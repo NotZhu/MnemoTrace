@@ -1,13 +1,13 @@
-"""Connectors + batch import — pure offline (hashing embedder, rule extractor), zero setup."""
+"""Connectors + 批量导入——纯离线（hashing 嵌入器、规则抽取器），零配置。"""
 from __future__ import annotations
 
 import json
 
-from engram import Memory
-from engram.connectors import parse, sniff
-from engram.connectors.base import to_epoch
+from mnemotrace import Memory
+from mnemotrace.connectors import parse, sniff
+from mnemotrace.connectors.base import to_epoch
 
-# A minimal but realistic ChatGPT export: a 3-node active thread under a root, plus a hidden system node.
+# 一个最小但贴近真实的 ChatGPT 导出：根节点下有一条 3 节点的活跃会话，外加一个隐藏的 system 节点。
 CHATGPT = [{
     "title": "Trip planning",
     "create_time": 1700000000.0,
@@ -37,7 +37,7 @@ def test_parse_chatgpt_reconstructs_active_thread():
     assert len(sessions) == 1
     s = sessions[0]
     assert s.title == "Trip planning"
-    # system node hidden -> 3 visible turns, in chronological order
+    # system 节点被隐藏 -> 可见轮次为 3，按时间顺序排列
     assert [m.speaker for m in s.messages] == ["user", "assistant", "user"]
     assert "Tokyo" in s.messages[0].content
     assert s.messages[0].event_time == 1700000000.0
@@ -58,7 +58,7 @@ def test_parse_openai_messages():
     assert len(sessions) == 1
     msgs = sessions[0].messages
     assert len(msgs) == 3
-    assert msgs[2].content == "I live in Shenzhen."  # multimodal content-parts flattened
+    assert msgs[2].content == "I live in Shenzhen."  # 多模态 content-parts 被展平
     assert sniff(arr) == "messages"
 
 
@@ -89,7 +89,7 @@ def test_parse_transcript_speaker_lines_and_freeform():
     tagged = "Alice: Hey there\nBob: Hi Alice\nhow are you?"
     s = parse(tagged, format="transcript")[0]
     assert [m.speaker for m in s.messages] == ["Alice", "Bob"]
-    assert s.messages[1].content == "Hi Alice\nhow are you?"  # continuation appended
+    assert s.messages[1].content == "Hi Alice\nhow are you?"  # 续行被追加到上一条发言
 
     free = "Just some freeform notes.\nNo speakers here."
     assert sniff(free) == "transcript"
@@ -99,7 +99,7 @@ def test_parse_transcript_speaker_lines_and_freeform():
 
 def test_to_epoch_forms():
     assert to_epoch(1700000000) == 1700000000.0
-    assert to_epoch(1700000000000) == 1700000000.0  # ms rescaled
+    assert to_epoch(1700000000000) == 1700000000.0  # 毫秒被换算
     assert to_epoch("2024-01-15") == to_epoch("2024-01-15T00:00:00Z")
     assert to_epoch(None) is None and to_epoch("") is None
 
@@ -109,7 +109,7 @@ def test_import_messages_end_to_end_offline():
     sessions = parse(CHATGPT, format="chatgpt")
     stats = mem.import_messages(sessions, user_id="me")
     assert stats["sessions"] == 1 and stats["episodes"] == 1
-    # the raw detail is retrievable through the lean read path (deterministic, no LLM needed)
+    # 原始细节应可经 lean 读取路径检索到（确定性，无需 LLM）
     ctx = mem.lean_context("Where is the trip?", user_id="me")
     assert "Tokyo" in ctx
 
@@ -170,4 +170,4 @@ def test_import_data_autosniff_and_synthetic_clock():
     stats = mem.import_data(arr, user_id="u2", base_time=1_700_000_000.0)
     assert stats["episodes"] == 1
     ep = list(mem.episodes_doc.values())[0]
-    assert ep.metadata.get("date")  # synthetic date stamped even without source timestamps
+    assert ep.metadata.get("date")  # 即使源数据没有时间戳，也会盖上合成日期

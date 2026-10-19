@@ -1,7 +1,6 @@
-"""Engram's reproducible evaluation harness (CLAUDE.md §4, Bet D).
+"""MnemoTrace 的可复现评测 harness（CLAUDE.md §4，Bet D）。
 
-M0 ships a tiny BUILT-IN synthetic set so `python eval/harness.py` produces real per-category numbers
-with zero downloads and no LLM -- it exists to lock in the harness *shape* (per-category accuracy +
-tokens + latency, multiple systems, fully reproducible). M1 plugs LOCOMO / LongMemEval datasets and an
-LLM judge into this same harness.
+M0 自带一个内置的小型合成数据集，使 `python eval/harness.py` 无需下载、无需 LLM 就能产出
+真实的分类别数字——它的意义在于锁定 harness 的*形态*（分类别准确率 + tokens + 延迟、多系统、
+完全可复现）。M1 再把 LOCOMO / LongMemEval 数据集和 LLM judge 接进同一个 harness。
 """

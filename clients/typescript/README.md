@@ -1,67 +1,74 @@
-# engram-memory (TypeScript/JavaScript SDK)
+# mnemotrace-memory (TypeScript/JavaScript SDK)
 
-Official SDK for [Engram](https://github.com/ly-wang19/engram) — the open-source long-term memory engine
+Official SDK for [MnemoTrace](https://github.com/NotZhu/MnemoTrace) — the open-source long-term memory engine
 for LLM agents. Zero runtime dependencies (uses the global `fetch`); works in Node 18+, browsers, Deno,
 Bun, and edge runtimes.
 
+The packages have not been published to npm or PyPI. Build the SDK from this checkout,
+then install the local package into your application (replace the path with your checkout):
+
 ```bash
-npm install engram-memory
+# Run from this repository root.
+npm --prefix clients/typescript ci
+npm --prefix clients/typescript run build
+# Run from your application's directory.
+npm install /path/to/MnemoTrace/clients/typescript
 ```
 
-You need a running Engram server (the SDK talks to its HTTP API):
+You need a running MnemoTrace server (the SDK talks to its HTTP API). Run from this repository root:
 
 ```bash
-pip install "engram-memory[serve]"
-export ENGRAM_OPEN=1                 # dev: Bearer text is the namespace; anonymous requires ENGRAM_ALLOW_ANONYMOUS=1
-export ENGRAM_EMBEDDER=hashing       # zero-download default; use bge-small for better local embeddings
-export ENGRAM_LLM=deepseek           # optional: enables /v1/chat/completions generation
-uvicorn engram.server.app:app --port 8000
+python -m pip install -e ".[serve]"
+export MNEMOTRACE_OPEN=1                 # dev: Bearer text is the namespace; anonymous requires MNEMOTRACE_ALLOW_ANONYMOUS=1
+export MNEMOTRACE_EMBEDDER=hashing       # zero-download default; use bge-small for better local embeddings
+export MNEMOTRACE_LLM=deepseek           # optional: enables /v1/chat/completions generation
+uvicorn mnemotrace.server.app:app --port 8000
 ```
 
 ## Quickstart
 
 ```ts
-import { EngramClient } from 'engram-memory'
+import { MnemoTraceClient } from 'mnemotrace-memory'
 
-const engram = new EngramClient({
+const mnemotrace = new MnemoTraceClient({
   baseUrl: 'http://localhost:8000',
   apiKey: 'sk-alice-123', // one key == one isolated memory namespace
 })
 
-const sessionId = 'codex:super-memory:thread-123'
+const sessionId = 'codex:mnemotrace:thread-123'
 
 // content-free wiring check: namespace/session/focus/counts/next actions, no memory text
-const status = await engram.agentStatus({ sessionId })
+const status = await mnemotrace.agentStatus({ sessionId })
 console.log(status.recommended_next_actions)
 
 // write
-await engram.remember('I live in Shenzhen and work at Tencent.', { sessionId })
+await mnemotrace.remember('I live in Shenzhen and work at Tencent.', { sessionId })
 
 // read — a small, dated, relevant slice to ground your own prompt
-const { context, tokens_est } = await engram.recall('where do I live?', { sessionId })
+const { context, tokens_est } = await mnemotrace.recall('where do I live?', { sessionId })
 
 // thread/task ended — finish consolidation, summarize, clear working memory
-await engram.closeSession(sessionId)
-const report = await engram.sessionReport(sessionId) // what this session saved; sensitive facts redacted
-const sessions = await engram.sessions({ limit: 20, query: 'codex' }) // content-free cross-agent index
+await mnemotrace.closeSession(sessionId)
+const report = await mnemotrace.sessionReport(sessionId) // what this session saved; sensitive facts redacted
+const sessions = await mnemotrace.sessions({ limit: 20, query: 'codex' }) // content-free cross-agent index
 
 // or a single direct answer (abstains when not in memory)
-const { answer } = await engram.search('Where do I work?')
+const { answer } = await mnemotrace.search('Where do I work?')
 ```
 
 ## OpenAI-compatible chat (drop-in)
 
-Engram exposes an OpenAI-compatible `/v1/chat/completions` that recalls + injects relevant memory before
+MnemoTrace exposes an OpenAI-compatible `/v1/chat/completions` that recalls + injects relevant memory before
 the model answers, and remembers the turn afterward. Use the SDK's `chat.completions` surface…
 
 ```ts
-const completion = await engram.chat.completions.create({
-  model: 'engram',
+const completion = await mnemotrace.chat.completions.create({
+  model: 'mnemotrace',
   messages: [{ role: 'user', content: 'Remind me where I work.' }],
-  memory: { session_id: 'codex:super-memory:thread-123', scope: 'auto' },
+  memory: { session_id: 'codex:mnemotrace:thread-123', scope: 'auto' },
 })
 console.log(completion.choices[0].message.content)
-console.log(completion.engram) // { recalled, memory_tokens_est, session_id, remembered }
+console.log(completion.mnemotrace) // { recalled, memory_tokens_est, session_id, remembered }
 ```
 
 …or keep your existing OpenAI SDK and just change the base URL:
@@ -69,14 +76,14 @@ console.log(completion.engram) // { recalled, memory_tokens_est, session_id, rem
 ```ts
 import OpenAI from 'openai'
 const openai = new OpenAI({ baseURL: 'http://localhost:8000/v1', apiKey: 'sk-alice-123' })
-await openai.chat.completions.create({ model: 'engram', messages: [...] }) // now memory-augmented
+await openai.chat.completions.create({ model: 'mnemotrace', messages: [...] }) // now memory-augmented
 ```
 
 Streaming works too:
 
 ```ts
-const stream = await engram.chat.completions.create({
-  model: 'engram',
+const stream = await mnemotrace.chat.completions.create({
+  model: 'mnemotrace',
   messages: [{ role: 'user', content: 'tell me about my projects' }],
   stream: true,
 })
@@ -95,27 +102,27 @@ structured-facts-only: no profile, summaries, or raw chunks.
 import { readFileSync } from 'node:fs'
 
 // ChatGPT export, OpenAI messages, JSONL, or a transcript — the server auto-detects the format.
-await engram.import({ data: JSON.parse(readFileSync('conversations.json', 'utf8')), format: 'chatgpt' })
+await mnemotrace.import({ data: JSON.parse(readFileSync('conversations.json', 'utf8')), format: 'chatgpt' })
 ```
 
 ## User-owned export
 
 ```ts
 // Safe by default: non-sensitive facts + graph; no profile, raw episodes, or summaries.
-const portable = await engram.export()
+const portable = await mnemotrace.export()
 
 // Full private export only after an explicit user action.
-const fullPrivate = await engram.export({ includeSensitive: true })
+const fullPrivate = await mnemotrace.export({ includeSensitive: true })
 ```
 
 ## Memory management UI
 
 ```ts
 // Content-free session index: which Codex / Claude / app sessions touched this namespace.
-const sessions = await engram.sessions({ limit: 20, query: 'claude-code' })
+const sessions = await mnemotrace.sessions({ limit: 20, query: 'claude-code' })
 
 // Share-safe/default view: paginate and search editable non-sensitive facts.
-const page = await engram.memories({
+const page = await mnemotrace.memories({
   factsLimit: 50,
   factsOffset: 0,
   episodesLimit: 0,
@@ -124,7 +131,7 @@ const page = await engram.memories({
 })
 
 // Owner-visible inspection view: include raw episodes, profile, and sensitive facts.
-const fullPrivatePage = await engram.memories({
+const fullPrivatePage = await mnemotrace.memories({
   factsLimit: 50,
   episodesLimit: 10,
   includeSensitive: true,
@@ -156,7 +163,7 @@ const fullPrivatePage = await engram.memories({
 | `forget({ confirm: true })` | POST /v1/forget | `{ ok, message }`; irreversible namespace wipe |
 | `chat.completions.create(params)` | POST /v1/chat/completions | `ChatCompletion` / stream |
 
-Errors throw `EngramError` with `.status` and a parsed `.detail`.
+Errors throw `MnemoTraceError` with `.status` and a parsed `.detail`.
 
 ## Develop
 
@@ -169,8 +176,8 @@ npm run typecheck
 
 ## License
 
-Engram is **dual-licensed**: open source under
-[GNU AGPL-3.0](https://github.com/ly-wang19/engram/blob/main/LICENSE), or a separate **commercial
+MnemoTrace is **dual-licensed**: open source under
+[GNU AGPL-3.0](https://github.com/NotZhu/MnemoTrace/blob/main/LICENSE), or a separate **commercial
 license** for proprietary/closed-source use. Commercial use that won't comply with the AGPL requires
 authorization — see
-[`COMMERCIAL-LICENSE.md`](https://github.com/ly-wang19/engram/blob/main/COMMERCIAL-LICENSE.md).
+[`COMMERCIAL-LICENSE.md`](https://github.com/NotZhu/MnemoTrace/blob/main/COMMERCIAL-LICENSE.md).

@@ -1,6 +1,6 @@
 # Quickstart: Validate the Memory Reference Radar
 
-This guide validates the planning artifacts for `002-memory-reference-radar`. It does not run Engram's
+This guide validates the planning artifacts for `002-memory-reference-radar`. It does not run MnemoTrace's
 runtime or benchmark harness because this feature is documentation and architecture governance.
 
 ## Prerequisites
@@ -53,7 +53,7 @@ rg -n "external-only|clean-room|accuracy/tokens/latency|raw evidence|supersedes|
 ```
 
 Expected outcome: matches appear in the plan, research, data model, or contracts, proving the radar
-preserves Engram's constitution gates.
+preserves MnemoTrace's constitution gates.
 
 ## 5. Check public links in the radar
 
@@ -74,7 +74,7 @@ fails, update the source entry with a stale-link note and `last_verified` date.
 Open [contracts/adoption-candidate.md](contracts/adoption-candidate.md) and verify every item in
 `research.md`'s Initial Priority Queue can be expressed with:
 
-- Engram-native form.
+- MnemoTrace-native form.
 - Strategic bets served.
 - Affected surface.
 - Benchmark target.

@@ -28,7 +28,7 @@ const useToastStore = create<ToastState>((set) => ({
   dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 }))
 
-/** Imperative helper usable anywhere (including outside React event handlers). */
+/** 命令式辅助函数，可在任意位置调用（包括 React 事件处理器之外）。 */
 export const toast = {
   success: (m: string) => useToastStore.getState().push('success', m),
   error: (m: string) => useToastStore.getState().push('error', m),

@@ -21,7 +21,7 @@ available beside the structured chain.
 ### Offline feature ablation
 
 ```bash
-/Users/ywwl/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+python3 \
   eval/ablate_features.py --jsonl results/chain_provenance_promotion_ablation.jsonl
 ```
 
@@ -33,7 +33,7 @@ Result: `improved 24/24 features`. The new `chain_provenance_promotion` row is e
 ### Direct zero-dependency behavior check
 
 ```bash
-/Users/ywwl/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 - <<'PY'
+python3 - <<'PY'
 # Builds a two-step employer update with source episodes.
 # Asserts chain_evidence=True promotes the old-source raw chunk,
 # while chain_evidence=False keeps the current new-source chunk.
@@ -45,7 +45,7 @@ Result: `OK chain provenance promotion behavior`.
 ### Real-data context acceptance
 
 ```bash
-/Users/ywwl/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 - <<'PY'
+python3 - <<'PY'
 # Loads eval/longmemeval_sample.json, runs chain_on vs chain_off context assembly,
 # and records full-detail answer-session hits, tokens, latency, and errors.
 PY
@@ -67,7 +67,7 @@ ablation, because the bundled sample does not include a previous-value raw-sourc
 ### Zero-setup project verification
 
 ```bash
-/Users/ywwl/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+python3 \
   scripts/check_zero_setup.py
 ```
 
@@ -80,7 +80,7 @@ Attempted:
 
 ```bash
 python3 -m pytest tests/test_lean.py -k "chain_provenance or provenance_source or history_for_previous or evolution_chain" -q
-/Users/ywwl/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+python3 \
   -m pytest tests/test_lean.py -k "chain_provenance or provenance_source or history_for_previous or evolution_chain" -q
 ```
 

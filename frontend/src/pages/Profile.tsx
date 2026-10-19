@@ -1,45 +1,53 @@
-import { Check, HelpCircle, Lock, ThumbsDown, ThumbsUp, Trash2, UserRound } from 'lucide-react'
 
-import { Badge, Card, CardTitle, EmptyState, ErrorState, PageHeader, Spinner, cx } from '../components/ui'
+
+import { CircleCheck, HelpCircle, Trash2, UserRound } from 'lucide-react'
+
+import { Card, CardTitle, ErrorState, PageHeader, Spinner, cx } from '../components/ui'
+import { PageEmptyState } from '../components/PageEmptyState'
 import { toast } from '../components/Toast'
 import { useAddFact, useDeleteFact, useMemories, useStructuredProfile } from '../hooks/queries'
-import { useT } from '../i18n'
-import type { Dict } from '../i18n/en'
+import { copy as t } from '../lib/copy'
 import type { Evidence, ProfileItem } from '../types'
 
-function evidenceLabel(e: Evidence, t: Dict): string {
-  if (e.kind === 'user') return t.profile.evidenceUser
-  if (e.kind === 'reinforced') return t.profile.evidenceReinforced
-  return e.count > 1 ? t.profile.evidenceMentions(e.count) : t.profile.evidenceOnce
-}
+const ICON_COLOR = 'text-brand-cyan'
 
-function EvidenceChip({ e }: { e: Evidence }) {
-  const t = useT()
+export function EvidenceChip({ e }: { e: Evidence }) {
+  if (e.source_count === 0 && e.kind !== 'reinforced') return null
+
   return (
-    <span
-      className={cx(
-        'inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-px text-[10px]',
-        e.kind === 'user' ? 'bg-brand-amber/15 text-brand-amber' : 'bg-white/5 text-ghost',
+    <span className="inline-flex shrink-0 items-center gap-1.5">
+      {e.source_count > 0 && (
+        <span
+          className="text-sm font-normal tabular-nums text-ghost"
+          title={t.profile.evidenceTitle}
+          aria-label={`${t.profile.evidenceTitle}：${e.source_count}`}
+        >
+          x{e.source_count}
+        </span>
       )}
-      title={t.profile.evidenceTitle}
-    >
-      {e.kind === 'user' && <Lock className="h-2.5 w-2.5" />}
-      {evidenceLabel(e, t)}
+
+      {e.kind === 'reinforced' && (
+        <span className="text-[10px] text-ghost" title={t.profile.evidenceReinforcedHint}>
+          {t.profile.evidenceReinforced}
+        </span>
+      )}
     </span>
   )
 }
 
 function PrefChip({ it }: { it: ProfileItem }) {
-  const like = it.polarity === 'like'
+  const dislike = it.polarity === 'dislike'
   return (
-    <span
-      className={cx(
-        'inline-flex min-w-0 max-w-full flex-wrap items-center gap-1.5 rounded-lg px-2.5 py-1 text-sm',
-        like ? 'bg-brand-mint/12 text-brand-mint' : 'bg-brand-rose/12 text-brand-rose',
-      )}
-    >
-      {like ? <ThumbsUp className="h-3.5 w-3.5 shrink-0" /> : <ThumbsDown className="h-3.5 w-3.5 shrink-0" />}
-      <span className="min-w-0 max-w-full break-all text-slate-100">{it.item}</span>
+    <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
+      <span
+        title={dislike ? t.profile.iconHints.dislike : t.profile.iconHints.like}
+        className={cx(
+          'min-w-0 max-w-full break-all rounded-lg px-2.5 py-1 text-sm',
+          dislike ? 'bg-brand-rose/10 text-brand-rose' : 'bg-brand-mint/10 text-brand-mint',
+        )}
+      >
+        {it.item}
+      </span>
       <EvidenceChip e={it.evidence} />
     </span>
   )
@@ -50,7 +58,6 @@ export default function Profile() {
   const memories = useMemories({ facts_limit: 240, episodes_limit: 0 })
   const addFact = useAddFact()
   const deleteFact = useDeleteFact()
-  const t = useT()
 
   if (isLoading) return <Spinner label={t.profile.loading} />
   if (isError) return <ErrorState message={(error as Error).message} />
@@ -75,12 +82,14 @@ export default function Profile() {
   const empty = data.counts.basic + data.counts.preferences + data.counts.tentative + data.counts.habits === 0
 
   return (
-    <div className="space-y-6">
-      <PageHeader title={t.profile.title} subtitle={t.profile.subtitle} />
+    <div className={empty ? 'flex min-h-0 flex-1 flex-col' : 'space-y-6'}>
+      <PageHeader title={t.profile.title} />
 
-      {empty && <EmptyState title={t.profile.emptyTitle} hint={t.profile.emptyHint} icon={<UserRound className="h-6 w-6" />} />}
+      {empty && (
+        <PageEmptyState title={t.profile.emptyTitle} hint={t.profile.emptyHint} icon={<UserRound className="h-6 w-6" />} />
+      )}
 
-      {/* basic info */}
+      {/* 基本信息 */}
       {data.basic.length > 0 && (
         <Card>
           <CardTitle hint={t.profile.basicHint}>{t.profile.basicTitle}</CardTitle>
@@ -99,14 +108,14 @@ export default function Profile() {
         </Card>
       )}
 
-      {/* preferences by category */}
+      {/* 按类别分组的偏好 */}
       {prefCats.length > 0 && (
         <Card>
-          <CardTitle hint={t.profile.prefsHint}>{t.profile.prefsTitle}</CardTitle>
+          <CardTitle>{t.profile.prefsTitle}</CardTitle>
           <div className="space-y-4">
             {prefCats.map(([cat, items]) => (
-              <div key={cat}>
-                <div className="mb-2 text-xs font-medium uppercase tracking-wider text-brand-cyan">{cat}</div>
+              <div key={cat} className="min-w-0 rounded-2xl border border-line bg-ink-700/40 p-4">
+                <h3 className="mb-2 text-xs font-medium tracking-wider text-brand-cyan">{cat}</h3>
                 <div className="flex flex-wrap gap-2">
                   {items.map((it) => (
                     <PrefChip key={it.fact_id} it={it} />
@@ -118,15 +127,16 @@ export default function Profile() {
         </Card>
       )}
 
-      {/* habits */}
+      {/* 习惯 */}
       {data.habits.length > 0 && (
         <Card>
-          <CardTitle hint={t.profile.habitsHint}>{t.profile.habitsTitle}</CardTitle>
-          <ul className="space-y-1.5">
+          <CardTitle>{t.profile.habitsTitle}</CardTitle>
+          <ul className="flex flex-wrap gap-2">
             {data.habits.map((h) => (
-              <li key={h.fact_id} className="flex min-w-0 items-center gap-2 text-sm text-slate-200">
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-violet" />
-                <span className="min-w-0 break-words">{h.text}</span>
+              <li key={h.fact_id} className="inline-flex min-w-0 max-w-full items-center gap-1.5">
+                <span title={t.profile.iconHints.habit} className="min-w-0 max-w-full break-all rounded-lg bg-ghost/10 px-2.5 py-1 text-sm text-ghost">
+                  {h.text}
+                </span>
                 <EvidenceChip e={h.evidence} />
               </li>
             ))}
@@ -134,12 +144,15 @@ export default function Profile() {
         </Card>
       )}
 
-      {/* tentative — the L1→L2 gate, display-only */}
+      {/* 待定项 —— L1→L2 的晋升门槛，仅展示 */}
       {data.tentative.length > 0 && (
         <Card>
           <CardTitle hint={t.profile.tentativeHint}>
             <span className="inline-flex items-center gap-2">
-              <HelpCircle className="h-4 w-4 text-brand-amber" /> {t.profile.tentativeTitle(data.tentative.length)}
+              <span role="img" aria-label={t.profile.iconPending} title={t.profile.iconHints.pending} className="inline-flex shrink-0">
+                <HelpCircle aria-hidden="true" className={`h-[18px] w-[18px] ${ICON_COLOR}`} />
+              </span>
+              {t.profile.tentativeTitle(data.tentative.length)}
             </span>
           </CardTitle>
           <p className="mb-3 text-sm text-ghost">
@@ -150,23 +163,27 @@ export default function Profile() {
           <ul className="divide-y divide-line">
             {data.tentative.map((it) => (
               <li key={it.fact_id} className="flex flex-col gap-2 py-2.5 sm:flex-row sm:items-center sm:gap-3">
-                <Badge tone={it.polarity === 'like' ? 'live' : 'old'}>{it.polarity === 'like' ? t.profile.like : t.profile.dislike}</Badge>
+                <span className={cx('inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium', it.polarity === 'like' ? 'text-brand-mint' : 'text-ghost line-through')}>
+                  {it.polarity === 'like' ? t.profile.like : t.profile.dislike}
+                </span>
                 <span className="min-w-0 flex-1 break-all text-sm text-slate-100">
                   {it.item} <span className="text-xs text-ghost">· {it.category}</span>
                 </span>
                 <EvidenceChip e={it.evidence} />
                 <button
                   onClick={() => confirm(it)}
-                  className="inline-flex items-center gap-1 rounded-lg border border-brand-mint/30 bg-brand-mint/10 px-2.5 py-1 text-xs text-brand-mint transition hover:bg-brand-mint/20"
+                  title={t.profile.iconHints.confirm}
+                  className={`inline-flex items-center gap-1 rounded-lg border border-brand-cyan/30 bg-transparent px-2.5 py-1 text-xs ${ICON_COLOR} transition hover:border-brand-cyan/50`}
                 >
-                  <Check className="h-3.5 w-3.5" /> {t.common.confirm}
+                  <CircleCheck aria-hidden="true" className="h-[18px] w-[18px]" /> {t.common.confirm}
                 </button>
                 <button
                   onClick={() => dismiss(it)}
-                  className="rounded-lg border border-line p-1.5 text-ghost transition hover:border-brand-rose/50 hover:text-brand-rose"
-                  title={t.profile.deleteCandidate}
+                  className={`rounded-lg border border-line bg-transparent p-1.5 ${ICON_COLOR} transition hover:border-brand-cyan/50`}
+                  title={t.profile.iconHints.delete}
+                  aria-label={t.profile.deleteCandidate}
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
+                  <Trash2 className="h-[18px] w-[18px]" />
                 </button>
               </li>
             ))}
@@ -178,7 +195,6 @@ export default function Profile() {
 }
 
 function HistoricalSlot({ factId, facts }: { factId: string; facts: Array<{ id: string; subject: string; predicate: string; object: string; status: string; invalid_at: string | null }> }) {
-  const t = useT()
   const current = facts.find((f) => f.id === factId)
   if (!current) return null
   const old = facts.filter(

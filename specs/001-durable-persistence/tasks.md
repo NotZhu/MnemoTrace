@@ -13,8 +13,8 @@
 **Purpose**: Prepare storage modules and dependency metadata without changing default runtime behavior.
 
 - [x] T001 Add `lancedb` optional extra to `pyproject.toml`
-- [x] T002 [P] Create persistence error types and schema constants in `engram/store/persist.py`
-- [x] T003 [P] Export persistence helpers from `engram/store/__init__.py`
+- [x] T002 [P] Create persistence error types and schema constants in `mnemotrace/store/persist.py`
+- [x] T003 [P] Export persistence helpers from `mnemotrace/store/__init__.py`
 
 ---
 
@@ -24,9 +24,9 @@
 
 **CRITICAL**: No user story work can begin until this phase is complete.
 
-- [x] T004 Implement explicit dataclass-to-record serialization for `Episode`, `Fact`, `Entity`, `Relation`, `WorkingMemory`, and `Conflict` in `engram/store/persist.py`
-- [x] T005 Implement explicit record-to-dataclass reconstruction with forward-tolerant field handling in `engram/store/persist.py`
-- [x] T006 Implement manifest creation, parsing, schema validation, and embedding-dimension validation in `engram/store/persist.py`
+- [x] T004 Implement explicit dataclass-to-record serialization for `Episode`, `Fact`, `Entity`, `Relation`, `WorkingMemory`, and `Conflict` in `mnemotrace/store/persist.py`
+- [x] T005 Implement explicit record-to-dataclass reconstruction with forward-tolerant field handling in `mnemotrace/store/persist.py`
+- [x] T006 Implement manifest creation, parsing, schema validation, and embedding-dimension validation in `mnemotrace/store/persist.py`
 - [x] T007 [P] Add shared persistence fixture helpers in `tests/test_persist_roundtrip.py`
 
 **Checkpoint**: Serializer can transform every persisted dataclass without pickle or `eval`.
@@ -48,10 +48,10 @@
 
 ### Implementation for User Story 1
 
-- [x] T012 [US1] Implement atomic JSONL+manifest save protocol with advisory locking in `engram/store/persist.py`
-- [x] T013 [US1] Implement streaming JSONL load protocol with malformed trailing-line recovery in `engram/store/persist.py`
-- [x] T014 [US1] Wire `Memory.save()` and `Memory.open()` to JSONL+manifest persistence in `engram/memory.py`
-- [x] T015 [US1] Preserve backward-compatible legacy pickle reading only through the explicit migration path, not normal `Memory.open()`, in `engram/memory.py`
+- [x] T012 [US1] Implement atomic JSONL+manifest save protocol with advisory locking in `mnemotrace/store/persist.py`
+- [x] T013 [US1] Implement streaming JSONL load protocol with malformed trailing-line recovery in `mnemotrace/store/persist.py`
+- [x] T014 [US1] Wire `Memory.save()` and `Memory.open()` to JSONL+manifest persistence in `mnemotrace/memory.py`
+- [x] T015 [US1] Preserve backward-compatible legacy pickle reading only through the explicit migration path, not normal `Memory.open()`, in `mnemotrace/memory.py`
 - [x] T016 [US1] Update persistence documentation in `specs/001-durable-persistence/quickstart.md`
 
 **Checkpoint**: User Story 1 is fully functional and independently testable with no optional extras.
@@ -71,9 +71,9 @@
 
 ### Implementation for User Story 2
 
-- [x] T019 [US2] Implement lazy-import `LanceDBVectorStore` in `engram/store/lancedb_store.py`
-- [x] T020 [US2] Add backend selection fields `storage` and `data_path` to `engram/config.py`
-- [x] T021 [US2] Wire LanceDB vector store factory selection without importing LanceDB on the default path in `engram/memory.py`
+- [x] T019 [US2] Implement lazy-import `LanceDBVectorStore` in `mnemotrace/store/lancedb_store.py`
+- [x] T020 [US2] Add backend selection fields `storage` and `data_path` to `mnemotrace/config.py`
+- [x] T021 [US2] Wire LanceDB vector store factory selection without importing LanceDB on the default path in `mnemotrace/memory.py`
 - [x] T022 [US2] Document LanceDB install and selection in `README.md` and `specs/001-durable-persistence/quickstart.md`
 
 **Checkpoint**: User Story 2 works when the optional extra is installed and is invisible to zero-setup users.
@@ -92,7 +92,7 @@
 
 ### Implementation for User Story 3
 
-- [x] T024 [US3] Implement legacy pickle loading and JSONL writing in `engram/store/migrate.py`
+- [x] T024 [US3] Implement legacy pickle loading and JSONL writing in `mnemotrace/store/migrate.py`
 - [x] T025 [US3] Add a CLI entry point for migration in `pyproject.toml`
 - [x] T026 [US3] Document migration warnings and commands in `README.md` and `specs/001-durable-persistence/quickstart.md`
 

@@ -11,7 +11,7 @@ import {
 import { useAuth } from '../store/auth'
 import type { FactEdit, FactWrite, Focus, Policy } from '../types'
 
-// Query keys are namespaced by the signed-in key so switching accounts never bleeds cache.
+// 查询 key 按登录 key 做命名空间隔离，切换账号时缓存不会串味。
 const ns = () => useAuth.getState().apiKey ?? 'anon'
 export const qk = {
   memoriesRoot: () => ['memories', ns()] as const,
@@ -25,12 +25,13 @@ export const qk = {
   focus: () => ['focus', ns()] as const,
   policy: () => ['policy', ns()] as const,
   profile: () => ['profile', ns()] as const,
+  sourceEpisodes: () => ['source-episodes', ns()] as const,
   working: (sessionId?: string) => ['working', ns(), sessionId ?? 'all'] as const,
   conflicts: () => ['conflicts', ns()] as const,
   health: () => ['health'] as const,
-  // Namespaced like every other key (see ns() above) — the audit is per-memory-space, so an
-  // un-namespaced key would show the previous space's findings, with its one-click bulk delete, after
-  // a key switch. Prefix key: invalidating ['audit', ns()] matches every limit the Health page holds.
+  // 与其他 key 一样按命名空间隔离（见上面的 ns()）— 审计是按记忆空间进行的，
+  // 不加命名空间的 key 在切换后会显示上一个空间的检查结果，连同它的一键批量删除。
+  // 前缀 key：失效 ['audit', ns()] 即可匹配 Health 页保存的任意 limit。
   auditRoot: () => ['audit', ns()] as const,
   audit: (limit: number) => ['audit', ns(), limit] as const,
 }
@@ -39,14 +40,26 @@ export function useHealth() {
   return useQuery({ queryKey: qk.health(), queryFn: api.health, staleTime: 30_000, retry: false })
 }
 
-export function useMemories(params: MemoriesQuery = {}) {
-  const enabled = !!useAuth((s) => s.apiKey)
-  return useQuery({ queryKey: qk.memories(params), queryFn: () => api.memories(params), enabled, retry: false })
+export function useMemories(params: MemoriesQuery = {}, options: { keepPreviousData?: boolean } = {}) {
+  const namespace = useAuth((s) => s.apiKey)
+  return useQuery({
+    queryKey: qk.memories(params), queryFn: () => api.memories(params), enabled: !!namespace, retry: false,
+    placeholderData: options.keepPreviousData ? (previousData, previousQuery) => {
+      const previousParams = previousQuery?.queryKey[2] as MemoriesQuery | undefined
+      // 只在同一空间、同一记录类型的搜索中保留结果，切换账号不能沿用上一空间的数据。
+      return previousQuery?.queryKey[1] === namespace && previousParams?.kind === params.kind ? previousData : undefined
+    } : undefined,
+  })
 }
 
-export function useSessions(params: SessionsQuery = {}) {
-  const enabled = !!useAuth((s) => s.apiKey)
-  return useQuery({ queryKey: qk.sessions(params), queryFn: () => api.sessions(params), enabled, retry: false })
+export function useSessions(params: SessionsQuery = {}, options: { keepPreviousData?: boolean } = {}) {
+  const namespace = useAuth((s) => s.apiKey)
+  return useQuery({
+    queryKey: qk.sessions(params), queryFn: () => api.sessions(params), enabled: !!namespace, retry: false,
+    // 搜索换词时保留本空间的列表，切换账号时不能显示其他空间的会话。
+    placeholderData: options.keepPreviousData ? (previousData, previousQuery) =>
+      previousQuery?.queryKey[1] === namespace ? previousData : undefined : undefined,
+  })
 }
 
 export function useAgentStatus(sessionId?: string) {
@@ -80,7 +93,7 @@ export function useFocus() {
   return useQuery({ queryKey: qk.focus(), queryFn: api.focus, enabled, retry: false })
 }
 
-/** Invalidate everything that a write can change (facts, profile, graph). */
+/** 使一次写入可能影响的所有查询失效（facts、profile、graph）。 */
 function useInvalidateMemory() {
   const qc = useQueryClient()
   return () => {
@@ -89,19 +102,20 @@ function useInvalidateMemory() {
     qc.invalidateQueries({ queryKey: qk.graphRoot() })
     qc.invalidateQueries({ queryKey: qk.focus() })
     qc.invalidateQueries({ queryKey: qk.profile() })
-    // The health audit is derived from the same facts. Without this a delete leaves the Health page
-    // showing the rows it just erased — and re-clicking its (irreversible) clear button reports
-    // "the slot changed since it was checked", blaming the store for the owner's own edit.
+    // 健康页的审计结果派生自同一批事实。不加这行的话，删除后 Health 页仍显示
+    // 刚被清掉的行 — 再点它的（不可逆）清空按钮会报"检查后槽位已变化"，
+    // 把所有者自己的修改归咎于存储层。
     qc.invalidateQueries({ queryKey: qk.auditRoot() })
   }
 }
 
-/** Raw episodes, fetched only when something needs to resolve a fact's provenance ids to source text. */
+/** 原始 episode，仅在需要把某条事实的 provenance id 解析回源文本时才拉取。 */
 export function useSourceEpisodes(enabled: boolean) {
+  const namespace = useAuth((s) => s.apiKey)
   return useQuery({
-    queryKey: ['source-episodes'],
+    queryKey: qk.sourceEpisodes(),
     queryFn: () => api.memories({ facts_limit: 0, episodes_limit: 200, include_sensitive: true }),
-    enabled,
+    enabled: enabled && !!namespace,
   })
 }
 
@@ -138,15 +152,6 @@ export function useResolveConflict() {
       qc.invalidateQueries({ queryKey: qk.profile() })
       qc.invalidateQueries({ queryKey: qk.graphRoot() })
     },
-  })
-}
-
-export function useAddWorking() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ content, kind, ttl }: { content: string; kind?: string; ttl?: number }) =>
-      api.addWorking(content, kind, ttl),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.working() }),
   })
 }
 
@@ -234,7 +239,7 @@ export function useSetPolicy() {
     mutationFn: (patch: Partial<Policy>) => api.setPolicy(patch),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.policy() })
-      qc.invalidateQueries({ queryKey: qk.memoriesRoot() }) // persona may change
+      qc.invalidateQueries({ queryKey: qk.memoriesRoot() }) // persona 可能已变化
     },
   })
 }

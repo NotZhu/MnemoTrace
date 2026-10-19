@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Run Engram's zero-setup verification path.
+"""运行 MnemoTrace 的零配置验证路径。
 
-This script intentionally uses only the Python standard library. It is the quick
-confidence check for contributors before they install optional services or test
-dependencies: source + installed-module quickstarts, offline eval, evidence-log validation, paper stats,
-and stdlib compilation.
+本脚本刻意只使用 Python 标准库。它是贡献者在安装可选服务或测试依赖之前的快速
+信心检查：源码 + 已安装模块的 quickstart、离线 eval、证据日志校验、paper 统计
+以及标准库编译检查。
 """
 from __future__ import annotations
 
@@ -24,25 +23,26 @@ EVIDENCE_REQUIREMENTS: dict[Path, tuple[str, ...]] = {
     ROOT / "results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl": ("full_context",),
 }
 CONSOLE_HELP_MODULES = (
-    "engram.agent_doctor",
-    "engram.agent_setup",
-    "engram.connectors",
-    "engram.mcp",
-    "engram.store.migrate",
+    "mnemotrace.agent_doctor",
+    "mnemotrace.agent_setup",
+    "mnemotrace.connectors",
+    "mnemotrace.mcp",
+    "mnemotrace.store.migrate",
 )
 CONSOLE_HELP_CALLABLES = (
     (
-        "engram-agent-bootstrap",
-        "from engram.agent_setup import bootstrap_main; bootstrap_main(['--help'])",
+        "mnemotrace-agent-bootstrap",
+        "from mnemotrace.agent_setup import bootstrap_main; bootstrap_main(['--help'])",
     ),
 )
 
 
 def _rel(path: Path) -> str:
+    # 仓库相对路径会对外打印（RESULTS.md 使用正斜杠），因此无论宿主 OS 如何都统一分隔符。
     try:
-        return str(path.relative_to(ROOT))
+        return path.relative_to(ROOT).as_posix()
     except ValueError:
-        return str(path)
+        return path.as_posix()
 
 
 def run_step(label: str, cmd: list[str]) -> None:
@@ -73,7 +73,7 @@ def format_public_evidence_requirements(paths: tuple[Path, ...]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run Engram's zero-setup smoke checks.")
+    parser = argparse.ArgumentParser(description="Run MnemoTrace's zero-setup smoke checks.")
     parser.add_argument(
         "--skip-paper-stats",
         action="store_true",
@@ -89,10 +89,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"missing public evidence log: {_rel(path)}", file=sys.stderr)
         return 1
 
-    with tempfile.TemporaryDirectory(prefix="engram_zero_setup_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="mnemotrace_zero_setup_") as tmp:
         synthetic_log = Path(tmp) / "synthetic_durable.jsonl"
         run_step("source quickstart", [py, "examples/quickstart.py"])
-        run_step("installed-module quickstart", [py, "-m", "engram.quickstart"])
+        run_step("installed-module quickstart", [py, "-m", "mnemotrace.quickstart"])
         for module in CONSOLE_HELP_MODULES:
             run_step(f"console help: {module}", [py, "-m", module, "--help"])
         for label, snippet in CONSOLE_HELP_CALLABLES:
@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if not args.skip_paper_stats:
         run_step("paper statistics", [py, "paper/compute_stats.py", "--bootstrap-samples", "100"])
-    run_step("stdlib compile check", [py, "-m", "compileall", "-q", "engram", "eval", "examples", "tests"])
+    run_step("stdlib compile check", [py, "-m", "compileall", "-q", "mnemotrace", "eval", "examples", "tests"])
 
     print("\nOK zero-setup verification passed.")
     return 0

@@ -1,48 +1,44 @@
-"""Is this memory a facility anyone depends on? — the L0-L4 ladder, measured off local signal.
+"""这段记忆是否成了有人依赖的设施（facility）？——用 L0-L4 阶梯、基于本地信号来度量。
 
-CLAUDE.md's Bet D discipline says a number we cannot reproduce does not exist. That discipline has so
-far only been pointed at *accuracy*. This points it at the other question, the one nobody was measuring:
-the memory is filling fast — thousands of session conclusions on the owner's own machine — and may
-barely be read. Filling a store is not a facility. Being read, and being read usefully, is.
+CLAUDE.md 的 Bet D 纪律说：无法复现的数字等于不存在。这条纪律至今只对准了*准确率*；这里把它
+对准另一个没人度量的问题：记忆正在被快速填充——所有者自己的机器上已有数千条 session 结论——
+但可能几乎没被读过。填满一个存储不是设施；被读到、且读得有用，才是。
 
-    python eval/facility.py --days 7 --url http://127.0.0.1:8766 --key-file ~/.engram/watch.key
+    python eval/facility.py --days 7 --url http://127.0.0.1:8766 --key-file ~/.mnemotrace/watch.key
 
-The ladder, as the owner set it:
+所有者定义的阶梯：
 
-    L0 exists       memory holds conclusions                                    (machine-measurable)
-    L1 connected    >=90% of finished sessions closed, lag < 60s                (machine-measurable)
-    L2 read         weekly engram_recall calls > 0 and trending up              (machine-measurable)
-    L3 useful       (i) conclusion dedup rate > 0  (ii) >=50% of recalls changed the answer
-                    (i) is machine-measurable; (ii) needs human labelling and is reported NOT MEASURED
-    L4 depended on  turning it off for a week prompts turning it back on        (human judgement only)
+    L0 exists       memory 里存有结论                                        （机器可度量）
+    L1 connected    >=90% 的已结束 session 被关闭，滞后 < 60s                 （机器可度量）
+    L2 read         每周 mnemotrace_recall 调用 > 0 且呈上升趋势                  （机器可度量）
+    L3 useful       (i) 结论去重率 > 0  (ii) >=50% 的 recall 改变了答案
+                    (i) 机器可度量；(ii) 需要人工标注，报告中标记为 NOT MEASURED
+    L4 depended on  关掉一周后会促使再把它打开                                （只能靠人工判断）
 
-WHY there is no `--judge` and no label queue: L3(ii) is a human judgement about whether an answer
-changed. An LLM judge would put a model on the critical path of a twenty-second offline metric and would
-be scoring its own family's output; a labelling queue with no consumer is abstraction for a hypothetical
-future (CLAUDE.md §8). The harness prints the ceiling on usefulness (did recall return anything at all)
-and says plainly that usefulness itself is unmeasured.
+为什么没有 `--judge`、没有标注队列：L3(ii) 是对"答案是否被改变"的人工判断。用 LLM judge 会把
+模型放到一个二十秒离线指标的关键路径上，而且是在给同族模型的输出打分；一个没有消费者的标注
+队列则是为假想未来做的抽象（CLAUDE.md §8）。harness 只打印有用性的上限（recall 到底有没有
+返回内容），并明确说明有用性本身未被度量。
 
-PRIVACY (CONTRIBUTING): the owner's transcripts carry colleague names and business detail. There is no
-field in the output schema, and no line in the table, that can hold a fact, a query, a session id, a
-project name or a file path. Paths are consumed in memory and never printed or written. Tests use
-synthetic fixtures only.
+PRIVACY (CONTRIBUTING)：所有者的 transcript 含同事姓名和业务细节。输出的 schema 里没有任何
+字段、表格里没有任何行能容纳 fact、查询、session id、项目名或文件路径。路径只在内存中使用，
+从不打印或写盘。测试只用合成夹具。
 
-KNOWN IMPRECISIONS, stated rather than papered over:
+已知的不精确之处，如实陈述而不是掩盖：
 
-* `_session_label` truncates the transcript uuid to 8 hex chars, so two transcripts can collide onto one
-  session id. Measured on this machine: 1 collision across 2082 transcripts (~0.05%), which very
-  slightly OVERSTATES L1 coverage.
-* Watcher lag is tick-resolution: watch.log's `fed` line is written after every close in a tick, so a
-  session ingested early in a slow tick is credited with the whole tick's duration. Irrelevant while the
-  p50 is measured in days; it matters once lag approaches the 15-45 min floor.
-* L2 sees only Claude Code and Codex transcripts on this machine. It is a LOWER BOUND on Engram tool
-  use, labelled "transcripts on this machine", not a global count.
-* The self-development exclusion is a path substring (`--exclude-project-substr`), so it can only be as
-  precise as the directory names. The number of calls it removes is always printed.
+* `_session_label` 把 transcript uuid 截断为 8 个十六进制字符，两个 transcript 可能撞到同一个
+  session id。本机实测：2082 个 transcript 中 1 次碰撞（约 0.05%），会让 L1 覆盖率被轻微高估。
+* Watcher 滞后是 tick 分辨率的：watch.log 的 `fed` 行在每个 tick 内每次 close 之后写入，所以
+  慢 tick 里早期被 ingest 的 session 会被记上整个 tick 的时长。p50 以天为单位时无所谓；一旦
+  滞后接近 15-45 分钟的下限就有影响了。
+* 本机上 L2 只能看到 Claude Code 和 Codex 的 transcript。它是 MnemoTrace 工具使用量的下界，标记为
+  "transcripts on this machine"，不是全局计数。
+* 自研排除是路径子串匹配（`--exclude-project-substr`），精度上限就是目录名的精度。它移除了
+  多少次调用始终会打印出来。
 
-Exit codes are three-valued on purpose (`--assert-no-regress`): 0 report produced, 1 the facility
-regressed, 2 the INSTRUMENT is broken (no control tool calls, server unreachable, empty roots).
-Conflating 1 and 2 is how a facility metric goes quietly dead while still printing zeros.
+退出码刻意设计为三值（`--assert-no-regress`）：0 报告已产出，1 设施发生了回退，2 度量工具
+本身坏了（没有 control 工具调用、server 不可达、roots 为空）。把 1 和 2 混在一起，就是一个
+设施指标在还打印着零的时候悄悄死掉的原因。
 """
 from __future__ import annotations
 
@@ -60,28 +56,28 @@ from typing import Iterable, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram.connectors import watch  # noqa: E402
-from engram.connectors.agent_sessions import _rows, _session_label, find_sessions  # noqa: E402
-from engram.connectors.base import to_epoch  # noqa: E402
+from mnemotrace.connectors import watch  # noqa: E402
+from mnemotrace.connectors.agent_sessions import _rows, _session_label, find_sessions  # noqa: E402
+from mnemotrace.connectors.base import to_epoch  # noqa: E402
 
 DEFAULT_URL = "http://127.0.0.1:8766"
 DEFAULT_ROOTS = "~/.claude/projects,~/.codex/sessions"
-DEFAULT_STATE = "~/.engram/watch_state.json"
-DEFAULT_WATCH_LOG = "~/.engram/logs/watch.log"
-DEFAULT_HOOK_LOG = "~/.engram/logs/hook.log"
+DEFAULT_STATE = "~/.mnemotrace/watch_state.json"
+DEFAULT_WATCH_LOG = "~/.mnemotrace/logs/watch.log"
+DEFAULT_HOOK_LOG = "~/.mnemotrace/logs/hook.log"
 DEFAULT_MCP_CONFIG = "~/.claude.json"
 DEFAULT_OUT = "results/facility.jsonl"
 
-TARGET_LAG_S = 60  # the owner's L1 goal
+TARGET_LAG_S = 60  # 所有者的 L1 目标
 TARGET_COVERAGE = 0.90
 
 EXIT_OK = 0
 EXIT_REGRESSED = 1
 EXIT_INSTRUMENT_BROKEN = 2
 
-# Byte prefilter applied to each raw line before json.loads. This set is load-bearing, not an
-# optimisation detail: `"tool_use_id"` does NOT contain `"tool_use"` (no closing quote), so dropping
-# `"tool_result"` from this set silently makes recall-reach 0 while every other number looks healthy.
+# 在 json.loads 之前对每行原始内容做的字节预过滤。这个集合是承重的，不是优化细节：
+# `"tool_use_id"` 并不包含 `"tool_use"`（没有闭合引号），所以从这个集合里去掉 `"tool_result"`
+# 会让 recall-reach 悄悄变成 0，而其他所有数字看起来都正常。
 _CALL_NEEDLES = (
     b'"tool_use"',
     b'"tool_result"',
@@ -90,32 +86,35 @@ _CALL_NEEDLES = (
     b'"local_shell_call"',
 )
 _CODEX_CALL_TYPES = {"function_call", "custom_tool_call", "local_shell_call"}
-# Codex writes a call's RESULT back as its own payload row, joined by `call_id`. Its type names do
-# not contain the call needles above (`"function_call_output"` does not contain the bytes
-# `"function_call"` — no closing quote), so the result reader needs these two of its own.
+# Codex 把调用的 RESULT 作为独立的 payload 行写回，用 `call_id` 关联。它的类型名不包含上面
+# 的调用探针（`"function_call_output"` 不包含 `"function_call"` 这串字节——没有闭合引号），
+# 所以结果读取器需要自己的这两个探针。
 _CODEX_RESULT_TYPES = {"function_call_output", "custom_tool_call_output"}
 _CODEX_RESULT_NEEDLES = (b'"function_call_output"', b'"custom_tool_call_output"')
-# Codex wraps an MCP tool result as "Wall time: N seconds\nOutput:\n<body>" (measured: 421 of the
-# 421 MCP-shaped outputs on this machine). Stripping it is what lets one empty-recall sentinel test
-# serve both agents instead of every Codex recall passing on preamble length alone.
+# Codex 把 MCP 工具结果包成 "Wall time: N seconds\nOutput:\n<body>"（实测：本机 421 个 MCP
+# 形状的输出中 421 个都是如此）。剥掉它之后，一个 empty-recall 哨兵测试就能同时服务两个
+# agent，而不是每个 Codex recall 都靠前导文本长度混过去。
 _CODEX_OUTPUT_WRAPPER = re.compile(r"^Wall time: [0-9.]+ seconds\n(?:Output:\n)?")
 _MCP_PREFIX = re.compile(r"^mcp__[^_]+(?:_[^_]+)*?__")
+# 仅解析只读历史 transcript；运行时配置/环境变量不回退到旧名称。
+_TRANSCRIPT_TOOL_PREFIXES = ("mnemotrace_", "engram_")
+_TRANSCRIPT_TOOL_NEEDLES = tuple(prefix.encode("ascii") for prefix in _TRANSCRIPT_TOOL_PREFIXES)
 
-# engram_recall / engram_search return this exact sentence when nothing matched (engram/mcp/server.py).
+# 新工具及历史 engram_recall / engram_search 的空结果哨兵（mnemotrace/mcp/server.py）。
 _EMPTY_RECALL = "No relevant memory found for that query."
-_EMPTY_RECALL_CHARS = 40  # a result shorter than this carried no retrieved context either
+_EMPTY_RECALL_CHARS = 40  # 比这更短的结果同样没有携带任何检索到的内容
 
 _WATCH_HEADER = re.compile(r"^\d+ session\(s\) to ingest")
 _WATCH_FED = re.compile(r"^(\S+) fed \d+ session\(s\)")
 
 
 # ---------------------------------------------------------------------------
-# small helpers
+# 小工具函数
 # ---------------------------------------------------------------------------
 
 
 def _pct(values: list[float], q: float) -> Optional[float]:
-    """Nearest-rank percentile. Returns None for an empty sample rather than inventing a 0."""
+    """最近秩百分位数。空样本返回 None，而不是硬造一个 0。"""
     if not values:
         return None
     ordered = sorted(values)
@@ -149,7 +148,7 @@ def _rate(num: int, den: int) -> float:
 
 
 # ---------------------------------------------------------------------------
-# server (content-free reads only)
+# server（只做无内容的读取）
 # ---------------------------------------------------------------------------
 
 
@@ -161,10 +160,10 @@ def _get(url: str, key: str, path: str, timeout: int = 60) -> dict:
 
 
 class ServerFacts:
-    """Everything the harness needs from the write target — counts only, never fact text.
+    """harness 需要从写入目标获取的一切——只要计数，绝不取 fact 文本。
 
-    `facts_limit=0` on /v1/memories is not cosmetic: any positive limit returns the *text* of stored
-    facts, which is exactly what must never enter this harness's memory, output or ledger.
+    /v1/memories 上的 `facts_limit=0` 不是装饰：任何正的 limit 都会返回存储 fact 的*文本*，
+    而那正是绝不能进入本 harness 的内存、输出或台账的东西。
     """
 
     def __init__(self) -> None:
@@ -211,52 +210,51 @@ class ServerFacts:
                     break
                 offset = int(nxt)
             self.reachable = True
-        except Exception as exc:  # noqa: BLE001 — an unreachable server is exit 2, not a crash
+        except Exception as exc:  # noqa: BLE001 — server 不可达应走退出码 2，而不是崩溃
             self.error = f"{type(exc).__name__}: {exc}"
         return self
 
 
 # ---------------------------------------------------------------------------
-# transcript scanning
+# transcript 扫描
 # ---------------------------------------------------------------------------
 
 
 class Scan:
-    """One pass over the transcripts in the window, producing the L1 and L2 raw material."""
+    """对窗口内的 transcript 扫一遍，产出 L1 和 L2 的原始素材。"""
 
     def __init__(self) -> None:
         self.files = 0
         self.bytes = 0
         self.seconds = 0.0
-        self.calls: Counter = Counter()               # engram tool name -> count
+        self.calls: Counter = Counter()               # 记忆工具名 -> 次数
         self.calls_by_week: dict[str, Counter] = defaultdict(Counter)
-        self.control: Counter = Counter()             # non-engram tool name -> count
+        self.control: Counter = Counter()             # 非记忆工具名 -> 次数
         self.excluded_selfdev_calls = 0
         self.prose_mentions = 0
         self.subagent_files = 0
         self.recall_calls = 0
         self.recall_non_empty = 0
-        # Resuming a session writes a NEW transcript file that replays the whole history, tool_use
-        # blocks and their ids included. Counting the replay reports reads that never happened:
-        # measured on this corpus, 182 raw engram calls are only 110 distinct ones, and the whole
-        # inflation lands on L2 — the rung the owner is trying to grow.
+        # 恢复会话会写出一个新的 transcript 文件，重放全部历史——包括 tool_use 块及其 id。
+        # 把重放也算进去会报告从未发生过的读取：本语料实测，182 次原始 engram 调用里只有 110
+        # 次是独立的，全部虚增都落在 L2 上——这正是所有者想增长的那个阶梯。
         self.seen_call_ids: set[str] = set()
         self.replayed_calls = 0
 
 
 def _classify(path: str) -> str:
-    """claude_code vs codex. Split by source because only one of them has an end-of-session event:
-    Codex's hooks.json has no `session_end` slot, so its half of the corpus stays watcher-bound."""
+    """claude_code 还是 codex。按来源拆分是因为只有一方有会话结束事件：
+    Codex 的 hooks.json 没有 `session_end` 槽位，所以它那半边语料只能靠 watcher 关闭。"""
     return "codex" if (f"{os.sep}.codex{os.sep}" in path
                        or os.path.basename(path).startswith("rollout-")) else "claude_code"
 
 
 def _tool_calls(data: bytes) -> Iterable[tuple[str, Optional[str], Optional[float]]]:
-    """Yield (tool_name, call_id, timestamp) for every structural tool call in one transcript.
+    """产出一个 transcript 中每个结构性工具调用的 (tool_name, call_id, timestamp)。
 
-    This reads `message.content` DIRECTLY rather than through agent_sessions._text_of, because that
-    helper's `_SKIP_BLOCKS` deliberately discards `tool_use` and `tool_result` — the right call for
-    ingest (tool machinery is not memory) and exactly wrong here, where the tool calls ARE the signal.
+    这里直接读 `message.content`，而不是经由 agent_sessions._text_of，因为那个辅助函数的
+    `_SKIP_BLOCKS` 会刻意丢弃 `tool_use` 和 `tool_result`——对 ingest 是正确选择（工具机制
+    不是记忆），在这里却恰好错了：工具调用本身就是信号。
     """
     for line in data.splitlines():
         if not any(needle in line for needle in _CALL_NEEDLES):
@@ -278,18 +276,16 @@ def _tool_calls(data: bytes) -> Iterable[tuple[str, Optional[str], Optional[floa
 
 
 def _tool_results(data: bytes) -> dict[str, str]:
-    """call id -> result text, for the recall-reach join. BOTH agent shapes, not just Claude's.
+    """call id -> 结果文本，用于 recall-reach 关联。两种 agent 的形状都要，不只是 Claude 的。
 
-    Gated on the SAME `_CALL_NEEDLES` set as `_tool_calls` (plus Codex's result names, which those
-    needles cannot match), not on a private copy of `b'"tool_result"'`. With a private copy the
-    `"tool_result"` entry up there is inert — removing it changes no number — so the comment claiming
-    it is load-bearing, and the test claiming to prove it, would both describe a coupling that does
-    not exist.
+    门控使用与 `_tool_calls` 相同的 `_CALL_NEEDLES` 集合（外加 Codex 的结果类型名——上面的
+    探针匹配不到它们），而不是私有复制一份 `b'"tool_result"'`。如果私有复制，上面那个
+    `"tool_result"` 条目就成了摆设——删掉它不改变任何数字——于是"它承重"的注释和声称证明
+    这一点的测试，描述的都是一种并不存在的耦合。
 
-    Reading only Claude's shape is not a missing nicety, it is a fabricated number: a Codex
-    `engram_recall` is a structural call, so it lands in the reach DENOMINATOR, but with no join it
-    can never reach the numerator — reach then reads low in exact proportion to how much Codex uses
-    the memory. Measured here before this join existed: 26% (13/50) where the truth is 100% (50/50).
+    只读 Claude 的形状不是少了个体贴的功能，而是捏造数字：Codex 的 `engram_recall` 也是
+    结构性调用，会进入 reach 的分母，但没有关联就永远到不了分子——reach 于是按 Codex 使用
+    记忆的比例精确地偏低。本关联存在之前本机实测：26%（13/50），而真实值是 100%（50/50）。
     """
     out: dict[str, str] = {}
     for line in data.splitlines():
@@ -323,19 +319,19 @@ def _tool_results(data: bytes) -> dict[str, str]:
 
 
 def strip_mcp_prefix(name: str) -> str:
-    """`mcp__engram__engram_recall` -> `engram_recall`; a bare tool name is returned unchanged."""
+    """移除 MCP 服务前缀；支持新工具名和只读历史 transcript 中的旧工具名。"""
     return _MCP_PREFIX.sub("", name)
 
 
-def is_engram_tool(name: str) -> bool:
-    return strip_mcp_prefix(name).startswith("engram_")
+def is_mnemotrace_tool(name: str) -> bool:
+    return strip_mcp_prefix(name).startswith(_TRANSCRIPT_TOOL_PREFIXES)
 
 
 def scan_transcripts(files: list[tuple[str, os.stat_result]], excludes: list[str]) -> Scan:
-    """Count Engram tool calls (and a control set) across the transcripts in the window.
+    """统计窗口内 transcript 中的 MnemoTrace 工具调用（以及一个对照集）。
 
-    `agent-*.jsonl` sub-agent transcripts are INCLUDED here and excluded from L1: a sub-agent calling
-    engram_recall is a real read of the memory, but it is not a session the watcher would ever close.
+    `agent-*.jsonl` 子 agent 的 transcript 在这里计入、但在 L1 中排除：子 agent 调用
+    mnemotrace_recall（含历史旧名）是对记忆的真实读取，但 watcher 永远不会关闭这样的会话。
     """
     scan = Scan()
     started = time.time()
@@ -349,25 +345,26 @@ def scan_transcripts(files: list[tuple[str, os.stat_result]], excludes: list[str
         scan.bytes += len(data)
         if os.path.basename(path).startswith("agent-"):
             scan.subagent_files += 1
-        if b"engram_" in data:
-            # Every line naming an engram tool, structural or merely quoted in prose. The gap between
-            # this and the structural count is the stale-matcher tripwire.
-            scan.prose_mentions += sum(1 for line in data.splitlines() if b"engram_" in line)
+        if any(needle in data for needle in _TRANSCRIPT_TOOL_NEEDLES):
+            # 同一行提及新旧工具只计一次；正文与结构性计数的差是匹配器过期的绊线。
+            scan.prose_mentions += sum(
+                1 for line in data.splitlines()
+                if any(needle in line for needle in _TRANSCRIPT_TOOL_NEEDLES)
+            )
         low = path.lower()
         excluded = any(sub in low for sub in excludes)
 
         results: Optional[dict[str, str]] = None
         for name, call_id, ts in _tool_calls(data):
             short = strip_mcp_prefix(name)
-            if not short.startswith("engram_"):
-                # The control row is counted over EVERY scanned file, not only engram-mentioning ones:
-                # a control that shared the matcher's blind spots would go to zero for the same reason a
-                # broken matcher does, and stop being a tripwire.
+            if not short.startswith(_TRANSCRIPT_TOOL_PREFIXES):
+                # 对照行统计覆盖每一个被扫描的文件，而不只是提到 engram 的文件：如果对照集
+                # 共享匹配器的盲区，它会和坏掉的匹配器一样归零，也就不再是绊线。
                 scan.control[short] += 1
                 continue
             if call_id:
-                # A call id is unique per real call in both agents (measured: 0 of 182 engram calls
-                # on this corpus lack one), so a repeated id is a replay, never a second read.
+                # 在两个 agent 中 call id 对每次真实调用都是唯一的（实测：本语料 182 次
+                # engram 调用中 0 次缺失），所以重复的 id 一定是重放，绝不是第二次读取。
                 if call_id in scan.seen_call_ids:
                     scan.replayed_calls += 1
                     continue
@@ -375,12 +372,13 @@ def scan_transcripts(files: list[tuple[str, os.stat_result]], excludes: list[str
             if excluded:
                 scan.excluded_selfdev_calls += 1
                 continue
-            tool = short[len("engram_"):]
+            tool = next(short[len(prefix):] for prefix in _TRANSCRIPT_TOOL_PREFIXES
+                        if short.startswith(prefix))
             scan.calls[tool] += 1
             scan.calls_by_week[_iso_week(ts or st.st_mtime)][tool] += 1
             if tool not in ("recall", "search"):
                 continue
-            # Reach: did the read return anything at all? A ceiling on usefulness, never usefulness.
+            # Reach：这次读取到底有没有返回内容？它是有用性的上限，绝不是有用性本身。
             scan.recall_calls += 1
             if results is None:
                 results = _tool_results(data)
@@ -392,17 +390,16 @@ def scan_transcripts(files: list[tuple[str, os.stat_result]], excludes: list[str
 
 
 # ---------------------------------------------------------------------------
-# L1: closed-session coverage and lag
+# L1：会话关闭覆盖率与滞后
 # ---------------------------------------------------------------------------
 
 
 def finished_sessions(roots: list[str], since: Optional[float], quiet_seconds: int,
                       now: float) -> list[tuple[str, os.stat_result]]:
-    """Transcripts eligible for ingest that have gone quiet — the L1 denominator.
+    """已进入静默、符合 ingest 条件的 transcript——L1 的分母。
 
-    Deliberately `find_sessions()` eligibility (>=2048 bytes, no `agent-*`) plus the quiet check, i.e.
-    exactly `watch.pending_sessions` minus the ledger check, so the denominator and the watcher can
-    never disagree about what a session is.
+    刻意使用 `find_sessions()` 的资格条件（>=2048 字节、非 `agent-*`）加上静默检查，即恰好是
+    `watch.pending_sessions` 去掉台账检查，这样分母与 watcher 对"什么是一个会话"永远不会分歧。
     """
     out = []
     for root in roots:
@@ -419,12 +416,11 @@ def finished_sessions(roots: list[str], since: Optional[float], quiet_seconds: i
 
 def parse_watch_lag(log_path: str, state: dict, index: dict[tuple[str, str], str],
                     now: float) -> list[float]:
-    """Lag samples from watch.log: close-returned-at minus transcript mtime.
+    """来自 watch.log 的滞后样本：close 返回时刻减去 transcript 的 mtime。
 
-    A block is the unstamped `N session(s) to ingest` header, one indented `<dir>/<file>` line per path,
-    terminated by the stamped `... fed ...` line. Only `fed`-terminated blocks count — the log holds far
-    more `server unreachable` lines and headers than `fed` lines, and crediting an unterminated block
-    would report lag for sessions that were never stored.
+    一个块由无时间戳的 `N session(s) to ingest` 头、每个路径一行缩进的 `<dir>/<file>`、以带
+    时间戳的 `... fed ...` 行结尾构成。只有以 `fed` 结尾的块才算数——日志里 `server unreachable`
+    行和头部远多于 `fed` 行，给未终止的块记账会为从未存储过的 session 报告滞后。
     """
     try:
         with open(log_path, encoding="utf-8", errors="replace") as fh:
@@ -455,8 +451,8 @@ def parse_watch_lag(log_path: str, state: dict, index: dict[tuple[str, str], str
                         st = os.stat(path)
                     except OSError:
                         continue
-                    # Only sample where the file has not moved since: the ledger recording this exact
-                    # size is what makes today's mtime equal to the mtime at ingest time.
+                    # 只采样自那之后文件未变过的：台账记录了这个精确大小，这正是今天的
+                    # mtime 等于 ingest 时刻 mtime 的依据。
                     if seen.get(path) != st.st_size:
                         continue
                     lag = fed_at - st.st_mtime
@@ -467,10 +463,10 @@ def parse_watch_lag(log_path: str, state: dict, index: dict[tuple[str, str], str
 
 
 def parse_hook_lag(log_path: str) -> list[float]:
-    """Lag samples from hook.log, which records its own `lag_s` (the hook knows both timestamps).
+    """来自 hook.log 的滞后样本，它自带 `lag_s`（hook 同时知道两个时间戳）。
 
-    Reading the hook's own number instead of re-deriving it keeps transcript paths out of this harness
-    entirely for the hook-fed half of the distribution.
+    读取 hook 自己记录的数字而不是重新推导，使得在 hook 喂入的那半边分布里，transcript 路径
+    完全不进入本 harness。
     """
     samples: list[float] = []
     try:
@@ -498,28 +494,27 @@ def parse_hook_lag(log_path: str) -> list[float]:
 
 
 # ---------------------------------------------------------------------------
-# report
+# 报告
 # ---------------------------------------------------------------------------
 
 
 def _read_target(mcp_config: str) -> tuple[str, str]:
-    """The URL+key the owner's agents actually READ from. Read-only; never edited by this harness."""
+    """所有者的 agent 实际从哪里 READ 的 URL+key。只读；本 harness 绝不修改它。"""
     try:
         with open(os.path.expanduser(mcp_config), encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return "", ""
-    server = ((data.get("mcpServers") or {}).get("engram") or {})
+    server = ((data.get("mcpServers") or {}).get("mnemotrace") or {})
     env = server.get("env") or {}
-    return str(env.get("ENGRAM_API_URL") or ""), str(env.get("ENGRAM_API_KEY") or "")
+    return str(env.get("MNEMOTRACE_API_URL") or ""), str(env.get("MNEMOTRACE_API_KEY") or "")
 
 
 def _previous_line(out_path: str, window_days: Optional[int]) -> Optional[dict]:
-    """The most recent ledger line for the SAME window.
+    """同一窗口最近的一条台账记录。
 
-    Comparing a `--days 7` run against an `--all` run would report a coverage cliff every time the
-    window changed: coverage is ~100% above the drain frontier and ~0% below it, so the two windows are
-    not the same measurement and must not be differenced.
+    拿 `--days 7` 的运行和 `--all` 的运行比较，每次窗口变化都会报出覆盖率悬崖：覆盖率在排水
+    前沿之上约 100%、之下约 0%，两个窗口不是同一种测量，绝不能做差。
     """
     last = None
     try:
@@ -554,7 +549,7 @@ def build_report(args) -> dict:
         except OSError:
             key = ""
     if not key:
-        key = os.environ.get("ENGRAM_API_KEY", "")
+        key = os.environ.get("MNEMOTRACE_API_KEY", "")
 
     server = ServerFacts.load(args.url, key)
     state = watch._load_state(os.path.expanduser(args.state))
@@ -577,23 +572,23 @@ def build_report(args) -> dict:
     for row in by_source.values():
         row["coverage"] = _rate(row["closed"], row["finished"])
 
-    # The watcher's own view of what is still owed, so `claims` has to be folded in the same way
-    # run_once folds it: a transcript the SessionEnd hook already fed is not backlog, and counting it
-    # would overstate the drain ETA for as long as the claims file has not been folded. Note this is
-    # always the watcher's DEFAULT roots (pending_sessions takes no root), not --roots.
+    # watcher 自己眼中还欠着什么，所以 `claims` 必须按 run_once 的方式折算进去：SessionEnd
+    # hook 已经喂过的 transcript 不是积压，只要 claims 文件还没折算，把它算进去就会高估排水
+    # ETA。注意这里始终是 watcher 的默认 roots（pending_sessions 不接受 root 参数），不是
+    # --roots。
     backlog = len(watch.pending_sessions(state, quiet_seconds=args.quiet_seconds, now=now,
                                          claims=watch.load_claims(watch.DEFAULT_CLAIMS)))
     tick_s = watch._parse_duration(args.tick_interval)
     limit = watch.DEFAULT_LIMIT
-    # A FLOOR, not a forecast: it assumes every tick ingests a full `limit` of NEW sessions. The log
-    # says otherwise — backlog ran 2064 -> 1596 over 39 ticks here, ~12/tick net, because each tick
-    # spends part of its budget re-feeding grown transcripts while new sessions keep arriving. Printed
-    # with ">=" for that reason; anything tighter is a number watch.log contradicts.
+    # 是下限，不是预测：它假设每个 tick 都能吃满 `limit` 个全新 session。日志并非如此——
+    # 本机积压在 39 个 tick 内从 2064 降到 1596，净速度约 12/tick，因为每个 tick 都要花一部分
+    # 预算重新喂增长过的 transcript，而新 session 还在源源到来。因此用 ">=" 打印；更紧的数字
+    # 都会与 watch.log 矛盾。
     ticks = -(-backlog // limit) if backlog else 0
     drain_eta_h = round(ticks * tick_s / 3600.0, 1)
 
-    # The ledger is a claim, not evidence (it also records give-ups after MAX_CLOSE_FAILURES). Print the
-    # delta between what it claims and what the server actually holds.
+    # 台账只是声称，不是证据（MAX_CLOSE_FAILURES 之后的放弃也会被记录）。打印它声称的与
+    # server 实际持有的之间的差值。
     seen = state.get("seen") or {}
     ledger_done = ledger_disagree = 0
     for path, size in seen.items():
@@ -606,9 +601,8 @@ def build_report(args) -> dict:
         if _session_label(path) not in server.session_facts:
             ledger_disagree += 1
 
-    # watch.log names each path as `<parent-dirname>/<basename>` — enough to join back to a path, and
-    # the only reason this harness touches path strings at all. Built from --roots so the join can be
-    # exercised against a fixture tree.
+    # watch.log 把每个路径记为 `<父目录名>/<basename>`——足以关联回完整路径，这也是本
+    # harness 唯一需要接触路径字符串的原因。索引从 --roots 构建，以便能用夹具树来测试关联。
     index = {(os.path.basename(os.path.dirname(p)), os.path.basename(p)): p
              for root in roots for p in find_sessions(root=root)}
     watch_lag = parse_watch_lag(os.path.expanduser(args.watch_log), state, index, now)
@@ -632,9 +626,8 @@ def build_report(args) -> dict:
                 scan_files.append((path, st))
     scan = scan_transcripts(scan_files, excludes)
 
-    # The current ISO week is always present, zero-filled if nothing was called. "Weekly recall > 0 and
-    # trending up" is a claim about NOW; letting the series end at the last week that happened to have a
-    # call would read a June spike as a healthy trend forever.
+    # 当前 ISO 周始终存在，没有调用就补零。"每周 recall > 0 且呈上升趋势"是对"现在"的断言；
+    # 如果让序列终止在碰巧有调用的最后一周，六月的尖峰就会被永远读成健康趋势。
     scan.calls_by_week.setdefault(_iso_week(now), Counter())
     weeks = {week: {"recall": c.get("recall", 0), "remember": c.get("remember", 0),
                     "close_session": c.get("close_session", 0),
@@ -642,7 +635,7 @@ def build_report(args) -> dict:
                                  if k not in ("recall", "remember", "close_session"))}
              for week, c in sorted(scan.calls_by_week.items())}
 
-    # --- rungs ---------------------------------------------------------------
+    # --- 各阶梯 --------------------------------------------------------------
     coverage = _rate(closed, len(finished))
     lag_p50 = _pct(all_lag, 0.5)
     recall_week_counts = [w["recall"] for _k, w in sorted(weeks.items())]
@@ -655,7 +648,7 @@ def build_report(args) -> dict:
         "L1": "met" if (coverage >= TARGET_COVERAGE and lag_p50 is not None
                         and lag_p50 < TARGET_LAG_S) else "not_met",
         "L2": "met" if l2_met else "not_met",
-        # L3 needs BOTH halves; (ii) has no machine proxy, so the rung can never read "met" from here.
+        # L3 需要两半同时满足；(ii) 没有机器代理指标，所以这个阶梯在这里永远读不出 "met"。
         "L3": "not_met" if supersession_rate == 0 else "not_measurable",
         "L4": "not_measurable",
     }
@@ -695,7 +688,7 @@ def build_report(args) -> dict:
             },
             "lag_floor_watch_s": [args.quiet_seconds, args.quiet_seconds + tick_s],
             "target_lag_s": TARGET_LAG_S,
-            "target_lag_reachable_watch": False,  # QUIET_SECONDS alone is 15x the 60s goal
+            "target_lag_reachable_watch": False,  # 仅 QUIET_SECONDS 一项就是 60s 目标的 15 倍
             "target_lag_reachable_hook": True,
         },
         "l2": {
@@ -733,12 +726,12 @@ def render(report: dict) -> str:
     lag = l1["lag"]
     window = "all time" if report["window_days"] is None else f"{report['window_days']}d window"
     lines = []
-    lines.append(f"engram facility · {report['run_id']} · {window} · "
+    lines.append(f"mnemotrace facility · {report['run_id']} · {window} · "
                  f"scan {report['scan']['files']} files / "
                  f"{report['scan']['bytes'] / 1e9:.2f} GB / {report['scan']['seconds']}s")
     marker = "" if t["same_memory"] else "   <-- DIFFERENT MEMORY"
     lines.append(f"  write target : {t['write_url']} [{t['write_target']}]")
-    lines.append(f"  read  target : {t['read_url'] or '(no engram MCP server configured)'} "
+    lines.append(f"  read  target : {t['read_url'] or '(no mnemotrace MCP server configured)'} "
                  f"[{t['read_target']}]{marker}")
     lines.append("")
     lines.append(f"L0 exists      {report['rungs']['L0'].upper():<14} "
@@ -769,7 +762,7 @@ def render(report: dict) -> str:
     weeks = " · ".join(f"{w} recall {c['recall']}/remember {c['remember']}/close {c['close_session']}"
                        f"/other {c['other']}" for w, c in sorted(l2["weeks"].items())) or "(none)"
     lines.append(f"L2 read        {report['rungs']['L2'].upper():<14} "
-                 f"{l2['calls_total']} engram call(s) in transcripts on this machine "
+                 f"{l2['calls_total']} MnemoTrace call(s) in transcripts on this machine "
                  f"(lower bound; {l2['excluded_selfdev_calls']} self-dev, "
                  f"{l2.get('replayed_calls', 0)} resume-replay calls excluded)")
     lines.append(f"                             {weeks}")
@@ -778,15 +771,15 @@ def render(report: dict) -> str:
                  f"({l2['control_total']} calls, {l2['control_distinct']} distinct tools)")
     if l2["prose_mentions"] and not l2["calls_total"] and not l2["excluded_selfdev_calls"]:
         lines.append(f"                             !! matcher may be stale: {l2['prose_mentions']} "
-                     "lines mention engram_* but 0 structural calls")
+                     "lines mention mnemotrace_* or historical engram_* but 0 structural calls")
     lines.append(f"L3 useful      {report['rungs']['L3'].upper():<14} "
                  f"supersession {l3['outcomes_superseded']}/{l3['outcomes_live']} = "
                  f"{l3['supersession_rate'] * 100:.1f}% "
                  f"({l3['outcomes_live_incl_sensitive']} incl. sensitive) · "
                  f"attribute facts {l3['attribute_facts']}")
     if l3["supersession_rate"] == 0:
-        # Only while the rate really is 0: a hard-coded explanation that outlives the number it explains
-        # is worse than none, because it tells the reader not to look.
+        # 只在比率确实为 0 时出现：一条比它要解释的数字活得更久的硬编码解释，比没有解释更糟，
+        # 因为它等于告诉读者不用再查了。
         lines.append("                             reason: conclusions are keyed subject=session_id, so "
                      "no two ever contend")
         lines.append("                                     for a (subject, predicate) slot — 0% is a "
@@ -801,7 +794,7 @@ def render(report: dict) -> str:
 
 
 def check_regression(report: dict, previous: Optional[dict]) -> tuple[int, list[str]]:
-    """exit 2 = the instrument is broken; exit 1 = the facility regressed. Never conflate them."""
+    """退出码 2 = 度量工具坏了；退出码 1 = 设施回退了。绝不能混为一谈。"""
     broken = []
     if not report["_instrument"]["server_reachable"]:
         broken.append("server unreachable")
@@ -836,9 +829,9 @@ def check_regression(report: dict, previous: Optional[dict]) -> tuple[int, list[
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--url", default=os.environ.get("ENGRAM_URL") or DEFAULT_URL,
+    ap.add_argument("--url", default=os.environ.get("MNEMOTRACE_URL") or DEFAULT_URL,
                     help="write target (the server the watcher/hook feeds)")
-    ap.add_argument("--key", default="", help="API key; precedence --key > --key-file > ENGRAM_API_KEY")
+    ap.add_argument("--key", default="", help="API key; precedence --key > --key-file > MNEMOTRACE_API_KEY")
     ap.add_argument("--key-file", default="", help="read the API key from this file")
     ap.add_argument("--days", type=int, default=7, help="scan window in days (default 7)")
     ap.add_argument("--all", action="store_true", help="scan the whole corpus instead of a window")
@@ -851,7 +844,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="scheduler interval; sets the watcher's lag floor")
     ap.add_argument("--exclude-project-substr", action="append", default=None,
                     help="repeatable; transcripts whose path contains this are self-development "
-                         "(default: super-memory)")
+                         "(default: mnemotrace)")
     ap.add_argument("--mcp-config", default=DEFAULT_MCP_CONFIG,
                     help="read-only, to report which memory the agents actually read from")
     ap.add_argument("--json", action="store_true", help="print the JSON object instead of the table")
@@ -861,7 +854,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="exit 1 if the facility regressed, 2 if the instrument is broken")
     args = ap.parse_args(argv)
     if args.exclude_project_substr is None:
-        args.exclude_project_substr = ["super-memory"]
+        args.exclude_project_substr = ["mnemotrace"]
 
     report = build_report(args)
     previous = (_previous_line(args.out, report["window_days"])

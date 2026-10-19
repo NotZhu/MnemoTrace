@@ -1,11 +1,10 @@
-"""Honest results reporter (CLAUDE.md Bet D): from a bench.py output JSONL, print the TRIPLE —
-accuracy + tokens + latency — per category and overall, for every system in the log.
+"""诚实的结果报告器（CLAUDE.md Bet D）：从 bench.py 输出的 JSONL，为日志里的每个系统打印三元组 ——
+准确率 + token + 延迟 —— 按类别和总体。
 
     python eval/report.py data/star.jsonl [more.jsonl ...]
 
-A number we cannot reproduce does not exist; this is the one place that turns raw run logs into the
-table we'd publish. It never fabricates: it reads only what the run actually scored, and it shows the
-completed-item count so partial runs are obviously partial.
+无法复现的数字不存在；这里是把原始运行日志变成可发布表格的唯一场所。它绝不编造：只读运行真正
+打过分的内容，并展示已完成 item 数，让部分运行一眼可见。
 """
 from __future__ import annotations
 
@@ -38,9 +37,9 @@ def format_synthetic_report(path: str, rows: list[dict]) -> str:
     item_rows = [r for r in rows if r.get("type") != "summary"]
     cats = sorted({r.get("category", "?") for r in item_rows})
     lines = [f"\nFILE: {path}   ({len(item_rows)} items + summary)\n"]
-    lines.append("  Synthetic offline harness (engram / naive-recall)")
+    lines.append("  Synthetic offline harness (MnemoTrace / naive-recall)")
     lines.append("")
-    lines.append("  " + "category".ljust(26) + "engram".ljust(16) + "naive-recall")
+    lines.append("  " + "category".ljust(26) + "MnemoTrace".ljust(16) + "naive-recall")
     lines.append("  " + "-" * 56)
     for cat in cats:
         subset = [r for r in item_rows if r.get("category", "?") == cat]
@@ -85,14 +84,14 @@ def format_bench_report(path: str, rows: list[dict]) -> str:
             if s not in systems:
                 systems.append(s)
 
-    # accuracy needs a non-None ok; tokens/latency averaged over scored items only
+    # 准确率要求 ok 非 None；token/延迟只对已打分的 item 取平均
     acc: dict[str, dict[str, list[bool]]] = {s: defaultdict(list) for s in systems}
     toks: dict[str, list[int]] = {s: [] for s in systems}
     lats: dict[str, list[float]] = {s: [] for s in systems}
     errs: dict[str, int] = {s: 0 for s in systems}
     for r in rows:
-        # abstention items (qid ..._abs) are graded by the official 'unanswerable' judge — break them out
-        # as their own bucket so the 'do-not-refuse' prompt tension is visible, not hidden in the category.
+        # 拒答 item（qid ..._abs）由官方 'unanswerable' judge 打分 —— 单独拆成一个桶，让
+        # "不许拒绝"prompt 的张力可见，而不是藏进普通类别里。
         cat = "abstention" if str(r.get("qid", "")).endswith("_abs") else r.get("cat") or r.get("pref_type", "?")
         for s in systems:
             res = r.get("sys", {}).get(s)

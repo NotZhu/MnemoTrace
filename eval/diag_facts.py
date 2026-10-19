@@ -1,7 +1,7 @@
-"""Surgical diagnostic: for specific qids, build BOTH the engram context (facts+chunks) and the rag
-context (chunks only), and print them next to the gold answer. Purpose: see exactly WHY the facts layer
-flips a knowledge-update / preference answer wrong vs plain RAG (scale50: engram 72 vs rag 74, the whole
-gap is knowledge-update 75 vs 88). Run offline per the M1 infra notes.
+"""外科手术式诊断：对指定的 qids，同时构建 MnemoTrace 上下文（facts+chunks）和 rag 上下文
+（仅 chunks），与金标准答案并排打印。目的：看清 facts 层究竟为什么把 knowledge-update /
+preference 的答案相对朴素 RAG 翻错（scale50：engram 72 vs rag 74，差距全在 knowledge-update
+75 vs 88）。按 M1 infra 笔记离线运行。
 
     HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python eval/diag_facts.py 945e3d21 1c0ddc50 505af2f5
 """
@@ -13,8 +13,8 @@ import sys
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram import Memory  # noqa: E402
-from engram.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
+from mnemotrace import Memory  # noqa: E402
+from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
 from eval.longmemeval import ingest, load_data, sessions_of  # noqa: E402
 
 
@@ -37,16 +37,16 @@ def main():
         n_sessions = len(list(sessions_of(item)))
         print(f"(haystack: {n_sessions} sessions)")
 
-        # ENGRAM: facts + chunks (mirror EngramSystem)
+        # MNEMOTRACE：facts + chunks（镜像 MnemoTraceSystem）
         mem = Memory(embedder=emb, llm=extractor)
         ingest(mem, item, qid)
         mem.engine.consolidate(mem.retrieve_episodes(q, qid, 8))
         eng_ctx = mem.context_for(q, user_id=qid, top_k=10, k_chunks=5)
         facts_block = eng_ctx.split("RELEVANT CONVERSATIONS")[0]
-        print("\n----- ENGRAM facts block (the only thing rag DOESN'T see) -----")
+        print("\n----- MNEMOTRACE facts block (the only thing rag DOESN'T see) -----")
         print(facts_block.strip()[:2500])
 
-        # Did the facts surface the answer's entity? show live vs invalidated facts for the subject.
+        # facts 是否让答案中的实体浮出水面？按主体列出 live 与失效化的 fact。
         user = mem.resolver.resolve(qid)
         live = [f for f in mem.fact_store.values() if f.user_id == user and f.is_live()]
         dead = [f for f in mem.fact_store.values() if f.user_id == user and not f.is_live()]

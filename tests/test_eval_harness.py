@@ -4,14 +4,14 @@ import json
 
 import pytest
 
-from eval.harness import evaluate, run_engram, write_jsonl
+from eval.harness import evaluate, run_mnemotrace, write_jsonl
 from eval.report import format_synthetic_report, load
 from eval.synthetic import ITEMS
 
 
 def test_synthetic_harness_durable_storage_smoke():
     item = next(it for it in ITEMS if it.id == "tmp2")
-    ok, tokens, latency = run_engram(item, storage="durable")
+    ok, tokens, latency = run_mnemotrace(item, storage="durable")
     assert ok is True
     assert tokens > 0
     assert latency >= 0.0
@@ -20,7 +20,7 @@ def test_synthetic_harness_durable_storage_smoke():
 def test_synthetic_harness_lancedb_storage_smoke():
     pytest.importorskip("lancedb")
     item = next(it for it in ITEMS if it.id == "tmp2")
-    ok, tokens, latency = run_engram(item, storage="lancedb")
+    ok, tokens, latency = run_mnemotrace(item, storage="lancedb")
     assert ok is True
     assert tokens > 0
     assert latency >= 0.0

@@ -1,18 +1,17 @@
-"""LongMemEval runner on Engram's harness (CLAUDE.md §4).
+"""跑在 MnemoTrace harness 上的 LongMemEval 运行器（CLAUDE.md §4）。
 
-    # end-to-end QA + full-context baseline on the bundled sample (needs an LLM key)
+    # 对内置样本做端到端 QA + full-context 基线（需要 LLM key）
     python eval/longmemeval.py --mode qa --limit 4
 
-    # retrieval Recall@k at scale, no LLM needed (point --data at longmemeval_s.json)
+    # 大规模检索 Recall@k，无需 LLM（--data 指向 longmemeval_s.json）
     python eval/longmemeval.py --mode recall --data data/longmemeval_s.json --limit 50
 
-Two complementary measurements:
-  * recall : embed every session turn, retrieve top-k, check evidence-session hit. LLM-free, scales to
-             the full 500-session haystack. Measures the retrieval half.
-  * qa     : ingest -> consolidate (LLM extraction) -> retrieve facts -> LLM answer -> LLM judge, AND a
-             full-context baseline (stuff all turns into the prompt) judged identically. Measures the
-             whole system and answers the charter's core question: do we beat full-context, and at what
-             token cost?
+两种互补的测量：
+  * recall : 对每个会话 turn 做嵌入，检索 top-k，检查是否命中证据会话。不依赖 LLM，可扩展到完整的
+             500 会话 haystack。测的是检索这一半。
+  * qa     : ingest -> consolidate（LLM 抽取）-> 检索 facts -> LLM 作答 -> LLM 裁判，外加一个
+             full-context 基线（把所有 turn 塞进 prompt），用同样的方式打分。测的是整个系统，并回答
+             章程的核心问题：我们能否在准确率上击败 full-context，token 成本是多少？
 """
 from __future__ import annotations
 
@@ -29,15 +28,15 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-warnings.filterwarnings("ignore")  # quiet litellm/pydantic serialization warnings
+warnings.filterwarnings("ignore")  # 屏蔽 litellm/pydantic 的序列化警告
 logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
 os.environ.setdefault("LITELLM_LOG", "CRITICAL")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram import Memory  # noqa: E402
-from engram.llm.providers import load_dotenv, make_embedder, make_llm, make_reranker  # noqa: E402
-from engram.util import DAY, fmt_date  # noqa: E402
+from mnemotrace import Memory  # noqa: E402
+from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm, make_reranker  # noqa: E402
+from mnemotrace.util import DAY, fmt_date  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = 1_700_000_000.0
@@ -56,11 +55,10 @@ ANSWER_SYSTEM = (
 )
 ANSWER_TEMPLATE = "Today's date: {qdate}\n\n{context}\n\nQuestion: {question}\nAnswer:"
 
-# Phase 1 — reasoning answer with explicit evidence-aggregation step. Targets the multi-evidence
-# failure mode that dominates both-wrong items on _S: counting ('how many sessions'), summing ('how many
-# rare items total'), ordering ('order of trips'), date arithmetic ('how old when X'), latest-wins
-# (knowledge-update). Single-shot answering doesn't aggregate; this prompts a brief CoT then a final
-# canonical "ANSWER: ..." line that the extractor + judge consume.
+# Phase 1 —— 带显式证据聚合步骤的 reasoning 作答。针对 _S 上 both-wrong 题目的主导失败模式：
+# 计数（'how many sessions'）、求和（'how many rare items total'）、排序（'order of trips'）、日期
+# 运算（'how old when X'）、最新优先（knowledge-update）。单次作答不会聚合；这里先让模型输出一段
+# 简短 CoT，再输出规范的 "ANSWER: ..." 终行，供 extractor + judge 消费。
 REASONING_SYSTEM = (
     "You answer the user's question using the provided dated context. The context has two parts: a FACTS "
     "index (a digest) AND the full dated CONVERSATIONS below it. The answer is USUALLY present — search "
@@ -98,36 +96,34 @@ REASONING_SYSTEM = (
 
 
 def extract_answer(pred: str) -> str:
-    """Pull the final 'ANSWER: ...' line out of a reasoning response. Falls back to the last non-empty
-    line if no marker is present. The judge + abstention check operate on the extracted final answer
-    so reasoning text doesn't false-positive the abstention substring match."""
+    """从 reasoning 回复中抽出最终的 'ANSWER: ...' 行。没有标记时回退为最后的非空行。judge 和拒答
+    检查只作用于抽取出的最终答案，避免推理文本误触发拒答的子串匹配。"""
     if not pred:
         return ""
     text = pred.strip()
-    # last occurrence of "ANSWER:" (case-insensitive), capture everything after it on that line
+    # 取最后一次出现的 "ANSWER:"（大小写不敏感），捕获该行其后内容
     import re as _re
 
     matches = list(_re.finditer(r"(?i)\bANSWER\s*:\s*(.*)", text))
     if matches:
         tail = matches[-1].group(1).strip()
-        # cut at next newline if the model continued (it shouldn't, per prompt)
+        # 若模型在后面继续写（按 prompt 不应如此），就在换行处截断
         tail = tail.split("\n")[0].strip()
         if tail:
             return tail
-    # No 'ANSWER:' marker. Reasoning-model backbones (doubao-seed, deepseek) put their chain-of-thought in
-    # a separate reasoning_content field and emit the actual answer directly in content — often multi-line
-    # (e.g. a personalized recommendation). Returning only the LAST line mangles those into a fragment and
-    # the judge never sees the real answer (this silently zeroed the preference category). The official
-    # LongMemEval judge grades the FULL response, so when there's no marker, return the whole text.
+    # 没有 'ANSWER:' 标记。推理型骨干模型（doubao-seed、deepseek）把思维链放在单独的 reasoning_content
+    # 字段里，content 直接就是最终答案 —— 且常常是多行（如个性化推荐）。只返回最后一行会把答案撕成
+    # 碎片，judge 永远看不到真正答案（这曾悄悄把 preference 类别打成零分）。官方 LongMemEval judge
+    # 对完整回复打分，所以无标记时返回整段文本。
     return text
 
 
-# ---- L2 session map + L3 user persona (CLAUDE.md §3 hierarchical abstraction) ----
-# Both leading agent-memory systems (Tencent Agent-Memory's L2 scenario-blocks + L3 personas, Volcano
-# OpenViking's User-Memory + L0/L1/L2 tiers) lift exactly our two weak categories with these layers:
-#   L2 session map  -> multi-session aggregation (count/list/compare without missing a session)
-#   L3 user persona -> preference (a pre-built profile to ground recommendations in)
-# We build each in ONE LLM pass over the whole dated history (cheap) instead of per-session calls.
+# ---- L2 session map + L3 user persona（CLAUDE.md §3 分层抽象）----
+# 领先的 agent-memory 系统都有这两层（腾讯 Agent-Memory 的 L2 场景块 + L3 画像，火山 OpenViking 的
+# User-Memory + L0/L1/L2 分层），恰好补强我们的两个弱项类别：
+#   L2 session map  -> 多会话聚合（计数/列举/对比时不漏会话）
+#   L3 user persona -> preference（预构建的画像，给推荐提供依据）
+# 两者都用一次 LLM 调用处理全部带日期的历史（便宜），而不是逐会话调用。
 
 SESSION_MAP_SYSTEM = (
     "You condense a long DATED chat history into a COMPLETE session-by-session map, for questions that "
@@ -148,7 +144,7 @@ PERSONA_SYSTEM = (
 
 
 def build_session_map(llm, history_text: str) -> str:
-    """L2: one dense pass turning the full dated history into a complete chronological session digest."""
+    """L2：一次密集调用，把完整的带日期历史转成按时间序的完整会话摘要。"""
     try:
         out = llm.complete(f"{history_text}\n\nComplete session-by-session map:", system=SESSION_MAP_SYSTEM)
         return out.strip()
@@ -157,7 +153,7 @@ def build_session_map(llm, history_text: str) -> str:
 
 
 def build_persona(llm, history_text: str) -> str:
-    """L3: one pass synthesizing the user's preferences/habits/possessions into a compact profile."""
+    """L3：一次调用，把用户的偏好/习惯/所有物综合成一份紧凑画像。"""
     try:
         out = llm.complete(f"{history_text}\n\nUSER PROFILE:", system=PERSONA_SYSTEM)
         return out.strip()
@@ -165,9 +161,9 @@ def build_persona(llm, history_text: str) -> str:
         return ""
 
 
-# ---- answer strategies that push the two weak categories (CLAUDE.md Bet B) ----
-# Routed by QUESTION TEXT, not the benchmark's category label, so the logic generalizes to real use
-# (a deployed system never sees a 'question_type') and isn't gaming the test.
+# ---- 针对两个弱项类别的作答策略（CLAUDE.md Bet B）----
+# 按问题文本路由，而非 benchmark 的类别标签，这样逻辑能泛化到真实使用场景（部署系统看不到
+# 'question_type'），也不是在钻评测空子。
 
 _NUM_WORDS = {"zero": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6",
               "seven": "7", "eight": "8", "nine": "9", "ten": "10", "eleven": "11", "twelve": "12"}
@@ -179,27 +175,27 @@ _PREF_CUES = ("recommend", "suggest", "what should i", "what would i", "would i 
 
 
 def needs_self_consistency(question: str) -> bool:
-    """Counting / summing / duration / aggregation questions: single-shot answering miscounts at random
-    (5->4, 4->6 observed on _S). Sampling K answers and taking the mode cancels the random error."""
+    """计数/求和/时长/聚合类问题：单次作答会随机数错（_S 上观察到 5->4、4->6）。采样 K 个答案取
+    众数，可以抵消这种随机误差。"""
     q = question.lower()
     return any(c in q for c in _COUNT_CUES)
 
 
 def needs_two_stage_pref(question: str) -> bool:
-    """Recommendation/preference questions: the model defaults to generic advice. Forcing it to first
-    surface the user's concrete stated history, then answer using it, fixes the personalization gap."""
+    """推荐/偏好类问题：模型默认输出泛泛建议。强制它先列出用户明确说过的具体历史、再据此作答，
+    弥补个性化短板。"""
     q = question.lower()
     return any(c in q for c in _PREF_CUES)
 
 
 def _norm_vote(ans: str) -> str:
-    """Normalize an answer for majority voting: lowercase, drop articles/filler, map number-words to
-    digits, collapse whitespace. So 'four model kits' and 'I worked on 4 kits' vote together on '4'."""
+    """为多数投票归一化答案：转小写、去掉冠词/填充词、数字词映射为数字、压缩空白。这样
+    'four model kits' 和 'I worked on 4 kits' 都投给 '4'。"""
     import re as _re
     s = ans.lower().strip().strip(".!?\"' ")
     s = _re.sub(r"\b(the|a|an|i|you|your|my|have|has|had|worked|on|or|bought|in|of|total|there|are|is|were|was)\b", " ", s)
     toks = [_NUM_WORDS.get(t, t) for t in _re.split(r"\s+", s) if t]
-    # if a number appears, vote on the number alone — it's the decisive content for counting/duration
+    # 若出现数字，就只对数字投票 —— 它是计数/时长题的决定性内容
     nums = [t for t in toks if _re.fullmatch(r"\d+(\.\d+)?", t)]
     if nums:
         return nums[0]
@@ -207,8 +203,8 @@ def _norm_vote(ans: str) -> str:
 
 
 def answer_self_consistency(answerer, prompt: str, system: str, k: int = 5) -> str:
-    """Sample k answers at temperature, return the ORIGINAL answer whose normalized form is most common.
-    Returns the full text (not just the normalized key) so the official judge sees a real answer."""
+    """带温度采样 k 个答案，返回归一化后出现最多的那个原始答案。返回完整文本（而非归一化 key），
+    让官方 judge 看到真实的答案。"""
     from collections import Counter
     cands = []
     for i in range(k):
@@ -219,7 +215,7 @@ def answer_self_consistency(answerer, prompt: str, system: str, k: int = 5) -> s
         return ""
     votes = Counter(_norm_vote(c) for c in cands)
     winner_key, _ = votes.most_common(1)[0]
-    # return the first full answer that maps to the winning key (longest, to carry the most context)
+    # 返回映射到获胜 key 的完整答案中最长的一个（携带最多上下文）
     matching = [c for c in cands if _norm_vote(c) == winner_key]
     return max(matching, key=len)
 
@@ -233,8 +229,8 @@ PREF_EXTRACT_SYSTEM = (
 
 
 def answer_two_stage_pref(answerer, context: str, question: str, qdate: str, answer_system: str) -> str:
-    """Stage 1: pull the user's concrete relevant history. Stage 2: answer, with that history pinned at the
-    top of the context so the model must ground its recommendation in it instead of giving generic advice."""
+    """阶段 1：拉出用户明确说过的相关历史。阶段 2：作答，把这段历史钉在 context 顶部，迫使模型
+    据此作答，而不是给出泛泛建议。"""
     relevant = answerer.complete(
         f"{context}\n\nQuestion: {question}\n\nThe user's relevant stated details:",
         system=PREF_EXTRACT_SYSTEM, temperature=0.0,
@@ -246,12 +242,12 @@ def answer_two_stage_pref(answerer, context: str, question: str, qdate: str, ans
     )
 
 
-# LongMemEval_S haystack averages ~497k chars (≈124k tokens) — well within gemini-2.5-flash/pro 1M window.
-# 600k gives margin without truncating any item; old 200k only covered the first 40% (oldest sessions!).
+# LongMemEval_S 的 haystack 平均约 497k 字符（≈124k token）—— 远在 gemini-2.5-flash/pro 的 1M 窗口之内。
+# 600k 留有余量且不截断任何 item；旧的 200k 只覆盖了前 40%（最老的会话！）。
 FC_CHAR_BUDGET = 600_000
 
 JUDGE_SYSTEM = "You grade answers. Reply with only 'yes' or 'no'."
-# Generic fallback (used only for categories not in the official set). Prefer official_judge_prompt().
+# 通用回退（仅用于官方集合之外的类别）。优先用 official_judge_prompt()。
 JUDGE_TEMPLATE = (
     "Question: {q}\nReference answer: {gold}\nCandidate answer: {pred}\n\n"
     "Does the candidate convey the same key information as the reference? Reply yes or no."
@@ -259,14 +255,13 @@ JUDGE_TEMPLATE = (
 
 
 def official_judge_prompt(task: str, question: str, answer: str, response: str, abstention: bool = False) -> str:
-    """The EXACT LongMemEval official judge prompts (external/LongMemEval/.../evaluate_qa.py).
+    """LongMemEval 官方 judge prompt 的逐字版本（external/LongMemEval/.../evaluate_qa.py）。
 
-    We match these verbatim so our numbers are directly comparable to the published leaderboard
-    (OMEGA 95.4, Mem0 94.4, Hunyuan 85.2). They are deliberately category-aware and more lenient than a
-    naive 'same info?' judge — temporal forgives off-by-one days; knowledge-update accepts an answer that
-    also restates old info; preference is rubric-based and needn't hit every point. Using a stricter
-    judge would understate our score and make it non-comparable (CLAUDE.md Bet D: be the trustworthy
-    scoreboard — that means scoring the way the benchmark defines, not harder)."""
+    逐字匹配官方 prompt，我们的数字才能与已发布的榜单直接可比（OMEGA 95.4、Mem0 94.4、Hunyuan 85.2）。
+    这些 prompt 刻意按类别区分，且比朴素的"信息一致吗"judge 更宽松 —— temporal 容忍差一天；
+    knowledge-update 接受同时复述旧信息的答案；preference 是 rubric 制，不必覆盖每一条。用更严格的
+    judge 会压低我们的分数并失去可比性（CLAUDE.md Bet D：做可信的记分板 —— 意味着按 benchmark 定义
+    的方式打分，而不是更严）。"""
     if abstention:
         return ("I will give you an unanswerable question, an explanation, and a response from a model. "
                 "Please answer yes if the model correctly identifies the question as unanswerable. The model "
@@ -302,7 +297,7 @@ def official_judge_prompt(task: str, question: str, answer: str, response: str, 
                 "model does not need to reflect all the points in the rubric. The response is correct as long as it "
                 "recalls and utilizes the user's personal information correctly.\n\nQuestion: {}\n\nRubric: {}\n\n"
                 "Model Response: {}\n\nIs the model response correct? Answer yes or no only.").format(question, answer, response)
-    # unknown category → generic
+    # 未知类别 -> 通用模板
     return JUDGE_TEMPLATE.format(q=question, gold=answer, pred=response)
 
 _ABSTAIN_MARKERS = (
@@ -329,7 +324,7 @@ def load_data(path: str | None) -> list[dict]:
         filename = path if path.startswith("longmemeval_") else f"longmemeval_{path}"
         path = hf_hub_download(repo_id="xiaowu0162/longmemeval", filename=filename, repo_type="dataset")
     elif path in ("locomo", "locomo10"):
-        # Second benchmark on the SAME harness: convert LOCOMO into LongMemEval items (see eval/locomo.py).
+        # 同一 harness 上的第二个 benchmark：把 LOCOMO 转成 LongMemEval item（见 eval/locomo.py）。
         from eval.locomo import load_locomo
 
         return load_locomo()
@@ -344,8 +339,8 @@ def sessions_of(item: dict):
 
 
 def parse_date(s):
-    """Parse a LongMemEval date like '2023/05/20 (Sat) 02:21' -> (epoch, 'YYYY-MM-DD'). Real dates are
-    essential for temporal-reasoning questions ('first', 'how long', 'most recent')."""
+    """解析形如 '2023/05/20 (Sat) 02:21' 的 LongMemEval 日期 -> (epoch, 'YYYY-MM-DD')。真实日期对
+    时序推理问题（'first'、'how long'、'most recent'）至关重要。"""
     if not s:
         return None
     m = re.search(r"(\d{4})[/-](\d{1,2})[/-](\d{1,2})", s)
@@ -362,8 +357,8 @@ def parse_date(s):
 
 
 def ingest(mem: Memory, item: dict, user_id: str) -> None:
-    # one episode per session (concatenated turns): ~10x fewer extraction calls than per-turn, and
-    # makes episode->session mapping 1:1 for recall. A session is a coherent memory unit.
+    # 每个会话一个 episode（拼接各 turn）：抽取调用比按 turn 少约 10 倍，且 episode->session 映射
+    # 一一对应，便于 recall。会话是一个连贯的记忆单元。
     dates = item.get("haystack_dates") or []
     texts: list[str] = []
     meta: list[tuple] = []
@@ -378,8 +373,8 @@ def ingest(mem: Memory, item: dict, user_id: str) -> None:
             meta.append((sid, event_time, dstr))
     if not texts:
         return
-    # Batch-embed the whole haystack in one model.encode call (the per-session loop otherwise serializes
-    # ~50 embeds on the GPU lock and dominates wall-clock at _S scale).
+    # 用一次 model.encode 批量嵌入整个 haystack（否则逐会话循环会在 GPU 锁上串行化约 50 次嵌入，
+    # 在 _S 规模下主导墙钟时间）。
     vecs = mem.embedder.embed_batch(texts)
     for (sid, event_time, dstr), text, vec in zip(meta, texts, vecs):
         ep = mem.add(text, user_id=user_id, session_id=sid, speaker="session",
@@ -388,9 +383,9 @@ def ingest(mem: Memory, item: dict, user_id: str) -> None:
 
 
 def all_text(item: dict, reverse: bool = False) -> str:
-    """Serialise all sessions to text. With reverse=True, most-recent sessions come first — better for
-    knowledge-update questions where the LLM should trust the latest fact. Chronological (default) is
-    better for temporal ordering questions. The REASONING_SYSTEM prompt handles both via date labels."""
+    """把所有会话序列化为文本。reverse=True 时最新会话在前 —— 更适合 knowledge-update 问题（LLM 应
+    信任最新 fact）。按时间序（默认）更适合时序排序类问题。REASONING_SYSTEM prompt 靠日期标注两者
+    兼顾。"""
     dates = item.get("haystack_dates") or []
     sessions_list = list(sessions_of(item))
     dates_list = list(dates) + [None] * max(0, len(sessions_list) - len(dates))
@@ -407,11 +402,10 @@ def all_text(item: dict, reverse: bool = False) -> str:
 
 
 def judge_correct(item: dict, pred: str, judge_llm) -> bool:
-    """Grade a prediction with the OFFICIAL LongMemEval category-specific judge (so our numbers are
-    leaderboard-comparable). We send EVERYTHING to the judge — no pre-filtering — exactly like the official
-    evaluate_qa.py. (An earlier 'looks_like_abstention' short-circuit was deflating temporal scores: it
-    rejected answers like 'June 2023 (not 100% sure)' on the substring 'not sure', even though June 2023 is
-    correct. The judge handles a pure 'I don't know' as wrong on its own.)"""
+    """用官方 LongMemEval 按类别区分的 judge 给预测打分（保证我们的数字与榜单可比）。所有预测都送给
+    judge —— 不做预过滤 —— 与官方 evaluate_qa.py 完全一致。（早先的 'looks_like_abstention' 短路逻辑
+    会压低 temporal 分数：它凭子串 'not sure' 拒掉了 'June 2023 (not 100% sure)' 这样的答案，尽管
+    June 2023 是对的。纯 'I don't know' judge 自己就会判错。）"""
     abstain = is_abstention(item)
     task = item.get("question_type", "?")
     prompt = official_judge_prompt(task, item["question"], item.get("answer", ""), pred, abstention=abstain)
@@ -425,7 +419,7 @@ def run_recall(items, embedder, top_k):
         evidence = set(item.get("answer_session_ids") or [])
         if not evidence:
             continue
-        mem = Memory(embedder=embedder)  # no llm: pure retrieval
+        mem = Memory(embedder=embedder)  # 不传 llm：纯检索
         ingest(mem, item, item["question_id"])
         qvec = embedder.embed(item["question"])
         results = mem.episodes_vec.search(qvec, top_k)
@@ -438,15 +432,15 @@ def run_recall(items, embedder, top_k):
 
 
 def eval_one(item, embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_chunks, extract_k=0, reranker=None):
-    """Evaluate one question. Returns a result dict; never raises (errors are captured)."""
+    """评测单个问题。返回结果 dict；绝不抛异常（错误会被捕获）。"""
     qid, cat, q = item["question_id"], item.get("question_type", "?"), item["question"]
     try:
         mem = Memory(embedder=embedder, llm=extractor_llm, reranker=reranker)
         ingest(mem, item, qid)
         if extract_k and extract_k > 0:
-            # _S scale: retrieve-then-extract. Extracting facts from all ~500 sessions is infeasible, so
-            # we retrieve (bi-encoder + reranker) the top extract_k sessions for THIS question and
-            # consolidate only those. Bounds LLM extraction cost regardless of haystack size.
+            # _S 规模：先检索再抽取。对全部约 500 个会话抽取 fact 不可行，所以针对当前问题检索
+            # （bi-encoder + reranker）top extract_k 个会话，只整合这些。无论 haystack 多大，都能
+            # 封顶 LLM 抽取成本。
             top_eps = mem.retrieve_episodes(q, qid, extract_k)
             mem.engine.consolidate(top_eps)
         else:
@@ -454,15 +448,15 @@ def eval_one(item, embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_ch
 
         qdate = item.get("question_date", "")
         t0 = time.perf_counter()
-        # HYBRID, date-stamped context via the core API: live facts (conflict-resolved/current) + top-k
-        # raw chunks (detail). Dates let the answerer resolve temporal & knowledge-update questions.
+        # 通过核心 API 拿到混合的、带日期戳的 context：存活 fact（已消解冲突/当前有效）+ top-k
+        # 原始 chunk（细节）。日期让 answerer 能解出时序与知识更新类问题。
         context = mem.context_for(q, user_id=qid, top_k=top_k, k_chunks=k_chunks)
         pred = answerer_llm.complete(ANSWER_TEMPLATE.format(qdate=qdate, context=context, question=q), system=ANSWER_SYSTEM)
         latency = (time.perf_counter() - t0) * 1000.0
         eng_ok = judge_correct(item, pred, judge_llm)
 
-        # full-context baseline — isolated so its failure (e.g. _S context exceeding the window) cannot
-        # sink the engram measurement. Capped to the model window (full-context doesn't scale; that's the point).
+        # full-context 基线 —— 单独隔离，它的失败（如 _S 上下文超出窗口）不能拖垮 engram 的测量。
+        # 上限截到模型窗口（full-context 本来就无法扩展；这正是要证明的点）。
         fc_ok, fc_tok = None, 0
         try:
             fc_context = all_text(item)[:FC_CHAR_BUDGET]
@@ -473,7 +467,7 @@ def eval_one(item, embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_ch
             fc_ok, fc_tok = None, 0
         return {"qid": qid, "cat": cat, "eng": eng_ok, "fc": fc_ok, "eng_tok": len(context.split()),
                 "fc_tok": fc_tok, "lat": latency, "pred": pred.strip()[:60], "err": None}
-    except Exception as e:  # noqa: BLE001 - one bad item must not kill a 500-question run
+    except Exception as e:  # noqa: BLE001 - 单个坏 item 不能杀死 500 题的运行
         return {"qid": qid, "cat": cat, "eng": None, "fc": None, "err": f"{type(e).__name__}: {str(e)[:90]}"}
 
 
@@ -500,12 +494,12 @@ def run_qa(items, embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_chu
                 eng_hits[r["cat"]].append(r["eng"])
                 eng_tokens.append(r["eng_tok"])
                 latencies.append(r["lat"])
-                if r["fc"] is not None:  # full-context may be absent on _S (didn't fit)
+                if r["fc"] is not None:  # _S 上 full-context 可能缺失（塞不下）
                     fc_hits[r["cat"]].append(r["fc"])
                     fc_tokens.append(r["fc_tok"])
                 if n <= 5 or n % 25 == 0:
                     e = 100.0 * sum(v for vs in eng_hits.values() for v in vs) / max(1, sum(len(v) for v in eng_hits.values()))
-                    print(f"  [{n}/{len(items)}] running engram acc={e:.1f}%  (last {r['cat']}: "
+                    print(f"  [{n}/{len(items)}] running MnemoTrace acc={e:.1f}%  (last {r['cat']}: "
                           f"eng={'Y' if r['eng'] else 'n'} fc={'Y' if r['fc'] else 'n'})", flush=True)
             if outfh:
                 outfh.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -559,7 +553,7 @@ def main():
     load_dotenv()
     items = load_data(args.data)
     if args.limit and args.limit < len(items):
-        # evenly-spaced sample so a small slice still covers all question types (the file is type-sorted)
+        # 等距抽样，让小切片也覆盖所有题型（文件按题型排序）
         stride = max(1, len(items) // args.limit)
         items = items[::stride][: args.limit]
     print(f"LongMemEval runner: {len(items)} items, mode={args.mode}, embedder={args.embedder}, top_k={args.topk}")
@@ -585,15 +579,15 @@ def main():
         if errors:
             print(f"\n   (note: {errors} item(s) errored and were excluded)")
         cats = sorted(set(eng_hits) | set(fc_hits))
-        print("\n   per-category accuracy (engram / full-context):")
+        print("\n   per-category accuracy (MnemoTrace / full-context):")
         for c in cats:
             e = 100.0 * sum(eng_hits[c]) / len(eng_hits[c]) if eng_hits[c] else 0.0
             f = 100.0 * sum(fc_hits[c]) / len(fc_hits[c]) if fc_hits[c] else 0.0
             print(f"     {c:24} {e:6.1f}% / {f:6.1f}%")
         avg = lambda xs: sum(xs) / len(xs) if xs else 0.0  # noqa: E731
         print("\n   OVERALL")
-        print(f"     accuracy        engram {_acc(eng_hits):5.1f}%   full-context {_acc(fc_hits):5.1f}%")
-        print(f"     context tokens  engram {avg(eng_tok):6.1f}   full-context {avg(fc_tok):7.1f}   "
+        print(f"     accuracy        MnemoTrace {_acc(eng_hits):5.1f}%   full-context {_acc(fc_hits):5.1f}%")
+        print(f"     context tokens  MnemoTrace {avg(eng_tok):6.1f}   full-context {avg(fc_tok):7.1f}   "
               f"({avg(fc_tok)/max(1,avg(eng_tok)):.1f}x leaner)")
         print(f"     p50 latency ms  {_percentile(lat, 50):.0f} (retrieve+answer)")
         print(f"     p95 latency ms  {_percentile(lat, 95):.0f} (retrieve+answer)")

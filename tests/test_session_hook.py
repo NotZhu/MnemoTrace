@@ -1,35 +1,41 @@
-"""The SessionEnd hook: the worker, the settings editor, and the handshake with the watcher.
+"""SessionEnd 钩子：worker 进程、settings 编辑器，以及与 watcher 的握手。
 
-Two things every test here has to be true about, because getting either wrong is worse than not shipping
-the feature:
+有两件事这里每个测试都必须验证，因为任何一件出错都比不做这个功能更糟：
 
-* **The owner's real ~/.claude/settings.json is never opened for writing.** Every test passes
-  `--settings` explicitly at a tmp path, and `test_dry_run_touches_nothing` asserts the real file's
-  sha256 is identical before and after a dry run.
-* **Nothing here talks to a network, an LLM, or a real transcript.** The transcripts are synthetic, the
-  server is a recorder standing in for `/v1/import` + `/v1/sessions/close`, and the settings fixtures are
-  hand-built with third-party paths.
+* **绝不以写方式打开 owner 真实的 ~/.claude/settings.json。** 每个测试都显式传入 `--settings`
+  指向 tmp 路径，且 `test_dry_run_touches_nothing` 断言 dry run 前后真实文件的 sha256 完全一致。
+* **这里没有任何东西会碰网络、LLM 或真实 transcript。** transcript 全是合成的，server 是一个
+  只做记录的替身，顶替 `/v1/import` + `/v1/sessions/close`，settings 夹具均手工构造并带第三方路径。
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import sys
 import time
+from unittest.mock import Mock
 
 import pytest
 
-from engram.connectors import hook_install as hi
-from engram.connectors import session_hook, watch
-from engram.connectors.agent_sessions import _session_label
+from mnemotrace.connectors import hook_install as hi
+from mnemotrace.connectors import session_hook, watch
+from mnemotrace.connectors.agent_sessions import _session_label
 
 REAL_SETTINGS = os.path.expanduser("~/.claude/settings.json")
 PY = "/opt/python/bin/python3"
 
 
+@pytest.fixture
+def preflight(monkeypatch):
+    check = Mock(return_value=None)
+    monkeypatch.setattr("mnemotrace.connectors.watch_install.preflight_import", check)
+    return check
+
+
 @pytest.fixture(autouse=True)
 def _never_really_detach(monkeypatch):
-    """os.setsid() in-process would move the whole pytest run into a new session."""
+    """进程内调用 os.setsid() 会把整个 pytest 运行挪进一个新会话。"""
     calls: list[int] = []
     monkeypatch.setattr(session_hook, "_setsid", lambda: calls.append(1))
     return calls
@@ -52,7 +58,7 @@ def _leaf(command: str = THIRD_PARTY, timeout: int = 10) -> dict:
 
 
 def _owner_shaped_hooks() -> dict:
-    """The shape of the owner's ten real slots: six with no matcher, four with "matcher": "*"."""
+    """owner 十个真实槽位的形状：六个没有 matcher，四个是 "matcher": "*"。"""
     no_matcher = ["UserPromptSubmit", "Stop", "StopFailure", "SubagentStart", "SubagentStop",
                   "TeammateIdle"]
     matched = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"]
@@ -74,7 +80,7 @@ SETTINGS_FIXTURES = {
 
 
 def _transcript(tmp_path, turns: int = 3, secret: str = "") -> str:
-    """A synthetic Claude Code transcript, over find_sessions' 2048-byte floor."""
+    """一份合成的 Claude Code transcript，大小超过 find_sessions 的 2048 字节下限。"""
     project = tmp_path / "roots" / "claude" / "-Users-demo-Projects-widget"
     project.mkdir(parents=True, exist_ok=True)
     path = project / "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0.jsonl"
@@ -93,8 +99,8 @@ def _transcript(tmp_path, turns: int = 3, secret: str = "") -> str:
 
 
 class StubServer:
-    """Stands in for the pilot: records what was imported and what was closed, and answers the one
-    read the harness's L1 join uses (`GET /v1/sessions`) out of the same recording."""
+    """替身 pilot：记录导入了什么、关闭了什么，并用同一份记录回答 harness 的 L1 join 所需的
+    唯一读请求（`GET /v1/sessions`）。"""
 
     def __init__(self, close_fails: bool = False):
         self.imports: list[dict] = []
@@ -114,7 +120,7 @@ class StubServer:
         raise AssertionError(f"unexpected POST {path}")
 
     def sessions(self) -> dict:
-        """What `GET /v1/sessions?limit=...` returns — the evidence store C1 defines "closed" against."""
+        """`GET /v1/sessions?limit=...` 的返回值 —— C1 判定 "closed" 时所依据的证据库。"""
         return {"sessions": [{"id": sid, "facts_added": 2} for sid in self.closed]}
 
 
@@ -129,10 +135,10 @@ def _hook_args(tmp_path, url="http://127.0.0.1:8766", target_in_state=None) -> t
     return argv, str(key_file)
 
 
-# --- 1. the dry run writes nothing, anywhere ---------------------------------------------------------
+# --- 1. dry run 任何地方都不写任何东西 ---------------------------------------------------------
 
 @pytest.mark.skipif(not os.path.exists(REAL_SETTINGS), reason="no real settings.json on this machine")
-def test_dry_run_touches_neither_the_temp_file_nor_the_owners(tmp_path, capsys):
+def test_dry_run_touches_neither_the_temp_file_nor_the_owners(tmp_path, capsys, preflight):
     settings = tmp_path / "s.json"
     settings.write_text(hi.dumps(SETTINGS_FIXTURES["owner_shaped"], 2))
     key_file = tmp_path / "watch.key"
@@ -144,21 +150,22 @@ def test_dry_run_touches_neither_the_temp_file_nor_the_owners(tmp_path, capsys):
     real_before = _sha(REAL_SETTINGS)
 
     code = watch.main(["--install-hook", "--dry-run", "--settings", str(settings),
-                       "--python", PY, "--url", "http://127.0.0.1:8766",
+                       "--python", sys.executable, "--url", "http://127.0.0.1:8766",
                        "--key-file", str(key_file), "--state", str(state)])
     out = capsys.readouterr().out
 
     assert code == watch.EXIT_OK
+    preflight.assert_called_once_with(sys.executable, module=hi.HOOK_MODULE)
     assert "[dry-run] nothing was written" in out
-    assert '+    "SessionEnd": [' in out                    # a real unified diff, not a summary
+    assert '+    "SessionEnd": [' in out                    # 真正的 unified diff，不是一行摘要
     assert f"target      : {watch._target('http://127.0.0.1:8766', 'demo-key')}" in out
     assert "matches watch_state.json" in out
     assert _sha(str(settings)) == before and settings.stat().st_mtime == before_mtime
     assert _sha(REAL_SETTINGS) == real_before
-    assert not list(tmp_path.glob("*.engram-bak-*"))
+    assert not list(tmp_path.glob("*.mnemotrace-bak-*"))
 
 
-def test_dry_run_names_a_target_mismatch_before_it_can_bite(tmp_path, capsys):
+def test_dry_run_names_a_target_mismatch_before_it_can_bite(tmp_path, capsys, preflight):
     settings = tmp_path / "s.json"
     settings.write_text(hi.dumps({}, 2))
     key_file = tmp_path / "watch.key"
@@ -166,25 +173,26 @@ def test_dry_run_names_a_target_mismatch_before_it_can_bite(tmp_path, capsys):
     state = tmp_path / "watch_state.json"
     state.write_text(json.dumps({"target": "deadbeef"}))
 
-    watch.main(["--install-hook", "--dry-run", "--settings", str(settings), "--python", PY,
+    watch.main(["--install-hook", "--dry-run", "--settings", str(settings), "--python", sys.executable,
                 "--url", "http://192.0.2.9:8456", "--key-file", str(key_file), "--state", str(state)])
     out = capsys.readouterr().out
+    preflight.assert_called_once_with(sys.executable, module=hi.HOOK_MODULE)
     assert "DOES NOT MATCH watch_state.json (deadbeef)" in out
 
 
-# --- 2. the round-trip property ----------------------------------------------------------------------
+# --- 2. 往返（roundtrip）性质 ----------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", sorted(SETTINGS_FIXTURES))
 def test_uninstall_undoes_install_byte_for_byte(name):
     original = SETTINGS_FIXTURES[name]
     raw = hi.dumps(original, 2)
-    command = hi.render_command(PY, "http://127.0.0.1:8766", "/h/.engram/watch.key",
-                                "/h/.engram/logs/hook.log")
+    command = hi.render_command(PY, "http://127.0.0.1:8766", "/h/.mnemotrace/watch.key",
+                                "/h/.mnemotrace/logs/hook.log")
 
     installed = hi.install(original, command)
     assert hi.find_command(installed) == command
 
-    # every key we were not asked to touch survives the *install*, byte for byte
+    # install 之后，所有未被要求改动的键都逐字节保留
     for key, value in original.items():
         if key != "hooks":
             assert json.dumps(installed[key], sort_keys=True) == json.dumps(value, sort_keys=True)
@@ -199,7 +207,7 @@ def test_uninstall_undoes_install_byte_for_byte(name):
 
 
 def test_uninstall_keeps_a_third_party_session_end_entry():
-    """The test that must fail if `_strip` ever widens: a neighbour in our own slot is not ours."""
+    """如果 `_strip` 哪天扩大了范围，这个测试必须失败：我们自己槽位里的邻居不是我们的。"""
     original = SETTINGS_FIXTURES["third_party_session_end"]
     command = hi.render_command(PY, "http://x", "/k", "/l")
     installed = hi.install(original, command)
@@ -213,7 +221,7 @@ def test_uninstall_keeps_a_third_party_session_end_entry():
 
 
 def test_reinstall_with_a_new_url_replaces_rather_than_doubles():
-    """Two entries would mean one session fed to two servers — the failure this feature exists to avoid."""
+    """出现两条记录就意味着一个 session 被喂给了两个 server —— 正是这个功能要避免的失败。"""
     first = hi.install({}, hi.render_command(PY, "http://a", "/k", "/l"))
     second = hi.install(first, hi.render_command(PY, "http://b", "/k", "/l"))
     leaves = [leaf for group in second["hooks"][hi.SLOT] for leaf in group["hooks"]]
@@ -225,24 +233,25 @@ def test_render_command_matches_the_agreed_shape():
     assert command == (
         "if [ -x '/usr/bin/python3' ]; then p=$({ command -p cat 2>/dev/null || cat; }); "
         "[ -n \"$p\" ] && { printf '%s' \"$p\" | nohup '/usr/bin/python3' "
-        "-m engram.connectors.session_hook --url 'http://127.0.0.1:8766' "
+        "-m mnemotrace.connectors.session_hook --url 'http://127.0.0.1:8766' "
         "--key-file '/h/watch.key' >>'/h/hook.log' 2>&1; } & "
         "else { command -p cat 2>/dev/null || cat; } >/dev/null 2>&1 || :; fi; exit 0")
     assert hi.entry_for(command) == {"hooks": [{"type": "command", "command": command, "timeout": 5}]}
-    assert "matcher" not in json.dumps(hi.entry_for(command))  # every SessionEnd `reason` is worth feeding
+    assert "matcher" not in json.dumps(hi.entry_for(command))  # SessionEnd 的每种 `reason` 都值得喂入
 
 
-def test_refuses_a_settings_file_it_cannot_reproduce(tmp_path, capsys):
+def test_refuses_a_settings_file_it_cannot_reproduce(tmp_path, capsys, preflight):
     settings = tmp_path / "s.json"
     settings.write_text('{\n  // the owner writes JSONC here\n  "model": "x"\n}\n')
     before = _sha(str(settings))
-    code = watch.main(["--install-hook", "--settings", str(settings), "--python", PY,
+    code = watch.main(["--install-hook", "--settings", str(settings), "--python", sys.executable,
                        "--url", "http://127.0.0.1:8766", "--key-file", str(tmp_path / "k"),
                        "--state", str(tmp_path / "st.json")])
     out = capsys.readouterr().out
     assert code == watch.EXIT_USAGE
+    preflight.assert_called_once_with(sys.executable, module=hi.HOOK_MODULE)
     assert "refusing to edit" in out and "by hand" in out
-    assert hi.HOOK_MODULE in out                      # the entry to paste is printed, not just refused
+    assert hi.HOOK_MODULE in out                      # 会打印可手工粘贴的条目，而不只是拒绝
     assert _sha(str(settings)) == before
 
 
@@ -254,7 +263,7 @@ def test_uninstall_on_a_file_without_our_entry_changes_nothing(tmp_path, capsys)
     assert code == watch.EXIT_OK
     assert "nothing to remove" in capsys.readouterr().out
     assert _sha(str(settings)) == before
-    assert not list(tmp_path.glob("*.engram-bak-*"))
+    assert not list(tmp_path.glob("*.mnemotrace-bak-*"))
 
 
 def test_install_then_uninstall_on_disk_round_trips(tmp_path, capsys):
@@ -266,8 +275,8 @@ def test_install_then_uninstall_on_disk_round_trips(tmp_path, capsys):
 
     args = ["--settings", str(settings), "--python", PY, "--url", "http://127.0.0.1:8766",
             "--key-file", str(key_file), "--state", str(tmp_path / "st.json")]
-    # preflight would refuse a fake interpreter, so stub it — the real one is covered by watch_install
-    import engram.connectors.watch_install as wi
+    # preflight 会拒绝假解释器，所以打桩掉——真实验证由 watch_install 覆盖
+    import mnemotrace.connectors.watch_install as wi
     real = wi.preflight_import
     wi.preflight_import = lambda *a, **k: None
     try:
@@ -277,14 +286,14 @@ def test_install_then_uninstall_on_disk_round_trips(tmp_path, capsys):
     capsys.readouterr()
 
     assert hi.HOOK_MODULE in settings.read_text()
-    backups = list(tmp_path.glob("s.json.engram-bak-*"))
+    backups = list(tmp_path.glob("s.json.mnemotrace-bak-*"))
     assert len(backups) == 1 and backups[0].read_bytes() == original
 
     assert watch.main(["--uninstall-hook", "--settings", str(settings)]) == watch.EXIT_OK
     assert settings.read_bytes() == original
 
 
-# --- 3. the worker ------------------------------------------------------------------------------------
+# --- 3. worker 进程 ---
 
 def test_a_stop_payload_does_nothing(tmp_path, capsys):
     argv, _ = _hook_args(tmp_path)
@@ -293,7 +302,7 @@ def test_a_stop_payload_does_nothing(tmp_path, capsys):
                                                     "transcript_path": _transcript(tmp_path)}),
                             ingest=lambda *a, **k: calls.append(a) or {})
     assert code == 0 and calls == []
-    assert capsys.readouterr().out == ""  # ~23 Stops per session; a log line each would be pure noise
+    assert capsys.readouterr().out == ""  # 每个 session 约 23 次 Stop；每次都打一行日志纯属噪音
 
 
 def test_session_end_feeds_exactly_once_and_says_so_without_naming_anything(tmp_path, capsys,
@@ -307,7 +316,7 @@ def test_session_end_feeds_exactly_once_and_says_so_without_naming_anything(tmp_
         calls.append((url, key, list(paths), kwargs))
         return watch.ingest(url, key, paths, **{**kwargs, "timeout": 5})
 
-    import engram.connectors.watch as w
+    import mnemotrace.connectors.watch as w
     original_post = w._post
     w._post = server.post
     try:
@@ -321,11 +330,12 @@ def test_session_end_feeds_exactly_once_and_says_so_without_naming_anything(tmp_
     url, key, paths, kwargs = calls[0]
     assert (url, key, paths) == ("http://127.0.0.1:8766", "demo-key", [path])
     assert kwargs["outcomes"] is True
-    assert _never_really_detach == [1]  # detached before doing anything slow
+    assert _never_really_detach == [1]  # 在做任何慢操作之前先脱离会话
 
     claims = watch.load_claims(str(tmp_path / "hook_claims.jsonl"))
     assert claims == {path: os.stat(path).st_size}
-    assert oct(os.stat(tmp_path / "hook_claims.jsonl").st_mode)[-3:] == "600"
+    if os.name == "posix":  # Windows 没有 POSIX 权限位；0600 在那里无法表示
+        assert oct(os.stat(tmp_path / "hook_claims.jsonl").st_mode)[-3:] == "600"
 
     out = capsys.readouterr().out.strip()
     assert out.count("\n") == 0 and "conclusion(s)" in out and "lag_s" in out
@@ -339,7 +349,7 @@ def test_a_second_run_on_an_unchanged_transcript_is_a_no_op(tmp_path, capsys):
     argv, _ = _hook_args(tmp_path)
     payload = json.dumps({"hook_event_name": "SessionEnd", "transcript_path": path})
     server = StubServer()
-    import engram.connectors.watch as w
+    import mnemotrace.connectors.watch as w
     original_post = w._post
     w._post = server.post
     try:
@@ -359,7 +369,7 @@ def test_a_failed_close_claims_nothing_so_the_watcher_retries(tmp_path, capsys):
     path = _transcript(tmp_path)
     argv, _ = _hook_args(tmp_path)
     server = StubServer(close_fails=True)
-    import engram.connectors.watch as w
+    import mnemotrace.connectors.watch as w
     original_post = w._post
     w._post = server.post
     try:
@@ -398,7 +408,7 @@ def test_a_transcript_outside_the_watched_roots_is_refused(tmp_path, capsys):
     assert "not a watched transcript" in capsys.readouterr().out
 
 
-# --- 4. the target guard -------------------------------------------------------------------------------
+# --- 4. target 校验守卫 ---
 
 def test_a_target_mismatch_feeds_nothing_and_says_which_two(tmp_path, capsys):
     path = _transcript(tmp_path)
@@ -421,7 +431,7 @@ def test_the_hook_never_writes_the_watchers_state_file(tmp_path):
                                  "seen": {}}))
     before, before_mtime = _sha(str(state)), state.stat().st_mtime
     server = StubServer()
-    import engram.connectors.watch as w
+    import mnemotrace.connectors.watch as w
     original_post = w._post
     w._post = server.post
     try:
@@ -430,19 +440,19 @@ def test_the_hook_never_writes_the_watchers_state_file(tmp_path):
                          roots=[str(tmp_path / "roots")])
     finally:
         w._post = original_post
-    assert server.closed  # it really did the work
+    assert server.closed  # 确实完成了实际工作
     assert _sha(str(state)) == before and state.stat().st_mtime == before_mtime
 
 
-# --- 5. the handshake, and the evidence the coverage metric joins on -----------------------------------
+# --- 5. 握手，以及覆盖率指标 join 所依赖的证据 ---
 
 def test_hook_close_is_visible_to_harness(tmp_path):
-    """The coupling test. The hook closes a session under `_session_label(path)`; C1 defines a transcript
-    as CLOSED iff that same label appears in `GET /v1/sessions`. One test, both sides."""
+    """耦合测试。钩子以 `_session_label(path)` 关闭一个 session；C1 把一条 transcript 定义为
+    CLOSED，当且仅当同一个 label 出现在 `GET /v1/sessions` 中。一个测试同时覆盖两侧。"""
     path = _transcript(tmp_path)
     argv, _ = _hook_args(tmp_path)
     server = StubServer()
-    import engram.connectors.watch as w
+    import mnemotrace.connectors.watch as w
     original_post = w._post
     w._post = server.post
     try:
@@ -458,9 +468,9 @@ def test_hook_close_is_visible_to_harness(tmp_path):
 
 
 def test_the_facility_harness_can_read_this_hooks_lag_line(tmp_path, capsys):
-    """The other half of the same coupling: `lag_s` in hook.log is the harness's only hook-fed lag
-    source (it must never re-derive it from a path). Skipped rather than vendored, because eval/ belongs
-    to the harness and this test's job is to notice when the two formats drift apart."""
+    """同一耦合的另一半：hook.log 里的 `lag_s` 是 harness 唯一的 hook 喂入 lag 来源（绝不允许它
+    从路径重新推导）。选择 skip 而不是 vendor 进来，因为 eval/ 属于 harness，而这个测试的职责
+    就是在两边格式漂移时发出警报。"""
     facility = pytest.importorskip("eval.facility", reason="the facility harness is not in this tree")
     if not hasattr(facility, "parse_hook_lag"):
         pytest.skip("eval/facility.py has no parse_hook_lag yet")
@@ -470,7 +480,7 @@ def test_the_facility_harness_can_read_this_hooks_lag_line(tmp_path, capsys):
     os.utime(path, (old, old))
     argv, _ = _hook_args(tmp_path)
     server = StubServer()
-    import engram.connectors.watch as w
+    import mnemotrace.connectors.watch as w
     original_post = w._post
     w._post = server.post
     try:
@@ -493,20 +503,20 @@ def test_the_watcher_treats_a_claim_as_seen_and_folds_it_under_its_lock(tmp_path
 
     loaded = watch.load_claims(str(claims))
     assert loaded == {path: 4096}
-    # a claim made against a different server says nothing about this one
+    # 针对别的 server 做的 claim 对这个 server 什么也说明不了
     assert watch.load_claims(str(claims), target="ffffffff") == {}
 
     state: dict = {"seen": {}}
     assert watch.fold_claims(state, str(claims), target="0ed09d5f") == 1
     assert state["seen"] == {path: 4096}
     assert not claims.exists() and not (tmp_path / "hook_claims.jsonl.merging").exists()
-    assert watch.fold_claims(state, str(claims)) == 0  # folding an absent file is a no-op
+    assert watch.fold_claims(state, str(claims)) == 0  # 对不存在的文件做 fold 是 no-op
 
 
 def test_load_claims_survives_a_hook_appending_mid_read(tmp_path):
     claims = tmp_path / "hook_claims.jsonl"
     claims.write_text(json.dumps({"path": "/a", "size": 10, "at": 1.0, "target": "t"}) + "\n"
-                      + '{"path": "/b", "size": 2')  # torn final line, exactly what O_APPEND can leave
+                      + '{"path": "/b", "size": 2')  # 被截断的最后一行，正是 O_APPEND 可能留下的形态
     assert watch.load_claims(str(claims)) == {"/a": 10}
 
 
@@ -519,17 +529,17 @@ def test_pending_sessions_skips_what_the_hook_already_fed(tmp_path, monkeypatch)
 
     assert watch.pending_sessions({}, claims=None) == [path]
     assert watch.pending_sessions({}, claims={path: size}) == []
-    assert watch.pending_sessions({}, claims={path: size - 1}) == [path]  # grown since the hook fed it
+    assert watch.pending_sessions({}, claims={path: size - 1}) == [path]  # 自钩子喂入之后又增长了
 
 
-# --- 6. redaction on the hook's own path ---------------------------------------------------------------
+# --- 6. 钩子自身路径上的脱敏 ---------------------------------------------------------------
 
 def test_a_pasted_key_is_redacted_before_the_hook_posts_anything(tmp_path):
     fake = "sk-abcdefghijklmnopqrstuvwxyz012345"
     path = _transcript(tmp_path, secret=f" here is my key {fake} keep it safe")
     argv, _ = _hook_args(tmp_path)
     server = StubServer()
-    import engram.connectors.watch as w
+    import mnemotrace.connectors.watch as w
     original_post = w._post
     w._post = server.post
     try:
@@ -543,7 +553,7 @@ def test_a_pasted_key_is_redacted_before_the_hook_posts_anything(tmp_path):
     assert server.imports and fake not in body and "[REDACTED]" in body
 
 
-# --- 7. the status line --------------------------------------------------------------------------------
+# --- 7. 状态行 --------------------------------------------------------------------------------
 
 def test_status_reports_the_hook_without_naming_a_transcript(tmp_path, capsys, monkeypatch):
     settings = tmp_path / "s.json"
@@ -552,7 +562,7 @@ def test_status_reports_the_hook_without_naming_a_transcript(tmp_path, capsys, m
     claims = tmp_path / "hook_claims.jsonl"
     session_hook.claim(str(claims), "/roots/proj/abc.jsonl", 4096, "0ed09d5f")
     monkeypatch.setattr(watch, "pending_sessions", lambda *a, **k: [])
-    monkeypatch.setattr("engram.connectors.watch_install._run",
+    monkeypatch.setattr("mnemotrace.connectors.watch_install._run",
                         lambda cmd: __import__("subprocess").CompletedProcess(cmd, 1, "", ""))
 
     watch.main(["--status", "--settings", str(settings), "--state", str(tmp_path / "st.json"),
@@ -567,7 +577,7 @@ def test_status_says_so_when_the_hook_is_not_installed(tmp_path, capsys, monkeyp
     settings = tmp_path / "s.json"
     settings.write_text(hi.dumps(SETTINGS_FIXTURES["owner_shaped"], 2))
     monkeypatch.setattr(watch, "pending_sessions", lambda *a, **k: [])
-    monkeypatch.setattr("engram.connectors.watch_install._run",
+    monkeypatch.setattr("mnemotrace.connectors.watch_install._run",
                         lambda cmd: __import__("subprocess").CompletedProcess(cmd, 1, "", ""))
     watch.main(["--status", "--settings", str(settings), "--state", str(tmp_path / "st.json"),
                 "--claims", str(tmp_path / "none.jsonl")])
@@ -581,11 +591,11 @@ def test_the_hook_flags_are_mutually_exclusive_with_the_scheduler_flags(capsys):
     assert "mutually exclusive" in capsys.readouterr().err
 
 
-# --- 6. the file we edit is not ours: mode and symlink ------------------------------------------------
+# --- 6. 我们编辑的文件不属于我们：权限位与符号链接 ------------------------------------------------
 
 def _stub_preflight():
-    """`--install-hook` refuses a fake interpreter; these tests are about the write, not the preflight."""
-    import engram.connectors.watch_install as wi
+    """`--install-hook` 会拒绝假解释器；这些测试关注的是写入本身，而不是 preflight。"""
+    import mnemotrace.connectors.watch_install as wi
     real = wi.preflight_import
     wi.preflight_import = lambda *a, **k: None
     return wi, real
@@ -599,9 +609,10 @@ def _install_args(tmp_path, settings):
             "--state", str(tmp_path / "st.json")]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits (0600 preservation) do not exist on Windows")
 def test_install_preserves_the_settings_file_permission_bits(tmp_path, capsys):
-    """The owner's real settings.json is 0600, and settings.json legitimately carries an `env` block
-    with tokens. Writing it back at the umask would silently make it world-readable, forever."""
+    """owner 真实的 settings.json 是 0600，而且 settings.json 里合法地携带着含 token 的 `env` 块。
+    若按 umask 权限写回，会悄悄让它变成全局可读，而且永远无法恢复。"""
     settings = tmp_path / "s.json"
     settings.write_text(hi.dumps(SETTINGS_FIXTURES["owner_shaped"], 2))
     os.chmod(settings, 0o600)
@@ -615,10 +626,11 @@ def test_install_preserves_the_settings_file_permission_bits(tmp_path, capsys):
 
     assert hi.HOOK_MODULE in settings.read_text()
     assert os.stat(settings).st_mode & 0o777 == 0o600
-    backups = list(tmp_path.glob("s.json.engram-bak-*"))
+    backups = list(tmp_path.glob("s.json.mnemotrace-bak-*"))
     assert len(backups) == 1 and os.stat(backups[0]).st_mode & 0o777 == 0o600
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits (0600 creation) do not exist on Windows")
 def test_a_new_settings_file_is_created_private(tmp_path, capsys):
     settings = tmp_path / "fresh" / "s.json"
     wi, real = _stub_preflight()
@@ -630,10 +642,10 @@ def test_a_new_settings_file_is_created_private(tmp_path, capsys):
     assert os.stat(settings).st_mode & 0o777 == 0o600
 
 
+@pytest.mark.skipif(os.name == "nt", reason="creating file symlinks on Windows requires elevated privileges")
 def test_install_follows_a_symlinked_settings_file_instead_of_replacing_it(tmp_path, capsys):
-    """`~/.claude/settings.json` is commonly a symlink into a dotfiles repo. Replacing the link with a
-    plain file reports success while the versioned copy never sees the entry — and the next checkout
-    takes the hook away again."""
+    """`~/.claude/settings.json` 通常是链向 dotfiles 仓库的符号链接。用普通文件替换该链接会"报告
+    成功"，但受版本管理的副本永远看不到新条目——而下一次 checkout 又会把钩子弄丢。"""
     real_file = tmp_path / "dotfiles" / "settings.json"
     real_file.parent.mkdir()
     real_file.write_text(hi.dumps(SETTINGS_FIXTURES["owner_shaped"], 2))
@@ -650,13 +662,13 @@ def test_install_follows_a_symlinked_settings_file_instead_of_replacing_it(tmp_p
         wi.preflight_import = real
     capsys.readouterr()
 
-    assert link.is_symlink()                                   # the link itself survived
-    assert hi.HOOK_MODULE in real_file.read_text()             # the versioned file is what changed
+    assert link.is_symlink()                                   # 链接本身保留了下来
+    assert hi.HOOK_MODULE in real_file.read_text()             # 变更的是受版本管理的那个文件
     assert os.stat(real_file).st_mode & 0o777 == 0o600
-    # The backup lives with the file it is a copy of, not next to the link.
-    backups = list(real_file.parent.glob("settings.json.engram-bak-*"))
+    # 备份和它所复制的文件放在一起，而不是放在链接旁边。
+    backups = list(real_file.parent.glob("settings.json.mnemotrace-bak-*"))
     assert len(backups) == 1 and backups[0].read_bytes() == original
-    assert not list(tmp_path.glob("s.json.engram-bak-*"))
+    assert not list(tmp_path.glob("s.json.mnemotrace-bak-*"))
 
     assert watch.main(["--uninstall-hook", "--settings", str(link)]) == watch.EXIT_OK
     assert link.is_symlink() and real_file.read_bytes() == original
@@ -674,4 +686,4 @@ def test_a_failed_write_leaves_no_temp_file_behind(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         hi.write(str(settings), "{}\n")
     assert settings.read_bytes() == original
-    assert not list(tmp_path.glob("*.engram-tmp"))
+    assert not list(tmp_path.glob("*.mnemotrace-tmp"))

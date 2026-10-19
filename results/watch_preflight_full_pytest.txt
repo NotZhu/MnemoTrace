@@ -1,0 +1,24 @@
+........................................................................ [  8%]
+........................................................................ [ 16%]
+......................................s................................. [ 24%]
+........................................................................ [ 32%]
+sss..................................................................... [ 41%]
+........................................................................ [ 49%]
+........................................................................ [ 57%]
+........................................................................ [ 65%]
+........................................................................ [ 73%]
+........................................................................ [ 82%]
+................................................sss..................... [ 90%]
+....................................................sss................. [ 98%]
+s............                                                            [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_documents.py:94: pypdf installed — the missing-dep error path isn't exercised
+SKIPPED [3] tests\test_forget_links.py:34: link creation requires Windows privileges
+SKIPPED [1] tests\test_session_hook.py:612: POSIX mode bits (0600 preservation) do not exist on Windows
+SKIPPED [1] tests\test_session_hook.py:633: POSIX mode bits (0600 creation) do not exist on Windows
+SKIPPED [1] tests\test_session_hook.py:645: creating file symlinks on Windows requires elevated privileges
+SKIPPED [1] tests\test_ui_static.py:90: file symlink unavailable: [WinError 1314] 客户端没有所需的特权。: '<REPO>\\.mnemotrace\\review-preflight-full\\test_console_rejects_external_0\\outside.txt' -> '<REPO>\\.mnemotrace\\review-preflight-full\\test_console_rejects_external_0\\dist\\linked.txt'
+SKIPPED [1] tests\test_ui_static.py:90: file symlink unavailable: [WinError 1314] 客户端没有所需的特权。: '<REPO>\\.mnemotrace\\review-preflight-full\\test_console_rejects_external_1\\outside.txt' -> '<REPO>\\.mnemotrace\\review-preflight-full\\test_console_rejects_external_1\\dist\\assets\\linked.txt'
+SKIPPED [1] tests\test_ui_static.py:90: file symlink unavailable: [WinError 1314] 客户端没有所需的特权。: '<REPO>\\.mnemotrace\\review-preflight-full\\test_console_rejects_external_2\\outside.txt' -> '<REPO>\\.mnemotrace\\review-preflight-full\\test_console_rejects_external_2\\dist\\index.html'
+SKIPPED [1] tests\test_watch_install.py:105: plutil is macOS-only
+866 passed, 11 skipped in 48.10s

@@ -1,7 +1,17 @@
 # Changelog
 
-All notable changes to Engram are documented here. The project uses semantic versioning for distributed
+All notable changes to MnemoTrace are documented here. The project uses semantic versioning for distributed
 artifacts; storage schema compatibility is documented separately when it changes.
+
+## [Unreleased] - 2026-10-19
+
+### Changed
+
+- HTTP and local MCP default to `~/.mnemotrace/data`; containers keep `/data` and systemd uses
+  `/var/lib/mnemotrace`. Old data directories are neither discovered nor migrated automatically.
+- MemoryService now reads, writes, and erases only the namespace's digest directory. Runtime fallback
+  to account-named directories or `.pkl` candidates has been removed. Existing digest stores keep the
+  same names and format; old paths remain untouched and require explicit, ownership-verified migration.
 
 ## [0.1.0] - 2026-07-14
 

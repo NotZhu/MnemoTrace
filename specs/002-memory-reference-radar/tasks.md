@@ -38,7 +38,7 @@ tests.
 
 **CRITICAL**: No user story work should be promoted until this phase is complete.
 
-- [x] T009 Add Phase 0 decisions to `specs/002-memory-reference-radar/research.md` covering internal-use scope, Engram-native candidates, raw evidence plus consolidated memory, clean-room status, and benchmark-prioritized promotion
+- [x] T009 Add Phase 0 decisions to `specs/002-memory-reference-radar/research.md` covering internal-use scope, MnemoTrace-native candidates, raw evidence plus consolidated memory, clean-room status, and benchmark-prioritized promotion
 - [x] T010 Define Reference Source, Capability Pattern, Adoption Candidate, Evidence Record, and Messaging Guardrail entities in `specs/002-memory-reference-radar/data-model.md`
 - [x] T011 Define required radar-entry fields and acceptance checks in `specs/002-memory-reference-radar/contracts/radar-entry.md`
 - [x] T012 Define required adoption-candidate fields and promotion rules in `specs/002-memory-reference-radar/contracts/adoption-candidate.md`
@@ -54,7 +54,7 @@ tests.
 knowledge-workspace, learning, and benchmark references without chat context.
 
 **Independent Test**: Read `research.md` and identify at least five high-priority reference sources,
-their architecture signals, evidence status, license/clean-room status, and Engram learning within 10
+their architecture signals, evidence status, license/clean-room status, and MnemoTrace learning within 10
 minutes.
 
 ### Validation for User Story 1
@@ -75,13 +75,13 @@ minutes.
 
 ---
 
-## Phase 4: User Story 2 - Convert Reference Patterns Into Engram-Native Capability Candidates (Priority: P2)
+## Phase 4: User Story 2 - Convert Reference Patterns Into MnemoTrace-Native Capability Candidates (Priority: P2)
 
-**Goal**: A maintainer can use the radar to promote public patterns into Engram-native candidates with
+**Goal**: A maintainer can use the radar to promote public patterns into MnemoTrace-native candidates with
 scope, affected surface, strategic bets, benchmark target, and ablation plan.
 
 **Independent Test**: Pick any top-priority pattern and verify it has an adoption-candidate shape that
-names the Engram surface, benchmark category, accuracy/tokens/latency hypothesis, clean-room boundary,
+names the MnemoTrace surface, benchmark category, accuracy/tokens/latency hypothesis, clean-room boundary,
 and rollback criterion.
 
 ### Validation for User Story 2
@@ -105,7 +105,7 @@ and rollback criterion.
 ## Phase 5: User Story 3 - Keep Public Positioning Honest While Learning Aggressively (Priority: P3)
 
 **Goal**: Contributors can use the radar internally while keeping README, landing-page, and benchmark
-copy tied to Engram-owned reproducible evidence.
+copy tied to MnemoTrace-owned reproducible evidence.
 
 **Independent Test**: Review a proposed public message and verify it contains no unreproduced
 competitor comparisons, hidden borrowed claims, or unbenchmarked "world best" language.
@@ -122,7 +122,7 @@ competitor comparisons, hidden borrowed claims, or unbenchmarked "world best" la
 - [x] T034 [US3] Add public-messaging impact requirements to `specs/002-memory-reference-radar/contracts/adoption-candidate.md`
 - [x] T035 [US3] Ensure `specs/002-memory-reference-radar/plan.md` records Constitution Check PASS status for reproducibility and honest public messaging
 
-**Checkpoint**: User Story 3 is complete when the radar can be used for internal learning without weakening Engram's reproducibility and messaging discipline.
+**Checkpoint**: User Story 3 is complete when the radar can be used for internal learning without weakening MnemoTrace's reproducibility and messaging discipline.
 
 ---
 
@@ -198,8 +198,8 @@ Task: "Verify every item in the Initial Priority Queue in specs/002-memory-refer
 ### Incremental Delivery
 
 1. Deliver US1 so contributors have a current, categorized radar.
-2. Deliver US2 so radar patterns become planning-ready Engram candidates.
-3. Deliver US3 so public messaging remains tied to reproducible Engram evidence.
+2. Deliver US2 so radar patterns become planning-ready MnemoTrace candidates.
+3. Deliver US3 so public messaging remains tied to reproducible MnemoTrace evidence.
 4. Run Phase 6 validation before moving to `/speckit-analyze` or feature-specific implementation specs.
 
 ### Next Implementation Specs

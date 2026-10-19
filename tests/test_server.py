@@ -1,6 +1,6 @@
-"""HTTP API smoke tests over the refactored MemoryService-backed app — offline (hashing embedder,
-rule extractor), so no model download or API key is needed. Exercises every route shape the React
-console + SDK depend on, plus the new /v1/import."""
+"""HTTP API 冒烟测试：针对重构后基于 MemoryService 的应用 —— 离线运行（hashing 嵌入器、
+规则提取器），无需下载模型或 API key。覆盖 React 控制台 + SDK 依赖的所有路由形态，
+以及新增的 /v1/import。"""
 from __future__ import annotations
 
 import os
@@ -13,22 +13,32 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 
-@pytest.fixture(scope="module")
-def client():
-    d = tempfile.mkdtemp(prefix="engram_srv_")
-    os.environ.update(ENGRAM_DATA_DIR=d, ENGRAM_EMBEDDER="hashing", ENGRAM_OPEN="1")
-    os.environ.pop("ENGRAM_LLM", None)
-    os.environ.pop("ENGRAM_API_KEYS", None)
-    os.environ.pop("ENGRAM_ALLOW_ANONYMOUS", None)
-    from engram.server import app as appmod
-    appmod._svc = None  # fresh singleton bound to the test env
-    with TestClient(appmod.app) as c:
-        yield c
-    shutil.rmtree(d, ignore_errors=True)
+@pytest.fixture()
+def client(monkeypatch):
+    d = tempfile.mkdtemp(prefix="mnemotrace_srv_")
+    # 与全局逐测试隔离保持同一作用域，避免开放模式在后续测试前被清理。
+    for name, value in {
+        "MNEMOTRACE_DATA_DIR": d,
+        "MNEMOTRACE_EMBEDDER": "hashing",
+        "MNEMOTRACE_OPEN": "1",
+        "MNEMOTRACE_LLM": "",
+        "MNEMOTRACE_ANSWERER": "",
+        "MNEMOTRACE_API_KEYS": "",
+        "MNEMOTRACE_ALLOW_ANONYMOUS": "",
+    }.items():
+        monkeypatch.setenv(name, value)
+    from mnemotrace.server import app as appmod
+    appmod._svc = None  # 绑定到测试环境变量的全新单例
+    try:
+        with TestClient(appmod.app) as c:
+            yield c
+    finally:
+        appmod._svc = None
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def hdr(ns: str) -> dict:
-    return {"Authorization": f"Bearer {ns}"}  # open mode -> the bearer text IS the namespace
+    return {"Authorization": f"Bearer {ns}"}  # open 模式下 -> bearer 内容即命名空间本身
 
 
 def test_health(client):
@@ -71,6 +81,36 @@ def test_remember_recall_roundtrip(client):
     assert dump["counts"]["episodes"] >= 1
     rec = client.post("/v1/recall", json={"query": "Where does the user live?"}, headers=h).json()
     assert "Shenzhen" in rec["context"] and rec["tokens_est"] > 0
+
+
+def test_structured_profile_source_count_survives_edit_and_reload(client):
+    h = hdr("synthetic-profile-evidence")
+    remembered = client.post("/v1/remember", json={
+        "content": "I like jazz.", "scope": "long",
+    }, headers=h)
+    assert remembered.status_code == 200
+
+    def preferences():
+        response = client.get("/v1/profile/structured", headers=h)
+        assert response.status_code == 200
+        return [item for items in response.json()["preferences"].values() for item in items]
+
+    item = next(item for item in preferences() if item["item"] == "jazz")
+    assert item["evidence"] == {"kind": "mentions", "count": 1, "source_count": 1}
+    changed = client.patch(f"/v1/facts/{item['fact_id']}", json={"object": "classical music"}, headers=h)
+    assert changed.status_code == 200
+
+    from mnemotrace.server import app as appmod
+    appmod._svc = None
+    edited = next(row for row in preferences() if row["fact_id"] == item["fact_id"])
+    assert edited["evidence"] == {"kind": "user", "count": 1, "source_count": 1}
+
+    manual = client.post("/v1/facts", json={
+        "subject": "user", "predicate": "likes", "object": "synthetic-manual-option",
+    }, headers=h)
+    assert manual.status_code == 200
+    added = next(row for row in preferences() if row["item"] == "synthetic-manual-option")
+    assert added["evidence"] == {"kind": "user", "count": 1, "source_count": 0}
 
 
 def test_tenant_data_rights_operations_remain_isolated(client):
@@ -277,7 +317,7 @@ def test_agent_status_endpoint_is_content_free_and_session_aware(client):
     assert status["session"]["working_live"] == 1
     assert status["focus"] == {"track": ["project decisions"], "mute": ["health details"]}
     assert status["counts"]["facts_live"] >= 1
-    assert "engram_recall" in status["tools"]["read_context"]
+    assert "mnemotrace_recall" in status["tools"]["read_context"]
     rendered = str(status).lower()
     assert "diabetes" not in rendered
     assert "acme" not in rendered
@@ -291,13 +331,13 @@ def test_import_sessions_and_raw_data(client):
                               {"role": "assistant", "content": "Mochi is a cute name!"}]}]
     out = client.post("/v1/import", json={"sessions": sessions}, headers=h).json()
     assert out["ok"] and out["episodes"] == 1
-    # raw data + format path
+    # 原始数据 + format 路径
     out2 = client.post("/v1/import", json={
         "data": [{"role": "user", "content": "I drive a Tesla Model 3."}], "format": "messages"}, headers=h).json()
     assert out2["episodes"] == 1
     ctx = client.post("/v1/recall", json={"query": "What pet do I have?"}, headers=h).json()["context"]
     assert "Mochi" in ctx
-    # empty import request is a clear 400
+    # 空的 import 请求应返回清晰的 400
     assert client.post("/v1/import", json={}, headers=h).status_code == 400
 
 
@@ -339,15 +379,48 @@ def test_fact_crud_and_focus_policy_graph_export(client):
     fid = client.post("/v1/facts", json={"predicate": "works_at", "object": "Tencent"}, headers=h).json()["id"]
     assert client.patch(f"/v1/facts/{fid}", json={"object": "Moonshot AI"}, headers=h).json()["ok"]
     assert client.patch("/v1/facts/nope", json={"object": "x"}, headers=h).status_code == 404
-    # focus + policy round-trip through the service
+    # focus + policy 经 service 层的往返测试
     assert client.put("/v1/focus", json={"track": ["career"], "mute": []}, headers=h).json()["focus"]["track"] == ["career"]
     assert client.get("/v1/focus", headers=h).json()["track"] == ["career"]
     pol = client.put("/v1/policy", json={"extract_instruction": "Record job changes."}, headers=h).json()
     assert pol["ok"] and pol["policy"]["extract_instruction"] == "Record job changes."
     assert "nodes" in client.get("/v1/graph", headers=h).json()
     exp = client.get("/v1/export", headers=h).json()
-    assert exp["engram_export_version"] == 1 and any(f["object"] == "Moonshot AI" for f in exp["facts"])
+    assert exp["mnemotrace_export_version"] == 1 and any(f["object"] == "Moonshot AI" for f in exp["facts"])
     assert client.delete(f"/v1/facts/{fid}", headers=h).json()["ok"] is True
+
+
+def test_fact_statement_edit_only_accepts_outcomes_and_is_persisted(client):
+    h = hdr("synthetic_statement_editor")
+    fid = client.post("/v1/facts", json={"predicate": "likes", "object": "USER_PREFERENCE_TOKEN"}, headers=h).json()["id"]
+    before = client.get("/v1/audit", headers=h).json()
+    finding = next(row for row in before["findings"] if row.get("fact_id") == fid)
+    assert finding["display"]
+    statement = "演示用户喜欢简洁的回答。"
+    for patch in ({"statement": " "}, {"statement": ""}, {"statement": statement, "object": "回答"}):
+        assert client.patch(f"/v1/facts/{fid}", json=patch, headers=h).status_code == 422
+    assert client.patch(f"/v1/facts/{fid}", json={"statement": statement}, headers=h).status_code == 422
+    dump = client.get("/v1/memories", headers=h).json()
+    unchanged = next(row for row in dump["facts"] if row["id"] == fid)
+    assert unchanged["object"] == "USER_PREFERENCE_TOKEN"
+    assert client.patch(f"/v1/facts/{fid}", json={
+        "subject": "user", "predicate": "likes", "object": "简洁的回答",
+    }, headers=h).status_code == 200
+    outcome_id = client.post("/v1/facts", json={
+        "subject": "synthetic-session", "predicate": "decision", "object": "原来的结论",
+    }, headers=h).json()["id"]
+    result = client.patch(f"/v1/facts/{outcome_id}", json={"statement": statement}, headers=h)
+    assert result.status_code == 200
+    assert result.json()["text"] == result.json()["display"] == statement
+    dump = client.get("/v1/memories", headers=h).json()
+    edited = next(row for row in dump["facts"] if row["id"] == outcome_id)
+    assert edited["object"] == edited["text"] == edited["display"] == statement
+    assert edited["source"] == "user"
+    from mnemotrace.server import app as appmod
+    appmod._svc = None
+    reloaded = client.get("/v1/memories", headers=h).json()["facts"]
+    assert next(row for row in reloaded if row["id"] == fid)["object"] == "简洁的回答"
+    assert next(row for row in reloaded if row["id"] == outcome_id)["object"] == statement
 
 
 def test_graph_endpoint_supports_as_of_and_edge_audit_fields(client):
@@ -471,6 +544,133 @@ def test_memories_endpoint_supports_pagination_filtering_and_sensitive_create(cl
     assert safe_search["facts"] == []
 
 
+def _seed_category_filter_facts(user):
+    from mnemotrace.server import app as appmod
+    from mnemotrace.types import Episode, Fact
+
+    mem = appmod.svc().get(user)
+    rows = [
+        Fact(subject="synthetic", predicate="note", object="alpha first", category="工作", valid_at=10, user_id=user),
+        Fact(subject="synthetic", predicate="note", object="alpha second", category="工作", valid_at=20, user_id=user),
+        Fact(subject="synthetic", predicate="note", object="beta latest", category="生活", valid_at=90, user_id=user),
+        Fact(subject="synthetic", predicate="note", object="uncategorized", category=" ", valid_at=80, user_id=user),
+        Fact(subject="synthetic", predicate="note", object="past alpha", category="旧分类", valid_at=5, invalid_at=6, user_id=user),
+        Fact(subject="synthetic-session", predicate="decision", object="synthetic decision", category="会话结论", valid_at=95, user_id=user),
+        Fact(subject="synthetic", predicate="note", object="private alpha", category="合成私有分类", sensitive=True, valid_at=100, user_id=user),
+    ]
+    for index, fact in enumerate(rows):
+        store = mem.cold_store if index == 1 else mem.fact_store
+        store.upsert(fact.id, [], fact)
+    episode = Episode(content="synthetic source record", user_id=user, session_id="synthetic-session")
+    mem.episodes_doc.put(episode.id, episode)
+    return rows
+
+
+def test_memories_category_filters_before_pagination_with_status_and_search(client):
+    user = "synthetic-category-filter"
+    rows = _seed_category_filter_facts(user)
+    params = {"kind": "attributes", "status": "live", "facts_limit": 1, "episodes_limit": 0}
+    unfiltered = client.get("/v1/memories", params=params, headers=hdr(user)).json()
+    assert unfiltered["facts"][0]["id"] == rows[2].id
+    filtered = {**params, "category": "工作", "q": "alpha"}
+    first = client.get("/v1/memories", params=filtered, headers=hdr(user)).json()
+    second = client.get("/v1/memories", params={**filtered, "facts_offset": 1}, headers=hdr(user)).json()
+    assert first["facts_page"]["total"] == 2
+    assert first["facts_page"]["has_more"] is True
+    assert {first["facts"][0]["id"], second["facts"][0]["id"]} == {rows[0].id, rows[1].id}
+    assert first["counts"] == unfiltered["counts"]
+    assert set(first["fact_categories"]) == {"工作", "生活", "其他", "旧分类"}
+    old = client.get("/v1/memories", params={**params, "status": "superseded", "category": "旧分类"}, headers=hdr(user)).json()
+    assert [fact["id"] for fact in old["facts"]] == [rows[4].id]
+    other = client.get("/v1/memories", params={**params, "category": "其他"}, headers=hdr(user)).json()
+    assert [fact["id"] for fact in other["facts"]] == [rows[3].id]
+    empty = client.get("/v1/memories", params={**params, "category": "不存在的分类"}, headers=hdr(user)).json()
+    assert empty["facts"] == [] and empty["facts_page"]["total"] == 0
+    assert empty["fact_categories"] == first["fact_categories"]
+
+
+def test_memories_category_facets_respect_visibility_kind_and_namespace(client):
+    user = "synthetic-category-facets"
+    rows = _seed_category_filter_facts(user)
+    params = {"kind": "attributes", "facts_limit": 0, "episodes_limit": 0, "q": "no match"}
+    safe = client.get("/v1/memories", params=params, headers=hdr(user)).json()
+    assert set(safe["fact_categories"]) == {"工作", "生活", "其他", "旧分类"}
+    private = client.get("/v1/memories", params={**params, "include_sensitive": True}, headers=hdr(user)).json()
+    assert "合成私有分类" in private["fact_categories"]
+    outcomes = client.get("/v1/memories", params={**params, "kind": "outcomes"}, headers=hdr(user)).json()
+    assert outcomes["fact_categories"] == ["会话结论"]
+    other_space = client.get("/v1/memories", params=params, headers=hdr("synthetic-empty-space")).json()
+    assert other_space["fact_categories"] == []
+    with_episodes = client.get("/v1/memories", params={"kind": "attributes", "category": "工作", "include_sensitive": True}, headers=hdr(user)).json()
+    assert len(with_episodes["episodes"]) == 1
+    assert {fact["id"] for fact in with_episodes["facts"]} == {rows[0].id, rows[1].id}
+
+
+def test_sensitive_edit_preserves_history_across_reload(client):
+    h = hdr("metadata_history")
+    claim = {"subject": "demo_user", "predicate": "lives_in", "object": "北京"}
+    old_response = client.post("/v1/facts", json=claim, headers=h)
+    assert old_response.status_code == 200
+    old_id = old_response.json()["id"]
+    current_response = client.post("/v1/facts", json={**claim, "object": "上海"}, headers=h)
+    assert current_response.status_code == 200
+    current_id = current_response.json()["id"]
+    url = "/v1/memories?include_sensitive=true&episodes_limit=0"
+    original = {f["id"]: f for f in client.get(url, headers=h).json()["facts"]}
+    assert original[old_id]["status"] == "superseded"
+
+    for sensitive in (True, False):
+        response = client.patch(f"/v1/facts/{old_id}", json={**claim, "sensitive": sensitive}, headers=h)
+        assert response.status_code == 200
+        # 重新加载持久化状态，不能只在热缓存中保留历史。
+        from mnemotrace.server import app as appmod
+        appmod._svc = None
+        rows = {f["id"]: f for f in client.get(url, headers=h).json()["facts"]}
+        assert rows[old_id]["sensitive"] is sensitive
+        assert rows[old_id]["status"] == "superseded"
+        assert rows[old_id]["invalid_at"] == original[old_id]["invalid_at"]
+        assert rows[current_id]["status"] == "live"
+        assert rows[current_id]["supersedes"] == old_id
+        live = client.get("/v1/memories?status=live&include_sensitive=true", headers=h).json()["facts"]
+        assert {f["id"] for f in live} == {current_id}
+        graph = client.get("/v1/graph?live_only=true&include_sensitive=true", headers=h).json()
+        assert all(edge["fact_id"] != old_id for edge in graph["edges"])
+        if sensitive:
+            safe = client.get("/v1/memories?include_sensitive=false", headers=h).json()["facts"]
+            assert all(f["id"] != old_id for f in safe)
+
+
+def test_metadata_edit_preserves_extracted_source_across_reload(client):
+    h = hdr("metadata_source")
+    response = client.post("/v1/remember", json={"content": "I live in Beijing."}, headers=h)
+    assert response.status_code == 200
+    url = "/v1/memories?include_sensitive=true&episodes_limit=0"
+    original = client.get(url, headers=h).json()["facts"][0]
+    assert original["source"] == "extracted" and original["provenance"]
+    claim = {field: original[field] for field in ("subject", "predicate", "object")}
+    fact_id = original["id"]
+
+    for patch in ({"sensitive": True}, {"sensitive": False}, {"category": "测试分类"}, {}):
+        response = client.patch(f"/v1/facts/{fact_id}", json={**claim, **patch}, headers=h)
+        assert response.status_code == 200
+        assert response.json()["source"] == "extracted"
+        from mnemotrace.server import app as appmod
+        appmod._svc = None
+        restored = next(f for f in client.get(url, headers=h).json()["facts"] if f["id"] == fact_id)
+        assert restored["source"] == "extracted"
+        assert restored["provenance"] == original["provenance"]
+        assert restored["status"] == original["status"]
+        for field, value in patch.items():
+            assert restored[field] == value
+
+    response = client.patch(f"/v1/facts/{fact_id}", json={"object": "Shanghai"}, headers=h)
+    assert response.status_code == 200 and response.json()["source"] == "user"
+    appmod._svc = None
+    restored = next(f for f in client.get(url, headers=h).json()["facts"] if f["id"] == fact_id)
+    assert restored["source"] == "user" and restored["object"] == "Shanghai"
+    assert restored["provenance"] == original["provenance"]
+
+
 def test_graph_endpoint_supports_query_live_only_and_limit(client):
     h = hdr("graph_query")
     client.post("/v1/facts", json={"predicate": "works_at", "object": "Acme"}, headers=h)
@@ -587,8 +787,36 @@ def test_export_without_sensitive_omits_free_text_layers_and_sensitive_graph(cli
     assert all("diabetes" not in e.get("fact_text", "").lower() for e in safe["graph"]["edges"])
 
 
-def test_forget_clears_namespace(client):
-    h = hdr("ephemeral")
+@pytest.mark.parametrize("namespace", ["test", "1"])
+def test_forget_policy_allows_regular_namespaces_with_confirmation(monkeypatch, namespace):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from mnemotrace.server import app as appmod
+
+    deleted = []
+
+    def forget(user):
+        deleted.append(user)
+        return {"ok": True}
+
+    monkeypatch.setattr(appmod, "svc", lambda: SimpleNamespace(forget=forget))
+    with pytest.raises(HTTPException) as missing_confirmation:
+        appmod.forget(user=namespace)
+    assert missing_confirmation.value.status_code == 400
+    for protected in ("anonymous", "mnemotrace-test"):
+        with pytest.raises(HTTPException) as protected_error:
+            appmod.forget(req=appmod.ForgetReq(confirm=True), user=protected)
+        assert protected_error.value.status_code == 403
+    assert deleted == []
+    assert appmod.forget(req=appmod.ForgetReq(confirm=True), user=namespace) == {"ok": True}
+    assert deleted == [namespace]
+
+
+@pytest.mark.parametrize("namespace", ["ephemeral", "test", "1"])
+def test_forget_clears_namespace(client, namespace):
+    h = hdr(namespace)
     client.post("/v1/remember", json={"content": "Temporary note."}, headers=h)
     guard = client.post("/v1/forget", headers=h)
     assert guard.status_code == 400
@@ -599,25 +827,26 @@ def test_forget_clears_namespace(client):
 
 
 def test_forget_rejects_public_demo_and_anonymous_namespaces(client):
-    assert client.post("/v1/forget", headers=hdr("1")).status_code == 403
+    assert client.post("/v1/forget", json={"confirm": True}, headers=hdr("mnemotrace-test")).status_code == 403
+    assert client.post("/v1/forget", json={"confirm": True}, headers=hdr("anonymous")).status_code == 403
 
-    d = tempfile.mkdtemp(prefix="engram_anon_forget_")
+    d = tempfile.mkdtemp(prefix="mnemotrace_anon_forget_")
     saved = {k: os.environ.get(k) for k in [
-        "ENGRAM_DATA_DIR",
-        "ENGRAM_EMBEDDER",
-        "ENGRAM_OPEN",
-        "ENGRAM_API_KEYS",
-        "ENGRAM_ALLOW_ANONYMOUS",
+        "MNEMOTRACE_DATA_DIR",
+        "MNEMOTRACE_EMBEDDER",
+        "MNEMOTRACE_OPEN",
+        "MNEMOTRACE_API_KEYS",
+        "MNEMOTRACE_ALLOW_ANONYMOUS",
     ]}
     os.environ.update(
-        ENGRAM_DATA_DIR=d,
-        ENGRAM_EMBEDDER="hashing",
-        ENGRAM_OPEN="1",
-        ENGRAM_ALLOW_ANONYMOUS="1",
+        MNEMOTRACE_DATA_DIR=d,
+        MNEMOTRACE_EMBEDDER="hashing",
+        MNEMOTRACE_OPEN="1",
+        MNEMOTRACE_ALLOW_ANONYMOUS="1",
     )
-    os.environ.pop("ENGRAM_API_KEYS", None)
+    os.environ.pop("MNEMOTRACE_API_KEYS", None)
     try:
-        from engram.server import app as appmod
+        from mnemotrace.server import app as appmod
         appmod._svc = None
         with TestClient(appmod.app) as c:
             assert c.post("/v1/forget").status_code == 403
@@ -627,7 +856,7 @@ def test_forget_rejects_public_demo_and_anonymous_namespaces(client):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
-        from engram.server import app as appmod
+        from mnemotrace.server import app as appmod
         appmod._svc = None
         shutil.rmtree(d, ignore_errors=True)
 
@@ -641,7 +870,7 @@ def test_static_cache_headers_and_robots(client):
     root = client.get("/", follow_redirects=False)
     assert root.headers["Cache-Control"] == "no-cache"
 
-    from engram.server import app as appmod
+    from mnemotrace.server import app as appmod
     if not appmod._spa_built():
         pytest.skip("SPA dist is not built")
     asset_dir = os.path.join(appmod._DIST, "assets")
@@ -654,13 +883,38 @@ def test_static_cache_headers_and_robots(client):
     assert resp.headers["Cache-Control"] == "public, max-age=31536000, immutable"
 
 
+def test_missing_console_only_explains_build_and_api_still_works(client, monkeypatch, tmp_path):
+    from mnemotrace.server import app as appmod
+
+    monkeypatch.setattr(appmod, "_DIST", str(tmp_path / "missing-console"))
+    for path in ("/", "/ui", "/ui/", "/ui/facts"):
+        response = client.get(path)
+        assert response.status_code == 503
+        assert "pnpm" in response.text and "build" in response.text
+        assert "<script" not in response.text and "<input" not in response.text
+        assert response.headers["Cache-Control"] == "no-cache"
+    assert client.get("/health").status_code == 200
+    assert client.get("/ready").status_code == 200
+    assert client.post("/v1/recall", json={"query": "hi"}, headers=hdr("synthetic-ui-test")).status_code == 200
+
+
+def test_built_console_redirect_and_deep_links(client, monkeypatch, tmp_path):
+    from mnemotrace.server import app as appmod
+
+    (tmp_path / "index.html").write_text("<!doctype html><title>Synthetic console</title>", encoding="utf-8")
+    monkeypatch.setattr(appmod, "_DIST", str(tmp_path))
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 307 and response.headers["location"] == "/ui/"
+    assert "Synthetic console" in client.get("/ui/facts").text
+
+
 def test_auth_rejects_when_keys_configured():
-    """With ENGRAM_API_KEYS set and no open mode, a bad key is 401."""
-    d = tempfile.mkdtemp(prefix="engram_auth_")
-    os.environ.update(ENGRAM_DATA_DIR=d, ENGRAM_EMBEDDER="hashing", ENGRAM_API_KEYS="alice:sk-good")
-    os.environ.pop("ENGRAM_OPEN", None)
+    """配置 MNEMOTRACE_API_KEYS 且未启用 open 模式时，错误的 key 应返回 401。"""
+    d = tempfile.mkdtemp(prefix="mnemotrace_auth_")
+    os.environ.update(MNEMOTRACE_DATA_DIR=d, MNEMOTRACE_EMBEDDER="hashing", MNEMOTRACE_API_KEYS="alice:sk-good")
+    os.environ.pop("MNEMOTRACE_OPEN", None)
     try:
-        from engram.server import app as appmod
+        from mnemotrace.server import app as appmod
         appmod._svc = None
         with TestClient(appmod.app) as c:
             health = c.get("/health").json()
@@ -677,16 +931,16 @@ def test_auth_rejects_when_keys_configured():
             assert c.post("/v1/recall", json={"query": "hi"},
                           headers={"Authorization": "Bearer sk-good"}).status_code == 200
     finally:
-        # restore open mode for any later modules
-        os.environ.pop("ENGRAM_API_KEYS", None)
-        os.environ["ENGRAM_OPEN"] = "1"
+        # 恢复 open 模式，供后续模块使用
+        os.environ.pop("MNEMOTRACE_API_KEYS", None)
+        os.environ["MNEMOTRACE_OPEN"] = "1"
         shutil.rmtree(d, ignore_errors=True)
 
 
 def test_api_key_config_supports_rotation_and_rejects_ambiguity(monkeypatch):
-    from engram.server import app as appmod
+    from mnemotrace.server import app as appmod
 
-    monkeypatch.setenv("ENGRAM_API_KEYS", "alice:key-new,alice:key-old,bob:key-b")
+    monkeypatch.setenv("MNEMOTRACE_API_KEYS", "alice:key-new,alice:key-old,bob:key-b")
     assert appmod._load_keys() == {
         "key-new": "alice",
         "key-old": "alice",
@@ -694,23 +948,61 @@ def test_api_key_config_supports_rotation_and_rejects_ambiguity(monkeypatch):
     }
 
     for invalid in ("missing-separator", ":empty-user", "empty-key:"):
-        monkeypatch.setenv("ENGRAM_API_KEYS", invalid)
+        monkeypatch.setenv("MNEMOTRACE_API_KEYS", invalid)
         with pytest.raises(appmod.AuthConfigError):
             appmod._load_keys()
 
-    monkeypatch.setenv("ENGRAM_API_KEYS", "alice:shared,bob:shared")
+    monkeypatch.setenv("MNEMOTRACE_API_KEYS", "alice:shared,bob:shared")
     with pytest.raises(appmod.AuthConfigError):
         appmod._load_keys()
 
 
+@pytest.mark.parametrize("configuration", ["api_keys", "spaces"])
+def test_non_ascii_key_configuration_returns_503_without_leaking_key(client, monkeypatch, configuration):
+    import json
+
+    if configuration == "api_keys":
+        monkeypatch.setenv("MNEMOTRACE_API_KEYS", "tenant-a:synthetic-good,tenant-b:中文密钥")
+    else:
+        monkeypatch.setenv("MNEMOTRACE_SPACES", json.dumps({
+            "synthetic-good": {"home": "tenant-a"}, "中文密钥": {"home": "tenant-b"},
+        }))
+    response = client.post("/v1/recall", json={"query": "hi"}, headers=hdr("synthetic-good"))
+    assert response.status_code == 503
+    assert response.json()["detail"] == "invalid API key configuration"
+    health = client.get("/health")
+    assert health.status_code == 200 and health.json()["auth_mode"] == "invalid"
+    ready = client.get("/ready")
+    assert ready.status_code == 503
+    for result in (response, health, ready):
+        assert "synthetic-good" not in result.text and "中文密钥" not in result.text
+
+
+@pytest.mark.parametrize("mode", ["api_keys", "spaces", "open"])
+def test_non_ascii_bearer_is_401_and_valid_key_still_works(client, monkeypatch, mode):
+    import json
+
+    if mode == "api_keys":
+        monkeypatch.setenv("MNEMOTRACE_API_KEYS", "tenant-a:synthetic-good")
+    elif mode == "spaces":
+        monkeypatch.setenv("MNEMOTRACE_SPACES", json.dumps({"synthetic-good": {"home": "tenant-a"}}))
+    # Raw header bytes exercise Latin-1 decoding at the actual ASGI request boundary.
+    headers = [(b"Authorization", b"Bearer caf\xe9-key")]
+    assert client.get("/v1/memories", headers=headers).status_code == 401
+    assert client.post("/v1/recall", json={"query": "hi"}, headers=headers).status_code == 401
+    valid = client.post("/v1/recall", json={"query": "hi"}, headers=hdr("synthetic-good"))
+    assert valid.status_code == 200
+
+
 def test_disabled_auth_is_live_but_not_ready():
-    d = tempfile.mkdtemp(prefix="engram_disabled_auth_")
-    os.environ.update(ENGRAM_DATA_DIR=d, ENGRAM_EMBEDDER="hashing")
-    os.environ.pop("ENGRAM_API_KEYS", None)
-    os.environ.pop("ENGRAM_OPEN", None)
-    os.environ.pop("ENGRAM_ALLOW_ANONYMOUS", None)
+    d = tempfile.mkdtemp(prefix="mnemotrace_disabled_auth_")
+    os.environ.update(MNEMOTRACE_DATA_DIR=d, MNEMOTRACE_EMBEDDER="hashing")
+    # 显式置空而不是 pop：MemoryService 初始化会 load_dotenv()，pop 掉的变量会被本地 .env 重新注入
+    os.environ["MNEMOTRACE_API_KEYS"] = ""
+    os.environ["MNEMOTRACE_OPEN"] = ""
+    os.environ["MNEMOTRACE_ALLOW_ANONYMOUS"] = ""
     try:
-        from engram.server import app as appmod
+        from mnemotrace.server import app as appmod
 
         appmod._svc = None
         with TestClient(appmod.app) as c:
@@ -722,22 +1014,22 @@ def test_disabled_auth_is_live_but_not_ready():
             assert c.get("/ready").status_code == 503
             assert c.post("/v1/recall", json={"query": "hi"}).status_code == 401
     finally:
-        os.environ["ENGRAM_OPEN"] = "1"
-        os.environ.pop("ENGRAM_API_KEYS", None)
+        os.environ["MNEMOTRACE_OPEN"] = "1"
+        os.environ.pop("MNEMOTRACE_API_KEYS", None)
         shutil.rmtree(d, ignore_errors=True)
 
 
 def test_request_limit_rejects_before_memory_write():
-    d = tempfile.mkdtemp(prefix="engram_request_limit_")
+    d = tempfile.mkdtemp(prefix="mnemotrace_request_limit_")
     os.environ.update(
-        ENGRAM_DATA_DIR=d,
-        ENGRAM_EMBEDDER="hashing",
-        ENGRAM_OPEN="1",
-        ENGRAM_MAX_REQUEST_BYTES="128",
+        MNEMOTRACE_DATA_DIR=d,
+        MNEMOTRACE_EMBEDDER="hashing",
+        MNEMOTRACE_OPEN="1",
+        MNEMOTRACE_MAX_REQUEST_BYTES="128",
     )
-    os.environ.pop("ENGRAM_API_KEYS", None)
+    os.environ.pop("MNEMOTRACE_API_KEYS", None)
     try:
-        from engram.server import app as appmod
+        from mnemotrace.server import app as appmod
 
         appmod._svc = None
         with TestClient(appmod.app) as c:
@@ -757,18 +1049,18 @@ def test_request_limit_rejects_before_memory_write():
                 assert response.headers["x-content-type-options"] == "nosniff"
             assert c.get("/v1/stats", headers=hdr("request-limit")).json()["counts"]["episodes"] == 0
     finally:
-        os.environ["ENGRAM_OPEN"] = "1"
-        os.environ.pop("ENGRAM_MAX_REQUEST_BYTES", None)
+        os.environ["MNEMOTRACE_OPEN"] = "1"
+        os.environ.pop("MNEMOTRACE_MAX_REQUEST_BYTES", None)
         shutil.rmtree(d, ignore_errors=True)
 
 
 def test_open_mode_requires_bearer_namespace_by_default():
-    d = tempfile.mkdtemp(prefix="engram_open_auth_")
-    os.environ.update(ENGRAM_DATA_DIR=d, ENGRAM_EMBEDDER="hashing", ENGRAM_OPEN="1")
-    os.environ.pop("ENGRAM_API_KEYS", None)
-    os.environ.pop("ENGRAM_ALLOW_ANONYMOUS", None)
+    d = tempfile.mkdtemp(prefix="mnemotrace_open_auth_")
+    os.environ.update(MNEMOTRACE_DATA_DIR=d, MNEMOTRACE_EMBEDDER="hashing", MNEMOTRACE_OPEN="1")
+    os.environ.pop("MNEMOTRACE_API_KEYS", None)
+    os.environ.pop("MNEMOTRACE_ALLOW_ANONYMOUS", None)
     try:
-        from engram.server import app as appmod
+        from mnemotrace.server import app as appmod
         appmod._svc = None
         with TestClient(appmod.app) as c:
             missing = c.post("/v1/recall", json={"query": "hi"})
@@ -783,43 +1075,43 @@ def test_open_mode_requires_bearer_namespace_by_default():
             assert "Authorization: Bearer <token>" in malformed.json()["detail"]
             assert c.post("/v1/recall", json={"query": "hi"}, headers=hdr("demo")).status_code == 200
     finally:
-        os.environ["ENGRAM_OPEN"] = "1"
-        os.environ.pop("ENGRAM_API_KEYS", None)
-        os.environ.pop("ENGRAM_ALLOW_ANONYMOUS", None)
+        os.environ["MNEMOTRACE_OPEN"] = "1"
+        os.environ.pop("MNEMOTRACE_API_KEYS", None)
+        os.environ.pop("MNEMOTRACE_ALLOW_ANONYMOUS", None)
         shutil.rmtree(d, ignore_errors=True)
 
 
 def test_open_mode_allows_anonymous_only_when_explicitly_enabled():
-    d = tempfile.mkdtemp(prefix="engram_open_anon_")
+    d = tempfile.mkdtemp(prefix="mnemotrace_open_anon_")
     os.environ.update(
-        ENGRAM_DATA_DIR=d,
-        ENGRAM_EMBEDDER="hashing",
-        ENGRAM_OPEN="1",
-        ENGRAM_ALLOW_ANONYMOUS="1",
+        MNEMOTRACE_DATA_DIR=d,
+        MNEMOTRACE_EMBEDDER="hashing",
+        MNEMOTRACE_OPEN="1",
+        MNEMOTRACE_ALLOW_ANONYMOUS="1",
     )
-    os.environ.pop("ENGRAM_API_KEYS", None)
+    os.environ.pop("MNEMOTRACE_API_KEYS", None)
     try:
-        from engram.server import app as appmod
+        from mnemotrace.server import app as appmod
         appmod._svc = None
         with TestClient(appmod.app) as c:
             assert c.post("/v1/recall", json={"query": "hi"}).status_code == 200
     finally:
-        os.environ["ENGRAM_OPEN"] = "1"
-        os.environ.pop("ENGRAM_API_KEYS", None)
-        os.environ.pop("ENGRAM_ALLOW_ANONYMOUS", None)
+        os.environ["MNEMOTRACE_OPEN"] = "1"
+        os.environ.pop("MNEMOTRACE_API_KEYS", None)
+        os.environ.pop("MNEMOTRACE_ALLOW_ANONYMOUS", None)
         shutil.rmtree(d, ignore_errors=True)
 
 
 def test_audit_flags_junk_and_says_what_to_do(client):
-    """Memory earns trust by being checkable. Extraction on real corpora leaves values that are not
-    values -- raw tokens, objects echoing the predicate, clipped sentences, pronoun subjects -- and none
-    of it is visible without reading every fact by hand. Each finding must carry why AND an action."""
+    """记忆要赢得信任，前提是可被检查。对真实语料做提取时，难免产生不像值的结果 —— 原始 token、
+    与谓词重复的对象、被截断的句子、代词主语 —— 不逐条人工审查就完全看不到这些问题。
+    每条 finding 都必须说明原因（why）并给出可执行的动作（action）。"""
     h = hdr("audit-ns")
     junk = [
-        ("interested_in", "kind_bar_fruit_nut_flavor"),      # machine token
-        ("occupation", "occupation"),                         # says nothing
-        ("note", 'open keystone."'),                          # clipped sentence
-        ("stores_in", "store/memory_store.py"),               # code artifact
+        ("interested_in", "kind_bar_fruit_nut_flavor"),      # 机器生成的 token
+        ("occupation", "occupation"),                         # 什么信息都没有
+        ("note", 'open keystone."'),                          # 被截断的句子
+        ("stores_in", "store/memory_store.py"),               # 代码产物
     ]
     for pred, obj in junk:
         r = client.post("/v1/facts", json={"subject": "user", "predicate": pred, "object": obj}, headers=h)
@@ -832,14 +1124,14 @@ def test_audit_flags_junk_and_says_what_to_do(client):
     kinds = set(data["by_kind"])
     assert {"machine_token", "empty_value"} <= kinds, kinds
     for f in data["findings"]:
-        assert f["why"] and f["action"], f  # a finding you cannot act on is noise
-    # the clean fact must not be flagged
+        assert f["why"] and f["action"], f  # 无法据以行动的 finding 就是噪音
+    # 干净的事实不应被标记
     assert not any("Moonshot" in str(f.get("text", "")) for f in data["findings"])
 
 
 def test_audit_finding_can_be_fixed_in_place(client):
-    """The point is the loop: flagged -> corrected -> gone, without leaving the console. The correction
-    must also stick (source=user), or auto-extraction would quietly undo it."""
+    """核心是形成闭环：被标记 -> 修正 -> 消失，全程不离开控制台。修正还必须生效
+    （source=user），否则自动提取会悄悄把它改回去。"""
     h = hdr("audit-fix")
     created = client.post("/v1/facts",
                           json={"subject": "user", "predicate": "likes", "object": "small_luxury_ships"},
@@ -859,10 +1151,31 @@ def test_audit_finding_can_be_fixed_in_place(client):
     assert after["total_findings"] < before["total_findings"]
 
 
+def test_audit_sorts_before_limit_and_preserves_equal_priority_order(client):
+    h = hdr("synthetic-audit-order")
+    # 故意先写较低优先级项目；limit=1 时也必须返回最后写入的红色问题。
+    for subject, predicate, obj in [
+        ("synthetic-a", "path", "demo/config.json"),
+        ("synthetic-b", "likes", "MACHINE_TOKEN_SYNTHETIC"),
+        ("synthetic-c", "note", "[clipped text"),
+        ("synthetic-d", "occupation", "occupation"),
+    ]:
+        assert client.post("/v1/facts", json={"subject": subject, "predicate": predicate, "object": obj}, headers=h).status_code == 200
+    full = client.get("/v1/audit?limit=60", headers=h).json()
+    assert [row["kind"] for row in full["findings"]] == [
+        "empty_value", "machine_token", "fragment", "code_artifact",
+    ]
+    limited = client.get("/v1/audit?limit=1", headers=h).json()
+    assert [row["kind"] for row in limited["findings"]] == ["empty_value"]
+    assert limited["total_findings"] == full["total_findings"] == 4
+    assert limited["by_kind"] == full["by_kind"]
+    assert limited["truncated"] is True
+
+
 def test_import_agent_sessions_defaults_to_outcomes_only_and_feed_stats(client):
-    """The watcher posts agent sessions with `metadata.source` and no `consolidate` key: the server must
-    store them for close-time distillation, never per-turn extract them (RuleExtractor turned 12 real
-    turns into 11 junk facts), and the stats must say when the memory was last fed."""
+    """watcher 上报的 agent 会话带 `metadata.source` 但不带 `consolidate` 键：服务端必须把它们
+    存起来留到 close 时再蒸馏，绝不逐轮提取（RuleExtractor 曾把 12 个真实轮次变成 11 条垃圾
+    fact）；同时 stats 必须记录记忆最后一次被喂入的时间。"""
     h = hdr("feed-ns")
     transcript = [{"role": "user", "content": "The config file is nearly empty. This is now clear: EKOS "
                                               "is deployed on an Ubuntu server."},
@@ -880,7 +1193,7 @@ def test_import_agent_sessions_defaults_to_outcomes_only_and_feed_stats(client):
     data = r.json()
     assert data["episodes"] == 3
     assert data["facts_deferred"] == 2 and data["deferred_reason"] == "outcomes_only", data
-    assert data["facts_added"] >= 1  # the plain session still went through the rule extractor
+    assert data["facts_added"] >= 1  # 普通 session 仍会走规则提取器
 
     closed = client.post("/v1/sessions/close", json={"session_id": "claude-code:a"}, headers=h).json()
     assert closed["pending_consolidated"] == 0 and closed["facts_added"] == 0, closed
@@ -892,12 +1205,12 @@ def test_import_agent_sessions_defaults_to_outcomes_only_and_feed_stats(client):
     status = client.get("/v1/agent/status", headers=h).json()
     assert status["feed"]["last_fed_at"] is not None and status["feed"]["sessions"] == 2
 
-    # asking for facts with no LLM attached: the reason is named, nothing is extracted
+    # 未挂 LLM 时请求提取：返回的 reason 会说明原因，且不做任何提取
     r = client.post("/v1/import", json={"consolidate": True, "sessions": [
         {"session_id": "codex:c", "metadata": {"source": "agent_session"}, "messages": transcript}]},
         headers=h).json()
     assert r["facts_deferred"] == 1 and r["deferred_reason"] == "no_llm", r
 
-    # a namespace nobody feeds says so
+    # 从未被喂入的命名空间会如实上报
     empty = client.get("/v1/stats", headers=hdr("never-fed")).json()["feed"]
     assert empty == {"last_fed_at": None, "last_fed_at_h": None, "sessions": 0, "conclusions": 0}

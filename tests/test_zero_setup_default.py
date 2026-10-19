@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 
-from engram import Memory
+from mnemotrace import Memory
 
 
 def test_default_memory_does_not_import_lancedb(tmp_path):

@@ -1,7 +1,7 @@
-"""The export -> import portability round-trip (an Engram snapshot restores, it is not re-ingested):
-facts keep bi-temporal stamps + supersession chains, episodes re-enter consolidated, the whole thing
-is idempotent, and /v1/import turns parse failures into 400s instead of 500s. Offline (hashing
-embedder + rule extractor), like every other test."""
+"""导出 -> 导入的可移植性往返测试（忆痕 快照应当被"还原"，而不是被重新写入）：
+事实保留双时间轴时间戳 + 取代链，episode 以已整合状态重新进入，整体是幂等的，
+且 /v1/import 会把解析失败转成 400 而不是 500。与所有其他测试一样离线运行
+（hashing 嵌入器 + 规则抽取器）。"""
 from __future__ import annotations
 
 import os
@@ -10,7 +10,7 @@ import tempfile
 
 import pytest
 
-from engram.memory import Memory
+from mnemotrace.memory import Memory
 
 
 def _mk_memory() -> Memory:
@@ -19,46 +19,47 @@ def _mk_memory() -> Memory:
 
 class TestSnapshotRoundtrip:
     def _service(self, tmpdir: str):
-        from engram.service import MemoryService
+        from mnemotrace.service import MemoryService
         return MemoryService(data_dir=tmpdir, embedder_name="hashing", llm_name="")
 
     def test_full_roundtrip_restores_facts_episodes_and_chains(self):
-        d = tempfile.mkdtemp(prefix="engram_snap_")
+        d = tempfile.mkdtemp(prefix="mnemotrace_snap_")
         try:
             svc = self._service(d)
-            # seed: one supersession chain (Beijing -> Shanghai) + one manual authoritative fact
+            # 种子数据：一条取代链（Beijing -> Shanghai）+ 一条手工权威事实
             svc.remember("alice", "I live in Beijing.")
             svc.remember("alice", "I moved, I now live in Shanghai.")
             svc.add_fact("alice", "alice", "favorite_editor", "vim")
             snap = svc.export("alice", include_sensitive=True)
-            assert snap["engram_export_version"] == 1 and snap["episodes"], "need a full export"
+            assert snap["mnemotrace_export_version"] == 1 and snap["episodes"], "need a full export"
+            assert "engram_export_version" not in snap
 
             out = svc.import_(user="bob", data=snap, format="auto")
-            assert out["ok"] is True and out["format"] == "engram"
-            assert out["facts_restored"] >= 3  # live x2 (Shanghai, vim) + superseded Beijing
+            assert out["ok"] is True and out["format"] == "mnemotrace"
+            assert out["facts_restored"] >= 3  # 存活 x2（Shanghai、vim）+ 已失效的 Beijing
             assert out["episodes_restored"] == len(snap["episodes"])
 
             mem = svc.get("bob")
             facts = [f for f in mem._all_facts() if f.user_id == "bob"]
             by_obj = {f.object: f for f in facts}
-            # bi-temporal survival: the superseded row is still invalid, the live row still live
+            # 双时间轴存续：被取代的那条仍处于失效状态，存活的那条仍然有效
             assert "Beijing" in by_obj and by_obj["Beijing"].invalid_at is not None
             assert "Shanghai" in by_obj and by_obj["Shanghai"].is_live()
-            # the supersession chain re-links to the NEW id of the Beijing fact (no dangling foreign id)
+            # 取代链要重新链接到 Beijing 事实的新 id（不能留下悬空的外部 id）
             assert by_obj["Shanghai"].supersedes == by_obj["Beijing"].id
-            # a manually asserted fact keeps its authoritative provenance class
+            # 手工断言的事实保留其权威的 provenance 类别
             assert by_obj["vim"].source == "user"
-            # restored episodes must never re-enter System-2 (their facts came with the snapshot)
+            # 还原的 episode 绝不能再次进入 System-2（它们的事实已随快照一起到来）
             eps = [ep for ep in mem.episodes_doc.values() if ep.user_id == "bob"]
             assert eps and all(ep.consolidated for ep in eps)
-            # and the memory actually answers from the restored namespace
+            # 且记忆确实能从还原后的命名空间中回答问题
             ctx = svc.recall("bob", "where do I live?")["context"]
             assert "Shanghai" in ctx
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
     def test_reimport_is_idempotent(self):
-        d = tempfile.mkdtemp(prefix="engram_snap_")
+        d = tempfile.mkdtemp(prefix="mnemotrace_snap_")
         try:
             svc = self._service(d)
             svc.remember("alice", "My favorite drink is oolong tea.")
@@ -72,8 +73,8 @@ class TestSnapshotRoundtrip:
             shutil.rmtree(d, ignore_errors=True)
 
     def test_safe_export_restores_facts_without_episodes(self):
-        # The default share-safe export has no episodes; restoring facts alone must still work.
-        d = tempfile.mkdtemp(prefix="engram_snap_")
+        # 默认的分享安全导出不含 episode；只还原事实也必须可行。
+        d = tempfile.mkdtemp(prefix="mnemotrace_snap_")
         try:
             svc = self._service(d)
             svc.remember("alice", "I work at Acme Corp.")
@@ -88,9 +89,9 @@ class TestSnapshotRoundtrip:
 
 class TestSnifferAndMemoryLevel:
     def test_sniff_recognizes_snapshot_and_parse_gives_actionable_error(self):
-        from engram.connectors import parse, sniff
-        snap = {"engram_export_version": 1, "facts": [], "episodes": []}
-        assert sniff(snap) == "engram"
+        from mnemotrace.connectors import parse, sniff
+        snap = {"mnemotrace_export_version": 1, "facts": [], "episodes": []}
+        assert sniff(snap) == "mnemotrace"
         with pytest.raises(ValueError, match="import_snapshot"):
             parse(snap)
 
@@ -98,7 +99,7 @@ class TestSnifferAndMemoryLevel:
         src = _mk_memory()
         src.add("I love hiking in the Alps.", user_id="u1")
         src.consolidate()
-        # hand-build the snapshot rows the way service.export does (subject/predicate/object + stamps)
+        # 按 service.export 的方式手工构造快照行（subject/predicate/object + 各时间戳）
         facts = [{
             "id": f.id, "subject": f.subject, "predicate": f.predicate, "object": f.object,
             "text": f.text, "source": f.source, "valid_at": f.valid_at, "invalid_at": f.invalid_at,
@@ -106,7 +107,7 @@ class TestSnifferAndMemoryLevel:
             "salience": f.salience, "confidence": f.confidence,
         } for f in src._all_facts()]
         dst = _mk_memory()
-        stats = dst.import_snapshot({"engram_export_version": 1, "facts": facts, "episodes": []},
+        stats = dst.import_snapshot({"mnemotrace_export_version": 1, "facts": facts, "episodes": []},
                                     user_id="u2")
         assert stats["facts_restored"] == len(facts) > 0
         assert stats["malformed"] == 0
@@ -114,7 +115,7 @@ class TestSnifferAndMemoryLevel:
     def test_malformed_rows_are_counted_not_fatal(self):
         dst = _mk_memory()
         stats = dst.import_snapshot({
-            "engram_export_version": 1,
+            "mnemotrace_export_version": 1,
             "facts": [{"subject": "a"}, "not-a-dict", {"subject": "a", "predicate": "p", "object": "o"}],
             "episodes": [{"no_content": True}, "junk"],
         })
@@ -128,12 +129,14 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 @pytest.fixture()
 def client():
-    d = tempfile.mkdtemp(prefix="engram_snap_srv_")
-    os.environ.update(ENGRAM_DATA_DIR=d, ENGRAM_EMBEDDER="hashing", ENGRAM_OPEN="1")
-    os.environ.pop("ENGRAM_LLM", None)
-    os.environ.pop("ENGRAM_API_KEYS", None)
-    os.environ.pop("ENGRAM_ALLOW_ANONYMOUS", None)
-    from engram.server import app as appmod
+    d = tempfile.mkdtemp(prefix="mnemotrace_snap_srv_")
+    os.environ.update(MNEMOTRACE_DATA_DIR=d, MNEMOTRACE_EMBEDDER="hashing", MNEMOTRACE_OPEN="1")
+    # 显式置空而不是 pop：MemoryService 初始化会 load_dotenv()，pop 掉的变量会被本地 .env 重新注入
+    os.environ["MNEMOTRACE_LLM"] = ""
+    os.environ["MNEMOTRACE_ANSWERER"] = ""
+    os.environ["MNEMOTRACE_API_KEYS"] = ""
+    os.environ["MNEMOTRACE_ALLOW_ANONYMOUS"] = ""
+    from mnemotrace.server import app as appmod
     appmod._svc = None
     with TestClient(appmod.app) as c:
         yield c
@@ -145,7 +148,7 @@ def _hdr(ns: str) -> dict:
 
 
 def test_http_unparseable_import_is_400_not_500(client):
-    # Any JSON object that matches no known export shape used to crash the parser -> 500.
+    # 任何不匹配已知导出结构的 JSON 对象，过去会让解析器崩溃 -> 500。
     r = client.post("/v1/import", json={"data": {"foo": "bar"}}, headers=_hdr("qa"))
     assert r.status_code == 400
     assert "could not parse" in r.json()["detail"]
@@ -158,7 +161,7 @@ def test_http_export_import_roundtrip(client):
     r = client.post("/v1/import", json={"data": snap}, headers=_hdr("dst"))
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["ok"] is True and body["format"] == "engram" and body["facts_restored"] >= 1
+    assert body["ok"] is True and body["format"] == "mnemotrace" and body["facts_restored"] >= 1
     ctx = client.post("/v1/recall", json={"query": "what is my cat's name?"},
                       headers=_hdr("dst")).json()["context"]
     assert "Miso" in ctx

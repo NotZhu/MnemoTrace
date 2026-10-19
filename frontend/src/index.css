@@ -5,6 +5,81 @@
 @layer base {
   :root {
     color-scheme: dark;
+    /* 登录与控制台共用色板，RGB 通道保留 Tailwind 的透明度修饰能力。 */
+    --memory-background: 18 23 31;
+    --memory-surface: 27 35 46;
+    --memory-field: 36 46 60;
+    --memory-border: 53 65 80;
+    --memory-field-border: 75 91 112;
+    --memory-text: 237 240 245;
+    --memory-muted: 173 181 194;
+    --memory-accent: 156 177 207;
+    --memory-selected: 44 57 76;
+    --memory-button: 56 72 96;
+    --memory-button-hover: 68 86 111;
+    --memory-secondary: 40 53 71;
+    --memory-secondary-hover: 50 66 89;
+    --memory-control-border: 96 116 141;
+    --memory-switch-thumb: 237 240 245;
+    --memory-switch-thumb-border: 220 226 234;
+    --memory-violet: 170 168 196;
+    --memory-mint: 141 181 172;
+    --memory-rose: 217 154 167;
+    --memory-amber: 201 177 138;
+    --memory-edit-marker: 139 180 224;
+    --memory-icon-surface: 36 46 60;
+    --memory-slate-100: 241 245 249;
+    --memory-slate-200: 226 232 240;
+    --memory-slate-300: 203 213 225;
+    --memory-focus: 164 190 224;
+    --memory-focus-icon: 192 213 240;
+    --memory-control-hover-border: 130 152 181;
+    --memory-disabled-background: 34 44 56;
+    --memory-disabled-border: 68 83 101;
+    --memory-disabled-text: 146 159 172;
+    --memory-card-shadow: 0 10px 35px rgb(8 11 16 / 12%);
+    --memory-login-shadow: 0 0 0 transparent;
+    --memory-scrollbar: 255 255 255;
+  }
+
+  :root[data-theme='light'] {
+    color-scheme: light;
+    --memory-background: 247 249 252;
+    --memory-surface: 255 255 255;
+    --memory-field: 246 248 252;
+    --memory-border: 170 187 208;
+    --memory-field-border: 150 169 194;
+    --memory-text: 37 50 69;
+    --memory-muted: 70 82 99;
+    --memory-accent: 68 82 106;
+    --memory-selected: 229 237 248;
+    --memory-button: 213 223 237;
+    --memory-button-hover: 198 213 233;
+    --memory-secondary: 231 237 246;
+    --memory-secondary-hover: 219 230 244;
+    --memory-control-border: 145 166 192;
+    --memory-switch-thumb: 85 109 142;
+    --memory-switch-thumb-border: 68 82 106;
+    --memory-violet: 101 84 123;
+    --memory-mint: 43 104 89;
+    --memory-rose: 156 68 94;
+    --memory-amber: 128 96 24;
+    --memory-edit-marker: 64 109 163;
+    --memory-icon-surface: 228 235 246;
+    --memory-slate-100: 37 50 69;
+    --memory-slate-200: 46 60 79;
+    --memory-slate-300: 65 81 103;
+    --memory-focus: 85 109 142;
+    --memory-focus-icon: 68 82 106;
+    --memory-control-hover-border: 96 116 141;
+    --memory-disabled-background: 232 237 244;
+    --memory-disabled-border: 178 190 207;
+    --memory-disabled-text: 108 120 139;
+    --memory-card-shadow: 0 10px 35px rgb(67 87 119 / 8%);
+    --memory-login-shadow:
+      0 24px 64px -16px rgb(67 87 119 / 24%),
+      0 8px 20px -6px rgb(67 87 119 / 14%);
+    --memory-scrollbar: 74 87 105;
   }
 
   html,
@@ -14,15 +89,17 @@
   }
 
   body {
-    @apply bg-ink text-slate-100 font-sans antialiased;
-    background-image:
-      radial-gradient(1200px 600px at 50% -10%, rgba(34, 211, 238, 0.1), transparent 60%),
-      radial-gradient(900px 500px at 100% 0%, rgba(167, 139, 250, 0.08), transparent 55%);
-    background-attachment: fixed;
+    @apply bg-ink text-foreground font-sans antialiased;
   }
 
   ::selection {
-    @apply bg-brand-cyan/30 text-white;
+    @apply bg-brand-cyan/30 text-foreground;
+  }
+
+  button:focus-visible,
+  a:focus-visible {
+    outline: 2px solid rgb(var(--memory-accent));
+    outline-offset: 3px;
   }
 
   /* Slim, on-brand scrollbars */
@@ -32,34 +109,180 @@
   }
   *::-webkit-scrollbar-thumb {
     @apply rounded-full;
-    background: rgba(255, 255, 255, 0.12);
+    background: rgb(var(--memory-scrollbar) / 12%);
   }
   *::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgb(var(--memory-scrollbar) / 20%);
   }
+
+  [data-theme='light'] .text-brand-cyan\/55 { color: rgb(var(--memory-accent)); }
+  [data-theme='light'] .text-ghost\/70,
+  [data-theme='light'] .text-ghost\/80 { color: rgb(var(--memory-muted)); }
+  [data-theme='light'] .placeholder\:text-ghost\/70::placeholder { color: rgb(var(--memory-muted) / 85%); }
 }
 
 @layer components {
-  /* Frosted card surface used across the console */
+  [data-theme='light'] .settings-copy-surface {
+    background-color: rgb(var(--memory-secondary));
+  }
+
+  .settings-textarea::-webkit-scrollbar-corner {
+    background-color: transparent;
+  }
+
+  .graph-page {
+    @apply flex h-full min-h-0 flex-col gap-4 sm:gap-6;
+  }
+
+  .graph-layout {
+    --graph-background: var(--memory-surface);
+    --graph-node: var(--memory-accent);
+    --graph-link: var(--memory-muted);
+    --graph-text: var(--memory-muted);
+    --graph-active: var(--memory-focus);
+    @apply grid min-h-0 min-w-0 flex-1 grid-cols-1 grid-rows-[minmax(0,3fr)_minmax(0,2fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_300px] lg:grid-rows-[minmax(0,1fr)];
+  }
+
+  .graph-workspace {
+    @apply relative h-full min-h-0 min-w-0 overflow-hidden rounded-[20px] border border-line shadow-card;
+    background: rgb(var(--graph-background));
+    color: rgb(var(--graph-text));
+  }
+
+  .graph-view { @apply relative h-full min-h-0 min-w-0; background: rgb(var(--graph-background)); }
+  .graph-empty-state { @apply pointer-events-none absolute inset-0 grid place-items-center px-6; }
+  .graph-empty-state > div { @apply w-full max-w-md py-6; }
+  .graph-canvas {
+    @apply block h-full w-full outline-none;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+  }
+  .graph-canvas:focus-visible { box-shadow: inset 0 0 0 1px rgb(var(--graph-active) / 50%); }
+  .graph-canvas canvas { display: block; width: 100%; height: 100%; }
+  .graph-status { @apply pointer-events-none absolute left-5 top-4 z-10 text-[11px]; }
+  .graph-status h3 { @apply font-normal; }
+
+  .graph-toolbar {
+    @apply absolute bottom-3 right-3 z-10 flex items-center gap-0.5 rounded-xl border border-line p-1;
+    background: rgb(var(--memory-field) / 95%);
+  }
+  .graph-tool {
+    @apply flex h-8 w-8 items-center justify-center rounded-lg transition-colors;
+    color: rgb(var(--graph-text));
+  }
+  .graph-tool:hover,
+  .graph-tool[aria-expanded='true'] { background: rgb(var(--memory-selected)); color: rgb(var(--graph-active)); }
+  .graph-tool:disabled { opacity: 0.4; cursor: default; }
+  .graph-settings-toggle { @apply absolute right-4 top-3 z-20; }
+  .graph-settings {
+    @apply absolute right-4 top-14 z-20 w-[240px] max-w-[calc(100%-32px)] space-y-4 overflow-y-auto rounded-xl border border-line p-4 shadow-card;
+    max-height: calc(100% - 70px);
+    background: rgb(var(--memory-surface));
+    color: rgb(var(--memory-muted));
+  }
+  .graph-settings h3 { @apply text-xs font-medium text-foreground; }
+  .graph-settings .graph-settings-divider { @apply border-t border-line pt-3; }
+  .graph-setting-row { @apply flex items-center justify-between gap-3 text-[11px]; }
+  .graph-setting-row input { width: 115px; height: 4px; accent-color: rgb(var(--graph-active)); cursor: pointer; }
+  .graph-setting-switch { @apply flex min-h-6 select-none items-center gap-2 rounded text-left text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan; }
+  .graph-inspector {
+    @apply relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[20px] border border-line bg-ink-800 p-5 shadow-card;
+  }
+
+  @screen lg {
+    /* 并排面板共用图标锚点，右侧标题和提示换行不再影响空状态高度。 */
+    .graph-inspector-empty { @apply absolute inset-0; }
+    .graph-empty-state > div,
+    .graph-inspector-empty > div {
+      @apply absolute left-1/2 m-0 w-[calc(100%-3rem)] max-w-md -translate-x-1/2 py-0;
+      top: max(76px, calc(50% - 60px));
+    }
+  }
+
+  .fact-blue-tag {
+    @apply rounded bg-brand-cyan/15 px-1.5 py-px text-brand-cyan;
+  }
+
+  [data-theme='light'] .fact-blue-tag {
+    @apply bg-blue-50 text-blue-600;
+  }
+
+  /* 时间轴标记沿用深色主题色值，在两种主题下保持同一套状态配色。 */
+  .timeline-live-dot {
+    background-color: rgb(141 181 172);
+  }
+
+  .timeline-old-dot {
+    background-color: rgb(173 181 194);
+  }
+
+  .timeline-rail {
+    background-color: rgb(53 65 80);
+  }
+
+  .switch-track {
+    @apply relative h-6 w-10 shrink-0 rounded-full border border-control-line bg-ink-700 transition-colors;
+  }
+
+  .switch-thumb {
+    @apply absolute left-0.5 top-0.5 h-[18px] w-[18px] rounded-full border transition-transform duration-150 motion-reduce:transition-none;
+    background: rgb(var(--memory-switch-thumb));
+    border-color: rgb(var(--memory-switch-thumb-border));
+  }
+
+  [role='switch'][aria-checked='true'] .switch-track {
+    @apply border-brand-cyan/70 bg-action-hover;
+  }
+
+  [role='switch'][aria-checked='true'] .switch-thumb {
+    @apply translate-x-4;
+  }
+
+  [data-theme='light'] [role='switch'][aria-checked='true'] .switch-track {
+    background: rgb(var(--memory-focus));
+    border-color: rgb(var(--memory-focus));
+  }
+  [data-theme='light'] [role='switch'][aria-checked='true'] .switch-thumb {
+    background: rgb(255 255 255);
+    border-color: rgb(237 240 245);
+  }
+
+  .graph-setting-switch .switch-track { @apply h-[18px] w-8; }
+  .graph-setting-switch .switch-thumb { @apply h-3 w-3; }
+  [role='switch'][aria-checked='true'].graph-setting-switch .switch-thumb { transform: translateX(14px); }
+
+  /* 日期文字单独按 ISO 格式显示；透明的原生控件保留日历选择与键盘操作。 */
+  .ask-date-input::-webkit-calendar-picker-indicator {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+  }
+  /* 明确的蓝灰层次让表单、列表与弹窗共用同一套表面。 */
   .card {
-    @apply rounded-2xl border border-line bg-white/[0.04] shadow-card backdrop-blur-sm;
+    @apply rounded-[20px] border border-line bg-ink-800 shadow-card;
   }
 
   .input {
-    @apply w-full rounded-xl border border-line bg-white/[0.05] px-3.5 py-2.5 text-sm text-slate-100
+    @apply w-full rounded-[13px] border border-field-line bg-ink-700 px-3.5 py-2.5 text-sm text-foreground
       placeholder:text-ghost/70 outline-none transition
-      focus:border-brand-cyan/60 focus:ring-2 focus:ring-brand-cyan/20;
+      focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/10;
   }
 
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold
+    @apply inline-flex max-w-full shrink-0 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium
       transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50;
   }
   .btn-primary {
-    @apply btn bg-brand-gradient text-ink-900 shadow-glow hover:brightness-110;
+    @apply btn border border-control-line bg-action text-foreground hover:bg-action-hover;
   }
   .btn-ghost {
-    @apply btn border border-line bg-white/[0.05] text-slate-100 hover:border-brand-cyan/50;
+    @apply btn border border-control-line bg-secondary text-foreground hover:bg-secondary-hover hover:border-brand-cyan;
   }
   .btn-danger {
     @apply btn border border-brand-rose/30 bg-brand-rose/10 text-brand-rose hover:bg-brand-rose/20;
@@ -68,4 +291,39 @@
   .label {
     @apply text-xs font-medium uppercase tracking-[0.14em] text-ghost;
   }
+
+  .nav-selected {
+    @apply bg-selected text-foreground;
+    box-shadow: inset 0 0 0 1px rgb(var(--memory-control-border) / 75%);
+  }
 }
+
+/* 只在手动切换主题时统一颜色过渡，不覆盖图谱和侧栏的位移动画。 */
+@media (prefers-reduced-motion: no-preference) {
+  html[data-theme-transition] body,
+  html[data-theme-transition] #root :where(div, span, p, h1, h2, h3, h4, h5, h6, header, aside, main, section, form, button, a, label, input, textarea, select, table, thead, tbody, tr, th, td, ul, li, details, summary) {
+    transition: background-color 200ms ease-out, color 200ms ease-out,
+      border-color 200ms ease-out, box-shadow 200ms ease-out, text-shadow 200ms ease-out,
+      transform 200ms ease-out, opacity 200ms ease-out !important;
+  }
+
+  html[data-theme-transition] #root .theme-toggle-thumb {
+    transition: background-color 200ms ease-out, transform 200ms ease-out !important;
+  }
+}
+
+/* 登录页直接揭示完整的新主题快照，避免快照内部再叠加颜色渐变。 */
+html[data-theme-reveal] #root * {
+  transition: none !important;
+}
+
+html[data-theme-reveal]::view-transition-group(root),
+html[data-theme-reveal]::view-transition-old(root),
+html[data-theme-reveal]::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+html[data-theme-reveal]::view-transition-old(root) { z-index: 1; }
+html[data-theme-reveal]::view-transition-new(root) { z-index: 2; }
+html[data-theme-reveal]::view-transition { pointer-events: none; }

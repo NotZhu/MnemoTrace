@@ -1,13 +1,13 @@
-# Cross-Agent Memory Layer
+# 跨 Agent 记忆层
 
-Engram's product job is not to be another chat log. It is the user's own memory layer that multiple
-agents can share: Claude Code, Codex, Cursor, a local script, or a hosted app should all read and write
-the same durable memory namespace.
+MnemoTrace 的产品定位不是又一个聊天日志。它是用户自己的 memory（记忆）层，可被多个 agent
+共享：Claude Code、Codex、Cursor、一个本地脚本，或一款托管应用，都应当读写同一份持久的 memory
+namespace（命名空间）。
 
-Copy-paste setup recipes for specific clients live in
-[`agent-adapters.md`](agent-adapters.md).
+针对特定客户端的复制粘贴式搭建配方位于
+[`agent-adapters.md`](agent-adapters.md)。
 
-## Mental Model
+## 心智模型
 
 ```text
 user namespace
@@ -17,13 +17,12 @@ user namespace
   working memory             short-lived state for the current session only
 ```
 
-The Bearer key selects the namespace. `session_id` is provenance and lifecycle scope; it is not a
-separate brain. A user's sessions should normally flow into the same namespace so future agents can
-retrieve the right slice.
+Bearer key 选定 namespace。`session_id` 是 provenance（溯源）与生命周期作用域；它不是一个独立的
+"大脑"。用户的各个 session 通常应当汇入同一个 namespace，这样未来的 agent 才能检索到正确的那一部分。
 
-## Client Lifecycle
+## 客户端生命周期
 
-Every agent adapter should implement this loop:
+每个 agent 适配器都应实现这个循环：
 
 ```text
 0. Start / wiring check
@@ -42,74 +41,70 @@ Every agent adapter should implement this loop:
    session_report(session_id) # what this session saved, sensitive facts redacted by default
 ```
 
-Do not ask the user to decide every `remember` call. The adapter should remember stable facts,
-preferences, decisions, project rules, bug conclusions, and architecture notes. Transient state can be
-stored with `scope="working"` or left to `scope="auto"` routing.
+不要每次 `remember` 调用都去问用户。适配器应当记住稳定的事实、偏好、决策、项目规则、bug 结论以及架构要点。
+瞬态状态可以用 `scope="working"` 存储，或交给 `scope="auto"` 路由处理。
 
-You can exercise this whole loop without a server:
+无需服务器即可演练整个循环：
 
 ```bash
 python examples/cross_agent_lifecycle.py --local
 ```
 
-## Cross-Agent Handoff
+## 跨 Agent 交接
 
-The core product behavior is that one agent can write and another agent can benefit later:
+核心产品行为是：一个 agent 可以写入，另一个 agent 之后可以从中受益：
 
 ```text
 Codex session
   remember("Project decision: the launch checklist must include committed eval logs.",
-           session_id="codex:super-memory:handoff-source")
-  close_session("codex:super-memory:handoff-source")
+           session_id="codex:mnemotrace:handoff-source")
+  close_session("codex:mnemotrace:handoff-source")
 
 Claude Code session
   recall("What launch checklist decision did the previous agent record?",
-         session_id="claude-code:super-memory:handoff-target")
+         session_id="claude-code:mnemotrace:handoff-target")
 ```
 
-Both sessions must use the same user namespace, for example the same Bearer key. The session IDs are
-provenance and cleanup scopes; they do not create separate brains. You can run a zero-server local smoke
-test first:
+两个 session 必须使用同一个用户 namespace，例如同一个 Bearer key。session ID 是 provenance（溯源）与
+清理作用域；它们不会创建独立的大脑。你可以先运行一个零服务的本地冒烟测试：
 
 ```bash
 python examples/cross_agent_handoff.py --local
 ```
 
-To test a real HTTP server:
+要测试真实的 HTTP 服务：
 
 ```bash
-python examples/cross_agent_handoff.py --base http://localhost:8000 --key me --project super-memory
+python examples/cross_agent_handoff.py --base http://localhost:8000 --key me --project mnemotrace
 ```
 
-## Namespace Strategy
+## Namespace 策略
 
-Use one namespace per user-owned memory space.
+每个用户拥有的 memory 空间使用一个 namespace。
 
-For a personal local setup:
+对于个人本地搭建：
 
 ```text
-ENGRAM_API_KEY=me
+MNEMOTRACE_API_KEY=me
 ```
 
-For local MCP, each agent may launch its own `python -m engram.mcp` stdio process. As long as those
-processes point at the same namespace and `ENGRAM_DATA_DIR`, Engram refreshes the hot in-memory cache when
-another process saves a newer manifest, so an already-running target agent can see a source agent's
-latest writes on the next recall/status call. Local write transactions are also serialized per namespace,
-so two agents saving at the same time do not overwrite each other's read-modify-save snapshot.
+对于本地 MCP，每个 agent 可以启动自己的 `python -m mnemotrace.mcp` stdio 进程。只要这些进程指向同一个
+namespace 与 `MNEMOTRACE_DATA_DIR`，当另一个进程保存了更新的 manifest 时，MnemoTrace 就会刷新热内存缓存，
+这样已在运行的目标 agent 能在下一次 recall/status 调用时看到源 agent 的最新写入。本地写事务也按
+namespace 串行化，因此两个 agent 同时保存时不会互相覆盖对方的 read-modify-save 快照。
 
-For hosted multi-tenant service:
+对于托管的多租户服务：
 
 ```text
 Authorization: Bearer <user-private-key>
 ```
 
-For stricter project separation, either use separate keys or encode project identity in the session id.
-Prefer shared user namespace plus project-aware `session_id` first, because cross-project user
-preferences should still transfer.
+要对项目做更严格的隔离，要么使用不同的 key，要么把项目身份编码进 session id。优先采用共享用户
+namespace 加上项目感知的 `session_id`，因为跨项目的用户偏好仍应迁移过来。
 
-## Session ID Strategy
+## Session ID 策略
 
-Use stable, inspectable IDs:
+使用稳定、可检查的 ID：
 
 ```text
 claude-code:<repo-name>:<thread-id>
@@ -118,129 +113,127 @@ cursor:<workspace-name>:<thread-id>
 app:<product-name>:<conversation-id>
 ```
 
-Examples:
+示例：
 
 ```text
-claude-code:super-memory:2026-06-26T10-30
-codex:super-memory:thread-abc123
-cursor:engram-frontend:issue-42
+claude-code:mnemotrace:2026-06-26T10-30
+codex:mnemotrace:thread-abc123
+cursor:mnemotrace-frontend:issue-42
 ```
 
-## MCP Integration
+## MCP 集成
 
-Use MCP for Claude Desktop, Claude Code, Cursor, and other MCP-capable agents:
+安装命令在本仓库根目录运行；发行包尚未发布到 PyPI。
+
+对 Claude Desktop、Claude Code、Cursor，以及其他支持 MCP 的 agent 使用 MCP：
 
 ```bash
-pip install "engram-memory[mcp]"
-python -m engram.mcp
+pip install -e '.[mcp]'
+python -m mnemotrace.mcp
 ```
 
-Agent policy:
+Agent 策略：
 
 ```text
 At session start or when debugging memory wiring:
-  engram_agent_status(session_id)
+  mnemotrace_agent_status(session_id)
 
 Before answering project/user-history-dependent requests:
-  engram_recall(query, max_chunks=6)
+  mnemotrace_recall(query, max_chunks=6)
 
 When the user states a durable preference, project decision, or reusable fact:
-  engram_remember(content, session_id, scope="long" or "auto")
+  mnemotrace_remember(content, session_id, scope="long" or "auto")
 
 When the user states temporary task/session state:
-  engram_remember(content, session_id, scope="working")
+  mnemotrace_remember(content, session_id, scope="working")
 
 When the user says to focus on or suppress a class of memories:
-  engram_set_focus(track=[...]) or engram_set_focus(mute=[...])
+  mnemotrace_set_focus(track=[...]) or mnemotrace_set_focus(mute=[...])
 
 When the thread ends or switches tasks:
-  engram_close_session(session_id)
+  mnemotrace_close_session(session_id)
 ```
 
-For a hosted Engram service:
+对于托管的 MnemoTrace 服务：
 
 ```bash
-ENGRAM_API_URL=http://localhost:8000 ENGRAM_API_KEY=me python -m engram.mcp
+MNEMOTRACE_API_URL=http://localhost:8000 MNEMOTRACE_API_KEY=me python -m mnemotrace.mcp
 ```
 
-Before connecting a real agent, verify the exact Python runtime the agent will launch:
+在接入真实 agent 之前，校验该 agent 将要启动的确切 Python 运行时：
 
 ```bash
-engram-agent-doctor --client codex --python /path/to/python
+mnemotrace-agent-doctor --client codex --python /path/to/python
 ```
 
-Fast path for a personal workstation:
+个人工作站的快速通道：
 
 ```bash
-engram-agent-bootstrap --local --dry-run --namespace me --python /path/to/python
-engram-agent-bootstrap --local --namespace me --python /path/to/python
-engram-agent-bootstrap --local --install-policy --namespace me --python /path/to/python
+mnemotrace-agent-bootstrap --local --dry-run --namespace me --python /path/to/python
+mnemotrace-agent-bootstrap --local --namespace me --python /path/to/python
+mnemotrace-agent-bootstrap --local --install-policy --namespace me --python /path/to/python
 ```
 
-The bootstrap command installs Codex + project `.mcp.json`, runs the doctor, verifies the installed
-config files, and prints the AGENTS.md policy text. Add `--install-policy` to write that policy into a
-managed block in AGENTS.md; `--uninstall-policy` removes only the Engram block. It supports
-`--bootstrap-targets codex` or `--bootstrap-targets mcp-json` for partial setup.
+bootstrap 命令会安装 Codex + 项目的 `.mcp.json`，运行 doctor，校验已安装的配置文件，并打印 AGENTS.md
+策略文本。加上 `--install-policy` 可把该策略写入 AGENTS.md 中的一段受管理 block；`--uninstall-policy`
+只移除 MnemoTrace 那段 block。它支持 `--bootstrap-targets codex` 或 `--bootstrap-targets mcp-json`
+用于部分搭建。
 
-For HTTP service mode, use the same flow with `--api-url http://localhost:8000 --api-key me` instead of
-`--local --namespace me`.
+对于 HTTP 服务模式，使用相同的流程，但用 `--api-url http://localhost:8000 --api-key me` 代替
+`--local --namespace me`。
 
-For Codex, `engram-agent-setup --install-codex --dry-run ...` previews the config change,
-`--install-codex --doctor` writes `[mcp_servers.engram]` with a backup and immediately verifies the MCP
-runtime, and `--uninstall-codex` removes only that Engram block.
-For Claude Code, Cursor, and other project-level MCP clients, `engram-agent-setup --install-mcp-json`
-writes an `engram` server into `.mcp.json` with the same dry-run, backup, doctor, and uninstall flow.
+对于 Codex，`mnemotrace-agent-setup --install-codex --dry-run ...` 会预览配置变更，`--install-codex --doctor`
+会写入 `[mcp_servers.mnemotrace]`（带备份）并立即校验 MCP 运行时，`--uninstall-codex` 只移除那段 MnemoTrace block。
+对于 Claude Code、Cursor，以及其他项目级 MCP 客户端，`mnemotrace-agent-setup --install-mcp-json` 会把一个
+`mnemotrace` 服务写入 `.mcp.json`，并提供相同的 dry-run、backup、doctor 与 uninstall 流程。
 
-The doctor uses a temporary local namespace, starts two actual `python -m engram.mcp` stdio servers
-against the same local data dir, optionally checks `~/.codex/config.toml` and `.mcp.json`, and verifies
-that the MCP tools can preload the target session, remember from a source session, close it, report what
-it saved, export a share-safe memory payload, recall the source memory from the already-running target
-server, set focus, close both sessions, and persist at least one live fact. Add `--api-url` and
-`--api-key` to verify the remote Engram service and user namespace too:
+doctor 会使用一个临时本地 namespace，针对同一个本地 data dir 启动两个真实的 `python -m mnemotrace.mcp`
+stdio 服务，可选地检查 `~/.codex/config.toml` 与 `.mcp.json`，并校验 MCP 工具能否预加载目标 session、
+从源 session 记住内容、关闭它、报告它所保存的内容、导出一份可安全共享的 memory 负载、从已在运行的目标
+服务 recall 源端的 memory、设置 focus、关闭两个 session，并至少持久化一条实时 fact。加上 `--api-url`
+与 `--api-key` 还能一并校验远程 MnemoTrace 服务与用户 namespace：
 
 ```bash
-engram-agent-doctor --client codex --python /path/to/python \
+mnemotrace-agent-doctor --client codex --python /path/to/python \
   --api-url http://localhost:8000 \
   --api-key me \
   --codex-config ~/.codex/config.toml \
   --mcp-json ./.mcp.json
 ```
 
-## User Ownership Loop
+## 用户所有权循环
 
-Agents should treat memory as user-owned state, not hidden model state:
+Agent 应当把 memory 视为用户拥有的状态，而不是隐藏的模型状态：
 
 ```text
 Inspect:
-  engram_list_sessions(response_format="json")
-  engram_list_facts(response_format="json")
+  mnemotrace_list_sessions(response_format="json")
+  mnemotrace_list_facts(response_format="json")
 
 Correct one memory:
-  engram_update_fact(fact_id, object="new value")
+  mnemotrace_update_fact(fact_id, object="new value")
 
 Delete one memory:
-  engram_delete_fact(fact_id, confirm=true)
+  mnemotrace_delete_fact(fact_id, confirm=true)
 
 Tune recall behavior:
-  engram_get_focus()
-  engram_set_focus(track=["project decisions"], mute=["health details"])
+  mnemotrace_get_focus()
+  mnemotrace_set_focus(track=["project decisions"], mute=["health details"])
 
 Export:
-  engram_export(response_format="json")                  # share-safe by default
-  engram_export(include_sensitive=true, response_format="json")  # explicit private export
+  mnemotrace_export(response_format="json")                  # share-safe by default
+  mnemotrace_export(include_sensitive=true, response_format="json")  # explicit private export
 
 Erase everything:
-  engram_forget(confirm=true)
+  mnemotrace_forget(confirm=true)
 ```
 
-Use precise fact updates/deletes when the user corrects a memory. Reserve full namespace erasure for an
-explicit "forget everything" request. Use focus when the user is asking to change what Engram emphasizes
-or suppresses, not when they are correcting a specific stored fact.
+当用户纠正一条 memory 时，使用精确的 fact 更新/删除。把整个 namespace 的擦除保留给明确的"遗忘一切"请求。
+当用户要求改变 MnemoTrace 强调或抑制的内容时用 focus，而不是在他们纠正某条具体已存 fact 时使用。
 
-## C-End Product Surface
+## 面向 C 端的产品界面
 
-A user-facing product should make the memory layer visible and governable. The minimum useful surface is
-not a chat-log page; it is the lifecycle and ownership loop:
+面向用户的产品应当让 memory 层可见且可治理。最小有用的界面不是聊天日志页面；而是生命周期与所有权循环：
 
 ```text
 Conversation setup
@@ -265,13 +258,12 @@ Memory management
   require explicit confirmation before full namespace erase
 ```
 
-The bundled management console at `/ui` follows this pattern: the Conversations view exposes
-`session_id`, write `scope`, content-free agent status, close-session, and session report; the Facts and
-Privacy views cover inspect/edit/delete/focus/export/erase.
+`/ui` 处附带的管理控制台遵循这一模式：Conversations 视图暴露 `session_id`、写 `scope`、无内容的 agent
+状态、close-session 以及 session report；Facts 与 Privacy 视图覆盖 inspect/edit/delete/focus/export/erase。
 
-## OpenAI-Compatible Integration
+## OpenAI 兼容集成
 
-For apps already using the OpenAI SDK, change `base_url` and pass Engram's `memory` extension:
+对于已经在使用 OpenAI SDK 的应用，修改 `base_url` 并传入 MnemoTrace 的 `memory` 扩展：
 
 ```python
 from openai import OpenAI
@@ -279,11 +271,11 @@ from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="me")
 
 client.chat.completions.create(
-    model="engram",
+    model="mnemotrace",
     messages=[{"role": "user", "content": "Continue the benchmark work."}],
     extra_body={
         "memory": {
-            "session_id": "codex:super-memory:thread-abc123",
+            "session_id": "codex:mnemotrace:thread-abc123",
             "recall": True,
             "remember": True,
             "scope": "auto",
@@ -292,43 +284,47 @@ client.chat.completions.create(
 )
 ```
 
-When the thread ends:
+当 conversation 结束时：
 
 ```bash
 curl -s -X POST http://localhost:8000/v1/sessions/close \
   -H "Authorization: Bearer me" \
   -H "Content-Type: application/json" \
-  -d '{"session_id":"codex:super-memory:thread-abc123"}'
+  -d '{"session_id":"codex:mnemotrace:thread-abc123"}'
 ```
 
-## TypeScript SDK Integration
+## TypeScript SDK 集成
+
+`mnemotrace-memory` SDK 使用本地 `clients/typescript/`，不是已发布 npm 包；先在本检出运行
+`npm --prefix clients/typescript install` 与 `npm --prefix clients/typescript run build`，再在应用中
+安装该本地目录，例如 `npm install /absolute/path/to/MnemoTrace/clients/typescript`。
 
 ```ts
-import { EngramClient } from 'engram-memory'
+import { MnemoTraceClient } from 'mnemotrace-memory'
 
-const sessionId = 'codex:super-memory:thread-abc123'
-const engram = new EngramClient({ baseUrl: 'http://localhost:8000', apiKey: 'me' })
+const sessionId = 'codex:mnemotrace:thread-abc123'
+const mnemotrace = new MnemoTraceClient({ baseUrl: 'http://localhost:8000', apiKey: 'me' })
 
-const status = await engram.agentStatus({ sessionId })
+const status = await mnemotrace.agentStatus({ sessionId })
 console.log(status.session, status.focus)
 
-const memory = await engram.recall('current project rules and user preferences', { sessionId })
+const memory = await mnemotrace.recall('current project rules and user preferences', { sessionId })
 
-await engram.remember('Project rule: benchmark claims require committed raw logs.', {
+await mnemotrace.remember('Project rule: benchmark claims require committed raw logs.', {
   sessionId,
   scope: 'long',
 })
 
-await engram.closeSession(sessionId)
-const report = await engram.sessionReport(sessionId)
+await mnemotrace.closeSession(sessionId)
+const report = await mnemotrace.sessionReport(sessionId)
 console.log(report.facts)
 ```
 
-For drop-in chat:
+对于即插即用的聊天：
 
 ```ts
-await engram.chat.completions.create({
-  model: 'engram',
+await mnemotrace.chat.completions.create({
+  model: 'mnemotrace',
   messages: [{ role: 'user', content: 'Continue the release notes.' }],
   memory: {
     session_id: sessionId,
@@ -339,27 +335,27 @@ await engram.chat.completions.create({
 })
 ```
 
-## What To Remember
+## 该记住什么
 
-Good durable memories:
+优质的持久 memory：
 
-- User preferences and standing instructions
-- Project rules and architecture decisions
-- Reusable debugging conclusions
-- Benchmark/evaluation constraints
-- People, teams, repos, and recurring workflows
+- 用户偏好与常驻指令
+- 项目规则与架构决策
+- 可复用的调试结论
+- benchmark（基准）/evaluation（评测）约束
+- 人员、团队、仓库以及反复出现的工作流
 
-Avoid durable memories:
+应避免持久 memory：
 
-- Secrets, tokens, credentials
-- One-off command output
-- Large logs
-- Passing physical/emotional state
-- Temporary task state unless marked as working memory
+- 密钥、token、凭据
+- 一次性的命令输出
+- 大日志
+- 转瞬即逝的生理/情绪状态
+- 临时任务状态（除非标记为 working memory）
 
-## Product Bar
+## 产品准则
 
-A good cross-agent adapter should make memory automatic:
+一个好的跨 agent 适配器应当让 memory 自动化：
 
 ```text
 The user should not have to say "call remember now."

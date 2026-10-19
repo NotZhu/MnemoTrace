@@ -1,9 +1,12 @@
-from eval.bench import SYSTEMS, engram_config
+import pytest
+
+from eval import ablate_features
+from eval.bench import SYSTEMS, mnemotrace_config
 from eval.ablate_features import run_ablation
 
 
-def test_engram_config_applies_algorithm_ablation_flags():
-    cfg = engram_config(ablations=("chain", "raw", "graph"))
+def test_mnemotrace_config_applies_algorithm_ablation_flags():
+    cfg = mnemotrace_config(ablations=("chain", "raw", "graph"))
 
     assert cfg.chain_evidence is False
     assert cfg.provenance_evidence is False
@@ -14,70 +17,70 @@ def test_engram_config_applies_algorithm_ablation_flags():
     assert cfg.evidence_budgeting is True
     assert cfg.evidence_planner is True
 
-    budget_cfg = engram_config(ablations=("evidence_budget",))
+    budget_cfg = mnemotrace_config(ablations=("evidence_budget",))
     assert budget_cfg.evidence_budgeting is False
 
-    summary_cfg = engram_config(ablations=("summary_fallback",))
+    summary_cfg = mnemotrace_config(ablations=("summary_fallback",))
     assert summary_cfg.summary_fallback is False
 
-    procedural_cfg = engram_config(ablations=("procedural_memory",))
+    procedural_cfg = mnemotrace_config(ablations=("procedural_memory",))
     assert procedural_cfg.procedural_memory is False
 
-    procedural_extraction_cfg = engram_config(ablations=("procedural_extraction",))
+    procedural_extraction_cfg = mnemotrace_config(ablations=("procedural_extraction",))
     assert procedural_extraction_cfg.procedural_extraction is False
 
-    preference_extraction_cfg = engram_config(ablations=("explicit_preference_extraction",))
+    preference_extraction_cfg = mnemotrace_config(ablations=("explicit_preference_extraction",))
     assert preference_extraction_cfg.explicit_preference_extraction is False
 
-    preference_filter_cfg = engram_config(ablations=("preference_object_filter",))
+    preference_filter_cfg = mnemotrace_config(ablations=("preference_object_filter",))
     assert preference_filter_cfg.preference_object_filter is False
 
-    preference_norm_cfg = engram_config(ablations=("preference_object_normalization",))
+    preference_norm_cfg = mnemotrace_config(ablations=("preference_object_normalization",))
     assert preference_norm_cfg.preference_object_normalization is False
 
-    preference_reversal_cfg = engram_config(ablations=("preference_reversal_extraction",))
+    preference_reversal_cfg = mnemotrace_config(ablations=("preference_reversal_extraction",))
     assert preference_reversal_cfg.preference_reversal_extraction is False
 
-    numeric_agg_cfg = engram_config(ablations=("numeric_aggregation_candidates",))
+    numeric_agg_cfg = mnemotrace_config(ablations=("numeric_aggregation_candidates",))
     assert numeric_agg_cfg.numeric_aggregation_candidates is False
 
-    aggregation_recall_cfg = engram_config(ablations=("aggregation_recall_expansion",))
+    aggregation_recall_cfg = mnemotrace_config(ablations=("aggregation_recall_expansion",))
     assert aggregation_recall_cfg.aggregation_recall_expansion is False
 
-    aggregation_constraint_cfg = engram_config(ablations=("aggregation_constraint_filter",))
+    aggregation_constraint_cfg = mnemotrace_config(ablations=("aggregation_constraint_filter",))
     assert aggregation_constraint_cfg.aggregation_constraint_filter is False
 
-    temporal_cfg = engram_config(ablations=("temporal_history",))
+    temporal_cfg = mnemotrace_config(ablations=("temporal_history",))
     assert temporal_cfg.temporal_history_queries is False
 
-    provenance_chunk_cfg = engram_config(ablations=("provenance_chunks",))
+    provenance_chunk_cfg = mnemotrace_config(ablations=("provenance_chunks",))
     assert provenance_chunk_cfg.provenance_evidence is True
     assert provenance_chunk_cfg.provenance_chunk_promotion is False
 
-    relation_cfg = engram_config(ablations=("graph_relation",))
+    relation_cfg = mnemotrace_config(ablations=("graph_relation",))
     assert relation_cfg.graph_proximity is True
     assert relation_cfg.graph_relation_awareness is False
 
-    reinforcement_cfg = engram_config(ablations=("graph_reinforcement",))
+    reinforcement_cfg = mnemotrace_config(ablations=("graph_reinforcement",))
     assert reinforcement_cfg.graph_proximity is True
     assert reinforcement_cfg.graph_path_reinforcement is False
 
-    self_anchor_cfg = engram_config(ablations=("graph_self_anchor",))
+    self_anchor_cfg = mnemotrace_config(ablations=("graph_self_anchor",))
     assert self_anchor_cfg.graph_proximity is True
     assert self_anchor_cfg.graph_self_anchor is False
 
-    alias_cfg = engram_config(ablations=("graph_entity_alias",))
+    alias_cfg = mnemotrace_config(ablations=("graph_entity_alias",))
     assert alias_cfg.graph_proximity is True
     assert alias_cfg.graph_entity_alias_anchor is False
 
-    negative_cfg = engram_config(ablations=("graph_negative",))
+    negative_cfg = mnemotrace_config(ablations=("graph_negative",))
     assert negative_cfg.graph_proximity is True
     assert negative_cfg.graph_negative_constraints is False
 
-    location_cfg = engram_config(ablations=("planner_location",))
+    location_cfg = mnemotrace_config(ablations=("planner_location",))
     assert location_cfg.planner_location_chains is False
 
-    project_cfg = engram_config(ablations=("planner_project",))
+    project_cfg = mnemotrace_config(ablations=("planner_project",))
     assert project_cfg.planner_project_chains is False
 
 
@@ -180,3 +183,27 @@ def test_offline_feature_ablation_proves_each_enabled_feature_changes_target_evi
         "planner_project_chains",
     }
     assert all(row.enabled_hit and not row.disabled_hit and row.improved for row in rows)
+
+
+@pytest.mark.parametrize("context, expected_hit", [
+    ("当前偏好记录（结构化）：\naisle seats\nred-eye flights", True),
+    ("PREFERENCE RECORDS (current, structured):\naisle seats\nred-eye flights", False),
+    ("RELEVANT CONVERSATIONS (full detail):\naisle seats\nred-eye flights", False),
+    ("当前偏好记录（结构化）：\naisle seats", False),
+    ("PREFERENCE RECORDS (current, structured):\nred-eye flights", False),
+])
+def test_preference_ablation_requires_structured_block_and_both_values(
+    monkeypatch, context, expected_hit
+):
+    monkeypatch.setattr(
+        ablate_features,
+        "_explicit_preference_extraction_context",
+        lambda enabled: context if enabled else "",
+    )
+
+    rows, _ = run_ablation()
+    preference = next(row for row in rows if row.feature == "explicit_preference_extraction")
+
+    assert preference.enabled_hit is expected_hit
+    assert preference.disabled_hit is False
+    assert preference.improved is expected_hit

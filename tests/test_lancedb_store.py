@@ -7,11 +7,11 @@ import pytest
 
 pytest.importorskip("lancedb")
 
-from engram.config import Config
-from engram.memory import Memory
-from engram.store.lancedb_store import LanceDBVectorStore
-from engram.store.memory_store import InMemoryVectorStore
-from engram.types import Fact
+from mnemotrace.config import Config
+from mnemotrace.memory import Memory
+from mnemotrace.store.lancedb_store import LanceDBVectorStore
+from mnemotrace.store.memory_store import InMemoryVectorStore
+from mnemotrace.types import Fact
 
 
 def _fact(subject: str, predicate: str, obj: str, vec: list[float]) -> Fact:
@@ -129,7 +129,7 @@ def test_lancedb_direct_construction_without_data_path_uses_isolated_temp_dirs()
     assert isinstance(a.fact_store, LanceDBVectorStore)
     assert isinstance(b.fact_store, LanceDBVectorStore)
     assert a.fact_store.path != b.fact_store.path
-    assert ".engram/data/default" not in a.fact_store.path
+    assert ".mnemotrace/data/default" not in a.fact_store.path
     assert cfg.data_path is None
 
 

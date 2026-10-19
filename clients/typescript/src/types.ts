@@ -1,6 +1,6 @@
 /**
- * Type definitions mirroring the Engram HTTP API (engram/server/app.py).
- * These are the exact response shapes the server returns, so SDK calls are fully typed.
+ * 与 忆痕 HTTP API（mnemotrace/server/app.py）对应的类型定义。
+ * 这些就是服务器实际返回的响应结构，因此 SDK 调用具备完整类型。
  */
 
 export interface Health {
@@ -21,16 +21,16 @@ export interface Health {
 export interface RememberResult {
   ok: boolean
   scope?: string
-  /** number of new facts extracted by consolidation */
+  /** 整合（consolidation）新提取的事实数 */
   extracted?: number
-  /** total live facts after this write */
+  /** 本次写入后的存活事实总数 */
   total_facts?: number
-  /** present if consolidation degraded (raw memory still stored) */
+  /** 整合降级时存在此字段（原始记忆仍已存储） */
   degraded?: string
   stored_raw?: boolean
 }
 
-/** Lean retrieved context — a small, dated slice to answer from (recall). */
+/** 检索到的精简上下文 — 用于作答的一小段带日期切片（recall）。 */
 export interface RecallResult {
   context: string
   tokens_est: number
@@ -40,7 +40,7 @@ export interface RecallResult {
   answer?: string
 }
 
-/** Direct factual answer with supporting facts (search). */
+/** 直接给出的事实性答案及支撑事实（search）。 */
 export interface SearchResult {
   answer: string
   facts: string[]
@@ -59,8 +59,8 @@ export interface CloseSessionResult {
   summaries: number
   reflected: number
   working_cleared: number
-  /** Conclusions newly distilled from this session. Re-closing an unchanged session adds none, and a
-   *  server with no LLM configured (or `ENGRAM_SESSION_OUTCOMES=0`) always reports 0. */
+  /** 本次会话新提炼的结论。未变更的会话重复关闭不会新增；未配置 LLM 的服务器
+   *  （或设置 `MNEMOTRACE_SESSION_OUTCOMES=0`）始终报告 0。 */
   outcomes?: number
 }
 
@@ -121,9 +121,9 @@ export interface SessionIndex {
 export interface SessionListOptions {
   limit?: number
   offset?: number
-  /** Text search over session ids. */
+  /** 对 session id 的文本搜索。 */
   query?: string
-  /** Alias for query, matching the HTTP parameter. */
+  /** query 的别名，与 HTTP 参数名一致。 */
   q?: string
 }
 
@@ -137,9 +137,9 @@ export interface Fact {
   subject: string
   predicate: string
   object: string
-  /** YYYY-MM-DD (valid-from) */
+  /** YYYY-MM-DD（生效起始日） */
   valid_at: string
-  /** YYYY-MM-DD or null if still valid */
+  /** YYYY-MM-DD，仍有效时为 null */
   invalid_at: string | null
   status: FactStatus
   source: FactSource
@@ -149,8 +149,8 @@ export interface Fact {
   redacted?: boolean
   salience: number
   provenance: string[]
-  /** Session conclusions embed their grounds in `text` ("statement （依据：why）"); the server splits the
-   *  grounds back out here. Empty string for ordinary attribute facts. */
+  /** 会话结论把依据内嵌在 `text` 中（"statement （依据：why）"）；服务器会把依据
+   *  拆分到这里。普通属性事实为空字符串。 */
   why?: string
 }
 
@@ -166,7 +166,7 @@ export interface MemoryCounts {
   facts_live: number
   facts_superseded: number
   summaries: number
-  /** Live facts that are session conclusions. Counted over the unfiltered set, like the two above. */
+  /** 属于会话结论的存活事实。与上面两项一样，按未过滤集合统计。 */
   facts_outcomes?: number
 }
 
@@ -187,20 +187,20 @@ export interface MemoryListOptions {
   episodesLimit?: number
   episodesOffset?: number
   status?: MemoryStatusFilter
-  /** Text search over facts; raw episodes are searched only when includeSensitive=true. */
+  /** 对事实的文本搜索；仅当 includeSensitive=true 时才搜索原始 episode。 */
   query?: string
-  /** Alias for query, matching the HTTP parameter. */
+  /** query 的别名，与 HTTP 参数名一致。 */
   q?: string
-  /** Defaults to a share-safe list; pass true only for explicit owner-visible raw episodes/profile. */
+  /** 默认返回可安全分享的列表；仅在需要所有者可见的原始 episode/画像时传 true。 */
   includeSensitive?: boolean
-  /** Split the fact set: 'outcomes' = session conclusions only, 'attributes' = everything else.
-   *  Unknown values are ignored by the server, like `status`. */
+  /** 拆分事实集合：'outcomes' = 仅会话结论，'attributes' = 其余全部。
+   *  与 `status` 一样，未知值会被服务器忽略。 */
   kind?: MemoryKindFilter
 }
 
 export type MemoryKindFilter = 'outcomes' | 'attributes'
 
-/** Paged memory view (GET /v1/memories); share-safe by default. */
+/** 分页的记忆视图（GET /v1/memories）；默认可安全分享。 */
 export interface MemoryDump {
   user: string
   profile: string
@@ -361,11 +361,11 @@ export interface ImportSessionInput {
   event_time?: number
 }
 
-/** Bulk import: pass pre-parsed `sessions`, OR raw `data` + a `format` to parse server-side. */
+/** 批量导入：传入已解析的 `sessions`，或传入原始 `data` + `format` 由服务器解析。 */
 export interface ImportParams {
   sessions?: ImportSessionInput[]
   data?: unknown
-  /** chatgpt | messages | records | jsonl | transcript | auto (default) */
+  /** chatgpt | messages | records | jsonl | transcript | auto（默认） */
   format?: string
   consolidate?: boolean
   summarize?: boolean
@@ -412,7 +412,7 @@ export interface MemoryExportEpisode {
 }
 
 export interface MemoryExport {
-  engram_export_version: 1
+  mnemotrace_export_version: 1
   user: string
   include_sensitive: boolean
   redacted_sensitive: boolean
@@ -425,35 +425,35 @@ export interface MemoryExport {
 }
 
 export interface ForgetOptions {
-  /** Must be true; wiping a namespace is irreversible. */
+  /** 必须为 true；清空命名空间不可逆。 */
   confirm: true
 }
 
-// --- OpenAI-compatible chat (POST /v1/chat/completions) ---------------------
+// --- OpenAI 兼容 chat（POST /v1/chat/completions）---------------------------
 
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool'
 
 export interface ChatMessage {
   role: ChatRole
-  /** string, or OpenAI multimodal content parts */
+  /** 字符串，或 OpenAI 多模态 content parts */
   content: string | Array<Record<string, unknown>>
 }
 
-/** Engram extension to control the memory layer per request. */
+/** 忆痕扩展，用于按请求控制记忆层。 */
 export interface MemoryControls {
-  /** recall + inject relevant memory before answering (default true) */
+  /** 回答前检索并注入相关记忆（默认 true） */
   recall?: boolean
-  /** remember the user turn after answering (default true) */
+  /** 回答后记住用户这一轮输入（默认 true） */
   remember?: boolean
-  /** conversation/thread id for recall and the background write */
+  /** 用于检索和后台写入的会话/线程 id */
   session_id?: string
-  /** auto | long | working; controls how the background write is routed */
+  /** auto | long | working；控制后台写入的路由方式 */
   scope?: string
-  /** number of full past conversations to include for detail (default 6) */
+  /** 为补充细节而包含的完整历史对话数量（默认 6） */
   n_chunks?: number
-  /** epoch seconds for a point-in-time memory view */
+  /** 用于按时间点查看记忆的 epoch 秒数 */
   as_of?: number
-  /** omit facts tagged sensitive from injected memory */
+  /** 从注入的记忆中省略标记为敏感的事实 */
   redact_sensitive?: boolean
 }
 
@@ -479,7 +479,7 @@ export interface ChatUsage {
   total_tokens: number
 }
 
-export interface EngramChatMeta {
+export interface MnemoTraceChatMeta {
   recalled: boolean
   memory_tokens_est: number
   session_id?: string | null
@@ -496,8 +496,8 @@ export interface ChatCompletion {
   model: string
   choices: ChatChoice[]
   usage: ChatUsage
-  /** Engram extension: what the memory layer did for this request. */
-  engram: EngramChatMeta
+  /** 忆痕扩展：本次请求中记忆层做了什么。 */
+  mnemotrace: MnemoTraceChatMeta
 }
 
 export interface ChatCompletionChunk {

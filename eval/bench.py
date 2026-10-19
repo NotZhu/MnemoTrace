@@ -1,15 +1,15 @@
-"""Unified benchmark rig (CLAUDE.md Bet D) — the honest, non-cheating way to compare memory systems.
+"""统一评测台（CLAUDE.md Bet D）—— 公平、不作弊的 memory 系统对比方式。
 
-Every system under test is a black box exposing ONE method: context(item) -> str (ingest the question's
-sessions, return the context to answer from). A FIXED answerer + FIXED judge + FIXED embedder/extractor
-are applied IDENTICALLY to every system, so the only thing that varies is the memory layer itself. We run
-competitors (Mem0, Zep) here ourselves rather than citing their self-reported numbers on other harnesses.
+每个被测系统都是一个黑盒，只暴露一个方法：context(item) -> str（摄取该问题的各会话，返回用于作答的
+context）。固定的 answerer + 固定的 judge + 固定的 embedder/extractor 以完全相同的方式作用于每个系统，
+因此唯一的变量就是 memory 层本身。我们在这里亲自跑竞品（Mem0、Zep），而不是引用它们在其他 harness 上
+自报的数字。
 
     python eval/bench.py --data s --limit 40 --systems engram,full_context,rag \
         --answerer univibe:gemini-2.5-flash --judge univibe:gpt-5.5 --extractor deepseek
 
-Standard rig (default): answerer=gemini-2.5-flash, judge=gpt-5.5, extractor(internal)=deepseek,
-embedder=bge-small. Change them, but they apply to ALL systems equally.
+标准配置（默认）：answerer=gemini-2.5-flash, judge=gpt-5.5, extractor(内部)=deepseek,
+embedder=bge-small。可以改，但必须对所有系统一视同仁。
 """
 from __future__ import annotations
 
@@ -23,19 +23,18 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
-# Disable chromadb/posthog telemetry — it tries to phone home, fails behind a proxy, and stalls runs.
+# 关闭 chromadb/posthog 遥测 —— 它会尝试外联上报，在代理环境下失败并卡死整个运行。
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 os.environ.setdefault("POSTHOG_DISABLED", "1")
-# The BGE embedder's HF tokenizer is invoked from worker threads; HuggingFace tokenizers warns that
-# using it after a fork risks a deadlock and disables its own parallelism. Set this explicitly so a
-# long parallel run can't be killed mid-flight by that fork/deadlock path (observed: exit 144).
+# BGE embedder 的 HF tokenizer 会被工作线程调用；HuggingFace tokenizers 警告 fork 之后使用可能死锁，
+# 并会因此关闭自身并行。这里显式设置，避免长时并行运行被 fork/死锁路径中途杀掉（曾观察到 exit 144）。
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram import Config, Memory  # noqa: E402
-from engram.llm.providers import load_dotenv, make_embedder, make_llm, make_reranker  # noqa: E402
-from engram.util import stems  # noqa: E402
+from mnemotrace import Config, Memory  # noqa: E402
+from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm, make_reranker  # noqa: E402
+from mnemotrace.util import stems  # noqa: E402
 from eval.longmemeval import (  # noqa: E402
     ANSWER_SYSTEM,
     ANSWER_TEMPLATE,
@@ -56,15 +55,14 @@ from eval.longmemeval import (  # noqa: E402
     needs_two_stage_pref,
     sessions_of,
 )
-from engram.retrieve.evidence import plan_evidence  # noqa: E402
+from mnemotrace.retrieve.evidence import plan_evidence  # noqa: E402
 
 
 def retrieve_evidence_episodes(mem: Memory, query: str, user_id: str, limit: int, use_planner: bool = True):
-    """Retrieve sessions for pre-consolidation using the same evidence-shape expansion as lean_context.
+    """用与 lean_context 相同的 evidence-shape 扩展来检索会话，供预整合使用。
 
-    The lean read path can later use subqueries to retrieve raw chunks, but L1 facts and L2 summaries only
-    exist for sessions consolidated up front. Multi-hop questions need those subquery-hit sessions in the
-    consolidated pool too, otherwise the graph is missing the very edges the read path wants to walk.
+    lean 读取路径之后可以用子查询检索原始 chunk，但 L1 facts 和 L2 摘要只对预先整合过的会话存在。
+    多跳问题命中的那些子查询会话也必须进入整合池，否则图里恰好缺少读取路径想要走的那几条边。
     """
     if limit <= 0:
         return []
@@ -81,17 +79,14 @@ def retrieve_evidence_episodes(mem: Memory, query: str, user_id: str, limit: int
         else None
     )
     subqueries = sorted((need.subqueries if need is not None else ()), key=lambda q: (-len(stems(q)), q))
-    # One guaranteed seat per subquery, and the MAIN query takes everything else. The old equal
-    # rank-interleave let a single weak subquery ("occupation") consume half the pool and displace
-    # the main query's mid-rank hits (a gold session at main-rank #6 fell out of an 8-slot pool) --
-    # the same evict-the-primary-signal shape as the provenance-promotion bug, one layer down.
-    # Multi-hop still works: each hop's subquery seats its best hit (the small-limit case where the
-    # subquery hits ARE the answer's halves). Planner subqueries are few (<=3), so the guaranteed
-    # seats cannot themselves crowd out the main query at realistic limits.
-    # Aggregation questions ("how many...", "list all...") are answered wrong when ONE occurrence is
-    # missing, and occurrences are spread across sessions by definition -- a pool sized for pointed
-    # questions systematically truncates them (observed: an airline list answered 3-of-4). Widen the
-    # pool for exactly those questions rather than paying the extraction cost on every question.
+    # 每个子查询保证一个席位，其余名额全部留给主查询。旧的等权交错排列会让单个弱子查询
+    # （"occupation"）吃掉半个池子，挤掉主查询的中段命中（曾有一个金标准会话排在主查询第 6 位，
+    # 却被 8 席的池子挤掉）—— 与 provenance-promotion bug 的"挤掉主信号"形态相同，只是低一层。
+    # 多跳仍然可用：每个跳的子查询都占住自己的最佳命中（小 limit 时子查询命中恰好就是答案的两半）。
+    # planner 的子查询很少（<=3），在现实的 limit 下这些保底席位不至于挤掉主查询。
+    # 聚合类问题（"how many..."、"list all..."）只要漏掉一次出现就答错，而出现位置天然分散在多个
+    # 会话里 —— 按指向性问题规模设的池子会系统性截断它们（曾观察到航空公司清单只答出 3/4）。
+    # 只对这类问题扩大池子，而不是为每个问题都付出额外的抽取成本。
     if (need is not None and getattr(need, "aggregation", False)
             and getattr(getattr(mem, "config", None), "aggregation_pool_boost", True)):
         limit = limit * 2
@@ -102,7 +97,7 @@ def retrieve_evidence_episodes(mem: Memory, query: str, user_id: str, limit: int
     per_sub = [mem.retrieve_episodes(q, user_id, 2) for q in subqueries]
     out: list = []
     seen: set[str] = set()
-    for eps in per_sub:  # guaranteed seat: each subquery's best unseen hit
+    for eps in per_sub:  # 保底席位：每个子查询尚未入选的最佳命中
         for ep in eps:
             if ep.id not in seen:
                 seen.add(ep.id)
@@ -110,13 +105,13 @@ def retrieve_evidence_episodes(mem: Memory, query: str, user_id: str, limit: int
                 break
         if len(out) >= limit:
             return out
-    for ep in main_eps:  # the main query fills every remaining slot
+    for ep in main_eps:  # 剩余名额全部由主查询填充
         if len(out) >= limit:
             return out
         if ep.id not in seen:
             seen.add(ep.id)
             out.append(ep)
-    for eps in per_sub:  # spare subquery hits backfill only if the pool still is not full
+    for eps in per_sub:  # 仅当池子仍未满时，才用剩余的子查询命中回填
         for ep in eps:
             if len(out) >= limit:
                 return out
@@ -127,14 +122,14 @@ def retrieve_evidence_episodes(mem: Memory, query: str, user_id: str, limit: int
 
 
 def _maybe_pinned(llm, cache_dir: str, model_tag: str):
-    """Pin the extractor's replies when --pin-extraction is given.
+    """给出 --pin-extraction 时固定（缓存）extractor 的回复。
 
-    Only the extractor is ever wrapped. Pinning the answerer or judge would hide real variance in the
-    thing being graded; pinning the extractor removes variance in the thing being held constant.
+    只包装 extractor。固定 answerer 或 judge 会掩盖被评测对象的真实方差；固定 extractor 则是消除
+    被控变量自身的方差。
     """
     if not cache_dir:
         return llm
-    from engram.llm.cache import CachedLLM
+    from mnemotrace.llm.cache import CachedLLM
 
     print(f"  extraction PINNED -> {cache_dir} (same prompt => same facts across runs)")
     return CachedLLM(llm, cache_dir, model_tag=model_tag)
@@ -164,9 +159,9 @@ class Rig:
     sc_k: int = 5
     persona: bool = False
     session_map: bool = False
-    cascade: bool = False  # engram_lean: coarse-to-fine drill (necessary at _M/10M scale)
-    summ_k: int = 25      # engram_lean: how many sessions to summarize (high-recall coverage)
-    n_summaries: int = 12  # engram_lean: how many session summaries to retrieve into the lean context
+    cascade: bool = False  # engram_lean: 粗到细的钻取（_M/10M 规模下必需）
+    summ_k: int = 25      # engram_lean: 摘要多少个会话（高召回覆盖）
+    n_summaries: int = 12  # engram_lean: 取多少条会话摘要进入 lean context
     agentic: bool = False
     timeline: bool = False
     hyde: bool = False
@@ -174,16 +169,16 @@ class Rig:
     wiki: bool = False
     summary: bool = False
     verify: bool = False
-    verify_retry: bool = False  # engram_lean: on "I don't know", widen the slice and retry once
+    verify_retry: bool = False  # engram_lean: 遇到 "I don't know" 时扩大切片并重试一次
     intent: bool = False
     ablations: tuple[str, ...] = ()
 
 
-def engram_config(evidence_planner: bool = True, ablations: tuple[str, ...] = ()) -> Config:
-    """Config helper for in-rig ablations.
+def mnemotrace_config(evidence_planner: bool = True, ablations: tuple[str, ...] = ()) -> Config:
+    """供评测台内消融实验使用的 Config 辅助函数。
 
-    A/B systems must differ only by the named memory intervention, not by hidden config drift. These flags
-    default to Engram's normal behavior and let the unified harness switch off one algorithm at a time.
+    A/B 系统之间只能差在指定的 memory 干预点上，不能有隐藏的配置漂移。这些开关默认是 MnemoTrace 的
+    正常行为，让统一 harness 可以一次只关掉一个算法。
     """
     disabled = set(ablations)
     return Config(
@@ -303,8 +298,8 @@ def engram_config(evidence_planner: bool = True, ablations: tuple[str, ...] = ()
     )
 
 
-# ---------------- system adapters (each: context(item) -> str) ----------------
-class EngramSystem:
+# ---------------- 系统适配器（各自实现 context(item) -> str） ----------------
+class MnemoTraceSystem:
     name = "engram"
 
     def __init__(self, rig: Rig):
@@ -313,7 +308,7 @@ class EngramSystem:
     def context(self, item: dict) -> str:
         rig, qid, q = self.rig, item["question_id"], item["question"]
         mem = Memory(
-            config=engram_config(ablations=rig.ablations),
+            config=mnemotrace_config(ablations=rig.ablations),
             embedder=rig.embedder,
             llm=rig.extractor_llm,
             reranker=rig.reranker,
@@ -340,8 +335,8 @@ class FullContextSystem:
 
 
 class RAGSystem:
-    """Pure retrieval baseline: embed raw sessions, return top-k chunks. No extraction, no facts, no
-    bi-temporal — isolates exactly what Engram's consolidation layer adds over plain RAG."""
+    """纯检索基线：对原始会话做嵌入，返回 top-k chunk。没有抽取、没有 fact、没有双时间轴 ——
+    用来精确隔离 MnemoTrace 整合层相对朴素 RAG 的增量。"""
 
     name = "rag"
 
@@ -350,32 +345,32 @@ class RAGSystem:
 
     def context(self, item: dict) -> str:
         rig, qid, q = self.rig, item["question_id"], item["question"]
-        mem = Memory(embedder=rig.embedder, reranker=rig.reranker)  # no llm -> no extraction
+        mem = Memory(embedder=rig.embedder, reranker=rig.reranker)  # 不传 llm -> 不做抽取
         ingest(mem, item, qid)
         eps = mem.retrieve_episodes(q, qid, rig.chunks)
         return "\n\n".join(f"[{e.metadata.get('date', '?')}]\n{e.content}" for e in eps)
 
 
 class Mem0System:
-    """Competitor: Mem0, configured with the SAME internal LLM (deepseek) + embedder as Engram, so the
-    comparison is fair. Lazy import; if mem0 isn't installed the rig skips it."""
+    """竞品：Mem0，配置与 MnemoTrace 相同的内部 LLM（deepseek）和 embedder，保证对比公平。懒加载；
+    未安装 mem0 时评测台会跳过它。"""
 
     name = "mem0"
 
     def __init__(self, rig: Rig):
         self.rig = rig
-        from mem0 import Memory as Mem0Memory  # noqa: F401  (validated when --systems includes mem0)
+        from mem0 import Memory as Mem0Memory  # noqa: F401  (--systems 包含 mem0 时才校验)
 
         self._Mem0 = Mem0Memory
-        # Mem0's internal extraction LLM -> the working ARK (Volcano) account (doubao-flash): the SAME
-        # internal model Engram uses (so the comparison is fair) and the account that still has balance.
+        # Mem0 的内部抽取 LLM 指向可用的 ARK（火山）账号（doubao-flash）：与 MnemoTrace 用的是同一个
+        # 内部模型（保证对比公平），也是还有余额的账号。
         self._llm_key = os.environ.get("ARK_API_KEY")
         self._llm_base = os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
         os.environ.setdefault("OPENAI_API_KEY", self._llm_key or "")
 
     def context(self, item: dict) -> str:
-        # Fair config: SAME internal LLM (doubao-flash) + embedder (bge-small) as Engram. Per-question chroma
-        # path = isolation + thread-safety (each question's memory is independent, as LongMemEval requires).
+        # 公平配置：与 MnemoTrace 相同的内部 LLM（doubao-flash）+ embedder（bge-small）。每个问题独立的
+        # chroma 路径 = 隔离 + 线程安全（每个问题的 memory 相互独立，LongMemEval 要求如此）。
         qid, q = item["question_id"], item["question"]
         safe = qid.replace("/", "_")
         cfg = {
@@ -383,7 +378,7 @@ class Mem0System:
                     "openai_base_url": self._llm_base, "api_key": self._llm_key, "temperature": 0.0}},
             "embedder": {"provider": "huggingface", "config": {"model": "BAAI/bge-small-en-v1.5"}},
             "vector_store": {"provider": "chroma", "config": {"collection_name": "mem0_lme", "path": f"data/mem0c/{safe}"}},
-            # per-question SQLite history too — else the shared default db locks under parallel workers.
+            # SQLite history 也按问题隔离 —— 否则并行 worker 下共享默认库会锁住。
             "history_db_path": f"data/mem0c/{safe}/history.db",
         }
         m = self._Mem0.from_config(cfg)
@@ -397,19 +392,19 @@ class Mem0System:
 
 
 class ZepSystem:
-    """Competitor: Zep / Graphiti — a temporally-aware (bi-temporal) knowledge-graph memory, the closest
-    design to Engram. Lazy import; requires `pip install graphiti-core`, a running Neo4j/FalkorDB
-    (NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD), and an OpenAI-compatible key for Graphiti's own extraction
-    LLM (OPENAI_API_KEY [+ OPENAI_BASE_URL]). Per-question `group_id` isolates each LongMemEval question.
+    """竞品：Zep / Graphiti —— 有时间感知（双时间轴）的知识图谱 memory，与 MnemoTrace 设计最接近。懒加载；
+    需要 `pip install graphiti-core`、运行中的 Neo4j/FalkorDB（NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD）、
+    以及给 Graphiti 自己的抽取 LLM 用的 OpenAI 兼容 key（OPENAI_API_KEY [+ OPENAI_BASE_URL]）。按问题
+    使用 `group_id` 隔离每个 LongMemEval 问题。
 
-    NOTE: written against the public graphiti_core API (async; signatures vary across versions). It is
-    scaffolding validated on the FIRST keyed run with a live graph DB, not in the offline CI env."""
+    注意：按公开的 graphiti_core API 编写（async；签名随版本变化）。这是脚手架代码，只在第一次带
+    key、连着真实图数据库的运行里验证过，未在离线 CI 环境验证。"""
 
     name = "zep"
 
     def __init__(self, rig: Rig):
         self.rig = rig
-        import graphiti_core  # noqa: F401  (validated when --systems includes zep)
+        import graphiti_core  # noqa: F401  (--systems 包含 zep 时才校验)
 
         self._Graphiti = graphiti_core.Graphiti
 
@@ -450,18 +445,18 @@ class ZepSystem:
 
 
 class HippoRAGSystem:
-    """Competitor: HippoRAG (knowledge graph + Personalized PageRank multi-hop retrieval). Lazy import;
-    requires `pip install hipporag` and an OpenAI-compatible key for its OpenIE + embeddings
-    (set HIPPORAG_LLM for the LLM name). Per-question `save_dir` isolates each question's index.
+    """竞品：HippoRAG（知识图谱 + Personalized PageRank 多跳检索）。懒加载；需要 `pip install hipporag`
+    以及给其 OpenIE + 嵌入用的 OpenAI 兼容 key（LLM 名称用 HIPPORAG_LLM 设置）。按问题使用 `save_dir`
+    隔离每个问题的索引。
 
-    NOTE: written against the public hipporag 2.x API (index/retrieve signatures vary across versions);
-    scaffolding validated on the FIRST keyed run, not in the offline CI env."""
+    注意：按公开的 hipporag 2.x API 编写（index/retrieve 签名随版本变化）；脚手架只在第一次带 key 的
+    运行里验证过，未在离线 CI 环境验证。"""
 
     name = "hipporag"
 
     def __init__(self, rig: Rig):
         self.rig = rig
-        from hipporag import HippoRAG  # noqa: F401  (validated when --systems includes hipporag)
+        from hipporag import HippoRAG  # noqa: F401  (--systems 包含 hipporag 时才校验)
 
         self._HippoRAG = HippoRAG
 
@@ -480,11 +475,10 @@ class HippoRAGSystem:
         return "PASSAGES:\n" + "\n".join(f"- {p}" for p in passages)
 
 
-class EngramFullSystem:
-    """Engram's extracted/conflict-resolved facts as a 'memory index', prepended to the full conversation
-    history. Combines 100% session recall (full-context) with Engram's bi-temporal structure (facts first,
-    most recent first). If this matches OMEGA-level scores, it proves the memory layer adds value on top
-    of full-context. Use --systems engram_full for the strongest single-system run."""
+class MnemoTraceFullSystem:
+    """把 MnemoTrace 抽取/消解过冲突的 fact 作为"记忆索引"前缀，拼接在完整对话历史之前。结合 100% 会话
+    召回（full-context）与 MnemoTrace 的双时间轴结构（fact 在前，最新的排最前）。如果它达到 OMEGA 级别的
+    分数，就证明 memory 层在 full-context 之上还有增量价值。最强单系统运行用 --systems engram_full。"""
 
     name = "engram_full"
 
@@ -495,24 +489,24 @@ class EngramFullSystem:
         rig, qid, q = self.rig, item["question_id"], item["question"]
         mem = Memory(embedder=rig.embedder, llm=rig.extractor_llm, reranker=rig.reranker)
         ingest(mem, item, qid)
-        # Extract from top-k retrieved sessions (same as EngramSystem)
+        # 从 top-k 检索到的会话中抽取（与 MnemoTraceSystem 相同）
         if rig.extract_k > 0:
             mem.engine.consolidate(mem.retrieve_episodes(q, qid, rig.extract_k))
-        # Assemble: extracted facts (most-recent first) as the index, full history below
-        from engram.util import fmt_date
+        # 组装：抽取出的 fact（最新在前）作为索引，完整历史附在下面
+        from mnemotrace.util import fmt_date
         facts = [f for f in mem.fact_store.values() if f.user_id == mem.resolver.resolve(qid) and f.is_live()]
         facts.sort(key=lambda f: f.valid_at, reverse=True)
         fact_lines = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.text}" for f in facts) or "(none extracted)"
         full_hist = all_text(item)[:FC_CHAR_BUDGET]
 
-        # L2/L3 abstraction layers (built once over the full history with the cheap extractor LLM).
+        # L2/L3 抽象层（用便宜的 extractor LLM 在完整历史上一次性构建）。
         blocks = []
-        if rig.persona:  # L3: user profile — grounds preference/recommendation answers
+        if rig.persona:  # L3: 用户画像 —— 为偏好/推荐类回答提供依据
             persona = build_persona(rig.extractor_llm, full_hist)
             if persona:
                 blocks.append(f"USER PROFILE (preferences, habits, possessions):\n{persona}")
         blocks.append(f"MEMORY INDEX (extracted facts, most recent first):\n{fact_lines}")
-        if rig.session_map:  # L2: complete session-by-session digest — aids multi-session aggregation
+        if rig.session_map:  # L2: 逐会话完整摘要 —— 辅助多会话聚合
             smap = build_session_map(rig.extractor_llm, full_hist)
             if smap:
                 blocks.append(f"SESSION MAP (every conversation, chronological):\n{smap}")
@@ -520,12 +514,11 @@ class EngramFullSystem:
         return "\n\n".join(blocks)
 
 
-class EngramLeanSystem:
-    """The scalable memory system (CLAUDE.md Bet A/E): build L1 facts + L2 session summaries + L3 persona
-    during consolidation, then answer from a LEAN retrieved slice — NOT the full history. This is the real
-    win condition: beat full-context on accuracy while using a fraction of the tokens, so it still works
-    when the history far exceeds the model's window. Unlike engram_full, the raw haystack never enters the
-    prompt; only a small, organized, retrieved context does."""
+class MnemoTraceLeanSystem:
+    """可扩展的 memory 系统（CLAUDE.md Bet A/E）：整合时构建 L1 facts + L2 会话摘要 + L3 用户画像，
+    然后从精简（lean）的检索切片作答 —— 而不是完整历史。这才是真正的赢面：用一小部分 token 在准确率
+    上击败 full-context，从而在历史远超模型窗口时依然可用。与 engram_full 不同，原始 haystack 永远
+    不进入 prompt，进入的只是一小段有组织的、检索出来的 context。"""
 
     name = "engram_lean"
     evidence_planner = True
@@ -533,14 +526,14 @@ class EngramLeanSystem:
 
     def __init__(self, rig: Rig):
         self.rig = rig
-        self._tl = threading.local()  # per-thread 1-item mem cache, so a verify-retry reuses the built mem
+        self._tl = threading.local()  # 每线程缓存 1 个 item 的 mem，让 verify 重试复用已构建的 mem
 
     def _mem_for(self, item: dict):
         rig, qid, q = self.rig, item["question_id"], item["question"]
         if getattr(self._tl, "qid", None) == qid and getattr(self._tl, "mem", None) is not None:
-            return self._tl.mem  # reuse across the verify-retry (no re-ingest / re-summarize)
+            return self._tl.mem  # verify 重试时复用（不再重新摄取/重新摘要）
         mem = Memory(
-            config=engram_config(
+            config=mnemotrace_config(
                 evidence_planner=self.evidence_planner,
                 ablations=tuple(self.ablations) + tuple(rig.ablations),
             ),
@@ -549,8 +542,8 @@ class EngramLeanSystem:
             reranker=rig.reranker,
         )
         ingest(mem, item, qid)
-        # L1 facts from the top-k retrieved sessions; L2 summaries over a high-recall set (recall@25≈98%
-        # on _S, so summarizing the top-summ_k retrieved sessions covers the evidence while staying lean).
+        # L1 facts 取自 top-k 检索会话；L2 摘要基于高召回集合（_S 上 recall@25≈98%，所以对 top-summ_k
+        # 个检索会话做摘要既能覆盖证据，又保持精简）。
         retrieved = retrieve_evidence_episodes(
             mem, q, qid, max(rig.extract_k, rig.summ_k), use_planner=self.evidence_planner
         )
@@ -564,8 +557,8 @@ class EngramLeanSystem:
     def context(self, item: dict, expand: int = 0) -> str:
         rig, qid, q = self.rig, item["question_id"], item["question"]
         mem = self._mem_for(item)
-        # expand>0 (a verification retry): widen the slice — more full-detail sessions, a timeline, and
-        # multi-hop decomposition — to surface evidence the first lean slice missed (the 'I don't know' fix).
+        # expand>0（验证重试）：加宽切片 —— 更多完整细节会话、时间线、多跳分解 —— 把第一轮 lean 切片
+        # 漏掉的证据找出来（针对 "I don't know" 的修复）。
         return mem.lean_context(
             q, user_id=qid, n_summaries=rig.n_summaries, n_facts=rig.topk,
             n_chunks=rig.chunks + expand * 5, persona=rig.persona,
@@ -574,216 +567,216 @@ class EngramLeanSystem:
         )
 
 
-class EngramLeanNoPlannerSystem(EngramLeanSystem):
-    """A/B baseline: same lean system, but disables benchmark-neutral evidence planning."""
+class MnemoTraceLeanNoPlannerSystem(MnemoTraceLeanSystem):
+    """A/B 基线：同一个 lean 系统，但关闭 benchmark 无关的证据规划。"""
 
     name = "engram_lean_no_planner"
     evidence_planner = False
 
 
-class EngramLeanNoChainSystem(EngramLeanSystem):
-    """A/B baseline: lean system without retrieved supersedes/evolution-chain context."""
+class MnemoTraceLeanNoChainSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但不含检索到的 supersedes/演化链上下文。"""
 
     name = "engram_lean_no_chain"
     ablations = ("chain",)
 
 
-class EngramLeanNoRawSystem(EngramLeanSystem):
-    """A/B baseline: lean system without provenance-backed raw source evidence."""
+class MnemoTraceLeanNoRawSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但不含有出处（provenance）支撑的原始来源证据。"""
 
     name = "engram_lean_no_raw"
     ablations = ("raw",)
 
 
-class EngramLeanNoProvenanceChunksSystem(EngramLeanSystem):
-    """A/B baseline: lean system without provenance-guided full-detail chunk promotion."""
+class MnemoTraceLeanNoProvenanceChunksSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但关闭由出处引导的完整细节 chunk 晋升。"""
 
     name = "engram_lean_no_provenance_chunks"
     ablations = ("provenance_chunks",)
 
 
-class EngramLeanNoEvidenceBudgetSystem(EngramLeanSystem):
-    """A/B baseline: lean system without intent-aware evidence budgeting."""
+class MnemoTraceLeanNoEvidenceBudgetSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但关闭意图感知的证据预算分配。"""
 
     name = "engram_lean_no_evidence_budget"
     ablations = ("evidence_budget",)
 
 
-class EngramLeanNoSummaryFallbackSystem(EngramLeanSystem):
-    """A/B baseline: lean system without derived-summary fallback for search misses."""
+class MnemoTraceLeanNoSummaryFallbackSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但搜索落空时没有派生摘要回退。"""
 
     name = "engram_lean_no_summary_fallback"
     ablations = ("summary_fallback",)
 
 
-class EngramLeanNoProceduralMemorySystem(EngramLeanSystem):
-    """A/B baseline: lean system without derived procedural/rule memory."""
+class MnemoTraceLeanNoProceduralMemorySystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但不含派生的程序性/规则记忆。"""
 
     name = "engram_lean_no_procedural_memory"
     ablations = ("procedural_memory",)
 
 
-class EngramLeanNoProceduralExtractionSystem(EngramLeanSystem):
-    """A/B baseline: lean system without rule/runbook procedure extraction."""
+class MnemoTraceLeanNoProceduralExtractionSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但关闭规则/操作手册类流程的抽取。"""
 
     name = "engram_lean_no_procedural_extraction"
     ablations = ("procedural_extraction",)
 
 
-class EngramLeanNoExplicitPreferenceExtractionSystem(EngramLeanSystem):
-    """A/B baseline: lean system without explicit like/prefer/avoid preference extraction."""
+class MnemoTraceLeanNoExplicitPreferenceExtractionSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但关闭显式 like/prefer/avoid 偏好抽取。"""
 
     name = "engram_lean_no_explicit_preference_extraction"
     ablations = ("explicit_preference_extraction",)
 
 
-class EngramLeanNoPreferenceObjectFilterSystem(EngramLeanSystem):
-    """A/B baseline: lean system without weak-object filtering for explicit preferences."""
+class MnemoTraceLeanNoPreferenceObjectFilterSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但显式偏好不做弱宾语过滤。"""
 
     name = "engram_lean_no_preference_object_filter"
     ablations = ("preference_object_filter",)
 
 
-class EngramLeanNoPreferenceObjectNormalizationSystem(EngramLeanSystem):
-    """A/B baseline: lean system without preference object canonicalization."""
+class MnemoTraceLeanNoPreferenceObjectNormalizationSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但偏好宾语不做规范化（canonicalization）。"""
 
     name = "engram_lean_no_preference_object_normalization"
     ablations = ("preference_object_normalization",)
 
 
-class EngramLeanNoPreferenceReversalExtractionSystem(EngramLeanSystem):
-    """A/B baseline: lean system without high-confidence preference-update extraction."""
+class MnemoTraceLeanNoPreferenceReversalExtractionSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但关闭高置信度的偏好更新抽取。"""
 
     name = "engram_lean_no_preference_reversal_extraction"
     ablations = ("preference_reversal_extraction",)
 
 
-class EngramLeanNoNumericAggregationCandidatesSystem(EngramLeanSystem):
-    """A/B baseline: lean system without deterministic money/hour/page aggregation candidates."""
+class MnemoTraceLeanNoNumericAggregationCandidatesSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但关闭确定性的金额/时长/页数聚合候选。"""
 
     name = "engram_lean_no_numeric_aggregation_candidates"
     ablations = ("numeric_aggregation_candidates",)
 
 
-class EngramLeanNoAggregationRecallExpansionSystem(EngramLeanSystem):
-    """A/B baseline: lean system without expanded recall queries for aggregation questions."""
+class MnemoTraceLeanNoAggregationRecallExpansionSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但聚合问题不做扩展召回查询。"""
 
     name = "engram_lean_no_aggregation_recall_expansion"
     ablations = ("aggregation_recall_expansion",)
 
 
-class EngramLeanNoAggregationConstraintFilterSystem(EngramLeanSystem):
-    """A/B baseline: lean system without query-constraint filtering for aggregation candidates."""
+class MnemoTraceLeanNoAggregationConstraintFilterSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但聚合候选不做查询约束过滤。"""
 
     name = "engram_lean_no_aggregation_constraint_filter"
     ablations = ("aggregation_constraint_filter",)
 
 
-class EngramLeanNoTemporalHistorySystem(EngramLeanSystem):
-    """A/B baseline: lean system without natural-language history/supersession queries."""
+class MnemoTraceLeanNoTemporalHistorySystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但关闭自然语言的历史/取代（supersession）查询。"""
 
     name = "engram_lean_no_temporal_history"
     ablations = ("temporal_history",)
 
 
-class EngramLeanNoGraphSystem(EngramLeanSystem):
-    """A/B baseline: lean system without n-hop graph proximity scoring/traversal."""
+class MnemoTraceLeanNoGraphSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但关闭 n-hop 图邻近打分/遍历。"""
 
     name = "engram_lean_no_graph"
     ablations = ("graph",)
 
 
-class EngramLeanNoGraphRelationSystem(EngramLeanSystem):
-    """A/B baseline: lean system without query-conditioned relation weighting inside graph proximity."""
+class MnemoTraceLeanNoGraphRelationSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但图邻近内部不做按查询条件的关系加权。"""
 
     name = "engram_lean_no_graph_relation"
     ablations = ("graph_relation",)
 
 
-class EngramLeanNoGraphReinforcementSystem(EngramLeanSystem):
-    """A/B baseline: lean system without multi-path graph support reinforcement."""
+class MnemoTraceLeanNoGraphReinforcementSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但关闭多路径的图支持强化。"""
 
     name = "engram_lean_no_graph_reinforcement"
     ablations = ("graph_reinforcement",)
 
 
-class EngramLeanNoGraphSelfAnchorSystem(EngramLeanSystem):
-    """A/B baseline: lean system without first-person/user graph anchoring."""
+class MnemoTraceLeanNoGraphSelfAnchorSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但关闭第一人称/用户的图锚定。"""
 
     name = "engram_lean_no_graph_self_anchor"
     ablations = ("graph_self_anchor",)
 
 
-class EngramLeanNoGraphEntityAliasSystem(EngramLeanSystem):
-    """A/B baseline: lean system without unique short-name/alias graph anchoring."""
+class MnemoTraceLeanNoGraphEntityAliasSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但关闭唯一短名/别名的图锚定。"""
 
     name = "engram_lean_no_graph_entity_alias"
     ablations = ("graph_entity_alias",)
 
 
-class EngramLeanNoGraphNegativeSystem(EngramLeanSystem):
-    """A/B baseline: lean system without not/except/excluding graph constraints."""
+class MnemoTraceLeanNoGraphNegativeSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但关闭 not/except/excluding 类图约束。"""
 
     name = "engram_lean_no_graph_negative"
     ablations = ("graph_negative",)
 
 
-class EngramLeanNoPlannerLocationSystem(EngramLeanSystem):
-    """A/B baseline: lean system without planner support for based_in/located_in answer chains."""
+class MnemoTraceLeanNoPlannerLocationSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但 planner 不支持 based_in/located_in 答案链。"""
 
     name = "engram_lean_no_planner_location"
     ablations = ("planner_location",)
 
 
-class EngramLeanNoPlannerProjectSystem(EngramLeanSystem):
-    """A/B baseline: lean system without planner support for works_on/project answer chains."""
+class MnemoTraceLeanNoPlannerProjectSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，但 planner 不支持 works_on/project 答案链。"""
 
     name = "engram_lean_no_planner_project"
     ablations = ("planner_project",)
 
 
-class EngramLeanCoreSystem(EngramLeanSystem):
-    """A/B baseline: lean system with the newest evidence enrichments disabled together."""
+class MnemoTraceLeanCoreSystem(MnemoTraceLeanSystem):
+    """A/B 基线：lean 系统，同时关闭最新的证据增强项。"""
 
     name = "engram_lean_core"
     ablations = ("chain", "raw", "graph")
 
 
-SYSTEMS = {"engram": EngramSystem, "full_context": FullContextSystem, "rag": RAGSystem,
+SYSTEMS = {"engram": MnemoTraceSystem, "full_context": FullContextSystem, "rag": RAGSystem,
            "mem0": Mem0System, "zep": ZepSystem, "hipporag": HippoRAGSystem,
-           "engram_full": EngramFullSystem, "engram_lean": EngramLeanSystem,
-           "engram_lean_no_planner": EngramLeanNoPlannerSystem,
-           "engram_lean_no_chain": EngramLeanNoChainSystem,
-           "engram_lean_no_raw": EngramLeanNoRawSystem,
-           "engram_lean_no_provenance_chunks": EngramLeanNoProvenanceChunksSystem,
-           "engram_lean_no_evidence_budget": EngramLeanNoEvidenceBudgetSystem,
-           "engram_lean_no_summary_fallback": EngramLeanNoSummaryFallbackSystem,
-           "engram_lean_no_procedural_memory": EngramLeanNoProceduralMemorySystem,
-           "engram_lean_no_procedural_extraction": EngramLeanNoProceduralExtractionSystem,
-           "engram_lean_no_explicit_preference_extraction": EngramLeanNoExplicitPreferenceExtractionSystem,
-           "engram_lean_no_preference_object_filter": EngramLeanNoPreferenceObjectFilterSystem,
-           "engram_lean_no_preference_object_normalization": EngramLeanNoPreferenceObjectNormalizationSystem,
-           "engram_lean_no_preference_reversal_extraction": EngramLeanNoPreferenceReversalExtractionSystem,
-           "engram_lean_no_numeric_aggregation_candidates": EngramLeanNoNumericAggregationCandidatesSystem,
-           "engram_lean_no_aggregation_recall_expansion": EngramLeanNoAggregationRecallExpansionSystem,
-           "engram_lean_no_aggregation_constraint_filter": EngramLeanNoAggregationConstraintFilterSystem,
-           "engram_lean_no_temporal_history": EngramLeanNoTemporalHistorySystem,
-           "engram_lean_no_graph": EngramLeanNoGraphSystem,
-           "engram_lean_no_graph_relation": EngramLeanNoGraphRelationSystem,
-           "engram_lean_no_graph_reinforcement": EngramLeanNoGraphReinforcementSystem,
-           "engram_lean_no_graph_self_anchor": EngramLeanNoGraphSelfAnchorSystem,
-           "engram_lean_no_graph_entity_alias": EngramLeanNoGraphEntityAliasSystem,
-           "engram_lean_no_graph_negative": EngramLeanNoGraphNegativeSystem,
-           "engram_lean_no_planner_location": EngramLeanNoPlannerLocationSystem,
-           "engram_lean_no_planner_project": EngramLeanNoPlannerProjectSystem,
-           "engram_lean_core": EngramLeanCoreSystem}
+           "engram_full": MnemoTraceFullSystem, "engram_lean": MnemoTraceLeanSystem,
+           "engram_lean_no_planner": MnemoTraceLeanNoPlannerSystem,
+           "engram_lean_no_chain": MnemoTraceLeanNoChainSystem,
+           "engram_lean_no_raw": MnemoTraceLeanNoRawSystem,
+           "engram_lean_no_provenance_chunks": MnemoTraceLeanNoProvenanceChunksSystem,
+           "engram_lean_no_evidence_budget": MnemoTraceLeanNoEvidenceBudgetSystem,
+           "engram_lean_no_summary_fallback": MnemoTraceLeanNoSummaryFallbackSystem,
+           "engram_lean_no_procedural_memory": MnemoTraceLeanNoProceduralMemorySystem,
+           "engram_lean_no_procedural_extraction": MnemoTraceLeanNoProceduralExtractionSystem,
+           "engram_lean_no_explicit_preference_extraction": MnemoTraceLeanNoExplicitPreferenceExtractionSystem,
+           "engram_lean_no_preference_object_filter": MnemoTraceLeanNoPreferenceObjectFilterSystem,
+           "engram_lean_no_preference_object_normalization": MnemoTraceLeanNoPreferenceObjectNormalizationSystem,
+           "engram_lean_no_preference_reversal_extraction": MnemoTraceLeanNoPreferenceReversalExtractionSystem,
+           "engram_lean_no_numeric_aggregation_candidates": MnemoTraceLeanNoNumericAggregationCandidatesSystem,
+           "engram_lean_no_aggregation_recall_expansion": MnemoTraceLeanNoAggregationRecallExpansionSystem,
+           "engram_lean_no_aggregation_constraint_filter": MnemoTraceLeanNoAggregationConstraintFilterSystem,
+           "engram_lean_no_temporal_history": MnemoTraceLeanNoTemporalHistorySystem,
+           "engram_lean_no_graph": MnemoTraceLeanNoGraphSystem,
+           "engram_lean_no_graph_relation": MnemoTraceLeanNoGraphRelationSystem,
+           "engram_lean_no_graph_reinforcement": MnemoTraceLeanNoGraphReinforcementSystem,
+           "engram_lean_no_graph_self_anchor": MnemoTraceLeanNoGraphSelfAnchorSystem,
+           "engram_lean_no_graph_entity_alias": MnemoTraceLeanNoGraphEntityAliasSystem,
+           "engram_lean_no_graph_negative": MnemoTraceLeanNoGraphNegativeSystem,
+           "engram_lean_no_planner_location": MnemoTraceLeanNoPlannerLocationSystem,
+           "engram_lean_no_planner_project": MnemoTraceLeanNoPlannerProjectSystem,
+           "engram_lean_core": MnemoTraceLeanCoreSystem}
 
 
 def failed_qids(path: str, system: str, limit: int = 0) -> set[str]:
-    """QIDs that a prior run got wrong for `system`.
+    """某次历史运行中 `system` 答错的 QID 集合。
 
-    This is for regression replay: rerun the exact old misses with current code, without hand-picking
-    items or peeking at benchmark categories during retrieval.
+    用于回归重放：用当前代码重跑那些确切的旧错题，既不人工挑选题目，也不让检索过程偷看 benchmark
+    类别。
     """
     qids: list[str] = []
     with open(path, encoding="utf-8") as fh:
@@ -808,9 +801,8 @@ def eval_item(item, systems, rig):
         try:
             t0 = time.perf_counter()
             ctx = sysobj.context(item)
-            # Strategy routing (rig.strategies): pick the answer method from the QUESTION TEXT (generalizes;
-            # never peeks at the benchmark's category label). Counting/duration -> self-consistency vote;
-            # recommendation/preference -> two-stage (surface user history, then answer grounded in it).
+            # 策略路由（rig.strategies）：依据问题文本选择作答方式（可泛化；绝不偷看 benchmark 的类别
+            # 标签）。计数/时长 -> 自一致性投票；推荐/偏好 -> 两阶段（先列出用户历史，再据此作答）。
             if rig.strategies and rig.sc_on and rig.reasoning and needs_self_consistency(q):
                 prompt = ANSWER_TEMPLATE.format(qdate=qdate, context=ctx, question=q)
                 pred_raw = answer_self_consistency(rig.answerer_llm, prompt, sys_prompt, k=rig.sc_k)
@@ -820,13 +812,12 @@ def eval_item(item, systems, rig):
                 pred_raw = rig.answerer_llm.complete(
                     ANSWER_TEMPLATE.format(qdate=qdate, context=ctx, question=q), system=sys_prompt
                 )
-            # reasoning mode: judge + abstention check operate on the extracted final ANSWER line,
-            # not the chain-of-thought, so reasoning text doesn't false-positive abstention markers.
+            # reasoning 模式：judge 和拒答检查只作用于抽取出的最终 ANSWER 行，而非思维链文本，
+            # 避免推理文字误触发拒答标记。
             pred = extract_answer(pred_raw) if rig.reasoning else pred_raw
-            # Verification / re-retrieval loop: the #1 failure mode is the model answering "I don't know"
-            # because the evidence fell outside the first lean slice. If it abstains (and the question is
-            # actually answerable), widen the slice (more full sessions + timeline + multi-hop) and retry
-            # ONCE; keep the retried answer only if it's no longer an abstention.
+            # 验证 / 重检索循环：首要失败模式是模型答 "I don't know"，因为证据落在第一轮 lean 切片之外。
+            # 若出现拒答（且问题本身可答），就加宽切片（更多完整会话 + 时间线 + 多跳）并重试一次；
+            # 只有重试答案不再是拒答时才采纳。
             if (rig.verify_retry and looks_like_abstention(pred) and not is_abstention(item)
                     and sysobj.name == "engram_lean"):
                 ctx2 = sysobj.context(item, expand=1)
@@ -837,7 +828,7 @@ def eval_item(item, systems, rig):
                     pred, ctx = pred2, ctx2
             lat = (time.perf_counter() - t0) * 1000.0
             ok = judge_correct(item, pred, rig.judge_llm)
-            # save the (truncated) prediction + gold so a finished run can be error-analyzed without re-running
+            # 保存（截断的）预测和金标准答案，跑完后无需重跑即可做错误分析
             out["sys"][sysobj.name] = {"ok": ok, "tok": len(ctx.split()), "lat": lat, "err": None,
                                        "pred": pred[:300], "gold": str(item.get("answer", ""))[:200]}
         except Exception as e:  # noqa: BLE001
@@ -846,7 +837,7 @@ def eval_item(item, systems, rig):
 
 
 def emit_item(item, systems, rig):
-    """Produce each system's hypothesis (no judging — that's the official harness's job)."""
+    """生成每个系统的假设答案（不打分 —— 打分是官方 harness 的职责）。"""
     q, qdate = item["question"], item.get("question_date", "")
     hyps = {}
     for sysobj in systems:
@@ -883,7 +874,7 @@ def main():
     ap.add_argument("--pin-extraction", default="", metavar="DIR",
                     help="cache extractor replies in DIR so two runs build the SAME facts. Required for "
                          "an honest read-path A/B: without it the extractor's own run-to-run variance "
-                         "swamps the code change being measured (see engram/llm/cache.py).")
+                         "swamps the code change being measured (see mnemotrace/llm/cache.py).")
     ap.add_argument("--embedder", default="bge-small")
     ap.add_argument("--reranker", default="none",
                     help="none | bge-reranker | bge-reranker-large | bge-reranker-v2 (cross-encoder over chunk pool)")
@@ -921,7 +912,7 @@ def main():
                     help="engram_lean: on an 'I don't know', widen the retrieved slice + timeline and retry once")
     ap.add_argument("--intent", action="store_true", help="engram: L6 intent hint (benchmark-neutral)")
     ap.add_argument("--ablate", default="",
-                    help="comma-separated Engram algorithm switches to disable for all Engram systems in this run: "
+                    help="comma-separated MnemoTrace algorithm switches to disable for all MnemoTrace systems in this run: "
                          "evidence_budget, summary_fallback, procedural_memory, procedural_extraction, explicit_preference_extraction, preference_object_filter, preference_object_normalization, preference_reversal_extraction, numeric_aggregation_candidates, aggregation_recall_expansion, aggregation_constraint_filter, chain, temporal_history, raw/provenance, provenance_chunks, "
                          "graph/graph_proximity, graph_relation, "
                          "graph_reinforcement, graph_self_anchor, graph_entity_alias, graph_negative, "
@@ -942,7 +933,7 @@ def main():
                     help="emit {question_id,hypothesis} JSONL per system (to <emit>.<system>.jsonl) for the "
                          "OFFICIAL LongMemEval evaluate_qa.py judge — instead of self-judging here")
     args = ap.parse_args()
-    if args.full:  # one switch to turn ON every engram differentiator
+    if args.full:  # 一个开关打开全部 engram 差异化特性
         args.agentic = args.timeline = args.hyde = args.graph = args.wiki = True
         args.summary = args.verify = args.intent = True
 
@@ -967,8 +958,8 @@ def main():
     if args.shuffle:
         import random
 
-        random.Random(args.seed).shuffle(items)  # deterministic: partials stay category-balanced
-    # resume: skip items already scored in --out, so a killed run can be relaunched to continue.
+        random.Random(args.seed).shuffle(items)  # 确定性：部分运行也保持类别均衡
+    # resume：跳过 --out 中已打分的 item，被杀掉的运行可重启续跑。
     done_qids = set()
     if args.out and args.resume and os.path.exists(args.out):
         with open(args.out, encoding="utf-8") as fh:
@@ -981,8 +972,8 @@ def main():
         items = [it for it in items if it["question_id"] not in done_qids]
         print(f"  RESUME: {len(done_qids)} already done; {len(items)} of {n_before} remaining")
 
-    # reasoning mode generates EVIDENCE+REASON+ANSWER; reasoning-model backbones (doubao-seed, deepseek-r1)
-    # also emit a thinking trace, so give generous headroom to avoid truncating before the ANSWER line.
+    # reasoning 模式会生成 EVIDENCE+REASON+ANSWER；推理型骨干模型（doubao-seed、deepseek-r1）还会输出
+    # 思考轨迹，所以留足余量，避免在 ANSWER 行之前被截断。
     ans_max_tok = 1500 if args.reasoning else 256
     rig = Rig(
         embedder=make_embedder(args.embedder),
@@ -1042,7 +1033,7 @@ def main():
             print(f"  {s}: {args.emit}.{s}.jsonl")
         print("\nNow score with the OFFICIAL judge, e.g.:")
         print("  OPENAI_API_KEY=$UNIVIBE_API_KEY OPENAI_BASE_URL=https://api.univibe.cc/openai/v1 \\")
-        print(f"  python external/LongMemEval/src/evaluation/evaluate_qa.py gpt-5.5 {args.emit}.engram.jsonl <ref.json>")
+        print(f"  python external/LongMemEval/src/evaluation/evaluate_qa.py gpt-5.5 {args.emit}.{sys_names[0]}.jsonl <ref.json>")
         return
 
     hits = {s: defaultdict(list) for s in sys_names}

@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="assets/brain-circuit.svg">
+<!-- landing:page_title -->
+<meta name="description" content="忆痕（MnemoTrace）是面向 LLM Agent 的开源长期记忆引擎，支持事实提炼、双时间轴更新、精准检索与来源追溯。">
+<style>
+  /* Subsets cover the current page copy; regenerate when new characters are added. */
+  @font-face{font-family:"Mnemo Sans";src:url("assets/fonts/mnemo-sans-sc-var.woff2") format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
+  @font-face{font-family:"Mnemo Serif";src:url("assets/fonts/mnemo-serif-sc-var.woff2") format("woff2");font-weight:200 900;font-style:normal;font-display:swap}
+  :root{
+    --bg:#12171f; --ink:#edf0f5; --dim:#adb5c2; --dim2:#929fac;
+    --cyan:#9cb1cf; --teal:#8db5ac; --violet:#aaa8c4; --amber:#c9b18a;
+    --green:#8db5ac; --red:#d99aa7; --card:#1b232e; --line:#354150;
+    --field:#242e3c; --selected:#2c394c; --button:#384860; --button-hover:#44566f;
+    color-scheme:dark;
+    --maxw:1200px;
+    --font-sans:"Mnemo Sans","Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft Yahei",system-ui,-apple-system,sans-serif;
+    --font-serif:"Mnemo Serif","Noto Serif SC","Songti SC","STSong","SimSun",serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:var(--font-sans);
+    background:var(--bg); color:var(--ink); -webkit-font-smoothing:antialiased; line-height:1.6;
+    overflow-x:hidden;
+  }
+  a{color:inherit}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+<!-- landing:section_padding_note -->
+  section{padding:96px 0;position:relative;background:var(--bg)}
+  @media(max-width:760px){section{padding:72px 0}}
+  .eyebrow{letter-spacing:.3em;font-size:12.5px;color:var(--cyan);text-transform:uppercase;font-weight:700;margin-bottom:18px}
+  h2{font-size:clamp(26px,4vw,42px);font-weight:800;letter-spacing:-.5px;line-height:1.2;margin-bottom:18px}
+  /* Serif display type carries the archive/memory tone; body stays sans for legibility. */
+  h1,h2,h3,.fstep .t,.mcard .t,.hero .stat .n,.vtok,.token-accuracy b{font-family:var(--font-serif)}
+  h2 .hl,.hl{color:var(--cyan)}
+  .lead{font-size:clamp(16px,2vw,19px);color:var(--dim);max-width:720px}
+  /* reveal on scroll */
+  .rv{opacity:0;transform:translateY(26px);transition:opacity .7s ease,transform .7s cubic-bezier(.2,.7,.2,1)}
+  .rv.in{opacity:1;transform:none}
+  .rv.d1{transition-delay:.1s}.rv.d2{transition-delay:.22s}.rv.d3{transition-delay:.34s}.rv.d4{transition-delay:.46s}.rv.d5{transition-delay:.58s}
+
+  /* nav */
+  nav{position:fixed;top:0;left:0;right:0;z-index:50;backdrop-filter:blur(12px);
+    background:rgba(18,23,31,.95);border-bottom:1px solid var(--line)}
+  nav .wrap{display:flex;align-items:center;justify-content:space-between;padding:14px 24px}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
+  .logo .brand-mark{display:block;width:28px;height:28px;flex:none}
+<!-- landing:navigation_links_css -->
+  .nlinks a:hover,.nlinks a:focus-visible{color:var(--ink)}
+<!-- landing:navigation_actions_css -->
+  .ghbtn{display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid var(--line);border-radius:999px;padding:7px 15px;font-size:13.5px;text-decoration:none}
+  .ghbtn:hover{border-color:var(--cyan);color:var(--cyan)}
+<!-- landing:navigation_breakpoints_css -->
+  @media(max-width:720px){
+    .nlinks{display:none}
+    nav .mnav{display:block}
+    nav .wrap{padding:14px 16px}
+<!-- landing:mobile_navigation_css -->
+    .ghbtn{padding:7px 9px}
+    .ghbtn span{display:none}
+  }
+  .mnav{display:none;position:relative}
+  .mnav summary{list-style:none;cursor:pointer;border:1px solid var(--line);border-radius:999px;padding:7px 14px;
+    font-size:13.5px;line-height:1.6;color:var(--dim);white-space:nowrap}
+  .mnav summary::-webkit-details-marker{display:none}
+  .mnav summary::marker{content:""}
+  .mnav[open] summary{border-color:var(--cyan);color:var(--ink)}
+  .mnav summary:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}
+  .mnav-panel{position:absolute;right:0;top:calc(100% + 10px);display:grid;gap:2px;min-width:176px;padding:8px;
+    background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 40px -24px rgba(0,0,0,.9)}
+  .mnav-panel a{display:block;padding:9px 12px;border-radius:8px;font-size:13.5px;line-height:1.6;color:var(--dim);
+    text-decoration:none;white-space:nowrap}
+  .mnav-panel a:hover,.mnav-panel a:focus-visible{background:rgba(156,177,207,.08);color:var(--ink)}
+
+  /* hero */
+  .hero{padding:135px 0 72px;text-align:center;
+    position:relative;isolation:isolate;overflow:hidden;
+    background:radial-gradient(ellipse min(620px,80vw) 420px at 50% -70px,
+      rgba(139,173,224,.15) 0%,rgba(139,173,224,.07) 40%,rgba(139,173,224,0) 100%),var(--bg)}
+  .hero,section,footer{position:relative;isolation:isolate;overflow:hidden}
+  .particle-network-background{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+  .hero>.wrap,section>.wrap,footer>.wrap{position:relative;z-index:1}
+  .hero[data-graph-hover]{cursor:grab}
+  .hero[data-graph-dragging]{cursor:grabbing;user-select:none}
+  .hero .eyebrow{font-size:12px;letter-spacing:.3em;margin-bottom:16px}
+  .hero h1{font-size:clamp(32px,6.3vw,68px);font-weight:900;letter-spacing:-.025em;line-height:1.12}
+  .hero p.tag{font-size:clamp(15px,2.16vw,20px);color:var(--dim);margin:20px auto 0;max-width:612px}
+  .hero .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:1fr;gap:16px;max-width:760px;margin:38px auto 0}
+  .hero .stat{display:flex;flex-direction:column;align-items:center;min-width:0;background:var(--card);border:1px solid rgba(156,177,207,.16);border-radius:14px;padding:16px 18px}
+  .hero .stat .n{font-size:27px;font-weight:900;line-height:1.6;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink)}
+  .hero .stat .l{width:100%;font-size:12px;line-height:1.6;color:var(--dim2);margin-top:3px;overflow-wrap:anywhere}
+  /* Hero stats are pre-revealed, so their hover transition can be shorter than .rv's reveal timing. */
+  .hero .stat{transition:transform .24s cubic-bezier(.2,.7,.2,1),border-color .24s ease,background-color .24s ease,box-shadow .24s ease}
+  @media(hover:hover){
+    .hero .stat:hover{transform:translateY(-3px);border-color:rgba(156,177,207,.4);background:#1f2935;
+      box-shadow:0 14px 30px -18px rgba(0,0,0,.85)}
+    .hero .stat:hover .l{color:var(--dim)}
+  }
+  @media(max-width:680px){.hero .stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:360px){.hero .stat{padding:16px 14px}}
+  .hero .cta{gap:13px;margin-top:34px}
+  .hero .b1{padding:13px 25px;font-size:14px;border:1px solid transparent}
+  .hero .b2{padding:13px 23px;font-size:14px}
+  .hero .b1,.hero .b2{display:inline-flex;align-items:center;justify-content:center;gap:8px;width:184px;height:50px;padding:0;box-sizing:border-box;line-height:1.6;white-space:nowrap}
+  .button-icon{display:block;width:16px;height:16px;flex:none}
+  .button-arrow{display:block;line-height:1}
+  .ghbtn,.hero .b1,.hero .b2{transition:background-color .18s ease,border-color .18s ease,color .18s ease}
+  .hero .b2:hover{background:rgba(156,177,207,.06);border-color:rgba(156,177,207,.4)}
+  .ghbtn:focus-visible,.hero .b1:focus-visible,.hero .b2:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}
+<!-- landing:reduced_motion_css -->
+  .hero .note{font-size:12px;color:var(--dim2)}
+  .cta{display:flex;gap:14px;justify-content:center;margin-top:38px;flex-wrap:wrap}
+  .b1{background:var(--button);color:var(--ink);font-weight:800;
+    border:none;border-radius:999px;padding:14px 28px;font-size:15px;cursor:pointer;text-decoration:none}
+  .b1:hover{background:var(--button-hover)}
+  .b2{border:1px solid var(--line);border-radius:999px;padding:14px 26px;font-size:15px;text-decoration:none;color:var(--ink)}
+  .b2:hover{border-color:var(--cyan)}
+
+  /* A shared frame keeps the two approaches comparable without competing cards. */
+<!-- landing:problem_anchor_css -->
+  #problem h2{font-weight:700;letter-spacing:-.035em;line-height:1.3}
+  #problem .lead{max-width:740px;line-height:1.85;margin-top:22px}
+  .memory-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin-top:48px;
+    border-top:1px solid rgba(156,177,207,.22);border-bottom:1px solid rgba(156,177,207,.14)}
+  .memory-approach{min-width:0;padding:32px 40px 34px 0}
+  .memory-approach.recall{padding-left:40px;border-left:1px solid rgba(156,177,207,.14);
+    background:linear-gradient(110deg,rgba(156,177,207,.045),transparent 80%)}
+  .approach-label{display:block;margin-bottom:12px;font-size:11px;font-weight:500;letter-spacing:.16em;color:var(--dim2)}
+  .recall .approach-label{color:var(--cyan)}
+  .memory-approach h3{font-size:22px;font-weight:600;line-height:1.4;letter-spacing:-.02em;margin-bottom:24px}
+  .memory-approach ul{list-style:none;display:grid;gap:16px;font-size:15px;line-height:1.85;color:var(--dim)}
+  @media(max-width:760px){
+    .memory-comparison{grid-template-columns:1fr;margin-top:32px}
+    .memory-approach{padding:26px 20px}
+    .memory-approach.recall{padding:26px 20px;border-left:0;border-top:1px solid rgba(156,177,207,.14)}
+    .memory-approach h3{font-size:20px;margin-bottom:20px}
+    .memory-approach ul{gap:12px}
+  }
+
+  /* Numbered steps and quiet dividers keep the process readable over the particles. */
+<!-- landing:how_anchor_css -->
+  #how h2{font-weight:700;letter-spacing:-.035em;line-height:1.3}
+  #how .lead{max-width:900px;margin-top:22px;line-height:1.85}
+  #how .lead b{font-weight:600}
+  .flow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:32px;margin-top:48px;
+    border-bottom:1px solid rgba(156,177,207,.14)}
+  .fstep{min-width:0;position:relative;padding:24px 0 32px;text-align:left;
+    border-top:1px solid rgba(156,177,207,.22)}
+  .fstep .ic{font-family:ui-monospace,Menlo,monospace;font-size:12px;letter-spacing:.08em;color:var(--dim2);margin-bottom:22px}
+  .fstep .t{font-weight:600;font-size:18px;line-height:1.5;margin-bottom:12px;letter-spacing:-.02em}
+  .fstep .s{font-size:14px;color:var(--dim);line-height:1.85}
+  .memory-types-title{margin-top:56px;font-size:22px;font-weight:600;line-height:1.5;letter-spacing:-.02em}
+  .mem{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin-top:28px}
+  .mcard{min-width:0;padding:0 24px;border-left:1px solid rgba(156,177,207,.16);text-align:left}
+  .mcard:first-child{padding-left:0;border-left:0}
+  .mcard:last-child{padding-right:0}
+  .mcard .t{font-weight:600;font-size:17px;line-height:1.5;margin-bottom:10px}
+  .mcard .s{font-size:13px;color:var(--dim);line-height:1.85}
+  @media(min-width:761px) and (max-width:1000px){
+    .flow{grid-template-columns:repeat(2,minmax(0,1fr));gap:0 32px}
+    .mem{grid-template-columns:repeat(3,minmax(0,1fr));gap:28px 0}
+    .mcard:nth-child(4){padding-left:0;border-left:0}
+  }
+  @media(max-width:760px){
+    .flow{grid-template-columns:1fr;gap:0;margin-top:32px}
+    .fstep{padding:22px 0 24px 44px}
+    .fstep .ic{position:absolute;left:0;top:26px;margin:0}
+    .fstep .t{margin-bottom:8px}
+    .memory-types-title{margin-top:40px;font-size:20px}
+    .mem{grid-template-columns:1fr;margin-top:22px}
+    .mcard,.mcard:first-child{padding:18px 0;border-left:0;border-top:1px solid rgba(156,177,207,.14)}
+    .mcard .t{margin-bottom:6px}
+    .mcard .s{font-size:14px}
+  }
+
+  /* Read the changes first, then compare answers about the present and the past. */
+<!-- landing:example_anchor_css -->
+  #example h2{font-weight:700;letter-spacing:-.035em;line-height:1.3}
+  #example .lead{max-width:900px;margin-top:22px;line-height:1.85}
+  .example-layout{display:grid;grid-template-columns:1fr;gap:32px;margin-top:40px}
+  .example-history,.example-queries{min-width:0}
+  .example-label{font-size:12px;font-weight:500;letter-spacing:.12em;line-height:1.6;color:var(--dim2)}
+  .example-queries{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 48px;
+    border-top:1px solid rgba(156,177,207,.16);padding-top:24px}
+  .example-queries>.example-label{grid-column:1/-1}
+  .tl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:48px;margin-top:24px}
+  .tlrow{min-width:0;padding-right:32px;position:relative;text-align:left}
+  .tlrow::before{content:"";position:absolute;left:0;top:32px;width:7px;height:7px;border-radius:50%;background:var(--cyan)}
+  .tlrow::after{content:"";position:absolute;left:7px;right:-48px;top:35px;height:1px;background:var(--line)}
+  .tlrow:last-child{padding-right:0}
+  .tlrow:last-child::after{display:none}
+  /* Draw the connector to the current node, then reveal what changed. */
+  .tlrow:first-child::after{transform:scaleX(0);transform-origin:left center;transition:transform .65s cubic-bezier(.2,.7,.2,1) .6s}
+  .example-layout.in .tlrow:first-child::after{transform:scaleX(1)}
+  .tlrow:last-child::before{opacity:0;transform:scale(.4);transition:opacity .2s ease 1.25s,transform .25s cubic-bezier(.2,.7,.2,1) 1.25s}
+  .tlrow:last-child .dt{opacity:0;transform:translateY(4px);transition:opacity .3s ease 1.32s,transform .3s cubic-bezier(.2,.7,.2,1) 1.32s}
+  .tlrow:last-child .bd{opacity:0;transform:translateY(6px);transition:opacity .35s ease 1.42s,transform .35s cubic-bezier(.2,.7,.2,1) 1.42s}
+  .example-layout.in .tlrow:last-child::before{opacity:1;transform:scale(1)}
+  .example-layout.in .tlrow:last-child .dt,
+  .example-layout.in .tlrow:last-child .bd{opacity:1;transform:none}
+  .tlrow.old::before{background:var(--dim)}
+  .tlrow .dt{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim2);letter-spacing:.02em;line-height:1.6;margin-bottom:36px}
+  .tlrow .say{font-size:16px;line-height:1.7}
+  .tlrow .say b{font-weight:600}
+  .tlrow .fx{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 8px;font-size:12px;line-height:1.8;color:var(--dim);margin-top:10px}
+  @media(prefers-reduced-motion:reduce){.tlrow:first-child::after,.tlrow:last-child::before,.tlrow:last-child .dt,.tlrow:last-child .bd{transition:none}}
+  .tag2{display:inline-block;flex:none;font-size:10px;line-height:1.6;border-radius:4px;padding:2px 7px}
+  .tag-cur{background:rgba(156,177,207,.14);color:var(--cyan)}
+  .tag-old{background:var(--field);color:var(--dim)}
+  .example-query{min-width:0;margin-top:20px}
+  .example-query+.example-query{border-left:1px solid rgba(156,177,207,.14);padding-left:32px}
+  .example-question{font-size:14px;line-height:1.8;color:var(--dim)}
+  .example-question b{font-weight:500;color:var(--ink)}
+  .example-answer{font-size:25px;line-height:1.4;letter-spacing:-.02em;margin-top:8px}
+  .example-answer b{font-weight:600}
+  .example-answer-state{font-size:11px;color:var(--dim2);margin-top:5px}
+  .example-provenance{border-top:1px solid rgba(156,177,207,.14);padding-top:18px;margin-top:32px;line-height:1.8}
+  @media(max-width:760px){
+    .example-layout{margin-top:32px}
+    .tl{grid-template-columns:1fr;gap:0;margin-left:4px}
+    .tlrow,.tlrow:last-child{display:grid;grid-template-columns:62px minmax(0,1fr);gap:12px;padding:0 0 32px 18px;text-align:left}
+    .tlrow:last-child{padding-bottom:0}
+    .tlrow::before{left:-3px;top:7px}
+    .tlrow::after{left:0;right:auto;top:14px;bottom:-7px;width:1px;height:auto}
+    .tlrow:first-child::after{transform:scaleY(0);transform-origin:top center}
+    .example-layout.in .tlrow:first-child::after{transform:scaleY(1)}
+    .tlrow .dt{margin-bottom:0;padding-top:3px}
+    .example-queries{grid-template-columns:1fr;gap:0;padding-top:24px}
+    .example-query+.example-query{border-left:0;border-top:1px solid rgba(156,177,207,.14);padding:20px 0 0}
+    .tlrow .say{font-size:15px}
+    .example-answer{font-size:23px}
+    .example-provenance{margin-top:28px}
+  }
+
+  /* Both token bars use the full-context amount as their shared scale. */
+<!-- landing:benchmark_anchor_css -->
+  #bench h2{font-weight:700;letter-spacing:-.035em;line-height:1.3}
+  #bench .lead{max-width:900px;margin-top:22px;line-height:1.85}
+  .vs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:80px;margin-top:48px;
+    border-top:1px solid rgba(156,177,207,.22);border-bottom:1px solid rgba(156,177,207,.14)}
+  .vcard{min-width:0;position:relative;padding:32px 0}
+  .vcard+.vcard::before{content:"";position:absolute;left:-40px;top:0;bottom:0;width:1px;background:rgba(156,177,207,.14)}
+  .vcard h3{font-size:18px;font-weight:600;line-height:1.5;letter-spacing:-.02em}
+  .vtok{font-size:clamp(40px,4vw,48px);font-weight:700;line-height:1.15;letter-spacing:-.03em;
+    font-variant-numeric:tabular-nums;color:var(--dim);margin-top:28px}
+  .vcard.win .vtok{color:var(--cyan)}
+  .token-unit{font-size:12px;color:var(--dim2);margin-top:8px;line-height:1.6}
+  .token-track{height:3px;background:rgba(156,177,207,.1);margin-top:28px;border-radius:2px}
+  .token-fill{height:100%;width:0;background:var(--dim2);border-radius:inherit;transition:width 1s cubic-bezier(.2,.7,.2,1) .6s}
+  .vs.in .token-fill{width:var(--token-share)}
+  .win .token-fill{background:var(--cyan)}
+  @media(prefers-reduced-motion:reduce){.token-fill{width:var(--token-share);transition:none}}
+  .token-hint{font-size:12px;line-height:1.7;color:var(--dim2);margin-top:10px}
+  .token-accuracy{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;font-size:13px;color:var(--dim);margin-top:26px}
+  .token-accuracy b{font-size:18px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--ink)}
+  @media(max-width:760px){
+    .vs{grid-template-columns:1fr;gap:0;margin-top:32px}
+    .vcard,.vcard+.vcard{padding:26px 0;border-left:0}
+    .vcard+.vcard{border-top:1px solid rgba(156,177,207,.14)}
+    .vcard+.vcard::before{display:none}
+    .vtok{margin-top:22px}
+    .token-track{margin-top:24px}
+    .token-accuracy{margin-top:20px}
+  }
+
+  .benchmark-meta{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:24px;font-size:12px;line-height:1.8;color:var(--dim2)}
+  #bench .vs{margin-top:28px}
+  .benchmark-evidence{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:14px 28px;margin-top:20px;font-size:13px;line-height:1.8;color:var(--dim)}
+  .benchmark-links{display:flex;flex-wrap:wrap;gap:22px}
+  .benchmark-links a,.benchmark-details-content a{color:var(--cyan);text-decoration:none}
+  .benchmark-links a:hover,.benchmark-details-content a:hover{text-decoration:underline;text-underline-offset:4px}
+  .benchmark-links a:focus-visible,.benchmark-details summary:focus-visible,.benchmark-details-content a:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}
+  .benchmark-details{border-top:1px solid rgba(156,177,207,.14);margin-top:24px;font-size:13px;color:var(--dim)}
+  .benchmark-details summary{width:fit-content;padding:18px 0;cursor:pointer;line-height:1.8;color:var(--cyan)}
+  .benchmark-details summary::marker{font-size:10px}
+  .benchmark-details-content{min-width:0;padding:2px 0 8px;line-height:1.9}
+  .benchmark-command{max-width:100%;overflow-x:auto;margin:18px 0;padding:16px 18px;border:1px solid rgba(156,177,207,.14);border-radius:8px;background:rgba(156,177,207,.04);font-size:12px;line-height:1.9}
+  .benchmark-command code{padding:0;border:0;border-radius:0;background:none;color:var(--ink);font-size:inherit}
+  .benchmark-latencies{display:flex;flex-wrap:wrap;gap:4px 28px;font-variant-numeric:tabular-nums}
+  .benchmark-latency-note{font-size:12px;color:var(--dim2);margin-top:6px}
+  @media(max-width:760px){
+    .benchmark-meta{gap:6px 18px}
+    .benchmark-evidence{gap:12px}
+    .benchmark-links{gap:20px}
+  }
+  .note{font-size:13px;color:var(--dim);margin-top:14px}
+  code{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:13px;font-family:ui-monospace,Menlo,monospace}
+  /* Connection options lead to examples; primary actions stay at the bottom. */
+<!-- landing:use_anchor_css -->
+  #use h2{font-weight:700;letter-spacing:-.035em;line-height:1.3}
+  #use .lead{max-width:900px;margin-top:22px;line-height:1.85}
+  .integration-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:40px;margin-top:44px}
+  @media(min-width:761px) and (max-width:1000px){.integration-options{grid-template-columns:repeat(2,minmax(0,1fr));gap:32px}}
+  .integration-option{display:flex;flex-direction:column;min-width:0;padding-top:22px;border-top:1px solid rgba(156,177,207,.22)}
+  .integration-option h3{font-size:18px;font-weight:600;line-height:1.5;letter-spacing:-.02em}
+  .integration-option p{flex:1;font-size:14px;line-height:1.85;color:var(--dim);margin-top:14px}
+  .integration-option>a{align-self:flex-start;display:inline-block;margin-top:18px}
+  .integration-option>a,.integration-deploy a{font-size:13px;line-height:1.8;color:var(--cyan);text-decoration:none}
+  .integration-option>a:hover,.integration-deploy a:hover{text-decoration:underline;text-underline-offset:4px}
+  .integration-example{position:relative;margin-top:36px;border-top:1px solid rgba(156,177,207,.16);border-bottom:1px solid rgba(156,177,207,.14)}
+  .integration-code{min-width:0;scroll-margin-top:100px}
+  .integration-code summary{padding:20px 84px 20px 0;font-size:13px;line-height:1.8;color:var(--cyan);cursor:pointer}
+  .integration-code summary::marker{font-size:10px}
+  .integration-code pre{max-width:100%;overflow-x:auto;margin:0 0 20px;padding:18px 20px;border:1px solid rgba(156,177,207,.14);border-radius:8px;background:rgba(156,177,207,.04);font-size:12px;line-height:1.9}
+  .integration-code code{padding:0;border:0;border-radius:0;background:none;font-size:inherit;color:var(--ink)}
+  .copy-example{position:absolute;right:0;top:14px;border:1px solid var(--line);border-radius:6px;padding:5px 12px;background:transparent;color:var(--dim);font:inherit;font-size:12px;line-height:1.6;cursor:pointer;
+    opacity:0;pointer-events:none;transform:translateY(-2px);transition:opacity .18s ease,transform .18s ease}
+  .integration-example:hover .copy-example,
+  .copy-example:focus-visible{opacity:1;pointer-events:auto;transform:none}
+  .copy-example:hover{border-color:var(--cyan);color:var(--ink)}
+  .integration-example .copy-example:disabled{opacity:.6;cursor:wait}
+  @media(hover:none),(pointer:coarse){.copy-example{opacity:1;pointer-events:auto;transform:none}}
+  @media(prefers-reduced-motion:reduce){.copy-example{transition:none}}
+  .copy-status{font-size:12px;line-height:1.8;color:var(--dim)}
+  .copy-status:not(:empty){margin-bottom:14px}
+  .integration-deploy{font-size:13px;line-height:1.85;color:var(--dim);margin-top:22px}
+  .integration-cta{margin-top:32px;gap:14px}
+  .integration-cta a{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:48px;font-size:14px;font-weight:600;transition:background-color .18s ease,border-color .18s ease,color .18s ease}
+  #use a:focus-visible,.integration-code summary:focus-visible,.copy-example:focus-visible,.integration-code pre:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}
+  @media(max-width:760px){
+    .integration-options{grid-template-columns:1fr;gap:28px;margin-top:32px}
+    .integration-example{margin-top:28px}
+    .integration-cta{gap:12px}
+    .integration-cta a{padding:12px 20px}
+  }
+
+  /* Each mechanism gets a clear heading and room for its explanation. */
+<!-- landing:sources_anchor_css -->
+  #sources h2{font-weight:700;letter-spacing:-.035em;line-height:1.3}
+  #sources .lead{max-width:900px;margin-top:22px;line-height:1.85}
+  .chips{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:36px 40px;margin-top:44px}
+  .chip{min-width:0;border-top:1px solid rgba(156,177,207,.22);padding-top:22px}
+  .chip h3{font-size:18px;font-weight:600;line-height:1.5;letter-spacing:-.02em;margin-bottom:14px}
+  .chip p{font-size:14px;font-weight:400;line-height:1.85;color:var(--dim)}
+  .chip p b{font-weight:400;color:inherit}
+  .sources-note{border-top:1px solid rgba(156,177,207,.14);padding-top:20px;margin-top:36px;font-size:13px;line-height:1.85;color:var(--dim)}
+  @media(min-width:761px) and (max-width:1000px){.chips{grid-template-columns:repeat(2,minmax(0,1fr));gap:32px}}
+  @media(max-width:760px){
+    .chips{grid-template-columns:1fr;gap:28px;margin-top:32px}
+    .chip{padding-top:20px}
+    .chip h3{font-size:17px;margin-bottom:10px}
+    .sources-note{margin-top:28px}
+  }
+
+  footer{padding:16px 0 18px;border-top:1px solid var(--line);color:var(--dim);font-size:13px}
+  footer .particle-network-background{opacity:.55}
+  .footer-wordmark{position:relative;height:148px;margin-bottom:12px}
+  .footer-wordmark-canvas{display:block;width:100%;height:100%;pointer-events:none}
+  .footer-wordmark[data-graph-hover]{cursor:grab}
+  .footer-wordmark[data-graph-dragging]{cursor:grabbing;user-select:none}
+  .footer-meta{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px 28px;
+    padding-top:16px;border-top:1px solid rgba(156,177,207,.12);font-size:12px;line-height:1.8;color:var(--dim2)}
+  .footer-links{display:flex;flex-wrap:wrap;gap:12px 24px}
+  .footer-links a{color:var(--dim);text-decoration:none}
+  .footer-links a:hover{color:var(--ink)}
+  .footer-links a:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}
+  @media(max-width:760px){
+    footer{padding-top:12px}
+    .footer-meta{flex-direction:column;justify-content:center;gap:10px;text-align:center}
+    .footer-links{justify-content:center;gap:10px 18px}
+  }
+</style>
+<script src="assets/memory-graph.js" defer></script>
+</head>
+<body>
+
+<nav><div class="wrap">
+<!-- landing:brand_logo -->
+  <div class="nlinks">
+    <a href="#problem"><span>为什么需要</span></a>
+    <a href="#how"><span>工作原理</span></a>
+    <a href="#example"><span>使用示例</span></a>
+    <a href="#bench"><span>评估结果</span></a>
+    <a href="#sources"><span>系统架构</span></a>
+    <a href="#use"><span>接入方式</span></a>
+  </div>
+  <div class="navright">
+    <details class="mnav">
+      <summary aria-label="章节导航">目录</summary>
+      <div class="mnav-panel">
+        <a href="#problem">为什么需要</a>
+        <a href="#how">工作原理</a>
+        <a href="#example">使用示例</a>
+        <a href="#bench">评估结果</a>
+        <a href="#sources">系统架构</a>
+        <a href="#use">接入方式</a>
+      </div>
+    </details>
+    <a class="ghbtn" href="https://github.com/NotZhu/MnemoTrace" target="_blank" aria-label="GitHub"><img class="button-icon" src="assets/github.svg" width="16" height="16" alt=""><span>GitHub</span></a>
+  </div>
+</div></nav>
+
+<!-- HERO -->
+<header class="hero">
+  <canvas class="particle-network-background" data-particle-network aria-hidden="true"></canvas>
+  <div class="wrap">
+  <div class="eyebrow rv in"><span>开源 · 可自托管 · 长期记忆引擎</span></div>
+<!-- landing:hero_title -->
+<!-- landing:hero_tagline -->
+  <div class="stats">
+<!-- landing:accuracy_label -->
+    <div class="stat rv in d3"><div class="n hl">约 1/10</div><div class="l"><span>全文上下文占比</span></div></div>
+    <div class="stat rv in d3"><div class="n hl"><span>5 类</span></div><div class="l"><span>记忆类型</span></div></div>
+    <div class="stat rv in d4"><div class="n hl">开源</div><div class="l"><span>可自托管 · 可复现</span></div></div>
+  </div>
+  <div class="cta rv in d4">
+    <a class="b1" href="https://github.com/NotZhu/MnemoTrace" target="_blank"><img class="button-icon" src="assets/github.svg" width="16" height="16" alt=""><span>在 GitHub 上看</span></a>
+    <a class="b2" href="#how"><span>了解工作原理</span><span class="button-arrow" aria-hidden="true">↓</span></a>
+  </div>
+  <p class="note rv in d5" style="margin-top:18px"><span>评估方法与原始日志公开，支持自行复现</span></p>
+</div></header>
+
+<!-- PROBLEM -->
+<section id="problem">
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+<div class="wrap">
+  <div class="eyebrow rv"><span>为什么需要长期记忆</span></div>
+  <h2 class="rv d1">让每次对话，<span class="hl">都接得上过去。</span></h2>
+<!-- landing:problem_intro -->
+  <div class="memory-comparison rv d2">
+    <article class="memory-approach" aria-labelledby="replay-title">
+      <span class="approach-label">完整上下文</span>
+      <h3 id="replay-title">重放完整历史</h3>
+      <ul>
+        <li>50 段对话，约 <b>7.9 万 token</b>，每次提问都得重读</li>
+        <li>历史越积越多，每次读取也越慢、越贵</li>
+        <li>无关信息太多，关键细节反而容易漏掉</li>
+        <li>本次 500 题评测，准确率 <b>78.8%</b></li>
+      </ul>
+    </article>
+    <article class="memory-approach recall" aria-labelledby="recall-title">
+<!-- landing:memory_approach_label -->
+      <h3 id="recall-title">按需召回记忆</h3>
+      <ul>
+        <li>先把对话整理成记忆，提问时找回相关事实和原文</li>
+        <li>平均只读约 <b>7.9k token</b>，约为全文的 <b>1/10</b></li>
+        <li>少读无关内容，让 AI 把注意力放在问题上</li>
+        <li>同一批 500 题，准确率 <b>84.4%</b></li>
+      </ul>
+    </article>
+  </div>
+</div></section>
+
+<!-- HOW -->
+<section id="how">
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+<div class="wrap">
+  <div class="eyebrow rv"><span>记忆如何运作</span></div>
+<!-- landing:how_intro -->
+
+  <div class="flow">
+    <div class="fstep rv d2"><div class="ic" aria-hidden="true">01</div><div class="t"><span>保存原始对话</span></div><div class="s"><span>原文完整留下<br>记录所属会话与时间</span></div></div>
+
+    <div class="fstep rv d3"><div class="ic" aria-hidden="true">02</div><div class="t"><span>提炼原子事实</span></div><div class="s"><span>把对话整理成一条条事实<br>每条都能追溯到原文</span></div></div>
+
+    <div class="fstep rv d3"><div class="ic" aria-hidden="true">03</div><div class="t"><span>构建双时间轴图谱</span></div><div class="s"><span>关联实体，记录事实何时有效、何时得知<br>更新标记失效，保留旧记录</span></div></div>
+
+    <div class="fstep rv d4"><div class="ic" aria-hidden="true">04</div><div class="t"><span>检索事实与原文</span></div><div class="s"><span>按问题找回相关记忆<br>事实提供线索，原文补充细节</span></div></div>
+  </div>
+
+<!-- landing:memory_types_heading -->
+  <div class="mem">
+    <div class="mcard rv d2"><div class="t"><span>情节记忆</span></div><div class="s"><span>聊过什么、发生过什么，保留原始记录</span></div></div>
+    <div class="mcard rv d2"><div class="t"><span>语义记忆</span></div><div class="s"><span>提炼出的事实，以及实体之间的关系</span></div></div>
+    <div class="mcard rv d3"><div class="t"><span>用户画像</span></div><div class="s"><span>根据已有事实，归纳身份、偏好与习惯</span></div></div>
+    <div class="mcard rv d3"><div class="t"><span>程序记忆</span></div><div class="s"><span>交代过的规则、指令与操作步骤</span></div></div>
+    <div class="mcard rv d4"><div class="t"><span>工作记忆</span></div><div class="s"><span>当前会话的临时状态，可设置有效期</span></div></div>
+  </div>
+</div></section>
+
+<!-- EXAMPLE -->
+<section id="example">
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+<div class="wrap">
+<!-- landing:example_intro -->
+  <div class="example-layout rv d2">
+    <div class="example-history">
+      <h3 class="example-label">记忆如何更新</h3>
+      <div class="tl">
+<!-- landing:example_timeline -->
+      </div>
+    </div>
+    <div class="example-queries">
+      <h3 class="example-label">按时间查询</h3>
+      <div class="example-query">
+<!-- landing:example_current_answer -->
+      </div>
+      <div class="example-query">
+<!-- landing:example_history_answer -->
+      </div>
+    </div>
+  </div>
+<!-- landing:example_provenance -->
+</div></section>
+
+<!-- BENCHMARK -->
+<section id="bench">
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+<div class="wrap">
+<!-- landing:benchmark_heading -->
+  <h2 class="rv d1"><span>同一批问题，准确率高出 <span class="hl">5.6 个百分点</span></span></h2>
+  <p class="lead rv d2"><span>题目相同，回答模型相同，评分提示词采用 LongMemEval 官方版本。每道题的回答、判分和运行记录都已公开，可以逐项查看。</span></p>
+<!-- landing:benchmark_metadata -->
+  <div class="vs rv d2">
+    <div class="vcard">
+      <h3>重读全部历史</h3>
+      <div class="vtok">79.2k</div>
+      <p class="token-unit">token · 平均每题用量</p>
+      <div class="token-track" aria-hidden="true"><div class="token-fill" style="--token-share:100%"></div></div>
+      <p class="token-hint">全文上下文用量</p>
+      <p class="token-accuracy">准确率 <b>78.8%</b></p>
+    </div>
+    <div class="vcard win">
+      <h3>检索相关记忆</h3>
+      <div class="vtok">7.9k</div>
+      <p class="token-unit">token · 平均每题用量</p>
+      <div class="token-track" aria-hidden="true"><div class="token-fill" style="--token-share:calc(7.9 / 79.2 * 100%)"></div></div>
+      <p class="token-hint">约为全文的 1/10</p>
+      <p class="token-accuracy">准确率 <b>84.4%</b></p>
+    </div>
+  </div>
+  <div class="benchmark-evidence rv d3">
+<!-- landing:benchmark_summary -->
+    <div class="benchmark-links">
+      <a href="https://github.com/NotZhu/MnemoTrace/blob/main/results/run500_v3_main_deepseekjudge.jsonl" target="_blank" rel="noopener noreferrer">查看原始日志 <span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/NotZhu/MnemoTrace/blob/main/RESULTS.md" target="_blank" rel="noopener noreferrer">评测方法 <span aria-hidden="true">↗</span></a>
+    </div>
+  </div>
+  <details class="benchmark-details rv d3">
+    <summary>核验结果与复现评测</summary>
+    <div class="benchmark-details-content">
+      <p>下载仓库后，可从已公开的原始日志核验结果。重新运行评测所需的数据、模型与环境配置见<a href="https://github.com/NotZhu/MnemoTrace/blob/main/RESULTS.md" target="_blank" rel="noopener noreferrer">完整评测指南</a>。</p>
+      <pre class="benchmark-command"><code>python eval/report.py results/run500_v3_main_deepseekjudge.jsonl
+python eval/validate_results.py --expected-rows 500 --require-complete --system engram_lean --system full_context results/run500_v3_main_deepseekjudge.jsonl</code></pre>
+      <div class="benchmark-latencies">
+        <p>全文上下文基线：p50 14.6s · p95 58.4s</p>
+        <p>MnemoTrace：p50 52.9s · p95 117.7s</p>
+      </div>
+      <p class="benchmark-latency-note">以上为同次运行的端到端回答延迟，包含模型调用，不代表单独的检索耗时。</p>
+    </div>
+  </details>
+</div></section>
+
+<!-- SOURCES -->
+<section id="sources">
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+<div class="wrap">
+<!-- landing:architecture_intro -->
+  <div class="chips">
+<!-- landing:architecture_cards -->
+</div></section>
+
+<!-- HOW TO CALL -->
+<section id="use">
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+<div class="wrap">
+  <div class="eyebrow rv"><span>接入方式 · API、MCP 与 SDK</span></div>
+  <h2 class="rv d1"><span>把记忆<span class="hl">接进现有应用。</span></span></h2>
+  <p class="lead rv d2"><span>本地启动服务后，可在控制台体验记忆的写入、更新与检索；也可通过 MCP、API 或 SDK 接入现有应用，或自行部署，将数据保存在自己的环境中。</span></p>
+
+  <div class="integration-options rv d2">
+    <article class="integration-option">
+      <h3>HTTP API</h3>
+      <p>通过接口写入、召回和管理记忆，接入现有服务与应用。</p>
+      <a href="#api-example" data-open-example>查看调用示例 <span aria-hidden="true">↓</span></a>
+    </article>
+    <article class="integration-option">
+      <h3>MCP</h3>
+      <p>为支持 MCP 的 Agent 提供记忆工具，在对话与任务之间延续上下文。</p>
+      <a href="https://github.com/NotZhu/MnemoTrace/blob/main/docs/agent-adapters.md" target="_blank" rel="noopener noreferrer">查看配置指南 <span aria-hidden="true">↗</span></a>
+    </article>
+    <article class="integration-option">
+      <h3>SDK / OpenAI 兼容</h3>
+      <p>通过 SDK 或 OpenAI 兼容接口，将记忆接入现有调用流程。</p>
+      <a href="https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/README.md" target="_blank" rel="noopener noreferrer">查看接入文档 <span aria-hidden="true">↗</span></a>
+    </article>
+  </div>
+  <div class="integration-example rv d3">
+    <details id="api-example" class="integration-code">
+      <summary>HTTP API 调用示例</summary>
+      <pre id="api-snippet" tabindex="0"><code># 连接本地服务，设置自己的命名空间
+B=http://127.0.0.1:8000
+K=my-app
+
+# 写入：告诉它一件需要记住的事
+curl -X POST "$B/v1/remember" \
+  -H "Authorization: Bearer $K" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"我喜欢简洁的回答，先给结论，再解释原因。"}'
+
+# 召回：带着问题找回相关记忆
+curl -X POST "$B/v1/recall" \
+  -H "Authorization: Bearer $K" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"我希望你怎样回答问题？"}'</code></pre>
+    </details>
+    <button type="button" class="copy-example" data-copy-code="api-snippet" aria-label="复制 HTTP API 调用示例">复制</button>
+    <p class="copy-status" role="status" aria-live="polite"></p>
+  </div>
+  <p class="integration-deploy rv d3">希望数据保存在自己的环境？<a href="https://github.com/NotZhu/MnemoTrace/blob/main/deploy/README.md" target="_blank" rel="noopener noreferrer">查看自托管部署指南 <span aria-hidden="true">↗</span></a></p>
+  <div class="cta integration-cta rv d4">
+    <a class="b1" role="button" aria-disabled="true" tabindex="-1" style="cursor:default;opacity:.55;pointer-events:none">打开体验控制台</a>
+    <a class="b2" href="https://github.com/NotZhu/MnemoTrace/blob/main/API.md" target="_blank" rel="noopener noreferrer">查看接入文档 <span aria-hidden="true">↗</span></a>
+  </div>
+</div></section>
+
+<footer>
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <div class="footer-wordmark" role="img" aria-label="MnemoTrace">
+      <canvas class="footer-wordmark-canvas" data-particle-network="wordmark" aria-hidden="true"></canvas>
+    </div>
+    <div class="footer-meta">
+      <p>开源 · 可自托管 · 结果可复现</p>
+      <div class="footer-links">
+        <a href="https://github.com/NotZhu/MnemoTrace" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+        <a href="https://github.com/NotZhu/MnemoTrace/blob/main/API.md" target="_blank" rel="noopener noreferrer">文档</a>
+        <a href="https://github.com/NotZhu/MnemoTrace/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">AGPL-3.0</a>
+        <a href="https://github.com/NotZhu/MnemoTrace/blob/main/COMMERCIAL-LICENSE.md" target="_blank" rel="noopener noreferrer">商业许可</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // scroll reveal
+  const io=new IntersectionObserver((es)=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}}),{threshold:.16});
+  document.querySelectorAll('.rv:not(.in)').forEach(el=>io.observe(el));
+  // The HTTP demo can use the legacy copy path when the Clipboard API is unavailable.
+  document.querySelectorAll('[data-open-example]').forEach(link => {
+    link.addEventListener('click', () => {
+      const example = document.getElementById('api-example');
+      if (example) example.open = true;
+    });
+  });
+  document.querySelectorAll('[data-copy-code]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const snippet = document.getElementById(button.dataset.copyCode);
+      if (!snippet) return;
+      const status = button.parentElement.querySelector('.copy-status');
+      const text = snippet.textContent;
+      let copied = false;
+      button.disabled = true;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        }
+      } catch (_) {}
+      if (!copied) {
+        const field = document.createElement('textarea');
+        const focused = document.activeElement;
+        field.value = text;
+        field.setAttribute('aria-hidden', 'true');
+        field.tabIndex = -1;
+        field.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0';
+        document.body.appendChild(field);
+        try {
+          field.focus({ preventScroll: true });
+          field.select();
+          copied = document.execCommand('copy');
+        } catch (_) {
+          copied = false;
+        } finally {
+          field.remove();
+          if (focused && typeof focused.focus === 'function') focused.focus({ preventScroll: true });
+        }
+      }
+      button.disabled = false;
+      button.textContent = copied ? '已复制' : '复制';
+      if (copied) {
+        if (status) status.textContent = '调用示例已复制。';
+<!-- landing:copy_feedback -->
+      } else {
+        const example = snippet.closest('details');
+        if (example) example.open = true;
+        snippet.focus();
+        const selection = window.getSelection();
+        if (selection) {
+          const range = document.createRange();
+          range.selectNodeContents(snippet);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        if (status) status.textContent = '自动复制未成功，请在展开的示例中手动复制。';
+      }
+    });
+  });
+  // Close the mobile section menu after a jump, an outside click, or Escape.
+  document.querySelectorAll('.mnav-panel a').forEach(link => link.addEventListener('click', () => { link.closest('details').open = false; }));
+  document.addEventListener('click', e => document.querySelectorAll('.mnav[open]').forEach(menu => { if (!menu.contains(e.target)) menu.open = false; }));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') document.querySelectorAll('.mnav[open]').forEach(menu => { menu.open = false; }); });
+</script>
+</body>
+</html>
