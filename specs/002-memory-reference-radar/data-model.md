@@ -8,7 +8,7 @@ preserve.
 
 ## Entity: Reference Source
 
-A public repository, product page, paper, benchmark, or technique collection relevant to Engram's
+A public repository, product page, paper, benchmark, or technique collection relevant to MnemoTrace's
 long-term memory strategy.
 
 **Fields**:
@@ -19,9 +19,9 @@ long-term memory strategy.
   lifelong memory, reflection/experience memory, product surface, benchmark, or radar collection.
 - `priority`: P0, P1, P2, or benchmark/radar.
 - `architecture_signal`: The strongest observed design pattern.
-- `engram_learning`: What Engram may learn at the architecture level.
-- `adoption_candidate`: The Engram-native candidate this source informs, or `research-only`.
-- `evidence_status`: External-only, reproduced locally, benchmarked in Engram harness, or rejected by
+- `mnemotrace_learning`: What MnemoTrace may learn at the architecture level.
+- `adoption_candidate`: The MnemoTrace-native candidate this source informs, or `research-only`.
+- `evidence_status`: External-only, reproduced locally, benchmarked in MnemoTrace harness, or rejected by
   ablation.
 - `clean_room_license_status`: Architecture-only, license pending, license reviewed, or blocked.
 - `last_verified`: Date when the link and high-level claim were last checked.
@@ -33,7 +33,7 @@ long-term memory strategy.
 - Any source with copyleft, unclear, or missing license information must be marked architecture-only
   until a later plan reviews license implications.
 - External benchmark claims may be summarized only as source claims; they cannot be copied into public
-  Engram results.
+  MnemoTrace results.
 
 ## Entity: Capability Pattern
 
@@ -43,15 +43,15 @@ A reusable architecture idea observed across one or more reference sources.
 
 - `name`: Short pattern label.
 - `source_refs`: One or more reference sources.
-- `engram_native_form`: How the pattern maps to Engram primitives.
-- `strategic_bets`: One or more Engram bets A-F.
+- `mnemotrace_native_form`: How the pattern maps to MnemoTrace primitives.
+- `strategic_bets`: One or more MnemoTrace bets A-F.
 - `expected_benefit`: User-visible or benchmark-visible improvement.
 - `risk`: Known risk such as prompt bloat, dependency weight, loss of provenance, or benchmark
   overfitting.
 
 **Validation rules**:
 
-- The pattern must map to Engram primitives instead of naming only an external project.
+- The pattern must map to MnemoTrace primitives instead of naming only an external project.
 - The pattern must preserve raw evidence plus consolidated memory unless it is explicitly rejected or
   redesigned.
 - The pattern must not require a new mandatory dependency in this feature.
@@ -72,7 +72,7 @@ A promoted capability pattern that is ready to become a later Spec-Kit feature o
 - `benchmark_target`: Benchmark or synthetic slice that tests the intended behavior.
 - `metrics`: Accuracy, tokens, and p50/p95 latency direction.
 - `rollback_criterion`: Evidence that means the candidate should not ship.
-- `messaging_impact`: None, internal-only, or public after Engram-owned reproduction.
+- `messaging_impact`: None, internal-only, or public after MnemoTrace-owned reproduction.
 
 **Validation rules**:
 
@@ -88,8 +88,8 @@ The proof status for a claim or candidate.
 **Fields**:
 
 - `claim`: The statement being evaluated.
-- `source`: External source, Engram run, or local inspection.
-- `status`: External-only, reproduced locally, benchmarked in Engram harness, contradicted, or
+- `source`: External source, MnemoTrace run, or local inspection.
+- `status`: External-only, reproduced locally, benchmarked in MnemoTrace harness, contradicted, or
   insufficient evidence.
 - `artifact`: Link or path to proof when available.
 - `metrics`: Accuracy, tokens, latency, and error count if benchmarked.
@@ -97,9 +97,9 @@ The proof status for a claim or candidate.
 
 **Validation rules**:
 
-- Public performance claims require Engram-owned raw logs.
+- Public performance claims require MnemoTrace-owned raw logs.
 - Benchmark evidence must include the full-context baseline from the same run when used publicly.
-- External-only evidence cannot be used as proof of Engram performance.
+- External-only evidence cannot be used as proof of MnemoTrace performance.
 
 ## Entity: Messaging Guardrail
 
@@ -114,9 +114,9 @@ A rule that separates internal research from public claims.
 
 **Validation rules**:
 
-- Public copy must not name-drop competitors as a benchmark comparison unless Engram reproduced the
+- Public copy must not name-drop competitors as a benchmark comparison unless MnemoTrace reproduced the
   comparison in its harness and the copy includes the full metrics triple.
-- Public copy must not say "SOTA", "#1", "world best", or similar without committed Engram evidence.
+- Public copy must not say "SOTA", "#1", "world best", or similar without committed MnemoTrace evidence.
 - Internal documents may name references, but must mark external claims as external-only.
 
 ## State Transitions
@@ -127,7 +127,7 @@ Reference Source
               -> archived if stale or irrelevant
 
 Capability Pattern
-  observed -> mapped-to-Engram -> candidate-proposed
+  observed -> mapped-to-MnemoTrace -> candidate-proposed
            -> rejected if it violates invariants or lacks a measurable hypothesis
 
 Adoption Candidate
@@ -135,6 +135,6 @@ Adoption Candidate
                 -> rejected/archived if ablation fails or risks outweigh gains
 
 Evidence Record
-  external-only -> reproduced locally -> benchmarked in Engram harness
+  external-only -> reproduced locally -> benchmarked in MnemoTrace harness
                 -> contradicted or insufficient-evidence if checks fail
 ```

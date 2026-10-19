@@ -1,31 +1,34 @@
 # 公开演示实例（open 模式）—— 与生产模板 docker-compose.yml 的区别，仅在演示语义所必需的两点：
-#   1. ENGRAM_OPEN=1：任意 bearer 即命名空间（key `1` 是公开演示空间），不配置 ENGRAM_API_KEYS。
+#   1. MNEMOTRACE_OPEN=1：任意 bearer 即命名空间（`mnemotrace-test` 是公开演示空间），不配置 MNEMOTRACE_API_KEYS。
+#      `1`、`test` 是普通空间，允许在明确确认后清空。
 #   2. 端口绑定 0.0.0.0：演示实例直接对公网提供 UI/API。
 # 其余与生产模板保持一致：持久卷（重启不丢数据）、非 root、只读根文件系统、丢弃 capabilities、
 # /ready 门禁。生产部署请用 docker-compose.yml，不要用本文件。
 #
 #   docker compose -f deploy/docker-compose.demo.yml up -d --build
+name: mnemotrace
+
 services:
-  engram:
+  mnemotrace:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: engram-memory:demo
+    image: mnemotrace-memory:demo
     init: true
     restart: unless-stopped
     ports:
-      - "${ENGRAM_PORT:-8456}:8000"
+      - "${MNEMOTRACE_PORT:-8456}:8000"
     environment:
-      ENGRAM_OPEN: "1"
-      ENGRAM_DATA_DIR: /data
-      ENGRAM_EMBEDDER: "${ENGRAM_EMBEDDER:-hashing}"
-      ENGRAM_LLM: "${ENGRAM_LLM:-}"
-      ENGRAM_ANSWERER: "${ENGRAM_ANSWERER:-}"
-      ENGRAM_MAX_REQUEST_BYTES: "${ENGRAM_MAX_REQUEST_BYTES:-2097152}"
-      ENGRAM_MAX_HOT_USERS: "${ENGRAM_MAX_HOT_USERS:-64}"
-      ENGRAM_MAX_HOT_FACTS: "${ENGRAM_MAX_HOT_FACTS:-10000}"
+      MNEMOTRACE_OPEN: "1"
+      MNEMOTRACE_DATA_DIR: /data
+      MNEMOTRACE_EMBEDDER: "${MNEMOTRACE_EMBEDDER:-hashing}"
+      MNEMOTRACE_LLM: "${MNEMOTRACE_LLM:-}"
+      MNEMOTRACE_ANSWERER: "${MNEMOTRACE_ANSWERER:-}"
+      MNEMOTRACE_MAX_REQUEST_BYTES: "${MNEMOTRACE_MAX_REQUEST_BYTES:-2097152}"
+      MNEMOTRACE_MAX_HOT_USERS: "${MNEMOTRACE_MAX_HOT_USERS:-64}"
+      MNEMOTRACE_MAX_HOT_FACTS: "${MNEMOTRACE_MAX_HOT_FACTS:-10000}"
     volumes:
-      - engram_demo_data:/data
+      - mnemotrace_demo_data:/data
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -45,4 +48,4 @@ services:
       retries: 4
 
 volumes:
-  engram_demo_data:
+  mnemotrace_demo_data:

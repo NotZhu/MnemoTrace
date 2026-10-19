@@ -1,13 +1,13 @@
-"""M0 guarantees, encoded as tests. These are the behaviors that make Engram a *memory* system and not
-just RAG: knowledge-update via non-destructive supersession, bi-temporal as-of queries, multi-hop graph
-reasoning, abstention, and identity resolution -- all running offline with zero dependencies."""
+"""M0 的保证，以测试的形式固化下来。这些行为让 忆痕 成为一个*记忆*系统而不只是 RAG：
+通过非破坏性取代（supersession）实现知识更新、双时间轴 as-of 查询、multi-hop 图推理、拒答、
+身份解析——全部在零依赖的离线环境运行。"""
 from __future__ import annotations
 
-from engram.config import Config
-from engram import Memory
-from engram.embed import HashingEmbedder
-from engram.types import Fact
-from engram.util import DAY
+from mnemotrace.config import Config
+from mnemotrace import Memory
+from mnemotrace.embed import HashingEmbedder
+from mnemotrace.types import Fact
+from mnemotrace.util import DAY
 
 BASE = 1_700_000_000.0
 
@@ -41,7 +41,7 @@ def test_single_hop_qa():
 
 def test_knowledge_update_supersedes_current_answer():
     mem = build()
-    # the current answer must reflect the job change, not the stale fact
+    # 当前答案必须反映换工作这件事，而不是过期的旧 fact
     assert "moonshot" in mem.search("Where does Wei work?", user_id="u1").answer().lower()
 
 
@@ -97,9 +97,9 @@ def test_duplicate_live_identity_slot_reads_current_head():
 
 
 def test_duplicate_live_slot_for_non_identity_single_valued_predicate_reads_current_head():
-    """The slot-head dedup covers ALL single-valued predicates, not just the small _IDENTITY_PREDS list.
-    A predicate like `major` is single-valued (state) but not in the identity set — two live payloads
-    for the same slot must still collapse to the current head instead of competing in fusion."""
+    """slot-head 去重覆盖所有单值 predicate，而不只是 _IDENTITY_PREDS 这个小列表。
+    像 `major` 这样的 predicate 是单值（状态）但不在身份集合里——同一槽位的两个 live payload
+    仍必须收敛到当前 head，而不是在融合中互相竞争。"""
     mem = Memory(config=Config(w_sem=0.0, w_lex=0.0, w_graph=0.0, w_rec=0.0, w_sal=1.0))
     old = Fact(
         "Wei",
@@ -141,11 +141,11 @@ def test_multi_valued_identity_facts_are_not_slot_deduped():
 
 
 def test_zero_score_evidence_signals_do_not_boost_irrelevant_salient_facts():
-    """RRF should fuse evidence, not arbitrary zero-score positions.
+    """RRF 应该融合证据，而不是任意的零分位次。
 
-    The target is the only lexical hit. The distractor has very high salience but zero lexical evidence.
-    If the lexical ranking includes zero-score docs, the distractor borrows almost the same lexical RRF
-    contribution as the true hit and can outrank it. Filtering zero evidence keeps relevance first.
+    target 是唯一的 lexical 命中。distractor 的显著度极高但没有任何 lexical 证据。如果 lexical
+    排序把零分文档也纳入，distractor 几乎能借到与真实命中相同的 lexical RRF 贡献，从而反超它。
+    过滤掉零证据才能让相关性优先。
     """
     mem = Memory(config=Config(w_sem=0.0, w_lex=1.0, w_graph=0.0, w_rec=0.0, w_sal=0.6))
     target = Fact(
@@ -182,7 +182,7 @@ def test_project_rules_are_structured_multi_value_memory():
         session_id="codex:repo:thread",
     )
     mem.add(
-        "Project preference: Codex should close Engram sessions when tasks end.",
+        "Project preference: Codex should close MnemoTrace sessions when tasks end.",
         user_id="codex-e2e",
         session_id="codex:repo:thread",
     )
@@ -193,7 +193,7 @@ def test_project_rules_are_structured_multi_value_memory():
     assert any(f.text.startswith("project rule ") for f in live)
     assert any(f.text.startswith("project preference ") for f in live)
     assert any("raw logs" in f.object for f in live)
-    assert any("close Engram sessions" in f.object for f in live)
+    assert any("close MnemoTrace sessions" in f.object for f in live)
     assert len(live) == 2
 
 
@@ -240,12 +240,12 @@ def test_short_project_rule_context_preserves_key_constraint():
     user = "codex-e2e"
     session = "codex:repo:thread"
     mem.add(
-        "Project rule: Engram benchmark claims must be backed by committed raw logs before public copy changes.",
+        "Project rule: MnemoTrace benchmark claims must be backed by committed raw logs before public copy changes.",
         user_id=user,
         session_id=session,
     )
     mem.add(
-        "Project preference: Codex should use Engram as cross-agent memory and call engram_close_session when a task ends.",
+        "Project preference: Codex should use MnemoTrace as cross-agent memory and call mnemotrace_close_session when a task ends.",
         user_id=user,
         session_id=session,
     )
@@ -258,7 +258,7 @@ def test_short_project_rule_context_preserves_key_constraint():
         n_chunks=4,
     )
     assert "raw logs" in ctx
-    assert "engram_close_session" in ctx
+    assert "mnemotrace_close_session" in ctx
 
 
 def test_no_hard_delete_history_preserved():
@@ -270,7 +270,7 @@ def test_no_hard_delete_history_preserved():
     assert len(live) == 1 and live[0].object == "Moonshot AI"
     superseded = [f for f in chain if not f.is_live()]
     assert len(superseded) == 1 and superseded[0].object == "Tencent"
-    # the new fact points back at what it replaced (the evolution chain)
+    # 新 fact 指回它取代的旧 fact（演化链）
     assert live[0].supersedes == superseded[0].id
 
 
@@ -329,10 +329,10 @@ def test_multiple_family_relations_accumulate_and_disambiguate():
 
 def test_abstention_unknown_attribute():
     mem = build()
-    # entity is known (Wei) but the attribute (favorite food) was never stated
+    # entity（Wei）是已知的，但该属性（喜欢的食物）从未被提及
     r = mem.search("What is Wei's favorite food?", user_id="u1")
     assert r.abstained
-    # totally unrelated query
+    # 完全无关的查询
     assert mem.search("What is the capital of France?", user_id="u1").abstained
 
 
@@ -420,7 +420,7 @@ def test_explicit_preference_skips_weak_objects_by_default():
 
 
 def test_preference_object_filter_can_be_disabled():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(preference_object_filter=False))
     mem.add("I love it. I love retro-style diners.", user_id="u1", event_time=BASE)
@@ -448,7 +448,7 @@ def test_preference_object_normalization_canonicalizes_wrappers():
 
 
 def test_preference_object_normalization_can_be_disabled():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(preference_object_normalization=False))
     mem.add("I like the sound of the avocado sauce.", user_id="u1", event_time=BASE)
@@ -485,7 +485,7 @@ def test_preference_reversal_extraction_handles_stopped_liking():
 
 
 def test_preference_reversal_extraction_can_be_disabled():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(preference_reversal_extraction=False))
     mem.add("I like jazz.", user_id="u1", event_time=BASE)
@@ -526,9 +526,9 @@ def test_assistant_small_talk_is_not_profile_occupation():
 
 
 def test_stemmer_aligns_inflections_for_lexical_retrieval():
-    """The BM25 lexical scorer and offline HashingEmbedder both build on stem(). Plurals and -y/-ies
-    inflections must reduce to a shared stem or lexical retrieval silently misses matches."""
-    from engram.util import stem, stems
+    """BM25 lexical 打分器和离线 HashingEmbedder 都建立在 stem() 之上。复数以及 -y/-ies 的形态
+    必须归约到共同的词干，否则 lexical 检索会静默漏掉匹配。"""
+    from mnemotrace.util import stem, stems
 
     assert stem("works") == stem("work")
     assert stem("colleagues") == stem("colleague")
@@ -538,12 +538,12 @@ def test_stemmer_aligns_inflections_for_lexical_retrieval():
     assert stem("companies") == stem("company")
     assert stem("carries") == stem("carry")
 
-    # Short base forms ending in -ies are NOT -y inflections (tie/lies/dies/pies) — the bare -s strip
-    # keeps them aligned with their singular, never collapsed to a -y stem.
+    # 以 -ies 结尾的短基础词不是 -y 形态（tie/lies/dies/pies）——只剥掉裸的 -s，让它们与单数保持
+    # 一致，而不是被折叠成 -y 词干。
     assert stem("ties") == stem("tie")
     assert stem("lies") == stem("lie")
     assert stem("dies") == stem("die")
 
-    # Sanity: stems() runs the rule across a free-form query
+    # Sanity 检查：stems() 把同一规则应用到自由格式的查询上
     q_stems = set(stems("Which cities did Wei study in?"))
-    assert "city" in q_stems and "studi" not in q_stems  # studi only if -ies rule failed
+    assert "city" in q_stems and "studi" not in q_stems  # 只有 -ies 规则失效时才会出现 studi

@@ -1,4 +1,4 @@
-// Types mirror the Engram memory server (engram/server/app.py). Keep in sync with the API.
+// 类型与 MnemoTrace 记忆服务器（mnemotrace/server/app.py）保持镜像。需与 API 同步更新。
 
 export type FactStatus = 'live' | 'superseded'
 export type FactSource = 'extracted' | 'user'
@@ -6,11 +6,11 @@ export type FactSource = 'extracted' | 'user'
 export interface MemoryFact {
   id: string
   text: string
-  display: string // localized rendering (中文 for Chinese-recorded facts); falls back to text
+  display: string // 本地化渲染结果（中文记录的事实显示为中文）；无则回退为 text
   subject: string
   predicate: string
   object: string
-  valid_at: string // human stamp from the server: "YYYY-MM-DD HH:MM:SS" (Beijing, UTC+8)
+  valid_at: string // 服务器生成的人类可读时间戳："YYYY-MM-DD HH:MM:SS"（北京时间，UTC+8）
   invalid_at: string | null
   status: FactStatus
   source: FactSource
@@ -19,8 +19,8 @@ export interface MemoryFact {
   sensitive: boolean
   salience: number
   provenance: string[]
-  // Outcome facts embed their reasoning in `text` ("statement （依据：why）"); the server splits it
-  // back out here so a journal row can show the claim and its grounds on separate lines. '' otherwise.
+  // 结论事实把推理依据内嵌在 `text` 中（"statement （依据：why）"）；服务器会把它
+  // 拆分到这里，让 journal 行能把主张和依据分行展示。其余情况为 ''。
   why: string
 }
 
@@ -79,8 +79,8 @@ export interface MemoryStatsCounts {
   pending_conflicts: number
 }
 
-/** Derived by the server from agent-session episodes; tells the console whether the memory is
- *  being fed by `engram-watch` at all (a memory nobody feeds stays empty). */
+/** 由服务器根据 agent 会话 episode 推导；告诉控制台记忆是否在被 `mnemotrace-watch`
+ *  持续喂养（无人喂养的记忆会一直为空）。 */
 export interface FeedStatus {
   last_fed_at: number | null
   last_fed_at_h: string | null
@@ -146,6 +146,7 @@ export interface MemoryDump {
   profile: string
   counts: MemoryCounts
   facts: MemoryFact[]
+  fact_categories?: string[]
   episodes: MemoryEpisode[]
   facts_page?: Page<MemoryFact>
   episodes_page?: Page<MemoryEpisode>
@@ -231,7 +232,7 @@ export interface RememberResult {
   total_facts?: number
   degraded?: string
   stored_raw?: boolean
-  scope?: RememberScope // 'working' = routed to ephemeral tier (not long-term)
+  scope?: RememberScope // 'working' = 路由到临时层（不进入长期记忆）
   kind?: string
 }
 
@@ -246,14 +247,14 @@ export interface CloseSessionResult {
   summaries: number
   reflected: number
   working_cleared: number
-  outcomes: number // conclusions newly distilled from this session (re-closing a session adds none)
+  outcomes: number // 本次会话新提炼的结论数（重复关闭同一会话不会新增）
 }
 
 export interface RecallResult {
   context: string
-  tokens_est: number // lean retrieved context
-  full_tokens?: number // the whole history (the full-context baseline)
-  answer?: string // the answer an agent would give from this memory (LLM over the lean context)
+  tokens_est: number // 精简检索上下文
+  full_tokens?: number // 完整历史（full-context 基线）
+  answer?: string // agent 基于这份记忆给出的答案（LLM 读取精简上下文）
 }
 
 export interface FactWrite {
@@ -265,6 +266,7 @@ export interface FactWrite {
 }
 
 export interface FactEdit {
+  statement?: string
   subject?: string
   predicate?: string
   object?: string
@@ -295,14 +297,15 @@ export interface Policy {
 }
 
 export interface PolicyResponse {
-  policy: Policy // user overrides ("" = use default)
-  defaults: Policy // built-in prompts
+  policy: Policy // 用户覆盖项（"" = 使用默认值）
+  defaults: Policy // 内置提示词
 }
 
-// --- L2 structured profile (feature ③) ---
+// --- L2 结构化画像（feature ③）---
 export interface Evidence {
   kind: 'user' | 'mentions' | 'reinforced'
-  count: number
+  count: number // 旧字段含义取决于 kind；界面来源计数使用 source_count。
+  source_count: number
 }
 
 export interface ProfileBasic {
@@ -350,21 +353,26 @@ export interface AuditFinding {
     | 'code_artifact'
     | 'dangling_subject'
     | 'slot_overflow'
+    | 'embedder_blind'
   why: string
   action: string
   fact_id?: string
   text?: string
+  display?: string
   subject?: string
   predicate?: string
   object?: string
   source?: FactSource
   valid_at_h?: string
   entity?: string
-  // slot_overflow is a group finding: one row for N facts crammed into a single-value slot, so it
-  // carries the size, the slot's human label and a few samples instead of one fact_id.
+  // slot_overflow 是一种分组结果：N 条事实挤进同一个单值槽位只占一行，因此它
+  // 不携带单个 fact_id，而是携带数量、槽位的人类可读标签和几条样例。
   label?: string
   count?: number
   samples?: Array<{ fact_id: string; text: string }>
+  embedder?: string
+  ratio?: number
+  migrate?: string
 }
 
 export interface AuditReport {

@@ -1,49 +1,38 @@
-import { useState, type FormEvent } from 'react'
-import { MessageSquare, Search, Sparkles, Zap } from 'lucide-react'
+
+
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { CalendarDays, ChevronDown, ChevronUp, MessageSquare, Search, Sparkles, X, Zap } from 'lucide-react'
 
 import { Button, Card, EmptyState, ErrorState, PageHeader, Spinner } from '../components/ui'
 import { useRecall } from '../hooks/queries'
-import { useT } from '../i18n'
+import { copy as t } from '../lib/copy'
 import { copyText } from '../lib/clipboard'
-import type { Dict } from '../i18n/en'
+import { splitContextSections } from '../lib/contextSections'
 import { toast } from '../components/Toast'
-
-// The lean-context blocks (engram.memory.lean_context) are emitted with English ALL-CAPS
-// headers regardless of UI language; we map each header to a localized section title.
-type SectionKey = Extract<
-  keyof Dict['ask'],
-  'sectionUserProfile' | 'sectionFacts' | 'sectionTimeline' | 'sectionSummaries' | 'sectionConversations'
->
-const SECTION_KEYS: Array<[RegExp, SectionKey]> = [
-  [/^USER PROFILE/i, 'sectionUserProfile'],
-  [/^FACTS/i, 'sectionFacts'],
-  [/^TIMELINE/i, 'sectionTimeline'],
-  [/^SESSION SUMMARIES/i, 'sectionSummaries'],
-  [/^RELEVANT CONVERSATIONS/i, 'sectionConversations'],
-]
-
-function splitBlocks(context: string) {
-  return context
-    .split(/\n\n(?=[A-Z][A-Z ]+(?:\([^)]*\))?:)/)
-    .map((block) => {
-      const nl = block.indexOf('\n')
-      const head = nl === -1 ? block : block.slice(0, nl)
-      const body = nl === -1 ? '' : block.slice(nl + 1)
-      const key = SECTION_KEYS.find(([re]) => re.test(head))?.[1]
-      // `rawLabel` is the server's own header — used as-is when no localized title matches.
-      return { key, rawLabel: head.replace(/:$/, ''), body: body.trim() || head }
-    })
-    .filter((b) => b.body)
-}
+import { useSpacePreference } from '../store/preferences'
 
 export default function Ask() {
   const recall = useRecall()
-  const t = useT()
   const [query, setQuery] = useState('')
-  const [chunks, setChunks] = useState(6)
+  const queryInput = useRef<HTMLInputElement>(null)
+  const [chunks, setChunks] = useSpacePreference('ask', 'chunks')
+  const chunksControl = useRef<HTMLDivElement>(null)
   const [asOf, setAsOf] = useState('')
-  const [redactSensitive, setRedactSensitive] = useState(true)
+  const [redactSensitive, setRedactSensitive] = useSpacePreference('ask', 'redactSensitive')
   const [showEvidence, setShowEvidence] = useState(false)
+
+  useEffect(() => {
+    const control = chunksControl.current
+    if (!control) return
+    const adjustChunks = (event: WheelEvent) => {
+      if (event.ctrlKey || event.deltaY === 0) return
+      event.preventDefault()
+      setChunks((value) => Math.max(2, Math.min(12, value + (event.deltaY < 0 ? 1 : -1))))
+    }
+    // React 的 wheel 监听默认 passive；使用原生监听才能阻止页面跟着滚动。
+    control.addEventListener('wheel', adjustChunks, { passive: false })
+    return () => control.removeEventListener('wheel', adjustChunks)
+  }, [setChunks])
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
@@ -60,67 +49,118 @@ export default function Ask() {
   }
 
   const result = recall.data
-  const blocks = result ? splitBlocks(result.context) : []
+  const blocks = result ? splitContextSections(result.context) : []
 
   return (
-    <div className="space-y-6">
-      <PageHeader title={t.ask.title} subtitle={t.ask.subtitle} />
+    <div className="space-y-8">
+      <PageHeader title={t.ask.title} />
 
       <Card>
-        <form onSubmit={submit} className="space-y-3">
-          <div className="flex flex-col gap-2 sm:flex-row">
-          <div className="flex flex-1 items-center gap-2 rounded-xl border border-line bg-white/[0.05] px-3 focus-within:border-brand-cyan/60 focus-within:ring-2 focus-within:ring-brand-cyan/20">
-            <Search className="h-4 w-4 text-ghost" />
+        <form onSubmit={submit} className="space-y-6">
+          <div className="flex flex-col gap-3 sm:flex-row">
+          <div className="flex min-w-0 w-full flex-1 items-center gap-2 rounded-2xl border border-line bg-ink-700 px-3">
+            <Search className="h-4 w-4 shrink-0 text-ghost" />
             <input
+              ref={queryInput}
               aria-label={t.ask.placeholder}
-              className="w-full bg-transparent py-2.5 text-sm outline-none placeholder:text-ghost/70"
+              className="min-w-0 w-full bg-transparent py-3 text-sm outline-none placeholder:text-ghost/70"
               placeholder={t.ask.placeholder}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
+            {query.length > 0 && (
+              <button
+                type="button"
+                aria-label={t.ask.clearQuery}
+                title={t.ask.clearQuery}
+                onClick={() => {
+                  setQuery('')
+                  queryInput.current?.focus()
+                }}
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-ghost transition hover:bg-selected hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan"
+              >
+                <X aria-hidden="true" className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
-          <Button type="submit" loading={recall.isPending} disabled={!query.trim()}>
+          <Button type="submit" loading={recall.isPending} disabled={!query.trim()} className="shrink-0 sm:self-stretch">
             {t.ask.searchBtn}
           </Button>
           </div>
-          <div className="flex flex-wrap items-center gap-3 text-xs text-ghost">
-            <label className="flex items-center gap-2">
-              {t.ask.chunksLabel}
-              <input
-                className="w-16 rounded-lg border border-line bg-white/[0.05] px-2 py-1 text-slate-100 outline-none"
-                type="number"
-                min={1}
-                max={12}
-                value={chunks}
-                onChange={(e) => setChunks(Math.max(1, Math.min(12, Number(e.target.value) || 1)))}
-              />
-            </label>
-            <label className="flex items-center gap-2">
-              {t.ask.asOfLabel}
-              <input
-                className="rounded-lg border border-line bg-white/[0.05] px-2 py-1 text-slate-100 outline-none"
-                type="date"
-                value={asOf}
-                onChange={(e) => setAsOf(e.target.value)}
-              />
-            </label>
-            <label className="flex select-none items-center gap-2">
-              <input type="checkbox" checked={redactSensitive} onChange={(e) => setRedactSensitive(e.target.checked)} className="accent-brand-rose" />
-              {t.ask.redactSensitive}
-            </label>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <span className="self-center text-xs text-ghost">{t.ask.examplesTitle}</span>
-            {t.ask.examples.map((ex) => (
-              <button
-                key={ex}
-                type="button"
-                className="rounded-lg border border-line bg-white/[0.04] px-2.5 py-1 text-xs text-brand-cyan transition hover:border-brand-cyan/50"
-                onClick={() => setQuery(ex)}
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-4">
+            <div className="flex min-w-0 flex-wrap gap-3">
+              {t.ask.examples.map((ex) => (
+                <button
+                  key={ex}
+                  type="button"
+                  className="rounded-xl border border-line bg-ink-700/70 px-4 py-2 text-sm text-brand-cyan transition hover:border-brand-cyan/50"
+                  onClick={() => setQuery(ex)}
+                >
+                  {ex}
+                </button>
+              ))}
+            </div>
+            <div className="flex min-w-0 flex-wrap items-center gap-x-8 gap-y-2 text-xs text-ghost sm:ml-auto">
+            <div className="inline-flex h-9 min-w-0 items-center gap-2 text-sm">
+              <span className="whitespace-nowrap">{t.ask.asOfControlLabel}</span>
+              <div className="relative inline-flex h-9 items-center gap-2">
+                <input
+                  id="ask-as-of"
+                  className="ask-date-input peer absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                  aria-label={t.ask.asOfLabel}
+                  type="date"
+                  value={asOf}
+                  onChange={(e) => setAsOf(e.target.value)}
+                  onClick={(e) => e.currentTarget.showPicker?.()}
+                />
+                <span aria-hidden="true" className="pointer-events-none whitespace-nowrap tabular-nums text-slate-100 peer-focus-visible:underline peer-focus-visible:underline-offset-4">{asOf || t.ask.asOfAny}</span>
+                <CalendarDays aria-hidden="true" className="pointer-events-none h-4 w-4 shrink-0 text-ghost peer-focus-visible:text-brand-cyan" />
+              </div>
+            </div>
+            <div className="inline-flex h-9 items-center gap-1 text-sm">
+              <span className="whitespace-nowrap">{t.ask.chunksControlLabel}</span>
+              <div ref={chunksControl} title={t.ask.chunksHint} className="inline-flex cursor-ns-resize items-center">
+              <output
+                id="ask-chunks"
+                aria-label={t.ask.chunksLabel}
+                className="inline-flex h-7 w-6 items-center justify-center text-sm tabular-nums text-slate-100"
               >
-                {ex}
-              </button>
-            ))}
+                {chunks}
+              </output>
+                <div className="flex flex-col">
+                  <button
+                    type="button"
+                    aria-label={t.ask.increaseChunks}
+                    onClick={() => setChunks((value) => Math.min(12, value + 1))}
+                    className="grid h-3.5 w-4 cursor-pointer place-items-center text-ghost hover:text-brand-cyan focus-visible:!outline-none focus-visible:text-foreground"
+                  >
+                    <ChevronUp aria-hidden="true" className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t.ask.decreaseChunks}
+                    onClick={() => setChunks((value) => Math.max(2, value - 1))}
+                    className="grid h-3.5 w-4 cursor-pointer place-items-center text-ghost hover:text-brand-cyan focus-visible:!outline-none focus-visible:text-foreground"
+                  >
+                    <ChevronDown aria-hidden="true" className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={redactSensitive}
+              aria-label={t.ask.redactSensitive}
+              onClick={() => setRedactSensitive((value) => !value)}
+              className="inline-flex min-h-[38px] shrink-0 select-none items-center gap-2.5 rounded-full text-sm text-ghost focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan"
+            >
+              <span aria-hidden="true" className="switch-track">
+                <span className="switch-thumb" />
+              </span>
+              <span>{t.ask.redactSensitive}</span>
+            </button>
+          </div>
           </div>
         </form>
       </Card>
@@ -136,8 +176,7 @@ export default function Ask() {
                 <MessageSquare className="h-4 w-4" /> {t.ask.answer}
               </div>
               <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-slate-100">{result.answer}</p>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <p className="flex-1 text-xs text-ghost">{t.ask.answerNote}</p>
+              <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
                 <Button
                   variant="ghost"
                   onClick={async () => {
@@ -163,15 +202,7 @@ export default function Ask() {
               </span>
               {result.full_tokens != null && (
                 <span className="text-ghost">
-                  {t.ask.fullLabel} <span className="text-slate-200">{result.full_tokens.toLocaleString()}</span> tokens
-                </span>
-              )}
-              {result.full_tokens != null && result.full_tokens > result.tokens_est && (
-                <span className="rounded-md bg-brand-mint/15 px-2 py-0.5 font-semibold text-brand-mint">
-                  {t.ask.savings(
-                    (result.full_tokens / Math.max(1, result.tokens_est)).toFixed(1),
-                    Math.max(1, Math.round((result.tokens_est / result.full_tokens) * 100)),
-                  )}
+                  {t.ask.fullLabel} <span className="text-slate-200">≈{result.full_tokens.toLocaleString()}</span> tokens
                 </span>
               )}
             </div>
@@ -183,7 +214,6 @@ export default function Ask() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="text-xs font-semibold uppercase tracking-wider text-brand-cyan">{t.ask.evidenceTitle}</div>
-                  <p className="mt-1 text-xs text-ghost">{t.ask.leanNote}</p>
                 </div>
                 <div className="flex gap-2">
                   <Button
@@ -205,13 +235,13 @@ export default function Ask() {
                 </div>
               </div>
               {showEvidence && (
-              <div className="mt-4 gap-4 md:columns-2 xl:columns-3">
+              <div className="mt-4 gap-6 md:columns-2 xl:columns-3">
               {blocks.map((b, i) => (
-                <section key={i} className="mb-4 break-inside-avoid rounded-xl border border-line bg-white/[0.03] p-4">
+                <section key={i} className="mb-6 break-inside-avoid rounded-xl border border-line bg-ink-700/50 p-4">
                   <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-brand-cyan">
                     {b.key ? t.ask[b.key] : b.rawLabel}
                   </div>
-                  <pre className="whitespace-pre-wrap text-sm leading-relaxed text-slate-200">{b.body}</pre>
+                  <pre className="whitespace-pre-wrap break-words font-sans text-sm not-italic leading-relaxed text-slate-200">{b.body}</pre>
                 </section>
               ))}
               </div>

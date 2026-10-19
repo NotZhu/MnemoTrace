@@ -1,0 +1,21 @@
+
+> mnemotrace-console@0.1.0 build
+> tsc -b && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 2933 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                           0.94 kB │ gzip:   0.65 kB
+dist/assets/favicon-C7PXVK0X.svg          1.73 kB │ gzip:   0.97 kB
+dist/assets/index-Q64G7ZPt.css           63.82 kB │ gzip:  11.83 kB
+dist/assets/colorToUniform-qZtVas7b.js    4.17 kB │ gzip:   1.51 kB
+dist/assets/WebGPURenderer-9m_00D6K.js   35.07 kB │ gzip:   9.73 kB
+dist/assets/browserAll-D-zk2yf-.js       43.14 kB │ gzip:  11.33 kB
+dist/assets/WebGLRenderer-x3E1wuCy.js    47.57 kB │ gzip:  13.28 kB
+dist/assets/SharedSystems-C5rumiCB.js    47.98 kB │ gzip:  13.18 kB
+dist/assets/webworkerAll-CgPShUXV.js     68.52 kB │ gzip:  19.21 kB
+dist/assets/graph-4OuqARyR.js           367.34 kB │ gzip: 114.37 kB
+dist/assets/index-BqLRKDzW.js           431.31 kB │ gzip: 135.35 kB
+✓ built in 19.12s

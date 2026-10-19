@@ -1,15 +1,14 @@
-"""Idempotent batch import (CLAUDE.md §8 "no silent corruption", applied to ingestion): re-posting the
-same export must not double every memory. Fingerprints persist with the snapshot, so dedupe survives a
-restart. All offline."""
+"""幂等的批量导入（CLAUDE.md §8 "no silent corruption"，应用在导入链路上）：重复导入同一份导出
+不得让每条记忆翻倍。指纹与快照一起持久化，所以去重在重启后依然生效。全部离线运行。"""
 from __future__ import annotations
 
 import os
 import shutil
 import tempfile
 
-from engram.embed import HashingEmbedder
-from engram.memory import Memory
-from engram.service import MemoryService
+from mnemotrace.embed import HashingEmbedder
+from mnemotrace.memory import Memory
+from mnemotrace.service import MemoryService
 
 _SESSIONS = [
     {"session_id": "s1", "messages": [{"role": "user", "content": "I have a dog named Mochi."}]},
@@ -23,25 +22,25 @@ def test_reimport_is_skipped():
     assert first["episodes"] == 2 and first["skipped"] == 0
     again = m.import_messages(_SESSIONS, user_id="u")
     assert again["episodes"] == 0 and again["skipped"] == 2
-    assert len(m.episodes_doc.values()) == 2  # not doubled
+    assert len(m.episodes_doc.values()) == 2  # 没有翻倍
 
 
 def test_dedupe_off_restores_append_behavior():
     m = Memory(embedder=HashingEmbedder(64))
     m.import_messages(_SESSIONS, user_id="u")
     raw = m.import_messages(_SESSIONS, user_id="u", dedupe=False)
-    assert raw["episodes"] == 2  # explicit opt-out duplicates (the legacy escape hatch)
+    assert raw["episodes"] == 2  # 显式关闭去重就会重复（旧版逃生通道）
     assert len(m.episodes_doc.values()) == 4
 
 
 def test_fingerprints_survive_restart():
-    d = tempfile.mkdtemp(prefix="engram_dedupe_")
+    d = tempfile.mkdtemp(prefix="mnemotrace_dedupe_")
     try:
         p = os.path.join(d, "u.pkl")
         m = Memory.open(p, embedder=HashingEmbedder(64))
         m.import_messages(_SESSIONS, user_id="u")
         m.save()
-        m2 = Memory.open(p, embedder=HashingEmbedder(64))  # fresh process
+        m2 = Memory.open(p, embedder=HashingEmbedder(64))  # 模拟全新进程
         again = m2.import_messages(_SESSIONS, user_id="u")
         assert again["skipped"] == 2 and len(m2.episodes_doc.values()) == 2
     finally:
@@ -59,7 +58,7 @@ def test_new_sessions_still_ingest_alongside_skips():
 
 
 def test_service_import_is_idempotent():
-    d = tempfile.mkdtemp(prefix="engram_dedupesvc_")
+    d = tempfile.mkdtemp(prefix="mnemotrace_dedupesvc_")
     try:
         svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
         first = svc.import_("u", sessions=_SESSIONS)

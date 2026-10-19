@@ -1,12 +1,11 @@
-"""Offline algorithm ablations for the newest read-path evidence features.
+"""针对最新 read-path 证据特性的离线算法消融。
 
-This is not a public benchmark claim. It is a zero-key smoke proof that each feature changes the targeted
-evidence behavior: recall features add evidence the disabled variant cannot surface, while precision
-guards remove known-bad evidence without losing the target signal.
+这不是公开的 benchmark 结论。它是一个零密钥的冒烟证明：每个特性确实改变了目标证据行为——
+recall 类特性会加入禁用后无法呈现的证据，precision 守卫会剔除已知坏证据而不丢失目标信号。
 
     python eval/ablate_features.py
 
-The real publishable gate remains eval/bench.py on LongMemEval/LOCOMO with raw JSONL logs.
+真正可发布的门槛仍是 eval/bench.py 在 LongMemEval/LOCOMO 上带原始 JSONL 日志的评测。
 """
 from __future__ import annotations
 
@@ -19,9 +18,9 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram import Config, Memory  # noqa: E402
-from engram.types import Fact  # noqa: E402
-from engram.util import DAY  # noqa: E402
+from mnemotrace import Config, Memory  # noqa: E402
+from mnemotrace.types import Fact  # noqa: E402
+from mnemotrace.util import DAY  # noqa: E402
 
 BASE = 1_700_000_000.0
 
@@ -259,7 +258,7 @@ def _numeric_aggregation_candidates_context(enabled: bool) -> str:
 
 
 def _aggregation_recall_expansion_context(enabled: bool) -> str:
-    from engram.retrieve.evidence import plan_evidence
+    from mnemotrace.retrieve.evidence import plan_evidence
 
     need = plan_evidence(
         "How many hours of jogging and yoga did I do last week?",
@@ -564,7 +563,7 @@ def run_ablation() -> tuple[list[AblationResult], dict]:
             "explicit_preference_extraction",
             _explicit_preference_extraction_context,
             lambda ctx: (
-                "PREFERENCE RECORDS (current, structured):" in ctx
+                "当前偏好记录（结构化）：" in ctx
                 and "aisle seats" in ctx
                 and "red-eye flights" in ctx
             ),
@@ -726,12 +725,12 @@ def run_ablation() -> tuple[list[AblationResult], dict]:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Run zero-key feature ablations for Engram read-path evidence.")
+    ap = argparse.ArgumentParser(description="Run zero-key feature ablations for MnemoTrace read-path evidence.")
     ap.add_argument("--jsonl", help="write per-feature rows plus a summary as JSONL")
     args = ap.parse_args()
 
     rows, summary = run_ablation()
-    print("Engram feature ablation smoke -- offline, zero API keys")
+    print("MnemoTrace feature ablation smoke -- offline, zero API keys")
     print("feature                  enabled  disabled  improved  target")
     print("-" * 78)
     for r in rows:

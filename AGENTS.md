@@ -1,7 +1,7 @@
-# Engram — an open-source long-term memory engine for LLM agents
+# MnemoTrace — an open-source long-term memory engine for LLM agents
 
-> **Project codename:** Engram (an *engram* is the physical trace a memory leaves in the brain).
-> The name is provisional — rename freely. The package is `engram`, the repo is "Super-Memory".
+> **Product name:** 忆痕 (Chinese) / MnemoTrace (English).
+> The import package is `mnemotrace`; Python/npm distributions are `mnemotrace-memory`.
 
 This file is the single source of truth for *what we are building and why*. Read it fully before
 writing code. It is written for any agent or human contributor walking in cold.
@@ -127,6 +127,7 @@ of bolted-on. **Never hard-delete a contradicted fact — invalidate it** (set `
 ### 3.2 Conflict resolution (cheap, then escalate)
 
 When a new fact arrives for an existing `(subject, predicate)` slot with a different object:
+
 1. **Slot match** (exact) → likely update; **embedding similarity** (same attribute under different free-form
    predicate) and **content subsumption** (one claim ⊂ the other) → contradiction vs. elaboration.
 2. If clearly contradictory and temporally ordered → invalidate the old (`old.invalid_at = new.valid_at`),
@@ -142,6 +143,7 @@ score(item | query) = w_sem·cos(q, item)            # dense semantic
                      + w_rec·exp(-Δt / τ)             # recency decay
                      + w_sal·salience(item)           # importance / reinforcement
 ```
+
 Weights are config-driven and tuned per benchmark on the harness (never hand-waved). Fusion across
 retrievers uses Reciprocal Rank Fusion, then an optional cross-encoder rerank for the top-k.
 
@@ -173,7 +175,7 @@ Target benchmarks, in order: LongMemEval_S → LongMemEval_M → LOCOMO → Pers
 ├── LICENSE                    # GNU AGPL-3.0 (the open-source arm of the dual license)
 ├── COMMERCIAL-LICENSE.md      # commercial license for proprietary/closed-source/SaaS use
 ├── pyproject.toml             # packaging; core has ZERO hard deps, backends are extras
-├── engram/                    # the library
+├── mnemotrace/                    # the library
 │   ├── __init__.py            # public API surface
 │   ├── config.py              # settings + pluggable backend selection
 │   ├── types.py               # bi-temporal dataclasses (Episode, Fact, Entity, Relation, ...)
@@ -195,7 +197,7 @@ Target benchmarks, in order: LongMemEval_S → LongMemEval_M → LOCOMO → Pers
 └── tests/                     # smoke + unit tests
 ```
 
-**Zero-setup invariant:** `python examples/quickstart.py`, installed `engram-quickstart`, and `pytest`
+**Zero-setup invariant:** `python examples/quickstart.py`, installed `mnemotrace-quickstart`, and `pytest`
 MUST run with **no API keys and no third-party services**, using the hashing embedder + rule-based
 extractor + in-memory stores. Real
 backends (LanceDB/Qdrant/pgvector, Kuzu/Neo4j, LiteLLM for any LLM, BGE embeddings/reranker) are optional
@@ -271,7 +273,7 @@ extras that slot in behind the same interfaces. We never break the zero-setup de
   owner can see which memory layer changed, why it changed, and which result logs prove it. If the
   change alters data flow, object lifecycle, storage shape, service/API surface, evaluation flow, or
   module boundaries, also update
-  [`docs/engram-full-architecture-report.zh-CN.md`](docs/engram-full-architecture-report.zh-CN.md).
+  [`docs/mnemotrace-full-architecture-report.zh-CN.md`](docs/mnemotrace-full-architecture-report.zh-CN.md).
 - **Numbers, public messaging, commits, and privacy follow [`CONTRIBUTING.md`](CONTRIBUTING.md)** (applies
   to agents too): every published number traces to a committed `results/*.jsonl` log and stays consistent
   across README ×2 + RESULTS.md + the landing page; don't name-drop competitors or make unbenchmarked
@@ -292,7 +294,9 @@ extras that slot in behind the same interfaces. We never break the zero-setup de
 - **The harness** — our in-repo, reproducible evaluation pipeline; the basis for every number we publish.
 
 <!-- SPECKIT START -->
+
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
 at specs/003-commercial-release/plan.md
+
 <!-- SPECKIT END -->

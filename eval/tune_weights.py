@@ -1,14 +1,13 @@
-"""Tune the retrieval-fusion weights ON THE HARNESS (CLAUDE.md §3.3 / §4 — "never hand-waved").
+"""在 harness 上调检索融合权重（CLAUDE.md §3.3 / §4——"绝不拍脑袋"）。
 
-The fusion weights (w_sem, w_lex, w_graph, w_rec, w_sal) were hand-set defaults. This grid-searches them
-against ground truth so the charter's "tuned per benchmark on the harness" is actually true. The objective
-is LLM-FREE: a fact is RELEVANT iff it was extracted from one of the question's evidence sessions
-(`answer_session_ids`); we maximize mean recall@k of relevant facts. Only the one-time fact extraction
-needs an LLM; the grid-search itself is pure re-ranking.
+融合权重（w_sem, w_lex, w_graph, w_rec, w_sal）此前是手工设定的默认值。本脚本对着 ground truth
+做网格搜索，让章程里"每个 benchmark 在 harness 上调优"名副其实。目标函数不用 LLM：一个 fact
+是 RELEVANT 当且仅当它抽自该问题的证据 session 之一（`answer_session_ids`）；我们最大化
+relevant fact 的平均 recall@k。只有一次性 fact 抽取需要 LLM；网格搜索本身是纯重排序。
 
     python eval/tune_weights.py --dev 30 --k 15
 
-Prints the best weight set; copy it into engram/config.py if it beats the current defaults materially.
+打印最优权重组；如果它明显优于当前默认值，就抄进 mnemotrace/config.py。
 """
 from __future__ import annotations
 
@@ -19,15 +18,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram import Memory  # noqa: E402
-from engram.config import Config  # noqa: E402
-from engram.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
+from mnemotrace import Memory  # noqa: E402
+from mnemotrace.config import Config  # noqa: E402
+from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
 from eval.longmemeval import ingest, load_data, sessions_of  # noqa: E402
 
 
 def build_dev(items, embedder, extractor, extract_k=20):
-    """For each dev question, build a fact store and label which facts are relevant (provenance in an
-    evidence session). Returns [(mem, user_id, query, relevant_fact_ids)]."""
+    """为每个 dev 问题构建 fact store，并标注哪些 fact 是 relevant（provenance 落在证据
+    session 中）。返回 [(mem, user_id, query, relevant_fact_ids)]。"""
     dev = []
     for it in items:
         qid = it["question_id"]
@@ -36,7 +35,7 @@ def build_dev(items, embedder, extractor, extract_k=20):
             continue
         mem = Memory(embedder=embedder, llm=extractor)
         ingest(mem, it, qid)
-        # episode.id -> session_id, so we can label facts by their provenance session
+        # episode.id -> session_id，从而可以按 provenance 所在 session 标注 fact
         ep_session = {ep.id: ep.session_id for ep in mem.episodes_doc.values()}
         retrieved = mem.retrieve_episodes(it["question"], qid, extract_k)
         mem.consolidate(retrieved)
@@ -89,7 +88,7 @@ def main():
     args = ap.parse_args()
     load_dotenv()
     items = load_data(args.data)
-    # dev split from the TAIL (seeded shuffle in the eval uses head order; tail avoids overlap with reports)
+    # dev 集取自尾部（评测里固定种子的洗牌用的是头部顺序；取尾部避免与已有报告重叠）
     import random
     random.Random(999).shuffle(items)
     dev_items = items[: args.dev]
@@ -101,7 +100,7 @@ def main():
     print(f"  BEST weights recall@{args.k}:    {best:.3f}")
     print(f"  best = {best_w}")
     if best > base_r + 0.01:
-        print("  -> update engram/config.py defaults with these (material improvement).")
+        print("  -> update mnemotrace/config.py defaults with these (material improvement).")
     else:
         print("  -> defaults are already near-optimal; now harness-validated, not hand-waved.")
 

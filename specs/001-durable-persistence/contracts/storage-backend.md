@@ -1,7 +1,7 @@
 # Contract — Durable Store Backends
 
 A durable backend is **not a new API**: it implements the existing ABCs in
-[`engram/store/base.py`](../../../engram/store/base.py). This contract restates the obligations a durable
+[`mnemotrace/store/base.py`](../../../mnemotrace/store/base.py). This contract restates the obligations a durable
 implementation MUST honor beyond the in-memory reference.
 
 ## VectorStore (LanceDBVectorStore)
@@ -16,7 +16,7 @@ implementation MUST honor beyond the in-memory reference.
 **Parity gate (SC-005 / FR-009):** for identical data + query, reloaded-LanceDB `search` top-k matches the
 in-memory store within a documented tolerance (ties + float error only).
 
-**Lazy-import gate (FR-007):** `import lancedb` happens **inside** `lancedb_store.py`, never at `engram/`
+**Lazy-import gate (FR-007):** `import lancedb` happens **inside** `lancedb_store.py`, never at `mnemotrace/`
 core import time. `tests/test_zero_setup_default.py` asserts the default import graph is lancedb-free.
 
 ## DocStore / GraphStore (durable form, v1)
@@ -28,7 +28,7 @@ saved/loaded as JSONL. (A native embedded graph backend, e.g. Kuzu, is a separat
 and `GraphStore.neighbors(entity_id, as_of=…, direction=…)` results (INV-2).
 
 ## Backend selection (config)
-`engram/config.py` exposes `storage = "memory" | "durable" | "lancedb"` plus a `data_path`:
+`mnemotrace/config.py` exposes `storage = "memory" | "durable" | "lancedb"` plus a `data_path`:
 - `"memory"` — **default**, changes nothing (Constitution II).
 - `"durable"` — JSONL snapshot for all stores (US1).
 - `"lancedb"` — JSONL for episodes/graph + LanceDB for the vector store (US2).

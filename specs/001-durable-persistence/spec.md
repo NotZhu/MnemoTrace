@@ -10,10 +10,10 @@
 
 ## Why this feature *(context)*
 
-Engram today persists state with pickle snapshots. That is the next load-bearing wall to remove:
+MnemoTrace today persists state with pickle snapshots. That is the next load-bearing wall to remove:
 pickle is **unsafe to load** (arbitrary code execution on untrusted files), **brittle** (any dataclass
 change can break old snapshots), **not crash-safe** (a whole-store rewrite can be interrupted), and it
-**does not scale** past what fits in one in-memory blob. This feature gives Engram a durable, safe,
+**does not scale** past what fits in one in-memory blob. This feature gives MnemoTrace a durable, safe,
 embedded persistence layer while keeping the zero-setup in-memory path as the default — directly serving
 Constitution Principle II (zero-setup), III (interfaces-first), and IV (no silent memory corruption).
 
@@ -21,7 +21,7 @@ Constitution Principle II (zero-setup), III (interfaces-first), and IV (no silen
 
 ### User Story 1 - Survive a restart with zero data loss (Priority: P1)
 
-An operator self-hosting Engram adds memories over a session, stops the process, and starts it again.
+An operator self-hosting MnemoTrace adds memories over a session, stops the process, and starts it again.
 Every episode, fact, entity, and relation comes back intact — including bi-temporal stamps, provenance,
 and supersedes chains. Nothing was silently dropped or mutated.
 
@@ -94,7 +94,7 @@ run it for real, then load via the new format and assert entity parity with the 
 
 - **Torn write / crash mid-append**: recovery skips the incomplete trailing record and loads the
   committed prefix; previously-committed data is never corrupted.
-- **Schema/version skew**: a store written by an incompatible (e.g. newer) Engram version fails to load
+- **Schema/version skew**: a store written by an incompatible (e.g. newer) MnemoTrace version fails to load
   with an explicit, actionable error — never a silent partial or wrong load.
 - **Untrusted store file**: opening a store never executes code embedded in the file.
 - **Concurrent writers** to one store path: v1 defines single-writer behavior (lock or documented
@@ -119,7 +119,7 @@ run it for real, then load via the new format and assert entity parity with the 
   be optional, config-selected extras (Constitution II). `quickstart.py` and `pytest` MUST pass with no
   extras installed.
 - **FR-007**: All persistence backends MUST sit behind the existing VectorStore / GraphStore / DocStore
-  interfaces; `engram/` core MUST NOT import a heavy persistence dependency at module top level
+  interfaces; `mnemotrace/` core MUST NOT import a heavy persistence dependency at module top level
   (Constitution III).
 - **FR-008**: System MUST provide a one-shot pickle→new-format migration with a dry-run that reports
   per-entity counts before writing.

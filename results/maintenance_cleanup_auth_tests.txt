@@ -1,0 +1,118 @@
+TAP version 13
+# Subtest: 中文 Key 在普通请求和导出前返回中文错误，不触发 Headers 异常或网络请求
+ok 1 - 中文 Key 在普通请求和导出前返回中文错误，不触发 Headers 异常或网络请求
+  ---
+  duration_ms: 36.517
+  type: 'test'
+  ...
+# Subtest: ASCII Key 原样发送；未登录仍能请求健康状态
+ok 2 - ASCII Key 原样发送；未登录仍能请求健康状态
+  ---
+  duration_ms: 2.8608
+  type: 'test'
+  ...
+# Subtest: 登录拒绝中文、全角、换行及空 Key，不持久化无效凭证
+ok 3 - 登录拒绝中文、全角、换行及空 Key，不持久化无效凭证
+  ---
+  duration_ms: 14.0623
+  type: 'test'
+  ...
+# Subtest: 旧凭证缓存只清除不恢复，重新输入有效 Key 后仅在内存登录
+ok 4 - 旧凭证缓存只清除不恢复，重新输入有效 Key 后仅在内存登录
+  ---
+  duration_ms: 2.8471
+  type: 'test'
+  ...
+# Subtest: 清除当前存储名下的旧凭证，不恢复登录且不影响主题与空间偏好
+ok 5 - 清除当前存储名下的旧凭证，不恢复登录且不影响主题与空间偏好
+  ---
+  duration_ms: 11.8612
+  type: 'test'
+  ...
+# Subtest: 普通与演示 Key 仅在当前页面内存登录，刷新不恢复凭证
+ok 6 - 普通与演示 Key 仅在当前页面内存登录，刷新不恢复凭证
+  ---
+  duration_ms: 7.7418
+  type: 'test'
+  ...
+# Subtest: 退出清除内存凭证，重新登录不写入浏览器存储
+ok 7 - 退出清除内存凭证，重新登录不写入浏览器存储
+  ---
+  duration_ms: 1.1059
+  type: 'test'
+  ...
+# Subtest: 浏览器禁止存储时仍可登录和退出
+ok 8 - 浏览器禁止存储时仍可登录和退出
+  ---
+  duration_ms: 1.6714
+  type: 'test'
+  ...
+# Subtest: 失败查询包含凭证的标识仅留在内存，不写入 localStorage 或 sessionStorage
+ok 9 - 失败查询包含凭证的标识仅留在内存，不写入 localStorage 或 sessionStorage
+  ---
+  duration_ms: 53.325
+  type: 'test'
+  ...
+# Subtest: 刷新时移除旧查询错误中的凭证，不恢复旧重试入口
+ok 10 - 刷新时移除旧查询错误中的凭证，不恢复旧重试入口
+  ---
+  duration_ms: 13.0705
+  type: 'test'
+  ...
+# Subtest: 账号切换同步移除旧账号的成功与失败查询，保留公共健康缓存
+ok 11 - 账号切换同步移除旧账号的成功与失败查询，保留公共健康缓存
+  ---
+  duration_ms: 15.5298
+  type: 'test'
+  ...
+# Subtest: 全局重试只使用当前账号的查询，不把当前数据写入其他账号缓存
+ok 12 - 全局重试只使用当前账号的查询，不把当前数据写入其他账号缓存
+  ---
+  duration_ms: 19.8523
+  type: 'test'
+  ...
+# Subtest: 退出时取消进行中的查询，旧请求迟到后不恢复缓存或错误提示
+ok 13 - 退出时取消进行中的查询，旧请求迟到后不恢复缓存或错误提示
+  ---
+  duration_ms: 21.6632
+  type: 'test'
+  ...
+# Subtest: 旧账号迟到的 401 不会退出新账号
+ok 14 - 旧账号迟到的 401 不会退出新账号
+  ---
+  duration_ms: 18.2783
+  type: 'test'
+  ...
+# Subtest: 读取响应正文期间切换账号，旧响应也不会作为成功结果返回
+ok 15 - 读取响应正文期间切换账号，旧响应也不会作为成功结果返回
+  ---
+  duration_ms: 20.007
+  type: 'test'
+  ...
+# Subtest: 原文溯源查询按账号隔离，切换账号后重新请求且退出后禁用
+ok 16 - 原文溯源查询按账号隔离，切换账号后重新请求且退出后禁用
+  ---
+  duration_ms: 17.3254
+  type: 'test'
+  ...
+# Subtest: 登录过程中公共健康请求可以正常完成，不受私有查询隔离影响
+ok 17 - 登录过程中公共健康请求可以正常完成，不受私有查询隔离影响
+  ---
+  duration_ms: 14.3245
+  type: 'test'
+  ...
+# Subtest: 当前账号查询可正常重试，成功后清除错误；无缓存错误可直接恢复页面
+ok 18 - 当前账号查询可正常重试，成功后清除错误；无缓存错误可直接恢复页面
+  ---
+  duration_ms: 14.8677
+  type: 'test'
+  ...
+1..18
+# tests 18
+# suites 0
+# pass 18
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 872.5612

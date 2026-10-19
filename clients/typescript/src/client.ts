@@ -1,13 +1,13 @@
 /**
- * EngramClient — the official TypeScript/JavaScript SDK for the Engram memory server.
+ * MnemoTraceClient — 忆痕记忆服务器的官方 TypeScript/JavaScript SDK。
  *
- * Zero runtime dependencies: it uses the global `fetch` (Node 18+ or the browser). One Bearer key per
- * client maps to one isolated memory namespace on the server.
+ * 零运行时依赖：使用全局 `fetch`（Node 18+ 或浏览器）。每个客户端一个 Bearer key，
+ * 对应服务器上一个隔离的记忆命名空间。
  *
- *   import { EngramClient } from 'engram-memory'
- *   const engram = new EngramClient({ baseUrl: 'http://localhost:8000', apiKey: 'sk-alice-123' })
- *   await engram.remember('I live in Shenzhen and work at Tencent.')
- *   const { context } = await engram.recall('where do I live?')
+ *   import { MnemoTraceClient } from 'mnemotrace-memory'
+ *   const mnemotrace = new MnemoTraceClient({ baseUrl: 'http://localhost:8000', apiKey: 'sk-alice-123' })
+ *   await mnemotrace.remember('I live in Shenzhen and work at Tencent.')
+ *   const { context } = await mnemotrace.recall('where do I live?')
  */
 import type {
   ChatCompletion,
@@ -40,47 +40,47 @@ import type {
   SessionReport,
 } from './types'
 
-/** Thrown for any non-2xx response. `detail` carries the parsed error body when available. */
-export class EngramError extends Error {
+/** 任何非 2xx 响应都会抛出此错误。`detail` 尽可能携带解析后的错误响应体。 */
+export class MnemoTraceError extends Error {
   constructor(
     public readonly status: number,
     message: string,
     public readonly detail?: unknown,
   ) {
     super(message)
-    this.name = 'EngramError'
+    this.name = 'MnemoTraceError'
   }
 }
 
-export interface EngramClientOptions {
-  /** Server base URL. Default 'http://localhost:8000'. A trailing '/v1' is allowed and normalized away. */
+export interface MnemoTraceClientOptions {
+  /** 服务器基础 URL。默认 'http://localhost:8000'。允许以 '/v1' 结尾，会被规整掉。 */
   baseUrl?: string
-  /** Bearer API key — selects the memory namespace on the server. */
+  /** Bearer API key — 决定服务器上的记忆命名空间。 */
   apiKey?: string
-  /** Custom fetch implementation (e.g. node-fetch on older runtimes). Defaults to global fetch. */
+  /** 自定义 fetch 实现（如旧运行时环境下的 node-fetch）。默认使用全局 fetch。 */
   fetch?: typeof fetch
-  /** Extra headers sent on every request. */
+  /** 每个请求都会携带的额外请求头。 */
   headers?: Record<string, string>
 }
 
-/** Overloaded create(): returns a stream when `stream: true`, else a single completion. */
+/** 重载的 create()：`stream: true` 时返回流式响应，否则返回单条补全。 */
 export interface ChatCompletionsCreate {
   (params: ChatCompletionCreateParams & { stream: true }): Promise<AsyncIterable<ChatCompletionChunk>>
   (params: ChatCompletionCreateParams & { stream?: false }): Promise<ChatCompletion>
 }
 
-export class EngramClient {
+export class MnemoTraceClient {
   readonly baseUrl: string
   private readonly apiKey?: string
   private readonly _fetch: typeof fetch
   private readonly extraHeaders: Record<string, string>
 
-  /** OpenAI-compatible surface: `client.chat.completions.create({ messages })`. */
+  /** OpenAI 兼容接口：`client.chat.completions.create({ messages })`。 */
   readonly chat: { completions: { create: ChatCompletionsCreate } }
 
-  constructor(options: EngramClientOptions = {}) {
+  constructor(options: MnemoTraceClientOptions = {}) {
     const base = options.baseUrl ?? 'http://localhost:8000'
-    // tolerate a base that already ends in /v1 (so both forms work)
+    // 容忍 base 已以 /v1 结尾的情况（两种写法都可用）
     this.baseUrl = base.replace(/\/$/, '').replace(/\/v1$/, '')
     this.apiKey = options.apiKey
     const f = options.fetch ?? (globalThis.fetch ? globalThis.fetch.bind(globalThis) : undefined)
@@ -94,7 +94,7 @@ export class EngramClient {
     }
   }
 
-  // --- low-level plumbing ---------------------------------------------------
+  // --- 底层请求封装 ----------------------------------------------------------
   private buildHeaders(json: boolean): Record<string, string> {
     const h: Record<string, string> = { ...this.extraHeaders }
     if (json) h['Content-Type'] = 'application/json'
@@ -105,7 +105,7 @@ export class EngramClient {
   private async assertOk(res: Response): Promise<void> {
     if (res.ok) return
     let detail: unknown
-    let message = `Engram request failed (${res.status})`
+    let message = `MnemoTrace request failed (${res.status})`
     try {
       const body = (await res.json()) as { detail?: unknown }
       detail = body
@@ -113,9 +113,9 @@ export class EngramClient {
         message = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
       }
     } catch {
-      /* non-JSON error body */
+      /* 非 JSON 的错误响应体 */
     }
-    throw new EngramError(res.status, message, detail)
+    throw new MnemoTraceError(res.status, message, detail)
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -133,16 +133,16 @@ export class EngramClient {
     return this.request<T>(path, { method: 'POST', body: body === undefined ? '{}' : JSON.stringify(body) })
   }
 
-  // --- health ---------------------------------------------------------------
+  // --- 健康检查 ---------------------------------------------------------------
   health(): Promise<Health> {
     return this.request<Health>('/health')
   }
 
-  // --- write / read memory --------------------------------------------------
+  // --- 写入 / 读取记忆 -------------------------------------------------------
   /**
-   * Store a message and consolidate it into bi-temporal facts.
-   * `space` writes to a shared/agent namespace instead of the caller's home (requires write access
-   * via ENGRAM_SPACES on the server).
+   * 存储一条消息并将其整合为 bi-temporal 事实。
+   * `space` 写入共享/agent 命名空间而非调用者自己的主命名空间（需要服务器端通过
+   * MNEMOTRACE_SPACES 授予写权限）。
    */
   remember(
     content: string,
@@ -157,9 +157,9 @@ export class EngramClient {
   }
 
   /**
-   * Retrieve a small, relevant, dated context to answer from (the lean read path).
-   * `spaces` reads + fuses several namespaces (e.g. the agent's own + a shared team space); each must
-   * be readable by this key's ENGRAM_SPACES principal.
+   * 检索一小段相关、带日期的上下文用于作答（lean 读路径）。
+   * `spaces` 读取并融合多个命名空间（如 agent 自己的 + 共享团队空间）；每个命名空间
+   * 都必须对该 key 的 MNEMOTRACE_SPACES 主体可读。
    */
   recall(
     query: string,
@@ -182,7 +182,7 @@ export class EngramClient {
     })
   }
 
-  /** Finish a thread/task: consolidate pending episodes, summarize, clear working memory, and persist. */
+  /** 结束一个会话/任务：整合待处理的 episode、生成摘要、清空工作记忆并持久化。 */
   closeSession(
     sessionId = 'default',
     options: { summarize?: boolean; clearWorking?: boolean } = {},
@@ -194,7 +194,7 @@ export class EngramClient {
     })
   }
 
-  /** Audit what durable facts a session contributed. Sensitive fact text is redacted by default. */
+  /** 审计某个会话贡献了哪些持久事实。敏感事实文本默认脱敏。 */
   sessionReport(
     sessionId: string,
     options: { includeSensitive?: boolean } = {},
@@ -206,7 +206,7 @@ export class EngramClient {
     return this.request<SessionReport>(`/v1/sessions/report?${params}`)
   }
 
-  /** Content-free cross-agent/app session index for memory management UIs. */
+  /** 不含内容的跨 agent/应用会话索引，用于记忆管理界面。 */
   sessions(options: SessionListOptions = {}): Promise<SessionIndex> {
     const params = new URLSearchParams()
     if (options.limit !== undefined) params.set('limit', String(options.limit))
@@ -217,7 +217,7 @@ export class EngramClient {
     return this.request<SessionIndex>(`/v1/sessions${qs ? `?${qs}` : ''}`)
   }
 
-  /** Answer a single factual question directly (abstains when not in memory). */
+  /** 直接回答单个事实性问题（记忆中没有答案时选择拒答）。 */
   search(query: string, options: { asOf?: number; redactSensitive?: boolean } = {}): Promise<SearchResult> {
     return this.post<SearchResult>('/v1/recall', {
       query,
@@ -227,7 +227,7 @@ export class EngramClient {
     })
   }
 
-  /** Everything stored for this namespace, with paging/filtering for user-owned memory UIs. */
+  /** 该命名空间下存储的全部记忆，支持分页/过滤，用于用户自有记忆管理界面。 */
   memories(options: MemoryListOptions = {}): Promise<MemoryDump> {
     const params = new URLSearchParams()
     if (options.factsLimit !== undefined) params.set('facts_limit', String(options.factsLimit))
@@ -245,24 +245,24 @@ export class EngramClient {
     return this.request<MemoryDump>(`/v1/memories${qs ? `?${qs}` : ''}`)
   }
 
-  /** Content-free namespace stats for dashboards/readiness probes. */
+  /** 不含内容的命名空间统计，用于仪表盘/就绪探针。 */
   stats(): Promise<MemoryStats> {
     return this.request<MemoryStats>('/v1/stats')
   }
 
-  /** Content-free agent/session status: namespace, focus, counts, and recommended memory actions. */
+  /** 不含内容的 agent/会话状态：命名空间、focus、计数以及建议的记忆操作。 */
   agentStatus(options: { sessionId?: string } = {}): Promise<AgentStatus> {
     const qs = options.sessionId === undefined ? '' : `?session_id=${encodeURIComponent(options.sessionId)}`
     return this.request<AgentStatus>(`/v1/agent/status${qs}`)
   }
 
-  /** The synthesized user profile + key facts. */
+  /** 合成后的用户画像 + 关键事实。 */
   profile(): Promise<ProfileResult> {
     return this.request<ProfileResult>('/v1/profile')
   }
 
-  // --- editable facts -------------------------------------------------------
-  /** Assert an authoritative fact (user-sourced; never silently overwritten). */
+  // --- 可编辑的事实 ----------------------------------------------------------
+  /** 断言一条权威事实（用户来源；绝不会被静默覆盖）。 */
   addFact(fact: FactInput): Promise<{ ok: boolean; id: string; text: string }> {
     return this.post('/v1/facts', { subject: 'user', ...fact })
   }
@@ -295,7 +295,7 @@ export class EngramClient {
     return this.request('/v1/policy', { method: 'PUT', body: JSON.stringify(patch) })
   }
 
-  /** Semantic graph. Defaults to share-safe; pass includeSensitive=true for the full owner-visible graph. */
+  /** 语义图谱。默认返回可安全分享的版本；传入 includeSensitive=true 获取完整的所有者可见图谱。 */
   graph(options: { asOf?: number; includeSensitive?: boolean } = {}): Promise<GraphData> {
     const params = new URLSearchParams()
     if (options.asOf !== undefined) params.set('as_of', String(options.asOf))
@@ -306,28 +306,28 @@ export class EngramClient {
     return this.request<GraphData>(`/v1/graph${qs ? `?${qs}` : ''}`)
   }
 
-  // --- bulk import / export / forget ---------------------------------------
-  /** Bulk-import a history (ChatGPT export, OpenAI messages, JSONL, transcript) in one batched pass. */
+  // --- 批量导入 / 导出 / 遗忘 -------------------------------------------------
+  /** 一次性批量导入历史记录（ChatGPT 导出、OpenAI messages、JSONL、transcript）。 */
   import(params: ImportParams): Promise<ImportResult> {
     return this.post<ImportResult>('/v1/import', params)
   }
 
-  /** Data export. Defaults to a share-safe structured export; pass includeSensitive=true for full private export. */
+  /** 数据导出。默认返回可安全分享的结构化导出；传入 includeSensitive=true 获取完整私有导出。 */
   export<T = MemoryExport>(options: { includeSensitive?: boolean } = {}): Promise<T> {
     const includeSensitive = options.includeSensitive ?? false
     const qs = `?include_sensitive=${includeSensitive ? 'true' : 'false'}`
     return this.request<T>(`/v1/export${qs}`)
   }
 
-  /** Erase ALL memory in this namespace (irreversible); requires explicit confirmation. */
+  /** 清空该命名空间下的所有记忆（不可逆）；需要显式确认。 */
   forget(options: ForgetOptions): Promise<OkMessage> {
     if (!options?.confirm) {
-      throw new EngramError(400, 'forget requires { confirm: true } because it permanently erases this namespace')
+      throw new MnemoTraceError(400, 'forget requires { confirm: true } because it permanently erases this namespace')
     }
     return this.post<OkMessage>('/v1/forget', { confirm: true })
   }
 
-  // --- OpenAI-compatible chat ----------------------------------------------
+  // --- OpenAI 兼容 chat ------------------------------------------------------
   private async createChatCompletion(
     params: ChatCompletionCreateParams,
   ): Promise<ChatCompletion | AsyncIterable<ChatCompletionChunk>> {
@@ -342,9 +342,9 @@ export class EngramClient {
   }
 }
 
-/** Parse an OpenAI-style SSE stream into ChatCompletionChunk values. */
+/** 将 OpenAI 风格的 SSE 流解析为 ChatCompletionChunk。 */
 async function* parseSSE(res: Response): AsyncGenerator<ChatCompletionChunk> {
-  if (!res.body) throw new EngramError(500, 'streaming requested but the response has no body')
+  if (!res.body) throw new MnemoTraceError(500, 'streaming requested but the response has no body')
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -363,7 +363,7 @@ async function* parseSSE(res: Response): AsyncGenerator<ChatCompletionChunk> {
         try {
           yield JSON.parse(data) as ChatCompletionChunk
         } catch {
-          /* skip malformed chunk */
+          /* 跳过格式错误的分块 */
         }
       }
     }

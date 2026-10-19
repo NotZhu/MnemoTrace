@@ -1,4 +1,4 @@
-# Specification Quality Checklist: Engram 0.1.0 商业交付版
+# Specification Quality Checklist: MnemoTrace 0.1.0 商业交付版
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-07-14

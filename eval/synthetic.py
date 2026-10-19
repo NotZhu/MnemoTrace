@@ -1,8 +1,8 @@
-"""Tiny built-in synthetic eval set covering the categories real memory benchmarks test:
-single-hop, knowledge-update, multi-hop, temporal (as-of), and abstention (false premise).
+"""内置的小型合成评测集，覆盖真实 memory benchmark 考察的类别：
+单跳（single-hop）、知识更新（knowledge-update）、多跳（multi-hop）、时序（as-of）、拒答（假前提）。
 
-Each item is self-contained (its own multi-session history) so items don't interfere. `answer=None`
-means the correct behavior is to ABSTAIN. `as_of_day` runs the query at a point in the past.
+每个 item 自包含（有自己的多会话历史），互不干扰。`answer=None` 表示正确行为是拒答（ABSTAIN）。
+`as_of_day` 让查询在过去某个时间点执行。
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class EvalItem:
     category: str
     sessions: list[tuple[str, int]]  # (text, day_offset)
     question: str
-    answer: Optional[str]  # None => abstention expected
+    answer: Optional[str]  # None => 期望拒答
     as_of_day: Optional[int] = None
 
 
@@ -63,16 +63,16 @@ ITEMS: list[EvalItem] = [
     EvalItem(
         "tmp2", "temporal",
         [("My name is Finn and I work at IBM.", 0), ("I now work at Oracle.", 50)],
-        "Where does Finn work?", "Oracle",  # current (no as_of)
+        "Where does Finn work?", "Oracle",  # 当前状态（无 as_of）
     ),
     EvalItem(
         "abs1", "abstention",
         [("My name is Gina and I work at Adobe.", 0)],
-        "What is Gina's favorite food?", None,  # attribute never stated -> abstain
+        "What is Gina's favorite food?", None,  # 属性从未提及 -> 拒答
     ),
     EvalItem(
         "abs2", "abstention",
         [("My name is Hugo and I live in Lisbon.", 0)],
-        "What is the capital of France?", None,  # unrelated -> abstain
+        "What is the capital of France?", None,  # 与记忆无关 -> 拒答
     ),
 ]

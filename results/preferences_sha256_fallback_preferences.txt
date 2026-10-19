@@ -1,0 +1,82 @@
+TAP version 13
+# Subtest: 图谱即时更新、合并写入，离页保存且重新加载恢复，重置也持久化
+ok 1 - 图谱即时更新、合并写入，离页保存且重新加载恢复，重置也持久化
+  ---
+  duration_ms: 8.6707
+  type: 'test'
+  ...
+# Subtest: 所有长期筛选立即保存，页面重建/刷新可恢复，账号和服务地址隔离且不保存明文凭据
+ok 2 - 所有长期筛选立即保存，页面重建/刷新可恢复，账号和服务地址隔离且不保存明文凭据
+  ---
+  duration_ms: 5.3065
+  type: 'test'
+  ...
+# Subtest: 指纹未完成时的修改不会丢失，快速换账号不会使用旧空间
+ok 3 - 指纹未完成时的修改不会丢失，快速换账号不会使用旧空间
+  ---
+  duration_ms: 1.4942
+  type: 'test'
+  ...
+# Subtest: 仅允许声明的偏好，缓存类型/范围异常或损坏时使用默认值
+ok 4 - 仅允许声明的偏好，缓存类型/范围异常或损坏时使用默认值
+  ---
+  duration_ms: 5.1968
+  type: 'test'
+  ...
+# Subtest: 问答片段最小值为2，旧缓存的1升级为2并保持其他设置
+ok 5 - 问答片段最小值为2，旧缓存的1升级为2并保持其他设置
+  ---
+  duration_ms: 3.1903
+  type: 'test'
+  ...
+# Subtest: 事实分类与三态筛选按空间持久化，兼容旧包含历史开关
+ok 6 - 事实分类与三态筛选按空间持久化，兼容旧包含历史开关
+  ---
+  duration_ms: 5.6366
+  type: 'test'
+  ...
+# Subtest: 存储不可用时仍能修改内存中的偏好
+ok 7 - 存储不可用时仍能修改内存中的偏好
+  ---
+  duration_ms: 1.1745
+  type: 'test'
+  ...
+# Subtest: crypto 不存在时偏好可跨刷新恢复，账号/服务隔离且不保存明文 key
+ok 8 - crypto 不存在时偏好可跨刷新恢复，账号/服务隔离且不保存明文 key
+  ---
+  duration_ms: 5.9469
+  type: 'test'
+  ...
+# Subtest: subtle 不存在时偏好可跨刷新恢复，账号/服务隔离且不保存明文 key
+ok 9 - subtle 不存在时偏好可跨刷新恢复，账号/服务隔离且不保存明文 key
+  ---
+  duration_ms: 5.5013
+  type: 'test'
+  ...
+# Subtest: 原生 digest 拒绝时偏好可跨刷新恢复，账号/服务隔离且不保存明文 key
+ok 10 - 原生 digest 拒绝时偏好可跨刷新恢复，账号/服务隔离且不保存明文 key
+  ---
+  duration_ms: 4.7012
+  type: 'test'
+  ...
+# Subtest: 回退和原生 SHA-256 对 UTF-8、长输入与分隔符得到相同编号
+ok 11 - 回退和原生 SHA-256 对 UTF-8、长输入与分隔符得到相同编号
+  ---
+  duration_ms: 3.9028
+  type: 'test'
+  ...
+# Subtest: 快速连续切换用最新状态计算；问答数值校验，不持久化会话/结果/草稿
+ok 12 - 快速连续切换用最新状态计算；问答数值校验，不持久化会话/结果/草稿
+  ---
+  duration_ms: 1.4682
+  type: 'test'
+  ...
+1..12
+# tests 12
+# suites 0
+# pass 12
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 248.5938

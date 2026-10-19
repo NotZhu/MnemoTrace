@@ -1,8 +1,8 @@
-"""Audit local benchmark result logs before they become public evidence.
+"""在本地 benchmark 结果日志成为公开证据之前进行审计。
 
-``validate_results.py`` answers "is this one log citable?". This script gives the wider dashboard:
-which files are complete, which are partial exploratory runs, and which have schema/errors that must not
-be cited. It is intentionally zero-dep and safe to run on a messy local ``results/`` directory.
+``validate_results.py`` 回答"这一份日志可否引用？"；本脚本给出更宽的仪表盘：哪些文件是完整的、
+哪些只是部分的探索性运行、哪些有模式/错误因此绝不能引用。刻意零依赖，可以放心跑在凌乱的本地
+``results/`` 目录上。
 
     python eval/audit_results.py
     python eval/audit_results.py --fail-invalid
@@ -19,7 +19,7 @@ from typing import Any
 
 try:
     from eval.validate_results import validate_bench_log
-except ModuleNotFoundError:  # direct execution as ``python eval/audit_results.py``
+except ModuleNotFoundError:  # 以 ``python eval/audit_results.py`` 直接执行时
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from eval.validate_results import validate_bench_log
 
@@ -163,7 +163,7 @@ def format_audit(audits: list[LogAudit]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Audit Engram result JSONL logs.")
+    parser = argparse.ArgumentParser(description="Audit MnemoTrace result JSONL logs.")
     parser.add_argument("paths", nargs="*", default=["results/*.jsonl"], help="JSONL files or glob patterns")
     parser.add_argument("--bench-rows", type=int, default=DEFAULT_BENCH_ROWS)
     parser.add_argument("--personamem-rows", type=int, default=None)

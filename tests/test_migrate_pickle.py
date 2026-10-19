@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pickle
 
-from engram import Memory
-from engram.store.migrate import migrate
+from mnemotrace import Memory
+from mnemotrace.store.migrate import migrate
 
 
 def _legacy_dict(mem: Memory) -> dict:

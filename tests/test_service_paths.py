@@ -6,11 +6,11 @@ import queue
 import shutil
 from pathlib import Path
 
-from engram import Memory
-from engram.embed import HashingEmbedder
-from engram.llm.providers import make_embedder
-from engram.service import MemoryService
-from engram.types import Entity, Relation
+from mnemotrace import Memory
+from mnemotrace.embed import HashingEmbedder
+from mnemotrace.llm.providers import make_embedder
+from mnemotrace.service import MemoryService
+from mnemotrace.types import Entity, Relation
 
 
 def _remember_in_process(data_dir: str, user: str, session_id: str, content: str, out) -> None:
@@ -18,7 +18,7 @@ def _remember_in_process(data_dir: str, user: str, session_id: str, content: str
         svc = MemoryService(data_dir=data_dir, embedder_name="hashing", llm_name="")
         result = svc.remember(user, content, session_id=session_id, scope="long")
         out.put({"ok": result.get("ok"), "extracted": result.get("extracted", 0)})
-    except BaseException as exc:  # noqa: BLE001 - surfaced in the parent test process.
+    except BaseException as exc:  # noqa: BLE001 - 异常会回传到父测试进程中显示。
         out.put({"error": repr(exc)})
 
 
@@ -27,13 +27,14 @@ def test_make_embedder_defaults_to_offline_hashing():
 
 
 def test_service_defaults_to_offline_hashing_embedder(tmp_path, monkeypatch):
-    monkeypatch.delenv("ENGRAM_EMBEDDER", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MNEMOTRACE_EMBEDDER", raising=False)
     svc = MemoryService(data_dir=str(tmp_path))
     assert isinstance(svc.embedder, HashingEmbedder)
 
 
 def test_service_reads_max_hot_facts_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("ENGRAM_MAX_HOT_FACTS", "3")
+    monkeypatch.setenv("MNEMOTRACE_MAX_HOT_FACTS", "3")
     svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing")
     assert svc.config.max_hot_facts == 3
 
@@ -77,10 +78,14 @@ def test_forget_never_targets_data_root_or_parent(tmp_path, monkeypatch):
     data = tmp_path / "data"
     data.mkdir()
     svc = MemoryService(data_dir=str(data), embedder_name="hashing")
+    Path(svc._secure_path("..")).mkdir()
     removed: list[Path] = []
 
     monkeypatch.setattr(shutil, "rmtree", lambda path: removed.append(Path(path).resolve()))
     monkeypatch.setattr(os, "remove", lambda path: removed.append(Path(path).resolve()))
+    # forget() 还会清空 namespace 目录本身；把这条删除路径也记录下来，让下面的包含性断言
+    # 能看到完整的清理过程。
+    monkeypatch.setattr(os, "rmdir", lambda path: removed.append(Path(path).resolve()))
 
     assert svc.forget("..") == {"ok": True, "message": "all memory for '..' erased"}
     root = data.resolve()
@@ -88,7 +93,7 @@ def test_forget_never_targets_data_root_or_parent(tmp_path, monkeypatch):
     assert all(path != root and root in path.parents for path in removed)
 
 
-def test_service_loads_legacy_pkl_named_store_and_forget_removes_both(tmp_path):
+def test_service_ignores_legacy_paths_and_forget_only_removes_digest_store(tmp_path):
     legacy = tmp_path / "alice.pkl"
     mem = Memory()
     mem.add("I live in Shenzhen.", user_id="alice")
@@ -96,14 +101,17 @@ def test_service_loads_legacy_pkl_named_store_and_forget_removes_both(tmp_path):
 
     svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing")
     loaded = svc.get("alice")
-    assert loaded.episodes_doc.values()[0].content == "I live in Shenzhen."
+    assert loaded.episodes_doc.values() == []
 
     new_path = tmp_path / "alice"
     new_path.mkdir()
+    svc.add_fact("alice", "project", "marker", "synthetic-new-store")
     assert legacy.exists() and new_path.exists()
     assert svc.forget("alice")["ok"] is True
-    assert not legacy.exists()
-    assert not new_path.exists()
+    assert legacy.exists()
+    assert new_path.exists()
+    assert not Path(svc._secure_path("alice")).exists()
+    assert Memory.open(str(legacy)).episodes_doc.values()[0].content == "I live in Shenzhen."
 
 
 def test_service_stats_reports_consolidation_backlog_without_content(tmp_path):
@@ -200,7 +208,7 @@ def test_service_refreshes_cached_namespace_after_external_process_write(tmp_pat
     codex_session = "codex:super-memory:external-writer"
     claude_session = "claude-code:super-memory:stale-reader"
 
-    # Claude Code has already opened and cached this namespace before Codex writes anything.
+    # 在 Codex 写入任何内容之前，Claude Code 就已经打开并缓存了这个 namespace。
     before = claude.agent_status(user, session_id=claude_session)
     assert before["session"]["episodes"] == 0
 
@@ -295,8 +303,8 @@ def test_service_agent_status_is_content_free_and_session_aware(tmp_path):
     assert status["session"]["working_live"] == 1
     assert status["focus"] == {"track": ["project decisions"], "mute": ["health details"]}
     assert status["counts"]["facts_live"] >= 1
-    assert "engram_recall" in status["tools"]["read_context"]
-    assert any("engram_close_session" in item for item in status["recommended_next_actions"])
+    assert "mnemotrace_recall" in status["tools"]["read_context"]
+    assert any("mnemotrace_close_session" in item for item in status["recommended_next_actions"])
 
     rendered = str(status).lower()
     assert "diabetes" not in rendered
@@ -449,12 +457,12 @@ def test_service_remember_total_facts_counts_cold_tier(tmp_path):
 
 
 # ---------------------------------------------------------------------------------------------------
-# embedder_blind: the store-level audit finding for "recall returns the same four facts for every query".
-# Measured on the owner's store: HashingEmbedder scored 0.000 for every Chinese query/fact pair.
+# embedder_blind：针对 store 层审计发现"recall 对每个 query 都返回同样四个事实"的测试。
+# 在 owner 的 store 上实测：HashingEmbedder 对每一对中文 query/fact 的打分都是 0.000。
 # ---------------------------------------------------------------------------------------------------
 
 _ZH = ["我们决定用 multilingual 作为线上 embedder，因为中文区分度更好",
-       "线上机每小时被 quant cron 的任务压垮，Engram 是受害者",
+       "线上机每小时被 quant cron 的任务压垮，忆痕 是受害者",
        "发布前必须过 LongMemEval A/B，不能只用中文语料验证",
        "读路径的两个同构缺陷：辅助信号驱逐主信号",
        "会话结论是记忆单元，逐轮抽取产出的是传记三元组",
@@ -466,7 +474,7 @@ _ZH = ["我们决定用 multilingual 作为线上 embedder，因为中文区分�
        "个人记忆路径和 benchmark 路径共用一套默认值是缝隙所在",
        "记忆自己长：watch 定时喂入"]
 _EN = ["We decided to use the multilingual embedder for production because it ranks Chinese.",
-       "The production box is crushed hourly by a quant cron job; Engram is the victim.",
+       "The production box is crushed hourly by a quant cron job; MnemoTrace is the victim.",
        "Every algorithm change must pass a LongMemEval A/B before shipping.",
        "Two isomorphic read-path defects: auxiliary signals evicting the primary signal.",
        "Session conclusions are the memory unit; per-turn extraction yields biography triples.",
@@ -493,17 +501,16 @@ def test_audit_embedder_blind_fires_on_hashing_non_ascii_store(tmp_path):
     assert len(rows) == 1 and audit["by_kind"]["embedder_blind"] == 1, audit
     row = rows[0]
     assert row["exact"] is True and row["embedder"] == "HashingEmbedder" and row["model"] is None
-    # The rule counts letters, not punctuation: lines that lean on ASCII names ("multilingual",
-    # "quant cron", "LongMemEval A/B") come out roughly half-and-half and are rightly NOT called blind.
-    # Nine of twelve still are, which is the 20% share several times over.
+    # 规则统计的是字母而非标点：依赖 ASCII 名称（"multilingual"、"quant cron"、"LongMemEval A/B"）的行
+    # 大约中英各半，正确地不会被判定为 blind。十二条中仍有九条触发，远超 20% 的阈值。
     assert row["checked"] >= 10 and row["blind"] == row["episodes_blind"] >= 8
     assert row["ratio"] >= 0.2 and "fact_id" not in row
     assert row["text"] == f"HashingEmbedder cannot rank {round(row['ratio'] * 100)}% of {row['checked']} memories"
     assert row["migrate"] in row["action"] and "bge-small-zh" in row["action"]
     assert audit["total_findings"] >= 1
-    # the agent sees the same verdict, with the command an operator can run
+    # agent 看到同样的结论，并附带一条运维人员可以直接运行的命令
     actions = svc.agent_status("zh")["recommended_next_actions"]
-    assert any("ENGRAM_EMBEDDER=multilingual ENGRAM_REEMBED_ON_MISMATCH=1" in a
+    assert any("MNEMOTRACE_EMBEDDER=multilingual MNEMOTRACE_REEMBED_ON_MISMATCH=1" in a
                and "HashingEmbedder" in a for a in actions), actions
 
 
@@ -512,18 +519,18 @@ def test_audit_no_embedder_blind_on_english_store(tmp_path):
     _seed(svc, "en", _EN)
     assert "embedder_blind" not in svc.audit("en")["by_kind"]
     assert not any("cannot be ranked" in a for a in svc.agent_status("en")["recommended_next_actions"])
-    # and below the floor of 10 memories nothing fires: a 3-line store is not evidence of anything
+    # 低于 10 条记忆的下限时也不触发：只有 3 行的 store 说明不了任何问题
     _seed(svc, "tiny", _ZH[:3])
     assert "embedder_blind" not in svc.audit("tiny")["by_kind"]
 
 
 def test_audit_no_embedder_blind_for_multilingual_embedder(tmp_path):
-    """The rule keys on the tokenizer, not on the corpus alone: a multilingual model ranks CJK fine, an
-    English-only sentence-transformer degrades (reported, but not as an exact verdict)."""
+    """该规则依据 tokenizer 判断，而不只看语料本身：multilingual 模型能正常为 CJK 排序，
+    纯英文的 sentence-transformer 会退化（照常上报，但不作为 exact 结论）。"""
     svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
     _seed(svc, "zh", _ZH)
 
-    class SentenceTransformerEmbedder:  # duck-typed stand-in; the real one needs sentence-transformers
+    class SentenceTransformerEmbedder:  # 鸭子类型替身；真正的实现依赖 sentence-transformers
         def __init__(self, model_name: str):
             self.model_name = model_name
 
@@ -535,7 +542,7 @@ def test_audit_no_embedder_blind_for_multilingual_embedder(tmp_path):
     assert len(rows) == 1 and rows[0]["exact"] is False
     assert rows[0]["model"] == "BAAI/bge-small-en-v1.5" and rows[0]["embedder"] == "SentenceTransformerEmbedder"
 
-    class LiteLLMEmbedder:  # any other embedder: never fires (we have no evidence about it)
+    class LiteLLMEmbedder:  # 其他任何 embedder：永不触发（我们没有关于它的证据）
         model_name = "text-embedding-3-small"
 
     svc.embedder = LiteLLMEmbedder()
@@ -543,9 +550,8 @@ def test_audit_no_embedder_blind_for_multilingual_embedder(tmp_path):
 
 
 def test_audit_no_embedder_blind_on_code_heavy_ascii_store(tmp_path):
-    """Punctuation is not a script. A store of JSON / SQL / shell facts is 100% [a-z0-9]-tokenizable —
-    the first version counted braces and pipes against the text and told the owner a third of their
-    memories were unrankable."""
+    """标点不属于文字。一个存 JSON / SQL / shell 事实的 store 是 100% 可按 [a-z0-9] 切分的——
+    旧版本把花括号和竖线也计入文字，曾误报 owner 有三分之一的记忆无法被排序。"""
     svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
     code = ['{"a": 1, "b": [2, 3], "c": {"d": null}}', "if (!ok) { return -1; }",
             "SELECT * FROM t WHERE x = 1;", "ls -la | grep -v '^d' | wc -l",
@@ -558,8 +564,8 @@ def test_audit_no_embedder_blind_on_code_heavy_ascii_store(tmp_path):
 
 
 def test_audit_embedder_blind_fires_on_two_large_chinese_sessions(tmp_path):
-    """The owner's real backfill: a couple of long transcripts, zero facts. Item count is 2, letter mass
-    is thousands — the verdict must come from the mass."""
+    """owner 真实回填数据的形态：几段长转录、零 facts。条目数只有 2，字母量数以千计——
+    结论必须来自字母量而非条目数。"""
     svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
     long_zh = ["，".join(_ZH) * 8, "。".join(reversed(_ZH)) * 8]
     _seed(svc, "big", long_zh)

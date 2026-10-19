@@ -126,7 +126,7 @@ LongMemEval temporal 护栏 83.3%（基线 83.5%，噪声内），没伤到另�
 
 **动机**：上文证明本 rig 的同题 A/B 不可信——83 道 single-hop 中 token 完全相同的有 **0** 道。
 
-**已交付**：`engram/llm/cache.py`（内容寻址磁盘缓存，包住 `LLM.complete`）+ `--pin-extraction DIR`。
+**已交付**：`mnemotrace/llm/cache.py`（内容寻址磁盘缓存，包住 `LLM.complete`）+ `--pin-extraction DIR`。
 只包 extractor，**不包 answerer/judge**（钉住被测对象合理，钉住裁判会掩盖真实答题方差）。
 6 项单测覆盖：同 prompt 同回复、跨进程存活、不同 model_tag 不串、空回复不缓存。
 
@@ -136,7 +136,7 @@ LongMemEval temporal 护栏 83.3%（基线 83.5%，噪声内），没伤到另�
 1. 差异出现在 persona 块（`- name:` vs `- Name:`）→ 怀疑 persona 排序
 2. 加 `id` tiebreak → 无效（**id 是随机 UUID，跨运行本就不同**，我这步治错了地方）
 3. 改按内容排序 → 仍不一致
-4. 单线程跑（`ENGRAM_EXTRACT_WORKERS=1`）→ 仍不一致，**排除并发**
+4. 单线程跑（`MNEMOTRACE_EXTRACT_WORKERS=1`）→ 仍不一致，**排除并发**
 5. Spy 出未命中的 prompt 并 diff → **两次的事实集内容本身不同**（不是顺序，是数量/内容差异），
    缓存命中率 97%，但**每次恰好 miss 1 次**，且 miss 的正是 persona 调用
 

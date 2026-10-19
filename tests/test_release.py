@@ -5,11 +5,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-import engram
+import mnemotrace
 
 try:
     import tomllib
-except ModuleNotFoundError:  # Python 3.10
+except ModuleNotFoundError:  # Python 3.10 没有 tomllib
     import tomli as tomllib
 
 
@@ -25,7 +25,7 @@ def test_release_versions_are_consistent():
     )
     frontend = json.loads((ROOT / "frontend/package.json").read_text(encoding="utf-8"))
 
-    assert engram.__version__ == VERSION
+    assert mnemotrace.__version__ == VERSION
     assert pyproject["project"]["version"] == VERSION
     assert sdk["version"] == VERSION
     assert sdk_lock["version"] == VERSION
@@ -44,6 +44,7 @@ def test_commercial_release_assets_exist():
         "deploy/.env.example",
         "deploy/README.md",
         "docs/commercial-release-0.1.0.zh-CN.md",
+        "docs/mnemotrace-full-architecture-report.zh-CN.md",
         ".github/workflows/ci.yml",
         "scripts/check_release.py",
     )

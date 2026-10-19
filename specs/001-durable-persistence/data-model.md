@@ -1,6 +1,6 @@
 # Phase 1 — Data Model: Persisted Records & Manifest
 
-The canonical entity definitions live in [`engram/types.py`](../../engram/types.py); this document
+The canonical entity definitions live in [`mnemotrace/types.py`](../../mnemotrace/types.py); this document
 specifies **how they are persisted** and the **invariants** the serializer must hold. The source dataclass
 is the single source of truth for fields — the serializer persists the **complete** field set so reload is
 lossless (Constitution IV).
@@ -43,7 +43,7 @@ lossless (Constitution IV).
 ```json
 {
   "schema_version": 1,
-  "engram_version": "0.x.y",
+  "mnemotrace_version": "0.x.y",
   "embedder_id": "bge-small-en-v1.5 | hashing | ...",
   "embedding_dim": 384,
   "created_at": 1750000000.0,

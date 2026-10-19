@@ -1,8 +1,7 @@
-"""Validate benchmark JSONL logs before they become published evidence.
+"""在 benchmark JSONL 日志成为公开发布证据之前进行校验。
 
-This is the failure-oriented sibling of ``eval/report.py``. ``report.py`` summarizes whatever a run
-contains; this module answers whether a log is complete enough to cite. It is intentionally zero-dep so
-contributors can run it anywhere the benchmark logs are available.
+这是 ``eval/report.py`` 的失败导向孪生兄弟。``report.py`` 概括一次运行里有什么；本模块回答的
+是"一份日志是否完整到可以引用"。刻意保持零依赖，贡献者在任何有 benchmark 日志的地方都能跑。
 """
 from __future__ import annotations
 
@@ -48,11 +47,11 @@ def validate_bench_log(
     required_systems: Iterable[str] | None = None,
     schema: str = "bench",
 ) -> list[str]:
-    """Return validation errors for a ``bench.py`` JSONL log.
+    """返回一份 ``bench.py`` JSONL 日志的校验错误。
 
-    ``require_complete`` is the standard for published/DONE evidence. By default every discovered system
-    must have a scored, non-error result on every row, with prediction and gold present. Pass
-    ``required_systems`` when only named systems from a multi-system log are being cited.
+    ``require_complete`` 是发布/DONE 证据的标准。默认情况下，发现的每个 system 在每一行都必须
+    有已打分、无错误的结果，且 prediction 和 gold 都在。只引用多 system 日志中指定 system 时，
+    传 ``required_systems``。
     """
     if schema not in SCHEMAS:
         return [f"{path}: unknown schema {schema!r}; expected one of {sorted(SCHEMAS)}"]
@@ -159,7 +158,7 @@ def _validate_result(
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Validate Engram benchmark JSONL logs.")
+    ap = argparse.ArgumentParser(description="Validate MnemoTrace benchmark JSONL logs.")
     ap.add_argument("logs", nargs="+", help="results/*.jsonl files to validate")
     ap.add_argument(
         "--schema",

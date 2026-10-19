@@ -1,22 +1,22 @@
-"""Simulate two agents sharing one user-owned Engram memory namespace.
+"""模拟两个 agent 共享同一个用户所有的 忆痕 记忆命名空间。
 
-Zero-server local smoke test:
+无服务端的本地冒烟测试：
 
     python examples/cross_agent_handoff.py --local
 
-Run an Engram server first:
+先启动 忆痕 服务：
 
-    ENGRAM_OPEN=1 ENGRAM_EMBEDDER=hashing uvicorn engram.server.app:app --port 8000
+    MNEMOTRACE_OPEN=1 MNEMOTRACE_EMBEDDER=hashing uvicorn mnemotrace.server.app:app --port 8000
 
-Then run:
+然后运行：
 
     python examples/cross_agent_handoff.py \
         --base http://localhost:8000 \
         --key me \
         --project super-memory
 
-The script acts like Codex writing a durable project decision, then Claude Code recalling it from a
-different session_id. Same Bearer key = same user-owned memory namespace.
+脚本扮演 Codex 写入一条持久的项目决策，再由 Claude Code 用另一个 session_id 把它召回。
+相同的 Bearer key = 相同的用户记忆命名空间。
 """
 from __future__ import annotations
 
@@ -59,15 +59,15 @@ def http_call(base: str, key: str) -> Call:
                 return json.loads(resp.read() or "{}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise SystemExit(f"Engram returned HTTP {exc.code} for {path}: {detail}") from exc
+            raise SystemExit(f"MnemoTrace returned HTTP {exc.code} for {path}: {detail}") from exc
         except urllib.error.URLError as exc:
-            raise SystemExit(f"Could not reach Engram at {base}: {exc}") from exc
+            raise SystemExit(f"Could not reach MnemoTrace at {base}: {exc}") from exc
 
     return call
 
 
 def local_call(key: str, data_dir: str) -> Call:
-    from engram.service import MemoryService
+    from mnemotrace.service import MemoryService
 
     svc = MemoryService(data_dir=data_dir, embedder_name="hashing", llm_name="")
 
@@ -174,12 +174,12 @@ def exercise_handoff(
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="Exercise cross-agent Engram memory handoff.")
+    ap = argparse.ArgumentParser(description="Exercise cross-agent MnemoTrace memory handoff.")
     ap.add_argument("--local", action="store_true",
                     help="use local MemoryService storage instead of an HTTP server")
     ap.add_argument("--data-dir", default=None,
-                    help="local Engram data dir for --local (default: temporary smoke-test dir)")
-    ap.add_argument("--base", default="http://localhost:8000", help="Engram HTTP base URL")
+                    help="local MnemoTrace data dir for --local (default: temporary smoke-test dir)")
+    ap.add_argument("--base", default="http://localhost:8000", help="MnemoTrace HTTP base URL")
     ap.add_argument("--key", default="me", help="Bearer key = user memory namespace")
     ap.add_argument("--project", default="super-memory", help="project/workspace name")
     ap.add_argument("--source-agent", default="codex", help="agent that writes the memory")
@@ -191,7 +191,7 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     if args.local:
-        data_dir = args.data_dir or tempfile.mkdtemp(prefix="engram-handoff.")
+        data_dir = args.data_dir or tempfile.mkdtemp(prefix="mnemotrace-handoff.")
         print("mode: local")
         print(f"data_dir: {data_dir}")
         call = local_call(args.key, data_dir)

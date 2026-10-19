@@ -1,4 +1,6 @@
-# Engram
+# 忆痕
+
+**MnemoTrace** is the English product name.
 
 **🌐 English | [中文](README.zh-CN.md)**
 
@@ -7,11 +9,11 @@ publish, you can reproduce.**
 
 **📄 [Paper — arXiv:2606.09900 →](https://arxiv.org/abs/2606.09900)** — *Less Context, More Accuracy: A Bi-Temporal Memory Engine for LLM Agents Where a Lean Retrieved Context Beats the Full History.*
 
-**🎬 [Live demo / 在线动画演示 →](https://ly-wang19.github.io/engram/)** — see how it works in 60 seconds.
+**🎬 [Live demo / 在线动画演示 →](https://notzhu.github.io/MnemoTrace/)** — see how it works in 60 seconds.
 
-**🔌 [Try the live console →](http://42.193.220.197:8456/ui)** — open it, enter the demo key `1`, and browse a fully-loaded public memory end-to-end (profile, facts, timeline, graph, Q&A). It is a public demo; do not submit private data.
+**🔌 Run the console locally:** start the server with the [quickstart](#quickstart-zero-setup-no-api-keys), then open **http://127.0.0.1:8000/ui** to browse your own memory end-to-end (profile, facts, timeline, graph, Q&A).
 
-Engram gives LLM agents durable, queryable memory across sessions: it stores what happened, distills
+MnemoTrace gives LLM agents durable, queryable memory across sessions: it stores what happened, distills
 atomic facts, tracks how they change over time (bi-temporal), resolves contradictions without losing
 history, and retrieves the right context with a hybrid semantic + lexical + graph + recency search.
 
@@ -45,14 +47,14 @@ a fraction of the tokens):
 
 | System | Overall | Avg tokens | Notes |
 |---|---:|---:|---|
-| **Engram** (`engram_lean`) | **84.4%** | **7.9k** | retrieves a lean slice; 0 errors / 500 |
+| **MnemoTrace** (`engram_lean`) | **84.4%** | **7.9k** | retrieves a lean slice; 0 errors / 500 |
 | full-context baseline (same answerer+judge) | 78.8% | 79.2k | stuffs the whole haystack in the prompt |
 
-**Engram beats the full-context baseline by +5.6 points while using ~10× fewer tokens** (7.9k vs 79.2k) —
+**MnemoTrace beats the full-context baseline by +5.6 points while using ~10× fewer tokens** (7.9k vs 79.2k) —
 the filtered slice is *more* accurate than the noisy full window, winning 4 of 6 categories
 (current `main`, DeepSeek official judge; log committed):
 
-| Category | Engram | full-context |
+| Category | MnemoTrace | full-context |
 |---|---:|---:|
 | single-session-assistant | 94.6% | 94.6% |
 | single-session-user | **91.4%** | 82.9% |
@@ -73,34 +75,39 @@ reasoning), and scaling the same discipline to larger corpora.
 
 ## Quickstart (zero setup, no API keys)
 
+Run from this source checkout. `mnemotrace-memory` is the distribution name, not a claim
+that a PyPI/npm release is available. Install the local core with `pip install -e .`;
+use `pip install -e '.[serve]'` for HTTP/MCP and production backends. Existing upstream links are
+source attribution only, not an installation source for this checkout.
+
 ```bash
 python examples/quickstart.py
 # or, after pip install:
-engram-quickstart
+mnemotrace-quickstart
 ```
 
 Runs the full pipeline — ingest → consolidate → retrieve — using offline deterministic fallbacks (hashing
 embedder, rule-based extractor, in-memory stores). Real backends (LanceDB, Kuzu, LiteLLM, BGE) plug in
-behind the same interfaces via `pip install "engram-memory[all]"`.
+behind the same interfaces via `pip install -e '.[all]'`.
 
 To use the embedded LanceDB vector backend explicitly:
 
 ```python
-from engram import Config, Memory
+from mnemotrace import Config, Memory
 
-cfg = Config(storage="lancedb", data_path="./engram-vectors")
-mem = Memory.open("./engram-store", config=cfg)
+cfg = Config(storage="lancedb", data_path="./mnemotrace-vectors")
+mem = Memory.open("./mnemotrace-store", config=cfg)
 ```
 
 Existing trusted legacy pickle snapshots can be migrated explicitly:
 
 ```bash
-engram-migrate-pickle --from old-memory.pkl --to ./engram-store --dry-run
-engram-migrate-pickle --from old-memory.pkl --to ./engram-store
+mnemotrace-migrate-pickle --from old-memory.pkl --to ./mnemotrace-store --dry-run
+mnemotrace-migrate-pickle --from old-memory.pkl --to ./mnemotrace-store
 ```
 
 ```python
-from engram import Memory
+from mnemotrace import Memory
 
 mem = Memory()
 mem.add("My name is Wei and I work at Tencent.", user_id="u1")
@@ -113,7 +120,7 @@ print(mem.search("Where does Wei work?", user_id="u1").answer())
 
 ## Connect it to your agent
 
-Engram ships a full **access layer** so any agent or app can use it — all backed by one multi-tenant
+MnemoTrace ships a full **access layer** so any agent or app can use it — all backed by one multi-tenant
 service (`MemoryService`). In production, configured API keys map to stable isolated tenant namespaces;
 the key text itself is used as a namespace only in explicitly enabled development open mode.
 The bundled console at `/ui` exposes the same product loop for humans: content-free session status,
@@ -128,28 +135,27 @@ or HTTP, including `agent_status`, `remember`, `close_session`, and `session_rep
 test is available at
 [`examples/cross_agent_handoff.py`](examples/cross_agent_handoff.py).
 You can also generate client-specific setup snippets with
-`engram-agent-setup --client codex --local --namespace me` (zero-server local MCP) or
-`engram-agent-setup --client codex --api-url http://localhost:8000 --api-key me` (HTTP service).
+`mnemotrace-agent-setup --client codex --local --namespace me` (zero-server local MCP) or
+`mnemotrace-agent-setup --client codex --api-url http://localhost:8000 --api-key me` (HTTP service).
 Add `--python /path/to/python` when the agent should launch a specific environment with
-`engram-memory[mcp]` installed. The fast local path is
-`engram-agent-bootstrap --local --dry-run --namespace me --python /path/to/python` followed by
-`engram-agent-bootstrap --local --namespace me --python /path/to/python`; it installs Codex + project
+this checkout installed with `pip install -e '.[mcp]'`. The fast local path is
+`mnemotrace-agent-bootstrap --local --dry-run --namespace me --python /path/to/python` followed by
+`mnemotrace-agent-bootstrap --local --namespace me --python /path/to/python`; it installs Codex + project
 `.mcp.json`, runs the doctor against the installed config files, and prints a ready-to-paste AGENTS.md
 policy. Add
 `--install-policy` to write that policy into a managed AGENTS.md block with backup/uninstall support.
-For Codex, `engram-agent-setup --install-codex --dry-run ...` previews
+For Codex, `mnemotrace-agent-setup --install-codex --dry-run ...` previews
 the exact `~/.codex/config.toml` change, `--install-codex --doctor` applies it with a backup and verifies
-the actual MCP stdio launch path, and `--uninstall-codex` removes only Engram's MCP block. For Claude
-Code, Cursor, and project-level MCP clients, `engram-agent-setup --install-mcp-json --doctor ...` manages
+the actual MCP stdio launch path, and `--uninstall-codex` removes only MnemoTrace's MCP block. For Claude
+Code, Cursor, and project-level MCP clients, `mnemotrace-agent-setup --install-mcp-json --doctor ...` manages
 `.mcp.json` with the same dry-run, backup, and uninstall flow.
 
-### Call it right now — hosted API, zero setup
+### Call it right now — local API
 
-Your Bearer key **is** your private memory namespace (pick anything). Full reference: [`API.md`](API.md);
-browse a loaded memory in the console at **http://42.193.220.197:8456/ui** (demo key `1`).
+Your Bearer key **is** your private memory namespace (pick anything). Full reference: [`API.md`](API.md).
 
 ```bash
-B=http://42.193.220.197:8456 ; K=my-app          # any key = your own isolated namespace
+B=http://127.0.0.1:8000 ; K=my-app          # any key = your own isolated namespace
 
 # 1) remember — auto-extracts atomic, bi-temporal facts (records in your input's language)
 curl -s -X POST $B/v1/remember -H "Authorization: Bearer $K" -H "Content-Type: application/json" \
@@ -174,58 +180,62 @@ binds only to localhost, and does not enable open mode. See [`deploy/README.md`]
 TLS gateway, backup, restore, upgrade, rollback, and key rotation. `GET /health` is liveness/diagnostics;
 `GET /ready` returns 503 until auth and storage are ready. Neither exposes keys, paths, or user data.
 
-For a direct Python deployment, install `engram-memory[serve]`, set
-`ENGRAM_API_KEYS="tenant-a:<strong-random-key>"`, and run Uvicorn. `ENGRAM_OPEN=1` remains available only
+For a direct Python deployment, run `pip install -e '.[serve]'` from this checkout, set
+`MNEMOTRACE_API_KEYS="tenant-a:<strong-random-key>"`, and run Uvicorn. `MNEMOTRACE_OPEN=1` remains available only
 for explicit local development.
 
-**1. MCP server** — give Claude Desktop / Claude Code / Cursor a persistent memory (`engram_recall`,
-`engram_remember`, `engram_close_session`, `engram_agent_status`, `engram_list_facts`,
-`engram_list_sessions`, `engram_update_fact`, `engram_delete_fact`, `engram_get_focus`,
-`engram_set_focus`, `engram_search`, `engram_stats`, `engram_import`, `engram_export`, …):
+**1. MCP server** — give Claude Desktop / Claude Code / Cursor a persistent memory (`mnemotrace_recall`,
+`mnemotrace_remember`, `mnemotrace_close_session`, `mnemotrace_agent_status`, `mnemotrace_list_facts`,
+`mnemotrace_list_sessions`, `mnemotrace_update_fact`, `mnemotrace_delete_fact`, `mnemotrace_get_focus`,
+`mnemotrace_set_focus`, `mnemotrace_search`, `mnemotrace_stats`, `mnemotrace_import`, `mnemotrace_export`, …):
 
 ```bash
-pip install "engram-memory[mcp]"
-python -m engram.mcp                 # local memory at ~/.engram/data (zero external service)
+pip install -e '.[mcp]'
+python -m mnemotrace.mcp                 # local memory at ~/.mnemotrace/data (zero external service)
 # or proxy a running server (hosted or self-hosted):
-#   python -m engram.mcp --api-url http://42.193.220.197:8456 --api-key my-app
+#   python -m mnemotrace.mcp --api-url http://127.0.0.1:8000 --api-key my-app
 ```
 ```jsonc
 // claude_desktop_config.json
-{ "mcpServers": { "engram": { "command": "python", "args": ["-m", "engram.mcp"] } } }
+{ "mcpServers": { "mnemotrace": { "command": "python", "args": ["-m", "mnemotrace.mcp"] } } }
 ```
 
-`engram_recall` and `engram_search` also accept `as_of` (epoch seconds) for point-in-time memory views and
+`mnemotrace_recall` and `mnemotrace_search` also accept `as_of` (epoch seconds) for point-in-time memory views and
 `redact_sensitive=true` for shared/safe contexts.
 
-For agent clients, the intended lifecycle is: call `engram_agent_status` at startup when you need a
+For agent clients, the intended lifecycle is: call `mnemotrace_agent_status` at startup when you need a
 content-free wiring check, recall before work that may depend on prior sessions, remember durable
 user/project facts with `scope="long"` or `scope="auto"`, use `scope="working"` for short-lived
-current-task state, then call `engram_close_session` when a thread ends or switches tasks. The close
+current-task state, then call `mnemotrace_close_session` when a thread ends or switches tasks. The close
 step does not delete the transcript; it finishes consolidation, creates missing session summaries,
 clears ephemeral working memory, and persists the namespace.
-When the user asks to correct or remove one memory, use `engram_list_facts` to find the fact id, then
-`engram_update_fact` or `engram_delete_fact(confirm=true)` for a precise edit instead of wiping the
+When the user asks to correct or remove one memory, use `mnemotrace_list_facts` to find the fact id, then
+`mnemotrace_update_fact` or `mnemotrace_delete_fact(confirm=true)` for a precise edit instead of wiping the
 whole namespace. When the user asks the agent to emphasize or suppress a topic class, use
-`engram_set_focus` instead of rewriting facts.
+`mnemotrace_set_focus` instead of rewriting facts.
 
 **2. JS/TS SDK + OpenAI-compatible API** — change one URL and your existing OpenAI code gets memory:
-recall + inject before the model answers, remember the turn after.
+
+The SDK is local source in `clients/typescript/`, not an npm-published release. Build it with
+`npm --prefix clients/typescript install` and `npm --prefix clients/typescript run build`, then install
+that local directory into your app (for example, `npm install /absolute/path/to/MnemoTrace/clients/typescript`).
+Recall and inject memory before the model answers; remember the turn afterward.
 
 ```ts
-import { EngramClient } from 'engram-memory'                  // npm i engram-memory
-const engram = new EngramClient({ baseUrl: 'http://42.193.220.197:8456', apiKey: 'my-app' })  // or your own host
-await engram.agentStatus({ sessionId: 'app:my-product:conversation-123' }) // content-free wiring check
-await engram.remember('I live in Shenzhen and work at Tencent.')
-const { context } = await engram.recall('where do I live?')
-await engram.closeSession('app:my-product:conversation-123')
-const report = await engram.sessionReport('app:my-product:conversation-123') // what this session saved
+import { MnemoTraceClient } from 'mnemotrace-memory'                  // local SDK: clients/typescript (not published to npm)
+const mnemotrace = new MnemoTraceClient({ baseUrl: 'http://127.0.0.1:8000', apiKey: 'my-app' })  // or your own host
+await mnemotrace.agentStatus({ sessionId: 'app:my-product:conversation-123' }) // content-free wiring check
+await mnemotrace.remember('I live in Shenzhen and work at Tencent.')
+const { context } = await mnemotrace.recall('where do I live?')
+await mnemotrace.closeSession('app:my-product:conversation-123')
+const report = await mnemotrace.sessionReport('app:my-product:conversation-123') // what this session saved
 
 // drop-in OpenAI compatibility (works with the official `openai` SDK too — just set base_url):
-const out = await engram.chat.completions.create({ model: 'engram', messages: [
+const out = await mnemotrace.chat.completions.create({ model: 'mnemotrace', messages: [
   { role: 'user', content: 'Remind me where I work.' } ] })
 ```
 
-For OpenAI-compatible chat, the Engram extension also accepts
+For OpenAI-compatible chat, the MnemoTrace extension also accepts
 `memory: { session_id: "codex:repo:thread", scope: "auto" }` to attach the turn to an agent thread,
 `memory: { as_of: <epoch seconds> }` for a point-in-time memory view, and
 `memory: { redact_sensitive: true }` to omit sensitive facts from injected memory (redacted contexts are
@@ -233,10 +243,10 @@ structured-facts-only: no profile, summaries, or raw chunks).
 
 For data portability, `/v1/export?include_sensitive=false` returns the same kind of share-safe structured
 view: non-sensitive facts plus their graph, with profile, summaries, and raw episodes omitted.
-The TypeScript SDK's `engram.export()` uses that share-safe export by default; pass
+The TypeScript SDK's `mnemotrace.export()` uses that share-safe export by default; pass
 `{ includeSensitive: true }` only for an explicit private export.
 For a user-facing "my memory" page, the SDK also exposes paged inspection:
-`engram.memories({ factsLimit, factsOffset, episodesLimit, status, query, includeSensitive })`.
+`mnemotrace.memories({ factsLimit, factsOffset, episodesLimit, status, query, includeSensitive })`.
 The standalone graph endpoint is share-safe by default; pass `/v1/graph?include_sensitive=true` only for
 an explicit private graph inspection.
 
@@ -244,7 +254,7 @@ an explicit private graph inspection.
 auto-detected):
 
 ```bash
-python -m engram.connectors --file conversations.json --namespace me     # local, or --api-url …
+python -m mnemotrace.connectors --file conversations.json --namespace me     # local, or --api-url …
 ```
 ```python
 mem.import_data(open("conversations.json").read(), user_id="me")          # in-process
@@ -254,31 +264,31 @@ See [`examples/batch_import.py`](examples/batch_import.py) (zero-setup) and
 [`clients/typescript/`](clients/typescript/) for the SDK.
 
 **4. Feed it from your agent sessions** — the transcripts Claude Code and Codex already write to disk are
-the memory-worthy material. `engram-watch` ingests the ones that have gone quiet, closes each session so it
+the memory-worthy material. `mnemotrace-watch` ingests the ones that have gone quiet, closes each session so it
 gets distilled into conclusions, and remembers what it has seen, so re-running is cheap and idempotent:
 
 ```bash
-engram-watch --dry-run                                  # what would be ingested, nothing stored
-engram-watch --once --url http://127.0.0.1:8000 --key me # one tick: newest quiet sessions, 25 per run
-engram-watch --install --url http://127.0.0.1:8000 --key me --interval 30m   # launchd / systemd / cron
-engram-watch --uninstall --purge                        # leaves ~/.engram exactly as it found it
+mnemotrace-watch --dry-run                                  # what would be ingested, nothing stored
+mnemotrace-watch --once --url http://127.0.0.1:8000 --key me # one tick: newest quiet sessions, 25 per run
+mnemotrace-watch --install --url http://127.0.0.1:8000 --key me --interval 30m   # launchd / systemd / cron
+mnemotrace-watch --uninstall --purge                        # leaves ~/.mnemotrace exactly as it found it
 ```
 
 By default a session costs one summary call and one conclusions call — per-turn fact extraction over a
 long transcript is opt-in (`--extract-facts`). `--install` refuses to register a job that would fail on
-its first tick (it imports `engram` in a clean environment first), stores the key in a `0600` file rather
+its first tick (it imports `mnemotrace` in a clean environment first), stores the key in a `0600` file rather
 than the plist, and `--uninstall` waits until the scheduler has actually let go.
 
 ## How it works
 
-Engram is a **dual-process** memory system, modeled on the human System-1 / System-2 split: a fast write
+MnemoTrace is a **dual-process** memory system, modeled on the human System-1 / System-2 split: a fast write
 path that never blocks on an LLM, and a slow consolidation path that does the heavy structuring offline.
 
 ```mermaid
 flowchart TB
     ADD([add messages]) --> S1
     SESS([your agent sessions on disk<br/>Claude Code · Codex]) --> W
-    subgraph W [engram-watch · batch, idempotent, schedulable]
+    subgraph W [mnemotrace-watch · batch, idempotent, schedulable]
         direction LR
         Wa[parse transcript<br/>drop tool noise · redact secrets] --> Wb[import as episodes] --> Wc[close session →<br/>distil conclusions · 1 LLM call]
     end
@@ -312,7 +322,7 @@ flowchart TB
 ```
 
 There are two ways in. **The write path (System-1)** appends a lossless episode, resolves identity across
-sessions/devices, embeds and enqueues — no LLM on the critical path. **The session path (`engram-watch`)**
+sessions/devices, embeds and enqueues — no LLM on the critical path. **The session path (`mnemotrace-watch`)**
 reads the agent transcripts already on your disk, stores them, and at session close distils what was
 *decided, found, learned, and left open* in one LLM call per session — the unit of memory for working
 sessions is the conclusion, not the biographical triple. **The consolidation path (System-2)**
@@ -336,8 +346,8 @@ provenance-tagged context. For the algorithm-level contracts, see
 | 7 | **Session conclusions** — a working session is distilled into decisions, findings, lessons and open questions, stored as ordinary bi-temporal facts | Per-turn extraction yields attributes ("works at X"); a session yields *what was concluded*. Both live in one store, so conclusions inherit supersession, provenance and retrieval for free, and the console's Journal reads like the notes you would have written by hand. |
 | 8 | **The reproducible harness** — one neutral eval, official judge baked in, full-context baseline in every table, raw logs published | In a field where every vendor's number is contested, *being the scoreboard anyone can verify* is the real moat. |
 
-The full data model and conflict-resolution rules live in [`engram/types.py`](engram/types.py) and
-[`engram/consolidate/`](engram/consolidate/).
+The full data model and conflict-resolution rules live in [`mnemotrace/types.py`](mnemotrace/types.py) and
+[`mnemotrace/consolidate/`](mnemotrace/consolidate/).
 
 ## Reproduce the benchmark
 
@@ -368,12 +378,12 @@ setup it was published under, that's a bug — open an issue.
 
 ## License
 
-Engram is **dual-licensed** — pick the arm that fits your use:
+MnemoTrace is **dual-licensed** — pick the arm that fits your use:
 
 - **Open source — [GNU AGPL-3.0](LICENSE).** Free to use, study, modify, and self-host. Note AGPL §13: if
-  you run a modified Engram to provide a network service, you must offer that service's complete source to
+  you run a modified MnemoTrace to provide a network service, you must offer that service's complete source to
   its users under the AGPL. Internal use, research, and education are unaffected.
-- **Commercial — a separate paid license.** To use Engram in a proprietary/closed-source product or a
+- **Commercial — a separate paid license.** To use MnemoTrace in a proprietary/closed-source product or a
   hosted/SaaS offering *without* the AGPL's source-disclosure obligations, you need a commercial license.
   See **[`COMMERCIAL-LICENSE.md`](COMMERCIAL-LICENSE.md)**.
 

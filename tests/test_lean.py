@@ -1,17 +1,16 @@
-"""The lean read path (CLAUDE.md Bet A/E): the scalable win condition — answer from a small retrieved
-slice (persona + facts + session summaries + a couple full chunks), NOT the whole history. These tests
-pin the framework's behavior offline (HashingEmbedder + rule extractor, zero deps, deterministic):
-L2 summaries get built and indexed, L3 persona is synthesized, and lean_context assembles them correctly
-with dedup + a hard size cap."""
+"""Lean 读取路径（CLAUDE.md Bet A/E）：可扩展的获胜条件 —— 从一小段检索结果（persona + facts +
+session summaries + 少量完整 chunk）作答，而不是重放全部历史。这些测试在离线环境下（HashingEmbedder
++ 规则 extractor，零依赖、确定性）固定框架行为：L2 摘要会被构建并索引，L3 persona 会被合成，
+lean_context 能正确组装它们，并做去重 + 硬性大小上限。"""
 from __future__ import annotations
 
-from engram import Config, Memory
-from engram.types import Episode
-from engram.util import DAY
+from mnemotrace import Config, Memory
+from mnemotrace.types import Episode
+from mnemotrace.util import DAY
 
 BASE = 1_700_000_000.0
 
-# A small multi-session history: distinct sessions so we can check coverage + dedup.
+# 一小段多 session 历史：session 各不相同，便于检查覆盖率 + 去重。
 SESSIONS = [
     ("I work at Tencent and my favorite language is Python.", 0),
     ("I took a trip to Kyoto and loved the temples.", 1),
@@ -26,7 +25,7 @@ def build(summarize=True) -> Memory:
     mem = Memory()
     eps = [mem.add(text, user_id="u1", session_id=f"s{i}", event_time=BASE + day * DAY)
            for i, (text, day) in enumerate(SESSIONS)]
-    for ep in eps:  # offline date stamp, mirroring the eval ingest
+    for ep in eps:  # 离线打上日期戳，与 eval 的 ingest 流程保持一致
         ep.metadata["date"] = "2023-01-0%d" % (eps.index(ep) + 1)
     mem.consolidate(eps)
     if summarize:
@@ -36,7 +35,7 @@ def build(summarize=True) -> Memory:
 
 def test_summaries_built_and_indexed():
     mem = build()
-    # every session gets an offline summary + an embedding, indexed for retrieval
+    # 每个 session 都会得到离线摘要 + 嵌入，并建立检索索引
     assert len(mem.summary_vec.values()) == len(SESSIONS)
     for ep in mem.episodes_doc.values():
         assert ep.summary, "each episode should carry a summary after summarize_episodes"
@@ -45,7 +44,7 @@ def test_summaries_built_and_indexed():
 
 def test_summarize_is_idempotent():
     mem = build()
-    n = mem.summarize_episodes(list(mem.episodes_doc.values()))  # already summarized
+    n = mem.summarize_episodes(list(mem.episodes_doc.values()))  # 已经摘要过
     assert n == 0, "re-summarizing already-summarized episodes is a no-op"
 
 
@@ -54,7 +53,7 @@ def test_retrieve_summaries_is_relevant():
     hits = mem.retrieve_summaries("Which cities did I travel to?", user_id="u1", k=3)
     assert hits, "summary retrieval returns something"
     joined = " ".join(h.summary.lower() for h in hits)
-    # the trip sessions should surface ahead of the cat/guitar ones
+    # 旅行相关的 session 应排在猫/吉他之前
     assert any(city in joined for city in ("kyoto", "lisbon", "oslo"))
 
 
@@ -67,7 +66,7 @@ def test_persona_built_from_facts():
 
 def test_consolidate_invalidates_persona_cache():
     mem = build()
-    mem.build_persona("u1")  # populate cache
+    mem.build_persona("u1")  # 填充缓存
     assert mem._persona_cache
     mem.add("I now work at Moonshot AI.", user_id="u1", session_id="s9", event_time=BASE + 9 * DAY)
     mem.consolidate(mem.ingestor.pending())
@@ -84,15 +83,15 @@ def test_lean_context_assembles_all_layers():
 
 
 def test_lean_context_dedup_no_session_twice():
-    """A session shown in full (detail chunk) must NOT also appear in the summary block — else we burn
-    tokens repeating it. This is the core leanness invariant."""
+    """以完整形式展示的 session（detail chunk）绝不能再出现在摘要块里 —— 否则就是重复烧 token。
+    这是 leanness 的核心不变量。"""
     mem = build()
     detail = mem.retrieve_episodes("Kyoto temples", "u1", 2)
     detail_dates = {e.metadata.get("date") for e in detail}
     ctx = mem.lean_context("Kyoto temples", user_id="u1", n_summaries=10, n_chunks=2)
     summ_block = ctx.split("SESSION SUMMARIES")[1].split("RELEVANT CONVERSATIONS")[0]
     for d in detail_dates:
-        # the detail session's date should not also head a summary line
+        # detail session 的日期不应再作为某条摘要行的开头
         assert f"- [{d}]" not in summ_block, "detail session leaked into the summary block (dup)"
 
 
@@ -103,8 +102,8 @@ def test_lean_context_respects_char_budget():
 
 
 def test_evidence_budgeting_keeps_exact_raw_detail_under_tight_budget():
-    from engram.config import Config
-    from engram.types import Fact
+    from mnemotrace.config import Config
+    from mnemotrace.types import Fact
 
     def make(enabled: bool) -> str:
         mem = Memory(config=Config(evidence_budgeting=enabled))
@@ -153,9 +152,9 @@ def test_lean_context_is_leaner_than_full_history():
     mem = build()
     full = "\n".join(ep.content for ep in mem.episodes_doc.values())
     lean = mem.lean_context("trips", user_id="u1", n_chunks=1)
-    # with only a couple full chunks + tiny summaries, lean must be a fraction of dumping every session
-    # (this is a tiny history; the gap widens enormously at benchmark scale)
-    assert len(lean) < len(full) * 3  # sanity: not pathologically larger
+    # 只带少量完整 chunk + 小摘要时，lean 必须远小于全量倾倒所有 session
+    # （这里历史很小；benchmark 规模下差距会急剧拉大）
+    assert len(lean) < len(full) * 3  # sanity：不能大得离谱
 
 
 def test_consolidate_full_builds_facts_and_summaries():
@@ -168,18 +167,18 @@ def test_consolidate_full_builds_facts_and_summaries():
 
 
 def test_lean_path_works_with_no_summaries():
-    """Degrade gracefully: if summaries were never built, lean_context still returns facts + chunks."""
+    """优雅降级：即使从未构建摘要，lean_context 仍能返回 facts + chunks。"""
     mem = build(summarize=False)
     ctx = mem.lean_context("Where do I work?", user_id="u1", n_chunks=1)
-    assert "SESSION SUMMARIES" not in ctx  # none built
+    assert "SESSION SUMMARIES" not in ctx  # 未构建任何摘要
     assert ctx.strip(), "still produces a usable context from facts + chunks"
 
 
 def test_user_fact_is_authoritative_over_extraction():
-    """The editable-memory invariant: a user-asserted fact owns its slot. Auto-extraction can neither
-    override it nor sit beside it; a user assertion supersedes an existing extracted value."""
-    from engram.consolidate.conflict import ConflictResolver
-    from engram.types import Fact
+    """可编辑记忆的不变量：用户断言的 fact 独占其槽位。自动提取既不能覆盖它，也不能与之并存；
+    用户断言会取代已有的提取值。"""
+    from mnemotrace.consolidate.conflict import ConflictResolver
+    from mnemotrace.types import Fact
 
     r = ConflictResolver()
     user_fact = Fact(subject="u", predicate="works_at", object="ByteDance", source="user", valid_at=BASE)
@@ -195,8 +194,8 @@ def test_user_fact_is_authoritative_over_extraction():
 
 
 def test_memory_crud_add_edit_delete():
-    """The management-UI operations: add_fact (user-authored), update_fact (edit + re-author), delete_fact
-    (right-to-forget, hard removal)."""
+    """管理界面的操作：add_fact（用户撰写）、update_fact（编辑并重新署名）、delete_fact
+    （被遗忘权，硬删除）。"""
     mem = Memory()
     f = mem.add_fact("user", "works_at", "ByteDance", user_id="u1")
     assert f.source == "user" and f.text == "user works at ByteDance"
@@ -237,19 +236,19 @@ def test_delete_fact_removes_graph_export_edge():
 
 
 def test_subsumption_drops_contained_fact():
-    """MemoryScope contra_repeat: a same-slot fact whose content is a strict subset of a fuller one is
-    redundant. Adding the subset is a no-op; adding the superset retires the partial version."""
-    from engram.consolidate.conflict import ConflictResolver
-    from engram.types import Fact
+    """MemoryScope contra_repeat：同槽位中内容是另一条更完整 fact 的严格子集时即为冗余。
+    添加子集是无操作；添加超集则淘汰那个不完整的版本。"""
+    from mnemotrace.consolidate.conflict import ConflictResolver
+    from mnemotrace.types import Fact
 
-    r = ConflictResolver()  # no embedder -> deterministic
+    r = ConflictResolver()  # 无 embedder -> 结果确定
     full = Fact(subject="Charles", predicate="role", object="boss and branch manager", valid_at=BASE)
-    # adding a strict subset of an existing fact -> dropped as duplicate
+    # 添加已有 fact 的严格子集 -> 作为重复丢弃
     action, inv = r.reconcile(Fact(subject="Charles", predicate="role", object="boss", valid_at=BASE + 1),
                               [full])
     assert action == "duplicate" and not inv
 
-    # adding a strict superset of an existing partial fact -> the partial one is invalidated
+    # 添加已有部分 fact 的严格超集 -> 旧的部分版本被失效化
     partial = Fact(subject="Charles", predicate="role", object="boss", valid_at=BASE)
     action, inv = r.reconcile(
         Fact(subject="Charles", predicate="role", object="boss and branch manager", valid_at=BASE + 1),
@@ -258,9 +257,9 @@ def test_subsumption_drops_contained_fact():
 
 
 def test_date_terms_makes_dates_searchable():
-    """Query-time temporal matching: a fact's date renders to searchable tokens so 'May 2023' can match
-    it via BM25 (dates otherwise live only in valid_at, invisible to retrieval)."""
-    from engram.retrieve.hybrid import date_terms
+    """查询期时间匹配：把 fact 的日期渲染成可检索的 token，使 'May 2023' 能经 BM25 命中它
+    （否则日期只存在于 valid_at 中，对检索不可见）。"""
+    from mnemotrace.retrieve.hybrid import date_terms
 
     terms = date_terms(BASE)  # BASE = 2023-11-14 UTC
     assert "2023" in terms
@@ -269,9 +268,9 @@ def test_date_terms_makes_dates_searchable():
 
 
 def test_weight_tuner_runs_and_scores():
-    """The fusion-weight tuner (CLAUDE.md §4) computes recall@k for a weight set and grid-searches —
-    offline, deterministic. This is what makes 'tuned on the harness' true instead of hand-waved."""
-    from engram.types import Fact
+    """融合权重调参器（CLAUDE.md §4）为一组权重计算 recall@k 并做网格搜索 —— 离线、确定性。
+    这就是让 'tuned on the harness' 有据可依而非空口无凭的机制。"""
+    from mnemotrace.types import Fact
     from eval.tune_weights import grid_search, mean_recall_at_k
 
     mem = build()
@@ -283,12 +282,12 @@ def test_weight_tuner_runs_and_scores():
     assert 0.0 <= r <= 1.0
     best, best_w, base_r = grid_search(dev, k=10)
     assert set(best_w) == {"w_sem", "w_lex", "w_graph", "w_rec", "w_sal"}
-    assert best >= base_r  # the grid includes the defaults, so best can't be worse
+    assert best >= base_r  # 网格里包含默认值，所以 best 不会更差
 
 
 def test_timeline_block_is_chronological():
-    """Temporal aid: with timeline=True the facts appear oldest->newest with dates, so ordering and
-    duration are read off the order rather than mentally computed."""
+    """时间辅助：timeline=True 时 fact 按旧->新带日期排列，顺序和时长直接从排列中读出，
+    而不必在脑中推算。"""
     mem = build()
     ctx = mem.lean_context("When did I travel?", user_id="u1", timeline=True, n_chunks=1)
     assert "TIMELINE" in ctx
@@ -299,8 +298,8 @@ def test_timeline_block_is_chronological():
 
 
 def test_evidence_planner_is_query_based_not_benchmark_based():
-    """The planner routes by evidence shape only; there is no benchmark category input."""
-    from engram.retrieve.evidence import plan_evidence
+    """planner 只按证据形态路由；不含任何 benchmark 类别输入。"""
+    from mnemotrace.retrieve.evidence import plan_evidence
 
     agg = plan_evidence("How many trips did I take, and list every city?")
     assert agg.aggregation and agg.use_cascade and agg.n_summaries > 0
@@ -367,7 +366,7 @@ def test_lean_context_auto_adds_timeline_for_temporal_queries():
 def test_lean_context_auto_adds_preference_records():
     mem = build()
     ctx = mem.lean_context("What is my favorite language?", user_id="u1", n_chunks=0)
-    assert "PREFERENCE RECORDS (current, structured):" in ctx
+    assert "当前偏好记录（结构化）：" in ctx
     assert "favorite language" in ctx.lower()
 
 
@@ -378,13 +377,13 @@ def test_lean_context_auto_adds_explicit_preference_records():
 
     ctx = mem.lean_context("What travel preferences should you remember?", user_id="u1", n_chunks=0)
 
-    assert "PREFERENCE RECORDS (current, structured):" in ctx
+    assert "当前偏好记录（结构化）：" in ctx
     assert "prefers" in ctx and "aisle seats" in ctx
     assert "avoids" in ctx and "red-eye flights" in ctx
 
 
 def test_lean_context_auto_adds_procedural_memory_block():
-    from engram.types import Fact
+    from mnemotrace.types import Fact
 
     mem = Memory()
     ep = mem.add(
@@ -423,7 +422,7 @@ def test_lean_context_auto_adds_dietary_restriction_records():
     mem.consolidate()
 
     ctx = mem.lean_context("What are my dietary restrictions?", user_id="u1", n_chunks=0)
-    assert "PREFERENCE RECORDS (current, structured):" in ctx
+    assert "当前偏好记录（结构化）：" in ctx
     assert "diet" in ctx and "vegetarian" in ctx
     assert "allergic to" in ctx and "peanuts" in ctx
 
@@ -459,7 +458,7 @@ def test_aggregation_evidence_keeps_raw_candidates_when_summaries_drop_details()
 
 
 def test_structured_aggregation_candidates_filter_furniture_accessories():
-    from engram.retrieve.aggregate import extract_aggregation_candidates, render_aggregation_candidates
+    from mnemotrace.retrieve.aggregate import extract_aggregation_candidates, render_aggregation_candidates
 
     eps = [
         Episode("I bought scratch guards from IKEA to protect the furniture.", event_time=BASE),
@@ -511,7 +510,7 @@ def test_lean_context_renders_structured_aggregation_candidates():
 
 
 def test_numeric_aggregation_candidates_extract_money_and_hours():
-    from engram.retrieve.aggregate import _numeric_mode, extract_aggregation_candidates, render_aggregation_candidates
+    from mnemotrace.retrieve.aggregate import _numeric_mode, extract_aggregation_candidates, render_aggregation_candidates
 
     money_eps = [
         Episode("I attended a mindfulness workshop. I paid $20 to attend.", event_time=BASE),
@@ -545,7 +544,7 @@ def test_numeric_aggregation_candidates_extract_money_and_hours():
 
 
 def test_aggregation_constraint_filter_excludes_conflicting_month_values():
-    from engram.retrieve.aggregate import extract_aggregation_candidates
+    from mnemotrace.retrieve.aggregate import extract_aggregation_candidates
 
     eps = [
         Episode(
@@ -694,7 +693,7 @@ def test_search_answers_previous_value_from_supersession_history():
 
 
 def test_temporal_history_query_can_be_disabled_for_ablation():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(temporal_history_queries=False))
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
@@ -767,7 +766,7 @@ def test_context_for_adds_fact_evolution_chain():
 
 
 def test_chain_evidence_can_be_disabled_for_ablation():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(chain_evidence=False))
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
@@ -786,8 +785,8 @@ def test_chain_evidence_can_be_disabled_for_ablation():
 
 
 def test_lean_context_adds_provenance_raw_evidence_for_retrieved_fact():
-    from engram.config import Config
-    from engram.types import Fact
+    from mnemotrace.config import Config
+    from mnemotrace.types import Fact
 
     mem = Memory(config=Config(evidence_planner=False))
     ep = mem.add(
@@ -822,8 +821,8 @@ def test_lean_context_adds_provenance_raw_evidence_for_retrieved_fact():
 
 
 def test_provenance_evidence_can_be_disabled_for_ablation():
-    from engram.config import Config
-    from engram.types import Fact
+    from mnemotrace.config import Config
+    from mnemotrace.types import Fact
 
     mem = Memory(config=Config(evidence_planner=False, provenance_evidence=False))
     ep = mem.add(
@@ -857,7 +856,7 @@ def test_provenance_evidence_can_be_disabled_for_ablation():
 
 
 def test_provenance_raw_evidence_dedups_full_detail_chunk():
-    from engram.types import Fact
+    from mnemotrace.types import Fact
 
     mem = Memory()
     ep = mem.add(
@@ -891,8 +890,8 @@ def test_provenance_raw_evidence_dedups_full_detail_chunk():
 
 
 def test_provenance_source_episode_is_promoted_into_detail_chunks():
-    from engram.config import Config
-    from engram.types import Fact
+    from mnemotrace.config import Config
+    from mnemotrace.types import Fact
 
     def make(enabled: bool) -> str:
         mem = Memory(
@@ -946,7 +945,7 @@ def test_provenance_source_episode_is_promoted_into_detail_chunks():
 
 
 def test_chain_provenance_promotes_superseded_source_for_history_query():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     def make(enabled: bool) -> str:
         mem = Memory(
@@ -992,8 +991,8 @@ def test_chain_provenance_promotes_superseded_source_for_history_query():
 
 
 def test_provenance_raw_evidence_is_hidden_in_redacted_context():
-    from engram.config import Config
-    from engram.types import Fact
+    from mnemotrace.config import Config
+    from mnemotrace.types import Fact
 
     mem = Memory(config=Config(evidence_planner=False))
     ep = mem.add(
@@ -1028,7 +1027,7 @@ def test_provenance_raw_evidence_is_hidden_in_redacted_context():
 
 
 def test_context_for_adds_provenance_raw_evidence_for_fact_sources():
-    from engram.types import Fact
+    from mnemotrace.types import Fact
 
     mem = Memory()
     ep = mem.add(
@@ -1206,7 +1205,7 @@ def test_graph_scores_respect_as_of_during_expansion():
 
 
 def test_graph_proximity_can_be_disabled_for_ablation():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(graph_proximity=False))
     direct = mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
@@ -1229,7 +1228,7 @@ def test_graph_proximity_can_be_disabled_for_ablation():
 
 
 def test_graph_relation_awareness_prioritizes_query_relevant_edges():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(graph_relation_awareness=True))
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
@@ -1249,7 +1248,7 @@ def test_graph_relation_awareness_prioritizes_query_relevant_edges():
 
 
 def test_graph_relation_awareness_can_be_disabled_for_ablation():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(graph_relation_awareness=False))
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
@@ -1269,7 +1268,7 @@ def test_graph_relation_awareness_can_be_disabled_for_ablation():
 
 
 def test_graph_path_reinforcement_boosts_multi_path_targets():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     def build_mem(enabled: bool):
         mem = Memory(config=Config(graph_path_reinforcement=enabled))
@@ -1324,7 +1323,7 @@ def test_graph_self_anchor_retrieves_first_person_graph_paths():
 
 
 def test_graph_self_anchor_can_be_disabled_for_ablation():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(graph_self_anchor=False))
     mem.add_fact("u1", "works_on", "Atlas", user_id="u1", valid_at=BASE)
@@ -1363,7 +1362,7 @@ def test_graph_entity_alias_anchor_matches_unique_short_name():
 
 
 def test_graph_entity_alias_anchor_can_be_disabled_for_ablation():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(graph_entity_alias_anchor=False))
     target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
@@ -1420,7 +1419,7 @@ def test_graph_negative_constraints_filter_excluded_location_paths():
 
 
 def test_graph_negative_constraints_can_be_disabled_for_ablation():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(graph_negative_constraints=False))
     mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
@@ -1448,7 +1447,7 @@ def test_multihop_planner_reaches_company_location_chain():
 
 
 def test_multihop_planner_location_chain_can_be_disabled_for_ablation():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(planner_location_chains=False))
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
@@ -1476,7 +1475,7 @@ def test_multihop_planner_reaches_project_location_chain():
 
 
 def test_multihop_planner_project_chain_can_be_disabled_for_ablation():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(planner_project_chains=False))
     mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
@@ -1490,7 +1489,7 @@ def test_multihop_planner_project_chain_can_be_disabled_for_ablation():
 
 
 def test_bench_preconsolidation_uses_multi_hop_subqueries():
-    from engram.types import Episode
+    from mnemotrace.types import Episode
     from eval.bench import retrieve_evidence_episodes
 
     sister = Episode("My sister Maya is a pediatrician.", id="sister", user_id="u1")
@@ -1525,8 +1524,8 @@ def test_bench_preconsolidation_uses_multi_hop_subqueries():
 
 
 def test_bench_preconsolidation_uses_aggregation_recall_expansion():
-    from engram.config import Config
-    from engram.types import Episode
+    from mnemotrace.config import Config
+    from mnemotrace.types import Episode
     from eval.bench import retrieve_evidence_episodes
 
     jog = Episode("I went for a 30-minute jog around the neighborhood.", id="jog", user_id="u1")
@@ -1551,8 +1550,8 @@ def test_bench_preconsolidation_uses_aggregation_recall_expansion():
         "u1",
         2,
     )
-    # both halves of the aggregation must be present; the pool boost may also admit extra sessions,
-    # which is harmless here -- a missing occurrence is what makes aggregation answers wrong.
+    # 聚合的两部分都必须在；pool boost 可能连带放入额外 session，
+    # 这在这里无害 —— 导致聚合答案出错的是漏掉某次出现。
     assert {"jog", "yoga"} <= {e.id for e in eps}
 
     baseline = retrieve_evidence_episodes(
@@ -1566,7 +1565,7 @@ def test_bench_preconsolidation_uses_aggregation_recall_expansion():
 
 
 def test_cascade_coarse_to_fine_assembles():
-    """Coarse-to-fine cascade: detail is drilled from the top-ranked summaries; both modes assemble."""
+    """由粗到细的 cascade：detail 从排名靠前的摘要中钻取；两种模式都能正常组装。"""
     mem = build()
     casc = mem.lean_context("Which cities did I visit?", user_id="u1", cascade=True, n_chunks=2)
     flat = mem.lean_context("Which cities did I visit?", user_id="u1", cascade=False, n_chunks=2)
@@ -1574,13 +1573,13 @@ def test_cascade_coarse_to_fine_assembles():
 
 
 def test_heat_tiered_eviction_pages_cold_preserves_durable():
-    """MemoryOS heat tiering: over capacity, the coldest incidental facts page to the cold tier
-    (non-destructive); durable preference/identity facts are never evicted."""
-    from engram.types import Fact
+    """MemoryOS 热度分层：超容量时最冷的偶发 fact 换出到 cold tier（非破坏性）；
+    持久的偏好/身份 fact 永不被驱逐。"""
+    from mnemotrace.types import Fact
 
     mem = Memory()
     u = mem.resolver.resolve("u1")
-    for i in range(5):  # incidental, increasing salience
+    for i in range(5):  # 偶发 fact，显著度递增
         f = Fact(subject="u1", predicate="parked_at", object=f"lot{i}", user_id=u,
                  salience=float(i), last_access=BASE + i)
         mem.fact_store.upsert(f.id, [0.0], f)
@@ -1638,7 +1637,7 @@ def test_search_pages_relevant_cold_fact_back_to_hot():
 
 
 def test_cold_page_in_preserves_hot_limit():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(max_hot_facts=0, abstain_threshold=2.0))
     target = mem.add_fact("apollo", "launch_code", "alpha", user_id="u1")
@@ -1659,7 +1658,7 @@ def test_cold_page_in_preserves_hot_limit():
 
 
 def test_max_hot_facts_auto_pages_on_add_fact():
-    from engram.config import Config
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(max_hot_facts=1))
     a = mem.add_fact("project", "project_status", "alpha", user_id="u1")
@@ -1772,7 +1771,7 @@ def test_graph_paths_fallback_respects_as_of_during_expansion():
 
 
 def test_pending_conflict_and_resolution_include_cold_tier_facts():
-    from engram.types import Conflict
+    from mnemotrace.types import Conflict
 
     mem = Memory()
     old = mem.add_fact("project", "status", "alpha", user_id="u1")
@@ -1811,12 +1810,12 @@ def test_update_cold_fact_promotes_without_duplicate():
 
 
 def test_resolve_conflict_writes_back_to_copying_vector_store():
-    """External vector backends may return payload copies, so conflict resolution must explicitly upsert
-    mutated facts instead of relying on in-memory object identity."""
+    """外部向量后端可能返回 payload 的副本，因此冲突解决必须显式 upsert 被修改的 fact，
+    而不能依赖内存中的对象同一性。"""
     from copy import deepcopy
 
-    from engram.store import InMemoryVectorStore
-    from engram.types import Conflict
+    from mnemotrace.store import InMemoryVectorStore
+    from mnemotrace.types import Conflict
 
     class CopyingVectorStore(InMemoryVectorStore):
         def upsert(self, key, vector, payload):
@@ -1850,13 +1849,13 @@ def test_resolve_conflict_writes_back_to_copying_vector_store():
 def test_agentic_multihop_decomposition():
     """Bet B: with an LLM, lean_context decomposes the question into sub-queries and unions their
     retrieval; without an LLM it degrades gracefully to the single query."""
-    mem = build()  # offline facts extracted
+    mem = build()  # 离线提取 facts
 
-    # graceful: agentic=True but no llm -> still returns a usable context
+    # 优雅降级：agentic=True 但没有 llm -> 仍返回可用 context
     ctx0 = mem.lean_context("Which cities did I visit?", user_id="u1", agentic=True, n_chunks=1)
     assert ctx0.strip()
 
-    # with an llm that decomposes, the path runs and still produces a context
+    # 配备能分解问题的 llm 后，该路径正常运行并产出 context
     class FakeLLM:
         def complete(self, prompt, system=None, **k):
             return '["cities I traveled to", "trips"]'
@@ -1868,8 +1867,8 @@ def test_agentic_multihop_decomposition():
 
 
 def test_agentic_episode_gather_respects_as_of():
-    """Agentic chunk retrieval must preserve the caller's point-in-time memory view."""
-    from engram.retrieve.agentic import AgenticRetriever
+    """Agentic chunk 检索必须保留调用方指定时点的记忆视图。"""
+    from mnemotrace.retrieve.agentic import AgenticRetriever
 
     class FakeLLM:
         def complete(self, prompt, system=None, **k):
@@ -1889,8 +1888,8 @@ def test_agentic_episode_gather_respects_as_of():
 
 
 def test_procedural_memory_surfaces_instructions():
-    """Procedural memory: a distinct typed view returning the user's standing how-to/instruction facts."""
-    from engram.types import Fact
+    """程序性记忆：一个独立的类型化视图，返回用户长期有效的 how-to/指令类 fact。"""
+    from mnemotrace.types import Fact
 
     mem = Memory()
     u = mem.resolver.resolve("u1")
@@ -1916,27 +1915,27 @@ def test_procedural_memory_includes_cold_tier_instructions():
 
 
 def test_working_memory_holds_active_query_set():
-    """Working memory: lean_context populates a transient, inspectable active set for the current query."""
+    """工作记忆：lean_context 为当前查询填充一个临时的、可检查的活跃集。"""
     mem = build()
-    assert mem.working_set == []  # nothing attended yet
+    assert mem.working_set == []  # 尚未关注任何内容
     mem.lean_context("Where do I work?", user_id="u1", n_chunks=1)
-    assert isinstance(mem.working_set, list)  # populated with the query's active facts (may be empty if none)
+    assert isinstance(mem.working_set, list)  # 已填充该查询的活跃 facts（可能为空）
 
 
 def test_decay_sweep_runs_in_consolidation():
-    """Bet E: the salience sweep actually runs (it was dead code). An old incidental fact ends below 1.0;
-    a durable preference stays at full salience."""
-    mem = build()  # consolidate() -> _decay_sweep() runs
+    """Bet E：显著度清扫确实会执行（此前是死代码）。旧的偶发 fact 最终低于 1.0；
+    持久的偏好保持满显著度。"""
+    mem = build()  # consolidate() -> 会执行 _decay_sweep()
     live = [f for f in mem.fact_store.values() if f.is_live()]
-    # at least the sweep executed without error and salience is bounded in (0, 1]
+    # 至少清扫无错执行完，且显著度落在 (0, 1] 区间
     assert all(0.0 < f.salience <= 1.5 for f in live)
 
 
 def test_durable_facts_exempt_from_decay():
-    """Mem0/OMEGA: preferences + identity don't fade. An incidental fact decays; a preference does not,
-    even after the same long gap."""
-    from engram.consolidate.decay import decay
-    from engram.types import Fact
+    """Mem0/OMEGA：偏好 + 身份不会衰减。偶发 fact 会衰减，偏好不会，
+    即使经过同样长的时间间隔。"""
+    from mnemotrace.consolidate.decay import decay
+    from mnemotrace.types import Fact
 
     incidental = Fact(subject="u", predicate="parked_at", object="lot B", salience=1.0, last_access=BASE)
     preference = Fact(subject="u", predicate="likes", object="jazz", salience=1.0, last_access=BASE)
@@ -1948,8 +1947,8 @@ def test_durable_facts_exempt_from_decay():
 
 
 def test_reinforce_boosts_and_resets_clock():
-    from engram.consolidate.decay import reinforce
-    from engram.types import Fact
+    from mnemotrace.consolidate.decay import reinforce
+    from mnemotrace.types import Fact
 
     f = Fact(subject="u", predicate="parked_at", object="lot B", salience=1.0, last_access=BASE)
     reinforce(f, boost=0.5, t=BASE + 5 * DAY)
@@ -1957,9 +1956,9 @@ def test_reinforce_boosts_and_resets_clock():
 
 
 def test_subsumption_keeps_distinct_values():
-    """Distinct (non-subset) values on a multi-valued predicate must both survive — don't over-merge."""
-    from engram.consolidate.conflict import ConflictResolver
-    from engram.types import Fact
+    """多值谓词上互不为子集的不同取值必须都保留 —— 不能过度合并。"""
+    from mnemotrace.consolidate.conflict import ConflictResolver
+    from mnemotrace.types import Fact
 
     r = ConflictResolver()
     pizza = Fact(subject="u", predicate="likes", object="pizza", valid_at=BASE)
@@ -1969,22 +1968,22 @@ def test_subsumption_keeps_distinct_values():
 
 
 def test_llm_escalation_resolves_borderline_conflict():
-    """§3.2 step 3: a same-subject pair with similarity in the ambiguous band (just below threshold) is
-    escalated to the LLM adjudicator only when one is configured; without it, the pair coexists."""
-    from engram.consolidate.conflict import ConflictResolver
-    from engram.embed import HashingEmbedder
-    from engram.types import Fact
+    """§3.2 第 3 步：同主体且相似度落在模糊带（略低于阈值）的一对 fact，只有在配置了 LLM 时
+    才升级给 LLM 仲裁者；没有 LLM 则两者并存。"""
+    from mnemotrace.consolidate.conflict import ConflictResolver
+    from mnemotrace.embed import HashingEmbedder
+    from mnemotrace.types import Fact
 
     old = Fact(subject="u", predicate="does_yoga", object="twice a week", valid_at=BASE)
     old.embedding = [1.0, 0.0]
     new = Fact(subject="u", predicate="practices_yoga", object="three times a week", valid_at=BASE + 1)
-    new.embedding = [0.75, 0.66]  # cosine ≈ 0.75 → in the ambiguous band [0.68, 0.80), below auto-threshold
+    new.embedding = [0.75, 0.66]  # cosine ≈ 0.75 → 落在模糊带 [0.68, 0.80) 内，低于自动阈值
 
-    # no LLM -> borderline pair is NOT superseded (stays LLM-free, both coexist)
+    # 无 LLM -> 临界对不会被取代（完全不依赖 LLM，两者并存）
     r0 = ConflictResolver(embedder=HashingEmbedder(2), sim_threshold=0.80)
     assert not r0.reconcile(new, [old])[1]
 
-    # with an LLM that says REPLACES -> the old fact is invalidated
+    # LLM 返回 REPLACES -> 旧 fact 被失效化
     class FakeLLM:
         def complete(self, prompt, system=None, **k):
             return "REPLACES"
@@ -1994,12 +1993,12 @@ def test_llm_escalation_resolves_borderline_conflict():
 
 
 def test_reflector_propagates_supersession_into_summaries():
-    """A summary frozen before a knowledge-update should get the current value appended by the reflector."""
-    from engram.types import Episode, Fact
+    """在知识更新前定稿的摘要，应由 reflector 把当前值追加进去。"""
+    from mnemotrace.types import Episode, Fact
 
     mem = Memory()
     ep = mem.add("I do yoga twice a week.", user_id="u1", session_id="s1", event_time=BASE)
-    # an old fact (sourced from ep) that a later fact supersedes
+    # 一条旧 fact（来源于 ep），随后被新 fact 取代
     old = Fact(subject="u1", predicate="yoga_frequency", object="twice a week",
                user_id=mem.resolver.resolve("u1"), valid_at=BASE, provenance=[ep.id],
                invalid_at=BASE + 5 * DAY, expired_at=BASE + 5 * DAY)
@@ -2007,7 +2006,7 @@ def test_reflector_propagates_supersession_into_summaries():
                user_id=mem.resolver.resolve("u1"), valid_at=BASE + 5 * DAY, supersedes=old.id)
     mem.fact_store.upsert(old.id, [0.0], old)
     mem.fact_store.upsert(new.id, [0.0], new)
-    mem.summarize_episodes([ep])  # freezes the "twice a week" summary
+    mem.summarize_episodes([ep])  # 冻结 "twice a week" 的摘要
     assert "[updated:" not in ep.summary
     n = mem.reflect("u1")
     assert n == 1
@@ -2015,7 +2014,7 @@ def test_reflector_propagates_supersession_into_summaries():
 
 
 def test_reflector_uses_cold_tier_superseded_facts():
-    from engram.types import Fact
+    from mnemotrace.types import Fact
 
     mem = Memory()
     ep = mem.add("I do yoga twice a week.", user_id="u1", session_id="s1", event_time=BASE)
@@ -2035,10 +2034,10 @@ def test_reflector_uses_cold_tier_superseded_facts():
 
 
 def test_type_weight_ranks_preference_and_identity_above_incidental():
-    """Type-weighted fusion (MemoryScope/OMEGA): preference > identity > incidental multipliers."""
-    from engram.config import Config
-    from engram.retrieve.hybrid import fact_type_weight
-    from engram.types import Fact
+    """类型加权融合（MemoryScope/OMEGA）：preference > identity > incidental 的乘数。"""
+    from mnemotrace.config import Config
+    from mnemotrace.retrieve.hybrid import fact_type_weight
+    from mnemotrace.types import Fact
 
     cfg = Config()
     pref = Fact(subject="u", predicate="likes", object="jazz")
@@ -2046,36 +2045,36 @@ def test_type_weight_ranks_preference_and_identity_above_incidental():
     ident = Fact(subject="u", predicate="works_at", object="Tencent")
     incidental = Fact(subject="u", predicate="mentioned", object="the weather")
     assert fact_type_weight(pref, cfg) == cfg.w_type_preference
-    assert fact_type_weight(fav, cfg) == cfg.w_type_preference  # favorite_* prefix
+    assert fact_type_weight(fav, cfg) == cfg.w_type_preference  # favorite_* 前缀
     assert fact_type_weight(ident, cfg) == cfg.w_type_identity
     assert fact_type_weight(incidental, cfg) == 1.0
     assert cfg.w_type_preference > cfg.w_type_identity > 1.0
 
 
 def test_type_weighting_is_relevance_gated_and_embedder_gated():
-    """Two safety properties of the corrected type-weighting:
-      (1) it is applied to the SEMANTIC score, so it reorders among relevant facts but never lifts an
-          off-topic one — 'where do I work?' must still return the employer, not a favorite;
-      (2) it is gated off for the offline HashingEmbedder (noisy cosines)."""
-    from engram.embed import HashingEmbedder
-    from engram.retrieve.hybrid import HybridRetriever
-    from engram.store import InMemoryGraphStore, InMemoryVectorStore
-    from engram.config import Config
+    """修正后类型加权的两个安全性质：
+      (1) 它只作用于 SEMANTIC 分数，因此只在相关 facts 之间重排，绝不会抬升离题项 ——
+          'where do I work?' 仍须返回雇主，而不是某个偏好；
+      (2) 对离线 HashingEmbedder（cosine 噪声大）则整体关闭。"""
+    from mnemotrace.embed import HashingEmbedder
+    from mnemotrace.retrieve.hybrid import HybridRetriever
+    from mnemotrace.store import InMemoryGraphStore, InMemoryVectorStore
+    from mnemotrace.config import Config
 
     r = HybridRetriever(InMemoryVectorStore(), InMemoryGraphStore(), HashingEmbedder(64), Config())
     assert r._semantic is False, "type-weighting must be gated off for the hashing embedder"
 
-    # relevance still wins (this is the regression the earlier multiplier caused: a 'favorite_language'
-    # fact outranking 'works_at' for a work query)
+    # 相关性仍然优先（这正是此前乘数导致的回归：对工作类查询，'favorite_language'
+    # 的 fact 排在了 'works_at' 前面）
     mem = build()
     ans = mem.search("Where do I work?", user_id="u1").answer().lower()
     assert "tencent" in ans, "relevance must win — a preference fact must not outrank the employer"
 
 
 def test_focus_track_boosts_salience_and_mute_hides():
-    """The 关注点 panel is REAL wiring, not a label (CLAUDE.md §3.3): a tracked topic boosts a fact's
-    salience (a retrieval-scoring + decay-exemption signal), and a muted topic is dropped from both the
-    assembled read context and the synthesized persona."""
+    """关注点面板是真实接线而非摆设（CLAUDE.md §3.3）：被跟踪的话题会提升 fact 的显著度
+    （作为检索打分 + 豁免衰减的信号），被静音的话题则同时从组装的读取 context 和合成的
+    persona 中剔除。"""
     mem = Memory()
     mem.add_fact("user", "uses", "Python", user_id="u1")
     mem.add_fact("user", "plays", "guitar", user_id="u1")
@@ -2115,8 +2114,8 @@ def test_focus_persists_across_save_open(tmp_path):
 
 
 def test_graph_data_has_no_dangling_edges():
-    """graph_data() feeds the 关系图谱 view: every edge endpoint must be a returned node, and orphan
-    entities (no surviving edge) are dropped so the picture is about relationships."""
+    """graph_data() 供关系图谱视图使用：每条边的端点都必须是返回的节点，孤儿实体
+    （没有存留边）会被丢弃，使画面聚焦于关系本身。"""
     mem = build()
     g = mem.graph_data("u1")
     assert g["nodes"] and g["edges"], "a consolidated history should yield a non-empty graph"
@@ -2131,8 +2130,8 @@ def test_graph_data_has_no_dangling_edges():
 
 
 def test_graph_data_as_of_excludes_future_relations():
-    """The graph view must obey the same valid-time boundary as search/as_of: a future edge is not live
-    in a past snapshot just because it has not been invalidated yet."""
+    """图谱视图必须遵守与 search/as_of 相同的 valid-time 边界：未来才生效的边，
+    不能仅因为“尚未被失效化”就出现在过去快照中。"""
     mem = Memory()
     mem.add("Wei works at Tencent.", user_id="u1", event_time=BASE)
     mem.add("Wei works at Moonshot AI.", user_id="u1", event_time=BASE + 30 * DAY)
@@ -2183,30 +2182,29 @@ def test_graph_data_can_exclude_sensitive_cold_fact_edges():
 
 
 def test_memory_policy_edits_extraction_and_persists(tmp_path):
-    """The 记忆策略 page is real wiring: a user's 'what to record' directive is appended to the extraction
-    system prompt, full prompt overrides replace the defaults (and clear back to default with ''), and the
-    whole policy survives a save/open round-trip."""
+    """记忆策略页面是真实接线：用户的 'what to record' 指令会追加到提取 system prompt 后面，
+    完整 prompt 覆盖会替换默认值（传 '' 则清回默认），且整套策略在 save/open 往返后仍保留。"""
     class FakeLLM:
         def complete(self, prompt, system=""):
             return "[]"
 
-    from engram.consolidate.llm_extractor import EXTRACT_SYSTEM
+    from mnemotrace.consolidate.llm_extractor import EXTRACT_SYSTEM
     m = Memory(llm=FakeLLM())
 
-    # additive 'what to record' directive flows into the extractor's effective system prompt
+    # 增量式 'what to record' 指令会进入 extractor 的实际生效 system prompt
     m.set_policy(extract_instruction="只记录与工作相关的事实")
     ex = m.engine.extractor
     assert ex.instruction == "只记录与工作相关的事实"
     assert "只记录与工作相关的事实" in ex._effective_system()
-    assert EXTRACT_SYSTEM in ex._effective_system()  # default still present, directive appended
+    assert EXTRACT_SYSTEM in ex._effective_system()  # 默认仍在，指令为追加
 
-    # full override replaces the default, and "" resets to default
+    # 完整覆盖会替换默认值，"" 则重置回默认
     m.set_policy(extract_system="CUSTOM PROMPT")
     assert m.engine.extractor.system == "CUSTOM PROMPT"
     m.set_policy(extract_system="")
     assert m.engine.extractor.system == EXTRACT_SYSTEM
 
-    # get_policy exposes overrides + the built-in defaults; policy persists
+    # get_policy 暴露覆盖项 + 内置默认值；策略持久化
     gp = m.get_policy()
     assert set(gp) == {"policy", "defaults"} and len(gp["defaults"]) == 4
     p = str(tmp_path / "u.pkl")
@@ -2215,31 +2213,30 @@ def test_memory_policy_edits_extraction_and_persists(tmp_path):
 
 
 def test_structured_profile_tiers_display_only_and_preserves_recall():
-    """The L2 structured profile (feature ③, reasonable version): basic/preferences/habits grouped, with
-    a DISPLAY-ONLY confirmed↔tentative split and HONEST evidence (no fabricated weights). The critical
-    invariant: the tentative split is presentation only — a tentative fact must STILL be in the fact store
-    and retrievable (recall is never gated by the profile view)."""
-    from engram.types import Fact
+    """L2 结构化画像（特性③，合理版）：basic/preferences/habits 分组展示，confirmed↔tentative
+    划分仅用于展示，证据保持诚实（不编造权重）。关键不变量：tentative 划分只是呈现层面 ——
+    tentative fact 仍必须留在 fact store 中且可检索（召回绝不被画像视图限制）。"""
+    from mnemotrace.types import Fact
     m = Memory()
-    m.add_fact("user", "favorite_music", "周杰伦", user_id="u")     # explicit favorite -> confirmed
+    m.add_fact("user", "favorite_music", "周杰伦", user_id="u")     # 显式 favorite -> confirmed
     casual = Fact(subject="user", predicate="likes", object="jazz", user_id="u",
-                  source="extracted", provenance=["ep1"])          # single casual mention -> tentative
+                  source="extracted", provenance=["ep1"])          # 单次随意提及 -> tentative
     casual.embedding = m.embedder.embed(casual.text)
     m.fact_store.upsert(casual.id, casual.embedding, casual)
 
     p = m.structured_profile("u")
     conf_items = [it["item"] for items in p["preferences"].values() for it in items]
-    # an explicitly STATED preference is confirmed (the user said it — not a shaky inference); both the
-    # explicit favorite and the stated like show in the canonical profile, not as 待确认 candidates.
+    # 用户明确说出的偏好即 confirmed（用户亲口说的，不是牵强的推断）；显式 favorite 和
+    # 明确说出的 likes 都进入正式画像，而不是作为待确认候选。
     assert "周杰伦" in conf_items and "jazz" in conf_items, "stated preferences are confirmed"
     assert [t["item"] for t in p["tentative"]] == [], "stated preferences are not held as 待确认"
 
-    # honest evidence, never a fabricated numeric weight
+    # 证据诚实，绝不编造数值权重
     for items in p["preferences"].values():
         for it in items:
             assert "weight" not in it and it["evidence"]["kind"] in {"user", "mentions", "reinforced"}
 
-    # RECALL INVARIANT: the tentative fact is display-tiered, NOT removed — still in the store and live
+    # 召回不变量：tentative fact 只是分了展示层，并未移除 —— 仍在 store 中且 live
     assert m.fact_store.get(casual.id) is not None and casual.is_live()
     assert any(f.object == "jazz" for f in m.fact_store.values() if f.is_live())
 
@@ -2258,9 +2255,9 @@ def test_structured_profile_includes_cold_tier_facts():
 
 
 def test_working_memory_is_ephemeral_and_never_enters_long_term(tmp_path):
-    """Feature ①: the working-memory tier holds transient state OUT of long-term, scoped by session + TTL,
-    cleared on session end. The core invariant: ephemeral items NEVER become durable facts."""
-    import engram.util as u
+    """特性①：working-memory 层保存瞬态状态但不进长期记忆，以 session + TTL 限定作用域，
+    session 结束即清空。核心不变量：ephemeral 条目绝不变成持久 fact。"""
+    import mnemotrace.util as u
     m = Memory()
     assert Memory.is_ephemeral("today my throat hurts") and not Memory.is_ephemeral("I have diabetes")
 
@@ -2269,21 +2266,21 @@ def test_working_memory_is_ephemeral_and_never_enters_long_term(tmp_path):
                        kind="passenger", ttl_seconds=7200)
     m.remember_working("note in another session", user_id="u", session_id="s2")
 
-    # session-scoped + kept out of long-term entirely
+    # 以 session 为作用域 + 完全不进长期记忆
     assert {w.content for w in m.working_memory("u", session_id="s1")} == {
         "today my throat hurts", "this trip front seat is my wife"}
     assert list(m.fact_store.values()) == [], "working memory must NOT create long-term facts"
 
-    # surfaced in the read context for that session, but ephemeral
+    # 会出现在该 session 的读取 context 中，但属临时性质
     ctx = m.lean_context("how am I", user_id="u", session_id="s1", n_chunks=0)
     assert "WORKING MEMORY" in ctx and "throat" in ctx.lower()
 
-    # hard TTL expiry, then power-cycle clear
+    # TTL 硬过期，之后按 session 清空
     later = u.now() + 8000
     assert [w.kind for w in m.working_memory("u", session_id="s1", as_of=later)] == ["state"]
     assert m.clear_session("u", "s1") == 1 and m.working_memory("u", session_id="s1") == []
 
-    # persists across save/open
+    # 跨 save/open 持久保留
     m.remember_working("persist me", user_id="u", session_id="s3")
     p = str(tmp_path / "u.pkl")
     m.save(p)
@@ -2291,30 +2288,30 @@ def test_working_memory_is_ephemeral_and_never_enters_long_term(tmp_path):
 
 
 def test_classification_and_sensitivity_redaction_preserves_recall():
-    """Feature ⑤: facts get a rule-based category + sensitivity flag; sensitive facts can be REDACTED from
-    a shared/export context — while staying fully in the store (recall + the owner's own view intact)."""
-    from engram.consolidate.classify import classify
+    """特性⑤：fact 由规则得到类别 + 敏感标志；敏感 fact 可在共享/导出 context 中被脱敏 ——
+    同时在 store 中完整保留（召回和本人视图均不受影响）。"""
+    from mnemotrace.consolidate.classify import classify
     assert classify("has_disease", "diabetes", "user has_disease diabetes") == ("健康", True)
     assert classify("salary", "25000", "user salary 25000")[1] is True
     assert classify("works_at", "Acme", "user works_at Acme") == ("工作", False)
-    assert classify("id_number", "310101199001011234", "x")[1] is True  # digit-run PII
+    assert classify("id_number", "310101199001011234", "x")[1] is True  # 连续数字 PII
 
     m = Memory()
-    m.add_fact("user", "has_disease", "diabetes", user_id="u")  # sensitive
-    m.add_fact("user", "works_at", "Acme", user_id="u")          # not sensitive
+    m.add_fact("user", "has_disease", "diabetes", user_id="u")  # 敏感
+    m.add_fact("user", "works_at", "Acme", user_id="u")          # 非敏感
     sensitive_fact = next(f for f in m.fact_store.values() if f.object == "diabetes")
     assert sensitive_fact.sensitive and sensitive_fact.category == "健康"
 
     redacted = m.lean_context("about me", user_id="u", n_chunks=0, redact_sensitive=True)
     assert "diabetes" not in redacted.lower(), "sensitive fact must be redacted from a shared context"
     assert "acme" in redacted.lower(), "non-sensitive facts stay"
-    # recall invariant: redaction is a view filter, not deletion — the fact is still stored & live
+    # 召回不变量：脱敏是视图过滤而非删除 —— fact 仍在存储中且 live
     assert any(f.object == "diabetes" for f in m.fact_store.values() if f.is_live())
 
 
 def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content():
-    """A redacted/shared context must not leak sensitive content through summaries, chunks, or working
-    memory prose. It should rely only on classified, non-sensitive structured facts."""
+    """脱敏/共享 context 不得通过摘要、chunk 或工作记忆文本泄漏敏感内容。
+    它只能依赖已分类、非敏感的结构化 facts。"""
     m = Memory()
     ep = m.add("My private diagnosis is diabetes. I work at Acme.", user_id="u", session_id="s1")
     ep.summary = "Private diagnosis: diabetes. Job: Acme."
@@ -2341,20 +2338,20 @@ def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content
 
 
 def test_ephemeral_remember_keeps_dated_episode_but_creates_no_durable_fact():
-    """Corrected ① model (the user's catch): ephemeral != deleted. Transient state goes to working memory
-    AND is kept as a dated EPISODE (so 'when did my throat hurt?' is answerable from history), but it does
-    NOT become a durable profile fact (so it never lingers as a current attribute)."""
+    """修正后的特性①模型（用户指出的）：ephemeral != 删除。瞬态状态进入工作记忆，
+    同时保留为带日期的 EPISODE（因此 'when did my throat hurt?' 可从历史中作答），
+    但不会变成持久的画像 fact（因此绝不会滞留为当前属性）。"""
     m = Memory()
     r = m.remember("today my throat is uncomfortable", user_id="u", session_id="s1")
     assert r["scope"] == "working"
 
-    # the EVENT is retained in the dated episodic log -> historically queryable
+    # 事件保留在带日期的情景日志中 -> 可按历史查询
     eps = m.retrieve_episodes("throat uncomfortable", user_id="u", k=3)
     assert any("throat" in e.content.lower() for e in eps), "dated episode must remain retrievable"
-    # current-session working memory holds it too
+    # 当前 session 的工作记忆同样持有它
     assert any("throat" in w.content.lower() for w in m.working_memory("u", session_id="s1"))
 
-    # but NO durable profile fact — and a later consolidate must not pick the ephemeral episode up
+    # 但绝不生成持久画像 fact —— 且后续 consolidate 不得将该临时 episode 收入
     m.remember("I work at Acme", user_id="u", session_id="s1")
     m.consolidate()
     assert not any("throat" in f.text.lower() for f in m.fact_store.values()), \
@@ -2362,42 +2359,41 @@ def test_ephemeral_remember_keeps_dated_episode_but_creates_no_durable_fact():
 
 
 def test_display_localization_keeps_canonical_predicate():
-    """Display localization (i18n): render Chinese-recorded facts naturally WITHOUT changing the canonical
-    English predicate (the slot key). English-recorded facts are left untouched."""
-    from engram.localize import render_display
-    # Chinese object -> localized Chinese display
+    """展示本地化（i18n）：把中文记录的 fact 自然地渲染出来，但不改动规范英文 predicate
+    （即 slot key）。英文记录的 fact 原样保留。"""
+    from mnemotrace.localize import render_display
+    # 中文 object -> 本地化的中文展示
     assert render_display("user", "works_at", "字节跳动", "user works at 字节跳动") == "在 字节跳动 工作"
     assert render_display("user", "favorite_music", "周杰伦", "x") == "最喜欢的音乐是 周杰伦"
     assert render_display("user", "allergic_to", "花粉", "x") == "对 花粉 过敏"
-    # English data is NOT force-translated
+    # 英文数据不被强制翻译
     assert render_display("user", "works_at", "Acme", "user works at Acme") == "user works at Acme"
-    # the canonical predicate/slot is unchanged by display (engine still dedups on it)
+    # 规范 predicate/slot 不因展示而改变（引擎仍据此去重）
     m = Memory()
     f = m.add_fact("user", "works_at", "字节跳动", user_id="u")
     assert f.predicate == "works_at" and f.slot[2] == "works_at"
 
 
 def test_costated_facts_do_not_semantic_supersede():
-    """Regression (user-reported): two facts from the SAME episode ('我在字节跳动做后端开发' ->
-    works_at 字节跳动 + job_title 后端开发) are complementary attributes and must NOT supersede each other
-    via the embedding path, even though they're short, same-subject and topically near. A genuine update
-    must come from a LATER, SEPARATE episode."""
-    from engram.consolidate.conflict import ConflictResolver
-    from engram.types import Fact
+    """回归（用户反馈）：来自同一 episode 的两条 fact（'我在字节跳动做后端开发' ->
+    works_at 字节跳动 + job_title 后端开发）是互补属性，即使它们很短、同主体且话题相近，
+    也绝不能经 embedding 路径互相取代。真正的更新必须来自更晚的、独立的 episode。"""
+    from mnemotrace.consolidate.conflict import ConflictResolver
+    from mnemotrace.types import Fact
 
-    class E:  # embedder returning identical vectors -> cosine 1.0 (worst case for the semantic path)
+    class E:  # 返回相同向量的 embedder -> cosine 1.0（语义路径的最坏情况）
         def embed(self, t):
             return [1.0, 0.0]
 
     r = ConflictResolver(embedder=E(), sim_threshold=0.8)
     old = Fact("user", "works_at", "字节跳动", provenance=["ep1"])
     old.embedding = [1.0, 0.0]
-    new = Fact("user", "job_title", "后端开发", provenance=["ep1"])  # SAME episode
+    new = Fact("user", "job_title", "后端开发", provenance=["ep1"])  # 同一 episode
     new.embedding = [1.0, 0.0]
     _, invalidated = r.reconcile(new, [old])
     assert invalidated == [], "co-stated complementary facts must not supersede each other"
 
-    # a real update from a DIFFERENT, later episode still supersedes (guard is provenance-scoped)
+    # 来自不同且更晚 episode 的真实更新仍会取代（防护只按 provenance 限定）
     later = Fact("user", "occupation", "产品经理", provenance=["ep9"])
     later.embedding = [1.0, 0.0]
     _, inval2 = r.reconcile(later, [old])
@@ -2405,47 +2401,47 @@ def test_costated_facts_do_not_semantic_supersede():
 
 
 def test_preference_reversal_supersedes_same_object_opposite_polarity():
-    """User-reported: '我喜欢跳舞' then '我不喜欢跳舞' showed BOTH (+跳舞 and -跳舞). A like<->dislike flip
-    on the SAME object is a reversal — the newer stance supersedes the old (PRD 治理: 修正否定). Different
-    objects still accumulate (multi-valued)."""
-    from engram.consolidate.conflict import ConflictResolver
-    from engram.types import Fact
+    """用户反馈：先 '我喜欢跳舞' 再 '我不喜欢跳舞' 时两者都出现（+跳舞 和 -跳舞）。
+    同一 object 上 like<->dislike 的翻转属于反转 —— 新立场取代旧立场（PRD 治理：修正否定）。
+    不同 object 仍然累积（多值）。"""
+    from mnemotrace.consolidate.conflict import ConflictResolver
+    from mnemotrace.types import Fact
     r = ConflictResolver()
     old = Fact("user", "likes", "跳舞", valid_at=100.0)
     new = Fact("user", "dislikes", "跳舞", valid_at=200.0)
     _, invalidated = r.reconcile(new, [old])
     assert old in invalidated, "later opposite-polarity preference on the same object must supersede"
-    # a DIFFERENT object is untouched — multi-valued accumulation preserved
+    # 不同 object 不受影响 —— 保留多值累积
     other = Fact("user", "likes", "唱歌", valid_at=50.0)
     _, inval2 = r.reconcile(Fact("user", "likes", "跳舞", valid_at=300.0), [other])
     assert other not in inval2
 
 
 def test_conflict_detection_flags_candidates_and_coexist_default():
-    """System-2 LLM detection: only flag genuine suspected conflicts among candidate pairs; COEXIST is the
-    default (unrelated / model-unsure pairs are never flagged)."""
-    from engram.consolidate.detect import detect_conflicts
-    from engram.types import Fact
+    """System-2 LLM 检测：只对候选对中真实的疑似冲突做标记；默认 COEXIST
+    （无关/模型不确定的对永不标记）。"""
+    from mnemotrace.consolidate.detect import detect_conflicts
+    from mnemotrace.types import Fact
 
     class Judge:
         def complete(self, prompt, system=""):
             return "CONFLICT" if ("北京" in prompt and "上海" in prompt) else "COEXIST"
 
     a = Fact("user", "lives_in", "北京", valid_at=100.0); a.embedding = [1.0, 0.0]
-    b = Fact("user", "based_in", "上海", valid_at=200.0); b.embedding = [0.8, 0.6]   # ~0.8 cos: in band
-    c = Fact("user", "likes", "咖啡", valid_at=150.0); c.embedding = [0.0, 1.0]       # unrelated (cos<0.62)
+    b = Fact("user", "based_in", "上海", valid_at=200.0); b.embedding = [0.8, 0.6]   # ~0.8 cosine：在模糊带内
+    c = Fact("user", "likes", "咖啡", valid_at=150.0); c.embedding = [0.0, 1.0]       # 无关（cos<0.62）
     flagged = detect_conflicts([a, b, c], Judge(), "user", seen=set())
     assert len(flagged) == 1, "only the genuine conflict pair is flagged (coexist default)"
     cf = flagged[0]
-    assert cf.newer == b.id and cf.older == a.id  # newer = later valid_at
+    assert cf.newer == b.id and cf.older == a.id  # newer = valid_at 更晚者
 
 
 def test_conflict_resolve_and_dismiss_are_user_driven():
-    """Detection NEVER auto-resolves — only the user's resolve()/dismiss() acts; resolving supersedes the
-    chosen loser, dismiss keeps both."""
-    from engram.types import Conflict
+    """检测绝不自动解决 —— 只有用户的 resolve()/dismiss() 会生效；resolve 使选定的败方被取代，
+    dismiss 则两者都保留。"""
+    from mnemotrace.types import Conflict
     m = Memory()
-    fa = m.add_fact("user", "likes", "北京", user_id="u")   # multi-valued -> both coexist (no auto-merge)
+    fa = m.add_fact("user", "likes", "北京", user_id="u")   # 多值 -> 两者并存（不自动合并）
     fb = m.add_fact("user", "likes", "上海", user_id="u")
     cf = Conflict(older=fa.id, newer=fb.id, user_id="u")
     m.conflicts[cf.id] = cf
@@ -2455,7 +2451,7 @@ def test_conflict_resolve_and_dismiss_are_user_driven():
     assert not fa.is_live() and fb.is_live(), "keep=newer supersedes the older"
     assert cf.status == "resolved" and m.pending_conflicts("u") == []
 
-    # dismiss keeps both
+    # dismiss 两者都保留
     g1 = m.add_fact("user", "likes", "茶", user_id="u")
     g2 = m.add_fact("user", "likes", "奶茶", user_id="u")
     cf2 = Conflict(older=g1.id, newer=g2.id, user_id="u")
@@ -2465,40 +2461,38 @@ def test_conflict_resolve_and_dismiss_are_user_driven():
 
 
 def test_promotion_never_evicts_every_semantic_chunk():
-    """The 2026-08-27 regression: promoted provenance chunks filled the whole k_chunks budget, so
-    when fact retrieval missed, the semantically-retrieved episode carrying the answer was evicted
-    and single-session recall collapsed to abstention. Promotion may take at most half the budget
-    (k>=2); the semantic floor must survive even with many promoted candidates."""
-    from engram.config import Config
-    from engram.types import Fact
+    """2026-08-27 回归：被提升的 provenance chunk 占满了整个 k_chunks 预算，导致 fact 检索
+    未命中时，承载答案的语义检索 episode 被驱逐，单 session 召回塌缩为拒答。提升最多只能占用
+    一半预算（k>=2）；即使提升候选很多，语义保底槽位也必须存活。"""
+    from mnemotrace.config import Config
+    from mnemotrace.types import Fact
 
     mem = Memory(config=Config(evidence_planner=False, provenance_evidence=False,
                                provenance_chunk_promotion=True))
-    # the answer lives in a session that only SEMANTIC retrieval will rank highly
+    # 答案所在的 session 只有语义检索才会给它高排名
     mem.add("The screening room access code is painted behind the velvet poster.",
             user_id="u1", session_id="answer-session", event_time=BASE)
-    # off-topic sessions that promoted facts will point at
+    # 被提升 facts 将指向的离题 session
     sources = []
     for i in range(3):
         sources.append(mem.add(f"Budget sync {i}: the quarterly numbers were reviewed in depth.",
                                user_id="u1", session_id=f"budget-{i}", event_time=BASE + (i + 1) * DAY))
     mem.consolidate()
-    # ranked facts all point off-topic -> their provenance chunks would previously fill the budget
+    # 排名靠前的 facts 全部指向离题内容 -> 此前它们的 provenance chunk 会占满预算
     for i, src in enumerate(sources):
         f = Fact(subject="u1", predicate=f"reviewed_{i}", object=f"quarterly numbers {i}",
                  user_id="u1", provenance=[src.id])
         f.embedding = mem.embedder.embed(f.text)
         mem.fact_store.upsert(f.id, f.embedding, f)
     ctx = mem.lean_context("what is the screening room access code?", user_id="u1", n_chunks=2)
-    assert "velvet poster" in ctx  # the semantic slot survived promotion pressure
+    assert "velvet poster" in ctx  # 语义槽位在提升压力下幸存
 
 
 def test_evolution_block_leads_with_the_current_value():
-    """knowledge-update regression guard: a flat table made the answerer scan a `role` column to find
-    which value is true now, and it picked superseded values often enough to lose to plain
-    full-context (e.g. the pre-move city). The block must state the current value as a claim first,
-    with the replaced value clearly subordinate."""
-    from engram.config import Config
+    """知识更新回归防护：扁平表格迫使回答者扫描 `role` 列来判断当前哪个值为真，且它选中
+    已被取代值的频率高到足以输给朴素 full-context（例如搬迁前的城市）。该块必须首先把当前值
+    作为结论陈述，被替换的值明显居于从属地位。"""
+    from mnemotrace.config import Config
 
     mem = Memory(config=Config(evidence_planner=False))
     mem.add("I live in Hawaii.", user_id="u1", event_time=BASE)
@@ -2509,17 +2503,17 @@ def test_evolution_block_leads_with_the_current_value():
     assert "FACT EVOLUTION" in ctx
     evo = ctx[ctx.index("FACT EVOLUTION"):]
     assert "CURRENT:" in evo and "Paris" in evo
-    # the current value must be stated before the value it replaced
+    # 当前值必须先于被替换值出现
     assert evo.index("Paris") < evo.index("Hawaii"), evo
     assert "was:" in evo and "Hawaii" in evo
 
 
 def test_aggregation_questions_widen_the_preconsolidation_pool():
-    """Aggregation answers are wrong when ONE occurrence is missing, and occurrences span sessions by
-    definition. A pool sized for pointed questions truncated them (a 4-airline list came back with 3),
-    so count/list/sum questions get a wider pool -- and only those, to contain extraction cost."""
-    from engram.config import Config
-    from engram.types import Episode
+    """聚合类答案只要漏掉一次出现就错了，而出现天然分布在多个 session。为指向性问题设计的
+    池子会截断它们（4 家航空公司的清单只回来 3 家），因此 count/list/sum 类问题使用更宽的池子
+    —— 且仅限这类问题，以控制提取成本。"""
+    from mnemotrace.config import Config
+    from mnemotrace.types import Episode
     from eval.bench import retrieve_evidence_episodes
 
     calls: list[int] = []
@@ -2539,6 +2533,6 @@ def test_aggregation_questions_widen_the_preconsolidation_pool():
     retrieve_evidence_episodes(FakeMem(), "Where does my sister work?", "u1", 8)
     assert max(calls) == 8, f"pointed question must keep the normal pool, got {calls}"
 
-    calls.clear()  # ablation restores the narrow pool
+    calls.clear()  # 消融后恢复窄池
     retrieve_evidence_episodes(FakeMem(boost=False), "How many airlines in total?", "u1", 8)
     assert max(calls) == 8, f"ablated boost should not widen, got {calls}"

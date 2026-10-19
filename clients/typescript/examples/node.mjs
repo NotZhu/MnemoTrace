@@ -1,19 +1,19 @@
-// Run against a local Engram server:
-//   pip install "engram-memory[serve]"
-//   ENGRAM_OPEN=1 ENGRAM_EMBEDDER=hashing ENGRAM_LLM=deepseek uvicorn engram.server.app:app
+// Run against a local MnemoTrace server:
+//   pip install "mnemotrace-memory[serve]"
+//   MNEMOTRACE_OPEN=1 MNEMOTRACE_EMBEDDER=hashing MNEMOTRACE_LLM=deepseek uvicorn mnemotrace.server.app:app
 //   node examples/node.mjs
 //
-// (After `npm run build`, import from 'engram-memory'. Here we import the built dist directly.)
-import { EngramClient } from '../dist/index.js'
+// (After `npm run build`, import from 'mnemotrace-memory'. Here we import the built dist directly.)
+import { MnemoTraceClient } from '../dist/index.js'
 
-const engram = new EngramClient({
-  baseUrl: process.env.ENGRAM_URL ?? 'http://localhost:8000',
-  apiKey: process.env.ENGRAM_API_KEY ?? 'demo-user',
+const mnemotrace = new MnemoTraceClient({
+  baseUrl: process.env.MNEMOTRACE_URL ?? 'http://localhost:8000',
+  apiKey: process.env.MNEMOTRACE_API_KEY ?? 'demo-user',
 })
 
-const sessionId = process.env.ENGRAM_SESSION_ID ?? 'sdk-demo:node'
+const sessionId = process.env.MNEMOTRACE_SESSION_ID ?? 'sdk-demo:node'
 
-const status = await engram.agentStatus({ sessionId })
+const status = await mnemotrace.agentStatus({ sessionId })
 console.log('--- agent memory status ---')
 console.log({
   namespace: status.user,
@@ -22,32 +22,32 @@ console.log({
   facts: status.counts.facts_live,
 })
 
-await engram.remember('I live in Shenzhen and my favorite language is Python.', { sessionId })
-await engram.remember('Actually I just switched jobs — I now work at Moonshot AI.', { sessionId })
+await mnemotrace.remember('I live in Shenzhen and my favorite language is Python.', { sessionId })
+await mnemotrace.remember('Actually I just switched jobs — I now work at Moonshot AI.', { sessionId })
 
-const { context } = await engram.recall('where do I work and live?', { sessionId })
+const { context } = await mnemotrace.recall('where do I work and live?', { sessionId })
 console.log('--- recalled memory ---\n' + context)
 
-const { answer } = await engram.search('What is my favorite programming language?')
+const { answer } = await mnemotrace.search('What is my favorite programming language?')
 console.log('\nsearch answer:', answer)
 
-// OpenAI-compatible chat with automatic memory injection (requires ENGRAM_LLM on the server).
+// OpenAI-compatible chat with automatic memory injection (requires MNEMOTRACE_LLM on the server).
 try {
-  const completion = await engram.chat.completions.create({
-    model: 'engram',
+  const completion = await mnemotrace.chat.completions.create({
+    model: 'mnemotrace',
     messages: [{ role: 'user', content: 'Remind me where I work.' }],
     memory: { session_id: sessionId, scope: 'auto' },
   })
   console.log('\nchat answer:', completion.choices[0].message.content)
-  console.log('memory used:', completion.engram)
+  console.log('memory used:', completion.mnemotrace)
 } catch (err) {
-  console.log('\n(chat skipped — set ENGRAM_LLM on the server to enable generation)')
+  console.log('\n(chat skipped — set MNEMOTRACE_LLM on the server to enable generation)')
 }
 
-await engram.closeSession(sessionId)
+await mnemotrace.closeSession(sessionId)
 console.log('\nclosed memory session:', sessionId)
 
-const report = await engram.sessionReport(sessionId)
+const report = await mnemotrace.sessionReport(sessionId)
 console.log('\n--- session memory report ---')
 console.log({
   episodes: report.episodes,
@@ -56,7 +56,7 @@ console.log({
   facts: report.facts.map((f) => f.text),
 })
 
-const sessions = await engram.sessions({ limit: 10, query: 'sdk-demo' })
+const sessions = await mnemotrace.sessions({ limit: 10, query: 'sdk-demo' })
 console.log('\n--- cross-agent session index ---')
 console.log(sessions.sessions.map((s) => ({
   id: s.id,
@@ -65,7 +65,7 @@ console.log(sessions.sessions.map((s) => ({
   workingLive: s.working_live,
 })))
 
-const memoryPage = await engram.memories({
+const memoryPage = await mnemotrace.memories({
   factsLimit: 10,
   episodesLimit: 0,
   status: 'live',
@@ -81,7 +81,7 @@ console.log({
   })),
 })
 
-const portable = await engram.export()
+const portable = await mnemotrace.export()
 console.log('\n--- share-safe export ---')
 console.log({
   includeSensitive: portable.include_sensitive,

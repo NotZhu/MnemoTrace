@@ -1,120 +1,160 @@
-import { useState } from 'react'
-import { Search, Share2 } from 'lucide-react'
 
-import { Card, CardTitle, EmptyState, ErrorState, PageHeader, Spinner } from '../components/ui'
+
+import { useEffect, useRef, useState } from 'react'
+import { MousePointer2, Search, Share2, X } from 'lucide-react'
+
+import { Card, EmptyState, ErrorState, PageHeader, Spinner } from '../components/ui'
 import { ForceGraph } from '../components/ForceGraph'
 import { useGraph } from '../hooks/queries'
-import { useT } from '../i18n'
+import { useDebouncedSearch } from '../hooks/useDebouncedSearch'
+import { useSpacePreference } from '../store/preferences'
+import { copy as t } from '../lib/copy'
+import { visibleGraph } from '../lib/graphVisibility'
 
 export default function GraphPage() {
-  const t = useT()
   const [q, setQ] = useState('')
-  const [liveOnly, setLiveOnly] = useState(true)
-  const [hideSensitive, setHideSensitive] = useState(true)
+  const searchInput = useRef<HTMLInputElement>(null)
+  const [composing, setComposing] = useState(false)
+  const searchQuery = useDebouncedSearch(q, composing, 500)
+  const [liveOnly, setLiveOnly] = useSpacePreference('graph', 'liveOnly')
+  const [hideSensitive, setHideSensitive] = useSpacePreference('graph', 'hideSensitive')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const { data, isLoading, isError, error } = useGraph({
-    q,
-    live_only: liveOnly,
+    q: searchQuery,
+    live_only: false,
     include_sensitive: !hideSensitive,
     limit: 120,
   })
 
-  if (isLoading) return <Spinner label={t.graph.loading} />
-  if (isError) return <ErrorState message={(error as Error).message} />
-  if (!data) return null
-
-  const hasGraph = data.nodes.length > 0
-  const selected = data.nodes.find((n) => n.id === selectedId) ?? null
+  const visibleData = data ? visibleGraph(data, liveOnly) : undefined
+  const hasGraph = (visibleData?.nodes.length ?? 0) > 0
+  const filteredEmpty = Boolean(searchQuery.trim() || hideSensitive || (liveOnly && data && data.nodes.length > 0))
+  const selected = visibleData?.nodes.find((n) => n.id === selectedId) ?? null
   const related = selected
-    ? data.edges.filter((e) => e.source === selected.id || e.target === selected.id)
+    ? (visibleData?.edges ?? []).filter((e) => e.source === selected.id || e.target === selected.id)
     : []
+  useEffect(() => {
+    if (data && selectedId && !selected) setSelectedId(null)
+  }, [data, selectedId, selected])
 
   return (
-    <div className="space-y-6">
-      <PageHeader title={t.graph.title} subtitle={t.graph.subtitle} />
+    <div className="graph-page">
+      <PageHeader title={t.graph.title} />
 
-      <Card className="!p-3">
+      <Card className="shrink-0 !p-3">
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex min-w-[220px] flex-1 items-center gap-2 rounded-xl border border-line bg-white/[0.05] px-3">
-            <Search className="h-4 w-4 text-ghost" />
+          <div className="flex min-w-[220px] flex-1 items-center gap-2 rounded-xl border border-line bg-ink-700 px-3">
+            <Search className="h-4 w-4 shrink-0 text-ghost" />
             <input
+              ref={searchInput}
               aria-label={t.graph.searchPlaceholder}
-              className="w-full bg-transparent py-2 text-sm outline-none placeholder:text-ghost/70"
+              className="min-w-0 w-full bg-transparent py-2 text-sm outline-none placeholder:text-ghost/70"
               placeholder={t.graph.searchPlaceholder}
               value={q}
+              onCompositionStart={() => setComposing(true)}
+              onCompositionEnd={() => setComposing(false)}
               onChange={(e) => {
                 setQ(e.target.value)
                 setSelectedId(null)
               }}
             />
+            {q.length > 0 && (
+              <button
+                type="button"
+                aria-label={t.graph.clearSearch}
+                onClick={() => {
+                  setQ('')
+                  setComposing(false)
+                  setSelectedId(null)
+                  searchInput.current?.focus()
+                }}
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-ghost transition hover:bg-selected hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan"
+              >
+                <X aria-hidden="true" className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
-          <label className="flex select-none items-center gap-2 px-1 text-sm text-ghost">
-            <input type="checkbox" checked={liveOnly} onChange={(e) => setLiveOnly(e.target.checked)} className="accent-brand-cyan" />
+          <button type="button" role="switch" aria-checked={liveOnly} aria-label={t.graph.currentOnly} onClick={() => setLiveOnly((value) => !value)} className="inline-flex min-h-[38px] select-none items-center gap-2.5 rounded-full px-1 text-sm text-ghost">
+            <span aria-hidden="true" className="switch-track"><span className="switch-thumb" /></span>
             {t.graph.currentOnly}
-          </label>
-          <label className="flex select-none items-center gap-2 px-1 text-sm text-ghost">
-            <input type="checkbox" checked={hideSensitive} onChange={(e) => setHideSensitive(e.target.checked)} className="accent-brand-rose" />
+          </button>
+          <button type="button" role="switch" aria-checked={hideSensitive} aria-label={t.graph.hideSensitive} onClick={() => setHideSensitive((value) => !value)} className="inline-flex min-h-[38px] select-none items-center gap-2.5 rounded-full px-1 text-sm text-ghost">
+            <span aria-hidden="true" className="switch-track"><span className="switch-thumb" /></span>
             {t.graph.hideSensitive}
-          </label>
+          </button>
         </div>
       </Card>
 
-      <Card>
-        <CardTitle
-          hint={
-            hasGraph ? (
-              <span className="flex items-center gap-3">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="h-px w-4 bg-brand-cyan" /> {t.graph.legendLive}
-                </span>
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="h-px w-4 border-t border-dashed border-slate-500" /> {t.graph.legendOld}
-                </span>
-              </span>
-            ) : undefined
-          }
-        >
-          {t.graph.stats(data.nodes.length, data.edges.length)}
-        </CardTitle>
+      <div className="graph-layout">
+        <div className="h-full min-h-0 min-w-0">
+          {isLoading ? <Spinner label={t.graph.loading} /> : isError ? <ErrorState message={(error as Error).message} /> : data ? <section className="graph-workspace">
+            <div className="graph-status">
+              <h3>{t.graph.stats(visibleData?.nodes.length ?? 0, visibleData?.edges.length ?? 0)}</h3>
+              {hasGraph && <span className="mt-1.5 flex items-center gap-3 text-[10px] text-ghost">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-px w-4 bg-ghost/65" /> {t.graph.legendLive}
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-px w-4 border-t border-dashed border-ghost/65" /> {t.graph.legendOld}
+                    </span>
+                  </span>}
+            </div>
 
-        {hasGraph ? (
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-            <ForceGraph data={data} selectedId={selectedId} onSelect={setSelectedId} />
-            <aside className="rounded-xl border border-line bg-white/[0.03] p-4">
-              {selected ? (
-                <div className="space-y-3">
-                  <div>
-                    <div className="text-xs uppercase tracking-wide text-ghost">{selected.type}</div>
-                    <div className="mt-1 break-words text-sm font-semibold text-slate-100">{selected.name}</div>
-                  </div>
-                  <div className="text-xs text-ghost">{t.graph.edgeCount(related.length)}</div>
-                  <ul className="space-y-2">
-                    {related.slice(0, 12).map((e, i) => {
-                      const other = data.nodes.find((n) => n.id === (e.source === selected.id ? e.target : e.source))
-                      return (
-                        <li key={`${e.fact_id ?? i}`} className="rounded-lg bg-white/[0.04] p-2 text-xs leading-relaxed">
-                          <div className="break-words text-slate-200">
-                            <span className="text-brand-cyan">{e.predicate}</span> {other?.name ?? ''}
-                          </div>
-                          {e.fact_text && <div className="mt-1 break-words text-ghost">{e.fact_text}</div>}
-                          <div className="mt-1 text-[11px] text-ghost">
-                            {e.valid_at_h}
-                            {!e.live && e.invalid_at_h ? ` · ${t.graph.legendOld} ${e.invalid_at_h}` : ''}
-                          </div>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </div>
-              ) : (
-                <EmptyState title={t.common.details} hint={t.graph.nodeHint} />
-              )}
-            </aside>
+            {data.nodes.length > 0 && <ForceGraph data={data} liveOnly={liveOnly} selectedId={selected?.id ?? null} onSelect={setSelectedId} />}
+            {!hasGraph && <div className="graph-empty-state" role="status">
+              <EmptyState title={filteredEmpty ? t.graph.noResultsTitle : t.graph.emptyTitle}
+                hint={filteredEmpty ? t.graph.noResultsHint : t.graph.emptyHint} icon={<Share2 className="h-6 w-6" />} />
+            </div>}
+          </section> : null}
+        </div>
+        <aside className="graph-inspector" aria-label={t.graph.entityInfo}>
+          <div className="mb-4 flex min-h-8 shrink-0 items-center justify-between gap-2">
+            <h3 className="text-sm font-medium text-foreground">{t.graph.entityInfo}</h3>
+            {selected && <button type="button" aria-label={t.graph.closeDetails} title={t.graph.closeDetails}
+              className="graph-tool shrink-0" onClick={() => setSelectedId(null)}><X size={15} /></button>}
           </div>
-        ) : (
-          <EmptyState title={t.graph.emptyTitle} hint={t.graph.emptyHint} icon={<Share2 className="h-6 w-6" />} />
-        )}
-      </Card>
+          {selected ? (
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
+              <div>
+                <div className="text-xs uppercase tracking-wide text-ghost">{selected.type}</div>
+                <div className="mt-1 break-words text-sm font-semibold text-slate-100">{selected.name}</div>
+              </div>
+              <div className="text-xs text-ghost">{t.graph.edgeCount(related.length)}</div>
+              <ul className="space-y-2">
+                {related.slice(0, 12).map((e, i) => {
+                  const sourceName = data?.nodes.find((n) => n.id === e.source)?.name ?? e.source
+                  const targetName = data?.nodes.find((n) => n.id === e.target)?.name ?? e.target
+                  const factText = e.fact_text?.trim()
+                  const repeatsRelation = factText?.replace(/\s+/g, ' ') === `${sourceName} ${e.predicate} ${targetName}`
+                  return (
+                    <li key={`${e.fact_id ?? i}`} className="rounded-lg bg-ink-700/70 p-2 text-xs leading-relaxed">
+                      <div className={`break-words text-slate-200${e.live ? '' : ' line-through'}`}>
+                        {e.source === selected.id ? <strong className="font-semibold text-foreground">{sourceName}</strong> : <span>{sourceName}</span>}
+                        {' '}<span className="text-brand-cyan">{e.predicate}</span>{' '}
+                        {e.target === selected.id ? <strong className="font-semibold text-foreground">{targetName}</strong> : <span>{targetName}</span>}
+                      </div>
+                      {factText && !repeatsRelation && <div className={`mt-1 break-words text-ghost${e.live ? '' : ' line-through'}`}>{factText}</div>}
+                      <div className="mt-1 text-[11px] text-ghost">
+                        {e.valid_at_h}
+                        {!e.live && e.invalid_at_h ? ` · ${t.graph.legendOld} ${e.invalid_at_h}` : ''}
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          ) : (
+            <div className="graph-inspector-empty flex min-h-0 flex-1 flex-col overflow-y-auto px-2 py-4 text-center">
+              <div className="my-auto flex shrink-0 flex-col items-center gap-3">
+                <div className="grid h-14 w-14 place-items-center rounded-2xl border border-field-line bg-icon-surface text-brand-cyan">
+                  <MousePointer2 aria-hidden="true" className="h-6 w-6" strokeWidth={1.5} />
+                </div>
+                <p className="max-w-52 text-xs leading-relaxed text-ghost">{t.graph.nodeHint}</p>
+              </div>
+            </div>
+          )}
+        </aside>
+      </div>
     </div>
   )
 }

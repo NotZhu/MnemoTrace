@@ -10,7 +10,7 @@ latency/scale figure is a separate, harness-measured task with a committed log (
 ## Scenario A — Survive a restart with zero loss (US1 · SC-001 · INV-1..3)
 ```bash
 python3 - <<'PY'
-from engram import Memory
+from mnemotrace import Memory
 m = Memory.open("data/qs/alice")                 # creates/opens a JSONL+manifest store directory
 m.add("My flight is AA100 to Boston on Friday.")
 m.add("Actually the flight changed to AA200.")   # creates a supersedes chain
@@ -18,7 +18,7 @@ m.consolidate()
 m.save()
 PY
 python3 - <<'PY'                                  # reopen in a fresh process
-from engram import Memory
+from mnemotrace import Memory
 m = Memory.open("data/qs/alice")
 print(m.search("which flight?").answer())         # AA200; AA100 still stored but invalidated
 PY
@@ -59,8 +59,8 @@ pytest -q tests/test_lancedb_store.py
 Minimal direct use:
 ```bash
 python3 - <<'PY'
-from engram import Memory
-from engram.config import Config
+from mnemotrace import Memory
+from mnemotrace.config import Config
 
 cfg = Config(storage="lancedb", data_path="data/qs/alice-vectors")
 m = Memory.open("data/qs/alice-lancedb", config=cfg)
@@ -76,10 +76,10 @@ vector tables under `data_path`.
 
 ## Scenario F — Migrate off pickle (US3 · FR-008)
 ```bash
-python3 -m engram.store.migrate --from data/legacy/alice.pkl --to data/qs/alice --dry-run  # prints counts, writes nothing
-python3 -m engram.store.migrate --from data/legacy/alice.pkl --to data/qs/alice            # writes JSONL
+python3 -m mnemotrace.store.migrate --from data/legacy/alice.pkl --to data/qs/alice --dry-run  # prints counts, writes nothing
+python3 -m mnemotrace.store.migrate --from data/legacy/alice.pkl --to data/qs/alice            # writes JSONL
 # installed package equivalent:
-#   engram-migrate-pickle --from data/legacy/alice.pkl --to data/qs/alice
+#   mnemotrace-migrate-pickle --from data/legacy/alice.pkl --to data/qs/alice
 ```
 **Expected**: the dry-run reports per-entity counts and writes nothing; the real run yields entity parity
 with the pickle. Only run this command on trusted legacy snapshots; normal `Memory.open()` does not load

@@ -1,11 +1,11 @@
-"""Batch-import a chat history into Engram -- zero setup, no API keys.
+"""把聊天历史批量导入 忆痕 —— 零配置，无需 API key。
 
     python examples/batch_import.py
 
-Demonstrates the §6 adoption layer's import path: take an exported history (here a tiny inline
-ChatGPT-style export and an OpenAI messages array), normalize it with engram.connectors, ingest it in
-ONE batched pass, then recall from it. The same `parse(...)` powers `python -m engram.connectors`, the
-`POST /v1/import` endpoint, and the MCP `engram_import` tool.
+演示 §6 adoption 层的导入路径：取一份导出的历史（这里是一个极小的内联 ChatGPT 风格导出
+和一个 OpenAI messages 数组），用 mnemotrace.connectors 归一化，一次性批量导入，然后再从中召回。
+同一个 `parse(...)` 同时支撑 `python -m mnemotrace.connectors`、`POST /v1/import` 端点和
+MCP 的 `mnemotrace_import` 工具。
 """
 from __future__ import annotations
 
@@ -14,10 +14,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram import Memory  # noqa: E402
-from engram.connectors import parse, sniff  # noqa: E402
+from mnemotrace import Memory  # noqa: E402
+from mnemotrace.connectors import parse, sniff  # noqa: E402
 
-# A miniature ChatGPT `conversations.json` (one conversation, an active 2-node thread).
+# 一个迷你版 ChatGPT `conversations.json`（单会话，含一个活跃的 2 节点线程）。
 CHATGPT_EXPORT = [{
     "title": "Moving to Berlin",
     "create_time": 1_700_000_000.0,
@@ -33,7 +33,7 @@ CHATGPT_EXPORT = [{
     },
 }]
 
-# An OpenAI-style messages array (a separate "session").
+# 一个 OpenAI 风格的 messages 数组（另一个独立"会话"）。
 OPENAI_MESSAGES = [
     {"role": "user", "content": "By the way, I'm vegetarian and allergic to peanuts."},
     {"role": "assistant", "content": "Noted — I'll keep that in mind."},
@@ -41,10 +41,10 @@ OPENAI_MESSAGES = [
 
 
 def main() -> None:
-    mem = Memory()  # offline: hashing embedder + rule extractor, zero setup
+    mem = Memory()  # 离线模式：hashing 嵌入器 + 规则抽取器，零配置
 
     print("== Detect + parse two different export formats ==")
-    chatgpt_sessions = parse(CHATGPT_EXPORT)  # auto-sniffed
+    chatgpt_sessions = parse(CHATGPT_EXPORT)  # 自动嗅探格式
     openai_sessions = parse(OPENAI_MESSAGES, format="messages")
     print(f"   chatgpt export  -> sniffed as '{sniff(CHATGPT_EXPORT)}', {len(chatgpt_sessions)} session(s)")
     print(f"   openai messages -> {len(openai_sessions)} session(s)")
@@ -59,7 +59,7 @@ def main() -> None:
         snippet = " ".join(ctx.split())[:160]
         print(f"   Q: {q}\n      -> {snippet}…\n")
 
-    # One-liner equivalent: mem.import_data(raw_text_or_object, format="auto", user_id="me")
+    # 单行等价写法：mem.import_data(raw_text_or_object, format="auto", user_id="me")
 
 
 if __name__ == "__main__":

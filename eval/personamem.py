@@ -1,14 +1,13 @@
-"""PersonaMem-v2 runner (CLAUDE.md §4 target benchmark #4).
+"""PersonaMem-v2 运行器（CLAUDE.md §4 目标 benchmark 第 4 项）。
 
-PersonaMem is a 4-way multiple-choice PERSONALIZATION task: given a long chat history (~32k tokens) that
-implicitly reveals a user's preferences, pick the single response (of 4) that is most personalized to
-THIS user. Three distractors reference plausible-but-wrong preferences. Scoring is exact-choice accuracy
-— no LLM judge — so it isolates whether the memory layer surfaces the RIGHT preference for the query.
+PersonaMem 是四选一的 PERSONALIZATION 任务：给定一段隐含暴露用户偏好的长聊天历史（约 32k token），
+从 4 个候选回复中选出对 THIS 用户最个性化的那一个。三个干扰项指向看似合理但错误的偏好。打分是
+精确选项命中率 —— 不用 LLM judge —— 因而能单独衡量 memory 层是否为查询浮出了正确的偏好。
 
-Why it complements LongMemEval: it stresses implicit-preference extraction + the L3 persona/profile layer,
-and includes `updated` (a preference changed mid-history → latest must win, our bi-temporal/conflict
-strength) and `who` (self vs others). We run engram_lean (answer from a lean retrieved slice) against the
-full-context baseline (whole history in the prompt) with the SAME answerer — the honest comparison.
+它为何补充 LongMemEval：它考验隐式偏好抽取 + L3 persona/profile 层，且包含 `updated`（历史中途偏好
+变更 -> 必须以最新为准，正是我们双时间轴/冲突处理的强项）和 `who`（自己 vs 他人）。我们让
+engram_lean（从精简检索切片作答）对阵 full-context 基线（整段历史进 prompt），用同一个 answerer
+—— 诚实的对比。
 
     python eval/personamem.py --n-personas 20 --per-persona 5 --answerer volcano:doubao-seed-1-6-flash-250615 \
         --systems engram_lean,full_context --workers 6 --out results/personamem_smoke.jsonl
@@ -28,18 +27,18 @@ import warnings
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
-warnings.filterwarnings("ignore")  # litellm/pydantic emit benign serialization warnings on doubao responses
+warnings.filterwarnings("ignore")  # litellm/pydantic 对 doubao 回复会发出无害的序列化警告
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram import Memory  # noqa: E402
-from engram.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
-from engram.util import DAY  # noqa: E402
+from mnemotrace import Memory  # noqa: E402
+from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
+from mnemotrace.util import DAY  # noqa: E402
 
 HF = "https://huggingface.co/datasets/bowen-upenn/PersonaMem-v2/resolve/main"
 PM_DIR = "data/personamem"
 CH_DIR = f"{PM_DIR}/ch32k"
-BASE_T = 1_700_000_000.0  # synthetic epoch for ordering episodes (PersonaMem has no per-turn dates)
+BASE_T = 1_700_000_000.0  # 用于给 episode 排序的合成纪元（PersonaMem 没有 per-turn 日期）
 
 ANSWER_SYSTEM = (
     "You select the MOST personalized response for a specific user, using ONLY what you know about them "
@@ -64,7 +63,7 @@ def _download(path: str, dest: str) -> None:
 
 
 def history_for(link: str) -> list[dict]:
-    """Download+cache a persona's 32k chat history (a list of {role, content} messages)."""
+    """下载并缓存某个 persona 的 32k 聊天历史（{role, content} 消息列表）。"""
     dest = f"{CH_DIR}/{os.path.basename(link)}"
     if not os.path.exists(dest):
         _download(link, dest)
@@ -73,7 +72,7 @@ def history_for(link: str) -> list[dict]:
 
 
 def load_items(n_personas: int, per_persona: int, seed: int = 0) -> list[dict]:
-    """Sample a balanced subset of benchmark.csv: n_personas personas, up to per_persona queries each."""
+    """从 benchmark.csv 抽取均衡子集：n_personas 个 persona，每个至多 per_persona 条查询。"""
     import pandas as pd
     df = pd.read_csv(f"{PM_DIR}/benchmark.csv")
     rng = random.Random(seed)
@@ -112,8 +111,8 @@ def load_items(n_personas: int, per_persona: int, seed: int = 0) -> list[dict]:
 
 
 def ingest_history(mem: Memory, messages: list[dict], pid: str, chunk: int = 6) -> None:
-    """Ingest the conversation as ordered episodes (system persona = episode 0; then ~chunk msgs each).
-    Incrementing event_time preserves order so an UPDATED preference's latest mention wins (bi-temporal)."""
+    """把对话按顺序摄取为 episode（system persona = episode 0；之后每段约 chunk 条消息）。
+    event_time 递增保持顺序，让 UPDATED 偏好以最近一次出现为准（双时间轴）。"""
     eps: list[tuple[str, float]] = []
     if messages and messages[0].get("role") == "system":
         eps.append((f"USER PERSONA:\n{messages[0]['content']}", BASE_T))
@@ -141,7 +140,7 @@ def full_history_text(messages: list[dict], budget: int = 120_000) -> str:
 
 
 def ask_mc(llm, context: str, query: str, options: list[str]) -> int:
-    """Present the 4 options as A-D, return the chosen index (-1 on parse failure)."""
+    """把 4 个选项以 A-D 呈现，返回所选下标（解析失败返回 -1）。"""
     letters = ["A", "B", "C", "D"]
     opt_block = "\n".join(f"{letters[i]}) {o}" for i, o in enumerate(options))
     prompt = (f"What you know about the user:\n{context}\n\n"
@@ -152,19 +151,19 @@ def ask_mc(llm, context: str, query: str, options: list[str]) -> int:
     return letters.index(m.group(0)) if m else -1
 
 
-# ---- per-persona Engram memory cache (ingest once, answer all its queries) ----
+# ---- 按 persona 缓存 MnemoTrace memory（摄取一次，回答其全部查询）----
 _MEM_LOCK = threading.Lock()
 _MEM_CACHE: dict[str, Memory] = {}
 
 
-def engram_mem(pid: str, messages: list[dict], embedder, extractor, rig) -> Memory:
+def mnemotrace_mem(pid: str, messages: list[dict], embedder, extractor, rig) -> Memory:
     with _MEM_LOCK:
         if pid in _MEM_CACHE:
             return _MEM_CACHE[pid]
     mem = Memory(embedder=embedder, llm=extractor)
     ingest_history(mem, messages, pid)
-    # consolidate over a high-recall retrieved set is query-dependent; for a persona store we consolidate
-    # the whole (modest) history once so facts + persona cover every preference the queries may probe.
+    # 在高召回检索集合上做整合依赖具体查询；对 persona 存储我们一次性整合全部（规模不大的）历史，
+    # 让 facts + persona 覆盖查询可能探查的每个偏好。
     eps = list(mem.episodes_doc.values())
     mem.consolidate_full(fact_episodes=eps[: rig["extract_k"]] if rig["extract_k"] else eps, summary_episodes=eps)
     with _MEM_LOCK:
@@ -218,7 +217,7 @@ def run():
                 with _MEM_LOCK:
                     hist_cache[link] = msgs
             pid = str(it["persona_id"])
-            # deterministic option shuffle per qid
+            # 每个 qid 确定性地打乱选项
             rng = random.Random(it["qid"])
             opts = [("c", it["correct"])] + [("x", x) for x in it["incorrect"]]
             rng.shuffle(opts)
@@ -230,7 +229,7 @@ def run():
                 if sysname == "full_context":
                     ctx = full_history_text(msgs)
                 else:
-                    mem = engram_mem(pid, msgs, embedder, extractor, rig)
+                    mem = mnemotrace_mem(pid, msgs, embedder, extractor, rig)
                     ctx = mem.lean_context(it["query"], user_id=pid, n_facts=rig["topk"],
                                            n_summaries=rig["n_summaries"], n_chunks=rig["chunks"], persona=True)
                 pick = ask_mc(answerer, ctx, it["query"], option_texts)
@@ -254,7 +253,7 @@ def run():
     if out_fh:
         out_fh.close()
 
-    # merge any prior results from --out for the final report
+    # 合并 --out 里已有的历史结果，用于最终报告
     allr = results + [json.loads(l) for l in open(args.out)] if (args.out and os.path.exists(args.out)) else results
     seen = set(); merged = []
     for r in allr:
@@ -265,7 +264,7 @@ def run():
         ok = sum(1 for r in merged if r["sys"].get(s, {}).get("ok"))
         tok = [r["sys"][s]["tok"] for r in merged if s in r["sys"]]
         print(f"  {s:14} acc={100*ok/max(1,len(merged)):5.1f}%  avg_tokens={sum(tok)//max(1,len(tok))}", flush=True)
-    # per-category breakdown for engram_lean (the interesting splits)
+    # engram_lean 的分类别细分（最有看头的切分）
     if "engram_lean" in systems:
         print("  -- engram_lean by pref_type / updated --", flush=True)
         by = defaultdict(lambda: [0, 0])

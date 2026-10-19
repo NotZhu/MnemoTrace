@@ -9,7 +9,7 @@ feature, task group, or benchmark experiment.
 | --- | --- | --- |
 | `name` | Yes | Candidate name |
 | `source_patterns` | Yes | Patterns and sources that inspired it |
-| `engram_native_form` | Yes | The Engram primitive or surface it changes |
+| `mnemotrace_native_form` | Yes | The MnemoTrace primitive or surface it changes |
 | `strategic_bets` | Yes | Bets A-F served by the candidate |
 | `affected_surface` | Yes | Write path, consolidation, graph store, read path, profile memory, procedural memory, workspace export, runtime profile, or harness |
 | `minimum_scope` | Yes | Smallest useful version to evaluate |
@@ -18,24 +18,24 @@ feature, task group, or benchmark experiment.
 | `ablation_plan` | Yes | How to compare with and without the candidate |
 | `rollback_criterion` | Yes | Evidence that means the candidate should not ship |
 | `clean_room_notes` | Yes | License and implementation boundary |
-| `messaging_impact` | Yes | None, internal-only, or public after Engram-owned reproduction |
+| `messaging_impact` | Yes | None, internal-only, or public after MnemoTrace-owned reproduction |
 
 ## Promotion Rules
 
 - `benchmark_target`, `metrics`, and `ablation_plan` must be concrete before `/speckit-tasks`.
 - Candidates touching facts must preserve provenance, bi-temporal stamps, and `supersedes` chains.
 - Candidates touching the read path must keep raw evidence plus consolidated memory unless an
-  Engram-owned ablation proves another path is better.
+  MnemoTrace-owned ablation proves another path is better.
 - Candidates requiring optional services, models, or stores must preserve the zero-setup quickstart and
   tests.
-- Public messaging impact remains internal-only until raw Engram logs prove the result.
+- Public messaging impact remains internal-only until raw MnemoTrace logs prove the result.
 
 ## Example
 
 ```text
 name: Chain-aware retrieval
-source_patterns: Hy-Memory evolution chains; Graphiti temporal updates; Engram supersedes model
-engram_native_form: Retrieve current fact plus bounded supersedes chain with provenance
+source_patterns: Hy-Memory evolution chains; Graphiti temporal updates; MnemoTrace supersedes model
+mnemotrace_native_form: Retrieve current fact plus bounded supersedes chain with provenance
 strategic_bets: Bet B, Bet C, Bet D
 affected_surface: read path, temporal filtering, context assembly
 minimum_scope: Expand retrieved facts to include one-hop superseded/superseding facts under a token budget
@@ -43,6 +43,6 @@ benchmark_target: Knowledge-update and temporal slices from LongMemEval/LOCOMO p
 metrics: Accuracy up, tokens neutral/slightly up, p95 latency within read-path target
 ablation_plan: Compare baseline retrieval vs chain-aware retrieval on the same items and answerer
 rollback_criterion: No accuracy gain outside variance, prompt bloat hurts latency/tokens, or provenance ambiguity
-clean_room_notes: Implement from Engram's existing fact model; do not copy external code
-messaging_impact: Internal-only until benchmarked in Engram harness
+clean_room_notes: Implement from MnemoTrace's existing fact model; do not copy external code
+messaging_impact: Internal-only until benchmarked in MnemoTrace harness
 ```

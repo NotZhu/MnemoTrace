@@ -1,15 +1,15 @@
-"""Bulk-ingest a memory dataset into an Engram service, then sanity-check recall. Stdlib only —
-hand this script + a JSON data file to anyone and they can load their (desensitised) data and test.
+"""把一份记忆数据集批量灌入 忆痕 服务，然后抽样验证召回。仅依赖标准库 ——
+把这个脚本加一个 JSON 数据文件交给任何人，他们就能灌入自己（已脱敏的）数据并测试。
 
-Data file = a JSON array (or {"records": [...]}). Each record is either:
-  • a raw conversation  -> POST /v1/remember (the service auto-extracts facts)
+数据文件 = JSON 数组（或 {"records": [...]}）。每条记录是以下二者之一：
+  • 一段原始对话  -> POST /v1/remember（服务端自动抽取 fact）
       {"content": "用户：我在字节做后端，最爱周杰伦。\n助手：好的", "session_id": "s1", "scope": "long"}
-      scope: "auto" (default, routes 临时状态 to working memory) | "long" (force long-term) | "working"
-  • a structured fact   -> POST /v1/facts (authoritative, won't be auto-overwritten)
+      scope: "auto"（默认，临时状态路由到 working 记忆）| "long"（强制长期）| "working"
+  • 一条结构化 fact -> POST /v1/facts（权威写入，不会被自动覆盖）
       {"subject": "user", "predicate": "works_at", "object": "字节跳动"}
 
-Usage:
-  python examples/ingest_client.py --base http://42.193.220.197:8456 --key demo-test \
+用法：
+  python examples/ingest_client.py --base http://127.0.0.1:8000 --key demo-test \
       --data your_data.json [--reset] [--scope long] [--probe "我喜欢哪个歌手"]
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ import urllib.request
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", required=True, help="service base URL, e.g. http://42.193.220.197:8456")
+    ap.add_argument("--base", required=True, help="service base URL, e.g. http://127.0.0.1:8000")
     ap.add_argument("--key", required=True, help="your API key = your isolated memory namespace")
     ap.add_argument("--data", required=True, help="path to the JSON dataset")
     ap.add_argument("--reset", action="store_true", help="wipe this key's memory before loading")

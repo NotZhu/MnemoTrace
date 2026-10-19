@@ -4,7 +4,7 @@ import json
 import subprocess
 import urllib.error
 
-from engram import agent_doctor as D
+from mnemotrace import agent_doctor as D
 
 
 def _completed(args, returncode=0, stdout="", stderr=""):
@@ -13,7 +13,7 @@ def _completed(args, returncode=0, stdout="", stderr=""):
 
 def test_diagnose_codex_success(monkeypatch):
     probe = {
-        "python": "/opt/engram/bin/python",
+        "python": "/opt/mnemotrace/bin/python",
         "before_empty": True,
         "remembered": True,
         "source_session": "doctor:source:smoke",
@@ -31,7 +31,7 @@ def test_diagnose_codex_success(monkeypatch):
         "summaries": 1,
     }
     stdio_probe = {
-        "python": "/opt/engram/bin/python",
+        "python": "/opt/mnemotrace/bin/python",
         "isolated_processes": True,
         "missing_tools": [],
         "remembered": True,
@@ -50,7 +50,7 @@ def test_diagnose_codex_success(monkeypatch):
     }
 
     def fake_run(parts, timeout=30.0):
-        if parts[:2] == ["/opt/engram/bin/python", "-c"]:
+        if parts[:2] == ["/opt/mnemotrace/bin/python", "-c"]:
             if "StdioServerParameters" in parts[2]:
                 return _completed(parts, stdout=json.dumps(stdio_probe) + "\n")
             return _completed(parts, stdout=json.dumps(probe) + "\n")
@@ -63,7 +63,7 @@ def test_diagnose_codex_success(monkeypatch):
     monkeypatch.setattr(D, "_run", fake_run)
     monkeypatch.setattr(D.shutil, "which", lambda name: "/usr/local/bin/codex" if name == "codex" else None)
 
-    report = D.diagnose(client="codex", python_cmd="/opt/engram/bin/python")
+    report = D.diagnose(client="codex", python_cmd="/opt/mnemotrace/bin/python")
 
     assert report["ok"] is True
     assert report["summary"] == {"ok": 4, "warn": 0, "fail": 0}
@@ -91,12 +91,12 @@ def test_python_probe_failure_mentions_mcp_install(monkeypatch):
 
     assert report["ok"] is False
     assert report["summary"]["fail"] == 1
-    assert 'pip install "engram-memory[mcp]"' in report["checks"][0]["detail"]
+    assert 'pip install "mnemotrace-memory[mcp]"' in report["checks"][0]["detail"]
 
 
 def test_diagnose_remote_http_lifecycle_success(monkeypatch):
     probe = {
-        "python": "/opt/engram/bin/python",
+        "python": "/opt/mnemotrace/bin/python",
         "before_empty": True,
         "remembered": True,
         "source_session": "doctor:source:smoke",
@@ -114,7 +114,7 @@ def test_diagnose_remote_http_lifecycle_success(monkeypatch):
         "summaries": 1,
     }
     stdio_probe = {
-        "python": "/opt/engram/bin/python",
+        "python": "/opt/mnemotrace/bin/python",
         "isolated_processes": True,
         "missing_tools": [],
         "remembered": True,
@@ -134,7 +134,7 @@ def test_diagnose_remote_http_lifecycle_success(monkeypatch):
     source_session = ""
 
     def fake_run(parts, timeout=30.0):
-        if parts[:2] == ["/opt/engram/bin/python", "-c"] and "StdioServerParameters" in parts[2]:
+        if parts[:2] == ["/opt/mnemotrace/bin/python", "-c"] and "StdioServerParameters" in parts[2]:
             return _completed(parts, stdout=json.dumps(stdio_probe) + "\n")
         return _completed(parts, stdout=json.dumps(probe) + "\n")
 
@@ -149,7 +149,7 @@ def test_diagnose_remote_http_lifecycle_success(monkeypatch):
         if path == "/v1/recall":
             return {
                 "context": (
-                    "Project decision: Engram remote doctor verifies cross-agent handoff.\n"
+                    "Project decision: MnemoTrace remote doctor verifies cross-agent handoff.\n"
                     f"(session: {source_session})"
                 )
             }
@@ -160,9 +160,9 @@ def test_diagnose_remote_http_lifecycle_success(monkeypatch):
         if path == "/v1/export":
             assert params == {"include_sensitive": "false"}
             return {
-                "engram_export_version": 1,
+                "mnemotrace_export_version": 1,
                 "include_sensitive": False,
-                "facts": [{"text": "Project decision: Engram remote doctor verifies cross-agent handoff."}],
+                "facts": [{"text": "Project decision: MnemoTrace remote doctor verifies cross-agent handoff."}],
             }
         if path == "/v1/sessions":
             assert params == {"q": source_session, "limit": 10, "offset": 0}
@@ -178,7 +178,7 @@ def test_diagnose_remote_http_lifecycle_success(monkeypatch):
             "session_id": source_session,
             "facts_added": 1,
             "facts": [{
-                "text": "Project decision: Engram remote doctor verifies cross-agent handoff.",
+                "text": "Project decision: MnemoTrace remote doctor verifies cross-agent handoff.",
             }],
         }
 
@@ -188,8 +188,8 @@ def test_diagnose_remote_http_lifecycle_success(monkeypatch):
 
     report = D.diagnose(
         client="none",
-        python_cmd="/opt/engram/bin/python",
-        api_url="http://engram.test",
+        python_cmd="/opt/mnemotrace/bin/python",
+        api_url="http://mnemotrace.test",
         api_key="sk-secret",
     )
 
@@ -200,13 +200,13 @@ def test_diagnose_remote_http_lifecycle_success(monkeypatch):
     assert report["checks"][2]["data"]["reported"] is True
     assert report["checks"][2]["data"]["sessions_ok"] is True
     rendered = D.render_report(report)
-    assert "http://engram.test" in rendered
+    assert "http://mnemotrace.test" in rendered
     assert "sk-secret" not in rendered
 
 
 def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
     probe = {
-        "python": "/opt/engram/bin/python",
+        "python": "/opt/mnemotrace/bin/python",
         "before_empty": True,
         "remembered": True,
         "source_session": "doctor:source:smoke",
@@ -224,7 +224,7 @@ def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
         "summaries": 1,
     }
     stdio_probe = {
-        "python": "/opt/engram/bin/python",
+        "python": "/opt/mnemotrace/bin/python",
         "isolated_processes": True,
         "missing_tools": [],
         "remembered": True,
@@ -243,15 +243,15 @@ def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
     }
     config = tmp_path / "config.toml"
     config.write_text(
-        "[mcp_servers.engram]\n"
-        'command = "/opt/engram/bin/python"\n'
-        'args = ["-m", "engram.mcp", "--api-url", "http://engram.test", "--api-key", "sk-secret"]\n'
+        "[mcp_servers.mnemotrace]\n"
+        'command = "/opt/mnemotrace/bin/python"\n'
+        'args = ["-m", "mnemotrace.mcp", "--api-url", "http://mnemotrace.test", "--api-key", "sk-secret"]\n'
     )
 
     source_session = ""
 
     def fake_run(parts, timeout=30.0):
-        if parts[:2] == ["/opt/engram/bin/python", "-c"] and "StdioServerParameters" in parts[2]:
+        if parts[:2] == ["/opt/mnemotrace/bin/python", "-c"] and "StdioServerParameters" in parts[2]:
             return _completed(parts, stdout=json.dumps(stdio_probe) + "\n")
         return _completed(parts, stdout=json.dumps(probe) + "\n")
 
@@ -265,7 +265,7 @@ def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
         if path == "/v1/recall":
             return {
                 "context": (
-                    "Project decision: Engram remote doctor verifies cross-agent handoff.\n"
+                    "Project decision: MnemoTrace remote doctor verifies cross-agent handoff.\n"
                     f"(session: {source_session})"
                 )
             }
@@ -275,9 +275,9 @@ def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
         if path == "/v1/export":
             assert params == {"include_sensitive": "false"}
             return {
-                "engram_export_version": 1,
+                "mnemotrace_export_version": 1,
                 "include_sensitive": False,
-                "facts": [{"text": "Project decision: Engram remote doctor verifies cross-agent handoff."}],
+                "facts": [{"text": "Project decision: MnemoTrace remote doctor verifies cross-agent handoff."}],
             }
         if path == "/v1/sessions":
             assert params == {"q": source_session, "limit": 10, "offset": 0}
@@ -293,7 +293,7 @@ def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
             "session_id": source_session,
             "facts_added": 1,
             "facts": [{
-                "text": "Project decision: Engram remote doctor verifies cross-agent handoff.",
+                "text": "Project decision: MnemoTrace remote doctor verifies cross-agent handoff.",
             }],
         }
 
@@ -303,8 +303,8 @@ def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
 
     report = D.diagnose(
         client="none",
-        python_cmd="/opt/engram/bin/python",
-        api_url="http://engram.test",
+        python_cmd="/opt/mnemotrace/bin/python",
+        api_url="http://mnemotrace.test",
         api_key="sk-secret",
         codex_config=str(config),
     )
@@ -317,7 +317,7 @@ def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
 
 def test_diagnose_validates_mcp_json_config(monkeypatch, tmp_path):
     probe = {
-        "python": "/opt/engram/bin/python",
+        "python": "/opt/mnemotrace/bin/python",
         "before_empty": True,
         "remembered": True,
         "source_session": "doctor:source:smoke",
@@ -335,7 +335,7 @@ def test_diagnose_validates_mcp_json_config(monkeypatch, tmp_path):
         "summaries": 1,
     }
     stdio_probe = {
-        "python": "/opt/engram/bin/python",
+        "python": "/opt/mnemotrace/bin/python",
         "isolated_processes": True,
         "missing_tools": [],
         "remembered": True,
@@ -355,16 +355,16 @@ def test_diagnose_validates_mcp_json_config(monkeypatch, tmp_path):
     config = tmp_path / ".mcp.json"
     config.write_text(json.dumps({
         "mcpServers": {
-            "engram": {
+            "mnemotrace": {
                 "type": "stdio",
-                "command": "/opt/engram/bin/python",
-                "args": ["-m", "engram.mcp", "--namespace", "me"],
+                "command": "/opt/mnemotrace/bin/python",
+                "args": ["-m", "mnemotrace.mcp", "--namespace", "me"],
             }
         }
     }))
 
     def fake_run(parts, timeout=30.0):
-        if parts[:2] == ["/opt/engram/bin/python", "-c"] and "StdioServerParameters" in parts[2]:
+        if parts[:2] == ["/opt/mnemotrace/bin/python", "-c"] and "StdioServerParameters" in parts[2]:
             return _completed(parts, stdout=json.dumps(stdio_probe) + "\n")
         return _completed(parts, stdout=json.dumps(probe) + "\n")
 
@@ -372,7 +372,7 @@ def test_diagnose_validates_mcp_json_config(monkeypatch, tmp_path):
 
     report = D.diagnose(
         client="none",
-        python_cmd="/opt/engram/bin/python",
+        python_cmd="/opt/mnemotrace/bin/python",
         mcp_json=str(config),
     )
 
@@ -384,14 +384,14 @@ def test_config_probe_fails_on_mismatched_python(tmp_path):
     config = tmp_path / ".mcp.json"
     config.write_text(json.dumps({
         "mcpServers": {
-            "engram": {"command": "wrong-python", "args": ["-m", "engram.mcp"]}
+            "mnemotrace": {"command": "wrong-python", "args": ["-m", "mnemotrace.mcp"]}
         }
     }))
 
     check = D._mcp_json_config_probe(
         str(config),
-        server_name="engram",
-        python_cmd="/opt/engram/bin/python",
+        server_name="mnemotrace",
+        python_cmd="/opt/mnemotrace/bin/python",
         api_url=None,
         api_key=None,
     )
@@ -404,24 +404,24 @@ def test_config_probe_validates_local_namespace(tmp_path):
     config = tmp_path / ".mcp.json"
     config.write_text(json.dumps({
         "mcpServers": {
-            "engram": {
-                "command": "/opt/engram/bin/python",
-                "args": ["-m", "engram.mcp", "--namespace", "local-me"],
+            "mnemotrace": {
+                "command": "/opt/mnemotrace/bin/python",
+                "args": ["-m", "mnemotrace.mcp", "--namespace", "local-me"],
             }
         }
     }))
 
     ok = D._mcp_json_config_probe(
         str(config),
-        server_name="engram",
-        python_cmd="/opt/engram/bin/python",
+        server_name="mnemotrace",
+        python_cmd="/opt/mnemotrace/bin/python",
         api_url=None,
         api_key="local-me",
     )
     wrong = D._mcp_json_config_probe(
         str(config),
-        server_name="engram",
-        python_cmd="/opt/engram/bin/python",
+        server_name="mnemotrace",
+        python_cmd="/opt/mnemotrace/bin/python",
         api_url=None,
         api_key="other-user",
     )
@@ -445,7 +445,7 @@ def test_remote_http_probe_reports_unauthorized(monkeypatch):
 
     monkeypatch.setattr(D, "_http_json", fake_http)
 
-    check = D._remote_http_probe("http://engram.test", "bad-key")
+    check = D._remote_http_probe("http://mnemotrace.test", "bad-key")
 
     assert check["status"] == "fail"
     assert "HTTP 401" in check["detail"]

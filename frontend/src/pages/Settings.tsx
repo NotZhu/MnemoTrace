@@ -1,14 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   CheckCircle2,
   ChevronDown,
   Clipboard,
   ExternalLink,
+  MessageSquare,
   PlugZap,
   RefreshCw,
   RotateCcw,
   Save,
-  ShieldCheck,
   Sparkles,
   Terminal,
   Wand2,
@@ -17,18 +17,38 @@ import {
 import { Badge, Button, Card, CardTitle, ErrorState, PageHeader, Spinner, cx } from '../components/ui'
 import { toast } from '../components/Toast'
 import { useAgentStatus, useHealth, usePolicy, useSessions, useSetPolicy } from '../hooks/queries'
-import { useT } from '../i18n'
+import { copy as t } from '../lib/copy'
+
 import { apiBaseUrl } from '../lib/api'
 import { copyText } from '../lib/clipboard'
+import { codexSetupCommand, defaultSetupShell, type SetupShell } from '../lib/codexSetupCommand'
 import { useAuth } from '../store/auth'
 import type { Policy } from '../types'
+
+const CODEX_TEST_SESSION_KEY = 'mnemotrace:codex-test-session'
+
+function initialCodexTestSession(): string {
+  try {
+    const saved = sessionStorage.getItem(CODEX_TEST_SESSION_KEY)
+    if (saved?.trim()) return saved
+  } catch {
+    // 浏览器禁用存储时，仍允许在当前页面完成测试。
+  }
+
+  return generateCodexTestSession()
+}
+
+function generateCodexTestSession(): string {
+  const suffix = typeof crypto !== 'undefined'
+    ? Array.from(crypto.getRandomValues(new Uint8Array(4)), (byte) => byte.toString(16).padStart(2, '0')).join('')
+    : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+  return `codex:onboarding:${suffix}`
+}
 
 export default function Settings() {
   const { data, isLoading, isError, error } = usePolicy()
   const save = useSetPolicy()
-  const t = useT()
 
-  // Built inside the component so the labels follow the active language.
   const PROMPT_FIELDS: Array<{ key: keyof Policy; label: string; hint: string }> = [
     { key: 'extract_system', label: t.settings.promptExtractLabel, hint: t.settings.promptExtractHint },
     { key: 'summary_system', label: t.settings.promptSummaryLabel, hint: t.settings.promptSummaryHint },
@@ -58,7 +78,7 @@ export default function Settings() {
   const isDefault = (key: keyof Policy) => prompts[key] === data.defaults[key]
 
   const onSave = () => {
-    // Send "" for any prompt left at its default so it stays "use default" rather than a frozen override.
+    // 仍处于默认值的 prompt 发送 ""，让它保持"使用默认"，而不是固化成一份覆盖副本。
     const patch: Partial<Policy> = {
       extract_instruction: instruction,
       extract_system: isDefault('extract_system') ? '' : prompts.extract_system,
@@ -81,133 +101,151 @@ export default function Settings() {
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title={t.settings.title}
-        subtitle={t.settings.subtitle}
-        actions={
+      <PageHeader title={t.settings.title} />
+
+      <section aria-labelledby="codex-setup-heading" className="space-y-4">
+        <h2 id="codex-setup-heading" className="text-base font-semibold text-slate-100">{t.settings.connectSectionTitle}</h2>
+        <CodexSetupCard />
+      </section>
+
+      <section aria-labelledby="memory-policy-heading" className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 id="memory-policy-heading" className="text-base font-semibold text-slate-100">{t.settings.policySectionTitle}</h2>
           <Button onClick={onSave} loading={save.isPending} disabled={!dirty}>
-            <Save className="h-4 w-4" /> {t.common.save}
+            <Save className="h-4 w-4" /> {t.settings.savePolicy}
           </Button>
-        }
-      />
-
-      <CodexSetupCard />
-
-      {/* headline: what to record */}
-      <Card>
-        <CardTitle hint={t.settings.recordHint}>
-          <span className="inline-flex items-center gap-2">
-            <Wand2 className="h-4 w-4 text-brand-cyan" /> {t.settings.recordTitle}
-          </span>
-        </CardTitle>
-        <p className="mb-3 text-sm leading-relaxed text-ghost">
-          {t.settings.recordDescPre}
-          <span className="text-slate-200">{t.settings.recordDescEmph}</span>
-          {t.settings.recordDescPost}
-        </p>
-        <textarea
-          className="input min-h-[110px] resize-y leading-relaxed"
-          placeholder={t.settings.recordPlaceholder}
-          value={instruction}
-          onChange={(e) => {
-            setDirty(true)
-            setInstruction(e.target.value)
-          }}
-        />
-      </Card>
-
-      {/* advanced: full prompt editing */}
-      <Card>
-        <button
-          className="flex w-full items-center justify-between"
-          onClick={() => setAdvanced((v) => !v)}
-        >
-          <span className="inline-flex items-center gap-2 text-sm font-semibold text-brand-violet">
-            <Sparkles className="h-4 w-4" /> {t.settings.advancedToggle}
-          </span>
-          <ChevronDown className={cx('h-4 w-4 text-ghost transition', advanced && 'rotate-180')} />
-        </button>
-
-        {advanced && (
-          <div className="mt-5 space-y-6">
-            {PROMPT_FIELDS.map((f) => (
-              <div key={f.key}>
-                <div className="mb-1.5 flex items-center justify-between gap-2">
-                  <div>
-                    <span className="text-sm font-medium text-slate-100">{f.label}</span>
-                    <span className="ml-2">
-                      {isDefault(f.key) ? <Badge>{t.settings.defaultBadge}</Badge> : <Badge tone="violet">{t.settings.customBadge}</Badge>}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => resetPrompt(f.key)}
-                    disabled={isDefault(f.key)}
-                    className="inline-flex items-center gap-1 text-xs text-ghost transition hover:text-brand-cyan disabled:opacity-40"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" /> {t.settings.resetDefault}
-                  </button>
-                </div>
-                <p className="mb-2 text-xs text-ghost">{f.hint}</p>
-                <textarea
-                  className="input min-h-[140px] resize-y font-mono text-[12.5px] leading-relaxed"
-                  value={prompts[f.key] ?? ''}
-                  onChange={(e) => {
-                    setDirty(true)
-                    setPrompts((p) => ({ ...p, [f.key]: e.target.value }))
-                  }}
-                />
-              </div>
-            ))}
-            <p className="text-xs text-ghost">{t.settings.advancedNote}</p>
+        </div>
+        {/* 主区块：记录什么 */}
+        <Card>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h3 className="inline-flex items-center gap-2 text-sm font-medium tracking-wide text-foreground">
+              <Wand2 className="h-4 w-4 text-brand-cyan" /> {t.settings.recordTitle}
+            </h3>
           </div>
-        )}
-      </Card>
+          <p className="mb-3 text-sm leading-relaxed text-ghost">{t.settings.recordDesc}</p>
+          <textarea
+            className="input settings-textarea min-h-[110px] resize-y leading-relaxed"
+            placeholder={t.settings.recordPlaceholder}
+            value={instruction}
+            onChange={(e) => {
+              setDirty(true)
+              setInstruction(e.target.value)
+            }}
+          />
+        </Card>
+
+        {/* 高级：完整 prompt 编辑 */}
+        <Card>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between"
+            aria-expanded={advanced}
+            aria-controls="advanced-memory-prompts"
+            onClick={() => setAdvanced((v) => !v)}
+          >
+            <span className="inline-flex items-center gap-2 text-sm font-semibold text-brand-violet">
+              <Sparkles className="h-4 w-4" /> {t.settings.advancedToggle}
+            </span>
+            <ChevronDown className={cx('h-4 w-4 text-ghost transition', advanced && 'rotate-180')} />
+          </button>
+
+          {advanced && (
+            <div id="advanced-memory-prompts" className="mt-5 space-y-6">
+              <p className="text-sm leading-relaxed text-ghost">{t.settings.advancedDesc}</p>
+              {PROMPT_FIELDS.map((f) => (
+                <div key={f.key}>
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <div>
+                      <span className="text-sm font-medium text-slate-100">{f.label}</span>
+                      <span className="ml-2">
+                        {isDefault(f.key) ? <Badge>{t.settings.defaultBadge}</Badge> : <Badge tone="violet">{t.settings.customBadge}</Badge>}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => resetPrompt(f.key)}
+                      disabled={isDefault(f.key)}
+                      className="inline-flex items-center gap-1 text-xs text-ghost transition hover:text-brand-cyan disabled:opacity-40"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" /> {t.settings.resetDefault}
+                    </button>
+                  </div>
+                  <p className="mb-2 text-xs text-ghost">{f.hint}</p>
+                  <div className="group/copy relative">
+                    <textarea
+                      aria-label={f.label}
+                      className="input settings-textarea block min-h-[140px] resize-y font-sans text-[12.5px] not-italic leading-relaxed"
+                      value={prompts[f.key] ?? ''}
+                      onChange={(e) => {
+                        setDirty(true)
+                        setPrompts((p) => ({ ...p, [f.key]: e.target.value }))
+                      }}
+                    />
+                    <FloatingCopyButton
+                      text={prompts[f.key] ?? ''}
+                      label={`${t.settings.connectCopyPrompt}：${f.label}`}
+                      disabled={!prompts[f.key]?.trim()}
+                      bottomInset={16}
+                      rightInset={16}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </section>
     </div>
   )
 }
 
 function CodexSetupCard() {
-  const t = useT()
   const apiKey = useAuth((s) => s.apiKey) || ''
-  const [sessionId, setSessionId] = useState('codex:engram:onboarding')
+  const [shell, setShell] = useState<SetupShell>(() => defaultSetupShell(
+    typeof navigator === 'undefined' ? '' : navigator.platform || navigator.userAgent,
+  ))
+  const [defaultSessionId, setDefaultSessionId] = useState(initialCodexTestSession)
+  const [sessionId, setSessionId] = useState(defaultSessionId)
+  const sessionGhost = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(CODEX_TEST_SESSION_KEY, sessionId)
+    } catch {
+      // 存储不可用时保留内存中的 ID，不影响测试提示和结果查询。
+    }
+  }, [sessionId])
   const apiUrl = apiBaseUrl()
   const uiBase = typeof window === 'undefined' ? apiUrl : window.location.origin
   const health = useHealth()
   const status = useAgentStatus(sessionId)
   const sessions = useSessions({ q: 'codex', limit: 5 })
   const codexSessions = sessions.data?.sessions ?? []
-  const hasCodexWrites = codexSessions.length > 0
+  const feedCommand = 'mnemotrace-watch --install'
 
-  const command = [
-    'python3 -m pip install -U "engram-memory[mcp] @ git+https://github.com/ly-wang19/engram.git"',
-    [
-      'python3 -m engram.agent_setup',
-      '--client codex',
-      '--api-url',
-      sh(apiUrl),
-      '--api-key',
-      sh(apiKey),
-      '--python "$(command -v python3)"',
-      '--install-codex',
-      '--doctor',
-    ].join(' '),
-  ].join(' && \\\n  ')
+  const command = codexSetupCommand(shell, apiUrl, apiKey)
 
-  const statusPrompt = t.settings.connectStatusPrompt(sessionId)
-  const rememberPrompt = t.settings.connectRememberPrompt(sessionId)
-  const closePrompt = t.settings.connectClosePrompt(sessionId)
+  const testPrompt = t.settings.connectTestPrompt(sessionId)
+  const serviceReady = !health.isError && !!health.data?.ready
+  const serviceStatus = health.isError
+    ? t.settings.connectServiceUnavailable
+    : health.isLoading
+      ? t.settings.connectServiceChecking
+      : serviceReady
+        ? t.settings.connectServiceReady
+        : t.settings.connectServiceNotReady
 
   return (
     <Card>
-      <CardTitle hint={t.settings.connectHint}>
+      <CardTitle hint={
+        <span role="status" className={cx('inline-flex items-center gap-1.5', serviceReady ? 'text-brand-mint' : 'text-ghost')}>
+          <span aria-hidden="true">●</span> {serviceStatus}
+        </span>
+      }>
         <span className="inline-flex items-center gap-2">
           <PlugZap className="h-4 w-4 text-brand-mint" /> {t.settings.connectTitle}
         </span>
       </CardTitle>
 
-      {/* minmax(0,…): arbitrary fr values default to minmax(auto,…), so the long install command's
-          min-content width would lock the column open and force page-level horizontal scroll. */}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+      <div className="grid min-w-0 grid-cols-1 gap-4">
         <div className="min-w-0 space-y-4">
           <p className="text-sm leading-relaxed text-ghost">
             {t.settings.connectDescPre}
@@ -215,75 +253,104 @@ function CodexSetupCard() {
             {t.settings.connectDescPost}
           </p>
 
-          <div className="grid gap-3 sm:grid-cols-3">
-            <StatusTile
-              label={t.settings.connectApiLabel}
-              value={health.data?.ready ? t.settings.connectReady : t.settings.connectChecking}
-              ok={!!health.data?.ready}
-            />
-            <StatusTile
-              label={t.settings.connectCodexSessions}
-              value={
-                sessions.isLoading
-                  ? t.settings.connectChecking
-                  : hasCodexWrites
-                    ? t.settings.connectDetected(codexSessions.length)
-                    : t.settings.connectNoneYet
-              }
-              ok={hasCodexWrites}
-            />
-            {/* Green only when fed within the last 24 h: a stale feed is the failure mode this tile
-                exists to expose, so "fed once, months ago" must not read as healthy. */}
-            <StatusTile
-              label={t.settings.connectFeedLabel}
-              value={
-                status.data?.feed?.last_fed_at_h
-                  ? t.settings.connectFedAt(status.data.feed.last_fed_at_h, status.data.feed.sessions)
-                  : t.settings.connectNeverFed
-              }
-              ok={!!status.data?.feed?.last_fed_at && Date.now() / 1000 - status.data.feed.last_fed_at < 86400}
-            />
+          <div className="rounded-xl border border-line bg-ink-700/60 p-4 pb-[13px]">
+            <label htmlFor="codex-test-session" className="block text-sm font-semibold text-slate-100">{t.settings.connectSessionLabel}</label>
+            <div className="settings-copy-surface group/copy relative mt-1.5 rounded-lg bg-ink-900/70">
+              <div
+                ref={sessionGhost}
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 select-none overflow-hidden whitespace-pre rounded-lg p-3 text-xs leading-relaxed text-ghost opacity-50"
+              >
+                {defaultSessionId}
+              </div>
+              <input
+                id="codex-test-session"
+                className="relative w-full rounded-lg border-0 bg-transparent p-3 text-xs leading-relaxed text-slate-200 outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan/40"
+                aria-describedby="codex-test-session-hint"
+                value={sessionId}
+                onChange={(e) => setSessionId(e.target.value)}
+                onScroll={(event) => {
+                  if (sessionGhost.current) sessionGhost.current.scrollLeft = event.currentTarget.scrollLeft
+                }}
+              />
+              <FloatingCopyButton
+                text={sessionId}
+                label={t.settings.connectCopySession}
+                disabled={!sessionId.trim()}
+              />
+            </div>
+            <div className="mt-[13px] flex flex-wrap items-center justify-between gap-2">
+              <span id="codex-test-session-hint" className="text-xs leading-relaxed text-ghost">
+                {t.settings.connectSessionHint}
+              </span>
+              <button
+                type="button"
+                className="ml-auto inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold text-brand-cyan hover:text-brand-mint"
+                onClick={() => {
+                  const nextSessionId = generateCodexTestSession()
+                  setDefaultSessionId(nextSessionId)
+                  setSessionId(nextSessionId)
+                  if (sessionGhost.current) sessionGhost.current.scrollLeft = 0
+                }}
+              >
+                <RefreshCw className="h-3.5 w-3.5" /> {t.settings.connectNewSession}
+              </button>
+            </div>
           </div>
 
-          <label className="block">
-            <span className="label">{t.settings.connectSessionLabel}</span>
-            <input
-              className="input mt-1.5"
-              value={sessionId}
-              onChange={(e) => setSessionId(e.target.value)}
-              placeholder="codex:project:thread"
-            />
-          </label>
-
-          <div className="rounded-xl border border-line bg-white/[0.035] p-4">
+          <div className="rounded-xl border border-line bg-ink-700/60 p-4">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div className="inline-flex items-center gap-2 text-sm font-semibold text-slate-100">
                 <Terminal className="h-4 w-4 text-brand-cyan" /> {t.settings.connectStepInstall}
               </div>
-              <Button
-                variant="ghost"
-                aria-label={t.settings.connectCopyCommand}
-                onClick={() => copy(command, t.common.copied, t.common.copyFailed)}
-              >
-                <Clipboard className="h-4 w-4" /> {t.settings.connectCopyCommand}
-              </Button>
+              <div role="group" aria-label={t.settings.connectTerminal} className="relative top-1 ml-auto inline-grid shrink-0 grid-cols-2 gap-1 rounded-xl border border-control-line/60 bg-ink-700/70 p-1">
+                {(['powershell', 'bash'] as const).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    aria-pressed={shell === option}
+                    onClick={() => setShell(option)}
+                    className={cx(
+                      'whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan',
+                      shell === option ? 'bg-action text-foreground shadow-sm' : 'text-ghost hover:bg-ink-700 hover:text-foreground',
+                    )}
+                  >
+                    {option === 'powershell' ? 'PowerShell' : 'Bash'}
+                  </button>
+                ))}
+              </div>
             </div>
-            <pre className="max-h-52 overflow-auto rounded-lg bg-ink-900/70 p-3 text-xs leading-relaxed text-slate-200">
-              <code>{command}</code>
-            </pre>
-            <p className="mt-2 flex items-start gap-2 text-xs leading-relaxed text-ghost">
-              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-amber" />
-              <span>{t.settings.connectSecretNote}</span>
-            </p>
+            <p className="mb-3 text-sm leading-relaxed text-ghost">{t.settings.connectInstallDesc}</p>
+            <div className="settings-copy-surface group/copy relative rounded-lg bg-ink-900/70">
+              <pre className="max-h-52 overflow-auto p-3 font-sans text-xs not-italic leading-relaxed text-slate-200">
+                <code className="font-sans not-italic">{command}</code>
+              </pre>
+              <FloatingCopyButton text={command} label={t.settings.connectCopyCommand} bottomInset={12} />
+            </div>
           </div>
         </div>
 
         <div className="min-w-0 space-y-4">
-          <div className="rounded-xl border border-line bg-white/[0.035] p-4">
+          <div className="rounded-xl border border-line bg-ink-700/60 p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div className="inline-flex items-center gap-2 text-sm font-semibold text-slate-100">
-                <CheckCircle2 className="h-4 w-4 text-brand-mint" /> {t.settings.connectStepTest}
+                <MessageSquare className="h-4 w-4 text-brand-cyan" /> {t.settings.connectStepTest}
               </div>
+            </div>
+            <p className="mb-3 text-sm leading-relaxed text-ghost">{t.settings.connectTestDesc}</p>
+            <div className="settings-copy-surface group/copy relative break-words rounded-lg bg-ink-900/70 p-3 text-xs leading-relaxed text-slate-200">
+              <p>{testPrompt}</p>
+              <FloatingCopyButton
+                text={testPrompt}
+                label={t.settings.connectCopyPrompt}
+                disabled={!sessionId.trim()}
+              />
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-line bg-ink-700/60 p-5 sm:p-6">
+            <div className="mb-5 flex items-center justify-between gap-2">
+              <div className="text-sm font-semibold text-slate-100">{t.settings.connectLiveTitle}</div>
               <Button
                 variant="ghost"
                 onClick={() => {
@@ -294,19 +361,7 @@ function CodexSetupCard() {
                 <RefreshCw className="h-4 w-4" /> {t.settings.connectRefresh}
               </Button>
             </div>
-            <PromptCopy label={t.settings.connectPromptStatus} text={statusPrompt} />
-            <PromptCopy label={t.settings.connectPromptRemember} text={rememberPrompt} />
-            <PromptCopy label={t.settings.connectPromptClose} text={closePrompt} />
-          </div>
-
-          <div className="rounded-xl border border-line bg-white/[0.035] p-4">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <div className="text-sm font-semibold text-slate-100">{t.settings.connectLiveTitle}</div>
-              <Badge tone={status.data?.ok ? 'live' : 'default'}>
-                {status.data?.ok ? t.settings.connectReady : t.settings.connectChecking}
-              </Badge>
-            </div>
-            <div className="space-y-2 text-sm text-ghost">
+            <div className="space-y-4 text-sm text-ghost">
               <div className="flex justify-between gap-3">
                 <span>{t.settings.connectNamespace}</span>
                 <span className="truncate text-right text-slate-200">{status.data?.user ?? apiKey}</span>
@@ -315,16 +370,23 @@ function CodexSetupCard() {
                 <span>{t.settings.connectSessionEpisodes}</span>
                 <span className="text-slate-200">{status.data?.session?.episodes ?? 0}</span>
               </div>
-              <div className="flex justify-between gap-3">
-                <span>{t.settings.connectLiveFacts}</span>
-                <span className="text-slate-200">{status.data?.counts?.facts_live ?? 0}</span>
-              </div>
             </div>
-            {codexSessions.length > 0 && (
-              <div className="mt-4 space-y-2">
-                <div className="text-xs font-medium uppercase text-ghost">{t.settings.connectRecentSessions}</div>
-                {codexSessions.map((row) => (
-                  <div key={row.id} className="rounded-lg bg-white/[0.04] px-3 py-2 text-xs text-ghost">
+          </div>
+
+          <details className="rounded-xl border border-line bg-ink-700/60 p-4">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-100">
+              {t.settings.connectRecentSessions}
+            </summary>
+            <div className="mt-3 space-y-2">
+              {sessions.isLoading ? (
+                <p className="text-xs leading-relaxed text-ghost">{t.settings.connectSessionsLoading}</p>
+              ) : sessions.isError ? (
+                <p className="text-xs leading-relaxed text-ghost">{t.settings.connectSessionsError}</p>
+              ) : codexSessions.length === 0 ? (
+                <p className="text-xs leading-relaxed text-ghost">{t.settings.connectSessionsEmpty}</p>
+              ) : (
+                codexSessions.map((row) => (
+                  <div key={row.id} className="rounded-lg bg-ink-700/70 px-3 py-2 text-xs text-ghost">
                     <div className="truncate font-medium text-slate-200">{row.id}</div>
                     <div className="mt-1 flex flex-wrap gap-2">
                       <span>{t.conversations.sessionCardEpisodes(row.episodes)}</span>
@@ -332,49 +394,78 @@ function CodexSetupCard() {
                       {row.last_event_at_h && <span>{t.conversations.sessionCardLast(row.last_event_at_h)}</span>}
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
+                ))
+              )}
+            </div>
             <a
               href={`${uiBase}/ui/conversations`}
               className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-brand-cyan hover:text-brand-mint"
             >
               {t.settings.connectOpenSessions} <ExternalLink className="h-3.5 w-3.5" />
             </a>
-          </div>
+          </details>
         </div>
       </div>
+      <details className="mt-4 rounded-xl border border-line bg-ink-700/60 p-4">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-100">
+          {t.settings.connectFeedTitle}
+        </summary>
+        {/* 只有 24 小时内导入过才显示绿色，避免把陈旧记录显示为健康状态。 */}
+        <div className="mt-3">
+          <StatusTile
+            label={t.settings.connectFeedLabel}
+            value={
+              status.data?.feed?.last_fed_at_h
+                ? t.settings.connectFedAt(status.data.feed.last_fed_at_h, status.data.feed.sessions)
+                : t.settings.connectNeverFed
+            }
+            ok={!!status.data?.feed?.last_fed_at && Date.now() / 1000 - status.data.feed.last_fed_at < 86400}
+          />
+        </div>
+        <div className="mt-3">
+          <p className="mb-1.5 text-sm leading-relaxed text-ghost">{t.settings.connectFeedCommandLabel}</p>
+          <div className="settings-copy-surface group/copy relative rounded-lg bg-ink-900/70">
+            <pre className="overflow-auto p-3 font-sans text-xs not-italic leading-relaxed text-slate-200">
+              <code className="font-sans not-italic">{feedCommand}</code>
+            </pre>
+            <FloatingCopyButton text={feedCommand} label={t.settings.connectCopyCommand} bottomInset={16} />
+          </div>
+        </div>
+      </details>
     </Card>
+  )
+}
+
+function FloatingCopyButton({ text, label, disabled = false, bottomInset = 8, rightInset = 8 }: {
+  text: string
+  label: string
+  disabled?: boolean
+  bottomInset?: number
+  rightInset?: number
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      style={{ bottom: bottomInset, right: rightInset }}
+      className="pointer-events-none absolute inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-line bg-ink-700 px-2 py-1 text-xs text-brand-cyan opacity-0 shadow-sm transition group-hover/copy:pointer-events-auto group-hover/copy:opacity-100 group-focus-within/copy:pointer-events-auto group-focus-within/copy:opacity-100 hover:text-brand-mint focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan disabled:cursor-not-allowed [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100"
+      onClick={() => copy(text, t.common.copied, t.common.copyFailed)}
+    >
+      <Clipboard className="h-3.5 w-3.5" /> {t.common.copy}
+    </button>
   )
 }
 
 function StatusTile({ label, value, ok }: { label: string; value: string; ok: boolean }) {
   return (
-    <div className="rounded-xl border border-line bg-white/[0.035] p-3">
+    <div className="rounded-xl border border-line bg-ink-700/60 p-3">
       <div className="text-xs text-ghost">{label}</div>
       <div className={cx('mt-1 flex items-center gap-2 text-sm font-semibold', ok ? 'text-brand-mint' : 'text-slate-200')}>
         {ok && <CheckCircle2 className="h-4 w-4" />}
         {value}
       </div>
-    </div>
-  )
-}
-
-function PromptCopy({ label, text }: { label: string; text: string }) {
-  const t = useT()
-  return (
-    <div className="mb-3 last:mb-0">
-      <div className="mb-1.5 flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-ghost">{label}</span>
-        <button
-          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-brand-cyan transition hover:bg-white/5 hover:text-brand-mint"
-          aria-label={`${t.settings.connectCopyPrompt}: ${label}`}
-          onClick={() => copy(text, t.common.copied, t.common.copyFailed)}
-        >
-          <Clipboard className="h-3.5 w-3.5" /> {t.settings.connectCopyPrompt}
-        </button>
-      </div>
-      <div className="rounded-lg bg-ink-900/70 p-3 text-xs leading-relaxed text-slate-200">{text}</div>
     </div>
   )
 }
@@ -386,8 +477,4 @@ async function copy(text: string, successMessage: string, errorMessage: string) 
   } catch {
     toast.error(errorMessage)
   }
-}
-
-function sh(value: string) {
-  return `'${value.replace(/'/g, "'\\''")}'`
 }

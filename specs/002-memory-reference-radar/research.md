@@ -4,15 +4,15 @@
 
 **Created**: 2026-06-29
 
-**Purpose**: Capture the public systems and algorithms Engram should study at the architecture level,
-then convert the useful patterns into Engram-native, reproducible work. This is internal research
-input. Public Engram claims still require Engram-owned logs and the accuracy/tokens/latency triple.
+**Purpose**: Capture the public systems and algorithms MnemoTrace should study at the architecture level,
+then convert the useful patterns into MnemoTrace-native, reproducible work. This is internal research
+input. Public MnemoTrace claims still require MnemoTrace-owned logs and the accuracy/tokens/latency triple.
 
 ## Phase 0 Decisions
 
 ### Decision: Treat the radar as internal architecture governance, not public positioning
 
-**Rationale**: Engram's credibility comes from reproducible results and clean ownership. The radar
+**Rationale**: MnemoTrace's credibility comes from reproducible results and clean ownership. The radar
 should help maintainers learn quickly while preventing unsupported public comparisons or copied claims.
 
 **Alternatives considered**:
@@ -21,20 +21,20 @@ should help maintainers learn quickly while preventing unsupported public compar
   project's messaging discipline unless every number is reproduced.
 - Private chat notes only: rejected because architecture decisions need stable reviewable artifacts.
 
-### Decision: Promote patterns only through Engram-native adoption candidates
+### Decision: Promote patterns only through MnemoTrace-native adoption candidates
 
-**Rationale**: The useful unit is not "copy project X"; it is a candidate that maps to an Engram memory
+**Rationale**: The useful unit is not "copy project X"; it is a candidate that maps to an MnemoTrace memory
 surface, strategic bet, evaluation hypothesis, and rollback criterion.
 
 **Alternatives considered**:
 
 - Direct feature imports from external systems: rejected because it risks license confusion, hidden
-  coupling, and features that do not match Engram's bi-temporal model.
+  coupling, and features that do not match MnemoTrace's bi-temporal model.
 - Pure literature survey without candidate backlog: rejected because it does not move the roadmap.
 
 ### Decision: Keep raw evidence plus consolidated memory as the default read-path assumption
 
-**Rationale**: Engram's M1 finding says facts-only QA loses recall. Every candidate must preserve raw
+**Rationale**: MnemoTrace's M1 finding says facts-only QA loses recall. Every candidate must preserve raw
 session chunks, facts, and provenance unless a later benchmark proves a narrower path is better.
 
 **Alternatives considered**:
@@ -45,7 +45,7 @@ session chunks, facts, and provenance unless a later benchmark proves a narrower
 
 ### Decision: Make clean-room and license status part of every reference entry
 
-**Rationale**: Engram is dual-licensed AGPL plus commercial. Architecture ideas can be studied, but
+**Rationale**: MnemoTrace is dual-licensed AGPL plus commercial. Architecture ideas can be studied, but
 code, schemas, prompts, and benchmark artifacts must not be reused without explicit review.
 
 **Alternatives considered**:
@@ -70,12 +70,12 @@ name a target behavior, benchmark category, and accuracy/tokens/latency directio
 
 - Study public ideas aggressively; do not copy code without an explicit license review and clean-room
   plan.
-- Treat third-party benchmark numbers as signals, not evidence. They become Engram evidence only after
+- Treat third-party benchmark numbers as signals, not evidence. They become MnemoTrace evidence only after
   reproduction in `eval/` with committed `results/*.jsonl` logs.
-- Translate every borrowed pattern into Engram's own primitives: lossless episodes, atomic facts,
+- Translate every borrowed pattern into MnemoTrace's own primitives: lossless episodes, atomic facts,
   bi-temporal graph, provenance, supersedes chains, hybrid raw-chunk plus fact retrieval, salience,
   async consolidation, and harness-backed ablations.
-- Do not turn this radar into public competitor positioning. Public copy should describe Engram's own
+- Do not turn this radar into public competitor positioning. Public copy should describe MnemoTrace's own
   capabilities and reproducible results.
 
 ## Review Status by Source
@@ -86,7 +86,7 @@ documents a clean-room plan.
 
 | Source | Evidence status | Clean-room/license status |
 | --- | --- | --- |
-| Hy-Memory / Tencent Hunyuan Memory | External claims only; not reproduced in Engram harness | Architecture-only; license/source availability pending |
+| Hy-Memory / Tencent Hunyuan Memory | External claims only; not reproduced in MnemoTrace harness | Architecture-only; license/source availability pending |
 | Mem0 | Public repository and docs; external claims only | License review required before any code reuse |
 | Graphiti / Zep | Public repository and docs; external claims only | License review required before any code reuse |
 | Letta / MemGPT | Public repository and docs; external claims only | License review required before any code reuse |
@@ -122,9 +122,9 @@ documents a clean-room plan.
 
 ## P0 References: Study First
 
-| Source | Category | Architecture signal | Engram learning | Adoption candidate |
+| Source | Category | Architecture signal | MnemoTrace learning | Adoption candidate |
 | --- | --- | --- | --- | --- |
-| [Hy-Memory](https://hy-memory.com/) / [Tencent Hunyuan Memory](https://memory.hunyuan.tencent.com/) | Layered memory product/research system | Six-layer memory, System-1/System-2 split, evolution chains, OpenClaw plugin positioning | Confirms Engram's direction around layered memory, async consolidation, profile/mental-model layers, and supersedes chains | Chain-aware retrieval; derived layers for session summaries, mental models, and intent models; runtime profiles |
+| [Hy-Memory](https://hy-memory.com/) / [Tencent Hunyuan Memory](https://memory.hunyuan.tencent.com/) | Layered memory product/research system | Six-layer memory, System-1/System-2 split, evolution chains, OpenClaw plugin positioning | Confirms MnemoTrace's direction around layered memory, async consolidation, profile/mental-model layers, and supersedes chains | Chain-aware retrieval; derived layers for session summaries, mental models, and intent models; runtime profiles |
 | [Mem0](https://github.com/mem0ai/mem0) | General AI memory layer | Product-grade API, user/session/agent memory, multi-signal retrieval, OpenMemory/MCP ecosystem | Study API ergonomics, entity linking, add-only extraction variants, and benchmark packaging | Memory service API refinement; entity-linked retrieval boost; OpenAI/MCP-compatible surfaces |
 | [Graphiti](https://github.com/getzep/graphiti) / Zep | Temporal knowledge graph | Real-time temporal KG for agents, episode-to-entity/relation construction, temporal updates | Strong reference for temporal graph reads and update-friendly graph construction | Bi-temporal graph retrieval; temporal path expansion; graph write contracts |
 | [Letta](https://github.com/letta-ai/letta) / MemGPT | Stateful agent platform | Core/archival/recall memory, agent-visible memory editing, stateful agent loops | Useful model for memory as an agent control surface, not just retrieval | Procedural memory controls; memory-edit operations with provenance and audit |
@@ -132,11 +132,11 @@ documents a clean-room plan.
 | [Cognee](https://github.com/topoteretes/cognee) | Knowledge graph memory platform | Self-hosted KG memory, ingestion pipelines, Kuzu-oriented graph storage, MCP surface | Study graph ingestion shape and self-hosted deployment ergonomics | Graph backend evaluation; KG ingestion pipeline comparison |
 | [Supermemory](https://github.com/supermemoryai/supermemory) | Context and memory engine | Fast local/hosted context engine, app/API packaging, cross-app memory | Reinforces context-engine product surface and raw evidence recall | Context assembly API; local-first service packaging |
 | [Hindsight](https://github.com/vectorize-io/hindsight) | Learning memory for agents | "Agent memory that learns" framing, feedback-driven memory improvement | Good lens for memory as behavior improvement, not just recall | Feedback-to-memory loop; failure-derived memory candidates |
-| [MemPalace](https://github.com/MemPalace/mempalace) | Open memory system | Strong emphasis on benchmarked memory and raw recall surfaces | Reinforces Engram's M1 finding that raw evidence retrieval must stay first-class | Raw-verbatim evidence retention; chunk provenance scoring |
+| [MemPalace](https://github.com/MemPalace/mempalace) | Open memory system | Strong emphasis on benchmarked memory and raw recall surfaces | Reinforces MnemoTrace's M1 finding that raw evidence retrieval must stay first-class | Raw-verbatim evidence retention; chunk provenance scoring |
 
 ## P1 References: Algorithm and Architecture Primitives
 
-| Source | Category | Architecture signal | Engram learning | Adoption candidate |
+| Source | Category | Architecture signal | MnemoTrace learning | Adoption candidate |
 | --- | --- | --- | --- | --- |
 | [SimpleMem](https://github.com/aiming-lab/SimpleMem) | Lifelong memory compression | Semantic lossless compression, multimodal memory, self-evolving variants | Study recursive consolidation and query-aware compressed memory units | Sleep-time semantic compression; summary/fact/chunk fusion ablation |
 | [A-Mem](https://github.com/agiresearch/a-mem) | Agentic memory | Dynamic, linked memory organization inspired by note networks | Treat memory as evolving graph of connected units, not static top-k rows | Memory-link evolution; associative expansion from retrieved units |
@@ -152,7 +152,7 @@ documents a clean-room plan.
 
 ## P2 References: Product Surfaces and Deployment Patterns
 
-| Source | Category | Architecture signal | Engram learning | Adoption candidate |
+| Source | Category | Architecture signal | MnemoTrace learning | Adoption candidate |
 | --- | --- | --- | --- | --- |
 | [MemOS](https://github.com/MemTensor/MemOS) | Memory operating system | Unified store/retrieve/manage, memory cubes, async scheduler, feedback correction, local plugin | Useful product abstraction for multi-tenant memory resources | Memory namespace/cube model; feedback correction UX |
 | [MemoryOS](https://github.com/BAI-LAB/MemoryOS) | Personalized memory OS | Short/mid/long-term memory organization for personalized agents | Study memory lifecycle and personalization boundaries | Lifecycle policy for profile vs episodic vs procedural memory |
@@ -162,20 +162,20 @@ documents a clean-room plan.
 
 ## Benchmark and Radar Sources
 
-| Source | Role | How Engram should use it |
+| Source | Role | How MnemoTrace should use it |
 | --- | --- | --- |
 | [LongMemEval-V2](https://xiaowu0162.github.io/longmemeval-v2/) | Long-history agent memory benchmark | Track as a future scale target; reproduce only through in-repo harness once available |
 | [BEAM](https://github.com/mohammadtavakoli78/BEAM) | Million-token long-term memory benchmark | Use for scaling and distractor robustness once M2/M3 read path is ready |
 | [LOCOMO](https://snap-research.github.io/locomo/) | Long conversational memory benchmark | Use for cross-session dialogue and profile-memory evaluation |
-| [Agent Memory Benchmark](https://agentmemorybenchmark.ai/) | External leaderboard/radar | Treat as ecosystem signal; do not import results as Engram claims |
-| [mem0 memory-benchmarks](https://github.com/mem0ai/memory-benchmarks) | Benchmark interface reference | Study harness shape and reproducibility gaps; keep Engram harness neutral |
+| [Agent Memory Benchmark](https://agentmemorybenchmark.ai/) | External leaderboard/radar | Treat as ecosystem signal; do not import results as MnemoTrace claims |
+| [mem0 memory-benchmarks](https://github.com/mem0ai/memory-benchmarks) | Benchmark interface reference | Study harness shape and reproducibility gaps; keep MnemoTrace harness neutral |
 | [Awesome Agent Memory](https://github.com/TeleAI-UAGI/Awesome-Agent-Memory) | Literature radar | Periodic sweep source for new systems and papers |
 | [Awesome GraphMemory](https://github.com/DEEP-PolyU/Awesome-GraphMemory) | Graph-memory radar | Periodic sweep source for graph-based memory techniques |
 | [Awesome Memory for Agents](https://github.com/TsinghuaC3I/Awesome-Memory-for-Agents) | Agent-memory radar | Periodic sweep source for new memory-agent papers |
 
 ## Capability Patterns to Absorb
 
-| Pattern | Best current references | Engram-native form | Evaluation hypothesis |
+| Pattern | Best current references | MnemoTrace-native form | Evaluation hypothesis |
 | --- | --- | --- | --- |
 | Raw evidence as first-class memory | MemPalace, Supermemory, Mem0, agentmemory | Retrieved raw session chunks remain part of every QA read path, alongside facts and graph evidence | Improves detail recall and reduces facts-only false negatives on LongMemEval/LOCOMO |
 | Evolution-chain retrieval | Hy-Memory, Graphiti, MemOS | Facts and profile records expose and retrieve `supersedes` chains with provenance and valid-time filters | Improves knowledge-update and temporal questions without increasing prompt noise |
@@ -208,7 +208,7 @@ documents a clean-room plan.
   derived artifacts.
 - Every derived artifact must point back to raw episodes/facts; no summary becomes untraceable truth.
 - Study LLM Wiki-style purpose files and source-backed workspace pages as an optional, human-readable
-  view over Engram memory, not as a replacement for typed memory.
+  view over MnemoTrace memory, not as a replacement for typed memory.
 - Target benchmark behaviors: long-session compression, profile consistency, repeated preference recall.
 
 ### Stage 3 - Graph Multi-Hop Retrieval
@@ -227,7 +227,7 @@ documents a clean-room plan.
 ### Stage 5 - Runtime Profiles and Scoreboard
 
 - Define user-selectable profiles with measured accuracy/tokens/latency tradeoffs.
-- Publish only Engram-owned numbers with raw logs and full-context baselines.
+- Publish only MnemoTrace-owned numbers with raw logs and full-context baselines.
 - Target outcome: trusted open scoreboard plus a memory engine that can be run locally, inspected, and
   reproduced.
 
@@ -235,12 +235,12 @@ documents a clean-room plan.
 
 - Source is public and link is recorded.
 - License is reviewed, or candidate is architecture-only clean-room.
-- Candidate maps to at least one Engram strategic bet.
+- Candidate maps to at least one MnemoTrace strategic bet.
 - Candidate preserves raw evidence plus fact retrieval.
 - Candidate preserves bi-temporal provenance and non-destructive invalidation when it touches facts.
 - Candidate has a benchmark category and an accuracy/tokens/latency hypothesis.
 - Candidate has an ablation plan and rollback criterion.
-- Public messaging impact is either none or tied to Engram-owned results.
+- Public messaging impact is either none or tied to MnemoTrace-owned results.
 
 ## Initial Priority Queue
 
