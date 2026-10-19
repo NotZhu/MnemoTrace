@@ -1,4 +1,4 @@
-# 数据模型：Engram 0.1.0 商业交付版
+# 数据模型：MnemoTrace 0.1.0 商业交付版
 
 ## Release
 
@@ -28,8 +28,7 @@
 - `tenant_id`: 原始租户身份。
 - `directory_name`: 安全可读前缀 + 摘要。
 - `absolute_path`: 数据根目录下的绝对路径。
-- `format`: `jsonl-v1` 或可信旧 `pickle`。
-- `legacy_path`: 满足安全旧格式时可选的兼容路径。
+- `format`: 运行时使用 `jsonl-v1`；可信旧 `pickle` 仅作为显式迁移源。
 
 **Validation**:
 
@@ -42,11 +41,11 @@
 
 ```text
 unseen -> secure-directory-created -> active
-legacy-valid -> legacy-active -> optional-explicit-migration -> secure-active
+legacy-source -> operator-confirmed-explicit-copy -> secure-active
 active -> tenant-erased
 ```
 
-删除状态只影响该租户的安全目录及其已验证的旧兼容路径。
+删除状态只影响该租户的摘要目录。旧来源不参与服务的读取、写入或擦除。
 
 ## ServiceHealth
 

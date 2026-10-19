@@ -1,0 +1,17 @@
+................................................................sss..... [ 51%]
+....................................................................     [100%]
+============================== warnings summary ===============================
+C:\Users\<USER>\AppData\Local\Programs\Python\Python312\Lib\site-packages\_pytest\config\__init__.py:1474
+  C:\Users\<USER>\AppData\Local\Programs\Python\Python312\Lib\site-packages\_pytest\config\__init__.py:1474: PytestConfigWarning: Unknown config option: asyncio_default_fixture_loop_scope
+
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+C:\Users\<USER>\AppData\Local\Programs\Python\Python312\Lib\site-packages\_pytest\config\__init__.py:1474
+  C:\Users\<USER>\AppData\Local\Programs\Python\Python312\Lib\site-packages\_pytest\config\__init__.py:1474: PytestConfigWarning: Unknown config option: asyncio_mode
+
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [3] tests\test_forget_links.py:34: link creation requires Windows privileges
+137 passed, 3 skipped, 2 warnings in 28.09s

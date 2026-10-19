@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from engram import Memory
-from engram.types import Conflict
-from engram.util import DAY
+from mnemotrace import Memory, __version__
+from mnemotrace.types import Conflict
+from mnemotrace.util import DAY
 
 BASE = 1_700_000_000.0
 
@@ -46,6 +46,8 @@ def test_jsonl_roundtrip_preserves_bitemporal_and_state(tmp_path):
     mem.save(path)
     manifest = json.loads((tmp_path / "memory" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["backend"] == "durable"
+    assert manifest["mnemotrace_version"] == __version__
+    assert "engram_version" not in manifest
 
     loaded = Memory.open(path)
     assert [e.__dict__ for e in sorted(loaded.episodes_doc.values(), key=lambda e: e.id)] == [

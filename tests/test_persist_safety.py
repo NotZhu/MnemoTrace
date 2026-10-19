@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from engram import Memory
-from engram.embed import HashingEmbedder
-from engram.store import DimensionMismatchError, EmbedderMismatchError, IncompatibleStoreError, StoreFormatError
+from mnemotrace import Memory
+from mnemotrace.embed import HashingEmbedder
+from mnemotrace.store import DimensionMismatchError, EmbedderMismatchError, IncompatibleStoreError, StoreFormatError
 
 
 def test_open_rejects_plain_file_instead_of_unpickling(tmp_path):

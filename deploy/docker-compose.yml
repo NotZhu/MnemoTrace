@@ -1,24 +1,26 @@
+name: mnemotrace
+
 services:
-  engram:
+  mnemotrace:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: engram-memory:0.1.0
+    image: mnemotrace-memory:0.1.0
     init: true
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${ENGRAM_PORT:-8000}:8000"
+      - "127.0.0.1:${MNEMOTRACE_PORT:-8000}:8000"
     environment:
-      ENGRAM_API_KEYS: "${ENGRAM_API_KEYS:?set ENGRAM_API_KEYS in deploy/.env}"
-      ENGRAM_DATA_DIR: /data
-      ENGRAM_EMBEDDER: "${ENGRAM_EMBEDDER:-hashing}"
-      ENGRAM_LLM: "${ENGRAM_LLM:-}"
-      ENGRAM_ANSWERER: "${ENGRAM_ANSWERER:-}"
-      ENGRAM_MAX_REQUEST_BYTES: "${ENGRAM_MAX_REQUEST_BYTES:-2097152}"
-      ENGRAM_MAX_HOT_USERS: "${ENGRAM_MAX_HOT_USERS:-64}"
-      ENGRAM_MAX_HOT_FACTS: "${ENGRAM_MAX_HOT_FACTS:-10000}"
+      MNEMOTRACE_API_KEYS: "${MNEMOTRACE_API_KEYS:?set MNEMOTRACE_API_KEYS in deploy/.env}"
+      MNEMOTRACE_DATA_DIR: /data
+      MNEMOTRACE_EMBEDDER: "${MNEMOTRACE_EMBEDDER:-hashing}"
+      MNEMOTRACE_LLM: "${MNEMOTRACE_LLM:-}"
+      MNEMOTRACE_ANSWERER: "${MNEMOTRACE_ANSWERER:-}"
+      MNEMOTRACE_MAX_REQUEST_BYTES: "${MNEMOTRACE_MAX_REQUEST_BYTES:-2097152}"
+      MNEMOTRACE_MAX_HOT_USERS: "${MNEMOTRACE_MAX_HOT_USERS:-64}"
+      MNEMOTRACE_MAX_HOT_FACTS: "${MNEMOTRACE_MAX_HOT_FACTS:-10000}"
     volumes:
-      - engram_data:/data
+      - mnemotrace_data:/data
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -38,4 +40,4 @@ services:
       retries: 4
 
 volumes:
-  engram_data:
+  mnemotrace_data:

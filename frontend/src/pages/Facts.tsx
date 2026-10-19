@@ -1,7 +1,11 @@
-import { useEffect, useState } from 'react'
-import { FileSearch, GitMerge, Lock, Pencil, Plus, Search, ShieldAlert, Trash2 } from 'lucide-react'
 
-import { Badge, Button, Card, CardTitle, EmptyState, ErrorState, Field, PageHeader, Spinner } from '../components/ui'
+
+import { useEffect, useRef, useState } from 'react'
+import { FileSearch, GitMerge, Loader2, Pencil, Plus, Search, ShieldAlert, Trash2, X } from 'lucide-react'
+
+import { Button, Card, CardTitle, ErrorState, Field, PageHeader, Spinner } from '../components/ui'
+import { PageEmptyState } from '../components/PageEmptyState'
+import { FilterSelect } from '../components/FilterSelect'
 import { ConfirmDialog, Modal } from '../components/Modal'
 import { toast } from '../components/Toast'
 import {
@@ -13,19 +17,21 @@ import {
   useSourceEpisodes,
   useResolveConflict,
 } from '../hooks/queries'
-import { useT } from '../i18n'
+import { copy as t } from '../lib/copy'
 import { splitStamp } from '../lib/format'
+import { useSpacePreference } from '../store/preferences'
 import type { MemoryEpisode, MemoryFact } from '../types'
 
 export default function Facts() {
   const addFact = useAddFact()
   const editFact = useEditFact()
   const deleteFact = useDeleteFact()
-  const t = useT()
 
   const [q, setQ] = useState('')
-  const [showOld, setShowOld] = useState(true)
-  const [hideSensitive, setHideSensitive] = useState(false)
+  const searchInput = useRef<HTMLInputElement>(null)
+  const [status, setStatus] = useSpacePreference('facts', 'status')
+  const [category, setCategory] = useSpacePreference('facts', 'category')
+  const [hideSensitive, setHideSensitive] = useSpacePreference('facts', 'hideSensitive')
   const [limit, setLimit] = useState(40)
   const [editing, setEditing] = useState<MemoryFact | null>(null)
   const [sourceOf, setSourceOf] = useState<MemoryFact | null>(null)
@@ -34,87 +40,124 @@ export default function Facts() {
 
   useEffect(() => {
     setLimit(40)
-  }, [q, showOld, hideSensitive])
+  }, [q, status, category, hideSensitive])
 
-  const { data, isLoading, isError, error } = useMemories({
-    // Attributes only — session conclusions have their own page, and mixing them means the newer,
-    // bulkier family buries the older one in both directions.
+  const { data, isLoading, isFetching, isError, error } = useMemories({
+    // 只取属性类事实 —— 会话结论有自己的页面；混在一起的话，更新、更庞大的那类
+    // 会在分页和列表里把另一类完全淹没。
     kind: 'attributes',
     facts_limit: limit,
     episodes_limit: 0,
     q,
-    status: showOld ? undefined : 'live',
+    status: status === 'all' ? undefined : status,
+    category: category || undefined,
     include_sensitive: !hideSensitive,
-  })
+  }, { keepPreviousData: true })
   const facts = data?.facts ?? []
   const sourceQuery = useSourceEpisodes(!!sourceOf)
   const factsPage = data?.facts_page
   const hasMore = factsPage?.has_more ?? false
+  const categories = [...new Set([...(data?.fact_categories ?? []), ...(category ? [category] : [])])]
+  const hasFilters = Boolean(q.trim() || category || status !== 'live')
+  const clearFilters = () => {
+    setQ('')
+    setCategory('')
+    setStatus('live')
+    setLimit(40)
+    searchInput.current?.focus()
+  }
+  const resetControl = hasFilters ? (
+    <button type="button" onClick={clearFilters} aria-label={t.facts.resetFilters}
+      className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-control-line/60 bg-transparent px-3 py-2 text-sm font-semibold text-brand-cyan transition-colors hover:bg-action-hover hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan">
+      <X aria-hidden="true" className="h-4 w-4" /> {t.facts.resetFilters}
+    </button>
+  ) : null
 
   if (isLoading) return <Spinner label={t.facts.loading} />
   if (isError) return <ErrorState message={(error as Error).message} />
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title={t.facts.title}
-        subtitle={t.facts.subtitle}
-        actions={
-          <Button onClick={() => setAdding(true)}>
-            <Plus className="h-4 w-4" /> {t.facts.addManual}
-          </Button>
-        }
-      />
+    <div className="flex min-h-0 flex-1 flex-col gap-6">
+      <PageHeader title={t.facts.title} />
 
       <ConflictsCard />
 
-
-      <Card className="!p-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex flex-1 items-center gap-2 rounded-xl border border-line bg-white/[0.05] px-3">
-            <Search className="h-4 w-4 text-ghost" />
+      <div className="flex min-h-0 flex-1 flex-col gap-3">
+        <div className="grid items-center gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <div aria-busy={isFetching} className="flex h-14 min-w-0 items-center gap-2 rounded-2xl border border-line bg-ink-700 pl-4 pr-2">
+            {isFetching
+              ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-ghost motion-reduce:animate-none" />
+              : <Search className="h-4 w-4 shrink-0 text-ghost" />}
             <input
+              ref={searchInput}
               aria-label={t.facts.searchPlaceholder}
-              className="w-full bg-transparent py-2 text-sm outline-none placeholder:text-ghost/70"
+              className="h-full min-w-0 w-full bg-transparent py-3 text-base outline-none placeholder:text-ghost/70"
               placeholder={t.facts.searchPlaceholder}
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
+            {q.length > 0 && (
+              <button
+                type="button"
+                aria-label={t.facts.clearSearch}
+                title={t.facts.clearSearch}
+                onClick={() => { setQ(''); searchInput.current?.focus() }}
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-ghost transition hover:bg-selected hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan"
+              >
+                <X aria-hidden="true" className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
-          <label className="flex select-none items-center gap-2 px-1 text-sm text-ghost">
-            <input type="checkbox" checked={showOld} onChange={(e) => setShowOld(e.target.checked)} className="accent-brand-cyan" />
-            {t.facts.showOld}
-          </label>
-          <label className="flex select-none items-center gap-2 px-1 text-sm text-ghost">
-            <input type="checkbox" checked={hideSensitive} onChange={(e) => setHideSensitive(e.target.checked)} className="accent-brand-rose" />
-            {t.facts.hideSensitive}
-          </label>
+          <Button type="button" variant="ghost" onClick={() => setAdding(true)} className="justify-self-end">
+            <Plus aria-hidden="true" className="h-4 w-4" /> {t.facts.addManual}
+          </Button>
         </div>
-      </Card>
-
-      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 pt-1">
+          <p className="text-xs text-ghost" aria-live="polite">{t.facts.factCount(factsPage?.total ?? facts.length)}</p>
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-x-6 gap-y-3 pr-3">
+            <FilterSelect label={t.facts.categoryFilter} value={category} onChange={setCategory}
+              options={[{ value: '', label: t.facts.allCategories }, ...categories.map(item => ({ value: item, label: item }))]} />
+            <FilterSelect label={t.facts.statusFilter} value={status} onChange={(value) => setStatus(value as typeof status)}
+              options={[
+                { value: 'live', label: t.facts.currentOnly },
+                { value: 'superseded', label: t.facts.historyOnly },
+                { value: 'all', label: t.facts.allStatuses },
+              ]} />
+            <button
+              type="button"
+              role="switch"
+              aria-checked={hideSensitive}
+              aria-label={t.facts.hideSensitive}
+              onClick={() => setHideSensitive((value) => !value)}
+              className="inline-flex min-h-[38px] select-none items-center gap-2.5 rounded-full text-sm text-ghost focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan"
+            >
+              <span aria-hidden="true" className="switch-track">
+                <span className="switch-thumb" />
+              </span>
+              {t.facts.hideSensitive}
+            </button>
+          </div>
+        </div>
+      <div className="flex flex-1 flex-col">
         {facts.length ? (
           <>
           <ul className="divide-y divide-line">
             {facts.map((f) => {
               const { date, time } = splitStamp(f.valid_at)
               return (
-              <li key={f.id} className="group flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:gap-3">
-                <div className="flex shrink-0 items-center gap-2 sm:w-[148px]">
-                  <Badge tone={f.status === 'live' ? 'live' : 'old'}>{f.status === 'live' ? t.facts.statusLive : t.facts.statusOld}</Badge>
-                  <time className="shrink-0 tabular-nums leading-tight text-brand-cyan">
-                    <span className="block text-[11px]">{date}</span>
-                    {time && <span className="block text-[10px] text-brand-cyan/55">{time}</span>}
-                  </time>
-                </div>
+              <li key={f.id} className="group flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:gap-5 sm:px-5">
                 <div className="min-w-0 flex-1 break-words">
-                  <div className={f.status === 'live' ? 'text-sm text-slate-100' : 'text-sm text-ghost line-through'}>
+                  <div className={f.status === 'live' ? 'text-sm leading-relaxed text-slate-100' : 'text-sm leading-relaxed text-ghost line-through'}>
                     {f.display || f.text}
                   </div>
-                  <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-ghost">
-                    <span className="inline-flex min-w-0 max-w-full whitespace-normal break-all rounded bg-white/5 px-1.5 py-px font-mono">{f.predicate}</span>
+                  <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-ghost">
+                    <span className={`inline-flex items-center gap-1.5 ${f.status === 'live' ? 'font-medium text-brand-mint' : 'text-ghost'}`}>
+                      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
+                      {f.status === 'live' ? t.facts.statusLive : t.facts.statusOld}
+                    </span>
+                    <time className="tabular-nums">{date}{time && ` · ${time}`}</time>
                     {f.category && f.category !== '其他' && (
-                      <span className="rounded bg-brand-violet/15 px-1.5 py-px text-brand-violet">{f.category}</span>
+                      <span className="rounded bg-ghost/10 px-1.5 py-px text-ghost">{f.category}</span>
                     )}
                     {f.sensitive && (
                       <span className="inline-flex items-center gap-1 rounded bg-brand-rose/15 px-1.5 py-px text-brand-rose">
@@ -122,18 +165,18 @@ export default function Facts() {
                       </span>
                     )}
                     {f.source === 'user' && (
-                      <span className="inline-flex items-center gap-1 text-brand-amber">
-                        <Lock className="h-3 w-3" /> {t.common.mine}
+                      <span className="fact-blue-tag" title={t.profile.iconHints.user}>
+                        {t.profile.evidenceUser}
                       </span>
                     )}
                     {f.invalid_at && <span>{t.facts.invalidAt(f.invalid_at)}</span>}
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-1 sm:opacity-80 sm:transition sm:group-hover:opacity-100">
+                <div className="flex shrink-0 items-center justify-end gap-1">
                   {!!f.provenance?.length && (
                     <button
                       onClick={() => setSourceOf(f)}
-                      className="rounded-lg border border-line p-2 text-ghost transition hover:border-brand-violet/50 hover:text-brand-violet"
+                      className="grid h-8 w-8 place-items-center rounded-lg text-ghost transition hover:bg-selected hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan"
                       aria-label={t.facts.viewSource}
                       title={t.facts.viewSource}
                     >
@@ -142,7 +185,7 @@ export default function Facts() {
                   )}
                   <button
                     onClick={() => setEditing(f)}
-                    className="rounded-lg border border-line p-2 text-ghost transition hover:border-brand-cyan/50 hover:text-brand-cyan"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-ghost transition hover:bg-selected hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan"
                     aria-label={t.common.edit}
                     title={t.common.edit}
                   >
@@ -150,7 +193,7 @@ export default function Facts() {
                   </button>
                   <button
                     onClick={() => setConfirmFact(f)}
-                    className="rounded-lg border border-line p-2 text-ghost transition hover:border-brand-rose/50 hover:text-brand-rose"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-ghost transition hover:bg-selected hover:text-brand-rose focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan"
                     aria-label={t.common.delete}
                     title={t.common.delete}
                   >
@@ -162,7 +205,7 @@ export default function Facts() {
             })}
           </ul>
           {hasMore && (
-            <div className="mt-4 flex justify-center">
+            <div className="flex justify-center border-t border-line py-3">
               <Button variant="ghost" onClick={() => setLimit((n) => n + 40)}>
                 {t.facts.loadMore}
               </Button>
@@ -170,20 +213,15 @@ export default function Facts() {
           )}
           </>
         ) : (
-          <EmptyState title={t.facts.emptyTitle} hint={t.facts.emptyHint} />
+          <PageEmptyState title={t.facts.emptyTitle} hint={hasFilters ? t.facts.noResultsHint : t.facts.emptyHint} footer={resetControl} />
         )}
-      </Card>
+      </div>
+      </div>
 
-      {/* provenance: a fact you cannot trace is a fact you cannot trust */}
+      {/* 溯源（provenance）：无法追溯来源的事实就无从谈信任 */}
       <Modal open={!!sourceOf} title={t.facts.sourceTitle} onClose={() => setSourceOf(null)}>
         {sourceOf && (
           <div className="space-y-4">
-            <div className="rounded-xl border border-line bg-white/[0.035] p-3">
-              <p className="text-sm text-slate-100">{sourceOf.display || sourceOf.text}</p>
-              <p className="mt-1 text-xs text-ghost">
-                {sourceOf.source === 'user' ? t.facts.sourceUser : t.facts.sourceExtracted}
-              </p>
-            </div>
             {sourceQuery.isLoading ? (
               <Spinner label={t.facts.sourceLoading} />
             ) : (
@@ -194,14 +232,17 @@ export default function Facts() {
                 if (!eps.length) return <p className="text-sm text-ghost">{t.facts.sourceMissing}</p>
                 return (
                   <div className="space-y-3">
-                    <p className="text-xs text-ghost">{t.facts.sourceFrom(eps.length)}</p>
+                    <p className="text-sm text-ghost">{t.facts.sourceFrom(eps.length)}</p>
                     {eps.map((e: MemoryEpisode) => (
-                      <div key={e.id} className="rounded-xl border border-line bg-ink-900/50 p-3">
-                        <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] text-ghost">
-                          <span className="text-brand-cyan">{e.date}</span>
-                          <span className="rounded bg-white/5 px-1.5 py-px font-mono">{e.session}</span>
+                      <div key={e.id} className="rounded-[20px] border border-line bg-ink-900/50 p-4">
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-ghost">
+                          <span className="shrink-0 text-brand-cyan">{e.date}</span>
+                          <div className="ml-auto flex min-w-0 flex-wrap justify-end gap-2">
+                          <span aria-label={`${t.facts.sessionLabel}：${e.session}`} className="rounded-md bg-ink-700/60 px-2 py-0.5 font-mono text-xs">{e.session}</span>
+                          <span title={`${t.facts.relationLabel}：${sourceOf.predicate}`} aria-label={`${t.facts.relationLabel}：${sourceOf.predicate}`} className="rounded-md bg-ink-700/60 px-2 py-0.5 font-mono text-xs">{sourceOf.predicate}</span>
+                          </div>
                         </div>
-                        <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-300">
+                        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-100">
                           {e.content}
                         </p>
                       </div>
@@ -214,7 +255,7 @@ export default function Facts() {
         )}
       </Modal>
 
-      {/* edit */}
+      {/* 编辑 */}
       <FactModal
         open={!!editing}
         title={t.facts.editTitle}
@@ -236,7 +277,7 @@ export default function Facts() {
         }}
       />
 
-      {/* add */}
+      {/* 新增 */}
       <FactModal
         open={adding}
         title={t.facts.addTitle}
@@ -262,7 +303,7 @@ export default function Facts() {
         }}
       />
 
-      {/* delete */}
+      {/* 删除 */}
       <ConfirmDialog
         open={!!confirmFact}
         title={t.facts.deleteTitle}
@@ -298,7 +339,6 @@ export default function Facts() {
 function ConflictsCard() {
   const { data } = useConflicts()
   const resolve = useResolveConflict()
-  const t = useT()
   const items = data?.conflicts ?? []
   if (!items.length) return null
 
@@ -317,13 +357,13 @@ function ConflictsCard() {
       </CardTitle>
       <ul className="space-y-3">
         {items.map((c) => (
-          <li key={c.id} className="rounded-xl border border-line bg-white/[0.02] p-3">
+          <li key={c.id} className="rounded-xl border border-line bg-ink-700/40 p-3">
             <div className="grid gap-1.5 sm:grid-cols-2">
               <div className="rounded-lg bg-brand-mint/10 px-2.5 py-1.5 text-sm">
                 <span className="text-[10px] text-brand-mint">{t.facts.conflictNew}</span>
                 <div className="text-slate-100">{c.newer_text}</div>
               </div>
-              <div className="rounded-lg bg-white/5 px-2.5 py-1.5 text-sm">
+              <div className="rounded-lg bg-ink-700/60 px-2.5 py-1.5 text-sm">
                 <span className="text-[10px] text-ghost">{t.facts.conflictOld}</span>
                 <div className="text-ghost line-through">{c.older_text}</div>
               </div>
@@ -359,18 +399,17 @@ function FactModal({
   onClose: () => void
   onSubmit: (vals: { subject?: string; predicate?: string; object?: string; sensitive?: boolean; category?: string }) => void
 }) {
-  const t = useT()
-  const [subject, setSubject] = useState('user')
+  const [subject, setSubject] = useState('')
   const [predicate, setPredicate] = useState('')
   const [object, setObject] = useState('')
   const [sensitive, setSensitive] = useState(false)
 
-  // Sync inputs whenever the dialog opens with a (possibly new) fact.
+  // 每次弹窗带着（可能是新的）事实打开时，同步一次表单值。
   const [seen, setSeen] = useState<string | null>(null)
   const sig = open ? (initial?.id ?? 'new') : null
   if (sig !== seen) {
     setSeen(sig)
-    setSubject(initial?.subject ?? 'user')
+    setSubject(initial?.subject ?? '')
     setPredicate(initial?.predicate ?? '')
     setObject(initial?.object ?? '')
     setSensitive(initial?.sensitive ?? false)
@@ -382,32 +421,81 @@ function FactModal({
       onClose={onClose}
       title={title}
       footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
+        <div className="grid w-full gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+          <div className="space-y-1">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={sensitive}
+              aria-label={t.facts.markSensitive}
+              onClick={() => setSensitive((value) => !value)}
+              className="inline-flex min-h-[38px] select-none items-center gap-2.5 rounded-full text-sm text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan"
+            >
+              <span aria-hidden="true" className="switch-track">
+                <span className="switch-thumb" />
+              </span>
+              {t.facts.markSensitive}
+            </button>
+            <p className="text-xs text-ghost">{t.facts.modalNote}</p>
+          </div>
+          <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} className="h-9 px-4 py-2 text-sm">
             {t.common.cancel}
           </Button>
-          <Button loading={loading} disabled={!predicate.trim() || !object.trim()} onClick={() => onSubmit({ subject, predicate, object, sensitive })}>
+          <Button loading={loading} disabled={!predicate.trim() || !object.trim()} onClick={() => onSubmit({ subject, predicate, object, sensitive })} className="h-9 px-4 py-2 text-sm">
             {t.common.save}
           </Button>
-        </>
+          </div>
+        </div>
       }
     >
       <div className="space-y-4">
         <Field label={t.facts.subjectLabel}>
-          <input className="input" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="user" />
+          <FactTextInput originalValue={initial?.subject} value={subject} onChange={setSubject} />
         </Field>
         <Field label={t.facts.predicateLabel}>
-          <input className="input font-mono" value={predicate} onChange={(e) => setPredicate(e.target.value)} placeholder="works_at" />
+          <FactTextInput originalValue={initial?.predicate} value={predicate} onChange={setPredicate} mono />
         </Field>
         <Field label={t.facts.objectLabel}>
-          <input className="input" value={object} onChange={(e) => setObject(e.target.value)} placeholder={t.facts.objectPlaceholder} />
+          <FactTextInput originalValue={initial?.object} value={object} onChange={setObject} />
         </Field>
-        <label className="flex select-none items-center gap-2 text-sm text-slate-200">
-          <input type="checkbox" checked={sensitive} onChange={(e) => setSensitive(e.target.checked)} className="accent-brand-rose" />
-          <ShieldAlert className="h-4 w-4 text-brand-rose" /> {t.facts.markSensitive}
-        </label>
-        <p className="text-xs text-ghost">{t.facts.modalNote}</p>
       </div>
     </Modal>
+  )
+}
+
+function FactTextInput({
+  originalValue,
+  value,
+  onChange,
+  mono = false,
+}: {
+  originalValue?: string
+  value: string
+  onChange: (value: string) => void
+  mono?: boolean
+}) {
+  const ghost = useRef<HTMLDivElement>(null)
+
+  return (
+    <div className={`relative rounded-[13px] bg-ink-700 ${mono ? 'font-mono' : ''}`}>
+      {originalValue !== undefined && (
+        <div
+          ref={ghost}
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 select-none overflow-hidden whitespace-pre rounded-[13px] border border-transparent px-3.5 py-2.5 text-sm text-ghost opacity-50"
+        >
+          {originalValue}
+        </div>
+      )}
+      <input
+        className="input relative bg-transparent"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onScroll={(event) => {
+          if (ghost.current) ghost.current.scrollLeft = event.currentTarget.scrollLeft
+        }}
+      />
+    </div>
   )
 }

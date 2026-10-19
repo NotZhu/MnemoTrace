@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from engram import Memory
-from engram.store import StoreFormatError, load_memory
+from mnemotrace import Memory
+from mnemotrace.store import StoreFormatError, load_memory
 
 
 def test_torn_trailing_jsonl_record_beyond_manifest_is_ignored(tmp_path):

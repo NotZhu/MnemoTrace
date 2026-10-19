@@ -5,18 +5,17 @@ import { Button, Card, CardTitle, ErrorState, PageHeader, Spinner } from '../com
 import { TagInput } from '../components/TagInput'
 import { toast } from '../components/Toast'
 import { useFocus, useSetFocus } from '../hooks/queries'
-import { useT } from '../i18n'
+import { copy as t } from '../lib/copy'
 
 export default function FocusPage() {
   const { data, isLoading, isError, error } = useFocus()
   const save = useSetFocus()
-  const t = useT()
 
   const [track, setTrack] = useState<string[]>([])
   const [mute, setMute] = useState<string[]>([])
   const [dirty, setDirty] = useState(false)
 
-  // Sync from server unless the user has unsaved edits.
+  // 从服务端同步，除非用户有未保存的修改。
   useEffect(() => {
     if (data && !dirty) {
       setTrack(data.track)
@@ -49,7 +48,6 @@ export default function FocusPage() {
     <div className="space-y-6">
       <PageHeader
         title={t.focus.title}
-        subtitle={t.focus.subtitle}
         actions={
           <Button onClick={onSave} loading={save.isPending} disabled={!dirty}>
             <Save className="h-4 w-4" /> {t.common.save}
@@ -57,9 +55,9 @@ export default function FocusPage() {
         }
       />
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6">
         <Card>
-          <CardTitle hint={t.focus.trackHint}>
+          <CardTitle>
             <span className="inline-flex items-center gap-2">
               <Star className="h-4 w-4 text-brand-amber" /> {t.focus.trackTitle}
             </span>
@@ -73,7 +71,7 @@ export default function FocusPage() {
         </Card>
 
         <Card>
-          <CardTitle hint={t.focus.muteHint}>
+          <CardTitle>
             <span className="inline-flex items-center gap-2">
               <BellOff className="h-4 w-4 text-brand-rose" /> {t.focus.muteTitle}
             </span>

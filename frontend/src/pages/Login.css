@@ -1,0 +1,710 @@
+/* 与控制台共用蓝灰色板；登录页保留自己的布局与插画样式。 */
+.login-page {
+  --login-background: rgb(var(--memory-background));
+  --login-surface: rgb(var(--memory-surface));
+  --login-field: rgb(var(--memory-field));
+  --login-border: rgb(var(--memory-border));
+  --login-text: rgb(var(--memory-text));
+  --login-muted: rgb(var(--memory-muted));
+  --login-accent: rgb(var(--memory-button));
+  --login-accent-text: rgb(var(--memory-accent));
+  --login-accent-soft: rgb(var(--memory-selected));
+  --login-particle-color: #a4bee0;
+  --login-particle-glow: rgb(156 188 233 / 55%);
+
+  isolation: isolate;
+  background: var(--login-background);
+  color: var(--login-text);
+  padding-top: 80px;
+  padding-right: 30px;
+  padding-bottom: 54px;
+  padding-left: 30px;
+}
+
+.login-page .login-particles {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.login-page ::selection {
+  background: rgb(56 72 96 / 30%);
+  color: var(--login-text);
+}
+
+.login-page .text-ghost {
+  color: var(--login-muted);
+}
+
+.login-page .login-shell {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.95fr);
+  align-items: center;
+  gap: 110px;
+  max-width: 1080px;
+}
+
+.login-page .login-overview {
+  position: relative;
+  isolation: isolate;
+  min-width: 0;
+}
+
+.login-page .login-memory-backdrop {
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  width: calc(100% + 140px);
+  height: 560px;
+  left: -70px;
+  top: 50%;
+  transform: translateY(-50%);
+  /* 柔光插画已经为文字留出暗区，外围渐隐融入页面背景。 */
+  mask-image: radial-gradient(
+    ellipse 73% 73% at 50% 50%,
+    #000 80%,
+    transparent 100%
+  );
+}
+
+.login-page .login-memory-graph {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.login-page .login-overview > .login-brand,
+.login-page .login-overview > .login-title,
+.login-page .login-overview > .login-intro {
+  pointer-events: none;
+}
+
+.login-page .login-graph-drift {
+  animation: login-graph-drift 22s ease-in-out infinite alternate;
+}
+
+.login-page .login-graph-surface,
+.login-page .login-graph-base-edges,
+.login-page .login-graph-base-dot {
+  pointer-events: none;
+}
+
+.login-page .login-graph-hover-edges {
+  pointer-events: none;
+  stroke: #b4d0f5;
+  stroke-width: 3.1;
+  stroke-linecap: round;
+  opacity: 0.7;
+  filter: drop-shadow(0 0 2.5px rgb(175 201 235 / 35%));
+}
+
+.login-page .login-graph-node[data-linked] .login-graph-dot {
+  opacity: 0.38;
+}
+
+.login-page .login-graph-base-edges path {
+  stroke-width: 1.15px;
+  vector-effect: non-scaling-stroke;
+  stroke-linecap: round;
+}
+
+.login-page .login-graph-base-dot {
+  filter: drop-shadow(0 0 1.2px rgb(165 199 239 / 14%));
+}
+
+.login-page .login-graph-ambient-current {
+  stroke: #f2f9ff;
+  stroke-width: 4.4;
+  stroke-linecap: round;
+  stroke-dasharray: 0.3 1;
+  animation: login-graph-ambient-current linear both;
+  opacity: 0;
+  filter: drop-shadow(0 0 8px rgb(200 225 255 / 80%));
+}
+
+.login-page .login-graph-ambient-node {
+  fill: #eef7ff;
+  opacity: 0;
+  animation: login-graph-ambient-node ease-out both;
+  filter: drop-shadow(0 0 8px rgb(200 225 255 / 80%));
+}
+
+.login-page .login-memory-backdrop[data-active] .login-graph-ambient {
+  visibility: hidden;
+}
+
+.login-page .login-graph-node {
+  cursor: grab;
+  touch-action: none;
+}
+
+.login-page .login-memory-backdrop[data-dragging] .login-memory-graph,
+.login-page .login-memory-backdrop[data-dragging] .login-graph-node {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.login-page .login-graph-node:focus,
+.login-page .login-graph-node:focus-visible {
+  outline: none;
+}
+
+.login-page .login-graph-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.login-page .login-graph-node:hover .login-graph-dot,
+.login-page .login-graph-node:focus-visible .login-graph-dot {
+  fill: #ffffff;
+  opacity: 0.85;
+}
+
+.login-page .login-graph-dot {
+  fill: #d3e4fa;
+  opacity: 0;
+  transition: opacity 200ms ease;
+  filter: drop-shadow(0 0 4px rgb(175 201 235 / 40%));
+}
+
+.login-page .login-graph-current {
+  stroke: #ffffff;
+  stroke-width: 4.4;
+  stroke-linecap: round;
+  stroke-dasharray: 0.22 1;
+  opacity: 0;
+  animation: login-graph-current 500ms linear both;
+  filter: drop-shadow(0 0 8px rgb(200 225 255 / 90%));
+}
+
+.login-page .login-graph-awaken {
+  fill: #eef7ff;
+  opacity: 0;
+  animation: login-graph-awaken 1125ms ease-out both;
+  filter: drop-shadow(0 0 8px rgb(200 225 255 / 85%));
+}
+
+.login-page .login-graph-origin-ring {
+  stroke: #eaf4ff;
+  stroke-width: 2.8;
+  opacity: 0;
+  pointer-events: none;
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: login-graph-origin-ring 800ms ease-out both;
+  filter: drop-shadow(0 0 5px rgb(200 225 255 / 50%));
+}
+
+.login-page .login-memory-backdrop[data-paused] * {
+  animation-play-state: paused;
+}
+
+@keyframes login-graph-drift {
+  from {
+    transform: translate(-2px, 2px);
+  }
+  to {
+    transform: translate(3px, -3px);
+  }
+}
+
+@keyframes login-graph-ambient-current {
+  0% {
+    stroke-dashoffset: 0.3;
+    opacity: 0;
+  }
+  12% {
+    opacity: var(--signal-strength);
+  }
+  80% {
+    opacity: var(--signal-strength);
+  }
+  100% {
+    stroke-dashoffset: -0.7;
+    opacity: 0;
+  }
+}
+
+@keyframes login-graph-ambient-node {
+  0% {
+    opacity: 0;
+  }
+  12% {
+    opacity: var(--signal-strength);
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes login-graph-current {
+  0% {
+    stroke-dashoffset: 0.22;
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 0.85;
+  }
+  100% {
+    stroke-dashoffset: -0.78;
+    opacity: 0;
+  }
+}
+
+@keyframes login-graph-origin-ring {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(2.1);
+    opacity: 0;
+  }
+}
+
+@keyframes login-graph-awaken {
+  0% {
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.login-page .login-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 32px;
+}
+
+.login-page .login-memory-icon {
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  flex-shrink: 0;
+  border-radius: 15px;
+  border: 1px solid rgb(var(--memory-control-border));
+  background: var(--login-field);
+  color: var(--login-accent-text);
+}
+
+.login-page .login-memory-icon svg {
+  width: 27px;
+  height: 27px;
+  stroke-width: 1.5;
+}
+
+/* 脑形图叠在文字下方，用柔和暗衬底保证左侧文案可读。 */
+.login-page .login-brand-name,
+.login-page .login-brand-subtitle,
+.login-page .login-title,
+.login-page .login-intro {
+  text-shadow:
+    0 1px 14px rgb(10 14 20 / 90%),
+    0 0 5px rgb(10 14 20 / 75%);
+}
+
+.login-page .login-brand-name {
+  color: var(--login-accent-text);
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.login-page .login-brand-subtitle {
+  color: var(--login-muted);
+  font-size: 13px;
+  letter-spacing: 1px;
+  line-height: 1.5;
+}
+
+.login-page .login-card {
+  min-width: 0;
+  margin: 0;
+  background: rgb(var(--memory-surface) / 72%);
+  border: 1px solid rgb(var(--memory-accent) / 25%);
+  border-radius: 20px;
+  padding: 30px;
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  backdrop-filter: blur(16px) saturate(120%);
+  box-shadow:
+    var(--memory-login-shadow),
+    inset 0 1px 0 rgb(var(--memory-text) / 4%);
+}
+
+.login-page .login-title {
+  margin: 0 0 20px;
+  font-size: 42px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: -1px;
+}
+
+.login-page .login-intro {
+  max-width: 400px;
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.9;
+}
+
+.login-page .login-notice {
+  margin: 0 0 20px;
+  font-size: 16px;
+  line-height: 1.8;
+}
+
+.login-page .login-key-label {
+  margin: 0;
+}
+
+.login-page .login-key-field {
+  display: flex;
+  align-items: center;
+  margin-top: 0;
+  min-height: 52px;
+  gap: 9px;
+  padding: 0 12px;
+  border: 1px solid var(--login-border);
+  border-radius: 13px;
+  background: var(--login-field);
+  border-color: var(--login-border);
+  overflow: hidden;
+  transition:
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.login-page .login-key-field:focus-within {
+  border-color: rgb(var(--memory-focus));
+  box-shadow: 0 0 0 3px rgb(var(--memory-accent) / 20%);
+}
+
+.login-page .login-key-field:focus-within > svg {
+  color: rgb(var(--memory-focus-icon));
+}
+
+.login-page .login-key-field > svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.login-page .login-key-field input {
+  flex: 1;
+  min-width: 0;
+  padding: 14px 0;
+  font-size: 15px;
+}
+
+/* Chrome 自动填充会在 input 上刷一层不透明背景；用同色 inset 阴影覆盖并保持文字颜色。 */
+.login-page .login-key-field input:-webkit-autofill,
+.login-page .login-key-field input:-webkit-autofill:hover,
+.login-page .login-key-field input:-webkit-autofill:focus,
+.login-page .login-key-field input:-webkit-autofill:active {
+  -webkit-text-fill-color: var(--login-text);
+  caret-color: var(--login-text);
+  -webkit-box-shadow: 0 0 0 1000px var(--login-field) inset !important;
+  box-shadow: 0 0 0 1000px var(--login-field) inset !important;
+  transition: background-color 9999s ease-out 0s;
+}
+
+.login-page .login-key-field input::selection {
+  background: rgb(var(--memory-accent));
+  color: rgb(var(--memory-background));
+}
+
+.login-page .login-clear-key {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--login-muted);
+  transition:
+    background 150ms,
+    color 150ms;
+}
+
+.login-page .login-clear-key:hover {
+  background: rgb(var(--memory-border));
+  color: var(--login-text);
+}
+
+.login-page .login-clear-key svg {
+  width: 16px;
+  height: 16px;
+}
+
+@media (pointer: coarse) {
+  .login-page .login-clear-key {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+.login-page .login-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.login-page .login-submit {
+  margin-top: 24px;
+}
+
+.login-page .btn-ghost,
+.login-page .btn-primary {
+  border: 0;
+  min-height: 52px;
+  border-radius: 13px;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.login-page input::placeholder {
+  color: var(--login-muted);
+  opacity: 0.7;
+}
+
+.login-page .btn-ghost {
+  background: rgb(var(--memory-secondary));
+  border-color: rgb(var(--memory-control-border));
+  color: var(--login-text);
+  font-weight: 500;
+  min-height: 46px;
+  gap: 8px;
+  padding: 10px 8px;
+  font-size: 14px;
+}
+
+.login-page .login-actions svg,
+.login-page .login-submit svg {
+  width: 18px;
+  height: 18px;
+}
+
+.login-page .btn-ghost:hover:not(:disabled) {
+  background: rgb(var(--memory-secondary-hover));
+  border-color: rgb(var(--memory-control-hover-border));
+}
+
+.login-page .login-actions .btn-ghost:disabled {
+  background: rgb(var(--memory-disabled-background));
+  border-color: rgb(var(--memory-disabled-border));
+  color: rgb(var(--memory-disabled-text));
+  opacity: 1;
+}
+
+.login-page .btn-primary {
+  background: var(--login-accent);
+  color: var(--login-text);
+  box-shadow: none;
+  gap: 12px;
+  padding: 12px;
+}
+
+.login-page .btn-primary:hover:not(:disabled) {
+  background: rgb(var(--memory-button-hover));
+  filter: none;
+}
+
+.login-page button:focus-visible {
+  outline: 2px solid var(--login-accent-text);
+  outline-offset: 3px;
+}
+
+@media (max-width: 740px) {
+  .login-page {
+    padding: 80px 20px 42px;
+  }
+
+  .login-page .login-shell {
+    max-width: 460px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 26px;
+  }
+
+  .login-page .login-brand {
+    margin-bottom: 22px;
+  }
+
+  .login-page .login-memory-backdrop {
+    left: 0;
+    width: 100%;
+    height: calc(100% + 44px);
+    max-height: 340px;
+    opacity: 0.65;
+  }
+
+  .login-page .login-memory-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 13px;
+  }
+
+  .login-page .login-memory-icon svg {
+    width: 24px;
+    height: 24px;
+  }
+
+  .login-page .login-brand-name {
+    font-size: 20px;
+  }
+
+  .login-page .login-title {
+    margin-bottom: 14px;
+    font-size: 32px;
+  }
+
+  .login-page .login-intro {
+    max-width: none;
+    font-size: 15px;
+    line-height: 1.75;
+  }
+}
+
+@media (max-width: 480px) {
+  .login-page {
+    padding-right: 16px;
+    padding-bottom: 38px;
+    padding-left: 16px;
+  }
+
+  .login-page .login-card {
+    padding: 22px 20px;
+  }
+
+  .login-page .login-title {
+    font-size: 30px;
+  }
+
+  .login-page .login-key-field input {
+    font-size: 16px;
+  }
+
+  .login-page .btn-ghost {
+    gap: 6px;
+  }
+}
+
+@media (max-width: 380px) {
+  .login-page .login-card {
+    padding: 22px 16px;
+  }
+
+  .login-page .login-actions {
+    gap: 8px;
+  }
+
+  .login-page .btn-ghost {
+    font-size: 13px;
+    padding: 10px 6px;
+  }
+
+  .login-page .btn-ghost svg {
+    width: 17px;
+    height: 17px;
+  }
+}
+
+[data-theme="light"] .login-page {
+  --login-particle-color: #6d87ab;
+  --login-particle-glow: rgb(96 123 161 / 30%);
+}
+
+[data-theme="light"] .login-page .login-brand-name,
+[data-theme="light"] .login-page .login-brand-subtitle,
+[data-theme="light"] .login-page .login-title,
+[data-theme="light"] .login-page .login-intro {
+  text-shadow:
+    0 1px 14px rgb(var(--memory-background) / 90%),
+    0 0 5px rgb(var(--memory-background) / 75%);
+}
+
+[data-theme="light"] .login-page .login-memory-graph {
+  /* 淡化文字背后的整片脑图，底色、轮廓、点线一起平滑融入浅色背景。 */
+  mask-image: radial-gradient(
+    ellipse 64% 29% at 28% 59%,
+    rgb(0 0 0 / 30%) 0%,
+    rgb(0 0 0 / 40%) 36%,
+    rgb(0 0 0 / 78%) 70%,
+    #000 100%
+  );
+}
+
+[data-theme="light"] .login-page .login-graph-surface > use {
+  stroke: rgb(var(--memory-accent) / 60%);
+}
+
+[data-theme="light"] .login-page .login-graph-base-edges path {
+  stroke: rgb(var(--memory-accent) / 55%);
+}
+
+[data-theme="light"] .login-page .login-graph-base-dot {
+  fill: rgb(var(--memory-accent) / 75%);
+}
+
+[data-theme="light"] .login-page .login-graph-hover-edges,
+[data-theme="light"] .login-page .login-graph-current,
+[data-theme="light"] .login-page .login-graph-ambient-current,
+[data-theme="light"] .login-page .login-graph-origin-ring {
+  stroke: rgb(var(--memory-focus));
+  filter: drop-shadow(0 0 4px rgb(var(--memory-focus) / 35%));
+}
+
+[data-theme="light"] .login-page .login-graph-dot,
+[data-theme="light"] .login-page .login-graph-awaken,
+[data-theme="light"] .login-page .login-graph-ambient-node {
+  fill: rgb(var(--memory-focus));
+  filter: drop-shadow(0 0 4px rgb(var(--memory-focus) / 35%));
+}
+
+[data-theme="light"] .login-page input::placeholder {
+  opacity: 0.85;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-page .login-graph-drift,
+  .login-page .login-graph-dot,
+  .login-page .login-graph-current,
+  .login-page .login-graph-awaken {
+    animation: none;
+  }
+
+  .login-page .login-graph-origin-ring {
+    display: none;
+  }
+
+  .login-page .login-graph-current {
+    stroke-dasharray: none;
+    opacity: 0.5;
+  }
+
+  .login-page .login-graph-awaken {
+    opacity: 0.8;
+  }
+
+  .login-page .login-graph-ambient {
+    display: none;
+  }
+}

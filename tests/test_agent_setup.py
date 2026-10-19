@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from engram.agent_setup import (
+from mnemotrace.agent_setup import (
     POLICY_END_MARKER,
     POLICY_START_MARKER,
     agents_policy_block,
@@ -27,10 +27,10 @@ from engram.agent_setup import (
 
 def test_mcp_args_remote_and_local():
     assert mcp_args(api_url="http://localhost:8000", api_key="me", namespace=None) == [
-        "-m", "engram.mcp", "--api-url", "http://localhost:8000", "--api-key", "me",
+        "-m", "mnemotrace.mcp", "--api-url", "http://localhost:8000", "--api-key", "me",
     ]
     assert mcp_args(api_url=None, api_key=None, namespace="work") == [
-        "-m", "engram.mcp", "--namespace", "work",
+        "-m", "mnemotrace.mcp", "--namespace", "work",
     ]
 
 
@@ -47,20 +47,20 @@ def test_render_codex_setup_contains_lifecycle_and_config():
         api_key="me",
         namespace=None,
         session_id="codex:repo:thread",
-        python_cmd="/opt/engram/bin/python",
+        python_cmd="/opt/mnemotrace/bin/python",
     )
 
-    assert "codex mcp add engram -- /opt/engram/bin/python" in out
-    assert "[mcp_servers.engram]" in out
-    assert 'command = "/opt/engram/bin/python"' in out
+    assert "codex mcp add mnemotrace -- /opt/mnemotrace/bin/python" in out
+    assert "[mcp_servers.mnemotrace]" in out
+    assert 'command = "/opt/mnemotrace/bin/python"' in out
     assert "--api-url" in out and "--api-key" in out
-    assert "engram_recall" in out
-    assert "engram_remember" in out
-    assert "engram_close_session" in out
-    assert "engram_update_fact" in out
-    assert "engram_delete_fact" in out
-    assert "engram_export" in out
-    assert "engram_set_focus" in out
+    assert "mnemotrace_recall" in out
+    assert "mnemotrace_remember" in out
+    assert "mnemotrace_close_session" in out
+    assert "mnemotrace_update_fact" in out
+    assert "mnemotrace_delete_fact" in out
+    assert "mnemotrace_export" in out
+    assert "mnemotrace_set_focus" in out
     assert "codex:<project>:<thread>" in out
 
 
@@ -73,7 +73,7 @@ def test_render_local_claude_setup_uses_namespace_not_api_key():
         session_id="claude-code:repo:thread",
     )
 
-    assert "claude mcp add-json engram" in out
+    assert "claude mcp add-json mnemotrace" in out
     assert "--namespace" in out
     assert "local-me" in out
     assert "--api-key" not in out
@@ -85,19 +85,19 @@ def test_install_mcp_json_config_creates_file(tmp_path):
 
     result = install_mcp_json_config(
         config_path=str(config),
-        api_url="http://engram.test",
+        api_url="http://mnemotrace.test",
         api_key="sk-test",
         namespace=None,
-        python_cmd="/opt/engram/bin/python",
+        python_cmd="/opt/mnemotrace/bin/python",
     )
 
     assert result["changed"] is True
     assert result["backup"] is None
     data = json.loads(config.read_text())
-    assert data["mcpServers"]["engram"] == {
+    assert data["mcpServers"]["mnemotrace"] == {
         "type": "stdio",
-        "command": "/opt/engram/bin/python",
-        "args": ["-m", "engram.mcp", "--api-url", "http://engram.test", "--api-key", "sk-test"],
+        "command": "/opt/mnemotrace/bin/python",
+        "args": ["-m", "mnemotrace.mcp", "--api-url", "http://mnemotrace.test", "--api-key", "sk-test"],
     }
 
 
@@ -106,7 +106,7 @@ def test_install_mcp_json_config_preserves_other_servers_and_backs_up(tmp_path):
     config.write_text(json.dumps({
         "mcpServers": {
             "other": {"command": "other", "args": []},
-            "engram": {"command": "old", "args": ["old"]},
+            "mnemotrace": {"command": "old", "args": ["old"]},
         },
         "notes": {"keep": True},
     }))
@@ -116,7 +116,7 @@ def test_install_mcp_json_config_preserves_other_servers_and_backs_up(tmp_path):
         api_url=None,
         api_key=None,
         namespace="local-me",
-        python_cmd="/opt/engram/bin/python",
+        python_cmd="/opt/mnemotrace/bin/python",
     )
 
     assert result["changed"] is True
@@ -124,7 +124,7 @@ def test_install_mcp_json_config_preserves_other_servers_and_backs_up(tmp_path):
     data = json.loads(config.read_text())
     assert data["notes"] == {"keep": True}
     assert data["mcpServers"]["other"] == {"command": "other", "args": []}
-    assert data["mcpServers"]["engram"]["args"] == ["-m", "engram.mcp", "--namespace", "local-me"]
+    assert data["mcpServers"]["mnemotrace"]["args"] == ["-m", "mnemotrace.mcp", "--namespace", "local-me"]
 
 
 def test_install_mcp_json_config_dry_run_does_not_write(tmp_path):
@@ -133,7 +133,7 @@ def test_install_mcp_json_config_dry_run_does_not_write(tmp_path):
 
     result = install_mcp_json_config(
         config_path=str(config),
-        api_url="http://engram.test",
+        api_url="http://mnemotrace.test",
         api_key="me",
         namespace=None,
         python_cmd="python",
@@ -165,7 +165,7 @@ def test_install_agents_policy_replaces_only_managed_block_and_backs_up(tmp_path
     agents.write_text(
         "# Existing Rules\n\n"
         "Keep this project rule.\n\n"
-        f"{POLICY_START_MARKER}\nold Engram instructions\n{POLICY_END_MARKER}\n\n"
+        f"{POLICY_START_MARKER}\nold MnemoTrace instructions\n{POLICY_END_MARKER}\n\n"
         "Keep this footer.\n"
     )
 
@@ -177,12 +177,12 @@ def test_install_agents_policy_replaces_only_managed_block_and_backs_up(tmp_path
     assert result["changed"] is True
     assert result["backup"] is not None
     backup = (tmp_path / result["backup"]).read_text()
-    assert "old Engram instructions" in backup
+    assert "old MnemoTrace instructions" in backup
     text = agents.read_text()
     assert "# Existing Rules" in text
     assert "Keep this project rule." in text
     assert "Keep this footer." in text
-    assert "old Engram instructions" not in text
+    assert "old MnemoTrace instructions" not in text
     assert "claude-code:repo:new-thread" in text
     assert text.count(POLICY_START_MARKER) == 1
 
@@ -227,11 +227,11 @@ def test_uninstall_agents_policy_removes_only_managed_block_and_backs_up(tmp_pat
     assert "Keep this footer." in text
 
 
-def test_uninstall_mcp_json_config_removes_only_engram_server(tmp_path):
+def test_uninstall_mcp_json_config_removes_only_mnemotrace_server(tmp_path):
     config = tmp_path / ".mcp.json"
     config.write_text(json.dumps({
         "mcpServers": {
-            "engram": {"command": "python", "args": ["-m", "engram.mcp"]},
+            "mnemotrace": {"command": "python", "args": ["-m", "mnemotrace.mcp"]},
             "other": {"command": "other", "args": []},
         }
     }))
@@ -241,20 +241,20 @@ def test_uninstall_mcp_json_config_removes_only_engram_server(tmp_path):
     assert result["changed"] is True
     assert result["backup"] is not None
     data = json.loads(config.read_text())
-    assert "engram" not in data["mcpServers"]
+    assert "mnemotrace" not in data["mcpServers"]
     assert data["mcpServers"]["other"] == {"command": "other", "args": []}
 
 
 def test_render_openai_setup_contains_memory_extension_and_close_call():
     out = render_markdown(
         "openai",
-        api_url="http://engram.test",
+        api_url="http://mnemotrace.test",
         api_key="sk-test",
         namespace=None,
         session_id="app:product:conversation",
     )
 
-    assert "OpenAI(base_url='http://engram.test/v1'" in out
+    assert "OpenAI(base_url='http://mnemotrace.test/v1'" in out
     assert "'session_id': session_id" in out
     assert "'scope': 'auto'" in out
     assert "/v1/sessions/close" in out
@@ -266,27 +266,27 @@ def test_install_codex_config_creates_file(tmp_path):
 
     result = install_codex_config(
         config_path=str(config),
-        api_url="http://engram.test",
+        api_url="http://mnemotrace.test",
         api_key="sk-test",
         namespace=None,
-        python_cmd="/opt/engram/bin/python",
+        python_cmd="/opt/mnemotrace/bin/python",
     )
 
     assert result["changed"] is True
     assert result["backup"] is None
     text = config.read_text()
-    assert "[mcp_servers.engram]" in text
-    assert 'command = "/opt/engram/bin/python"' in text
-    assert '"--api-url", "http://engram.test", "--api-key", "sk-test"' in text
+    assert "[mcp_servers.mnemotrace]" in text
+    assert 'command = "/opt/mnemotrace/bin/python"' in text
+    assert '"--api-url", "http://mnemotrace.test", "--api-key", "sk-test"' in text
 
 
-def test_install_codex_config_replaces_engram_table_and_backs_up(tmp_path):
+def test_install_codex_config_replaces_mnemotrace_table_and_backs_up(tmp_path):
     config = tmp_path / "config.toml"
     config.write_text(
         'model = "gpt-5"\n\n'
         "[mcp_servers.other]\n"
         'command = "other"\n\n'
-        "[mcp_servers.engram]\n"
+        "[mcp_servers.mnemotrace]\n"
         'command = "old-python"\n'
         'args = ["old"]\n\n'
         "[profiles.default]\n"
@@ -298,7 +298,7 @@ def test_install_codex_config_replaces_engram_table_and_backs_up(tmp_path):
         api_url=None,
         api_key=None,
         namespace="local-me",
-        python_cmd="/opt/engram/bin/python",
+        python_cmd="/opt/mnemotrace/bin/python",
     )
 
     assert result["changed"] is True
@@ -318,7 +318,7 @@ def test_install_codex_config_dry_run_does_not_write(tmp_path):
 
     result = install_codex_config(
         config_path=str(config),
-        api_url="http://engram.test",
+        api_url="http://mnemotrace.test",
         api_key="me",
         namespace=None,
         python_cmd="python",
@@ -331,30 +331,30 @@ def test_install_codex_config_dry_run_does_not_write(tmp_path):
     assert config.read_text() == 'model = "gpt-5"\n'
     report = render_codex_config_result(result, python_cmd="python")
     assert "Would install" in report
-    assert "[mcp_servers.engram]" in report
+    assert "[mcp_servers.mnemotrace]" in report
 
 
 def test_render_codex_config_result_verify_command_matches_remote_mode(tmp_path):
     config = tmp_path / "config.toml"
     result = install_codex_config(
         config_path=str(config),
-        api_url="http://engram.test",
+        api_url="http://mnemotrace.test",
         api_key="sk-test",
         namespace=None,
-        python_cmd="/opt/engram/bin/python",
+        python_cmd="/opt/mnemotrace/bin/python",
         dry_run=True,
     )
 
     report = render_codex_config_result(
         result,
-        python_cmd="/opt/engram/bin/python",
-        api_url="http://engram.test",
+        python_cmd="/opt/mnemotrace/bin/python",
+        api_url="http://mnemotrace.test",
         api_key="sk-test",
     )
 
     assert (
-        "engram-agent-doctor --client codex --python /opt/engram/bin/python "
-        "--api-url http://engram.test --api-key sk-test"
+        "mnemotrace-agent-doctor --client codex --python /opt/mnemotrace/bin/python "
+        "--api-url http://mnemotrace.test --api-key sk-test"
     ) in report
 
 
@@ -365,19 +365,19 @@ def test_render_codex_config_result_verify_command_matches_local_namespace(tmp_p
         api_url=None,
         api_key=None,
         namespace="local-me",
-        python_cmd="/opt/engram/bin/python",
+        python_cmd="/opt/mnemotrace/bin/python",
         dry_run=True,
     )
 
     report = render_codex_config_result(
         result,
-        python_cmd="/opt/engram/bin/python",
+        python_cmd="/opt/mnemotrace/bin/python",
         api_url=None,
         api_key="local-me",
     )
 
     assert (
-        "engram-agent-doctor --client codex --python /opt/engram/bin/python "
+        "mnemotrace-agent-doctor --client codex --python /opt/mnemotrace/bin/python "
         "--api-key local-me"
     ) in report
     assert '"--namespace", "local-me"' in report
@@ -387,7 +387,7 @@ def test_render_codex_config_result_includes_doctor_report(tmp_path):
     config = tmp_path / "config.toml"
     result = install_codex_config(
         config_path=str(config),
-        api_url="http://engram.test",
+        api_url="http://mnemotrace.test",
         api_key="me",
         namespace=None,
         python_cmd="python",
@@ -422,7 +422,7 @@ def test_main_install_codex_with_doctor_runs_doctor(tmp_path, monkeypatch, capsy
             "checks": [{"name": "MCP stdio server", "status": "ok", "detail": "ready"}],
         }
 
-    monkeypatch.setattr("engram.agent_setup.run_codex_doctor", fake_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_codex_doctor", fake_doctor)
 
     main([
         "--install-codex",
@@ -430,15 +430,15 @@ def test_main_install_codex_with_doctor_runs_doctor(tmp_path, monkeypatch, capsy
         "--codex-config",
         str(config),
         "--python",
-        "/opt/engram/bin/python",
+        "/opt/mnemotrace/bin/python",
         "--api-url",
-        "http://engram.test",
+        "http://mnemotrace.test",
         "--api-key",
         "me",
     ])
 
-    assert calls[0]["python_cmd"] == "/opt/engram/bin/python"
-    assert calls[0]["api_url"] == "http://engram.test"
+    assert calls[0]["python_cmd"] == "/opt/mnemotrace/bin/python"
+    assert calls[0]["api_url"] == "http://mnemotrace.test"
     assert calls[0]["api_key"] == "me"
     assert calls[0]["codex_config"] == str(config)
     out = capsys.readouterr().out
@@ -453,7 +453,7 @@ def test_main_install_codex_dry_run_skips_doctor(tmp_path, monkeypatch, capsys):
     def fake_doctor(**kwargs):
         raise AssertionError(kwargs)
 
-    monkeypatch.setattr("engram.agent_setup.run_codex_doctor", fake_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_codex_doctor", fake_doctor)
 
     main([
         "--install-codex",
@@ -481,7 +481,7 @@ def test_main_install_codex_with_failed_doctor_exits_nonzero(tmp_path, monkeypat
             "checks": [{"name": "MCP stdio server", "status": "fail", "detail": "boom"}],
         }
 
-    monkeypatch.setattr("engram.agent_setup.run_codex_doctor", fake_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_codex_doctor", fake_doctor)
 
     with pytest.raises(SystemExit) as exc:
         main([
@@ -511,7 +511,7 @@ def test_main_install_mcp_json_with_doctor_runs_doctor(tmp_path, monkeypatch, ca
             "checks": [{"name": "MCP stdio server", "status": "ok", "detail": "ready"}],
         }
 
-    monkeypatch.setattr("engram.agent_setup.run_mcp_doctor", fake_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_mcp_doctor", fake_doctor)
 
     main([
         "--install-mcp-json",
@@ -521,16 +521,16 @@ def test_main_install_mcp_json_with_doctor_runs_doctor(tmp_path, monkeypatch, ca
         "--mcp-json",
         str(config),
         "--python",
-        "/opt/engram/bin/python",
+        "/opt/mnemotrace/bin/python",
         "--api-url",
-        "http://engram.test",
+        "http://mnemotrace.test",
         "--api-key",
         "me",
     ])
 
     assert calls[0]["client"] == "claude-code"
-    assert calls[0]["python_cmd"] == "/opt/engram/bin/python"
-    assert calls[0]["api_url"] == "http://engram.test"
+    assert calls[0]["python_cmd"] == "/opt/mnemotrace/bin/python"
+    assert calls[0]["api_url"] == "http://mnemotrace.test"
     assert calls[0]["api_key"] == "me"
     assert calls[0]["mcp_json"] == str(config)
     out = capsys.readouterr().out
@@ -553,7 +553,7 @@ def test_main_install_mcp_json_accepts_doctor_client_none(tmp_path, monkeypatch,
             "checks": [{"name": "MCP stdio server", "status": "ok", "detail": "ready"}],
         }
 
-    monkeypatch.setattr("engram.agent_setup.run_mcp_doctor", fake_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_mcp_doctor", fake_doctor)
 
     main([
         "--install-mcp-json",
@@ -574,7 +574,7 @@ def test_main_install_mcp_json_dry_run_skips_doctor(tmp_path, monkeypatch, capsy
     def fake_doctor(**kwargs):
         raise AssertionError(kwargs)
 
-    monkeypatch.setattr("engram.agent_setup.run_mcp_doctor", fake_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_mcp_doctor", fake_doctor)
 
     main([
         "--install-mcp-json",
@@ -597,8 +597,8 @@ def test_main_bootstrap_dry_run_does_not_write(tmp_path, monkeypatch, capsys):
     def fail_doctor(**kwargs):
         raise AssertionError(kwargs)
 
-    monkeypatch.setattr("engram.agent_setup.run_codex_doctor", fail_doctor)
-    monkeypatch.setattr("engram.agent_setup.run_mcp_doctor", fail_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_codex_doctor", fail_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_mcp_doctor", fail_doctor)
 
     main([
         "--bootstrap",
@@ -614,7 +614,7 @@ def test_main_bootstrap_dry_run_does_not_write(tmp_path, monkeypatch, capsys):
     assert not codex.exists()
     assert not mcp_json.exists()
     out = capsys.readouterr().out
-    assert "# Engram Agent Bootstrap" in out
+    assert "# MnemoTrace Agent Bootstrap" in out
     assert "Codex: would install" in out
     assert "MCP JSON: would install" in out
     assert "Doctor skipped" in out
@@ -629,8 +629,8 @@ def test_main_bootstrap_install_policy_dry_run_does_not_write(tmp_path, monkeypa
     def fail_doctor(**kwargs):
         raise AssertionError(kwargs)
 
-    monkeypatch.setattr("engram.agent_setup.run_codex_doctor", fail_doctor)
-    monkeypatch.setattr("engram.agent_setup.run_mcp_doctor", fail_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_codex_doctor", fail_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_mcp_doctor", fail_doctor)
 
     main([
         "--bootstrap",
@@ -672,7 +672,7 @@ def test_main_bootstrap_installs_both_and_runs_codex_doctor(tmp_path, monkeypatc
             "checks": [{"name": "MCP stdio server", "status": "ok", "detail": "ready"}],
         }
 
-    monkeypatch.setattr("engram.agent_setup.run_codex_doctor", fake_codex_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_codex_doctor", fake_codex_doctor)
 
     main([
         "--bootstrap",
@@ -681,21 +681,21 @@ def test_main_bootstrap_installs_both_and_runs_codex_doctor(tmp_path, monkeypatc
         "--mcp-json",
         str(mcp_json),
         "--python",
-        "/opt/engram/bin/python",
+        "/opt/mnemotrace/bin/python",
         "--api-url",
-        "http://engram.test",
+        "http://mnemotrace.test",
         "--api-key",
         "me",
     ])
 
     assert calls[0][0] == "codex"
-    assert calls[0][1]["python_cmd"] == "/opt/engram/bin/python"
-    assert calls[0][1]["api_url"] == "http://engram.test"
+    assert calls[0][1]["python_cmd"] == "/opt/mnemotrace/bin/python"
+    assert calls[0][1]["api_url"] == "http://mnemotrace.test"
     assert calls[0][1]["api_key"] == "me"
     assert calls[0][1]["codex_config"] == str(codex)
     assert calls[0][1]["mcp_json"] == str(mcp_json)
-    assert "[mcp_servers.engram]" in codex.read_text()
-    assert json.loads(mcp_json.read_text())["mcpServers"]["engram"]["command"] == "/opt/engram/bin/python"
+    assert "[mcp_servers.mnemotrace]" in codex.read_text()
+    assert json.loads(mcp_json.read_text())["mcpServers"]["mnemotrace"]["command"] == "/opt/mnemotrace/bin/python"
     out = capsys.readouterr().out
     assert "Codex: installed" in out
     assert "MCP JSON: installed" in out
@@ -717,7 +717,7 @@ def test_main_bootstrap_local_namespace_is_installed_and_verified(tmp_path, monk
             "checks": [{"name": "MCP stdio server", "status": "ok", "detail": "ready"}],
         }
 
-    monkeypatch.setattr("engram.agent_setup.run_codex_doctor", fake_codex_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_codex_doctor", fake_codex_doctor)
 
     main([
         "--bootstrap",
@@ -729,14 +729,14 @@ def test_main_bootstrap_local_namespace_is_installed_and_verified(tmp_path, monk
         "--mcp-json",
         str(mcp_json),
         "--python",
-        "/opt/engram/bin/python",
+        "/opt/mnemotrace/bin/python",
     ])
 
     assert calls[0]["api_url"] is None
     assert calls[0]["api_key"] == "local-me"
     assert '"--namespace", "local-me"' in codex.read_text()
-    server = json.loads(mcp_json.read_text())["mcpServers"]["engram"]
-    assert server["args"] == ["-m", "engram.mcp", "--namespace", "local-me"]
+    server = json.loads(mcp_json.read_text())["mcpServers"]["mnemotrace"]
+    assert server["args"] == ["-m", "mnemotrace.mcp", "--namespace", "local-me"]
     out = capsys.readouterr().out
     assert "--api-key local-me" in out
     assert "Codex: installed" in out
@@ -759,13 +759,13 @@ def test_main_bootstrap_install_policy_no_doctor_writes_all_targets(tmp_path, ca
         "--agents-file",
         str(agents),
         "--python",
-        "/opt/engram/bin/python",
+        "/opt/mnemotrace/bin/python",
         "--session-id",
         "codex:repo:thread",
     ])
 
-    assert "[mcp_servers.engram]" in codex.read_text()
-    assert json.loads(mcp_json.read_text())["mcpServers"]["engram"]["command"] == "/opt/engram/bin/python"
+    assert "[mcp_servers.mnemotrace]" in codex.read_text()
+    assert json.loads(mcp_json.read_text())["mcpServers"]["mnemotrace"]["command"] == "/opt/mnemotrace/bin/python"
     text = agents.read_text()
     assert POLICY_START_MARKER in text
     assert "codex:repo:thread" in text
@@ -791,7 +791,7 @@ def test_main_bootstrap_mcp_json_only_runs_mcp_doctor(tmp_path, monkeypatch, cap
             "checks": [{"name": "MCP stdio server", "status": "ok", "detail": "ready"}],
         }
 
-    monkeypatch.setattr("engram.agent_setup.run_mcp_doctor", fake_mcp_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_mcp_doctor", fake_mcp_doctor)
 
     main([
         "--bootstrap",
@@ -824,7 +824,7 @@ def test_main_bootstrap_failed_doctor_exits_nonzero(tmp_path, monkeypatch, capsy
             "checks": [{"name": "MCP stdio server", "status": "fail", "detail": "boom"}],
         }
 
-    monkeypatch.setattr("engram.agent_setup.run_codex_doctor", fake_codex_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_codex_doctor", fake_codex_doctor)
 
     with pytest.raises(SystemExit) as exc:
         main(["--bootstrap", "--bootstrap-targets", "codex", "--codex-config", str(codex)])
@@ -867,12 +867,12 @@ def test_bootstrap_main_adds_bootstrap_flag(tmp_path, monkeypatch, capsys):
             "checks": [{"name": "MCP stdio server", "status": "ok", "detail": "ready"}],
         }
 
-    monkeypatch.setattr("engram.agent_setup.run_codex_doctor", fake_codex_doctor)
+    monkeypatch.setattr("mnemotrace.agent_setup.run_codex_doctor", fake_codex_doctor)
 
     bootstrap_main(["--bootstrap-targets", "codex", "--codex-config", str(codex)])
 
-    assert "[mcp_servers.engram]" in codex.read_text()
-    assert "# Engram Agent Bootstrap" in capsys.readouterr().out
+    assert "[mcp_servers.mnemotrace]" in codex.read_text()
+    assert "# MnemoTrace Agent Bootstrap" in capsys.readouterr().out
 
 
 def test_bootstrap_main_help_uses_bootstrap_program_name(capsys):
@@ -880,13 +880,13 @@ def test_bootstrap_main_help_uses_bootstrap_program_name(capsys):
         bootstrap_main(["--help"])
 
     assert exc.value.code == 0
-    assert "usage: engram-agent-bootstrap" in capsys.readouterr().out
+    assert "usage: mnemotrace-agent-bootstrap" in capsys.readouterr().out
 
 
-def test_uninstall_codex_config_removes_only_engram_table_and_backs_up(tmp_path):
+def test_uninstall_codex_config_removes_only_mnemotrace_table_and_backs_up(tmp_path):
     config = tmp_path / "config.toml"
     block = codex_toml_block(
-        api_url="http://engram.test",
+        api_url="http://mnemotrace.test",
         api_key="me",
         namespace=None,
         python_cmd="python",
@@ -902,9 +902,9 @@ def test_uninstall_codex_config_removes_only_engram_table_and_backs_up(tmp_path)
 
     assert result["changed"] is True
     assert result["backup"] is not None
-    assert "[mcp_servers.engram]" in (tmp_path / result["backup"]).read_text()
+    assert "[mcp_servers.mnemotrace]" in (tmp_path / result["backup"]).read_text()
     text = config.read_text()
-    assert "[mcp_servers.engram]" not in text
+    assert "[mcp_servers.mnemotrace]" not in text
     assert "[mcp_servers.other]" in text
     assert 'model = "gpt-5"' in text
 
@@ -912,11 +912,11 @@ def test_uninstall_codex_config_removes_only_engram_table_and_backs_up(tmp_path)
 def test_codex_config_backups_do_not_overwrite_within_same_second(tmp_path, monkeypatch):
     config = tmp_path / "config.toml"
     config.write_text('model = "gpt-5"\n')
-    monkeypatch.setattr("engram.agent_setup.time.strftime", lambda fmt: "20260626235959")
+    monkeypatch.setattr("mnemotrace.agent_setup.time.strftime", lambda fmt: "20260626235959")
 
     installed = install_codex_config(
         config_path=str(config),
-        api_url="http://engram.test",
+        api_url="http://mnemotrace.test",
         api_key="me",
         namespace=None,
         python_cmd="python",
@@ -924,7 +924,7 @@ def test_codex_config_backups_do_not_overwrite_within_same_second(tmp_path, monk
     uninstalled = uninstall_codex_config(config_path=str(config))
 
     assert installed["backup"] != uninstalled["backup"]
-    assert installed["backup"].endswith("config.toml.engram-bak-20260626235959")
-    assert uninstalled["backup"].endswith("config.toml.engram-bak-20260626235959-1")
+    assert installed["backup"].endswith("config.toml.mnemotrace-bak-20260626235959")
+    assert uninstalled["backup"].endswith("config.toml.mnemotrace-bak-20260626235959-1")
     assert (tmp_path / installed["backup"]).exists()
     assert (tmp_path / uninstalled["backup"]).exists()

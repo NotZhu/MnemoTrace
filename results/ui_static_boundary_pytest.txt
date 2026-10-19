@@ -1,0 +1,23 @@
+........................sss............................................. [ 85%]
+............                                                             [100%]
+============================== warnings summary ===============================
+<site-packages>\_pytest\config\__init__.py:1474
+  <site-packages>\_pytest\config\__init__.py:1474: PytestConfigWarning: Unknown config option: asyncio_default_fixture_loop_scope
+
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+<site-packages>\_pytest\config\__init__.py:1474
+  <site-packages>\_pytest\config\__init__.py:1474: PytestConfigWarning: Unknown config option: asyncio_mode
+
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+tests/test_ui_static.py::test_console_boundary_over_real_http
+  <site-packages>\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
+    warnings.warn(  # deprecated in 14.0 - 2024-11-09
+
+tests/test_ui_static.py::test_console_boundary_over_real_http
+  <site-packages>\uvicorn\protocols\websockets\websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
+    from websockets.server import WebSocketServerProtocol
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+81 passed, 3 skipped, 4 warnings in 14.21s

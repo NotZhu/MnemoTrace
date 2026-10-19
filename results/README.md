@@ -1,63 +1,50 @@
-# Benchmark Result Logs
+# Benchmark 结果日志
 
-This directory stores raw JSONL evidence for benchmark claims. Treat it as an audit log, not a scratch
-dump.
+本目录保存 benchmark 声明的原始 JSONL 证据。请将其视为审计日志，而非临时转储。
 
-## Experiment Persistence Rule
+## 实验持久化规则
 
-Every experiment run for an algorithmic change must leave a saved artifact under `results/` or a
-documented path named in the PR. This includes smoke ablations, fixed-slice real-data checks, failed
-provider attempts, and complete benchmark runs.
+每次算法变更的每次实验运行，都必须在 `results/` 下留下一份已保存的产物，或在 PR 中指明已记录的路径。这包括 smoke ablation、固定切片真实数据检查、失败的 provider 尝试，以及完整的 benchmark 运行。
 
-- Prefer machine-readable JSONL via `--out`, `--jsonl`, or a small saved runner output.
-- Record the exact command, dataset or slice, system(s), date, metrics, and status.
-- Mark failed, partial, or exploratory artifacts explicitly; never present them as publishable benchmark
-  evidence.
+- 优先使用机器可读的 JSONL，通过 `--out`、`--jsonl` 或一小段已保存的 runner 输出。
+- 记录确切的命令、数据集或切片、系统、日期、指标与状态。
+- 明确标记失败、部分或探索性的产物；绝不要将它们作为可发布的 benchmark 证据呈现。
 
-## Commit Rule
+## 提交规则
 
-A result log can be committed as evidence only when it has a clear consumer:
+只有在有明确消费者时，结果日志才能作为证据提交：
 
-- `README.md` / `README.zh-CN.md` / `RESULTS.md` public numbers
-- paper tables, checklists, or runbooks marked `DONE`
-- regression fixtures used by tests
+- `README.md` / `README.zh-CN.md` / `RESULTS.md` 公开数字
+- 标记为 `DONE` 的论文表格、检查清单或 runbook
+- 测试所用的回归 fixture
 
-Before committing a new cited full-set run, validate it:
+在提交一个新的被引用的全集运行之前，先校验它：
 
 ```bash
 python eval/report.py results/<name>.jsonl
 python eval/validate_results.py --expected-rows <full item count> --require-complete results/<name>.jsonl
 ```
 
-The validator must pass before the log is marked `DONE` or used in public copy.
-For LongMemEval_S full-set runs, `<full item count>` is `500`; use the benchmark's real full item count
-for other datasets.
-When public copy cites only selected systems from a multi-system log, validate those systems explicitly
-with repeatable `--system <name>` flags. This keeps disclosed auxiliary-system failures visible without
-blocking a clean cited baseline.
-PersonaMem-v2 logs come from `eval/personamem.py` and use a distinct multiple-choice schema; validate
-them with `--schema personamem` and the sampled item count (for example, `--expected-rows 100` for
-`--n-personas 20 --per-persona 5`).
+校验器必须在日志被标记为 `DONE` 或用于公开文案之前通过。
+对于 LongMemEval_S 全集运行，`<full item count>` 为 `500`；对于其他数据集，使用该 benchmark 真实的完整条目数。
+当公开文案仅引用多系统日志中选定的系统时，请用可重复的 `--system <name>` 标志显式校验这些系统。这能在不阻塞干净被引用基线的前提下，让已披露的辅助系统失败保持可见。
+PersonaMem-v2 日志来自 `eval/personamem.py`，并采用一套不同的选择题 schema；请用 `--schema personamem` 与采样条目数来校验它们（例如，对应 `--n-personas 20 --per-persona 5` 使用 `--expected-rows 100`）。
 
-## What Not To Commit As Evidence
+## 不应作为证据提交的内容
 
-Do not cite or commit local exploratory files as benchmark proof when they are:
+当本地探索性文件属于以下情形时，不要将其引用或提交为 benchmark 证明：
 
-- partial runs
-- smoke slices
-- failed competitor runs
-- prompt/rerank reconstruction slices
-- unvalidated cross-benchmark experiments
+- 部分运行
+- smoke 切片
+- 失败的竞争对手运行
+- prompt/rerank 重建切片
+- 未校验的跨 benchmark 实验
 
-Those files are useful while developing, but they should either be completed and validated, or documented
-explicitly as exploratory artifacts before entering the repository.
+这些文件在开发过程中有用，但它们要么应当被完成并校验，要么在进入仓库之前被显式记录为探索性产物。
 
-Plain `.log` files are ignored by `.gitignore`; keep terminal transcripts local unless a paper artifact
-explicitly needs them.
+普通 `.log` 文件被 `.gitignore` 忽略；除非论文产物明确需要，否则请将终端记录保留在本地。
 
-## Release Validation Logs
+## 发布校验日志
 
-Engineering release evidence may also be stored here when a specification or release report cites it.
-For example, `commercial_release_0_1_0_validation.jsonl` records security, packaging, SDK, frontend,
-container, and regression gates for the 0.1.0 delivery. These logs prove release readiness only: they
-are not algorithm experiments and must never be cited as benchmark-quality or accuracy evidence.
+当某份规范或发布报告引用时，工程发布证据也可存储于此。
+例如，`commercial_release_0_1_0_validation.jsonl` 记录了 0.1.0 交付物的安全、打包、SDK、前端、容器与回归门禁。这些日志仅用于证明发布就绪状态：它们不是算法实验，绝不能被引用为 benchmark 质量或 accuracy 证据。

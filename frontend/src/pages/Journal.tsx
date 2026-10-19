@@ -1,20 +1,24 @@
-import { useEffect, useRef, useState } from 'react'
-import { HelpCircle, Lock, Search, Trash2 } from 'lucide-react'
+
+
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { Check, ChevronRight, HelpCircle, Loader2, NotebookText, Pencil, Search, Trash2, X } from 'lucide-react'
 
 import { Button, Card, CardTitle, ErrorState, PageHeader, Spinner } from '../components/ui'
+import { PageEmptyState } from '../components/PageEmptyState'
 import { ConfirmDialog } from '../components/Modal'
 import { toast } from '../components/Toast'
 import { useCloseSession, useDeleteFact, useEditFact, useMemories, useSessions } from '../hooks/queries'
-import { useT } from '../i18n'
+import { useDebouncedSearch } from '../hooks/useDebouncedSearch'
+import { useSpacePreference } from '../store/preferences'
+import { copy as t } from '../lib/copy'
 import { splitStamp } from '../lib/format'
 import type { MemoryFact } from '../types'
 
-/** The archive of what sessions concluded.
+/** 会话结论的档案。
  *
- * Per-turn extraction produces attributes; a session produces conclusions. Both are ordinary Facts —
- * conclusions are the ones whose predicate is one of the four outcome kinds — so this page is a
- * different *reading* of the same store, not a second store. The unit here is the session, because a
- * conclusion is supported by the whole conversation rather than by one line of it.
+ * 逐轮抽取产出属性；一个会话产出结论。两者都是普通的 Fact —— 结论只是 predicate 恰好属于
+ * 四种结果类型之一的事实 —— 所以这个页面是对同一存储的另一种*读法*，而不是第二个存储。
+ * 这里的单位是会话，因为一条结论依赖的是整段对话，而不是其中某一行。
  */
 
 const KIND_ORDER = ['decision', 'finding', 'lesson', 'open_question'] as const
@@ -27,6 +31,8 @@ const KIND_COLOR: Record<string, string> = {
   open_question: 'text-brand-violet',
 }
 
+const OUTCOME_TEXT_CLASS = 'text-[15px] leading-relaxed whitespace-pre-wrap break-words'
+
 const kindRank = (predicate: string) => {
   const i = KIND_ORDER.indexOf(predicate.toLowerCase() as OutcomeKind)
   return i === -1 ? KIND_ORDER.length : i
@@ -37,10 +43,10 @@ export interface OutcomeGroup {
   facts: MemoryFact[]
 }
 
-/** Group outcomes into the sessions they came from (an outcome's subject IS its session id).
+/** 把结论按其所属会话分组（结论的 subject 就是会话 id）。
  *
- * Runs are consecutive and the server order (valid_at desc) is preserved: re-sorting would reshuffle
- * the whole archive every time another page is loaded. */
+ * 分组连续进行，并保留服务端顺序（valid_at 倒序）：重新排序会在每次加载下一页时
+ * 打乱整个档案。 */
 export function groupOutcomes(facts: MemoryFact[]): OutcomeGroup[] {
   const groups: OutcomeGroup[] = []
   for (const f of facts) {
@@ -53,9 +59,11 @@ export function groupOutcomes(facts: MemoryFact[]): OutcomeGroup[] {
 }
 
 export default function Journal() {
-  const t = useT()
   const [q, setQ] = useState('')
-  const [showSuperseded, setShowSuperseded] = useState(false)
+  const searchInput = useRef<HTMLInputElement>(null)
+  const [composing, setComposing] = useState(false)
+  const searchQuery = useDebouncedSearch(q, composing)
+  const [showSuperseded, setShowSuperseded] = useSpacePreference('journal', 'showSuperseded')
   const [kindChip, setKindChip] = useState<OutcomeKind | 'all'>('all')
   const [limit, setLimit] = useState(60)
 
@@ -63,45 +71,65 @@ export default function Journal() {
     setLimit(60)
   }, [q, showSuperseded, kindChip])
 
-  const { data, isLoading, isError, error } = useMemories({
+  const { data, isLoading, isFetching, isError, error } = useMemories({
     kind: 'outcomes',
     facts_limit: limit,
     episodes_limit: 0,
-    q,
+    q: searchQuery,
     status: showSuperseded ? undefined : 'live',
     include_sensitive: true,
-  })
-
-  if (isLoading) return <Spinner label={t.journal.loading} />
-  if (isError) return <ErrorState message={(error as Error).message} />
+  }, { keepPreviousData: true })
 
   const facts = data?.facts ?? []
   const rows = kindChip === 'all' ? facts : facts.filter((f) => f.predicate.toLowerCase() === kindChip)
   const groups = groupOutcomes(rows)
   const hasMore = data?.facts_page?.has_more ?? false
   const open = facts.filter((f) => f.status === 'live' && f.predicate.toLowerCase() === 'open_question').slice(0, 8)
+  const hasSearch = Boolean(q.trim())
+  const hasKindFilter = kindChip !== 'all'
+  const hasFilters = hasSearch || hasKindFilter
+  const searchUpdating = composing || q !== searchQuery || isFetching
+
+  const clearFilters = () => {
+    setQ('')
+    setComposing(false)
+    setKindChip('all')
+    searchInput.current?.focus()
+  }
+  const resetControl = hasFilters ? (
+    <button type="button" onClick={clearFilters} aria-label={t.journal.resetFilters}
+      className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-control-line/60 bg-transparent px-3 py-2 text-sm font-semibold text-brand-cyan transition-colors hover:bg-action-hover hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan">
+      <X aria-hidden="true" className="h-4 w-4" /> {t.journal.resetFilters}
+    </button>
+  ) : null
+  const resetInEmptyState = !isLoading && !isError && !rows.length && !searchUpdating && hasFilters
 
   let lastDate = ''
 
   return (
-    <div className="space-y-6">
-      <PageHeader title={t.journal.title} subtitle={t.journal.subtitle} />
+    <div className="flex min-h-0 flex-1 flex-col gap-6">
+      <PageHeader title={t.journal.title} />
 
       {open.length > 0 && <OpenQuestionsCard items={open} />}
 
-      <Card className="!p-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex flex-1 items-center gap-2 rounded-xl border border-line bg-white/[0.05] px-3">
-            <Search className="h-4 w-4 text-ghost" />
-            <input
-              aria-label={t.journal.searchPlaceholder}
-              className="w-full bg-transparent py-2 text-sm outline-none placeholder:text-ghost/70"
-              placeholder={t.journal.searchPlaceholder}
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5">
+      <div className="space-y-4">
+        <div aria-busy={searchUpdating} className="flex w-full items-center gap-2 rounded-2xl border border-line bg-ink-700 px-3">
+          {searchUpdating
+            ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-ghost motion-reduce:animate-none" />
+            : <Search className="h-4 w-4 shrink-0 text-ghost" />}
+          <input
+            ref={searchInput}
+            aria-label={t.journal.searchPlaceholder}
+            className="min-w-0 w-full bg-transparent py-3 text-sm outline-none placeholder:text-ghost/70"
+            placeholder={t.journal.searchPlaceholder}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onCompositionStart={() => setComposing(true)}
+            onCompositionEnd={(e) => { setComposing(false); setQ(e.currentTarget.value) }}
+          />
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div role="group" aria-label={t.journal.kindFilterLabel} className="grid max-w-full grid-cols-5 gap-1 rounded-xl border border-line/50 bg-ink-700/70 p-1">
             <KindChip active={kindChip === 'all'} onClick={() => setKindChip('all')} label={t.journal.kindAll} />
             {KIND_ORDER.map((k) => (
               <KindChip
@@ -109,23 +137,28 @@ export default function Journal() {
                 active={kindChip === k}
                 onClick={() => setKindChip(k)}
                 label={t.journal.kind[k]}
-                color={KIND_COLOR[k]}
               />
             ))}
           </div>
-          <label className="flex select-none items-center gap-2 px-1 text-sm text-ghost">
-            <input
-              type="checkbox"
-              checked={showSuperseded}
-              onChange={(e) => setShowSuperseded(e.target.checked)}
-              className="accent-brand-cyan"
-            />
-            {t.journal.showSuperseded}
-          </label>
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showSuperseded}
+              aria-label={t.journal.showSuperseded}
+              onClick={() => setShowSuperseded((value) => !value)}
+              className="inline-flex min-h-[38px] shrink-0 select-none items-center gap-2.5 rounded-full px-1 text-sm text-ghost"
+            >
+              <span aria-hidden="true" className="switch-track">
+                <span className="switch-thumb" />
+              </span>
+              <span>{t.journal.showSuperseded}</span>
+            </button>
+          </div>
         </div>
-      </Card>
+      </div>
 
-      {rows.length ? (
+      {isLoading ? <Spinner label={t.journal.loading} /> : isError ? <ErrorState message={(error as Error).message} /> : rows.length ? (
         <>
           <div className="space-y-4">
             {groups.map((g, i) => {
@@ -152,18 +185,23 @@ export default function Journal() {
             </div>
           )}
         </>
+      ) : searchUpdating ? (
+        <Spinner label={t.journal.searching} />
+      ) : hasFilters ? (
+        <PageEmptyState title={t.journal.noResultsTitle} hint={t.journal.noResultsHint} icon={<Search className="h-6 w-6" />} footer={resetControl} />
       ) : (
         <JournalEmpty />
       )}
 
-      {/* Deliberately not empty-state-only: one distilled session does not mean the backlog is done,
-          and hiding the control the moment a conclusion exists leaves the rest of the owner's history
-          with no route in from this page. Re-closing an already-distilled session is a no-op. */}
-      {rows.length > 0 && (
+      {/* 有意不在只有空状态时才显示：蒸馏过一个会话不代表积压已清完，而且一旦出现结论就
+          隐藏这个入口，其余的历史记录在这页就没有任何进入路径了。重复蒸馏已蒸馏过的
+          会话是无害的空操作。 */}
+      {!isError && rows.length > 0 && (
         <Card>
           <BackfillSessions />
         </Card>
       )}
+      {hasFilters && !resetInEmptyState && <div className="mt-auto flex justify-center pt-6" data-filter-reset-footer>{resetControl}</div>}
     </div>
   )
 }
@@ -171,22 +209,18 @@ export default function Journal() {
 function KindChip({
   active,
   label,
-  color,
   onClick,
 }: {
   active: boolean
   label: string
-  color?: string
   onClick: () => void
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className={
-        active
-          ? 'rounded-lg border border-brand-cyan/40 bg-brand-cyan/10 px-2.5 py-1 text-xs font-medium text-slate-100'
-          : `rounded-lg border border-line px-2.5 py-1 text-xs transition hover:border-brand-cyan/30 hover:text-slate-100 ${color ?? 'text-ghost'}`
-      }
+      aria-pressed={active}
+      className={`whitespace-nowrap rounded-lg px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan sm:px-4 ${active ? 'bg-action text-foreground shadow-sm' : 'text-ghost hover:bg-ink-700 hover:text-foreground'}`}
     >
       {label}
     </button>
@@ -194,7 +228,6 @@ function KindChip({
 }
 
 function OpenQuestionsCard({ items }: { items: MemoryFact[] }) {
-  const t = useT()
   return (
     <Card className="!border-brand-amber/30 !bg-brand-amber/[0.06]">
       <CardTitle>
@@ -217,8 +250,8 @@ function OpenQuestionsCard({ items }: { items: MemoryFact[] }) {
   )
 }
 
-/** One session's conclusions. Read-only unless `editable` — corrections belong on the Journal, and a
- *  Dashboard preview that could rewrite memory in passing would be the wrong affordance. */
+/** 单个会话的结论。除非传入 `editable` 否则只读 —— 修正应该在 Journal 页做，一个能顺手
+ *  改写记忆的 Dashboard 预览是错误的交互设计。 */
 export function SessionOutcomes({
   group,
   editable = false,
@@ -228,21 +261,16 @@ export function SessionOutcomes({
   editable?: boolean
   className?: string
 }) {
-  const t = useT()
   return (
     <Card className={className}>
-      <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-ghost">
-        <span className="min-w-0 max-w-full truncate font-mono" title={group.session}>
+      <div className="mb-3 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-[13px] text-ghost">
+        <span className="min-w-0 max-w-full truncate">
           {t.journal.sessionLabel} {group.session}
         </span>
         <span>{t.journal.conclusionCount(group.facts.length)}</span>
       </div>
-      <ul>
-        {group.facts.map((f, i) => {
-          const prev = group.facts[i - 1]
-          const gap = i === 0 ? '' : prev && prev.predicate === f.predicate ? 'mt-1.5' : 'mt-3'
-          return <OutcomeRow key={f.id} fact={f} editable={editable} className={gap} />
-        })}
+      <ul className="divide-y divide-line/50">
+        {group.facts.map((f) => <OutcomeRow key={f.id} fact={f} editable={editable} />)}
       </ul>
     </Card>
   )
@@ -251,102 +279,158 @@ export function SessionOutcomes({
 function OutcomeRow({
   fact,
   editable,
-  className,
 }: {
   fact: MemoryFact
   editable: boolean
-  className: string
 }) {
-  const t = useT()
   const editFact = useEditFact()
   const deleteFact = useDeleteFact()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [confirming, setConfirming] = useState(false)
   const [mine, setMine] = useState(false)
-  // Esc unmounts the textarea, which also fires blur — without this the cancel would save.
-  const cancelled = useRef(false)
+  const [evidenceOpen, setEvidenceOpen] = useState(false)
+  const evidenceId = useId()
+  const saveInFlight = useRef(false)
 
   const kind = fact.predicate.toLowerCase()
   const statement = fact.display || fact.text
   const isMine = mine || fact.source === 'user'
+  const manualMarker = isMine ? (
+    <span className="text-xs leading-relaxed text-ghost" title={t.journal.mineHint}>
+      {t.journal.mine}
+    </span>
+  ) : null
 
   const start = () => {
     if (!editable) return
-    cancelled.current = false
     setDraft(statement)
     setEditing(true)
   }
 
   const save = () => {
-    if (cancelled.current) return
+    if (saveInFlight.current || editFact.isPending) return
     const next = draft.trim()
-    if (!next || next === statement) {
+    if (!next) return
+    if (next === statement) {
       setEditing(false)
       return
     }
+    saveInFlight.current = true
     editFact.mutate(
       { id: fact.id, patch: { object: next } },
       {
         onSuccess: (r) => {
-          // The edit marks the fact user-authored — that is what tells the owner the correction will
-          // survive the next distillation instead of being quietly re-extracted over.
+          // 编辑会把该事实标记为用户亲笔 —— 用户由此知道这条修正能在下次蒸馏中幸存，
+          // 而不是被悄悄地重新抽取覆盖。
           setMine(r.source === 'user')
           toast.success(t.journal.saved)
           setEditing(false)
         },
         onError: (e) => toast.error(String((e as Error).message)),
+        onSettled: () => { saveInFlight.current = false },
       },
     )
   }
 
   return (
-    <li className={`group flex items-start gap-3 ${className}`}>
-      <span className={`w-10 shrink-0 pt-0.5 text-[11px] font-medium ${KIND_COLOR[kind] ?? 'text-ghost'}`}>
-        {t.journal.kind[kind as OutcomeKind] ?? fact.predicate}
+    <li className="group flex items-start gap-3 py-3 first:pt-0 last:pb-0">
+      <span className="w-14 shrink-0 pt-0.5">
+        <span className={`inline-flex rounded-md bg-selected px-1.5 py-0.5 text-[11px] font-medium ${KIND_COLOR[kind] ?? 'text-ghost'}`}>
+          {t.journal.kind[kind as OutcomeKind] ?? fact.predicate}
+        </span>
       </span>
       <div className="min-w-0 flex-1">
         {editing ? (
           <AutoTextarea
+            originalValue={statement}
             value={draft}
             onChange={setDraft}
-            onSave={save}
-            onCancel={() => {
-              cancelled.current = true
-              setEditing(false)
-            }}
           />
         ) : (
           <div
-            onClick={start}
             className={
               fact.status === 'live'
-                ? `text-sm leading-relaxed text-slate-100 break-words ${editable ? 'cursor-text' : ''}`
-                : `text-sm leading-relaxed text-ghost line-through break-words ${editable ? 'cursor-text' : ''}`
+                ? `${OUTCOME_TEXT_CLASS} text-slate-100`
+                : `${OUTCOME_TEXT_CLASS} text-ghost line-through`
             }
-            title={editable ? t.journal.editHint : undefined}
           >
             {statement}
           </div>
         )}
         {fact.why && (
-          <div className="mt-0.5 break-words text-xs leading-relaxed text-ghost">↳ {fact.why}</div>
-        )}
-        {isMine && (
-          <div className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-brand-amber">
-            <Lock className="h-3 w-3" /> {t.journal.mine}
+          <div className="mt-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <button
+                type="button"
+                aria-expanded={evidenceOpen}
+                aria-controls={evidenceId}
+                onClick={() => setEvidenceOpen((open) => !open)}
+                className="inline-flex items-center gap-1 bg-transparent p-0 text-xs leading-relaxed text-[rgb(var(--memory-edit-marker))] hover:text-foreground"
+              >
+                <ChevronRight className={`h-3 w-3 transition-transform motion-reduce:transition-none ${evidenceOpen ? 'rotate-90' : ''}`} aria-hidden="true" />
+                {t.journal.viewEvidence}
+              </button>
+              {manualMarker}
+            </div>
+            <div id={evidenceId} hidden={!evidenceOpen} className="mt-2 border-l-2 border-line/70 py-1 pl-3 text-xs leading-relaxed text-ghost break-words">
+              {fact.why}
+            </div>
           </div>
         )}
+        {!fact.why && manualMarker && <div className="mt-2">{manualMarker}</div>}
       </div>
-      {editable && !editing && (
-        <button
-          onClick={() => setConfirming(true)}
-          className="shrink-0 rounded-lg border border-line p-1.5 text-ghost opacity-0 transition hover:border-brand-rose/50 hover:text-brand-rose focus:opacity-100 group-hover:opacity-100"
-          aria-label={t.common.delete}
-          title={t.common.delete}
+      {editable && (
+        <div
+          className={`flex shrink-0 items-start gap-1.5 ${editing ? '' : 'opacity-0 transition group-hover:opacity-100 focus-within:opacity-100 [@media(pointer:coarse)]:opacity-100'}`}
         >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
+          {editing ? (
+            <>
+              <button
+                type="button"
+                onClick={save}
+                disabled={!draft.trim() || editFact.isPending}
+                className="rounded-lg border border-line p-1.5 text-brand-mint transition hover:border-brand-mint/50 disabled:opacity-50"
+                aria-label={t.common.save}
+                title={t.common.save}
+                aria-busy={editFact.isPending}
+              >
+                {editFact.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                disabled={editFact.isPending}
+                className="rounded-lg border border-line p-1.5 text-ghost transition hover:text-foreground disabled:opacity-50"
+                aria-label={t.common.cancel}
+                title={t.common.cancel}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={start}
+                className="rounded-lg border border-line p-1.5 text-ghost transition hover:border-brand-cyan/50 hover:text-brand-cyan"
+                aria-label={t.common.edit}
+                title={t.common.edit}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirming(true)}
+                className="rounded-lg border border-line p-1.5 text-ghost transition hover:border-brand-rose/50 hover:text-brand-rose"
+                aria-label={t.common.delete}
+                title={t.common.delete}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </>
+          )}
+        </div>
       )}
       <ConfirmDialog
         open={confirming}
@@ -374,59 +458,60 @@ function OutcomeRow({
   )
 }
 
-/** Same typography as the row it replaces, so editing does not make the line jump. */
+/** 原句作为淡底影保留；两层文字共同占位，避免删短草稿时裁掉原句。 */
 function AutoTextarea({
+  originalValue,
   value,
   onChange,
-  onSave,
-  onCancel,
 }: {
+  originalValue: string
   value: string
   onChange: (v: string) => void
-  onSave: () => void
-  onCancel: () => void
 }) {
   const ref = useRef<HTMLTextAreaElement>(null)
-  useEffect(() => {
+  const original = useRef(originalValue).current
+  useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${el.scrollHeight}px`
-  }, [value])
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  }, [])
 
   return (
-    <textarea
-      ref={ref}
-      autoFocus
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      onBlur={onSave}
-      onKeyDown={(e) => {
-        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') onSave()
-        if (e.key === 'Escape') onCancel()
-      }}
-      className="block w-full resize-none overflow-hidden rounded-lg border border-brand-cyan/40 bg-white/[0.04] px-2 py-1 text-sm leading-relaxed text-slate-100 outline-none"
-    />
+    <div className={`relative grid rounded-md bg-ink-700/70 ${OUTCOME_TEXT_CLASS}`}>
+      <div aria-hidden="true" className="pointer-events-none min-w-0 select-none text-ghost opacity-50 [grid-area:1/1]">
+        {original + '\u200b'}
+      </div>
+      <div aria-hidden="true" className="invisible min-w-0 [grid-area:1/1]">{value + '\u200b'}</div>
+      <textarea
+        ref={ref}
+        rows={1}
+        aria-label={t.journal.editConclusion}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="absolute inset-0 m-0 block h-full min-h-0 w-full resize-none overflow-hidden rounded-md border-0 bg-transparent p-0 text-slate-100 [font:inherit] whitespace-pre-wrap break-words outline-none ring-1 ring-brand-cyan/40 focus:ring-brand-cyan/60"
+      />
+    </div>
   )
 }
 
-/** The first thing a new owner sees. "No conclusions yet" would explain nothing — what they need is
- *  why their memory looked like fragments, and the two ways to get a conclusion written. */
+/** 即使暂无结论，也保留从已有会话生成总结的入口。 */
 function JournalEmpty() {
-  const t = useT()
   return (
-    <Card>
-      <CardTitle>{t.journal.emptyTitle}</CardTitle>
-      <p className="max-w-2xl text-sm leading-relaxed text-ghost">{t.journal.emptyBody}</p>
-      <BackfillSessions className="mt-5" />
-    </Card>
+    <div>
+      <PageEmptyState
+        title={t.journal.emptyTitle}
+        hint={t.journal.emptyHint}
+        icon={<NotebookText className="h-6 w-6" />}
+      />
+      <BackfillSessions className="mt-7" />
+    </div>
   )
 }
 
-/** Distil a session that already exists. Closing a session is what writes its conclusions, so this is
- *  the console's only way to reach history that was never closed through an agent client. */
+/** 蒸馏一个已存在的会话。只有关闭会话才会写出结论，因此这是控制台触达那些从未通过
+ *  agent 客户端关闭的历史记录的唯一入口。 */
 function BackfillSessions({ className }: { className?: string }) {
-  const t = useT()
   const sessions = useSessions({ limit: 8 })
   const closeSession = useCloseSession()
   const [pending, setPending] = useState<string | null>(null)
@@ -436,7 +521,11 @@ function BackfillSessions({ className }: { className?: string }) {
     closeSession.mutate(id, {
       onSuccess: (r) => {
         setPending(null)
-        toast.success(t.journal.backfillDone(r.outcomes))
+        if (r.outcomes > 0) {
+          toast.success(t.journal.backfillDone(r.outcomes))
+        } else {
+          toast.info(t.journal.backfillNoNew)
+        }
       },
       onError: (e) => {
         setPending(null)
@@ -449,22 +538,21 @@ function BackfillSessions({ className }: { className?: string }) {
 
   return (
     <div className={className}>
-      <div className="mb-2 text-xs font-semibold tracking-wide text-slate-300">{t.journal.backfillTitle}</div>
-      <ul className="space-y-2">
+      <ul className="space-y-4">
         {sessions.data.sessions.slice(0, 5).map((s) => (
           <li
             key={s.id}
-            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-white/[0.02] p-3"
+            className="flex flex-wrap items-center justify-between gap-x-6 gap-y-4 rounded-xl border border-line bg-ink-700/40 p-5 sm:px-6"
           >
             <div className="min-w-0">
-              <div className="max-w-full truncate font-mono text-xs text-brand-cyan" title={s.id}>
-                {s.id}
+              <div className="max-w-full truncate text-sm text-brand-cyan">
+                {t.journal.sessionLabel} {s.id}
               </div>
-              {s.last_event_at_h && <div className="mt-1 text-[11px] text-ghost">{s.last_event_at_h}</div>}
+              {s.last_event_at_h && <div className="mt-2 text-xs text-ghost">{s.last_event_at_h}</div>}
             </div>
             <Button
               variant="ghost"
-              className="px-2 py-1 text-xs"
+              className="rounded-md px-4 py-2 text-sm"
               loading={pending === s.id}
               disabled={!!pending}
               onClick={() => distil(s.id)}

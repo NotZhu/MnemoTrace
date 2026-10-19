@@ -1,59 +1,41 @@
-# Engram — Benchmark Results & Methodology
+# 忆痕 — 基准测试结果与方法论
 
-This file is the full, reproducible record behind the headline number in the README. The project's core
-discipline (CLAUDE.md, Bet D): **a number we cannot reproduce does not exist.** Everything needed to
-re-run and verify is here.
+本文件是 README 中那个头条数字背后完整、可复现的记录。项目的核心准则（CLAUDE.md，Bet D）：**无法复现的数字不存在。** 重新运行并验证所需的全部内容都在此处。
 
-**Paper:** [arXiv:2606.09900](https://arxiv.org/abs/2606.09900) — the peer-reviewable write-up of the headline result below.
+**论文：** [arXiv:2606.09900](https://arxiv.org/abs/2606.09900) —— 下方头条结果的可同行评审版本。
 
 ---
 
-## Headline: LongMemEval_S, 500 questions
+## 头条结果：LongMemEval_S，500 题
 
-The headline system is **`engram_lean`** — it answers from a small *retrieved* slice of memory, never the
-full history. This is the honest test of a memory system: a precisely filtered context that beats the
-noisy full window, at a fraction of the tokens.
+头条系统为 **`engram_lean`** —— 它只从一小块*检索*到的记忆切片中作答，而非完整历史。这正是记忆系统的诚实测试：一个精准过滤后的上下文，以极少的 token 击败噪声满满的整窗。
 
 | System | Overall | Avg context tokens | Errors |
 |---|---:|---:|---:|
-| **Engram** (`engram_lean`) | **83.6%** | **9.6k** | 0 / 500 |
+| **MnemoTrace** (`engram_lean`) | **83.6%** | **9.6k** | 0 / 500 |
 | full-context baseline (same answerer + judge) | 73.2% | 79k | 0 / 500 |
 
 > [!NOTE]
-> **These numbers are pinned to the code that produced them** — commit `4a2aa0e` (2026-06-27), the
-> revision that committed `results/headline_500.jsonl`. The codebase has evolved substantially since
-> (graph retrieval, evidence planning, temporal chains, preference extraction, LLM query decomposition)
-> and has **not** been re-scored on the full 500; a 50-question spot-check on identical items scored the
-> same overall as this baseline but with a very different per-category profile (temporal-reasoning and
-> preference up, single-session recall down). Treat 83.6 / 73.2 as the measured result of *that*
-> revision, not a live property of `main`. A fresh full-500 run against a stable judge is planned once
-> the current read-path ablation settles which features stay on by default.
+> **这些数字与生成它们的代码严格绑定** —— 提交 `4a2aa0e`（2026-06-27），即提交 `results/headline_500.jsonl` 的修订版本。此后代码库已大幅演进（图检索、证据规划、时间链、偏好抽取、LLM 查询分解），并**未**在完整 500 题上重新评分；对相同题目的 50 题抽查，整体分数与本基线一致，但各类别分布差异很大（时间推理与偏好上升，单会话检索下降）。请将 83.6 / 73.2 视为*该*修订版本的实测结果，而非 `main` 分支的实时属性。待当前读路径消融确定哪些特性默认开启后，计划针对稳定评分器重新跑一次完整 500 题。
 
-**Engram `engram_lean` beats the full-context baseline by +10.4 points while using ~8× fewer tokens**
-(9.6k vs 79k) on this 500-question run. Both numbers are on the **official** LongMemEval judge prompts,
-with the **same answerer and judge applied to every system** in the harness; both `engram_lean` and
-`full_context` completed all 500 questions with 0 errored.
+**MnemoTrace `engram_lean` 在以约 8× 更少的 token 使用时，比全上下文基线高出 +10.4 个百分点**（9.6k 对 79k）于本次 500 题运行。两个数字都基于**官方** LongMemEval 评分器提示词，评测框架对每一个系统都施加了**相同的回答器与评分器**；`engram_lean` 与 `full_context` 均完成了全部 500 题，错误数为 0。
 
-> For reference, in the same 500-question run a non-lean variant that prepends the conflict-resolved facts
-> *above the full history* (`engram_full`, ~79k tokens) scores **83.4%** — i.e. lean retrieval at 9.6k
-> tokens matches the full-history-plus-facts variant at ~1/8 the context. `engram_full` had 1 errored item,
-> so its 83.4% is over 499 scored questions; the lean number is the one we headline.
+> 作为参考，在同一 500 题运行中，一个非 lean 变体将冲突已解决的事实*置于完整历史之上*（`engram_full`，约 79k token）得分为 **83.4%** —— 即 9.6k token 的 lean 检索与"完整历史加事实"变体在约 1/8 的上下文下表现相当。`engram_full` 有 1 条错误项，因此其 83.4% 是基于 499 条已评分题目；我们头条采用的是 lean 数字。
 
 ---
 
-## Current-code measurement (2026-08-28, deepseek official judge)
+## 当前代码测量（2026-08-28，deepseek 官方评分器）
 
-Current `main`, full 500 questions, **0 errors**, log committed and format-validated
-(`results/run500_v3_main_deepseekjudge.jsonl`):
+当前 `main` 分支，完整 500 题，**0 错误**，日志已提交并通过格式校验（`results/run500_v3_main_deepseekjudge.jsonl`）：
 
 | System | Overall | Avg context tokens |
 |---|---:|---:|
-| **Engram** (`engram_lean`) | **84.4%** | **7.9k** |
+| **MnemoTrace** (`engram_lean`) | **84.4%** | **7.9k** |
 | full-context baseline (same answerer + judge) | 78.8% | 79.2k |
 
-**+5.6 points at ~10× fewer tokens**, winning 4 of 6 categories:
+**以约 10× 更少的 token 高出 +5.6 个百分点**，在 6 个类别中赢下 4 个：
 
-| Category | Engram | full-context |
+| Category | MnemoTrace | full-context |
 |---|---:|---:|
 | single-session-assistant | 94.6% | 94.6% |
 | single-session-user | **91.4%** | 82.9% |
@@ -62,26 +44,13 @@ Current `main`, full 500 questions, **0 errors**, log committed and format-valid
 | single-session-preference | **80.0%** | 50.0% |
 | multi-session | **78.2%** | 66.9% |
 
-**Context for the absolute number:** the LongMemEval authors report **~82.4%** for *oracle* GPT-4o —
-the gold sessions handed directly to the reader, i.e. what perfect retrieval buys you. Engram's 84.4%
-comes from a *retrieved* 7.9k slice, so the filtered context is doing slightly better than handing the
-model the right sessions outright. Take it as a sanity anchor, not a like-for-like comparison: different
-reader, different judge.
+**关于绝对数字的背景：** LongMemEval 作者报告的 *oracle* GPT-4o 为 **~82.4%** —— 即直接交给回答器的黄金会话，也就是完美检索所能带来的上限。MnemoTrace 的 84.4% 来自一块*检索*到的 7.9k 切片，因此过滤后的上下文表现略好于直接把正确会话交给模型。请将其视为一个合理性锚点，而非逐一对应的比较：读者不同、评分器不同。
 
-**What we could not move.** A pre-registered goal of a **≥ +8** margin was not met in three separate
-500-question runs (+5.8, +4.0, +5.6). Three independent probes say the remaining gap is not in the
-retrieval layer: (1) on multi-session, `engram_lean` and `full_context` tie exactly, so the answer no
-longer depends on which context is supplied; (2) swapping in a stronger reasoning answerer
-(`gpt-5.6-sol`) *lost* 1.6 points on the same context while doubling latency; (3) we are already at the
-published oracle ceiling. Systems reporting 94%+ on this benchmark do not publish their backbone, judge,
-or question subset, so we do not treat those as comparable. We report the miss rather than restating it.
+**我们未能跨越的部分。** 一个预先登记的目标 —— 达到 **≥ +8** 的优势 —— 在三次独立的 500 题运行中均未达成（+5.8、+4.0、+5.6）。三项独立探查表明，剩余的差距不在检索层：(1) 在多会话上，`engram_lean` 与 `full_context` 完全打平，因此答案已不再依赖于提供哪段上下文；(2) 换用更强的推理回答器（`gpt-5.6-sol`）在同一上下文下*丢失*了 1.6 个百分点，同时延迟翻倍；(3) 我们已经处于已发布的 oracle 上限。在此基准上报告 94%+ 的系统并未公开其骨干模型、评分器或题目子集，因此我们不将其视为可比较对象。我们选择如实报告这一未达标之处，而非改写它。
 
-**Cost note worth more than the points:** under a reasoning answerer, the full-context baseline became
-too expensive to finish (100 questions projected past 10 hours, aborted) while the 7.9k lean path
-completed 60 questions in 40 minutes. As readers get heavier, the 10× token gap turns from a cost
-saving into a feasibility difference.
+**比分数更值得注意的成本注记：** 在推理回答器下，全上下文基线变得过于昂贵而无法跑完（100 题预计超过 10 小时，已中止），而 7.9k 的 lean 路径在 40 分钟内完成了 60 题。随着读者模型变重，10× 的 token 差距从一项成本节省变成了可行性差异。
 
-## Per-category breakdown (`engram_lean`, full 500)
+## 逐类别明细（`engram_lean`，完整 500 题）
 
 | Category | Score | n | Notes |
 |---|---:|---:|---|
@@ -94,36 +63,23 @@ saving into a feasibility difference.
 | single-session-preference | 73.3% | 30 | hard industry-wide (frontier LLMs 37–48% on PersonaMem) |
 | **Overall** | **83.6%** | **500** | |
 
-**Efficiency:** mean retrieved context **~9.6k tokens** (~8× leaner than the ~79k full-context baseline)
-in the committed run. End-to-end answer latency for `engram_lean` is p50 **60.5s** / p95 **106.6s** in
-this log; this includes the remote doubao-seed-2.0-pro answer call and is reported as measured, not used
-as a separate retrieval latency claim.
+**效率：** 在已提交的运行中，平均检索到的上下文为 **~9.6k token**（比约 79k 的全上下文基线精简约 8×）。`engram_lean` 的端到端回答延迟在本日志中为 p50 **60.5s** / p95 **106.6s**；这包含了远程的 doubao-seed-2.0-pro 回答调用，并按实测上报，而非用作单独的检索延迟宣称。
 
 ---
 
-## Exact setup
+## 精确设置
 
-- **Dataset:** `longmemeval_s` (the real benchmark, 500 questions, ~50 sessions / ~115k-token haystack
-  per question), pulled from HuggingFace `xiaowu0162/longmemeval`.
-- **Embedder:** `BAAI/bge-small-en-v1.5` (local, no API key).
-- **Internal extractor** (System-2 fact extraction): `doubao-seed-1.6-flash`.
-- **Answerer:** `doubao-seed-2.0-pro`.
-- **Judge:** `deepseek-v3.2`, prompted with the **exact official LongMemEval category-specific judge
-  prompts** (`official_judge_prompt()` in `eval/longmemeval.py`) — temporal off-by-one tolerance,
-  knowledge-update old-info tolerance, preference rubric leniency, "contains the answer" semantics,
-  unanswerable detection.
-- **The `engram_lean` system:** Engram retrieves a small hybrid slice — conflict-resolved bi-temporal
-  facts + the most relevant raw session chunks + L2 session summaries — and answers from *that* alone
-  (~9.6k tokens), never the full history.
+- **数据集：** `longmemeval_s`（真实基准，500 题，每题约 50 个会话 / 约 115k-token 的 haystack），取自 HuggingFace `xiaowu0162/longmemeval`。
+- **嵌入器：** `BAAI/bge-small-en-v1.5`（本地，无需 API key）。
+- **内部抽取器**（System-2 事实抽取）：`doubao-seed-1.6-flash`。
+- **回答器：** `doubao-seed-2.0-pro`。
+- **评分器：** `deepseek-v3.2`，使用**精确官方 LongMemEval 类别专属评分器提示词**（`eval/longmemeval.py` 中的 `official_judge_prompt()`）发起 —— 时间偏差一位容差、知识更新旧信息容差、偏好评分标准宽松、"包含答案"语义、不可回答检测。
+- **`engram_lean` 系统：** MnemoTrace 检索一小块混合切片 —— 冲突已解决的双时间轴事实 + 最相关的原始会话分块 + L2 会话摘要 —— 并仅基于*该*切片作答（约 9.6k token），从不使用完整历史。
 
-### Reproduce
+### 复现
 
 > [!IMPORTANT]
-> **The judge endpoint used for the headline run has since been retired by its provider.** As of
-> 2026-08-27, Volcano Ark reports `deepseek-v3-2-251201` — and every other `deepseek-*` model on that
-> platform — as `status: Shutdown`, and `doubao-seed-1-6-flash-250615` as `status: Retiring`. The
-> command below is kept **verbatim as the provenance of the published numbers**; it is what produced
-> them, and it will 404 today. To re-run now, see *Running it today* below.
+> **头条运行所用的评分器 endpoint 已被其提供方下线。** 截至 2026-08-27，Volcano Ark 将 `deepseek-v3-2-251201` —— 以及该平台上所有其他 `deepseek-*` 模型 —— 报告为 `status: Shutdown`，并将 `doubao-seed-1-6-flash-250615` 报告为 `status: Retiring`。下方命令**逐字保留，作为已发布数字的溯源**；它正是生成这些数字所用的命令，而如今它将返回 404。如需现在重新运行，请见下方的 *Running it today*。
 
 ```bash
 # the exact command that produced the headline numbers (judge endpoint since retired -- see above)
@@ -145,10 +101,9 @@ python eval/validate_results.py --expected-rows 500 --require-complete \
 ```
 
 
-#### Running it today
+#### 现在如何运行
 
-Substitute a judge that is still served (`deepseek` is the DeepSeek official API; `univibe:gpt-5.5`
-also works). Everything else is unchanged:
+换用一个仍在服务的评分器（`deepseek` 即 DeepSeek 官方 API；`univibe:gpt-5.5` 也可用）。其余部分不变：
 
 ```bash
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python eval/bench.py \
@@ -162,121 +117,70 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python eval/bench.py \
     --out data/run.jsonl
 ```
 
-**Read that result honestly.** Swapping the judge swaps the measuring stick, so the absolute score from
-this command is **not** directly comparable to the 83.6 / 73.2 published above — those numbers belong to
-the judge they were measured with, and we do not restate them under a different one. What remains valid
-is the comparison *within* your run: the harness applies your judge identically to every `--systems`
-entry, so `engram_lean` vs `full_context` is still apples-to-apples. That internal contrast — a small
-retrieved slice beating the full history at a fraction of the tokens — is the actual claim, and it is
-the part you can reproduce today. When we re-publish absolute numbers it will be against a stable judge,
-as a new run with its own committed log, not a silent re-baseline of these.
-The harness applies the **same answerer and judge to every `--systems` entry**, so any comparison *within*
-a run (e.g. `engram_lean` vs `full_context`) is apples-to-apples by construction. Raw per-question logs
-(prediction + gold + correctness + tokens + latency for every question) are written to the `--out` JSONL.
+**诚实地看待该结果。** 更换评分器就更换了衡量标尺，因此该命令得出的绝对分数**无法**与上文发布的 83.6 / 73.2 直接比较 —— 那些数字属于测量它们时所用的评分器，我们不会在另一个评分器下重新陈述它们。仍然有效的是你*本次运行内部*的比较：评测框架对你的每一个 `--systems` 条目施加相同的评分器，因此 `engram_lean` 对 `full_context` 仍是逐项可比的。这一内部对比 —— 一小块检索到的切片以极少的 token 击败完整历史 —— 才是真正的论点，也是你今天能够复现的部分。当我们重新发布绝对数字时，将基于一个稳定的评分器，作为一个带有自身已提交日志的新运行，而不是对这些数字静默地重新基线化。评测框架对每一个 `--systems` 条目施加**相同的回答器与评分器**，因此任意*同一运行内部*的比较（例如 `engram_lean` 对 `full_context`）在构造上就是逐项可比的。逐题的原始日志（每题的预测 + 标准答案 + 正确性 + token + 延迟）会写入 `--out` 指定的 JSONL。
 
-**The raw logs are committed:**
-- `engram_lean` headline (83.6%, 9.6k tokens): [`results/longmemeval_s_engram_lean_v2_final.jsonl`](results/longmemeval_s_engram_lean_v2_final.jsonl) — 500 lines.
-- full-context baseline (73.2%, 500/500 scored) + the `engram_full` variant (83.4%, 499/500 scored, 1 error), same 500-question run, same answerer + judge: [`results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl`](results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl).
+**原始日志已提交：**
+- `engram_lean` 头条（83.6%，9.6k token）：[`results/longmemeval_s_engram_lean_v2_final.jsonl`](results/longmemeval_s_engram_lean_v2_final.jsonl) —— 500 行。
+- 全上下文基线（73.2%，500/500 已评分）+ `engram_full` 变体（83.4%，499/500 已评分，1 处错误），同一 500 题运行，相同回答器 + 评分器：[`results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl`](results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl)。
 
-Recompute any table yourself: `python eval/report.py <file.jsonl>`. Before a log is used as published
-evidence, check the cited system(s) with
-`python eval/validate_results.py --expected-rows <full item count> --require-complete --system <name> <file.jsonl>`.
-Omit `--system` only when every system in the log is meant to be complete, citable evidence.
+你可以自己重算任意表格：`python eval/report.py <file.jsonl>`。在将某份日志用作已发布证据之前，请用 `python eval/validate_results.py --expected-rows <完整条目数> --require-complete --system <name> <file.jsonl>` 校验所引用的系统。仅当日志中每个系统都意在作为完整、可引用的证据时，才省略 `--system`。
 
-### Provider setup
+### 提供方设置
 
-Models are addressed as `provider:model` and resolved by `engram/llm/providers.py` via LiteLLM, so any
-OpenAI-compatible endpoint works. Swap in OpenAI / DeepSeek / a local model and the same commands run.
-The embedder and the offline fallbacks need no key.
+模型以 `provider:model` 的形式指定，并由 `mnemotrace/llm/providers.py` 通过 LiteLLM 解析，因此任何 OpenAI 兼容的 endpoint 都能工作。换上 OpenAI / DeepSeek / 本地模型，相同的命令即可运行。嵌入器与离线回退无需 key。
 
-**Endpoint drift — the judge in the command above is retired (verified 2026-08-17).** Volcano/ARK has
-withdrawn `deepseek-v3-2-251201`; the id now returns `InvalidEndpointOrModel.NotFound`, so the reproduce
-command as printed fails for *every* system with a `litellm.NotFoundError` before a single question is
-scored. No DeepSeek model is served on ARK any more. The answerer (`doubao-seed-2-0-pro-260215`) and the
-extractor (`doubao-seed-1-6-flash-250615`) are unaffected.
+**Endpoint 漂移 —— 上方命令中的评分器已下线（2026-08-17 核实）。** Volcano/ARK 已撤回 `deepseek-v3-2-251201`；该 id 现在返回 `InvalidEndpointOrModel.NotFound`，因此按原样打印的复现命令在*每个*系统上都尚未评分任何一题便以 `litellm.NotFoundError` 失败。ARK 上已不再提供任何 DeepSeek 模型。回答器（`doubao-seed-2-0-pro-260215`）与抽取器（`doubao-seed-1-6-flash-250615`）不受影响。
 
-To re-run today, point the judge at DeepSeek's own API instead — `DEEPSEEK_API_KEY` in `.env`, and:
+如需今天重新运行，请将评分器指向 DeepSeek 自己的 API —— 在 `.env` 中设置 `DEEPSEEK_API_KEY`，然后：
 
 ```bash
     --judge deepseek        # -> deepseek/deepseek-chat via LiteLLM
 ```
 
-This is **not** the same judge as the headline run: `deepseek-chat` now serves DeepSeek's v4-flash, not
-the v3.2 that scored the committed logs. A different judge shifts absolute scores, so a fresh run is not
-directly comparable to the 83.6% above. Within a single run every system still shares one judge, so
-comparisons *inside* a run remain apples-to-apples — which is the property this harness actually
-guarantees. Re-scoring the committed 500-question logs under the new judge is the only way to restore a
-like-for-like headline; until that is done, 83.6% stands as the number produced by the judge named beside
-it.
+这**不是**与头条运行相同的评分器：`deepseek-chat` 现在提供的是 DeepSeek 的 v4-flash，而非为已提交日志评分的 v3.2。不同的评分器会改变绝对分数，因此一次新运行无法与上文的 83.6% 直接比较。在单次运行内，每个系统仍共享同一个评分器，因此运行*内部*的比较仍逐项可比 —— 而这正是此评测框架实际保证的特性。在新评分器下对已提交的 500 题日志重新评分，是恢复逐一对应头条数字的唯一方式；在那之前，83.6% 仍作为由其旁所注评分器产生的数字成立。
 
-Worth naming plainly, because it is the failure mode a "reproducible harness" moat has to survive: the
-code stayed correct and the raw logs stayed committed, but a third-party model id was retired underneath
-the documented command, and nothing in the repo noticed. Pinning judges to endpoints outside our control
-is a standing liability for Bet D.
+值得直白点名，因为这是一道"可复现评测框架"护城河必须挺过的失败模式：代码保持正确、原始日志保持提交，但一个第三方模型 id 在文档化命令之下被悄然下线，而仓库中没有任何东西察觉。将评分器绑定到我们无法控制的 endpoint，是 Bet D 一项长期存在的隐患。
 
 ---
 
-## Measurement-integrity notes (what we fixed so the number is honest)
+## 测量完整性注记（我们为让数字诚实而修复的问题）
 
-These are the kind of bugs that silently inflate or deflate memory-benchmark numbers. We document ours:
+以下是那类会悄悄抬高或压低记忆基准数字的错误。我们记录了自己的这些：
 
-1. **Lean, not full-history (the honest test):** an earlier headline (`engram_full`) prepended facts above
-   the *entire* conversation history (~79k tokens). That system *contains* full-context, so it can't really
-   lose to it — it doesn't validate the memory architecture. The headline is now `engram_lean`, which
-   retrieves a ~9.6k-token slice and is the real test of the retrieval thesis.
-2. **Full-context truncation bug (was deflating the baseline, not us):** the full-context baseline was once
-   capped below the `_S` haystack size, feeding it only the oldest sessions. Fixed so it gets the whole
-   haystack. Any "full-context only scores 30%" claim from before that fix is a truncation artifact.
-3. **Official judge, not a homemade one:** an earlier generic "same info?" judge was *stricter* than the
-   official LongMemEval judge and deflated scores while making them non-comparable. We use the official
-   prompts verbatim.
-4. **Abstention handling:** `_abs` questions are graded by the official *unanswerable* judge.
-5. **Reliability:** the LLM client uses exponential-backoff retry with jitter + transient/permanent error
-   classification; the headline run completed with **0 errored questions** out of 500.
+1. **Lean，而非完整历史（诚实的测试）：** 早先的头条（`engram_full`）将事实置于*整个*对话历史之上（约 79k token）。该系统*包含*了完整上下文，因此实际上不可能输给它 —— 它无法验证记忆架构。头条现改为 `engram_lean`，它检索一块约 9.6k-token 的切片，才是对检索主张真正的测试。
+2. **全上下文截断缺陷（压低的是基线，不是我们）：** 全上下文基线一度被限制在 `_S` 的 haystack 大小以下，只喂给它最旧的会话。已修复，使其获得整个 haystack。该修复之前任何"全上下文仅得 30 分"的说法都是截断造成的假象。
+3. **官方评分器，而非自制的：** 早先一个通用的"信息相同？"评分器比官方 LongMemEval 评分器*更严格*，既压低了分数，又使其无法比较。我们逐字使用官方提示词。
+4. **拒答处理：** `_abs` 题目由官方*不可回答*评分器评级。
+5. **可靠性：** LLM 客户端采用带抖动的指数退避重试 + 瞬时/永久错误分类；头条运行在 500 题中完成了 **0 个错误题目**。
 
 ---
 
-## Honest caveats
+## 诚实的注意事项
 
-- **83.6% is a real result for the current `engram_lean` configuration, not a cherry-picked slice.** Small
-  samples were repeatedly optimistic during development (an 18-item slice once read 83% when an earlier
-  full-set truth was ~58%); **only full-500 numbers appear here.**
-- The lean headline (83.6% @ 9.6k) and the full-context baseline (73.2% @ 79k) are both 500-question runs
-  under the same doubao answerer + deepseek judge; the full-context baseline depends only on
-  (questions, answerer, judge), all identical, so it is a fair reference for the lean number.
-- The hardest categories — multi-session reasoning and single-session-preference — are the active roadmap,
-  updated here with the same reproduce discipline. If a future number appears in this file, the command to
-  reproduce it appears next to it.
+- **83.6% 是当前 `engram_lean` 配置的真实结果，而非精心挑选的切片。** 开发过程中小样本曾反复显得过于乐观（一个 18 项的切片曾读出 83%，而早先的完整集真相约为 58%）；**此处仅出现完整 500 题的数字。**
+- lean 头条（83.6% @ 9.6k）与全上下文基线（73.2% @ 79k）都是在同一 doubao 回答器 + deepseek 评分器下的 500 题运行；全上下文基线仅依赖于（题目、回答器、评分器），三者完全相同，因此它是 lean 数字的一个公平参照。
+- 最难的类别 —— 多会话推理与单会话偏好 —— 是当前的重点工作路线，在此以相同的复现准则更新。若本文件日后出现某个新数字，复现它的命令会紧邻其旁。
 
 ---
 
-## The other measurement: is the memory a *facility*? (`eval/facility.py`)
+## 另一项测量：记忆是否是一个*设施*？（`eval/facility.py`）
 
-Accuracy is one axis. A memory can score well on LongMemEval and still be a store nobody reads. That
-second question has its own in-repo instrument, run the same way and held to the same rule — a number
-we cannot reproduce does not exist:
+准确性只是一个维度。一段记忆可以在 LongMemEval 上得分很高，却仍是无人问津的 store。这第二个问题在仓库内有自己的测量工具，以相同方式运行并遵循相同规则 —— 无法复现的数字不存在：
 
 ```bash
-python eval/facility.py --days 7 --url http://127.0.0.1:8766 --key-file ~/.engram/watch.key
+python eval/facility.py --days 7 --url http://127.0.0.1:8766 --key-file ~/.mnemotrace/watch.key
 ```
 
-It reads only local signal (agent transcripts, the watcher's state and log, and the server's
-**content-free** endpoints), uses no LLM, and reports a five-rung ladder in ~20 s:
+它只读取本地信号（agent 转录文本、watcher 的状态与日志，以及服务端的 **content-free** endpoint），不使用 LLM，并在约 20 秒内报告一个五级阶梯：
 
 | Rung | Question | How it is decided |
 |---|---|---|
-| L0 exists | does memory hold conclusions? | `/v1/stats` + `/v1/memories?facts_limit=0` |
-| L1 connected | are finished sessions actually closed, and how fast? | a finished transcript counts as closed **only** when its session id appears in `GET /v1/sessions`; lag comes only from `fed`-terminated watcher-log blocks and the hook's own `lag_s` |
-| L2 read | is anyone calling `engram_recall`? | structural `tool_use` / `function_call` matching after stripping the `mcp__<server>__` prefix — never a substring scan, which over-counts prose mentions by ~74×; calls are de-duplicated by call id, because resuming a session writes a new transcript that replays the old `tool_use` blocks verbatim (measured here: 182 raw calls, 110 distinct) |
-| L3 useful | (i) do conclusions ever supersede each other? (ii) did a recall change the answer? | (i) is measured; the reach ceiling joins **both** result shapes — Claude's `tool_result` and Codex's `function_call_output` — since joining only one leaves the other agent's recalls stuck in the denominator (that bug read 26% where the truth was 100%); (ii) prints **NOT MEASURED** — it needs human labelling and ships no machine proxy and no LLM judge |
-| L4 depended on | would turning it off for a week hurt? | **not machine-measurable**; printed as such |
+| L0 存在 | 记忆是否保存了结论？ | `/v1/stats` + `/v1/memories?facts_limit=0` |
+| L1 已连接 | 已结束的会话是否真正被关闭，以及有多快？ | 一段已结束的转录文本**仅当**其 session id 出现在 `GET /v1/sessions` 中时才算作已关闭；滞后仅来自 `fed` 终止的 watcher-log 块以及 hook 自身的 `lag_s` |
+| L2 被读取 | 是否有人调用 `mnemotrace_recall`？ | 在剥离 `mcp__<server>__` 前缀后做结构化的 `tool_use` / `function_call` 匹配 —— 绝不做子串扫描（那会将散文提及多算约 74×）；调用按 call id 去重，因为恢复一个会话会写入新的转录文本、原样重放旧的 `tool_use` 块（此处实测：182 次原始调用，110 次去重后） |
+| L3 有用 | （i）结论是否会相互取代？（ii）某次 recall 是否改变了答案？ | （i）已测量；触达上限会同时连接**两种**结果形态 —— Claude 的 `tool_result` 与 Codex 的 `function_call_output` —— 因为只连接一种会把另一个 agent 的 recall 卡在分母里（该缺陷曾读出 26%，而真相是 100%）；（ii）打印 **NOT MEASURED** —— 它需要人工标注，且不提供任何机器代理，也没有 LLM 评分器 |
+| L4 被依赖 | 把它关掉一周会不会造成损害？ | **无法由机器测量**；按此打印 |
 
-Two properties are deliberate. **Counts and rates only:** no field in the output schema and no line in
-the table can hold a fact, a query, a session id, a project name or a file path — the harness reads
-personal transcripts, so it must be unable to quote them. And **`--assert-no-regress` distinguishes
-exit 1 (the facility regressed) from exit 2 (the instrument itself is broken)** — zero control-tool
-calls, an unreachable server, empty roots — with an always-on control row and a stale-matcher
-tripwire, because conflating the two is how a facility metric goes quietly dead while still printing
-zeros. Each run appends one line to `results/facility.jsonl`, so the trend is a `tail`, not a join.
+两项特性是刻意为之。**仅统计计数与比率：** 输出 schema 中没有任何字段、表格中没有任何一行可以容纳一条事实、一个查询、一个 session id、一个项目名或一个文件路径 —— 该评测框架读取的是个人转录文本，因此它必须无法引用它们。而 **`--assert-no-regress` 将退出码 1（设施发生回归）与退出码 2（测量工具自身损坏）区分开来** —— 零控制工具调用、不可达的服务端、空根目录 —— 通过一个常驻的控制行与一个过期匹配器触发器，因为混淆二者正是设施指标在仍打印零值的同时悄然死去的方式。每次运行向 `results/facility.jsonl` 追加一行，因此趋势是一个 `tail`，而非 join。
 
-Numbers from this harness are per-machine and are not published here.
+来自该评测框架的数字是按机器独立的，此处不予发布。

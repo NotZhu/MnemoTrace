@@ -1,14 +1,14 @@
-"""Exercise the user-facing Engram lifecycle for one agent session.
+"""演示单个 agent 会话中面向用户的 忆痕 完整生命周期。
 
-Zero-server local smoke test:
+无服务端的本地冒烟测试：
 
     python examples/cross_agent_lifecycle.py --local
 
-Run an Engram server first:
+先启动 忆痕 服务：
 
-    ENGRAM_OPEN=1 ENGRAM_EMBEDDER=hashing uvicorn engram.server.app:app --port 8000
+    MNEMOTRACE_OPEN=1 MNEMOTRACE_EMBEDDER=hashing uvicorn mnemotrace.server.app:app --port 8000
 
-Then simulate one Codex thread:
+然后模拟一个 Codex 线程：
 
     python examples/cross_agent_lifecycle.py \
         --base http://localhost:8000 \
@@ -17,12 +17,12 @@ Then simulate one Codex thread:
         --project super-memory \
         --thread demo
 
-This demonstrates the product loop an agent client should follow:
-  1. agent_status: content-free wiring/status check
-  2. recall: fetch relevant user/project memory before work
-  3. remember: save durable facts/decisions and short-lived working state
-  4. close_session: drain consolidation and clear working state at session end
-  5. session_report: audit what this session saved
+本示例展示 agent 客户端应遵循的产品闭环：
+  1. agent_status: 不含内容的状态/接线检查
+  2. recall: 开始工作前拉取相关的用户/项目记忆
+  3. remember: 保存持久的 fact/决策与短期的 working 状态
+  4. close_session: 会话结束时触发整合并清空 working 状态
+  5. session_report: 审计本次会话保存了什么
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ if __package__ in {None, ""}:
 Call = Callable[[str, Optional[dict], str], dict]
 DURABLE_MEMORIES = [
     "Project rule: benchmark claims require committed raw logs before public copy changes.",
-    "Project preference: keep Engram memory integrations automatic; users should not manually decide every remember call.",
+    "Project preference: keep MnemoTrace memory integrations automatic; users should not manually decide every remember call.",
 ]
 WORKING_MEMORY = (
     "Current task state: testing the Codex adapter lifecycle; verify the session report before final reply."
@@ -72,9 +72,9 @@ def http_call(base: str, key: str) -> Call:
                 return json.loads(resp.read() or "{}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise SystemExit(f"Engram returned HTTP {exc.code} for {path}: {detail}") from exc
+            raise SystemExit(f"MnemoTrace returned HTTP {exc.code} for {path}: {detail}") from exc
         except urllib.error.URLError as exc:
-            raise SystemExit(f"Could not reach Engram at {base}: {exc}") from exc
+            raise SystemExit(f"Could not reach MnemoTrace at {base}: {exc}") from exc
 
     return call
 
@@ -92,7 +92,7 @@ def _bool_query_value(query: dict[str, list[str]], key: str, default: bool = Fal
 
 
 def local_call(key: str, data_dir: str) -> Call:
-    from engram.service import MemoryService
+    from mnemotrace.service import MemoryService
 
     svc = MemoryService(data_dir=data_dir, embedder_name="hashing", llm_name="")
 
@@ -272,12 +272,12 @@ def exercise_lifecycle(
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="Exercise Engram's agent memory lifecycle.")
+    ap = argparse.ArgumentParser(description="Exercise MnemoTrace's agent memory lifecycle.")
     ap.add_argument("--local", action="store_true",
                     help="use local MemoryService storage instead of an HTTP server")
     ap.add_argument("--data-dir", default=None,
-                    help="local Engram data dir for --local (default: temporary smoke-test dir)")
-    ap.add_argument("--base", default="http://localhost:8000", help="Engram HTTP base URL")
+                    help="local MnemoTrace data dir for --local (default: temporary smoke-test dir)")
+    ap.add_argument("--base", default="http://localhost:8000", help="MnemoTrace HTTP base URL")
     ap.add_argument("--key", default="me", help="Bearer key = user memory namespace")
     ap.add_argument("--agent", default="codex", help="agent name used in the session id")
     ap.add_argument("--project", default="super-memory", help="project/workspace name")
@@ -287,7 +287,7 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     if args.local:
-        data_dir = args.data_dir or tempfile.mkdtemp(prefix="engram-lifecycle.")
+        data_dir = args.data_dir or tempfile.mkdtemp(prefix="mnemotrace-lifecycle.")
         print("mode: local")
         print(f"data_dir: {data_dir}")
         call = local_call(args.key, data_dir)
@@ -311,7 +311,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(1)
 
     if args.local:
-        print("\nFor a real local Codex setup, point its MCP config at the same Engram namespace/data dir.")
+        print("\nFor a real local Codex setup, point its MCP config at the same MnemoTrace namespace/data dir.")
     else:
         print(f"\nInspect in the console: {args.base.rstrip('/')}/ui/  (key: {args.key})")
 

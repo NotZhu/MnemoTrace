@@ -1,15 +1,14 @@
-"""Reproducible eval harness.
+"""可复现的评测 harness。
 
     python eval/harness.py
     python eval/harness.py --storage durable --out results/synthetic_durable.jsonl
     python eval/report.py results/synthetic_durable.jsonl
 
-Runs Engram over each item's history and scores per category, reporting the triple the charter mandates
-(accuracy + context tokens + latency). A "naive recall" reference is included as a stand-in for the
-full-context baseline: it can recall any fact present in the raw history but cannot scope to a point in
-time, cannot tell which of two contradictory facts is current, and cannot abstain -- which is exactly
-the capability surface a memory system has to add. (M1 swaps in real LOCOMO/LongMemEval + an LLM judge
-+ a true full-context+LLM baseline behind this same harness.)
+让 MnemoTrace 跑每个 item 的历史并按类别打分，报告章程要求的三元组（准确率 + context token + 延迟）。
+包含一个"naive recall"参照，充当 full-context 基线的替身：它能召回原始历史里的任何 fact，但无法
+限定到某个时间点、无法分辨两个矛盾 fact 哪个是当前有效的、也无法拒答 —— 这正是一个 memory 系统
+必须补上的能力面。（M1 会在同一 harness 之后换上真实 LOCOMO/LongMemEval + LLM judge + 真正的
+full-context+LLM 基线。）
 """
 from __future__ import annotations
 
@@ -24,8 +23,8 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram import Config, Memory  # noqa: E402
-from engram.util import DAY, stems  # noqa: E402
+from mnemotrace import Config, Memory  # noqa: E402
+from mnemotrace.util import DAY, stems  # noqa: E402
 from eval.synthetic import ITEMS, EvalItem  # noqa: E402
 
 BASE = 1_700_000_000.0
@@ -54,13 +53,13 @@ def _memory_for(storage: str, data_path: str | None = None) -> Memory:
     return Memory(config=cfg)
 
 
-def run_engram(item: EvalItem, storage: str = "memory") -> tuple[bool, int, float]:
-    detail = run_engram_detail(item, storage=storage)
+def run_mnemotrace(item: EvalItem, storage: str = "memory") -> tuple[bool, int, float]:
+    detail = run_mnemotrace_detail(item, storage=storage)
     return detail["ok"], detail["tokens"], detail["latency_ms"]
 
 
-def run_engram_detail(item: EvalItem, storage: str = "memory") -> dict:
-    tmp = tempfile.mkdtemp(prefix=f"engram_eval_{storage}_") if storage != "memory" else None
+def run_mnemotrace_detail(item: EvalItem, storage: str = "memory") -> dict:
+    tmp = tempfile.mkdtemp(prefix=f"mnemotrace_eval_{storage}_") if storage != "memory" else None
     mem = _memory_for(storage, os.path.join(tmp, "vectors") if tmp else None)
     for text, day in item.sessions:
         mem.add(text, user_id=item.id, event_time=BASE + day * DAY)
@@ -105,9 +104,9 @@ def run_naive_recall(item: EvalItem) -> tuple[bool, int]:
     history_text = " ".join(t for t, _ in item.sessions)
     tokens = len(stems(history_text))
     if item.answer is None:
-        return False, tokens  # naive reader cannot abstain
+        return False, tokens  # naive 读者无法拒答
     if item.as_of_day is not None:
-        return False, tokens  # naive reader has no temporal scoping
+        return False, tokens  # naive 读者没有时间范围限定
     return _contains(history_text, item.answer), tokens
 
 
@@ -121,7 +120,7 @@ def evaluate(storage: str = "memory") -> tuple[list[dict], dict]:
     latencies: list[float] = []
 
     for it in ITEMS:
-        e = run_engram_detail(it, storage=storage)
+        e = run_mnemotrace_detail(it, storage=storage)
         b_ok, b_tok = run_naive_recall(it)
         row = {
             **e,
@@ -170,7 +169,7 @@ def write_jsonl(path: str, rows: list[dict], summary: dict) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Run the built-in offline Engram synthetic eval.")
+    ap = argparse.ArgumentParser(description="Run the built-in offline MnemoTrace synthetic eval.")
     ap.add_argument("--storage", choices=["memory", "durable", "lancedb"], default="memory",
                     help="memory uses RAM only; durable/lancedb save and reopen before search")
     ap.add_argument("--out", help="write per-item raw logs plus a final summary record as JSONL")
@@ -180,9 +179,9 @@ def main() -> None:
     if args.out:
         write_jsonl(args.out, rows, summary)
 
-    print(f"Engram eval harness -- {len(ITEMS)} items, offline (hashing embedder + rule extractor)")
+    print(f"MnemoTrace eval harness -- {len(ITEMS)} items, offline (hashing embedder + rule extractor)")
     print(f"storage={args.storage} ({'save/reopen before search' if args.storage != 'memory' else 'RAM only'})\n")
-    print(f"  {'id':5} {'category':16} {'engram':7} {'naive':6}  question")
+    print(f"  {'id':5} {'category':16} {'MnemoTrace':10} {'naive':6}  question")
     print("  " + "-" * 78)
     for row in rows:
         print(
@@ -190,14 +189,14 @@ def main() -> None:
             f"{'PASS' if row['ok'] else 'FAIL':7} {'ok' if row['naive_ok'] else '--':6}  {row['question']}"
         )
 
-    print("\n  Per-category accuracy (engram / naive-recall):")
+    print("\n  Per-category accuracy (MnemoTrace / naive-recall):")
     for c, vals in summary["per_category"].items():
         print(f"    {c:16} {vals['engram_accuracy']:6.1f}% / {vals['naive_accuracy']:5.1f}%")
 
     print("\n  Overall:")
-    print(f"    accuracy        engram {summary['accuracy']:5.1f}%   "
+    print(f"    accuracy        MnemoTrace {summary['accuracy']:5.1f}%   "
           f"naive-recall {summary['naive_accuracy']:5.1f}%")
-    print(f"    context tokens  engram {summary['avg_tokens']:5.1f}    "
+    print(f"    context tokens  MnemoTrace {summary['avg_tokens']:5.1f}    "
           f"naive-recall {summary['naive_avg_tokens']:5.1f}   "
           f"({summary['token_ratio']:.1f}x leaner)")
     print(f"    latency (ms)    p50 {summary['latency_p50_ms']:.2f}   p95 {summary['latency_p95_ms']:.2f}")

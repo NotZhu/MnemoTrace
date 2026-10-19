@@ -1,5 +1,6 @@
 import { currentKey, useAuth } from '../store/auth'
-import { getT } from '../i18n'
+import { copy as t } from '../lib/copy'
+import { isValidApiKey } from './apiKey'
 import type { AuditReport,
   AgentStatus,
   CloseSessionResult,
@@ -22,8 +23,8 @@ import type { AuditReport,
   WorkingItem,
 } from '../types'
 
-// Same-origin by default (FastAPI serves the SPA + API together). Override with
-// VITE_API_BASE when the API lives elsewhere.
+// 默认同源（FastAPI 同时托管 SPA 与 API）。当 API 部署在其他位置时，用
+// VITE_API_BASE 覆盖。
 const BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '')
 
 export function apiBaseUrl(): string {
@@ -42,31 +43,48 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+function requestKey(): string | null {
   const key = currentKey()
+  if (key !== null && !isValidApiKey(key)) {
+    useAuth.getState().logout()
+    throw new ApiError(400, t.errors.invalidApiKey)
+  }
+  return key
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const key = requestKey()
+  const assertCurrentKey = () => {
+    if (path !== '/health' && key !== currentKey()) throw new ApiError(409, t.errors.spaceChanged)
+  }
   const headers = new Headers(init.headers)
   headers.set('Content-Type', 'application/json')
   if (key) headers.set('Authorization', `Bearer ${key}`)
 
   const res = await fetch(`${BASE}${path}`, { ...init, headers })
+  // 旧请求的迟到响应不能退出新账号，也不能驱动新账号的写后回调。
+  assertCurrentKey()
 
   if (res.status === 401) {
-    // Stale / wrong key — drop it so the app returns to the login gate.
-    useAuth.getState().logout()
-    throw new ApiError(401, getT().errors.unauthorized)
+    // key 已过期/错误 — 丢弃它，让应用回到登录页。
+    if (key === currentKey()) useAuth.getState().logout()
+    throw new ApiError(401, t.errors.unauthorized)
   }
   if (!res.ok) {
-    let detail = getT().errors.requestFailed(res.status)
+    let detail = t.errors.requestFailed(res.status)
     try {
       const body = await res.json()
       if (body?.detail) detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
     } catch {
-      /* non-JSON error body */
+      /* 非 JSON 的错误响应体 */
     }
+    assertCurrentKey()
     throw new ApiError(res.status, detail)
   }
   if (res.status === 204) return undefined as T
-  return (await res.json()) as T
+  const data = (await res.json()) as T
+  assertCurrentKey()
+  return data
 }
 
 const json = (body: unknown) => JSON.stringify(body)
@@ -85,10 +103,11 @@ export interface MemoriesQuery {
   episodes_limit?: number
   episodes_offset?: number
   status?: 'live' | 'superseded'
+  category?: string
   q?: string
   include_sensitive?: boolean
-  // Server-side split of the two fact families: session conclusions vs. per-turn attributes. Keeping
-  // it on the server means facts_page.total already reports the filtered count.
+  // 服务器端对两类事实的划分：会话结论 vs. 逐轮属性。放在服务器侧意味着
+  // facts_page.total 已经是过滤后的计数。
   kind?: 'outcomes' | 'attributes'
 }
 
@@ -163,10 +182,9 @@ export const api = {
       body: json({ subject: 'user', ...fact }),
     }),
 
-  // `source` comes back as 'user' after any edit — the caller needs it to confirm the correction will
-  // survive the next extraction pass rather than being silently overwritten.
+  // 实际修改内容后 `source` 为 'user'；只改敏感标记或分类时保留原来源。
   editFact: (id: string, patch: FactEdit) =>
-    request<{ ok: boolean; id: string; text: string; source: FactSource }>(`/v1/facts/${id}`, {
+    request<{ ok: boolean; id: string; text: string; display?: string; source: FactSource }>(`/v1/facts/${id}`, {
       method: 'PATCH',
       body: json(patch),
     }),
@@ -174,8 +192,8 @@ export const api = {
   deleteFact: (id: string) =>
     request<{ ok: boolean }>(`/v1/facts/${id}`, { method: 'DELETE' }),
 
-  // expect_count is what the owner was shown when they approved: the server refuses rather than erase
-  // more rows than that if the slot moved since the audit ran.
+  // expect_count 是所有者确认时看到的数量：如果自审计以来该槽位发生了变化，服务器会
+  // 拒绝执行，而不是删除超过该数量的行。
   clearSlot: (subject: string, predicate: string, expect_count: number) =>
     request<{ ok: boolean; deleted: number; found?: number; reason?: string }>(
       '/v1/facts/clear-slot',
@@ -214,19 +232,19 @@ export const api = {
   resolveConflict: (id: string, keep: 'newer' | 'older' | 'both') =>
     request<{ ok: boolean }>(`/v1/conflicts/${id}/resolve`, { method: 'POST', body: json({ keep }) }),
 
-  /** Trigger a browser download of the memory export (safe by default; keeps the Bearer header). */
+  /** 触发浏览器下载记忆导出（默认安全；保留 Bearer 请求头）。 */
   async exportDownload(filenameHint = 'me', includeSensitive = false): Promise<void> {
-    const key = currentKey()
+    const key = requestKey()
     const qs = `?include_sensitive=${includeSensitive ? 'true' : 'false'}`
     const res = await fetch(`${BASE}/v1/export${qs}`, {
       headers: key ? { Authorization: `Bearer ${key}` } : undefined,
     })
-    if (!res.ok) throw new ApiError(res.status, getT().errors.exportFailed(res.status))
+    if (!res.ok) throw new ApiError(res.status, t.errors.exportFailed(res.status))
     const blob = await res.blob()
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `engram_${filenameHint}_export.json`
+    a.download = `mnemotrace_${filenameHint}_export.json`
     document.body.appendChild(a)
     a.click()
     a.remove()

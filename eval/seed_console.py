@@ -1,16 +1,15 @@
-"""Seed the Engram console with LongMemEval_S so a deployed service has rich, realistic memory to
-browse and test — ONE user namespace per question (key = its number).
+"""用 LongMemEval_S 给 MnemoTrace 控制台做种子，让部署好的服务有丰富、真实的记忆可浏览、可测试
+——每个问题一个独立用户命名空间（key = 问题序号）。
 
-Why local-build-then-upload: the server uses bge-small, so we build the per-user stores HERE with the
-same embedder (vectors are compatible) and copy the generated store directories into ENGRAM_DATA_DIR.
-The server isn't hammered, and there's no model mismatch.
+为什么本地构建再上传：服务端用 bge-small，所以在这里用同一个 embedder 构建每用户的存储
+（向量兼容），再把生成的存储目录拷进 MNEMOTRACE_DATA_DIR。这样既不会打爆服务器，也没有模型
+不一致。
 
-Hybrid extraction (cost vs. quality): the bulk uses the FREE offline rule extractor; a representative
-subset — the first `--featured-per-cat` questions of EACH category — uses the configured LLM for
-high-quality facts. Everything else (episodes, L2 summaries, timeline, graph, retrieval) is populated
-either way.
+混合抽取（成本与质量的折中）：大头用免费的离线规则抽取器；有代表性的子集——每个类别的前
+`--featured-per-cat` 个问题——用配置好的 LLM 抽取高质量 fact。其余一切（episode、L2 摘要、
+时间线、图、检索）无论哪种方式都会填充。
 
-Run from the repo root (so .env with the provider key is picked up):
+从仓库根目录运行（以便读到带 provider key 的 .env）：
   python eval/seed_console.py \
       --data ~/.cache/huggingface/hub/datasets--xiaowu0162--longmemeval/snapshots/*/longmemeval_s \
       --out /tmp/console_stores --featured-per-cat 3 --llm volcano:doubao-seed-1-6-flash-250615
@@ -30,13 +29,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from engram import Memory
-from engram.util import DAY, fmt_date
+from mnemotrace import Memory
+from mnemotrace.util import DAY, fmt_date
 
 BASE = 1_700_000_000.0
 
 
-# --- LongMemEval ingest (inlined from eval/longmemeval.py to avoid importing the LLM-eval stack) ---
+# --- LongMemEval ingest（从 eval/longmemeval.py 内联，避免引入 LLM 评测栈） ---
 def sessions_of(item: dict):
     sessions = item.get("haystack_sessions", [])
     ids = item.get("haystack_session_ids") or [f"sess_{i}" for i in range(len(sessions))]
@@ -59,7 +58,7 @@ def parse_date(s):
 
 
 def ingest(mem: Memory, item: dict, user_id: str) -> None:
-    """One episode per session (concatenated turns), batch-embedded in a single encode call."""
+    """每个 session 一个 episode（拼接各 turn），用一次 encode 调用批量嵌入。"""
     dates = item.get("haystack_dates") or []
     texts, meta = [], []
     for idx, (sid, turns) in enumerate(sessions_of(item)):
@@ -80,7 +79,7 @@ def ingest(mem: Memory, item: dict, user_id: str) -> None:
 
 
 def pick_featured(items: list[dict], per_cat: int) -> set[int]:
-    """First `per_cat` questions of each category — a representative spread across the 6 task types."""
+    """每个类别的前 `per_cat` 个问题——覆盖 6 种任务类型的有代表性样本。"""
     seen: dict[str, int] = {}
     featured: set[int] = set()
     for i, it in enumerate(items):
@@ -109,7 +108,7 @@ def main() -> None:
     ap.add_argument("--shard", default=None, help="i/N — only process items where index %% N == i (parallel)")
     args = ap.parse_args()
 
-    from engram.llm.providers import load_dotenv, make_embedder, make_llm
+    from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm
 
     load_dotenv()
     os.makedirs(args.out, exist_ok=True)
@@ -142,7 +141,7 @@ def main() -> None:
         try:
             mem.consolidate()
             mem.summarize_episodes(list(mem.episodes_doc.values()))
-        except Exception as exc:  # noqa: BLE001 -- never let one bad item abort the whole seed
+        except Exception as exc:  # noqa: BLE001 -- 绝不让一个坏条目中断整个种子流程
             print(f"  [{key}] consolidate degraded: {type(exc).__name__}: {exc}")
         n_live = sum(1 for f in mem.fact_store.values() if f.is_live())
         mem.save(os.path.join(args.out, key))
@@ -160,15 +159,15 @@ def main() -> None:
             print(f"  {i + 1}/{len(items)}  ({rate:.1f}/s)  last={key} facts={n_live} "
                   f"{'★llm' if is_feat else ''}")
 
-    # When sharded, each worker writes its own slice; merge_manifest() combines them afterward.
+    # 分片时每个 worker 写自己的那份；之后由 merge_manifest() 合并。
     mfile = f"manifest.shard{shard_i}.json" if shard_n is not None else "manifest.json"
     with open(os.path.join(args.out, mfile), "w") as fh:
         json.dump(manifest, fh, ensure_ascii=False, indent=2)
     if shard_n is not None:
         print(f"shard {shard_i}/{shard_n} done in {time.time() - t0:.0f}s -> {mfile} ({len(manifest)} users)")
         return
-    # human-readable table
-    lines = ["# Engram console seed — LongMemEval_S\n",
+    # 人类可读的表格
+    lines = ["# MnemoTrace console seed — LongMemEval_S\n",
              f"{len(manifest)} users. Log in with the **key** (the number). ★ = LLM-extracted.\n",
              "| key | cat | facts | question | answer |", "|--:|---|--:|---|---|"]
     for m in manifest:

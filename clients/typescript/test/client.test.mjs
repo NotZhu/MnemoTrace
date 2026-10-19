@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { EngramClient } from '../dist/index.js'
+import { MnemoTraceClient, MnemoTraceError } from '../dist/index.js'
+import { createRequire } from 'node:module'
 
 const counts = {
   episodes: 0,
@@ -23,6 +24,66 @@ const counts = {
   graph_stale_relations: 0,
   pending_conflicts: 0,
 }
+
+test('ESM and CommonJS expose only the new runtime API', async () => {
+  const esm = await import('../dist/index.js')
+  const cjs = createRequire(import.meta.url)('../dist/index.cjs')
+  for (const sdk of [esm, cjs]) {
+    assert.equal(typeof sdk.MnemoTraceClient, 'function')
+    assert.equal(typeof sdk.MnemoTraceError, 'function')
+    assert.equal(Object.hasOwn(sdk, 'EngramClient'), false)
+    assert.equal(Object.hasOwn(sdk, 'EngramError'), false)
+  }
+})
+
+test('chat preserves model IDs and returns the mnemotrace response extension', async () => {
+  const calls = []
+  const meta = {
+    recalled: true,
+    memory_tokens_est: 42,
+    session_id: 'sdk-demo:chat',
+    as_of: null,
+    redacted_sensitive: false,
+    remembered: false,
+  }
+  const model = 'deepseek/deepseek-chat'
+  const client = new MnemoTraceClient({
+    fetch: async (url, init) => {
+      calls.push({ url, init })
+      return new Response(JSON.stringify({
+        id: 'chatcmpl-test',
+        object: 'chat.completion',
+        created: 0,
+        model,
+        choices: [{ index: 0, message: { role: 'assistant', content: 'Test reply' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 42, completion_tokens: 2, total_tokens: 44 },
+        mnemotrace: meta,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    },
+  })
+  const completion = await client.chat.completions.create({
+    model,
+    messages: [{ role: 'user', content: 'Test question' }],
+    memory: { session_id: meta.session_id, remember: false },
+  })
+  assert.equal(calls[0].url, 'http://localhost:8000/v1/chat/completions')
+  assert.equal(JSON.parse(calls[0].init.body).model, model)
+  assert.deepEqual(completion.mnemotrace, meta)
+  assert.equal(Object.hasOwn(completion, 'engram'), false)
+})
+
+test('request failures use the new error identity and default message', async () => {
+  const client = new MnemoTraceClient({
+    fetch: async () => new Response('Unavailable', { status: 503 }),
+  })
+  await assert.rejects(client.health(), (err) => {
+    assert.ok(err instanceof MnemoTraceError)
+    assert.equal(err.name, 'MnemoTraceError')
+    assert.equal(err.status, 503)
+    assert.equal(err.message, 'MnemoTrace request failed (503)')
+    return true
+  })
+})
 
 test('agentStatus calls the content-free agent status endpoint', async () => {
   const calls = []
@@ -46,24 +107,24 @@ test('agentStatus calls the content-free agent status endpoint', async () => {
       embedder: 'HashingEmbedder',
       llm_configured: false,
       recommended_next_actions: [
-        'Call engram_recall before answering tasks that depend on prior user/project context.',
+        'Call mnemotrace_recall before answering tasks that depend on prior user/project context.',
       ],
       tools: {
-        read_context: 'engram_recall',
-        write_memory: 'engram_remember',
-        close_session: 'engram_close_session',
-        inspect_facts: 'engram_list_facts',
-        correct_fact: 'engram_update_fact',
-        delete_fact: 'engram_delete_fact',
-        focus: 'engram_get_focus / engram_set_focus',
+        read_context: 'mnemotrace_recall',
+        write_memory: 'mnemotrace_remember',
+        close_session: 'mnemotrace_close_session',
+        inspect_facts: 'mnemotrace_list_facts',
+        correct_fact: 'mnemotrace_update_fact',
+        delete_fact: 'mnemotrace_delete_fact',
+        focus: 'mnemotrace_get_focus / mnemotrace_set_focus',
       },
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     })
   }
-  const client = new EngramClient({
-    baseUrl: 'http://engram.test/v1',
+  const client = new MnemoTraceClient({
+    baseUrl: 'http://mnemotrace.test/v1',
     apiKey: 'sk-test',
     fetch,
   })
@@ -73,13 +134,13 @@ test('agentStatus calls the content-free agent status endpoint', async () => {
   assert.equal(calls.length, 1)
   assert.equal(
     calls[0].url,
-    'http://engram.test/v1/agent/status?session_id=codex%3Arepo%2Fthread%201',
+    'http://mnemotrace.test/v1/agent/status?session_id=codex%3Arepo%2Fthread%201',
   )
   assert.equal(calls[0].init.method, undefined)
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
   assert.equal(calls[0].init.headers['Content-Type'], undefined)
   assert.equal(status.mode, 'content_free_agent_status')
-  assert.equal(status.tools.read_context, 'engram_recall')
+  assert.equal(status.tools.read_context, 'mnemotrace_recall')
 })
 
 test('sessionReport calls the session audit endpoint with redaction default', async () => {
@@ -103,8 +164,8 @@ test('sessionReport calls the session audit endpoint with redaction default', as
       headers: { 'Content-Type': 'application/json' },
     })
   }
-  const client = new EngramClient({
-    baseUrl: 'http://engram.test',
+  const client = new MnemoTraceClient({
+    baseUrl: 'http://mnemotrace.test',
     apiKey: 'sk-test',
     fetch,
   })
@@ -114,7 +175,7 @@ test('sessionReport calls the session audit endpoint with redaction default', as
   assert.equal(calls.length, 1)
   assert.equal(
     calls[0].url,
-    'http://engram.test/v1/sessions/report?session_id=codex%3Arepo%2Fthread+1&include_sensitive=false',
+    'http://mnemotrace.test/v1/sessions/report?session_id=codex%3Arepo%2Fthread+1&include_sensitive=false',
   )
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
   assert.equal(report.session_id, 'codex:repo/thread 1')
@@ -158,8 +219,8 @@ test('sessions calls the content-free cross-agent session index endpoint', async
       headers: { 'Content-Type': 'application/json' },
     })
   }
-  const client = new EngramClient({
-    baseUrl: 'http://engram.test/v1',
+  const client = new MnemoTraceClient({
+    baseUrl: 'http://mnemotrace.test/v1',
     apiKey: 'sk-test',
     fetch,
   })
@@ -167,7 +228,7 @@ test('sessions calls the content-free cross-agent session index endpoint', async
   const index = await client.sessions({ limit: 2, offset: 4, query: 'claude-code' })
 
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].url, 'http://engram.test/v1/sessions?limit=2&offset=4&q=claude-code')
+  assert.equal(calls[0].url, 'http://mnemotrace.test/v1/sessions?limit=2&offset=4&q=claude-code')
   assert.equal(calls[0].init.method, undefined)
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
   assert.equal(calls[0].init.headers['Content-Type'], undefined)
@@ -230,8 +291,8 @@ test('memories supports paging search and share-safe filtering for owner UIs', a
       headers: { 'Content-Type': 'application/json' },
     })
   }
-  const client = new EngramClient({
-    baseUrl: 'http://engram.test',
+  const client = new MnemoTraceClient({
+    baseUrl: 'http://mnemotrace.test',
     apiKey: 'sk-test',
     fetch,
   })
@@ -248,7 +309,7 @@ test('memories supports paging search and share-safe filtering for owner UIs', a
   assert.equal(calls.length, 1)
   assert.equal(
     calls[0].url,
-    'http://engram.test/v1/memories?facts_limit=2&facts_offset=4&episodes_limit=0&status=live&q=work&include_sensitive=false',
+    'http://mnemotrace.test/v1/memories?facts_limit=2&facts_offset=4&episodes_limit=0&status=live&q=work&include_sensitive=false',
   )
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
   assert.equal(dump.facts_page.next_offset, 6)
@@ -262,7 +323,7 @@ test('export defaults to share-safe payload and can request full private export'
     calls.push({ url, init })
     const includeSensitive = url.endsWith('include_sensitive=true')
     return new Response(JSON.stringify({
-      engram_export_version: 1,
+      mnemotrace_export_version: 1,
       include_sensitive: includeSensitive,
       redacted_sensitive: !includeSensitive,
       facts: includeSensitive
@@ -276,8 +337,8 @@ test('export defaults to share-safe payload and can request full private export'
       headers: { 'Content-Type': 'application/json' },
     })
   }
-  const client = new EngramClient({
-    baseUrl: 'http://engram.test/v1',
+  const client = new MnemoTraceClient({
+    baseUrl: 'http://mnemotrace.test/v1',
     apiKey: 'sk-test',
     fetch,
   })
@@ -285,9 +346,11 @@ test('export defaults to share-safe payload and can request full private export'
   const safeExport = await client.export()
   const fullExport = await client.export({ includeSensitive: true })
 
-  assert.equal(calls[0].url, 'http://engram.test/v1/export?include_sensitive=false')
-  assert.equal(calls[1].url, 'http://engram.test/v1/export?include_sensitive=true')
+  assert.equal(calls[0].url, 'http://mnemotrace.test/v1/export?include_sensitive=false')
+  assert.equal(calls[1].url, 'http://mnemotrace.test/v1/export?include_sensitive=true')
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
+  assert.equal(safeExport.mnemotrace_export_version, 1)
+  assert.equal(Object.hasOwn(safeExport, 'engram_export_version'), false)
   assert.equal(safeExport.include_sensitive, false)
   assert.equal(safeExport.redacted_sensitive, true)
   assert.deepEqual(safeExport.facts.map((fact) => fact.object), ['Moonshot AI'])
@@ -307,22 +370,22 @@ test('forget requires explicit confirmation before sending destructive request',
       headers: { 'Content-Type': 'application/json' },
     })
   }
-  const client = new EngramClient({
-    baseUrl: 'http://engram.test/v1',
+  const client = new MnemoTraceClient({
+    baseUrl: 'http://mnemotrace.test/v1',
     apiKey: 'sk-test',
     fetch,
   })
 
   assert.throws(
     () => client.forget(),
-    (err) => err.name === 'EngramError' && err.status === 400 && /confirm/.test(err.message),
+    (err) => err.name === 'MnemoTraceError' && err.status === 400 && /confirm/.test(err.message),
   )
   assert.equal(calls.length, 0)
 
   const done = await client.forget({ confirm: true })
 
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].url, 'http://engram.test/v1/forget')
+  assert.equal(calls[0].url, 'http://mnemotrace.test/v1/forget')
   assert.equal(calls[0].init.method, 'POST')
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
   assert.deepEqual(JSON.parse(calls[0].init.body), { confirm: true })

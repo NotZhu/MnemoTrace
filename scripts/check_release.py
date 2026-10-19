@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Zero-dependency release gate for Engram's self-hosted commercial distribution."""
+"""MnemoTrace 自托管商业发行版的零依赖发布门禁检查。"""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,7 @@ from pathlib import Path
 
 try:
     import tomllib
-except ModuleNotFoundError:  # Python 3.10 compatibility for the release/dev toolchain.
+except ModuleNotFoundError:  # 兼容 Python 3.10 的发布/开发工具链。
     import tomli as tomllib
 
 
@@ -34,7 +34,7 @@ def main() -> int:
     sdk = json.loads(_read("clients/typescript/package.json"))
     sdk_lock = json.loads(_read("clients/typescript/package-lock.json"))
     frontend = json.loads(_read("frontend/package.json"))
-    init_text = _read("engram/__init__.py")
+    init_text = _read("mnemotrace/__init__.py")
     init_version = re.search(r'^__version__\s*=\s*"([^"]+)"', init_text, re.MULTILINE)
 
     versions = {
@@ -74,7 +74,7 @@ def main() -> int:
         "API.md",
         "docs/commercial-release-0.1.0.zh-CN.md",
         "docs/architecture-optimization-map.zh-CN.md",
-        "docs/engram-full-architecture-report.zh-CN.md",
+        "docs/mnemotrace-full-architecture-report.zh-CN.md",
         ".github/workflows/ci.yml",
     )
     for path in required:
@@ -83,7 +83,7 @@ def main() -> int:
     docker_text = _read("Dockerfile")
     compose_text = _read("deploy/docker-compose.yml")
     _check("USER 10001:10001" in docker_text, "container runs as non-root", errors)
-    _check("ENGRAM_OPEN" not in docker_text + compose_text, "container is not open by default", errors)
+    _check("MNEMOTRACE_OPEN" not in docker_text + compose_text, "container is not open by default", errors)
     _check("/ready" in docker_text + compose_text, "container health uses readiness", errors)
 
     results = _read("RESULTS.md")

@@ -1,6 +1,6 @@
-# Engram Constitution
+# MnemoTrace Constitution
 
-> Engram is an open-source, self-hostable long-term memory engine for LLM agents.
+> MnemoTrace is an open-source, self-hostable long-term memory engine for LLM agents.
 > This constitution distills the non-negotiables from [`CLAUDE.md`](../../CLAUDE.md) (the project
 > charter and source of truth) into spec-checkable principles. Every spec, plan, and task produced
 > through Spec-Kit is validated against the principles below. When this file and `CLAUDE.md` appear
@@ -30,7 +30,7 @@ using the hashing embedder + rule-based extractor + in-memory stores.
 ### III. Interfaces First, Backends Behind Them
 Every external dependency (LLM, embedder, vector/graph/doc store, lexical index) sits behind an abstract
 interface with a zero-dep, **deterministic**, offline fallback.
-- Never import a heavy dependency at module top level in `engram/` core — gate it behind the backend
+- Never import a heavy dependency at module top level in `mnemotrace/` core — gate it behind the backend
   that needs it, imported lazily.
 - Offline fallbacks (hashing embedder, rule-based extractor) are deterministic so tests and the demo
   reproduce without network.
@@ -72,7 +72,7 @@ What we ship in public must survive a skeptic reading our logs.
 - **Dual-process core.** System-1 = hot write path, no LLM on the critical path (<50ms target).
   System-2 = async/sleep-time consolidation (extract facts, build the bi-temporal graph, detect
   conflicts, score salience/decay, summarize). The read path targets <100ms.
-- **Language.** Python ≥ 3.10; `engram/` core is pure-stdlib. Dropping to Rust requires harness
+- **Language.** Python ≥ 3.10; `mnemotrace/` core is pure-stdlib. Dropping to Rust requires harness
   evidence that it is the bottleneck (Principle V).
 - **Module shape.** Small, composable modules that match the repository tree in `CLAUDE.md` §5; a
   reviewer must be able to map any file to a box in the §3 architecture diagram.

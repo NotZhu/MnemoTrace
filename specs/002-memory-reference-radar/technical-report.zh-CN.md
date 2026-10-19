@@ -1,20 +1,20 @@
-# Engram 记忆框架技术报告：面向可验证算法领先的架构路线
+# MnemoTrace 记忆框架技术报告：面向可验证算法领先的架构路线
 
 **日期**：2026-06-29
 
 **关联 Spec-Kit feature**：`002-memory-reference-radar`
 
-**适用范围**：内部技术路线、架构设计、后续算法实现规划。本文不是公开营销稿；任何公开性能主张仍必须来自 Engram 自己的 `eval/` harness 与已提交的 `results/*.jsonl` 原始日志。
+**适用范围**：内部技术路线、架构设计、后续算法实现规划。本文不是公开营销稿；任何公开性能主张仍必须来自 MnemoTrace 自己的 `eval/` harness 与已提交的 `results/*.jsonl` 原始日志。
 
 ## 1. 执行摘要
 
-Engram 的目标不是做一个普通的「记忆插件」，而是做一个可自托管、可复现、可审计、可扩展的 LLM agent 长期记忆基础设施。真正的领先不应靠一句「世界第一」来证明，而应靠三件事同时成立：
+MnemoTrace 的目标不是做一个普通的「记忆插件」，而是做一个可自托管、可复现、可审计、可扩展的 LLM agent 长期记忆基础设施。真正的领先不应靠一句「世界第一」来证明，而应靠三件事同时成立：
 
 1. **准确率领先**：在中立、可复现的 benchmark 上，检索出的精确上下文比 full-context baseline 更准。
 2. **成本与延迟领先**：在准确率不牺牲的前提下，显著降低 token 和 p50/p95 latency。
 3. **证据领先**：每一个公开数字都有命令、配置、原始日志和 full-context baseline 可复跑。
 
-我们当前的战略判断是：没有单一模式能赢。要把公开领域最强的做法组合成 Engram 自己的内核：
+我们当前的战略判断是：没有单一模式能赢。要把公开领域最强的做法组合成 MnemoTrace 自己的内核：
 
 - 原始证据保真：Episode/raw chunks 永远是事实来源。
 - 原子事实与双时间轴：Fact 有 `valid_at`/`invalid_at` 和 `created_at`/`expired_at`。
@@ -24,7 +24,7 @@ Engram 的目标不是做一个普通的「记忆插件」，而是做一个可�
 - 睡眠期 consolidation：摘要、画像、心智模型、意图/程序记忆异步构建。
 - 可复现 harness：任何算法改进必须报告 accuracy + tokens + latency。
 
-一句话：**Engram 要成为「双时间轴图谱记忆内核 + 混合证据检索 + 多跳规划器 + 可复现评分台」**。
+一句话：**MnemoTrace 要成为「双时间轴图谱记忆内核 + 混合证据检索 + 多跳规划器 + 可复现评分台」**。
 
 ## 2. 设计原则
 
@@ -38,7 +38,7 @@ Engram 的目标不是做一个普通的「记忆插件」，而是做一个可�
 
 - 不写未复现的竞品对比。
 - 不写没有 raw logs 的「SOTA」「#1」「世界第一」。
-- 不把第三方 benchmark 数字当成 Engram 证据。
+- 不把第三方 benchmark 数字当成 MnemoTrace 证据。
 - 不牺牲 AGPL + commercial 双许可的清晰边界。
 
 ### 2.3 任何能力都必须能被 ablation
@@ -54,7 +54,7 @@ Engram 的目标不是做一个普通的「记忆插件」，而是做一个可�
 
 ### 3.1 P0：直接记忆系统与强竞品
 
-| 系统 | 核心启发 | Engram 吸收方向 |
+| 系统 | 核心启发 | MnemoTrace 吸收方向 |
 | --- | --- | --- |
 | [Hy-Memory](https://hy-memory.com/) / [Tencent Hunyuan Memory](https://memory.hunyuan.tencent.com/) | 六层记忆、System-1/System-2、evolution chain | chain-aware retrieval、session/profile/mental/intent 派生层、runtime profiles |
 | [Mem0](https://github.com/mem0ai/mem0) | 通用 memory layer、SDK/API、用户/agent/session 记忆 | 服务 API、实体链接、OpenAI/MCP 兼容面 |
@@ -68,7 +68,7 @@ Engram 的目标不是做一个普通的「记忆插件」，而是做一个可�
 
 ### 3.2 P1：算法与架构原语
 
-| 系统 | 核心启发 | Engram 吸收方向 |
+| 系统 | 核心启发 | MnemoTrace 吸收方向 |
 | --- | --- | --- |
 | [SimpleMem](https://github.com/aiming-lab/SimpleMem) | lifelong memory compression、自演化记忆 | sleep-time semantic compression、summary/fact/chunk fusion ablation |
 | [A-Mem](https://github.com/agiresearch/a-mem) | 动态链接记忆、Zettelkasten 式组织 | memory-link evolution、associative expansion |
@@ -84,7 +84,7 @@ Engram 的目标不是做一个普通的「记忆插件」，而是做一个可�
 
 ### 3.3 P2：产品面与部署形态
 
-| 系统 | 核心启发 | Engram 吸收方向 |
+| 系统 | 核心启发 | MnemoTrace 吸收方向 |
 | --- | --- | --- |
 | [MemOS](https://github.com/MemTensor/MemOS) | memory OS、memory cubes、反馈修正 | namespace/cube model、feedback correction UX |
 | [MemoryOS](https://github.com/BAI-LAB/MemoryOS) | 短/中/长期 personalized memory | profile/episodic/procedural lifecycle policy |
@@ -92,7 +92,7 @@ Engram 的目标不是做一个普通的「记忆插件」，而是做一个可�
 | [Memobase](https://github.com/memodb-io/memobase) | user profile memory | profile/identity schema、更新策略 |
 | [agentmemory](https://github.com/rohitg00/agentmemory) | MCP-first coding-agent memory | MCP server ergonomics、coding-agent workflows |
 
-## 4. Engram 目标架构
+## 4. MnemoTrace 目标架构
 
 ### 4.1 写路径：System-1 快写，System-2 慢思考
 
@@ -142,9 +142,9 @@ System-2 的目标是高质量、可审计：
 
 ### 5.1 Chain-aware retrieval
 
-**来源启发**：Hy-Memory evolution chain、Graphiti temporal updates、Engram 现有 `supersedes` 模型。
+**来源启发**：Hy-Memory evolution chain、Graphiti temporal updates、MnemoTrace 现有 `supersedes` 模型。
 
-**Engram 形态**：当 read path 命中一个 fact/profile record 时，在 token budget 内展开其 current fact、superseded fact、superseding fact、valid/invalid time 和 provenance。
+**MnemoTrace 形态**：当 read path 命中一个 fact/profile record 时，在 token budget 内展开其 current fact、superseded fact、superseding fact、valid/invalid time 和 provenance。
 
 **预期收益**：提升知识更新、偏好变化、时间问答。
 
@@ -154,9 +154,9 @@ System-2 的目标是高质量、可审计：
 
 ### 5.2 Raw evidence fusion hardening
 
-**来源启发**：MemPalace、Supermemory、Mem0，以及 Engram M1 的 load-bearing finding。
+**来源启发**：MemPalace、Supermemory、Mem0，以及 MnemoTrace M1 的 load-bearing finding。
 
-**Engram 形态**：把 raw chunks、facts、graph paths、derived summaries 明确建模为不同 evidence classes，context assembly 时按证据类型、provenance、token budget 做融合。
+**MnemoTrace 形态**：把 raw chunks、facts、graph paths、derived summaries 明确建模为不同 evidence classes，context assembly 时按证据类型、provenance、token budget 做融合。
 
 **预期收益**：降低 facts-only 的细节遗漏，提升答案可引用性。
 
@@ -168,7 +168,7 @@ System-2 的目标是高质量、可审计：
 
 **来源启发**：Hy-Memory、RAPTOR、GraphRAG、SimpleMem、LLM Wiki。
 
-**Engram 形态**：
+**MnemoTrace 形态**：
 
 - SessionSummary：会话摘要。
 - ProfileSummary：用户画像摘要。
@@ -186,7 +186,7 @@ System-2 的目标是高质量、可审计：
 
 **来源启发**：HippoRAG、LightRAG、GraphRAG、LLM Wiki 四信号图谱。
 
-**Engram 形态**：query entity 作为种子，进行 bounded n-hop/PPR-style expansion，并叠加：
+**MnemoTrace 形态**：query entity 作为种子，进行 bounded n-hop/PPR-style expansion，并叠加：
 
 - graph distance
 - edge confidence
@@ -204,7 +204,7 @@ System-2 的目标是高质量、可审计：
 
 **来源启发**：LLM Wiki、GraphRAG、Cognee。
 
-**Engram 形态**：可选生成 human-readable memory workspace，用于维护者查看：
+**MnemoTrace 形态**：可选生成 human-readable memory workspace，用于维护者查看：
 
 - source-backed pages
 - purpose/context
@@ -223,7 +223,7 @@ System-2 的目标是高质量、可审计：
 
 **来源启发**：Generative Agents、Reflexion、ExpeL、A-Mem、Hindsight。
 
-**Engram 形态**：失败、重复任务、用户修正、高 salience episode 进入 procedural memory 候选，经验证后形成 lesson/skill memory。
+**MnemoTrace 形态**：失败、重复任务、用户修正、高 salience episode 进入 procedural memory 候选，经验证后形成 lesson/skill memory。
 
 **预期收益**：提升 agent 重复任务表现、减少同类错误。
 
@@ -235,7 +235,7 @@ System-2 的目标是高质量、可审计：
 
 **来源启发**：Hy-Memory、MemOS、Mem0、Supermemory。
 
-**Engram 形态**：
+**MnemoTrace 形态**：
 
 - `lite`：raw chunks + lexical/vector。
 - `standard`：facts + raw chunks + conflict handling。
@@ -256,7 +256,7 @@ System-2 的目标是高质量、可审计：
 2. Raw evidence fusion hardening。
 3. Context assembly 证据类型化。
 
-原因：这是最直接服务 LongMemEval/LOCOMO 的路径，也是 Engram 当前已有数据模型最能支撑的方向。
+原因：这是最直接服务 LongMemEval/LOCOMO 的路径，也是 MnemoTrace 当前已有数据模型最能支撑的方向。
 
 ### 阶段 B：再攻 hard categories
 
@@ -264,7 +264,7 @@ System-2 的目标是高质量、可审计：
 2. Multi-hop planner 与 graph expansion 联动。
 3. Temporal/as-of filtering 加强。
 
-原因：multi-hop、multi-session、temporal 是长期记忆系统最难的类别，也是 Engram 的差异化战场。
+原因：multi-hop、multi-session、temporal 是长期记忆系统最难的类别，也是 MnemoTrace 的差异化战场。
 
 ### 阶段 C：再建长期护城河
 
@@ -315,7 +315,7 @@ System-2 的目标是高质量、可审计：
 - GPLv3/不明 license 项目只做 architecture-only clean-room。
 - 不搬代码、不搬 prompt、不搬 schema。
 - 不用外部数字做公开 claim。
-- 不说「世界第一」作为公开结论，除非有 Engram-owned benchmark evidence。
+- 不说「世界第一」作为公开结论，除非有 MnemoTrace-owned benchmark evidence。
 
 ### 8.3 产品风险
 
@@ -325,12 +325,12 @@ System-2 的目标是高质量、可审计：
 
 ## 9. 当前结论
 
-Engram 已经具备成为领先记忆框架的核心方向：双时间轴、非破坏性冲突处理、raw + fact hybrid read path、可复现 harness。下一步不是继续堆参考项目，而是把最有把握的两个候选先打穿：
+MnemoTrace 已经具备成为领先记忆框架的核心方向：双时间轴、非破坏性冲突处理、raw + fact hybrid read path、可复现 harness。下一步不是继续堆参考项目，而是把最有把握的两个候选先打穿：
 
 1. **Chain-aware retrieval**：把 `supersedes` 从写入元数据变成读取优势。
 2. **Raw evidence fusion hardening**：把 raw chunks、facts、graph paths 的证据装配做扎实。
 
-这两项如果能在 LongMemEval/LOCOMO 的 knowledge-update、temporal、multi-session 类别上稳定提升，同时维持低 token 和低 latency，Engram 的算法内核就会开始形成真正的领先壁垒。
+这两项如果能在 LongMemEval/LOCOMO 的 knowledge-update、temporal、multi-session 类别上稳定提升，同时维持低 token 和低 latency，MnemoTrace 的算法内核就会开始形成真正的领先壁垒。
 
 ## 10. 文档语言偏好
 

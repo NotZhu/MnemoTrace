@@ -333,9 +333,8 @@ def test_public_copy_avoids_competitor_leaderboard_positioning():
 
 
 def test_public_headline_claims_are_traceable_to_results():
-    # The number of record is the current-main run (deepseek official judge); the retired-judge run
-    # stays quotable only where its exact setup is documented, so the landing pages carry the current
-    # numbers and README/RESULTS additionally keep the pinned historical pair.
+    # 主记录的数字来自当前主跑（deepseek 官方 judge）；已退役 judge 的那批结果只允许在完整记录了
+    # 其实验设置的地方引用，因此落地页携带当前数字，README/RESULTS 另外保留固定下来的历史一对。
     expected_claims = ("84.4", "78.8", "7.9k", "79.2k")
     for rel in ("README.md", "README.zh-CN.md", "docs/index.html", "demo/index.html"):
         text = (ROOT / rel).read_text(encoding="utf-8")
@@ -345,8 +344,8 @@ def test_public_headline_claims_are_traceable_to_results():
 
 
 def test_contributor_headline_claims_match_results():
-    # CLAUDE.md/AGENTS.md still describe the M1 milestone in its own terms (retired judge); they are
-    # contributor history, not the public number of record.
+    # CLAUDE.md/AGENTS.md 仍以它自己的口径（已退役 judge）描述 M1 里程碑；它们是贡献者历史，
+    # 不是公开的主记录数字。
     expected_claims = ("83.6", "73.2", "+10.4", "9.6k", "79k")
     stale_claims = ("74.8", "+8.8")
     for rel in ("AGENTS.md", "CLAUDE.md"):
@@ -358,10 +357,10 @@ def test_contributor_headline_claims_match_results():
 
 
 def test_public_derived_headline_claims_match_raw_logs():
-    """Every published delta/ratio must be re-derivable from the committed log it cites."""
+    """每一条公开发布的差值/比值都必须能从它所引用的已提交日志重新推导出来。"""
     log = ROOT / "results/run500_v3_main_deepseekjudge.jsonl"
     lean = _metrics(log, "engram_lean")
-    baseline = _metrics(log, "full_context")  # same run: same answerer, same judge, same items
+    baseline = _metrics(log, "full_context")  # 同一次运行：同样的回答器、judge 和题目
     accuracy_delta = round(float(lean["accuracy"]) - float(baseline["accuracy"]), 1)
     token_ratio = round(float(baseline["avg_tokens"]) / float(lean["avg_tokens"]))
 
@@ -369,15 +368,14 @@ def test_public_derived_headline_claims_match_raw_logs():
     assert token_ratio == 10
 
     docs = ("README.md", "README.zh-CN.md", "RESULTS.md", "docs/index.html", "demo/index.html")
+    # 公开文档可以用 "+5.6" / "+5.6 分" / "5.6 个百分点" / "5.6 points"，也可以用
+    # "10×" / "10 倍" / "1/10"。判据是同一个差值/比值，而不是某一种排版。
+    delta_pattern = re.compile(r"\+?5\.6\s*(?:个百分点|points?|分)")
+    ratio_pattern = re.compile(r"(?:10\s*[×x]|10\s*倍|1\s*/\s*10)")
     for rel in docs:
         text = (ROOT / rel).read_text(encoding="utf-8")
-        assert "+5.6" in text, f"derived accuracy delta missing from {rel}"
-        compact = text.replace(" ", "")
-        assert (
-            "10×" in text
-            or "10x" in text
-            or "10倍" in compact
-        ), f"derived token ratio missing from {rel}"
+        assert delta_pattern.search(text), f"derived accuracy delta missing from {rel}"
+        assert ratio_pattern.search(text), f"derived token ratio missing from {rel}"
 
 
 def test_report_prints_p50_and_p95_latency_for_committed_logs():

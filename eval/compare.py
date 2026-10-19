@@ -1,12 +1,10 @@
-"""Cross-log comparison for the multi-backbone matrix (CLAUDE.md Bet D, M2_RUNBOOK §3).
+"""多 backbone 矩阵的跨日志比较（CLAUDE.md Bet D，M2_RUNBOOK §3）。
 
-`report.py` turns one bench log into a table. This script answers the question that needs TWO+ logs:
-when the same qids were run under different backbones (or systems), where do they agree, where do they
-disagree, and what's the oracle-ensemble upper bound? That complementarity is what makes a multi-backbone
-matrix worth running — and what justifies (or falsifies) per-backbone routing.
+`report.py` 把一份 bench 日志变成一张表；本脚本回答的是需要两份以上日志的问题：同样的 qids
+在不同 backbone（或系统）下运行时，哪里一致、哪里分歧、oracle 集成上限是多少？正是这种
+互补性让多 backbone 矩阵值得跑——也是 per-backbone 路由能否成立（或被证伪）的依据。
 
-Reads only what the runs actually scored; never fabricates. Partial runs are obviously partial because
-every number is reported with its denominator.
+只读各次运行实际打过分的内容；从不编造。部分运行一眼可见为部分，因为每个数字都带着分母。
 
     python eval/compare.py results/file_a.jsonl results/file_b.jsonl [more.jsonl ...]
     python eval/compare.py results/file_a.jsonl results/file_b.jsonl --system engram_lean
@@ -21,7 +19,7 @@ from pathlib import Path
 
 
 def load(path: str) -> dict[str, dict]:
-    """qid -> {system_name: {ok, err, tok, lat, cat, pred, gold}}; cat lives on the row, hoisted in."""
+    """qid -> {system_name: {ok, err, tok, lat, cat, pred, gold}}；cat 在行上，这里上提到条目级。"""
     out: dict[str, dict] = {}
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -50,7 +48,7 @@ def _systems_in(log: dict[str, dict]) -> list[str]:
 
 
 def _scored(entry: dict, system: str) -> bool:
-    """A scored item: the system has a result and it's not an error. Abstentions count as scored (ok=False)."""
+    """已打分：该 system 有结果且不是错误。拒答也算已打分（ok=False）。"""
     res = entry.get(system)
     return bool(res) and not res.get("err")
 
@@ -69,7 +67,7 @@ def format_pair_compare(
     paths: list[str], system: str | None, per_category: bool
 ) -> str:
     logs = [load(p) for p in paths]
-    # Pick the system to compare: explicit, or the only one shared across all files.
+    # 选出要比较的 system：显式指定，或唯一被所有文件共享的那个。
     if system is None:
         common: list[str] = []
         for sys_name in _systems_in(logs[0]):
@@ -88,7 +86,7 @@ def format_pair_compare(
         system = common[0]
     assert system is not None
 
-    # Restrict to qids that EVERY file scored under this system. Anything else is apples-to-oranges.
+    # 只保留在该 system 下被每个文件都打分过的 qids。其余的一律不可比。
     shared = sorted(set.intersection(*[set(l.keys()) for l in logs]))
     shared = [q for q in shared if all(_scored(l[q], system) for l in logs)]
     if not shared:
@@ -106,7 +104,7 @@ def format_pair_compare(
         f"(file sizes: {[len(l) for l in logs]})\n"
     )
 
-    # Per-file accuracy on the shared set, overall + per-category.
+    # 各文件在共享集上的准确率：总体 + 分类别。
     by_file_cat_ok: dict[str, dict[str, list[bool]]] = {label: collections.defaultdict(list) for label in labels}
     for q in shared:
         for label, log in zip(labels, logs):
@@ -130,7 +128,7 @@ def format_pair_compare(
     lines.append(row)
     lines.append("")
 
-    # Disagreement breakdown (only meaningful for 2 files; for 3+ show pairwise vs file 0).
+    # 分歧明细（只在 2 个文件时才有意义；3 个以上时相对第 0 个文件两两展示）。
     if len(labels) == 2:
         a, b = labels
         la, lb = logs
@@ -182,7 +180,7 @@ def format_pair_compare(
                 )
         lines.append("")
     else:
-        # N files: pairwise oracle (per-q any-file correct).
+        # N 个文件：成对 oracle（每个 q 任一文件答对即计入）。
         oracle = sum(
             1 for q in shared if any(_ok(l[q], system) for l in logs)
         )
@@ -198,7 +196,7 @@ def format_pair_compare(
                 all_wrong += 1
                 continue
             if sum(oks) == 1:
-                # uniquely correct — attribute to the winning file
+                # 唯一答对——归功给胜出的文件
                 for label, ok in zip(labels, oks):
                     if ok:
                         per_file_only[label] += 1

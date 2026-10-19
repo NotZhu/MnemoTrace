@@ -1,7 +1,7 @@
 {
-  "name": "engram-memory",
+  "name": "mnemotrace-memory",
   "version": "0.1.0",
-  "description": "Official TypeScript/JavaScript SDK for Engram — open-source long-term memory for LLM agents (with an OpenAI-compatible chat surface).",
+  "description": "Official TypeScript/JavaScript SDK for MnemoTrace — open-source long-term memory for LLM agents (with an OpenAI-compatible chat surface).",
   "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -25,7 +25,7 @@
     "prepublishOnly": "npm run typecheck && npm run build && npm test"
   },
   "keywords": [
-    "engram",
+    "mnemotrace",
     "memory",
     "long-term-memory",
     "llm",
@@ -36,9 +36,9 @@
     "knowledge-graph"
   ],
   "engines": { "node": ">=18" },
-  "repository": { "type": "git", "url": "https://github.com/ly-wang19/engram", "directory": "clients/typescript" },
-  "homepage": "https://github.com/ly-wang19/engram/tree/main/clients/typescript",
-  "bugs": { "url": "https://github.com/ly-wang19/engram/issues" },
+  "repository": { "type": "git", "url": "https://github.com/NotZhu/MnemoTrace", "directory": "clients/typescript" },
+  "homepage": "https://github.com/NotZhu/MnemoTrace/tree/main/clients/typescript",
+  "bugs": { "url": "https://github.com/NotZhu/MnemoTrace/issues" },
   "devDependencies": {
     "tsup": "^8.0.0",
     "typescript": "^5.4.0"

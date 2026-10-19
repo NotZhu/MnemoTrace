@@ -1,19 +1,18 @@
-"""Pinning the extractor is what makes a read-path A/B measure the code instead of the model.
+"""把提取器固定（pin）住，读路径的 A/B 对比衡量的才是代码而不是模型。
 
-Motivating incident (2026-08-29): a same-item A/B on LOCOMO reported single-hop losing 5 questions on a
-render path that was byte-identical between the two runs. It had not regressed -- of 83 single-hop
-items, zero produced the same context token count across runs, because the LLM extractor distilled a
-different fact set from the same sessions each time. Every delta in that experiment was inside the
-extractor's own variance."""
+起因（2026-08-29 事故）：LOCOMO 上一次同题 A/B 报告 single-hop 在两个逐字节相同的渲染路径之间
+丢了 5 题。它并没有回归——83 道单跳题里，没有任何一题在两次运行间产生相同的 context token 数，
+因为 LLM 提取器每次都从相同的会话里提炼出不同的事实集合。那次实验里的每个 delta 都落在提取器
+自身的方差之内。"""
 from __future__ import annotations
 
 import tempfile
 
-from engram.llm.cache import CachedLLM
+from mnemotrace.llm.cache import CachedLLM
 
 
 class FlakyLLM:
-    """Stands in for a real extractor: same prompt, different reply every call."""
+    """替代真实提取器：同样的 prompt，每次调用返回不同的回复。"""
 
     model = "flaky-1"
 
@@ -37,7 +36,7 @@ def test_same_prompt_returns_the_same_reply():
 
 
 def test_cache_survives_a_new_process_object():
-    """Runs are separate processes; the pin is worthless if it does not outlive one."""
+    """各次运行是独立进程；如果 pin 不能跨越进程存活，它就毫无价值。"""
     with tempfile.TemporaryDirectory() as d:
         first = CachedLLM(FlakyLLM(), d).complete("p")
         second_inner = FlakyLLM()
@@ -54,21 +53,20 @@ def test_different_prompts_and_kwargs_do_not_collide():
 
 
 def test_different_models_do_not_share_entries():
-    """Serving doubao's facts for a gpt-5.6 run would corrupt the very comparison this protects."""
+    """把 doubao 提炼的事实喂给 gpt-5.6 的运行，会毁掉这个缓存要保护的对比本身。"""
     with tempfile.TemporaryDirectory() as d:
-        shared = FlakyLLM()  # one model object, so replies differ per call and a hit is visible
+        shared = FlakyLLM()  # 同一个模型对象，所以每次回复不同，缓存命中与否可见
         a = CachedLLM(shared, d, model_tag="model-a").complete("p")
         b = CachedLLM(shared, d, model_tag="model-b").complete("p")
         assert shared.calls == 2, "a different model tag must miss the cache"
         assert a != b
-        # and each tag replays its own entry
+        # 每个 tag 各自重放自己的条目
         assert CachedLLM(shared, d, model_tag="model-a").complete("p") == a
         assert shared.calls == 2
 
 
 def test_empty_replies_are_not_cached():
-    """An empty body is the transient-failure shape the retry loop handles; pinning it would make one
-    flaky call permanent."""
+    """空回复是重试循环要处理的瞬态失败形态；把它固定进缓存会让一次抖动变成永久。"""
 
     class SometimesEmpty:
         model = "e"
@@ -84,7 +82,7 @@ def test_empty_replies_are_not_cached():
         inner = SometimesEmpty()
         llm = CachedLLM(inner, d)
         assert llm.complete("p") == ""
-        assert llm.complete("p") == "real answer"  # retried, not replayed from cache
+        assert llm.complete("p") == "real answer"  # 走了重试，而不是从缓存重放
 
 
 def test_unknown_attributes_fall_through_to_the_real_model():
@@ -93,16 +91,15 @@ def test_unknown_attributes_fall_through_to_the_real_model():
 
 
 def test_identity_registration_does_not_depend_on_extraction_order():
-    """The last 10% of A/B noise: extraction ran under a thread pool, and registering the user's
-    canonical name is order-dependent, so whichever call returned first decided whether later facts read
-    'Evan lives in X' or 'user lives in X'. The fact set flipped between identical runs, which flipped
-    the persona prompt, which defeated the pinned cache. Extraction is now two-phase: model calls fan
-    out, conversion runs in chronological order."""
-    from engram import Memory
-    from engram.types import Episode
+    """A/B 噪音的最后 10%：提取在线程池里并发运行，而注册用户的规范名（canonical name）是依赖顺序
+    的，于是哪个调用先返回就决定了后续事实读起来是 'Evan lives in X' 还是 'user lives in X'。
+    事实集合在完全相同的运行之间翻转，翻转了 persona prompt，进而击穿了 pin 缓存。提取现在是
+    两阶段的：模型调用并发扇出，转换按时间顺序执行。"""
+    from mnemotrace import Memory
+    from mnemotrace.types import Episode
 
     class StubExtractor:
-        """Mimics the LLM extractor's split API; the name is only stated in the LAST episode."""
+        """模拟 LLM 提取器的分段 API；名字只在最后一个 episode 里出现。"""
 
         def __init__(self):
             self.self_name = {}
@@ -113,7 +110,7 @@ def test_identity_registration_does_not_depend_on_extraction_order():
             return [{"subject": "user", "predicate": "likes", "object": ep.content.split()[-1]}]
 
         def facts_from(self, ep, items):
-            from engram.types import Fact
+            from mnemotrace.types import Fact
 
             out = []
             for it in items:
@@ -137,6 +134,6 @@ def test_identity_registration_does_not_depend_on_extraction_order():
         mem.consolidate()
         seen.append(sorted(f.text for f in mem._all_facts()))
     assert seen[0] == seen[1] == seen[2], f"fact set varied across runs: {seen}"
-    # the name arrives last chronologically, so earlier facts keep the pre-name subject -- the point is
-    # that this is the SAME every run, not which subject wins.
+    # 名字按时间顺序最后到达，所以更早的事实保留命名前的主体——关键在于每次运行都完全相同，
+    # 而不是哪个主体胜出。
     assert all("coffee" in " ".join(s) for s in seen)

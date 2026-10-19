@@ -4,24 +4,24 @@
 
 | 配置 | 默认 | 生产要求 |
 | --- | --- | --- |
-| `ENGRAM_DATA_DIR` | `~/.engram/data` | 容器使用持久卷 `/data` |
-| `ENGRAM_API_KEYS` | 空 | 必须配置 `tenant:key`，同租户可重复出现以轮换密钥 |
-| `ENGRAM_OPEN` | false | 生产禁止启用 |
-| `ENGRAM_ALLOW_ANONYMOUS` | false | 生产禁止启用 |
-| `ENGRAM_MAX_REQUEST_BYTES` | 2097152 | 根据网关限制调整，必须为正数 |
-| `ENGRAM_EMBEDDER` | `hashing` | 可按质量需求换可选后端 |
-| `ENGRAM_LLM` | 空 | 可选；为空时规则抽取仍可运行 |
+| `MNEMOTRACE_DATA_DIR` | `~/.mnemotrace/data` | 容器使用持久卷 `/data` |
+| `MNEMOTRACE_API_KEYS` | 空 | 必须配置 `tenant:key`，同租户可重复出现以轮换密钥 |
+| `MNEMOTRACE_OPEN` | false | 生产禁止启用 |
+| `MNEMOTRACE_ALLOW_ANONYMOUS` | false | 生产禁止启用 |
+| `MNEMOTRACE_MAX_REQUEST_BYTES` | 2097152 | 根据网关限制调整，必须为正数 |
+| `MNEMOTRACE_EMBEDDER` | `hashing` | 可按质量需求换可选后端 |
+| `MNEMOTRACE_LLM` | 空 | 可选；为空时规则抽取仍可运行 |
 
 ## 鉴权配置语义
 
 ```text
-ENGRAM_API_KEYS=tenant-a:key-a1,tenant-a:key-a2,tenant-b:key-b1
+MNEMOTRACE_API_KEYS=tenant-a:key-a1,tenant-a:key-a2,tenant-b:key-b1
 ```
 
 - 同租户多密钥合法，用于先加新密钥、切流、再删旧密钥。
 - 空租户、空密钥、缺少分隔符或同一密钥映射不同租户为配置错误。
 - 密钥不得出现在健康响应、日志、异常文本或导出数据中。
-- 未配置密钥时，只有显式 `ENGRAM_OPEN=1` 才可使用 Bearer 文本作为开发命名空间。
+- 未配置密钥时，只有显式 `MNEMOTRACE_OPEN=1` 才可使用 Bearer 文本作为开发命名空间。
 
 ## 健康契约
 

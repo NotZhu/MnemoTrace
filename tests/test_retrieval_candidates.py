@@ -1,17 +1,17 @@
-"""Opt-in ANN candidate generation (CLAUDE.md Bet E, scale read path). The guarantee tested here: it is
-OFF by default, and when a small store's ANN pool covers all facts the candidate set equals the full scan
-— so turning it on changes nothing for small users (the behavior-preserving property we can verify offline;
-ranking quality at scale is eval-gated). Uses the in-memory store, so no LanceDB needed.
+"""可选开启的 ANN 候选生成（CLAUDE.md Bet E，规模化读路径）。本文件验证的保证是：它默认关闭；
+且当小存储的 ANN 候选池覆盖全部事实时，候选集等价于全量扫描——所以对小用户来说开启与否没有区别
+（这是可以离线验证的"行为保持"性质；规模化下的排序质量交给 eval 把关）。使用内存 store，因此无需
+LanceDB。
 
-Text is kept to a form the offline rule extractor actually parses ("X and Y" single sentence), so a fact
-genuinely lands and the equivalence check is non-vacuous."""
+文本刻意保持为离线规则提取器确实能解析的形式（"X and Y" 单句），从而事实能真正落库，等价性检查
+才不是空转。"""
 from __future__ import annotations
 
-from engram.config import Config
-from engram.embed import HashingEmbedder
-from engram.memory import Memory
+from mnemotrace.config import Config
+from mnemotrace.embed import HashingEmbedder
+from mnemotrace.memory import Memory
 
-_TEXT = "My name is Wei and I live in Shenzhen."  # rule extractor -> (Wei, lives_in, Shenzhen)
+_TEXT = "My name is Wei and I live in Shenzhen."  # 规则提取器 -> (Wei, lives_in, Shenzhen)
 
 
 def _mem(ann: bool) -> Memory:
@@ -35,10 +35,10 @@ def test_ann_path_retrieves_the_fact():
 
 
 def test_ann_equals_full_scan_on_small_store():
-    # few facts (< ann_pool) -> the ANN pool covers them all -> identical candidate set -> identical ranking
+    # 事实很少（< ann_pool）-> ANN 候选池覆盖全部 -> 候选集相同 -> 排序相同
     full, ann = _mem(ann=False), _mem(ann=True)
     for query in ("where do I live", "Wei", "Shenzhen"):
         assert _spo(full.retriever.retrieve(query, "u")[0]) == _spo(ann.retriever.retrieve(query, "u")[0]), \
             f"opt-in changed ranking for {query!r} on a small store"
-    # non-vacuous: the fact really is retrieved (so the equalities above aren't just []==[])
+    # 非空转：事实确实被检索到了（否则上面的相等可能只是 [] == []）
     assert _spo(ann.retriever.retrieve("where do I live", "u")[0])

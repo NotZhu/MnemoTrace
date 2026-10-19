@@ -1,4 +1,4 @@
-# 快速验收：Engram 0.1.0 商业交付版
+# 快速验收：MnemoTrace 0.1.0 商业交付版
 
 所有命令从仓库根目录执行。验收结果应记录到 `results/commercial_release_0_1_0_validation.jsonl`。
 
@@ -70,13 +70,13 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
 
 curl -fsS http://127.0.0.1:8000/ready
 curl -fsS -X POST http://127.0.0.1:8000/v1/remember \
-  -H "Authorization: Bearer $ENGRAM_TEST_KEY" \
+  -H "Authorization: Bearer $MNEMOTRACE_TEST_KEY" \
   -H "Content-Type: application/json" \
   -d '{"content":"release canary 2026-07-14","session_id":"release-smoke"}'
 
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml restart
 curl -fsS -X POST http://127.0.0.1:8000/v1/recall \
-  -H "Authorization: Bearer $ENGRAM_TEST_KEY" \
+  -H "Authorization: Bearer $MNEMOTRACE_TEST_KEY" \
   -H "Content-Type: application/json" \
   -d '{"query":"release canary","n_chunks":3}'
 ```

@@ -6,11 +6,11 @@
 
 ## Summary
 
-Create an internal architecture radar that lets Engram study the strongest public memory,
+Create an internal architecture radar that lets MnemoTrace study the strongest public memory,
 GraphRAG, knowledge-compilation, and agent-learning systems, then promote only the patterns that can
-be cleanly translated into Engram-native capabilities with reproducible evaluation. The plan keeps
+be cleanly translated into MnemoTrace-native capabilities with reproducible evaluation. The plan keeps
 this work as governance and design first: reference sources are recorded, capability patterns are
-mapped to Engram strategic bets, and adoption candidates must pass clean-room, provenance,
+mapped to MnemoTrace strategic bets, and adoption candidates must pass clean-room, provenance,
 zero-setup, and harness-backed ablation gates before implementation.
 
 The first planning-ready candidates are:
@@ -26,7 +26,7 @@ The first planning-ready candidates are:
 ## Technical Context
 
 **Language/Version**: Markdown documentation and Spec-Kit artifacts; future implementation remains
-Python >=3.10 per Engram constitution.
+Python >=3.10 per MnemoTrace constitution.
 
 **Primary Dependencies**: None for this feature. External repositories are research inputs only.
 
@@ -34,10 +34,10 @@ Python >=3.10 per Engram constitution.
 storage changes.
 
 **Testing**: Documentation validation through checklist review, link checks, placeholder scans, and
-future `/speckit-tasks` acceptance checks. Any promoted algorithmic change must later run Engram's
+future `/speckit-tasks` acceptance checks. Any promoted algorithmic change must later run MnemoTrace's
 benchmark harness and report accuracy, tokens, and p50/p95 latency.
 
-**Target Platform**: Internal maintainers and contributors working in the Engram repository.
+**Target Platform**: Internal maintainers and contributors working in the MnemoTrace repository.
 
 **Project Type**: Documentation/governance feature that feeds later library and harness work.
 
@@ -56,10 +56,10 @@ surfaces, and evaluation sources. It does not implement runtime behavior in this
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
 - **I. Reproducibility Is Non-Negotiable**: PASS. The radar labels external claims as external-only
-  and requires Engram-owned logs before public claims.
+  and requires MnemoTrace-owned logs before public claims.
 - **II. Zero-Setup Invariant**: PASS. This feature adds documentation only; future dependencies are
   explicitly optional until separately specified.
-- **III. Interfaces First, Backends Behind Them**: PASS. Adoption candidates must map to Engram
+- **III. Interfaces First, Backends Behind Them**: PASS. Adoption candidates must map to MnemoTrace
   surfaces before implementation and cannot import third-party code from the radar.
 - **IV. No Silent Memory Corruption**: PASS. Candidate promotion requires provenance,
   `supersedes`/invalidation preservation where facts are affected.
@@ -68,7 +68,7 @@ surfaces, and evaluation sources. It does not implement runtime behavior in this
 - **VI. Compose, Don't Pick**: PASS. The radar explicitly composes raw chunks, facts, temporal graph,
   hierarchy, reflection, and runtime profiles rather than selecting a single external pattern.
 - **VII. Honest, Open Public Messaging**: PASS. Public messaging guardrails are a first-class
-  requirement; competitor claims stay internal unless reproduced by Engram.
+  requirement; competitor claims stay internal unless reproduced by MnemoTrace.
 
 **Post-design re-check**: PASS. `data-model.md`, `contracts/`, and `quickstart.md` preserve the same
 gates and add validation steps rather than implementation shortcuts.
@@ -107,7 +107,7 @@ specs/
 ```
 
 **Structure Decision**: This feature is documentation-only. It does not add code paths under
-`engram/`, tests under `tests/`, or benchmark logs under `results/`. Later implementation features
+`mnemotrace/`, tests under `tests/`, or benchmark logs under `results/`. Later implementation features
 will be split out from the adoption candidates and planned separately.
 
 ## Complexity Tracking

@@ -1,22 +1,20 @@
-"""Per-feature read-path ablation on the real benchmark, measured WITHOUT an answerer or a judge.
+"""在真实 benchmark 上做逐特性 read-path 消融，测量时不用 answerer 也不用 judge。
 
-Why not just run eval/bench.py --ablate per feature: the QA score is dominated by answerer variance
-(run-to-run swings of ~±6-10 questions per 500 on the standard rig), which is larger than the effect
-most single features have. Ablating 25+ flags through the QA path would therefore mostly measure the
-answerer's mood, at 3x the cost.
+为什么不是直接对每个特性跑 eval/bench.py --ablate：QA 分数被 answerer 的方差主导（标准 rig 上
+逐次波动约 ±6-10 题/500），超过大多数单特性本身的影响。经 QA 路径消融 25+ 个开关，测到的多半
+是 answerer 的心情，成本还是 3 倍。
 
-So this measures the thing the read-path features actually control: **does the gold answer survive into
-the retrieved context?** The answerer can't answer what retrieval never handed it, so answer-in-context
-is the necessary condition these features are responsible for — and it needs no answerer and no judge,
-which is both cheaper and far less noisy. (It is a necessary, not sufficient, condition: a feature can
-put the answer in context and the answerer can still miss it. Promote anything interesting here to a
-real eval/bench.py run before believing a headline delta.)
+所以这里测量的是 read-path 特性真正控制的东西：**金标准答案是否存活在检索到的上下文里？**
+检索从未交给 answerer 的内容，answerer 不可能答出，因此 answer-in-context 是这些特性所负责的
+必要条件——而且不需要 answerer 也不需要 judge，更便宜也远更稳定。（这只是必要条件而非充分
+条件：特性可以把答案放进上下文，answerer 仍可能错过。这里出现的任何有趣信号，先升级到真正的
+eval/bench.py 运行再相信头条差值。）
 
     python eval/ablate_readpath.py --limit 60 --extractor volcano:doubao-seed-1-6-flash-250615 \
         --out results/readpath_ablation.jsonl
 
-Each feature is run as "baseline minus that one feature", so the delta is that feature's marginal
-contribution on top of everything else — not its value in isolation.
+每个特性都以"基线减去该特性"的方式运行，所以 delta 是该特性在其余一切之上的边际贡献——
+不是它在孤立状态下的价值。
 """
 from __future__ import annotations
 
@@ -33,13 +31,13 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram import Memory  # noqa: E402
-from engram.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
-from eval.bench import engram_config  # noqa: E402
+from mnemotrace import Memory  # noqa: E402
+from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
+from eval.bench import mnemotrace_config  # noqa: E402
 from eval.longmemeval import ingest, load_data  # noqa: E402
 
-# Every read-path flag that engram_config() can switch off, grouped so the report reads as themes
-# rather than an undifferentiated list of 25 booleans.
+# mnemotrace_config() 能关掉的每一个 read-path 开关，按主题分组，让报告读起来是一个个主题，
+# 而不是 25 个不分青红皂白的布尔值。
 FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
     "graph / multi-hop": (
         "graph_proximity", "graph_relation_awareness", "graph_path_reinforcement",
@@ -65,17 +63,16 @@ ALL_FEATURES = tuple(f for group in FEATURE_GROUPS.values() for f in group)
 
 
 def _norm(s: str) -> str:
-    """Loose match: the answerer sees the context, not an exact-match grader, so casing/punctuation and
-    inner whitespace must not decide whether the answer 'was there'."""
+    """宽松匹配：answerer 看到的是上下文，不是精确匹配的评分器，所以大小写/标点和内部
+    空白不应决定答案"是否在场"。"""
     return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
 
 
 def answer_in_context(context: str, gold: str) -> bool:
-    """Whether the gold answer is recoverable from the retrieved context.
+    """金标准答案能否从检索到的上下文中找回。
 
-    Short golds ('Nike', '55-inch') are checked whole. Long golds are sentences, and demanding a verbatim
-    sentence match would under-count contexts that clearly carry the fact in different words; those are
-    scored on content-token coverage instead (>=80% of tokens >3 chars present).
+    短的金标准答案（'Nike'、'55-inch'）整体匹配。长的金标准答案是句子，要求逐字匹配会漏掉
+    那些明显换了措辞携带事实的上下文；后者改用内容词覆盖率计分（>=80% 的 >3 字符 token 出现）。
     """
     ctx, g = _norm(context), _norm(gold)
     if not g:
@@ -92,14 +89,14 @@ def answer_in_context(context: str, gold: str) -> bool:
 def context_for_item(item: dict, embedder, extractor, ablations: tuple[str, ...],
                      topk: int, chunks: int, extract_k: int) -> tuple[str, int]:
     qid, q = item["question_id"], item["question"]
-    mem = Memory(config=engram_config(ablations=ablations), embedder=embedder, llm=extractor)
+    mem = Memory(config=mnemotrace_config(ablations=ablations), embedder=embedder, llm=extractor)
     ingest(mem, item, qid)
     if extract_k > 0:
         mem.engine.consolidate(mem.retrieve_episodes(q, qid, extract_k))
     else:
         mem.consolidate()
     ctx = mem.context_for(q, user_id=qid, top_k=topk, k_chunks=chunks)
-    return ctx, len(ctx) // 4  # rough token estimate, only used for a relative cost column
+    return ctx, len(ctx) // 4  # 粗略的 token 估算，只用于相对成本一列
 
 
 def run_variant(items, embedder, extractor, ablations, args, label) -> dict:
@@ -113,7 +110,7 @@ def run_variant(items, embedder, extractor, ablations, args, label) -> dict:
             ctx, tok = context_for_item(item, embedder, extractor, ablations,
                                         args.topk, args.chunks, args.extract_k)
             return answer_in_context(ctx, item.get("answer", "")), tok, None
-        except Exception as exc:  # noqa: BLE001 — one bad item must not kill the sweep
+        except Exception as exc:  # noqa: BLE001 — 一个坏条目不能毁掉整轮扫描
             return False, 0, f"{type(exc).__name__}: {exc}"
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -156,8 +153,8 @@ def main() -> int:
     print(f"  metric=answer_in_context (no answerer, no judge)  extractor={args.extractor}\n")
 
     rows = []
-    # Baseline, repeated: the spread across identical runs IS the noise floor. A feature delta smaller
-    # than this band is not evidence of anything.
+    # 基线重复运行：相同运行之间的波动就是噪声底线。特性 delta 小于这个区间的，什么也
+    # 证明不了。
     baselines = []
     for i in range(max(1, args.repeat_baseline)):
         b = run_variant(items, embedder, extractor, (), args, f"baseline#{i+1}")
@@ -171,7 +168,7 @@ def main() -> int:
 
     for f in features:
         r = run_variant(items, embedder, extractor, (f,), args, f"-{f}")
-        r["delta_pp"] = round((base_rate - r["rate"]) * 100, 1)  # positive => feature HELPS
+        r["delta_pp"] = round((base_rate - r["rate"]) * 100, 1)  # 正值 => 特性有帮助
         rows.append(r)
         verdict = "helps" if r["delta_pp"] > noise * 100 else ("hurts" if r["delta_pp"] < -noise * 100 else "noise")
         print(f"  -{f:<34} {r['rate']*100:5.1f}%   delta {r['delta_pp']:+5.1f} pp   [{verdict}]")

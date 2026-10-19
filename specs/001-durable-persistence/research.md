@@ -27,7 +27,7 @@ preserve every field (IV), and assert **no** performance numbers (V — those ar
   did); *WAL/journal* — overkill for an append log.
 
 ## D3. Safe load + version gate → manifest `schema_version`, explicit reconstruction
-- **Decision**: `manifest.json` carries `schema_version` (int) + `engram_version`. If `schema_version`
+- **Decision**: `manifest.json` carries `schema_version` (int) + `mnemotrace_version`. If `schema_version`
   exceeds what the reader supports → raise a clear `IncompatibleStoreError` (never a partial/wrong load,
   FR-004). Records become dataclasses via **explicit field mapping**, never `eval`/`__dict__` injection.
 - **Rationale**: FR-003 + FR-004 — forward-incompatible stores fail loudly.
@@ -45,7 +45,7 @@ preserve every field (IV), and assert **no** performance numbers (V — those ar
 ## D5. Concurrency → single-writer advisory lock (v1)
 - **Decision**: an advisory lock file per namespace dir (`.lock` via `fcntl.flock`); a second writer fails
   fast with a clear error. Multi-writer is **out of scope v1**, documented.
-- **Rationale**: matches `MemoryService`'s per-namespace LRU ownership (`engram/service.py`); prevents
+- **Rationale**: matches `MemoryService`'s per-namespace LRU ownership (`mnemotrace/service.py`); prevents
   interleaved corruption without a DB.
 - **Alternatives**: portalocker (extra dep); MVCC (overkill).
 

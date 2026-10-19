@@ -1,7 +1,7 @@
 /**
- * engram-memory — official TypeScript/JavaScript SDK for Engram, the open-source long-term memory
- * engine. See https://github.com/ly-wang19/engram and the Engram server (engram/server/app.py).
+ * mnemotrace-memory — 忆痕（开源长期记忆引擎）官方 TypeScript/JavaScript SDK。
+ * 见 https://github.com/NotZhu/MnemoTrace 与 忆痕服务器（mnemotrace/server/app.py）。
  */
-export { EngramClient, EngramError } from './client'
-export type { EngramClientOptions, ChatCompletionsCreate } from './client'
+export { MnemoTraceClient, MnemoTraceError } from './client'
+export type { MnemoTraceClientOptions, ChatCompletionsCreate } from './client'
 export * from './types'

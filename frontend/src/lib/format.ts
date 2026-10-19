@@ -1,8 +1,8 @@
-// Small presentation helpers. No date math on the client — the server already renders
-// human stamps (bi-temporal, UTC), we just split/format them and truncate text.
+// 少量展示层辅助函数。客户端不做日期计算 — 服务器已渲染好人类可读的时间戳
+// （bi-temporal、UTC），我们只做拆分/格式化和文本截断。
 
-/** Split a server stamp ("YYYY-MM-DD HH:MM:SS", Beijing) into its date and time parts.
- *  `time` is '' for legacy/date-only stamps, so callers can render it optionally. */
+/** 将服务器时间戳（"YYYY-MM-DD HH:MM:SS"，北京时间）拆分为日期和时间两部分。
+ *  旧数据/仅日期的时间戳 `time` 为 ''，调用方可选择性地渲染。 */
 export function splitStamp(s: string | null | undefined): { date: string; time: string } {
   if (!s) return { date: '', time: '' }
   const i = s.indexOf(' ')
@@ -18,14 +18,4 @@ export function compactNumber(n: number): string {
 export function truncate(s: string, max = 140): string {
   if (!s) return ''
   return s.length > max ? `${s.slice(0, max - 1)}…` : s
-}
-
-/** Render a predicate (works_at) as a readable phrase (works at). */
-export function humanizePredicate(p: string): string {
-  return p.replace(/_/g, ' ')
-}
-
-export function estimateTokens(text: string): number {
-  // ~ words; matches the server's `len(ctx.split())` heuristic.
-  return text.trim() ? text.trim().split(/\s+/).length : 0
 }

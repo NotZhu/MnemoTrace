@@ -1,7 +1,7 @@
 import { useState, type KeyboardEvent } from 'react'
 import { Plus, X } from 'lucide-react'
 
-import { useT } from '../i18n'
+import { copy as t } from '../lib/copy'
 import { cx } from './ui'
 
 export function TagInput({
@@ -15,7 +15,6 @@ export function TagInput({
   placeholder?: string
   tone?: 'cyan' | 'rose'
 }) {
-  const t = useT()
   const [value, setValue] = useState('')
 
   const add = () => {
@@ -41,12 +40,12 @@ export function TagInput({
 
   return (
     <div>
-      <div className="mb-2 flex flex-wrap gap-2">
+      <div className="mb-3 flex min-h-7 flex-wrap items-center gap-2">
         {tags.length === 0 && <span className="text-xs text-ghost">{t.common.none}</span>}
         {tags.map((tag, i) => (
           <span key={`${tag}-${i}`} className={cx('inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-sm', chip)}>
             {tag}
-            <button onClick={() => remove(i)} className="opacity-60 transition hover:opacity-100" aria-label="remove">
+            <button onClick={() => remove(i)} className="opacity-60 transition hover:opacity-100" aria-label="移除">
               <X className="h-3.5 w-3.5" />
             </button>
           </span>
@@ -61,7 +60,7 @@ export function TagInput({
           onKeyDown={onKey}
         />
         <button className="btn-ghost shrink-0" onClick={add} type="button">
-          <Plus className="h-4 w-4" /> {t.common.add}
+          <Plus className="h-4 w-4" /> {t.focus.add}
         </button>
       </div>
     </div>

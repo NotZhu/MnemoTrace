@@ -1,0 +1,20 @@
+# Normalize all text files to LF in the repository; let git handle checkout conversion.
+* text=auto
+
+# Shell scripts must be LF even on Windows checkouts.
+*.sh text eol=lf
+*.py text eol=lf
+
+# Windows scripts must be CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets — never touch.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.gz binary
+*.whl binary
