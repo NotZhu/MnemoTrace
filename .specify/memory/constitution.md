@@ -1,104 +1,95 @@
-# MnemoTrace Constitution
+# MnemoTrace 项目宪章
 
-> MnemoTrace is an open-source, self-hostable long-term memory engine for LLM agents.
-> This constitution distills the non-negotiables from [`CLAUDE.md`](../../CLAUDE.md) (the project
-> charter and source of truth) into spec-checkable principles. Every spec, plan, and task produced
-> through Spec-Kit is validated against the principles below. When this file and `CLAUDE.md` appear
-> to disagree, `CLAUDE.md` wins and this file must be amended to match.
+> MnemoTrace 是面向 LLM 智能体的开源、可自托管长期记忆引擎。
+> 本宪章从项目章程与事实来源 [`CLAUDE.md`](../../CLAUDE.md) 中提炼不可妥协的要求，形成可用于规格检查的原则。
+> 通过 Spec-Kit 生成的每份规格、计划和任务都必须按以下原则验证。
+> 若本文件与 `CLAUDE.md` 看似不一致，以 `CLAUDE.md` 为准，并修订本文件使其一致。
 
-## Core Principles
+## 核心原则
 
-### I. Reproducibility Is Non-Negotiable (Bet D)
-A number we cannot reproduce does not exist.
-- Every published number traces to a committed `results/*.jsonl` log **and** the exact command that
-  produced it.
-- Always report the **triple**: accuracy **+** total tokens **+** p50/p95 latency. Never accuracy alone.
-- The **full-context baseline** appears in every results table. If we do not beat it on accuracy, we
-  say so plainly.
-- Use a strong, non-gameable judge; document every deviation from a benchmark's official defaults.
-- One harness, in-repo (`eval/`): same ingestion, same answer prompt, same judge, declared backbone.
-- Numbers stay consistent across README ×2 + RESULTS.md + the landing page. Cross-harness numbers are
-  never lifted into our results tables as head-to-head.
+### I. 可复现性不可妥协（Bet D）
 
-### II. The Zero-Setup Invariant (NON-NEGOTIABLE)
-`python examples/quickstart.py` and `pytest` MUST run with **no API keys and no third-party services**,
-using the hashing embedder + rule-based extractor + in-memory stores.
-- Real backends (LanceDB/Qdrant/pgvector, Kuzu/Neo4j, LiteLLM, BGE embeddings/reranker) are **optional
-  extras** that slot in behind the same interfaces.
-- A change that breaks the zero-setup demo or the offline test suite is rejected, no exceptions.
+一个无法复现的数字不存在。
 
-### III. Interfaces First, Backends Behind Them
-Every external dependency (LLM, embedder, vector/graph/doc store, lexical index) sits behind an abstract
-interface with a zero-dep, **deterministic**, offline fallback.
-- Never import a heavy dependency at module top level in `mnemotrace/` core — gate it behind the backend
-  that needs it, imported lazily.
-- Offline fallbacks (hashing embedder, rule-based extractor) are deterministic so tests and the demo
-  reproduce without network.
+- 每个公开数字都必须可追溯到已提交的 `results/*.jsonl` 日志，**以及**产生该数字的精确命令。
+- 始终同时报告**三项指标**：准确率 + 总 token 消耗 + p50/p95 延迟，绝不只报告准确率。
+- 每张结果表都必须包含**全上下文基线**。如果准确率没有超越它，就明确说明。
+- 使用难以投机取巧的强 judge，记录相对于 benchmark 官方默认设置的每项偏离。
+- 仓库内使用同一套评测框架（`eval/`）：相同数据摄入、回答提示词和 judge，并声明骨干模型。
+- 两份 README、RESULTS.md 和落地页中的数字保持一致。不得把不同评测框架的数字直接搬入结果表作同条件对比。
 
-### IV. No Silent Memory Corruption
-Memory is bi-temporal from day one: *valid time* (`valid_at`/`invalid_at`) **and** *transaction time*
-(`created_at`/`expired_at`).
-- Contradictions **invalidate** with provenance (`invalid_at` + a `supersedes` chain); they never
-  overwrite-and-forget. Hard-deleting a contradicted fact is forbidden.
-- Every fact can answer "where did this come from?" (provenance → source episode ids) and "what did it
-  replace?" (supersedes chain).
-- Conflict resolution is cheap-first (slot match → embedding similarity → subsumption); only ambiguous
-  cases escalate to an LLM adjudicator. No LLM call per fact.
+### II. 零配置不变量（不可妥协）
 
-### V. Measure Before Optimizing
-Performance and accuracy claims come from the harness, not intuition.
-- No premature Rust, no premature caching, no hand-waved fusion weights — the harness decides the
-  bottleneck and whether a change helps.
-- An intervention whose net effect is **within run-to-run variance** is not a win; report it as such
-  rather than claiming it. (The answerer's variance can exceed a retrieval gain — measure the floor.)
+`python examples/quickstart.py` 和 `pytest` 必须在**无 API key、无第三方服务**的情况下运行，
+使用哈希 embedder、规则提取器和内存存储。
 
-### VI. Compose, Don't Pick
-No single pattern wins; the gaps are in the seams between patterns.
-- We compose typed memory + a bi-temporal graph + heat-tiered paging + multi-signal retrieval fusion
-  (RRF, optional rerank) + salience decay + sleep-time consolidation + a linear-scaling index.
-- The read path is **hybrid**: consolidated facts **+** retrieved raw session chunks. Facts-only QA is
-  forbidden — it loses recall (a load-bearing M1 finding). Facts add conflict-resolved/bi-temporal
-  signal; chunks restore detail.
-- Build for the next milestone, not for M4-imagined futures. Don't add abstraction for hypotheticals.
+- 真实后端（LanceDB/Qdrant/pgvector、Kuzu/Neo4j、LiteLLM、BGE 嵌入 / 重排器）均作为**可选 extras** 接入同一套接口。
+- 破坏零配置示例或离线测试套件的变更一律拒绝，没有例外。
 
-### VII. Honest, Open Public Messaging
-What we ship in public must survive a skeptic reading our logs.
-- No name-dropping competitors; no unbenchmarked claims ("SOTA", "#1", "1M") in public copy.
-- No AI-attribution trailers in commit messages.
-- Never commit real personal data, names, or secrets — synthetic placeholders only.
-- Dual-licensed: AGPL-3.0 (open) + commercial. Copyleft is deliberate; derivatives stay open.
+### III. 接口优先，后端置于接口之后
 
-## Architecture Constraints
-- **Dual-process core.** System-1 = hot write path, no LLM on the critical path (<50ms target).
-  System-2 = async/sleep-time consolidation (extract facts, build the bi-temporal graph, detect
-  conflicts, score salience/decay, summarize). The read path targets <100ms.
-- **Language.** Python ≥ 3.10; `mnemotrace/` core is pure-stdlib. Dropping to Rust requires harness
-  evidence that it is the bottleneck (Principle V).
-- **Module shape.** Small, composable modules that match the repository tree in `CLAUDE.md` §5; a
-  reviewer must be able to map any file to a box in the §3 architecture diagram.
-- **Comments explain *why*, not *what*** — the bi-temporal invariants and conflict rules deserve
-  comments; getters do not.
+每个外部依赖（LLM、embedder、向量 / 图 / 文档存储、词法索引）都位于抽象接口之后，
+并提供零依赖、**确定性**的离线回退。
 
-## Development Workflow
-- **Spec-driven.** Features flow constitution → `/speckit-specify` → (`/speckit-clarify`) →
-  `/speckit-plan` → `/speckit-tasks` → (`/speckit-analyze`) → `/speckit-implement`. Each artifact is
-  checked against this constitution; `/speckit-analyze` is the consistency gate before implementation.
-- **Every benchmark claim ships with the command to reproduce it** (Bet D, applied to ourselves).
-- **Numbers, public messaging, commits, and privacy follow [`CONTRIBUTING.md`](../../CONTRIBUTING.md)**
-  — this applies to agents and humans alike.
-- A spec that would break Principle II (zero-setup) or Principle IV (provenance/invalidation) is not
-  "needs revision" — it is rejected until redesigned.
+- `mnemotrace/` 核心模块顶层不得导入重型依赖；仅在需要它的后端中延迟导入。
+- 哈希 embedder、规则提取器等离线回退保持确定性，让测试和示例无需网络即可复现。
 
-## Governance
-- This constitution and `CLAUDE.md` (the charter) together are the source of truth. This file distills
-  the charter's non-negotiables into principles that specs can be checked against; it must never
-  contradict the charter. `CLAUDE.md` remains the runtime development guidance.
-- **Amendments** require editing both this file and (where affected) `CLAUDE.md`, with a version bump
-  and a one-line rationale in the PR description. Semantic versioning:
-  - **MAJOR** — a principle is removed or redefined in a backward-incompatible way.
-  - **MINOR** — a new principle/section is added or materially expanded.
-  - **PATCH** — clarifications and wording that do not change meaning.
-- All specs, plans, and PRs verify compliance. Complexity must be justified against Principle VI
-  (compose, don't pick) and Principle V (measure first); unjustified complexity is removed.
+### IV. 不允许静默损坏记忆
 
-**Version**: 1.0.0 | **Ratified**: 2026-06-25 | **Last Amended**: 2026-06-25
+记忆从第一天就使用双时间：*有效时间*（`valid_at`/`invalid_at`）**与**
+*事务时间*（`created_at`/`expired_at`）。
+
+- 矛盾必须通过**失效化**处理并保留来源（`invalid_at` + `supersedes` 链），绝不能覆盖后遗忘。禁止硬删除被反驳的事实。
+- 每条事实都能回答“来自哪里”（provenance → 来源 episode id）和“替代了什么”（supersedes 链）。
+- 冲突处理先用低成本方法（槽位匹配 → 嵌入相似度 → 内容包含关系），仅将有歧义的情况升级至 LLM 裁决器；不为每条事实都调用 LLM。
+
+### V. 先测量，再优化
+
+性能与准确率声明来自评测框架，而非直觉。
+
+- 不提前引入 Rust、缓存，也不凭空设定融合权重；由评测框架判断瓶颈和变更是否有益。
+- 净效果落在**运行间波动范围内**的改动不算胜利，必须如实报告。回答模型的波动可能超过检索收益，因此要测量噪声下限。
+
+### VI. 组合，而非单选
+
+没有一种模式能解决所有问题，缺口存在于模式之间的衔接处。
+
+- 组合类型化记忆、双时间图谱、按热度分层的分页、多信号检索融合（RRF、可选重排）、显著度衰减、休眠期整合，以及线性扩展索引。
+- 读取路径必须是**混合方案**：整合后的事实 **+** 检索到的原始会话片段。禁止仅靠事实问答，因为它会损失召回，这是 M1 的关键发现。事实提供冲突已处理的双时间信号，片段补回细节。
+- 面向下一个里程碑构建，不为想象中的 M4 未来增加抽象。
+
+### VII. 诚实、开放的对外措辞
+
+公开交付的内容必须经得起质疑者对日志的审阅。
+
+- 公开文案不得借竞争对手造势，不得作无 benchmark 支撑的声明（如“SOTA”“#1”“1M”）。
+- 提交信息不添加 AI 署名 trailer。
+- 绝不提交真实个人数据、姓名或密钥，只使用合成占位符。
+- 采用双授权：AGPL-3.0（开源）+ 商业许可。刻意采用 copyleft，让衍生作品保持开放。
+
+## 架构约束
+
+- **双进程核心。** System-1 是热写入路径，关键路径不调用 LLM，目标 <50ms。System-2 是异步 / 休眠期整合，负责事实提取、双时间图谱构建、冲突检测、显著度 / 衰减评分和摘要。读取路径目标 <100ms。
+- **语言。** Python ≥ 3.10；`mnemotrace/` 核心仅用标准库。下沉至 Rust 必须有评测框架证据证明相关部分是瓶颈（原则 V）。
+- **模块形态。** 模块小而可组合，与 `CLAUDE.md` §5 的仓库树对应；审阅者必须能将每个文件对应到 §3 架构图的一个部分。
+- **注释解释为什么，而不是做了什么。** 双时间不变量与冲突规则值得注释，getter 不需要。
+
+## 开发流程
+
+- **规格驱动。** 功能按以下流程推进：宪章 → `/speckit-specify` →（`/speckit-clarify`）→ `/speckit-plan` → `/speckit-tasks` →（`/speckit-analyze`）→ `/speckit-implement`。每项产物均按本宪章检查；`/speckit-analyze` 是实施前的一致性门禁。
+- **每项 benchmark 声明都附带复现命令**，这是 Bet D 对自身的要求。
+- **数字、对外措辞、提交和隐私遵循 [`CONTRIBUTING.md`](../../CONTRIBUTING.md)**，人类和智能体同样适用。
+- 违反原则 II（零配置）或原则 IV（来源 / 失效处理）的规格，必须在重新设计前拒绝接受，不能只标为“需要修订”。
+
+## 治理
+
+- 本宪章与项目章程 `CLAUDE.md` 共同构成事实来源。本文件将章程中不可妥协的要求提炼为可检查规格的原则，绝不能与章程矛盾。`CLAUDE.md` 继续作为实际开发指导。
+- **修订**要求编辑本文件，以及受影响时的 `CLAUDE.md`，提升版本号，并在 PR 描述中用一句话说明理由。遵循语义化版本：
+  - **MAJOR**：移除原则，或以不向后兼容的方式重新定义原则。
+  - **MINOR**：新增原则 / 章节，或实质性扩展内容。
+  - **PATCH**：不改变含义的澄清与措辞调整。
+- 所有规格、计划和 PR 均须验证合规性。复杂度必须依据原则 VI（组合，而非单选）和原则 V（先测量）论证；移除无合理依据的复杂度。
+
+本次文字修订：将正文译为中文，保留原有原则与约束，便于维护者阅读。
+
+**Version**: 1.0.1 | **Ratified**: 2026-06-25 | **Last Amended**: 2026-10-20

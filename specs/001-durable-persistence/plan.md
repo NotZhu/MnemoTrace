@@ -1,112 +1,105 @@
-# Implementation Plan: Durable Persistence Backend
+# 实施计划：持久化存储后端
 
 **Branch**: `001-durable-persistence` | **Date**: 2026-06-25 | **Spec**: [spec.md](./spec.md)
 
-**Input**: Feature specification from `specs/001-durable-persistence/spec.md`
+**Input**: 功能规格 `specs/001-durable-persistence/spec.md`
 
-## Summary
+## 概要
 
-Replace the whole-store **pickle** snapshot (`Memory.save`/`Memory.open` in `mnemotrace/memory.py:178-223`)
-with a **safe, schema-versioned, crash-resilient on-disk format** (per-namespace directory of JSON Lines
-record files + a `manifest.json`), and add **LanceDB** as the first real durable `VectorStore` behind the
-existing `mnemotrace/store/base.py` interface. The in-memory stores (`mnemotrace/store/memory_store.py`) stay the
-zero-setup default and the correctness reference; the durable format and LanceDB are optional,
-config-selected backends. A one-shot `pickle → JSONL` migration protects existing users.
+将整库 **pickle** 快照（`mnemotrace/memory.py:178-223` 中的 `Memory.save`/`Memory.open`）
+替换为**安全、带 schema 版本、可承受崩溃的磁盘格式**：每个命名空间使用一个目录，包含 JSON Lines
+记录文件和 `manifest.json`。同时，在现有 `mnemotrace/store/base.py` 接口之后加入 **LanceDB**，
+作为首个真实、持久的 `VectorStore`。内存存储（`mnemotrace/store/memory_store.py`）仍为零配置默认实现
+和正确性参照；持久化格式与 LanceDB 均为可选、通过配置选择的后端。通过一次性 `pickle → JSONL` 迁移保护现有用户。
 
-Two clean layers, both behind code that already exists:
-1. **Durable snapshot format** — a serializer in `mnemotrace/store/persist.py` that streams each entity type
-   to its own append-only `.jsonl` and gates loads on a `manifest.json` (schema version + embedder id +
-   dimension + counts). This is what removes pickle (US1).
-2. **Durable vector backend** — `LanceDBVectorStore` in `mnemotrace/store/lancedb_store.py` implementing the
-   `VectorStore` ABC with a lazy `lancedb` import, so vectors persist and scale past RAM (US2).
+两个层次均位于已有接口之后：
 
-## Technical Context
+1. **持久快照格式**：`mnemotrace/store/persist.py` 中的序列化器，将各实体类型流式写入各自仅追加的 `.jsonl`，并用 `manifest.json`（schema 版本、embedder id、维度、数量）控制加载。这一层负责替换 pickle（US1）。
+2. **持久向量后端**：`mnemotrace/store/lancedb_store.py` 中的 `LanceDBVectorStore` 实现 `VectorStore` 抽象基类，延迟导入 `lancedb`，让向量持久保存，并扩展到 RAM 之外（US2）。
 
-**Language/Version**: Python ≥ 3.10; `mnemotrace/` core stays pure-stdlib (Constitution III).
+## 技术背景（Technical Context）
 
-**Primary Dependencies**: stdlib only for US1 (`json`, `os`, `tempfile`, `io`; an advisory lock file for
-single-writer). `lancedb` (+ its `pyarrow`) is an **optional extra** used only by `lancedb_store.py` (US2).
+**Language/Version**: Python ≥ 3.10；`mnemotrace/` 核心仅使用标准库（宪章 III）。
 
-**Storage**: one directory per namespace — `manifest.json`, `episodes.jsonl`, `facts.jsonl`,
-`entities.jsonl`, `relations.jsonl`; LanceDB tables live under the same dir when the backend is enabled.
+**Primary Dependencies**: US1 仅用标准库（`json`、`os`、`tempfile`、`io`；用建议锁文件实现单写者）。
+`lancedb` 及其依赖 `pyarrow` 是**可选 extra**，仅由 `lancedb_store.py` 使用（US2）。
 
-**Testing**: pytest. US1/US3 tests run fully offline with **no extras**; US2 tests are skip-gated on
-`lancedb` being importable.
+**Storage**: 每个命名空间一个目录，包含 `manifest.json`、`episodes.jsonl`、`facts.jsonl`、
+`entities.jsonl`、`relations.jsonl`；启用 LanceDB 后，其表也位于同一目录下。
 
-**Target Platform**: self-hosted Linux/macOS (single process).
+**Testing**: pytest。US1/US3 测试完全离线，**不依赖 extras**；US2 测试仅在可导入 `lancedb` 时执行，否则跳过。
 
-**Project Type**: library (`mnemotrace` package) + in-repo eval harness.
+**Target Platform**: 自托管 Linux/macOS，单进程。
 
-**Performance Goals**: append is O(1) per record + fsync; restart load is O(n) **streamed** (never a single
-whole-blob load); the LanceDB search latency/scale target is **measured on the harness, not asserted here**
-(Constitution V). The read-path <100ms target from the charter must not regress.
+**Project Type**: 库（`mnemotrace` 包）+ 仓库内评测框架。
 
-**Constraints**: zero-setup invariant holds (Constitution II); loads never execute stored code (no
-pickle/`eval`); writes are crash-safe (torn tail recoverable); **single writer per namespace** in v1.
+**Performance Goals**: 每条记录追加为 O(1) + fsync；重启加载为 O(n) **流式处理**，绝不一次性加载整个数据块。
+LanceDB 的搜索延迟 / 规模目标**通过评测框架测量，不在此断言**（宪章 V）。章程中的读取路径 <100ms 目标不得退化。
 
-**Scale/Scope**: US2 targets a corpus that exceeds comfortable RAM; the exact N and the p50/p95 read
-latency are set as a harness task, not claimed in this plan.
+**Constraints**: 保持零配置不变量（宪章 II）；加载绝不执行存储代码（不用 pickle/`eval`）；
+写入具备崩溃安全性，可恢复撕裂尾部；v1 **每个命名空间仅允许一个写者**。
 
-## Constitution Check
+**Scale/Scope**: US2 面向无法轻松放入 RAM 的语料；具体 N 和 p50/p95 读取延迟作为评测任务确定，不在本计划中作成绩声明。
 
-*GATE: Must pass before Phase 0 research. Re-checked after Phase 1 design.*
+## 宪章检查
 
-| Principle | Gate | Status |
+*门禁：Phase 0 研究前必须通过；Phase 1 设计后复查。*
+
+| 原则 | 门禁 | 状态 |
 |---|---|---|
-| **I. Reproducibility** | This plan asserts **zero** performance numbers; any latency/scale claim is deferred to a harness task with a committed log. | ✅ PASS |
-| **II. Zero-setup (NON-NEGOTIABLE)** | In-memory default unchanged; durable format + LanceDB are optional/config-selected; a test asserts the default path pulls **no** heavy import; `quickstart.py` + offline `pytest` pass with no extras. | ✅ PASS |
-| **III. Interfaces-first** | `LanceDBVectorStore` implements the `VectorStore` ABC; `lancedb` is imported **lazily inside** `lancedb_store.py`; `mnemotrace/` core never imports it at module top level. | ✅ PASS |
-| **IV. No silent corruption** | The serializer round-trips **every** bi-temporal stamp, provenance list, and supersedes pointer; invalidated facts persist as invalid (no hard-delete). A round-trip equality test is a release gate. | ✅ PASS |
-| **V. Measure-first** | Format is the simplest safe thing (JSONL + manifest); no premature indexing/caching. Perf work is a separate, measured task. | ✅ PASS |
-| **VI. Compose, don't pick** | The durable backend composes **behind** existing interfaces; it does not replace or fork the in-memory reference. | ✅ PASS |
-| **VII. Honest messaging** | Migration + single-writer limit are documented plainly; no over-claim. | ✅ PASS |
+| **I. 可复现性** | 本计划不声称任何性能数字；延迟 / 规模声明交由带已提交日志的评测任务验证。 | ✅ PASS |
+| **II. 零配置（不可妥协）** | 内存默认实现不变；持久化格式与 LanceDB 为配置选择的可选项；测试断言默认路径不导入重型依赖；无 extras 时 `quickstart.py` 和离线 `pytest` 通过。 | ✅ PASS |
+| **III. 接口优先** | `LanceDBVectorStore` 实现 `VectorStore` 抽象基类；`lancedb` 仅在 `lancedb_store.py` 内延迟导入；`mnemotrace/` 核心模块顶层绝不导入它。 | ✅ PASS |
+| **IV. 不允许静默损坏** | 序列化器往返保留每个双时间戳、来源列表和 supersedes 指针；失效事实仍以失效状态保存，不硬删除。往返一致性测试作为发布门禁。 | ✅ PASS |
+| **V. 先测量** | 采用最简单的安全格式（JSONL + manifest），不提前加入索引 / 缓存。性能优化作为独立、经测量的任务。 | ✅ PASS |
+| **VI. 组合，而非单选** | 持久化后端在现有接口之后组合，不替换或分叉内存参照实现。 | ✅ PASS |
+| **VII. 诚实措辞** | 明确记录迁移与单写者限制，不夸大能力。 | ✅ PASS |
 
-**No violations → Complexity Tracking left empty.**
+**无违规 → 复杂度跟踪留空。**
 
-## Project Structure
+## 项目结构
 
-### Documentation (this feature)
+### 本功能的文档
 
 ```text
 specs/001-durable-persistence/
-├── plan.md              # This file
-├── research.md          # Phase 0 — format/backend/crash-safety decisions
-├── data-model.md        # Phase 1 — persisted record + manifest schemas
-├── quickstart.md        # Phase 1 — runnable validation scenarios
-├── contracts/           # Phase 1 — store-backend + on-disk-format contracts
-└── tasks.md             # Phase 2 — created by /speckit-tasks (NOT here)
+├── plan.md              # 本文件
+├── research.md          # Phase 0：格式 / 后端 / 崩溃安全性决策
+├── data-model.md        # Phase 1：持久记录与 manifest schema
+├── quickstart.md        # Phase 1：可运行的验证场景
+├── contracts/           # Phase 1：存储后端与磁盘格式契约
+└── tasks.md             # Phase 2：由 /speckit-tasks 创建，不在本阶段生成
 ```
 
-### Source Code (repository root)
+### 源代码（仓库根目录）
 
 ```text
 mnemotrace/store/
-├── base.py            # (existing) VectorStore / DocStore / GraphStore ABCs — unchanged
-├── memory_store.py    # (existing) in-memory reference impls — unchanged, stays the default
-├── persist.py         # NEW: safe JSONL+manifest serialize/deserialize; atomic write, torn-tail recovery
-├── lancedb_store.py   # NEW: LanceDBVectorStore (optional, lazy import) implementing VectorStore
-└── migrate.py         # NEW: one-shot pickle -> JSONL migration (--dry-run reports counts, then apply)
+├── base.py            # 已有：VectorStore / DocStore / GraphStore 抽象基类，不变
+├── memory_store.py    # 已有：内存参照实现，不变，继续作为默认实现
+├── persist.py         # 新增：安全的 JSONL+manifest 序列化 / 反序列化；原子写入、撕裂尾部恢复
+├── lancedb_store.py   # 新增：可选、延迟导入的 LanceDBVectorStore，实现 VectorStore
+└── migrate.py         # 新增：一次性 pickle -> JSONL 迁移（先 --dry-run 报告数量，再执行）
 
-mnemotrace/memory.py       # CHANGED: Memory.save/open delegate to store.persist; pickle path removed
-mnemotrace/config.py       # CHANGED: storage backend selection (memory | durable | lancedb) + data path
-pyproject.toml         # CHANGED: [project.optional-dependencies] lancedb = ["lancedb"]
+mnemotrace/memory.py   # 修改：Memory.save/open 委托 store.persist；移除 pickle 路径
+mnemotrace/config.py   # 修改：存储后端选择（memory | durable | lancedb）与数据路径
+pyproject.toml        # 修改：[project.optional-dependencies] lancedb = ["lancedb"]
 
 tests/
-├── test_persist_roundtrip.py    # US1 / SC-001 / FR-002: add->save->open equality on ALL fields
-├── test_persist_safety.py       # US1 / SC-002 / FR-003,FR-004: no code-exec on load; version-skew errors
-├── test_persist_crash.py        # US1 / SC-003 / FR-005: torn-write recovery keeps committed prefix
-├── test_zero_setup_default.py   # II / SC-004 / FR-006: default path heavy-import-free; quickstart ok
-├── test_lancedb_store.py        # US2 / SC-005 / FR-009: restart persistence + in-memory parity (gated)
-└── test_migrate_pickle.py       # US3 / FR-008: dry-run counts + post-migrate entity parity
+├── test_persist_roundtrip.py    # US1 / SC-001 / FR-002：add->save->open 所有字段一致
+├── test_persist_safety.py       # US1 / SC-002 / FR-003,FR-004：加载不执行代码；版本不兼容报错
+├── test_persist_crash.py        # US1 / SC-003 / FR-005：撕裂写入恢复保留已提交前缀
+├── test_zero_setup_default.py   # II / SC-004 / FR-006：默认路径无重型导入；quickstart 可运行
+├── test_lancedb_store.py        # US2 / SC-005 / FR-009：重启持久化与内存结果一致，按依赖门控
+└── test_migrate_pickle.py       # US3 / FR-008：dry-run 数量与迁移后实体一致
 
-eval/                  # harness task to measure LanceDB read latency + scale (SC-006) — committed log, no asserted number
+eval/                  # 测量 LanceDB 读取延迟与规模（SC-006）；提交日志，不凭空断言数字
 ```
 
-**Structure Decision**: Single-project library layout. The feature is contained almost entirely within
-`mnemotrace/store/` (three new modules behind the existing ABCs) plus a focused change to `Memory.save/open`
-and `config.py`. No new top-level project, no change to the read/write paths' public API — callers keep
-calling `Memory.open(path)` / `mem.save()`; only the on-disk representation and the optional backend change.
+**结构决策：** 沿用单项目库布局。功能几乎全部位于 `mnemotrace/store/`（现有抽象基类之后的三个新模块），
+仅对 `Memory.save/open` 和 `config.py` 做集中修改。不新增顶层项目，不改变读写路径的公开 API；
+调用者仍使用 `Memory.open(path)` / `mem.save()`，只有磁盘表示和可选后端改变。
 
-## Complexity Tracking
+## 复杂度跟踪
 
-> No constitution violations — section intentionally empty.
+> 无宪章违规，本节有意留空。

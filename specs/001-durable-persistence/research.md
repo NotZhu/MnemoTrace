@@ -1,59 +1,41 @@
-# Phase 0 — Research & Decisions: Durable Persistence
+# Phase 0 — 研究与决策：持久化存储
 
-All decisions honor the constitution: stdlib-only default (II), behind the existing interfaces (III),
-preserve every field (IV), and assert **no** performance numbers (V — those are harness tasks).
+所有决策遵循宪章：默认仅用标准库（II）、位于现有接口之后（III）、保留每个字段（IV），
+且**不声称任何**性能数字（V；这些数字由评测任务测量）。
 
-## D1. On-disk format → JSON Lines (one file per entity type) + `manifest.json`
-- **Decision**: serialize each collection to its own append-friendly `.jsonl` (one JSON object per line);
-  a `manifest.json` header carries schema version, embedder identity, and committed counts.
-- **Rationale**: pure stdlib (`json`) keeps the durable path zero-dep (II); append-friendly → crash-safe
-  (FR-005); safe to load — `json.loads` cannot execute code (FR-003); human-inspectable for
-  provenance/debugging; streamable record-by-record → no whole-blob load (unlike pickle). The stores
-  already hold plain dataclasses, so the mapping is mechanical.
-- **Alternatives**: *pickle* (status quo) — unsafe + brittle + rewrites the whole store each save;
-  *SQLite* — solid but adds a schema/migration surface and still needs JSON for nested fields (embeddings,
-  provenance); revisit when we need secondary indexes, not for the snapshot; *LMDB* — C dependency, breaks
-  the stdlib default; *Parquet* — needs pyarrow, columnar is overkill for doc/graph records.
+## D1. 磁盘格式 → JSON Lines（每种实体一个文件）+ `manifest.json`
 
-## D2. Crash safety → append + fsync, manifest written last (atomic), torn-tail recovery
-- **Decision**: append a record as one line, `flush()` + `os.fsync()`; write `manifest.json` **last** via
-  `manifest.json.tmp` + `os.replace()` (atomic). On load, parse the manifest-declared committed prefix for
-  each `.jsonl`; missing/malformed records inside that prefix fail loudly, while truncated/garbled records
-  after the manifest count are ignored as an uncommitted torn tail → a crash leaves a recoverable
-  **last-committed prefix** without silently dropping committed memory (FR-005, SC-003).
-- **Rationale**: atomic rename + fsync is the standard durable-without-a-DB recipe; `os.replace` is atomic
-  on POSIX and Windows.
-- **Alternatives**: *whole-file-then-rename per save* — loses O(1) append, rewrites everything (what pickle
-  did); *WAL/journal* — overkill for an append log.
+- **决策：** 每个集合序列化至各自便于追加的 `.jsonl`，每行一个 JSON 对象；`manifest.json` 头部元数据记录 schema 版本、embedder 身份和已提交记录数量。
+- **理由：** 纯标准库（`json`）让持久化路径保持零依赖（II）；便于追加，有助于实现崩溃安全（FR-005）；加载安全，`json.loads` 不会执行代码（FR-003）；人可直接检查，便于追溯来源和调试；可逐条流式处理，无需像 pickle 那样一次加载整个数据块。现有存储已经持有普通 dataclass，因此映射直接明确。
+- **备选：** *pickle*（现状）不安全、脆弱，每次保存都重写整个存储；*SQLite* 可靠，但增加 schema / 迁移维护面，嵌套字段（嵌入、来源）仍需 JSON，等需要二级索引时再考虑，不用于本次快照；*LMDB* 有 C 依赖，破坏标准库默认方案；*Parquet* 需要 pyarrow，对文档 / 图谱记录使用列式存储过重。
 
-## D3. Safe load + version gate → manifest `schema_version`, explicit reconstruction
-- **Decision**: `manifest.json` carries `schema_version` (int) + `mnemotrace_version`. If `schema_version`
-  exceeds what the reader supports → raise a clear `IncompatibleStoreError` (never a partial/wrong load,
-  FR-004). Records become dataclasses via **explicit field mapping**, never `eval`/`__dict__` injection.
-- **Rationale**: FR-003 + FR-004 — forward-incompatible stores fail loudly.
-- **Alternatives**: unversioned (silent mis-load — rejected); pickle protocol versions (still unsafe).
+## D2. 崩溃安全 → 追加 + fsync，最后原子写入 manifest，恢复撕裂尾部
 
-## D4. First durable vector backend → LanceDB
-- **Decision**: `LanceDBVectorStore` (embedded, on-disk, native ANN) as the first real `VectorStore`,
-  config-selected, `lancedb` imported lazily inside the module.
-- **Rationale**: the charter's stated path; embedded + zero-server fits self-host; memory-mapped → scales
-  past RAM (SC-006); Apache-2.0.
-- **Alternatives**: *Chroma* — heavier tree, more server-ish (it is Mem0's default in our eval, not ours);
-  *sqlite-vec* — promising but newer/less proven; *Qdrant/pgvector* — need a server → later extras behind
-  the same ABC.
+- **决策：** 每条记录追加为一行，执行 `flush()` + `os.fsync()`；**最后**通过 `manifest.json.tmp` + `os.replace()` 原子写入 `manifest.json`。加载时按 manifest 声明的已提交前缀解析各 `.jsonl`；前缀内部缺失记录或格式错误必须明确失败，manifest 数量之后的截断 / 损坏记录作为未提交的撕裂尾部忽略。这样崩溃后可恢复**最后已提交前缀**，不会静默丢弃已提交记忆（FR-005、SC-003）。
+- **理由：** 原子重命名 + fsync 是不依赖数据库实现持久性的常见做法；`os.replace` 在 POSIX 和 Windows 上均为原子操作。
+- **备选：** *每次保存先写完整文件再重命名*会失去 O(1) 追加，每次重写全部内容，与 pickle 相同；对追加日志采用 *WAL / journal* 过重。
 
-## D5. Concurrency → single-writer advisory lock (v1)
-- **Decision**: an advisory lock file per namespace dir (`.lock` via `fcntl.flock`); a second writer fails
-  fast with a clear error. Multi-writer is **out of scope v1**, documented.
-- **Rationale**: matches `MemoryService`'s per-namespace LRU ownership (`mnemotrace/service.py`); prevents
-  interleaved corruption without a DB.
-- **Alternatives**: portalocker (extra dep); MVCC (overkill).
+## D3. 安全加载与版本门禁 → manifest `schema_version`，显式重建
 
-## D6. Format stays orthogonal to the vector backend
-- **Decision**: fact embeddings travel in `facts.jsonl`, so the durable snapshot is backend-independent. On
-  load with the in-memory backend, embeddings repopulate the dict; with LanceDB, load upserts them into the
-  LanceDB table. US1 (format) is therefore testable without US2 (LanceDB), as the spec requires.
-- **Rationale**: keeps the two user stories independently shippable/testable; the snapshot stays portable
-  across vector backends.
+- **决策：** `manifest.json` 携带 `schema_version`（int）和 `mnemotrace_version`。若 `schema_version` 超过读取器支持的版本，明确抛出 `IncompatibleStoreError`，绝不部分加载或错误加载（FR-004）。记录通过**显式字段映射**重建为 dataclass，绝不使用 `eval` 或向 `__dict__` 注入。
+- **理由：** 满足 FR-003 + FR-004，明确拒绝不兼容的较新格式存储。
+- **备选：** 无版本格式会静默误加载，拒绝；pickle 协议版本仍无法解决安全问题。
 
-**All NEEDS CLARIFICATION resolved — no open unknowns block Phase 1.**
+## D4. 首个持久向量后端 → LanceDB
+
+- **决策：** 使用 `LanceDBVectorStore`（嵌入式、磁盘存储、原生 ANN）作为首个真实 `VectorStore`，由配置选择，`lancedb` 在模块内部延迟导入。
+- **理由：** 符合章程中的既定路径；嵌入式、无需服务器，适合自托管；内存映射可扩展到 RAM 之外（SC-006）；采用 Apache-2.0 许可。
+- **备选：** *Chroma* 依赖树更重、更偏向服务式运行（它是评测中 Mem0 的默认后端，不是我们的默认）；*sqlite-vec* 有潜力，但较新、验证较少；*Qdrant/pgvector* 需要服务器，留作同一抽象基类之后的后续 extras。
+
+## D5. 并发 → 单写者建议锁（v1）
+
+- **决策：** 每个命名空间目录使用建议锁文件（通过 `fcntl.flock` 操作 `.lock`）；第二个写者立即明确报错。**v1 不支持多写者**，需在文档中说明。
+- **理由：** 与 `MemoryService` 按命名空间管理 LRU 归属的方式一致（`mnemotrace/service.py`），无需数据库即可避免交错写入损坏。
+- **备选：** portalocker 增加依赖；MVCC 过重。
+
+## D6. 格式与向量后端保持正交
+
+- **决策：** 事实嵌入保存在 `facts.jsonl`，因此持久快照独立于后端。使用内存后端加载时，嵌入重新填入字典；使用 LanceDB 时，通过 upsert 写入 LanceDB 表。因此，按规格要求，US1（格式）可在没有 US2（LanceDB）的情况下测试。
+- **理由：** 两个用户故事可独立交付和测试；快照可跨向量后端移植。
+
+**所有 NEEDS CLARIFICATION 均已解决，没有未决问题阻止 Phase 1。**

@@ -1,38 +1,36 @@
-# Specification Quality Checklist: Memory Reference Radar
+# 规格质量检查清单：记忆系统参考雷达
 
-**Purpose**: Validate specification completeness and quality before proceeding to planning
+**Purpose**: 进入计划阶段前，验证规格完整性与质量
 **Created**: 2026-06-29
 **Feature**: [spec.md](../spec.md)
 
-## Content Quality
+## 内容质量
 
-- [x] No implementation details (languages, frameworks, APIs)
-- [x] Focused on user value and business needs
-- [x] Written for non-technical stakeholders
-- [x] All mandatory sections completed
+- [x] 不包含实现细节（语言、框架、API）
+- [x] 聚焦用户价值与业务需求
+- [x] 面向非技术利益相关方编写
+- [x] 所有必需章节均已完成
 
-## Requirement Completeness
+## 需求完整性
 
-- [x] No [NEEDS CLARIFICATION] markers remain
-- [x] Requirements are testable and unambiguous
-- [x] Success criteria are measurable
-- [x] Success criteria are technology-agnostic (no implementation details)
-- [x] All acceptance scenarios are defined
-- [x] Edge cases are identified
-- [x] Scope is clearly bounded
-- [x] Dependencies and assumptions identified
+- [x] 没有遗留的 [NEEDS CLARIFICATION] 标记
+- [x] 需求可测试且无歧义
+- [x] 成功标准可测量
+- [x] 成功标准与技术选型无关，不包含实现细节
+- [x] 所有验收场景均已定义
+- [x] 边界情况已识别
+- [x] 范围边界明确
+- [x] 依赖与假设已识别
 
-## Feature Readiness
+## 功能就绪情况
 
-- [x] All functional requirements have clear acceptance criteria
-- [x] User scenarios cover primary flows
-- [x] Feature meets measurable outcomes defined in Success Criteria
-- [x] No implementation details leak into specification
+- [x] 所有功能需求都有明确验收标准
+- [x] 用户场景覆盖主要流程
+- [x] 功能满足“成功标准”中定义的可测量结果
+- [x] 规格中没有混入实现细节
 
-## Notes
+## 说明
 
-- Validation pass 1 completed on 2026-06-29.
-- The companion `research.md` is intentionally more concrete than `spec.md` because it records the
-  current architecture radar and candidate backlog. Implementation still requires a later Spec-Kit plan.
-- Final implementation validation completed on 2026-07-14: links, source status, placeholders,
-  governance terms, managed context blocks, task format, and Chinese technical report all passed.
+- 第 1 轮验证于 2026-06-29 完成。
+- 配套 `research.md` 有意比 `spec.md` 更具体，因为它记录当前架构雷达和候选待办。实施仍需后续 Spec-Kit 计划。
+- 最终实施验证于 2026-07-14 完成：链接、来源状态、占位符、治理术语、托管上下文区块、任务格式及中文技术报告均通过。

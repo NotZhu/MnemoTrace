@@ -1,272 +1,241 @@
-# Memory Reference Radar
+# 记忆系统参考雷达
 
 **Feature**: `002-memory-reference-radar`
 
 **Created**: 2026-06-29
 
-**Purpose**: Capture the public systems and algorithms MnemoTrace should study at the architecture level,
-then convert the useful patterns into MnemoTrace-native, reproducible work. This is internal research
-input. Public MnemoTrace claims still require MnemoTrace-owned logs and the accuracy/tokens/latency triple.
+**Purpose**: 记录 MnemoTrace 应在架构层面研究的公开系统与算法，将有用模式转化为 MnemoTrace 自身、可复现的工作。
+这是内部研究输入；MnemoTrace 的公开声明仍需自有日志，以及准确率 / token 消耗 / 延迟（accuracy/tokens/latency）三项指标。
 
-## Phase 0 Decisions
+## Phase 0 决策
 
-### Decision: Treat the radar as internal architecture governance, not public positioning
+### 决策：将雷达用于内部架构治理，而非对外定位
 
-**Rationale**: MnemoTrace's credibility comes from reproducible results and clean ownership. The radar
-should help maintainers learn quickly while preventing unsupported public comparisons or copied claims.
+**理由：** MnemoTrace 的可信度来自可复现结果与自主实现。雷达应帮助维护者快速学习，
+同时防止无依据的公开比较或照搬声明。
 
-**Alternatives considered**:
+**考虑过的备选：**
 
-- Public competitor matrix: rejected because it would invite stale comparisons and violate the
-  project's messaging discipline unless every number is reproduced.
-- Private chat notes only: rejected because architecture decisions need stable reviewable artifacts.
+- 公开竞争对手矩阵：除非所有数字都已复现，否则容易引入过时比较，并违反项目措辞纪律，因此拒绝。
+- 仅保留私下聊天笔记：架构决策需要稳定、可评审的产物，因此拒绝。
 
-### Decision: Promote patterns only through MnemoTrace-native adoption candidates
+### 决策：只通过 MnemoTrace 自有采纳候选推进模式
 
-**Rationale**: The useful unit is not "copy project X"; it is a candidate that maps to an MnemoTrace memory
-surface, strategic bet, evaluation hypothesis, and rollback criterion.
+**理由：** 有用的工作单位应是映射到 MnemoTrace 记忆模块、战略下注、评测假设和回滚标准的候选，而非“复制项目 X”。
 
-**Alternatives considered**:
+**考虑过的备选：**
 
-- Direct feature imports from external systems: rejected because it risks license confusion, hidden
-  coupling, and features that do not match MnemoTrace's bi-temporal model.
-- Pure literature survey without candidate backlog: rejected because it does not move the roadmap.
+- 直接从外部系统引入功能：可能造成许可混淆、隐性耦合，并引入不适合 MnemoTrace 双时间模型的功能，因此拒绝。
+- 只做文献综述，不维护候选待办：不能推进路线图，因此拒绝。
 
-### Decision: Keep raw evidence plus consolidated memory as the default read-path assumption
+### 决策：以原始证据 + 整合记忆作为读取路径默认前提
 
-**Rationale**: MnemoTrace's M1 finding says facts-only QA loses recall. Every candidate must preserve raw
-session chunks, facts, and provenance unless a later benchmark proves a narrower path is better.
+**理由：** MnemoTrace 的 M1 发现表明，仅靠事实问答会损失召回。
+除非后续 benchmark 证明更窄的路径更好，否则每个候选必须保留原始会话片段、事实与来源。
 
-**Alternatives considered**:
+**考虑过的备选：**
 
-- Facts-only memory: rejected because it drops detail and contradicts current project evidence.
-- Raw-only memory: rejected because it misses conflict handling, temporal reasoning, and multi-hop
-  structure.
+- 仅事实记忆：丢失细节，与项目现有证据矛盾，因此拒绝。
+- 仅原始记忆：缺少冲突处理、时间推理和多跳结构，因此拒绝。
 
-### Decision: Make clean-room and license status part of every reference entry
+### 决策：每个参考条目均记录独立实现与许可状态
 
-**Rationale**: MnemoTrace is dual-licensed AGPL plus commercial. Architecture ideas can be studied, but
-code, schemas, prompts, and benchmark artifacts must not be reused without explicit review.
+**理由：** MnemoTrace 采用 AGPL + 商业双授权。可以研究架构思想，
+但代码、schema、提示词和 benchmark 产物未经明确审查不得复用。
 
-**Alternatives considered**:
+**考虑过的备选：**
 
-- Review licenses later: rejected because candidate promotion needs to know whether a source is
-  architecture-only.
-- Exclude copyleft projects entirely: rejected because many ideas are still safe to study at the
-  architecture level.
+- 之后再审查许可：候选推进时就需要知道来源是否仅限架构研究，因此拒绝。
+- 完全排除 copyleft 项目：许多思想仍可在架构层面研究，因此拒绝。
 
-### Decision: Prioritize candidates by benchmark category and strategic bet
+### 决策：按 benchmark 类别与战略下注确定候选优先级
 
-**Rationale**: The goal is algorithmic leadership under reproducible evaluation. Candidates that cannot
-name a target behavior, benchmark category, and accuracy/tokens/latency direction stay research-only.
+**理由：** 目标是在可复现评测下取得算法优势。无法指出目标行为、benchmark 类别和准确率 / token 消耗 / 延迟变化方向的候选，继续保留为仅研究。
 
-**Alternatives considered**:
+**考虑过的备选：**
 
-- Prioritize by ecosystem popularity: rejected because popularity does not prove memory quality.
-- Prioritize by ease of implementation: rejected because the goal is the strongest memory engine, not
-  the easiest checklist.
+- 按生态流行度排序：流行不代表记忆质量，因此拒绝。
+- 按实现难度排序：目标是构建最强的记忆引擎，而非完成最容易的清单，因此拒绝。
 
-## Operating Rules
+## 工作规则
 
-- Study public ideas aggressively; do not copy code without an explicit license review and clean-room
-  plan.
-- Treat third-party benchmark numbers as signals, not evidence. They become MnemoTrace evidence only after
-  reproduction in `eval/` with committed `results/*.jsonl` logs.
-- Translate every borrowed pattern into MnemoTrace's own primitives: lossless episodes, atomic facts,
-  bi-temporal graph, provenance, supersedes chains, hybrid raw-chunk plus fact retrieval, salience,
-  async consolidation, and harness-backed ablations.
-- Do not turn this radar into public competitor positioning. Public copy should describe MnemoTrace's own
-  capabilities and reproducible results.
+- 积极研究公开思想；未经明确许可审查和独立实现（clean-room）计划，不复制代码。
+- 第三方 benchmark 数字是线索，不是证据。只有在 `eval/` 中复现并提交 `results/*.jsonl` 日志后，才成为 MnemoTrace 证据。
+- 将每个借鉴模式转化为 MnemoTrace 自身原语：无损 episode、原子 fact、双时间图谱、来源、supersedes 链、原始片段 + 事实混合检索、显著度、异步整合，以及由评测框架支撑的消融。
+- 不将本雷达变为公开的竞争对手定位材料；公开文案应描述 MnemoTrace 自身能力和可复现结果。
 
-## Review Status by Source
+## 各来源审查状态
 
-All entries start as architecture-only research inputs. "License pending" means no code, prompt,
-schema, or benchmark artifact may be reused until a later planning step reviews the source license and
-documents a clean-room plan.
+所有条目起初均为仅研究架构的输入。“许可待审”意味着在后续计划审查来源许可并记录独立实现方案前，
+不得复用任何代码、提示词、schema 或 benchmark 产物。
 
-| Source | Evidence status | Clean-room/license status |
+| 来源 | 证据状态 | 独立实现 / 许可状态 |
 | --- | --- | --- |
-| Hy-Memory / Tencent Hunyuan Memory | External claims only; not reproduced in MnemoTrace harness | Architecture-only; license/source availability pending |
-| Mem0 | Public repository and docs; external claims only | License review required before any code reuse |
-| Graphiti / Zep | Public repository and docs; external claims only | License review required before any code reuse |
-| Letta / MemGPT | Public repository and docs; external claims only | License review required before any code reuse |
-| LangMem | Public repository and docs; external claims only | License review required before any code reuse |
-| Cognee | Public repository and docs; external claims only | License review required before any code reuse |
-| LLM Wiki | Public repository and docs; external claims only | GPLv3; architecture-only clean-room unless a later plan accepts license implications |
-| Supermemory | Public repository and docs; external claims only | License review required before any code reuse |
-| Hindsight | Public repository candidate; external claims only | License review and repository verification required |
-| MemPalace | Public repository candidate; external claims only | License review and repository verification required |
-| SimpleMem | Public repository/paper candidate; external claims only | Architecture-only until license review |
-| A-Mem | Public repository/paper candidate; external claims only | Architecture-only until license review |
-| HippoRAG | Public repository/paper candidate; external claims only | Architecture-only until license review |
-| LightRAG | Public repository and docs; external claims only | License review required before any code reuse |
-| Microsoft GraphRAG | Public repository and docs; external claims only | License review required before any code reuse |
-| RAPTOR | Public repository/paper candidate; external claims only | Architecture-only until license review |
-| Generative Agents | Public repository/paper candidate; external claims only | Architecture-only until license review |
-| Reflexion | Public repository/paper candidate; external claims only | Architecture-only until license review |
-| ExpeL | Public repository/paper candidate; external claims only | Architecture-only until license review |
-| MemoryBank | Public repository/paper candidate; external claims only | Architecture-only until license review |
-| MemOS | Public repository and docs; external claims only | License review required before any code reuse |
-| MemoryOS | Public repository/paper candidate; external claims only | Architecture-only until license review |
-| memU | Public repository and docs; external claims only | License review required before any code reuse |
-| Memobase | Public repository and docs; external claims only | License review required before any code reuse |
-| agentmemory | Public repository candidate; external claims only | License review and repository verification required |
-| LongMemEval-V2 | Public benchmark page; external claims only | Benchmark terms and dataset license review required before reuse |
-| BEAM | Public benchmark repository; external claims only | License review required before benchmark artifact reuse |
-| LOCOMO | Public benchmark page and dataset; external claims only | Dataset terms and license review required before reuse |
-| Agent Memory Benchmark | Public leaderboard; external claims only | Research-only; leaderboard terms review required |
-| mem0 memory-benchmarks | Public benchmark repository; external claims only | Architecture-only until license and harness review |
-| Awesome Agent Memory | Public literature radar; external claims only | Architecture-only; linked sources require their own license review |
-| Awesome GraphMemory | Public graph-memory radar; external claims only | Architecture-only; linked sources require their own license review |
-| Awesome Memory for Agents | Public literature radar; external claims only | Architecture-only; linked sources require their own license review |
+| Hy-Memory / Tencent Hunyuan Memory | 仅外部声明，未在 MnemoTrace 评测框架复现 | 仅研究架构；许可 / 源码可用性待确认 |
+| Mem0 | 公开仓库与文档；仅外部声明 | 复用任何代码前需审查许可 |
+| Graphiti / Zep | 公开仓库与文档；仅外部声明 | 复用任何代码前需审查许可 |
+| Letta / MemGPT | 公开仓库与文档；仅外部声明 | 复用任何代码前需审查许可 |
+| LangMem | 公开仓库与文档；仅外部声明 | 复用任何代码前需审查许可 |
+| Cognee | 公开仓库与文档；仅外部声明 | 复用任何代码前需审查许可 |
+| LLM Wiki | 公开仓库与文档；仅外部声明 | GPLv3；仅研究架构并独立实现，除非后续计划接受许可影响 |
+| Supermemory | 公开仓库与文档；仅外部声明 | 复用任何代码前需审查许可 |
+| Hindsight | 候选公开仓库；仅外部声明 | 需审查许可并核验仓库 |
+| MemPalace | 候选公开仓库；仅外部声明 | 需审查许可并核验仓库 |
+| SimpleMem | 候选公开仓库 / 论文；仅外部声明 | 许可审查前仅研究架构 |
+| A-Mem | 候选公开仓库 / 论文；仅外部声明 | 许可审查前仅研究架构 |
+| HippoRAG | 候选公开仓库 / 论文；仅外部声明 | 许可审查前仅研究架构 |
+| LightRAG | 公开仓库与文档；仅外部声明 | 复用任何代码前需审查许可 |
+| Microsoft GraphRAG | 公开仓库与文档；仅外部声明 | 复用任何代码前需审查许可 |
+| RAPTOR | 候选公开仓库 / 论文；仅外部声明 | 许可审查前仅研究架构 |
+| Generative Agents | 候选公开仓库 / 论文；仅外部声明 | 许可审查前仅研究架构 |
+| Reflexion | 候选公开仓库 / 论文；仅外部声明 | 许可审查前仅研究架构 |
+| ExpeL | 候选公开仓库 / 论文；仅外部声明 | 许可审查前仅研究架构 |
+| MemoryBank | 候选公开仓库 / 论文；仅外部声明 | 许可审查前仅研究架构 |
+| MemOS | 公开仓库与文档；仅外部声明 | 复用任何代码前需审查许可 |
+| MemoryOS | 候选公开仓库 / 论文；仅外部声明 | 许可审查前仅研究架构 |
+| memU | 公开仓库与文档；仅外部声明 | 复用任何代码前需审查许可 |
+| Memobase | 公开仓库与文档；仅外部声明 | 复用任何代码前需审查许可 |
+| agentmemory | 候选公开仓库；仅外部声明 | 需审查许可并核验仓库 |
+| LongMemEval-V2 | 公开 benchmark 页面；仅外部声明 | 复用前需审查 benchmark 条款与数据集许可 |
+| BEAM | 公开 benchmark 仓库；仅外部声明 | 复用 benchmark 产物前需审查许可 |
+| LOCOMO | 公开 benchmark 页面与数据集；仅外部声明 | 复用前需审查数据集条款与许可 |
+| Agent Memory Benchmark | 公开排行榜；仅外部声明 | 仅研究，需审查排行榜条款 |
+| mem0 memory-benchmarks | 公开 benchmark 仓库；仅外部声明 | 许可与评测框架审查前仅研究架构 |
+| Awesome Agent Memory | 公开文献雷达；仅外部声明 | 仅研究架构；所链接来源需分别审查许可 |
+| Awesome GraphMemory | 公开图记忆雷达；仅外部声明 | 仅研究架构；所链接来源需分别审查许可 |
+| Awesome Memory for Agents | 公开文献雷达；仅外部声明 | 仅研究架构；所链接来源需分别审查许可 |
 
-## P0 References: Study First
+## P0 参考：优先研究
 
-| Source | Category | Architecture signal | MnemoTrace learning | Adoption candidate |
+| 来源 | 类别 | 架构信号 | MnemoTrace 学习点 | 采纳候选 |
 | --- | --- | --- | --- | --- |
-| [Hy-Memory](https://hy-memory.com/) / [Tencent Hunyuan Memory](https://memory.hunyuan.tencent.com/) | Layered memory product/research system | Six-layer memory, System-1/System-2 split, evolution chains, OpenClaw plugin positioning | Confirms MnemoTrace's direction around layered memory, async consolidation, profile/mental-model layers, and supersedes chains | Chain-aware retrieval; derived layers for session summaries, mental models, and intent models; runtime profiles |
-| [Mem0](https://github.com/mem0ai/mem0) | General AI memory layer | Product-grade API, user/session/agent memory, multi-signal retrieval, OpenMemory/MCP ecosystem | Study API ergonomics, entity linking, add-only extraction variants, and benchmark packaging | Memory service API refinement; entity-linked retrieval boost; OpenAI/MCP-compatible surfaces |
-| [Graphiti](https://github.com/getzep/graphiti) / Zep | Temporal knowledge graph | Real-time temporal KG for agents, episode-to-entity/relation construction, temporal updates | Strong reference for temporal graph reads and update-friendly graph construction | Bi-temporal graph retrieval; temporal path expansion; graph write contracts |
-| [Letta](https://github.com/letta-ai/letta) / MemGPT | Stateful agent platform | Core/archival/recall memory, agent-visible memory editing, stateful agent loops | Useful model for memory as an agent control surface, not just retrieval | Procedural memory controls; memory-edit operations with provenance and audit |
-| [LangMem](https://github.com/langchain-ai/langmem) | Agent memory primitives | Semantic, episodic, and procedural memory primitives integrated with agent graphs | Good vocabulary for memory types and agent workflow integration | Typed memory API naming and graph-agent integration patterns |
-| [Cognee](https://github.com/topoteretes/cognee) | Knowledge graph memory platform | Self-hosted KG memory, ingestion pipelines, Kuzu-oriented graph storage, MCP surface | Study graph ingestion shape and self-hosted deployment ergonomics | Graph backend evaluation; KG ingestion pipeline comparison |
-| [Supermemory](https://github.com/supermemoryai/supermemory) | Context and memory engine | Fast local/hosted context engine, app/API packaging, cross-app memory | Reinforces context-engine product surface and raw evidence recall | Context assembly API; local-first service packaging |
-| [Hindsight](https://github.com/vectorize-io/hindsight) | Learning memory for agents | "Agent memory that learns" framing, feedback-driven memory improvement | Good lens for memory as behavior improvement, not just recall | Feedback-to-memory loop; failure-derived memory candidates |
-| [MemPalace](https://github.com/MemPalace/mempalace) | Open memory system | Strong emphasis on benchmarked memory and raw recall surfaces | Reinforces MnemoTrace's M1 finding that raw evidence retrieval must stay first-class | Raw-verbatim evidence retention; chunk provenance scoring |
+| [Hy-Memory](https://hy-memory.com/) / [Tencent Hunyuan Memory](https://memory.hunyuan.tencent.com/) | 分层记忆产品 / 研究系统 | 六层记忆、System-1/System-2 划分、演化链、OpenClaw 插件定位 | 印证 MnemoTrace 在分层记忆、异步整合、画像 / 心智模型层及 supersedes 链上的方向 | 链感知检索；会话摘要、心智模型和意图模型等派生层；运行配置 |
+| [Mem0](https://github.com/mem0ai/mem0) | 通用 AI 记忆层 | 产品级 API、用户 / 会话 / 智能体记忆、多信号检索、OpenMemory/MCP 生态 | 研究 API 易用性、实体链接、仅追加式提取变体和 benchmark 组织方式 | 改进记忆服务 API；实体关联检索加权；OpenAI/MCP 兼容接入面 |
+| [Graphiti](https://github.com/getzep/graphiti) / Zep | 时间知识图谱 | 面向智能体的实时时间知识图谱，从 episode 构建实体 / 关系，时间更新 | 时间图谱读取和便于更新的图谱构建的重要参考 | 双时间图谱检索；时间路径扩展；图谱写入契约 |
+| [Letta](https://github.com/letta-ai/letta) / MemGPT | 有状态智能体平台 | 核心 / 归档 / 召回记忆，智能体可见的记忆编辑，有状态智能体循环 | 将记忆视为智能体可控制的能力，而不只是检索 | 程序性记忆控制；带来源与审计的记忆编辑操作 |
+| [LangMem](https://github.com/langchain-ai/langmem) | 智能体记忆原语 | 与智能体图集成的语义、情景和程序性记忆原语 | 记忆类型与智能体工作流集成的术语参考 | 类型化记忆 API 命名，以及图式智能体集成模式 |
+| [Cognee](https://github.com/topoteretes/cognee) | 知识图谱记忆平台 | 自托管知识图谱记忆、摄入流水线、面向 Kuzu 的图存储、MCP 接入面 | 研究图谱摄入形态与自托管部署易用性 | 图后端评估；知识图谱摄入流水线比较 |
+| [Supermemory](https://github.com/supermemoryai/supermemory) | 上下文与记忆引擎 | 快速的本地 / 托管上下文引擎、应用 / API 封装、跨应用记忆 | 加强对上下文引擎产品接入面和原始证据召回的认识 | 上下文组装 API；本地优先的服务封装 |
+| [Hindsight](https://github.com/vectorize-io/hindsight) | 面向智能体的学习型记忆 | “会学习的智能体记忆”定位，反馈驱动的记忆改进 | 从行为改善，而不仅是召回的角度理解记忆 | 反馈到记忆的闭环；从失败派生的记忆候选 |
+| [MemPalace](https://github.com/MemPalace/mempalace) | 开放记忆系统 | 重视经过 benchmark 验证的记忆与原始内容召回接口 | 印证 MnemoTrace 的 M1 发现：原始证据检索必须保持一等地位 | 原文证据保留；片段来源评分 |
 
-## P1 References: Algorithm and Architecture Primitives
+## P1 参考：算法与架构原语
 
-| Source | Category | Architecture signal | MnemoTrace learning | Adoption candidate |
+| 来源 | 类别 | 架构信号 | MnemoTrace 学习点 | 采纳候选 |
 | --- | --- | --- | --- | --- |
-| [SimpleMem](https://github.com/aiming-lab/SimpleMem) | Lifelong memory compression | Semantic lossless compression, multimodal memory, self-evolving variants | Study recursive consolidation and query-aware compressed memory units | Sleep-time semantic compression; summary/fact/chunk fusion ablation |
-| [A-Mem](https://github.com/agiresearch/a-mem) | Agentic memory | Dynamic, linked memory organization inspired by note networks | Treat memory as evolving graph of connected units, not static top-k rows | Memory-link evolution; associative expansion from retrieved units |
-| [HippoRAG](https://github.com/OSU-NLP-Group/HippoRAG) | Graph RAG | Knowledge graph plus Personalized PageRank for multi-hop retrieval | High-value reference for graph-proximity scoring and multi-hop entity expansion | Graph proximity retriever; PPR-style candidate expansion |
-| [LightRAG](https://github.com/HKUDS/LightRAG) | Lightweight GraphRAG | Simple and fast graph plus vector retrieval | Useful baseline for lean graph retrieval without heavy global indexing | Lightweight graph/BM25/vector fusion baseline |
-| [Microsoft GraphRAG](https://github.com/microsoft/graphrag) | GraphRAG pipeline | Entity/relation extraction, community summaries, local/global query modes | Reference for hierarchical graph summaries and global vs local read modes | Community summaries; global/local/hybrid graph query modes |
-| [LLM Wiki](https://github.com/nashsu/llm_wiki/blob/main/README_CN.md) | Knowledge compilation workspace | Immutable sources to generated Wiki to schema/purpose, two-step ingestion, source-backed pages, four-signal graph association, Louvain communities, graph insights, hybrid retrieval | Study human-readable memory workspaces, purpose-guided consolidation, source-traceable derived pages, graph-health diagnostics, and graph-expanded retrieval | Memory workspace export; purpose-aware consolidation; graph diagnostics for sparse/bridging memories |
-| [RAPTOR](https://github.com/parthsarthi03/raptor) | Hierarchical retrieval | Recursive abstractive tree-organized retrieval | Reference for hierarchical abstraction beyond session summaries | Summary tree for episode clusters; query-routed abstraction levels |
-| [Generative Agents](https://github.com/joonspk-research/generative_agents) | Memory stream and reflection | Recency, relevance, importance, reflection, planning | Classic basis for salience/reflection tradeoffs | Reflection queue; salience/relevance/recency calibration |
-| [Reflexion](https://github.com/noahshinn/reflexion) | Verbal reinforcement memory | Failure feedback stored as reusable verbal lessons | Useful for procedural memory and agent self-correction | Failure-to-procedure memory; task retry reflection |
-| [ExpeL](https://github.com/LeapLabTHU/ExpeL) | Experiential learning | Extract insights from prior tasks and recall them for new tasks | Useful for procedural and skill memory over tasks | Experience extraction pipeline; skill/lesson retrieval |
-| [MemoryBank](https://github.com/zhongwanjun/MemoryBank-SiliconFriend) | Long-term companion memory | User/persona adaptation and long-running dialogue memory | Early reference for persona persistence and user-specific memory | Profile memory update and decay baselines |
+| [SimpleMem](https://github.com/aiming-lab/SimpleMem) | 终身记忆压缩 | 语义无损压缩、多模态记忆、自演化变体 | 研究递归整合与查询感知的压缩记忆单元 | 休眠期语义压缩；摘要 / 事实 / 片段融合消融 |
+| [A-Mem](https://github.com/agiresearch/a-mem) | 自主式记忆 | 受笔记网络启发、动态且互联的记忆组织方式 | 将记忆视为相互连接单元组成的演化图，而非静态 top-k 记录 | 记忆链接演化；从已检索单元进行关联扩展 |
+| [HippoRAG](https://github.com/OSU-NLP-Group/HippoRAG) | 图 RAG | 知识图谱 + 个性化 PageRank，用于多跳检索 | 图邻近评分与多跳实体扩展的重要参考 | 图邻近检索器；PPR 式候选扩展 |
+| [LightRAG](https://github.com/HKUDS/LightRAG) | 轻量 GraphRAG | 简单快速的图谱 + 向量检索 | 无需重型全局索引的精简图检索基线 | 轻量图谱 / BM25 / 向量融合基线 |
+| [Microsoft GraphRAG](https://github.com/microsoft/graphrag) | GraphRAG 流水线 | 实体 / 关系提取、社区摘要、局部 / 全局查询模式 | 分层图谱摘要，以及全局 / 局部读取模式的参考 | 社区摘要；全局 / 局部 / 混合图查询模式 |
+| [LLM Wiki](https://github.com/nashsu/llm_wiki/blob/main/README_CN.md) | 知识编译工作区 | 不可变来源 → 生成的 Wiki → schema / 用途；两步摄入、有来源支撑的页面、四信号图关联、Louvain 社区、图谱洞察、混合检索 | 研究便于人阅读的记忆工作区、用途引导的整合、可追溯来源的派生页、图谱健康诊断及图扩展检索 | 记忆工作区导出；用途感知整合；稀疏 / 桥接记忆的图谱诊断 |
+| [RAPTOR](https://github.com/parthsarthi03/raptor) | 分层检索 | 递归抽象、树形组织的检索 | 超越会话摘要的分层抽象参考 | episode 聚类摘要树；按查询选择抽象层级 |
+| [Generative Agents](https://github.com/joonspk-research/generative_agents) | 记忆流与反思 | 时近性、相关性、重要性、反思、规划 | 显著度与反思权衡的经典基础 | 反思队列；显著度 / 相关性 / 时近性校准 |
+| [Reflexion](https://github.com/noahshinn/reflexion) | 语言强化记忆 | 将失败反馈存为可复用的文字经验 | 程序性记忆与智能体自我纠错的参考 | 失败到程序性记忆的转换；任务重试反思 |
+| [ExpeL](https://github.com/LeapLabTHU/ExpeL) | 经验学习 | 从先前任务提取经验，在新任务中召回 | 跨任务程序性与技能记忆的参考 | 经验提取流水线；技能 / 经验检索 |
+| [MemoryBank](https://github.com/zhongwanjun/MemoryBank-SiliconFriend) | 长期陪伴记忆 | 用户 / 画像适应与长期对话记忆 | 画像持久化与用户专属记忆的早期参考 | 画像记忆更新与衰减基线 |
 
-## P2 References: Product Surfaces and Deployment Patterns
+## P2 参考：产品接入面与部署模式
 
-| Source | Category | Architecture signal | MnemoTrace learning | Adoption candidate |
+| 来源 | 类别 | 架构信号 | MnemoTrace 学习点 | 采纳候选 |
 | --- | --- | --- | --- | --- |
-| [MemOS](https://github.com/MemTensor/MemOS) | Memory operating system | Unified store/retrieve/manage, memory cubes, async scheduler, feedback correction, local plugin | Useful product abstraction for multi-tenant memory resources | Memory namespace/cube model; feedback correction UX |
-| [MemoryOS](https://github.com/BAI-LAB/MemoryOS) | Personalized memory OS | Short/mid/long-term memory organization for personalized agents | Study memory lifecycle and personalization boundaries | Lifecycle policy for profile vs episodic vs procedural memory |
-| [memU](https://github.com/NevaMind-AI/memU) | Personal memory for agents | Fast retrieval, self-evolving skills, lower-cost personal memory | Study local personal-memory ergonomics and skill evolution | Personal memory profile; skill memory surface |
-| [Memobase](https://github.com/memodb-io/memobase) | Profile memory | User profile-based memory for chatbot applications | Good focused reference for profile extraction/update surfaces | Profile/identity schema and update policy |
-| [agentmemory](https://github.com/rohitg00/agentmemory) | Coding-agent memory server | MCP-first coding-agent memory, lifecycle/confidence/KG/hybrid search framing | Study coding-agent install flow, MCP tooling, and repository-memory UX | MCP server ergonomics; coding-agent memory workflows |
+| [MemOS](https://github.com/MemTensor/MemOS) | 记忆操作系统 | 统一存储 / 检索 / 管理、记忆立方体、异步调度、反馈纠正、本地插件 | 多租户记忆资源的产品抽象参考 | 记忆命名空间 / 立方体模型；反馈纠正体验 |
+| [MemoryOS](https://github.com/BAI-LAB/MemoryOS) | 个性化记忆操作系统 | 为个性化智能体组织短期 / 中期 / 长期记忆 | 研究记忆生命周期和个性化边界 | 画像 / 情景 / 程序性记忆的生命周期策略 |
+| [memU](https://github.com/NevaMind-AI/memU) | 智能体个人记忆 | 快速检索、自演化技能、低成本个人记忆 | 研究本地个人记忆易用性与技能演化 | 个人记忆配置；技能记忆接入面 |
+| [Memobase](https://github.com/memodb-io/memobase) | 画像记忆 | 面向聊天应用、基于用户画像的记忆 | 画像提取 / 更新接口的专门参考 | 画像 / 身份 schema 与更新策略 |
+| [agentmemory](https://github.com/rohitg00/agentmemory) | 编程智能体记忆服务器 | MCP 优先，围绕生命周期 / 置信度 / 知识图谱 / 混合搜索组织能力 | 研究编程智能体安装流程、MCP 工具和仓库记忆体验 | MCP server 易用性；编程智能体记忆工作流 |
 
-## Benchmark and Radar Sources
+## Benchmark 与雷达来源
 
-| Source | Role | How MnemoTrace should use it |
+| 来源 | 角色 | MnemoTrace 应如何使用 |
 | --- | --- | --- |
-| [LongMemEval-V2](https://xiaowu0162.github.io/longmemeval-v2/) | Long-history agent memory benchmark | Track as a future scale target; reproduce only through in-repo harness once available |
-| [BEAM](https://github.com/mohammadtavakoli78/BEAM) | Million-token long-term memory benchmark | Use for scaling and distractor robustness once M2/M3 read path is ready |
-| [LOCOMO](https://snap-research.github.io/locomo/) | Long conversational memory benchmark | Use for cross-session dialogue and profile-memory evaluation |
-| [Agent Memory Benchmark](https://agentmemorybenchmark.ai/) | External leaderboard/radar | Treat as ecosystem signal; do not import results as MnemoTrace claims |
-| [mem0 memory-benchmarks](https://github.com/mem0ai/memory-benchmarks) | Benchmark interface reference | Study harness shape and reproducibility gaps; keep MnemoTrace harness neutral |
-| [Awesome Agent Memory](https://github.com/TeleAI-UAGI/Awesome-Agent-Memory) | Literature radar | Periodic sweep source for new systems and papers |
-| [Awesome GraphMemory](https://github.com/DEEP-PolyU/Awesome-GraphMemory) | Graph-memory radar | Periodic sweep source for graph-based memory techniques |
-| [Awesome Memory for Agents](https://github.com/TsinghuaC3I/Awesome-Memory-for-Agents) | Agent-memory radar | Periodic sweep source for new memory-agent papers |
+| [LongMemEval-V2](https://xiaowu0162.github.io/longmemeval-v2/) | 长历史智能体记忆 benchmark | 作为未来规模目标跟踪；可用后仅通过仓库内评测框架复现 |
+| [BEAM](https://github.com/mohammadtavakoli78/BEAM) | 百万 token 长期记忆 benchmark | M2/M3 读取路径就绪后，用于规模与干扰鲁棒性评估 |
+| [LOCOMO](https://snap-research.github.io/locomo/) | 长对话记忆 benchmark | 用于跨会话对话和画像记忆评测 |
+| [Agent Memory Benchmark](https://agentmemorybenchmark.ai/) | 外部排行榜 / 雷达 | 作为生态线索，不将其结果导入为 MnemoTrace 声明 |
+| [mem0 memory-benchmarks](https://github.com/mem0ai/memory-benchmarks) | Benchmark 接口参考 | 研究评测框架形态与可复现性缺口，保持 MnemoTrace 框架中立 |
+| [Awesome Agent Memory](https://github.com/TeleAI-UAGI/Awesome-Agent-Memory) | 文献雷达 | 定期扫描新系统和论文的来源 |
+| [Awesome GraphMemory](https://github.com/DEEP-PolyU/Awesome-GraphMemory) | 图记忆雷达 | 定期扫描基于图的记忆技术的来源 |
+| [Awesome Memory for Agents](https://github.com/TsinghuaC3I/Awesome-Memory-for-Agents) | 智能体记忆雷达 | 定期扫描记忆智能体新论文的来源 |
 
-## Capability Patterns to Absorb
+## 待吸收的能力模式
 
-| Pattern | Best current references | MnemoTrace-native form | Evaluation hypothesis |
+| 模式 | 当前主要参考 | MnemoTrace 自身形式 | 评测假设 |
 | --- | --- | --- | --- |
-| Raw evidence as first-class memory | MemPalace, Supermemory, Mem0, agentmemory | Retrieved raw session chunks remain part of every QA read path, alongside facts and graph evidence | Improves detail recall and reduces facts-only false negatives on LongMemEval/LOCOMO |
-| Evolution-chain retrieval | Hy-Memory, Graphiti, MemOS | Facts and profile records expose and retrieve `supersedes` chains with provenance and valid-time filters | Improves knowledge-update and temporal questions without increasing prompt noise |
-| Temporal graph expansion | Graphiti, HippoRAG, LightRAG, GraphRAG | Query entities seed n-hop/PPR-style graph expansion over bi-temporal relations | Improves multi-hop/multi-session categories while keeping token budget below full context |
-| Hierarchical consolidation | RAPTOR, GraphRAG, SimpleMem, Hy-Memory | Session summaries, profile summaries, mental models, and community summaries are derived artifacts with source links | Reduces tokens while preserving answerable evidence for long histories |
-| Knowledge workspace and diagnostics | LLM Wiki, GraphRAG, Cognee | Optional human-readable memory workspace with purpose, source-backed derived pages, graph communities, sparse areas, bridge nodes, and missing-link diagnostics | Improves maintainability, auditability, and consolidation quality without treating workspace pages as untraceable truth |
-| Agentic reflection and experience memory | Generative Agents, Reflexion, ExpeL, A-Mem, Hindsight | Failures, repeated tasks, and high-salience episodes produce procedural lessons and linked memory updates | Improves repeated-task agent behavior and procedural recall without polluting factual memory |
-| Runtime profiles | Hy-Memory, MemOS, Mem0, Supermemory | Configurable modes such as `lite`, `standard`, `graph`, and `consolidated`, each with measured tradeoffs | Lets users choose latency/cost/accuracy tradeoffs and lets the harness compare ablations fairly |
-| Memory feedback/correction | MemOS, memU, Letta, Mem0 | User or agent corrections update memory non-destructively with provenance and invalidation | Improves correction handling while preserving auditability |
-| Profile/identity memory | Memobase, MemoryBank, Mem0, Hy-Memory | Identity/profile records are distinct typed memory with update, conflict, and decay rules | Improves personalization questions without mixing preference facts into raw episodic recall |
+| 将原始证据作为一等记忆 | MemPalace, Supermemory, Mem0, agentmemory | 每条问答读取路径都保留检索到的原始会话片段，与事实和图谱证据共同使用 | 改善细节召回，减少 LongMemEval/LOCOMO 上仅事实问答的漏答 |
+| 演化链检索 | Hy-Memory, Graphiti, MemOS | 事实与画像记录暴露并检索带来源和有效时间过滤的 `supersedes` 链 | 改善知识更新和时间问题，不增加提示词噪声 |
+| 时间图谱扩展 | Graphiti, HippoRAG, LightRAG, GraphRAG | 以查询实体为种子，在双时间关系上进行 n 跳 / PPR 式图扩展 | 改善多跳 / 跨会话类别，同时使 token 预算低于全上下文 |
+| 分层整合 | RAPTOR, GraphRAG, SimpleMem, Hy-Memory | 会话摘要、画像摘要、心智模型和社区摘要均为带来源链接的派生产物 | 降低 token 消耗，同时保留长历史中可回答问题的证据 |
+| 知识工作区与诊断 | LLM Wiki, GraphRAG, Cognee | 可选的、便于人阅读的记忆工作区，包含用途、有来源支撑的派生页、图社区、稀疏区域、桥接节点和缺失链接诊断 | 改善可维护性、可审计性与整合质量，不把工作区页面当成不可追溯的事实来源 |
+| 智能体反思与经验记忆 | Generative Agents, Reflexion, ExpeL, A-Mem, Hindsight | 从失败、重复任务和高显著度 episode 中形成程序性经验与关联记忆更新 | 改善重复任务行为和程序性召回，不污染事实记忆 |
+| 运行配置 | Hy-Memory, MemOS, Mem0, Supermemory | 提供 `lite`、`standard`、`graph`、`consolidated` 等模式，分别测量权衡 | 用户可选择延迟 / 成本 / 准确率权衡，评测框架可公平比较消融 |
+| 记忆反馈 / 纠正 | MemOS, memU, Letta, Mem0 | 用户或智能体纠正通过来源与失效处理，非破坏性地更新记忆 | 改善纠正处理，同时保留可审计性 |
+| 画像 / 身份记忆 | Memobase, MemoryBank, Mem0, Hy-Memory | 身份 / 画像记录作为独立类型化记忆，具有更新、冲突与衰减规则 | 改善个性化问题，不将偏好事实混入原始情景召回 |
 
-## Staged Assimilation Path
+## 分阶段吸收路径
 
-### Stage 0 - Governance and Radar
+### Stage 0 — 治理与雷达
 
-- Keep this radar current and reviewed before each major memory feature.
-- Require source link, license status, clean-room note, and evaluation hypothesis for every promoted
-  candidate.
-- Do not implement from this radar directly; promote a candidate into a normal Spec-Kit plan first.
+- 每项重要记忆功能开始前，更新并审阅本雷达。
+- 每个获准推进的候选都要求来源链接、许可状态、独立实现说明及评测假设。
+- 不直接依据雷达实施；先将候选推进为正常 Spec-Kit 计划。
 
-### Stage 1 - Evidence-First Read Path
+### Stage 1 — 证据优先的读取路径
 
-- Promote raw evidence retrieval and chunk provenance as a non-negotiable read-path invariant.
-- Add chain-aware retrieval for facts/profile records so updates are explainable.
-- Target benchmark behaviors: detail recall, knowledge update, temporal current-vs-past questions.
+- 将原始证据检索与片段来源提升为不可妥协的读取路径不变量。
+- 为事实 / 画像记录加入链感知检索，让更新可解释。
+- 目标 benchmark 行为：细节召回、知识更新、当前与过去的时间问题。
 
-### Stage 2 - Derived Memory Layers
+### Stage 2 — 派生记忆层
 
-- Add or formalize session summary, profile summary, mental model, and intent/procedure layers as
-  derived artifacts.
-- Every derived artifact must point back to raw episodes/facts; no summary becomes untraceable truth.
-- Study LLM Wiki-style purpose files and source-backed workspace pages as an optional, human-readable
-  view over MnemoTrace memory, not as a replacement for typed memory.
-- Target benchmark behaviors: long-session compression, profile consistency, repeated preference recall.
+- 添加或正式定义会话摘要、画像摘要、心智模型和意图 / 程序层，作为派生产物。
+- 每个派生产物必须回指原始 episode / fact；任何摘要都不能成为不可追溯的事实来源。
+- 研究 LLM Wiki 式用途文件和有来源支撑的工作区页面，将其作为 MnemoTrace 记忆之上可选、便于人阅读的视图，不替代类型化记忆。
+- 目标 benchmark 行为：长会话压缩、画像一致性、重复偏好召回。
 
-### Stage 3 - Graph Multi-Hop Retrieval
+### Stage 3 — 图多跳检索
 
-- Add graph proximity retrieval with controlled n-hop expansion and time filtering.
-- Test lightweight graph/vector/BM25 fusion before adding heavier community-summary machinery.
-- Target benchmark behaviors: multi-hop, multi-session, entity-chain questions.
+- 添加带受控 n 跳扩展和时间过滤的图邻近检索。
+- 加入较重的社区摘要机制之前，先测试轻量图谱 / 向量 / BM25 融合。
+- 目标 benchmark 行为：多跳、跨会话、实体链问题。
 
-### Stage 4 - Reflection and Experience Memory
+### Stage 4 — 反思与经验记忆
 
-- Convert failures, repeated actions, and reinforced facts into procedural lessons when evidence is
-  strong enough.
-- Keep procedural lessons separate from factual claims and require provenance.
-- Target benchmark behaviors: agent task improvement and repeated workflow consistency.
+- 证据足够充分时，将失败、重复操作和被强化的事实转为程序性经验。
+- 程序性经验与事实声明分开，并要求来源。
+- 目标 benchmark 行为：智能体任务改善和重复工作流一致性。
 
-### Stage 5 - Runtime Profiles and Scoreboard
+### Stage 5 — 运行配置与成绩记录
 
-- Define user-selectable profiles with measured accuracy/tokens/latency tradeoffs.
-- Publish only MnemoTrace-owned numbers with raw logs and full-context baselines.
-- Target outcome: trusted open scoreboard plus a memory engine that can be run locally, inspected, and
-  reproduced.
+- 定义用户可选择的配置，并测量准确率 / token 消耗 / 延迟权衡。
+- 仅发布带原始日志和全上下文基线的 MnemoTrace 自有数字。
+- 目标结果：可信、开放的成绩记录，加上可本地运行、检查和复现的记忆引擎。
 
-## Promotion Checklist for Any Candidate
+## 候选推进检查清单
 
-- Source is public and link is recorded.
-- License is reviewed, or candidate is architecture-only clean-room.
-- Candidate maps to at least one MnemoTrace strategic bet.
-- Candidate preserves raw evidence plus fact retrieval.
-- Candidate preserves bi-temporal provenance and non-destructive invalidation when it touches facts.
-- Candidate has a benchmark category and an accuracy/tokens/latency hypothesis.
-- Candidate has an ablation plan and rollback criterion.
-- Public messaging impact is either none or tied to MnemoTrace-owned results.
+- 来源公开，链接已记录。
+- 许可已审查，或候选仅研究架构并采用独立实现。
+- 至少映射到一项 MnemoTrace 战略下注。
+- 保留原始证据 + 事实检索。
+- 涉及事实时，保留双时间来源与非破坏性失效处理。
+- 有 benchmark 类别及准确率 / token 消耗 / 延迟假设。
+- 有消融计划与回滚标准。
+- 对外措辞影响为无影响，或与 MnemoTrace 自有结果绑定。
 
-## Initial Priority Queue
+## 初始优先队列（Initial Priority Queue）
 
-1. **Chain-aware retrieval**: when a fact/profile record is retrieved, optionally include its
-   `supersedes` chain and provenance under a token budget.
-2. **Raw evidence fusion hardening**: make raw chunks, facts, and graph paths explicit evidence classes
-   in context assembly.
-3. **Derived memory layers**: specify session summaries, profile summaries, mental models, and intent or
-   procedure records as typed derived artifacts.
-4. **Memory workspace diagnostics**: define optional source-backed pages, purpose context, sparse-area
-   warnings, bridge nodes, and missing-link suggestions for maintainers.
-5. **Graph proximity retriever**: add a lightweight n-hop/PPR-inspired retrieval component behind the
-   graph-store interface.
-6. **Reflection/experience memory**: create a procedural-memory path for failures, repeated tasks, and
-   user corrections.
-7. **Runtime profiles**: define measured modes that trade off latency, tokens, and recall.
+1. **链感知检索：** 检索事实 / 画像记录时，可选在 token 预算内附带其 `supersedes` 链与来源。
+2. **原始证据融合加强：** 在上下文组装中，明确区分原始片段、事实与图路径三类证据。
+3. **派生记忆层：** 将会话摘要、画像摘要、心智模型和意图或程序记录定义为类型化派生产物。
+4. **记忆工作区诊断：** 为维护者定义可选的有来源支撑页面、用途背景、稀疏区域警告、桥接节点与缺失链接建议。
+5. **图邻近检索器：** 在图存储接口之后添加轻量、借鉴 n 跳 / PPR 思路的检索组件。
+6. **反思 / 经验记忆：** 为失败、重复任务和用户纠正建立程序性记忆路径。
+7. **运行配置：** 定义经过测量、权衡延迟、token 消耗与召回的模式。
 
-## Open Questions for Later Planning
+## 留待后续计划回答的问题
 
-- Which benchmark slice should be the first gate for chain-aware retrieval: LongMemEval knowledge
-  update, LOCOMO temporal questions, or a small synthetic update set?
-- Should mental models and intent models be separate typed entities, or derived profile records with a
-  stricter schema?
-- What is the minimum graph-expansion algorithm that can improve multi-hop recall without adding heavy
-  dependencies or violating the zero-setup invariant?
-- Should a human-readable workspace be generated as Markdown pages, JSON artifacts, or both, and how do
-  we guarantee those pages never become untraceable source-of-truth records?
-- How should user corrections be represented so they can invalidate prior claims without turning every
-  correction into a high-salience permanent fact?
+- 链感知检索的首个门禁应使用哪个 benchmark 子集：LongMemEval 知识更新、LOCOMO 时间问题，还是小型合成更新集？
+- 心智模型和意图模型应是独立类型化实体，还是采用更严格 schema 的派生画像记录？
+- 不增加重型依赖、不违反零配置不变量的前提下，能改善多跳召回的最小图扩展算法是什么？
+- 便于人阅读的工作区应生成 Markdown 页面、JSON 产物，还是两者都生成？如何保证这些页面不会成为不可追溯的权威记录？
+- 如何表示用户纠正，使其能失效化先前声明，又不把每次纠正都变成高显著度的永久事实？

@@ -1,172 +1,172 @@
-# Tasks: Durable Persistence Backend
+# 任务清单：持久化存储后端
 
-**Input**: Design documents from `/specs/001-durable-persistence/`
+**Input**: `/specs/001-durable-persistence/` 中的设计文档
 
-**Prerequisites**: `plan.md`, `spec.md`, `research.md`, `data-model.md`, `contracts/`
+**Prerequisites**: `plan.md`、`spec.md`、`research.md`、`data-model.md`、`contracts/`
 
-**Tests**: Required by the feature spec success criteria (round-trip, safety, crash recovery, zero-setup, backend parity, migration).
+**Tests**: 功能规格的成功标准要求测试覆盖往返一致性、安全、崩溃恢复、零配置、后端结果一致性及迁移。
 
-**Organization**: Tasks are grouped by user story so each story can be implemented and verified independently.
+**Organization**: 按用户故事分组，让每个故事可独立实施和验证。
 
-## Phase 1: Setup (Shared Infrastructure)
+## Phase 1：准备（共享基础设施）
 
-**Purpose**: Prepare storage modules and dependency metadata without changing default runtime behavior.
+**目的：** 准备存储模块和依赖元数据，不改变默认运行时行为。
 
-- [x] T001 Add `lancedb` optional extra to `pyproject.toml`
-- [x] T002 [P] Create persistence error types and schema constants in `mnemotrace/store/persist.py`
-- [x] T003 [P] Export persistence helpers from `mnemotrace/store/__init__.py`
-
----
-
-## Phase 2: Foundational (Blocking Prerequisites)
-
-**Purpose**: Build shared JSON-safe dataclass serialization utilities used by US1, US2, and US3.
-
-**CRITICAL**: No user story work can begin until this phase is complete.
-
-- [x] T004 Implement explicit dataclass-to-record serialization for `Episode`, `Fact`, `Entity`, `Relation`, `WorkingMemory`, and `Conflict` in `mnemotrace/store/persist.py`
-- [x] T005 Implement explicit record-to-dataclass reconstruction with forward-tolerant field handling in `mnemotrace/store/persist.py`
-- [x] T006 Implement manifest creation, parsing, schema validation, and embedding-dimension validation in `mnemotrace/store/persist.py`
-- [x] T007 [P] Add shared persistence fixture helpers in `tests/test_persist_roundtrip.py`
-
-**Checkpoint**: Serializer can transform every persisted dataclass without pickle or `eval`.
+- [x] T001 在 `pyproject.toml` 中添加可选 `lancedb` extra
+- [x] T002 [P] 在 `mnemotrace/store/persist.py` 中创建持久化错误类型与 schema 常量
+- [x] T003 [P] 从 `mnemotrace/store/__init__.py` 导出持久化辅助函数
 
 ---
 
-## Phase 3: User Story 1 - Survive a Restart With Zero Data Loss (Priority: P1) MVP
+## Phase 2：基础能力（阻塞性前置条件）
 
-**Goal**: Replace pickle snapshots with a safe JSONL+manifest store that reloads all current memory collections losslessly.
+**目的：** 构建 US1、US2、US3 共用的、可安全表示为 JSON 的 dataclass 序列化工具。
 
-**Independent Test**: Add a fixed corpus, consolidate it, save to a store directory, reopen it, and assert all episodes, facts, graph entities, relations, working memory, conflicts, policy, focus, identity, aliases, and persona cache are preserved.
+**关键约束：** 本阶段完成前，不得开始任何用户故事的工作。
 
-### Tests for User Story 1
+- [x] T004 在 `mnemotrace/store/persist.py` 中，为 `Episode`、`Fact`、`Entity`、`Relation`、`WorkingMemory` 和 `Conflict` 实现显式 dataclass → 记录序列化
+- [x] T005 在 `mnemotrace/store/persist.py` 中，实现显式记录 → dataclass 重建，并容忍较新版本字段
+- [x] T006 在 `mnemotrace/store/persist.py` 中，实现 manifest 创建、解析、schema 校验及嵌入维度校验
+- [x] T007 [P] 在 `tests/test_persist_roundtrip.py` 中添加共享持久化测试夹具辅助函数
 
-- [x] T008 [P] [US1] Add round-trip equality tests for all persisted collections in `tests/test_persist_roundtrip.py`
-- [x] T009 [P] [US1] Add no-code-exec and incompatible-version tests in `tests/test_persist_safety.py`
-- [x] T010 [P] [US1] Add torn-tail recovery test in `tests/test_persist_crash.py`
-- [x] T011 [P] [US1] Add zero-setup import and quickstart guard tests in `tests/test_zero_setup_default.py`
-
-### Implementation for User Story 1
-
-- [x] T012 [US1] Implement atomic JSONL+manifest save protocol with advisory locking in `mnemotrace/store/persist.py`
-- [x] T013 [US1] Implement streaming JSONL load protocol with malformed trailing-line recovery in `mnemotrace/store/persist.py`
-- [x] T014 [US1] Wire `Memory.save()` and `Memory.open()` to JSONL+manifest persistence in `mnemotrace/memory.py`
-- [x] T015 [US1] Preserve backward-compatible legacy pickle reading only through the explicit migration path, not normal `Memory.open()`, in `mnemotrace/memory.py`
-- [x] T016 [US1] Update persistence documentation in `specs/001-durable-persistence/quickstart.md`
-
-**Checkpoint**: User Story 1 is fully functional and independently testable with no optional extras.
+**检查点：** 序列化器无需 pickle 或 `eval` 即可转换所有持久化 dataclass。
 
 ---
 
-## Phase 4: User Story 2 - LanceDB as the First Real Vector Backend (Priority: P2)
+## Phase 3：用户故事 1 — 重启后零数据丢失（优先级：P1）MVP
 
-**Goal**: Add an optional persistent LanceDB vector store behind `VectorStore` while keeping in-memory as the default.
+**目标：** 用安全的 JSONL+manifest 存储替换 pickle 快照，无损重载当前所有记忆集合。
 
-**Independent Test**: Populate in-memory and LanceDB stores with identical facts, restart LanceDB, and assert top-k parity within documented tolerance.
+**独立测试：** 添加固定语料、整合、保存到存储目录，再重新打开；断言所有 episode、fact、图谱实体、关系、工作记忆、冲突、策略、关注点、身份、别名及 persona 缓存均被保留。
 
-### Tests for User Story 2
+### 用户故事 1 的测试
 
-- [x] T017 [P] [US2] Add skip-gated LanceDB persistence and restart tests in `tests/test_lancedb_store.py`
-- [x] T018 [P] [US2] Add in-memory vs LanceDB top-k parity tests in `tests/test_lancedb_store.py`
+- [x] T008 [P] [US1] 在 `tests/test_persist_roundtrip.py` 中，为所有持久化集合添加往返一致性测试
+- [x] T009 [P] [US1] 在 `tests/test_persist_safety.py` 中，添加加载不执行代码及版本不兼容测试
+- [x] T010 [P] [US1] 在 `tests/test_persist_crash.py` 中添加撕裂尾部恢复测试
+- [x] T011 [P] [US1] 在 `tests/test_zero_setup_default.py` 中添加零配置导入与 quickstart 守卫测试
 
-### Implementation for User Story 2
+### 用户故事 1 的实现
 
-- [x] T019 [US2] Implement lazy-import `LanceDBVectorStore` in `mnemotrace/store/lancedb_store.py`
-- [x] T020 [US2] Add backend selection fields `storage` and `data_path` to `mnemotrace/config.py`
-- [x] T021 [US2] Wire LanceDB vector store factory selection without importing LanceDB on the default path in `mnemotrace/memory.py`
-- [x] T022 [US2] Document LanceDB install and selection in `README.md` and `specs/001-durable-persistence/quickstart.md`
+- [x] T012 [US1] 在 `mnemotrace/store/persist.py` 中实现带建议锁的原子 JSONL+manifest 保存协议
+- [x] T013 [US1] 在 `mnemotrace/store/persist.py` 中实现流式 JSONL 加载协议，支持格式异常尾行恢复
+- [x] T014 [US1] 在 `mnemotrace/memory.py` 中，将 `Memory.save()` 和 `Memory.open()` 接入 JSONL+manifest 持久化
+- [x] T015 [US1] 在 `mnemotrace/memory.py` 中，仅通过显式迁移路径保留向后兼容的旧 pickle 读取，不用于正常 `Memory.open()`
+- [x] T016 [US1] 更新 `specs/001-durable-persistence/quickstart.md` 中的持久化文档
 
-**Checkpoint**: User Story 2 works when the optional extra is installed and is invisible to zero-setup users.
-
----
-
-## Phase 5: User Story 3 - Safe One-Shot Migration Off Pickle (Priority: P3)
-
-**Goal**: Provide an explicit migration tool for existing pickle snapshots with dry-run counts and parity checks.
-
-**Independent Test**: Create a known legacy pickle snapshot, run dry-run migration, run actual migration, then load the new store and assert parity.
-
-### Tests for User Story 3
-
-- [x] T023 [P] [US3] Add dry-run and apply migration tests in `tests/test_migrate_pickle.py`
-
-### Implementation for User Story 3
-
-- [x] T024 [US3] Implement legacy pickle loading and JSONL writing in `mnemotrace/store/migrate.py`
-- [x] T025 [US3] Add a CLI entry point for migration in `pyproject.toml`
-- [x] T026 [US3] Document migration warnings and commands in `README.md` and `specs/001-durable-persistence/quickstart.md`
-
-**Checkpoint**: Existing users can migrate intentionally; normal operation no longer loads pickle.
+**检查点：** 用户故事 1 功能完整，无可选 extras 时也可独立测试。
 
 ---
 
-## Phase 6: Polish & Cross-Cutting Concerns
+## Phase 4：用户故事 2 — LanceDB 作为首个真实向量后端（优先级：P2）
 
-**Purpose**: Validate the feature against project invariants and benchmark discipline.
+**目标：** 在 `VectorStore` 接口之后添加可选的持久化 LanceDB 向量存储，保持内存实现为默认。
 
-- [x] T027 Run `pytest -q` and `python3 examples/quickstart.py` with no optional services
-- [x] T028 [P] Add a durable-backend harness smoke scenario in `eval/`
-- [x] T029 [P] Update `RESULTS.md` only if a committed raw log exists for any new persistence performance claim
-- [x] T030 Review public copy for honest messaging: no unbenchmarked scale or latency claims in `README.md`, `README.zh-CN.md`, and `docs/index.html`
+**独立测试：** 用相同事实填充内存存储与 LanceDB，重启 LanceDB，断言 top-k 在已记录的容差范围内一致。
 
----
+### 用户故事 2 的测试
 
-## Dependencies & Execution Order
+- [x] T017 [P] [US2] 在 `tests/test_lancedb_store.py` 中添加持久化和重启测试，缺少依赖时跳过
+- [x] T018 [P] [US2] 在 `tests/test_lancedb_store.py` 中添加内存存储与 LanceDB 的 top-k 一致性测试
 
-### Phase Dependencies
+### 用户故事 2 的实现
 
-- **Setup (Phase 1)**: No dependencies.
-- **Foundational (Phase 2)**: Depends on Setup; blocks all user stories.
-- **User Story 1 (Phase 3)**: Depends on Foundational; MVP scope.
-- **User Story 2 (Phase 4)**: Depends on Foundational and can reuse US1 persistence metadata.
-- **User Story 3 (Phase 5)**: Depends on US1 serializer.
-- **Polish (Phase 6)**: Depends on the user stories being implemented for the chosen release slice.
+- [x] T019 [US2] 在 `mnemotrace/store/lancedb_store.py` 中实现延迟导入的 `LanceDBVectorStore`
+- [x] T020 [US2] 在 `mnemotrace/config.py` 中添加后端选择字段 `storage` 和 `data_path`
+- [x] T021 [US2] 在 `mnemotrace/memory.py` 中接入 LanceDB 向量存储工厂选择，默认路径不导入 LanceDB
+- [x] T022 [US2] 在 `README.md` 和 `specs/001-durable-persistence/quickstart.md` 中说明 LanceDB 的安装与选择方式
 
-### User Story Dependencies
-
-- **US1 (P1)**: No dependency on US2 or US3; delivers the safe durable format MVP.
-- **US2 (P2)**: Can start after Foundational, but final integration should respect US1 manifest validation.
-- **US3 (P3)**: Requires US1 save/load helpers to write the new format.
-
-### Parallel Opportunities
-
-- T002 and T003 can run in parallel.
-- T007 can run in parallel with T004-T006 once test fixture shape is agreed.
-- T008-T011 can run in parallel because each targets a separate test file.
-- T017 and T018 can run in parallel after `LanceDBVectorStore` shape is known.
-- T028-T030 can run in parallel after implementation.
+**检查点：** 安装可选 extra 后，用户故事 2 可用；对零配置用户无影响。
 
 ---
 
-## Parallel Example: User Story 1
+## Phase 5：用户故事 3 — 一次性安全迁出 pickle（优先级：P3）
+
+**目标：** 为现有 pickle 快照提供显式迁移工具，支持 dry-run 数量报告和一致性检查。
+
+**独立测试：** 创建已知旧 pickle 快照，先执行迁移 dry-run，再实际迁移，加载新存储并断言一致。
+
+### 用户故事 3 的测试
+
+- [x] T023 [P] [US3] 在 `tests/test_migrate_pickle.py` 中添加 dry-run 和实际迁移测试
+
+### 用户故事 3 的实现
+
+- [x] T024 [US3] 在 `mnemotrace/store/migrate.py` 中实现旧 pickle 加载和 JSONL 写入
+- [x] T025 [US3] 在 `pyproject.toml` 中添加迁移 CLI 入口
+- [x] T026 [US3] 在 `README.md` 和 `specs/001-durable-persistence/quickstart.md` 中说明迁移警告与命令
+
+**检查点：** 现有用户可主动迁移，正常运行不再加载 pickle。
+
+---
+
+## Phase 6：完善与跨模块事项
+
+**目的：** 按项目不变量与 benchmark 纪律验证功能。
+
+- [x] T027 无可选服务时运行 `pytest -q` 和 `python3 examples/quickstart.py`
+- [x] T028 [P] 在 `eval/` 中添加持久化后端评测冒烟场景
+- [x] T029 [P] 仅在新的持久化性能声明有已提交原始日志时更新 `RESULTS.md`
+- [x] T030 审阅 `README.md`、`README.zh-CN.md` 和 `docs/index.html` 的公开文案，确保措辞诚实，不作无 benchmark 支撑的规模或延迟声明
+
+---
+
+## 依赖与执行顺序
+
+### 阶段依赖
+
+- **准备（Phase 1）：** 无依赖。
+- **基础能力（Phase 2）：** 依赖准备阶段，阻塞全部用户故事。
+- **用户故事 1（Phase 3）：** 依赖基础能力，构成 MVP 范围。
+- **用户故事 2（Phase 4）：** 依赖基础能力，可复用 US1 持久化元数据。
+- **用户故事 3（Phase 5）：** 依赖 US1 序列化器。
+- **完善（Phase 6）：** 依赖所选发布范围内的用户故事完成实现。
+
+### 用户故事依赖
+
+- **US1（P1）：** 不依赖 US2 或 US3，交付安全持久格式的 MVP。
+- **US2（P2）：** 基础能力完成后即可开始，但最终集成应遵循 US1 manifest 校验。
+- **US3（P3）：** 需要 US1 保存 / 加载辅助函数来写入新格式。
+
+### 可并行事项
+
+- T002 与 T003 可并行。
+- 测试夹具形态确定后，T007 可与 T004-T006 并行。
+- T008-T011 分别面向不同测试文件，可并行。
+- `LanceDBVectorStore` 形态确定后，T017 与 T018 可并行。
+- 实现完成后，T028-T030 可并行。
+
+---
+
+## 并行示例：用户故事 1
 
 ```bash
-Task: "Add round-trip equality tests for all persisted collections in tests/test_persist_roundtrip.py"
-Task: "Add no-code-exec and incompatible-version tests in tests/test_persist_safety.py"
-Task: "Add torn-tail recovery test in tests/test_persist_crash.py"
-Task: "Add zero-setup import and quickstart guard tests in tests/test_zero_setup_default.py"
+Task: "在 tests/test_persist_roundtrip.py 中，为所有持久化集合添加往返一致性测试"
+Task: "在 tests/test_persist_safety.py 中，添加加载不执行代码及版本不兼容测试"
+Task: "在 tests/test_persist_crash.py 中添加撕裂尾部恢复测试"
+Task: "在 tests/test_zero_setup_default.py 中添加零配置导入与 quickstart 守卫测试"
 ```
 
 ---
 
-## Implementation Strategy
+## 实施策略
 
-### MVP First (User Story 1 Only)
+### MVP 优先（仅用户故事 1）
 
-1. Complete Phase 1 and Phase 2.
-2. Implement US1 save/load behind the existing `Memory.save()` and `Memory.open()` API.
-3. Validate with the US1 tests, full offline `pytest -q`, and `python3 examples/quickstart.py`.
-4. Stop and review before adding LanceDB or migration.
+1. 完成 Phase 1 和 Phase 2。
+2. 在现有 `Memory.save()` 和 `Memory.open()` API 之后实现 US1 保存 / 加载。
+3. 用 US1 测试、完整离线 `pytest -q` 和 `python3 examples/quickstart.py` 验证。
+4. 添加 LanceDB 或迁移功能前，暂停并审阅。
 
-### Incremental Delivery
+### 增量交付
 
-1. US1 makes persistence safe and restartable with zero optional dependencies.
-2. US2 adds scale-oriented vector persistence as an optional backend.
-3. US3 protects existing pickle users through explicit migration.
-4. Polish only publishes measured claims backed by raw logs.
+1. US1 以零可选依赖提供安全、可重启的持久化。
+2. US2 以可选后端提供面向扩展规模的向量持久化。
+3. US3 通过显式迁移保护现有 pickle 用户。
+4. 完善阶段仅发布由原始日志支撑、经过测量的声明。
 
-### Notes
+### 说明
 
-- `[P]` tasks touch different files or can be completed without depending on unfinished implementation details.
-- Every user-story task includes an exact file path for traceability.
-- Do not claim persistence latency, scale, or benchmark improvements without a committed harness log.
+- `[P]` 任务涉及不同文件，或不依赖尚未完成的实现细节即可完成。
+- 每个用户故事任务均包含精确文件路径，便于追踪。
+- 没有已提交评测日志时，不得宣称持久化延迟、规模或 benchmark 改善。

@@ -1,22 +1,22 @@
-# Quickstart: Validate the Memory Reference Radar
+# 快速上手：验证记忆系统参考雷达
 
-This guide validates the planning artifacts for `002-memory-reference-radar`. It does not run MnemoTrace's
-runtime or benchmark harness because this feature is documentation and architecture governance.
+本指南验证 `002-memory-reference-radar` 的规划产物。本功能属于文档与架构治理，
+因此不运行 MnemoTrace 运行时或 benchmark 评测框架。
 
-## Prerequisites
+## 前置条件
 
-- Repository checkout.
-- Shell with `rg`, `curl`, and `git`.
+- 已检出仓库。
+- Shell 中可使用 `rg`、`curl` 和 `git`。
 
-## 1. Confirm the active feature
+## 1. 确认当前功能
 
 ```bash
 cat .specify/feature.json
 ```
 
-Expected outcome: the file points to `specs/002-memory-reference-radar`.
+预期结果：文件指向 `specs/002-memory-reference-radar`。
 
-## 2. Check required artifacts
+## 2. 检查必需产物
 
 ```bash
 test -f specs/002-memory-reference-radar/spec.md
@@ -30,9 +30,9 @@ test -f specs/002-memory-reference-radar/contracts/adoption-candidate.md
 test -f specs/002-memory-reference-radar/checklists/requirements.md
 ```
 
-Expected outcome: every command exits successfully.
+预期结果：所有命令成功退出。
 
-## 3. Check unresolved placeholders
+## 3. 检查未解决的占位符
 
 ```bash
 rg -n "NEEDS CLARIFICATION|\\[FEATURE\\]|\\[DATE\\]|\\[###|ACTION REQUIRED|REMOVE IF UNUSED" \
@@ -43,19 +43,18 @@ rg -n "NEEDS CLARIFICATION|\\[FEATURE\\]|\\[DATE\\]|\\[###|ACTION REQUIRED|REMOV
   specs/002-memory-reference-radar/contracts
 ```
 
-Expected outcome: no matches.
+预期结果：没有匹配项。
 
-## 4. Check key governance terms
+## 4. 检查关键治理术语
 
 ```bash
 rg -n "external-only|clean-room|accuracy/tokens/latency|raw evidence|supersedes|zero-setup" \
   specs/002-memory-reference-radar
 ```
 
-Expected outcome: matches appear in the plan, research, data model, or contracts, proving the radar
-preserves MnemoTrace's constitution gates.
+预期结果：计划、研究、数据模型或契约中出现匹配项，表明雷达保留了 MnemoTrace 的宪章门禁。
 
-## 5. Check public links in the radar
+## 5. 检查雷达中的公开链接
 
 ```bash
 perl -ne 'print "$1\n" while /\\((https?:\\/\\/[^)]+)\\)/g' \
@@ -66,21 +65,20 @@ while read url; do
 done
 ```
 
-Expected outcome: current active links return successful HTTP status codes. If a source later moves or
-fails, update the source entry with a stale-link note and `last_verified` date.
+预期结果：当前有效链接返回成功的 HTTP 状态码。若来源之后迁移或失效，
+应更新条目，注明链接失效，并记录 `last_verified` 日期。
 
-## 6. Review promotion readiness
+## 6. 审查是否可进入下一阶段
 
-Open [contracts/adoption-candidate.md](contracts/adoption-candidate.md) and verify every item in
-`research.md`'s Initial Priority Queue can be expressed with:
+打开 [contracts/adoption-candidate.md](contracts/adoption-candidate.md)，确认 `research.md` 的
+Initial Priority Queue（初始优先队列）中每个条目均能明确描述以下内容：
 
-- MnemoTrace-native form.
-- Strategic bets served.
-- Affected surface.
-- Benchmark target.
-- Accuracy/tokens/latency hypothesis.
-- Clean-room notes.
-- Rollback criterion.
+- MnemoTrace 自身的能力形式。
+- 服务的战略下注。
+- 受影响的模块或接口。
+- Benchmark 目标。
+- 准确率 / token 消耗 / 延迟假设。
+- 独立实现（clean-room）说明。
+- 回滚标准。
 
-Expected outcome: the top candidates can move to `/speckit-tasks`; candidates missing these fields
-stay research-only.
+预期结果：首选候选可进入 `/speckit-tasks`；缺失这些字段的候选仍保持仅研究状态。
