@@ -1,183 +1,128 @@
-# Feature Specification: Memory Reference Radar
+# 功能规格：记忆系统参考雷达
 
 **Feature Branch**: `002-memory-reference-radar`
 
 **Created**: 2026-06-29
 
-**Status**: Completed
+**Status**: 已完成（Completed）
 
-**Input**: User description: "Record a Spec-Kit document for the global memory-system references MnemoTrace should study, judge each at the architecture level, and turn useful patterns into a staged path toward a leading long-term memory infrastructure."
+**Input**: 用户描述：“用 Spec-Kit 文档记录 MnemoTrace 应当研究的全球记忆系统参考，
+在架构层面逐一判断，并将有用模式转化为迈向领先长期记忆基础设施的分阶段路径。”
 
-## Why this feature *(context)*
+## 为什么需要此功能（背景）
 
-MnemoTrace's mission is to become a best-in-class open, reproducible long-term memory engine for LLM
-agents. The field is moving quickly: memory layers, temporal graphs, GraphRAG systems, lifelong
-memory compression, reflection systems, and coding-agent memory servers are all converging on the same
-problem from different angles.
+MnemoTrace 的使命是成为面向 LLM 智能体的一流、开放、可复现的长期记忆引擎。
+领域正在快速发展：记忆层、时间图谱、GraphRAG 系统、终身记忆压缩、反思系统与编程智能体记忆服务器，
+正从不同角度解决同一个问题。
 
-This feature creates an internal, Spec-Kit governed reference radar so maintainers can study the best
-public work, convert useful ideas into MnemoTrace-native capability candidates, and keep all adoption
-decisions tied to reproducible evaluation. It also protects the project from two failure modes:
-copying code or claims we cannot own, and scattering architecture ideas across chat history instead of
-turning them into testable work.
+本功能建立一个受 Spec-Kit 管理的内部参考雷达，让维护者研究优秀公开工作，
+将有用思想转化为 MnemoTrace 自身的能力候选，并将所有采纳决策与可复现评测绑定。
+同时避免两类失败：复制无法自主负责的代码或声明，以及把架构想法散落在聊天历史中，而未形成可测试的工作。
 
-## User Scenarios & Testing *(mandatory)*
+## 用户场景与测试（必需）
 
-### User Story 1 - Maintain a current architecture radar (Priority: P1)
+### 用户故事 1 — 维护持续更新的架构雷达（优先级：P1）
 
-A maintainer wants to understand which memory systems, GraphRAG systems, knowledge-compilation
-systems, and agent-learning systems are most relevant to MnemoTrace. They open one feature folder and see
-a categorized radar with each source, its role, its strongest architecture pattern, what MnemoTrace may
-learn from it, and what must not be copied or claimed without evidence.
+维护者希望了解哪些记忆系统、GraphRAG 系统、知识编译系统和智能体学习系统与 MnemoTrace 最相关。
+打开一个功能目录，即可看到分类雷达：每个来源的角色、最有价值的架构模式、MnemoTrace 可学习的内容，
+以及哪些内容不能在缺乏证据时复制或宣称。
 
-**Why this priority**: MnemoTrace needs a disciplined way to stand on public work without drifting into
-random feature chasing. This story alone gives the team a shared map before implementation begins.
+**优先级理由：** MnemoTrace 需要有纪律地利用公开工作，避免随意追逐功能。
+本故事本身就能在实施之前为团队提供共同的参考地图。
 
-**Independent Test**: A new contributor can open the radar and identify the top candidate sources for
-raw evidence retrieval, temporal graph retrieval, hierarchical consolidation, reflection, and memory
-OS-style product surfaces without asking for chat context.
+**独立测试：** 新贡献者无需询问聊天背景，就能打开雷达，找出原始证据检索、时间图谱检索、
+分层整合、反思，以及记忆操作系统式产品接入面的首选参考来源。
 
-**Acceptance Scenarios**:
+**验收场景：**
 
-1. **Given** a contributor asks "which systems should we study for temporal graph memory?", **When**
-   they read the radar, **Then** they can find the relevant systems, links, useful patterns, and
-   MnemoTrace-specific next questions.
-2. **Given** a maintainer adds a new memory project to the radar, **When** they fill the entry, **Then**
-   it includes category, link, capability signal, adoption candidate, evidence status, and licensing
-   review status.
-3. **Given** an external project publishes a benchmark claim, **When** it is recorded in the radar,
-   **Then** it is marked as an external claim until reproduced in MnemoTrace's harness.
+1. **给定**贡献者询问“时间图谱记忆应该研究哪些系统？”，**当**阅读雷达，**则**能找到相关系统、链接、有用模式及 MnemoTrace 需要进一步回答的问题。
+2. **给定**维护者向雷达添加新记忆项目，**当**填写条目，**则**包含类别、链接、能力信号、采纳候选、证据状态和许可审查状态。
+3. **给定**外部项目发布 benchmark 声明，**当**将其记入雷达，**则**在 MnemoTrace 评测框架复现前始终标为外部声明。
 
 ---
 
-### User Story 2 - Convert reference patterns into MnemoTrace-native capability candidates (Priority: P2)
+### 用户故事 2 — 将参考模式转化为 MnemoTrace 自身的能力候选（优先级：P2）
 
-A maintainer wants to decide what to build next. They use the radar to map public patterns into
-MnemoTrace's own architecture: raw episodes, atomic facts, bi-temporal graph, profile memory, procedural
-memory, hybrid retrieval, multi-hop planning, salience decay, and reproducible evaluation. Each
-candidate states the expected benefit and the benchmark category it should improve.
+维护者希望决定下一步构建什么。借助雷达，将公开模式映射到 MnemoTrace 自身架构：原始 episode、
+原子 fact、双时间图谱、画像记忆、程序性记忆、混合检索、多跳规划、显著度衰减和可复现评测。
+每个候选都说明预期收益，以及应当改善的 benchmark 类别。
 
-**Why this priority**: The reference radar only matters if it produces focused, measurable MnemoTrace work.
-This story keeps architecture thinking connected to the roadmap.
+**优先级理由：** 参考雷达只有产出聚焦、可测量的 MnemoTrace 工作才有价值。
+本故事使架构思考与路线图保持关联。
 
-**Independent Test**: Pick any top-priority pattern and verify it has a proposed MnemoTrace capability, a
-bounded scope, a target benchmark behavior, and a measurable success criterion before any code is
-started.
+**独立测试：** 选择任意最高优先级模式，确认在开始编码前，它已有对应的 MnemoTrace 能力提案、
+明确范围、目标 benchmark 行为和可测量成功标准。
 
-**Acceptance Scenarios**:
+**验收场景：**
 
-1. **Given** a source suggests a useful pattern, **When** it is promoted to an adoption candidate,
-   **Then** the candidate names the MnemoTrace memory type or read/write-path behavior it would affect.
-2. **Given** a proposed candidate cannot name a benchmark category or user-visible behavior it should
-   improve, **When** it is reviewed, **Then** it remains research-only and is not moved into planning.
-3. **Given** two references solve the same problem differently, **When** the radar is reviewed, **Then**
-   their tradeoffs are captured as alternatives rather than merged into one vague requirement.
+1. **给定**某来源展示了有用模式，**当**将其提升为采纳候选，**则**候选明确指出影响的 MnemoTrace 记忆类型或读写路径行为。
+2. **给定**提案无法指出应改善的 benchmark 类别或用户可见行为，**当**评审，**则**保留为仅研究，不进入计划阶段。
+3. **给定**两个参考以不同方式解决同一问题，**当**评审雷达，**则**将各自权衡记录为备选方案，不合并为模糊需求。
 
 ---
 
-### User Story 3 - Keep public positioning honest while learning aggressively (Priority: P3)
+### 用户故事 3 — 积极学习，同时保持对外定位诚实（优先级：P3）
 
-A contributor preparing public copy or benchmark notes wants to be ambitious without making
-unsupported claims. They can use the radar to learn internally while keeping public messaging focused
-on MnemoTrace's reproducible results, not competitor comparisons or borrowed narratives.
+准备公开文案或 benchmark 说明的贡献者，希望保持雄心且不作无依据的声明。
+他们可以借雷达在内部学习，同时让公开措辞聚焦于 MnemoTrace 可复现的结果，不借竞争对手比较或外部叙事来定位。
 
-**Why this priority**: The project can learn from the field, but MnemoTrace's credibility comes from open
-evaluation and clean ownership of its implementation.
+**优先级理由：** 项目可以向整个领域学习，但 MnemoTrace 的可信度来自开放评测与自主实现。
 
-**Independent Test**: Review a proposed README or landing-page change against the radar guardrails and
-verify it does not name-drop competitors, repeat unreproduced external numbers, or claim "SOTA" without
-a committed MnemoTrace results log.
+**独立测试：** 按雷达的措辞约束审阅拟议的 README 或落地页变更，
+确认没有借竞争对手造势、重复未经复现的外部数字，或在没有已提交 MnemoTrace 结果日志时宣称“SOTA”。
 
-**Acceptance Scenarios**:
+**验收场景：**
 
-1. **Given** a public-facing document mentions MnemoTrace's position, **When** it is reviewed, **Then** any
-   performance claim links to MnemoTrace-owned raw logs and includes accuracy, tokens, and latency.
-2. **Given** a contributor wants to adapt an external idea, **When** it enters the radar, **Then** the
-   entry records clean-room constraints and license-review status before implementation work begins.
-3. **Given** a source's claim cannot be reproduced, **When** the team discusses it publicly, **Then** it
-   is not presented as MnemoTrace evidence.
+1. **给定**公开文档涉及 MnemoTrace 的定位，**当**评审，**则**所有性能声明都链接到 MnemoTrace 自有原始日志，并包含准确率、token 消耗和延迟。
+2. **给定**贡献者希望改编外部思想，**当**将其加入雷达，**则**在实施开始前记录独立实现（clean-room）约束和许可审查状态。
+3. **给定**某来源的声明无法复现，**当**团队公开讨论，**则**不将其作为 MnemoTrace 的证据。
 
-### Edge Cases
+### 边界情况
 
-- **A project changes direction or disappears**: keep the entry, mark its last verified date, and avoid
-  relying on stale claims.
-- **A source is a website or paper rather than a repository**: record it as research input and require
-  extra evidence before implementation work.
-- **A source has a restrictive or unclear license**: keep architecture notes, but block code reuse and
-  require a clean-room implementation plan before planning.
-- **A pattern improves one benchmark while harming another**: mark it as benchmark-specific until an
-  ablation shows the net effect.
-- **A source overlaps strongly with MnemoTrace's existing design**: record confirmation value, but avoid
-  duplicating work unless the radar identifies a measurable gap.
+- **项目改变方向或消失：** 保留条目，标记最后核验日期，避免依赖过时声明。
+- **来源是网站或论文，而非代码仓库：** 作为研究输入记录，在实施前要求额外证据。
+- **来源许可受限或不明确：** 保留架构笔记，阻止代码复用，并要求进入计划阶段前提供独立实现方案。
+- **模式改善一个 benchmark 却损害另一个：** 在消融实验说明净效果前，标为特定 benchmark 适用。
+- **来源与 MnemoTrace 现有设计高度重合：** 记录其对现有设计的印证价值；只有雷达发现可测量缺口时才开展重复工作。
 
-## Requirements *(mandatory)*
+## 需求（必需）
 
-### Functional Requirements
+### 功能需求
 
-- **FR-001**: The feature MUST maintain a categorized reference radar covering direct memory systems,
-  graph retrieval systems, knowledge-compilation systems, lifelong memory systems,
-  reflection/experience systems, and evaluation sources.
-- **FR-002**: Each reference source MUST include a link, category, architecture signal, potential
-  MnemoTrace learning, evidence status, and clean-room/licensing status.
-- **FR-003**: The radar MUST distinguish external claims from MnemoTrace-owned results; external claims MUST
-  NOT be treated as benchmark evidence until reproduced in MnemoTrace's harness.
-- **FR-004**: Each adoption candidate MUST map to at least one MnemoTrace strategic bet: accuracy over
-  full-context noise, multi-hop reasoning, bi-temporal conflict handling, reproducible harness,
-  scaling/salience, or async consolidation.
-- **FR-005**: Each adoption candidate MUST name the MnemoTrace capability surface it would affect, such as
-  write path, consolidation, graph store, read path, profile memory, procedural memory, runtime
-  profile, or evaluation harness.
-- **FR-006**: Each adoption candidate MUST include a measurable hypothesis before it can move to
-  planning, including expected benchmark category, accuracy/tokens/latency direction, and an ablation
-  check.
-- **FR-007**: The radar MUST preserve MnemoTrace's zero-setup invariant by marking any external dependency
-  as optional unless a future spec explicitly justifies otherwise.
-- **FR-008**: The radar MUST preserve MnemoTrace's "facts plus raw chunks" read-path principle; candidates
-  that produce facts-only QA MUST be rejected or redesigned.
-- **FR-009**: The radar MUST include public-messaging guardrails so internal research does not become
-  unsupported competitor comparison, hidden code borrowing, or unbenchmarked "world best" claims.
-- **FR-010**: The radar MUST define a staged assimilation path that prioritizes architecture-level
-  leverage before implementation details.
+- **FR-001**：必须维护分类参考雷达，覆盖直接记忆系统、图检索系统、知识编译系统、终身记忆系统、反思 / 经验系统及评测来源。
+- **FR-002**：每个参考来源必须包含链接、类别、架构信号、MnemoTrace 潜在学习点、证据状态，以及独立实现 / 许可状态。
+- **FR-003**：雷达必须区分外部声明与 MnemoTrace 自有结果；在 MnemoTrace 评测框架复现前，不得将外部声明当作 benchmark 证据。
+- **FR-004**：每个采纳候选必须至少映射到一项 MnemoTrace 战略下注：超越全上下文噪声的准确率、多跳推理、双时间冲突处理、可复现评测框架、扩展 / 显著度，或异步整合。
+- **FR-005**：每个采纳候选必须指出影响的 MnemoTrace 能力接口或模块，例如写入路径、整合、图存储、读取路径、画像记忆、程序性记忆、运行配置或评测框架。
+- **FR-006**：每个采纳候选进入计划阶段前必须包含可测量假设，包括预期 benchmark 类别、准确率 / token 消耗 / 延迟的变化方向，以及消融检查。
+- **FR-007**：雷达必须保持 MnemoTrace 零配置不变量；除非后续规格明确论证其他安排，否则外部依赖均标为可选。
+- **FR-008**：雷达必须保持“事实 + 原始片段”的读取路径原则；导致仅靠事实问答的候选必须被拒绝或重新设计。
+- **FR-009**：雷达必须包含对外措辞约束，避免内部研究变为无依据的竞争对手比较、隐瞒代码借用，或无 benchmark 支撑的“世界最佳”声明。
+- **FR-010**：雷达必须定义分阶段吸收路径，优先考虑架构层面的收益，再考虑实现细节。
 
-### Key Entities
+### 关键实体
 
-- **Reference Source**: A public repository, product page, paper, benchmark, or technique collection
-  relevant to long-term memory systems.
-- **Capability Pattern**: A reusable architecture idea observed in one or more sources, such as
-  evolution chains, raw evidence retrieval, graph expansion, recursive abstraction, reflection, or
-  runtime profiles.
-- **Adoption Candidate**: An MnemoTrace-native proposal derived from a capability pattern, with scope,
-  target memory surface, and evaluation hypothesis.
-- **Evidence Record**: The status of proof for a claim: external-only, reproduced locally, benchmarked
-  in MnemoTrace harness, or rejected by ablation.
-- **Messaging Guardrail**: A rule that separates internal learning from public positioning and keeps
-  MnemoTrace's claims tied to committed raw results.
+- **参考来源（Reference Source）**：与长期记忆系统相关的公开仓库、产品页、论文、benchmark 或技术合集。
+- **能力模式（Capability Pattern）**：从一个或多个来源中观察到的可复用架构思想，例如演化链、原始证据检索、图扩展、递归抽象、反思或运行配置。
+- **采纳候选（Adoption Candidate）**：从能力模式衍生的 MnemoTrace 自有提案，包含范围、目标记忆模块和评测假设。
+- **证据记录（Evidence Record）**：声明的证明状态，例如仅外部声明、已本地复现、已在 MnemoTrace 评测框架验证，或被消融实验否定。
+- **措辞约束（Messaging Guardrail）**：区分内部学习与对外定位，让 MnemoTrace 声明绑定已提交原始结果的规则。
 
-## Success Criteria *(mandatory)*
+## 成功标准（必需）
 
-### Measurable Outcomes
+### 可测量结果
 
-- **SC-001**: A new contributor can identify at least five high-priority reference sources and their
-  MnemoTrace-relevant lessons within 10 minutes of opening the feature folder.
-- **SC-002**: 100% of adoption candidates include source, MnemoTrace-specific rationale, clean-room/license
-  note, affected capability surface, and measurable evaluation hypothesis.
-- **SC-003**: 100% of benchmark or performance claims in the radar are labeled as external-only or
-  MnemoTrace-reproduced; no unlabeled numbers appear.
-- **SC-004**: Every promoted candidate has an explicit ablation plan that reports accuracy, tokens, and
-  latency together before it can affect public messaging.
-- **SC-005**: Public-facing copy produced from this work contains zero unreproduced competitor
-  comparisons and zero unbenchmarked "SOTA", "#1", "world best", or scaling claims.
-- **SC-006**: The staged assimilation path produces at least one planning-ready candidate for each of
-  raw evidence retrieval, evolution-chain retrieval, hierarchical consolidation, graph multi-hop
-  retrieval, and reflection/experience memory.
+- **SC-001**：新贡献者打开功能目录后，能在 10 分钟内识别至少五个高优先级参考来源，以及它们对 MnemoTrace 的启发。
+- **SC-002**：100% 的采纳候选包含来源、MnemoTrace 特定理由、独立实现 / 许可说明、受影响模块和可测量评测假设。
+- **SC-003**：雷达中 100% 的 benchmark 或性能声明标为仅外部声明或已由 MnemoTrace 复现，不出现未标注数字。
+- **SC-004**：每个获准推进的候选在影响对外措辞之前，都有明确消融计划，同时报告准确率、token 消耗和延迟。
+- **SC-005**：由本工作产生的公开文案中，不含未经复现的竞争对手比较，也不含无 benchmark 支撑的“SOTA”“#1”“世界最佳”或规模声明。
+- **SC-006**：分阶段吸收路径至少为原始证据检索、演化链检索、分层整合、图多跳检索、反思 / 经验记忆各产出一个可进入计划阶段的候选。
 
-## Assumptions
+## 假设
 
-- This is an internal architecture and planning feature, not public marketing copy.
-- Referenced systems are studied from public pages, papers, repositories, and benchmark artifacts only.
-- Implementation work happens in later Spec-Kit phases and must use MnemoTrace-native interfaces, tests,
-  and clean-room code.
-- External benchmark numbers are useful for triage but never count as MnemoTrace results until reproduced
-  with committed raw logs.
-- The initial radar is intentionally architecture-level; detailed code review of each project happens
-  only after a candidate is promoted to planning.
+- 本功能服务于内部架构与规划，不是公开营销文案。
+- 仅从公开页面、论文、仓库和 benchmark 产物研究参考系统。
+- 实施在后续 Spec-Kit 阶段进行，必须使用 MnemoTrace 自身接口、测试和独立实现代码。
+- 外部 benchmark 数字可用于初筛；只有复现并提交原始日志后，才计为 MnemoTrace 结果。
+- 初始雷达刻意停留在架构层面；只有候选进入计划阶段后，才详细审阅各项目代码。

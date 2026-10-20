@@ -1,169 +1,128 @@
-# Feature Specification: Durable Persistence Backend
+# 功能规格：持久化存储后端
 
 **Feature Branch**: `001-durable-persistence`
 
 **Created**: 2026-06-25
 
-**Status**: Draft
+**Status**: 草稿（Draft）
 
-**Input**: User description: "Durable persistence backend: add LanceDB as the first real vector store behind the VectorStore interface and replace fragile pickle snapshots with a safe, append-only, schema-versioned on-disk format; in-memory stays the zero-setup default"
+**Input**: 用户描述：“持久化存储后端：在 VectorStore 接口之后加入 LanceDB，作为首个真实向量存储；用安全、仅追加、带 schema 版本的磁盘格式替换脆弱的 pickle 快照；内存实现仍为零配置默认方案。”
 
-## Why this feature *(context)*
+## 为什么需要此功能（背景）
 
-MnemoTrace today persists state with pickle snapshots. That is the next load-bearing wall to remove:
-pickle is **unsafe to load** (arbitrary code execution on untrusted files), **brittle** (any dataclass
-change can break old snapshots), **not crash-safe** (a whole-store rewrite can be interrupted), and it
-**does not scale** past what fits in one in-memory blob. This feature gives MnemoTrace a durable, safe,
-embedded persistence layer while keeping the zero-setup in-memory path as the default — directly serving
-Constitution Principle II (zero-setup), III (interfaces-first), and IV (no silent memory corruption).
+MnemoTrace 目前使用 pickle 快照持久化状态，这是下一项必须替换的关键基础：
+pickle **加载不安全**（不可信文件可执行任意代码）、**脆弱**（dataclass 的任何变化都可能破坏旧快照）、
+**不具备崩溃安全性**（整个存储的重写可能被中断），且**无法扩展到单个内存数据块之外**。
+本功能提供持久、安全、嵌入式的持久化层，同时保留零配置内存路径为默认方案，直接服务于宪章原则
+II（零配置）、III（接口优先）和 IV（不允许静默损坏记忆）。
 
-## User Scenarios & Testing *(mandatory)*
+## 用户场景与测试（必需）
 
-### User Story 1 - Survive a restart with zero data loss (Priority: P1)
+### 用户故事 1 — 重启后零数据丢失（优先级：P1）
 
-An operator self-hosting MnemoTrace adds memories over a session, stops the process, and starts it again.
-Every episode, fact, entity, and relation comes back intact — including bi-temporal stamps, provenance,
-and supersedes chains. Nothing was silently dropped or mutated.
+自托管 MnemoTrace 的运维人员在会话中添加记忆，停止进程后重新启动。
+所有 episode、fact、entity 和 relation 都完整恢复，包括双时间戳、来源和 supersedes 链；
+没有内容被静默丢弃或修改。
 
-**Why this priority**: Durability across restarts is the entire point of a memory engine. Without it the
-other stories have nothing to stand on. This story alone is a viable MVP (a safe, durable store replacing
-pickle), independent of which vector backend is used.
+**优先级理由：** 跨重启持久保存是记忆引擎的根本意义，其他故事都以此为基础。
+本故事本身就构成可用 MVP：用安全、持久的存储替换 pickle，且不依赖向量后端的选择。
 
-**Independent Test**: Add a fixed corpus, snapshot in-memory state, restart the store from disk, and
-assert the reloaded state is byte-for-byte equal on all entities and their temporal/provenance fields.
+**独立测试：** 添加固定语料，对内存状态制作快照，从磁盘重启存储，
+断言所有实体及其时间 / 来源字段在重新加载后逐字节一致。
 
-**Acceptance Scenarios**:
+**验收场景：**
 
-1. **Given** a store with N episodes/facts/relations, **When** the process restarts and reloads from
-   disk, **Then** all N are recovered with identical `valid_at`/`invalid_at`/`created_at`/`expired_at`,
-   provenance, and supersedes pointers.
-2. **Given** an invalidated (superseded) fact, **When** the store reloads, **Then** the fact is still
-   present and still marked invalid with its supersedes chain intact (no hard-delete on reload).
-3. **Given** a store directory that does not exist yet, **When** the store opens it, **Then** it starts
-   empty without error.
+1. **给定**存储中有 N 条 episode / fact / relation，**当**进程重启并从磁盘重新加载，
+   **则**全部 N 条记录恢复，`valid_at`/`invalid_at`/`created_at`/`expired_at`、来源和 supersedes 指针完全一致。
+2. **给定**一条已失效（被替代）的事实，**当**存储重新加载，**则**该事实仍存在且仍标记为失效，
+   supersedes 链完整，加载时不进行硬删除。
+3. **给定**尚不存在的存储目录，**当**存储打开该目录，**则**以空存储启动且不报错。
 
 ---
 
-### User Story 2 - LanceDB as the first real vector backend (Priority: P2)
+### 用户故事 2 — LanceDB 作为首个真实向量后端（优先级：P2）
 
-A user installs the `lancedb` extra and selects it in config. Embeddings persist to an embedded columnar
-store on disk; semantic search returns the same top-k as the in-memory store (within documented backend
-tolerance) and survives restart, scaling past available RAM. With no extra installed, nothing changes —
-in-memory is still the default.
+用户安装 `lancedb` extra 并在配置中选择它。嵌入持久保存到磁盘上的嵌入式列式存储；
+语义搜索返回与内存存储相同的 top-k（允许已记录的后端容差），重启后仍可用，并可扩展到可用 RAM 之外。
+未安装 extra 时，行为不变：内存存储仍是默认实现。
 
-**Why this priority**: This is the charter's stated next backend (embedded, zero-server) and unlocks
-scale (M3), but it builds on the durable-store contract from US1. It is independently testable behind the
-existing VectorStore interface.
+**优先级理由：** 这是章程中明确的下一个后端（嵌入式、无需服务器），为 M3 扩展规模提供基础，
+但依赖 US1 的持久存储契约。它可在现有 VectorStore 接口之后独立测试。
 
-**Independent Test**: Run the same query set against the in-memory store and the LanceDB-backed store on
-identical data; assert top-k overlap meets the agreed threshold, then restart and assert results persist.
+**独立测试：** 对相同数据，在内存存储与 LanceDB 存储上运行同一组查询；
+断言 top-k 重合度达到约定阈值，然后重启并断言结果仍被保留。
 
-**Acceptance Scenarios**:
+**验收场景：**
 
-1. **Given** the `lancedb` extra is installed and selected, **When** facts are added and the process
-   restarts, **Then** vector search returns the same results as before the restart.
-2. **Given** no optional extra is installed, **When** `quickstart.py` and `pytest` run, **Then** they
-   pass using the in-memory default (zero-setup invariant holds).
-3. **Given** a stored embedding dimension that differs from the configured embedder, **When** the store
-   opens, **Then** it fails with a clear dimension-mismatch error rather than returning wrong neighbors.
+1. **给定**已安装并选择 `lancedb` extra，**当**添加事实后重启进程，**则**向量搜索返回与重启前相同的结果。
+2. **给定**未安装任何可选 extra，**当**运行 `quickstart.py` 和 `pytest`，**则**使用默认内存实现并通过，零配置不变量成立。
+3. **给定**已存储的嵌入维度与配置的 embedder 不同，**当**打开存储，**则**明确报告维度不匹配并失败，而不是返回错误的近邻。
 
 ---
 
-### User Story 3 - Safe one-shot migration off pickle (Priority: P3)
+### 用户故事 3 — 一次性安全迁出 pickle（优先级：P3）
 
-An operator with an existing pickle snapshot upgrades. They run a one-shot migration that reads the old
-snapshot, reports counts in a dry-run, then writes the new safe format. Normal operation never loads the
-old pickle again.
+持有现有 pickle 快照的运维人员升级后，运行一次性迁移：读取旧快照，
+先通过 dry-run 报告记录数量，再写入新的安全格式。正常运行不再加载旧 pickle。
 
-**Why this priority**: Protects existing users' data, but only matters once US1's format exists. Lowest
-priority because new installs don't need it.
+**优先级理由：** 保护现有用户数据，但只有 US1 格式存在后才有意义。
+新安装不需要迁移，因此优先级最低。
 
-**Independent Test**: Take a known pickle snapshot, run migration in dry-run (asserts reported counts),
-run it for real, then load via the new format and assert entity parity with the original.
+**独立测试：** 使用一份已知 pickle 快照，运行 dry-run 并断言报告的数量，
+再执行实际迁移，通过新格式加载后，断言实体与原始快照一致。
 
-**Acceptance Scenarios**:
+**验收场景：**
 
-1. **Given** a valid pickle snapshot, **When** migration runs in dry-run, **Then** it reports per-entity
-   counts and writes nothing.
-2. **Given** the same snapshot, **When** migration runs for real, **Then** the new-format store contains
-   every entity with all temporal/provenance fields preserved.
+1. **给定**有效的 pickle 快照，**当**运行迁移 dry-run，**则**报告各实体类型的数量，且不写入任何内容。
+2. **给定**同一快照，**当**实际执行迁移，**则**新格式存储包含所有实体，保留全部时间 / 来源字段。
 
 ---
 
-### Edge Cases
+### 边界情况
 
-- **Torn write / crash mid-append**: recovery skips the incomplete trailing record and loads the
-  committed prefix; previously-committed data is never corrupted.
-- **Schema/version skew**: a store written by an incompatible (e.g. newer) MnemoTrace version fails to load
-  with an explicit, actionable error — never a silent partial or wrong load.
-- **Untrusted store file**: opening a store never executes code embedded in the file.
-- **Concurrent writers** to one store path: v1 defines single-writer behavior (lock or documented
-  constraint); it must not silently interleave into corruption.
-- **Embedding model change** between writes: detected via the manifest's recorded model id/dimension.
+- **写入撕裂 / 追加过程中崩溃：** 恢复时跳过尾部不完整记录，加载已提交的前缀；此前已提交的数据绝不能损坏。
+- **Schema / 版本不一致：** 由不兼容版本（例如更新版本）的 MnemoTrace 写入的存储必须拒绝加载，给出明确、可操作的错误，绝不能静默地部分加载或错误加载。
+- **不可信存储文件：** 打开存储绝不执行文件中嵌入的代码。
+- **同一路径的并发写入：** v1 明确定义单写者行为（加锁或记录约束），不得静默交错写入并造成损坏。
+- **写入之间更换嵌入模型：** 通过 manifest 中记录的模型 id 和维度检测。
 
-## Requirements *(mandatory)*
+## 需求（必需）
 
-### Functional Requirements
+### 功能需求
 
-- **FR-001**: System MUST persist all core entities (Episode, Fact, Entity, Relation) durably such that a
-  process restart recovers them with no loss.
-- **FR-002**: Persistence MUST preserve every bi-temporal stamp, provenance (source episode ids), and
-  supersedes chain exactly (Constitution IV).
-- **FR-003**: The on-disk format MUST be safe to load — loading MUST NOT execute arbitrary code (no
-  pickle/`eval` of stored data).
-- **FR-004**: The format MUST be schema-versioned via a store manifest; loading an incompatible version
-  MUST fail with a clear error, never a silent mis-load.
-- **FR-005**: Writes MUST be crash-resilient — an interrupted write MUST NOT corrupt committed data; on
-  recovery the store loads to the last fully-committed record.
-- **FR-006**: In-memory stores MUST remain the zero-setup default; the durable backend and LanceDB MUST
-  be optional, config-selected extras (Constitution II). `quickstart.py` and `pytest` MUST pass with no
-  extras installed.
-- **FR-007**: All persistence backends MUST sit behind the existing VectorStore / GraphStore / DocStore
-  interfaces; `mnemotrace/` core MUST NOT import a heavy persistence dependency at module top level
-  (Constitution III).
-- **FR-008**: System MUST provide a one-shot pickle→new-format migration with a dry-run that reports
-  per-entity counts before writing.
-- **FR-009**: Top-k search over a persisted-then-reloaded store MUST match the in-memory store's results
-  for the same data and query, modulo a documented backend tolerance.
-- **FR-010**: The durable backend MUST be runnable under the harness so any latency/throughput/scale
-  claim is measured, not asserted (Constitution V).
+- **FR-001**：系统必须持久保存所有核心实体（Episode、Fact、Entity、Relation），进程重启后无损恢复。
+- **FR-002**：持久化必须精确保留每个双时间戳、来源（源 episode id）和 supersedes 链（宪章 IV）。
+- **FR-003**：磁盘格式必须可安全加载；加载不得执行任意代码，不得对存储数据使用 pickle 或 `eval`。
+- **FR-004**：格式必须通过存储 manifest 记录 schema 版本；加载不兼容版本时必须明确报错，绝不能静默误加载。
+- **FR-005**：写入必须能承受崩溃；中断的写入不得损坏已提交数据；恢复时加载到最后一条完整提交的记录。
+- **FR-006**：内存存储必须保持零配置默认地位；持久化后端与 LanceDB 必须是通过配置选择的可选 extras（宪章 II）。未安装 extras 时，`quickstart.py` 和 `pytest` 必须通过。
+- **FR-007**：所有持久化后端必须位于现有 VectorStore / GraphStore / DocStore 接口之后；`mnemotrace/` 核心模块顶层不得导入重型持久化依赖（宪章 III）。
+- **FR-008**：系统必须提供一次性的 pickle → 新格式迁移，并支持在写入前报告各实体数量的 dry-run。
+- **FR-009**：对相同数据和查询，持久化后重新加载的存储，其 top-k 搜索结果必须与内存存储一致，允许已记录的后端容差。
+- **FR-010**：持久化后端必须可在评测框架中运行，让所有延迟 / 吞吐 / 规模声明都来自测量，而非断言（宪章 V）。
 
-### Key Entities *(persisted forms — attributes, not implementation)*
+### 关键实体（持久化形式：描述属性，而非实现）
 
-- **Episode**: raw lossless turn/event; `event_time` + `ingested_at`; the append-only source of truth.
-- **Fact**: atomic (subject, predicate, object) claim; text, embedding, salience, confidence,
-  provenance, the two time axes, and supersedes pointer.
-- **Entity / Relation**: graph nodes/edges carrying the same bi-temporal stamps.
-- **Store Manifest**: schema version, embedder id + embedding dimension, store created/updated
-  transaction times, and per-entity record counts — the header that makes loads safe and versioned.
+- **Episode**：原始无损轮次 / 事件；`event_time` + `ingested_at`；仅追加的事实来源。
+- **Fact**：原子的 (subject, predicate, object) 声明；文本、嵌入、显著度、置信度、来源、两条时间轴和 supersedes 指针。
+- **Entity / Relation**：携带相同双时间戳的图谱节点 / 边。
+- **Store Manifest**：schema 版本、embedder id + 嵌入维度、存储创建 / 更新事务时间，以及各实体类型的记录数量；作为保证安全加载和版本管理的头部元数据。
 
-## Success Criteria *(mandatory)*
+## 成功标准（必需）
 
-### Measurable Outcomes
+### 可测量结果
 
-- **SC-001**: After add → restart, **100%** of episodes/facts/relations and their bi-temporal +
-  provenance fields are recovered (round-trip equality test).
-- **SC-002**: Opening any store file **never** executes code from the file (verified by a crafted-file
-  test that would trip on code execution).
-- **SC-003**: A simulated crash mid-write loses **at most the single in-flight record** and never the
-  committed prefix (torn-write test).
-- **SC-004**: The zero-setup invariant holds — the full offline test suite and `quickstart.py` pass with
-  **no** optional extras installed.
-- **SC-005**: A reloaded store returns **identical top-k** search results to the equivalent in-memory
-  store on a fixed query set (within the documented tolerance for the chosen vector backend).
-- **SC-006**: The durable backend serves a target corpus **without loading the whole store into RAM**;
-  the exact corpus size and the p50/p95 read latency target are set in the plan and measured on the
-  harness.
+- **SC-001**：添加 → 重启后，**100%** 的 episode / fact / relation 及其双时间和来源字段恢复（往返一致性测试）。
+- **SC-002**：打开任意存储文件时，**绝不**执行其中代码；通过专门构造的文件测试验证，若执行代码则测试失败。
+- **SC-003**：模拟写入中崩溃时，**最多只丢失当时正在写入的一条记录**，已提交前缀不丢失（写入撕裂测试）。
+- **SC-004**：零配置不变量成立：**未安装任何**可选 extras 时，完整离线测试套件和 `quickstart.py` 通过。
+- **SC-005**：对固定查询集，重新加载的存储返回与等价内存存储**相同的 top-k** 搜索结果，允许所选向量后端已记录的容差。
+- **SC-006**：持久化后端在**不把整个存储加载到 RAM** 的情况下服务目标语料；具体语料规模和 p50/p95 读取延迟目标在计划中确定，并通过评测框架测量。
 
-## Assumptions
+## 假设
 
-- **Single-writer per store path** for v1; multi-process concurrent writers are out of scope and
-  documented as such.
-- **LanceDB is the first real vector backend** (embedded, zero-server) per the charter; Qdrant/pgvector
-  remain later extras behind the same interface.
-- **The in-memory stores remain the correctness reference** — the durable backend must match their
-  observable behavior.
-- **A given store is written and read with the same embedder** (model id + dimension recorded in the
-  manifest); changing embedder requires re-embedding, out of scope here.
-- **Scope is the vector + doc stores plus a safe durable form for the graph**; a native embedded graph
-  backend (e.g. Kuzu) is a separate later spec, not this one.
+- v1 **每条存储路径只允许一个写者**；多进程并发写入不在范围内，必须明确记录。
+- 按章程，**LanceDB 是首个真实向量后端**（嵌入式、无需服务器）；Qdrant/pgvector 留作同一接口之后的后续 extras。
+- **内存存储仍是正确性参照**，持久化后端必须匹配其可观察行为。
+- **同一存储使用相同 embedder 读写**；模型 id 和维度记入 manifest。更换 embedder 需要重新嵌入，不在本次范围内。
+- **范围涵盖向量与文档存储，以及图谱的安全持久化形式**；原生嵌入式图后端（如 Kuzu）属于后续独立规格。

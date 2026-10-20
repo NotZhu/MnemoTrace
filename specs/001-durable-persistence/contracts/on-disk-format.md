@@ -1,43 +1,41 @@
-# Contract — On-Disk Format (v1, `schema_version = 1`)
+# 契约：磁盘格式（v1，`schema_version = 1`）
 
-## Directory layout (one per namespace)
-```
+## 目录布局（每个命名空间一个）
+
+```text
 <data_path>/<namespace>/
-├── manifest.json      # written LAST, atomically (tmp + os.replace) — the commit point
+├── manifest.json      # 最后以原子方式写入（tmp + os.replace），是提交点
 ├── episodes.jsonl
 ├── facts.jsonl
 ├── entities.jsonl
 ├── relations.jsonl
 ├── working.jsonl
 ├── conflicts.jsonl
-├── .lock              # advisory single-writer lock (fcntl.flock)
-└── lancedb/           # present only when backend = "lancedb"
+├── .lock              # 建议式单写者锁（fcntl.flock）
+└── lancedb/           # 仅 backend = "lancedb" 时存在
 ```
 
-## Write protocol (crash-safe — D2)
-1. Acquire `.lock`; fail fast if held (single writer — D5).
-2. Append/rewrite each `*.jsonl` (append for incremental save; a full rewrite is acceptable for v1
-   compaction).
-3. `flush()` + `os.fsync()` each file.
-4. Write `manifest.json.tmp`, fsync it, then `os.replace()` → `manifest.json` (**atomic commit point**).
-5. Release the lock.
+## 写入协议（崩溃安全 — D2）
 
-## Read protocol (safe + recovering — D2/D3)
-1. No `manifest.json` → **empty store**, no error (US1 acceptance scenario 3).
-2. Parse the manifest; `schema_version` greater than supported → `IncompatibleStoreError` (FR-004).
-3. `embedder_id` or `embedding_dim` differs from the configured embedder → `EmbedderMismatchError` or
-   `DimensionMismatchError`, rather than returning neighbors from the wrong vector space (US2 acceptance
-   scenario 3).
-4. Stream exactly the manifest-declared committed prefix for each `*.jsonl`. Missing records or malformed
-   JSON **inside** that prefix raise `StoreFormatError`; malformed bytes/records **after** the manifest
-   count are treated as an uncommitted torn tail and ignored (FR-005).
-5. Reconstruct dataclasses by explicit field mapping — **no `eval`, no `pickle`** (FR-003).
+1. 获取 `.lock`；若已被持有则立即失败（单写者 — D5）。
+2. 追加 / 重写各 `*.jsonl`；增量保存采用追加，v1 压缩整理允许全量重写。
+3. 对每个文件执行 `flush()` + `os.fsync()`。
+4. 写入 `manifest.json.tmp` 并 fsync，再通过 `os.replace()` 替换 `manifest.json`，此处为**原子提交点**。
+5. 释放锁。
 
-## Guarantees
-- **Safe** — opening any file never executes embedded code (SC-002).
-- **Durable** — the committed prefix survives a crash mid-write (SC-003).
-- **Vector-space safe** — stores written with a different embedding model id or dimension fail loudly.
-- **No silent loss** — corruption inside the manifest-committed prefix fails loudly instead of loading a
-  partial memory.
-- **Versioned** — incompatible stores fail loudly, never silently (FR-004).
-- **Lossless** — every dataclass field round-trips (Constitution IV; INV-1..4 in data-model.md).
+## 读取协议（安全且可恢复 — D2/D3）
+
+1. 没有 `manifest.json` → 视为**空存储**，不报错（US1 验收场景 3）。
+2. 解析 manifest；`schema_version` 大于支持版本时抛出 `IncompatibleStoreError`（FR-004）。
+3. `embedder_id` 或 `embedding_dim` 与配置的 embedder 不同，抛出 `EmbedderMismatchError` 或 `DimensionMismatchError`，而非返回错误向量空间的近邻（US2 验收场景 3）。
+4. 对每个 `*.jsonl`，严格按 manifest 声明的已提交前缀流式读取；前缀**内部**缺失记录或 JSON 格式错误，抛出 `StoreFormatError`；manifest 数量**之后**的异常字节 / 记录视为未提交的撕裂尾部并忽略（FR-005）。
+5. 通过显式字段映射重建 dataclass，**不使用 `eval` 或 `pickle`**（FR-003）。
+
+## 保证
+
+- **安全**：打开任何文件都不会执行嵌入代码（SC-002）。
+- **持久**：已提交前缀可在写入中崩溃后保留（SC-003）。
+- **向量空间安全**：使用不同嵌入模型 id 或维度写入的存储会明确报错。
+- **不静默丢失**：manifest 已提交前缀内出现损坏时明确失败，不加载部分记忆冒充完整结果。
+- **版本化**：不兼容存储明确失败，绝不静默处理（FR-004）。
+- **无损**：所有 dataclass 字段往返保留（宪章 IV；data-model.md 中的 INV-1..4）。

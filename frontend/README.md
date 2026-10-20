@@ -1,27 +1,26 @@
-# MnemoTrace 记忆控制台 (Memory Console)
+# MnemoTrace 记忆控制台
 
-A production-grade web UI for managing your MnemoTrace long-term memory — view, ask, edit,
-customize, and export everything the engine remembers about you.
+用于管理 MnemoTrace 长期记忆的生产级 Web 界面：查看、提问、编辑、定制并导出引擎保存的关于你的记忆。
 
 > 这是给"小白"也能看懂、也能自己管理记忆的前端：查看用户画像、增删改记忆、定制关注点、
 > 可视化时间线与关系图谱、一键导出或清空。它把 MnemoTrace 的可审计记忆能力做成一个
 > **完全开源**的管理界面。
 
-## Stack
+## 技术栈
 
-| Concern | Choice |
+| 用途 | 选型 |
 |---|---|
-| Framework | React 18 + TypeScript |
-| Build | Vite 5 |
-| Styling | Tailwind CSS 3 (brand design tokens in `tailwind.config.ts`) |
-| Routing | React Router 6 |
-| Server state | TanStack Query 5 |
-| Auth/UI state | Zustand (API key in page memory only) |
-| Icons | lucide-react |
+| 框架 | React 18 + TypeScript |
+| 构建 | Vite 5 |
+| 样式 | Tailwind CSS 3（品牌设计变量见 `tailwind.config.ts`） |
+| 路由 | React Router 6 |
+| 服务端状态 | TanStack Query 5 |
+| 鉴权 / 界面状态 | Zustand（API key 仅保存在页面内存中） |
+| 图标 | lucide-react |
 
-The knowledge-graph view uses a Quartz-derived D3 force simulation and PixiJS renderer, loaded on demand.
-The React wrapper is `src/components/ForceGraph.tsx`; source provenance and MIT attribution are recorded in
-[`vendor/quartz/README.md`](vendor/quartz/README.md). The backend API and memory data model are unchanged.
+知识图谱视图使用由 Quartz 适配而来的 D3 力模拟与 PixiJS 渲染器，按需加载。
+React 封装位于 `src/components/ForceGraph.tsx`；来源与 MIT 署名记录见
+[`vendor/quartz/README.md`](vendor/quartz/README.md)。后端 API 与记忆数据模型保持不变。
 
 ## 界面文案
 
@@ -70,61 +69,57 @@ Web Crypto 缺失或 digest 报错时，使用 `@noble/hashes` 的 JavaScript SH
 首次加载不启用渐变，系统开启减少动态效果时跳过新增的颜色过渡。
 验证：`npm run test:theme`、`npm run build`；完整验收见 `../results/theme_validation.md`。
 
-## Views
+## 页面功能
 
-- **总览 Dashboard** — stats, L3 persona, quick "remember".
-- **记忆问答 Ask** — retrieve a *lean* context and see how few tokens answer a question (Bet A/E).
-- **事实管理 Facts** — full bi-temporal CRUD; user edits are authoritative (🔒, never auto-overwritten).
-- **时间线 Timeline** — chronological evolution with supersession (live vs. replaced).
-- **关系图谱 Graph** — entities + relations; solid = current, dashed = invalidated.
-- **关注点 Focus** — track (salience boost) / mute (hide) topics. Real wiring, not cosmetic.
-- **原始对话 Conversations** — the cross-agent lifecycle surface: choose a `session_id`, see
-  content-free `agent_status`, write with `scope=auto|long|working`, close the session, and audit what
-  durable facts that session saved. It also includes a content-free session index so users can see which
-  Codex/Claude/app sessions touched their memory.
-- **隐私与数据 Privacy** — safe export by default (non-sensitive facts + graph), explicit private export,
-  and confirmed erase (right to be forgotten).
+- **总览 Dashboard** — 统计信息、L3 用户画像，以及快速记忆录入。
+- **记忆问答 Ask** — 检索精简上下文，展示回答问题所需的少量 token（Bet A/E）。
+- **事实管理 Facts** — 完整的双时间增删改查；用户编辑具有权威性（🔒，不会被自动覆盖）。
+- **时间线 Timeline** — 按时间展示记忆演化与替代关系，区分当前有效和已被替代的内容。
+- **关系图谱 Graph** — 展示实体与关系；实线表示当前有效，虚线表示已失效。
+- **关注点 Focus** — 跟踪主题以提升显著度，或静音主题以隐藏内容；这些选项实际影响记忆处理。
+- **原始对话 Conversations** — 跨智能体的会话生命周期入口：选择 `session_id`，查看不含记忆正文的
+  `agent_status`，用 `scope=auto|long|working` 写入，关闭会话，并审计该会话保存的持久事实。
+  还提供不含正文的会话索引，便于用户查看哪些 Codex / Claude / 应用会话访问过记忆。
+- **隐私与数据 Privacy** — 默认安全导出非敏感事实与图谱；显式选择后可导出私密数据；确认后可清空数据，落实被遗忘权。
 
-## Product Lifecycle
+## 产品生命周期
 
-For a C-end product or an agent console, the first-class workflow is:
+面向个人用户的产品或智能体控制台，核心工作流如下：
 
 ```text
-Open a conversation/thread
-  -> call agent_status(session_id) to confirm namespace + session wiring
-  -> list /v1/sessions when the user needs a cross-agent session index
-  -> recall before answering user/project-history-dependent tasks
-  -> remember durable facts with scope="auto" or scope="long"
-  -> remember temporary task state with scope="working"
-  -> close_session(session_id) when the thread ends or switches tasks
-  -> show session_report(session_id) so the user can audit what was saved
+打开对话 / 线程
+  -> 调用 agent_status(session_id)，确认命名空间与会话接入状态
+  -> 用户需要跨智能体会话索引时，查询 /v1/sessions
+  -> 回答依赖用户 / 项目历史的任务前，先 recall
+  -> 用 scope="auto" 或 scope="long" 记住持久事实
+  -> 用 scope="working" 记住临时任务状态
+  -> 线程结束或切换任务时，调用 close_session(session_id)
+  -> 展示 session_report(session_id)，供用户审计已保存的内容
 ```
 
-The API key is the user's memory namespace. `session_id` is provenance and lifecycle scope, not a
-separate memory silo; Codex, Claude Code, Cursor, and your app should reuse the same namespace when the
-user expects one shared memory layer.
+API key 对应用户的记忆命名空间。`session_id` 用于来源追踪和生命周期管理，不划分独立的记忆空间。
+如果用户期望共享同一层记忆，Codex、Claude Code、Cursor 和你的应用应复用同一命名空间。
 
-## Develop
+## 本地开发
 
 使用 Node 22，与 CI / Docker 保持一致；当前 SHA-256 依赖要求 Node >=20.19。包管理器版本由 `packageManager` 固定。
 
 ```bash
 pnpm install
-# run the memory server in another terminal (serves the API on :8000)
+# 在另一个终端启动记忆服务（API 端口为 :8000）
 #   MNEMOTRACE_OPEN=1 MNEMOTRACE_EMBEDDER=bge-small uvicorn mnemotrace.server.app:app --port 8000
-pnpm dev            # Vite dev server on http://localhost:5173/ui/ (proxies /v1 + /health to :8000)
+pnpm dev            # Vite 开发服务：http://localhost:5173/ui/（将 /v1 与 /health 代理至 :8000）
 ```
 
-## Build (served by the Python server)
+## 构建（由 Python 服务提供页面）
 
 ```bash
 pnpm build          # → frontend/dist
 ```
 
-The FastAPI memory server (`mnemotrace/server/app.py`) auto-detects `frontend/dist` and serves the
-console at **`/ui`** (with SPA fallback so deep links survive a refresh); `/` redirects there.
-When `dist/` isn't built, `/` and `/ui` show build instructions with HTTP 503. Build the console
-and restart the server to enable it. The HTTP API, health checks and offline quickstart remain
-usable without a Node build step; the inline dashboard has been removed.
+FastAPI 记忆服务（`mnemotrace/server/app.py`）自动检测 `frontend/dist`，在 **`/ui`** 提供控制台，
+并通过 SPA 回退让深层链接在刷新后仍可访问；`/` 会重定向到该页面。
+尚未构建 `dist/` 时，`/` 和 `/ui` 返回 HTTP 503 并展示构建说明。构建控制台后重启服务即可启用。
+无需执行 Node 构建，HTTP API、健康检查和离线 quickstart 仍可使用；旧的内联仪表盘已移除。
 
-Configure a non-same-origin API with `VITE_API_BASE` (see `.env.example`).
+连接不同源的 API 时，使用 `VITE_API_BASE` 配置地址（见 `.env.example`）。

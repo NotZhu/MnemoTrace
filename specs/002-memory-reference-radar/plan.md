@@ -1,81 +1,63 @@
-# Implementation Plan: Memory Reference Radar
+# 实施计划：记忆系统参考雷达
 
 **Branch**: `002-memory-reference-radar` | **Date**: 2026-06-29 | **Spec**: [spec.md](spec.md)
 
-**Input**: Feature specification from `specs/002-memory-reference-radar/spec.md`
+**Input**: 功能规格 `specs/002-memory-reference-radar/spec.md`
 
-## Summary
+## 概要
 
-Create an internal architecture radar that lets MnemoTrace study the strongest public memory,
-GraphRAG, knowledge-compilation, and agent-learning systems, then promote only the patterns that can
-be cleanly translated into MnemoTrace-native capabilities with reproducible evaluation. The plan keeps
-this work as governance and design first: reference sources are recorded, capability patterns are
-mapped to MnemoTrace strategic bets, and adoption candidates must pass clean-room, provenance,
-zero-setup, and harness-backed ablation gates before implementation.
+建立内部架构雷达，让 MnemoTrace 研究优秀的公开记忆、GraphRAG、知识编译和智能体学习系统，
+仅推进那些能通过独立实现转化为 MnemoTrace 自身能力、并接受可复现评测的模式。
+本计划优先处理治理与设计：记录参考来源，将能力模式映射至 MnemoTrace 战略下注，
+采纳候选在实施前必须通过独立实现、来源、零配置，以及有评测框架证据支撑的消融门禁。
 
-The first planning-ready candidates are:
+首批可进入计划阶段的候选：
 
-1. Chain-aware retrieval for `supersedes` evolution chains.
-2. Raw evidence fusion hardening across chunks, facts, and graph paths.
-3. Derived memory layers for summaries, mental models, intent/procedure records, and optional
-   human-readable workspace views.
-4. Graph proximity retrieval for multi-hop expansion.
-5. Reflection/experience memory for procedural lessons.
-6. Runtime profiles with measured accuracy/tokens/latency tradeoffs.
+1. 面向 `supersedes` 演化链的链感知检索。
+2. 加强原始证据在片段、事实和图路径之间的融合。
+3. 摘要、心智模型、意图 / 程序记录等派生记忆层，以及可选的便于人阅读的工作区视图。
+4. 面向多跳扩展的图邻近检索。
+5. 用于程序性经验的反思 / 经验记忆。
+6. 对准确率 / token 消耗 / 延迟权衡进行测量的运行配置。
 
-## Technical Context
+## 技术背景（Technical Context）
 
-**Language/Version**: Markdown documentation and Spec-Kit artifacts; future implementation remains
-Python >=3.10 per MnemoTrace constitution.
+**Language/Version**: Markdown 文档和 Spec-Kit 产物；后续实现按 MnemoTrace 宪章继续使用 Python >=3.10。
 
-**Primary Dependencies**: None for this feature. External repositories are research inputs only.
+**Primary Dependencies**: 本功能无依赖。外部仓库仅作为研究输入。
 
-**Storage**: Repository-tracked Markdown files under `specs/002-memory-reference-radar/`; no runtime
-storage changes.
+**Storage**: 仓库跟踪的 Markdown 文件，位于 `specs/002-memory-reference-radar/`；不改变运行时存储。
 
-**Testing**: Documentation validation through checklist review, link checks, placeholder scans, and
-future `/speckit-tasks` acceptance checks. Any promoted algorithmic change must later run MnemoTrace's
-benchmark harness and report accuracy, tokens, and p50/p95 latency.
+**Testing**: 通过检查清单审阅、链接检查、占位符扫描及后续 `/speckit-tasks` 验收检查验证文档。
+获准推进的算法变更，后续必须运行 MnemoTrace benchmark 框架，同时报告准确率、token 消耗和 p50/p95 延迟。
 
-**Target Platform**: Internal maintainers and contributors working in the MnemoTrace repository.
+**Target Platform**: 在 MnemoTrace 仓库中工作的内部维护者与贡献者。
 
-**Project Type**: Documentation/governance feature that feeds later library and harness work.
+**Project Type**: 文档 / 治理功能，为后续库与评测框架工作提供输入。
 
-**Performance Goals**: Not applicable to this documentation feature. Promoted candidates must define
-their own benchmark hypotheses before implementation.
+**Performance Goals**: 本文档功能不适用。获准推进的候选必须在实施前定义各自的 benchmark 假设。
 
-**Constraints**: Preserve zero-setup invariant, raw-chunk plus fact retrieval, bi-temporal provenance,
-non-destructive invalidation, clean-room implementation boundaries, and honest public messaging.
+**Constraints**: 保持零配置不变量、原始片段 + 事实检索、双时间来源追踪、非破坏性失效处理、独立实现边界，以及诚实的对外措辞。
 
-**Scale/Scope**: Initial radar covers direct memory systems, graph retrieval systems,
-knowledge-compilation systems, lifelong memory systems, reflection/experience systems, product
-surfaces, and evaluation sources. It does not implement runtime behavior in this feature.
+**Scale/Scope**: 初始雷达覆盖直接记忆系统、图检索系统、知识编译系统、终身记忆系统、反思 / 经验系统、产品接入面和评测来源。本功能不实现运行时行为。
 
-## Constitution Check
+## 宪章检查
 
-*GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
+*门禁：Phase 0 研究前必须通过；Phase 1 设计后复查。*
 
-- **I. Reproducibility Is Non-Negotiable**: PASS. The radar labels external claims as external-only
-  and requires MnemoTrace-owned logs before public claims.
-- **II. Zero-Setup Invariant**: PASS. This feature adds documentation only; future dependencies are
-  explicitly optional until separately specified.
-- **III. Interfaces First, Backends Behind Them**: PASS. Adoption candidates must map to MnemoTrace
-  surfaces before implementation and cannot import third-party code from the radar.
-- **IV. No Silent Memory Corruption**: PASS. Candidate promotion requires provenance,
-  `supersedes`/invalidation preservation where facts are affected.
-- **V. Measure Before Optimizing**: PASS. Every promoted candidate needs an ablation hypothesis and
-  accuracy/tokens/latency reporting.
-- **VI. Compose, Don't Pick**: PASS. The radar explicitly composes raw chunks, facts, temporal graph,
-  hierarchy, reflection, and runtime profiles rather than selecting a single external pattern.
-- **VII. Honest, Open Public Messaging**: PASS. Public messaging guardrails are a first-class
-  requirement; competitor claims stay internal unless reproduced by MnemoTrace.
+- **I. 可复现性不可妥协**：PASS。雷达将外部声明标为仅外部声明（external-only），公开声明前要求 MnemoTrace 自有日志。
+- **II. 零配置不变量**：PASS。本功能只增加文档；未来依赖在另行制定规格前明确保持可选。
+- **III. 接口优先，后端置于接口之后**：PASS。采纳候选在实施前必须映射至 MnemoTrace 模块，不能直接从雷达引入第三方代码。
+- **IV. 不允许静默损坏记忆**：PASS。候选推进需保留来源；涉及事实时，需保留 `supersedes` / 失效处理。
+- **V. 先测量，再优化**：PASS。每个获准推进的候选都需要消融假设，并报告准确率 / token 消耗 / 延迟（accuracy/tokens/latency）。
+- **VI. 组合，而非单选**：PASS。雷达明确组合原始片段、事实、时间图谱、分层结构、反思和运行配置，不单选某个外部模式。
+- **VII. 诚实、开放的对外措辞**：PASS。措辞约束是一等需求；竞争对手声明在 MnemoTrace 复现前仅作内部材料。
 
-**Post-design re-check**: PASS. `data-model.md`, `contracts/`, and `quickstart.md` preserve the same
-gates and add validation steps rather than implementation shortcuts.
+**设计后复查：** PASS。`data-model.md`、`contracts/` 和 `quickstart.md` 保留相同门禁，增加验证步骤，不提供绕过实施约束的捷径。
 
-## Project Structure
+## 项目结构
 
-### Documentation (this feature)
+### 本功能的文档
 
 ```text
 specs/002-memory-reference-radar/
@@ -92,24 +74,23 @@ specs/002-memory-reference-radar/
     └── radar-entry.md
 ```
 
-### Source Code (repository root)
+### 源代码（仓库根目录）
 
 ```text
-AGENTS.md                 # Project charter/context copy used by Codex sessions
-CLAUDE.md                 # Project charter/context file configured for Spec-Kit agent-context
+AGENTS.md                 # Codex 会话使用的项目章程 / 上下文副本
+CLAUDE.md                 # Spec-Kit agent-context 配置使用的项目章程 / 上下文文件
 .specify/
-├── feature.json          # Active feature pointer
+├── feature.json          # 当前功能指针
 └── memory/
-    └── constitution.md   # Governance gates used by this plan
+    └── constitution.md   # 本计划使用的治理门禁
 specs/
 └── 002-memory-reference-radar/
-    └── ...               # This feature's planning artifacts
+    └── ...               # 本功能的规划产物
 ```
 
-**Structure Decision**: This feature is documentation-only. It does not add code paths under
-`mnemotrace/`, tests under `tests/`, or benchmark logs under `results/`. Later implementation features
-will be split out from the adoption candidates and planned separately.
+**结构决策：** 本功能仅涉及文档。不在 `mnemotrace/` 增加代码路径，不在 `tests/` 增加测试，
+不在 `results/` 增加 benchmark 日志。后续实施功能从采纳候选中拆出，单独规划。
 
-## Complexity Tracking
+## 复杂度跟踪
 
-No constitution violations or extra complexity exceptions are required.
+无需宪章违规豁免或额外复杂度例外。
