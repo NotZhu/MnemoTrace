@@ -1,6 +1,6 @@
 # ISSUE-033 / 034 统一记忆访问协议验收
 
-日期：2026-10-20。状态：实现完成，本地 Windows 原生验证；Ubuntu/POSIX CI 待确认。
+日期：2026-10-20。状态：已修复；本地 Windows 与 Windows/Ubuntu CI 验收通过。
 
 ## 根因与实施
 
@@ -61,6 +61,25 @@ python -B scripts/check_zero_setup.py
 另已通过 `scripts/check_release.py`、`scripts/build_landing_pages.py --check`、改动 Python 文件的
 导入/语法静态检查及 `git diff --check`；新的锁协调模块与并发回归文件通过完整 Ruff 检查。
 
+## GitHub CI 验收
+
+[PR #1](https://github.com/NotZhu/MnemoTrace/pull/1) 的
+[CI 运行 39378499937](https://github.com/NotZhu/MnemoTrace/actions/runs/39378499937)
+已完成且结论为 success，对应源代码提交 `9bb73952c959f9da244a8e17699875f181917973`。
+以下六个任务全部通过：
+
+- `python (ubuntu-latest, 3.10)`
+- `python (ubuntu-latest, 3.12)`
+- `python (windows-latest, 3.10)`
+- `python (windows-latest, 3.12)`
+- `web`
+- `container`
+
+四组 Python 任务的原生并发回归、零配置、落地页同步及发布检查均成功；Ubuntu/Python 3.12
+另完成 wheel/sdist 构建与 twine 校验。任务、步骤、提交和结论的 GitHub 返回值保存在
+[issue033_034_ci_validation.jsonl](issue033_034_ci_validation.jsonl)。
+本地原始日志保留其运行当时“CI pending”的历史范围，后续双平台结论由此 CI 证据补充。
+
 ## 覆盖与边界
 
 - 首次加载、版本变化重载与写入/forget 的固定交错：同实例、不同实例；再次保存与全新实例读取。
@@ -74,5 +93,5 @@ python -B scripts/check_zero_setup.py
 
 普通热读允许上一份已提交视图，读取副作用维持原有持久化语义。直接 Memory 调用方的并发
 读改存、保存中途崩溃后的多文件恢复、线上部署状态均不在本轮保证中。共享目录的服务需统一升级。
-Ubuntu/POSIX 原生锁验证完成前，[ISSUE-033](../docs/known-issues.zh-CN.md#issue-033) 与
-[ISSUE-034](../docs/known-issues.zh-CN.md#issue-034) 均保持待验收。
+双平台验收已完成，[ISSUE-033](../docs/known-issues.zh-CN.md#issue-033) 与
+[ISSUE-034](../docs/known-issues.zh-CN.md#issue-034) 均标记为已修复。

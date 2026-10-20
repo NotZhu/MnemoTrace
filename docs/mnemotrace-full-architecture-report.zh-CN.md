@@ -486,8 +486,10 @@ conflicts.jsonl
 共享数据目录的进程必须统一升级后重新启动，不能混跑不遵守该加载/提交协议的旧进程。
 验证见[文件锁错误分类](../results/flock_error_handling_validation.md)、
 [清空并发](../results/forget_concurrency_validation.md)与
-[ISSUE-033/034 访问协议验收](../results/issue033_034_validation.md)。当前本地 Windows 原生验证通过，
-Ubuntu/POSIX 原生锁仍待 CI 矩阵确认；问题台账保持待验收。
+[ISSUE-033/034 访问协议验收](../results/issue033_034_validation.md)。提交 `9bb7395` 已通过
+Windows/Ubuntu、Python 3.10/3.12 四组 CI，以及 web/container 检查；
+[CI 原始证据](../results/issue033_034_ci_validation.jsonl)对应
+[运行记录](https://github.com/NotZhu/MnemoTrace/actions/runs/39378499937)，问题台账已标记为已修复。
 
 ### 6.3 命名空间目录、擦除与迁移边界
 
