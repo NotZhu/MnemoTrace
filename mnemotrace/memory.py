@@ -199,6 +199,7 @@ class Memory:
         self.cold_pages_out: dict[str, int] = {}
         self.cold_pages_in: dict[str, int] = {}
         self._persist_path: Optional[str] = None
+        self._snapshot_version: Optional[str] = None
         self._rewire()
 
     def _all_facts(self) -> list[Fact]:
