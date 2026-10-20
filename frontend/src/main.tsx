@@ -5,20 +5,25 @@ import { BrowserRouter } from 'react-router-dom'
 
 import App from './App'
 import { copy as t } from './lib/copy'
-import { useAuth } from './store/auth'
+import { currentSession, useAuth } from './store/auth'
+import { StaleSessionError } from './lib/api'
 import { useQueryErrors } from './store/queryErrors'
 import './index.css'
 
-function isCurrentQuery(query: Pick<Query, 'queryKey' | 'queryHash'>) {
-  const key = useAuth.getState().apiKey
+type QueryIdentity = Pick<Query, 'queryKey' | 'queryHash'>
+const queryEpochs = new WeakMap<QueryIdentity, number>()
+
+function isCurrentQuery(query: QueryIdentity) {
+  const { key, epoch } = currentSession()
   return key !== null && query.queryKey[1] === key
+    && queryEpochs.get(query) === epoch
     && queryClient.getQueryCache().get(query.queryHash) === query
 }
 
 const queryClient = new QueryClient({
   queryCache: new QueryCache({
     onError: (error, query) => {
-      if (!isCurrentQuery(query)) return
+      if (error instanceof StaleSessionError || !isCurrentQuery(query)) return
       const message = error instanceof TypeError
         ? t.errors.network
         : error instanceof Error ? error.message : String(error)
@@ -35,12 +40,13 @@ const queryClient = new QueryClient({
 })
 
 queryClient.getQueryCache().subscribe((event) => {
+  if (event.type === 'added') queryEpochs.set(event.query, currentSession().epoch)
   if (event.type === 'removed') useQueryErrors.getState().resolve(event.query.queryHash)
 })
 
 useAuth.subscribe((state, previous) => {
-  if (state.apiKey === previous.apiKey) return
-  // API 在执行时读取凭证；账号切换必须先取消旧查询，再移除其缓存与重试入口。
+  if (state.epoch === previous.epoch) return
+  // 同 Key 再次登录也要移除旧周期的查询、缓存与重试入口。
   const privateQueries = { predicate: (query: Query) => query.queryKey[0] !== 'health' }
   void queryClient.cancelQueries(privateQueries)
   queryClient.removeQueries(privateQueries)

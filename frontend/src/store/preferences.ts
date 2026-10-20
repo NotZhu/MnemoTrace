@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import { sha256 } from '@noble/hashes/sha2.js'
-import { useAuth } from './auth'
+import { currentSession, isCurrentSession, useAuth, type AuthSession } from './auth'
 import { apiBaseUrl } from '../lib/api'
 import { DEFAULT_QUARTZ_SETTINGS } from '../vendor/quartz/types'
 import type { QuartzGraphSettings } from '../vendor/quartz/types'
@@ -100,10 +100,11 @@ export const usePreferences = create<PreferencesState>()(persist((set, get) => (
   },
   resetGraph() { set({ graph: { ...DEFAULT_QUARTZ_SETTINGS } }); flushPreferences() },
   setSpace(page, field, value) {
-    const credential = useAuth.getState().apiKey
+    const session = currentSession()
+    const credential = session.key
     if (!credential) return
     const apply = (scope: string) => {
-      if (useAuth.getState().apiKey !== credential) return
+      if (!isCurrentSession(session)) return
       set(state => {
         const current = state.spaces[scope] ?? DEFAULT_SPACE_PREFERENCES
         const next = nextValue(value, current[page][field])
@@ -147,14 +148,17 @@ export function preferenceScopeFor(credential: string, server = apiBaseUrl()): P
   }
   return scope
 }
-function activateScope(credential: string | null) {
+function activateScope(session: AuthSession) {
   usePreferences.setState({ activeScope: null })
+  const credential = session.key
   if (credential) void preferenceScopeFor(credential).then(activeScope => {
-    if (useAuth.getState().apiKey === credential) usePreferences.setState({ activeScope })
+    if (isCurrentSession(session)) usePreferences.setState({ activeScope })
   })
 }
-activateScope(useAuth.getState().apiKey)
-useAuth.subscribe((state, previous) => { if (state.apiKey !== previous.apiKey) activateScope(state.apiKey) })
+activateScope(currentSession())
+useAuth.subscribe((state, previous) => {
+  if (state.epoch !== previous.epoch) activateScope({ key: state.apiKey, epoch: state.epoch })
+})
 if (typeof window !== 'undefined') window.addEventListener('pagehide', flushPreferences)
 
 export function useSpacePreference<P extends Page, K extends Field<P>>(page: P, field: K):
