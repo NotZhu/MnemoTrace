@@ -16,14 +16,22 @@ import re
 import shutil
 import threading
 from collections import OrderedDict
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from copy import deepcopy
+from dataclasses import dataclass
+from functools import wraps
 from typing import Any, Optional
 
-from . import _flock
+from ._namespace_lock import NamespaceLock, namespace_lock
 from .localize import display_of
 from .memory import Memory
 from .metrics import Metrics, timed
-from .store.persist import DimensionMismatchError, EmbedderMismatchError
+from .store.persist import (
+    DimensionMismatchError,
+    EmbedderMismatchError,
+    PersistenceError,
+    snapshot_version,
+)
 from .util import fmt_date, fmt_datetime
 
 DEFAULT_DATA_DIR = os.path.expanduser("~/.mnemotrace/data")
@@ -107,6 +115,21 @@ def _page(items: list, offset: int = 0, limit: Optional[int] = None) -> tuple[li
     }
 
 
+@dataclass
+class _Access:
+    writing: bool = False
+    memory: Memory | None = None
+
+
+def _read_access(method):
+    @wraps(method)
+    def read(self, user, *args, **kwargs):
+        with self._read_scope(user):
+            # JSON 响应必须与可变缓存分离，避免向调用方暴露缓存内部的列表和字典。
+            return deepcopy(method(self, user, *args, **kwargs))
+    return read
+
+
 class MemoryService:
     """按命名空间持久化的记忆，共享 embedder/LLM，热用户用 LRU 管理。
 
@@ -160,8 +183,9 @@ class MemoryService:
         if self._outcomes_forced_off:
             self.config.session_outcomes = False
         self._hot: "OrderedDict[str, Memory]" = OrderedDict()
-        self._hot_versions: dict[str, tuple[int, int] | None] = {}
-        self._locks: dict[str, threading.Lock] = {}
+        self._hot_versions: dict[str, str | None] = {}
+        self._locks: dict[str, NamespaceLock] = {}
+        self._access = threading.local()
         self._g = threading.Lock()
         # 在线服务指标（Bet D 的在线版）：承载 SLO 的路径上的延迟分位数 + token 节省比，
         # 仅以聚合形式经 GET /metrics 暴露。见 mnemotrace/metrics.py。
@@ -209,85 +233,152 @@ class MemoryService:
     def _user_file_lock(self, user: str):
         # 锁位于摘要存储目录外，清空与重建存储时仍保留同一锁文件，
         # 避免等待中的进程和后续写入锁住不同文件。
-        os.makedirs(self.data_dir, exist_ok=True)
-        lock_path = self._contained_child(f"@{self._safe_user(user)}.service.lock")
-        with open(lock_path, "a", encoding="utf-8") as fh:
-            _flock.acquire(fh)  # 阻塞式：跨进程/线程串行化读-改-存
-            try:
-                yield
-            finally:
-                _flock.release(fh)
+        with self._coordinator(user).file_lock():
+            yield
+
+    def _coordinator(self, user: str) -> NamespaceLock:
+        path = self._contained_child(f"@{self._safe_user(user)}.service.lock")
+        state = namespace_lock(path)
+        with self._g:
+            self._locks[user] = state
+        return state
+
+    def _frames(self) -> dict[str, _Access]:
+        if not hasattr(self._access, "frames"):
+            self._access.frames = {}
+        return self._access.frames
+
+    def _discard(self, user: str) -> None:
+        with self._g:
+            self._hot.pop(user, None)
+            self._hot_versions.pop(user, None)
+
+    def _publish(self, user: str, mem: Memory) -> None:
+        with self._g:
+            self._hot[user] = mem
+            self._hot_versions[user] = mem._snapshot_version
+            self._hot.move_to_end(user)
+            while len(self._hot) > self.max_hot_users:
+                evicted, _ = self._hot.popitem(last=False)
+                self._hot_versions.pop(evicted, None)
 
     @contextmanager
     def write_lock(self, user: str):
         """跨线程和 MCP stdio 进程串行化本地的读-改-存事务。"""
         with self.lock(user):
+            frames = self._frames()
+            previous = frames.get(user)
+            if previous is not None and not previous.writing:
+                raise PersistenceError("cannot upgrade an active read operation to a write transaction")
             with self._user_file_lock(user):
-                yield
+                if previous is None:
+                    frames[user] = _Access(writing=True)
+                try:
+                    yield
+                except BaseException:  # noqa: BLE001 -- 写入中断时也必须移除脏缓存
+                    self._discard(user)
+                    frames[user].memory = None
+                    raise
+                finally:
+                    if previous is None:
+                        frames.pop(user, None)
 
-    def _store_version(self, user: str) -> tuple[int, int] | None:
-        manifest = os.path.join(self._path(user), "manifest.json")
-        try:
-            st = os.stat(manifest)
-        except FileNotFoundError:
-            return None
-        return (st.st_mtime_ns, st.st_size)
+    def _store_version(self, user: str) -> str | None:
+        return snapshot_version(self._path(user))
 
     def _save(self, user: str, mem: Memory) -> None:
-        mem.save()
-        with self._g:
-            if self._hot.get(user) is mem:
-                self._hot_versions[user] = self._store_version(user)
+        frame = self._frames().get(user)
+        if (frame is None or not frame.writing or frame.memory is not mem
+                or not self._coordinator(user).file_held):
+            raise PersistenceError("save requires the current memory in a service write transaction")
+        try:
+            if mem._snapshot_version != self._store_version(user):
+                raise PersistenceError("stale memory snapshot; reload before writing")
+            mem.save()
+        except BaseException:  # noqa: BLE001 -- 不保留只提交了部分内容的缓存对象
+            self._discard(user)
+            frame.memory = None
+            raise
+        self._publish(user, mem)
 
-    def lock(self, user: str) -> threading.Lock:
-        with self._g:
-            return self._locks.setdefault(user, threading.Lock())
+    def lock(self, user: str):
+        return self._coordinator(user).thread_lock
+
+    @contextmanager
+    def _read_scope(self, user: str):
+        with self.lock(user):
+            frames = self._frames()
+            previous = frames.get(user)
+            if previous is not None:
+                if previous.memory is None:
+                    previous.memory = self._get_locked(user)
+                yield previous.memory
+                return
+            frame = frames[user] = _Access()
+            try:
+                # 持久化索引在调入冷层事实时可能修改共享表，因此读取期间也要持文件锁。
+                guard = self._user_file_lock(user) if self.config.storage == "lancedb" else nullcontext()
+                with guard:
+                    frame.memory = self._get_locked(user)
+                    yield frame.memory
+            finally:
+                frames.pop(user, None)
 
     def get(self, user: str) -> Memory:
-        """返回 `user` 的热 Memory；当另一个本地进程保存了更新的快照时重新加载。
+        """按 manifest 提交标识刷新缓存；嵌套调用复用本次操作的对象。
 
-        Agent 客户端常以独立 MCP stdio 进程运行（Codex、Claude Code、Cursor），并共享同一个
-        用户数据目录。每次访问都检查 manifest 指纹，可以防止这些进程在兄弟 agent 写盘后
-        继续提供过时的内存态。
+        返回的裸 Memory 只供顺序使用。并发修改及保存必须位于 write_lock 内；服务读取入口
+        自行保持整个读取作用域，不能把本方法返回后的对象当成不可变快照。
         """
+        with self._read_scope(user) as mem:
+            return mem
+
+    def _cached(self, user: str, version: str | None) -> Optional[Memory]:
         with self._g:
             if user in self._hot:
-                current = self._store_version(user)
-                if current != self._hot_versions.get(user):
-                    self._hot.pop(user, None)
-                    self._hot_versions.pop(user, None)
-                else:
+                if version == self._hot_versions.get(user):
                     self._hot.move_to_end(user)
                     return self._hot[user]
+                self._hot.pop(user, None)
+                self._hot_versions.pop(user, None)
+        return None
+
+    def _get_locked(self, user: str) -> Memory:
+        cached = self._cached(user, self._store_version(user))
+        if cached is not None and self.config.storage != "lancedb":
+            return cached
+        # 文件锁须覆盖全部集合的读取和缓存发布；保存会先逐个替换集合文件再提交 manifest，
+        # 只保护 manifest 读取仍可能加载不同提交代次的集合。
+        with self._user_file_lock(user):
+            cached = self._cached(user, self._store_version(user))
+            if cached is not None:
+                return cached
+            return self._load_locked(user)
+
+    def _load_locked(self, user: str) -> Memory:
+        if not self._coordinator(user).file_held:
+            raise PersistenceError("snapshot loading requires the namespace file lock")
         try:
-            mem = Memory.open(self._path(user), embedder=self.embedder, llm=self.llm, config=self.config)
-        except (DimensionMismatchError, EmbedderMismatchError):
-            # 存储中的向量来自另一个 embedder（MNEMOTRACE_EMBEDDER 被改过）。直接拒绝是安全默认
-            # （混用嵌入空间会悄悄污染检索结果）；在可选开关开启时，首次触碰即原地迁移——
-            # 从文本重新嵌入全部内容并持久化，此后 manifest 与新 embedder 匹配。
-            if os.environ.get("MNEMOTRACE_REEMBED_ON_MISMATCH") != "1":
-                raise
-            with self._user_file_lock(user):
+            try:
+                mem = Memory.open(self._path(user), embedder=self.embedder, llm=self.llm, config=self.config)
+            except (DimensionMismatchError, EmbedderMismatchError):
+                if os.environ.get("MNEMOTRACE_REEMBED_ON_MISMATCH") != "1":
+                    raise
                 mem = Memory.open(self._path(user), allow_mismatch=True,
                                   embedder=self.embedder, llm=self.llm, config=self.config)
                 mem.reembed()
                 mem.save()
-        version = self._store_version(user)
-        with self._g:
-            self._hot[user] = mem
-            self._hot_versions[user] = version
-            self._hot.move_to_end(user)
-            while len(self._hot) > self.max_hot_users:
-                evicted, _ = self._hot.popitem(last=False)
-                self._hot_versions.pop(evicted, None)
+        except BaseException:  # noqa: BLE001 -- 迁移失败或中断时不能发布缓存
+            self._discard(user)
+            raise
+        self._publish(user, mem)
         return mem
 
     def forget(self, user: str) -> dict:
         # 线程锁与目录外的稳定文件锁覆盖整个擦除过程，包括最后的目录删除。
         with self.write_lock(user):
-            with self._g:
-                self._hot.pop(user, None)
-                self._hot_versions.pop(user, None)
+            self._discard(user)
+            self._frames()[user].memory = None
             # 与读取使用同一摘要路径；删除前重新校验真实目录边界及链接别名。
             target = self._path(user)
             if os.path.exists(target):
@@ -548,7 +639,7 @@ class MemoryService:
             mem = self.get(user)
             focus = mem.set_focus(track=track, mute=mute)
             self._save(user, mem)
-            return {"ok": True, "focus": focus}
+            return {"ok": True, "focus": deepcopy(focus)}
 
     def set_policy(self, user: str, **fields: Optional[str]) -> dict:
         with self.write_lock(user):
@@ -570,45 +661,28 @@ class MemoryService:
         `answer=True`（HTTP /v1/recall 路径，用于控制台的"问答"视图）会额外基于该上下文生成一个
         真正的回答，并报告 full-context 基线的 token 数，UI 由此展示 token 节省。这要多花一次
         LLM 调用，因此只需要注入上下文的 MCP/OpenAI 兼容接入面保持关闭（默认）。"""
-        mem = self.get(user)
-        if lean:
+        with self._read_scope(user) as mem:
+            if not lean:
+                res = mem.search(query, user_id=user, as_of=as_of)
+                visible = [f for f in res.facts[:10]
+                           if not redact_sensitive or not getattr(f, "sensitive", False)]
+                text = (res.answer() if not redact_sensitive else
+                        (visible[0].object or visible[0].text) if visible else "I don't have that in memory.")
+                return {"answer": text, "facts": [f.text for f in visible], "as_of": as_of,
+                        "redacted_sensitive": redact_sensitive}
             ctx = mem.lean_context(query, user_id=user, n_chunks=n_chunks, session_id=session_id,
                                    as_of=as_of, redact_sensitive=redact_sensitive)
-            out = {
-                "context": ctx,
-                "tokens_est": _est_tokens(ctx),
-                "as_of": as_of,
-                "redacted_sensitive": redact_sensitive,
-            }
+            out = {"context": ctx, "tokens_est": _est_tokens(ctx), "as_of": as_of,
+                   "redacted_sensitive": redact_sensitive}
             if answer:
-                # 同一时间视图下的 full-context 基线：把所有符合条件的 episode 塞进 prompt 的成本。
-                # as-of 读取时，未来的 episode 不计入基线。
-                full = "\n".join(
-                    ep.content for ep in mem.episodes_doc.values()
-                    if as_of is None or ep.event_time <= as_of
-                )
+                full = "\n".join(ep.content for ep in mem.episodes_doc.values()
+                                 if as_of is None or ep.event_time <= as_of)
                 out["full_tokens"] = _est_tokens(full)
-                out["answer"] = _answer_from_memory(self.answerer, query, ctx)
-            # 在线 token 节省统计（Bet D 在线版）：始终记录上下文大小；full-history 基线仅在本调用
-            # 顺带算出时才记录——度量不能给热路径增加成本。
-            self.metrics.tokens(out["tokens_est"], out.get("full_tokens"))
-            return out
-        res = mem.search(query, user_id=user, as_of=as_of)
-        visible_facts = [
-            f for f in res.facts[:10]
-            if not redact_sensitive or not getattr(f, "sensitive", False)
-        ]
-        answer = (
-            res.answer()
-            if not redact_sensitive
-            else (visible_facts[0].object or visible_facts[0].text) if visible_facts else "I don't have that in memory."
-        )
-        return {
-            "answer": answer,
-            "facts": [f.text for f in visible_facts],
-            "as_of": as_of,
-            "redacted_sensitive": redact_sensitive,
-        }
+        # 记忆读取与状态调整已完成；回答生成只使用独立字符串，可在退出读取作用域后执行。
+        if answer:
+            out["answer"] = _answer_from_memory(self.answerer, query, ctx)
+        self.metrics.tokens(out["tokens_est"], out.get("full_tokens"))
+        return out
 
     @timed("recall_multi")
     def recall_multi(self, spaces: list[str], query: str, n_chunks: int = 6,
@@ -620,9 +694,9 @@ class MemoryService:
         所在——多跳规划器仍在单个 space 内工作。"""
         blocks: list[str] = []
         for s in spaces:
-            mem = self.get(s)
-            ctx = mem.lean_context(query, user_id=s, n_chunks=n_chunks, session_id=session_id,
-                                   as_of=as_of, redact_sensitive=redact_sensitive)
+            with self._read_scope(s) as mem:
+                ctx = mem.lean_context(query, user_id=s, n_chunks=n_chunks, session_id=session_id,
+                                       as_of=as_of, redact_sensitive=redact_sensitive)
             if ctx.strip():
                 blocks.append(f"## Space: {s}\n{ctx}")
         context = "\n\n".join(blocks)
@@ -631,11 +705,13 @@ class MemoryService:
         self.metrics.tokens(out["tokens_est"])
         return out
 
+    @_read_access
     def structured_profile(self, user: str) -> dict:
         """L2 结构化 profile（基本信息 / 偏好 / 习惯，区分已确认与待确认）。仅用于展示。"""
         return self.get(user).structured_profile(user)
 
     # --- suspected conflicts (LLM-detected in System-2, user-confirmed; never auto-resolved) --------
+    @_read_access
     def conflicts(self, user: str) -> dict:
         """等待用户裁决的可疑冲突。文本已本地化用于展示。"""
 
@@ -671,6 +747,7 @@ class MemoryService:
             self._save(user, mem)
             return {"ok": True, "id": wm.id, "kind": wm.kind, "expires_at": wm.expires_at}
 
+    @_read_access
     def working_memory(self, user: str, session_id: Optional[str] = None) -> dict:
         mem = self.get(user)
         items = mem.working_memory(user, session_id=session_id)
@@ -726,7 +803,9 @@ class MemoryService:
                 want = False  # MNEMOTRACE_SESSION_OUTCOMES=0 是运维设定的上限；任何请求体都不能解除
             if want and self.llm is not None and episodes:
                 from .consolidate.outcomes import (
-                    OUTCOME_PREDICATES, extract_outcomes, split_outcome_text,
+                    OUTCOME_PREDICATES,
+                    extract_outcomes,
+                    split_outcome_text,
                 )
 
                 # 同一个 session 关闭两次不能让结论翻倍。extract_outcomes 只在单次调用内去重，
@@ -763,17 +842,21 @@ class MemoryService:
                 "working_cleared": working_cleared,
             }
 
+    @_read_access
     def profile(self, user: str) -> dict:
         mem = self.get(user)
         return {"profile": mem.build_persona(user),
                 "facts": [f.text for f in _all_facts(mem) if f.is_live()][:50]}
 
+    @_read_access
     def get_focus(self, user: str) -> dict:
         return self.get(user).get_focus()
 
+    @_read_access
     def get_policy(self, user: str) -> dict:
         return self.get(user).get_policy()
 
+    @_read_access
     def agent_status(self, user: str, session_id: Optional[str] = None) -> dict:
         """agent 在使用 忆痕 前可检查的无内容状态。
 
@@ -840,6 +923,7 @@ class MemoryService:
             },
         }
 
+    @_read_access
     def session_report(
         self,
         user: str,
@@ -914,6 +998,7 @@ class MemoryService:
             "facts": facts_payload,
         }
 
+    @_read_access
     def sessions(
         self,
         user: str,
@@ -1004,6 +1089,7 @@ class MemoryService:
             "next_offset": page["next_offset"],
         }
 
+    @_read_access
     def graph(
         self,
         user: str,
@@ -1023,6 +1109,7 @@ class MemoryService:
             limit=lim,
         )
 
+    @_read_access
     def memories(
         self,
         user: str,
@@ -1239,6 +1326,7 @@ class MemoryService:
             "migrate": migrate,
         }
 
+    @_read_access
     def audit(self, user: str, limit: int = 40) -> dict:
         """记忆健康检查：把人们会想修的条目连同原因一并呈现。
 
@@ -1368,6 +1456,7 @@ class MemoryService:
             "truncated": len(findings) > limit,
         }
 
+    @_read_access
     def stats(self, user: str) -> dict:
         """面向仪表盘/就绪探针的无内容命名空间统计。刻意不含 profile 文本、fact 文本、
         episode 片段和数据路径，因此在生产环境中轮询是安全的。"""
@@ -1458,6 +1547,7 @@ class MemoryService:
             "feed": feed,
         }
 
+    @_read_access
     def export(self, user: str, include_sensitive: bool = False) -> dict:
         """数据导出。
 

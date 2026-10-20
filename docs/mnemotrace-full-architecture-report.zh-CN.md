@@ -435,6 +435,8 @@ conflicts.jsonl
 2. `Memory.save(path)` 只保存状态，不保存 LLM/embedder 对象本身。
 3. `Memory.open(path, **kwargs)` 用当前传入的后端能力恢复 store。
 4. `MemoryService` 按逻辑 namespace 选择存储路径，读改存由线程锁与进程文件锁串行化；路径所有权风险见第 6.3 节。
+5. manifest 的可选 `snapshot_id` 标识一次提交。加载器和保存函数将实际读取/提交的令牌绑定至 Memory；旧格式按 manifest 原文 SHA-256 识别，无需预迁移，下一次正常保存写入新标识。`schema_version` 保持 1。
+6. Windows 的 manifest 读取使用允许共享删除的句柄，已有 manifest 通过 ReplaceFileW 原子替换；首次创建及 POSIX 路径仍使用 os.replace。已有读者可继续读取旧 manifest，新读者看到新提交。
 
 ### 6.1 嵌入模型身份与维度
 
@@ -454,18 +456,40 @@ conflicts.jsonl
 
 ### 6.2 跨线程、跨进程锁
 
-`MemoryService.write_lock(user)` 先取得实例内线程锁，再取得数据根目录下的
+`MemoryService.write_lock(user)` 先取得规范化稳定锁路径对应的进程内共享可重入线程锁，再取得数据根目录下的
 `@<安全命名空间>.service.lock`。该文件仅用于同步，路径不随新旧存储目录选择变化，
 也不随 namespace 清空而删除。持久化保存另在目标存储的 `.lock` 上串行执行。
+同一存储路径的多个服务实例共用 `_namespace_lock` 协调对象，文件锁所有权按线程保存，
+只有最外层持有者打开、释放句柄；实例自身的热缓存继续相互独立。注册表锁与缓存元数据锁
+`_g` 仅保护内存结构，不覆盖路径解析、manifest 读取或锁等待。
+
+写作用域覆盖获取最新提交、加载、必要迁移、修改与保存，最外层写事务中的首次 get 必须在
+获得文件锁后重新校验缓存版本。`_save` 要求对象属于当前写操作，并校验基准提交令牌；
+同线程跨实例嵌套提交使旧对象过期时明确拒绝回写。失败或中断的保存/迁移不保留脏热缓存。
+
+读作用域用线程锁保护整个检索、权重强化、冷热搬迁、工作记忆清扫及响应组装。默认内存索引
+缓存命中且 manifest 令牌相同时不取文件锁；缓存缺失或版本变化时，持文件锁二次检查并加载
+全部集合后发布缓存，避免混合代快照。嵌套 agent_status/stats/get 固定本次对象，LRU 淘汰不会
+使操作中途更换对象；业务响应与可变缓存引用分离。跨空间召回逐空间完成，不同时持有多个用户锁。
+
+默认内存索引的热读可返回操作开始时看到的上一份已提交缓存，不保证跨进程写入期间严格实时。
+查询分解、planner 等读取中的 LLM 调用保留线程锁但不持文件锁；answerer 只使用已组装字符串，
+在读取作用域退出后调用。同步 remember/consolidate 的 LLM 仍在写锁内。LanceDB 配置的读取
+保守地保持文件锁，不能直接套用内存索引热读规则。裸 get 返回的可变对象不具备独立
+并发事务能力，直接 Memory.open/save 的并发读改存与保存中途崩溃恢复另行处理。
 
 `_flock` 统一封装 POSIX flock 与 Windows msvcrt：Windows 锁住字节 0，非阻塞加锁的 EACCES
 表示竞争，阻塞获取时等待 10ms 重试；POSIX 非阻塞 EACCES/EAGAIN 返回 False。
 两平台遇到 EINTR 重试，定位失败和其他真实错误向上传播。上下文关闭文件释放锁，hook/watch
 在获取异常时也关闭句柄，不将所有文件故障误当成竞争。
 
-共享数据目录的进程必须使用一致的服务锁协议。使用目录内服务锁的旧进程需要停用并重新启动，
-不能与稳定目录外服务锁的进程混跑。验证见[文件锁错误分类](../results/flock_error_handling_validation.md)
-与[清空并发](../results/forget_concurrency_validation.md)。
+共享数据目录的进程必须统一升级后重新启动，不能混跑不遵守该加载/提交协议的旧进程。
+验证见[文件锁错误分类](../results/flock_error_handling_validation.md)、
+[清空并发](../results/forget_concurrency_validation.md)与
+[ISSUE-033/034 访问协议验收](../results/issue033_034_validation.md)。提交 `9bb7395` 已通过
+Windows/Ubuntu、Python 3.10/3.12 四组 CI，以及 web/container 检查；
+[CI 原始证据](../results/issue033_034_ci_validation.jsonl)对应
+[运行记录](https://github.com/NotZhu/MnemoTrace/actions/runs/39378499937)，问题台账已标记为已修复。
 
 ### 6.3 命名空间目录、擦除与迁移边界
 

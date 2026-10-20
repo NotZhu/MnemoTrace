@@ -5,13 +5,15 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import uuid
 from contextlib import contextmanager
 from dataclasses import fields
 from typing import Any, Iterable
 
-from .. import _flock, __version__
+from .. import __version__, _flock
 from ..ingest import IdentityResolver
 from ..types import Conflict, Entity, Episode, Fact, Relation, WorkingMemory
 from ..util import now
@@ -39,6 +41,71 @@ class EmbedderMismatchError(PersistenceError):
 
 class StoreFormatError(PersistenceError):
     """该路径或 manifest 不是合法的 忆痕 JSONL 存储。"""
+
+
+def _open_manifest(path: str):
+    if os.name != "nt":
+        return open(path, "rb")
+    import _winapi
+    import msvcrt
+
+    # CRT 的 open() 不允许共享删除；版本检查须允许原子提交，
+    # 即使另一进程仍持有旧 manifest 的读取句柄也不能阻止替换。
+    share_read_write_delete = 0x1 | 0x2 | 0x4
+    handle = _winapi.CreateFile(path, _winapi.GENERIC_READ, share_read_write_delete,
+                               0, _winapi.OPEN_EXISTING, 0x80, 0)
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except BaseException:  # noqa: BLE001 -- 句柄所有权尚未转交给 CRT，失败时须自行关闭
+        _winapi.CloseHandle(handle)
+        raise
+    try:
+        return os.fdopen(fd, "rb")
+    except BaseException:  # noqa: BLE001 -- 中断时也须关闭已经转交的文件描述符
+        os.close(fd)
+        raise
+
+
+def _replace_manifest(source: str, destination: str) -> None:
+    if os.name != "nt":
+        os.replace(source, destination)
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    # 即使设置 FILE_SHARE_DELETE，MoveFileEx（os.replace）仍拒绝替换在用目标；
+    # ReplaceFile 保持原子替换，并允许共享删除的已有读者继续读取旧文件。
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    replace = kernel.ReplaceFileW
+    replace.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                        wintypes.DWORD, wintypes.LPVOID, wintypes.LPVOID)
+    replace.restype = wintypes.BOOL
+    if not replace(destination, source, None, 0, None, None):
+        error = ctypes.get_last_error()
+        if error in (2, 3):  # 首次提交时尚无可替换的目标文件。
+            os.replace(source, destination)
+        else:
+            raise ctypes.WinError(error)
+
+
+def _read_manifest(path: str) -> tuple[dict[str, Any], str] | None:
+    try:
+        with _open_manifest(os.path.join(path, "manifest.json")) as fh:
+            raw = fh.read()
+    except FileNotFoundError:
+        return None
+    manifest = json.loads(raw)
+    snapshot_id = manifest.get("snapshot_id")
+    if snapshot_id is not None and (not isinstance(snapshot_id, str) or not snapshot_id):
+        raise StoreFormatError("manifest snapshot_id must be a non-empty string")
+    token = f"snapshot:{snapshot_id}" if snapshot_id else f"legacy:{hashlib.sha256(raw).hexdigest()}"
+    return manifest, token
+
+
+def snapshot_version(path: str) -> str | None:
+    """读取原子提交的 manifest 标识，无需读取集合文件。"""
+    result = _read_manifest(path)
+    return None if result is None else result[1]
 
 
 def _embedder_id(embedder: Any) -> str:
@@ -188,6 +255,7 @@ def save_memory(mem: Any, path: str, backend: str = "durable") -> None:
                 pass
         manifest = {
             "schema_version": SCHEMA_VERSION,
+            "snapshot_id": uuid.uuid4().hex,
             "mnemotrace_version": __version__,
             "embedder_id": _embedder_id(mem.embedder),
             "embedding_dim": _embedder_dim(mem.embedder),
@@ -203,7 +271,9 @@ def save_memory(mem: Any, path: str, backend: str = "durable") -> None:
             fh.write("\n")
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, manifest_path)
+        _replace_manifest(tmp, manifest_path)
+        # 记录实际提交的标识，不能根据随后取得的文件状态或内容反推版本。
+        mem._snapshot_version = f"snapshot:{manifest['snapshot_id']}"
 
 
 def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
@@ -217,11 +287,11 @@ def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
         raise StoreFormatError(
             f"{path} is not an MnemoTrace JSONL store directory; run the explicit pickle migration first"
         )
-    manifest_path = os.path.join(path, "manifest.json")
-    if not os.path.exists(manifest_path):
+    loaded = _read_manifest(path)
+    if loaded is None:
+        mem._snapshot_version = None
         return False
-    with open(manifest_path, "r", encoding="utf-8") as fh:
-        manifest = json.load(fh)
+    manifest, version = loaded
     schema = int(manifest.get("schema_version", 0))
     if schema > SCHEMA_VERSION:
         raise IncompatibleStoreError(
@@ -318,4 +388,5 @@ def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
     mem.cold_pages_out = {k: int(v) for k, v in (state.get("cold_pages_out") or {}).items()}
     mem.cold_pages_in = {k: int(v) for k, v in (state.get("cold_pages_in") or {}).items()}
     mem._import_seen = set(state.get("import_seen") or ())
+    mem._snapshot_version = version
     return True
