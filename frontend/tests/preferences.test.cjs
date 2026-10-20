@@ -14,7 +14,7 @@ const KEY='mnemotrace.preferences'
 function load(saved,{unavailable=false,noCrypto=false,cryptoImpl=webcrypto}={}) {
   const values=new Map(saved===undefined?[]:[[KEY,typeof saved==='string'?saved:JSON.stringify(saved)]])
   const listeners=[],timers=new Map(),events={}
-  let auth={apiKey:null},timerId=0,writes=0
+  let auth={apiKey:null,epoch:0},timerId=0,writes=0
   const useAuth=()=>{}
   useAuth.getState=()=>auth
   useAuth.subscribe=callback=>{listeners.push(callback);return()=>{}}
@@ -28,7 +28,9 @@ function load(saved,{unavailable=false,noCrypto=false,cryptoImpl=webcrypto}={}) 
     module:moduleData,exports:moduleData.exports,window,crypto:noCrypto?undefined:cryptoImpl,TextEncoder,
     setTimeout(callback) {timers.set(++timerId,callback);return timerId},clearTimeout:id=>timers.delete(id),
     require(name) {
-      if(name==='./auth') return {useAuth}
+      if(name==='./auth') return {useAuth,
+        currentSession:()=>({key:auth.apiKey,epoch:auth.epoch}),
+        isCurrentSession:session=>session.key===auth.apiKey&&session.epoch===auth.epoch}
       if(name==='../lib/api') return {apiBaseUrl:()=> 'https://synthetic.invalid'}
       return require(name)
     },
@@ -37,12 +39,12 @@ function load(saved,{unavailable=false,noCrypto=false,cryptoImpl=webcrypto}={}) 
   return {store,values,exports,events,writes:()=>writes,
     state:()=>store.getState(),flush:exports.flushPreferences,
     async login(key) {
-      const old=auth;auth={apiKey:key};listeners.forEach(fn=>fn(auth,old))
+      const old=auth;auth={apiKey:key,epoch:old.epoch+1};listeners.forEach(fn=>fn(auth,old))
       if(key) await exports.preferenceScopeFor(key)
       await Promise.resolve()
       return store.getState().activeScope
     },
-    startLogin(key) {const old=auth;auth={apiKey:key};listeners.forEach(fn=>fn(auth,old))},
+    startLogin(key) {const old=auth;auth={apiKey:key,epoch:old.epoch+1};listeners.forEach(fn=>fn(auth,old))},
   }
 }
 const savedState=s=>JSON.parse(s.values.get(KEY)).state
@@ -246,3 +248,23 @@ test('快速连续切换用最新状态计算；问答数值校验，不持久�
   assert.deepEqual(Object.keys(savedState(s)).sort(),['graph','spaces'])
   assert.deepEqual(Object.keys(savedState(s).spaces[scope]).sort(),['ask','facts','graph','journal'])
 })
+
+for (const relogin of ['logout-login', 'same-key-login']) {
+  test(`延迟偏好修改不会穿过 ${relogin}，新周期修改仍生效`,async()=>{
+    let finish
+    const s=load(undefined,{cryptoImpl:{subtle:{digest:()=>new Promise(resolve=>{finish=resolve})}}})
+    const credential='synthetic-pending-preferences'
+    s.startLogin(credential)
+    s.state().setSpace('ask','chunks',9)
+    if(relogin==='logout-login') s.startLogin(null)
+    s.startLogin(credential)
+    assert.equal(s.state().activeScope,null)
+    s.state().setSpace('graph','hideSensitive',true)
+    finish(new Uint8Array(32).buffer)
+    await s.exports.preferenceScopeFor(credential)
+    await Promise.resolve()
+    const state=s.state(),preferences=state.spaces[state.activeScope]
+    assert.equal(preferences.ask.chunks,6,'旧周期的修改必须丢弃')
+    assert.equal(preferences.graph.hideSensitive,true,'当前周期的修改仍应保存')
+  })
+}

@@ -24,7 +24,9 @@ function client(key) {
     module: moduleData, exports: moduleData.exports, Headers, URLSearchParams,
     require: name => {
       assert.equal(name, '../store/auth')
-      return { currentKey: () => key, useAuth: { getState: () => ({ logout: () => { loggedOut = true } }) } }
+      return { currentSession: () => ({ key, epoch: 1 }),
+        isCurrentSession: session => session.key === key && session.epoch === 1,
+        useAuth: { getState: () => ({ logout: () => { loggedOut = true } }) } }
     },
     fetch: async (_, init) => {
       // Native Headers validates the export path too, just as browser fetch does.

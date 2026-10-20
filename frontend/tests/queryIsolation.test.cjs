@@ -15,6 +15,7 @@ const source = esbuild.buildSync({
       export { useAuth } from './store/auth'
       export { useQueryErrors } from './store/queryErrors'
       export { api } from './lib/api'
+      export { StaleSessionError } from './lib/api'
       export { useSourceEpisodes } from './hooks/queries'
       export { GlobalErrorBanner } from './components/GlobalErrorBanner'
     `,
@@ -226,6 +227,51 @@ test('当前账号查询可正常重试，成功后清除错误；无缓存错�
     const before = s.requests.length
     s.retry()
     assert.equal(s.requests.length, before)
+    assert.equal(s.useQueryErrors.getState().failures.length, 0)
+  } finally { s.cleanup() }
+})
+
+test('直接同 Key 登录也同步清空私有缓存和旧错误，保留健康缓存', async () => {
+  const s = setup()
+  try {
+    s.login(spaceA)
+    s.queryClient.setQueryData(['profile', spaceA], { private: 'synthetic-a' })
+    s.queryClient.setQueryData(['health'], { ok: true })
+    await assert.rejects(s.query(spaceA))
+    s.login(spaceA)
+    assert.equal(s.queryClient.getQueryData(['profile', spaceA]), undefined)
+    assert.equal(s.useQueryErrors.getState().failures.length, 0)
+    assert.equal(s.queryClient.getQueryData(['health']).ok, true)
+  } finally { s.cleanup() }
+})
+
+test('同 Key 新登录取消旧查询，迟到结果不恢复缓存和错误', async () => {
+  const s = setup()
+  try {
+    s.login(spaceA)
+    let finish
+    s.respond(() => new Promise(resolve => { finish = resolve }))
+    const oldQuery = s.query(spaceA).catch(() => {})
+    s.login(spaceA)
+    assert.equal(s.queryClient.isFetching(), 0)
+    finish(response({ user: spaceA, private: 'synthetic-old' }))
+    await oldQuery
+    await turn()
+    assert.equal(s.queryClient.getQueryData(keyFor(spaceA)), undefined)
+    assert.equal(s.useQueryErrors.getState().failures.length, 0)
+    s.respond(async () => response({ user: spaceA, current: true }))
+    assert.equal((await s.query(spaceA)).current, true)
+  } finally { s.cleanup() }
+})
+
+test('取消类型不会进入当前查询的全局错误横幅', async () => {
+  const s = setup()
+  try {
+    s.login(spaceA)
+    await assert.rejects(s.queryClient.fetchQuery({
+      queryKey: keyFor(spaceA), retry: false,
+      queryFn: async () => { throw new s.StaleSessionError() },
+    }))
     assert.equal(s.useQueryErrors.getState().failures.length, 0)
   } finally { s.cleanup() }
 })
