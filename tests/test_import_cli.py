@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from mnemotrace import Memory, _flock
+from mnemotrace import Memory
 from mnemotrace.connectors import parse
 from mnemotrace.connectors.__main__ import _import_local, main
 from mnemotrace.service import MemoryService
@@ -87,7 +87,7 @@ def test_cli_waits_for_service_transaction_and_preserves_its_write(tmp_path, mon
     service = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
     user = "synthetic-user"
     attempting, finished = threading.Event(), threading.Event()
-    acquire = _flock.acquire
+    get_lock = MemoryService.lock
     errors = []
 
     def import_in_thread():
@@ -100,12 +100,13 @@ def test_cli_waits_for_service_transaction_and_preserves_its_write(tmp_path, mon
 
     worker = threading.Thread(target=import_in_thread, daemon=True)
 
-    def announce(fh, **kwargs):
+    def announce(instance, namespace):
+        lock = get_lock(instance, namespace)
         if threading.current_thread() is worker:
             attempting.set()
-        return acquire(fh, **kwargs)
+        return lock
 
-    monkeypatch.setattr(_flock, "acquire", announce)
+    monkeypatch.setattr(MemoryService, "lock", announce)
     try:
         with service.write_lock(user):
             worker.start()

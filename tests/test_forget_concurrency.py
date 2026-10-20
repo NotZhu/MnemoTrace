@@ -48,11 +48,9 @@ def test_forget_blocks_writes_until_directory_removal(tmp_path, monkeypatch, lay
     assert store == Path(service._secure_path(user))
     attempting, finished = threading.Event(), threading.Event()
     errors = []
-    acquire, rmdir = _flock.acquire, os.rmdir
+    get_lock, rmdir = writer_service.lock, os.rmdir
 
     def write():
-        if same_service:
-            attempting.set()
         try:
             writer_service.add_fact(user, "project", "marker", "after-forget")
         except BaseException as exc:
@@ -62,10 +60,12 @@ def test_forget_blocks_writes_until_directory_removal(tmp_path, monkeypatch, lay
 
     writer = threading.Thread(target=write)
 
-    def announce(fh, **kwargs):
+    def announce(namespace):
+        # A sibling now blocks at the shared thread lock, before reaching flock.
+        lock = get_lock(namespace)
         if threading.current_thread() is writer:
             attempting.set()
-        return acquire(fh, **kwargs)
+        return lock
 
     def remove_directory(path, *args, **kwargs):
         if Path(path) == store:
@@ -74,7 +74,7 @@ def test_forget_blocks_writes_until_directory_removal(tmp_path, monkeypatch, lay
             assert not finished.wait(0.2), "write completed before forget removed the directory"
         return rmdir(path, *args, **kwargs)
 
-    monkeypatch.setattr(_flock, "acquire", announce)
+    monkeypatch.setattr(writer_service, "lock", announce)
     monkeypatch.setattr(os, "rmdir", remove_directory)
     try:
         assert service.forget(user)["ok"] is True
