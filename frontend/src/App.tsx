@@ -20,6 +20,7 @@ import Privacy from './pages/Privacy'
 
 export default function App() {
   const apiKey = useAuth((s) => s.apiKey)
+  const epoch = useAuth((s) => s.epoch)
 
   // 文档语言固定为中文，旧的语言偏好不参与界面渲染。
   useEffect(() => {
@@ -38,7 +39,7 @@ export default function App() {
 
   return (
     <Routes>
-      <Route element={<Layout />}>
+      <Route element={<Layout key={epoch} />}>
         <Route index element={<Dashboard />} />
         <Route path="journal" element={<Journal />} />
         <Route path="profile" element={<Profile />} />

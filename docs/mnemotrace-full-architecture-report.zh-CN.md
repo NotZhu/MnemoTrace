@@ -838,23 +838,30 @@ unsafe-inline，收紧范围与历史凭据清理见[ISSUE-013](known-issues.zh-
 ### 10.2 浏览器凭证、请求和查询缓存
 
 `store/auth.ts` 的 Zustand 状态仅保存在页面内存，初始 key 为空，刷新需重新输入。
+每次 login／logout 原子更新 key、错误状态及递增 epoch，同 Key 登录、无效 Key 登录和重复退出也推进周期。
+`currentSession()` 单次读取 `{key, epoch}`，`isCurrentSession()` 比较完整快照；epoch 不落盘、不发送给服务端。
 登录和 API 客户端均检查非空可打印 ASCII；非法值在构造 Headers 前被拒绝，合法值原样发送。
 启动尝试删除 localStorage 的 mnemotrace.auth，不读取或恢复其内容；engram.auth 残留清理是
 [ISSUE-013](known-issues.zh-CN.md#issue-013) 的未解决部分。
 
-私有查询 key 含登录凭据以区分账号。main.tsx 的同步订阅在 key 改变时取消私有查询、移除缓存、
+私有查询 key 含登录凭据以区分账号，键格式保持不变。main.tsx 的同步订阅在 epoch 改变时取消私有查询、移除缓存、
 清除错误，公共 health 缓存保留。原文查询也带 namespace；全局重试只选当前账号的失败查询，
-回调核对当前身份及缓存对象，避免迟到结果更新其他账号。
+WeakMap 在查询加入缓存时记录所属 epoch，回调核对周期、当前身份及缓存对象，过期取消不进入全局错误横幅。
+App 以 epoch 作为已登录 Layout 的 key，直接同 Key 登录也重建旧页面树，不沿用旧导出中状态。
 
-`lib/api.ts` 记录请求开始时的 key，在收到响应和读取正文后核对身份；空间变化以客户端 409 结束，
-旧请求的 401 不退出新账号。取消查询用于阻止缓存提交，不能撤回已发出的 HTTP 或服务端写入。
+`lib/api.ts` 的 JSON 与导出路径共用请求会话检查，记录发起时的 `{key, epoch}`，在收到响应、读取正文完成
+及下载前核对；网络或正文读取失败也先核对。过期以 `StaleSessionError extends ApiError`（409）拒绝，
+旧请求的 401 不退出新登录；当前 JSON 401 仍退出并返回 401。`/health` 豁免周期过期检查，但其旧 401 也不能退出新登录。
+取消查询用于阻止缓存提交，不使用 AbortController，不撤回已发出的 HTTP 或服务端写入。
 queryErrors 也仅存内存，启动清理旧 sessionStorage 项；含 key 的 queryHash 不再持久化。
-导出下载使用独立请求路径，其账号切换语义不能直接套用普通 JSON 请求的全部守卫。
+隐私页在 await 导出后、成功／失败提示前重新检查会话，过期静默结束且不更新旧周期的导出状态。
+对象 URL 创建后以 finally 释放并清理下载元素，正常路径维持点击后立即释放；已触发的下载不追溯撤销。
 
 Layout 依据全局查询错误决定是否挂载 Outlet，辅助读取失败可能丢失未保存编辑，见
 [ISSUE-016](known-issues.zh-CN.md#issue-016)。验证入口：
 [凭证内存态](../results/auth_memory_only_validation.md)、[查询隔离](../results/query_isolation_validation.md)
-与[凭证输入](../results/api_key_character_validation.md)。
+与[凭证输入](../results/api_key_character_validation.md)。当前周期与导出边界见
+[ISSUE-035 本地验收及原始输出](../results/issue035_validation.md)；尚未核验真实浏览器和线上部署。
 
 ### 10.3 展示偏好、主题与共享组件
 
@@ -866,7 +873,8 @@ MemoryService；图谱外观/受力参数在当前浏览器内通用，页面筛
 
 缓存保存图谱 liveOnly/hideSensitive、事实 status/category/hideSensitive、结论 showSuperseded、
 问答 chunks/redactSensitive；字段、类型、范围与版本在恢复时校验。滑条写入合并 150ms，开关、
-问答选项与重置立即保存，离页和 pagehide 补存。登录变化先停读旧空间，迟到的指纹不覆盖新身份。
+问答选项与重置立即保存，离页和 pagehide 补存。epoch 变化先停读旧空间，迟到的指纹激活与延迟修改
+必须仍属于发起时的登录快照；同 Key 新登录也拒绝旧回写。指纹算法与存储格式不变，已有偏好继续恢复。
 localStorage 不可用时保留内存操作；不同来源及设备不自动同步。搜索、草稿、问答结果和弹窗不持久化。
 
 `store/theme.ts` 单独保存 mnemotrace.theme，HTML 内联初始化在 React 首屏前恢复 dark/light，

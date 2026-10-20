@@ -1,4 +1,4 @@
-import { currentKey, useAuth } from '../store/auth'
+import { currentSession, isCurrentSession, useAuth } from '../store/auth'
 import { copy as t } from '../lib/copy'
 import { isValidApiKey } from './apiKey'
 import type { AuditReport,
@@ -43,47 +43,68 @@ export class ApiError extends Error {
   }
 }
 
-function requestKey(): string | null {
-  const key = currentKey()
-  if (key !== null && !isValidApiKey(key)) {
+export class StaleSessionError extends ApiError {
+  constructor() {
+    super(409, t.errors.spaceChanged)
+    this.name = 'StaleSessionError'
+  }
+}
+
+function requestSession(publicRequest = false) {
+  const session = currentSession()
+  if (session.key !== null && !isValidApiKey(session.key)) {
     useAuth.getState().logout()
     throw new ApiError(400, t.errors.invalidApiKey)
   }
-  return key
+  const check = () => {
+    if (!publicRequest && !isCurrentSession(session)) throw new StaleSessionError()
+  }
+  // 成功和失败都先检查归属；旧网络错误也不能成为新登录的失败提示。
+  const wait = async <T>(pending: Promise<T>): Promise<T> => {
+    let value: T
+    try {
+      value = await pending
+    } catch (error) {
+      check()
+      throw error
+    }
+    check()
+    return value
+  }
+  return { session, check, wait }
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const key = requestKey()
-  const assertCurrentKey = () => {
-    if (path !== '/health' && key !== currentKey()) throw new ApiError(409, t.errors.spaceChanged)
-  }
+  const guard = requestSession(path === '/health')
+  const { key } = guard.session
   const headers = new Headers(init.headers)
   headers.set('Content-Type', 'application/json')
   if (key) headers.set('Authorization', `Bearer ${key}`)
 
-  const res = await fetch(`${BASE}${path}`, { ...init, headers })
+  const res = await guard.wait(fetch(`${BASE}${path}`, { ...init, headers }))
   // 旧请求的迟到响应不能退出新账号，也不能驱动新账号的写后回调。
-  assertCurrentKey()
+  guard.check()
 
   if (res.status === 401) {
     // key 已过期/错误 — 丢弃它，让应用回到登录页。
-    if (key === currentKey()) useAuth.getState().logout()
+    if (isCurrentSession(guard.session)) useAuth.getState().logout()
     throw new ApiError(401, t.errors.unauthorized)
   }
   if (!res.ok) {
     let detail = t.errors.requestFailed(res.status)
     try {
-      const body = await res.json()
+      const body = await guard.wait(res.json())
       if (body?.detail) detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
-    } catch {
+    } catch (error) {
+      if (error instanceof StaleSessionError) throw error
       /* 非 JSON 的错误响应体 */
     }
-    assertCurrentKey()
+    guard.check()
     throw new ApiError(res.status, detail)
   }
   if (res.status === 204) return undefined as T
-  const data = (await res.json()) as T
-  assertCurrentKey()
+  const data = (await guard.wait(res.json())) as T
+  guard.check()
   return data
 }
 
@@ -234,20 +255,27 @@ export const api = {
 
   /** 触发浏览器下载记忆导出（默认安全；保留 Bearer 请求头）。 */
   async exportDownload(filenameHint = 'me', includeSensitive = false): Promise<void> {
-    const key = requestKey()
+    const guard = requestSession()
+    const { key } = guard.session
     const qs = `?include_sensitive=${includeSensitive ? 'true' : 'false'}`
-    const res = await fetch(`${BASE}/v1/export${qs}`, {
+    const res = await guard.wait(fetch(`${BASE}/v1/export${qs}`, {
       headers: key ? { Authorization: `Bearer ${key}` } : undefined,
-    })
+    }))
+    guard.check()
     if (!res.ok) throw new ApiError(res.status, t.errors.exportFailed(res.status))
-    const blob = await res.blob()
+    const blob = await guard.wait(res.blob())
+    guard.check()
     const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `mnemotrace_${filenameHint}_export.json`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    URL.revokeObjectURL(url)
+    let a: HTMLAnchorElement | undefined
+    try {
+      a = document.createElement('a')
+      a.href = url
+      a.download = `mnemotrace_${filenameHint}_export.json`
+      document.body.appendChild(a)
+      guard.check()
+      a.click()
+    } finally {
+      try { a?.remove() } finally { URL.revokeObjectURL(url) }
+    }
   },
 }

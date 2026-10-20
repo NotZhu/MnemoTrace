@@ -5,8 +5,8 @@ import { Button, Card, CardTitle, PageHeader } from '../components/ui'
 import { ConfirmDialog } from '../components/Modal'
 import { ExportRangeSelect, type ExportMode } from '../components/ExportRangeSelect'
 import { toast } from '../components/Toast'
-import { api } from '../lib/api'
-import { useAuth } from '../store/auth'
+import { api, StaleSessionError } from '../lib/api'
+import { currentSession, isCurrentSession, useAuth } from '../store/auth'
 import { useAgentStatus, useForget } from '../hooks/queries'
 import { copy as t } from '../lib/copy'
 
@@ -22,14 +22,17 @@ export default function Privacy() {
   const protectedNamespace = ['anonymous', 'mnemotrace-test'].includes(user)
 
   const onExport = async () => {
+    const session = currentSession()
     setExporting(true)
     try {
       await api.exportDownload(user.replace(/[^a-zA-Z0-9]/g, '') || 'me', !excludeSensitive)
+      if (!isCurrentSession(session)) return
       toast.success(excludeSensitive ? t.privacy.exportedExcl : t.privacy.exported)
     } catch (e) {
+      if (e instanceof StaleSessionError || !isCurrentSession(session)) return
       toast.error(String((e as Error).message))
     } finally {
-      setExporting(false)
+      if (isCurrentSession(session)) setExporting(false)
     }
   }
 

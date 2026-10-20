@@ -10,6 +10,7 @@ try {
 
 interface AuthState {
   apiKey: string | null
+  epoch: number
   keyError: string | null
   login: (key: string) => void
   logout: () => void
@@ -17,20 +18,35 @@ interface AuthState {
 
 export const useAuth = create<AuthState>((set) => ({
   apiKey: null,
+  epoch: 0,
   keyError: null,
   login: (key) => {
     useQueryErrors.getState().clear()
-    set(isValidApiKey(key.trim())
+    const next = isValidApiKey(key.trim())
       ? { apiKey: key.trim(), keyError: null }
-      : { apiKey: null, keyError: t.errors.invalidApiKey })
+      : { apiKey: null, keyError: t.errors.invalidApiKey }
+    set(state => ({ ...next, epoch: state.epoch + 1 }))
   },
   logout: () => {
     useQueryErrors.getState().clear()
-    set({ apiKey: null, keyError: null })
+    set(state => ({ apiKey: null, keyError: null, epoch: state.epoch + 1 }))
   },
 }))
 
 /** Read the key outside React (for the fetch client). */
 export function currentKey(): string | null {
   return useAuth.getState().apiKey
+}
+
+export type AuthSession = Readonly<{ key: string | null; epoch: number }>
+
+export function currentSession(): AuthSession {
+  const { apiKey: key, epoch } = useAuth.getState()
+  return { key, epoch }
+}
+
+export function isCurrentSession(session: AuthSession): boolean {
+  const current = currentSession()
+  // 同一 Key 再次登录也属于新周期，旧任务不能重新生效。
+  return session.epoch === current.epoch && session.key === current.key
 }

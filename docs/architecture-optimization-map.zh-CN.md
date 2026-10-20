@@ -183,8 +183,9 @@ watch 的 `seen` 可能包含放弃收尾的记录，不能把本地账本条目
 | 模块 | 原因与采用的方案 | 证据 |
 | --- | --- | --- |
 | 登录与查询错误内存态 | 原始 Key 及含 Key 的 queryHash 不落浏览器存储；刷新重新登录，启动尝试清理旧缓存。客户端与服务端共用字符约束，有效 Key 原样发送 | [凭证内存态](../results/auth_memory_only_validation.md)、[客户端校验](../results/api_key_character_validation.md) |
-| 查询账号隔离 | Key 变化时取消并移除私有查询、清空错误，保留公共 health。重试只执行当前账号查询；响应到达及读取正文后再次核对身份，防止旧响应回填或退出新账号 | [隔离验收](../results/query_isolation_validation.md) |
-| 空间偏好 | 主题和允许的显示设置可持久化，筛选按 API 地址与凭据的 SHA-256 指纹隔离。图谱显示/受力参数为浏览器通用；敏感内容、草稿、搜索结果和 Key 不写入偏好。即时更新、合并写入与离页补存，版本/类型/范围校验后恢复 | [界面偏好](../results/ui_preferences_validation.md)、[SHA-256 回退](../results/preferences_sha256_fallback_validation.md) |
+| 查询账号与登录周期隔离 | 每次登录／退出原子推进内存 epoch；同步取消并移除私有查询、清空错误，保留公共 health。WeakMap 记录查询所属周期，回调同时检查 epoch、账号与缓存对象；已登录页面树按 epoch 重建，同 Key 重登也隔离 | [早期隔离验收](../results/query_isolation_validation.md)、[周期隔离验收](../results/issue035_validation.md) |
+| 导出与共享请求生命周期 | JSON 和 Blob 共用 `{key, epoch}` 快照检查；成功和失败均核对周期，旧 401 不退出新登录。下载前、页面提示前再次检查，过期以 StaleSessionError(409) 静默取消，finally 释放 URL 和元素；不撤销服务端已收到的操作或已触发下载 | [ISSUE-035 验收与原始输出](../results/issue035_validation.md) |
+| 空间偏好 | 主题和允许的显示设置可持久化，筛选按 API 地址与凭据的 SHA-256 指纹隔离。指纹异步激活、延迟修改均检查登录周期；同账号新登录恢复既有偏好，但旧任务不能回写。图谱参数为浏览器通用；敏感内容、草稿、搜索结果、Key 和 epoch 不写入偏好 | [界面偏好](../results/ui_preferences_validation.md)、[SHA-256 回退](../results/preferences_sha256_fallback_validation.md)、[周期回归](../results/issue035_validation.md) |
 | 非安全上下文的指纹 | 原生 crypto/subtle 不可用或 digest 拒绝时用固定版本 JavaScript SHA-256，保持 UTF-8 输入和空间编号一致；两种实现都失败时才用临时内存空间，存储不可用仍能操作 | [兼容验收](../results/preferences_sha256_fallback_validation.md) |
 | 中文与主题 | 中文文案集中到 copy.ts，界面固定 zh-CN。theme 只保存主题值，首屏恢复；登录页使用 View Transition 圆形揭示，内部页渐变，减少动态或不支持时回退；两套色板驱动图谱和页面 | [中文界面](../results/ui_chinese_only_validation.md)、[主题](../results/theme_validation.md) |
 | 登录空间引导 | 开放模式允许填入随机空间 Key，受保护/未知模式禁用快捷入口；生成只填入、不自动登录。演示为 mnemotrace-test，test 与 1 是普通空间；清空仍需确认，演示与 anonymous 保持保护 | [登录引导](../results/login_space_guidance_validation.md)、[空间策略](../results/test_namespace_policy_validation.md) |
