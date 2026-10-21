@@ -380,7 +380,7 @@ def test_clearing_a_slot_is_case_insensitive_on_the_predicate(tmp_path):
 def test_clearing_a_slot_leaves_superseded_history_alone(tmp_path):
     """audit 统计的是存活（LIVE）fact，所以 `expect_count` 是存活数。如果把被清除集合也算上被
     supersede 的行，守卫就会在比较两个不同的总体：对任何带 supersedes 链的槽位它会永远拒绝；而
-    若省略守卫，则会删掉 owner 从没见过的双时间轴历史（CLAUDE.md §3.1：对被取代的 fact 要失效化，
+    若省略守卫，则会删掉 owner 从没见过的双时间轴历史（AGENTS.md 「对象与时间语义」：对被取代的 fact 要失效化，
     绝不硬删）。"""
     import time
 

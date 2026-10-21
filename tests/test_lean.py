@@ -1,4 +1,4 @@
-"""Lean 读取路径（CLAUDE.md Bet A/E）：可扩展的获胜条件 —— 从一小段检索结果（persona + facts +
+"""Lean 读取路径（AGENTS.md Bet A/E）：可扩展的获胜条件 —— 从一小段检索结果（persona + facts +
 session summaries + 少量完整 chunk）作答，而不是重放全部历史。这些测试在离线环境下（HashingEmbedder
 + 规则 extractor，零依赖、确定性）固定框架行为：L2 摘要会被构建并索引，L3 persona 会被合成，
 lean_context 能正确组装它们，并做去重 + 硬性大小上限。"""
@@ -268,7 +268,7 @@ def test_date_terms_makes_dates_searchable():
 
 
 def test_weight_tuner_runs_and_scores():
-    """融合权重调参器（CLAUDE.md §4）为一组权重计算 recall@k 并做网格搜索 —— 离线、确定性。
+    """融合权重调参器（AGENTS.md 「评测、公开内容与贡献规则」）为一组权重计算 recall@k 并做网格搜索 —— 离线、确定性。
     这就是让 'tuned on the harness' 有据可依而非空口无凭的机制。"""
     from mnemotrace.types import Fact
     from eval.tune_weights import grid_search, mean_recall_at_k
@@ -1968,7 +1968,7 @@ def test_subsumption_keeps_distinct_values():
 
 
 def test_llm_escalation_resolves_borderline_conflict():
-    """§3.2 第 3 步：同主体且相似度落在模糊带（略低于阈值）的一对 fact，只有在配置了 LLM 时
+    """「IV. 不允许静默损坏记忆」的歧义裁决：同主体且相似度落在模糊带（略低于阈值）的一对 fact，只有在配置了 LLM 时
     才升级给 LLM 仲裁者；没有 LLM 则两者并存。"""
     from mnemotrace.consolidate.conflict import ConflictResolver
     from mnemotrace.embed import HashingEmbedder
@@ -2072,7 +2072,7 @@ def test_type_weighting_is_relevance_gated_and_embedder_gated():
 
 
 def test_focus_track_boosts_salience_and_mute_hides():
-    """关注点面板是真实接线而非摆设（CLAUDE.md §3.3）：被跟踪的话题会提升 fact 的显著度
+    """关注点面板是真实接线而非摆设（AGENTS.md 「检索与模块」）：被跟踪的话题会提升 fact 的显著度
     （作为检索打分 + 豁免衰减的信号），被静音的话题则同时从组装的读取 context 和合成的
     persona 中剔除。"""
     mem = Memory()

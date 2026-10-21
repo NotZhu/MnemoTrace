@@ -18,7 +18,7 @@
 | [ISSUE-005](#issue-005) | 会话结论同义改写后重复保存 | 缺陷 | 会话结论 | P1 | 待决策 |
 | [ISSUE-022](#issue-022) | 发布前残留的原作者与原项目信息清理 | 发布准备 | 文档、论文、许可证、日志、Git 历史 | P1 | 待决策 |
 
-### P2：功能、评测与维护（24 项）
+### P2：功能、评测与维护（25 项）
 
 | 编号 | 事项 | 类型 | 范围 | 优先级 | 状态 |
 |---|---|---|---|---|---|
@@ -46,6 +46,7 @@
 | [ISSUE-036](#issue-036) | 敏感过滤切换仍显示旧结果 | 缺陷 | 控制台、事实筛选 | P2 | 待处理 |
 | [ISSUE-037](#issue-037) | 设置页跳转会话导致重新登录 | 缺陷 | 控制台、导航、鉴权 | P2 | 待处理 |
 | [ISSUE-038](#issue-038) | 结论类型在分页后筛选导致漏项 | 缺陷 | 会话结论、筛选、分页 | P2 | 待处理 |
+| [ISSUE-039](#issue-039) | 身份合并后旧身份下的历史记忆无法检索 | 缺陷 | 身份解析、检索 | P2 | 待处理 |
 
 ### P3：体验与后续需求（5 项）
 
@@ -814,6 +815,40 @@ Journal 请求后端全部 outcomes 的一页，再按 kindChip 本地筛选。�
 - 切换类型正确重置分页，没有重复、漏项或无限请求同一页。
 
 **代码与证据**：[结论页](../frontend/src/pages/Journal.tsx)、[后端列表](../mnemotrace/service.py)、[合成复现](#evidence-issue-038)。
+
+<a id="issue-039"></a>
+
+### ISSUE-039：身份合并后旧身份下的历史记忆无法检索
+
+**类型**：缺陷 · **范围**：身份解析、检索 · **优先级**：P2 · **状态**：待处理
+
+#### 现象与原因
+
+`Memory.link_identity` 只合并 resolver 的别名映射，规范身份取字典序更小的根；已有记忆的
+`user_id` 保持原值。检索先解析查询身份，再按存储中的 `user_id` 精确过滤，因此原先属于
+非规范身份的记忆在合并后无法检索，数据仍保留在存储中。
+
+#### 离线复现
+
+```python
+from mnemotrace import Memory
+
+mem = Memory()
+mem.add_fact("user", "lives_in", "Paris", user_id="u1")
+assert mem.search("Where does user live?", user_id="u1").facts
+mem.link_identity("u1", "a@example.com")
+for user_id in ("u1", "a@example.com"):
+    assert mem.search("Where does user live?", user_id=user_id).abstained
+```
+
+#### 处理要求与验收标准
+
+- 合并后，两个句柄均可检索双方已有记忆，并保留 provenance、supersedes 与双时间历史。
+- 覆盖先关联后写入、双方先写入后关联、多次合并及持久化重启，保持其他身份的数据隔离。
+- 修复前应在首次写入前关联句柄；身份模块说明必须明确当前边界。
+- 修复并通过上述验收后，将 ISSUE-039 标记为已修复，同步更新身份模块及相关文档，移除已失效的限制说明；若 `AGENTS.md` 中存在本问题的临时提示，也应删除。
+
+**代码与证据**：[身份解析](../mnemotrace/ingest/identity.py)、[Memory 门面](../mnemotrace/memory.py)、[检索过滤](../mnemotrace/retrieve/hybrid.py)；上方脚本可离线复现。
 
 <a id="issue-017"></a>
 

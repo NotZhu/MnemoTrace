@@ -1,5 +1,5 @@
 """忆痕 Memory Service — 多租户 HTTP API，任何人都可以接入并管理自己的记忆
-（CLAUDE.md §6，服务化/采用层）。每个 API key 对应一个隔离的记忆命名空间；记忆持久化到磁盘，
+（AGENTS.md 「代码导航」，服务化/采用层）。每个 API key 对应一个隔离的记忆命名空间；记忆持久化到磁盘，
 跨请求和重启均可用。
 
 启动方式：
@@ -235,7 +235,7 @@ def auth_principal(authorization: str = Header(default="")) -> Principal:
 
 @app.get("/metrics")
 def metrics():
-    """实时服务指标（CLAUDE.md Bet D online）：每个操作的 p50/p95 延迟、请求计数器，以及
+    """实时服务指标（AGENTS.md Bet D online）：每个操作的 p50/p95 延迟、请求计数器，以及
     检索上下文相对全量历史的 token 节省比。只输出聚合数字——不包含命名空间名和用户内容，
     因此可以保持和 /health 一样开放。"""
     return svc().metrics_snapshot()
@@ -552,7 +552,7 @@ class DocumentReq(BaseModel):
 
 @app.post("/v1/documents")
 def import_document(req: DocumentReq, user: str = Depends(auth)):
-    """把 PDF/DOCX/text 文档或图片作为长期记忆摄入（多模态，CLAUDE.md §6）。"""
+    """把 PDF/DOCX/text 文档或图片作为长期记忆摄入（多模态，AGENTS.md 「代码导航」）。"""
     if req.text is not None:
         data: object = req.text
     elif req.data_base64:

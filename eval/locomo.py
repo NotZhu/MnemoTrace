@@ -1,4 +1,4 @@
-"""LOCOMO -> LongMemEval item 适配器（CLAUDE.md Bet D：同一 harness 上的第二个 benchmark）。
+"""LOCOMO -> LongMemEval item 适配器（AGENTS.md Bet D：同一 harness 上的第二个 benchmark）。
 
 把公开的 LOCOMO 数据集（Maharana et al., ACL 2024; snap-research/locomo，`data/locomo10.json`）转换成
 `eval/bench.py` 消费的 item 形状，这样 `python eval/bench.py --data locomo ...` 就能让每个系统走与

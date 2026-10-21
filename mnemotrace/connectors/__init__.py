@@ -1,4 +1,4 @@
-"""批量导入连接器（CLAUDE.md §6 采纳层）：把外部的历史导出转成 忆痕 会话，再由
+"""批量导入连接器（AGENTS.md 「代码导航」 采纳层）：把外部的历史导出转成 忆痕 会话，再由
 `Memory.import_messages()` 用少量批量调用完成导入。
 
     from mnemotrace import Memory

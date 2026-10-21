@@ -1,9 +1,5 @@
 # 忆痕全链路架构与数据流报告
 
-本文按模块描述 MnemoTrace 的当前实现：消息如何写入、整理和持久化，查询如何得到证据与答案，
-以及 HTTP、MCP、SDK 和管理控制台如何共享记忆服务。产品中文名为忆痕，英文名为 MnemoTrace；
-Python import 为 `mnemotrace`，Python/npm 发行包为 `mnemotrace-memory`。
-
 报告中的架构目标不等同于全部功能已通过验收。未解决风险与功能缺口统一见
 [问题与改进跟踪](known-issues.zh-CN.md)，改动原因和实验取舍见
 [架构优化地图](architecture-optimization-map.zh-CN.md)。公开成绩只以
@@ -11,18 +7,18 @@ Python import 为 `mnemotrace`，Python/npm 发行包为 `mnemotrace-memory`。
 
 ## 0. 阅读入口
 
-| 你想看什么 | 入口 |
-| --- | --- |
-| 整体结构、对象与数据流 | 本文第 1～8 节 |
-| 配置、服务与控制台 | 本文第 9～10 节 |
-| 评测、实现边界与代码定位 | 本文第 11～16 节 |
-| 文档维护规则 | 本文第 17 节 |
-| 改动原因、算法取舍和实验索引 | [架构优化地图](architecture-optimization-map.zh-CN.md) |
-| 算法原则 | [算法架构](algorithm-architecture.md) |
-| 尚未解决的问题 | [问题台账](known-issues.zh-CN.md) |
-| 评测证据与规则 | [results 说明](../results/README.md)、[公开结果](../RESULTS.md) |
-| 自托管交付范围 | [交付说明](commercial-release-0.1.0.zh-CN.md) |
-| 项目使命与贡献约束 | [AGENTS.md](../AGENTS.md)、[CONTRIBUTING.md](../CONTRIBUTING.md) |
+| 你想看什么                   | 入口                                                          |
+| ---------------------------- | ------------------------------------------------------------- |
+| 整体结构、对象与数据流       | 本文第 1～8 节                                                |
+| 配置、服务与控制台           | 本文第 9～10 节                                               |
+| 评测、实现边界与代码定位     | 本文第 11～16 节                                              |
+| 文档维护规则                 | 本文第 17 节                                                  |
+| 改动原因、算法取舍和实验索引 | [架构优化地图](architecture-optimization-map.zh-CN.md)         |
+| 算法原则                     | [算法架构](algorithm-architecture.md)                          |
+| 尚未解决的问题               | [问题台账](known-issues.zh-CN.md)                              |
+| 评测证据与规则               | [results 说明](../results/README.md)、[公开结果](../RESULTS.md) |
+| 自托管交付范围               | [交付说明](commercial-release-0.1.0.zh-CN.md)                  |
+| 项目使命与贡献约束           | [AGENTS.md](../AGENTS.md)                                      |
 
 建议先读第 1～5 节建立对象与写入流程，再读第 6～10 节理解持久化、检索和产品入口。
 修改算法前核对配置开关、验收分层与问题台账，区分已实现行为、已验证结果和候选方向。
@@ -153,28 +149,46 @@ flowchart TD
     ANSW --> LOG
     LOG --> MAP
 ```
+<a id="backend-status"></a>
+
+### 2.1 后端实现状态
+
+| 层       | 默认离线实现     | 已实现的可选后端               | 规划中，尚未实现      |
+| -------- | ---------------- | ------------------------------ | --------------------- |
+| 嵌入     | HashingEmbedder  | sentence-transformers、LiteLLM | —                    |
+| LLM      | offline 规则实现 | LiteLLM                        | —                    |
+| 向量存储 | 内存             | LanceDB                        | Qdrant、pgvector      |
+| 图存储   | 内存             | —                             | Kuzu、Neo4j、FalkorDB |
+| 文档存储 | 内存             | —                             | —                    |
+| 词法检索 | 自研内存 BM25    | —                             | tantivy、bm25s        |
+
+可选后端的安装依赖由 `pyproject.toml` 中对应的 extras 声明。
+规划中的名称只表示候选方向，不代表已有适配器或可用配置。
+
+`durable` 是 JSONL + manifest 快照机制，不是独立的 store 实现。
+DocStore 与 GraphStore 当前运行时使用内存实现。
 
 ## 3. 核心数据对象
 
 MnemoTrace 的数据模型在 `mnemotrace/types.py`。理解这些对象，就能理解所有数据流。
 
-| 对象 | 产生位置 | 保存位置 | 被谁消费 | 关键字段/不变量 |
-| --- | --- | --- | --- | --- |
-| `Episode` | `Memory.add`, `Memory.remember`, import | `episodes_doc`, `episodes_vec`, persistence `episodes.jsonl` | consolidation、raw retrieval、summary、eval | 原始无损事件；`event_time` 是世界时间，`ingested_at` 是事务时间；不因抽取失败丢弃 |
-| `Fact` | `RuleExtractor`, `LLMExtractor`, `add_fact` | `fact_store`, `cold_store`, persistence `facts.jsonl` | hybrid retrieval、graph、profile、history、context blocks | 原子`(subject, predicate, object)`；双时间轴；contradiction 只失效不覆盖；保留 provenance |
-| `Entity` | `GraphBuilder.add_fact` | `graph`, persistence `entities.jsonl` | graph retrieval、multi-hop、graph API | 以`user_id + canonical name` 定位；可带 aliases |
-| `Relation` | `GraphBuilder.add_fact` | `graph`, persistence `relations.jsonl` | graph proximity、multi-hop、graph visualization | 由 Fact 投影；携带`fact_id` 和双时间过滤能力 |
-| `WorkingMemory` | `remember_working`, ephemeral `remember` | `working_mem`, persistence `working.jsonl` | `lean_context`, agent status, session report | 会话/TTL 范围内生效，不自动变成长期 profile |
-| `Conflict` | `_detect_conflicts`, manual conflict tools | `conflicts`, persistence `conflicts.jsonl` | conflict UI/API/MCP | 对高风险矛盾等待用户确认，不静默破坏记忆 |
+| 对象              | 产生位置                                          | 保存位置                                                           | 被谁消费                                                  | 关键字段/不变量                                                                             |
+| ----------------- | ------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `Episode`       | `Memory.add`, `Memory.remember`, import       | `episodes_doc`, `episodes_vec`, persistence `episodes.jsonl` | consolidation、raw retrieval、summary、eval               | 原始无损事件；`event_time` 是世界时间，`ingested_at` 是事务时间；不因抽取失败丢弃       |
+| `Fact`          | `RuleExtractor`, `LLMExtractor`, `add_fact` | `fact_store`, `cold_store`, persistence `facts.jsonl`        | hybrid retrieval、graph、profile、history、context blocks | 原子`(subject, predicate, object)`；双时间轴；contradiction 只失效不覆盖；保留 provenance |
+| `Entity`        | `GraphBuilder.add_fact`                         | `graph`, persistence `entities.jsonl`                          | graph retrieval、multi-hop、graph API                     | 以`user_id + canonical name` 定位；可带 aliases                                           |
+| `Relation`      | `GraphBuilder.add_fact`                         | `graph`, persistence `relations.jsonl`                         | graph proximity、multi-hop、graph visualization           | 由 Fact 投影；携带`fact_id` 和双时间过滤能力                                              |
+| `WorkingMemory` | `remember_working`, ephemeral `remember`      | `working_mem`, persistence `working.jsonl`                     | `lean_context`, agent status, session report            | 会话/TTL 范围内生效，不自动变成长期 profile                                                 |
+| `Conflict`      | `_detect_conflicts`, manual conflict tools      | `conflicts`, persistence `conflicts.jsonl`                     | conflict UI/API/MCP                                       | 对高风险矛盾等待用户确认，不静默破坏记忆                                                    |
 
 ### 3.1 双时间轴
 
 每个事实有两组时间：
 
-| 时间轴 | 字段 | 含义 | 用途 |
-| --- | --- | --- | --- |
-| valid time | `valid_at`, `invalid_at` | 事实在现实世界中什么时候为真 | `as_of`、历史问题、knowledge-update |
-| transaction time | `created_at`, `expired_at` | 系统什么时候学到/撤回它 | 审计、回放、数据修复 |
+| 时间轴           | 字段                           | 含义                         | 用途                                  |
+| ---------------- | ------------------------------ | ---------------------------- | ------------------------------------- |
+| valid time       | `valid_at`, `invalid_at`   | 事实在现实世界中什么时候为真 | `as_of`、历史问题、knowledge-update |
+| transaction time | `created_at`, `expired_at` | 系统什么时候学到/撤回它      | 审计、回放、数据修复                  |
 
 规则：矛盾事实不要 hard-delete。旧事实设置 `invalid_at`/`expired_at`，新事实设置 `supersedes` 指向旧事实。
 
@@ -205,12 +219,12 @@ flowchart LR
 事实编辑沿 `HTTP/MCP → MemoryService.update_fact → Memory.update_fact` 执行，以实际字段值
 区分内容修改和元数据修改。`source` 表示正文是否为用户断言，`provenance` 表示关联的原始 Episode。
 
-| 编辑类型 | 当前行为 |
-| --- | --- |
-| 只改 sensitive/category，或原样回传内容字段 | 只保存明确提交的元数据；保留 source、正文、display、向量、有效/事务时间、supersedes、provenance 和图边 |
-| 实际修改 subject/predicate/object | 重建正文、向量和图边，重新分类并应用显式覆盖；source 设为 user，保留原 provenance；清除 invalid_at/expired_at 使该记录重新生效 |
-| 会话结论整句编辑 | statement 仅接受 decision/finding/lesson/open_question；正文保留依据子句，object/display 使用修正后的陈述 |
-| 属性事实提交 statement，或与三元组字段混用 | 修改前拒绝，HTTP 返回 422；不存在的事实返回 404 |
+| 编辑类型                                    | 当前行为                                                                                                                       |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 只改 sensitive/category，或原样回传内容字段 | 只保存明确提交的元数据；保留 source、正文、display、向量、有效/事务时间、supersedes、provenance 和图边                         |
+| 实际修改 subject/predicate/object           | 重建正文、向量和图边，重新分类并应用显式覆盖；source 设为 user，保留原 provenance；清除 invalid_at/expired_at 使该记录重新生效 |
+| 会话结论整句编辑                            | statement 仅接受 decision/finding/lesson/open_question；正文保留依据子句，object/display 使用修正后的陈述                      |
+| 属性事实提交 statement，或与三元组字段混用  | 修改前拒绝，HTTP 返回 422；不存在的事实返回 404                                                                                |
 
 未变化的内容不因保存表单而重新生效。内容编辑是对既有记录的修正，不会自动创建一条新的历史版本，
 也不能把“保留来源”解释为修正后的内容仍逐字来自原文。`display_of` 统一负责自然语言展示回退。
@@ -224,14 +238,14 @@ flowchart LR
 
 ### 4.1 写入入口
 
-| 入口 | 文件/函数 | 适用场景 |
-| --- | --- | --- |
-| Python 直接写入 | `mnemotrace/memory.py::Memory.add` | 低层 API，追加 Episode，可选立即 consolidate |
-| 用户语义写入 | `mnemotrace/memory.py::Memory.remember` | 自动判断长期/短期 scope，始终保留 raw Episode |
-| 批量导入 | `Memory.import_messages`, `Memory.import_data` | ChatGPT export、OpenAI messages、JSONL、transcript |
-| 服务层写入 | `mnemotrace/service.py::MemoryService.remember` | 多用户、多租户、持久化、锁 |
-| HTTP 写入 | `mnemotrace/server/app.py::remember`, `import_history` | API 服务 |
-| MCP 写入 | `mnemotrace/mcp/server.py` | 给外部 Agent 持久记忆工具 |
+| 入口            | 文件/函数                                                  | 适用场景                                           |
+| --------------- | ---------------------------------------------------------- | -------------------------------------------------- |
+| Python 直接写入 | `mnemotrace/memory.py::Memory.add`                       | 低层 API，追加 Episode，可选立即 consolidate       |
+| 用户语义写入    | `mnemotrace/memory.py::Memory.remember`                  | 自动判断长期/短期 scope，始终保留 raw Episode      |
+| 批量导入        | `Memory.import_messages`, `Memory.import_data`         | ChatGPT export、OpenAI messages、JSONL、transcript |
+| 服务层写入      | `mnemotrace/service.py::MemoryService.remember`          | 多用户、多租户、持久化、锁                         |
+| HTTP 写入       | `mnemotrace/server/app.py::remember`, `import_history` | API 服务                                           |
+| MCP 写入        | `mnemotrace/mcp/server.py`                               | 给外部 Agent 持久记忆工具                          |
 
 ### 4.2 System-1 快写路径
 
@@ -256,22 +270,22 @@ sequenceDiagram
 
 关键点：
 
-| 设计点 | 当前实现 | 原因 |
-| --- | --- | --- |
-| 原始消息先保存 | `Episode` 写入 `episodes_doc` 和 `episodes_vec` | 抽取错了也能从 raw evidence 补回 |
-| 写路径默认无 LLM | hashing embedder + rule extractor 可零 key 运行 | 保证 zero-setup 和稳定测试 |
-| event/transaction 分离 | `event_time` 与 `ingested_at` 同时保存 | 支持真实历史时间和系统学习时间 |
-| 可选立即整理 | `add(..., consolidate=True)` | 小 demo 可同步完成，大规模可异步 |
+| 设计点                 | 当前实现                                              | 原因                             |
+| ---------------------- | ----------------------------------------------------- | -------------------------------- |
+| 原始消息先保存         | `Episode` 写入 `episodes_doc` 和 `episodes_vec` | 抽取错了也能从 raw evidence 补回 |
+| 写路径默认无 LLM       | hashing embedder + rule extractor 可零 key 运行       | 保证 zero-setup 和稳定测试       |
+| event/transaction 分离 | `event_time` 与 `ingested_at` 同时保存            | 支持真实历史时间和系统学习时间   |
+| 可选立即整理           | `add(..., consolidate=True)`                        | 小 demo 可同步完成，大规模可异步 |
 
 ### 4.3 `remember` 的长期/短期分流
 
 `Memory.remember` 总是保存 Episode，但会根据 scope 和文本判断是否写入 WorkingMemory：
 
-| 路径 | 条件 | 结果 |
-| --- | --- | --- |
-| 长期记忆 | `scope="long"` 或 auto 判断为长期内容 | Episode 等待 consolidation，后续产生 Fact/Summary/Graph |
-| 短期/会话态 | `scope="working"` 或 auto 命中临时表达 | 写入`WorkingMemory`，仍保留 Episode metadata |
-| 显式 working | `remember_working` | 直接写会话态记忆，可设置 TTL |
+| 路径         | 条件                                     | 结果                                                    |
+| ------------ | ---------------------------------------- | ------------------------------------------------------- |
+| 长期记忆     | `scope="long"` 或 auto 判断为长期内容  | Episode 等待 consolidation，后续产生 Fact/Summary/Graph |
+| 短期/会话态  | `scope="working"` 或 auto 命中临时表达 | 写入`WorkingMemory`，仍保留 Episode metadata          |
+| 显式 working | `remember_working`                     | 直接写会话态记忆，可设置 TTL                            |
 
 这样做避免“临时状态污染长期画像”，同时保留审计来源。
 
@@ -329,13 +343,13 @@ flowchart TD
 
 ### 5.1 抽取层
 
-| 模块 | 文件 | 作用 |
-| --- | --- | --- |
-| 规则抽取 | `mnemotrace/consolidate/extractor.py::RuleExtractor` | zero-key 默认抽取 names、location、preference、procedure、project rule 等 |
-| LLM 抽取 | `mnemotrace/consolidate/llm_extractor.py::LLMExtractor` | 可选增强，不作为 zero-setup 必需项 |
-| 分类 | `mnemotrace/consolidate/classify.py` | 给 fact 标 category/sensitive，用于 redaction 和 profile |
-| 结构化画像 | `mnemotrace/consolidate/structured.py` | 把 live facts 组织为 profile |
-| 会话结论蒸馏 | `mnemotrace/consolidate/outcomes.py::extract_outcomes` | 在 close_session 中分析整段会话，产出 decision/finding/lesson/open_question 四类 Fact |
+| 模块         | 文件                                                      | 作用                                                                                  |
+| ------------ | --------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| 规则抽取     | `mnemotrace/consolidate/extractor.py::RuleExtractor`    | zero-key 默认抽取 names、location、preference、procedure、project rule 等             |
+| LLM 抽取     | `mnemotrace/consolidate/llm_extractor.py::LLMExtractor` | 可选增强，不作为 zero-setup 必需项                                                    |
+| 分类         | `mnemotrace/consolidate/classify.py`                    | 给 fact 标 category/sensitive，用于 redaction 和 profile                              |
+| 结构化画像   | `mnemotrace/consolidate/structured.py`                  | 把 live facts 组织为 profile                                                          |
+| 会话结论蒸馏 | `mnemotrace/consolidate/outcomes.py::extract_outcomes`  | 在 close_session 中分析整段会话，产出 decision/finding/lesson/open_question 四类 Fact |
 
 会话结论补充逐轮属性抽取：subject 为 session ID，object 为完整陈述，text 包含陈述与依据子句。
 该蒸馏分支在满足调用条件时使用一次 LLM；结论仍经 classify 计算敏感位，category 固定为“会话结论”，
@@ -347,14 +361,14 @@ flowchart TD
 
 `mnemotrace/consolidate/conflict.py::ConflictResolver` 的原则是便宜判断优先，LLM 只处理模糊情况。
 
-| 判断 | 例子 | 处理 |
-| --- | --- | --- |
-| exact slot | 同一`subject + predicate` 出现新 object | 单值 predicate 下旧事实失效 |
-| preference reversal | 先喜欢 X，后来不再喜欢 X | 新 fact supersedes 旧 preference |
-| content subsumption | 新事实包含旧事实更多细节 | 可能作为 elaboration 或 replacement |
-| embedding similarity | predicate 文本不同但语义同槽 | 仅在有真实 embedder 时使用 |
-| protected/multi-valued guard | 家人、同事、多个项目等可多值 | 不误删可并存事实 |
-| ambiguous LLM adjudication | 规则无法确定 | 可选 LLM 判断 |
+| 判断                         | 例子                                      | 处理                                |
+| ---------------------------- | ----------------------------------------- | ----------------------------------- |
+| exact slot                   | 同一`subject + predicate` 出现新 object | 单值 predicate 下旧事实失效         |
+| preference reversal          | 先喜欢 X，后来不再喜欢 X                  | 新 fact supersedes 旧 preference    |
+| content subsumption          | 新事实包含旧事实更多细节                  | 可能作为 elaboration 或 replacement |
+| embedding similarity         | predicate 文本不同但语义同槽              | 仅在有真实 embedder 时使用          |
+| protected/multi-valued guard | 家人、同事、多个项目等可多值              | 不误删可并存事实                    |
+| ambiguous LLM adjudication   | 规则无法确定                              | 可选 LLM 判断                       |
 
 冲突后的数据不变量：
 
@@ -371,11 +385,11 @@ graph relation for old fact 被 invalidate
 
 `mnemotrace/consolidate/graph_builder.py::GraphBuilder` 把适合图谱表达的事实投影成 Entity/Relation。
 
-| 输入 fact | 图谱动作 |
-| --- | --- |
-| `self lives_in Beijing` | upsert entity`self` 和 `Beijing`，增加 `lives_in` relation |
-| `sister works_at Acme` | upsert`sister` 和 `Acme`，增加 `works_at` relation |
-| `procedure/how_to/routine` | 默认不投影为对象节点，留在 procedural memory |
+| 输入 fact                                 | 图谱动作                                                                                                                                          |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `self lives_in Beijing`                 | upsert entity`self` 和 `Beijing`，增加 `lives_in` relation                                                                                  |
+| `sister works_at Acme`                  | upsert`sister` 和 `Acme`，增加 `works_at` relation                                                                                          |
+| `procedure/how_to/routine`              | 默认不投影为对象节点，留在 procedural memory                                                                                                      |
 | `decision/finding/lesson/open_question` | 同上，不投影。结论的宾语是整句话、主语是 session id，建边会把整句话 upsert 成实体、每个 session 造一个孤立节点，并在体检里伪造出`orphan_entity` |
 
 图谱主要支持：
@@ -406,16 +420,16 @@ graph relation for old fact 被 invalidate
 
 MnemoTrace 的 core 接口在 `mnemotrace/store/base.py`，默认实现是内存 store，可选后端在 extras 中扩展。
 
-| Store | 默认实现 | 保存什么 | 读路径用途 |
-| --- | --- | --- | --- |
-| `episodes_doc` | `InMemoryDocStore` | 原始 Episode | raw chunks、session report、provenance |
-| `episodes_vec` | `InMemoryVectorStore` | Episode embedding | raw retrieval、detail chunks |
-| `fact_store` | `InMemoryVectorStore` | hot live/superseded facts | hybrid retrieval 主体 |
-| `cold_store` | `InMemoryVectorStore` | 被分页的 cold facts | 大规模时补召回 |
-| `summary_vec` | `InMemoryVectorStore` | session summaries | summary fallback、context blocks |
-| `graph` | `InMemoryGraphStore` | entities/relations | multi-hop、graph proximity |
-| `working_mem` | dict/state | WorkingMemory | session context |
-| `conflicts` | dict/state | Conflict | 用户确认 |
+| Store            | 默认实现                | 保存什么                  | 读路径用途                             |
+| ---------------- | ----------------------- | ------------------------- | -------------------------------------- |
+| `episodes_doc` | `InMemoryDocStore`    | 原始 Episode              | raw chunks、session report、provenance |
+| `episodes_vec` | `InMemoryVectorStore` | Episode embedding         | raw retrieval、detail chunks           |
+| `fact_store`   | `InMemoryVectorStore` | hot live/superseded facts | hybrid retrieval 主体                  |
+| `cold_store`   | `InMemoryVectorStore` | 被分页的 cold facts       | 大规模时补召回                         |
+| `summary_vec`  | `InMemoryVectorStore` | session summaries         | summary fallback、context blocks       |
+| `graph`        | `InMemoryGraphStore`  | entities/relations        | multi-hop、graph proximity             |
+| `working_mem`  | dict/state              | WorkingMemory             | session context                        |
+| `conflicts`    | dict/state              | Conflict                  | 用户确认                               |
 
 持久化在 `mnemotrace/store/persist.py`：
 
@@ -522,11 +536,11 @@ embedder/config；真正的 pickle 文件仍只能走下面的可信旧快照迁
 
 读取有三个主要入口：
 
-| 入口 | 函数 | 返回 | 用途 |
-| --- | --- | --- | --- |
-| 直接搜索 | `Memory.search` | `SearchResult` | 简单 API，能返回 top facts 和 answer |
-| 上下文装配 | `Memory.lean_context` | context string | benchmark/headline 主路径，给 answerer 读 |
-| 兼容上下文 | `Memory.context_for` | context string | 更老/更通用的 context builder |
+| 入口       | 函数                    | 返回             | 用途                                      |
+| ---------- | ----------------------- | ---------------- | ----------------------------------------- |
+| 直接搜索   | `Memory.search`       | `SearchResult` | 简单 API，能返回 top facts 和 answer      |
+| 上下文装配 | `Memory.lean_context` | context string   | benchmark/headline 主路径，给 answerer 读 |
+| 兼容上下文 | `Memory.context_for`  | context string   | 更老/更通用的 context builder             |
 
 服务层 `MemoryService.recall` 会根据参数调用 `lean_context` 或 `search`，HTTP 和 MCP 最终也走这些入口。
 
@@ -568,17 +582,17 @@ flowchart TD
 
 `mnemotrace/retrieve/evidence.py::plan_evidence` 先判断问题需要哪类证据。
 
-| 识别类型 | 典型问题 | 会触发的证据 |
-| --- | --- | --- |
-| exact lookup | “我妹妹住哪里” | facts + graph + raw |
-| current state | “我现在的地址是什么” | slot head/current-state block |
-| temporal/history | “我以前喜欢什么” | supersedes chain/history block |
-| aggregation | “我总共花了多少钱” | subqueries + aggregation candidates + raw chunks |
-| duration | “我练了多久” | duration block |
-| preference | “我喜欢什么咖啡” | preference facts/profile |
-| procedural | “我说过要怎么部署” | procedural memory |
-| multi-hop | “我同事的公司在哪里” | planner subqueries + graph paths |
-| abstention-sensitive | “有没有证据证明...” | 更谨慎的 abstention |
+| 识别类型             | 典型问题               | 会触发的证据                                     |
+| -------------------- | ---------------------- | ------------------------------------------------ |
+| exact lookup         | “我妹妹住哪里”       | facts + graph + raw                              |
+| current state        | “我现在的地址是什么” | slot head/current-state block                    |
+| temporal/history     | “我以前喜欢什么”     | supersedes chain/history block                   |
+| aggregation          | “我总共花了多少钱”   | subqueries + aggregation candidates + raw chunks |
+| duration             | “我练了多久”         | duration block                                   |
+| preference           | “我喜欢什么咖啡”     | preference facts/profile                         |
+| procedural           | “我说过要怎么部署”   | procedural memory                                |
+| multi-hop            | “我同事的公司在哪里” | planner subqueries + graph paths                 |
+| abstention-sensitive | “有没有证据证明...”  | 更谨慎的 abstention                              |
 
 规划结果会影响：
 
@@ -603,16 +617,16 @@ score(item | query)
 
 注意：recency 和 salience 是 prior，不应该伪装成证据。当前架构原则要求“没有 lexical/semantic/graph 命中的项不能只靠 prior 被推上来”。
 
-| 信号 | 代码位置 | 作用 |
-| --- | --- | --- |
-| dense semantic | `fact_store.search`, embedder | 召回语义相近事实 |
-| lexical/BM25 | `mnemotrace/retrieve/lexical.py` | 精确词、日期、名称匹配 |
-| graph proximity | `_graph_scores` | 根据实体 n-hop 邻近度加权 |
-| relation relevance | `graph_relation_relevance` | query 与 relation predicate 对齐 |
-| self/entity alias anchor | `query_entity_ids` | 把 “my/me/I/别名” 锚到用户实体 |
-| negative constraints | `graph_exclusion_zone` | 避免“不包括 X”的实体污染 |
-| slot heads | `_current_slot_heads` | 单值属性优先当前事实 |
-| weighted RRF | `mnemotrace/retrieve/fusion.py` | 融合多路排名 |
+| 信号                     | 代码位置                           | 作用                             |
+| ------------------------ | ---------------------------------- | -------------------------------- |
+| dense semantic           | `fact_store.search`, embedder    | 召回语义相近事实                 |
+| lexical/BM25             | `mnemotrace/retrieve/lexical.py` | 精确词、日期、名称匹配           |
+| graph proximity          | `_graph_scores`                  | 根据实体 n-hop 邻近度加权        |
+| relation relevance       | `graph_relation_relevance`       | query 与 relation predicate 对齐 |
+| self/entity alias anchor | `query_entity_ids`               | 把 “my/me/I/别名” 锚到用户实体 |
+| negative constraints     | `graph_exclusion_zone`           | 避免“不包括 X”的实体污染       |
+| slot heads               | `_current_slot_heads`            | 单值属性优先当前事实             |
+| weighted RRF             | `mnemotrace/retrieve/fusion.py`  | 融合多路排名                     |
 
 ### 7.4 Raw evidence fusion
 
@@ -620,14 +634,14 @@ score(item | query)
 
 Raw evidence 来源：
 
-| 来源 | 函数 | 用途 |
-| --- | --- | --- |
-| query 直接检索 Episode | `retrieve_episodes` | 找原始细节 |
-| fact provenance | `_provenance_detail_chunks` | 命中 fact 后回到源会话补细节 |
-| chain provenance | `_chain_facts_for_seeds` -> `_provenance_detail_chunks` | previous-value / current-vs-past 问题中，把`supersedes` 链上的旧事实来源也纳入 raw chunk promotion |
-| provenance raw block | `_provenance_raw_block` | 给 answerer 看事实来源上下文 |
-| session summaries | `retrieve_summaries` | raw 太长时给 source-backed 摘要 |
-| aggregation raw episodes | `_aggregation_block` | 数值/列表问题从源文本抽候选 |
+| 来源                     | 函数                                                        | 用途                                                                                                 |
+| ------------------------ | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| query 直接检索 Episode   | `retrieve_episodes`                                       | 找原始细节                                                                                           |
+| fact provenance          | `_provenance_detail_chunks`                               | 命中 fact 后回到源会话补细节                                                                         |
+| chain provenance         | `_chain_facts_for_seeds` -> `_provenance_detail_chunks` | previous-value / current-vs-past 问题中，把`supersedes` 链上的旧事实来源也纳入 raw chunk promotion |
+| provenance raw block     | `_provenance_raw_block`                                   | 给 answerer 看事实来源上下文                                                                         |
+| session summaries        | `retrieve_summaries`                                      | raw 太长时给 source-backed 摘要                                                                      |
+| aggregation raw episodes | `_aggregation_block`                                      | 数值/列表问题从源文本抽候选                                                                          |
 
 当前原则：
 
@@ -657,20 +671,20 @@ flowchart LR
 
 时间链路由三部分组成：
 
-| 能力 | 函数 | 数据来源 |
-| --- | --- | --- |
-| 当前值 | `_current_state_block` | live facts + slot heads |
-| 历史值 | `_history_block`, `_fact_evolution_block` | `supersedes` chain |
-| as-of 查询 | `Memory.as_of`, temporal filters | `Fact.is_live(as_of)`, graph neighbors as-of |
+| 能力       | 函数                                          | 数据来源                                       |
+| ---------- | --------------------------------------------- | ---------------------------------------------- |
+| 当前值     | `_current_state_block`                      | live facts + slot heads                        |
+| 历史值     | `_history_block`, `_fact_evolution_block` | `supersedes` chain                           |
+| as-of 查询 | `Memory.as_of`, temporal filters            | `Fact.is_live(as_of)`, graph neighbors as-of |
 
 典型问题：
 
-| 问题 | 需要的证据 |
-| --- | --- |
-| “我现在住哪里” | current live fact |
-| “我之前住哪里” | invalidated old fact |
-| “我什么时候改了偏好” | supersedes chain + source timestamps |
-| “在某天我们认为 X 是什么” | valid time + transaction time 过滤 |
+| 问题                        | 需要的证据                           |
+| --------------------------- | ------------------------------------ |
+| “我现在住哪里”            | current live fact                    |
+| “我之前住哪里”            | invalidated old fact                 |
+| “我什么时候改了偏好”      | supersedes chain + source timestamps |
+| “在某天我们认为 X 是什么” | valid time + transaction time 过滤   |
 
 ### 7.7 Aggregation evidence
 
@@ -686,11 +700,11 @@ flowchart LR
 
 聚合开关：
 
-| 开关 | 作用 |
-| --- | --- |
+| 开关                               | 作用                         |
+| ---------------------------------- | ---------------------------- |
 | `numeric_aggregation_candidates` | 抽金额、小时、页数等数值候选 |
-| `aggregation_recall_expansion` | 聚合问题增加高召回子查询 |
-| `aggregation_constraint_filter` | 用题面月份等约束标记 EXCLUDE |
+| `aggregation_recall_expansion`   | 聚合问题增加高召回子查询     |
+| `aggregation_constraint_filter`  | 用题面月份等约束标记 EXCLUDE |
 
 ### 7.8 上下文格式与回答时间参照
 
@@ -739,62 +753,56 @@ flowchart TD
 
 核心开关在 `mnemotrace/config.py::Config`。影响评测读写路径的算法开关应能由 eval harness ablate；会话生命周期功能单独验收。
 
-| 开关 | 默认 | 影响层 | 作用 |
-| --- | --- | --- | --- |
-| `w_sem`, `w_lex`, `w_graph`, `w_rec`, `w_sal` | numeric | Hybrid retrieval | 检索融合权重 |
-| `top_k`, `candidate_k`, `rrf_k` | numeric | Retrieval | 候选池和 RRF 控制 |
-| `max_hops` | numeric | Graph | 图扩展跳数 |
-| `abstain_threshold` | numeric | Search | 证据不足时拒答 |
-| `evidence_planner` | true | Read path | 按问题形态组织证据 |
-| `evidence_budgeting` | true | Context packing | 按证据类型优先级裁剪 |
-| `explicit_preference_extraction` | true | Extraction | 显式偏好事实抽取 |
-| `preference_object_filter` | true | Extraction precision | 过滤弱对象偏好 |
-| `preference_object_normalization` | true | Extraction canonicalization | 规范化偏好对象 |
-| `preference_reversal_extraction` | true | Conflict/history | 抽取偏好反转并触发 supersedes |
-| `procedural_extraction` | true | Extraction | 从 runbook/how-to 抽过程事实 |
-| `procedural_memory` | true | Read path | 过程记忆独立读层 |
-| `summary_fallback` | true | Search/read fallback | fact miss 时查 source-backed summaries |
-| `chain_evidence` | true | Temporal/history + Raw evidence fusion | 展开 bounded supersedes chain，并让 chain facts 可作为 provenance raw chunk promotion 的种子 |
-| `temporal_history_queries` | true | Temporal | 自然语言历史问题 |
-| `provenance_chunk_promotion` | true | Raw evidence fusion | fact 命中后提升源 Episode chunk |
-| `provenance_evidence` | true | Context | 带来源证据块 |
-| `numeric_aggregation_candidates` | true | Aggregation | 数值候选表 |
-| `aggregation_recall_expansion` | true | Evidence planner | 聚合高召回子查询 |
-| `aggregation_constraint_filter` | true | Aggregation precision | 本地题面约束过滤 |
-| `graph_proximity` | true | Hybrid retrieval | 图邻近度检索 |
-| `graph_relation_awareness` | true | Graph scoring | relation 与 query 对齐 |
-| `graph_path_reinforcement` | true | Graph scoring | path hit 强化 |
-| `graph_self_anchor` | true | Entity anchoring | self/my/I 锚点 |
-| `graph_entity_alias_anchor` | true | Entity anchoring | alias 锚点 |
-| `graph_negative_constraints` | true | Graph filtering | 负约束排除 |
-| `planner_location_chains` | true | Multi-hop planner | 地点链路 |
-| `planner_project_chains` | true | Multi-hop planner | 项目链路 |
-| `session_outcomes` | true | System-2 / 会话生命周期 | `close_session` 时蒸馏会话结论。该蒸馏分支在满足条件的每次关闭调用中使用一次 LLM：`MNEMOTRACE_SESSION_OUTCOMES=0` 是运维强制开关（在 `close_session` 里覆盖请求体，`outcomes: true` 也无法解除）；未配置 `MNEMOTRACE_LLM` 时该分支不执行，zero-setup 不受影响 |
+| 开关                                                    | 默认    | 影响层                                 | 作用                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------- | ------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `w_sem`, `w_lex`, `w_graph`, `w_rec`, `w_sal` | numeric | Hybrid retrieval                       | 检索融合权重                                                                                                                                                                                                                                                            |
+| `top_k`, `candidate_k`, `rrf_k`                   | numeric | Retrieval                              | 候选池和 RRF 控制                                                                                                                                                                                                                                                       |
+| `max_hops`                                            | numeric | Graph                                  | 图扩展跳数                                                                                                                                                                                                                                                              |
+| `abstain_threshold`                                   | numeric | Search                                 | 证据不足时拒答                                                                                                                                                                                                                                                          |
+| `evidence_planner`                                    | true    | Read path                              | 按问题形态组织证据                                                                                                                                                                                                                                                      |
+| `evidence_budgeting`                                  | true    | Context packing                        | 按证据类型优先级裁剪                                                                                                                                                                                                                                                    |
+| `explicit_preference_extraction`                      | true    | Extraction                             | 显式偏好事实抽取                                                                                                                                                                                                                                                        |
+| `preference_object_filter`                            | true    | Extraction precision                   | 过滤弱对象偏好                                                                                                                                                                                                                                                          |
+| `preference_object_normalization`                     | true    | Extraction canonicalization            | 规范化偏好对象                                                                                                                                                                                                                                                          |
+| `preference_reversal_extraction`                      | true    | Conflict/history                       | 抽取偏好反转并触发 supersedes                                                                                                                                                                                                                                           |
+| `procedural_extraction`                               | true    | Extraction                             | 从 runbook/how-to 抽过程事实                                                                                                                                                                                                                                            |
+| `procedural_memory`                                   | true    | Read path                              | 过程记忆独立读层                                                                                                                                                                                                                                                        |
+| `summary_fallback`                                    | true    | Search/read fallback                   | fact miss 时查 source-backed summaries                                                                                                                                                                                                                                  |
+| `chain_evidence`                                      | true    | Temporal/history + Raw evidence fusion | 展开 bounded supersedes chain，并让 chain facts 可作为 provenance raw chunk promotion 的种子                                                                                                                                                                            |
+| `temporal_history_queries`                            | true    | Temporal                               | 自然语言历史问题                                                                                                                                                                                                                                                        |
+| `provenance_chunk_promotion`                          | true    | Raw evidence fusion                    | fact 命中后提升源 Episode chunk                                                                                                                                                                                                                                         |
+| `provenance_evidence`                                 | true    | Context                                | 带来源证据块                                                                                                                                                                                                                                                            |
+| `numeric_aggregation_candidates`                      | true    | Aggregation                            | 数值候选表                                                                                                                                                                                                                                                              |
+| `aggregation_recall_expansion`                        | true    | Evidence planner                       | 聚合高召回子查询                                                                                                                                                                                                                                                        |
+| `aggregation_constraint_filter`                       | true    | Aggregation precision                  | 本地题面约束过滤                                                                                                                                                                                                                                                        |
+| `graph_proximity`                                     | true    | Hybrid retrieval                       | 图邻近度检索                                                                                                                                                                                                                                                            |
+| `graph_relation_awareness`                            | true    | Graph scoring                          | relation 与 query 对齐                                                                                                                                                                                                                                                  |
+| `graph_path_reinforcement`                            | true    | Graph scoring                          | path hit 强化                                                                                                                                                                                                                                                           |
+| `graph_self_anchor`                                   | true    | Entity anchoring                       | self/my/I 锚点                                                                                                                                                                                                                                                          |
+| `graph_entity_alias_anchor`                           | true    | Entity anchoring                       | alias 锚点                                                                                                                                                                                                                                                              |
+| `graph_negative_constraints`                          | true    | Graph filtering                        | 负约束排除                                                                                                                                                                                                                                                              |
+| `planner_location_chains`                             | true    | Multi-hop planner                      | 地点链路                                                                                                                                                                                                                                                                |
+| `planner_project_chains`                              | true    | Multi-hop planner                      | 项目链路                                                                                                                                                                                                                                                                |
+| `session_outcomes`                                    | true    | System-2 / 会话生命周期                | `close_session` 时蒸馏会话结论。该蒸馏分支在满足条件的每次关闭调用中使用一次 LLM：`MNEMOTRACE_SESSION_OUTCOMES=0` 是运维强制开关（在 `close_session` 里覆盖请求体，`outcomes: true` 也无法解除）；未配置 `MNEMOTRACE_LLM` 时该分支不执行，zero-setup 不受影响 |
 
-验收规则：
-
-1. 影响 harness 的算法开关须在 `eval/bench.py::mnemotrace_config` 中可关闭。`session_outcomes`
-   属于 close_session 生命周期，标准 benchmark 不调用该入口，需用会话与持久化回归独立验证。
-2. 新增算法路径必须有目标单测或离线 ablation。
-3. 影响 read path/fusion 的改动必须留下真实 benchmark 切片日志。
-4. 准备影响公开数字时，必须跑完整或明确标注探索，不允许只凭小样本宣传。
+开关与消融的验收要求见 [AGENTS.md 的验证与完成](../AGENTS.md#验证与完成)。`session_outcomes` 的独立会话生命周期见上表。
 
 ## 10. 服务层与产品入口
 
 `MemoryService` 是 HTTP、MCP 和管理控制台共用的多租户核心，负责 Memory 懒加载、LRU 热用户、
 持久化、服务写锁和管理操作。调用面按下表映射到同一实现。
 
-| 能力 | 服务/模块 | 入口 |
-| --- | --- | --- |
-| 消息与导入 | remember、import_、connectors | /v1/remember、/v1/import、MCP |
-| 召回与回答 | recall、recall_multi | /v1/recall、MCP recall/search |
-| 事实管理 | add_fact、update_fact、delete_fact、clear_slot | fact APIs；clear-slot 仅 HTTP |
-| 画像、关注点与策略 | structured_profile、set_focus、set_policy | profile/focus/policy APIs |
-| 工作记忆与冲突 | working_memory、clear_working、resolve_conflict | working/conflict APIs |
-| 会话管理 | sessions、close_session、session_report | session APIs 与 MCP |
-| 图谱、审计与统计 | graph、audit、stats、agent_status | graph/audit/stats/agent APIs |
-| 导出与空间擦除 | export、forget | export/forget APIs |
-| 自动喂入 | connectors.watch、session_hook、watch_install | mnemotrace-watch、SessionEnd hook |
+| 能力               | 服务/模块                                       | 入口                              |
+| ------------------ | ----------------------------------------------- | --------------------------------- |
+| 消息与导入         | remember、import_、connectors                   | /v1/remember、/v1/import、MCP     |
+| 召回与回答         | recall、recall_multi                            | /v1/recall、MCP recall/search     |
+| 事实管理           | add_fact、update_fact、delete_fact、clear_slot  | fact APIs；clear-slot 仅 HTTP     |
+| 画像、关注点与策略 | structured_profile、set_focus、set_policy       | profile/focus/policy APIs         |
+| 工作记忆与冲突     | working_memory、clear_working、resolve_conflict | working/conflict APIs             |
+| 会话管理           | sessions、close_session、session_report         | session APIs 与 MCP               |
+| 图谱、审计与统计   | graph、audit、stats、agent_status               | graph/audit/stats/agent APIs      |
+| 导出与空间擦除     | export、forget                                  | export/forget APIs                |
+| 自动喂入           | connectors.watch、session_hook、watch_install   | mnemotrace-watch、SessionEnd hook |
 
 `stats.feed` 从 agent-session Episode 派生最近喂入时间、会话与结论计数，不另存一份状态；
 agent_status 复用它并给出可执行的下一步建议。SDK、安装命令及 MCP 使用新产品前缀，
@@ -814,17 +822,17 @@ flowchart LR
     MEM --> JSONL["manifest + JSONL collections"]
 ```
 
-| 环节 | 当前行为与边界 |
-| --- | --- |
-| 静态 key | MNEMOTRACE_API_KEYS 使用 tenant:key，同租户可多 key，同 key 不可映射多租户；合法配置逐项恒定时间比较 |
-| 多空间 | MNEMOTRACE_SPACES 为 key 指定 home/read/write，space-aware remember/recall 先解析 Principal，其余管理路由沿 auth 的 home 字符串路径 |
-| 字符校验 | spaces.py 共用 is_valid_api_key/AuthConfigError，凭据须非空可打印 ASCII；中文租户名不受该凭据规则限制 |
-| 失败路径 | 非法 Bearer 字符返回 401，非法 key 字符配置映射为 503且不回显 key；空头按匿名开关处理 |
-| 开放模式 | 仅显式 MNEMOTRACE_OPEN=1 启用；无 Bearer 的匿名访问还须 MNEMOTRACE_ALLOW_ANONYMOUS=1 |
-| 普通与演示空间 | test、1 是普通空间；anonymous、mnemotrace-test 受 forget 保护；其余空间擦除须显式 confirm=true |
-| 请求体 | 默认 2 MiB，可配置正整数；检查 Content-Length 和实际流式字节，字段另有长度和数量约束，超限返回 413/422 |
-| 健康 | /health 提供 liveness 与诊断，/ready 依鉴权和数据目录写入条件返回 readiness；存活不代表业务已就绪 |
-| 容器与发布 | 非 root、只读根、cap drop、持久 /data、本机端口；CI 检查版本、许可、证据、构建和容器 |
+| 环节           | 当前行为与边界                                                                                                                      |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| 静态 key       | MNEMOTRACE_API_KEYS 使用 tenant:key，同租户可多 key，同 key 不可映射多租户；合法配置逐项恒定时间比较                                |
+| 多空间         | MNEMOTRACE_SPACES 为 key 指定 home/read/write，space-aware remember/recall 先解析 Principal，其余管理路由沿 auth 的 home 字符串路径 |
+| 字符校验       | spaces.py 共用 is_valid_api_key/AuthConfigError，凭据须非空可打印 ASCII；中文租户名不受该凭据规则限制                               |
+| 失败路径       | 非法 Bearer 字符返回 401，非法 key 字符配置映射为 503且不回显 key；空头按匿名开关处理                                               |
+| 开放模式       | 仅显式 MNEMOTRACE_OPEN=1 启用；无 Bearer 的匿名访问还须 MNEMOTRACE_ALLOW_ANONYMOUS=1                                                |
+| 普通与演示空间 | test、1 是普通空间；anonymous、mnemotrace-test 受 forget 保护；其余空间擦除须显式 confirm=true                                      |
+| 请求体         | 默认 2 MiB，可配置正整数；检查 Content-Length 和实际流式字节，字段另有长度和数量约束，超限返回 413/422                              |
+| 健康           | /health 提供 liveness 与诊断，/ready 依鉴权和数据目录写入条件返回 readiness；存活不代表业务已就绪                                   |
+| 容器与发布     | 非 root、只读根、cap drop、持久 /data、本机端口；CI 检查版本、许可、证据、构建和容器                                                |
 
 配置解析保留首尾空白及分隔符规则。多空间无效 JSON/非对象配置仍回退为空配置，不能将字符校验
 描述为所有配置错误均严格拒绝。相关验证见[鉴权字符边界](../results/api_key_character_validation.md)、
@@ -1025,14 +1033,14 @@ flowchart TD
 
 主要系统：
 
-| 系统 | 类 | 用途 |
-| --- | --- | --- |
-| `full_context` | `FullContextSystem` | 必须对照的完整上下文 baseline |
-| `rag` | `RAGSystem` | 简单向量检索 baseline |
-| `mem0`, `zep`, `hipporag` | adapter classes | 对外部风格系统做可复现近似对照 |
-| `engram_full` | `MnemoTraceFullSystem` | 更完整上下文路径 |
-| `engram_lean` | `MnemoTraceLeanSystem` | 当前 headline 主系统 |
-| `engram_lean_no_*` | ablation classes | 验证某个模块是否真的有贡献 |
+| 系统                            | 类                       | 用途                           |
+| ------------------------------- | ------------------------ | ------------------------------ |
+| `full_context`                | `FullContextSystem`    | 必须对照的完整上下文 baseline  |
+| `rag`                         | `RAGSystem`            | 简单向量检索 baseline          |
+| `mem0`, `zep`, `hipporag` | adapter classes          | 对外部风格系统做可复现近似对照 |
+| `engram_full`                 | `MnemoTraceFullSystem` | 更完整上下文路径               |
+| `engram_lean`                 | `MnemoTraceLeanSystem` | 当前 headline 主系统           |
+| `engram_lean_no_*`            | ablation classes         | 验证某个模块是否真的有贡献     |
 
 每条日志应至少让维护者追踪：
 
@@ -1053,15 +1061,7 @@ facility 分析器识别新旧工具前缀仅用于只读历史 transcript，不
 
 ## 12. 改动验收分层
 
-算法变动按影响范围选择真实数据验收，并保存可复现证据；局部改动不必一律运行完整 500 题。
-
-| 改动范围 | 必做 | 建议数据规模 |
-| --- | --- | --- |
-| 文档-only | `git diff --check` | 不需要 benchmark |
-| 局部抽取规则 | 目标单测 +`eval/ablate_features.py` | 小切片 + 相关 qid |
-| evidence planner / fusion | 单测 + 真实 benchmark 切片 JSONL | 相关类别 20 到 50 条起 |
-| read path 大改 | 单测 + ablation + full-context 对照 | 100 条或完整 500 |
-| public number | validator + raw logs committed | 完整 benchmark |
+项目验收分层统一见 [AGENTS.md 的验证与完成](../AGENTS.md#验证与完成)。本节保留执行工具入口。
 
 标准命令入口：
 
@@ -1079,16 +1079,16 @@ python eval/validate_results.py
 
 有实现与证据索引的方向：
 
-| 方向 | 解决的架构问题 | 证据入口 |
-| --- | --- | --- |
-| preference extraction/filter/normalization/reversal | 让画像偏好更准，并能处理“不再喜欢” | `docs/architecture-optimization-map.zh-CN.md` |
-| summary fallback | fact miss 时不直接丢失 session 层证据 | `results/summary_fallback_experiments.md` |
-| provenance chunk promotion | 命中 fact 后回源 Episode 补 raw detail | `results/provenance_chunk_promotion_experiments.md` |
-| chain provenance promotion | previous-value 问题中，`supersedes` 链上的旧事实来源也能提升为 raw detail chunk | `results/chain_provenance_promotion_experiments.md` |
-| procedural memory/extraction | 把规则、流程、runbook 从普通语义事实中分层 | `results/procedural_memory_experiments.md` |
-| numeric aggregation candidates | 对金额/页数/小时等聚合问题给结构化候选 | `results/numeric_aggregation_candidates_experiments.md` |
-| aggregation recall expansion | 提升聚合问题 raw/fact 召回 | `results/aggregation_recall_expansion_experiments.md` |
-| aggregation constraint filter | 用题面月份等约束减少错误候选 | `results/aggregation_constraint_filter_experiments.md` |
+| 方向                                                | 解决的架构问题                                                                    | 证据入口                                                  |
+| --------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| preference extraction/filter/normalization/reversal | 让画像偏好更准，并能处理“不再喜欢”                                              | `docs/architecture-optimization-map.zh-CN.md`           |
+| summary fallback                                    | fact miss 时不直接丢失 session 层证据                                             | `results/summary_fallback_experiments.md`               |
+| provenance chunk promotion                          | 命中 fact 后回源 Episode 补 raw detail                                            | `results/provenance_chunk_promotion_experiments.md`     |
+| chain provenance promotion                          | previous-value 问题中，`supersedes` 链上的旧事实来源也能提升为 raw detail chunk | `results/chain_provenance_promotion_experiments.md`     |
+| procedural memory/extraction                        | 把规则、流程、runbook 从普通语义事实中分层                                        | `results/procedural_memory_experiments.md`              |
+| numeric aggregation candidates                      | 对金额/页数/小时等聚合问题给结构化候选                                            | `results/numeric_aggregation_candidates_experiments.md` |
+| aggregation recall expansion                        | 提升聚合问题 raw/fact 召回                                                        | `results/aggregation_recall_expansion_experiments.md`   |
+| aggregation constraint filter                       | 用题面月份等约束减少错误候选                                                      | `results/aggregation_constraint_filter_experiments.md`  |
 
 本表只列能力与证据入口，具体改动取舍和测量边界见[架构优化地图](architecture-optimization-map.zh-CN.md)。
 
@@ -1096,105 +1096,81 @@ python eval/validate_results.py
 
 未解决问题以[问题台账](known-issues.zh-CN.md)为准，主要边界如下：
 
-| 层级 | 边界与入口 |
-| --- | --- |
-| HTTP/租户存储 | 静态文件越界与旧目录所有权冲突已完成本地修复；线上升级未核验，运行时只使用摘要目录，旧库需显式确认归属与迁移，见第 6.3、10.7 节 |
-| 提取与证据 | [场景决定进入偏好](known-issues.zh-CN.md#issue-003)、[上下文范围与重复](known-issues.zh-CN.md#issue-004)、[结论重复](known-issues.zh-CN.md#issue-005) |
-| 控制台 | [CSP/历史凭据](known-issues.zh-CN.md#issue-013)、[图谱截断](known-issues.zh-CN.md#issue-014)、[辅助查询卸载草稿](known-issues.zh-CN.md#issue-016) |
-| 迁移与验证 | [旧 pickle 类型解析](known-issues.zh-CN.md#issue-015)、[提示词完整质量评测](known-issues.zh-CN.md#issue-012) |
+| 层级          | 边界与入口                                                                                                                                         |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HTTP/租户存储 | 静态文件越界与旧目录所有权冲突已完成本地修复；线上升级未核验，运行时只使用摘要目录，旧库需显式确认归属与迁移，见第 6.3、10.7 节                    |
+| 提取与证据    | [场景决定进入偏好](known-issues.zh-CN.md#issue-003)、[上下文范围与重复](known-issues.zh-CN.md#issue-004)、[结论重复](known-issues.zh-CN.md#issue-005) |
+| 控制台        | [CSP/历史凭据](known-issues.zh-CN.md#issue-013)、[图谱截断](known-issues.zh-CN.md#issue-014)、[辅助查询卸载草稿](known-issues.zh-CN.md#issue-016)     |
+| 迁移与验证    | [旧 pickle 类型解析](known-issues.zh-CN.md#issue-015)、[提示词完整质量评测](known-issues.zh-CN.md#issue-012)                                         |
 
 以下为算法候选方向，不表示已实现或已取得对应效果：
 
-| 优先级 | 方向 | 主要代码 | 为什么是下一步 |
-| --- | --- | --- | --- |
-| P0 | Raw evidence fusion hardening | `Memory.lean_context`, `_provenance_detail_chunks`, `retrieve_episodes` | 继续强化已有 chain-to-raw 来源衔接，减少重复并保持细节 |
-| P0 | Chain-aware retrieval | `_chain_facts_for_seeds`, `_fact_evolution_block`, `HybridRetriever` | knowledge-update/current-vs-past 是 MnemoTrace 的差异化；下一步扩展多段演化链和 profile-level chain |
-| P1 | Graph proximity / multi-hop retriever | `HybridRetriever._graph_scores`, `MultiHopPlanner`, `_graph_paths_block` | multi-hop/multi-session 是长期记忆系统最难类别 |
-| P1 | Temporal interval reasoning | temporal/history blocks, aggregation/duration | duration 和区间问题仍需要更强结构化 |
-| P2 | Runtime profiles | `Config`, `eval/bench.py` | 让用户按 lite/standard/graph 选择可测 tradeoff |
+| 优先级 | 方向                                  | 主要代码                                                                       | 为什么是下一步                                                                                      |
+| ------ | ------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| P0     | Raw evidence fusion hardening         | `Memory.lean_context`, `_provenance_detail_chunks`, `retrieve_episodes`  | 继续强化已有 chain-to-raw 来源衔接，减少重复并保持细节                                              |
+| P0     | Chain-aware retrieval                 | `_chain_facts_for_seeds`, `_fact_evolution_block`, `HybridRetriever`     | knowledge-update/current-vs-past 是 MnemoTrace 的差异化；下一步扩展多段演化链和 profile-level chain |
+| P1     | Graph proximity / multi-hop retriever | `HybridRetriever._graph_scores`, `MultiHopPlanner`, `_graph_paths_block` | multi-hop/multi-session 是长期记忆系统最难类别                                                      |
+| P1     | Temporal interval reasoning           | temporal/history blocks, aggregation/duration                                  | duration 和区间问题仍需要更强结构化                                                                 |
+| P2     | Runtime profiles                      | `Config`, `eval/bench.py`                                                  | 让用户按 lite/standard/graph 选择可测 tradeoff                                                      |
 
-每一步都必须：
-
-1. 在 `Config` 中可开关。
-2. 在 `eval/bench.py` 中可 ablate。
-3. 在 `results/` 留下实验日志。
-4. 更新 `docs/architecture-optimization-map.zh-CN.md`。
-5. 如果改动数据流、生命周期、服务接口或对象关系，同步更新本文。
+候选方向的开关、消融与实验要求见 [验证与完成](../AGENTS.md#验证与完成)，文档同步要求见 [文档更新](../AGENTS.md#documentation)。
 
 ## 15. 代码定位索引
 
-| 问题 | 看哪里 |
-| --- | --- |
-| 一条消息怎么写进去 | `mnemotrace/memory.py::add`, `mnemotrace/ingest/` |
-| 为什么 raw Episode 不能删 | `mnemotrace/types.py::Episode`, `AGENTS.md` mission |
-| Fact 双时间轴在哪里 | `mnemotrace/types.py::Fact` |
-| 冲突怎么变 supersedes | `mnemotrace/consolidate/conflict.py` |
-| consolidation 主流程 | `mnemotrace/consolidate/engine.py::ConsolidationEngine.consolidate` |
-| 图谱怎么建 | `mnemotrace/consolidate/graph_builder.py` |
-| 会话结论怎么来的 | `mnemotrace/consolidate/outcomes.py`, `mnemotrace/service.py::MemoryService.close_session` |
-| 记忆体检规则在哪 | `mnemotrace/service.py::MemoryService.audit`（`slot_overflow` 的边界是 `structured._BASIC` 减 `_MULTI_VALUED_FIELDS`） |
-| 批量硬删除在哪 | `mnemotrace/service.py::MemoryService.clear_slot`, `mnemotrace/server/app.py::clear_slot` |
-| 问题怎么分类 | `mnemotrace/retrieve/evidence.py::plan_evidence` |
-| 多信号检索 | `mnemotrace/retrieve/hybrid.py::HybridRetriever.retrieve` |
-| 多跳规划 | `mnemotrace/retrieve/planner.py::MultiHopPlanner` |
-| 聚合候选 | `mnemotrace/retrieve/aggregate.py` |
-| context 怎么拼 | `mnemotrace/memory.py::lean_context` |
-| direct search | `mnemotrace/memory.py::search` |
-| as-of/history | `mnemotrace/memory.py::as_of`, `_history_block`, `_fact_evolution_block` |
-| raw chunks | `mnemotrace/memory.py::retrieve_episodes`, `_provenance_detail_chunks` |
-| summary | `summarize_episodes`, `retrieve_summaries` |
-| 服务层 | `mnemotrace/service.py::MemoryService` |
-| HTTP API | `mnemotrace/server/app.py` |
-| MCP tools | `mnemotrace/mcp/server.py` |
-| 持久化格式 | `mnemotrace/store/persist.py` |
-| 命名空间安全映射 | `mnemotrace/service.py::_safe_user`, `_contained_child`, `_path` |
-| 容器与单节点部署 | `Dockerfile`, `deploy/docker-compose.yml`, `deploy/mnemotrace.service` |
-| 版本与发布门禁 | `mnemotrace/__init__.py::__version__`, `scripts/check_release.py` |
-| benchmark | `eval/bench.py` |
+| 问题                      | 看哪里                                                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 一条消息怎么写进去        | `mnemotrace/memory.py::add`, `mnemotrace/ingest/`                                                                          |
+| 为什么 raw Episode 不能删 | `mnemotrace/types.py::Episode`, `AGENTS.md` mission                                                                        |
+| Fact 双时间轴在哪里       | `mnemotrace/types.py::Fact`                                                                                                  |
+| 冲突怎么变 supersedes     | `mnemotrace/consolidate/conflict.py`                                                                                         |
+| consolidation 主流程      | `mnemotrace/consolidate/engine.py::ConsolidationEngine.consolidate`                                                          |
+| 图谱怎么建                | `mnemotrace/consolidate/graph_builder.py`                                                                                    |
+| 会话结论怎么来的          | `mnemotrace/consolidate/outcomes.py`, `mnemotrace/service.py::MemoryService.close_session`                                 |
+| 记忆体检规则在哪          | `mnemotrace/service.py::MemoryService.audit`（`slot_overflow` 的边界是 `structured._BASIC` 减 `_MULTI_VALUED_FIELDS`） |
+| 批量硬删除在哪            | `mnemotrace/service.py::MemoryService.clear_slot`, `mnemotrace/server/app.py::clear_slot`                                  |
+| 问题怎么分类              | `mnemotrace/retrieve/evidence.py::plan_evidence`                                                                             |
+| 多信号检索                | `mnemotrace/retrieve/hybrid.py::HybridRetriever.retrieve`                                                                    |
+| 多跳规划                  | `mnemotrace/retrieve/planner.py::MultiHopPlanner`                                                                            |
+| 聚合候选                  | `mnemotrace/retrieve/aggregate.py`                                                                                           |
+| context 怎么拼            | `mnemotrace/memory.py::lean_context`                                                                                         |
+| direct search             | `mnemotrace/memory.py::search`                                                                                               |
+| as-of/history             | `mnemotrace/memory.py::as_of`, `_history_block`, `_fact_evolution_block`                                                 |
+| raw chunks                | `mnemotrace/memory.py::retrieve_episodes`, `_provenance_detail_chunks`                                                     |
+| summary                   | `summarize_episodes`, `retrieve_summaries`                                                                                 |
+| 服务层                    | `mnemotrace/service.py::MemoryService`                                                                                       |
+| HTTP API                  | `mnemotrace/server/app.py`                                                                                                   |
+| MCP tools                 | `mnemotrace/mcp/server.py`                                                                                                   |
+| 持久化格式                | `mnemotrace/store/persist.py`                                                                                                |
+| 命名空间安全映射          | `mnemotrace/service.py::_safe_user`, `_contained_child`, `_path`                                                         |
+| 容器与单节点部署          | `Dockerfile`, `deploy/docker-compose.yml`, `deploy/mnemotrace.service`                                                   |
+| 版本与发布门禁            | `mnemotrace/__init__.py::__version__`, `scripts/check_release.py`                                                          |
+| benchmark                 | `eval/bench.py`                                                                                                              |
 
-| 控制台问题 | 看哪里 |
-| --- | --- |
-| 凭据和查询生命周期 | frontend/src/store/auth.ts、main.tsx、lib/api.ts、store/queryErrors.ts |
-| 展示偏好与主题 | frontend/src/store/preferences.ts、store/theme.ts、lib/themeReveal.ts |
-| 图谱模型、渲染、视角与轨迹 | frontend/src/vendor/quartz/{model,graph,view,motion,types}.ts |
-| 页面筛选、来源与会话 | frontend/src/hooks/queries.ts、pages/{Facts,Profile,Journal,Conversations}.tsx |
-| 体检与错误展示 | frontend/src/pages/Health.tsx、components/GlobalErrorBanner.tsx |
-| 登录装饰 | frontend/src/pages/LoginMemoryGraph.tsx、LoginParticles.tsx、loginMemoryGraph*.ts |
-| 公开静态网页 | landing/index.html.in、landing/pages.json、scripts/build_landing_pages.py |
+| 控制台问题                 | 看哪里                                                                            |
+| -------------------------- | --------------------------------------------------------------------------------- |
+| 凭据和查询生命周期         | frontend/src/store/auth.ts、main.tsx、lib/api.ts、store/queryErrors.ts            |
+| 展示偏好与主题             | frontend/src/store/preferences.ts、store/theme.ts、lib/themeReveal.ts             |
+| 图谱模型、渲染、视角与轨迹 | frontend/src/vendor/quartz/{model,graph,view,motion,types}.ts                     |
+| 页面筛选、来源与会话       | frontend/src/hooks/queries.ts、pages/{Facts,Profile,Journal,Conversations}.tsx    |
+| 体检与错误展示             | frontend/src/pages/Health.tsx、components/GlobalErrorBanner.tsx                   |
+| 登录装饰                   | frontend/src/pages/LoginMemoryGraph.tsx、LoginParticles.tsx、loginMemoryGraph*.ts |
+| 公开静态网页               | landing/index.html.in、landing/pages.json、scripts/build_landing_pages.py         |
 
 ## 16. 架构不变量
 
-这些是实现与验收必须遵守的约束；已知缺口按第 14 节和问题台账跟踪：
-
-1. 自动矛盾处理必须非破坏性失效，保留来源与替代链。显式单条擦除可以删除指定历史事实；
-   clear_slot 的批量擦除只选 live 非手写事实，不能顺带抹掉整条 supersedes 历史。
-2. 不把 facts-only 当成默认 QA 主路径。
-3. 不让 LLM 成为 zero-setup 必需依赖。
-4. 不让 recency/salience 这种 prior 单独伪装成证据。
-5. 不让 benchmark 分支读取数据集标签做投机。
-6. 不发布没有 raw JSONL 的数字。
-7. 不把 ephemeral/working memory 静默写成长期画像。
-8. 不新增不可 ablate 的算法路径。
-9. 不在公开文案里使用未经可复现验证的 “SOTA/#1/1M” 等主张。
-10. 不把原始 tenant/user 文本直接拼进文件路径；删除目标必须是数据根目录的已验证子项。
-11. 生产 HTTP 服务不默认开启 open/anonymous；liveness 不能替代 readiness。
+项目不变量统一维护在 [AGENTS.md](../AGENTS.md)：[记忆完整性与服务边界](../AGENTS.md#principle-iv)、[检索组合](../AGENTS.md#principle-vi)、[离线依赖](../AGENTS.md#principle-iii)与[评测证据](../AGENTS.md#principle-i)。已知缺口按第 14 节和问题台账跟踪；具体实现契约见本文各模块。
 
 ## 17. 文档维护规则
 
-本报告按模块维护当前实现。改动生效后更新对应章节中的数据流、对象生命周期、接口和边界，
-将重复内容合并，删除已失效的实现说明；不在文件头部或末尾按日期堆叠变更记录。
+本报告的维护要求统一见 [AGENTS.md 的文档更新](../AGENTS.md#documentation)。以下只列内容位置，便于按模块查找。
 
-| 内容 | 维护位置 |
-| --- | --- |
-| 当前对象与写入、整理、存储、读取流程 | 本文第 3～8 节 |
-| 算法开关及其影响面 | 本文第 9 节、Config 与 harness |
-| 服务、鉴权、部署、控制台与可视化 | 本文第 6、10、15、16 节；交付范围同时更新交付说明 |
-| 评测流程和验收原则 | 本文第 11～12 节 |
-| 改动原因、重要取舍、未采用方案和实验索引 | 架构优化地图中的对应条目 |
-| 命令、测试数量、环境、输出和测量限制 | 对应 results 验收文档或原始日志；本文以链接引用 |
-| 未解决风险、需求、待验证行为和验收条件 | known-issues.zh-CN.md；本文仅保留必要边界与链接 |
-| 公开 benchmark 数字 | RESULTS.md、README 两种语言、落地页及已提交原始日志，遵守 CONTRIBUTING.md |
-
-不要把操作过程、用户对话、截图调整顺序或各轮通过数量写成架构章节。重要历史决策确有保留价值时，
-在优化地图记录原因并链接原始证据，避免让当前说明书同时描述互相替代的方案。
-移动章节后检查编号、内部链接、外部深链接和代码位置；文档整理本身不改变算法、接口或存储行为。
+| 内容                                   | 位置                              |
+| -------------------------------------- | --------------------------------- |
+| 对象与写入、整理、存储、读取流程       | 本文第 3～8 节                    |
+| 算法开关及其影响面                     | 本文第 9 节、Config 与 harness    |
+| 服务、鉴权、部署、控制台与可视化       | 本文第 6、10、15、16 节；交付说明 |
+| 评测流程与验收入口                     | 本文第 11～12 节                  |
+| 改动原因、取舍、未采用方案与实验索引   | 架构优化地图                      |
+| 命令、环境、输出与测量限制             | results 验收文档或原始日志        |
+| 未解决风险、需求、待验证行为与验收条件 | known-issues.zh-CN.md             |
+| 公开 benchmark 数字                    | RESULTS.md 及其引用的原始日志     |

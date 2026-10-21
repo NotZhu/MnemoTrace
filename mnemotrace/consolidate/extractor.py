@@ -1,7 +1,7 @@
 """离线、确定性的 (subject, predicate, object) 提取器。
 
 这是零依赖的回退实现。它处理 demo 和测试用到的常见第一/第三人称句式；有意不做通用化。
-生产环境在相同的 `.extract(episode) -> list[Fact]` API 后面换用 LLM 提取器（CLAUDE.md §3, §8）。
+生产环境在相同的 `.extract(episode) -> list[Fact]` API 后面换用 LLM 提取器（AGENTS.md 「架构概览与代码导航」, 「核心不变量」）。
 保持 API 一致，离线 demo 和 GPT/Kimi/DeepSeek 驱动的运行才能共享其余整条管线。
 """
 from __future__ import annotations

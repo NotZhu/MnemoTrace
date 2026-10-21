@@ -1,4 +1,4 @@
-"""跑在 MnemoTrace harness 上的 LongMemEval 运行器（CLAUDE.md §4）。
+"""跑在 MnemoTrace harness 上的 LongMemEval 运行器（AGENTS.md 「评测、公开内容与贡献规则」）。
 
     # 对内置样本做端到端 QA + full-context 基线（需要 LLM key）
     python eval/longmemeval.py --mode qa --limit 4
@@ -118,7 +118,7 @@ def extract_answer(pred: str) -> str:
     return text
 
 
-# ---- L2 session map + L3 user persona（CLAUDE.md §3 分层抽象）----
+# ---- L2 session map + L3 user persona（AGENTS.md 「架构概览与代码导航」 分层抽象）----
 # 领先的 agent-memory 系统都有这两层（腾讯 Agent-Memory 的 L2 场景块 + L3 画像，火山 OpenViking 的
 # User-Memory + L0/L1/L2 分层），恰好补强我们的两个弱项类别：
 #   L2 session map  -> 多会话聚合（计数/列举/对比时不漏会话）
@@ -161,7 +161,7 @@ def build_persona(llm, history_text: str) -> str:
         return ""
 
 
-# ---- 针对两个弱项类别的作答策略（CLAUDE.md Bet B）----
+# ---- 针对两个弱项类别的作答策略（AGENTS.md Bet B）----
 # 按问题文本路由，而非 benchmark 的类别标签，这样逻辑能泛化到真实使用场景（部署系统看不到
 # 'question_type'），也不是在钻评测空子。
 
@@ -260,7 +260,7 @@ def official_judge_prompt(task: str, question: str, answer: str, response: str, 
     逐字匹配官方 prompt，我们的数字才能与已发布的榜单直接可比（OMEGA 95.4、Mem0 94.4、Hunyuan 85.2）。
     这些 prompt 刻意按类别区分，且比朴素的"信息一致吗"judge 更宽松 —— temporal 容忍差一天；
     knowledge-update 接受同时复述旧信息的答案；preference 是 rubric 制，不必覆盖每一条。用更严格的
-    judge 会压低我们的分数并失去可比性（CLAUDE.md Bet D：做可信的记分板 —— 意味着按 benchmark 定义
+    judge 会压低我们的分数并失去可比性（AGENTS.md Bet D：做可信的记分板 —— 意味着按 benchmark 定义
     的方式打分，而不是更严）。"""
     if abstention:
         return ("I will give you an unanswerable question, an explanation, and a response from a model. "

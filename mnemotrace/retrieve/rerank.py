@@ -1,4 +1,4 @@
-"""Cross-encoder 重排器(CLAUDE.md L1 strong retrieval)。bi-encoder(BGE)提供廉价的候选池;
+"""Cross-encoder 重排器(AGENTS.md「检索与模块」)。bi-encoder(BGE)提供廉价的候选池;
 cross-encoder 对 (query, passage) 联合重打分,大幅提高"哪些 session/chunk 真正回答了问题"的精度。
 这是对 LongMemEval _S 杠杆最大的检索升级。"""
 from __future__ import annotations

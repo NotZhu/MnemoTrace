@@ -1,4 +1,4 @@
-"""诚实的结果报告器（CLAUDE.md Bet D）：从 bench.py 输出的 JSONL，为日志里的每个系统打印三元组 ——
+"""诚实的结果报告器（AGENTS.md Bet D）：从 bench.py 输出的 JSONL，为日志里的每个系统打印三元组 ——
 准确率 + token + 延迟 —— 按类别和总体。
 
     python eval/report.py data/star.jsonl [more.jsonl ...]

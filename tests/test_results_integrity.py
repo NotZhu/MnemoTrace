@@ -111,7 +111,7 @@ def test_zero_setup_prints_system_scoped_evidence_requirements():
 
 
 def test_public_evidence_docs_explain_system_scoped_validation():
-    for rel in ("CONTRIBUTING.md", "RESULTS.md", "eval/README.md", "results/README.md"):
+    for rel in ("AGENTS.md", "RESULTS.md", "eval/README.md", "results/README.md"):
         text = (ROOT / rel).read_text(encoding="utf-8")
         assert "--system" in text, f"{rel} must document system-scoped evidence validation"
 
@@ -343,17 +343,16 @@ def test_public_headline_claims_are_traceable_to_results():
         assert "RESULTS.md" in text, f"{rel} must link headline claims back to methodology/raw logs"
 
 
-def test_contributor_headline_claims_match_results():
-    # CLAUDE.md/AGENTS.md 仍以它自己的口径（已退役 judge）描述 M1 里程碑；它们是贡献者历史，
-    # 不是公开的主记录数字。
-    expected_claims = ("83.6", "73.2", "+10.4", "9.6k", "79k")
-    stale_claims = ("74.8", "+8.8")
-    for rel in ("AGENTS.md", "CLAUDE.md"):
+def test_contributor_docs_link_to_results_without_copying_headline_claims():
+    # Rules point to the versioned evidence; they do not cache a particular run's scores.
+    for rel in ("AGENTS.md", "CONTRIBUTING.md"):
         text = (ROOT / rel).read_text(encoding="utf-8")
-        for claim in expected_claims:
-            assert claim in text, f"{claim!r} missing from {rel}"
-        for claim in stale_claims:
-            assert claim not in text, f"stale claim {claim!r} found in {rel}"
+        assert "](RESULTS.md)" in text
+        assert (ROOT / "RESULTS.md").is_file()
+    for rel in ("AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", ".specify/memory/constitution.md"):
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        for claim in ("83.6", "73.2", "+10.4", "9.6k", "79k", "84.4", "78.8", "74.8", "+8.8"):
+            assert claim not in text, f"duplicated benchmark claim {claim!r} found in {rel}"
 
 
 def test_public_derived_headline_claims_match_raw_logs():

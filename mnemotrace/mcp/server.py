@@ -1,4 +1,4 @@
-"""mnemotrace_mcp — 忆痕 长期记忆的 Model Context Protocol 服务器（CLAUDE.md §6，
+"""mnemotrace_mcp — 忆痕 长期记忆的 Model Context Protocol 服务器（AGENTS.md 「代码导航」，
 2026 年 agent 技术栈中杠杆率最高的采用入口）。
 
 给任何 MCP 客户端（Claude Desktop、Claude Code、Cursor 等）一个持久的双时间轴记忆：它可以在

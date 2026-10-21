@@ -77,8 +77,8 @@ specs/002-memory-reference-radar/
 ### 源代码（仓库根目录）
 
 ```text
-AGENTS.md                 # Codex 会话使用的项目章程 / 上下文副本
-CLAUDE.md                 # Spec-Kit agent-context 配置使用的项目章程 / 上下文文件
+AGENTS.md                 # 项目章程与工作规则的唯一维护来源
+CLAUDE.md                 # Claude Code 导入入口，仅导入 AGENTS.md
 .specify/
 ├── feature.json          # 当前功能指针
 └── memory/

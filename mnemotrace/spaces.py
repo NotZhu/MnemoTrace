@@ -1,4 +1,4 @@
-"""记忆 space + 访问控制（CLAUDE.md §6——多 agent / 团队共享记忆）。
+"""记忆 space + 访问控制（AGENTS.md 「代码导航」——多 agent / 团队共享记忆）。
 
 *space* 就是记忆命名空间——正是 `MemoryService` 已有的键。一个 API key（一个 *principal*）
 可以写一个 space、读多个：自己的 + 共享团队 space + 某个终端用户的。

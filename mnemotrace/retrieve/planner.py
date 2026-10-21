@@ -1,4 +1,4 @@
-"""Multi-hop 查询规划器(CLAUDE.md Bet B)—— 全领域的软肋,我们的主攻目标。
+"""Multi-hop 查询规划器(AGENTS.md Bet B)—— 全领域的软肋,我们的主攻目标。
 
 把关系型问题("Where does Wei's colleague work?")分解成有序谓词链 [colleague, works_at],锚定在
 一个实体(Wei)上,然后逐跳遍历双时间轴图。只对真正的 multi-hop 问题触发(≥2 个谓词 + 已知锚点);

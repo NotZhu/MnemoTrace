@@ -25,7 +25,7 @@ All configuration flows through the extension's own config file at
 
 ```yaml
 # Path to the coding agent context file managed by this extension
-context_file: CLAUDE.md
+context_file: AGENTS.md
 
 # Delimiters for the managed Spec Kit section
 context_markers:
@@ -35,6 +35,10 @@ context_markers:
 
 - `context_file` — the project-relative path to the coding agent context file, written by `specify init` and `specify integration install`.
 - `context_markers.start` / `.end` — the delimiters around the managed section. Edit these to use custom markers.
+
+In MnemoTrace, this target is `AGENTS.md`, the single project-rule source.
+`CLAUDE.md` only imports that file. After reinitializing an integration, check
+the config against [the project rules](../../../AGENTS.md) before refreshing.
 
 ## Requirements
 

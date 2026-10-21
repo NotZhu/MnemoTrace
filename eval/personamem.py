@@ -1,4 +1,4 @@
-"""PersonaMem-v2 运行器（CLAUDE.md §4 目标 benchmark 第 4 项）。
+"""PersonaMem-v2 运行器（AGENTS.md 「评测、公开内容与贡献规则」 目标 benchmark 第 4 项）。
 
 PersonaMem 是四选一的 PERSONALIZATION 任务：给定一段隐含暴露用户偏好的长聊天历史（约 32k token），
 从 4 个候选回复中选出对 THIS 用户最个性化的那一个。三个干扰项指向看似合理但错误的偏好。打分是

@@ -40,9 +40,7 @@ MnemoTrace 的算法赌注是架构性的，而非单一的检索器技巧。系
    - 在 fact 之后添加原始 chunk，因为 fact 提供结构，而 chunk 找回抽取可能丢失的明细。
 
 5. 评测反馈平面
-   - 每个公开数字都必须来自已提交的 JSONL 日志。
-   - 每个表格都同时报告准确率、token 与 p50/p95 延迟。
-   - 每次基准比较都包含全上下文基线。
+   - 证据、指标与基线要求统一见 [AGENTS.md 的评测规则](../AGENTS.md#principle-i)。
    - 在加入路由前，跨日志比较在共享已评分 qid 上衡量骨干互补性。
 
 ## 读路径契约
@@ -62,20 +60,17 @@ MnemoTrace 的算法赌注是架构性的，而非单一的检索器技巧。系
 
 ## 架构不变量
 
-- 矛盾时不硬删除。被取代的 fact 仍可追溯审计。
-- 零配置正确性不依赖 LLM。LLM 可改进抽取或评分，但引擎仍必须离线确定性运行。
-- 不容许会损坏的回退。零依赖回退可能降级，但绝不悄然产生错误记忆：没有 LLM 时，agent 转录会被存储但不做规则抽取；当哈希嵌入器无法对 namespace 持有内容做 tokenize 时，审计会如实说明并指明迁移。
-- 一次 store 级删除，三重防护。`clear-slot` 是写侧唯一的硬删除；它需要所有者批准的计数，仅触及 live fact，且绝不移除所有者键入的内容。
-- 不容许纯 fact 问答。默认读路径将整合后的 fact 与原始会话 chunk 结合。
-- 不容许历史遗忘。历史值与更新问题应呈现 supersession 链，而非仅当前的 live slot head。
-- 不容许先验泄漏为证据。近因与显著度可打破平局，但无法将零证据的命中变成相关 fact。
-- 不容许仅用于基准的分支。查询规划依据证据形态，而非数据集标签。
-- 未经原始日志与验证，不容许公开声明。
+项目约束统一见 [零配置](../AGENTS.md#principle-ii)、[记忆完整性](../AGENTS.md#principle-iv)、
+[检索组合](../AGENTS.md#principle-vi)与[评测规则](../AGENTS.md#principle-i)。对应实现边界包括：
+
+- 无 LLM 时，agent 转录被存储但不做规则抽取；哈希嵌入器无法对 namespace 内容 tokenize 时，审计说明限制并指明迁移。
+- `clear-slot` 使用所有者批准的计数，仅选择 live 非手写事实；显式单条擦除与批量擦除的区别见全链路报告。
+- 历史值与更新问题呈现 supersession 链，而不只呈现当前 live slot head。
 
 ## 承重参数
 
 评测框架证明承重的融合权重、阈值与预算，连同各自所属的算法，已列表于
-[`architecture-optimization-map.zh-CN.md` § 算法流程与承重参数](architecture-optimization-map.zh-CN.md)。
+[架构优化地图：算法流程与承重参数](architecture-optimization-map.zh-CN.md)。
 该表为事实来源；本文档陈述契约。
 
 ## 后续改进方向

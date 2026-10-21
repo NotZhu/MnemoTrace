@@ -1,4 +1,4 @@
-"""架构：异步 System-2 整合（CLAUDE.md Bet F），通过 MNEMOTRACE_ASYNC_CONSOLIDATION=1 开启。
+"""架构：异步 System-2 整合（AGENTS.md Bet F），通过 MNEMOTRACE_ASYNC_CONSOLIDATION=1 开启。
 默认的同步路径保持不变（这里也验证了这一点）。完全离线（hashing 嵌入器、规则提取器、无 LLM）。"""
 from __future__ import annotations
 

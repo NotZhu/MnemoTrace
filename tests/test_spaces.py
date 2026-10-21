@@ -1,4 +1,4 @@
-"""多空间（多 agent / 团队共享）记忆测试（CLAUDE.md §6）。覆盖 MNEMOTRACE_SPACES 的 ACL 解析、service
+"""多空间（多 agent / 团队共享）记忆测试（AGENTS.md 「代码导航」）。覆盖 MNEMOTRACE_SPACES 的 ACL 解析、service
 层的跨空间读融合，以及 HTTP 层的写入/读取授权。单空间鉴权（MNEMOTRACE_API_KEYS / open 模式）刻意
 不做改动，仍由 test_server 覆盖。全部离线（hashing 嵌入器、无 LLM）；环境变量用 monkeypatch，
 会自动还原。"""

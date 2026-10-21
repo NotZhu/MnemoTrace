@@ -1,6 +1,6 @@
 # MnemoTrace 评测
 
-本目录是 MnemoTrace 基准声明的可复现承载面。核心规则很简单：只有在原始 JSONL 日志被提交、可报告且经验证时，一个数字才可对外发布。
+本目录提供 MnemoTrace 评测工具与操作示例。项目规则见 [AGENTS.md 的评测规则](../AGENTS.md#principle-i)，本页说明命令及其输出。
 
 ## 离线冒烟评测框架
 
@@ -22,7 +22,7 @@ python eval/report.py results/synthetic_durable.jsonl
 
 ## 算法消融冒烟
 
-当新增读路径特性时，在投入 LongMemEval/LOCOMO 之前，先在零密钥合成消融中证明它们添加了预期的证据：
+零密钥合成消融用于检查新增读路径特性是否添加预期证据，适用要求见 [验证与完成](../AGENTS.md#验证与完成)：
 
 ```bash
 python eval/ablate_features.py
@@ -30,19 +30,17 @@ python eval/ablate_features.py
 
 该命令会逐个切换最新的证据特性，并检查启用路径是否呈现了禁用路径无法呈现的证据：supersedes 链上下文、针对历史值问题的链感知溯源分块提升、来自 supersession 历史的自然语言历史值答案、针对 fact-miss how-to 查询的派生摘要回退、针对 runbook/规则查询的溯源支撑过程记忆、从 runbook/how-to 文本中基于规则的过程抽取、溯源支撑的原始片段、溯源引导的完整明细分块提升、n-hop 图邻近、在紧凑预算下保留精确原始明细的意图感知证据预算分配，以及将目标关系排在同节点干扰项之前的查询条件化图关系加权，外加将多路径支撑目标排在单路径干扰项之前的 PPR 风格图路径增强，以及面向第一人称图查询的自锚定。它是目标行为的局部改进证明，而非公开的准确率声明。它还检查唯一短名实体锚定，因此只有当该 token 无歧义时，"Moonshot" 才能安全锚定 `Moonshot AI`；并检查负向图约束，因此 "not in Lisbon" 会过滤被排除的路径而非提升它；外加 planner 位置/项目链，使同事/公司、人/项目问题能从 `works_at` 或 `works_on` 延续到 `based_in`/`located_in` 答案事实。
 
-可发布的声明仍需 `eval/bench.py` 加已提交的原始日志。
+公开质量结论的证据要求见 [评测规则](../AGENTS.md#principle-i)。
 
 ## 算法 PR 门禁
 
-每个算法读/写路径 PR 都必须同时包含本地正确性检查和真实数据验收：
+算法 PR 的门禁、真实数据验收范围和报告内容见 [AGENTS.md 的验证与完成](../AGENTS.md#验证与完成)。以下是工具入口：
 
 ```bash
 python eval/ablate_features.py --jsonl results/<feature>_ablation.jsonl
 pytest -q tests/test_lean.py tests/test_smoke.py tests/test_zero_setup_default.py tests/test_eval_ablation.py
 python eval/validate_results.py --expected-rows 500 --require-complete --system engram_lean results/headline_500.jsonl
 ```
-
-对于预计会影响基准行为的改动，需在 LongMemEval、LOCOMO 或 PersonaMem 上新增一次 `eval/bench.py` 运行（PR 门禁允许使用固定切片；公开声明仍需完整的已提交日志）。PR 描述必须报告命令、行数、被比较的系统、准确率、token、p50/p95 延迟、保存的制品路径，以及结果是回归、中性还是改进。失败或中断的实验也必须作为 failed/partial 制品保存，而非默默丢弃。
 
 ## 真实基准
 
@@ -76,7 +74,7 @@ python eval/validate_results.py --expected-rows 500 --require-complete \
 python eval/compare.py results/backbone_a.jsonl results/backbone_b.jsonl --system engram_lean --per-category
 ```
 
-只有通过验证的日志才应在论文笔记中标记为 `DONE`，或用于 README/RESULTS 文案。部分日志、冒烟切片、失败的竞品运行和探索性消融可保留在本地，直到完成或被明确记为探索性。原始日志的提交策略见 [`../results/README.md`](../results/README.md)。
+日志引用与提交范围统一见 [实验产物与日志提交](../AGENTS.md#evidence-artifacts)；不同 schema 的操作示例见 [结果目录说明](../results/README.md)。
 
 在决定提交什么之前，先审计该目录：
 
