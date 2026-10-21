@@ -4,6 +4,7 @@
 代码基线：`11faa7066f01c7393a69375ebc4f13cdc5d04bcd`；在本次工作区修改上运行。
 分支：`fix/console-script-credentials`。用户已确认将规则变更与安全修复分为两个本地提交，不推送。
 下文各轮“不提交”的记录描述当时验收状态；测试仍按上述基线与工作区执行事实记录，不改写为提交后运行。
+后续已合并并推送 `d960e27`；该版本首次远程 CI 的失败及修复见 [Windows 所有者验收](#windows-ci-文件所有者验收)。
 
 ## 环境与运行结果
 
@@ -233,6 +234,41 @@ git diff --check
 普通过程输出保存在本机 `results/codex_toml_*.log`。独立解析 oracle 在模拟屏蔽 tomllib 前保留模块，避免模拟分支反而跳过真实解析；
 原生 Python 3.10 与 Linux/POSIX 权限仍未运行，已有 3.10 开发依赖 tomli 的原生执行不以本轮模拟代替。
 本轮不改前端、不重复浏览器清理、不运行质量 benchmark 或远程 CI/部署；保留已有修改，不暂存、不提交、不推送。
+
+## Windows CI 文件所有者验收
+
+首次推送版本 `d960e27c5e82224d1bf747aa8ca27e08508e9075` 的
+[CI](https://github.com/NotZhu/MnemoTrace/actions/runs/39616474523) 中，Ubuntu Python 3.10/3.12、Web 与容器通过；
+Windows Python 3.10/3.12 各为 **111 失败、976 通过、9 跳过**，分别耗时 113.07/67.76 秒。
+失败归类为同一 owner 检查引发的 84 个 CredentialError、22 个 SystemExit 与 5 个下游退出码断言。
+失败位置为 `_windows_security` 的所有者检查，DACL 安装、受保护标志和描述符读取已经成功。
+
+根因是新建路径只施加 DACL，但随后要求 owner 为当前用户或 SYSTEM，隐含假设了创建时的默认 owner。
+[Windows 默认所有者来自进程令牌](https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-of-a-new-object)，不保证是当前用户。
+现在新建目录和临时文件的 SDDL 显式包含当前用户 owner，并在同一次 SetFileSecurityW 中设置 owner 与受保护 DACL。
+已有凭据引用仍只读校验，管理员组 owner 不被加入允许列表；赋权失败在写入前终止，不覆盖目标。
+
+[4 项新增回归](../tests/test_windows_credential_owner.py)首次 **2 失败、2 通过**，修复后全部通过。
+隔离模型将默认 owner 设为 Administrators，只模拟文件 owner 状态，SID/安全描述符转换、DACL 安装与校验使用真实 Windows API；
+覆盖目录、原子临时文件和备份、重复复用、不安全 owner 只读拒绝与 owner 设置失败时零字节写入/原目标不变。
+本机普通令牌不能创建 Administrators 所有的文件（原生探针错误 1307），因此该模型不冒充管理员令牌原生验收。
+
+本机目标凭据测试 **12 通过、2 跳过**（文件链接权限与 POSIX mode）；完整 Python **1094 通过、13 跳过，136.58 秒**，
+包含真实 HTTP/MCP stdio 接入。跳过分类与前轮相同；无可选包 zero-setup、release、Ruff I/F/E9 与 diff 检查通过。
+zero-setup 首次调用遗漏专用 TEMP/TMP，沙箱临时目录访问失败；设置仓库专用目录后通过，不计为代码缺陷。
+完整 Python 和修复版本原生 CI 结果记录于 [机器记录](windows_credential_owner_validation.jsonl)。
+此次不改前端、CI 用户或测试跳过条件，不重复浏览器清理，不运行质量 benchmark 或部署。
+
+重现命令（TEMP/TMP 使用上方仓库专用目录）：
+
+```powershell
+.venv/Scripts/python.exe -m pytest tests/test_windows_credential_owner.py tests/test_credentials.py -o addopts= -q -rs
+.venv/Scripts/python.exe -m pytest -o addopts= -q -rs --basetemp=E:/MnemoTrace/.mnemotrace/test-windows-owner-full
+.mnemotrace/zero-console-security/Scripts/python.exe scripts/check_zero_setup.py
+.venv/Scripts/python.exe scripts/check_release.py
+.venv/Scripts/python.exe -m ruff check --select I,F,E9 mnemotrace/credentials.py tests/test_windows_credential_owner.py
+git diff --check
+```
 
 ## 过程限制
 

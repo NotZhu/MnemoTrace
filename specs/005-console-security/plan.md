@@ -1,5 +1,14 @@
 # 实施计划
 
+## Windows CI 所有者修复
+
+1. 归类远程 Windows 3.10/3.12 失败，先用真实安全描述符与隔离的默认所有者模拟建立失败回归。
+2. 新建路径保护时同时设置 owner 与受保护 DACL，保持只读检查的所有者限制；设置失败在写入前终止。
+3. 验证目录、临时文件、备份、复用、安全拒绝与真实传输，运行完整 pytest、zero-setup、release、静态和 diff 检查。
+4. 同步架构、优化地图、台账与验收记录，区分已通过 Linux 原生 CI 和尚未通过的 Windows CI；在独立修复分支保留可审查结果。
+
+实施前一致性检查：规格、步骤与任务对应；II/III 保持零配置、标准库和 Python 3.10；IV 保持安全失败关闭与既有凭据只读拒绝；VII 仅合成数据。不通过放宽权限、跳过测试或修改 CI 用户规避；不改算法或前端。通过，可实施。
+
 分支：`fix/console-script-credentials`。Python 标准库、现有 React/Vite 与 node:test/pytest。
 
 1. 主题脚本作为 public 静态资源同步加载，主题 store 接续根元素的初始主题；服务端 script-src 收紧。

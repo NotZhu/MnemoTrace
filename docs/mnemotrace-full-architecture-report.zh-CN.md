@@ -884,6 +884,9 @@ CLI、TOML、JSON 及验证命令在共享参数出口应用同一规则，生�
 
 文件保存在用户目录 .mnemotrace/credentials/<随机 UUID>.key；POSIX 目录 0700、文件 0600，
 Windows 使用仅当前用户与 SYSTEM 的受保护 DACL；链接、非普通文件或不安全权限均拒绝。
+新建目录和临时文件同时显式设定当前用户为所有者，不依赖进程令牌的默认所有者；管理员进程的默认所有者可能是管理员组。
+只读检查仍拒绝当前用户/SYSTEM 之外的所有者，不修复已存在的不安全引用；所有者或 DACL 设置失败都在写入前终止。
+实现与回归边界见 [Windows 所有者验收](../results/console_security_validation.md#windows-ci-文件所有者验收)。
 临时文件先施加权限再写入，fsync 后原子替换；同目标同 Key 复用引用，更换 Key 先写新文件再更新配置。
 配置备份同样私有，卸载仅移除配置、不删除凭据；dry-run 不创建凭据或改配置。
 setup 与 doctor 通过 `mnemotrace/agent_config.py` 共用 Codex 配置读取，不互相调用内部解析函数。

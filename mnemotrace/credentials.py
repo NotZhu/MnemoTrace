@@ -89,11 +89,13 @@ def _windows_security(path: Path, *, protect: bool = False) -> None:
 
     if protect:
         inheritance = "OICI" if path.is_dir() else ""
-        sddl = f"D:P(A;{inheritance};FA;;;SY)(A;{inheritance};FA;;;{user_sid})"
+        # Elevated tokens can default new objects to the Administrators group.
+        # Establish the owner as well as the DACL before writing private bytes.
+        sddl = f"O:{user_sid}D:P(A;{inheritance};FA;;;SY)(A;{inheritance};FA;;;{user_sid})"
         descriptor = w.LPVOID()
         require(adv.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, c.byref(descriptor), None))
         try:
-            require(adv.SetFileSecurityW(str(path), 0x80000004, descriptor))
+            require(adv.SetFileSecurityW(str(path), 0x80000005, descriptor))
         finally:
             kernel.LocalFree(descriptor)
 

@@ -460,7 +460,7 @@ Windows 完整 Python/前端测试、类型检查、生产构建、zero-setup、
 
 #### 剩余验收与边界
 
-- 本机没有可运行的 Linux Python 环境，POSIX 权限与 Python 3.10 尚待既有 CI 矩阵验证；新增前端安全回归已加入 CI。
+- 首次推送的 Linux Python 3.10/3.12、Web 与容器 CI 已通过；Windows 两个 Python 作业因新建文件默认所有者不符合检查而失败，修复与原生复验结果见[Windows 所有者验收](../results/console_security_validation.md#windows-ci-文件所有者验收)。在修复版本的 Windows 原生 CI 通过前保留待验收。
 - 不将本机验收表述为其他部署已升级；线上使用新构建与新服务后仍需核验实际响应和接入。
 - 私有凭据文件是权限保护的明文，不承诺加密。旧配置、终端历史和历史备份不自动迁移、清扫或撤销。
 
