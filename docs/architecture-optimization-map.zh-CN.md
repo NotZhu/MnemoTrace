@@ -192,8 +192,9 @@ watch 的 `seen` 可能包含放弃收尾的记录，不能把本地账本条目
 | 开发入口 | Vite 开发与预览在 base 检查前将 GET/HEAD /ui 重定向到 /ui/，保留查询参数；开发监听忽略 Windows 原子写入临时目录 | [Vite 配置](../frontend/vite.config.ts)、[主题验收中的开发检查](../results/theme_validation.md) |
 | 共享选择器 | ScopeSelect、ExportRangeSelect 保留类型、选项和说明，统一复用 FilterSelect 的键盘、失焦、禁用逻辑；删除无调用的内部导出 | [清理验收](../results/frontend_select_cleanup_validation.md) |
 | 事实分类与状态筛选 | category 与 kind、状态、搜索和敏感范围在分页前共同筛选。分类选项按同空间/类型/敏感可见范围生成，不被已选分类、搜索和分页缩减；三态筛选按空间保存，切换后重置分页 | [筛选验收](../results/fact_filters_validation.md) |
+| 查询旧响应复用范围 | useMemories 仅允许同账号、同过滤范围下的搜索词与请求条数变化借用整份旧响应；分页偏移与未来筛选字段默认参与比较，敏感缺省值归一化为 false。Facts 无兼容数据时仅列表加载，错误时保留挂载和当前查询重试；计数、分类与空态不冒充新结果，占位期间禁用加载更多。选择停止复用而非页面二次过滤，避免分页和分类信息失配 | [查询范围与展示验收](../results/issue036_validation.md) |
 | 记忆体检 | 服务在 limit 前稳定按红、琥珀、蓝、灰排序，by_kind 统计全部；前端复制数组排序，不改写缓存。属性编辑用三元组，结论用整句，样本文本不冒充 Episode 原文 | [体检验收](../results/health_edit_validation.md)、[排序回归输出](../results/health_audit_order_pytest.txt) |
-| 会话结论搜索 | 工具栏保持挂载，组词期间不提交拼音，停顿 250ms 后查询，清空立即恢复；仅同空间、同记录类型保留上次结果，避免换账号闪出旧数据 | [搜索验收](../results/journal_search_validation.md) |
+| 会话结论搜索 | 工具栏保持挂载，组词期间不提交拼音，停顿 250ms 后查询，清空立即恢复；复用遵守共享查询范围，搜索换词保留列表，历史状态改变则等待当前范围响应 | [搜索验收](../results/journal_search_validation.md)、[范围回归](../results/issue036_validation.md) |
 | 原始会话列表与写入表单 | 搜索停顿 500ms 查询，加载时保留同空间列表。SessionPicker 独立读取完整索引，默认 default，新 ID 只在确认后切换；收尾绑定所点卡片 ID，报告也打开该会话，不改顶部选择。表单内容与底部选择器分区，草稿仅页面内存在 | [会话搜索与表单验收](../results/conversations_search_validation.md) |
 | 导出范围说明 | 空间名取 agent_status.user，不用 Key 冒充；默认 compact，范围随选项显示，并解释模型处理边界，不改变导出载荷 | [导出说明](../results/privacy_export_guidance_validation.md) |
 | 落地页生成 | demo/docs 的共用内容由模板和差异插槽生成，保留各页有意差别；CI 做只读同步检查，减少手工双改造成的漂移 | [维护验收](../results/maintenance_cleanup_validation.md)、[生成器](../scripts/build_landing_pages.py) |

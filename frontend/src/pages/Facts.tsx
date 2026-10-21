@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { FileSearch, GitMerge, Loader2, Pencil, Plus, Search, ShieldAlert, Trash2, X } from 'lucide-react'
 
-import { Button, Card, CardTitle, ErrorState, Field, PageHeader, Spinner } from '../components/ui'
+import { Button, Card, CardTitle, ErrorBanner, Field, PageHeader, Spinner } from '../components/ui'
 import { PageEmptyState } from '../components/PageEmptyState'
 import { FilterSelect } from '../components/FilterSelect'
 import { ConfirmDialog, Modal } from '../components/Modal'
@@ -42,7 +42,7 @@ export default function Facts() {
     setLimit(40)
   }, [q, status, category, hideSensitive])
 
-  const { data, isLoading, isFetching, isError, error } = useMemories({
+  const { data, isLoading, isFetching, isError, isSuccess, isPlaceholderData, error, refetch } = useMemories({
     // 只取属性类事实 —— 会话结论有自己的页面；混在一起的话，更新、更庞大的那类
     // 会在分页和列表里把另一类完全淹没。
     kind: 'attributes',
@@ -72,9 +72,6 @@ export default function Facts() {
       <X aria-hidden="true" className="h-4 w-4" /> {t.facts.resetFilters}
     </button>
   ) : null
-
-  if (isLoading) return <Spinner label={t.facts.loading} />
-  if (isError) return <ErrorState message={(error as Error).message} />
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6">
@@ -113,7 +110,7 @@ export default function Facts() {
           </Button>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 pt-1">
-          <p className="text-xs text-ghost" aria-live="polite">{t.facts.factCount(factsPage?.total ?? facts.length)}</p>
+          <p className="text-xs text-ghost" aria-live="polite">{!data || isPlaceholderData || isError ? t.facts.countPending : t.facts.factCount(factsPage?.total ?? facts.length)}</p>
           <div className="ml-auto flex flex-wrap items-center justify-end gap-x-6 gap-y-3 pr-3">
             <FilterSelect label={t.facts.categoryFilter} value={category} onChange={setCategory}
               options={[{ value: '', label: t.facts.allCategories }, ...categories.map(item => ({ value: item, label: item }))]} />
@@ -138,9 +135,14 @@ export default function Facts() {
             </button>
           </div>
         </div>
-      <div className="flex flex-1 flex-col">
-        {facts.length ? (
+      <div className="flex flex-1 flex-col" aria-busy={isFetching}>
+        {isError ? (
+          <ErrorBanner message={(error as Error).message} action={
+            <Button variant="ghost" disabled={isFetching} onClick={() => { void refetch() }}>{t.facts.retry}</Button>
+          } />
+        ) : isLoading || !data ? <Spinner label={t.facts.loading} /> : facts.length ? (
           <>
+          {isPlaceholderData && <p role="status" className="px-4 py-2 text-xs text-ghost">{t.facts.updating}</p>}
           <ul className="divide-y divide-line">
             {facts.map((f) => {
               const { date, time } = splitStamp(f.valid_at)
@@ -206,13 +208,13 @@ export default function Facts() {
           </ul>
           {hasMore && (
             <div className="flex justify-center border-t border-line py-3">
-              <Button variant="ghost" onClick={() => setLimit((n) => n + 40)}>
+              <Button variant="ghost" disabled={isPlaceholderData || isFetching} onClick={() => setLimit((n) => n + 40)}>
                 {t.facts.loadMore}
               </Button>
             </div>
           )}
           </>
-        ) : (
+        ) : isPlaceholderData || !isSuccess ? <Spinner label={t.facts.updating} /> : (
           <PageEmptyState title={t.facts.emptyTitle} hint={hasFilters ? t.facts.noResultsHint : t.facts.emptyHint} footer={resetControl} />
         )}
       </div>

@@ -865,7 +865,7 @@ queryErrors 也仅存内存，启动清理旧 sessionStorage 项；含 key 的 q
 隐私页在 await 导出后、成功／失败提示前重新检查会话，过期静默结束且不更新旧周期的导出状态。
 对象 URL 创建后以 finally 释放并清理下载元素，正常路径维持点击后立即释放；已触发的下载不追溯撤销。
 
-Layout 依据全局查询错误决定是否挂载 Outlet，辅助读取失败可能丢失未保存编辑，见
+Layout 在 Facts 页保留错误期挂载（见第 10.4 节）；其他页面依据全局查询错误决定是否挂载 Outlet，辅助读取失败可能丢失未保存编辑，见
 [ISSUE-016](known-issues.zh-CN.md#issue-016)。验证入口：
 [凭证内存态](../results/auth_memory_only_validation.md)、[查询隔离](../results/query_isolation_validation.md)
 与[凭证输入](../results/api_key_character_validation.md)。当前周期与导出边界见
@@ -902,6 +902,14 @@ Facts 经 `useMemories → GET /v1/memories → MemoryService.memories` 查询�
 生成 fact_categories，再应用精确分类、状态和搜索，最后分页。空分类以“其他”参与筛选，不改写存储；
 分类候选不随搜索、状态或分页缩减。空间级 counts 与筛选后的 facts_page.total 分别展示，原始对话不受分类影响。
 切换筛选重置分页，清除条件保留敏感开关。验证见[事实筛选](../results/fact_filters_validation.md)。
+
+`hooks/queries.ts::useMemories` 的完整 queryKey 保留所有参数；临时旧响应仅在同账号且范围参数一致时复用，
+只豁免搜索词和请求条数变化。敏感范围、kind、分类、状态、偏移及未来筛选字段改变均不能借用旧响应；
+include_sensitive 未传按 false 比较，空分类按未传处理。当前条件已有缓存时直接使用查询库的对应缓存。
+`pages/Facts.tsx` 在列表内处理加载、失败与 refetch；工具栏保持挂载，无数据时只保留当前分类值，计数等待，
+占位空列表显示更新，占位分页禁用。`components/Layout.tsx` 保留 Facts 的错误期挂载，全局错误条仍可重试；
+其他页面仍按全局查询错误决定是否挂载 Outlet。此机制不改变独立冲突、来源或画像查询。
+工程证据与浏览器边界见 [查询范围与展示验收](../results/issue036_validation.md)。
 
 Profile 的 EvidenceChip 只将 source_count 显示为来源数，访问强化单独标识，不将 count 当成来源或置信度。
 来源查看、候选进入和习惯展示的缺口见[问题台账](known-issues.zh-CN.md)。Timeline 按 valid_at 展示

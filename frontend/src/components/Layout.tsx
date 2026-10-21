@@ -25,7 +25,8 @@ export default function Layout() {
         <Topbar onMenu={() => setNavOpen(true)} />
         <main className={`mx-auto max-w-[1600px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8 ${isGraphPage ? 'min-h-0 w-full flex-1' : stretchesContent ? 'flex w-full flex-1 flex-col' : ''}`}>
           <GlobalErrorBanner />
-          {!hasQueryFailure && <Outlet />}
+          {/* 事实页在列表内处理失败；保留筛选栏才能改变范围或重试当前查询。 */}
+          {(!hasQueryFailure || isFactsPage) && <Outlet />}
         </main>
       </div>
       <Toaster />

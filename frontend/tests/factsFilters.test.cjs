@@ -12,10 +12,11 @@ const source = esbuild.buildSync({
 }).outputFiles[0].text
 function nodes(tree) {
   if (!tree || typeof tree !== 'object') return []
-  return [tree, ...(Array.isArray(tree) ? tree : [].concat(tree.props?.children ?? [], tree.props?.footer ?? [])).flatMap(nodes)]
+  return [tree, ...(Array.isArray(tree) ? tree : [].concat(tree.props?.children ?? [], tree.props?.footer ?? [], tree.props?.action ?? [])).flatMap(nodes)]
 }
 function setup({ empty = false, hideSensitive = false } = {}) {
   const states = [], effects = [], queries = [], preferences = { status: 'live', category: '', hideSensitive }
+  let queryResult = {}, retries = 0
   let cursor, effectCursor, pending
   const mutation = () => ({ mutate() {} })
   const moduleData = { exports: {} }
@@ -26,7 +27,7 @@ function setup({ empty = false, hideSensitive = false } = {}) {
     }
     if (name === '../store/preferences') return { useSpacePreference: (_, field) => [preferences[field], value => { preferences[field] = typeof value === 'function' ? value(preferences[field]) : value }] }
     if (name === '../hooks/queries') return { useAddFact: mutation, useEditFact: mutation, useDeleteFact: mutation, useSourceEpisodes: () => ({}),
-      useMemories(params) { queries.push(params); return { data: { facts: empty ? [] : [{ id: 'synthetic-fact', display: 'Synthetic fact', status: 'live', valid_at: '', provenance: [] }], fact_categories: ['工作', '其他', '历史分类'], facts_page: { total: empty ? 0 : 81, has_more: !empty } } } },
+      useMemories(params) { queries.push(params); return { isSuccess: true, refetch: () => { retries++ }, data: { facts: empty ? [] : [{ id: 'synthetic-fact', display: 'Synthetic fact', status: 'live', valid_at: '', provenance: [] }], fact_categories: ['工作', '其他', '历史分类'], facts_page: { total: empty ? 0 : 81, has_more: !empty } }, ...queryResult } },
     }
     if (name === '../components/ui') return new Proxy({}, { get: () => () => null })
     if (name === '../components/Modal') return { Modal: () => null, ConfirmDialog: () => null }
@@ -36,6 +37,7 @@ function setup({ empty = false, hideSensitive = false } = {}) {
   function render() { cursor = effectCursor = 0; pending = []; const tree = moduleData.exports.default(); pending.forEach(effect => effect()); return tree }
   const find = predicate => nodes(render()).find(predicate)
   return { render, preferences, queries,
+    setResult: result => { queryResult = result }, retries: () => retries,
     select: label => find(node => node.type?.name === 'FilterSelect' && node.props.label === label),
     search: value => find(node => node.type === 'input').props.onChange({ target: { value } }),
     button: label => find(node => node.props?.children === label || (node.type === 'button' && node.props['aria-label'] === label)),
@@ -49,6 +51,65 @@ test('分类、状态两个无边框下拉框位于隐藏敏感开关左侧，�
   assert.equal(s.select('事实分类').props.value, '')
   assert.equal(s.select('事实状态').props.value, 'live')
   assert.deepEqual(Array.from(s.select('事实分类').props.options, option => option.value), ['', '工作', '其他', '历史分类'])
+})
+
+test('加载时保留开关和筛选，旧计数、分类、列表及分页一起退出', () => {
+  const s = setup()
+  s.select('事实分类').props.onChange('工作')
+  s.setResult({ data: undefined, isLoading: true, isFetching: true, isSuccess: false })
+  s.button('隐藏敏感内容').props.onClick()
+  assert.equal(s.query().include_sensitive, false)
+  assert.deepEqual(Array.from(s.select('事实分类').props.options, o => o.value), ['', '工作'])
+  const tree = nodes(s.render())
+  assert.ok(tree.some(n => n.props?.label === '加载事实…'))
+  assert.ok(tree.some(n => n.props?.children === '正在统计…'))
+  assert.equal(s.button('加载更多事实'), undefined)
+  assert.equal(tree.some(n => n.type?.name === 'PageEmptyState'), false)
+})
+
+test('失败时工具栏和当前查询重试仍可用，不误报空结果', () => {
+  const s = setup()
+  s.setResult({ data: undefined, isLoading: false, isError: true, isSuccess: false, error: new Error('synthetic failure') })
+  assert.ok(s.button('隐藏敏感内容'))
+  assert.ok(nodes(s.render()).some(n => n.props?.message === 'synthetic failure'))
+  s.button('重新加载').props.onClick()
+  assert.equal(s.retries(), 1)
+  assert.equal(nodes(s.render()).some(n => n.type?.name === 'PageEmptyState'), false)
+})
+
+test('占位列表标明更新并禁用加载更多，旧计数不作为当前统计', () => {
+  const s = setup()
+  s.setResult({ isPlaceholderData: true, isFetching: true })
+  assert.equal(s.button('加载更多事实').props.disabled, true)
+  assert.ok(nodes(s.render()).some(n => n.props?.children === '正在更新事实…'))
+  assert.ok(nodes(s.render()).some(n => n.props?.children === '正在统计…'))
+})
+
+test('旧空列表不能被解释成新搜索无结果，成功响应后才显示空状态', () => {
+  const s = setup({ empty: true })
+  s.setResult({ isPlaceholderData: true, isFetching: true })
+  assert.equal(nodes(s.render()).some(n => n.type?.name === 'PageEmptyState'), false)
+  s.setResult({ isPlaceholderData: false, isFetching: false })
+  assert.equal(nodes(s.render()).some(n => n.type?.name === 'PageEmptyState'), true)
+})
+
+test('全局查询错误不能卸载事实页，其他页面保留既有错误边界', () => {
+  const layout = esbuild.buildSync({
+    entryPoints: [path.resolve(__dirname, '../src/components/Layout.tsx')],
+    bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
+    external: ['react', 'react/jsx-runtime', 'react-router-dom', './GlobalErrorBanner', './Sidebar', './Topbar', './Toast', '../store/queryErrors'],
+  }).outputFiles[0].text
+  for (const route of ['/facts', '/profile']) {
+    const moduleData = { exports: {} }, Outlet = () => null
+    vm.runInNewContext(layout, { module: moduleData, exports: moduleData.exports, require(name) {
+      if (name === 'react') return { ...React, useState: () => [false, () => {}] }
+      if (name === 'react-router-dom') return { Outlet, useMatch: pattern => route === pattern }
+      if (name === '../store/queryErrors') return { useQueryErrors: selector => selector({ failures: [{ message: 'synthetic failure' }] }) }
+      if (name.startsWith('./')) return new Proxy({}, { get: () => () => null })
+      return require(name)
+    } })
+    assert.equal(nodes(moduleData.exports.default()).some(n => n.type === Outlet), route === '/facts')
+  }
 })
 
 test('分类、历史状态和搜索词共同送入服务查询，切换筛选后重置分页', () => {

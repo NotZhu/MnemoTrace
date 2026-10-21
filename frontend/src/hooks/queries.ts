@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { hashKey, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import {
   api,
@@ -40,14 +40,24 @@ export function useHealth() {
   return useQuery({ queryKey: qk.health(), queryFn: api.health, staleTime: 30_000, retry: false })
 }
 
+function memoriesScope(params: MemoriesQuery) {
+  // 只放行搜索词和请求条数变化；新筛选字段默认参与比较，避免跨可见范围借用整份响应。
+  const { q: _q, facts_limit: _factsLimit, episodes_limit: _episodesLimit, ...scope } = params
+  return hashKey([{
+    ...scope,
+    include_sensitive: params.include_sensitive ?? false,
+    category: params.category?.trim() || undefined,
+  }])
+}
+
 export function useMemories(params: MemoriesQuery = {}, options: { keepPreviousData?: boolean } = {}) {
   const namespace = useAuth((s) => s.apiKey)
   return useQuery({
     queryKey: qk.memories(params), queryFn: () => api.memories(params), enabled: !!namespace, retry: false,
     placeholderData: options.keepPreviousData ? (previousData, previousQuery) => {
       const previousParams = previousQuery?.queryKey[2] as MemoriesQuery | undefined
-      // 只在同一空间、同一记录类型的搜索中保留结果，切换账号不能沿用上一空间的数据。
-      return previousQuery?.queryKey[1] === namespace && previousParams?.kind === params.kind ? previousData : undefined
+      return previousQuery?.queryKey[1] === namespace && previousParams
+        && memoriesScope(previousParams) === memoriesScope(params) ? previousData : undefined
     } : undefined,
   })
 }
