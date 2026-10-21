@@ -1,4 +1,4 @@
-"""在线服务指标（CLAUDE.md Bet D 的线上部分）。关键点：承载 SLO 的路径有计时（p50/p95），
+"""在线服务指标（AGENTS.md Bet D 的线上部分）。关键点：承载 SLO 的路径有计时（p50/p95），
 token 节省比来自真实的 recall 调用，异步积压可见，且载荷只含聚合值——没有命名空间名、
 没有用户内容。全部离线运行。"""
 from __future__ import annotations

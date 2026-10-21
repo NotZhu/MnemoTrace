@@ -1,4 +1,4 @@
-"""廉价、无 LLM 的冲突检测（CLAUDE.md Bet C）。
+"""廉价、无 LLM 的冲突检测（AGENTS.md Bet C）。
 
 当新 fact 更新了某个实体的单值属性时，它取代旧值。解决方式是非破坏性的：我们设置旧 fact 的
 `invalid_at`（世界时间）和 `expired_at`（信念时间），并令 `new.supersedes -> old`，保留历史，
@@ -120,7 +120,7 @@ class ConflictResolver:
         # 保证零依赖 demo 和测试完全确定。
         self.embedder = embedder
         self.sim_threshold = sim_threshold
-        # 可选的 LLM 裁决器（CLAUDE.md §3.2 第 3 步）：对刚好低于自动取代阈值的模糊区间，询问 LLM
+        # 可选的 LLM 裁决器（AGENTS.md 「IV. 不允许静默损坏记忆」的歧义裁决）：对刚好低于自动取代阈值的模糊区间，询问 LLM
         # 新 fact 是否取代旧 fact。未传入 llm 时关闭——常见路径保持无 LLM（Bet C），
         # 只有真正边界的情况才升级。
         self.llm = llm

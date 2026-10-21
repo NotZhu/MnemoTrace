@@ -1,4 +1,4 @@
-"""双时间轴查询助手:as-of 过滤与演化链历史(CLAUDE.md §3.1)。"""
+"""双时间轴查询助手:as-of 过滤与演化链历史(AGENTS.md 「对象与时间语义」)。"""
 from __future__ import annotations
 
 from typing import Optional

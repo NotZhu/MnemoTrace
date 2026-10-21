@@ -1,5 +1,5 @@
 """Reciprocal Rank Fusion。一种对量纲鲁棒的组合方式,把多个排序信号(semantic、lexical、graph、
-recency、salience)合并,而无需归一化不可比的分数区间。实现 CLAUDE.md §3.3。"""
+recency、salience)合并,而无需归一化不可比的分数区间。实现 AGENTS.md 「检索与模块」。"""
 from __future__ import annotations
 
 

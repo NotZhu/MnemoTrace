@@ -1,5 +1,5 @@
 """检索融合与整合的可调参数。默认值对离线 demo 足够合理；
-在评测 harness 上则按 benchmark 逐一调优（绝不拍脑袋——见 CLAUDE.md §4）。"""
+在评测 harness 上则按 benchmark 逐一调优（绝不拍脑袋——见 AGENTS.md 「评测、公开内容与贡献规则」）。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,7 +12,7 @@ class Config:
     storage: str = "memory"  # memory | durable | lancedb
     data_path: Optional[str] = None
 
-    # --- 检索融合权重（CLAUDE.md §3.3）---
+    # --- 检索融合权重（AGENTS.md 「检索与模块」）---
     w_sem: float = 1.0  # 稠密语义
     w_lex: float = 0.6  # 词汇 / BM25
     w_graph: float = 0.8  # n-hop 图邻近 （不可下调：这是多 session 跨会话关联的承重项——
@@ -33,10 +33,10 @@ class Config:
     top_k: int = 5
     candidate_k: int = 24  # 融合前每个检索器的候选池
 
-    # 候选生成（扩展路径；CLAUDE.md Bet E）。默认关闭：检索器会扫描用户的全部 live fact
+    # 候选生成（扩展路径；AGENTS.md Bet E）。默认关闭：检索器会扫描用户的全部 live fact
     # （精确，几千条以内没问题）。开启后改为从向量库拉取有界的 ANN 候选池（∪ 查询的图邻居
     # fact）——这是面向大存储的次线性读取路径。成为默认值前须过评测门槛：ANN 候选可能丢掉
-    # 词汇强 / 向量弱的 fact，所以要先在 harness 上验证排序（CLAUDE.md §4）。当候选池覆盖
+    # 词汇强 / 向量弱的 fact，所以要先在 harness 上验证排序（AGENTS.md 「评测、公开内容与贡献规则」）。当候选池覆盖
     # 全部 fact（小存储）时候选集 == 全量扫描，结果不变。
     ann_candidates: bool = False
     ann_pool: int = 200  # ann_candidates 开启时从 ANN 索引拉取的最近候选数
@@ -90,7 +90,7 @@ class Config:
     # 语义冲突检测：当同一 subject 的较新 fact 与旧 fact 的嵌入相近到这个程度
     # （同一属性、不同的自由表述 predicate）时，将旧 fact 失效化。在 harness 上调优。
     conflict_sim_threshold: float = 0.80
-    # 把处于临界值的冲突（相似度略低于阈值）升级给 LLM 裁决器（§3.2 第 3 步）。
+    # 把处于临界值的冲突（相似度略低于阈值）升级给 LLM 裁决器（「IV. 不允许静默损坏记忆」的歧义裁决）。
     # 默认关闭：让整合对每条 fact 保持零 LLM 调用（Bet C）；追求最高精度时开启。
     conflict_llm_escalation: bool = False
     # 针对模糊尾部的 System-2 LLM 冲突检测：把廉价规则枚举不出的可疑冲突作为待处理项呈现给

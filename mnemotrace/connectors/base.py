@@ -1,11 +1,11 @@
 """批量导入连接器 —— 把外部聊天/历史记录导出规范化为 忆痕 会话。
 
 `mnemotrace.connectors` 里的所有东西都是**纯标准库**（无第三方依赖），因此在零配置安装下也能导入历史
-（CLAUDE.md §5）。*解析器*把原始导出 —— ChatGPT 的 `conversations.json`、OpenAI `messages` 数组、
+（AGENTS.md 「代码导航」）。*解析器*把原始导出 —— ChatGPT 的 `conversations.json`、OpenAI `messages` 数组、
 JSONL 日志、纯 transcript —— 转换成 `ImportSession` 列表，再由 `Memory.import_messages()` 用少量批量
 嵌入调用 + 一次 System-2 整合完成导入（比逐条 `add()` 快 10 倍以上）。
 
-这个接缝填补的空白：此前唯一的批量加载器是仅供 eval 使用的 `seed_console.py`。这是 §6 采纳层需要的、
+这个接缝填补的空白：此前唯一的批量加载器是仅供 eval 使用的 `seed_console.py`。这是 「代码导航」 采纳层需要的、
 面向用户的"自带历史"连接器。
 """
 from __future__ import annotations

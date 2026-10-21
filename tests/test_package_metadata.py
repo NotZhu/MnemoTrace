@@ -68,9 +68,32 @@ def test_python_console_scripts_resolve_to_callables():
 
 
 def test_zero_setup_contract_mentions_installed_quickstart():
-    for rel in ("AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"):
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "mnemotrace-quickstart" in agents
+    assert "python examples/quickstart.py" in agents
+    assert "pytest" in agents
+
+    claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    # Claude imports must be outside Markdown code spans/fences.
+    assert claude.splitlines().count("@AGENTS.md") == 1
+    assert "`" not in claude
+    assert not any(line.startswith("@") for line in agents.splitlines())
+    assert "<!-- SPECKIT START -->" not in claude
+
+    for rel, target in (
+        ("CONTRIBUTING.md", "AGENTS.md#principle-ii"),
+        (".specify/memory/constitution.md", "../../AGENTS.md#principle-ii"),
+    ):
         text = (ROOT / rel).read_text(encoding="utf-8")
-        assert "mnemotrace-quickstart" in text, f"{rel} must include the installed quickstart contract"
+        assert f"]({target})" in text
+        assert "mnemotrace-quickstart" not in text, f"{rel} must not duplicate the contract"
+
+    config = (ROOT / ".specify/extensions/agent-context/agent-context-config.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "context_file: AGENTS.md" in config
+    assert agents.count("<!-- SPECKIT START -->") == 1
+    assert agents.count("<!-- SPECKIT END -->") == 1
 
 
 def test_console_seed_default_names_jsonl_stores_not_pickles():

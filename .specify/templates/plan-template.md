@@ -40,7 +40,8 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+[Read AGENTS.md for the authoritative project rules; use
+.specify/memory/constitution.md only as the I–VII principle index.]
 
 ## Project Structure
 

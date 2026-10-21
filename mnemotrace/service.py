@@ -1,4 +1,4 @@
-"""MemoryService — 所有接入面共享的多租户记忆核心（CLAUDE.md §6）。
+"""MemoryService — 所有接入面共享的多租户记忆核心（AGENTS.md 「代码导航」）。
 
 一个进程承载多个相互隔离的命名空间（每个用户/api-key 一个 `Memory`），落盘持久化，热用户常驻内存
 并用 LRU 管理。HTTP API（`mnemotrace/server/app.py`）、MCP server（`mnemotrace/mcp/`）与 OpenAI 兼容代理
@@ -159,7 +159,7 @@ class MemoryService:
         # 否则复用主 LLM。让 Ask 页面给出真正的回答，而不只是上下文。
         answerer_name = os.environ.get("MNEMOTRACE_ANSWERER", "")
         self.answerer = make_llm(answerer_name) if answerer_name else self.llm
-        # 多模态写入（ingest）用的视觉描述器（CLAUDE.md §6）：把图片转成可检索的描述文本。
+        # 多模态写入（ingest）用的视觉描述器（AGENTS.md 「代码导航」）：把图片转成可检索的描述文本。
         # 默认用主 LLM（很多对话模型具备视觉能力）；需要专用视觉模型时设置 MNEMOTRACE_VISION_LLM。
         # 为 None 时图片以占位符存储，离线路径保持纯文本。
         vision_name = os.environ.get("MNEMOTRACE_VISION_LLM", "")
@@ -190,7 +190,7 @@ class MemoryService:
         # 在线服务指标（Bet D 的在线版）：承载 SLO 的路径上的延迟分位数 + token 节省比，
         # 仅以聚合形式经 GET /metrics 暴露。见 mnemotrace/metrics.py。
         self.metrics = Metrics()
-        # System-1 / System-2 拆分（CLAUDE.md Bet F）。启用后 remember() 只做快速的 System-1 写入
+        # System-1 / System-2 拆分（AGENTS.md Bet F）。启用后 remember() 只做快速的 System-1 写入
         # （追加 + 轻量嵌入 + 持久化保存），把整合交给后台 worker，写入路径保持低延迟。
         # 默认关闭——同步路径保留了控制台、测试和现有调用方依赖的"remember 后立即可查"语义。
         self._async = os.environ.get("MNEMOTRACE_ASYNC_CONSOLIDATION") == "1"
@@ -405,7 +405,7 @@ class MemoryService:
         }
         return snap
 
-    # --- async System-2 consolidation (CLAUDE.md Bet F; opt-in via MNEMOTRACE_ASYNC_CONSOLIDATION=1) --------
+    # --- async System-2 consolidation (AGENTS.md Bet F; opt-in via MNEMOTRACE_ASYNC_CONSOLIDATION=1) --------
     def _enqueue(self, user: str) -> None:
         """把用户待整合的 episode 排入后台整合，合并重复的入队请求。"""
         with self._g:
@@ -523,7 +523,7 @@ class MemoryService:
     def import_document(self, user: str, data, filename: Optional[str] = None,
                         content_type: Optional[str] = None, session_id: str = "document",
                         consolidate: bool = True, summarize: bool = True) -> dict:
-        """写入一个上传的文档或图片（CLAUDE.md §6 多模态）。PDF/DOCX/文本被拍平为纯文本；图片由
+        """写入一个上传的文档或图片（AGENTS.md 「代码导航」 多模态）。PDF/DOCX/文本被拍平为纯文本；图片由
         视觉模型生成描述（未配置时以占位符存储）——无论哪种方式都进入与其他内容相同的 System-2
         管线，立即可检索。"""
         from .connectors.documents import detect_kind, document_text, to_data_url, to_session
@@ -604,7 +604,7 @@ class MemoryService:
 
         `expect_count` 是必需的乐观并发保护，不是可选项。owner 批准删除的是 audit 展示的那 N 行；
         如果期间存储发生了变化（一次 watcher 运行、另一个 session），拒绝是唯一安全的答案——
-        悄悄删除超出批准范围的内容，恰恰是 CLAUDE.md §8 禁止的损坏。把它做成可选，会让
+        悄悄删除超出批准范围的内容，恰恰是 AGENTS.md 「核心不变量」 禁止的损坏。把它做成可选，会让
         "无保护调用"成为 API 的默认形态，而这正是该操作绝不能有的形态。
         """
         with self.write_lock(user):
@@ -618,7 +618,7 @@ class MemoryService:
             #   * 只取 live fact。audit() 只对 live fact 分组，因此 `expect_count` 是 live 计数；
             #     在这里匹配已被取代的行，既会让任何带 supersedes 链的槽位的保护永久失效，也会在
             #     保护被省略时硬删除 owner 从未见过的双时间轴历史
-            #     （CLAUDE.md §3.1：被取代的 fact 要失效化，绝不擦除）。
+            #     （AGENTS.md 「对象与时间语义」：被取代的 fact 要失效化，绝不擦除）。
             #   * 跳过 source="user"。owner 亲手输入的 fact 不是抽取垃圾，audit() 出于同样原因
             #     也把它排除在分组之外。
             doomed = [f for f in _all_facts(mem)
@@ -688,7 +688,7 @@ class MemoryService:
     def recall_multi(self, spaces: list[str], query: str, n_chunks: int = 6,
                      session_id: Optional[str] = None, as_of: Optional[float] = None,
                      redact_sensitive: bool = False) -> dict:
-        """跨多个 space 读取并融合结果（CLAUDE.md §6——agent + 团队共享 + 用户记忆在读取时组合）。
+        """跨多个 space 读取并融合结果（AGENTS.md 「代码导航」——agent + 团队共享 + 用户记忆在读取时组合）。
         每个 space 贡献自己的精简上下文，并标注来源以保留来源溯源。不做跨 space 的图遍历
         （实体保存在各自 space 的存储里）；这里做的是 fact + chunk 组合，这正是多 scope 的价值
         所在——多跳规划器仍在单个 space 内工作。"""

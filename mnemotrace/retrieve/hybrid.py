@@ -1,4 +1,4 @@
-"""混合检索(CLAUDE.md §3.3):在 live fact 集合上融合 dense-semantic + BM25-lexical + graph-proximity +
+"""混合检索(AGENTS.md 「检索与模块」):在 live fact 集合上融合 dense-semantic + BM25-lexical + graph-proximity +
 新近度 + 显著度,并结合加权的 Reciprocal Rank Fusion。"""
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def date_terms(epoch: float) -> str:
         return ""
 
 # 标记持久身份/偏好类 fact(区别于偶然事件提及)的谓词。用于按类型加权融合——
-# 这些 fact 会获得检索加权(CLAUDE.md §3.3;MemoryScope/OMEGA 的收敛结论)。
+# 这些 fact 会获得检索加权(AGENTS.md 「检索与模块」;MemoryScope/OMEGA 的收敛结论)。
 _PREFERENCE_PREDS = frozenset({
     "likes", "dislikes", "prefers", "avoids", "loves", "hates", "enjoys", "wants",
     "allergic_to", "interested_in", "favorite", "prefers_to",

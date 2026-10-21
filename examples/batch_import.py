@@ -2,7 +2,7 @@
 
     python examples/batch_import.py
 
-演示 §6 adoption 层的导入路径：取一份导出的历史（这里是一个极小的内联 ChatGPT 风格导出
+演示 「代码导航」 adoption 层的导入路径：取一份导出的历史（这里是一个极小的内联 ChatGPT 风格导出
 和一个 OpenAI messages 数组），用 mnemotrace.connectors 归一化，一次性批量导入，然后再从中召回。
 同一个 `parse(...)` 同时支撑 `python -m mnemotrace.connectors`、`POST /v1/import` 端点和
 MCP 的 `mnemotrace_import` 工具。

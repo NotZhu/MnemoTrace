@@ -1,4 +1,4 @@
-"""多跳规划器测试（CLAUDE.md Bet B）。在一张手工搭建的小图上驱动新的 LLM 分解路径及其各层回退，
+"""多跳规划器测试（AGENTS.md Bet B）。在一张手工搭建的小图上驱动新的 LLM 分解路径及其各层回退，
 因此是确定性的、无需真实模型。
 
 被测链条：Wei -colleague-> Lei -works_at-> Moonshot。两跳问题（"where does Wei's colleague work?"）

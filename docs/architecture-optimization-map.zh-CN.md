@@ -253,33 +253,16 @@ python eval/facility.py --all --url http://127.0.0.1:8766 --key-file ~/.mnemotra
 | 双语界面占位、登录插画空白拖拽 | 双语词典、语言 store 和隐藏布局占位已移除，固定中文；空白区域平移已取消，保留节点弹性拖拽。避免把已退役的控制项留在当前说明 | [中文界面验收](../results/ui_chinese_only_validation.md)、[登录插画回归](../frontend/tests/loginMemoryGraphData.test.cjs) |
 | 英文偏好专用分类与简易内联控制台 | 英文 PREFERENCE RECORDS 不再有预算分类/消融专用分支，归入 other，不删除原文；未构建 React 时返回 503，不再保留 _VIEWER_HTML 编辑入口。前端旧上下文解析的剩余范围另见 ISSUE-028 | [维护验收](../results/maintenance_cleanup_validation.md)、[格式收束](known-issues.zh-CN.md#issue-028) |
 
-只有个人语料或离线单测通过，不能证明 read path、图谱守门或检索排序在 benchmark 上成立。
-保留失败和回滚依据，比重复堆积过程记录更有助于后续决策。
+这些记录保留失败和回滚依据；各类证据的适用范围见下方验收入口。
 
 ## 6. 验收分层规则
 
-| 改动类型 | 必跑验收 | 何时跑完整 benchmark |
-| --- | --- | --- |
-| 抽取规则、过滤规则、候选表局部增强 | 目标单测、离线特性消融、真实相关切片 context JSONL | 多项合包或可能影响 headline 时 |
-| read path、evidence planning、fusion 权重 | 目标单测、离线 ablation、真实 miss/类别切片、tokens 与延迟 | 影响全局排序、context budget 或公开数字时 |
-| answerer/judge 提示词或 harness | 小样本 QA、validator、同 rig 的 full-context 对照 | 质量主张需要完整集合；只跑切片则明确标为探索 |
-| 个人会话导入与收尾 | 合成回归、导入/收尾/重启与目标隔离、脱敏的前后对比证据 | 不走该路径的 benchmark 不能替代验收 |
-| 服务、存储与安全边界 | 路径/租户/链接/鉴权/并发回归、zero-setup、发布检查及相关构建 | 改算法时另加质量评测；线上生效须部署核验 |
-| 控制台展示与缓存 | 组件/状态回归、类型检查、生产构建，必要时实际页面验证 | 不凭展示测试发布记忆准确率结论 |
-| README/RESULTS 公开数字 | validator、已提交原始 JSONL、可复现命令与统一 baseline | 必须完整、可验证，并同步全部公开入口 |
-
-accuracy、总 tokens、p50/p95 latency 一并报告。测试数量、执行平台、跳过项、命令输出与操作过程
-放在 `results/` 验收记录；此地图保留链接和影响决策的验证边界，不将某次通过数当作当前全仓保证。
+验收要求统一见 [AGENTS.md 的验证与完成](../AGENTS.md#验证与完成)，公开数字与实验产物见
+[评测规则](../AGENTS.md#principle-i)及[日志提交规则](../AGENTS.md#evidence-artifacts)。本地图中的证据链接用于说明对应改动的验证范围。
 
 ## 7. 维护规则
 
-1. 新改动合并到对应模块台账，写明问题、采用方案、取舍和证据；不在页首或页尾追加日期变更块。
-2. 新增 Config 开关或 ablation 系统，更新算法参数和对应优化点；区分默认值、内部常量与实验配置。
-3. 改变数据流、对象生命周期、存储、服务/API 或评测边界，同时更新总览图、代码位置和全链路报告对应章节。
-4. 被替代或收益未证实的方案归入“未采用／回滚原因”，注明当前状态，保留可复核的失败证据。
-5. 缺陷和待办只在 known-issues 维护状态；这里链接对应事项，避免重复台账。操作过程和原始输出留在 results。
-6. 改公开成绩先核验完整日志并同步 README ×2、RESULTS 与落地页；这里仅解释架构影响和证据入口。
-7. 纯 UI 调整归入控制台，不包装为记忆算法收益；不得把被替代的实现或旧测试结论混入当前行为。
+维护要求统一见 [AGENTS.md 的文档更新](../AGENTS.md#documentation)。本页按模块保存问题、方案、取舍与证据；当前实现的细节入口是全链路报告。
 
 ## 8. 快速定位
 
@@ -294,7 +277,7 @@ accuracy、总 tokens、p50/p95 latency 一并报告。测试数量、执行平�
 | 数值聚合 | [aggregate.py](../mnemotrace/retrieve/aggregate.py) |
 | 服务与交付 | [service.py](../mnemotrace/service.py)、[HTTP](../mnemotrace/server/app.py)、[部署](../deploy/README.md)、[交付规格](../specs/003-commercial-release/) |
 | 评测与设施性度量 | [bench.py](../eval/bench.py)、[ablate_features.py](../eval/ablate_features.py)、[longmemeval.py](../eval/longmemeval.py)、[facility.py](../eval/facility.py) |
-| 宪章与贡献规则 | [AGENTS.md](../AGENTS.md)、[CLAUDE.md](../CLAUDE.md)、[CONTRIBUTING.md](../CONTRIBUTING.md) |
+| 宪章与贡献规则 | [AGENTS.md](../AGENTS.md) |
 | 完整架构与算法说明 | [全链路报告](mnemotrace-full-architecture-report.zh-CN.md)、[算法说明](algorithm-architecture.md) |
 | 外部参考与研究材料 | [参考雷达](../specs/002-memory-reference-radar/research.md)、[中文技术报告](../specs/002-memory-reference-radar/technical-report.zh-CN.md) |
 | 原始日志与公开结果 | [日志规则](../results/README.md)、[RESULTS.md](../RESULTS.md)、[历史 headline 日志](../results/headline_500.jsonl) |

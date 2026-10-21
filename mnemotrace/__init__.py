@@ -1,4 +1,4 @@
-"""忆痕 —— 开源长期记忆引擎。项目章程见 CLAUDE.md。
+"""忆痕 —— 开源长期记忆引擎。项目章程见 AGENTS.md。
 
 Memory facade 接好后，公共 API 在本模块定稿（见 mnemotrace/memory.py）。
 """

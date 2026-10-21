@@ -1,4 +1,4 @@
-"""幂等的批量导入（CLAUDE.md §8 "no silent corruption"，应用在导入链路上）：重复导入同一份导出
+"""幂等的批量导入（AGENTS.md 「核心不变量」 "no silent corruption"，应用在导入链路上）：重复导入同一份导出
 不得让每条记忆翻倍。指纹与快照一起持久化，所以去重在重启后依然生效。全部离线运行。"""
 from __future__ import annotations
 

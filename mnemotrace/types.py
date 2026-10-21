@@ -1,4 +1,4 @@
-"""双时间轴数据模型。见 CLAUDE.md §3.1。
+"""双时间轴数据模型。见 AGENTS.md 「对象与时间语义」。
 
 核心不变式：被反驳的 fact 做*失效化*，绝不硬删除。每个 Fact 跟踪两条独立的时间轴，
 使我们既能回答"现在什么是真的？"，也能回答"在时刻 T 我们认为什么是真的？"：
@@ -27,7 +27,7 @@ class Episode:
     embedding: Optional[list[float]] = None
     consolidated: bool = False
     # L2 抽象：该 episode/session 的紧凑摘要，整合时计算一次，读取时用它（而非完整原文）
-    # 构建精简上下文——这是让一小片检索结果就能廉价覆盖大量 session 的扩展性基石（CLAUDE.md Bet A/E）。
+    # 构建精简上下文——这是让一小片检索结果就能廉价覆盖大量 session 的扩展性基石（AGENTS.md Bet A/E）。
     summary: str = ""
     summary_embedding: Optional[list[float]] = None
     id: str = field(default_factory=lambda: gen_id("ep"))
@@ -122,7 +122,7 @@ class Relation:
 
 @dataclass
 class WorkingMemory:
-    """短期工作记忆（CLAUDE.md §3 typed memory）：绝不能污染持久长期存储的瞬态状态。
+    """短期工作记忆（AGENTS.md 「架构概览与代码导航」 typed memory）：绝不能污染持久长期存储的瞬态状态。
     绑定到 session 和/或硬性 TTL，在所属 session 结束、到期或被消费时清除。
     例如："今天嗓子疼"（瞬态状态）、"提醒我买牛奶"（意图）、单次行程中的同行者信息。
     与 `working_set`（查询的瞬态注意力集合）不同——这是一个持久化、有生命周期管理的层级。

@@ -28,7 +28,7 @@ backends = ["lancedb>=0.6", "numpy>=1.24"]
 lancedb = ["lancedb>=0.6"]
 embeddings = ["sentence-transformers>=2.2"]  # local BGE embeddings (MNEMOTRACE_EMBEDDER=bge-*; no API key)
 llm = ["litellm>=1.40"]
-# Serving / adoption layer (CLAUDE.md §6).
+# Serving / adoption layer; see AGENTS.md#architecture.
 server = ["fastapi>=0.110", "uvicorn>=0.27", "pydantic>=2"]   # the multi-tenant HTTP API + console
 # mcp is pinned <2: the server is written against the 1.x FastMCP API, and mcp 2.0.0 removed
 # mcp.server.fastmcp (fresh CI resolves broke the moment 2.0 shipped). Lift after porting to 2.x.

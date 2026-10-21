@@ -1,4 +1,4 @@
-"""Agentic 迭代检索(CLAUDE.md Bet B)—— 针对全领域最薄弱处:multi-session / multi-hop。
+"""Agentic 迭代检索(AGENTS.md Bet B)—— 针对全领域最薄弱处:multi-session / multi-hop。
 不是一次嵌入查找,而是让 LLM 把问题分解成子查询,逐个子查询检索,然后基于已找到的内容再做一轮
 后续检索(让第二跳的实体浮出来)。这是一个可开关、可消融的层:如果在 harness 上无法提升
 multi-session,就删掉它。"""

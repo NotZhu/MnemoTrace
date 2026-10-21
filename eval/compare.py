@@ -1,4 +1,4 @@
-"""多 backbone 矩阵的跨日志比较（CLAUDE.md Bet D，M2_RUNBOOK §3）。
+"""多 backbone 矩阵的跨日志比较（AGENTS.md Bet D，M2_RUNBOOK 第 3 节）。
 
 `report.py` 把一份 bench 日志变成一张表；本脚本回答的是需要两份以上日志的问题：同样的 qids
 在不同 backbone（或系统）下运行时，哪里一致、哪里分歧、oracle 集成上限是多少？正是这种

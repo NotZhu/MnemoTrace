@@ -1,4 +1,4 @@
-"""统一评测台（CLAUDE.md Bet D）—— 公平、不作弊的 memory 系统对比方式。
+"""统一评测台（AGENTS.md Bet D）—— 公平、不作弊的 memory 系统对比方式。
 
 每个被测系统都是一个黑盒，只暴露一个方法：context(item) -> str（摄取该问题的各会话，返回用于作答的
 context）。固定的 answerer + 固定的 judge + 固定的 embedder/extractor 以完全相同的方式作用于每个系统，
@@ -515,7 +515,7 @@ class MnemoTraceFullSystem:
 
 
 class MnemoTraceLeanSystem:
-    """可扩展的 memory 系统（CLAUDE.md Bet A/E）：整合时构建 L1 facts + L2 会话摘要 + L3 用户画像，
+    """可扩展的 memory 系统（AGENTS.md Bet A/E）：整合时构建 L1 facts + L2 会话摘要 + L3 用户画像，
     然后从精简（lean）的检索切片作答 —— 而不是完整历史。这才是真正的赢面：用一小部分 token 在准确率
     上击败 full-context，从而在历史远超模型窗口时依然可用。与 engram_full 不同，原始 haystack 永远
     不进入 prompt，进入的只是一小段有组织的、检索出来的 context。"""

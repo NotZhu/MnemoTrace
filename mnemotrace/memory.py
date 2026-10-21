@@ -145,7 +145,7 @@ class Memory:
     ) -> None:
         self.config = config or Config()
         self.embedder = embedder or HashingEmbedder(self.config.embed_dim)
-        self.reranker = reranker  # 可选 cross-encoder；提升 chunk/session 检索精度 (CLAUDE.md L1)
+        self.reranker = reranker  # 可选 cross-encoder；提升 chunk/session 检索精度 (AGENTS.md「检索与模块」)
         self.llm = llm  # 启用时供 agentic 检索（查询分解）使用
 
         custom_vector_factory = vector_store_factory is not InMemoryVectorStore
@@ -175,11 +175,11 @@ class Memory:
         # 由 lean_context 填充；可检查、瞬态——与持久化 store 不同。
         self.working_set: list[Fact] = []
         # 工作记忆层：瞬态的、按 session/TTL 划分范围的状态，刻意不进入持久化长期存储
-        # (CLAUDE.md §3 typed memory)。生命周期受管（过期/消费/清除）。
+        # (AGENTS.md 「架构概览与代码导航」 typed memory)。生命周期受管（过期/消费/清除）。
         self.working_mem: dict[str, WorkingMemory] = {}
         # 用户自定义关注领域（"关注点"面板）。不是摆设——真实生效：
         #   * track：用户希望被强调的主题 -> 提升显著度；显著度是一等检索评分信号
-        #     (CLAUDE.md §3.3 w_sal)，且这些主题豁免衰减/驱逐（保持热层）。
+        #     (AGENTS.md 「检索与模块」 w_sal)，且这些主题豁免衰减/驱逐（保持热层）。
         #   * mute：需要抑制的主题 -> 从组装的读上下文和 persona 中过滤掉。
         self.focus: dict[str, list[str]] = {"track": [], "mute": []}
         # 每用户记忆策略：可编辑 prompt + "要记录什么"指令（控制台的 记忆策略 页面）。
@@ -243,7 +243,7 @@ class Memory:
                 for k, v in getattr(self, "_aliases", {}).items():
                     ex.aliases.setdefault(k, set()).update(v)
 
-    # --- 持久化（让记忆跨进程/session 存活；CLAUDE.md §6） ---
+    # --- 持久化（让记忆跨进程/session 存活；AGENTS.md 「代码导航」） ---
     def save(self, path: Optional[str] = None) -> None:
         """把持久化记忆状态快照到安全的 JSONL+manifest 存储。
 
@@ -353,7 +353,7 @@ class Memory:
         consolidate() 成长期 fact。返回描述路由结果的 dict。
 
         这是修正后的模型：瞬态 != 删除。只是跳过向持久 profile 的提升；episode 记录
-        (CLAUDE.md L0) 永远保留。"""
+        (AGENTS.md「对象与时间语义」) 永远保留。"""
         ephemeral = scope == "working" or (scope == "auto" and self.is_ephemeral(content))
         ep = self.add(content, user_id=user_id, session_id=session_id)
         if ephemeral:
@@ -402,7 +402,7 @@ class Memory:
             ep.user_id for ep in (summary_episodes or self.episodes_doc.values())})
         return stats
 
-    # --- 批量导入（CLAUDE.md §6 采用层）：批量接入用户自己的历史 ---
+    # --- 批量导入（AGENTS.md 「代码导航」 采用层）：批量接入用户自己的历史 ---
     def import_messages(
         self,
         sessions,
@@ -792,7 +792,7 @@ class Memory:
     # --- 关注领域："关注点"定制（记忆应强调/抑制什么） ---
     def set_focus(self, track: Optional[list[str]] = None, mute: Optional[list[str]] = None) -> dict:
         """定制记忆的优先级。真实生效，不只是个标签：
-          * `track` 主题获得显著度提升——显著度是一等检索评分信号 (CLAUDE.md §3.3 w_sal)，
+          * `track` 主题获得显著度提升——显著度是一等检索评分信号 (AGENTS.md 「检索与模块」 w_sal)，
             且豁免衰减/驱逐，因此被 track 的主题确实排名更高并留在热层。
           * `mute` 主题从组装的读上下文（lean_context）和 persona 中被抑制。
         传入 None 表示该列表不变；传入 [] 表示清空。"""
@@ -1119,7 +1119,7 @@ class Memory:
         return eps[:k]
 
     def reflect(self, user_id: str = "default") -> int:
-        """Reflector（Mastra 式摘要维护，CLAUDE.md §3）。L2 摘要在其 session 被摘要时定格；若它
+        """Reflector（Mastra 式摘要维护，AGENTS.md 「架构概览与代码导航」）。L2 摘要在其 session 被摘要时定格；若它
         陈述的 fact 之后被取代，旧值会残留在摘要文本里，精简读取就会把它浮出来。本方法把当前值
         追加到任何来源 fact 已失效化的摘要上，使知识更新传播进抽象层。返回被纠正的摘要数量。"""
         user = self.resolver.resolve(user_id)
@@ -1146,14 +1146,14 @@ class Memory:
 
     # 程序性记忆：how-to / 指令性知识——用户声明过的关于事情该怎么做的规则（"always remind
     # me…"、"I prefer responses in bullet points"）。这是 fact store 之上的一个独立类型化视图
-    # （CLAUDE.md §3 typed memory），浮出以便助手遵循长期有效的指令。
+    # （AGENTS.md 「架构概览与代码导航」 typed memory），浮出以便助手遵循长期有效的指令。
     _INSTRUCTION_PREDS = frozenset({
         "wants", "wants_reminder", "instruction", "prefers", "prefers_format", "asks_to", "always",
         "never", "remind", "rule", "routine", "how_to", "procedure", "wants_me_to",
     })
 
     def evict_cold(self, max_hot: int) -> int:
-        """冷热分层分页（MemoryOS，CLAUDE.md §3 / Bet E）。当热层 fact 集超过容量时，把最冷的
+        """冷热分层分页（MemoryOS，AGENTS.md 「架构概览与代码导航」 / Bet E）。当热层 fact 集超过容量时，把最冷的
         fact（显著度最低、访问最旧）换页到冷层——但持久的身份/偏好 fact 除外，它们保持热层。
         非破坏性：冷 fact 是移动而非删除，历史与 as-of 查询保持完整，未来的查询仍可把它们换页
         回来。正是这一点让检索成本在 10M-token 规模下保持 O(hot working set) 而非
@@ -2169,7 +2169,7 @@ class Memory:
         session_id: Optional[str] = None,  # 设置时，在最前面加上本 session 的瞬态工作记忆
         redact_sensitive: bool = False,  # 安全/共享视图：只显示非敏感的结构化 fact
     ) -> str:
-        """可扩展的读路径（CLAUDE.md Bet A/E）：从检索到的抽象层组装一个小而组织良好的上下文，
+        """可扩展的读路径（AGENTS.md Bet A/E）：从检索到的抽象层组装一个小而组织良好的上下文，
         而不是整段历史——
             L3 persona  +  L1 带日期 fact  +  L2 session 摘要  +  少量完整 chunk 提供细节。
 
@@ -2332,7 +2332,7 @@ class Memory:
                 blocks.append(hist)
 
         # L2 粗层：对每个（子）查询检索 session 摘要并排序。这是由粗到细级联的粗层
-        # （CLAUDE.md Bet E / OpenViking）：摘要很小，可以廉价地索引并排序大量 session——这是
+        # （AGENTS.md Bet E / OpenViking）：摘要很小，可以廉价地索引并排序大量 session——这是
         # 突破模型窗口（_M / 10M 前沿）的关键。
         summ_ranked: list[Episode] = []
         seen_s: set[str] = set()
@@ -2611,7 +2611,7 @@ class Memory:
         verify: bool = False,
         intent: bool = False,
     ) -> str:
-        """组装供 LLM 作答的 hybrid 读上下文（CLAUDE.md §3）：live 且带日期戳的 fact（经冲突
+        """组装供 LLM 作答的 hybrid 读上下文（AGENTS.md 「架构概览与代码导航」）：live 且带日期戳的 fact（经冲突
         解决的当前状态）+ top-k 原始 session chunk（细节抽取会丢掉的部分）。每一行都带日期戳，
         正是时间类与知识更新类问题可被回答的关键。
 

@@ -1,4 +1,4 @@
-"""在 harness 上调检索融合权重（CLAUDE.md §3.3 / §4——"绝不拍脑袋"）。
+"""在 harness 上调检索融合权重（AGENTS.md 「检索与模块」 / 「评测、公开内容与贡献规则」——"绝不拍脑袋"）。
 
 融合权重（w_sem, w_lex, w_graph, w_rec, w_sal）此前是手工设定的默认值。本脚本对着 ground truth
 做网格搜索，让章程里"每个 benchmark 在 harness 上调优"名副其实。目标函数不用 LLM：一个 fact

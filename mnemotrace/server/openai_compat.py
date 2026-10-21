@@ -1,4 +1,4 @@
-"""OpenAI 兼容的 chat 端点，透明叠加长期记忆（CLAUDE.md §6 采用层）。
+"""OpenAI 兼容的 chat 端点，透明叠加长期记忆（AGENTS.md 「代码导航」 采用层）。
 
 把任何 OpenAI 客户端的 `base_url` 指向 忆痕 服务器即可免费获得记忆：模型回答之前，忆痕
 检索一小段相关的用户历史并注入；回答之后，在关键路径之外记住这一轮。这是最大的即插即用采用
@@ -55,7 +55,7 @@ def _latest_user_message(messages: list) -> Optional[dict]:
 
 def remembered_text(captioner: Any, messages: list) -> str:
     """为最新一条 user 消息持久化的文本：其文本加上任意图片部分的描述，让通过代理发送的图片
-    留下可检索的痕迹（CLAUDE.md §6 多模态）。没有图片或没有视觉描述器时精确退化为
+    留下可检索的痕迹（AGENTS.md 「代码导航」 多模态）。没有图片或没有视觉描述器时精确退化为
     `latest_user_text`——纯文本路径不变。"""
     from ..llm.vision import caption_content
 
