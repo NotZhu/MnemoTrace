@@ -20,13 +20,14 @@ Windows，Python 3.12.6（仓库 `.venv`）、独立无可选包的 `--without-p
 | release / landing 同步 / diff 检查 | 通过 |
 | 生产浏览器 | 12 项通过，见 [原始检查](console_security_browser.jsonl) |
 | 原 Edge 历史凭据 | 三个实际 origin 均清理，见 [存在性记录](console_security_local_cleanup.jsonl) |
+| 修复版本原生 CI | `4060faa` 的 Windows/Linux × Python 3.10/3.12、Web 与容器六个作业通过，见 [Windows 所有者验收](#windows-ci-文件所有者验收) |
 
 完整 Python 跳过项：Windows 无文件 symlink 创建权限（8 项）；POSIX mode bits（3 项）；
 已安装 pypdf 导致缺依赖路径不适用（1 项）；macOS 专用 plutil（1 项）。目录 junction、
 Windows 原生 DACL、宽权限拒绝和实际 HTTP socket 均有已执行回归。
 本机仅有 docker-desktop WSL 发行版，Docker daemon 未运行，没有可用 Linux Python；
-POSIX 权限与 Python 3.10 未在本机运行。既有 Ubuntu/Windows、3.10/3.12 CI 矩阵及新增前端安全任务
-在后续推送时执行，本轮没有远程 CI 结果。
+POSIX 权限与 Python 3.10 未在本机运行。初轮验收时尚无远程 CI 结果；后续 Ubuntu/Windows、3.10/3.12 原生 CI
+及前端安全任务已通过，见 [Windows 所有者验收](#windows-ci-文件所有者验收)。
 
 ## 可重复命令
 
@@ -257,6 +258,24 @@ Windows Python 3.10/3.12 各为 **111 失败、976 通过、9 跳过**，分别�
 包含真实 HTTP/MCP stdio 接入。跳过分类与前轮相同；无可选包 zero-setup、release、Ruff I/F/E9 与 diff 检查通过。
 zero-setup 首次调用遗漏专用 TEMP/TMP，沙箱临时目录访问失败；设置仓库专用目录后通过，不计为代码缺陷。
 完整 Python 和修复版本原生 CI 结果记录于 [机器记录](windows_credential_owner_validation.jsonl)。
+
+修复提交 `4060faa01c9ce498580f432032cdd66d2b86a1c2` 的
+[原生 CI](https://github.com/NotZhu/MnemoTrace/actions/runs/39620060423) 已完成，六个作业均为 success：
+
+| 作业 | Python 通过 / 跳过 | pytest 耗时 |
+| --- | --- | --- |
+| Ubuntu / Python 3.10 | 1089 / 11 | 27.57 秒 |
+| Ubuntu / Python 3.12 | 1089 / 11 | 27.48 秒 |
+| Windows / Python 3.10 | 1091 / 9 | 62.16 秒 |
+| Windows / Python 3.12 | 1091 / 9 | 53.14 秒 |
+| Web | SDK 类型检查、测试与构建；控制台查询隔离、图谱、安全回归与生产构建通过 | 不合并计算 |
+| Container | Docker 生产镜像构建通过 | 不合并计算 |
+
+四个 Python 作业的 landing、zero-setup、release 均通过；发行包 build/twine 检查按既有条件只在 Ubuntu 3.12 执行并通过。
+CI 使用默认 pytest 输出，仅记录汇总跳过数量，没有逐项跳过原因，不能用本机跳过分类替代远程记录。
+核对命令为 `gh run view 39620060423 --repo NotZhu/MnemoTrace --json headSha,status,conclusion,jobs` 及同一运行的 `--log`。
+这补齐原生 Python 3.10、Linux/POSIX 与 Windows 创建/读取凭据的验证；本机默认 owner 模型的边界仍保留，不改写为本机管理员令牌测试。
+验收不代表其他部署已升级，也不自动清扫旧配置、终端历史或其他浏览器配置。
 此次不改前端、CI 用户或测试跳过条件，不重复浏览器清理，不运行质量 benchmark 或部署。
 
 重现命令（TEMP/TMP 使用上方仓库专用目录）：
