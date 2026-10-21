@@ -9,7 +9,6 @@ Codex/Claude/Cursor 将要拉起的 `python -m mnemotrace.mcp` stdio server，
 from __future__ import annotations
 
 import argparse
-import ast
 import json
 import shutil
 import subprocess
@@ -17,9 +16,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from .agent_config import ConfigReadError, load_codex_server
+from .credentials import CredentialError, read_key, redact, resolve_key
 
 CLIENTS = ("none", "codex", "claude-code", "cursor", "openai")
 
@@ -405,10 +407,13 @@ def _check_mcp_server_config(
         else:
             failures.append("args do not point at the requested MnemoTrace API URL")
         if api_key is not None:
-            if isinstance(args, list) and _arg_value(args, "--api-key") == api_key:
-                data["api_key_ok"] = True
-            else:
-                failures.append("args do not include the requested API key")
+            try:
+                reference = _arg_value(args, "--api-key-file") if isinstance(args, list) else None
+                data["api_key_ok"] = bool(reference and read_key(reference) == api_key)
+            except CredentialError:
+                data["api_key_ok"] = False
+            if not data["api_key_ok"]:
+                failures.append("private credential reference is missing, unsafe, or has a different identity")
     elif api_key is not None:
         if isinstance(args, list) and _arg_value(args, "--namespace") == api_key:
             data["namespace_ok"] = True
@@ -427,48 +432,6 @@ def _check_mcp_server_config(
     }
 
 
-def _parse_toml_value(raw: str) -> Any:
-    raw = raw.strip()
-    try:
-        return json.loads(raw)
-    except Exception:  # noqa: BLE001
-        return ast.literal_eval(raw)
-
-
-def _load_codex_mnemotrace_server(path: Path) -> dict:
-    if not path.exists():
-        raise FileNotFoundError(str(path))
-    text = path.read_text()
-    try:
-        import tomllib  # Python 3.11+
-
-        data = tomllib.loads(text)
-        server = (data.get("mcp_servers") or {}).get("mnemotrace")
-        if server is None:
-            raise KeyError("[mcp_servers.mnemotrace]")
-        return server
-    except ModuleNotFoundError:
-        pass
-    lines = text.splitlines()
-    start = None
-    for i, line in enumerate(lines):
-        if line.split("#", 1)[0].strip() == "[mcp_servers.mnemotrace]":
-            start = i + 1
-            break
-    if start is None:
-        raise KeyError("[mcp_servers.mnemotrace]")
-    out: dict[str, Any] = {}
-    for line in lines[start:]:
-        clean = line.split("#", 1)[0].strip()
-        if clean.startswith("[") and clean.endswith("]"):
-            break
-        if not clean or "=" not in clean:
-            continue
-        key, raw = clean.split("=", 1)
-        out[key.strip()] = _parse_toml_value(raw)
-    return out
-
-
 def _codex_config_probe(
     config_path: str,
     *,
@@ -478,7 +441,7 @@ def _codex_config_probe(
 ) -> dict[str, Any]:
     path = Path(config_path).expanduser()
     try:
-        server = _load_codex_mnemotrace_server(path)
+        server = load_codex_server(path)
     except FileNotFoundError:
         return {
             "name": "Codex config",
@@ -486,11 +449,18 @@ def _codex_config_probe(
             "detail": f"Codex config not found: {path}",
             "command": [],
         }
-    except Exception as exc:  # noqa: BLE001
+    except ConfigReadError as exc:
         return {
             "name": "Codex config",
             "status": "fail",
-            "detail": f"Could not read [mcp_servers.mnemotrace] from {path}: {exc}",
+            "detail": str(exc),
+            "command": [],
+        }
+    except Exception:  # noqa: BLE001
+        return {
+            "name": "Codex config",
+            "status": "fail",
+            "detail": f"Could not read [mcp_servers.mnemotrace] from {path}.",
             "command": [],
         }
     check = _check_mcp_server_config(
@@ -523,11 +493,11 @@ def _mcp_json_config_probe(
             "detail": f"MCP JSON config not found: {path}",
             "command": [],
         }
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         return {
             "name": "MCP JSON config",
             "status": "fail",
-            "detail": f"Could not read mcpServers.{server_name} from {path}: {exc}",
+            "detail": f"Could not read mcpServers.{server_name} from {path}.",
             "command": [],
         }
     check = _check_mcp_server_config(
@@ -777,7 +747,7 @@ def _remote_http_probe(api_url: str, api_key: str) -> dict[str, Any]:
             "clear_working": True,
         })
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:400]
+        detail = "Request failed."
         if exc.code == 401:
             detail = "HTTP 401: the MnemoTrace server rejected this API key."
         else:
@@ -912,15 +882,33 @@ def _client_probe(client: str) -> list[dict[str, Any]]:
     return checks
 
 
+def _redact_report(report: dict[str, Any], key: str | None) -> dict[str, Any]:
+    """Keep control fields intact even when a valid key equals a field or enum."""
+    result = deepcopy(report)
+    for field in ("python", "api_url"):
+        if field in result:
+            result[field] = redact(result[field], key)
+    for check in result["checks"]:
+        for field in ("detail", "command", "data"):
+            if field in check:
+                check[field] = redact(check[field], key)
+    return result
+
+
 def diagnose(
     client: str = "none",
     python_cmd: str = "python",
     api_url: str | None = None,
-    api_key: str = "me",
+    api_key: str | None = None,
+    api_key_file: str | None = None,
     codex_config: str | None = None,
     mcp_json: str | None = None,
     mcp_server_name: str = "mnemotrace",
 ) -> dict[str, Any]:
+    if api_url:
+        api_key = resolve_key(key=api_key, key_file=api_key_file)
+    else:
+        api_key = api_key or "me"
     python_check = _python_probe(python_cmd)
     checks = [python_check]
     if python_check["status"] == "ok":
@@ -945,7 +933,7 @@ def diagnose(
     checks.extend(_client_probe(client))
     failed = [c for c in checks if c["status"] == "fail"]
     warned = [c for c in checks if c["status"] == "warn"]
-    return {
+    return _redact_report({
         "ok": not failed,
         "client": client,
         "python": python_cmd,
@@ -956,10 +944,12 @@ def diagnose(
             "warn": len(warned),
             "fail": len(failed),
         },
-    }
+    }, api_key if api_url else None)
 
 
-def render_report(report: dict[str, Any]) -> str:
+def render_report(report: dict[str, Any], *, api_key: str | None = None) -> str:
+    if api_key is not None:
+        report = _redact_report(report, api_key)
     lines = [
         "# MnemoTrace Agent Doctor",
         "",
@@ -996,8 +986,9 @@ def main(argv: list[str] | None = None) -> None:
                     help="Python executable that the agent will launch for `python -m mnemotrace.mcp`")
     ap.add_argument("--api-url", default=None,
                     help="optional MnemoTrace HTTP server to verify with a remote lifecycle smoke test")
-    ap.add_argument("--api-key", default="me",
-                    help="Bearer key for --api-url, or expected local namespace when --api-url is omitted")
+    credentials = ap.add_mutually_exclusive_group()
+    credentials.add_argument("--api-key", help="Explicit Bearer key or expected local namespace")
+    credentials.add_argument("--api-key-file", help="Private credential file for remote access")
     ap.add_argument("--codex-config", default=None,
                     help="optional Codex config.toml path to verify [mcp_servers.mnemotrace]")
     ap.add_argument("--mcp-json", default=None,
@@ -1007,11 +998,18 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--json", action="store_true", help="print machine-readable JSON")
     args = ap.parse_args(argv)
 
+    try:
+        api_key = None
+        if args.api_url or args.api_key is not None or args.api_key_file:
+            api_key = resolve_key(key=args.api_key, key_file=args.api_key_file, required=bool(args.api_url))
+    except CredentialError as exc:
+        ap.error(str(exc))
+
     report = diagnose(
         client=args.client,
         python_cmd=args.python,
         api_url=args.api_url,
-        api_key=args.api_key,
+        api_key=api_key,
         codex_config=args.codex_config,
         mcp_json=args.mcp_json,
         mcp_server_name=args.mcp_server_name,

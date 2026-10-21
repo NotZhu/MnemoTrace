@@ -173,7 +173,9 @@ MnemoTrace 自带完整**接入层**:HTTP API + MCP + JS/TS SDK + OpenAI 兼容,
 [`examples/cross_agent_lifecycle.py`](examples/cross_agent_lifecycle.py)，双 agent 交接自测见
 [`examples/cross_agent_handoff.py`](examples/cross_agent_handoff.py)。如果 agent 需要用指定 Python
 环境启动 MCP，可用 `mnemotrace-agent-setup --client codex --local --namespace me --python /path/to/python`
-生成本地零服务配置，或用 `--api-url ... --api-key ...` 生成 HTTP 服务配置；最快本地路径是
+生成本地零服务配置。HTTP 接入使用 `--install-codex --api-url ... --prompt-api-key --doctor`，
+隐藏输入后写入用户私有凭据文件，配置和验证命令仅引用 `--api-key-file` 路径；
+权限与生命周期见[接入凭据说明](frontend/README.md#接入凭据)。最快本地路径是
 先 `mnemotrace-agent-bootstrap --local --dry-run --namespace me --python /path/to/python` 预览，再
 `mnemotrace-agent-bootstrap --local --namespace me --python /path/to/python` 安装 Codex + 项目 `.mcp.json`、
 运行 doctor 验证已写入配置和 MCP runtime，并输出可粘贴进 AGENTS.md 的策略文本；
@@ -205,7 +207,7 @@ curl -s -X POST $B/v1/recall -H "Authorization: Bearer $K" -H "Content-Type: app
 ```bash
 pip install -e '.[mcp]'
 python -m mnemotrace.mcp                 # 本地记忆，零外部服务
-# 或代理一个运行中的服务： python -m mnemotrace.mcp --api-url http://127.0.0.1:8000 --api-key my-app
+# 或代理一个运行中的服务： python -m mnemotrace.mcp --api-url http://127.0.0.1:8000 --api-key-file /path/to/private/key
 ```
 ```jsonc
 // claude_desktop_config.json

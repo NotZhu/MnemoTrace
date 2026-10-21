@@ -4,11 +4,31 @@ import json
 import subprocess
 import urllib.error
 
+import pytest
+
 from mnemotrace import agent_doctor as D
 
 
 def _completed(args, returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr=stderr)
+
+
+def test_private_file_identity_and_failure_output_are_redacted(tmp_path, monkeypatch, capsys):
+    from mnemotrace.credentials import store_key
+    reference = store_key("synthetic-doctor-secret", directory=tmp_path / "credentials")
+    monkeypatch.setattr(D, "_python_probe", lambda python: {"name": "synthetic", "status": "fail"})
+    observed = []
+    def remote(url, key):
+        observed.append(key)
+        return {"name": "remote", "status": "fail", "detail": f"synthetic failure echoed {key}", "data": [key]}
+    monkeypatch.setattr(D, "_remote_http_probe", remote)
+    with pytest.raises(SystemExit) as stopped:
+        D.main(["--api-url", "http://example.invalid", "--api-key-file", reference, "--json"])
+    assert stopped.value.code == 1
+    assert observed == ["synthetic-doctor-secret"]
+    output = capsys.readouterr()
+    assert "synthetic-doctor-secret" not in output.out + output.err
+    assert "<REDACTED>" in output.out
 
 
 def test_diagnose_codex_success(monkeypatch):
@@ -241,11 +261,14 @@ def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
         "recalled_phrase": True,
         "recalled_source_session": True,
     }
+    from mnemotrace.credentials import store_key
+    reference = store_key("sk-secret", directory=tmp_path / "credentials")
     config = tmp_path / "config.toml"
     config.write_text(
         "[mcp_servers.mnemotrace]\n"
         'command = "/opt/mnemotrace/bin/python"\n'
-        'args = ["-m", "mnemotrace.mcp", "--api-url", "http://mnemotrace.test", "--api-key", "sk-secret"]\n'
+        'args = ' + json.dumps(["-m", "mnemotrace.mcp", "--api-url", "http://mnemotrace.test", "--api-key-file", reference], ensure_ascii=False) + "\n",
+        encoding="utf-8",
     )
 
     source_session = ""

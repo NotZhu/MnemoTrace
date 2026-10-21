@@ -442,7 +442,7 @@ export const copy = {
     connectNewSession: '生成新 ID',
     connectSessionHint: '用于关联本轮测试记录，重新测试时可生成新 ID。',
     connectStepInstall: '1. 安装连接器',
-    connectInstallDesc: '在本机 MnemoTrace 项目根目录的终端中运行以下命令。完成后，新开一个 Codex 聊天。',
+    connectInstallDesc: '在本机 MnemoTrace 项目根目录的终端中运行以下命令，按提示隐藏输入当前空间的 API Key。凭据以权限保护的明文文件保存在用户目录 .mnemotrace/credentials，客户端配置仅引用文件路径。旧版含 Key 的命令可能已被 PowerShell 或 Bash 历史保存，本操作不会清除旧记录。完成后，新开一个 Codex 聊天。',
     connectCopyCommand: '复制命令',
     connectTerminal: '终端',
     connectStepTest: '2. 保存一条测试记忆',

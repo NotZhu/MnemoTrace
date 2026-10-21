@@ -136,7 +136,10 @@ test is available at
 [`examples/cross_agent_handoff.py`](examples/cross_agent_handoff.py).
 You can also generate client-specific setup snippets with
 `mnemotrace-agent-setup --client codex --local --namespace me` (zero-server local MCP) or
-`mnemotrace-agent-setup --client codex --api-url http://localhost:8000 --api-key me` (HTTP service).
+`mnemotrace-agent-setup --install-codex --api-url http://localhost:8000 --prompt-api-key --doctor`
+(HTTP service, hidden credential input). Generated configs use an owner-only private credential file;
+setup, MCP, and doctor accept `--api-key-file`. Terminal output never repeats the credential.
+See [credential handling](frontend/README.md#接入凭据) for permissions and lifecycle limits.
 Add `--python /path/to/python` when the agent should launch a specific environment with
 this checkout installed with `pip install -e '.[mcp]'`. The fast local path is
 `mnemotrace-agent-bootstrap --local --dry-run --namespace me --python /path/to/python` followed by
@@ -193,7 +196,7 @@ for explicit local development.
 pip install -e '.[mcp]'
 python -m mnemotrace.mcp                 # local memory at ~/.mnemotrace/data (zero external service)
 # or proxy a running server (hosted or self-hosted):
-#   python -m mnemotrace.mcp --api-url http://127.0.0.1:8000 --api-key my-app
+#   python -m mnemotrace.mcp --api-url http://127.0.0.1:8000 --api-key-file /path/to/private/key
 ```
 ```jsonc
 // claude_desktop_config.json

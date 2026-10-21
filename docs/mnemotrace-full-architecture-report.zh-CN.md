@@ -52,6 +52,9 @@ flowchart TD
         MCP["MCP tools\nmnemotrace/mcp/server.py"]
         EVAL["Eval harness\neval/bench.py"]
         SDK["TypeScript SDK / Agent adapter"]
+        SETUP["Setup 隐藏输入\n凭据文件 / 参数生成 / 内容脱敏"]
+        KEYFILE["用户私有凭据文件\n配置仅引用绝对路径"]
+        SETUP --> KEYFILE --> MCP
     end
 
     subgraph SVC["服务与多租户层"]
@@ -838,8 +841,9 @@ flowchart LR
 描述为所有配置错误均严格拒绝。相关验证见[鉴权字符边界](../results/api_key_character_validation.md)、
 [空间策略](../results/test_namespace_policy_validation.md)与[交付记录](../results/commercial_release_0_1_0_validation.jsonl)。
 
-服务设置 no-store、nosniff、DENY、no-referrer 和 CSP 等响应头。CSP 的 script-src 仍允许
-unsafe-inline，收紧范围与历史凭据清理见[ISSUE-013](known-issues.zh-CN.md#issue-013)。
+服务设置 no-store、nosniff、DENY、no-referrer 和 CSP 等响应头。script-src 仅允许 self，
+主题通过头部同步同源脚本恢复，不授权内联脚本或动态代码生成；style-src 保留现有内联样式权限。
+实际脚本执行与页面验收见[控制台安全验收](../results/console_security_validation.md)。
 静态文件路由通过 realpath/commonpath 和 StaticFiles 约束公开目录；[ISSUE-001](known-issues.zh-CN.md#issue-001)
 已完成本地 HTTP 修复验收，线上部署未核验。租户目录所有权见第 6.3 节。
 
@@ -849,8 +853,9 @@ unsafe-inline，收紧范围与历史凭据清理见[ISSUE-013](known-issues.zh-
 每次 login／logout 原子更新 key、错误状态及递增 epoch，同 Key 登录、无效 Key 登录和重复退出也推进周期。
 `currentSession()` 单次读取 `{key, epoch}`，`isCurrentSession()` 比较完整快照；epoch 不落盘、不发送给服务端。
 登录和 API 客户端均检查非空可打印 ASCII；非法值在构造 Headers 前被拒绝，合法值原样发送。
-启动尝试删除 localStorage 的 mnemotrace.auth，不读取或恢复其内容；engram.auth 残留清理是
-[ISSUE-013](known-issues.zh-CN.md#issue-013) 的未解决部分。
+启动尝试删除 localStorage 的 mnemotrace.auth，不读取或恢复其内容；历史浏览器凭据按原 origin
+一次性定点清理，不新增旧登录恢复或旧产品兼容路径。操作边界见
+[控制台安全验收](../results/console_security_validation.md)。
 
 私有查询 key 含登录凭据以区分账号，键格式保持不变。main.tsx 的同步订阅在 epoch 改变时取消私有查询、移除缓存、
 清除错误，公共 health 缓存保留。原文查询也带 namespace；全局重试只选当前账号的失败查询，
@@ -871,6 +876,41 @@ Layout 在 Facts 页保留错误期挂载（见第 10.4 节）；其他页面依
 与[凭证输入](../results/api_key_character_validation.md)。当前周期与导出边界见
 [ISSUE-035 本地验收及原始输出](../results/issue035_validation.md)；尚未核验真实浏览器和线上部署。
 
+接入凭据由 `mnemotrace/credentials.py` 集中处理：setup、MCP、doctor 共用文件读取、字符与权限校验。
+文件路径统一展开用户目录，并以调用时工作目录转为绝对路径；不消解链接，以便权限检查拒绝链接路径。
+CLI、TOML、JSON 及验证命令在共享参数出口应用同一规则，生成片段不创建文件，占位符保持原样。
+显式 Key、文件和隐藏输入互斥，未显式选择时可读取 MNEMOTRACE_API_KEY；远程安装缺少凭据直接失败，
+文件错误不回退到环境身份，本地 namespace 模式仍零配置。回显不可关闭、取消或无效输入不写配置。
+
+文件保存在用户目录 .mnemotrace/credentials/<随机 UUID>.key；POSIX 目录 0700、文件 0600，
+Windows 使用仅当前用户与 SYSTEM 的受保护 DACL；链接、非普通文件或不安全权限均拒绝。
+临时文件先施加权限再写入，fsync 后原子替换；同目标同 Key 复用引用，更换 Key 先写新文件再更新配置。
+配置备份同样私有，卸载仅移除配置、不删除凭据；dry-run 不创建凭据或改配置。
+setup 与 doctor 通过 `mnemotrace/agent_config.py` 共用 Codex 配置读取，不互相调用内部解析函数。
+Python 3.11+ 使用 tomllib；3.10 的标准库读取器完整收集语句后读取 command 字符串和 args 字符串数组，
+支持多行数组、单双引号、引号内 #、行尾注释及尾逗号。引用复用是可选优化：不支持的表达形式跳过复用，
+使用本次已验证的输入创建私有文件；doctor 明确返回读取失败。已识别引用的缺失、链接、不安全权限或无效内容仍阻止安装。
+示例和输出使用文件引用、占位符或脱敏文本，不打印真实 Key。此存储是权限保护的明文，
+不承诺加密，也不自动迁移旧配置、清扫历史备份或撤销服务端 Key。
+doctor 的 `_redact_report` 按报告结构生成副本：保留字段名、成功标志、客户端枚举、汇总计数与检查项的固定名称/状态，
+只对 Python 路径、API 地址、详情、展示命令及 data 中的字符串内容脱敏。共享 redact 递归保留字典键与非文本值；
+不能将整个诊断报告视作普通文本递归替换，否则合法 Key 与 ok/status 等重名会破坏控制字段。
+汇总和退出判断依据原始探针结果，文本与 JSON 共用处理后的报告；setup 沿用该报告结构判断安装后自检结果。
+新增报告内容字段时须纳入此边界。验证入口见[诊断报告脱敏验收](../results/console_security_validation.md#诊断报告结构与脱敏边界验收)。
+配置生成与诊断内容有独立边界：mcp_args、codex_toml_block、render_markdown 不接收原始 Key；
+结果渲染的本地 namespace 与远程脱敏 Key 分开传递。模块名、配置键、服务器名、工具名、地址、路径和会话参数
+按精确值构建并进行 JSON/TOML/shell 转义，即使与 Key 同字也不改写。四类 setup 渲染不对成品全文调用 redact；
+只在自由提示进入模板前处理，嵌入报告通过 render_report 的可选 api_key 参数复用结构化脱敏。
+配置与策略块来自当前生成器，不解析或迁移旧版含 Key 的块。CLI 参数和凭据存储不变，
+纯 Python 辅助接口直接收窄、不添加旧参数别名；按数据来源验收，不能以最终文本的 Key 字符串全局零出现代替安全边界。
+验证入口见[配置生成与渲染验收](../results/console_security_validation.md#配置生成与文本脱敏边界验收)。
+Codex 的 command 和所有 args 元素由私有 `_toml_string` 编码为 TOML 双引号基础字符串：合法 Unicode 保留原字符，
+引号、反斜杠、ASCII 控制字符和 DEL 使用 TOML 转义，孤立代理项返回固定 CredentialError 并阻止覆盖配置。
+该函数不承担通用 TOML 写入或历史迁移，JSON 与 shell 继续使用各自编码；安装最终以 UTF-8 写入。
+完整字节产物由独立 TOML 解析器验证，不能用 JSON 能否解析数组替代。Unicode 路径、读取、复用和实际接入见
+[TOML 编码验收](../results/console_security_validation.md#codex-toml-字符串编码验收)。
+路径、配置读取及真实传输的验证范围见[控制台安全验收](../results/console_security_validation.md#凭据路径与配置读取验收)。
+
 ### 10.3 展示偏好、主题与共享组件
 
 `store/preferences.ts` 将白名单偏好写入版本化 localStorage。控件 → Zustand → 缓存恢复不经过
@@ -885,7 +925,8 @@ MemoryService；图谱外观/受力参数在当前浏览器内通用，页面筛
 必须仍属于发起时的登录快照；同 Key 新登录也拒绝旧回写。指纹算法与存储格式不变，已有偏好继续恢复。
 localStorage 不可用时保留内存操作；不同来源及设备不自动同步。搜索、草稿、问答结果和弹窗不持久化。
 
-`store/theme.ts` 单独保存 mnemotrace.theme，HTML 内联初始化在 React 首屏前恢复 dark/light，
+`store/theme.ts` 单独保存 mnemotrace.theme，`public/theme-init.js` 在 HTML 头部同步加载，
+先于首次绘制和 React 恢复 dark/light，store 接续根元素初始主题，
 无效值回退深色；根元素 data-theme/color-scheme 驱动共享组件与画布配色。ThemeToggle 在登录页
 可使用 View Transition 圆形揭示，其他页面使用颜色过渡；能力缺失或减少动态偏好时直接切换，
 连续操作清理旧任务。主题不参与服务鉴权或记忆内容。
@@ -996,7 +1037,9 @@ motion.ts 预计算真实 D3 轨迹，先按终点适配一次，再由 RAF 插�
 登录页依据 health.auth_mode 显示开放或受保护模式说明。生成空间 key 和演示按钮仅在开放模式可操作，
 只填充输入，不自动登录、创建空间或调用擦除；演示值为 mnemotrace-test。输入为空禁止提交，
 清空按钮仅清除表单并恢复焦点。安装命令的目标 API 地址由 apiBaseUrl 派生，自定义长期目标选择的缺口
-见[ISSUE-008](known-issues.zh-CN.md#issue-008)，带 key 的终端历史风险见第 10.1 节。
+见[ISSUE-008](known-issues.zh-CN.md#issue-008)。接入命令使用 --prompt-api-key，不包含当前登录 Key；
+安装工具隐藏输入后写入用户私有凭据文件，配置、验证命令仅包含 --api-key-file 的绝对路径。
+旧版含 Key 命令可能已留在终端历史，界面说明不能清除历史或撤销旧 Key。
 
 LoginMemoryGraph 是独立 SVG 装饰，不读取用户记忆。可见边决定传播和邻接，位置与取样外观分别由
 loginMemoryGraphData/Appearance 管理；motion 与 React hook 负责局部漂浮、邻居牵动、边界内节点拖动
@@ -1157,7 +1200,8 @@ python eval/validate_results.py
 | 控制台问题                 | 看哪里                                                                            |
 | -------------------------- | --------------------------------------------------------------------------------- |
 | 凭据和查询生命周期         | frontend/src/store/auth.ts、main.tsx、lib/api.ts、store/queryErrors.ts            |
-| 展示偏好与主题             | frontend/src/store/preferences.ts、store/theme.ts、lib/themeReveal.ts             |
+| 展示偏好与主题             | frontend/public/theme-init.js、src/store/{preferences,theme}.ts、src/lib/themeReveal.ts |
+| 接入凭据文件与诊断         | mnemotrace/credentials.py、agent_config.py、agent_setup.py、agent_doctor.py、mcp/__main__.py |
 | 图谱模型、渲染、视角与轨迹 | frontend/src/vendor/quartz/{model,graph,view,motion,types}.ts                     |
 | 页面筛选、来源与会话       | frontend/src/hooks/queries.ts、pages/{Facts,Profile,Journal,Conversations}.tsx    |
 | 体检与错误展示             | frontend/src/pages/Health.tsx、components/GlobalErrorBanner.tsx                   |

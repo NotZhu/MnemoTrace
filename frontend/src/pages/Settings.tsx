@@ -22,7 +22,6 @@ import { copy as t } from '../lib/copy'
 import { apiBaseUrl } from '../lib/api'
 import { copyText } from '../lib/clipboard'
 import { codexSetupCommand, defaultSetupShell, type SetupShell } from '../lib/codexSetupCommand'
-import { useAuth } from '../store/auth'
 import type { Policy } from '../types'
 
 const CODEX_TEST_SESSION_KEY = 'mnemotrace:codex-test-session'
@@ -199,7 +198,6 @@ export default function Settings() {
 }
 
 function CodexSetupCard() {
-  const apiKey = useAuth((s) => s.apiKey) || ''
   const [shell, setShell] = useState<SetupShell>(() => defaultSetupShell(
     typeof navigator === 'undefined' ? '' : navigator.platform || navigator.userAgent,
   ))
@@ -221,7 +219,7 @@ function CodexSetupCard() {
   const codexSessions = sessions.data?.sessions ?? []
   const feedCommand = 'mnemotrace-watch --install'
 
-  const command = codexSetupCommand(shell, apiUrl, apiKey)
+  const command = codexSetupCommand(shell, apiUrl)
 
   const testPrompt = t.settings.connectTestPrompt(sessionId)
   const serviceReady = !health.isError && !!health.data?.ready
@@ -364,7 +362,7 @@ function CodexSetupCard() {
             <div className="space-y-4 text-sm text-ghost">
               <div className="flex justify-between gap-3">
                 <span>{t.settings.connectNamespace}</span>
-                <span className="truncate text-right text-slate-200">{status.data?.user ?? apiKey}</span>
+                <span className="truncate text-right text-slate-200">{status.data?.user ?? '—'}</span>
               </div>
               <div className="flex justify-between gap-3">
                 <span>{t.settings.connectSessionEpisodes}</span>

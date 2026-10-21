@@ -21,6 +21,7 @@
 | 鉴权 | 默认失败关闭；严格 key 配置；同租户多 key 轮换 | HTTP auth/readiness 测试 |
 | 请求边界 | 声明长度与实际流式字节都受限，常用字段另有上限，超限在写入前拒绝 | 普通/分块 413 + episode 计数测试 |
 | 健康检查 | `/health` 区分存活，`/ready` 只在可接流量时成功 | 200/503 状态测试 |
+| 控制台与接入 | 同源脚本 CSP；隐藏输入、私有凭据文件、配置仅引用路径，诊断与终端输出脱敏 | [控制台安全验收](../results/console_security_validation.md) |
 | 容器 | 非 root、只读根、持久卷、cap drop、本机端口绑定 | Docker build + 重启召回 |
 | 版本 | Python/服务/SDK/管理界面/manifest 统一 0.1.0 | `scripts/check_release.py` |
 | 发布 | CI、变更记录、安全策略、中文部署/备份/升级文档 | release gate + build checks |
@@ -36,6 +37,9 @@
 
 ```mermaid
 flowchart LR
+    SETUP["隐藏输入 / 私有文件"] --> KEYFILE["用户私有凭据文件"]
+    KEYFILE --> MCP["MCP 读取文件"]
+    MCP --> C
     C["Agent / App / SDK"] --> G["TLS Proxy / API Gateway"]
     G --> A["Bearer key 校验\n严格 tenant:key 映射"]
     A --> N["稳定 tenant_id"]

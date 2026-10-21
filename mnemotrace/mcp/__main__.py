@@ -29,15 +29,27 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8765, help="bind port for --http (default 8765)")
     ap.add_argument("--namespace", "-n", help="local memory namespace (default $MNEMOTRACE_NAMESPACE or 'me')")
     ap.add_argument("--api-url", help="proxy a running MnemoTrace server (default $MNEMOTRACE_API_URL); else local")
-    ap.add_argument("--api-key", help="Bearer key for --api-url (default $MNEMOTRACE_API_KEY)")
+    credentials = ap.add_mutually_exclusive_group()
+    credentials.add_argument("--api-key", help="Explicit Bearer key (default $MNEMOTRACE_API_KEY)")
+    credentials.add_argument("--api-key-file", help="Private credential file for --api-url")
     args = ap.parse_args()
+
+    from ..credentials import CredentialError, resolve_key
+
+    try:
+        remote = bool(args.api_url or os.environ.get("MNEMOTRACE_API_URL"))
+        key = None
+        if remote or args.api_key is not None or args.api_key_file:
+            key = resolve_key(key=args.api_key, key_file=args.api_key_file, required=remote)
+    except CredentialError as exc:
+        ap.error(str(exc))
 
     if args.namespace:
         os.environ["MNEMOTRACE_NAMESPACE"] = args.namespace
     if args.api_url:
         os.environ["MNEMOTRACE_API_URL"] = args.api_url
-    if args.api_key:
-        os.environ["MNEMOTRACE_API_KEY"] = args.api_key
+    if key is not None:
+        os.environ["MNEMOTRACE_API_KEY"] = key
 
     from .server import backend, mcp
 

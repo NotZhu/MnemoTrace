@@ -3,31 +3,51 @@
 默认模式刻意保持只读：只打印可直接复制的配置方案，绝不改动用户的
 Claude/Codex/Cursor 配置。显式的 install/uninstall 标志可以先备份再管理 Codex 的
 config.toml，因为 Codex 是第一个能用 doctor 做端到端验证的适配器。
+
+配置和命令保留功能参数的精确值；只有自由诊断内容在进入模板前脱敏。
+禁止对成品全文替换 Key，否则合法参数与固定标识重名也会被破坏。
 """
 from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import shlex
+import shutil
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
+from .agent_config import ConfigReadError, load_codex_server
+from .credentials import (
+    CredentialError,
+    credential_path,
+    private_write,
+    read_config,
+    read_key,
+    redact,
+    resolve_key,
+    store_key,
+)
 
 CLIENTS = ("all", "claude-code", "codex", "cursor", "openai")
 DOCTOR_CLIENTS = ("none", "claude-code", "codex", "cursor", "openai")
 BOOTSTRAP_TARGETS = ("codex", "mcp-json")
 POLICY_START_MARKER = "<!-- MNEMOTRACE MEMORY START -->"
 POLICY_END_MARKER = "<!-- MNEMOTRACE MEMORY END -->"
+PRIVATE_CREDENTIAL_FILE = "<private-credential-file>"
 
 
-def mcp_args(*, api_url: str | None, api_key: str | None, namespace: str | None) -> list[str]:
+def _credential_file_argument(path: str | None) -> str:
+    if not path or path == PRIVATE_CREDENTIAL_FILE:
+        return PRIVATE_CREDENTIAL_FILE
+    return str(credential_path(path))
+
+
+def mcp_args(*, api_url: str | None, namespace: str | None, api_key_file: str | None = None) -> list[str]:
     args = ["-m", "mnemotrace.mcp"]
     if api_url:
         args += ["--api-url", api_url]
-        if api_key:
-            args += ["--api-key", api_key]
+        args += ["--api-key-file", _credential_file_argument(api_key_file)]
     else:
         args += ["--namespace", namespace or "me"]
     return args
@@ -57,13 +77,30 @@ def agents_file_path(path: str | None = None) -> Path:
     return Path(path).expanduser() if path else Path.cwd() / "AGENTS.md"
 
 
-def codex_toml_block(*, api_url: str | None, api_key: str | None,
-                     namespace: str | None, python_cmd: str) -> str:
-    args = mcp_args(api_url=api_url, api_key=api_key, namespace=namespace)
-    toml_args = ", ".join(json.dumps(a) for a in args)
+def _toml_string(value: str) -> str:
+    """Encode one TOML basic string, without JSON's surrogate-pair escapes."""
+    escapes = {'"': '\\"', '\\': '\\\\', '\b': '\\b', '\t': '\\t', '\n': '\\n', '\f': '\\f', '\r': '\\r'}
+    encoded = []
+    for char in value:
+        code = ord(char)
+        if 0xD800 <= code <= 0xDFFF:
+            raise CredentialError("Codex config strings must contain valid Unicode scalar values.")
+        if char in escapes:
+            encoded.append(escapes[char])
+        elif code < 0x20 or code == 0x7F:
+            encoded.append(f"\\u{code:04X}")
+        else:
+            encoded.append(char)
+    return '"' + "".join(encoded) + '"'
+
+
+def codex_toml_block(*, api_url: str | None,
+                     namespace: str | None, python_cmd: str, api_key_file: str | None = None) -> str:
+    args = mcp_args(api_url=api_url, namespace=namespace, api_key_file=api_key_file)
+    toml_args = ", ".join(_toml_string(a) for a in args)
     return "\n".join([
         "[mcp_servers.mnemotrace]",
-        f"command = {json.dumps(python_cmd)}",
+        f"command = {_toml_string(python_cmd)}",
         f"args = [{toml_args}]",
         "",
     ])
@@ -231,16 +268,18 @@ def install_codex_config(
     *,
     config_path: str | None = None,
     api_url: str | None = "http://localhost:8000",
-    api_key: str | None = "me",
+    api_key: str | None = None,
+    api_key_file: str | None = None,
     namespace: str | None = None,
     python_cmd: str = "python",
     dry_run: bool = False,
 ) -> dict:
     path = codex_config_path(config_path)
-    before = path.read_text() if path.exists() else ""
+    before = read_config(path)
+    api_key_file = _credential_reference(path, "codex", api_url, api_key, api_key_file, dry_run, "mnemotrace")
     block = codex_toml_block(
         api_url=api_url,
-        api_key=api_key,
+        api_key_file=api_key_file,
         namespace=namespace,
         python_cmd=python_cmd,
     )
@@ -251,10 +290,11 @@ def install_codex_config(
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             backup = _backup_path(path)
-            shutil.copy2(path, backup)
-        path.write_text(after)
+            private_write(backup, path.read_bytes())
+        private_write(path, after.encode("utf-8"))
     return {
         "ok": True,
+        "api_key_file": api_key_file,
         "action": "install",
         "changed": changed,
         "dry_run": dry_run,
@@ -275,13 +315,13 @@ def uninstall_codex_config(*, config_path: str | None = None, dry_run: bool = Fa
             "path": str(path),
             "backup": None,
         }
-    before = path.read_text()
+    before = read_config(path)
     after, removed = _remove_toml_table(before, "[mcp_servers.mnemotrace]")
     backup = None
     if removed and not dry_run:
         backup = _backup_path(path)
-        shutil.copy2(path, backup)
-        path.write_text(after)
+        private_write(backup, path.read_bytes())
+        private_write(path, after.encode("utf-8"))
     return {
         "ok": True,
         "action": "uninstall",
@@ -296,7 +336,7 @@ def _load_json_config(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(read_config(path))
     except json.JSONDecodeError as exc:
         raise ValueError(f"{path} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
@@ -304,18 +344,55 @@ def _load_json_config(path: Path) -> dict:
     return data
 
 
+def _credential_reference(path: Path, kind: str, api_url: str | None, api_key: str | None,
+                          api_key_file: str | None, dry_run: bool, server_name: str) -> str | None:
+    if not api_url:
+        return None
+    if api_key_file:
+        value = read_key(api_key_file)
+        if api_key is not None and value != api_key:
+            raise CredentialError("Credential file does not match the requested identity.")
+        return str(credential_path(api_key_file))
+    key = resolve_key(key=api_key)
+    if dry_run:
+        return "<private-credential-file>"
+    previous = None
+    if path.exists():
+        # Only inspect the current target, never discover/migrate historical client configs.
+        try:
+            if kind == "codex":
+                server = load_codex_server(path)
+            else:
+                server = (_load_json_config(path).get("mcpServers") or {}).get(server_name, {})
+        except (KeyError, ConfigReadError):
+            # Reuse is optional; recognized file references are still checked by store_key.
+            server = {}
+        args = server.get("args", []) if isinstance(server, dict) else []
+        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+            args = []
+
+        def argument(flag):
+            index = args.index(flag) + 1 if flag in args else len(args)
+            return args[index] if index < len(args) else None
+
+        if argument("--api-url") == api_url:
+            previous = argument("--api-key-file")
+    return store_key(key, previous=previous)
+
+
 def install_mcp_json_config(
     *,
     config_path: str | None = None,
     api_url: str | None = "http://localhost:8000",
-    api_key: str | None = "me",
+    api_key: str | None = None,
+    api_key_file: str | None = None,
     namespace: str | None = None,
     python_cmd: str = "python",
     server_name: str = "mnemotrace",
     dry_run: bool = False,
 ) -> dict:
     path = mcp_json_path(config_path)
-    before = path.read_text() if path.exists() else ""
+    before = read_config(path)
     data = _load_json_config(path)
     servers = data.get("mcpServers")
     if servers is None:
@@ -323,8 +400,9 @@ def install_mcp_json_config(
     if not isinstance(servers, dict):
         raise ValueError(f"{path} field `mcpServers` must be a JSON object")
     data["mcpServers"] = servers
+    api_key_file = _credential_reference(path, "json", api_url, api_key, api_key_file, dry_run, server_name)
     server = _stdio_server(
-        mcp_args(api_url=api_url, api_key=api_key, namespace=namespace),
+        mcp_args(api_url=api_url, namespace=namespace, api_key_file=api_key_file),
         python_cmd,
     )
     servers[server_name] = server
@@ -335,10 +413,11 @@ def install_mcp_json_config(
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             backup = _backup_path(path)
-            shutil.copy2(path, backup)
-        path.write_text(after)
+            private_write(backup, path.read_bytes())
+        private_write(path, after.encode("utf-8"))
     return {
         "ok": True,
+        "api_key_file": api_key_file,
         "action": "install",
         "changed": changed,
         "dry_run": dry_run,
@@ -372,13 +451,12 @@ def uninstall_mcp_json_config(
     removed = isinstance(servers, dict) and server_name in servers
     if removed:
         del servers[server_name]
-    before = path.read_text()
     after = _json(data) + "\n"
     backup = None
     if removed and not dry_run:
         backup = _backup_path(path)
-        shutil.copy2(path, backup)
-        path.write_text(after)
+        private_write(backup, path.read_bytes())
+        private_write(path, after.encode("utf-8"))
     return {
         "ok": True,
         "action": "uninstall",
@@ -388,7 +466,6 @@ def uninstall_mcp_json_config(
         "backup": str(backup) if backup else None,
         "server_name": server_name,
         "config": data,
-        "before": before if dry_run else None,
     }
 
 
@@ -440,15 +517,15 @@ def _doctor_verify_command(
     client: str,
     python_cmd: str,
     api_url: str | None,
-    api_key: str | None,
+    namespace: str | None,
+    api_key_file: str | None = None,
 ) -> list[str]:
     verify = ["mnemotrace-agent-doctor", "--client", client, "--python", python_cmd]
     if api_url:
         verify += ["--api-url", api_url]
-        if api_key:
-            verify += ["--api-key", api_key]
-    elif api_key:
-        verify += ["--api-key", api_key]
+        verify += ["--api-key-file", _credential_file_argument(api_key_file)]
+    elif namespace:
+        verify += ["--api-key", namespace]
     return verify
 
 
@@ -458,9 +535,11 @@ def render_codex_config_result(
     python_cmd: str = "python",
     api_url: str | None = None,
     api_key: str | None = None,
+    namespace: str | None = None,
     doctor_report: dict | None = None,
     doctor_skipped: str | None = None,
 ) -> str:
+    api_key_file = result.get("api_key_file")
     action = "install" if result.get("action") == "install" else "uninstall"
     verb = {
         ("install", True): "Would install",
@@ -484,7 +563,8 @@ def render_codex_config_result(
             client="codex",
             python_cmd=python_cmd,
             api_url=api_url,
-            api_key=api_key,
+            namespace=namespace,
+            api_key_file=api_key_file,
         )
         lines += [
             "",
@@ -495,11 +575,11 @@ def render_codex_config_result(
             "```",
         ]
     if doctor_skipped:
-        lines += ["", f"Doctor skipped: {doctor_skipped}"]
+        lines += ["", f"Doctor skipped: {redact(doctor_skipped, api_key if api_url else None)}"]
     if doctor_report is not None:
         from .agent_doctor import render_report
 
-        lines += ["", "Doctor result:", "", render_report(doctor_report).rstrip()]
+        lines += ["", "Doctor result:", "", render_report(doctor_report, api_key=api_key if api_url else None).rstrip()]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -510,9 +590,11 @@ def render_mcp_json_config_result(
     doctor_client: str = "none",
     api_url: str | None = None,
     api_key: str | None = None,
+    namespace: str | None = None,
     doctor_report: dict | None = None,
     doctor_skipped: str | None = None,
 ) -> str:
+    api_key_file = result.get("api_key_file")
     action = "install" if result.get("action") == "install" else "uninstall"
     verb = {
         ("install", True): "Would install",
@@ -542,15 +624,16 @@ def render_mcp_json_config_result(
             client=doctor_client,
             python_cmd=python_cmd,
             api_url=api_url,
-            api_key=api_key,
+            namespace=namespace,
+            api_key_file=api_key_file,
         )
         lines += ["", "Verify with:", "", "```bash", _shell(verify), "```"]
     if doctor_skipped:
-        lines += ["", f"Doctor skipped: {doctor_skipped}"]
+        lines += ["", f"Doctor skipped: {redact(doctor_skipped, api_key if api_url else None)}"]
     if doctor_report is not None:
         from .agent_doctor import render_report
 
-        lines += ["", "Doctor result:", "", render_report(doctor_report).rstrip()]
+        lines += ["", "Doctor result:", "", render_report(doctor_report, api_key=api_key if api_url else None).rstrip()]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -637,7 +720,9 @@ def render_bootstrap_result(
     session_id: str,
     doctor_reports: list[dict] | None = None,
     doctor_skipped: str | None = None,
+    namespace: str | None = None,
 ) -> str:
+    api_key_file = next((r.get("api_key_file") for _, r in results if r.get("api_key_file")), None)
     lines = ["# MnemoTrace Agent Bootstrap", ""]
     policy_result = None
     for label, result in results:
@@ -648,16 +733,17 @@ def render_bootstrap_result(
         if label == "AGENTS.md policy":
             policy_result = result
     if doctor_skipped:
-        lines += ["", f"Doctor skipped: {doctor_skipped}"]
+        lines += ["", f"Doctor skipped: {redact(doctor_skipped, api_key if api_url else None)}"]
     for report in doctor_reports or []:
         from .agent_doctor import render_report
 
-        lines += ["", "Doctor result:", "", render_report(report).rstrip()]
+        lines += ["", "Doctor result:", "", render_report(report, api_key=api_key if api_url else None).rstrip()]
     verify = _doctor_verify_command(
         client="codex" if any(label == "Codex" for label, _ in results) else "none",
         python_cmd=python_cmd,
         api_url=api_url,
-        api_key=api_key,
+        namespace=namespace,
+        api_key_file=api_key_file,
     )
     lines += ["", "Verify later with:", "", "```bash", _shell(verify), "```", ""]
     if policy_result is not None:
@@ -683,12 +769,12 @@ def render_markdown(
     client: str = "all",
     *,
     api_url: str | None = "http://localhost:8000",
-    api_key: str | None = "me",
+    api_key_file: str | None = None,
     namespace: str | None = None,
     session_id: str = "codex:super-memory:thread-123",
     python_cmd: str = "python",
 ) -> str:
-    args = mcp_args(api_url=api_url, api_key=api_key, namespace=namespace)
+    args = mcp_args(api_url=api_url, namespace=namespace, api_key_file=api_key_file)
     server = _stdio_server(args, python_cmd)
     out: list[str] = [
         "# MnemoTrace Agent Setup",
@@ -742,7 +828,7 @@ def render_markdown(
             "```toml",
             codex_toml_block(
                 api_url=api_url,
-                api_key=api_key,
+                api_key_file=api_key_file,
                 namespace=namespace,
                 python_cmd=python_cmd,
             ).rstrip(),
@@ -775,7 +861,7 @@ def render_markdown(
         ]
 
     if client in {"all", "openai"}:
-        key = api_key or namespace or "me"
+        key = "<API_KEY>"
         url = (api_url or "http://localhost:8000").rstrip("/") + "/v1"
         out += [
             "## OpenAI-Compatible Apps",
@@ -814,7 +900,7 @@ def render_markdown(
     return "\n".join(out).rstrip() + "\n"
 
 
-def main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup") -> None:
+def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup") -> None:
     ap = argparse.ArgumentParser(
         prog=prog,
         description="Print or explicitly install config snippets for using MnemoTrace as cross-agent memory.",
@@ -822,7 +908,10 @@ def main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup")
     ap.add_argument("--client", choices=CLIENTS, default="all", help="which adapter recipe to print")
     ap.add_argument("--api-url", default="http://localhost:8000",
                     help="MnemoTrace HTTP server for remote MCP/OpenAI-compatible mode")
-    ap.add_argument("--api-key", default="me", help="Bearer key = user memory namespace")
+    credentials = ap.add_mutually_exclusive_group()
+    credentials.add_argument("--api-key", help="Explicit Bearer key (prefer hidden input or private file)")
+    credentials.add_argument("--api-key-file", help="Private credential file")
+    credentials.add_argument("--prompt-api-key", action="store_true", help="Read API key without echo")
     ap.add_argument("--local", action="store_true", help="use local MCP storage instead of an HTTP server")
     ap.add_argument("--namespace", default="me", help="local MCP namespace when --local is set")
     ap.add_argument("--session-id", default="codex:super-memory:thread-123",
@@ -887,7 +976,19 @@ def main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup")
         ap.error("--no-doctor requires --bootstrap")
 
     api_url = None if args.local else args.api_url
-    api_key = None if args.local else args.api_key
+    needs_key = bool(args.bootstrap or args.install_codex or args.install_mcp_json)
+    if args.local and (args.api_key is not None or args.api_key_file or args.prompt_api_key):
+        ap.error("--local cannot be combined with remote credentials")
+    try:
+        explicit_input = args.api_key is not None or args.api_key_file is not None or args.prompt_api_key
+        api_key = None
+        if not args.local and (needs_key or explicit_input):
+            api_key = resolve_key(
+                key=args.api_key, key_file=args.api_key_file,
+                prompt=args.prompt_api_key, required=needs_key,
+            )
+    except CredentialError as exc:
+        ap.error(str(exc))
     namespace = args.namespace if args.local else None
     if args.bootstrap:
         try:
@@ -902,6 +1003,7 @@ def main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup")
                     config_path=args.codex_config,
                     api_url=api_url,
                     api_key=api_key,
+                    api_key_file=args.api_key_file,
                     namespace=namespace,
                     python_cmd=args.python,
                     dry_run=args.dry_run,
@@ -914,6 +1016,7 @@ def main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup")
                     config_path=args.mcp_json,
                     api_url=api_url,
                     api_key=api_key,
+                    api_key_file=args.api_key_file,
                     namespace=namespace,
                     python_cmd=args.python,
                     server_name=args.mcp_server_name,
@@ -970,7 +1073,8 @@ def main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup")
                 results=results,
                 python_cmd=args.python,
                 api_url=api_url,
-                api_key=api_key or namespace,
+                api_key=api_key,
+                namespace=namespace,
                 session_id=args.session_id,
                 doctor_reports=doctor_reports,
                 doctor_skipped=doctor_skipped,
@@ -985,6 +1089,7 @@ def main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup")
             config_path=args.codex_config,
             api_url=api_url,
             api_key=api_key,
+            api_key_file=args.api_key_file,
             namespace=namespace,
             python_cmd=args.python,
             dry_run=args.dry_run,
@@ -1005,7 +1110,8 @@ def main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup")
                 result,
                 python_cmd=args.python,
                 api_url=api_url,
-                api_key=api_key or namespace,
+                api_key=api_key,
+                namespace=namespace,
                 doctor_report=doctor_report,
                 doctor_skipped=doctor_skipped,
             ),
@@ -1023,6 +1129,7 @@ def main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup")
             config_path=args.mcp_json,
             api_url=api_url,
             api_key=api_key,
+            api_key_file=args.api_key_file,
             namespace=namespace,
             python_cmd=args.python,
             server_name=args.mcp_server_name,
@@ -1047,7 +1154,8 @@ def main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup")
                 python_cmd=args.python,
                 doctor_client=args.doctor_client,
                 api_url=api_url,
-                api_key=api_key or namespace,
+                api_key=api_key,
+                namespace=namespace,
                 doctor_report=doctor_report,
                 doctor_skipped=doctor_skipped,
             ),
@@ -1079,11 +1187,18 @@ def main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup")
     print(render_markdown(
         args.client,
         api_url=api_url,
-        api_key=api_key,
+        api_key_file=args.api_key_file,
         namespace=namespace,
         session_id=args.session_id,
         python_cmd=args.python,
     ), end="")
+
+
+def main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup") -> None:
+    try:
+        _main(argv, prog=prog)
+    except CredentialError as exc:
+        raise SystemExit(str(exc)) from None
 
 
 def bootstrap_main(argv: list[str] | None = None) -> None:

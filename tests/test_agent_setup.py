@@ -23,13 +23,94 @@ from mnemotrace.agent_setup import (
     uninstall_codex_config,
     uninstall_mcp_json_config,
 )
+from mnemotrace.credentials import read_key
+
+
+@pytest.fixture(autouse=True)
+def isolated_credentials(tmp_path, monkeypatch):
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("MNEMOTRACE_API_KEY", "me")
+
+
+def test_hidden_install_reuses_reference_and_never_prints_key(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("getpass.getpass", lambda *a: "synthetic-hidden-key")
+    path = tmp_path / "config.toml"
+    command = ["--install-codex", "--prompt-api-key", "--codex-config", str(path)]
+    main(command)
+    first = path.read_text()
+    main(command)
+    assert path.read_text() == first
+    from mnemotrace.agent_config import load_codex_server
+    args = load_codex_server(path)["args"]
+    reference = args[args.index("--api-key-file") + 1]
+    assert read_key(reference) == "synthetic-hidden-key"
+    assert "synthetic-hidden-key" not in first + capsys.readouterr().out
+    assert len(list((tmp_path / ".mnemotrace/credentials").glob("*.key"))) == 1
+
+
+def test_missing_credentials_and_cancel_do_not_write(tmp_path, monkeypatch):
+    monkeypatch.delenv("MNEMOTRACE_API_KEY")
+    path = tmp_path / "config.toml"
+    with pytest.raises(SystemExit):
+        main(["--install-codex", "--codex-config", str(path)])
+    monkeypatch.setattr("getpass.getpass", lambda *a: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(SystemExit):
+        main(["--install-codex", "--prompt-api-key", "--codex-config", str(path)])
+    assert not path.exists() and not (tmp_path / ".mnemotrace").exists()
+
+
+def test_uninstall_does_not_read_unrelated_remote_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("MNEMOTRACE_API_KEY", "synthetic\ninvalid")
+    path = tmp_path / "config.toml"
+    path.write_text('model = "synthetic"\n')
+    main(["--uninstall-codex", "--codex-config", str(path)])
+    assert path.read_text() == 'model = "synthetic"\n'
+
+
+def test_dry_run_and_rotation_preserve_credential_lifecycle(tmp_path):
+    path = tmp_path / "config.toml"
+    preview = install_codex_config(config_path=str(path), api_key="synthetic-one", dry_run=True)
+    assert not path.exists() and not (tmp_path / ".mnemotrace").exists()
+    assert "synthetic-one" not in str(preview)
+    first = install_codex_config(config_path=str(path), api_key="synthetic-one")
+    second = install_codex_config(config_path=str(path), api_key="synthetic-two")
+    assert first["api_key_file"] != second["api_key_file"]
+    assert read_key(first["api_key_file"]) == "synthetic-one"
+    assert read_key(second["api_key_file"]) == "synthetic-two"
+    uninstall_codex_config(config_path=str(path))
+    assert read_key(second["api_key_file"]) == "synthetic-two"
+
+
+def test_private_file_install_and_all_recipe_outputs_are_safe(tmp_path):
+    from mnemotrace.credentials import check_private, store_key
+    reference = store_key("synthetic-recipe-key", directory=tmp_path / "credentials")
+    path = tmp_path / ".mcp.json"
+    path.write_text('{"mcpServers":{"other":{"args":["synthetic-other-secret"]}}}')
+    result = install_mcp_json_config(config_path=str(path), api_key_file=reference)
+    check_private(__import__("pathlib").Path(result["backup"]))
+    assert read_key(result["api_key_file"]) == "synthetic-recipe-key"
+    output = render_markdown(api_key_file=reference)
+    assert "synthetic-recipe-key" not in output
+    assert "--api-key-file" in output
+
+
+def test_failed_private_write_preserves_installed_config(tmp_path, monkeypatch):
+    from mnemotrace import credentials
+    path = tmp_path / "config.toml"
+    installed = install_codex_config(config_path=str(path), api_key="synthetic-one")
+    before = path.read_bytes()
+    monkeypatch.setattr(credentials.os, "replace", lambda *a: (_ for _ in ()).throw(OSError()))
+    with pytest.raises(credentials.CredentialError):
+        install_codex_config(config_path=str(path), api_key="synthetic-two")
+    assert path.read_bytes() == before
+    assert read_key(installed["api_key_file"]) == "synthetic-one"
 
 
 def test_mcp_args_remote_and_local():
-    assert mcp_args(api_url="http://localhost:8000", api_key="me", namespace=None) == [
-        "-m", "mnemotrace.mcp", "--api-url", "http://localhost:8000", "--api-key", "me",
+    assert mcp_args(api_url="http://localhost:8000", namespace=None) == [
+        "-m", "mnemotrace.mcp", "--api-url", "http://localhost:8000", "--api-key-file", "<private-credential-file>",
     ]
-    assert mcp_args(api_url=None, api_key=None, namespace="work") == [
+    assert mcp_args(api_url=None, namespace="work") == [
         "-m", "mnemotrace.mcp", "--namespace", "work",
     ]
 
@@ -44,7 +125,6 @@ def test_render_codex_setup_contains_lifecycle_and_config():
     out = render_markdown(
         "codex",
         api_url="http://localhost:8000",
-        api_key="me",
         namespace=None,
         session_id="codex:repo:thread",
         python_cmd="/opt/mnemotrace/bin/python",
@@ -68,7 +148,6 @@ def test_render_local_claude_setup_uses_namespace_not_api_key():
     out = render_markdown(
         "claude-code",
         api_url=None,
-        api_key=None,
         namespace="local-me",
         session_id="claude-code:repo:thread",
     )
@@ -97,7 +176,7 @@ def test_install_mcp_json_config_creates_file(tmp_path):
     assert data["mcpServers"]["mnemotrace"] == {
         "type": "stdio",
         "command": "/opt/mnemotrace/bin/python",
-        "args": ["-m", "mnemotrace.mcp", "--api-url", "http://mnemotrace.test", "--api-key", "sk-test"],
+        "args": ["-m", "mnemotrace.mcp", "--api-url", "http://mnemotrace.test", "--api-key-file", result["api_key_file"]],
     }
 
 
@@ -249,7 +328,6 @@ def test_render_openai_setup_contains_memory_extension_and_close_call():
     out = render_markdown(
         "openai",
         api_url="http://mnemotrace.test",
-        api_key="sk-test",
         namespace=None,
         session_id="app:product:conversation",
     )
@@ -258,7 +336,8 @@ def test_render_openai_setup_contains_memory_extension_and_close_call():
     assert "'session_id': session_id" in out
     assert "'scope': 'auto'" in out
     assert "/v1/sessions/close" in out
-    assert "Authorization: Bearer sk-test" in out
+    assert "Authorization: Bearer <API_KEY>" in out
+    assert "sk-test" not in out
 
 
 def test_install_codex_config_creates_file(tmp_path):
@@ -277,7 +356,8 @@ def test_install_codex_config_creates_file(tmp_path):
     text = config.read_text()
     assert "[mcp_servers.mnemotrace]" in text
     assert 'command = "/opt/mnemotrace/bin/python"' in text
-    assert '"--api-url", "http://mnemotrace.test", "--api-key", "sk-test"' in text
+    assert '"--api-url", "http://mnemotrace.test", "--api-key-file"' in text
+    assert "sk-test" not in text
 
 
 def test_install_codex_config_replaces_mnemotrace_table_and_backs_up(tmp_path):
@@ -354,7 +434,7 @@ def test_render_codex_config_result_verify_command_matches_remote_mode(tmp_path)
 
     assert (
         "mnemotrace-agent-doctor --client codex --python /opt/mnemotrace/bin/python "
-        "--api-url http://mnemotrace.test --api-key sk-test"
+        "--api-url http://mnemotrace.test --api-key-file"
     ) in report
 
 
@@ -373,7 +453,7 @@ def test_render_codex_config_result_verify_command_matches_local_namespace(tmp_p
         result,
         python_cmd="/opt/mnemotrace/bin/python",
         api_url=None,
-        api_key="local-me",
+        namespace="local-me",
     )
 
     assert (
@@ -887,7 +967,6 @@ def test_uninstall_codex_config_removes_only_mnemotrace_table_and_backs_up(tmp_p
     config = tmp_path / "config.toml"
     block = codex_toml_block(
         api_url="http://mnemotrace.test",
-        api_key="me",
         namespace=None,
         python_cmd="python",
     )

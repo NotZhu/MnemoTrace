@@ -60,6 +60,8 @@ Web Crypto 缺失或 digest 报错时，使用 `@noble/hashes` 的 JavaScript SH
 
 登录页和内部顶栏提供太阳/月亮切换按钮。默认深色，选择保存在浏览器的 `mnemotrace.theme`，
 刷新和重新打开页面时恢复；存储不可用时仍能在当前页面切换。
+`public/theme-init.js` 在 HTML 头部同步加载，先于样式绘制和 React 恢复主题；生产脚本策略仅允许
+同源脚本，不授权内联脚本或动态代码生成。主题 store 接续根元素的初始主题。
 `src/index.css` 定义两套蓝灰色变量，`tailwind.config.ts` 将共享组件及历史 slate 文本类映射到变量。
 浅色使用浅灰背景、白色卡片、深蓝灰文字、淡蓝图标底色及按钮；登录图谱与粒子同步适配。
 主题只改变前端展示，不影响认证、数据或服务调用。
@@ -68,6 +70,29 @@ Web Crypto 缺失或 digest 报错时，使用 `@noble/hashes` 的 JavaScript SH
 开关尺寸为 `72 × 36px`；浏览器不支持原生视图过渡时，登录页回退为普通主题切换。
 首次加载不启用渐变，系统开启减少动态效果时跳过新增的颜色过渡。
 验证：`npm run test:theme`、`npm run build`；完整验收见 `../results/theme_validation.md`。
+
+## 接入凭据
+
+设置页的 PowerShell/Bash 安装命令不包含登录 Key，安装成功后通过 `--prompt-api-key` 隐藏输入。
+无法关闭回显、输入取消或凭据无效时终止。远程安装必须显式提供凭据，不再默认使用 `me`。
+
+```bash
+python -m mnemotrace.agent_setup --install-codex --prompt-api-key --doctor
+```
+
+凭据写入用户目录 `.mnemotrace/credentials/<随机 UUID>.key`；生成的 MCP 配置和后续 doctor 命令
+仅包含 `--api-key-file` 的绝对路径。已有私有文件可直接传入 setup、MCP 和 doctor。
+显式 `--api-key` 与 `MNEMOTRACE_API_KEY` 仍供直接调用使用，三种显式输入方式互斥，文件错误不会回退到环境身份。
+本地 `--local --namespace me` 路径不需要凭据。
+
+文件是权限保护的明文：POSIX 目录 0700、文件 0600；Windows 使用仅当前用户与 SYSTEM 的受保护 DACL。
+不接受链接、非普通文件或不安全权限。相同安装目标和 Key 复用文件，更换 Key 先写新文件再替换引用；
+旧引用、卸载后凭据和历史备份不会被自动删除。新建配置备份同样受私有权限保护。
+dry-run 不创建凭据或修改配置，示例和输出使用文件引用或占位符。
+
+旧版含 Key 命令可能已经进入 PowerShell/Bash 历史；新流程不会清除历史、撤销旧 Key 或自动迁移旧配置。
+浏览器的历史凭据按实际 origin 一次性清理两个已知键，不恢复旧登录、不清空主题和空间偏好。
+工程验收与平台边界见 [控制台安全验收](../results/console_security_validation.md)。
 
 ## 页面功能
 

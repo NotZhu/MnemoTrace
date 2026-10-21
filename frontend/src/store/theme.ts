@@ -32,7 +32,7 @@ interface ThemeState {
 export const useTheme = create<ThemeState>()(
   persist(
     (set, get) => ({
-      theme: 'dark',
+      theme: typeof document !== 'undefined' && document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
       toggle: (animate = true) => {
         const theme = get().theme === 'dark' ? 'light' : 'dark'
         applyTheme(theme, animate)

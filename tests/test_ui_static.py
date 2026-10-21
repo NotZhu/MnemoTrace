@@ -76,6 +76,10 @@ def test_console_normal_files_and_navigation(console, method, path, expected):
     )
     assert response.headers["x-frame-options"] == "DENY"
     assert "default-src 'self'" in response.headers["content-security-policy"]
+    policy = response.headers["content-security-policy"]
+    assert "script-src 'self';" in policy
+    assert "unsafe-eval" not in policy
+    assert "style-src 'self' 'unsafe-inline'" in policy
 
 
 @pytest.mark.parametrize("location", ["linked.txt", "assets/linked.txt", "index.html"])
@@ -130,6 +134,7 @@ def test_console_missing_build(monkeypatch, tmp_path):
             response = client.get(path)
             assert response.status_code == 503
             assert "pnpm" in response.text
+            assert "script-src 'self';" in response.headers["content-security-policy"]
     finally:
         client.close()
 

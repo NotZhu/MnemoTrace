@@ -2,14 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <script>
-      try {
-        const saved = JSON.parse(localStorage.getItem('mnemotrace.theme') || 'null');
-        const theme = saved?.state?.theme === 'light' ? 'light' : 'dark';
-        document.documentElement.dataset.theme = theme;
-        document.documentElement.style.colorScheme = theme;
-      } catch { /* 存储不可用时沿用默认深色主题。 */ }
-    </script>
+    <script src="/theme-init.js"></script>
     <link rel="icon" type="image/svg+xml" href="/src/assets/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="MnemoTrace 记忆控制台——查看、编辑、定制和导出你的长期记忆。" />

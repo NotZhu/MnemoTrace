@@ -187,8 +187,12 @@ watch 的 `seen` 可能包含放弃收尾的记录，不能把本地账本条目
 | 导出与共享请求生命周期 | JSON 和 Blob 共用 `{key, epoch}` 快照检查；成功和失败均核对周期，旧 401 不退出新登录。下载前、页面提示前再次检查，过期以 StaleSessionError(409) 静默取消，finally 释放 URL 和元素；不撤销服务端已收到的操作或已触发下载 | [ISSUE-035 验收与原始输出](../results/issue035_validation.md) |
 | 空间偏好 | 主题和允许的显示设置可持久化，筛选按 API 地址与凭据的 SHA-256 指纹隔离。指纹异步激活、延迟修改均检查登录周期；同账号新登录恢复既有偏好，但旧任务不能回写。图谱参数为浏览器通用；敏感内容、草稿、搜索结果、Key 和 epoch 不写入偏好 | [界面偏好](../results/ui_preferences_validation.md)、[SHA-256 回退](../results/preferences_sha256_fallback_validation.md)、[周期回归](../results/issue035_validation.md) |
 | 非安全上下文的指纹 | 原生 crypto/subtle 不可用或 digest 拒绝时用固定版本 JavaScript SHA-256，保持 UTF-8 输入和空间编号一致；两种实现都失败时才用临时内存空间，存储不可用仍能操作 | [兼容验收](../results/preferences_sha256_fallback_validation.md) |
-| 中文与主题 | 中文文案集中到 copy.ts，界面固定 zh-CN。theme 只保存主题值，首屏恢复；登录页使用 View Transition 圆形揭示，内部页渐变，减少动态或不支持时回退；两套色板驱动图谱和页面 | [中文界面](../results/ui_chinese_only_validation.md)、[主题](../results/theme_validation.md) |
+| 中文与主题 | 中文文案集中到 copy.ts，界面固定 zh-CN。theme 只保存主题值，通过头部同步外置脚本在首屏恢复；登录页使用 View Transition 圆形揭示，内部页渐变，减少动态或不支持时回退；两套色板驱动图谱和页面 | [中文界面](../results/ui_chinese_only_validation.md)、[主题](../results/theme_validation.md) |
 | 登录空间引导 | 开放模式允许填入随机空间 Key，受保护/未知模式禁用快捷入口；生成只填入、不自动登录。演示为 mnemotrace-test，test 与 1 是普通空间；清空仍需确认，演示与 anonymous 保持保护 | [登录引导](../results/login_space_guidance_validation.md)、[空间策略](../results/test_namespace_policy_validation.md) |
+| 脚本授权与接入凭据 | 为主题初始化放宽全页脚本许可、将 Key 当普通命令文本是两条根因。采用同源同步主题脚本与 script-src self；setup 隐藏输入，标准库 credentials 统一私有文件、平台权限、原子写入和失败关闭；生成配置/验证仅引用路径，备份私有、输出脱敏，卸载不删除凭据。路径在校验与生成出口统一展开用户目录并转为绝对路径，避免工作目录改变导致接入失败。agent_config 独立提供 setup/doctor 的配置读取，3.10 支持常见多行字符串数组；不支持格式只跳过可选复用，已识别凭据安全错误仍终止。代价是客户端需读取本地文件，3.10 读取器不覆盖通用 TOML；不宣称加密或自动清扫历史 | [控制台安全验收](../results/console_security_validation.md)、[路径与配置回归](../tests/test_credential_config.py)、[凭据回归](../tests/test_credentials.py)、[启动回归](../tests/test_mcp_credentials.py) |
+| 诊断报告内容脱敏 | 无差别递归替换会把合法 Key 同名的字段及状态改写，导致 doctor 崩溃、setup 误判。共享文本脱敏保留字典键；doctor 按报告结构复制并仅清理内容，控制字段与原始探针结果保持一致。代价是新增内容字段须明确纳入脱敏入口；不用禁用合法 Key 或捕获 KeyError 掩盖错误，不涉及记忆算法收益 | [报告脱敏验收](../results/console_security_validation.md#诊断报告结构与脱敏边界验收)、[报告与调用链回归](../tests/test_doctor_redaction.py) |
+| 配置生成与文本边界 | 成品全文替换会破坏固定模块/工具名，也会改坏合法地址和私有凭据路径。纯生成接口只接收功能参数及文件引用，结果渲染分离 namespace 与脱敏 Key；配置/命令按精确值转义，仅在自由内容进入模板前脱敏，报告复用结构化边界。代价是当前私密阶段直接调整 Python 辅助接口，并按来源维护内容字段；不以最终文本中同名字符串零出现作为安全结论，不增加正则例外或旧配置迁移 | [生成与渲染验收](../results/console_security_validation.md#配置生成与文本脱敏边界验收)、[成品解析与安装回归](../tests/test_setup_rendering.py)、[真实渲染参数接入](../tests/test_mcp_credentials.py) |
+| Codex TOML 字符串编码 | JSON 默认代理项对不属于合法 TOML Unicode 转义，路径测试使用 JSON 解析会遗漏该格式错误。command/args 统一使用小型基础字符串编码函数，保留 Unicode 并转义控制字符，安全拒绝孤立代理项；完整 UTF-8 字节用真实 TOML 解析器还原并与原参数比较。取舍是维护有限字符串编码，不引入通用写入器或依赖，也不改变 JSON/shell 或迁移历史配置 | [TOML 编码验收](../results/console_security_validation.md#codex-toml-字符串编码验收)、[Unicode 与编码回归](../tests/test_codex_toml.py)、[真实 TOML 参数接入](../tests/test_mcp_credentials.py) |
 | 开发入口 | Vite 开发与预览在 base 检查前将 GET/HEAD /ui 重定向到 /ui/，保留查询参数；开发监听忽略 Windows 原子写入临时目录 | [Vite 配置](../frontend/vite.config.ts)、[主题验收中的开发检查](../results/theme_validation.md) |
 | 共享选择器 | ScopeSelect、ExportRangeSelect 保留类型、选项和说明，统一复用 FilterSelect 的键盘、失焦、禁用逻辑；删除无调用的内部导出 | [清理验收](../results/frontend_select_cleanup_validation.md) |
 | 事实分类与状态筛选 | category 与 kind、状态、搜索和敏感范围在分页前共同筛选。分类选项按同空间/类型/敏感可见范围生成，不被已选分类、搜索和分页缩减；三态筛选按空间保存，切换后重置分页 | [筛选验收](../results/fact_filters_validation.md) |
@@ -199,8 +203,8 @@ watch 的 `seen` 可能包含放弃收尾的记录，不能把本地账本条目
 | 导出范围说明 | 空间名取 agent_status.user，不用 Key 冒充；默认 compact，范围随选项显示，并解释模型处理边界，不改变导出载荷 | [导出说明](../results/privacy_export_guidance_validation.md) |
 | 落地页生成 | demo/docs 的共用内容由模板和差异插槽生成，保留各页有意差别；CI 做只读同步检查，减少手工双改造成的漂移 | [维护验收](../results/maintenance_cleanup_validation.md)、[生成器](../scripts/build_landing_pages.py) |
 
-凭证内存态不消除页面登录期间的 XSS 风险，历史凭据与 CSP 加固见
-[ISSUE-013](known-issues.zh-CN.md#issue-013)。搜索工具栏持续挂载也不等于全局错误时页面不会卸载，
+凭证内存态不消除页面登录期间的 XSS 风险；脚本授权和原浏览器定点清理的工程证据见
+[控制台安全验收](../results/console_security_validation.md)。搜索工具栏持续挂载也不等于全局错误时页面不会卸载，
 草稿生命周期见 [ISSUE-016](known-issues.zh-CN.md#issue-016)。
 
 ### 4.6 控制台：关系图谱与登录插画
