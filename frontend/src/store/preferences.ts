@@ -48,7 +48,7 @@ function validateSpace(value: unknown): SpacePreferences {
     graph: { liveOnly: boolean(graph.liveOnly, true), hideSensitive: boolean(graph.hideSensitive, false) },
     facts: {
       status: facts.status === 'live' || facts.status === 'superseded' || facts.status === 'all'
-        ? facts.status : facts.showOld === true ? 'all' : 'live',
+        ? facts.status : 'live',
       category: typeof facts.category === 'string' ? facts.category.trim() : '',
       hideSensitive: boolean(facts.hideSensitive, false),
     },
@@ -118,10 +118,11 @@ export const usePreferences = create<PreferencesState>()(persist((set, get) => (
     else void preferenceScopeFor(credential).then(apply)
   },
 }), {
-  name: STORAGE_KEY, version: 1, storage,
+  name: STORAGE_KEY, version: 2, storage,
   partialize: state => ({ graph: state.graph, spaces: Object.fromEntries(Object.entries(state.spaces).filter(([id]) => STABLE_SCOPE.test(id))) }),
   merge: (saved, current) => ({ ...current, ...validateSaved(saved) }),
-  migrate: (saved, version) => validateSaved(version > 1 ? undefined : saved),
+  // 旧版本缓存整份重置并回写；保留 migrate 才能让 zustand 覆盖掉磁盘上的旧格式。
+  migrate: () => validateSaved(undefined),
 }))
 
 // 与现有查询缓存保持同一隔离边界；持久化内容只包含指纹和偏好，不包含凭据。

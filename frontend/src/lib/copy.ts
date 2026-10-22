@@ -321,8 +321,6 @@ export const copy = {
     evidenceUser: '手动设定',
     evidenceReinforced: '已增强',
     evidenceReinforcedHint: '曾被系统检索使用，提高了重要程度。',
-    evidenceMentions: (n: number) => `${n} 个会话提到`,
-    evidenceOnce: '提及一次',
     evidenceTitle: '来源记录次数',
     confirmed: (item: string) => `已确认：${item}（标记为手动设定）`,
     dismissed: '已删除该候选',
