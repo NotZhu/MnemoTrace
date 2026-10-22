@@ -49,6 +49,7 @@ flowchart TD
     subgraph IN["外部入口"]
         API["Python API\nMemory / MemoryService"]
         HTTP["HTTP API\nmnemotrace/server/app.py"]
+        UI["React 控制台\nRouter 保留页面 · 查询错误局部呈现\n草稿限当前登录周期"]
         MCP["MCP tools\nmnemotrace/mcp/server.py"]
         EVAL["Eval harness\neval/bench.py"]
         SDK["TypeScript SDK / Agent adapter"]
@@ -107,6 +108,7 @@ flowchart TD
 
     API --> MEM
     HTTP --> AUTH
+    UI --> HTTP
     MCP -->|remote| AUTH
     MCP -->|local| MS
     SDK --> AUTH
@@ -418,7 +420,7 @@ graph relation for old fact 被 invalidate
 - 结构化画像从事实派生，`evidence.source_count` 为 provenance 中不同 Episode ID 的数量；无来源为 0。
   `evidence.count` 在强化分支中仍表示访问次数，不能替代来源数量或语义置信度。
 
-画像候选、分类和展示的已知限制见[问题台账](known-issues.zh-CN.md#issue-006)。
+画像候选、分类和展示的已知限制见[问题台账](known-issues.zh-CN.md)。
 调用链验证见[提示词与上下文](../results/chinese_prompt_context_validation.md)、
 [摘要语言](../results/summary_source_language_validation.md)及[画像来源](../results/profile_evidence_validation.md)。
 这些验证不代替真实模型质量或完整 benchmark 评测。
@@ -513,9 +515,9 @@ StoreFormatError；不自动迁移、不根据映射重写 user_id。`identity`/
 共享数据目录的进程必须统一升级后重新启动，不能混跑不遵守该加载/提交协议的旧进程。
 验证见[文件锁错误分类](../results/flock_error_handling_validation.md)、
 [清空并发](../results/forget_concurrency_validation.md)与
-[ISSUE-033/034 访问协议验收](../results/issue033_034_validation.md)。提交 `9bb7395` 已通过
+[服务访问协议验收](../results/console-validation-index.md#service-transactions)。提交 `9bb7395` 已通过
 Windows/Ubuntu、Python 3.10/3.12 四组 CI，以及 web/container 检查；
-[CI 原始证据](../results/issue033_034_ci_validation.jsonl)对应
+[CI 原始证据](../results/console-validation-index.md#service-transactions-ci)对应
 [运行记录](https://github.com/NotZhu/MnemoTrace/actions/runs/39378499937)，问题台账已标记为已修复。
 
 ### 6.3 命名空间目录、擦除与迁移边界
@@ -525,10 +527,10 @@ Windows/Ubuntu、Python 3.10/3.12 四组 CI，以及 web/container 检查；
 检查真实路径是数据根目录的直接子项，且最终目录项名称与请求名称完全一致，拒绝同级链接以及
 Windows 大小写/尾点别名。`_path` 始终返回自身摘要目录，读取、写入和 forget 均不回退至旧名字。
 `_legacy_safe_user` / `_legacy_paths` 已移除。逻辑 ID 即使与另一租户的目录名相同，也只访问自己的
-摘要目录；[ISSUE-002](known-issues.zh-CN.md#issue-002) 已完成合成隔离修复验收，线上部署未核验。
+摘要目录；[隔离与擦除验收](../results/digest_only_namespace_validation.md)已完成本地合成检查，线上部署未核验。
 验证命令见[仅摘要目录验收](../results/digest_only_namespace_validation.md)，本地导入 CLI 的补齐见
 [CLI 验收](../results/import_cli_digest_validation.md)。其他兼容收束项仅记录于
-[问题台账 ISSUE-023～032](known-issues.zh-CN.md#issue-023)，当前未实施。
+[问题台账中的存储与接口维护事项](known-issues.zh-CN.md)，当前未实施。
 
 所有旧目录都不会被服务自动认领、读写、迁移、合并或擦除。管理员须停止共享目录的全部进程并备份，
 结合历史配置和来源确认实际 namespace，再显式复制到其尚不存在的摘要目录；验证后再处置旧来源。
@@ -731,7 +733,7 @@ flowchart LR
 
 控制台 `splitContextSections` 仅负责分区展示，中文画像小节及英文 STYLE 合并在画像卡片内，
 中文偏好表独立成区，其他英文证据块按类型识别。原始上下文直接用于回答和复制，界面折叠不减少模型输入。
-证据过宽和跨层重复见[ISSUE-004](known-issues.zh-CN.md#issue-004)。
+证据过宽和跨层重复的状态见[问题台账](known-issues.zh-CN.md)。
 格式与定向模型示例见[上下文语言](../results/chinese_prompt_context_validation.md)、
 [记录时间参照](../results/record_time_label_validation.md)、[身份与关系](../results/identity_prompt_validation.md)
 及[回答提示词](../results/answer_prompt_validation.md)；这些记录不保证所有时间或身份表达均正确。
@@ -853,12 +855,14 @@ flowchart LR
 服务设置 no-store、nosniff、DENY、no-referrer 和 CSP 等响应头。script-src 仅允许 self，
 主题通过头部同步同源脚本恢复，不授权内联脚本或动态代码生成；style-src 保留现有内联样式权限。
 实际脚本执行与页面验收见[控制台安全验收](../results/console_security_validation.md)。
-静态文件路由通过 realpath/commonpath 和 StaticFiles 约束公开目录；[ISSUE-001](known-issues.zh-CN.md#issue-001)
+静态文件路由通过 realpath/commonpath 和 StaticFiles 约束公开目录；[静态边界验收](../results/ui_static_boundary_validation.md)
 已完成本地 HTTP 修复验收，线上部署未核验。租户目录所有权见第 6.3 节。
 
 ### 10.2 浏览器凭证、请求和查询缓存
 
 `store/auth.ts` 的 Zustand 状态仅保存在页面内存，初始 key 为空，刷新需重新输入。
+控制台内部导航使用 Router 和 basename，切换页面不重载应用；生产及开发代理的验证见
+[内部导航验收](../results/console-validation-index.md#console-error-lifecycle)。
 每次 login／logout 原子更新 key、错误状态及递增 epoch，同 Key 登录、无效 Key 登录和重复退出也推进周期。
 `currentSession()` 单次读取 `{key, epoch}`，`isCurrentSession()` 比较完整快照；epoch 不落盘、不发送给服务端。
 登录和 API 客户端均检查非空可打印 ASCII；非法值在构造 Headers 前被拒绝，合法值原样发送。
@@ -879,11 +883,18 @@ queryErrors 也仅存内存，启动清理旧 sessionStorage 项；含 key 的 q
 隐私页在 await 导出后、成功／失败提示前重新检查会话，过期静默结束且不更新旧周期的导出状态。
 对象 URL 创建后以 finally 释放并清理下载元素，正常路径维持点击后立即释放；已触发的下载不追溯撤销。
 
-Layout 在 Facts 页保留错误期挂载（见第 10.4 节）；其他页面依据全局查询错误决定是否挂载 Outlet，辅助读取失败可能丢失未保存编辑，见
-[ISSUE-016](known-issues.zh-CN.md#issue-016)。验证入口：
+Layout 始终挂载 Outlet，普通读取失败不再重建页面；全局错误条只展示失败与重试。
+ErrorState 始终在数据区域呈现错误，可重试对应查询，不因其他查询已报错而隐藏。
+设置策略、关注点、结论和体检已有数据刷新失败时，保留当前查询内容和编辑组件并标明更新失败；
+会话写入表单独立于历史读取，来源读取失败与成功空结果分开，接入状态未知不显示为零。
+dirty 草稿不被恢复响应覆盖，退出及同 Key 新登录仍通过 epoch 重建页面并清理私有查询。
+结论编辑行在同一父级按事实 ID 协调，连续会话分组仅控制展示；新增、拆分或合并分组不重建已有行。
+草稿不跨路由或刷新恢复，也不持久化。
+代码位置：frontend/src/components/{Layout,ui,GlobalErrorBanner}.tsx 与各 pages/ 编辑区域。
+工程与真实服务浏览器证据见[错误生命周期与导航验收](../results/console-validation-index.md#console-error-lifecycle)。相关验证入口：
 [凭证内存态](../results/auth_memory_only_validation.md)、[查询隔离](../results/query_isolation_validation.md)
 与[凭证输入](../results/api_key_character_validation.md)。当前周期与导出边界见
-[ISSUE-035 本地验收及原始输出](../results/issue035_validation.md)；尚未核验真实浏览器和线上部署。
+[登录周期本地验收及原始输出](../results/console-validation-index.md#session-lifecycle)。本地浏览器使用合成数据，不代表线上部署或跨浏览器保证。
 
 接入凭据由 `mnemotrace/credentials.py` 集中处理：setup、MCP、doctor 共用文件读取、字符与权限校验。
 文件路径统一展开用户目录，并以调用时工作目录转为绝对路径；不消解链接，以便权限检查拒绝链接路径。
@@ -960,9 +971,10 @@ Facts 经 `useMemories → GET /v1/memories → MemoryService.memories` 查询�
 只豁免搜索词和请求条数变化。敏感范围、kind、分类、状态、偏移及未来筛选字段改变均不能借用旧响应；
 include_sensitive 未传按 false 比较，空分类按未传处理。当前条件已有缓存时直接使用查询库的对应缓存。
 `pages/Facts.tsx` 在列表内处理加载、失败与 refetch；工具栏保持挂载，无数据时只保留当前分类值，计数等待，
-占位空列表显示更新，占位分页禁用。`components/Layout.tsx` 保留 Facts 的错误期挂载，全局错误条仍可重试；
-其他页面仍按全局查询错误决定是否挂载 Outlet。此机制不改变独立冲突、来源或画像查询。
-工程证据与浏览器边界见 [查询范围与展示验收](../results/issue036_validation.md)。
+占位空列表显示更新，占位分页禁用。Layout 的统一页面挂载与错误隔离见第 10.2 节；
+Facts 的列表错误不移除事实编辑组件，来源在弹窗内区分错误、空结果和成功原文，失败可局部重试。
+此机制不改变独立冲突、来源或画像接口及敏感过滤范围。
+工程证据与浏览器边界见 [查询范围与展示验收](../results/console-validation-index.md#query-scope)。
 
 Profile 的 EvidenceChip 只将 source_count 显示为来源数，访问强化单独标识，不将 count 当成来源或置信度。
 来源查看、候选进入和习惯展示的缺口见[问题台账](known-issues.zh-CN.md)。Timeline 按 valid_at 展示
@@ -979,7 +991,7 @@ hashing 或英文嵌入模型对当前语料的限制，并提供显式重嵌入
 
 Journal 从相同 Fact 存储按 outcome 类型查询，按会话分组；250ms 防抖与输入法组合检查控制请求，
 仅同账号和同记录类型沿用上一页结果。结论通过 close_session 蒸馏；重复关闭仍可能因同义改写新增，
-不能承诺未变化会话完全幂等，见[ISSUE-005](known-issues.zh-CN.md#issue-005)。
+不能承诺未变化会话完全幂等，重复结论的状态见[问题台账](known-issues.zh-CN.md)。
 验证见[结论搜索](../results/journal_search_validation.md)和[结论提示词](../results/session_outcomes_prompt_validation.md)。
 
 Privacy 默认 compact 导出非敏感结构化事实及其派生图，省略可能包含敏感内容的原文、摘要和画像；
@@ -999,7 +1011,7 @@ ScopeSelect 传回 auto/long/working，范围语义仍由服务处理。
 
 会话卡片上的结束操作绑定该卡片 ID，完成后打开同一会话的 report，保留添加区域的选择；
 请求期间避免重复提交，写后失效沿统一 mutation 处理。添加、结束、查看依据与删除单个会话不是同一操作，
-单会话删除的对象范围仍由[ISSUE-020](known-issues.zh-CN.md#issue-020)跟踪。
+单会话删除的对象范围仍由[问题台账](known-issues.zh-CN.md)跟踪。
 验证见[会话搜索与表单](../results/conversations_search_validation.md)。
 
 ### 10.6 关系图谱展示与交互
@@ -1012,7 +1024,7 @@ GET /v1/graph → useGraph → GraphPage → ForceGraph
 
 GraphPage 的搜索采用 500ms 防抖与输入法检查，查询固定 live_only=false、limit=120，敏感过滤仍在服务端。
 “仅当前”由 visibleGraph 和控制器 setLiveOnly 同时过滤展示，不重建布局、弹簧、节点大小或相机。
-该结果只是服务端限额内的图；截断后过滤会遗漏当前关系，见[ISSUE-014](known-issues.zh-CN.md#issue-014)。
+该结果只是服务端限额内的图；截断后过滤会遗漏当前关系，状态见[问题台账](known-issues.zh-CN.md)。
 
 ForceGraph 动态导入 vendor/quartz/graph.ts，model.ts 生成页面专属模拟副本。物理弹簧按不同实体对去重，
 实际关系完整绘制，历史边为虚线，自环单独处理。D3 负责斥力、中心、连线、碰撞、拖动和缩放，
@@ -1049,7 +1061,7 @@ motion.ts 预计算真实 D3 轨迹，先按终点适配一次，再由 RAF 插�
 登录页依据 health.auth_mode 显示开放或受保护模式说明。生成空间 key 和演示按钮仅在开放模式可操作，
 只填充输入，不自动登录、创建空间或调用擦除；演示值为 mnemotrace-test。输入为空禁止提交，
 清空按钮仅清除表单并恢复焦点。安装命令的目标 API 地址由 apiBaseUrl 派生，自定义长期目标选择的缺口
-见[ISSUE-008](known-issues.zh-CN.md#issue-008)。接入命令使用 --prompt-api-key，不包含当前登录 Key；
+见[问题台账](known-issues.zh-CN.md)。接入命令使用 --prompt-api-key，不包含当前登录 Key；
 安装工具隐藏输入后写入用户私有凭据文件，配置、验证命令仅包含 --api-key-file 的绝对路径。
 旧版含 Key 命令可能已留在终端历史，界面说明不能清除历史或撤销旧 Key。
 
@@ -1072,7 +1084,7 @@ Vite 开发/预览将 GET/HEAD /ui 规范为 /ui/ 并保留查询参数。
 两个公开静态落地页由 landing/index.html.in 与 landing/pages.json 生成，后者保存页面差异片段。
 标准库脚本 scripts/build_landing_pages.py 输出 demo/index.html 与 docs/index.html，--check、pytest
 和 CI 检查是否同步。共同内容改源模板，差异改配置，不直接修改生成 HTML。在线链接与资源核验见
-[ISSUE-021](known-issues.zh-CN.md#issue-021)。
+[问题台账](known-issues.zh-CN.md)。
 验证入口：[登录引导](../results/login_space_guidance_validation.md)、
 [登录装饰](../results/login_glass_demo_migration_validation.md)、[控制台与网页生成](../results/maintenance_cleanup_validation.md)。
 历史登录样式和本机演示数据迁移记录不构成当前服务的自动迁移步骤。
@@ -1162,9 +1174,9 @@ python eval/validate_results.py
 | 层级          | 边界与入口                                                                                                                                         |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | HTTP/租户存储 | 静态文件越界与旧目录所有权冲突已完成本地修复；线上升级未核验，运行时只使用摘要目录，旧库需显式确认归属与迁移，见第 6.3、10.7 节                    |
-| 提取与证据    | [场景决定进入偏好](known-issues.zh-CN.md#issue-003)、[上下文范围与重复](known-issues.zh-CN.md#issue-004)、[结论重复](known-issues.zh-CN.md#issue-005) |
-| 控制台        | [CSP/历史凭据](known-issues.zh-CN.md#issue-013)、[图谱截断](known-issues.zh-CN.md#issue-014)、[辅助查询卸载草稿](known-issues.zh-CN.md#issue-016)     |
-| 迁移与验证    | [提示词完整质量评测](known-issues.zh-CN.md#issue-012)                                         |
+| 提取与证据    | [场景决定进入偏好、上下文范围与重复、结论重复](known-issues.zh-CN.md) |
+| 控制台        | [图谱截断与接入地址说明](known-issues.zh-CN.md) |
+| 迁移与验证    | [提示词完整质量评测](known-issues.zh-CN.md) |
 
 以下为算法候选方向，不表示已实现或已取得对应效果：
 

@@ -27,7 +27,7 @@ const SESSION_ACTION_CLASS = 'whitespace-nowrap border-0 bg-transparent p-0 text
 
 export default function Conversations() {
   const [limit, setLimit] = useState(20)
-  const { data, isLoading, isError, error } = useMemories({
+  const { data, isLoading, isError, error, refetch } = useMemories({
     facts_limit: 0,
     episodes_limit: limit,
     include_sensitive: true,
@@ -75,9 +75,7 @@ export default function Conversations() {
     onError: (e) => toast.error(String((e as Error).message)),
   })
 
-  if (isLoading) return <Spinner label={t.conversations.loading} />
-  if (isError) return <ErrorState message={(error as Error).message} />
-  if (!data) return null
+  const episodes = data?.episodes ?? []
 
   return (
     <div className="space-y-6">
@@ -86,7 +84,7 @@ export default function Conversations() {
       <Card className="!pb-3.5">
         <div className="mb-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <h3 className="text-sm font-medium tracking-wide text-foreground">{t.conversations.rememberTitle}</h3>
-          {status.data && (
+          {status.data && !status.isError && (
             <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-ghost">
               <span className="min-w-0 break-all">{t.conversations.statusNamespace(status.data.user)}</span>
               <span aria-hidden="true">·</span>
@@ -94,6 +92,7 @@ export default function Conversations() {
             </div>
           )}
         </div>
+        {status.isError && <ErrorState message={`会话状态读取失败：${(status.error as Error).message}`} onRetry={() => { void status.refetch() }} />}
         <textarea
           rows={3}
           className="input min-h-[82px] resize-y"
@@ -114,7 +113,7 @@ export default function Conversations() {
             </div>
           </div>
           <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-3">
-            {status.data && (status.data.session.episodes_pending > 0 || status.data.consolidation_backlog) && (
+            {status.data && !status.isError && (status.data.session.episodes_pending > 0 || status.data.consolidation_backlog) && (
               <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-ghost">
                 {status.data.session.episodes_pending > 0 && (
                   <span className="text-brand-amber">{t.conversations.statusPending(status.data.session.episodes_pending)}</span>
@@ -133,6 +132,7 @@ export default function Conversations() {
         </div>
       </Card>
 
+      {working.isError && <ErrorState message={`工作记忆读取失败${working.data ? '，显示上次结果' : ''}：${(working.error as Error).message}`} onRetry={() => { void working.refetch() }} />}
       {(working.data?.items.length ?? 0) > 0 && (
         <Card>
           <CardTitle
@@ -179,7 +179,7 @@ export default function Conversations() {
           placeholder={t.conversations.sessionsSearch}
         />
         {sessions.isLoading && <Spinner label={t.conversations.sessionsLoading} />}
-        {sessions.isError && <ErrorState message={(sessions.error as Error).message} />}
+        {sessions.isError && <ErrorState message={`会话索引读取失败${sessions.data ? '，显示上次结果' : ''}：${(sessions.error as Error).message}`} onRetry={() => { void sessions.refetch() }} />}
         {sessions.data && (
           sessions.data.sessions.length ? (
             <ul className="grid gap-2 md:grid-cols-2">
@@ -222,11 +222,12 @@ export default function Conversations() {
       </Card>
 
       <Card>
-        <CardTitle hint={t.conversations.episodesHint(data.episodes_page?.total ?? data.episodes.length)}>{t.conversations.episodesTitle}</CardTitle>
-        {data.episodes.length ? (
+        <CardTitle hint={data ? t.conversations.episodesHint(data.episodes_page?.total ?? episodes.length) : undefined}>{t.conversations.episodesTitle}</CardTitle>
+        {isError && <ErrorState message={`${data ? '对话记录更新失败，显示上次结果：' : ''}${(error as Error).message}`} onRetry={() => { void refetch() }} />}
+        {!data ? (isLoading ? <Spinner label={t.conversations.loading} /> : null) : episodes.length ? (
           <>
           <ul className="gap-3 md:columns-2">
-            {data.episodes.map((e, i) => {
+            {episodes.map((e, i) => {
               const key = `${e.date}-${e.session}-${i}`
               const isOpen = expanded[key]
               const long = e.content.length > 320
@@ -276,7 +277,7 @@ export default function Conversations() {
         title={auditSession ? t.conversations.auditTitle(auditSession) : t.conversations.auditTitle('')}
       >
         {report.isLoading && <Spinner label={t.conversations.auditLoading} />}
-        {report.isError && <ErrorState message={(report.error as Error).message} />}
+        {report.isError && <ErrorState message={`会话报告读取失败${report.data ? '，显示上次结果' : ''}：${(report.error as Error).message}`} onRetry={() => { void report.refetch() }} />}
         {report.data && (
           <div className="space-y-4 text-sm">
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">

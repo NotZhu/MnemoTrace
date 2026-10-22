@@ -93,13 +93,13 @@ test('旧空列表不能被解释成新搜索无结果，成功响应后才显�
   assert.equal(nodes(s.render()).some(n => n.type?.name === 'PageEmptyState'), true)
 })
 
-test('全局查询错误不能卸载事实页，其他页面保留既有错误边界', () => {
+test('全局查询错误不能卸载任何路由页面', () => {
   const layout = esbuild.buildSync({
     entryPoints: [path.resolve(__dirname, '../src/components/Layout.tsx')],
     bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
     external: ['react', 'react/jsx-runtime', 'react-router-dom', './GlobalErrorBanner', './Sidebar', './Topbar', './Toast', '../store/queryErrors'],
   }).outputFiles[0].text
-  for (const route of ['/facts', '/profile']) {
+  for (const route of ['/facts', '/profile', '/settings', '/conversations', '/focus', '/journal', '/health', '/ask', '/graph', '/timeline', '/', '/privacy']) {
     const moduleData = { exports: {} }, Outlet = () => null
     vm.runInNewContext(layout, { module: moduleData, exports: moduleData.exports, require(name) {
       if (name === 'react') return { ...React, useState: () => [false, () => {}] }
@@ -108,7 +108,7 @@ test('全局查询错误不能卸载事实页，其他页面保留既有错误�
       if (name.startsWith('./')) return new Proxy({}, { get: () => () => null })
       return require(name)
     } })
-    assert.equal(nodes(moduleData.exports.default()).some(n => n.type === Outlet), route === '/facts')
+    assert.equal(nodes(moduleData.exports.default()).some(n => n.type === Outlet), true, route)
   }
 })
 

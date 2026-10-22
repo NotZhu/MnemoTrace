@@ -1,6 +1,6 @@
 
 
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { Check, ChevronRight, HelpCircle, Loader2, NotebookText, Pencil, Search, Trash2, X } from 'lucide-react'
 
 import { Button, Card, CardTitle, ErrorState, PageHeader, Spinner } from '../components/ui'
@@ -71,7 +71,7 @@ export default function Journal() {
     setLimit(60)
   }, [q, showSuperseded, kindChip])
 
-  const { data, isLoading, isFetching, isError, error } = useMemories({
+  const { data, isLoading, isFetching, isError, error, refetch } = useMemories({
     kind: 'outcomes',
     facts_limit: limit,
     episodes_limit: 0,
@@ -158,23 +158,34 @@ export default function Journal() {
         </div>
       </div>
 
-      {isLoading ? <Spinner label={t.journal.loading} /> : isError ? <ErrorState message={(error as Error).message} /> : rows.length ? (
+      {isError && <ErrorState message={`${data ? '结论更新失败，显示上次结果并保留编辑：' : ''}${(error as Error).message}`} onRetry={() => { void refetch() }} />}
+      {isLoading && !data ? <Spinner label={t.journal.loading} /> : isError && !data ? null : rows.length ? (
         <>
-          <div className="space-y-4">
-            {groups.map((g, i) => {
+          <div>
+            {/* 行始终在同一父级按事实 ID 协调；分组只控制外观，不能决定编辑器寿命。 */}
+            {groups.flatMap((g) => {
               const { date } = splitStamp(g.facts[0]?.valid_at)
               const newDay = date !== lastDate
               lastDate = date
-              return (
-                <div key={`${g.session}-${i}`} className="space-y-3">
-                  {newDay && (
-                    <h2 className="sticky top-0 z-10 -mx-1 bg-ink-900/85 px-1 py-1.5 text-xs font-semibold tabular-nums tracking-wide text-brand-cyan backdrop-blur">
-                      {date}
-                    </h2>
-                  )}
-                  <SessionOutcomes group={g} editable />
-                </div>
-              )
+              return g.facts.map((fact, index) => {
+                const first = index === 0
+                const last = index === g.facts.length - 1
+                return (
+                  <Fragment key={fact.id}>
+                    {first && newDay && (
+                      <h2 className="sticky top-0 z-10 -mx-1 mb-3 mt-4 bg-ink-900/85 px-1 py-1.5 text-xs font-semibold tabular-nums tracking-wide text-brand-cyan backdrop-blur first:mt-0">
+                        {date}
+                      </h2>
+                    )}
+                    <div className={`border-x border-line bg-ink-800 px-5 sm:px-6 ${first ? `rounded-t-[20px] border-t pt-5 sm:pt-6 ${newDay ? '' : 'mt-4 first:mt-0'}` : ''} ${last ? 'rounded-b-[20px] border-b pb-5 sm:pb-6' : ''}`}>
+                      {first && <OutcomeGroupHeading group={g} />}
+                      <ul className={`${first ? '' : 'border-t border-line/50 [&>li]:!pt-3'} ${last ? '' : '[&>li]:!pb-3'}`}>
+                        <OutcomeRow fact={fact} editable />
+                      </ul>
+                    </div>
+                  </Fragment>
+                )
+              })
             })}
           </div>
           {hasMore && (
@@ -196,7 +207,7 @@ export default function Journal() {
       {/* 有意不在只有空状态时才显示：蒸馏过一个会话不代表积压已清完，而且一旦出现结论就
           隐藏这个入口，其余的历史记录在这页就没有任何进入路径了。重复蒸馏已蒸馏过的
           会话是无害的空操作。 */}
-      {!isError && rows.length > 0 && (
+      {rows.length > 0 && (
         <Card>
           <BackfillSessions />
         </Card>
@@ -263,16 +274,20 @@ export function SessionOutcomes({
 }) {
   return (
     <Card className={className}>
-      <div className="mb-3 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-[13px] text-ghost">
-        <span className="min-w-0 max-w-full truncate">
-          {t.journal.sessionLabel} {group.session}
-        </span>
-        <span>{t.journal.conclusionCount(group.facts.length)}</span>
-      </div>
+      <OutcomeGroupHeading group={group} />
       <ul className="divide-y divide-line/50">
         {group.facts.map((f) => <OutcomeRow key={f.id} fact={f} editable={editable} />)}
       </ul>
     </Card>
+  )
+}
+
+function OutcomeGroupHeading({ group }: { group: OutcomeGroup }) {
+  return (
+    <div className="mb-3 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-[13px] text-ghost">
+      <span className="min-w-0 max-w-full truncate">{t.journal.sessionLabel} {group.session}</span>
+      <span>{t.journal.conclusionCount(group.facts.length)}</span>
+    </div>
   )
 }
 

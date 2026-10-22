@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   CheckCircle2,
   ChevronDown,
@@ -45,7 +46,7 @@ function generateCodexTestSession(): string {
 }
 
 export default function Settings() {
-  const { data, isLoading, isError, error } = usePolicy()
+  const { data, isLoading, isError, error, refetch } = usePolicy()
   const save = useSetPolicy()
 
   const PROMPT_FIELDS: Array<{ key: keyof Policy; label: string; hint: string }> = [
@@ -70,13 +71,10 @@ export default function Settings() {
     }
   }, [data, dirty])
 
-  if (isLoading) return <Spinner label={t.settings.loading} />
-  if (isError) return <ErrorState message={(error as Error).message} />
-  if (!data) return null
-
-  const isDefault = (key: keyof Policy) => prompts[key] === data.defaults[key]
+  const isDefault = (key: keyof Policy) => prompts[key] === data?.defaults[key]
 
   const onSave = () => {
+    if (!data) return
     // 仍处于默认值的 prompt 发送 ""，让它保持"使用默认"，而不是固化成一份覆盖副本。
     const patch: Partial<Policy> = {
       extract_instruction: instruction,
@@ -94,6 +92,7 @@ export default function Settings() {
   }
 
   const resetPrompt = (key: keyof Policy) => {
+    if (!data) return
     setDirty(true)
     setPrompts((p) => ({ ...p, [key]: data.defaults[key] }))
   }
@@ -107,7 +106,10 @@ export default function Settings() {
         <CodexSetupCard />
       </section>
 
-      <section aria-labelledby="memory-policy-heading" className="space-y-4">
+      {!data ? (isLoading ? <Spinner label={t.settings.loading} /> : isError ? (
+        <ErrorState message={(error as Error).message} onRetry={() => { void refetch() }} />
+      ) : null) : <section aria-labelledby="memory-policy-heading" className="space-y-4">
+        {isError && <ErrorState message={`策略更新失败，保留当前草稿：${(error as Error).message}`} onRetry={() => { void refetch() }} />}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 id="memory-policy-heading" className="text-base font-semibold text-slate-100">{t.settings.policySectionTitle}</h2>
           <Button onClick={onSave} loading={save.isPending} disabled={!dirty}>
@@ -192,7 +194,7 @@ export default function Settings() {
             </div>
           )}
         </Card>
-      </section>
+      </section>}
     </div>
   )
 }
@@ -212,7 +214,6 @@ function CodexSetupCard() {
     }
   }, [sessionId])
   const apiUrl = apiBaseUrl()
-  const uiBase = typeof window === 'undefined' ? apiUrl : window.location.origin
   const health = useHealth()
   const status = useAgentStatus(sessionId)
   const sessions = useSessions({ q: 'codex', limit: 5 })
@@ -359,14 +360,15 @@ function CodexSetupCard() {
                 <RefreshCw className="h-4 w-4" /> {t.settings.connectRefresh}
               </Button>
             </div>
+            {status.isError && <ErrorState message={`接入状态读取失败：${(status.error as Error).message}`} onRetry={() => { void status.refetch() }} />}
             <div className="space-y-4 text-sm text-ghost">
               <div className="flex justify-between gap-3">
                 <span>{t.settings.connectNamespace}</span>
-                <span className="truncate text-right text-slate-200">{status.data?.user ?? '—'}</span>
+                <span className="truncate text-right text-slate-200">{!status.isError ? status.data?.user ?? '—' : '—'}</span>
               </div>
               <div className="flex justify-between gap-3">
                 <span>{t.settings.connectSessionEpisodes}</span>
-                <span className="text-slate-200">{status.data?.session?.episodes ?? 0}</span>
+                <span className="text-slate-200">{!status.isError ? status.data?.session?.episodes ?? '—' : '—'}</span>
               </div>
             </div>
           </div>
@@ -379,7 +381,7 @@ function CodexSetupCard() {
               {sessions.isLoading ? (
                 <p className="text-xs leading-relaxed text-ghost">{t.settings.connectSessionsLoading}</p>
               ) : sessions.isError ? (
-                <p className="text-xs leading-relaxed text-ghost">{t.settings.connectSessionsError}</p>
+                <ErrorState message={t.settings.connectSessionsError} onRetry={() => { void sessions.refetch() }} />
               ) : codexSessions.length === 0 ? (
                 <p className="text-xs leading-relaxed text-ghost">{t.settings.connectSessionsEmpty}</p>
               ) : (
@@ -395,12 +397,12 @@ function CodexSetupCard() {
                 ))
               )}
             </div>
-            <a
-              href={`${uiBase}/ui/conversations`}
+            <Link
+              to="/conversations"
               className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-brand-cyan hover:text-brand-mint"
             >
               {t.settings.connectOpenSessions} <ExternalLink className="h-3.5 w-3.5" />
-            </a>
+            </Link>
           </details>
         </div>
       </div>
@@ -413,11 +415,11 @@ function CodexSetupCard() {
           <StatusTile
             label={t.settings.connectFeedLabel}
             value={
-              status.data?.feed?.last_fed_at_h
+              status.isError || !status.data ? '—' : status.data?.feed?.last_fed_at_h
                 ? t.settings.connectFedAt(status.data.feed.last_fed_at_h, status.data.feed.sessions)
                 : t.settings.connectNeverFed
             }
-            ok={!!status.data?.feed?.last_fed_at && Date.now() / 1000 - status.data.feed.last_fed_at < 86400}
+            ok={!status.isError && !!status.data?.feed?.last_fed_at && Date.now() / 1000 - status.data.feed.last_fed_at < 86400}
           />
         </div>
         <div className="mt-3">

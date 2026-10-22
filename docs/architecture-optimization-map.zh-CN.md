@@ -55,6 +55,7 @@ flowchart TD
   READ --> CLIENT["HTTP · MCP · SDK · 控制台"]
   LIST --> CLIENT
   AUDIT --> CLIENT
+  CLIENT --> UI["控制台<br/>Router 内部导航 · 页面保持挂载<br/>局部查询错误 · 登录周期内草稿"]
   BENCH["独立评测 harness<br/>声明 embedder / answerer / judge<br/>full-context baseline"] -.-> READ
 ```
 
@@ -65,7 +66,7 @@ benchmark 的配置和调用路径需要单独声明，不能用未经过 `close
 
 | 优先级 | 模块 | 原因与下一步 | 验证边界 |
 | --- | --- | --- | --- |
-| P0 | Raw evidence fusion | facts-only 丢失原文细节；继续将 raw chunks、facts、graph paths、summary/provenance 证据类型化，减少重复与噪声 | 读路径消融、真实错例切片、tokens 与延迟；证据过宽见 [ISSUE-004](known-issues.zh-CN.md#issue-004) |
+| P0 | Raw evidence fusion | facts-only 丢失原文细节；继续将 raw chunks、facts、graph paths、summary/provenance 证据类型化，减少重复与噪声 | 读路径消融、真实错例切片、tokens 与延迟；证据过宽状态见[问题台账](known-issues.zh-CN.md) |
 | P0 | Chain-aware retrieval | 已支持 previous-value 源会话提升；扩展到多段属性演化与 profile-level chain | 区分当前值和历史值的完整证据链 |
 | P1 | Graph proximity / multi-hop | 强化跨会话关联；先用真实错例验证轻量 n-hop 或 PPR-style expansion | 代理 recall 提升不能代替最终 QA 质量 |
 | P1 | Temporal interval reasoning | 补足 start/end pair、invalid_at span 与 duration/date arithmetic 证据 | 保留原文时间精度；按具体类别和 rig 比较 baseline |
@@ -75,7 +76,7 @@ benchmark 的配置和调用路径需要单独声明，不能用未经过 `close
 benchmark 路径优先推进原文融合、演化链和多跳；个人记忆路径重点是导入质量、来源与身份一致性。
 agent_session 的抽取门、watch/hook 调度和 embedder 能力体检已有实现，不重复列作待开发功能。
 具体缺陷、兼容收束和状态见[问题台账](known-issues.zh-CN.md)，包括
-[ISSUE-023～032](known-issues.zh-CN.md#issue-023)。这些方向是待验证的优化目标，不表示已经落地。
+[存储与接口收束事项](known-issues.zh-CN.md)。这些方向是待验证的优化目标，不表示已经落地。
 
 控制台的信息组织以“决定过什么、什么仍未解决、哪些内容需要纠正”为依据；页面合并需要实际使用证据，
 不能仅因存储中存在一种对象就增加一个页面，也不能仅凭主观判断删除现有入口。
@@ -133,11 +134,11 @@ watch 的 `seen` 可能包含放弃收尾的记录，不能把本地账本条目
 | 结论提示词 | 按原文内容判断，不限制会话场景；允许有依据的单句决定，排除临时任务、普通属性与推断，要求 15–400 字符。合成模型仍出现明确安排漏提取，不能宣称零结论问题已解决 | [提示词验收](../results/session_outcomes_prompt_validation.md)、[模型输出](../results/session_outcomes_prompt_synthetic_live.jsonl) |
 | 元数据编辑保留历史与来源 | 仅改敏感位、分类或原样保存，保留 source、时间戳、替代链、正文、向量、provenance 和图边；实际改动三元组才标为 user。避免标记操作复活失效事实或误授用户断言保护 | [历史保护](../results/fact_metadata_history_validation.md)、[来源语义](../results/fact_source_metadata_validation.md) |
 | 完整陈述编辑的类型边界 | statement 仅用于 decision/finding/lesson/open_question；属性事实必须编辑三元组，非法混用在写入前返回 422。结论编辑保留依据并刷新展示，沿用既有持久化与派生更新 | [三元组语义验收](../results/fact_statement_semantics_validation.md)、[体检编辑验收](../results/health_edit_validation.md) |
-| 画像来源计数 | `source_count` 只数去重后的 provenance Episode ID，无来源为 0；不把旧 count 或访问强化次数解释为来源。只读派生，不新增持久化字段 | [来源展示验收](../results/profile_evidence_validation.md)；旧 count 收束见 [ISSUE-029](known-issues.zh-CN.md#issue-029) |
+| 画像来源计数 | `source_count` 只数去重后的 provenance Episode ID，无来源为 0；不把旧 count 或访问强化次数解释为来源。只读派生，不新增持久化字段 | [来源展示验收](../results/profile_evidence_validation.md)；旧 count 收束状态见[问题台账](known-issues.zh-CN.md) |
 | `slot_overflow` 与 `clear_slot` | 对单值身份槽按槽报告异常，排除 children/language/education 等多值字段。清理为显式硬删除，只作用于本槽 live 抽取事实，不触碰 user 断言或 superseded 历史；审计与删除共用 canonical 身份与集合口径，必填 `expect_count` 防止过期确认 | [破坏性操作护栏](../tests/test_outcomes.py)、[服务实现](../mnemotrace/service.py) |
 
 结论作为 Fact 会参与启用 LLM 命名空间的读取，不只是控制台卡片。精确文本去重不等于语义幂等，
-重复收尾后的同义结论见 [ISSUE-005](known-issues.zh-CN.md#issue-005)。
+重复收尾后的同义结论状态见[问题台账](known-issues.zh-CN.md)。
 复用 Fact 保留了来源、时间与检索能力；若跨会话语义去重、教训重现时强化等行为无法在现有边界内
 清楚表达，再评估独立类型，避免继续向多个调用点堆积特殊判断或为假想需求提前抽象。
 冲突处理的非破坏性失效与用户明确发起的垃圾清理是不同操作，不能用后者替代 supersedes 历史。
@@ -163,7 +164,7 @@ watch 的 `seen` 可能包含放弃收尾的记录，不能把本地账本条目
 偏好表生成“当前偏好记录（结构化）”及中文表头，复制上下文仍取服务端原文。
 证据见[提示词与分区验收](../results/chinese_prompt_context_validation.md)、
 [摘要语言验收](../results/summary_source_language_validation.md)。提示词传递测试不能证明模型必然遵循要求，
-人物归属合成检查仍有失败，完整质量评测见 [ISSUE-012](known-issues.zh-CN.md#issue-012)。
+人物归属合成检查仍有失败，完整质量评测的状态见[问题台账](known-issues.zh-CN.md)。
 
 ### 4.4 嵌入、存储、锁与服务边界
 
@@ -172,8 +173,8 @@ watch 的 `seen` 可能包含放弃收尾的记录，不能把本地账本条目
 | API BGE-M3 模型元数据 | 构造时声明 `openai/BAAI/bge-m3` 与 1024 维，避免重启先按错误维度加载。其他 API 模型须显式正整数 dim，每条响应维度必须匹配，不能首次调用后改写空间；全局离线入口仍为 hashing | [初始维度问题](../results/api_bge_dimension_validation.md)、[当前维度契约](../results/api_bge_1024_refactor_validation.md) |
 | embedder 能力体检 | hashing 保证零配置运行，但不证明中文语义能力。非 ASCII 主导的输入可触发 `embedder_blind`，由 audit/agent_status 给出配置与显式重嵌入建议，不直接拒绝中文写入 | [语言能力检查](../results/embedder_zh_2026-09-01.md)、[服务回归](../tests/test_service_paths.py) |
 | 跨平台文件锁 | `_flock` 统一 service、persist、watch 与 hook：POSIX flock、Windows msvcrt 轮询；非阻塞竞争可跳过，EINTR 重试，定位及真实加锁故障传播，避免锁失效后继续写或永久等待 | [错误处理验收](../results/flock_error_handling_validation.md)、[锁回归](../tests/test_flock.py) |
-| 服务读写作用域与重入（ISSUE-033/034） | 规范化稳定锁路径共享进程内线程锁及文件锁所有权；读操作完整持线程锁，冷加载持文件锁覆盖全部集合与发布，写操作持锁读改存。嵌套读取固定对象，迁移复用外层锁，清空后旧对象不可写回；默认内存索引热读允许上一已提交版本 | [访问协议验收](../results/issue033_034_validation.md)、[本地原始日志](../results/issue033_034_validation.jsonl)、[并发回归](../tests/test_service_transactions.py)、[CI 原始证据](../results/issue033_034_ci_validation.jsonl)；Windows/Ubuntu、Python 3.10/3.12 均已通过 |
-| 快照提交身份与 Windows manifest 替换 | manifest 每次提交生成 `snapshot_id`，加载及保存记录实际令牌；旧格式按原文摘要识别，避免 mtime/size 碰撞。Windows 共享删除读取句柄配合 ReplaceFileW，允许热版本检查与原子提交交错；保存中途崩溃恢复另行处理 | [快照与原生句柄回归](../tests/test_service_transactions.py)、[访问协议验收](../results/issue033_034_validation.md) |
+| 服务读写作用域与重入 | 规范化稳定锁路径共享进程内线程锁及文件锁所有权；读操作完整持线程锁，冷加载持文件锁覆盖全部集合与发布，写操作持锁读改存。嵌套读取固定对象，迁移复用外层锁，清空后旧对象不可写回；默认内存索引热读允许上一已提交版本 | [访问协议验收与本地日志](../results/console-validation-index.md#service-transactions)、[并发回归](../tests/test_service_transactions.py)、[CI 原始证据](../results/console-validation-index.md#service-transactions-ci)；Windows/Ubuntu、Python 3.10/3.12 均已通过 |
+| 快照提交身份与 Windows manifest 替换 | manifest 每次提交生成 `snapshot_id`，加载及保存记录实际令牌；旧格式按原文摘要识别，避免 mtime/size 碰撞。Windows 共享删除读取句柄配合 ReplaceFileW，允许热版本检查与原子提交交错；保存中途崩溃恢复另行处理 | [快照与原生句柄回归](../tests/test_service_transactions.py)、[访问协议验收](../results/console-validation-index.md#service-transactions) |
 | 摘要目录唯一归属 | 读取、写入、清空只使用当前 namespace 的摘要目录，拒绝同级链接和名称别名。旧账号名目录及 .pkl 不参与运行时回退；旧库需停进程、备份、确认归属后显式迁移，不自动合并或覆盖 | [仅摘要目录验收](../results/digest_only_namespace_validation.md)、[归属回归](../tests/test_namespace_ownership.py) |
 | 清空与重建的并发一致性 | 线程锁和进程锁覆盖完整删除。锁在摘要目录外保持同一文件，等待写入不切换锁；`shutil.rmtree` 删除链接入口而不遍历目标，扫描失败传播 | [并发验收](../results/forget_concurrency_validation.md)、[清理与 junction 验收](../results/maintenance_cleanup_validation.md)、[链接删除回归](../tests/test_forget_links.py) |
 | 服务鉴权与请求边界 | 配置失败关闭，统一单/多空间 Key 的非空可打印 ASCII 约束；非法凭证 401，非法配置 503，不回显密钥。请求限制、liveness/readiness、非 root 容器与统一版本门禁约束自托管入口 | [鉴权验收](../results/api_key_character_validation.md)、[发布日志](../results/commercial_release_0_1_0_validation.jsonl)、[发布规格](../specs/003-commercial-release/) |
@@ -188,9 +189,11 @@ watch 的 `seen` 可能包含放弃收尾的记录，不能把本地账本条目
 | 模块 | 原因与采用的方案 | 证据 |
 | --- | --- | --- |
 | 登录与查询错误内存态 | 原始 Key 及含 Key 的 queryHash 不落浏览器存储；刷新重新登录，启动尝试清理旧缓存。客户端与服务端共用字符约束，有效 Key 原样发送 | [凭证内存态](../results/auth_memory_only_validation.md)、[客户端校验](../results/api_key_character_validation.md) |
-| 查询账号与登录周期隔离 | 每次登录／退出原子推进内存 epoch；同步取消并移除私有查询、清空错误，保留公共 health。WeakMap 记录查询所属周期，回调同时检查 epoch、账号与缓存对象；已登录页面树按 epoch 重建，同 Key 重登也隔离 | [早期隔离验收](../results/query_isolation_validation.md)、[周期隔离验收](../results/issue035_validation.md) |
-| 导出与共享请求生命周期 | JSON 和 Blob 共用 `{key, epoch}` 快照检查；成功和失败均核对周期，旧 401 不退出新登录。下载前、页面提示前再次检查，过期以 StaleSessionError(409) 静默取消，finally 释放 URL 和元素；不撤销服务端已收到的操作或已触发下载 | [ISSUE-035 验收与原始输出](../results/issue035_validation.md) |
-| 空间偏好 | 主题和允许的显示设置可持久化，筛选按 API 地址与凭据的 SHA-256 指纹隔离。指纹异步激活、延迟修改均检查登录周期；同账号新登录恢复既有偏好，但旧任务不能回写。图谱参数为浏览器通用；敏感内容、草稿、搜索结果、Key 和 epoch 不写入偏好 | [界面偏好](../results/ui_preferences_validation.md)、[SHA-256 回退](../results/preferences_sha256_fallback_validation.md)、[周期回归](../results/issue035_validation.md) |
+| 查询错误与编辑生命周期 | 全局错误曾卸载路由并销毁无关草稿，局部 ErrorState 又被全局提示隐藏。Layout 统一保留页面，错误条只告警/重试，各区域呈现自身失败；已有数据刷新失败保留编辑组件，dirty 输入不被恢复响应覆盖，来源错误与空结果分开。结论编辑行在同一父级按事实 ID 保持身份，连续分组变化不重建行。草稿仍限页面及登录周期，不增加持久化；代价是局部与全局可能同时提示错误 | [真实服务、DOM 回归与截图](../results/console-validation-index.md#console-error-lifecycle)、[行为回归](../frontend/tests/consoleErrors.test.cjs) |
+| 控制台内部导航 | 设置链接绕过 Router，整页加载清空内存凭据。改用既有 Link 与 basename，移除专用 origin/部署前缀拼接；主动刷新仍重新登录，不增加凭据恢复 | [生产与开发代理导航验收](../results/console-validation-index.md#console-error-lifecycle) |
+| 查询账号与登录周期隔离 | 每次登录／退出原子推进内存 epoch；同步取消并移除私有查询、清空错误，保留公共 health。WeakMap 记录查询所属周期，回调同时检查 epoch、账号与缓存对象；已登录页面树按 epoch 重建，同 Key 重登也隔离 | [早期隔离验收](../results/query_isolation_validation.md)、[周期隔离验收](../results/console-validation-index.md#session-lifecycle) |
+| 导出与共享请求生命周期 | JSON 和 Blob 共用 `{key, epoch}` 快照检查；成功和失败均核对周期，旧 401 不退出新登录。下载前、页面提示前再次检查，过期以 StaleSessionError(409) 静默取消，finally 释放 URL 和元素；不撤销服务端已收到的操作或已触发下载 | [登录周期验收与原始输出](../results/console-validation-index.md#session-lifecycle) |
+| 空间偏好 | 主题和允许的显示设置可持久化，筛选按 API 地址与凭据的 SHA-256 指纹隔离。指纹异步激活、延迟修改均检查登录周期；同账号新登录恢复既有偏好，但旧任务不能回写。图谱参数为浏览器通用；敏感内容、草稿、搜索结果、Key 和 epoch 不写入偏好 | [界面偏好](../results/ui_preferences_validation.md)、[SHA-256 回退](../results/preferences_sha256_fallback_validation.md)、[周期回归](../results/console-validation-index.md#session-lifecycle) |
 | 非安全上下文的指纹 | 原生 crypto/subtle 不可用或 digest 拒绝时用固定版本 JavaScript SHA-256，保持 UTF-8 输入和空间编号一致；两种实现都失败时才用临时内存空间，存储不可用仍能操作 | [兼容验收](../results/preferences_sha256_fallback_validation.md) |
 | 中文与主题 | 中文文案集中到 copy.ts，界面固定 zh-CN。theme 只保存主题值，通过头部同步外置脚本在首屏恢复；登录页使用 View Transition 圆形揭示，内部页渐变，减少动态或不支持时回退；两套色板驱动图谱和页面 | [中文界面](../results/ui_chinese_only_validation.md)、[主题](../results/theme_validation.md) |
 | 登录空间引导 | 开放模式允许填入随机空间 Key，受保护/未知模式禁用快捷入口；生成只填入、不自动登录。演示为 mnemotrace-test，test 与 1 是普通空间；清空仍需确认，演示与 anonymous 保持保护 | [登录引导](../results/login_space_guidance_validation.md)、[空间策略](../results/test_namespace_policy_validation.md) |
@@ -202,16 +205,16 @@ watch 的 `seen` 可能包含放弃收尾的记录，不能把本地账本条目
 | 开发入口 | Vite 开发与预览在 base 检查前将 GET/HEAD /ui 重定向到 /ui/，保留查询参数；开发监听忽略 Windows 原子写入临时目录 | [Vite 配置](../frontend/vite.config.ts)、[主题验收中的开发检查](../results/theme_validation.md) |
 | 共享选择器 | ScopeSelect、ExportRangeSelect 保留类型、选项和说明，统一复用 FilterSelect 的键盘、失焦、禁用逻辑；删除无调用的内部导出 | [清理验收](../results/frontend_select_cleanup_validation.md) |
 | 事实分类与状态筛选 | category 与 kind、状态、搜索和敏感范围在分页前共同筛选。分类选项按同空间/类型/敏感可见范围生成，不被已选分类、搜索和分页缩减；三态筛选按空间保存，切换后重置分页 | [筛选验收](../results/fact_filters_validation.md) |
-| 查询旧响应复用范围 | useMemories 仅允许同账号、同过滤范围下的搜索词与请求条数变化借用整份旧响应；分页偏移与未来筛选字段默认参与比较，敏感缺省值归一化为 false。Facts 无兼容数据时仅列表加载，错误时保留挂载和当前查询重试；计数、分类与空态不冒充新结果，占位期间禁用加载更多。选择停止复用而非页面二次过滤，避免分页和分类信息失配 | [查询范围与展示验收](../results/issue036_validation.md) |
+| 查询旧响应复用范围 | useMemories 仅允许同账号、同过滤范围下的搜索词与请求条数变化借用整份旧响应；分页偏移与未来筛选字段默认参与比较，敏感缺省值归一化为 false。Facts 无兼容数据时仅列表加载，错误时保留挂载和当前查询重试；计数、分类与空态不冒充新结果，占位期间禁用加载更多。选择停止复用而非页面二次过滤，避免分页和分类信息失配 | [查询范围与展示验收](../results/console-validation-index.md#query-scope) |
 | 记忆体检 | 服务在 limit 前稳定按红、琥珀、蓝、灰排序，by_kind 统计全部；前端复制数组排序，不改写缓存。属性编辑用三元组，结论用整句，样本文本不冒充 Episode 原文 | [体检验收](../results/health_edit_validation.md)、[排序回归输出](../results/health_audit_order_pytest.txt) |
-| 会话结论搜索 | 工具栏保持挂载，组词期间不提交拼音，停顿 250ms 后查询，清空立即恢复；复用遵守共享查询范围，搜索换词保留列表，历史状态改变则等待当前范围响应 | [搜索验收](../results/journal_search_validation.md)、[范围回归](../results/issue036_validation.md) |
+| 会话结论搜索 | 工具栏保持挂载，组词期间不提交拼音，停顿 250ms 后查询，清空立即恢复；复用遵守共享查询范围，搜索换词保留列表，历史状态改变则等待当前范围响应 | [搜索验收](../results/journal_search_validation.md)、[范围回归](../results/console-validation-index.md#query-scope) |
 | 原始会话列表与写入表单 | 搜索停顿 500ms 查询，加载时保留同空间列表。SessionPicker 独立读取完整索引，默认 default，新 ID 只在确认后切换；收尾绑定所点卡片 ID，报告也打开该会话，不改顶部选择。表单内容与底部选择器分区，草稿仅页面内存在 | [会话搜索与表单验收](../results/conversations_search_validation.md) |
 | 导出范围说明 | 空间名取 agent_status.user，不用 Key 冒充；默认 compact，范围随选项显示，并解释模型处理边界，不改变导出载荷 | [导出说明](../results/privacy_export_guidance_validation.md) |
 | 落地页生成 | demo/docs 的共用内容由模板和差异插槽生成，保留各页有意差别；CI 做只读同步检查，减少手工双改造成的漂移 | [维护验收](../results/maintenance_cleanup_validation.md)、[生成器](../scripts/build_landing_pages.py) |
 
 凭证内存态不消除页面登录期间的 XSS 风险；脚本授权和原浏览器定点清理的工程证据见
-[控制台安全验收](../results/console_security_validation.md)。搜索工具栏持续挂载也不等于全局错误时页面不会卸载，
-草稿生命周期见 [ISSUE-016](known-issues.zh-CN.md#issue-016)。
+[控制台安全验收](../results/console_security_validation.md)。查询错误不销毁页面，登录周期变化仍清理草稿，
+具体验证范围见[错误生命周期与导航验收](../results/console-validation-index.md#console-error-lifecycle)。
 
 ### 4.6 控制台：关系图谱与登录插画
 
@@ -220,7 +223,7 @@ watch 的 `seen` 可能包含放弃收尾的记录，不能把本地账本条目
 | Quartz 的 D3/PixiJS 路径 | GraphPage → ForceGraph → vendor/quartz，固定上游版本 `d25a6eabf96751ffca56f8a8139272def7a65041`，保留 MIT 许可与适配说明，生产分发 licenses/quartz.txt。D3 负责力模型、Pixi 绘制、Tween.js 高亮；增加弱中心力限制断开组漂散，按不同邻居数定节点大小，不承诺零交叉 | [迁移验收](../results/graph_quartz_migration_validation.md) |
 | 数据副本与资源生命周期 | 重复/历史关系在显示副本保留，弹簧按实体对去重，自环不参加弹簧。按需加载依赖，异步初始化可取消，选择/主题复用画布，卸载释放 GPU、模拟与动画资源，静置后停止持续渲染 | [图谱回归](../frontend/tests/quartzGraph.test.cjs)、[迁移验收](../results/graph_quartz_migration_validation.md) |
 | 生产 CSP | 创建 Pixi Application 前加载 pixi.js/unsafe-eval 静态实现，避免 shader/uniform 的动态 Function 被 CSP 拦截，不放宽服务端策略 | [受限动态代码生成验收](../results/graph_csp_validation.md) |
-| 布局与可见内容分离 | 仅当前通过 setLiveOnly 改显隐，完整图继续决定模型、弹簧、节点半径和缓存；隐藏对象不可命中。统计、详情与键盘列表共享可见规则，避免切换时节点跳动 | [显隐验收](../results/graph_visibility_validation.md)；先截断再过滤的缺口见 [ISSUE-014](known-issues.zh-CN.md#issue-014) |
+| 布局与可见内容分离 | 仅当前通过 setLiveOnly 改显隐，完整图继续决定模型、弹簧、节点半径和缓存；隐藏对象不可命中。统计、详情与键盘列表共享可见规则，避免切换时节点跳动 | [显隐验收](../results/graph_visibility_validation.md)；先截断再过滤的缺口状态见[问题台账](known-issues.zh-CN.md) |
 | 初次进入和返回 | 初始静态预计算后适配一次，再做实时 D3 自然展开，普通结束不改相机。返回视图按身份、稳定图签名与受力参数隔离，有界内存缓存坐标/相机；入场中离开保留未收拢基准，防快速切页累积偏差，刷新清空缓存 | [迁移验收](../results/graph_quartz_migration_validation.md)、[返回状态验收](../results/graph_return_view_validation.md) |
 | 适应画布与重置 | 共用预计算 D3 轨迹，按最终范围适配后播放；fit 保留参数/筛选/选择，reset 恢复默认并清除选择。拖动、调参、缩放和数据变化从可见状态接管；减少动画直接显示终点 | [动画适配验收](../results/graph_reset_fit_validation.md) |
 | 标签与邻接阅读 | 普通标签按宽度截短并随缩放淡出；悬停、键盘聚焦或选择显示全名，邻居增强、其他对象淡化。fit 使用稳定总览宽度，展开全名不重新布局，详情保留原文和关系方向 | [可读性验收](../results/graph_readability_validation.md) |
@@ -263,7 +266,7 @@ python eval/facility.py --all --url http://127.0.0.1:8766 --key-file ~/.mnemotra
 | 图谱入场结束补 fit、返回绘制插值 | 结束补 fit 引起末尾跳动，按钮改为先按最终范围适配再播放轨迹；返回时的独立绘制插值改为共用自然入场，保持模型坐标与命中一致 | [适配](../results/graph_reset_fit_validation.md)、[返回](../results/graph_return_view_validation.md) |
 | 旧演示 Key 映射和登录恢复 | test→mnemotrace-test 的恢复映射与 test/1 清空保护已取消；凭证持久化整体移除。旧数据迁移只是一次运行记录，不是服务仍会自动迁移的承诺 | [早期界面／演示迁移](../results/login_glass_demo_migration_validation.md)、[当前空间策略](../results/test_namespace_policy_validation.md)、[内存态](../results/auth_memory_only_validation.md) |
 | 双语界面占位、登录插画空白拖拽 | 双语词典、语言 store 和隐藏布局占位已移除，固定中文；空白区域平移已取消，保留节点弹性拖拽。避免把已退役的控制项留在当前说明 | [中文界面验收](../results/ui_chinese_only_validation.md)、[登录插画回归](../frontend/tests/loginMemoryGraphData.test.cjs) |
-| 英文偏好专用分类与简易内联控制台 | 英文 PREFERENCE RECORDS 不再有预算分类/消融专用分支，归入 other，不删除原文；未构建 React 时返回 503，不再保留 _VIEWER_HTML 编辑入口。前端旧上下文解析的剩余范围另见 ISSUE-028 | [维护验收](../results/maintenance_cleanup_validation.md)、[格式收束](known-issues.zh-CN.md#issue-028) |
+| 英文偏好专用分类与简易内联控制台 | 英文 PREFERENCE RECORDS 不再有预算分类/消融专用分支，归入 other，不删除原文；未构建 React 时返回 503，不再保留 _VIEWER_HTML 编辑入口。前端旧上下文解析的剩余范围见问题台账 | [维护验收](../results/maintenance_cleanup_validation.md)、[格式收束状态](known-issues.zh-CN.md) |
 
 这些记录保留失败和回滚依据；各类证据的适用范围见下方验收入口。
 

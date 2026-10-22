@@ -1,8 +1,6 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 import { AlertTriangle, Inbox, Loader2 } from 'lucide-react'
 
-import { useQueryErrors } from '../store/queryErrors'
-
 /* ---------- 工具函数 ---------- */
 export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ')
@@ -152,9 +150,11 @@ export function ErrorBanner({ message, action }: { message: string; action?: Rea
   )
 }
 
-export function ErrorState({ message }: { message: string }) {
-  // 全局置顶条已经统一呈现查询错误，页面内不再重复显示同一类错误。
-  const hasGlobalFailure = useQueryErrors((state) => state.failures.length > 0)
-  if (hasGlobalFailure) return null
-  return <ErrorBanner message={message} />
+export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  // 全局条无法说明哪个区域不可用，局部错误和重试始终保留。
+  return <ErrorBanner message={message} action={onRetry && (
+    <button type="button" className="shrink-0 rounded-lg border border-brand-rose/30 px-2.5 py-1 text-xs" onClick={onRetry}>
+      重新加载
+    </button>
+  )} />
 }

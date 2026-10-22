@@ -12,8 +12,7 @@ export function GlobalErrorBanner() {
   if (!latest) return null
 
   const retry = () => {
-    // 刷新后页面内容没有挂载，失败的查询可能不在缓存里；此时清掉持久化错误，
-    // 让 Outlet 重新挂载并重新请求。仍在缓存里的错误则主动重拉。
+    // 查询已被移除时只清理失效提示；重试不改变页面或编辑组件生命周期。
     const namespace = useAuth.getState().apiKey
     const failed = queryClient.getQueryCache().getAll().filter((query) =>
       namespace !== null && query.queryKey[1] === namespace && query.state.status === 'error')

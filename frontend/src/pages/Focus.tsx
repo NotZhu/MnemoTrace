@@ -8,7 +8,7 @@ import { useFocus, useSetFocus } from '../hooks/queries'
 import { copy as t } from '../lib/copy'
 
 export default function FocusPage() {
-  const { data, isLoading, isError, error } = useFocus()
+  const { data, isLoading, isError, error, refetch } = useFocus()
   const save = useSetFocus()
 
   const [track, setTrack] = useState<string[]>([])
@@ -23,8 +23,8 @@ export default function FocusPage() {
     }
   }, [data, dirty])
 
-  if (isLoading) return <Spinner label={t.focus.loading} />
-  if (isError) return <ErrorState message={(error as Error).message} />
+  if (!data) return isLoading ? <Spinner label={t.focus.loading} /> : isError
+    ? <ErrorState message={(error as Error).message} onRetry={() => { void refetch() }} /> : null
 
   const update = (which: 'track' | 'mute', next: string[]) => {
     setDirty(true)
@@ -46,6 +46,7 @@ export default function FocusPage() {
 
   return (
     <div className="space-y-6">
+      {isError && <ErrorState message={`关注点更新失败，保留当前草稿：${(error as Error).message}`} onRetry={() => { void refetch() }} />}
       <PageHeader
         title={t.focus.title}
         actions={

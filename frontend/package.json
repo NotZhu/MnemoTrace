@@ -15,7 +15,7 @@
     "test:theme": "node --test tests/theme.test.cjs tests/themeReveal.test.cjs",
     "test:security": "node --test tests/themeBootstrap.test.cjs tests/theme.test.cjs tests/codexSetupCommand.test.cjs tests/demoAuthMigration.test.cjs",
     "test:preferences": "node --test tests/preferences.test.cjs",
-    "test:query-isolation": "node --test tests/queryIsolation.test.cjs tests/searchQueries.test.cjs tests/memoryScope.test.cjs tests/apiKeyValidation.test.cjs tests/sessionLifecycle.test.cjs tests/privacySession.test.cjs tests/preferences.test.cjs",
+    "test:query-isolation": "node --test tests/queryIsolation.test.cjs tests/searchQueries.test.cjs tests/memoryScope.test.cjs tests/apiKeyValidation.test.cjs tests/sessionLifecycle.test.cjs tests/privacySession.test.cjs tests/preferences.test.cjs tests/consoleErrors.test.cjs tests/factsFilters.test.cjs",
     "test:search": "node --test tests/searchQueries.test.cjs tests/graphSearch.test.cjs tests/conversationSearch.test.cjs tests/sessionPicker.test.cjs tests/factsFilters.test.cjs tests/filterSelect.test.cjs"
   },
   "dependencies": {

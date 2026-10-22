@@ -1,0 +1,44 @@
+{
+  "date": "2026-10-22T07:06:14.539253+00:00",
+  "base_commit": "3c7ee3d6d593b3516556642b54655126ecced021",
+  "working_tree_dirty": true,
+  "source_patch": "implementation.patch",
+  "source_patch_apply": "git apply --unidiff-zero results/issue016-037/implementation.patch at base_commit",
+  "patch_sha256": "2d70d4555c4121b447e9107ed5c11064cdcd5e63efb01d6f6a66d274e39dad4c",
+  "source_patch_scope": "all tracked modifications and added textual test/spec/evidence source; logs and screenshots supplied separately",
+  "screenshots": {
+    "conversation-failure.jpg": {
+      "bytes": 39367,
+      "sha256": "529464da4583fa3463b62aac59022b5b60f3443e32dc7cb74e86ed64021243b9"
+    },
+    "conversation-recovered.jpg": {
+      "bytes": 30077,
+      "sha256": "0a351e0b7f6a83a8934801fd36f1875fb6d324fa292833148c7884c336a33851"
+    },
+    "fact-failure-desktop.jpg": {
+      "bytes": 33768,
+      "sha256": "98ce29929138246b160b7512dab800feb258b4752aa9f01913d81a041acb6053"
+    },
+    "fact-failure.jpg": {
+      "bytes": 19497,
+      "sha256": "be7509ae391215639df430eb66e20afd7ab68f03e2634fe6854d01c87d1a2214"
+    },
+    "fact-recovered-desktop.jpg": {
+      "bytes": 31968,
+      "sha256": "458b9f5fe1812d35b21ab4a6c79cd12ccbb48516a9b71187e8d30f150efecd08"
+    },
+    "fact-recovered.jpg": {
+      "bytes": 18903,
+      "sha256": "faa731733a668e642e6a20786e0eed7819eae1f3103ecac7d9f72b9cbf86b840"
+    },
+    "settings-failure.jpg": {
+      "bytes": 103346,
+      "sha256": "b796fdd339afdd9c19ed09217001ffa166dfc922c0289f7fa2984bd7f75b29f4"
+    },
+    "settings-recovered.jpg": {
+      "bytes": 97957,
+      "sha256": "63200cf6f054f70238c51eac84e2bf501f45de7ea4db2e21dbb1fb74f7a78d7a"
+    }
+  },
+  "evidence_only": true
+}

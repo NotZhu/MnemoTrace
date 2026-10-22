@@ -126,6 +126,7 @@ export function useSourceEpisodes(enabled: boolean) {
     queryKey: qk.sourceEpisodes(),
     queryFn: () => api.memories({ facts_limit: 0, episodes_limit: 200, include_sensitive: true }),
     enabled: enabled && !!namespace,
+    retry: false,
   })
 }
 

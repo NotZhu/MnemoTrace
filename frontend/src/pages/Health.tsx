@@ -80,13 +80,12 @@ export default function Health() {
     }
   }
 
-  if (isLoading) return (
+  if (!data && isLoading) return (
     <div className="flex w-full flex-1 items-center justify-center">
       <Spinner label={t.health.loading} />
     </div>
   )
-  if (isError) return <ErrorState message={(error as Error).message} />
-  if (!data) return null
+  if (!data) return isError ? <ErrorState message={(error as Error).message} onRetry={() => { void refetch() }} /> : null
 
   const kinds = Object.entries(data.by_kind).sort(([a], [b]) => findingPriority(a) - findingPriority(b))
   const findings = [...data.findings].sort((a, b) => findingPriority(a.kind) - findingPriority(b.kind))
@@ -94,6 +93,7 @@ export default function Health() {
 
   return (
     <div className="space-y-6">
+      {isError && <ErrorState message={`体检更新失败，显示上次结果并保留编辑：${(error as Error).message}`} onRetry={() => { void refetch() }} />}
       <PageHeader title={t.health.title} />
       <Card>
         <CardTitle hint={

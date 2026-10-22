@@ -1,0 +1,7 @@
+const fs = require('node:fs')
+const path = require('node:path')
+const file = path.resolve(__dirname, '../../.mnemotrace/issue016-037-browser/faults.json')
+fs.mkdirSync(path.dirname(file), { recursive: true })
+const [mode = 'clear', target = '/v1/sessions'] = process.argv.slice(2)
+fs.writeFileSync(file, JSON.stringify({ rules: mode === 'clear' ? [] : [{ path: target, mode }] }))
+console.log({ mode, target })

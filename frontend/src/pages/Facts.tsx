@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { FileSearch, GitMerge, Loader2, Pencil, Plus, Search, ShieldAlert, Trash2, X } from 'lucide-react'
 
-import { Button, Card, CardTitle, ErrorBanner, Field, PageHeader, Spinner } from '../components/ui'
+import { Button, Card, CardTitle, ErrorBanner, ErrorState, Field, PageHeader, Spinner } from '../components/ui'
 import { PageEmptyState } from '../components/PageEmptyState'
 import { FilterSelect } from '../components/FilterSelect'
 import { ConfirmDialog, Modal } from '../components/Modal'
@@ -224,7 +224,9 @@ export default function Facts() {
       <Modal open={!!sourceOf} title={t.facts.sourceTitle} onClose={() => setSourceOf(null)}>
         {sourceOf && (
           <div className="space-y-4">
-            {sourceQuery.isLoading ? (
+            {sourceQuery.isError ? (
+              <ErrorState message={`来源读取失败：${(sourceQuery.error as Error).message}`} onRetry={() => { void sourceQuery.refetch() }} />
+            ) : sourceQuery.isLoading ? (
               <Spinner label={t.facts.sourceLoading} />
             ) : (
               (() => {
