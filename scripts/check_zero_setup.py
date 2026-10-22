@@ -27,7 +27,6 @@ CONSOLE_HELP_MODULES = (
     "mnemotrace.agent_setup",
     "mnemotrace.connectors",
     "mnemotrace.mcp",
-    "mnemotrace.store.migrate",
 )
 CONSOLE_HELP_CALLABLES = (
     (

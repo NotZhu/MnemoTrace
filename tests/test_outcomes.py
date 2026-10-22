@@ -403,42 +403,6 @@ def test_clearing_a_slot_leaves_superseded_history_alone(tmp_path):
     assert all(mem.fact_store.get(h.id) is not None for h in history)
 
 
-def test_clearing_a_slot_targets_the_same_facts_the_audit_showed_after_an_identity_link(tmp_path):
-    """audit() 与 clear_slot() 对"fact 归谁所有"的判定必须一致。identity link 之前写入的 fact 带着
-    原始句柄，之后写入的带着 canonical 标识；如果两侧解析不一致，计数守卫会在一个总体上通过而删除
-    落在另一个总体上，owner 就会丢掉从未见过的行。"""
-    svc = MemoryService(data_dir=str(tmp_path))
-    mem = svc.get("u1")
-    junk = []
-    for i in range(3):
-        f = Fact(subject="user", predicate="occupation", object=f"borrowed title {i}", user_id="u1")
-        f.embedding = mem.embedder.embed(f.text)
-        mem.fact_store.upsert(f.id, f.embedding, f)
-        junk.append(f)
-    mem.link_identity("u1", "alice@example.com")  # canonical 标识从此变成这个地址
-    # 这个槽位必须横跨两种写法，这正是缺陷的全部：两侧解析不一致时，守卫拿 3 比 3 通过，删除却落在
-    # 另外三行上。如果垃圾全用同一种写法，即使把一侧改回原样，测试也照样绿。
-    # 抽取而来而非用户录入：source="user" 的 fact 被有意排除在分组之外，所以这里若放一条权威 fact，
-    # 测的就成了那个豁免规则而不是身份解析。
-    canonical = mem.resolver.resolve("u1")
-    assert canonical != "u1"
-    after = Fact(subject="user", predicate="occupation", object="borrowed title 3", user_id=canonical)
-    after.embedding = mem.embedder.embed(after.text)
-    mem.fact_store.upsert(after.id, after.embedding, after)
-    kept = mem.add_fact("user", "employer", "Acme", user_id="u1")  # 已盖上 canonical 标识
-
-    finding = [r for r in svc.audit("u1")["findings"]
-               if r["kind"] == "slot_overflow" and r["predicate"] == "occupation"][0]
-    assert finding["count"] == 4
-    shown = {s["fact_id"] for s in finding["samples"]}
-    assert shown == {f.id for f in junk} | {after.id}
-
-    assert svc.clear_slot("u1", "user", "occupation", expect_count=4)["deleted"] == 4
-    assert all(mem.fact_store.get(f.id) is None for f in junk)
-    assert mem.fact_store.get(after.id) is None
-    assert mem.fact_store.get(kept.id) is not None
-
-
 def test_slot_overflow_does_not_fire_on_genuinely_multi_valued_attributes(tmp_path):
     """三个孩子、三门语言或三个学位是一个真实的人，不是抽取垃圾。对他们断言"单值属性不可能有
     3 个值"是错的，而且该发现还附带一键硬删。"""

@@ -609,12 +609,10 @@ class MemoryService:
         """
         with self.write_lock(user):
             mem = self.get(user)
-            canonical = mem.resolver.resolve(user)
             pred = predicate.strip().lower()
             # 待删集合必须与 audit() 分组的集合完全一致，否则计数保护会在比较两个不同群体的
             # 同时放行、删掉错误的行：
-            #   * 身份校验两侧都要 resolve。身份关联前写入的 fact 带原始 handle，关联后写入的带
-            #     规范名；用存储的 `user_id` 与某一种写法比较，会悄悄命中同一个人的另一半数据。
+            #   * 与 audit() 一样精确匹配原始 user_id，其他用户的同名槽位不参与计数或删除。
             #   * 只取 live fact。audit() 只对 live fact 分组，因此 `expect_count` 是 live 计数；
             #     在这里匹配已被取代的行，既会让任何带 supersedes 链的槽位的保护永久失效，也会在
             #     保护被省略时硬删除 owner 从未见过的双时间轴历史
@@ -623,7 +621,7 @@ class MemoryService:
             #     也把它排除在分组之外。
             doomed = [f for f in _all_facts(mem)
                       if f.is_live() and f.source != "user"
-                      and mem.resolver.resolve(f.user_id) == canonical
+                      and f.user_id == user
                       and f.subject == subject and f.predicate.strip().lower() == pred]
             if len(doomed) != expect_count:
                 return {"ok": False, "deleted": 0, "found": len(doomed),
@@ -780,10 +778,9 @@ class MemoryService:
         """
         with self.write_lock(user):
             mem = self.get(user)
-            canonical = mem.resolver.resolve(user)
             episodes = [
                 ep for ep in mem.episodes_doc.values()
-                if ep.user_id == canonical and ep.session_id == session_id
+                if ep.user_id == user and ep.session_id == session_id
             ]
             pending = [ep for ep in episodes if not ep.consolidated]
             stats = (
@@ -814,10 +811,10 @@ class MemoryService:
                 seen_keys = {
                     split_outcome_text(f.text)[0].lower()[:120]
                     for f in _all_facts(mem)
-                    if f.is_live() and f.user_id == canonical
+                    if f.is_live() and f.user_id == user
                     and f.predicate.lower() in OUTCOME_PREDICATES and f.subject == session_id
                 }
-                for fact in extract_outcomes(self.llm, episodes, canonical, session_id=session_id):
+                for fact in extract_outcomes(self.llm, episodes, user, session_id=session_id):
                     if split_outcome_text(fact.text)[0].lower()[:120] in seen_keys:
                         continue
                     fact.embedding = mem.embedder.embed(fact.text)
@@ -865,15 +862,14 @@ class MemoryService:
         focus 策略是什么、接下来该做什么？"
         """
         mem = self.get(user)
-        canonical = mem.resolver.resolve(user)
         stats = self.stats(user)
         session_episodes = [
             ep for ep in mem.episodes_doc.values()
-            if ep.user_id == canonical and (session_id is None or ep.session_id == session_id)
+            if ep.user_id == user and (session_id is None or ep.session_id == session_id)
         ]
         session_working = [
             w for w in mem.working_mem.values()
-            if w.user_id == canonical
+            if w.user_id == user
             and w.is_live()
             and (session_id is None or w.session_id == session_id)
         ]
@@ -887,7 +883,7 @@ class MemoryService:
         ]
         if (stats.get("counts") or {}).get("pending_conflicts", 0):
             next_actions.append("Review pending conflicts before relying on disputed memories.")
-        blind = self._embedder_blindness(mem, canonical)
+        blind = self._embedder_blindness(mem, user)
         if blind:
             next_actions.append(
                 f"{round(blind['ratio'] * 100)}% of this namespace's memories cannot be ranked by the "
@@ -937,16 +933,15 @@ class MemoryService:
         """
 
         mem = self.get(user)
-        canonical = mem.resolver.resolve(user)
         episodes = [
             ep for ep in mem.episodes_doc.values()
-            if ep.user_id == canonical and ep.session_id == session_id
+            if ep.user_id == user and ep.session_id == session_id
         ]
         episode_ids = {ep.id for ep in episodes}
         pending = [ep for ep in episodes if not ep.consolidated]
         session_facts = [
             f for f in _all_facts(mem)
-            if f.user_id == canonical and episode_ids.intersection(f.provenance)
+            if f.user_id == user and episode_ids.intersection(f.provenance)
         ]
         session_facts.sort(key=lambda f: f.valid_at, reverse=True)
         redacted = 0
@@ -982,7 +977,7 @@ class MemoryService:
         facts_payload = [fact_view(f) for f in session_facts]
         working_live = [
             w for w in mem.working_mem.values()
-            if w.user_id == canonical and w.session_id == session_id and w.is_live()
+            if w.user_id == user and w.session_id == session_id and w.is_live()
         ]
         return {
             "ok": True,
@@ -1013,7 +1008,6 @@ class MemoryService:
         才调用 `session_report()`。
         """
         mem = self.get(user)
-        canonical = mem.resolver.resolve(user)
         sessions: dict[str, dict] = {}
 
         def ensure(sid: str) -> dict:
@@ -1036,7 +1030,7 @@ class MemoryService:
 
         episode_ids_by_session: dict[str, set[str]] = {}
         for ep in mem.episodes_doc.values():
-            if ep.user_id != canonical:
+            if ep.user_id != user:
                 continue
             row = ensure(ep.session_id)
             row["episodes"] += 1
@@ -1057,12 +1051,12 @@ class MemoryService:
             episode_ids_by_session.setdefault(ep.session_id, set()).add(ep.id)
 
         for w in mem.working_mem.values():
-            if w.user_id == canonical and w.is_live():
+            if w.user_id == user and w.is_live():
                 ensure(w.session_id)["working_live"] += 1
 
         if episode_ids_by_session:
             for f in _all_facts(mem):
-                if f.user_id != canonical:
+                if f.user_id != user:
                     continue
                 provenance = set(f.provenance)
                 if not provenance:
@@ -1241,7 +1235,7 @@ class MemoryService:
             },
         }
 
-    def _embedder_blindness(self, mem: Memory, canonical: str) -> Optional[dict]:
+    def _embedder_blindness(self, mem: Memory, user: str) -> Optional[dict]:
         """当配置的 embedder 无法对命名空间内的内容排序时，给出一条存储级发现。
 
         在 owner 的真实存储上实测：HashingEmbedder 对每对中文查询/fact 都打 0.000 分，
@@ -1282,8 +1276,8 @@ class MemoryService:
             return (rankable + dark) > 0 and dark / (rankable + dark) >= 0.5
 
         facts = [f for f in _all_facts(mem)
-                 if mem.resolver.resolve(f.user_id) == canonical and f.is_live()]
-        episodes = sorted((ep for ep in mem.episodes_doc.values() if ep.user_id == canonical),
+                 if f.user_id == user and f.is_live()]
+        episodes = sorted((ep for ep in mem.episodes_doc.values() if ep.user_id == user),
                           key=lambda ep: ep.ingested_at, reverse=True)[:2000]
         facts_blind = sum(1 for f in facts if blind(f.text or ""))
         episodes_blind = sum(1 for ep in episodes if blind(ep.content or ""))
@@ -1341,11 +1335,9 @@ class MemoryService:
         from .consolidate.structured import _BASIC
 
         mem = self.get(user)
-        # 两侧都要 resolve：已关联 handle 的 owner，其 fact 可能带着任一写法的标记；
-        # clear_slot() 作用的正是这个集合——两者对"谁拥有这条 fact"绝不能有分歧。
-        canonical = mem.resolver.resolve(user)
+        # 与 clear_slot() 精确匹配同一 user_id，审计计数与实际删除集合必须一致。
         facts = [f for f in _all_facts(mem)
-                 if mem.resolver.resolve(f.user_id) == canonical and f.is_live()]
+                 if f.user_id == user and f.is_live()]
         graph = mem.graph_data(user, include_sensitive=True)
         referenced = {e["source"] for e in graph.get("edges", [])} | {e["target"] for e in graph.get("edges", [])}
 
@@ -1399,7 +1391,7 @@ class MemoryService:
         # 存储级，而非单条：当 embedder 无法对语料排序时，任何单条发现都不得要领——
         # owner 问的是"为什么 recall 总是返回同样四条 fact"，答案是 embedder 本身，
         # 只报告一次并附上迁移命令。
-        row = self._embedder_blindness(mem, canonical)
+        row = self._embedder_blindness(mem, user)
         if row:
             findings.append(row)
 

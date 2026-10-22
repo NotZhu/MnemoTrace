@@ -117,7 +117,7 @@ def test_evidence_budgeting_keeps_exact_raw_detail_under_tight_budget():
             subject="Apollo",
             predicate="launch_code",
             object="A17",
-            user_id=mem.resolver.resolve("u1"),
+            user_id="u1",
             valid_at=BASE,
             provenance=[ep.id],
         )
@@ -396,7 +396,7 @@ def test_lean_context_auto_adds_procedural_memory_block():
         subject="PAT",
         predicate="procedure",
         object="open security settings and update CI secrets",
-        user_id=mem.resolver.resolve("u1"),
+        user_id="u1",
         valid_at=BASE,
         provenance=[ep.id],
     )
@@ -799,7 +799,7 @@ def test_lean_context_adds_provenance_raw_evidence_for_retrieved_fact():
         subject="Apollo",
         predicate="launch_code",
         object="A17",
-        user_id=mem.resolver.resolve("u1"),
+        user_id="u1",
         valid_at=BASE,
         provenance=[ep.id],
     )
@@ -835,7 +835,7 @@ def test_provenance_evidence_can_be_disabled_for_ablation():
         subject="Apollo",
         predicate="launch_code",
         object="A17",
-        user_id=mem.resolver.resolve("u1"),
+        user_id="u1",
         valid_at=BASE,
         provenance=[ep.id],
     )
@@ -869,7 +869,7 @@ def test_provenance_raw_evidence_dedups_full_detail_chunk():
         subject="Apollo",
         predicate="launch_code",
         object="A17",
-        user_id=mem.resolver.resolve("u1"),
+        user_id="u1",
         valid_at=BASE,
         provenance=[ep.id],
     )
@@ -918,7 +918,7 @@ def test_provenance_source_episode_is_promoted_into_detail_chunks():
             subject="Apollo",
             predicate="launch_code",
             object="A17",
-            user_id=mem.resolver.resolve("u1"),
+            user_id="u1",
             valid_at=BASE,
             provenance=[source.id],
         )
@@ -1005,7 +1005,7 @@ def test_provenance_raw_evidence_is_hidden_in_redacted_context():
         subject="Apollo",
         predicate="launch_code",
         object="A17",
-        user_id=mem.resolver.resolve("u1"),
+        user_id="u1",
         valid_at=BASE,
         provenance=[ep.id],
         sensitive=True,
@@ -1040,7 +1040,7 @@ def test_context_for_adds_provenance_raw_evidence_for_fact_sources():
         subject="Apollo",
         predicate="launch_code",
         object="A17",
-        user_id=mem.resolver.resolve("u1"),
+        user_id="u1",
         valid_at=BASE,
         provenance=[ep.id],
     )
@@ -1170,7 +1170,7 @@ def test_graph_scores_expand_beyond_one_hop_for_bridge_facts():
 
     scores, qids = mem.retriever._graph_scores(
         "Tell me about Wei",
-        mem.resolver.resolve("u1"),
+        "u1",
         [direct, bridge, second_hop],
         None,
     )
@@ -1189,13 +1189,13 @@ def test_graph_scores_respect_as_of_during_expansion():
 
     before, _ = mem.retriever._graph_scores(
         "Tell me about Wei",
-        mem.resolver.resolve("u1"),
+        "u1",
         live,
         BASE + 0.5 * DAY,
     )
     after, _ = mem.retriever._graph_scores(
         "Tell me about Wei",
-        mem.resolver.resolve("u1"),
+        "u1",
         live,
         BASE + 2 * DAY,
     )
@@ -1214,12 +1214,12 @@ def test_graph_proximity_can_be_disabled_for_ablation():
 
     scores, qids = mem.retriever._graph_scores(
         "Tell me about Wei",
-        mem.resolver.resolve("u1"),
+        "u1",
         [direct, bridge, second_hop],
         None,
     )
-    related = mem._graph_related_facts("Tell me about Wei", mem.resolver.resolve("u1"), None)
-    paths = mem._graph_paths_block("Tell me about Wei", mem.resolver.resolve("u1"), None)
+    related = mem._graph_related_facts("Tell me about Wei", "u1", None)
+    paths = mem._graph_paths_block("Tell me about Wei", "u1", None)
 
     assert qids, "entity anchoring still works; only proximity evidence is ablated"
     assert all(score == 0.0 for score in scores.values())
@@ -1235,11 +1235,11 @@ def test_graph_relation_awareness_prioritizes_query_relevant_edges():
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     distractor = mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY)
     target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY)
-    live = [f for f in mem.fact_store.values() if f.user_id == mem.resolver.resolve("u1")]
+    live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
 
     scores, _ = mem.retriever._graph_scores(
         "Where is Wei's colleague's company based?",
-        mem.resolver.resolve("u1"),
+        "u1",
         live,
         None,
     )
@@ -1255,11 +1255,11 @@ def test_graph_relation_awareness_can_be_disabled_for_ablation():
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     distractor = mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY)
     target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY)
-    live = [f for f in mem.fact_store.values() if f.user_id == mem.resolver.resolve("u1")]
+    live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
 
     scores, _ = mem.retriever._graph_scores(
         "Where is Wei's colleague's company based?",
-        mem.resolver.resolve("u1"),
+        "u1",
         live,
         None,
     )
@@ -1282,19 +1282,19 @@ def test_graph_path_reinforcement_boosts_multi_path_targets():
         return mem, target, distractor
 
     enabled_mem, enabled_target, enabled_distractor = build_mem(True)
-    enabled_live = [f for f in enabled_mem.fact_store.values() if f.user_id == enabled_mem.resolver.resolve("u1")]
+    enabled_live = [f for f in enabled_mem.fact_store.values() if f.user_id == "u1"]
     enabled_scores, _ = enabled_mem.retriever._graph_scores(
         "Where is Wei's project based?",
-        enabled_mem.resolver.resolve("u1"),
+        "u1",
         enabled_live,
         None,
     )
 
     disabled_mem, disabled_target, disabled_distractor = build_mem(False)
-    disabled_live = [f for f in disabled_mem.fact_store.values() if f.user_id == disabled_mem.resolver.resolve("u1")]
+    disabled_live = [f for f in disabled_mem.fact_store.values() if f.user_id == "u1"]
     disabled_scores, _ = disabled_mem.retriever._graph_scores(
         "Where is Wei's project based?",
-        disabled_mem.resolver.resolve("u1"),
+        "u1",
         disabled_live,
         None,
     )
@@ -1307,11 +1307,11 @@ def test_graph_self_anchor_retrieves_first_person_graph_paths():
     mem = Memory()
     mem.add_fact("u1", "works_on", "Atlas", user_id="u1", valid_at=BASE)
     target = mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY)
-    live = [f for f in mem.fact_store.values() if f.user_id == mem.resolver.resolve("u1")]
+    live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
 
     scores, qids = mem.retriever._graph_scores(
         "Where is my project based?",
-        mem.resolver.resolve("u1"),
+        "u1",
         live,
         None,
     )
@@ -1328,11 +1328,11 @@ def test_graph_self_anchor_can_be_disabled_for_ablation():
     mem = Memory(config=Config(graph_self_anchor=False))
     mem.add_fact("u1", "works_on", "Atlas", user_id="u1", valid_at=BASE)
     target = mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY)
-    live = [f for f in mem.fact_store.values() if f.user_id == mem.resolver.resolve("u1")]
+    live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
 
     scores, qids = mem.retriever._graph_scores(
         "Where is my project based?",
-        mem.resolver.resolve("u1"),
+        "u1",
         live,
         None,
     )
@@ -1346,11 +1346,11 @@ def test_graph_self_anchor_can_be_disabled_for_ablation():
 def test_graph_entity_alias_anchor_matches_unique_short_name():
     mem = Memory()
     target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
-    live = [f for f in mem.fact_store.values() if f.user_id == mem.resolver.resolve("u1")]
+    live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
 
     scores, qids = mem.retriever._graph_scores(
         "Where is Moonshot based?",
-        mem.resolver.resolve("u1"),
+        "u1",
         live,
         None,
     )
@@ -1366,11 +1366,11 @@ def test_graph_entity_alias_anchor_can_be_disabled_for_ablation():
 
     mem = Memory(config=Config(graph_entity_alias_anchor=False))
     target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
-    live = [f for f in mem.fact_store.values() if f.user_id == mem.resolver.resolve("u1")]
+    live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
 
     scores, qids = mem.retriever._graph_scores(
         "Where is Moonshot based?",
-        mem.resolver.resolve("u1"),
+        "u1",
         live,
         None,
     )
@@ -1385,11 +1385,11 @@ def test_graph_entity_alias_anchor_requires_unique_token():
     mem = Memory()
     first = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
     second = mem.add_fact("Moonshot Labs", "based_in", "Shanghai", user_id="u1", valid_at=BASE + DAY)
-    live = [f for f in mem.fact_store.values() if f.user_id == mem.resolver.resolve("u1")]
+    live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
 
     scores, qids = mem.retriever._graph_scores(
         "Where is Moonshot based?",
-        mem.resolver.resolve("u1"),
+        "u1",
         live,
         None,
     )
@@ -1408,7 +1408,7 @@ def test_graph_negative_constraints_filter_excluded_location_paths():
 
     query = "Where is Wei's project not in Lisbon based?"
     res = mem.search(query, user_id="u1")
-    related = mem._graph_related_facts(query, mem.resolver.resolve("u1"), None)
+    related = mem._graph_related_facts(query, "u1", None)
     ctx = mem.context_for(query, user_id="u1", k_chunks=0, graph=True)
 
     assert "reykjavik" in res.answer().lower()
@@ -1578,7 +1578,7 @@ def test_heat_tiered_eviction_pages_cold_preserves_durable():
     from mnemotrace.types import Fact
 
     mem = Memory()
-    u = mem.resolver.resolve("u1")
+    u = "u1"
     for i in range(5):  # 偶发 fact，显著度递增
         f = Fact(subject="u1", predicate="parked_at", object=f"lot{i}", user_id=u,
                  salience=float(i), last_access=BASE + i)
@@ -1692,7 +1692,7 @@ def test_graph_related_facts_include_cold_tier_facts():
     assert mem.evict_cold(max_hot=1) == 1
     assert mem.cold_store.get(cold.id) is not None
 
-    related = mem._graph_related_facts("project", mem.resolver.resolve("u1"), None)
+    related = mem._graph_related_facts("project", "u1", None)
     assert "cold graph evidence" in {f.object for f in related}
 
 
@@ -1702,7 +1702,7 @@ def test_graph_related_facts_expand_beyond_one_hop():
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
 
-    related = mem._graph_related_facts("Tell me about Wei", mem.resolver.resolve("u1"), None)
+    related = mem._graph_related_facts("Tell me about Wei", "u1", None)
 
     assert target.id in {f.id for f in related}
 
@@ -1713,8 +1713,8 @@ def test_graph_related_facts_respect_as_of_during_expansion():
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
 
-    before = mem._graph_related_facts("Tell me about Wei", mem.resolver.resolve("u1"), BASE + 0.5 * DAY)
-    after = mem._graph_related_facts("Tell me about Wei", mem.resolver.resolve("u1"), BASE + 2 * DAY)
+    before = mem._graph_related_facts("Tell me about Wei", "u1", BASE + 0.5 * DAY)
+    after = mem._graph_related_facts("Tell me about Wei", "u1", BASE + 2 * DAY)
 
     assert target.id not in {f.id for f in before}
     assert target.id in {f.id for f in after}
@@ -1740,7 +1740,7 @@ def test_graph_paths_include_cold_tier_facts():
     hot.salience = 1.0
     assert mem.evict_cold(max_hot=1) == 1
 
-    block = mem._graph_paths_block("project", mem.resolver.resolve("u1"), None)
+    block = mem._graph_paths_block("project", "u1", None)
     assert "cold path evidence" in block
 
 
@@ -1750,7 +1750,7 @@ def test_graph_paths_fallback_expands_beyond_one_hop():
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
 
-    block = mem._graph_paths_block("Tell me about Wei", mem.resolver.resolve("u1"), None)
+    block = mem._graph_paths_block("Tell me about Wei", "u1", None)
 
     assert "Wei --colleague--> Lin" in block
     assert "Lin --works_at--> Moonshot AI" in block
@@ -1763,8 +1763,8 @@ def test_graph_paths_fallback_respects_as_of_during_expansion():
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
 
-    before = mem._graph_paths_block("Tell me about Wei", mem.resolver.resolve("u1"), BASE + 0.5 * DAY)
-    after = mem._graph_paths_block("Tell me about Wei", mem.resolver.resolve("u1"), BASE + 2 * DAY)
+    before = mem._graph_paths_block("Tell me about Wei", "u1", BASE + 0.5 * DAY)
+    after = mem._graph_paths_block("Tell me about Wei", "u1", BASE + 2 * DAY)
 
     assert "Moonshot AI --based_in--> Beijing" not in before
     assert "Moonshot AI --based_in--> Beijing" in after
@@ -1783,7 +1783,7 @@ def test_pending_conflict_and_resolution_include_cold_tier_facts():
     new.salience = 1.0
     assert mem.evict_cold(max_hot=1) == 1
     assert mem.cold_store.get(old.id) is not None
-    cf = Conflict(older=old.id, newer=new.id, user_id=mem.resolver.resolve("u1"), text_older=old.text, text_newer=new.text)
+    cf = Conflict(older=old.id, newer=new.id, user_id="u1", text_older=old.text, text_newer=new.text)
     mem.conflicts[cf.id] = cf
 
     assert mem.pending_conflicts("u1") == [cf]
@@ -1838,7 +1838,7 @@ def test_resolve_conflict_writes_back_to_copying_vector_store():
     mem.cold_store = CopyingVectorStore()
     mem._rewire()
 
-    cf = Conflict(older=older.id, newer=newer.id, user_id=mem.resolver.resolve("u1"))
+    cf = Conflict(older=older.id, newer=newer.id, user_id="u1")
     mem.conflicts[cf.id] = cf
 
     assert mem.resolve_conflict(cf.id, keep="newer") is True
@@ -1892,7 +1892,7 @@ def test_procedural_memory_surfaces_instructions():
     from mnemotrace.types import Fact
 
     mem = Memory()
-    u = mem.resolver.resolve("u1")
+    u = "u1"
     mem.fact_store.upsert("f1", [0.0], Fact(subject="u1", predicate="wants_reminder",
                                             object="water the plants", user_id=u))
     mem.fact_store.upsert("f2", [0.0], Fact(subject="u1", predicate="works_at", object="Tencent", user_id=u))
@@ -2000,10 +2000,10 @@ def test_reflector_propagates_supersession_into_summaries():
     ep = mem.add("I do yoga twice a week.", user_id="u1", session_id="s1", event_time=BASE)
     # 一条旧 fact（来源于 ep），随后被新 fact 取代
     old = Fact(subject="u1", predicate="yoga_frequency", object="twice a week",
-               user_id=mem.resolver.resolve("u1"), valid_at=BASE, provenance=[ep.id],
+               user_id="u1", valid_at=BASE, provenance=[ep.id],
                invalid_at=BASE + 5 * DAY, expired_at=BASE + 5 * DAY)
     new = Fact(subject="u1", predicate="yoga_frequency", object="three times a week",
-               user_id=mem.resolver.resolve("u1"), valid_at=BASE + 5 * DAY, supersedes=old.id)
+               user_id="u1", valid_at=BASE + 5 * DAY, supersedes=old.id)
     mem.fact_store.upsert(old.id, [0.0], old)
     mem.fact_store.upsert(new.id, [0.0], new)
     mem.summarize_episodes([ep])  # 冻结 "twice a week" 的摘要
@@ -2019,10 +2019,10 @@ def test_reflector_uses_cold_tier_superseded_facts():
     mem = Memory()
     ep = mem.add("I do yoga twice a week.", user_id="u1", session_id="s1", event_time=BASE)
     old = Fact(subject="u1", predicate="yoga_frequency", object="twice a week",
-               user_id=mem.resolver.resolve("u1"), valid_at=BASE, provenance=[ep.id],
+               user_id="u1", valid_at=BASE, provenance=[ep.id],
                invalid_at=BASE + 5 * DAY, expired_at=BASE + 5 * DAY, salience=0.0)
     new = Fact(subject="u1", predicate="yoga_frequency", object="three times a week",
-               user_id=mem.resolver.resolve("u1"), valid_at=BASE + 5 * DAY, supersedes=old.id,
+               user_id="u1", valid_at=BASE + 5 * DAY, supersedes=old.id,
                salience=1.0)
     mem.fact_store.upsert(old.id, [0.0], old)
     mem.fact_store.upsert(new.id, [0.0], new)

@@ -55,8 +55,7 @@ class Fact:
     # 这是用户侧记忆编辑可信的基础。
     source: str = "extracted"
     # 分类（feature ⑤）：粗粒度的领域/类别标签和敏感标记（PII/健康/财务等）。
-    # 用简单默认值使其成为类属性——旧 pickle 的 fact（没有这些字段）会读到默认值，
-    # 保持快照向后兼容。敏感 fact 可在共享/导出场景中脱敏。
+    # 默认值供离线构造与写入后的分类使用；敏感 fact 可在共享/导出场景中脱敏。
     category: str = ""
     sensitive: bool = False
 

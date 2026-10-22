@@ -28,7 +28,7 @@
 - `tenant_id`: 原始租户身份。
 - `directory_name`: 安全可读前缀 + 摘要。
 - `absolute_path`: 数据根目录下的绝对路径。
-- `format`: 运行时使用 `jsonl-v1`；可信旧 `pickle` 仅作为显式迁移源。
+- `format`: 运行时使用 `jsonl-v1`；旧 `pickle` 转换已退役，不作为加载或迁移源。
 
 **Validation**:
 

@@ -95,7 +95,7 @@ def _procedural_memory_context(enabled: bool) -> str:
         subject="PAT",
         predicate="procedure",
         object="open security settings, regenerate the token, then update CI secrets",
-        user_id=mem.resolver.resolve("u1"),
+        user_id="u1",
         valid_at=BASE,
         provenance=[ep.id],
     )
@@ -314,7 +314,7 @@ def _raw_context(enabled: bool) -> str:
         subject="Apollo",
         predicate="launch_code",
         object="A17",
-        user_id=mem.resolver.resolve("u1"),
+        user_id="u1",
         valid_at=BASE,
         provenance=[ep.id],
     )
@@ -354,7 +354,7 @@ def _provenance_chunk_context(enabled: bool) -> str:
         subject="Apollo",
         predicate="launch_code",
         object="A17",
-        user_id=mem.resolver.resolve("u1"),
+        user_id="u1",
         valid_at=BASE,
         provenance=[source.id],
     )
@@ -413,7 +413,7 @@ def _evidence_budget_context(enabled: bool) -> str:
         subject="Apollo",
         predicate="launch_code",
         object="A17",
-        user_id=mem.resolver.resolve("u1"),
+        user_id="u1",
         valid_at=BASE,
         provenance=[ep.id],
     )

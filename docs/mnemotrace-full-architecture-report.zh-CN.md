@@ -68,7 +68,7 @@ flowchart TD
     end
 
     subgraph WPATH["写入与整理链路"]
-        ING["System-1 Ingestor\nfast append Episode"]
+        ING["System-1 Ingestor\nappend Episode + exact user_id"]
         EP["Episode\nraw lossless event"]
         CONS["System-2 ConsolidationEngine\nextract facts + reconcile + graph"]
         EXT["RuleExtractor / LLMExtractor"]
@@ -280,6 +280,10 @@ sequenceDiagram
 | event/transaction 分离 | `event_time` 与 `ingested_at` 同时保存            | 支持真实历史时间和系统学习时间   |
 | 可选立即整理           | `add(..., consolidate=True)`                        | 小 demo 可同步完成，大规模可异步 |
 
+归属由调用方传入的原始 `user_id` 标记，默认 `default`。Memory 不再关联不同编号，
+Ingestor、事实读取、审计与删除均精确匹配该字符串。服务按授权空间选择 Memory，再传入空间标识；
+API key、空间 ACL 和目录隔离不因底层接口退役而改变。姓名/昵称共指在 System-2 的同用户范围内保留。
+
 ### 4.3 `remember` 的长期/短期分流
 
 `Memory.remember` 总是保存 Episode，但会根据 scope 和文本判断是否写入 WorkingMemory：
@@ -455,6 +459,12 @@ conflicts.jsonl
 5. manifest 的可选 `snapshot_id` 标识一次提交。加载器和保存函数将实际读取/提交的令牌绑定至 Memory；旧格式按 manifest 原文 SHA-256 识别，无需预迁移，下一次正常保存写入新标识。`schema_version` 保持 1。
 6. Windows 的 manifest 读取使用允许共享删除的句柄，已有 manifest 通过 ReplaceFileW 原子替换；首次创建及 POSIX 路径仍使用 os.replace。已有读者可继续读取旧 manifest，新读者看到新提交。
 
+新 manifest 不写入 `resolver_parent`，集合格式和 schema_version=1 保持不变。
+加载时只接受缺失、空或字符串到自身的旧映射，真实关联或非法映射在修改任何 store 前抛出
+StoreFormatError；不自动迁移、不根据映射重写 user_id。`identity`/`aliases` 是姓名与昵称共指状态，
+继续持久化，与已退役的用户编号关联不同。验证与限制见
+[归属与退役验收](../results/user_scope_retirement_validation.md)。
+
 ### 6.1 嵌入模型身份与维度
 
 `LiteLLMEmbedder` 是远端 embedding API 的适配层。默认模型为 `openai/BAAI/bge-m3`，
@@ -523,16 +533,15 @@ Windows 大小写/尾点别名。`_path` 始终返回自身摘要目录，读取
 所有旧目录都不会被服务自动认领、读写、迁移、合并或擦除。管理员须停止共享目录的全部进程并备份，
 结合历史配置和来源确认实际 namespace，再显式复制到其尚不存在的摘要目录；验证后再处置旧来源。
 普通 JSONL 目录可通过 Memory.open(source).save(destination) 显式复制，并使用与原库一致的
-embedder/config；真正的 pickle 文件仍只能走下面的可信旧快照迁移入口。既有摘要映射与存储格式不变。
+embedder/config；pickle 转换工具已退役，旧文件不参与加载或转换。既有摘要映射与存储格式不变。
 
 `forget()` 在两层服务写锁内清除热缓存、校验唯一的摘要路径并删除该目录，完成后才释放锁。
 `shutil.rmtree` 不遍历子目录符号链接或 Windows junction 的目标；扫描失败向上传播。
 等待中的写入取得锁后重新读取路径，按需建立新存储。验证见
 [擦除与目录边界](../results/maintenance_cleanup_validation.md)。
 
-旧产品默认目录和 Compose 卷不会自动扫描、合并或搬运。普通 Memory.open 不读取 pickle；
-可信旧快照只能通过显式迁移命令处理，历史类型路径的适配缺口见
-[ISSUE-015](known-issues.zh-CN.md#issue-015)。命名与运行入口边界见
+旧产品默认目录和 Compose 卷不会自动扫描、合并或搬运。Memory.open 仅加载 JSONL，
+pickle 转换模块与发行命令已退役；旧文件保持原样，不提供自动或显式转换入口。命名与运行入口边界见
 [入口验收](../results/mnemotrace_rename_validation.md)，不构成旧数据已迁移的保证。
 
 ## 7. 读取链路总览
@@ -963,7 +972,7 @@ Profile 的 EvidenceChip 只将 source_count 显示为来源数，访问强化�
 描述全部发现。界面复用同一处理优先级。embedder_blind 根据 live 事实与最近原文中的字符分布判断
 hashing 或英文嵌入模型对当前语料的限制，并提供显式重嵌入建议；这不是完整的语义或隐私审计。
 `clear_slot` 仅删除当前用户、指定槽位中的 live 非手写事实，expect_count 防止确认后集合数量变化，
-与 audit 分组使用相同身份解析。单条 delete_fact 是显式擦除，能够删除指定的当前或历史事实。
+与 audit 分组精确匹配相同的原始 user_id。单条 delete_fact 是显式擦除，能够删除指定的当前或历史事实。
 属性修正使用 subject/predicate/object 表单；statement 语义见第 3.3 节。audit 跳过所有 outcome，
 因此 Health 中 outcome 编辑分支当前不可达，见[清理建议](known-issues.zh-CN.md#cleanup)。
 验证见[体检编辑](../results/health_edit_validation.md)与[排序](../results/health_audit_order_pytest.txt)。
@@ -1155,7 +1164,7 @@ python eval/validate_results.py
 | HTTP/租户存储 | 静态文件越界与旧目录所有权冲突已完成本地修复；线上升级未核验，运行时只使用摘要目录，旧库需显式确认归属与迁移，见第 6.3、10.7 节                    |
 | 提取与证据    | [场景决定进入偏好](known-issues.zh-CN.md#issue-003)、[上下文范围与重复](known-issues.zh-CN.md#issue-004)、[结论重复](known-issues.zh-CN.md#issue-005) |
 | 控制台        | [CSP/历史凭据](known-issues.zh-CN.md#issue-013)、[图谱截断](known-issues.zh-CN.md#issue-014)、[辅助查询卸载草稿](known-issues.zh-CN.md#issue-016)     |
-| 迁移与验证    | [旧 pickle 类型解析](known-issues.zh-CN.md#issue-015)、[提示词完整质量评测](known-issues.zh-CN.md#issue-012)                                         |
+| 迁移与验证    | [提示词完整质量评测](known-issues.zh-CN.md#issue-012)                                         |
 
 以下为算法候选方向，不表示已实现或已取得对应效果：
 

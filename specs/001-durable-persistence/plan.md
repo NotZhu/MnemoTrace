@@ -1,5 +1,7 @@
 # 实施计划：持久化存储后端
 
+> 原规格中的用户编号关联状态与旧 pickle 转换支持，已由[接口退役规格](../006-retire-identity-linking/spec.md)替代；其余历史设计保留。
+
 **Branch**: `001-durable-persistence` | **Date**: 2026-06-25 | **Spec**: [spec.md](./spec.md)
 
 **Input**: 功能规格 `specs/001-durable-persistence/spec.md`

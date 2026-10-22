@@ -159,7 +159,7 @@ def test_search_prefers_source_backed_procedural_memory_for_runbook_queries():
         subject="PAT",
         predicate="procedure",
         object="open security settings and update CI secrets",
-        user_id=mem.resolver.resolve("u1"),
+        user_id="u1",
         provenance=[ep.id],
     )
     fact.embedding = mem.embedder.embed(fact.text)
@@ -186,7 +186,7 @@ def test_procedural_memory_can_be_disabled_for_ablation():
         subject="PAT",
         predicate="procedure",
         object="open security settings and update CI secrets",
-        user_id=mem.resolver.resolve("u1"),
+        user_id="u1",
         provenance=[ep.id],
     )
     fact.embedding = mem.embedder.embed(fact.text)

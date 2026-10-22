@@ -1,6 +1,6 @@
 """M0 的保证，以测试的形式固化下来。这些行为让 忆痕 成为一个*记忆*系统而不只是 RAG：
 通过非破坏性取代（supersession）实现知识更新、双时间轴 as-of 查询、multi-hop 图推理、拒答、
-身份解析——全部在零依赖的离线环境运行。"""
+用户归属隔离——全部在零依赖的离线环境运行。"""
 from __future__ import annotations
 
 from mnemotrace.config import Config
@@ -124,7 +124,7 @@ def test_duplicate_live_slot_for_non_identity_single_valued_predicate_reads_curr
     mem.fact_store.upsert(new.id, new.embedding or [], new)
 
     ranked, _ = mem.retriever.retrieve(
-        "What is Wei's major?", mem.resolver.resolve("u1"), top_k=5
+        "What is Wei's major?", "u1", top_k=5
     )
     objs = {f.object for f, _ in ranked}
     assert "computer science" in objs
@@ -136,7 +136,7 @@ def test_multi_valued_identity_facts_are_not_slot_deduped():
     mem.add_fact("Wei", "owns", "a bike", user_id="u1")
     mem.add_fact("Wei", "owns", "a camera", user_id="u1")
 
-    ranked, _ = mem.retriever.retrieve("What does Wei own?", mem.resolver.resolve("u1"), top_k=5)
+    ranked, _ = mem.retriever.retrieve("What does Wei own?", "u1", top_k=5)
     assert {f.object for f, _ in ranked} >= {"a bike", "a camera"}
 
 
@@ -167,7 +167,7 @@ def test_zero_score_evidence_signals_do_not_boost_irrelevant_salient_facts():
     mem.fact_store.upsert(target.id, target.embedding or [], target)
     mem.fact_store.upsert(distractor.id, distractor.embedding or [], distractor)
 
-    ranked, diag = mem.retriever.retrieve("ticket code alpha", mem.resolver.resolve("u1"), top_k=2)
+    ranked, diag = mem.retriever.retrieve("ticket code alpha", "u1", top_k=2)
 
     assert ranked[0][0] is target
     assert diag["lex"][target.id] > 0
@@ -334,13 +334,6 @@ def test_abstention_unknown_attribute():
     assert r.abstained
     # 完全无关的查询
     assert mem.search("What is the capital of France?", user_id="u1").abstained
-
-
-def test_identity_resolution_merges_handles():
-    mem = build()
-    mem.link_identity("u1", "wei@moonshot.ai")
-    r = mem.search("Where does Wei work?", user_id="wei@moonshot.ai")
-    assert "moonshot" in r.answer().lower()
 
 
 def test_profile_reflects_current_state():

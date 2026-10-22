@@ -53,7 +53,7 @@ def mean_recall_at_k(dev, weights: dict, k: int) -> float:
     for mem, qid, query, relevant in dev:
         for name, val in weights.items():
             setattr(mem.config, name, val)
-        ranked, _ = mem.retriever.retrieve(query, mem.resolver.resolve(qid), None, k)
+        ranked, _ = mem.retriever.retrieve(query, qid, None, k)
         got = {f.id for f, _ in ranked} & relevant
         total += len(got) / len(relevant)
     return total / len(dev) if dev else 0.0

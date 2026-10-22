@@ -39,3 +39,9 @@
 - **不静默丢失**：manifest 已提交前缀内出现损坏时明确失败，不加载部分记忆冒充完整结果。
 - **版本化**：不兼容存储明确失败，绝不静默处理（FR-004）。
 - **无损**：所有 dataclass 字段往返保留（宪章 IV；data-model.md 中的 INV-1..4）。
+
+## 用户归属状态
+
+新快照不保存用户编号别名映射。若旧 state 含 resolver_parent，仅缺失、空字典或字符串到自身的映射
+可加载；真实关联和非法字段在修改任何 store 前抛出 StoreFormatError。姓名/昵称共指状态继续保留。
+集合格式和 schema_version=1 不变，不自动重写记录归属；详情见[退役规格](../../006-retire-identity-linking/spec.md)。

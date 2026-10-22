@@ -99,12 +99,10 @@ cfg = Config(storage="lancedb", data_path="./mnemotrace-vectors")
 mem = Memory.open("./mnemotrace-store", config=cfg)
 ```
 
-Existing trusted legacy pickle snapshots can be migrated explicitly:
-
-```bash
-mnemotrace-migrate-pickle --from old-memory.pkl --to ./mnemotrace-store --dry-run
-mnemotrace-migrate-pickle --from old-memory.pkl --to ./mnemotrace-store
-```
+Memory records use the exact `user_id` supplied by the caller (`default` when omitted).
+Different IDs remain separate; identity linking and legacy pickle conversion are not supported.
+Name and nickname recognition within one user scope remains available.
+JSONL snapshots with previously linked user IDs are rejected explicitly rather than silently reinterpreted.
 
 ```python
 from mnemotrace import Memory
@@ -298,7 +296,7 @@ flowchart TB
     W --> TM
     subgraph S1 [SYSTEM-1 · hot write path · no LLM on critical path]
         direction LR
-        S1a[append lossless Episode] --> S1b[identity resolution<br/>across sessions/devices] --> S1c[light embed + enqueue]
+        S1a[append lossless Episode] --> S1b[user_id ownership<br/>preserved across sessions] --> S1c[light embed + enqueue]
     end
     S1 -. async queue .-> S2
     subgraph S2 [SYSTEM-2 · async consolidation · seconds]
@@ -324,8 +322,8 @@ flowchart TB
     Rf --> OUT([answer-ready context])
 ```
 
-There are two ways in. **The write path (System-1)** appends a lossless episode, resolves identity across
-sessions/devices, embeds and enqueues — no LLM on the critical path. **The session path (`mnemotrace-watch`)**
+There are two ways in. **The write path (System-1)** appends a lossless episode, preserves its supplied
+user_id, embeds and enqueues — no LLM on the critical path. **The session path (`mnemotrace-watch`)**
 reads the agent transcripts already on your disk, stores them, and at session close distils what was
 *decided, found, learned, and left open* in one LLM call per session — the unit of memory for working
 sessions is the conclusion, not the biographical triple. **The consolidation path (System-2)**

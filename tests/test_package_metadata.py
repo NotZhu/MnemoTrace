@@ -39,7 +39,6 @@ def test_package_metadata_links_to_real_repository():
         "mnemotrace.agent_setup",
         "mnemotrace.connectors",
         "mnemotrace.mcp",
-        "mnemotrace.store.migrate",
     ):
         assert f'"{module}"' in zero_setup
     assert '"mnemotrace-agent-bootstrap"' in zero_setup

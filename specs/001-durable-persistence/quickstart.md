@@ -71,12 +71,7 @@ PY
 ```
 **预期：** 输出 `Moonshot AI`；JSONL manifest 对应可移植快照，LanceDB 将向量表保存在 `data_path` 下。
 
-## 场景 F — 迁出 pickle（US3 · FR-008）
-```bash
-python3 -m mnemotrace.store.migrate --from data/legacy/alice.pkl --to data/qs/alice --dry-run  # 报告数量，不写入
-python3 -m mnemotrace.store.migrate --from data/legacy/alice.pkl --to data/qs/alice            # 写入 JSONL
-# 安装包后的等价命令：
-#   mnemotrace-migrate-pickle --from data/legacy/alice.pkl --to data/qs/alice
-```
-**预期：** dry-run 报告各实体类型的数量且不写入；实际迁移后实体与 pickle 一致。
-仅对可信旧快照运行此命令；正常的 `Memory.open()` 不加载 pickle。
+## 旧快照支持边界
+
+pickle 转换器和发行命令已退役；保留旧文件，不执行加载或自动转换。
+当前行为见[接口退役规格](../006-retire-identity-linking/spec.md)。

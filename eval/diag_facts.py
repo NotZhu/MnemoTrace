@@ -47,7 +47,7 @@ def main():
         print(facts_block.strip()[:2500])
 
         # facts 是否让答案中的实体浮出水面？按主体列出 live 与失效化的 fact。
-        user = mem.resolver.resolve(qid)
+        user = qid
         live = [f for f in mem.fact_store.values() if f.user_id == user and f.is_live()]
         dead = [f for f in mem.fact_store.values() if f.user_id == user and not f.is_live()]
         print(f"\n  fact_store: {len(live)} live, {len(dead)} invalidated (supersede chain)")

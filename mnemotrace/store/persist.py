@@ -14,7 +14,6 @@ from dataclasses import fields
 from typing import Any, Iterable
 
 from .. import __version__, _flock
-from ..ingest import IdentityResolver
 from ..types import Conflict, Entity, Episode, Fact, Relation, WorkingMemory
 from ..util import now
 from .memory_store import InMemoryDocStore, InMemoryGraphStore
@@ -194,7 +193,6 @@ def _manifest_count(counts: dict[str, Any], name: str) -> int:
 
 def _memory_state(mem: Any) -> dict[str, Any]:
     return {
-        "resolver_parent": dict(getattr(mem.resolver, "_parent", {})),
         "persona_cache": dict(getattr(mem, "_persona_cache", {})),
         "focus": getattr(mem, "focus", {"track": [], "mute": []}),
         "policy": getattr(mem, "policy", {}),
@@ -285,7 +283,7 @@ def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
     """
     if os.path.exists(path) and not os.path.isdir(path):
         raise StoreFormatError(
-            f"{path} is not an MnemoTrace JSONL store directory; run the explicit pickle migration first"
+            f"{path} is not an MnemoTrace JSONL store directory"
         )
     loaded = _read_manifest(path)
     if loaded is None:
@@ -314,6 +312,19 @@ def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
             "re-attach the original embedder, or migrate with Memory.open(path, allow_mismatch=True, ...)"
             ".reembed() (service: MNEMOTRACE_REEMBED_ON_MISMATCH=1)"
         )
+
+    state = manifest.get("state") or {}
+    if "resolver_parent" in state:
+        mapping = state["resolver_parent"]
+        if not isinstance(mapping, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in mapping.items()
+        ):
+            raise StoreFormatError("snapshot contains malformed retired identity state")
+        # 旧的自身映射没有归属语义；真实关联不能静默丢弃，否则记忆的可见范围会变化。
+        # 必须在清空任何向量 store 之前拒绝，LanceDB 的修改会直接影响持久数据。
+        if any(key != value for key, value in mapping.items()):
+            raise StoreFormatError("snapshot contains retired identity links; automatic conversion is not supported")
 
     counts = manifest.get("counts") or {}
     expected_counts = {name: _manifest_count(counts, name) for name in COLLECTIONS}
@@ -372,9 +383,6 @@ def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
     for item in conflict_items:
         mem.conflicts[item.id] = item
 
-    state = manifest.get("state") or {}
-    mem.resolver = IdentityResolver()
-    mem.resolver._parent.update(state.get("resolver_parent") or {})
     mem._persona_cache = state.get("persona_cache") or {}
     mem.focus = state.get("focus") or {"track": [], "mute": []}
     mem.policy = state.get("policy") or {

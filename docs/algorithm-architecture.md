@@ -15,7 +15,7 @@ MnemoTrace 的算法赌注是架构性的，而非单一的检索器技巧。系
 
 1. 热摄入平面
    - 以事件时间与事务时间追加无损 episode。
-   - 尽早解析身份，使第一人称 fact 跨会话落到同一主体。
+   - 保留原始 user_id 归属；System-2 在该范围内识别自称与昵称，使第一人称 fact 跨会话落到同一主体，不关联不同用户编号。
    - 默认保持关键写路径确定性且无需 LLM。
    - 第二个入口 `mnemotrace/connectors/watch.py` 批量摄入磁盘上已有的 agent 转录（Claude Code、Codex）：解析、丢弃工具噪声、遮蔽密钥、以 episode 存储，然后关闭会话以便蒸馏。基于内容指纹幂等；可调度（`--install`）。
 

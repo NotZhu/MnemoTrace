@@ -54,11 +54,5 @@ def main() -> None:
     r = mem.as_of("Where does Wei work?", BASE + 10 * DAY, user_id="wei")
     print(f"   day 10 -> {r.answer()!r}   (today -> {mem.search('Where does Wei work?', user_id='wei').answer()!r})")
 
-    print("\n== Identity resolution: merge two handles into one person ==")
-    mem.link_identity("wei", "wei@moonshot.ai")
-    r = mem.search("Where does Wei work?", user_id="wei@moonshot.ai")
-    print(f"   query as 'wei@moonshot.ai' -> {r.answer()!r}  (same memories, resolved identity)")
-
-
 if __name__ == "__main__":
     main()

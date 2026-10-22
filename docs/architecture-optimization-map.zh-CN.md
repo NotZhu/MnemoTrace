@@ -69,7 +69,7 @@ benchmark 的配置和调用路径需要单独声明，不能用未经过 `close
 | P0 | Chain-aware retrieval | 已支持 previous-value 源会话提升；扩展到多段属性演化与 profile-level chain | 区分当前值和历史值的完整证据链 |
 | P1 | Graph proximity / multi-hop | 强化跨会话关联；先用真实错例验证轻量 n-hop 或 PPR-style expansion | 代理 recall 提升不能代替最终 QA 质量 |
 | P1 | Temporal interval reasoning | 补足 start/end pair、invalid_at span 与 duration/date arithmetic 证据 | 保留原文时间精度；按具体类别和 rig 比较 baseline |
-| P1 | 身份解析边界 | 读取、审计与删除必须看到相同的 canonical 用户集合 | 新增按用户读取功能时复用统一边界，避免各调用点手写比较 |
+| P1 | 用户归属一致性 | 读取、审计与删除精确匹配相同的原始 user_id；不合并编号 | 姓名共指与用户编号隔离分别验证，保护历史和其他用户数据 |
 | P2 | Runtime profiles | 将 embedder、extractor、语言和读取策略绑定为可测配置，使被测组合对应实际使用组合 | 每个 profile 用相同 harness 报 accuracy、tokens、p50/p95 latency |
 
 benchmark 路径优先推进原文融合、演化链和多跳；个人记忆路径重点是导入质量、来源与身份一致性。
@@ -114,6 +114,11 @@ agent_session 的抽取门、watch/hook 调度和 embedder 能力体检已有实
 
 hook 当前覆盖的事件源不能自动推广到所有 agent；Codex 侧事件能力与关闭覆盖率需按实际运行环境核验。
 watch 的 `seen` 可能包含放弃收尾的记录，不能把本地账本条目直接解释为服务端已闭合。
+
+归属接口已收束为原始 `user_id`：删除编号别名解析器和 link 接口，保留姓名/昵称共指及图谱别名。
+审计、删除与检索采用相同归属条件；持久化在修改 store 前拒绝真实历史关联，避免静默改变可见范围。
+这是接口退役与正确性简化，不是检索准确率优化。证据见
+[归属与退役验收](../results/user_scope_retirement_validation.md)。
 
 ### 4.2 System-2、Typed Memory 与事实编辑
 
@@ -248,6 +253,7 @@ python eval/facility.py --all --url http://127.0.0.1:8766 --key-file ~/.mnemotra
 
 | 方向 | 状态、取舍与验证边界 | 证据 |
 | --- | --- | --- |
+| 用户编号关联与旧 pickle 转换 | 已退役。控制台不使用同库编号合并，原关联实现可能使历史记忆不可达；不为当前私有开发阶段维护旧转换能力。保留 user_id 隔离、姓名共指和安全拒绝，不提供空间合并 | [退役验收](../results/user_scope_retirement_validation.md) |
 | `entity_normalization` 图谱守门 | 已回滚。按中文标定的长度、词数和标点阈值误伤英文实体，并因任一端不合格丢整条边，造成 graph proximity 丢失。小样本回滚对照支持撤销该实现，不构成通用归一化方案的最终结论 | commit 185e0ac，由 60682c5 回滚；[对照](../results/entity_normalization_regression_ab.md) |
 | `aggregation_pool_boost` 的收益归因 | 默认仍开启，但单项收益待复议；混合切片的改善未在纯 multi-session 切片复现，成本真实增加。合包结果不能证明该项独立有效，不能将其写作已回滚或确定增益 | commit 75406be；[纯 multi-session 对照](../results/run60_multisession_p0b_deepseekjudge.jsonl)、[合包探索](../results/run100_p1p0b_deepseekjudge.jsonl) |
 | 单靠更强 answerer 突破质量瓶颈 | 探索切片未支持稳定准确率收益且延迟上升。有限模型、样本与 rig 不能证明 benchmark 存在不可突破的天花板；后续须联合检查证据、配置和作答器 | 结论限于已有探索；完整复现日志不足时不作为公开主张 |

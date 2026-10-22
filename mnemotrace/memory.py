@@ -21,7 +21,7 @@ from .consolidate.summarizer import (
     SessionSummarizer,
 )
 from .embed import Embedder, HashingEmbedder
-from .ingest import IdentityResolver, Ingestor
+from .ingest import Ingestor
 from .llm import LLM
 from .localize import display_of
 from .retrieve import (
@@ -166,7 +166,6 @@ class Memory:
         self.cold_store = make_vector_store("cold_store")  # 冷层：被换出的旧 fact，保留（从不删除）
         self.summary_vec = make_vector_store("summary_vec")  # L2 session 摘要，可检索用于精简读取切片
         self.graph = graph_store_factory()
-        self.resolver = IdentityResolver()
 
         self.summarizer = SessionSummarizer(llm)
         self.profiles = ProfileBuilder()
@@ -224,7 +223,7 @@ class Memory:
     def _rewire(self) -> None:
         """把流水线组件（重新）绑定到当前 store。在初始化和加载快照后调用，这样持久化可以换入
         store 而不触碰 embedder/llm（它们不会被序列化）。"""
-        self.ingestor = Ingestor(self.episodes_doc, self.episodes_vec, self.embedder, self.resolver)
+        self.ingestor = Ingestor(self.episodes_doc, self.episodes_vec, self.embedder)
         self.engine = ConsolidationEngine(self.fact_store, self.graph, self.embedder, self.config, self.llm)
         self.retriever = HybridRetriever(self.fact_store, self.graph, self.embedder, self.config)
         self.cold_retriever = HybridRetriever(self.cold_store, self.graph, self.embedder, self.config)
@@ -570,7 +569,7 @@ class Memory:
         结果。在 `dedupe`（默认）下幂等。"""
         from .connectors.base import to_epoch
 
-        user = self.resolver.resolve(user_id)
+        user = user_id
 
         # --- episodes：恢复无损带日期日志（仅 include_sensitive 导出中存在） ---
         ep_seen = {(ep.session_id, ep.content) for ep in self.episodes_doc.values()
@@ -659,16 +658,13 @@ class Memory:
                 "episodes_restored": eps_restored, "episodes_skipped": eps_skipped,
                 "malformed": malformed}
 
-    def link_identity(self, a: str, b: str) -> str:
-        return self.resolver.link(a, b)
-
     # --- 用户手写的记忆管理（管理界面驱动的可编辑层） ---
     def add_fact(self, subject: str, predicate: str, object: str, user_id: str = "default",
                  valid_at: Optional[float] = None, sensitive: Optional[bool] = None,
                  category: Optional[str] = None) -> Fact:
         """手动断言一条 fact。它被标记为 source='user'（权威）：冲突解决允许它取代同一槽位上
         任何抽取出的值，并且此后受到保护，不会被未来的自动覆盖改写。"""
-        user = self.resolver.resolve(user_id)
+        user = user_id
         f = Fact(subject=subject, predicate=predicate, object=object, user_id=user, source="user",
                  valid_at=valid_at if valid_at is not None else now())
         f.embedding = self.embedder.embed(f.text)
@@ -841,7 +837,7 @@ class Memory:
 
         `include_sensitive=False` 返回仅由未标记敏感的 fact 派生的 share-safe 图。
         """
-        user = self.resolver.resolve(user_id)
+        user = user_id
         ents = {e.id: e for e in self.graph.entities.values() if e.user_id == user}
         relations = self.graph.relations()
         live_relation_fact_ids = {
@@ -952,7 +948,7 @@ class Memory:
                          event_time: Optional[float] = None) -> WorkingMemory:
         """把一条瞬态条目存入工作记忆层。不整合进长期存储，也不进入持久 profile。`ttl_seconds`
         设定硬性墙钟过期时间；否则存活到 session 被清除为止。"""
-        user = self.resolver.resolve(user_id)
+        user = user_id
         wm = WorkingMemory(
             content=content, user_id=user, session_id=session_id, kind=kind,
             event_time=event_time if event_time is not None else now(),
@@ -966,14 +962,14 @@ class Memory:
                        as_of: Optional[float] = None, kind: Optional[str] = None) -> list[WorkingMemory]:
         """存活的工作记忆条目（可按 session / kind 过滤）；排除已过期和已消费的。
         读取时惰性清扫硬过期条目。"""
-        user = self.resolver.resolve(user_id)
+        user = user_id
         self.sweep_working(as_of)
         return [w for w in self.working_mem.values()
                 if w.user_id == user and w.is_live(as_of, session_id) and (kind is None or w.kind == kind)]
 
     def clear_session(self, user_id: str = "default", session_id: str = "default") -> int:
         """会话结束/断电重启式清理：丢弃该 session 的工作记忆。返回清除数量。"""
-        user = self.resolver.resolve(user_id)
+        user = user_id
         ids = [i for i, w in self.working_mem.items() if w.user_id == user and w.session_id == session_id]
         for i in ids:
             del self.working_mem[i]
@@ -1010,7 +1006,7 @@ class Memory:
 
     def pending_conflicts(self, user_id: str = "default") -> list[Conflict]:
         """等待用户裁决的疑似冲突（两条 fact 都必须仍然 live）。"""
-        user = self.resolver.resolve(user_id)
+        user = user_id
         out = []
         for c in self.conflicts.values():
             if c.user_id != user or c.status != "pending":
@@ -1096,7 +1092,7 @@ class Memory:
         """为查询取 top-k 条 session 摘要，使用与 fact/episode 检索相同的 hybrid（dense + BM25,
         RRF）信号。词法匹配在这里很重要：聚合类问题（"how many trips"）依赖摘要里提到的精确词，
         纯嵌入查找可能把它们排在模糊相似项之后。返回携带 .summary 字段的 episode。"""
-        user = self.resolver.resolve(user_id)
+        user = user_id
         pool = max(k * 3, 30)
         cands = self.summary_vec.search(
             self.embedder.embed(query),
@@ -1122,7 +1118,7 @@ class Memory:
         """Reflector（Mastra 式摘要维护，AGENTS.md 「架构概览与代码导航」）。L2 摘要在其 session 被摘要时定格；若它
         陈述的 fact 之后被取代，旧值会残留在摘要文本里，精简读取就会把它浮出来。本方法把当前值
         追加到任何来源 fact 已失效化的摘要上，使知识更新传播进抽象层。返回被纠正的摘要数量。"""
-        user = self.resolver.resolve(user_id)
+        user = user_id
         facts = [f for f in self._all_facts() if f.user_id == user]
         replacement = {f.supersedes: f for f in facts if f.supersedes and f.is_live()}
         by_episode: dict[str, list] = {}
@@ -1205,7 +1201,7 @@ class Memory:
 
     def procedural(self, user_id: str = "default", as_of: Optional[float] = None) -> list[Fact]:
         """该用户的长期指令 / how-to fact（程序性记忆）。"""
-        user = self.resolver.resolve(user_id)
+        user = user_id
         return [f for f in self._all_facts()
                 if f.user_id == user and f.is_live(as_of)
                 and (f.predicate.lower() in self._INSTRUCTION_PREDS
@@ -1292,14 +1288,14 @@ class Memory:
         "已确认"与"待确认"。这是只读的派生视图——从不过滤 fact store 或检索路径，因此召回
         不受影响（search/lean_context 仍看到全部 fact）。"""
         from .consolidate.structured import build_structured_profile
-        user = self.resolver.resolve(user_id)
+        user = user_id
         subject = self.engine.self_name(user)
         live = [f for f in self._all_facts() if f.user_id == user and f.is_live()]
         return build_structured_profile(live, subject, user)
 
     def build_persona(self, user_id: str = "default") -> str:
         """L3：由 live fact 合成的紧凑叙事式 profile（偏好/习惯/所有物）。"""
-        user = self.resolver.resolve(user_id)
+        user = user_id
         if user in self._persona_cache:
             return self._persona_cache[user]
         subject = self.engine.self_name(user)
@@ -2180,7 +2176,7 @@ class Memory:
           * 摘要块提供宽时间覆盖（默认 20），这正是聚合类问题（"how many trips"、"list
             everything"）所需的；摘要很小，覆盖因此仍然廉价。
         `char_budget` 对组装出的上下文硬性封顶，使其永远不可能接近全文历史的规模。"""
-        user = self.resolver.resolve(user_id)
+        user = user_id
         blocks: list[str] = []
         need = (
             plan_evidence(
@@ -2469,7 +2465,7 @@ class Memory:
         as_of: Optional[float] = None,
         top_k: Optional[int] = None,
     ) -> SearchResult:
-        user = self.resolver.resolve(user_id)
+        user = user_id
 
         # 1. 先走 multi-hop planner（仅对真正的 >=2 跳关系类问题触发）
         plan = self.planner.plan(query, user, as_of)
@@ -2568,7 +2564,7 @@ class Memory:
         融合把这些提上来而不取代语义信号。改善偏好类和精确实体类问题——原始文本词项优于嵌入
         相似度的场景。
         """
-        user = self.resolver.resolve(user_id)
+        user = user_id
         pool = pool or max(k * 5, 25)
         candidates = self.episodes_vec.search(
             self.embedder.embed(query),
@@ -2616,7 +2612,7 @@ class Memory:
         正是时间类与知识更新类问题可被回答的关键。
 
         agentic=True 把单次 chunk 检索换成 LLM 分解的迭代检索（Bet B）。"""
-        user = self.resolver.resolve(user_id)
+        user = user_id
 
         # HyDE：用 LLM 写的假想答案扩展查询，以提升检索召回（M2c）。
         search_query = query
@@ -2770,11 +2766,11 @@ class Memory:
         return notes
 
     def history(self, subject: str, predicate: str, user_id: str = "default") -> list[Fact]:
-        user = self.resolver.resolve(user_id)
+        user = user_id
         return history(self._all_facts(), user, subject, predicate)
 
     def profile(self, user_id: str = "default") -> dict[str, str]:
-        return self.engine.profile(self.resolver.resolve(user_id))
+        return self.engine.profile(user_id)
 
     # --- 内部实现 ---
     def _should_abstain(self, query: str, facts: list[Fact], diag: dict) -> bool:

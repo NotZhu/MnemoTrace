@@ -44,7 +44,6 @@ all = ["mnemotrace-memory[server,mcp,embeddings,backends,llm,documents,eval,dev]
 mnemotrace-quickstart = "mnemotrace.quickstart:main"       # zero-setup installed demo
 mnemotrace-mcp = "mnemotrace.mcp.__main__:main"            # run the MCP server
 mnemotrace-import = "mnemotrace.connectors.__main__:main"  # import a chat/history export
-mnemotrace-migrate-pickle = "mnemotrace.store.migrate:main" # migrate trusted legacy pickle snapshots
 mnemotrace-agent-setup = "mnemotrace.agent_setup:main"     # print cross-agent memory config snippets
 mnemotrace-agent-bootstrap = "mnemotrace.agent_setup:bootstrap_main" # install + verify common agent configs
 mnemotrace-agent-doctor = "mnemotrace.agent_doctor:main"   # verify an agent's Python/MCP memory runtime

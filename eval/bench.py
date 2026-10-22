@@ -494,7 +494,7 @@ class MnemoTraceFullSystem:
             mem.engine.consolidate(mem.retrieve_episodes(q, qid, rig.extract_k))
         # 组装：抽取出的 fact（最新在前）作为索引，完整历史附在下面
         from mnemotrace.util import fmt_date
-        facts = [f for f in mem.fact_store.values() if f.user_id == mem.resolver.resolve(qid) and f.is_live()]
+        facts = [f for f in mem.fact_store.values() if f.user_id == qid and f.is_live()]
         facts.sort(key=lambda f: f.valid_at, reverse=True)
         fact_lines = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.text}" for f in facts) or "(none extracted)"
         full_hist = all_text(item)[:FC_CHAR_BUDGET]

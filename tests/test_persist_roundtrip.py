@@ -16,7 +16,6 @@ def _build_memory() -> Memory:
             event_time=BASE + DAY)
     mem.consolidate()
     mem.summarize_episodes(mem.episodes_doc.values())
-    mem.link_identity("u1", "wei@example.com")
     mem.set_focus(track=["moonshot"], mute=["weight"])
     mem.set_policy(extract_instruction="only durable preferences")
     mem.remember_working("persist this temporary note", user_id="u1", session_id="s1")
@@ -64,8 +63,7 @@ def test_jsonl_roundtrip_preserves_bitemporal_and_state(tmp_path):
     assert loaded.cold_pages_out == {"u1": 2}
     assert loaded.cold_pages_in == {"u1": 1}
     assert loaded._persona_cache == {"u1": "cached persona"}
-    assert loaded.resolver.resolve("wei@example.com") == loaded.resolver.resolve("u1")
-    assert "moonshot" in loaded.search("Where does Wei work?", user_id="wei@example.com").answer().lower()
+    assert "moonshot" in loaded.search("Where does Wei work?", user_id="u1").answer().lower()
 
 
 def test_memory_open_missing_store_starts_empty(tmp_path):

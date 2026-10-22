@@ -3,7 +3,7 @@
 All notable changes to MnemoTrace are documented here. The project uses semantic versioning for distributed
 artifacts; storage schema compatibility is documented separately when it changes.
 
-## [Unreleased] - 2026-10-19
+## [Unreleased] - 2026-10-22
 
 ### Changed
 
@@ -12,6 +12,15 @@ artifacts; storage schema compatibility is documented separately when it changes
 - MemoryService now reads, writes, and erases only the namespace's digest directory. Runtime fallback
   to account-named directories or `.pkl` candidates has been removed. Existing digest stores keep the
   same names and format; old paths remain untouched and require explicit, ownership-verified migration.
+- Memory ownership uses the exact supplied `user_id`; names, nicknames, and entity aliases still resolve
+  within that scope. Snapshots with actual historical user-ID links fail before any store mutation;
+  empty or self-only mappings remain loadable without rewriting records.
+
+### Removed
+
+- The user-ID linking interface and resolver. API-key authentication and space isolation are unchanged.
+- The legacy pickle converter, its console command, and migration guidance. Existing pickle files are
+  left untouched and are no longer supported as conversion sources.
 
 ## [0.1.0] - 2026-07-14
 

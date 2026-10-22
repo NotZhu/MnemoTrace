@@ -1,4 +1,4 @@
-"""System-1：热写入路径。关键路径上没有 LLM —— 追加无损 episode、解析身份、计算轻量嵌入，
+"""System-1：热写入路径。关键路径上没有 LLM —— 追加无损 episode、标记归属、计算轻量嵌入，
 然后交给异步整合。目标：感知延迟 50ms 以内。"""
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from ..embed import Embedder
 from ..store import DocStore, VectorStore
 from ..types import Episode
 from ..util import now
-from .identity import IdentityResolver
 
 
 class Ingestor:
@@ -17,12 +16,10 @@ class Ingestor:
         episodes_doc: DocStore,
         episodes_vec: VectorStore,
         embedder: Embedder,
-        resolver: Optional[IdentityResolver] = None,
     ) -> None:
         self.episodes_doc = episodes_doc
         self.episodes_vec = episodes_vec
         self.embedder = embedder
-        self.resolver = resolver or IdentityResolver()
 
     def ingest(
         self,
@@ -33,10 +30,9 @@ class Ingestor:
         event_time: Optional[float] = None,
         embedding: Optional[list] = None,
     ) -> Episode:
-        canonical = self.resolver.resolve(user_id)
         ep = Episode(
             content=content,
-            user_id=canonical,
+            user_id=user_id,
             session_id=session_id,
             speaker=speaker,
             event_time=event_time if event_time is not None else now(),
