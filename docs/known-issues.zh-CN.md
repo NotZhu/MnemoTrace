@@ -18,7 +18,7 @@
 | [ISSUE-005](#issue-005) | 会话结论同义改写后重复保存         | 缺陷     | 会话结论                           | P1     | 待决策 |
 | [ISSUE-022](#issue-022) | 发布前残留的原作者与原项目信息清理 | 发布准备 | 文档、论文、许可证、日志、Git 历史 | P1     | 暂缓   |
 
-### P2：功能、评测与维护（18 项）
+### P2：功能、评测与维护（17 项）
 
 | 编号                   | 事项                                         | 类型     | 范围                 | 优先级 | 状态   |
 | ---------------------- | -------------------------------------------- | -------- | -------------------- | ------ | ------ |
@@ -34,7 +34,6 @@
 | [ISSUE-024](#issue-024) | 存储必要元数据缺失时仍容忍加载               | 维护改进 | 存储校验             | P2     | 待处理 |
 | [ISSUE-025](#issue-025) | 快照缺失必需状态时静默补齐                   | 维护改进 | 快照、状态恢复       | P2     | 待处理 |
 | [ISSUE-026](#issue-026) | 打开记忆库时仍回填旧事实分类                 | 维护改进 | 加载、事实分类       | P2     | 待处理 |
-| [ISSUE-027](#issue-027) | 浏览器仍转换旧版本偏好设置                   | 维护改进 | 控制台缓存           | P2     | 待处理 |
 | [ISSUE-028](#issue-028) | 上下文标题格式未统一，历史解析分支待收束     | 维护改进 | 证据组装、控制台解析 | P2     | 待决策 |
 | [ISSUE-029](#issue-029) | 画像仍输出含义混杂的旧 count 字段            | 维护改进 | 画像、接口类型       | P2     | 待处理 |
 | [ISSUE-031](#issue-031) | 参数别名与清空确认写法待统一                 | 维护改进 | HTTP、SDK、调用方    | P2     | 待处理 |
@@ -51,7 +50,7 @@
 | [ISSUE-020](#issue-020) | 删除单个会话               | 新增功能 | 会话、存储 | P3     | 暂缓   |
 | [ISSUE-021](#issue-021) | 官网链接发布核验           | 改进     | 演示站点   | P3     | 待验收 |
 
-### 已修复（9 项）
+### 已修复（10 项）
 
 | 编号                   | 事项                                 | 类型     | 范围                 | 优先级 | 状态   |
 | ---------------------- | ------------------------------------ | -------- | -------------------- | ------ | ------ |
@@ -59,6 +58,7 @@
 | [ISSUE-002](#issue-002) | 旧目录回退造成命名空间串读与误删     | 安全缺陷 | 租户隔离、存储、擦除 | P1     | 已修复 |
 | [ISSUE-013](#issue-013) | CSP 脚本授权、历史凭据清理与使用提醒 | 安全加固 | 控制台、接入配置     | P2     | 已修复 |
 | [ISSUE-016](#issue-016) | 辅助查询失败卸载页面并丢失草稿       | 缺陷     | 控制台、错误处理     | P2     | 已修复 |
+| [ISSUE-027](#issue-027) | 浏览器仍转换旧版本偏好设置           | 维护改进 | 控制台缓存           | P2     | 已修复 |
 | [ISSUE-033](#issue-033) | 并发加载旧快照导致写入丢失           | 缺陷     | 服务缓存、并发、存储 | P1     | 已修复 |
 | [ISSUE-034](#issue-034) | 自动重嵌入在写入路径重复取锁         | 缺陷     | 服务锁、重嵌入       | P1     | 已修复 |
 | [ISSUE-035](#issue-035) | 退出或切换账号后旧导出仍下载         | 缺陷     | 控制台、导出         | P2     | 已修复 |
@@ -558,24 +558,6 @@ GraphPage 始终请求 `live_only=false, limit=120`，随后由浏览器过滤�
 - 离线事实没有 display 时仍可正常展示，零配置链路正常；不误删普通写入的分类或隐私处理。
 
 **代码**：[Memory.open/_classify](../mnemotrace/memory.py)、[事实分类](../mnemotrace/consolidate/classify.py)。
-
-<a id="issue-027"></a>
-
-### ISSUE-027：浏览器仍转换旧版本偏好设置
-
-**类型**：维护改进 · **范围**：控制台缓存 · **优先级**：P2 · **状态**：待处理
-
-#### 现状与处理要求
-
-偏好恢复仍将旧 showOld 转换为 status，并接受较早缓存版本。按 [AGENTS.md 的兼容策略](../AGENTS.md#开发阶段与兼容策略)，更新偏好缓存版本，旧版本直接重置，不再迁移旧字段；保留当前偏好格式的输入校验与账号隔离。
-
-#### 验收标准
-
-- 旧版本缓存明确重置；当前格式可刷新恢复且账号之间隔离。
-- 移除旧字段转换，但当前 chunks 最小值等输入范围校验继续有效。
-- 不改变登录内存态、查询错误状态和主题功能。
-
-**代码**：[偏好 store](../frontend/src/store/preferences.ts)。
 
 <a id="issue-028"></a>
 
@@ -1134,15 +1116,43 @@ useMemories 原来的 placeholderData 仅比较账号和 kind，Facts 又开启�
 
 **代码与证据**：[设置页](../frontend/src/pages/Settings.tsx)、[内存鉴权](../frontend/src/store/auth.ts)、[路由](../frontend/src/main.tsx)、[导航验收](../results/console-validation-index.md#console-error-lifecycle)。
 
+<a id="issue-027"></a>
+
+### ISSUE-027：浏览器仍转换旧版本偏好设置
+
+**类型**：维护改进 · **范围**：控制台缓存 · **优先级**：P2 · **状态**：已修复（2026-10-22，前端合成回归与生产构建；未在真实浏览器核验重置后的界面）
+
+#### 现象与影响
+
+偏好恢复把早期的 `showOld` 布尔开关转换成三态 `status`，并让版本 0、1 的缓存继续按当前格式校验后采用。按当前开发阶段的兼容策略，这类迁移分支只为历史版本保留，缺失外部旧版用户时属于需要退役的复杂度，也扩大了缓存恢复的输入面。
+
+#### 原因与证据
+
+`validateSpace` 在三态判断之外保留了 `facts.showOld === true ? 'all'` 的回退，`migrate` 对 `version > 1` 之外的所有版本都返回校验后的内容。修复前的偏好回归在旧实现上得到 6 项失败，覆盖版本 0/1 未被重置、`showOld` 仍被转换、当前格式输入与 chunks 钳制用例。
+
+#### 已实施修复与验收边界
+
+缓存版本升到 2，`migrate` 不再读取旧内容，任何非当前版本整份回落到默认值并写回，磁盘上的旧格式随之替换；保留 `migrate` 而非删除，避免 persist 只跳过恢复、留下旧数据。`facts.status` 只接受 `live` / `superseded` / `all`。当前格式的类型、范围、白名单字段校验、`chunks` 最小值钳制、登录周期隔离与指纹算法均未改变。
+
+升级后浏览器中已有的空间偏好（图谱参数、事实筛选、问答片段数）一次性回到默认值，这是预期的兼容策略而非缺陷。未提供字段迁移、跨设备同步或针对旧数据的保留路径。
+
+#### 验收结果
+
+- 偏好回归 17 项通过，覆盖旧版本整份重置、重置后回写当前版本、重置后仍可写入并在刷新后恢复、重置不破坏账号隔离、未声明字段不写回。
+- 完整前端 228 项通过；TypeScript 检查与 Vite 生产构建通过；`git diff --check` 无输出。
+- 回归在 Node VM 中注入合成 localStorage 与 Web Crypto，未在真实浏览器验证重置后的界面，也未运行后端 pytest 或模型 benchmark。
+
+**代码与证据**：[偏好 store](../frontend/src/store/preferences.ts)、[偏好回归](../frontend/tests/preferences.test.cjs)、[验收记录](../results/preferences_cache_version_validation.md)、[修复前回归](../results/preferences_cache_version_red.txt)。
+
 <a id="cleanup"></a>
 
 ## 无行为影响的清理建议
 
-以下事项与功能缺陷分开跟踪，状态均为待处理。
+以下事项与功能缺陷分开跟踪。第 1 条状态为待处理；第 2、3 条已修复。
 
-1. **删除体检页不可达的结论编辑分支。** [audit](../mnemotrace/service.py) 跳过全部 outcome predicates，因此 [Health](../frontend/src/pages/Health.tsx) 的 isOutcome 分支及仅由它使用的 StatementEditor 无法由正常返回结果触达。可删除该 UI 分支；若需要体检会话结论，应先定义实际检查规则与返回契约。公开的 statement 编辑 API 具有独立用途，不随死 UI 分支删除。
-2. **更正全局错误条的持久化注释。** [GlobalErrorBanner](../frontend/src/components/GlobalErrorBanner.tsx) 仍描述刷新后清理“持久化错误”，但 [queryErrors](../frontend/src/store/queryErrors.ts) 只保存内存状态，启动时仅删除历史缓存。注释应准确区分当前内存状态与历史缓存清理，避免误导错误恢复逻辑的维护。
-3. **删除不再使用的画像证据文案。** [copy.ts](../frontend/src/lib/copy.ts) 的 profile.evidenceMentions 与 profile.evidenceOnce 已无调用，可删除；保留仍在使用的 source_count 展示和手动设定/强化提示。
+1. **删除体检页不可达的结论编辑分支。** [audit](../mnemotrace/service.py) 跳过全部 outcome predicates，因此 [Health](../frontend/src/pages/Health.tsx) 的 isOutcome 分支及仅由它使用的 StatementEditor 无法由正常返回结果触达。可删除该 UI 分支；若需要体检会话结论，应先定义实际检查规则与返回契约。公开的 statement 编辑 API 具有独立用途，不随死 UI 分支删除。删除时 [healthEditing 回归](../frontend/tests/healthEditing.test.cjs) 中两个构造结论 predicate 的用例会一并失效，需同步移除，并确认 statement 编辑路径在 [结论编辑回归](../tests/test_outcomes.py) 中仍有覆盖。
+2. **更正全局错误条的持久化注释。** 已修复（2026-10-22，提交 `bc163ab`）。[GlobalErrorBanner](../frontend/src/components/GlobalErrorBanner.tsx) 的重试分支不再描述“刷新后清理持久化错误”，改为“查询已被移除时只清理失效提示；重试不改变页面或编辑组件生命周期”，与 [queryErrors](../frontend/src/store/queryErrors.ts) 只保存内存状态、启动时仅删除历史缓存的实现一致。该提交同时由 [ISSUE-016](#issue-016) 覆盖页面挂载与错误处理行为，本次仅涉及注释措辞。
+3. **删除不再使用的画像证据文案。** 已修复（2026-10-22）。[copy.ts](../frontend/src/lib/copy.ts) 的 profile.evidenceMentions 与 profile.evidenceOnce 已删除，两者在代码、测试和文档中均无调用；画像证据继续显示 source_count 计数，evidenceTitle、手动设定与强化提示保留。完整前端回归与生产构建通过，记录见[缓存版本重置验收](../results/preferences_cache_version_validation.md)。
 
 <a id="evidence"></a>
 

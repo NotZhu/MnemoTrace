@@ -1,0 +1,1378 @@
+TAP version 13
+# Subtest: 中文 Key 在普通请求和导出前返回中文错误，不触发 Headers 异常或网络请求
+ok 1 - 中文 Key 在普通请求和导出前返回中文错误，不触发 Headers 异常或网络请求
+  ---
+  duration_ms: 42.3862
+  type: 'test'
+  ...
+# Subtest: ASCII Key 原样发送；未登录仍能请求健康状态
+ok 2 - ASCII Key 原样发送；未登录仍能请求健康状态
+  ---
+  duration_ms: 5.0874
+  type: 'test'
+  ...
+# Subtest: 登录拒绝中文、全角、换行及空 Key，不持久化无效凭证
+ok 3 - 登录拒绝中文、全角、换行及空 Key，不持久化无效凭证
+  ---
+  duration_ms: 21.1166
+  type: 'test'
+  ...
+# Subtest: 旧凭证缓存只清除不恢复，重新输入有效 Key 后仅在内存登录
+ok 4 - 旧凭证缓存只清除不恢复，重新输入有效 Key 后仅在内存登录
+  ---
+  duration_ms: 6.9377
+  type: 'test'
+  ...
+# Subtest: 根据客户端系统选择终端，Windows 默认 PowerShell
+ok 5 - 根据客户端系统选择终端，Windows 默认 PowerShell
+  ---
+  duration_ms: 0.736
+  type: 'test'
+  ...
+# Subtest: Bash 命令成功后隐藏输入凭据，命令不接收 Key
+ok 6 - Bash 命令成功后隐藏输入凭据，命令不接收 Key
+  ---
+  duration_ms: 0.3432
+  type: 'test'
+  ...
+# Subtest: PowerShell 命令兼容 5.1，并解析当前 Python 的完整路径
+ok 7 - PowerShell 命令兼容 5.1，并解析当前 Python 的完整路径
+  ---
+  duration_ms: 0.1682
+  type: 'test'
+  ...
+# Subtest: 在 Windows PowerShell 中校验执行顺序、失败中止及参数完整性
+ok 8 - 在 Windows PowerShell 中校验执行顺序、失败中止及参数完整性
+  ---
+  duration_ms: 3025.948
+  type: 'test'
+  ...
+# Subtest: 实际 Bash 保留 URL 参数，安装失败时不进入隐藏输入步骤
+ok 9 - 实际 Bash 保留 URL 参数，安装失败时不进入隐藏输入步骤
+  ---
+  duration_ms: 318.7667
+  type: 'test'
+  ...
+# Subtest: 设置草稿在已有策略刷新失败和恢复后保持，独立接入卡片不消失
+ok 10 - 设置草稿在已有策略刷新失败和恢复后保持，独立接入卡片不消失
+  ---
+  duration_ms: 115.4136
+  type: 'test'
+  ...
+# Subtest: 策略首次失败仍保留接入区域并提供该查询重试
+ok 11 - 策略首次失败仍保留接入区域并提供该查询重试
+  ---
+  duration_ms: 19.3958
+  type: 'test'
+  ...
+# Subtest: 会话输入不依赖历史查询成功，失败及重试保留正文和会话选择
+ok 12 - 会话输入不依赖历史查询成功，失败及重试保留正文和会话选择
+  ---
+  duration_ms: 21.5241
+  type: 'test'
+  ...
+# Subtest: Journal 后台刷新失败保留正在编辑的行和草稿
+ok 13 - Journal 后台刷新失败保留正在编辑的行和草稿
+  ---
+  duration_ms: 25.899
+  type: 'test'
+  ...
+# Subtest: Health 后台刷新失败保留正在编辑的行和草稿
+ok 14 - Health 后台刷新失败保留正在编辑的行和草稿
+  ---
+  duration_ms: 23.1318
+  type: 'test'
+  ...
+# Subtest: 结论重试恢复后新增、拆分或合并分组不重建已有编辑行
+ok 15 - 结论重试恢复后新增、拆分或合并分组不重建已有编辑行
+  ---
+  duration_ms: 28.0615
+  type: 'test'
+  ...
+# Subtest: 关注点草稿在后台刷新失败后保留
+ok 16 - 关注点草稿在后台刷新失败后保留
+  ---
+  duration_ms: 22.407
+  type: 'test'
+  ...
+# Subtest: 来源读取失败显示错误和当前查询重试，不冒充来源缺失
+ok 17 - 来源读取失败显示错误和当前查询重试，不冒充来源缺失
+  ---
+  duration_ms: 26.6511
+  type: 'test'
+  ...
+# Subtest: 查看会话使用内部路由而非普通链接或硬编码部署前缀
+ok 18 - 查看会话使用内部路由而非普通链接或硬编码部署前缀
+  ---
+  duration_ms: 43.0336
+  type: 'test'
+  ...
+# Subtest: 局部错误不会被全局错误条隐藏，重试调用当前区域处理器
+ok 19 - 局部错误不会被全局错误条隐藏，重试调用当前区域处理器
+  ---
+  duration_ms: 62.6395
+  type: 'test'
+  ...
+# Subtest: Focus 首次读取失败提供当前查询重试，不展示空结果
+ok 20 - Focus 首次读取失败提供当前查询重试，不展示空结果
+  ---
+  duration_ms: 19.982
+  type: 'test'
+  ...
+# Subtest: Health 首次读取失败提供当前查询重试，不展示空结果
+ok 21 - Health 首次读取失败提供当前查询重试，不展示空结果
+  ---
+  duration_ms: 30.999
+  type: 'test'
+  ...
+# Subtest: 设置保存失败保留草稿，后续服务器响应不能覆盖 dirty 输入
+ok 22 - 设置保存失败保留草稿，后续服务器响应不能覆盖 dirty 输入
+  ---
+  duration_ms: 17.5804
+  type: 'test'
+  ...
+# Subtest: 来源加载、成功空结果和成功原文分别呈现
+ok 23 - 来源加载、成功空结果和成功原文分别呈现
+  ---
+  duration_ms: 21.0534
+  type: 'test'
+  ...
+# Subtest: 接入状态失败不把未知会话数显示为零
+ok 24 - 接入状态失败不把未知会话数显示为零
+  ---
+  duration_ms: 15.8824
+  type: 'test'
+  ...
+# Subtest: 中文画像四个小节保留在同一卡片，偏好表独立分区
+ok 25 - 中文画像四个小节保留在同一卡片，偏好表独立分区
+  ---
+  duration_ms: 1.6833
+  type: 'test'
+  ...
+# Subtest: 旧英文 STYLE 合并到画像，旧标题和正文保留原文
+ok 26 - 旧英文 STYLE 合并到画像，旧标题和正文保留原文
+  ---
+  duration_ms: 0.4982
+  type: 'test'
+  ...
+# Subtest: 中文顶层标题和 Windows 换行均能识别，保留事实关系值
+ok 27 - 中文顶层标题和 Windows 换行均能识别，保留事实关系值
+  ---
+  duration_ms: 1.0363
+  type: 'test'
+  ...
+# Subtest: 其他英文证据类型仍独立分区，正文空行不丢失
+ok 28 - 其他英文证据类型仍独立分区，正文空行不丢失
+  ---
+  duration_ms: 0.1907
+  type: 'test'
+  ...
+# Subtest: 会话列表连续输入停顿 500ms 后才查询，输入框立即更新
+ok 29 - 会话列表连续输入停顿 500ms 后才查询，输入框立即更新
+  ---
+  duration_ms: 63.5445
+  type: 'test'
+  ...
+# Subtest: 会话列表不查询中文组词中的拼音，清空后立即恢复全部会话
+ok 30 - 会话列表不查询中文组词中的拼音，清空后立即恢复全部会话
+  ---
+  duration_ms: 10.6988
+  type: 'test'
+  ...
+# Subtest: 结束会话只处理所点卡片的 ID，报告打开相同会话，上方输入保持不变
+ok 31 - 结束会话只处理所点卡片的 ID，报告打开相同会话，上方输入保持不变
+  ---
+  duration_ms: 4.0539
+  type: 'test'
+  ...
+# Subtest: 空会话列表不在添加记忆区域提供结束会话入口
+ok 32 - 空会话列表不在添加记忆区域提供结束会话入口
+  ---
+  duration_ms: 1.8911
+  type: 'test'
+  ...
+# Subtest: 默认使用 default 会话，列表中的使用此会话会同步顶部选择
+ok 33 - 默认使用 default 会话，列表中的使用此会话会同步顶部选择
+  ---
+  duration_ms: 2.698
+  type: 'test'
+  ...
+# Subtest: 清除当前存储名下的旧凭证，不恢复登录且不影响主题与空间偏好
+ok 34 - 清除当前存储名下的旧凭证，不恢复登录且不影响主题与空间偏好
+  ---
+  duration_ms: 11.4783
+  type: 'test'
+  ...
+# Subtest: 普通与演示 Key 仅在当前页面内存登录，刷新不恢复凭证
+ok 35 - 普通与演示 Key 仅在当前页面内存登录，刷新不恢复凭证
+  ---
+  duration_ms: 12.0315
+  type: 'test'
+  ...
+# Subtest: 退出清除内存凭证，重新登录不写入浏览器存储
+ok 36 - 退出清除内存凭证，重新登录不写入浏览器存储
+  ---
+  duration_ms: 2.4853
+  type: 'test'
+  ...
+# Subtest: 浏览器禁止存储时仍可登录和退出
+ok 37 - 浏览器禁止存储时仍可登录和退出
+  ---
+  duration_ms: 3.2805
+  type: 'test'
+  ...
+# Subtest: 分类、状态两个无边框下拉框位于隐藏敏感开关左侧，不再显示历史开关
+ok 38 - 分类、状态两个无边框下拉框位于隐藏敏感开关左侧，不再显示历史开关
+  ---
+  duration_ms: 110.3706
+  type: 'test'
+  ...
+# Subtest: 加载时保留开关和筛选，旧计数、分类、列表及分页一起退出
+ok 39 - 加载时保留开关和筛选，旧计数、分类、列表及分页一起退出
+  ---
+  duration_ms: 44.0706
+  type: 'test'
+  ...
+# Subtest: 失败时工具栏和当前查询重试仍可用，不误报空结果
+ok 40 - 失败时工具栏和当前查询重试仍可用，不误报空结果
+  ---
+  duration_ms: 39.8613
+  type: 'test'
+  ...
+# Subtest: 占位列表标明更新并禁用加载更多，旧计数不作为当前统计
+ok 41 - 占位列表标明更新并禁用加载更多，旧计数不作为当前统计
+  ---
+  duration_ms: 48.3547
+  type: 'test'
+  ...
+# Subtest: 旧空列表不能被解释成新搜索无结果，成功响应后才显示空状态
+ok 42 - 旧空列表不能被解释成新搜索无结果，成功响应后才显示空状态
+  ---
+  duration_ms: 55.8989
+  type: 'test'
+  ...
+# Subtest: 全局查询错误不能卸载任何路由页面
+ok 43 - 全局查询错误不能卸载任何路由页面
+  ---
+  duration_ms: 33.472
+  type: 'test'
+  ...
+# Subtest: 分类、历史状态和搜索词共同送入服务查询，切换筛选后重置分页
+ok 44 - 分类、历史状态和搜索词共同送入服务查询，切换筛选后重置分页
+  ---
+  duration_ms: 45.4013
+  type: 'test'
+  ...
+# Subtest: 无结果时通过底部重置筛选清空分类、状态和搜索，隐藏敏感设置保持不变
+ok 45 - 无结果时通过底部重置筛选清空分类、状态和搜索，隐藏敏感设置保持不变
+  ---
+  duration_ms: 43.96
+  type: 'test'
+  ...
+# Subtest: 触发器无边框无下划线，展开菜单使用主题底色、高亮和勾选标记
+ok 46 - 触发器无边框无下划线，展开菜单使用主题底色、高亮和勾选标记
+  ---
+  duration_ms: 93.2946
+  type: 'test'
+  ...
+# Subtest: 鼠标与键盘选择更新筛选，取消、失焦和悬停不意外切换
+ok 47 - 鼠标与键盘选择更新筛选，取消、失焦和悬停不意外切换
+  ---
+  duration_ms: 26.4046
+  type: 'test'
+  ...
+# Subtest: 记忆范围复用选择行为并保留选项值、标签关联和样式
+ok 48 - 记忆范围复用选择行为并保留选项值、标签关联和样式
+  ---
+  duration_ms: 25.4583
+  type: 'test'
+  ...
+# Subtest: 导出范围保留说明关联，禁用时关闭菜单并阻止选择，再启用可正常使用
+ok 49 - 导出范围保留说明关联，禁用时关闭菜单并阻止选择，再启用可正常使用
+  ---
+  duration_ms: 25.9063
+  type: 'test'
+  ...
+# Subtest: 图谱连续输入后等待 500ms 才提交最终搜索词
+ok 50 - 图谱连续输入后等待 500ms 才提交最终搜索词
+  ---
+  duration_ms: 62.9828
+  type: 'test'
+  ...
+# Subtest: 中文组词期间不提交拼音，完成后延迟搜索，清空立即恢复
+ok 51 - 中文组词期间不提交拼音，完成后延迟搜索，清空立即恢复
+  ---
+  duration_ms: 17.0561
+  type: 'test'
+  ...
+# Subtest: 加载和出错时搜索框仍可继续输入
+ok 52 - 加载和出错时搜索框仍可继续输入
+  ---
+  duration_ms: 2.4665
+  type: 'test'
+  ...
+# Subtest: 选中关系任一端都保持原始方向和英文关系词，仅加粗当前实体并去除重复正文
+ok 53 - 选中关系任一端都保持原始方向和英文关系词，仅加粗当前实体并去除重复正文
+  ---
+  duration_ms: 3.7261
+  type: 'test'
+  ...
+# Subtest: 实体卡片始终保留，选择才显示详情，清除选择后恢复空内容
+ok 54 - 实体卡片始终保留，选择才显示详情，清除选择后恢复空内容
+  ---
+  duration_ms: 3.4056
+  type: 'test'
+  ...
+# Subtest: 筛选移除实体或图谱为空时清空详情，加载和失败仍保留实体卡片
+ok 55 - 筛选移除实体或图谱为空时清空详情，加载和失败仍保留实体卡片
+  ---
+  duration_ms: 2.9173
+  type: 'test'
+  ...
+# Subtest: 仅当前使用同一完整数据，只切换可见统计与详情，过滤后不恢复隐藏选择
+ok 56 - 仅当前使用同一完整数据，只切换可见统计与详情，过滤后不恢复隐藏选择
+  ---
+  duration_ms: 4.598
+  type: 'test'
+  ...
+# Subtest: 仅有历史关系时显示空态但保留完整画布，开关恢复内容
+ok 57 - 仅有历史关系时显示空态但保留完整画布，开关恢复内容
+  ---
+  duration_ms: 2.7937
+  type: 'test'
+  ...
+# Subtest: 属性编辑提交明确三元组，不能把完整展示句作为 object 或 statement 保存
+ok 58 - 属性编辑提交明确三元组，不能把完整展示句作为 object 或 statement 保存
+  ---
+  duration_ms: 81.5126
+  type: 'test'
+  ...
+# Subtest: 属性编辑的原样保存、取消及空字段不提交，失败保留三元组草稿
+ok 59 - 属性编辑的原样保存、取消及空字段不提交，失败保留三元组草稿
+  ---
+  duration_ms: 7.0053
+  type: 'test'
+  ...
+# Subtest: 属性表单分别绑定主语、关系和取值，字段失焦不自动提交
+ok 60 - 属性表单分别绑定主语、关系和取值，字段失焦不自动提交
+  ---
+  duration_ms: 3.9529
+  type: 'test'
+  ...
+# Subtest: 结论仍可整句编辑，重复失焦不重复保存
+ok 61 - 结论仍可整句编辑，重复失焦不重复保存
+  ---
+  duration_ms: 2.4502
+  type: 'test'
+  ...
+# Subtest: 取消和原样失焦不提交，保存失败保留草稿并允许重试
+ok 62 - 取消和原样失焦不提交，保存失败保留草稿并允许重试
+  ---
+  duration_ms: 2.7281
+  type: 'test'
+  ...
+# Subtest: 按钮接管失焦，取消不会先保存
+ok 63 - 按钮接管失焦，取消不会先保存
+  ---
+  duration_ms: 2.3836
+  type: 'test'
+  ...
+# Subtest: 单条删除先打开项目弹窗，取消不提交，确认才删除且不重复请求
+ok 64 - 单条删除先打开项目弹窗，取消不提交，确认才删除且不重复请求
+  ---
+  duration_ms: 3.0894
+  type: 'test'
+  ...
+# Subtest: 删除失败保留确认弹窗并可重试
+ok 65 - 删除失败保留确认弹窗并可重试
+  ---
+  duration_ms: 2.2184
+  type: 'test'
+  ...
+# Subtest: 汇总标签与问题列表均按颜色优先级排序，同级稳定且不改写查询缓存
+ok 66 - 汇总标签与问题列表均按颜色优先级排序，同级稳定且不改写查询缓存
+  ---
+  duration_ms: 2.6633
+  type: 'test'
+  ...
+# Subtest: 40ms 的快速检查仍保留至少 600ms 加载反馈，不闪一下就结束
+ok 67 - 40ms 的快速检查仍保留至少 600ms 加载反馈，不闪一下就结束
+  ---
+  duration_ms: 69.0126
+  type: 'test'
+  ...
+# Subtest: 慢请求完成后立即结束反馈，不额外等待一个完整时长
+ok 68 - 慢请求完成后立即结束反馈，不额外等待一个完整时长
+  ---
+  duration_ms: 3.8891
+  type: 'test'
+  ...
+# Subtest: 加载时只旋转已有刷新图标，按钮不插入第二个图标，快速重复点击不重复请求
+ok 69 - 加载时只旋转已有刷新图标，按钮不插入第二个图标，快速重复点击不重复请求
+  ---
+  duration_ms: 2.4633
+  type: 'test'
+  ...
+# Subtest: 离开页面会清理反馈计时器，未完成请求也不更新已卸载页面
+ok 70 - 离开页面会清理反馈计时器，未完成请求也不更新已卸载页面
+  ---
+  duration_ms: 3.3768
+  type: 'test'
+  ...
+# Subtest: 真正空列表保留首条总结入口，有搜索条件时显示没有匹配的结论
+ok 71 - 真正空列表保留首条总结入口，有搜索条件时显示没有匹配的结论
+  ---
+  duration_ms: 134.8566
+  type: 'test'
+  ...
+# Subtest: 重置筛选位于空状态底部，恢复已有结论并保留历史设置
+ok 72 - 重置筛选位于空状态底部，恢复已有结论并保留历史设置
+  ---
+  duration_ms: 54.0267
+  type: 'test'
+  ...
+# Subtest: 只有类型筛选时可以重置，搜索和类型同时存在时一次清除
+ok 73 - 只有类型筛选时可以重置，搜索和类型同时存在时一次清除
+  ---
+  duration_ms: 50.9894
+  type: 'test'
+  ...
+# Subtest: 等待防抖或查询完成时不提前展示空结果
+ok 74 - 等待防抖或查询完成时不提前展示空结果
+  ---
+  duration_ms: 55.7627
+  type: 'test'
+  ...
+# Subtest: 开放模式说明已有空间的返回方式，生成 Key 不显示额外小字也不自动登录
+ok 75 - 开放模式说明已有空间的返回方式，生成 Key 不显示额外小字也不自动登录
+  ---
+  duration_ms: 62.6234
+  type: 'test'
+  ...
+# Subtest: 生成后仍可修改、清空或填入演示 Key，演示填入不直接登录
+ok 76 - 生成后仍可修改、清空或填入演示 Key，演示填入不直接登录
+  ---
+  duration_ms: 3.4455
+  type: 'test'
+  ...
+# Subtest: 受保护模式使用管理员 Key 说明，两个快捷按钮保持显示并禁用
+ok 77 - 受保护模式使用管理员 Key 说明，两个快捷按钮保持显示并禁用
+  ---
+  duration_ms: 2.2413
+  type: 'test'
+  ...
+# Subtest: 模式检测中、不可用和禁用时保留快捷按钮的禁用状态
+ok 78 - 模式检测中、不可用和禁用时保留快捷按钮的禁用状态
+  ---
+  duration_ms: 5.2087
+  type: 'test'
+  ...
+# Subtest: 参与电流传播的底线在静置时也有足够对比度，原有亮线不变
+ok 79 - 参与电流传播的底线在静置时也有足够对比度，原有亮线不变
+  ---
+  duration_ms: 3.4062
+  type: 'test'
+  ...
+# Subtest: 右上分支经过中间节点，不额外画跨节点捷径
+ok 80 - 右上分支经过中间节点，不额外画跨节点捷径
+  ---
+  duration_ms: 0.3725
+  type: 'test'
+  ...
+# Subtest: 近乎背景色的连接不能直接传递电流
+ok 81 - 近乎背景色的连接不能直接传递电流
+  ---
+  duration_ms: 0.3929
+  type: 'test'
+  ...
+# Subtest: 每个电流邻居都有且只有一条绘制连接
+ok 82 - 每个电流邻居都有且只有一条绘制连接
+  ---
+  duration_ms: 2.4856
+  type: 'test'
+  ...
+# Subtest: 任意起点的一跳传播都与可见连线一致
+ok 83 - 任意起点的一跳传播都与可见连线一致
+  ---
+  duration_ms: 92.3521
+  type: 'test'
+  ...
+# Subtest: 常驻电流从不同区域的已连接节点轮流出发
+ok 84 - 常驻电流从不同区域的已连接节点轮流出发
+  ---
+  duration_ms: 0.31
+  type: 'test'
+  ...
+# Subtest: 常驻电流的每个亮点都有对应的可见入边，且在到达之后亮起
+ok 85 - 常驻电流的每个亮点都有对应的可见入边，且在到达之后亮起
+  ---
+  duration_ms: 2.7819
+  type: 'test'
+  ...
+# Subtest: 成组漂浮的邻近节点协调移动，自动幅度保持收敛
+ok 86 - 成组漂浮的邻近节点协调移动，自动幅度保持收敛
+  ---
+  duration_ms: 12.4935
+  type: 'test'
+  ...
+# Subtest: 弹性拖拽牵动可见邻居、限制范围，松手后回稳
+ok 87 - 弹性拖拽牵动可见邻居、限制范围，松手后回稳
+  ---
+  duration_ms: 2075.8166
+  type: 'test'
+  ...
+# Subtest: 边和正反向电流路径共用移动后的端点，不增加新的连接
+ok 88 - 边和正反向电流路径共用移动后的端点，不增加新的连接
+  ---
+  duration_ms: 1262.8143
+  type: 'test'
+  ...
+# Subtest: 脑形边界同时约束自动漂浮和长距离拖拽，后台时长不积压
+ok 89 - 脑形边界同时约束自动漂浮和长距离拖拽，后台时长不积压
+  ---
+  duration_ms: 881.7351
+  type: 'test'
+  ...
+# Subtest: 局部舒展可以独立于漂浮调整，关闭所有自动动态时保持原坐标
+ok 90 - 局部舒展可以独立于漂浮调整，关闭所有自动动态时保持原坐标
+  ---
+  duration_ms: 4.692
+  type: 'test'
+  ...
+# Subtest: scope: sensitive cannot borrow an incompatible response
+ok 91 - scope: sensitive cannot borrow an incompatible response
+  ---
+  duration_ms: 11.4976
+  type: 'test'
+  ...
+# Subtest: scope: kind cannot borrow an incompatible response
+ok 92 - scope: kind cannot borrow an incompatible response
+  ---
+  duration_ms: 2.8793
+  type: 'test'
+  ...
+# Subtest: scope: category cannot borrow an incompatible response
+ok 93 - scope: category cannot borrow an incompatible response
+  ---
+  duration_ms: 1.9905
+  type: 'test'
+  ...
+# Subtest: scope: status cannot borrow an incompatible response
+ok 94 - scope: status cannot borrow an incompatible response
+  ---
+  duration_ms: 1.7844
+  type: 'test'
+  ...
+# Subtest: scope: factsOffset cannot borrow an incompatible response
+ok 95 - scope: factsOffset cannot borrow an incompatible response
+  ---
+  duration_ms: 1.886
+  type: 'test'
+  ...
+# Subtest: scope: episodesOffset cannot borrow an incompatible response
+ok 96 - scope: episodesOffset cannot borrow an incompatible response
+  ---
+  duration_ms: 1.7348
+  type: 'test'
+  ...
+# Subtest: scope: futureFilter cannot borrow an incompatible response
+ok 97 - scope: futureFilter cannot borrow an incompatible response
+  ---
+  duration_ms: 1.6454
+  type: 'test'
+  ...
+# Subtest: scope: widening also waits; omitted sensitive equals false and empty category equals omitted
+ok 98 - scope: widening also waits; omitted sensitive equals false and empty category equals omitted
+  ---
+  duration_ms: 2.1431
+  type: 'test'
+  ...
+# Subtest: scope: search and page size retain data but another account never does
+ok 99 - scope: search and page size retain data but another account never does
+  ---
+  duration_ms: 2.1225
+  type: 'test'
+  ...
+# Subtest: scope: Journal search retains results; changing history scope waits
+ok 100 - scope: Journal search retains results; changing history scope waits
+  ---
+  duration_ms: 3.8173
+  type: 'test'
+  ...
+# Subtest: scope: delayed failure and explicit retry never restore sensitive placeholder
+ok 101 - scope: delayed failure and explicit retry never restore sensitive placeholder
+  ---
+  duration_ms: 9.8416
+  type: 'test'
+  ...
+# Subtest: scope: rapid toggles and late wide response cannot replace current safe data
+ok 102 - scope: rapid toggles and late wide response cannot replace current safe data
+  ---
+  duration_ms: 2.6839
+  type: 'test'
+  ...
+# Subtest: scope: exact safe cache is immediately usable
+ok 103 - scope: exact safe cache is immediately usable
+  ---
+  duration_ms: 2.0295
+  type: 'test'
+  ...
+# Subtest: 图谱即时更新、合并写入，离页保存且重新加载恢复，重置也持久化
+ok 104 - 图谱即时更新、合并写入，离页保存且重新加载恢复，重置也持久化
+  ---
+  duration_ms: 13.5134
+  type: 'test'
+  ...
+# Subtest: 所有长期筛选立即保存，页面重建/刷新可恢复，账号和服务地址隔离且不保存明文凭据
+ok 105 - 所有长期筛选立即保存，页面重建/刷新可恢复，账号和服务地址隔离且不保存明文凭据
+  ---
+  duration_ms: 17.5778
+  type: 'test'
+  ...
+# Subtest: 指纹未完成时的修改不会丢失，快速换账号不会使用旧空间
+ok 106 - 指纹未完成时的修改不会丢失，快速换账号不会使用旧空间
+  ---
+  duration_ms: 3.9706
+  type: 'test'
+  ...
+# Subtest: 仅允许声明的偏好，缓存类型/范围异常或损坏时使用默认值
+ok 107 - 仅允许声明的偏好，缓存类型/范围异常或损坏时使用默认值
+  ---
+  duration_ms: 8.6691
+  type: 'test'
+  ...
+# Subtest: 旧版本缓存整份重置为默认值并回写当前版本
+ok 108 - 旧版本缓存整份重置为默认值并回写当前版本
+  ---
+  duration_ms: 6.0357
+  type: 'test'
+  ...
+# Subtest: 旧版包含历史开关不再转换成三态筛选
+ok 109 - 旧版包含历史开关不再转换成三态筛选
+  ---
+  duration_ms: 10.4088
+  type: 'test'
+  ...
+# Subtest: 旧版本重置后仍可写入并在刷新后恢复
+ok 110 - 旧版本重置后仍可写入并在刷新后恢复
+  ---
+  duration_ms: 7.9885
+  type: 'test'
+  ...
+# Subtest: 问答片段最小值为2，当前格式的越界输入被钳制并保持其他设置
+ok 111 - 问答片段最小值为2，当前格式的越界输入被钳制并保持其他设置
+  ---
+  duration_ms: 7.6514
+  type: 'test'
+  ...
+# Subtest: 事实分类与三态筛选按空间持久化
+ok 112 - 事实分类与三态筛选按空间持久化
+  ---
+  duration_ms: 47.1448
+  type: 'test'
+  ...
+# Subtest: 存储不可用时仍能修改内存中的偏好
+ok 113 - 存储不可用时仍能修改内存中的偏好
+  ---
+  duration_ms: 2.2689
+  type: 'test'
+  ...
+# Subtest: crypto 不存在时偏好可跨刷新恢复，账号/服务隔离且不保存明文 key
+ok 114 - crypto 不存在时偏好可跨刷新恢复，账号/服务隔离且不保存明文 key
+  ---
+  duration_ms: 21.1793
+  type: 'test'
+  ...
+# Subtest: subtle 不存在时偏好可跨刷新恢复，账号/服务隔离且不保存明文 key
+ok 115 - subtle 不存在时偏好可跨刷新恢复，账号/服务隔离且不保存明文 key
+  ---
+  duration_ms: 11.2386
+  type: 'test'
+  ...
+# Subtest: 原生 digest 拒绝时偏好可跨刷新恢复，账号/服务隔离且不保存明文 key
+ok 116 - 原生 digest 拒绝时偏好可跨刷新恢复，账号/服务隔离且不保存明文 key
+  ---
+  duration_ms: 11.6882
+  type: 'test'
+  ...
+# Subtest: 回退和原生 SHA-256 对 UTF-8、长输入与分隔符得到相同编号
+ok 117 - 回退和原生 SHA-256 对 UTF-8、长输入与分隔符得到相同编号
+  ---
+  duration_ms: 12.4392
+  type: 'test'
+  ...
+# Subtest: 快速连续切换用最新状态计算；问答数值校验，不持久化会话/结果/草稿
+ok 118 - 快速连续切换用最新状态计算；问答数值校验，不持久化会话/结果/草稿
+  ---
+  duration_ms: 4.1782
+  type: 'test'
+  ...
+# Subtest: 延迟偏好修改不会穿过 logout-login，新周期修改仍生效
+ok 119 - 延迟偏好修改不会穿过 logout-login，新周期修改仍生效
+  ---
+  duration_ms: 2.1298
+  type: 'test'
+  ...
+# Subtest: 延迟偏好修改不会穿过 same-key-login，新周期修改仍生效
+ok 120 - 延迟偏好修改不会穿过 same-key-login，新周期修改仍生效
+  ---
+  duration_ms: 1.7833
+  type: 'test'
+  ...
+# Subtest: Privacy discards old success without toast or state updates after relogin
+ok 121 - Privacy discards old success without toast or state updates after relogin
+  ---
+  duration_ms: 40.3206
+  type: 'test'
+  ...
+# Subtest: Privacy discards old http-error without toast or state updates after relogin
+ok 122 - Privacy discards old http-error without toast or state updates after relogin
+  ---
+  duration_ms: 2.5829
+  type: 'test'
+  ...
+# Subtest: Privacy discards old network-error without toast or state updates after relogin
+ok 123 - Privacy discards old network-error without toast or state updates after relogin
+  ---
+  duration_ms: 2.4669
+  type: 'test'
+  ...
+# Subtest: Privacy rechecks the session between API completion and its success callback
+ok 124 - Privacy rechecks the session between API completion and its success callback
+  ---
+  duration_ms: 3.8766
+  type: 'test'
+  ...
+# Subtest: Privacy compact succeeds normally and shows one success toast
+ok 125 - Privacy compact succeeds normally and shows one success toast
+  ---
+  duration_ms: 2.9374
+  type: 'test'
+  ...
+# Subtest: Privacy with-originals succeeds normally and shows one success toast
+ok 126 - Privacy with-originals succeeds normally and shows one success toast
+  ---
+  duration_ms: 4.0845
+  type: 'test'
+  ...
+# Subtest: Privacy reports current-session export failures
+ok 127 - Privacy reports current-session export failures
+  ---
+  duration_ms: 2.3419
+  type: 'test'
+  ...
+# Subtest: same-key login changes the authenticated layout key, resetting the old page tree
+ok 128 - same-key login changes the authenticated layout key, resetting the old page tree
+  ---
+  duration_ms: 6.7186
+  type: 'test'
+  ...
+# Subtest: 自动提取事实显示来源数
+ok 129 - 自动提取事实显示来源数
+  ---
+  duration_ms: 10.0662
+  type: 'test'
+  ...
+# Subtest: 用户设定事实只显示来源数，不显示手动设定标记
+ok 130 - 用户设定事实只显示来源数，不显示手动设定标记
+  ---
+  duration_ms: 0.5663
+  type: 'test'
+  ...
+# Subtest: 访问强化次数不会当作来源数显示
+ok 131 - 访问强化次数不会当作来源数显示
+  ---
+  duration_ms: 0.5624
+  type: 'test'
+  ...
+# Subtest: 没有来源的用户设定事实不显示证据标记
+ok 132 - 没有来源的用户设定事实不显示证据标记
+  ---
+  duration_ms: 0.2244
+  type: 'test'
+  ...
+# Subtest: 无直接来源的身份补全不显示虚构计数
+ok 133 - 无直接来源的身份补全不显示虚构计数
+  ---
+  duration_ms: 0.2208
+  type: 'test'
+  ...
+# Subtest: 图谱的生产依赖在禁止动态代码生成时仍能初始化渲染检查并同步 uniform
+ok 134 - 图谱的生产依赖在禁止动态代码生成时仍能初始化渲染检查并同步 uniform
+  ---
+  duration_ms: 576.9479
+  type: 'test'
+  ...
+# Subtest: D3 只修改图谱副本，重复/历史关系完整保留，弹簧按实体对合并
+ok 135 - D3 只修改图谱副本，重复/历史关系完整保留，弹簧按实体对合并
+  ---
+  duration_ms: 22.4202
+  type: 'test'
+  ...
+# Subtest: 新数据保留已有实体坐标，新增实体由 D3 初始化，旧的拖动固定状态不泄漏
+ok 136 - 新数据保留已有实体坐标，新增实体由 D3 初始化，旧的拖动固定状态不泄漏
+  ---
+  duration_ms: 0.4452
+  type: 'test'
+  ...
+# Subtest: 使用 Quartz 的 D3 受力配置，支持参数调整
+ok 137 - 使用 Quartz 的 D3 受力配置，支持参数调整
+  ---
+  duration_ms: 0.4865
+  type: 'test'
+  ...
+# Subtest: 空图、孤立点、自环、缺失端点及 120 节点均能运行，相同输入结果确定
+ok 138 - 空图、孤立点、自环、缺失端点及 120 节点均能运行，相同输入结果确定
+  ---
+  duration_ms: 1958.1721
+  type: 'test'
+  ...
+# Subtest: 节点大小反映不同邻居数，自环和重复事实不夸大节点
+ok 139 - 节点大小反映不同邻居数，自环和重复事实不夸大节点
+  ---
+  duration_ms: 0.8137
+  type: 'test'
+  ...
+# Subtest: 选择、显示设置和窗口尺寸变化复用同一画布，卸载时清理
+ok 140 - 选择、显示设置和窗口尺寸变化复用同一画布，卸载时清理
+  ---
+  duration_ms: 107.7509
+  type: 'test'
+  ...
+# Subtest: 异步 WebGL 初始化完成前离开页面，迟到的画布会被销毁
+ok 141 - 异步 WebGL 初始化完成前离开页面，迟到的画布会被销毁
+  ---
+  duration_ms: 6.0963
+  type: 'test'
+  ...
+# Subtest: 仅当前切换复用同一控制器，异步初始化期间变化使用最新显隐值
+ok 142 - 仅当前切换复用同一控制器，异步初始化期间变化使用最新显隐值
+  ---
+  duration_ms: 4.6247
+  type: 'test'
+  ...
+# Subtest: 入场运动结束不会再次改变比例，初次适配使用稳定布局
+ok 143 - 入场运动结束不会再次改变比例，初次适配使用稳定布局
+  ---
+  duration_ms: 577.8857
+  type: 'test'
+  ...
+# Subtest: 加入历史关系后切页再进入，从缓存布局播放与首次一致的 D3 入场，保留视角
+ok 144 - 加入历史关系后切页再进入，从缓存布局播放与首次一致的 D3 入场，保留视角
+  ---
+  duration_ms: 396.6705
+  type: 'test'
+  ...
+# Subtest: 返回动画中途离开不会积累收拢偏差，减少动画偏好直接恢复
+ok 145 - 返回动画中途离开不会积累收拢偏差，减少动画偏好直接恢复
+  ---
+  duration_ms: 138.1969
+  type: 'test'
+  ...
+# Subtest: 视图只在相同身份、图数据和受力配置下复用，缓存有界
+ok 146 - 视图只在相同身份、图数据和受力配置下复用，缓存有界
+  ---
+  duration_ms: 0.779
+  type: 'test'
+  ...
+# Subtest: 正常入场有节点运动，减少动画偏好下保持静态
+ok 147 - 正常入场有节点运动，减少动画偏好下保持静态
+  ---
+  duration_ms: 154.1942
+  type: 'test'
+  ...
+# Subtest: 仅当前只切换节点与连线显隐，反复切换保持坐标、受力、相机及入场次数
+ok 148 - 仅当前只切换节点与连线显隐，反复切换保持坐标、受力、相机及入场次数
+  ---
+  duration_ms: 159.3971
+  type: 'test'
+  ...
+# Subtest: 全部关系被隐藏时节点不可命中，关闭仅当前后恢复命中
+ok 149 - 全部关系被隐藏时节点不可命中，关闭仅当前后恢复命中
+  ---
+  duration_ms: 18.802
+  type: 'test'
+  ...
+# Subtest: 重置和适应画布共用最终范围，动画结束不再改变视角
+ok 150 - 重置和适应画布共用最终范围，动画结束不再改变视角
+  ---
+  duration_ms: 523.2724
+  type: 'test'
+  ...
+# Subtest: 适应画布以当前设置重新排列并展开，保留显隐和选中实体
+ok 151 - 适应画布以当前设置重新排列并展开，保留显隐和选中实体
+  ---
+  duration_ms: 636.8744
+  type: 'test'
+  ...
+# Subtest: 按钮展开期间的缩放、平移或再次适配不被轨迹播放改写
+ok 152 - 按钮展开期间的缩放、平移或再次适配不被轨迹播放改写
+  ---
+  duration_ms: 2718.7993
+  type: 'test'
+  ...
+# Subtest: 减少动画模式重置立即完成适配，结束回调不再次改变视角
+ok 153 - 减少动画模式重置立即完成适配，结束回调不再次改变视角
+  ---
+  duration_ms: 418.249
+  type: 'test'
+  ...
+# Subtest: 按钮播放中的拖动和作用力调节从可见位置接管，旧轨迹不再写回
+ok 154 - 按钮播放中的拖动和作用力调节从可见位置接管，旧轨迹不再写回
+  ---
+  duration_ms: 1102.3001
+  type: 'test'
+  ...
+# Subtest: 预计算轨迹使用真实受力，插值终点准确，120 节点帧数有界
+ok 155 - 预计算轨迹使用真实受力，插值终点准确，120 节点帧数有界
+  ---
+  duration_ms: 3118.4299
+  type: 'test'
+  ...
+# Subtest: 长名称总览截短，缩远淡出，鼠标和键盘聚焦显示全名，离开恢复选择
+ok 156 - 长名称总览截短，缩远淡出，鼠标和键盘聚焦显示全名，离开恢复选择
+  ---
+  duration_ms: 454.5981
+  type: 'test'
+  ...
+# Subtest: 聚焦区分当前节点、直接邻居和无关对象，退出恢复且不改变布局或相机
+ok 157 - 聚焦区分当前节点、直接邻居和无关对象，退出恢复且不改变布局或相机
+  ---
+  duration_ms: 169.7662
+  type: 'test'
+  ...
+# Subtest: 展开长名称不改变适配结果，详情全名不会挤小图谱
+ok 158 - 展开长名称不改变适配结果，详情全名不会挤小图谱
+  ---
+  duration_ms: 329.1561
+  type: 'test'
+  ...
+# Subtest: 失败查询包含凭证的标识仅留在内存，不写入 localStorage 或 sessionStorage
+ok 159 - 失败查询包含凭证的标识仅留在内存，不写入 localStorage 或 sessionStorage
+  ---
+  duration_ms: 137.1195
+  type: 'test'
+  ...
+# Subtest: 刷新时移除旧查询错误中的凭证，不恢复旧重试入口
+ok 160 - 刷新时移除旧查询错误中的凭证，不恢复旧重试入口
+  ---
+  duration_ms: 31.9518
+  type: 'test'
+  ...
+# Subtest: 账号切换同步移除旧账号的成功与失败查询，保留公共健康缓存
+ok 161 - 账号切换同步移除旧账号的成功与失败查询，保留公共健康缓存
+  ---
+  duration_ms: 39.8307
+  type: 'test'
+  ...
+# Subtest: 全局重试只使用当前账号的查询，不把当前数据写入其他账号缓存
+ok 162 - 全局重试只使用当前账号的查询，不把当前数据写入其他账号缓存
+  ---
+  duration_ms: 41.6103
+  type: 'test'
+  ...
+# Subtest: 退出时取消进行中的查询，旧请求迟到后不恢复缓存或错误提示
+ok 163 - 退出时取消进行中的查询，旧请求迟到后不恢复缓存或错误提示
+  ---
+  duration_ms: 35.3263
+  type: 'test'
+  ...
+# Subtest: 旧账号迟到的 401 不会退出新账号
+ok 164 - 旧账号迟到的 401 不会退出新账号
+  ---
+  duration_ms: 32.778
+  type: 'test'
+  ...
+# Subtest: 读取响应正文期间切换账号，旧响应也不会作为成功结果返回
+ok 165 - 读取响应正文期间切换账号，旧响应也不会作为成功结果返回
+  ---
+  duration_ms: 45.425
+  type: 'test'
+  ...
+# Subtest: 原文溯源查询按账号隔离，切换账号后重新请求且退出后禁用
+ok 166 - 原文溯源查询按账号隔离，切换账号后重新请求且退出后禁用
+  ---
+  duration_ms: 49.2083
+  type: 'test'
+  ...
+# Subtest: 登录过程中公共健康请求可以正常完成，不受私有查询隔离影响
+ok 167 - 登录过程中公共健康请求可以正常完成，不受私有查询隔离影响
+  ---
+  duration_ms: 45.6987
+  type: 'test'
+  ...
+# Subtest: 当前账号查询可正常重试，成功后清除错误；无缓存错误可直接恢复页面
+ok 168 - 当前账号查询可正常重试，成功后清除错误；无缓存错误可直接恢复页面
+  ---
+  duration_ms: 33.5052
+  type: 'test'
+  ...
+# Subtest: 直接同 Key 登录也同步清空私有缓存和旧错误，保留健康缓存
+ok 169 - 直接同 Key 登录也同步清空私有缓存和旧错误，保留健康缓存
+  ---
+  duration_ms: 34.4228
+  type: 'test'
+  ...
+# Subtest: 同 Key 新登录取消旧查询，迟到结果不恢复缓存和错误
+ok 170 - 同 Key 新登录取消旧查询，迟到结果不恢复缓存和错误
+  ---
+  duration_ms: 33.5913
+  type: 'test'
+  ...
+# Subtest: 取消类型不会进入当前查询的全局错误横幅
+ok 171 - 取消类型不会进入当前查询的全局错误横幅
+  ---
+  duration_ms: 28.4207
+  type: 'test'
+  ...
+# Subtest: 搜索新词时保留同一空间的上一页结果，不进入整页首次加载状态
+ok 172 - 搜索新词时保留同一空间的上一页结果，不进入整页首次加载状态
+  ---
+  duration_ms: 13.0188
+  type: 'test'
+  ...
+# Subtest: 切换记忆空间时不显示上一空间的搜索结果
+ok 173 - 切换记忆空间时不显示上一空间的搜索结果
+  ---
+  duration_ms: 2.7378
+  type: 'test'
+  ...
+# Subtest: 切换记录类型和未启用选项的调用不保留旧结果
+ok 174 - 切换记录类型和未启用选项的调用不保留旧结果
+  ---
+  duration_ms: 4.9149
+  type: 'test'
+  ...
+# Subtest: 会话搜索请求期间保留列表，结果到达后替换列表
+ok 175 - 会话搜索请求期间保留列表，结果到达后替换列表
+  ---
+  duration_ms: 5.2953
+  type: 'test'
+  ...
+# Subtest: 会话搜索切换空间时不沿用其他空间的列表
+ok 176 - 会话搜索切换空间时不沿用其他空间的列表
+  ---
+  duration_ms: 2.7846
+  type: 'test'
+  ...
+# Subtest: 未启用保留结果选项的会话查询保持原有加载行为
+ok 177 - 未启用保留结果选项的会话查询保持原有加载行为
+  ---
+  duration_ms: 2.2298
+  type: 'test'
+  ...
+# Subtest: export during response: logout discards the old download
+ok 178 - export during response: logout discards the old download
+  ---
+  duration_ms: 41.7406
+  type: 'test'
+  ...
+# Subtest: export during response: A to B discards the old download
+ok 179 - export during response: A to B discards the old download
+  ---
+  duration_ms: 2.3608
+  type: 'test'
+  ...
+# Subtest: export during response: A logout A discards the old download
+ok 180 - export during response: A logout A discards the old download
+  ---
+  duration_ms: 2.2488
+  type: 'test'
+  ...
+# Subtest: export during response: A B A discards the old download
+ok 181 - export during response: A B A discards the old download
+  ---
+  duration_ms: 2.2916
+  type: 'test'
+  ...
+# Subtest: export during response: same key login discards the old download
+ok 182 - export during response: same key login discards the old download
+  ---
+  duration_ms: 2.3875
+  type: 'test'
+  ...
+# Subtest: export during body: logout discards the old download
+ok 183 - export during body: logout discards the old download
+  ---
+  duration_ms: 4.2704
+  type: 'test'
+  ...
+# Subtest: export during body: A to B discards the old download
+ok 184 - export during body: A to B discards the old download
+  ---
+  duration_ms: 4.0971
+  type: 'test'
+  ...
+# Subtest: export during body: A logout A discards the old download
+ok 185 - export during body: A logout A discards the old download
+  ---
+  duration_ms: 2.5126
+  type: 'test'
+  ...
+# Subtest: export during body: A B A discards the old download
+ok 186 - export during body: A B A discards the old download
+  ---
+  duration_ms: 2.5317
+  type: 'test'
+  ...
+# Subtest: export during body: same key login discards the old download
+ok 187 - export during body: same key login discards the old download
+  ---
+  duration_ms: 2.5624
+  type: 'test'
+  ...
+# Subtest: login and logout atomically publish a new in-memory session, including invalid and same-key login
+ok 188 - login and logout atomically publish a new in-memory session, including invalid and same-key login
+  ---
+  duration_ms: 4.309
+  type: 'test'
+  ...
+# Subtest: memories: old 200 response after same-key relogin is stale and cannot log out
+ok 189 - memories: old 200 response after same-key relogin is stale and cannot log out
+  ---
+  duration_ms: 3.6263
+  type: 'test'
+  ...
+# Subtest: memories: old 401 response after same-key relogin is stale and cannot log out
+ok 190 - memories: old 401 response after same-key relogin is stale and cannot log out
+  ---
+  duration_ms: 2.2543
+  type: 'test'
+  ...
+# Subtest: memories: old 500 response after same-key relogin is stale and cannot log out
+ok 191 - memories: old 500 response after same-key relogin is stale and cannot log out
+  ---
+  duration_ms: 2.4856
+  type: 'test'
+  ...
+# Subtest: memories: old network-error response after same-key relogin is stale and cannot log out
+ok 192 - memories: old network-error response after same-key relogin is stale and cannot log out
+  ---
+  duration_ms: 2.6994
+  type: 'test'
+  ...
+# Subtest: exportDownload: old 200 response after same-key relogin is stale and cannot log out
+ok 193 - exportDownload: old 200 response after same-key relogin is stale and cannot log out
+  ---
+  duration_ms: 2.5047
+  type: 'test'
+  ...
+# Subtest: exportDownload: old 401 response after same-key relogin is stale and cannot log out
+ok 194 - exportDownload: old 401 response after same-key relogin is stale and cannot log out
+  ---
+  duration_ms: 2.5751
+  type: 'test'
+  ...
+# Subtest: exportDownload: old 500 response after same-key relogin is stale and cannot log out
+ok 195 - exportDownload: old 500 response after same-key relogin is stale and cannot log out
+  ---
+  duration_ms: 2.5978
+  type: 'test'
+  ...
+# Subtest: exportDownload: old network-error response after same-key relogin is stale and cannot log out
+ok 196 - exportDownload: old network-error response after same-key relogin is stale and cannot log out
+  ---
+  duration_ms: 2.7972
+  type: 'test'
+  ...
+# Subtest: JSON body json cannot cross a same-key login
+ok 197 - JSON body json cannot cross a same-key login
+  ---
+  duration_ms: 2.7142
+  type: 'test'
+  ...
+# Subtest: JSON body json-error cannot cross a same-key login
+ok 198 - JSON body json-error cannot cross a same-key login
+  ---
+  duration_ms: 2.921
+  type: 'test'
+  ...
+# Subtest: JSON body error-detail cannot cross a same-key login
+ok 199 - JSON body error-detail cannot cross a same-key login
+  ---
+  duration_ms: 3.8987
+  type: 'test'
+  ...
+# Subtest: JSON body error-detail-rejection cannot cross a same-key login
+ok 200 - JSON body error-detail-rejection cannot cross a same-key login
+  ---
+  duration_ms: 2.8996
+  type: 'test'
+  ...
+# Subtest: public health response remains valid across login, logout and relogin
+ok 201 - public health response remains valid across login, logout and relogin
+  ---
+  duration_ms: 3.147
+  type: 'test'
+  ...
+# Subtest: public health body remains valid across login, logout and relogin
+ok 202 - public health body remains valid across login, logout and relogin
+  ---
+  duration_ms: 2.3447
+  type: 'test'
+  ...
+# Subtest: old public health 401 cannot log out a newer same-key login
+ok 203 - old public health 401 cannot log out a newer same-key login
+  ---
+  duration_ms: 2.4802
+  type: 'test'
+  ...
+# Subtest: current JSON 401 logs out once and keeps the unauthorized error contract
+ok 204 - current JSON 401 logs out once and keeps the unauthorized error contract
+  ---
+  duration_ms: 5.0498
+  type: 'test'
+  ...
+# Subtest: current JSON errors retain server details, invalid JSON fallback and network errors
+ok 205 - current JSON errors retain server details, invalid JSON fallback and network errors
+  ---
+  duration_ms: 3.1532
+  type: 'test'
+  ...
+# Subtest: normal export sensitive=false sends the original key and releases its URL
+ok 206 - normal export sensitive=false sends the original key and releases its URL
+  ---
+  duration_ms: 3.4783
+  type: 'test'
+  ...
+# Subtest: normal export sensitive=true sends the original key and releases its URL
+ok 207 - normal export sensitive=true sends the original key and releases its URL
+  ---
+  duration_ms: 2.597
+  type: 'test'
+  ...
+# Subtest: download failure at onElement still releases the URL and removes any element
+ok 208 - download failure at onElement still releases the URL and removes any element
+  ---
+  duration_ms: 2.8237
+  type: 'test'
+  ...
+# Subtest: download failure at onAppend still releases the URL and removes any element
+ok 209 - download failure at onAppend still releases the URL and removes any element
+  ---
+  duration_ms: 2.5082
+  type: 'test'
+  ...
+# Subtest: download failure at onClick still releases the URL and removes any element
+ok 210 - download failure at onClick still releases the URL and removes any element
+  ---
+  duration_ms: 2.4408
+  type: 'test'
+  ...
+# Subtest: a session change after URL creation cancels the click and releases resources
+ok 211 - a session change after URL creation cancels the click and releases resources
+  ---
+  duration_ms: 2.8185
+  type: 'test'
+  ...
+# Subtest: Blob read failure stale=false has no URL to release
+ok 212 - Blob read failure stale=false has no URL to release
+  ---
+  duration_ms: 2.8285
+  type: 'test'
+  ...
+# Subtest: Blob read failure stale=true has no URL to release
+ok 213 - Blob read failure stale=true has no URL to release
+  ---
+  duration_ms: 2.4638
+  type: 'test'
+  ...
+# Subtest: 已有会话可选择，default 不重复，打开菜单不会切换当前会话
+ok 214 - 已有会话可选择，default 不重复，打开菜单不会切换当前会话
+  ---
+  duration_ms: 78.1822
+  type: 'test'
+  ...
+# Subtest: 键盘选择、取消及移出菜单不会触发意外切换
+ok 215 - 键盘选择、取消及移出菜单不会触发意外切换
+  ---
+  duration_ms: 6.2741
+  type: 'test'
+  ...
+# Subtest: 空库或索引请求失败时仍提供 default
+ok 216 - 空库或索引请求失败时仍提供 default
+  ---
+  duration_ms: 5.3238
+  type: 'test'
+  ...
+# Subtest: 新 ID 仅在确认时选择，修剪空白并关闭菜单，空白不提交
+ok 217 - 新 ID 仅在确认时选择，修剪空白并关闭菜单，空白不提交
+  ---
+  duration_ms: 3.5221
+  type: 'test'
+  ...
+# Subtest: 输入法组词期间不会提交新 ID，Tab 可进入输入框，失焦不提交草稿
+ok 218 - 输入法组词期间不会提交新 ID，Tab 可进入输入框，失焦不提交草稿
+  ---
+  duration_ms: 5.4847
+  type: 'test'
+  ...
+# Subtest: 默认深色，切换即时应用到页面并保存，重新加载恢复浅色
+ok 219 - 默认深色，切换即时应用到页面并保存，重新加载恢复浅色
+  ---
+  duration_ms: 13.7638
+  type: 'test'
+  ...
+# Subtest: 无效偏好回退深色，存储不可用时仍能切换
+ok 220 - 无效偏好回退深色，存储不可用时仍能切换
+  ---
+  duration_ms: 2.761
+  type: 'test'
+  ...
+# Subtest: 首次恢复不渐变，手动切换同步颜色过渡，快速连点只保留最后一个清理任务
+ok 221 - 首次恢复不渐变，手动切换同步颜色过渡，快速连点只保留最后一个清理任务
+  ---
+  duration_ms: 1.7662
+  type: 'test'
+  ...
+# Subtest: 减少动态效果时不启用新增的颜色渐变或清理定时器
+ok 222 - 减少动态效果时不启用新增的颜色渐变或清理定时器
+  ---
+  duration_ms: 1.5899
+  type: 'test'
+  ...
+# Subtest: 两套主题的正文、辅助文字及状态文本在对应表面上具有足够对比度
+ok 223 - 两套主题的正文、辅助文字及状态文本在对应表面上具有足够对比度
+  ---
+  duration_ms: 2.3121
+  type: 'test'
+  ...
+# Subtest: 主题在同步同源脚本中恢复，HTML 不含内联脚本
+ok 224 - 主题在同步同源脚本中恢复，HTML 不含内联脚本
+  ---
+  duration_ms: 6.3392
+  type: 'test'
+  ...
+# Subtest: 圆形从按钮中心向外覆盖视口，主题只更新一次并关闭内部颜色渐变
+ok 225 - 圆形从按钮中心向外覆盖视口，主题只更新一次并关闭内部颜色渐变
+  ---
+  duration_ms: 5.3126
+  type: 'test'
+  ...
+# Subtest: 不支持、减少动态效果或快照启动失败时正常切换，不残留样式
+ok 226 - 不支持、减少动态效果或快照启动失败时正常切换，不残留样式
+  ---
+  duration_ms: 3.3899
+  type: 'test'
+  ...
+# Subtest: 连续切换取消旧动画，旧任务结束不会清除新任务样式
+ok 227 - 连续切换取消旧动画，旧任务结束不会清除新任务样式
+  ---
+  duration_ms: 1.5462
+  type: 'test'
+  ...
+# Subtest: 快照准备失败仍保留主题更新，并清理动画标记
+ok 228 - 快照准备失败仍保留主题更新，并清理动画标记
+  ---
+  duration_ms: 1.432
+  type: 'test'
+  ...
+1..228
+# tests 228
+# suites 0
+# pass 228
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 12233.8581

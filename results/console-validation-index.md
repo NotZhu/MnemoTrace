@@ -32,3 +32,11 @@
 ## 服务访问协议 CI 证据
 
 [Windows/Ubuntu、Python 3.10/3.12 的原始输出](issue033_034_ci_validation.jsonl)。
+
+<a id="preference-cache"></a>
+
+## 空间偏好缓存版本重置
+
+[缓存版本重置验收](preferences_cache_version_validation.md)、
+[修复前回归](preferences_cache_version_red.txt)、[偏好测试](preferences_cache_version_preferences.txt)、
+[完整前端测试](preferences_cache_version_frontend_tests.txt)。

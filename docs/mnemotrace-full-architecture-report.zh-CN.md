@@ -943,9 +943,10 @@ MemoryService；图谱外观/受力参数在当前浏览器内通用，页面筛
 使用不落盘的临时标识。不同 key 即使映射相同后端 user，也不会自动共用偏好。
 
 缓存保存图谱 liveOnly/hideSensitive、事实 status/category/hideSensitive、结论 showSuperseded、
-问答 chunks/redactSensitive；字段、类型、范围与版本在恢复时校验。滑条写入合并 150ms，开关、
+问答 chunks/redactSensitive；字段、类型、范围在恢复时校验，缓存版本不是当前值时整份重置为默认值
+并回写，不迁移旧字段。滑条写入合并 150ms，开关、
 问答选项与重置立即保存，离页和 pagehide 补存。epoch 变化先停读旧空间，迟到的指纹激活与延迟修改
-必须仍属于发起时的登录快照；同 Key 新登录也拒绝旧回写。指纹算法与存储格式不变，已有偏好继续恢复。
+必须仍属于发起时的登录快照；同 Key 新登录也拒绝旧回写。指纹算法、存储键与空间编号不变。
 localStorage 不可用时保留内存操作；不同来源及设备不自动同步。搜索、草稿、问答结果和弹窗不持久化。
 
 `store/theme.ts` 单独保存 mnemotrace.theme，`public/theme-init.js` 在 HTML 头部同步加载，
@@ -957,7 +958,8 @@ localStorage 不可用时保留内存操作；不同来源及设备不自动同�
 固定中文文案由 lib/copy.ts 提供，文档语言为 zh-CN，记忆正文、技术名称和复制内容保留原文。
 ScopeSelect 与 ExportRangeSelect 通过类型化封装复用 FilterSelect，统一键盘、外部点击、失焦与禁用行为。
 验证入口：[偏好存储](../results/ui_preferences_validation.md)、
-[SHA-256 回退](../results/preferences_sha256_fallback_validation.md)、[主题](../results/theme_validation.md)、
+[SHA-256 回退](../results/preferences_sha256_fallback_validation.md)、
+[缓存版本重置](../results/preferences_cache_version_validation.md)、[主题](../results/theme_validation.md)、
 [选择器](../results/frontend_select_cleanup_validation.md)及[中文文案](../results/ui_chinese_only_validation.md)。
 
 ### 10.4 事实、画像、体检、结论与隐私
