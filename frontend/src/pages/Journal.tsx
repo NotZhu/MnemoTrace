@@ -1,13 +1,13 @@
 
 
-import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useId, useLayoutEffect, useRef, useState } from 'react'
 import { Check, ChevronRight, HelpCircle, Loader2, NotebookText, Pencil, Search, Trash2, X } from 'lucide-react'
 
 import { Button, Card, CardTitle, ErrorState, PageHeader, Spinner } from '../components/ui'
 import { PageEmptyState } from '../components/PageEmptyState'
 import { ConfirmDialog } from '../components/Modal'
 import { toast } from '../components/Toast'
-import { useCloseSession, useDeleteFact, useEditFact, useMemories, useSessions } from '../hooks/queries'
+import { useCloseSession, useDeleteFact, useEditFact, useMemories, useMemoryPages, useSessions } from '../hooks/queries'
 import { useDebouncedSearch } from '../hooks/useDebouncedSearch'
 import { useSpacePreference } from '../store/preferences'
 import { copy as t } from '../lib/copy'
@@ -65,26 +65,24 @@ export default function Journal() {
   const searchQuery = useDebouncedSearch(q, composing)
   const [showSuperseded, setShowSuperseded] = useSpacePreference('journal', 'showSuperseded')
   const [kindChip, setKindChip] = useState<OutcomeKind | 'all'>('all')
-  const [limit, setLimit] = useState(60)
 
-  useEffect(() => {
-    setLimit(60)
-  }, [q, showSuperseded, kindChip])
-
-  const { data, isLoading, isFetching, isError, error, refetch } = useMemories({
+  const { data, isLoading, isFetching, isError, error, refetch, loadMore, isPlaceholderData } = useMemoryPages({
     kind: 'outcomes',
-    facts_limit: limit,
+    facts_limit: 60,
+    outcome_kind: kindChip === 'all' ? undefined : kindChip,
     episodes_limit: 0,
     q: searchQuery,
     status: showSuperseded ? undefined : 'live',
     include_sensitive: true,
-  }, { keepPreviousData: true })
+  })
 
   const facts = data?.facts ?? []
-  const rows = kindChip === 'all' ? facts : facts.filter((f) => f.predicate.toLowerCase() === kindChip)
+  const rows = facts
   const groups = groupOutcomes(rows)
   const hasMore = data?.facts_page?.has_more ?? false
-  const open = facts.filter((f) => f.status === 'live' && f.predicate.toLowerCase() === 'open_question').slice(0, 8)
+  const openQuery = useMemories({ kind: 'outcomes', outcome_kind: 'open_question', status: 'live',
+    facts_limit: 8, episodes_limit: 0, q: searchQuery, include_sensitive: true })
+  const open = openQuery.data?.facts ?? []
   const hasSearch = Boolean(q.trim())
   const hasKindFilter = kindChip !== 'all'
   const hasFilters = hasSearch || hasKindFilter
@@ -111,6 +109,7 @@ export default function Journal() {
       <PageHeader title={t.journal.title} />
 
       {open.length > 0 && <OpenQuestionsCard items={open} />}
+      {openQuery.isError && <ErrorState message={`待解决问题读取失败：${(openQuery.error as Error).message}`} onRetry={() => { void openQuery.refetch() }} />}
 
       <div className="space-y-4">
         <div aria-busy={searchUpdating} className="flex w-full items-center gap-2 rounded-2xl border border-line bg-ink-700 px-3">
@@ -190,7 +189,7 @@ export default function Journal() {
           </div>
           {hasMore && (
             <div className="flex justify-center">
-              <Button variant="ghost" onClick={() => setLimit((n) => n + 60)}>
+              <Button variant="ghost" disabled={searchUpdating || isPlaceholderData || isError} onClick={() => { void loadMore() }}>
                 {t.journal.loadMore}
               </Button>
             </div>

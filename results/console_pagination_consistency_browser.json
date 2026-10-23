@@ -1,0 +1,185 @@
+[
+  {
+    "scenario": "attributes complete",
+    "expected": 601,
+    "domCount": 601,
+    "domUnique": 601,
+    "idCount": 601,
+    "idUnique": 601,
+    "requests": 16,
+    "oneRevision": true,
+    "oneTime": true,
+    "continuationsPaired": true,
+    "bundle": "/ui/assets/index-D-G4-0LY.js"
+  },
+  {
+    "scenario": "timeline complete",
+    "expected": 664,
+    "domCount": 664,
+    "domUnique": 664,
+    "idCount": 664,
+    "idUnique": 664,
+    "requests": 12,
+    "oneRevision": true,
+    "oneTime": true,
+    "continuationsPaired": true,
+    "bundle": "/ui/assets/index-D-G4-0LY.js"
+  },
+  {
+    "scenario": "episodes complete",
+    "count": 241,
+    "unique": 241,
+    "idCount": 241,
+    "idUnique": 241,
+    "requests": 13,
+    "oneTime": true,
+    "paired": true
+  },
+  {
+    "scenario": "journal complete",
+    "visibleRows": 63,
+    "idCount": 63,
+    "idUnique": 63,
+    "requests": 2,
+    "oneTime": true
+  },
+  {
+    "scenario": "older lesson and independent card",
+    "olderLesson": true,
+    "independentCard": true,
+    "falseEmpty": false
+  },
+  {
+    "scenario": "same-page write refresh second-page failure",
+    "sameEditor": true,
+    "draft": "Synthetic retained consistency draft",
+    "rows": 63,
+    "olderLesson": true,
+    "requests": [
+      {
+        "params": {
+          "kind": "outcomes",
+          "facts_limit": "60",
+          "episodes_limit": "0",
+          "status": "live",
+          "include_sensitive": "true",
+          "facts_offset": "0"
+        },
+        "status": 200,
+        "count": 60
+      },
+      {
+        "params": {
+          "kind": "outcomes",
+          "facts_limit": "60",
+          "episodes_limit": "0",
+          "status": "live",
+          "include_sensitive": "true",
+          "facts_offset": "60",
+          "expected_revision": "snapshot:84dc5ac2aedf4618a9671c22b56b8b3a",
+          "evaluated_at": "1792740030.986354"
+        },
+        "status": 503
+      }
+    ]
+  },
+  {
+    "scenario": "successful full-chain retry preserves draft",
+    "sameEditor": true,
+    "draft": "Synthetic retained consistency draft",
+    "rows": 63,
+    "newEditVisible": true,
+    "globalError": false,
+    "requests": [
+      {
+        "params": {
+          "kind": "outcomes",
+          "facts_limit": "60",
+          "episodes_limit": "0",
+          "status": "live",
+          "include_sensitive": "true",
+          "facts_offset": "0"
+        },
+        "status": 200,
+        "revision": "snapshot:84dc5ac2aedf4618a9671c22b56b8b3a",
+        "evaluated_at": 1792740031.8954422,
+        "count": 60
+      },
+      {
+        "params": {
+          "kind": "outcomes",
+          "facts_limit": "60",
+          "episodes_limit": "0",
+          "status": "live",
+          "include_sensitive": "true",
+          "facts_offset": "60",
+          "expected_revision": "snapshot:84dc5ac2aedf4618a9671c22b56b8b3a",
+          "evaluated_at": "1792740031.8954422"
+        },
+        "status": 200,
+        "revision": "snapshot:84dc5ac2aedf4618a9671c22b56b8b3a",
+        "evaluated_at": 1792740031.8954422,
+        "count": 3
+      }
+    ]
+  },
+  {
+    "scenario": "revision conflict preserves draft",
+    "sameEditor": true,
+    "draft": "Synthetic conflict retained draft",
+    "rows": 60,
+    "moreDisabled": true,
+    "globalError": false
+  },
+  {
+    "scenario": "revision reload then finish",
+    "sameEditor": true,
+    "draft": "Synthetic conflict retained draft",
+    "rows": 61,
+    "requests": [
+      {
+        "params": {
+          "kind": "outcomes",
+          "facts_limit": "60",
+          "outcome_kind": "decision",
+          "episodes_limit": "0",
+          "status": "live",
+          "include_sensitive": "true",
+          "facts_offset": "0"
+        },
+        "status": 200,
+        "revision": "snapshot:34e903486c994506856c8a13eed5c743",
+        "evaluated_at": 1792740118.9373276,
+        "count": 60
+      },
+      {
+        "params": {
+          "kind": "outcomes",
+          "facts_limit": "60",
+          "outcome_kind": "decision",
+          "episodes_limit": "0",
+          "status": "live",
+          "include_sensitive": "true",
+          "facts_offset": "60",
+          "expected_revision": "snapshot:34e903486c994506856c8a13eed5c743",
+          "evaluated_at": "1792740118.9373276"
+        },
+        "status": 200,
+        "revision": "snapshot:34e903486c994506856c8a13eed5c743",
+        "evaluated_at": 1792740118.9373276,
+        "count": 1
+      }
+    ],
+    "hasMore": false
+  },
+  {
+    "scenario": "episode identity and expanded state after write refresh",
+    "sameParagraph": true,
+    "tailVisible": true,
+    "collapseVisible": true,
+    "requests": 13,
+    "ids": 243,
+    "unique": 243,
+    "oneTime": true
+  }
+]

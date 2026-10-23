@@ -40,9 +40,10 @@ function setup({ empty = false, history = false } = {}) {
       if (name === '../store/preferences') return { useSpacePreference: () => [history, next => { history = next(history) }] }
       if (name === '../hooks/useDebouncedSearch') return { useDebouncedSearch: q => debounced === undefined ? q : debounced }
       if (name === '../hooks/queries') return {
-        useMemories(params) {
+        useMemories: () => ({ data: { facts: [] } }),
+        useMemoryPages(params) {
           queries.push(params)
-          const facts = empty || params.q.trim() ? [] : [fact]
+          const facts = empty || params.q.trim() || (params.outcome_kind && params.outcome_kind !== 'decision') ? [] : [fact]
           return { data: { facts, facts_page: { has_more: false } }, isLoading: false, isFetching: fetching, isError: false }
         },
         useSessions: () => ({ data: { sessions: [] } }),
@@ -116,4 +117,12 @@ test('等待防抖或查询完成时不提前展示空结果', () => {
   assert.ok(s.loading())
   s.pending(false, '不存在的话题')
   assert.ok(s.title('没有匹配的结论'))
+})
+
+
+test('类型筛选作为服务端查询条件发送', () => {
+  const s = setup()
+  s.kind('经验')
+  s.render()
+  assert.equal(s.queries.at(-1).outcome_kind, 'lesson')
 })

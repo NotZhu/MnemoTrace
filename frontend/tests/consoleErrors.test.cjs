@@ -18,7 +18,7 @@ function setup(pageName) {
   const results = {
     usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', summary_system: 'synthetic', persona_system: 'synthetic' } } },
     useFocus: { data: { track: ['synthetic'], mute: [] } },
-    useMemories: { data: { facts: [fact], episodes: [], facts_page: { total: 1 }, fact_categories: [] } },
+    useMemoryPages: { data: { facts: [fact], episodes: [], facts_page: { total: 1 }, fact_categories: [] } },
     useAudit: { data: { checked: { facts: 1, entities: 0 }, total_findings: 1, by_kind: { fragment: 1 }, findings: [finding] } },
     useSessions: { data: { sessions: [] } }, useHealth: { data: { ready: true } },
     useAgentStatus: { data: { user: 'synthetic', counts: { facts_live: 1 }, session: { episodes: 1, episodes_pending: 0 } } },
@@ -129,14 +129,14 @@ test('会话输入不依赖历史查询成功，失败及重试保留正文和�
   const s = setup('Conversations'), input = () => s.find(n => n.type === 'textarea')
   input().props.onChange({ target: { value: 'synthetic conversation draft' } })
   s.find(n => n.type === 'SessionPicker').props.onChange('synthetic-selected')
-  s.results.useMemories = { isError: true, error: new Error('synthetic history failure') }
+  s.results.useMemoryPages = { isError: true, error: new Error('synthetic history failure') }
   assert.equal(input()?.props.value, 'synthetic conversation draft')
   assert.equal(s.find(n => n.type === 'SessionPicker').props.value, 'synthetic-selected')
-  s.results.useMemories = { isLoading: true }
+  s.results.useMemoryPages = { isLoading: true }
   assert.equal(input()?.props.value, 'synthetic conversation draft')
 })
 
-for (const [page, query, editor] of [['Journal', 'useMemories', 'OutcomeRow'], ['Health', 'useAudit', 'FindingRow']]) {
+for (const [page, query, editor] of [['Journal', 'useMemoryPages', 'OutcomeRow'], ['Health', 'useAudit', 'FindingRow']]) {
   test(`${page} 后台刷新失败保留正在编辑的行和草稿`, () => {
     const s = setup(page)
     const button = s.find(n => n.type === 'button' && ['编辑', '编辑这条记忆'].includes(n.props['aria-label']))
@@ -156,7 +156,7 @@ for (const [page, query, editor] of [['Journal', 'useMemories', 'OutcomeRow'], [
 
 test('结论重试恢复后新增、拆分或合并分组不重建已有编辑行', () => {
   const s = setup('Journal')
-  const original = s.results.useMemories.data.facts[0]
+  const original = s.results.useMemoryPages.data.facts[0]
   s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
   s.find(n => n.type === 'textarea').props.onChange({ target: { value: 'synthetic reordered draft' } })
   s.render()
@@ -165,17 +165,17 @@ test('结论重试恢复后新增、拆分或合并分组不重建已有编辑�
     assert.ok(s.find(n => n.type === 'textarea' && n.props.value === 'synthetic reordered draft'), 'unsaved editor stays visible')
     assert.ok(s.instance('OutcomeRow').split(',').includes(identity), 'original editing component remains mounted')
   }
-  s.results.useMemories.isError = true
-  s.results.useMemories.error = new Error('synthetic refresh failure')
+  s.results.useMemoryPages.isError = true
+  s.results.useMemoryPages.error = new Error('synthetic refresh failure')
   retained()
-  s.results.useMemories.isError = false
-  s.results.useMemories.isFetching = true
+  s.results.useMemoryPages.isError = false
+  s.results.useMemoryPages.isFetching = true
   retained()
   const newer = { ...original, id: 'synthetic-newer', subject: 'synthetic-other-session' }
   const sameSession = { ...original, id: 'synthetic-same-session' }
-  s.results.useMemories.isFetching = false
+  s.results.useMemoryPages.isFetching = false
   for (const facts of [[newer, original], [sameSession, original], [sameSession, newer, original], [sameSession, original]]) {
-    s.results.useMemories.data = { ...s.results.useMemories.data, facts }
+    s.results.useMemoryPages.data = { ...s.results.useMemoryPages.data, facts }
     retained()
   }
 })

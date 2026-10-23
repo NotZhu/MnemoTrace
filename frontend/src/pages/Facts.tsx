@@ -1,6 +1,6 @@
 
 
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { FileSearch, GitMerge, Loader2, Pencil, Plus, Search, ShieldAlert, Trash2, X } from 'lucide-react'
 
 import { Button, Card, CardTitle, ErrorBanner, ErrorState, Field, PageHeader, Spinner } from '../components/ui'
@@ -13,7 +13,7 @@ import {
   useConflicts,
   useDeleteFact,
   useEditFact,
-  useMemories,
+  useMemoryPages,
   useSourceEpisodes,
   useResolveConflict,
 } from '../hooks/queries'
@@ -32,27 +32,22 @@ export default function Facts() {
   const [status, setStatus] = useSpacePreference('facts', 'status')
   const [category, setCategory] = useSpacePreference('facts', 'category')
   const [hideSensitive, setHideSensitive] = useSpacePreference('facts', 'hideSensitive')
-  const [limit, setLimit] = useState(40)
   const [editing, setEditing] = useState<MemoryFact | null>(null)
   const [sourceOf, setSourceOf] = useState<MemoryFact | null>(null)
   const [adding, setAdding] = useState(false)
   const [confirmFact, setConfirmFact] = useState<MemoryFact | null>(null)
 
-  useEffect(() => {
-    setLimit(40)
-  }, [q, status, category, hideSensitive])
-
-  const { data, isLoading, isFetching, isError, isSuccess, isPlaceholderData, error, refetch } = useMemories({
+  const { data, isLoading, isFetching, isError, isSuccess, isPlaceholderData, error, refetch, loadMore } = useMemoryPages({
     // 只取属性类事实 —— 会话结论有自己的页面；混在一起的话，更新、更庞大的那类
     // 会在分页和列表里把另一类完全淹没。
     kind: 'attributes',
-    facts_limit: limit,
+    facts_limit: 40,
     episodes_limit: 0,
     q,
     status: status === 'all' ? undefined : status,
     category: category || undefined,
     include_sensitive: !hideSensitive,
-  }, { keepPreviousData: true })
+  })
   const facts = data?.facts ?? []
   const sourceQuery = useSourceEpisodes(!!sourceOf)
   const factsPage = data?.facts_page
@@ -63,7 +58,6 @@ export default function Facts() {
     setQ('')
     setCategory('')
     setStatus('live')
-    setLimit(40)
     searchInput.current?.focus()
   }
   const resetControl = hasFilters ? (
@@ -136,11 +130,12 @@ export default function Facts() {
           </div>
         </div>
       <div className="flex flex-1 flex-col" aria-busy={isFetching}>
-        {isError ? (
+        {isError && (
           <ErrorBanner message={(error as Error).message} action={
             <Button variant="ghost" disabled={isFetching} onClick={() => { void refetch() }}>{t.facts.retry}</Button>
           } />
-        ) : isLoading || !data ? <Spinner label={t.facts.loading} /> : facts.length ? (
+        )}
+        {!data ? (isError ? null : <Spinner label={t.facts.loading} />) : facts.length ? (
           <>
           {isPlaceholderData && <p role="status" className="px-4 py-2 text-xs text-ghost">{t.facts.updating}</p>}
           <ul className="divide-y divide-line">
@@ -208,7 +203,7 @@ export default function Facts() {
           </ul>
           {hasMore && (
             <div className="flex justify-center border-t border-line py-3">
-              <Button variant="ghost" disabled={isPlaceholderData || isFetching} onClick={() => setLimit((n) => n + 40)}>
+              <Button variant="ghost" disabled={isPlaceholderData || isFetching || isError} onClick={() => { void loadMore() }}>
                 {t.facts.loadMore}
               </Button>
             </div>

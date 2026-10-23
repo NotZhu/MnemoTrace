@@ -236,6 +236,9 @@ export class MnemoTraceClient {
     if (options.episodesOffset !== undefined) params.set('episodes_offset', String(options.episodesOffset))
     if (options.status !== undefined) params.set('status', options.status)
     if (options.kind !== undefined) params.set('kind', options.kind)
+    if (options.outcomeKind !== undefined) params.set('outcome_kind', options.outcomeKind)
+    if (options.expectedRevision !== undefined) params.set('expected_revision', options.expectedRevision)
+    if (options.evaluatedAt !== undefined) params.set('evaluated_at', String(options.evaluatedAt))
     const query = options.query ?? options.q
     if (query !== undefined) params.set('q', query)
     if (options.includeSensitive !== undefined) {

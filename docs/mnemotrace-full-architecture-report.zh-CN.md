@@ -49,7 +49,7 @@ flowchart TD
     subgraph IN["外部入口"]
         API["Python API\nMemory / MemoryService"]
         HTTP["HTTP API\nmnemotrace/server/app.py"]
-        UI["React 控制台\nRouter 保留页面 · 查询错误局部呈现\n草稿限当前登录周期"]
+        UI["React 控制台\nRouter 保留页面 · 查询错误局部呈现\n共享分页 · 提交版本与评估时刻 · 登录周期内草稿"]
         MCP["MCP tools\nmnemotrace/mcp/server.py"]
         EVAL["Eval harness\neval/bench.py"]
         SDK["TypeScript SDK / Agent adapter"]
@@ -964,19 +964,37 @@ ScopeSelect 与 ExportRangeSelect 通过类型化封装复用 FilterSelect，统
 
 ### 10.4 事实、画像、体检、结论与隐私
 
-Facts 经 `useMemories → GET /v1/memories → MemoryService.memories` 查询：先按记录类型和敏感可见范围
-生成 fact_categories，再应用精确分类、状态和搜索，最后分页。空分类以“其他”参与筛选，不改写存储；
-分类候选不随搜索、状态或分页缩减。空间级 counts 与筛选后的 facts_page.total 分别展示，原始对话不受分类影响。
-切换筛选重置分页，清除条件保留敏感开关。验证见[事实筛选](../results/fact_filters_validation.md)。
+Facts、Timeline、Journal 和 Conversations 经 `hooks/memoryPages.ts::useMemoryPages → GET /v1/memories → MemoryService.memories`
+浏览已存储数据。服务先按类型与敏感范围生成分类候选，再应用分类、状态和搜索，最后对匹配集合分页；
+`outcome_kind` 精确筛选 decision/finding/lesson/open_question，在分页前与其他条件相交，非法值拒绝。
+空分类以“其他”参与筛选；空间级 counts 与筛选后的 page.total 分别展示。事实按 (valid_at,id)、原文按 (event_time,id)
+倒序，显式单页上限分别为 500/200，未传 limit 的单次全文语义保留。控制台固定每页 40/60/60/20，不递增 limit。
 
-`hooks/queries.ts::useMemories` 的完整 queryKey 保留所有参数；临时旧响应仅在同账号且范围参数一致时复用，
-只豁免搜索词和请求条数变化。敏感范围、kind、分类、状态、偏移及未来筛选字段改变均不能借用旧响应；
-include_sensitive 未传按 false 比较，空分类按未传处理。当前条件已有缓存时直接使用查询库的对应缓存。
-`pages/Facts.tsx` 在列表内处理加载、失败与 refetch；工具栏保持挂载，无数据时只保留当前分类值，计数等待，
-占位空列表显示更新，占位分页禁用。Layout 的统一页面挂载与错误隔离见第 10.2 节；
-Facts 的列表错误不移除事实编辑组件，来源在弹窗内区分错误、空结果和成功原文，失败可局部重试。
-此机制不改变独立冲突、来源或画像接口及敏感过滤范围。
-工程证据与浏览器边界见 [查询范围与展示验收](../results/console-validation-index.md#query-scope)。
+共享分页将账号、完整筛选条件和页大小作为缓存身份，offset、提交版本与评估时刻放在 pageParams 中，消费服务端 next_offset，
+按 ID 合并页面。无匹配只依据当前查询成功响应判断；同范围搜索可以临时沿用旧展示，但占位计数等待、分页禁用。
+其他条件改变不复用旧页。单次概览查询继续使用 `hooks/queries.ts::useMemories`；它的旧响应复用规则保留。
+
+服务响应的 data_revision 复用读取对象的提交版本，empty 表示尚无持久化提交；evaluated_at 是首次请求在读取作用域内捕获的 Unix 秒。
+后续页成对携带 expected_revision 和 evaluated_at，缺一项或时间不是有限非负数则拒绝。
+状态过滤、行 status 及 facts_live/facts_superseded/facts_outcomes 使用同一 evaluated_at；自然时间流逝不改变已浏览批次，
+重载才使用新时刻。读取版本变化返回 HTTP 409 / memory_revision_changed，不另存快照。
+版本只跟踪标准 MemoryService 持久化提交，裸 Memory 的未保存修改不受保护；该协议不提供历史快照或独立双时间查询。
+
+Infinite Query 是页面链唯一提交者；显式重载调用 refetch(cancelRefetch=true)。写后统一经过 queries.ts::refreshAfterWrite：
+先显式取消所有受影响的查询根，等待取消完成后核对捕获的登录周期，再调用 invalidateQueries。
+这是因为库的 cancelRefetch 仅在已有 data 时替换请求，无缓存首屏会复用旧 pending 请求；显式取消屏障同时覆盖首屏、筛选首屏和概览。
+新增/编辑/删除、记忆导入与会话关闭、冲突处理和策略更新使用该入口；写入成功回调不等待后台刷新，旧周期不影响新登录缓存。
+两者从不携带旧上下文的第一页开始，按新响应的 next_offset、版本和时刻重建已加载页数；新集合变短时在末页停止。
+整批成功后才替换旧数据，任意后续页失败保留全部旧页和草稿。没有独立重载 mutation、直接 setQueryData 或时间戳错误仲裁，
+也不使用 fetchInfiniteQuery 的新鲜度判断或持久化 pages=1 配置。API 将查询 AbortSignal 传给 fetch，查询取消还阻止忽略信号的迟到响应提交。
+普通下一页错误只重试该页；版本变化与协议错误停止追加并提供显式重载。不自动循环追赶外部写入。
+版本冲突不进入全局重试横幅，也会清除同查询先前的网络错误；其他错误沿用局部/全局处理。
+HTTP 契约见 [API 文档](../API.md#记忆列表的筛选与一致分页)，TypeScript SDK 同步提供 outcomeKind、expectedRevision、evaluatedAt 和响应上下文。
+
+Layout 的页面挂载和错误隔离见第 10.2 节。Facts 的列表失败不移除事实编辑组件，来源读取仍区分失败、空结果与成功原文。
+原始对话行和展开状态使用 Episode ID，不使用数组位置。筛选清除保留敏感开关；分类候选不随搜索、状态和分页缩减。
+验证与边界见[分页验收](../results/console_pagination_validation.md)、[事实筛选](../results/fact_filters_validation.md)
+和[查询范围验收](../results/console-validation-index.md#query-scope)。
 
 Profile 的 EvidenceChip 只将 source_count 显示为来源数，访问强化单独标识，不将 count 当成来源或置信度。
 来源查看、候选进入和习惯展示的缺口见[问题台账](known-issues.zh-CN.md)。Timeline 按 valid_at 展示
@@ -992,7 +1010,8 @@ hashing 或英文嵌入模型对当前语料的限制，并提供显式重嵌入
 验证见[体检编辑](../results/health_edit_validation.md)与[排序](../results/health_audit_order_pytest.txt)。
 
 Journal 从相同 Fact 存储按 outcome 类型查询，按会话分组；250ms 防抖与输入法组合检查控制请求，
-仅同账号和同记录类型沿用上一页结果。结论通过 close_session 蒸馏；重复关闭仍可能因同义改写新增，
+类型条件在后端分页前生效，按 ID 累计页面；顶部待解决卡片独立查询 live open_question，沿用搜索、最多 8 条，
+不受类型按钮或主列表当前页影响。结论通过 close_session 蒸馏；重复关闭仍可能因同义改写新增，
 不能承诺未变化会话完全幂等，重复结论的状态见[问题台账](known-issues.zh-CN.md)。
 验证见[结论搜索](../results/journal_search_validation.md)和[结论提示词](../results/session_outcomes_prompt_validation.md)。
 

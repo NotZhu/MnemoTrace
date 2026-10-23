@@ -12,7 +12,7 @@ import {
   useAgentStatus,
   useClearWorking,
   useCloseSession,
-  useMemories,
+  useMemoryPages,
   useRemember,
   useSessionReport,
   useSessions,
@@ -26,10 +26,9 @@ import type { RememberScope } from '../types'
 const SESSION_ACTION_CLASS = 'whitespace-nowrap border-0 bg-transparent p-0 text-[11px] text-ghost transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand-cyan disabled:cursor-wait disabled:opacity-50'
 
 export default function Conversations() {
-  const [limit, setLimit] = useState(20)
-  const { data, isLoading, isError, error, refetch } = useMemories({
+  const { data, isLoading, isError, error, refetch, loadMore, isFetching } = useMemoryPages({
     facts_limit: 0,
-    episodes_limit: limit,
+    episodes_limit: 20,
     include_sensitive: true,
   })
   const remember = useRemember()
@@ -227,8 +226,8 @@ export default function Conversations() {
         {!data ? (isLoading ? <Spinner label={t.conversations.loading} /> : null) : episodes.length ? (
           <>
           <ul className="gap-3 md:columns-2">
-            {episodes.map((e, i) => {
-              const key = `${e.date}-${e.session}-${i}`
+            {episodes.map((e) => {
+              const key = e.id
               const isOpen = expanded[key]
               const long = e.content.length > 320
               return (
@@ -260,7 +259,7 @@ export default function Conversations() {
           </ul>
           {data.episodes_page?.has_more && (
             <div className="mt-4 flex justify-center">
-              <Button variant="ghost" onClick={() => setLimit((n) => n + 20)}>
+              <Button variant="ghost" disabled={isFetching || isError} onClick={() => { void loadMore() }}>
                 {t.conversations.loadMore}
               </Button>
             </div>

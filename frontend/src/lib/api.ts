@@ -43,6 +43,13 @@ export class ApiError extends Error {
   }
 }
 
+export class MemoryRevisionChangedError extends ApiError {
+  constructor(message = '记录已变化，请重新加载') {
+    super(409, message)
+    this.name = 'MemoryRevisionChangedError'
+  }
+}
+
 export class StaleSessionError extends ApiError {
   constructor() {
     super(409, t.errors.spaceChanged)
@@ -91,15 +98,20 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError(401, t.errors.unauthorized)
   }
   if (!res.ok) {
+    let code: string | undefined
     let detail = t.errors.requestFailed(res.status)
     try {
       const body = await guard.wait(res.json())
-      if (body?.detail) detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
+      if (body?.detail) {
+        code = body.detail.code
+        detail = typeof body.detail === 'string' ? body.detail : body.detail.message ?? JSON.stringify(body.detail)
+      }
     } catch (error) {
       if (error instanceof StaleSessionError) throw error
       /* 非 JSON 的错误响应体 */
     }
     guard.check()
+    if (res.status === 409 && code === 'memory_revision_changed') throw new MemoryRevisionChangedError(detail)
     throw new ApiError(res.status, detail)
   }
   if (res.status === 204) return undefined as T
@@ -118,7 +130,12 @@ const qs = (params: object) => {
   return s ? `?${s}` : ''
 }
 
+export type OutcomeKind = 'decision' | 'finding' | 'lesson' | 'open_question'
+
 export interface MemoriesQuery {
+  outcome_kind?: OutcomeKind
+  expected_revision?: string
+  evaluated_at?: number
   facts_limit?: number
   facts_offset?: number
   episodes_limit?: number
@@ -159,7 +176,8 @@ export interface RememberOptions {
 export const api = {
   health: () => request<Health>('/health'),
 
-  memories: (params: MemoriesQuery = {}) => request<MemoryDump>(`/v1/memories${qs(params)}`),
+  memories: (params: MemoriesQuery = {}, options: Pick<RequestInit, 'signal'> = {}) =>
+    request<MemoryDump>(`/v1/memories${qs(params)}`, options),
   audit: (limit = 60) => request<AuditReport>(`/v1/audit?limit=${limit}`),
   sessions: (params: SessionsQuery = {}) => request<SessionsIndex>(`/v1/sessions${qs(params)}`),
   agentStatus: (sessionId?: string) =>

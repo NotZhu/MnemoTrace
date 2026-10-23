@@ -50,12 +50,12 @@ flowchart TD
 
   CORE <-->|"嵌入与相似度"| EMB["可插拔 Embedder<br/>hashing 离线兜底；语言能力需检查"]
   CORE --> READ["证据规划与混合检索<br/>dense · BM25 · graph · recency · salience<br/>RRF · as-of · 弃答与原文融合"]
-  CORE --> LIST["按类型列出事实与结论"]
+  CORE --> LIST["服务端完整筛选后分页<br/>确定排序 · 提交版本与评估时刻"]
   CORE --> AUDIT["审计与 slot_overflow<br/>clear-slot 计数校验；保护用户断言和历史"]
   READ --> CLIENT["HTTP · MCP · SDK · 控制台"]
   LIST --> CLIENT
   AUDIT --> CLIENT
-  CLIENT --> UI["控制台<br/>Router 内部导航 · 页面保持挂载<br/>局部查询错误 · 登录周期内草稿"]
+  CLIENT --> UI["控制台<br/>Router 内部导航 · 页面保持挂载<br/>共享分页 · 固定评估时刻 · 整批重载<br/>局部查询错误 · 登录周期内草稿"]
   BENCH["独立评测 harness<br/>声明 embedder / answerer / judge<br/>full-context baseline"] -.-> READ
 ```
 
@@ -205,9 +205,10 @@ watch 的 `seen` 可能包含放弃收尾的记录，不能把本地账本条目
 | 开发入口 | Vite 开发与预览在 base 检查前将 GET/HEAD /ui 重定向到 /ui/，保留查询参数；开发监听忽略 Windows 原子写入临时目录 | [Vite 配置](../frontend/vite.config.ts)、[主题验收中的开发检查](../results/theme_validation.md) |
 | 共享选择器 | ScopeSelect、ExportRangeSelect 保留类型、选项和说明，统一复用 FilterSelect 的键盘、失焦、禁用逻辑；删除无调用的内部导出 | [清理验收](../results/frontend_select_cleanup_validation.md) |
 | 事实分类与状态筛选 | category 与 kind、状态、搜索和敏感范围在分页前共同筛选。分类选项按同空间/类型/敏感可见范围生成，不被已选分类、搜索和分页缩减；三态筛选按空间保存，切换后重置分页 | [筛选验收](../results/fact_filters_validation.md) |
-| 查询旧响应复用范围 | useMemories 仅允许同账号、同过滤范围下的搜索词与请求条数变化借用整份旧响应；分页偏移与未来筛选字段默认参与比较，敏感缺省值归一化为 false。Facts 无兼容数据时仅列表加载，错误时保留挂载和当前查询重试；计数、分类与空态不冒充新结果，占位期间禁用加载更多。选择停止复用而非页面二次过滤，避免分页和分类信息失配 | [查询范围与展示验收](../results/console-validation-index.md#query-scope) |
+| 列表分页与版本一致性 | 四页统一完整筛选、计数及稳定排序，再用 next_offset 和固定页大小累计 ID，事实/原文上限 500/200。提交版本固定记录，evaluated_at 固定过滤、行状态和三个事实统计；空库为 empty，裸 Memory 未保存修改不受保护。手动请求写缓存曾允许旧重载覆盖新结果，改由 Infinite Query 独占提交；重载与写后失效从第一页重建已加载深度，全部成功后替换，失败保留旧页和草稿。无缓存首屏会被 invalidateQueries 去重，写后因此统一先取消所有受影响查询，再在登录周期复核后失效；冲突/策略旁路同用该入口。AbortSignal 传输取消与查询取消共同隔离迟到响应。避免 fetchInfiniteQuery 新鲜度判断及 pages=1 残留；代价为重载请求量随已加载页数增加。HTTP/SDK 同步契约，无历史快照和持续写入自动追赶 | [服务回归](../tests/test_memory_pagination.py)、[查询生命周期](../frontend/tests/memoryPages.test.cjs)、[工程与浏览器证据](../results/console_pagination_validation.md) |
+| 查询旧响应复用范围 | 单次 useMemories 仅允许同账号、同过滤范围下的搜索词与请求条数变化借用整份旧响应；分页偏移与未来筛选字段默认参与比较，敏感缺省值归一化为 false。Facts 无兼容数据时仅列表加载，错误时保留挂载和当前查询重试；计数、分类与空态不冒充新结果，占位期间禁用加载更多。选择停止复用而非页面二次过滤，避免分页和分类信息失配 | [查询范围与展示验收](../results/console-validation-index.md#query-scope) |
 | 记忆体检 | 服务在 limit 前稳定按红、琥珀、蓝、灰排序，by_kind 统计全部；前端复制数组排序，不改写缓存。属性编辑用三元组，结论用整句，样本文本不冒充 Episode 原文 | [体检验收](../results/health_edit_validation.md)、[排序回归输出](../results/health_audit_order_pytest.txt) |
-| 会话结论搜索 | 工具栏保持挂载，组词期间不提交拼音，停顿 250ms 后查询，清空立即恢复；复用遵守共享查询范围，搜索换词保留列表，历史状态改变则等待当前范围响应 | [搜索验收](../results/journal_search_validation.md)、[范围回归](../results/console-validation-index.md#query-scope) |
+| 会话结论搜索 | 工具栏保持挂载，组词期间不提交拼音，停顿 250ms 后查询，清空立即恢复。具体类型在服务端分页前筛选，搜索旧展示受查询范围约束；待解决卡片单独取 live open_question，不从主列表已加载页推导 | [搜索验收](../results/journal_search_validation.md)、[范围回归](../results/console-validation-index.md#query-scope) |
 | 原始会话列表与写入表单 | 搜索停顿 500ms 查询，加载时保留同空间列表。SessionPicker 独立读取完整索引，默认 default，新 ID 只在确认后切换；收尾绑定所点卡片 ID，报告也打开该会话，不改顶部选择。表单内容与底部选择器分区，草稿仅页面内存在 | [会话搜索与表单验收](../results/conversations_search_validation.md) |
 | 导出范围说明 | 空间名取 agent_status.user，不用 Key 冒充；默认 compact，范围随选项显示，并解释模型处理边界，不改变导出载荷 | [导出说明](../results/privacy_export_guidance_validation.md) |
 | 落地页生成 | demo/docs 的共用内容由模板和差异插槽生成，保留各页有意差别；CI 做只读同步检查，减少手工双改造成的漂移 | [维护验收](../results/maintenance_cleanup_validation.md)、[生成器](../scripts/build_landing_pages.py) |

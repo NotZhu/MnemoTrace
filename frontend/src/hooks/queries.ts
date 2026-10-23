@@ -1,4 +1,5 @@
-import { hashKey, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+export { useMemoryPages } from './memoryPages'
+import { hashKey, useMutation, useQuery, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
 
 import {
   api,
@@ -8,7 +9,7 @@ import {
   type RememberOptions,
   type SessionsQuery,
 } from '../lib/api'
-import { useAuth } from '../store/auth'
+import { currentSession, isCurrentSession, useAuth } from '../store/auth'
 import type { FactEdit, FactWrite, Focus, Policy } from '../types'
 
 // 查询 key 按登录 key 做命名空间隔离，切换账号时缓存不会串味。
@@ -103,20 +104,24 @@ export function useFocus() {
   return useQuery({ queryKey: qk.focus(), queryFn: api.focus, enabled, retry: false })
 }
 
+function refreshAfterWrite(client: QueryClient, roots: readonly QueryKey[]) {
+  const session = currentSession()
+  if (session.key === null || roots.some(key => key[1] !== session.key)) return
+  // Invalidation reuses pending first loads. Cancel them even when no data has been committed yet.
+  void Promise.all(roots.map(queryKey => client.cancelQueries({ queryKey }))).then(() => {
+    if (!isCurrentSession(session)) return
+    return Promise.all(roots.map(queryKey => client.invalidateQueries({ queryKey })))
+  })
+}
+
 /** 使一次写入可能影响的所有查询失效（facts、profile、graph）。 */
 function useInvalidateMemory() {
   const qc = useQueryClient()
-  return () => {
-    qc.invalidateQueries({ queryKey: qk.memoriesRoot() })
-    qc.invalidateQueries({ queryKey: qk.sessionsRoot() })
-    qc.invalidateQueries({ queryKey: qk.graphRoot() })
-    qc.invalidateQueries({ queryKey: qk.focus() })
-    qc.invalidateQueries({ queryKey: qk.profile() })
-    // 健康页的审计结果派生自同一批事实。不加这行的话，删除后 Health 页仍显示
-    // 刚被清掉的行 — 再点它的（不可逆）清空按钮会报"检查后槽位已变化"，
-    // 把所有者自己的修改归咎于存储层。
-    qc.invalidateQueries({ queryKey: qk.auditRoot() })
-  }
+  return () => refreshAfterWrite(qc, [
+    qk.memoriesRoot(), qk.sessionsRoot(), qk.graphRoot(), qk.focus(), qk.profile(),
+    // 审计结果也派生自事实，必须重新核对批量操作前显示的数量。
+    qk.auditRoot(),
+  ])
 }
 
 /** 原始 episode，仅在需要把某条事实的 provenance id 解析回源文本时才拉取。 */
@@ -157,12 +162,7 @@ export function useResolveConflict() {
   return useMutation({
     mutationFn: ({ id, keep }: { id: string; keep: 'newer' | 'older' | 'both' }) =>
       api.resolveConflict(id, keep),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.conflicts() })
-      qc.invalidateQueries({ queryKey: qk.memoriesRoot() })
-      qc.invalidateQueries({ queryKey: qk.profile() })
-      qc.invalidateQueries({ queryKey: qk.graphRoot() })
-    },
+    onSuccess: () => refreshAfterWrite(qc, [qk.conflicts(), qk.memoriesRoot(), qk.profile(), qk.graphRoot()]),
   })
 }
 
@@ -170,7 +170,7 @@ export function useClearWorking() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (session_id?: string) => api.clearWorking(session_id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['working', ns()] }),
+    onSuccess: () => refreshAfterWrite(qc, [['working', ns()]]),
   })
 }
 
@@ -190,7 +190,7 @@ export function useCloseSession() {
     mutationFn: (session_id?: string) => api.closeSession(session_id),
     onSuccess: () => {
       invalidate()
-      qc.invalidateQueries({ queryKey: ['working', ns()] })
+      refreshAfterWrite(qc, [['working', ns()]])
     },
   })
 }
@@ -248,9 +248,6 @@ export function useSetPolicy() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (patch: Partial<Policy>) => api.setPolicy(patch),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.policy() })
-      qc.invalidateQueries({ queryKey: qk.memoriesRoot() }) // persona 可能已变化
-    },
+    onSuccess: () => refreshAfterWrite(qc, [qk.policy(), qk.memoriesRoot()]),
   })
 }

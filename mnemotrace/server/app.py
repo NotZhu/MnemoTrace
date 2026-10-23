@@ -446,6 +446,9 @@ def memories(
     q: str = "",
     include_sensitive: bool = False,
     category: Optional[str] = None,
+    outcome_kind: Optional[str] = None,
+    expected_revision: Optional[str] = None,
+    evaluated_at: Optional[float] = None,
     user: str = Depends(auth),
 ):
     """浏览已存储的记忆。
@@ -455,21 +458,33 @@ def memories(
     profile 和敏感 fact。
     `kind=outcomes` 只保留 session 结论（decision/finding/lesson/open_question），
     `kind=attributes` 只保留其余内容；其他值和 `status` 一样被忽略。
+    `outcome_kind` 精确筛选四类结论；后续页成对携带 `expected_revision` 和 `evaluated_at`，
+    分别固定已提交集合与状态评估时刻。提交版本不符时返回 409。
     `category` 精确筛选事实分类（空分类归入“其他”），在分页前生效；
     `fact_categories` 返回同一事实类型及敏感可见范围内的分类，不受搜索、状态及分页限制。
     """
-    return svc().memories(
-        user,
-        facts_limit=facts_limit,
-        facts_offset=facts_offset,
-        episodes_limit=episodes_limit,
-        episodes_offset=episodes_offset,
-        status=status,
-        kind=kind,
-        q=q,
-        include_sensitive=include_sensitive,
-        category=category,
-    )
+    from ..service import MemoryRevisionChanged
+
+    try:
+        return svc().memories(
+            user,
+            facts_limit=facts_limit,
+            facts_offset=facts_offset,
+            episodes_limit=episodes_limit,
+            episodes_offset=episodes_offset,
+            status=status,
+            kind=kind,
+            q=q,
+            include_sensitive=include_sensitive,
+            category=category,
+            outcome_kind=outcome_kind,
+            expected_revision=expected_revision,
+            evaluated_at=evaluated_at,
+        )
+    except MemoryRevisionChanged as exc:
+        raise HTTPException(409, {"code": "memory_revision_changed", "message": str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.get("/v1/audit")

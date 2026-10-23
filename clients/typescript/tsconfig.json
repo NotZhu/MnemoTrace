@@ -13,6 +13,6 @@
     "verbatimModuleSyntax": true,
     "outDir": "dist"
   },
-  "include": ["src"],
+  "include": ["src", "test/*.types.ts"],
   "exclude": ["dist", "node_modules", "examples"]
 }

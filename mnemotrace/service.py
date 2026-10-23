@@ -10,6 +10,7 @@ MCP server 和导入 CLI 在没有安装 web 依赖时也能使用它。
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import queue
 import re
@@ -32,7 +33,15 @@ from .store.persist import (
     PersistenceError,
     snapshot_version,
 )
-from .util import fmt_date, fmt_datetime
+from .util import fmt_date, fmt_datetime, now
+
+FACTS_PAGE_LIMIT = 500
+EPISODES_PAGE_LIMIT = 200
+
+
+class MemoryRevisionChanged(ValueError):
+    """A later page belongs to a different committed collection."""
+
 
 DEFAULT_DATA_DIR = os.path.expanduser("~/.mnemotrace/data")
 
@@ -98,7 +107,7 @@ def _page(items: list, offset: int = 0, limit: Optional[int] = None) -> tuple[li
         sliced = items[start:]
         next_offset = None
     else:
-        effective_limit = _clamp_limit(limit, max_value=500)
+        effective_limit = max(0, int(limit))
         if effective_limit == 0:
             sliced = []
             next_offset = None
@@ -1116,6 +1125,9 @@ class MemoryService:
         q: str = "",
         include_sensitive: bool = False,
         category: Optional[str] = None,
+        outcome_kind: Optional[str] = None,
+        expected_revision: Optional[str] = None,
+        evaluated_at: Optional[float] = None,
     ) -> dict:
         """浏览已存储的记忆。
 
@@ -1128,9 +1140,21 @@ class MemoryService:
         """
         from .consolidate.outcomes import OUTCOME_PREDICATES, split_outcome_text
 
+        if outcome_kind is not None and outcome_kind not in OUTCOME_PREDICATES:
+            raise ValueError("outcome_kind must be decision, finding, lesson or open_question")
+        if (expected_revision is None) != (evaluated_at is None):
+            raise ValueError("expected_revision and evaluated_at must be provided together")
+        if evaluated_at is not None and (not math.isfinite(evaluated_at) or evaluated_at < 0):
+            raise ValueError("evaluated_at must be a finite non-negative Unix timestamp")
         mem = self.get(user)
-        all_facts = sorted(_all_facts(mem), key=lambda f: f.valid_at, reverse=True)
-        episodes_all = sorted(mem.episodes_doc.values(), key=lambda ep: ep.event_time, reverse=True)
+        # Pin the token to the loaded object, not a second manifest read that could see a newer commit.
+        data_revision = mem._snapshot_version or "empty"
+        if expected_revision is not None and expected_revision != data_revision:
+            raise MemoryRevisionChanged("记录已变化，请重新加载")
+        # A commit fixes stored records; the evaluation time also fixes membership as time passes.
+        evaluated_at = now() if evaluated_at is None else evaluated_at
+        all_facts = sorted(_all_facts(mem), key=lambda f: (f.valid_at, f.id), reverse=True)
+        episodes_all = sorted(mem.episodes_doc.values(), key=lambda ep: (ep.event_time, ep.id), reverse=True)
 
         needle = q.strip().lower()
 
@@ -1140,7 +1164,7 @@ class MemoryService:
                 "subject": f.subject, "predicate": f.predicate,
                 "object": f.object, "valid_at": fmt_datetime(f.valid_at),
                 "invalid_at": fmt_datetime(f.invalid_at) if f.invalid_at else None,
-                "status": "live" if f.is_live() else "superseded",
+                "status": "live" if f.is_live(as_of=evaluated_at) else "superseded",
                 "source": f.source, "supersedes": f.supersedes,
                 "category": getattr(f, "category", ""), "sensitive": getattr(f, "sensitive", False),
                 "salience": round(f.salience, 2), "provenance": f.provenance,
@@ -1174,6 +1198,8 @@ class MemoryService:
             filtered_facts = [f for f in filtered_facts if f.predicate.lower() in OUTCOME_PREDICATES]
         elif kind_key == "attributes":
             filtered_facts = [f for f in filtered_facts if f.predicate.lower() not in OUTCOME_PREDICATES]
+        if outcome_kind is not None:
+            filtered_facts = [f for f in filtered_facts if f.predicate.lower() == outcome_kind]
         if not include_sensitive:
             filtered_facts = [f for f in filtered_facts if not getattr(f, "sensitive", False)]
         def category_of(f) -> str:
@@ -1184,9 +1210,9 @@ class MemoryService:
         if category and category.strip():
             filtered_facts = [f for f in filtered_facts if category_of(f) == category.strip()]
         if status in {"live", "current"}:
-            filtered_facts = [f for f in filtered_facts if f.is_live()]
+            filtered_facts = [f for f in filtered_facts if f.is_live(as_of=evaluated_at)]
         elif status in {"superseded", "old", "history"}:
-            filtered_facts = [f for f in filtered_facts if not f.is_live()]
+            filtered_facts = [f for f in filtered_facts if not f.is_live(as_of=evaluated_at)]
         if needle:
             def matches_fact(f) -> bool:
                 haystack = " ".join([
@@ -1207,22 +1233,24 @@ class MemoryService:
                 if needle in " ".join([ep.content or "", ep.summary or "", ep.session_id or ""]).lower()
             ]
 
-        facts_lim = _clamp_limit(facts_limit, default=None, max_value=1000)
-        episodes_lim = _clamp_limit(episodes_limit, default=None, max_value=200)
+        facts_lim = _clamp_limit(facts_limit, default=None, max_value=FACTS_PAGE_LIMIT)
+        episodes_lim = _clamp_limit(episodes_limit, default=None, max_value=EPISODES_PAGE_LIMIT)
         facts_page_items, facts_page = _page(filtered_facts, facts_offset, facts_lim)
         episodes_page_items, episodes_page = _page(filtered_episodes, episodes_offset, episodes_lim)
         facts_payload = [fact_view(f) for f in facts_page_items]
         episodes_payload = [episode_view(ep) for ep in episodes_page_items]
         return {
             "user": user,
+            "data_revision": data_revision,
+            "evaluated_at": evaluated_at,
             "profile": mem.build_persona(user) if include_sensitive else "",
             "counts": {"episodes": len(episodes_all),
-                       "facts_live": sum(1 for f in all_facts if f.is_live()),
-                       "facts_superseded": sum(1 for f in all_facts if not f.is_live()),
+                       "facts_live": sum(1 for f in all_facts if f.is_live(as_of=evaluated_at)),
+                       "facts_superseded": sum(1 for f in all_facts if not f.is_live(as_of=evaluated_at)),
                        # 与 facts_live/facts_superseded 一样，基于未过滤集合统计：若计数随当前
                        # 过滤收缩，调用方就无法判断 outcomes 到底存不存在。
                        "facts_outcomes": sum(1 for f in all_facts
-                                             if f.is_live() and f.predicate.lower() in OUTCOME_PREDICATES),
+                                             if f.is_live(as_of=evaluated_at) and f.predicate.lower() in OUTCOME_PREDICATES),
                        "summaries": len(mem.summary_vec.values())},
             "facts": facts_payload,
             "fact_categories": fact_categories,

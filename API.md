@@ -206,6 +206,47 @@ agent session。
 | GET | `/v1/export?include_sensitive=false` | 安全结构化导出：仅非敏感 facts + graph；不含画像、摘要、原始对话 |
 | POST | `/v1/forget` | 需 `{"confirm":true}`；清空该 key 的全部记忆（不可逆） |
 
+### 记忆列表的筛选与一致分页
+
+`GET /v1/memories` 在分页前组合 `kind`、`outcome_kind`、`status`、`category`、`q` 与敏感可见范围。
+`outcome_kind` 仅允许 `decision`、`finding`、`lesson`、`open_question`，未传表示不限制，非法值返回 422。
+事实按 `(valid_at, id)` 倒序，原始对话按 `(event_time, id)` 倒序；同一时间的顺序确定。
+
+- `facts_limit` / `facts_offset`、`episodes_limit` / `episodes_offset` 分别控制两类列表；显式 limit 上限为 500 / 200，0 表示不取该类记录，未传 limit 保留不分页的全文语义。
+- `facts_page` / `episodes_page` 含 `items`、`total`、`offset`、`limit`、`has_more`、`next_offset`；只按服务端 `next_offset` 前进，末页该值为 null。每类页面的 total 与记录来自同一匹配集合；`counts` 仍为原有空间级统计，不随搜索和分类收缩。
+- 首次请求省略 `expected_revision` 和 `evaluated_at`，响应返回不透明 `data_revision` 与数值 `evaluated_at`（Unix 秒）。后续页成对传回这两个值。缺一项、负数或非有限时间返回 422。
+- 同一批分页的 live/历史过滤、事实行 `status` 和 `counts.facts_live` / `facts_superseded` / `facts_outcomes` 都按首次评估时刻判定。自然时间流逝不改变当前批次；重新从第一页省略上下文请求才取得新时刻。
+- 后续请求的提交版本不符时返回 HTTP 409：`{"detail":{"code":"memory_revision_changed","message":"记录已变化，请重新加载"}}`，不附带可追加页面。调用方应保留已有展示，停止追加，并由用户重新加载；不自动重试旧上下文。
+
+版本保护适用于通过标准 `MemoryService` 持久化写入路径提交的变化；`"empty"` 代表尚无持久化提交。
+裸 `Memory` 的未保存修改不受此协议保护。该接口不保留历史快照，也不提供相互独立的有效时间与事务时间查询。
+
+TypeScript SDK 使用 camelCase 请求选项，响应保持 HTTP 字段名；完整遍历示例：
+
+```typescript
+import { MnemoTraceClient } from 'mnemotrace-memory'
+
+const client = new MnemoTraceClient({ apiKey: 'synthetic-key' })
+let offset = 0
+let revision: string | undefined
+let evaluatedAt: number | undefined
+const ids = new Set<string>()
+for (;;) {
+  const page = await client.memories({
+    factsLimit: 60, factsOffset: offset, episodesLimit: 0,
+    kind: 'outcomes', outcomeKind: 'lesson',
+    expectedRevision: revision, evaluatedAt,
+  })
+  revision = page.data_revision
+  evaluatedAt = page.evaluated_at
+  for (const fact of page.facts) ids.add(fact.id)
+  if (!page.facts_page.has_more) break
+  offset = page.facts_page.next_offset!
+}
+```
+
+SDK 非成功响应抛出 `MnemoTraceError`；409 的机器错误码保留在错误的 `detail.detail.code` 中，SDK 不自动重试。
+
 整句编辑的 `statement` 仅适用于已有谓词为 `decision`、`finding`、`lesson`、`open_question` 的
 会话结论；属性事实必须通过 `subject`、`predicate`、`object` 修正。对属性事实提交 `statement`
 （即使与原文相同）、空白 statement 或混合两种内容字段，均返回 HTTP 422，不修改事实或图谱。

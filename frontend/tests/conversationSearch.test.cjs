@@ -52,7 +52,7 @@ function setup(sessionItems = []) {
     require(name) {
       if (name === 'react') return hookReact
       if (name === '../hooks/queries') return {
-        useMemories: () => ({data: {episodes: []}}),
+        useMemoryPages: () => ({data: {episodes: []}}),
         useAgentStatus: () => ({}), useWorking: () => ({refetch(){}}), useSessionReport: (id) => {reports.push(id);return {}},
         useRemember: () => ({}), useClearWorking: () => ({}),
         useCloseSession: () => ({mutate(id, callbacks){closed.push(id);callbacks.onSuccess({facts_added:1,outcomes:1})}}),

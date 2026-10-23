@@ -391,3 +391,35 @@ test('forget requires explicit confirmation before sending destructive request',
   assert.deepEqual(JSON.parse(calls[0].init.body), { confirm: true })
   assert.equal(done.ok, true)
 })
+
+
+test('memory browse sends outcome and complete context and exposes the response context', async () => {
+  const calls = []
+  const client = new MnemoTraceClient({ fetch: async url => {
+    calls.push(new URL(url))
+    return new Response(JSON.stringify({ data_revision: 'synthetic-v1', evaluated_at: 1000, facts: [] }))
+  } })
+  const dump = await client.memories({ outcomeKind: 'lesson', expectedRevision: 'synthetic-v1', evaluatedAt: 1000, factsOffset: 60, factsLimit: 60 })
+  assert.equal(calls[0].searchParams.get('outcome_kind'), 'lesson')
+  assert.equal(calls[0].searchParams.get('expected_revision'), 'synthetic-v1')
+  assert.equal(calls[0].searchParams.get('evaluated_at'), '1000')
+  assert.equal(calls[0].searchParams.get('facts_offset'), '60')
+  assert.equal(dump.data_revision, 'synthetic-v1')
+  assert.equal(dump.evaluated_at, 1000)
+})
+
+test('memory revision conflict retains the structured HTTP error without automatic retry', async () => {
+  let calls = 0
+  const body = { detail: { code: 'memory_revision_changed', message: 'Synthetic revision changed' } }
+  const client = new MnemoTraceClient({ fetch: async () => {
+    calls++
+    return new Response(JSON.stringify(body), { status: 409 })
+  } })
+  await assert.rejects(client.memories({ expectedRevision: 'synthetic-v1', evaluatedAt: 1000 }), error => {
+    assert.ok(error instanceof MnemoTraceError)
+    assert.equal(error.status, 409)
+    assert.deepEqual(error.detail, body)
+    return true
+  })
+  assert.equal(calls, 1)
+})

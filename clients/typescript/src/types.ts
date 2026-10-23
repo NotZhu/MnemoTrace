@@ -181,7 +181,14 @@ export interface MemoryPage<T> {
   items: T[]
 }
 
+export type OutcomeKind = 'decision' | 'finding' | 'lesson' | 'open_question'
+
 export interface MemoryListOptions {
+  outcomeKind?: OutcomeKind
+  /** Pair with evaluatedAt from the first page; a changed commit returns HTTP 409. */
+  expectedRevision?: string
+  /** Unix seconds captured by the first page; pair with expectedRevision. */
+  evaluatedAt?: number
   factsLimit?: number
   factsOffset?: number
   episodesLimit?: number
@@ -203,6 +210,8 @@ export type MemoryKindFilter = 'outcomes' | 'attributes'
 /** 分页的记忆视图（GET /v1/memories）；默认可安全分享。 */
 export interface MemoryDump {
   user: string
+  data_revision: string
+  evaluated_at: number
   profile: string
   counts: MemoryCounts
   facts: Fact[]

@@ -142,6 +142,8 @@ export interface SessionsIndex {
 }
 
 export interface MemoryDump {
+  data_revision: string
+  evaluated_at: number
   user: string
   profile: string
   counts: MemoryCounts

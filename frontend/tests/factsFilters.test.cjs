@@ -27,7 +27,7 @@ function setup({ empty = false, hideSensitive = false } = {}) {
     }
     if (name === '../store/preferences') return { useSpacePreference: (_, field) => [preferences[field], value => { preferences[field] = typeof value === 'function' ? value(preferences[field]) : value }] }
     if (name === '../hooks/queries') return { useAddFact: mutation, useEditFact: mutation, useDeleteFact: mutation, useSourceEpisodes: () => ({}),
-      useMemories(params) { queries.push(params); return { isSuccess: true, refetch: () => { retries++ }, data: { facts: empty ? [] : [{ id: 'synthetic-fact', display: 'Synthetic fact', status: 'live', valid_at: '', provenance: [] }], fact_categories: ['工作', '其他', '历史分类'], facts_page: { total: empty ? 0 : 81, has_more: !empty } }, ...queryResult } },
+      useMemoryPages(params) { queries.push(params); return { isSuccess: true, loadMore: () => {}, refetch: () => { retries++ }, data: { facts: empty ? [] : [{ id: 'synthetic-fact', display: 'Synthetic fact', status: 'live', valid_at: '', provenance: [] }], fact_categories: ['工作', '其他', '历史分类'], facts_page: { total: empty ? 0 : 81, has_more: !empty } }, ...queryResult } },
     }
     if (name === '../components/ui') return new Proxy({}, { get: () => () => null })
     if (name === '../components/Modal') return { Modal: () => null, ConfirmDialog: () => null }
@@ -115,7 +115,7 @@ test('全局查询错误不能卸载任何路由页面', () => {
 test('分类、历史状态和搜索词共同送入服务查询，切换筛选后重置分页', () => {
   const s = setup()
   s.button('加载更多事实').props.onClick()
-  assert.equal(s.query().facts_limit, 80)
+  assert.equal(s.query().facts_limit, 40)
   s.select('事实分类').props.onChange('工作')
   s.select('事实状态').props.onChange('superseded')
   s.search('synthetic')

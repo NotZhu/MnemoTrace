@@ -1214,3 +1214,56 @@ def test_import_agent_sessions_defaults_to_outcomes_only_and_feed_stats(client):
     # 从未被喂入的命名空间会如实上报
     empty = client.get("/v1/stats", headers=hdr("never-fed")).json()["feed"]
     assert empty == {"last_fed_at": None, "last_fed_at_h": None, "sessions": 0, "conclusions": 0}
+
+
+def test_memories_outcome_kind_and_revision_contract(client):
+    from mnemotrace.server import app as appmod
+    user = "synthetic-pagination"
+    svc = appmod.svc()
+    with svc.write_lock(user):
+        mem = svc.get(user)
+        for i in range(61):
+            mem.add_fact("synthetic-session", "decision", f"Synthetic decision {i}", user_id=user, valid_at=100+i)
+        mem.add_fact("synthetic-session", "lesson", "Synthetic older lesson", user_id=user, valid_at=1)
+        svc._save(user, mem)
+    params = {"kind": "outcomes", "outcome_kind": "lesson", "facts_limit": 1}
+    first = client.get("/v1/memories", params=params, headers=hdr(user)).json()
+    assert first["facts_page"]["total"] == 1
+    assert first["facts"][0]["predicate"] == "lesson"
+    assert client.get("/v1/memories", params={"outcome_kind": "invalid"}, headers=hdr(user)).status_code == 422
+    svc.add_fact(user, "synthetic-session", "finding", "Synthetic new finding")
+    conflict = client.get("/v1/memories", params={**params, "expected_revision": first["data_revision"], "evaluated_at": first["evaluated_at"]}, headers=hdr(user))
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "memory_revision_changed"
+    assert "facts" not in conflict.json()
+
+
+@pytest.mark.parametrize("params", [
+    {"expected_revision": "empty"}, {"evaluated_at": "1000"},
+    *[{"expected_revision": "empty", "evaluated_at": value} for value in ["-1", "nan", "inf", "-inf"]],
+])
+def test_memories_invalid_browse_context_returns_parameter_error(client, params):
+    response = client.get("/v1/memories", params=params, headers=hdr("synthetic-context"))
+    assert response.status_code == 422
+    assert "evaluated_at" in str(response.json())
+
+
+def test_memories_http_echoes_context_and_freezes_time(client, monkeypatch):
+    from mnemotrace.server import app as appmod
+    svc, user = appmod.svc(), "synthetic-clock"
+    with svc.write_lock(user):
+        mem = svc.get(user)
+        for name, valid in [("future", 1100), ("current", 900), ("older", 800)]:
+            mem.add_fact(name, "decision", name, user_id=user, valid_at=valid)
+        svc._save(user, mem)
+    clock = [1000]
+    monkeypatch.setattr("mnemotrace.util.time.time", lambda: clock[0])
+    params = {"facts_limit": 1, "status": "live"}
+    first = client.get("/v1/memories", params=params, headers=hdr(user)).json()
+    assert first["evaluated_at"] == 1000
+    clock[0] = 1200
+    second = client.get("/v1/memories", params={**params, "facts_offset": first["facts_page"]["next_offset"],
+                        "expected_revision": first["data_revision"], "evaluated_at": first["evaluated_at"]}, headers=hdr(user)).json()
+    assert second["evaluated_at"] == first["evaluated_at"]
+    assert second["facts_page"]["total"] == 2
+    assert [first["facts"][0]["object"], second["facts"][0]["object"]] == ["current", "older"]

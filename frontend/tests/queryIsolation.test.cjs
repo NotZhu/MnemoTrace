@@ -275,3 +275,19 @@ test('取消类型不会进入当前查询的全局错误横幅', async () => {
     assert.equal(s.useQueryErrors.getState().failures.length, 0)
   } finally { s.cleanup() }
 })
+
+
+test('分页版本变化交给局部重新加载，同时清除此前网络错误的全局重试入口', async () => {
+  const s = setup()
+  try {
+    s.login(spaceA)
+    await assert.rejects(s.query(spaceA))
+    assert.equal(s.useQueryErrors.getState().failures.length, 1)
+    s.respond(async () => ({ ok: false, status: 409, json: async () => ({ detail: {
+      code: 'memory_revision_changed', message: '记录已变化，请重新加载',
+    } }) }))
+    await assert.rejects(s.query(spaceA), error => error.name === 'MemoryRevisionChangedError' && !(error instanceof s.StaleSessionError))
+    assert.equal(s.useQueryErrors.getState().failures.length, 0)
+    assert.equal(s.useAuth.getState().apiKey, spaceA)
+  } finally { s.cleanup() }
+})

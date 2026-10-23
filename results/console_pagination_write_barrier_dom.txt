@@ -1,0 +1,135 @@
+[p1 "MnemoTrace" | space "console write cancellation validation"(12): 1 managed, 0 untracked — p1* "MnemoTrace"]
+root
+  container
+    container
+      svg_root
+      container
+        text "MnemoTrace"
+        text "记忆控制台"
+    container
+      anchor [ref=6, loc=href:/ui, url=http://127.0.0.1:8771/ui]
+        svg_root
+        text "总览"
+      anchor [ref=7, loc=href:/ui/journal, url=http://127.0.0.1:8771/ui/journal]
+        svg_root
+        text "会话结论"
+      anchor [ref=8, loc=href:/ui/profile, url=http://127.0.0.1:8771/ui/profile]
+        svg_root
+        text "用户画像"
+      anchor [ref=9, loc=href:/ui/ask, url=http://127.0.0.1:8771/ui/ask]
+        svg_root
+        text "记忆问答"
+      anchor [ref=10, loc=href:/ui/facts, url=http://127.0.0.1:8771/ui/facts]
+        svg_root
+        text "事实管理"
+      anchor [ref=11, loc=href:/ui/health, url=http://127.0.0.1:8771/ui/health]
+        svg_root
+        text "记忆体检"
+      anchor [ref=12, loc=href:/ui/timeline, url=http://127.0.0.1:8771/ui/timeline]
+        svg_root
+        text "时间线"
+      anchor [ref=13, loc=href:/ui/graph, url=http://127.0.0.1:8771/ui/graph]
+        svg_root
+        text "关系图谱"
+      anchor [ref=14, loc=href:/ui/focus, url=http://127.0.0.1:8771/ui/focus]
+        svg_root
+        text "关注点"
+      anchor [ref=15, loc=href:/ui/conversations, url=http://127.0.0.1:8771/ui/conversations]
+        svg_root
+        text "原始对话"
+      anchor [ref=16, loc=href:/ui/settings, url=http://127.0.0.1:8771/ui/settings]
+        svg_root
+        text "接入与策略"
+      anchor [ref=17, loc=href:/ui/privacy, url=http://127.0.0.1:8771/ui/privacy]
+        svg_root
+        text "隐私与数据"
+    paragraph
+      text "开源 · 自托管"
+  container
+    container
+      container
+        text "S"
+        text "syn…key"
+        button "复制 API key" [ref=18, loc=css:button[aria-label="复制 API key"]]
+          svg_root
+      switch "深色模式" [ref=19, loc=css:button[aria-label="深色模式"]]
+        svg_root
+        svg_root
+      button [ref=20]
+        svg_root
+        text "退出"
+    container
+      container
+        container
+          svg_root
+          textbox "搜索事实…" [ref=21, loc=css:input[placeholder="搜索事实…"]]
+            text "Synthetic"
+          button "清空事实搜索" [ref=33, loc=css:button[aria-label="清空事实搜索"]]
+            svg_root
+        button [ref=22]
+          svg_root
+          text "添加事实"
+      container
+        paragraph
+          text "共 3 条事实"
+        container
+          comboboxgrouping "事实分类" [ref=23, loc=css:button[aria-label="事实分类"]]
+            text "全部分类"
+            svg_root
+          comboboxgrouping "事实状态" [ref=24, loc=css:button[aria-label="事实状态"]]
+            text "当前有效"
+            svg_root
+          switch "隐藏敏感内容" [ref=25, loc=css:button[aria-label="隐藏敏感内容"]]
+            text "隐藏敏感内容"
+      unordered_list
+        list_item
+          container
+            text "synthetic-filter-insert marker Synthetic filtered-page inserted"
+            container
+              text "有效"
+              container
+                text "2026-10-23"
+                text "· 15:58:29"
+              text "身份"
+              text "手动设定"
+          container
+            button "编辑" [ref=46]
+              svg_root
+            button "删除" [ref=47]
+              svg_root
+        list_item
+          container
+            text "synthetic-first-insert marker Synthetic first-page inserted"
+            container
+              text "有效"
+              container
+                text "2026-10-23"
+                text "· 15:57:44"
+              text "身份"
+              text "手动设定"
+          container
+            button "编辑" [ref=34]
+              svg_root
+            button "删除" [ref=35]
+              svg_root
+        list_item
+          container
+            text "synthetic-project marker Synthetic initial 2"
+            container
+              text "有效"
+              container
+                text "2026-10-23"
+                text "· 15:54:33"
+              text "工作"
+              text "手动设定"
+          container
+            button "编辑" [ref=36]
+              svg_root
+            button "删除" [ref=37]
+              svg_root
+  container
+    svg_root
+    paragraph
+      text "已添加（来源：手动设定）"
+    button [ref=48]
+      svg_root

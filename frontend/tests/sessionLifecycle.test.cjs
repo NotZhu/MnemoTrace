@@ -245,3 +245,15 @@ for (const stale of [false, true]) {
     assert.deepEqual(s.calls.revoked, [])
   })
 }
+
+
+test('memory browse forwards cancellation and the complete browsing context to fetch', async () => {
+  const s = setup(), controller = new AbortController()
+  s.login('synthetic-A')
+  s.respond(async () => ({ ok: true, status: 200, json: async () => ({ data_revision: 'synthetic-v1', evaluated_at: 1000 }) }))
+  const result = await s.api.memories({ outcome_kind: 'lesson', expected_revision: 'synthetic-v1', evaluated_at: 1000 }, { signal: controller.signal })
+  assert.equal(s.calls.requests[0].init.signal, controller.signal)
+  const url = s.calls.requests[0].url
+  assert.ok(url.includes('outcome_kind=lesson') && url.includes('expected_revision=synthetic-v1') && url.includes('evaluated_at=1000'))
+  assert.equal(result.evaluated_at, 1000)
+})

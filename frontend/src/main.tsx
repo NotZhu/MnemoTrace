@@ -6,7 +6,7 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { copy as t } from './lib/copy'
 import { currentSession, useAuth } from './store/auth'
-import { StaleSessionError } from './lib/api'
+import { StaleSessionError, MemoryRevisionChangedError } from './lib/api'
 import { useQueryErrors } from './store/queryErrors'
 import './index.css'
 
@@ -24,6 +24,10 @@ const queryClient = new QueryClient({
   queryCache: new QueryCache({
     onError: (error, query) => {
       if (error instanceof StaleSessionError || !isCurrentQuery(query)) return
+      if (error instanceof MemoryRevisionChangedError) {
+        useQueryErrors.getState().resolve(query.queryHash)
+        return
+      }
       const message = error instanceof TypeError
         ? t.errors.network
         : error instanceof Error ? error.message : String(error)
