@@ -66,7 +66,7 @@ DEFAULT_STATE = "~/.mnemotrace/watch_state.json"
 DEFAULT_WATCH_LOG = "~/.mnemotrace/logs/watch.log"
 DEFAULT_HOOK_LOG = "~/.mnemotrace/logs/hook.log"
 DEFAULT_MCP_CONFIG = "~/.claude.json"
-DEFAULT_OUT = "results/facility.jsonl"
+DEFAULT_OUT = ".artifacts/eval/facility.jsonl"
 
 TARGET_LAG_S = 60  # 所有者的 L1 目标
 TARGET_COVERAGE = 0.90

@@ -1,183 +1,121 @@
 # mnemotrace-memory (TypeScript/JavaScript SDK)
 
-Official SDK for [MnemoTrace](https://github.com/NotZhu/MnemoTrace) — the open-source long-term memory engine
-for LLM agents. Zero runtime dependencies (uses the global `fetch`); works in Node 18+, browsers, Deno,
-Bun, and edge runtimes.
+The SDK for [MnemoTrace](https://github.com/NotZhu/MnemoTrace) uses the global `fetch` and has zero runtime dependencies. It supports Node 18+ and browser environments with `fetch`.
 
-The packages have not been published to npm or PyPI. Build the SDK from this checkout,
-then install the local package into your application (replace the path with your checkout):
+## Install from this checkout
+
+The package has not been published to npm. Build it from this checkout, then install the local package into your application:
 
 ```bash
-# Run from this repository root.
+# From the repository root.
 npm --prefix clients/typescript ci
 npm --prefix clients/typescript run build
-# Run from your application's directory.
+# From your application's directory; replace the path with your checkout.
 npm install /path/to/MnemoTrace/clients/typescript
 ```
 
-You need a running MnemoTrace server (the SDK talks to its HTTP API). Run from this repository root:
-
-```bash
-python -m pip install -e ".[serve]"
-export MNEMOTRACE_OPEN=1                 # dev: Bearer text is the namespace; anonymous requires MNEMOTRACE_ALLOW_ANONYMOUS=1
-export MNEMOTRACE_EMBEDDER=hashing       # zero-download default; use bge-small for better local embeddings
-export MNEMOTRACE_LLM=deepseek           # optional: enables /v1/chat/completions generation
-uvicorn mnemotrace.server.app:app --port 8000
-```
+The SDK requires a running HTTP server. Follow the [deployment guide](https://github.com/NotZhu/MnemoTrace/blob/main/deploy/README.md) for server setup, credentials and model configuration.
 
 ## Quickstart
 
 ```ts
 import { MnemoTraceClient } from 'mnemotrace-memory'
 
-const mnemotrace = new MnemoTraceClient({
+const client = new MnemoTraceClient({
   baseUrl: 'http://localhost:8000',
-  apiKey: 'sk-alice-123', // one key == one isolated memory namespace
+  apiKey: 'synthetic-key', // replace with a key configured on your server
 })
+const sessionId = 'app:my-app:thread-123'
 
-const sessionId = 'codex:mnemotrace:thread-123'
-
-// content-free wiring check: namespace/session/focus/counts/next actions, no memory text
-const status = await mnemotrace.agentStatus({ sessionId })
+const status = await client.agentStatus({ sessionId })
 console.log(status.recommended_next_actions)
+await client.remember('I work at Acme.', { sessionId, scope: 'long' })
+const { context, tokens_est } = await client.recall('Where do I work?', { sessionId })
+console.log(context, tokens_est)
 
-// write
-await mnemotrace.remember('I live in Shenzhen and work at Tencent.', { sessionId })
-
-// read — a small, dated, relevant slice to ground your own prompt
-const { context, tokens_est } = await mnemotrace.recall('where do I live?', { sessionId })
-
-// thread/task ended — finish consolidation, summarize, clear working memory
-await mnemotrace.closeSession(sessionId)
-const report = await mnemotrace.sessionReport(sessionId) // what this session saved; sensitive facts redacted
-const sessions = await mnemotrace.sessions({ limit: 20, query: 'codex' }) // content-free cross-agent index
-
-// or a single direct answer (abstains when not in memory)
-const { answer } = await mnemotrace.search('Where do I work?')
+await client.closeSession(sessionId)
+const report = await client.sessionReport(sessionId)
+const sessions = await client.sessions({ limit: 20, query: 'app:my-app' })
 ```
 
-## OpenAI-compatible chat (drop-in)
+The server maps keys to authorized spaces. Several keys may share one tenant; a different key does not necessarily mean a different store. Keep a stable `sessionId` through recall, remember and close. Closing consolidates and saves the session; it does not delete it. See the [agent lifecycle guide](https://github.com/NotZhu/MnemoTrace/blob/main/docs/guides/agents.md).
 
-MnemoTrace exposes an OpenAI-compatible `/v1/chat/completions` that recalls + injects relevant memory before
-the model answers, and remembers the turn afterward. Use the SDK's `chat.completions` surface…
+## OpenAI-compatible chat
+
+Chat requires a configured answerer. It recalls memory before answering and saves the user turn afterward; call `closeSession` when the conversation ends.
 
 ```ts
-const completion = await mnemotrace.chat.completions.create({
+const completion = await client.chat.completions.create({
   model: 'mnemotrace',
   messages: [{ role: 'user', content: 'Remind me where I work.' }],
-  memory: { session_id: 'codex:mnemotrace:thread-123', scope: 'auto' },
+  memory: { session_id: sessionId, scope: 'auto' },
 })
 console.log(completion.choices[0].message.content)
-console.log(completion.mnemotrace) // { recalled, memory_tokens_est, session_id, remembered }
+console.log(completion.mnemotrace)
 ```
 
-…or keep your existing OpenAI SDK and just change the base URL:
+For streaming, iterate over the returned async iterable:
 
 ```ts
-import OpenAI from 'openai'
-const openai = new OpenAI({ baseURL: 'http://localhost:8000/v1', apiKey: 'sk-alice-123' })
-await openai.chat.completions.create({ model: 'mnemotrace', messages: [...] }) // now memory-augmented
-```
-
-Streaming works too:
-
-```ts
-const stream = await mnemotrace.chat.completions.create({
+const stream = await client.chat.completions.create({
   model: 'mnemotrace',
-  messages: [{ role: 'user', content: 'tell me about my projects' }],
+  messages: [{ role: 'user', content: 'Tell me about my projects.' }],
   stream: true,
+  memory: { session_id: sessionId },
 })
-for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.content ?? '')
+for await (const chunk of stream) {
+  console.log(chunk.choices[0]?.delta?.content ?? '')
+}
 ```
 
-Control the memory layer per request: `memory: { session_id: 'codex:repo:thread' }` to attach the turn to
-an agent thread, `{ scope: 'long' }` / `{ scope: 'working' }` for write routing, `{ recall: false }`,
-`{ remember: false }`, `{ as_of: 1700864000 }` for a point-in-time memory view, or
-`{ redact_sensitive: true }` to omit sensitive facts from injected memory. Redacted contexts are
-structured-facts-only: no profile, summaries, or raw chunks.
+The chat `memory` extension uses HTTP snake_case fields. Regular SDK method options use camelCase; responses retain the HTTP field names. Memory controls are documented in the [HTTP reference](https://github.com/NotZhu/MnemoTrace/blob/main/docs/reference/http-api.md#openai-compatible-chat). An existing OpenAI client can use the same endpoint by setting its base URL to `http://localhost:8000/v1`.
 
-## Importing an existing history
+## Browse memory consistently
 
-```ts
-import { readFileSync } from 'node:fs'
+Use `memories` with `factsLimit`/`factsOffset` and `episodesLimit`/`episodesOffset`. The response includes `facts_page`, `episodes_page`, `data_revision` and `evaluated_at`.
 
-// ChatGPT export, OpenAI messages, JSONL, or a transcript — the server auto-detects the format.
-await mnemotrace.import({ data: JSON.parse(readFileSync('conversations.json', 'utf8')), format: 'chatgpt' })
-```
-
-## User-owned export
+Carry the first page's `data_revision` and `evaluated_at` together as `expectedRevision` and `evaluatedAt` on subsequent pages. Advance with `next_offset`. A commit change returns HTTP 409; the SDK preserves the structured error and does not retry automatically. The [complete traversal example](https://github.com/NotZhu/MnemoTrace/blob/main/docs/reference/http-api.md#记忆列表的筛选与一致分页) covers this protocol.
 
 ```ts
-// Safe by default: non-sensitive facts + graph; no profile, raw episodes, or summaries.
-const portable = await mnemotrace.export()
-
-// Full private export only after an explicit user action.
-const fullPrivate = await mnemotrace.export({ includeSensitive: true })
-```
-
-## Memory management UI
-
-```ts
-// Content-free session index: which Codex / Claude / app sessions touched this namespace.
-const sessions = await mnemotrace.sessions({ limit: 20, query: 'claude-code' })
-
-// Share-safe/default view: paginate and search editable non-sensitive facts.
-const page = await mnemotrace.memories({
+const page = await client.memories({
   factsLimit: 50,
-  factsOffset: 0,
   episodesLimit: 0,
+  kind: 'outcomes',
+  outcomeKind: 'lesson',
   status: 'live',
-  query: 'work',
-})
-
-// Owner-visible inspection view: include raw episodes, profile, and sensitive facts.
-const fullPrivatePage = await mnemotrace.memories({
-  factsLimit: 50,
-  episodesLimit: 10,
-  includeSensitive: true,
 })
 ```
 
-## API surface
+## Import, export and management
 
-| Method | HTTP | Returns |
-| --- | --- | --- |
-| `health()` | GET /health | `Health` readiness + safe deployment introspection |
-| `remember(content, { sessionId?, scope? })` | POST /v1/remember | `RememberResult` |
-| `recall(query, { nChunks?, sessionId?, asOf?, redactSensitive? })` | POST /v1/recall (lean) | `RecallResult` |
-| `closeSession(sessionId, { summarize?, clearWorking? })` | POST /v1/sessions/close | `CloseSessionResult` |
-| `sessions({ limit?, offset?, query? })` | GET /v1/sessions | content-free cross-agent/app session index |
-| `sessionReport(sessionId, { includeSensitive? })` | GET /v1/sessions/report | `SessionReport` for what this session saved |
-| `search(query, { asOf?, redactSensitive? })` | POST /v1/recall | `SearchResult` |
-| `memories({ factsLimit?, factsOffset?, episodesLimit?, episodesOffset?, status?, query?, includeSensitive? })` | GET /v1/memories | paged `MemoryDump`; share-safe by default, full owner-visible view with `includeSensitive: true` |
-| `agentStatus({ sessionId? })` | GET /v1/agent/status | `AgentStatus` content-free namespace/session/focus/counts/next actions |
-| `stats()` | GET /v1/stats | `MemoryStats` content-free namespace observability, including consolidation backlog, hot/cold fact tiers, and page-in/out counts |
-| `profile()` | GET /v1/profile | `ProfileResult` |
-| `addFact({ subject?, predicate, object })` | POST /v1/facts | `{ ok, id, text }` |
-| `updateFact(id, patch)` / `deleteFact(id)` | PATCH/DELETE /v1/facts/:id | — |
-| `getFocus()` / `setFocus(f)` | GET/PUT /v1/focus | `Focus` |
-| `getPolicy()` / `setPolicy(p)` | GET/PUT /v1/policy | `PolicyResponse` |
-| `graph({ asOf?, includeSensitive? })` | GET /v1/graph | `GraphData`; share-safe by default, full owner-visible graph with `includeSensitive: true` |
-| `import(params)` | POST /v1/import | `ImportResult` |
-| `export({ includeSensitive? })` | GET /v1/export | share-safe structured JSON by default; full private JSON with `includeSensitive: true` |
-| `forget({ confirm: true })` | POST /v1/forget | `{ ok, message }`; irreversible namespace wipe |
-| `chat.completions.create(params)` | POST /v1/chat/completions | `ChatCompletion` / stream |
+```ts
+await client.import({
+  data: [{ role: 'user', content: 'I work at Acme.' }],
+  format: 'messages',
+})
 
-Errors throw `MnemoTraceError` with `.status` and a parsed `.detail`.
+const portable = await client.export() // non-sensitive facts and graph
+// Request only when the user explicitly chooses a full private export.
+const fullPrivate = await client.export({ includeSensitive: true })
+```
+
+Use `search` for a direct factual answer, `addFact`/`updateFact`/`deleteFact` for explicit fact management, and `getFocus`/`setFocus` or `getPolicy`/`setPolicy` for user settings. The `space` option on `remember(content, options)` and `spaces` option on `recall(query, options)` select authorized shared spaces. Full signatures and response types live in [client.ts](https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/src/client.ts) and [types.ts](https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/src/types.ts).
+
+`health()` calls `/health` for liveness and diagnostics; a successful HTTP response does not prove readiness. Deployment checks use `/ready`. Default browsing, graph and export views omit sensitive content; full private views require `includeSensitive: true`. `redactSensitive: true` on recall restricts context to non-sensitive structured facts, excluding profile, summaries and raw chunks.
+
+Non-success responses throw `MnemoTraceError` with `.status` and the parsed response body in `.detail`. For revision conflicts the machine code is at `error.detail.detail.code`; narrow its type before reading it. Whole-space erasure requires `forget({ confirm: true })` and is irreversible.
 
 ## Develop
 
+Run from `clients/typescript/`:
+
 ```bash
-npm install
-npm run build       # dual ESM + CJS + .d.ts into dist/
-npm test            # runtime smoke tests against the built dist/
+npm ci
 npm run typecheck
+npm run build       # ESM, CommonJS and declarations in dist/
+npm test            # builds first, then runs runtime regressions
 ```
 
 ## License
 
-MnemoTrace is **dual-licensed**: open source under
-[GNU AGPL-3.0](https://github.com/NotZhu/MnemoTrace/blob/main/LICENSE), or a separate **commercial
-license** for proprietary/closed-source use. Commercial use that won't comply with the AGPL requires
-authorization — see
-[`COMMERCIAL-LICENSE.md`](https://github.com/NotZhu/MnemoTrace/blob/main/COMMERCIAL-LICENSE.md).
+The SDK uses the project's AGPL-3.0/commercial dual license. See [LICENSE](https://github.com/NotZhu/MnemoTrace/blob/main/LICENSE) and [COMMERCIAL-LICENSE.md](https://github.com/NotZhu/MnemoTrace/blob/main/COMMERCIAL-LICENSE.md) for the terms.

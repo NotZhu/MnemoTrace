@@ -10,7 +10,7 @@ engram_lean（从精简检索切片作答）对阵 full-context 基线（整段�
 —— 诚实的对比。
 
     python eval/personamem.py --n-personas 20 --per-persona 5 --answerer volcano:doubao-seed-1-6-flash-250615 \
-        --systems engram_lean,full_context --workers 6 --out results/personamem_smoke.jsonl
+        --systems engram_lean,full_context --workers 6 --out .artifacts/eval/personamem_smoke.jsonl
 """
 from __future__ import annotations
 
@@ -33,7 +33,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mnemotrace import Memory  # noqa: E402
 from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
-from mnemotrace.util import DAY  # noqa: E402
 
 HF = "https://huggingface.co/datasets/bowen-upenn/PersonaMem-v2/resolve/main"
 PM_DIR = "data/personamem"

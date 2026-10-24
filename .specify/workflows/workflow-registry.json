@@ -2,12 +2,12 @@
   "schema_version": "1.0",
   "workflows": {
     "speckit": {
-      "name": "Full SDD Cycle",
-      "version": "1.0.0",
-      "description": "Runs specify \u2192 plan \u2192 tasks \u2192 implement with review gates",
+      "name": "Major Change Design Cycle",
+      "version": "1.1.0",
+      "description": "Major changes: specify → plan → tasks → analyze → implement",
       "source": "bundled",
       "installed_at": "2026-06-25T04:27:39.681968+00:00",
-      "updated_at": "2026-06-25T04:27:39.681984+00:00"
+      "updated_at": "2026-10-23T00:00:00+00:00"
     }
   }
 }

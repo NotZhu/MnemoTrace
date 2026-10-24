@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reproducible paper statistics from committed result logs.
 
-No model calls happen here. The script reads ``results/*.jsonl`` and recomputes the headline confidence
+No model calls happen here. The script reads ``results/benchmarks/*.jsonl`` and recomputes the headline confidence
 intervals, paired tests, bootstrap gap CI, per-category breakdowns, and the committed multi-backbone
 headline table.
 
@@ -21,11 +21,11 @@ from typing import Iterable
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LEAN = ROOT / "results/longmemeval_s_engram_lean_v2_final.jsonl"
-OTHER = ROOT / "results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl"
+LEAN = ROOT / "results/benchmarks/longmemeval_s_engram_lean_v2_final.jsonl"
+OTHER = ROOT / "results/benchmarks/longmemeval_s_volcano_doubao_deepseekjudge.jsonl"
 BACKBONE_RUNS = (
-    ("doubao-pro", ROOT / "results/headline_500.jsonl"),
-    ("doubao-flash", ROOT / "results/bb_flash.jsonl"),
+    ("doubao-pro", ROOT / "results/benchmarks/headline_500.jsonl"),
+    ("doubao-flash", ROOT / "results/benchmarks/bb_flash.jsonl"),
 )
 
 

@@ -69,7 +69,8 @@ read_feature_json_feature_directory() {
         if ! _fd=$(jq -r '.feature_directory // empty' "$fj" 2>/dev/null); then
             _fd=''
         fi
-    elif command -v python3 >/dev/null 2>&1; then
+    # Windows can expose a python3 Store alias without a working interpreter.
+    elif command -v python3 >/dev/null 2>&1 && python3 -c 'import json' >/dev/null 2>&1; then
         # Use Python so pretty-printed/multi-line JSON still parses correctly.
         if ! _fd=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); v=d.get('feature_directory'); print(v if v else '')" "$fj" 2>/dev/null); then
             _fd=''

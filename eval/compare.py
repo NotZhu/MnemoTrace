@@ -1,4 +1,4 @@
-"""多 backbone 矩阵的跨日志比较（AGENTS.md Bet D，M2_RUNBOOK 第 3 节）。
+"""多 backbone 矩阵的跨日志比较（AGENTS.md 原则 I，eval/README.md）。
 
 `report.py` 把一份 bench 日志变成一张表；本脚本回答的是需要两份以上日志的问题：同样的 qids
 在不同 backbone（或系统）下运行时，哪里一致、哪里分歧、oracle 集成上限是多少？正是这种
@@ -6,8 +6,8 @@
 
 只读各次运行实际打过分的内容；从不编造。部分运行一眼可见为部分，因为每个数字都带着分母。
 
-    python eval/compare.py results/file_a.jsonl results/file_b.jsonl [more.jsonl ...]
-    python eval/compare.py results/file_a.jsonl results/file_b.jsonl --system engram_lean
+    python eval/compare.py .artifacts/eval/file_a.jsonl .artifacts/eval/file_b.jsonl [more.jsonl ...]
+    python eval/compare.py .artifacts/eval/file_a.jsonl .artifacts/eval/file_b.jsonl --system engram_lean
 """
 from __future__ import annotations
 

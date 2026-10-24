@@ -8,7 +8,7 @@ go in final. Nothing here requires touching main.tex until you approve.
 ---
 
 ## 1. Reproducibility note — MUST add (and pin the headline)
-The committed headline log `results/longmemeval_s_engram_lean_v2_final.jsonl` (lean avg **9569 tokens**,
+The committed headline log `results/benchmarks/longmemeval_s_engram_lean_v2_final.jsonl` (lean avg **9569 tokens**,
 **83.6%**) was produced at commit **`b276866`**. Commits after it (access-layer + product fixes, ~1065 lines
 across the consolidate/ path) changed what the consolidation pipeline *emits*, shrinking the assembled lean
 context to ~7.3k tokens (→ ~79% — a regression, not the headline). The `lean_context` signature is unchanged;

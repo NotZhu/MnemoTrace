@@ -159,7 +159,7 @@ def _validate_result(
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Validate MnemoTrace benchmark JSONL logs.")
-    ap.add_argument("logs", nargs="+", help="results/*.jsonl files to validate")
+    ap.add_argument("logs", nargs="+", help="JSONL files to validate (select the matching schema)")
     ap.add_argument(
         "--schema",
         choices=sorted(SCHEMAS),

@@ -29,6 +29,10 @@ env/
 *.key
 
 # Local data / scratch
+.artifacts/
+.specify/feature.json
+.specify/integration.json
+.specify/integrations/claude.manifest.json
 *.log
 .DS_Store
 data/
@@ -51,7 +55,8 @@ paper/*.out
 # Keep curated benchmark logs (committable evidence)
 !results/
 results/*.tmp
-eval/locomo10.json  # LOCOMO dataset: download from snap-research/locomo, not vendored
+# LOCOMO dataset: download from snap-research/locomo, not vendored
+eval/locomo10.json
 
 # Agent persona files kept next to the code but never part of it
 SOUL.md

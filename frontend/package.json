@@ -9,6 +9,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "test": "node --test",
     "test:login-graph": "node --test tests/loginMemoryGraphData.test.cjs",
     "test:graph": "node --test tests/quartzGraph.test.cjs tests/quartzViewport.test.cjs",
     "test:demo-auth": "node --test tests/demoAuthMigration.test.cjs tests/apiKeyValidation.test.cjs tests/loginGuidance.test.cjs",

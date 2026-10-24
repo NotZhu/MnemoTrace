@@ -87,12 +87,9 @@ def test_zero_setup_contract_mentions_installed_quickstart():
         assert f"]({target})" in text
         assert "mnemotrace-quickstart" not in text, f"{rel} must not duplicate the contract"
 
-    config = (ROOT / ".specify/extensions/agent-context/agent-context-config.yml").read_text(
-        encoding="utf-8"
-    )
-    assert "context_file: AGENTS.md" in config
-    assert agents.count("<!-- SPECKIT START -->") == 1
-    assert agents.count("<!-- SPECKIT END -->") == 1
+    assert "<!-- SPECKIT START -->" not in agents
+    assert "<!-- SPECKIT END -->" not in agents
+    assert not (ROOT / ".specify/extensions/agent-context").exists()
 
 
 def test_console_seed_default_names_jsonl_stores_not_pickles():

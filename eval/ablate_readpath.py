@@ -11,7 +11,7 @@
 eval/bench.py 运行再相信头条差值。）
 
     python eval/ablate_readpath.py --limit 60 --extractor volcano:doubao-seed-1-6-flash-250615 \
-        --out results/readpath_ablation.jsonl
+        --out .artifacts/eval/readpath_ablation.jsonl
 
 每个特性都以"基线减去该特性"的方式运行，所以 delta 是该特性在其余一切之上的边际贡献——
 不是它在孤立状态下的价值。
@@ -24,7 +24,7 @@ import os
 import re
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -139,7 +139,7 @@ def main() -> int:
     ap.add_argument("--features", default="", help="comma-separated subset (default: all)")
     ap.add_argument("--repeat-baseline", type=int, default=2,
                     help="re-run the baseline N times to measure this rig's own noise floor")
-    ap.add_argument("--out", default="results/readpath_ablation.jsonl")
+    ap.add_argument("--out", default=".artifacts/eval/readpath_ablation.jsonl")
     args = ap.parse_args()
 
     load_dotenv()

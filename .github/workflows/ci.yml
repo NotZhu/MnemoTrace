@@ -27,6 +27,7 @@ jobs:
       - name: Python regressions (including native namespace transactions)
         run: pytest
         timeout-minutes: 20
+      - run: python scripts/check_repository.py
       - run: python scripts/build_landing_pages.py --check
       - run: python scripts/check_zero_setup.py
       - run: python scripts/check_release.py
@@ -49,11 +50,7 @@ jobs:
       - run: npm install --global pnpm@10.30.3
       - run: pnpm install --frozen-lockfile
         working-directory: frontend
-      - run: pnpm run test:query-isolation
-        working-directory: frontend
-      - run: pnpm run test:graph
-        working-directory: frontend
-      - run: pnpm run test:security
+      - run: pnpm test
         working-directory: frontend
       - run: pnpm run build
         working-directory: frontend

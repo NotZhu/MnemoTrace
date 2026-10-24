@@ -82,8 +82,8 @@ def test_zero_setup_audits_results_md_evidence_logs():
     )
 
     assert results_links <= evidence
-    assert "results/headline_500.jsonl" in evidence
-    assert "results/bb_flash.jsonl" in evidence
+    assert "results/benchmarks/headline_500.jsonl" in evidence
+    assert "results/benchmarks/bb_flash.jsonl" in evidence
 
 
 def test_results_md_evidence_logs_have_validation_requirements():
@@ -105,7 +105,7 @@ def test_zero_setup_prints_system_scoped_evidence_requirements():
     text = format_public_evidence_requirements(public_evidence_logs())
 
     assert "public evidence requirements" in text
-    assert "results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl: require full_context" in text
+    assert "results/benchmarks/longmemeval_s_volcano_doubao_deepseekjudge.jsonl: require full_context" in text
     assert "engram_full" not in text
     assert "invalid" not in text.lower()
 
@@ -124,7 +124,7 @@ def test_paper_done_result_logs_are_complete_and_scored():
     links = set()
     for line in text.splitlines():
         if "[DONE" in line:
-            links.update(re.findall(r"results/[A-Za-z0-9_.-]+\.jsonl", line))
+            links.update(re.findall(r"results/[A-Za-z0-9_./-]+\.jsonl", line))
     assert links
     for link in links:
         errors = validate_bench_log(ROOT / link, expected_rows=500, require_complete=True)
@@ -170,15 +170,15 @@ def test_public_raw_logs_have_unique_and_matching_qids():
         assert len(qids) == len(set(qids)), f"{link} contains duplicate qids"
         qids_by_link[link] = set(qids)
 
-    lean_qids = qids_by_link["results/longmemeval_s_engram_lean_v2_final.jsonl"]
-    baseline_qids = qids_by_link["results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl"]
+    lean_qids = qids_by_link["results/benchmarks/longmemeval_s_engram_lean_v2_final.jsonl"]
+    baseline_qids = qids_by_link["results/benchmarks/longmemeval_s_volcano_doubao_deepseekjudge.jsonl"]
     assert len(lean_qids) == 500
     assert lean_qids == baseline_qids
 
 
 def test_public_raw_logs_have_matching_qid_categories():
-    lean_rows = _rows(ROOT / "results/longmemeval_s_engram_lean_v2_final.jsonl")
-    baseline_rows = _rows(ROOT / "results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl")
+    lean_rows = _rows(ROOT / "results/benchmarks/longmemeval_s_engram_lean_v2_final.jsonl")
+    baseline_rows = _rows(ROOT / "results/benchmarks/longmemeval_s_volcano_doubao_deepseekjudge.jsonl")
     lean_categories = {row["qid"]: row["cat"] for row in lean_rows}
     baseline_categories = {row["qid"]: row["cat"] for row in baseline_rows}
 
@@ -196,8 +196,8 @@ def test_public_raw_logs_have_expected_category_distribution():
         "single-session-preference": 30,
     }
     for rel in (
-        "results/longmemeval_s_engram_lean_v2_final.jsonl",
-        "results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl",
+        "results/benchmarks/longmemeval_s_engram_lean_v2_final.jsonl",
+        "results/benchmarks/longmemeval_s_volcano_doubao_deepseekjudge.jsonl",
     ):
         rows = _rows(ROOT / rel)
         counts = Counter(
@@ -210,8 +210,8 @@ def test_public_raw_logs_have_expected_category_distribution():
 
 def test_public_raw_logs_have_matching_gold_by_qid():
     paths = (
-        ROOT / "results/longmemeval_s_engram_lean_v2_final.jsonl",
-        ROOT / "results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl",
+        ROOT / "results/benchmarks/longmemeval_s_engram_lean_v2_final.jsonl",
+        ROOT / "results/benchmarks/longmemeval_s_volcano_doubao_deepseekjudge.jsonl",
     )
     gold_by_qid: dict[str, str] = {}
     for path in paths:
@@ -228,7 +228,7 @@ def test_public_raw_logs_have_matching_gold_by_qid():
 
 
 def test_results_md_headline_numbers_match_raw_logs():
-    lean = _metrics(ROOT / "results/longmemeval_s_engram_lean_v2_final.jsonl", "engram_lean")
+    lean = _metrics(ROOT / "results/benchmarks/longmemeval_s_engram_lean_v2_final.jsonl", "engram_lean")
     assert lean == {
         "n": 500,
         "errors": 0,
@@ -238,7 +238,7 @@ def test_results_md_headline_numbers_match_raw_logs():
         "p95_latency_ms": 106623,
     }
 
-    baseline = _metrics(ROOT / "results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl", "full_context")
+    baseline = _metrics(ROOT / "results/benchmarks/longmemeval_s_volcano_doubao_deepseekjudge.jsonl", "full_context")
     assert baseline == {
         "n": 500,
         "errors": 0,
@@ -248,7 +248,7 @@ def test_results_md_headline_numbers_match_raw_logs():
         "p95_latency_ms": 64161,
     }
 
-    full = _metrics(ROOT / "results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl", "engram_full")
+    full = _metrics(ROOT / "results/benchmarks/longmemeval_s_volcano_doubao_deepseekjudge.jsonl", "engram_full")
     assert full == {
         "n": 499,
         "errors": 1,
@@ -264,7 +264,7 @@ def test_results_md_headline_numbers_match_raw_logs():
 
 def test_results_md_category_numbers_match_raw_logs():
     categories = _category_metrics(
-        ROOT / "results/longmemeval_s_engram_lean_v2_final.jsonl",
+        ROOT / "results/benchmarks/longmemeval_s_engram_lean_v2_final.jsonl",
         "engram_lean",
     )
     expected = {
@@ -357,7 +357,7 @@ def test_contributor_docs_link_to_results_without_copying_headline_claims():
 
 def test_public_derived_headline_claims_match_raw_logs():
     """每一条公开发布的差值/比值都必须能从它所引用的已提交日志重新推导出来。"""
-    log = ROOT / "results/run500_v3_main_deepseekjudge.jsonl"
+    log = ROOT / "results/benchmarks/run500_v3_main_deepseekjudge.jsonl"
     lean = _metrics(log, "engram_lean")
     baseline = _metrics(log, "full_context")  # 同一次运行：同样的回答器、judge 和题目
     accuracy_delta = round(float(lean["accuracy"]) - float(baseline["accuracy"]), 1)
@@ -382,7 +382,7 @@ def test_report_prints_p50_and_p95_latency_for_committed_logs():
         [
             sys.executable,
             str(ROOT / "eval/report.py"),
-            str(ROOT / "results/longmemeval_s_engram_lean_v2_final.jsonl"),
+            str(ROOT / "results/benchmarks/longmemeval_s_engram_lean_v2_final.jsonl"),
         ],
         text=True,
     )
@@ -395,7 +395,7 @@ def test_report_prints_scored_denominators_for_errored_systems():
         [
             sys.executable,
             str(ROOT / "eval/report.py"),
-            str(ROOT / "results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl"),
+            str(ROOT / "results/benchmarks/longmemeval_s_volcano_doubao_deepseekjudge.jsonl"),
         ],
         text=True,
     )
@@ -409,13 +409,13 @@ def test_report_prints_every_requested_log():
         [
             sys.executable,
             str(ROOT / "eval/report.py"),
-            str(ROOT / "results/headline_500.jsonl"),
-            str(ROOT / "results/bb_flash.jsonl"),
+            str(ROOT / "results/benchmarks/headline_500.jsonl"),
+            str(ROOT / "results/benchmarks/bb_flash.jsonl"),
         ],
         text=True,
     )
-    assert str(ROOT / "results/headline_500.jsonl") in out
-    assert str(ROOT / "results/bb_flash.jsonl") in out
+    assert str(ROOT / "results/benchmarks/headline_500.jsonl") in out
+    assert str(ROOT / "results/benchmarks/bb_flash.jsonl") in out
 
 
 def test_compute_stats_prints_committed_backbone_summary():

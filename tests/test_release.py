@@ -43,8 +43,8 @@ def test_commercial_release_assets_exist():
         "deploy/docker-compose.yml",
         "deploy/.env.example",
         "deploy/README.md",
-        "docs/commercial-release-0.1.0.zh-CN.md",
-        "docs/mnemotrace-full-architecture-report.zh-CN.md",
+        "docs/reference/http-api.md",
+        "docs/architecture/README.md",
         ".github/workflows/ci.yml",
         "scripts/check_release.py",
     )

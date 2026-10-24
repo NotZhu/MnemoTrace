@@ -56,7 +56,7 @@ MNEMOTRACE_API_KEYS=tenant-a:key-new,tenant-a:key-old
 升级前停止共享数据目录的全部服务进程并备份，检查 manifest 的 state.resolver_parent 是否存在
 非自身映射；发现关联时保留原文件并停止该存储的升级，不使用新版本覆盖保存。
 未关联快照正常加载，下一次保存不再写入旧映射。全部进程使用同一版本后再恢复服务。
-本次本地验收不代表线上部署已完成，证据见[退役验收](../results/user_scope_retirement_validation.md)。
+本次本地验收不代表线上部署已完成，证据见[退役验收](../results/engineering/README.md#service-transactions)。
 
 ## 备份与恢复
 
@@ -80,7 +80,7 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml start
 旧目录不会被服务读写或清空。如仍有需要保留的旧数据，先停用共享目录的全部进程并备份，确认
 真实归属后显式复制到该 namespace 尚不存在的摘要目录，验证后再处理旧来源；不要仅凭目录名认领数据。
 既有摘要目录和 JSONL/manifest 格式不变。详细验证与迁移边界见
-[仅摘要目录验收](../results/digest_only_namespace_validation.md)。
+[仅摘要目录验收](../results/engineering/README.md#service-transactions)。
 
 已有部署不会被自动接管：请停用旧服务，备份并显式恢复数据到新卷或新目录，再启用
 `mnemotrace.service` / 新 Compose 服务。新默认本机数据目录是 `~/.mnemotrace/data`；

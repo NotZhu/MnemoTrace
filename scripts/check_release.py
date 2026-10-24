@@ -71,10 +71,10 @@ def main() -> int:
         "deploy/README.md",
         "README.md",
         "README.zh-CN.md",
-        "API.md",
-        "docs/commercial-release-0.1.0.zh-CN.md",
-        "docs/architecture-optimization-map.zh-CN.md",
-        "docs/mnemotrace-full-architecture-report.zh-CN.md",
+        "docs/reference/http-api.md",
+        "docs/README.md",
+        "docs/decisions.md",
+        "docs/architecture/README.md",
         ".github/workflows/ci.yml",
     )
     for path in required:
@@ -94,7 +94,7 @@ def main() -> int:
 
     _check("商业授权" in _read("COMMERCIAL-LICENSE.md"), "commercial license has Chinese terms", errors)
     _check("漏洞" in _read("SECURITY.md"), "security policy has Chinese reporting guidance", errors)
-    _check("单节点" in _read("docs/commercial-release-0.1.0.zh-CN.md"), "release scope is bounded", errors)
+    _check("单节点" in _read("deploy/README.md"), "release scope is bounded", errors)
 
     if errors:
         print(f"\ncommercial release checks failed: {len(errors)}", file=sys.stderr)

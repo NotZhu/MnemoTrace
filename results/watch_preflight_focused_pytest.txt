@@ -1,7 +1,0 @@
-....s.......................................sss.                         [100%]
-=========================== short test summary info ===========================
-SKIPPED [1] tests\test_watch_install.py:105: plutil is macOS-only
-SKIPPED [1] tests\test_session_hook.py:612: POSIX mode bits (0600 preservation) do not exist on Windows
-SKIPPED [1] tests\test_session_hook.py:633: POSIX mode bits (0600 creation) do not exist on Windows
-SKIPPED [1] tests\test_session_hook.py:645: creating file symlinks on Windows requires elevated privileges
-44 passed, 4 skipped in 0.91s

@@ -7,7 +7,7 @@ DRY_RUN=false
 ALLOW_EXISTING=false
 SHORT_NAME=""
 BRANCH_NUMBER=""
-USE_TIMESTAMP=false
+USE_TIMESTAMP=true
 ARGS=()
 i=1
 while [ $i -le $# ]; do
@@ -48,6 +48,7 @@ while [ $i -le $# ]; do
                 exit 1
             fi
             BRANCH_NUMBER="$next_arg"
+            USE_TIMESTAMP=false
             ;;
         --timestamp)
             USE_TIMESTAMP=true
@@ -60,8 +61,8 @@ while [ $i -le $# ]; do
             echo "  --dry-run           Compute feature name and paths without creating directories or files"
             echo "  --allow-existing-branch  Reuse an existing feature directory if it already exists"
             echo "  --short-name <name> Provide a custom short name (2-4 words) for the feature"
-            echo "  --number N          Specify branch number manually (overrides auto-detection)"
-            echo "  --timestamp         Use timestamp prefix (YYYYMMDD-HHMMSS) instead of sequential numbering"
+            echo "  --number N          Use an explicit numeric prefix instead of a timestamp"
+            echo "  --timestamp         Use timestamp prefix (YYYYMMDD-HHMMSS, default)"
             echo "  --help, -h          Show this help message"
             echo ""
             echo "Examples:"
@@ -89,29 +90,6 @@ if [ -z "$FEATURE_DESCRIPTION" ]; then
     echo "Error: Feature description cannot be empty or contain only whitespace" >&2
     exit 1
 fi
-
-# Function to get highest number from specs directory
-get_highest_from_specs() {
-    local specs_dir="$1"
-    local highest=0
-
-    if [ -d "$specs_dir" ]; then
-        for dir in "$specs_dir"/*; do
-            [ -d "$dir" ] || continue
-            dirname=$(basename "$dir")
-            # Match sequential prefixes (>=3 digits), but skip timestamp dirs.
-            if echo "$dirname" | grep -Eq '^[0-9]{3,}-' && ! echo "$dirname" | grep -Eq '^[0-9]{8}-[0-9]{6}-'; then
-                number=$(echo "$dirname" | grep -Eo '^[0-9]+')
-                number=$((10#$number))
-                if [ "$number" -gt "$highest" ]; then
-                    highest=$number
-                fi
-            fi
-        done
-    fi
-
-    echo "$highest"
-}
 
 # Function to clean and format a branch name
 clean_branch_name() {
@@ -200,12 +178,6 @@ if [ "$USE_TIMESTAMP" = true ]; then
     FEATURE_NUM=$(date +%Y%m%d-%H%M%S)
     BRANCH_NAME="${FEATURE_NUM}-${BRANCH_SUFFIX}"
 else
-    # Determine branch number from existing feature directories
-    if [ -z "$BRANCH_NUMBER" ]; then
-        HIGHEST=$(get_highest_from_specs "$SPECS_DIR")
-        BRANCH_NUMBER=$((HIGHEST + 1))
-    fi
-
     # Force base-10 interpretation to prevent octal conversion (e.g., 010 → 8 in octal, but should be 10 in decimal)
     FEATURE_NUM=$(printf "%03d" "$((10#$BRANCH_NUMBER))")
     BRANCH_NAME="${FEATURE_NUM}-${BRANCH_SUFFIX}"

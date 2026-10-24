@@ -538,7 +538,7 @@
   <div class="benchmark-evidence rv d3">
     <p>本次评测，平均上下文约为全文的 1/10，准确率高出 5.6 个百分点。</p>
     <div class="benchmark-links">
-      <a href="https://github.com/NotZhu/MnemoTrace/blob/main/results/run500_v3_main_deepseekjudge.jsonl" target="_blank" rel="noopener noreferrer">查看原始日志 <span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/NotZhu/MnemoTrace/blob/main/results/benchmarks/run500_v3_main_deepseekjudge.jsonl" target="_blank" rel="noopener noreferrer">查看原始日志 <span aria-hidden="true">↗</span></a>
       <a href="https://github.com/NotZhu/MnemoTrace/blob/main/RESULTS.md" target="_blank" rel="noopener noreferrer">评测方法 <span aria-hidden="true">↗</span></a>
     </div>
   </div>
@@ -546,8 +546,8 @@
     <summary>核验结果与复现评测</summary>
     <div class="benchmark-details-content">
       <p>下载仓库后，可从已公开的原始日志核验结果。重新运行评测所需的数据、模型与环境配置见<a href="https://github.com/NotZhu/MnemoTrace/blob/main/RESULTS.md" target="_blank" rel="noopener noreferrer">完整评测指南</a>。</p>
-      <pre class="benchmark-command"><code>python eval/report.py results/run500_v3_main_deepseekjudge.jsonl
-python eval/validate_results.py --expected-rows 500 --require-complete --system engram_lean --system full_context results/run500_v3_main_deepseekjudge.jsonl</code></pre>
+      <pre class="benchmark-command"><code>python eval/report.py results/benchmarks/run500_v3_main_deepseekjudge.jsonl
+python eval/validate_results.py --expected-rows 500 --require-complete --system engram_lean --system full_context results/benchmarks/run500_v3_main_deepseekjudge.jsonl</code></pre>
       <div class="benchmark-latencies">
         <p>全文上下文基线：p50 14.6s · p95 58.4s</p>
         <p>MnemoTrace：p50 52.9s · p95 117.7s</p>
@@ -592,7 +592,7 @@ python eval/validate_results.py --expected-rows 500 --require-complete --system 
     <article class="integration-option">
       <h3>MCP</h3>
       <p>为支持 MCP 的 Agent 提供记忆工具，在对话与任务之间延续上下文。</p>
-      <a href="https://github.com/NotZhu/MnemoTrace/blob/main/docs/agent-adapters.md" target="_blank" rel="noopener noreferrer">查看配置指南 <span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/NotZhu/MnemoTrace/blob/main/docs/guides/agents.md" target="_blank" rel="noopener noreferrer">查看配置指南 <span aria-hidden="true">↗</span></a>
     </article>
     <article class="integration-option">
       <h3>SDK / OpenAI 兼容</h3>
@@ -625,7 +625,7 @@ curl -X POST "$B/v1/recall" \
   <p class="integration-deploy rv d3">希望数据保存在自己的环境？<a href="https://github.com/NotZhu/MnemoTrace/blob/main/deploy/README.md" target="_blank" rel="noopener noreferrer">查看自托管部署指南 <span aria-hidden="true">↗</span></a></p>
   <div class="cta integration-cta rv d4">
     <a class="b1" role="button" aria-disabled="true" tabindex="-1" style="cursor:default;opacity:.55;pointer-events:none">打开体验控制台</a>
-    <a class="b2" href="https://github.com/NotZhu/MnemoTrace/blob/main/API.md" target="_blank" rel="noopener noreferrer">查看接入文档 <span aria-hidden="true">↗</span></a>
+    <a class="b2" href="https://github.com/NotZhu/MnemoTrace/blob/main/docs/reference/http-api.md" target="_blank" rel="noopener noreferrer">查看接入文档 <span aria-hidden="true">↗</span></a>
   </div>
 </div></section>
 
@@ -639,7 +639,7 @@ curl -X POST "$B/v1/recall" \
       <p>开源 · 可自托管 · 结果可复现</p>
       <div class="footer-links">
         <a href="https://github.com/NotZhu/MnemoTrace" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a>
-        <a href="https://github.com/NotZhu/MnemoTrace/blob/main/API.md" target="_blank" rel="noopener noreferrer">文档</a>
+        <a href="https://github.com/NotZhu/MnemoTrace/blob/main/docs/reference/http-api.md" target="_blank" rel="noopener noreferrer">文档</a>
         <a href="https://github.com/NotZhu/MnemoTrace/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">AGPL-3.0</a>
         <a href="https://github.com/NotZhu/MnemoTrace/blob/main/COMMERCIAL-LICENSE.md" target="_blank" rel="noopener noreferrer">商业许可</a>
       </div>

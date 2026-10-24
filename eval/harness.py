@@ -1,8 +1,8 @@
 """可复现的评测 harness。
 
     python eval/harness.py
-    python eval/harness.py --storage durable --out results/synthetic_durable.jsonl
-    python eval/report.py results/synthetic_durable.jsonl
+    python eval/harness.py --storage durable --out .artifacts/eval/synthetic_durable.jsonl
+    python eval/report.py .artifacts/eval/synthetic_durable.jsonl
 
 让 MnemoTrace 跑每个 item 的历史并按类别打分，报告章程要求的三元组（准确率 + context token + 延迟）。
 包含一个"naive recall"参照，充当 full-context 基线的替身：它能召回原始历史里的任何 fact，但无法

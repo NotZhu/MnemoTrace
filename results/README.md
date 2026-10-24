@@ -1,26 +1,36 @@
-# Benchmark 结果日志
+# 证据目录
 
-本目录保存原始 JSONL 与工程验收产物。实验持久化、证据消费者与提交范围统一见
-[AGENTS.md 的实验产物与日志提交](../AGENTS.md#evidence-artifacts)，发布校验要求见
-[评测规则](../AGENTS.md#principle-i)。本页提供工具操作说明。
+本目录只保存被公开结果、设计取舍、必要工程发布或回归 fixture 消费的材料。实验本地留存和证据提交的规则见 [AGENTS](../AGENTS.md#evidence-artifacts)。新试跑先写 `.artifacts/<task>/`，不为每次运行新增 Markdown。
+
+| 分类 | 入口与边界 |
+| --- | --- |
+| 正式 benchmark | [benchmarks](benchmarks/)，公开数字及精确设置由 [RESULTS](../RESULTS.md) 维护 |
+| 算法实验 | [实验索引](experiments/README.md)，含消融、context 切片、失败及回滚反证 |
+| 工程验收 | [工程索引](engineering/README.md)，与准确率、线上部署核验区分 |
+
+## 历史快照 tag
+
+历史说明统一引用 [`repository-snapshot-2026-10-23`](https://github.com/NotZhu/MnemoTrace/tree/repository-snapshot-2026-10-23)，固定到重构前提交 `c9a51899e63e6c98857b60aaae06471202cb3641`。该 tag 保留原目录、已退役脚本和当时说明；后续整理、amend、rebase 或 squash 不移动或删除它。
+
+快照用于保留文档来源，不代表实验运行代码版本；实验实际 SHA、未提交补丁及未知条件仍以原始记录为准。克隆未包含 tag 时可运行：
+
+```bash
+git fetch origin tag repository-snapshot-2026-10-23
+git rev-parse 'repository-snapshot-2026-10-23^{commit}'
+```
 
 ## 报告与校验
 
 ```bash
-python eval/report.py results/<name>.jsonl
-python eval/validate_results.py --expected-rows <full item count> --require-complete results/<name>.jsonl
-```
-
-LongMemEval_S 全集的 `<full item count>` 为 `500`；其他数据集使用真实完整条目数。
-多系统日志可用重复的 `--system <name>` 参数选择被引用的系统，例如：
-
-```bash
+python eval/report.py results/benchmarks/headline_500.jsonl
 python eval/validate_results.py --expected-rows 500 --require-complete \
-    --system engram_lean --system full_context results/<name>.jsonl
+    --system engram_lean --system full_context results/benchmarks/headline_500.jsonl
 ```
 
-PersonaMem-v2 日志来自 `eval/personamem.py`，并采用一套不同的选择题 schema；请用 `--schema personamem` 与采样条目数来校验它们（例如，对应 `--n-personas 20 --per-persona 5` 使用 `--expected-rows 100`）。
+`LongMemEval_S` 全集为 500 行；其他数据集使用真实完整条目数。混合日志用可重复的 --system 只验证被引用系统，未引用或出错系统不使整份日志成为干净证据。
 
-## 产物类型示例
+PersonaMem-v2 使用独立选择题 schema，校验显式加 --schema personamem；例如 20 personas × 5 items 使用 --expected-rows 100。离线消融、context-only 与工程 JSONL 不套用正式 QA schema。
 
-`commercial_release_0_1_0_validation.jsonl` 记录安全、打包、SDK、前端、容器与回归门禁，属于工程发布证据。其证据范围与算法运行的区别见上述日志提交规则。
+原始文件中的历史命令、路径、系统标识和数值保留不变；当前工具和说明使用分类后的路径。未记录的代码条件或中断原因标为未知，不以目录位置推断完成状态。历史文档快照链接帮助追溯已有命令，不替代运行代码 SHA。
+
+正式证据用 `report/validator` 重算；结果审计默认只扫描 benchmarks 的 QA 日志，实验按 schema 和切片显式选择输入。工程记录与原始脚本不作为当前可执行命令自动运行。

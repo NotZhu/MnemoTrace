@@ -46,7 +46,41 @@ def test_check_detects_stale_output_without_overwriting(monkeypatch, tmp_path):
     main = builder["main"]
     monkeypatch.setitem(main.__globals__, "ROOT", tmp_path)
     monkeypatch.setitem(main.__globals__, "build_pages", lambda: builder["build_pages"](tmp_path))
+    monkeypatch.setitem(main.__globals__, "build_assets", lambda root: {})
     assert main(["--check"]) == 1
     assert (tmp_path / "demo/index.html").read_text(encoding="utf-8") == "stale"
     assert main([]) == 0
     assert main(["--check"]) == 0
+
+
+def test_shared_assets_are_checked_without_overwriting(tmp_path, monkeypatch):
+    main = builder["main"]
+    source = tmp_path / "demo/assets/shared.bin"
+    copy = tmp_path / "docs/assets/shared.bin"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source\x00\xff")
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(b"stale")
+    monkeypatch.setitem(main.__globals__, "ROOT", tmp_path)
+    monkeypatch.setitem(main.__globals__, "build_pages", lambda: {})
+    asset_builder = builder["build_assets"]
+    monkeypatch.setitem(asset_builder.__globals__, "SHARED_ASSETS", ("shared.bin",))
+    monkeypatch.setitem(main.__globals__, "build_assets", asset_builder)
+    assert main(["--check"]) == 1
+    assert copy.read_bytes() == b"stale"
+    assert main([]) == 0
+    assert copy.read_bytes() == source.read_bytes()
+    assert main(["--check"]) == 0
+
+
+def test_check_accepts_git_crlf_html_without_rewriting(tmp_path, monkeypatch):
+    main = builder["main"]
+    page = tmp_path / "demo/index.html"
+    page.parent.mkdir(parents=True)
+    checked_out = b"<html>\r\n</html>\r\n"
+    page.write_bytes(checked_out)
+    monkeypatch.setitem(main.__globals__, "ROOT", tmp_path)
+    monkeypatch.setitem(main.__globals__, "build_pages", lambda: {page: "<html>\n</html>\n"})
+    monkeypatch.setitem(main.__globals__, "build_assets", lambda root: {})
+    assert main(["--check"]) == 0
+    assert page.read_bytes() == checked_out

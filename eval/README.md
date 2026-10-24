@@ -1,96 +1,57 @@
-# MnemoTrace 评测
+# 评测操作
 
-本目录提供 MnemoTrace 评测工具与操作示例。项目规则见 [AGENTS.md 的评测规则](../AGENTS.md#principle-i)，本页说明命令及其输出。
+项目规则见 [AGENTS](../AGENTS.md#principle-i)，已发布结果和历史条件见 [RESULTS](../RESULTS.md)，日志分类与 schema 见[证据目录](../results/README.md)。本页只维护可执行入口，不保存阶段待办或逐次运行成绩。
 
-## 离线冒烟评测框架
-
-先运行零密钥项目冒烟测试：
+## 离线检查
 
 ```bash
 python scripts/check_zero_setup.py
-```
-
-该命令会执行快速上手、合成评测框架、已提交公开日志的验证、论文统计，以及无需可选依赖的标准库编译。若只想运行合成评测框架：
-
-```bash
 python eval/harness.py
-python eval/harness.py --storage durable --out results/synthetic_durable.jsonl
-python eval/report.py results/synthetic_durable.jsonl
+python eval/harness.py --storage durable --out .artifacts/eval/synthetic_durable.jsonl
+python eval/report.py .artifacts/eval/synthetic_durable.jsonl
+python eval/ablate_features.py --jsonl .artifacts/eval/feature_ablation.jsonl
 ```
 
-合成日志用于回归和评测框架形态检查。它们不是公开的基准证据。
-
-## 算法消融冒烟
-
-零密钥合成消融用于检查新增读路径特性是否添加预期证据，适用要求见 [验证与完成](../AGENTS.md#验证与完成)：
-
-```bash
-python eval/ablate_features.py
-```
-
-该命令会逐个切换最新的证据特性，并检查启用路径是否呈现了禁用路径无法呈现的证据：supersedes 链上下文、针对历史值问题的链感知溯源分块提升、来自 supersession 历史的自然语言历史值答案、针对 fact-miss how-to 查询的派生摘要回退、针对 runbook/规则查询的溯源支撑过程记忆、从 runbook/how-to 文本中基于规则的过程抽取、溯源支撑的原始片段、溯源引导的完整明细分块提升、n-hop 图邻近、在紧凑预算下保留精确原始明细的意图感知证据预算分配，以及将目标关系排在同节点干扰项之前的查询条件化图关系加权，外加将多路径支撑目标排在单路径干扰项之前的 PPR 风格图路径增强，以及面向第一人称图查询的自锚定。它是目标行为的局部改进证明，而非公开的准确率声明。它还检查唯一短名实体锚定，因此只有当该 token 无歧义时，"Moonshot" 才能安全锚定 `Moonshot AI`；并检查负向图约束，因此 "not in Lisbon" 会过滤被排除的路径而非提升它；外加 planner 位置/项目链，使同事/公司、人/项目问题能从 `works_at` 或 `works_on` 延续到 `based_in`/`located_in` 答案事实。
-
-公开质量结论的证据要求见 [评测规则](../AGENTS.md#principle-i)。
-
-## 算法 PR 门禁
-
-算法 PR 的门禁、真实数据验收范围和报告内容见 [AGENTS.md 的验证与完成](../AGENTS.md#验证与完成)。以下是工具入口：
-
-```bash
-python eval/ablate_features.py --jsonl results/<feature>_ablation.jsonl
-pytest -q tests/test_lean.py tests/test_smoke.py tests/test_zero_setup_default.py tests/test_eval_ablation.py
-python eval/validate_results.py --expected-rows 500 --require-complete --system engram_lean results/headline_500.jsonl
-```
+zero-setup 检查仓库文档、源码与已安装模块 quickstart、CLI help、合成评测、已发布证据、论文统计和标准库编译。合成与离线消融验证目标行为，不作为真实 QA 准确率。读路径消融工具 `ablate_readpath.py` 的默认输出为 `.artifacts/eval/readpath_ablation.jsonl`。
 
 ## 真实基准
 
-产品及运行时包名已改为 MnemoTrace / `mnemotrace`。为复现已有 raw logs，benchmark system IDs
-（`SYSTEMS` keys、`system.name`、日志 `sys` keys）仍保留 `engram`、`engram_lean` 等历史标识；
-这些是评测身份，不是旧包、旧启动命令或旧环境变量的运行时兼容入口。证据文件路径也保持原样。
+`bench.py` 提供统一摄入、上下文、回答和评分流水线。系统名保留 `engram_lean`、`full_context` 等历史评测标识；产品包仍为 `mnemotrace`。数据加载、系统和可关闭开关以 [bench.py](bench.py) 为准。
 
-`eval/bench.py` 是 LongMemEval/LOCOMO/PersonaMem 风格运行的统一评测装置。同一次运行中的每个系统共享相同的回答器、评分器、抽取器和数据切片，因此运行内比较是唯一可公平对照的声明。
-
-真实运行写出 `results/<name>.jsonl` 后，同时使用以下两个工具：
+真实运行需要数据、可选模型依赖及相应 provider 的凭据，会产生 API 费用。先使用 `python eval/bench.py --help` 核对参数，为 answerer、judge、extractor 选择明确的模型版本；历史 endpoint 状态见 RESULTS，文档不保证它们继续服务。以下示意命令中的模型占位符需替换：
 
 ```bash
-python eval/report.py results/<name>.jsonl
-python eval/validate_results.py --expected-rows <full item count> --require-complete results/<name>.jsonl
-```
-
-- `report.py` 汇总所写入的一切：准确率、上下文 token、p50/p95 延迟、错误，以及已评分的分母。
-- `validate_results.py` 在日志不足以引用时失败：行数错误、重复的 qid、缺失字段、未评分行或错误行。
-  对于 LongMemEval_S 全量运行，`<full item count>` 为 `500`；其他数据集请使用该基准的真实全量条目数。
-  若多系统日志包含一个探索性的或被显式标记为错误的、不属于已发布声明的系统，请显式验证被引用的系统：
-
-```bash
+python eval/bench.py --data s --limit 500 --systems engram_lean,full_context \
+    --answerer <provider:model> --judge <provider:model> --extractor <provider:model> \
+    --embedder bge-small --reasoning --persona \
+    --chunks 2 --topk 15 --extract-k 8 --summ-k 28 --n-summaries 28 \
+    --out .artifacts/eval/lme_s.jsonl
+python eval/report.py .artifacts/eval/lme_s.jsonl
 python eval/validate_results.py --expected-rows 500 --require-complete \
-    --system engram_lean --system full_context results/<name>.jsonl
+    --system engram_lean --system full_context .artifacts/eval/lme_s.jsonl
 ```
 
-- `audit_results.py` 扫描杂乱的本地 `results/` 目录，并将每个日志标记为 `complete`、`incomplete` 或 `invalid`，以免探索性日志被误当作证据。
-- `compare.py` 针对单个系统，在其共享的已评分 qid 上比较两条或多条已验证日志，报告每条日志的准确率、分歧，以及多骨干互补性的 oracle 上限：
+LOCOMO 使用 `--data locomo` 并准备对应加载器需要的数据。`--limit 500` 只是上限，不能推定其他数据集已完成全集。更换骨干需完整记录 answerer/judge/extractor、依赖、数据范围、开关、命令与代码状态；跨 rig 的数字分别报告。未验证的第三方适配器不能因注册在 SYSTEMS 就视为可用。
 
-```bash
-python eval/compare.py results/backbone_a.jsonl results/backbone_b.jsonl --system engram_lean --per-category
-```
+## 校验、审计与比较
 
-日志引用与提交范围统一见 [实验产物与日志提交](../AGENTS.md#evidence-artifacts)；不同 schema 的操作示例见 [结果目录说明](../results/README.md)。
-
-在决定提交什么之前，先审计该目录：
+- `report.py` 汇总准确率、已评分分母、平均上下文 token、p50/p95 延迟及错误；上下文 token 不等于总 token，端到端延迟不等于检索延迟。
+- `validate_results.py` 检查行数、qid、字段和完整评分。LongMemEval_S 全集为 500；混合日志通过可重复 `--system` 只声明被引用系统。
+- `audit_results.py` 默认仅扫描 `results/benchmarks/*.jsonl`，将 QA 日志区分 complete/incomplete/invalid。实验与工程 JSONL 需要各自 schema，不能混扫后当作损坏的正式 QA。
+- `compare.py` 在共享的已评分 qid 上比较同一系统，报告分歧与组合 oracle；oracle 是这两份输出的事后选择上界，不是 benchmark 的理论上限。
 
 ```bash
 python eval/audit_results.py
-python eval/audit_results.py --fail-invalid results/headline_500.jsonl results/bb_flash.jsonl
+python eval/audit_results.py --fail-invalid results/benchmarks/headline_500.jsonl results/benchmarks/bb_flash.jsonl
+python eval/compare.py .artifacts/eval/backbone_a.jsonl .artifacts/eval/backbone_b.jsonl --system engram_lean --per-category
 ```
 
-PersonaMem-v2 是一个多选题运行器，采用不同的 JSONL 形态（`pref_type` + 选中的选项，而非 LongMemEval 的 `cat` + 经评分的 `pred/gold`）。请使用显式 schema 验证它：
+PersonaMem-v2 是独立多选题 schema，不能使用 LongMemEval 的 cat/pred/gold 约定：
 
 ```bash
-python eval/personamem.py --n-personas 20 --per-persona 5 --out results/personamem_v2.jsonl
-python eval/report.py results/personamem_v2.jsonl
-python eval/validate_results.py --schema personamem --expected-rows 100 --require-complete results/personamem_v2.jsonl
+python eval/personamem.py --n-personas 20 --per-persona 5 --out .artifacts/eval/personamem_v2.jsonl
+python eval/report.py .artifacts/eval/personamem_v2.jsonl
+python eval/validate_results.py --schema personamem --expected-rows 100 --require-complete .artifacts/eval/personamem_v2.jsonl
 ```
 
-## 后续实验
-
-当前的多骨干、竞品、LOCOMO 和方差运行见 [`M2_RUNBOOK.md`](M2_RUNBOOK.md) 与 [`../paper/EXPERIMENTS_CHECKLIST.md`](../paper/EXPERIMENTS_CHECKLIST.md)。
+新运行先留在 `.artifacts/`；只有明确消费者需要的证据才按[分类规则](../results/README.md)入库。设施测量 `facility.py` 默认写 `.artifacts/eval/facility.jsonl`，独立于 benchmark 准确率；合成测试不读取个人语料。研究中的未完成事项统一在[问题台账](../docs/issues.md)，论文历史实验范围保留在 [paper 检查清单](../paper/EXPERIMENTS_CHECKLIST.md)。

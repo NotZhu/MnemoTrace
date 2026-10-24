@@ -17,10 +17,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE_REQUIREMENTS: dict[Path, tuple[str, ...]] = {
-    ROOT / "results/headline_500.jsonl": ("engram_lean", "full_context"),
-    ROOT / "results/bb_flash.jsonl": ("engram_lean", "full_context"),
-    ROOT / "results/longmemeval_s_engram_lean_v2_final.jsonl": ("engram_lean",),
-    ROOT / "results/longmemeval_s_volcano_doubao_deepseekjudge.jsonl": ("full_context",),
+    ROOT / "results/benchmarks/run500_v3_main_deepseekjudge.jsonl": ("engram_lean", "full_context"),
+    ROOT / "results/benchmarks/headline_500.jsonl": ("engram_lean", "full_context"),
+    ROOT / "results/benchmarks/bb_flash.jsonl": ("engram_lean", "full_context"),
+    ROOT / "results/benchmarks/longmemeval_s_engram_lean_v2_final.jsonl": ("engram_lean",),
+    ROOT / "results/benchmarks/longmemeval_s_volcano_doubao_deepseekjudge.jsonl": ("full_context",),
 }
 CONSOLE_HELP_MODULES = (
     "mnemotrace.agent_doctor",
@@ -81,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     py = sys.executable
+    run_step("repository documentation", [py, "scripts/check_repository.py"])
     evidence_logs = public_evidence_logs()
     missing = [path for path in evidence_logs if not path.exists()]
     if missing:

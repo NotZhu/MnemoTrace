@@ -164,7 +164,7 @@ def format_audit(audits: list[LogAudit]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audit MnemoTrace result JSONL logs.")
-    parser.add_argument("paths", nargs="*", default=["results/*.jsonl"], help="JSONL files or glob patterns")
+    parser.add_argument("paths", nargs="*", default=["results/benchmarks/*.jsonl"], help="QA logs or glob patterns; context/engineering schemas are selected separately")
     parser.add_argument("--bench-rows", type=int, default=DEFAULT_BENCH_ROWS)
     parser.add_argument("--personamem-rows", type=int, default=None)
     parser.add_argument("--fail-invalid", action="store_true", help="exit non-zero when any log is not complete")

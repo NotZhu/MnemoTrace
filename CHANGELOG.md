@@ -3,10 +3,16 @@
 All notable changes to MnemoTrace are documented here. The project uses semantic versioning for distributed
 artifacts; storage schema compatibility is documented separately when it changes.
 
-## [Unreleased] - 2026-10-22
+## [Unreleased] - 2026-10-24
 
 ### Changed
 
+- Refactored documentation into guides, API references, architecture, decisions, and an issue ledger;
+  consolidated project rules in AGENTS.md and made document updates depend on the change's scope.
+- Classified benchmark, experiment, and engineering evidence under results/; preserved raw artifacts
+  and linked historical explanations through the repository-snapshot-2026-10-23 tag.
+- Unified frontend test discovery in CI, enabled unused TypeScript checks, and narrowed Docker build
+  context to exclude local runtime data and scratch files. Pytest cache now uses .artifacts/pytest/.
 - HTTP and local MCP default to `~/.mnemotrace/data`; containers keep `/data` and systemd uses
   `/var/lib/mnemotrace`. Old data directories are neither discovered nor migrated automatically.
 - MemoryService now reads, writes, and erases only the namespace's digest directory. Runtime fallback
@@ -18,6 +24,8 @@ artifacts; storage schema compatibility is documented separately when it changes
 
 ### Removed
 
+- Completed specification suites, redundant reports, obsolete diagnostics, and stale integration
+  inventory. Local scratch files use .artifacts/; the downloaded LOCOMO dataset is no longer vendored.
 - The user-ID linking interface and resolver. API-key authentication and space isolation are unchanged.
 - The legacy pickle converter, its console command, and migration guidance. Existing pickle files are
   left untouched and are no longer supported as conversion sources.

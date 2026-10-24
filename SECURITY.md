@@ -34,7 +34,7 @@
 
 0.1.0 对逻辑租户 ID 使用带摘要的安全目录名，防止目录穿越和字符过滤碰撞；整租户删除只允许作用于
 数据根目录的已验证子项。静态密钥配置适合单节点自托管，不等同于完整身份平台。更多边界见
-[`docs/commercial-release-0.1.0.zh-CN.md`](docs/commercial-release-0.1.0.zh-CN.md)。
+[`deploy/README.md`](deploy/README.md)。
 
 ---
 

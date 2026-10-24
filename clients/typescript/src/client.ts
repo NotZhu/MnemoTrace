@@ -1,8 +1,8 @@
 /**
  * MnemoTraceClient — 忆痕记忆服务器的官方 TypeScript/JavaScript SDK。
  *
- * 零运行时依赖：使用全局 `fetch`（Node 18+ 或浏览器）。每个客户端一个 Bearer key，
- * 对应服务器上一个隔离的记忆命名空间。
+ * 零运行时依赖：使用全局 `fetch`（Node 18+ 或浏览器）。客户端携带 Bearer key，
+ * 身份、主空间与共享空间权限由服务器配置解析。
  *
  *   import { MnemoTraceClient } from 'mnemotrace-memory'
  *   const mnemotrace = new MnemoTraceClient({ baseUrl: 'http://localhost:8000', apiKey: 'sk-alice-123' })
@@ -55,7 +55,7 @@ export class MnemoTraceError extends Error {
 export interface MnemoTraceClientOptions {
   /** 服务器基础 URL。默认 'http://localhost:8000'。允许以 '/v1' 结尾，会被规整掉。 */
   baseUrl?: string
-  /** Bearer API key — 决定服务器上的记忆命名空间。 */
+  /** Bearer 鉴权凭据；可访问的记忆空间由服务器配置决定。 */
   apiKey?: string
   /** 自定义 fetch 实现（如旧运行时环境下的 node-fetch）。默认使用全局 fetch。 */
   fetch?: typeof fetch
@@ -248,7 +248,7 @@ export class MnemoTraceClient {
     return this.request<MemoryDump>(`/v1/memories${qs ? `?${qs}` : ''}`)
   }
 
-  /** 不含内容的命名空间统计，用于仪表盘/就绪探针。 */
+  /** 不含内容的命名空间统计，用于仪表盘；服务就绪检查使用 /ready。 */
   stats(): Promise<MemoryStats> {
     return this.request<MemoryStats>('/v1/stats')
   }

@@ -1,391 +1,69 @@
-# 忆痕
+# MnemoTrace · 忆痕
 
-**MnemoTrace** is the English product name.
+[English](README.md) | [中文](README.zh-CN.md)
 
-**🌐 English | [中文](README.zh-CN.md)**
+An open-source long-term memory engine for LLM agents. MnemoTrace keeps original conversations, extracts bi-temporal facts, preserves superseded history, and retrieves facts together with their source context.
 
-**An open-source long-term memory engine for LLM agents — built around one principle: every number we
-publish, you can reproduce.**
+**0.1.0 Beta · single-node self-hosting.** The offline loop needs no API keys or services. Production HTTP requires configured credentials. See [deployment](deploy/README.md), [security](SECURITY.md), and the [documentation](docs/README.md).
 
-**📄 [Paper — arXiv:2606.09900 →](https://arxiv.org/abs/2606.09900)** — *Less Context, More Accuracy: A Bi-Temporal Memory Engine for LLM Agents Where a Lean Retrieved Context Beats the Full History.*
+## Quickstart
 
-**🎬 [Live demo / 在线动画演示 →](https://notzhu.github.io/MnemoTrace/)** — see how it works in 60 seconds.
-
-**🔌 Run the console locally:** start the server with the [quickstart](#quickstart-zero-setup-no-api-keys), then open **http://127.0.0.1:8000/ui** to browse your own memory end-to-end (profile, facts, timeline, graph, Q&A).
-
-MnemoTrace gives LLM agents durable, queryable memory across sessions: it stores what happened, distills
-atomic facts, tracks how they change over time (bi-temporal), resolves contradictions without losing
-history, and retrieves the right context with a hybrid semantic + lexical + graph + recency search.
-
-> Status: **0.1.0 beta — self-hosted release**. The end-to-end loop runs with **zero setup** (no API
-> keys, no services), while the production deployment fails closed without configured credentials.
-> See the [0.1.0 delivery scope](docs/commercial-release-0.1.0.zh-CN.md), [security policy](SECURITY.md),
-> and [`RESULTS.md`](RESULTS.md) for benchmark methodology and raw logs.
-
-## Why another memory system?
-
-The field has two real gaps, and we target both:
-
-1. **Most memory systems lose to the dumb "full-context" baseline on accuracy** — they win on cost, not
-   correctness. We always report full-context in the same table, so you can see exactly where we stand.
-2. **Every vendor reports benchmark numbers on a different, non-reproducible harness.** The same system can
-   appear as 58% / 66% / 92% across sources; different papers give contradictory orderings. We ship **one
-   neutral harness**, in-repo, with the official judge baked in — and publish the raw per-question logs.
-
-In a field where every number is contested, *being the scoreboard everyone can verify* is the point.
-
-## Results — LongMemEval_S (500 questions, official judge)
-
-Measured on the real [LongMemEval_S](https://github.com/xiaowu0162/LongMemEval) benchmark (500 questions,
-~50 sessions / ~115k tokens of haystack per question), graded by the **official category-specific
-LongMemEval judge prompts**. Answerer **doubao-seed-2.0-pro**, judge **DeepSeek-V3.2** — a strict,
-standard judge, so this is a fair number, not a friendly one.
-
-**The headline system is `engram_lean`: it answers from a small *retrieved* slice, never the full history.**
-This is the real test of a memory system — and the project's core thesis (beat full-context on accuracy at
-a fraction of the tokens):
-
-| System | Overall | Avg tokens | Notes |
-|---|---:|---:|---|
-| **MnemoTrace** (`engram_lean`) | **84.4%** | **7.9k** | retrieves a lean slice; 0 errors / 500 |
-| full-context baseline (same answerer+judge) | 78.8% | 79.2k | stuffs the whole haystack in the prompt |
-
-**MnemoTrace beats the full-context baseline by +5.6 points while using ~10× fewer tokens** (7.9k vs 79.2k) —
-the filtered slice is *more* accurate than the noisy full window, winning 4 of 6 categories
-(current `main`, DeepSeek official judge; log committed):
-
-| Category | MnemoTrace | full-context |
-|---|---:|---:|
-| single-session-assistant | 94.6% | 94.6% |
-| single-session-user | **91.4%** | 82.9% |
-| knowledge-update | 84.6% | **91.0%** |
-| temporal-reasoning | **83.5%** | 81.2% |
-| single-session-preference | **80.0%** | 50.0% |
-| multi-session | **78.2%** | 66.9% |
-
-An earlier run on the since-retired Volcano judge scored **83.6% vs 73.2% (+10.4)** — kept pinned in
-[`RESULTS.md`](RESULTS.md) with its exact setup; the judge swap alone moved the baseline +4.4pp, so the
-two runs are different measuring sticks and we report both rather than restating either.
-
-**Where it stands:** the filtered slice beats the full window at ~1/10 the tokens, with the biggest wins
-exactly where long context drowns the signal (preference +30.0, multi-session +11.3). We report it
-openly — same answerer, same official judge prompts, every question logged, no cherry-picked slice.
-The active roadmap: the two categories where full context still wins (knowledge-update, temporal
-reasoning), and scaling the same discipline to larger corpora.
-
-## Quickstart (zero setup, no API keys)
-
-Run from this source checkout. `mnemotrace-memory` is the distribution name, not a claim
-that a PyPI/npm release is available. Install the local core with `pip install -e .`;
-use `pip install -e '.[serve]'` for HTTP/MCP and production backends. Existing upstream links are
-source attribution only, not an installation source for this checkout.
+Run from this checkout with Python 3.10 or newer:
 
 ```bash
 python examples/quickstart.py
-# or, after pip install:
+```
+
+To use the package locally:
+
+```bash
+python -m pip install -e .
 mnemotrace-quickstart
 ```
 
-Runs the full pipeline — ingest → consolidate → retrieve — using offline deterministic fallbacks (hashing
-embedder, rule-based extractor, in-memory stores). Real backends (LanceDB, Kuzu, LiteLLM, BGE) plug in
-behind the same interfaces via `pip install -e '.[all]'`.
-
-To use the embedded LanceDB vector backend explicitly:
-
-```python
-from mnemotrace import Config, Memory
-
-cfg = Config(storage="lancedb", data_path="./mnemotrace-vectors")
-mem = Memory.open("./mnemotrace-store", config=cfg)
-```
-
-Memory records use the exact `user_id` supplied by the caller (`default` when omitted).
-Different IDs remain separate; identity linking and legacy pickle conversion are not supported.
-Name and nickname recognition within one user scope remains available.
-JSONL snapshots with previously linked user IDs are rejected explicitly rather than silently reinterpreted.
+The distribution name is `mnemotrace-memory`; these commands install this checkout and do not imply an available PyPI/npm release. The core uses only the standard library, with deterministic hashing, rule extraction and memory stores.
 
 ```python
 from mnemotrace import Memory
 
-mem = Memory()
-mem.add("My name is Wei and I work at Tencent.", user_id="u1")
-mem.add("Actually I just switched jobs — I now work at Moonshot AI.", user_id="u1")
-mem.consolidate()                      # System-2: extract facts, build graph, resolve conflicts
-
-print(mem.search("Where does Wei work?", user_id="u1").answer())
-# -> "Moonshot AI"  (the contradicted fact is invalidated, not deleted — history is preserved)
+memory = Memory()
+memory.add("My name is Alex and I work at Acme.", user_id="user123")
+memory.consolidate()
+print(memory.search("Where does Alex work?", user_id="user123").answer())
 ```
 
-## Connect it to your agent
+Use the exact same `user_id` to share memory across sessions. Different IDs remain separate; name/nickname recognition stays within one user. See the [quickstart](docs/quickstart.md), [Python API](docs/reference/python-api.md), and [backend status](docs/architecture/README.md#backend-status).
 
-MnemoTrace ships a full **access layer** so any agent or app can use it — all backed by one multi-tenant
-service (`MemoryService`). In production, configured API keys map to stable isolated tenant namespaces;
-the key text itself is used as a namespace only in explicitly enabled development open mode.
-The bundled console at `/ui` exposes the same product loop for humans: content-free session status,
-session-scoped writes with `scope=auto|long|working`, close-session, session report, paged memory
-management, safe export, and confirmed erase — plus a **Journal** of what each session concluded and a
-**Health** page that names extraction junk (down to "84 facts crammed into one slot") and clears it in one step.
-For the recommended lifecycle across Claude Code, Codex, Cursor, and custom agents, see
-[`docs/cross-agent-memory.md`](docs/cross-agent-memory.md) and the copy-paste adapter recipes in
-[`docs/agent-adapters.md`](docs/agent-adapters.md). A one-session lifecycle smoke test (local zero-server
-or HTTP, including `agent_status`, `remember`, `close_session`, and `session_report`) is available at
-[`examples/cross_agent_lifecycle.py`](examples/cross_agent_lifecycle.py), and a two-agent handoff smoke
-test is available at
-[`examples/cross_agent_handoff.py`](examples/cross_agent_handoff.py).
-You can also generate client-specific setup snippets with
-`mnemotrace-agent-setup --client codex --local --namespace me` (zero-server local MCP) or
-`mnemotrace-agent-setup --install-codex --api-url http://localhost:8000 --prompt-api-key --doctor`
-(HTTP service, hidden credential input). Generated configs use an owner-only private credential file;
-setup, MCP, and doctor accept `--api-key-file`. Terminal output never repeats the credential.
-See [credential handling](frontend/README.md#接入凭据) for permissions and lifecycle limits.
-Add `--python /path/to/python` when the agent should launch a specific environment with
-this checkout installed with `pip install -e '.[mcp]'`. The fast local path is
-`mnemotrace-agent-bootstrap --local --dry-run --namespace me --python /path/to/python` followed by
-`mnemotrace-agent-bootstrap --local --namespace me --python /path/to/python`; it installs Codex + project
-`.mcp.json`, runs the doctor against the installed config files, and prints a ready-to-paste AGENTS.md
-policy. Add
-`--install-policy` to write that policy into a managed AGENTS.md block with backup/uninstall support.
-For Codex, `mnemotrace-agent-setup --install-codex --dry-run ...` previews
-the exact `~/.codex/config.toml` change, `--install-codex --doctor` applies it with a backup and verifies
-the actual MCP stdio launch path, and `--uninstall-codex` removes only MnemoTrace's MCP block. For Claude
-Code, Cursor, and project-level MCP clients, `mnemotrace-agent-setup --install-mcp-json --doctor ...` manages
-`.mcp.json` with the same dry-run, backup, and uninstall flow.
+## Results
 
-### Call it right now — local API
+LongMemEval_S, 500 questions, official category-specific judge prompts. The recorded run uses doubao-seed-2.0-pro as answerer and the DeepSeek official judge; every compared system uses the same answerer, judge and questions.
 
-Your Bearer key **is** your private memory namespace (pick anything). Full reference: [`API.md`](API.md).
+| System | Accuracy | Average context tokens |
+| --- | ---: | ---: |
+| MnemoTrace (`engram_lean`) | **84.4%** | **7.9k** |
+| Full-context baseline | 78.8% | 79.2k |
 
-```bash
-B=http://127.0.0.1:8000 ; K=my-app          # any key = your own isolated namespace
+That run gives **+5.6 points** using about **1/10** of the baseline context tokens. These are historical measurements, not a live property of subsequent code. The earlier 83.6% / 73.2% run used another judge setup and remains separately documented.
 
-# 1) remember — auto-extracts atomic, bi-temporal facts (records in your input's language)
-curl -s -X POST $B/v1/remember -H "Authorization: Bearer $K" -H "Content-Type: application/json" \
-  -d '{"content":"我在字节跳动做后端，最喜欢周杰伦。"}'
+Read [RESULTS.md](RESULTS.md) for exact settings, total-token and latency reporting limits, category results, provider changes, and reproduction commands. The [raw run](results/benchmarks/run500_v3_main_deepseekjudge.jsonl) is committed; use `python eval/report.py <file>` to recalculate it. [Evaluation tools](eval/README.md) include full-context comparison and completeness validation.
 
-# 2) recall — a small grounded slice + an answer + the token saving vs full-context
-curl -s -X POST $B/v1/recall -H "Authorization: Bearer $K" -H "Content-Type: application/json" \
-  -d '{"query":"我最喜欢哪个歌手"}'
-# -> {"answer":"你最喜欢周杰伦。","context":"…","tokens_est":120,"full_tokens":1400}
-```
+## Connect an agent or application
 
-### Or self-host (your data, your machine)
+- [Agent guide](docs/guides/agents.md): local MCP, HTTP proxy, installation, doctor and session lifecycle.
+- [HTTP API](docs/reference/http-api.md): protected service, console, pagination and OpenAI-compatible memory extension.
+- [MCP tools](docs/reference/mcp.md) and [TypeScript SDK](clients/typescript/README.md).
+- [Deployment](deploy/README.md): Docker Compose, systemd, backup, key rotation and upgrade boundaries.
 
-```bash
-cp deploy/.env.example deploy/.env              # replace the sample key with a strong random key
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
-curl -fsS http://127.0.0.1:8000/ready
-```
+Install optional capabilities from this checkout with `python -m pip install -e '.[serve]'`. Open `/ui/` after starting the configured server. Rules and the available optional backends are documented separately from planned integrations.
 
-The standard container is non-root, uses a read-only root filesystem and persistent `/data` volume,
-binds only to localhost, and does not enable open mode. See [`deploy/README.md`](deploy/README.md) for
-TLS gateway, backup, restore, upgrade, rollback, and key rotation. `GET /health` is liveness/diagnostics;
-`GET /ready` returns 503 until auth and storage are ready. Neither exposes keys, paths, or user data.
+## Design and contributing
 
-For a direct Python deployment, run `pip install -e '.[serve]'` from this checkout, set
-`MNEMOTRACE_API_KEYS="tenant-a:<strong-random-key>"`, and run Uvicorn. `MNEMOTRACE_OPEN=1` remains available only
-for explicit local development.
+[Architecture](docs/architecture/README.md) explains writing, consolidation, retrieval and service boundaries. [Design decisions](docs/decisions.md) link to supporting and negative evidence. [Known issues](docs/issues.md) tracks unresolved behavior.
 
-**1. MCP server** — give Claude Desktop / Claude Code / Cursor a persistent memory (`mnemotrace_recall`,
-`mnemotrace_remember`, `mnemotrace_close_session`, `mnemotrace_agent_status`, `mnemotrace_list_facts`,
-`mnemotrace_list_sessions`, `mnemotrace_update_fact`, `mnemotrace_delete_fact`, `mnemotrace_get_focus`,
-`mnemotrace_set_focus`, `mnemotrace_search`, `mnemotrace_stats`, `mnemotrace_import`, `mnemotrace_export`, …):
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md). Ordinary changes update the relevant source and tests; major changes use the scoped specification workflow.
 
-```bash
-pip install -e '.[mcp]'
-python -m mnemotrace.mcp                 # local memory at ~/.mnemotrace/data (zero external service)
-# or proxy a running server (hosted or self-hosted):
-#   python -m mnemotrace.mcp --api-url http://127.0.0.1:8000 --api-key-file /path/to/private/key
-```
-```jsonc
-// claude_desktop_config.json
-{ "mcpServers": { "mnemotrace": { "command": "python", "args": ["-m", "mnemotrace.mcp"] } } }
-```
-
-`mnemotrace_recall` and `mnemotrace_search` also accept `as_of` (epoch seconds) for point-in-time memory views and
-`redact_sensitive=true` for shared/safe contexts.
-
-For agent clients, the intended lifecycle is: call `mnemotrace_agent_status` at startup when you need a
-content-free wiring check, recall before work that may depend on prior sessions, remember durable
-user/project facts with `scope="long"` or `scope="auto"`, use `scope="working"` for short-lived
-current-task state, then call `mnemotrace_close_session` when a thread ends or switches tasks. The close
-step does not delete the transcript; it finishes consolidation, creates missing session summaries,
-clears ephemeral working memory, and persists the namespace.
-When the user asks to correct or remove one memory, use `mnemotrace_list_facts` to find the fact id, then
-`mnemotrace_update_fact` or `mnemotrace_delete_fact(confirm=true)` for a precise edit instead of wiping the
-whole namespace. When the user asks the agent to emphasize or suppress a topic class, use
-`mnemotrace_set_focus` instead of rewriting facts.
-
-**2. JS/TS SDK + OpenAI-compatible API** — change one URL and your existing OpenAI code gets memory:
-
-The SDK is local source in `clients/typescript/`, not an npm-published release. Build it with
-`npm --prefix clients/typescript install` and `npm --prefix clients/typescript run build`, then install
-that local directory into your app (for example, `npm install /absolute/path/to/MnemoTrace/clients/typescript`).
-Recall and inject memory before the model answers; remember the turn afterward.
-
-```ts
-import { MnemoTraceClient } from 'mnemotrace-memory'                  // local SDK: clients/typescript (not published to npm)
-const mnemotrace = new MnemoTraceClient({ baseUrl: 'http://127.0.0.1:8000', apiKey: 'my-app' })  // or your own host
-await mnemotrace.agentStatus({ sessionId: 'app:my-product:conversation-123' }) // content-free wiring check
-await mnemotrace.remember('I live in Shenzhen and work at Tencent.')
-const { context } = await mnemotrace.recall('where do I live?')
-await mnemotrace.closeSession('app:my-product:conversation-123')
-const report = await mnemotrace.sessionReport('app:my-product:conversation-123') // what this session saved
-
-// drop-in OpenAI compatibility (works with the official `openai` SDK too — just set base_url):
-const out = await mnemotrace.chat.completions.create({ model: 'mnemotrace', messages: [
-  { role: 'user', content: 'Remind me where I work.' } ] })
-```
-
-For OpenAI-compatible chat, the MnemoTrace extension also accepts
-`memory: { session_id: "codex:repo:thread", scope: "auto" }` to attach the turn to an agent thread,
-`memory: { as_of: <epoch seconds> }` for a point-in-time memory view, and
-`memory: { redact_sensitive: true }` to omit sensitive facts from injected memory (redacted contexts are
-structured-facts-only: no profile, summaries, or raw chunks).
-
-For data portability, `/v1/export?include_sensitive=false` returns the same kind of share-safe structured
-view: non-sensitive facts plus their graph, with profile, summaries, and raw episodes omitted.
-The TypeScript SDK's `mnemotrace.export()` uses that share-safe export by default; pass
-`{ includeSensitive: true }` only for an explicit private export.
-For a user-facing "my memory" page, the SDK also exposes paged inspection:
-`mnemotrace.memories({ factsLimit, factsOffset, episodesLimit, status, query, includeSensitive })`.
-The standalone graph endpoint is share-safe by default; pass `/v1/graph?include_sensitive=true` only for
-an explicit private graph inspection.
-
-**3. Batch import** — bring your whole history (ChatGPT export, OpenAI messages, JSONL, transcript;
-auto-detected):
-
-```bash
-python -m mnemotrace.connectors --file conversations.json --namespace me     # local, or --api-url …
-```
-```python
-mem.import_data(open("conversations.json").read(), user_id="me")          # in-process
-```
-
-See [`examples/batch_import.py`](examples/batch_import.py) (zero-setup) and
-[`clients/typescript/`](clients/typescript/) for the SDK.
-
-**4. Feed it from your agent sessions** — the transcripts Claude Code and Codex already write to disk are
-the memory-worthy material. `mnemotrace-watch` ingests the ones that have gone quiet, closes each session so it
-gets distilled into conclusions, and remembers what it has seen, so re-running is cheap and idempotent:
-
-```bash
-mnemotrace-watch --dry-run                                  # what would be ingested, nothing stored
-mnemotrace-watch --once --url http://127.0.0.1:8000 --key me # one tick: newest quiet sessions, 25 per run
-mnemotrace-watch --install --url http://127.0.0.1:8000 --key me --interval 30m   # launchd / systemd / cron
-mnemotrace-watch --uninstall --purge                        # leaves ~/.mnemotrace exactly as it found it
-```
-
-By default a session costs one summary call and one conclusions call — per-turn fact extraction over a
-long transcript is opt-in (`--extract-facts`). `--install` refuses to register a job that would fail on
-its first tick (it imports `mnemotrace` in a clean environment first), stores the key in a `0600` file rather
-than the plist, and `--uninstall` waits until the scheduler has actually let go.
-
-## How it works
-
-MnemoTrace is a **dual-process** memory system, modeled on the human System-1 / System-2 split: a fast write
-path that never blocks on an LLM, and a slow consolidation path that does the heavy structuring offline.
-
-```mermaid
-flowchart TB
-    ADD([add messages]) --> S1
-    SESS([your agent sessions on disk<br/>Claude Code · Codex]) --> W
-    subgraph W [mnemotrace-watch · batch, idempotent, schedulable]
-        direction LR
-        Wa[parse transcript<br/>drop tool noise · redact secrets] --> Wb[import as episodes] --> Wc[close session →<br/>distil conclusions · 1 LLM call]
-    end
-    W --> TM
-    subgraph S1 [SYSTEM-1 · hot write path · no LLM on critical path]
-        direction LR
-        S1a[append lossless Episode] --> S1b[user_id ownership<br/>preserved across sessions] --> S1c[light embed + enqueue]
-    end
-    S1 -. async queue .-> S2
-    subgraph S2 [SYSTEM-2 · async consolidation · seconds]
-        direction LR
-        S2a[extract atomic Facts] --> S2b[build BI-TEMPORAL graph<br/>entities + relations] --> S2c[cheap conflict detect<br/>non-destructive invalidate] --> S2d[salience scoring + decay]
-    end
-    S2 --> TM
-    subgraph TM [TYPED MEMORY · each type = its own store + retrieval policy]
-        direction LR
-        TMa[(Episodic)]
-        TMb[(Semantic<br/>bi-temporal graph)]
-        TMc[(Profile /<br/>Identity)]
-        TMd[(Procedural)]
-        TMe[(Session<br/>conclusions)]
-    end
-    TM --> R
-    Q([search query]) --> R
-    subgraph R [READ PATH · hybrid retrieval]
-        direction TB
-        Ra[multi-hop query decomposition] --> Rb[parallel retrieve:<br/>dense vector + BM25 lexical + graph n-hop + recency/salience]
-        Rb --> Rc[Reciprocal Rank Fusion + optional rerank] --> Rd[bi-temporal as-of filter] --> Re[abstention gate] --> Rf[assemble dated, provenance-tagged context]
-    end
-    Rf --> OUT([answer-ready context])
-```
-
-There are two ways in. **The write path (System-1)** appends a lossless episode, preserves its supplied
-user_id, embeds and enqueues — no LLM on the critical path. **The session path (`mnemotrace-watch`)**
-reads the agent transcripts already on your disk, stores them, and at session close distils what was
-*decided, found, learned, and left open* in one LLM call per session — the unit of memory for working
-sessions is the conclusion, not the biographical triple. **The consolidation path (System-2)**
-runs asynchronously: it extracts atomic `(subject, predicate, object)` facts, builds a knowledge graph, and
-resolves contradictions. **The read path** decomposes the question, retrieves through four complementary
-channels in parallel, fuses positive evidence with RRF plus recency/salience priors (optional
-cross-encoder rerank), applies a point-in-time temporal filter, and assembles a dated,
-provenance-tagged context. For the algorithm-level contracts, see
-[`docs/algorithm-architecture.md`](docs/algorithm-architecture.md).
-
-### What makes it different
-
-| # | Design choice | Why it matters |
-|---|---|---|
-| 1 | **Bi-temporal facts** — every fact carries *valid time* (true in the world) **and** *transaction time* (when we learned it) | Makes "what did we know on date T?" (`as_of`) and knowledge-updates **first-class**, not bolted-on. This is why knowledge-update scores 87.5% and temporal 81.1%. |
-| 2 | **Non-destructive conflict resolution** — a contradicted fact is *invalidated* (`invalid_at` + `supersedes` chain), never deleted | No silent memory corruption. Every fact answers "where did this come from?" and "what did it replace?" — full provenance + audit trail. |
-| 3 | **Cheap conflict detection** — slot-match + embedding/NLI heuristics, escalate to an LLM **only** when ambiguous | Production-grade temporal correctness **without** an LLM call per fact — the cost win at scale. |
-| 4 | **Hybrid retrieval** — dense semantic + BM25 lexical + graph proximity fused as positive evidence, with recency/salience as priors | No single retriever wins everywhere. The *validated* finding: **facts + raw chunks beats either alone** — facts add conflict-resolved/temporal signal, chunks restore lost detail. |
-| 5 | **Dual-process split** — fast write, async consolidation | Keeps graph-building, dedup, and conflict resolution off the critical path; read-path latency is measured in the harness before we publish claims. |
-| 6 | **Pluggable everything, and fallbacks that refuse to corrupt** — LLM / embedder / vector store / graph store sit behind interfaces with zero-dep offline fallbacks; when a fallback cannot handle your data it says so instead of degrading silently | `python scripts/check_zero_setup.py` runs with **no API keys, no services**. Without an LLM, agent transcripts are stored but never rule-extracted (that produced junk on real sessions); the health check reports when the hashing embedder cannot tokenize what you stored (see [`results/embedder_zh_2026-09-01.md`](results/embedder_zh_2026-09-01.md)) and names the fix. Swap in BGE / LanceDB / Kuzu / any LLM via one config line. |
-| 7 | **Session conclusions** — a working session is distilled into decisions, findings, lessons and open questions, stored as ordinary bi-temporal facts | Per-turn extraction yields attributes ("works at X"); a session yields *what was concluded*. Both live in one store, so conclusions inherit supersession, provenance and retrieval for free, and the console's Journal reads like the notes you would have written by hand. |
-| 8 | **The reproducible harness** — one neutral eval, official judge baked in, full-context baseline in every table, raw logs published | In a field where every vendor's number is contested, *being the scoreboard anyone can verify* is the real moat. |
-
-The full data model and conflict-resolution rules live in [`mnemotrace/types.py`](mnemotrace/types.py) and
-[`mnemotrace/consolidate/`](mnemotrace/consolidate/).
-
-## Reproduce the benchmark
-
-```bash
-# 1. zero-dep smoke test: quickstart + offline harness + evidence validation
-python scripts/check_zero_setup.py
-
-# optional: full unit suite when test dependencies are installed
-pytest
-
-# 2. retrieval recall on the real haystack (no LLM needed)
-python eval/longmemeval.py --mode recall --data s --limit 500
-
-# 3. full QA benchmark with the official judge — engram_lean vs the full-context baseline
-#    (needs model access; any OpenAI-compatible provider works — see RESULTS.md for setup)
-#    NOTE: the judge used for the published headline (volcano:deepseek-v3-2-251201) has been retired
-#    by its provider, so this uses a served one. A different judge shifts absolute scores, but the
-#    engram_lean vs full_context contrast within your run stays apples-to-apples. See RESULTS.md.
-python eval/bench.py --data s --limit 500 --systems engram_lean,full_context \
-    --answerer volcano:doubao-seed-2-0-pro-260215 --judge deepseek \
-    --extractor volcano:doubao-seed-1-6-flash-250615 --reasoning --persona \
-    --chunks 2 --topk 15 --extract-k 8 --summ-k 28 --n-summaries 28
-```
-
-Raw per-question logs for the headline number live in [`RESULTS.md`](RESULTS.md), along with the exact
-(now-retired) judge those numbers were measured with. If you can't reproduce a number we published on the
-setup it was published under, that's a bug — open an issue.
+[Paper](https://arxiv.org/abs/2606.09900) · [Paper sources](paper/README.md) · [Demo](https://notzhu.github.io/MnemoTrace/)
 
 ## License
 
-MnemoTrace is **dual-licensed** — pick the arm that fits your use:
-
-- **Open source — [GNU AGPL-3.0](LICENSE).** Free to use, study, modify, and self-host. Note AGPL §13: if
-  you run a modified MnemoTrace to provide a network service, you must offer that service's complete source to
-  its users under the AGPL. Internal use, research, and education are unaffected.
-- **Commercial — a separate paid license.** To use MnemoTrace in a proprietary/closed-source product or a
-  hosted/SaaS offering *without* the AGPL's source-disclosure obligations, you need a commercial license.
-  See **[`COMMERCIAL-LICENSE.md`](COMMERCIAL-LICENSE.md)**.
-
-In short: **open source is free; commercial use that won't comply with the AGPL requires authorization.**
+AGPL-3.0; see [LICENSE](LICENSE). Proprietary or SaaS use that does not comply with AGPL requires a [commercial license](COMMERCIAL-LICENSE.md).

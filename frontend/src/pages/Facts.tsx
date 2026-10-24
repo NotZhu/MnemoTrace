@@ -37,7 +37,7 @@ export default function Facts() {
   const [adding, setAdding] = useState(false)
   const [confirmFact, setConfirmFact] = useState<MemoryFact | null>(null)
 
-  const { data, isLoading, isFetching, isError, isSuccess, isPlaceholderData, error, refetch, loadMore } = useMemoryPages({
+  const { data, isFetching, isError, isSuccess, isPlaceholderData, error, refetch, loadMore } = useMemoryPages({
     // 只取属性类事实 —— 会话结论有自己的页面；混在一起的话，更新、更庞大的那类
     // 会在分页和列表里把另一类完全淹没。
     kind: 'attributes',
