@@ -340,6 +340,10 @@ export interface GraphData {
   edges: GraphEdge[]
 }
 
+export interface GraphResponse extends GraphData {
+  has_more: boolean
+}
+
 export interface FactInput {
   subject?: string
   predicate: string

@@ -9,7 +9,7 @@ import type { AuditReport,
   FactEdit,
   FactSource,
   FactWrite,
-  GraphData,
+  GraphResponse,
   Health,
   MemoryDump,
   Policy,
@@ -184,7 +184,7 @@ export const api = {
     request<AgentStatus>(`/v1/agent/status${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`),
   sessionReport: (sessionId: string, includeSensitive = false) =>
     request<SessionReport>(`/v1/sessions/report${qs({ session_id: sessionId, include_sensitive: includeSensitive })}`),
-  graph: (params: GraphQuery = {}) => request<GraphData>(`/v1/graph${qs(params)}`),
+  graph: (params: GraphQuery = {}) => request<GraphResponse>(`/v1/graph${qs(params)}`),
   focus: () => request<Focus>('/v1/focus'),
 
   remember: (content: string, options: RememberOptions = {}) =>

@@ -20,7 +20,7 @@ import type {
   FactPatch,
   ForgetOptions,
   Focus,
-  GraphData,
+  GraphResponse,
   Health,
   ImportParams,
   ImportResult,
@@ -299,14 +299,14 @@ export class MnemoTraceClient {
   }
 
   /** 语义图谱。默认返回可安全分享的版本；传入 includeSensitive=true 获取完整的所有者可见图谱。 */
-  graph(options: { asOf?: number; includeSensitive?: boolean } = {}): Promise<GraphData> {
+  graph(options: { asOf?: number; includeSensitive?: boolean } = {}): Promise<GraphResponse> {
     const params = new URLSearchParams()
     if (options.asOf !== undefined) params.set('as_of', String(options.asOf))
     if (options.includeSensitive !== undefined) {
       params.set('include_sensitive', options.includeSensitive ? 'true' : 'false')
     }
     const qs = params.toString()
-    return this.request<GraphData>(`/v1/graph${qs ? `?${qs}` : ''}`)
+    return this.request<GraphResponse>(`/v1/graph${qs ? `?${qs}` : ''}`)
   }
 
   // --- 批量导入 / 导出 / 遗忘 -------------------------------------------------

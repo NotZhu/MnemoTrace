@@ -94,9 +94,22 @@ export function useSessionReport(sessionId: string | null | undefined, includeSe
   })
 }
 
-export function useGraph(params: GraphQuery = {}) {
-  const enabled = !!useAuth((s) => s.apiKey)
-  return useQuery({ queryKey: qk.graph(params), queryFn: () => api.graph(params), enabled, retry: false })
+function graphScope(params: GraphQuery) {
+  const { live_only: _liveOnly, ...scope } = params
+  return hashKey([{ ...scope, include_sensitive: params.include_sensitive ?? false }])
+}
+
+export function useGraph(params: GraphQuery = {}, options: { keepPreviousData?: boolean } = {}) {
+  const namespace = useAuth((s) => s.apiKey)
+  return useQuery({
+    queryKey: qk.graph(params), queryFn: () => api.graph(params), enabled: !!namespace, retry: false,
+    // 仅当前开关可借用旧图；搜索、隐私及身份变化必须清除旧响应。
+    placeholderData: options.keepPreviousData ? (previousData, previousQuery) => {
+      const previousParams = previousQuery?.queryKey[2] as GraphQuery | undefined
+      return previousQuery?.queryKey[1] === namespace && previousParams
+        && graphScope(previousParams) === graphScope(params) ? previousData : undefined
+    } : undefined,
+  })
 }
 
 export function useFocus() {

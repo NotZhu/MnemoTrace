@@ -819,6 +819,7 @@ class Memory:
         双时间轴（live/被取代）状态的边。孤立实体（没有存留边）被丢弃，让画面聚焦于关系本身。
 
         `include_sensitive=False` 返回仅由未标记敏感的 fact 派生的 share-safe 图。
+        `limit` 限制筛选后的关系数；`has_more` 表示仍有未返回的匹配关系。
         """
         user = user_id
         ents = {e.id: e for e in self.graph.entities.values() if e.user_id == user}
@@ -829,6 +830,7 @@ class Memory:
         }
         needle = q.strip().lower()
         edges, touched = [], set()
+        has_more = False
         for r in relations:
             if r.subject_id not in ents or r.object_id not in ents:
                 continue
@@ -860,6 +862,10 @@ class Memory:
             ]).lower()
             if needle and needle not in haystack:
                 continue
+            # 仅用额外一条匹配关系判断截断，不把它的端点加入返回节点。
+            if limit is not None and limit > 0 and len(edges) >= limit:
+                has_more = True
+                break
             edges.append({
                 "source": r.subject_id,
                 "target": r.object_id,
@@ -875,10 +881,8 @@ class Memory:
             })
             touched.add(r.subject_id)
             touched.add(r.object_id)
-            if limit is not None and limit > 0 and len(edges) >= limit:
-                break
         nodes = [{"id": eid, "name": ents[eid].name, "type": ents[eid].type} for eid in touched]
-        return {"nodes": nodes, "edges": edges}
+        return {"nodes": nodes, "edges": edges, "has_more": has_more}
 
     # --- 记忆策略：可编辑 prompt + "要记录什么"指令（记忆策略页面） ---
     def get_policy(self) -> dict:

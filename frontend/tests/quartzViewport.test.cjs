@@ -102,6 +102,44 @@ async function scene({reducedMotion=false,data=baseGraph,viewCache,liveOnly=fals
   }}
 }
 
+test('筛选替换数据保留相机和已有坐标，返回节点恢复位置，空结果不重启布局',async()=>{
+  for (const reducedMotion of [true,false]) {
+    const cache=modelModule.exports.graphViewCache(`synthetic-filter-${reducedMotion}`)
+    const s=await scene({viewCache:cache,reducedMotion})
+    try {
+      s.finish()
+      s.controller.zoomBy(1.2);s.controller.panBy(30,20)
+      const positions=new Map(s.simulation.nodes().map(n=>[n.id,[n.x,n.y]]))
+      const view=JSON.stringify([s.stage.scale.x,s.stage.position.x,s.stage.position.y])
+      const subset={nodes:baseGraph.nodes.slice(0,2),edges:baseGraph.edges.slice(0,1)}
+      const extra={nodes:[...subset.nodes,{id:'new',name:'合成新节点',type:'entity'}],edges:[...subset.edges,{source:'0',target:'new',predicate:'uses',live:true}]}
+      for(const data of [subset,extra,{nodes:[],edges:[]},baseGraph]) {
+        const restarts=s.restarts()
+        s.controller.setData(data,{preserveView:true})
+        s.draw(1000)
+        assert.equal(JSON.stringify([s.stage.scale.x,s.stage.position.x,s.stage.position.y]),view)
+        assert.equal(s.restarts(),restarts)
+        for(const n of s.simulation.nodes()) {
+          if(positions.has(n.id)) assert.equal(JSON.stringify([n.x,n.y]),JSON.stringify(positions.get(n.id)))
+          assert.ok(Number.isFinite(n.x)&&Number.isFinite(n.y))
+          assert.equal(n.fx,undefined);assert.equal(n.fy,undefined)
+        }
+      }
+    } finally {s.controller.destroy()}
+  }
+})
+
+test('入场中筛选保存可见坐标，旧动画不再覆盖返回节点的位置',async()=>{
+  const s=await scene({viewCache:modelModule.exports.graphViewCache('synthetic-mid-entrance')})
+  try {
+    const positions=JSON.stringify(s.simulation.nodes().map(n=>[n.id,n.x,n.y]))
+    s.controller.setData({nodes:baseGraph.nodes.slice(0,2),edges:baseGraph.edges.slice(0,1)},{preserveView:true})
+    s.controller.setData(baseGraph,{preserveView:true})
+    s.finish()
+    assert.equal(JSON.stringify(s.simulation.nodes().map(n=>[n.id,n.x,n.y])),positions)
+  } finally {s.controller.destroy()}
+})
+
 test('入场运动结束不会再次改变比例，初次适配使用稳定布局',async()=>{
   const s=await scene()
   try {

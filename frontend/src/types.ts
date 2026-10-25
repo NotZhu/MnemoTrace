@@ -221,6 +221,10 @@ export interface GraphData {
   edges: GraphEdge[]
 }
 
+export interface GraphResponse extends GraphData {
+  has_more: boolean
+}
+
 export interface Focus {
   track: string[]
   mute: string[]

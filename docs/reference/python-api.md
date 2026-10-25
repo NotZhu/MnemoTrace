@@ -59,8 +59,10 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 | `consume_working(wm_id)`、`sweep_working(as_of=None)` | 标记消费或清理过期/已消费工作条目 |
 | `get_focus()`、`set_focus(track=None, mute=None)` | 查询或更新关注点，None 保持不变，[] 清空对应列表 |
 | `get_policy()`、`set_policy(**fields)` | 查询或覆盖抽取、摘要与画像策略 |
-| `graph_data(user_id=..., as_of=None, include_sensitive=True, q="", live_only=False, limit=None)` | 实体与关系字典 |
+| `graph_data(user_id=..., as_of=None, include_sensitive=True, q="", live_only=False, limit=None)` | 返回 nodes、edges、has_more；见下述图谱完整性契约 |
 | `pending_conflicts(user_id=...)`、`resolve_conflict(conflict_id, keep="newer")`、`dismiss_conflict(conflict_id)` | 查询和裁决待确认冲突 |
+
+图谱的状态、搜索、敏感内容与时间筛选均在 `limit` 前执行；正数 `limit` 限制返回关系数，节点仅包含这些关系的端点。`has_more=true` 表示当前查询条件下仍有未返回的匹配关系；恰好达到上限不表示截断。不限量查询返回全部匹配关系，`has_more=false`。该字段不提供命名空间总数，展示数量仅描述已返回的图。
 
 ## 保存与模型切换
 

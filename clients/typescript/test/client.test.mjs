@@ -4,6 +4,19 @@ import test from 'node:test'
 import { MnemoTraceClient, MnemoTraceError } from '../dist/index.js'
 import { createRequire } from 'node:module'
 
+test('graph exposes completeness metadata and preserves safe default query options',async()=>{
+  const calls=[]
+  const response={nodes:[],edges:[],has_more:false}
+  const client=new MnemoTraceClient({fetch:async url=>{
+    calls.push(url)
+    return new Response(JSON.stringify(response),{status:200})
+  }})
+  assert.deepEqual(await client.graph(),response)
+  assert.equal(calls[0],'http://localhost:8000/v1/graph')
+  await client.graph({asOf:100,includeSensitive:true})
+  assert.equal(calls[1],'http://localhost:8000/v1/graph?as_of=100&include_sensitive=true')
+})
+
 const counts = {
   episodes: 0,
   episodes_consolidated: 0,
