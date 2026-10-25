@@ -1,73 +1,73 @@
 # 架构总览
 
-MnemoTrace 将无损原始会话、双时间事实、关系图谱和派生记忆组合起来，为查询生成带来源的证据。System-1 与 System-2 表示职责分工，不要求两个操作系统进程。
+MnemoTrace 将原始事件、可更新事实和派生上下文分开管理。Python 库提供记忆管线，服务层负责持久化与命名空间，HTTP/MCP/SDK 和控制台提供不同接入面。数据与故障边界见[记忆生命周期](memory.md)。
 
-```mermaid
-flowchart TD
-    A[Python / HTTP / MCP / SDK] --> S[MemoryService：租户、锁与持久化]
-    A --> M[Memory：核心编排]
-    S --> M
-    M --> I[System-1：追加 Episode 与整合队列]
-    I --> C[System-2：抽取、冲突、图谱与派生记忆]
-    C --> T[Fact / Entity / Relation / Summary]
-    I --> E[原始 Episode 与向量]
-    M --> R[查询规划、多信号检索与时间过滤]
-    T --> R
-    E --> R
-    R --> B[事实与原文去重、预算、来源标记]
-    B --> O[上下文 / 答案 / 控制台]
-    V[统一 eval：answerer、judge、full-context] --> M
+## 模块边界
+
+| 层 | 职责与主要入口 |
+| --- | --- |
+| 数据与配置 | [types.py](../../mnemotrace/types.py) 的记录类型、[config.py](../../mnemotrace/config.py) 的算法参数 |
+| 摄入 | [ingest/](../../mnemotrace/ingest/) 保存事件并建立嵌入；[connectors/](../../mnemotrace/connectors/) 解析外部导出与会话记录 |
+| 整合 | [consolidate/](../../mnemotrace/consolidate/) 抽取事实、处理重复与冲突、构建摘要和派生画像 |
+| 检索 | [retrieve/](../../mnemotrace/retrieve/) 生成候选、融合信号、规划证据和组装上下文 |
+| 存储 | [store/base.py](../../mnemotrace/store/base.py) 定义接口；内存实现、JSONL 快照与可选向量后端提供存储 |
+| 组合入口 | [Memory](../../mnemotrace/memory.py) 连接管线；[MemoryService](../../mnemotrace/service.py) 管理命名空间、锁、缓存及提交 |
+| 接入面 | [HTTP](../../mnemotrace/server/)、[MCP](../../mnemotrace/mcp/)、[TypeScript SDK](../../clients/typescript/)、[控制台](../../frontend/) |
+| 测量 | [eval/](../../eval/) 固定数据、摄入、answerer 和 judge，对比不同记忆策略 |
+
+核心仅用标准库。真实 LLM、embedder 与向量后端经接口和可选依赖接入；确定性实现保证基础管线可离线理解与验证。
+
+## 写入路径
+
+```text
+应用 / HTTP / MCP
+    → 归属与权限检查（网络入口）
+    → 保存 Episode
+    → 按 scope 分流长期内容或 WorkingMemory
+    → 整合、冲突处理、图与摘要
+    → 服务层保存命名空间
 ```
 
-## 阅读与代码导航
+Python 的 `add()`、`remember()` 和 `consolidate()` 是显式操作，保存也由调用方决定。服务层默认同步整合；异步模式先保存原始事件，再把整合入队，返回值带 `queued`。
 
-| 主题 | 说明 | 主要代码 |
-| --- | --- | --- |
-| 类型与生命周期 | [记忆、整合与存储](memory.md) | [types.py](../../mnemotrace/types.py)、[memory.py](../../mnemotrace/memory.py)、[consolidate](../../mnemotrace/consolidate/)、[store](../../mnemotrace/store/) |
-| 查询与回答证据 | [检索与上下文](retrieval.md) | [retrieve](../../mnemotrace/retrieve/)、`Memory` 的读取方法 |
-| 接入与隔离 | [服务架构](service.md) | [service.py](../../mnemotrace/service.py)、[server](../../mnemotrace/server/)、[connectors](../../mnemotrace/connectors/) |
-| 页面与查询状态 | [控制台架构](console.md) | [frontend/src](../../frontend/src/) |
-| 配置与外部依赖 | [配置参考](../reference/configuration.md) | [Config](../../mnemotrace/config.py)、`embed/llm/store` 接口 |
-| 验证 | [评测操作](../../eval/README.md) | [eval](../../eval/)、[tests](../../tests/) |
+原始写入成功与提取成功分别表达。模型失败时，服务可能返回 `stored_raw=true` 和 `degraded`；调用方应检查这些字段，不能把“已保存原文”解释为“已建立所有事实”。
 
-设计理由见[取舍记录](../decisions.md)，缺陷和待验证状态仅由[问题台账](../issues.md)维护。当前架构图不构成性能或质量验收。
+会话收尾是独立入口，可补整合、摘要与结论，并清理 working 状态。基准问题的读取不能替代这一生命周期的验证。
 
-<a id="backend-status"></a>
+## 检索与上下文
 
-## 后端实现状态
+```text
+查询及用户 / session / as_of
+    → 证据需求与查询规划
+    → 词法、向量及图候选
+    → 融合、历史链与来源补充
+    → 事实 + 摘要 + 原始会话片段
+    → 按预算组装上下文或返回事实答案
+```
 
-| 层 | 默认离线实现 | 已实现的可选后端 | 规划中 |
-| --- | --- | --- | --- |
-| 嵌入 | `HashingEmbedder` | sentence-transformers、LiteLLM embedding API | — |
-| 抽取/模型 | 规则实现 | LiteLLM | — |
-| 向量 | 内存 | LanceDB | Qdrant、pgvector |
-| 图 | 内存 | — | Kuzu、Neo4j、FalkorDB |
-| 文档 | 内存 | — | — |
-| 词法 | 内存 BM25 | — | tantivy、bm25s |
+事实提供可结构化的当前认知，摘要用于会话级定位，原始片段补充抽取遗漏的细节。热层与冷层区分工作集，不表示冷事实已经被遗忘。时近性和显著度辅助排序，检索质量仍依赖候选与证据覆盖。
 
-`durable` 是 JSONL + manifest 快照机制，`DocStore`/`GraphStore` 运行时仍为内存对象。规划中的后端不代表已有适配器或安装配置。外部依赖通过 extras 延迟加载，默认闭环只使用标准库。
+`search()` 返回事实性答案及依据；`lean_context()`、`context_for()` 返回可交给调用方模型的文本。HTTP 的默认 recall 还可生成答案；本地 MCP 的上下文读取默认不额外生成答案。各入口的默认预算和返回结构见各自参考页。
 
-## 目标与战略方向
+哈希嵌入主要反映词汇重合；真实语义能力来自所选模型与配置。权重、候选池、预算及规划分支的收益使用[评测框架](../../eval/README.md)验证，不能由结构复杂度推断。
 
-长期目标是验证精确检索能否同时改善准确率与成本，并以开放框架和原始日志支持复现。
+## 服务、隔离与一致性
 
-| 标识 | 方向 | 验证重点 |
-| --- | --- | --- |
-| Bet A | 超越 full-context 准确率并降低成本 | 同 rig 准确率、token 与延迟 |
-| Bet B | 多跳查询规划 | 分解、图遍历、跨会话证据 |
-| Bet C | 双时间与低成本冲突处理 | 知识更新、历史和来源链 |
-| Bet D | 可复现评测框架 | 统一流水线、强 judge、原始日志 |
-| Bet E | 分层分页、衰减与规模扩展 | 10M+ tokens 下的能力目标 |
-| Bet F | 异步及休眠期整合 | 图谱、去重和冲突移出关键路径 |
+服务按命名空间管理持久化 Memory；热缓存有容量上限，读取会核对 manifest 提交标识。写入协调覆盖加载、修改和保存，进程内读写协调与命名空间文件锁共同约束访问，避免基于过期对象覆盖新提交。
 
-以下是设计目标，不是当前成绩：System-1 热写入 <50ms，读取 <100ms，System-2 秒级异步整合。
+HTTP 的凭据映射及 space ACL 在服务器执行。跨 space 读写目前集中在 remember/recall；其他管理路由使用自己的鉴权路径，不能假定任意 space 凭据都能调用所有管理功能。
 
-| 里程碑 | 验收目标 |
+MCP 本地后端固定一个 namespace；远程后端转发到 HTTP。SDK 负责序列化、鉴权头与错误封装。控制台通过服务 API 管理状态，生产资源由服务的 `/ui/` 提供，开发运行方式见[贡献指南](../../CONTRIBUTING.md)。
+
+## 当前设计取舍
+
+| 选择 | 原因与代价 |
 | --- | --- |
-| M0 | 零依赖 `add` → `consolidate` → `search`、双时间、冲突失效、as-of 与微型评测 |
-| M1 | 真实后端与相同题目的 full-context 对照，`LongMemEval_S` 全集目标 >85% |
-| M2 | 多跳与时间推理，`LongMemEval_S` 目标 90+，准确率超越 full-context |
-| M3 | `LongMemEval_M`、`BEAM-1M/10M` 上验证 1M+ tokens 扩展 |
-| M4 | 开放框架与日志，经 MCP、SDK 和更多基准扩大复现 |
+| 原始事件与事实分开 | 保留溯源与抽取遗漏；需要额外存储和隐私范围管理 |
+| 时间与替代链 | 更新后仍可检查历史；查询和擦除必须处理链路语义 |
+| 确定性离线实现 | 无外部服务即可运行；语言覆盖和语义质量有限 |
+| 服务入口共用 MemoryService | 持久化与生命周期逻辑集中；不同接入面的参数能力仍有差异 |
+| JSONL + manifest | 可检查、无对象反序列化执行；不等同于具备完整事务恢复能力的数据库 |
+| 可选异步整合 | 缩短写入关键路径；引入积压、收尾和可见性边界 |
 
-成绩和限制见 [RESULTS](../../RESULTS.md)。候选优化应先解决已记录的问题，并按证据形态验证原文融合、演化链、多跳及时间区间推理，不能将候选表述为已取得收益。
+当前契约说明见 [memory.md](memory.md)，真实限制在对应接口或使用说明中解释。独立重大设计只有在需要持续引用时才保留专题说明，常规修复通过代码、测试与 PR 表达。

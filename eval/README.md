@@ -1,57 +1,84 @@
-# 评测操作
+# 评测方法与复现
 
-项目规则见 [AGENTS](../AGENTS.md#principle-i)，已发布结果和历史条件见 [RESULTS](../RESULTS.md)，日志分类与 schema 见[证据目录](../results/README.md)。本页只维护可执行入口，不保存阶段待办或逐次运行成绩。
+本目录保留通用评测、报告和结果校验工具。当前页面说明如何测量，不维护历史成绩榜单。公开结论的要求见 [AGENTS.md](../AGENTS.md#principle-i)。
 
-## 离线检查
+## 选择测量范围
 
-```bash
-python scripts/check_zero_setup.py
-python eval/harness.py
-python eval/harness.py --storage durable --out .artifacts/eval/synthetic_durable.jsonl
-python eval/report.py .artifacts/eval/synthetic_durable.jsonl
-python eval/ablate_features.py --jsonl .artifacts/eval/feature_ablation.jsonl
+
+| 问题                    | 入口                                                                 |
+| ------------------------- | ---------------------------------------------------------------------- |
+| 验证 harness 和离线行为 | tests/test_eval_harness.py、test_validate_results.py、test_report.py |
+| LongMemEval 统一 QA     | [bench.py](bench.py)，数据解析见 [longmemeval.py](longmemeval.py)    |
+| LOCOMO 适配             | [locomo.py](locomo.py) 转为同一 harness 的输入                       |
+| PersonaMem              | [personamem.py](personamem.py)，日志使用自己的 schema                |
+| 功能消融与参数          | bench 的 --ablate 与 [tune_weights.py](tune_weights.py)              |
+| 服务接入与导入覆盖      | [facility.py](facility.py)，不是答案准确率基准                       |
+| 准备控制台演示数据      | [seed_console.py](seed_console.py)，不是生产用户数据迁移器           |
+
+离线回归、探索切片、完整 QA 和会话收尾验证回答不同问题，不能互相替代。算法切片用于定位变化，影响全局排序、预算或公开结论时扩大数据范围。
+
+## 准备运行
+
+源码安装的 extras 以 [pyproject.toml](../pyproject.toml) 为准。真实 QA 通常需要 llm、所选 embedder 的依赖，以及对应 provider 凭据；完整 CLI 参数用 `python eval/bench.py --help` 查看。
+
+bench 的 --data 可传本地 JSON 路径，也支持 s/m/oracle 等 LongMemEval 数据别名和 locomo 适配入口。别名可能需要额外下载依赖与联网；本地路径更便于固定数据版本。遵循数据集原始来源的获取和使用条件，记录版本、题目 id 范围及预处理。
+
+以下为 Bash 运行模板：先设置 EXTRACTOR_MODEL、ANSWERER_MODEL、JUDGE_MODEL、EMBEDDER_MODEL 为 factory 支持且已配置的模型标识，再执行。此路径会调用模型并可能产生费用：
+
+```sh
+mkdir -p .artifacts/eval/my-run
+python eval/bench.py \
+  --data /path/to/longmemeval_s.json \
+  --limit 20 --systems engram_lean,full_context \
+  --extractor "$EXTRACTOR_MODEL" --answerer "$ANSWERER_MODEL" \
+  --judge "$JUDGE_MODEL" --embedder "$EMBEDDER_MODEL" \
+  --pin-extraction .artifacts/eval/my-run/extraction-cache \
+  --out .artifacts/eval/my-run/qa.jsonl
 ```
 
-zero-setup 检查仓库文档、源码与已安装模块 quickstart、CLI help、合成评测、已发布证据、论文统计和标准库编译。合成与离线消融验证目标行为，不作为真实 QA 准确率。读路径消融工具 `ablate_readpath.py` 的默认输出为 `.artifacts/eval/readpath_ablation.jsonl`。
+engram_lean 是当前 CLI 的系统标识，并非另一份产品名。使用脚本实际支持的标识，不因文案重写更名。
 
-## 真实基准
+## 数据、基线与消融
 
-`bench.py` 提供统一摄入、上下文、回答和评分流水线。系统名保留 `engram_lean`、`full_context` 等历史评测标识；产品包仍为 `mnemotrace`。数据加载、系统和可关闭开关以 [bench.py](bench.py) 为准。
+- --limit 0 表示不限制题数；--full 是开启算法功能的选项，不是“运行全集”。
+- --qid、--category、--failures-from 控制切片，选样发生在 --limit 等处理之前；记录实际 QID，不能只报告请求数量。--shuffle 改变所选样本顺序，不能自动消除切片偏差。
+- 记忆系统与 full_context 在同次运行中共享明确的 answerer/judge 和数据条件；声明上下文预算、摄入、模型和配置差异。
+- 比较读路径时复用 --pin-extraction，避免抽取差异掩盖读取变化；这不能消除 answerer/judge 的随机性。
+- --ablate 关闭对应配置开关，具体映射见 bench.py。多次运行的代码、模型、预算和范围应一致，原始开关状态应记录。
+- --resume 只用于恢复相同系统和配置的同一次运行。更换模型或系统后不要复用旧输出混合恢复。
+- --emit 为官方 judge 输出适配日志；它与 bench 自身 QA JSONL 的 schema 不同。
 
-真实运行需要数据、可选模型依赖及相应 provider 的凭据，会产生 API 费用。先使用 `python eval/bench.py --help` 核对参数，为 answerer、judge、extractor 选择明确的模型版本；历史 endpoint 状态见 RESULTS，文档不保证它们继续服务。以下示意命令中的模型占位符需替换：
+当前 harness 不通过 close_session 验证会话结论生命周期；该路径使用专门的服务/持久化回归和 Agent 示例核对。
 
-```bash
-python eval/bench.py --data s --limit 500 --systems engram_lean,full_context \
-    --answerer <provider:model> --judge <provider:model> --extractor <provider:model> \
-    --embedder bge-small --reasoning --persona \
-    --chunks 2 --topk 15 --extract-k 8 --summ-k 28 --n-summaries 28 \
-    --out .artifacts/eval/lme_s.jsonl
-python eval/report.py .artifacts/eval/lme_s.jsonl
-python eval/validate_results.py --expected-rows 500 --require-complete \
-    --system engram_lean --system full_context .artifacts/eval/lme_s.jsonl
+## 报告与完整性
+
+```sh
+python eval/report.py .artifacts/eval/my-run/qa.jsonl
+python eval/validate_results.py --expected-rows 20 --require-complete .artifacts/eval/my-run/qa.jsonl
+python eval/audit_results.py .artifacts/eval/my-run/qa.jsonl --bench-rows 20 --fail-invalid
 ```
 
-LOCOMO 使用 `--data locomo` 并准备对应加载器需要的数据。`--limit 500` 只是上限，不能推定其他数据集已完成全集。更换骨干需完整记录 answerer/judge/extractor、依赖、数据范围、开关、命令与代码状态；跨 rig 的数字分别报告。未验证的第三方适配器不能因注册在 SYSTEMS 就视为可用。
+完整 LongMemEval_S 对应 500 题，不能用上例 20 行探索结果替代。混合日志可用重复的 --system 只要求所引用系统完整，但应明确系统选择，不能把未被检查的部分也称为完整。PersonaMem 使用 `--schema personamem` 并按实际实验设计指定题数。
 
-## 校验、审计与比较
+report 输出和日志字段需要分别理解：
 
-- `report.py` 汇总准确率、已评分分母、平均上下文 token、p50/p95 延迟及错误；上下文 token 不等于总 token，端到端延迟不等于检索延迟。
-- `validate_results.py` 检查行数、qid、字段和完整评分。LongMemEval_S 全集为 500；混合日志通过可重复 `--system` 只声明被引用系统。
-- `audit_results.py` 默认仅扫描 `results/benchmarks/*.jsonl`，将 QA 日志区分 complete/incomplete/invalid。实验与工程 JSONL 需要各自 schema，不能混扫后当作损坏的正式 QA。
-- `compare.py` 在共享的已评分 qid 上比较同一系统，报告分歧与组合 oracle；oracle 是这两份输出的事后选择上界，不是 benchmark 的理论上限。
+- accuracy 的有效分母、错误与未完成题数；
+- total tokens 与单次上下文估算，是否包含抽取、回答、判断等调用；
+- p50/p95 延迟及其测量范围，区分摄入、检索和端到端；
+- full-context 对照、配置差异和多次运行波动。
 
-```bash
-python eval/audit_results.py
-python eval/audit_results.py --fail-invalid results/benchmarks/headline_500.jsonl results/benchmarks/bb_flash.jsonl
-python eval/compare.py .artifacts/eval/backbone_a.jsonl .artifacts/eval/backbone_b.jsonl --system engram_lean --per-category
-```
+审计工具必须显式传入日志路径或 glob；批量审计时为 glob 加引号，由工具统一展开。不传路径会报告用法错误，不扫描隐含目录，也不猜测哪些日志可作为证据。
 
-PersonaMem-v2 是独立多选题 schema，不能使用 LongMemEval 的 cat/pred/gold 约定：
+## 产物与公开证据
 
-```bash
-python eval/personamem.py --n-personas 20 --per-persona 5 --out .artifacts/eval/personamem_v2.jsonl
-python eval/report.py .artifacts/eval/personamem_v2.jsonl
-python eval/validate_results.py --schema personamem --expected-rows 100 --require-complete .artifacts/eval/personamem_v2.jsonl
-```
+本地实验输出和抽取缓存放在 .artifacts/ 的任务目录，保留精确命令、数据范围、系统、模型、参数、代码 commit、未提交 diff 和结果。失败及未完成尝试明确标注，必要复现实验不能只留最终成功摘要。
 
-新运行先留在 `.artifacts/`；只有明确消费者需要的证据才按[分类规则](../results/README.md)入库。设施测量 `facility.py` 默认写 `.artifacts/eval/facility.jsonl`，独立于 benchmark 准确率；合成测试不读取个人语料。研究中的未完成事项统一在[问题台账](../docs/issues.md)，论文历史实验范围保留在 [paper 检查清单](../paper/EXPERIMENTS_CHECKLIST.md)。
+公开数字需要可持续获取的原始日志与复现条件，发布前通过完整性校验并确认所有入口表述一致。可按实际发布决定持久保存位置；临时 CI 日志和本地被忽略文件本身不足以提供长期可获取性。普通测试不新增验收 Markdown 或历史结果归档目录。
+
+## 保留工具的边界
+
+facility 会读取所选会话目录、watcher/hook 状态并可能访问服务，使用前核对 --roots、--url、凭据和输出范围；--no-out 可禁止追加记录。它的覆盖统计不能替代用户体验或答案质量。
+
+seed_console 使用基准数据建立演示 namespace，输出为 JSONL 存储目录。显式选择 --out 目录、数据范围、embedder 和 LLM，避免覆盖真实用户数据；先通过 --help 核对默认设置。
+
+所有测量都应在授权范围内执行。核心、安装和工程检查成功不表示算法提升。

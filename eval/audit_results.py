@@ -1,11 +1,11 @@
 """在本地 benchmark 结果日志成为公开证据之前进行审计。
 
 ``validate_results.py`` 回答"这一份日志可否引用？"；本脚本给出更宽的仪表盘：哪些文件是完整的、
-哪些只是部分的探索性运行、哪些有模式/错误因此绝不能引用。刻意零依赖，可以放心跑在凌乱的本地
-``results/`` 目录上。
+哪些只是部分的探索性运行、哪些有模式/错误因此绝不能引用。刻意零依赖，显式接收本地日志路径
+或 glob，不依赖仓库中的结果归档目录。
 
-    python eval/audit_results.py
-    python eval/audit_results.py --fail-invalid
+    python eval/audit_results.py .artifacts/eval/my-run/qa.jsonl
+    python eval/audit_results.py ".artifacts/eval/my-run/*.jsonl" --fail-invalid
 """
 from __future__ import annotations
 
@@ -164,7 +164,7 @@ def format_audit(audits: list[LogAudit]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audit MnemoTrace result JSONL logs.")
-    parser.add_argument("paths", nargs="*", default=["results/benchmarks/*.jsonl"], help="QA logs or glob patterns; context/engineering schemas are selected separately")
+    parser.add_argument("paths", nargs="+", help="QA logs or glob patterns; context/engineering schemas are selected separately")
     parser.add_argument("--bench-rows", type=int, default=DEFAULT_BENCH_ROWS)
     parser.add_argument("--personamem-rows", type=int, default=None)
     parser.add_argument("--fail-invalid", action="store_true", help="exit non-zero when any log is not complete")

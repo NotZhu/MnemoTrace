@@ -1,65 +1,80 @@
 # Python API
 
-公开入口是 `from mnemotrace import Memory, Config`。完整签名见 [memory.py](../../mnemotrace/memory.py)，类型见 [types.py](../../mnemotrace/types.py)。本页说明主要调用及容易混淆的边界。
+面向嵌入式应用的公共入口为 `from mnemotrace import Memory, Config`；还导出 Episode、Fact、Entity 和 Relation。核心不需要第三方运行时依赖。入门步骤见[快速开始](../quickstart.md)。
 
-## 创建与持久化
+## 构造与运行配置
 
-```python
-from mnemotrace import Config, Memory
+`Memory(config=None, embedder=None, llm=None, reranker=None, vector_store_factory=..., graph_store_factory=...)`
 
-memory = Memory(config=Config())
-episode = memory.add("My name is Alex.", user_id="user123")
-memory.consolidate()
-memory.save("./my-store")
-restored = Memory.open("./my-store")
-```
+默认 Config、HashingEmbedder、规则抽取、内存文档/向量/图存储。传入 LLM 可启用相关模型路径；可选实现通过各自 extras 安装。参数字段和默认值见[配置参考](configuration.md)及 [Config](../../mnemotrace/config.py)。
 
-`Memory` 默认内存、`hashing`、规则抽取，无服务和 `key`。`save` 保存状态，`open` 以传入后端恢复；模型身份或维度不匹配明确失败。需要共享进程间读改存时使用 [MemoryService](../architecture/service.md)，裸 `Memory` 不提供相同事务边界。
+直接使用 Memory 不读取服务端的凭据映射，也不自动提供鉴权、服务级锁或逐操作保存。并发与持久化由应用管理，或改用 [MemoryService](../../mnemotrace/service.py)/HTTP。
 
 ## 写入与导入
 
-| 方法 | 返回与语义 |
+| 方法 | 主要参数 | 返回与语义 |
+| --- | --- | --- |
+| `add` | content；user_id、session_id、speaker、event_time；consolidate=False | Episode；保存事件，可选择立即整合 |
+| `remember` | content；user_id、session_id、scope="auto" | dict；路由 long/working，长期内容仍需显式整合 |
+| `consolidate` | episodes=None | 计数字典；None 处理 pending 事件 |
+| `consolidate_full` | fact_episodes=None、summary_episodes=None | 计数字典；整合、摘要与反映更新，可分别指定两组事件 |
+| `import_messages` | sessions、user_id；consolidate=None、summarize=True、dedupe=True 等 | 计数字典；导入已解析会话 |
+| `import_data` | data、format="auto"、user_id、session_id；其余导入选项 | 计数字典；先解析再导入 |
+| `import_snapshot` | snapshot、user_id、dedupe=True | dict；导入结构化导出，不等同于打开存储目录 |
+
+`scope="auto"` 按规则识别短时状态，`long` 强制走长期内容路径，`working` 跳过长期画像事实提取。Python 记忆实例中的写入不会自动保存到磁盘。
+
+## 检索与上下文
+
+| 方法 | 主要参数 | 返回 |
+| --- | --- | --- |
+| `search` | query、user_id、as_of=None、top_k=None | SearchResult |
+| `as_of` | query、when、user_id、top_k=None | SearchResult；时间查询便捷入口 |
+| `lean_context` | query、user_id；as_of、session_id、redact_sensitive；n_summaries、n_facts、n_chunks、char_budget 等 | 按预算组合的上下文字符串 |
+| `context_for` | query、user_id；as_of、top_k、k_chunks 及按需增强选项 | 上下文字符串 |
+| `retrieve_episodes` | query、user_id、k=5、pool=None、as_of=None | 检索到的原始 Episode |
+| `history` | subject、predicate、user_id | 同一槽位的 Fact 列表 |
+| `profile` | user_id | 属性字典 |
+| `structured_profile` | user_id | 结构化画像字典 |
+| `build_persona` | user_id | 派生画像文本 |
+
+SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answer()` 返回已生成答案或最高事实的 object/text；拒答时返回固定提示。`top()` 返回首条 Fact 或 None。它不是对任何问题都调用外部模型的通用聊天接口。
+
+`as_of`、时间字段使用 epoch 秒。查询需要沿用正确的 user_id；携带 session_id 才能在相应上下文中包含该 session 的工作记忆。Python `graph_data()` 默认包含敏感事实支持的关系，与 HTTP 的安全视图默认值不同。
+
+## 事实、工作状态与策略
+
+| 方法 | 用途 |
 | --- | --- |
-| `add(content, user_id, session_id, ...)` | `Episode`；追加无损原文，默认不立即整合 |
-| `remember(content, ..., scope="auto")` | 结果 dict；按 `auto`/`long`/`working` 路由并保留来源 |
-| `consolidate(episodes=None)` | 计数 dict；抽取待处理 `Episode`、冲突失效与图谱更新 |
-| `consolidate_full(...)` | 事实与摘要整合，用于需要分别选择证据的流水线 |
-| `import_data(data, format="auto", ...)` | 接收 `chatgpt/messages/records/jsonl/transcript` 等来源 |
-| `import_messages(sessions, ...)` | 按会话导入、批量嵌入与去重；保留来源事件时间 |
-| `import_snapshot(snapshot, ...)` | 恢复导出记录，保留双时间并重映射来源与替代链 |
-| `add_fact(subject, predicate, object, ...)` | `Fact`；用户明确断言，保护其权威性 |
+| `add_fact(subject, predicate, object, user_id=..., valid_at=None, sensitive=None, category=None)` | 返回用户来源 Fact |
+| `update_fact(fact_id, ...)` | 修改内容、分类或敏感标记，返回 Fact 或 None；statement 不与三元组字段混用 |
+| `delete_fact(fact_id)` | 删除指定事实，返回 bool |
+| `remember_working(content, user_id=..., session_id=..., kind="state", ttl_seconds=None)` | 返回 WorkingMemory |
+| `working_memory(user_id=..., session_id=None, as_of=None, kind=None)` | 活跃工作条目 |
+| `clear_session(user_id=..., session_id=...)` | 清理该 session 工作记忆，返回数量；不是服务层 close_session |
+| `consume_working(wm_id)`、`sweep_working(as_of=None)` | 标记消费或清理过期/已消费工作条目 |
+| `get_focus()`、`set_focus(track=None, mute=None)` | 查询或更新关注点，None 保持不变，[] 清空对应列表 |
+| `get_policy()`、`set_policy(**fields)` | 查询或覆盖抽取、摘要与画像策略 |
+| `graph_data(user_id=..., as_of=None, include_sensitive=True, q="", live_only=False, limit=None)` | 实体与关系字典 |
+| `pending_conflicts(user_id=...)`、`resolve_conflict(conflict_id, keep="newer")`、`dismiss_conflict(conflict_id)` | 查询和裁决待确认冲突 |
 
-`user_id` 默认 `default`，精确匹配原始值；`session_id` 用于溯源与生命周期，不提供跨用户编号合并。`agent_session` 的逐轮抽取门和降级见[生命周期](../architecture/memory.md)。
-
-## 查询与时间
+## 保存与模型切换
 
 ```python
-result = restored.search("What is my name?", user_id="user123")
-print(result.answer())
-context = restored.lean_context("What is my name?", user_id="user123")
+from mnemotrace import Memory
+
+memory = Memory.open("/path/to/owned-memory-store")
+memory.add("I prefer Python.", user_id="user123")
+memory.consolidate()
+memory.save()
 ```
 
-`search` 返回 `SearchResult`，包含 `facts`、`scores`、`via` 和 `abstained`；通过 `answer()` 获取答案文本。`lean_context` 返回给下游模型的证据字符串，组合事实、原文和派生层，不等同于完整历史。
+`save(path=None)` 使用指定目录或上次打开/保存的路径；没有路径时抛出 ValueError。`open(path, allow_mismatch=False, **kwargs)` 是类方法，支持与构造函数一致的运行组件参数。
 
-`as_of(query, when, ...)` 返回某一时间条件下的 `SearchResult`，when 是 epoch 秒。它转交 `search(as_of=when)`，没有独立 T / K 参数。`history(subject, predicate, ...)` 返回槽位历史；时序语义见[生命周期](../architecture/memory.md#对象与时间)。
+异常类型从 `mnemotrace.store.persist` 导入：PersistenceError、StoreFormatError、IncompatibleStoreError、DimensionMismatchError、EmbedderMismatchError。当前恢复条件和重嵌入流程见[持久化契约](../architecture/memory.md)。
 
-`retrieve_episodes` 和 `retrieve_summaries` 分别检索原始会话与摘要。`redact_sensitive=True` 的 `lean_context` 只提供已分类的非敏感结构化事实，不包含可能泄露自由文本的画像、摘要与原文；不能将敏感分类当作完整隐私审计。
+## 扩展与研究入口
 
-## 管理与会话态
+摘要和派生层操作还包括 `summarize_episodes`、`retrieve_summaries`、`reflect`、`procedural`；热层管理包括 `evict_cold`、`apply_focus`。这些方法改变派生状态或工作集，调用方负责后续保存及必要验证。
 
-| 方法 | 语义 |
-| --- | --- |
-| `update_fact(id, ...)` | 返回 `Fact` 或 None；元数据和实际内容修改分别处理 |
-| `delete_fact(id)` | 显式删除指定事实，返回 bool |
-| `structured_profile / build_persona` | 结构化与叙事画像，来源数量不等于置信度 |
-| `remember_working / working_memory` | 会话及 TTL 记忆，不自动进入长期画像 |
-| `clear_session / consume_working / sweep_working` | 清除会话状态、消费单条或过期清扫 |
-| `get_focus / set_focus` | `track`/`mute`；None 保持列表，[] 清空 |
-| `get_policy / set_policy` | 用户策略覆盖默认抽取、摘要和画像规则 |
-| `pending_conflicts / resolve_conflict` | 候选矛盾与显式 `newer/older/both` 选择 |
-| `graph_data` | 当前用户的图视图，支持时间、搜索及敏感范围 |
-| `reembed` | 显式重新生成向量；先备份，不能只修改 manifest |
-
-结论的整句 `statement` 仅适用于 `decision/finding/lesson/open_question`；属性事实编辑三元组。元数据保存不复活历史，实际内容修改会成为用户断言。完整规则见[编辑与擦除](../architecture/memory.md#编辑与擦除)。
-
-关闭客户端会话、持久化及可见审计由 `MemoryService.close_session` 和 `MemoryService.session_report` 提供，HTTP / MCP 对应入口见[接入指南](../guides/agents.md)。
+精确签名、类型和行为以 [Memory](../../mnemotrace/memory.py)、[记录类型](../../mnemotrace/types.py) 和对应[测试](../../tests/)为核对来源。HTTP/MCP 的方法、默认值及能力不与嵌入式 API 一一对应。

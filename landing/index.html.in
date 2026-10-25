@@ -526,14 +526,14 @@
   <div class="benchmark-evidence rv d3">
 <!-- landing:benchmark_summary -->
     <div class="benchmark-links">
-      <a href="https://github.com/NotZhu/MnemoTrace/blob/main/results/benchmarks/run500_v3_main_deepseekjudge.jsonl" target="_blank" rel="noopener noreferrer">查看原始日志 <span aria-hidden="true">↗</span></a>
-      <a href="https://github.com/NotZhu/MnemoTrace/blob/main/RESULTS.md" target="_blank" rel="noopener noreferrer">评测方法 <span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/NotZhu/MnemoTrace" target="_blank" rel="noopener noreferrer">查看原始日志 <span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/NotZhu/MnemoTrace" target="_blank" rel="noopener noreferrer">评测方法 <span aria-hidden="true">↗</span></a>
     </div>
   </div>
   <details class="benchmark-details rv d3">
     <summary>核验结果与复现评测</summary>
     <div class="benchmark-details-content">
-      <p>下载仓库后，可从已公开的原始日志核验结果。重新运行评测所需的数据、模型与环境配置见<a href="https://github.com/NotZhu/MnemoTrace/blob/main/RESULTS.md" target="_blank" rel="noopener noreferrer">完整评测指南</a>。</p>
+      <p>下载仓库后，可从已公开的原始日志核验结果。重新运行评测所需的数据、模型与环境配置见<a href="https://github.com/NotZhu/MnemoTrace" target="_blank" rel="noopener noreferrer">完整评测指南</a>。</p>
       <pre class="benchmark-command"><code>python eval/report.py results/benchmarks/run500_v3_main_deepseekjudge.jsonl
 python eval/validate_results.py --expected-rows 500 --require-complete --system engram_lean --system full_context results/benchmarks/run500_v3_main_deepseekjudge.jsonl</code></pre>
       <div class="benchmark-latencies">

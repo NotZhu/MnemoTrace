@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import mnemotrace
+import pytest
+
+from scripts import check_release
 
 try:
     import tomllib
@@ -63,4 +67,48 @@ def test_release_gate_passes():
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "OK commercial release checks passed" in result.stdout
+    assert "OK release metadata and deployment checks passed" in result.stdout
+
+
+@pytest.fixture
+def release_repository(tmp_path, monkeypatch):
+    for rel in (
+        "pyproject.toml", "mnemotrace/__init__.py",
+        "clients/typescript/package.json", "clients/typescript/package-lock.json",
+        "frontend/package.json", "LICENSE", "COMMERCIAL-LICENSE.md", "SECURITY.md",
+        "CHANGELOG.md", "Dockerfile", ".dockerignore", "deploy/docker-compose.yml",
+        "deploy/.env.example", "deploy/README.md", "README.md", "README.zh-CN.md",
+        "docs/reference/http-api.md", "docs/README.md",
+        "docs/architecture/README.md", ".github/workflows/ci.yml",
+    ):
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / rel, target)
+    monkeypatch.setattr(check_release, "ROOT", tmp_path)
+    return tmp_path
+
+
+def test_release_check_needs_no_historical_artifacts(release_repository):
+    for name in ("RESULTS.md", "results", "paper", ".specify", "specs"):
+        assert not (release_repository / name).exists()
+    assert check_release.main() == 0
+
+
+@pytest.mark.parametrize("defect", ["version", "root", "anonymous", "liveness"])
+def test_release_check_rejects_invalid_metadata_and_deployment(release_repository, defect):
+    def replace(rel, old, new):
+        path = release_repository / rel
+        text = path.read_text(encoding="utf-8")
+        assert old in text
+        path.write_text(text.replace(old, new), encoding="utf-8")
+
+    if defect == "version":
+        replace("pyproject.toml", 'version = "0.1.0"', 'version = "0.1.1"')
+    elif defect == "root":
+        replace("Dockerfile", "USER 10001:10001", "USER root")
+    elif defect == "anonymous":
+        replace("Dockerfile", "USER 10001:10001", "ENV MNEMOTRACE_OPEN=1\nUSER 10001:10001")
+    else:
+        for rel in ("Dockerfile", "deploy/docker-compose.yml"):
+            replace(rel, "/ready", "/health")
+    assert check_release.main() == 1

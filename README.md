@@ -1,69 +1,48 @@
 # MnemoTrace · 忆痕
 
-[English](README.md) | [中文](README.zh-CN.md)
+Long-term memory for LLM agents, with a Python library, HTTP service, MCP tools, TypeScript SDK, and a management console.
 
-An open-source long-term memory engine for LLM agents. MnemoTrace keeps original conversations, extracts bi-temporal facts, preserves superseded history, and retrieves facts together with their source context.
+MnemoTrace stores conversation episodes, extracts facts with time and provenance, and retrieves relevant context across sessions. Memory updates can retain superseded facts for historical queries. The default Python path uses a hashing embedder and rule-based extraction: no API key, model download, or external service is required. These deterministic defaults demonstrate the pipeline; they do not establish semantic retrieval quality.
 
-**0.1.0 Beta · single-node self-hosting.** The offline loop needs no API keys or services. Production HTTP requires configured credentials. See [deployment](deploy/README.md), [security](SECURITY.md), and the [documentation](docs/README.md).
+[中文](README.zh-CN.md) · [Documentation](docs/README.md) · [Quickstart](docs/quickstart.md)
 
-## Quickstart
+## Try it
 
-Run from this checkout with Python 3.10 or newer:
+From a source checkout, with Python 3.10 or later:
 
-```bash
-python examples/quickstart.py
-```
-
-To use the package locally:
-
-```bash
-python -m pip install -e .
+```sh
+python -m pip install .
 mnemotrace-quickstart
 ```
 
-The distribution name is `mnemotrace-memory`; these commands install this checkout and do not imply an available PyPI/npm release. The core uses only the standard library, with deterministic hashing, rule extraction and memory stores.
+For a minimal integration:
 
 ```python
 from mnemotrace import Memory
 
 memory = Memory()
-memory.add("My name is Alex and I work at Acme.", user_id="user123")
+memory.add("I live in Paris.", user_id="user123", session_id="demo")
 memory.consolidate()
-print(memory.search("Where does Alex work?", user_id="user123").answer())
+print(memory.search("Where do I live?", user_id="user123").answer())
+# Paris
 ```
 
-Use the exact same `user_id` to share memory across sessions. Different IDs remain separate; name/nickname recognition stays within one user. See the [quickstart](docs/quickstart.md), [Python API](docs/reference/python-api.md), and [backend status](docs/architecture/README.md#backend-status).
+This instance lives in memory. See the [quickstart](docs/quickstart.md) to save and reopen it, or [deployment](deploy/README.md) to run a persistent service and console.
 
-## Results
+## Choose an entry point
 
-LongMemEval_S, 500 questions, official category-specific judge prompts. The recorded run uses doubao-seed-2.0-pro as answerer and the DeepSeek official judge; every compared system uses the same answerer, judge and questions.
 
-| System | Accuracy | Average context tokens |
-| --- | ---: | ---: |
-| MnemoTrace (`engram_lean`) | **84.4%** | **7.9k** |
-| Full-context baseline | 78.8% | 79.2k |
+| Goal                           | Start here                                                                                                                                           |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Use and manage memory          | [Usage guide](docs/guides/usage.md)                                                                                                                  |
+| Connect an agent or MCP client | [Agent integration](docs/guides/agents.md)                                                                                                           |
+| Call an API                    | [Python](docs/reference/python-api.md), [HTTP](docs/reference/http-api.md), [MCP](docs/reference/mcp.md), [TypeScript](clients/typescript/README.md) |
+| Configure models and storage   | [Configuration](docs/reference/configuration.md)                                                                                                     |
+| Understand the implementation  | [Architecture](docs/architecture/README.md)                                                                                                          |
+| Develop or measure changes     | [Contributing](CONTRIBUTING.md), [Evaluation](eval/README.md)                                                                                        |
 
-That run gives **+5.6 points** using about **1/10** of the baseline context tokens. These are historical measurements, not a live property of subsequent code. The earlier 83.6% / 73.2% run used another judge setup and remains separately documented.
+Model-backed extraction, embeddings, and answering require the corresponding optional dependencies and configuration. The console requires a frontend build; installing the Python wheel alone does not include that build.
 
-Read [RESULTS.md](RESULTS.md) for exact settings, total-token and latency reporting limits, category results, provider changes, and reproduction commands. The [raw run](results/benchmarks/run500_v3_main_deepseekjudge.jsonl) is committed; use `python eval/report.py <file>` to recalculate it. [Evaluation tools](eval/README.md) include full-context comparison and completeness validation.
+## License and security
 
-## Connect an agent or application
-
-- [Agent guide](docs/guides/agents.md): local MCP, HTTP proxy, installation, doctor and session lifecycle.
-- [HTTP API](docs/reference/http-api.md): protected service, console, pagination and OpenAI-compatible memory extension.
-- [MCP tools](docs/reference/mcp.md) and [TypeScript SDK](clients/typescript/README.md).
-- [Deployment](deploy/README.md): Docker Compose, systemd, backup, key rotation and upgrade boundaries.
-
-Install optional capabilities from this checkout with `python -m pip install -e '.[serve]'`. Open `/ui/` after starting the configured server. Rules and the available optional backends are documented separately from planned integrations.
-
-## Design and contributing
-
-[Architecture](docs/architecture/README.md) explains writing, consolidation, retrieval and service boundaries. [Design decisions](docs/decisions.md) link to supporting and negative evidence. [Known issues](docs/issues.md) tracks unresolved behavior.
-
-Start with [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md). Ordinary changes update the relevant source and tests; major changes use the scoped specification workflow.
-
-[Paper](https://arxiv.org/abs/2606.09900) · [Paper sources](paper/README.md) · [Demo](https://notzhu.github.io/MnemoTrace/)
-
-## License
-
-AGPL-3.0; see [LICENSE](LICENSE). Proprietary or SaaS use that does not comply with AGPL requires a [commercial license](COMMERCIAL-LICENSE.md).
+See [LICENSE](LICENSE) and [commercial licensing terms](COMMERCIAL-LICENSE.md). Report vulnerabilities using [SECURITY.md](SECURITY.md). Changes are recorded in [CHANGELOG.md](CHANGELOG.md).

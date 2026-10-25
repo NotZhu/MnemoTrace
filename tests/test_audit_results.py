@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 
-from eval.audit_results import audit_log, format_audit, infer_schema
+import pytest
+
+from eval.audit_results import audit_log, format_audit, infer_schema, main
 
 
 def _write_jsonl(path, rows):
@@ -83,3 +85,35 @@ def test_format_audit_includes_validation_errors(tmp_path):
     assert str(path) in text
     assert "incomplete" in text
     assert "expected 2 rows, got 1" in text
+
+
+@pytest.mark.parametrize("args", [[], ["--fail-invalid"]])
+def test_cli_requires_explicit_log_paths(args, capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(args)
+
+    assert exc.value.code == 2
+    assert "paths" in capsys.readouterr().err
+
+
+def test_cli_audits_explicit_log_path(tmp_path, capsys):
+    path = tmp_path / "complete.jsonl"
+    _write_jsonl(path, [_bench_row("q1"), _bench_row("q2")])
+
+    assert main([str(path), "--bench-rows", "2", "--fail-invalid"]) == 0
+    output = capsys.readouterr().out
+    assert str(path) in output
+    assert "complete" in output
+
+
+def test_cli_glob_reports_incomplete_logs_and_fails(tmp_path, capsys):
+    complete = tmp_path / "complete.jsonl"
+    partial = tmp_path / "partial.jsonl"
+    _write_jsonl(complete, [_bench_row("q1"), _bench_row("q2")])
+    _write_jsonl(partial, [_bench_row("q1")])
+
+    assert main([str(tmp_path / "*.jsonl"), "--bench-rows", "2", "--fail-invalid"]) == 1
+    output = capsys.readouterr().out
+    assert str(complete) in output
+    assert str(partial) in output
+    assert "incomplete" in output

@@ -1,3 +1,0 @@
-{"browser":"original Edge","origin":"http://localhost:8000","keys":["engram.auth","mnemotrace.auth"],"before_present":[false,true],"after_absent":true,"read_credential_values":false,"cleared_other_storage":false}
-{"browser":"original Edge","origin":"http://127.0.0.1:8000","keys":["engram.auth","mnemotrace.auth"],"before_present":[true,true],"after_absent":true,"read_credential_values":false,"cleared_other_storage":false}
-{"browser":"original Edge","origin":"http://localhost:5173","keys":["engram.auth","mnemotrace.auth"],"before_present":[false,true],"after_absent":true,"read_credential_values":false,"cleared_other_storage":false}

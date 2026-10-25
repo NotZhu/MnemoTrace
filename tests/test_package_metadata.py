@@ -17,14 +17,12 @@ def test_package_metadata_links_to_real_repository():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     ts_package_text = (ROOT / "clients/typescript/package.json").read_text(encoding="utf-8")
     ts_package = json.loads(ts_package_text)
-    ts_readme = (ROOT / "clients/typescript/README.md").read_text(encoding="utf-8")
     ts_index = (ROOT / "clients/typescript/src/index.ts").read_text(encoding="utf-8")
     quickstart_example = (ROOT / "examples/quickstart.py").read_text(encoding="utf-8")
     zero_setup = (ROOT / "scripts/check_zero_setup.py").read_text(encoding="utf-8")
 
     assert "your-org" not in pyproject
     assert "your-org" not in ts_package_text
-    assert "your-org" not in ts_readme
     assert "your-org" not in ts_index
     assert 'Homepage = "https://github.com/NotZhu/MnemoTrace"' in pyproject
     assert 'Repository = "https://github.com/NotZhu/MnemoTrace"' in pyproject
@@ -48,6 +46,12 @@ def test_package_metadata_links_to_real_repository():
     assert ts_package["homepage"] == "https://github.com/NotZhu/MnemoTrace/tree/main/clients/typescript"
     assert ts_package["bugs"]["url"] == "https://github.com/NotZhu/MnemoTrace/issues"
     assert ts_package["scripts"]["prepublishOnly"] == "npm run typecheck && npm run build && npm test"
+
+
+def test_sdk_readme_documents_repository_and_license_links():
+    ts_readme = (ROOT / "clients/typescript/README.md").read_text(encoding="utf-8")
+
+    assert "your-org" not in ts_readme
     assert "](../../" not in ts_readme
     assert "https://github.com/NotZhu/MnemoTrace/blob/main/LICENSE" in ts_readme
     assert "https://github.com/NotZhu/MnemoTrace/blob/main/COMMERCIAL-LICENSE.md" in ts_readme
@@ -77,19 +81,12 @@ def test_zero_setup_contract_mentions_installed_quickstart():
     assert claude.splitlines().count("@AGENTS.md") == 1
     assert "`" not in claude
     assert not any(line.startswith("@") for line in agents.splitlines())
-    assert "<!-- SPECKIT START -->" not in claude
 
-    for rel, target in (
-        ("CONTRIBUTING.md", "AGENTS.md#principle-ii"),
-        (".specify/memory/constitution.md", "../../AGENTS.md#principle-ii"),
-    ):
-        text = (ROOT / rel).read_text(encoding="utf-8")
-        assert f"]({target})" in text
-        assert "mnemotrace-quickstart" not in text, f"{rel} must not duplicate the contract"
 
-    assert "<!-- SPECKIT START -->" not in agents
-    assert "<!-- SPECKIT END -->" not in agents
-    assert not (ROOT / ".specify/extensions/agent-context").exists()
+def test_contributing_links_to_authoritative_zero_setup_contract():
+    text = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    assert "](AGENTS.md#principle-ii)" in text
+    assert "mnemotrace-quickstart" not in text
 
 
 def test_console_seed_default_names_jsonl_stores_not_pickles():

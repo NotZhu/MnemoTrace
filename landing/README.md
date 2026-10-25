@@ -11,4 +11,4 @@ python scripts/build_landing_pages.py --check
 
 共享资源以 `demo/assets` 的 brain-`circuit.svg`、`github.svg` 和 fonts 下的 `OFL.txt`、`README.txt`、两个 woff2 为来源。生成器同步 `docs/assets` 对应副本并检查字节一致。两份 memory-`graph.js` 保留页面变体，不合并。字体和第三方许可证随资源保留。
 
-修改后提交来源和生成输出，检查两页链接、资源和有意差异。公开成绩要求见[项目规则](../AGENTS.md#principle-i)，对应数据只由 [RESULTS](../RESULTS.md)及原始日志解释。
+修改后提交来源和生成输出，检查两页链接、资源和有意差异。公开成绩要求见[项目规则](../AGENTS.md#principle-i)，复现与校验方式见[评测说明](../eval/README.md)。

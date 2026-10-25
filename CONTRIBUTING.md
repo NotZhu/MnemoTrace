@@ -1,67 +1,108 @@
 # 为 MnemoTrace 做贡献
 
-[AGENTS.md](AGENTS.md)是项目规则的唯一来源。本页说明开发操作；约束见[零配置](AGENTS.md#principle-ii)、[工作流程](AGENTS.md#workflow)、[验证要求](AGENTS.md#验证与完成)及[证据规则](AGENTS.md#evidence-artifacts)。
+本页说明开发环境与验证入口。共用开发规则维护在 [AGENTS.md](AGENTS.md)，使用方式见[文档导航](docs/README.md)。
 
 ## 开发环境
 
-```bash
+Python 3.10 或更高版本。在仓库根目录创建独立环境：
+
+```sh
 python -m venv .venv
 ```
 
-激活虚拟环境（POSIX：`source .venv/bin/activate`；PowerShell：`.venv\Scripts\Activate.ps1`），再安装：
+Bash 使用 `source .venv/bin/activate`，PowerShell 使用 `.venv\Scripts\Activate.ps1`。随后安装当前开发和接口依赖：
 
-```bash
-python -m pip install -e '.[dev,server,mcp]'
+```sh
+python -m pip install -e ".[dev,server,mcp]" build twine
 ```
 
-服务和 MCP extras 仅供对应测试使用，核心仍零硬依赖。前端和 SDK 操作见 [frontend](frontend/README.md) 与 [TypeScript SDK](clients/typescript/README.md)。
+核心库没有第三方运行时依赖，开发依赖和可选后端不应进入核心的硬依赖。零配置示例、已安装命令与离线测试的权威契约见 [AGENTS.md](AGENTS.md#principle-ii)。
 
-## 常用检查
+## 定位变更
 
-```bash
-pytest
+
+| 工作           | 入口                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------ |
+| 记忆与存储     | [架构总览](docs/architecture/README.md)、[持久化契约](docs/architecture/memory.md) |
+| HTTP / MCP     | [协议参考](docs/reference/http-api.md)、[工具参考](docs/reference/mcp.md)          |
+| 控制台与 SDK   | 下方开发步骤和对应接口测试                                                         |
+| 算法与性能     | [评测说明](eval/README.md)                                                         |
+| 文档           | [导航](docs/README.md)及对应权威页面                                               |
+| 两个静态展示页 | [来源说明](landing/README.md)                                                      |
+
+先检查相关实现、调用方和已有测试。新行为与缺陷需要能区分正确和错误结果的回归；文案和排版修改按影响选择静态检查。重大取舍按 AGENTS 的条件保留设计说明，普通修复直接实施。
+
+## Python 验证
+
+在根目录运行目标测试，再按影响扩大范围：
+
+```sh
+python -m pytest tests/test_conflict.py
+python -m pytest
+```
+
+测试依赖已安装后，默认套件应不需要 API key 或外部服务。测试入口会隔离模型相关环境，并禁止通常的本地 dotenv 自动加载；只有专门验证 dotenv 的 fixture 才显式恢复该行为。可选后端未安装时，相关测试可能跳过。
+
+运行安装与默认路径检查：
+
+```sh
+python scripts/check_zero_setup.py
+```
+
+使用合成数据或独立临时目录。不要把现有个人记忆库、凭据或生产数据作为自动测试 fixture。
+
+## 控制台开发
+
+CI 使用 Node.js 22 和前端 package.json 声明的 pnpm 版本。先启动本地后端，再在 `frontend/` 执行：
+
+```sh
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+开发服务默认端口 5173，`/v1` 和 `/health` 代理到 localhost:8000，具体 base 与路径见 [vite.config.ts](frontend/vite.config.ts)。生产模式构建后由 Python 服务的 `/ui/` 提供资源。
+
+```sh
+pnpm test
+pnpm run build
+```
+
+build 已包含 TypeScript 检查。前端测试覆盖状态、查询与关键交互；涉及真实用户交互变化时，再按范围运行实际页面验证。UI 操作说明见[使用指南](docs/guides/usage.md)。
+
+## TypeScript SDK 开发
+
+在 `clients/typescript/` 执行：
+
+```sh
+npm ci
+npm run typecheck
+npm test
+```
+
+test 通过 pretest 先构建。发布包的使用和 API 参考维护在 [SDK README](clients/typescript/README.md)，公共导出来自 src/index.ts，运行测试位于该目录的 test/。
+
+## 文档与生成内容
+
+当前使用仓库 Markdown。docs/README.md 是完整导航；新增独立页面需有明确读者和职责，并接入导航。示例优先复用已有可运行入口，参考页描述契约与限制，架构页解释机制和理由。
+
+```sh
 python scripts/check_repository.py
 python scripts/build_landing_pages.py --check
-python scripts/check_zero_setup.py
-python scripts/check_release.py
 git diff --check
 ```
 
-先运行受影响的目标测试，提交前按变更范围完成既有门禁。zero-setup 在无可选服务条件下执行示例、合成 harness、公开证据和论文统计，不需要真实模型 API。
+移动或退出页面时更新链接、锚点、检查器要求和必要的引用。迁移问题时保留仍需引用的依据与适用范围；生成页修改来源后再生成，不直接修改输出。
 
-## 重大变更
+## 打包与交付
 
-重大任务按 [AGENTS 工作流程](AGENTS.md#workflow)使用 Spec Kit。使用时间戳创建，避免完成规格退出后编号复用：
-
-```bash
-bash .specify/scripts/bash/create-new-feature.sh --json --short-name my-feature 'Describe the major change'
+```sh
+python scripts/check_release.py
+python -m build
+python -m twine check dist/*
 ```
 
-工具会返回 feature 路径，本地 `.specify/feature.json` 保存当前上下文且被 Git 忽略；可用 `SPECIFY_FEATURE_DIRECTORY` 显式指定。`plan`、`tasks` 解析允许没有研究、模型和契约附属文件。实施前运行 speckit-analyze，通过后再 implement；完成后提炼内容并移除套件。
+发布检查核对发行元数据、文件与部署安全默认值；不能替代文档、算法或产品验收。完整 CI 范围见 [ci.yml](.github/workflows/ci.yml)。
 
-Spec Kit 不自动更新 AGENTS，也不改 Git 分支；分支命名按任务要求选择。没有活动规格时工具应明确提示，不猜测历史计划。
+提交或 PR 说明问题、最终行为、验证结果与限制。验证失败或中断时明确区分本次引入的问题与已有问题。普通测试结果在 PR/CI 交付；临时输出写系统临时目录或 .artifacts/ 下的任务目录，按 AGENTS 的生命周期处理。
 
-工作流调度需要先在本机安装所选 Agent 集成；本机安装状态不进入 Git。仓库保留公共脚本与模板的工具安装基线，供升级时识别本地修改。
-
-## 文档与实验
-
-文档入口是 [docs/README.md](docs/README.md)。当前说明更新对应主题；设计取舍和未完成状态分别在[决策](docs/decisions.md)与[台账](docs/issues.md)，不新增每次修改的报告。
-
-临时输出使用 `.artifacts/<task>/`，原始实验保留所需的命令、数据范围、代码条件、失败和限制。有明确消费者后才进入 [results](results/README.md)。普通通过输出留在对话、PR 或 CI。
-
-算法运行、schema 和校验见 [eval](eval/README.md)，公开数字和完整复现见 [RESULTS.md](RESULTS.md)。历史原始日志保持内容不变，当前路径由索引提供。
-
-## 静态网页
-
-HTML 来源为 `landing/index.html.in` 和 `landing/pages.json`。六组共享资源以 `demo/assets` 为源，`docs/assets` 对应内容由生成器同步：
-
-```bash
-python scripts/build_landing_pages.py
-python scripts/build_landing_pages.py --check
-```
-
-提交来源及两份生成输出；不手改生成 HTML 或共享资源副本。页面差异和发布路径保持独立，操作见 [landing](landing/README.md)。
-
-## 提交与部署
-
-PR 描述交代问题、最终行为、验证及限制。重构与新功能分开，移除无消费者的过程材料；临时产物不进入 diff。发布与部署入口见 [deploy](deploy/README.md)。
+缺陷和需求使用对应 Issue；漏洞按 [SECURITY.md](SECURITY.md)报告。许可证及商业条款见 [LICENSE](LICENSE) 和 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。

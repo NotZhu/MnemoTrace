@@ -1,42 +1,55 @@
 # 快速开始
 
-使用 Python 3.10 或更新版本，在仓库根目录运行：
+本页使用 Python 库完成一次离线写入、检索和重开存储。需要 Python 3.10 或更高版本，无需 API key、模型下载或服务进程。
 
-```bash
-python examples/quickstart.py
-```
+## 安装与运行
 
-该示例不需要 API `key` 或第三方服务，使用内存存储、哈希嵌入和规则抽取，演示原始消息、事实整合、冲突失效与检索。
+在仓库根目录执行：
 
-需要在项目中导入包时安装当前检出：
-
-```bash
-python -m pip install -e .
+```sh
+python -m pip install .
 mnemotrace-quickstart
 ```
 
-`mnemotrace-memory` 是发行包名，本仓库的安装说明不代表已有可用的 `PyPI/npm` 发布。
+源码检出也可以直接运行 `python examples/quickstart.py`，已安装环境可运行 `python -m mnemotrace.quickstart`。完整示例展示整合、历史与时间查询；其中的名字和会话内容为演示数据。
 
-## 最小 Python 使用
+## 写入并查询
 
 ```python
 from mnemotrace import Memory
 
 memory = Memory()
-memory.add("My name is Alex and I work at Acme.", user_id="user123")
-memory.add("I now work at Example Labs.", user_id="user123")
-memory.consolidate()
-result = memory.search("Where does Alex work?", user_id="user123")
-print(result.answer())
+memory.add("I live in Paris.", user_id="user123", session_id="demo")
+stats = memory.consolidate()
+result = memory.search("Where do I live?", user_id="user123")
+
+print(stats["facts_added"])  # 1
+print(result.answer())      # Paris
+print(memory.profile("user123"))  # {'lives_in': 'Paris'}
 ```
 
-`add` 保存 `Episode`，`consolidate` 抽取 `Fact`、处理冲突并更新图谱。明确更新使旧事实失效并保留历史；规则抽取只适合其覆盖的简单表达，不等同于真实会话理解。
+`add()` 保存原始事件，`consolidate()` 提取事实并建立检索结构；两者在 Python 库中是显式分开的。查询时沿用写入时的 `user_id`。默认哈希嵌入主要捕捉词汇重合，规则抽取只覆盖部分语言模式；真实语料的召回质量需要单独评测。
 
-数据按传入的原始 `user_id` 隔离。跨会话共享使用同一个用户编号；不同编号不会自动合并。完整 API 和双时间边界见 [Python 参考](reference/python-api.md)。
+## 保存与重开
+
+在同一程序中继续执行：
+
+```python
+from tempfile import TemporaryDirectory
+
+with TemporaryDirectory(prefix="mnemotrace-example-") as directory:
+    memory.save(directory)
+    reopened = Memory.open(directory)
+    assert reopened.search("Where do I live?", user_id="user123").answer() == "Paris"
+```
+
+临时目录会在示例结束时删除。实际应用应改用自己管理的持久目录，并在写入后显式 `save()`；`Memory.open(path)` 不会自动保存后续修改。服务层会负责命名空间保存，见[部署说明](../deploy/README.md)。
+
+存储记录嵌入模型身份和维度。重开已有库时使用一致的 embedder；更换模型的受支持流程见[持久化契约](architecture/memory.md#嵌入模型一致性)。
 
 ## 下一步
 
-- 需要重启后保留数据：[存储与配置](reference/configuration.md#存储与嵌入)。
-- 需要给多个 Agent 使用：[接入指南](guides/agents.md)。
-- 需要 HTTP 与控制台：[部署说明](../deploy/README.md)，启动后访问 `http://127.0.0.1:8000/ui/`。
-- 需要开发验证：[贡献指南](../CONTRIBUTING.md)。
+- 处理会话、导入与隐私：[使用指南](guides/usage.md)。
+- 接入现有 Agent：[Agent 接入](guides/agents.md)。
+- 查询具体方法：[Python API](reference/python-api.md)。
+- 运行 HTTP 服务和控制台：[部署与运维](../deploy/README.md)。

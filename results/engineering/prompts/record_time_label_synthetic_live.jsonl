@@ -1,2 +1,0 @@
-{"record_date": "2026-10-12", "source": "昨天晚上做了实验A。", "query": "实验A是哪一天做的？", "context": "FACTS (current, dated):\n- [2026-10-12] user completed 实验A\n\nRELEVANT CONVERSATIONS (full detail):\n原始记录时间：2026-10-12\n会话：default\n记录内容：昨天晚上做了实验A。", "answer": "实验A是2026年10月11日晚上做的。"}
-{"record_date": "2026-10-20", "source": "上周做了实验B。", "query": "实验B是在什么时间做的？", "context": "RELEVANT CONVERSATIONS (full detail):\n原始记录时间：2026-10-20\n会话：default\n记录内容：上周做了实验B。", "answer": "实验B是在2026年10月12日至10月18日那一周做的（原始记录时间为2026年10月20日，记录中说“上周做了实验B”）。"}

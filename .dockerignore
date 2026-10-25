@@ -10,7 +10,6 @@ _repo_cache
 .workbuddy
 .claude
 .agents
-.specify
 .github
 .DS_Store
 .env
@@ -31,8 +30,5 @@ frontend/node_modules
 frontend/dist
 clients
 docs
-paper
-results
-specs
 tests
 *.log

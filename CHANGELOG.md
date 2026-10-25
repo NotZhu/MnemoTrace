@@ -3,14 +3,19 @@
 All notable changes to MnemoTrace are documented here. The project uses semantic versioning for distributed
 artifacts; storage schema compatibility is documented separately when it changes.
 
-## [Unreleased] - 2026-10-24
+## [Unreleased] - 2026-10-25
 
 ### Changed
 
-- Refactored documentation into guides, API references, architecture, decisions, and an issue ledger;
-  consolidated project rules in AGENTS.md and made document updates depend on the change's scope.
-- Classified benchmark, experiment, and engineering evidence under results/; preserved raw artifacts
-  and linked historical explanations through the repository-snapshot-2026-10-23 tag.
+- Rebuilt documentation around quickstart, usage, integration, API references, architecture,
+  deployment, and evaluation; consolidated overlapping architecture and frontend development pages.
+  AGENTS.md now defines shared engineering guidance with scoped validation and document lifecycles.
+- Audited the historical issue ledger and moved 24 remaining items to GitHub Issues;
+  removed docs/issues.md and updated its documentation and checker references.
+- Result auditing requires explicit log paths or glob patterns instead of an implicit
+  archive directory.
+- Retained historical material in Git history;
+  current documentation no longer carries historical benchmark scores as current claims.
 - Unified frontend test discovery in CI, enabled unused TypeScript checks, and narrowed Docker build
   context to exclude local runtime data and scratch files. Pytest cache now uses .artifacts/pytest/.
 - HTTP and local MCP default to `~/.mnemotrace/data`; containers keep `/data` and systemd uses
@@ -24,6 +29,8 @@ artifacts; storage schema compatibility is documented separately when it changes
 
 ### Removed
 
+- Retired RESULTS.md, results/, paper/, and Spec Kit scaffolding from the maintained tree;
+  engineering checks no longer require their historical files or workflow.
 - Completed specification suites, redundant reports, obsolete diagnostics, and stale integration
   inventory. Local scratch files use .artifacts/; the downloaded LOCOMO dataset is no longer vendored.
 - The user-ID linking interface and resolver. API-key authentication and space isolation are unchanged.

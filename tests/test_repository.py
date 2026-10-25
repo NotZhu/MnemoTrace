@@ -89,10 +89,7 @@ def test_navigation_is_the_document_registry(tmp_path):
 
 @pytest.mark.parametrize("path,diagnostic", [
     ("REPORT.md", "unowned root document"),
-    ("results/trial.jsonl", "uncategorized result artifact"),
     (".artifacts/report.md", "local artifact must not be tracked"),
-    (".specify/feature.json", "local artifact must not be tracked"),
-    ("specs/001-old/spec.md", "major specification needs timestamp"),
 ])
 def test_artifact_boundaries(tmp_path, path, diagnostic):
     files = fixture_repository(tmp_path)
@@ -100,19 +97,12 @@ def test_artifact_boundaries(tmp_path, path, diagnostic):
     assert any(diagnostic in error for error in checker["check_structure"](tmp_path, files + [extra]))
 
 
-def test_generated_plan_context_is_rejected(tmp_path):
+def test_documentation_check_needs_no_historical_artifacts(tmp_path):
     files = fixture_repository(tmp_path)
-    agents = document(tmp_path, "AGENTS.md", "<!-- SPECKIT START -->\ncurrent plan\n")
-    assert "AGENTS.md: remove generated current-plan context" in checker["check_structure"](tmp_path, files + [agents])
-
-
-def test_superseded_page_reference_is_rejected_but_history_is_allowed(tmp_path):
-    files = fixture_repository(tmp_path)
-    path = tmp_path / "docs/decisions.md"
-    path.write_text("See docs/known-issues.zh-CN.md.\n", encoding="utf-8")
-    assert any("superseded documentation" in error for error in checker["check_structure"](tmp_path, files))
-    path.write_text("[history](https://github.com/example/repo/blob/commit/docs/known-issues.zh-CN.md)\n", encoding="utf-8")
     assert checker["check_structure"](tmp_path, files) == []
+    for name in ("RESULTS.md", "results", "paper", ".specify", "specs"):
+        assert not (tmp_path / name).exists()
+    assert checker["main"](["--root", str(tmp_path)]) == 0
 
 
 def test_repository_check_is_read_only_and_passes():

@@ -1,50 +1,58 @@
-# MCP 工具
+# MCP 工具参考
 
-MCP 服务将工具调用映射到同一个 `MemoryService`，可直接使用本地 namespace，也可代理 HTTP 服务。实现及完整类型约束见 [mcp/server.py](../../mnemotrace/mcp/server.py)，安装见 [Agent 指南](../guides/agents.md)。
+安装和客户端配置见[Agent 接入](../guides/agents.md)。工具通过本地 MemoryService 或远程 HTTP 后端执行，默认 stdio；工具定义见 [server.py](../../mnemotrace/mcp/server.py)。
 
-## 启动
+## 读取与会话
 
-```bash
-python -m pip install -e '.[mcp]'
-python -m mnemotrace.mcp --namespace user123
+多数读取工具支持 `response_format="markdown"`（默认）或 `"json"`。JSON 指格式化后的工具结果，不应假定其等同于原始 HTTP 响应的所有字段。
+
+| 工具 | 主要参数 | 用途 |
+| --- | --- | --- |
+| `mnemotrace_agent_status` | session_id 可选、response_format | 不含正文的接线与状态 |
+| `mnemotrace_recall` | query 必填；max_chunks=6（0–20）、session_id、as_of、redact_sensitive=false、response_format | 返回相关上下文，JSON 含 context、tokens_est 等 |
+| `mnemotrace_search` | query 必填；as_of、redact_sensitive=false、response_format | 直接事实答案与依据 |
+| `mnemotrace_list_sessions` | limit=20（1–100）、offset=0、q=""、response_format | 不含正文的会话索引 |
+| `mnemotrace_session_report` | session_id 必填；include_sensitive=false、response_format | 会话贡献审计 |
+| `mnemotrace_list_facts` | limit=20（1–100）、offset=0、include_superseded=false、response_format | 分页事实，用于检查或定位 id |
+| `mnemotrace_profile` | response_format | 派生画像与关键事实 |
+| `mnemotrace_stats` | response_format | 不含内容的命名空间统计 |
+| `mnemotrace_audit` | limit=40、response_format | 启发式体检与建议，不执行修复 |
+| `mnemotrace_get_focus` | response_format | track/mute 配置 |
+
+`max_chunks` 是 MCP 参数，HTTP 对应字段为 `n_chunks`，两者上限不同。`as_of` 使用 epoch 秒；默认读取不保证自动脱敏，私有上下文需要调用方按场景设置 redact_sensitive。
+
+## 写入与管理
+
+| 工具 | 主要参数 | 用途 |
+| --- | --- | --- |
+| `mnemotrace_remember` | content 必填；session_id=default、scope=auto/long/working | 保存并通过服务层处理整合 |
+| `mnemotrace_close_session` | session_id=default、summarize=true、clear_working=true、response_format | 收尾，不删除原始事件 |
+| `mnemotrace_add_fact` | predicate、object 必填；subject=user、sensitive、category | 添加用户明确断言 |
+| `mnemotrace_update_fact` | fact_id 必填；subject、predicate、object、sensitive、category、response_format | 编辑事实，找不到时检查错误结果 |
+| `mnemotrace_set_focus` | track、mute 可选；response_format | None 不变，[] 清空 |
+| `mnemotrace_import` | content 必填；format=auto | 导入原始导出内容，content 不是服务器文件路径 |
+| `mnemotrace_export` | include_sensitive=false、response_format | 默认安全导出，显式选择才返回私有原文 |
+| `mnemotrace_delete_fact` | fact_id 必填；confirm=false、response_format | 确认后永久删除单个事实 |
+| `mnemotrace_forget` | confirm=false | 确认后清空整个命名空间 |
+
+格式名称以工具 schema 为准。写入可能产生模型调用、持久化与派生状态变化；原始写入、异步排队和整合降级的状态应分别解释。
+
+## 权限与能力边界
+
+- 本地后端绑定一个 namespace；远程后端使用服务端凭据解析身份。现有 MCP 工具未暴露 HTTP recall/remember 的任意 spaces/space 参数。
+- MCP 不提供 HTTP 的所有管理端点，例如独立工作记忆管理、结构化画像、记忆策略、冲突裁决和槽位清理。需要这些能力时选择 HTTP。
+- delete_fact 与 forget 必须 confirm=true；读取工具的只读注解只是客户端提示，实际副作用由工具实现决定。
+- 工具错误可能表现为错误文本，而非标准 HTTP 状态。调用方应检查结果并在失败时报告，不能因为工具调用已返回就宣布完成。
+- 默认敏感标记过滤不是完整隐私保证。清空范围、工作记忆持久化与原始事件保留见[记忆生命周期](../architecture/memory.md)。
+
+## 最小生命周期
+
+```text
+agent_status(session_id)
+→ recall(query, session_id)
+→ remember(content, session_id, scope)
+→ close_session(session_id)
+→ session_report(session_id)
 ```
 
-本地 stdio 模式使用服务进程自己的数据目录；共享目录和相同 namespace 的客户端可以共享持久记忆。远程代理指定 `--api-url` 和安全凭据文件 `--api-key-file`，配置文件不应包含原始 `Key`。
-
-## 读取与审计
-
-| 工具 | 主要输入 | 输出 |
-| --- | --- | --- |
-| `mnemotrace_agent_status` | `session_id`（可选） | 空间、计数、focus 和建议，不含记忆正文 |
-| `mnemotrace_recall` | query、`session_id`、`max_chunks`、`as_of`、`redact_sensitive` | 带来源上下文；JSON 含 `context/tokens_est/as_of/redacted_sensitive` |
-| `mnemotrace_search` | query、`as_of`、`redact_sensitive` | 直接答案和支撑事实，无依据时拒答 |
-| `mnemotrace_list_sessions` | `limit`、`offset`、`q` | 不含正文的会话索引和分页 |
-| `mnemotrace_session_report` | `session_id`、`include_sensitive` | 该会话保存的事实审计，默认脱敏 |
-| `mnemotrace_list_facts` | `limit`、`offset`、`include_superseded` | 带当前/历史状态的事实列表 |
-| `mnemotrace_profile` | `response_format` | 画像与事实 |
-| `mnemotrace_get_focus` | `response_format` | `track`/`mute` 策略 |
-| `mnemotrace_audit` | `limit` | 只读体检发现和处理建议 |
-| `mnemotrace_stats` | `response_format` | 不含正文的计数和运行状态 |
-
-支持 `response_format` 的工具可选择 `markdown` 或 `json`。`recall` 的 `max_chunks` 默认 6、范围 0–20；`list_facts/list_sessions` 的 `limit` 默认 20、范围 1–100。准确签名以工具 schema 为准。
-
-## 写入与生命周期
-
-| 工具 | 用法与边界 |
-| --- | --- |
-| `mnemotrace_remember` | `content`、`session_id`、`scope`=`auto`/`long`/`working`；尽力整合，原始记忆先保存 |
-| `mnemotrace_add_fact` | `predicate`、`object`、`subject`=`user` 及可选元数据；明确用户断言 |
-| `mnemotrace_update_fact` | `fact_id` 及三元组/元数据；实际修改内容与元数据分别处理 |
-| `mnemotrace_set_focus` | `track`/`mute`；None 保持、[] 清空 |
-| `mnemotrace_import` | `content`、format=`auto`；批量导入历史 |
-| `mnemotrace_close_session` | `session_id`、summarize、`clear_working`；整理、摘要、结论及保存 |
-
-`close_session` 不删除原始会话；无 LLM 不蒸馏 `outcomes`。精确去重不保证同义改写幂等。MCP `update_fact` 的 schema 当前不提供 HTTP `statement` 整句参数，不把两个接入面描述为完全相同。
-
-## 导出与擦除
-
-- `mnemotrace_export` 默认仅非敏感 facts + graph；完整私有导出才使用 `include_sensitive=true`。
-- `mnemotrace_delete_fact` 需要 `fact_id` 和 confirm=true，永久擦除该条事实。
-- `mnemotrace_forget` 需要 confirm=true，擦除整个授权空间；不传只说明操作。
-
-MCP 没有 HTTP clear-slot 工具。数据归属、私有凭据和并发边界见[服务架构](../architecture/service.md)，未完成能力见[问题台账](../issues.md)。
+客户端负责在恰当时机调用，安装工具不会自动使所有对话被记住。持续导入和客户端接线见[Agent 指南](../guides/agents.md)。

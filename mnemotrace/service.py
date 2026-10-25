@@ -1267,8 +1267,7 @@ class MemoryService:
         """当配置的 embedder 无法对命名空间内的内容排序时，给出一条存储级发现。
 
         在 owner 的真实存储上实测：HashingEmbedder 对每对中文查询/fact 都打 0.000 分，
-        /v1/recall 对三个不相关的查询返回了完全相同的四条 fact
-        （results/experiments/README.md#embedding），而产品里没有任何地方说明原因。根因是结构性的——
+        /v1/recall 对三个不相关的查询返回了完全相同的四条 fact，而产品里没有任何地方说明原因。根因是结构性的——
         hashing 词干器只输出 [a-z0-9] token，以 CJK 为主的文本几乎哈希不出任何东西，
         BM25 看到的也是同样的空 token 流——因此无需模型调用即可检测：统计语料中非 ASCII 的占比。
         由 audit() 和 agent_status() 共享，保证控制台与 agent 看到同一个结论。

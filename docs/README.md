@@ -1,22 +1,32 @@
 # MnemoTrace 文档
 
-忆痕为 LLM 智能体提供跨会话记忆。当前版本为 0.1.0 Beta，支持离线使用及单节点自托管。
+按需要完成的任务选择入口。技术正文以当前实现为基础；API 名称、命令和文件名保留原文。
 
-按要完成的任务选择入口：
+## 开始使用
 
-| 任务 | 文档 |
-| --- | --- |
-| 在本机跑通写入、整合与检索 | [快速开始](quickstart.md) |
-| 接入 Codex、Claude Code 或其他客户端 | [Agent 接入指南](guides/agents.md) |
-| 调用 SDK 或服务 | [Python API](reference/python-api.md)、[HTTP API](reference/http-api.md)、[MCP 工具](reference/mcp.md) |
-| 选择存储、模型和算法开关 | [配置参考](reference/configuration.md) |
-| 部署、备份、升级或轮换密钥 | [部署说明](../deploy/README.md) |
-| 理解模块与数据流 | [架构总览](architecture/README.md)、[记忆生命周期](architecture/memory.md)、[检索与上下文](architecture/retrieval.md) |
-| 理解服务和界面边界 | [服务架构](architecture/service.md)、[控制台架构](architecture/console.md) |
-| 查设计理由及未解决问题 | [设计取舍](decisions.md)、[问题台账](issues.md) |
-| 开发和验证变更 | [贡献指南](../CONTRIBUTING.md)、[项目规则](../AGENTS.md) |
-| 查看成绩或复现实验 | [公开结果](../RESULTS.md)、[评测操作](../eval/README.md)、[证据目录](../results/README.md) |
+- [快速开始](quickstart.md)：离线运行、写入、检索与保存。
+- [使用与管理记忆](guides/usage.md)：导入、事实、会话、画像、关注点和隐私操作。
+- [Agent 接入](guides/agents.md)：本地与远程 MCP、配置生成、诊断和会话收尾。
+- [部署与运维](../deploy/README.md)：HTTP 服务、控制台、容器、鉴权和备份恢复。
 
-API、配置与类型以代码及对应测试为准；架构文档解释当前机制与边界。设计目标不代表实测能力，问题台账中的待验收事项不能作为已完成承诺。公开质量数字由 RESULTS 及其原始日志支撑。
+## 查询接口
 
-`docs/index.html` 和 `assets/` 同时承担现有静态网页发布；HTML 与共享资源的维护入口见 [landing](../landing/README.md)。论文材料位于 [paper](../paper/README.md)，不承担项目工作规则。
+
+| 接口或配置                | 参考                                          |
+| --------------------------- | ----------------------------------------------- |
+| Python 库                 | [Python API](reference/python-api.md)         |
+| HTTP 协议                 | [HTTP API](reference/http-api.md)             |
+| MCP 工具                  | [MCP 参考](reference/mcp.md)                  |
+| TypeScript/JavaScript SDK | [SDK README](../clients/typescript/README.md) |
+| 模型、运行参数与命令      | [配置参考](reference/configuration.md)        |
+
+## 理解与开发
+
+- [架构总览](architecture/README.md)：模块边界、读写路径和设计取舍。
+- [记忆生命周期与持久化](architecture/memory.md)：数据模型、时间、替代、擦除和恢复边界。
+- [贡献指南](../CONTRIBUTING.md)：开发环境、测试、构建和调试。
+- [评测说明](../eval/README.md)：基线、消融、指标和结果校验。
+- [开发约定](../AGENTS.md)、[静态展示页来源](../landing/README.md)。
+- [版本变化](../CHANGELOG.md)、[漏洞报告](../SECURITY.md)、[许可](../LICENSE)及[商业授权](../COMMERCIAL-LICENSE.md)。
+
+缺陷、需求和待验证事项在 [GitHub Issues](https://github.com/NotZhu/MnemoTrace/issues) 维护。

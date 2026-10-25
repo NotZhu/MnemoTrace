@@ -15,27 +15,17 @@ from urllib.parse import unquote, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_DOCS = {
     "AGENTS.md", "CHANGELOG.md", "CLAUDE.md", "COMMERCIAL-LICENSE.md",
-    "CONTRIBUTING.md", "README.md", "README.zh-CN.md", "RESULTS.md", "SECURITY.md",
+    "CONTRIBUTING.md", "README.md", "README.zh-CN.md", "SECURITY.md",
 }
 REQUIRED = {
-    "docs/README.md", "docs/quickstart.md", "docs/guides/agents.md",
+    "docs/README.md", "docs/quickstart.md", "docs/guides/usage.md", "docs/guides/agents.md",
     "docs/reference/python-api.md", "docs/reference/http-api.md",
     "docs/reference/mcp.md", "docs/reference/configuration.md",
     "docs/architecture/README.md", "docs/architecture/memory.md",
-    "docs/architecture/retrieval.md", "docs/architecture/service.md",
-    "docs/architecture/console.md", "docs/decisions.md", "docs/issues.md",
-    "results/README.md", "results/experiments/README.md", "results/engineering/README.md",
 }
 SKIP_DIRS = {
     ".git", ".venv", "venv", "env", "node_modules", "__pycache__", "dist", "build",
     ".artifacts", ".cleanup-archive", ".mnemotrace", ".pytest_cache", ".ruff_cache", "data",
-}
-LEGACY_DOCS = {
-    "docs/mnemotrace-full-architecture-report.zh-CN.md",
-    "docs/architecture-optimization-map.zh-CN.md", "docs/known-issues.zh-CN.md",
-    "docs/readpath-improvement-plan.zh-CN.md", "docs/temporal-granularity-plan.zh-CN.md",
-    "docs/commercial-release-0.1.0.zh-CN.md", "docs/algorithm-architecture.md",
-    "docs/agent-adapters.md", "docs/cross-agent-memory.md", "API.md",
 }
 INLINE_LINK = re.compile(r'''!?\[[^\]\n]*\]\(\s*(<[^>\n]+>|[^\s)]+)(?:\s+["'][^\n]*?["'])?\s*\)''')
 REF_DEFINITION = re.compile(r'''^ {0,3}\[([^\]\n]+)\]:\s*(<[^>\n]+>|\S+)(?:\s+["'].*)?$''', re.M)
@@ -174,26 +164,13 @@ def check_structure(root: Path, files: list[Path]) -> list[str]:
         p = Path(path)
         if len(p.parts) == 1 and p.suffix == ".md" and path not in ROOT_DOCS:
             errors.append(f"unowned root document: {path}")
-        if path.startswith(".artifacts/") or path == ".specify/feature.json":
+        if path.startswith(".artifacts/"):
             errors.append(f"local artifact must not be tracked: {path}")
-        if path.startswith("results/") and len(p.parts) == 2 and p.name != "README.md":
-            errors.append(f"uncategorized result artifact: {path}")
-        if path.startswith("specs/") and (len(p.parts) < 3 or not re.match(r"\d{8}-\d{6}-", p.parts[1])):
-            errors.append(f"major specification needs timestamp directory: {path}")
-    agents = root / "AGENTS.md"
-    if agents.exists() and "<!-- SPECKIT START -->" in agents.read_text(encoding="utf-8"):
-        errors.append("AGENTS.md: remove generated current-plan context")
-    if any(path.startswith(".specify/extensions/agent-context/") for path in paths):
-        errors.append("remove automatic agent-context writeback extension")
-    documents = [p for p in files if p.suffix == ".md" and not p.relative_to(root).as_posix().startswith((".specify/", "paper/"))]
+    documents = [p for p in files if p.suffix == ".md"]
     for document in documents:
         if not document.resolve().is_relative_to(root.resolve()):
             errors.append(f"{document.relative_to(root).as_posix()}: document escapes repository")
             continue
-        content = re.sub(r"https?://[^\s)<>]+", "", prose(document.read_text(encoding="utf-8")))
-        for old in LEGACY_DOCS:
-            if old in content:
-                errors.append(f"{document.relative_to(root).as_posix()}: superseded documentation reference: {old}")
     # Navigation itself is the manifest; a second registry would duplicate ownership.
     start = (root / "docs/README.md").resolve()
     reachable = {start}
@@ -221,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = args.root.resolve()
     files = repository_files(root)
-    documents = [p for p in files if p.suffix == ".md" and not p.is_relative_to(root / ".specify/templates")]
+    documents = [p for p in files if p.suffix == ".md"]
     errors = check_structure(root, files) + check_links(root, documents)
     for error in sorted(set(errors)):
         print(f"FAIL {error}")

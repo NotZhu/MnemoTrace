@@ -1,172 +1,140 @@
 # HTTP API
 
-生产模式将 Bearer `key` 映射到稳定租户空间，同租户可轮换多个 `key`，不同空间隔离。Base URL 示例为 http://127.0.0.1:8000，部署与网关要求见 [deploy](../../deploy/README.md)。接口实现见 [server/app.py](../../mnemotrace/server/app.py)。
+HTTP 服务是多应用接入和控制台管理的边界。启动方式见[部署说明](../../deploy/README.md)，字段定义与路由来源见 [app.py](../../mnemotrace/server/app.py)。
 
-## 鉴权与健康
+## 地址、鉴权与公共端点
 
-受保护模式下，所有 `/v1/*` 接口携带 `Authorization: Bearer <key>`，JSON 请求设置 `Content-Type: application/json`。`key` 为非空可打印 ASCII，租户名称可以中文。非法凭据返回 401，非法服务配置使鉴权和 readiness 返回 503，错误不回显 `key`。
+产品 API 前缀为 `/v1`，请求和响应通常使用 JSON。受保护路由发送 `Authorization: Bearer <key>`，身份由服务器配置解析，不由请求体 user_id 决定。
 
-生产默认失败关闭；开放模式及匿名访问分别需要显式开关。健康检查不鉴权：`/health` 是存活与诊断入口，`/ready` 仅在鉴权与存储可接流量时返回 200，否则为 503。健康结果不含 `Key` 或记忆正文。
+- `MNEMOTRACE_API_KEYS` 按 `tenant:key` 映射，多个 key 可以属于同一 tenant。
+- 开放模式必须显式启用；Bearer 文本本身成为 namespace，默认仍拒绝共享匿名访问。
+- remember/recall 还支持 space principal 和 ACL。其他管理路由使用普通鉴权映射，不能假定只配置 space key 就能访问全部管理路由。
+- key 必须为非空可打印 ASCII。生产部署使用足够长的随机凭据并通过 HTTPS 或受控网络传输。
 
-## 写入
+| 公共端点 | 用途 |
+| --- | --- |
+| `GET /health` | 进程存活和运行配置概况，`ok=true` 不等于 ready |
+| `GET /ready` | 就绪时 200，否则 503；健康门禁使用此端点 |
+| `GET /metrics` | 聚合计数、延迟与 token 观测，不包含记忆正文 |
+| `GET /docs`、`GET /openapi.json` | 框架生成的交互参考和 schema；不包含全部响应语义 |
+| `GET /ui/` | 已构建的管理控制台，未构建时返回 503 |
 
-`POST /v1/remember`：
+HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节与 Content-Length 都受检查。鉴权失败和错误请求不能作为有效操作处理。
 
-```json
-{
-  "content": "I work at Acme.",
-  "session_id": "app:my-app:thread-123",
-  "scope": "long"
-}
-```
+## 写入与读取
 
-`scope` 可为 `auto`（默认）、`long`、`working`；可选 `space` 选择获准写入的空间，省略时使用凭据的 `home`。自动瞬态路由和长期提取是不同阶段；原始 `Episode` 始终保存。`POST /v1/facts` 使用 `subject`/`predicate`/`object` 和可选 `sensitive`/`category` 记录用户明确断言，不能被自动抽取悄悄覆盖。
+### POST /v1/remember
 
-## 召回与会话
+| JSON 字段 | 默认值与含义 |
+| --- | --- |
+| content | 必填，1–1,000,000 字符 |
+| session_id | `default`，1–512 字符 |
+| scope | `auto`；支持 long/working |
+| space | 未设置时写调用者 home；显式设置需有写权限 |
 
-`POST /v1/recall`：
+默认同步提取并保存。正常长期写入返回 `ok`、`scope`、`extracted` 等；异步模式可返回 `queued=true`、`episode_id`；提取降级可返回 `degraded`、`stored_raw=true`。working 路径返回工作条目 id 与事件 id。调用方应根据这些分支判断处理进度。
 
-```json
-{
-  "query": "Where do I work?",
-  "lean": true,
-  "n_chunks": 4,
-  "as_of": null,
-  "redact_sensitive": false
-}
-```
+### POST /v1/recall
 
-单空间 `lean=true` 返回 `context`、`tokens_est`、`full_tokens` 和 `answer`；`lean=false` 返回直接事实答案及 `facts`，不提供相同的上下文字段。`n_chunks` 默认 6，HTTP 范围为 0–50。token 字段为估算，不能替代模型计费量或 benchmark 总成本。`as_of` 是单个 epoch 秒条件，不提供独立现实时间/事务时间参数。
+| JSON 字段 | 默认值与含义 |
+| --- | --- |
+| query | 必填，1–32,768 字符 |
+| lean | true，返回上下文；false 请求直接事实答案 |
+| n_chunks | 6，范围 0–50 |
+| session_id | null，设定时可包含该 session 工作状态 |
+| as_of | null；epoch 秒 |
+| redact_sensitive | false；按当前敏感标记过滤相关返回内容 |
+| spaces | 默认为 home；最多 16 个，每个均须可读 |
 
-可选 `spaces` 读取授权空间列表，省略时只读 `home`；每个空间都需授权。多空间请求走融合上下文路径，不按 `lean=false` 切换成单空间事实搜索。多空间响应含 `context`、`tokens_est` 和 `spaces`，不能依赖单空间回答字段。
+单 space 的 lean 路径返回 `context`、`tokens_est`、`as_of`、`redacted_sensitive`，HTTP 还可返回 `answer` 和 `full_tokens`。无作答模型时不应把回退内容视为通用模型答案。`lean=false` 返回 `answer` 和事实文本列表。
 
-`redact_sensitive=true` 只返回已分类的非敏感结构化事实，省略画像、摘要和原始对话。它不等同于对全部自由文本完成隐私审计。
+多 space 路径融合各自的上下文并保留来源信息，不保证与单 space 的答案或字段组合完全相同。`tokens_est/full_tokens` 是估算值，不等于所有模型调用的总计费 token。
 
-`POST /v1/sessions/close`：
+## 会话与检查
 
-```json
-{
-  "session_id": "app:my-app:thread-123",
-  "summarize": true,
-  "clear_working": true
-}
-```
+| 端点 | 输入 | 主要用途 |
+| --- | --- | --- |
+| `POST /v1/sessions/close` | session_id=default、summarize=true、clear_working=true、outcomes=null | 整合与收尾，不删除原始事件 |
+| `GET /v1/sessions` | limit、offset=0、q="" | 不含正文的会话索引和分页 |
+| `GET /v1/sessions/report` | session_id 必填、include_sensitive=false | 某 session 的贡献与事实报告 |
+| `GET /v1/agent/status` | session_id 可选 | 接线、计数和推荐操作，不返回记忆正文 |
+| `GET /v1/stats` | 无 | 命名空间统计，不包含原文和存储路径 |
+| `GET /v1/audit` | limit=40，归一到 1–200 | 启发式体检发现，不自动修复 |
 
-关闭会话整理待处理记录、补齐摘要、清理工作记忆并保存，不删除原文。配置 LLM 且允许 `outcomes` 时蒸馏四类结论；请求 `outcomes=false` 可关闭本次，环境 `MNEMOTRACE_SESSION_OUTCOMES=0` 强制关闭。无 LLM 不执行该分支。精确去重不保证同义结论幂等。
+close 返回处理计数，例如 `pending_consolidated`、`facts_added`、`summaries`、`working_cleared` 和 `outcomes`。结论提取需要 LLM；服务端 `MNEMOTRACE_SESSION_OUTCOMES=0` 会强制关闭，即使请求传 outcomes=true。
 
-`GET /v1/sessions/report?session_id=...` 审计该会话保存的事实，默认隐藏敏感正文；完整私有审计才选择 `include_sensitive=true`。`GET /v1/agent/status?session_id=...` 只返回空间、计数、focus 和下一步建议，不含记忆正文。
+## 记忆列表的筛选与一致分页
 
-## OpenAI-compatible chat
+`GET /v1/memories` 支持：
 
-`POST /v1/chat/completions` 接受 memory 扩展：
+| 查询参数 | 作用 |
+| --- | --- |
+| facts_limit、facts_offset | 事实分页 |
+| episodes_limit、episodes_offset | 原始事件分页 |
+| q | 搜索；HTTP 正式参数为 q |
+| status | live/current、superseded/old/history、all；未知值按实现忽略 |
+| kind | outcomes 或 attributes |
+| outcome_kind | decision、finding、lesson、open_question |
+| category | 精确分类过滤；空分类归为“其他” |
+| include_sensitive | 默认 false；true 是所有者的完整检查视图 |
+| expected_revision、evaluated_at | 后续页成对沿用首屏返回值，固定提交集合与状态评估时刻 |
+
+返回包含事实、事件、计数及分页信息；`fact_categories` 描述相同类型及可见范围内的分类集合。默认安全视图不返回 profile、原始事件正文或摘要，计数不代表所有这些内容已经返回。
+
+分页响应给出 `data_revision` 与 `evaluated_at`；下一页分别传为 expected_revision 和 evaluated_at。字段必须成对提供。版本发生变化返回 409，`detail.code="memory_revision_changed"`，应从第一页重取；不要继续累加旧结果。
+
+## 事实与派生视图
+
+| 端点 | 输入与语义 |
+| --- | --- |
+| `POST /v1/facts` | predicate、object 必填；subject=user，sensitive/category 可选；添加用户断言 |
+| `PATCH /v1/facts/{fact_id}` | 三元组字段或 statement，及 sensitive/category；statement 非空且不能与三元组字段混用 |
+| `DELETE /v1/facts/{fact_id}` | 删除单事实；检查响应中的 ok |
+| `POST /v1/facts/clear-slot` | subject、predicate、expect_count 必填；受当前数量、来源和历史链保护 |
+| `GET /v1/profile` | 派生画像与关键事实 |
+| `GET /v1/profile/structured` | 结构化画像的确认与待确认视图 |
+| `GET /v1/graph` | as_of、include_sensitive=false、q、live_only=false、limit |
+| `GET /v1/focus` / `PUT /v1/focus` | track/mute 列表，省略保持，[] 清空 |
+| `GET /v1/policy` / `PUT /v1/policy` | extract_instruction、extract_system、summary_system、persona_system；空字符串恢复默认 |
+| `GET /v1/conflicts` | 待确认冲突，需要相应检测配置 |
+| `POST /v1/conflicts/{conflict_id}/resolve` | keep=newer、older 或 both |
+
+内容编辑使事实变为用户来源；只改敏感标记或分类保留原来源。槽位清理可能通过 JSON 结果表达拒绝，不能只检查 HTTP 状态。服务端权限不会被客户端筛选或隐私开关替代。
+
+## 工作记忆、导入与导出
+
+| 端点 | 输入与语义 |
+| --- | --- |
+| `POST /v1/working` | content；session_id=default、kind=state、ttl_seconds 可选 |
+| `GET /v1/working` | session_id 可选；仅返回活跃条目 |
+| `DELETE /v1/working` | session_id 必填；清理该 session 的工作条目 |
+| `POST /v1/import` | sessions 或 data + format；consolidate=null、summarize=true、dedupe=true |
+| `POST /v1/documents` | text 或 data_base64；filename、content_type 可选，session_id=document |
+| `GET /v1/export` | include_sensitive=false；返回结构化导出 |
+| `POST /v1/forget` | JSON `{"confirm": true}`；当前也接受查询参数 confirm=true |
+
+导入同时给 sessions 和 data 时以 sessions 为准。consolidate=null 按输入来源选择，Agent 会话与普通导出存在差异。PDF/DOCX 需要 documents extra，图片描述依赖视觉模型；base64 内容仍受请求体上限约束。
+
+默认导出省略敏感事实与自由文本层；完整私有导出需要 include_sensitive=true。forget 永久清空命名空间；anonymous 和 mnemotrace-test 禁止整库清空。单事实删除和清理工作状态不会完整擦除原始会话。
+
+## OpenAI 兼容聊天
+
+`POST /v1/chat/completions` 接受 model、非空 messages、stream 和可选 memory：
 
 ```json
 {
   "model": "mnemotrace",
-  "messages": [
-    {
-      "role": "user",
-      "content": "Continue the project."
-    }
-  ],
-  "memory": {
-    "session_id": "app:my-app:thread-123",
-    "recall": true,
-    "remember": true,
-    "scope": "auto",
-    "n_chunks": 6,
-    "as_of": null,
-    "redact_sensitive": false
-  }
+  "messages": [{"role": "user", "content": "Where do I live?"}],
+  "memory": {"session_id": "demo", "recall": true, "remember": true, "n_chunks": 6}
 }
 ```
 
-`memory.recall=false` 可关闭召回，`memory.remember=false` 可关闭写回；`scope` 选择长期或工作记忆路由，`n_chunks` 控制原文数量，`as_of` 传递时点，`redact_sensitive=true` 限制为非敏感结构化事实。
+memory 还支持 scope、as_of 和 redact_sensitive。需要配置作答 LLM，否则返回 503；model 字段不负责动态选择服务器的实际后端。部分兼容参数会被接受但不参与生成，不能把此端点视为其他服务的全部接口实现。
 
-回答前召回，响应生成后在后台保存用户轮次；响应的 `remembered` 表示已安排后台写入，不代表已完成持久化。客户端仍需在会话结束时调用 close。`Python/TypeScript` 应用的接入和生命周期见 [Agent 指南](../guides/agents.md)。
+stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切分返回，不承诺模型 token 实时透传。记忆写入在响应之外安排，响应中的 remembered 标志表示已安排该路径，不能代替后续审计。
 
-## 查看与管理
+## 错误处理
 
-| 方法 | 路径 | 语义 |
-| --- | --- | --- |
-| GET | `/v1/sessions` | `limit`/`offset`/`q`；不含正文的会话索引 |
-| GET | `/v1/stats` | 不含正文的计数、积压、冷热及后端状态 |
-| GET | `/v1/memories` | 默认非敏感视图，筛选和一致分页见下文 |
-| GET | `/v1/profile/structured` | 从事实派生的结构化画像 |
-| GET | `/v1/graph` | 默认排除敏感事实对应的边，完整私有图需 `include_sensitive=true` |
-| GET | `/v1/conflicts` | 需要开启冲突检测的待确认候选 |
-| POST | `/v1/conflicts/{id}/resolve` | keep=`newer/older/both` |
-| PATCH | `/v1/facts/{id}` | 三元组、元数据或四类结论的 `statement` |
-| DELETE | `/v1/facts/{id}` | 显式擦除指定事实 |
-| GET | `/v1/audit` | 只读发现、全部计数与截取结果 |
-| POST | `/v1/facts/clear-slot` | `subject`/`predicate`/`expect_count`；仅删除 `live` 非手写槽位事实，数量变化整体拒绝 |
-| GET | `/v1/export` | 默认非敏感 facts+graph；完整私有导出需 `include_sensitive=true` |
-| POST | `/v1/forget` | confirm=true；擦除授权空间 |
+常见状态：400 输入或确认缺失；401 凭据缺失/无效；403 权限或受保护擦除；404 目标不存在；409 记忆分页版本变化；413 请求过大；422 字段或编辑校验；503 就绪、配置、模型或控制台构建条件不满足。
 
-### 记忆列表的筛选与一致分页
-
-`GET /v1/memories` 在分页前组合 `kind`、`outcome_kind`、`status`、`category`、`q` 与敏感可见范围。
-`outcome_kind` 仅允许 `decision`、`finding`、`lesson`、`open_question`，未传表示不限制，非法值返回 422。
-事实按 `(valid_at, id)` 倒序，原始对话按 `(event_time, id)` 倒序；同一时间的顺序确定。
-
-- `facts_limit` / `facts_offset`、`episodes_limit` / `episodes_offset` 分别控制两类列表；显式 `limit` 上限为 500 / 200，0 表示不取该类记录，未传 `limit` 保留不分页的全文语义。
-- `facts_page` / `episodes_page` 含 `items`、`total`、`offset`、`limit`、`has_more`、`next_offset`；只按服务端 `next_offset` 前进，末页该值为 null。每类页面的 total 与记录来自同一匹配集合；`counts` 仍为原有空间级统计，不随搜索和分类收缩。
-- 首次请求省略 `expected_revision` 和 `evaluated_at`，响应返回不透明 `data_revision` 与数值 `evaluated_at`（Unix 秒）。后续页成对传回这两个值。缺一项、负数或非有限时间返回 422。
-- 同一批分页的 `live`/历史过滤、事实行 `status` 和 `counts.facts_live` / `facts_superseded` / `facts_outcomes` 都按首次评估时刻判定。自然时间流逝不改变当前批次；重新从第一页省略上下文请求才取得新时刻。
-- 后续请求的提交版本不符时返回 HTTP 409：`{"detail":{"code":"memory_revision_changed","message":"记录已变化，请重新加载"}}`，不附带可追加页面。调用方应保留已有展示，停止追加，并由用户重新加载；不自动重试旧上下文。
-
-版本保护适用于通过标准 `MemoryService` 持久化写入路径提交的变化；`"empty"` 代表尚无持久化提交。
-裸 `Memory` 的未保存修改不受此协议保护。该接口不保留历史快照，也不提供相互独立的有效时间与事务时间查询。
-
-TypeScript SDK 使用 camelCase 请求选项，响应保持 HTTP 字段名；完整遍历示例：
-
-```typescript
-import { MnemoTraceClient } from 'mnemotrace-memory'
-
-const client = new MnemoTraceClient({ apiKey: 'synthetic-key' })
-let offset = 0
-let revision: string | undefined
-let evaluatedAt: number | undefined
-const ids = new Set<string>()
-for (;;) {
-  const page = await client.memories({
-    factsLimit: 60, factsOffset: offset, episodesLimit: 0,
-    kind: 'outcomes', outcomeKind: 'lesson',
-    expectedRevision: revision, evaluatedAt,
-  })
-  revision = page.data_revision
-  evaluatedAt = page.evaluated_at
-  for (const fact of page.facts) ids.add(fact.id)
-  if (!page.facts_page.has_more) break
-  offset = page.facts_page.next_offset!
-}
-```
-
-SDK 非成功响应抛出 `MnemoTraceError`；409 的机器错误码保留在错误的 `detail.detail.code` 中，SDK 不自动重试。
-
-### 事实编辑
-
-整句编辑的 `statement` 仅适用于已有谓词为 `decision`、`finding`、`lesson`、`open_question` 的
-会话结论；属性事实必须通过 `subject`、`predicate`、`object` 修正。对属性事实提交 `statement`
-（即使与原文相同）、空白 `statement` 或混合两种内容字段，均返回 HTTP 422，不修改事实或图谱。
-结论的整句更新保存到 `object`/`text`/`display`，并保留依据子句；不调用模型猜测三元组。
-事实 ID、来源 `Episode` ID 沿用现有编辑语义。编辑响应包含当前 `display`；审计的单条发现也新增
-`display`，前端优先使用它。审计 `samples[].text` 是已保存的事实内容样本，不是来源对话逐字原文。
-
-### 记忆体检
-
-`GET /v1/audit` 按默认处理优先级稳定排序后再截取 `limit`：红色（缺少信息/检索支持不足）、
-琥珀色（异常标识/多个取值/内容不完整/指代不明）、蓝色（内容过长/代码路径）、灰色（未关联对象）。
-同级保留原发现顺序；`by_kind` 和 `total_findings` 仍反映全部发现。
-
-### 结构化画像的依据
-
-`GET /v1/profile/structured` 的条目 `evidence` 包含：
-
-- `kind`：`user`（用户设定）、`mentions`（来源提及）或 `reinforced`（访问强化）。
-- `count`：保留既有语义；`user` 为 1，`mentions` 为来源数（旧的无来源兜底为 1），
-  `reinforced` 为访问次数。
-- `source_count`：关联的去重来源 `Episode` ID 数量，无来源时为 0；画像以 `xN` 展示。
-  用户设定和访问强化不替代这个数量，手动设定以带悬浮提示的 UserCheck 图标同时展示。
-
-控制台位于 `/ui/`，未构建时返回 503，HTTP API 与健康检查独立工作。错误、并发、目录与凭据边界见[服务架构](../architecture/service.md)。
+错误通常位于 `detail`，可能是字符串、对象或字段错误列表。成功响应中的 queued、degraded、ok=false 等业务状态也需要处理。响应 schema 尚未覆盖全部载荷，应结合本页和[实现](../../mnemotrace/server/app.py)核对。

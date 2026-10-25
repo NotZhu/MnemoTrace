@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MnemoTrace 自托管商业发行版的零依赖发布门禁检查。"""
+"""核对发行元数据、交付文件和部署配置；文档导航由独立检查负责。"""
 from __future__ import annotations
 
 import json
@@ -73,7 +73,6 @@ def main() -> int:
         "README.zh-CN.md",
         "docs/reference/http-api.md",
         "docs/README.md",
-        "docs/decisions.md",
         "docs/architecture/README.md",
         ".github/workflows/ci.yml",
     )
@@ -86,20 +85,13 @@ def main() -> int:
     _check("MNEMOTRACE_OPEN" not in docker_text + compose_text, "container is not open by default", errors)
     _check("/ready" in docker_text + compose_text, "container health uses readiness", errors)
 
-    results = _read("RESULTS.md")
-    evidence = sorted(set(re.findall(r"\]\((results/[^)]+\.jsonl)\)", results)))
-    _check(bool(evidence), "RESULTS.md links raw JSONL evidence", errors)
-    for path in evidence:
-        _check((ROOT / path).is_file(), f"public evidence exists: {path}", errors)
-
     _check("商业授权" in _read("COMMERCIAL-LICENSE.md"), "commercial license has Chinese terms", errors)
     _check("漏洞" in _read("SECURITY.md"), "security policy has Chinese reporting guidance", errors)
-    _check("单节点" in _read("deploy/README.md"), "release scope is bounded", errors)
 
     if errors:
-        print(f"\ncommercial release checks failed: {len(errors)}", file=sys.stderr)
+        print(f"\nrelease metadata and deployment checks failed: {len(errors)}", file=sys.stderr)
         return 1
-    print("\nOK commercial release checks passed")
+    print("\nOK release metadata and deployment checks passed")
     return 0
 
 

@@ -30,9 +30,6 @@ env/
 
 # Local data / scratch
 .artifacts/
-.specify/feature.json
-.specify/integration.json
-.specify/integrations/claude.manifest.json
 *.log
 .DS_Store
 data/
@@ -48,13 +45,6 @@ _repo_cache/
 .claude/skills/
 .agents/skills/
 
-# LaTeX build artifacts
-paper/*.aux
-paper/*.out
-
-# Keep curated benchmark logs (committable evidence)
-!results/
-results/*.tmp
 # LOCOMO dataset: download from snap-research/locomo, not vendored
 eval/locomo10.json
 
