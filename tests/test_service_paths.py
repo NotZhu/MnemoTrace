@@ -348,7 +348,7 @@ def test_service_stats_reports_graph_hygiene_without_content(tmp_path):
     svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing")
     mem = svc.get("u")
     mem.add_fact("user", "works_at", "Acme", user_id="u")
-    orphan = mem.graph.upsert_entity(Entity(name="Private Orphan", user_id="u"))
+    mem.graph.upsert_entity(Entity(name="Private Orphan", user_id="u"))
     subject = mem.graph.upsert_entity(Entity(name="ghost subject", user_id="u"))
     obj = mem.graph.upsert_entity(Entity(name="ghost object", user_id="u"))
     mem.graph.add_relation(Relation(subject_id=subject.id, predicate="ghost", object_id=obj.id, fact_id="missing_fact"))

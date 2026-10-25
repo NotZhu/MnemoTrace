@@ -1,0 +1,40 @@
+name: 缺陷报告
+description: 提供环境和最小复现，帮助定位行为与预期的差异。
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请使用合成数据复现，提交前移除 API key、私人对话和其他敏感信息。
+        安全漏洞请按 [SECURITY.md](https://github.com/NotZhu/MnemoTrace/blob/main/SECURITY.md) 报告。
+  - type: textarea
+    id: environment
+    attributes:
+      label: 版本与运行环境
+      description: MnemoTrace 版本或 commit、操作系统、Python / Node.js 版本、安装命令及启用的 extras；涉及控制台时附浏览器版本。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 最小复现
+      description: 提供可复制的命令或代码、必要的合成输入，以及触发问题的步骤。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果与日志
+      description: 提供完整错误信息或脱敏日志；界面问题可附截图。
+    validations:
+      required: true
+  - type: textarea
+    id: evaluation
+    attributes:
+      label: 评测复现信息（仅评测问题填写）
+      description: 数据集及版本、题目范围或 QID、完整命令、模型与配置、原始日志，以及是否包含同次运行的 full-context baseline。复现要求见 eval/README.md。

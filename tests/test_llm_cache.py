@@ -96,7 +96,6 @@ def test_identity_registration_does_not_depend_on_extraction_order():
     事实集合在完全相同的运行之间翻转，翻转了 persona prompt，进而击穿了 pin 缓存。提取现在是
     两阶段的：模型调用并发扇出，转换按时间顺序执行。"""
     from mnemotrace import Memory
-    from mnemotrace.types import Episode
 
     class StubExtractor:
         """模拟 LLM 提取器的分段 API；名字只在最后一个 episode 里出现。"""

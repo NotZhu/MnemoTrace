@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全漏洞报告
+    url: https://github.com/NotZhu/MnemoTrace/blob/main/SECURITY.md
+    about: 按安全政策报告漏洞，避免在公开 Issue 中披露敏感细节。

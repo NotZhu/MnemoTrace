@@ -2442,7 +2442,6 @@ class Memory:
                 blocks.append(agg)
 
         assembled = "\n\n".join(blocks)
-        default_budget = char_budget == 60_000
         if char_budget == 60_000:
             full_chars = sum(len(ep.content) for ep in self.episodes_doc.values() if ep.user_id == user)
             if full_chars:

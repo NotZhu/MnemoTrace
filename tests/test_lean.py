@@ -270,7 +270,6 @@ def test_date_terms_makes_dates_searchable():
 def test_weight_tuner_runs_and_scores():
     """融合权重调参器（AGENTS.md 「评测、公开内容与贡献规则」）为一组权重计算 recall@k 并做网格搜索 —— 离线、确定性。
     这就是让 'tuned on the harness' 有据可依而非空口无凭的机制。"""
-    from mnemotrace.types import Fact
     from eval.tune_weights import grid_search, mean_recall_at_k
 
     mem = build()
@@ -1994,7 +1993,7 @@ def test_llm_escalation_resolves_borderline_conflict():
 
 def test_reflector_propagates_supersession_into_summaries():
     """在知识更新前定稿的摘要，应由 reflector 把当前值追加进去。"""
-    from mnemotrace.types import Episode, Fact
+    from mnemotrace.types import Fact
 
     mem = Memory()
     ep = mem.add("I do yoga twice a week.", user_id="u1", session_id="s1", event_time=BASE)

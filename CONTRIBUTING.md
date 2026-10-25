@@ -37,11 +37,19 @@ python -m pip install -e ".[dev,server,mcp]" build twine
 在根目录运行目标测试，再按影响扩大范围：
 
 ```sh
+python -m ruff check .
 python -m pytest tests/test_conflict.py
 python -m pytest
 ```
 
 测试依赖已安装后，默认套件应不需要 API key 或外部服务。测试入口会隔离模型相关环境，并禁止通常的本地 dotenv 自动加载；只有专门验证 dotenv 的 fixture 才显式恢复该行为。可选后端未安装时，相关测试可能跳过。
+
+涉及 LanceDB 或文档导入时，安装对应 extras 后运行实际后端回归；CI 的 `optional-backends` job 也执行这一组离线检查：
+
+```sh
+python -m pip install -e ".[dev,server,mcp,lancedb,documents]"
+python -m pytest tests/test_lancedb_store.py tests/test_documents.py
+```
 
 运行安装与默认路径检查：
 
@@ -53,7 +61,7 @@ python scripts/check_zero_setup.py
 
 ## 控制台开发
 
-CI 使用 Node.js 22 和前端 package.json 声明的 pnpm 版本。先启动本地后端，再在 `frontend/` 执行：
+CI 使用 Node.js 22，通过 Corepack 读取前端 package.json 声明的 pnpm 版本。先执行 `corepack enable` 并启动本地后端，再在 `frontend/` 执行：
 
 ```sh
 pnpm install --frozen-lockfile
@@ -105,4 +113,6 @@ python -m twine check dist/*
 
 提交或 PR 说明问题、最终行为、验证结果与限制。验证失败或中断时明确区分本次引入的问题与已有问题。普通测试结果在 PR/CI 交付；临时输出写系统临时目录或 .artifacts/ 下的任务目录，按 AGENTS 的生命周期处理。
 
-缺陷和需求使用对应 Issue；漏洞按 [SECURITY.md](SECURITY.md)报告。许可证及商业条款见 [LICENSE](LICENSE) 和 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。
+缺陷使用 [Issue 表单](https://github.com/NotZhu/MnemoTrace/issues/new?template=bug_report.yml)，需求可直接创建 Issue；漏洞按 [SECURITY.md](SECURITY.md)报告。许可证及商业条款见 [LICENSE](LICENSE) 和 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。
+
+Dependabot 每周检查 Python、控制台、SDK、GitHub Actions 和 Docker 依赖，更新范围维护在 [.github/dependabot.yml](.github/dependabot.yml)。依赖更新由维护者核对变更说明和受影响的测试后合并；可选后端未安装导致的跳过不等于升级验证通过。

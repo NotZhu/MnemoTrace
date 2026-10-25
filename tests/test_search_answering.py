@@ -1,4 +1,4 @@
-"""来自一线缺陷报告的读路径产品修复（对 LongMemEval harness 零影响——这些路径是
+"""手写事实保护、搜索作答与画像权威性回归（对 LongMemEval harness 零影响——这些路径是
 search()/answer()/add_fact 时的冲突处理，benchmark 的 lean_context 从不触达）：
 
   #1  固定（source="user"）的事实绝不能被跨槽位的模糊匹配取代（即“打地鼠”bug）。

@@ -1,5 +1,8 @@
 # MnemoTrace · 忆痕
 
+[![CI](https://github.com/NotZhu/MnemoTrace/actions/workflows/ci.yml/badge.svg)](https://github.com/NotZhu/MnemoTrace/actions/workflows/ci.yml)
+[![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
+
 Long-term memory for LLM agents, with a Python library, HTTP service, MCP tools, TypeScript SDK, and a management console.
 
 MnemoTrace stores conversation episodes, extracts facts with time and provenance, and retrieves relevant context across sessions. Memory updates can retain superseded facts for historical queries. The default Python path uses a hashing embedder and rule-based extraction: no API key, model download, or external service is required. These deterministic defaults demonstrate the pipeline; they do not establish semantic retrieval quality.

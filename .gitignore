@@ -14,7 +14,6 @@ dist/
 .cleanup-archive/
 .pnpm-store/
 node_modules/
-frontend/pnpm-workspace.yaml
 *.tsbuildinfo
 .coverage
 htmlcov/
@@ -39,20 +38,9 @@ external/
 mnemotrace_cache/
 .mnemotrace_cache/
 _repo_cache/
-.workbuddy/
-.claude/settings.local.json
-.claude/worktrees/
-.claude/skills/
-.agents/skills/
 
 # LOCOMO dataset: download from snap-research/locomo, not vendored
 eval/locomo10.json
 
-# Agent persona files kept next to the code but never part of it
-SOUL.md
-IDENTITY.md
-USER.md
-# Internal ops handoff notes (contains private infra details) — local only
-HANDOFF.md
 # Stale process-id files from scoreboard runs
 *.pid
