@@ -61,3 +61,22 @@ def test_failed_load_does_not_clear_existing_memory(tmp_path):
         load_memory(existing, str(bad_path))
 
     assert [e.content for e in existing.episodes_doc.values()] == before
+
+
+def test_invalid_utf8_beyond_committed_prefix_is_not_decoded(tmp_path):
+    mem = Memory()
+    mem.add("Synthetic source", user_id="u")
+    mem.save(str(tmp_path))
+    with (tmp_path / "episodes.jsonl").open("ab") as fh:
+        fh.write(b'\xff\xfe{"uncommitted":')
+    restored = Memory.open(str(tmp_path))
+    assert [ep.content for ep in restored.episodes_doc.values()] == ["Synthetic source"]
+
+
+def test_invalid_utf8_inside_committed_prefix_is_format_error(tmp_path):
+    mem = Memory()
+    mem.add("Synthetic source", user_id="u")
+    mem.save(str(tmp_path))
+    (tmp_path / "episodes.jsonl").write_bytes(b'\xff\xfe\n')
+    with pytest.raises(StoreFormatError, match="episodes.jsonl.*line 1"):
+        Memory.open(str(tmp_path))

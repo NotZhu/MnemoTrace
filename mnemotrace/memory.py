@@ -567,84 +567,67 @@ class Memory:
         （重跑抽取会使其重复并抹平历史），episode 则重新进入带日期的原始日志并标记为已整合，
         System-2 永远不会重新消化它们。share-safe 导出不含 episode——只恢复 fact 是那里的预期
         结果。在 `dedupe`（默认）下幂等。"""
-        from .connectors.base import to_epoch
+        from .store._validation import validate_embedding, validate_snapshot
 
+        snapshot = validate_snapshot(snapshot)
         user = user_id
 
         # --- episodes：恢复无损带日期日志（仅 include_sensitive 导出中存在） ---
         ep_seen = {(ep.session_id, ep.content) for ep in self.episodes_doc.values()
                    if ep.user_id == user}
-        eps_restored = eps_skipped = 0
-        for row in snapshot.get("episodes") or []:
-            if not isinstance(row, dict):
-                continue
-            content = str(row.get("content") or "")
-            if not content:
-                continue
-            session_id = str(row.get("session_id") or "imported")
+        eps_skipped = 0
+        prepared_episodes: list[Episode] = []
+        for row in snapshot["episodes"]:
+            content = row["content"]
+            session_id = row["session_id"]
             if dedupe and (session_id, content) in ep_seen:
                 eps_skipped += 1
                 continue
             ep = Episode(content=content, user_id=user, session_id=session_id,
-                         speaker=str(row.get("speaker") or "user"),
-                         event_time=to_epoch(row.get("event_time")) or now(),
+                         speaker=row["speaker"], event_time=row["event_time"],
                          consolidated=True,  # 它的 fact 在下方恢复；绝不重新抽取
-                         summary=str(row.get("summary") or ""))
+                         summary=row.get("summary", ""))
             ep.embedding = self.embedder.embed(content)
+            validate_embedding(ep.embedding, "snapshot.episodes.embedding", self.embedder.dim)
             if ep.summary:
                 ep.summary_embedding = self.embedder.embed(ep.summary)
-            self.episodes_doc.put(ep.id, ep)
-            self.episodes_vec.upsert(ep.id, ep.embedding, ep)
+                validate_embedding(ep.summary_embedding, "snapshot.episodes.summary_embedding", self.embedder.dim)
+            prepared_episodes.append(ep)
             ep_seen.add((session_id, content))
-            eps_restored += 1
 
         # --- facts：同时恢复 live 与被取代的行，保留 valid/transaction 时间 ---
-        fact_seen = {(f.subject, f.predicate, f.object, round(f.valid_at, 1))
+        fact_seen = {(f.subject, f.predicate, f.object, round(f.valid_at, 1)): f.id
                      for f in self._all_facts() if f.user_id == user}
         id_map: dict[str, str] = {}  # 旧快照 id -> 新 id，用于重连取代链
-        staged: list[tuple[Fact, str]] = []
-        facts_skipped = malformed = 0
-        for row in snapshot.get("facts") or []:
-            if not isinstance(row, dict):
-                malformed += 1
-                continue
-            s = str(row.get("subject") or "").strip()
-            p = str(row.get("predicate") or "").strip()
-            o = str(row.get("object") or "").strip()
-            if not (s and p and o):
-                malformed += 1
-                continue
-            valid_at = to_epoch(row.get("valid_at")) or now()
+        staged: list[tuple[Fact, str | None]] = []
+        facts_skipped = 0
+        for row in snapshot["facts"]:
+            s, p, o = row["subject"], row["predicate"], row["object"]
+            valid_at = row["valid_at"]
             key = (s, p, o, round(valid_at, 1))
             if dedupe and key in fact_seen:
+                id_map[row["id"]] = fact_seen[key]
                 facts_skipped += 1
                 continue
-            try:
-                salience = float(row.get("salience", 1.0))
-                confidence = float(row.get("confidence", 1.0))
-            except (TypeError, ValueError):
-                salience, confidence = 1.0, 1.0
             f = Fact(subject=s, predicate=p, object=o, user_id=user,
-                     text=str(row.get("text") or ""),
-                     source=str(row.get("source") or "extracted"),
-                     category=str(row.get("category") or ""),
-                     sensitive=bool(row.get("sensitive", False)),
-                     salience=salience, confidence=confidence,
+                     text=row.get("text", ""), source=row["source"],
+                     category=row["category"], sensitive=row["sensitive"],
+                     salience=row["salience"], confidence=row["confidence"],
                      valid_at=valid_at,
-                     invalid_at=to_epoch(row.get("invalid_at")),
-                     created_at=to_epoch(row.get("created_at")) or now(),
-                     expired_at=to_epoch(row.get("expired_at")),
+                     invalid_at=row["invalid_at"], created_at=row["created_at"],
+                     expired_at=row["expired_at"],
                      # 来源 episode id：原样保留以保审计诚实——被引用的 episode 在这里拿到了新 id，
                      # 这些字段记录的是该 fact 当初来自哪里。
-                     provenance=[str(x) for x in (row.get("provenance") or [])])
+                     provenance=row["provenance"])
             f.embedding = self.embedder.embed(f.text)
-            old_id = str(row.get("id") or "")
-            if old_id:
-                id_map[old_id] = f.id
-            staged.append((f, str(row.get("supersedes") or "")))
-            fact_seen.add(key)
-        # 第二遍处理，使取代链与行顺序无关；快照之外（或作为重复被跳过）的 supersedes 目标
-        # 置为 None，而不是留下悬空的外部 id。
+            validate_embedding(f.embedding, "snapshot.facts.embedding", self.embedder.dim)
+            id_map[row["id"]] = f.id
+            staged.append((f, row["supersedes"]))
+            fact_seen[key] = f.id
+        # 校验和向量准备全部成功后才写入；取代链也链接到去重命中的已有事实。
+        for ep in prepared_episodes:
+            self.episodes_doc.put(ep.id, ep)
+            self.episodes_vec.upsert(ep.id, ep.embedding, ep)
         for f, old_sup in staged:
             f.supersedes = id_map.get(old_sup) if old_sup else None
             self.fact_store.upsert(f.id, f.embedding, f)
@@ -655,8 +638,8 @@ class Memory:
         self._enforce_hot_limit()
         self._persona_cache.clear()
         return {"format": "mnemotrace", "facts_restored": len(staged), "facts_skipped": facts_skipped,
-                "episodes_restored": eps_restored, "episodes_skipped": eps_skipped,
-                "malformed": malformed}
+                "episodes_restored": len(prepared_episodes), "episodes_skipped": eps_skipped,
+                "malformed": 0}
 
     # --- 用户手写的记忆管理（管理界面驱动的可编辑层） ---
     def add_fact(self, subject: str, predicate: str, object: str, user_id: str = "default",

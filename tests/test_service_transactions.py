@@ -191,20 +191,31 @@ def test_snapshot_identity_survives_equal_size_and_timestamp(tmp_path, monkeypat
     assert objects(Memory.open(first._path("u"), embedder=first.embedder)) == {"new"}
 
 
-def test_legacy_manifest_token_is_loaded_then_upgraded(tmp_path):
+def test_legacy_manifest_without_commit_identity_is_rejected_without_upgrade(tmp_path):
     svc = service(tmp_path)
     svc.add_fact("u", "project", "marker", "old")
     manifest_path = Path(svc._path("u")) / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest.pop("snapshot_id")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = manifest_path.read_bytes()
     reopened = service(tmp_path)
-    mem = reopened.get("u")
-    assert mem._snapshot_version.startswith("legacy:")
-    assert mem._snapshot_version == persist.snapshot_version(reopened._path("u"))
-    reopened.add_fact("u", "project", "next_marker", "next")
-    assert mem._snapshot_version.startswith("snapshot:")
-    assert objects(service(tmp_path).get("u")) == {"old", "next"}
+    with pytest.raises(persist.StoreFormatError, match="snapshot_id"):
+        reopened.get("u")
+    assert manifest_path.read_bytes() == before
+    assert "u" not in reopened._hot
+
+
+def test_warm_cache_cannot_bypass_invalid_manifest_state(tmp_path):
+    svc = service(tmp_path)
+    svc.add_fact("u", "project", "marker", "old")
+    svc.get("u")
+    manifest_path = Path(svc._path("u")) / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["state"].pop("import_seen")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(persist.StoreFormatError, match="import_seen"):
+        svc.get("u")
 
 
 def test_live_manifest_reader_does_not_prevent_atomic_commit(tmp_path):
