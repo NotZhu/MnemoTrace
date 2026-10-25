@@ -9,11 +9,9 @@ MCP server 和导入 CLI 在没有安装 web 依赖时也能使用它。
 """
 from __future__ import annotations
 
-import hashlib
 import math
 import os
 import queue
-import re
 import shutil
 import threading
 from collections import OrderedDict
@@ -24,6 +22,7 @@ from functools import wraps
 from typing import Any, Optional
 
 from ._namespace_lock import NamespaceLock, namespace_lock
+from ._namespace_paths import contained_child, namespace_directory, namespace_path
 from .localize import display_of
 from .memory import Memory
 from .metrics import Metrics, timed
@@ -213,26 +212,13 @@ class MemoryService:
 
     # --- namespace lifecycle ------------------------------------------------
     def _safe_user(self, user: str) -> str:
-        """为一个逻辑命名空间生成确定、抗碰撞的目录名。
-
-        可读前缀仅用于排查。身份来自原始 UTF-8 命名空间的摘要，因此去标点和 Unicode 归一化
-        绝不可能把两个租户合并到一起。
-        """
-        raw = str(user)
-        prefix = re.sub(r"[^A-Za-z0-9]+", "-", raw).strip("-").lower()[:48]
-        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-        return f"{prefix or 'namespace'}--{digest}"
+        return namespace_directory(user)
 
     def _contained_child(self, name: str) -> str:
-        root = os.path.realpath(self.data_dir)
-        path = os.path.realpath(os.path.join(root, name))
-        # 同级目录链接、Windows 大小写/尾点别名也可能落在根目录内，却属于另一命名空间。
-        if os.path.dirname(path) != root or path == root or os.path.basename(path) != name:
-            raise ValueError("namespace path must be a direct child of MNEMOTRACE_DATA_DIR without aliases")
-        return path
+        return contained_child(self.data_dir, name)
 
     def _secure_path(self, user: str) -> str:
-        return self._contained_child(self._safe_user(user))
+        return namespace_path(self.data_dir, user)
 
     def _path(self, user: str) -> str:
         # 不认领旧名字：原始 namespace 只能通过自己的摘要目录访问存储。
