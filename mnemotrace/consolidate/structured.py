@@ -108,14 +108,15 @@ def _category(pred: str, obj: str) -> str:
 
 
 def _evidence(f: Fact) -> dict:
-    """保留旧 count 的分支语义，另用 source_count 避免来源数量与设定/强化状态混淆。"""
+    """来源数统计不同的 Episode ID，强化次数独立保留检索使用次数。"""
     source_count = len(set(f.provenance))
     if f.source == "user":
-        return {"kind": "user", "count": 1, "source_count": source_count}
-    n = source_count or 1
-    if f.access_count > 0 and n < 2:
-        return {"kind": "reinforced", "count": f.access_count, "source_count": source_count}
-    return {"kind": "mentions", "count": n, "source_count": source_count}
+        kind = "user"
+    elif f.access_count > 0 and source_count < 2:
+        kind = "reinforced"
+    else:
+        kind = "mentions"
+    return {"kind": kind, "source_count": source_count, "reinforcement_count": f.access_count}
 
 
 def _confirmed(f: Fact) -> bool:
@@ -185,7 +186,8 @@ def build_structured_profile(facts: list[Fact], subject: str, user_id: str = "de
     # （且尚无 name fact 提供时）显式地放入 基本信息。
     if "name" not in basic and subject and subject.lower() not in (USER_REFS | {user_id.lower()}):
         basic["name"] = {"field": "name", "label": "姓名", "value": subject,
-                         "evidence": {"kind": "mentions", "count": 1, "source_count": 0},
+                         "evidence": {"kind": "mentions", "source_count": 0,
+                                      "reinforcement_count": 0},
                          "source": "extracted", "fact_id": ""}
     for b in basic.values():
         b.pop("_rank", None)

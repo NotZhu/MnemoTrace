@@ -26,7 +26,7 @@ def test_habit_uses_source_language_display_without_changing_fact(predicate, obj
 
     assert profile["habits"] == [{
         "text": display,
-        "evidence": {"kind": "mentions", "count": 1, "source_count": 1},
+        "evidence": {"kind": "mentions", "source_count": 1, "reinforcement_count": 0},
         "fact_id": fact.id,
     }]
     assert profile["counts"]["habits"] == 1
@@ -83,7 +83,7 @@ def test_llm_display_reaches_memory_profile_without_another_model_call(sentence)
 
     assert profile["habits"] == [{
         "text": sentence,
-        "evidence": {"kind": "mentions", "count": 1, "source_count": 1},
+        "evidence": {"kind": "mentions", "source_count": 1, "reinforcement_count": 0},
         "fact_id": fact.id,
     }]
     assert asdict(memory.fact_store.get(fact.id)) == before

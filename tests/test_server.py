@@ -96,21 +96,31 @@ def test_structured_profile_source_count_survives_edit_and_reload(client):
         return [item for items in response.json()["preferences"].values() for item in items]
 
     item = next(item for item in preferences() if item["item"] == "jazz")
-    assert item["evidence"] == {"kind": "mentions", "count": 1, "source_count": 1}
+    assert item["evidence"] == {"kind": "mentions", "source_count": 1, "reinforcement_count": 0}
+    recalled = client.post("/v1/recall", json={"query": "What music do I like?"}, headers=h)
+    assert recalled.status_code == 200
+    reinforced = next(row for row in preferences() if row["fact_id"] == item["fact_id"])
+    reinforcement_count = reinforced["evidence"]["reinforcement_count"]
+    assert reinforcement_count > 0
+    assert reinforced["evidence"] == {
+        "kind": "reinforced", "source_count": 1, "reinforcement_count": reinforcement_count,
+    }
     changed = client.patch(f"/v1/facts/{item['fact_id']}", json={"object": "classical music"}, headers=h)
     assert changed.status_code == 200
 
     from mnemotrace.server import app as appmod
     appmod._svc = None
     edited = next(row for row in preferences() if row["fact_id"] == item["fact_id"])
-    assert edited["evidence"] == {"kind": "user", "count": 1, "source_count": 1}
+    assert edited["evidence"] == {
+        "kind": "user", "source_count": 1, "reinforcement_count": reinforcement_count,
+    }
 
     manual = client.post("/v1/facts", json={
         "subject": "user", "predicate": "likes", "object": "synthetic-manual-option",
     }, headers=h)
     assert manual.status_code == 200
     added = next(row for row in preferences() if row["item"] == "synthetic-manual-option")
-    assert added["evidence"] == {"kind": "user", "count": 1, "source_count": 0}
+    assert added["evidence"] == {"kind": "user", "source_count": 0, "reinforcement_count": 0}
 
 
 def test_tenant_data_rights_operations_remain_isolated(client):

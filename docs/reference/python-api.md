@@ -40,6 +40,8 @@
 | `structured_profile` | user_id | 结构化画像字典 |
 | `build_persona` | user_id | 派生画像文本 |
 
+<a id="profile-evidence"></a>结构化画像条目的 `evidence` 包含 `kind`、`source_count` 和 `reinforcement_count`。`source_count` 是事实 provenance 中不同来源 Episode ID 的数量；手动添加且没有来源、或仅从身份消解补全的姓名，来源数为 0。`reinforcement_count` 是事实的 `access_count`，记录检索使用时的强化次数；手动设定和多来源事实同样返回该次数，身份消解补全的姓名为 0。`kind` 优先用 `user` 表示手动设定；非手动事实在来源不足两条且曾被检索强化时为 `reinforced`，其余为 `mentions`。三者分别表达状态、来源数和强化次数，读取画像不会增加强化次数。
+
 SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answer()` 返回已生成答案或最高事实的 object/text；拒答时返回固定提示。`top()` 返回首条 Fact 或 None。它不是对任何问题都调用外部模型的通用聊天接口。
 
 `as_of`、时间字段使用 epoch 秒。查询需要沿用正确的 user_id；携带 session_id 才能在相应上下文中包含该 session 的工作记忆。Python `graph_data()` 默认包含敏感事实支持的关系，与 HTTP 的安全视图默认值不同。
