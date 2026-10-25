@@ -306,8 +306,8 @@ export interface PolicyResponse {
 // --- L2 结构化画像（feature ③）---
 export interface Evidence {
   kind: 'user' | 'mentions' | 'reinforced'
-  count: number // 旧字段含义取决于 kind；界面来源计数使用 source_count。
-  source_count: number
+  source_count: number // 不同来源 Episode ID 的数量，与手动设定和访问强化状态无关。
+  reinforcement_count: number // 事实的 access_count；包括手动设定和多来源事实。
 }
 
 export interface ProfileBasic {

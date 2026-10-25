@@ -99,6 +99,8 @@ close 返回处理计数，例如 `pending_consolidated`、`facts_added`、`summ
 | `GET /v1/conflicts` | 待确认冲突，需要相应检测配置 |
 | `POST /v1/conflicts/{conflict_id}/resolve` | keep=newer、older 或 both |
 
+结构化画像的证据字段与 Python API 共用[证据契约](python-api.md#profile-evidence)。
+
 内容编辑使事实变为用户来源；只改敏感标记或分类保留原来源。槽位清理可能通过 JSON 结果表达拒绝，不能只检查 HTTP 状态。服务端权限不会被客户端筛选或隐私开关替代。
 
 ## 工作记忆、导入与导出

@@ -10,25 +10,26 @@ import { copy as t } from '../lib/copy'
 import type { Evidence, ProfileItem } from '../types'
 
 const ICON_COLOR = 'text-brand-cyan'
+const REINFORCEMENT_THRESHOLDS = [0, 2, 5, 10, Infinity]
 
-export function EvidenceChip({ e }: { e: Evidence }) {
-  if (e.source_count === 0 && e.kind !== 'reinforced') return null
+export function ProfileTag({ text, e, tone = 'neutral' }: {
+  text: string
+  e: Evidence
+  tone?: 'positive' | 'negative' | 'neutral'
+}) {
+  const manual = e.kind === 'user'
+  const level = REINFORCEMENT_THRESHOLDS.findIndex(limit => e.reinforcement_count <= limit)
+  const polarity = tone === 'positive' ? t.profile.like : tone === 'negative' ? t.profile.dislike : ''
+  const hint = [polarity, t.profile.evidenceHint(manual, e.reinforcement_count, e.source_count)].filter(Boolean).join(' · ')
 
   return (
-    <span className="inline-flex shrink-0 items-center gap-1.5">
+    <span className="profile-tag-group" role="group" tabIndex={0} title={hint} aria-label={`${text}，${hint}`}>
+      <span className="profile-tag" data-manual={manual} data-tone={tone} data-reinforcement-level={level}>
+        {text}
+      </span>
       {e.source_count > 0 && (
-        <span
-          className="text-sm font-normal tabular-nums text-ghost"
-          title={t.profile.evidenceTitle}
-          aria-label={`${t.profile.evidenceTitle}：${e.source_count}`}
-        >
+        <span className="shrink-0 text-sm font-normal tabular-nums text-ghost" aria-label={`${t.profile.evidenceTitle}：${e.source_count}`}>
           x{e.source_count}
-        </span>
-      )}
-
-      {e.kind === 'reinforced' && (
-        <span className="text-[10px] text-ghost" title={t.profile.evidenceReinforcedHint}>
-          {t.profile.evidenceReinforced}
         </span>
       )}
     </span>
@@ -36,21 +37,7 @@ export function EvidenceChip({ e }: { e: Evidence }) {
 }
 
 function PrefChip({ it }: { it: ProfileItem }) {
-  const dislike = it.polarity === 'dislike'
-  return (
-    <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
-      <span
-        title={dislike ? t.profile.iconHints.dislike : t.profile.iconHints.like}
-        className={cx(
-          'min-w-0 max-w-full break-all rounded-lg px-2.5 py-1 text-sm',
-          dislike ? 'bg-brand-rose/10 text-brand-rose' : 'bg-brand-mint/10 text-brand-mint',
-        )}
-      >
-        {it.item}
-      </span>
-      <EvidenceChip e={it.evidence} />
-    </span>
-  )
+  return <ProfileTag text={it.item} e={it.evidence} tone={it.polarity === 'dislike' ? 'negative' : 'positive'} />
 }
 
 export default function Profile() {
@@ -92,14 +79,13 @@ export default function Profile() {
       {/* 基本信息 */}
       {data.basic.length > 0 && (
         <Card>
-          <CardTitle hint={t.profile.basicHint}>{t.profile.basicTitle}</CardTitle>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-4">
+          <CardTitle>{t.profile.basicTitle}</CardTitle>
+          <div className="flex flex-wrap gap-x-6 gap-y-4">
             {data.basic.map((b) => (
-              <div key={b.field}>
+              <div key={b.field} className="min-w-0 max-w-full">
                 <div className="text-xs text-ghost">{b.label}</div>
                 <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-2">
-                  <span className="min-w-0 break-words text-sm text-slate-100">{b.value}</span>
-                  <EvidenceChip e={b.evidence} />
+                  <ProfileTag text={b.value} e={b.evidence} />
                 </div>
                 <HistoricalSlot factId={b.fact_id} facts={memories.data?.facts ?? []} />
               </div>
@@ -134,10 +120,7 @@ export default function Profile() {
           <ul className="flex flex-wrap gap-2">
             {data.habits.map((h) => (
               <li key={h.fact_id} className="inline-flex min-w-0 max-w-full items-center gap-1.5">
-                <span title={t.profile.iconHints.habit} className="min-w-0 max-w-full break-all rounded-lg bg-ghost/10 px-2.5 py-1 text-sm text-ghost">
-                  {h.text}
-                </span>
-                <EvidenceChip e={h.evidence} />
+                <ProfileTag text={h.text} e={h.evidence} />
               </li>
             ))}
           </ul>
@@ -166,10 +149,10 @@ export default function Profile() {
                 <span className={cx('inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium', it.polarity === 'like' ? 'text-brand-mint' : 'text-ghost line-through')}>
                   {it.polarity === 'like' ? t.profile.like : t.profile.dislike}
                 </span>
-                <span className="min-w-0 flex-1 break-all text-sm text-slate-100">
-                  {it.item} <span className="text-xs text-ghost">· {it.category}</span>
-                </span>
-                <EvidenceChip e={it.evidence} />
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                  <PrefChip it={it} />
+                  <span className="text-xs text-ghost">· {it.category}</span>
+                </div>
                 <button
                   onClick={() => confirm(it)}
                   title={t.profile.iconHints.confirm}
