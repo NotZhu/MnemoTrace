@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+from ..localize import display_of
 from ..types import Fact
 
 # predicate -> (规范字段键, 展示标签)。身份/基本信息槽位（单值）。
@@ -178,7 +179,7 @@ def build_structured_profile(facts: list[Fact], subject: str, user_id: str = "de
             continue
         # 3) 习惯/常规（轻量）
         if _is_habit(pred):
-            habits.append({"text": f.text, "evidence": _evidence(f), "fact_id": f.id})
+            habits.append({"text": display_of(f), "evidence": _evidence(f), "fact_id": f.id})
 
     # 用户姓名被消解进身份（本人称呼）而不是作为 fact 存储，所以在拿到它时
     # （且尚无 name fact 提供时）显式地放入 基本信息。
