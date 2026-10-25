@@ -696,6 +696,33 @@ def test_graph_endpoint_supports_query_live_only_and_limit(client):
     assert all(edge["live"] for edge in current_company["edges"])
 
 
+def test_graph_limit_and_completeness_follow_namespace_filters(client):
+    from mnemotrace.server import app as appmod
+
+    user = "synthetic_graph_limit"
+    mem = appmod.svc().get(user)
+    for i in range(121):
+        fact = mem.add_fact("synthetic_user", f"link_{i}", f"old_{i}", user_id=user)
+        mem.graph.invalidate_relations_for_fact(fact.id, fact.valid_at + 1)
+    current = mem.add_fact("synthetic_user", "uses", "current_target", user_id=user)
+    mem.add_fact("synthetic_user", "private_link", "private_target", user_id=user, sensitive=True)
+
+    broad = client.get("/v1/graph?limit=120", headers=hdr(user)).json()
+    assert len(broad["edges"]) == 120 and broad["has_more"] is True
+    for query in ["live_only=true", "q=current_target", "live_only=true&limit=1"]:
+        response = client.get(f"/v1/graph?{query}", headers=hdr(user))
+        assert response.status_code == 200
+        graph = response.json()
+        assert [edge["fact_id"] for edge in graph["edges"]] == [current.id]
+        assert graph["has_more"] is False
+        assert {node["name"] for node in graph["nodes"]} == {"synthetic_user", "current_target"}
+    private = client.get("/v1/graph?live_only=true&limit=1&include_sensitive=true", headers=hdr(user)).json()
+    assert private["has_more"] is True
+    assert client.get("/v1/graph?limit=1", headers=hdr("synthetic_other")).json() == {
+        "nodes": [], "edges": [], "has_more": False,
+    }
+
+
 def test_recall_endpoint_supports_as_of_for_search_and_lean_context(client):
     h = hdr("recall_asof")
     client.post("/v1/import", json={

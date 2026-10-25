@@ -186,13 +186,15 @@ export const copy = {
 
   graph: {
     loading: '构建关系图谱…',
+    updating: '正在更新图谱…',
+    truncated: (n: number) => `已展示 ${n} 条关系，还有更多，请缩小搜索范围。`,
     title: '关系图谱',
     legendLive: '当前关系',
     legendOld: '已失效',
     stats: (entities: number, relations: number) => `${entities} 个实体 · ${relations} 条关系`,
     emptyTitle: '暂无图谱数据',
     emptyHint: '添加事实或整理会话后，可在这里查看实体及其关系。',
-    noResultsTitle: '暂无匹配结果',
+    noResultsTitle: '当前筛选下暂无匹配关系',
     noResultsHint: '试试其他关键词，或调整筛选条件。',
     ariaLabel: '知识图谱',
     searchPlaceholder: '搜索实体或关系…',
@@ -223,7 +225,7 @@ export const copy = {
     resetView: '重置图谱',
     gestureHint: '滚轮缩放 · 拖动画布平移 · 拖动节点调整位置',
     keyboardHint: '键盘：加减键缩放，方向键平移，Home 适应画布，Tab 浏览实体，Enter 选择，Esc 取消选择。',
-    edgeCount: (n: number) => `${n} 条相关关系`,
+    edgeCount: (n: number) => `当前图中 ${n} 条相关关系`,
   },
 
   focus: {

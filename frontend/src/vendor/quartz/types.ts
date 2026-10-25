@@ -30,7 +30,7 @@ export interface QuartzGraphViewCache {
 }
 
 export interface QuartzGraphController {
-  setData(data: GraphData): void
+  setData(data: GraphData, options?: { preserveView: boolean }): void
   setLiveOnly(liveOnly: boolean): void
   setSelected(id: string | null): void
   setFocus(id: string | null): void

@@ -1,4 +1,4 @@
-import type { MemoryDump, MemoryListOptions, OutcomeKind } from '../src/types'
+import type { GraphResponse, MemoryDump, MemoryListOptions, OutcomeKind } from '../src/types'
 import type { MnemoTraceClient } from '../src/client'
 
 declare const client: MnemoTraceClient
@@ -13,3 +13,9 @@ response.then(dump => {
 // Unsupported outcome types are rejected before a request can be assembled.
 // @ts-expect-error invalid outcome type
 client.memories({ outcomeKind: 'unsupported' })
+
+const graph: Promise<GraphResponse> = client.graph()
+graph.then(result => {
+  const hasMore: boolean = result.has_more
+  return hasMore
+})

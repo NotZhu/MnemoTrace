@@ -10,6 +10,9 @@ import { useDebouncedSearch } from '../hooks/useDebouncedSearch'
 import { useSpacePreference } from '../store/preferences'
 import { copy as t } from '../lib/copy'
 import { visibleGraph } from '../lib/graphVisibility'
+import type { GraphData } from '../types'
+
+const emptyGraph: GraphData = { nodes: [], edges: [] }
 
 export default function GraphPage() {
   const [q, setQ] = useState('')
@@ -19,23 +22,27 @@ export default function GraphPage() {
   const [liveOnly, setLiveOnly] = useSpacePreference('graph', 'liveOnly')
   const [hideSensitive, setHideSensitive] = useSpacePreference('graph', 'hideSensitive')
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const { data, isLoading, isError, error } = useGraph({
+  const { data, isLoading, isFetching, isPlaceholderData, isError, error, refetch } = useGraph({
     q: searchQuery,
-    live_only: false,
+    live_only: liveOnly,
     include_sensitive: !hideSensitive,
     limit: 120,
-  })
+  }, { keepPreviousData: true })
 
   const visibleData = data ? visibleGraph(data, liveOnly) : undefined
   const hasGraph = (visibleData?.nodes.length ?? 0) > 0
-  const filteredEmpty = Boolean(searchQuery.trim() || hideSensitive || (liveOnly && data && data.nodes.length > 0))
+  const pending = isLoading || isFetching || isPlaceholderData
+  const settled = data && !pending && !isError
+  const filteredEmpty = Boolean(searchQuery.trim() || hideSensitive || liveOnly)
   const selected = visibleData?.nodes.find((n) => n.id === selectedId) ?? null
   const related = selected
     ? (visibleData?.edges ?? []).filter((e) => e.source === selected.id || e.target === selected.id)
     : []
   useEffect(() => {
-    if (data && selectedId && !selected) setSelectedId(null)
-  }, [data, selectedId, selected])
+    if (!data || isError || !selectedId || selected) return
+    // 截断旧图的局部空结果不能证明所选实体在新查询中不存在。
+    if (settled || (isPlaceholderData && liveOnly && data.has_more === false)) setSelectedId(null)
+  }, [data, selectedId, selected, isError, settled, isPlaceholderData, liveOnly])
 
   return (
     <div className="graph-page">
@@ -87,9 +94,10 @@ export default function GraphPage() {
 
       <div className="graph-layout">
         <div className="h-full min-h-0 min-w-0">
-          {isLoading ? <Spinner label={t.graph.loading} /> : isError ? <ErrorState message={(error as Error).message} /> : data ? <section className="graph-workspace">
+          <section className="graph-workspace" aria-busy={Boolean(pending)}>
             <div className="graph-status">
-              <h3>{t.graph.stats(visibleData?.nodes.length ?? 0, visibleData?.edges.length ?? 0)}</h3>
+              <h3>{pending ? t.graph.updating : isError ? t.graph.renderError : t.graph.stats(visibleData?.nodes.length ?? 0, visibleData?.edges.length ?? 0)}</h3>
+              {settled && data.has_more && <p className="mt-1 max-w-sm" role="status">{t.graph.truncated(visibleData?.edges.length ?? 0)}</p>}
               {hasGraph && <span className="mt-1.5 flex items-center gap-3 text-[10px] text-ghost">
                     <span className="inline-flex items-center gap-1.5">
                       <span className="h-px w-4 bg-ghost/65" /> {t.graph.legendLive}
@@ -100,12 +108,15 @@ export default function GraphPage() {
                   </span>}
             </div>
 
-            {data.nodes.length > 0 && <ForceGraph data={data} liveOnly={liveOnly} selectedId={selected?.id ?? null} onSelect={setSelectedId} />}
-            {!hasGraph && <div className="graph-empty-state" role="status">
+            <ForceGraph data={data ?? emptyGraph} dataScope={JSON.stringify([searchQuery, hideSensitive])}
+              liveOnly={liveOnly} selectedId={selected?.id ?? null} onSelect={setSelectedId} />
+            {pending && !hasGraph && <div className="pointer-events-none absolute inset-0 grid place-items-center"><Spinner label={t.graph.loading} /></div>}
+            {isError && <div className="absolute inset-x-4 top-16 z-20"><ErrorState message={(error as Error).message} onRetry={() => void refetch()} /></div>}
+            {settled && !hasGraph && !data.has_more && <div className="graph-empty-state" role="status">
               <EmptyState title={filteredEmpty ? t.graph.noResultsTitle : t.graph.emptyTitle}
                 hint={filteredEmpty ? t.graph.noResultsHint : t.graph.emptyHint} icon={<Share2 className="h-6 w-6" />} />
             </div>}
-          </section> : null}
+          </section>
         </div>
         <aside className="graph-inspector" aria-label={t.graph.entityInfo}>
           <div className="mb-4 flex min-h-8 shrink-0 items-center justify-between gap-2">

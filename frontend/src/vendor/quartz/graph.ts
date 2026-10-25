@@ -41,6 +41,7 @@ export async function createQuartzGraph(host: HTMLElement, data: GraphData, opti
   let selectedId = options.selectedId, hoveredId: string | null = null, focusId: string | null = null
   let disposed = false, dragging = false
   let mounted = false
+  let hasLayout = false
   let frame: number | null = null
   let transform = zoomIdentity
   const preference = window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -197,10 +198,10 @@ export async function createQuartzGraph(host: HTMLElement, data: GraphData, opti
     return label.text
   }
 
-  function saveView() {
+  function saveView(visiblePositions = false) {
     if (!mounted || !options.viewCache) return
     options.viewCache.set({ signature: graphViewSignature(currentData, settings),
-      nodes: entrancePositions ?? model.nodes.map(node => ({ id: node.id, x: node.x ?? 0, y: node.y ?? 0 })),
+      nodes: (!visiblePositions && entrancePositions) || model.nodes.map(node => ({ id: node.id, x: node.x ?? 0, y: node.y ?? 0 })),
       width: size.width, height: size.height, transform: { k: transform.k, x: transform.x, y: transform.y } })
   }
 
@@ -221,7 +222,12 @@ export async function createQuartzGraph(host: HTMLElement, data: GraphData, opti
     entrancePositions = null
   }
 
-  function mountModel(next: GraphData, preservePositions = true, restoreView = true, planEntrance = false) {
+  function mountModel(next: GraphData, {
+    preservePositions = true, restoreView = true, planEntrance = false, preserveView = false,
+  } = {}) {
+    preserveView = preserveView && hasLayout
+    const previousIds = new Set(preservePositions ? model.nodes.map(node => node.id) : [])
+    const saved = restoreView ? options.viewCache?.get(graphViewSignature(next, settings)) : undefined
     mounted = false
     playback = null
     simulation.stop()
@@ -232,10 +238,23 @@ export async function createQuartzGraph(host: HTMLElement, data: GraphData, opti
     }
     nodeRenderData.length = 0; linkRenderData.length = 0
     model = createQuartzModel(next, preservePositions ? model.nodes : [])
+    hasLayout = preserveView ? hasLayout : model.nodes.length > 0
+    // 已显示节点优先使用当前位置；重新出现的节点复用该结果的有界视图缓存。
+    const restoredIds = new Set<string>()
+    if (preserveView && saved) {
+      const positions = new Map(saved.nodes.map(node => [node.id, node]))
+      for (const node of model.nodes) {
+        const position = positions.get(node.id)
+        if (!previousIds.has(node.id) && position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
+          node.x = position.x; node.y = position.y
+          restoredIds.add(node.id)
+        }
+      }
+    }
     visibleNodeIds = new Set(visibleGraph(next, liveOnly).nodes.map(node => node.id))
     simulation.nodes(model.nodes)
     configureQuartzForces(simulation, model, settings)
-    hoveredId = null; focusId = null
+    hoveredId = null; focusId = null; canvas.title = ''
     for (const node of model.nodes) {
       const gfx = new Graphics({ eventMode: 'static', label: node.id, cursor: 'pointer', hitArea: new Circle(0, 0, 12) })
       const label = makeLabel(node.name, 12)
@@ -250,7 +269,21 @@ export async function createQuartzGraph(host: HTMLElement, data: GraphData, opti
       linkContainer.addChild(gfx); labelsContainer.addChild(label)
       linkRenderData.push({ link, gfx, label, alpha: 1 })
     }
-    const saved = restoreView ? options.viewCache?.get(graphViewSignature(next, settings)) : undefined
+    if (preserveView) {
+      const known = model.nodes.filter(node => previousIds.has(node.id) || restoredIds.has(node.id))
+      if (known.length < model.nodes.length) {
+        // 仅为新节点求位置；临时固定已有节点，避免过滤导致整图跳动。
+        for (const node of known) { node.fx = node.x; node.fy = node.y }
+        const ticks = Math.ceil(Math.log(simulation.alphaMin()) / Math.log(1 - simulation.alphaDecay()))
+        simulation.alphaTarget(0).alpha(1).tick(ticks)
+        for (const node of known) { delete node.fx; delete node.fy }
+      }
+      for (const node of model.nodes) { node.vx = 0; node.vy = 0 }
+      simulation.alphaTarget(0).alpha(0).stop()
+      mounted = true
+      updateAppearance()
+      return
+    }
     if (saved && saved.signature === graphViewSignature(next, settings) && saved.nodes.length === model.nodes.length && saved.width > 0 && saved.height > 0 &&
       [saved.width, saved.height, saved.transform.k, saved.transform.x, saved.transform.y].every(Number.isFinite) && saved.transform.k >= 0.2 && saved.transform.k <= 4) {
       const positions = new Map(saved.nodes.map(node => [node.id, node]))
@@ -401,9 +434,10 @@ export async function createQuartzGraph(host: HTMLElement, data: GraphData, opti
   try { mountModel(data) } catch (error) { destroy(); throw error }
 
   return {
-    setData(next) {
+    setData(next, update) {
       if (graphViewSignature(next, settings) === graphViewSignature(currentData, settings)) { currentData = next; return }
-      saveView(); currentData = next; mountModel(next)
+      saveView(update?.preserveView); currentData = next
+      mountModel(next, { preserveView: update?.preserveView ?? false })
     },
     setLiveOnly(next) {
       if (next === liveOnly) return
@@ -437,11 +471,11 @@ export async function createQuartzGraph(host: HTMLElement, data: GraphData, opti
     },
     zoomBy(factor) { surface.call(zoomBehavior.scaleBy, factor, [size.width / 2, size.height / 2]) },
     panBy(x, y) { surface.call(zoomBehavior.translateBy, x / transform.k, y / transform.k) },
-    fit() { mountModel(currentData, false, false, true) },
+    fit() { mountModel(currentData, { preservePositions: false, restoreView: false, planEntrance: true }) },
     reset() {
       settings = { ...DEFAULT_QUARTZ_SETTINGS }
       selectedId = null
-      mountModel(currentData, false, false, true)
+      mountModel(currentData, { preservePositions: false, restoreView: false, planEntrance: true })
     },
     destroy,
   }

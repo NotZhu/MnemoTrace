@@ -8,8 +8,9 @@ import type { QuartzGraphController, QuartzGraphSettings } from '../vendor/quart
 import { graphViewCache } from '../vendor/quartz/view'
 import { visibleGraph } from '../lib/graphVisibility'
 
-export function ForceGraph({ data, liveOnly = false, selectedId = null, onSelect }: {
+export function ForceGraph({ data, dataScope = '', liveOnly = false, selectedId = null, onSelect }: {
   data: GraphData
+  dataScope?: string
   liveOnly?: boolean
   selectedId?: string | null
   onSelect?: (id: string | null) => void
@@ -24,8 +25,9 @@ export function ForceGraph({ data, liveOnly = false, selectedId = null, onSelect
   const [attempt, setAttempt] = useState(0)
   const visibleData = visibleGraph(data, liveOnly)
   const hasVisibleNodes = visibleData.nodes.length > 0
-  const current = useRef({ data, liveOnly, selectedId, onSelect, settings })
-  current.current = { data, liveOnly, selectedId, onSelect, settings }
+  const appliedScope = useRef(dataScope)
+  const current = useRef({ data, dataScope, liveOnly, selectedId, onSelect, settings })
+  current.current = { data, dataScope, liveOnly, selectedId, onSelect, settings }
   const helpId = useId(), settingsId = useId()
 
   useEffect(() => {
@@ -46,7 +48,11 @@ export function ForceGraph({ data, liveOnly = false, selectedId = null, onSelect
       if (abort.signal.aborted) { instance.destroy(); return }
       controller.current = instance
       instance.resize(container.clientWidth, container.clientHeight)
-      if (initial.data !== current.current.data) instance.setData(current.current.data)
+      appliedScope.current = initial.dataScope
+      if (initial.data !== current.current.data || initial.dataScope !== current.current.dataScope) {
+        instance.setData(current.current.data, { preserveView: initial.dataScope === current.current.dataScope })
+        appliedScope.current = current.current.dataScope
+      }
       instance.setLiveOnly(current.current.liveOnly)
       instance.setSelected(current.current.selectedId)
       instance.configure(current.current.settings)
@@ -64,7 +70,11 @@ export function ForceGraph({ data, liveOnly = false, selectedId = null, onSelect
     return () => { abort.abort(); observer.disconnect(); instance?.destroy(); controller.current = null; flushPreferences() }
   }, [attempt, viewScope])
 
-  useEffect(() => { controller.current?.setData(data) }, [data])
+  useEffect(() => {
+    if (!controller.current) return
+    controller.current.setData(data, { preserveView: appliedScope.current === dataScope })
+    appliedScope.current = dataScope
+  }, [data, dataScope])
   useEffect(() => { controller.current?.setLiveOnly(liveOnly) }, [liveOnly])
   useEffect(() => { controller.current?.setSelected(selectedId) }, [selectedId])
   useEffect(() => { controller.current?.configure(settings) }, [settings])

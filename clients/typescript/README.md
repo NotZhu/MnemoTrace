@@ -69,7 +69,7 @@ All operations below return promises. Option names are camelCase except where an
 | `deleteFact(id)` | deletion result; inspect ok |
 | `getFocus()` / `setFocus(partial)` | track/mute lists |
 | `getPolicy()` / `setPolicy(partial)` | extraction, summary and persona overrides |
-| `graph(options?)` | asOf, includeSensitive=false; GraphData |
+| `graph(options?)` | asOf, includeSensitive=false; GraphResponse（nodes、edges、has_more） |
 | `import(params)` | ImportParams sent as the HTTP import payload; ImportResult |
 | `export(options?)` | includeSensitive=false; MemoryExport by default |
 | `forget({ confirm: true })` | irreversible namespace erase; missing confirmation fails before sending |

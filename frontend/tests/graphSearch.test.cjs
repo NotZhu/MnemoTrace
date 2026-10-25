@@ -55,7 +55,7 @@ function setup() {
       if (name === '../store/preferences') return {useSpacePreference(_page,field) {
         return hookReact.useState(field === 'liveOnly')
       }}
-      if (name === '../hooks/queries') return {useGraph(params) {queries.push(params); return result}}
+      if (name === '../hooks/queries') return {useGraph(params) {queries.push(params); return typeof result === 'function' ? result(params) : result}}
       if (name === '../components/ui') return Object.fromEntries(
         ['Card', 'CardTitle', 'EmptyState', 'ErrorState', 'PageHeader', 'Spinner'].map(key => [key, () => null]),
       )
@@ -208,13 +208,13 @@ test('筛选移除实体或图谱为空时清空详情，加载和失败仍保�
   }
 })
 
-test('仅当前使用同一完整数据，只切换可见统计与详情，过滤后不恢复隐藏选择', () => {
+test('仅当前同步查询条件、可见统计与详情，过滤后不恢复隐藏选择', () => {
   const s = setup()
   const data = {nodes:[...syntheticGraph.nodes,{id:'old',name:'合成历史实体',type:'entity'}],
     edges:[...syntheticGraph.edges,{source:'synthetic-project',target:'old',predicate:'used_to',live:false}]}
   s.setResult({data,isLoading:false,isError:false})
   assert.equal(s.graph().props.data,data,'布局始终接收完整关系')
-  assert.equal(s.queries.at(-1).live_only,false,'请求全部关系，开关不改变查询参数')
+  assert.equal(s.queries.at(-1).live_only,true,'服务端在限量前筛选当前关系')
   assert.equal(s.graph().props.liveOnly,true)
   assert.ok(findNode(s.render(),n=>n.type==='h3' && n.props.children==='2 个实体 · 1 条关系'))
   s.graph().props.onSelect('synthetic-project')
@@ -229,8 +229,51 @@ test('仅当前使用同一完整数据，只切换可见统计与详情，过�
   assert.equal(s.graph().props.selectedId,null)
   s.toggleCurrent()
   assert.equal(s.graph().props.selectedId,null,'已隐藏的选择不应再次出现')
-  assert.ok(s.queries.every(q=>q.live_only===false))
+  assert.equal(s.queries.at(-1).live_only,false)
   function countRows(tree) {const list=findNode(tree,n=>n.type==='ul');return [].concat(list?.props.children??[]).length}
+})
+
+test('120 条历史不能让命名空间中的当前关系显示为空', () => {
+  const s = setup()
+  const history = Array.from({length:121}, (_,i) => ({source:'old-source',target:'old-target',predicate:`old ${i}`,live:false}))
+  s.setResult(params => {
+    const edges = [...history, ...syntheticGraph.edges].filter(edge => !params.live_only || edge.live)
+    return {data:{nodes:[...syntheticGraph.nodes,{id:'old-source'},{id:'old-target'}],edges:edges.slice(0,params.limit),has_more:edges.length>params.limit},isLoading:false,isError:false}
+  })
+  const tree = s.render()
+  assert.equal(s.graph().props.data.edges[0].fact_id,'synthetic-fact')
+  assert.equal(findNode(tree,n=>n.props?.className==='graph-empty-state'),undefined)
+})
+
+test('截断提示仅描述当前成功结果，过渡和错误不显示确定性空态', () => {
+  const s = setup()
+  s.setResult({data:{...syntheticGraph,has_more:true},isLoading:false,isError:false})
+  assert.ok(findNode(s.render(),n=>n.props?.children==='已展示 1 条关系，还有更多，请缩小搜索范围。'))
+  for (const result of [
+    {data:{nodes:[],edges:[],has_more:true},isPlaceholderData:true,isFetching:true},
+    {isLoading:true},
+    {isError:true,error:new Error('synthetic failure')},
+  ]) {
+    s.setResult(result)
+    assert.ok(s.graph(),'请求期间保留画布')
+    const tree=s.render()
+    assert.equal(findNode(tree,n=>n.props?.className==='graph-empty-state'),undefined)
+    assert.equal(findNode(tree,n=>n.props?.children==='已展示 1 条关系，还有更多，请缩小搜索范围。'),undefined)
+  }
+})
+
+test('截断旧图的过渡空结果不清除最终当前图中仍存在的选择',()=>{
+  const s=setup()
+  s.toggleCurrent()
+  const broad={nodes:[syntheticGraph.nodes[0],{id:'old',name:'合成历史目标',type:'entity'}],
+    edges:[{source:'synthetic-project',target:'old',predicate:'used',live:false}],has_more:true}
+  s.setResult({data:broad,isLoading:false,isError:false})
+  s.graph().props.onSelect('synthetic-project')
+  s.setResult({data:broad,isPlaceholderData:true,isFetching:true})
+  s.toggleCurrent()
+  s.render()
+  s.setResult({data:{...syntheticGraph,has_more:false},isLoading:false,isError:false})
+  assert.equal(s.graph().props.selectedId,'synthetic-project')
 })
 
 test('仅有历史关系时显示空态但保留完整画布，开关恢复内容', () => {

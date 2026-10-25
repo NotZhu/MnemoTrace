@@ -101,6 +101,8 @@ close 返回处理计数，例如 `pending_consolidated`、`facts_added`、`summ
 
 结构化画像的证据字段与 Python API 共用[证据契约](python-api.md#profile-evidence)。
 
+`GET /v1/graph` 返回 `{nodes, edges, has_more}`，筛选顺序与完整性含义遵循 [Python 图谱契约](python-api.md)。`limit` 按筛选后的关系数计，显式正数上限最多为 500；省略时不限量。`has_more=true` 表示该查询结果被截断，不代表查询失败，也不包含全局总数。
+
 内容编辑使事实变为用户来源；只改敏感标记或分类保留原来源。槽位清理可能通过 JSON 结果表达拒绝，不能只检查 HTTP 状态。服务端权限不会被客户端筛选或隐私开关替代。
 
 ## 工作记忆、导入与导出

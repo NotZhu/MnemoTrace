@@ -215,3 +215,17 @@ test('仅当前切换复用同一控制器，异步初始化期间变化使用�
   assert.equal(h.calls.filter(c=>c.name==='setData').length,dataCalls,'开关不传入另一份布局数据')
   h.unmount()
 })
+
+test('数据请求和空结果复用画布，同一范围保留视图，新搜索重置适配',async()=>{
+  const h=wrapperHarness(), data={nodes:[node('a'),node('b')],edges:[edge('a','b',true)]}
+  h.render({data,dataScope:'search-a'});await h.flush()
+  h.resolve();await h.flush()
+  const subset={nodes:[node('a')],edges:[]}
+  h.render({data:subset,dataScope:'search-a'});await h.flush()
+  assert.equal(h.calls.filter(c=>c.name==='setData').at(-1).args[1].preserveView,true)
+  h.render({data:{nodes:[],edges:[]},dataScope:'search-b'});await h.flush()
+  assert.equal(h.calls.filter(c=>c.name==='setData').at(-1).args[1].preserveView,false)
+  assert.equal(h.created(),1)
+  h.unmount()
+  assert.equal(h.calls.filter(c=>c.name==='destroy').length,1)
+})
