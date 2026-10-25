@@ -40,7 +40,7 @@
   "homepage": "https://github.com/NotZhu/MnemoTrace/tree/main/clients/typescript",
   "bugs": { "url": "https://github.com/NotZhu/MnemoTrace/issues" },
   "devDependencies": {
-    "tsup": "^8.0.0",
+    "tsup": "^9.0.0",
     "typescript": "^5.4.0"
   }
 }
