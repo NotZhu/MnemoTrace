@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import uuid
@@ -16,10 +15,10 @@ from typing import Any, Iterable
 from .. import __version__, _flock
 from ..types import Conflict, Entity, Episode, Fact, Relation, WorkingMemory
 from ..util import now
+from ._validation import (
+    COLLECTIONS, SCHEMA_VERSION, UnsupportedVersion, validate_manifest, validate_record, validate_state,
+)
 from .memory_store import InMemoryDocStore, InMemoryGraphStore
-
-SCHEMA_VERSION = 1
-COLLECTIONS = ("episodes", "facts", "entities", "relations", "working", "conflicts")
 
 
 class PersistenceError(Exception):
@@ -93,12 +92,20 @@ def _read_manifest(path: str) -> tuple[dict[str, Any], str] | None:
             raw = fh.read()
     except FileNotFoundError:
         return None
-    manifest = json.loads(raw)
-    snapshot_id = manifest.get("snapshot_id")
-    if snapshot_id is not None and (not isinstance(snapshot_id, str) or not snapshot_id):
-        raise StoreFormatError("manifest snapshot_id must be a non-empty string")
-    token = f"snapshot:{snapshot_id}" if snapshot_id else f"legacy:{hashlib.sha256(raw).hexdigest()}"
-    return manifest, token
+    try:
+        manifest = _validated_manifest(json.loads(raw.decode("utf-8")))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise StoreFormatError("manifest: malformed JSON or encoding") from exc
+    return manifest, f"snapshot:{manifest['snapshot_id']}"
+
+
+def _validated_manifest(manifest: Any) -> dict:
+    try:
+        return validate_manifest(manifest)
+    except UnsupportedVersion as exc:
+        raise IncompatibleStoreError(str(exc)) from exc
+    except ValueError as exc:
+        raise StoreFormatError(str(exc)) from exc
 
 
 def snapshot_version(path: str) -> str | None:
@@ -112,18 +119,23 @@ def _embedder_id(embedder: Any) -> str:
     return str(name or embedder.__class__.__name__)
 
 
-def _embedder_dim(embedder: Any) -> int | None:
+def _embedder_dim(embedder: Any) -> int:
     dim = getattr(embedder, "dim", None)
-    return int(dim) if dim is not None else None
+    if isinstance(dim, bool) or not isinstance(dim, int) or dim <= 0:
+        raise StoreFormatError("embedder.embedding_dim: must be a positive integer")
+    return dim
 
 
 def _record(obj: Any) -> dict[str, Any]:
     return {f.name: getattr(obj, f.name) for f in fields(obj)}
 
 
-def _from_record(cls: type, record: dict[str, Any]):
-    allowed = {f.name for f in fields(cls)}
-    return cls(**{k: v for k, v in record.items() if k in allowed})
+def _from_record(cls: type, record: Any, location: str | None = None):
+    try:
+        values = validate_record(cls.__name__, record, location or cls.__name__)
+    except ValueError as exc:
+        raise StoreFormatError(str(exc)) from exc
+    return cls(**values)
 
 
 def _json_dump(obj: Any, fh) -> None:
@@ -164,13 +176,14 @@ def _read_jsonl(path: str, name: str, limit: int | None = None) -> list[dict[str
             raise StoreFormatError(f"{name}.jsonl is missing {limit} committed record(s)")
         return []
     out: list[dict[str, Any]] = []
-    with open(file_path, "r", encoding="utf-8") as fh:
+    # Decode only committed lines; even invalid UTF-8 in an uncommitted tail is irrelevant.
+    with open(file_path, "rb") as fh:
         for line_no, line in enumerate(fh, start=1):
             if limit is not None and len(out) >= limit:
                 break
             try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError as exc:
+                out.append(json.loads(line.decode("utf-8")))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                 raise StoreFormatError(
                     f"{name}.jsonl has malformed JSON inside the committed prefix at line {line_no}"
                 ) from exc
@@ -181,28 +194,28 @@ def _read_jsonl(path: str, name: str, limit: int | None = None) -> list[dict[str
     return out
 
 
-def _manifest_count(counts: dict[str, Any], name: str) -> int:
-    try:
-        count = int(counts[name])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise StoreFormatError(f"manifest missing valid count for {name}") from exc
-    if count < 0:
-        raise StoreFormatError(f"manifest count for {name} must be non-negative")
-    return count
-
-
 def _memory_state(mem: Any) -> dict[str, Any]:
-    return {
-        "persona_cache": dict(getattr(mem, "_persona_cache", {})),
-        "focus": getattr(mem, "focus", {"track": [], "mute": []}),
-        "policy": getattr(mem, "policy", {}),
-        "identity": dict(getattr(mem, "_identity", {})),
-        "aliases": {k: sorted(v) for k, v in getattr(mem, "_aliases", {}).items()},
-        "cold_pages_out": dict(getattr(mem, "cold_pages_out", {})),
-        "cold_pages_in": dict(getattr(mem, "cold_pages_in", {})),
-        # 幂等导入的指纹（仅内容哈希，不含记忆内容本身），保证重启后重复导入仍能去重
-        "import_seen": sorted(getattr(mem, "_import_seen", ())),
-    }
+    for key, attribute in (("focus", "focus"), ("policy", "policy"), ("identity", "_identity"),
+                           ("aliases", "_aliases"), ("import_seen", "_import_seen")):
+        if not hasattr(mem, attribute):
+            raise StoreFormatError(f"manifest.state.{key}: missing required runtime attribute")
+    try:
+        if not isinstance(mem._import_seen, set) or any(not isinstance(v, str) for v in mem._import_seen):
+            raise StoreFormatError("manifest.state.import_seen: must be a set of strings in memory")
+        if not isinstance(mem._aliases, dict) or any(
+            not isinstance(v, set) or any(not isinstance(name, str) for name in v)
+            for v in mem._aliases.values()
+        ):
+            raise StoreFormatError("manifest.state.aliases: must map strings to sets of strings in memory")
+        return validate_state({
+            "persona_cache": getattr(mem, "_persona_cache", {}), "focus": mem.focus, "policy": mem.policy,
+            "identity": mem._identity, "aliases": {k: sorted(v) for k, v in mem._aliases.items()},
+            "cold_pages_out": getattr(mem, "cold_pages_out", {}),
+            "cold_pages_in": getattr(mem, "cold_pages_in", {}),
+            "import_seen": sorted(mem._import_seen),
+        })
+    except ValueError as exc:
+        raise StoreFormatError(str(exc)) from exc
 
 
 def save_memory(mem: Any, path: str, backend: str = "durable") -> None:
@@ -211,58 +224,53 @@ def save_memory(mem: Any, path: str, backend: str = "durable") -> None:
         raise StoreFormatError(f"store path exists and is not a directory: {path}")
 
     with _lock(path):
-        episodes = sorted(mem.episodes_doc.values(), key=lambda e: e.id)
-        hot_ids = {f.id for f in mem.fact_store.values()}
+        previous = _read_manifest(path)
+        episodes = mem.episodes_doc.values()
         facts = []
-        for fact in sorted(mem.fact_store.values(), key=lambda f: f.id):
+        for fact in mem.fact_store.values():
             row = _record(fact)
             row["_store"] = "hot"
             facts.append(row)
-        for fact in sorted(mem.cold_store.values(), key=lambda f: f.id):
-            if fact.id in hot_ids:
-                continue
+        for fact in mem.cold_store.values():
             row = _record(fact)
             row["_store"] = "cold"
             facts.append(row)
-        counts = {
-            "episodes": _write_jsonl(path, "episodes", (_record(e) for e in episodes)),
-            "facts": _write_jsonl(path, "facts", facts),
-            "entities": _write_jsonl(
-                path, "entities", (_record(e) for e in sorted(mem.graph.entities.values(), key=lambda e: e.id))
-            ),
-            "relations": _write_jsonl(
-                path, "relations", (_record(r) for r in sorted(mem.graph.relations(), key=lambda r: r.id))
-            ),
-            "working": _write_jsonl(
-                path, "working", (_record(w) for w in sorted(mem.working_mem.values(), key=lambda w: w.id))
-            ),
-            "conflicts": _write_jsonl(
-                path, "conflicts", (_record(c) for c in sorted(mem.conflicts.values(), key=lambda c: c.id))
-            ),
+        collections = {
+            "episodes": [_record(e) for e in episodes], "facts": facts,
+            "entities": [_record(e) for e in mem.graph.entities.values()],
+            "relations": [_record(r) for r in mem.graph.relations()],
+            "working": [_record(w) for w in mem.working_mem.values()],
+            "conflicts": [_record(c) for c in mem.conflicts.values()],
         }
-        for name in COLLECTIONS:
-            counts.setdefault(name, 0)
-
-        created_at = now()
+        kinds = (Episode, Fact, Entity, Relation, WorkingMemory, Conflict)
+        dimension = _embedder_dim(mem.embedder)
+        try:
+            for (name, rows), cls in zip(collections.items(), kinds):
+                for i, row in enumerate(rows, 1):
+                    validate_record(cls.__name__, row, f"{name}.jsonl:{i}",
+                                    jsonl_fact=name == "facts", embedding_dim=dimension)
+        except ValueError as exc:
+            raise StoreFormatError(str(exc)) from exc
+        hot_ids = {row["id"] for row in facts if row["_store"] == "hot"}
+        collections["facts"] = [row for row in facts if row["_store"] == "hot" or row["id"] not in hot_ids]
+        for rows in collections.values():
+            rows.sort(key=lambda row: row["id"])
         manifest_path = os.path.join(path, "manifest.json")
-        if os.path.exists(manifest_path):
-            try:
-                with open(manifest_path, "r", encoding="utf-8") as fh:
-                    created_at = float(json.load(fh).get("created_at", created_at))
-            except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                pass
-        manifest = {
+        manifest = _validated_manifest({
             "schema_version": SCHEMA_VERSION,
             "snapshot_id": uuid.uuid4().hex,
             "mnemotrace_version": __version__,
             "embedder_id": _embedder_id(mem.embedder),
-            "embedding_dim": _embedder_dim(mem.embedder),
+            "embedding_dim": dimension,
             "backend": backend,
-            "created_at": created_at,
+            "created_at": previous[0]["created_at"] if previous else now(),
             "updated_at": now(),
-            "counts": counts,
+            "counts": {name: len(rows) for name, rows in collections.items()},
             "state": _memory_state(mem),
-        }
+        })
+        # All record/state validation must finish before the first collection is replaced.
+        for name, rows in collections.items():
+            _write_jsonl(path, name, rows)
         tmp = os.path.join(path, "manifest.json.tmp")
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(manifest, fh, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -290,111 +298,80 @@ def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
         mem._snapshot_version = None
         return False
     manifest, version = loaded
-    schema = int(manifest.get("schema_version", 0))
-    if schema > SCHEMA_VERSION:
-        raise IncompatibleStoreError(
-            f"store schema_version={schema} is newer than supported schema_version={SCHEMA_VERSION}"
-        )
-    stored_dim = manifest.get("embedding_dim")
+    stored_dim = manifest["embedding_dim"]
     current_dim = _embedder_dim(mem.embedder)
-    if not allow_mismatch and stored_dim is not None and current_dim is not None \
-            and int(stored_dim) != int(current_dim):
+    if not allow_mismatch and stored_dim != current_dim:
         raise DimensionMismatchError(
             f"store embedding_dim={stored_dim} does not match current embedder dim={current_dim}; "
             "re-attach the original embedder, or migrate with Memory.open(path, allow_mismatch=True, ...)"
             ".reembed() (service: MNEMOTRACE_REEMBED_ON_MISMATCH=1)"
         )
-    stored_embedder = manifest.get("embedder_id")
+    stored_embedder = manifest["embedder_id"]
     current_embedder = _embedder_id(mem.embedder)
-    if not allow_mismatch and stored_embedder is not None and str(stored_embedder) != current_embedder:
+    if not allow_mismatch and stored_embedder != current_embedder:
         raise EmbedderMismatchError(
             f"store embedder_id={stored_embedder!r} does not match current embedder_id={current_embedder!r}; "
             "re-attach the original embedder, or migrate with Memory.open(path, allow_mismatch=True, ...)"
             ".reembed() (service: MNEMOTRACE_REEMBED_ON_MISMATCH=1)"
         )
 
-    state = manifest.get("state") or {}
-    if "resolver_parent" in state:
-        mapping = state["resolver_parent"]
-        if not isinstance(mapping, dict) or any(
-            not isinstance(key, str) or not isinstance(value, str)
-            for key, value in mapping.items()
-        ):
-            raise StoreFormatError("snapshot contains malformed retired identity state")
-        # 旧的自身映射没有归属语义；真实关联不能静默丢弃，否则记忆的可见范围会变化。
-        # 必须在清空任何向量 store 之前拒绝，LanceDB 的修改会直接影响持久数据。
-        if any(key != value for key, value in mapping.items()):
-            raise StoreFormatError("snapshot contains retired identity links; automatic conversion is not supported")
+    state = manifest["state"]
+    aliases = {k: set(v) for k, v in state["aliases"].items()}
+    import_seen = set(state["import_seen"])
+    prepared = {}
+    kinds = (Episode, Fact, Entity, Relation, WorkingMemory, Conflict)
+    for name, cls in zip(COLLECTIONS, kinds):
+        prepared[name] = []
+        for i, row in enumerate(_read_jsonl(path, name, manifest["counts"][name]), 1):
+            location = f"{name}.jsonl:{i}"
+            try:
+                values = validate_record(cls.__name__, row, location, jsonl_fact=name == "facts",
+                                         embedding_dim=stored_dim)
+            except ValueError as exc:
+                raise StoreFormatError(str(exc)) from exc
+            tier = values.pop("_store", None)
+            obj = cls(**values)
+            prepared[name].append((tier, obj) if name == "facts" else obj)
 
-    counts = manifest.get("counts") or {}
-    expected_counts = {name: _manifest_count(counts, name) for name in COLLECTIONS}
-
-    episodes = [_from_record(Episode, row) for row in _read_jsonl(path, "episodes", expected_counts["episodes"])]
-    facts = [
-        (row.get("_store", "hot"), _from_record(Fact, row))
-        for row in _read_jsonl(path, "facts", expected_counts["facts"])
-    ]
-    entities = [_from_record(Entity, row) for row in _read_jsonl(path, "entities", expected_counts["entities"])]
-    relations = [
-        _from_record(Relation, row)
-        for row in _read_jsonl(path, "relations", expected_counts["relations"])
-    ]
-    working_items = [
-        _from_record(WorkingMemory, row)
-        for row in _read_jsonl(path, "working", expected_counts["working"])
-    ]
-    conflict_items = [
-        _from_record(Conflict, row)
-        for row in _read_jsonl(path, "conflicts", expected_counts["conflicts"])
-    ]
-
-    def clear_vector(store):
-        for payload in list(store.values()):
-            key = getattr(payload, "id", None)
-            if key is not None:
-                store.delete(key)
-
+    # Decoding existing persistent payloads can itself fail. Inspect every index before
+    # deleting anything, so a corrupt later index cannot leave earlier ones emptied.
+    clear_plan = [(store, [payload.id for payload in store.values() if hasattr(payload, "id")])
+                  for store in (mem.episodes_vec, mem.fact_store, mem.cold_store, mem.summary_vec)]
     mem.episodes_doc = InMemoryDocStore()
-    clear_vector(mem.episodes_vec)
-    clear_vector(mem.fact_store)
-    clear_vector(mem.cold_store)
-    clear_vector(mem.summary_vec)
+    for store, keys in clear_plan:
+        for key in keys:
+            store.delete(key)
     mem.graph = InMemoryGraphStore()
 
-    for ep in episodes:
+    for ep in prepared["episodes"]:
         mem.episodes_doc.put(ep.id, ep)
         mem.episodes_vec.upsert(ep.id, ep.embedding or [], ep)
         if ep.summary_embedding is not None:
             mem.summary_vec.upsert(ep.id, ep.summary_embedding, ep)
 
-    for tier, fact in facts:
+    for tier, fact in prepared["facts"]:
         target = mem.cold_store if tier == "cold" else mem.fact_store
         target.upsert(fact.id, fact.embedding or [], fact)
 
-    for entity in entities:
+    for entity in prepared["entities"]:
         mem.graph.upsert_entity(entity)
-    for relation in relations:
+    for relation in prepared["relations"]:
         mem.graph.add_relation(relation)
 
     mem.working_mem = {}
-    for item in working_items:
+    for item in prepared["working"]:
         mem.working_mem[item.id] = item
     mem.conflicts = {}
-    for item in conflict_items:
+    for item in prepared["conflicts"]:
         mem.conflicts[item.id] = item
 
-    mem._persona_cache = state.get("persona_cache") or {}
-    mem.focus = state.get("focus") or {"track": [], "mute": []}
-    mem.policy = state.get("policy") or {
-        "extract_instruction": "",
-        "extract_system": "",
-        "summary_system": "",
-        "persona_system": "",
-    }
-    mem._identity = state.get("identity") or {}
-    mem._aliases = {k: set(v) for k, v in (state.get("aliases") or {}).items()}
-    mem.cold_pages_out = {k: int(v) for k, v in (state.get("cold_pages_out") or {}).items()}
-    mem.cold_pages_in = {k: int(v) for k, v in (state.get("cold_pages_in") or {}).items()}
-    mem._import_seen = set(state.get("import_seen") or ())
+    mem._persona_cache = state["persona_cache"]
+    mem.focus = state["focus"]
+    mem.policy = state["policy"]
+    mem._identity = state["identity"]
+    mem._aliases = aliases
+    mem.cold_pages_out = state["cold_pages_out"]
+    mem.cold_pages_in = state["cold_pages_in"]
+    mem._import_seen = import_seen
     mem._snapshot_version = version
     return True

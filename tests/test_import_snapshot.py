@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from dataclasses import asdict
 
 import pytest
 
@@ -99,28 +100,22 @@ class TestSnifferAndMemoryLevel:
         src = _mk_memory()
         src.add("I love hiking in the Alps.", user_id="u1")
         src.consolidate()
-        # 按 service.export 的方式手工构造快照行（subject/predicate/object + 各时间戳）
-        facts = [{
-            "id": f.id, "subject": f.subject, "predicate": f.predicate, "object": f.object,
-            "text": f.text, "source": f.source, "valid_at": f.valid_at, "invalid_at": f.invalid_at,
-            "created_at": f.created_at, "supersedes": f.supersedes, "provenance": f.provenance,
-            "salience": f.salience, "confidence": f.confidence,
-        } for f in src._all_facts()]
+        facts = [asdict(f) for f in src._all_facts()]
         dst = _mk_memory()
         stats = dst.import_snapshot({"mnemotrace_export_version": 1, "facts": facts, "episodes": []},
                                     user_id="u2")
         assert stats["facts_restored"] == len(facts) > 0
         assert stats["malformed"] == 0
 
-    def test_malformed_rows_are_counted_not_fatal(self):
+    def test_malformed_rows_reject_the_entire_snapshot(self):
         dst = _mk_memory()
-        stats = dst.import_snapshot({
-            "mnemotrace_export_version": 1,
-            "facts": [{"subject": "a"}, "not-a-dict", {"subject": "a", "predicate": "p", "object": "o"}],
-            "episodes": [{"no_content": True}, "junk"],
-        })
-        assert stats["facts_restored"] == 1 and stats["malformed"] == 2
-        assert stats["episodes_restored"] == 0
+        with pytest.raises(ValueError, match="snapshot.facts"):
+            dst.import_snapshot({
+                "mnemotrace_export_version": 1,
+                "facts": [{"subject": "a"}, "not-a-dict"],
+                "episodes": [{"no_content": True}, "junk"],
+            })
+        assert dst.fact_store.values() == dst.episodes_doc.values() == []
 
 
 pytest_fastapi = pytest.importorskip("fastapi")
@@ -165,3 +160,14 @@ def test_http_export_import_roundtrip(client):
     ctx = client.post("/v1/recall", json={"query": "what is my cat's name?"},
                       headers=_hdr("dst")).json()["context"]
     assert "Miso" in ctx
+
+
+def test_http_invalid_snapshot_is_400_and_does_not_partially_import(client):
+    client.post("/v1/remember", json={"content": "My cat is named Miso."}, headers=_hdr("src"))
+    snap = client.get("/v1/export", params={"include_sensitive": "true"}, headers=_hdr("src")).json()
+    snap["facts"][-1]["provenance"] = 42
+    response = client.post("/v1/import", json={"data": snap}, headers=_hdr("dst"))
+    assert response.status_code == 400
+    assert "provenance" in response.json()["detail"]
+    restored = client.get("/v1/export", params={"include_sensitive": "true"}, headers=_hdr("dst")).json()
+    assert restored["facts"] == restored["episodes"] == []

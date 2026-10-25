@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import asdict
 
 import pytest
 
@@ -12,6 +13,7 @@ from mnemotrace.memory import Memory
 from mnemotrace.store.lancedb_store import LanceDBVectorStore
 from mnemotrace.store.memory_store import InMemoryVectorStore
 from mnemotrace.types import Fact
+from mnemotrace.store import StoreFormatError, load_memory
 
 
 def _fact(subject: str, predicate: str, obj: str, vec: list[float]) -> Fact:
@@ -139,3 +141,75 @@ def test_default_memory_path_does_not_import_lancedb(tmp_path):
     mem.add("I like Python.", user_id="u")
     mem.save(str(tmp_path / "snapshot"))
     assert "lancedb" not in sys.modules
+
+
+@pytest.mark.parametrize("damage", ["state", "last_record"])
+def test_invalid_restore_does_not_change_existing_lancedb_rows(tmp_path, damage):
+    mem = Memory(config=Config(storage="lancedb", data_path=str(tmp_path / "vectors")))
+    mem.add_fact("Existing", "likes", "tea", user_id="u")
+    table = mem.fact_store._open()
+    before = table.to_arrow().to_pylist()
+    source = Memory()
+    source.add_fact("Source", "likes", "coffee", user_id="u")
+    source.add_fact("Source", "works_at", "SyntheticCo", user_id="u")
+    path = tmp_path / "snapshot"
+    source.save(str(path))
+    if damage == "state":
+        target = path / "manifest.json"
+        manifest = json.loads(target.read_text(encoding="utf-8"))
+        manifest["state"]["import_seen"] = 42
+        target.write_text(json.dumps(manifest), encoding="utf-8")
+    else:
+        target = path / "facts.jsonl"
+        rows = [json.loads(line) for line in target.read_text(encoding="utf-8").splitlines()]
+        rows[-1].pop("expired_at")
+        target.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    with pytest.raises(StoreFormatError):
+        load_memory(mem, str(path))
+    assert table.to_arrow().to_pylist() == before
+
+
+def test_corrupt_typed_lancedb_payload_fails_without_repairing_table(tmp_path):
+    store = LanceDBVectorStore(str(tmp_path / "vectors"), "facts")
+    fact = _fact("Synthetic", "likes", "tea", [1.0, 0.0])
+    row = asdict(fact)
+    row.pop("id")
+    store.upsert("ft_synthetic", fact.embedding, fact)
+    table = store._open()
+    table.delete("key = 'ft_synthetic'")
+    table.add([{"key": "ft_synthetic", "vector": fact.embedding,
+                "payload": json.dumps({"type": "Fact", "data": row})}])
+    before = table.to_arrow().to_pylist()
+    with pytest.raises(StoreFormatError, match="id"):
+        store.get("ft_synthetic")
+    assert table.to_arrow().to_pylist() == before
+
+
+def test_invalid_snapshot_import_does_not_write_lancedb_rows(tmp_path):
+    mem = Memory(config=Config(storage="lancedb", data_path=str(tmp_path / "vectors")))
+    mem.add_fact("Existing", "likes", "tea")
+    before = mem.fact_store._open().to_arrow().to_pylist()
+    valid = asdict(Fact(id="ft_valid", subject="Source", predicate="likes", object="coffee"))
+    invalid = {**valid, "id": "ft_invalid", "provenance": 42}
+    with pytest.raises(ValueError, match="provenance"):
+        mem.import_snapshot({"mnemotrace_export_version": 1, "facts": [valid, invalid], "episodes": []})
+    assert mem.fact_store._open().to_arrow().to_pylist() == before
+
+
+def test_corrupt_existing_later_index_does_not_clear_earlier_index(tmp_path):
+    mem = Memory(config=Config(storage="lancedb", data_path=str(tmp_path / "vectors")))
+    mem.add("Synthetic source", user_id="u")
+    fact = mem.add_fact("Synthetic", "likes", "tea", user_id="u")
+    before = mem.episodes_vec._open().to_arrow().to_pylist()
+    row = asdict(fact)
+    row.pop("id")
+    table = mem.fact_store._open()
+    table.delete("key = '" + fact.id + "'")
+    table.add([{"key": fact.id, "vector": fact.embedding,
+                "payload": json.dumps({"type": "Fact", "data": row})}])
+    source = Memory()
+    source.add("Replacement source", user_id="u")
+    source.save(str(tmp_path / "snapshot"))
+    with pytest.raises(StoreFormatError, match="id"):
+        load_memory(mem, str(tmp_path / "snapshot"))
+    assert mem.episodes_vec._open().to_arrow().to_pylist() == before

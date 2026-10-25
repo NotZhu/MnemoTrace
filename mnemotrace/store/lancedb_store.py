@@ -13,7 +13,7 @@ from typing import Any, Optional
 from ..types import Episode, Fact
 from ..util import cosine
 from .base import Predicate, VectorStore
-from .persist import _from_record, _record
+from .persist import StoreFormatError, _from_record, _record
 
 _TYPES = {"Episode": Episode, "Fact": Fact}
 
@@ -34,10 +34,15 @@ def _encode_payload(payload: Any) -> str:
 
 
 def _decode_payload(raw: str) -> Any:
-    obj = json.loads(raw)
+    try:
+        obj = json.loads(raw)
+    except (ValueError, TypeError, UnicodeDecodeError) as exc:
+        raise StoreFormatError("LanceDB payload: malformed JSON") from exc
+    if not isinstance(obj, dict) or not isinstance(obj.get("type"), str) or "data" not in obj:
+        raise StoreFormatError("LanceDB payload: missing valid type or data")
     typ = obj.get("type")
     if typ in _TYPES:
-        return _from_record(_TYPES[typ], obj.get("data") or {})
+        return _from_record(_TYPES[typ], obj["data"], "LanceDB payload.data")
     return obj.get("data")
 
 

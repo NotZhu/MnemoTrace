@@ -22,6 +22,8 @@
 | `import_data` | data、format="auto"、user_id、session_id；其余导入选项 | 计数字典；先解析再导入 |
 | `import_snapshot` | snapshot、user_id、dedupe=True | dict；导入结构化导出，不等同于打开存储目录 |
 
+结构化快照按版本 1 的必要字段整批校验，错误抛出 `ValueError`，不部分导入。迁移保留目标用户的运行设置；字段、来源编号和替代链语义见[结构化迁移导入](../architecture/memory.md#结构化迁移导入)。
+
 `scope="auto"` 按规则识别短时状态，`long` 强制走长期内容路径，`working` 跳过长期画像事实提取。Python 记忆实例中的写入不会自动保存到磁盘。
 
 ## 检索与上下文
@@ -72,6 +74,8 @@ memory.save()
 `save(path=None)` 使用指定目录或上次打开/保存的路径；没有路径时抛出 ValueError。`open(path, allow_mismatch=False, **kwargs)` 是类方法，支持与构造函数一致的运行组件参数。
 
 异常类型从 `mnemotrace.store.persist` 导入：PersistenceError、StoreFormatError、IncompatibleStoreError、DimensionMismatchError、EmbedderMismatchError。当前恢复条件和重嵌入流程见[持久化契约](../architecture/memory.md)。
+
+当前格式缺少必要信息、类型非法或缺少提交编号的历史存档会被明确拒绝，不自动升级。自定义 embedder 必须提供正整数 `dim`；`allow_mismatch` 只放宽模型匹配，不跳过格式校验。
 
 ## 扩展与研究入口
 
