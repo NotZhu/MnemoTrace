@@ -8,7 +8,7 @@
 
 | 参数组 | 主要字段与默认行为 | 影响 |
 | --- | --- | --- |
-| 存储 | storage=memory、data_path=None | 可选后端位置；不代替显式 open/save |
+| 存储 | storage=memory、data_path=None | 内置 LanceDB 需要非空数据路径；不代替显式 open/save |
 | 嵌入 | embed_dim=256 | 默认 HashingEmbedder 维度；显式 embedder 有自己的身份与维度 |
 | 融合 | w_sem=1.0、w_lex=0.6、w_graph=0.8、w_rec=0.3、w_sal=0.25 | 不同检索信号的配置权重 |
 | 类型先验 | w_type_preference=1.25、w_type_identity=1.15 | 在相关候选中调整优先级 |
@@ -18,6 +18,24 @@
 | 热层与拒答 | max_hot_facts=10000、abstain_threshold=0.45 | 工作集容量和低证据回退 |
 | 整合 | salience_decay_per_day=0.02、access_boost=0.5 | 显著度更新 |
 | 冲突 | conflict_sim_threshold=0.80；conflict_llm_escalation=False、conflict_detection=False | 规则与可选模型冲突处理 |
+
+使用内置 LanceDB 向量后端时，直接构造 `Memory` 必须提供非空 `data_path`；缺失或空字符串会在后端初始化前抛出 `ValueError`，不会自动创建临时数据库。该路径是向量数据库位置，不代替保存完整记忆状态所需的 `save()`：
+
+```python
+from mnemotrace import Config, Memory
+
+memory = Memory(config=Config(storage="lancedb", data_path="./vectors"))
+memory.save("./snapshot")
+```
+
+`Memory.open()` 已接收快照根目录，在 `data_path=None` 时会使用其下的 `lancedb` 子目录，不修改传入的 Config。显式提供的非空 `data_path` 优先；空字符串仍报错，不触发路径推导：
+
+```python
+memory = Memory.open("./snapshot", config=Config(storage="lancedb"))
+# 向量数据库位置为 ./snapshot/lancedb；加载完整记忆快照。
+```
+
+上述要求仅针对内置 LanceDB 后端。使用自定义 `vector_store_factory` 时，存储位置由工厂管理。LanceDB 的安装依赖见下方[模型与可选依赖](#模型与可选依赖)。
 
 开关按职责分组：
 
