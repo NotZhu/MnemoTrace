@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from ..localize import display_of
 from ..types import Fact
+from ._rule_match import compile_keywords, matches_keywords, normalize_predicate
 
 # predicate -> (规范字段键, 展示标签)。身份/基本信息槽位（单值）。
 _BASIC: dict[str, tuple[str, str]] = {
@@ -42,31 +43,42 @@ _BASIC: dict[str, tuple[str, str]] = {
 _POSITIVE = {"likes", "like", "loves", "love", "enjoys", "enjoy", "prefers", "prefer", "favorite",
              "favourite", "interested_in", "fan_of", "into", "fond_of", "wants", "wishes_for"}
 _DIETARY = {"diet", "dietary_restriction", "dietary_restrictions"}
+_RESTRICTIONS = {"allergic_to", "allergic", "cannot_eat", "cant_eat"}
 _NEGATIVE = {"dislikes", "dislike", "hates", "hate", "avoids", "avoid", "allergic_to", "allergic",
              "cannot_eat", "cant_eat", "not_into", "disinterested_in"}
 _HABIT = {"usually", "often", "routine", "regularly", "habit", "tends_to", "commutes", "frequently",
           "daily", "weekly", "every_day", "every_week", "every_morning"}
 
-# 给偏好分组用的粗粒度类别桶（对 predicate + object 做关键词匹配）
+# 给偏好分组用的粗粒度类别桶（明确的 predicate 线索先于 object）。
 # keyword -> category，中英皆有。命中首个即返回，所以顺序很重要："有游泳池的酒店"这样的短语
 # 同时含 酒店(出行) 和 游泳(运动)——把 出行 排在 运动 前面才能归入 出行。
 _CATEGORY_KW: list[tuple[str, tuple[str, ...]]] = [
-    ("健康禁忌", ("allergic", "allergy", "intoleran", "过敏", "忌口", "禁忌")),
-    ("饮食", ("food", "eat", "cuisine", "dish", "restaurant", "drink", "coffee", "tea", "spicy",
-              "seafood", "meal", "cook", "snack", "fruit",
-              "吃", "餐", "菜", "料", "火锅", "辣", "香菜", "甜", "咖啡", "茶", "清淡", "评分", "人均", "口味")),
-    ("出行", ("travel", "trip", "destination", "hotel", "route", "drive", "flight", "scenery", "poi",
+    ("饮食", ("food", "foods", "eat", "eats", "eating", "cuisine", "cuisines", "dish", "dishes",
+              "restaurant", "restaurants", "drink", "drinks", "drinking", "coffee", "tea", "spicy",
+              "seafood", "meal", "meals", "cook", "cooks", "cooking", "snack", "snacks", "fruit", "fruits",
+              "吃", "餐", "菜", "料", "食物", "食材", "食谱", "调料", "饮料", "餐厅", "餐馆", "饭菜",
+              "吃饭", "外卖", "做菜", "早餐", "午餐", "晚餐", "早饭", "午饭", "晚饭", "菜谱", "菜单", "麻辣烫",
+              "川菜", "火锅", "辣", "吃辣", "辛辣", "香菜", "甜", "甜食", "甜点", "咖啡", "茶", "绿茶", "红茶", "奶茶",
+              "乌龙茶", "喝茶", "茶饮", "清淡", "口味")),
+    ("出行", ("travel", "trip", "trips", "destination", "destinations", "hotel", "hotels", "route",
+              "routes", "drive", "driving", "flight", "flights", "scenery", "poi",
               "酒店", "住宿", "民宿", "高架", "路线", "停车", "充电", "景点", "旅游", "出差", "导航", "自驾")),
-    ("音乐", ("music", "song", "artist", "singer", "band", "genre", "playlist",
-              "歌", "音乐", "曲", "电音", "流行", "周杰伦", "五月天", "华语", "粤语", "民谣", "摇滚")),
-    ("影视", ("movie", "film", "show", "tv", "series", "video", "cinema", "drama", "director",
-              "片", "电影", "电视剧", "影视", "恐怖", "科幻", "诺兰", "导演", "综艺", "动画")),
-    ("运动", ("sport", "exercise", "gym", "run", "fitness", "yoga", "basketball", "football", "hike",
-              "跑步", "游泳", "健身", "篮球", "足球", "瑜伽", "运动", "球", "爬山", "登山")),
-    ("阅读", ("book", "read", "author", "novel", "podcast", "news", "书", "阅读", "新闻", "播客", "股票")),
+    ("音乐", ("music", "song", "songs", "artist", "artists", "singer", "singers", "band", "bands",
+              "genre", "genres", "playlist", "playlists", "歌", "歌曲", "听歌", "唱歌", "音乐", "曲", "乐曲", "电音",
+              "流行音乐", "周杰伦", "五月天", "华语音乐", "粤语歌", "民谣", "摇滚")),
+    ("影视", ("movie", "movies", "film", "films", "show", "shows", "tv", "series", "video", "videos",
+              "cinema", "drama", "director", "directors", "片", "电影", "短片", "纪录片", "电视剧", "影视", "恐怖片",
+              "科幻片", "诺兰", "导演", "综艺", "动画")),
+    ("运动", ("sport", "sports", "exercise", "gym", "run", "runs", "running", "fitness", "yoga",
+              "basketball", "football", "hike", "hikes", "hiking", "跑步", "游泳", "健身", "篮球",
+              "足球", "羽毛球", "网球", "乒乓球", "排球", "瑜伽", "运动", "球", "球类", "爬山", "登山")),
+    ("阅读", ("book", "books", "read", "reads", "reading", "author", "authors", "novel", "novels",
+              "podcast", "podcasts", "news", "书", "读书", "看书", "书店", "图书", "书籍", "小说", "阅读", "新闻", "播客", "股票")),
     ("兴趣", ("跳舞", "探店", "摄影", "自拍", "烘焙", "绘画", "手工")),
-    ("环境", ("安静", "氛围", "环境", "嘈杂", "空调", "温度", "座椅", "加热")),
+    ("环境", ("quiet", "environment", "environments", "ambience", "noise", "安静", "氛围", "环境",
+              "嘈杂", "空调", "温度", "座椅", "加热")),
 ]
+_CATEGORY_MATCHERS = [(category, compile_keywords(keywords)) for category, keywords in _CATEGORY_KW]
 
 
 _POS_PREFIX = ("favorite", "favourite", "likes_", "loves_", "enjoys_", "prefers_", "prefer_",
@@ -78,7 +90,7 @@ _NEG_PREFIX = ("dislikes_", "dislike_", "hates_", "avoids_", "avoid_", "allergic
 def _polarity(pred: str) -> str | None:
     """偏好 predicate 的 like / dislike 极性——处理 LLM 产出的复合 predicate
     （likes_quiet_environments、doesn't_drive_on_elevated_roads 等），不止规范动词。"""
-    p = pred.lower()
+    p = normalize_predicate(pred)
     if p in _DIETARY:
         return "diet"
     if p in _POSITIVE or p.startswith(_POS_PREFIX):
@@ -94,16 +106,15 @@ def _is_habit(pred: str) -> bool:
 
 
 def _category(pred: str, obj: str) -> str:
-    p = pred.lower()
-    if p.startswith("favorite_") or p.startswith("favourite_"):
-        suffix = p.split("_", 1)[1]
-        for cat, kws in _CATEGORY_KW:
-            if any(k in suffix for k in kws):
+    p = normalize_predicate(pred)
+    # 过敏主题的书籍不代表本人过敏；禁忌只由明确关系确定。
+    if p in _RESTRICTIONS:
+        return "健康禁忌"
+    # likes_music 等复合关系也携带主题；不能被对象中的另一个领域覆盖。
+    for value in (p, obj):
+        for cat, kws in _CATEGORY_MATCHERS:
+            if matches_keywords(value, kws):
                 return cat
-    hay = f"{p} {obj.lower()}"
-    for cat, kws in _CATEGORY_KW:
-        if any(k in hay for k in kws):
-            return cat
     return "其他"
 
 
