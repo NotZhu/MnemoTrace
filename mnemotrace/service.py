@@ -177,6 +177,7 @@ class MemoryService:
         from .config import Config
 
         self.config = Config()
+        self.config.llm_topics = os.environ.get("MNEMOTRACE_LLM_TOPICS") != "0"
         if os.environ.get("MNEMOTRACE_MAX_HOT_FACTS"):
             self.config.max_hot_facts = int(os.environ["MNEMOTRACE_MAX_HOT_FACTS"])
         # 可选开启的 System-2 LLM 冲突检测 -> detect->confirm 循环（需要 LLM）。默认关闭，
@@ -817,7 +818,8 @@ class MemoryService:
                     if f.is_live() and f.user_id == user
                     and f.predicate.lower() in OUTCOME_PREDICATES and f.subject == session_id
                 }
-                for fact in extract_outcomes(self.llm, episodes, user, session_id=session_id):
+                for fact in extract_outcomes(self.llm, episodes, user, session_id=session_id,
+                                              llm_topics=self.config.llm_topics):
                     if split_outcome_text(fact.text)[0].lower()[:120] in seen_keys:
                         continue
                     fact.embedding = mem.embedder.embed(fact.text)

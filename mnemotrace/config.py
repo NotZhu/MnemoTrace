@@ -50,6 +50,7 @@ class Config:
     preference_object_filter: bool = True  # 抑制 "it"/"these ideas" 这类弱显式偏好宾语
     preference_object_normalization: bool = True  # 把 "sound/idea of X" 这类偏好宾语规范化为 X
     preference_reversal_extraction: bool = True  # 抽取高置信度的 "no longer like X" 式偏好更新
+    llm_topics: bool = True  # 在现有抽取调用中生成主题；关闭后仍使用离线规则，不增加模型调用
     numeric_aggregation_candidates: bool = True  # 为计数/求和问题抽取金额/小时/页数等数值行
     aggregation_recall_expansion: bool = True  # 把计数/求和查询扩展为高召回的证据查找
     aggregation_constraint_filter: bool = True  # 把违反查询约束的数值候选标记为 EXCLUDE

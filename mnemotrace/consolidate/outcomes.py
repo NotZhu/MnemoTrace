@@ -26,6 +26,7 @@ from ..llm import LLM
 from ..types import Episode, Fact
 from .classify import classify
 from .llm_extractor import parse_json_facts
+from .topic_rules import log_topic_inputs, resolve_topic, topic_system
 
 # 四种类型直接作为 predicate。这样挑选是为了让人读原始 fact 列表时一眼看出每条在断言什么，
 # 检索也能按 kind 过滤而无需改 schema。
@@ -80,7 +81,7 @@ def _windowed(turns: list[str], budget: int) -> str:
 
 def extract_outcomes(llm: LLM, episodes: list[Episode], user_id: str,
                      session_id: str = "", max_chars: int = 24000,
-                     system: Optional[str] = None) -> list[Fact]:
+                     system: Optional[str] = None, *, llm_topics: bool = True) -> list[Fact]:
     """把一个会话的 episode 蒸馏成 decision/finding/lesson/open_question fact。
 
     按会话粒度设计：一个决定体现在对话的弧线里，而不是任何单轮中——这正是逐 episode 的提取器
@@ -103,7 +104,7 @@ def extract_outcomes(llm: LLM, episodes: list[Episode], user_id: str,
         "现在输出 JSON 数组："
     )
     try:
-        raw = llm.complete(prompt, system=system or OUTCOME_SYSTEM)
+        raw = llm.complete(prompt, system=topic_system(system or OUTCOME_SYSTEM, llm_topics))
     except Exception:  # noqa: BLE001 — 模型故障绝不能丢失 episode 本身
         return []
 
@@ -115,6 +116,7 @@ def extract_outcomes(llm: LLM, episodes: list[Episode], user_id: str,
 
     out: list[Fact] = []
     seen: set[str] = set()
+    topic_items: list[dict] = []
     for item in parse_json_facts(raw):
         kind = str(item.get("kind", "")).strip().lower()
         if kind not in OUTCOME_PREDICATES:
@@ -127,6 +129,9 @@ def extract_outcomes(llm: LLM, episodes: list[Episode], user_id: str,
             continue
         seen.add(key)
         why = " ".join(str(item.get("why", "")).split())[:300]
+        topic, topic_source = resolve_topic(kind, f"{statement} {why}",
+                                            item.get("topic") if llm_topics else None)
+        topic_items.append(item)
         # 结论是模型围绕工作会话写的散文，完全可能带上 classify() 本要挡在共享视图之外的内容
         # （凭据、诊断、薪水）。其他所有写路径都会做分类；缺了这一条，outcome 一出生就是
         # sensitive=False，会出现在共享安全的 `/v1/memories` 和 `/v1/export` 视图里——而且只有
@@ -144,11 +149,15 @@ def extract_outcomes(llm: LLM, episodes: list[Episode], user_id: str,
             user_id=user_id,
             category=OUTCOME_CATEGORY,
             sensitive=sensitive,
+            topic=topic,
+            topic_source=topic_source,
             valid_at=valid_at,
             created_at=created_at,
             provenance=provenance,
         )
         out.append(fact)
+    if llm_topics:
+        log_topic_inputs(topic_items)
     return out
 
 

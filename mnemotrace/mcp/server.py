@@ -651,7 +651,8 @@ async def mnemotrace_update_fact(
     category: Annotated[Optional[str], Field(description="Optional category override.")] = None,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
     topic: Annotated[Optional[Topic], Field(description="Optional manual main topic; unknown is explicit.")] = None,
-    reset_topic: Annotated[bool, Field(description="Clear the manual topic; cannot be combined with topic.")] = False,
+    reset_topic: Annotated[bool, Field(description="Re-evaluate topic with offline rules, without a model call; "
+                                                  "cannot be combined with topic.")] = False,
 ) -> str:
     """按 id 修正一条已存的 fact。
 

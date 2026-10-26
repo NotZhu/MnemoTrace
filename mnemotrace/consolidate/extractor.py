@@ -9,6 +9,9 @@ from __future__ import annotations
 import re
 
 from ..types import Episode, Fact
+from .topic_rules import resolve_topic
+
+EXPLICIT_PREFERENCE_PREDS = frozenset({"likes", "loves", "enjoys", "prefers", "dislikes", "hates", "avoids"})
 
 # 从捕获的 object 尾部剥掉的赘词（"Moonshot AI too" -> "Moonshot AI"）
 _FILLER = {"too", "now", "also", "currently", "anymore", "though", "well", "as",
@@ -88,6 +91,13 @@ def normalize_preference_object(obj: str) -> str:
             text = _clean_obj(new)
             break
     return text
+
+
+def preference_topic_object(predicate: str, obj: str, normalize: bool) -> str:
+    """主题使用整合后将落库的取值；不提前改变事实，以保留既有过滤顺序。"""
+    if normalize and predicate.lower() in EXPLICIT_PREFERENCE_PREDS:
+        return normalize_preference_object(obj)
+    return obj
 
 
 def is_specific_preference_object(obj: str) -> bool:
@@ -212,6 +222,8 @@ class RuleExtractor:
         return self.self_of(ep.user_id)
 
     def _mk(self, subj: str, pred: str, obj: str, ep: Episode) -> Fact:
+        topic, topic_source = resolve_topic(
+            pred, preference_topic_object(pred, obj, self.preference_object_normalization))
         return Fact(
             subject=subj,
             predicate=pred,
@@ -220,6 +232,8 @@ class RuleExtractor:
             valid_at=ep.event_time,
             created_at=ep.ingested_at,
             provenance=[ep.id],
+            topic=topic,
+            topic_source=topic_source,
         )
 
     def _episode_procedures(self, ep: Episode) -> list[Fact]:

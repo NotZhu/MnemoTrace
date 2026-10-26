@@ -7,6 +7,8 @@ import re
 
 from ..llm import LLM
 from ..types import Episode, Fact
+from .extractor import preference_topic_object
+from .topic_rules import log_topic_inputs, resolve_topic, topic_system
 
 EXTRACT_SYSTEM = (
     "你是长期记忆系统中的精确信息提取引擎。\n"
@@ -103,10 +105,13 @@ def parse_json_facts(raw: str) -> list[dict]:
 
 
 class LLMExtractor:
-    def __init__(self, llm: LLM, system: str = EXTRACT_SYSTEM, template: str = EXTRACT_TEMPLATE) -> None:
+    def __init__(self, llm: LLM, system: str = EXTRACT_SYSTEM, template: str = EXTRACT_TEMPLATE,
+                 *, llm_topics: bool = True, preference_object_normalization: bool = True) -> None:
         self.llm = llm
         self.system = system
         self.template = template
+        self.llm_topics = llm_topics
+        self.preference_object_normalization = preference_object_normalization
         # 可选的按用户指令，附加在 system prompt 末尾：用户想记录（或不想记录）什么。
         # 由 Memory.policy["extract_instruction"] 设置——即 console 里那个核心的"要记录什么记忆"开关。
         self.instruction = ""
@@ -117,10 +122,11 @@ class LLMExtractor:
         return self.self_name.get(user_id, user_id)
 
     def _effective_system(self) -> str:
+        system = self.system
         if self.instruction.strip():
-            return (self.system + "\n\n以下是用户关于记录内容的补充要求，请遵守，但仍只输出上述 JSON 数组：\n"
-                    + self.instruction.strip())
-        return self.system
+            system += ("\n\n以下是用户关于记录内容的补充要求，请遵守，但仍只输出上述 JSON 数组：\n"
+                       + self.instruction.strip())
+        return topic_system(system, self.llm_topics)
 
     def extract(self, ep: Episode) -> list[Fact]:
         return self.facts_from(ep, self.raw_items(ep))
@@ -142,6 +148,7 @@ class LLMExtractor:
         """把解析出的条目转成 Fact，并注册姓名/别名。有意依赖顺序：请按时间顺序调用，
         使规范名是用户实际最先说出的那个。"""
         facts: list[Fact] = []
+        topic_items: list[dict] = []
         for item in items:
             subj = str(item.get("subject", "")).strip()
             pred = _norm_predicate(str(item.get("predicate", "")))
@@ -159,6 +166,10 @@ class LLMExtractor:
                 # 归一到同一个规范 subject，使用户自己的所有 fact 共享它（否则会分散在多个
                 # subject 上，档案 / 冲突消解就无法识别它们属于用户本人）。
                 subj = self.self_of(ep.user_id) if self.self_of(ep.user_id) != ep.user_id else subj
+            topic, topic_source = resolve_topic(
+                pred, preference_topic_object(pred, obj, self.preference_object_normalization),
+                item.get("topic") if self.llm_topics else None)
+            topic_items.append(item)
             facts.append(
                 Fact(
                     subject=subj,
@@ -171,6 +182,10 @@ class LLMExtractor:
                     valid_at=ep.event_time,
                     created_at=ep.ingested_at,
                     provenance=[ep.id],
+                    topic=topic,
+                    topic_source=topic_source,
                 )
             )
+        if self.llm_topics:
+            log_topic_inputs(topic_items)
         return facts

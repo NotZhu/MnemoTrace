@@ -16,7 +16,8 @@ from __future__ import annotations
 
 from ..localize import display_of
 from ..types import Fact
-from ._rule_match import compile_keywords, matches_keywords, normalize_predicate
+from ._rule_match import matches_keywords, normalize_predicate
+from ._topic_keywords import LIFE_TOPIC_MATCHERS, RESTRICTION_PREDICATES
 
 # predicate -> (规范字段键, 展示标签)。身份/基本信息槽位（单值）。
 _BASIC: dict[str, tuple[str, str]] = {
@@ -43,42 +44,15 @@ _BASIC: dict[str, tuple[str, str]] = {
 _POSITIVE = {"likes", "like", "loves", "love", "enjoys", "enjoy", "prefers", "prefer", "favorite",
              "favourite", "interested_in", "fan_of", "into", "fond_of", "wants", "wishes_for"}
 _DIETARY = {"diet", "dietary_restriction", "dietary_restrictions"}
-_RESTRICTIONS = {"allergic_to", "allergic", "cannot_eat", "cant_eat"}
 _NEGATIVE = {"dislikes", "dislike", "hates", "hate", "avoids", "avoid", "allergic_to", "allergic",
              "cannot_eat", "cant_eat", "not_into", "disinterested_in"}
 _HABIT = {"usually", "often", "routine", "regularly", "habit", "tends_to", "commutes", "frequently",
           "daily", "weekly", "every_day", "every_week", "every_morning"}
 
-# 给偏好分组用的粗粒度类别桶（明确的 predicate 线索先于 object）。
-# keyword -> category，中英皆有。命中首个即返回，所以顺序很重要："有游泳池的酒店"这样的短语
-# 同时含 酒店(出行) 和 游泳(运动)——把 出行 排在 运动 前面才能归入 出行。
-_CATEGORY_KW: list[tuple[str, tuple[str, ...]]] = [
-    ("饮食", ("food", "foods", "eat", "eats", "eating", "cuisine", "cuisines", "dish", "dishes",
-              "restaurant", "restaurants", "drink", "drinks", "drinking", "coffee", "tea", "spicy",
-              "seafood", "meal", "meals", "cook", "cooks", "cooking", "snack", "snacks", "fruit", "fruits",
-              "吃", "餐", "菜", "料", "食物", "食材", "食谱", "调料", "饮料", "餐厅", "餐馆", "饭菜",
-              "吃饭", "外卖", "做菜", "早餐", "午餐", "晚餐", "早饭", "午饭", "晚饭", "菜谱", "菜单", "麻辣烫",
-              "川菜", "火锅", "辣", "吃辣", "辛辣", "香菜", "甜", "甜食", "甜点", "咖啡", "茶", "绿茶", "红茶", "奶茶",
-              "乌龙茶", "喝茶", "茶饮", "清淡", "口味")),
-    ("出行", ("travel", "trip", "trips", "destination", "destinations", "hotel", "hotels", "route",
-              "routes", "drive", "driving", "flight", "flights", "scenery", "poi",
-              "酒店", "住宿", "民宿", "高架", "路线", "停车", "充电", "景点", "旅游", "出差", "导航", "自驾")),
-    ("音乐", ("music", "song", "songs", "artist", "artists", "singer", "singers", "band", "bands",
-              "genre", "genres", "playlist", "playlists", "歌", "歌曲", "听歌", "唱歌", "音乐", "曲", "乐曲", "电音",
-              "流行音乐", "周杰伦", "五月天", "华语音乐", "粤语歌", "民谣", "摇滚")),
-    ("影视", ("movie", "movies", "film", "films", "show", "shows", "tv", "series", "video", "videos",
-              "cinema", "drama", "director", "directors", "片", "电影", "短片", "纪录片", "电视剧", "影视", "恐怖片",
-              "科幻片", "诺兰", "导演", "综艺", "动画")),
-    ("运动", ("sport", "sports", "exercise", "gym", "run", "runs", "running", "fitness", "yoga",
-              "basketball", "football", "hike", "hikes", "hiking", "跑步", "游泳", "健身", "篮球",
-              "足球", "羽毛球", "网球", "乒乓球", "排球", "瑜伽", "运动", "球", "球类", "爬山", "登山")),
-    ("阅读", ("book", "books", "read", "reads", "reading", "author", "authors", "novel", "novels",
-              "podcast", "podcasts", "news", "书", "读书", "看书", "书店", "图书", "书籍", "小说", "阅读", "新闻", "播客", "股票")),
-    ("兴趣", ("跳舞", "探店", "摄影", "自拍", "烘焙", "绘画", "手工")),
-    ("环境", ("quiet", "environment", "environments", "ambience", "noise", "安静", "氛围", "环境",
-              "嘈杂", "空调", "温度", "座椅", "加热")),
-]
-_CATEGORY_MATCHERS = [(category, compile_keywords(keywords)) for category, keywords in _CATEGORY_KW]
+# 画像沿用原有分组顺序；自动主题在共享词表之上独立处理冲突。
+_GROUP_LABELS = {"food": "饮食", "travel": "出行", "music": "音乐", "film_tv": "影视",
+                 "sports": "运动", "reading": "阅读", "hobbies": "兴趣", "environment": "环境"}
+_CATEGORY_MATCHERS = [(_GROUP_LABELS[topic], words) for topic, words in LIFE_TOPIC_MATCHERS]
 
 
 _POS_PREFIX = ("favorite", "favourite", "likes_", "loves_", "enjoys_", "prefers_", "prefer_",
@@ -108,7 +82,7 @@ def _is_habit(pred: str) -> bool:
 def _category(pred: str, obj: str) -> str:
     p = normalize_predicate(pred)
     # 过敏主题的书籍不代表本人过敏；禁忌只由明确关系确定。
-    if p in _RESTRICTIONS:
+    if p in RESTRICTION_PREDICATES:
         return "健康禁忌"
     # likes_music 等复合关系也携带主题；不能被对象中的另一个领域覆盖。
     for value in (p, obj):

@@ -10,8 +10,8 @@ test('fact topics and reset are passed through with server-assigned origins', as
     const body = JSON.parse(init.body)
     calls.push({url, body})
     return new Response(JSON.stringify({ok: true, id: 'synthetic-fact', text: 'user prefers tea',
-      topic: body.reset_topic ? 'unknown' : body.topic,
-      topic_source: body.reset_topic ? 'unset' : 'user'}), {status: 200})
+      topic: body.reset_topic ? 'food' : body.topic,
+      topic_source: body.reset_topic ? 'rule' : 'user'}), {status: 200})
   }})
   const added = await client.addFact({predicate: 'prefers', object: 'tea', topic: 'food'})
   assert.equal(added.topic, 'food')
@@ -19,7 +19,8 @@ test('fact topics and reset are passed through with server-assigned origins', as
   const explicitUnknown = await client.updateFact(added.id, {topic: 'unknown'})
   assert.equal(explicitUnknown.topic_source, 'user')
   const reset = await client.updateFact(added.id, {reset_topic: true})
-  assert.equal(reset.topic_source, 'unset')
+  assert.equal(reset.topic, 'food')
+  assert.equal(reset.topic_source, 'rule')
   assert.deepEqual(calls.map(call => call.body), [
     {subject: 'user', predicate: 'prefers', object: 'tea', topic: 'food'},
     {topic: 'unknown'}, {reset_topic: true},

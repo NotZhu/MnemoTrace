@@ -105,7 +105,7 @@ close 返回处理计数，例如 `pending_consolidated`、`facts_added`、`summ
 
 内容编辑使事实变为用户来源；只改敏感标记、分类或主题保留原来源。槽位清理可能通过 JSON 结果表达拒绝，不能只检查 HTTP 状态。服务端权限不会被客户端筛选或隐私开关替代。
 
-事实读写响应包含 topic/topic_source；主题的固定枚举会出现在 OpenAPI 中。topic 省略或 null 表示未指定，`"unknown"` 表示人工选择未知；`reset_topic=true` 恢复 unknown/unset，不能与明确 topic 同传。主题来源由服务端决定，非法主题或编辑组合返回 422。内容变化且未指定新主题时重置旧主题，完整契约见[主题与来源](../architecture/memory.md#主题与来源)。脱敏会话报告省略主题元数据。
+事实读写响应包含 topic/topic_source；主题的固定枚举会出现在 OpenAPI 中。topic 省略或 null 表示未指定，`"unknown"` 表示人工选择未知；`reset_topic=true` 按当前内容执行离线规则，不调用模型，结果为明确主题/rule 或 unknown/unset，不能与明确 topic 同传。主题来源由服务端决定，非法主题或编辑组合返回 422。新增未指定主题、内容变化且未指定新主题时使用规则，完整契约见[主题与来源](../architecture/memory.md#主题与来源)。脱敏会话报告省略主题元数据。
 
 ## 工作记忆、导入与导出
 
