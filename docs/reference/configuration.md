@@ -41,12 +41,23 @@ memory = Memory.open("./snapshot", config=Config(storage="lancedb"))
 
 - 证据与预算：evidence_planner、evidence_budgeting、chain_evidence、temporal_history_queries、chain_current_first、provenance_evidence、provenance_chunk_promotion。
 - 抽取与偏好：explicit_preference_extraction、preference_object_filter、preference_object_normalization、preference_reversal_extraction。
+- 自动主题：llm_topics=True，在既有属性抽取和会话结论调用中附加主题协议；关闭时忽略模型主题，仍执行离线规则。
 - 数值聚合：numeric_aggregation_candidates、aggregation_recall_expansion、aggregation_constraint_filter、aggregation_pool_boost。
 - 派生读取：summary_fallback、summary_fallback_k、procedural_extraction、procedural_memory、procedural_memory_k。
 - 图与规划：graph_proximity、graph_relation_awareness、graph_path_reinforcement、graph_self_anchor、graph_entity_alias_anchor、graph_negative_constraints、planner_location_chains、planner_project_chains、planner_llm_decomposition。
 - 会话收尾：session_outcomes。
 
 多数增强当前默认开启，但具体是否执行还取决于调用路径和模型是否可用。不要从字段默认值推断已经发生外部模型调用。算法消融、数据范围与成本记录见[评测说明](../../eval/README.md)。
+
+```python
+from mnemotrace import Config, Memory
+
+memory = Memory(config=Config(llm_topics=False))
+fact = memory.add_fact("user", "uses", "storage engine")
+assert (fact.topic, fact.topic_source) == ("technology", "rule")
+```
+
+有 LLM 时该开关只控制主题协议，不关闭原有事实或结论提取。开启后不增加模型调用次数或 token 上限，但会增加输入和输出 token；有效提示词改变也会改变提示词缓存键。关闭时保留原有请求形状与提示词缓存语义。主题判定与重置规则见[主题与来源](../architecture/memory.md#主题与来源)。
 
 ## 服务环境变量
 
@@ -59,6 +70,7 @@ memory = Memory.open("./snapshot", config=Config(storage="lancedb"))
 | MNEMOTRACE_ALLOW_ANONYMOUS | 关闭；仅开放模式下控制共享 anonymous |
 | MNEMOTRACE_EMBEDDER | hashing，不下载模型 |
 | MNEMOTRACE_LLM | 空，规则抽取 |
+| MNEMOTRACE_LLM_TOPICS | 默认开启；设为 0 关闭 LLM 主题增强，保留规则判断；HTTP 服务和本地 MCP 生效，代理 MCP 由目标服务控制 |
 | MNEMOTRACE_ANSWERER | 未设置时复用主 LLM |
 | MNEMOTRACE_VISION_LLM | 未设置时复用主 LLM；没有模型时不生成图片语义描述 |
 | MNEMOTRACE_MAX_REQUEST_BYTES | 2097152，HTTP 请求体字节上限，必须为正整数 |

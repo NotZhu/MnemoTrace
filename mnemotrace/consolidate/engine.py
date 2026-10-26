@@ -15,16 +15,16 @@ from ..util import DAY
 from .conflict import ConflictResolver
 from .decay import is_durable
 from .extractor import (
+    EXPLICIT_PREFERENCE_PREDS,
     RuleExtractor,
     is_preference_reversal_fact,
     is_specific_preference_object,
-    normalize_preference_object,
+    preference_topic_object,
 )
 from .graph_builder import GraphBuilder
 from .summarizer import ProfileBuilder
 
 _PROCEDURAL_EXTRACTED_PREDS = {"procedure", "how_to", "routine"}
-_EXPLICIT_PREFERENCE_PREDS = {"likes", "loves", "enjoys", "prefers", "dislikes", "hates", "avoids"}
 
 
 class ConsolidationEngine:
@@ -44,7 +44,8 @@ class ConsolidationEngine:
         if llm is not None:
             from .llm_extractor import LLMExtractor
 
-            self.extractor = LLMExtractor(llm)
+            self.extractor = LLMExtractor(llm, llm_topics=config.llm_topics,
+                                          preference_object_normalization=config.preference_object_normalization)
         else:
             self.extractor = RuleExtractor(
                 config.explicit_preference_extraction,
@@ -118,7 +119,7 @@ class ConsolidationEngine:
                     continue
                 if (
                     not self.config.explicit_preference_extraction
-                    and fact.predicate.lower() in _EXPLICIT_PREFERENCE_PREDS
+                    and fact.predicate.lower() in EXPLICIT_PREFERENCE_PREDS
                 ):
                     continue
                 if (
@@ -128,15 +129,16 @@ class ConsolidationEngine:
                     continue
                 if (
                     self.config.preference_object_filter
-                    and fact.predicate.lower() in _EXPLICIT_PREFERENCE_PREDS
+                    and fact.predicate.lower() in EXPLICIT_PREFERENCE_PREDS
                     and not is_specific_preference_object(fact.object)
                 ):
                     continue
                 if (
                     self.config.preference_object_normalization
-                    and fact.predicate.lower() in _EXPLICIT_PREFERENCE_PREDS
+                    and fact.predicate.lower() in EXPLICIT_PREFERENCE_PREDS
                 ):
-                    normalized = normalize_preference_object(fact.object)
+                    normalized = preference_topic_object(fact.predicate, fact.object,
+                                                          self.config.preference_object_normalization)
                     if normalized != fact.object:
                         fact.object = normalized
                         fact.text = f"{fact.subject} {fact.predicate.replace('_', ' ')} {fact.object}".strip()

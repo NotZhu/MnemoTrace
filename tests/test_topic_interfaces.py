@@ -36,14 +36,14 @@ def test_http_topic_write_read_reset_export_and_namespace_isolation(topic_client
     unknown = client.patch(endpoint, headers=headers, json={"topic": "unknown"}).json()
     assert unknown["topic_source"] == "user"
     reset = client.patch(endpoint, headers=headers, json={"reset_topic": True}).json()
-    assert (reset["topic"], reset["topic_source"]) == ("unknown", "unset")
+    assert (reset["topic"], reset["topic_source"]) == ("food", "rule")
     snapshot = client.get("/v1/export", headers=headers).json()
     assert snapshot["mnemotrace_export_version"] == 2
-    assert snapshot["facts"][0]["topic_source"] == "unset"
+    assert snapshot["facts"][0]["topic_source"] == "rule"
     denied = client.patch(endpoint, headers={"Authorization": "Bearer synthetic-beta"},
                           json={"topic": "finance"})
     assert denied.status_code == 404
-    assert client.get("/v1/memories", headers=headers).json()["facts"][0]["topic"] == "unknown"
+    assert client.get("/v1/memories", headers=headers).json()["facts"][0]["topic"] == "food"
 
 
 @pytest.mark.parametrize("patch", [

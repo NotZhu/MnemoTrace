@@ -1,0 +1,38 @@
+"""画像与自动主题共享的生活领域词表；各自保留判定优先级。"""
+from __future__ import annotations
+
+from ._rule_match import compile_keywords
+
+RESTRICTION_PREDICATES = frozenset({"allergic_to", "allergic", "cannot_eat", "cant_eat"})
+
+LIFE_TOPIC_KEYWORDS = (('food',
+  ('food', 'foods', 'eat', 'eats', 'eating', 'cuisine', 'cuisines', 'dish', 'dishes', 'restaurant',
+   'restaurants', 'drink', 'drinks', 'drinking', 'coffee', 'tea', 'spicy', 'seafood', 'meal',
+   'meals', 'cook', 'cooks', 'cooking', 'snack', 'snacks', 'fruit', 'fruits', '吃', '餐', '菜', '料',
+   '食物', '食材', '食谱', '调料', '饮料', '餐厅', '餐馆', '饭菜', '吃饭', '外卖', '做菜', '早餐', '午餐', '晚餐', '早饭', '午饭',
+   '晚饭', '菜谱', '菜单', '麻辣烫', '川菜', '火锅', '辣', '吃辣', '辛辣', '香菜', '甜', '甜食', '甜点', '咖啡', '茶', '绿茶',
+   '红茶', '奶茶', '乌龙茶', '喝茶', '茶饮', '清淡', '口味')),
+ ('travel',
+  ('travel', 'trip', 'trips', 'destination', 'destinations', 'hotel', 'hotels', 'route', 'routes',
+   'drive', 'driving', 'flight', 'flights', 'scenery', 'poi', '酒店', '住宿', '民宿', '高架', '路线', '停车',
+   '充电', '景点', '旅游', '出差', '导航', '自驾')),
+ ('music',
+  ('music', 'song', 'songs', 'artist', 'artists', 'singer', 'singers', 'band', 'bands', 'genre',
+   'genres', 'playlist', 'playlists', '歌', '歌曲', '听歌', '唱歌', '音乐', '曲', '乐曲', '电音', '流行音乐', '周杰伦',
+   '五月天', '华语音乐', '粤语歌', '民谣', '摇滚')),
+ ('film_tv',
+  ('movie', 'movies', 'film', 'films', 'show', 'shows', 'tv', 'series', 'video', 'videos', 'cinema',
+   'drama', 'director', 'directors', '片', '电影', '短片', '纪录片', '电视剧', '影视', '恐怖片', '科幻片', '诺兰', '导演',
+   '综艺', '动画')),
+ ('sports',
+  ('sport', 'sports', 'exercise', 'gym', 'run', 'runs', 'running', 'fitness', 'yoga', 'basketball',
+   'football', 'hike', 'hikes', 'hiking', '跑步', '游泳', '健身', '篮球', '足球', '羽毛球', '网球', '乒乓球', '排球',
+   '瑜伽', '运动', '球', '球类', '爬山', '登山')),
+ ('reading',
+  ('book', 'books', 'read', 'reads', 'reading', 'author', 'authors', 'novel', 'novels', 'podcast',
+   'podcasts', 'news', '书', '读书', '看书', '书店', '图书', '书籍', '小说', '阅读', '新闻', '播客', '股票')),
+ ('hobbies', ('跳舞', '探店', '摄影', '自拍', '烘焙', '绘画', '手工')),
+ ('environment',
+  ('quiet', 'environment', 'environments', 'ambience', 'noise', '安静', '氛围', '环境', '嘈杂', '空调', '温度',
+   '座椅', '加热')))
+LIFE_TOPIC_MATCHERS = tuple((topic, compile_keywords(words)) for topic, words in LIFE_TOPIC_KEYWORDS)

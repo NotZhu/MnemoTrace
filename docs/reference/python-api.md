@@ -64,12 +64,12 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 
 图谱的状态、搜索、敏感内容与时间筛选均在 `limit` 前执行；正数 `limit` 限制返回关系数，节点仅包含这些关系的端点。`has_more=true` 表示当前查询条件下仍有未返回的匹配关系；恰好达到上限不表示截断。不限量查询返回全部匹配关系，`has_more=false`。该字段不提供命名空间总数，展示数量仅描述已返回的图。
 
-主题可使用导出的 `Topic`、`TopicSource` 类型。`topic=None` 表示未指定，`topic="unknown"` 是人工选择未知，`reset_topic=True` 恢复为 unknown/unset，不能与明确 topic 同传。仅修改主题不改变事实来源或历史；内容变化且未指定新主题时重置旧主题。完整契约见[主题与来源](../architecture/memory.md#主题与来源)。
+主题可使用导出的 `Topic`、`TopicSource` 类型。`topic=None` 表示未指定，`topic="unknown"` 是人工选择未知。`reset_topic=True` 按当前内容重新执行离线规则，不调用模型，结果为明确主题/rule 或 unknown/unset，不能与明确 topic 同传。仅修改主题不改变事实来源或历史；新增未指定主题、内容变化且未指定新主题时使用规则。完整契约见[主题与来源](../architecture/memory.md#主题与来源)。
 
 ```python
 fact = memory.add_fact("user", "prefers", "茶", topic="food")
 memory.update_fact(fact.id, topic="unknown")  # unknown/user
-memory.update_fact(fact.id, reset_topic=True)  # unknown/unset
+memory.update_fact(fact.id, reset_topic=True)  # 按当前内容重新判断，来源为 rule 或 unset
 ```
 
 ## 保存与模型切换

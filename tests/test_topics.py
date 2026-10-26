@@ -13,12 +13,12 @@ from mnemotrace.store import IncompatibleStoreError, StoreFormatError
 from mnemotrace.types import Fact
 
 
-def test_unassigned_topics_do_not_change_offline_classification_or_profile():
+def test_rule_topics_do_not_change_offline_classification_or_profile():
     mem = Memory()
     mem.add("I like tea.")
     mem.consolidate()
     fact, = mem.fact_store.values()
-    assert (fact.topic, fact.topic_source, fact.category) == ("unknown", "unset", "偏好")
+    assert (fact.topic, fact.topic_source, fact.category) == ("food", "rule", "偏好")
     mem.update_fact(fact.id, topic="music")
     item, = mem.structured_profile()["preferences"]["饮食"]
     assert item["fact_id"] == fact.id
@@ -35,7 +35,7 @@ def test_manual_topic_values_and_reset_are_distinct(topic):
     mem.update_fact(fact.id, topic=None)
     assert (fact.topic, fact.topic_source) == (topic, "user")
     mem.update_fact(fact.id, reset_topic=True)
-    assert (fact.topic, fact.topic_source) == ("unknown", "unset")
+    assert (fact.topic, fact.topic_source) == ("food", "rule")
 
 
 @pytest.mark.parametrize("resubmit", [False, True])
@@ -61,7 +61,7 @@ def test_content_edit_resets_old_topic_unless_explicitly_replaced(patch):
     mem = Memory()
     fact = mem.add_fact("user", "prefers", "tea", topic="food")
     mem.update_fact(fact.id, **patch)
-    assert (fact.topic, fact.topic_source) == ("unknown", "unset")
+    assert (fact.topic, fact.topic_source) == ("food", "rule")
     mem.update_fact(fact.id, object="jazz", topic="music")
     assert (fact.topic, fact.topic_source) == ("music", "user")
 
@@ -207,7 +207,7 @@ def test_manual_topic_writes_do_not_call_llm():
     fact = mem.add_fact("user", "prefers", "tea", topic="food")
     mem.update_fact(fact.id, topic="reading")
     mem.update_fact(fact.id, reset_topic=True)
-    assert (fact.topic, fact.topic_source) == ("unknown", "unset")
+    assert (fact.topic, fact.topic_source) == ("food", "rule")
     assert model.calls == 0
 
 

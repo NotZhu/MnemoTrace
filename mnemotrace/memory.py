@@ -19,6 +19,7 @@ from .consolidate.summarizer import (
     ProfileBuilder,
     SessionSummarizer,
 )
+from .consolidate.topic_rules import resolve_topic
 from .embed import Embedder, HashingEmbedder
 from .ingest import Ingestor
 from .llm import LLM
@@ -663,6 +664,9 @@ class Memory:
                  valid_at=valid_at if valid_at is not None else now(),
                  topic=topic if topic is not None else "unknown",
                  topic_source="user" if topic is not None else "unset")
+        if topic is None:
+            # 手动新增没有独立的结论依据参数，内容线索只取对象；重置既有结论时另纳入已存依据。
+            f.topic, f.topic_source = resolve_topic(predicate, object)
         f.embedding = self.embedder.embed(f.text)
         from .consolidate.classify import classify_fact
         classify_fact(f)  # 打 category + 敏感标签（feature ⑤）
@@ -725,7 +729,9 @@ class Memory:
             if topic is not None:
                 f.topic, f.topic_source = topic, "user"
             elif reset_topic:
-                f.topic, f.topic_source = "unknown", "unset"
+                # 即使结论使用三元组式默认正文，也不能将 session 主语带入主题判断。
+                why = split_outcome_text(f.text)[1] if f.predicate.lower() in OUTCOME_PREDICATES else ""
+                f.topic, f.topic_source = resolve_topic(f.predicate, f"{f.object} {why}")
             self._upsert_fact(f, tier="hot")
             self._persona_cache.clear()
             return f
@@ -778,8 +784,11 @@ class Memory:
         if sensitive is not None:
             f.sensitive = sensitive
         # 内容变化使原主题失去依据；同次编辑明确指定的新主题优先。
-        f.topic = topic if topic is not None else "unknown"
-        f.topic_source = "user" if topic is not None else "unset"
+        if topic is not None:
+            f.topic, f.topic_source = topic, "user"
+        else:
+            why = split_outcome_text(f.text)[1] if f.predicate.lower() in OUTCOME_PREDICATES else ""
+            f.topic, f.topic_source = resolve_topic(f.predicate, f"{f.object} {why}")
         self._upsert_fact(f, tier="hot")
         self.engine.graph_builder.add_fact(f)
         self._persona_cache.clear()
@@ -939,6 +948,10 @@ class Memory:
         if ex is not None and hasattr(ex, "system") and hasattr(ex, "instruction"):
             ex.system = self._effective("extract_system")
             ex.instruction = self.policy.get("extract_instruction", "")
+        if hasattr(ex, "llm_topics"):
+            ex.llm_topics = self.config.llm_topics
+        if hasattr(ex, "preference_object_normalization"):
+            ex.preference_object_normalization = self.config.preference_object_normalization
         self.summarizer.system = self._effective("summary_system")
 
     # --- 工作记忆层：瞬态的、按 session/TTL 划界的状态，不进长期存储（feature ①） ---
