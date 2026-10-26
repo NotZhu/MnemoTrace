@@ -104,34 +104,25 @@ def test_lancedb_consolidation_persists_invalidated_fact_payload(tmp_path):
     assert "oracle" in reopened.search("Where does Finn work?", user_id="u").answer().lower()
 
 
-def test_lancedb_open_without_data_path_isolates_each_store(tmp_path):
+@pytest.mark.parametrize("explicit_default_factory", [False, True])
+def test_lancedb_open_without_data_path_isolates_each_store(tmp_path, explicit_default_factory):
     cfg = Config(storage="lancedb")
-    a = Memory.open(str(tmp_path / "alice"), config=cfg)
-    b = Memory.open(str(tmp_path / "bob"), config=cfg)
+    kwargs = {"vector_store_factory": InMemoryVectorStore} if explicit_default_factory else {}
+    a = Memory.open(str(tmp_path / "alice"), config=cfg, **kwargs)
+    b = Memory.open(str(tmp_path / "bob"), config=cfg, **kwargs)
     a.add_fact("user", "likes", "apples", user_id="alice")
     b.add_fact("user", "likes", "bananas", user_id="bob")
     a.save()
     b.save()
 
-    alice = Memory.open(str(tmp_path / "alice"), config=cfg)
-    bob = Memory.open(str(tmp_path / "bob"), config=cfg)
+    alice = Memory.open(str(tmp_path / "alice"), config=cfg, **kwargs)
+    bob = Memory.open(str(tmp_path / "bob"), config=cfg, **kwargs)
     assert [f.object for f in alice.fact_store.values()] == ["apples"]
     assert [f.object for f in bob.fact_store.values()] == ["bananas"]
     assert "apples" in alice.search("What do I like?", user_id="alice").answer().lower()
     assert "bananas" in bob.search("What do I like?", user_id="bob").answer().lower()
     assert (tmp_path / "alice" / "lancedb").exists()
     assert (tmp_path / "bob" / "lancedb").exists()
-    assert cfg.data_path is None
-
-
-def test_lancedb_direct_construction_without_data_path_uses_isolated_temp_dirs():
-    cfg = Config(storage="lancedb")
-    a = Memory(config=cfg)
-    b = Memory(config=cfg)
-    assert isinstance(a.fact_store, LanceDBVectorStore)
-    assert isinstance(b.fact_store, LanceDBVectorStore)
-    assert a.fact_store.path != b.fact_store.path
-    assert ".mnemotrace/data/default" not in a.fact_store.path
     assert cfg.data_path is None
 
 

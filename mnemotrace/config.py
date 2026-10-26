@@ -10,7 +10,7 @@ from typing import Optional
 class Config:
     # --- 存储后端选择 ---
     storage: str = "memory"  # memory | durable | lancedb
-    data_path: Optional[str] = None
+    data_path: Optional[str] = None  # 内置 LanceDB 必须有非空路径；open() 可从快照根目录派生
 
     # --- 检索融合权重（AGENTS.md 「检索与模块」）---
     w_sem: float = 1.0  # 稠密语义

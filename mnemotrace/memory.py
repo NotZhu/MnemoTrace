@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import re
-import tempfile
 from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
@@ -150,9 +149,14 @@ class Memory:
 
         custom_vector_factory = vector_store_factory is not InMemoryVectorStore
         if self.config.storage == "lancedb" and not custom_vector_factory:
-            from .store.lancedb_store import LanceDBVectorStore
+            base = self.config.data_path
+            if not base:
+                raise ValueError(
+                    "storage='lancedb' requires a non-empty data_path; "
+                    "pass data_path or use Memory.open(path, config=...)"
+                )
 
-            base = self.config.data_path or tempfile.mkdtemp(prefix="mnemotrace_lancedb_")
+            from .store.lancedb_store import LanceDBVectorStore
 
             def make_vector_store(name: str) -> VectorStore:
                 return LanceDBVectorStore(base, name)
@@ -259,6 +263,10 @@ class Memory:
     def open(cls, path: str, allow_mismatch: bool = False, **kwargs) -> "Memory":
         """从 JSONL+manifest 存储打开持久化 Memory；不存在则从空开始。
 
+        使用内置 LanceDB 后端时，config.data_path 为 None 则使用 path/lancedb，
+        显式非空路径优先，空字符串抛出 ValueError；不修改传入的 Config，也不创建临时数据库。
+        省略或显式传入默认向量工厂时行为一致；自定义 vector_store_factory 自行管理存储位置。
+
         `allow_mismatch=True` 仅仅为了让 `.reembed()` 能把 store 迁移到所挂载的 embedder 而绕过
         嵌入空间守卫——其他任何目的下的不匹配打开都会损坏检索。"""
         cfg = kwargs.get("config")
@@ -266,7 +274,7 @@ class Memory:
             cfg is not None
             and getattr(cfg, "storage", None) == "lancedb"
             and getattr(cfg, "data_path", None) is None
-            and "vector_store_factory" not in kwargs
+            and kwargs.get("vector_store_factory", InMemoryVectorStore) is InMemoryVectorStore
         ):
             kwargs["config"] = replace(cfg, data_path=f"{path}/lancedb")
         mem = cls(**kwargs)
