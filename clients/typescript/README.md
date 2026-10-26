@@ -64,8 +64,8 @@ All operations below return promises. Option names are camelCase except where an
 | `stats()` | MemoryStats without memory text |
 | `agentStatus(options?)` | optional sessionId; AgentStatus |
 | `profile()` | ProfileResult |
-| `addFact(fact)` | predicate/object plus optional subject/sensitive/category; id and text |
-| `updateFact(id, patch)` | FactPatch; id and text |
+| `addFact(fact)` | predicate/object plus optional subject/sensitive/category/topic; id, text and topic metadata |
+| `updateFact(id, patch)` | FactPatch, including topic/reset_topic; id, text and topic metadata |
 | `deleteFact(id)` | deletion result; inspect ok |
 | `getFocus()` / `setFocus(partial)` | track/mute lists |
 | `getPolicy()` / `setPolicy(partial)` | extraction, summary and persona overrides |
@@ -84,6 +84,8 @@ The SDK does not expose every HTTP endpoint or filter: category filtering, docum
 ## Types and errors
 
 Public types are exported from [types.ts](https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/src/types.ts). Core results include RememberResult, RecallResult, SearchResult, Fact, MemoryDump, SessionIndex, SessionReport, ImportResult, MemoryExport, and chat completion types.
+
+`Topic` is a fixed set of main topics, with a separate `TopicSource`. Omitting `topic` or passing null leaves it unspecified; selecting `'unknown'` explicitly records a manual choice. Use `{ reset_topic: true }` to restore `'unknown'/'unset'`, without also supplying a topic. Content edits clear the old topic unless a replacement is supplied. Topic-only edits preserve fact provenance and history. Automatic topic assignment and profile grouping by stored topics are not enabled yet. Redacted session report rows omit topic metadata. Structured exports use version 2 and preserve both fields; version 1 snapshots are rejected.
 
 Non-2xx responses throw `MnemoTraceError` with status and the parsed error body in detail. Network failures can remain native fetch errors. A successful HTTP response can still contain queued, degraded, or a rejected business result; inspect the operation's payload.
 

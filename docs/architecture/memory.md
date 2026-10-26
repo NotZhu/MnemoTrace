@@ -20,6 +20,18 @@
 
 分类和画像分组与敏感检测独立：敏感检测仍检查关系、对象及完整正文，包含会话结论的依据，不随分类修正改变规则。健康禁忌分组不会自动设置敏感标记，例如 cannot_eat/cant_eat → peanuts 在没有其他敏感线索时仍为 False，allergic 则会命中敏感词干。未知拼写 allic 不作为禁忌关系识别。
 
+## 主题与来源
+
+Fact 的 `topic` 是单一主主题，独立于管理分类 category、敏感标记 sensitive 和事实来源 source。固定取值及校验集中在 [topics.py](../../mnemotrace/topics.py)，覆盖生活画像与工作会话，`unknown` 表示未知；不接受自定义主题、中文别名或空字符串。健康主题不证明本人存在疾病或禁忌。
+
+`topic_source` 为 unset、rule、llm 或 user：unset 必须对应 unknown，rule/llm 必须对应明确主题，user 可以明确选择 unknown。内置规则与 LLM 提取器目前均不自动赋主题，未指定主题的新事实为 unknown/unset；人工设置主题记为 user。导入与恢复保留主题及其原始来源。
+
+仅编辑主题或恢复未赋值状态属于元数据操作，不改变事实来源、正文、向量、时间、有效状态和替代链。实际修改三元组或结论正文时，旧主题重置为 unknown/unset；同次明确指定的新主题优先。回传未变的内容不触发重置。重复导入或抽取不会覆盖存量事实的人工主题，新替代事实也不继承旧事实的主题。
+
+主题字段可通过 Python、HTTP、MCP 和 SDK 读写；控制台暂不提供主题交互，画像分组与检索排序也尚不消费该字段。脱敏会话报告的占位条目省略 topic/topic_source，共享导出继续过滤敏感事实。
+
+`topic` 与 `focus.track` 含义不同：前者描述单条事实的主题，后者是记忆实例（服务端命名空间）的关注配置，使用自由文本词语匹配 Fact.text，提升显著度并影响排序与冷热层策略。两者不自动映射，修改 topic 不会更改 track 或提升显著度；例如 topic=food 不代表正文为“茶”的事实会命中 track=["food"]。
+
 ## 时间与知识更新
 
 - Episode 的 `event_time` 表示事件发生时间，`ingested_at` 表示进入系统的时间。
@@ -46,13 +58,15 @@ working 的“临时”指可见性与清理生命周期。当前 JSONL 快照�
 - 前缀内部缺失记录或 JSON 格式错误时抛出 `StoreFormatError`。
 - manifest 数量之后的撕裂字节作为未提交尾部丢弃；这里指加载时不接纳尾部，不表示自动改写磁盘文件。
 - 路径存在且不是目录时拒绝加载；manifest 不存在时，当前实现按空库处理。
-- 当前写入与读取 schema 为 1，其他整数版本抛出 `IncompatibleStoreError`；版本缺失或类型非法抛出 `StoreFormatError`。
+- 当前写入与读取 schema 为 2，其他整数版本抛出 `IncompatibleStoreError`；版本缺失或类型非法抛出 `StoreFormatError`。
 
 保存先刷新并替换集合文件，再替换 manifest。文件锁和提交标识提供并发协调，但多文件快照不等于完整的跨文件事务回滚，也不承诺崩溃发生在任意阶段都能自动恢复旧代次。备份应在暂停写入后复制完整数据目录，见[部署说明](../../deploy/README.md#备份与恢复)。
 
 恢复使用独立于新建对象默认值的字段契约。manifest 必须包含 schema、非空 snapshot_id 和 embedder_id、正整数 embedding_dim、backend、软件版本、创建/更新时间、六类集合计数和 state。提交编号缺失时不再使用旧哈希 token。当前 writer 生成的完整存档继续可读；历史存档缺少这些信息时拒绝读取，不自动转换、补造、重写或删除。
 
 六类本地记录要求当前写入字段完整，唯一允许缺省的字段是 Fact.text（按三元组生成）和 Fact.display（空字符串）；未知附加字段不参与对象构造。JSONL 事实另须有 `_store=hot|cold`。时间、编号、归属、来源、替代关系、失效/消费标记均不能由新建默认值补齐。允许显式的合法空值，例如 provenance=[]、invalid_at=null；空值与字段缺失不同。类型严格校验，数值须有限，整数不接受布尔值；epoch 0 和负时间戳原样保留。LanceDB 的类型化 payload 使用同一记录契约。
+
+事实的 topic/topic_source 为必需字段，并校验取值及来源组合。版本 1 的旧库不自动升级，新格式缺失主题字段属于损坏；打开、保存或导入都不会自动清理旧数据。
 
 state 必须包含 focus（track/mute 字符串列表）、policy（四个策略字符串）、identity（字符串映射）、aliases（字符串列表映射）和 import_seen（字符串列表）。显式空列表/映射合法，policy 的空字符串表示使用内置策略；persona_cache、cold_pages_out 和 cold_pages_in 可缺省，提供时仍需合法。它们的字段规则由[恢复校验实现](../../mnemotrace/store/_validation.py)统一维护。
 
@@ -62,7 +76,7 @@ state 必须包含 focus（track/mute 字符串列表）、policy（四个策略
 
 ## 结构化迁移导入
 
-`Memory.import_snapshot()` 和 HTTP `/v1/import` 接受版本 1 的结构化导出，要求顶层版本、facts 和 episodes 列表及各记录必要字段完整。事实行须提供原编号、来源类别、双时间轴和替代关系；对话行须提供原编号、session、speaker、content 与 event_time，摘要可缺省。时间须为有限 epoch 数值，不从字符串推断单位或用当前时间补齐。导出字段契约与本地存储不同，不能直接将 JSONL 目录当作迁移载荷。
+`Memory.import_snapshot()` 和 HTTP `/v1/import` 接受版本 2 的结构化导出，要求顶层版本、facts 和 episodes 列表及各记录必要字段完整。事实行须提供原编号、来源类别、topic/topic_source、双时间轴和替代关系；对话行须提供原编号、session、speaker、content 与 event_time，摘要可缺省。时间须为有限 epoch 数值，不从字符串推断单位或用当前时间补齐。导出字段契约与本地存储不同，不能直接将 JSONL 目录当作迁移载荷。
 
 迁移会为目标用户分配新记录编号、重算向量、重连本批与去重命中的替代链；未包含的替代目标置空，provenance 保留来源编号。目标用户的 focus、policy、identity、aliases 和 import_seen 保持不变；导出的 focus、profile 和 graph 等展示信息不覆盖目标设置。默认分享安全导出允许 episodes=[]。迁移导入不提供整库运行状态备份恢复。
 

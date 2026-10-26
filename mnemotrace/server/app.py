@@ -38,6 +38,7 @@ from .. import __version__
 from ..memory import InvalidFactEditError
 from ..service import MemoryService
 from ..spaces import AuthConfigError, Principal, is_valid_api_key, load_spaces, principal_for_token
+from ..topics import Topic
 
 
 DEFAULT_MAX_REQUEST_BYTES = 2 * 1024 * 1024
@@ -647,6 +648,7 @@ class FactReq(BaseModel):
     object: str
     sensitive: Optional[bool] = None
     category: Optional[str] = None
+    topic: Optional[Topic] = None
 
 
 class FactEdit(BaseModel):
@@ -656,6 +658,8 @@ class FactEdit(BaseModel):
     sensitive: Optional[bool] = None  # 用户对自动敏感标记的覆盖（⑤）
     category: Optional[str] = None
     statement: Optional[str] = Field(default=None, min_length=1)
+    topic: Optional[Topic] = None
+    reset_topic: bool = False
 
 
 @app.post("/v1/facts")
@@ -668,6 +672,7 @@ def add_fact(req: FactReq, user: str = Depends(auth)):
         req.object,
         sensitive=req.sensitive,
         category=req.category,
+        topic=req.topic,
     )
 
 
@@ -680,7 +685,7 @@ def edit_fact(fact_id: str, req: FactEdit, user: str = Depends(auth)):
     try:
         result = svc().update_fact(user, fact_id, subject=req.subject, predicate=req.predicate,
                                    object=req.object, sensitive=req.sensitive, category=req.category,
-                                   statement=req.statement)
+                                    statement=req.statement, topic=req.topic, reset_topic=req.reset_topic)
     except InvalidFactEditError as exc:
         raise HTTPException(422, str(exc)) from exc
     if result is None:

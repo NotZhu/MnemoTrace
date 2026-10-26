@@ -41,6 +41,7 @@ from .store import (
     load_memory,
     save_memory,
 )
+from .topics import Topic, validate_topic
 from .types import Conflict, Episode, Fact, WorkingMemory
 from .util import DAY, fmt_date, now
 
@@ -620,6 +621,7 @@ class Memory:
             f = Fact(subject=s, predicate=p, object=o, user_id=user,
                      text=row.get("text", ""), source=row["source"],
                      category=row["category"], sensitive=row["sensitive"],
+                      topic=row["topic"], topic_source=row["topic_source"],
                      salience=row["salience"], confidence=row["confidence"],
                      valid_at=valid_at,
                      invalid_at=row["invalid_at"], created_at=row["created_at"],
@@ -652,12 +654,15 @@ class Memory:
     # --- 用户手写的记忆管理（管理界面驱动的可编辑层） ---
     def add_fact(self, subject: str, predicate: str, object: str, user_id: str = "default",
                  valid_at: Optional[float] = None, sensitive: Optional[bool] = None,
-                 category: Optional[str] = None) -> Fact:
+                 category: Optional[str] = None, topic: Optional[Topic] = None) -> Fact:
         """手动断言一条 fact。它被标记为 source='user'（权威）：冲突解决允许它取代同一槽位上
         任何抽取出的值，并且此后受到保护，不会被未来的自动覆盖改写。"""
         user = user_id
+        # Fact 构造时校验主题及主题来源，失败发生在嵌入、图操作和存储之前。
         f = Fact(subject=subject, predicate=predicate, object=object, user_id=user, source="user",
-                 valid_at=valid_at if valid_at is not None else now())
+                 valid_at=valid_at if valid_at is not None else now(),
+                 topic=topic if topic is not None else "unknown",
+                 topic_source="user" if topic is not None else "unset")
         f.embedding = self.embedder.embed(f.text)
         from .consolidate.classify import classify_fact
         classify_fact(f)  # 打 category + 敏感标签（feature ⑤）
@@ -679,13 +684,21 @@ class Memory:
 
     def update_fact(self, fact_id: str, subject: Optional[str] = None, predicate: Optional[str] = None,
                     object: Optional[str] = None, sensitive: Optional[bool] = None,
-                    category: Optional[str] = None, statement: Optional[str] = None) -> Optional[Fact]:
+                    category: Optional[str] = None, statement: Optional[str] = None,
+                    topic: Optional[Topic] = None, reset_topic: bool = False) -> Optional[Fact]:
         """实际修改 fact 内容时标记为用户手写（因此自动抽取不会把它改回去）。
         依据新内容重新分类 category/sensitivity；显式传入的 `sensitive`/`category` 覆盖自动结果
         （用户的选择永远优先）。只修改元数据或回传未变的内容时，保留来源、有效状态与历史。"""
         f = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
         if f is None:
             return None
+        if not isinstance(reset_topic, bool):
+            raise InvalidFactEditError("reset_topic must be a boolean")
+        if topic is not None:
+            if reset_topic:
+                raise InvalidFactEditError("topic cannot be combined with reset_topic")
+            # 此入口把主题来源固定为 user；允许人工明确选择 unknown。
+            validate_topic(topic, "user")
         from .consolidate.outcomes import OUTCOME_CATEGORY, OUTCOME_PREDICATES, split_outcome_text
         if statement is not None:
             if any(value is not None for value in (subject, predicate, object)):
@@ -709,6 +722,10 @@ class Memory:
                 f.sensitive = sensitive
             if category is not None:
                 f.category = category
+            if topic is not None:
+                f.topic, f.topic_source = topic, "user"
+            elif reset_topic:
+                f.topic, f.topic_source = "unknown", "unset"
             self._upsert_fact(f, tier="hot")
             self._persona_cache.clear()
             return f
@@ -760,6 +777,9 @@ class Memory:
             f.category = category
         if sensitive is not None:
             f.sensitive = sensitive
+        # 内容变化使原主题失去依据；同次编辑明确指定的新主题优先。
+        f.topic = topic if topic is not None else "unknown"
+        f.topic_source = "user" if topic is not None else "unset"
         self._upsert_fact(f, tier="hot")
         self.engine.graph_builder.add_fact(f)
         self._persona_cache.clear()

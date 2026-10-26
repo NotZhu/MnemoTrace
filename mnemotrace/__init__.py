@@ -7,8 +7,9 @@ __version__ = "0.1.0"
 
 from .config import Config
 from .types import Entity, Episode, Fact, Relation
+from .topics import Topic, TopicSource
 
-__all__ = ["__version__", "Config", "Episode", "Fact", "Entity", "Relation"]
+__all__ = ["__version__", "Config", "Episode", "Fact", "Entity", "Relation", "Topic", "TopicSource"]
 
 # Memory facade 延迟挂载以避免导入开销；见 mnemotrace/memory.py。
 try:  # pragma: no cover - exercised once memory.py lands

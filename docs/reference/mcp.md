@@ -27,8 +27,8 @@
 | --- | --- | --- |
 | `mnemotrace_remember` | content 必填；session_id=default、scope=auto/long/working | 保存并通过服务层处理整合 |
 | `mnemotrace_close_session` | session_id=default、summarize=true、clear_working=true、response_format | 收尾，不删除原始事件 |
-| `mnemotrace_add_fact` | predicate、object 必填；subject=user、sensitive、category | 添加用户明确断言 |
-| `mnemotrace_update_fact` | fact_id 必填；subject、predicate、object、sensitive、category、response_format | 编辑事实，找不到时检查错误结果 |
+| `mnemotrace_add_fact` | predicate、object 必填；subject=user、sensitive、category、topic | 添加用户明确断言 |
+| `mnemotrace_update_fact` | fact_id 必填；subject、predicate、object、sensitive、category、topic、reset_topic、response_format | 编辑事实，找不到时检查错误结果 |
 | `mnemotrace_set_focus` | track、mute 可选；response_format | None 不变，[] 清空 |
 | `mnemotrace_import` | content 必填；format=auto | 导入原始导出内容，content 不是服务器文件路径 |
 | `mnemotrace_export` | include_sensitive=false、response_format | 默认安全导出，显式选择才返回私有原文 |
@@ -36,6 +36,8 @@
 | `mnemotrace_forget` | confirm=false | 确认后清空整个命名空间 |
 
 格式名称以工具 schema 为准。写入可能产生模型调用、持久化与派生状态变化；原始写入、异步排队和整合降级的状态应分别解释。
+
+topic 使用工具 schema 的固定枚举；来源由服务端记录。人工选择 unknown 与 `reset_topic=true` 恢复未赋值状态不同，不能同时指定主题与重置标志；仅改主题不改变事实来源和历史。新增或编辑结果展示主题及来源，列表的 JSON 结果保留该元数据；脱敏报告省略它。完整语义见[主题与来源](../architecture/memory.md#主题与来源)。
 
 ## 权限与能力边界
 

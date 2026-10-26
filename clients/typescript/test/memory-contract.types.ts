@@ -1,4 +1,4 @@
-import type { GraphResponse, MemoryDump, MemoryListOptions, OutcomeKind } from '../src/types'
+import type { GraphResponse, MemoryDump, MemoryListOptions, OutcomeKind, Topic, TopicSource } from '../src/types'
 import type { MnemoTraceClient } from '../src/client'
 
 declare const client: MnemoTraceClient
@@ -19,3 +19,15 @@ graph.then(result => {
   const hasMore: boolean = result.has_more
   return hasMore
 })
+
+client.addFact({ predicate: 'prefers', object: 'tea', topic: 'food' }).then(result => {
+  const topic: Topic = result.topic
+  const source: TopicSource = result.topic_source
+  return [topic, source]
+})
+client.updateFact('synthetic-fact', { reset_topic: true })
+client.updateFact('synthetic-fact', { topic: null })
+// @ts-expect-error unsupported topic
+client.updateFact('synthetic-fact', { topic: '音乐' })
+// @ts-expect-error callers cannot choose the topic source
+client.addFact({ predicate: 'prefers', object: 'tea', topic_source: 'llm' })

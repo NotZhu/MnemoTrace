@@ -12,7 +12,7 @@ from mnemotrace.types import Episode, Fact
 
 def snapshot():
     return {
-        "mnemotrace_export_version": 1,
+        "mnemotrace_export_version": 2,
         "facts": [asdict(Fact(id="ft_source", subject="Synthetic", predicate="works_at",
                               object="SyntheticCo", valid_at=0, created_at=-1, source="user"))],
         "episodes": [asdict(Episode(id="ep_source", content="Synthetic source", event_time=0))],
@@ -56,7 +56,7 @@ def test_missing_envelope_rejects_entire_batch(key):
 @pytest.mark.parametrize("key", [
     "id", "subject", "predicate", "object", "source", "valid_at", "invalid_at",
     "created_at", "expired_at", "supersedes", "provenance", "category", "sensitive",
-    "salience", "confidence",
+    "salience", "confidence", "topic", "topic_source",
 ])
 def test_missing_fact_history_rejects_before_any_episode_is_added(key):
     payload = snapshot()
@@ -95,7 +95,7 @@ def test_invalid_last_record_does_not_partially_import_or_echo_values(key, value
     assert contents(mem) == before
 
 
-@pytest.mark.parametrize("value", [True, 1.9, "1", 0, 2, 999])
+@pytest.mark.parametrize("value", [True, 1.9, "1", 0, 1, 999])
 def test_invalid_snapshot_versions_are_rejected(value):
     payload = snapshot()
     payload["mnemotrace_export_version"] = value

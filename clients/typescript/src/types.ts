@@ -73,6 +73,9 @@ export interface SessionReportFact {
   status: FactStatus
   source: FactSource
   category: string
+  /** Omitted for redacted rows. */
+  topic?: Topic
+  topic_source?: TopicSource
   sensitive: boolean
   redacted: boolean
   provenance: string[]
@@ -130,7 +133,15 @@ export interface SessionListOptions {
 export type FactStatus = 'live' | 'superseded'
 export type FactSource = 'extracted' | 'user'
 
-export interface Fact {
+export type Topic = 'food' | 'travel' | 'music' | 'film_tv' | 'sports' | 'reading' | 'hobbies'
+  | 'environment' | 'health' | 'work' | 'learning' | 'technology' | 'finance' | 'relationships' | 'unknown'
+export type TopicSource = 'unset' | 'rule' | 'llm' | 'user'
+export interface TopicMetadata {
+  topic: Topic
+  topic_source: TopicSource
+}
+
+export interface Fact extends TopicMetadata {
   id: string
   text: string
   display?: string
@@ -350,6 +361,7 @@ export interface FactInput {
   object: string
   sensitive?: boolean
   category?: string
+  topic?: Topic | null
 }
 
 export interface FactPatch {
@@ -358,6 +370,8 @@ export interface FactPatch {
   object?: string
   sensitive?: boolean
   category?: string
+  topic?: Topic | null
+  reset_topic?: boolean
 }
 
 export interface ImportMessageInput {
@@ -392,7 +406,7 @@ export interface ImportResult {
   summaries: number
 }
 
-export interface MemoryExportFact {
+export interface MemoryExportFact extends TopicMetadata {
   id: string
   subject: string
   predicate: string
@@ -425,7 +439,7 @@ export interface MemoryExportEpisode {
 }
 
 export interface MemoryExport {
-  mnemotrace_export_version: 1
+  mnemotrace_export_version: 2
   user: string
   include_sensitive: boolean
   redacted_sensitive: boolean

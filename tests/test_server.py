@@ -396,7 +396,7 @@ def test_fact_crud_and_focus_policy_graph_export(client):
     assert pol["ok"] and pol["policy"]["extract_instruction"] == "Record job changes."
     assert "nodes" in client.get("/v1/graph", headers=h).json()
     exp = client.get("/v1/export", headers=h).json()
-    assert exp["mnemotrace_export_version"] == 1 and any(f["object"] == "Moonshot AI" for f in exp["facts"])
+    assert exp["mnemotrace_export_version"] == 2 and any(f["object"] == "Moonshot AI" for f in exp["facts"])
     assert client.delete(f"/v1/facts/{fid}", headers=h).json()["ok"] is True
 
 

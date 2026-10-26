@@ -183,7 +183,7 @@ def test_invalid_snapshot_import_does_not_write_lancedb_rows(tmp_path):
     valid = asdict(Fact(id="ft_valid", subject="Source", predicate="likes", object="coffee"))
     invalid = {**valid, "id": "ft_invalid", "provenance": 42}
     with pytest.raises(ValueError, match="provenance"):
-        mem.import_snapshot({"mnemotrace_export_version": 1, "facts": [valid, invalid], "episodes": []})
+        mem.import_snapshot({"mnemotrace_export_version": 2, "facts": [valid, invalid], "episodes": []})
     assert mem.fact_store._open().to_arrow().to_pylist() == before
 
 

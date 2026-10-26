@@ -9,6 +9,7 @@ import type { AuditReport,
   FactEdit,
   FactSource,
   FactWrite,
+  TopicMetadata,
   GraphResponse,
   Health,
   MemoryDump,
@@ -216,14 +217,14 @@ export const api = {
     }),
 
   addFact: (fact: FactWrite) =>
-    request<{ ok: boolean; id: string; text: string }>('/v1/facts', {
+    request<{ ok: boolean; id: string; text: string } & TopicMetadata>('/v1/facts', {
       method: 'POST',
       body: json({ subject: 'user', ...fact }),
     }),
 
   // 实际修改内容后 `source` 为 'user'；只改敏感标记或分类时保留原来源。
   editFact: (id: string, patch: FactEdit) =>
-    request<{ ok: boolean; id: string; text: string; display?: string; source: FactSource }>(`/v1/facts/${id}`, {
+    request<{ ok: boolean; id: string; text: string; display?: string; source: FactSource } & TopicMetadata>(`/v1/facts/${id}`, {
       method: 'PATCH',
       body: json(patch),
     }),

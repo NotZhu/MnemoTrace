@@ -87,8 +87,8 @@ close 返回处理计数，例如 `pending_consolidated`、`facts_added`、`summ
 
 | 端点 | 输入与语义 |
 | --- | --- |
-| `POST /v1/facts` | predicate、object 必填；subject=user，sensitive/category 可选；添加用户断言 |
-| `PATCH /v1/facts/{fact_id}` | 三元组字段或 statement，及 sensitive/category；statement 非空且不能与三元组字段混用 |
+| `POST /v1/facts` | predicate、object 必填；subject=user，sensitive/category/topic 可选；添加用户断言 |
+| `PATCH /v1/facts/{fact_id}` | 三元组字段或 statement，及 sensitive/category/topic/reset_topic；statement 非空且不能与三元组字段混用 |
 | `DELETE /v1/facts/{fact_id}` | 删除单事实；检查响应中的 ok |
 | `POST /v1/facts/clear-slot` | subject、predicate、expect_count 必填；受当前数量、来源和历史链保护 |
 | `GET /v1/profile` | 派生画像与关键事实 |
@@ -103,7 +103,9 @@ close 返回处理计数，例如 `pending_consolidated`、`facts_added`、`summ
 
 `GET /v1/graph` 返回 `{nodes, edges, has_more}`，筛选顺序与完整性含义遵循 [Python 图谱契约](python-api.md)。`limit` 按筛选后的关系数计，显式正数上限最多为 500；省略时不限量。`has_more=true` 表示该查询结果被截断，不代表查询失败，也不包含全局总数。
 
-内容编辑使事实变为用户来源；只改敏感标记或分类保留原来源。槽位清理可能通过 JSON 结果表达拒绝，不能只检查 HTTP 状态。服务端权限不会被客户端筛选或隐私开关替代。
+内容编辑使事实变为用户来源；只改敏感标记、分类或主题保留原来源。槽位清理可能通过 JSON 结果表达拒绝，不能只检查 HTTP 状态。服务端权限不会被客户端筛选或隐私开关替代。
+
+事实读写响应包含 topic/topic_source；主题的固定枚举会出现在 OpenAPI 中。topic 省略或 null 表示未指定，`"unknown"` 表示人工选择未知；`reset_topic=true` 恢复 unknown/unset，不能与明确 topic 同传。主题来源由服务端决定，非法主题或编辑组合返回 422。内容变化且未指定新主题时重置旧主题，完整契约见[主题与来源](../architecture/memory.md#主题与来源)。脱敏会话报告省略主题元数据。
 
 ## 工作记忆、导入与导出
 

@@ -22,7 +22,7 @@
 | `import_data` | data、format="auto"、user_id、session_id；其余导入选项 | 计数字典；先解析再导入 |
 | `import_snapshot` | snapshot、user_id、dedupe=True | dict；导入结构化导出，不等同于打开存储目录 |
 
-结构化快照按版本 1 的必要字段整批校验，错误抛出 `ValueError`，不部分导入。迁移保留目标用户的运行设置；字段、来源编号和替代链语义见[结构化迁移导入](../architecture/memory.md#结构化迁移导入)。
+结构化快照按版本 2 的必要字段整批校验，错误抛出 `ValueError`，不部分导入。迁移保留目标用户的运行设置；字段、来源编号和替代链语义见[结构化迁移导入](../architecture/memory.md#结构化迁移导入)。
 
 `scope="auto"` 按规则识别短时状态，`long` 强制走长期内容路径，`working` 跳过长期画像事实提取。Python 记忆实例中的写入不会自动保存到磁盘。
 
@@ -50,8 +50,8 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 
 | 方法 | 用途 |
 | --- | --- |
-| `add_fact(subject, predicate, object, user_id=..., valid_at=None, sensitive=None, category=None)` | 返回用户来源 Fact |
-| `update_fact(fact_id, ...)` | 修改内容、分类或敏感标记，返回 Fact 或 None；statement 不与三元组字段混用 |
+| `add_fact(subject, predicate, object, user_id=..., valid_at=None, sensitive=None, category=None, topic=None)` | 返回用户来源 Fact |
+| `update_fact(fact_id, ..., topic=None, reset_topic=False)` | 修改内容或元数据，返回 Fact 或 None；statement 不与三元组字段混用 |
 | `delete_fact(fact_id)` | 删除指定事实，返回 bool |
 | `remember_working(content, user_id=..., session_id=..., kind="state", ttl_seconds=None)` | 返回 WorkingMemory |
 | `working_memory(user_id=..., session_id=None, as_of=None, kind=None)` | 活跃工作条目 |
@@ -63,6 +63,14 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 | `pending_conflicts(user_id=...)`、`resolve_conflict(conflict_id, keep="newer")`、`dismiss_conflict(conflict_id)` | 查询和裁决待确认冲突 |
 
 图谱的状态、搜索、敏感内容与时间筛选均在 `limit` 前执行；正数 `limit` 限制返回关系数，节点仅包含这些关系的端点。`has_more=true` 表示当前查询条件下仍有未返回的匹配关系；恰好达到上限不表示截断。不限量查询返回全部匹配关系，`has_more=false`。该字段不提供命名空间总数，展示数量仅描述已返回的图。
+
+主题可使用导出的 `Topic`、`TopicSource` 类型。`topic=None` 表示未指定，`topic="unknown"` 是人工选择未知，`reset_topic=True` 恢复为 unknown/unset，不能与明确 topic 同传。仅修改主题不改变事实来源或历史；内容变化且未指定新主题时重置旧主题。完整契约见[主题与来源](../architecture/memory.md#主题与来源)。
+
+```python
+fact = memory.add_fact("user", "prefers", "茶", topic="food")
+memory.update_fact(fact.id, topic="unknown")  # unknown/user
+memory.update_fact(fact.id, reset_topic=True)  # unknown/unset
+```
 
 ## 保存与模型切换
 

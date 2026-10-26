@@ -180,7 +180,7 @@ def test_diagnose_remote_http_lifecycle_success(monkeypatch):
         if path == "/v1/export":
             assert params == {"include_sensitive": "false"}
             return {
-                "mnemotrace_export_version": 1,
+                "mnemotrace_export_version": 2,
                 "include_sensitive": False,
                 "facts": [{"text": "Project decision: MnemoTrace remote doctor verifies cross-agent handoff."}],
             }
@@ -298,7 +298,7 @@ def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
         if path == "/v1/export":
             assert params == {"include_sensitive": "false"}
             return {
-                "mnemotrace_export_version": 1,
+                "mnemotrace_export_version": 2,
                 "include_sensitive": False,
                 "facts": [{"text": "Project decision: MnemoTrace remote doctor verifies cross-agent handoff."}],
             }
