@@ -68,7 +68,7 @@ def test_manifest_values_are_not_coerced(saved, key, value):
         Memory.open(str(path), allow_mismatch=True)
 
 
-@pytest.mark.parametrize("version", [0, -1, 2, 999])
+@pytest.mark.parametrize("version", [0, -1, 1, 999])
 def test_unsupported_version_takes_precedence_over_other_missing_fields(tmp_path, version):
     (tmp_path / "manifest.json").write_text(json.dumps({"schema_version": version}), encoding="utf-8")
     with pytest.raises(IncompatibleStoreError):

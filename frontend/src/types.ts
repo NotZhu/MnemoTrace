@@ -3,7 +3,15 @@
 export type FactStatus = 'live' | 'superseded'
 export type FactSource = 'extracted' | 'user'
 
-export interface MemoryFact {
+export type Topic = 'food' | 'travel' | 'music' | 'film_tv' | 'sports' | 'reading' | 'hobbies'
+  | 'environment' | 'health' | 'work' | 'learning' | 'technology' | 'finance' | 'relationships' | 'unknown'
+export type TopicSource = 'unset' | 'rule' | 'llm' | 'user'
+export interface TopicMetadata {
+  topic: Topic
+  topic_source: TopicSource
+}
+
+export interface MemoryFact extends TopicMetadata {
   id: string
   text: string
   display: string // 本地化渲染结果（中文记录的事实显示为中文）；无则回退为 text
@@ -167,6 +175,9 @@ export interface SessionReportFact {
   status: FactStatus
   source: FactSource
   category: string
+  // 脱敏占位条目不返回主题元数据。
+  topic?: Topic
+  topic_source?: TopicSource
   sensitive: boolean
   redacted: boolean
   provenance: string[]
@@ -269,6 +280,7 @@ export interface FactWrite {
   object: string
   sensitive?: boolean
   category?: string
+  topic?: Topic | null
 }
 
 export interface FactEdit {
@@ -278,6 +290,8 @@ export interface FactEdit {
   object?: string
   sensitive?: boolean
   category?: string
+  topic?: Topic | null
+  reset_topic?: boolean
 }
 
 export interface Health {

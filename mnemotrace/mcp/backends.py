@@ -16,6 +16,8 @@ import os
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote, urlencode
 
+from ..topics import Topic
+
 
 @runtime_checkable
 class Backend(Protocol):
@@ -67,6 +69,7 @@ class Backend(Protocol):
         object: str,
         sensitive: bool | None = None,
         category: str | None = None,
+        topic: Topic | None = None,
     ) -> dict: ...
     async def update_fact(
         self,
@@ -76,6 +79,8 @@ class Backend(Protocol):
         object: str | None = None,
         sensitive: bool | None = None,
         category: str | None = None,
+        topic: Topic | None = None,
+        reset_topic: bool = False,
     ) -> dict | None: ...
     async def delete_fact(self, fact_id: str) -> dict: ...
     async def import_(self, data: Any, format: str = "auto") -> dict: ...
@@ -180,6 +185,7 @@ class LocalBackend:
         object: str,
         sensitive: bool | None = None,
         category: str | None = None,
+        topic: Topic | None = None,
     ) -> dict:
         return await asyncio.to_thread(
             self.svc.add_fact,
@@ -187,8 +193,9 @@ class LocalBackend:
             subject,
             predicate,
             object,
-            sensitive,
-            category,
+            sensitive=sensitive,
+            category=category,
+            topic=topic,
         )
 
     async def update_fact(
@@ -199,6 +206,8 @@ class LocalBackend:
         object: str | None = None,
         sensitive: bool | None = None,
         category: str | None = None,
+        topic: Topic | None = None,
+        reset_topic: bool = False,
     ) -> dict | None:
         return await asyncio.to_thread(
             self.svc.update_fact,
@@ -207,8 +216,10 @@ class LocalBackend:
             subject,
             predicate,
             object,
-            sensitive,
-            category,
+            sensitive=sensitive,
+            category=category,
+            topic=topic,
+            reset_topic=reset_topic,
         )
 
     async def delete_fact(self, fact_id: str) -> dict:
@@ -361,12 +372,15 @@ class RemoteBackend:
         object: str,
         sensitive: bool | None = None,
         category: str | None = None,
+        topic: Topic | None = None,
     ) -> dict:
         body = {"subject": subject, "predicate": predicate, "object": object}
         if sensitive is not None:
             body["sensitive"] = sensitive
         if category is not None:
             body["category"] = category
+        if topic is not None:
+            body["topic"] = topic
         return await self._post("/v1/facts", body)
 
     async def update_fact(
@@ -377,6 +391,8 @@ class RemoteBackend:
         object: str | None = None,
         sensitive: bool | None = None,
         category: str | None = None,
+        topic: Topic | None = None,
+        reset_topic: bool = False,
     ) -> dict | None:
         body: dict[str, Any] = {}
         if subject is not None:
@@ -389,6 +405,10 @@ class RemoteBackend:
             body["sensitive"] = sensitive
         if category is not None:
             body["category"] = category
+        if topic is not None:
+            body["topic"] = topic
+        if reset_topic:
+            body["reset_topic"] = True
         return await self._patch(f"/v1/facts/{quote(fact_id, safe='')}", body)
 
     async def delete_fact(self, fact_id: str) -> dict:

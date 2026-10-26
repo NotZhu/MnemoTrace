@@ -22,6 +22,7 @@ from typing import Any
 
 from .agent_config import ConfigReadError, load_codex_server
 from .credentials import CredentialError, read_key, redact, resolve_key
+from .store._validation import EXPORT_VERSION
 
 CLIENTS = ("none", "codex", "claude-code", "cursor", "openai")
 
@@ -36,6 +37,7 @@ import tempfile
 from mnemotrace.mcp import server as S
 from mnemotrace.mcp.backends import LocalBackend
 from mnemotrace.service import MemoryService
+from mnemotrace.store._validation import EXPORT_VERSION
 
 SOURCE_SESSION = "doctor:source:smoke"
 TARGET_SESSION = "doctor:target:smoke"
@@ -146,7 +148,7 @@ async def main():
             and PHRASE not in sessions_text
         ),
         "export_ok": (
-            exported.get("mnemotrace_export_version") == 1
+            exported.get("mnemotrace_export_version") == EXPORT_VERSION
             and exported.get("include_sensitive") is False
             and len(exported.get("facts") or []) >= 1
         ),
@@ -172,6 +174,7 @@ import tempfile
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mnemotrace.store._validation import EXPORT_VERSION
 
 SOURCE_SESSION = "doctor:source:stdio"
 TARGET_SESSION = "doctor:target:stdio"
@@ -311,7 +314,7 @@ async def main():
                 and PHRASE not in sessions_text
             ),
             "export_ok": (
-                exported.get("mnemotrace_export_version") == 1
+                exported.get("mnemotrace_export_version") == EXPORT_VERSION
                 and exported.get("include_sensitive") is False
                 and len(exported.get("facts") or []) >= 1
             ),
@@ -784,7 +787,7 @@ def _remote_http_probe(api_url: str, api_key: str) -> dict[str, Any]:
         and closed_target.get("ok") is True
         and report.get("ok") is True
         and int(report.get("facts_added") or 0) >= 1
-        and exported.get("mnemotrace_export_version") == 1
+        and exported.get("mnemotrace_export_version") == EXPORT_VERSION
         and exported.get("include_sensitive") is False
         and len(exported.get("facts") or []) >= 1
         and phrase in report_text
@@ -824,7 +827,7 @@ def _remote_http_probe(api_url: str, api_key: str) -> dict[str, Any]:
             "sessions_ok": sessions.get("ok") is True,
             "sessions_count": len(sessions.get("sessions") or []),
             "export_ok": (
-                exported.get("mnemotrace_export_version") == 1
+                exported.get("mnemotrace_export_version") == EXPORT_VERSION
                 and exported.get("include_sensitive") is False
             ),
             "recalled_phrase": phrase in context,

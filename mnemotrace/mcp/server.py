@@ -28,6 +28,7 @@ except Exception as exc:  # noqa: BLE001
     raise SystemExit('the MCP server needs the MCP SDK — `pip install "mnemotrace-memory[mcp]"`') from exc
 
 from .backends import Backend, make_backend
+from ..topics import Topic
 
 INSTRUCTIONS = (
     "MnemoTrace is the user's long-term memory. Use `mnemotrace_recall` BEFORE answering anything that may "
@@ -623,6 +624,7 @@ async def mnemotrace_add_fact(
     subject: Annotated[str, Field(description="Who/what the fact is about. Default 'user'.")] = "user",
     sensitive: Annotated[Optional[bool], Field(description="Optional user override for sensitivity.")] = None,
     category: Annotated[Optional[str], Field(description="Optional user-visible category label.")] = None,
+    topic: Annotated[Optional[Topic], Field(description="Optional manually selected main topic.")] = None,
 ) -> str:
     """断言单条权威的 (subject, predicate, object) fact。
 
@@ -631,10 +633,12 @@ async def mnemotrace_add_fact(
     任何冲突的抽取值。
     """
     try:
-        data = await backend().add_fact(subject, predicate, object, sensitive=sensitive, category=category)
+        data = await backend().add_fact(subject, predicate, object, sensitive=sensitive, category=category,
+                                        topic=topic)
     except Exception as e:  # noqa: BLE001
         return _err(e)
-    return f"Stored authoritative fact: {data.get('text', f'{subject} {predicate} {object}')}"
+    return (f"Stored authoritative fact: {data.get('text', f'{subject} {predicate} {object}')}\n"
+            f"Topic: {data.get('topic', 'unknown')} ({data.get('topic_source', 'unset')})")
 
 
 @mcp.tool(name="mnemotrace_update_fact", annotations=ToolAnnotations(title="Correct a stored fact", **_WRITE))
@@ -646,6 +650,8 @@ async def mnemotrace_update_fact(
     sensitive: Annotated[Optional[bool], Field(description="Optional sensitivity override.")] = None,
     category: Annotated[Optional[str], Field(description="Optional category override.")] = None,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+    topic: Annotated[Optional[Topic], Field(description="Optional manual main topic; unknown is explicit.")] = None,
+    reset_topic: Annotated[bool, Field(description="Clear the manual topic; cannot be combined with topic.")] = False,
 ) -> str:
     """按 id 修正一条已存的 fact。
 
@@ -654,7 +660,7 @@ async def mnemotrace_update_fact(
 
     返回（json）：{"ok": true, "id": str, "text": str}，找不到时返回错误字符串。
     """
-    if all(v is None for v in (subject, predicate, object, sensitive, category)):
+    if all(v is None for v in (subject, predicate, object, sensitive, category, topic)) and not reset_topic:
         return "Error: provide at least one field to update."
     try:
         data = await backend().update_fact(
@@ -664,6 +670,8 @@ async def mnemotrace_update_fact(
             object=object,
             sensitive=sensitive,
             category=category,
+            topic=topic,
+            reset_topic=reset_topic,
         )
     except Exception as e:  # noqa: BLE001
         return _err(e)
@@ -671,7 +679,8 @@ async def mnemotrace_update_fact(
         return f"Error: fact `{fact_id}` was not found."
     if response_format == ResponseFormat.JSON:
         return _json(data)
-    return f"Updated fact `{data.get('id', fact_id)}`: {data.get('text', '')}"
+    return (f"Updated fact `{data.get('id', fact_id)}`: {data.get('text', '')}\n"
+            f"Topic: {data.get('topic', 'unknown')} ({data.get('topic_source', 'unset')})")
 
 
 @mcp.tool(name="mnemotrace_delete_fact", annotations=ToolAnnotations(title="Delete one stored fact", **_DESTRUCTIVE))

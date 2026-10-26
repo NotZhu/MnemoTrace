@@ -26,12 +26,14 @@ from ._namespace_paths import contained_child, namespace_directory, namespace_pa
 from .localize import display_of
 from .memory import Memory
 from .metrics import Metrics, timed
+from .store._validation import EXPORT_VERSION
 from .store.persist import (
     DimensionMismatchError,
     EmbedderMismatchError,
     PersistenceError,
     snapshot_version,
 )
+from .topics import Topic
 from .util import fmt_date, fmt_datetime, now
 
 FACTS_PAGE_LIMIT = 500
@@ -554,6 +556,7 @@ class MemoryService:
         object: str,
         sensitive: Optional[bool] = None,
         category: Optional[str] = None,
+        topic: Optional[Topic] = None,
     ) -> dict:
         with self.write_lock(user):
             mem = self.get(user)
@@ -564,23 +567,28 @@ class MemoryService:
                 user_id=user,
                 sensitive=sensitive,
                 category=category,
+                topic=topic,
             )
             self._save(user, mem)
-            return {"ok": True, "id": f.id, "text": f.text}
+            return {"ok": True, "id": f.id, "text": f.text,
+                    "topic": f.topic, "topic_source": f.topic_source}
 
     def update_fact(self, user: str, fact_id: str, subject: Optional[str] = None,
                     predicate: Optional[str] = None, object: Optional[str] = None,
                     sensitive: Optional[bool] = None, category: Optional[str] = None,
-                    statement: Optional[str] = None) -> Optional[dict]:
+                    statement: Optional[str] = None, topic: Optional[Topic] = None,
+                    reset_topic: bool = False) -> Optional[dict]:
         with self.write_lock(user):
             mem = self.get(user)
             f = mem.update_fact(fact_id, subject=subject, predicate=predicate, object=object,
-                                sensitive=sensitive, category=category, statement=statement)
+                                 sensitive=sensitive, category=category, statement=statement,
+                                 topic=topic, reset_topic=reset_topic)
             if f is None:
                 return None
             self._save(user, mem)
             # 返回实际 `source`：正文修正会成为用户断言，隐私/分类编辑则保留原来源。
-            return {"ok": True, "id": f.id, "text": f.text, "display": display_of(f), "source": f.source}
+            return {"ok": True, "id": f.id, "text": f.text, "display": display_of(f), "source": f.source,
+                    "topic": f.topic, "topic_source": f.topic_source}
 
     def delete_fact(self, user: str, fact_id: str) -> dict:
         with self.write_lock(user):
@@ -962,6 +970,7 @@ class MemoryService:
                 return {**base, "text": "[redacted sensitive fact]", "display": "[redacted sensitive fact]"}
             return {
                 **base,
+                "topic": f.topic, "topic_source": f.topic_source,
                 "text": f.text,
                 "display": display_of(f),
                 "subject": f.subject,
@@ -1153,6 +1162,7 @@ class MemoryService:
                 "status": "live" if f.is_live(as_of=evaluated_at) else "superseded",
                 "source": f.source, "supersedes": f.supersedes,
                 "category": getattr(f, "category", ""), "sensitive": getattr(f, "sensitive", False),
+                "topic": f.topic, "topic_source": f.topic_source,
                 "salience": round(f.salience, 2), "provenance": f.provenance,
                 # outcome 的 `text` 是"结论 （依据：why）"——单个内嵌字符串，因为检索匹配的就是它。
                 # 读者需要把两者分开，所以在这里拆一次，而不是要求每个接入面各自重新解析分隔符。
@@ -1566,7 +1576,7 @@ class MemoryService:
                   if include_sensitive or not getattr(f, "sensitive", False)]
         graph = mem.graph_data(user, include_sensitive=include_sensitive)
         out = {
-            "mnemotrace_export_version": 1,
+            "mnemotrace_export_version": EXPORT_VERSION,
             "user": user,
             "include_sensitive": include_sensitive,
             "redacted_sensitive": not include_sensitive,
@@ -1576,6 +1586,7 @@ class MemoryService:
                 "id": f.id, "subject": f.subject, "predicate": f.predicate, "object": f.object,
                 "text": f.text, "source": f.source, "status": "live" if f.is_live() else "superseded",
                 "category": getattr(f, "category", ""), "sensitive": getattr(f, "sensitive", False),
+                "topic": f.topic, "topic_source": f.topic_source,
                 "salience": round(f.salience, 3), "confidence": f.confidence,
                 "valid_at": f.valid_at, "valid_at_h": fmt_date(f.valid_at),
                 "invalid_at": f.invalid_at, "invalid_at_h": fmt_date(f.invalid_at) if f.invalid_at else None,

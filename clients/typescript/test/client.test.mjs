@@ -4,6 +4,28 @@ import test from 'node:test'
 import { MnemoTraceClient, MnemoTraceError } from '../dist/index.js'
 import { createRequire } from 'node:module'
 
+test('fact topics and reset are passed through with server-assigned origins', async () => {
+  const calls = []
+  const client = new MnemoTraceClient({fetch: async (url, init) => {
+    const body = JSON.parse(init.body)
+    calls.push({url, body})
+    return new Response(JSON.stringify({ok: true, id: 'synthetic-fact', text: 'user prefers tea',
+      topic: body.reset_topic ? 'unknown' : body.topic,
+      topic_source: body.reset_topic ? 'unset' : 'user'}), {status: 200})
+  }})
+  const added = await client.addFact({predicate: 'prefers', object: 'tea', topic: 'food'})
+  assert.equal(added.topic, 'food')
+  assert.equal(added.topic_source, 'user')
+  const explicitUnknown = await client.updateFact(added.id, {topic: 'unknown'})
+  assert.equal(explicitUnknown.topic_source, 'user')
+  const reset = await client.updateFact(added.id, {reset_topic: true})
+  assert.equal(reset.topic_source, 'unset')
+  assert.deepEqual(calls.map(call => call.body), [
+    {subject: 'user', predicate: 'prefers', object: 'tea', topic: 'food'},
+    {topic: 'unknown'}, {reset_topic: true},
+  ])
+})
+
 test('graph exposes completeness metadata and preserves safe default query options',async()=>{
   const calls=[]
   const response={nodes:[],edges:[],has_more:false}
@@ -336,7 +358,7 @@ test('export defaults to share-safe payload and can request full private export'
     calls.push({ url, init })
     const includeSensitive = url.endsWith('include_sensitive=true')
     return new Response(JSON.stringify({
-      mnemotrace_export_version: 1,
+      mnemotrace_export_version: 2,
       include_sensitive: includeSensitive,
       redacted_sensitive: !includeSensitive,
       facts: includeSensitive
@@ -362,7 +384,7 @@ test('export defaults to share-safe payload and can request full private export'
   assert.equal(calls[0].url, 'http://mnemotrace.test/v1/export?include_sensitive=false')
   assert.equal(calls[1].url, 'http://mnemotrace.test/v1/export?include_sensitive=true')
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
-  assert.equal(safeExport.mnemotrace_export_version, 1)
+  assert.equal(safeExport.mnemotrace_export_version, 2)
   assert.equal(Object.hasOwn(safeExport, 'engram_export_version'), false)
   assert.equal(safeExport.include_sensitive, false)
   assert.equal(safeExport.redacted_sensitive, true)

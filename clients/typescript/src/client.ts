@@ -18,6 +18,7 @@ import type {
   Fact,
   FactInput,
   FactPatch,
+  TopicMetadata,
   ForgetOptions,
   Focus,
   GraphResponse,
@@ -266,11 +267,11 @@ export class MnemoTraceClient {
 
   // --- 可编辑的事实 ----------------------------------------------------------
   /** 断言一条权威事实（用户来源；绝不会被静默覆盖）。 */
-  addFact(fact: FactInput): Promise<{ ok: boolean; id: string; text: string }> {
+  addFact(fact: FactInput): Promise<{ ok: boolean; id: string; text: string } & TopicMetadata> {
     return this.post('/v1/facts', { subject: 'user', ...fact })
   }
 
-  updateFact(id: string, patch: FactPatch): Promise<{ ok: boolean; id: string; text: string }> {
+  updateFact(id: string, patch: FactPatch): Promise<{ ok: boolean; id: string; text: string } & TopicMetadata> {
     return this.request(`/v1/facts/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),

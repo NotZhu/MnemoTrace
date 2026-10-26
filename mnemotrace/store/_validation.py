@@ -6,7 +6,10 @@ import math
 from copy import deepcopy
 from typing import Any, Callable
 
-SCHEMA_VERSION = 1
+from ..topics import TOPICS, TOPIC_SOURCES, validate_topic
+
+SCHEMA_VERSION = 2
+EXPORT_VERSION = 2
 COLLECTIONS = ("episodes", "facts", "entities", "relations", "working", "conflicts")
 Validator = Callable[[Any, str], None]
 
@@ -127,6 +130,7 @@ _FACT = {
     "text": _string, "display": _string, "user_id": _identifier, "embedding": _VECTOR,
     "salience": _number, "confidence": _number, "source": _SOURCE,
     "category": _string, "sensitive": _boolean, "valid_at": _number,
+    "topic": _choice(*TOPICS), "topic_source": _choice(*TOPIC_SOURCES),
     "invalid_at": _TIME_OR_NULL, "created_at": _number, "expired_at": _TIME_OR_NULL,
     "supersedes": _ID_OR_NULL, "provenance": _STRINGS, "last_access": _number,
     "access_count": _count,
@@ -179,11 +183,20 @@ def validate_record(kind: str, record: Any, path: str, *, jsonl_fact: bool = Fal
     if jsonl_fact:
         spec = {**spec, "_store": _choice("hot", "cold")}
     result = _fields(record, spec, path, ("text", "display") if kind == "Fact" else ())
+    if kind == "Fact":
+        _validate_topic_pair(result, path)
     if embedding_dim is not None:
         for key in ("embedding", "summary_embedding"):
             if result.get(key) is not None:
                 validate_embedding(result[key], f"{path}.{key}", embedding_dim)
     return result
+
+
+def _validate_topic_pair(record: dict, path: str) -> None:
+    try:
+        validate_topic(record["topic"], record["topic_source"])
+    except ValueError as exc:
+        _fail(path, str(exc))
 
 
 def validate_state(state: Any, path: str = "manifest.state") -> dict:
@@ -228,6 +241,7 @@ def validate_manifest(manifest: Any) -> dict:
 # A migration carries source identities/history, not the target user's runtime state.
 _IMPORT_FACT = {key: _FACT[key] for key in (
     "id", "subject", "predicate", "object", "text", "source", "category", "sensitive",
+    "topic", "topic_source",
     "salience", "confidence", "valid_at", "invalid_at", "created_at", "expired_at",
     "supersedes", "provenance",
 )}
@@ -245,8 +259,8 @@ def validate_snapshot(snapshot: Any) -> dict:
             _fail(f"snapshot.{key}", "missing required field")
     version = snapshot["mnemotrace_export_version"]
     _integer(version, "snapshot.mnemotrace_export_version")
-    if version != 1:
-        _fail("snapshot.mnemotrace_export_version", "unsupported version; supported version is 1")
+    if version != EXPORT_VERSION:
+        _fail("snapshot.mnemotrace_export_version", f"unsupported version; supported version is {EXPORT_VERSION}")
     result = {}
     for name, spec, optional in (("facts", _IMPORT_FACT, ("text", "status", "valid_at_h", "invalid_at_h")),
                                  ("episodes", _IMPORT_EPISODE, ("summary",))):
@@ -255,6 +269,9 @@ def validate_snapshot(snapshot: Any) -> dict:
             _fail(f"snapshot.{name}", "must be a list")
         result[name] = [_fields(row, spec, f"snapshot.{name}[{i}]", optional)
                         for i, row in enumerate(rows)]
+        if name == "facts":
+            for i, row in enumerate(result[name]):
+                _validate_topic_pair(row, f"snapshot.facts[{i}]")
         seen = set()
         for i, row in enumerate(result[name]):
             if row["id"] in seen:

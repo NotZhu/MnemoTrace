@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .topics import Topic, TopicSource, validate_topic
 from .util import gen_id, now
 
 
@@ -74,7 +75,12 @@ class Fact:
     access_count: int = 0
     id: str = field(default_factory=lambda: gen_id("ft"))
 
+    # 与事实来源、管理分类及敏感标记独立；自动赋值由写入路径接入。
+    topic: Topic = "unknown"
+    topic_source: TopicSource = "unset"
+
     def __post_init__(self) -> None:
+        validate_topic(self.topic, self.topic_source)
         if not self.text:
             # 把 predicate 渲染成自然语言（"works_at" -> "works at"），让嵌入和词汇匹配
             # 看到的是真实文本，而不是 snake_case token。
