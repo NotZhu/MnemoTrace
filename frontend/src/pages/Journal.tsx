@@ -107,6 +107,11 @@ export default function Journal() {
     </button>
   ) : null
   const resetInEmptyState = !isLoading && !isError && !rows.length && !searchUpdating && hasFilters
+  const failures = [
+    ...(isError ? [(error as Error).message] : []),
+    ...(openQuery.isError ? [(openQuery.error as Error).message] : []),
+  ]
+  const errorMessage = [...new Set(failures)].join('；')
 
   let lastDate = ''
 
@@ -115,7 +120,13 @@ export default function Journal() {
       <PageHeader title={t.journal.title} />
 
       {open.length > 0 && <OpenQuestionsCard items={open} />}
-      {openQuery.isError && <ErrorState message={`待解决问题读取失败：${(openQuery.error as Error).message}`} onRetry={() => { void openQuery.refetch() }} />}
+      {failures.length > 0 && <ErrorState
+        message={`${isError ? (data ? '结论更新失败，显示上次结果并保留编辑：' : '') : '待解决问题读取失败：'}${errorMessage}`}
+        onRetry={() => {
+          if (isError) void refetch()
+          if (openQuery.isError) void openQuery.refetch()
+        }}
+      />}
 
       <div className="space-y-4">
         <div aria-busy={searchUpdating} className="flex w-full items-center gap-2 rounded-2xl border border-line bg-ink-700 px-3">
@@ -165,7 +176,6 @@ export default function Journal() {
         </div>
       </div>
 
-      {isError && <ErrorState message={`${data ? '结论更新失败，显示上次结果并保留编辑：' : ''}${(error as Error).message}`} onRetry={() => { void refetch() }} />}
       {isLoading && !data ? <Spinner label={t.journal.loading} /> : isError && !data ? null : rows.length ? (
         <>
           <div>
@@ -562,12 +572,18 @@ function BackfillSessions({ className }: { className?: string }) {
     })
   }
 
-  if (!sessions.data?.sessions.length) return null
+  const sessionRows = sessions.data?.sessions ?? []
+  if (!sessions.isError && !sessionRows.length) return null
 
   return (
-    <div className={className}>
-      <ul className="space-y-4">
-        {sessions.data.sessions.slice(0, 5).map((s) => (
+    <div className={`space-y-4 ${className ?? ''}`}>
+      {sessions.isError && <ErrorState
+        message={`历史会话读取失败：${(sessions.error as Error).message}`}
+        onRetry={() => { void sessions.refetch() }}
+        isRetrying={sessions.isFetching}
+      />}
+      {sessionRows.length > 0 && <ul className="space-y-4">
+        {sessionRows.slice(0, 5).map((s) => (
           <li
             key={s.id}
             className="flex flex-wrap items-center justify-between gap-x-6 gap-y-4 rounded-xl border border-line bg-ink-700/40 p-5 sm:px-6"
@@ -589,7 +605,7 @@ function BackfillSessions({ className }: { className?: string }) {
             </Button>
           </li>
         ))}
-      </ul>
+      </ul>}
     </div>
   )
 }

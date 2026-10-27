@@ -108,7 +108,7 @@ export function ForceGraph({ data, dataScope = '', liveOnly = false, selectedId 
       aria-describedby={helpId} aria-busy={!ready && !error} onKeyDown={keyboard} />
     {!ready && !error && <div className="pointer-events-none absolute inset-0 grid place-items-center text-xs text-ghost" role="status">{t.graph.loading}</div>}
     {error && <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-8 text-center text-sm">
-      <p className="text-foreground">{t.graph.renderError}</p>
+      <p className="text-sm text-foreground">{t.graph.renderError}</p>
       <p className="max-w-lg break-words text-xs text-ghost">{error}</p>
       <button type="button" className="rounded-lg border border-line px-4 py-2 text-foreground" onClick={() => setAttempt((value) => value + 1)}>{t.graph.retry}</button>
     </div>}

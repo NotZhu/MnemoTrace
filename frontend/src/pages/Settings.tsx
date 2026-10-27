@@ -47,6 +47,8 @@ function generateCodexTestSession(): string {
 
 export default function Settings() {
   const { data, isLoading, isError, error, refetch } = usePolicy()
+  const session = useCodexSession()
+  const status = useAgentStatus(session.sessionId)
   const save = useSetPolicy()
 
   const PROMPT_FIELDS: Array<{ key: keyof Policy; label: string; hint: string }> = [
@@ -100,15 +102,19 @@ export default function Settings() {
   return (
     <div className="space-y-6">
       <PageHeader title={t.settings.title} />
+      {status.isError && <ErrorState message={`接入状态读取失败：${(status.error as Error).message}`} onRetry={() => { void status.refetch() }} />}
 
       <section aria-labelledby="codex-setup-heading" className="space-y-4">
         <h2 id="codex-setup-heading" className="text-base font-semibold text-slate-100">{t.settings.connectSectionTitle}</h2>
-        <CodexSetupCard />
+        <CodexSetupCard session={session} status={status} />
       </section>
 
-      {!data ? (isLoading ? <Spinner label={t.settings.loading} /> : isError ? (
-        <ErrorState message={(error as Error).message} onRetry={() => { void refetch() }} />
-      ) : null) : <section aria-labelledby="memory-policy-heading" className="space-y-4">
+      {!data ? <section aria-labelledby="memory-policy-heading" className="space-y-4">
+        <h2 id="memory-policy-heading" className="text-base font-semibold text-slate-100">{t.settings.policySectionTitle}</h2>
+        {isLoading ? <Spinner label={t.settings.loading} /> : isError ? (
+          <ErrorState message={`策略读取失败：${(error as Error).message}`} onRetry={() => { void refetch() }} />
+        ) : null}
+      </section> : <section aria-labelledby="memory-policy-heading" className="space-y-4">
         {isError && <ErrorState message={`策略更新失败，保留当前草稿：${(error as Error).message}`} onRetry={() => { void refetch() }} />}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 id="memory-policy-heading" className="text-base font-semibold text-slate-100">{t.settings.policySectionTitle}</h2>
@@ -199,13 +205,9 @@ export default function Settings() {
   )
 }
 
-function CodexSetupCard() {
-  const [shell, setShell] = useState<SetupShell>(() => defaultSetupShell(
-    typeof navigator === 'undefined' ? '' : navigator.platform || navigator.userAgent,
-  ))
+function useCodexSession() {
   const [defaultSessionId, setDefaultSessionId] = useState(initialCodexTestSession)
   const [sessionId, setSessionId] = useState(defaultSessionId)
-  const sessionGhost = useRef<HTMLDivElement>(null)
   useEffect(() => {
     try {
       sessionStorage.setItem(CODEX_TEST_SESSION_KEY, sessionId)
@@ -213,9 +215,25 @@ function CodexSetupCard() {
       // 存储不可用时保留内存中的 ID，不影响测试提示和结果查询。
     }
   }, [sessionId])
+  const newSession = () => {
+    const nextSessionId = generateCodexTestSession()
+    setDefaultSessionId(nextSessionId)
+    setSessionId(nextSessionId)
+  }
+  return { defaultSessionId, sessionId, setSessionId, newSession }
+}
+
+function CodexSetupCard({ session, status }: {
+  session: ReturnType<typeof useCodexSession>
+  status: ReturnType<typeof useAgentStatus>
+}) {
+  const [shell, setShell] = useState<SetupShell>(() => defaultSetupShell(
+    typeof navigator === 'undefined' ? '' : navigator.platform || navigator.userAgent,
+  ))
+  const { defaultSessionId, sessionId, setSessionId, newSession } = session
+  const sessionGhost = useRef<HTMLDivElement>(null)
   const apiUrl = apiBaseUrl()
   const health = useHealth()
-  const status = useAgentStatus(sessionId)
   const sessions = useSessions({ q: 'codex', limit: 5 })
   const codexSessions = sessions.data?.sessions ?? []
   const feedCommand = 'mnemotrace-watch --install'
@@ -286,9 +304,7 @@ function CodexSetupCard() {
                 type="button"
                 className="ml-auto inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold text-brand-cyan hover:text-brand-mint"
                 onClick={() => {
-                  const nextSessionId = generateCodexTestSession()
-                  setDefaultSessionId(nextSessionId)
-                  setSessionId(nextSessionId)
+                  newSession()
                   if (sessionGhost.current) sessionGhost.current.scrollLeft = 0
                 }}
               >
@@ -347,21 +363,9 @@ function CodexSetupCard() {
             </div>
           </div>
 
-          <div className="rounded-xl border border-line bg-ink-700/60 p-5 sm:p-6">
-            <div className="mb-5 flex items-center justify-between gap-2">
-              <div className="text-sm font-semibold text-slate-100">{t.settings.connectLiveTitle}</div>
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  status.refetch()
-                  sessions.refetch()
-                }}
-              >
-                <RefreshCw className="h-4 w-4" /> {t.settings.connectRefresh}
-              </Button>
-            </div>
-            {status.isError && <ErrorState message={`接入状态读取失败：${(status.error as Error).message}`} onRetry={() => { void status.refetch() }} />}
-            <div className="space-y-4 text-sm text-ghost">
+          <details className="rounded-xl border border-line bg-ink-700/60 p-4">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-100">{t.settings.connectLiveTitle}</summary>
+            <div className="mt-4 space-y-4 text-sm text-ghost">
               <div className="flex justify-between gap-3">
                 <span>{t.settings.connectNamespace}</span>
                 <span className="truncate text-right text-slate-200">{!status.isError ? status.data?.user ?? '—' : '—'}</span>
@@ -371,7 +375,19 @@ function CodexSetupCard() {
                 <span className="text-slate-200">{!status.isError ? status.data?.session?.episodes ?? '—' : '—'}</span>
               </div>
             </div>
-          </div>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                className="ml-auto inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold text-brand-cyan hover:text-brand-mint"
+                onClick={() => {
+                  status.refetch()
+                  sessions.refetch()
+                }}
+              >
+                <RefreshCw className="h-3.5 w-3.5" /> {t.settings.connectRefresh}
+              </button>
+            </div>
+          </details>
 
           <details className="rounded-xl border border-line bg-ink-700/60 p-4">
             <summary className="cursor-pointer text-sm font-semibold text-slate-100">

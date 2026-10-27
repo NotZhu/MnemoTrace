@@ -105,6 +105,151 @@ function setup(pageName) {
   }
 }
 
+test('Facts 请求失败使用共享错误条的重新加载按钮，只重试事实请求', () => {
+  const s = setup('Facts')
+  Object.assign(s.results.useMemoryPages, { isError: true, isFetching: true, error: new Error('synthetic facts failure') })
+  const error = s.find(n => n.type === 'ErrorState' && n.props.message.includes('synthetic facts failure'))
+  assert.ok(error)
+  assert.equal(error.props.isRetrying, true)
+  error.props.onRetry()
+  assert.deepEqual(s.retries, ['useMemoryPages'])
+})
+
+test('Conversations 会话状态提示在卡片上方，其他各条读取错误和独立重试保留', () => {
+  const s = setup('Conversations')
+  s.find(n => n.type === 'textarea').props.onChange({ target: { value: 'synthetic preserved draft' } })
+  for (const name of ['useMemoryPages', 'useAgentStatus', 'useWorking', 'useSessions']) {
+    Object.assign(s.results[name], { isError: true, error: new Error('synthetic failure') })
+  }
+  const nodes = s.nodes(), errors = nodes.filter(n => n.type === 'ErrorState')
+  assert.equal(errors.length, 4, '每条错误独立保留，不合并')
+  const statusError = errors.find(n => n.props.message.startsWith('会话状态读取失败'))
+  assert.ok(nodes.indexOf(statusError) < nodes.findIndex(n => n.type === 'Card'))
+  statusError.props.onRetry()
+  assert.deepEqual(s.retries, ['useAgentStatus'])
+  assert.ok(s.find(n => n.type === 'textarea' && n.props.value === 'synthetic preserved draft'))
+})
+
+test('Settings 接入状态错误放在页面最上方，策略和会话索引错误分别保留', () => {
+  const s = setup('Settings')
+  for (const name of ['usePolicy', 'useAgentStatus', 'useSessions']) {
+    Object.assign(s.results[name], { isError: true, error: new Error('synthetic failure') })
+  }
+  const nodes = s.nodes(), errors = nodes.filter(n => n.type === 'ErrorState')
+  assert.equal(errors.length, 3, '不合并或隐藏其他错误')
+  const statusError = errors.find(n => n.props.message.startsWith('接入状态读取失败'))
+  assert.ok(nodes.indexOf(statusError) < nodes.findIndex(n => n.props?.id === 'codex-setup-heading'), '状态提示替代通用提示，位于接入标题之前')
+  assert.ok(nodes.indexOf(statusError) < nodes.findIndex(n => n.type === 'Card'))
+  statusError.props.onRetry()
+  assert.deepEqual(s.retries, ['useAgentStatus'])
+})
+
+for (const failed of [['useMemoryPages', 'useMemories'], ['useMemoryPages'], ['useMemories']]) {
+  test(`Journal ${failed.join(' + ')} 失败时只有一条错误，重试所有失败请求`, () => {
+    const s = setup('Journal')
+    s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
+    s.find(n => n.type === 'textarea').props.onChange({ target: { value: 'synthetic retained draft' } })
+    for (const query of failed) Object.assign(s.results[query], { isError: true, error: new Error('请求失败 (500)') })
+    const errors = s.nodes().filter(n => n.type === 'ErrorState')
+    assert.equal(errors.length, 1)
+    assert.equal(errors[0].props.message.split('请求失败 (500)').length, 2, '同一错误消息只出现一次')
+    errors[0].props.onRetry()
+    assert.deepEqual(s.retries, failed)
+    assert.ok(s.find(n => n.type === 'textarea' && n.props.value === 'synthetic retained draft'))
+  })
+}
+
+for (const empty of [false, true]) {
+  for (const cached of [false, true]) {
+    test(`Journal 历史会话失败可独立重试并保留缓存，空结论=${empty}，缓存=${cached}`, () => {
+      const s = setup('Journal')
+      if (empty) s.results.useMemoryPages.data.facts = []
+      s.results.useSessions = {
+        isError: true, isFetching: true, error: new Error('synthetic sessions failure'),
+        data: cached ? { sessions: [{ id: 'synthetic-history' }] } : undefined,
+      }
+      const errors = s.nodes().filter(n => n.type === 'ErrorState')
+      assert.equal(errors.length, 1)
+      assert.equal(errors[0].props.message, '历史会话读取失败：synthetic sessions failure')
+      assert.equal(errors[0].props.isRetrying, true)
+      assert.equal(!!s.find(n => n.type === 'li' && n.key === 'synthetic-history'), cached)
+      errors[0].props.onRetry()
+      assert.deepEqual(s.retries, ['useSessions'])
+
+      s.results.useSessions = { data: { sessions: [] } }
+      assert.equal(s.nodes().filter(n => n.type === 'ErrorState').length, 0)
+      assert.ok(!s.find(n => n.type === 'li' && n.key === 'synthetic-history'))
+    })
+  }
+}
+
+test('Journal 两个不同错误合并后仍能看到各自原因', () => {
+  const s = setup('Journal')
+  s.results.useMemoryPages = { isError: true, error: new Error('synthetic list failure') }
+  s.results.useMemories = { isError: true, error: new Error('synthetic open failure') }
+  const errors = s.nodes().filter(n => n.type === 'ErrorState')
+  assert.equal(errors.length, 1)
+  assert.match(errors[0].props.message, /synthetic list failure/)
+  assert.match(errors[0].props.message, /synthetic open failure/)
+  s.results.useMemoryPages = { data: { facts: [], episodes: [] } }
+  const remaining = s.nodes().filter(n => n.type === 'ErrorState')
+  assert.equal(remaining.length, 1)
+  assert.doesNotMatch(remaining[0].props.message, /synthetic list failure/)
+  remaining[0].props.onRetry()
+  assert.deepEqual(s.retries, ['useMemories'])
+  s.results.useMemories = { data: { facts: [] } }
+  assert.equal(s.nodes().filter(n => n.type === 'ErrorState').length, 0)
+})
+
+test('Dashboard 首次全部失败只显示一条错误，一次重试三个失败请求', () => {
+  const s = setup('Dashboard')
+  s.results.useMemories = params => ({ isError: true, error: new Error('请求失败 (500)'),
+    refetch: () => s.retries.push(params.kind === 'outcomes' ? 'outcomes' : 'memories') })
+  s.results.useStructuredProfile = { isError: true, error: new Error('请求失败 (500)') }
+  const errors = s.nodes().filter(n => n.type === 'ErrorState')
+  assert.equal(errors.length, 1)
+  assert.equal(errors[0].props.message, '请求失败 (500)')
+  errors[0].props.onRetry()
+  assert.deepEqual(s.retries, ['memories', 'outcomes', 'useStructuredProfile'])
+})
+
+test('Dashboard 辅助请求失败可重试，后台主请求失败不销毁输入草稿', () => {
+  const s = setup('Dashboard')
+  s.results.useMemories = params => params.kind === 'outcomes'
+    ? { isError: true, error: new Error('synthetic outcomes failure'), refetch: () => s.retries.push('outcomes') }
+    : { data: { counts: { facts_live: 1, facts_outcomes: 0, facts_superseded: 0, episodes: 0 } } }
+  s.results.useStructuredProfile = { isError: true, error: new Error('synthetic profile failure') }
+  s.find(n => n.type === 'textarea').props.onChange({ target: { value: 'synthetic dashboard draft' } })
+  const errors = s.nodes().filter(n => n.type === 'ErrorState')
+  assert.equal(errors.length, 1)
+  assert.match(errors[0].props.message, /synthetic outcomes failure/)
+  assert.match(errors[0].props.message, /synthetic profile failure/)
+  errors[0].props.onRetry()
+  assert.deepEqual(s.retries, ['outcomes', 'useStructuredProfile'])
+  const previous = s.results.useMemories
+  s.results.useMemories = params => ({ ...previous(params), isError: true, error: new Error('synthetic refresh failure') })
+  assert.ok(s.find(n => n.type === 'textarea' && n.props.value === 'synthetic dashboard draft'))
+  assert.equal(s.nodes().filter(n => n.type === 'ErrorState').length, 1)
+})
+
+test('Profile 主请求或辅助请求失败均可见，并只重试失败请求', () => {
+  const s = setup('Profile')
+  const profile = { basic: [], preferences: {}, habits: [], tentative: [], counts: { basic: 0, preferences: 0, habits: 0, tentative: 0 } }
+  s.results.useStructuredProfile = { data: profile }
+  s.results.useMemories = { isError: true, error: new Error('synthetic memories failure') }
+  let errors = s.nodes().filter(n => n.type === 'ErrorState')
+  assert.equal(errors.length, 1)
+  errors[0].props.onRetry()
+  assert.deepEqual(s.retries, ['useMemories'])
+  s.results.useStructuredProfile = { isError: true, error: new Error('请求失败 (500)') }
+  s.results.useMemories = { isError: true, error: new Error('请求失败 (500)') }
+  errors = s.nodes().filter(n => n.type === 'ErrorState')
+  assert.equal(errors.length, 1)
+  assert.equal(errors[0].props.message, '请求失败 (500)')
+  errors[0].props.onRetry()
+  assert.deepEqual(s.retries.slice(1), ['useStructuredProfile', 'useMemories'])
+})
+
 for (const [action, fields] of [['keep', {}], ['food', { topic: 'food' }], ['unknown', { topic: 'unknown' }], ['reset', { reset_topic: true }]]) {
   test(`Facts 主题操作 ${action} 仅发送用户明确操作的主题字段，失败保留选择`, () => {
     const s = setup('Facts')
@@ -155,11 +300,14 @@ test('设置草稿在已有策略刷新失败和恢复后保持，独立接入�
   assert.equal(input().props.value, 'synthetic unsaved draft')
 })
 
-test('策略首次失败仍保留接入区域并提供该查询重试', () => {
+test('策略首次失败保留策略标题、明确失败原因和重试，不显示未加载的可编辑表单', () => {
   const s = setup('Settings')
   s.results.usePolicy = { isError: true, error: new Error('synthetic failure') }
   assert.ok(s.find(n => n.type === 'input' && n.props.value?.startsWith('codex:')))
+    assert.ok(s.find(n => n.type === 'h2' && n.props.id === 'memory-policy-heading'))
   const error = s.find(n => n.type === 'ErrorState')
+    assert.equal(error.props.message, '策略读取失败：synthetic failure')
+    assert.equal(s.find(n => n.type === 'textarea' && n.props.placeholder), undefined)
   assert.equal(typeof error?.props.onRetry, 'function')
   error.props.onRetry()
   assert.deepEqual(s.retries, ['usePolicy'])
@@ -245,7 +393,7 @@ test('查看会话使用内部路由而非普通链接或硬编码部署前缀',
   assert.equal(s.find(n => n.type === 'a' && n.props.href?.includes('/ui/conversations')), undefined)
 })
 
-test('局部错误不会被全局错误条隐藏，重试调用当前区域处理器', () => {
+test('局部错误可被辅助技术识别，重新加载调用当前区域处理器', () => {
   const source = esbuild.buildSync({ entryPoints: [path.resolve(__dirname, '../src/components/ui.tsx')],
     bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
     external: ['react', 'react/jsx-runtime', 'lucide-react', '../store/queryErrors'],
@@ -258,6 +406,8 @@ test('局部错误不会被全局错误条隐藏，重试调用当前区域处�
   let retries = 0
   const result = mod.exports.ErrorState({ message: 'synthetic local failure', onRetry: () => retries++ })
   assert.ok(result)
+  assert.equal(mod.exports.ErrorBanner(result.props).props.role, 'alert')
+  assert.equal(result.props.action.props.children, '重新加载')
   result.props.action.props.onClick()
   assert.equal(retries, 1)
 })

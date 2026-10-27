@@ -142,7 +142,7 @@ export function EmptyState({ title, hint, icon }: { title: string; hint?: string
 
 export function ErrorBanner({ message, action }: { message: string; action?: ReactNode }) {
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-brand-rose/30 bg-brand-rose/10 p-4 text-sm text-brand-rose backdrop-blur-md">
+    <div role="alert" className="flex items-center gap-3 rounded-xl border border-brand-rose/30 bg-brand-rose/10 p-4 text-sm text-brand-rose backdrop-blur-md">
       <AlertTriangle className="h-5 w-5 shrink-0" />
       <span className="min-w-0 flex-1">{message}</span>
       {action}
@@ -150,10 +150,9 @@ export function ErrorBanner({ message, action }: { message: string; action?: Rea
   )
 }
 
-export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
-  // 全局条无法说明哪个区域不可用，局部错误和重试始终保留。
+export function ErrorState({ message, onRetry, isRetrying }: { message: string; onRetry?: () => void; isRetrying?: boolean }) {
   return <ErrorBanner message={message} action={onRetry && (
-    <button type="button" className="shrink-0 rounded-lg border border-brand-rose/30 px-2.5 py-1 text-xs" onClick={onRetry}>
+    <button type="button" disabled={isRetrying} className="shrink-0 rounded-lg border border-brand-rose/30 px-2.5 py-1 text-xs disabled:cursor-wait disabled:opacity-50" onClick={onRetry}>
       重新加载
     </button>
   )} />

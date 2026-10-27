@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react'
 import { FileSearch, GitMerge, Loader2, Pencil, Plus, Search, ShieldAlert, Trash2, X } from 'lucide-react'
 
-import { Button, Card, CardTitle, ErrorBanner, ErrorState, Field, PageHeader, Spinner } from '../components/ui'
+import { Button, Card, CardTitle, ErrorState, Field, PageHeader, Spinner } from '../components/ui'
 import { PageEmptyState } from '../components/PageEmptyState'
 import { FilterSelect } from '../components/FilterSelect'
 import { TopicBadge, TopicEditor } from '../components/TopicEditor'
@@ -75,6 +75,7 @@ export default function Facts() {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6">
       <PageHeader title={t.facts.title} />
+      {isError && <ErrorState message={(error as Error).message} isRetrying={isFetching} onRetry={() => { void refetch() }} />}
 
       <ConflictsCard />
 
@@ -137,11 +138,6 @@ export default function Facts() {
           </div>
         </div>
       <div className="flex flex-1 flex-col" aria-busy={isFetching}>
-        {isError && (
-          <ErrorBanner message={(error as Error).message} action={
-            <Button variant="ghost" disabled={isFetching} onClick={() => { void refetch() }}>{t.facts.retry}</Button>
-          } />
-        )}
         {!data ? (isError ? null : <Spinner label={t.facts.loading} />) : facts.length ? (
           <>
           {isPlaceholderData && <p role="status" className="px-4 py-2 text-xs text-ghost">{t.facts.updating}</p>}
