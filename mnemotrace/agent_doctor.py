@@ -22,7 +22,7 @@ from typing import Any
 
 from .agent_config import ConfigReadError, load_codex_server
 from .credentials import CredentialError, read_key, redact, resolve_key
-from .store._validation import EXPORT_VERSION
+from .store._validation import validate_snapshot
 
 CLIENTS = ("none", "codex", "claude-code", "cursor", "openai")
 
@@ -37,7 +37,7 @@ import tempfile
 from mnemotrace.mcp import server as S
 from mnemotrace.mcp.backends import LocalBackend
 from mnemotrace.service import MemoryService
-from mnemotrace.store._validation import EXPORT_VERSION
+from mnemotrace.store._validation import validate_snapshot
 
 SOURCE_SESSION = "doctor:source:smoke"
 TARGET_SESSION = "doctor:target:smoke"
@@ -98,6 +98,7 @@ async def main():
         "mnemotrace_export",
         response_format="json",
     ))
+    validate_snapshot(exported)
     recalled = json.loads(await call(
         "mnemotrace_recall",
         query="What does MnemoTrace doctor verify across agents?",
@@ -148,8 +149,7 @@ async def main():
             and PHRASE not in sessions_text
         ),
         "export_ok": (
-            exported.get("mnemotrace_export_version") == EXPORT_VERSION
-            and exported.get("include_sensitive") is False
+            exported.get("include_sensitive") is False
             and len(exported.get("facts") or []) >= 1
         ),
         "recalled": PHRASE in context and SOURCE_SESSION in context,
@@ -174,7 +174,7 @@ import tempfile
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mnemotrace.store._validation import EXPORT_VERSION
+from mnemotrace.store._validation import validate_snapshot
 
 SOURCE_SESSION = "doctor:source:stdio"
 TARGET_SESSION = "doctor:target:stdio"
@@ -264,6 +264,7 @@ async def main():
                             "mnemotrace_export",
                             response_format="json",
                         ))
+                        validate_snapshot(exported)
                 recalled = json.loads(await call(
                     target,
                     "mnemotrace_recall",
@@ -314,8 +315,7 @@ async def main():
                 and PHRASE not in sessions_text
             ),
             "export_ok": (
-                exported.get("mnemotrace_export_version") == EXPORT_VERSION
-                and exported.get("include_sensitive") is False
+                exported.get("include_sensitive") is False
                 and len(exported.get("facts") or []) >= 1
             ),
             "source_session": SOURCE_SESSION,
@@ -739,6 +739,7 @@ def _remote_http_probe(api_url: str, api_key: str) -> dict[str, Any]:
         exported = _http_get_json(base, api_key, "/v1/export", {
             "include_sensitive": "false",
         })
+        validate_snapshot(exported)
         recalled = _http_json(base, api_key, "/v1/recall", {
             "query": "What does the MnemoTrace remote doctor verify?",
             "session_id": target_session,
@@ -787,7 +788,6 @@ def _remote_http_probe(api_url: str, api_key: str) -> dict[str, Any]:
         and closed_target.get("ok") is True
         and report.get("ok") is True
         and int(report.get("facts_added") or 0) >= 1
-        and exported.get("mnemotrace_export_version") == EXPORT_VERSION
         and exported.get("include_sensitive") is False
         and len(exported.get("facts") or []) >= 1
         and phrase in report_text
@@ -812,7 +812,7 @@ def _remote_http_probe(api_url: str, api_key: str) -> dict[str, Any]:
             f"{base} responded, but recall did not prove cross-agent handoff "
             f"(remember_ok={remembered.get('ok')}, close_ok={closed_source.get('ok')}, "
             f"report_ok={report.get('ok')}, sessions_ok={sessions.get('ok')}, "
-            f"export_version={exported.get('mnemotrace_export_version')}, "
+            f"export_facts={len(exported.get('facts') or [])}, "
             f"target_close_ok={closed_target.get('ok')})."
         ),
         "command": command,
@@ -827,8 +827,7 @@ def _remote_http_probe(api_url: str, api_key: str) -> dict[str, Any]:
             "sessions_ok": sessions.get("ok") is True,
             "sessions_count": len(sessions.get("sessions") or []),
             "export_ok": (
-                exported.get("mnemotrace_export_version") == EXPORT_VERSION
-                and exported.get("include_sensitive") is False
+                exported.get("include_sensitive") is False
             ),
             "recalled_phrase": phrase in context,
             "recalled_source_session": source_session in context,

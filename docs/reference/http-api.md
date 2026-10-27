@@ -123,7 +123,7 @@ close 返回处理计数，例如 `pending_consolidated`、`facts_added`、`summ
 
 导入同时给 sessions 和 data 时以 sessions 为准。consolidate=null 按输入来源选择，Agent 会话与普通导出存在差异。PDF/DOCX 需要 documents extra，图片描述依赖视觉模型；base64 内容仍受请求体上限约束。
 
-结构化 MnemoTrace 快照导入先整批校验；必要字段缺失、类型非法或版本不支持时返回 400，目标数据不部分写入。成功响应保留 malformed=0。它用于数据迁移，保留目标运行设置；详细规则见[结构化迁移导入](../architecture/memory.md#结构化迁移导入)。
+结构化 MnemoTrace 快照导入先整批校验；必要字段缺失或类型非法时返回 400，目标数据不部分写入。成功响应保留 malformed=0。它用于数据迁移，保留目标运行设置；详细规则见[结构化快照导入](../architecture/memory.md#结构化快照导入)。
 
 默认导出省略敏感事实与自由文本层；完整私有导出需要 include_sensitive=true。forget 永久清空命名空间；anonymous 和 mnemotrace-test 禁止整库清空。单事实删除和清理工作状态不会完整擦除原始会话。
 

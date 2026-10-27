@@ -55,7 +55,7 @@ function validateSpace(value: unknown): SpacePreferences {
       hideSensitive: boolean(facts.hideSensitive, false),
     },
     journal: { showSuperseded: boolean(journal.showSuperseded, false), topic: savedTopic(journal.topic) },
-    ask: { chunks: ask.chunks === 1 ? 2 : Number.isInteger(ask.chunks) ? number(ask.chunks, 2, 12, 6) : 6,
+    ask: { chunks: Number.isInteger(ask.chunks) ? number(ask.chunks, 2, 12, 6) : 6,
       redactSensitive: boolean(ask.redactSensitive, false) },
   }
 }

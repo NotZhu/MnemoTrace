@@ -22,6 +22,7 @@ from .base import ImportMessage, ImportSession, extract_text, load_json, to_epoc
 from .chatgpt import parse_chatgpt
 from .agent_sessions import find_sessions, load_sessions, parse_agent_session
 from .generic import parse_jsonl, parse_messages, parse_records, parse_transcript
+from ..store._validation import is_snapshot_candidate
 
 __all__ = [
     "ImportMessage", "ImportSession", "parse", "sniff",
@@ -61,7 +62,7 @@ def sniff(data: Any) -> str:
 
 def _sniff_obj(obj: Any) -> str:
     if isinstance(obj, dict):
-        if "mnemotrace_export_version" in obj:
+        if is_snapshot_candidate(obj):
             return "mnemotrace"  # 我们自己的 /v1/export 快照 —— 用于恢复，不能当作消息解析
         if "mapping" in obj or "conversations" in obj:
             return "chatgpt"

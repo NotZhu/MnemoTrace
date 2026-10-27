@@ -46,6 +46,7 @@ def test_jsonl_roundtrip_preserves_bitemporal_and_state(tmp_path):
     manifest = json.loads((tmp_path / "memory" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["backend"] == "durable"
     assert manifest["mnemotrace_version"] == __version__
+    assert "schema_version" not in manifest
     assert "engram_version" not in manifest
 
     loaded = Memory.open(path)
@@ -70,6 +71,19 @@ def test_memory_open_missing_store_starts_empty(tmp_path):
     mem = Memory.open(str(tmp_path / "new-store"))
     assert mem.episodes_doc.values() == []
     assert mem.fact_store.values() == []
+
+
+def test_open_preserves_empty_fields_and_sensitive_flags(tmp_path):
+    mem = Memory()
+    fact = mem.add_fact("Synthetic", "has_disease", "synthetic condition", user_id="u")
+    fact.category = ""
+    fact.text = ""
+    fact.display = ""
+    fact.sensitive = False
+    before = fact.__dict__.copy()
+    mem.save(str(tmp_path / "memory"))
+    loaded = Memory.open(str(tmp_path / "memory"))
+    assert loaded.fact_store.values()[0].__dict__ == before
 
 
 def test_graph_tombstones_do_not_reappear_after_roundtrip(tmp_path):

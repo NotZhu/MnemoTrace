@@ -9,7 +9,7 @@ import pytest
 
 from mnemotrace import Memory
 from mnemotrace.service import MemoryService
-from mnemotrace.store import IncompatibleStoreError, StoreFormatError
+from mnemotrace.store import StoreFormatError
 from mnemotrace.types import Fact
 
 
@@ -107,7 +107,7 @@ def test_topics_roundtrip_hot_cold_and_snapshot(tmp_path, topic, source, tier):
     restored_store = restored.fact_store if tier == "hot" else restored.cold_store
     assert asdict(restored_store.get(fact.id)) == asdict(fact)
     snapshot = svc.export("u", include_sensitive=True)
-    assert snapshot["mnemotrace_export_version"] == 2
+    assert "mnemotrace_export_version" not in snapshot
     dst = Memory()
     dst.import_snapshot(snapshot)
     imported, = dst.fact_store.values()
@@ -139,20 +139,18 @@ def test_missing_topic_fields_are_corruption_not_defaults(tmp_path, field):
         Memory.open(str(tmp_path))
 
 
-def test_previous_versions_are_rejected_without_rewriting(tmp_path):
+def test_format_annotations_are_not_used_to_select_a_reader(tmp_path):
     mem = Memory()
     mem.save(str(tmp_path))
     path = tmp_path / "manifest.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    assert manifest["schema_version"] == 2
+    assert "schema_version" not in manifest
     manifest["schema_version"] = 1
     path.write_text(json.dumps(manifest), encoding="utf-8")
     before = path.read_bytes()
-    with pytest.raises(IncompatibleStoreError):
-        Memory.open(str(tmp_path))
+    Memory.open(str(tmp_path))
     assert path.read_bytes() == before
-    with pytest.raises(ValueError, match="version"):
-        mem.import_snapshot({"mnemotrace_export_version": 1, "facts": [], "episodes": []})
+    assert mem.import_snapshot({"facts": [], "episodes": []})["facts_restored"] == 0
 
 
 def test_invalid_snapshot_topic_rejected_before_partial_import(tmp_path):

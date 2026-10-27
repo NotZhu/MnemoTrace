@@ -441,7 +441,6 @@ export interface MemoryExportEpisode {
 }
 
 export interface MemoryExport {
-  mnemotrace_export_version: 2
   user: string
   include_sensitive: boolean
   redacted_sensitive: boolean

@@ -8,7 +8,7 @@ from dataclasses import asdict
 import pytest
 
 from mnemotrace import Memory
-from mnemotrace.store import IncompatibleStoreError, StoreFormatError, load_memory
+from mnemotrace.store import StoreFormatError, load_memory
 from mnemotrace.store.persist import snapshot_version
 from mnemotrace.types import Conflict
 
@@ -42,7 +42,7 @@ def disk_bytes(path):
 
 
 @pytest.mark.parametrize("key", [
-    "schema_version", "snapshot_id", "embedder_id", "embedding_dim", "backend",
+    "snapshot_id", "embedder_id", "embedding_dim", "backend",
     "mnemotrace_version", "created_at", "updated_at", "counts", "state",
 ])
 def test_required_manifest_fields_are_checked_by_load_and_version(saved, key):
@@ -56,7 +56,6 @@ def test_required_manifest_fields_are_checked_by_load_and_version(saved, key):
 
 
 @pytest.mark.parametrize("key,value", [
-    ("schema_version", True), ("schema_version", 1.9), ("schema_version", "1"),
     ("snapshot_id", ""), ("embedder_id", 1), ("embedding_dim", None),
     ("embedding_dim", True), ("embedding_dim", "256"), ("embedding_dim", 0),
     ("created_at", float("nan")), ("updated_at", float("inf")), ("backend", "unknown"),
@@ -68,11 +67,11 @@ def test_manifest_values_are_not_coerced(saved, key, value):
         Memory.open(str(path), allow_mismatch=True)
 
 
-@pytest.mark.parametrize("version", [0, -1, 1, 999])
-def test_unsupported_version_takes_precedence_over_other_missing_fields(tmp_path, version):
-    (tmp_path / "manifest.json").write_text(json.dumps({"schema_version": version}), encoding="utf-8")
-    with pytest.raises(IncompatibleStoreError):
-        Memory.open(str(tmp_path))
+def test_unknown_manifest_fields_do_not_select_a_different_reader(saved):
+    original, path = saved
+    edit_manifest(path, lambda m: m.update(schema_version="ignored annotation", extra="ignored"))
+    restored = Memory.open(str(path))
+    assert [asdict(f) for f in restored.fact_store.values()] == [asdict(f) for f in original.fact_store.values()]
 
 
 @pytest.mark.parametrize("collection", ["episodes", "facts", "entities", "relations", "working", "conflicts"])
@@ -87,8 +86,6 @@ def test_each_persisted_record_field_is_checked_before_mutation(saved, collectio
     before = [asdict(f) for f in existing.fact_store.values()]
     focus = copy.deepcopy(existing.focus)
     for key in rows[-1]:
-        if collection == "facts" and key in {"text", "display"}:
-            continue
         changed = copy.deepcopy(rows)
         del changed[-1][key]
         target.write_text("".join(json.dumps(row) + "\n" for row in changed), encoding="utf-8")
@@ -100,7 +97,8 @@ def test_each_persisted_record_field_is_checked_before_mutation(saved, collectio
         target.write_bytes(original)
 
 
-@pytest.mark.parametrize("key", ["focus", "policy", "identity", "aliases", "import_seen"])
+@pytest.mark.parametrize("key", ["focus", "policy", "identity", "aliases", "import_seen",
+                                 "persona_cache", "cold_pages_out", "cold_pages_in"])
 def test_required_state_cannot_be_implicitly_reset(saved, key):
     _, path = saved
     edit_manifest(path, lambda m: m["state"].pop(key))
@@ -127,16 +125,11 @@ def test_invalid_state_fails_without_changing_memory(saved, key, value):
     assert original._snapshot_version == token
 
 
-def test_optional_caches_and_fact_display_can_be_omitted(saved):
+def test_empty_display_and_caches_are_valid_and_extensions_are_ignored(saved):
     _, path = saved
-    def remove_caches(m):
-        for key in ("persona_cache", "cold_pages_in", "cold_pages_out"):
-            m["state"].pop(key)
-    edit_manifest(path, remove_caches)
     target = path / "facts.jsonl"
     row = json.loads(target.read_text(encoding="utf-8"))
-    row.pop("text")
-    row.pop("display")
+    row["display"] = ""
     row["unknown_extension"] = "ignored"
     target.write_text(json.dumps(row) + "\n", encoding="utf-8")
     restored = Memory.open(str(path))
@@ -186,10 +179,20 @@ def test_explicit_lifecycle_and_source_survive_restore(saved, key):
     assert not restored_item.is_live()
 
 
-def test_lancedb_typed_decoder_rejects_missing_identity_without_backend_dependency():
+@pytest.mark.parametrize("field", ["id", "text", "display"])
+def test_lancedb_typed_decoder_rejects_missing_fields_without_backend_dependency(field):
     from mnemotrace.store.lancedb_store import _decode_payload
     from mnemotrace.types import Fact
     row = asdict(Fact(subject="Synthetic", predicate="likes", object="tea"))
-    row.pop("id")
-    with pytest.raises(StoreFormatError, match="id"):
+    row.pop(field)
+    with pytest.raises(StoreFormatError, match=field):
         _decode_payload(json.dumps({"type": "Fact", "data": row}))
+
+
+def test_typed_payload_restores_explicit_empty_text():
+    from mnemotrace.store.lancedb_store import _decode_payload
+    from mnemotrace.types import Fact
+    row = asdict(Fact(subject="Synthetic", predicate="likes", object="tea"))
+    row["text"] = ""
+    restored = _decode_payload(json.dumps({"type": "Fact", "data": row}))
+    assert restored.text == ""

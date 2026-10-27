@@ -205,7 +205,7 @@ def test_load_and_snapshot_import_do_not_backfill_topics(tmp_path):
     restored = Memory.open(str(tmp_path / "store"), llm=model)
     assert restored.fact_store.get(fact.id).topic_source == "unset" and model.calls == []
     svc = MemoryService(data_dir=str(tmp_path / "service"), embedder_name="hashing", llm_name="")
-    svc.import_("u", data={"mnemotrace_export_version": 2, "facts": [asdict(fact)], "episodes": []})
+    svc.import_("u", data={"facts": [asdict(fact)], "episodes": []})
     assert svc.memories("u")["facts"][0]["topic_source"] == "unset"
 
 

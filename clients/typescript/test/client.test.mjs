@@ -373,7 +373,6 @@ test('export defaults to share-safe payload and can request full private export'
     calls.push({ url, init })
     const includeSensitive = url.endsWith('include_sensitive=true')
     return new Response(JSON.stringify({
-      mnemotrace_export_version: 2,
       include_sensitive: includeSensitive,
       redacted_sensitive: !includeSensitive,
       facts: includeSensitive
@@ -399,7 +398,7 @@ test('export defaults to share-safe payload and can request full private export'
   assert.equal(calls[0].url, 'http://mnemotrace.test/v1/export?include_sensitive=false')
   assert.equal(calls[1].url, 'http://mnemotrace.test/v1/export?include_sensitive=true')
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
-  assert.equal(safeExport.mnemotrace_export_version, 2)
+  assert.equal('mnemotrace_export_version' in safeExport, false)
   assert.equal(Object.hasOwn(safeExport, 'engram_export_version'), false)
   assert.equal(safeExport.include_sensitive, false)
   assert.equal(safeExport.redacted_sensitive, true)
