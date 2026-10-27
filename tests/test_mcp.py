@@ -622,7 +622,7 @@ async def test_remote_backend_exports_memory():
             pass
 
         def json(self):
-            return {"mnemotrace_export_version": 2, "include_sensitive": False, "facts": []}
+            return {"include_sensitive": False, "facts": [], "episodes": []}
 
     class FakeClient:
         def __init__(self):
@@ -640,8 +640,8 @@ async def test_remote_backend_exports_memory():
     assert client.gets[0][0] == "http://mnemotrace.test/v1/export?include_sensitive=false"
     assert client.gets[0][1]["Authorization"] == "Bearer sk-test"
     assert client.gets[1][0] == "http://mnemotrace.test/v1/export?include_sensitive=true"
-    assert safe["mnemotrace_export_version"] == 2
-    assert full["mnemotrace_export_version"] == 2
+    assert "mnemotrace_export_version" not in safe
+    assert "mnemotrace_export_version" not in full
 
 
 @pytest.mark.asyncio

@@ -26,7 +26,7 @@ from ._namespace_paths import contained_child, namespace_directory, namespace_pa
 from .localize import display_of
 from .memory import Memory
 from .metrics import Metrics, timed
-from .store._validation import EXPORT_VERSION
+from .store._validation import is_snapshot_candidate
 from .store.persist import (
     DimensionMismatchError,
     EmbedderMismatchError,
@@ -506,8 +506,7 @@ class MemoryService:
                         obj = load_json(obj)
                     except Exception:  # noqa: BLE001 — 纯文本（transcript 等）：走下面的旧路径
                         obj = data
-                if isinstance(obj, dict) and "mnemotrace_export_version" in obj \
-                        and format in ("auto", "mnemotrace"):
+                if format == "mnemotrace" or (format == "auto" and is_snapshot_candidate(obj)):
                     stats = mem.import_snapshot(obj, user_id=user, dedupe=dedupe)
                     self._save(user, mem)
                     return {"ok": True, **stats}
@@ -1584,7 +1583,6 @@ class MemoryService:
                   if include_sensitive or not getattr(f, "sensitive", False)]
         graph = mem.graph_data(user, include_sensitive=include_sensitive)
         out = {
-            "mnemotrace_export_version": EXPORT_VERSION,
             "user": user,
             "include_sensitive": include_sensitive,
             "redacted_sensitive": not include_sensitive,

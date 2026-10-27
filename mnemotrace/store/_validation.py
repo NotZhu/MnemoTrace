@@ -8,14 +8,8 @@ from typing import Any, Callable
 
 from ..topics import TOPICS, TOPIC_SOURCES, validate_topic
 
-SCHEMA_VERSION = 2
-EXPORT_VERSION = 2
 COLLECTIONS = ("episodes", "facts", "entities", "relations", "working", "conflicts")
 Validator = Callable[[Any, str], None]
-
-
-class UnsupportedVersion(ValueError):
-    """A well-formed version number that this reader does not support."""
 
 
 def _fail(path: str, reason: str) -> None:
@@ -182,7 +176,7 @@ def validate_record(kind: str, record: Any, path: str, *, jsonl_fact: bool = Fal
     spec = _RECORDS[kind]
     if jsonl_fact:
         spec = {**spec, "_store": _choice("hot", "cold")}
-    result = _fields(record, spec, path, ("text", "display") if kind == "Fact" else ())
+    result = _fields(record, spec, path)
     if kind == "Fact":
         _validate_topic_pair(result, path)
     if embedding_dim is not None:
@@ -206,29 +200,14 @@ def validate_state(state: Any, path: str = "manifest.state") -> dict:
         "identity": _mapping(_string), "aliases": _mapping(_STRINGS), "import_seen": _STRINGS,
         "persona_cache": _mapping(_string),
         "cold_pages_out": _mapping(_count), "cold_pages_in": _mapping(_count),
-    }, path, ("persona_cache", "cold_pages_out", "cold_pages_in"))
-    if "resolver_parent" in state:
-        mapping = state["resolver_parent"]
-        try:
-            _mapping(_string)(mapping, f"{path}.resolver_parent")
-        except ValueError:
-            _fail(f"{path}.resolver_parent", "malformed retired identity state")
-        if any(key != value for key, value in mapping.items()):
-            _fail(f"{path}.resolver_parent", "retired identity links; automatic conversion is not supported")
-    for key in ("persona_cache", "cold_pages_out", "cold_pages_in"):
-        result.setdefault(key, {})
+    }, path)
     return result
 
 
 def validate_manifest(manifest: Any) -> dict:
     _object(manifest, "manifest")
-    if "schema_version" not in manifest:
-        _fail("manifest.schema_version", "missing required field")
-    _integer(manifest["schema_version"], "manifest.schema_version")
-    if manifest["schema_version"] != SCHEMA_VERSION:
-        raise UnsupportedVersion(f"manifest.schema_version: unsupported version; supported version is {SCHEMA_VERSION}")
     result = _fields(manifest, {
-        "schema_version": _integer, "snapshot_id": _identifier, "embedder_id": _identifier,
+        "snapshot_id": _identifier, "embedder_id": _identifier,
         "embedding_dim": _dimension, "backend": _choice("durable", "lancedb"),
         "mnemotrace_version": _identifier, "created_at": _number, "updated_at": _number,
         "counts": lambda v, p: _fields(v, {key: _count for key in COLLECTIONS}, p),
@@ -252,15 +231,16 @@ _IMPORT_EPISODE = {key: _EPISODE[key] for key in (
 )}
 
 
+def is_snapshot_candidate(value: Any) -> bool:
+    """Route snapshot-shaped objects to strict validation, including incomplete envelopes."""
+    return isinstance(value, dict) and ("facts" in value or "episodes" in value)
+
+
 def validate_snapshot(snapshot: Any) -> dict:
     _object(snapshot, "snapshot")
-    for key in ("mnemotrace_export_version", "facts", "episodes"):
+    for key in ("facts", "episodes"):
         if key not in snapshot:
             _fail(f"snapshot.{key}", "missing required field")
-    version = snapshot["mnemotrace_export_version"]
-    _integer(version, "snapshot.mnemotrace_export_version")
-    if version != EXPORT_VERSION:
-        _fail("snapshot.mnemotrace_export_version", f"unsupported version; supported version is {EXPORT_VERSION}")
     result = {}
     for name, spec, optional in (("facts", _IMPORT_FACT, ("text", "status", "valid_at_h", "invalid_at_h")),
                                  ("episodes", _IMPORT_EPISODE, ("summary",))):

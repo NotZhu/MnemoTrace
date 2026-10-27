@@ -282,7 +282,6 @@ class Memory:
         mem = cls(**kwargs)
         if load_memory(mem, path, allow_mismatch=allow_mismatch):
             mem._rewire()
-            mem._classify()  # 为 feature ⑤ 之前保存的 fact 回填 category/sensitivity
         mem._persist_path = path
         return mem
 

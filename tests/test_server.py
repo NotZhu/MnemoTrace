@@ -58,6 +58,34 @@ def test_health(client):
     assert client.get("/ready").status_code == 200
 
 
+def test_store_validation_failure_is_structured_and_does_not_delete_data(client):
+    import json
+    from pathlib import Path
+    from mnemotrace import Memory
+    from mnemotrace._namespace_paths import namespace_path
+    from mnemotrace.server import app as appmod
+
+    path = Path(namespace_path(appmod.svc().data_dir, "synthetic-corrupt"))
+    Memory().save(str(path))
+    manifest = path / "manifest.json"
+    row = json.loads(manifest.read_text(encoding="utf-8"))
+    row.pop("snapshot_id")
+    manifest.write_text(json.dumps(row), encoding="utf-8")
+    before = {file.name: file.read_bytes() for file in path.iterdir() if file.is_file()}
+    response = client.get("/v1/policy", headers=hdr("synthetic-corrupt"))
+    assert response.status_code == 500
+    assert response.json() == {"detail": {"code": "store_validation_failed", "message": "记忆数据校验失败"}}
+    assert str(path) not in response.text and "snapshot_id" not in response.text
+    assert {file.name: file.read_bytes() for file in path.iterdir() if file.is_file()} == before
+
+
+@pytest.mark.parametrize("payload", [{"facts": []}, {"episodes": []}, {"facts": "bad", "episodes": []}])
+def test_incomplete_snapshot_is_rejected_instead_of_message_ingestion(client, payload):
+    response = client.post("/v1/import", json={"data": payload}, headers=hdr("synthetic-invalid-import"))
+    assert response.status_code == 400
+    assert client.get("/v1/memories", headers=hdr("synthetic-invalid-import")).json()["facts"] == []
+
+
 def test_private_api_responses_are_not_cacheable(client):
     h = hdr("cache_headers")
 
@@ -396,7 +424,7 @@ def test_fact_crud_and_focus_policy_graph_export(client):
     assert pol["ok"] and pol["policy"]["extract_instruction"] == "Record job changes."
     assert "nodes" in client.get("/v1/graph", headers=h).json()
     exp = client.get("/v1/export", headers=h).json()
-    assert exp["mnemotrace_export_version"] == 2 and any(f["object"] == "Moonshot AI" for f in exp["facts"])
+    assert "mnemotrace_export_version" not in exp and any(f["object"] == "Moonshot AI" for f in exp["facts"])
     assert client.delete(f"/v1/facts/{fid}", headers=h).json()["ok"] is True
 
 

@@ -32,7 +32,7 @@ class TestSnapshotRoundtrip:
             svc.remember("alice", "I moved, I now live in Shanghai.")
             svc.add_fact("alice", "alice", "favorite_editor", "vim")
             snap = svc.export("alice", include_sensitive=True)
-            assert snap["mnemotrace_export_version"] == 2 and snap["episodes"], "need a full export"
+            assert "mnemotrace_export_version" not in snap and snap["episodes"], "need a full export"
             assert "engram_export_version" not in snap
 
             out = svc.import_(user="bob", data=snap, format="auto")
@@ -91,7 +91,7 @@ class TestSnapshotRoundtrip:
 class TestSnifferAndMemoryLevel:
     def test_sniff_recognizes_snapshot_and_parse_gives_actionable_error(self):
         from mnemotrace.connectors import parse, sniff
-        snap = {"mnemotrace_export_version": 2, "facts": [], "episodes": []}
+        snap = {"facts": [], "episodes": []}
         assert sniff(snap) == "mnemotrace"
         with pytest.raises(ValueError, match="import_snapshot"):
             parse(snap)
@@ -102,7 +102,7 @@ class TestSnifferAndMemoryLevel:
         src.consolidate()
         facts = [asdict(f) for f in src._all_facts()]
         dst = _mk_memory()
-        stats = dst.import_snapshot({"mnemotrace_export_version": 2, "facts": facts, "episodes": []},
+        stats = dst.import_snapshot({"facts": facts, "episodes": []},
                                     user_id="u2")
         assert stats["facts_restored"] == len(facts) > 0
         assert stats["malformed"] == 0
@@ -111,7 +111,6 @@ class TestSnifferAndMemoryLevel:
         dst = _mk_memory()
         with pytest.raises(ValueError, match="snapshot.facts"):
             dst.import_snapshot({
-                "mnemotrace_export_version": 2,
                 "facts": [{"subject": "a"}, "not-a-dict"],
                 "episodes": [{"no_content": True}, "junk"],
             })

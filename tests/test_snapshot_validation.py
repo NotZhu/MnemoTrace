@@ -12,7 +12,6 @@ from mnemotrace.types import Episode, Fact
 
 def snapshot():
     return {
-        "mnemotrace_export_version": 2,
         "facts": [asdict(Fact(id="ft_source", subject="Synthetic", predicate="works_at",
                               object="SyntheticCo", valid_at=0, created_at=-1, source="user"))],
         "episodes": [asdict(Episode(id="ep_source", content="Synthetic source", event_time=0))],
@@ -42,7 +41,7 @@ def contents(mem):
     })
 
 
-@pytest.mark.parametrize("key", ["mnemotrace_export_version", "facts", "episodes"])
+@pytest.mark.parametrize("key", ["facts", "episodes"])
 def test_missing_envelope_rejects_entire_batch(key):
     payload = snapshot()
     payload.pop(key)
@@ -96,11 +95,11 @@ def test_invalid_last_record_does_not_partially_import_or_echo_values(key, value
 
 
 @pytest.mark.parametrize("value", [True, 1.9, "1", 0, 1, 999])
-def test_invalid_snapshot_versions_are_rejected(value):
+def test_additional_snapshot_fields_are_not_format_selectors(value):
     payload = snapshot()
     payload["mnemotrace_export_version"] = value
-    with pytest.raises(ValueError, match="mnemotrace_export_version"):
-        Memory().import_snapshot(payload)
+    stats = Memory().import_snapshot(payload)
+    assert stats["facts_restored"] == 1
 
 
 def test_migration_preserves_source_history_and_target_settings():

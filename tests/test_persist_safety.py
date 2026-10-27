@@ -6,7 +6,7 @@ import pytest
 
 from mnemotrace import Memory
 from mnemotrace.embed import HashingEmbedder
-from mnemotrace.store import DimensionMismatchError, EmbedderMismatchError, IncompatibleStoreError, StoreFormatError
+from mnemotrace.store import DimensionMismatchError, EmbedderMismatchError, StoreFormatError
 
 
 def test_open_rejects_plain_file_instead_of_unpickling(tmp_path):
@@ -16,14 +16,14 @@ def test_open_rejects_plain_file_instead_of_unpickling(tmp_path):
         Memory.open(str(path))
 
 
-def test_newer_schema_fails_loudly(tmp_path):
+def test_incomplete_manifest_fails_field_validation(tmp_path):
     path = tmp_path / "store"
     path.mkdir()
     (path / "manifest.json").write_text(
-        json.dumps({"schema_version": 999, "embedding_dim": 256, "counts": {}}),
+        json.dumps({"embedding_dim": 256, "counts": {}}),
         encoding="utf-8",
     )
-    with pytest.raises(IncompatibleStoreError):
+    with pytest.raises(StoreFormatError, match="snapshot_id"):
         Memory.open(str(path))
 
 

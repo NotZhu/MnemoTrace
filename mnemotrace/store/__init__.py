@@ -3,7 +3,6 @@ from .memory_store import InMemoryDocStore, InMemoryGraphStore, InMemoryVectorSt
 from .persist import (
     DimensionMismatchError,
     EmbedderMismatchError,
-    IncompatibleStoreError,
     PersistenceError,
     StoreFormatError,
     load_memory,
@@ -18,7 +17,6 @@ __all__ = [
     "InMemoryDocStore",
     "InMemoryGraphStore",
     "PersistenceError",
-    "IncompatibleStoreError",
     "DimensionMismatchError",
     "EmbedderMismatchError",
     "StoreFormatError",

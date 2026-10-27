@@ -16,17 +16,13 @@ from .. import __version__, _flock
 from ..types import Conflict, Entity, Episode, Fact, Relation, WorkingMemory
 from ..util import now
 from ._validation import (
-    COLLECTIONS, SCHEMA_VERSION, UnsupportedVersion, validate_manifest, validate_record, validate_state,
+    COLLECTIONS, validate_manifest, validate_record, validate_state,
 )
 from .memory_store import InMemoryDocStore, InMemoryGraphStore
 
 
 class PersistenceError(Exception):
     """存储持久化错误的基类。"""
-
-
-class IncompatibleStoreError(PersistenceError):
-    """该存储由当前版本无法读取的 schema 写成。"""
 
 
 class DimensionMismatchError(PersistenceError):
@@ -102,8 +98,6 @@ def _read_manifest(path: str) -> tuple[dict[str, Any], str] | None:
 def _validated_manifest(manifest: Any) -> dict:
     try:
         return validate_manifest(manifest)
-    except UnsupportedVersion as exc:
-        raise IncompatibleStoreError(str(exc)) from exc
     except ValueError as exc:
         raise StoreFormatError(str(exc)) from exc
 
@@ -135,7 +129,15 @@ def _from_record(cls: type, record: Any, location: str | None = None):
         values = validate_record(cls.__name__, record, location or cls.__name__)
     except ValueError as exc:
         raise StoreFormatError(str(exc)) from exc
-    return cls(**values)
+    return _restore_record(cls, values)
+
+
+def _restore_record(cls: type, values: dict):
+    obj = cls(**values)
+    if cls is Fact:
+        # 已存空正文是合法值，不能被新建 Fact 的三元组默认正文覆盖。
+        obj.text = values["text"]
+    return obj
 
 
 def _json_dump(obj: Any, fh) -> None:
@@ -219,7 +221,7 @@ def _memory_state(mem: Any) -> dict[str, Any]:
 
 
 def save_memory(mem: Any, path: str, backend: str = "durable") -> None:
-    """把一个 Memory 实例持久化到带 schema 版本的 JSONL 目录。"""
+    """把一个 Memory 实例持久化到当前字段契约的 JSONL 目录。"""
     if os.path.exists(path) and not os.path.isdir(path):
         raise StoreFormatError(f"store path exists and is not a directory: {path}")
 
@@ -257,7 +259,6 @@ def save_memory(mem: Any, path: str, backend: str = "durable") -> None:
             rows.sort(key=lambda row: row["id"])
         manifest_path = os.path.join(path, "manifest.json")
         manifest = _validated_manifest({
-            "schema_version": SCHEMA_VERSION,
             "snapshot_id": uuid.uuid4().hex,
             "mnemotrace_version": __version__,
             "embedder_id": _embedder_id(mem.embedder),
@@ -330,7 +331,7 @@ def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
             except ValueError as exc:
                 raise StoreFormatError(str(exc)) from exc
             tier = values.pop("_store", None)
-            obj = cls(**values)
+            obj = _restore_record(cls, values)
             prepared[name].append((tier, obj) if name == "facts" else obj)
 
     # Decoding existing persistent payloads can itself fail. Inspect every index before

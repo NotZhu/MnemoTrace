@@ -191,17 +191,17 @@ test('旧版本重置后仍可写入并在刷新后恢复',async()=>{
   assert.equal(reloaded.state().spaces[reloaded.state().activeScope],undefined,'重置不破坏账号隔离')
 })
 
-test('问答片段最小值为2，当前格式的越界输入被钳制并保持其他设置',async()=>{
+test('问答片段非法输入使用当前默认值并保持其他设置，有效输入正常保存',async()=>{
   const base=load(),credential='synthetic-chunk-minimum',scope=await base.login(credential)
   const s=load({version:2,state:{spaces:{[scope]:{ask:{chunks:1,redactSensitive:true},facts:{hideSensitive:true}}}}})
   await s.login(credential)
-  assert.equal(s.state().spaces[scope].ask.chunks,2)
+  assert.equal(s.state().spaces[scope].ask.chunks,6)
   assert.equal(s.state().spaces[scope].ask.redactSensitive,true)
   assert.equal(s.state().spaces[scope].facts.hideSensitive,true)
   s.state().setSpace('ask','chunks',1)
-  assert.equal(savedState(s).spaces[scope].ask.chunks,2)
+  assert.equal(savedState(s).spaces[scope].ask.chunks,6)
   s.state().setSpace('ask','chunks',previous=>previous-1)
-  assert.equal(s.state().spaces[scope].ask.chunks,2)
+  assert.equal(s.state().spaces[scope].ask.chunks,5)
   s.state().setSpace('ask','chunks',12)
   const reloaded=load(s.values.get(KEY))
   await reloaded.login(credential)

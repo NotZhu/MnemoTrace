@@ -769,7 +769,6 @@ async def mnemotrace_export(
     lines = [
         "# MnemoTrace export",
         "",
-        f"- Version: {data.get('mnemotrace_export_version', '?')}",
         f"- Namespace: `{data.get('user', '?')}`",
         f"- Include sensitive: {bool(data.get('include_sensitive'))}",
         f"- Redacted sensitive: {bool(data.get('redacted_sensitive'))}",

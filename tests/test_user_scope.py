@@ -6,8 +6,6 @@ import pytest
 
 from mnemotrace import Memory
 from mnemotrace.service import MemoryService
-from mnemotrace.store import StoreFormatError
-from mnemotrace.store.persist import load_memory
 from mnemotrace.types import Fact
 
 
@@ -52,8 +50,8 @@ def test_default_user_is_still_supported():
     assert mem.search("Where does user live?", user_id="other").abstained
 
 
-@pytest.mark.parametrize("mapping", [{}, {"user123": "user123"}])
-def test_self_only_snapshot_mapping_is_discarded_without_changing_records(tmp_path, mapping):
+@pytest.mark.parametrize("mapping", [{}, {"user123": "user123"}, None, [], "invalid", {"user123": 7}, {"user123": "other"}])
+def test_unknown_state_fields_do_not_change_record_identity(tmp_path, mapping):
     source = tmp_path / "store"
     mem = Memory()
     fact = mem.add_fact("user", "lives_in", "Paris", user_id="user123")
@@ -66,36 +64,6 @@ def test_self_only_snapshot_mapping_is_discarded_without_changing_records(tmp_pa
     assert loaded.fact_store.get(fact.id).__dict__ == fact.__dict__
     loaded.save()
     assert "resolver_parent" not in json.loads(manifest_path.read_text(encoding="utf-8"))["state"]
-
-
-@pytest.mark.parametrize("mapping", [
-    None, [], "invalid", {"user123": 7}, {"user123": "other"},
-    {"user123": "alias", "alias": "other", "other": "other"},
-])
-@pytest.mark.parametrize("allow_mismatch", [False, True])
-def test_linked_or_malformed_snapshot_is_rejected_before_mutating_stores(
-    tmp_path, monkeypatch, mapping, allow_mismatch,
-):
-    source = tmp_path / "store"
-    mem = Memory()
-    mem.add_fact("user", "lives_in", "Paris", user_id="user123")
-    mem.save(str(source))
-    manifest_path = source / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["state"]["resolver_parent"] = mapping
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    files = {p.name: p.read_bytes() for p in source.iterdir() if p.is_file()}
-    target = Memory()
-    kept = target.add_fact("user", "lives_in", "Berlin", user_id="unrelated")
-
-    def unexpected_delete(*args):
-        pytest.fail("loading an unsupported mapping must not modify vector stores")
-
-    monkeypatch.setattr(target.fact_store, "delete", unexpected_delete)
-    with pytest.raises(StoreFormatError, match="identity"):
-        load_memory(target, str(source), allow_mismatch=allow_mismatch)
-    assert target.fact_store.get(kept.id) is kept
-    assert {p.name: p.read_bytes() for p in source.iterdir() if p.is_file()} == files
 
 
 def test_audit_and_clear_slot_share_exact_scope_and_protect_history(tmp_path):

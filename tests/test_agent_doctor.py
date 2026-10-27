@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 import subprocess
 import urllib.error
 
 import pytest
 
 from mnemotrace import agent_doctor as D
+from mnemotrace.types import Fact
+
+
+def safe_snapshot():
+    return {"include_sensitive": False, "episodes": [], "facts": [asdict(Fact(
+        subject="Synthetic", predicate="decision",
+        object="MnemoTrace remote doctor verifies cross-agent handoff.",
+        text="Project decision: MnemoTrace remote doctor verifies cross-agent handoff.",
+    ))]}
 
 
 def _completed(args, returncode=0, stdout="", stderr=""):
@@ -179,11 +189,7 @@ def test_diagnose_remote_http_lifecycle_success(monkeypatch):
         assert api_key == "sk-secret"
         if path == "/v1/export":
             assert params == {"include_sensitive": "false"}
-            return {
-                "mnemotrace_export_version": 2,
-                "include_sensitive": False,
-                "facts": [{"text": "Project decision: MnemoTrace remote doctor verifies cross-agent handoff."}],
-            }
+            return safe_snapshot()
         if path == "/v1/sessions":
             assert params == {"q": source_session, "limit": 10, "offset": 0}
             return {
@@ -297,11 +303,7 @@ def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
     def fake_get(api_url, api_key, path, params=None, timeout=30.0):
         if path == "/v1/export":
             assert params == {"include_sensitive": "false"}
-            return {
-                "mnemotrace_export_version": 2,
-                "include_sensitive": False,
-                "facts": [{"text": "Project decision: MnemoTrace remote doctor verifies cross-agent handoff."}],
-            }
+            return safe_snapshot()
         if path == "/v1/sessions":
             assert params == {"q": source_session, "limit": 10, "offset": 0}
             return {

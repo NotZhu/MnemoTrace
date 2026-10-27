@@ -71,27 +71,27 @@ working 的“临时”指可见性与清理生命周期。当前 JSONL 快照�
 - 前缀内部缺失记录或 JSON 格式错误时抛出 `StoreFormatError`。
 - manifest 数量之后的撕裂字节作为未提交尾部丢弃；这里指加载时不接纳尾部，不表示自动改写磁盘文件。
 - 路径存在且不是目录时拒绝加载；manifest 不存在时，当前实现按空库处理。
-- 当前写入与读取 schema 为 2，其他整数版本抛出 `IncompatibleStoreError`；版本缺失或类型非法抛出 `StoreFormatError`。
+- 存储不使用格式版本字段；按当前字段及约束校验，缺失或非法字段抛出 `StoreFormatError`。
 
 保存先刷新并替换集合文件，再替换 manifest。文件锁和提交标识提供并发协调，但多文件快照不等于完整的跨文件事务回滚，也不承诺崩溃发生在任意阶段都能自动恢复旧代次。备份应在暂停写入后复制完整数据目录，见[部署说明](../../deploy/README.md#备份与恢复)。
 
-恢复使用独立于新建对象默认值的字段契约。manifest 必须包含 schema、非空 snapshot_id 和 embedder_id、正整数 embedding_dim、backend、软件版本、创建/更新时间、六类集合计数和 state。提交编号缺失时不再使用旧哈希 token。当前 writer 生成的完整存档继续可读；历史存档缺少这些信息时拒绝读取，不自动转换、补造、重写或删除。
+恢复使用独立于新建对象默认值的字段契约。manifest 必须包含非空 snapshot_id 和 embedder_id、正整数 embedding_dim、backend、软件版本、创建/更新时间、六类集合计数和 state。snapshot_id 用于并发提交识别，与数据格式版本无关。当前 writer 生成的完整存档继续可读；历史存档缺少这些信息时拒绝读取，不自动转换、补造、重写或删除。
 
-六类本地记录要求当前写入字段完整，唯一允许缺省的字段是 Fact.text（按三元组生成）和 Fact.display（空字符串）；未知附加字段不参与对象构造。JSONL 事实另须有 `_store=hot|cold`。时间、编号、归属、来源、替代关系、失效/消费标记均不能由新建默认值补齐。允许显式的合法空值，例如 provenance=[]、invalid_at=null；空值与字段缺失不同。类型严格校验，数值须有限，整数不接受布尔值；epoch 0 和负时间戳原样保留。LanceDB 的类型化 payload 使用同一记录契约。
+六类本地记录要求当前写入字段完整，包括 Fact.text 和 Fact.display；未知附加字段不参与对象构造。JSONL 事实另须有 `_store=hot|cold`。时间、编号、归属、来源、替代关系、失效/消费标记均不能由新建默认值补齐。允许显式的合法空值，例如 provenance=[]、invalid_at=null；空值与字段缺失不同。类型严格校验，数值须有限，整数不接受布尔值；epoch 0 和负时间戳原样保留。LanceDB 的类型化 payload 使用同一记录契约。
 
-事实的 topic/topic_source 为必需字段，并校验取值及来源组合。版本 1 的旧库不自动升级，新格式缺失主题字段属于损坏；打开、保存或导入都不会自动清理旧数据。
+事实的 topic/topic_source 为必需字段，并校验取值及来源组合。缺失主题字段属于校验失败；打开、保存或导入都不会自动清理数据。
 
-state 必须包含 focus（track/mute 字符串列表）、policy（四个策略字符串）、identity（字符串映射）、aliases（字符串列表映射）和 import_seen（字符串列表）。显式空列表/映射合法，policy 的空字符串表示使用内置策略；persona_cache、cold_pages_out 和 cold_pages_in 可缺省，提供时仍需合法。它们的字段规则由[恢复校验实现](../../mnemotrace/store/_validation.py)统一维护。
+state 必须包含 focus（track/mute 字符串列表）、policy（四个策略字符串）、identity（字符串映射）、aliases（字符串列表映射）和 import_seen（字符串列表）。显式空列表/映射合法，policy 的空字符串表示使用内置策略；persona_cache、cold_pages_out 和 cold_pages_in 同样为必需字段，合法空对象允许保留。它们的字段规则由[恢复校验实现](../../mnemotrace/store/_validation.py)统一维护。
 
 加载在修改目标存储前完成全部记录与状态的校验、转换及对象准备；保存也在替换第一个集合文件前完成待保存数据和已有 manifest 的校验。格式校验失败不改变已有记忆、持久化表或提交编号。服务的缓存版本检查同样验证 manifest，不能通过暖缓存绕过检查。这不增加后端 I/O 失败时的事务回滚保证。
 
-加载后的旧事实分类回填仍保留，退出工作见 [#18](https://github.com/NotZhu/MnemoTrace/issues/18)。
+打开和读取不回填分类、敏感标记或主题；自动判断只在正常写入、内容编辑和整合路径执行。HTTP 存储校验失败返回 500，detail.code 为 store_validation_failed，message 为“记忆数据校验失败”，不暴露路径、正文或原始值。
 
-## 结构化迁移导入
+## 结构化快照导入
 
-`Memory.import_snapshot()` 和 HTTP `/v1/import` 接受版本 2 的结构化导出，要求顶层版本、facts 和 episodes 列表及各记录必要字段完整。事实行须提供原编号、来源类别、topic/topic_source、双时间轴和替代关系；对话行须提供原编号、session、speaker、content 与 event_time，摘要可缺省。时间须为有限 epoch 数值，不从字符串推断单位或用当前时间补齐。导出字段契约与本地存储不同，不能直接将 JSONL 目录当作迁移载荷。
+`Memory.import_snapshot()` 和 HTTP `/v1/import` 接受不带格式版本字段的当前结构化导出，要求 facts 和 episodes 列表及各记录必要字段完整。自动导入遇到顶层含 facts 或 episodes 的对象即执行快照校验；失败不回退为对话抽取。事实行须提供原编号、来源类别、topic/topic_source、双时间轴和替代关系；对话行须提供原编号、session、speaker、content 与 event_time，摘要可缺省。时间须为有限 epoch 数值，不从字符串推断单位或用当前时间补齐。导出字段契约与本地存储不同，不能直接将 JSONL 目录当作迁移载荷。
 
-迁移会为目标用户分配新记录编号、重算向量、重连本批与去重命中的替代链；未包含的替代目标置空，provenance 保留来源编号。目标用户的 focus、policy、identity、aliases 和 import_seen 保持不变；导出的 focus、profile 和 graph 等展示信息不覆盖目标设置。默认分享安全导出允许 episodes=[]。迁移导入不提供整库运行状态备份恢复。
+导入会为目标用户分配新记录编号、重算向量、重连本批与去重命中的替代链；未包含的替代目标置空，provenance 保留来源编号。目标用户的 focus、policy、identity、aliases 和 import_seen 保持不变；导出的 focus、profile 和 graph 等展示信息不覆盖目标设置。默认分享安全导出允许 episodes=[]。快照导入不提供整库运行状态备份恢复。
 
 导入先整批校验并准备对象和向量，成功后才写入。任何坏记录使整批以 `ValueError` 拒绝，HTTP 对应 400，错误指出记录位置和字段而不包含记忆正文；不再跳过坏行后返回成功。成功结果中的 malformed 固定为 0。普通聊天历史导入仍遵循其独立的宽松解析规则。
 
