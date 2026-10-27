@@ -1,6 +1,5 @@
 # 公开演示实例（open 模式）—— 与生产模板 docker-compose.yml 的区别，仅在演示语义所必需的两点：
 #   1. MNEMOTRACE_OPEN=1：任意 bearer 即命名空间（`mnemotrace-test` 是公开演示空间），不配置 MNEMOTRACE_API_KEYS。
-#      `1`、`test` 是普通空间，允许在明确确认后清空。
 #   2. 端口绑定 0.0.0.0：演示实例直接对公网提供 UI/API。
 # 其余与生产模板保持一致：持久卷（重启不丢数据）、非 root、只读根文件系统、丢弃 capabilities、
 # /ready 门禁。生产部署请用 docker-compose.yml，不要用本文件。
