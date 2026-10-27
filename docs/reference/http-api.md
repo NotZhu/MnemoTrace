@@ -107,6 +107,8 @@ close 返回处理计数，例如 `pending_consolidated`、`facts_added`、`summ
 
 事实读写响应包含 topic/topic_source；主题的固定枚举会出现在 OpenAPI 中。topic 省略或 null 表示未指定，`"unknown"` 表示人工选择未知；`reset_topic=true` 按当前内容执行离线规则，不调用模型，结果为明确主题/rule 或 unknown/unset，不能与明确 topic 同传。主题来源由服务端决定，非法主题或编辑组合返回 422。新增未指定主题、内容变化且未指定新主题时使用规则，完整契约见[主题与来源](../architecture/memory.md#主题与来源)。脱敏会话报告省略主题元数据。
 
+`GET /v1/memories?topic=food` 按已存主题精确筛选；省略表示全部，`topic=unknown` 包含人工未知和未赋值未知，空字符串及非法枚举返回 422。与 category、status、kind、outcome_kind、q 取交集并在分页前执行，facts_page.total 为筛选后总数；原始 episode 和既有全局计数不随主题筛选改变。fact_categories 的候选范围不随主题、搜索、状态或分页收缩。后续页继续成对携带 expected_revision/evaluated_at。
+
 ## 工作记忆、导入与导出
 
 | 端点 | 输入与语义 |

@@ -195,6 +195,8 @@ export interface MemoryPage<T> {
 export type OutcomeKind = 'decision' | 'finding' | 'lesson' | 'open_question'
 
 export interface MemoryListOptions {
+  /** Exact stored main topic. unknown includes manual and unassigned unknown facts. */
+  topic?: Topic
   outcomeKind?: OutcomeKind
   /** Pair with evaluatedAt from the first page; a changed commit returns HTTP 409. */
   expectedRevision?: string

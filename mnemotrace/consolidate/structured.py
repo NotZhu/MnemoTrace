@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from ..localize import display_of
 from ..types import Fact
-from ._rule_match import matches_keywords, normalize_predicate
-from ._topic_keywords import LIFE_TOPIC_MATCHERS, RESTRICTION_PREDICATES
+from ._rule_match import normalize_predicate
+from ._topic_keywords import RESTRICTION_PREDICATES
 
 # predicate -> (规范字段键, 展示标签)。身份/基本信息槽位（单值）。
 _BASIC: dict[str, tuple[str, str]] = {
@@ -49,10 +49,13 @@ _NEGATIVE = {"dislikes", "dislike", "hates", "hate", "avoids", "avoid", "allergi
 _HABIT = {"usually", "often", "routine", "regularly", "habit", "tends_to", "commutes", "frequently",
           "daily", "weekly", "every_day", "every_week", "every_morning"}
 
-# 画像沿用原有分组顺序；自动主题在共享词表之上独立处理冲突。
+# 这里只把已存主题映射为展示分组，不在读取时重新判断主题。
 _GROUP_LABELS = {"food": "饮食", "travel": "出行", "music": "音乐", "film_tv": "影视",
-                 "sports": "运动", "reading": "阅读", "hobbies": "兴趣", "environment": "环境"}
-_CATEGORY_MATCHERS = [(_GROUP_LABELS[topic], words) for topic, words in LIFE_TOPIC_MATCHERS]
+                 "sports": "运动", "reading": "阅读", "hobbies": "兴趣", "environment": "环境",
+                 "health": "健康", "work": "工作", "learning": "学习", "technology": "技术",
+                 "finance": "财务", "relationships": "人际", "unknown": "其他"}
+_GROUP_ORDER = list(_GROUP_LABELS.values())
+_GROUP_ORDER.insert(_GROUP_ORDER.index("健康"), "健康禁忌")
 
 
 _POS_PREFIX = ("favorite", "favourite", "likes_", "loves_", "enjoys_", "prefers_", "prefer_",
@@ -79,17 +82,11 @@ def _is_habit(pred: str) -> bool:
     return p in _HABIT or any(p.startswith(h + "_") for h in _HABIT)
 
 
-def _category(pred: str, obj: str) -> str:
-    p = normalize_predicate(pred)
-    # 过敏主题的书籍不代表本人过敏；禁忌只由明确关系确定。
-    if p in RESTRICTION_PREDICATES:
+def _preference_group(fact: Fact) -> str:
+    # 禁忌是明确关系的独立展示特例，不能仅凭 health 主题推断。
+    if normalize_predicate(fact.predicate) in RESTRICTION_PREDICATES:
         return "健康禁忌"
-    # likes_music 等复合关系也携带主题；不能被对象中的另一个领域覆盖。
-    for value in (p, obj):
-        for cat, kws in _CATEGORY_MATCHERS:
-            if matches_keywords(value, kws):
-                return cat
-    return "其他"
+    return _GROUP_LABELS[fact.topic]
 
 
 def _evidence(f: Fact) -> dict:
@@ -152,10 +149,11 @@ def build_structured_profile(facts: list[Fact], subject: str, user_id: str = "de
                 cand["_rank"] = _rank(f)
                 basic[field] = cand
             continue
-        # 2) 偏好（带极性标记），按粗粒度类别分组
+        # 2) 偏好（带极性标记），消费已存主题；未知不回退到关键词。
         pol = _polarity(pred)
         if pol is not None:
-            item = {"item": f.object, "polarity": pol, "category": _category(pred, f.object),
+            item = {"item": f.object, "polarity": pol, "category": _preference_group(f),
+                    "topic": f.topic, "topic_source": f.topic_source,
                     "evidence": _evidence(f), "source": f.source, "fact_id": f.id,
                     "subject": f.subject, "predicate": f.predicate, "object": f.object}
             if _confirmed(f):
@@ -178,7 +176,7 @@ def build_structured_profile(facts: list[Fact], subject: str, user_id: str = "de
         b.pop("_rank", None)
     return {
         "basic": list(basic.values()),
-        "preferences": prefs,
+        "preferences": {group: prefs[group] for group in _GROUP_ORDER if group in prefs},
         "habits": habits,
         "tentative": tentative,
         "counts": {

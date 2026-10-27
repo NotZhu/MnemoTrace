@@ -6,6 +6,7 @@ import { FileSearch, GitMerge, Loader2, Pencil, Plus, Search, ShieldAlert, Trash
 import { Button, Card, CardTitle, ErrorBanner, ErrorState, Field, PageHeader, Spinner } from '../components/ui'
 import { PageEmptyState } from '../components/PageEmptyState'
 import { FilterSelect } from '../components/FilterSelect'
+import { TopicBadge, TopicEditor } from '../components/TopicEditor'
 import { ConfirmDialog, Modal } from '../components/Modal'
 import { toast } from '../components/Toast'
 import {
@@ -20,7 +21,8 @@ import {
 import { copy as t } from '../lib/copy'
 import { splitStamp } from '../lib/format'
 import { useSpacePreference } from '../store/preferences'
-import type { MemoryEpisode, MemoryFact } from '../types'
+import type { FactEdit, MemoryEpisode, MemoryFact, Topic } from '../types'
+import { TOPIC_OPTIONS, topicPatch, type TopicAction } from '../lib/topics'
 
 export default function Facts() {
   const addFact = useAddFact()
@@ -31,6 +33,7 @@ export default function Facts() {
   const searchInput = useRef<HTMLInputElement>(null)
   const [status, setStatus] = useSpacePreference('facts', 'status')
   const [category, setCategory] = useSpacePreference('facts', 'category')
+  const [topic, setTopic] = useSpacePreference('facts', 'topic')
   const [hideSensitive, setHideSensitive] = useSpacePreference('facts', 'hideSensitive')
   const [editing, setEditing] = useState<MemoryFact | null>(null)
   const [sourceOf, setSourceOf] = useState<MemoryFact | null>(null)
@@ -46,6 +49,7 @@ export default function Facts() {
     q,
     status: status === 'all' ? undefined : status,
     category: category || undefined,
+    topic: topic || undefined,
     include_sensitive: !hideSensitive,
   })
   const facts = data?.facts ?? []
@@ -53,10 +57,11 @@ export default function Facts() {
   const factsPage = data?.facts_page
   const hasMore = factsPage?.has_more ?? false
   const categories = [...new Set([...(data?.fact_categories ?? []), ...(category ? [category] : [])])]
-  const hasFilters = Boolean(q.trim() || category || status !== 'live')
+  const hasFilters = Boolean(q.trim() || category || topic || status !== 'live')
   const clearFilters = () => {
     setQ('')
     setCategory('')
+    setTopic('')
     setStatus('live')
     searchInput.current?.focus()
   }
@@ -108,6 +113,8 @@ export default function Facts() {
           <div className="ml-auto flex flex-wrap items-center justify-end gap-x-6 gap-y-3 pr-3">
             <FilterSelect label={t.facts.categoryFilter} value={category} onChange={setCategory}
               options={[{ value: '', label: t.facts.allCategories }, ...categories.map(item => ({ value: item, label: item }))]} />
+            <FilterSelect<Topic | ''> label="主题" value={topic} onChange={setTopic}
+              options={[{ value: '', label: '全部主题' }, ...TOPIC_OPTIONS]} />
             <FilterSelect label={t.facts.statusFilter} value={status} onChange={(value) => setStatus(value as typeof status)}
               options={[
                 { value: 'live', label: t.facts.currentOnly },
@@ -166,6 +173,7 @@ export default function Facts() {
                         {t.profile.evidenceUser}
                       </span>
                     )}
+                    <TopicBadge topic={f.topic} topic_source={f.topic_source} />
                     {f.invalid_at && <span>{t.facts.invalidAt(f.invalid_at)}</span>}
                   </div>
                 </div>
@@ -290,6 +298,7 @@ export default function Facts() {
               object: vals.object!,
               sensitive: vals.sensitive,
               category: vals.category,
+              topic: vals.topic,
             },
             {
               onSuccess: () => {
@@ -396,12 +405,13 @@ function FactModal({
   initial?: MemoryFact
   loading: boolean
   onClose: () => void
-  onSubmit: (vals: { subject?: string; predicate?: string; object?: string; sensitive?: boolean; category?: string }) => void
+  onSubmit: (vals: FactEdit) => void
 }) {
   const [subject, setSubject] = useState('')
   const [predicate, setPredicate] = useState('')
   const [object, setObject] = useState('')
   const [sensitive, setSensitive] = useState(false)
+  const [topicAction, setTopicAction] = useState<TopicAction>('keep')
 
   // 每次弹窗带着（可能是新的）事实打开时，同步一次表单值。
   const [seen, setSeen] = useState<string | null>(null)
@@ -412,6 +422,7 @@ function FactModal({
     setPredicate(initial?.predicate ?? '')
     setObject(initial?.object ?? '')
     setSensitive(initial?.sensitive ?? false)
+    setTopicAction('keep')
   }
 
   return (
@@ -438,10 +449,10 @@ function FactModal({
             <p className="text-xs text-ghost">{t.facts.modalNote}</p>
           </div>
           <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose} className="h-9 px-4 py-2 text-sm">
+          <Button variant="ghost" disabled={loading} onClick={onClose} className="h-9 px-4 py-2 text-sm">
             {t.common.cancel}
           </Button>
-          <Button loading={loading} disabled={!predicate.trim() || !object.trim()} onClick={() => onSubmit({ subject, predicate, object, sensitive })} className="h-9 px-4 py-2 text-sm">
+          <Button loading={loading} disabled={loading || !predicate.trim() || !object.trim()} onClick={() => onSubmit({ subject, predicate, object, sensitive, ...topicPatch(topicAction) })} className="h-9 px-4 py-2 text-sm">
             {t.common.save}
           </Button>
           </div>
@@ -458,6 +469,7 @@ function FactModal({
         <Field label={t.facts.objectLabel}>
           <FactTextInput originalValue={initial?.object} value={object} onChange={setObject} />
         </Field>
+        <TopicEditor current={initial} value={topicAction} onChange={setTopicAction} disabled={loading} />
       </div>
     </Modal>
   )

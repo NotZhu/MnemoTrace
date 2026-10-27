@@ -33,7 +33,7 @@ from .store.persist import (
     PersistenceError,
     snapshot_version,
 )
-from .topics import Topic
+from .topics import TOPICS, Topic
 from .util import fmt_date, fmt_datetime, now
 
 FACTS_PAGE_LIMIT = 500
@@ -1125,6 +1125,7 @@ class MemoryService:
         outcome_kind: Optional[str] = None,
         expected_revision: Optional[str] = None,
         evaluated_at: Optional[float] = None,
+        topic: Optional[Topic] = None,
     ) -> dict:
         """浏览已存储的记忆。
 
@@ -1134,9 +1135,12 @@ class MemoryService:
 
         `kind` 把 fact 集拆成读者实际会分开浏览的两类：'outcomes'（session 得出的结论）与
         'attributes'（其余全部）。未知值像 `status` 一样被忽略而不是报错。
+        `topic` 必须是合法已存主题；unknown 同时匹配人工及未赋值的未知，只作用于事实。
         """
         from .consolidate.outcomes import OUTCOME_PREDICATES, split_outcome_text
 
+        if topic is not None and (not isinstance(topic, str) or topic not in TOPICS):
+            raise ValueError("topic must be one of " + ", ".join(TOPICS))
         if outcome_kind is not None and outcome_kind not in OUTCOME_PREDICATES:
             raise ValueError("outcome_kind must be decision, finding, lesson or open_question")
         if (expected_revision is None) != (evaluated_at is None):
@@ -1205,6 +1209,8 @@ class MemoryService:
 
         # 分类候选来自本空间、同一事实类型及可见范围，不随分页、状态和搜索结果消失。
         fact_categories = sorted({category_of(f) for f in filtered_facts}, key=lambda value: (value.casefold(), value))
+        if topic is not None:
+            filtered_facts = [f for f in filtered_facts if f.topic == topic]
         if category and category.strip():
             filtered_facts = [f for f in filtered_facts if category_of(f) == category.strip()]
         if status in {"live", "current"}:

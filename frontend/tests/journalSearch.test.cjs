@@ -21,8 +21,8 @@ function text(node) {
   return (Array.isArray(node) ? node : [].concat(node.props?.children ?? [])).map(text).join('')
 }
 function setup({ empty = false, history = false } = {}) {
-  const states = [], queries = []
-  let cursor = 0, fetching = false, debounced
+  const states = [], queries = [], openQueries = []
+  let cursor = 0, fetching = false, debounced, topic = ''
   const fact = { id: 'synthetic-conclusion', subject: 'synthetic-session', predicate: 'decision', object: 'Synthetic decision', text: 'Synthetic decision', status: 'live', valid_at: '2026-10-16 12:00' }
   const mutation = () => ({ mutate() {}, isPending: false })
   const moduleData = { exports: {} }
@@ -37,10 +37,11 @@ function setup({ empty = false, history = false } = {}) {
           return [states[index], next => { states[index] = typeof next === 'function' ? next(states[index]) : next }]
         },
       }
-      if (name === '../store/preferences') return { useSpacePreference: () => [history, next => { history = next(history) }] }
+      if (name === '../store/preferences') return { useSpacePreference: (_, field) => field === 'topic'
+        ? [topic, next => { topic = next }] : [history, next => { history = typeof next === 'function' ? next(history) : next }] }
       if (name === '../hooks/useDebouncedSearch') return { useDebouncedSearch: q => debounced === undefined ? q : debounced }
       if (name === '../hooks/queries') return {
-        useMemories: () => ({ data: { facts: [] } }),
+        useMemories: params => { openQueries.push(params); return { data: { facts: [] } } },
         useMemoryPages(params) {
           queries.push(params)
           const facts = empty || params.q.trim() || (params.outcome_kind && params.outcome_kind !== 'decision') ? [] : [fact]
@@ -55,7 +56,8 @@ function setup({ empty = false, history = false } = {}) {
   function render() { cursor = 0; return moduleData.exports.default() }
   const all = () => nodes(render())
   return {
-    render, queries,
+    render, queries, openQueries,
+    topic(value) { all().find(node => node.type?.name === 'FilterSelect' && node.props.label === '主题').props.onChange(value) },
     search(value) { all().find(node => node.type === 'input').props.onChange({ target: { value } }) },
     kind(label) { all().find(node => node.props?.label === label).props.onClick() },
     click(label) { all().find(node => node.type === 'button' && text(node).trim() === label).props.onClick() },
@@ -125,4 +127,16 @@ test('类型筛选作为服务端查询条件发送', () => {
   s.kind('经验')
   s.render()
   assert.equal(s.queries.at(-1).outcome_kind, 'lesson')
+})
+
+test('主题筛选随请求发送且清空筛选恢复全部主题', () => {
+  const s = setup()
+  s.topic('unknown')
+  s.render()
+  assert.equal(s.queries.at(-1).topic, 'unknown')
+  assert.equal(s.openQueries.at(-1).topic, 'unknown')
+  s.click('重置筛选')
+  s.render()
+  assert.equal(s.queries.at(-1).topic, undefined)
+  assert.equal(s.openQueries.at(-1).topic, undefined)
 })

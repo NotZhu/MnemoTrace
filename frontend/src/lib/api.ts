@@ -10,6 +10,7 @@ import type { AuditReport,
   FactSource,
   FactWrite,
   TopicMetadata,
+  Topic,
   GraphResponse,
   Health,
   MemoryDump,
@@ -134,6 +135,7 @@ const qs = (params: object) => {
 export type OutcomeKind = 'decision' | 'finding' | 'lesson' | 'open_question'
 
 export interface MemoriesQuery {
+  topic?: Topic
   outcome_kind?: OutcomeKind
   expected_revision?: string
   evaluated_at?: number

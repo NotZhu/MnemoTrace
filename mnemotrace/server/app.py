@@ -450,6 +450,7 @@ def memories(
     outcome_kind: Optional[str] = None,
     expected_revision: Optional[str] = None,
     evaluated_at: Optional[float] = None,
+    topic: Optional[Topic] = None,
     user: str = Depends(auth),
 ):
     """浏览已存储的记忆。
@@ -463,6 +464,8 @@ def memories(
     分别固定已提交集合与状态评估时刻。提交版本不符时返回 409。
     `category` 精确筛选事实分类（空分类归入“其他”），在分页前生效；
     `fact_categories` 返回同一事实类型及敏感可见范围内的分类，不受搜索、状态及分页限制。
+    `topic` 精确筛选已存主题，与其他事实筛选取交集，分页前执行；unknown 不区分来源。
+    主题筛选不缩小分类候选范围，不过滤原始 episode。
     """
     from ..service import MemoryRevisionChanged
 
@@ -481,6 +484,7 @@ def memories(
             outcome_kind=outcome_kind,
             expected_revision=expected_revision,
             evaluated_at=evaluated_at,
+            topic=topic,
         )
     except MemoryRevisionChanged as exc:
         raise HTTPException(409, {"code": "memory_revision_changed", "message": str(exc)}) from exc

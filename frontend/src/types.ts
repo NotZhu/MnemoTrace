@@ -337,7 +337,7 @@ export interface ProfileBasic {
   fact_id: string
 }
 
-export interface ProfileItem {
+export interface ProfileItem extends TopicMetadata {
   item: string
   polarity: 'like' | 'dislike'
   category: string

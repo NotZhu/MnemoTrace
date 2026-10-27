@@ -389,6 +389,8 @@ async def mnemotrace_list_facts(
     include_superseded: Annotated[bool, Field(description="Also show old facts that were superseded by a "
                                               "newer value (the bi-temporal history).")] = False,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+    topic: Annotated[Optional[Topic], Field(description="Exact stored main topic; unknown matches both "
+                                          "manual unknown and unassigned facts. Omit for all topics.")] = None,
 ) -> str:
     """浏览 忆痕 存储的关于用户的原子 fact（分页）。
 
@@ -398,7 +400,7 @@ async def mnemotrace_list_facts(
     返回（json）：{"total","count","offset","has_more","next_offset","facts":[...]}。
     """
     try:
-        dump = await backend().memories()
+        dump = await backend().memories(topic=topic)
     except Exception as e:  # noqa: BLE001
         return _err(e)
     facts = dump.get("facts", [])
@@ -416,7 +418,8 @@ async def mnemotrace_list_facts(
     for f in page:
         tag = "" if f.get("status") == "live" else " _(superseded)_"
         lock = " 🔒" if f.get("source") == "user" else ""
-        lines.append(f"- `{f.get('id', '?')}` [{f.get('valid_at', '?')}] {f.get('text', '')}{tag}{lock}")
+        lines.append(f"- `{f.get('id', '?')}` [{f.get('valid_at', '?')}] {f.get('text', '')}{tag}{lock}"
+                     f" · topic: {f.get('topic', 'unknown')} ({f.get('topic_source', 'unset')})")
     if nxt is not None:
         lines += ["", f"…{total - nxt} more — call again with offset={nxt}."]
     return "\n".join(lines)

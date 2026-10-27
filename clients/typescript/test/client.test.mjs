@@ -4,6 +4,20 @@ import test from 'node:test'
 import { MnemoTraceClient, MnemoTraceError } from '../dist/index.js'
 import { createRequire } from 'node:module'
 
+test('memories sends the stored-topic filter alongside paging and search', async () => {
+  const calls = []
+  const client = new MnemoTraceClient({ fetch: async url => {
+    calls.push(new URL(url))
+    return new Response(JSON.stringify({facts: []}), {status: 200})
+  } })
+  await client.memories({topic: 'unknown', kind: 'outcomes', factsLimit: 1, query: 'synthetic'})
+  assert.deepEqual(Object.fromEntries(calls[0].searchParams), {
+    topic: 'unknown', kind: 'outcomes', facts_limit: '1', q: 'synthetic',
+  })
+  await client.memories()
+  assert.equal(calls[1].searchParams.has('topic'), false)
+})
+
 test('fact topics and reset are passed through with server-assigned origins', async () => {
   const calls = []
   const client = new MnemoTraceClient({fetch: async (url, init) => {

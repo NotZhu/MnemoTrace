@@ -13,14 +13,14 @@ from mnemotrace.store import IncompatibleStoreError, StoreFormatError
 from mnemotrace.types import Fact
 
 
-def test_rule_topics_do_not_change_offline_classification_or_profile():
+def test_profile_follows_manual_topic_without_changing_fact_classification():
     mem = Memory()
     mem.add("I like tea.")
     mem.consolidate()
     fact, = mem.fact_store.values()
     assert (fact.topic, fact.topic_source, fact.category) == ("food", "rule", "偏好")
     mem.update_fact(fact.id, topic="music")
-    item, = mem.structured_profile()["preferences"]["饮食"]
+    item, = mem.structured_profile()["preferences"]["音乐"]
     assert item["fact_id"] == fact.id
 
 

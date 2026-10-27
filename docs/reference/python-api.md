@@ -42,6 +42,8 @@
 
 <a id="profile-evidence"></a>结构化画像条目的 `evidence` 包含 `kind`、`source_count` 和 `reinforcement_count`。`source_count` 是事实 provenance 中不同来源 Episode ID 的数量；手动添加且没有来源、或仅从身份消解补全的姓名，来源数为 0。`reinforcement_count` 是事实的 `access_count`，记录检索使用时的强化次数；手动设定和多来源事实同样返回该次数，身份消解补全的姓名为 0。`kind` 优先用 `user` 表示手动设定；非手动事实在来源不足两条且曾被检索强化时为 `reinforced`，其余为 `mentions`。三者分别表达状态、来源数和强化次数，读取画像不会增加强化次数。
 
+偏好条目提供 topic/topic_source，按已存主题分组；unknown 均进入“其他”，明确禁忌关系是独立特例。条目的 category 为画像分组标签，完整规则见[主题与来源](../architecture/memory.md#主题与来源)。Python 服务入口 `MemoryService.memories(..., topic=None)` 按已存主题精确筛选；unknown 包含人工及未赋值的未知，非法枚举抛出 ValueError。与其他事实筛选取交集，在分页前执行，不筛选原始 episode。
+
 SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answer()` 返回已生成答案或最高事实的 object/text；拒答时返回固定提示。`top()` 返回首条 Fact 或 None。它不是对任何问题都调用外部模型的通用聊天接口。
 
 `as_of`、时间字段使用 epoch 秒。查询需要沿用正确的 user_id；携带 session_id 才能在相应上下文中包含该 session 的工作记忆。Python `graph_data()` 默认包含敏感事实支持的关系，与 HTTP 的安全视图默认值不同。
