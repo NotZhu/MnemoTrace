@@ -15,7 +15,7 @@ function nodes(tree) {
   return [tree, ...(Array.isArray(tree) ? tree : [].concat(tree.props?.children ?? [], tree.props?.footer ?? [], tree.props?.action ?? [])).flatMap(nodes)]
 }
 function setup({ empty = false, hideSensitive = false } = {}) {
-  const states = [], effects = [], queries = [], preferences = { status: 'live', category: '', hideSensitive }
+  const states = [], effects = [], queries = [], preferences = { status: 'live', category: '', topic: '', hideSensitive }
   let queryResult = {}, retries = 0
   let cursor, effectCursor, pending
   const mutation = () => ({ mutate() {} })
@@ -45,9 +45,9 @@ function setup({ empty = false, hideSensitive = false } = {}) {
   }
 }
 
-test('分类、状态两个无边框下拉框位于隐藏敏感开关左侧，不再显示历史开关', () => {
+test('分类、主题和状态下拉框位于隐藏敏感开关左侧', () => {
   const s = setup(), controls = nodes(s.render()).filter(node => node.type?.name === 'FilterSelect' || node.props?.role === 'switch')
-  assert.deepEqual(controls.map(node => node.props.label ?? node.props['aria-label']), ['事实分类', '事实状态', '隐藏敏感内容'])
+  assert.deepEqual(controls.map(node => node.props.label ?? node.props['aria-label']), ['事实分类', '主题', '事实状态', '隐藏敏感内容'])
   assert.equal(s.select('事实分类').props.value, '')
   assert.equal(s.select('事实状态').props.value, 'live')
   assert.deepEqual(Array.from(s.select('事实分类').props.options, option => option.value), ['', '工作', '其他', '历史分类'])
@@ -117,6 +117,7 @@ test('分类、历史状态和搜索词共同送入服务查询，切换筛选�
   s.button('加载更多事实').props.onClick()
   assert.equal(s.query().facts_limit, 40)
   s.select('事实分类').props.onChange('工作')
+  s.select('主题').props.onChange('technology')
   s.select('事实状态').props.onChange('superseded')
   s.search('synthetic')
   s.render()
@@ -124,6 +125,7 @@ test('分类、历史状态和搜索词共同送入服务查询，切换筛选�
   assert.equal(query.facts_limit, 40)
   assert.equal(query.kind, 'attributes')
   assert.equal(query.category, '工作')
+  assert.equal(query.topic, 'technology')
   assert.equal(query.status, 'superseded')
   assert.equal(query.q, 'synthetic')
   assert.equal(query.include_sensitive, true)
@@ -135,12 +137,14 @@ test('无结果时通过底部重置筛选清空分类、状态和搜索，隐�
   const s = setup({ empty: true, hideSensitive: true })
   s.select('事实分类').props.onChange('工作')
   s.select('事实状态').props.onChange('all')
+  s.select('主题').props.onChange('unknown')
   s.search('不存在的合成内容')
   const empty = nodes(s.render()).find(node => node.type?.name === 'PageEmptyState')
   assert.equal(empty.props.footer.props['aria-label'], '重置筛选')
   s.button('重置筛选').props.onClick()
   const query = s.query()
   assert.equal(query.category, undefined)
+  assert.equal(query.topic, undefined)
   assert.equal(query.status, 'live')
   assert.equal(query.q, '')
   assert.equal(query.include_sensitive, false)

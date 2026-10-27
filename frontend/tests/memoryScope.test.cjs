@@ -40,6 +40,7 @@ function setup(params = initial, data = full) {
 }
 
 for (const [name, patch] of Object.entries({
+  topic: { topic: 'food' },
   sensitive: { include_sensitive: false }, kind: { kind: 'outcomes' }, category: { category: 'work' },
   status: { status: 'superseded' }, factsOffset: { facts_offset: 40 }, episodesOffset: { episodes_offset: 20 },
   futureFilter: { future_filter: 'restricted' },

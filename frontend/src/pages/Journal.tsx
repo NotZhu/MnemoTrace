@@ -6,13 +6,16 @@ import { Check, ChevronRight, HelpCircle, Loader2, NotebookText, Pencil, Search,
 import { Button, Card, CardTitle, ErrorState, PageHeader, Spinner } from '../components/ui'
 import { PageEmptyState } from '../components/PageEmptyState'
 import { ConfirmDialog } from '../components/Modal'
+import { FilterSelect } from '../components/FilterSelect'
+import { TopicBadge, TopicEditor } from '../components/TopicEditor'
 import { toast } from '../components/Toast'
 import { useCloseSession, useDeleteFact, useEditFact, useMemories, useMemoryPages, useSessions } from '../hooks/queries'
 import { useDebouncedSearch } from '../hooks/useDebouncedSearch'
 import { useSpacePreference } from '../store/preferences'
 import { copy as t } from '../lib/copy'
 import { splitStamp } from '../lib/format'
-import type { MemoryFact } from '../types'
+import type { MemoryFact, Topic } from '../types'
+import { TOPIC_OPTIONS, topicPatch, type TopicAction } from '../lib/topics'
 
 /** 会话结论的档案。
  *
@@ -64,10 +67,12 @@ export default function Journal() {
   const [composing, setComposing] = useState(false)
   const searchQuery = useDebouncedSearch(q, composing)
   const [showSuperseded, setShowSuperseded] = useSpacePreference('journal', 'showSuperseded')
+  const [topic, setTopic] = useSpacePreference('journal', 'topic')
   const [kindChip, setKindChip] = useState<OutcomeKind | 'all'>('all')
 
   const { data, isLoading, isFetching, isError, error, refetch, loadMore, isPlaceholderData } = useMemoryPages({
     kind: 'outcomes',
+    topic: topic || undefined,
     facts_limit: 60,
     outcome_kind: kindChip === 'all' ? undefined : kindChip,
     episodes_limit: 0,
@@ -81,17 +86,18 @@ export default function Journal() {
   const groups = groupOutcomes(rows)
   const hasMore = data?.facts_page?.has_more ?? false
   const openQuery = useMemories({ kind: 'outcomes', outcome_kind: 'open_question', status: 'live',
-    facts_limit: 8, episodes_limit: 0, q: searchQuery, include_sensitive: true })
+    facts_limit: 8, episodes_limit: 0, q: searchQuery, topic: topic || undefined, include_sensitive: true })
   const open = openQuery.data?.facts ?? []
   const hasSearch = Boolean(q.trim())
   const hasKindFilter = kindChip !== 'all'
-  const hasFilters = hasSearch || hasKindFilter
+  const hasFilters = hasSearch || hasKindFilter || Boolean(topic)
   const searchUpdating = composing || q !== searchQuery || isFetching
 
   const clearFilters = () => {
     setQ('')
     setComposing(false)
     setKindChip('all')
+    setTopic('')
     searchInput.current?.focus()
   }
   const resetControl = hasFilters ? (
@@ -140,6 +146,8 @@ export default function Journal() {
             ))}
           </div>
           <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
+            <FilterSelect<Topic | ''> label="主题" value={topic} onChange={setTopic}
+              options={[{ value: '', label: '全部主题' }, ...TOPIC_OPTIONS]} />
             <button
               type="button"
               role="switch"
@@ -301,6 +309,7 @@ function OutcomeRow({
   const deleteFact = useDeleteFact()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
+  const [topicAction, setTopicAction] = useState<TopicAction>('keep')
   const [confirming, setConfirming] = useState(false)
   const [mine, setMine] = useState(false)
   const [evidenceOpen, setEvidenceOpen] = useState(false)
@@ -319,6 +328,7 @@ function OutcomeRow({
   const start = () => {
     if (!editable) return
     setDraft(statement)
+    setTopicAction('keep')
     setEditing(true)
   }
 
@@ -326,19 +336,19 @@ function OutcomeRow({
     if (saveInFlight.current || editFact.isPending) return
     const next = draft.trim()
     if (!next) return
-    if (next === statement) {
+    const patch = { ...(next === statement ? {} : { statement: next }), ...topicPatch(topicAction) }
+    if (!Object.keys(patch).length) {
       setEditing(false)
       return
     }
     saveInFlight.current = true
     editFact.mutate(
-      { id: fact.id, patch: { object: next } },
+      { id: fact.id, patch },
       {
         onSuccess: (r) => {
-          // 编辑会把该事实标记为用户亲笔 —— 用户由此知道这条修正能在下次蒸馏中幸存，
-          // 而不是被悄悄地重新抽取覆盖。
+          // 正文变化才会成为用户来源；仅改主题时以服务返回的原来源为准。
           setMine(r.source === 'user')
-          toast.success(t.journal.saved)
+          toast.success(next === statement ? t.journal.topicSaved : t.journal.saved)
           setEditing(false)
         },
         onError: (e) => toast.error(String((e as Error).message)),
@@ -372,6 +382,10 @@ function OutcomeRow({
             {statement}
           </div>
         )}
+        <div className="mt-2">
+          {editing ? <TopicEditor current={fact} value={topicAction} onChange={setTopicAction} disabled={editFact.isPending} />
+            : <TopicBadge topic={fact.topic} topic_source={fact.topic_source} />}
+        </div>
         {fact.why && (
           <div className="mt-2">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">

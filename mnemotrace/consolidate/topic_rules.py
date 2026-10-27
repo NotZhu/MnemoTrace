@@ -33,8 +33,8 @@ _SUFFIX_TOPICS.update({
     "destinations": "travel", "quiet_environment": "environment", "quiet_environments": "environment",
 })
 
-# 只在自动主题侧排除：画像仍按原词表分组（股票→阅读、环境→环境、genre→音乐）。
-# 共享词表本身不修改，自动主题避免把股票当阅读、运行环境当物理环境。
+# 原有生活词表中的宽泛线索不一定构成主题证据：股票归财务，技术运行环境归技术。
+# 过滤后的词表只用于写入判断，画像读取直接消费已存主题。
 _AUTO_TOPIC_EXCLUDED = {"reading": {"股票"}, "environment": {"environment", "environments", "环境"},
                         "music": {"artist", "artists", "genre", "genres"}}
 _EXTRA_RULES = (

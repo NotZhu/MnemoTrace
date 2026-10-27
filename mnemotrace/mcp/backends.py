@@ -50,7 +50,7 @@ class Backend(Protocol):
         offset: int = 0,
         q: str = "",
     ) -> dict: ...
-    async def memories(self) -> dict: ...
+    async def memories(self, topic: Topic | None = None) -> dict: ...
     async def stats(self) -> dict: ...
 
     async def audit(self, limit: int = 40) -> dict: ...
@@ -153,8 +153,8 @@ class LocalBackend:
     async def sessions(self, limit: int = 20, offset: int = 0, q: str = "") -> dict:
         return await asyncio.to_thread(self.svc.sessions, self.ns, limit, offset, q)
 
-    async def memories(self) -> dict:
-        return await asyncio.to_thread(self.svc.memories, self.ns)
+    async def memories(self, topic: Topic | None = None) -> dict:
+        return await asyncio.to_thread(self.svc.memories, self.ns, topic=topic)
 
     async def stats(self) -> dict:
         return await asyncio.to_thread(self.svc.stats, self.ns)
@@ -334,8 +334,9 @@ class RemoteBackend:
         qs = urlencode({"limit": limit, "offset": offset, "q": q})
         return await self._get("/v1/sessions?" + qs)
 
-    async def memories(self) -> dict:
-        return await self._get("/v1/memories")
+    async def memories(self, topic: Topic | None = None) -> dict:
+        qs = "?" + urlencode({"topic": topic}) if topic is not None else ""
+        return await self._get("/v1/memories" + qs)
 
     async def stats(self) -> dict:
         return await self._get("/v1/stats")

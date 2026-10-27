@@ -13,19 +13,20 @@ function setup(pageName) {
     bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
     external: ['react', 'react/jsx-runtime', 'lucide-react', 'react-router-dom', '../components/*', '../hooks/queries', '../store/preferences', '../lib/api'],
   }).outputFiles[0].text
-  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', display: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted' }
+  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', display: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', topic: 'food', topic_source: 'rule' }
   const finding = { kind: 'fragment', fact_id: fact.id, ...fact }
   const results = {
     usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', summary_system: 'synthetic', persona_system: 'synthetic' } } },
     useFocus: { data: { track: ['synthetic'], mute: [] } },
     useMemoryPages: { data: { facts: [fact], episodes: [], facts_page: { total: 1 }, fact_categories: [] } },
+    useMemories: {}, useStructuredProfile: {},
     useAudit: { data: { checked: { facts: 1, entities: 0 }, total_findings: 1, by_kind: { fragment: 1 }, findings: [finding] } },
     useSessions: { data: { sessions: [] } }, useHealth: { data: { ready: true } },
     useAgentStatus: { data: { user: 'synthetic', counts: { facts_live: 1 }, session: { episodes: 1, episodes_pending: 0 } } },
     useWorking: { data: { items: [] } }, useSessionReport: {}, useSourceEpisodes: {}, useConflicts: { data: { conflicts: [] } },
   }
   let active, hookIndex, nextId = 0, tree
-  const instances = new Map(), pendingEffects = [], retries = [], mutations = []
+  const instances = new Map(), pendingEffects = [], retries = [], mutations = [], toasts = []
   const react = { ...React,
     useState(initial) {
       const instance = active, slot = hookIndex++
@@ -51,9 +52,11 @@ function setup(pageName) {
     return components.get(name)
   }
   const modules = { exports: {} }
-  const queries = new Proxy({}, { get: (_, name) => () => name in results
-    ? { ...results[name], refetch: () => retries.push(name) }
-    : { isPending: false, mutate: (...args) => mutations.push({ name, args }) } })
+  const queries = new Proxy({}, { get: (_, name) => (...args) => {
+    if (!(name in results)) return { isPending: false, mutate: (...args) => mutations.push({ name, args }) }
+    const result = typeof results[name] === 'function' ? results[name](...args) : results[name]
+    return { ...result, refetch: result.refetch ?? (() => retries.push(name)) }
+  } })
   vm.runInNewContext(source, { module: modules, exports: modules.exports, console, performance, setTimeout, clearTimeout,
     window: { setTimeout, clearTimeout, location: { origin: 'http://synthetic' } },
     document: { addEventListener() {}, removeEventListener() {} },
@@ -64,8 +67,8 @@ function setup(pageName) {
       if (name === 'lucide-react') return new Proxy({}, { get: () => () => null })
       if (name === '../hooks/queries') return queries
       if (name === '../lib/api') return { apiBaseUrl: () => 'http://synthetic' }
-      if (name === '../store/preferences') return { useSpacePreference: (_page, field) => react.useState(field === 'status' ? 'live' : field === 'category' ? '' : false) }
-      if (name === '../components/Toast') return { toast: { success() {}, error() {}, info() {} } }
+      if (name === '../store/preferences') return { useSpacePreference: (_page, field) => react.useState(field === 'status' ? 'live' : field === 'category' || field === 'topic' ? '' : false) }
+      if (name === '../components/Toast') return { toast: { success: text => toasts.push(text), error() {}, info() {} } }
       if (name.startsWith('../components/')) return new Proxy({}, { get: (_, key) => key === 'cx' ? (...args) => args.filter(Boolean).join(' ') : component(key) })
       return require(name)
     },
@@ -96,10 +99,47 @@ function setup(pageName) {
     if (node == null || typeof node !== 'object') return []
     return Array.isArray(node) ? node.flatMap(child => nodes(child)) : [node, ...nodes(node.props?.children)]
   }
-  return { results, retries, mutations, render, nodes,
+  return { results, retries, mutations, toasts, render, nodes,
     find: predicate => nodes().find(predicate),
     instance: name => [...instances.values()].filter(i => i.type.name === name).map(i => i.id).join(','),
   }
+}
+
+for (const [action, fields] of [['keep', {}], ['food', { topic: 'food' }], ['unknown', { topic: 'unknown' }], ['reset', { reset_topic: true }]]) {
+  test(`Facts 主题操作 ${action} 仅发送用户明确操作的主题字段，失败保留选择`, () => {
+    const s = setup('Facts')
+    s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
+    const editor = () => s.find(n => n.type === 'TopicEditor')
+    assert.equal(editor().props.current.topic_source, 'rule')
+    editor().props.onChange(action)
+    s.find(n => n.type === 'Button' && n.props.loading !== undefined).props.onClick()
+    const mutation = s.mutations.find(m => m.name === 'useEditFact')
+    const patch = JSON.parse(JSON.stringify(mutation.args[0].patch))
+    assert.deepEqual(Object.fromEntries(Object.entries(patch).filter(([key]) => key.startsWith('topic') || key === 'reset_topic')), fields)
+    mutation.args[1].onError(new Error('synthetic write failure'))
+    assert.equal(editor().props.value, action)
+    mutation.args[1].onSuccess({ source: 'extracted' })
+    assert.equal(s.toasts.at(-1), '已更新')
+  })
+}
+
+for (const [action, fields] of [['unknown', { topic: 'unknown' }], ['reset', { reset_topic: true }]]) {
+  test(`Journal 仅修改主题 ${action} 时不发送正文，失败后保留草稿`, () => {
+    const s = setup('Journal')
+    s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
+    const editor = () => s.find(n => n.type === 'TopicEditor')
+    editor().props.onChange(action)
+    s.find(n => n.type === 'button' && n.props['aria-label'] === '保存').props.onClick()
+    const mutation = s.mutations.find(m => m.name === 'useEditFact')
+    assert.deepEqual(JSON.parse(JSON.stringify(mutation.args[0].patch)), fields)
+    mutation.args[1].onError(new Error('synthetic write failure'))
+    mutation.args[1].onSettled()
+    assert.equal(editor().props.value, action)
+    assert.ok(s.find(n => n.type === 'textarea' && n.props.value === 'synthetic original'))
+    s.find(n => n.type === 'button' && n.props['aria-label'] === '保存').props.onClick()
+    s.mutations.at(-1).args[1].onSuccess({ source: 'extracted' })
+    assert.equal(s.toasts.at(-1), '主题已保存')
+  })
 }
 
 test('设置草稿在已有策略刷新失败和恢复后保持，独立接入卡片不消失', () => {

@@ -8,7 +8,7 @@ import pytest
 from mnemotrace import Memory
 from mnemotrace.consolidate.classify import classify, classify_fact
 from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY, extract_outcomes
-from mnemotrace.consolidate.structured import _category, build_structured_profile
+from mnemotrace.consolidate.structured import build_structured_profile
 from mnemotrace.types import Episode, Fact
 
 
@@ -57,10 +57,10 @@ def test_fact_category_boundaries_and_predicate_precedence(predicate, obj, text,
     ("prefers", "showcase code", "其他"),
     ("prefers", "bandwidth monitoring", "其他"),
     ("prefers", "整理参考资料", "其他"),
-    ("prefers", "流行的编程框架", "其他"),
+    ("prefers", "流行的编程框架", "技术"),
     ("prefers", "保留事实和原始对话片段", "其他"),
     ("prefers", "秘书协作", "其他"),
-    ("prefers", "课程评分", "其他"),
+    ("prefers", "课程评分", "学习"),
     ("prefers", "tea", "饮食"),
     ("prefers", "TEA, please!", "饮食"),
     ("prefers", "tea2", "其他"),
@@ -96,7 +96,9 @@ def test_fact_category_boundaries_and_predicate_precedence(predicate, obj, text,
     ("prefers", "synthetic-option", "其他"),
 ])
 def test_profile_grouping_boundaries_and_predicate_precedence(predicate, obj, expected):
-    assert _category(predicate, obj) == expected
+    mem = Memory()
+    mem.add_fact("user", predicate, obj)
+    assert list(mem.structured_profile()["preferences"]) == [expected]
 
 
 @pytest.mark.parametrize(("predicate", "obj", "text", "expected"), [
@@ -133,7 +135,9 @@ def test_classify_fact_preserves_explicit_category_and_sensitive_marking():
 ])
 def test_profile_groups_without_rewriting_fact(predicate, obj, expected):
     fact = Fact("user", predicate, obj, source="user", category="人工分类", sensitive=True,
-                provenance=["synthetic-episode"], supersedes="synthetic-previous")
+                provenance=["synthetic-episode"], supersedes="synthetic-previous",
+                topic="music" if predicate == "likes_music" else "unknown",
+                topic_source="rule" if predicate == "likes_music" else "unset")
     before = asdict(fact)
     profile = build_structured_profile([fact], "user")
     item, = profile["preferences"][expected]
@@ -178,10 +182,12 @@ def test_offline_extraction_uses_category_rules():
     ("看书", "阅读"), ("书店", "阅读"), ("看小说", "阅读"),
     ("听歌", "音乐"), ("唱歌", "音乐"), ("短片", "影视"),
     ("秘书", "其他"), ("地球仪", "其他"), ("曲线", "其他"), ("诗歌", "其他"),
-    ("照片", "其他"), ("书桌", "其他"), ("课程评分", "其他"),
+    ("照片", "其他"), ("书桌", "其他"), ("课程评分", "学习"),
 ])
 def test_profile_common_chinese_expressions(obj, expected):
-    profile = build_structured_profile([Fact("user", "prefers", obj)], "user")
+    mem = Memory()
+    mem.add_fact("user", "prefers", obj)
+    profile = mem.structured_profile()
     item, = profile["preferences"][expected]
     assert item["item"] == obj
 
@@ -233,9 +239,9 @@ def test_existing_category_and_metadata_edits_do_not_reclassify():
     ("allergic", "peanuts", "健康禁忌", True),
     ("cannot_eat", "花生", "健康禁忌", False),
     ("cant_eat", "peanuts", "健康禁忌", False),
-    ("prefers", "喜欢过敏知识书籍", "阅读", True),
-    ("prefers", "allergy books", "阅读", True),
-    ("prefers", "过敏", "其他", True),
+    ("prefers", "喜欢过敏知识书籍", "其他", True),
+    ("prefers", "allergy books", "其他", True),
+    ("prefers", "过敏", "健康", True),
     ("prefers", "lactose intolerance", "其他", False),
     ("dietary_restriction", "peanuts", "其他", False),
     ("dietary_restriction", "seafood", "饮食", False),

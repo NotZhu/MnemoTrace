@@ -67,11 +67,11 @@ def test_rule_topics_use_relations_or_unambiguous_object_evidence(predicate, obj
 
 
 @pytest.mark.parametrize("obj", ["黑茶", "普洱", "白茶", "龙井", "披萨", "寿司"])
-def test_food_topic_additions_preserve_profile_grouping_and_conflict_abstention(obj):
+def test_food_topic_additions_drive_profile_grouping_and_preserve_conflict_abstention(obj):
     mem = Memory()
     fact = mem.add_fact("user", "prefers", obj)
     assert (fact.topic, fact.topic_source) == ("food", "rule")
-    item, = mem.structured_profile()["preferences"]["其他"]
+    item, = mem.structured_profile()["preferences"]["饮食"]
     assert item["fact_id"] == fact.id
     conflict = Memory().add_fact("user", "prefers", f"{obj}与数据库")
     assert (conflict.topic, conflict.topic_source) == ("unknown", "unset")

@@ -231,6 +231,7 @@ export class MnemoTraceClient {
   /** 该命名空间下存储的全部记忆，支持分页/过滤，用于用户自有记忆管理界面。 */
   memories(options: MemoryListOptions = {}): Promise<MemoryDump> {
     const params = new URLSearchParams()
+    if (options.topic !== undefined) params.set('topic', options.topic)
     if (options.factsLimit !== undefined) params.set('facts_limit', String(options.factsLimit))
     if (options.factsOffset !== undefined) params.set('facts_offset', String(options.factsOffset))
     if (options.episodesLimit !== undefined) params.set('episodes_limit', String(options.episodesLimit))

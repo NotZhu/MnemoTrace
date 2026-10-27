@@ -54,3 +54,34 @@ async def test_mcp_local_and_proxy_preserve_topic_contract(tmp_path):
             assert (fact.topic, fact.topic_source) == ("music", "rule")
         finally:
             server.set_backend(None)
+
+
+@pytest.mark.asyncio
+async def test_topic_filter_is_forwarded_by_both_backends_and_applied_before_tool_paging(tmp_path):
+    service = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
+    for obj, topic in [("合成茶", "food"), ("合成作品", "music"), ("合成咖啡", "food")]:
+        service.add_fact("synthetic", "user", "prefers", obj, topic=topic)
+    local = LocalBackend(namespace="synthetic", service=service)
+    requests = []
+
+    def route(request):
+        requests.append(dict(request.url.params))
+        return httpx.Response(200, json=service.memories("synthetic", topic=request.url.params.get("topic")))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as transport:
+        remote = RemoteBackend("http://synthetic.test", key="sk-synthetic", client=transport)
+        for backend in [local, remote]:
+            data = await backend.memories(topic="food")
+            assert len(data["facts"]) == 2 and all(f["topic"] == "food" for f in data["facts"])
+            server.set_backend(backend)
+            try:
+                response = await server.mcp.call_tool("mnemotrace_list_facts", {
+                    "topic": "food", "limit": 1, "response_format": "json",
+                })
+                blocks = response[0] if isinstance(response, tuple) else response
+                page = json.loads(blocks[0].text)
+                assert page["total"] == 2 and page["count"] == 1 and page["has_more"]
+                assert page["facts"][0]["topic"] == "food"
+            finally:
+                server.set_backend(None)
+        assert requests == [{"topic": "food"}, {"topic": "food"}]

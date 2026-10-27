@@ -1,7 +1,5 @@
-"""画像与自动主题共享的生活领域词表；各自保留判定优先级。"""
+"""自动主题使用的生活领域词表，以及画像共用的明确禁忌关系。"""
 from __future__ import annotations
-
-from ._rule_match import compile_keywords
 
 RESTRICTION_PREDICATES = frozenset({"allergic_to", "allergic", "cannot_eat", "cant_eat"})
 
@@ -35,4 +33,3 @@ LIFE_TOPIC_KEYWORDS = (('food',
  ('environment',
   ('quiet', 'environment', 'environments', 'ambience', 'noise', '安静', '氛围', '环境', '嘈杂', '空调', '温度',
    '座椅', '加热')))
-LIFE_TOPIC_MATCHERS = tuple((topic, compile_keywords(words)) for topic, words in LIFE_TOPIC_KEYWORDS)

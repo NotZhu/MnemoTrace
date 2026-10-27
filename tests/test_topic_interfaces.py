@@ -46,6 +46,21 @@ def test_http_topic_write_read_reset_export_and_namespace_isolation(topic_client
     assert client.get("/v1/memories", headers=headers).json()["facts"][0]["topic"] == "food"
 
 
+def test_http_topic_filters_before_paging_and_rejects_invalid_values(topic_client):
+    client, _ = topic_client
+    headers = {"Authorization": "Bearer synthetic-topic"}
+    for obj, topic in [("合成茶", "food"), ("合成作品", "music"), ("合成咖啡", "food"), ("合成未知", "unknown")]:
+        assert client.post("/v1/facts", headers=headers, json={
+            "predicate": "prefers", "object": obj, "topic": topic,
+        }).status_code == 200
+    page = client.get("/v1/memories", headers=headers, params={"topic": "food", "facts_limit": 1}).json()
+    assert page["facts_page"]["total"] == 2 and page["facts"][0]["topic"] == "food"
+    unknown = client.get("/v1/memories", headers=headers, params={"topic": "unknown"}).json()
+    assert len(unknown["facts"]) == 1 and unknown["facts"][0]["topic_source"] == "user"
+    for invalid in ["", "Music", "音乐"]:
+        assert client.get("/v1/memories", headers=headers, params={"topic": invalid}).status_code == 422
+
+
 @pytest.mark.parametrize("patch", [
     {"topic": "音乐"}, {"topic": ""}, {"topic": []}, {"topic": 1},
     {"topic": "food", "reset_topic": True},

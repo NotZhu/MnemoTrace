@@ -17,13 +17,14 @@ function setup({ episodes = false, count = 601, holdInitial = false } = {}) {
   let revision = 'synthetic-v1', clock = 1000, failureOffset, malformed = false, epoch = 1, namespace = 'synthetic-A'
   let pending, observer, releaseInitial, commits = 1
   if (holdInitial) pending = new Promise((resolve, reject) => { releaseInitial = error => error ? reject(error) : resolve() })
-  const calls = [], errors = [], rows = Array.from({ length: count }, (_, id) => ({ id: `synthetic-${id}`, predicate: id < 61 ? 'decision' : 'lesson' }))
+  const calls = [], errors = [], rows = Array.from({ length: count }, (_, id) => ({ id: `synthetic-${id}`, predicate: id < 61 ? 'decision' : 'lesson', topic: id % 2 ? 'music' : 'food' }))
   const client = new rq.QueryClient({ queryCache: new rq.QueryCache({ onError: error => errors.push(error) }), defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: 10_000 } } })
   const api = { async memories(params, options = {}) {
     const collection = episodes ? 'episodes' : 'facts', offset = params[`${collection}_offset`] || 0
     const version = revision, evaluatedAt = params.evaluated_at ?? clock, limit = params[`${collection}_limit`]
     calls.push({ ...params, signal: options.signal })
-    const filtered = rows.filter(row => !params.outcome_kind || row.predicate === params.outcome_kind)
+    const filtered = rows.filter(row => (!params.outcome_kind || row.predicate === params.outcome_kind)
+      && (!params.topic || row.topic === params.topic))
     const items = filtered.slice(offset, offset + limit), next = offset + items.length
     const page = { items, total: filtered.length, offset, limit, has_more: next < filtered.length, next_offset: next < filtered.length ? next : null }
     if (malformed) page.next_offset = offset
@@ -84,6 +85,25 @@ function setup({ episodes = false, count = 601, holdInitial = false } = {}) {
     close() { off(); observer.destroy(); client.clear() },
   }
 }
+
+test('topic changes reset infinite pages and reject a late response from a different topic', async () => {
+  const s = setup()
+  try {
+    await s.ready()
+    await s.observer.fetchNextPage()
+    const release = s.hold()
+    assert.equal(s.change({ topic: 'food' }).data, undefined)
+    assert.equal(s.change({ topic: 'music' }).data, undefined)
+    await s.observer.refetch()
+    release()
+    await flush()
+    const pages = s.current().data.pages
+    assert.equal(pages.length, 1)
+    assert.ok(pages[0].facts.every(fact => fact.topic === 'music'))
+    assert.equal(s.calls.at(-1).facts_offset, 0)
+    assert.equal(s.calls.at(-1).topic, 'music')
+  } finally { s.close() }
+})
 
 for (const episodes of [false, true]) test(`complete ${episodes ? 'episodes' : 'facts'} use fixed pages, exact IDs and browse context`, async () => {
   const s = setup({ episodes })

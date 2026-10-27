@@ -72,6 +72,8 @@ test('所有长期筛选立即保存，页面重建/刷新可恢复，账号和�
   s.state().setSpace('graph','hideSensitive',true)
   s.state().setSpace('facts','status','live')
   s.state().setSpace('facts','hideSensitive',true)
+  s.state().setSpace('facts','topic','food')
+  s.state().setSpace('journal','topic','unknown')
   s.state().setSpace('journal','showSuperseded',true)
   s.state().setSpace('ask','chunks',9)
   s.state().setSpace('ask','redactSensitive',true)
@@ -83,6 +85,8 @@ test('所有长期筛选立即保存，页面重建/刷新可恢复，账号和�
   assert.equal(reload.state().spaces[a].ask.chunks,9)
   assert.equal(reload.state().spaces[a].journal.showSuperseded,true)
   assert.equal(reload.state().spaces[a].facts.hideSensitive,true)
+  assert.equal(reload.state().spaces[a].facts.topic,'food')
+  assert.equal(reload.state().spaces[a].journal.topic,'unknown')
   assert.equal(reload.state().spaces[a].facts.status,'live')
   assert.equal(reload.state().spaces[a].graph.liveOnly,false)
   assert.equal(reload.state().spaces[a].graph.hideSensitive,true)
@@ -118,7 +122,7 @@ test('仅允许声明的偏好，缓存类型/范围异常或损坏时使用默�
   const base=load(),scope=await base.login('synthetic-validation')
   const s=load({version:2,state:{
     graph:{nodeScale:999,lineWidth:0.7,showRelations:'true',enableRadial:true},
-    spaces:{[scope]:{ask:{chunks:99,redactSensitive:true},facts:{status:'invalid',undeclared:'x'},query:'不应保存的搜索'},'raw-credential':{ask:{chunks:4}}},
+    spaces:{[scope]:{ask:{chunks:99,redactSensitive:true},facts:{status:'invalid',topic:'Music',undeclared:'x'},journal:{topic:['food']},query:'不应保存的搜索'},'raw-credential':{ask:{chunks:4}}},
     apiKey:'must-not-restore',query:'must-not-restore',
   }})
   assert.equal(s.state().graph.nodeScale,1.4)
@@ -128,6 +132,8 @@ test('仅允许声明的偏好，缓存类型/范围异常或损坏时使用默�
   assert.equal(s.state().spaces[scope].ask.chunks,6)
   assert.equal(s.state().spaces[scope].ask.redactSensitive,true)
   assert.equal(s.state().spaces[scope].facts.status,'live')
+  assert.equal(s.state().spaces[scope].facts.topic,'')
+  assert.equal(s.state().spaces[scope].journal.topic,'')
   s.flush()
   assert.ok(!s.values.get(KEY).includes('must-not-restore'))
   assert.ok(!s.values.get(KEY).includes('不应保存的搜索'))
