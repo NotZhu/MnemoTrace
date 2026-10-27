@@ -79,6 +79,7 @@ export default function Conversations() {
   return (
     <div className="space-y-6">
       <PageHeader title={t.conversations.title} />
+      {status.isError && <ErrorState message={`会话状态读取失败：${(status.error as Error).message}`} onRetry={() => { void status.refetch() }} />}
 
       <Card className="!pb-3.5">
         <div className="mb-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
@@ -91,7 +92,6 @@ export default function Conversations() {
             </div>
           )}
         </div>
-        {status.isError && <ErrorState message={`会话状态读取失败：${(status.error as Error).message}`} onRetry={() => { void status.refetch() }} />}
         <textarea
           rows={3}
           className="input min-h-[82px] resize-y"

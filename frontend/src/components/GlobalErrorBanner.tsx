@@ -24,7 +24,7 @@ export function GlobalErrorBanner() {
   }
 
   return (
-    <div className="sticky top-[72px] z-10 mb-6" role="alert">
+    <div className="mb-6">
       <ErrorBanner
         message={latest.message}
         action={(

@@ -41,14 +41,19 @@ function PrefChip({ it }: { it: ProfileItem }) {
 }
 
 export default function Profile() {
-  const { data, isLoading, isError, error } = useStructuredProfile()
+  const profile = useStructuredProfile()
+  const { data, isLoading } = profile
   const memories = useMemories({ facts_limit: 240, episodes_limit: 0 })
   const addFact = useAddFact()
   const deleteFact = useDeleteFact()
+  const failed = [profile, memories].filter(query => query.isError)
+  const errorState = failed.length > 0 ? <ErrorState
+    message={[...new Set(failed.map(query => (query.error as Error).message))].join('；')}
+    onRetry={() => { failed.forEach(query => { void query.refetch() }) }}
+  /> : null
 
   if (isLoading) return <Spinner label={t.profile.loading} />
-  if (isError) return <ErrorState message={(error as Error).message} />
-  if (!data) return null
+  if (!data) return errorState
 
   const confirm = (it: ProfileItem) =>
     addFact.mutate(
@@ -71,6 +76,7 @@ export default function Profile() {
   return (
     <div className={empty ? 'flex min-h-0 flex-1 flex-col' : 'space-y-6'}>
       <PageHeader title={t.profile.title} />
+      {errorState}
 
       {empty && (
         <PageEmptyState title={t.profile.emptyTitle} hint={t.profile.emptyHint} icon={<UserRound className="h-6 w-6" />} />

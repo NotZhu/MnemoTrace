@@ -10,7 +10,8 @@ import { groupOutcomes, SessionOutcomes } from './Journal'
 import type { StructuredProfile } from '../types'
 
 export default function Dashboard() {
-  const { data, isLoading, isError, error } = useMemories({ facts_limit: 6, episodes_limit: 0, status: 'live' })
+  const memories = useMemories({ facts_limit: 6, episodes_limit: 0, status: 'live' })
+  const { data, isLoading } = memories
   // 用户真正会读的"结论"。单独发一个查询，保证上面的统计不被过滤。
   // include_sensitive 与 counts.facts_outcomes（该统计忽略敏感标记）以及 Journal 页保持一致：
   // 否则把一条结论改写成会被 classify() 判为敏感的内容后，它会从这个列表消失但计数仍统计它，
@@ -25,6 +26,11 @@ export default function Dashboard() {
   const profile = useStructuredProfile()
   const remember = useRemember()
   const [text, setText] = useState('')
+  const failed = [memories, outcomes, profile].filter(query => query.isError)
+  const errorState = failed.length > 0 ? <ErrorState
+    message={[...new Set(failed.map(query => (query.error as Error).message))].join('；')}
+    onRetry={() => { failed.forEach(query => { void query.refetch() }) }}
+  /> : null
 
   const submit = () => {
     const content = text.trim()
@@ -41,8 +47,7 @@ export default function Dashboard() {
   }
 
   if (isLoading) return <Spinner label={t.dashboard.loading} />
-  if (isError) return <ErrorState message={(error as Error).message} />
-  if (!data) return null
+  if (!data) return errorState
 
   const c = data.counts
   const groups = groupOutcomes(outcomes.data?.facts ?? []).slice(0, 2)
@@ -50,6 +55,7 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       <PageHeader title={t.dashboard.title} />
+      {errorState}
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label={t.dashboard.statLive} value={c.facts_live} icon={<Database className="h-5 w-5" />} />
@@ -89,22 +95,22 @@ export default function Dashboard() {
               <SessionOutcomes key={`${g.session}-${i}`} group={g} className="!bg-ink-700/40 !p-4" />
             ))}
           </div>
-        ) : (
+        ) : !outcomes.isError ? (
           <EmptyState
             title={t.dashboard.conclusionsEmptyTitle}
             hint={t.dashboard.conclusionsEmptyHint}
             icon={<Lightbulb className="h-6 w-6" />}
           />
-        )}
+        ) : null}
       </Card>
 
       <Card>
         <CardTitle>{t.dashboard.personaTitle}</CardTitle>
-        {profile.data && !profile.isError ? (
+        {profile.data ? (
           <StructuredProfileMini data={profile.data} />
-        ) : (
+        ) : !profile.isError ? (
           <EmptyState title={t.dashboard.personaEmptyTitle} hint={t.dashboard.personaEmptyHint} icon={<Sparkles className="h-6 w-6" />} />
-        )}
+        ) : null}
       </Card>
     </div>
   )

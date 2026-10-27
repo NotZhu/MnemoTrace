@@ -96,7 +96,7 @@ export default function GraphPage() {
         <div className="h-full min-h-0 min-w-0">
           <section className="graph-workspace" aria-busy={Boolean(pending)}>
             <div className="graph-status">
-              <h3>{pending ? t.graph.updating : isError ? t.graph.renderError : t.graph.stats(visibleData?.nodes.length ?? 0, visibleData?.edges.length ?? 0)}</h3>
+              <h3 className={isError && !pending ? 'text-sm' : undefined}>{pending ? t.graph.updating : isError ? t.graph.renderError : t.graph.stats(visibleData?.nodes.length ?? 0, visibleData?.edges.length ?? 0)}</h3>
               {settled && data.has_more && <p className="mt-1 max-w-sm" role="status">{t.graph.truncated(visibleData?.edges.length ?? 0)}</p>}
               {hasGraph && <span className="mt-1.5 flex items-center gap-3 text-[10px] text-ghost">
                     <span className="inline-flex items-center gap-1.5">

@@ -72,7 +72,7 @@ test('失败时工具栏和当前查询重试仍可用，不误报空结果', ()
   s.setResult({ data: undefined, isLoading: false, isError: true, isSuccess: false, error: new Error('synthetic failure') })
   assert.ok(s.button('隐藏敏感内容'))
   assert.ok(nodes(s.render()).some(n => n.props?.message === 'synthetic failure'))
-  s.button('重新加载').props.onClick()
+  nodes(s.render()).find(n => n.props?.message === 'synthetic failure').props.onRetry()
   assert.equal(s.retries(), 1)
   assert.equal(nodes(s.render()).some(n => n.type?.name === 'PageEmptyState'), false)
 })
@@ -93,22 +93,24 @@ test('旧空列表不能被解释成新搜索无结果，成功响应后才显�
   assert.equal(nodes(s.render()).some(n => n.type?.name === 'PageEmptyState'), true)
 })
 
-test('全局查询错误不能卸载任何路由页面', () => {
+test('问答与隐私保留全局提示，接入页由自己的状态错误占据顶部', () => {
   const layout = esbuild.buildSync({
     entryPoints: [path.resolve(__dirname, '../src/components/Layout.tsx')],
     bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
     external: ['react', 'react/jsx-runtime', 'react-router-dom', './GlobalErrorBanner', './Sidebar', './Topbar', './Toast', '../store/queryErrors'],
   }).outputFiles[0].text
   for (const route of ['/facts', '/profile', '/settings', '/conversations', '/focus', '/journal', '/health', '/ask', '/graph', '/timeline', '/', '/privacy']) {
-    const moduleData = { exports: {} }, Outlet = () => null
+    const moduleData = { exports: {} }, Outlet = () => null, GlobalErrorBanner = () => null
     vm.runInNewContext(layout, { module: moduleData, exports: moduleData.exports, require(name) {
       if (name === 'react') return { ...React, useState: () => [false, () => {}] }
       if (name === 'react-router-dom') return { Outlet, useMatch: pattern => route === pattern }
+      if (name === './GlobalErrorBanner') return { GlobalErrorBanner }
       if (name === '../store/queryErrors') return { useQueryErrors: selector => selector({ failures: [{ message: 'synthetic failure' }] }) }
       if (name.startsWith('./')) return new Proxy({}, { get: () => () => null })
       return require(name)
     } })
     assert.equal(nodes(moduleData.exports.default()).some(n => n.type === Outlet), true, route)
+    assert.equal(nodes(moduleData.exports.default()).some(n => n.type === GlobalErrorBanner), ['/ask', '/privacy'].includes(route), route)
   }
 })
 
