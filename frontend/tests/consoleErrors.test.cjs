@@ -183,6 +183,22 @@ for (const empty of [false, true]) {
   }
 }
 
+test('测试结果收起时刷新操作仍在标题行，且独立刷新状态和会话', () => {
+  const s = setup('Settings')
+  const children = node => [].concat(node.props?.children ?? []).flat(Infinity)
+  const section = s.find(n => n.type === 'div' && children(n).some(child =>
+    child?.type === 'details' && children(child).some(item =>
+      item?.type === 'summary' && item.props.children === '测试结果')))
+  assert.ok(section)
+  const details = children(section).find(n => n?.type === 'details')
+  const refresh = children(section).find(n => n?.type === 'button' && children(n).includes('刷新结果'))
+  assert.equal(details.props.open, undefined, '默认收起')
+  assert.ok(refresh, '刷新按钮位于折叠区域之外，收起时仍可见')
+  refresh.props.onClick()
+  assert.deepEqual(s.retries, ['useAgentStatus', 'useSessions'])
+  assert.equal(details.props.open, undefined, '刷新不改变折叠状态')
+})
+
 test('Journal 两个不同错误合并后仍能看到各自原因', () => {
   const s = setup('Journal')
   s.results.useMemoryPages = { isError: true, error: new Error('synthetic list failure') }

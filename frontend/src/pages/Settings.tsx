@@ -363,31 +363,31 @@ function CodexSetupCard({ session, status }: {
             </div>
           </div>
 
-          <details className="rounded-xl border border-line bg-ink-700/60 p-4">
-            <summary className="cursor-pointer text-sm font-semibold text-slate-100">{t.settings.connectLiveTitle}</summary>
-            <div className="mt-4 space-y-4 text-sm text-ghost">
-              <div className="flex justify-between gap-3">
-                <span>{t.settings.connectNamespace}</span>
-                <span className="truncate text-right text-slate-200">{!status.isError ? status.data?.user ?? '—' : '—'}</span>
+          <div className="relative rounded-xl border border-line bg-ink-700/60 p-4">
+            <details>
+              <summary className="min-h-5 cursor-pointer pr-24 text-sm font-semibold text-slate-100">{t.settings.connectLiveTitle}</summary>
+              <div className="mt-4 space-y-4 text-sm text-ghost">
+                <div className="flex justify-between gap-3">
+                  <span>{t.settings.connectNamespace}</span>
+                  <span className="truncate text-right text-slate-200">{!status.isError ? status.data?.user ?? '—' : '—'}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span>{t.settings.connectSessionEpisodes}</span>
+                  <span className="text-slate-200">{!status.isError ? status.data?.session?.episodes ?? '—' : '—'}</span>
+                </div>
               </div>
-              <div className="flex justify-between gap-3">
-                <span>{t.settings.connectSessionEpisodes}</span>
-                <span className="text-slate-200">{!status.isError ? status.data?.session?.episodes ?? '—' : '—'}</span>
-              </div>
-            </div>
-            <div className="mt-4 flex justify-end">
-              <button
-                type="button"
-                className="ml-auto inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold text-brand-cyan hover:text-brand-mint"
-                onClick={() => {
-                  status.refetch()
-                  sessions.refetch()
-                }}
-              >
-                <RefreshCw className="h-3.5 w-3.5" /> {t.settings.connectRefresh}
-              </button>
-            </div>
-          </details>
+            </details>
+            <button
+              type="button"
+              className="absolute right-4 top-4 inline-flex min-h-5 shrink-0 items-center gap-1.5 text-xs font-semibold text-brand-cyan hover:text-brand-mint"
+              onClick={() => {
+                status.refetch()
+                sessions.refetch()
+              }}
+            >
+              <RefreshCw className="h-3.5 w-3.5" /> {t.settings.connectRefresh}
+            </button>
+          </div>
 
           <details className="rounded-xl border border-line bg-ink-700/60 p-4">
             <summary className="cursor-pointer text-sm font-semibold text-slate-100">
@@ -444,7 +444,7 @@ function CodexSetupCard({ session, status }: {
             <pre className="overflow-auto p-3 font-sans text-xs not-italic leading-relaxed text-slate-200">
               <code className="font-sans not-italic">{feedCommand}</code>
             </pre>
-            <FloatingCopyButton text={feedCommand} label={t.settings.connectCopyCommand} bottomInset={16} />
+            <FloatingCopyButton text={feedCommand} label={t.settings.connectCopyCommand} />
           </div>
         </div>
       </details>
