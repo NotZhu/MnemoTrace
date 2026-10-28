@@ -110,7 +110,7 @@ test('导出范围保留说明关联，禁用时关闭菜单并阻止选择，�
   const s = setup('ExportRangeSelect', 'compact')
   assert.equal(s.trigger().props['aria-describedby'], 'privacy-export-mode-hint')
   s.trigger().props.onClick()
-  assert(s.list().props.className.includes('w-48'))
+  assert(s.list().props.className.includes('w-40'))
   s.disable(true)
   assert.equal(s.trigger().props.disabled, true)
   assert.equal(s.trigger().props['aria-expanded'], false)

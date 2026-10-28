@@ -17,8 +17,8 @@ const appearances = {
   export: {
     root: 'relative w-fit max-w-full',
     trigger: 'inline-flex min-h-8 items-center gap-1 rounded-md border-0 bg-transparent p-0 text-left text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand-cyan disabled:cursor-not-allowed disabled:opacity-50',
-    list: 'absolute left-0 top-full z-30 mt-2 w-48 max-w-[calc(100vw-4rem)] rounded-[13px] border border-field-line bg-ink-800 p-1.5 text-sm shadow-card',
-    option: 'gap-2 px-2 py-2.5', label: undefined, icon: 'h-3.5 w-3.5',
+    list: 'absolute left-0 top-full z-30 mt-2 w-40 max-w-[calc(100vw-4rem)] rounded-[13px] border border-field-line bg-ink-800 p-1 text-sm shadow-card',
+    option: 'gap-2 px-2 py-1.5', label: undefined, icon: 'h-3.5 w-3.5',
   },
 }
 

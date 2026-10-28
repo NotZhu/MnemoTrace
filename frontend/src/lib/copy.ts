@@ -423,7 +423,7 @@ export const copy = {
     title: '接入与记忆策略',
     connectSectionTitle: 'Codex 接入',
     policySectionTitle: '记忆策略',
-    savePolicy: '保存记忆策略',
+    savePolicy: '保存策略',
     connectTitle: '连接 Codex',
     connectDescPre: '连接后，Codex 可以保存和检索',
     connectDescEmph: '当前记忆空间',
