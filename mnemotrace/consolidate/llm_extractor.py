@@ -10,6 +10,7 @@ from ..types import Episode, Fact
 from .extractor import preference_topic_object
 from .topic_rules import log_topic_inputs, resolve_topic, topic_system
 
+# 系统提示词
 EXTRACT_SYSTEM = (
     "你是长期记忆系统中的精确信息提取引擎。\n"
     "从多轮对话中，提取明确陈述的、独立且具有长期价值的事实，涉及用户及其提到的人物或事物，"
@@ -32,6 +33,7 @@ EXTRACT_SYSTEM = (
     "不要推断或编造对话中未明确陈述的事实。如果没有具有长期价值的事实，输出 []。"
 )
 
+# 用户提示词模板
 EXTRACT_TEMPLATE = "对话：\n{content}\n\nJSON 事实："
 
 # 声明用户姓名/昵称的 predicate——全部注册为用户的别名，之后任何别名作为 subject 出现时都归一
@@ -105,18 +107,26 @@ def parse_json_facts(raw: str) -> list[dict]:
 
 
 class LLMExtractor:
+    """LLM 事实抽取器。"""
     def __init__(self, llm: LLM, system: str = EXTRACT_SYSTEM, template: str = EXTRACT_TEMPLATE,
                  *, llm_topics: bool = True, preference_object_normalization: bool = True) -> None:
+        """初始化 LLM 事实抽取器。
+
+        Args:
+            llm: LLM。
+            system: 系统提示词。
+            template: 用户提示词模板。
+            llm_topics: 是否启用主题抽取。
+            preference_object_normalization: 是否对偏好对象进行归一化。
+        """
         self.llm = llm
         self.system = system
         self.template = template
         self.llm_topics = llm_topics
         self.preference_object_normalization = preference_object_normalization
-        # 可选的按用户指令，附加在 system prompt 末尾：用户想记录（或不想记录）什么。
-        # 由 Memory.policy["extract_instruction"] 设置——即 console 里那个核心的"要记录什么记忆"开关。
-        self.instruction = ""
-        self.self_name: dict[str, str] = {}        # user_id -> 规范名（最先声明的那个）
-        self.aliases: dict[str, set] = {}          # user_id -> {所有声明的姓名/昵称}（共指消解）
+        self.instruction = ""  # 用户对事实抽取的补充要求；非空时附加到系统提示词
+        self.self_name: dict[str, str] = {}  # 用户 ID -> 首次识别的规范名
+        self.aliases: dict[str, set] = {}  # 用户 ID -> 已识别的姓名和昵称（小写）
 
     def self_of(self, user_id: str) -> str:
         return self.self_name.get(user_id, user_id)

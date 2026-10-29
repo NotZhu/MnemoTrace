@@ -16,10 +16,25 @@ def _h(token: str) -> int:
 
 
 class HashingEmbedder(Embedder):
+    """零依赖的哈希嵌入器。"""
+
     def __init__(self, dim: int = 256):
+        """初始化哈希嵌入器。
+
+        Args:
+            dim: 嵌入维度。
+        """
+        # 嵌入维度
         self.dim = dim
 
     def embed(self, text: str) -> list[float]:
+        """计算文本的哈希嵌入向量。
+
+        Args:
+            text: 文本。
+        Returns:
+            哈希嵌入向量。
+        """
         from ..util import stems
 
         vec = [0.0] * self.dim

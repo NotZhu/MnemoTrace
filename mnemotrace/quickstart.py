@@ -14,7 +14,7 @@ BASE = 1_700_000_000.0  # 固定纪元，保证 demo 可复现
 
 def main() -> None:
     mem = Memory()
-
+    # 模拟用户历史：("对话内容", 天数偏移)
     history = [
         ("My name is Wei and I work at Tencent.", 0),
         ("I live in Shenzhen.", 1),
@@ -23,18 +23,18 @@ def main() -> None:
         ("My colleague Lin works at Moonshot AI too.", 31),
     ]
 
-    print("== Ingest (System-1, fast write path) ==")
+    print("== 写入原始事件（System-1，快速写入） ==")
     for text, day in history:
         mem.add(text, user_id="wei", event_time=BASE + day * DAY)
-        print(f"   day {day:>2}: {text}")
+        print(f"   第 {day:>2} 天：{text}")
 
-    print("\n== Consolidate (System-2: extract facts, build graph, resolve conflicts) ==")
+    print("\n== 记忆整合（System-2：提取事实、构建图关系、处理冲突） ==")
     print("  ", mem.consolidate())
 
-    print("\n== Current profile (L3 identity) ==")
+    print("\n== 当前用户画像（L3 身份信息） ==")
     print("  ", mem.profile("wei"))
 
-    print("\n== Queries ==")
+    print("\n== 查询记忆 ==")
     for q in [
         "Where does Wei work?",  # 单跳，必须反映换工作
         "What is my favorite programming language?",  # 第一人称属性
@@ -45,14 +45,14 @@ def main() -> None:
         r = mem.search(q, user_id="wei")
         print(f"   [{r.via:9}] {q}\n              -> {r.answer()!r}")
 
-    print("\n== Knowledge update: history of Wei's employer (nothing is deleted) ==")
+    print("\n== 记忆更新：Wei 的工作单位历史 ==")
     for f in mem.history("Wei", "works_at", user_id="wei"):
-        state = "current" if f.is_live() else "superseded"
-        print(f"   {f.object:12} [{state}]  supersedes={f.supersedes}")
+        state = "当前" if f.is_live() else "已被取代"
+        print(f"   {f.object:12} [{state}]  取代的事实 ID={f.supersedes}")
 
-    print("\n== Bi-temporal as-of query: what did we believe on day 10 (before the switch)? ==")
+    print("\n== 时间查询：第 10 天（换工作前）记录的工作单位 ==")
     r = mem.as_of("Where does Wei work?", BASE + 10 * DAY, user_id="wei")
-    print(f"   day 10 -> {r.answer()!r}   (today -> {mem.search('Where does Wei work?', user_id='wei').answer()!r})")
+    print(f"   第 10 天 -> {r.answer()!r}   （当前 -> {mem.search('Where does Wei work?', user_id='wei').answer()!r}）")
 
 if __name__ == "__main__":
     main()

@@ -11,10 +11,14 @@ from .base import DocStore, GraphStore, Predicate, VectorStore
 
 
 class InMemoryVectorStore(VectorStore):
+    """内存版向量存储。"""
     def __init__(self) -> None:
+        """初始化向量存储。"""
+        # 以 key 为索引，存储 (vector, payload) 元组
         self._d: dict[str, tuple[list[float], Any]] = {}
 
     def upsert(self, key: str, vector: list[float], payload: Any) -> None:
+        """插入或更新向量存储中的条目。"""
         self._d[key] = (vector, payload)
 
     def search(
@@ -40,7 +44,9 @@ class InMemoryVectorStore(VectorStore):
 
 
 class InMemoryDocStore(DocStore):
+    """内存版文档存储。"""
     def __init__(self) -> None:
+        """初始化文档存储。"""
         self._d: dict[str, Any] = {}
 
     def put(self, key: str, obj: Any) -> None:
@@ -57,11 +63,18 @@ class InMemoryDocStore(DocStore):
 
 
 class InMemoryGraphStore(GraphStore):
+    """内存版图存储。"""
     def __init__(self) -> None:
+        """初始化图存储。"""
+        # 节点主表，key = entity.id，value = Entity 实例
         self.entities: dict[str, Entity] = {}
+        # 名字到 id 的反查索引，key = (user_id, name.lower())，value = entity.id
         self._by_name: dict[tuple[str, str], str] = {}
+        # 边表，key = relation.id，value = Relation 实例
         self.rels: dict[str, Relation] = {}
+        # 出边邻接表，key = subject_id，value = list[relation.id]
         self._out: dict[str, list[str]] = defaultdict(list)
+        # 入边邻接表，key = object_id，value = list[relation.id]
         self._in: dict[str, list[str]] = defaultdict(list)
 
     def upsert_entity(self, entity: Entity) -> Entity:

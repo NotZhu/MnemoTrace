@@ -52,11 +52,11 @@ class LanceDBVectorStore(VectorStore):
     def __init__(self, path: str, table: str = "vectors") -> None:
         import lancedb  # noqa: PLC0415 - 可选依赖，刻意延迟导入。
 
-        self.path = os.path.expanduser(path)
-        self.table_name = table
-        os.makedirs(self.path, exist_ok=True)
-        self._db = lancedb.connect(self.path)
-        self._table = None
+        self.path = os.path.expanduser(path)  # 展开用户目录 ~
+        self.table_name = table  # 表名
+        os.makedirs(self.path, exist_ok=True)  # 创建数据库目录
+        self._db = lancedb.connect(self.path)  # 连接数据库
+        self._table = None  # 表引用，初始为 None
 
     def _open(self):
         if self._table is not None:

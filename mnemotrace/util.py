@@ -39,6 +39,7 @@ def now() -> float:
 
 
 def gen_id(prefix: str) -> str:
+    """生成一个唯一 ID，带指定前缀。"""
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
@@ -46,6 +47,7 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
 def tokenize(text: str) -> list[str]:
+    """提取小写 ASCII 字母与数字组成的 token；其他字符作为分隔符。"""
     return _TOKEN_RE.findall(text.lower())
 
 
@@ -64,6 +66,13 @@ def stem(token: str) -> str:
 
 
 def stems(text: str) -> list[str]:
+    """把文本切分成 token 并单数化。
+
+    Args:
+        text: 文本。
+    Returns:
+        token 列表。
+    """
     return [stem(t) for t in tokenize(text)]
 
 

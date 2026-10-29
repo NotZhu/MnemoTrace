@@ -50,11 +50,9 @@ from .util import DAY, fmt_date, now
 class InvalidFactEditError(ValueError):
     """编辑请求不能安全地应用到该事实，且尚未修改存储。"""
 
-
-# 可编辑的记忆策略 prompt（控制台的"提示词" / "要记录什么记忆"）。默认值为内置 prompt；
-# 每用户覆盖项（空字符串 = 使用默认值）存储在 Memory.policy 中。
+# 默认记忆策略字段值
 POLICY_DEFAULTS = {
-    "extract_instruction": "",  # 追加指令：记录什么 / 忽略什么
+    "extract_instruction": "",
     "extract_system": EXTRACT_SYSTEM,
     "summary_system": SESSION_SUMMARY_SYSTEM,
     "persona_system": PERSONA_SYSTEM,
@@ -144,12 +142,23 @@ class Memory:
         vector_store_factory: Callable[[], VectorStore] = InMemoryVectorStore,
         graph_store_factory: Callable[[], GraphStore] = InMemoryGraphStore,
     ) -> None:
+        """初始化记忆及其存储、整合和检索组件。
+
+        Args:
+            config: 运行配置；默认为 Config()。
+            embedder: 用于写入、整合和检索的嵌入器；
+            llm: 可选的语言模型，用于事实提取、摘要和查询规划等；
+            reranker: 可选的重排序器，用于调整 chunk 和 session 检索结果。
+            vector_store_factory: 创建向量存储的无参工厂，默认使用内存存储；
+            graph_store_factory: 创建图存储的无参工厂，默认使用内存存储。
+        """
         self.config = config or Config()
         self.embedder = embedder or HashingEmbedder(self.config.embed_dim)
         self.reranker = reranker  # 可选 cross-encoder；提升 chunk/session 检索精度 (AGENTS.md「检索与模块」)
         self.llm = llm  # 启用时供 agentic 检索（查询分解）使用
-
+        # 是否自定义向量存储工厂
         custom_vector_factory = vector_store_factory is not InMemoryVectorStore
+        # 如果使用 LanceDB 后端，且未自定义向量存储工厂
         if self.config.storage == "lancedb" and not custom_vector_factory:
             base = self.config.data_path
             if not base:
@@ -159,52 +168,47 @@ class Memory:
                 )
 
             from .store.lancedb_store import LanceDBVectorStore
-
+            # 创建 LanceDB 向量存储工厂
             def make_vector_store(name: str) -> VectorStore:
                 return LanceDBVectorStore(base, name)
         else:
             def make_vector_store(name: str) -> VectorStore:
+                # 如果自定义了向量存储工厂，则直接使用它
                 return vector_store_factory()
-
+        # 初始化文档存储
         self.episodes_doc = InMemoryDocStore()
-        self.episodes_vec = make_vector_store("episodes_vec")
-        self.fact_store = make_vector_store("fact_store")  # 热层：快速、高频检索的工作集
-        self.cold_store = make_vector_store("cold_store")  # 冷层：被换出的旧 fact，保留（从不删除）
-        self.summary_vec = make_vector_store("summary_vec")  # L2 session 摘要，可检索用于精简读取切片
+        # 初始化向量存储
+        self.episodes_vec = make_vector_store("episodes_vec")  # 原始事件的向量索引，用于检索相关片段
+        self.fact_store = make_vector_store("fact_store")  # 热层事实的向量存储，用于主要检索
+        self.cold_store = make_vector_store("cold_store")  # 冷层事实的向量存储，保留从热层换出的事实
+        self.summary_vec = make_vector_store("summary_vec")  # 会话摘要的向量索引，用于检索相关摘要
+        # 初始化图存储
         self.graph = graph_store_factory()
-
+        # 初始化摘要器
         self.summarizer = SessionSummarizer(llm)
+        # 初始化用户画像构建器
         self.profiles = ProfileBuilder()
+        # 初始化用户画像缓存
         self._persona_cache: dict[str, str] = {}
-        # 工作记忆：为最近一次查询组装的小型当前关注集（类似 OS 分页的"热"上下文）。
-        # 由 lean_context 填充；可检查、瞬态——与持久化 store 不同。
+        # 查询工作集：记录 lean_context 最近一次执行到事实组装时选出的事实，供检查。
+        # 后续 lean_context 执行到此阶段时会覆盖它；该列表不写入快照。
         self.working_set: list[Fact] = []
-        # 工作记忆层：瞬态的、按 session/TTL 划分范围的状态，刻意不进入持久化长期存储
-        # (AGENTS.md 「架构概览与代码导航」 typed memory)。生命周期受管（过期/消费/清除）。
+        # 短期工作记忆：按条目 ID 保存用户和会话相关的临时状态，支持过期、消费和清除。
+        # 条目可随快照保存并恢复；短期指其生命周期，不会因此成为长期事实。
         self.working_mem: dict[str, WorkingMemory] = {}
-        # 用户自定义关注领域（"关注点"面板）。不是摆设——真实生效：
-        #   * track：用户希望被强调的主题 -> 提升显著度；显著度是一等检索评分信号
-        #     (AGENTS.md 「检索与模块」 w_sal)，且这些主题豁免衰减/驱逐（保持热层）。
-        #   * mute：需要抑制的主题 -> 从组装的读上下文和 persona 中过滤掉。
+        # 关注主题：track 提升相关事实的显著度；mute 在上下文和画像中抑制相关事实。
         self.focus: dict[str, list[str]] = {"track": [], "mute": []}
-        # 每用户记忆策略：可编辑 prompt + "要记录什么"指令（控制台的 记忆策略 页面）。
-        # prompt 为空字符串表示"使用内置默认值"。通过 _apply_policy() 接入真实的 extractor /
-        # summarizer / persona，并随快照持久化。
+        # 记忆策略：抽取指令及抽取、摘要、画像提示词；空提示词使用内置默认值。
         self.policy: dict[str, str] = {"extract_instruction": "", "extract_system": "",
                                        "summary_system": "", "persona_system": ""}
-        # 已解析的用户身份（user_id -> 自称，如 "user123" -> "李雷"）。持久化保存，以便重新加载后
-        # 第一人称归一化和 profile 仍知道用户是谁。
-        self._identity: dict[str, str] = {}
-        self._aliases: dict[str, set] = {}  # user_id -> {所有声明过的名字/昵称}（共指）
-        # 已导入 episode 的内容指纹（幂等重导入：同一导出导入两次不能让每条记忆翻倍）。
-        # 随快照持久化（manifest 状态）。
-        self._import_seen: set[str] = set()
-        # 疑似冲突，浮出给用户确认（System-2 LLM 检测；从不自动应用）。
-        self.conflicts: dict[str, Conflict] = {}
-        self.cold_pages_out: dict[str, int] = {}
-        self.cold_pages_in: dict[str, int] = {}
-        self._persist_path: Optional[str] = None
-        self._snapshot_version: Optional[str] = None
+        self._identity: dict[str, str] = {}  # 用户 ID -> 已解析的自称
+        self._aliases: dict[str, set] = {}  # 用户 ID -> 已解析的名字或昵称集合
+        self._import_seen: set[str] = set()  # 已导入事件的指纹，用于重复导入去重
+        self.conflicts: dict[str, Conflict] = {}  # 疑似冲突及其处理状态，按冲突 ID 保存
+        self.cold_pages_out: dict[str, int] = {}  # 每个用户从热层换出到冷层的事实数
+        self.cold_pages_in: dict[str, int] = {}  # 每个用户从冷层调回热层的事实数
+        self._persist_path: Optional[str] = None  # 默认快照目录，由 open 或 save 设置
+        self._snapshot_version: Optional[str] = None  # 已加载或保存的快照版本，用于检测并发修改
         self._rewire()
 
     def _all_facts(self) -> list[Fact]:
@@ -227,12 +231,18 @@ class Memory:
         self.cold_store.upsert(fact.id, fact.embedding or [], fact)
 
     def _rewire(self) -> None:
-        """把流水线组件（重新）绑定到当前 store。在初始化和加载快照后调用，这样持久化可以换入
-        store 而不触碰 embedder/llm（它们不会被序列化）。"""
+        """重建处理组件，使其引用当前存储、嵌入器和配置。
+
+        初始化、加载快照和重嵌入后调用；嵌入器和 LLM 由运行时提供。
+        """
+        # 初始化事件写入器
         self.ingestor = Ingestor(self.episodes_doc, self.episodes_vec, self.embedder)
+        # 初始化事实整合引擎
         self.engine = ConsolidationEngine(self.fact_store, self.graph, self.embedder, self.config, self.llm)
+        # 初始化热/冷层混合检索器
         self.retriever = HybridRetriever(self.fact_store, self.graph, self.embedder, self.config)
         self.cold_retriever = HybridRetriever(self.cold_store, self.graph, self.embedder, self.config)
+        # 初始化多跳查询规划器
         self.planner = MultiHopPlanner(
             self.graph,
             self.fact_store,
@@ -240,7 +250,8 @@ class Memory:
             extra_fact_stores=[self.cold_store],
             llm=self.llm,
         )
-        # 把持久化的自称恢复到（新建的）extractor 中，使身份在重载后得以保留
+
+        # 将保存的用户规范名和别名恢复到新建的抽取器中。
         ex = getattr(self.engine, "extractor", None)
         if ex is not None and hasattr(ex, "self_name"):
             ex.self_name.update(getattr(self, "_identity", {}))
@@ -347,6 +358,19 @@ class Memory:
         consolidate: bool = False,
         embedding: Optional[list] = None,
     ) -> Episode:
+        """写入一条带时间戳的 episode。
+
+        Args:
+            content: 事件内容。
+            user_id: 用户 ID。
+            session_id: 会话 ID。
+            speaker: 说话者。
+            event_time: 事件时间戳。
+            consolidate: 是否立即执行整合。
+            embedding: 事件内容的嵌入向量。
+        Returns:
+            Episode: 写入的 episode 对象。
+        """
         ep = self.ingestor.ingest(content, user_id, session_id, speaker, event_time, embedding=embedding)
         if consolidate:
             self.consolidate()
@@ -372,11 +396,17 @@ class Memory:
         return {"scope": "long", "episode_id": ep.id}
 
     def consolidate(self, episodes: Optional[list[Episode]] = None) -> dict[str, int]:
-        """System-2：从 `episodes`（默认：全部 pending）抽取 fact 并构建双时间轴图。
-        live fact 集合刚发生变化，因此使 persona 缓存失效。"""
+        """ 执行一次 System-2 整合，抽取 fact、构建图、检测冲突、分类和敏感标志。
+
+        Args:
+            episodes: 可选的 episode 列表。
+        Returns:
+            dict[str, int]: 整合统计信息。
+        """
+        # 传入的 episode 列表或所有待处理的 episode 列表
         eps = episodes if episodes is not None else self.ingestor.pending()
-        self._apply_policy()  # 遵循用户可编辑的抽取 prompt / "要记录什么"指令
-        self.sweep_working()  # 内务清理：丢弃已过期/已消费的瞬态条目
+        self._apply_policy()  # 应用用户策略
+        self.sweep_working()  # 清理工作记忆
         stats = self.engine.consolidate(eps)
         ex = getattr(self.engine, "extractor", None)  # 捕获新解析出的身份以便持久化
         if ex is not None and hasattr(ex, "self_name"):
@@ -937,20 +967,24 @@ class Memory:
         return self.get_policy()
 
     def _effective(self, key: str) -> str:
-        """有覆盖则返回覆盖，否则返回内置默认值。"""
+        """返回实际生效的策略字段值（用户覆盖或默认值）。"""
         return self.policy.get(key) or POLICY_DEFAULTS[key]
 
     def _apply_policy(self) -> None:
-        """把当前策略推入运行中的 extractor + summarizer。在每次整合/摘要/persona 构建前以及策略
-        变更时调用。有守卫：离线 RuleExtractor（无可编辑 prompt）直接跳过、不做改动。"""
+        """把用户覆盖的策略字段应用到 extractor/summarizer。"""
         ex = getattr(self.engine, "extractor", None)
+        # 仅在有可编辑 prompt 时应用策略
         if ex is not None and hasattr(ex, "system") and hasattr(ex, "instruction"):
-            ex.system = self._effective("extract_system")
+            # 指令 prompt
             ex.instruction = self.policy.get("extract_instruction", "")
+            # 系统 prompt
+            ex.system = self._effective("extract_system")
+        # LLM 主题和偏好对象归一化参数
         if hasattr(ex, "llm_topics"):
             ex.llm_topics = self.config.llm_topics
         if hasattr(ex, "preference_object_normalization"):
             ex.preference_object_normalization = self.config.preference_object_normalization
+        # 摘要系统 prompt
         self.summarizer.system = self._effective("summary_system")
 
     # --- 工作记忆层：瞬态的、按 session/TTL 划界的状态，不进长期存储（feature ①） ---
@@ -1011,8 +1045,15 @@ class Memory:
         return True
 
     def sweep_working(self, as_of: Optional[float] = None) -> int:
-        """丢弃硬过期/已消费的工作条目。读取时惰性调用，整合期间也会调用。"""
+        """清扫工作记忆层：丢弃已过期/已消费的工作条目。
+
+        Args:
+            as_of (Optional[float]): 可选的时间戳，用于判断哪些工作
+        Returns:
+            int: 被清扫的工作条目数量。
+        """
         t = now() if as_of is None else as_of
+        # 标记为已消费的条目或已过期的条目都被清除
         dead = [i for i, w in self.working_mem.items()
                 if w.consumed or (w.expires_at is not None and w.expires_at <= t)]
         for i in dead:
@@ -2283,7 +2324,7 @@ class Memory:
             order = self.reranker.rerank(query, [(str(i), f.text) for i, f in enumerate(all_facts)],
                                          top_k or n_facts)
             all_facts = [all_facts[int(i)] for i, _ in order]
-        self.working_set = all_facts  # 工作记忆：本次查询的活动集
+        self.working_set = all_facts  # 更新查询工作集，供后续检查
         if all_facts:
             for f in all_facts:  # 访问即强化：被浮出的 fact 保持显著（间隔效应）
                 reinforce(f, self.config.access_boost)
@@ -2796,7 +2837,9 @@ class Memory:
         return history(self._all_facts(), user, subject, predicate)
 
     def profile(self, user_id: str = "default") -> dict[str, str]:
-        return self.engine.profile(user_id)
+        subject = self.engine.self_name(user_id)
+        live = [f for f in self.fact_store.values() if f.user_id == user_id and f.is_live()]
+        return self.profiles.build(subject, live)
 
     # --- 内部实现 ---
     def _should_abstain(self, query: str, facts: list[Fact], diag: dict) -> bool:

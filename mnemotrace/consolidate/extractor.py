@@ -176,6 +176,7 @@ def _slug(s: str) -> str:
 
 
 class RuleExtractor:
+    """规则事实抽取器。"""
     def __init__(
         self,
         explicit_preference_extraction: bool = True,
@@ -183,7 +184,15 @@ class RuleExtractor:
         preference_object_normalization: bool = True,
         preference_reversal_extraction: bool = True,
     ) -> None:
-        # 按用户学习本人称呼，让 "I work at X" 能归属到 "Wei" 而不是代词。
+        """初始化规则抽取器。
+
+        Args:
+            explicit_preference_extraction: 是否显式提取偏好。
+            preference_object_filter: 是否过滤偏好对象。
+            preference_object_normalization: 是否对偏好对象进行归一化。
+            preference_reversal_extraction: 是否提取偏好反转。
+        """
+        # 用户 ID -> 首次识别的规范名
         self.self_name: dict[str, str] = {}
         self.explicit_preference_extraction = explicit_preference_extraction
         self.preference_object_filter = preference_object_filter
