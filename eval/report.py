@@ -37,7 +37,7 @@ def format_synthetic_report(path: str, rows: list[dict]) -> str:
     item_rows = [r for r in rows if r.get("type") != "summary"]
     cats = sorted({r.get("category", "?") for r in item_rows})
     lines = [f"\nFILE: {path}   ({len(item_rows)} items + summary)\n"]
-    lines.append("  Synthetic offline harness (MnemoTrace / naive-recall)")
+    lines.append("  Synthetic harness (MnemoTrace / naive-recall; not an end-to-end quality benchmark)")
     lines.append("")
     lines.append("  " + "category".ljust(26) + "MnemoTrace".ljust(16) + "naive-recall")
     lines.append("  " + "-" * 56)

@@ -1,6 +1,6 @@
 """多空间（多 agent / 团队共享）记忆测试（AGENTS.md 「代码导航」）。覆盖 MNEMOTRACE_SPACES 的 ACL 解析、service
 层的跨空间读融合，以及 HTTP 层的写入/读取授权。单空间鉴权（MNEMOTRACE_API_KEYS / open 模式）刻意
-不做改动，仍由 test_server 覆盖。全部离线（hashing 嵌入器、无 LLM）；环境变量用 monkeypatch，
+不做改动，仍由 test_server 覆盖。全部离线（hashing 嵌入器、固定合成模型响应）；环境变量用 monkeypatch，
 会自动还原。"""
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import tempfile
 
 import pytest
 
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import MemoryService
 from mnemotrace.spaces import Principal, principal_for_token
 
 
@@ -73,7 +73,7 @@ def spaces_client(monkeypatch):
     for var in ("MNEMOTRACE_API_KEYS", "MNEMOTRACE_OPEN", "MNEMOTRACE_ALLOW_ANONYMOUS", "MNEMOTRACE_LLM", "MNEMOTRACE_ANSWERER"):
         monkeypatch.setenv(var, "")
     from mnemotrace.server import app as appmod
-    appmod._svc = None
+    appmod._svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
     with TestClient(appmod.app) as c:
         yield c
     appmod._svc = None

@@ -6,6 +6,10 @@
 模型返回的内容与 owner 手写进 markdown 的东西相当。"""
 from __future__ import annotations
 
+import json
+import pytest
+from mnemotrace.extraction import ExtractionError, ExtractionResponseError, LLMNotConfiguredError
+
 from mnemotrace.consolidate.outcomes import (
     OUTCOME_CATEGORY,
     OUTCOME_PREDICATES,
@@ -14,8 +18,8 @@ from mnemotrace.consolidate.outcomes import (
     extract_outcomes,
     split_outcome_text,
 )
-from mnemotrace.memory import Memory
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryService
 from mnemotrace.types import Episode, Fact
 
 
@@ -62,14 +66,27 @@ def test_unknown_kinds_and_degenerate_statements_are_rejected():
                   '{"kind":"lesson","statement":"too short"},'
                   '{"kind":"finding","statement":"' + "x" * 500 + '"},'
                   '{"kind":"finding","statement":"A real finding with adequate length here"}]')
-    facts = extract_outcomes(llm, _episodes(), "u")
-    assert [f.object for f in facts] == ["A real finding with adequate length here"]
+    with pytest.raises(ExtractionResponseError):
+        extract_outcomes(llm, _episodes(), "u")
 
 
 def test_duplicate_statements_collapse():
     llm = StubLLM('[{"kind":"decision","statement":"We chose rsync over docker compose"},'
                   '{"kind":"decision","statement":"We chose rsync over docker compose"}]')
     assert len(extract_outcomes(llm, _episodes(), "u")) == 1
+
+
+@pytest.mark.parametrize('kind', ['FINDING', ' finding '])
+def test_kind_is_normalized_before_validation(kind):
+    llm = StubLLM(json.dumps([{'kind': kind, 'statement': 'A synthetic finding with adequate length.'}]))
+    item, = extract_outcomes(llm, _episodes(), 'u')
+    assert item.predicate == 'finding'
+
+
+@pytest.mark.parametrize('statement', ['too short', 'x' * 500])
+def test_valid_kind_with_degenerate_length_is_filtered(statement):
+    llm = StubLLM(json.dumps([{'kind': 'finding', 'statement': statement}]))
+    assert extract_outcomes(llm, _episodes(), 'u') == []
 
 
 def test_transcript_is_fenced_as_data_not_conversation():
@@ -98,10 +115,11 @@ def test_model_outage_never_loses_the_session():
         def complete(self, *a, **k):
             raise RuntimeError("provider down")
 
-    assert extract_outcomes(Broken(), _episodes(), "u") == []
+    with pytest.raises(ExtractionError):
+        extract_outcomes(Broken(), _episodes(), "u")
 
 
-def test_truncated_model_output_salvages_complete_objects():
+def test_truncated_model_output_is_rejected():
     """被 max_tokens 截断的回复过去会丢掉所有已抽取的条目——而这恰恰是长会话的常态，因为模型会
     用满预算。"""
     from mnemotrace.consolidate.llm_extractor import parse_json_facts
@@ -109,8 +127,8 @@ def test_truncated_model_output_salvages_complete_objects():
     truncated = ('[{"kind":"finding","statement":"first complete one","why":"a"},'
                  '{"kind":"lesson","statement":"second complete one","why":"b"},'
                  '{"kind":"decis')
-    got = parse_json_facts(truncated)
-    assert [g["statement"] for g in got] == ["first complete one", "second complete one"]
+    with pytest.raises(ExtractionResponseError):
+        parse_json_facts(truncated)
 
 
 def test_split_outcome_text_is_the_exact_inverse_of_the_format():
@@ -137,18 +155,17 @@ def _svc(tmp_path, llm=None):
 
 
 def _session(svc, user="u", session_id="s1"):
-    svc.remember(user, "我们把部署方式从 docker compose 换成了 rsync", session_id=session_id)
-    svc.remember(user, "重新配对会覆盖唯一的全局配置文件", session_id=session_id)
+    svc.remember(user, "我们把部署方式从 docker compose 换成了 rsync", session_id=session_id, scope="working")
+    svc.remember(user, "重新配对会覆盖唯一的全局配置文件", session_id=session_id, scope="working")
 
 
-def test_close_session_produces_nothing_without_an_llm(tmp_path):
-    """零配置守卫：session_outcomes 默认为 True，但没有 key 就没有 LLM，因此不会发起调用、也不会
-    产出 outcome fact——pytest 和 quickstart 保持离线且确定。"""
-    svc = _svc(tmp_path)
-    assert svc.config.session_outcomes is True
-    assert svc.llm is None
+def test_close_session_requires_llm_when_outcomes_requested(tmp_path):
+    from mnemotrace.service import MemoryService as NativeService
+    svc = NativeService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
     _session(svc)
-    assert svc.close_session("u", "s1")["outcomes"] == 0
+    with pytest.raises(LLMNotConfiguredError):
+        svc.close_session("u", "s1")
+    assert len(svc.get("u").working_memory("u", "s1")) == 2
 
 
 def test_env_kill_switch_turns_outcomes_off(tmp_path, monkeypatch):

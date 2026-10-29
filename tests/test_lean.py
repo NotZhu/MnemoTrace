@@ -4,7 +4,9 @@ session summaries + 少量完整 chunk）作答，而不是重放全部历史。
 lean_context 能正确组装它们，并做去重 + 硬性大小上限。"""
 from __future__ import annotations
 
-from mnemotrace import Config, Memory
+from mnemotrace import Config
+
+from tests.model_fixtures import Memory
 from mnemotrace.types import Episode
 from mnemotrace.util import DAY
 
@@ -2258,7 +2260,7 @@ def test_working_memory_is_ephemeral_and_never_enters_long_term(tmp_path):
     session 结束即清空。核心不变量：ephemeral 条目绝不变成持久 fact。"""
     import mnemotrace.util as u
     m = Memory()
-    assert Memory.is_ephemeral("today my throat hurts") and not Memory.is_ephemeral("I have diabetes")
+    assert not hasattr(Memory, "is_ephemeral")
 
     m.remember_working("today my throat hurts", user_id="u", session_id="s1", kind="state")
     m.remember_working("this trip front seat is my wife", user_id="u", session_id="s1",
@@ -2341,7 +2343,7 @@ def test_ephemeral_remember_keeps_dated_episode_but_creates_no_durable_fact():
     同时保留为带日期的 EPISODE（因此 'when did my throat hurt?' 可从历史中作答），
     但不会变成持久的画像 fact（因此绝不会滞留为当前属性）。"""
     m = Memory()
-    r = m.remember("today my throat is uncomfortable", user_id="u", session_id="s1")
+    r = m.remember("today my throat is uncomfortable", user_id="u", session_id="s1", scope="working")
     assert r["scope"] == "working"
 
     # 事件保留在带日期的情景日志中 -> 可按历史查询

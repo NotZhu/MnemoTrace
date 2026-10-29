@@ -46,21 +46,21 @@ def _percentile(values: list[float], p: float) -> float:
     return s[idx]
 
 
-def _memory_for(storage: str, data_path: str | None = None) -> Memory:
+def _memory_for(storage: str, llm, data_path: str | None = None) -> Memory:
     if storage == "memory":
-        return Memory()
+        return Memory(llm=llm)
     cfg = Config(storage="lancedb", data_path=data_path) if storage == "lancedb" else Config()
-    return Memory(config=cfg)
+    return Memory(config=cfg, llm=llm)
 
 
-def run_mnemotrace(item: EvalItem, storage: str = "memory") -> tuple[bool, int, float]:
-    detail = run_mnemotrace_detail(item, storage=storage)
+def run_mnemotrace(item: EvalItem, storage: str = "memory", *, llm) -> tuple[bool, int, float]:
+    detail = run_mnemotrace_detail(item, storage=storage, llm=llm)
     return detail["ok"], detail["tokens"], detail["latency_ms"]
 
 
-def run_mnemotrace_detail(item: EvalItem, storage: str = "memory") -> dict:
+def run_mnemotrace_detail(item: EvalItem, storage: str = "memory", *, llm) -> dict:
     tmp = tempfile.mkdtemp(prefix=f"mnemotrace_eval_{storage}_") if storage != "memory" else None
-    mem = _memory_for(storage, os.path.join(tmp, "vectors") if tmp else None)
+    mem = _memory_for(storage, llm, os.path.join(tmp, "vectors") if tmp else None)
     for text, day in item.sessions:
         mem.add(text, user_id=item.id, event_time=BASE + day * DAY)
     mem.consolidate()
@@ -110,7 +110,7 @@ def run_naive_recall(item: EvalItem) -> tuple[bool, int]:
     return _contains(history_text, item.answer), tokens
 
 
-def evaluate(storage: str = "memory") -> tuple[list[dict], dict]:
+def evaluate(storage: str = "memory", *, llm) -> tuple[list[dict], dict]:
     cats = sorted({it.category for it in ITEMS})
     rows: list[dict] = []
     eng_hits: dict[str, list[bool]] = defaultdict(list)
@@ -120,7 +120,7 @@ def evaluate(storage: str = "memory") -> tuple[list[dict], dict]:
     latencies: list[float] = []
 
     for it in ITEMS:
-        e = run_mnemotrace_detail(it, storage=storage)
+        e = run_mnemotrace_detail(it, storage=storage, llm=llm)
         b_ok, b_tok = run_naive_recall(it)
         row = {
             **e,
@@ -169,17 +169,23 @@ def write_jsonl(path: str, rows: list[dict], summary: dict) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Run the built-in offline MnemoTrace synthetic eval.")
+    ap = argparse.ArgumentParser(description="Run the synthetic MnemoTrace eval with an explicit LLM.")
     ap.add_argument("--storage", choices=["memory", "durable", "lancedb"], default="memory",
                     help="memory uses RAM only; durable/lancedb save and reopen before search")
     ap.add_argument("--out", help="write per-item raw logs plus a final summary record as JSONL")
+    ap.add_argument("--llm", help="model name, or set MNEMOTRACE_LLM")
     args = ap.parse_args()
+    from mnemotrace.llm.providers import make_llm, load_dotenv
+    load_dotenv()
+    model = args.llm or os.environ.get("MNEMOTRACE_LLM", "")
+    if not model:
+        ap.error("configure --llm or MNEMOTRACE_LLM")
 
-    rows, summary = evaluate(storage=args.storage)
+    rows, summary = evaluate(storage=args.storage, llm=make_llm(model))
     if args.out:
         write_jsonl(args.out, rows, summary)
 
-    print(f"MnemoTrace eval harness -- {len(ITEMS)} items, offline (hashing embedder + rule extractor)")
+    print(f"MnemoTrace eval harness -- {len(ITEMS)} items, LLM extraction with hashing embeddings")
     print(f"storage={args.storage} ({'save/reopen before search' if args.storage != 'memory' else 'RAM only'})\n")
     print(f"  {'id':5} {'category':16} {'MnemoTrace':10} {'naive':6}  question")
     print("  " + "-" * 78)

@@ -1,4 +1,4 @@
-"""把聊天历史批量导入 忆痕 —— 零配置，无需 API key。
+"""把聊天历史批量导入 忆痕 —— 使用已配置的 LLM。
 
     python examples/batch_import.py
 
@@ -41,7 +41,14 @@ OPENAI_MESSAGES = [
 
 
 def main() -> None:
-    mem = Memory()  # 离线模式：hashing 嵌入器 + 规则抽取器，零配置
+    import os
+    from mnemotrace.llm.providers import load_dotenv, make_llm
+    from mnemotrace.extraction import LLMNotConfiguredError
+    load_dotenv()
+    model = os.environ.get("MNEMOTRACE_LLM", "").strip()
+    if not model:
+        raise SystemExit(str(LLMNotConfiguredError()))
+    mem = Memory(llm=make_llm(model))
 
     print("== Detect + parse two different export formats ==")
     chatgpt_sessions = parse(CHATGPT_EXPORT)  # 自动嗅探格式

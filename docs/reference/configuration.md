@@ -71,7 +71,7 @@ assert (fact.topic, fact.topic_source) == ("technology", "rule")
 | MNEMOTRACE_OPEN | 关闭；显式开启后把 Bearer 文本作为 namespace |
 | MNEMOTRACE_ALLOW_ANONYMOUS | 关闭；仅开放模式下控制共享 anonymous |
 | MNEMOTRACE_EMBEDDER | hashing，不下载模型 |
-| MNEMOTRACE_LLM | 空，规则抽取 |
+| MNEMOTRACE_LLM | 空；请求抽取时报配置错误 |
 | MNEMOTRACE_LLM_TOPICS | 默认开启；设为 0 关闭 LLM 主题增强，保留规则判断；HTTP 服务和本地 MCP 生效，代理 MCP 由目标服务控制 |
 | MNEMOTRACE_ANSWERER | 未设置时复用主 LLM |
 | MNEMOTRACE_VISION_LLM | 未设置时复用主 LLM；没有模型时不生成图片语义描述 |
@@ -123,7 +123,7 @@ assert (fact.topic, fact.topic_source) == ("technology", "rule")
 
 | 命令 | 主要用途 |
 | --- | --- |
-| mnemotrace-quickstart | 离线示例 |
+| mnemotrace-quickstart | 使用已配置 LLM 的示例 |
 | mnemotrace-mcp / python -m mnemotrace.mcp | 本地工具服务或远程 HTTP 代理 |
 | mnemotrace-import / python -m mnemotrace.connectors | 解析与导入，先使用 --dry-run |
 | mnemotrace-agent-setup | 输出或安装客户端配置与受管接入说明 |

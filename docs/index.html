@@ -572,7 +572,7 @@ python eval/validate_results.py --expected-rows 500 --require-complete --system 
     <article class="chip rv d4"><h3>类型化记忆</h3><p>情节 / 语义图谱 / 画像身份 / 程序性 / 工作记忆,各有存储与策略</p></article>
     <article class="chip rv d4"><h3>显著度衰减 + Reflector</h3><p>强化与遗忘、摘要刷新、答案验证回路</p></article>
   </div>
-  <p class="sources-note rv d4"><span>一切可插拔:LLM / 嵌入器 / 向量库 / 图库都在接口背后,带<b>零依赖离线兜底</b> —— 不用 key、不用任何服务即可跑 <code>python scripts/check_zero_setup.py</code>。</span></p>
+  <p class="sources-note rv d4"><span>LLM 负责语义抽取；嵌入器、向量库和图库通过接口接入。使用 <code>python scripts/check_core.py</code> 离线验证核心存储与配置错误契约。</span></p>
 </div></section>
 
 <!-- HOW TO CALL -->

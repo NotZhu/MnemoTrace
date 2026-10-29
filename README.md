@@ -5,7 +5,7 @@
 
 Long-term memory for LLM agents, with a Python library, HTTP service, MCP tools, TypeScript SDK, and a management console.
 
-MnemoTrace stores conversation episodes, extracts facts with time and provenance, and retrieves relevant context across sessions. Memory updates can retain superseded facts for historical queries. The default Python path uses a hashing embedder and rule-based extraction: no API key, model download, or external service is required. These deterministic defaults demonstrate the pipeline; they do not establish semantic retrieval quality.
+MnemoTrace stores conversation episodes, extracts facts with time and provenance, and retrieves relevant context across sessions. Memory updates can retain superseded facts for historical queries. Natural-language fact extraction requires a configured LLM. Raw records, explicit facts, existing memory reads, and snapshot restoration work without one. Hashing embeddings remain available for lexical smoke checks; they do not establish semantic retrieval quality.
 
 [中文](README.zh-CN.md) · [Documentation](docs/README.md) · [Quickstart](docs/quickstart.md)
 
@@ -14,7 +14,8 @@ MnemoTrace stores conversation episodes, extracts facts with time and provenance
 From a source checkout, with Python 3.10 or later:
 
 ```sh
-python -m pip install .
+python -m pip install ".[llm]"
+# Set MNEMOTRACE_LLM and the provider credentials before running.
 mnemotrace-quickstart
 ```
 
@@ -22,8 +23,9 @@ For a minimal integration:
 
 ```python
 from mnemotrace import Memory
+from mnemotrace.llm.providers import make_llm
 
-memory = Memory()
+memory = Memory(llm=make_llm("deepseek"))
 memory.add("I live in Paris.", user_id="user123", session_id="demo")
 memory.consolidate()
 print(memory.search("Where do I live?", user_id="user123").answer())

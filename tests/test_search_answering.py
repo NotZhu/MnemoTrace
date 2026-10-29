@@ -9,7 +9,7 @@ search()/answer()/add_fact 时的冲突处理，benchmark 的 lean_context 从�
 """
 from __future__ import annotations
 
-from mnemotrace import Memory
+from tests.model_fixtures import Memory
 from mnemotrace.consolidate.conflict import ConflictResolver
 from mnemotrace.memory import _ANSWER_TYPE_MATCH, _expected_answer_type
 from mnemotrace.types import Fact

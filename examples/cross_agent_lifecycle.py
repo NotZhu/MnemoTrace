@@ -1,6 +1,6 @@
 """演示单个 agent 会话中面向用户的 忆痕 完整生命周期。
 
-无服务端的本地冒烟测试：
+先配置 MNEMOTRACE_LLM 与对应凭据，再运行无服务端的本地示例：
 
     python examples/cross_agent_lifecycle.py --local
 
@@ -94,7 +94,7 @@ def _bool_query_value(query: dict[str, list[str]], key: str, default: bool = Fal
 def local_call(key: str, data_dir: str) -> Call:
     from mnemotrace.service import MemoryService
 
-    svc = MemoryService(data_dir=data_dir, embedder_name="hashing", llm_name="")
+    svc = MemoryService(data_dir=data_dir, embedder_name="hashing")
 
     def call(path: str, body: dict | None = None, method: str = "POST") -> dict:
         body = body or {}

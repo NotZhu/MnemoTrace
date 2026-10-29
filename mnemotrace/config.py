@@ -46,7 +46,7 @@ class Config:
     preference_reversal_extraction: bool = True  # 抽取 no longer like X 等明确的偏好反转
     llm_topics: bool = True  # 在已有 LLM 抽取调用中生成主题；关闭后仍使用规则判定主题
     procedural_extraction: bool = True  # 将长期操作步骤抽取为过程类事实
-    # 服务关闭会话时，可调用 LLM 提取决策、发现和经验；未配置 LLM 时不执行。
+    # 服务关闭会话时，可调用 LLM 提取决策、发现和经验；需要配置 LLM。
     # 服务端可用 MNEMOTRACE_SESSION_OUTCOMES=0 强制关闭。
     session_outcomes: bool = True
     max_hot_facts: int = 10_000  # 热层事实数量上限；换出的事实保留在冷层

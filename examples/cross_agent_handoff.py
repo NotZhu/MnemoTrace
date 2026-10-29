@@ -1,6 +1,6 @@
 """模拟两个 agent 共享同一个用户所有的 忆痕 记忆命名空间。
 
-无服务端的本地冒烟测试：
+先配置 MNEMOTRACE_LLM 与对应凭据，再运行无服务端的本地示例：
 
     python examples/cross_agent_handoff.py --local
 
@@ -69,7 +69,7 @@ def http_call(base: str, key: str) -> Call:
 def local_call(key: str, data_dir: str) -> Call:
     from mnemotrace.service import MemoryService
 
-    svc = MemoryService(data_dir=data_dir, embedder_name="hashing", llm_name="")
+    svc = MemoryService(data_dir=data_dir, embedder_name="hashing")
 
     def call(path: str, body: dict | None = None, method: str = "POST") -> dict:
         body = body or {}

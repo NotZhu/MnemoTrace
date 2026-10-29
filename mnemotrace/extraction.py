@@ -1,0 +1,33 @@
+"""Stable, content-free failures shared by extraction and service adapters."""
+from __future__ import annotations
+
+
+class ExtractionError(RuntimeError):
+    code = "extraction_failed"
+    status_code = 502
+    message = "Memory extraction failed; retry consolidation after the model is available."
+
+    def __init__(self, *, stored_raw: bool = False, episode_ids: list[str] | None = None):
+        super().__init__(self.message)
+        self.stored_raw = stored_raw
+        self.episode_ids = list(episode_ids or [])
+
+    def detail(self) -> dict:
+        return {"code": self.code, "message": self.message,
+                "stored_raw": self.stored_raw, "episode_ids": self.episode_ids}
+
+
+class LLMNotConfiguredError(ExtractionError):
+    code = "llm_not_configured"
+    status_code = 503
+    message = "Configure an LLM: pass llm= to Memory, or set MNEMOTRACE_LLM for the service."
+
+
+class ExtractionResponseError(ExtractionError):
+    code = "extraction_invalid_response"
+    message = "The model returned an invalid extraction response; check its prompt and retry."
+
+
+def require_llm(llm) -> None:
+    if llm is None:
+        raise LLMNotConfiguredError()

@@ -16,7 +16,7 @@ Bash 使用 `source .venv/bin/activate`，PowerShell 使用 `.venv\Scripts\Activ
 python -m pip install -e ".[dev,server,mcp]" build twine
 ```
 
-核心库没有第三方运行时依赖，开发依赖和可选后端不应进入核心的硬依赖。零配置示例、已安装命令与离线测试的权威契约见 [AGENTS.md](AGENTS.md#principle-ii)。
+核心库没有第三方运行时依赖，开发依赖和可选后端不应进入核心的硬依赖。模型示例、核心检查与离线测试的权威契约见 [AGENTS.md](AGENTS.md#principle-ii)。
 
 ## 定位变更
 
@@ -54,7 +54,7 @@ python -m pytest tests/test_lancedb_store.py tests/test_documents.py
 运行安装与默认路径检查：
 
 ```sh
-python scripts/check_zero_setup.py
+python scripts/check_core.py
 ```
 
 使用合成数据或独立临时目录。不要把现有个人记忆库、凭据或生产数据作为自动测试 fixture。

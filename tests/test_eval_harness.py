@@ -7,11 +7,12 @@ import pytest
 from eval.harness import evaluate, run_mnemotrace, write_jsonl
 from eval.report import format_synthetic_report, load
 from eval.synthetic import ITEMS
+from tests.model_fixtures import RecordedLLM
 
 
 def test_synthetic_harness_durable_storage_smoke():
     item = next(it for it in ITEMS if it.id == "tmp2")
-    ok, tokens, latency = run_mnemotrace(item, storage="durable")
+    ok, tokens, latency = run_mnemotrace(item, storage="durable", llm=RecordedLLM())
     assert ok is True
     assert tokens > 0
     assert latency >= 0.0
@@ -20,14 +21,14 @@ def test_synthetic_harness_durable_storage_smoke():
 def test_synthetic_harness_lancedb_storage_smoke():
     pytest.importorskip("lancedb")
     item = next(it for it in ITEMS if it.id == "tmp2")
-    ok, tokens, latency = run_mnemotrace(item, storage="lancedb")
+    ok, tokens, latency = run_mnemotrace(item, storage="lancedb", llm=RecordedLLM())
     assert ok is True
     assert tokens > 0
     assert latency >= 0.0
 
 
 def test_synthetic_harness_jsonl_raw_log_contains_items_and_summary(tmp_path):
-    rows, summary = evaluate(storage="memory")
+    rows, summary = evaluate(storage="memory", llm=RecordedLLM())
     path = tmp_path / "harness.jsonl"
     write_jsonl(str(path), rows, summary)
 
@@ -41,12 +42,12 @@ def test_synthetic_harness_jsonl_raw_log_contains_items_and_summary(tmp_path):
 
 
 def test_report_reads_synthetic_harness_jsonl(tmp_path):
-    rows, summary = evaluate(storage="memory")
+    rows, summary = evaluate(storage="memory", llm=RecordedLLM())
     path = tmp_path / "harness.jsonl"
     write_jsonl(str(path), rows, summary)
 
     report = format_synthetic_report(str(path), load(str(path)))
-    assert "Synthetic offline harness" in report
+    assert "Synthetic harness" in report
     assert "OVERALL" in report
     assert "100.0% (10)" in report
     assert "avg context tokens" in report

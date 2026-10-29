@@ -1,13 +1,14 @@
 # 快速开始
 
-本页使用 Python 库完成一次离线写入、检索和重开存储。需要 Python 3.10 或更高版本，无需 API key、模型下载或服务进程。
+本页使用 Python 库完成模型抽取、检索和重开存储。需要 Python 3.10 或更高版本，以及已配置的 LLM。示例使用 DeepSeek，运行前设置 DEEPSEEK_API_KEY；命令行示例另需设置 MNEMOTRACE_LLM=deepseek。
 
 ## 安装与运行
 
 在仓库根目录执行：
 
 ```sh
-python -m pip install .
+python -m pip install ".[llm]"
+# Set MNEMOTRACE_LLM and the provider credentials before running.
 mnemotrace-quickstart
 ```
 
@@ -17,8 +18,9 @@ mnemotrace-quickstart
 
 ```python
 from mnemotrace import Memory
+from mnemotrace.llm.providers import make_llm
 
-memory = Memory()
+memory = Memory(llm=make_llm("deepseek"))
 memory.add("I live in Paris.", user_id="user123", session_id="demo")
 stats = memory.consolidate()
 result = memory.search("Where do I live?", user_id="user123")
@@ -28,7 +30,7 @@ print(result.answer())      # Paris
 print(memory.profile("user123"))  # {'lives_in': 'Paris'}
 ```
 
-`add()` 保存原始事件，`consolidate()` 提取事实并建立检索结构；两者在 Python 库中是显式分开的。查询时沿用写入时的 `user_id`。默认哈希嵌入主要捕捉词汇重合，规则抽取只覆盖部分语言模式；真实语料的召回质量需要单独评测。
+`add()` 保存原始事件，`consolidate()` 提取事实并建立检索结构；两者在 Python 库中是显式分开的。查询时沿用写入时的 `user_id`。事实由 LLM 从原话生成，默认哈希嵌入主要捕捉词汇重合；真实语料的抽取和召回质量需要单独评测。
 
 ## 保存与重开
 

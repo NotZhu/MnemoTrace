@@ -69,6 +69,7 @@ export interface MemoryCounts {
 export interface MemoryStatsCounts {
   episodes: number
   episodes_consolidated: number
+  extraction_failures?: number
   episodes_pending: number
   episodes_ephemeral: number
   facts_hot: number
@@ -105,7 +106,8 @@ export interface AgentStatus {
   session: {
     id: string | null
     episodes: number
-    episodes_pending: number
+    extraction_failures?: number
+  episodes_pending: number
     working_live: number
   }
   counts: MemoryStatsCounts
@@ -130,6 +132,7 @@ export interface SessionIndexItem {
   id: string
   episodes: number
   episodes_consolidated: number
+  extraction_failures?: number
   episodes_pending: number
   facts_added: number
   facts_sensitive: number
@@ -193,6 +196,7 @@ export interface SessionReport {
   include_sensitive: boolean
   episodes: number
   episodes_consolidated: number
+  extraction_failures?: number
   episodes_pending: number
   working_live: number
   facts_added: number
@@ -243,13 +247,21 @@ export interface Focus {
 
 export type RememberScope = 'auto' | 'long' | 'working'
 
+export interface ExtractionFailure {
+  code: 'llm_not_configured' | 'extraction_failed' | 'extraction_invalid_response'
+  message: string
+  stored_raw: boolean
+  episode_ids: string[]
+}
+
 export interface RememberResult {
   ok: boolean
-  extracted: number
+  scope?: 'long' | 'working' | 'mixed' | 'none'
+  queued?: boolean
+  episode_id?: string
+  extracted?: number
+  working_added?: number
   total_facts?: number
-  degraded?: string
-  stored_raw?: boolean
-  scope?: RememberScope // 'working' = 路由到临时层（不进入长期记忆）
   kind?: string
 }
 

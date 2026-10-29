@@ -7,7 +7,7 @@ from dataclasses import asdict
 
 import pytest
 
-from mnemotrace import Memory
+from tests.model_fixtures import Memory
 from mnemotrace.store import StoreFormatError, load_memory
 from mnemotrace.store.persist import snapshot_version
 from mnemotrace.types import Conflict

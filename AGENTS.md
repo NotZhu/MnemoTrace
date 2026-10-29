@@ -22,7 +22,7 @@ Python 支持范围、extras 与打包入口以 [pyproject.toml](pyproject.toml)
 
 - 围绕任务要求的行为控制改动范围，完成必要的调用链调整；独立的清理和重构另行处理。
 - 优先扩展职责合适的现有模块。新增抽象应解决当前存在的重复或变化，并说明它封装什么、由谁调用；接口尽量小，复杂度留在实现内部。
-- Python 核心仅依赖标准库。LLM、embedder 和存储后端通过接口接入，可选依赖在对应实现中延迟加载，保留可离线运行的确定性实现。
+- Python 核心仅依赖标准库。LLM、embedder 和存储后端通过接口接入，可选依赖在对应实现中延迟加载，保留离线可验证的原文、显式事实和存储能力；自动事实抽取使用 LLM。
 - 参数含义与默认值在定义处维护；跨层传递应保持明确。注释解释非显然的原因、限制和取舍，格式和静态规范交给现有工具。
 - 优化前定位瓶颈，再决定是否增加缓存、索引、并发或新依赖，同时考虑失效、资源释放和失败恢复的代价。
 - 接口、数据模型、安全边界或跨模块设计存在未决取舍时，先说明问题、备选方案、影响和验证方法。需要持续引用时保留一份设计说明，工具按需选择；普通修复和局部重构直接实施并验证。
@@ -39,7 +39,7 @@ Python 支持范围、extras 与打包入口以 [pyproject.toml](pyproject.toml)
 
 ## 验证与评测
 
-<a id="principle-ii"></a>零配置契约：`python examples/quickstart.py` 和安装后的 `mnemotrace-quickstart` 无需 API key 或第三方服务即可运行，使用哈希 embedder、规则提取器和内存存储；安装测试依赖后的 `pytest` 同样应可离线运行。修改核心、默认配置或导入路径时，核对这一契约。
+<a id="principle-ii"></a>模型抽取契约：自然语言事实抽取、自动生命周期判断和会话结论需要配置 LLM。服务端在本次输入写入前拒绝缺少模型的抽取请求；底层 Memory.remember 仅保存原文及路由策略，由 consolidate 检查模型。`python examples/quickstart.py` 与安装后的 `mnemotrace-quickstart` 使用真实模型，不维护离线完整演示。pytest 使用合成事实与固定模型响应，可离线运行；原文保存、手动事实、已有记忆读取和快照恢复不依赖 LLM。
 
 - 为新增行为和缺陷修复补充能区分正确与错误行为的回归；已有测试足以覆盖时直接复用。测试面向可观察结果，避免只复刻实现细节。
 - 先运行受影响的检查，再根据影响面扩大验证。接口、存储、隔离和异步生命周期的变化，应覆盖对应集成边界；用户可见的交互变化按需要实际运行验证。
@@ -54,7 +54,7 @@ Python 支持范围、extras 与打包入口以 [pyproject.toml](pyproject.toml)
 | TypeScript SDK   | `clients/typescript/`：`npm run typecheck`、`npm test`；test 会先执行构建                                               |
 | 文档链接与导航   | 根目录：`python scripts/check_repository.py`、`git diff --check`；迁移另查路径消费者                                    |
 | 展示页生成一致性 | 根目录：`python scripts/build_landing_pages.py --check`                                                                 |
-| 零配置与发布检查 | 涉及运行、打包或部署契约时，执行 `python scripts/check_zero_setup.py`、`python scripts/check_release.py` 及对应 CI 检查 |
+| 核心与发布检查 | 涉及运行、打包或部署契约时，执行 `python scripts/check_core.py`、`python scripts/check_release.py` 及对应 CI 检查 |
 
 <a id="principle-i"></a>算法与公开成绩：
 

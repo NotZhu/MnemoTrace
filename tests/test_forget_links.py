@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import MemoryService
 
 
 @pytest.mark.parametrize("kind", ["file", "directory", "dangling", "junction"])

@@ -4,7 +4,7 @@
 
 ## 开始使用
 
-- [快速开始](quickstart.md)：离线运行、写入、检索与保存。
+- [快速开始](quickstart.md)：配置模型、写入、检索与保存。
 - [使用与管理记忆](guides/usage.md)：导入、事实、会话、画像、关注点和隐私操作。
 - [Agent 接入](guides/agents.md)：本地与远程 MCP、配置生成、诊断和会话收尾。
 - [部署与运维](../deploy/README.md)：HTTP 服务、控制台、容器、鉴权和备份恢复。

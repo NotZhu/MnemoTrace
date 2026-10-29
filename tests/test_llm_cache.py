@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import tempfile
+import json
+from mnemotrace import Memory
 
 from mnemotrace.llm.cache import CachedLLM
 
@@ -91,48 +93,25 @@ def test_unknown_attributes_fall_through_to_the_real_model():
 
 
 def test_identity_registration_does_not_depend_on_extraction_order():
-    """A/B 噪音的最后 10%：提取在线程池里并发运行，而注册用户的规范名（canonical name）是依赖顺序
-    的，于是哪个调用先返回就决定了后续事实读起来是 'Evan lives in X' 还是 'user lives in X'。
-    事实集合在完全相同的运行之间翻转，翻转了 persona prompt，进而击穿了 pin 缓存。提取现在是
-    两阶段的：模型调用并发扇出，转换按时间顺序执行。"""
-    from mnemotrace import Memory
-
-    class StubExtractor:
-        """模拟 LLM 提取器的分段 API；名字只在最后一个 episode 里出现。"""
-
-        def __init__(self):
-            self.self_name = {}
-
-        def raw_items(self, ep):
-            if "call me" in ep.content:
-                return [{"subject": "user", "predicate": "name", "object": "Evan"}]
-            return [{"subject": "user", "predicate": "likes", "object": ep.content.split()[-1]}]
-
-        def facts_from(self, ep, items):
-            from mnemotrace.types import Fact
-
-            out = []
-            for it in items:
-                if it["predicate"] == "name":
-                    self.self_name.setdefault(ep.user_id, it["object"])
-                    continue
-                subj = self.self_name.get(ep.user_id, it["subject"])
-                out.append(Fact(subject=subj, predicate=it["predicate"], object=it["object"],
-                                user_id=ep.user_id, valid_at=ep.event_time))
-            return out
-
-        def extract(self, ep):
-            return self.facts_from(ep, self.raw_items(ep))
-
+    import time
+    from mnemotrace.llm import FakeLLM
+    outputs = {
+        "I like coffee": [{"subject":"user","predicate":"likes","object":"coffee"}],
+        "I like hiking": [{"subject":"user","predicate":"likes","object":"hiking"}],
+        "you can call me Evan": [{"subject":"user","predicate":"name","object":"Evan"}],
+    }
+    def complete(prompt, system):
+        content = prompt.split("对话：\n", 1)[1].split("\n\nJSON 事实：", 1)[0]
+        if content == "I like coffee":
+            time.sleep(0.01)
+        return json.dumps({"facts": outputs[content], "working": []})
     seen = []
     for _ in range(3):
-        mem = Memory()
-        mem.engine.extractor = StubExtractor()
-        for i, text in enumerate(["I like coffee", "I like hiking", "you can call me Evan"]):
+        mem = Memory(llm=FakeLLM(handler=complete))
+        for i, text in enumerate(outputs):
             mem.add(text, user_id="u1", event_time=1_700_000_000.0 + i * 86400)
         mem.consolidate()
         seen.append(sorted(f.text for f in mem._all_facts()))
-    assert seen[0] == seen[1] == seen[2], f"fact set varied across runs: {seen}"
-    # 名字按时间顺序最后到达，所以更早的事实保留命名前的主体——关键在于每次运行都完全相同，
-    # 而不是哪个主体胜出。
-    assert all("coffee" in " ".join(s) for s in seen)
+        assert mem.engine.self_name("u1") == "Evan"
+    assert seen[0] == seen[1] == seen[2]
+    assert all("coffee" in " ".join(rows) for rows in seen)

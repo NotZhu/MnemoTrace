@@ -7,7 +7,7 @@
 
 | 问题                    | 入口                                                                 |
 | ------------------------- | ---------------------------------------------------------------------- |
-| 验证 harness 和离线行为 | tests/test_eval_harness.py、test_validate_results.py、test_report.py |
+| 验证 harness 的固定响应回归 | tests/test_eval_harness.py、test_validate_results.py、test_report.py |
 | LongMemEval 统一 QA     | [bench.py](bench.py)，数据解析见 [longmemeval.py](longmemeval.py)    |
 | LOCOMO 适配             | [locomo.py](locomo.py) 转为同一 harness 的输入                       |
 | PersonaMem              | [personamem.py](personamem.py)，日志使用自己的 schema                |
@@ -95,7 +95,7 @@ facility 会读取所选会话目录、watcher/hook 状态并可能访问服务�
 ```
 
 ```sh
-python eval/seed_console.py --data .artifacts/console-demo-input.json --out .artifacts/console-demo --embedder hashing --llm= --featured-per-cat 0
+python eval/seed_console.py --data .artifacts/console-demo-input.json --out .artifacts/console-demo --embedder hashing --llm deepseek
 ```
 
 按上述步骤复制后，空间 `1` 应能看到居住地 `Paris`。若仅在本机核对复制结果，可先不启动 HTTP 服务，直接使用服务的读取入口（将路径替换为本次复制目标）：
@@ -107,3 +107,5 @@ python -c "from mnemotrace.service import MemoryService; s = MemoryService(data_
 脚本会在加载模型前检查本次计划写入的空间目录和清单文件；任何目标已存在就报错，并以排他创建防止两个生成进程覆盖同一目标。不同分片可以共享输出根目录，但重复运行同一分片会报错。失败可能留下不完整的目录或清单；换新的 `--out` 重新生成，不把失败输出复制到服务中。旧版编号目录不会自动读取、认领或迁移，旧源存储保持不动；需要数据时重新生成。
 
 所有测量都应在授权范围内执行。核心、安装和工程检查成功不表示算法提升。
+
+所有执行自然语言事实抽取的评测与种子生成入口需要显式 LLM。离线测试使用固定合成响应，只验证管线行为，不能证明模型质量；公开质量结论仍遵循统一评测及完整日志要求。

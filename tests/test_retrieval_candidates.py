@@ -3,15 +3,14 @@
 （这是可以离线验证的"行为保持"性质；规模化下的排序质量交给 eval 把关）。使用内存 store，因此无需
 LanceDB。
 
-文本刻意保持为离线规则提取器确实能解析的形式（"X and Y" 单句），从而事实能真正落库，等价性检查
-才不是空转。"""
+固定合成模型响应确保事实真正落库，避免候选集等价性检查仅比较空结果。"""
 from __future__ import annotations
 
 from mnemotrace.config import Config
 from mnemotrace.embed import HashingEmbedder
-from mnemotrace.memory import Memory
+from tests.model_fixtures import Memory
 
-_TEXT = "My name is Wei and I live in Shenzhen."  # 规则提取器 -> (Wei, lives_in, Shenzhen)
+_TEXT = "My name is Wei and I live in Shenzhen."  # 固定响应包含 (Wei, lives_in, Shenzhen)
 
 
 def _mem(ann: bool) -> Memory:

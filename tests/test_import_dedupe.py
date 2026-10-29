@@ -7,8 +7,8 @@ import shutil
 import tempfile
 
 from mnemotrace.embed import HashingEmbedder
-from mnemotrace.memory import Memory
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryService
 
 _SESSIONS = [
     {"session_id": "s1", "messages": [{"role": "user", "content": "I have a dog named Mochi."}]},

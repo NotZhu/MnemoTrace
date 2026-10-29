@@ -1,8 +1,8 @@
 """默认提示词语言与模型调用边界；使用合成回复，不依赖外部模型。"""
 import json
 
-from mnemotrace import Memory
-from mnemotrace.consolidate.llm_extractor import LLMExtractor
+from tests.model_fixtures import Memory
+from tests.model_fixtures import LLMExtractor
 from mnemotrace.consolidate.summarizer import SessionSummarizer
 from mnemotrace.types import Episode
 

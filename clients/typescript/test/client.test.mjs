@@ -4,6 +4,36 @@ import test from 'node:test'
 import { MnemoTraceClient, MnemoTraceError } from '../dist/index.js'
 import { createRequire } from 'node:module'
 
+for (const [status, code, storedRaw] of [
+  [503, 'llm_not_configured', false],
+  [502, 'extraction_failed', true],
+  [502, 'extraction_invalid_response', true],
+]) {
+  test(`remember preserves ${code} and raw-save details without retrying`, async () => {
+    let calls = 0
+    const detail = { code, message: 'Synthetic extraction error', stored_raw: storedRaw,
+      episode_ids: storedRaw ? ['synthetic-episode'] : [] }
+    const client = new MnemoTraceClient({ fetch: async () => {
+      calls += 1
+      return new Response(JSON.stringify({ detail }), { status })
+    } })
+    await assert.rejects(client.remember('Synthetic input'), error => {
+      assert.ok(error instanceof MnemoTraceError)
+      assert.equal(error.status, status)
+      assert.deepEqual(error.detail, { detail })
+      return true
+    })
+    assert.equal(calls, 1)
+  })
+}
+
+test('remember reports scheduling without fabricating an extraction result', async () => {
+  const result = { ok: true, queued: true, episode_id: 'synthetic-episode' }
+  const client = new MnemoTraceClient({ fetch: async () =>
+    new Response(JSON.stringify(result), { status: 200 }) })
+  assert.deepEqual(await client.remember('Synthetic input'), result)
+})
+
 test('memories sends the stored-topic filter alongside paging and search', async () => {
   const calls = []
   const client = new MnemoTraceClient({ fetch: async url => {

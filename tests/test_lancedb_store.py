@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("lancedb")
 
 from mnemotrace.config import Config
-from mnemotrace.memory import Memory
+from tests.model_fixtures import Memory
 from mnemotrace.store.lancedb_store import LanceDBVectorStore
 from mnemotrace.store.memory_store import InMemoryVectorStore
 from mnemotrace.types import Fact

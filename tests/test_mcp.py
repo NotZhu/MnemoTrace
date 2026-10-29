@@ -1,4 +1,4 @@
-"""MCP 服务器工具测试：通过 FastMCP.call_tool 驱动，注入本地后端（hashing 嵌入器、规则抽取器）——
+"""MCP 服务器工具测试：通过 FastMCP.call_tool 驱动，注入本地后端（hashing 嵌入器、固定合成模型响应）——
 离线、零配置。验证各工具、其 schema，以及 markdown/json 输出。"""
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ pytest.importorskip("mcp")
 
 from mnemotrace.mcp import server as S  # noqa: E402
 from mnemotrace.mcp.backends import LocalBackend, RemoteBackend  # noqa: E402
-from mnemotrace.service import MemoryService  # noqa: E402
+from tests.model_fixtures import MemoryService  # noqa: E402
 
 
 @pytest.fixture()

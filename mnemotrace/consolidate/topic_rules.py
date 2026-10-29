@@ -67,7 +67,7 @@ _DESCRIPTIONS = {
     "finance": "财务与金融", "relationships": "人际关系", "unknown": "无充分依据或主题难以确定",
 }
 _TOPIC_PROTOCOL = (
-    "\n\n附加主题协议：保留原有 JSON 数组和字段，每条额外提供一个 topic 字段。\n"
+    "\n\n附加主题协议：保留原有 JSON 结构和字段，每条长期事实（facts 数组）或会话结论额外提供一个 topic 字段；working 条目不添加主题。\n"
     + "；".join(f"{topic}={_DESCRIPTIONS[topic]}" for topic in TOPICS)
     + "。\ntopic 必须精确使用一个上述英文标识，不确定时返回 unknown。按本条断言关注的内容判断，"
       "不要仅凭主语名称或整段会话主题贴标签，不推断新的事实。"

@@ -1,4 +1,4 @@
-"""忆痕 快速上手——完整管线，零配置，无需 API key。
+"""忆痕 快速上手——使用已配置的 LLM 运行完整管线。
 
 本模块同时支撑源码检出的 ``python examples/quickstart.py`` 和安装后的
 ``mnemotrace-quickstart`` 控制台脚本。
@@ -13,8 +13,19 @@ BASE = 1_700_000_000.0  # 固定纪元，保证 demo 可复现
 
 
 def main() -> None:
-    mem = Memory()
-    # 模拟用户历史：("对话内容", 天数偏移)
+    import os
+    from .llm.providers import load_dotenv, make_llm
+    from .extraction import LLMNotConfiguredError
+
+    load_dotenv()
+    model = os.environ.get("MNEMOTRACE_LLM", "").strip()
+    if not model:
+        raise SystemExit(str(LLMNotConfiguredError()) + " Install mnemotrace-memory[llm].")
+    try:
+        mem = Memory(llm=make_llm(model))
+    except ImportError:
+        raise SystemExit('Install mnemotrace-memory[llm] to run the quickstart.') from None
+
     history = [
         ("My name is Wei and I work at Tencent.", 0),
         ("I live in Shenzhen.", 1),

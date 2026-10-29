@@ -1,13 +1,13 @@
 """架构：异步 System-2 整合（AGENTS.md Bet F），通过 MNEMOTRACE_ASYNC_CONSOLIDATION=1 开启。
-默认的同步路径保持不变（这里也验证了这一点）。完全离线（hashing 嵌入器、规则提取器、无 LLM）。"""
+默认的同步路径保持不变（这里也验证了这一点）。使用 hashing 嵌入器和固定合成模型响应离线验证。"""
 from __future__ import annotations
 
 import shutil
 import tempfile
 
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import MemoryService
 
-_SENT = "My name is Wei and I live in Shenzhen."  # 规则提取器能从这句抽出 >=1 条事实
+_SENT = "My name is Wei and I live in Shenzhen."  # 固定模型响应包含至少一条事实
 
 
 def test_consolidation_is_synchronous_by_default(monkeypatch):
@@ -36,7 +36,7 @@ def test_async_remember_returns_fast_then_flush_consolidates(monkeypatch):
         assert svc.memories("u")["counts"]["episodes"] >= 1
 
         svc.flush()  # 等 System-2 清空队列
-        # flush 之后整合已运行：规则提取器抽出了至少一条事实
+        # flush 之后整合已运行，固定模型响应中的事实已落库
         assert svc.memories("u")["counts"]["facts_live"] >= 1
 
         svc.close()

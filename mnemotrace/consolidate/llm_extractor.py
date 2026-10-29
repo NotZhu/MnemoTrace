@@ -1,13 +1,13 @@
-"""LLM 驱动的 fact 提取器。与离线 RuleExtractor 相同的 `.extract(episode) -> list[Fact]` API，
-因此整条管线（图构建、冲突消解、检索）都不变——只是提取质量提升。给 Memory 传入 `llm` 时自动启用。"""
+"""Model extraction with validated durable facts and transient working entries."""
 from __future__ import annotations
 
 import json
 import re
 
 from ..llm import LLM
+from ..extraction import ExtractionError, ExtractionResponseError, require_llm
 from ..types import Episode, Fact
-from .extractor import preference_topic_object
+from .preferences import preference_topic_object
 from .topic_rules import log_topic_inputs, resolve_topic, topic_system
 
 # 系统提示词
@@ -15,7 +15,7 @@ EXTRACT_SYSTEM = (
     "你是长期记忆系统中的精确信息提取引擎。\n"
     "从多轮对话中，提取明确陈述的、独立且具有长期价值的事实，涉及用户及其提到的人物或事物，"
     "包括身份、属性、偏好、关系、所有物、目标、计划，以及事件和发生时间。\n"
-    '仅输出 JSON 对象数组，每个对象包含 "subject"、"predicate"、"object"、"text" 四个字段。'
+    '仅输出一个 JSON 对象，包含 facts 和 working 两个数组。facts 每个对象包含 "subject"、"predicate"、"object"、"text" 四个字段。'
     "字段名保持英文；predicate 使用简短的英文 snake_case，不得翻译成中文，"
     "例如 works_at、lives_in、favorite_color、owns、married_to、born_in、visited。\n"
     "明确、完整地提取偏好，使用 likes、dislikes、prefers、avoids、allergic_to、favorite_<thing> 等关系，"
@@ -30,7 +30,7 @@ EXTRACT_SYSTEM = (
     "不要翻译。例如保留“字节跳动”，不要改为“ByteDance”。"
     "text 使用与对话相同的语言，将事实写成自然的一句话：中文对话生成中文句子，英文对话生成英文句子。"
     '例如 {"subject":"李雷","predicate":"works_at","object":"字节跳动","text":"李雷在字节跳动工作"}。\n'
-    "不要推断或编造对话中未明确陈述的事实。如果没有具有长期价值的事实，输出 []。"
+    "不要推断或编造对话中未明确陈述的事实。facts 中只保留长期事实。working 中每条包含 content（临时状态原话的忠实概括）和 kind（state、intent 或 task）。混合内容分别放入两个数组；没有记忆价值时返回 {\"facts\":[],\"working\":[]}。时间词不是临时性的充分条件：今天搬家、现在就职、确诊过敏也可能具有长期价值。不要输出过期时间或 TTL。"
 )
 
 # 用户提示词模板
@@ -50,60 +50,30 @@ def _norm_predicate(p: str) -> str:
     return p
 
 
-def _complete_objects_prefix(text: str) -> str:
-    """用已完整结束的 object 重建合法 JSON 数组，丢弃被截断的尾巴。"""
-    if not text.startswith("["):
-        return ""
-    objects: list[str] = []
-    depth = 0
-    start = -1
-    in_string = False
-    escaped = False
-    for i, ch in enumerate(text):
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0 and start >= 0:
-                objects.append(text[start:i + 1])
-                start = -1
-    return "[" + ",".join(objects) + "]" if objects else ""
+def parse_json(raw: str, expected: type):
+    """Accept a complete JSON value, optionally wrapped in fences or prose."""
+    if not isinstance(raw, str) or not raw.strip():
+        raise ExtractionResponseError()
+    starts = [i for i in (raw.find('{'), raw.find('[')) if i >= 0]
+    start = min(starts) if starts else -1
+    end = max(raw.rfind('}'), raw.rfind(']'))
+    if start < 0 or end < start:
+        raise ExtractionResponseError()
+    try:
+        data = json.loads(raw[start:end + 1])
+    except (ValueError, TypeError) as exc:
+        raise ExtractionResponseError() from exc
+    if not isinstance(data, expected):
+        raise ExtractionResponseError()
+    return data
 
 
 def parse_json_facts(raw: str) -> list[dict]:
-    """宽容的 JSON 数组解析：处理代码围栏和前后杂文。"""
-    if not raw:
-        return []
-    text = raw.strip()
-    text = re.sub(r"^```(?:json)?", "", text).strip()
-    text = re.sub(r"```$", "", text).strip()
-    start, end = text.find("["), text.rfind("]")
-    candidate = text[start : end + 1] if (start != -1 and end > start) else text
-    # 被 max_tokens 截断的回复会留下合法前缀和写了一半的最后一个 object。抢救完整 object 严格优于
-    # 丢弃整批——否则长会话正是如此：模型用满预算，提取出的所有条目全部作废。
-    salvaged = _complete_objects_prefix(candidate)
-    for attempt in (candidate, text, salvaged):
-        if not attempt:
-            continue
-        try:
-            data = json.loads(attempt)
-            if isinstance(data, list):
-                return [d for d in data if isinstance(d, dict)]
-        except json.JSONDecodeError:
-            continue
-    return []
+    """Strict array protocol used by session outcomes; [] is a successful empty result."""
+    data = parse_json(raw, list)
+    if not all(isinstance(item, dict) for item in data):
+        raise ExtractionResponseError()
+    return data
 
 
 class LLMExtractor:
@@ -134,25 +104,50 @@ class LLMExtractor:
     def _effective_system(self) -> str:
         system = self.system
         if self.instruction.strip():
-            system += ("\n\n以下是用户关于记录内容的补充要求，请遵守，但仍只输出上述 JSON 数组：\n"
+            system += ("\n\n以下是用户关于记录内容的补充要求，请遵守，但仍只输出上述 JSON 对象：\n"
                        + self.instruction.strip())
         return topic_system(system, self.llm_topics)
 
     def extract(self, ep: Episode) -> list[Fact]:
-        return self.facts_from(ep, self.raw_items(ep))
+        """Facts-only convenience API; automatic lifecycle callers must use raw_items."""
+        data = self.raw_items(ep)
+        if data["working"]:
+            raise ValueError("Use raw_items() to retain extracted working memory")
+        return self.facts_from(ep, data["facts"])
 
-    def raw_items(self, ep: Episode) -> list[dict]:
-        """只做模型调用——不触碰任何共享状态，因此可以安全并发。
-
-        从 `facts_from` 中拆出来，是因为身份注册（哪个名字是规范名）依赖顺序：放在线程池里跑时它
-        按完成顺序解析，导致同一 episode 这次产出 "Evan lives in X"、下次产出 "user lives in X"。
-        fact 集随之改变，persona prompt 随之改变，固定的提取缓存也随之失效。现在调用方并行发起
-        模型调用，而有状态的转换按时间顺序执行。
-        """
-        return parse_json_facts(
-            self.llm.complete(self.template.format(speaker=ep.speaker, content=ep.content),
-                              system=self._effective_system())
-        )
+    def raw_items(self, ep: Episode) -> dict:
+        """Stateless model call and complete validation, safe to fan out."""
+        require_llm(self.llm)
+        scope = ep.metadata.get("memory_scope", "long")
+        system = self._effective_system()
+        system += ("\n本次路由模式：" + scope +
+                   ("。仅抽取长期事实，working 必须为空。" if scope == "long" else
+                    "。同时判断长期事实与临时状态；同一段可以同时含有两者。"))
+        try:
+            raw = self.llm.complete(self.template.format(speaker=ep.speaker, content=ep.content), system=system)
+        except Exception as exc:
+            raise ExtractionError() from exc
+        data = parse_json(raw, dict)
+        for key in ("facts", "working"):
+            if not isinstance(data.get(key), list) or not all(isinstance(i, dict) for i in data[key]):
+                raise ExtractionResponseError()
+        for item in data["facts"]:
+            if not all(isinstance(item.get(k), str) and item[k].strip()
+                       for k in ("subject", "predicate", "object")):
+                raise ExtractionResponseError()
+            if not _norm_predicate(item["predicate"]):
+                raise ExtractionResponseError()
+            if "text" in item and not isinstance(item["text"], str):
+                raise ExtractionResponseError()
+        for item in data["working"]:
+            if (not isinstance(item.get("content"), str) or not item["content"].strip()
+                    or not isinstance(item.get("kind"), str)
+                    or item["kind"] not in {"state", "intent", "task"}
+                    or set(item) - {"content", "kind"}):
+                raise ExtractionResponseError()
+        if scope == "long" and data["working"]:
+            raise ExtractionResponseError()
+        return data
 
     def facts_from(self, ep: Episode, items: list[dict]) -> list[Fact]:
         """把解析出的条目转成 Fact，并注册姓名/别名。有意依赖顺序：请按时间顺序调用，
@@ -175,7 +170,7 @@ class LLMExtractor:
                 # 第一人称/用户指称，或用户声明过的任何姓名（我/用户/李雷/小雷）->
                 # 归一到同一个规范 subject，使用户自己的所有 fact 共享它（否则会分散在多个
                 # subject 上，档案 / 冲突消解就无法识别它们属于用户本人）。
-                subj = self.self_of(ep.user_id) if self.self_of(ep.user_id) != ep.user_id else subj
+                subj = self.self_of(ep.user_id)
             topic, topic_source = resolve_topic(
                 pred, preference_topic_object(pred, obj, self.preference_object_normalization),
                 item.get("topic") if self.llm_topics else None)

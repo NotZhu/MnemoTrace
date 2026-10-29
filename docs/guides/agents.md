@@ -73,7 +73,7 @@ MCP 的 `--http` 是另一种传输方式，默认绑定 127.0.0.1:8765，路径
 
 `mnemotrace-agent-setup` 可输出客户端片段，并可按选项安装 Codex 配置、`.mcp.json` 或受管的记忆策略区块。`mnemotrace-agent-bootstrap` 提供组合安装入口；先用 `--dry-run` 查看将修改的位置。受管区块只承载产品接入说明，不复制本仓库的开发规则。
 
-使用 `mnemotrace-agent-doctor --help` 选择客户端或远程目标。诊断会检查所选 Python、依赖、配置和服务接线；诊断输出不能替代实际的写入、检索与收尾验证。
+使用 `mnemotrace-agent-doctor --help` 选择客户端或远程目标。诊断会实际验证所选 Python 的显式事实、工作记忆、检索和收尾链路。LLM 抽取配置单独报告为警告：未配置时给出配置提示，已配置时说明尚未验证真实调用；doctor 不自动调用付费模型。
 
 源码中的[单 Agent 生命周期示例](../../examples/cross_agent_lifecycle.py)和[跨 Agent 交接示例](../../examples/cross_agent_handoff.py)可用 `--local` 在临时本地库中演示流程；显式 `--data-dir` 会保留运行数据。真实用户数据请使用自己管理的目录，不要复制进仓库。
 

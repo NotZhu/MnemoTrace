@@ -2,7 +2,11 @@ import pytest
 
 from eval import ablate_features
 from eval.bench import SYSTEMS, mnemotrace_config
-from eval.ablate_features import run_ablation
+from tests.model_fixtures import RecordedLLM
+
+
+def run_ablation():
+    return ablate_features.run_ablation(llm=RecordedLLM())
 
 
 def test_mnemotrace_config_applies_algorithm_ablation_flags():

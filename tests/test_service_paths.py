@@ -6,10 +6,10 @@ import queue
 import shutil
 from pathlib import Path
 
-from mnemotrace import Memory
+from tests.model_fixtures import Memory
 from mnemotrace.embed import HashingEmbedder
 from mnemotrace.llm.providers import make_embedder
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import MemoryService
 from mnemotrace.types import Entity, Relation
 
 

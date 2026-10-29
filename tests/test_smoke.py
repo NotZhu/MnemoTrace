@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from mnemotrace.config import Config
-from mnemotrace import Memory
+from tests.model_fixtures import Memory
 from mnemotrace.embed import HashingEmbedder
 from mnemotrace.types import Fact
 from mnemotrace.util import DAY
@@ -397,7 +397,7 @@ def test_explicit_preference_does_not_use_polluted_name_guess():
 
     facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
     assert ("pretty", "loves", "retro-style diners") not in facts
-    assert ("u1", "likes", "jazz") in facts
+    assert ("Wei", "likes", "jazz") in facts
     assert mem.engine.self_name("u1") == "Wei"
 
 

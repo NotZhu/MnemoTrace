@@ -3,12 +3,24 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 import subprocess
+import sys
 import urllib.error
 
 import pytest
 
 from mnemotrace import agent_doctor as D
 from mnemotrace.types import Fact
+
+
+@pytest.mark.parametrize('probe', [D._python_probe, D._stdio_probe])
+def test_real_offline_lifecycle_probe(probe, tmp_path, monkeypatch):
+    monkeypatch.setenv('MNEMOTRACE_LLM', '')
+    monkeypatch.setenv('PYTHONDONTWRITEBYTECODE', '1')
+    monkeypatch.setenv('TEMP', str(tmp_path))
+    monkeypatch.setenv('TMP', str(tmp_path))
+    result = probe(sys.executable)
+    assert result['status'] == 'ok', result
+    assert result['data']['remembered'] and result['data']['recalled']
 
 
 def safe_snapshot():
@@ -96,7 +108,7 @@ def test_diagnose_codex_success(monkeypatch):
     report = D.diagnose(client="codex", python_cmd="/opt/mnemotrace/bin/python")
 
     assert report["ok"] is True
-    assert report["summary"] == {"ok": 4, "warn": 0, "fail": 0}
+    assert report["summary"] == {"ok": 4, "warn": 1, "fail": 0}
     assert report["checks"][0]["data"]["facts_live"] == 1
     assert report["checks"][0]["data"]["recalled_source_session"] is True
     assert "doctor:source:smoke" in report["checks"][0]["detail"]
@@ -171,6 +183,8 @@ def test_diagnose_remote_http_lifecycle_success(monkeypatch):
     def fake_http(api_url, api_key, path, body, timeout=30.0):
         nonlocal source_session
         assert api_key == "sk-secret"
+        if path == "/v1/facts":
+            return {"ok": True}
         if path == "/v1/remember":
             source_session = body["session_id"]
             return {"ok": True}
@@ -194,7 +208,7 @@ def test_diagnose_remote_http_lifecycle_success(monkeypatch):
             assert params == {"q": source_session, "limit": 10, "offset": 0}
             return {
                 "ok": True,
-                "sessions": [{"id": source_session, "facts_added": 1}],
+                "sessions": [{"id": source_session, "facts_added": 1, "episodes": 1}],
                 "page": {"total": 1},
             }
         assert path == "/v1/sessions/report"
@@ -202,6 +216,7 @@ def test_diagnose_remote_http_lifecycle_success(monkeypatch):
         return {
             "ok": True,
             "session_id": source_session,
+            "episodes": 1,
             "facts_added": 1,
             "facts": [{
                 "text": "Project decision: MnemoTrace remote doctor verifies cross-agent handoff.",
@@ -220,7 +235,7 @@ def test_diagnose_remote_http_lifecycle_success(monkeypatch):
     )
 
     assert report["ok"] is True
-    assert report["summary"] == {"ok": 3, "warn": 0, "fail": 0}
+    assert report["summary"] == {"ok": 3, "warn": 1, "fail": 0}
     assert report["checks"][2]["name"] == "Remote HTTP lifecycle"
     assert report["checks"][2]["data"]["recalled_source_session"] is True
     assert report["checks"][2]["data"]["reported"] is True
@@ -286,6 +301,8 @@ def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
 
     def fake_http(api_url, api_key, path, body, timeout=30.0):
         nonlocal source_session
+        if path == "/v1/facts":
+            return {"ok": True}
         if path == "/v1/remember":
             source_session = body["session_id"]
             return {"ok": True}
@@ -308,7 +325,7 @@ def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
             assert params == {"q": source_session, "limit": 10, "offset": 0}
             return {
                 "ok": True,
-                "sessions": [{"id": source_session, "facts_added": 1}],
+                "sessions": [{"id": source_session, "facts_added": 1, "episodes": 1}],
                 "page": {"total": 1},
             }
         assert path == "/v1/sessions/report"
@@ -316,6 +333,7 @@ def test_diagnose_validates_codex_config(monkeypatch, tmp_path):
         return {
             "ok": True,
             "session_id": source_session,
+            "episodes": 1,
             "facts_added": 1,
             "facts": [{
                 "text": "Project decision: MnemoTrace remote doctor verifies cross-agent handoff.",

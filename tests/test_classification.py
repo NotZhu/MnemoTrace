@@ -5,7 +5,7 @@ from dataclasses import asdict
 
 import pytest
 
-from mnemotrace import Memory
+from tests.model_fixtures import Memory
 from mnemotrace.consolidate.classify import classify, classify_fact
 from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY, extract_outcomes
 from mnemotrace.consolidate.structured import build_structured_profile

@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from mnemotrace import Config, Memory
+from mnemotrace import Config
+
+from tests.model_fixtures import Memory
 from mnemotrace.store.memory_store import InMemoryVectorStore
 
 

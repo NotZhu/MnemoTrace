@@ -147,7 +147,7 @@ export class MnemoTraceClient {
    */
   remember(
     content: string,
-    options: { sessionId?: string; scope?: string; space?: string } = {},
+    options: { sessionId?: string; scope?: 'auto' | 'long' | 'working'; space?: string } = {},
   ): Promise<RememberResult> {
     return this.post<RememberResult>('/v1/remember', {
       content,

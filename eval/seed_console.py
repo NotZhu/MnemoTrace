@@ -6,14 +6,12 @@
 MNEMOTRACE_DATA_DIR，保留目录名且拒绝覆盖；用相同 embedder 启动服务。输出冲突会报错，
 失败后换新的 --out 目录重新生成，不自动清理或导入旧输出。完整步骤见 eval/README.md。
 
-混合抽取（成本与质量的折中）：大头用免费的离线规则抽取器；有代表性的子集——每个类别的前
-`--featured-per-cat` 个问题——用配置好的 LLM 抽取高质量 fact。其余一切（episode、L2 摘要、
-时间线、图、检索）无论哪种方式都会填充。
+所有自然语言事实均使用显式配置的 LLM 抽取；不提供规则抽取回退。
 
 从仓库根目录运行（以便读到带 provider key 的 .env）：
   python eval/seed_console.py \
       --data ~/.cache/huggingface/hub/datasets--xiaowu0162--longmemeval/snapshots/*/longmemeval_s \
-      --out /tmp/console_stores --featured-per-cat 3 --llm volcano:doubao-seed-1-6-flash-250615
+      --out /tmp/console_stores --llm volcano:doubao-seed-1-6-flash-250615
 """
 from __future__ import annotations
 
@@ -80,18 +78,6 @@ def ingest(mem: Memory, item: dict, user_id: str) -> None:
         ep.metadata["date"] = dstr or fmt_date(event_time)
 
 
-def pick_featured(items: list[dict], per_cat: int) -> set[int]:
-    """每个类别的前 `per_cat` 个问题——覆盖 6 种任务类型的有代表性样本。"""
-    seen: dict[str, int] = {}
-    featured: set[int] = set()
-    for i, it in enumerate(items):
-        cat = it.get("question_type", "?")
-        if seen.get(cat, 0) < per_cat:
-            seen[cat] = seen.get(cat, 0) + 1
-            featured.add(i)
-    return featured
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="path to longmemeval_s json")
@@ -102,7 +88,6 @@ def main() -> None:
     )
     ap.add_argument("--embedder", default="bge-small")
     ap.add_argument("--llm", default="volcano:doubao-seed-1-6-flash-250615")
-    ap.add_argument("--featured-per-cat", type=int, default=3)
     ap.add_argument("--limit", type=int, default=0, help="0 = all")
     ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--device", default=None, help="embedder device: mps | cpu | cuda (default auto)")
@@ -113,6 +98,9 @@ def main() -> None:
     from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm
 
     load_dotenv()
+    args.llm = args.llm or os.environ.get("MNEMOTRACE_LLM", "")
+    if not args.llm:
+        ap.error("configure --llm or MNEMOTRACE_LLM before generating any output")
     args.out = os.path.abspath(os.path.expanduser(args.out))
 
     with open(os.path.expanduser(args.data), encoding="utf-8") as fh:
@@ -154,21 +142,21 @@ def main() -> None:
         ap.error(f"output already exists: {exc.filename}; use a fresh --out directory")
 
     embedder = make_embedder(args.embedder, device=args.device, batch_size=args.batch)
-    llm = make_llm(args.llm) if args.llm else None
-    featured = pick_featured(items, args.featured_per_cat) if llm else set()
-    print(f"{len(items)} questions | featured (LLM): {len(featured)} | offline: {len(items) - len(featured)}")
+    llm = make_llm(args.llm)
+    print(f"{len(items)} questions | explicit LLM extraction")
 
     manifest = []
     t0 = time.time()
     for i, item, namespace, path in selected:
-        is_feat = i in featured
-        mem = Memory(embedder=embedder, llm=(llm if is_feat else None))
+        mem = Memory(embedder=embedder, llm=llm)
         ingest(mem, item, user_id=namespace)
+        extraction_error = None
         try:
             mem.consolidate()
             mem.summarize_episodes(list(mem.episodes_doc.values()))
         except Exception as exc:  # noqa: BLE001 -- 绝不让一个坏条目中断整个种子流程
-            print(f"  [{namespace}] consolidate degraded: {type(exc).__name__}: {exc}")
+            extraction_error = type(exc).__name__
+            print(f"  [{namespace}] extraction failed: {extraction_error}; raw records saved")
         n_live = sum(1 for f in mem.fact_store.values() if f.is_live())
         mem.save(path)
         manifest.append({
@@ -179,18 +167,21 @@ def main() -> None:
             "answer": str(item.get("answer", "")),
             "sessions": len(sessions_of(item)),
             "facts_live": n_live,
-            "extractor": "llm" if is_feat else "offline",
+            "extractor": "llm",
+            "extraction_error": extraction_error,
         })
         if (i + 1) % 10 == 0 or i + 1 == len(items):
             rate = (i + 1 - args.offset) / max(1e-6, time.time() - t0)
             print(f"  {i + 1}/{len(items)}  ({rate:.1f}/s)  last={namespace} facts={n_live} "
-                  f"{'★llm' if is_feat else ''}")
+                  "LLM")
 
     # 分片时每个 worker 只写自己的清单，不生成合并清单或 Markdown。
     with open(os.path.join(args.out, mfile), "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, ensure_ascii=False, indent=2)
     if shard_n is not None:
         print(f"shard {shard_i}/{shard_n} done in {time.time() - t0:.0f}s -> {mfile} ({len(manifest)} users)")
+        if any(row["extraction_error"] for row in manifest):
+            raise SystemExit(1)
         return
     # 人类可读的表格
     lines = ["# MnemoTrace console seed — LongMemEval_S\n",
@@ -209,6 +200,9 @@ def main() -> None:
     with open(os.path.join(args.out, "manifest.md"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))
     print(f"done in {time.time() - t0:.0f}s -> {args.out} (manifest.json + manifest.md)")
+
+    if any(row["extraction_error"] for row in manifest):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -38,9 +38,11 @@ export default function Dashboard() {
     remember.mutate(content, {
       onSuccess: (r) => {
         setText('')
-        if (r.scope === 'working') toast.info(t.dashboard.toastWorking)
-        else if (r.degraded) toast.info(t.common.toastDegraded)
-        else toast.success(t.common.toastRemembered(r.extracted))
+        if (r.queued) toast.info('原文已保存，正在等待模型抽取')
+        else if (r.scope === 'none') toast.info('原文已保存，没有需要长期或临时记忆的内容')
+        else if (r.scope === 'mixed') toast.success('已保存长期事实和临时状态')
+        else if (r.scope === 'working') toast.info(t.dashboard.toastWorking)
+        else toast.success(t.common.toastRemembered(r.extracted ?? 0))
       },
       onError: (e) => toast.error(String((e as Error).message)),
     })

@@ -1,6 +1,6 @@
 """CLI：把外部聊天/历史记录导出导入 忆痕。
 
-  # 本地、文件存储的 memory（零配置 —— hashing embedder + 规则提取器）：
+  # 本地文件存储（事实抽取需要 --llm 配置）：
   python -m mnemotrace.connectors --file conversations.json --namespace me
 
   # 更高质量的本地导入（真实嵌入 / LLM 提取器；需要可选依赖 + key）：
@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import urllib.request
+import urllib.error
 
 from . import parse, sniff
 
@@ -52,7 +53,7 @@ def _import_local(args, sessions) -> dict:
     from ..service import MemoryService
 
     # 与 HTTP/MCP 共用摘要路径和完整读-改-存锁；不能另行选择旧账号名目录。
-    # CLI 的默认嵌入/抽取仍明确使用离线实现，真实后端由命令行参数选择。
+    # 默认使用 hashing 嵌入；事实抽取需要显式选择模型。
     service = MemoryService(data_dir=args.data_dir, embedder_name=args.embedder or "hashing",
                             llm_name=args.llm or "")
     try:
@@ -77,7 +78,7 @@ def main() -> None:
     ap.add_argument("--api-url", help="push to a running MnemoTrace server instead of a local store")
     ap.add_argument("--key", default=os.environ.get("MNEMOTRACE_API_KEY", ""), help="Bearer key for --api-url")
     ap.add_argument("--embedder", help="local mode: real embedder (e.g. bge-small); default hashing")
-    ap.add_argument("--llm", help="local mode: LLM for fact extraction (e.g. deepseek); default rule-based")
+    ap.add_argument("--llm", help="local mode: LLM for fact extraction (e.g. deepseek); required unless --no-consolidate is used")
     ap.add_argument("--no-consolidate", action="store_true", help="skip fact extraction (raw episodes only)")
     ap.add_argument("--no-summarize", action="store_true", help="skip L2 session summaries")
     ap.add_argument("--dry-run", action="store_true", help="parse + report only; don't ingest")
@@ -98,11 +99,32 @@ def main() -> None:
         print("nothing to import.", file=sys.stderr)
         return
 
-    if args.api_url:
-        stats = _post_remote(args.api_url, args.key, sessions,
-                             not args.no_consolidate, not args.no_summarize)
-    else:
-        stats = _import_local(args, sessions)
+    from ..extraction import ExtractionError
+
+    try:
+        if args.api_url:
+            stats = _post_remote(args.api_url, args.key, sessions,
+                                 not args.no_consolidate, not args.no_summarize)
+        else:
+            stats = _import_local(args, sessions)
+    except ExtractionError as exc:
+        ap.exit(1, json.dumps(exc.detail(), ensure_ascii=False) + "\n")
+    except ImportError:
+        ap.exit(1, 'Install mnemotrace-memory[llm] for model extraction.\n')
+    except urllib.error.HTTPError as exc:
+        from ..extraction import LLMNotConfiguredError, ExtractionResponseError
+        errors = {e.code: e for e in (ExtractionError, LLMNotConfiguredError, ExtractionResponseError)}
+        try:
+            detail = json.load(exc).get("detail", {})
+            error_type = errors.get(detail.get("code")) if isinstance(detail, dict) else None
+            if error_type is not None:
+                ids = detail.get("episode_ids", [])
+                error = error_type(stored_raw=detail.get("stored_raw") is True,
+                                   episode_ids=ids if isinstance(ids, list) and all(isinstance(i, str) for i in ids) else [])
+                ap.exit(1, json.dumps(error.detail(), ensure_ascii=False) + "\n")
+        except (ValueError, AttributeError):
+            pass
+        ap.exit(1, f'Import failed: HTTP {exc.code}. Check server extraction configuration and session status.\n')
     print(json.dumps(stats, ensure_ascii=False))
 
 
