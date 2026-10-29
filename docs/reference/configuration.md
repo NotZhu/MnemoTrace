@@ -6,13 +6,15 @@
 
 `from mnemotrace import Config`，再传给 `Memory(config=...)`。完整字段和精确默认值在 [config.py](../../mnemotrace/config.py) 维护。
 
+创建 `Config` 时请使用关键字参数，例如 `Config(top_k=5)`；字段顺序可能随配置分组调整。
+
 | 参数组 | 主要字段与默认行为 | 影响 |
 | --- | --- | --- |
 | 存储 | storage=memory、data_path=None | 内置 LanceDB 需要非空数据路径；不代替显式 open/save |
 | 嵌入 | embed_dim=256 | 默认 HashingEmbedder 维度；显式 embedder 有自己的身份与维度 |
 | 融合 | w_sem=1.0、w_lex=0.6、w_graph=0.8、w_rec=0.3、w_sal=0.25 | 不同检索信号的配置权重 |
 | 类型先验 | w_type_preference=1.25、w_type_identity=1.15 | 在相关候选中调整优先级 |
-| 候选与输出 | candidate_k=24、top_k=5、rrf_k=60 | 检索候选、排序与返回规模 |
+| 候选与输出 | top_k=5、rrf_k=60；candidate_k=24 当前未使用 | 检索返回规模与排序融合 |
 | 扩展候选 | ann_candidates=False、ann_pool=200 | 可选有界向量候选路径，可能改变召回覆盖 |
 | 时间与图 | recency_tau_days=45、max_hops=2 | 时近性先验和图遍历 |
 | 热层与拒答 | max_hot_facts=10000、abstain_threshold=0.45 | 工作集容量和低证据回退 |

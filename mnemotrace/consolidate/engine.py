@@ -1,5 +1,7 @@
-"""System-2 编排：处理待整合的 episode -> 提取 -> 消解冲突 -> 存储 fact + 构建双时间轴图。
-在关键路径之外运行（生产环境中异步 / 休眠期执行）。"""
+"""System-2 记忆整合：从事件中抽取事实、处理冲突并更新事实存储和图关系。
+
+整合由调用方触发，可同步执行，也可由服务配置为异步执行。
+"""
 from __future__ import annotations
 
 import math
@@ -22,12 +24,12 @@ from .extractor import (
     preference_topic_object,
 )
 from .graph_builder import GraphBuilder
-from .summarizer import ProfileBuilder
 
 _PROCEDURAL_EXTRACTED_PREDS = {"procedure", "how_to", "routine"}
 
 
 class ConsolidationEngine:
+    """按事件时间抽取、消解并存储事实，同时维护图关系。"""
     def __init__(
         self,
         fact_store: VectorStore,
@@ -36,6 +38,15 @@ class ConsolidationEngine:
         config: Config,
         llm: Optional[LLM] = None,
     ) -> None:
+        """初始化事件整合引擎。
+
+        Args:
+            fact_store: 事实存储。
+            graph: 图存储。
+            embedder: 文本嵌入器。
+            config: 配置。
+            llm: LLM。
+        """
         self.fact_store = fact_store
         self.graph = graph
         self.embedder = embedder
@@ -43,43 +54,51 @@ class ConsolidationEngine:
         self.llm = llm
         if llm is not None:
             from .llm_extractor import LLMExtractor
-
+            # 初始化 LLM 事实抽取器
             self.extractor = LLMExtractor(llm, llm_topics=config.llm_topics,
                                           preference_object_normalization=config.preference_object_normalization)
         else:
+            # 初始化规则抽取器
             self.extractor = RuleExtractor(
                 config.explicit_preference_extraction,
                 config.preference_object_filter,
                 config.preference_object_normalization,
                 config.preference_reversal_extraction,
             )
+        # 初始化图构建器
         self.graph_builder = GraphBuilder(graph, embedder)
-        # 语义冲突检测需要真实的（语义）embedder；离线 HashingEmbedder 产出的余弦值没有意义，
-        # 所以在该场景下关闭它 → 只走 exact-slot，完全确定。
-        from ..embed import HashingEmbedder
 
+        # 哈希向量不适合判断语义冲突；使用 HashingEmbedder 时关闭语义路径，保留其他冲突规则。
+        from ..embed import HashingEmbedder
         sem_embedder = None if isinstance(embedder, HashingEmbedder) else embedder
-        self.conflict = ConflictResolver(
-            sem_embedder, config.conflict_sim_threshold,
-            llm=llm if config.conflict_llm_escalation else None)
-        self.profiles = ProfileBuilder()
+        # 初始化冲突解析器
+        self.conflict = ConflictResolver(sem_embedder, config.conflict_sim_threshold,
+                                        llm=llm if config.conflict_llm_escalation else None)
 
     def consolidate(self, episodes: list[Episode]) -> dict[str, int]:
+        """执行事实整合。
+
+        Args:
+            episodes: 要整合的 episode 列表。
+        Returns:
+            dict[str, int]: 整合统计信息。
+        """
+        # 初始化统计信息，包括新增事实数、重复事实数和被作废的事实数
         stats = {"facts_added": 0, "duplicates": 0, "invalidated": 0}
+        # 按事件时间排序，确保按顺序处理
         chrono = sorted(episodes, key=lambda e: (e.event_time, e.ingested_at))
 
-        # Step 1: 并行提取所有 episode 的 fact——每次提取是独立的 LLM 调用（无共享状态）。
-        # 并发上限 4：当多个 bench worker 同时调用时，8 路并发意味着约 24 个并发的 relay 调用
-        # → 触发限流/退避，整体反而更慢。4 能让 relay 保持健康，同时把 8 次串行等待压缩到约 2 轮。
-        # 默认上限为 4（多个 bench worker 并发时保持 relay 健康）；像向 console 灌入整个数据集
-        # 这类一次性批量任务，可通过 MNEMOTRACE_EXTRACT_WORKERS 调高——那时只有这一个调用方，
-        # relay 扛得住额外的扇出。
+        # Step 1: 并行提取所有 episode 的 fact——每次提取是独立的 LLM 调用，可安全并发。
+        # 并发数默认 4：太高会让模型 API 被打满而触发限流，重试反而更慢；
+        # 4 既能保持顺畅，又把 8 个待处理项压到约 2 轮跑完。
+        # 批量大导入（前方只有这一个调用方时）可用 MNEMOTRACE_EXTRACT_WORKERS 调高。
         import os
+        # 并发数上限
         _xw = int(os.environ.get("MNEMOTRACE_EXTRACT_WORKERS", "4"))
+        # 初始化事实存储
         ep_facts: dict[str, list] = {}
-        # 提取器支持时走两阶段：模型调用先扇出（无状态），随后按时间顺序把结果转成 Fact。
-        # 身份注册在第二阶段，依赖顺序——放在线程池里做会让规范名取决于哪个调用先返回，导致
-        # 同一 episode 这次产出 "Evan ..."、下次产出 "user ..."，相同运行之间悄然改变 fact 集。
+        # 提取器支持时，先并发调用模型，再按事件时间顺序生成事实并注册用户身份。
+        # 避免模型返回顺序改变规范名，使同一输入的事实主体不稳定。
         two_phase = hasattr(self.extractor, "raw_items") and hasattr(self.extractor, "facts_from")
         if len(chrono) > 1 and two_phase:
             raw: dict[str, list] = {}
@@ -176,8 +195,3 @@ class ConsolidationEngine:
 
     def self_name(self, user_id: str) -> str:
         return self.extractor.self_of(user_id)
-
-    def profile(self, user_id: str) -> dict[str, str]:
-        subject = self.self_name(user_id)
-        live = [f for f in self.fact_store.values() if f.user_id == user_id and f.is_live()]
-        return self.profiles.build(subject, live)

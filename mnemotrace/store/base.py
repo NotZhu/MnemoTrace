@@ -11,7 +11,7 @@ Predicate = Callable[[Any], bool]
 
 
 class VectorStore(ABC):
-    """把 key 映射到 (vector, payload)，并支持带可选过滤条件的最近邻检索。"""
+    """向量存储接口。支持 key 映射到 (vector, payload)，并支持带可选过滤条件的最近邻检索。"""
 
     @abstractmethod
     def upsert(self, key: str, vector: list[float], payload: Any) -> None: ...
@@ -48,7 +48,7 @@ class DocStore(ABC):
 
 
 class GraphStore(ABC):
-    """双时间轴属性图：entity 节点 + 带时间戳的 relation 边。"""
+    """图存储接口：管理实体节点和关系边，支持按有效时间查询关系。"""
 
     @abstractmethod
     def upsert_entity(self, entity: Entity) -> Entity:

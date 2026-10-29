@@ -65,6 +65,7 @@ class PlanResult:
 
 
 class MultiHopPlanner:
+    """多跳查询规划器"""
     def __init__(
         self,
         graph: GraphStore,
@@ -73,12 +74,21 @@ class MultiHopPlanner:
         extra_fact_stores: Optional[list[VectorStore]] = None,
         llm=None,
     ) -> None:
+        """初始化多跳查询规划器。
+
+        Args:
+            graph: 图存储。
+            fact_store: 事实存储。
+            config: 配置。
+            extra_fact_stores: 额外的事实存储。
+            llm: LLM。
+        """
         self.graph = graph
         self.fact_store = fact_store
+        # 事实存储列表,包含主存储和额外存储
         self.fact_stores = [fact_store] + list(extra_fact_stores or [])
         self.config = config
-        # 可开关,让 LLM 分解像其他读路径特性一样可消融:它会在读路径上增加一次 LLM 调用,
-        # 因此其成本/延迟/精度的取舍必须可度量,而不是隐式的。
+        # 启用时可调用 LLM 分解查询，增加延迟和费用；关闭或模型结果不可用时使用关键词规则。
         self.llm = llm if getattr(config, "planner_llm_decomposition", True) else None
 
     def _fact(self, fact_id: str) -> Optional[Fact]:

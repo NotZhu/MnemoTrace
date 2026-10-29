@@ -161,14 +161,23 @@ def _is_excluded_mention(query_l: str, name: str) -> bool:
 
 
 class HybridRetriever:
+    """混合检索器:融合语义、词法、图关系、显著度和新近度的检索。"""
     def __init__(self, fact_store: VectorStore, graph: GraphStore, embedder: Embedder, config: Config) -> None:
+        """初始化混合检索器。
+
+        Args:
+            fact_store: 事实存储。
+            graph: 图存储。
+            embedder: 嵌入器。
+            config: 配置。
+        """
         self.fact_store = fact_store
         self.graph = graph
         self.embedder = embedder
         self.config = config
-        # 类型加权需要真实的语义信号;离线 HashingEmbedder 的余弦值是噪声,所以在那里关闭该功能
-        # (与 conflict resolver 相同的模式)——保证零依赖 demo 的确定性。
+        # 哈希相似度不适合语义类型加权；使用 HashingEmbedder 时关闭该加权。
         from ..embed import HashingEmbedder
+        # 是否使用语义加权
         self._semantic = not isinstance(embedder, HashingEmbedder)
 
     def query_entity_ids(self, query: str, user_id: str) -> set[str]:

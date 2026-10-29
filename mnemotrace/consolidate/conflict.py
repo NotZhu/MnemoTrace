@@ -114,15 +114,19 @@ _ADJUDICATE_SYSTEM = (
 
 
 class ConflictResolver:
+    """按同槽位规则及可选的语义相似度判断事实是否取代旧事实。"""
     def __init__(self, embedder: Optional[Embedder] = None, sim_threshold: float = 0.80,
                  llm=None, ambiguous_band: float = 0.12) -> None:
-        # embedder 只用于语义路径；为 None 时（离线/hashing）只有 exact-slot 生效，
-        # 保证零依赖 demo 和测试完全确定。
+        """初始化冲突解析器。
+
+        Args:
+            embedder: 用于语义相似度计算的嵌入器。
+            sim_threshold: 语义相似度阈值。
+            llm: 可选的大型语言模型裁决器。
+            ambiguous_band: 模糊区间宽度。
+        """
         self.embedder = embedder
         self.sim_threshold = sim_threshold
-        # 可选的 LLM 裁决器（AGENTS.md 「IV. 不允许静默损坏记忆」的歧义裁决）：对刚好低于自动取代阈值的模糊区间，询问 LLM
-        # 新 fact 是否取代旧 fact。未传入 llm 时关闭——常见路径保持无 LLM（Bet C），
-        # 只有真正边界的情况才升级。
         self.llm = llm
         self.ambiguous_band = ambiguous_band
 

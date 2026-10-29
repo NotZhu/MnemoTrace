@@ -1,4 +1,4 @@
-"""把原子 Fact 投影进双时间轴知识图谱（实体 + 带时间戳的关系边）。"""
+"""根据事实创建图中的实体和关系，并维护关系的有效时间。"""
 from __future__ import annotations
 
 from ..embed import Embedder
@@ -17,6 +17,12 @@ _TEXTUAL_OBJECT_PREDICATES = {
 
 class GraphBuilder:
     def __init__(self, graph: GraphStore, embedder: Embedder) -> None:
+        """初始化图构建器。
+
+        Args:
+            graph: 图存储。
+            embedder: 文本嵌入器。
+        """
         self.graph = graph
         self.embedder = embedder
 

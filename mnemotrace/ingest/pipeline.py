@@ -1,5 +1,7 @@
-"""System-1：热写入路径。关键路径上没有 LLM —— 追加无损 episode、标记归属、计算轻量嵌入，
-然后交给异步整合。目标：感知延迟 50ms 以内。"""
+"""System-1 事件写入：保存原始内容及归属信息，并生成或接收文本向量。
+
+事件标记为待整合；整合由调用方触发，可采用同步或异步方式。
+"""
 from __future__ import annotations
 
 from typing import Optional
@@ -11,12 +13,20 @@ from ..util import now
 
 
 class Ingestor:
+    """事件写入器。"""
     def __init__(
         self,
         episodes_doc: DocStore,
         episodes_vec: VectorStore,
         embedder: Embedder,
     ) -> None:
+        """初始化事件写入器。
+
+        Args:
+            episodes_doc: 事件文档存储。
+            episodes_vec: 事件向量存储。
+            embedder: 文本嵌入器。
+        """
         self.episodes_doc = episodes_doc
         self.episodes_vec = episodes_vec
         self.embedder = embedder
@@ -30,6 +40,18 @@ class Ingestor:
         event_time: Optional[float] = None,
         embedding: Optional[list] = None,
     ) -> Episode:
+        """写入一条事件（episode）。
+
+        Args:
+            content: 事件内容。
+            user_id: 用户 ID。
+            session_id: 会话 ID。
+            speaker: 说话者。
+            event_time: 事件发生时间（世界时间）。
+            embedding: 事件内容的预计算嵌入向量。
+        Returns:
+            写入的 Episode 对象。
+        """
         ep = Episode(
             content=content,
             user_id=user_id,
@@ -37,14 +59,13 @@ class Ingestor:
             speaker=speaker,
             event_time=event_time if event_time is not None else now(),
         )
-        # 接受预计算的 embedding，调用方就能在一次 model.encode 里批量嵌入多个 episode，
-        # 比逐条 embed 快 10 倍以上（一次性写入整段会话 haystack 时尤为明显）。
+        # 优先使用预计算的向量；未提供时由嵌入器处理原文。
         ep.embedding = embedding if embedding is not None else self.embedder.embed(content)
-        # 只追加日志 + episodic 向量索引；consolidated=False 意味着进入 System-2 的处理队列。
-        self.episodes_doc.put(ep.id, ep)
-        self.episodes_vec.upsert(ep.id, ep.embedding, ep)
+        # 新事件默认为待整合，后续由调用方触发 System-2 处理。
+        self.episodes_doc.put(ep.id, ep)  # 保存原始事件
+        self.episodes_vec.upsert(ep.id, ep.embedding, ep)  # 保存向量及关联事件，供检索
         return ep
 
     def pending(self) -> list[Episode]:
-        """尚未整合的 episode（即 System-2 的工作队列）。"""
+        """返回尚未整合的 episode 列表。"""
         return [ep for ep in self.episodes_doc.values() if not ep.consolidated]

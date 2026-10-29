@@ -102,40 +102,45 @@ class Fact:
 
 @dataclass
 class Entity:
-    """语义图中的节点。参考实现按 (user_id, 小写名) 解析。"""
-
+    """语义图中的节点。身份键是 (user_id, name)，不区分大小写。"""
+    # 实体名
     name: str
+    # 实体类型
     type: str = "entity"
+    # 所属用户
     user_id: str = "default"
+    # 实体向量
     embedding: Optional[list[float]] = None
+    # 实体别名
     aliases: list[str] = field(default_factory=list)
+    # 实体 id
     id: str = field(default_factory=lambda: gen_id("en"))
 
 
 @dataclass
 class Relation:
     """两个实体之间的有向双时间轴边，由一个 Fact 支撑。"""
-
+    # 主体 id
     subject_id: str
+    # 谓词
     predicate: str
+    # 宾体 id
     object_id: str
+    # 支撑边的 fact id
     fact_id: str
+    # 有效的时间点
     valid_at: float = field(default_factory=now)
+    # 无效的时间点
     invalid_at: Optional[float] = None
+    # 边 id
     id: str = field(default_factory=lambda: gen_id("rel"))
 
 
 @dataclass
 class WorkingMemory:
-    """短期工作记忆（AGENTS.md 「架构概览与代码导航」 typed memory）：绝不能污染持久长期存储的瞬态状态。
-    绑定到 session 和/或硬性 TTL，在所属 session 结束、到期或被消费时清除。
-    例如："今天嗓子疼"（瞬态状态）、"提醒我买牛奶"（意图）、单次行程中的同行者信息。
-    与 `working_set`（查询的瞬态注意力集合）不同——这是一个持久化、有生命周期管理的层级。
+    """临时状态，可随快照持久化；会话清理、到期或消费后移除。
 
-    生命周期（通用记忆卫生规则——瞬态上下文不得进入长期存储）：
-      * session-scoped  -> 存活到 clear_session()（例如一次新对话 / 重启）
-      * ttl/expires_at  -> 在墙钟时间硬性过期（例如带日期的提醒、2 小时回退）
-      * consumed        -> 完成使命后软清除
+    与查询时的 working_set 不同，工作记忆有独立生命周期，不作为长期事实保存。
     """
 
     content: str
@@ -145,7 +150,7 @@ class WorkingMemory:
     event_time: float = field(default_factory=now)
     created_at: float = field(default_factory=now)
     expires_at: Optional[float] = None  # 硬性墙钟过期时间；None => 仅随 session 存活
-    consumed: bool = False  # 被使用后软清除
+    consumed: bool = False  # 是否已被消费
     embedding: Optional[list[float]] = None
     id: str = field(default_factory=lambda: gen_id("wm"))
     metadata: dict = field(default_factory=dict)
@@ -163,19 +168,20 @@ class WorkingMemory:
 
 @dataclass
 class Conflict:
-    """用户两条 fact 之间的可疑冲突，呈现给用户确认而非自动解决（这是廉价规则覆盖不了的
-    模糊尾部的安全路径：System-2 中的 LLM 只负责检测，由用户裁决）。`older`/`newer` 按
-    valid time 排序；解决时保留一方并取代另一方。绝不自动应用——杜绝悄悄的损坏。"""
+    """两条事实之间的疑似冲突，按有效时间区分较早和较晚的事实。
 
-    older: str  # valid_at 较早的 fact id（疑似过时方）
-    newer: str  # valid_at 较晚的 fact id（疑似现行方）
-    text_older: str = ""  # 展示快照（fact 之后可能被编辑/删除）
-    text_newer: str = ""
-    user_id: str = "default"
-    reason: str = ""
-    status: str = "pending"  # pending | resolved | dismissed
-    detected_at: float = field(default_factory=now)
-    id: str = field(default_factory=lambda: gen_id("cf"))
+    LLM 检测出的冲突由用户处理：可保留一方、保留两方或排除该冲突。
+    """
+
+    older: str  # 有效时间较早的事实 ID
+    newer: str  # 有效时间较晚的事实 ID
+    text_older: str = ""  # 检测时旧事实的文本快照
+    text_newer: str = ""  # 检测时新事实的文本快照
+    user_id: str = "default"  # 所属用户 ID
+    reason: str = ""  # 疑似冲突的原因
+    status: str = "pending"  # pending 待处理；resolved 已裁决；dismissed 已排除
+    detected_at: float = field(default_factory=now)  # 检测时间，默认为创建时刻
+    id: str = field(default_factory=lambda: gen_id("cf"))  # 冲突记录 ID
 
     @property
     def pair_key(self) -> tuple:

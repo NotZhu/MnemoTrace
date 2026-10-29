@@ -14,6 +14,7 @@ from typing import Optional
 from ..llm import LLM
 from ..types import Episode, Fact
 
+# 默认会话摘要系统 prompt
 _SESSION_SUMMARY_SYSTEM = (
     "将一段带日期的对话压缩为信息密集、忠于事实的摘要，供记忆索引使用。"
     "后续问题应当能够仅依据这份摘要得到回答。\n"
@@ -25,9 +26,9 @@ _SESSION_SUMMARY_SYSTEM = (
     "表达简洁，但具体信息必须完整，尤其不能遗漏数字或名称。直接输出摘要，不要添加开场说明。"
 )
 
-# 结构化 4 层画像，取自 Tencent Agent-Memory 的 L3 "deep scan"（Anchors → Interest
-# graph → Interaction protocol → Cognitive core）。结构化档案对偏好/推荐类回答的支撑远好于
-# 平铺的 fact 堆——Hunyuan/腾讯在偏好上的大头收益正来源于此。
+# 结构化 4 层画像（源自 Tencent Agent-Memory L3 "deep scan"）：身份锚点 → 兴趣 → 协作方式 → 核心目标
+# 按层组织的事实档案，比平铺 fact 堆更能支撑偏好 / 推荐类回答；这是 Hunyuan/腾讯在偏好场景获利的核心来源。
+# 默认用户画像系统 prompt
 _PERSONA_SYSTEM = (
     "为长期记忆系统维护一份简洁、结构化的用户画像。根据用户的已知事实，使用简体中文归纳，"
     "专有名称及需要准确保留的原文值保持原样。\n"
@@ -67,8 +68,7 @@ class SessionSummarizer:
 
 
 class ProfileBuilder:
-    """L3 确定性兜底：把用户当前的单值 fact 组织成 O(1) 的档案 dict。始终可用（无需 LLM），
-    也是叙事画像的离线回退。"""
+    """将用户事实整理为档案字典或文字画像；无 LLM 时使用规则生成画像。"""
 
     _KEYS = {
         "works_at", "lives_in", "name", "born_in", "married_to", "occupation", "job_title", "age",
