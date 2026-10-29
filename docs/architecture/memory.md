@@ -77,7 +77,7 @@ working 的“临时”指可见性与清理生命周期。当前 JSONL 快照�
 
 恢复使用独立于新建对象默认值的字段契约。manifest 必须包含非空 snapshot_id 和 embedder_id、正整数 embedding_dim、backend、软件版本、创建/更新时间、六类集合计数和 state。snapshot_id 用于并发提交识别，与数据格式版本无关。当前 writer 生成的完整存档继续可读；历史存档缺少这些信息时拒绝读取，不自动转换、补造、重写或删除。
 
-六类本地记录要求当前写入字段完整，包括 Fact.text 和 Fact.display；未知附加字段不参与对象构造。JSONL 事实另须有 `_store=hot|cold`。时间、编号、归属、来源、替代关系、失效/消费标记均不能由新建默认值补齐。允许显式的合法空值，例如 provenance=[]、invalid_at=null；空值与字段缺失不同。类型严格校验，数值须有限，整数不接受布尔值；epoch 0 和负时间戳原样保留。LanceDB 的类型化 payload 使用同一记录契约。
+六类本地记录要求当前写入字段完整，包括 Fact.text 和 Fact.display；未知附加字段不参与对象构造。JSONL 事实另须有 `_store=hot|cold`。时间、编号、归属、来源、替代关系、失效/消费标记均不能由新建默认值补齐。允许显式的合法空值，例如 provenance=[]、invalid_at=null；空值与字段缺失不同。类型严格校验，数值须有限，整数不接受布尔值；epoch 0 和负时间戳原样保留。LanceDB 和 Qdrant 的类型化 payload 使用同一记录契约。Qdrant 的运行方式、资源释放和快照恢复说明见[配置参考](../reference/configuration.md#可选-qdrant)。
 
 事实的 topic/topic_source 为必需字段，并校验取值及来源组合。缺失主题字段属于校验失败；打开、保存或导入都不会自动清理数据。
 

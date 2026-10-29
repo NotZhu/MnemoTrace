@@ -193,6 +193,7 @@ class ConsolidationEngine:
                 continue  # 用户是谁/喜欢什么，以及已被使用过的内容，不淡出
             days = max(0.0, (now_t - f.valid_at) / DAY)
             f.salience = max(0.3, math.exp(-self.config.salience_decay_per_day * days))
+            self.fact_store.upsert(f.id, f.embedding or [], f)
 
     def self_name(self, user_id: str) -> str:
         return self.extractor.self_of(user_id)

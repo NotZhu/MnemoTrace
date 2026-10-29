@@ -40,7 +40,7 @@ from ..service import MemoryService
 from ..extraction import ExtractionError, require_llm
 from ..spaces import AuthConfigError, Principal, is_valid_api_key, load_spaces, principal_for_token
 from ..topics import Topic
-from ..store import StoreFormatError
+from ..store import PersistenceError, StoreFormatError
 
 
 DEFAULT_MAX_REQUEST_BYTES = 2 * 1024 * 1024
@@ -157,6 +157,13 @@ async def store_validation_failure(_request: Request, _error: StoreFormatError):
     # 存储异常可能包含文件路径和记录细节；客户端只接收稳定、无内容的错误。
     return JSONResponse(status_code=500, content={"detail": {
         "code": "store_validation_failed", "message": "记忆数据校验失败",
+    }})
+
+
+@app.exception_handler(PersistenceError)
+async def store_operation_failure(_request: Request, _error: PersistenceError):
+    return JSONResponse(status_code=503, content={"detail": {
+        "code": "store_unavailable", "message": "记忆存储暂不可用",
     }})
 
 

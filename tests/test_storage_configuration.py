@@ -106,3 +106,35 @@ def test_custom_vector_factory_owns_its_location(monkeypatch, tmp_path, entrypoi
     ))
     assert mem.config is cfg
     assert cfg.data_path is None
+
+
+@pytest.mark.parametrize("kwargs", [
+    {}, {"data_path": ""},
+    {"qdrant_url": "http://127.0.0.1:6333"},
+    {"qdrant_url": "http://127.0.0.1:6333", "data_path": "vectors", "qdrant_namespace": "u"},
+    {"data_path": "vectors", "qdrant_namespace": ""},
+    {"data_path": "vectors", "qdrant_collection_prefix": "../unsafe"},
+    {"data_path": "vectors", "qdrant_timeout": 0},
+    {"qdrant_url": "https://secret@example.com", "qdrant_namespace": "u"},
+    {"qdrant_url": "http://example.com", "qdrant_namespace": "u"},
+])
+def test_invalid_qdrant_config_fails_before_optional_import(monkeypatch, kwargs):
+    monkeypatch.setitem(sys.modules, "qdrant_client", None)
+    with pytest.raises(ValueError):
+        Memory(config=Config(storage="qdrant", **kwargs))
+
+
+def test_qdrant_custom_factory_does_not_import_or_validate_backend(monkeypatch):
+    monkeypatch.setitem(sys.modules, "qdrant_client", None)
+    mem = Memory(config=Config(storage="qdrant"), vector_store_factory=lambda: InMemoryVectorStore())
+    assert isinstance(mem.fact_store, InMemoryVectorStore)
+    mem.close()
+
+
+def test_default_import_and_config_repr_do_not_expose_qdrant_key():
+    import subprocess
+    result = subprocess.run([sys.executable, "-c",
+        "import sys; from mnemotrace import Memory; Memory(); "
+        "assert 'qdrant_client' not in sys.modules"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "synthetic-secret" not in repr(Config(qdrant_api_key="synthetic-secret"))

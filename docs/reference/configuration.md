@@ -10,7 +10,7 @@
 
 | 参数组 | 主要字段与默认行为 | 影响 |
 | --- | --- | --- |
-| 存储 | storage=memory、data_path=None | 内置 LanceDB 需要非空数据路径；不代替显式 open/save |
+| 存储 | storage=memory、data_path=None | 可选 LanceDB / Qdrant；向量数据库不代替完整快照的 open/save |
 | 嵌入 | embed_dim=256 | 默认 HashingEmbedder 维度；显式 embedder 有自己的身份与维度 |
 | 融合 | w_sem=1.0、w_lex=0.6、w_graph=0.8、w_rec=0.3、w_sal=0.25 | 不同检索信号的配置权重 |
 | 类型先验 | w_type_preference=1.25、w_type_identity=1.15 | 在相关候选中调整优先级 |
@@ -39,6 +39,47 @@ memory = Memory.open("./snapshot", config=Config(storage="lancedb"))
 
 上述要求仅针对内置 LanceDB 后端。使用自定义 `vector_store_factory` 时，存储位置由工厂管理。LanceDB 的安装依赖见下方[模型与可选依赖](#模型与可选依赖)。
 
+### 可选 Qdrant
+
+安装 `python -m pip install "mnemotrace-memory[qdrant]"`（源码安装用 `".[qdrant]"`）。默认内存路径不导入 Qdrant，LanceDB 仍可独立选择。
+
+本地模式适合单进程开发与测试。四个索引共享一个客户端，退出上下文会释放数据库锁；`close()` 不隐式保存：
+
+```python
+from mnemotrace import Config, Memory
+
+with Memory.open("./synthetic-snapshot", config=Config(storage="qdrant")) as memory:
+    memory.add("I like Python.", user_id="synthetic-user", consolidate=True)
+    memory.save()
+# 本地向量库在 ./synthetic-snapshot/qdrant，完整状态仍在 JSONL + manifest 中。
+```
+
+直接使用 `Memory(config=Config(storage="qdrant", data_path="./vectors"))` 时必须指定非空本地路径。`Memory.open()` 仅在 `data_path=None` 时推导路径，不修改传入的 Config。重复持有同一路径会报错，重新打开前应关闭原实例。
+
+远程模式用于自建或云端 Qdrant；除回环地址用于本机测试外，连接要求 HTTPS。凭据通过环境或本地配置传入，不写入快照、配置 repr 或响应：
+
+```python
+import os
+from mnemotrace import Config, Memory
+
+config = Config(
+    storage="qdrant",
+    qdrant_url=os.environ["MNEMOTRACE_QDRANT_URL"],
+    qdrant_api_key=os.environ.get("MNEMOTRACE_QDRANT_API_KEY"),
+)
+with Memory.open("./synthetic-snapshot", config=config) as memory:
+    memory.add_fact("user", "likes", "Python", user_id="synthetic-user")
+    memory.save()
+```
+
+远程 URL 与 `data_path` 互斥。直接构造远程 `Memory` 时还需要显式 `qdrant_namespace`；`open()` 可从规范化快照绝对路径的 SHA-256 摘要推导。更换快照位置会改变推导出的远程命名空间；需要固定身份时显式配置 namespace。不同 Memory 不应使用同一远程 namespace 并各自管理不同快照。
+
+`qdrant_collection_prefix` 默认 `mnemotrace`，用于区分共享集群中的部署；命名空间摘要和索引名进一步隔离四个集合。`qdrant_timeout` 默认 10 秒。自定义 `vector_store_factory` 仍由调用方管理后端；直接使用 `QdrantVectorStore(client, collection, dimension)` 时，注入客户端由调用方关闭。
+
+Qdrant 承担向量和 payload 存储，图、原始日志及其他状态仍由完整快照恢复。打开快照前先校验全部记录，再重建该命名空间索引；首次打开没有 manifest 的目录视为空快照。未调用 `save()` 的改动不会成为恢复依据。维度不匹配时失败，显式 `open(..., allow_mismatch=True)` 后调用 `reembed()` 和 `save()` 才能迁移；迁移失败可从原有效快照以 `allow_mismatch=True` 重新打开并重试。
+
+带 Python 谓词的查询会分页扫描全部记录、先过滤再排序，以保持现有结果语义。首版没有过滤下推或默认 ANN 加速，不能仅凭切换后端推断检索变快。
+
 开关按职责分组：
 
 - 证据与预算：evidence_planner、evidence_budgeting、chain_evidence、temporal_history_queries、chain_current_first、provenance_evidence、provenance_chunk_promotion。
@@ -65,6 +106,11 @@ assert (fact.topic, fact.topic_source) == ("technology", "rule")
 
 | 变量 | 未设置时的行为或默认值 |
 | --- | --- |
+| MNEMOTRACE_STORAGE | `memory`；可选 `durable`、`lancedb`、`qdrant`，由 HTTP 与本地 MCP 共用 |
+| MNEMOTRACE_QDRANT_URL | 未设置时使用每用户快照目录下的本地 Qdrant；设置时连接远程服务 |
+| MNEMOTRACE_QDRANT_API_KEY | 未设置；仅通过服务配置传入远程客户端 |
+| MNEMOTRACE_QDRANT_COLLECTION_PREFIX | 使用 Config 默认前缀；服务始终另行派生每用户命名空间 |
+| MNEMOTRACE_QDRANT_TIMEOUT | 使用 Config 的连接超时默认值，单位秒 |
 | MNEMOTRACE_DATA_DIR | `~/.mnemotrace/data`；服务按命名空间管理目录 |
 | MNEMOTRACE_API_KEYS | 未配置；保护路由拒绝访问，需显式配置鉴权 |
 | MNEMOTRACE_SPACES | 未配置；remember/recall 的扩展 principal/ACL 配置 |
@@ -82,6 +128,20 @@ assert (fact.topic, fact.topic_source) == ("technology", "rule")
 | MNEMOTRACE_CONFLICT_DETECTION | 设为 1 且配置 LLM 时启用待确认冲突检测 |
 | MNEMOTRACE_SESSION_OUTCOMES | 设为 0 时强制禁止会话结论提取，客户端不能覆盖 |
 | MNEMOTRACE_REEMBED_ON_MISMATCH | 默认关闭；设为 1 可触发显式模型迁移路径 |
+
+例如在 PowerShell 中为 HTTP / 本地 MCP 选择本地 Qdrant：
+
+```powershell
+$env:MNEMOTRACE_STORAGE = "qdrant"
+$env:MNEMOTRACE_DATA_DIR = "./synthetic-service-data"
+# HTTP 还需按下方说明配置鉴权。
+python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000
+# 或在另一条独立命令中启动本地 MCP：python -m mnemotrace.mcp
+```
+
+远程部署再设置 `MNEMOTRACE_QDRANT_URL`，需要鉴权时提供 `MNEMOTRACE_QDRANT_API_KEY`。本地模式不能让 HTTP 与 MCP 两个进程同时持有同一用户数据库；多进程使用远程 Qdrant，同时共享相同快照目录和文件锁。仅共享 Qdrant、各自持有快照的跨主机部署不在当前事务保证范围内。
+
+服务擦除会先清理该用户的精确四个集合，再清理本地状态；远程失败返回错误，保留快照以便重试。操作中断会留下索引标记，下一次访问从已提交快照恢复。HTTP 存储错误见 [HTTP 参考](http-api.md)；异步整合失败计入 `consolidation_failed` 指标，原始已提交 episode 可再次整合。
 
 生产 Compose 模板只传入其中一部分变量；需要其他设置时应明确修改自己的部署环境，不能假定本机全部变量会自动传进容器。systemd 读取模板指定的 EnvironmentFile。
 
@@ -114,6 +174,7 @@ assert (fact.topic, fact.topic_source) == ("technology", "rule")
 | 本地语义嵌入 | `.[embeddings]`；multilingual、bge-small-zh、bge-small、bge-m3、bge-large 或 st:模型名 |
 | LLM / API 嵌入 | `.[llm]`；模型名和凭据规则由 [providers.py](../../mnemotrace/llm/providers.py) 解析 |
 | PDF/DOCX 解析 | `.[documents]` |
+| 可选 Qdrant | `.[qdrant]` 或对应 backends extra；本地和远程共用官方客户端 |
 | 可选 LanceDB | `.[lancedb]` 或对应 backends extra |
 | 完整服务常用组合 | `.[serve]`；具体包含项以 pyproject 为准 |
 

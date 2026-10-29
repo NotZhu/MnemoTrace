@@ -208,7 +208,7 @@ def validate_manifest(manifest: Any) -> dict:
     _object(manifest, "manifest")
     result = _fields(manifest, {
         "snapshot_id": _identifier, "embedder_id": _identifier,
-        "embedding_dim": _dimension, "backend": _choice("durable", "lancedb"),
+        "embedding_dim": _dimension, "backend": _choice("durable", "lancedb", "qdrant"),
         "mnemotrace_version": _identifier, "created_at": _number, "updated_at": _number,
         "counts": lambda v, p: _fields(v, {key: _count for key in COLLECTIONS}, p),
         "state": _object,

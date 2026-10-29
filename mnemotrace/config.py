@@ -2,15 +2,21 @@
 在评测 harness 上则按 benchmark 逐一调优（绝不拍脑袋——见 AGENTS.md 「评测、公开内容与贡献规则」）。"""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
 @dataclass
 class Config:
     # --- 存储与嵌入 ---
-    storage: str = "memory"  # memory | lancedb
-    data_path: Optional[str] = None  # 内置 LanceDB 必须有非空路径；open() 可从快照根目录派生
+    storage: str = "memory"  # memory | durable | lancedb | qdrant
+    data_path: Optional[str] = None  # 本地 LanceDB / Qdrant 路径；open() 可从快照根目录派生
+
+    qdrant_url: Optional[str] = None  # None: local mode, using data_path
+    qdrant_api_key: Optional[str] = field(default=None, repr=False)
+    qdrant_namespace: Optional[str] = None  # open() derives a digest from its snapshot root
+    qdrant_collection_prefix: str = "mnemotrace"
+    qdrant_timeout: float = 10.0
     embed_dim: int = 256  # 默认 HashingEmbedder 的向量维度；显式嵌入器使用自身维度
 
     # --- 检索数量与候选范围 ---
