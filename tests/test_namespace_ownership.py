@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from mnemotrace import Memory
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryService
 
 
 def service_at(directory):

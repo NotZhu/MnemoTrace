@@ -32,7 +32,7 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 | scope | `auto`；支持 long/working |
 | space | 未设置时写调用者 home；显式设置需有写权限 |
 
-默认同步提取并保存。正常长期写入返回 `ok`、`scope`、`extracted` 等；异步模式可返回 `queued=true`、`episode_id`；提取降级可返回 `degraded`、`stored_raw=true`。working 路径返回工作条目 id 与事件 id。调用方应根据这些分支判断处理进度。
+默认同步提取并保存。正常长期写入返回 `ok`、`scope`、`extracted` 等；异步模式可返回 `queued=true`、`episode_id`；提取失败返回 502，错误详情说明 `stored_raw` 与记录 ID。working 路径返回工作条目 id 与事件 id。调用方应根据这些分支判断处理进度。
 
 ### POST /v1/recall
 
@@ -147,4 +147,16 @@ stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切�
 
 常见状态：400 输入或确认缺失；401 凭据缺失/无效；403 权限或受保护擦除；404 目标不存在；409 记忆分页版本变化；413 请求过大；422 字段或编辑校验；503 就绪、配置、模型或控制台构建条件不满足。
 
-错误通常位于 `detail`，可能是字符串、对象或字段错误列表。成功响应中的 queued、degraded、ok=false 等业务状态也需要处理。响应 schema 尚未覆盖全部载荷，应结合本页和[实现](../../mnemotrace/server/app.py)核对。
+错误通常位于 `detail`，可能是字符串、对象或字段错误列表。成功响应中的 queued、ok=false 等业务状态也需要处理。响应 schema 尚未覆盖全部载荷，应结合本页和[实现](../../mnemotrace/server/app.py)核对。
+
+## 模型抽取状态与错误
+
+服务端 remember 的 auto/long 在原文写入前检查 LLM；working 无需模型。同步结果 scope 为 long/working/mixed/none，按过滤后的有效事实、身份更新和工作条目计算；已有重复事实仍算长期内容，身份更新可返回 long 且 extracted=0。extracted 与 working_added 只统计当前输入新增的长期事实和工作条目，不包含同批其他待处理输入。异步接收返回 queued=true、episode_id，尚无最终 scope 或抽取数量。
+
+缺少模型返回 HTTP 503 / llm_not_configured；调用失败返回 502 / extraction_failed；响应无效返回 502 / extraction_invalid_response。detail 包含 code、message、stored_raw、episode_ids。stored_raw=true 表示原文已保存，不必重复上传；恢复模型后关闭对应会话可重试。会话状态、报告和命名空间统计的 extraction_failures 表示待处理错误的事件数，MCP 的 JSON 和文本均展示此计数。
+
+stats.counts.episodes_ephemeral 统计包含临时记忆内容的历史事件，包括最终 scope 为 working 或 mixed 的事件；不表示整条事件均为临时内容，也不等于当前存活的 working_live 条目数。清理工作记忆后，历史事件计数仍保留。
+
+导入先去重，再根据新增内容和相关 pending 判断是否需要抽取；全部重复且已完成时，无需 LLM 即可返回 skipped（包括 consolidate=true）。实际需要抽取时，在新输入写入前采用相同预检与错误语义；consolidate=false 可仅存原文。agent-session 默认在关闭会话时提炼结论；需要模型但未配置时明确报错，不静默跳过。失败不会提前清理工作记忆。服务端强制关闭 outcomes 的设置仍优先。
+
+完整抽取协议见 [Python API](python-api.md#模型抽取与错误契约)。

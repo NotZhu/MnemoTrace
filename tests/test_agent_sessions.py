@@ -5,6 +5,8 @@ Codex transcript），但一直没有入口：通用 JSONL 读取器保留了工
 几乎什么都没存下来。这些测试钉死了哪些内容会被保留，以及——同样重要的是——哪些会被丢弃。"""
 from __future__ import annotations
 
+import pytest
+
 import json
 import os
 
@@ -213,13 +215,13 @@ def test_one_failed_distil_does_not_cost_the_others(monkeypatch):
 
 
 # ---------------------------------------------------------------------------------------------------
-# 门槛机制：agent 会话只存储起来供 close 时蒸馏，绝不交给 RuleExtractor。
+# 门槛机制：agent 会话只存储起来供 close 时蒸馏，绝不交给 LLMExtractor。
 # 在加门槛之前实测：12 个真实轮次 -> 11 条垃圾 fact（`The | occupation | nearly empty`），owner 的
 # 存储里 88 条 fact 中有 84 条 `occupation` 行，全部来自无 LLM 的 fallback 时期。
 # ---------------------------------------------------------------------------------------------------
 
 # 一段形似真实工作会话 transcript 的文本：主语是代词/冠词的句子、markdown、一个配置路径。
-# RuleExtractor 会把它变成垃圾（见 test_records_import_still_rule_extracts，它证明了当来源不是
+# LLMExtractor 会把它变成垃圾（见 test_records_import_requests_model_extraction，它证明了当来源不是
 # agent 会话时，同样的文本确实会被抽取）。
 _TRANSCRIPT_A = [
     {"role": "user", "content": "The config file is nearly empty. This is now clear: **EKOS is deployed on "
@@ -242,7 +244,7 @@ def _agent_sessions(prefix: str = "claude-code") -> list[dict]:
 
 
 def test_agent_session_import_without_llm_defers_per_turn_extraction(tmp_path):
-    from mnemotrace.memory import Memory
+    from mnemotrace import Memory
     from mnemotrace.service import MemoryService
 
     mem = Memory()
@@ -253,7 +255,7 @@ def test_agent_session_import_without_llm_defers_per_turn_extraction(tmp_path):
     eps = [ep for ep in mem.episodes_doc.values() if ep.user_id == "u"]
     assert len(eps) == 2
     for ep in eps:
-        assert ep.consolidated is True  # 下游绝不能再把它排进 RuleExtractor
+        assert ep.consolidated is True  # 下游绝不能再把它排进 LLMExtractor
         assert ep.metadata["extraction"] == "outcomes_only"
         assert ep.metadata["source"] == "agent_session"
     assert stats["summaries"] >= 1  # transcript 的 chunk/摘要检索在离线环境下依然可用
@@ -261,7 +263,7 @@ def test_agent_session_import_without_llm_defers_per_turn_extraction(tmp_path):
     # close_session 就是那个"排水口"，否则 pending 的 episode 会被逐轮抽取。
     svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
     assert svc.import_("u", sessions=_agent_sessions())["facts_deferred"] == 2
-    closed = svc.close_session("u", "claude-code:a")
+    closed = svc.close_session("u", "claude-code:a", outcomes=False)
     assert closed["episodes"] == 1
     assert closed["pending_consolidated"] == 0 and closed["facts_added"] == 0, closed
 
@@ -269,7 +271,7 @@ def test_agent_session_import_without_llm_defers_per_turn_extraction(tmp_path):
 def test_agent_session_import_with_llm_and_consolidate_true_extracts():
     """有 LLM 时同样的 12 个轮次产出了 10 条干净的 fact（`EKOS | deployed_on | Ubuntu server`），
     所以显式选择加入时仍必须执行逐轮抽取。"""
-    from mnemotrace.memory import Memory
+    from tests.model_fixtures import Memory
 
     class StubLLM:
         def complete(self, prompt: str, system: str = "", **kw) -> str:
@@ -282,22 +284,20 @@ def test_agent_session_import_with_llm_and_consolidate_true_extracts():
     assert all("extraction" not in ep.metadata for ep in mem.episodes_doc.values())
 
 
-def test_agent_session_consolidate_true_without_llm_reports_no_llm():
-    """没有 LLM 却要求抽取 fact 是会污染存储的场景；正确的回应是一个原因码，而不是垃圾。"""
-    from mnemotrace.memory import Memory
-
+def test_agent_session_consolidate_true_without_llm_is_rejected():
+    from mnemotrace import Memory
+    from mnemotrace.extraction import LLMNotConfiguredError
     mem = Memory()
-    stats = mem.import_messages(_agent_sessions(), user_id="u", consolidate=True)
-    assert stats["facts_added"] == 0, stats
-    assert stats["facts_deferred"] == 2 and stats["deferred_reason"] == "no_llm", stats
-    assert not [f for f in mem.fact_store.values() if f.user_id == "u"]
+    with pytest.raises(LLMNotConfiguredError):
+        mem.import_messages(_agent_sessions(), user_id="u", consolidate=True)
+    assert not mem.episodes_doc.values()
 
 
-def test_records_import_still_rule_extracts():
-    """零配置 demo 的回归守卫：门槛看的是 source，而不是文本内容。同样的句子以 `records` 形式
-    到来时，照旧走 RuleExtractor。"""
+def test_records_import_requests_model_extraction():
+    """记录导入的抽取回归：门槛看的是 source，而不是文本内容。同样的句子以 `records` 形式
+    到来时，照旧走 LLMExtractor。"""
     from mnemotrace.connectors import parse
-    from mnemotrace.memory import Memory
+    from tests.model_fixtures import Memory
 
     records = [{"content": m["content"], "speaker": m["role"], "session_id": "r1"}
                for m in _TRANSCRIPT_A + _TRANSCRIPT_B]

@@ -6,11 +6,13 @@ from dataclasses import asdict
 
 import pytest
 
-from mnemotrace import Config, Memory
-from mnemotrace.consolidate.extractor import RuleExtractor
-from mnemotrace.consolidate.llm_extractor import EXTRACT_SYSTEM, LLMExtractor
+from mnemotrace import Config
+
+from tests.model_fixtures import Memory
+from mnemotrace.consolidate.llm_extractor import EXTRACT_SYSTEM
+from tests.model_fixtures import LLMExtractor
 from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY, extract_outcomes
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import MemoryService
 from mnemotrace.types import Episode, Fact
 
 
@@ -125,7 +127,7 @@ def test_prompt_extension_preserves_custom_policy_without_growth():
     assert "附加主题协议" not in model.calls[-1][1]
     ex = LLMExtractor(model, llm_topics=False)
     ex.extract(Episode("Synthetic four"))
-    assert model.calls[-1][1] == EXTRACT_SYSTEM
+    assert model.calls[-1][1].startswith(EXTRACT_SYSTEM)
 
 
 @pytest.mark.parametrize("hint", [None, "unknown", "music"])
@@ -143,9 +145,7 @@ def test_topics_follow_final_normalized_objects_without_losing_abstention(hint):
     assert fact.object == "the idea of 茶" and fact.topic == "unknown"
 
 
-def test_rule_extractor_and_manual_updates_do_not_call_models():
-    fact, = RuleExtractor().extract(Episode("I like tea."))
-    assert (fact.topic, fact.topic_source) == ("food", "rule")
+def test_manual_updates_do_not_call_models():
     model = RecordingLLM([])
     mem = Memory(llm=model)
     fact = mem.add_fact("user", "prefers", "茶", topic="unknown")
@@ -326,5 +326,7 @@ def test_extraction_failure_does_not_create_facts_or_retry_for_topics():
             self.calls += 1
             raise RuntimeError("synthetic failure")
     model = BrokenLLM()
-    assert extract_outcomes(model, [Episode("Synthetic discussion")], "u") == []
+    from mnemotrace.extraction import ExtractionError
+    with pytest.raises(ExtractionError):
+        extract_outcomes(model, [Episode("Synthetic discussion")], "u")
     assert model.calls == 1

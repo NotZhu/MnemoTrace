@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from mnemotrace import Memory
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryService
 from mnemotrace.types import Fact
 
 

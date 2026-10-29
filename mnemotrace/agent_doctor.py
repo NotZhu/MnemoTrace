@@ -30,6 +30,7 @@ CLIENTS = ("none", "codex", "claude-code", "cursor", "openai")
 _PROBE = r"""
 import asyncio
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -54,6 +55,7 @@ async def call(name, **args):
 async def main():
     data_dir = tempfile.mkdtemp(prefix="mnemotrace_agent_doctor_")
     svc = MemoryService(data_dir=data_dir, embedder_name="hashing", llm_name="")
+    svc.config.session_outcomes = False
     S.set_backend(LocalBackend(namespace=USER, service=svc))
     before = json.loads(await call(
         "mnemotrace_recall",
@@ -63,10 +65,11 @@ async def main():
         response_format="json",
     ))
     remembered = await call(
-        "mnemotrace_remember",
-        content=f"Project rule: MnemoTrace doctor verifies {PHRASE}.",
-        session_id=SOURCE_SESSION,
+        "mnemotrace_add_fact",
+        subject="project", predicate="rule", object=f"MnemoTrace doctor verifies {PHRASE}.",
     )
+    await call("mnemotrace_remember", content=f"Synthetic handoff {PHRASE}",
+               session_id=SOURCE_SESSION, scope="working")
     focus_set = json.loads(await call(
         "mnemotrace_set_focus",
         track=["MCP lifecycle"],
@@ -119,8 +122,9 @@ async def main():
     shutil.rmtree(data_dir, ignore_errors=True)
     print(json.dumps({
         "python": sys.executable,
+        "llm_configured": bool(os.environ.get("MNEMOTRACE_LLM", "").strip()),
         "before_empty": not bool((before.get("context") or "").strip()),
-        "remembered": "Remembered" in remembered,
+        "remembered": "Error:" not in remembered,
         "source_session": SOURCE_SESSION,
         "target_session": TARGET_SESSION,
         "focus_ok": (
@@ -136,14 +140,14 @@ async def main():
         "report_ok": (
             report.get("ok") is True
             and report.get("session_id") == SOURCE_SESSION
-            and int(report.get("facts_added") or 0) >= 1
-            and PHRASE in report_text
+            and int(report.get("episodes") or 0) >= 1
+            and SOURCE_SESSION in report_text
         ),
         "sessions_ok": (
             sessions.get("ok") is True
             and any(
                 row.get("id") == SOURCE_SESSION
-                and int(row.get("facts_added") or 0) >= 1
+                and int(row.get("episodes") or 0) >= 1
                 for row in (sessions.get("sessions") or [])
             )
             and PHRASE not in sessions_text
@@ -194,6 +198,7 @@ async def main():
         env["MNEMOTRACE_DATA_DIR"] = data_dir
         env["MNEMOTRACE_EMBEDDER"] = "hashing"
         env["MNEMOTRACE_LLM"] = ""
+        env["MNEMOTRACE_SESSION_OUTCOMES"] = "0"
 
         target_params = StdioServerParameters(
             command=sys.executable,
@@ -210,6 +215,7 @@ async def main():
                 await target.initialize()
                 tools = {tool.name for tool in (await target.list_tools()).tools}
                 required = {
+                    "mnemotrace_add_fact",
                     "mnemotrace_remember",
                     "mnemotrace_recall",
                     "mnemotrace_close_session",
@@ -231,9 +237,16 @@ async def main():
                         await source.initialize()
                         remembered = await call(
                             source,
+                            "mnemotrace_add_fact",
+                            subject="project", predicate="rule",
+                            object=f"MnemoTrace stdio doctor verifies {PHRASE}.",
+                        )
+                        await call(
+                            source,
                             "mnemotrace_remember",
                             content=f"Project rule: MnemoTrace stdio doctor verifies {PHRASE}.",
                             session_id=SOURCE_SESSION,
+                            scope="working",
                         )
                         focus = json.loads(await call(
                             source,
@@ -288,7 +301,7 @@ async def main():
             "isolated_processes": True,
             "required_tools": sorted(required),
             "missing_tools": sorted(required - tools),
-            "remembered": "Remembered" in remembered,
+            "remembered": "Error:" not in remembered,
             "focused": focus.get("ok") is True,
             "target_preloaded": (
                 status_before.get("ok") is True
@@ -302,14 +315,14 @@ async def main():
             "report_ok": (
                 report.get("ok") is True
                 and report.get("session_id") == SOURCE_SESSION
-                and int(report.get("facts_added") or 0) >= 1
-                and PHRASE in report_text
+                and int(report.get("episodes") or 0) >= 1
+                and SOURCE_SESSION in report_text
             ),
             "sessions_ok": (
                 sessions.get("ok") is True
                 and any(
                     row.get("id") == SOURCE_SESSION
-                    and int(row.get("facts_added") or 0) >= 1
+                    and int(row.get("episodes") or 0) >= 1
                     for row in (sessions.get("sessions") or [])
                 )
                 and PHRASE not in sessions_text
@@ -718,15 +731,19 @@ def _remote_http_probe(api_url: str, api_key: str) -> dict[str, Any]:
         f"{base}/v1/export",
     ]
     try:
+        _http_json(base, api_key, "/v1/facts", {
+            "subject": "project", "predicate": "decision", "object": f"MnemoTrace {phrase}.",
+        })
         remembered = _http_json(base, api_key, "/v1/remember", {
             "content": f"Project decision: MnemoTrace {phrase}.",
             "session_id": source_session,
-            "scope": "long",
+            "scope": "working",
         })
         closed_source = _http_json(base, api_key, "/v1/sessions/close", {
             "session_id": source_session,
             "summarize": True,
             "clear_working": True,
+            "outcomes": False,
         })
         report = _http_get_json(base, api_key, "/v1/sessions/report", {
             "session_id": source_session,
@@ -749,6 +766,7 @@ def _remote_http_probe(api_url: str, api_key: str) -> dict[str, Any]:
             "session_id": target_session,
             "summarize": True,
             "clear_working": True,
+            "outcomes": False,
         })
     except urllib.error.HTTPError as exc:
         detail = "Request failed."
@@ -787,14 +805,14 @@ def _remote_http_probe(api_url: str, api_key: str) -> dict[str, Any]:
         and closed_source.get("ok") is True
         and closed_target.get("ok") is True
         and report.get("ok") is True
-        and int(report.get("facts_added") or 0) >= 1
+        and int(report.get("episodes") or 0) >= 1
         and exported.get("include_sensitive") is False
         and len(exported.get("facts") or []) >= 1
-        and phrase in report_text
+        and source_session in report_text
         and sessions.get("ok") is True
         and any(
             row.get("id") == source_session
-            and int(row.get("facts_added") or 0) >= 1
+            and int(row.get("episodes") or 0) >= 1
             for row in (sessions.get("sessions") or [])
         )
         and phrase not in sessions_text
@@ -933,6 +951,14 @@ def diagnose(
             api_key=api_key,
         ))
     checks.extend(_client_probe(client))
+    if python_check["status"] == "ok":
+        configured = bool(python_check.get("data", {}).get("llm_configured"))
+        checks.append({
+            "name": "LLM extraction", "status": "warn",
+            "detail": "LLM configuration detected; live extraction was not tested." if configured else
+                      "Automatic extraction requires MNEMOTRACE_LLM and provider credentials; the lifecycle probes use explicit memories.",
+            "data": {"llm_configured": configured, "model_call_performed": False},
+        })
     failed = [c for c in checks if c["status"] == "fail"]
     warned = [c for c in checks if c["status"] == "warn"]
     return _redact_report({

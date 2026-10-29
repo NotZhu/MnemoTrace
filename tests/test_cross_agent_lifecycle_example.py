@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def synthetic_model_service(monkeypatch):
+    from tests.model_fixtures import MemoryService
+    monkeypatch.setattr("mnemotrace.service.MemoryService", MemoryService)
+
+
 import json
 
-import pytest
 
 from examples.cross_agent_lifecycle import (
     VERIFY_PHRASE,

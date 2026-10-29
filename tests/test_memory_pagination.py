@@ -1,7 +1,7 @@
 """Browse complete filtered collections without mixing committed versions."""
 import pytest
 
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import MemoryService
 
 
 def service(path):

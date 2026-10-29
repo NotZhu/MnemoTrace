@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 
-from mnemotrace import Memory, __version__
+from mnemotrace import __version__
+
+from tests.model_fixtures import Memory
 from mnemotrace.types import Conflict
 from mnemotrace.util import DAY
 

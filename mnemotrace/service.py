@@ -10,6 +10,7 @@ MCP server 和导入 CLI 在没有安装 web 依赖时也能使用它。
 from __future__ import annotations
 
 import math
+import logging
 import os
 import queue
 import shutil
@@ -25,6 +26,7 @@ from ._namespace_lock import NamespaceLock, namespace_lock
 from ._namespace_paths import contained_child, namespace_directory, namespace_path
 from .localize import display_of
 from .memory import Memory
+from .extraction import ExtractionError, require_llm
 from .metrics import Metrics, timed
 from .store._validation import is_snapshot_candidate
 from .store.persist import (
@@ -164,7 +166,8 @@ class MemoryService:
         self.max_hot_users = max_hot_users or int(os.environ.get("MNEMOTRACE_MAX_HOT_USERS", "64"))
         self.embedder = make_embedder(embedder_name or os.environ.get("MNEMOTRACE_EMBEDDER", "hashing"))
         name = llm_name if llm_name is not None else os.environ.get("MNEMOTRACE_LLM", "")
-        self.llm = make_llm(name) if name else None  # 无 LLM 时使用确定性的规则抽取器
+        name = name.strip()
+        self.llm = make_llm(name) if name else None  # 抽取操作在写入前检查模型配置
         # /v1/recall 的 answerer（控制台的"问答"）——设置时用比抽取器更强的模型；
         # 否则复用主 LLM。让 Ask 页面给出真正的回答，而不只是上下文。
         answerer_name = os.environ.get("MNEMOTRACE_ANSWERER", "")
@@ -425,8 +428,9 @@ class MemoryService:
                 self._pending.discard(user)
             try:
                 self._consolidate_now(user)
-            except Exception:  # noqa: BLE001 — 坏任务绝不能杀死 worker
-                pass
+            except Exception:
+                self.metrics.count("extraction_failed")
+                logging.getLogger(__name__).warning("Background consolidation failed; raw episodes remain pending")
             finally:
                 self._queue.task_done()  # type: ignore[union-attr]
 
@@ -459,30 +463,34 @@ class MemoryService:
         """存储一条消息 + 执行 System-2 整合/摘要（尽力而为：模型瞬时故障也绝不丢失原始 episode）。
         `scope`（auto|long|working）按时效性路由——瞬态内容留在按日历史 + 工作记忆中，
         不会被提升为持久化的 profile fact（见 Memory.remember）。"""
+        if scope not in {"auto", "long", "working"}:
+            raise ValueError("scope must be auto, long, or working")
+        if scope != "working":
+            require_llm(self.llm)
         with self.write_lock(user):
             mem = self.get(user)
             routed = mem.remember(content, user_id=user, session_id=session_id, scope=scope)
+            self._save(user, mem)
             if routed["scope"] == "working":
-                self._save(user, mem)
                 return {"ok": True, "scope": "working", "kind": routed["kind"],
                         "id": routed["working_id"], "episode_id": routed["episode_id"],
-                        "note": "kept in dated history (askable later); not added to the durable profile"}
+                        "extracted": 0, "working_added": 1}
             if self._async:
-                # 仅 System-1：episode 在此完成嵌入 + 持久化保存；System-2（整合 + 摘要）
-                # 在后台 worker 中运行，写入立即返回（Bet F）。
-                self._save(user, mem)
                 self._enqueue(user)
-                return {"ok": True, "scope": "long", "queued": True, "episode_id": routed.get("episode_id"),
-                        "note": "consolidation scheduled off the write path (async System-2)"}
+                return {"ok": True, "queued": True, "episode_id": routed["episode_id"]}
             try:
-                added = mem.consolidate().get("facts_added", 0)
-                mem.summarize_episodes(list(mem.episodes_doc.values()))
-            except Exception as exc:  # noqa: BLE001 — keep the raw episode no matter what
+                mem.consolidate()
+            except ExtractionError:
                 self._save(user, mem)
-                self.metrics.count("remember_degraded")
-                return {"ok": True, "extracted": 0, "degraded": type(exc).__name__, "stored_raw": True}
+                self.metrics.count("extraction_failed")
+                raise
+            mem.summarize_episodes(list(mem.episodes_doc.values()))
             self._save(user, mem)
-            return {"ok": True, "scope": "long", "extracted": added,
+            ep = mem.episodes_doc.get(routed["episode_id"])
+            counts = ep.metadata["extraction_counts"]
+            return {"ok": True, "scope": ep.metadata["memory_result"],
+                    "episode_id": ep.id, "extracted": counts["facts_added"],
+                    "working_added": counts["working_added"],
                     "total_facts": len([f for f in _all_facts(mem) if f.is_live()])}
 
     @timed("import")
@@ -511,8 +519,18 @@ class MemoryService:
                     self._save(user, mem)
                     return {"ok": True, **stats}
                 sessions = parse(data, format=format, session_id=session_id)
-            stats = mem.import_messages(sessions, user_id=user, consolidate=consolidate,
-                                        summarize=summarize, dedupe=dedupe)
+            # A cached namespace must use the current service model for preflight and execution.
+            if mem.llm is not self.llm:
+                mem.llm = self.llm
+                mem.summarizer.llm = self.llm
+                mem._rewire()
+            try:
+                stats = mem.import_messages(sessions, user_id=user, consolidate=consolidate,
+                                            summarize=summarize, dedupe=dedupe)
+            except ExtractionError as exc:
+                if exc.stored_raw:
+                    self._save(user, mem)
+                raise
             self._save(user, mem)
             return {"ok": True, **stats}
 
@@ -523,6 +541,8 @@ class MemoryService:
         """写入一个上传的文档或图片（AGENTS.md 「代码导航」 多模态）。PDF/DOCX/文本被拍平为纯文本；图片由
         视觉模型生成描述（未配置时以占位符存储）——无论哪种方式都进入与其他内容相同的 System-2
         管线，立即可检索。"""
+        if consolidate:
+            require_llm(self.llm)
         from .connectors.documents import detect_kind, document_text, to_data_url, to_session
         from .llm import vision
 
@@ -543,8 +563,13 @@ class MemoryService:
                                  metadata={"kind": kind, "media_type": content_type or ""})
         with self.write_lock(user):
             mem = self.get(user)
-            stats = mem.import_messages([session], user_id=user, consolidate=consolidate,
-                                        summarize=summarize)
+            try:
+                stats = mem.import_messages([session], user_id=user, consolidate=consolidate,
+                                            summarize=summarize)
+            except ExtractionError as exc:
+                if exc.stored_raw:
+                    self._save(user, mem)
+                raise
             self._save(user, mem)
         return {"ok": True, "kind": kind, **stats}
 
@@ -785,48 +810,42 @@ class MemoryService:
                 ep for ep in mem.episodes_doc.values()
                 if ep.user_id == user and ep.session_id == session_id
             ]
+            from .consolidate.outcomes import extract_outcomes, OUTCOME_PREDICATES, split_outcome_text
             pending = [ep for ep in episodes if not ep.consolidated]
-            stats = (
-                mem.consolidate(pending)
-                if pending
-                else {"facts_added": 0, "duplicates": 0, "invalidated": 0}
-            )
+            want = (self.config.session_outcomes if outcomes is None else outcomes) and not self._outcomes_forced_off
+            try:
+                if pending or (want and episodes):
+                    require_llm(self.llm)
+                prepared = extract_outcomes(self.llm, episodes, user, session_id=session_id,
+                                            llm_topics=self.config.llm_topics) if want and episodes else []
+                stats = mem.consolidate(pending) if pending else {}
+            except ExtractionError as exc:
+                exc.stored_raw = bool(episodes)
+                exc.episode_ids = [ep.id for ep in episodes]
+                for ep in episodes:
+                    ep.metadata["outcome_error"] = exc.code
+                self._save(user, mem)
+                raise
+            seen_keys = {split_outcome_text(f.text)[0].lower()[:120] for f in _all_facts(mem)
+                         if f.is_live() and f.user_id == user and f.predicate.lower() in OUTCOME_PREDICATES
+                         and f.subject == session_id}
+            outcome_facts = 0
+            for fact in prepared:
+                key = split_outcome_text(fact.text)[0].lower()[:120]
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                fact.embedding = mem.embedder.embed(fact.text)
+                mem.fact_store.upsert(fact.id, fact.embedding, fact)
+                mem.engine.graph_builder.add_fact(fact)
+                outcome_facts += 1
+            for ep in episodes:
+                ep.metadata.pop("outcome_error", None)
+            if outcome_facts:
+                mem._persona_cache.clear()
             summaries = mem.summarize_episodes(episodes) if summarize else 0
             reflected = mem.reflect(user) if summarize else 0
             working_cleared = mem.clear_session(user, session_id) if clear_working else 0
-
-            # 会话结束时结论才存在、才值得记录：会话中途只有进行中的任务。正是这次写入让个人
-            # 记忆保持有料——逐轮抽取器产出的是传记式三元组，而工作会话里根本没有这类内容。
-            outcome_facts = 0
-            want = self.config.session_outcomes if outcomes is None else outcomes
-            if self._outcomes_forced_off:
-                want = False  # MNEMOTRACE_SESSION_OUTCOMES=0 是运维设定的上限；任何请求体都不能解除
-            if want and self.llm is not None and episodes:
-                from .consolidate.outcomes import (
-                    OUTCOME_PREDICATES,
-                    extract_outcomes,
-                    split_outcome_text,
-                )
-
-                # 同一个 session 关闭两次不能让结论翻倍。extract_outcomes 只在单次调用内去重，
-                # 而重复关闭是常态：connectors/watch.py 会重发任何增长过的 transcript 并再次关闭。
-                # 使用与它相同的 120 字符键。
-                seen_keys = {
-                    split_outcome_text(f.text)[0].lower()[:120]
-                    for f in _all_facts(mem)
-                    if f.is_live() and f.user_id == user
-                    and f.predicate.lower() in OUTCOME_PREDICATES and f.subject == session_id
-                }
-                for fact in extract_outcomes(self.llm, episodes, user, session_id=session_id,
-                                              llm_topics=self.config.llm_topics):
-                    if split_outcome_text(fact.text)[0].lower()[:120] in seen_keys:
-                        continue
-                    fact.embedding = mem.embedder.embed(fact.text)
-                    mem.fact_store.upsert(fact.id, fact.embedding, fact)
-                    mem.engine.graph_builder.add_fact(fact)
-                    outcome_facts += 1
-                if outcome_facts:
-                    mem._persona_cache.clear()
 
             self._save(user, mem)
             return {
@@ -903,6 +922,7 @@ class MemoryService:
                 "id": session_id,
                 "episodes": len(session_episodes),
                 "episodes_pending": len(pending_session_episodes),
+                "extraction_failures": sum(bool(ep.metadata.get("extraction_error") or ep.metadata.get("outcome_error")) for ep in session_episodes),
                 "working_live": len(session_working),
             },
             "counts": stats.get("counts", {}),
@@ -992,6 +1012,7 @@ class MemoryService:
             "episodes": len(episodes),
             "episodes_consolidated": len([ep for ep in episodes if ep.consolidated]),
             "episodes_pending": len(pending),
+            "extraction_failures": sum(bool(ep.metadata.get("extraction_error") or ep.metadata.get("outcome_error")) for ep in episodes),
             "working_live": len(working_live),
             "facts_added": len(session_facts),
             "facts_redacted": redacted,
@@ -1022,6 +1043,7 @@ class MemoryService:
                     "episodes": 0,
                     "episodes_consolidated": 0,
                     "episodes_pending": 0,
+                    "extraction_failures": 0,
                     "facts_added": 0,
                     "facts_sensitive": 0,
                     "working_live": 0,
@@ -1039,6 +1061,7 @@ class MemoryService:
                 continue
             row = ensure(ep.session_id)
             row["episodes"] += 1
+            row["extraction_failures"] += bool(ep.metadata.get("extraction_error") or ep.metadata.get("outcome_error"))
             if ep.consolidated:
                 row["episodes_consolidated"] += 1
             else:
@@ -1498,7 +1521,10 @@ class MemoryService:
         ]
         consolidated_episodes = [ep for ep in episodes if ep.consolidated]
         pending_episodes = [ep for ep in episodes if not ep.consolidated]
-        ephemeral_episodes = [ep for ep in episodes if ep.metadata.get("ephemeral")]
+        # Count history containing working content, including mixed durable/working input.
+        ephemeral_episodes = [ep for ep in episodes
+                              if ep.metadata.get("memory_result") in {"working", "mixed"}
+                              or ep.metadata.get("ephemeral")]
         event_times = [ep.event_time for ep in episodes]
         fact_times = [f.valid_at for f in facts]
         user_entities = [e for e in mem.graph.entities.values() if e.user_id == user]
@@ -1534,6 +1560,7 @@ class MemoryService:
                 "episodes": len(episodes),
                 "episodes_consolidated": len(consolidated_episodes),
                 "episodes_pending": len(pending_episodes),
+                "extraction_failures": sum(bool(ep.metadata.get("extraction_error") or ep.metadata.get("outcome_error")) for ep in episodes),
                 "episodes_ephemeral": len(ephemeral_episodes),
                 "facts_hot": len(hot_facts),
                 "facts_cold": len(cold_facts),

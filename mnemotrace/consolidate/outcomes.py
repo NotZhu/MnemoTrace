@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ..llm import LLM
+from ..extraction import ExtractionError, ExtractionResponseError, require_llm
 from ..types import Episode, Fact
 from .classify import classify
 from .llm_extractor import parse_json_facts
@@ -87,8 +88,9 @@ def extract_outcomes(llm: LLM, episodes: list[Episode], user_id: str,
     按会话粒度设计：一个决定体现在对话的弧线里，而不是任何单轮中——这正是逐 episode 的提取器
     看不见它的原因。每个会话一次 LLM 调用，而不是每轮一次。
     """
-    if llm is None or not episodes:
+    if not episodes:
         return []
+    require_llm(llm)
     chrono = sorted(episodes, key=lambda e: (e.event_time, e.ingested_at))
     transcript = _windowed(
         [f"[{ep.speaker}] {ep.content}" for ep in chrono if ep.content.strip()], max_chars
@@ -105,8 +107,8 @@ def extract_outcomes(llm: LLM, episodes: list[Episode], user_id: str,
     )
     try:
         raw = llm.complete(prompt, system=topic_system(system or OUTCOME_SYSTEM, llm_topics))
-    except Exception:  # noqa: BLE001 — 模型故障绝不能丢失 episode 本身
-        return []
+    except Exception as exc:
+        raise ExtractionError() from exc
 
     # 把每条产出归因到整个会话：结论由整段对话支撑，而不是某一轮，因此"这是从哪来的？"
     # 应该指向会话本身，而不是其中随机一行。
@@ -118,9 +120,13 @@ def extract_outcomes(llm: LLM, episodes: list[Episode], user_id: str,
     seen: set[str] = set()
     topic_items: list[dict] = []
     for item in parse_json_facts(raw):
+        if (not isinstance(item.get("kind"), str)
+                or not isinstance(item.get("statement"), str) or not item["statement"].strip()
+                or ("why" in item and not isinstance(item["why"], str))):
+            raise ExtractionResponseError()
         kind = str(item.get("kind", "")).strip().lower()
         if kind not in OUTCOME_PREDICATES:
-            continue
+            raise ExtractionResponseError()
         statement = " ".join(str(item.get("statement", "")).split())
         if not (_MIN_CHARS <= len(statement) <= _MAX_CHARS):
             continue

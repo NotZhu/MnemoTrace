@@ -19,7 +19,7 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-# CORE HAS ZERO HARD DEPENDENCIES — the offline demo + tests must run on a bare Python.
+# Core has zero hard dependencies; extraction requires an injected LLM, tests use fixed responses.
 dependencies = []
 
 [project.optional-dependencies]
@@ -41,7 +41,7 @@ dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "ruff>=0.4", "tomli>=2; python_ver
 all = ["mnemotrace-memory[server,mcp,embeddings,backends,llm,documents,eval,dev]"]
 
 [project.scripts]
-mnemotrace-quickstart = "mnemotrace.quickstart:main"       # zero-setup installed demo
+mnemotrace-quickstart = "mnemotrace.quickstart:main"       # configured-LLM example
 mnemotrace-mcp = "mnemotrace.mcp.__main__:main"            # run the MCP server
 mnemotrace-import = "mnemotrace.connectors.__main__:main"  # import a chat/history export
 mnemotrace-agent-setup = "mnemotrace.agent_setup:main"     # print cross-agent memory config snippets

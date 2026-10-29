@@ -10,7 +10,7 @@ import tempfile
 import pytest
 
 from mnemotrace.metrics import Metrics
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import MemoryService
 
 _SECRET_NS = "alice-secret-ns"
 _SECRET_TEXT = "I live in Shenzhen"
@@ -56,7 +56,7 @@ def test_savings_ratio_needs_both_sides():
 def test_service_paths_are_timed_and_tokens_recorded(svc):
     svc.remember(_SECRET_NS, f"My name is Wei and {_SECRET_TEXT}.")
     svc.recall(_SECRET_NS, "where do I live")                 # 只记 context tokens
-    svc.recall(_SECRET_NS, "where do I live", answer=True)    # + full 基线（无 LLM -> answer 为 ""）
+    svc.recall(_SECRET_NS, "where do I live", answer=True)    # + full 基线，固定响应的 answer 为空
     snap = svc.metrics_snapshot()
 
     assert snap["ops"]["remember"]["n"] == 1

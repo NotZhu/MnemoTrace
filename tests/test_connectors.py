@@ -1,9 +1,9 @@
-"""Connectors + 批量导入——纯离线（hashing 嵌入器、规则抽取器），零配置。"""
+"""Connectors + 批量导入：使用 hashing 嵌入器和固定合成模型响应离线验证。"""
 from __future__ import annotations
 
 import json
 
-from mnemotrace import Memory
+from tests.model_fixtures import Memory
 from mnemotrace.connectors import parse, sniff
 from mnemotrace.connectors.base import to_epoch
 

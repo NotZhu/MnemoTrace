@@ -1,5 +1,5 @@
 """HTTP API 冒烟测试：针对重构后基于 MemoryService 的应用 —— 离线运行（hashing 嵌入器、
-规则提取器），无需下载模型或 API key。覆盖 React 控制台 + SDK 依赖的所有路由形态，
+固定合成模型响应），无需下载模型或 API key。覆盖 React 控制台 + SDK 依赖的所有路由形态，
 以及新增的 /v1/import。"""
 from __future__ import annotations
 
@@ -28,7 +28,8 @@ def client(monkeypatch):
     }.items():
         monkeypatch.setenv(name, value)
     from mnemotrace.server import app as appmod
-    appmod._svc = None  # 绑定到测试环境变量的全新单例
+    from tests.model_fixtures import MemoryService
+    appmod._svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
     try:
         with TestClient(appmod.app) as c:
             yield c
@@ -48,7 +49,7 @@ def test_health(client):
     assert data["auth_mode"] == "open"
     assert data["anonymous_allowed"] is False
     assert data["embedder"] == "HashingEmbedder"
-    assert data["llm_configured"] is False
+    assert data["llm_configured"] is True
     assert data["answerer_configured"] is False
     assert data["storage"] == "memory"
     assert data["max_hot_users"] >= data["users_hot"]
@@ -61,7 +62,7 @@ def test_health(client):
 def test_store_validation_failure_is_structured_and_does_not_delete_data(client):
     import json
     from pathlib import Path
-    from mnemotrace import Memory
+    from tests.model_fixtures import Memory
     from mnemotrace._namespace_paths import namespace_path
     from mnemotrace.server import app as appmod
 
@@ -1239,7 +1240,7 @@ def test_audit_sorts_before_limit_and_preserves_equal_priority_order(client):
 
 def test_import_agent_sessions_defaults_to_outcomes_only_and_feed_stats(client):
     """watcher 上报的 agent 会话带 `metadata.source` 但不带 `consolidate` 键：服务端必须把它们
-    存起来留到 close 时再蒸馏，绝不逐轮提取（RuleExtractor 曾把 12 个真实轮次变成 11 条垃圾
+    存起来留到 close 时再蒸馏，绝不逐轮提取（LLMExtractor 曾把 12 个真实轮次变成 11 条垃圾
     fact）；同时 stats 必须记录记忆最后一次被喂入的时间。"""
     h = hdr("feed-ns")
     transcript = [{"role": "user", "content": "The config file is nearly empty. This is now clear: EKOS "
@@ -1258,7 +1259,7 @@ def test_import_agent_sessions_defaults_to_outcomes_only_and_feed_stats(client):
     data = r.json()
     assert data["episodes"] == 3
     assert data["facts_deferred"] == 2 and data["deferred_reason"] == "outcomes_only", data
-    assert data["facts_added"] >= 1  # 普通 session 仍会走规则提取器
+    assert data["facts_added"] >= 1  # 普通 session 仍请求模型抽取
 
     closed = client.post("/v1/sessions/close", json={"session_id": "claude-code:a"}, headers=h).json()
     assert closed["pending_consolidated"] == 0 and closed["facts_added"] == 0, closed
@@ -1270,11 +1271,13 @@ def test_import_agent_sessions_defaults_to_outcomes_only_and_feed_stats(client):
     status = client.get("/v1/agent/status", headers=h).json()
     assert status["feed"]["last_fed_at"] is not None and status["feed"]["sessions"] == 2
 
-    # 未挂 LLM 时请求提取：返回的 reason 会说明原因，且不做任何提取
+    from mnemotrace.server import app as appmod
+    appmod.svc().llm = None
+    # 未挂 LLM 时请求提取：在写入前拒绝。
     r = client.post("/v1/import", json={"consolidate": True, "sessions": [
         {"session_id": "codex:c", "metadata": {"source": "agent_session"}, "messages": transcript}]},
         headers=h).json()
-    assert r["facts_deferred"] == 1 and r["deferred_reason"] == "no_llm", r
+    assert r["detail"]["code"] == "llm_not_configured", r
 
     # 从未被喂入的命名空间会如实上报
     empty = client.get("/v1/stats", headers=hdr("never-fed")).json()["feed"]

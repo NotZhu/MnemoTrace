@@ -5,7 +5,7 @@
 
 为 LLM 智能体提供长期记忆，包含 Python 库、HTTP 服务、MCP 工具、TypeScript SDK 和管理控制台。
 
-MnemoTrace 保存原始会话，从中提取带时间和来源的事实，并跨会话检索相关上下文。知识更新可以保留被替代的事实，支持历史查询。Python 默认路径使用哈希嵌入与规则抽取，无需 API key、模型下载或外部服务；这套确定性配置用于理解管线，不代表语义检索质量。
+MnemoTrace 保存原始会话，从中提取带时间和来源的事实，并跨会话检索相关上下文。知识更新可以保留被替代的事实，支持历史查询。自然语言事实抽取需要配置 LLM；原文保存、手动事实、已有记忆读取和快照恢复可独立使用。默认哈希嵌入仍可用于词汇烟测，不代表语义检索质量。
 
 [English](README.md) · [文档导航](docs/README.md) · [快速开始](docs/quickstart.md)
 
@@ -14,7 +14,8 @@ MnemoTrace 保存原始会话，从中提取带时间和来源的事实，并跨
 在源码仓库根目录执行，需要 Python 3.10 或更高版本：
 
 ```sh
-python -m pip install .
+python -m pip install ".[llm]"
+# Set MNEMOTRACE_LLM and the provider credentials before running.
 mnemotrace-quickstart
 ```
 
@@ -22,8 +23,9 @@ mnemotrace-quickstart
 
 ```python
 from mnemotrace import Memory
+from mnemotrace.llm.providers import make_llm
 
-memory = Memory()
+memory = Memory(llm=make_llm("deepseek"))
 memory.add("I live in Paris.", user_id="user123", session_id="demo")
 memory.consolidate()
 print(memory.search("Where do I live?", user_id="user123").answer())

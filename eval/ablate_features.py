@@ -15,12 +15,20 @@ import os
 import sys
 import time
 from dataclasses import dataclass
+from contextvars import ContextVar
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mnemotrace import Config, Memory  # noqa: E402
 from mnemotrace.types import Fact  # noqa: E402
 from mnemotrace.util import DAY  # noqa: E402
+
+_MODEL = ContextVar("ablation_model", default=None)
+
+
+def _memory(**kwargs):
+    return Memory(llm=_MODEL.get(), **kwargs)
+
 
 BASE = 1_700_000_000.0
 
@@ -49,7 +57,7 @@ def _timed(fn):
 
 
 def _chain_context(enabled: bool) -> str:
-    mem = Memory(config=Config(chain_evidence=enabled))
+    mem = _memory(config=Config(chain_evidence=enabled))
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
     mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
     return mem.lean_context(
@@ -62,7 +70,7 @@ def _chain_context(enabled: bool) -> str:
 
 
 def _temporal_history_context(enabled: bool) -> str:
-    mem = Memory(config=Config(temporal_history_queries=enabled))
+    mem = _memory(config=Config(temporal_history_queries=enabled))
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
     mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
     res = mem.search("Where did Wei work before Moonshot AI?", user_id="u1")
@@ -70,7 +78,7 @@ def _temporal_history_context(enabled: bool) -> str:
 
 
 def _summary_fallback_context(enabled: bool) -> str:
-    mem = Memory(config=Config(summary_fallback=enabled))
+    mem = _memory(config=Config(summary_fallback=enabled))
     ep = mem.add(
         "To rotate the PAT: open security settings, regenerate the token, then update CI secrets.",
         user_id="u1",
@@ -83,7 +91,7 @@ def _summary_fallback_context(enabled: bool) -> str:
 
 
 def _procedural_memory_context(enabled: bool) -> str:
-    mem = Memory(config=Config(procedural_memory=enabled, abstain_threshold=2.0))
+    mem = _memory(config=Config(procedural_memory=enabled, abstain_threshold=2.0))
     ep = mem.add(
         "PAT runbook source: rotate the PAT by opening security settings, regenerating the token, "
         "then updating CI secrets.",
@@ -114,7 +122,7 @@ def _procedural_memory_context(enabled: bool) -> str:
 
 
 def _procedural_extraction_context(enabled: bool) -> str:
-    mem = Memory(config=Config(procedural_extraction=enabled, abstain_threshold=2.0))
+    mem = _memory(config=Config(procedural_extraction=enabled, abstain_threshold=2.0))
     mem.add(
         "PAT runbook source: rotate the PAT by opening security settings, regenerating the token, "
         "then updating CI secrets.",
@@ -136,7 +144,7 @@ def _procedural_extraction_context(enabled: bool) -> str:
 
 
 def _explicit_preference_extraction_context(enabled: bool) -> str:
-    mem = Memory(config=Config(explicit_preference_extraction=enabled))
+    mem = _memory(config=Config(explicit_preference_extraction=enabled))
     mem.add(
         "I prefer aisle seats and avoid red-eye flights.",
         user_id="u1",
@@ -157,7 +165,7 @@ def _explicit_preference_extraction_context(enabled: bool) -> str:
 
 
 def _preference_object_filter_context(enabled: bool) -> str:
-    mem = Memory(config=Config(preference_object_filter=enabled))
+    mem = _memory(config=Config(preference_object_filter=enabled))
     mem.add(
         "I love it. I love retro-style diners.",
         user_id="u1",
@@ -179,7 +187,7 @@ def _preference_object_filter_context(enabled: bool) -> str:
 
 
 def _preference_object_normalization_context(enabled: bool) -> str:
-    mem = Memory(config=Config(preference_object_normalization=enabled))
+    mem = _memory(config=Config(preference_object_normalization=enabled))
     mem.add(
         "I like the sound of the avocado sauce. I like the idea of fruit kebabs.",
         user_id="u1",
@@ -201,7 +209,7 @@ def _preference_object_normalization_context(enabled: bool) -> str:
 
 
 def _preference_reversal_extraction_context(enabled: bool) -> str:
-    mem = Memory(config=Config(preference_reversal_extraction=enabled))
+    mem = _memory(config=Config(preference_reversal_extraction=enabled))
     mem.add("I like jazz.", user_id="u1", session_id="prefs-old", event_time=BASE)
     mem.add("I no longer like jazz.", user_id="u1", session_id="prefs-new", event_time=BASE + DAY)
     mem.consolidate()
@@ -227,7 +235,7 @@ def _preference_reversal_extraction_context(enabled: bool) -> str:
 
 
 def _numeric_aggregation_candidates_context(enabled: bool) -> str:
-    mem = Memory(config=Config(numeric_aggregation_candidates=enabled))
+    mem = _memory(config=Config(numeric_aggregation_candidates=enabled))
     mem.add(
         "I attended a mindfulness workshop. I paid $20 to attend.",
         user_id="u1",
@@ -277,7 +285,7 @@ def _aggregation_recall_expansion_context(enabled: bool) -> str:
 
 
 def _aggregation_constraint_filter_context(enabled: bool) -> str:
-    mem = Memory(config=Config(aggregation_constraint_filter=enabled))
+    mem = _memory(config=Config(aggregation_constraint_filter=enabled))
     mem.add(
         'I just finished a 416-page novel, but before that, I read "The Power" '
         "by Naomi Alderman in December, which had 341 pages.",
@@ -303,7 +311,7 @@ def _aggregation_constraint_filter_context(enabled: bool) -> str:
 
 
 def _raw_context(enabled: bool) -> str:
-    mem = Memory(config=Config(evidence_planner=False, provenance_evidence=enabled))
+    mem = _memory(config=Config(evidence_planner=False, provenance_evidence=enabled))
     ep = mem.add(
         "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
         user_id="u1",
@@ -330,7 +338,7 @@ def _raw_context(enabled: bool) -> str:
 
 
 def _provenance_chunk_context(enabled: bool) -> str:
-    mem = Memory(
+    mem = _memory(
         config=Config(
             evidence_planner=False,
             provenance_evidence=False,
@@ -371,7 +379,7 @@ def _provenance_chunk_context(enabled: bool) -> str:
 
 
 def _chain_provenance_context(enabled: bool) -> str:
-    mem = Memory(
+    mem = _memory(
         config=Config(
             chain_evidence=enabled,
             provenance_evidence=False,
@@ -402,7 +410,7 @@ def _chain_provenance_context(enabled: bool) -> str:
 
 
 def _evidence_budget_context(enabled: bool) -> str:
-    mem = Memory(config=Config(evidence_budgeting=enabled))
+    mem = _memory(config=Config(evidence_budgeting=enabled))
     ep = mem.add(
         "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
         user_id="u1",
@@ -438,7 +446,7 @@ def _evidence_budget_context(enabled: bool) -> str:
 
 
 def _graph_context(enabled: bool) -> str:
-    mem = Memory(config=Config(graph_proximity=enabled))
+    mem = _memory(config=Config(graph_proximity=enabled))
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -446,7 +454,7 @@ def _graph_context(enabled: bool) -> str:
 
 
 def _graph_relation_context(enabled: bool) -> str:
-    mem = Memory(config=Config(graph_relation_awareness=enabled))
+    mem = _memory(config=Config(graph_relation_awareness=enabled))
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -455,7 +463,7 @@ def _graph_relation_context(enabled: bool) -> str:
 
 
 def _graph_reinforcement_context(enabled: bool) -> str:
-    mem = Memory(config=Config(graph_path_reinforcement=enabled))
+    mem = _memory(config=Config(graph_path_reinforcement=enabled))
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Wei", "mentor", "Maya", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Lin", "works_on", "Atlas", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -467,20 +475,20 @@ def _graph_reinforcement_context(enabled: bool) -> str:
 
 
 def _graph_self_anchor_context(enabled: bool) -> str:
-    mem = Memory(config=Config(graph_self_anchor=enabled))
+    mem = _memory(config=Config(graph_self_anchor=enabled))
     mem.add_fact("u1", "works_on", "Atlas", user_id="u1", valid_at=BASE)
     mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY)
     return mem.context_for("Where is my project based?", user_id="u1", k_chunks=0, graph=True)
 
 
 def _graph_entity_alias_context(enabled: bool) -> str:
-    mem = Memory(config=Config(graph_entity_alias_anchor=enabled))
+    mem = _memory(config=Config(graph_entity_alias_anchor=enabled))
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
     return mem.context_for("Where is Moonshot based?", user_id="u1", k_chunks=0, graph=True)
 
 
 def _graph_negative_context(enabled: bool) -> str:
-    mem = Memory(config=Config(graph_negative_constraints=enabled))
+    mem = _memory(config=Config(graph_negative_constraints=enabled))
     mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
     mem.add_fact("Wei", "works_on", "Zephyr", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -489,7 +497,7 @@ def _graph_negative_context(enabled: bool) -> str:
 
 
 def _planner_location_context(enabled: bool) -> str:
-    mem = Memory(config=Config(planner_location_chains=enabled))
+    mem = _memory(config=Config(planner_location_chains=enabled))
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -498,7 +506,7 @@ def _planner_location_context(enabled: bool) -> str:
 
 
 def _planner_project_context(enabled: bool) -> str:
-    mem = Memory(config=Config(planner_project_chains=enabled))
+    mem = _memory(config=Config(planner_project_chains=enabled))
     mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
     mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY)
     res = mem.search("Where is Wei's project based?", user_id="u1")
@@ -517,7 +525,7 @@ def _before(target: str, distractor: str):
     return judge
 
 
-def run_ablation() -> tuple[list[AblationResult], dict]:
+def _run_ablation() -> tuple[list[AblationResult], dict]:
     cases = [
         (
             "chain_evidence",
@@ -557,7 +565,7 @@ def run_ablation() -> tuple[list[AblationResult], dict]:
                 and "sessions: pat-runbook" in ctx
                 and "SEARCH procedural" in ctx
             ),
-            "rule extractor promotes runbook source into procedural memory",
+            "model extraction promotes runbook source into procedural memory",
         ),
         (
             "explicit_preference_extraction",
@@ -567,7 +575,7 @@ def run_ablation() -> tuple[list[AblationResult], dict]:
                 and "aisle seats" in ctx
                 and "red-eye flights" in ctx
             ),
-            "rule extractor promotes explicit prefer/avoid statements into profile memory",
+            "model extraction promotes explicit prefer/avoid statements into profile memory",
         ),
         (
             "preference_object_filter",
@@ -724,13 +732,29 @@ def run_ablation() -> tuple[list[AblationResult], dict]:
     return rows, summary
 
 
+def run_ablation(*, llm):
+    from mnemotrace.extraction import require_llm
+    require_llm(llm)
+    token = _MODEL.set(llm)
+    try:
+        return _run_ablation()
+    finally:
+        _MODEL.reset(token)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run zero-key feature ablations for MnemoTrace read-path evidence.")
     ap.add_argument("--jsonl", help="write per-feature rows plus a summary as JSONL")
+    ap.add_argument("--llm", help="model name, or set MNEMOTRACE_LLM")
     args = ap.parse_args()
+    from mnemotrace.llm.providers import make_llm, load_dotenv
+    load_dotenv()
+    model = args.llm or os.environ.get("MNEMOTRACE_LLM", "")
+    if not model:
+        ap.error("configure --llm or MNEMOTRACE_LLM")
 
-    rows, summary = run_ablation()
-    print("MnemoTrace feature ablation smoke -- offline, zero API keys")
+    rows, summary = run_ablation(llm=make_llm(model))
+    print("MnemoTrace feature ablation smoke -- explicit LLM; synthetic smoke only")
     print("feature                  enabled  disabled  improved  target")
     print("-" * 78)
     for r in rows:

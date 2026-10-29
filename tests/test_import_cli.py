@@ -8,20 +8,61 @@ from pathlib import Path
 
 import pytest
 
-from mnemotrace import Memory
+from tests.model_fixtures import Memory
 from mnemotrace.connectors import parse
 from mnemotrace.connectors.__main__ import _import_local, main
 from mnemotrace.service import MemoryService
 
 
+@pytest.fixture(autouse=True)
+def synthetic_provider(monkeypatch):
+    from tests.model_fixtures import RecordedLLM
+    monkeypatch.setattr("mnemotrace.llm.providers.make_llm", lambda *a, **k: RecordedLLM())
+
+
 def args_for(root, user="synthetic-user", **overrides):
-    values = dict(data_dir=str(root), namespace=user, embedder=None, llm=None,
+    values = dict(data_dir=str(root), namespace=user, embedder=None, llm="synthetic-fixture",
                   no_consolidate=True, no_summarize=True)
     return Namespace(**{**values, **overrides})
 
 
 def sessions():
     return parse([{"role": "user", "content": "SYNTHETIC_CLI_EPISODE"}], format="messages")
+
+
+def test_cli_missing_model_is_actionable_without_traceback(tmp_path, monkeypatch, capsys):
+    import io
+    monkeypatch.setattr('sys.stdin', io.StringIO(json.dumps([{
+        'role': 'user', 'content': 'Synthetic raw input'}])))
+    monkeypatch.setattr('sys.argv', ['mnemotrace-import', '--data-dir', str(tmp_path)])
+    with pytest.raises(SystemExit) as stopped:
+        main()
+    assert stopped.value.code == 1
+    output = capsys.readouterr().err
+    assert 'llm_not_configured' in output and 'Traceback' not in output
+    assert not MemoryService(data_dir=str(tmp_path), llm_name='').get('me').episodes_doc.values()
+
+
+def test_cli_remote_extraction_error_preserves_retry_details(monkeypatch, capsys):
+    import io
+    import urllib.error
+    from mnemotrace.extraction import ExtractionError
+    from mnemotrace.connectors import __main__ as cli
+    error = ExtractionError(stored_raw=True, episode_ids=['synthetic-episode'])
+
+    def remote(*args):
+        raise urllib.error.HTTPError('https://synthetic.invalid', 502, 'failed', {},
+                                     io.BytesIO(json.dumps({'detail': error.detail()}).encode()))
+
+    monkeypatch.setattr(cli, '_post_remote', remote)
+    monkeypatch.setattr('sys.stdin', io.StringIO(json.dumps([{
+        'role': 'user', 'content': 'Synthetic raw input'}])))
+    monkeypatch.setattr('sys.argv', ['mnemotrace-import', '--api-url', 'https://synthetic.invalid'])
+    with pytest.raises(SystemExit) as stopped:
+        main()
+    assert stopped.value.code == 1
+    output = capsys.readouterr().err
+    assert 'synthetic-episode' in output and 'extraction_failed' in output and 'Traceback' not in output
 
 
 @pytest.mark.parametrize("old_layout", [None, "directory", "pkl-directory", "pkl-file"])
@@ -123,7 +164,7 @@ def test_cli_waits_for_service_transaction_and_preserves_its_write(tmp_path, mon
     assert [ep.content for ep in reloaded.get(user).episodes_doc.values()] == ["user: SYNTHETIC_CLI_EPISODE"]
 
 
-def test_cli_default_still_consolidates_and_summarizes_offline(tmp_path):
+def test_cli_consolidates_and_summarizes_with_configured_fixture_model(tmp_path):
     parsed = parse([{"role": "user", "content": "I live in SyntheticCity."}], format="messages")
     result = _import_local(args_for(tmp_path, no_consolidate=False, no_summarize=False), parsed)
     service = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")

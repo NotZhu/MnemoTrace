@@ -11,9 +11,11 @@ from unittest.mock import patch
 
 import pytest
 
-from mnemotrace import Memory, _flock
+from mnemotrace import _flock
+
+from mnemotrace import Memory
 from mnemotrace.embed import HashingEmbedder
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import MemoryService
 from mnemotrace.store import PersistenceError, persist
 
 

@@ -14,7 +14,7 @@ import pytest
 from mnemotrace.connectors import documents as D
 from mnemotrace.llm import vision
 from mnemotrace.server import openai_compat as oc
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import MemoryService
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32  # 魔数检测所需的最低限度文件头
 

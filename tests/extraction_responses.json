@@ -1,0 +1,887 @@
+{
+  "user: The config file is nearly empty. This is now clear: **EKOS is deployed on an Ubuntu server** and the backend framework is FastAPI.\nassistant: This confirms the deployment. The next step is to check nginx.\nuser: That module is broken. The extractor is volcano and the judge is deepseek.\nassistant: It looks like the retry loop is the problem here.\nuser: I moved to Shenzhen last year and I work at Moonshot AI.": [
+    {
+      "subject": "EKOS",
+      "predicate": "deployed_on",
+      "object": "Ubuntu server"
+    },
+    {
+      "subject": "EKOS",
+      "predicate": "backend_framework",
+      "object": "FastAPI"
+    },
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Shenzhen"
+    },
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Moonshot AI"
+    }
+  ],
+  "I live in Shenzhen.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Shenzhen"
+    }
+  ],
+  "My name is Wei and I live in Shenzhen.": [
+    {
+      "subject": "user",
+      "predicate": "name",
+      "object": "Wei"
+    },
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Shenzhen"
+    }
+  ],
+  "My name is Wei.": [
+    {
+      "subject": "user",
+      "predicate": "name",
+      "object": "Wei"
+    }
+  ],
+  "I work at Moonshot AI.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Moonshot AI"
+    }
+  ],
+  "I like tea.": [
+    {
+      "subject": "user",
+      "predicate": "likes",
+      "object": "tea"
+    }
+  ],
+  "I work at Storage Labs.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Storage Labs"
+    }
+  ],
+  "# Trip planning\nuser: I am planning a trip to Tokyo in March.\nassistant: Tokyo is lovely in spring.\nuser: My budget is 3000 dollars.": [
+    {
+      "subject": "user",
+      "predicate": "occupation",
+      "object": "lovely"
+    },
+    {
+      "subject": "user",
+      "predicate": "occupation",
+      "object": "3000 dollars"
+    }
+  ],
+  "user: Wei works at Tencent.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Tencent"
+    }
+  ],
+  "user: Wei works at Moonshot AI.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Moonshot AI"
+    }
+  ],
+  "user: I work at Tencent.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Tencent"
+    }
+  ],
+  "Project decision: the launch checklist must include committed eval logs.": [
+    {
+      "subject": "project",
+      "predicate": "decision",
+      "object": "launch checklist must include committed eval logs"
+    }
+  ],
+  "Project rule: benchmark claims require committed raw logs before public copy changes.": [
+    {
+      "subject": "project",
+      "predicate": "rule",
+      "object": "benchmark claims require committed raw logs before public copy changes"
+    }
+  ],
+  "Project preference: keep MnemoTrace memory integrations automatic; users should not manually decide every remember call.": [
+    {
+      "subject": "project",
+      "predicate": "preference",
+      "object": "keep MnemoTrace memory integrations automatic"
+    }
+  ],
+  "# notes.txt\ndocument: Apollo program notes. Lead engineer: Wei Zhang. Launched 1969.": [],
+  "# bike.png\ndocument: [image] a red bicycle leaning on a wall": [],
+  "# x.png\ndocument: [image] (no caption — set MNEMOTRACE_VISION_LLM to describe images)": [],
+  "PAT runbook source: rotate the PAT by opening security settings, regenerating the token, then updating CI secrets.": [
+    {
+      "subject": "PAT",
+      "predicate": "procedure",
+      "object": "rotate the PAT by opening security settings, regenerating the token, then updating CI secrets"
+    }
+  ],
+  "I prefer aisle seats and avoid red-eye flights.": [
+    {
+      "subject": "user",
+      "predicate": "prefers",
+      "object": "aisle seats"
+    },
+    {
+      "subject": "user",
+      "predicate": "avoids",
+      "object": "red-eye flights"
+    }
+  ],
+  "I love it. I love retro-style diners.": [
+    {
+      "subject": "user",
+      "predicate": "loves",
+      "object": "it"
+    },
+    {
+      "subject": "user",
+      "predicate": "loves",
+      "object": "retro-style diners"
+    }
+  ],
+  "I like the sound of the avocado sauce. I like the idea of fruit kebabs.": [
+    {
+      "subject": "user",
+      "predicate": "likes",
+      "object": "sound of the avocado sauce"
+    },
+    {
+      "subject": "user",
+      "predicate": "likes",
+      "object": "idea of fruit kebabs"
+    }
+  ],
+  "I like jazz.": [
+    {
+      "subject": "user",
+      "predicate": "likes",
+      "object": "jazz"
+    }
+  ],
+  "I no longer like jazz.": [
+    {
+      "subject": "user",
+      "predicate": "dislikes",
+      "object": "jazz"
+    }
+  ],
+  "Wei works at Tencent and keeps a blue employee badge.": [
+    {
+      "subject": "Wei",
+      "predicate": "works_at",
+      "object": "Tencent"
+    }
+  ],
+  "Wei works at Moonshot AI on agent memory.": [
+    {
+      "subject": "Wei",
+      "predicate": "works_at",
+      "object": "Moonshot AI on agent memory"
+    }
+  ],
+  "My name is Finn and I work at IBM.": [
+    {
+      "subject": "user",
+      "predicate": "name",
+      "object": "Finn"
+    },
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "IBM"
+    }
+  ],
+  "I now work at Oracle.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Oracle"
+    }
+  ],
+  "My name is Ana and I work at Spotify.": [
+    {
+      "subject": "user",
+      "predicate": "name",
+      "object": "Ana"
+    },
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Spotify"
+    }
+  ],
+  "I really enjoy hiking on weekends.": [
+    {
+      "subject": "user",
+      "predicate": "enjoys",
+      "object": "hiking on weekends"
+    }
+  ],
+  "My name is Cara and my favorite color is blue.": [
+    {
+      "subject": "user",
+      "predicate": "name",
+      "object": "Cara"
+    },
+    {
+      "subject": "user",
+      "predicate": "favorite_color",
+      "object": "blue"
+    }
+  ],
+  "My name is Ben and I live in Boston.": [
+    {
+      "subject": "user",
+      "predicate": "name",
+      "object": "Ben"
+    },
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Boston"
+    }
+  ],
+  "I moved — I now live in Denver.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Denver"
+    }
+  ],
+  "My favorite color is green now.": [
+    {
+      "subject": "user",
+      "predicate": "favorite_color",
+      "object": "green"
+    }
+  ],
+  "My name is Dora.": [
+    {
+      "subject": "user",
+      "predicate": "name",
+      "object": "Dora"
+    }
+  ],
+  "My colleague Evan works at Netflix.": [
+    {
+      "subject": "user",
+      "predicate": "colleague",
+      "object": "Evan"
+    },
+    {
+      "subject": "Evan",
+      "predicate": "works_at",
+      "object": "Netflix"
+    }
+  ],
+  "My sister Maya is a pediatrician at a children's hospital.": [
+    {
+      "subject": "user",
+      "predicate": "sister",
+      "object": "Maya"
+    },
+    {
+      "subject": "Maya",
+      "predicate": "occupation",
+      "object": "pediatrician"
+    }
+  ],
+  "Maya just moved to Seattle for a fellowship.": [
+    {
+      "subject": "Maya",
+      "predicate": "lives_in",
+      "object": "Seattle"
+    }
+  ],
+  "I bought a new espresso machine and it's wonderful.": [],
+  "My name is Gina and I work at Adobe.": [
+    {
+      "subject": "user",
+      "predicate": "name",
+      "object": "Gina"
+    },
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Adobe"
+    }
+  ],
+  "My name is Hugo and I live in Lisbon.": [
+    {
+      "subject": "user",
+      "predicate": "name",
+      "object": "Hugo"
+    },
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Lisbon"
+    }
+  ],
+  "I live in Beijing.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Beijing"
+    }
+  ],
+  "user: I live in SyntheticCity.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "SyntheticCity"
+    }
+  ],
+  "user: I have a dog named Mochi.": [],
+  "user: I drive a Tesla Model 3.": [],
+  "user: I started judo.": [],
+  "I moved, I now live in Shanghai.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Shanghai"
+    }
+  ],
+  "My favorite drink is oolong tea.": [
+    {
+      "subject": "user",
+      "predicate": "favorite_drink",
+      "object": "oolong tea"
+    }
+  ],
+  "I work at Acme Corp.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Acme Corp"
+    }
+  ],
+  "I love hiking in the Alps.": [
+    {
+      "subject": "user",
+      "predicate": "loves",
+      "object": "hiking in the Alps"
+    }
+  ],
+  "My cat is named Miso.": [
+    {
+      "subject": "user",
+      "predicate": "occupation",
+      "object": "named Miso"
+    }
+  ],
+  "I work at Tencent and my favorite language is Python.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Tencent"
+    },
+    {
+      "subject": "user",
+      "predicate": "favorite_language",
+      "object": "Python"
+    }
+  ],
+  "I took a trip to Kyoto and loved the temples.": [],
+  "I adopted a cat named Luna.": [],
+  "I took a trip to Lisbon for a conference.": [],
+  "I started learning the guitar this month.": [],
+  "I took a trip to Oslo to see the fjords.": [],
+  "I now work at Moonshot AI.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Moonshot AI"
+    }
+  ],
+  "I'm vegetarian and allergic to peanuts.": [
+    {
+      "subject": "user",
+      "predicate": "diet",
+      "object": "vegetarian"
+    },
+    {
+      "subject": "user",
+      "predicate": "allergic_to",
+      "object": "peanuts"
+    }
+  ],
+  "Wei works at Tencent.": [
+    {
+      "subject": "Wei",
+      "predicate": "works_at",
+      "object": "Tencent"
+    }
+  ],
+  "Wei works at Moonshot AI.": [
+    {
+      "subject": "Wei",
+      "predicate": "works_at",
+      "object": "Moonshot AI"
+    }
+  ],
+  "My sister Anna is a lawyer.": [
+    {
+      "subject": "user",
+      "predicate": "sister",
+      "object": "Anna"
+    },
+    {
+      "subject": "Anna",
+      "predicate": "occupation",
+      "object": "lawyer"
+    }
+  ],
+  "My sister Maya is a pediatrician.": [
+    {
+      "subject": "user",
+      "predicate": "sister",
+      "object": "Maya"
+    },
+    {
+      "subject": "Maya",
+      "predicate": "occupation",
+      "object": "pediatrician"
+    }
+  ],
+  "Maya just moved to Seattle.": [
+    {
+      "subject": "Maya",
+      "predicate": "lives_in",
+      "object": "Seattle"
+    }
+  ],
+  "I work at Acme": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Acme"
+    }
+  ],
+  "The screening room access code is painted behind the velvet poster.": [
+    {
+      "subject": "The",
+      "predicate": "occupation",
+      "object": "painted behind the velvet poster"
+    }
+  ],
+  "Budget sync 0: the quarterly numbers were reviewed in depth.": [],
+  "Budget sync 1: the quarterly numbers were reviewed in depth.": [],
+  "Budget sync 2: the quarterly numbers were reviewed in depth.": [],
+  "I live in Hawaii.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Hawaii"
+    }
+  ],
+  "I moved. I live in Paris now.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Paris"
+    }
+  ],
+  "I live in Shenzhen and work at Tencent.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Shenzhen"
+    },
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Tencent"
+    }
+  ],
+  "我们把部署方式从 docker compose 换成了 rsync": [],
+  "重新配对会覆盖唯一的全局配置文件": [],
+  "My name is Wei and I work at Tencent.": [
+    {
+      "subject": "user",
+      "predicate": "name",
+      "object": "Wei"
+    },
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Tencent"
+    }
+  ],
+  "Actually I switched jobs and now work at Moonshot AI.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Moonshot AI"
+    }
+  ],
+  "PAT runbook source: rotate the PAT by opening security settings and updating CI secrets.": [
+    {
+      "subject": "PAT",
+      "predicate": "procedure",
+      "object": "rotate the PAT by opening security settings and updating CI secrets"
+    }
+  ],
+  "user: I work at Acme.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Acme"
+    }
+  ],
+  "Project decision: release notes require committed raw logs.": [
+    {
+      "subject": "project",
+      "predicate": "decision",
+      "object": "release notes require committed raw logs"
+    }
+  ],
+  "My private diagnosis is diabetes.": [
+    {
+      "subject": "user",
+      "predicate": "medical_condition",
+      "object": "diabetes"
+    }
+  ],
+  "My private diagnosis is diabetes. I work at Acme.": [
+    {
+      "subject": "user",
+      "predicate": "occupation",
+      "object": "diabetes"
+    },
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Acme"
+    }
+  ],
+  "# Pets\nuser: I have a dog named Mochi.\nassistant: Mochi is a cute name!": [
+    {
+      "subject": "user",
+      "predicate": "occupation",
+      "object": "cute name"
+    }
+  ],
+  "First durable episode.": [],
+  "Second durable episode.": [],
+  "Temporary note.": [],
+  "user: I live in Shenzhen and work at Moonshot AI.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Shenzhen"
+    },
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Moonshot AI"
+    }
+  ],
+  "I work at Acme.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Acme"
+    }
+  ],
+  "Project decision: local MCP agents must refresh disk snapshots before recall.": [
+    {
+      "subject": "project",
+      "predicate": "decision",
+      "object": "local MCP agents must refresh disk snapshots before recall"
+    }
+  ],
+  "My private diagnosis is diabetes and I work at Acme.": [
+    {
+      "subject": "user",
+      "predicate": "occupation",
+      "object": "diabetes"
+    },
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Acme"
+    }
+  ],
+  "Just saying hello.": [],
+  "I live in Syntheticville.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Syntheticville"
+    }
+  ],
+  "My favorite programming language is Python.": [
+    {
+      "subject": "user",
+      "predicate": "favorite_programming_language",
+      "object": "Python"
+    }
+  ],
+  "Actually I just switched jobs — I now work at Moonshot AI.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Moonshot AI"
+    }
+  ],
+  "My colleague Lin works at Moonshot AI too.": [
+    {
+      "subject": "user",
+      "predicate": "colleague",
+      "object": "Lin"
+    },
+    {
+      "subject": "Lin",
+      "predicate": "works_at",
+      "object": "Moonshot AI"
+    }
+  ],
+  "Wei works at Tencent.\nWei works at Moonshot AI.": [
+    {
+      "subject": "Wei",
+      "predicate": "works_at",
+      "object": "Tencent"
+    },
+    {
+      "subject": "Wei",
+      "predicate": "works_at",
+      "object": "Moonshot AI"
+    }
+  ],
+  "Project preference: Codex should close MnemoTrace sessions when tasks end.": [
+    {
+      "subject": "project",
+      "predicate": "preference",
+      "object": "Codex should close MnemoTrace sessions when tasks end"
+    }
+  ],
+  "To rotate the PAT: open security settings, regenerate the token, then update CI secrets.": [
+    {
+      "subject": "PAT",
+      "predicate": "procedure",
+      "object": "open security settings, regenerate the token, then update CI secrets"
+    }
+  ],
+  "Project rule: MnemoTrace benchmark claims must be backed by committed raw logs before public copy changes.": [
+    {
+      "subject": "project",
+      "predicate": "rule",
+      "object": "MnemoTrace benchmark claims must be backed by committed raw logs before public copy changes"
+    }
+  ],
+  "Project preference: Codex should use MnemoTrace as cross-agent memory and call mnemotrace_close_session when a task ends.": [
+    {
+      "subject": "project",
+      "predicate": "preference",
+      "object": "Codex should use MnemoTrace as cross-agent memory"
+    }
+  ],
+  "I am a pediatrician.": [
+    {
+      "subject": "user",
+      "predicate": "occupation",
+      "object": "pediatrician"
+    }
+  ],
+  "I work as a data engineer at Spotify.": [
+    {
+      "subject": "user",
+      "predicate": "occupation",
+      "object": "data engineer"
+    }
+  ],
+  "I'm a fan of jazz.": [
+    {
+      "subject": "user",
+      "predicate": "likes",
+      "object": "jazz"
+    }
+  ],
+  "I'm into synthwave.": [
+    {
+      "subject": "user",
+      "predicate": "likes",
+      "object": "synthwave"
+    }
+  ],
+  "I don't like crowded lounges.": [
+    {
+      "subject": "user",
+      "predicate": "dislikes",
+      "object": "crowded lounges"
+    }
+  ],
+  "I'm pretty sure I love retro-style diners.": [
+    {
+      "subject": "user",
+      "predicate": "loves",
+      "object": "retro-style diners"
+    }
+  ],
+  "I love it. I love retro-style diners. I like these ideas.": [
+    {
+      "subject": "user",
+      "predicate": "loves",
+      "object": "retro-style diners"
+    }
+  ],
+  "I like the sound of the avocado sauce.": [
+    {
+      "subject": "user",
+      "predicate": "likes",
+      "object": "sound of the avocado sauce"
+    }
+  ],
+  "I love crowded lounges.": [
+    {
+      "subject": "user",
+      "predicate": "loves",
+      "object": "crowded lounges"
+    }
+  ],
+  "I stopped enjoying crowded lounges.": [
+    {
+      "subject": "user",
+      "predicate": "dislikes",
+      "object": "crowded lounges"
+    }
+  ],
+  "I'm moving to Berlin next month for a job at Acme.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Berlin"
+    },
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Acme"
+    }
+  ],
+  "By the way, I'm vegetarian and allergic to peanuts.": [
+    {
+      "subject": "user",
+      "predicate": "diet",
+      "object": "vegetarian"
+    },
+    {
+      "subject": "user",
+      "predicate": "allergic_to",
+      "object": "peanuts"
+    }
+  ],
+  "Exciting! Berlin is great.": [],
+  "The deploy key rotates every 90 days.": [],
+  "Standup is at 10am daily.": [],
+  "Agent A note: the API base is api.acme.dev.": [],
+  "Team standup is daily at 10am.": [
+    {
+      "subject": "Team",
+      "predicate": "occupation",
+      "object": "daily"
+    }
+  ],
+  "Alice lives in Berlin.": [
+    {
+      "subject": "Alice",
+      "predicate": "lives_in",
+      "object": "Berlin"
+    }
+  ],
+  "My name is Aster. I live in Paris.": [
+    {
+      "subject": "user",
+      "predicate": "name",
+      "object": "Aster"
+    },
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Paris"
+    }
+  ],
+  "My name is Beryl. I live in Berlin.": [
+    {
+      "subject": "user",
+      "predicate": "name",
+      "object": "Beryl"
+    },
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Berlin"
+    }
+  ],
+  "user: I live in Paris.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Paris"
+    }
+  ],
+  "user: I live in London.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "London"
+    }
+  ],
+  "user: I live in Tokyo.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Tokyo"
+    }
+  ],
+  "user: I live in Berlin.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Berlin"
+    }
+  ],
+  "SYNTHETIC_PENDING": [],
+  "SYNTHETIC_CONCURRENT_EPISODE": [],
+  "SYNTHETIC_NEW_EPISODE": [],
+  "Project decision: child-write-beta must survive concurrent local MCP writes.": [
+    {
+      "subject": "project",
+      "predicate": "decision",
+      "object": "child-write-beta must survive concurrent local MCP writes"
+    }
+  ],
+  "user: I have a cat named Pixel.": [
+    {
+      "subject": "user",
+      "predicate": "has_pet",
+      "object": "cat named Pixel"
+    }
+  ],
+  "Team note: standup is at 10am daily.": [],
+  "SYNTHETIC_ORIGINAL_EPISODE": [],
+  "Project decision: launch notes require committed raw logs.": [
+    {
+      "subject": "project",
+      "predicate": "decision",
+      "object": "launch notes require committed raw logs"
+    }
+  ]
+}

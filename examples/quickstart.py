@@ -1,4 +1,4 @@
-"""忆痕 零配置快速上手演示的源码运行入口。
+"""忆痕 使用已配置 LLM 的快速上手示例的源码运行入口。
 
     python examples/quickstart.py
 

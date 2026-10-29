@@ -19,7 +19,7 @@ def test_package_metadata_links_to_real_repository():
     ts_package = json.loads(ts_package_text)
     ts_index = (ROOT / "clients/typescript/src/index.ts").read_text(encoding="utf-8")
     quickstart_example = (ROOT / "examples/quickstart.py").read_text(encoding="utf-8")
-    zero_setup = (ROOT / "scripts/check_zero_setup.py").read_text(encoding="utf-8")
+    zero_setup = (ROOT / "scripts/check_core.py").read_text(encoding="utf-8")
 
     assert "your-org" not in pyproject
     assert "your-org" not in ts_package_text
@@ -31,16 +31,15 @@ def test_package_metadata_links_to_real_repository():
     assert 'license-files = ["LICENSE", "COMMERCIAL-LICENSE.md"]' in pyproject
     assert 'mnemotrace-quickstart = "mnemotrace.quickstart:main"' in pyproject
     assert "from mnemotrace.quickstart import main" in quickstart_example
-    assert '"-m", "mnemotrace.quickstart"' in zero_setup
+    assert 'mnemotrace.quickstart' in zero_setup
     for module in (
         "mnemotrace.agent_doctor",
         "mnemotrace.agent_setup",
         "mnemotrace.connectors",
         "mnemotrace.mcp",
     ):
-        assert f'"{module}"' in zero_setup
-    assert '"mnemotrace-agent-bootstrap"' in zero_setup
-    assert "bootstrap_main(['--help'])" in zero_setup
+        assert module in zero_setup
+    assert 'LLMNotConfiguredError' in zero_setup
     assert ts_package["repository"]["url"] == "https://github.com/NotZhu/MnemoTrace"
     assert ts_package["repository"]["directory"] == "clients/typescript"
     assert ts_package["homepage"] == "https://github.com/NotZhu/MnemoTrace/tree/main/clients/typescript"

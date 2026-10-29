@@ -6,7 +6,7 @@
     pip install "mnemotrace-memory[server]"
     export MNEMOTRACE_API_KEYS="alice:sk-alice-123,bob:sk-bob-456"   # user:key 键值对（开发环境可用 MNEMOTRACE_OPEN=1）
     export MNEMOTRACE_EMBEDDER=hashing          # 零下载默认值；想要更好的本地嵌入可用 bge-small
-    export MNEMOTRACE_LLM=deepseek              # 可选：更好的 fact 抽取（需要对应 provider 的 key）
+    export MNEMOTRACE_LLM=deepseek              # 自动事实抽取必需；需要对应 provider 的 key
     uvicorn mnemotrace.server.app:app --host 0.0.0.0 --port 8000
 
 然后客户端（curl / SDK / MCP bridge）用 `Authorization: Bearer <key>` 调用：
@@ -23,7 +23,7 @@ from __future__ import annotations
 import hmac
 import os
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Literal, Optional
 
 try:
     from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
@@ -37,6 +37,7 @@ except Exception as exc:  # noqa: BLE001
 from .. import __version__
 from ..memory import InvalidFactEditError
 from ..service import MemoryService
+from ..extraction import ExtractionError, require_llm
 from ..spaces import AuthConfigError, Principal, is_valid_api_key, load_spaces, principal_for_token
 from ..topics import Topic
 from ..store import StoreFormatError
@@ -144,6 +145,11 @@ def _apply_security_headers(response, path: str):
         "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
     )
     return response
+
+
+@app.exception_handler(ExtractionError)
+async def extraction_failure(_request: Request, error: ExtractionError):
+    return JSONResponse(status_code=error.status_code, content={"detail": error.detail()})
 
 
 @app.exception_handler(StoreFormatError)
@@ -254,7 +260,7 @@ def metrics():
 class RememberReq(BaseModel):
     content: str = Field(min_length=1, max_length=1_000_000)
     session_id: str = Field(default="default", min_length=1, max_length=512)
-    scope: str = "auto"  # auto（按易逝性路由）| long（强制长期）| working（强制临时）
+    scope: Literal["auto", "long", "working"] = "auto"
     space: Optional[str] = Field(default=None, max_length=512)  # 目标命名空间（默认：调用者的 home）
 
 
@@ -619,6 +625,8 @@ def chat_completions(req: ChatCompletionReq, background: BackgroundTasks, user: 
     opts = req.memory or {}
     session_id = str(opts.get("session_id") or "default")
     scope = str(opts.get("scope") or "auto")
+    if scope not in {"auto", "long", "working"}:
+        raise HTTPException(422, "scope must be auto, long, or working")
     body = req.model_dump()
     try:
         resp = oc.chat_completion(
@@ -638,20 +646,31 @@ def chat_completions(req: ChatCompletionReq, background: BackgroundTasks, user: 
     # 纯文本的即插即用路径不受影响。
     user_text = oc.remembered_text(svc().captioner, body.get("messages", []))
     if opts.get("remember", True) and user_text:
+        if scope != "working":
+            require_llm(svc().llm)
         background.add_task(
-            svc().remember,
+            _remember_chat,
             user,
             user_text,
             session_id=session_id,
             scope=scope,
         )  # 在响应路径之外写入（System-2）
-        resp["mnemotrace"]["remembered"] = True
+        resp["mnemotrace"]["remember_queued"] = True
         resp["mnemotrace"]["remember_scope"] = scope
 
     if req.stream:
         from fastapi.responses import StreamingResponse
         return StreamingResponse(oc.iter_sse(resp), media_type="text/event-stream")
     return resp
+
+
+def _remember_chat(user: str, content: str, session_id: str, scope: str) -> None:
+    """The chat response acknowledges scheduling; extraction errors remain inspectable."""
+    try:
+        svc().remember(user, content, session_id=session_id, scope=scope)
+    except ExtractionError:
+        import logging
+        logging.getLogger(__name__).warning("Chat memory extraction failed; inspect the session status")
 
 
 # --- 用户自写的记忆管理（可编辑层；用户断言具有最高优先级）---

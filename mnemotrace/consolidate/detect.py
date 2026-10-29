@@ -13,6 +13,7 @@ from ..embed import Embedder
 from ..llm import LLM
 from ..types import Conflict, Fact
 from ..util import cosine
+from .verdict import parse_verdict
 
 _JUDGE_SYSTEM = (
     "你判断关于同一个人的两条记忆是否冲突——即其中一条是否更新/否定/取代了另一条(同一属性的新值、"
@@ -56,8 +57,9 @@ def detect_conflicts(facts: list[Fact], llm: LLM, user_id: str, seen: set[tuple]
         try:
             verdict = llm.complete(f"A: {a.text}\nB: {b.text}\n\n它们冲突吗?", system=_JUDGE_SYSTEM)
         except Exception:  # noqa: BLE001 -- 检测绝不能中断整合
+            parse_verdict(None, {"CONFLICT", "COEXIST"})
             continue
-        if "conflict" not in verdict.strip().lower():
+        if parse_verdict(verdict, {"CONFLICT", "COEXIST"}) != "CONFLICT":
             continue  # COEXIST（或无法解析）-> 不标记，两者都保留
         older, newer = (a, b) if a.valid_at <= b.valid_at else (b, a)
         conflicts.append(Conflict(

@@ -9,8 +9,10 @@ from unittest.mock import patch
 
 import pytest
 
-from mnemotrace import Memory, _flock
-from mnemotrace.service import MemoryService
+from mnemotrace import _flock
+
+from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryService
 
 
 def _waiting_writer(data_dir, user, attempting, result):

@@ -12,7 +12,7 @@ httpx = pytest.importorskip("httpx")
 
 from mnemotrace.mcp import server as server  # noqa: E402
 from mnemotrace.mcp.backends import LocalBackend, RemoteBackend  # noqa: E402
-from mnemotrace.service import MemoryService  # noqa: E402
+from tests.model_fixtures import MemoryService  # noqa: E402
 
 
 @pytest.mark.asyncio

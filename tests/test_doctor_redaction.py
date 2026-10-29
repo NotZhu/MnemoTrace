@@ -58,12 +58,13 @@ def test_diagnose_preserves_structure_and_sanitizes_content(monkeypatch, key, re
     assert report["client"] == "codex"
     assert report["summary"] == {
         "ok": 2 + (remote_status == "ok"),
-        "warn": int(remote_status == "warn"), "fail": int(remote_status == "fail"),
+        "warn": 1 + int(remote_status == "warn"), "fail": int(remote_status == "fail"),
     }
     assert report["python"] == "runtime/<REDACTED>/python"
     assert report["api_url"] == "http://example.invalid/<REDACTED>"
-    assert [check["name"] for check in report["checks"]] == [p["name"] for p in probes]
-    assert [check["status"] for check in report["checks"]] == ["ok", "ok", remote_status]
+    assert [check["name"] for check in report["checks"]] == [p["name"] for p in probes] + ["LLM extraction"]
+    assert [check["status"] for check in report["checks"]] == ["ok", "ok", remote_status, "warn"]
+    assert report["checks"][-1]["data"] == {"llm_configured": False, "model_call_performed": False}
     remote = report["checks"][2]
     assert remote["detail"] == "Synthetic provider output: Bearer <REDACTED>"
     assert remote["command"] == ["HTTP", "http://example.invalid/<REDACTED>", "<REDACTED>"]

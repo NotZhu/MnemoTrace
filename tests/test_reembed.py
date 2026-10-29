@@ -11,8 +11,8 @@ import tempfile
 import pytest
 
 from mnemotrace.embed import HashingEmbedder
-from mnemotrace.memory import Memory
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryService
 from mnemotrace.store import DimensionMismatchError
 
 _SENT = "My name is Wei and I live in Shenzhen."

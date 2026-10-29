@@ -146,7 +146,8 @@ class WorkingMemory:
     content: str
     user_id: str = "default"
     session_id: str = "default"
-    kind: str = "state"  # state | intent | schedule | note | passenger | ...
+    # 模型抽取只输出 state/intent/task；显式写入也可用 schedule/note/passenger 等自定义类型。
+    kind: str = "state"
     event_time: float = field(default_factory=now)
     created_at: float = field(default_factory=now)
     expires_at: Optional[float] = None  # 硬性墙钟过期时间；None => 仅随 session 存活

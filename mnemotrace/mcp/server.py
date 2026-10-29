@@ -87,11 +87,21 @@ def _json(obj) -> str:
 
 def _err(e: Exception) -> str:
     """可操作、不泄露内部信息的错误文案（最佳实践：引导 agent 修复）。"""
+    from ..extraction import ExtractionError
+    if isinstance(e, ExtractionError):
+        return "Error: " + _json(e.detail())
     try:
         import httpx
 
         if isinstance(e, httpx.HTTPStatusError):
             code = e.response.status_code
+            if code in {502, 503}:
+                try:
+                    detail = e.response.json().get("detail", {})
+                    if detail.get("code") in {"llm_not_configured", "extraction_failed", "extraction_invalid_response"}:
+                        return "Error: " + _json(detail)
+                except (ValueError, AttributeError):
+                    pass
             if code == 401:
                 return ("Error: the MnemoTrace server rejected the credentials (401). Check MNEMOTRACE_API_KEY "
                         "matches a configured key on the server.")
@@ -221,21 +231,23 @@ async def mnemotrace_remember(
 
     当用户说出值得跨 session 记住的持久 fact、偏好、计划或决定时调用。临时性的当前 session
     状态用 `scope=working`。存储与旧值矛盾的值不会删除历史——旧 fact 被失效化并保留
-    （as-of 查询依然可用）。尽力而为：即使整合降级，原始记忆也已保存。
+    （as-of 查询依然可用）。auto/long 需要配置 LLM；抽取失败会返回可识别错误并保留原文供重试。
     """
     try:
         data = await backend().remember(content, session_id=session_id, scope=scope.value)
     except Exception as e:  # noqa: BLE001
         return _err(e)
-    if data.get("degraded"):
-        return (f"Stored the raw memory, but consolidation degraded ({data['degraded']}). It is still "
-                "recallable.")
+    if data.get("queued"):
+        return f"Queued raw episode {data['episode_id']} for model extraction; extraction is not complete."
     if data.get("scope") == "working":
         return (
             "Stored as working memory for this session. It remains in dated history, but will not be "
             "promoted to durable profile facts."
         )
+    if data.get("scope") == "none":
+        return "Saved raw history. No durable facts or working memory were extracted (scope=none)."
     return (f"Remembered. Extracted {data.get('extracted', 0)} new fact(s); "
+            f"added {data.get('working_added', 0)} working item(s) (scope={data.get('scope')}); "
             f"{data.get('total_facts', '?')} live facts total.")
 
 
@@ -319,6 +331,7 @@ async def mnemotrace_session_report(
         f"- Session: `{data.get('session_id', session_id)}`",
         f"- Episodes: {data.get('episodes', 0)} "
         f"({data.get('episodes_pending', 0)} pending consolidation)",
+        f"- Extraction failures: {data.get('extraction_failures', 0)} episode(s)",
         f"- Working memory still live: {data.get('working_live', 0)} item(s)",
         f"- Durable facts linked to this session: {data.get('facts_added', 0)}",
         f"- Sensitive facts redacted: {data.get('facts_redacted', 0)}",
@@ -519,6 +532,8 @@ async def mnemotrace_agent_status(
         f"- Session: `{s.get('id') or '(none supplied)'}`",
         f"- Session episodes: {s.get('episodes', 0)} "
         f"({s.get('episodes_pending', 0)} pending consolidation)",
+        f"- Session extraction failures: {s.get('extraction_failures', 0)} episode(s)",
+        f"- Overall extraction failures: {c.get('extraction_failures', 0)} episode(s)",
         f"- Session working memory: {s.get('working_live', 0)} live item(s)",
         f"- Long-term memory: {c.get('facts_live', 0)} live fact(s), "
         f"{c.get('summaries', 0)} summary(ies), {c.get('pending_conflicts', 0)} pending conflict(s)",
@@ -599,7 +614,8 @@ async def mnemotrace_stats(response_format: ResponseFormat = ResponseFormat.MARK
         "",
         f"- Episodes: {c.get('episodes', 0)} "
         f"({c.get('episodes_consolidated', 0)} consolidated, {c.get('episodes_pending', 0)} pending, "
-        f"{c.get('episodes_ephemeral', 0)} ephemeral)",
+        f"{c.get('episodes_ephemeral', 0)} with working content)",
+        f"- Extraction failures: {c.get('extraction_failures', 0)} episode(s)",
         f"- Facts: {c.get('facts_live', 0)} live, {c.get('facts_superseded', 0)} superseded, "
         f"{c.get('facts_sensitive', 0)} sensitive",
         f"- Heat tiering: {c.get('facts_hot', 0)} hot, {c.get('facts_cold', 0)} cold, "

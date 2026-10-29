@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from mnemotrace import Memory
+from tests.model_fixtures import Memory
 
 
 @pytest.mark.parametrize("patch", [{"sensitive": True}, {"category": "测试分类"}])

@@ -6,7 +6,7 @@
 
 `Memory(config=None, embedder=None, llm=None, reranker=None, vector_store_factory=..., graph_store_factory=...)`
 
-默认 Config、HashingEmbedder、规则抽取、内存文档/向量/图存储。传入 LLM 可启用相关模型路径；可选实现通过各自 extras 安装。参数字段和默认值见[配置参考](configuration.md)及 [Config](../../mnemotrace/config.py)。
+默认 Config、HashingEmbedder 和内存文档/向量/图存储。传入 LLM 才能抽取自然语言事实；可选实现通过各自 extras 安装。参数字段和默认值见[配置参考](configuration.md)及 [Config](../../mnemotrace/config.py)。
 
 直接使用 Memory 不读取服务端的凭据映射，也不自动提供鉴权、服务级锁或逐操作保存。并发与持久化由应用管理，或改用 [MemoryService](../../mnemotrace/service.py)/HTTP。
 
@@ -24,7 +24,7 @@
 
 结构化快照不使用格式版本字段，按当前必要字段整批校验，错误抛出 `ValueError`，不部分导入。导入保留目标用户的运行设置；字段、来源编号和替代链语义见[结构化快照导入](../architecture/memory.md#结构化快照导入)。
 
-`scope="auto"` 按规则识别短时状态，`long` 强制走长期内容路径，`working` 跳过长期画像事实提取。Python 记忆实例中的写入不会自动保存到磁盘。
+`scope="auto"` 在整合时由同一次模型调用识别长期事实与临时状态；`long` 仅请求长期事实，`working` 显式写入工作记忆。时间词不决定生命周期。底层 remember 仅保存原文和请求的 scope，auto/long 仍需 consolidate。Python 记忆实例中的写入不会自动保存到磁盘。
 
 ## 检索与上下文
 
@@ -96,3 +96,15 @@ memory.save()
 摘要和派生层操作还包括 `summarize_episodes`、`retrieve_summaries`、`reflect`、`procedural`；热层管理包括 `evict_cold`、`apply_focus`。这些方法改变派生状态或工作集，调用方负责后续保存及必要验证。
 
 精确签名、类型和行为以 [Memory](../../mnemotrace/memory.py)、[记录类型](../../mnemotrace/types.py) 和对应[测试](../../tests/)为核对来源。HTTP/MCP 的方法、默认值及能力不与嵌入式 API 一一对应。
+
+## 模型抽取与错误契约
+
+抽取模型输出 `{"facts": [...], "working": [...]}`；facts 条目包含非空字符串 subject、predicate、object，可附 text 和 topic；working 条目包含非空 content 和 kind（state/intent/task），不接受模型设置 TTL。两个数组均为必需；混合内容分别生成两类记录，无记忆价值时两个数组为空。自定义 extract_system 必须遵循该协议，旧数组响应不兼容。会话结论仍使用对象数组协议。
+
+`consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实和工作条目。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，整批保持待处理，重试会消解重复事实并按来源 episode、内容和 kind 去重工作条目。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
+
+导入重试先去重，再检查实际抽取需求：全部内容已完成且没有相关 pending 时，无需 LLM 即可返回 skipped，即使 consolidate=True。存在待抽取的新内容或相关 pending 时，在本次新输入写入前检查模型。已存在内容不再创建 episode。summarize=True 会补齐本次涉及会话中缺失的摘要，包括抽取重试和部分新增的情况；已有摘要不重复生成，返回 summaries 为本次实际补齐数量。
+
+公开异常为 LLMNotConfiguredError、ExtractionError、ExtractionResponseError；后两者的原文记录保持待处理，可以重新 consolidate。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。原文保存不等同于事实抽取完成。模型输出的 working.kind 限定为 state/intent/task，显式工作记忆接口仍可使用其他 kind。会话结论 kind 在校验前忽略大小写和首尾空白，未知类型仍报响应无效。
+
+替代裁决仅接受 REPLACES/COEXISTS，冲突检测仅接受 CONFLICT/COEXIST（忽略首尾空白与大小写）；其他响应记录安全警告并不执行对应替代或冲突标记。

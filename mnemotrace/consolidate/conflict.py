@@ -7,7 +7,7 @@ as-of 查询因此仍然可用。
 两个检测器，都不依赖 LLM（只有真正模糊的情况才升级到 LLM——这里不需要）：
 
 1. EXACT-SLOT —— 新旧 fact 共享 `(user, subject, predicate)` 但 object 不同。确定性；离线
-   RuleExtractor 的规范 predicate（works_at、lives_in 等）都走这条路。
+   模型生成的规范 predicate（works_at、lives_in 等）都走这条路。
 
 2. SEMANTIC（需要真实 embedder）—— 新旧 fact 共享 *subject* 且嵌入相近（同一属性），但 LLM 提取器
    给了它们 *不同的自由格式 predicate*。这是常见且此前被漏掉的情况："attends_yoga twice a week"（8 月）
@@ -27,6 +27,7 @@ from typing import Optional
 from ..embed import Embedder
 from ..types import Fact
 from ..util import cosine
+from .verdict import parse_verdict
 
 # 包含关系（"Contained"）检测用的实义词——忽略短词/虚词，这样才能识别
 # "Charles is my boss" ⊂ "Charles is my boss and a branch manager"。
@@ -136,8 +137,9 @@ class ConflictResolver:
         try:
             verdict = self.llm.complete(
                 f"OLD: {old.text}\nNEW: {new.text}\n\nDoes NEW replace OLD?", system=_ADJUDICATE_SYSTEM)
-            return "replace" in verdict.strip().lower()
+            return parse_verdict(verdict, {"REPLACES", "COEXISTS"}) == "REPLACES"
         except Exception:  # noqa: BLE001 -- 绝不让裁决中断整合
+            parse_verdict(None, {"REPLACES", "COEXISTS"})
             return False
 
     def reconcile(self, new: Fact, live: list[Fact]) -> tuple[str, list[Fact]]:

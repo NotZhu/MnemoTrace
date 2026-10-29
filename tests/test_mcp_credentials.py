@@ -57,7 +57,7 @@ def test_installed_file_reference_reaches_same_tenant_over_real_stdio(tmp_path, 
         render_mcp_json_config_result,
     )
     from mnemotrace.server import app as appmod
-    from mnemotrace.service import MemoryService
+    from tests.model_fixtures import MemoryService
 
     key = "mnemotrace" if launch_source == "rendered" else "synthetic-transport-key"
     monkeypatch.setenv("MNEMOTRACE_API_KEYS", f"synthetic-tenant:{key}")

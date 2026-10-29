@@ -6,7 +6,7 @@ from dataclasses import asdict
 
 import pytest
 
-from mnemotrace import Memory
+from tests.model_fixtures import Memory
 from mnemotrace.types import Episode, Fact
 
 

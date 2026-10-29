@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from mnemotrace import Memory
+from tests.model_fixtures import Memory
 from mnemotrace.consolidate.structured import build_structured_profile
 from mnemotrace.types import Fact
 

@@ -1,7 +1,7 @@
 """Graph limits apply to matching relations; lookahead must not leak nodes."""
 import pytest
 
-from mnemotrace import Memory
+from tests.model_fixtures import Memory
 
 
 def add_relation(mem, index, *, historical=False, sensitive=False):

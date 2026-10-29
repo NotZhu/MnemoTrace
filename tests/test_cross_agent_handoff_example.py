@@ -2,6 +2,14 @@ from __future__ import annotations
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def synthetic_model_service(monkeypatch):
+    from tests.model_fixtures import MemoryService
+    monkeypatch.setattr("mnemotrace.service.MemoryService", MemoryService)
+
+
+
 from examples.cross_agent_handoff import exercise_handoff, local_call, main
 
 

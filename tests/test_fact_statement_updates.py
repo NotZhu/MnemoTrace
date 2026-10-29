@@ -5,7 +5,7 @@ from copy import deepcopy
 
 import pytest
 
-from mnemotrace import Memory
+from tests.model_fixtures import Memory
 from mnemotrace.localize import display_of
 
 
@@ -88,7 +88,7 @@ def test_http_edit_route_maps_attribute_statement_rejection_to_422(tmp_path, mon
     pytest.importorskip("fastapi")
     from fastapi import HTTPException
     from mnemotrace.server import app as appmod
-    from mnemotrace.service import MemoryService
+    from tests.model_fixtures import MemoryService
 
     service = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
     created = service.add_fact("synthetic_user", "user", "lives_in", "Beijing")

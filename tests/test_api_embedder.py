@@ -9,7 +9,7 @@ import pytest
 
 from mnemotrace.embed.litellm_embed import LiteLLMEmbedder
 from mnemotrace.llm.providers import make_embedder
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import MemoryService
 from mnemotrace.store import DimensionMismatchError, EmbedderMismatchError
 
 

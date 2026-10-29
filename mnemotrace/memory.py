@@ -1,7 +1,7 @@
 """公开门面（facade）。将 System-1 写入、System-2 整合，以及 hybrid + multi-hop 读路径组织到
 一个小 API 之后：add() / consolidate() / search() / as_of() / history() / profile()。
 
-默认完全离线（hashing embedder、规则抽取器、内存 store），因此 `Memory()` 零配置即可运行。
+默认哈希嵌入和内存存储；自动事实抽取要求注入 LLM。
 传入真实的 `embedder` / `llm` / store 工厂即可在 benchmark 后端上运行。
 """
 from __future__ import annotations
@@ -43,6 +43,7 @@ from .store import (
     save_memory,
 )
 from .topics import Topic, validate_topic
+from .extraction import ExtractionError, require_llm
 from .types import Conflict, Episode, Fact, WorkingMemory
 from .util import DAY, fmt_date, now
 
@@ -237,9 +238,8 @@ class Memory:
         """
         # 初始化事件写入器
         self.ingestor = Ingestor(self.episodes_doc, self.episodes_vec, self.embedder)
-        # 初始化事实整合引擎
-        self.engine = ConsolidationEngine(self.fact_store, self.graph, self.embedder, self.config, self.llm)
-        # 初始化热/冷层混合检索器
+        self.engine = ConsolidationEngine(self.fact_store, self.graph, self.embedder, self.config, self.llm,
+                                          working_mem=self.working_mem)
         self.retriever = HybridRetriever(self.fact_store, self.graph, self.embedder, self.config)
         self.cold_retriever = HybridRetriever(self.cold_store, self.graph, self.embedder, self.config)
         # 初始化多跳查询规划器
@@ -250,14 +250,8 @@ class Memory:
             extra_fact_stores=[self.cold_store],
             llm=self.llm,
         )
-
-        # 将保存的用户规范名和别名恢复到新建的抽取器中。
-        ex = getattr(self.engine, "extractor", None)
-        if ex is not None and hasattr(ex, "self_name"):
-            ex.self_name.update(getattr(self, "_identity", {}))
-            if hasattr(ex, "aliases"):
-                for k, v in getattr(self, "_aliases", {}).items():
-                    ex.aliases.setdefault(k, set()).update(v)
+        self.engine.extractor.self_name.update(self._identity)
+        self.engine.extractor.aliases.update({k: set(v) for k, v in self._aliases.items()})
 
     # --- 持久化（让记忆跨进程/session 存活；AGENTS.md 「代码导航」） ---
     def save(self, path: Optional[str] = None) -> None:
@@ -371,6 +365,8 @@ class Memory:
         Returns:
             Episode: 写入的 episode 对象。
         """
+        if consolidate:
+            require_llm(self.llm)
         ep = self.ingestor.ingest(content, user_id, session_id, speaker, event_time, embedding=embedding)
         if consolidate:
             self.consolidate()
@@ -378,22 +374,22 @@ class Memory:
 
     def remember(self, content: str, user_id: str = "default", session_id: str = "default",
                  scope: str = "auto") -> dict:
-        """带瞬态路由的高层写入。关键：它总是无损地存储带日期的 episode，因此无论路由到哪，
-        "X 是什么时候发生的？"都能从历史中回答。对于瞬态状态（"今天我嗓子疼"），它额外写入一条
-        工作记忆条目，并标记该 episode，使其中不会抽出持久的 profile FACT——*事件*被记住
-        （带日期、可检索），但*状态*不会作为当前 profile 属性残留。持久内容保持 pending，由调用方
-        consolidate() 成长期 fact。返回描述路由结果的 dict。
+        """Save raw input and its requested lifecycle policy.
 
-        这是修正后的模型：瞬态 != 删除。只是跳过向持久 profile 的提升；episode 记录
-        (AGENTS.md「对象与时间语义」) 永远保留。"""
-        ephemeral = scope == "working" or (scope == "auto" and self.is_ephemeral(content))
+        Explicit working entries are ready immediately. Auto/long remain pending until
+        consolidate() validates model output; auto may yield both durable and temporary entries.
+        """
+        if scope not in {"auto", "long", "working"}:
+            raise ValueError("scope must be auto, long, or working")
         ep = self.add(content, user_id=user_id, session_id=session_id)
-        if ephemeral:
-            ep.consolidated = True  # 留在带日期的 episode 日志中，但不产出持久 fact
+        ep.metadata["memory_scope"] = scope
+        if scope == "working":
+            ep.consolidated = True
             ep.metadata["ephemeral"] = True
+            ep.metadata["memory_result"] = "working"
             wm = self.remember_working(content, user_id=user_id, session_id=session_id)
             return {"scope": "working", "episode_id": ep.id, "working_id": wm.id, "kind": wm.kind}
-        return {"scope": "long", "episode_id": ep.id}
+        return {"scope": scope, "episode_id": ep.id}
 
     def consolidate(self, episodes: Optional[list[Episode]] = None) -> dict[str, int]:
         """ 执行一次 System-2 整合，抽取 fact、构建图、检测冲突、分类和敏感标志。
@@ -405,14 +401,19 @@ class Memory:
         """
         # 传入的 episode 列表或所有待处理的 episode 列表
         eps = episodes if episodes is not None else self.ingestor.pending()
-        self._apply_policy()  # 应用用户策略
-        self.sweep_working()  # 清理工作记忆
-        stats = self.engine.consolidate(eps)
-        ex = getattr(self.engine, "extractor", None)  # 捕获新解析出的身份以便持久化
-        if ex is not None and hasattr(ex, "self_name"):
-            self._identity.update(ex.self_name)
-            for k, v in getattr(ex, "aliases", {}).items():
-                self._aliases.setdefault(k, set()).update(v)
+        self._apply_policy()  # 遵循用户可编辑的抽取 prompt / "要记录什么"指令
+        self.sweep_working()
+        try:
+            stats = self.engine.consolidate(eps)
+        except ExtractionError as exc:
+            exc.stored_raw = bool(eps)
+            exc.episode_ids = [ep.id for ep in eps]
+            for ep in eps:
+                ep.metadata["extraction_error"] = exc.code
+            raise
+        self._identity.update(self.engine.extractor.self_name)
+        for k, v in self.engine.extractor.aliases.items():
+            self._aliases.setdefault(k, set()).update(v)
         self._classify()  # feature ⑤：给新 fact 打 category + 敏感标志（基于规则）
         self._detect_conflicts()  # System-2：将疑似冲突浮出给用户（需主动开启、有门控）
         self._enforce_hot_limit()
@@ -466,8 +467,8 @@ class Memory:
         拿到新的合成时钟）。`dedupe=False` 恢复原始追加行为。
 
         `consolidate=None`（默认）表示除 agent-session 转录（`metadata.source == "agent_session"`）
-        外的所有来源都"抽取 fact"；后者只存储 + 摘要，除非调用方显式要求（`True`）且已挂载 LLM
-        才做逐轮抽取——见下方的门控。
+        外的来源请求 fact 抽取；转录只存储 + 摘要，显式传 True 才做逐轮抽取。
+        先去重，再根据新增候选和相关 pending 检查 LLM；无实际抽取任务时不要求模型。
         """
         import hashlib
 
@@ -496,6 +497,9 @@ class Memory:
             return None
 
         items = [c for c in (_coerce(s) for s in sessions) if c is not None]
+        session_ids = {s.session_id or f"imported_{i}" for i, s in enumerate(items)}
+        want_facts = consolidate is True
+        do_consolidate = consolidate is not False
         base = base_time if base_time is not None else now()
         texts: list[str] = []
         metas: list[tuple] = []
@@ -545,10 +549,19 @@ class Memory:
             texts.append(body)
             metas.append((sid, et, s.title, fp, source))
             session_count += 1
-        if not texts:
-            return {"sessions": 0, "episodes": 0, "facts_added": 0, "summaries": 0, "skipped": skipped,
-                    "facts_deferred": 0, "deferred_reason": None}
-
+        pending = [ep for ep in self.ingestor.pending()
+                   if ep.user_id == user_id and ep.session_id in session_ids
+                   and (want_facts or ep.metadata.get("source") != "agent_session")] if do_consolidate else []
+        needs_facts = do_consolidate and (bool(pending) or any(
+            want_facts or source != "agent_session" for _, _, _, _, source in metas))
+        if needs_facts:
+            # Deduplication is read-only. Reject before embedding, writing or recording new fingerprints.
+            try:
+                require_llm(self.llm)
+            except ExtractionError as exc:
+                exc.stored_raw = bool(pending)
+                exc.episode_ids = [ep.id for ep in pending]
+                raise
         vecs: list = []
         for j in range(0, len(texts), batch_size):
             vecs.extend(self.embedder.embed_batch(texts[j:j + batch_size]))
@@ -566,7 +579,6 @@ class Memory:
             self._import_seen.add(fp)  # 仅在 episode 真正落库之后记录
 
         agent_eps = [ep for ep in new_eps if ep.metadata.get("source") == "agent_session"]
-        want_facts = consolidate is True and self.llm is not None
         if agent_eps and not want_facts:
             for ep in agent_eps:
                 # 工作会话的持久记忆是其结束时的 outcome（consolidate/outcomes.py），而不是逐轮
@@ -577,19 +589,20 @@ class Memory:
                 ep.consolidated = True
                 ep.metadata["extraction"] = "outcomes_only"
         agent_ids = {ep.id for ep in agent_eps}
-        extract = new_eps if want_facts else [ep for ep in new_eps if ep.id not in agent_ids]
-        do_consolidate = True if consolidate is None else consolidate
+        extract = pending + (new_eps if want_facts else [ep for ep in new_eps if ep.id not in agent_ids])
 
         stats = {"sessions": session_count, "episodes": len(new_eps), "facts_added": 0, "summaries": 0,
                  "skipped": skipped}
         # 防御空列表：consolidate([]) 仍会空跑 _apply_policy/sweep。
         if do_consolidate and extract:
-            stats["facts_added"] = self.consolidate(extract).get("facts_added", 0)
+            stats.update(self.consolidate(extract))
         stats["facts_deferred"] = 0 if want_facts else len(agent_eps)
-        stats["deferred_reason"] = ("no_llm" if (consolidate is True and self.llm is None and agent_eps)
-                                    else ("outcomes_only" if stats["facts_deferred"] else None))
+        stats["deferred_reason"] = "outcomes_only" if stats["facts_deferred"] else None
         if summarize:
-            stats["summaries"] = self.summarize_episodes(new_eps)
+            # Retried imports may contain both new rows and existing rows without summaries.
+            stats["summaries"] = self.summarize_episodes([
+                ep for ep in self.episodes_doc.values()
+                if ep.user_id == user_id and ep.session_id in session_ids])
         return stats
 
     def import_data(self, data, format: str = "auto", user_id: str = "default",
@@ -790,7 +803,7 @@ class Memory:
         # （outcomes.py 写入 `display=statement`），可以直接重新赋值。其他所有 fact 的 display 都是
         # extractor 生成的完整句子（"Wei works at Tencent"），若把裸 object 赋给 display 就会渲染成
         # "Moonshot AI"——本功能要修复的碎片化问题又从属性侧回来了。正确做法是清空 display，让
-        # display_of() 回退到 render_display(subject, predicate, object)——所有规则抽取的 fact
+        # display_of() 回退到 render_display(subject, predicate, object)——没有原语言展示文本的 fact
         # （display=""）本来就是这么渲染的。
         # 以"text 是否被重建"为门控条件，而非"object 是否变化"：重命名 predicate（finding ->
         # lesson）或 subject 同样会重写 text，留下旧 display 是同一种过期渲染 bug。
@@ -971,39 +984,15 @@ class Memory:
         return self.policy.get(key) or POLICY_DEFAULTS[key]
 
     def _apply_policy(self) -> None:
-        """把用户覆盖的策略字段应用到 extractor/summarizer。"""
-        ex = getattr(self.engine, "extractor", None)
-        # 仅在有可编辑 prompt 时应用策略
-        if ex is not None and hasattr(ex, "system") and hasattr(ex, "instruction"):
-            # 指令 prompt
-            ex.instruction = self.policy.get("extract_instruction", "")
-            # 系统 prompt
-            ex.system = self._effective("extract_system")
-        # LLM 主题和偏好对象归一化参数
-        if hasattr(ex, "llm_topics"):
-            ex.llm_topics = self.config.llm_topics
-        if hasattr(ex, "preference_object_normalization"):
-            ex.preference_object_normalization = self.config.preference_object_normalization
-        # 摘要系统 prompt
+        """Apply user policy and extraction options before each model operation."""
+        ex = self.engine.extractor
+        ex.system = self._effective("extract_system")
+        ex.instruction = self.policy.get("extract_instruction", "")
+        ex.llm_topics = self.config.llm_topics
+        ex.preference_object_normalization = self.config.preference_object_normalization
         self.summarizer.system = self._effective("summary_system")
 
     # --- 工作记忆层：瞬态的、按 session/TTL 划界的状态，不进长期存储（feature ①） ---
-    # 标记一句话是瞬态的（一时的状态/意图）而非持久 fact——用于把"今天我嗓子疼"路由到工作
-    # 记忆，而不是污染长期存储。
-    _EPHEMERAL_MARKERS = (
-        "today", "right now", "currently", "this morning", "this afternoon", "tonight", "this week",
-        "for now", "at the moment", "temporarily", "this trip", "feeling a bit", "i feel ",
-        "今天", "现在", "此刻", "暂时", "这会儿", "待会", "等下", "本次", "这趟", "这次", "最近想", "改天",
-    )
-
-    @classmethod
-    def is_ephemeral(cls, content: str) -> bool:
-        """启发式路由：这句话读起来像瞬态的状态/意图（→ 工作记忆）还是持久 fact（→ 长期）？
-        确定性且零成本；调用方随时可以用显式 scope 覆盖。把瞬态上下文挡在长期存储之外是通用的
-        记忆卫生收益。"""
-        c = content.lower()
-        return any(m in c for m in cls._EPHEMERAL_MARKERS)
-
     def remember_working(self, content: str, user_id: str = "default", session_id: str = "default",
                          kind: str = "state", ttl_seconds: Optional[float] = None,
                          event_time: Optional[float] = None) -> WorkingMemory:

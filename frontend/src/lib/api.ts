@@ -39,6 +39,7 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    public detail?: { code?: string; stored_raw?: boolean; episode_ids?: string[] },
   ) {
     super(message)
     this.name = 'ApiError'
@@ -101,11 +102,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!res.ok) {
     let code: string | undefined
+    let failure: { code?: string; stored_raw?: boolean; episode_ids?: string[] } | undefined
     let detail = t.errors.requestFailed(res.status)
     try {
       const body = await guard.wait(res.json())
       if (body?.detail) {
         code = body.detail.code
+        if (typeof body.detail === 'object') failure = body.detail
         detail = typeof body.detail === 'string' ? body.detail : body.detail.message ?? JSON.stringify(body.detail)
       }
     } catch (error) {
@@ -114,7 +117,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     guard.check()
     if (res.status === 409 && code === 'memory_revision_changed') throw new MemoryRevisionChangedError(detail)
-    throw new ApiError(res.status, detail)
+    if (failure?.stored_raw) detail += ' 原文已保存，恢复模型后请重试整合，无需重新提交原文。'
+    throw new ApiError(res.status, detail, failure)
   }
   if (res.status === 204) return undefined as T
   const data = (await guard.wait(res.json())) as T

@@ -10,7 +10,7 @@
 | 源码启动 | 本地开发、调试或自行管理进程 |
 | systemd 模板 | 已准备 Python 环境与部署目录的 Linux 主机 |
 
-默认配置使用 hashing 和规则提取，不下载模型。真实嵌入、抽取、回答或图片描述需要安装对应 extras、提供模型配置和凭据。Python wheel 本身不包含控制台构建。
+默认嵌入使用 hashing，不下载模型；自动事实抽取需要 LLM 配置和凭据，缺少时写入请求明确报错。真实嵌入、回答或图片描述需要对应 extras。Python wheel 本身不包含控制台构建。
 
 ## Compose
 
@@ -37,7 +37,7 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
 在根目录安装 HTTP 依赖：
 
 ```sh
-python -m pip install ".[server]"
+python -m pip install ".[server,llm]"
 ```
 
 Bash 环境示例，先替换 YOUR_API_KEY 并使用自己管理的数据目录：
@@ -46,7 +46,7 @@ Bash 环境示例，先替换 YOUR_API_KEY 并使用自己管理的数据目录�
 export MNEMOTRACE_API_KEYS="user123:YOUR_API_KEY"
 export MNEMOTRACE_DATA_DIR="/absolute/path/to/memory-data"
 export MNEMOTRACE_EMBEDDER="hashing"
-export MNEMOTRACE_LLM=""
+export MNEMOTRACE_LLM="deepseek"
 python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
@@ -56,7 +56,7 @@ PowerShell 对应设置方式：
 $env:MNEMOTRACE_API_KEYS = "user123:YOUR_API_KEY"
 $env:MNEMOTRACE_DATA_DIR = "C:\path\to\memory-data"
 $env:MNEMOTRACE_EMBEDDER = "hashing"
-$env:MNEMOTRACE_LLM = ""
+$env:MNEMOTRACE_LLM = "deepseek"
 python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
@@ -98,8 +98,10 @@ python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000 --worke
 
 - 401：核对 Bearer 头、服务器 tenant:key 映射及是否连接到正确实例。
 - 503 /ready：核对配置合法性与数据目录权限；UI 的 503 还可能表示尚未构建。
-- 写入 queued 或 degraded：核对异步积压、模型配置及返回字段；先确认原始事件是否保存。
+- 写入 queued 或返回抽取错误：核对异步积压、模型配置及返回字段；先确认原始事件是否保存。
 - 存储或模型不匹配：保留现场和备份，读取[持久化契约](../docs/architecture/memory.md)，不要通过删除数据或忽略错误来恢复表面可用。
 - 文本已导入但没有会话结论：核对收尾入口、LLM 与 SESSION_OUTCOMES 配置，见 [Agent 指南](../docs/guides/agents.md)。
 
 漏洞报告见[安全政策](../SECURITY.md)。本页的部署步骤不替代实际环境的验证。
+
+示例模型需要对应的 DEEPSEEK_API_KEY；使用其他模型时替换名称及凭据。容器运行时传入凭据，不能写入镜像或提交到仓库。未配置模型的服务仍可读取已有记忆和管理显式事实。

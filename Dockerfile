@@ -25,7 +25,7 @@ RUN groupadd --gid 10001 mnemotrace \
 
 COPY pyproject.toml README.md LICENSE COMMERCIAL-LICENSE.md ./
 COPY mnemotrace/ ./mnemotrace/
-RUN python -m pip install ".[server,mcp]"
+RUN python -m pip install ".[server,mcp,llm]"
 
 COPY --from=console-build /build/frontend/dist/ ./frontend/dist/
 

@@ -1,5 +1,5 @@
 """OpenAI 兼容的 /v1/chat/completions —— 记忆注入 + 生成 + 后台 remember。
-离线模式：hashing 嵌入器、规则抽取器，以及用于生成的确定性 FakeLLM。"""
+离线验证：hashing 嵌入器、固定抽取响应，以及用于生成的确定性 FakeLLM。"""
 from __future__ import annotations
 
 import os
@@ -10,7 +10,7 @@ import pytest
 
 from mnemotrace.llm import FakeLLM
 from mnemotrace.server import openai_compat as oc
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import MemoryService
 
 # --- 纯拼装逻辑（不依赖 web 框架） -------------------------------------
 
@@ -132,6 +132,7 @@ def test_chat_completion_without_llm_raises():
     d = tempfile.mkdtemp(prefix="mnemotrace_oc_")
     try:
         svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
+        svc.llm = None
         with pytest.raises(oc.NoLLMConfigured):
             oc.chat_completion(svc, "u", {"messages": [{"role": "user", "content": "hi"}]})
     finally:
@@ -169,7 +170,7 @@ def test_chat_completions_endpoint(client_with_llm):
     data = r.json()
     assert data["object"] == "chat.completion"
     assert data["choices"][0]["message"]["content"] == "You live in Shenzhen."
-    assert data["mnemotrace"]["recalled"] is True and data["mnemotrace"]["remembered"] is True
+    assert data["mnemotrace"]["recalled"] is True and data["mnemotrace"]["remember_queued"] is True
     # FakeLLM 的 system prompt 中应能看到注入的召回记忆
     assert any("Shenzhen" in (call["system"] or "") for call in appmod._svc.llm.calls)
 
@@ -233,7 +234,7 @@ def test_chat_completions_endpoint_remembers_with_session_and_scope(client_with_
     assert r.status_code == 200
     data = r.json()
     assert data["mnemotrace"]["session_id"] == "codex:repo:thread-1"
-    assert data["mnemotrace"]["remembered"] is True
+    assert data["mnemotrace"]["remember_queued"] is True
     assert data["mnemotrace"]["remember_scope"] == "long"
 
     memories = c.get("/v1/memories?include_sensitive=true", headers=h).json()

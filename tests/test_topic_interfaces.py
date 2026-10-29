@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import MemoryService
 
 
 @pytest.fixture()

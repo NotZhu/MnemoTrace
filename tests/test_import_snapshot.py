@@ -1,8 +1,10 @@
 """导出 -> 导入的可移植性往返测试（忆痕 快照应当被"还原"，而不是被重新写入）：
 事实保留双时间轴时间戳 + 取代链，episode 以已整合状态重新进入，整体是幂等的，
 且 /v1/import 会把解析失败转成 400 而不是 500。与所有其他测试一样离线运行
-（hashing 嵌入器 + 规则抽取器）。"""
+（hashing 嵌入器 + 固定合成模型响应）。"""
 from __future__ import annotations
+
+from tests.model_fixtures import MemoryService
 
 import os
 import shutil
@@ -11,7 +13,7 @@ from dataclasses import asdict
 
 import pytest
 
-from mnemotrace.memory import Memory
+from tests.model_fixtures import Memory
 
 
 def _mk_memory() -> Memory:
@@ -20,7 +22,7 @@ def _mk_memory() -> Memory:
 
 class TestSnapshotRoundtrip:
     def _service(self, tmpdir: str):
-        from mnemotrace.service import MemoryService
+        from tests.model_fixtures import MemoryService
         return MemoryService(data_dir=tmpdir, embedder_name="hashing", llm_name="")
 
     def test_full_roundtrip_restores_facts_episodes_and_chains(self):
@@ -131,7 +133,7 @@ def client():
     os.environ["MNEMOTRACE_API_KEYS"] = ""
     os.environ["MNEMOTRACE_ALLOW_ANONYMOUS"] = ""
     from mnemotrace.server import app as appmod
-    appmod._svc = None
+    appmod._svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
     with TestClient(appmod.app) as c:
         yield c
     shutil.rmtree(d, ignore_errors=True)

@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from mnemotrace import Memory
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryService
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,9 +43,14 @@ def seed_input(tmp_path, monkeypatch):
 def run_seed(source, output, *args):
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1")
     return subprocess.run(
-        [sys.executable, "-B", str(ROOT / "eval/seed_console.py"),
+        [sys.executable, "-B", "-c",
+         "import sys,runpy;sys.path.insert(0,sys.argv[1]);"
+         "from mnemotrace.llm import providers;from tests.model_fixtures import RecordedLLM;"
+         "providers.make_llm=lambda *a,**k:RecordedLLM();"
+         "sys.argv=sys.argv[2:];runpy.run_path(sys.argv[0],run_name='__main__')",
+         str(ROOT), str(ROOT / "eval/seed_console.py"),
          "--data", str(source), "--out", str(output), "--embedder", "hashing",
-         "--llm", "", "--featured-per-cat", "0", *args],
+         "--llm", "synthetic-fixture", *args],
         cwd=source.parent, env=env, capture_output=True, text=True, encoding="utf-8",
         timeout=30,
     )

@@ -18,16 +18,22 @@ export interface Health {
   max_hot_facts: number
 }
 
+export interface ExtractionFailure {
+  code: 'llm_not_configured' | 'extraction_failed' | 'extraction_invalid_response'
+  message: string
+  stored_raw: boolean
+  episode_ids: string[]
+}
+
 export interface RememberResult {
   ok: boolean
-  scope?: string
-  /** 整合（consolidation）新提取的事实数 */
+  scope?: 'long' | 'working' | 'mixed' | 'none'
+  queued?: boolean
+  episode_id?: string
   extracted?: number
-  /** 本次写入后的存活事实总数 */
+  working_added?: number
   total_facts?: number
-  /** 整合降级时存在此字段（原始记忆仍已存储） */
-  degraded?: string
-  stored_raw?: boolean
+  kind?: string
 }
 
 /** 检索到的精简上下文 — 用于作答的一小段带日期切片（recall）。 */
@@ -59,8 +65,7 @@ export interface CloseSessionResult {
   summaries: number
   reflected: number
   working_cleared: number
-  /** 本次会话新提炼的结论。未变更的会话重复关闭不会新增；未配置 LLM 的服务器
-   *  （或设置 `MNEMOTRACE_SESSION_OUTCOMES=0`）始终报告 0。 */
+  /** 本次会话新提炼的结论。未变更的会话重复关闭不会新增；设置 `MNEMOTRACE_SESSION_OUTCOMES=0` 时不运行；未配置模型而请求提炼时返回错误。 */
   outcomes?: number
 }
 
@@ -91,6 +96,7 @@ export interface SessionReport {
   include_sensitive: boolean
   episodes: number
   episodes_consolidated: number
+  extraction_failures?: number
   episodes_pending: number
   working_live: number
   facts_added: number
@@ -102,6 +108,7 @@ export interface SessionIndexItem {
   id: string
   episodes: number
   episodes_consolidated: number
+  extraction_failures?: number
   episodes_pending: number
   facts_added: number
   facts_sensitive: number
@@ -242,7 +249,8 @@ export interface MemoryStats {
   counts: {
     episodes: number
     episodes_consolidated: number
-    episodes_pending: number
+    extraction_failures?: number
+  episodes_pending: number
     episodes_ephemeral: number
     facts_hot: number
     facts_cold: number
@@ -286,7 +294,8 @@ export interface AgentStatus {
   session: {
     id: string | null
     episodes: number
-    episodes_pending: number
+    extraction_failures?: number
+  episodes_pending: number
     working_live: number
   }
   counts: MemoryStats['counts']
@@ -476,7 +485,7 @@ export interface MemoryControls {
   /** 用于检索和后台写入的会话/线程 id */
   session_id?: string
   /** auto | long | working；控制后台写入的路由方式 */
-  scope?: string
+  scope?: 'auto' | 'long' | 'working'
   /** 为补充细节而包含的完整历史对话数量（默认 6） */
   n_chunks?: number
   /** 用于按时间点查看记忆的 epoch 秒数 */
@@ -514,6 +523,7 @@ export interface MnemoTraceChatMeta {
   as_of: number | null
   redacted_sensitive: boolean
   remembered: boolean
+  remember_queued?: boolean
   remember_scope?: string
 }
 

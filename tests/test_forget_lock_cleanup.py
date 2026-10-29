@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from mnemotrace import Memory
-from mnemotrace.service import MemoryService
+from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryService
 
 
 @pytest.mark.parametrize("include_pickle_directory", [False, True])

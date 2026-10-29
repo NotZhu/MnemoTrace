@@ -30,7 +30,7 @@ jobs:
         timeout-minutes: 20
       - run: python scripts/check_repository.py
       - run: python scripts/build_landing_pages.py --check
-      - run: python scripts/check_zero_setup.py
+      - run: python scripts/check_core.py
       - run: python scripts/check_release.py
       - if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
         run: |
