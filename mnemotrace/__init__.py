@@ -19,6 +19,6 @@ try:  # pragma: no cover - exercised once memory.py lands
 except Exception:  # noqa: BLE001 - 开发期部分构建的容错
     pass
 
-from .extraction import ExtractionError, ExtractionResponseError, LLMNotConfiguredError
+from .extraction import ExtractionError, ExtractionResponseError, ExtractionTruncatedError, LLMNotConfiguredError
 
-__all__ += ["ExtractionError", "ExtractionResponseError", "LLMNotConfiguredError"]
+__all__ += ["ExtractionError", "ExtractionResponseError", "ExtractionTruncatedError", "LLMNotConfiguredError"]

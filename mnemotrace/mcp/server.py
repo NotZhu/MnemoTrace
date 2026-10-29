@@ -98,7 +98,7 @@ def _err(e: Exception) -> str:
             if code in {502, 503}:
                 try:
                     detail = e.response.json().get("detail", {})
-                    if detail.get("code") in {"llm_not_configured", "extraction_failed", "extraction_invalid_response"}:
+                    if detail.get("code") in {"llm_not_configured", "extraction_failed", "extraction_invalid_response", "extraction_truncated"}:
                         return "Error: " + _json(detail)
                 except (ValueError, AttributeError):
                     pass

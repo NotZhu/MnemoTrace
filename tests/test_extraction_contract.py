@@ -116,8 +116,8 @@ def test_mixed_batch_failure_does_not_register_name_or_write_working():
             return response([fact('Synthetic Name', 'name')], [{'content': 'Temporary task', 'kind': 'task'}])
         return 'invalid'
     m = Memory(llm=FakeLLM(handler=complete))
-    m.remember('first', scope='auto')
-    m.remember('second', scope='auto')
+    m.remember('first', scope='auto', session_id='s1')
+    m.remember('second', scope='auto', session_id='s2')
     with pytest.raises(ExtractionResponseError):
         m.consolidate()
     assert not m.engine.extractor.self_name and not m._identity and not m.working_mem
@@ -251,8 +251,14 @@ def test_async_failure_is_visible_and_worker_stays_alive(tmp_path, monkeypatch):
 
 def test_storage_failure_keeps_entire_batch_pending_and_retry_keeps_working(monkeypatch):
     def complete(prompt, system=''):
-        index = '1' if 'row 1' in prompt else '0'
-        return response([fact(index, 'owns')], [{'content': 'task ' + index, 'kind': 'task'}])
+        from mnemotrace.consolidate.windows import WINDOW_PREFIX
+        window = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
+        facts, working = [], []
+        for span in window['pending']:
+            index = '1' if 'row 1' in span['content'] else '0'
+            facts.append({**fact(index, 'owns'), 'source_ids': [span['id']]})
+            working.append({'content': 'task ' + index, 'kind': 'task', 'source_ids': [span['id']]})
+        return response(facts, working)
     mem = Memory(llm=FakeLLM(handler=complete))
     for index in range(2):
         result = mem.remember('row ' + str(index))
@@ -310,8 +316,14 @@ def test_scope_includes_existing_durable_fact(tmp_path):
 
 def test_sync_counts_only_include_current_input(tmp_path):
     def complete(prompt, system=''):
-        index = '1' if 'first pending' in prompt else '2'
-        return response([fact(index, 'owns')], [{'content': 'task ' + index, 'kind': 'task'}])
+        from mnemotrace.consolidate.windows import WINDOW_PREFIX
+        data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
+        facts, working = [], []
+        for span in data['pending']:
+            index = '1' if 'first pending' in span['content'] else '2'
+            facts.append({**fact(index, 'owns'), 'source_ids': [span['id']]})
+            working.append({'content': 'task ' + index, 'kind': 'task', 'source_ids': [span['id']]})
+        return response(facts, working)
     svc = service(tmp_path, FakeLLM(handler=complete))
     svc.get('u').remember('first pending', user_id='u')
     result = svc.remember('u', 'current input')

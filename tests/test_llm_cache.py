@@ -101,7 +101,9 @@ def test_identity_registration_does_not_depend_on_extraction_order():
         "you can call me Evan": [{"subject":"user","predicate":"name","object":"Evan"}],
     }
     def complete(prompt, system):
-        content = prompt.split("对话：\n", 1)[1].split("\n\nJSON 事实：", 1)[0]
+        from mnemotrace.consolidate.windows import WINDOW_PREFIX
+        data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
+        content = data["pending"][0]["content"]
         if content == "I like coffee":
             time.sleep(0.01)
         return json.dumps({"facts": outputs[content], "working": []})
@@ -109,7 +111,7 @@ def test_identity_registration_does_not_depend_on_extraction_order():
     for _ in range(3):
         mem = Memory(llm=FakeLLM(handler=complete))
         for i, text in enumerate(outputs):
-            mem.add(text, user_id="u1", event_time=1_700_000_000.0 + i * 86400)
+            mem.add(text, user_id="u1", session_id=f"s{i}", event_time=1_700_000_000.0 + i * 86400)
         mem.consolidate()
         seen.append(sorted(f.text for f in mem._all_facts()))
         assert mem.engine.self_name("u1") == "Evan"

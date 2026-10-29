@@ -177,6 +177,11 @@ def validate_record(kind: str, record: Any, path: str, *, jsonl_fact: bool = Fal
     if jsonl_fact:
         spec = {**spec, "_store": _choice("hot", "cold")}
     result = _fields(record, spec, path)
+    if kind == "Episode":
+        from ..consolidate.processing import validate_progress
+        progress = validate_progress(result["content"], result["metadata"])
+        if progress and result["consolidated"] != (progress["completed_through"] == len(result["content"])):
+            _fail(path, "completion flag must match processing range")
     if kind == "Fact":
         _validate_topic_pair(result, path)
     if embedding_dim is not None:

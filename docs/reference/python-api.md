@@ -107,11 +107,11 @@ memory.save()
 
 抽取模型输出 `{"facts": [...], "working": [...]}`；facts 条目包含非空字符串 subject、predicate、object，可附 text 和 topic；working 条目包含非空 content 和 kind（state/intent/task），不接受模型设置 TTL。两个数组均为必需；混合内容分别生成两类记录，无记忆价值时两个数组为空。自定义 extract_system 必须遵循该协议，旧数组响应不兼容。会话结论仍使用对象数组协议。
 
-`consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实和工作条目。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，整批保持待处理，重试会消解重复事实并按来源 episode、内容和 kind 去重工作条目。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
+`consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实和工作条目。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，已完成的窗口范围保留，未完成范围继续待处理；重试跳过完成范围并消解重复事实和工作条目。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
 
 导入重试先去重，再检查实际抽取需求：全部内容已完成且没有相关 pending 时，无需 LLM 即可返回 skipped，即使 consolidate=True。存在待抽取的新内容或相关 pending 时，在本次新输入写入前检查模型。已存在内容不再创建 episode。summarize=True 会补齐本次涉及会话中缺失的摘要，包括抽取重试和部分新增的情况；已有摘要不重复生成，返回 summaries 为本次实际补齐数量。
 
-公开异常为 LLMNotConfiguredError、ExtractionError、ExtractionResponseError；后两者的原文记录保持待处理，可以重新 consolidate。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。原文保存不等同于事实抽取完成。模型输出的 working.kind 限定为 state/intent/task，显式工作记忆接口仍可使用其他 kind。会话结论 kind 在校验前忽略大小写和首尾空白，未知类型仍报响应无效。
+公开异常为 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError；未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。原文保存不等同于事实抽取完成。模型输出的 working.kind 限定为 state/intent/task，显式工作记忆接口仍可使用其他 kind。会话结论 kind 在校验前忽略大小写和首尾空白，未知类型仍报响应无效。
 
 替代裁决仅接受 REPLACES/COEXISTS，冲突检测仅接受 CONFLICT/COEXIST（忽略首尾空白与大小写）；其他响应记录安全警告并不执行对应替代或冲突标记。
 

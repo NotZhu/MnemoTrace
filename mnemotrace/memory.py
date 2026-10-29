@@ -13,6 +13,7 @@ from typing import Callable, Optional
 from .config import Config
 from .consolidate import ConsolidationEngine, is_single_valued, reinforce
 from .consolidate.llm_extractor import EXTRACT_SYSTEM
+from .consolidate.processing import EpisodeProcessingStore
 from .consolidate.summarizer import (
     PERSONA_SYSTEM,
     SESSION_SUMMARY_SYSTEM,
@@ -281,6 +282,7 @@ class Memory:
         # 初始化事件写入器
         self.ingestor = Ingestor(self.episodes_doc, self.episodes_vec, self.embedder)
         self.engine = ConsolidationEngine(self.fact_store, self.graph, self.embedder, self.config, self.llm,
+                                          processing=EpisodeProcessingStore(self.episodes_doc, self._sync_episode),
                                           working_mem=self.working_mem)
         self.retriever = HybridRetriever(self.fact_store, self.graph, self.embedder, self.config)
         self.cold_retriever = HybridRetriever(self.cold_store, self.graph, self.embedder, self.config)
@@ -476,15 +478,18 @@ class Memory:
             exc.stored_raw = bool(eps)
             exc.episode_ids = [ep.id for ep in eps]
             for ep in eps:
-                ep.metadata["extraction_error"] = exc.code
-                self._sync_episode(ep)
+                if not ep.consolidated:
+                    ep.metadata["extraction_error"] = exc.code
             raise
-        for supplied, ep in zip(requested, eps):
-            supplied.consolidated = ep.consolidated
-            self._sync_episode(ep)
-        self._identity.update(self.engine.extractor.self_name)
-        for k, v in self.engine.extractor.aliases.items():
-            self._aliases.setdefault(k, set()).update(v)
+        finally:
+            # Earlier completed windows retain their identities even if a later storage write fails.
+            self._persona_cache.clear()
+            self._identity.update(self.engine.extractor.self_name)
+            for k, v in self.engine.extractor.aliases.items():
+                self._aliases.setdefault(k, set()).update(v)
+            for supplied, ep in zip(requested, eps):
+                supplied.consolidated = ep.consolidated
+                self._sync_episode(ep)
         self._classify()  # feature ⑤：给新 fact 打 category + 敏感标志（基于规则）
         self._detect_conflicts()  # System-2：将疑似冲突浮出给用户（需主动开启、有门控）
         self._enforce_hot_limit()

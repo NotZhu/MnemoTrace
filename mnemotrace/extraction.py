@@ -5,7 +5,7 @@ from __future__ import annotations
 class ExtractionError(RuntimeError):
     code = "extraction_failed"
     status_code = 502
-    message = "Memory extraction failed; retry consolidation after the model is available."
+    message = "Memory extraction failed; check the model and processing configuration, then retry consolidation."
 
     def __init__(self, *, stored_raw: bool = False, episode_ids: list[str] | None = None):
         super().__init__(self.message)
@@ -26,6 +26,11 @@ class LLMNotConfiguredError(ExtractionError):
 class ExtractionResponseError(ExtractionError):
     code = "extraction_invalid_response"
     message = "The model returned an invalid extraction response; check its prompt and retry."
+
+
+class ExtractionTruncatedError(ExtractionResponseError):
+    code = "extraction_truncated"
+    message = "The extraction response was truncated; increase its output budget or reduce the window and retry."
 
 
 def require_llm(llm) -> None:

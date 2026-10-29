@@ -502,6 +502,13 @@ def test_async_close_inside_namespace_scope_does_not_join_its_waiting_worker(
     # An isolated process imposes a hard timeout on a lock/join regression.
     snippet = """
 import sys
+import os
+import faulthandler
+faulthandler.dump_traceback_later(5, repeat=True)
+from mnemotrace.llm import providers
+providers.load_dotenv = lambda *args, **kwargs: None
+for name in ('MNEMOTRACE_LLM', 'MNEMOTRACE_ANSWERER', 'MNEMOTRACE_VISION_LLM'):
+    os.environ[name] = ''
 from tests.model_fixtures import MemoryService
 svc = MemoryService(data_dir=sys.argv[1], embedder_name='hashing', llm_name='')
 with svc.write_lock('u'):
@@ -509,9 +516,13 @@ with svc.write_lock('u'):
     svc.close()
 svc.close()
 svc.flush()
+faulthandler.cancel_dump_traceback_later()
 """
-    result = subprocess.run([sys.executable, "-c", snippet, svc.data_dir],
-                            capture_output=True, text=True, timeout=20)
+    try:
+        result = subprocess.run([sys.executable, "-c", snippet, svc.data_dir],
+                                capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(str(exc.stderr))
     assert result.returncode == 0, result.stderr
     assert any(f["object"] == "Python" for f in svc.memories("u")["facts"])
 
@@ -626,5 +637,42 @@ def test_consolidate_accepts_episode_without_existing_document(config, tmp_path)
         assert memory.episodes_doc.get(episode.id).consolidated
         assert memory.retrieve_episodes("Python", user_id="u")[0].id == episode.id
         memory.save()
+        if config.qdrant_url:
+            memory._qdrant_backend.erase()
+
+
+def test_window_ranges_resume_and_write_back_after_restart(config, tmp_path, monkeypatch):
+    from mnemotrace import Memory as NativeMemory
+    from mnemotrace.consolidate.processing import PROGRESS_KEY
+    from mnemotrace.consolidate.windows import ExtractionWindow, SourceSpan, WINDOW_PREFIX
+    from mnemotrace.llm import FakeLLM
+    model = FakeLLM(handler=lambda *args: '{"facts":[],"working":[]}')
+    config.extraction_context_bytes = 20
+    root = str(tmp_path / "ranges")
+    with NativeMemory.open(root, config=config, llm=model) as memory:
+        ep = memory.add("Synthetic🙂" * 90, session_id="s")
+        config.extraction_max_input_bytes = memory.config.extraction_max_input_bytes = memory.engine.extractor.window_size(
+            ExtractionWindow((SourceSpan(ep, 0, 1),))) + 200
+        original = memory.engine.processing.write
+        calls = []
+        def fail_second(updated):
+            calls.append(updated.id)
+            if len(calls) == 2:
+                raise OSError("Synthetic range checkpoint failure")
+            original(updated)
+        monkeypatch.setattr(memory.engine.processing, "write", fail_second)
+        with pytest.raises(OSError):
+            memory.consolidate()
+        through = ep.metadata[PROGRESS_KEY]["completed_through"]
+        assert memory.episodes_vec.get(ep.id).metadata[PROGRESS_KEY]["completed_through"] == through
+        assert not ep.consolidated
+        memory.save()
+    retry = FakeLLM(handler=lambda *args: '{"facts":[],"working":[]}')
+    with NativeMemory.open(root, config=config, llm=retry) as memory:
+        memory.consolidate()
+        data = json.JSONDecoder().raw_decode(retry.calls[0]["prompt"].split(WINDOW_PREFIX, 1)[1])[0]
+        assert data["pending"][0]["start"] == through
+        record = memory.episodes_vec.get(ep.id)
+        assert record.consolidated and record.metadata[PROGRESS_KEY]["completed_through"] == len(ep.content)
         if config.qdrant_url:
             memory._qdrant_backend.erase()

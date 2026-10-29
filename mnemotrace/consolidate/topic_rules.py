@@ -82,7 +82,7 @@ def topic_system(system: str, enabled: bool) -> str:
 def log_topic_inputs(items: list[dict]) -> None:
     """单次属性或结论抽取调用内聚合，非法主题至多一条 WARNING。
 
-    不跨 episode 或 session 调用累计；只记录数量，不带入模型字段、正文或用户标识。
+    不跨独立模型调用累计；一个窗口可包含多个 episode。只记录数量，不带入模型字段、正文或用户标识。
     """
     invalid = sum("topic" in item and (not isinstance(item["topic"], str) or item["topic"] not in TOPICS)
                   for item in items)
