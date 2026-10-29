@@ -8,6 +8,7 @@ for (const [status, code, storedRaw] of [
   [503, 'llm_not_configured', false],
   [502, 'extraction_failed', true],
   [502, 'extraction_invalid_response', true],
+  [502, 'extraction_truncated', true],
 ]) {
   test(`remember preserves ${code} and raw-save details without retrying`, async () => {
     let calls = 0

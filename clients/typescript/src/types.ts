@@ -19,7 +19,7 @@ export interface Health {
 }
 
 export interface ExtractionFailure {
-  code: 'llm_not_configured' | 'extraction_failed' | 'extraction_invalid_response'
+  code: 'llm_not_configured' | 'extraction_failed' | 'extraction_invalid_response' | 'extraction_truncated'
   message: string
   stored_raw: boolean
   episode_ids: string[]

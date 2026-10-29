@@ -3,12 +3,29 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from dataclasses import dataclass
 
 from ..llm import LLM
-from ..extraction import ExtractionError, ExtractionResponseError, require_llm
+from ..extraction import ExtractionError, ExtractionResponseError, ExtractionTruncatedError, require_llm
+from ..llm.base import Completion, complete_result
 from ..types import Episode, Fact
 from .preferences import preference_topic_object
 from .topic_rules import log_topic_inputs, resolve_topic, topic_system
+from .windows import ExtractionWindow
+
+_WINDOW_SYSTEM = (
+    "\n输入为窗口 JSON。pending 是本次待处理片段，context 仅为理解前文。"
+    "每条 facts/working 还须给出 source_ids 数组，引用输入片段的 id；至少引用一个 pending 片段。"
+    "不得只从 context 重复抽取，不得编造来源。按来源时间保留更新前后的不同事实，不要只输出窗口最后的状态。"
+)
+
+
+@dataclass(frozen=True)
+class WindowOutput:
+    items: dict
+    completion: Completion
+    latency_ms: float
 
 # 系统提示词
 EXTRACT_SYSTEM = (
@@ -119,14 +136,51 @@ class LLMExtractor:
         """Stateless model call and complete validation, safe to fan out."""
         require_llm(self.llm)
         scope = ep.metadata.get("memory_scope", "long")
-        system = self._effective_system()
-        system += ("\n本次路由模式：" + scope +
+        system = self._system(scope)
+        result = self._complete(self.template.format(speaker=ep.speaker, content=ep.content), system)
+        return self._validate(result.text, scope)
+
+    def _system(self, scope: str) -> str:
+        return self._effective_system() + ("\n本次路由模式：" + scope +
                    ("。仅抽取长期事实，working 必须为空。" if scope == "long" else
                     "。同时判断长期事实与临时状态；同一段可以同时含有两者。"))
+
+    def _complete(self, prompt: str, system: str, **kwargs) -> Completion:
         try:
-            raw = self.llm.complete(self.template.format(speaker=ep.speaker, content=ep.content), system=system)
+            result = complete_result(self.llm, prompt, system=system, **kwargs)
         except Exception as exc:
             raise ExtractionError() from exc
+        if result.finish_reason in {"length", "max_tokens", "max_output_tokens", "incomplete"}:
+            raise ExtractionTruncatedError()
+        if result.finish_reason not in {None, "stop", "end_turn"}:
+            raise ExtractionResponseError()
+        return result
+
+    def window_size(self, window: ExtractionWindow) -> int:
+        prompt = self.template.format(speaker=window.pending[0].episode.speaker, content=window.content)
+        return len((prompt + self._system(window.scope) + _WINDOW_SYSTEM).encode("utf-8"))
+
+    def raw_window(self, window: ExtractionWindow, max_tokens: int) -> WindowOutput:
+        require_llm(self.llm)
+        started = time.perf_counter()
+        result = self._complete(
+            self.template.format(speaker=window.pending[0].episode.speaker, content=window.content),
+            self._system(window.scope) + _WINDOW_SYSTEM, max_tokens=max_tokens)
+        data = self._validate(result.text, window.scope, window=True)
+        allowed = {s.id for s in (*window.context, *window.pending)}
+        pending = {s.id for s in window.pending}
+        for item in (*data["facts"], *data["working"]):
+            # A single pending span has an unambiguous implicit source, including direct callers.
+            sources = item.get("source_ids", list(pending) if len(pending) == 1 else None)
+            if (not isinstance(sources, list) or not sources or any(
+                    not isinstance(s, str) or s not in allowed for s in sources)
+                    or not pending.intersection(sources)):
+                raise ExtractionResponseError()
+            item["source_ids"] = list(dict.fromkeys(sources))
+        return WindowOutput(data, result, (time.perf_counter() - started) * 1000)
+
+    @staticmethod
+    def _validate(raw: str, scope: str, *, window: bool = False) -> dict:
         data = parse_json(raw, dict)
         for key in ("facts", "working"):
             if not isinstance(data.get(key), list) or not all(isinstance(i, dict) for i in data[key]):
@@ -143,13 +197,13 @@ class LLMExtractor:
             if (not isinstance(item.get("content"), str) or not item["content"].strip()
                     or not isinstance(item.get("kind"), str)
                     or item["kind"] not in {"state", "intent", "task"}
-                    or set(item) - {"content", "kind"}):
+                    or set(item) - ({"content", "kind", "source_ids"} if window else {"content", "kind"})):
                 raise ExtractionResponseError()
         if scope == "long" and data["working"]:
             raise ExtractionResponseError()
         return data
 
-    def facts_from(self, ep: Episode, items: list[dict]) -> list[Fact]:
+    def facts_from(self, ep: Episode, items: list[dict], *, log_topics: bool = True) -> list[Fact]:
         """把解析出的条目转成 Fact，并注册姓名/别名。有意依赖顺序：请按时间顺序调用，
         使规范名是用户实际最先说出的那个。"""
         facts: list[Fact] = []
@@ -191,6 +245,6 @@ class LLMExtractor:
                     topic_source=topic_source,
                 )
             )
-        if self.llm_topics:
+        if self.llm_topics and log_topics:
             log_topic_inputs(topic_items)
         return facts

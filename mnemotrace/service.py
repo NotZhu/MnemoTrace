@@ -194,6 +194,10 @@ class MemoryService:
                 "MNEMOTRACE_QDRANT_TIMEOUT", str(self.config.qdrant_timeout),
             ))
         self.config.llm_topics = os.environ.get("MNEMOTRACE_LLM_TOPICS") != "0"
+        for field in ("extraction_max_input_bytes", "extraction_context_bytes", "extraction_max_output_tokens"):
+            value = os.environ.get("MNEMOTRACE_" + field.upper())
+            if value is not None:
+                setattr(self.config, field, int(value))
         if os.environ.get("MNEMOTRACE_MAX_HOT_FACTS"):
             self.config.max_hot_facts = int(os.environ["MNEMOTRACE_MAX_HOT_FACTS"])
         # 可选开启的 System-2 LLM 冲突检测 -> detect->confirm 循环（需要 LLM）。默认关闭，

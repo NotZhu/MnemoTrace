@@ -1,4 +1,4 @@
-"""确定性、不联网的 LLM，用于测试和 demo。可以用 handler(prompt, system)->str 驱动，
+"""确定性、不联网的 LLM，用于固定响应测试。可以用 handler(prompt, system)->str 驱动，
 或者给一组固定的回复。会记录所有调用以便断言。"""
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from .base import Completion, LLM
 class FakeLLM(LLM):
     def __init__(
         self,
-        handler: Optional[Callable[[str, Optional[str]], str]] = None,
+        handler: Optional[Callable[[str, Optional[str]], str | Completion]] = None,
         responses: Optional[list[str | Completion]] = None,
     ) -> None:
         self._handler = handler

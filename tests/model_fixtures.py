@@ -11,12 +11,41 @@ from pathlib import Path
 from mnemotrace import Memory as NativeMemory
 from mnemotrace.consolidate.llm_extractor import LLMExtractor as NativeExtractor
 from mnemotrace.service import MemoryService as NativeService
+from mnemotrace.consolidate.windows import WINDOW_PREFIX
 
 RESPONSES = json.loads(Path(__file__).with_name('extraction_responses.json').read_text(encoding='utf-8'))
 
 
+def window_input(prompt):
+    if WINDOW_PREFIX in prompt:
+        return json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
+    return None
+
+
+def replay_window(prompt, system, invoke):
+    """Keep legacy consumer fixtures per source; native window tests bypass this adapter."""
+    data = window_input(prompt)
+    result = {'facts': [], 'working': []}
+    for span in data['pending']:
+        raw = invoke('对话：\n' + span['content'] + '\n\nJSON 事实：', system=system)
+        try:
+            value = json.loads(raw)
+        except (ValueError, TypeError):
+            return raw
+        if isinstance(value, list):
+            value = {'facts': value, 'working': []}
+        if not isinstance(value, dict):
+            return raw
+        for key in result:
+            for item in value.get(key, []):
+                result[key].append({**item, 'source_ids': [span['id']]})
+    return json.dumps(result, ensure_ascii=False)
+
+
 class RecordedLLM:
     def complete(self, prompt, system='', **kwargs):
+        if window_input(prompt) is not None:
+            return replay_window(prompt, system, self.complete)
         if '对话：\n' in prompt and '\n\nJSON 事实：' in prompt:
             content = prompt.split('对话：\n', 1)[1].rsplit('\n\nJSON 事实：', 1)[0]
             if content not in RESPONSES:
@@ -35,6 +64,8 @@ class FixtureProtocol:
         self.model = model
 
     def complete(self, prompt, **kwargs):
+        if window_input(prompt) is not None:
+            return replay_window(prompt, kwargs.get('system', ''), self.complete)
         raw = self.model.complete(prompt, **kwargs)
         if '对话：\n' in prompt and '\n\nJSON 事实：' in prompt:
             try:

@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor
 from copy import copy, deepcopy
 from typing import Optional
@@ -14,7 +16,7 @@ from ..embed import Embedder
 from ..llm import LLM
 from ..store import GraphStore, VectorStore
 from ..types import Episode, WorkingMemory
-from ..extraction import require_llm
+from ..extraction import ExtractionError, require_llm
 from ..util import DAY
 from .conflict import ConflictResolver
 from .decay import is_durable
@@ -25,6 +27,9 @@ from .preferences import (
     preference_topic_object,
 )
 from .graph_builder import GraphBuilder
+from .processing import EpisodeProcessingStore, PROGRESS_KEY
+from .windows import chronology, plan_windows
+from .topic_rules import log_topic_inputs
 
 _PROCEDURAL_EXTRACTED_PREDS = {"procedure", "how_to", "routine", "instruction", "agent_instruction"}
 
@@ -39,6 +44,7 @@ class ConsolidationEngine:
         config: Config,
         llm: Optional[LLM] = None,
         *,
+        processing: EpisodeProcessingStore,
         working_mem: Optional[dict[str, WorkingMemory]] = None,
     ) -> None:
         """初始化事件整合引擎。
@@ -50,6 +56,11 @@ class ConsolidationEngine:
             config: 配置。
             llm: LLM。
         """
+        for name in ("extraction_max_input_bytes", "extraction_max_output_tokens", "extraction_context_bytes"):
+            value = getattr(config, name)
+            if type(value) is not int or value < (0 if name == "extraction_context_bytes" else 1):
+                raise ValueError(f"{name} must be a valid integer budget")
+        self.processing = processing
         self.fact_store = fact_store
         self.graph = graph
         self.embedder = embedder
@@ -69,119 +80,148 @@ class ConsolidationEngine:
                                         llm=llm if config.conflict_llm_escalation else None)
 
     def consolidate(self, episodes: list[Episode]) -> dict[str, int]:
-        """执行事实整合。
-
-        Args:
-            episodes: 要整合的 episode 列表。
-        Returns:
-            dict[str, int]: 整合统计信息。
-        """
-        stats = {"facts_added": 0, "duplicates": 0, "invalidated": 0, "working_added": 0}
-        chrono = sorted(episodes, key=lambda e: (e.event_time, e.ingested_at))
-
-        if not chrono:
+        stats = {"facts_added": 0, "duplicates": 0, "invalidated": 0, "working_added": 0,
+                 "model_calls": 0, "windows_completed": 0}
+        active = []
+        for ep in sorted({ep.id: ep for ep in episodes}.values(), key=chronology):
+            offset = self.processing.offset(ep)
+            if PROGRESS_KEY in ep.metadata and offset == len(ep.content):
+                ep.consolidated = True
+            if not ep.consolidated:
+                active.append(ep)
+        if not active:
             return stats
         require_llm(self.llm)
-        # Validate the entire batch before changing facts, identities, or completion flags.
+        history = {ep.id: ep for ep in [*self.processing.episodes(), *active]}
+        try:
+            windows = plan_windows(active, list(history.values()), self.processing.offset,
+                                   self.extractor.window_size, self.config.extraction_max_input_bytes,
+                                   self.config.extraction_context_bytes)
+        except ValueError as exc:
+            raise ExtractionError() from exc
+        # Validate all responses before applying any derived state from this request.
         import os
         workers = max(1, int(os.environ.get("MNEMOTRACE_EXTRACT_WORKERS", "4")))
-        with ThreadPoolExecutor(max_workers=min(workers, len(chrono))) as pool:
-            futures = {ep.id: pool.submit(self.extractor.raw_items, ep) for ep in chrono}
-            raw = {ep.id: futures[ep.id].result() for ep in chrono}
-        staged = copy(self.extractor)
-        staged.self_name = deepcopy(self.extractor.self_name)
-        staged.aliases = deepcopy(self.extractor.aliases)
-        ep_facts, identity_updates, working = {}, {}, {}
-        counts = {ep.id: {"facts_added": 0, "working_added": 0} for ep in chrono}
-        for ep in chrono:
-            before = (staged.self_name.get(ep.user_id), set(staged.aliases.get(ep.user_id, ())))
-            ep_facts[ep.id] = staged.facts_from(ep, raw[ep.id]["facts"])
-            identity_updates[ep.id] = before != (
-                staged.self_name.get(ep.user_id), set(staged.aliases.get(ep.user_id, ())))
-            working[ep.id] = [WorkingMemory(
-                content=item["content"].strip(), kind=item["kind"], user_id=ep.user_id,
-                session_id=ep.session_id, event_time=ep.event_time,
-                metadata={"episode_id": ep.id}) for item in raw[ep.id]["working"]]
-            for wm in working[ep.id]:
-                wm.embedding = self.embedder.embed(wm.content)
-        for ep in chrono:
-            accepted = []
-            for fact in ep_facts[ep.id]:
-                if (
-                    not self.config.procedural_extraction
-                    and fact.predicate.lower() in _PROCEDURAL_EXTRACTED_PREDS
-                ):
-                    continue
-                if (
-                    not self.config.explicit_preference_extraction
-                    and fact.predicate.lower() in EXPLICIT_PREFERENCE_PREDS
-                ):
-                    continue
-                if (
-                    not self.config.preference_reversal_extraction
-                    and is_preference_reversal_fact(fact, ep.content)
-                ):
-                    continue
-                if (
-                    self.config.preference_object_filter
-                    and fact.predicate.lower() in EXPLICIT_PREFERENCE_PREDS
-                    and not is_specific_preference_object(fact.object)
-                ):
-                    continue
-                if (
-                    self.config.preference_object_normalization
-                    and fact.predicate.lower() in EXPLICIT_PREFERENCE_PREDS
-                ):
-                    normalized = preference_topic_object(fact.predicate, fact.object,
-                                                          self.config.preference_object_normalization)
-                    if normalized != fact.object:
-                        fact.object = normalized
-                        fact.text = f"{fact.subject} {fact.predicate.replace('_', ' ')} {fact.object}".strip()
-                fact.embedding = self.embedder.embed(fact.text)
-                accepted.append(fact)
-            ep_facts[ep.id] = accepted
-
-        # Step 2: 按时间顺序消解冲突——顺序对 "supersedes" 链很重要。
-        for ep in chrono:
-            for fact in ep_facts.get(ep.id, []):
-                live = [f for f in self.fact_store.values() if f.user_id == fact.user_id and f.is_live()]
-                action, invalidated = self.conflict.reconcile(fact, live)
-                for old in invalidated:
-                    self.graph_builder.invalidate(old.id, fact.created_at)
-                    self.fact_store.upsert(old.id, old.embedding or [], old)
-                    stats["invalidated"] += 1
-                if action == "duplicate":
-                    stats["duplicates"] += 1
-                    continue
-                self.fact_store.upsert(fact.id, fact.embedding, fact)
-                self.graph_builder.add_fact(fact)
-                stats["facts_added"] += 1
-                counts[ep.id]["facts_added"] += 1
-
-        # Storage failures may leave facts to reconcile on retry. Keep every episode pending
-        # until its working entries and identities can also be committed.
-        self._decay_sweep()
-        seen_working = {(w.metadata.get("episode_id"), w.content, w.kind)
-                        for w in self.working_mem.values()}
-        for ep in chrono:
-            for wm in working[ep.id]:
-                key = (ep.id, wm.content, wm.kind)
-                if key not in seen_working:
-                    self.working_mem[wm.id] = wm
-                    seen_working.add(key)
-                    counts[ep.id]["working_added"] += 1
-            stats["working_added"] += counts[ep.id]["working_added"]
-        self.extractor.self_name = staged.self_name
-        self.extractor.aliases = staged.aliases
-        for ep in chrono:
-            durable = bool(ep_facts[ep.id]) or identity_updates[ep.id]
-            ep.consolidated = True
-            ep.metadata.pop("extraction_error", None)
-            ep.metadata["extraction_counts"] = counts[ep.id]
-            ep.metadata["memory_result"] = (
-                "mixed" if durable and working[ep.id] else
-                "working" if working[ep.id] else "long" if durable else "none")
+        with ThreadPoolExecutor(max_workers=min(workers, len(windows))) as pool:
+            futures = [pool.submit(self.extractor.raw_window, w,
+                                   self.config.extraction_max_output_tokens) for w in windows]
+            outputs = [f.result() for f in futures]
+        stats["model_calls"] = len(windows)
+        for window, output in zip(windows, outputs):
+            self._apply_window(window, output, stats)
+            stats["windows_completed"] += 1
         return stats
+
+    def _accepted(self, fact, content: str) -> bool:
+        pred = fact.predicate.lower()
+        if not self.config.procedural_extraction and pred in _PROCEDURAL_EXTRACTED_PREDS:
+            return False
+        if pred in EXPLICIT_PREFERENCE_PREDS:
+            if not self.config.explicit_preference_extraction:
+                return False
+            if self.config.preference_object_filter and not is_specific_preference_object(fact.object):
+                return False
+            if self.config.preference_object_normalization:
+                obj = preference_topic_object(pred, fact.object, True)
+                if obj != fact.object:
+                    fact.object = obj
+                    fact.text = f"{fact.subject} {pred.replace('_', ' ')} {obj}".strip()
+        return self.config.preference_reversal_extraction or not is_preference_reversal_fact(fact, content)
+
+    def _apply_window(self, window, output, stats):
+        spans = {s.id: s for s in (*window.context, *window.pending)}
+        pending_ids = {s.id for s in window.pending}
+        pending_order = {s.id: i for i, s in enumerate(window.pending)}
+        def anchor(item):
+            return max((spans[k] for k in item["source_ids"] if k in pending_ids),
+                       key=lambda s: (*chronology(s.episode), pending_order[s.id], s.start))
+        staged = copy(self.extractor)
+        staged.self_name, staged.aliases = deepcopy(self.extractor.self_name), deepcopy(self.extractor.aliases)
+        facts, working, durable, transient = [], [], set(), set()
+        if staged.llm_topics:
+            log_topic_inputs(output.items["facts"])
+        counts = {s.episode.id: {"facts_added": 0, "working_added": 0} for s in window.pending}
+        for item in sorted(output.items["facts"], key=lambda i: pending_order[anchor(i).id]):
+            ep = anchor(item).episode
+            before = (staged.self_name.get(ep.user_id), set(staged.aliases.get(ep.user_id, ())))
+            extracted = staged.facts_from(ep, [item], log_topics=False)
+            if before != (staged.self_name.get(ep.user_id), set(staged.aliases.get(ep.user_id, ()))):
+                durable.add(ep.id)
+            for fact in extracted:
+                if not self._accepted(fact, "\n".join(spans[k].episode.content[spans[k].start:spans[k].end]
+                                                       for k in item["source_ids"])):
+                    continue
+                fact.provenance = list(dict.fromkeys(spans[k].episode.id for k in item["source_ids"]))
+                identity = json.dumps([item["source_ids"], fact.slot, fact.object], ensure_ascii=False)
+                fact.id = "ft_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+                fact.embedding = self.embedder.embed(fact.text)
+                facts.append((ep, fact))
+                durable.update(spans[k].episode.id for k in item["source_ids"] if k in pending_ids)
+        for item in output.items["working"]:
+            ep = anchor(item).episode
+            identity = json.dumps([item["source_ids"], item["content"].strip(), item["kind"]], ensure_ascii=False)
+            wm = WorkingMemory(content=item["content"].strip(), kind=item["kind"], user_id=ep.user_id,
+                               session_id=ep.session_id, event_time=ep.event_time,
+                               id="wm_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24],
+                               metadata={"episode_id": ep.id, "source_ids": item["source_ids"],
+                                         "provenance": list(dict.fromkeys(spans[k].episode.id for k in item["source_ids"]))})
+            wm.embedding = self.embedder.embed(wm.content)
+            working.append((ep, wm))
+            transient.update(spans[k].episode.id for k in item["source_ids"] if k in pending_ids)
+        # Embedding and response validation have completed before storage changes.
+        for ep, fact in facts:
+            counts[ep.id]["facts_added"] += self._write_fact(fact, stats)
+        self._decay_sweep()
+        seen = {(w.metadata.get("episode_id"), w.content, w.kind) for w in self.working_mem.values()}
+        for ep, wm in working:
+            key = (ep.id, wm.content, wm.kind)
+            if wm.id not in self.working_mem and key not in seen:
+                self.working_mem[wm.id] = wm
+                seen.add(key)
+                counts[ep.id]["working_added"] += 1
+                stats["working_added"] += 1
+        self.extractor.self_name, self.extractor.aliases = staged.self_name, staged.aliases
+        self.processing.complete(window, counts, durable, transient, output.completion, output.latency_ms)
+
+    def _ensure_projection(self, fact):
+        subject = self.graph.get_entity(fact.user_id, fact.subject)
+        if subject is None or not any(r.fact_id == fact.id for r in self.graph.neighbors(subject.id)):
+            self.graph_builder.add_fact(fact)
+
+    def _write_fact(self, fact, stats) -> int:
+        existing = self.fact_store.get(fact.id)
+        if existing is not None:
+            if existing.source == "user":
+                stats["duplicates"] += 1
+                return 0
+            # A checkpoint retry repairs projection; it must not reset intervening metadata edits.
+            fact = deepcopy(existing)
+        live = [deepcopy(f) for f in self.fact_store.values()
+                if f.user_id == fact.user_id and f.id != fact.id and f.is_live()]
+        action, invalidated = self.conflict.reconcile(fact, live)
+        if action == "duplicate" and existing is None:
+            for old in live:
+                if old.slot == fact.slot and old.object.strip().lower() == fact.object.strip().lower():
+                    if old.source == "extracted":
+                        old.provenance = list(dict.fromkeys([*old.provenance, *fact.provenance]))
+                        self.fact_store.upsert(old.id, old.embedding or [], old)
+                        self._ensure_projection(old)
+                    break
+            stats["duplicates"] += 1
+            return 0
+        if existing is not None:
+            fact.supersedes = existing.supersedes or fact.supersedes
+        # Persist the new chain head before invalidations, so interrupted writes are retryable.
+        self.fact_store.upsert(fact.id, fact.embedding, fact)
+        for old in invalidated:
+            self.graph_builder.invalidate(old.id, fact.valid_at)
+            self.fact_store.upsert(old.id, old.embedding or [], old)
+            stats["invalidated"] += 1
+        if fact.supersedes:
+            self.graph_builder.invalidate(fact.supersedes, fact.valid_at)
+        self._ensure_projection(fact)
+        stats["duplicates" if existing else "facts_added"] += 1
+        return int(existing is None)
 
     def _decay_sweep(self) -> None:
         live = [f for f in self.fact_store.values() if f.is_live()]

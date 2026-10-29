@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from pathlib import Path
 import subprocess
 import sys
 import urllib.error
@@ -14,6 +15,10 @@ from mnemotrace.types import Fact
 
 @pytest.mark.parametrize('probe', [D._python_probe, D._stdio_probe])
 def test_real_offline_lifecycle_probe(probe, tmp_path, monkeypatch):
+    # Subprocesses do not inherit the parent's patched dotenv loader. Use an empty cwd
+    # while explicitly importing this checkout, so developer model settings stay out.
+    monkeypatch.setenv('PYTHONPATH', str(Path(__file__).resolve().parents[1]))
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('MNEMOTRACE_LLM', '')
     monkeypatch.setenv('PYTHONDONTWRITEBYTECODE', '1')
     monkeypatch.setenv('TEMP', str(tmp_path))
