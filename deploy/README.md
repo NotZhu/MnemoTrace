@@ -30,6 +30,10 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
 
 容器使用 UID/GID 10001。改为宿主机 bind mount 时，提前确认该用户可以写入数据目录。Compose 只传递模板列出的变量；额外模型设置需在自己的部署配置中明确传入。
 
+运行镜像包含 Qdrant 客户端。使用该后端时，在自己的 Compose 环境配置中加入
+`MNEMOTRACE_STORAGE=qdrant`；远程服务还需传入 `MNEMOTRACE_QDRANT_URL` 和按需提供的密钥。
+本地模式使用数据卷中的用户数据库目录。可选参数与快照约束见[Qdrant 配置](../docs/reference/configuration.md#可选-qdrant)。
+
 `docker-compose.demo.yml` 使用公开演示语义和不同端口/卷，不能代替有鉴权的生产模板。示例模式的 Bearer namespace 不具备生产凭据的保密性。
 
 ## 源码启动
