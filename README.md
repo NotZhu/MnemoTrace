@@ -19,6 +19,8 @@ python -m pip install ".[llm]"
 mnemotrace-quickstart
 ```
 
+Optional persistent vector backends are available via `mnemotrace-memory[qdrant]` and `mnemotrace-memory[lancedb]`. Qdrant supports local and remote modes; see the [configuration reference](docs/reference/configuration.md#可选-qdrant) for setup and lifecycle requirements.
+
 For a minimal integration:
 
 ```python

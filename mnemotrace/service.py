@@ -131,6 +131,7 @@ def _page(items: list, offset: int = 0, limit: Optional[int] = None) -> tuple[li
 class _Access:
     writing: bool = False
     memory: Memory | None = None
+    recover_vectors: bool = False
 
 
 def _read_access(method):
@@ -179,7 +180,19 @@ class MemoryService:
         self.captioner = make_llm(vision_name) if vision_name else self.llm
         from .config import Config
 
-        self.config = Config()
+        storage = os.environ.get("MNEMOTRACE_STORAGE", "memory")
+        if storage not in ("memory", "durable", "lancedb", "qdrant"):
+            raise ValueError("MNEMOTRACE_STORAGE must be memory, durable, lancedb or qdrant")
+        self.config = Config(storage=storage)
+        if storage == "qdrant":
+            self.config.qdrant_url = os.environ.get("MNEMOTRACE_QDRANT_URL")
+            self.config.qdrant_api_key = os.environ.get("MNEMOTRACE_QDRANT_API_KEY")
+            self.config.qdrant_collection_prefix = os.environ.get(
+                "MNEMOTRACE_QDRANT_COLLECTION_PREFIX", self.config.qdrant_collection_prefix,
+            )
+            self.config.qdrant_timeout = float(os.environ.get(
+                "MNEMOTRACE_QDRANT_TIMEOUT", str(self.config.qdrant_timeout),
+            ))
         self.config.llm_topics = os.environ.get("MNEMOTRACE_LLM_TOPICS") != "0"
         if os.environ.get("MNEMOTRACE_MAX_HOT_FACTS"):
             self.config.max_hot_facts = int(os.environ["MNEMOTRACE_MAX_HOT_FACTS"])
@@ -201,6 +214,8 @@ class MemoryService:
         self._locks: dict[str, NamespaceLock] = {}
         self._access = threading.local()
         self._g = threading.Lock()
+        self._active_users: dict[str, int] = {}
+        self._closed = False
         # 在线服务指标（Bet D 的在线版）：承载 SLO 的路径上的延迟分位数 + token 节省比，
         # 仅以聚合形式经 GET /metrics 暴露。见 mnemotrace/metrics.py。
         self.metrics = Metrics()
@@ -251,22 +266,52 @@ class MemoryService:
 
     def _discard(self, user: str) -> None:
         with self._g:
-            self._hot.pop(user, None)
+            mem = self._hot.pop(user, None)
             self._hot_versions.pop(user, None)
+        if mem is not None:
+            mem.close()
+
+    def _trim_cache(self) -> None:
+        with self._g:
+            for user in list(self._hot):
+                if len(self._hot) <= self.max_hot_users:
+                    break
+                if self.config.storage != "qdrant" or not self._active_users.get(user):
+                    mem = self._hot.pop(user)
+                    self._hot_versions.pop(user, None)
+                    # Close before a new access can reacquire the same local path.
+                    mem.close()
+
+    @contextmanager
+    def _cache_access(self, user: str):
+        with self._g:
+            if (self._closed and user not in self._frames()
+                    and threading.current_thread() is not self._worker):
+                raise RuntimeError("MemoryService is closed")
+            self._active_users[user] = self._active_users.get(user, 0) + 1
+        try:
+            yield
+        finally:
+            with self._g:
+                self._active_users[user] -= 1
+                if not self._active_users[user]:
+                    del self._active_users[user]
+                shutting_down = self._closed and user not in self._active_users
+            if shutting_down:
+                self._discard(user)
+            self._trim_cache()
 
     def _publish(self, user: str, mem: Memory) -> None:
         with self._g:
             self._hot[user] = mem
             self._hot_versions[user] = mem._snapshot_version
             self._hot.move_to_end(user)
-            while len(self._hot) > self.max_hot_users:
-                evicted, _ = self._hot.popitem(last=False)
-                self._hot_versions.pop(evicted, None)
+        self._trim_cache()
 
     @contextmanager
     def write_lock(self, user: str):
         """跨线程和 MCP stdio 进程串行化本地的读-改-存事务。"""
-        with self.lock(user):
+        with self.lock(user), self._cache_access(user):
             frames = self._frames()
             previous = frames.get(user)
             if previous is not None and not previous.writing:
@@ -275,7 +320,11 @@ class MemoryService:
                 if previous is None:
                     frames[user] = _Access(writing=True)
                 try:
+                    if previous is None:
+                        self._begin_vector_access(user, frames[user])
                     yield
+                    if previous is None:
+                        self._finish_vector_access(user)
                 except BaseException:  # noqa: BLE001 -- 写入中断时也必须移除脏缓存
                     self._discard(user)
                     frames[user].memory = None
@@ -283,6 +332,25 @@ class MemoryService:
                 finally:
                     if previous is None:
                         frames.pop(user, None)
+
+    def _vector_marker(self, user: str) -> str:
+        return self._contained_child(f"@{self._safe_user(user)}.qdrant-dirty")
+
+    def _begin_vector_access(self, user: str, frame: _Access) -> None:
+        if self.config.storage == "qdrant":
+            marker = self._vector_marker(user)
+            frame.recover_vectors = os.path.exists(marker)
+            # Kept on failure/process interruption. The next lock holder must
+            # rebuild indexes from the committed snapshot even if its cached
+            # manifest version has not changed.
+            with open(marker, "w", encoding="utf-8") as fh:
+                fh.write("uncommitted vector access\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+
+    def _finish_vector_access(self, user: str) -> None:
+        if self.config.storage == "qdrant":
+            os.remove(self._vector_marker(user))
 
     def _store_version(self, user: str) -> str | None:
         return snapshot_version(self._path(user))
@@ -307,7 +375,7 @@ class MemoryService:
 
     @contextmanager
     def _read_scope(self, user: str):
-        with self.lock(user):
+        with self.lock(user), self._cache_access(user):
             frames = self._frames()
             previous = frames.get(user)
             if previous is not None:
@@ -318,10 +386,16 @@ class MemoryService:
             frame = frames[user] = _Access()
             try:
                 # 持久化索引在调入冷层事实时可能修改共享表，因此读取期间也要持文件锁。
-                guard = self._user_file_lock(user) if self.config.storage == "lancedb" else nullcontext()
+                guard = self._user_file_lock(user) if self.config.storage in ("lancedb", "qdrant") else nullcontext()
                 with guard:
-                    frame.memory = self._get_locked(user)
-                    yield frame.memory
+                    self._begin_vector_access(user, frame)
+                    try:
+                        frame.memory = self._get_locked(user)
+                        yield frame.memory
+                        self._finish_vector_access(user)
+                    except BaseException:
+                        self._discard(user)
+                        raise
             finally:
                 frames.pop(user, None)
 
@@ -335,18 +409,25 @@ class MemoryService:
             return mem
 
     def _cached(self, user: str, version: str | None) -> Optional[Memory]:
+        stale = None
         with self._g:
             if user in self._hot:
                 if version == self._hot_versions.get(user):
                     self._hot.move_to_end(user)
                     return self._hot[user]
-                self._hot.pop(user, None)
+                stale = self._hot.pop(user)
                 self._hot_versions.pop(user, None)
+        if stale is not None:
+            stale.close()
         return None
 
     def _get_locked(self, user: str) -> Memory:
+        frame = self._frames().get(user)
+        if frame is not None and frame.recover_vectors:
+            self._discard(user)
+            frame.recover_vectors = False
         cached = self._cached(user, self._store_version(user))
-        if cached is not None and self.config.storage != "lancedb":
+        if cached is not None and self.config.storage not in ("lancedb", "qdrant"):
             return cached
         # 文件锁须覆盖全部集合的读取和缓存发布；保存会先逐个替换集合文件再提交 manifest，
         # 只保护 manifest 读取仍可能加载不同提交代次的集合。
@@ -359,6 +440,7 @@ class MemoryService:
     def _load_locked(self, user: str) -> Memory:
         if not self._coordinator(user).file_held:
             raise PersistenceError("snapshot loading requires the namespace file lock")
+        mem = None
         try:
             try:
                 mem = Memory.open(self._path(user), embedder=self.embedder, llm=self.llm, config=self.config)
@@ -370,6 +452,8 @@ class MemoryService:
                 mem.reembed()
                 mem.save()
         except BaseException:  # noqa: BLE001 -- 迁移失败或中断时不能发布缓存
+            if mem is not None:
+                mem.close()
             self._discard(user)
             raise
         self._publish(user, mem)
@@ -378,6 +462,17 @@ class MemoryService:
     def forget(self, user: str) -> dict:
         # 线程锁与目录外的稳定文件锁覆盖整个擦除过程，包括最后的目录删除。
         with self.write_lock(user):
+            if self.config.storage == "qdrant":
+                # Construct from server-owned config, without loading a possibly
+                # corrupt snapshot. Never enumerate or erase collections by prefix.
+                self._discard(user)
+                from .store._qdrant import QdrantBackend, resolve_config
+
+                backend = QdrantBackend(resolve_config(self.config, self._path(user)), self.embedder.dim)
+                try:
+                    backend.erase()
+                finally:
+                    backend.close()
             self._discard(user)
             self._frames()[user].memory = None
             # 与读取使用同一摘要路径；删除前重新校验真实目录边界及链接别名。
@@ -408,12 +503,17 @@ class MemoryService:
 
     # --- async System-2 consolidation (AGENTS.md Bet F; opt-in via MNEMOTRACE_ASYNC_CONSOLIDATION=1) --------
     def _enqueue(self, user: str) -> None:
-        """把用户待整合的 episode 排入后台整合，合并重复的入队请求。"""
+        """Queue consolidation, or finish an in-flight producer during shutdown."""
         with self._g:
-            if user in self._pending:
-                return
-            self._pending.add(user)
-        self._queue.put(user)  # type: ignore[union-attr]
+            synchronous = self._closed
+            if not synchronous:
+                if user in self._pending:
+                    return
+                self._pending.add(user)
+                # Serialized with the shutdown sentinel: never enqueue behind it.
+                self._queue.put(user)  # type: ignore[union-attr]
+        if synchronous:
+            self._consolidate_now(user)
 
     def _consume(self) -> None:
         """后台 worker：消费队列，在写入路径之外执行 System-2（整合 + 摘要）。"""
@@ -421,6 +521,8 @@ class MemoryService:
             user = self._queue.get()  # type: ignore[union-attr]
             if user is None:  # 关闭哨兵
                 self._queue.task_done()  # type: ignore[union-attr]
+                with self._g:
+                    self._worker = None
                 break
             # 在整合之前先清除 pending，这样整合过程中新到的 episode 会触发下一轮整合，而不是被
             # 悄悄跳过（consolidate() 只处理尚未整合的 episode，重复一轮成本很低且幂等）。
@@ -428,8 +530,8 @@ class MemoryService:
                 self._pending.discard(user)
             try:
                 self._consolidate_now(user)
-            except Exception:
-                self.metrics.count("extraction_failed")
+            except Exception as exc:
+                self.metrics.count("extraction_failed" if isinstance(exc, ExtractionError) else "consolidation_failed")
                 logging.getLogger(__name__).warning("Background consolidation failed; raw episodes remain pending")
             finally:
                 self._queue.task_done()  # type: ignore[union-attr]
@@ -440,7 +542,12 @@ class MemoryService:
             try:
                 mem.consolidate()
                 mem.summarize_episodes(list(mem.episodes_doc.values()))
-            finally:
+            except PersistenceError:
+                raise
+            except BaseException:
+                self._save(user, mem)
+                raise
+            else:
                 self._save(user, mem)
 
     def flush(self) -> None:
@@ -450,11 +557,22 @@ class MemoryService:
             self._queue.join()
 
     def close(self) -> None:
-        """停止后台 worker（尽力而为）。异步未开启时调用也安全。"""
-        if self._worker is not None and self._queue is not None:
-            self._queue.put(None)  # 哨兵
-            self._worker.join(timeout=5)
-            self._worker = None
+        """Drain queued work; scopes holding namespace locks finish shutdown on exit."""
+        with self._g:
+            if not self._closed:
+                self._closed = True
+                if self._worker is not None and self._queue is not None:
+                    self._queue.put(None)
+            worker = self._worker
+            for user in list(self._hot):
+                if not self._active_users.get(user):
+                    mem = self._hot.pop(user)
+                    self._hot_versions.pop(user, None)
+                    mem.close()
+        # Joining while holding a namespace scope could wait for a worker that
+        # needs that same lock. It drains after the scope releases it instead.
+        if worker is not None and not self._frames() and threading.current_thread() is not worker:
+            worker.join()
 
     # --- 写入路径 -----------------------------------------------------------
     @timed("remember")

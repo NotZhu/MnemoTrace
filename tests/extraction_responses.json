@@ -883,5 +883,29 @@
       "predicate": "decision",
       "object": "launch notes require committed raw logs"
     }
+  ],
+  "I like Python.": [
+    {
+      "subject": "user",
+      "predicate": "likes",
+      "object": "Python",
+      "text": "I like Python."
+    }
+  ],
+  "I like apples.": [
+    {
+      "subject": "user",
+      "predicate": "likes",
+      "object": "apples",
+      "text": "I like apples."
+    }
+  ],
+  "I like bananas.": [
+    {
+      "subject": "user",
+      "predicate": "likes",
+      "object": "bananas",
+      "text": "I like bananas."
+    }
   ]
 }

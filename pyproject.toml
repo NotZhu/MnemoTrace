@@ -24,8 +24,9 @@ dependencies = []
 
 [project.optional-dependencies]
 # Real embedding/LLM/vector/graph backends slot in behind the same interfaces.
-backends = ["lancedb>=0.6", "numpy>=1.24"]
+backends = ["lancedb>=0.6", "numpy>=1.24", "qdrant-client>=1.19.1,<2"]
 lancedb = ["lancedb>=0.6"]
+qdrant = ["qdrant-client>=1.19.1,<2"]
 embeddings = ["sentence-transformers>=2.2"]  # local BGE embeddings (MNEMOTRACE_EMBEDDER=bge-*; no API key)
 llm = ["litellm>=1.40"]
 # Serving / adoption layer; see docs/architecture/README.md.

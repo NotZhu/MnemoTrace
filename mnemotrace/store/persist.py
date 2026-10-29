@@ -334,10 +334,14 @@ def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
             obj = _restore_record(cls, values)
             prepared[name].append((tier, obj) if name == "facts" else obj)
 
+    finish_vector_restore = mem._prepare_vector_restore(stored_dim, allow_mismatch)
+
     # Decoding existing persistent payloads can itself fail. Inspect every index before
     # deleting anything, so a corrupt later index cannot leave earlier ones emptied.
     clear_plan = [(store, [payload.id for payload in store.values() if hasattr(payload, "id")])
                   for store in (mem.episodes_vec, mem.fact_store, mem.cold_store, mem.summary_vec)]
+    if finish_vector_restore is not None:
+        finish_vector_restore()
     mem.episodes_doc = InMemoryDocStore()
     for store, keys in clear_plan:
         for key in keys:

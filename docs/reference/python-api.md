@@ -108,3 +108,8 @@ memory.save()
 公开异常为 LLMNotConfiguredError、ExtractionError、ExtractionResponseError；后两者的原文记录保持待处理，可以重新 consolidate。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。原文保存不等同于事实抽取完成。模型输出的 working.kind 限定为 state/intent/task，显式工作记忆接口仍可使用其他 kind。会话结论 kind 在校验前忽略大小写和首尾空白，未知类型仍报响应无效。
 
 替代裁决仅接受 REPLACES/COEXISTS，冲突检测仅接受 CONFLICT/COEXIST（忽略首尾空白与大小写）；其他响应记录安全警告并不执行对应替代或冲突标记。
+
+
+## 数据库资源生命周期
+
+`Memory.close()` 幂等释放 Memory 内部创建的数据库客户端，不隐式保存。`with Memory.open(...) as memory:` 可保证退出时释放；需要持久化改动时在退出前调用 `save()`。直接注入 `QdrantVectorStore` 的客户端由调用方管理。可选后端的选择、路径和远程配置见[配置参考](configuration.md#可选-qdrant)。

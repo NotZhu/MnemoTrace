@@ -21,6 +21,8 @@ HTTP 服务是多应用接入和控制台管理的边界。启动方式见[部�
 
 HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节与 Content-Length 都受检查。鉴权失败和错误请求不能作为有效操作处理。
 
+存储记录校验失败返回 `500`，`detail.code=store_validation_failed`；存储连接、超时或操作失败返回 `503`，`detail.code=store_unavailable`。两者均返回不含数据与凭据的错误信息。存储失败不会作为空结果或模型提取降级的成功响应返回。
+
 ## 写入与读取
 
 ### POST /v1/remember

@@ -19,6 +19,8 @@ python -m pip install ".[llm]"
 mnemotrace-quickstart
 ```
 
+需要持久化向量后端时，可选安装 `mnemotrace-memory[qdrant]` 或 `mnemotrace-memory[lancedb]`；Qdrant 支持本地与远程模式，配置及生命周期见[配置参考](docs/reference/configuration.md#可选-qdrant)。
+
 最小接入示例：
 
 ```python

@@ -365,8 +365,8 @@ def test_invalid_http_scope_is_rejected_before_model_or_input(tmp_path, monkeypa
         'messages': [{'role': 'user', 'content': 'Synthetic input'}], 'memory': {'scope': 'invalid'}}
     with TestClient(appmod.app) as client:
         result = client.post(endpoint, json=body, headers={'Authorization': 'Bearer synthetic-user'})
-    assert result.status_code == 422
-    assert not svc.get('synthetic-user').episodes_doc.values()
+        assert result.status_code == 422
+        assert not svc.get('synthetic-user').episodes_doc.values()
 
 
 @pytest.mark.parametrize(('scope', 'facts', 'working'), [

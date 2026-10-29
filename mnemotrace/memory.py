@@ -158,6 +158,8 @@ class Memory:
         self.reranker = reranker  # 可选 cross-encoder；提升 chunk/session 检索精度 (AGENTS.md「检索与模块」)
         self.llm = llm  # 启用时供 agentic 检索（查询分解）使用
         # 是否自定义向量存储工厂
+
+        self._qdrant_backend = None
         custom_vector_factory = vector_store_factory is not InMemoryVectorStore
         # 如果使用 LanceDB 后端，且未自定义向量存储工厂
         if self.config.storage == "lancedb" and not custom_vector_factory:
@@ -172,6 +174,13 @@ class Memory:
             # 创建 LanceDB 向量存储工厂
             def make_vector_store(name: str) -> VectorStore:
                 return LanceDBVectorStore(base, name)
+        elif self.config.storage == "qdrant" and not custom_vector_factory:
+            from .store._qdrant import QdrantBackend
+
+            self._qdrant_backend = QdrantBackend(self.config, self.embedder.dim)
+
+            def make_vector_store(name: str) -> VectorStore:
+                return self._qdrant_backend.stores[name]
         else:
             def make_vector_store(name: str) -> VectorStore:
                 # 如果自定义了向量存储工厂，则直接使用它
@@ -184,8 +193,11 @@ class Memory:
         self.cold_store = make_vector_store("cold_store")  # 冷层事实的向量存储，保留从热层换出的事实
         self.summary_vec = make_vector_store("summary_vec")  # 会话摘要的向量索引，用于检索相关摘要
         # 初始化图存储
-        self.graph = graph_store_factory()
-        # 初始化摘要器
+        try:
+            self.graph = graph_store_factory()
+        except BaseException:
+            self.close()
+            raise
         self.summarizer = SessionSummarizer(llm)
         # 初始化用户画像构建器
         self.profiles = ProfileBuilder()
@@ -210,7 +222,37 @@ class Memory:
         self.cold_pages_in: dict[str, int] = {}  # 每个用户从冷层调回热层的事实数
         self._persist_path: Optional[str] = None  # 默认快照目录，由 open 或 save 设置
         self._snapshot_version: Optional[str] = None  # 已加载或保存的快照版本，用于检测并发修改
-        self._rewire()
+        try:
+            self._rewire()
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        """Release owned database resources; this does not save pending state."""
+        if self._qdrant_backend is not None:
+            self._qdrant_backend.close()
+
+    def __enter__(self) -> "Memory":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
+    def _prepare_vector_restore(self, dimension: int, allow_mismatch: bool = False):
+        if self._qdrant_backend is not None:
+            return self._qdrant_backend.prepare_restore(dimension, allow_mismatch)
+        return None
+
+    def _reinforce_fact(self, fact: Fact) -> None:
+        reinforce(fact, self.config.access_boost)
+        self._upsert_fact(fact)
+
+    def _sync_episode(self, ep: Episode) -> None:
+        self.episodes_doc.put(ep.id, ep)
+        self.episodes_vec.upsert(ep.id, ep.embedding or [], ep)
+        if ep.summary_embedding is not None:
+            self.summary_vec.upsert(ep.id, ep.summary_embedding, ep)
 
     def _all_facts(self) -> list[Fact]:
         return self.fact_store.values() + self.cold_store.values()
@@ -262,7 +304,7 @@ class Memory:
         path = path or self._persist_path
         if not path:
             raise ValueError("no path to save to")
-        backend = "lancedb" if self.config.storage == "lancedb" else "durable"
+        backend = self.config.storage if self.config.storage in ("lancedb", "qdrant") else "durable"
         save_memory(self, path, backend=backend)
         self._persist_path = path
 
@@ -284,11 +326,28 @@ class Memory:
             and kwargs.get("vector_store_factory", InMemoryVectorStore) is InMemoryVectorStore
         ):
             kwargs["config"] = replace(cfg, data_path=f"{path}/lancedb")
+        if (cfg is not None and cfg.storage == "qdrant"
+                and kwargs.get("vector_store_factory", InMemoryVectorStore) is InMemoryVectorStore):
+            from .store._qdrant import resolve_config
+
+            kwargs["config"] = resolve_config(cfg, path)
         mem = cls(**kwargs)
-        if load_memory(mem, path, allow_mismatch=allow_mismatch):
-            mem._rewire()
-        mem._persist_path = path
-        return mem
+        try:
+            if load_memory(mem, path, allow_mismatch=allow_mismatch):
+                mem._rewire()
+            elif mem._qdrant_backend is not None:
+                # An absent manifest means an empty snapshot, including after an
+                # interrupted first write. Validate every index before clearing.
+                plan = [(store, [row.id for row in store.values()])
+                        for store in mem._qdrant_backend.stores.values()]
+                for store, keys in plan:
+                    for key in keys:
+                        store.delete(key)
+            mem._persist_path = path
+            return mem
+        except BaseException:
+            mem.close()
+            raise
 
     def reembed(self, embedder: Optional[Embedder] = None) -> dict[str, int]:
         """把所有已存储向量迁移到 `embedder` 的空间（默认：当前挂载的那个）——这是在既有 store
@@ -300,6 +359,9 @@ class Memory:
             self.embedder = embedder
 
         def _clear(store) -> None:
+            if self._qdrant_backend is not None and store in self._qdrant_backend.stores.values():
+                store.reset_dimension(self.embedder.dim)
+                return
             for payload in list(store.values()):
                 key = getattr(payload, "id", None)
                 if key is not None:
@@ -320,17 +382,19 @@ class Memory:
         vecs = self.embedder.embed_batch([ep.content for ep in episodes]) if episodes else []
         for ep, v in zip(episodes, vecs):
             ep.embedding = v
-            self.episodes_vec.upsert(ep.id, v, ep)
         counts["episodes"] = len(episodes)
 
-        summarized = [ep for ep in episodes if ep.summary]
+        summarized = [ep for ep in episodes if ep.summary or ep.summary_embedding is not None]
         _clear(self.summary_vec)
         # 与 summarize_episodes 相同的嵌入来源：summary，回退到内容摘录
         vecs = (self.embedder.embed_batch([ep.summary or ep.content[:200] for ep in summarized])
                 if summarized else [])
         for ep, v in zip(summarized, vecs):
             ep.summary_embedding = v
-            self.summary_vec.upsert(ep.id, v, ep)
+        # Copying backends must receive the complete episode only after both
+        # embeddings have entered the new space, including empty-text summaries.
+        for ep in episodes:
+            self._sync_episode(ep)
         counts["summaries"] = len(summarized)
 
         for wm in self.working_mem.values():
@@ -387,6 +451,7 @@ class Memory:
             ep.consolidated = True
             ep.metadata["ephemeral"] = True
             ep.metadata["memory_result"] = "working"
+            self._sync_episode(ep)
             wm = self.remember_working(content, user_id=user_id, session_id=session_id)
             return {"scope": "working", "episode_id": ep.id, "working_id": wm.id, "kind": wm.kind}
         return {"scope": scope, "episode_id": ep.id}
@@ -399,8 +464,10 @@ class Memory:
         Returns:
             dict[str, int]: 整合统计信息。
         """
-        # 传入的 episode 列表或所有待处理的 episode 列表
-        eps = episodes if episodes is not None else self.ingestor.pending()
+        requested = list(episodes) if episodes is not None else self.ingestor.pending()
+        # Retrieved payloads may predate summary or metadata updates. Consolidate
+        # authoritative episodes so writing them back cannot revert newer fields.
+        eps = [self.episodes_doc.get(ep.id) or ep for ep in requested]
         self._apply_policy()  # 遵循用户可编辑的抽取 prompt / "要记录什么"指令
         self.sweep_working()
         try:
@@ -410,7 +477,11 @@ class Memory:
             exc.episode_ids = [ep.id for ep in eps]
             for ep in eps:
                 ep.metadata["extraction_error"] = exc.code
+                self._sync_episode(ep)
             raise
+        for supplied, ep in zip(requested, eps):
+            supplied.consolidated = ep.consolidated
+            self._sync_episode(ep)
         self._identity.update(self.engine.extractor.self_name)
         for k, v in self.engine.extractor.aliases.items():
             self._aliases.setdefault(k, set()).update(v)
@@ -576,6 +647,7 @@ class Memory:
             if source:
                 ep.metadata["source"] = source  # 读取侧（stats.feed、下方门控）以它为键
             new_eps.append(ep)
+            self._sync_episode(ep)
             self._import_seen.add(fp)  # 仅在 episode 真正落库之后记录
 
         agent_eps = [ep for ep in new_eps if ep.metadata.get("source") == "agent_session"]
@@ -588,6 +660,7 @@ class Memory:
                 # worker——均按 `not ep.consolidated` 过滤）永远不会抽取它。
                 ep.consolidated = True
                 ep.metadata["extraction"] = "outcomes_only"
+                self._sync_episode(ep)
         agent_ids = {ep.id for ep in agent_eps}
         extract = pending + (new_eps if want_facts else [ep for ep in new_eps if ep.id not in agent_ids])
 
@@ -882,6 +955,7 @@ class Memory:
         for f in list(self.fact_store.values()) + list(self.cold_store.values()):
             if self._matches(f, track):
                 f.salience = min(cap, f.salience + boost)
+                self._upsert_fact(f)
                 n += 1
         return n
 
@@ -1110,9 +1184,15 @@ class Memory:
         """给每条 fact 打粗粒度 category + 敏感标志（基于规则，幂等）。"""
         from .consolidate.classify import classify_fact
         for f in self.fact_store.values():
+            before = (f.category, f.sensitive)
             classify_fact(f)
+            if (f.category, f.sensitive) != before:
+                self._upsert_fact(f)
         for f in self.cold_store.values():
+            before = (f.category, f.sensitive)
             classify_fact(f)
+            if (f.category, f.sensitive) != before:
+                self._upsert_fact(f)
 
     # --- L2/L3 抽象（整合期间构建，为精简读取而存储） ---
     def summarize_episodes(self, episodes: list[Episode]) -> int:
@@ -1136,7 +1216,13 @@ class Memory:
         for ep, summ, vec in zip(todo, summaries, vecs):
             ep.summary = summ
             ep.summary_embedding = vec
-            self.summary_vec.upsert(ep.id, vec, ep)
+            # Retrieval may return a snapshot from before consolidation. Merge
+            # only summary fields into the authoritative episode, retaining the
+            # caller-visible summary update above without reverting other state.
+            current = self.episodes_doc.get(ep.id) or ep
+            current.summary = summ
+            current.summary_embedding = vec
+            self._sync_episode(current)
         return len(todo)
 
     def retrieve_summaries(
@@ -1194,6 +1280,8 @@ class Memory:
             current = "; ".join(replacement[o.id].text for o in stale if o.id in replacement)
             if current:
                 ep.summary = f"{ep.summary or ''} [updated: {current}]".strip()
+                ep.summary_embedding = self.embedder.embed(ep.summary)
+                self._sync_episode(ep)
                 corrected += 1
         return corrected
 
@@ -1576,7 +1664,7 @@ class Memory:
         if not candidates:
             return None
         _, _, old, newer = max(candidates, key=lambda row: (row[0], row[1], row[2].created_at, row[2].id))
-        reinforce(old, self.config.access_boost)
+        self._reinforce_fact(old)
         return SearchResult(query=query, facts=[old, newer], scores=[1.0, 1.0], via="history", _answer=old.object)
 
     def _chain_facts_for_seeds(
@@ -2316,7 +2404,7 @@ class Memory:
         self.working_set = all_facts  # 更新查询工作集，供后续检查
         if all_facts:
             for f in all_facts:  # 访问即强化：被浮出的 fact 保持显著（间隔效应）
-                reinforce(f, self.config.access_boost)
+                self._reinforce_fact(f)
             by_date = sorted(all_facts, key=lambda f: f.valid_at, reverse=True)  # 最新在前（更新优先）
             fl = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.text}" for f in by_date)
             blocks.append(f"FACTS (current, dated):\n{fl}")
@@ -2527,7 +2615,7 @@ class Memory:
         plan = self.planner.plan(query, user, as_of)
         if plan is not None:
             for f in plan.facts:
-                reinforce(f, self.config.access_boost)
+                self._reinforce_fact(f)
             return SearchResult(query=query, facts=plan.facts, via="multi-hop", _answer=plan.answer)
 
         # 2. 基于取代链的自然语言历史查询
@@ -2597,7 +2685,7 @@ class Memory:
             return SearchResult(query=query, facts=facts, scores=scores, via="abstain", abstained=True)
 
         if via != "cold":
-            reinforce(facts[0], self.config.access_boost)
+            self._reinforce_fact(facts[0])
         return SearchResult(query=query, facts=facts, scores=scores, via=via)
 
     def as_of(self, query: str, when: float, user_id: str = "default", top_k: Optional[int] = None) -> SearchResult:
@@ -2887,7 +2975,7 @@ class Memory:
         if not rows:
             return None
         f = rows[0]
-        reinforce(f, self.config.access_boost)
+        self._reinforce_fact(f)
         source = self._procedural_source_label(f)
         pred = f.predicate.replace("_", " ")
         answer = f"[{fmt_date(f.valid_at)}] ({source}) {f.subject} {pred}: {f.object}"
