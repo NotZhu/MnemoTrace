@@ -17,6 +17,11 @@
 
 离线回归、探索切片、完整 QA 和会话收尾验证回答不同问题，不能互相替代。算法切片用于定位变化，影响全局排序、预算或公开结论时扩大数据范围。
 
+窗口抽取可用 `python eval/window_extraction.py --events 24 --runs 3 --out .artifacts/eval/windows.json`
+对照即时逐条处理与批量窗口。默认仅回放精确的合成输入/输出，检查调用次数、事实遗漏、来源和模型延迟；
+未提供的真实 token 数保持 null。显式指定 `--extractor` 才会使用已配置的真实模型并可能产生费用。
+这是抽取专项，不含 answerer/judge，也不代表真实模型质量或端到端收益；公开结论仍须运行下述完整 QA 与 full-context baseline。
+
 ## 准备运行
 
 源码安装的 extras 以 [pyproject.toml](../pyproject.toml) 为准。真实 QA 通常需要 llm、所选 embedder 的依赖，以及对应 provider 凭据；完整 CLI 参数用 `python eval/bench.py --help` 查看。
