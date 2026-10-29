@@ -6,7 +6,7 @@ import os
 
 from typing import Optional
 
-from .base import LLM
+from .base import Completion, LLM
 
 # caption() 的默认指令：一段密集的、利于检索的描述（图中可见的名字、文字、数字）——
 # 一张原本无法检索的图片由此变成可搜索的记忆。
@@ -48,7 +48,7 @@ class LiteLLMClient(LLM):
         "permissiondenied", "permission denied", "no api key", "api key not",
     )
 
-    def _run(self, messages: list, **kwargs) -> str:
+    def _run(self, messages: list, **kwargs) -> Completion:
         """在现成的 `messages` 列表上调用模型，带韧性退避循环。文本的 `complete()` 和多模态的
         `caption()` 共用它，从而获得相同的重试/快速失败行为。"""
         import random
@@ -75,9 +75,14 @@ class LiteLLMClient(LLM):
         for attempt in range(self.max_attempts):
             try:
                 resp = self._litellm.completion(**params)
-                content = resp.choices[0].message.content
-                if content:
-                    return content
+                choice = resp.choices[0]
+                content = choice.message.content
+                reason = getattr(choice, "finish_reason", None)
+                if content or reason not in (None, "stop", "end_turn"):
+                    counts = getattr(resp, "usage", None)
+                    usage = {k: v for k in ("prompt_tokens", "completion_tokens", "total_tokens")
+                             if type(v := getattr(counts, k, None)) is int and v >= 0}
+                    return Completion(content or "", reason, usage or None)
                 # 不稳定中转返回空 body：按瞬时错误处理，而不是静默返回 ""。
                 last_exc = RuntimeError("empty completion content")
             except Exception as e:  # noqa: BLE001 - 先分类：瞬时的重试 / 永久性的快速失败
@@ -91,6 +96,9 @@ class LiteLLMClient(LLM):
         raise last_exc  # type: ignore[misc]
 
     def complete(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
+        return self.complete_result(prompt, system=system, **kwargs).text
+
+    def complete_result(self, prompt: str, system: Optional[str] = None, **kwargs) -> Completion:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -105,4 +113,4 @@ class LiteLLMClient(LLM):
             {"type": "text", "text": prompt or _CAPTION_PROMPT},
             {"type": "image_url", "image_url": {"url": image_ref}},
         ]
-        return self._run([{"role": "user", "content": content}])
+        return self._run([{"role": "user", "content": content}]).text

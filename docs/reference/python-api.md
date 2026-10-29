@@ -99,6 +99,12 @@ memory.save()
 
 ## 模型抽取与错误契约
 
+模型的 `complete(prompt, **kwargs)` 继续返回字符串。需要结束状态与用量时使用
+`complete_result(prompt, **kwargs) -> Completion`；`Completion` 从 `mnemotrace.llm`
+导入，包含 `text`、`finish_reason` 和 `usage`。结束状态或 token 数未提供时为 `None`，
+不能将其解释为零用量或已确认正常结束。LiteLLM 适配器和 `CachedLLM` 保留这些信息；
+仅实现字符串接口的自定义适配器仍可使用，但只能通过内容校验检测不完整响应。
+
 抽取模型输出 `{"facts": [...], "working": [...]}`；facts 条目包含非空字符串 subject、predicate、object，可附 text 和 topic；working 条目包含非空 content 和 kind（state/intent/task），不接受模型设置 TTL。两个数组均为必需；混合内容分别生成两类记录，无记忆价值时两个数组为空。自定义 extract_system 必须遵循该协议，旧数组响应不兼容。会话结论仍使用对象数组协议。
 
 `consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实和工作条目。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，整批保持待处理，重试会消解重复事实并按来源 episode、内容和 kind 去重工作条目。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
