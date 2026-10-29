@@ -24,7 +24,9 @@ import os
 import threading
 from typing import Optional
 
-from .base import LLM
+from dataclasses import asdict
+
+from .base import Completion, LLM, complete_result
 
 
 class CachedLLM(LLM):
@@ -92,6 +94,26 @@ class CachedLLM(LLM):
         total = self.hits + self.misses
         return {"hits": self.hits, "misses": self.misses,
                 "hit_rate": round(self.hits / total, 3) if total else 0.0}
+
+    def complete_result(self, prompt: str, **kwargs) -> Completion:
+        # Separate keys prevent old text-only entries from losing truncation metadata.
+        key = self._key(prompt, {**kwargs, "_completion_record": "text-finish-usage"})
+        cached = self._read(key)
+        if cached is not None:
+            try:
+                result = Completion(**json.loads(cached))
+            except (ValueError, TypeError):
+                pass
+            else:
+                with self._lock:
+                    self.hits += 1
+                return result
+        result = complete_result(self.inner, prompt, **kwargs)
+        with self._lock:
+            self.misses += 1
+        if result.text:
+            self._write(key, json.dumps(asdict(result), ensure_ascii=False))
+        return result
 
     def __getattr__(self, name):
         # 代码里从模型对象上读取的其他属性（如 `.model`）透传给真实模型，
