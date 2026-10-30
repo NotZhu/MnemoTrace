@@ -175,8 +175,8 @@ class LLMExtractor:
         allowed = {s.id for s in (*window.context, *window.pending)}
         pending = {s.id for s in window.pending}
         for item in (*data["facts"], *data["working"]):
-            # A single pending span has an unambiguous implicit source, including direct callers.
-            sources = item.get("source_ids", list(pending) if len(pending) == 1 else None)
+            # Context makes even a single pending span ambiguous: require an explicit choice.
+            sources = item.get("source_ids", list(pending) if len(pending) == 1 and not window.context else None)
             if (not isinstance(sources, list) or not sources or any(
                     not isinstance(s, str) or s not in allowed for s in sources)
                     or not pending.intersection(sources)):
