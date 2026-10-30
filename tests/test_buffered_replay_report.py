@@ -102,6 +102,20 @@ def test_late_producer_samples_are_visible_but_not_latency_evidence(modules):
     assert result['metrics']['producer_lag_ms']['p50'] == 300
 
 
+def test_protocol_rejection_is_visible_even_when_provider_succeeded(modules, tmp_path):
+    report, _ = modules
+    _, rows = directory(tmp_path)
+    rows[0]['status'] = 'failed'
+    rows[0]['windows'][0].update(validated=False,error_code='extraction_invalid_response')
+    rows[0]['arrivals'][0].update(status='failed',error_type='ExtractionResponseError')
+    write_rows(tmp_path, rows)
+    result = report.summarize(tmp_path)
+    assert result['groups']['immediate']['cost']['extraction']['failures'] == 0
+    assert result['groups']['immediate']['cost']['extraction']['rejected_windows'] == 1
+    assert 'extraction_invalid_response' in result['rows'][0]['errors']
+    assert result['paired_observations'] == 0
+
+
 def test_grid_has_two_rounds_and_reverses_pair_order(modules):
     _, comparison = modules
     from buffered_replay import load_suite
