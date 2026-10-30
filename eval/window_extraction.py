@@ -106,31 +106,58 @@ def compare(events: int, runs: int, extractor: str | None = None) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--events", type=int, default=24)
-    parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--runs", type=int, help='Default: 2 replay, 3 extraction-only')
     parser.add_argument("--extractor", help="Explicitly opt into a configured real model; may incur charges")
     parser.add_argument("--out", type=Path)
     parser.add_argument('--quality', action='store_true', help='Run frozen service quality comparison; --out is a new directory')
+    parser.add_argument('--buffered-replay', action='store_true', help='Replay a fixed arrival stream against one runtime')
+    parser.add_argument('--runtime-ref', default='2b434a0')
+    parser.add_argument('--cases', help='Comma-separated continuous replay case IDs')
+    parser.add_argument('--pilot-only', action='store_true')
+    parser.add_argument('--resume', action='store_true', help='Only append never-started observations')
     parser.add_argument('--baseline-ref', default='5ee0cda')
     parser.add_argument('--candidate-ref', default='HEAD')
     parser.add_argument('--report', type=Path, help='Recompute and validate an existing quality directory without model calls')
     parser.add_argument('--max-calls', type=int, default=2000)
     parser.add_argument('--max-tokens', type=int, default=3_000_000)
-    parser.add_argument('--max-seconds', type=int, default=3600)
+    parser.add_argument('--max-seconds', type=int, help='Default: 14400 replay, 3600 quality comparison')
     parser.add_argument('--budget-file', type=Path, help='Reuse the same budget across candidate attempts')
     args = parser.parse_args()
+    if sum((args.quality, args.buffered_replay, bool(args.report))) > 1:
+        parser.error('--quality, --buffered-replay and --report are mutually exclusive')
+    if not args.buffered_replay and (args.cases or args.pilot_only or args.resume):
+        parser.error('--cases, --pilot-only and --resume require --buffered-replay')
+    if args.buffered_replay:
+        from buffered_replay_comparison import compare as compare_replay
+        if not args.out or args.budget_file:
+            parser.error('--buffered-replay requires --out and uses its own budget file')
+        report = compare_replay(args.out, runtime=args.runtime_ref, extractor=args.extractor,
+            cases=args.cases.split(',') if args.cases else None, runs=2 if args.runs is None else args.runs,
+            pilot_only=args.pilot_only, resume=args.resume, max_calls=args.max_calls,
+            max_tokens=args.max_tokens, max_seconds=args.max_seconds or 14400)
+        print(json.dumps({k: v for k, v in report.items() if k != 'rows'}, ensure_ascii=False, indent=2))
+        return int(not report['execution_complete'])
     if args.quality or args.report:
         from extraction_comparison import compare_quality, summarize
         from extraction_quality import SUITE
         if args.report:
+            manifest = json.loads((args.report/'manifest.json').read_text(encoding='utf-8'))
+            if manifest['kind'] == 'buffered_replay':
+                from buffered_replay_report import summarize as summarize_replay
+                report = summarize_replay(args.report)
+                print(json.dumps({k: v for k, v in report.items() if k != 'rows'}, ensure_ascii=False, indent=2))
+                return int(not report['execution_complete'])
             report = summarize(args.report)
         else:
             if not args.extractor or not args.out:
                 parser.error('--quality requires explicit --extractor and a new --out directory')
             report = compare_quality(args.out, args.baseline_ref, args.candidate_ref, args.extractor, SUITE,
-                max_calls=args.max_calls, max_tokens=args.max_tokens, seconds=args.max_seconds,
+                max_calls=args.max_calls, max_tokens=args.max_tokens, seconds=args.max_seconds or 3600,
                 budget_file=args.budget_file)
         print(json.dumps({k: v for k, v in report.items() if k != 'differences'}, ensure_ascii=False, indent=2))
         return int(not report['runtime_accepted'])
+    if args.runs is None:
+        args.runs = 3
     if args.events < 1 or args.runs < 1:
         parser.error("events and runs must be positive")
     try:

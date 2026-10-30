@@ -6,6 +6,7 @@ that backlog is measured rather than slowing the offered stream to model speed.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import math
 from pathlib import Path
 import queue
 import time
@@ -133,9 +134,15 @@ def load_suite(path=SUITE):
         raise ValueError('Not a continuous replay suite')
     for case in value['cases']:
         events = case['events']
-        if (len(events) not in (8, 24) or any(e['delay'] < 0 for e in events)
+        if (len(events) not in (8, 24) or any(type(e['delay']) not in (int, float)
+                or not math.isfinite(e['delay']) or e['delay'] < 0 for e in events)
                 or [e['delay'] for e in events] != sorted(e['delay'] for e in events)):
             raise ValueError('Invalid replay arrival schedule')
+        for control in case.get('controls', []):
+            if (control['kind'] != 'flush' or control['user'] not in {e['user'] for e in events}
+                    or type(control['delay']) not in (int, float) or not math.isfinite(control['delay'])
+                    or control['delay'] < 0):
+                raise ValueError('Invalid replay control')
     return value
 
 
