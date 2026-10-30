@@ -206,6 +206,9 @@ def validate_state(state: Any, path: str = "manifest.state") -> dict:
         "persona_cache": _mapping(_string),
         "cold_pages_out": _mapping(_count), "cold_pages_in": _mapping(_count),
     }, path)
+    if 'processing' in state:
+        from ..consolidate.tasks import validate_tasks
+        result['processing'] = validate_tasks(state['processing'])
     return result
 
 
