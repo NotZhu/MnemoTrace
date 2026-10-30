@@ -5,6 +5,7 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
+import re
 import unicodedata
 
 SUITE = Path(__file__).with_name('fixtures') / 'extraction_quality.json'
@@ -12,11 +13,13 @@ SUITE = Path(__file__).with_name('fixtures') / 'extraction_quality.json'
 
 def load_suite(path=SUITE):
     data = json.loads(Path(path).read_text(encoding='utf-8'))
-    if data.get('version') != 1 or not isinstance(data.get('cases'), list):
+    # Revision 1 remains readable so its immutable measured evidence can be rescored.
+    if data.get('version') not in {1, 2} or not isinstance(data.get('cases'), list):
         raise ValueError('Invalid extraction suite')
     ids = set()
     for case in data['cases']:
-        if case['id'] in ids or case['split'] not in {'development', 'held_out'}:
+        if (not isinstance(case['id'], str) or re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', case['id']) is None
+                or case['id'] in ids or case['split'] not in {'development', 'held_out'}):
             raise ValueError('Duplicate case or invalid split')
         ids.add(case['id'])
         events = {e['id'] for e in case['events']}
@@ -28,6 +31,8 @@ def load_suite(path=SUITE):
                     raise ValueError('Invalid gold sources')
                 if item['at'] not in events:
                     raise ValueError('Invalid gold time')
+                if any(key not in events for key in item.get('allowed_at', [])):
+                    raise ValueError('Invalid alternative time')
     return data
 
 
@@ -42,7 +47,11 @@ def normalize(value):
 def _triple(row, aliases):
     def entity(value):
         value = normalize(value)
-        return aliases.get(value, value)
+        seen = set()
+        while value in aliases and value not in seen:
+            seen.add(value)
+            value = aliases[value]
+        return value
     return (entity(row['subject']), normalize(row['predicate']).lower(), entity(row['object']))
 
 
@@ -75,6 +84,9 @@ def _sources(actual, alternatives):
 def score_case(case, result, *, raw=False):
     """Raw mode scores emitted items only; omissions are measured on final state."""
     aliases = {'user': 'u', '用户': 'u', '我': 'u', **case.get('aliases', {})}
+    for user, names in case.get('identity', {}).items():
+        for name in names:
+            aliases[name] = user
     events = {e['id']: e for e in case['events']}
     gold = case.get('raw_facts', case['facts']) if raw else case['facts']
     facts = result.get('facts', [])
@@ -90,7 +102,8 @@ def score_case(case, result, *, raw=False):
         row, expected = facts[p], gold[g]
         alternatives = expected.get('raw_sources', expected['sources']) if raw else expected['sources']
         detail = dict(predicted=p, gold=expected['id'], **_sources(row.get('sources', []), alternatives))
-        detail['time_ok'] = expected.get('manual', False) or row.get('valid_at') == events[expected['at']]['at']
+        detail['time_ok'] = expected.get('manual', False) or row.get('valid_at') in {
+            events[key]['at'] for key in expected.get('allowed_at', [expected['at']])}
         if not raw:
             replacement = expected.get('replaced_by')
             detail['history_ok'] = (row.get('invalid_at') == events[gold[next(
@@ -101,11 +114,16 @@ def score_case(case, result, *, raw=False):
                 detail['history_ok'] &= successor is not None and successor.get('supersedes') == row.get('id')
         else:
             detail['history_ok'] = True
+        if expected.get('manual') and not raw:
+            detail['history_ok'] &= row.get('source') == 'user'
         evidence_ok = True
         if raw and 'spans' in row:
             for event, quote in expected.get('evidence', {}).items():
-                cited = ''.join(s['content'] for s in row['spans'] if s['event'] == event)
-                evidence_ok &= quote in cited
+                cited = [s for s in row['spans'] if s['event'] == event and 'start' in s and 'end' in s]
+                original = events[event]['text']
+                starts = [i for i in range(len(original)) if original.startswith(quote, i)]
+                evidence_ok &= any(all(any(s['start'] <= pos < s['end'] for s in cited)
+                                       for pos in range(i, i + len(quote))) for i in starts)
         detail['evidence_ok'] = evidence_ok
         details.append(detail)
     matched_p = {p for p, _ in pairs}
@@ -128,13 +146,14 @@ def score_case(case, result, *, raw=False):
     weaker = [p for p in unexpected if any(_triple(facts[p], aliases) in {
         _triple(dict(zip(('subject', 'predicate', 'object'), t)), aliases)
         for t in g.get('weaker_variants', [])} for g in gold)]
-    counts = dict(fact_tp=len(pairs), fact_predicted=len(facts), fact_expected=len(gold),
-                  working_tp=len(wpairs), working_predicted=len(working), working_expected=len(case['working']),
+    counts = dict(fact_tp=len(pairs), fact_predicted=len(facts), fact_expected=0 if raw else len(gold),
+                  working_tp=len(wpairs), working_predicted=len(working), working_expected=0 if raw else len(case['working']),
                   source_tp=sum(d['source_tp'] for d in (*details, *wd)),
                   source_predicted=sum(d['source_predicted'] for d in (*details, *wd)),
                   source_expected=sum(d['source_expected'] for d in (*details, *wd)),
                   joint_correct=sum(d['source_exact'] and d['time_ok'] and d['history_ok'] and d['evidence_ok']
-                                    for d in details))
+                                    for d in details),
+                  working_joint_correct=sum(d['source_exact'] and d['kind_ok'] and d['time_ok'] for d in wd))
     ok = (not unexpected and (raw or len(matched_g) == len(gold)) and identity_ok
           and all(d['source_exact'] and d['time_ok'] and d['history_ok'] and d['evidence_ok'] for d in details)
           and len(wpairs) == len(working) and (raw or len(wpairs) == len(case['working']))
@@ -155,7 +174,10 @@ def aggregate(rows):
                 failures=sum(row['status'] != 'completed' for row in rows), counts=dict(counts),
                 fact_precision=ratio('fact_tp', 'fact_predicted'), fact_recall=ratio('fact_tp', 'fact_expected'),
                 source_precision=ratio('source_tp', 'source_predicted'), source_recall=ratio('source_tp', 'source_expected'),
-                joint_recall=ratio('joint_correct', 'fact_expected'))
+                joint_recall=ratio('joint_correct', 'fact_expected'),
+                working_precision=ratio('working_tp', 'working_predicted'),
+                working_recall=ratio('working_tp', 'working_expected'),
+                working_joint_recall=ratio('working_joint_correct', 'working_expected'))
 
 
 def validate_rows(rows, expected_keys, fingerprint):
@@ -168,7 +190,7 @@ def validate_rows(rows, expected_keys, fingerprint):
         seen.add(key)
         if row.get('suite_hash') != fingerprint:
             errors.append('suite mismatch: ' + repr(key))
-        if row.get('status') not in {'completed', 'failed', 'budget_stopped', 'timed_out'}:
+        if row.get('status') not in {'completed', 'failed', 'budget_stopped', 'timed_out', 'not_run'}:
             errors.append('nonterminal result: ' + repr(key))
     if seen != set(expected_keys):
         errors.append('result grid mismatch')

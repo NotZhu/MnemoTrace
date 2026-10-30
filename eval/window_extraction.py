@@ -109,7 +109,28 @@ def main() -> int:
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--extractor", help="Explicitly opt into a configured real model; may incur charges")
     parser.add_argument("--out", type=Path)
+    parser.add_argument('--quality', action='store_true', help='Run frozen service quality comparison; --out is a new directory')
+    parser.add_argument('--baseline-ref', default='5ee0cda')
+    parser.add_argument('--candidate-ref', default='HEAD')
+    parser.add_argument('--report', type=Path, help='Recompute and validate an existing quality directory without model calls')
+    parser.add_argument('--max-calls', type=int, default=2000)
+    parser.add_argument('--max-tokens', type=int, default=3_000_000)
+    parser.add_argument('--max-seconds', type=int, default=3600)
+    parser.add_argument('--budget-file', type=Path, help='Reuse the same budget across candidate attempts')
     args = parser.parse_args()
+    if args.quality or args.report:
+        from extraction_comparison import compare_quality, summarize
+        from extraction_quality import SUITE
+        if args.report:
+            report = summarize(args.report)
+        else:
+            if not args.extractor or not args.out:
+                parser.error('--quality requires explicit --extractor and a new --out directory')
+            report = compare_quality(args.out, args.baseline_ref, args.candidate_ref, args.extractor, SUITE,
+                max_calls=args.max_calls, max_tokens=args.max_tokens, seconds=args.max_seconds,
+                budget_file=args.budget_file)
+        print(json.dumps({k: v for k, v in report.items() if k != 'differences'}, ensure_ascii=False, indent=2))
+        return int(not report['runtime_accepted'])
     if args.events < 1 or args.runs < 1:
         parser.error("events and runs must be positive")
     try:
