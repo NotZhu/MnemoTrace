@@ -209,13 +209,18 @@ def _memory_state(mem: Any) -> dict[str, Any]:
             for v in mem._aliases.values()
         ):
             raise StoreFormatError("manifest.state.aliases: must map strings to sets of strings in memory")
-        return validate_state({
+        state = {
             "persona_cache": getattr(mem, "_persona_cache", {}), "focus": mem.focus, "policy": mem.policy,
             "identity": mem._identity, "aliases": {k: sorted(v) for k, v in mem._aliases.items()},
             "cold_pages_out": getattr(mem, "cold_pages_out", {}),
             "cold_pages_in": getattr(mem, "cold_pages_in", {}),
             "import_seen": sorted(mem._import_seen),
-        })
+        }
+        if mem._processing_state is not None:
+            from ..consolidate.tasks import validate_task_sources
+            validate_task_sources(mem._processing_state, mem.episodes_doc.values())
+            state['processing'] = mem._processing_state
+        return validate_state(state)
     except ValueError as exc:
         raise StoreFormatError(str(exc)) from exc
 
@@ -334,6 +339,11 @@ def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
             obj = _restore_record(cls, values)
             prepared[name].append((tier, obj) if name == "facts" else obj)
 
+    from ..consolidate.tasks import validate_task_sources
+    try:
+        validate_task_sources(state.get('processing'), prepared['episodes'])
+    except ValueError as exc:
+        raise StoreFormatError(str(exc)) from exc
     finish_vector_restore = mem._prepare_vector_restore(stored_dim, allow_mismatch)
 
     # Decoding existing persistent payloads can itself fail. Inspect every index before
@@ -378,5 +388,6 @@ def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
     mem.cold_pages_out = state["cold_pages_out"]
     mem.cold_pages_in = state["cold_pages_in"]
     mem._import_seen = import_seen
+    mem._processing_state = state.get('processing')
     mem._snapshot_version = version
     return True
