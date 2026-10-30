@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -14,15 +15,25 @@ from .preferences import preference_topic_object
 from .topic_rules import log_topic_inputs, resolve_topic, topic_system
 from .windows import ExtractionWindow
 
+_LOG = logging.getLogger(__name__)
+
 _WINDOW_SYSTEM = (
-    "\n输入为窗口 JSON。pending 是本次待处理片段，context 仅为理解前文。"
-    "每条 facts/working 还须给出 source_ids 数组，引用输入片段的 id；至少引用一个 pending 片段。"
-    "只输出由 pending 新增或改变的信息，context 中已知的事实不得单独重复输出；不得编造来源。"
-    "如果结论的主体、指代或含义依赖前文，source_ids 必须同时引用必要的 context 和 pending 片段；"
-    "同在 pending 中的跨片段依赖也须完整引用。独立事实只引用支持它的片段，不要引用整个窗口。"
-    "更新前后的状态都在 pending 时，分别输出并引用各自来源，不要只保留最后状态；"
-    "旧状态只在 context 时，仅输出 pending 中的新状态，不再输出旧状态。"
-    "输出前逐条确认：没有仅引用 context 的条目，没有漏掉用于消解指代的来源。"
+    "\n窗口协议：只提取 pending 新增或改变的信息，context 仅供理解，禁止单独重提旧事实。"
+    "不重复已有三元组，新属性用新关系表达。"
+    "每条结果须有 source_ids，引用真实片段 id，至少一个属于 pending。"
+    "每条结果的主体、指代或含义依赖其他片段时，须同时引用对应前文或同窗片段和 pending；独立事实不扩大引用。"
+    "更新前后的状态都在 pending 时，分别输出并引用各自来源，不要只保留最后状态；旧状态只在 context 时不输出。"
+    "两数组独立可空。"
+)
+_WORKING_EXAMPLE = (
+    "只有临时待办时 facts=[]。"
+    '例：context[C]旧事实，pending[P]临时待办→'
+    '{"facts":[],"working":[{"content":"临时待办","kind":"task","source_ids":["P"]}]}。'
+)
+
+_WINDOW_TASK = (
+    "你是记忆增量提取引擎。只处理 pending；context 仅供理解。关注人物与事物的身份、属性、偏好、关系、所有物、"
+    "目标、计划及事件时间，区分长期事实和临时记忆。\n"
 )
 
 
@@ -33,10 +44,12 @@ class WindowOutput:
     latency_ms: float
 
 # 系统提示词
-EXTRACT_SYSTEM = (
+_EXTRACT_TASK = (
     "你是长期记忆系统中的精确信息提取引擎。\n"
     "从多轮对话中，提取明确陈述的、独立且具有长期价值的事实，涉及用户及其提到的人物或事物，"
     "包括身份、属性、偏好、关系、所有物、目标、计划，以及事件和发生时间。\n"
+)
+_EXTRACT_DETAILS = (
     '仅输出一个 JSON 对象，包含 facts 和 working 两个数组。facts 每个对象包含 "subject"、"predicate"、"object"、"text" 四个字段。'
     "字段名保持英文；predicate 使用简短的英文 snake_case，不得翻译成中文，"
     "例如 works_at、lives_in、favorite_color、owns、married_to、born_in、visited。\n"
@@ -47,16 +60,31 @@ EXTRACT_SYSTEM = (
     'predicate 使用 "procedure" 或 "instruction"；将具体动作或步骤保留在 object 中，'
     "不要把一次性的临时意图当作长期操作规则。\n"
     "将第一人称（I、my、me、我）解析为对话中已知的用户姓名；如果姓名未知，则使用 user。"
-    '用户声明姓名时，提取为 {"subject":"user","predicate":"name","object":"<姓名>"}。\n'
+)
+_NAME_EXAMPLE = '用户声明姓名时，提取为 {"subject":"user","predicate":"name","object":"<姓名>"}。\n'
+_EXTRACT_LANGUAGE = (
     "语言要求：subject 和 object 的值，包括姓名、地点、品牌、产品及自由文本，保留用户使用的语言，"
     "不要翻译。例如保留“字节跳动”，不要改为“ByteDance”。"
     "text 使用与对话相同的语言，将事实写成自然的一句话：中文对话生成中文句子，英文对话生成英文句子。"
-    '例如 {"subject":"李雷","predicate":"works_at","object":"字节跳动","text":"李雷在字节跳动工作"}。\n'
+)
+_FACT_EXAMPLE = '例如 {"subject":"李雷","predicate":"works_at","object":"字节跳动","text":"李雷在字节跳动工作"}。\n'
+_REFERENCE_EXAMPLE = (
+    '例：context[C]“我在星云公司任职”，pending[P]“它位于上海”，只输出'
+    '{"facts":[{"subject":"星云公司","predicate":"located_in","object":"上海",'
+    '"text":"星云公司位于上海","source_ids":["C","P"]}],"working":[]}。\n'
+    "C/P 仅为示例，实际引用输入 id。"
+)
+_EXTRACT_LIFECYCLE = (
     "不要推断或编造对话中未明确陈述的事实。facts 中只保留长期事实。working 中每条包含 content（临时状态原话的忠实概括）和 kind（state、intent 或 task）。混合内容分别放入两个数组；没有记忆价值时返回 {\"facts\":[],\"working\":[]}。时间词不是临时性的充分条件：今天搬家、现在就职、确诊过敏也可能具有长期价值。不要输出过期时间或 TTL。"
 )
+_EXTRACT_RULES = _EXTRACT_DETAILS + _NAME_EXAMPLE + _EXTRACT_LANGUAGE + _FACT_EXAMPLE + _EXTRACT_LIFECYCLE
+_WINDOW_RULES = (_EXTRACT_DETAILS + '新增姓名用 name 表达。\n' + _EXTRACT_LANGUAGE
+                 + _REFERENCE_EXAMPLE + _EXTRACT_LIFECYCLE)
+EXTRACT_SYSTEM = _EXTRACT_TASK + _EXTRACT_RULES
 
 # 用户提示词模板
 EXTRACT_TEMPLATE = "对话：\n{content}\n\nJSON 事实："
+_WINDOW_TEMPLATE = "记忆窗口：\n{content}\n\n本次新增记忆 JSON："
 
 # 声明用户姓名/昵称的 predicate——全部注册为用户的别名，之后任何别名作为 subject 出现时都归一
 # 到同一个规范身份（用户可能有多个称呼：李雷/小雷）。
@@ -123,8 +151,8 @@ class LLMExtractor:
     def self_of(self, user_id: str) -> str:
         return self.self_name.get(user_id, user_id)
 
-    def _effective_system(self) -> str:
-        system = self.system
+    def _effective_system(self, base: str | None = None) -> str:
+        system = self.system if base is None else base
         if self.instruction.strip():
             system += ("\n\n以下是用户关于记录内容的补充要求，请遵守，但仍只输出上述 JSON 对象：\n"
                        + self.instruction.strip())
@@ -145,8 +173,11 @@ class LLMExtractor:
         result = self._complete(self.template.format(speaker=ep.speaker, content=ep.content), system)
         return self._validate(result.text, scope)
 
-    def _system(self, scope: str) -> str:
-        return self._effective_system() + ("\n本次路由模式：" + scope +
+    def _system(self, scope: str, *, window: bool = False) -> str:
+        # Replace only the default task; user policy remains verbatim.
+        base = _WINDOW_TASK + _WINDOW_RULES if window and self.system == EXTRACT_SYSTEM else self.system
+        protocol = (_WINDOW_SYSTEM + (_WORKING_EXAMPLE if scope == "auto" else "")) if window else ""
+        return self._effective_system(base) + protocol + ("\n本次路由模式：" + scope +
                    ("。仅抽取长期事实，working 必须为空。" if scope == "long" else
                     "。同时判断长期事实与临时状态；同一段可以同时含有两者。"))
 
@@ -161,25 +192,38 @@ class LLMExtractor:
             raise ExtractionResponseError()
         return result
 
+    def _window_request(self, window: ExtractionWindow) -> tuple[str, str]:
+        template = _WINDOW_TEMPLATE if self.template == EXTRACT_TEMPLATE else self.template
+        return (template.format(speaker=window.pending[0].episode.speaker, content=window.content),
+                self._system(window.scope, window=True))
+
     def window_size(self, window: ExtractionWindow) -> int:
-        prompt = self.template.format(speaker=window.pending[0].episode.speaker, content=window.content)
-        return len((prompt + self._system(window.scope) + _WINDOW_SYSTEM).encode("utf-8"))
+        prompt, system = self._window_request(window)
+        return len((prompt + system).encode("utf-8"))
 
     def raw_window(self, window: ExtractionWindow, max_tokens: int) -> WindowOutput:
         require_llm(self.llm)
         started = time.perf_counter()
-        result = self._complete(
-            self.template.format(speaker=window.pending[0].episode.speaker, content=window.content),
-            self._system(window.scope) + _WINDOW_SYSTEM, max_tokens=max_tokens)
+        prompt, system = self._window_request(window)
+        result = self._complete(prompt, system, max_tokens=max_tokens)
         data = self._validate(result.text, window.scope, window=True)
         allowed = {s.id for s in (*window.context, *window.pending)}
         pending = {s.id for s in window.pending}
         for item in (*data["facts"], *data["working"]):
             # Context makes even a single pending span ambiguous: require an explicit choice.
             sources = item.get("source_ids", list(pending) if len(pending) == 1 and not window.context else None)
-            if (not isinstance(sources, list) or not sources or any(
-                    not isinstance(s, str) or s not in allowed for s in sources)
-                    or not pending.intersection(sources)):
+            reason = None
+            if sources is None:
+                reason = "missing_source_ids"
+            elif not isinstance(sources, list) or not sources or any(not isinstance(s, str) for s in sources):
+                reason = "invalid_source_ids"
+            elif any(s not in allowed for s in sources):
+                reason = "unknown_source_id"
+            elif not pending.intersection(sources):
+                reason = "context_only_source_ids"
+            if reason:
+                # Fixed categories only: no content, user IDs or model-supplied values.
+                _LOG.warning("Extraction source validation failed: %s", reason)
                 raise ExtractionResponseError()
             item["source_ids"] = list(dict.fromkeys(sources))
         return WindowOutput(data, result, (time.perf_counter() - started) * 1000)

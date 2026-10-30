@@ -46,8 +46,8 @@ class ExtractionWindow:
     @property
     def content(self) -> str:
         return WINDOW_PREFIX + json.dumps(
-            {"pending": [s.record() for s in self.pending],
-             "context": [s.record() for s in self.context]}, ensure_ascii=False)
+            {"context": [s.record() for s in self.context],
+             "pending": [s.record() for s in self.pending]}, ensure_ascii=False)
 
     @property
     def id(self) -> str:

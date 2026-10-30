@@ -11,6 +11,7 @@ from mnemotrace.types import Episode, Fact
 from mnemotrace.consolidate.conflict import ConflictResolver
 from mnemotrace.consolidate.detect import detect_conflicts
 from mnemotrace.consolidate.llm_extractor import parse_json_facts
+from mnemotrace.consolidate.windows import WINDOW_PREFIX
 
 
 def response(facts=(), working=()):
@@ -133,7 +134,7 @@ def test_auto_routes_in_one_model_call(tmp_path, facts, working, expected):
     svc = service(tmp_path, model)
     result = svc.remember('u', 'I moved to Beijing today and will live here permanently.')
     # Summary generation is a separate existing operation, not a routing call.
-    assert len([c for c in model.calls if 'JSON 事实' in c['prompt']]) == 1
+    assert len([c for c in model.calls if WINDOW_PREFIX in c['prompt']]) == 1
     assert result['scope'] == expected
     assert result['extracted'] == len(facts) and result['working_added'] == len(working)
 
@@ -431,7 +432,7 @@ def test_import_retry_completes_requested_summaries(tmp_path, summarize, has_new
         svc.import_('u', sessions=sessions)
 
     def complete(prompt, system=''):
-        if 'JSON 事实' in prompt:
+        if WINDOW_PREFIX in prompt:
             return response([fact('old' if 'Old synthetic' in prompt else 'new', 'owns')])
         return 'Synthetic summary'
 
