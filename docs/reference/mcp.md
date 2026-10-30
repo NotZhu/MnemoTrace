@@ -4,6 +4,12 @@
 
 ## 读取与会话
 
+`mnemotrace_remember` 新增 `processing=immediate|buffered`，默认 immediate；buffered 需要目标服务启用缓冲。
+`mnemotrace_processing_status(session_id=null)` 查询无原文的任务状态；
+`mnemotrace_flush_processing(session_id=null, timeout=30, retry_failed=false)` 处理当前捕获范围。
+刷新返回 completed、failed 或 timed_out，仅完成时 ok=true；retry_failed 显式重新处理失败或取消任务。
+工具在本地与远程后端使用相同契约，缓冲接收不表示事实已可检索。
+
 多数读取工具支持 `response_format="markdown"`（默认）或 `"json"`。JSON 指格式化后的工具结果，不应假定其等同于原始 HTTP 响应的所有字段。
 
 | 工具 | 主要参数 | 用途 |

@@ -355,7 +355,7 @@ def _migration_process(path, mismatch, entry, enabled, result):
         if key.startswith("MNEMOTRACE_"):
             os.environ.pop(key)
     os.environ["MNEMOTRACE_REEMBED_ON_MISMATCH"] = "1" if enabled else "0"
-    os.environ["MNEMOTRACE_ASYNC_CONSOLIDATION"] = "1" if entry == "async" else "0"
+    os.environ["MNEMOTRACE_BUFFERED_EXTRACTION"] = "1" if entry == "async" else "0"
     try:
         with patch("mnemotrace.llm.providers.load_dotenv"):
             svc = service(path)
@@ -370,8 +370,8 @@ def _migration_process(path, mismatch, entry, enabled, result):
                 svc.import_("u", format="messages", data=[{"role": "user", "content": "SYNTHETIC_IMPORT"}],
                             consolidate=False, summarize=False)
             else:
-                svc._enqueue("u")
-                svc.flush()
+                svc.remember("u", "I live in Syntheticville.", scope="long", processing="buffered")
+                assert svc.flush("u")["ok"]
             svc.close()
             result.put({"ok": True})
     except BaseException as exc:  # noqa: BLE001 -- report child failures before the timeout

@@ -36,6 +36,30 @@ class NamespaceLock:
                     self._owner.file_held = False
                     _flock.release(fh)
 
+    @contextmanager
+    def try_file_lock(self):
+        """Nonblocking lease; callers must not hold a namespace transaction while waiting."""
+        if not self.thread_lock.acquire(blocking=False):
+            yield False
+            return
+        try:
+            if self.file_held:
+                yield True
+                return
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            with open(self.path, 'a') as fh:
+                if not _flock.acquire(fh, blocking=False):
+                    yield False
+                    return
+                self._owner.file_held = True
+                try:
+                    yield True
+                finally:
+                    self._owner.file_held = False
+                    _flock.release(fh)
+        finally:
+            self.thread_lock.release()
+
 
 _registry: WeakValueDictionary = WeakValueDictionary()
 _registry_lock = threading.Lock()

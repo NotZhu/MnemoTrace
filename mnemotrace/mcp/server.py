@@ -18,7 +18,7 @@ session 之间 `mnemotrace_remember` fact，并 `mnemotrace_recall` 一小段相
 
 import json
 from enum import Enum
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -98,7 +98,7 @@ def _err(e: Exception) -> str:
             if code in {502, 503}:
                 try:
                     detail = e.response.json().get("detail", {})
-                    if detail.get("code") in {"llm_not_configured", "extraction_failed", "extraction_invalid_response", "extraction_truncated"}:
+                    if detail.get("code") in {"llm_not_configured", "buffered_processing_disabled", "processing_incomplete", "extraction_failed", "extraction_invalid_response", "extraction_truncated"}:
                         return "Error: " + _json(detail)
                 except (ValueError, AttributeError):
                     pass
@@ -226,6 +226,7 @@ async def mnemotrace_remember(
     scope: Annotated[RememberScope, Field(description="auto = route by ephemerality; long = force durable "
                                            "fact extraction; working = current-session state that should not "
                                            "be promoted to long-term profile facts.")] = RememberScope.AUTO,
+    processing: Literal['immediate', 'buffered'] = 'immediate',
 ) -> str:
     """把内容存入用户长期记忆并整合（抽取原子双时间轴 fact、与已有认知解决矛盾、更新知识图）。
 
@@ -234,7 +235,7 @@ async def mnemotrace_remember(
     （as-of 查询依然可用）。auto/long 需要配置 LLM；抽取失败会返回可识别错误并保留原文供重试。
     """
     try:
-        data = await backend().remember(content, session_id=session_id, scope=scope.value)
+        data = await backend().remember(content, session_id=session_id, scope=scope.value, processing=processing)
     except Exception as e:  # noqa: BLE001
         return _err(e)
     if data.get("queued"):
@@ -249,6 +250,25 @@ async def mnemotrace_remember(
     return (f"Remembered. Extracted {data.get('extracted', 0)} new fact(s); "
             f"added {data.get('working_added', 0)} working item(s) (scope={data.get('scope')}); "
             f"{data.get('total_facts', '?')} live facts total.")
+
+
+@mcp.tool(name='mnemotrace_processing_status', annotations=ToolAnnotations(title='Memory processing status', **_READ))
+async def mnemotrace_processing_status(session_id: Optional[str] = None) -> str:
+    """Inspect buffered processing without returning raw content or model credentials."""
+    try:
+        return _json(await backend().processing_status(session_id))
+    except Exception as exc:
+        return _err(exc)
+
+
+@mcp.tool(name='mnemotrace_flush_processing', annotations=ToolAnnotations(title='Flush memory processing', **_WRITE))
+async def mnemotrace_flush_processing(session_id: Optional[str] = None, timeout: float = 30,
+                                     retry_failed: bool = False) -> str:
+    """Process the currently accepted boundary; retry_failed explicitly retries failed/cancelled work."""
+    try:
+        return _json(await backend().flush_processing(session_id, timeout, retry_failed))
+    except Exception as exc:
+        return _err(exc)
 
 
 @mcp.tool(

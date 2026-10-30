@@ -10,7 +10,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from copy import copy, deepcopy
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from ..config import Config
 from ..embed import Embedder
@@ -34,18 +34,24 @@ from .topic_rules import log_topic_inputs
 
 _PROCEDURAL_EXTRACTED_PREDS = {"procedure", "how_to", "routine", "instruction", "agent_instruction"}
 
+if TYPE_CHECKING:
+    from .llm_extractor import LLMExtractor
+
 
 @dataclass(frozen=True)
 class PreparedExtraction:
     """Detached inputs; execution never retains an engine, Memory or database handle."""
     windows: tuple[ExtractionWindow, ...]
-    extractor: object
+    extractor: LLMExtractor
     max_tokens: int
 
     def execute(self):
         import os
         if not self.windows:
             return []
+        if len(self.windows) == 1:
+            # Background workers are daemons; avoid an executor's non-daemon shutdown join.
+            return [self.extractor.raw_window(self.windows[0], self.max_tokens)]
         workers = max(1, int(os.environ.get("MNEMOTRACE_EXTRACT_WORKERS", "4")))
         with ThreadPoolExecutor(max_workers=min(workers, len(self.windows))) as pool:
             return list(pool.map(lambda w: self.extractor.raw_window(w, self.max_tokens), self.windows))
@@ -63,6 +69,7 @@ class ConsolidationEngine:
         *,
         processing: EpisodeProcessingStore,
         working_mem: Optional[dict[str, WorkingMemory]] = None,
+        extra_fact_stores: tuple[VectorStore, ...] = (),
     ) -> None:
         """初始化事件整合引擎。
 
@@ -79,6 +86,7 @@ class ConsolidationEngine:
                 raise ValueError(f"{name} must be a valid integer budget")
         self.processing = processing
         self.fact_store = fact_store
+        self.extra_fact_stores = extra_fact_stores
         self.graph = graph
         self.embedder = embedder
         self.config = config
@@ -133,7 +141,7 @@ class ConsolidationEngine:
         try:
             windows = plan_windows(active, list(history.values()), self.processing.offset,
                                    self.extractor.window_size, self.config.extraction_max_input_bytes,
-                                   self.config.extraction_context_bytes)
+                                   self.config.extraction_context_bytes, 1 if first_only else None)
         except ValueError as exc:
             raise ExtractionError() from exc
         extractor = copy(self.extractor)
@@ -246,14 +254,18 @@ class ConsolidationEngine:
             self.graph_builder.add_fact(fact)
 
     def _write_fact(self, fact, stats) -> int:
-        existing = self.fact_store.get(fact.id)
+        stores = (self.fact_store, *self.extra_fact_stores)
+        def write(record):
+            target = next((store for store in stores if store.get(record.id) is not None), self.fact_store)
+            target.upsert(record.id, record.embedding or [], record)
+        existing = next((record for store in stores if (record := store.get(fact.id)) is not None), None)
         if existing is not None:
             if existing.source == "user":
                 stats["duplicates"] += 1
                 return 0
             # A checkpoint retry repairs projection; it must not reset intervening metadata edits.
             fact = deepcopy(existing)
-        live = [deepcopy(f) for f in self.fact_store.values()
+        live = [deepcopy(f) for store in stores for f in store.values()
                 if f.user_id == fact.user_id and f.id != fact.id and f.is_live()]
         action, invalidated = self.conflict.reconcile(fact, live)
         if action == "duplicate" and existing is None:
@@ -261,7 +273,7 @@ class ConsolidationEngine:
                 if old.slot == fact.slot and old.object.strip().lower() == fact.object.strip().lower():
                     if old.source == "extracted":
                         old.provenance = list(dict.fromkeys([*old.provenance, *fact.provenance]))
-                        self.fact_store.upsert(old.id, old.embedding or [], old)
+                        write(old)
                         self._ensure_projection(old)
                     break
             stats["duplicates"] += 1
@@ -269,10 +281,10 @@ class ConsolidationEngine:
         if existing is not None:
             fact.supersedes = existing.supersedes or fact.supersedes
         # Persist the new chain head before invalidations, so interrupted writes are retryable.
-        self.fact_store.upsert(fact.id, fact.embedding, fact)
+        write(fact)
         for old in invalidated:
             self.graph_builder.invalidate(old.id, fact.valid_at)
-            self.fact_store.upsert(old.id, old.embedding or [], old)
+            write(old)
             stats["invalidated"] += 1
         if fact.supersedes:
             self.graph_builder.invalidate(fact.supersedes, fact.valid_at)

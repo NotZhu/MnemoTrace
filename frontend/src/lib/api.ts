@@ -176,6 +176,7 @@ export interface SessionsQuery {
 }
 
 export interface RememberOptions {
+  processing?: 'immediate' | 'buffered'
   session_id?: string
   scope?: RememberScope
 }
@@ -201,6 +202,7 @@ export const api = {
         content,
         session_id: options.session_id ?? 'default',
         scope: options.scope ?? 'auto',
+        processing: options.processing ?? 'immediate',
       }),
     }),
 

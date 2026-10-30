@@ -284,7 +284,7 @@ class Memory:
         self.ingestor = Ingestor(self.episodes_doc, self.episodes_vec, self.embedder)
         self.engine = ConsolidationEngine(self.fact_store, self.graph, self.embedder, self.config, self.llm,
                                           processing=EpisodeProcessingStore(self.episodes_doc, self._sync_episode),
-                                          working_mem=self.working_mem)
+                                          working_mem=self.working_mem, extra_fact_stores=(self.cold_store,))
         self.retriever = HybridRetriever(self.fact_store, self.graph, self.embedder, self.config)
         self.cold_retriever = HybridRetriever(self.cold_store, self.graph, self.embedder, self.config)
         # 初始化多跳查询规划器
@@ -457,6 +457,7 @@ class Memory:
             self._sync_episode(ep)
             wm = self.remember_working(content, user_id=user_id, session_id=session_id)
             return {"scope": "working", "episode_id": ep.id, "working_id": wm.id, "kind": wm.kind}
+        self._sync_episode(ep)
         return {"scope": scope, "episode_id": ep.id}
 
     def consolidate(self, episodes: Optional[list[Episode]] = None) -> dict[str, int]:
@@ -494,10 +495,28 @@ class Memory:
             for supplied, ep in zip(requested, eps):
                 supplied.consolidated = ep.consolidated
                 self._sync_episode(ep)
+            from .consolidate.tasks import ProcessingTasks
+            ProcessingTasks.refresh_completed(self, {ep.id for ep in eps}, now())
         self._classify()  # feature ⑤：给新 fact 打 category + 敏感标志（基于规则）
         self._detect_conflicts()  # System-2：将疑似冲突浮出给用户（需主动开启、有门控）
         self._enforce_hot_limit()
         self._persona_cache.clear()  # fact 变了 -> 缓存的 persona 已过期
+        return stats
+
+    def _apply_extraction(self, window, output):
+        """Apply a validated detached result to the current authoritative memory."""
+        self._apply_policy()
+        self.sweep_working()
+        try:
+            stats = self.engine.apply(window, output)
+        finally:
+            self._identity.update(self.engine.extractor.self_name)
+            for key, aliases in self.engine.extractor.aliases.items():
+                self._aliases.setdefault(key, set()).update(aliases)
+            self._persona_cache.clear()
+        self._classify()
+        self._detect_conflicts()
+        self._enforce_hot_limit()
         return stats
 
     def consolidate_full(
@@ -629,8 +648,11 @@ class Memory:
             texts.append(body)
             metas.append((sid, et, s.title, fp, source))
             session_count += 1
+        from .consolidate.tasks import ProcessingTasks
+        buffered_ids = ProcessingTasks.registered_ids(self)
         pending = [ep for ep in self.ingestor.pending()
-                   if ep.user_id == user_id and ep.session_id in session_ids
+                   if ep.id not in buffered_ids
+                   and ep.user_id == user_id and ep.session_id in session_ids
                    and (want_facts or ep.metadata.get("source") != "agent_session")] if do_consolidate else []
         needs_facts = do_consolidate and (bool(pending) or any(
             want_facts or source != "agent_session" for _, _, _, _, source in metas))
@@ -1139,7 +1161,9 @@ class Memory:
         from .consolidate.detect import detect_conflicts
         seen = {c.pair_key for c in self.conflicts.values()}
         for user in {f.user_id for f in self._all_facts()}:
-            live = [f for f in self._all_facts() if f.user_id == user and f.is_live()]
+            # Buffered judgement replay must not depend on database point enumeration order.
+            live = sorted((f for f in self._all_facts() if f.user_id == user and f.is_live()),
+                          key=lambda f: (f.created_at, f.id))
             for c in detect_conflicts(live, self.llm, user, seen, self.embedder):
                 self.conflicts[c.id] = c
                 seen.add(c.pair_key)

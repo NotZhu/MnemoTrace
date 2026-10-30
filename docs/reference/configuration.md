@@ -139,7 +139,7 @@ assert (fact.topic, fact.topic_source) == ("technology", "rule")
 | MNEMOTRACE_MAX_REQUEST_BYTES | 2097152，HTTP 请求体字节上限，必须为正整数 |
 | MNEMOTRACE_MAX_HOT_USERS | 64，服务的热用户缓存容量 |
 | MNEMOTRACE_MAX_HOT_FACTS | 使用 Config 的热层上限 |
-| MNEMOTRACE_ASYNC_CONSOLIDATION | 仅设为 1 时开启后台整合；返回与可见性见 HTTP 参考 |
+| MNEMOTRACE_BUFFERED_EXTRACTION | 默认关闭；设为 1 后允许请求显式选择 buffered，remember 默认仍为 immediate；接口见 HTTP 参考 |
 | MNEMOTRACE_CONFLICT_DETECTION | 设为 1 且配置 LLM 时启用待确认冲突检测 |
 | MNEMOTRACE_SESSION_OUTCOMES | 设为 0 时强制禁止会话结论提取，客户端不能覆盖 |
 | MNEMOTRACE_REEMBED_ON_MISMATCH | 默认关闭；设为 1 可触发显式模型迁移路径 |

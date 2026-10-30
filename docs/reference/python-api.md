@@ -93,6 +93,12 @@ memory.save()
 
 ## 扩展与研究入口
 
+服务端 `MemoryService.remember(user, content, session_id="default", scope="auto", processing="immediate")`
+可显式选择 buffered，需开启 `MNEMOTRACE_BUFFERED_EXTRACTION`。这不改变底层 `Memory.remember()` 仅保存原文与路由的职责。
+`processing_status(user, session_id=None)` 查看任务；`flush(user, session_id=None, timeout=30, retry_failed=False)`
+等待本次捕获范围并返回 completed、failed 或 timed_out，只有 completed 对应 ok=true。
+取消、失败和超时不会删除原始事件。模型或存储失败不能通过 queued 响应解释为抽取成功。
+
 摘要和派生层操作还包括 `summarize_episodes`、`retrieve_summaries`、`reflect`、`procedural`；热层管理包括 `evict_cold`、`apply_focus`。这些方法改变派生状态或工作集，调用方负责后续保存及必要验证。
 
 精确签名、类型和行为以 [Memory](../../mnemotrace/memory.py)、[记录类型](../../mnemotrace/types.py) 和对应[测试](../../tests/)为核对来源。HTTP/MCP 的方法、默认值及能力不与嵌入式 API 一一对应。
@@ -115,6 +121,8 @@ memory.save()
 
 替代裁决仅接受 REPLACES/COEXISTS，冲突检测仅接受 CONFLICT/COEXIST（忽略首尾空白与大小写）；其他响应记录安全警告并不执行对应替代或冲突标记。
 
+
+服务层 `MemoryService.close_session()` 遇到缓冲刷新失败或超时会抛出 `ProcessingIncompleteError`（code=`processing_incomplete`），不会报告关闭成功或执行后续清理。先查询处理状态，必要时显式重试失败任务，再关闭会话。缓冲关闭配置错误另用 `BufferedProcessingDisabledError` 表达。
 
 ## 数据库资源生命周期
 

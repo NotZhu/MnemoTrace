@@ -444,7 +444,7 @@ async def test_remote_backend_forwards_remember_scope():
 
     url, body, headers = client.posts[-1]
     assert url == "http://mnemotrace.test/v1/remember"
-    assert body == {"content": "temporary state", "session_id": "s1", "scope": "working"}
+    assert body == {"content": "temporary state", "session_id": "s1", "scope": "working", "processing": "immediate"}
     assert headers["Authorization"] == "Bearer sk-test"
     assert data["scope"] == "working"
 

@@ -268,7 +268,15 @@ class RememberReq(BaseModel):
     content: str = Field(min_length=1, max_length=1_000_000)
     session_id: str = Field(default="default", min_length=1, max_length=512)
     scope: Literal["auto", "long", "working"] = "auto"
+    processing: Literal['immediate', 'buffered'] = 'immediate'
     space: Optional[str] = Field(default=None, max_length=512)  # 目标命名空间（默认：调用者的 home）
+
+
+class ProcessingFlushReq(BaseModel):
+    session_id: Optional[str] = Field(default=None, min_length=1, max_length=512)
+    space: Optional[str] = Field(default=None, max_length=512)
+    timeout: float = Field(default=30, ge=0, le=300)
+    retry_failed: bool = False
 
 
 class RecallReq(BaseModel):
@@ -381,7 +389,29 @@ def remember(req: RememberReq, principal: Principal = Depends(auth_principal)):
         raise HTTPException(403, f"not allowed to write to space '{target}'")
     # 在 service 内部按易逝性路由：无论走哪条路，带日期的 episode 都会被存储（历史仍可回答）；
     # 临时状态还会进入 working memory，且不会被提升为持久 fact。
-    return svc().remember(target, req.content, session_id=req.session_id, scope=req.scope)
+    data = svc().remember(target, req.content, session_id=req.session_id, scope=req.scope,
+                          processing=req.processing)
+    return JSONResponse(data, status_code=202) if data.get('queued') else data
+
+
+@app.get('/v1/processing')
+def processing_status(session_id: Optional[str] = None, space: Optional[str] = None,
+                      principal: Principal = Depends(auth_principal)):
+    target = space or principal.home
+    if not principal.can_read(target):
+        raise HTTPException(403, 'Not allowed to read this space')
+    return svc().processing_status(target, session_id)
+
+
+@app.post('/v1/processing/flush')
+def processing_flush(req: ProcessingFlushReq, principal: Principal = Depends(auth_principal)):
+    target = req.space or principal.home
+    if not principal.can_write(target):
+        raise HTTPException(403, 'Not allowed to write this space')
+    result = svc().flush(target, req.session_id, req.timeout, req.retry_failed)
+    if not principal.can_read(target):
+        return {'ok': result['ok'], 'status': result['status']}
+    return result
 
 
 @app.post("/v1/recall")

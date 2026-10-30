@@ -35,6 +35,8 @@ import type {
   ProfileResult,
   RecallResult,
   RememberResult,
+  ProcessingStatus,
+  ProcessingFlushResult,
   SearchResult,
   SessionIndex,
   SessionListOptions,
@@ -147,13 +149,30 @@ export class MnemoTraceClient {
    */
   remember(
     content: string,
-    options: { sessionId?: string; scope?: 'auto' | 'long' | 'working'; space?: string } = {},
+    options: { sessionId?: string; scope?: 'auto' | 'long' | 'working'; space?: string;
+      processing?: 'immediate' | 'buffered' } = {},
   ): Promise<RememberResult> {
     return this.post<RememberResult>('/v1/remember', {
       content,
       session_id: options.sessionId ?? 'default',
       scope: options.scope ?? 'auto',
       space: options.space,
+      processing: options.processing ?? 'immediate',
+    })
+  }
+
+  processingStatus(options: { sessionId?: string; space?: string } = {}): Promise<ProcessingStatus> {
+    const query = new URLSearchParams()
+    if (options.sessionId !== undefined) query.set('session_id', options.sessionId)
+    if (options.space !== undefined) query.set('space', options.space)
+    return this.request<ProcessingStatus>(`/v1/processing${query.size ? `?${query}` : ''}`)
+  }
+
+  flushProcessing(options: { sessionId?: string; space?: string; timeout?: number;
+    retryFailed?: boolean } = {}): Promise<ProcessingFlushResult> {
+    return this.post<ProcessingFlushResult>('/v1/processing/flush', {
+      session_id: options.sessionId, space: options.space,
+      timeout: options.timeout ?? 30, retry_failed: options.retryFailed ?? false,
     })
   }
 

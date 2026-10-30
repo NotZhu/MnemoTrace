@@ -85,7 +85,7 @@ def _context(first: SourceSpan, history: list[Episode], budget: int) -> tuple[So
 
 def plan_windows(episodes: list[Episode], history: list[Episode], offset: Callable[[Episode], int],
                  measure: Callable[[ExtractionWindow], int], max_bytes: int,
-                 context_bytes: int) -> list[ExtractionWindow]:
+                 context_bytes: int, max_windows: int | None = None) -> list[ExtractionWindow]:
     """Group only adjacent same-user/session/policy input; context never advances offsets."""
     windows = []
     key = lambda ep: (ep.user_id, ep.session_id, ep.metadata.get("memory_scope", "long"))
@@ -125,4 +125,6 @@ def plan_windows(episodes: list[Episode], history: list[Episode], offset: Callab
                 start = lo
                 break
             windows.append(ExtractionWindow(tuple(pending), context))
+            if max_windows is not None and len(windows) >= max_windows:
+                return windows
     return windows

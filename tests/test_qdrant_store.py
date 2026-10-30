@@ -87,7 +87,10 @@ def test_crud_types_and_arbitrary_keys(store):
     assert store.get("missing") is None and store.values() == []
     store.delete("missing")
     key = "中文 key/'\\特殊"
-    fact = Fact(subject="Synthetic", predicate="likes", object="tea", embedding=[1.0, 0.0])
+    # Exact payload comparison uses stable integral timestamps; remote JSON may round
+    # arbitrary wall-clock floats by one ULP before restoring a typed Fact.
+    fact = Fact(subject="Synthetic", predicate="likes", object="tea", embedding=[1.0, 0.0],
+                valid_at=1_700_000_000.0, created_at=1_700_000_000.0, last_access=1_700_000_000.0)
     store.upsert(key, fact.embedding, fact)
     assert asdict(store.get(key)) == asdict(fact)
     fact.object = "coffee"
@@ -347,12 +350,75 @@ def test_local_path_requires_release_before_reopening(tmp_path):
 
 
 def test_async_worker_is_drained_before_service_releases_clients(service_factory, monkeypatch):
-    monkeypatch.setenv("MNEMOTRACE_ASYNC_CONSOLIDATION", "1")
+    monkeypatch.setenv("MNEMOTRACE_BUFFERED_EXTRACTION", "1")
     svc = service_factory()
-    svc.remember("u", "I like Python.", scope="long")
+    svc.remember("u", "I like Python.", scope="long", processing="buffered")
     svc.close()
     reopened = service_factory()
+    assert reopened.flush("u")["ok"]
     assert any(f["object"] == "Python" for f in reopened.memories("u")["facts"])
+
+
+def test_buffered_raw_routing_checkpoint_and_cache_eviction(service_factory, monkeypatch):
+    from mnemotrace._buffered import BufferedExtraction
+    monkeypatch.setenv('MNEMOTRACE_BUFFERED_EXTRACTION', '1')
+    monkeypatch.setattr(BufferedExtraction, 'consume', lambda _: None)
+    svc = service_factory(max_hot_users=1)
+    first = svc.remember('u', 'I like Python.', scope='long', processing='buffered')
+    assert svc.get('u').episodes_vec.get(first['episode_id']).metadata['memory_scope'] == 'long'
+    svc.remember('bob', 'I like apples.', scope='long', processing='buffered')
+    assert svc.hot_count <= 1
+    svc.flush('u', timeout=0)
+    assert svc._buffered.run_one('u')
+    assert svc.processing_status('u')['counts']['completed'] == 1
+    assert svc.get('u').episodes_vec.get(first['episode_id']).consolidated
+    svc.close()
+    reopened = service_factory(max_hot_users=1)
+    assert reopened.processing_status('u')['counts']['completed'] == 1
+    assert reopened.processing_status('bob')['counts']['pending'] == 1
+    reopened.flush('bob', timeout=0)
+    assert reopened._buffered.run_one('bob')
+    assert any(f['object'] == 'apples' for f in reopened.memories('bob')['facts'])
+
+
+def test_buffered_conflict_replay_is_independent_of_backend_point_order(service_factory, monkeypatch):
+    import hashlib
+    import json
+    from mnemotrace._buffered import BufferedExtraction
+    from mnemotrace.consolidate.windows import WINDOW_PREFIX
+    from mnemotrace.llm import FakeLLM
+    monkeypatch.setenv('MNEMOTRACE_BUFFERED_EXTRACTION', '1')
+    monkeypatch.setattr(BufferedExtraction, 'consume', lambda _: None)
+    svc = service_factory()
+    svc.config.conflict_detection = True
+    def response(prompt, system):
+        if WINDOW_PREFIX not in prompt:
+            return 'CONFLICT'
+        data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
+        return json.dumps({'facts': [{'subject': 'user', 'predicate': 'dislikes', 'object': 'tea',
+                                     'source_ids': [data['pending'][0]['id']]}], 'working': []})
+    model = FakeLLM(handler=response)
+    object.__setattr__(svc, 'llm', model)  # Native envelope, without the legacy test adapter.
+    raw = svc.remember('u', 'synthetic', processing='buffered')
+    source_ids = [raw['episode_id'] + '@0:9']
+    identity = json.dumps([source_ids, ('u', 'u', 'dislikes'), 'tea'], ensure_ascii=False)
+    new_id = 'ft_' + hashlib.sha256(identity.encode()).hexdigest()[:24]
+    # Force the remote backend to enumerate the newly added point before the old one.
+    old_id = next('ft_manual_' + str(i) for i in range(1000)
+                  if _point_id('ft_manual_' + str(i)) > _point_id(new_id))
+    with svc.write_lock('u'):
+        mem = svc.get('u')
+        ep = mem.episodes_doc.get(raw['episode_id'])
+        old = Fact(id=old_id, subject='u', predicate='allergic_to', object='tea', user_id='u', source='user',
+                   valid_at=ep.event_time - 1, created_at=ep.ingested_at - 1)
+        old.embedding = mem.embedder.embed(old.text)
+        mem.fact_store.upsert(old.id, old.embedding, old)
+        mem.engine.graph_builder.add_fact(old)
+        svc._save('u', mem)
+    svc.flush('u', timeout=0)
+    assert svc._buffered.run_one('u')
+    assert svc.processing_status('u')['counts']['completed'] == 1
+    assert len(model.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -467,28 +533,31 @@ def test_real_connection_failure_is_http_503_not_empty_success(monkeypatch, tmp_
 
 
 def test_shutdown_finishes_producer_paused_before_enqueue(service_factory, monkeypatch):
-    monkeypatch.setenv("MNEMOTRACE_ASYNC_CONSOLIDATION", "1")
+    monkeypatch.setenv("MNEMOTRACE_BUFFERED_EXTRACTION", "1")
     svc = service_factory()
     entered = threading.Event()
     release = threading.Event()
-    original = svc._enqueue
+    original = svc._buffered.notify
 
     def paused(user):
         entered.set()
         assert release.wait(10)
         original(user)
 
-    monkeypatch.setattr(svc, "_enqueue", paused)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        producer = pool.submit(svc.remember, "u", "I like Python.", scope="long")
+    monkeypatch.setattr(svc._buffered, "notify", paused)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        producer = pool.submit(svc.remember, "u", "I like Python.", scope="long", processing="buffered")
         try:
             assert entered.wait(10)
-            svc.close()
+            closing = pool.submit(svc.close)
+            release.set()
+            closing.result(timeout=35)
         finally:
             release.set()
         assert producer.result(timeout=10)["ok"]
-    svc.flush()
+
     reopened = service_factory()
+    assert reopened.flush("u")["ok"]
     assert any(f["object"] == "Python" for f in reopened.memories("u")["facts"])
 
 
@@ -497,7 +566,7 @@ def test_async_close_inside_namespace_scope_does_not_join_its_waiting_worker(
 ):
     import subprocess
     import sys
-    monkeypatch.setenv("MNEMOTRACE_ASYNC_CONSOLIDATION", "1")
+    monkeypatch.setenv("MNEMOTRACE_BUFFERED_EXTRACTION", "1")
     svc = service_factory()
     # An isolated process imposes a hard timeout on a lock/join regression.
     snippet = """
@@ -512,10 +581,15 @@ for name in ('MNEMOTRACE_LLM', 'MNEMOTRACE_ANSWERER', 'MNEMOTRACE_VISION_LLM'):
 from tests.model_fixtures import MemoryService
 svc = MemoryService(data_dir=sys.argv[1], embedder_name='hashing', llm_name='')
 with svc.write_lock('u'):
-    svc.remember('u', 'I like Python.', scope='long')
+    svc.remember('u', 'I like Python.', scope='long', processing='buffered')
     svc.close()
 svc.close()
-svc.flush()
+try:
+    svc.flush('u')
+except RuntimeError:
+    pass
+else:
+    raise AssertionError('closed service accepted a flush')
 faulthandler.cancel_dump_traceback_later()
 """
     try:
@@ -524,6 +598,7 @@ faulthandler.cancel_dump_traceback_later()
     except subprocess.TimeoutExpired as exc:
         pytest.fail(str(exc.stderr))
     assert result.returncode == 0, result.stderr
+    assert svc.flush("u")["ok"]
     assert any(f["object"] == "Python" for f in svc.memories("u")["facts"])
 
 

@@ -1,4 +1,4 @@
-"""架构：异步 System-2 整合（AGENTS.md Bet F），通过 MNEMOTRACE_ASYNC_CONSOLIDATION=1 开启。
+"""架构：异步 System-2 整合（AGENTS.md Bet F），通过 MNEMOTRACE_BUFFERED_EXTRACTION=1 开启。
 默认的同步路径保持不变（这里也验证了这一点）。使用 hashing 嵌入器和固定合成模型响应离线验证。"""
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ _SENT = "My name is Wei and I live in Shenzhen."  # 固定模型响应包含至�
 
 
 def test_consolidation_is_synchronous_by_default(monkeypatch):
-    monkeypatch.delenv("MNEMOTRACE_ASYNC_CONSOLIDATION", raising=False)
+    monkeypatch.delenv("MNEMOTRACE_BUFFERED_EXTRACTION", raising=False)
     d = tempfile.mkdtemp(prefix="mnemotrace_sync_")
     try:
         svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
@@ -24,13 +24,13 @@ def test_consolidation_is_synchronous_by_default(monkeypatch):
 
 
 def test_async_remember_returns_fast_then_flush_consolidates(monkeypatch):
-    monkeypatch.setenv("MNEMOTRACE_ASYNC_CONSOLIDATION", "1")
+    monkeypatch.setenv("MNEMOTRACE_BUFFERED_EXTRACTION", "1")
     d = tempfile.mkdtemp(prefix="mnemotrace_async_")
     try:
         svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
         assert svc._worker is not None  # 后台 worker 已启动
 
-        r = svc.remember("u", _SENT)
+        r = svc.remember("u", _SENT, processing="buffered")
         assert r.get("queued") is True  # System-1 返回时没有内联整合
         # 在整合运行之前，episode 已经持久化（System-1 已保存）
         assert svc.memories("u")["counts"]["episodes"] >= 1
@@ -46,13 +46,13 @@ def test_async_remember_returns_fast_then_flush_consolidates(monkeypatch):
 
 
 def test_async_coalesces_multiple_writes_then_flush(monkeypatch):
-    monkeypatch.setenv("MNEMOTRACE_ASYNC_CONSOLIDATION", "1")
+    monkeypatch.setenv("MNEMOTRACE_BUFFERED_EXTRACTION", "1")
     d = tempfile.mkdtemp(prefix="mnemotrace_async2_")
     try:
         svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
-        svc.remember("u", "My name is Wei.")
-        svc.remember("u", "I live in Shenzhen.")
-        svc.remember("u", "I work at Moonshot AI.")
+        svc.remember("u", "My name is Wei.", processing="buffered")
+        svc.remember("u", "I live in Shenzhen.", processing="buffered")
+        svc.remember("u", "I work at Moonshot AI.", processing="buffered")
         svc.flush()  # 所有排队任务完成（已合并）；不丢失任何写入
         assert svc.memories("u")["counts"]["episodes"] == 3
         assert svc.memories("u")["counts"]["facts_live"] >= 1

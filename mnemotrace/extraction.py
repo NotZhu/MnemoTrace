@@ -23,6 +23,18 @@ class LLMNotConfiguredError(ExtractionError):
     message = "Configure an LLM: pass llm= to Memory, or set MNEMOTRACE_LLM for the service."
 
 
+class BufferedProcessingDisabledError(ExtractionError):
+    code = 'buffered_processing_disabled'
+    status_code = 503
+    message = 'Enable MNEMOTRACE_BUFFERED_EXTRACTION to use buffered processing.'
+
+
+class ProcessingIncompleteError(ExtractionError):
+    code = 'processing_incomplete'
+    status_code = 503
+    message = 'Session processing is incomplete; inspect processing status before retrying close.'
+
+
 class ExtractionResponseError(ExtractionError):
     code = "extraction_invalid_response"
     message = "The model returned an invalid extraction response; check its prompt and retry."
