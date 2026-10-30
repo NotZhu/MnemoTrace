@@ -87,7 +87,8 @@ class EpisodeProcessingStore:
             data["transient"] |= ep.id in transient
             data["windows"].append({"start": span.start, "end": span.end, "window_id": window.id,
                                     "finish_reason": completion.finish_reason, "usage": completion.usage,
-                                    "latency_ms": latency_ms})
+                                    # Persist integer milliseconds: remote JSON stores may round binary floats.
+                                    "latency_ms": round(latency_ms)})
             updated = replace(ep, metadata=deepcopy(ep.metadata), consolidated=span.end == len(ep.content))
             updated.metadata[PROGRESS_KEY] = data
             updated.metadata.pop("extraction_error", None)

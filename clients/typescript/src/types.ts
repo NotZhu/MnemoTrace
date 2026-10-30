@@ -19,7 +19,7 @@ export interface Health {
 }
 
 export interface ExtractionFailure {
-  code: 'llm_not_configured' | 'extraction_failed' | 'extraction_invalid_response' | 'extraction_truncated'
+  code: 'llm_not_configured' | 'buffered_processing_disabled' | 'processing_incomplete' | 'extraction_failed' | 'extraction_invalid_response' | 'extraction_truncated'
   message: string
   stored_raw: boolean
   episode_ids: string[]
@@ -29,11 +29,45 @@ export interface RememberResult {
   ok: boolean
   scope?: 'long' | 'working' | 'mixed' | 'none'
   queued?: boolean
+  processing?: 'pending' | 'completed'
   episode_id?: string
   extracted?: number
   working_added?: number
   total_facts?: number
   kind?: string
+}
+
+export type ProcessingState = 'pending' | 'running' | 'retry_wait' | 'failed' | 'completed' | 'cancelled'
+
+export interface ProcessingJob {
+  episode_id: string
+  session_id: string
+  scope: 'auto' | 'long' | 'working'
+  state: ProcessingState
+  attempts: number
+  window_attempts: number
+  completed_through: number
+  source_length: number
+  content_hash: string
+  queued_at: number
+  updated_at: number
+  next_attempt_at: number
+  error_code: string | null
+  forced: boolean
+}
+
+export interface ProcessingStatus {
+  enabled: boolean
+  generation: string | null
+  session_id: string | null
+  counts: Record<ProcessingState, number>
+  jobs: ProcessingJob[]
+  recovery_error?: boolean
+}
+
+export interface ProcessingFlushResult extends Partial<ProcessingStatus> {
+  ok: boolean
+  status: 'completed' | 'failed' | 'timed_out'
 }
 
 /** 检索到的精简上下文 — 用于作答的一小段带日期切片（recall）。 */

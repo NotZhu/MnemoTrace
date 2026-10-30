@@ -10,9 +10,7 @@ MCP server 和导入 CLI 在没有安装 web 依赖时也能使用它。
 from __future__ import annotations
 
 import math
-import logging
 import os
-import queue
 import shutil
 import threading
 from collections import OrderedDict
@@ -26,7 +24,7 @@ from ._namespace_lock import NamespaceLock, namespace_lock
 from ._namespace_paths import contained_child, namespace_directory, namespace_path
 from .localize import display_of
 from .memory import Memory
-from .extraction import ExtractionError, require_llm
+from .extraction import BufferedProcessingDisabledError, ExtractionError, ProcessingIncompleteError, require_llm
 from .metrics import Metrics, timed
 from .store._validation import is_snapshot_candidate
 from .store.persist import (
@@ -143,6 +141,18 @@ def _read_access(method):
     return read
 
 
+def _processing_access(method):
+    @wraps(method)
+    def process(self, user, *args, **kwargs):
+        if self._closed and not self._frames():
+            raise RuntimeError('MemoryService is closed')
+        mode = (kwargs.get('processing', args[3] if len(args) > 3 else 'immediate')
+                if method.__name__ == 'remember' else 'immediate')
+        with self._processing_scope(user, mode):
+            return method(self, user, *args, **kwargs)
+    return process
+
+
 class MemoryService:
     """按命名空间持久化的记忆，共享 embedder/LLM，热用户用 LRU 管理。
 
@@ -223,16 +233,12 @@ class MemoryService:
         # 在线服务指标（Bet D 的在线版）：承载 SLO 的路径上的延迟分位数 + token 节省比，
         # 仅以聚合形式经 GET /metrics 暴露。见 mnemotrace/metrics.py。
         self.metrics = Metrics()
-        # System-1 / System-2 拆分（AGENTS.md Bet F）。启用后 remember() 只做快速的 System-1 写入
-        # （追加 + 轻量嵌入 + 持久化保存），把整合交给后台 worker，写入路径保持低延迟。
-        # 默认关闭——同步路径保留了控制台、测试和现有调用方依赖的"remember 后立即可查"语义。
-        self._async = os.environ.get("MNEMOTRACE_ASYNC_CONSOLIDATION") == "1"
-        self._queue: "Optional[queue.Queue]" = None
-        self._pending: set[str] = set()  # 已排队等待整合的用户（合并重复入队）
         self._worker: Optional[threading.Thread] = None
-        if self._async:
-            self._queue = queue.Queue()
-            self._worker = threading.Thread(target=self._consume, name="mnemotrace-system2", daemon=True)
+        self._buffered = None
+        if os.environ.get('MNEMOTRACE_BUFFERED_EXTRACTION') == '1':
+            from ._buffered import BufferedExtraction
+            self._buffered = BufferedExtraction(self)
+            self._worker = self._buffered.thread
             self._worker.start()
 
     # --- namespace lifecycle ------------------------------------------------
@@ -410,6 +416,10 @@ class MemoryService:
         自行保持整个读取作用域，不能把本方法返回后的对象当成不可变快照。
         """
         with self._read_scope(user) as mem:
+            if mem.llm is not self.llm:
+                mem.llm = self.llm
+                mem.summarizer.llm = self.llm
+                mem._rewire()
             return mem
 
     def _cached(self, user: str, version: str | None) -> Optional[Memory]:
@@ -498,110 +508,110 @@ class MemoryService:
         （内存中的热命名空间数、异步 System-2 积压）。只含聚合数字。"""
         snap = self.metrics.snapshot()
         snap["users_hot"] = self.hot_count
-        snap["async"] = {
-            "enabled": self._async,
-            "queue_depth": self._queue.qsize() if self._queue is not None else 0,
-            "pending_users": len(self._pending),
-        }
+        snap['buffered'] = {'enabled': self._buffered is not None,
+                            'recovery_error': self._buffered.recovery_error if self._buffered else False}
         return snap
 
-    # --- async System-2 consolidation (AGENTS.md Bet F; opt-in via MNEMOTRACE_ASYNC_CONSOLIDATION=1) --------
-    def _enqueue(self, user: str) -> None:
-        """Queue consolidation, or finish an in-flight producer during shutdown."""
-        with self._g:
-            synchronous = self._closed
-            if not synchronous:
-                if user in self._pending:
-                    return
-                self._pending.add(user)
-                # Serialized with the shutdown sentinel: never enqueue behind it.
-                self._queue.put(user)  # type: ignore[union-attr]
-        if synchronous:
-            self._consolidate_now(user)
+    def processing_status(self, user: str, session_id: Optional[str] = None) -> dict:
+        result = self._processing_status(user, session_id)
+        result['enabled'] = self._buffered is not None
+        result['recovery_error'] = self._buffered.recovery_error if self._buffered else False
+        return result
 
-    def _consume(self) -> None:
-        """后台 worker：消费队列，在写入路径之外执行 System-2（整合 + 摘要）。"""
-        while True:
-            user = self._queue.get()  # type: ignore[union-attr]
-            if user is None:  # 关闭哨兵
-                self._queue.task_done()  # type: ignore[union-attr]
-                with self._g:
-                    self._worker = None
-                break
-            # 在整合之前先清除 pending，这样整合过程中新到的 episode 会触发下一轮整合，而不是被
-            # 悄悄跳过（consolidate() 只处理尚未整合的 episode，重复一轮成本很低且幂等）。
-            with self._g:
-                self._pending.discard(user)
-            try:
-                self._consolidate_now(user)
-            except Exception as exc:
-                self.metrics.count("extraction_failed" if isinstance(exc, ExtractionError) else "consolidation_failed")
-                logging.getLogger(__name__).warning("Background consolidation failed; raw episodes remain pending")
-            finally:
-                self._queue.task_done()  # type: ignore[union-attr]
+    def _processing_status(self, user, session_id=None, ids=None):
+        from .consolidate.tasks import ProcessingTasks
+        with self._user_file_lock(user), self._cache_access(user):
+            if self._store_version(user) is None:
+                return ProcessingTasks.empty_snapshot(session_id)
+            with self._read_scope(user) as mem:
+                return ProcessingTasks(mem, user).snapshot(session_id, ids)
 
-    def _consolidate_now(self, user: str) -> None:
-        with self.write_lock(user):
-            mem = self.get(user)
-            try:
-                mem.consolidate()
-                mem.summarize_episodes(list(mem.episodes_doc.values()))
-            except PersistenceError:
-                raise
-            except BaseException:
-                self._save(user, mem)
-                raise
-            else:
-                self._save(user, mem)
+    @contextmanager
+    def _processing_scope(self, user, mode='immediate'):
+        if mode == 'buffered':
+            yield
+            return
+        lease = namespace_lock(self._contained_child('@' + self._safe_user(user) + '.processing.lock'))
+        if self._frames():
+            with lease.try_file_lock() as acquired:
+                if not acquired:
+                    raise RuntimeError('Acquire processing access before entering a namespace transaction')
+                yield
+        else:
+            with lease.file_lock():
+                yield
 
-    def flush(self) -> None:
-        """阻塞直到所有排队的 System-2 整合完成（用于测试 / 优雅停机）。
-        同步模式下是空操作。"""
-        if self._queue is not None:
-            self._queue.join()
+    def flush(self, user: Optional[str] = None, session_id: Optional[str] = None,
+              timeout: float = 30, retry_failed: bool = False) -> dict:
+        if self._closed:
+            raise RuntimeError('MemoryService is closed')
+        if user is None:
+            from .store.persist import discover_processing_namespaces
+            users = self._buffered.scan() if self._buffered else [
+                name for name, _ in discover_processing_namespaces(self.data_dir)]
+            results = [self.flush(name, session_id, timeout, retry_failed) for name in users]
+            status = ('failed' if any(r['status'] == 'failed' for r in results) else
+                      'timed_out' if any(r['status'] == 'timed_out' for r in results) else 'completed')
+            return {'ok': status == 'completed', 'status': status, 'results': results}
+        if self._buffered is None:
+            result = self.processing_status(user, session_id)
+            incomplete = any(result['counts'][s] for s in ('pending', 'running', 'retry_wait', 'failed', 'cancelled'))
+            return {'ok': not incomplete, 'status': 'failed' if incomplete else 'completed', **result}
+        return self._buffered.flush(user, session_id, timeout, retry_failed)
 
     def close(self) -> None:
-        """Drain queued work; scopes holding namespace locks finish shutdown on exit."""
         with self._g:
-            if not self._closed:
-                self._closed = True
-                if self._worker is not None and self._queue is not None:
-                    self._queue.put(None)
-            worker = self._worker
+            if self._closed:
+                return
+            self._closed = True
+        if self._buffered:
+            self._buffered.close()
+        with self._g:
             for user in list(self._hot):
                 if not self._active_users.get(user):
-                    mem = self._hot.pop(user)
+                    self._hot.pop(user).close()
                     self._hot_versions.pop(user, None)
-                    mem.close()
-        # Joining while holding a namespace scope could wait for a worker that
-        # needs that same lock. It drains after the scope releases it instead.
-        if worker is not None and not self._frames() and threading.current_thread() is not worker:
-            worker.join()
+            if self._worker is not None and not self._worker.is_alive():
+                self._worker = None
 
     # --- 写入路径 -----------------------------------------------------------
     @timed("remember")
+    @_processing_access
     def remember(self, user: str, content: str, session_id: str = "default",
-                 scope: str = "auto") -> dict:
+                 scope: str = "auto", processing: str = 'immediate') -> dict:
         """存储一条消息 + 执行 System-2 整合/摘要（尽力而为：模型瞬时故障也绝不丢失原始 episode）。
         `scope`（auto|long|working）按时效性路由——瞬态内容留在按日历史 + 工作记忆中，
         不会被提升为持久化的 profile fact（见 Memory.remember）。"""
         if scope not in {"auto", "long", "working"}:
             raise ValueError("scope must be auto, long, or working")
+        if processing not in {'immediate', 'buffered'}:
+            raise ValueError('processing must be immediate or buffered')
+        if processing == 'buffered' and self._buffered is None:
+            raise BufferedProcessingDisabledError()
         if scope != "working":
             require_llm(self.llm)
         with self.write_lock(user):
             mem = self.get(user)
             routed = mem.remember(content, user_id=user, session_id=session_id, scope=scope)
+            if processing == 'buffered':
+                from .consolidate.tasks import ProcessingTasks
+                ProcessingTasks(mem, user).enqueue(mem.episodes_doc.get(routed['episode_id']), self._buffered.clock())
+                self._save(user, mem)
+                self._buffered.notify(user)
+                return {'ok': True, 'queued': routed['scope'] != 'working',
+                        'processing': 'completed' if routed['scope'] == 'working' else 'pending',
+                        **({'scope': 'working', 'kind': routed['kind'], 'id': routed['working_id'],
+                            'extracted': 0, 'working_added': 1} if routed['scope'] == 'working' else {}),
+                        'episode_id': routed['episode_id']}
             self._save(user, mem)
             if routed["scope"] == "working":
                 return {"ok": True, "scope": "working", "kind": routed["kind"],
                         "id": routed["working_id"], "episode_id": routed["episode_id"],
                         "extracted": 0, "working_added": 1}
-            if self._async:
-                self._enqueue(user)
-                return {"ok": True, "queued": True, "episode_id": routed["episode_id"]}
             try:
-                mem.consolidate()
+                from .consolidate.tasks import ProcessingTasks
+                owned = ProcessingTasks.registered_ids(mem)
+                mem.consolidate([ep for ep in mem.ingestor.pending() if ep.id not in owned])
             except ExtractionError:
                 self._save(user, mem)
                 self.metrics.count("extraction_failed")
@@ -616,6 +626,7 @@ class MemoryService:
                     "total_facts": len([f for f in _all_facts(mem) if f.is_live()])}
 
     @timed("import")
+    @_processing_access
     def import_(self, user: str, sessions: Optional[list] = None, format: str = "auto",
                 data: Any = None, consolidate: Optional[bool] = None, summarize: bool = True,
                 session_id: str = "imported", dedupe: bool = True) -> dict:
@@ -641,11 +652,6 @@ class MemoryService:
                     self._save(user, mem)
                     return {"ok": True, **stats}
                 sessions = parse(data, format=format, session_id=session_id)
-            # A cached namespace must use the current service model for preflight and execution.
-            if mem.llm is not self.llm:
-                mem.llm = self.llm
-                mem.summarizer.llm = self.llm
-                mem._rewire()
             try:
                 stats = mem.import_messages(sessions, user_id=user, consolidate=consolidate,
                                             summarize=summarize, dedupe=dedupe)
@@ -657,6 +663,7 @@ class MemoryService:
             return {"ok": True, **stats}
 
     @timed("import_document")
+    @_processing_access
     def import_document(self, user: str, data, filename: Optional[str] = None,
                         content_type: Optional[str] = None, session_id: str = "document",
                         consolidate: bool = True, summarize: bool = True) -> dict:
@@ -741,6 +748,9 @@ class MemoryService:
         with self.write_lock(user):
             mem = self.get(user)
             ok = mem.delete_fact(fact_id)
+            if ok:
+                from .consolidate.tasks import ProcessingTasks
+                ProcessingTasks(mem, user).cancel(now())
             self._save(user, mem)
             return {"ok": ok}
 
@@ -778,6 +788,9 @@ class MemoryService:
                         "expected": expect_count, "reason": "slot changed since it was audited"}
             for f in doomed:
                 mem.delete_fact(f.id)
+            if doomed:
+                from .consolidate.tasks import ProcessingTasks
+                ProcessingTasks(mem, user).cancel(now())
             self._save(user, mem)
             return {"ok": True, "deleted": len(doomed), "subject": subject, "predicate": predicate}
 
@@ -794,6 +807,8 @@ class MemoryService:
             mem = self.get(user)
             clean = {k: v for k, v in fields.items() if v is not None}
             result = mem.set_policy(**clean)
+            from .consolidate.tasks import ProcessingTasks
+            ProcessingTasks(mem, user).revise()
             self._save(user, mem)
             return {"ok": True, **result}
 
@@ -909,6 +924,8 @@ class MemoryService:
         with self.write_lock(user):
             mem = self.get(user)
             n = mem.clear_session(user, session_id)
+            from .consolidate.tasks import ProcessingTasks
+            ProcessingTasks(mem, user).cancel(now(), session_id)
             self._save(user, mem)
             return {"ok": True, "cleared": n}
 
@@ -926,12 +943,28 @@ class MemoryService:
         读取索引 session 摘要，把知识更新反映进这些摘要，清理瞬态工作记忆，并持久化该命名空间。
         这是 Claude Code / Codex / Cursor 类客户端在线程关闭或切换任务时可调用的生命周期钩子。
         """
-        with self.write_lock(user):
+        with self._read_scope(user) as mem:
+            boundary = {ep.id for ep in mem.episodes_doc.values()
+                        if ep.user_id == user and ep.session_id == session_id}
+            working_boundary = {w.id for w in mem.working_mem.values()
+                                if w.user_id == user and w.session_id == session_id}
+        if self._buffered:
+            flushed = self._buffered.flush(user, session_id, boundary=boundary)
+        else:
+            flushed = self.flush(user, session_id, timeout=0)
+        if not flushed['ok']:
+            retained = [job['episode_id'] for job in flushed.get('jobs', []) if job['episode_id'] in boundary]
+            raise ProcessingIncompleteError(stored_raw=bool(retained), episode_ids=retained)
+        with self._processing_scope(user), self.write_lock(user):
+            if (boundary or working_boundary) and self._store_version(user) is None:
+                raise ProcessingIncompleteError()
             mem = self.get(user)
             episodes = [
                 ep for ep in mem.episodes_doc.values()
-                if ep.user_id == user and ep.session_id == session_id
+                if ep.user_id == user and ep.session_id == session_id and ep.id in boundary
             ]
+            if len(episodes) != len(boundary):
+                raise ProcessingIncompleteError(stored_raw=bool(episodes), episode_ids=[ep.id for ep in episodes])
             from .consolidate.outcomes import extract_outcomes, OUTCOME_PREDICATES, split_outcome_text
             pending = [ep for ep in episodes if not ep.consolidated]
             want = (self.config.session_outcomes if outcomes is None else outcomes) and not self._outcomes_forced_off
@@ -967,7 +1000,14 @@ class MemoryService:
                 mem._persona_cache.clear()
             summaries = mem.summarize_episodes(episodes) if summarize else 0
             reflected = mem.reflect(user) if summarize else 0
-            working_cleared = mem.clear_session(user, session_id) if clear_working else 0
+            working_doomed = [w.id for w in mem.working_mem.values()
+                             if w.user_id == user and w.session_id == session_id and (
+                                 w.id in working_boundary or (w.metadata.get('provenance') and
+                                 set(w.metadata['provenance']).issubset(boundary)))]
+            working_cleared = len(working_doomed) if clear_working else 0
+            if clear_working:
+                for key in working_doomed:
+                    del mem.working_mem[key]
 
             self._save(user, mem)
             return {

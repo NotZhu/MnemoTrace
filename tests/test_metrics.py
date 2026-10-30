@@ -64,7 +64,7 @@ def test_service_paths_are_timed_and_tokens_recorded(svc):
     assert snap["ops"]["recall"]["p95_ms"] >= snap["ops"]["recall"]["p50_ms"] >= 0
     t = snap["tokens"]
     assert t["context_total"] > 0 and t["full_total"] > 0 and t["recalls_with_baseline"] == 1
-    assert snap["async"] == {"enabled": False, "queue_depth": 0, "pending_users": 0}
+    assert snap["buffered"] == {"enabled": False, "recovery_error": False}
     assert snap["users_hot"] == 1
 
 
@@ -78,15 +78,14 @@ def test_payload_is_aggregate_only(svc):
 
 
 def test_async_backlog_is_visible(monkeypatch):
-    monkeypatch.setenv("MNEMOTRACE_ASYNC_CONSOLIDATION", "1")
+    monkeypatch.setenv("MNEMOTRACE_BUFFERED_EXTRACTION", "1")
     d = tempfile.mkdtemp(prefix="mnemotrace_metrics_async_")
     try:
         s = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
-        s.remember("u", "My name is Wei and I live in Shenzhen.")
-        assert s.metrics_snapshot()["async"]["enabled"] is True
+        s.remember("u", "My name is Wei and I live in Shenzhen.", processing="buffered")
+        assert s.metrics_snapshot()["buffered"]["enabled"] is True
         s.flush()
-        snap = s.metrics_snapshot()["async"]
-        assert snap["queue_depth"] == 0 and snap["pending_users"] == 0  # 已清空
+        assert s.processing_status("u")["counts"]["completed"] == 1
         s.close()
     finally:
         shutil.rmtree(d, ignore_errors=True)

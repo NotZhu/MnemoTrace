@@ -196,6 +196,38 @@ def _read_jsonl(path: str, name: str, limit: int | None = None) -> list[dict[str
     return out
 
 
+def discover_processing_namespaces(root: str) -> list[tuple[str, bool]]:
+    """Discover only explicitly registered feature state, checking directory ownership."""
+    from .._namespace_paths import contained_child, namespace_path
+    from ..consolidate.tasks import ACTIVE
+    namespaces = []
+    for entry in os.scandir(root):
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        path = contained_child(root, entry.name)
+        try:
+            with open(os.path.join(path, 'manifest.json'), encoding='utf-8') as fh:
+                raw = json.load(fh)
+        except FileNotFoundError:
+            continue
+        except (ValueError, OSError) as exc:
+            raise StoreFormatError('Cannot read buffered recovery manifest') from exc
+        if (not isinstance(raw, dict) or not isinstance(raw.get('state'), dict)
+                or 'processing' not in raw['state']):
+            continue
+        try:
+            state = validate_manifest(raw)['state']['processing']
+            if state is None:
+                continue
+            user = state['namespace']
+            if namespace_path(root, user) != path:
+                raise ValueError('Buffered recovery namespace ownership mismatch')
+        except ValueError as exc:
+            raise StoreFormatError('Invalid buffered recovery state') from exc
+        namespaces.append((user, any(j['state'] in ACTIVE for j in state['jobs'].values())))
+    return namespaces
+
+
 def _memory_state(mem: Any) -> dict[str, Any]:
     for key, attribute in (("focus", "focus"), ("policy", "policy"), ("identity", "_identity"),
                            ("aliases", "_aliases"), ("import_seen", "_import_seen")):

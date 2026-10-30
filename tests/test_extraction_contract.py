@@ -236,14 +236,15 @@ def test_remote_mcp_preserves_safe_extraction_error_details():
 
 
 def test_async_failure_is_visible_and_worker_stays_alive(tmp_path, monkeypatch):
-    monkeypatch.setenv('MNEMOTRACE_ASYNC_CONSOLIDATION', '1')
+    monkeypatch.setenv('MNEMOTRACE_BUFFERED_EXTRACTION', '1')
     svc = service(tmp_path, Broken())
     try:
-        result = svc.remember('u', 'Synthetic input', session_id='s')
+        result = svc.remember('u', 'Synthetic input', session_id='s', processing='buffered')
         assert result['queued'] and 'scope' not in result
-        svc.flush()
+        svc.flush('u', timeout=1)
         ep, = svc.get('u').episodes_doc.values()
-        assert not ep.consolidated and ep.metadata['extraction_error'] == 'extraction_failed'
+        assert not ep.consolidated
+        assert svc.processing_status('u')['jobs'][0]['error_code'] == 'extraction_failed'
         assert svc._worker.is_alive()
     finally:
         svc.close()

@@ -23,7 +23,11 @@ from ..topics import Topic
 class Backend(Protocol):
     mode: str
 
-    async def remember(self, content: str, session_id: str = "default", scope: str = "auto") -> dict: ...
+    async def remember(self, content: str, session_id: str = "default", scope: str = "auto",
+                       processing: str = "immediate") -> dict: ...
+    async def processing_status(self, session_id: str | None = None) -> dict: ...
+    async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
+                               retry_failed: bool = False) -> dict: ...
     async def recall(
         self,
         query: str,
@@ -101,8 +105,16 @@ class LocalBackend:
         self.ns = namespace
         self.svc = service or MemoryService()
 
-    async def remember(self, content: str, session_id: str = "default", scope: str = "auto") -> dict:
-        return await asyncio.to_thread(self.svc.remember, self.ns, content, session_id, scope)
+    async def remember(self, content: str, session_id: str = "default", scope: str = "auto",
+                       processing: str = "immediate") -> dict:
+        return await asyncio.to_thread(self.svc.remember, self.ns, content, session_id, scope, processing)
+
+    async def processing_status(self, session_id: str | None = None) -> dict:
+        return await asyncio.to_thread(self.svc.processing_status, self.ns, session_id)
+
+    async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
+                               retry_failed: bool = False) -> dict:
+        return await asyncio.to_thread(self.svc.flush, self.ns, session_id, timeout, retry_failed)
 
     async def recall(
         self,
@@ -257,8 +269,9 @@ class RemoteBackend:
             h["Authorization"] = f"Bearer {self.key}"
         return h
 
-    async def _post(self, path: str, body: dict) -> dict:
-        r = await self._client.post(self.api_url + path, json=body, headers=self._headers)
+    async def _post(self, path: str, body: dict, *, timeout: float | None = None) -> dict:
+        r = await self._client.post(self.api_url + path, json=body, headers=self._headers,
+                                    **({'timeout': timeout} if timeout is not None else {}))
         r.raise_for_status()
         return r.json()
 
@@ -282,12 +295,23 @@ class RemoteBackend:
         r.raise_for_status()
         return r.json()
 
-    async def remember(self, content: str, session_id: str = "default", scope: str = "auto") -> dict:
+    async def remember(self, content: str, session_id: str = "default", scope: str = "auto",
+                       processing: str = "immediate") -> dict:
         return await self._post("/v1/remember", {
             "content": content,
             "session_id": session_id,
             "scope": scope,
+            "processing": processing,
         })
+
+    async def processing_status(self, session_id: str | None = None) -> dict:
+        query = '?' + urlencode({'session_id': session_id}) if session_id is not None else ''
+        return await self._get('/v1/processing' + query)
+
+    async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
+                               retry_failed: bool = False) -> dict:
+        return await self._post('/v1/processing/flush', {
+            'session_id': session_id, 'timeout': timeout, 'retry_failed': retry_failed}, timeout=timeout + 10)
 
     async def recall(
         self,

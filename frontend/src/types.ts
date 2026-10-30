@@ -248,7 +248,7 @@ export interface Focus {
 export type RememberScope = 'auto' | 'long' | 'working'
 
 export interface ExtractionFailure {
-  code: 'llm_not_configured' | 'extraction_failed' | 'extraction_invalid_response' | 'extraction_truncated'
+  code: 'llm_not_configured' | 'buffered_processing_disabled' | 'processing_incomplete' | 'extraction_failed' | 'extraction_invalid_response' | 'extraction_truncated'
   message: string
   stored_raw: boolean
   episode_ids: string[]
@@ -258,6 +258,7 @@ export interface RememberResult {
   ok: boolean
   scope?: 'long' | 'working' | 'mixed' | 'none'
   queued?: boolean
+  processing?: 'pending' | 'completed'
   episode_id?: string
   extracted?: number
   working_added?: number

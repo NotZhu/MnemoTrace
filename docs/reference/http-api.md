@@ -32,9 +32,18 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 | content | 必填，1–1,000,000 字符 |
 | session_id | `default`，1–512 字符 |
 | scope | `auto`；支持 long/working |
+| processing | `immediate`；可选 `buffered`，需服务端启用 |
 | space | 未设置时写调用者 home；显式设置需有写权限 |
 
-默认同步提取并保存。正常长期写入返回 `ok`、`scope`、`extracted` 等；异步模式可返回 `queued=true`、`episode_id`；提取失败返回 502，错误详情说明 `stored_raw` 与记录 ID。working 路径返回工作条目 id 与事件 id。调用方应根据这些分支判断处理进度。
+默认同步提取并保存。正常长期写入返回 `ok`、`scope`、`extracted` 等；显式缓冲在原文和任务提交后返回 HTTP 202、`queued=true`、`processing=pending`、`episode_id`，此时不承诺抽取已完成。提取失败返回 502，错误详情说明 `stored_raw` 与记录 ID。显式 working 无需模型且立即完成。调用方应根据这些分支判断处理进度。
+
+### 缓冲处理状态与刷新
+
+`GET /v1/processing` 支持可选 `session_id`、`space`（需读权限），返回状态计数与任务列表；任务包含事件编号、来源长度、完成位置、尝试次数、下次重试时间和脱敏错误码，不包含原文。
+`attempts` 为事件累计参与次数，`window_attempts` 为当前窗口的重试计数；同窗多个事件共享模型请求，不能将事件次数相加当成调用次数。
+
+`POST /v1/processing/flush` 接受 `session_id=null`、`space=null`、`timeout=30`（0–300 秒）、`retry_failed=false`，需写权限。只等待请求捕获的已有任务，返回 `status=completed|failed|timed_out`，仅完成时 `ok=true`。设 `retry_failed=true` 才会重新处理失败或取消的任务。超时不删除已接收内容。
+仅有写权限时只返回 ok 和 status，不返回任务列表、计数或代次；任务详情仍要求读权限。
 
 ### POST /v1/recall
 
@@ -155,7 +164,7 @@ stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切�
 
 服务端 remember 的 auto/long 在原文写入前检查 LLM；working 无需模型。同步结果 scope 为 long/working/mixed/none，按过滤后的有效事实、身份更新和工作条目计算；已有重复事实仍算长期内容，身份更新可返回 long 且 extracted=0。extracted 与 working_added 只统计当前输入新增的长期事实和工作条目，不包含同批其他待处理输入。异步接收返回 queued=true、episode_id，尚无最终 scope 或抽取数量。
 
-缺少模型返回 HTTP 503 / llm_not_configured；调用失败返回 502 / extraction_failed；响应无效返回 502 / extraction_invalid_response；输出截断返回 502 / extraction_truncated。detail 包含 code、message、stored_raw、episode_ids。stored_raw=true 表示原文已保存，不必重复上传；恢复模型后关闭对应会话可重试。会话状态、报告和命名空间统计的 extraction_failures 表示待处理错误的事件数，MCP 的 JSON 和文本均展示此计数。
+缺少模型返回 HTTP 503 / llm_not_configured；调用失败返回 502 / extraction_failed；响应无效返回 502 / extraction_invalid_response；输出截断返回 502 / extraction_truncated。关闭会话时缓冲刷新失败、超时或来源已被擦除，返回 503 / processing_incomplete，不执行后续摘要和清理。detail 包含 code、message、stored_raw、episode_ids。stored_raw=true 表示原文已保存，不必重复上传；缓冲任务需要通过刷新接口显式重试 failed/cancelled 后再关闭会话，即时抽取可重新关闭会话重试。会话状态、报告和命名空间统计的 extraction_failures 表示待处理错误的事件数，MCP 的 JSON 和文本均展示此计数。
 
 stats.counts.episodes_ephemeral 统计包含临时记忆内容的历史事件，包括最终 scope 为 working 或 mixed 的事件；不表示整条事件均为临时内容，也不等于当前存活的 working_live 条目数。清理工作记忆后，历史事件计数仍保留。
 

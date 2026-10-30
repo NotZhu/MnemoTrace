@@ -4,8 +4,24 @@ import test from 'node:test'
 import { MnemoTraceClient, MnemoTraceError } from '../dist/index.js'
 import { createRequire } from 'node:module'
 
+test('buffered writes accept 202 and expose status and explicit retry controls', async () => {
+  const calls = []
+  const client = new MnemoTraceClient({ fetch: async (url, init) => {
+    calls.push({url, body: init.body && JSON.parse(init.body)})
+    return new Response(JSON.stringify({ok: true, queued: true}), {status: calls.length === 1 ? 202 : 200})
+  } })
+  assert.equal((await client.remember('synthetic', {processing: 'buffered'})).queued, true)
+  await client.processingStatus({sessionId: 'synthetic session', space: 'team'})
+  await client.flushProcessing({sessionId: 'synthetic session', retryFailed: true, timeout: 0})
+  assert.equal(calls[0].body.processing, 'buffered')
+  assert.equal(new URL(calls[1].url).searchParams.get('session_id'), 'synthetic session')
+  assert.deepEqual(calls[2].body, {session_id: 'synthetic session', timeout: 0, retry_failed: true})
+})
+
 for (const [status, code, storedRaw] of [
   [503, 'llm_not_configured', false],
+  [503, 'buffered_processing_disabled', false],
+  [503, 'processing_incomplete', true],
   [502, 'extraction_failed', true],
   [502, 'extraction_invalid_response', true],
   [502, 'extraction_truncated', true],

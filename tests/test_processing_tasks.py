@@ -56,3 +56,21 @@ def test_cancel_and_retry_are_explicit_and_keep_completed_jobs():
     tasks.force([ep.id], 103, retry_failed=True)
     assert tasks.rows()[ep.id]['state'] == 'pending'
     assert tasks.rows()[ep.id]['forced']
+
+
+def test_task_manifest_rejects_uncommitted_episode_progress(tmp_path):
+    from mnemotrace.llm import FakeLLM
+    mem = Memory(llm=FakeLLM(responses=[json.dumps({'facts': [
+        {'subject': 'user', 'predicate': 'owns', 'object': 'synthetic'}], 'working': []})]))
+    ep = mem.add('synthetic', user_id='u')
+    tasks = ProcessingTasks(mem, 'u')
+    tasks.enqueue(ep, 100)
+    mem.save(str(tmp_path))
+    manifest = (tmp_path / 'manifest.json').read_bytes()
+    mem.consolidate([ep])
+    tasks.completed([ep.id], 101)
+    mem.save()
+    # Simulate collections replaced but the new manifest not committed.
+    (tmp_path / 'manifest.json').write_bytes(manifest)
+    with pytest.raises(StoreFormatError):
+        Memory.open(str(tmp_path))
