@@ -309,7 +309,13 @@ def test_scope_uses_accepted_content_and_identity(tmp_path, facts, working, expe
 
 
 def test_scope_includes_existing_durable_fact(tmp_path):
-    svc = service(tmp_path, FakeLLM(handler=lambda *args: response([fact()])))
+    from mnemotrace.consolidate.windows import WINDOW_PREFIX
+    def model(prompt, system):
+        if WINDOW_PREFIX not in prompt:
+            return 'Synthetic summary'
+        payload = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
+        return response([{**fact(), 'source_ids': [payload['pending'][0]['id']]}])
+    svc = service(tmp_path, FakeLLM(handler=model))
     svc.remember('u', 'Synthetic first statement')
     result = svc.remember('u', 'Synthetic repeated statement')
     assert result['scope'] == 'long' and result['extracted'] == 0

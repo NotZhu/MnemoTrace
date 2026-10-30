@@ -18,6 +18,22 @@ def empty(*args):
     return '{"facts":[],"working":[]}'
 
 
+@pytest.mark.parametrize('kind', ['facts', 'working'])
+def test_context_requires_explicit_sources_before_any_state_change(kind):
+    item = ({'subject': 'user', 'predicate': 'owns', 'object': 'synthetic'} if kind == 'facts'
+            else {'content': 'synthetic task', 'kind': 'task'})
+    response = {'facts': [], 'working': [], kind: [item]}
+    mem = Memory(llm=FakeLLM(responses=[json.dumps(response)]))
+    earlier = mem.add('synthetic identity context', user_id='u', session_id='s', event_time=1)
+    routed = mem.remember('synthetic pending', user_id='u', session_id='s')
+    later = mem.episodes_doc.get(routed['episode_id'])
+    with pytest.raises(ExtractionResponseError):
+        mem.consolidate([later])
+    assert not later.consolidated and not earlier.consolidated
+    assert not mem.fact_store.values() and not mem.working_mem
+    assert PROGRESS_KEY not in later.metadata
+
+
 def rows(data):
     return [{"subject": "user", "predicate": "owns", "object": span["content"],
              "text": span["content"], "source_ids": [span["id"]]} for span in data["pending"]]
