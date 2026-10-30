@@ -76,7 +76,7 @@ def test_large_unicode_source_is_split_losslessly_with_previous_segment_context(
     overhead = mem.engine.extractor.window_size(ExtractionWindow((SourceSpan(ep, 0, 1),)))
     mem.config.extraction_max_input_bytes = overhead + 350
     mem.consolidate()
-    windows = [payload(c["prompt"]) for c in model.calls]
+    windows = sorted((payload(c["prompt"]) for c in model.calls), key=lambda w: w["pending"][0]["start"])
     assert len(windows) > 1
     assert "".join(w["pending"][0]["content"] for w in windows) == text == ep.content
     assert windows[1]["context"] and windows[1]["context"][-1]["episode_id"] == ep.id
@@ -162,7 +162,8 @@ def test_restart_only_processes_remaining_ranges_after_checkpoint_failure(tmp_pa
     retry = FakeLLM(handler=empty)
     restored = Memory.open(str(tmp_path), llm=retry, config=mem.config)
     restored.consolidate()
-    pending = [s for call in retry.calls for s in payload(call["prompt"])["pending"]]
+    pending = sorted((s for call in retry.calls for s in payload(call["prompt"])["pending"]),
+                     key=lambda s: s["start"])
     assert pending[0]["start"] == offset
     assert "".join(s["content"] for s in pending) == ep.content[offset:]
     assert not restored.ingestor.pending()

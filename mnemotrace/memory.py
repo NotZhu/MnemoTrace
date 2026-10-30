@@ -223,6 +223,7 @@ class Memory:
         self.cold_pages_in: dict[str, int] = {}  # 每个用户从冷层调回热层的事实数
         self._persist_path: Optional[str] = None  # 默认快照目录，由 open 或 save 设置
         self._snapshot_version: Optional[str] = None  # 已加载或保存的快照版本，用于检测并发修改
+        self._processing_state = None  # Optional buffered-extraction feature state, committed with the snapshot.
         try:
             self._rewire()
         except BaseException:
@@ -470,6 +471,9 @@ class Memory:
         # Retrieved payloads may predate summary or metadata updates. Consolidate
         # authoritative episodes so writing them back cannot revert newer fields.
         eps = [self.episodes_doc.get(ep.id) or ep for ep in requested]
+        for ep in eps:
+            if self.episodes_doc.get(ep.id) is None:
+                self._sync_episode(ep)
         self._apply_policy()  # 遵循用户可编辑的抽取 prompt / "要记录什么"指令
         self.sweep_working()
         try:

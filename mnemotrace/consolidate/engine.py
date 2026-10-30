@@ -9,6 +9,7 @@ import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from copy import copy, deepcopy
+from dataclasses import dataclass
 from typing import Optional
 
 from ..config import Config
@@ -28,10 +29,26 @@ from .preferences import (
 )
 from .graph_builder import GraphBuilder
 from .processing import EpisodeProcessingStore, PROGRESS_KEY
-from .windows import chronology, plan_windows
+from .windows import ExtractionWindow, SourceSpan, chronology, plan_windows
 from .topic_rules import log_topic_inputs
 
 _PROCEDURAL_EXTRACTED_PREDS = {"procedure", "how_to", "routine", "instruction", "agent_instruction"}
+
+
+@dataclass(frozen=True)
+class PreparedExtraction:
+    """Detached inputs; execution never retains an engine, Memory or database handle."""
+    windows: tuple[ExtractionWindow, ...]
+    extractor: object
+    max_tokens: int
+
+    def execute(self):
+        import os
+        if not self.windows:
+            return []
+        workers = max(1, int(os.environ.get("MNEMOTRACE_EXTRACT_WORKERS", "4")))
+        with ThreadPoolExecutor(max_workers=min(workers, len(self.windows))) as pool:
+            return list(pool.map(lambda w: self.extractor.raw_window(w, self.max_tokens), self.windows))
 
 
 class ConsolidationEngine:
@@ -80,8 +97,28 @@ class ConsolidationEngine:
                                         llm=llm if config.conflict_llm_escalation else None)
 
     def consolidate(self, episodes: list[Episode]) -> dict[str, int]:
-        stats = {"facts_added": 0, "duplicates": 0, "invalidated": 0, "working_added": 0,
-                 "model_calls": 0, "windows_completed": 0}
+        prepared = self.prepare(episodes)
+        outputs = prepared.execute()  # Validate every response before changing derived state.
+        stats = self.empty_stats()
+        try:
+            for window, output in zip(prepared.windows, outputs):
+                result = self.apply(window, output)
+                for key, value in result.items():
+                    stats[key] += value
+        finally:
+            # Checkpoints may replace records; callers must not write back earlier references.
+            for ep in episodes:
+                current = self.processing.documents.get(ep.id)
+                if current is not None:
+                    ep.metadata, ep.consolidated = current.metadata, current.consolidated
+        return stats
+
+    @staticmethod
+    def empty_stats():
+        return {"facts_added": 0, "duplicates": 0, "invalidated": 0, "working_added": 0,
+                "model_calls": 0, "windows_completed": 0}
+
+    def prepare(self, episodes: list[Episode], *, first_only: bool = False) -> PreparedExtraction:
         active = []
         for ep in sorted({ep.id: ep for ep in episodes}.values(), key=chronology):
             offset = self.processing.offset(ep)
@@ -90,7 +127,7 @@ class ConsolidationEngine:
             if not ep.consolidated:
                 active.append(ep)
         if not active:
-            return stats
+            return PreparedExtraction((), copy(self.extractor), self.config.extraction_max_output_tokens)
         require_llm(self.llm)
         history = {ep.id: ep for ep in [*self.processing.episodes(), *active]}
         try:
@@ -99,17 +136,37 @@ class ConsolidationEngine:
                                    self.config.extraction_context_bytes)
         except ValueError as exc:
             raise ExtractionError() from exc
-        # Validate all responses before applying any derived state from this request.
-        import os
-        workers = max(1, int(os.environ.get("MNEMOTRACE_EXTRACT_WORKERS", "4")))
-        with ThreadPoolExecutor(max_workers=min(workers, len(windows))) as pool:
-            futures = [pool.submit(self.extractor.raw_window, w,
-                                   self.config.extraction_max_output_tokens) for w in windows]
-            outputs = [f.result() for f in futures]
-        stats["model_calls"] = len(windows)
-        for window, output in zip(windows, outputs):
-            self._apply_window(window, output, stats)
-            stats["windows_completed"] += 1
+        extractor = copy(self.extractor)
+        extractor.self_name, extractor.aliases = {}, {}
+        return PreparedExtraction(tuple(deepcopy(windows[:1] if first_only else windows)), extractor,
+                                  self.config.extraction_max_output_tokens)
+
+    def rebind(self, window: ExtractionWindow) -> ExtractionWindow | None:
+        """Validate captured source identity/ranges and bind to current authoritative records."""
+        bound = []
+        for spans in (window.pending, window.context):
+            current = []
+            for span in spans:
+                ep = self.processing.documents.get(span.episode.id)
+                old = span.episode
+                if ep is None or (ep.content, ep.user_id, ep.session_id, ep.event_time, ep.ingested_at,
+                                  ep.metadata.get('memory_scope', 'long')) != (
+                        old.content, old.user_id, old.session_id, old.event_time, old.ingested_at,
+                        old.metadata.get('memory_scope', 'long')):
+                    return None
+                if spans is window.pending and (ep.consolidated or self.processing.offset(ep) != span.start):
+                    return None
+                current.append(SourceSpan(ep, span.start, span.end))
+            bound.append(tuple(current))
+        return ExtractionWindow(*bound)
+
+    def apply(self, window, output):
+        current = self.rebind(window)
+        if current is None:
+            raise ValueError('Extraction sources or processing ranges changed')
+        stats = self.empty_stats()
+        self._apply_window(current, output, stats)
+        stats.update(model_calls=1, windows_completed=1)
         return stats
 
     def _accepted(self, fact, content: str) -> bool:
