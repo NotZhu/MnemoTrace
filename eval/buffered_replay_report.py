@@ -29,12 +29,22 @@ def costs(rows):
         repeats = Counter((r['case_id'], r['mode'], r['run'], c.get('window')) for r in rows
                           for c in r.get('calls', []) if c['phase'] == 'extraction' and phase in {'extraction', 'total'})
         group['repeated_window_attempts'] = sum(n-1 for n in repeats.values())
+        group['rejected_windows'] = (sum(not w.get('validated') and bool(w.get('error_code'))
+            for r in rows for w in r.get('windows', [])) if phase in {'extraction', 'total'} else 0)
         for field in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
             values = [(c.get('usage') or {}).get(field) for c in provider]
             group[field] = sum(values) if values and all(v is not None for v in values) else None
         group['missing_usage'] = sum((c.get('usage') or {}).get('total_tokens') is None for c in provider)
         result[phase] = group
     return result
+
+
+def failure_codes(row):
+    """Provider success does not imply extraction acceptance or request success."""
+    return sorted(set(row.get('errors', []))
+        | {w['error_code'] for w in row.get('windows', []) if w.get('error_code')}
+        | {a.get('error_code', a.get('error_type', 'request_failed'))
+           for a in row.get('arrivals', []) if a.get('status') == 'failed'})
 
 
 def latency(rows):
@@ -211,7 +221,7 @@ def summarize(directory):
             triggers=dict(Counter(c for r in rows for s in r['selections'] for c in s['conditions']))),
         pairs=[dict(case_id=p[0]['case_id'], run=p[0]['run'],
                     cost={m: costs([p[i]]) for i, m in enumerate(('immediate', 'buffered'))}) for p in pairs],
-        rows=[dict(case_id=r['case_id'], mode=r['mode'], run=r['run'], status=r['status'], errors=r['errors'],
+        rows=[dict(case_id=r['case_id'], mode=r['mode'], run=r['run'], status=r['status'], errors=failure_codes(r),
                    score=r['score'], raw_score=r['raw_score'], cost=costs([r]), latency=latency([r]),
                    inflight_observed=r['inflight_observed']) for r in rows])
     (directory/'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')

@@ -167,7 +167,8 @@ def replay(case, call, *, clock=time.perf_counter, wait=time.sleep):
                 call(command, row)
                 row['status'] = 'completed'
             except Exception as exc:
-                row.update(status='failed', error_type=type(exc).__name__)
+                row.update(status='failed', error_type=type(exc).__name__,
+                           error_code=getattr(exc, 'code', type(exc).__name__))
             finally:
                 row['returned_at'] = clock() - started
     with ThreadPoolExecutor(max_workers=len(users), thread_name_prefix='replay-ingress') as pool:
