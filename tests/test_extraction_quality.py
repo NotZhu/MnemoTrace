@@ -83,6 +83,54 @@ def test_raw_evidence_must_be_in_the_actual_cited_fragment():
     assert not score['ok'] and not score['facts'][0]['evidence_ok']
 
 
+def test_raw_evidence_uses_character_coverage_not_concatenated_fragments():
+    case = deepcopy(next(c for c in quality.load_suite()['cases'] if c['id'] == 'long-2'))
+    case['events'][0]['text'] = '我喜欢绿茶。'
+    row = predicted(case)['facts'][0]
+    row['spans'] = [dict(event='e1', content='我喜', start=0, end=2),
+                    dict(event='e1', content='绿茶。', start=3, end=6)]
+    assert not quality.score_case(case, {'facts': [row], 'working': []}, raw=True)['ok']
+    row['spans'] = [dict(event='e1', content='我喜欢绿茶。', start=0, end=6)]
+    assert quality.score_case(case, {'facts': [row], 'working': []}, raw=True)['ok']
+
+
+def test_identity_aliases_share_canonical_user_without_guessing_names():
+    case = next(c for c in quality.load_suite()['cases'] if c['id'] == 'reference-2')
+    result = predicted(case)
+    result['facts'][0]['subject'] = 'u'
+    result['identity'] = {'u': '林舟'}
+    assert quality.score_case(case, result)['ok']
+    result['facts'][0]['subject'] = '陌生人'
+    assert not quality.score_case(case, result)['ok']
+
+
+def test_raw_repetitions_have_precision_but_no_future_fact_recall(case):
+    result = predicted(case)
+    result['facts'] *= 2
+    score = quality.score_case(case, result, raw=True)
+    summary = quality.aggregate([dict(score=score, status='completed')])
+    assert summary['fact_precision'] == 1 and summary['fact_recall'] is None
+
+
+def test_manual_value_keeps_user_authority_without_transcript_sources():
+    case = next(c for c in quality.load_suite()['cases'] if c['id'] == 'isolation-3')
+    result = predicted(case)
+    result['facts'][0]['source'] = 'user'
+    assert quality.score_case(case, result)['ok']
+    result['facts'][0]['source'] = 'extracted'
+    assert not quality.score_case(case, result)['ok']
+
+
+def test_corroboration_time_allows_original_or_joint_source_anchor_only():
+    case = next(c for c in quality.load_suite()['cases'] if c['id'] == 'append-2')
+    result = predicted(case)
+    for event in case['events']:
+        result['facts'][0]['valid_at'] = event['at']
+        assert quality.score_case(case, result)['ok']
+    result['facts'][0]['valid_at'] += 1
+    assert not quality.score_case(case, result)['ok']
+
+
 def test_history_chain_is_scored_not_just_live_fact_text():
     case = next(c for c in quality.load_suite()['cases'] if c['id'] == 'update-1')
     result = predicted(case)

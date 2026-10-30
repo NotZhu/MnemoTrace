@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "cases": [
     {
       "id": "independent-1",
@@ -1714,7 +1714,7 @@
               "e2"
             ]
           ],
-          "at": "e2",
+          "at": "e1",
           "weaker_variants": [],
           "raw_sources": [
             [
@@ -1727,6 +1727,10 @@
               "e1",
               "e2"
             ]
+          ],
+          "allowed_at": [
+            "e1",
+            "e2"
           ]
         }
       ],
