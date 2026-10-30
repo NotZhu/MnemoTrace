@@ -17,7 +17,12 @@ from .windows import ExtractionWindow
 _WINDOW_SYSTEM = (
     "\n输入为窗口 JSON。pending 是本次待处理片段，context 仅为理解前文。"
     "每条 facts/working 还须给出 source_ids 数组，引用输入片段的 id；至少引用一个 pending 片段。"
-    "不得只从 context 重复抽取，不得编造来源。按来源时间保留更新前后的不同事实，不要只输出窗口最后的状态。"
+    "只输出由 pending 新增或改变的信息，context 中已知的事实不得单独重复输出；不得编造来源。"
+    "如果结论的主体、指代或含义依赖前文，source_ids 必须同时引用必要的 context 和 pending 片段；"
+    "同在 pending 中的跨片段依赖也须完整引用。独立事实只引用支持它的片段，不要引用整个窗口。"
+    "更新前后的状态都在 pending 时，分别输出并引用各自来源，不要只保留最后状态；"
+    "旧状态只在 context 时，仅输出 pending 中的新状态，不再输出旧状态。"
+    "输出前逐条确认：没有仅引用 context 的条目，没有漏掉用于消解指代的来源。"
 )
 
 
