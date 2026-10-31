@@ -33,6 +33,7 @@ from .retrieve import (
     plan_evidence,
     render_aggregation_candidates,
 )
+from .retrieve.events import EventEvidence, event_evidence
 from .retrieve.lexical import bm25_scores, overlap_terms, stems
 from .store import (
     GraphStore,
@@ -252,10 +253,15 @@ class Memory:
         self._upsert_fact(fact)
 
     def _sync_episode(self, ep: Episode) -> None:
+        if ep.summary and ep.summary_embedding is None:
+            raise ValueError("A searchable summary requires its embedding")
         self.episodes_doc.put(ep.id, ep)
-        self.episodes_vec.upsert(ep.id, ep.embedding or [], ep)
-        if ep.summary_embedding is not None:
+        if ep.summary:
             self.summary_vec.upsert(ep.id, ep.summary_embedding, ep)
+            self.episodes_vec.delete(ep.id)
+        else:
+            self.episodes_vec.upsert(ep.id, ep.embedding or [], ep)
+            self.summary_vec.delete(ep.id)
 
     def _all_facts(self) -> list[Fact]:
         return self.fact_store.values() + self.cold_store.values()
@@ -383,8 +389,11 @@ class Memory:
 
         episodes = list(self.episodes_doc.values())  # doc 日志是 episode 文本的权威来源
         _clear(self.episodes_vec)
-        vecs = self.embedder.embed_batch([ep.content for ep in episodes]) if episodes else []
-        for ep, v in zip(episodes, vecs):
+        raw_episodes = [ep for ep in episodes if not ep.summary]
+        vecs = self.embedder.embed_batch([ep.content for ep in raw_episodes]) if raw_episodes else []
+        for ep in episodes:
+            ep.embedding = None
+        for ep, v in zip(raw_episodes, vecs):
             ep.embedding = v
         counts["episodes"] = len(episodes)
 
@@ -494,7 +503,8 @@ class Memory:
             for k, v in self.engine.extractor.aliases.items():
                 self._aliases.setdefault(k, set()).update(v)
             for supplied, ep in zip(requested, eps):
-                supplied.consolidated = ep.consolidated
+                if isinstance(supplied, Episode):
+                    supplied.consolidated = ep.consolidated
                 self._sync_episode(ep)
             from .consolidate.tasks import ProcessingTasks
             ProcessingTasks.refresh_completed(self, {ep.id for ep in eps}, now())
@@ -535,10 +545,7 @@ class Memory:
         stats["summaries"] = self.summarize_episodes(
             summary_episodes if summary_episodes is not None else self.ingestor.pending()
         )
-        # Reflector：把摘要之后发生的知识更新传播进 L2 层，使精简读取不会浮出已被后续 fact
-        # 纠正过的旧值。
-        stats["reflected"] = sum(self.reflect(uid) for uid in {
-            ep.user_id for ep in (summary_episodes or self.episodes_doc.values())})
+        stats["reflected"] = 0
         return stats
 
     # --- 批量导入（AGENTS.md 「代码导航」 采用层）：批量接入用户自己的历史 ---
@@ -784,8 +791,7 @@ class Memory:
             fact_seen[key] = f.id
         # 校验和向量准备全部成功后才写入；取代链也链接到去重命中的已有事实。
         for ep in prepared_episodes:
-            self.episodes_doc.put(ep.id, ep)
-            self.episodes_vec.upsert(ep.id, ep.embedding, ep)
+            self._sync_episode(ep)
         for f, old_sup in staged:
             f.supersedes = id_map.get(old_sup) if old_sup else None
             self.fact_store.upsert(f.id, f.embedding, f)
@@ -1265,7 +1271,7 @@ class Memory:
         user_id: str = "default",
         k: int = 8,
         as_of: Optional[float] = None,
-    ) -> list[Episode]:
+    ) -> list[EventEvidence]:
         """为查询取 top-k 条 session 摘要，使用与 fact/episode 检索相同的 hybrid（dense + BM25,
         RRF）信号。词法匹配在这里很重要：聚合类问题（"how many trips"）依赖摘要里提到的精确词，
         纯嵌入查找可能把它们排在模糊相似项之后。返回携带 .summary 字段的 episode。"""
@@ -1276,12 +1282,12 @@ class Memory:
             pool,
             where=lambda e: e.user_id == user and (as_of is None or e.event_time <= as_of),
         )
-        eps = [ep for _, ep in cands]
+        eps = [event_evidence(ep) for _, ep in cands]
         if len(eps) <= k:
             return eps
         from .retrieve.hybrid import date_terms
         bm25 = bm25_scores(query, [
-            (ep.id, f"{ep.summary or ep.content} {date_terms(ep.event_time)}") for ep in eps])
+            (ep.id, f"{ep.text} {date_terms(ep.event_time)}") for ep in eps])
         if bm25:
             bm25_rank = {eid: r for r, (eid, _) in
                          enumerate(sorted(bm25.items(), key=lambda x: x[1], reverse=True))}
@@ -1290,34 +1296,6 @@ class Memory:
                 1.0 / (K + i + 1) + 1.0 / (K + bm25_rank.get(eps[i].id, len(eps)) + 1)))
             eps = [eps[i] for i in order]
         return eps[:k]
-
-    def reflect(self, user_id: str = "default") -> int:
-        """Reflector（Mastra 式摘要维护，AGENTS.md 「架构概览与代码导航」）。L2 摘要在其 session 被摘要时定格；若它
-        陈述的 fact 之后被取代，旧值会残留在摘要文本里，精简读取就会把它浮出来。本方法把当前值
-        追加到任何来源 fact 已失效化的摘要上，使知识更新传播进抽象层。返回被纠正的摘要数量。"""
-        user = user_id
-        facts = [f for f in self._all_facts() if f.user_id == user]
-        replacement = {f.supersedes: f for f in facts if f.supersedes and f.is_live()}
-        by_episode: dict[str, list] = {}
-        for old in facts:
-            if old.is_live() or old.id not in replacement:
-                continue
-            for ep_id in old.provenance:
-                by_episode.setdefault(ep_id, []).append(old)
-        corrected = 0
-        for ep in self.summary_vec.values():
-            if ep.user_id != user or "[updated:" in (ep.summary or ""):
-                continue
-            stale = by_episode.get(ep.id)
-            if not stale:
-                continue
-            current = "; ".join(replacement[o.id].text for o in stale if o.id in replacement)
-            if current:
-                ep.summary = f"{ep.summary or ''} [updated: {current}]".strip()
-                ep.summary_embedding = self.embedder.embed(ep.summary)
-                self._sync_episode(ep)
-                corrected += 1
-        return corrected
 
     # 程序性记忆：how-to / 指令性知识——用户声明过的关于事情该怎么做的规则（"always remind
     # me…"、"I prefer responses in bullet points"）。这是 fact store 之上的一个独立类型化视图
@@ -1892,12 +1870,13 @@ class Memory:
                 ep = self.episodes_doc.get(ep_id)
                 if ep is None or ep.user_id != user or ep.event_time > view_time:
                     continue
+                ep = event_evidence(ep)
                 seen_eps.add(ep_id)
                 needle = f"{query} {fact.text} {fact.subject} {fact.predicate} {fact.object}"
-                snippet = self._snippet_for_evidence(ep.content, needle, max_chars=snippet_chars)
+                snippet = self._snippet_for_evidence(ep.text, needle, max_chars=snippet_chars)
                 date = ep.metadata.get("date") or fmt_date(ep.event_time)
                 rows.append(
-                    f"- [{date}] (session: {ep.session_id}; supports: "
+                    f"- [{date}] (episode: {ep.id}; space: {ep.user_id}; session: {ep.session_id}; supports: "
                     f"{fact.subject} {fact.predicate.replace('_', ' ')} {fact.object}) {snippet}"
                 )
                 if len(rows) >= limit:
@@ -1968,8 +1947,9 @@ class Memory:
                 ep = self.episodes_doc.get(ep_id)
                 if ep is None or ep.user_id != user or ep.event_time > view_time:
                     continue
-                ep_overlap = len(overlap_terms(query, ep.content)) if query else 0
-                support_overlap = len(overlap_terms(fact.text, ep.content))
+                ep = event_evidence(ep)
+                ep_overlap = len(overlap_terms(query, ep.text)) if query else 0
+                support_overlap = len(overlap_terms(fact.text, ep.text))
                 score = fact_overlap * 8 + support_overlap * 3 + ep_overlap * 2
                 if history_query and fact.valid_at <= view_time and not fact.is_live(as_of):
                     score += 96
@@ -2014,9 +1994,11 @@ class Memory:
         for f in facts:
             add_row(f.valid_at, "fact", f.text)
         for ep in summaries:
-            add_row(ep.event_time, "summary", ep.summary or ep.content)
+            ep = event_evidence(ep)
+            add_row(ep.event_time, "summary", ep.text)
         for ep in detail_eps:
-            add_row(ep.event_time, "conversation", ep.content)
+            ep = event_evidence(ep)
+            add_row(ep.event_time, "conversation", ep.text)
         if not rows:
             return ""
         rows.sort(key=lambda x: (-x[0], x[1]))
@@ -2077,7 +2059,8 @@ class Memory:
 
         split_re = re.compile(r"(?<=[.!?])\s+|\n+")
         for ep in episodes:
-            parts = split_re.split(ep.content)
+            ep = event_evidence(ep)
+            parts = split_re.split(ep.text)
             for anchor in anchors:
                 al = anchor.lower()
                 for part in parts:
@@ -2509,7 +2492,7 @@ class Memory:
         # L2 粗层：对每个（子）查询检索 session 摘要并排序。这是由粗到细级联的粗层
         # （AGENTS.md Bet E / OpenViking）：摘要很小，可以廉价地索引并排序大量 session——这是
         # 突破模型窗口（_M / 10M 前沿）的关键。
-        summ_ranked: list[Episode] = []
+        summ_ranked: list[EventEvidence] = []
         seen_s: set[str] = set()
         if n_summaries:
             for q in queries:
@@ -2581,7 +2564,7 @@ class Memory:
         if summaries:
             chrono = sorted(summaries, key=lambda e: e.event_time)
             sm = "\n".join(
-                f"- [{e.metadata.get('date') or fmt_date(e.event_time)}] {e.summary}" for e in chrono
+                f"- [{e.metadata.get('date') or fmt_date(e.event_time)}] (episode: {e.id}; space: {e.user_id}) {e.text}" for e in chrono
             )
             blocks.append(f"SESSION SUMMARIES (relevant, chronological):\n{sm}")
 
@@ -2589,7 +2572,7 @@ class Memory:
             chunks = "\n\n".join(
                 f"原始记录时间：{e.metadata.get('date') or fmt_date(e.event_time)}\n"
                 f"会话：{e.session_id}\n"
-                f"记录内容：{e.content}" for e in detail_eps
+                f"事件：{e.id}\n空间：{e.user_id}\n表示：{e.representation}\n记录内容：{e.text}" for e in detail_eps
             )
             blocks.append(f"RELEVANT CONVERSATIONS (full detail):\n{chunks}")
 
@@ -2726,6 +2709,11 @@ class Memory:
         """回答"在 `when` 时刻我们认为什么是真的？"——双时间轴时间点查询。"""
         return self.search(query, user_id=user_id, as_of=when, top_k=top_k)
 
+    def get_episode(self, episode_id: str, user_id: str = "default") -> Episode | None:
+        """Explicit original-document lookup; callers must serialize concurrent use."""
+        ep = self.episodes_doc.get(episode_id)
+        return ep if ep is not None and ep.user_id == user_id else None
+
     def retrieve_episodes(
         self,
         query: str,
@@ -2744,16 +2732,16 @@ class Memory:
         """
         user = user_id
         pool = pool or max(k * 5, 25)
-        candidates = self.episodes_vec.search(
-            self.embedder.embed(query),
-            pool,
-            where=lambda e: e.user_id == user and (as_of is None or e.event_time <= as_of),
-        )
-        eps = [ep for _, ep in candidates]
+        query_vector = self.embedder.embed(query)
+        predicate = lambda e: e.user_id == user and (as_of is None or e.event_time <= as_of)
+        candidates = self.episodes_vec.search(query_vector, pool, where=predicate)
+        candidates += self.summary_vec.search(query_vector, pool, where=predicate)
+        candidates.sort(key=lambda row: row[0], reverse=True)
+        eps = [event_evidence(ep) for _, ep in candidates[:pool]]
 
         # 候选数多于要返回的数量时，做 BM25 + 嵌入的 RRF 融合。
         if len(eps) > k:
-            bm25 = bm25_scores(query, [(ep.id, ep.content) for ep in eps])
+            bm25 = bm25_scores(query, [(ep.id, ep.text) for ep in eps])
             if bm25:
                 bm25_rank = {eid: r for r, (eid, _) in
                              enumerate(sorted(bm25.items(), key=lambda x: x[1], reverse=True))}
@@ -2765,7 +2753,7 @@ class Memory:
                 eps = [eps[i] for i in fused_order]
 
         if self.reranker is not None and len(eps) > k:
-            ranked = self.reranker.rerank(query, [(i, ep.content) for i, ep in enumerate(eps)], k)
+            ranked = self.reranker.rerank(query, [(i, ep.text) for i, ep in enumerate(eps)], k)
             return [eps[i] for i, _ in ranked]
         return eps[:k]
 
@@ -2827,7 +2815,7 @@ class Memory:
             parts = []
             for ep in episodes:
                 date = ep.metadata.get("date") or fmt_date(ep.event_time)
-                parts.append(f"[{date}]\n{ep.content}")
+                parts.append(f"[{date}] (episode: {ep.id}; space: {ep.user_id}; {ep.representation})\n{ep.text}")
             chunk_block = "\n\n".join(parts)
 
         result = (
@@ -2903,7 +2891,7 @@ class Memory:
         if not g or g == "none":
             return ""
         more = self.retrieve_episodes(gap.strip(), user, 2, as_of=as_of)
-        return "\n\n".join(f"[{ep.metadata.get('date', '?')}]\n{ep.content}" for ep in more)
+        return "\n\n".join(f"[{ep.metadata.get('date', '?')}]\n{ep.text}" for ep in more)
 
     def _graph_related_facts(self, query: str, user: str, as_of: Optional[float], limit: int = 8) -> list[Fact]:
         if not self.config.graph_proximity:
@@ -2981,7 +2969,7 @@ class Memory:
         candidates: list[tuple[int, int, float, Episode, str]] = []
         k = max(1, int(getattr(self.config, "summary_fallback_k", 6) or 6))
         for ep in self.retrieve_summaries(query, user_id, k=k, as_of=as_of):
-            text = (ep.summary or ep.content or "").strip()
+            text = ep.text.strip()
             if not text:
                 continue
             exact = overlap_terms(query, text) - _GENERIC_ATTR_TERMS

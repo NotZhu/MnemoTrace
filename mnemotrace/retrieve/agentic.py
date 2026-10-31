@@ -55,6 +55,6 @@ class AgenticRetriever:
 
         pull(self._subqueries(query))
         if self.rounds > 1 and seen:
-            hint = "\n".join(ep.content[:200] for ep in list(seen.values())[:5])
+            hint = "\n".join(ep.text[:200] for ep in list(seen.values())[:5])
             pull(self._subqueries(query, hint=hint))
         return list(seen.values())[:k]

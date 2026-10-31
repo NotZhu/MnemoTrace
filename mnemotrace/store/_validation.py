@@ -178,6 +178,8 @@ def validate_record(kind: str, record: Any, path: str, *, jsonl_fact: bool = Fal
         spec = {**spec, "_store": _choice("hot", "cold")}
     result = _fields(record, spec, path)
     if kind == "Episode":
+        if result["summary"] and result["summary_embedding"] is None:
+            _fail(path, "non-empty summary requires summary_embedding")
         from ..consolidate.processing import validate_progress
         progress = validate_progress(result["content"], result["metadata"])
         if progress and result["consolidated"] != (progress["completed_through"] == len(result["content"])):
