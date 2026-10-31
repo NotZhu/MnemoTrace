@@ -171,3 +171,16 @@ stats.counts.episodes_ephemeral 统计包含临时记忆内容的历史事件，
 导入先去重，再根据新增内容和相关 pending 判断是否需要抽取；全部重复且已完成时，无需 LLM 即可返回 skipped（包括 consolidate=true）。实际需要抽取时，在新输入写入前采用相同预检与错误语义；consolidate=false 可仅存原文。agent-session 默认在关闭会话时提炼结论；需要模型但未配置时明确报错，不静默跳过。失败不会提前清理工作记忆。服务端强制关闭 outcomes 的设置仍优先。
 
 完整抽取协议见 [Python API](python-api.md#模型抽取与错误契约)。
+
+
+## 条件摘要与原文读取
+
+`GET /v1/episodes/{episode_id}?space=<space>` 显式读取完整原文。space 默认调用者 home，服务端校验 can_read；无权读取返回 403，空间内事件不存在返回 404。
+响应为 `{id, space, session_id, speaker, event_time, ingested_at, content}`，不含嵌入和内部任务字段。自由文本原文不属于脱敏响应，调用方需要时才显式请求。
+
+`POST /v1/remember` 返回独立的 `summarization: {status, error_code}`。status 为 not_needed 或任务状态；摘要失败不撤销已接受的原文和抽取。
+`GET /v1/processing` 增加独立 summarization 区，包含摘要任务 counts/jobs，不改变原抽取计数。
+`POST /v1/processing/flush` 增加 include_summaries=false；开启后等待本次固定边界内的抽取与摘要，retry_failed 仅重试所选阶段。
+`POST /v1/sessions/close` 的 summarize=true 只处理长事件的缺失摘要；失败保留工作记忆，返回 processing_incomplete。
+
+成功摘要是事件的唯一 agent 检索文本；原文不参与向量、词法、重排、来源补充或自动上下文展开。owner 的管理搜索与导出仍可访问原文。

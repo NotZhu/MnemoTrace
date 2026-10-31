@@ -27,7 +27,8 @@ class Backend(Protocol):
                        processing: str = "immediate") -> dict: ...
     async def processing_status(self, session_id: str | None = None) -> dict: ...
     async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
-                               retry_failed: bool = False) -> dict: ...
+                               retry_failed: bool = False, include_summaries: bool = False) -> dict: ...
+    async def get_episode(self, episode_id: str, space: str | None = None) -> dict | None: ...
     async def recall(
         self,
         query: str,
@@ -113,8 +114,13 @@ class LocalBackend:
         return await asyncio.to_thread(self.svc.processing_status, self.ns, session_id)
 
     async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
-                               retry_failed: bool = False) -> dict:
-        return await asyncio.to_thread(self.svc.flush, self.ns, session_id, timeout, retry_failed)
+                               retry_failed: bool = False, include_summaries: bool = False) -> dict:
+        return await asyncio.to_thread(self.svc.flush, self.ns, session_id, timeout, retry_failed, include_summaries)
+
+    async def get_episode(self, episode_id: str, space: str | None = None) -> dict | None:
+        if space is not None and space != self.ns:
+            raise ValueError('The local backend only reads its configured namespace')
+        return await asyncio.to_thread(self.svc.get_episode, self.ns, episode_id)
 
     async def recall(
         self,
@@ -309,9 +315,14 @@ class RemoteBackend:
         return await self._get('/v1/processing' + query)
 
     async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
-                               retry_failed: bool = False) -> dict:
+                               retry_failed: bool = False, include_summaries: bool = False) -> dict:
         return await self._post('/v1/processing/flush', {
-            'session_id': session_id, 'timeout': timeout, 'retry_failed': retry_failed}, timeout=timeout + 10)
+            'session_id': session_id, 'timeout': timeout, 'retry_failed': retry_failed,
+            'include_summaries': include_summaries}, timeout=timeout + 10)
+
+    async def get_episode(self, episode_id: str, space: str | None = None) -> dict:
+        query = '?' + urlencode({'space': space}) if space is not None else ''
+        return await self._get('/v1/episodes/' + quote(episode_id, safe='') + query)
 
     async def recall(
         self,

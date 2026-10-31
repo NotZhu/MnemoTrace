@@ -299,6 +299,8 @@ export const copy = {
     episodesHint: (n: number) => `共 ${n} 条`,
     episodesTitle: '对话记录',
     summaryPrefix: '摘要：',
+    summaryPending: '摘要处理中；当前使用原文检索',
+    summaryFailed: '摘要未完成；当前使用原文检索',
     emptyTitle: '还没有对话',
     emptyHint: '在上面存一条试试。',
     loadMore: '加载更早对话',

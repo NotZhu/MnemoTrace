@@ -635,7 +635,7 @@ def _run_ablation() -> tuple[list[AblationResult], dict]:
         (
             "provenance_evidence",
             _raw_context,
-            _contains("PROVENANCE RAW EVIDENCE (source episodes for retrieved facts):", "blue binder"),
+            _contains("PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):", "blue binder"),
             "blue binder",
         ),
         (

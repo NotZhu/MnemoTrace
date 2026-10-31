@@ -277,6 +277,7 @@ class ProcessingFlushReq(BaseModel):
     space: Optional[str] = Field(default=None, max_length=512)
     timeout: float = Field(default=30, ge=0, le=300)
     retry_failed: bool = False
+    include_summaries: bool = False
 
 
 class RecallReq(BaseModel):
@@ -408,9 +409,21 @@ def processing_flush(req: ProcessingFlushReq, principal: Principal = Depends(aut
     target = req.space or principal.home
     if not principal.can_write(target):
         raise HTTPException(403, 'Not allowed to write this space')
-    result = svc().flush(target, req.session_id, req.timeout, req.retry_failed)
+    result = svc().flush(target, req.session_id, req.timeout, req.retry_failed, req.include_summaries)
     if not principal.can_read(target):
         return {'ok': result['ok'], 'status': result['status']}
+    return result
+
+
+@app.get('/v1/episodes/{episode_id}')
+def get_episode(episode_id: str, space: Optional[str] = None,
+                principal: Principal = Depends(auth_principal)):
+    target = space or principal.home
+    if not principal.can_read(target):
+        raise HTTPException(403, 'Not allowed to read this space')
+    result = svc().get_episode(target, episode_id)
+    if result is None:
+        raise HTTPException(404, 'Episode not found')
     return result
 
 

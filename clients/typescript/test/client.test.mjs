@@ -15,7 +15,7 @@ test('buffered writes accept 202 and expose status and explicit retry controls',
   await client.flushProcessing({sessionId: 'synthetic session', retryFailed: true, timeout: 0})
   assert.equal(calls[0].body.processing, 'buffered')
   assert.equal(new URL(calls[1].url).searchParams.get('session_id'), 'synthetic session')
-  assert.deepEqual(calls[2].body, {session_id: 'synthetic session', timeout: 0, retry_failed: true})
+  assert.deepEqual(calls[2].body, {session_id: 'synthetic session', timeout: 0, retry_failed: true, include_summaries: false})
 })
 
 for (const [status, code, storedRaw] of [
@@ -518,4 +518,18 @@ test('memory revision conflict retains the structured HTTP error without automat
     return true
   })
   assert.equal(calls, 1)
+})
+
+
+test('original lookup encodes the event ID and preserves space selection', async () => {
+  const calls = []
+  const client = new MnemoTraceClient({fetch: async (url, init) => {
+    calls.push({url, body: init.body && JSON.parse(init.body)})
+    return new Response(JSON.stringify({id: 'event/id', content: 'complete original'}))
+  }})
+  assert.equal((await client.getEpisode('event/id', {space: 'shared space'})).content, 'complete original')
+  assert.equal(new URL(calls[0].url).pathname, '/v1/episodes/event%2Fid')
+  assert.equal(new URL(calls[0].url).searchParams.get('space'), 'shared space')
+  await client.flushProcessing({includeSummaries: true})
+  assert.equal(calls[1].body.include_summaries, true)
 })

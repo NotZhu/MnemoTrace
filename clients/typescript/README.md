@@ -114,3 +114,6 @@ In this directory, run `npm ci`, `npm run typecheck`, and `npm test`. Tests run 
 
 Source: [NotZhu/MnemoTrace](https://github.com/NotZhu/MnemoTrace).
 License: [AGPL-3.0](https://github.com/NotZhu/MnemoTrace/blob/main/LICENSE); see [commercial terms](https://github.com/NotZhu/MnemoTrace/blob/main/COMMERCIAL-LICENSE.md).
+
+
+`getEpisode(episodeId, {space?})` explicitly reads the complete original event referenced by recall. Recall uses only an event's summary once available; it does not expand the original automatically. `flushProcessing({includeSummaries: true})` also waits for eligible summaries; the default remains extraction-only. Remember returns a separate `summarization` status/error without failing an already accepted write.

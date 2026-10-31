@@ -51,6 +51,7 @@ export interface WorkingItem {
 }
 
 export interface MemoryEpisode {
+  summarization?: { status: string; error_code: string | null }
   id: string
   date: string
   session: string

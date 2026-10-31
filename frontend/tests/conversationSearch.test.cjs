@@ -20,7 +20,7 @@ function findNode(node, predicate) {
   }
 }
 
-function setup(sessionItems = []) {
+function setup(sessionItems = [], episodes = []) {
   const states = [], effects = [], timers = new Map(), queries = []
   const closed = [], reports = []
   let stateIndex, effectIndex, pendingEffects, now = 0, timerId = 0
@@ -52,7 +52,7 @@ function setup(sessionItems = []) {
     require(name) {
       if (name === 'react') return hookReact
       if (name === '../hooks/queries') return {
-        useMemoryPages: () => ({data: {episodes: []}}),
+        useMemoryPages: () => ({data: {episodes}}),
         useAgentStatus: () => ({}), useWorking: () => ({refetch(){}}), useSessionReport: (id) => {reports.push(id);return {}},
         useRemember: () => ({}), useClearWorking: () => ({}),
         useCloseSession: () => ({mutate(id, callbacks){closed.push(id);callbacks.onSuccess({facts_added:1,outcomes:1})}}),
@@ -148,3 +148,13 @@ test('默认使用 default 会话，列表中的使用此会话会同步顶部�
   findNode(card,node=>node.type==='button' && node.props.children==='使用此会话').props.onClick()
   assert.equal(findNode(s.render(),node=>node.type?.name==='SessionPicker').props.value,'synthetic-session')
 })
+
+
+for (const [status, message] of [['pending', '摘要处理中；当前使用原文检索'], ['failed', '摘要未完成；当前使用原文检索']]) {
+  test(`事件摘要 ${status} 独立展示，所有者仍能浏览原文`, () => {
+    const s = setup([], [{id:'synthetic', content:'完整原文仍在', date:'2026-10-31', session:'s', summary:'', summarization:{status}}])
+    const tree = s.render()
+    assert.ok(findNode(tree, node => node.type === 'p' && node.props.children === message))
+    assert.ok(findNode(tree, node => node.type === 'p' && node.props.children === '完整原文仍在'))
+  })
+}
