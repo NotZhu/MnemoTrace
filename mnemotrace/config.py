@@ -11,11 +11,11 @@ class Config:
     storage: str = "memory"  # memory | durable | lancedb | qdrant
     data_path: Optional[str] = None  # 本地 LanceDB / Qdrant 路径；open() 可从快照根目录派生
 
-    qdrant_url: Optional[str] = None  # None: local mode, using data_path
-    qdrant_api_key: Optional[str] = field(default=None, repr=False)
-    qdrant_namespace: Optional[str] = None  # open() derives a digest from its snapshot root
+    qdrant_url: Optional[str] = None  # None: 本地模式，使用 data_path
+    qdrant_api_key: Optional[str] = field(default=None, repr=False)  # Qdrant API 密钥，打印时不会显示
+    qdrant_namespace: Optional[str] = None  # open() 从快照根目录派生一个哈希值，用于命名空间
     qdrant_collection_prefix: str = "mnemotrace"
-    qdrant_timeout: float = 10.0
+    qdrant_timeout: float = 10.0  # Qdrant 请求超时时间，单位秒
     embed_dim: int = 256  # 默认 HashingEmbedder 的向量维度；显式嵌入器使用自身维度
 
     # --- 检索数量与候选范围 ---

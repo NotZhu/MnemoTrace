@@ -59,6 +59,7 @@ class LanceDBVectorStore(VectorStore):
         self._table = None  # 表引用，初始为 None
 
     def _open(self):
+        """打开 LanceDB 表，如果不存在则返回 None。"""
         if self._table is not None:
             return self._table
         tables = self._db.list_tables()
@@ -67,7 +68,14 @@ class LanceDBVectorStore(VectorStore):
             self._table = self._db.open_table(self.table_name)
         return self._table
 
-    def _ensure(self, vector: list[float], key: str, payload: Any):
+    def _ensure(self, key: str, vector: list[float], payload: Any):
+        """确保向量存储表存在。
+
+        Args:
+            key: 唯一标识符。
+            vector: 向量数据。
+            payload: 关联的任意对象（将被 JSON 序列化）。
+        """
         table = self._open()
         if table is None:
             self._table = self._db.create_table(
@@ -79,7 +87,14 @@ class LanceDBVectorStore(VectorStore):
         return table
 
     def upsert(self, key: str, vector: list[float], payload: Any) -> None:
-        table = self._ensure(vector, key, payload)
+        """插入或更新向量存储中的条目。
+
+        Args:
+            key: 唯一标识符。
+            vector: 向量数据。
+            payload: 关联的任意对象（将被 JSON 序列化）。
+        """
+        table = self._ensure(key, vector, payload)
         if table is None:
             return
         table.delete(f"key = {_quote(key)}")
