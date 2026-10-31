@@ -17,6 +17,7 @@ _CAPTION_PROMPT = (
 
 
 class LiteLLMClient(LLM):
+    """LiteLLM 的客户端封装。"""
     def __init__(
         self,
         model: str = "gpt-4o-mini",
@@ -27,6 +28,17 @@ class LiteLLMClient(LLM):
         retry_cap: float = 30.0,
         **kwargs,
     ) -> None:
+        """初始化 LiteLLM 客户端。
+
+        Args:
+            model: 模型名称。
+            temperature: 采样温度。
+            max_tokens: 最大生成 token 数。
+            max_attempts: 最大尝试次数。
+            retry_base: 重试的基础延迟（秒）。
+            retry_cap: 重试的最大延迟（秒）。
+            **kwargs: 其他传递给 LiteLLM 的参数。
+        """
         import litellm  # 延迟导入
 
         self._litellm = litellm

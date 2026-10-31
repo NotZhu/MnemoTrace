@@ -1,4 +1,4 @@
-"""Optional Qdrant adapter. Importing this module does not load qdrant-client."""
+"""可选 Qdrant 向量存储适配器；导入本模块不会加载 qdrant-client。"""
 from __future__ import annotations
 
 import math
@@ -50,14 +50,20 @@ def _decode(point, dimension: int) -> tuple[str, list[float], Any]:
 
 
 class QdrantVectorStore(VectorStore):
-    """One collection, owned by the caller; the injected client is never closed here.
+    """单个集合的适配器；集合和注入客户端归调用方所有，此处不关闭客户端。
 
-    Python predicates require an exact full scan. Payloads retain original vectors
-    because cosine collections normalize their stored vectors, and empty vectors
-    must remain visible to the VectorStore contract.
+    Python 谓词需要精确的全量扫描。载荷保留原始向量，因为余弦集合会归一化
+    已存向量，而空向量也须保持对 VectorStore 接口可见。
     """
 
     def __init__(self, client: Any, collection: str, dimension: int) -> None:
+        """初始化 Qdrant 向量存储适配器。
+
+        Args:
+            client: Qdrant 客户端实例。
+            collection: 向量集合名称。
+            dimension: 向量维度。
+        """
         if isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0:
             raise ValueError("Qdrant dimension must be a positive integer")
         self.client = client

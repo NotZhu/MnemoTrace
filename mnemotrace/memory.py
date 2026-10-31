@@ -175,6 +175,7 @@ class Memory:
             # 创建 LanceDB 向量存储工厂
             def make_vector_store(name: str) -> VectorStore:
                 return LanceDBVectorStore(base, name)
+        # 如果使用 Qdrant 后端，且未自定义向量存储工厂
         elif self.config.storage == "qdrant" and not custom_vector_factory:
             from .store._qdrant import QdrantBackend
 
