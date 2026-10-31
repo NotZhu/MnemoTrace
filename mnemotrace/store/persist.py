@@ -391,10 +391,7 @@ def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
     mem.graph = InMemoryGraphStore()
 
     for ep in prepared["episodes"]:
-        mem.episodes_doc.put(ep.id, ep)
-        mem.episodes_vec.upsert(ep.id, ep.embedding or [], ep)
-        if ep.summary_embedding is not None:
-            mem.summary_vec.upsert(ep.id, ep.summary_embedding, ep)
+        mem._sync_episode(ep)
 
     for tier, fact in prepared["facts"]:
         target = mem.cold_store if tier == "cold" else mem.fact_store

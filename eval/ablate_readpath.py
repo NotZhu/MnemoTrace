@@ -92,7 +92,7 @@ def context_for_item(item: dict, embedder, extractor, ablations: tuple[str, ...]
     mem = Memory(config=mnemotrace_config(ablations=ablations), embedder=embedder, llm=extractor)
     ingest(mem, item, qid)
     if extract_k > 0:
-        mem.engine.consolidate(mem.retrieve_episodes(q, qid, extract_k))
+        mem.consolidate(mem.retrieve_episodes(q, qid, extract_k))
     else:
         mem.consolidate()
     ctx = mem.context_for(q, user_id=qid, top_k=topk, k_chunks=chunks)

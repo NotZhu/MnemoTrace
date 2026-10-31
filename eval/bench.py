@@ -315,7 +315,7 @@ class MnemoTraceSystem:
         )
         ingest(mem, item, qid)
         if rig.extract_k > 0:
-            mem.engine.consolidate(mem.retrieve_episodes(q, qid, rig.extract_k))
+            mem.consolidate(mem.retrieve_episodes(q, qid, rig.extract_k))
         else:
             mem.consolidate()
         return mem.context_for(q, user_id=qid, top_k=rig.topk, k_chunks=rig.chunks,
@@ -348,7 +348,7 @@ class RAGSystem:
         mem = Memory(embedder=rig.embedder, reranker=rig.reranker)  # 不传 llm -> 不做抽取
         ingest(mem, item, qid)
         eps = mem.retrieve_episodes(q, qid, rig.chunks)
-        return "\n\n".join(f"[{e.metadata.get('date', '?')}]\n{e.content}" for e in eps)
+        return "\n\n".join(f"[{e.metadata.get('date', '?')}]\n{e.text}" for e in eps)
 
 
 class Mem0System:
@@ -491,7 +491,7 @@ class MnemoTraceFullSystem:
         ingest(mem, item, qid)
         # 从 top-k 检索到的会话中抽取（与 MnemoTraceSystem 相同）
         if rig.extract_k > 0:
-            mem.engine.consolidate(mem.retrieve_episodes(q, qid, rig.extract_k))
+            mem.consolidate(mem.retrieve_episodes(q, qid, rig.extract_k))
         # 组装：抽取出的 fact（最新在前）作为索引，完整历史附在下面
         from mnemotrace.util import fmt_date
         facts = [f for f in mem.fact_store.values() if f.user_id == qid and f.is_live()]

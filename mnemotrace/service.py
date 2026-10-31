@@ -999,7 +999,7 @@ class MemoryService:
             if outcome_facts:
                 mem._persona_cache.clear()
             summaries = mem.summarize_episodes(episodes) if summarize else 0
-            reflected = mem.reflect(user) if summarize else 0
+            reflected = 0
             working_doomed = [w.id for w in mem.working_mem.values()
                              if w.user_id == user and w.session_id == session_id and (
                                  w.id in working_boundary or (w.metadata.get('provenance') and

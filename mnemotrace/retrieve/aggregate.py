@@ -9,6 +9,7 @@ import json
 import re
 from dataclasses import dataclass
 
+from .events import event_evidence
 from ..types import Episode, Fact
 from ..util import fmt_date, stems
 from .lexical import overlap_terms
@@ -406,7 +407,8 @@ def _evidence_snippets(
         text = " ".join(fact.text.split())
         candidates.append((_evidence_score(query, text) + 1, fact.valid_at, text[:500]))
     for ep in episodes:
-        for segment in _user_segments(ep.content):
+        ep = event_evidence(ep)
+        for segment in _user_segments(ep.text):
             for sent in _sentences(segment):
                 text = " ".join(sent.split())
                 if len(text) < 8:
@@ -504,7 +506,8 @@ def extract_aggregation_candidates(
             numeric_out.extend(_numeric_candidates_from_text(
                 query, fact.text, fact.valid_at, constraint_filter=constraint_filter))
         for ep in episodes:
-            for segment in _user_segments(ep.content):
+            ep = event_evidence(ep)
+            for segment in _user_segments(ep.text):
                 numeric_out.extend(_numeric_candidates_from_text(
                     query, segment, ep.event_time, constraint_filter=constraint_filter))
     target = _target_type(query)
@@ -514,7 +517,8 @@ def extract_aggregation_candidates(
     for fact in facts:
         out.extend(_candidate_from_text(query, target, fact.text, fact.valid_at))
     for ep in episodes:
-        for segment in _user_segments(ep.content):
+        ep = event_evidence(ep)
+        for segment in _user_segments(ep.text):
             for sent in _sentences(segment):
                 out.extend(_candidate_from_text(query, target, sent, ep.event_time))
     if not llm_out:

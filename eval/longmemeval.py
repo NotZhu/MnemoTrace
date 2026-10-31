@@ -442,7 +442,7 @@ def eval_one(item, embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_ch
             # （bi-encoder + reranker）top extract_k 个会话，只整合这些。无论 haystack 多大，都能
             # 封顶 LLM 抽取成本。
             top_eps = mem.retrieve_episodes(q, qid, extract_k)
-            mem.engine.consolidate(top_eps)
+            mem.consolidate(top_eps)
         else:
             mem.consolidate()
 
