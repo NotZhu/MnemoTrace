@@ -4,8 +4,7 @@
 Bet A/E），整合过程把每个会话蒸馏成紧凑的 L2 摘要、把整个用户蒸馏成 L3 画像，在关键路径之外
 一次算好并存起来。读路径随后只检索一小片摘要 + 画像，让精简上下文以低成本覆盖大量会话。
 
-一切在离线时优雅降级：没有 LLM 时，会话摘要就是截断的片段，画像是确定性的单值 fact 档案
-——`Memory()` 依然零配置可用。
+事件摘要只在达到长度条件且有模型时生成，失败不以摘录冒充成功；原文与确定性画像仍可离线读取。
 """
 from __future__ import annotations
 
@@ -44,27 +43,29 @@ _PERSONA_SYSTEM = (
 
 
 class SessionSummarizer:
-    """Episode（原始会话）-> 紧凑 L2 摘要。有 LLM 时用 LLM；离线回退为截断片段。"""
+    """原始事件的条件压缩；无模型或失败时不生成替代原文的摘要。"""
 
-    def __init__(self, llm: Optional[LLM] = None, max_excerpt: int = 400) -> None:
+    def __init__(self, llm: Optional[LLM] = None) -> None:
         self.llm = llm
-        self.max_excerpt = max_excerpt
         # 当前生效的摘要 system prompt。默认用内置的；Memory 可以用其 policy 中的按用户覆盖
         # 替换（console 里可编辑的"提示词"）。
         self.system = _SESSION_SUMMARY_SYSTEM
 
-    def summarize(self, episode: Episode) -> str:
-        if self.llm is None:
-            # 离线回退：截断的片段仍能提供词法/嵌入信号供检索使用。
-            text = " ".join(episode.content.split())
-            return text[: self.max_excerpt]
-        date = episode.metadata.get("date", "")
-        prompt = f"日期：{date}\n对话：\n{episode.content}\n\n摘要："
-        try:
-            out = self.llm.complete(prompt, system=self.system)
-            return out.strip() or episode.content[: self.max_excerpt]
-        except Exception:  # noqa: BLE001 -- 绝不让摘要中断整合
-            return episode.content[: self.max_excerpt]
+    def summarize(self, episode: Episode, config=None) -> str:
+        """Explicit sequential summary generation, with no excerpt fallback."""
+        from ..config import Config
+        from .summaries import advance, prepare_step, validate_config
+        config = config or Config()
+        validate_config(config)
+        if len(episode.content) < config.summary_min_chars:
+            return ''
+        job = dict(phase='source', position=0, pieces=[], outputs=[], **{'pass': 0})
+        while True:
+            step = prepare_step(episode, job, config, self.system)
+            result, _usage = step.execute(self.llm, config)
+            job, summary = advance(job, step, result, len(episode.content))
+            if summary is not None:
+                return summary
 
 
 class ProfileBuilder:

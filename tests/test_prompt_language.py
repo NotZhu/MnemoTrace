@@ -12,7 +12,7 @@ class RecordingLLM:
         self.response = response
         self.calls = []
 
-    def complete(self, prompt, system=""):
+    def complete(self, prompt, system="", **kwargs):
         self.calls.append((prompt, system))
         return self.response
 
@@ -37,7 +37,7 @@ def test_extraction_uses_chinese_instructions_and_preserves_internal_fields():
 
 
 def test_summary_requests_source_language_without_modifying_original_content():
-    episode = Episode(content="Read Example Book for 45 minutes on 2026-10-16.")
+    episode = Episode(content="Read Example Book for 45 minutes on 2026-10-16. " * 60)
     llm = RecordingLLM("Read Example Book for 45 minutes on 2026-10-16.")
     summary = SessionSummarizer(llm).summarize(episode)
     prompt, system = llm.calls[0]
@@ -46,8 +46,11 @@ def test_summary_requests_source_language_without_modifying_original_content():
     assert "专有名称、准确数值" in system
     assert episode.content in prompt
     assert summary == llm.response
-    assert episode.content == "Read Example Book for 45 minutes on 2026-10-16."
-    assert SessionSummarizer().summarize(episode) == episode.content
+    assert episode.content == "Read Example Book for 45 minutes on 2026-10-16. " * 60
+    from mnemotrace.consolidate.summaries import SummaryError
+    import pytest
+    with pytest.raises(SummaryError, match="llm_not_configured"):
+        SessionSummarizer().summarize(episode)
 
 
 def test_policy_exposes_chinese_defaults_and_preserves_custom_overrides(tmp_path):

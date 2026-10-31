@@ -1,6 +1,8 @@
 """Optional backend contracts, run against local mode and a real CI Qdrant service."""
 from __future__ import annotations
 
+from tests.model_fixtures import seed_summaries
+
 import json
 import os
 import threading
@@ -175,8 +177,9 @@ def test_restart_history_reinforcement_and_episode_state(config, tmp_path):
         result = memory.search("Where does Finn work?", user_id="u")
         assert result.answer() == "Oracle"
         assert memory.fact_store.get(result.top().id).access_count == 1
-        memory.summarize_episodes(memory.episodes_doc.values())
-        assert all(ep.consolidated and ep.summary for ep in memory.episodes_vec.values())
+        seed_summaries(memory, memory.episodes_doc.values())
+        assert not memory.episodes_vec.values()
+        assert all(ep.consolidated and ep.summary for ep in memory.summary_vec.values())
         memory.save()
     assert config.data_path is None
     with Memory.open(root, config=config) as reopened:
@@ -607,28 +610,23 @@ def test_consolidate_full_preserves_state_with_separate_episode_retrievals(confi
     root = str(tmp_path / "snapshot")
     with Memory.open(root, config=config) as memory:
         original = memory.add("I like Python.", user_id="u")
-        fact_episodes = memory.retrieve_episodes("Python", user_id="u")
-        summary_episodes = memory.retrieve_episodes("Python", user_id="u")
-        assert fact_episodes[0].id == summary_episodes[0].id == original.id
-        assert fact_episodes[0] is not summary_episodes[0]
-
-        stats = memory.consolidate_full(
-            fact_episodes=fact_episodes, summary_episodes=summary_episodes,
-        )
-        assert stats["facts_added"] == stats["summaries"] == 1
+        seed_summaries(memory, [original])
+        facts = memory.retrieve_episodes("Python", user_id="u")
+        summaries = memory.retrieve_episodes("Python", user_id="u")
+        assert facts[0].id == summaries[0].id == original.id
+        assert facts[0] is not summaries[0]
+        stats = memory.consolidate_full(fact_episodes=facts, summary_episodes=summaries)
+        assert stats["facts_added"] == 1 and stats["summaries"] == 0
         assert memory.ingestor.pending() == []
-        for episode in (memory.episodes_doc.get(original.id),
-                        memory.episodes_vec.get(original.id),
-                        memory.summary_vec.get(original.id)):
-            assert episode.consolidated and episode.summary
-        # Preserve summarize_episodes' existing update of the supplied objects.
-        assert summary_episodes[0].summary
-        assert memory.consolidate()["duplicates"] == 0
+        assert memory.episodes_vec.get(original.id) is None
+        for ep in (memory.episodes_doc.get(original.id), memory.summary_vec.get(original.id)):
+            assert ep.consolidated and ep.summary
+        assert not hasattr(summaries[0], 'content')
         memory.save()
-
     with Memory.open(root, config=config) as reopened:
         assert reopened.ingestor.pending() == []
         assert reopened.episodes_doc.get(original.id).summary
+        assert reopened.episodes_vec.get(original.id) is None
         if config.qdrant_url:
             reopened._qdrant_backend.erase()
 
@@ -640,29 +638,27 @@ def test_reembed_summary_survives_retrieval_consolidation_and_restart(
     root = str(tmp_path / "snapshot")
     with Memory.open(root, config=config) as memory:
         original = memory.add("I like Python.", user_id="u")
-        monkeypatch.setattr(memory.summarizer, "summarize", lambda episode: summary_text)
-        memory.summarize_episodes([original])
+        if summary_text:
+            original.summary = summary_text
+            original.summary_embedding = memory.embedder.embed(summary_text)
+            memory._sync_episode(original)
         memory.save()
         memory.reembed(HashingEmbedder(16))
-
-        episodes = memory.retrieve_episodes("Python", user_id="u")
-        for episode in (memory.episodes_doc.get(original.id), episodes[0],
-                        memory.summary_vec.get(original.id)):
-            assert len(episode.embedding) == len(episode.summary_embedding) == 16
-        assert memory.consolidate(episodes)["facts_added"] == 1
+        evidence = memory.retrieve_episodes("Python", user_id="u")
+        assert evidence[0].representation == ('summary' if summary_text else 'raw')
+        assert memory.consolidate(evidence)["facts_added"] == 1
         assert memory.ingestor.pending() == []
         memory.save()
-
     with Memory.open(root, config=config, embedder=HashingEmbedder(16)) as reopened:
-        for episode in (reopened.episodes_doc.get(original.id),
-                        reopened.episodes_vec.get(original.id),
-                        reopened.summary_vec.get(original.id)):
-            assert episode.consolidated
-            assert len(episode.embedding) == len(episode.summary_embedding) == 16
-        assert reopened.ingestor.pending() == []
+        ep = reopened.episodes_doc.get(original.id)
+        assert ep.consolidated and ep.summary == summary_text
+        if summary_text:
+            assert ep.embedding is None and len(ep.summary_embedding) == 16
+            assert reopened.episodes_vec.get(ep.id) is None
+        else:
+            assert len(ep.embedding) == 16 and reopened.summary_vec.get(ep.id) is None
         if config.qdrant_url:
             reopened._qdrant_backend.erase()
-
 
 
 def test_consolidate_stale_retrieval_keeps_newer_summary_and_metadata(config, tmp_path):
@@ -670,17 +666,16 @@ def test_consolidate_stale_retrieval_keeps_newer_summary_and_metadata(config, tm
     with Memory.open(root, config=config) as memory:
         original = memory.add("I like Python.", user_id="u")
         stale = memory.retrieve_episodes("Python", user_id="u")
-        assert stale[0].summary == "" and stale[0].summary_embedding is None
+        assert stale[0].representation == "raw"
         original.metadata["note"] = "latest authoritative metadata"
-        memory.summarize_episodes(memory.episodes_doc.values())
+        seed_summaries(memory, memory.episodes_doc.values())
         latest = memory.episodes_doc.get(original.id)
         summary, summary_embedding = latest.summary, list(latest.summary_embedding)
 
         assert memory.consolidate(stale)["facts_added"] == 1
-        assert stale[0].consolidated  # Successful consolidation still updates supplied objects.
+        assert stale[0].representation == "raw"  # Read-only evidence remains unchanged.
         assert memory.ingestor.pending() == []
         for episode in (memory.episodes_doc.get(original.id),
-                        memory.episodes_vec.get(original.id),
                         memory.summary_vec.get(original.id)):
             assert episode.consolidated
             assert episode.summary == summary
@@ -693,7 +688,6 @@ def test_consolidate_stale_retrieval_keeps_newer_summary_and_metadata(config, tm
         assert reopened.ingestor.pending() == []
         assert len(reopened.summary_vec.values()) == 1
         for episode in (reopened.episodes_doc.get(original.id),
-                        reopened.episodes_vec.get(original.id),
                         reopened.summary_vec.get(original.id)):
             assert episode.consolidated and episode.summary == summary
             assert episode.summary_embedding == summary_embedding

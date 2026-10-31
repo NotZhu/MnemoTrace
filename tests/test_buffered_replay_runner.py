@@ -46,7 +46,9 @@ def test_exact_responses_trace_committed_ranges_and_restore(runner, tmp_path, ca
     assert not validate_observation(row, case, row['suite_hash'])
     assert row['score']['ok'], row['score']
     assert row['raw_score']['ok'], row['raw_score']
-    assert sum(c['phase'] == 'summary' for c in row['calls']) == len(case['events'])
+    eligible = sum(len(event['text']) >= 2000 for event in case['events'])
+    summary_calls = sum(c['phase'] == 'summary' for c in row['calls'])
+    assert summary_calls >= eligible if eligible else summary_calls == 0
     assert all(not c['provider_request'] for c in row['calls'])
     if case_id == 'burst-short' and mode == 'buffered':
         assert sum(c['phase'] == 'extraction' for c in row['calls']) == 1

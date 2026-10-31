@@ -31,13 +31,17 @@ def build(summarize=True) -> Memory:
         ep.metadata["date"] = "2023-01-0%d" % (eps.index(ep) + 1)
     mem.consolidate(eps)
     if summarize:
-        mem.summarize_episodes(eps)
+        # Seed existing summaries: these tests exercise read consumers, not model compression.
+        for ep in eps:
+            ep.summary = ep.content
+            ep.summary_embedding = mem.embedder.embed(ep.summary)
+            mem._sync_episode(ep)
     return mem
 
 
-def test_summaries_built_and_indexed():
+def test_existing_summaries_are_indexed_exclusively():
     mem = build()
-    # 每个 session 都会得到离线摘要 + 嵌入，并建立检索索引
+    assert not mem.episodes_vec.values()
     assert len(mem.summary_vec.values()) == len(SESSIONS)
     for ep in mem.episodes_doc.values():
         assert ep.summary, "each episode should carry a summary after summarize_episodes"
@@ -164,8 +168,8 @@ def test_consolidate_full_builds_facts_and_summaries():
     eps = [mem.add(t, user_id="u1", session_id=f"s{i}", event_time=BASE + d * DAY)
            for i, (t, d) in enumerate(SESSIONS)]
     stats = mem.consolidate_full(fact_episodes=eps, summary_episodes=eps)
-    assert stats["facts_added"] >= 0 and stats["summaries"] == len(SESSIONS)
-    assert len(mem.summary_vec.values()) == len(SESSIONS)
+    assert stats["facts_added"] >= 0 and stats["summaries"] == 0
+    assert len(mem.summary_vec.values()) == 0
 
 
 def test_lean_path_works_with_no_summaries():
@@ -816,7 +820,7 @@ def test_lean_context_adds_provenance_raw_evidence_for_retrieved_fact():
     )
 
     assert "FACTS (current, dated):" in ctx
-    assert "PROVENANCE RAW EVIDENCE (source episodes for retrieved facts):" in ctx
+    assert "PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):" in ctx
     assert "A17" in ctx
     assert "blue binder" in ctx
 
@@ -852,7 +856,7 @@ def test_provenance_evidence_can_be_disabled_for_ablation():
     )
 
     assert "A17" in ctx
-    assert "PROVENANCE RAW EVIDENCE" not in ctx
+    assert "PROVENANCE EVENT EVIDENCE" not in ctx
     assert "blue binder" not in ctx
 
 
@@ -887,7 +891,7 @@ def test_provenance_raw_evidence_dedups_full_detail_chunk():
 
     assert "RELEVANT CONVERSATIONS (full detail):" in ctx
     assert "blue binder" in ctx
-    assert "PROVENANCE RAW EVIDENCE (source episodes for retrieved facts):" not in ctx
+    assert "PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):" not in ctx
 
 
 def test_provenance_source_episode_is_promoted_into_detail_chunks():
@@ -1023,7 +1027,7 @@ def test_provenance_raw_evidence_is_hidden_in_redacted_context():
         char_budget=10_000,
     )
 
-    assert "PROVENANCE RAW EVIDENCE" not in ctx
+    assert "PROVENANCE EVENT EVIDENCE" not in ctx
     assert "blue binder" not in ctx
 
 
@@ -1050,7 +1054,7 @@ def test_context_for_adds_provenance_raw_evidence_for_fact_sources():
 
     ctx = mem.context_for("What is Apollo's launch code?", user_id="u1", k_chunks=0)
 
-    assert "PROVENANCE RAW EVIDENCE (source episodes for retrieved facts):" in ctx
+    assert "PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):" in ctx
     assert "blue binder" in ctx
 
 

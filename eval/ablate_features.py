@@ -85,7 +85,9 @@ def _summary_fallback_context(enabled: bool) -> str:
         session_id="pat-runbook",
         event_time=BASE,
     )
-    mem.summarize_episodes([ep])
+    ep.summary = ep.content
+    ep.summary_embedding = mem.embedder.embed(ep.summary)
+    mem._sync_episode(ep)
     res = mem.search("How do I rotate the PAT?", user_id="u1")
     return f"{res.via}\n{res.answer()}"
 
