@@ -252,10 +252,10 @@ def test_service_switch_applies_to_attributes_and_outcomes(tmp_path, monkeypatch
     attributes = [system for prompt, system, _ in model.calls if "JSON 事实" in prompt]
     outcomes = [system for prompt, system, _ in model.calls if "现在输出 JSON 数组" in prompt]
     summaries = [system for prompt, system, _ in model.calls if prompt.endswith("摘要：")]
-    assert len(attributes) == len(outcomes) == len(summaries) == 1
-    assert len(model.calls) == 3  # remember 既有的摘要调用仍保留。
+    assert len(attributes) == len(outcomes) == 1
+    assert summaries == []
+    assert len(model.calls) == 2  # Short events do not request a summary.
     assert all(("附加主题协议" in system) is enabled for system in attributes + outcomes)
-    assert "附加主题协议" not in summaries[0]
     warnings = [record.getMessage() for record in caplog.records
                 if record.name == "mnemotrace.consolidate.topic_rules" and record.levelname == "WARNING"]
     assert warnings == (["LLM topic fallback: invalid=1"] * 2

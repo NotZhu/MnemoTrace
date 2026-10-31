@@ -9,7 +9,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from .events import event_evidence
+from .events import EventEvidence, event_evidence
 from ..types import Episode, Fact
 from ..util import fmt_date, stems
 from .lexical import overlap_terms
@@ -399,7 +399,7 @@ def _evidence_score(query: str, text: str) -> int:
 def _evidence_snippets(
     query: str,
     facts: list[Fact],
-    episodes: list[Episode],
+    episodes: list[Episode | EventEvidence],
     limit: int = 60,
 ) -> list[tuple[str, float, str]]:
     candidates: list[tuple[int, float, str]] = []
@@ -418,7 +418,7 @@ def _evidence_snippets(
     return [(f"E{i}", t, text) for i, (_, t, text) in enumerate(candidates[:limit])]
 
 
-def _llm_candidates(query: str, facts: list[Fact], episodes: list[Episode], llm) -> list[AggregationCandidate]:
+def _llm_candidates(query: str, facts: list[Fact], episodes: list[Episode | EventEvidence], llm) -> list[AggregationCandidate]:
     if llm is None:
         return []
     snippets = _evidence_snippets(query, facts, episodes)
@@ -494,7 +494,7 @@ def _llm_candidates(query: str, facts: list[Fact], episodes: list[Episode], llm)
 def extract_aggregation_candidates(
     query: str,
     facts: list[Fact],
-    episodes: list[Episode],
+    episodes: list[Episode | EventEvidence],
     llm=None,
     numeric: bool = True,
     constraint_filter: bool = True,

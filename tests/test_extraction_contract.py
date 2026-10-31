@@ -426,7 +426,7 @@ def test_ephemeral_history_counts_content_after_working_is_cleared(tmp_path, res
 @pytest.mark.parametrize('summarize', [False, True])
 @pytest.mark.parametrize('has_new_session', [False, True])
 def test_import_retry_completes_requested_summaries(tmp_path, summarize, has_new_session):
-    sessions = [{'session_id': 's', 'messages': [{'content': 'Old synthetic record'}]}]
+    sessions = [{'session_id': 's', 'messages': [{'content': 'Old synthetic record ' * 120}]}]
     svc = service(tmp_path, Broken())
     with pytest.raises(ExtractionError):
         svc.import_('u', sessions=sessions)
@@ -439,7 +439,7 @@ def test_import_retry_completes_requested_summaries(tmp_path, summarize, has_new
     restarted = service(tmp_path, FakeLLM(handler=complete))
     foreign = restarted.get('other').add('Unrelated synthetic record', user_id='other', session_id='s')
     if has_new_session:
-        sessions.append({'session_id': 't', 'messages': [{'content': 'New synthetic record'}]})
+        sessions.append({'session_id': 't', 'messages': [{'content': 'New synthetic record ' * 120}]})
     count = len(sessions)
     result = restarted.import_('u', sessions=sessions, summarize=summarize)
     assert result['episodes'] == int(has_new_session) and result['skipped'] == 1
@@ -509,7 +509,7 @@ def test_completed_duplicate_import_does_not_require_model(tmp_path, layer, cons
         mem = restarted.get('u')
     assert mem.llm is None
     assert result['skipped'] == 1 and result['episodes'] == 0 and result['facts_added'] == 0
-    assert result['summaries'] == int(summarize)
+    assert result['summaries'] == 0  # Short imported records need no model summary.
     assert len(mem.episodes_doc.values()) == 1 and len(mem.fact_store.values()) == 1
     assert not mem.ingestor.pending()
 

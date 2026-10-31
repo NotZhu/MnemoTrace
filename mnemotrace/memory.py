@@ -225,6 +225,9 @@ class Memory:
         self.cold_pages_in: dict[str, int] = {}  # 每个用户从冷层调回热层的事实数
         self._persist_path: Optional[str] = None  # 默认快照目录，由 open 或 save 设置
         self._snapshot_version: Optional[str] = None  # 已加载或保存的快照版本，用于检测并发修改
+        self._summary_state = None
+        from .consolidate.summaries import validate_config
+        validate_config(self.config)
         self._processing_state = None  # Optional buffered-extraction feature state, committed with the snapshot.
         try:
             self._rewire()
@@ -397,15 +400,16 @@ class Memory:
             ep.embedding = v
         counts["episodes"] = len(episodes)
 
-        summarized = [ep for ep in episodes if ep.summary or ep.summary_embedding is not None]
+        summarized = [ep for ep in episodes if ep.summary]
         _clear(self.summary_vec)
-        # 与 summarize_episodes 相同的嵌入来源：summary，回退到内容摘录
-        vecs = (self.embedder.embed_batch([ep.summary or ep.content[:200] for ep in summarized])
+        for ep in raw_episodes:
+            ep.summary_embedding = None
+        vecs = (self.embedder.embed_batch([ep.summary for ep in summarized])
                 if summarized else [])
         for ep, v in zip(summarized, vecs):
             ep.summary_embedding = v
         # Copying backends must receive the complete episode only after both
-        # embeddings have entered the new space, including empty-text summaries.
+        # selected embeddings have entered the new space.
         for ep in episodes:
             self._sync_episode(ep)
         counts["summaries"] = len(summarized)
@@ -470,7 +474,7 @@ class Memory:
         self._sync_episode(ep)
         return {"scope": scope, "episode_id": ep.id}
 
-    def consolidate(self, episodes: Optional[list[Episode]] = None) -> dict[str, int]:
+    def consolidate(self, episodes: Optional[list[Episode | EventEvidence]] = None) -> dict[str, int]:
         """ 执行一次 System-2 整合，抽取 fact、构建图、检测冲突、分类和敏感标志。
 
         Args:
@@ -532,8 +536,8 @@ class Memory:
 
     def consolidate_full(
         self,
-        fact_episodes: Optional[list[Episode]] = None,
-        summary_episodes: Optional[list[Episode]] = None,
+        fact_episodes: Optional[list[Episode | EventEvidence]] = None,
+        summary_episodes: Optional[list[Episode | EventEvidence]] = None,
     ) -> dict[str, int]:
         """一次连贯的 System-2 处理，构建所有读取期层：
           L1 facts     来自 `fact_episodes`     （对最相关 session 做深度抽取），
@@ -1235,35 +1239,52 @@ class Memory:
                 self._upsert_fact(f)
 
     # --- L2/L3 抽象（整合期间构建，为精简读取而存储） ---
-    def summarize_episodes(self, episodes: list[Episode]) -> int:
-        """L2：把每个 episode 蒸馏成紧凑摘要并索引进 summary_vec 供检索。摘要并行生成（相互
-        独立的 LLM 调用）后批量嵌入——精简读取因此可以拉取少量 session 摘要，而不必把整段
-        原始 session 拖入上下文。"""
-        from concurrent.futures import ThreadPoolExecutor
+    def summarize_episodes(self, episodes: list[Episode | EventEvidence]) -> int:
+        """Generate only missing long-event summaries; failures remain observable and retryable.
 
-        self._apply_policy()  # 遵循用户可编辑的摘要 prompt
-        todo = [ep for ep in episodes if not ep.summary]
-        if not todo:
-            return 0
-        if self.llm is not None and len(todo) > 1:
-            import os
-            _sw = int(os.environ.get("MNEMOTRACE_SUMMARIZE_WORKERS", "8"))
-            with ThreadPoolExecutor(max_workers=min(_sw, len(todo))) as pool:
-                summaries = list(pool.map(self.summarizer.summarize, todo))
-        else:
-            summaries = [self.summarizer.summarize(ep) for ep in todo]
-        vecs = self.embedder.embed_batch([s or ep.content[:200] for s, ep in zip(summaries, todo)])
-        for ep, summ, vec in zip(todo, summaries, vecs):
-            ep.summary = summ
-            ep.summary_embedding = vec
-            # Retrieval may return a snapshot from before consolidation. Merge
-            # only summary fields into the authoritative episode, retaining the
-            # caller-visible summary update above without reverting other state.
-            current = self.episodes_doc.get(ep.id) or ep
-            current.summary = summ
-            current.summary_embedding = vec
-            self._sync_episode(current)
-        return len(todo)
+        Direct Memory is sequential. Concurrent services use the detached service runner.
+        """
+        from .consolidate.summaries import SummaryError, SummaryTasks, advance, prepare_step, seal_progress
+        self._apply_policy()
+        count = 0
+        for supplied in episodes:
+            ep = self.episodes_doc.get(supplied.id)
+            if ep is None:
+                continue
+            tasks = SummaryTasks(self, ep.user_id)
+            tasks.register([ep], now(), retry_failed=True)
+            job = tasks.rows().get(ep.id)
+            while job and job['state'] in {'pending', 'retry_wait'} and not ep.summary:
+                try:
+                    job.update(state='running', attempts=job['attempts'] + 1,
+                               step_attempts=job['step_attempts'] + 1)
+                    if job['phase'] == 'embed':
+                        text = job['pieces'][0]
+                        vector = self.embedder.embed(text)
+                        previous = ep.summary, ep.summary_embedding
+                        try:
+                            ep.summary, ep.summary_embedding = text, vector
+                            self._sync_episode(ep)
+                        except Exception:
+                            ep.summary, ep.summary_embedding = previous
+                            self._sync_episode(ep)
+                            raise
+                        job.update(state='completed', phase='source', position=len(ep.content),
+                                   pieces=[], outputs=[], step_attempts=0, next_attempt_at=0, error_code=None)
+                        seal_progress(job)
+                        count += 1
+                    else:
+                        step = prepare_step(ep, job, self.config, self._effective('summary_system'))
+                        result, _usage = step.execute(self.llm, self.config)
+                        updated, _final = advance(job, step, result, len(ep.content))
+                        tasks.state['jobs'][ep.id] = job = updated
+                except Exception as exc:
+                    job.update(state='failed', error_code=exc.code if isinstance(exc, SummaryError)
+                               else 'summary_failed', updated_at=now())
+                    break
+            if isinstance(supplied, Episode):
+                supplied.summary, supplied.summary_embedding = ep.summary, ep.summary_embedding
+        return count
 
     def retrieve_summaries(
         self,
@@ -1274,7 +1295,7 @@ class Memory:
     ) -> list[EventEvidence]:
         """为查询取 top-k 条 session 摘要，使用与 fact/episode 检索相同的 hybrid（dense + BM25,
         RRF）信号。词法匹配在这里很重要：聚合类问题（"how many trips"）依赖摘要里提到的精确词，
-        纯嵌入查找可能把它们排在模糊相似项之后。返回携带 .summary 字段的 episode。"""
+        纯嵌入查找可能把它们排在模糊相似项之后。返回只包含选定文本的只读事件证据。"""
         user = user_id
         pool = max(k * 3, 30)
         cands = self.summary_vec.search(
@@ -1810,10 +1831,9 @@ class Memory:
 
     @staticmethod
     def _snippet_for_evidence(content: str, needle: str, max_chars: int = 360) -> str:
-        """返回紧凑的原始证据切片，优先选取与查询/fact 匹配的行/句子。
+        """从已选定的事件表示中截取与查询/fact 匹配的行或句子。
 
-        原始来源很有价值，因为 fact 抽取可能丢掉限定词、数量或上下文细节。切片刻意很小，使来源
-        证据提升召回的同时，不会悄悄把精简路径变成全文历史重放。
+        输入已经执行摘要优先规则，此处不读取原文来补充被压缩的信息。
         """
         text = " ".join(content.split())
         if len(text) <= max_chars:
@@ -1844,9 +1864,8 @@ class Memory:
     ) -> str:
         """为检索到的 fact 提供紧凑的来源 episode。
 
-        这是 hybrid 记忆的原始侧：fact 给出精确、经过冲突解决的槽位；其来源 episode 恢复被丢掉
-        的细节。只使用被检索 fact 明确引用的 episode，排除已渲染的完整细节 chunk，遵守 `as_of`，
-        并在脱敏上下文中禁用该块——因为原始散文可能包含 fact 分类器覆盖不到的敏感内容。
+        只使用被检索 fact 明确引用的事件表示，排除已渲染的事件，遵守 `as_of`。
+        有摘要时只截取摘要；在脱敏上下文中禁用该块，因为事件文本可能包含未被 fact 分类器识别的敏感内容。
         """
         if redact_sensitive or not facts:
             return ""
@@ -1880,8 +1899,8 @@ class Memory:
                     f"{fact.subject} {fact.predicate.replace('_', ' ')} {fact.object}) {snippet}"
                 )
                 if len(rows) >= limit:
-                    return "PROVENANCE RAW EVIDENCE (source episodes for retrieved facts):\n" + "\n".join(rows)
-        return "PROVENANCE RAW EVIDENCE (source episodes for retrieved facts):\n" + "\n".join(rows) if rows else ""
+                    return "PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):\n" + "\n".join(rows)
+        return "PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):\n" + "\n".join(rows) if rows else ""
 
 
     @staticmethod
@@ -1925,17 +1944,16 @@ class Memory:
         as_of: Optional[float],
         limit: int,
         redact_sensitive: bool = False,
-    ) -> list[Episode]:
-        """由检索 fact 的来源溯源支撑的完整原始 chunk。
+    ) -> list[EventEvidence]:
+        """按 fact 来源提升选定的事件表示，仍遵守同一 `n_chunks` 预算。
 
-        常规原始检索以查询为先。若它被干扰带偏，fact 仍能通过来源溯源定位正确的源 episode；
-        把该 episode 提升进来即可恢复周边细节，同时同样的 `n_chunks` 预算保持读路径精简。
+        摘要事件的匹配和返回值都只使用摘要。
         """
         if limit <= 0 or redact_sensitive or not facts:
             return []
         view_time = now() if as_of is None else as_of
         history_query = bool(_TEMPORAL_HISTORY_RE.search(query or ""))
-        scored: dict[str, tuple[int, int, float, Episode]] = {}
+        scored: dict[str, tuple[int, int, float, EventEvidence]] = {}
         for fact_rank, fact in enumerate(facts):
             if getattr(fact, "sensitive", False):
                 continue
@@ -1963,8 +1981,8 @@ class Memory:
     def _aggregation_block(
         self,
         facts: list[Fact],
-        summaries: list[Episode],
-        detail_eps: list[Episode],
+        summaries: list[EventEvidence],
+        detail_eps: list[EventEvidence],
         query: str = "",
         limit: int = 36,
     ) -> str:
@@ -1972,7 +1990,7 @@ class Memory:
         rows: list[tuple[int, float, str, str]] = []
         seen: set[tuple[str, str]] = set()
 
-        def add_row(t: float, source: str, evidence: str) -> None:
+        def add_row(t: float, source: str, evidence: str, event=None) -> None:
             if source in {"conversation", "summary"} and query:
                 evidence = self._snippet_for_evidence(evidence, query, max_chars=520)
             text = " ".join(evidence.split())
@@ -1989,16 +2007,17 @@ class Memory:
                 score += 2
             elif source == "conversation":
                 score += 1
-            rows.append((score, t, source, text[:520]))
+            label = source if event is None else f"{source} (episode: {event.id}; space: {event.user_id})"
+            rows.append((score, t, label, text[:520]))
 
         for f in facts:
             add_row(f.valid_at, "fact", f.text)
         for ep in summaries:
             ep = event_evidence(ep)
-            add_row(ep.event_time, "summary", ep.text)
+            add_row(ep.event_time, "summary", ep.text, ep)
         for ep in detail_eps:
             ep = event_evidence(ep)
-            add_row(ep.event_time, "conversation", ep.text)
+            add_row(ep.event_time, "conversation", ep.text, ep)
         if not rows:
             return ""
         rows.sort(key=lambda x: (-x[0], x[1]))
@@ -2025,10 +2044,10 @@ class Memory:
         self,
         query: str,
         facts: list[Fact],
-        episodes: list[Episode],
+        episodes: list[Episode | EventEvidence],
         limit: int = 24,
     ) -> str:
-        """为时长类问题提供带日期的原始片段——开始/结束对常在摘要中丢失。"""
+        """从选定事件表示中提供带日期的时长证据；不回读原文补齐缺失日期。"""
         anchors = [a or b for a, b in re.findall(r"'([^']+)'|\"([^\"]+)\"", query)]
         anchors = [a.strip() for a in anchors if a and len(a.strip()) >= 3]
         if not anchors:
@@ -2069,7 +2088,7 @@ class Memory:
                         continue
                     if not action_re.search(part):
                         continue
-                    add_row(ep.event_time, anchor, "conversation", part)
+                    add_row(ep.event_time, anchor, f"event {ep.id}; space {ep.user_id}; {ep.representation}", part)
                     break
 
         if not rows:
@@ -2147,7 +2166,7 @@ class Memory:
     @classmethod
     def _evidence_block_kind(cls, block: str) -> str:
         title = cls._evidence_block_title(block)
-        if title.startswith("PROVENANCE RAW"):
+        if title.startswith("PROVENANCE EVENT"):
             return "provenance"
         if title.startswith("RELEVANT CONVERSATIONS"):
             return "raw"
@@ -2544,10 +2563,8 @@ class Memory:
                 detail_ids = {e.id for e in detail_eps}
         summaries = [e for e in summ_ranked if e.id not in detail_ids]
 
-        # 聚合/列举类问题尤其容易受压缩损失影响：正确的 session 可能被检索用于整合，但 LLM 的
-        # fact/摘要步骤会丢掉某个低显著度候选。为这类问题保留一张紧凑的原始证据表，让计数/列举
-        # 在候选被 System-2 抽象挤压之前就能看到它们。
-        aggregation_eps: list[Episode] = []
+        # 聚合可扩大选定事件证据的候选范围，但不使用原文补回摘要遗漏。
+        aggregation_eps: list[EventEvidence] = []
         if need is not None and need.aggregation and not redact_sensitive:
             seen_agg = set(detail_ids)
             for q in queries:
@@ -2605,7 +2622,7 @@ class Memory:
 
         assembled = "\n\n".join(blocks)
         if char_budget == 60_000:
-            full_chars = sum(len(ep.content) for ep in self.episodes_doc.values() if ep.user_id == user)
+            full_chars = sum(len(event_evidence(ep).text) for ep in self.episodes_doc.values() if ep.user_id == user)
             if full_chars:
                 # 极小的历史仍需要足够空间容纳 profile + fact + 一个 chunk；否则均分块适配器
                 # 可能恰好在约束所在处截断持久的项目规则。
@@ -2709,10 +2726,13 @@ class Memory:
         """回答"在 `when` 时刻我们认为什么是真的？"——双时间轴时间点查询。"""
         return self.search(query, user_id=user_id, as_of=when, top_k=top_k)
 
-    def get_episode(self, episode_id: str, user_id: str = "default") -> Episode | None:
-        """Explicit original-document lookup; callers must serialize concurrent use."""
+    def get_episode(self, episode_id: str, user_id: str = "default") -> dict | None:
+        """Explicit original lookup; no embeddings or internal processing state."""
         ep = self.episodes_doc.get(episode_id)
-        return ep if ep is not None and ep.user_id == user_id else None
+        if ep is None or ep.user_id != user_id:
+            return None
+        return dict(id=ep.id, space=ep.user_id, session_id=ep.session_id, speaker=ep.speaker,
+                    event_time=ep.event_time, ingested_at=ep.ingested_at, content=ep.content)
 
     def retrieve_episodes(
         self,
@@ -2800,7 +2820,7 @@ class Memory:
         facts_block = "\n".join(fact_lines) or "(none)"
 
         chunk_block = ""
-        episodes: list[Episode] = []
+        episodes: list[EventEvidence] = []
         if k_chunks:
             if agentic and self.llm is not None:
                 from .retrieve.agentic import AgenticRetriever
@@ -2891,7 +2911,7 @@ class Memory:
         if not g or g == "none":
             return ""
         more = self.retrieve_episodes(gap.strip(), user, 2, as_of=as_of)
-        return "\n\n".join(f"[{ep.metadata.get('date', '?')}]\n{ep.text}" for ep in more)
+        return "\n\n".join(f"[{ep.metadata.get('date', '?')}] (episode: {ep.id}; space: {ep.user_id}; {ep.representation})\n{ep.text}" for ep in more)
 
     def _graph_related_facts(self, query: str, user: str, as_of: Optional[float], limit: int = 8) -> list[Fact]:
         if not self.config.graph_proximity:
@@ -2966,7 +2986,7 @@ class Memory:
         fact）。保守策略：要求非泛化的词法重叠，绝不把模糊相似的摘要当作答案返回。"""
         if not self.config.summary_fallback:
             return None
-        candidates: list[tuple[int, int, float, Episode, str]] = []
+        candidates: list[tuple[int, int, float, EventEvidence, str]] = []
         k = max(1, int(getattr(self.config, "summary_fallback_k", 6) or 6))
         for ep in self.retrieve_summaries(query, user_id, k=k, as_of=as_of):
             text = ep.text.strip()
@@ -2977,7 +2997,7 @@ class Memory:
                 candidates.append((len(exact), len(overlap_terms(query, text)), ep.event_time, ep, text))
         if candidates:
             _, _, _, ep, text = max(candidates, key=lambda row: (row[0], row[1], row[2]))
-            dated = f"[{ep.metadata.get('date') or fmt_date(ep.event_time)}] (session: {ep.session_id}) {text}"
+            dated = f"[{ep.metadata.get('date') or fmt_date(ep.event_time)}] (episode: {ep.id}; space: {ep.user_id}; session: {ep.session_id}) {text}"
             return SearchResult(query=query, via="summary", _answer=dated)
         return None
 

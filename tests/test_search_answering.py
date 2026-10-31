@@ -9,7 +9,7 @@ search()/answer()/add_fact 时的冲突处理，benchmark 的 lean_context 从�
 """
 from __future__ import annotations
 
-from tests.model_fixtures import Memory
+from tests.model_fixtures import Memory, seed_summaries
 from mnemotrace.consolidate.conflict import ConflictResolver
 from mnemotrace.memory import _ANSWER_TYPE_MATCH, _expected_answer_type
 from mnemotrace.types import Fact
@@ -83,7 +83,7 @@ def test_summary_fallback_answers_from_summary():
     mem = Memory()
     ep = mem.add("To reset the PAT: open settings, regenerate the token, then update CI.",
                  user_id="u1", session_id="s1")
-    mem.summarize_episodes([ep])
+    seed_summaries(mem, [ep])
     res = mem._summary_fallback("How do I reset the PAT?", "u1")
     assert res is not None, "a relevant summary should be surfaced when no fact answers"
     assert "pat" in res.answer().lower() or "token" in res.answer().lower()
@@ -93,7 +93,7 @@ def test_search_uses_summary_fallback_when_no_fact_ranked():
     mem = Memory()
     ep = mem.add("To reset the PAT: open settings, regenerate the token, then update CI.",
                  user_id="u1", session_id="s1")
-    mem.summarize_episodes([ep])
+    seed_summaries(mem, [ep])
 
     res = mem.search("How do I reset the PAT?", user_id="u1")
     assert res.via == "summary"
@@ -107,7 +107,7 @@ def test_summary_fallback_can_be_disabled_for_ablation():
     mem = Memory(config=Config(summary_fallback=False))
     ep = mem.add("To reset the PAT: open settings, regenerate the token, then update CI.",
                  user_id="u1", session_id="s1")
-    mem.summarize_episodes([ep])
+    seed_summaries(mem, [ep])
 
     res = mem.search("How do I reset the PAT?", user_id="u1")
 
@@ -121,7 +121,7 @@ def test_summary_fallback_selects_best_source_backed_summary():
                    user_id="u1", session_id="weak")
     strong = mem.add("To reset the PAT: open settings, regenerate the token, then update CI.",
                      user_id="u1", session_id="strong")
-    mem.summarize_episodes([weak, strong])
+    seed_summaries(mem, [weak, strong])
 
     res = mem._summary_fallback("How do I reset the PAT?", "u1")
 
@@ -136,7 +136,7 @@ def test_summary_fallback_respects_as_of():
                   user_id="u1", session_id="old", event_time=1_700_000_000.0)
     new = mem.add("To reset the PAT: use the new security console.",
                   user_id="u1", session_id="new", event_time=1_702_592_000.0)
-    mem.summarize_episodes([old, new])
+    seed_summaries(mem, [old, new])
 
     res = mem._summary_fallback("How do I reset the PAT?", "u1", as_of=1_700_864_000.0)
     assert res is not None

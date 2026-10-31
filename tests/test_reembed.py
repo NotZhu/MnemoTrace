@@ -11,7 +11,7 @@ import tempfile
 import pytest
 
 from mnemotrace.embed import HashingEmbedder
-from tests.model_fixtures import Memory
+from tests.model_fixtures import Memory, seed_summaries
 from tests.model_fixtures import MemoryService
 from mnemotrace.store import DimensionMismatchError
 
@@ -21,7 +21,7 @@ _SENT = "My name is Wei and I live in Shenzhen."
 def _store(path: str, dim: int = 64) -> None:
     m = Memory.open(path, embedder=HashingEmbedder(dim))
     m.add(_SENT, user_id="u", consolidate=True)
-    m.summarize_episodes(list(m.episodes_doc.values()))  # 顺便填充 summary 索引
+    seed_summaries(m, list(m.episodes_doc.values()))  # 顺便填充 summary 索引
     m.save()
 
 

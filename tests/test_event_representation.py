@@ -28,7 +28,7 @@ def test_summary_replaces_raw_index_and_retrieval_payload():
         hit.text = "changed"
     with pytest.raises(TypeError):
         hit.metadata["date"] = "changed"
-    assert mem.get_episode(ep.id, "u").content == ep.content
+    assert mem.get_episode(ep.id, "u")["content"] == ep.content
     assert mem.get_episode(ep.id, "other") is None
 
 
@@ -57,7 +57,7 @@ def test_summary_survives_restore_and_reembedding_without_raw_index(tmp_path):
     assert reopened.summary_vec.get(ep.id) is not None
     reopened.reembed()
     assert reopened.episodes_vec.get(ep.id) is None
-    assert reopened.get_episode(ep.id, "u").content == ep.content
+    assert reopened.get_episode(ep.id, "u")["content"] == ep.content
 
 
 def test_raw_word_changes_do_not_change_ranked_summary_evidence():
@@ -108,3 +108,24 @@ def test_reembed_never_embeds_summarized_original():
     mem.reembed(embedder)
     assert ep.content not in embedder.inputs
     assert ep.summary in embedder.inputs
+
+
+def test_default_context_budget_does_not_inspect_summarized_original_length():
+    class UnreadableOriginal(str):
+        def __len__(self):
+            raise AssertionError('retrieval must not inspect original length')
+    mem = Memory()
+    ep = summarized(mem)
+    ep.content = UnreadableOriginal(ep.content)
+    context = mem.lean_context('connection issue', 'u', persona=False)
+    assert ep.summary in context and ep.id in context
+
+
+def test_reembed_discards_orphaned_summary_vector_without_embedding_an_excerpt():
+    from mnemotrace.embed import HashingEmbedder
+    mem = Memory()
+    ep = mem.add('A synthetic original without a summary.', user_id='u')
+    ep.summary_embedding = [1.0] * mem.embedder.dim
+    mem.reembed(HashingEmbedder(dim=16))
+    assert ep.summary_embedding is None
+    assert mem.summary_vec.get(ep.id) is None and mem.episodes_vec.get(ep.id) is not None

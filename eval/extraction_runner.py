@@ -25,6 +25,15 @@ def require_credentials(extractor):
             raise ValueError('Configure DEEPSEEK_API_KEY before starting DeepSeek evaluation')
 
 
+def summary_call_target():
+    try:
+        from mnemotrace.consolidate.summaries import SummaryStep
+    except ModuleNotFoundError:
+        from mnemotrace.consolidate.summarizer import SessionSummarizer
+        return SessionSummarizer, 'summarize'
+    return SummaryStep, 'execute'
+
+
 def tagged(function, phase):
     @functools.wraps(function)
     def call(*args, **kwargs):
@@ -267,9 +276,9 @@ def main():
                       MNEMOTRACE_CONFLICT_DETECTION='0', MNEMOTRACE_SESSION_OUTCOMES='0',
                       MNEMOTRACE_EXTRACT_WORKERS='1', LITELLM_LOCAL_MODEL_COST_MAP='True')
     from mnemotrace.consolidate.llm_extractor import LLMExtractor
-    from mnemotrace.consolidate.summarizer import SessionSummarizer
+    summary_type, summary_method = summary_call_target()
     LLMExtractor.raw_window = tagged(LLMExtractor.raw_window, 'extraction')
-    SessionSummarizer.summarize = tagged(SessionSummarizer.summarize, 'summary')
+    setattr(summary_type, summary_method, tagged(getattr(summary_type, summary_method), 'summary'))
     from mnemotrace.llm import providers
     import mnemotrace
     if not Path(mnemotrace.__file__).resolve().is_relative_to(args.root.resolve()):

@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import math
+import time
 import uuid
 
 STATES = {'pending', 'running', 'retry_wait', 'failed', 'completed', 'cancelled'}
@@ -161,6 +162,8 @@ class ProcessingTasks:
             job.update(state=state, updated_at=timestamp, **fields)
 
     def cancel(self, timestamp, session_id=None):
+        from .summaries import SummaryTasks
+        SummaryTasks(self.memory, self.namespace).cancel(timestamp, session_id)
         if self.state:
             self.state['revision'] += 1
             for job in self.rows(session_id).values():
@@ -168,6 +171,8 @@ class ProcessingTasks:
                     job.update(state='cancelled', error_code='cancelled', updated_at=timestamp, forced=False)
 
     def revise(self):
+        from .summaries import SummaryTasks
+        SummaryTasks(self.memory, self.namespace).cancel(time.time())
         if self.state:
             self.state['revision'] += 1
 

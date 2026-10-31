@@ -258,7 +258,7 @@ def test_agent_session_import_without_llm_defers_per_turn_extraction(tmp_path):
         assert ep.consolidated is True  # 下游绝不能再把它排进 LLMExtractor
         assert ep.metadata["extraction"] == "outcomes_only"
         assert ep.metadata["source"] == "agent_session"
-    assert stats["summaries"] >= 1  # transcript 的 chunk/摘要检索在离线环境下依然可用
+    assert stats["summaries"] == 0  # Offline input remains searchable as original events.
 
     # close_session 就是那个"排水口"，否则 pending 的 episode 会被逐轮抽取。
     svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")

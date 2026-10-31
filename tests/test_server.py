@@ -206,10 +206,10 @@ def test_close_session_endpoint_consolidates_summarizes_and_clears_working(clien
     assert out["episodes"] == 1
     assert out["pending_consolidated"] == 1
     assert out["facts_added"] >= 1
-    assert out["summaries"] == 1
+    assert out["summaries"] == 0
     assert out["working_cleared"] == 1
     assert client.get("/v1/working?session_id=s1", headers=h).json()["items"] == []
-    assert client.get("/v1/memories", headers=h).json()["counts"]["summaries"] == 1
+    assert client.get("/v1/memories", headers=h).json()["counts"]["summaries"] == 0
 
 
 def test_http_handoff_across_agent_sessions_in_same_namespace(client):

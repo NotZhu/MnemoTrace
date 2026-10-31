@@ -17,7 +17,7 @@ from unittest.mock import patch
 from buffered_replay import load_suite, replay
 from extraction_budget import Budget, BudgetStopped
 from extraction_quality import score_case, suite_hash
-from extraction_runner import PHASE, require_credentials, tagged
+from extraction_runner import PHASE, require_credentials, tagged, summary_call_target
 
 EVENT = ContextVar('replay_event', default=None)
 WINDOW = ContextVar('replay_window', default=None)
@@ -126,7 +126,7 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
     from mnemotrace import Memory
     from mnemotrace._buffered import BufferedExtraction
     from mnemotrace.consolidate.llm_extractor import LLMExtractor
-    from mnemotrace.consolidate.summarizer import SessionSummarizer
+    summary_type, summary_method = summary_call_target()
     from mnemotrace.ingest.pipeline import Ingestor
     from mnemotrace.llm import Completion, LLM, providers
     from mnemotrace.llm.base import complete_result
@@ -268,7 +268,7 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
         patches.enter_context(patch.object(MemoryService, '_save', save))
         patches.enter_context(patch.object(LLMExtractor, 'raw_window', raw_window))
         patches.enter_context(patch.object(BufferedExtraction, '_select', select))
-        patches.enter_context(patch.object(SessionSummarizer, 'summarize', tagged(SessionSummarizer.summarize, 'summary')))
+        patches.enter_context(patch.object(summary_type, summary_method, tagged(getattr(summary_type, summary_method), 'summary')))
         patches.enter_context(patch.object(providers, 'make_llm', lambda *a, **kw: Meter()))
         try:
             service = MemoryService(data_dir=str(directory/'store'), embedder_name='hashing',

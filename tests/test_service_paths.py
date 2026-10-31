@@ -150,18 +150,18 @@ def test_service_close_session_grooms_one_session_and_clears_working(tmp_path):
     assert out["episodes"] == 1
     assert out["pending_consolidated"] == 1
     assert out["facts_added"] >= 1
-    assert out["summaries"] == 1
+    assert out["summaries"] == 0
     assert out["working_cleared"] == 1
     assert svc.working_memory("u", session_id="s1")["items"] == []
 
     stats = svc.stats("u")
     assert stats["counts"]["episodes_pending"] == 0
     dump = svc.memories("u", include_sensitive=True)
-    assert dump["counts"]["summaries"] == 1
-    assert dump["episodes"][0]["summary"]
+    assert dump["counts"]["summaries"] == 0
+    assert not dump["episodes"][0]["summary"]
 
     reloaded = MemoryService(data_dir=str(tmp_path), embedder_name="hashing")
-    assert reloaded.memories("u")["counts"]["summaries"] == 1
+    assert reloaded.memories("u")["counts"]["summaries"] == 0
 
 
 def test_service_handoffs_memory_across_agent_sessions(tmp_path):

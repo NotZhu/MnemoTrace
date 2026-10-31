@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from tests.model_fixtures import Memory
+from tests.model_fixtures import Memory, seed_summaries
 from tests.model_fixtures import MemoryService
 from mnemotrace.types import Fact
 
@@ -17,7 +17,7 @@ def test_user_scopes_preserve_all_memory_layers_after_restart(tmp_path):
     mem.consolidate()
     for user, (_, city) in users.items():
         mem.remember_working(f"prepare trip to {city}", user_id=user, session_id="shared")
-    mem.summarize_episodes(mem.episodes_doc.values())
+    seed_summaries(mem, mem.episodes_doc.values())
     before = {f.id: f.__dict__.copy() for f in mem._all_facts()}
     mem.save(str(tmp_path / "store"))
     loaded = Memory.open(str(tmp_path / "store"))

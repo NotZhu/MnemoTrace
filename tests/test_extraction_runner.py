@@ -19,13 +19,13 @@ def harness(monkeypatch):
     ('immediate', 'lifecycle-1'), ('buffered', 'lifecycle-1'), ('immediate', 'isolation-5')])
 def test_service_measurement_completes_same_summary_work_and_restores(harness, mode, case_id, monkeypatch, tmp_path):
     from mnemotrace.consolidate.llm_extractor import LLMExtractor
-    from mnemotrace.consolidate.summarizer import SessionSummarizer
+    from mnemotrace.consolidate.summaries import SummaryStep
     from mnemotrace.consolidate.windows import WINDOW_PREFIX
     from mnemotrace.llm import Completion, FakeLLM, providers
     monkeypatch.setenv('MNEMOTRACE_BUFFERED_EXTRACTION', '1')
     monkeypatch.setenv('MNEMOTRACE_SESSION_OUTCOMES', '0')
     monkeypatch.setattr(LLMExtractor, 'raw_window', harness.tagged(LLMExtractor.raw_window, 'extraction'))
-    monkeypatch.setattr(SessionSummarizer, 'summarize', harness.tagged(SessionSummarizer.summarize, 'summary'))
+    monkeypatch.setattr(SummaryStep, 'execute', harness.tagged(SummaryStep.execute, 'summary'))
     responses = {'我喜欢绿茶。': ('likes', '绿茶'), '我喜欢苹果。': ('likes', '苹果'),
                  '我有一辆自行车。': ('owns', '自行车')}
     def handler(prompt, system):
@@ -48,7 +48,9 @@ def test_service_measurement_completes_same_summary_work_and_restores(harness, m
     row = harness.run_case(case, args)
     assert row['status'] == 'completed', row['error_code']
     assert row['score']['ok'] and row['raw_score']['ok'] and row['restored']
-    assert sum(c['phase'] == 'summary' for c in row['calls']) == len(case['events'])
+    eligible = sum(len(event['text']) >= 2000 for event in case['events'])
+    summary_calls = sum(c['phase'] == 'summary' for c in row['calls'])
+    assert summary_calls >= eligible if eligible else summary_calls == 0
     expected = (len(case['events']) if mode == 'immediate' else 1) + int(case.get('inject_transient_once', False))
     assert sum(c['phase'] == 'extraction' for c in row['calls']) == expected
     ledger = json.loads(budget_path.read_text())

@@ -183,6 +183,12 @@ class BufferedExtraction:
         return None
 
     def run_one(self, user, ids=None):
+        if self._run_extraction(user, ids):
+            return True
+        from ._summaries import run_one as run_summary
+        return run_summary(self.service, user, ids)
+
+    def _run_extraction(self, user, ids=None):
         """A single lease protects preparation/model/commit, never namespace reads or appends."""
         svc = self.service
         with self.lease(user).try_file_lock() as acquired:
@@ -302,6 +308,9 @@ class BufferedExtraction:
                     finally:
                         mem.llm, mem.engine.conflict = original_llm, original_conflict
                     tasks.completed(keys, self.clock())
+                    from .consolidate.summaries import SummaryTasks
+                    SummaryTasks(mem, user).register([mem.episodes_doc.get(k) for k in keys
+                        if mem.episodes_doc.get(k).consolidated], self.clock())
                     svc._save(user, mem)
                 except Exception:
                     # write_lock discards a possibly dirty backend; the running checkpoint is recoverable.
@@ -373,6 +382,10 @@ class BufferedExtraction:
                             if os.path.isfile(os.path.join(self.service._path(user), 'manifest.json')):
                                 counts = self.status(user)['counts']
                                 active = any(counts[s] for s in ACTIVE)
+                                with self.service._read_scope(user) as mem:
+                                    from .consolidate.summaries import SummaryTasks
+                                    summary_counts = SummaryTasks(mem, user).snapshot()['counts']
+                                    active |= any(summary_counts[s] for s in ACTIVE)
                         if not active:
                             with self.condition:
                                 if self.users.get(user) == wake_revision:

@@ -68,6 +68,12 @@ class Config:
     # 有 LLM 时检测疑似冲突并交由用户确认，不自动应用。
     conflict_detection: bool = False
 
+    # --- 条件事件摘要 ---
+    summary_min_chars: int = 2000
+    summary_max_chars: int = 800
+    summary_max_input_bytes: int = 16_384
+    summary_max_output_tokens: int = 1024
+
     # --- 上下文与证据 ---
     evidence_planner: bool = True  # 根据查询意图选择 lean_context 的证据组织方式
     evidence_budgeting: bool = True  # 根据查询意图分配上下文预算

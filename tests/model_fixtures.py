@@ -102,3 +102,12 @@ class MemoryService(NativeService):
 class LLMExtractor(NativeExtractor):
     def __init__(self, llm, *args, **kwargs):
         super().__init__(FixtureProtocol(llm), *args, **kwargs)
+
+
+def seed_summaries(memory, episodes):
+    """Seed pre-existing summaries for read/restore tests, without simulating an LLM."""
+    for supplied in episodes:
+        ep = memory.episodes_doc.get(supplied.id)
+        ep.summary = ep.content
+        ep.summary_embedding = memory.embedder.embed(ep.summary)
+        memory._sync_episode(ep)

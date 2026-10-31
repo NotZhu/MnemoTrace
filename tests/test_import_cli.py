@@ -170,5 +170,5 @@ def test_cli_consolidates_and_summarizes_with_configured_fixture_model(tmp_path)
     service = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
     memory = service.get("synthetic-user")
     assert result["facts_added"] >= 1
-    assert memory.episodes_doc.values()[0].summary
+    assert not memory.episodes_doc.values()[0].summary  # Short imported events need no summary.
     assert any(fact.object == "SyntheticCity" for fact in memory.fact_store.values())
