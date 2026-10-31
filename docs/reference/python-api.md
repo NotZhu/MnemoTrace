@@ -17,7 +17,7 @@
 | `add` | content；user_id、session_id、speaker、event_time；consolidate=False | Episode；保存事件，可选择立即整合 |
 | `remember` | content；user_id、session_id、scope="auto" | dict；路由 long/working，长期内容仍需显式整合 |
 | `consolidate` | episodes=None | 计数字典；None 处理 pending 事件 |
-| `consolidate_full` | fact_episodes=None、summary_episodes=None | 计数字典；整合、摘要与反映更新，可分别指定两组事件 |
+| `consolidate_full` | fact_episodes=None、summary_episodes=None | 计数字典；整合与条件摘要，可分别指定两组事件；reflected 固定为 0 |
 | `import_messages` | sessions、user_id；consolidate=None、summarize=True、dedupe=True 等 | 计数字典；导入已解析会话 |
 | `import_data` | data、format="auto"、user_id、session_id；其余导入选项 | 计数字典；先解析再导入 |
 | `import_snapshot` | snapshot、user_id、dedupe=True | dict；导入结构化导出，不等同于打开存储目录 |
@@ -34,7 +34,8 @@
 | `as_of` | query、when、user_id、top_k=None | SearchResult；时间查询便捷入口 |
 | `lean_context` | query、user_id；as_of、session_id、redact_sensitive；n_summaries、n_facts、n_chunks、char_budget 等 | 按预算组合的上下文字符串 |
 | `context_for` | query、user_id；as_of、top_k、k_chunks 及按需增强选项 | 上下文字符串 |
-| `retrieve_episodes` | query、user_id、k=5、pool=None、as_of=None | 检索到的原始 Episode |
+| `retrieve_episodes` | query、user_id、k=5、pool=None、as_of=None | 不可变 EventEvidence；text 为该事件当前的原文或摘要，不含原文副本 |
+| `get_episode` | episode_id、user_id=default | 原文记录字典或 None；仅含身份、来源时间和完整 content |
 | `history` | subject、predicate、user_id | 同一槽位的 Fact 列表 |
 | `profile` | user_id | 属性字典 |
 | `structured_profile` | user_id | 结构化画像字典 |
@@ -95,11 +96,11 @@ memory.save()
 
 服务端 `MemoryService.remember(user, content, session_id="default", scope="auto", processing="immediate")`
 可显式选择 buffered，需开启 `MNEMOTRACE_BUFFERED_EXTRACTION`。这不改变底层 `Memory.remember()` 仅保存原文与路由的职责。
-`processing_status(user, session_id=None)` 查看任务；`flush(user, session_id=None, timeout=30, retry_failed=False)`
+`processing_status(user, session_id=None)` 查看任务；`flush(user, session_id=None, timeout=30, retry_failed=False, include_summaries=False)`
 等待本次捕获范围并返回 completed、failed 或 timed_out，只有 completed 对应 ok=true。
 取消、失败和超时不会删除原始事件。模型或存储失败不能通过 queued 响应解释为抽取成功。
 
-摘要和派生层操作还包括 `summarize_episodes`、`retrieve_summaries`、`reflect`、`procedural`；热层管理包括 `evict_cold`、`apply_focus`。这些方法改变派生状态或工作集，调用方负责后续保存及必要验证。
+摘要和派生层操作还包括 `summarize_episodes`、`retrieve_summaries`、`procedural`；热层管理包括 `evict_cold`、`apply_focus`。这些方法改变派生状态或工作集，调用方负责后续保存及必要验证。
 
 精确签名、类型和行为以 [Memory](../../mnemotrace/memory.py)、[记录类型](../../mnemotrace/types.py) 和对应[测试](../../tests/)为核对来源。HTTP/MCP 的方法、默认值及能力不与嵌入式 API 一一对应。
 
@@ -115,7 +116,7 @@ memory.save()
 
 `consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实和工作条目。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，已完成的窗口范围保留，未完成范围继续待处理；重试跳过完成范围并消解重复事实和工作条目。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
 
-导入重试先去重，再检查实际抽取需求：全部内容已完成且没有相关 pending 时，无需 LLM 即可返回 skipped，即使 consolidate=True。存在待抽取的新内容或相关 pending 时，在本次新输入写入前检查模型。已存在内容不再创建 episode。summarize=True 会补齐本次涉及会话中缺失的摘要，包括抽取重试和部分新增的情况；已有摘要不重复生成，返回 summaries 为本次实际补齐数量。
+导入重试先去重，再检查实际抽取需求：全部内容已完成且没有相关 pending 时，无需 LLM 即可返回 skipped，即使 consolidate=True。存在待抽取的新内容或相关 pending 时，在本次新输入写入前检查模型。已存在内容不再创建 episode。summarize=True 会补齐本次涉及会话中满足长度条件且缺失的摘要，包括抽取重试和部分新增的情况；已有摘要不重复生成，返回 summaries 为本次实际补齐数量。
 
 公开异常为 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError；未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。原文保存不等同于事实抽取完成。模型输出的 working.kind 限定为 state/intent/task，显式工作记忆接口仍可使用其他 kind。会话结论 kind 在校验前忽略大小写和首尾空白，未知类型仍报响应无效。
 
@@ -127,3 +128,14 @@ memory.save()
 ## 数据库资源生命周期
 
 `Memory.close()` 幂等释放 Memory 内部创建的数据库客户端，不隐式保存。`with Memory.open(...) as memory:` 可保证退出时释放；需要持久化改动时在退出前调用 `save()`。直接注入 `QdrantVectorStore` 的客户端由调用方管理。可选后端的选择、路径和远程配置见[配置参考](configuration.md#可选-qdrant)。
+
+
+### 摘要与显式原文读取
+
+`remember` 在完成原文保存及抽取后才执行条件摘要；摘要失败仍返回 ok=true，并通过 summarization.status/error_code 报告。
+buffered 在整个事件抽取完成后自动注册摘要任务，读取不触发模型。processing_status 返回独立的 summarization 任务区，原 counts 仍只统计抽取。
+默认 flush 只等待抽取；include_summaries=True 等待调用开始捕获范围内的摘要。未启用 worker 时不隐式启动后台处理，未完成任务返回 failed，可通过 close_session(summarize=True) 显式重试。
+close_session 的摘要未完成时返回 processing_incomplete，保留已完成阶段及工作记忆；summarize=False 不取消既有后台任务。
+
+摘要成功后，所有 agent 事件检索、来源证据、聚合和上下文只使用摘要。检索文本带事件 ID；通过 get_episode 显式读取原文。
+Fact 仍从原文抽取且独立检索；历史事件摘要不追加后续事实。owner 管理浏览、全文搜索及导出保留。

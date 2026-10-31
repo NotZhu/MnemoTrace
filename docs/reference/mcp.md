@@ -6,7 +6,7 @@
 
 `mnemotrace_remember` 新增 `processing=immediate|buffered`，默认 immediate；buffered 需要目标服务启用缓冲。
 `mnemotrace_processing_status(session_id=null)` 查询无原文的任务状态；
-`mnemotrace_flush_processing(session_id=null, timeout=30, retry_failed=false)` 处理当前捕获范围。
+`mnemotrace_flush_processing(session_id=null, timeout=30, retry_failed=false, include_summaries=false)` 处理当前捕获范围。
 刷新返回 completed、failed 或 timed_out，仅完成时 ok=true；retry_failed 显式重新处理失败或取消任务。
 工具在本地与远程后端使用相同契约，缓冲接收不表示事实已可检索。
 
@@ -68,3 +68,12 @@ agent_status(session_id)
 客户端负责在恰当时机调用，安装工具不会自动使所有对话被记住。持续导入和客户端接线见[Agent 指南](../guides/agents.md)。
 
 模型抽取的配置错误、运行失败和排队状态与 [HTTP 契约](http-api.md#模型抽取状态与错误)一致。本地和远程模式均返回安全错误码与原文保存状态；queued 不表示已完成抽取。
+
+
+## 条件摘要与原文读取
+
+`mnemotrace_get_episode(episode_id, space=null, response_format)` 读取 recall 返回的事件 ID 对应的完整原文，不调用模型。
+远程后端在 HTTP 服务端执行空间读取权限检查；本地后端只读取其配置命名空间。
+recall 返回事件当前的检索表示：有摘要时只用摘要，未摘要时使用原文，不自动展开已摘要事件。
+buffered 会自动生成符合长度条件的事件摘要；processing_status 包含独立 summarization 区。
+flush 默认只等待抽取，include_summaries=true 时包含捕获范围内的摘要；摘要失败不会以摘录冒充成功。

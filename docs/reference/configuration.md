@@ -21,6 +21,19 @@
 调小输入预算会拆成更多窗口；调大输出预算可能增加调用成本。更改预算后重试从已完成的字符位置继续。
 原文需保持不变；修改原文后不能复用已有处理范围。
 
+## 条件事件摘要
+
+| Config 字段 | 服务环境变量 | 含义 |
+| --- | --- | --- |
+| summary_min_chars | MNEMOTRACE_SUMMARY_MIN_CHARS | 原文达到此 Python 字符数才请求摘要 |
+| summary_max_chars | MNEMOTRACE_SUMMARY_MAX_CHARS | 成功摘要的字符上限，必须小于生成阈值 |
+| summary_max_input_bytes | MNEMOTRACE_SUMMARY_MAX_INPUT_BYTES | 系统和用户提示词合计 UTF-8 字节预算 |
+| summary_max_output_tokens | MNEMOTRACE_SUMMARY_MAX_OUTPUT_TOKENS | 每次摘要调用的输出 token 上限 |
+
+四项均为正整数，精确默认值在 [Config](../../mnemotrace/config.py) 中维护。这些是工程初值，未完成真实模型质量或成本验收。
+超长事件按实际输入预算分段并保存中间进度，之后合并成一份事件摘要；中间结果不参与检索。
+摘要失败、空输出、输出超限或截断不产生摘录替代品。已有摘要不自动重新生成。
+
 ## 其他配置参数
 
 | 参数组 | 主要字段与默认行为 | 影响 |

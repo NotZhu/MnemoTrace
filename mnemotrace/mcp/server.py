@@ -148,7 +148,7 @@ async def mnemotrace_recall(
     query: Annotated[str, Field(description="What you want to remember about the user / past sessions, "
                                 "e.g. 'the user's dietary restrictions' or 'what we decided about the API'.",
                                 min_length=1)],
-    max_chunks: Annotated[int, Field(description="How many full past conversations to include for detail "
+    max_chunks: Annotated[int, Field(description="How many event evidence records to include "
                                      "(0 = facts/summaries only). Default 6.", ge=0, le=20)] = 6,
     session_id: Annotated[Optional[str], Field(description="Optional conversation/thread id; when set, "
                                            "session-scoped working memory is included.")] = None,
@@ -184,6 +184,27 @@ async def mnemotrace_recall(
     if not ctx:
         return "No relevant memory found for that query."
     return f"Relevant memory (~{data.get('tokens_est', '?')} tokens):\n\n{ctx}"
+
+
+@mcp.tool(name="mnemotrace_get_episode", annotations=ToolAnnotations(title="Read original event", **_READ))
+async def mnemotrace_get_episode(
+    episode_id: Annotated[str, Field(description="Event ID returned by recall; reads its full original.",
+                                   min_length=1, max_length=512)],
+    space: Annotated[Optional[str], Field(description="Source space shown beside the event ID.",
+                                         max_length=512)] = None,
+    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+) -> str:
+    """Explicitly read a source event. Recall does not expand summarized events automatically."""
+    try:
+        data = await backend().get_episode(episode_id, space)
+    except Exception as exc:  # noqa: BLE001 -- shared sanitized adapter errors
+        return _err(exc)
+    if data is None:
+        return "Error: episode not found."
+    if response_format == ResponseFormat.JSON:
+        return _json(data)
+    return (f"Event {data['id']} (space: {data['space']}; session: {data['session_id']}; "
+            f"event_time: {data['event_time']}; ingested_at: {data['ingested_at']})\n\n{data['content']}")
 
 
 @mcp.tool(name="mnemotrace_search", annotations=ToolAnnotations(title="Answer from memory", **_READ))
@@ -238,18 +259,24 @@ async def mnemotrace_remember(
         data = await backend().remember(content, session_id=session_id, scope=scope.value, processing=processing)
     except Exception as e:  # noqa: BLE001
         return _err(e)
+    summary = data['summarization']
+    summary_status = f" Summarization: {summary['status']}"
+    if summary['error_code']:
+        summary_status += f" ({summary['error_code']})"
+    summary_status += "."
     if data.get("queued"):
-        return f"Queued raw episode {data['episode_id']} for model extraction; extraction is not complete."
+        return (f"Queued raw episode {data['episode_id']} for model extraction; extraction is not complete."
+                + summary_status)
     if data.get("scope") == "working":
         return (
             "Stored as working memory for this session. It remains in dated history, but will not be "
-            "promoted to durable profile facts."
+            "promoted to durable profile facts." + summary_status
         )
     if data.get("scope") == "none":
-        return "Saved raw history. No durable facts or working memory were extracted (scope=none)."
+        return "Saved raw history. No durable facts or working memory were extracted (scope=none)." + summary_status
     return (f"Remembered. Extracted {data.get('extracted', 0)} new fact(s); "
             f"added {data.get('working_added', 0)} working item(s) (scope={data.get('scope')}); "
-            f"{data.get('total_facts', '?')} live facts total.")
+            f"{data.get('total_facts', '?')} live facts total." + summary_status)
 
 
 @mcp.tool(name='mnemotrace_processing_status', annotations=ToolAnnotations(title='Memory processing status', **_READ))
@@ -263,10 +290,10 @@ async def mnemotrace_processing_status(session_id: Optional[str] = None) -> str:
 
 @mcp.tool(name='mnemotrace_flush_processing', annotations=ToolAnnotations(title='Flush memory processing', **_WRITE))
 async def mnemotrace_flush_processing(session_id: Optional[str] = None, timeout: float = 30,
-                                     retry_failed: bool = False) -> str:
+                                     retry_failed: bool = False, include_summaries: bool = False) -> str:
     """Process the currently accepted boundary; retry_failed explicitly retries failed/cancelled work."""
     try:
-        return _json(await backend().flush_processing(session_id, timeout, retry_failed))
+        return _json(await backend().flush_processing(session_id, timeout, retry_failed, include_summaries))
     except Exception as exc:
         return _err(exc)
 
@@ -279,7 +306,7 @@ async def mnemotrace_close_session(
     session_id: Annotated[str, Field(description="Conversation/thread id to close.")] = "default",
     summarize: Annotated[
         bool,
-        Field(description="Create missing session summaries for future lean recall."),
+        Field(description="Create missing long-event summaries within the captured session boundary."),
     ] = True,
     clear_working: Annotated[
         bool,
@@ -770,6 +797,8 @@ async def mnemotrace_import(
         return _err(e)
     text = (f"Imported {data.get('sessions', 0)} session(s) / {data.get('episodes', 0)} episode(s); "
             f"extracted {data.get('facts_added', 0)} fact(s), {data.get('summaries', 0)} summary(ies).")
+    if data.get('summarization'):
+        text += "\nSummarization by event: " + _json(data['summarization'])
     deferred = int(data.get("facts_deferred") or 0)
     if deferred:
         text += f"; {deferred} agent session(s) stored for close-time distillation"

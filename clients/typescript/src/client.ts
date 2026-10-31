@@ -169,11 +169,19 @@ export class MnemoTraceClient {
   }
 
   flushProcessing(options: { sessionId?: string; space?: string; timeout?: number;
-    retryFailed?: boolean } = {}): Promise<ProcessingFlushResult> {
+    retryFailed?: boolean; includeSummaries?: boolean } = {}): Promise<ProcessingFlushResult> {
     return this.post<ProcessingFlushResult>('/v1/processing/flush', {
       session_id: options.sessionId, space: options.space,
       timeout: options.timeout ?? 30, retry_failed: options.retryFailed ?? false,
+      include_summaries: options.includeSummaries ?? false,
     })
+  }
+
+  /** Explicitly read the full source of an event returned by recall. */
+  getEpisode(episodeId: string, options: { space?: string } = {}): Promise<import('./types.js').OriginalEpisode> {
+    const query = new URLSearchParams()
+    if (options.space !== undefined) query.set('space', options.space)
+    return this.request(`/v1/episodes/${encodeURIComponent(episodeId)}${query.size ? `?${query}` : ''}`)
   }
 
   /**

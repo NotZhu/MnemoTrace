@@ -25,7 +25,29 @@ export interface ExtractionFailure {
   episode_ids: string[]
 }
 
+export interface SummarizationResult {
+  status: ProcessingState | 'not_needed'
+  error_code: string | null
+}
+
+export interface SummaryProcessingStatus {
+  counts: Record<ProcessingState, number>
+  jobs: Array<{ episode_id: string; session_id: string; state: ProcessingState;
+    attempts: number; error_code: string | null; completed_through: number | null }>
+}
+
+export interface OriginalEpisode {
+  id: string
+  space: string
+  session_id: string
+  speaker: string
+  event_time: number
+  ingested_at: number
+  content: string
+}
+
 export interface RememberResult {
+  summarization: SummarizationResult
   ok: boolean
   scope?: 'long' | 'working' | 'mixed' | 'none'
   queued?: boolean
@@ -57,6 +79,7 @@ export interface ProcessingJob {
 }
 
 export interface ProcessingStatus {
+  summarization?: SummaryProcessingStatus
   enabled: boolean
   generation: string | null
   session_id: string | null
@@ -207,6 +230,8 @@ export interface Fact extends TopicMetadata {
 }
 
 export interface EpisodeView {
+  id: string
+  summarization: SummarizationResult
   date: string
   session: string
   content: string
@@ -444,6 +469,7 @@ export interface ImportParams {
 }
 
 export interface ImportResult {
+  summarization?: Record<string, SummarizationResult>
   ok: boolean
   sessions: number
   episodes: number

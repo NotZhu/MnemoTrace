@@ -98,7 +98,7 @@ def test_search_uses_summary_fallback_when_no_fact_ranked():
     res = mem.search("How do I reset the PAT?", user_id="u1")
     assert res.via == "summary"
     assert "token" in res.answer().lower()
-    assert "(session: s1)" in res.answer()
+    assert f"(episode: {ep.id}; space: u1; session: s1)" in res.answer()
 
 
 def test_summary_fallback_can_be_disabled_for_ablation():
@@ -126,7 +126,7 @@ def test_summary_fallback_selects_best_source_backed_summary():
     res = mem._summary_fallback("How do I reset the PAT?", "u1")
 
     assert res is not None
-    assert "(session: strong)" in res.answer()
+    assert f"(episode: {strong.id}; space: u1; session: strong)" in res.answer()
     assert "regenerate the token" in res.answer().lower()
 
 
