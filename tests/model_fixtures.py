@@ -14,6 +14,9 @@ from mnemotrace.service import MemoryService as NativeService
 from mnemotrace.consolidate.windows import WINDOW_PREFIX
 
 RESPONSES = json.loads(Path(__file__).with_name('extraction_responses.json').read_text(encoding='utf-8'))
+for _source, _facts in list(RESPONSES.items()):
+    if _source.startswith('user: ') and '\n' not in _source:
+        RESPONSES.setdefault(_source[len('user: '):], _facts)
 
 
 def window_input(prompt):
@@ -38,7 +41,18 @@ def replay_window(prompt, system, invoke):
             return raw
         for key in result:
             for item in value.get(key, []):
+                if 'rules' in data:
+                    if key == 'working' and data['mode'] == 'historical':
+                        continue
+                    fields = ('subject', 'predicate', 'object', 'text') if key == 'facts' else ('content', 'kind')
+                    item = {k: item[k] for k in fields if k in item}
+                    if key == 'facts':
+                        item.setdefault('text', f"{item['subject']} {item['predicate']} {item['object']}")
+                    item['assertion_kind'] = 'user_statement' if span['role'] == 'user' else 'assistant_suggestion'
                 result[key].append({**item, 'source_ids': [span['id']]})
+    if 'rules' in data:
+        result['summaries'] = [dict(message_id=span['message_id'], text='Synthetic event summary')
+                               for span in data['pending'] if span['message_id'] in data['rules']['summary_required']]
     return json.dumps(result, ensure_ascii=False)
 
 

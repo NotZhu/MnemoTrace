@@ -309,7 +309,8 @@ def test_nested_cross_instance_read_reuses_native_file_lock(tmp_path, monkeypatc
     with first.write_lock("u"):
         assert first.get("u")._snapshot_version == second.get("u")._snapshot_version
         assert second.agent_status("u")["counts"]["facts_live"] == 1
-    assert len(files) == 1 and files[0].startswith("@")
+    assert len([name for name in files if name.startswith('@')]) == 1
+    assert files.count('.lock') == 1  # One coherent cold snapshot load, reused by nested reads.
 
 
 def test_cache_metadata_lock_never_contains_version_io(tmp_path, monkeypatch):

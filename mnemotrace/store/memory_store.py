@@ -103,7 +103,7 @@ class InMemoryGraphStore(GraphStore):
         for rid in rel_ids:
             r = self.rels[rid]
             live = as_of is None or (
-                r.valid_at <= as_of and (r.invalid_at is None or r.invalid_at > as_of)
+                (r.valid_at is not None and r.valid_at <= as_of) and (r.invalid_at is None or r.invalid_at > as_of)
             )
             if live:
                 out.append(r)

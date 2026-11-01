@@ -159,6 +159,8 @@ class SummaryTasks:
         changed = False
         token = fingerprint(self.memory, self.memory.llm)
         for ep in episodes:
+            if ep.message_id is not None:
+                continue  # Dialogue summaries belong exclusively to the joint-call ledger.
             if ep.user_id != self.namespace or ep.summary or len(ep.content) < self.memory.config.summary_min_chars:
                 continue
             if self.state is None:
@@ -195,6 +197,12 @@ class SummaryTasks:
 
     def result(self, episode_id):
         ep = self.memory.episodes_doc.get(episode_id)
+        if ep is not None and ep.message_id is not None:
+            from .messages import MessageTasks
+            row = MessageTasks(self.memory, self.namespace).rows().get(episode_id)
+            if row:
+                win = MessageTasks(self.memory, self.namespace).state['windows'].get(row['window_id'])
+                return {'status': row['summary'], 'error_code': win['error_code'] if win else None}
         job = self.rows().get(episode_id)
         if ep is None:
             return {'status': 'cancelled', 'error_code': 'source_changed'}

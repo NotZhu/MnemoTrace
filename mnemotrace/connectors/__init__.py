@@ -77,7 +77,7 @@ def _sniff_obj(obj: Any) -> str:
             return "chatgpt"
         if "messages" in sample:
             return "messages"
-        if any(k in sample for k in ("role", "role", "author", "from")) and \
+        if any(k in sample for k in ("role", "author", "from")) and \
                 any(k in sample for k in ("content", "text", "message", "body")):
             return "messages" if not any(
                 k in sample for k in ("session_id", "conversation_id", "thread_id")) else "records"

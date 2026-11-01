@@ -238,6 +238,22 @@ async def mnemotrace_search(
     return "\n".join(lines)
 
 
+@mcp.tool(name='mnemotrace_remember_messages', annotations=ToolAnnotations(title='Remember dialogue messages', **_WRITE))
+async def mnemotrace_remember_messages(messages: list[dict], session_id: str,
+        mode: Literal['live', 'historical'] = 'live',
+        processing: Literal['immediate', 'buffered'] = 'buffered',
+        scope: Literal['auto', 'long'] = 'auto') -> str:
+    """Store complete user/assistant messages with required stable message_id, role and content.
+
+    event_time may be unknown. Reuse IDs on retransmission; historical never activates old tasks.
+    Acceptance persists raw sources and tasks; inspect processing status or flush for completion.
+    """
+    try:
+        return _json(await backend().remember_messages(messages, session_id, mode, processing, scope))
+    except Exception as exc:
+        return _err(exc)
+
+
 @mcp.tool(name="mnemotrace_remember", annotations=ToolAnnotations(title="Remember a memory", **_WRITE))
 async def mnemotrace_remember(
     content: Annotated[str, Field(description="The message / fact / preference to store, in natural "
@@ -797,11 +813,13 @@ async def mnemotrace_import(
         return _err(e)
     text = (f"Imported {data.get('sessions', 0)} session(s) / {data.get('episodes', 0)} episode(s); "
             f"extracted {data.get('facts_added', 0)} fact(s), {data.get('summaries', 0)} summary(ies).")
+    if data.get('queued'):
+        text += '\nProcessing queued; use processing_status or flush_processing before treating extraction as complete.'
     if data.get('summarization'):
         text += "\nSummarization by event: " + _json(data['summarization'])
     deferred = int(data.get("facts_deferred") or 0)
     if deferred:
-        text += f"; {deferred} agent session(s) stored for close-time distillation"
+        text += f"; {deferred} message(s) stored without automatic extraction"
     return text
 
 

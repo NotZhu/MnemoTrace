@@ -37,7 +37,7 @@ except Exception as exc:  # noqa: BLE001
 from .. import __version__
 from ..memory import InvalidFactEditError
 from ..service import MemoryService
-from ..extraction import ExtractionError, require_llm
+from ..extraction import ExtractionError
 from ..spaces import AuthConfigError, Principal, is_valid_api_key, load_spaces, principal_for_token
 from ..topics import Topic
 from ..store import PersistenceError, StoreFormatError
@@ -114,10 +114,10 @@ def svc() -> MemoryService:
 async def _lifespan(_app: FastAPI):
     svc()  # 启动时加载一次 embedder（和 LLM），避免首个请求产生竞态
     yield
-    # 先排空排队中的异步 System-2 整合，再停止 worker，保证优雅停机不会丢掉待处理的整合。
-    # 默认同步模式下为空操作。
+    # Freeze shutdown ranges without a second per-namespace wait. close() owns the
+    # bounded worker join; accepted work remains in durable checkpoints.
     if _svc is not None:
-        _svc.flush()
+        _svc.flush(timeout=0)
         _svc.close()
 
 
@@ -272,6 +272,24 @@ class RememberReq(BaseModel):
     space: Optional[str] = Field(default=None, max_length=512)  # 目标命名空间（默认：调用者的 home）
 
 
+class DialogueMessage(BaseModel):
+    model_config = {'extra': 'forbid', 'strict': True, 'allow_inf_nan': False}
+    message_id: str = Field(min_length=1, max_length=512)
+    role: Literal['user', 'assistant']
+    content: str = Field(min_length=1, max_length=1_000_000)
+    event_time: Optional[float] = None
+
+
+class MessagesReq(BaseModel):
+    model_config = {'extra': 'forbid'}
+    session_id: str = Field(min_length=1, max_length=512)
+    messages: list[DialogueMessage] = Field(min_length=1, max_length=1000)
+    mode: Literal['live', 'historical'] = 'live'
+    processing: Literal['immediate', 'buffered'] = 'buffered'
+    scope: Literal['auto', 'long'] = 'auto'
+    space: Optional[str] = Field(default=None, max_length=512)
+
+
 class ProcessingFlushReq(BaseModel):
     session_id: Optional[str] = Field(default=None, min_length=1, max_length=512)
     space: Optional[str] = Field(default=None, max_length=512)
@@ -380,6 +398,16 @@ def robots_txt():
         "Disallow: /v1/\n"
         "Disallow: /health\n"
     )
+
+
+@app.post('/v1/messages')
+def remember_messages(req: MessagesReq, principal: Principal = Depends(auth_principal)):
+    target = req.space or principal.home
+    if not principal.can_write(target):
+        raise HTTPException(403, 'Not allowed to write this space')
+    data = svc().remember_messages(target, [m.model_dump() for m in req.messages], req.session_id,
+                                  req.mode, req.processing, req.scope)
+    return JSONResponse(data, status_code=202) if data['queued'] else data
 
 
 @app.post("/v1/remember")
@@ -696,15 +724,17 @@ def chat_completions(req: ChatCompletionReq, background: BackgroundTasks, user: 
     # 纯文本的即插即用路径不受影响。
     user_text = oc.remembered_text(svc().captioner, body.get("messages", []))
     if opts.get("remember", True) and user_text:
-        if scope != "working":
-            require_llm(svc().llm)
-        background.add_task(
-            _remember_chat,
-            user,
-            user_text,
-            session_id=session_id,
-            scope=scope,
-        )  # 在响应路径之外写入（System-2）
+        if scope == 'working':
+            svc().remember(user, user_text, session_id=session_id, scope='working')
+        else:
+            # The upstream response is already complete, including when SSE is requested.
+            # Persist both sources/tasks before claiming that this turn was accepted.
+            svc().remember_messages(user, [
+                {'message_id': opts.get('message_id') or resp['id'] + ':user',
+                 'role': 'user', 'content': user_text},
+                {'message_id': resp['id'], 'role': 'assistant',
+                 'content': resp['choices'][0]['message']['content'], 'event_time': resp['created']},
+            ], session_id, scope=scope)
         resp["mnemotrace"]["remember_queued"] = True
         resp["mnemotrace"]["remember_scope"] = scope
 
@@ -712,15 +742,6 @@ def chat_completions(req: ChatCompletionReq, background: BackgroundTasks, user: 
         from fastapi.responses import StreamingResponse
         return StreamingResponse(oc.iter_sse(resp), media_type="text/event-stream")
     return resp
-
-
-def _remember_chat(user: str, content: str, session_id: str, scope: str) -> None:
-    """The chat response acknowledges scheduling; extraction errors remain inspectable."""
-    try:
-        svc().remember(user, content, session_id=session_id, scope=scope)
-    except ExtractionError:
-        import logging
-        logging.getLogger(__name__).warning("Chat memory extraction failed; inspect the session status")
 
 
 # --- 用户自写的记忆管理（可编辑层；用户断言具有最高优先级）---

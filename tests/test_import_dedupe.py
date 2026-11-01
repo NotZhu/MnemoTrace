@@ -25,11 +25,14 @@ def test_reimport_is_skipped():
     assert len(m.episodes_doc.values()) == 2  # 没有翻倍
 
 
-def test_dedupe_off_restores_append_behavior():
+def test_dialogue_ids_remain_idempotent_and_new_ids_allow_equal_content():
     m = Memory(embedder=HashingEmbedder(64))
     m.import_messages(_SESSIONS, user_id="u")
     raw = m.import_messages(_SESSIONS, user_id="u", dedupe=False)
-    assert raw["episodes"] == 2  # 显式关闭去重就会重复（旧版逃生通道）
+    assert raw["episodes"] == 0
+    copies = [{**session, 'messages': [{**msg, 'message_id': 'another'} for msg in session['messages']]}
+              for session in _SESSIONS]
+    assert m.import_messages(copies, user_id='u')["episodes"] == 2
     assert len(m.episodes_doc.values()) == 4
 
 

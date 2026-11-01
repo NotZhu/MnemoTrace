@@ -96,10 +96,10 @@ def _rows(text: str) -> Iterator[dict]:
 
 def parse_agent_session(text: str, session_id: str = "agent-session",
                         include_sidechains: bool = False,
-                        min_chars: int = 12) -> list[ImportSession]:
+                        min_chars: int = 1) -> list[ImportSession]:
     """把一份 Claude Code / Codex 会话日志解析成一个 ImportSession。
 
-    `min_chars` 丢弃单词轮次（"ok"、"继续"、"yes"）—— 它们不含事实，否则会占满长会话的 episode 数量。
+    默认保留所有非空对话，包括可能确认先前建议的简短回复。
     """
     messages: list[ImportMessage] = []
     first_ts: Optional[float] = None
@@ -129,7 +129,9 @@ def parse_agent_session(text: str, session_id: str = "agent-session",
         ts = to_epoch(row.get("timestamp"))
         if first_ts is None:
             first_ts = ts
-        messages.append(ImportMessage(content=redact_secrets(body), role=role, event_time=ts))
+        message_id = message.get('id') or row.get('uuid')
+        messages.append(ImportMessage(content=redact_secrets(body), role=role, event_time=ts,
+                                      message_id=str(message_id) if message_id is not None else None))
     if not messages:
         return []
     return [ImportSession(session_id=session_id, messages=messages, event_time=first_ts,

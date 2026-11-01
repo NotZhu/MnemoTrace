@@ -1,5 +1,6 @@
 """Pure window planning over immutable source text and committed character offsets."""
 from __future__ import annotations
+from ..util import time_key
 
 import hashlib
 import json
@@ -14,7 +15,7 @@ WINDOW_PREFIX = "MNEMOTRACE_WINDOW\n"
 
 def chronology(ep: Episode):
     # Stable sorting preserves source order on tied clocks; random IDs are not a clock.
-    return ep.event_time, ep.ingested_at
+    return time_key(ep.event_time), ep.ingested_at
 
 
 @dataclass(frozen=True)

@@ -22,6 +22,8 @@ from ..topics import Topic
 @runtime_checkable
 class Backend(Protocol):
     mode: str
+    async def remember_messages(self, messages: list[dict], session_id: str, mode: str = 'live',
+                                processing: str = 'buffered', scope: str = 'auto') -> dict: ...
 
     async def remember(self, content: str, session_id: str = "default", scope: str = "auto",
                        processing: str = "immediate") -> dict: ...
@@ -105,6 +107,10 @@ class LocalBackend:
 
         self.ns = namespace
         self.svc = service or MemoryService()
+
+    async def remember_messages(self, messages: list[dict], session_id: str, mode: str = 'live',
+                                processing: str = 'buffered', scope: str = 'auto') -> dict:
+        return await asyncio.to_thread(self.svc.remember_messages, self.ns, messages, session_id, mode, processing, scope)
 
     async def remember(self, content: str, session_id: str = "default", scope: str = "auto",
                        processing: str = "immediate") -> dict:
@@ -300,6 +306,11 @@ class RemoteBackend:
         r = await self._client.get(self.api_url + path, headers=self._headers)
         r.raise_for_status()
         return r.json()
+
+    async def remember_messages(self, messages: list[dict], session_id: str, mode: str = 'live',
+                                processing: str = 'buffered', scope: str = 'auto') -> dict:
+        return await self._post('/v1/messages', dict(messages=messages, session_id=session_id,
+            mode=mode, processing=processing, scope=scope))
 
     async def remember(self, content: str, session_id: str = "default", scope: str = "auto",
                        processing: str = "immediate") -> dict:

@@ -2,8 +2,8 @@
 
 `mnemotrace.connectors` 里的所有东西都是**纯标准库**（无第三方依赖），因此在零配置安装下也能导入历史
 （AGENTS.md 「代码导航」）。*解析器*把原始导出 —— ChatGPT 的 `conversations.json`、OpenAI `messages` 数组、
-JSONL 日志、纯 transcript —— 转换成 `ImportSession` 列表，再由 `Memory.import_messages()` 用少量批量
-嵌入调用 + 一次 System-2 整合完成导入（比逐条 `add()` 快 10 倍以上）。
+JSONL 日志、纯 transcript —— 转换成 `ImportSession` 列表，再由 `Memory.import_messages()`
+按原始顺序逐条保存消息，并通过统一窗口执行历史抽取。
 
 这个接缝填补的空白：此前唯一的批量加载器是仅供 eval 使用的 `seed_console.py`。这是 「代码导航」 采纳层需要的、
 面向用户的"自带历史"连接器。
@@ -30,6 +30,7 @@ class ImportMessage:
     role: str = "user"  # 作者角色：user | assistant | system | tool | ...
     event_time: Optional[float] = None  # epoch 秒（若来源带有时间）
     metadata: dict = field(default_factory=dict)
+    message_id: Optional[str] = None
 
 
 @dataclass
@@ -77,7 +78,7 @@ _DATE_RE = re.compile(r"(\d{4})[/-](\d{1,2})[/-](\d{1,2})")
 def to_epoch(value: Any) -> Optional[float]:
     """尽力把时间戳转成 epoch 秒。接受 epoch 整数/浮点数（自动识别毫秒/微秒/纳秒量级）、ISO-8601
     字符串（'2024-01-15T10:30:00Z'）和 'YYYY-MM-DD'。找不到可解析的内容时返回 None
-    （调用方随后回退到合成时钟）。"""
+    （保留来源时间未知，不以接收时间替代）。"""
     if value is None or value == "":
         return None
     if isinstance(value, bool):  # 防御：Python 中 bool 是 int 的子类

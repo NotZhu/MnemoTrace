@@ -19,6 +19,7 @@
 新存储，也不需要迁移。
 """
 from __future__ import annotations
+from ..util import time_key
 
 from typing import Optional
 
@@ -91,7 +92,7 @@ def extract_outcomes(llm: LLM, episodes: list[Episode], user_id: str,
     if not episodes:
         return []
     require_llm(llm)
-    chrono = sorted(episodes, key=lambda e: (e.event_time, e.ingested_at))
+    chrono = sorted(episodes, key=lambda e: (time_key(e.event_time), e.ingested_at))
     transcript = _windowed(
         [f"[{ep.role}] {ep.content}" for ep in chrono if ep.content.strip()], max_chars
     )

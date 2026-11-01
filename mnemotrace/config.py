@@ -48,6 +48,10 @@ class Config:
     extraction_max_input_bytes: int = 16_384  # 系统与用户提示词 UTF-8 字节预算；不是模型精确 token 数
     extraction_context_bytes: int = 2_048  # 每个窗口最多携带的前文正文 UTF-8 字节数
     extraction_max_output_tokens: int = 2_048  # 抽取输出上限；截断响应不提交
+    joint_max_output_tokens: int = 8192
+    joint_core_output_tokens: int = 2048
+    joint_summary_output_tokens: int = 2048
+    joint_context_tokens: Optional[int] = None  # 提供方总上下文；未知时不冒充已验证
     explicit_preference_extraction: bool = True  # 抽取 like、prefer、avoid 等显式偏好
     preference_object_filter: bool = True  # 过滤 it、these ideas 等含义不明确的偏好对象
     preference_object_normalization: bool = True  # 将 sound/idea of X 等偏好对象规范化为 X

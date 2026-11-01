@@ -146,8 +146,9 @@ def _json_dump(obj: Any, fh) -> None:
 
 
 @contextmanager
-def _lock(path: str):
-    os.makedirs(path, exist_ok=True)
+def _lock(path: str, *, create: bool = True):
+    if create:
+        os.makedirs(path, exist_ok=True)
     lock_path = os.path.join(path, ".lock")
     with open(lock_path, "a", encoding="utf-8") as fh:
         _flock.acquire(fh)  # 阻塞式：多进程间的保存不得交错执行
@@ -204,6 +205,8 @@ def discover_processing_namespaces(root: str) -> list[tuple[str, bool]]:
     for entry in os.scandir(root):
         if not entry.is_dir(follow_symlinks=False):
             continue
+        if os.path.normcase(os.path.realpath(entry.path)) != os.path.normcase(os.path.abspath(entry.path)):
+            continue  # Windows junctions must not alias another namespace during discovery.
         path = contained_child(root, entry.name)
         try:
             with _open_manifest(os.path.join(path, 'manifest.json')) as fh:
@@ -214,12 +217,17 @@ def discover_processing_namespaces(root: str) -> list[tuple[str, bool]]:
             raise StoreFormatError('Cannot read buffered recovery manifest') from exc
         if not isinstance(raw, dict) or not isinstance(raw.get('state'), dict):
             continue
-        if not any(k in raw['state'] for k in ('processing', 'summarization')):
+        if not any(k in raw['state'] for k in ('processing', 'summarization', 'messages')):
             continue
         try:
             state = validate_manifest(raw)['state']
             features = [state['processing']] if state.get('processing') is not None else []
             features.extend((state.get('summarization') or {}).values())
+            messages = state.get('messages')
+            if messages:
+                for namespace, pipeline in messages['namespaces'].items():
+                    features.append({'namespace': namespace, 'jobs': {
+                        key: {'state': job['state']} for key, job in pipeline['windows'].items()}})
             if not features:
                 continue
             user = features[0]['namespace']
@@ -227,7 +235,10 @@ def discover_processing_namespaces(root: str) -> list[tuple[str, bool]]:
                 raise ValueError('Buffered recovery namespace ownership mismatch')
         except ValueError as exc:
             raise StoreFormatError('Invalid buffered recovery state') from exc
-        namespaces.append((user, any(j['state'] in ACTIVE for f in features for j in f['jobs'].values())))
+        active = any(j['state'] in ACTIVE for f in features for j in f['jobs'].values())
+        active |= bool(messages and any(not r['cancelled'] and r['window_id'] is None and r['core'] == 'pending'
+                                       for pipeline in messages['namespaces'].values() for r in pipeline['messages'].values()))
+        namespaces.append((user, active))
     return namespaces
 
 
@@ -258,18 +269,23 @@ def _memory_state(mem: Any) -> dict[str, Any]:
         if mem._summary_state is not None:
             from ..consolidate.summaries import validate_state as validate_summaries
             state['summarization'] = validate_summaries(mem._summary_state, mem.episodes_doc.values())
+        if mem._message_state is not None:
+            from ..consolidate.messages import validate_state as validate_messages
+            state['messages'] = validate_messages(mem._message_state, mem.episodes_doc.values(), mem.embedder.dim)
         return validate_state(state)
     except ValueError as exc:
         raise StoreFormatError(str(exc)) from exc
 
 
-def save_memory(mem: Any, path: str, backend: str = "durable") -> None:
+def save_memory(mem: Any, path: str, backend: str = "durable", *, check_version: bool = False) -> None:
     """把一个 Memory 实例持久化到当前字段契约的 JSONL 目录。"""
     if os.path.exists(path) and not os.path.isdir(path):
         raise StoreFormatError(f"store path exists and is not a directory: {path}")
 
     with _lock(path):
         previous = _read_manifest(path)
+        if check_version and (previous[1] if previous else None) != mem._snapshot_version:
+            raise PersistenceError('Snapshot changed; reopen before processing')
         episodes = mem.episodes_doc.values()
         facts = []
         for fact in mem.fact_store.values():
@@ -302,6 +318,7 @@ def save_memory(mem: Any, path: str, backend: str = "durable") -> None:
             rows.sort(key=lambda row: row["id"])
         manifest_path = os.path.join(path, "manifest.json")
         manifest = _validated_manifest({
+            "format_version": 2,
             "snapshot_id": uuid.uuid4().hex,
             "mnemotrace_version": __version__,
             "embedder_id": _embedder_id(mem.embedder),
@@ -327,6 +344,17 @@ def save_memory(mem: Any, path: str, backend: str = "durable") -> None:
 
 
 def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
+    """Read one complete committed generation under the writer's snapshot lock."""
+    if os.path.exists(path) and not os.path.isdir(path):
+        raise StoreFormatError(f'{path} is not an MnemoTrace JSONL store directory')
+    if not os.path.exists(os.path.join(path, 'manifest.json')):
+        mem._snapshot_version = None
+        return False
+    with _lock(path, create=False):
+        return _load_memory(mem, path, allow_mismatch)
+
+
+def _load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
     """把 JSONL 存储的内容加载进一个已有的 Memory 实例。
 
     若 manifest 不存在则返回 False，表示"从空开始"。`allow_mismatch=True` 会跳过嵌入器
@@ -387,6 +415,11 @@ def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
         validate_summaries(state.get('summarization'), prepared['episodes'])
     except ValueError as exc:
         raise StoreFormatError(str(exc)) from exc
+    from ..consolidate.messages import validate_state as validate_messages
+    try:
+        validate_messages(state.get('messages'), prepared['episodes'], stored_dim)
+    except ValueError as exc:
+        raise StoreFormatError(str(exc)) from exc
     finish_vector_restore = mem._prepare_vector_restore(stored_dim, allow_mismatch)
 
     # Decoding existing persistent payloads can itself fail. Inspect every index before
@@ -430,5 +463,6 @@ def load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
     mem._import_seen = import_seen
     mem._processing_state = state.get('processing')
     mem._summary_state = state.get('summarization')
+    mem._message_state = state.get('messages')
     mem._snapshot_version = version
     return True

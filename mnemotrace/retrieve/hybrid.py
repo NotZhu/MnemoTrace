@@ -1,6 +1,7 @@
 """混合检索(AGENTS.md 「检索与模块」):在 live fact 集合上融合 dense-semantic + BM25-lexical + graph-proximity +
 新近度 + 显著度,并结合加权的 Reciprocal Rank Fusion。"""
 from __future__ import annotations
+from ..util import time_key
 
 import re
 from typing import Optional
@@ -245,7 +246,7 @@ class HybridRetriever:
         for rel in self.graph.relations():
             if rel.predicate.lower() not in _EXCLUSION_VALUE_PREDS:
                 continue
-            live = as_of is None or (rel.valid_at <= as_of and (rel.invalid_at is None or rel.invalid_at > as_of))
+            live = as_of is None or ((rel.valid_at is not None and rel.valid_at <= as_of) and (rel.invalid_at is None or rel.invalid_at > as_of))
             if live and rel.object_id in direct:
                 out.add(rel.subject_id)
         return out
@@ -357,24 +358,25 @@ class HybridRetriever:
         for fact in facts:
             if not is_single_valued(fact.predicate):
                 continue
-            cur = heads.get(fact.slot)
+            slot = (*fact.slot, fact.assertion_kind)
+            cur = heads.get(slot)
             # 手动 fact 具有权威性;否则以最新且有效的观测作为 head。
             if cur is None or (
                 fact.source == "user",
-                fact.valid_at,
+                time_key(fact.valid_at),
                 fact.created_at,
                 fact.id,
             ) > (
                 cur.source == "user",
-                cur.valid_at,
+                time_key(cur.valid_at),
                 cur.created_at,
                 cur.id,
             ):
-                heads[fact.slot] = fact
+                heads[slot] = fact
         return [
             fact
             for fact in facts
-            if not is_single_valued(fact.predicate) or heads.get(fact.slot) is fact
+            if not is_single_valued(fact.predicate) or heads.get((*fact.slot, fact.assertion_kind)) is fact
         ]
 
     def retrieve(
@@ -410,7 +412,7 @@ class HybridRetriever:
         lex = bm25_scores(query, [(f.id, f"{f.text} {date_terms(f.valid_at)}") for f in live])
         gph, qids = self._graph_scores(query, user_id, live, as_of)
         t = now() if as_of is None else as_of
-        rec = {f.id: recency(max(0.0, t - f.valid_at), self.config.recency_tau_days) for f in live}
+        rec = {f.id: recency(max(0.0, t - time_key(f.valid_at)), self.config.recency_tau_days) for f in live}
         sal = {f.id: f.salience for f in live}
 
         rankings = {

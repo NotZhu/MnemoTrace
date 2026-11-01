@@ -35,12 +35,17 @@ def main() -> None:
     ]
 
     print("== 写入原始事件（System-1，快速写入） ==")
-    for text, day in history:
-        mem.add(text, user_id="wei", event_time=BASE + day * DAY)
+    for index, (text, day) in enumerate(history):
+        mem.remember_messages([dict(message_id=f'demo:{index}', role='user', content=text,
+                                   event_time=BASE + day * DAY)],
+                              session_id='demo', user_id='wei', mode='historical')
         print(f"   第 {day:>2} 天：{text}")
 
     print("\n== 记忆整合（System-2：提取事实、构建图关系、处理冲突） ==")
-    print("  ", mem.consolidate())
+    processing = mem.flush_messages('wei', 'demo')
+    print("  ", processing)
+    if not processing['ok']:
+        raise SystemExit('Dialogue processing incomplete; inspect the reported task errors.')
 
     print("\n== 当前用户画像（L3 身份信息） ==")
     print("  ", mem.profile("wei"))

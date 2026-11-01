@@ -10,7 +10,7 @@ from typing import Any, Optional
 from .base import ImportMessage, ImportSession, extract_text, iter_jsonl, to_epoch
 
 # 消息字典的角色可能放在下面任意一个键里；内容键同理
-_ROLE_KEYS = ("role", "role", "author", "from", "sender")
+_ROLE_KEYS = ("role", "author", "from", "sender")
 _CONTENT_KEYS = ("content", "text", "message", "body", "value")
 _TIME_KEYS = ("event_time", "timestamp", "time", "created_at", "create_time", "date", "ts")
 _SESSION_KEYS = ("session_id", "session", "conversation_id", "thread_id", "chat_id")
@@ -31,7 +31,8 @@ def _msg_from_dict(d: dict, default_role: str = "user") -> Optional[ImportMessag
     if not text or not str(text).strip():
         return None
     return ImportMessage(content=str(text).strip(), role=str(role),
-                         event_time=to_epoch(_first(d, _TIME_KEYS)))
+                         event_time=to_epoch(_first(d, _TIME_KEYS)),
+                         message_id=_first(d, ('message_id', 'id')))
 
 
 def parse_messages(obj: Any, session_id: str = "imported") -> list[ImportSession]:
