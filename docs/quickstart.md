@@ -21,16 +21,18 @@ from mnemotrace import Memory
 from mnemotrace.llm.providers import make_llm
 
 memory = Memory(llm=make_llm("deepseek"))
-memory.add("I live in Paris.", user_id="user123", session_id="demo")
-stats = memory.consolidate()
+memory.remember_messages([
+    {"message_id": "m1", "role": "user", "content": "I live in Paris."}
+], user_id="user123", session_id="demo")
+processing = memory.flush_messages(user_id="user123")
+assert processing["ok"]
 result = memory.search("Where do I live?", user_id="user123")
 
-print(stats["facts_added"])  # 1
 print(result.answer())      # Paris
 print(memory.profile("user123"))  # {'lives_in': 'Paris'}
 ```
 
-`add()` 保存原始事件，`consolidate()` 提取事实并建立检索结构；两者在 Python 库中是显式分开的。查询时沿用写入时的 `user_id`。事实由 LLM 从原话生成，默认哈希嵌入主要捕捉词汇重合；真实语料的抽取和召回质量需要单独评测。
+`remember_messages()` 按消息 ID 保存完整原文及处理任务，`flush_messages()` 固定当前范围并联合提取事实、工作记忆及长消息摘要。来源时间可省略，此时明确为未知；历史对话指定 `mode="historical"`。查询时沿用写入时的 `user_id`。事实由 LLM 从原话生成，默认哈希嵌入主要捕捉词汇重合；真实语料的抽取和召回质量需要单独评测。非对话原文仍可使用 `add()` / `consolidate()`。
 
 ## 保存与重开
 

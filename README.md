@@ -28,8 +28,10 @@ from mnemotrace import Memory
 from mnemotrace.llm.providers import make_llm
 
 memory = Memory(llm=make_llm("deepseek"))
-memory.add("I live in Paris.", user_id="user123", session_id="demo")
-memory.consolidate()
+memory.remember_messages([
+    {"message_id": "m1", "role": "user", "content": "I live in Paris."}
+], user_id="user123", session_id="demo")
+assert memory.flush_messages(user_id="user123")["ok"]
 print(memory.search("Where do I live?", user_id="user123").answer())
 # Paris
 ```

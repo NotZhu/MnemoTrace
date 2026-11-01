@@ -10,6 +10,12 @@
 
 ## 窗口抽取预算
 
+对话联合输出使用 `joint_max_output_tokens`、`joint_core_output_tokens`、`joint_summary_output_tokens`，分别对应 `MNEMOTRACE_JOINT_MAX_OUTPUT_TOKENS`、`MNEMOTRACE_JOINT_CORE_OUTPUT_TOKENS`、`MNEMOTRACE_JOINT_SUMMARY_OUTPUT_TOKENS`。
+默认值维护在 [Config](../../mnemotrace/config.py)，只是工程起点。规划同时预留核心结果、逐条长消息摘要及格式开销，输出不足时缩小窗口，不复用独立摘要的输出上限。
+可用 `joint_context_tokens` / `MNEMOTRACE_JOINT_CONTEXT_TOKENS` 声明提供方总上下文限制；规划使用输入 UTF-8 字节作为保守 token 上界，同时预留完整联合输出上限。未声明时不声称已验证提供方上下文容量。截断响应整体失败。
+
+后台对话处理默认开启，`MNEMOTRACE_BUFFERED_EXTRACTION=0` 显式关闭。对话仅由最后活动后空闲 60 秒、预算、flush/close 触发，没有最早等待兜底；原文入口的旧抽取配置见下表。
+
 | Config 字段 | 服务环境变量 | 含义 |
 | --- | --- | --- |
 | extraction_max_input_bytes | MNEMOTRACE_EXTRACTION_MAX_INPUT_BYTES | 系统与用户提示词的 UTF-8 字节总预算，包含来源元数据 |
@@ -152,7 +158,7 @@ assert (fact.topic, fact.topic_source) == ("technology", "rule")
 | MNEMOTRACE_MAX_REQUEST_BYTES | 2097152，HTTP 请求体字节上限，必须为正整数 |
 | MNEMOTRACE_MAX_HOT_USERS | 64，服务的热用户缓存容量 |
 | MNEMOTRACE_MAX_HOT_FACTS | 使用 Config 的热层上限 |
-| MNEMOTRACE_BUFFERED_EXTRACTION | 默认关闭；设为 1 后允许请求显式选择 buffered，remember 默认仍为 immediate；接口见 HTTP 参考 |
+| MNEMOTRACE_BUFFERED_EXTRACTION | 默认开启后台处理；设为 0 关闭 worker，显式 flush 仍可执行；对话默认 buffered，原文 remember 默认 immediate；接口见 HTTP 参考 |
 | MNEMOTRACE_CONFLICT_DETECTION | 设为 1 且配置 LLM 时启用待确认冲突检测 |
 | MNEMOTRACE_SESSION_OUTCOMES | 设为 0 时强制禁止会话结论提取，客户端不能覆盖 |
 | MNEMOTRACE_REEMBED_ON_MISMATCH | 默认关闭；设为 1 可触发显式模型迁移路径 |
@@ -220,4 +226,4 @@ python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000
 | mnemotrace-agent-doctor | 检查所选运行环境与接线 |
 | mnemotrace-watch | 发现并导入客户端会话，另有调度器及 hook 安装选项 |
 
-完整参数用各命令的 `--help` 查询。MCP 的 `--api-url/--api-key-file` 对应远程后端；本地使用 `--namespace` 与数据目录。watcher 的 `--url`、`--key-file`、`--dry-run`、`--no-outcomes` 及安装选项有各自解析规则，不与其他 CLI 参数名混用。
+完整参数用各命令的 `--help` 查询。MCP 的 `--api-url/--api-key-file` 对应远程后端；本地使用 `--namespace` 与数据目录。watcher 的 `--url`、`--key-file`、`--dry-run`、`--no-close`、`--immediate` 及安装选项有各自解析规则，不与其他 CLI 参数名混用。

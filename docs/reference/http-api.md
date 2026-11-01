@@ -25,6 +25,27 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 
 ## 写入与读取
 
+### POST /v1/messages
+
+对话消息的统一入口，一次请求属于一个会话。实时与历史使用相同的消息数组：
+
+```json
+{"session_id":"chat-001","mode":"live","messages":[
+  {"message_id":"m1","role":"user","content":"请制定迁移计划。","event_time":1793500000},
+  {"message_id":"m2","role":"assistant","content":"建议先备份，再迁移。","event_time":1793500010}
+]}
+```
+
+`message_id`、`role`、`content` 必填；role 仅支持 user/assistant，不接收流式碎片。每条独立保存，数组顺序成为会话持久化序号。`event_time` 可省略或为 null，表示来源时间未知。
+`mode` 默认为 live；historical 不创建活跃工作记忆。`processing` 默认为 buffered，可显式 immediate；`scope` 支持 auto/long。`space` 的写权限由服务端校验。
+
+消息 ID 在空间和会话内唯一；同 ID 同输入返回原事件及当前状态，不重置空闲计时，不重复生成。不同输入返回 409/message_conflict；批内冲突在任何写入前拒绝。不同 ID 的相同正文允许存在。
+新消息的原文和任务持久化后返回 HTTP 202、queued=true；messages 数组含事件 ID、消息 ID、序号及分项状态。接收不代表抽取完成。自动处理需要模型，新输入在写入前检查配置。
+
+`GET /v1/processing` 的 messages 区报告对话处理；`POST /v1/processing/flush` 同时冻结并等待相应消息范围。completed、failed、timed_out 和每条 core/summarization/error_code 区分完整成功、部分失败与尚未完成。retry_failed=true 显式重试缺项，普通读取不会重置次数。
+
+下方 `/v1/remember` 保留给单条原文/显式工作状态等非消息数组入口；它不生成对话消息身份，也不接管 `/v1/messages` 的联合任务。
+
 ### POST /v1/remember
 
 | JSON 字段 | 默认值与含义 |
