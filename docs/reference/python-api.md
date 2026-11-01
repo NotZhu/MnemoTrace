@@ -12,6 +12,16 @@
 
 ## 写入与导入
 
+对话使用 `Memory.remember_messages(messages, session_id, user_id="default", mode="live", scope="auto")`。
+每条消息包含 message_id、role、content 和可选 event_time，角色限定为 user/assistant。返回每条事件 ID、持久化顺序和处理状态；相同 ID 的冲突输入报 MessageConflictError。
+底层写入不依赖 LLM；内存实例仍需显式 save 才获得持久性。`Memory.flush_messages(user_id="default", session_id=None, timeout=30, retry_failed=False)` 使用同一联合状态机处理已记录范围，需配置 LLM。保存失败优先恢复权威快照；无法恢复的实例必须重新打开。
+
+服务端使用 `MemoryService.remember_messages(user, messages, session_id, mode="live", processing="buffered", scope="auto")`，确认接收前保存原文和任务。后台默认开启，`MNEMOTRACE_BUFFERED_EXTRACTION=0` 可显式关闭；关闭后台仍可使用 immediate 和显式 flush。缺少模型时拒绝新的自动抽取输入。
+`processing_status` 的 messages 区与 `message_status` 报告核心、摘要和嵌入阶段；`flush`、`close_session` 冻结调用开始时的范围并显式报告失败，保留后来追加的消息与工作记忆。
+
+历史导入适配后逐条提交 historical 消息，超过入口批量上限时顺序分批。来源没有消息 ID 时，适配器采用稳定源位置 ID；修订原位置应使用明确的新消息 ID，不能以正文哈希删除合法重复。来源时间缺失保持未知，不再生成今天的合成时间。
+文档、手工事实和下述原文 API 保留独立契约；`consolidate()` 不会绕过联合任务处理对话消息。
+
 | 方法 | 主要参数 | 返回与语义 |
 | --- | --- | --- |
 | `add` | content；user_id、session_id、role、event_time；consolidate=False | Episode；保存事件，可选择立即整合 |
@@ -86,7 +96,7 @@ memory.consolidate()
 memory.save()
 ```
 
-`save(path=None)` 使用指定目录或上次打开/保存的路径；没有路径时抛出 ValueError。`open(path, allow_mismatch=False, **kwargs)` 是类方法，支持与构造函数一致的运行组件参数。
+`save(path=None, check_version=False)` 使用指定目录或上次打开/保存的路径；没有路径时抛出 ValueError。`check_version=True` 在快照锁内拒绝覆盖其他写入者已推进的版本；消息处理器和服务端保存使用此保护。`open(path, allow_mismatch=False, **kwargs)` 是类方法，支持与构造函数一致的运行组件参数，恢复在同一快照锁内读取完整代次。
 
 异常类型从 `mnemotrace.store.persist` 导入：PersistenceError、StoreFormatError、DimensionMismatchError、EmbedderMismatchError。当前恢复条件和重嵌入流程见[持久化契约](../architecture/memory.md)。
 
@@ -95,7 +105,7 @@ memory.save()
 ## 扩展与研究入口
 
 服务端 `MemoryService.remember(user, content, session_id="default", scope="auto", processing="immediate")`
-可显式选择 buffered，需开启 `MNEMOTRACE_BUFFERED_EXTRACTION`。这不改变底层 `Memory.remember()` 仅保存原文与路由的职责。
+可显式选择 buffered，后台默认开启；显式关闭后不可提交新的 buffered 输入。这不改变底层 `Memory.remember()` 仅保存原文与路由的职责。
 `processing_status(user, session_id=None)` 查看任务；`flush(user, session_id=None, timeout=30, retry_failed=False, include_summaries=False)`
 等待本次捕获范围并返回 completed、failed 或 timed_out，只有 completed 对应 ok=true。
 取消、失败和超时不会删除原始事件。模型或存储失败不能通过 queued 响应解释为抽取成功。
@@ -116,7 +126,7 @@ memory.save()
 
 `consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实和工作条目。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，已完成的窗口范围保留，未完成范围继续待处理；重试跳过完成范围并消解重复事实和工作条目。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
 
-导入重试先去重，再检查实际抽取需求：全部内容已完成且没有相关 pending 时，无需 LLM 即可返回 skipped，即使 consolidate=True。存在待抽取的新内容或相关 pending 时，在本次新输入写入前检查模型。已存在内容不再创建 episode。summarize=True 会补齐本次涉及会话中满足长度条件且缺失的摘要，包括抽取重试和部分新增的情况；已有摘要不重复生成，返回 summaries 为本次实际补齐数量。
+对话历史导入使用消息身份和联合任务；同 ID 的重传不重新生成。文档和可移植快照保留各自导入契约。独立摘要与 include_summaries 的规则只适用于非对话原文任务。
 
 公开异常为 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError；未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。原文保存不等同于事实抽取完成。模型输出的 working.kind 限定为 state/intent/task，显式工作记忆接口仍可使用其他 kind。会话结论 kind 在校验前忽略大小写和首尾空白，未知类型仍报响应无效。
 
@@ -132,7 +142,7 @@ memory.save()
 
 ### 摘要与显式原文读取
 
-`remember` 在完成原文保存及抽取后才执行条件摘要；摘要失败仍返回 ok=true，并通过 summarization.status/error_code 报告。
+非对话原文入口 `remember` 在完成原文保存及抽取后才执行条件摘要；摘要失败仍返回 ok=true，并通过 summarization.status/error_code 报告。
 buffered 在整个事件抽取完成后自动注册摘要任务，读取不触发模型。processing_status 返回独立的 summarization 任务区，原 counts 仍只统计抽取。
 默认 flush 只等待抽取；include_summaries=True 等待调用开始捕获范围内的摘要。未启用 worker 时不隐式启动后台处理，未完成任务返回 failed，可通过 close_session(summarize=True) 显式重试。
 close_session 的摘要未完成时返回 processing_incomplete，保留已完成阶段及工作记忆；summarize=False 不取消既有后台任务。

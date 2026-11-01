@@ -62,7 +62,7 @@ MCP 的 `--http` 是另一种传输方式，默认绑定 127.0.0.1:8765，路径
 
 1. 用 `mnemotrace_agent_status(session_id=...)` 检查接线和计数。
 2. 需要既往信息时调用 `mnemotrace_recall`，携带当前 session id，把返回内容作为有来源的上下文使用。
-3. 对值得跨会话保留的内容调用 `mnemotrace_remember`；短时任务状态使用 `scope="working"`。
+3. 对话调用 `mnemotrace_remember_messages`，携带稳定 session_id、逐条 message_id 与 user/assistant 角色；默认 buffered。历史使用 historical。非对话笔记或显式短时状态仍可调用 `mnemotrace_remember`。
 4. 任务结束调用 `mnemotrace_close_session`，再用 `mnemotrace_session_report` 核对结果。
 
 为每个独立线程使用稳定、可区分的 session id，例如 `agent:my-app:thread-123`。不要每轮换 id，也不要让所有线程共用 `default`。安装 MCP 只提供工具，何时调用仍由 Agent 的任务逻辑或客户端策略决定。
@@ -81,5 +81,5 @@ MCP 的 `--http` 是另一种传输方式，默认绑定 127.0.0.1:8765，路径
 
 - 找不到模块或依赖：确认 MCP 使用的 Python 与安装依赖的环境一致。
 - 看不到既有记忆：核对数据目录、namespace/远程身份、session id 和写入返回值。
-- 只有原始事件、没有结论：检查模型配置、异步积压、收尾调用及 `MNEMOTRACE_SESSION_OUTCOMES`。
+- 对话只有原始事件、没有结构化记忆：检查模型配置、processing_status 的 messages 区和 flush 结果。原文笔记的独立会话结论另受 `MNEMOTRACE_SESSION_OUTCOMES` 控制。
 - 缺少某个管理能力：MCP 和 SDK 只暴露部分 HTTP 能力，按各接口参考选择入口。
