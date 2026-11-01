@@ -2,6 +2,11 @@ import type { GraphResponse, MemoryDump, MemoryListOptions, OutcomeKind, Topic, 
 import type { MnemoTraceClient } from '../src/client'
 
 declare const client: MnemoTraceClient
+client.rememberMessages([{message_id: 'm1', role: 'assistant', content: 'Synthetic', event_time: null}], {sessionId: 's'})
+// @ts-expect-error dialogue requires a stable identity
+client.rememberMessages([{role: 'user', content: 'Synthetic'}], {sessionId: 's'})
+// @ts-expect-error tool output is not a complete user/assistant dialogue message
+client.rememberMessages([{message_id: 'm1', role: 'tool', content: 'Synthetic'}], {sessionId: 's'})
 const outcome: OutcomeKind = 'open_question'
 const options: MemoryListOptions = { outcomeKind: outcome, expectedRevision: 'synthetic-v1', evaluatedAt: 1000 }
 const response: Promise<MemoryDump> = client.memories(options)

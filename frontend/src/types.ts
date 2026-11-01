@@ -12,6 +12,8 @@ export interface TopicMetadata {
 }
 
 export interface MemoryFact extends TopicMetadata {
+  assertion_kind?: 'unspecified' | 'user_statement' | 'assistant_suggestion' | 'user_confirmation' | 'assistant_report'
+  source_roles?: ('user' | 'assistant')[]
   id: string
   text: string
   display: string // 本地化渲染结果（中文记录的事实显示为中文）；无则回退为 text
@@ -55,6 +57,9 @@ export interface MemoryEpisode {
   id: string
   date: string
   session: string
+  role: string
+  mode: 'live' | 'historical' | null
+  coverage: { partial: boolean } | null
   content: string
   summary: string
 }

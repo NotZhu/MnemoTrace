@@ -5,7 +5,6 @@ import { CircleAlert, Hourglass, Send, ShieldAlert, Trash2 } from 'lucide-react'
 
 import { Badge, Button, Card, CardTitle, EmptyState, ErrorState, PageHeader, Spinner } from '../components/ui'
 import { Modal } from '../components/Modal'
-import { ScopeSelect } from '../components/ScopeSelect'
 import { SessionPicker } from '../components/SessionPicker'
 import { toast } from '../components/Toast'
 import {
@@ -13,7 +12,7 @@ import {
   useClearWorking,
   useCloseSession,
   useMemoryPages,
-  useRemember,
+  useRememberMessages,
   useSessionReport,
   useSessions,
   useWorking,
@@ -21,7 +20,6 @@ import {
 import { useDebouncedSearch } from '../hooks/useDebouncedSearch'
 import { copy as t } from '../lib/copy'
 import { truncate } from '../lib/format'
-import type { RememberScope } from '../types'
 
 const SESSION_ACTION_CLASS = 'whitespace-nowrap border-0 bg-transparent p-0 text-[11px] text-ghost transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand-cyan disabled:cursor-wait disabled:opacity-50'
 
@@ -31,10 +29,12 @@ export default function Conversations() {
     episodes_limit: 20,
     include_sensitive: true,
   })
-  const remember = useRemember()
+  const remember = useRememberMessages()
   const [sessionId, setSessionId] = useState('default')
   const currentSession = sessionId.trim() || 'default'
-  const [scope, setScope] = useState<RememberScope>('auto')
+  const [role, setRole] = useState<'user' | 'assistant'>('user')
+  const [mode, setMode] = useState<'live' | 'historical'>('live')
+  const [pendingInput, setPendingInput] = useState<{identity: string; id: string} | null>(null)
   const status = useAgentStatus(currentSession)
   const working = useWorking(currentSession)
   const clearWorking = useClearWorking()
@@ -51,15 +51,16 @@ export default function Conversations() {
   const submit = () => {
     const content = text.trim()
     if (!content) return
-    remember.mutate({ content, session_id: currentSession, scope }, {
+    const identity = JSON.stringify([currentSession, content, role, mode])
+    const messageId = pendingInput?.identity === identity ? pendingInput.id : crypto.randomUUID()
+    setPendingInput({identity, id: messageId})
+    remember.mutate({messages: [{message_id: messageId, role, content}], sessionId: currentSession, mode}, {
       onSuccess: (r) => {
         setText('')
+        setPendingInput(null)
         working.refetch()
         if (r.queued) toast.info('原文已保存，正在等待模型抽取')
-        else if (r.scope === 'none') toast.info('原文已保存，没有需要长期或临时记忆的内容')
-        else if (r.scope === 'mixed') toast.success('已保存长期事实和临时状态')
-        else if (r.scope === 'working') toast.info(t.conversations.toastWorking)
-        else toast.success(t.common.toastRemembered(r.extracted ?? 0))
+        else toast.success('消息已保存')
       },
       onError: (e) => toast.error(String((e as Error).message)),
     })
@@ -110,7 +111,14 @@ export default function Conversations() {
               <SessionPicker value={sessionId} onChange={setSessionId} />
             </div>
             <div className="shrink-0">
-              <ScopeSelect value={scope} onChange={setScope} />
+              <select aria-label="消息角色" className="input" value={role}
+                onChange={(e) => setRole(e.target.value as 'user' | 'assistant')}>
+                <option value="user">用户消息</option><option value="assistant">AI 完整回复</option>
+              </select>
+              <select aria-label="消息模式" className="input" value={mode}
+                onChange={(e) => setMode(e.target.value as 'live' | 'historical')}>
+                <option value="live">实时</option><option value="historical">历史</option>
+              </select>
             </div>
           </div>
           <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-3">
@@ -236,6 +244,8 @@ export default function Conversations() {
                 <li key={key} className="mb-3 break-inside-avoid rounded-xl border border-line bg-ink-700/40 p-4">
                   <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px] text-ghost">
                     <span className="tabular-nums text-brand-cyan">{e.date}</span>
+                    <span>{e.role === 'assistant' ? 'AI 回复' : e.role === 'user' ? '用户消息' : e.role}</span>
+                    {e.mode === 'historical' && <span>历史</span>}
                     <span className="inline-flex min-w-0 max-w-full whitespace-normal break-all rounded bg-ink-700/60 px-1.5 py-px">{e.session}</span>
                   </div>
                   <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-200">
@@ -258,6 +268,7 @@ export default function Conversations() {
                   {e.summary && (
                     <p className="mt-2 border-l-2 border-brand-violet/40 pl-3 text-xs leading-relaxed text-ghost">
                       {t.conversations.summaryPrefix}
+                      {e.coverage?.partial && <span>（仅覆盖可见首尾）</span>}
                       {e.summary}
                     </p>
                   )}
