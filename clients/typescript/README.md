@@ -29,7 +29,10 @@ const client = new MnemoTraceClient({
   apiKey: 'YOUR_API_KEY',
 })
 
-await client.remember('I live in Paris.', { sessionId: 'demo', scope: 'long' })
+await client.rememberMessages([
+  { message_id: 'm1', role: 'user', content: 'I live in Paris.' },
+], { sessionId: 'demo' })
+await client.flushProcessing({ sessionId: 'demo', includeSummaries: true })
 const result = await client.recall('Where do I live?', { sessionId: 'demo' })
 console.log(result.context)
 await client.closeSession('demo')
@@ -55,6 +58,7 @@ All operations below return promises. Option names are camelCase except where an
 | --- | --- |
 | `health()` | Health; readiness is a separate HTTP endpoint |
 | `remember(content, options?)` | sessionId, scope, space; RememberResult |
+| `rememberMessages(messages, options)` | required sessionId; mode, processing, scope, space; MessagesResult |
 | `recall(query, options?)` | nChunks=6, sessionId, asOf, redactSensitive=false, spaces; RecallResult |
 | `search(query, options?)` | asOf, redactSensitive; SearchResult via lean=false |
 | `closeSession(sessionId?, options?)` | default session; summarize/clearWorking default true; CloseSessionResult |

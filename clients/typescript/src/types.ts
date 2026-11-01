@@ -37,11 +37,16 @@ export interface SummaryProcessingStatus {
 }
 
 export interface OriginalEpisode {
+  message_id: string | null
+  sequence: number | null
+  mode: 'live' | 'historical' | null
+  coverage: {unit: 'unicode_code_points'; ranges: [number, number][]; partial: boolean;
+    policy: string; original_length: number; input_hash: string; source: string; strategy_completed: boolean} | null
   id: string
   space: string
   session_id: string
   role: string
-  event_time: number
+  event_time: number | null
   ingested_at: number
   content: string
 }
@@ -79,6 +84,7 @@ export interface ProcessingJob {
 }
 
 export interface ProcessingStatus {
+  messages?: {generation: string | null; counts: Record<ProcessingState, number>; jobs: MessageJob[]}
   summarization?: SummaryProcessingStatus
   enabled: boolean
   generation: string | null
@@ -206,6 +212,8 @@ export interface TopicMetadata {
 }
 
 export interface Fact extends TopicMetadata {
+  assertion_kind?: 'unspecified' | 'user_statement' | 'assistant_suggestion' | 'user_confirmation' | 'assistant_report'
+  source_roles?: ('user' | 'assistant')[]
   id: string
   text: string
   display?: string
@@ -234,6 +242,9 @@ export interface EpisodeView {
   summarization: SummarizationResult
   date: string
   session: string
+  role: string
+  mode: 'live' | 'historical' | null
+  coverage: { partial: boolean } | null
   content: string
   summary: string
 }
@@ -446,6 +457,7 @@ export interface FactPatch {
 
 export interface ImportMessageInput {
   role?: string
+  message_id?: string
   content: string
   event_time?: number
 }
@@ -612,4 +624,31 @@ export interface ChatCompletionChunk {
 export interface OkMessage {
   ok: boolean
   message?: string
+}
+/** Complete dialogue input. IDs are stable within a space and session. */
+export interface DialogueMessage {
+  message_id: string
+  role: 'user' | 'assistant'
+  content: string
+  event_time?: number | null
+}
+
+export interface MessageJob {
+  episode_id: string
+  message_id: string
+  sequence: number
+  state: 'pending' | 'running' | 'retry_wait' | 'completed' | 'failed' | 'cancelled'
+  core: 'not_requested' | 'pending' | 'completed' | 'failed'
+  summarization: 'not_needed' | 'pending' | 'completed' | 'failed'
+  error_code: string | null
+  attempts: number
+  embed_attempts: number
+}
+
+export interface MessagesResult {
+  ok: boolean
+  accepted: number
+  queued: boolean
+  messages: MessageJob[]
+  processing?: { ok: boolean; status: 'completed' | 'failed' | 'timed_out'; jobs: MessageJob[] }
 }

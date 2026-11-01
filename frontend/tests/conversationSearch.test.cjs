@@ -22,7 +22,7 @@ function findNode(node, predicate) {
 
 function setup(sessionItems = [], episodes = []) {
   const states = [], effects = [], timers = new Map(), queries = []
-  const closed = [], reports = []
+  const closed = [], reports = [], submitted = []
   let stateIndex, effectIndex, pendingEffects, now = 0, timerId = 0
   const hookReact = {
     ...React,
@@ -45,6 +45,7 @@ function setup(sessionItems = [], episodes = []) {
   const moduleData = {exports: {}}
   vm.runInNewContext(source, {
     module: moduleData, exports: moduleData.exports,
+    crypto: {randomUUID: () => `synthetic-${submitted.length + 1}`},
     window: {
       setTimeout(callback, delay) {const id = ++timerId; timers.set(id, {callback, at: now + delay}); return id},
       clearTimeout(id) {timers.delete(id)},
@@ -54,7 +55,7 @@ function setup(sessionItems = [], episodes = []) {
       if (name === '../hooks/queries') return {
         useMemoryPages: () => ({data: {episodes}}),
         useAgentStatus: () => ({}), useWorking: () => ({refetch(){}}), useSessionReport: (id) => {reports.push(id);return {}},
-        useRemember: () => ({}), useClearWorking: () => ({}),
+        useRememberMessages: () => ({mutate(input, callbacks) {submitted.push({input, callbacks})}}), useClearWorking: () => ({}),
         useCloseSession: () => ({mutate(id, callbacks){closed.push(id);callbacks.onSuccess({facts_added:1,outcomes:1})}}),
         useSessions(params, options) {queries.push({params, options}); return {data: {sessions: sessionItems}}},
       }
@@ -62,7 +63,7 @@ function setup(sessionItems = [], episodes = []) {
         ['Badge', 'Button', 'Card', 'CardTitle', 'EmptyState', 'ErrorState', 'Field', 'PageHeader', 'Spinner'].map(key => [key, () => null]),
       )
       if (name === '../components/Modal') return {Modal: () => null}
-      if (name === '../components/Toast') return {toast: {success(){}}}
+      if (name === '../components/Toast') return {toast: {success(){}, info(){}, error(){}}}
       return require(name)
     },
   })
@@ -74,7 +75,7 @@ function setup(sessionItems = [], episodes = []) {
     return tree
   }
   return {
-    render, closed, reports,
+    render, closed, reports, submitted,
     input: () => findNode(render(), node => node.type === 'input' && node.props.className.includes('mb-3')),
     tick(ms) {
       now += ms
@@ -87,6 +88,26 @@ function setup(sessionItems = [], episodes = []) {
     options: () => queries.at(-1).options,
   }
 }
+
+test('对话重试保持消息 ID，角色和模式属于不可变输入，成功后可再次写相同正文', () => {
+  const s = setup()
+  const text = () => findNode(s.render(), node => node.type === 'textarea')
+  const send = () => text().props.onKeyDown({ctrlKey: true, key: 'Enter'})
+  text().props.onChange({target: {value: 'Synthetic dialogue'}})
+  send()
+  s.submitted[0].callbacks.onError(new Error('synthetic timeout'))
+  send()
+  assert.equal(s.submitted[0].input.messages[0].message_id, s.submitted[1].input.messages[0].message_id)
+  const role = findNode(s.render(), node => node.type === 'select' && node.props['aria-label'] === '消息角色')
+  role.props.onChange({target: {value: 'assistant'}})
+  send()
+  assert.notEqual(s.submitted[1].input.messages[0].message_id, s.submitted[2].input.messages[0].message_id)
+  assert.equal(s.submitted[2].input.messages[0].role, 'assistant')
+  s.submitted[2].callbacks.onSuccess({queued: true})
+  text().props.onChange({target: {value: 'Synthetic dialogue'}})
+  send()
+  assert.notEqual(s.submitted[2].input.messages[0].message_id, s.submitted[3].input.messages[0].message_id)
+})
 
 test('会话列表连续输入停顿 500ms 后才查询，输入框立即更新', () => {
   const s = setup()

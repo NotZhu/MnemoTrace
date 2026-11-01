@@ -196,6 +196,15 @@ export function useRemember() {
   })
 }
 
+export function useRememberMessages() {
+  const invalidate = useInvalidateMemory()
+  return useMutation({
+    mutationFn: (req: {messages: Parameters<typeof api.rememberMessages>[0]; sessionId: string;
+      mode?: 'live' | 'historical'}) => api.rememberMessages(req.messages, req.sessionId, req.mode),
+    onSuccess: invalidate,
+  })
+}
+
 export function useCloseSession() {
   const invalidate = useInvalidateMemory()
   const qc = useQueryClient()

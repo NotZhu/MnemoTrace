@@ -4,6 +4,19 @@ import test from 'node:test'
 import { MnemoTraceClient, MnemoTraceError } from '../dist/index.js'
 import { createRequire } from 'node:module'
 
+test('dialogue messages preserve identities, roles, unknown time and batch policy', async () => {
+  const calls = []
+  const client = new MnemoTraceClient({fetch: async (url, init) => {
+    calls.push({url, body: JSON.parse(init.body)})
+    return new Response(JSON.stringify({ok: true, queued: true, messages: []}), {status: 202})
+  }})
+  const messages = [{message_id: 'u1', role: 'user', content: 'Synthetic dialogue'},
+    {message_id: 'a1', role: 'assistant', content: 'Synthetic suggestion', event_time: null}]
+  await client.rememberMessages(messages, {sessionId: 's', mode: 'historical'})
+  assert.equal(new URL(calls[0].url).pathname, '/v1/messages')
+  assert.deepEqual(calls[0].body, {messages, session_id: 's', mode: 'historical', processing: 'buffered', scope: 'auto'})
+})
+
 test('buffered writes accept 202 and expose status and explicit retry controls', async () => {
   const calls = []
   const client = new MnemoTraceClient({ fetch: async (url, init) => {

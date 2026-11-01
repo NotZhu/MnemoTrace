@@ -142,6 +142,15 @@ export class MnemoTraceClient {
   }
 
   // --- 写入 / 读取记忆 -------------------------------------------------------
+  rememberMessages(messages: import('./types.js').DialogueMessage[], options: {
+    sessionId: string; mode?: 'live' | 'historical'; processing?: 'immediate' | 'buffered';
+    scope?: 'auto' | 'long'; space?: string
+  }): Promise<import('./types.js').MessagesResult> {
+    return this.post('/v1/messages', { messages, session_id: options.sessionId,
+      mode: options.mode ?? 'live', processing: options.processing ?? 'buffered',
+      scope: options.scope ?? 'auto', space: options.space })
+  }
+
   /**
    * 存储一条消息并将其整合为 bi-temporal 事实。
    * `space` 写入共享/agent 命名空间而非调用者自己的主命名空间（需要服务器端通过
