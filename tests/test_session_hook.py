@@ -329,7 +329,7 @@ def test_session_end_feeds_exactly_once_and_says_so_without_naming_anything(tmp_
     assert len(calls) == 1
     url, key, paths, kwargs = calls[0]
     assert (url, key, paths) == ("http://127.0.0.1:8766", "demo-key", [path])
-    assert kwargs["outcomes"] is True
+    assert kwargs["close_sessions"] is True
     assert _never_really_detach == [1]  # 在做任何慢操作之前先脱离会话
 
     claims = watch.load_claims(str(tmp_path / "hook_claims.jsonl"))

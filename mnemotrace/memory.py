@@ -5,8 +5,10 @@
 传入真实的 `embedder` / `llm` / store 工厂即可在 benchmark 后端上运行。
 """
 from __future__ import annotations
+from .util import time_key
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
@@ -226,6 +228,12 @@ class Memory:
         self._persist_path: Optional[str] = None  # 默认快照目录，由 open 或 save 设置
         self._snapshot_version: Optional[str] = None  # 已加载或保存的快照版本，用于检测并发修改
         self._summary_state = None
+        self._message_state = None
+        import threading
+        self._message_lock = threading.RLock()
+        self._message_step_lock = threading.Lock()
+        self._message_closed = False
+        self._message_broken = False
         from .consolidate.summaries import validate_config
         validate_config(self.config)
         self._processing_state = None  # Optional buffered-extraction feature state, committed with the snapshot.
@@ -237,6 +245,7 @@ class Memory:
 
     def close(self) -> None:
         """Release owned database resources; this does not save pending state."""
+        self._message_closed = True
         if self._qdrant_backend is not None:
             self._qdrant_backend.close()
 
@@ -309,16 +318,17 @@ class Memory:
         self.engine.extractor.aliases.update({k: set(v) for k, v in self._aliases.items()})
 
     # --- 持久化（让记忆跨进程/session 存活；AGENTS.md 「代码导航」） ---
-    def save(self, path: Optional[str] = None) -> None:
+    def save(self, path: Optional[str] = None, *, check_version: bool = False) -> None:
         """把持久化记忆状态快照到安全的 JSONL+manifest 存储。
 
         embedder/llm 不会被序列化；重新打开时请挂载你想用的运行时后端。常规操作刻意不写 pickle。
+        check_version=True 在持久化锁内拒绝覆盖其他写入者已推进的快照。
         """
         path = path or self._persist_path
         if not path:
             raise ValueError("no path to save to")
         backend = self.config.storage if self.config.storage in ("lancedb", "qdrant") else "durable"
-        save_memory(self, path, backend=backend)
+        save_memory(self, path, backend=backend, check_version=check_version)
         self._persist_path = path
 
     @classmethod
@@ -372,6 +382,10 @@ class Memory:
             self.embedder = embedder
 
         def _clear(store) -> None:
+            from .store.lancedb_store import LanceDBVectorStore
+            if isinstance(store, LanceDBVectorStore):
+                store.reset_dimension(self.embedder.dim)
+                return
             if self._qdrant_backend is not None and store in self._qdrant_backend.stores.values():
                 store.reset_dimension(self.embedder.dim)
                 return
@@ -418,6 +432,17 @@ class Memory:
             wm.embedding = self.embedder.embed(wm.content)
         counts["working"] = len(self.working_mem)
 
+        # Saved generation is independent of the embedding space; its checkpoint
+        # vectors must be recomputed before a pending commit can resume.
+        if self._message_state:
+            from .consolidate.messages import config_identity, reset_attempts
+            for state in self._message_state['namespaces'].values():
+                for window in state['windows'].values():
+                    if window['phase'] in {'embed', 'commit'} and window['state'] not in {'completed', 'cancelled'}:
+                        window.update(phase='embed', state='pending', vectors={},
+                                      next_attempt_at=0, config=config_identity(self))
+                        reset_attempts(window, 'embed_attempts', 'reembed', now())
+
         self._persona_cache.clear()
         self._rewire()  # retriever/engine 持有 embedder 引用（以及语义门控）——需重新绑定
         return counts
@@ -446,6 +471,8 @@ class Memory:
         Returns:
             Episode: 写入的 episode 对象。
         """
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         if consolidate:
             require_llm(self.llm)
         ep = self.ingestor.ingest(content, user_id, session_id, role, event_time, embedding=embedding)
@@ -460,6 +487,8 @@ class Memory:
         Explicit working entries are ready immediately. Auto/long remain pending until
         consolidate() validates model output; auto may yield both durable and temporary entries.
         """
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         if scope not in {"auto", "long", "working"}:
             raise ValueError("scope must be auto, long, or working")
         ep = self.add(content, user_id=user_id, session_id=session_id)
@@ -474,6 +503,53 @@ class Memory:
         self._sync_episode(ep)
         return {"scope": scope, "episode_id": ep.id}
 
+    def remember_messages(self, messages: list[dict], session_id: str, user_id: str = 'default',
+                          mode: str = 'live', scope: str = 'auto') -> dict:
+        """Offline-capable dialogue source/task recording; service owns background execution.
+
+        With an in-memory Memory, durability requires an explicit save, as with add().
+        """
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
+        from .consolidate.messages import MessageTasks, normalized
+        rows = normalized(messages, session_id, mode, scope)
+        with self._message_lock:
+            if self._message_closed:
+                raise RuntimeError('Memory is closed')
+            tasks = MessageTasks(self, user_id)
+            rows, unseen = tasks.inspect(rows, session_id, mode, scope)
+        batch = self.embedder.embed_batch(list(unseen.values())) if unseen else []
+        if len(batch) != len(unseen):
+            raise ValueError('Embedding batch length mismatch')
+        from .store._validation import validate_embedding
+        for vector in batch:
+            validate_embedding(vector, 'message embedding', self.embedder.dim)
+        vectors = dict(zip(unseen, batch))
+        with self._message_lock:
+            if self._message_closed:
+                raise RuntimeError('Memory is closed')
+            tasks = MessageTasks(self, user_id)
+            tasks.inspect(rows, session_id, mode, scope)
+            try:
+                ids, fresh = tasks.accept(rows, session_id, mode, scope, now(), vectors)
+            except BaseException:
+                self._recover_message_checkpoint()
+                raise
+            return {**tasks.response(ids), 'accepted': len(fresh)}
+
+    def _recover_message_checkpoint(self):
+        """Discard an interrupted native write or make the dirty object unreadable."""
+        try:
+            from .store.persist import load_memory
+            if not self._persist_path:
+                raise RuntimeError('No authoritative checkpoint available')
+            if not load_memory(self, self._persist_path):
+                raise RuntimeError('No authoritative checkpoint available')
+            self._rewire()
+        except BaseException:
+            self._message_broken = True
+            self.close()
+
     def consolidate(self, episodes: Optional[list[Episode | EventEvidence]] = None) -> dict[str, int]:
         """ 执行一次 System-2 整合，抽取 fact、构建图、检测冲突、分类和敏感标志。
 
@@ -482,7 +558,12 @@ class Memory:
         Returns:
             dict[str, int]: 整合统计信息。
         """
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         requested = list(episodes) if episodes is not None else self.ingestor.pending()
+        # Dialogue work has its own joint-call ledger; legacy raw extraction cannot consume it.
+        requested = [ep for ep in requested if self.episodes_doc.get(ep.id) is None
+                     or self.episodes_doc.get(ep.id).message_id is None]
         # Retrieved payloads may predate summary or metadata updates. Consolidate
         # authoritative episodes so writing them back cannot revert newer fields.
         eps = [self.episodes_doc.get(ep.id) or ep for ep in requested]
@@ -553,7 +634,67 @@ class Memory:
         return stats
 
     # --- 批量导入（AGENTS.md 「代码导航」 采用层）：批量接入用户自己的历史 ---
-    def import_messages(
+    def flush_messages(self, user_id: str = 'default', session_id: Optional[str] = None,
+                       timeout: float = 30, retry_failed: bool = False) -> dict:
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
+        if self._message_closed:
+            raise RuntimeError('Memory is closed; reopen the authoritative snapshot')
+        from ._messages import flush_memory
+        return flush_memory(self, user_id, session_id, timeout, retry_failed)
+
+    def import_messages(self, sessions, user_id: str = 'default', consolidate: Optional[bool] = None,
+                        summarize: bool = True, roles: bool = True, batch_size: int = 256,
+                        base_time: Optional[float] = None, dedupe: bool = True) -> dict:
+        """Adapt history to individual historical messages; documents retain their own input path.
+
+        Undated messages remain unknown. Positional import IDs are stable within an ordered
+        source export; changing an existing position requires an explicit source message ID.
+        """
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
+        from .connectors.dialogue import batches
+        from .consolidate.messages import MessageTasks
+        plans = batches(list(sessions), consolidate)
+        tasks = MessageTasks(self, user_id)
+        if any(messages is not None and extract and tasks.inspect(messages, sid, 'historical')[1]
+               for sid, messages, _, extract in plans):
+            require_llm(self.llm)
+        stats = dict(sessions=0, episodes=0, skipped=0, facts_added=0, summaries=0,
+                     facts_deferred=0, deferred_reason=None)
+        before = len(self.fact_store.values())
+        prior_summaries = {e.id for e in self.episodes_doc.values() if e.summary}
+        for sid, messages, record, extract in plans:
+            if messages is None:
+                result = self._import_documents([record], user_id, consolidate, summarize, roles,
+                                                batch_size, base_time, dedupe)
+                for key in ('sessions', 'episodes', 'skipped', 'facts_added', 'summaries'):
+                    stats[key] += result.get(key, 0)
+                continue
+            result = self.remember_messages(messages, sid, user_id, 'historical', 'auto' if extract else 'raw')
+            fresh = result['accepted']
+            if not extract:
+                stats['facts_deferred'] += fresh
+                stats['deferred_reason'] = 'not_requested'
+            for row in result['messages']:
+                ep = self.episodes_doc.get(row['episode_id'])
+                for key in ('source',):
+                    if key in record.get('metadata', {}):
+                        ep.metadata.setdefault(key, record['metadata'][key])
+                self._sync_episode(ep)
+            stats['sessions'] += bool(fresh)
+            stats['episodes'] += fresh
+            stats['skipped'] += len(messages) - fresh
+            if extract and fresh:
+                result = self.flush_messages(user_id, sid)
+                if not result['ok']:
+                    raise ExtractionError(stored_raw=True, episode_ids=[r['episode_id'] for r in result['jobs']])
+        stats['facts_added'] = len(self.fact_store.values()) - before
+        stats['summaries'] = sum(bool(e.summary) and e.id not in prior_summaries for e in self.episodes_doc.values()
+                                 if e.user_id == user_id and e.message_id is not None)
+        return stats
+
+    def _import_documents(
         self,
         sessions,
         user_id: str = "default",
@@ -564,22 +705,10 @@ class Memory:
         base_time: Optional[float] = None,
         dedupe: bool = True,
     ) -> dict[str, int]:
-        """批量写入预解析的 session（来自 `mnemotrace.connectors.parse`），每个 session 生成一条
-        episode：正文用少数几次 encode 批量嵌入，然后仅对新 episode 跑一次 System-2（抽取 fact +
-        构建图，可选 L2 摘要）。这是导入整段聊天历史的高效路径——远比逐轮 `add()` 便宜（N 个
-        session 只做一次 model.encode，而非 N 次）。
+        """Retain document source grouping, deduplication and optional raw extraction.
 
-        `sessions` 是 `ImportSession` 的可迭代对象（或形如 `{session_id, messages, ...}` 的 dict）。
-        `base_time` 为源数据未打时间戳的 session 提供合成时钟（base + i·day），即使没有日期也能
-        保持时间先后顺序。返回写入 + 整合统计。
-
-        `dedupe`（默认开启）使重导入幂等：内容指纹已写入过的 episode 会被跳过（计入 `skipped`）
-        ——重复提交同一份导出不会再让每条记忆翻倍。指纹由内容+身份构成（绝不含时间：重导入会
-        拿到新的合成时钟）。`dedupe=False` 恢复原始追加行为。
-
-        `consolidate=None`（默认）表示除 agent-session 转录（`metadata.source == "agent_session"`）
-        外的来源请求 fact 抽取；转录只存储 + 摘要，显式传 True 才做逐轮抽取。
-        先去重，再根据新增候选和相关 pending 检查 LLM；无实际抽取任务时不要求模型。
+        Dialogue adapters never call this path. Document dates retain their existing
+        ingestion policy; message source times and identities belong to MessageTasks.
         """
         import hashlib
 
@@ -596,7 +725,7 @@ class Memory:
                 return s
             if isinstance(s, dict) and "messages" in s:
                 msgs = [ImportMessage(content=str(m.get("content", "")),
-                                      role=str(m.get("role") or m.get("role") or "user"),
+                                      role=str(m.get("role") or "user"),
                                       event_time=_time_of(m),
                                       metadata=dict(m.get("metadata", {})))
                         for m in s["messages"] if isinstance(m, dict)]
@@ -609,7 +738,6 @@ class Memory:
 
         items = [c for c in (_coerce(s) for s in sessions) if c is not None]
         session_ids = {s.session_id or f"imported_{i}" for i, s in enumerate(items)}
-        want_facts = consolidate is True
         do_consolidate = consolidate is not False
         base = base_time if base_time is not None else now()
         texts: list[str] = []
@@ -664,10 +792,9 @@ class Memory:
         buffered_ids = ProcessingTasks.registered_ids(self)
         pending = [ep for ep in self.ingestor.pending()
                    if ep.id not in buffered_ids
-                   and ep.user_id == user_id and ep.session_id in session_ids
-                   and (want_facts or ep.metadata.get("source") != "agent_session")] if do_consolidate else []
-        needs_facts = do_consolidate and (bool(pending) or any(
-            want_facts or source != "agent_session" for _, _, _, _, source in metas))
+                   and ep.message_id is None and ep.user_id == user_id
+                   and ep.session_id in session_ids] if do_consolidate else []
+        needs_facts = do_consolidate and bool(pending or metas)
         if needs_facts:
             # Deduplication is read-only. Reject before embedding, writing or recording new fingerprints.
             try:
@@ -693,27 +820,15 @@ class Memory:
             self._sync_episode(ep)
             self._import_seen.add(fp)  # 仅在 episode 真正落库之后记录
 
-        agent_eps = [ep for ep in new_eps if ep.metadata.get("source") == "agent_session"]
-        if agent_eps and not want_facts:
-            for ep in agent_eps:
-                # 工作会话的持久记忆是其结束时的 outcome（consolidate/outcomes.py），而不是逐轮
-                # 三元组：RuleExtractor 曾把 12 个真实轮次变成 11 条垃圾 fact 和 84 行
-                # `occupation`，即便用 LLM 也会抽出工作会话里并不存在的生平三元组（357ae16）。
-                # 打上 consolidated=True 正是为了让后续所有 drain（close_session、remember、异步
-                # worker——均按 `not ep.consolidated` 过滤）永远不会抽取它。
-                ep.consolidated = True
-                ep.metadata["extraction"] = "outcomes_only"
-                self._sync_episode(ep)
-        agent_ids = {ep.id for ep in agent_eps}
-        extract = pending + (new_eps if want_facts else [ep for ep in new_eps if ep.id not in agent_ids])
+        extract = pending + new_eps
 
         stats = {"sessions": session_count, "episodes": len(new_eps), "facts_added": 0, "summaries": 0,
                  "skipped": skipped}
         # 防御空列表：consolidate([]) 仍会空跑 _apply_policy/sweep。
         if do_consolidate and extract:
             stats.update(self.consolidate(extract))
-        stats["facts_deferred"] = 0 if want_facts else len(agent_eps)
-        stats["deferred_reason"] = "outcomes_only" if stats["facts_deferred"] else None
+        stats["facts_deferred"] = 0
+        stats["deferred_reason"] = None
         if summarize:
             # Retried imports may contain both new rows and existing rows without summaries.
             stats["summaries"] = self.summarize_episodes([
@@ -735,36 +850,39 @@ class Memory:
         （重跑抽取会使其重复并抹平历史），episode 则重新进入带日期的原始日志并标记为已整合，
         System-2 永远不会重新消化它们。share-safe 导出不含 episode——只恢复 fact 是那里的预期
         结果。在 `dedupe`（默认）下幂等。"""
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         from .store._validation import validate_embedding, validate_snapshot
 
         snapshot = validate_snapshot(snapshot)
         user = user_id
 
         # --- episodes：恢复无损带日期日志（仅 include_sensitive 导出中存在） ---
-        ep_seen = {(ep.session_id, ep.content) for ep in self.episodes_doc.values()
-                   if ep.user_id == user}
+        ep_seen = {ep.metadata.get('snapshot_source_id') for ep in self.episodes_doc.values()
+                   if ep.user_id == user and ep.metadata.get('snapshot_source_id')}
         eps_skipped = 0
         prepared_episodes: list[Episode] = []
         for row in snapshot["episodes"]:
             content = row["content"]
             session_id = row["session_id"]
-            if dedupe and (session_id, content) in ep_seen:
+            if dedupe and row['id'] in ep_seen:
                 eps_skipped += 1
                 continue
             ep = Episode(content=content, user_id=user, session_id=session_id,
                          role=row["role"], event_time=row["event_time"],
                          consolidated=True,  # 它的 fact 在下方恢复；绝不重新抽取
-                         summary=row.get("summary", ""))
+                         summary=row.get("summary", ""), coverage=row.get('coverage'),
+                         metadata={'snapshot_source_id': row['id']})
             ep.embedding = self.embedder.embed(content)
             validate_embedding(ep.embedding, "snapshot.episodes.embedding", self.embedder.dim)
             if ep.summary:
                 ep.summary_embedding = self.embedder.embed(ep.summary)
                 validate_embedding(ep.summary_embedding, "snapshot.episodes.summary_embedding", self.embedder.dim)
             prepared_episodes.append(ep)
-            ep_seen.add((session_id, content))
+            ep_seen.add(row['id'])
 
         # --- facts：同时恢复 live 与被取代的行，保留 valid/transaction 时间 ---
-        fact_seen = {(f.subject, f.predicate, f.object, round(f.valid_at, 1)): f.id
+        fact_seen = {(f.subject, f.predicate, f.object, (round(f.valid_at, 1) if f.valid_at is not None else None), f.assertion_kind): f.id
                      for f in self._all_facts() if f.user_id == user}
         id_map: dict[str, str] = {}  # 旧快照 id -> 新 id，用于重连取代链
         staged: list[tuple[Fact, str | None]] = []
@@ -772,13 +890,14 @@ class Memory:
         for row in snapshot["facts"]:
             s, p, o = row["subject"], row["predicate"], row["object"]
             valid_at = row["valid_at"]
-            key = (s, p, o, round(valid_at, 1))
+            key = (s, p, o, (round(valid_at, 1) if valid_at is not None else None), row.get('assertion_kind', 'unspecified'))
             if dedupe and key in fact_seen:
                 id_map[row["id"]] = fact_seen[key]
                 facts_skipped += 1
                 continue
             f = Fact(subject=s, predicate=p, object=o, user_id=user,
                      text=row.get("text", ""), source=row["source"],
+                     assertion_kind=row.get("assertion_kind", "unspecified"), source_roles=row.get("source_roles", []),
                      category=row["category"], sensitive=row["sensitive"],
                       topic=row["topic"], topic_source=row["topic_source"],
                      salience=row["salience"], confidence=row["confidence"],
@@ -815,6 +934,8 @@ class Memory:
                  category: Optional[str] = None, topic: Optional[Topic] = None) -> Fact:
         """手动断言一条 fact。它被标记为 source='user'（权威）：冲突解决允许它取代同一槽位上
         任何抽取出的值，并且此后受到保护，不会被未来的自动覆盖改写。"""
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         user = user_id
         # Fact 构造时校验主题及主题来源，失败发生在嵌入、图操作和存储之前。
         f = Fact(subject=subject, predicate=predicate, object=object, user_id=user, source="user",
@@ -825,6 +946,8 @@ class Memory:
             # 手动新增没有独立的结论依据参数，内容线索只取对象；重置既有结论时另纳入已存依据。
             f.topic, f.topic_source = resolve_topic(predicate, object)
         f.embedding = self.embedder.embed(f.text)
+        from .consolidate.messages import MessageTasks
+        MessageTasks(self, f.user_id).invalidate()
         from .consolidate.classify import classify_fact
         classify_fact(f)  # 打 category + 敏感标签（feature ⑤）
         if category is not None:
@@ -850,6 +973,8 @@ class Memory:
         """实际修改 fact 内容时标记为用户手写（因此自动抽取不会把它改回去）。
         依据新内容重新分类 category/sensitivity；显式传入的 `sensitive`/`category` 覆盖自动结果
         （用户的选择永远优先）。只修改元数据或回传未变的内容时，保留来源、有效状态与历史。"""
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         f = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
         if f is None:
             return None
@@ -927,6 +1052,8 @@ class Memory:
             f.display = f.object if f.predicate.lower() in OUTCOME_PREDICATES else ""
         f.embedding = self.embedder.embed(f.text)
         f.source = "user"
+        from .consolidate.messages import MessageTasks
+        MessageTasks(self, f.user_id).invalidate()
         f.invalid_at = None  # 用户编辑使其重新生效
         f.expired_at = None
         # 依据编辑后的内容重新分类，再应用显式的用户覆盖
@@ -955,6 +1082,10 @@ class Memory:
         """被遗忘权：硬删除一条 fact（区别于保留历史的自动失效化）。这是用户主动发起的擦除，
         数据真的被移除——热层和冷层都删。"""
         existed = self.fact_store.get(fact_id) is not None or self.cold_store.get(fact_id) is not None
+        if existed and self._message_state:
+            from .consolidate.messages import MessageTasks
+            record = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
+            MessageTasks(self, record.user_id).invalidate()
         self.graph.delete_relations_for_fact(fact_id)
         self.graph.prune_orphan_entities()
         self.fact_store.delete(fact_id)
@@ -1032,7 +1163,7 @@ class Memory:
             live = (
                 r.invalid_at is None
                 if as_of is None
-                else r.valid_at <= as_of and (r.invalid_at is None or r.invalid_at > as_of)
+                else (r.valid_at is not None and r.valid_at <= as_of) and (r.invalid_at is None or r.invalid_at > as_of)
             )
             if live_only and not live:
                 continue
@@ -1128,6 +1259,8 @@ class Memory:
                        as_of: Optional[float] = None, kind: Optional[str] = None) -> list[WorkingMemory]:
         """存活的工作记忆条目（可按 session / kind 过滤）；排除已过期和已消费的。
         读取时惰性清扫硬过期条目。"""
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         user = user_id
         self.sweep_working(as_of)
         return [w for w in self.working_mem.values()
@@ -1137,6 +1270,8 @@ class Memory:
         """会话结束/断电重启式清理：丢弃该 session 的工作记忆。返回清除数量。"""
         user = user_id
         ids = [i for i, w in self.working_mem.items() if w.user_id == user and w.session_id == session_id]
+        from .consolidate.messages import MessageTasks
+        MessageTasks(self, user).invalidate(session_id)
         for i in ids:
             del self.working_mem[i]
         return len(ids)
@@ -1200,12 +1335,14 @@ class Memory:
         c = self.conflicts.get(conflict_id)
         if c is None:
             return False
+        from .consolidate.messages import MessageTasks
+        MessageTasks(self, c.user_id).invalidate()
         newer = self.fact_store.get(c.newer) or self.cold_store.get(c.newer)
         older = self.fact_store.get(c.older) or self.cold_store.get(c.older)
         if keep in ("newer", "older") and newer is not None and older is not None:
             winner, loser = (newer, older) if keep == "newer" else (older, newer)
             if loser.invalid_at is None:
-                loser.invalid_at = max(winner.valid_at, loser.valid_at)
+                loser.invalid_at = max((winner.valid_at, loser.valid_at), key=time_key)
             loser.expired_at = now()
             winner.supersedes = loser.id
             self.engine.graph_builder.invalidate(loser.id, loser.expired_at)
@@ -1301,7 +1438,7 @@ class Memory:
         cands = self.summary_vec.search(
             self.embedder.embed(query),
             pool,
-            where=lambda e: e.user_id == user and (as_of is None or e.event_time <= as_of),
+            where=lambda e: e.user_id == user and (as_of is None or (e.event_time is not None and e.event_time <= as_of)),
         )
         eps = [event_evidence(ep) for _, ep in cands]
         if len(eps) <= k:
@@ -1381,7 +1518,7 @@ class Memory:
         """该用户的长期指令 / how-to fact（程序性记忆）。"""
         user = user_id
         return [f for f in self._all_facts()
-                if f.user_id == user and f.is_live(as_of)
+                if f.user_id == user and f.is_user_knowledge and f.is_live(as_of)
                 and (f.predicate.lower() in self._INSTRUCTION_PREDS
                      or any(f.predicate.lower().startswith(p + "_") for p in ("wants", "prefers", "remind")))]
 
@@ -1417,7 +1554,7 @@ class Memory:
         q_is_proc = bool(_PROCEDURAL_QUERY_RE.search(query))
         rows: list[tuple[int, float, Fact]] = []
         for f in self._all_facts():
-            if f.user_id != user or not f.is_live(as_of) or not self._is_procedural_fact(f):
+            if f.user_id != user or not f.is_user_knowledge or not f.is_live(as_of) or not self._is_procedural_fact(f):
                 continue
             text = " ".join(
                 part for part in (
@@ -1468,7 +1605,7 @@ class Memory:
         from .consolidate.structured import build_structured_profile
         user = user_id
         subject = self.engine.self_name(user)
-        live = [f for f in self._all_facts() if f.user_id == user and f.is_live()]
+        live = [f for f in self._all_facts() if f.user_id == user and f.is_user_knowledge and f.is_live()]
         return build_structured_profile(live, subject, user)
 
     def build_persona(self, user_id: str = "default") -> str:
@@ -1479,7 +1616,7 @@ class Memory:
         subject = self.engine.self_name(user)
         mute = self.focus.get("mute", [])
         live = [f for f in self._all_facts()
-                if f.user_id == user and f.is_live() and not self._matches(f, mute)]
+                if f.user_id == user and f.is_user_knowledge and f.is_live() and not self._matches(f, mute)]
         persona = (self.profiles.narrative(subject, live, llm=self.llm,
                                            system=self._effective("persona_system")) if live else "")
         track = self.focus.get("track", [])
@@ -1498,7 +1635,7 @@ class Memory:
         mute = self.focus.get("mute", [])
         live = [
             f for f in self._all_facts()
-            if f.user_id == user and f.is_live(as_of) and not self._matches(f, mute)
+            if f.user_id == user and f.is_user_knowledge and f.is_live(as_of) and not self._matches(f, mute)
         ]
         return self.profiles.narrative(
             subject,
@@ -1516,11 +1653,11 @@ class Memory:
                 multi.append(f)
                 continue
             key = (f.subject.lower(), f.predicate.lower())
-            if key not in latest or f.valid_at > latest[key].valid_at:
+            if key not in latest or time_key(f.valid_at) > time_key(latest[key].valid_at):
                 latest[key] = f
         rows = sorted(
             list(latest.values()) + multi,
-            key=lambda f: (f.subject.lower(), f.predicate.lower(), f.object.lower(), -f.valid_at),
+            key=lambda f: (f.subject.lower(), f.predicate.lower(), f.object.lower(), -time_key(f.valid_at)),
         )[:limit]
         if not rows:
             return ""
@@ -1545,7 +1682,7 @@ class Memory:
         prefs = [f for f in pool.values() if any(m in f.predicate.lower() for m in self._PREFERENCE_MARKERS)]
         if not prefs:
             return ""
-        prefs.sort(key=lambda f: (not overlap_terms(query, f"{f.predicate} {f.object}"), -f.valid_at))
+        prefs.sort(key=lambda f: (not overlap_terms(query, f"{f.predicate} {f.object}"), -time_key(f.valid_at)))
         lines = ["日期 | 人物或对象 | 偏好关系 | 具体内容", "--- | --- | --- | ---"]
         for f in prefs[:limit]:
             lines.append(f"{fmt_date(f.valid_at)} | {f.subject} | {f.predicate.replace('_', ' ')} | {f.object}")
@@ -1615,7 +1752,7 @@ class Memory:
 
         rows = sorted(
             selected.values(),
-            key=lambda f: (f.subject.lower(), f.predicate.lower(), f.valid_at, f.object.lower()),
+            key=lambda f: (f.subject.lower(), f.predicate.lower(), time_key(f.valid_at), f.object.lower()),
         )[:limit]
         lines = [
             "valid from | valid until | subject | attribute | value | status",
@@ -1624,7 +1761,7 @@ class Memory:
         for f in rows:
             until = fmt_date(f.invalid_at) if f.invalid_at is not None else "current"
             view_time = now() if as_of is None else as_of
-            if f.valid_at > view_time:
+            if (f.valid_at is not None and f.valid_at > view_time):
                 status = "not yet valid"
             elif f.is_live(as_of):
                 status = "current"
@@ -1664,7 +1801,7 @@ class Memory:
         if not self.config.temporal_history_queries or not _TEMPORAL_HISTORY_RE.search(query):
             return None
         view_time = now() if as_of is None else as_of
-        facts = [f for f in self._all_facts() if f.user_id == user and f.valid_at <= view_time]
+        facts = [f for f in self._all_facts() if f.user_id == user and (f.valid_at is not None and f.valid_at <= view_time)]
         if not facts:
             return None
         by_id = {f.id: f for f in facts}
@@ -1675,10 +1812,10 @@ class Memory:
 
         candidates: list[tuple[int, float, Fact, Fact]] = []
         for old, newers in ((by_id[old_id], ns) for old_id, ns in replacements.items()):
-            visible_newers = [n for n in newers if n.valid_at <= view_time]
+            visible_newers = [n for n in newers if (n.valid_at is not None and n.valid_at <= view_time)]
             if not visible_newers:
                 continue
-            newer = max(visible_newers, key=lambda f: (f.valid_at, f.created_at, f.id))
+            newer = max(visible_newers, key=lambda f: (time_key(f.valid_at), f.created_at, f.id))
             if old.is_live(as_of):
                 continue
             old_terms = self._chain_terms(old)
@@ -1727,7 +1864,7 @@ class Memory:
                 replaces.setdefault(f.supersedes, []).append(f)
 
         def visible(f: Fact) -> bool:
-            return f.valid_at <= view_time
+            return (f.valid_at is not None and f.valid_at <= view_time)
 
         selected: dict[str, Fact] = {}
 
@@ -1746,7 +1883,7 @@ class Memory:
             queue = [seed]
             while queue:
                 cur = queue.pop(0)
-                for newer in sorted(replaces.get(cur.id, []), key=lambda f: f.valid_at):
+                for newer in sorted(replaces.get(cur.id, []), key=lambda f: time_key(f.valid_at)):
                     if newer.id in seen:
                         continue
                     seen.add(newer.id)
@@ -1760,7 +1897,7 @@ class Memory:
         # 替代值）时才渲染。
         if len(selected) <= 1:
             return []
-        return sorted(selected.values(), key=lambda f: (f.subject.lower(), f.predicate.lower(), f.valid_at))[:limit]
+        return sorted(selected.values(), key=lambda f: (f.subject.lower(), f.predicate.lower(), time_key(f.valid_at)))[:limit]
 
     def _fact_evolution_block(
         self,
@@ -1801,7 +1938,7 @@ class Memory:
                 slots.setdefault((f.subject, f.predicate), []).append(f)
             blocks = []
             for (subj, pred), facts in slots.items():
-                facts.sort(key=lambda x: x.valid_at, reverse=True)
+                facts.sort(key=lambda x: time_key(x.valid_at), reverse=True)
                 attr = pred.replace("_", " ")
                 live = next((f for f in facts if f.is_live(as_of)), None)
                 head = live or facts[0]
@@ -1875,7 +2012,7 @@ class Memory:
         history_query = bool(_TEMPORAL_HISTORY_RE.search(query or ""))
 
         def fact_order(f: Fact) -> tuple[int, float]:
-            past = int(history_query and f.valid_at <= view_time and not f.is_live(as_of))
+            past = int(history_query and (f.valid_at is not None and f.valid_at <= view_time) and not f.is_live(as_of))
             return (past, f.valid_at)
 
         for fact in sorted(facts, key=fact_order, reverse=True):
@@ -1887,7 +2024,7 @@ class Memory:
                 if ep_id in seen_eps:
                     continue
                 ep = self.episodes_doc.get(ep_id)
-                if ep is None or ep.user_id != user or ep.event_time > view_time:
+                if ep is None or ep.user_id != user or (ep.event_time is not None and ep.event_time > view_time):
                     continue
                 ep = event_evidence(ep)
                 seen_eps.add(ep_id)
@@ -1963,17 +2100,17 @@ class Memory:
                 continue
             for ep_id in fact.provenance:
                 ep = self.episodes_doc.get(ep_id)
-                if ep is None or ep.user_id != user or ep.event_time > view_time:
+                if ep is None or ep.user_id != user or (ep.event_time is not None and ep.event_time > view_time):
                     continue
                 ep = event_evidence(ep)
                 ep_overlap = len(overlap_terms(query, ep.text)) if query else 0
                 support_overlap = len(overlap_terms(fact.text, ep.text))
                 score = fact_overlap * 8 + support_overlap * 3 + ep_overlap * 2
-                if history_query and fact.valid_at <= view_time and not fact.is_live(as_of):
+                if history_query and (fact.valid_at is not None and fact.valid_at <= view_time) and not fact.is_live(as_of):
                     score += 96
                 prev = scored.get(ep.id)
-                item = (score, fact_rank, ep.event_time, ep)
-                if prev is None or (score, -fact_rank, ep.event_time) > (prev[0], -prev[1], prev[2]):
+                item = (score, fact_rank, time_key(ep.event_time), ep)
+                if prev is None or (score, -fact_rank, time_key(ep.event_time)) > (prev[0], -prev[1], prev[2]):
                     scored[ep.id] = item
         ranked = sorted(scored.values(), key=lambda item: (-item[0], item[1], -item[2], item[3].id))
         return [ep for _, _, _, ep in ranked[:limit]]
@@ -2117,7 +2254,7 @@ class Memory:
             for f in plan.facts[:limit]:
                 if redact_sensitive and getattr(f, "sensitive", False):
                     continue
-                lines.append(f"- [{fmt_date(f.valid_at)}] {f.text}")
+                lines.append(f"- [{fmt_date(f.valid_at)}] {f.evidence_text}")
             if lines:
                 return "GRAPH PATHS (relation evidence):\n" + "\n".join(lines)
             return ""
@@ -2357,6 +2494,8 @@ class Memory:
           * 摘要块提供宽时间覆盖（默认 20），这正是聚合类问题（"how many trips"、"list
             everything"）所需的；摘要很小，覆盖因此仍然廉价。
         `char_budget` 对组装出的上下文硬性封顶，使其永远不可能接近全文历史的规模。"""
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         user = user_id
         blocks: list[str] = []
         need = (
@@ -2409,7 +2548,7 @@ class Memory:
             wm = self.working_memory(user, session_id=session_id, as_of=as_of)
             if wm:
                 wl = "\n".join(f"- [{w.kind}] {w.content}"
-                               for w in sorted(wm, key=lambda x: x.event_time))
+                               for w in sorted(wm, key=lambda x: time_key(x.event_time)))
                 blocks.append(f"WORKING MEMORY (this session, ephemeral):\n{wl}")
 
         # L1 fact：对每个（子）查询做 hybrid 检索后取并集；再从查询实体做 n-hop 图扩展。
@@ -2441,8 +2580,8 @@ class Memory:
         if all_facts:
             for f in all_facts:  # 访问即强化：被浮出的 fact 保持显著（间隔效应）
                 self._reinforce_fact(f)
-            by_date = sorted(all_facts, key=lambda f: f.valid_at, reverse=True)  # 最新在前（更新优先）
-            fl = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.text}" for f in by_date)
+            by_date = sorted(all_facts, key=lambda f: time_key(f.valid_at), reverse=True)  # 最新在前（更新优先）
+            fl = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.evidence_text}" for f in by_date)
             blocks.append(f"FACTS (current, dated):\n{fl}")
             if need is not None and need.current_state:
                 state = self._current_state_block(all_facts)
@@ -2455,8 +2594,8 @@ class Memory:
             # TIMELINE：同样的 fact 按旧->新排列并显式留出间隔，使"最早/最近/间隔多久"能直接
             # 从顺序读出，日期算术为模型铺好而不是留给心算（时间类问题的主要失败模式）。
             if timeline:
-                chrono = sorted(all_facts, key=lambda f: f.valid_at)
-                tl = "\n".join(f"- {fmt_date(f.valid_at)}: {f.text}" for f in chrono)
+                chrono = sorted(all_facts, key=lambda f: time_key(f.valid_at))
+                tl = "\n".join(f"- {fmt_date(f.valid_at)}: {f.evidence_text}" for f in chrono)
                 blocks.append(f"TIMELINE (oldest to newest — use for ordering and durations):\n{tl}")
             if need is not None and need.multi_hop:
                 paths = self._graph_paths_block(query, user, as_of, redact_sensitive=redact_sensitive)
@@ -2579,7 +2718,7 @@ class Memory:
                     break
 
         if summaries:
-            chrono = sorted(summaries, key=lambda e: e.event_time)
+            chrono = sorted(summaries, key=lambda e: time_key(e.event_time))
             sm = "\n".join(
                 f"- [{e.metadata.get('date') or fmt_date(e.event_time)}] (episode: {e.id}; space: {e.user_id}) {e.text}" for e in chrono
             )
@@ -2589,7 +2728,7 @@ class Memory:
             chunks = "\n\n".join(
                 f"原始记录时间：{e.metadata.get('date') or fmt_date(e.event_time)}\n"
                 f"会话：{e.session_id}\n"
-                f"事件：{e.id}\n空间：{e.user_id}\n表示：{e.representation}\n记录内容：{e.text}" for e in detail_eps
+                f"事件：{e.id}\n空间：{e.user_id}\n表示：{e.representation}; partial={e.partial}; role={e.role}\n记录内容：{e.text}" for e in detail_eps
             )
             blocks.append(f"RELEVANT CONVERSATIONS (full detail):\n{chunks}")
 
@@ -2643,6 +2782,8 @@ class Memory:
         as_of: Optional[float] = None,
         top_k: Optional[int] = None,
     ) -> SearchResult:
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         user = user_id
 
         # 1. 先走 multi-hop planner（仅对真正的 >=2 跳关系类问题触发）
@@ -2728,11 +2869,14 @@ class Memory:
 
     def get_episode(self, episode_id: str, user_id: str = "default") -> dict | None:
         """Explicit original lookup; no embeddings or internal processing state."""
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         ep = self.episodes_doc.get(episode_id)
         if ep is None or ep.user_id != user_id:
             return None
         return dict(id=ep.id, space=ep.user_id, session_id=ep.session_id, role=ep.role,
-                    event_time=ep.event_time, ingested_at=ep.ingested_at, content=ep.content)
+                    event_time=ep.event_time, ingested_at=ep.ingested_at, content=ep.content,
+                    message_id=ep.message_id, sequence=ep.sequence, mode=ep.mode, coverage=deepcopy(ep.coverage))
 
     def retrieve_episodes(
         self,
@@ -2750,10 +2894,12 @@ class Memory:
         融合把这些提上来而不取代语义信号。改善偏好类和精确实体类问题——原始文本词项优于嵌入
         相似度的场景。
         """
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         user = user_id
         pool = pool or max(k * 5, 25)
         query_vector = self.embedder.embed(query)
-        predicate = lambda e: e.user_id == user and (as_of is None or e.event_time <= as_of)
+        predicate = lambda e: e.user_id == user and (as_of is None or (e.event_time is not None and e.event_time <= as_of))
         candidates = self.episodes_vec.search(query_vector, pool, where=predicate)
         candidates += self.summary_vec.search(query_vector, pool, where=predicate)
         candidates.sort(key=lambda row: row[0], reverse=True)
@@ -2816,7 +2962,7 @@ class Memory:
         # 它甚于列表下方更旧的 fact。
         ranked_by_date = sorted(ranked, key=lambda x: x[0].valid_at, reverse=True)
         ranked_facts = [f for f, _ in ranked_by_date]
-        fact_lines = [f"- [{fmt_date(f.valid_at)}] {f.text}" for f in ranked_facts]
+        fact_lines = [f"- [{fmt_date(f.valid_at)}] {f.evidence_text}" for f in ranked_facts]
         facts_block = "\n".join(fact_lines) or "(none)"
 
         chunk_block = ""
@@ -2835,7 +2981,7 @@ class Memory:
             parts = []
             for ep in episodes:
                 date = ep.metadata.get("date") or fmt_date(ep.event_time)
-                parts.append(f"[{date}] (episode: {ep.id}; space: {ep.user_id}; {ep.representation})\n{ep.text}")
+                parts.append(f"[{date}] (episode: {ep.id}; space: {ep.user_id}; {ep.representation}; partial={ep.partial}; role={ep.role})\n{ep.text}")
             chunk_block = "\n\n".join(parts)
 
         result = (
@@ -2858,15 +3004,15 @@ class Memory:
                 result += f"\n\n{raw_prov}"
         if timeline:
             # 相关 fact 的显式时间顺序——有助于 "first/after/how long"（M2b）
-            ordered = sorted((f for f, _ in ranked), key=lambda f: f.valid_at)
-            tl = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.text}" for f in ordered) or "(none)"
+            ordered = sorted((f for f, _ in ranked), key=lambda f: time_key(f.valid_at))
+            tl = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.evidence_text}" for f in ordered) or "(none)"
             result = f"TIMELINE (oldest to newest):\n{tl}\n\n" + result
         if graph:
             # L2：从查询的锚实体出发遍历实体图，跨 session 拉取相连的 fact
             # （multi-hop / multi-session）。
             related = self._graph_related_facts(search_query, user, as_of)
             if related:
-                block = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.text}" for f in related)
+                block = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.evidence_text}" for f in related)
                 result += f"\n\nRELATED FACTS (graph traversal):\n{block}"
         if wiki:
             # L4：LLM 精编的逐实体笔记（区分当前与过去），查询时合成。
@@ -2911,7 +3057,7 @@ class Memory:
         if not g or g == "none":
             return ""
         more = self.retrieve_episodes(gap.strip(), user, 2, as_of=as_of)
-        return "\n\n".join(f"[{ep.metadata.get('date', '?')}] (episode: {ep.id}; space: {ep.user_id}; {ep.representation})\n{ep.text}" for ep in more)
+        return "\n\n".join(f"[{ep.metadata.get('date', '?')}] (episode: {ep.id}; space: {ep.user_id}; {ep.representation}; partial={ep.partial}; role={ep.role})\n{ep.text}" for ep in more)
 
     def _graph_related_facts(self, query: str, user: str, as_of: Optional[float], limit: int = 8) -> list[Fact]:
         if not self.config.graph_proximity:
@@ -2921,7 +3067,7 @@ class Memory:
             return []
         graph_scores, _ = self.retriever._graph_scores(query, user, live, as_of)
         related = [f for f in live if graph_scores.get(f.id, 0.0) > 0.0]
-        related.sort(key=lambda f: (-graph_scores.get(f.id, 0.0), -f.valid_at, f.text.lower()))
+        related.sort(key=lambda f: (-graph_scores.get(f.id, 0.0), -time_key(f.valid_at), f.text.lower()))
         return related[:limit]
 
     def _entity_notes(self, query: str, user: str, as_of: Optional[float], max_entities: int = 3) -> list[str]:
@@ -2939,8 +3085,8 @@ class Memory:
             if not facts:
                 continue
             lines = "\n".join(
-                f"[{fmt_date(f.valid_at)}] {f.text}" + ("" if f.is_live(as_of) else " (past)")
-                for f in sorted(facts, key=lambda x: x.valid_at)
+                f"[{fmt_date(f.valid_at)}] {f.evidence_text}" + ("" if f.is_live(as_of) else " (past)")
+                for f in sorted(facts, key=lambda x: time_key(x.valid_at))
             )
             note = self.llm.complete(
                 f"Summarize what is known about {ent.name} in 2-3 sentences. Note current vs outdated "
@@ -2956,6 +3102,8 @@ class Memory:
         return history(self._all_facts(), user, subject, predicate)
 
     def profile(self, user_id: str = "default") -> dict[str, str]:
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         subject = self.engine.self_name(user_id)
         live = [f for f in self.fact_store.values() if f.user_id == user_id and f.is_live()]
         return self.profiles.build(subject, live)

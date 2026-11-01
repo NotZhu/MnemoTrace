@@ -23,7 +23,7 @@ class Episode:
     user_id: str = "default"
     session_id: str = "default"
     role: str = "user"
-    event_time: float = field(default_factory=now)  # 在世界中发生的时间
+    event_time: Optional[float] = field(default_factory=now)  # None 明确表示来源时间未知
     ingested_at: float = field(default_factory=now)  # 我们记录它的时间
     embedding: Optional[list[float]] = None
     consolidated: bool = False
@@ -33,6 +33,10 @@ class Episode:
     summary_embedding: Optional[list[float]] = None
     id: str = field(default_factory=lambda: gen_id("ep"))
     metadata: dict = field(default_factory=dict)
+    message_id: Optional[str] = None
+    sequence: Optional[int] = None
+    mode: Optional[str] = None
+    coverage: Optional[dict] = None
 
 
 @dataclass
@@ -61,7 +65,7 @@ class Fact:
     sensitive: bool = False
 
     # --- 有效时间（世界）---
-    valid_at: float = field(default_factory=now)
+    valid_at: Optional[float] = field(default_factory=now)
     invalid_at: Optional[float] = None  # None => 在世界中仍为真
 
     # --- 事务时间（认知）---
@@ -78,6 +82,8 @@ class Fact:
     # 与事实来源、管理分类及敏感标记独立；自动赋值由写入路径接入。
     topic: Topic = "unknown"
     topic_source: TopicSource = "unset"
+    assertion_kind: str = "unspecified"
+    source_roles: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         validate_topic(self.topic, self.topic_source)
@@ -92,11 +98,19 @@ class Fact:
         """(user, subject, predicate) 键。共享同一槽位的两个 fact 是候选冲突。"""
         return (self.user_id, self.subject.lower(), self.predicate.lower())
 
+    @property
+    def evidence_text(self) -> str:
+        return self.text if self.assertion_kind == 'unspecified' else f'[{self.assertion_kind}] {self.text}'
+
+    @property
+    def is_user_knowledge(self) -> bool:
+        return self.assertion_kind in {'unspecified', 'user_statement', 'user_confirmation'}
+
     def is_live(self, as_of: Optional[float] = None) -> bool:
         """当该 fact 在 `as_of` 时刻既仍被认知、又在世界中有效时返回 True。"""
         t = now() if as_of is None else as_of
         believed = self.expired_at is None or self.expired_at > t
-        valid = self.valid_at <= t and (self.invalid_at is None or self.invalid_at > t)
+        valid = (self.valid_at is None or self.valid_at <= t) and (self.invalid_at is None or self.invalid_at > t)
         return believed and valid
 
 
@@ -129,7 +143,7 @@ class Relation:
     # 支撑边的 fact id
     fact_id: str
     # 有效的时间点
-    valid_at: float = field(default_factory=now)
+    valid_at: Optional[float] = field(default_factory=now)
     # 无效的时间点
     invalid_at: Optional[float] = None
     # 边 id
@@ -148,7 +162,7 @@ class WorkingMemory:
     session_id: str = "default"
     # 模型抽取只输出 state/intent/task；显式写入也可用 schedule/note/passenger 等自定义类型。
     kind: str = "state"
-    event_time: float = field(default_factory=now)
+    event_time: Optional[float] = field(default_factory=now)
     created_at: float = field(default_factory=now)
     expires_at: Optional[float] = None  # 硬性墙钟过期时间；None => 仅随 session 存活
     consumed: bool = False  # 是否已被消费

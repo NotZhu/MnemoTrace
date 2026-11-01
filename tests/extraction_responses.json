@@ -907,5 +907,51 @@
       "object": "bananas",
       "text": "I like bananas."
     }
-  ]
+  ],
+  "I am planning a trip to Tokyo in March.": [
+    {
+      "subject": "user",
+      "predicate": "plans",
+      "object": "a trip to Tokyo in March"
+    }
+  ],
+  "Tokyo is lovely in spring.": [],
+  "My budget is 3000 dollars.": [
+    {
+      "subject": "user",
+      "predicate": "budget",
+      "object": "3000 dollars"
+    }
+  ],
+  "I work at Tencent.": [
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Tencent"
+    }
+  ],
+  "The config file is nearly empty. This is now clear: **EKOS is deployed on an Ubuntu server** and the backend framework is FastAPI.": [],
+  "This confirms the deployment. The next step is to check nginx.": [],
+  "That module is broken. The extractor is volcano and the judge is deepseek.": [],
+  "It looks like the retry loop is the problem here.": [],
+  "I moved to Shenzhen last year and I work at Moonshot AI.": [
+    {
+      "subject": "user",
+      "predicate": "lives_in",
+      "object": "Shenzhen"
+    },
+    {
+      "subject": "user",
+      "predicate": "works_at",
+      "object": "Moonshot AI"
+    }
+  ],
+  "The config file is nearly empty. This is now clear: EKOS is deployed on an Ubuntu server.": [
+    {
+      "subject": "EKOS",
+      "predicate": "deployed_on",
+      "object": "Ubuntu server"
+    }
+  ],
+  "This confirms the deployment; next is nginx.": []
 }

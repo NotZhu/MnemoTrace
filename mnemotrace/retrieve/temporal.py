@@ -1,5 +1,6 @@
 """双时间轴查询助手:as-of 过滤与演化链历史(AGENTS.md 「对象与时间语义」)。"""
 from __future__ import annotations
+from ..util import time_key
 
 from typing import Optional
 
@@ -19,4 +20,4 @@ def history(facts: list[Fact], user_id: str, subject: str, predicate: str) -> li
         and f.subject.lower() == subject.lower()
         and f.predicate == predicate
     ]
-    return sorted(chain, key=lambda f: f.valid_at)
+    return sorted(chain, key=lambda f: time_key(f.valid_at))

@@ -14,11 +14,14 @@ class EventEvidence:
     user_id: str
     session_id: str
     role: str
-    event_time: float
+    event_time: float | None
     ingested_at: float
     text: str
     representation: str
     metadata: Mapping[str, str]
+    derived: bool = False
+    partial: bool | None = False
+    coverage: Mapping | None = None
 
 
 def event_evidence(episode: Episode | EventEvidence) -> EventEvidence:
@@ -30,4 +33,8 @@ def event_evidence(episode: Episode | EventEvidence) -> EventEvidence:
         episode.summary if episode.summary else episode.content,
         "summary" if episode.summary else "raw",
         MappingProxyType({"date": episode.metadata.get("date", "")}),
+        bool(episode.summary), (bool(episode.coverage['partial']) if episode.coverage is not None
+                                else None if episode.summary else False),
+        MappingProxyType({**episode.coverage, 'ranges': tuple(tuple(r) for r in episode.coverage['ranges'])})
+        if episode.coverage is not None else None,
     )

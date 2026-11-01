@@ -55,7 +55,7 @@ def test_missing_model_rejected_before_input_write(tmp_path, operation):
         elif operation == 'add':
             mem.add('Synthetic input', consolidate=True)
         elif operation == 'import':
-            svc.import_('u', sessions=[{'messages': [{'content': 'Synthetic input'}]}])
+            svc.import_('u', sessions=[{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic input'}]}])
         else:
             svc.import_document('u', 'Synthetic input', filename='input.txt')
     assert error.value.stored_raw is False
@@ -167,16 +167,21 @@ def test_preference_embedding_uses_final_normalized_text():
     assert stored.embedding == m.embedder.embed(stored.text)
 
 
-def test_duplicate_import_retries_failed_extraction_without_extra_episodes():
-    m = Memory(llm=Broken())
-    sessions = [{'session_id': 's', 'messages': [{'content': 'Synthetic record'}]}]
-    with pytest.raises(ExtractionError):
-        m.import_messages(sessions, summarize=False)
-    model = FakeLLM(responses=[response([fact()])])
-    m.llm = m.engine.llm = m.engine.extractor.llm = model
-    stats = m.import_messages(sessions, summarize=False)
-    assert stats['skipped'] == 1 and stats['facts_added'] == 1
-    assert len(m.episodes_doc.values()) == 1
+def test_duplicate_import_requires_explicit_retry_without_extra_episodes():
+    from tests.test_message_pipeline import reply
+    def denied(*args):
+        raise PermissionError('synthetic authentication failure')
+    m = Memory(llm=FakeLLM(handler=denied))
+    sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic record'}]}]
+    m.remember_messages(sessions[0]['messages'], 's', mode='historical')
+    # A deliberately failed checkpoint is retried only by an explicit flush request.
+    from mnemotrace._messages import flush_memory
+    assert not flush_memory(m, 'default', timeout=.01)['ok']
+    m.llm = FakeLLM(handler=reply)
+    stats = m.import_messages(sessions)
+    assert stats['skipped'] == 1 and stats['facts_added'] == 0
+    assert m.flush_messages(retry_failed=True)['ok']
+    assert len(m.episodes_doc.values()) == 1 and len(m.fact_store.values()) == 1
 
 
 def test_outcomes_failure_does_not_clear_working(tmp_path):
@@ -423,35 +428,36 @@ def test_ephemeral_history_counts_content_after_working_is_cleared(tmp_path, res
     assert counts['episodes_ephemeral'] == expected and counts['working_live'] == 0
 
 
-@pytest.mark.parametrize('summarize', [False, True])
 @pytest.mark.parametrize('has_new_session', [False, True])
-def test_import_retry_completes_requested_summaries(tmp_path, summarize, has_new_session):
-    sessions = [{'session_id': 's', 'messages': [{'content': 'Old synthetic record ' * 120}]}]
-    svc = service(tmp_path, Broken())
-    with pytest.raises(ExtractionError):
-        svc.import_('u', sessions=sessions)
-
-    def complete(prompt, system=''):
-        if WINDOW_PREFIX in prompt:
-            return response([fact('old' if 'Old synthetic' in prompt else 'new', 'owns')])
-        return 'Synthetic summary'
-
-    restarted = service(tmp_path, FakeLLM(handler=complete))
-    foreign = restarted.get('other').add('Unrelated synthetic record', user_id='other', session_id='s')
+def test_import_receipts_do_not_restart_failed_joint_work(tmp_path, has_new_session, monkeypatch):
+    from mnemotrace._buffered import BufferedExtraction
+    from mnemotrace._messages import run_one
+    from tests.test_message_pipeline import reply
+    monkeypatch.setattr(BufferedExtraction, 'consume', lambda _: None)
+    model = FakeLLM(handler=lambda *args: '{')
+    svc = service(tmp_path, model)
+    stamp = [1000.0]
+    svc._buffered.clock = lambda: stamp[0]
+    sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user',
+                  'content': 'Synthetic long record ' * 120}]}]
+    assert svc.import_('u', sessions=sessions)['queued']
+    svc.flush('u', 's', timeout=0)
+    for delay in (0, 30, 120):
+        stamp[0] += delay
+        while run_one(svc, 'u'):
+            pass
+    assert len(model.calls) == 3
     if has_new_session:
-        sessions.append({'session_id': 't', 'messages': [{'content': 'New synthetic record ' * 120}]})
-    count = len(sessions)
-    result = restarted.import_('u', sessions=sessions, summarize=summarize)
-    assert result['episodes'] == int(has_new_session) and result['skipped'] == 1
-    assert result['summaries'] == (count if summarize else 0)
-    episodes = restarted.get('u').episodes_doc.values()
-    assert len(episodes) == count and all(ep.consolidated for ep in episodes)
-    assert sum(bool(ep.summary) for ep in episodes) == (count if summarize else 0)
-    assert not foreign.summary
-    # A later request can fill summaries even when there is no extraction left to retry.
-    repeated = restarted.import_('u', sessions=sessions, summarize=True)
-    assert repeated['episodes'] == 0 and repeated['summaries'] == (0 if summarize else count)
-    assert restarted.import_('u', sessions=sessions)['summaries'] == 0
+        sessions.append({'session_id': 't', 'messages': [{'message_id': 'm2', 'role': 'user', 'content': 'Synthetic new record'}]})
+    repeated = svc.import_('u', sessions=sessions)
+    assert repeated['episodes'] == int(has_new_session) and repeated['skipped'] == 1
+    assert len(model.calls) == 3
+    model._handler = reply
+    svc.flush('u', 's', timeout=0, retry_failed=True)
+    while run_one(svc, 'u'):
+        pass
+    assert svc.message_status('u', 's')['jobs'][0]['state'] == 'completed'
+    svc.close()
 
 
 @pytest.mark.parametrize('predicate', ['FINDING', 'Finding'])
@@ -493,86 +499,95 @@ def test_mcp_text_displays_extraction_failures(tmp_path, tool):
 @pytest.mark.parametrize('consolidate', [None, True])
 @pytest.mark.parametrize('summarize', [False, True])
 def test_completed_duplicate_import_does_not_require_model(tmp_path, layer, consolidate, summarize):
-    sessions = [{'session_id': 's', 'messages': [{'content': 'Synthetic completed record'}]}]
-    model = FakeLLM(handler=lambda *args: response([fact()]))
+    from tests.test_message_pipeline import reply
+    sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic completed record'}]}]
+    model = FakeLLM(handler=reply)
     if layer == 'core':
         initial = Memory(llm=model)
-        initial.import_messages(sessions, user_id='u', summarize=False)
+        initial.import_messages(sessions, user_id='u')
         initial.save(str(tmp_path))
         mem = Memory.open(str(tmp_path))
         result = mem.import_messages(sessions, user_id='u', consolidate=consolidate, summarize=summarize)
     else:
         initial = service(tmp_path, model)
-        initial.import_('u', sessions=sessions, summarize=False)
+        initial.import_('u', sessions=sessions, consolidate=True)
+        initial.close()
         restarted = service(tmp_path, None)
         result = restarted.import_('u', sessions=sessions, consolidate=consolidate, summarize=summarize)
         mem = restarted.get('u')
-    assert mem.llm is None
     assert result['skipped'] == 1 and result['episodes'] == 0 and result['facts_added'] == 0
-    assert result['summaries'] == 0  # Short imported records need no model summary.
-    assert len(mem.episodes_doc.values()) == 1 and len(mem.fact_store.values()) == 1
-    assert not mem.ingestor.pending()
+    assert result['summaries'] == 0 and len(mem.fact_store.values()) == 1
 
 
 @pytest.mark.parametrize('layer', ['core', 'service'])
 @pytest.mark.parametrize('consolidate', [None, True])
-@pytest.mark.parametrize('state', ['pending', 'mixed_pending', 'mixed_complete', 'append'])
-def test_import_preflight_checks_actual_new_and_pending_work(tmp_path, layer, consolidate, state):
-    sessions = [{'session_id': 's', 'messages': [{'content': 'Synthetic existing record'}]}]
-    is_pending = state in {'pending', 'mixed_pending'}
-    model = None if is_pending else FakeLLM(handler=lambda *args: response([fact()]))
+@pytest.mark.parametrize('pending', [False, True])
+@pytest.mark.parametrize('new_input', [False, True])
+def test_import_preflight_checks_only_new_automatic_input(tmp_path, layer, consolidate, pending, new_input):
+    from tests.test_message_pipeline import reply
+    sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic existing record'}]}]
+    initial = Memory(llm=FakeLLM(handler=reply)) if layer == 'core' else service(tmp_path, FakeLLM(handler=reply))
     if layer == 'core':
-        initial = Memory(llm=model)
-        initial.import_messages(sessions, user_id='u', consolidate=not is_pending, summarize=False)
+        initial.remember_messages(sessions[0]['messages'], 's', 'u', mode='historical')
+        if not pending:
+            assert initial.flush_messages('u')['ok']
         initial.save(str(tmp_path))
         mem = Memory.open(str(tmp_path))
-        invoke = lambda rows, **kw: mem.import_messages(rows, user_id='u', **kw)
+        invoke = lambda: mem.import_messages(sessions, user_id='u', consolidate=consolidate)
     else:
-        initial = service(tmp_path, model)
-        initial.import_('u', sessions=sessions, consolidate=not is_pending, summarize=False)
+        with initial.write_lock('u'):
+            mem = initial.get('u')
+            mem.remember_messages(sessions[0]['messages'], 's', 'u', mode='historical')
+            initial._save('u', mem)
+        if not pending:
+            assert initial.flush('u')['ok']
+        initial.close()
         restarted = service(tmp_path, None)
         mem = restarted.get('u')
-        invoke = lambda rows, **kw: restarted.import_('u', sessions=rows, **kw)
-    fingerprints = set(mem._import_seen)
-    existing, = mem.episodes_doc.values()
-    if state.startswith('mixed'):
-        sessions.append({'session_id': 'new', 'messages': [{'content': 'Synthetic new record'}]})
-    with pytest.raises(LLMNotConfiguredError) as error:
-        invoke(sessions, consolidate=consolidate, summarize=False, dedupe=state != 'append')
-    assert error.value.stored_raw is is_pending
-    assert error.value.episode_ids == ([existing.id] if is_pending else [])
-    assert len(mem.episodes_doc.values()) == 1 and mem._import_seen == fingerprints
-    assert bool(mem.ingestor.pending()) is is_pending
+        invoke = lambda: restarted.import_('u', sessions=sessions, consolidate=consolidate)
+    if new_input:
+        sessions.append({'session_id': 'new', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic new record'}]})
+        with pytest.raises(LLMNotConfiguredError):
+            invoke()
+    else:
+        assert invoke()['skipped'] == 1
+    assert len(mem.episodes_doc.values()) == 1
 
 
 @pytest.mark.parametrize('consolidate', [None, True])
 @pytest.mark.parametrize('sessions', [[], [{'session_id': 's', 'messages': [{'content': '  '}]}]])
 def test_empty_import_does_not_require_model(consolidate, sessions):
     mem = Memory()
-    result = mem.import_messages(sessions, consolidate=consolidate, summarize=False)
-    assert result['episodes'] == 0 and result['facts_added'] == 0
+    assert mem.import_messages(sessions, consolidate=consolidate)['episodes'] == 0
     assert not mem.episodes_doc.values()
 
 
 @pytest.mark.parametrize('consolidate', [None, True])
 def test_cached_import_respects_disabled_service_model(tmp_path, consolidate):
-    sessions = [{'session_id': 's', 'messages': [{'content': 'Synthetic completed record'}]}]
-    svc = service(tmp_path, FakeLLM(handler=lambda *args: response([fact()])))
-    svc.import_('u', sessions=sessions, summarize=False)
+    from tests.test_message_pipeline import reply
+    sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic completed record'}]}]
+    svc = service(tmp_path, FakeLLM(handler=reply))
+    svc.import_('u', sessions=sessions, consolidate=True)
     svc.llm = None
-    assert svc.import_('u', sessions=sessions, consolidate=consolidate, summarize=False)['skipped'] == 1
-    sessions.append({'session_id': 'new', 'messages': [{'content': 'Synthetic new record'}]})
+    assert svc.import_('u', sessions=sessions, consolidate=consolidate)['skipped'] == 1
+    sessions.append({'session_id': 'new', 'messages': [{'message_id': 'm2', 'role': 'user', 'content': 'Synthetic new record'}]})
     with pytest.raises(LLMNotConfiguredError):
-        svc.import_('u', sessions=sessions, consolidate=consolidate, summarize=False)
-    assert svc.get('u').llm is None and len(svc.get('u').episodes_doc.values()) == 1
+        svc.import_('u', sessions=sessions, consolidate=consolidate)
+    assert len(svc.get('u').episodes_doc.values()) == 1
 
 
 @pytest.mark.parametrize('consolidate', [None, True])
-def test_cached_import_can_enable_model_for_pending_retry(tmp_path, consolidate):
-    sessions = [{'session_id': 's', 'messages': [{'content': 'Synthetic pending record'}]}]
+def test_import_intent_change_requires_new_message_id(tmp_path, consolidate):
+    from mnemotrace.consolidate.messages import MessageConflictError
+    from tests.test_message_pipeline import reply
+    sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic pending record'}]}]
     svc = service(tmp_path, None)
-    svc.import_('u', sessions=sessions, consolidate=False, summarize=False)
-    svc.llm = FakeLLM(handler=lambda *args: response([fact()]))
-    result = svc.import_('u', sessions=sessions, consolidate=consolidate, summarize=False)
-    assert result['skipped'] == 1 and result['facts_added'] == 1
-    assert svc.get('u').llm is svc.llm and not svc.get('u').ingestor.pending()
+    svc.import_('u', sessions=sessions, consolidate=False)
+    svc.llm = FakeLLM(handler=reply)
+    with pytest.raises(MessageConflictError):
+        svc.import_('u', sessions=sessions, consolidate=consolidate)
+    assert len(svc.get('u').episodes_doc.values()) == 1
+    sessions[0]['messages'][0]['message_id'] = 'm2'
+    svc.import_('u', sessions=sessions, consolidate=True)
+    assert svc.message_status('u')['jobs'][0]['core'] == 'not_requested'
+    assert svc.message_status('u')['jobs'][1]['core'] == 'completed'

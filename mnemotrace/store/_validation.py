@@ -112,18 +112,53 @@ _TIME_OR_NULL = _nullable(_number)
 _ID_OR_NULL = _nullable(_identifier)
 _SOURCE = _choice("user", "extracted")
 
+
+def _coverage(value: Any, path: str) -> None:
+    _object(value, path)
+    if set(value) != {'unit', 'ranges', 'partial', 'policy', 'source', 'original_length', 'input_hash', 'strategy_completed'}:
+        _fail(path, 'invalid coverage fields')
+    _choice('unicode_code_points')(value['unit'], path + '.unit')
+    _boolean(value['partial'], path + '.partial')
+    _count(value['original_length'], path + '.original_length')
+    if value['strategy_completed'] is not True:
+        _fail(path, 'coverage must describe a completed strategy')
+    expected = 'head_tail_v1' if value['partial'] else 'full_message_v1'
+    if value['policy'] != expected:
+        _fail(path, 'policy does not match coverage')
+    for field in ('source', 'input_hash'):
+        text = value[field]
+        if not isinstance(text, str) or len(text) != 64 or any(c not in '0123456789abcdef' for c in text):
+            _fail(path + '.' + field, 'must be a SHA256 fingerprint')
+    ranges = value['ranges']
+    if not isinstance(ranges, list) or len(ranges) != (2 if value['partial'] else 1):
+        _fail(path, 'invalid coverage ranges')
+    end = 0
+    for span in ranges:
+        if not isinstance(span, list) or len(span) != 2 or any(type(n) is not int for n in span):
+            _fail(path, 'invalid codepoint interval')
+        if not end <= span[0] < span[1] <= value['original_length']:
+            _fail(path, 'invalid codepoint bounds')
+        end = span[1]
+    if ranges[0][0] != 0 or end != value['original_length'] or value['partial'] and ranges[0][1] >= ranges[1][0]:
+        _fail(path, 'ranges do not match the declared strategy')
+
+
 # Explicit wire fields: adding a dataclass default must not silently change restoration.
 _EPISODE = {
     "id": _identifier, "content": _string, "user_id": _identifier,
-    "session_id": _identifier, "role": _identifier, "event_time": _number,
+    "session_id": _identifier, "role": _identifier, "event_time": _TIME_OR_NULL,
     "ingested_at": _number, "embedding": _VECTOR, "consolidated": _boolean,
     "summary": _string, "summary_embedding": _VECTOR, "metadata": _metadata,
+    "message_id": _ID_OR_NULL, "sequence": _nullable(_count),
+    "mode": _nullable(_choice("live", "historical")), "coverage": _nullable(_coverage),
 }
 _FACT = {
     "id": _identifier, "subject": _identifier, "predicate": _identifier, "object": _identifier,
     "text": _string, "display": _string, "user_id": _identifier, "embedding": _VECTOR,
     "salience": _number, "confidence": _number, "source": _SOURCE,
-    "category": _string, "sensitive": _boolean, "valid_at": _number,
+    "category": _string, "sensitive": _boolean, "valid_at": _TIME_OR_NULL,
+    "assertion_kind": _choice("unspecified", "user_statement", "assistant_suggestion", "user_confirmation", "assistant_report"),
+    "source_roles": _list(_choice("user", "assistant")),
     "topic": _choice(*TOPICS), "topic_source": _choice(*TOPIC_SOURCES),
     "invalid_at": _TIME_OR_NULL, "created_at": _number, "expired_at": _TIME_OR_NULL,
     "supersedes": _ID_OR_NULL, "provenance": _STRINGS, "last_access": _number,
@@ -136,9 +171,9 @@ _RECORDS = {
                "user_id": _identifier, "embedding": _VECTOR, "aliases": _STRINGS},
     "Relation": {"id": _identifier, "subject_id": _identifier, "predicate": _identifier,
                  "object_id": _identifier, "fact_id": _identifier,
-                 "valid_at": _number, "invalid_at": _TIME_OR_NULL},
+                 "valid_at": _TIME_OR_NULL, "invalid_at": _TIME_OR_NULL},
     "WorkingMemory": {"id": _identifier, "content": _string, "user_id": _identifier,
-                      "session_id": _identifier, "kind": _identifier, "event_time": _number,
+                      "session_id": _identifier, "kind": _identifier, "event_time": _TIME_OR_NULL,
                       "created_at": _number, "expires_at": _TIME_OR_NULL, "consumed": _boolean,
                       "embedding": _VECTOR, "metadata": _metadata},
     "Conflict": {"id": _identifier, "older": _identifier, "newer": _identifier,
@@ -178,6 +213,8 @@ def validate_record(kind: str, record: Any, path: str, *, jsonl_fact: bool = Fal
         spec = {**spec, "_store": _choice("hot", "cold")}
     result = _fields(record, spec, path)
     if kind == "Episode":
+        if result['coverage'] is not None and result['coverage']['original_length'] != len(result['content']):
+            _fail(path, 'coverage length does not match original content')
         if result["summary"] and result["summary_embedding"] is None:
             _fail(path, "non-empty summary requires summary_embedding")
         from ..consolidate.processing import validate_progress
@@ -214,18 +251,24 @@ def validate_state(state: Any, path: str = "manifest.state") -> dict:
     if 'processing' in state:
         from ..consolidate.tasks import validate_tasks
         result['processing'] = validate_tasks(state['processing'])
+    if 'messages' in state:
+        from ..consolidate.messages import validate_state as validate_messages
+        result['messages'] = validate_messages(state['messages'])
     return result
 
 
 def validate_manifest(manifest: Any) -> dict:
     _object(manifest, "manifest")
     result = _fields(manifest, {
+        "format_version": _integer,
         "snapshot_id": _identifier, "embedder_id": _identifier,
         "embedding_dim": _dimension, "backend": _choice("durable", "lancedb", "qdrant"),
         "mnemotrace_version": _identifier, "created_at": _number, "updated_at": _number,
         "counts": lambda v, p: _fields(v, {key: _count for key in COLLECTIONS}, p),
         "state": _object,
     }, "manifest")
+    if result['format_version'] != 2:
+        _fail('manifest.format_version', 'unsupported format; use the explicit snapshot upgrade command')
     result["state"] = validate_state(result["state"])
     return result
 
@@ -235,12 +278,12 @@ _IMPORT_FACT = {key: _FACT[key] for key in (
     "id", "subject", "predicate", "object", "text", "source", "category", "sensitive",
     "topic", "topic_source",
     "salience", "confidence", "valid_at", "invalid_at", "created_at", "expired_at",
-    "supersedes", "provenance",
+    "supersedes", "provenance", "assertion_kind", "source_roles",
 )}
 _IMPORT_FACT.update(status=_choice("live", "superseded"), valid_at_h=_string,
                     invalid_at_h=_nullable(_string))
 _IMPORT_EPISODE = {key: _EPISODE[key] for key in (
-    "id", "content", "session_id", "role", "event_time", "summary",
+    "id", "content", "session_id", "role", "event_time", "summary", "coverage",
 )}
 
 
@@ -255,8 +298,8 @@ def validate_snapshot(snapshot: Any) -> dict:
         if key not in snapshot:
             _fail(f"snapshot.{key}", "missing required field")
     result = {}
-    for name, spec, optional in (("facts", _IMPORT_FACT, ("text", "status", "valid_at_h", "invalid_at_h")),
-                                 ("episodes", _IMPORT_EPISODE, ("summary",))):
+    for name, spec, optional in (("facts", _IMPORT_FACT, ("text", "status", "valid_at_h", "invalid_at_h", "assertion_kind", "source_roles")),
+                                 ("episodes", _IMPORT_EPISODE, ("summary", "coverage"))):
         rows = snapshot[name]
         if not isinstance(rows, list):
             _fail(f"snapshot.{name}", "must be a list")

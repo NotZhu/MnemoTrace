@@ -190,7 +190,7 @@ def test_close_session_endpoint_consolidates_summarizes_and_clears_working(clien
     h = hdr("session_close")
     client.post("/v1/import", json={
         "format": "records",
-        "consolidate": False,
+        "consolidate": None,
         "summarize": False,
         "data": [{"session_id": "s1", "content": "I work at Acme."}],
     }, headers=h)
@@ -368,10 +368,10 @@ def test_import_sessions_and_raw_data(client):
     sessions = [{"session_id": "s1", "title": "Pets",
                  "messages": [{"role": "user", "content": "I have a dog named Mochi."},
                               {"role": "assistant", "content": "Mochi is a cute name!"}]}]
-    out = client.post("/v1/import", json={"sessions": sessions}, headers=h).json()
-    assert out["ok"] and out["episodes"] == 1
+    out = client.post("/v1/import", json={"consolidate": True, "sessions": sessions}, headers=h).json()
+    assert out["ok"] and out["episodes"] == 2
     # 原始数据 + format 路径
-    out2 = client.post("/v1/import", json={
+    out2 = client.post("/v1/import", json={"consolidate": True,
         "data": [{"role": "user", "content": "I drive a Tesla Model 3."}], "format": "messages"}, headers=h).json()
     assert out2["episodes"] == 1
     ctx = client.post("/v1/recall", json={"query": "What pet do I have?"}, headers=h).json()["context"]
@@ -382,7 +382,7 @@ def test_import_sessions_and_raw_data(client):
 
 def test_import_sessions_accept_iso_timestamps(client):
     h = hdr("import_iso")
-    out = client.post("/v1/import", json={
+    out = client.post("/v1/import", json={"consolidate": True,
         "sessions": [{
             "session_id": "career",
             "messages": [
@@ -464,7 +464,7 @@ def test_fact_statement_edit_only_accepts_outcomes_and_is_persisted(client):
 
 def test_graph_endpoint_supports_as_of_and_edge_audit_fields(client):
     h = hdr("graph_asof")
-    client.post("/v1/import", json={
+    client.post("/v1/import", json={"consolidate": True,
         "format": "records",
         "data": [
             {"session_id": "old", "content": "Wei works at Tencent.", "event_time": 1_700_000_000.0},
@@ -754,7 +754,7 @@ def test_graph_limit_and_completeness_follow_namespace_filters(client):
 
 def test_recall_endpoint_supports_as_of_for_search_and_lean_context(client):
     h = hdr("recall_asof")
-    client.post("/v1/import", json={
+    client.post("/v1/import", json={"consolidate": True,
         "format": "records",
         "data": [
             {"session_id": "old", "content": "Wei works at Tencent.", "event_time": 1_700_000_000.0},
@@ -1238,7 +1238,7 @@ def test_audit_sorts_before_limit_and_preserves_equal_priority_order(client):
     assert limited["truncated"] is True
 
 
-def test_import_agent_sessions_defaults_to_outcomes_only_and_feed_stats(client):
+def test_import_agent_sessions_defaults_to_buffered_messages_and_feed_stats(client):
     """watcher 上报的 agent 会话带 `metadata.source` 但不带 `consolidate` 键：服务端必须把它们
     存起来留到 close 时再蒸馏，绝不逐轮提取（LLMExtractor 曾把 12 个真实轮次变成 11 条垃圾
     fact）；同时 stats 必须记录记忆最后一次被喂入的时间。"""
@@ -1257,9 +1257,10 @@ def test_import_agent_sessions_defaults_to_outcomes_only_and_feed_stats(client):
     r = client.post("/v1/import", json=body, headers=h)
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["episodes"] == 3
-    assert data["facts_deferred"] == 2 and data["deferred_reason"] == "outcomes_only", data
-    assert data["facts_added"] >= 1  # 普通 session 仍请求模型抽取
+    assert data["episodes"] == 5
+    assert data["facts_deferred"] == 0 and data["deferred_reason"] is None, data
+    assert data["queued"] and data["facts_added"] == 0
+    assert client.post("/v1/processing/flush", headers=h, json={}).json()["ok"]
 
     closed = client.post("/v1/sessions/close", json={"session_id": "claude-code:a"}, headers=h).json()
     assert closed["pending_consolidated"] == 0 and closed["facts_added"] == 0, closed

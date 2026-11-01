@@ -91,7 +91,7 @@ def test_cli_entrypoint_uses_service_digest_and_preserves_old_paths(
     assert result["store"] == service._path("synthetic-user")
     assert result["episodes"] == 1
     memory = service.get("synthetic-user")
-    assert [ep.content for ep in memory.episodes_doc.values()] == ["user: SYNTHETIC_CLI_EPISODE"]
+    assert [ep.content for ep in memory.episodes_doc.values()] == ["SYNTHETIC_CLI_EPISODE"]
     assert memory.fact_store.values() == []
     assert all(not ep.summary for ep in memory.episodes_doc.values())
     if old_layout == "pkl-file":
@@ -118,7 +118,7 @@ def test_cli_and_service_append_to_same_store_and_dedupe_after_restart(tmp_path)
     service.add_fact("synthetic-user", "project", "marker", "SYNTHETIC_SERVICE_FACT")
     first = _import_local(args_for(tmp_path), sessions())
     assert first["episodes"] == 1
-    assert [ep.content for ep in service.get("synthetic-user").episodes_doc.values()] == ["user: SYNTHETIC_CLI_EPISODE"]
+    assert [ep.content for ep in service.get("synthetic-user").episodes_doc.values()] == ["SYNTHETIC_CLI_EPISODE"]
     assert {fact.object for fact in service.get("synthetic-user").fact_store.values()} == {"SYNTHETIC_SERVICE_FACT"}
     again = _import_local(args_for(tmp_path), sessions())
     assert again["episodes"] == 0 and again["skipped"] == 1
@@ -161,7 +161,7 @@ def test_cli_waits_for_service_transaction_and_preserves_its_write(tmp_path, mon
     assert not worker.is_alive() and not errors
     reloaded = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
     assert {fact.object for fact in reloaded.get(user).fact_store.values()} == {"SYNTHETIC_CONCURRENT_FACT"}
-    assert [ep.content for ep in reloaded.get(user).episodes_doc.values()] == ["user: SYNTHETIC_CLI_EPISODE"]
+    assert [ep.content for ep in reloaded.get(user).episodes_doc.values()] == ["SYNTHETIC_CLI_EPISODE"]
 
 
 def test_cli_consolidates_and_summarizes_with_configured_fixture_model(tmp_path):

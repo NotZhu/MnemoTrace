@@ -23,7 +23,7 @@ def test_incomplete_manifest_fails_field_validation(tmp_path):
         json.dumps({"embedding_dim": 256, "counts": {}}),
         encoding="utf-8",
     )
-    with pytest.raises(StoreFormatError, match="snapshot_id"):
+    with pytest.raises(StoreFormatError, match="format_version"):
         Memory.open(str(path))
 
 

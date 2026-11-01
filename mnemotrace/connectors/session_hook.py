@@ -240,7 +240,7 @@ def run(argv: Optional[list[str]] = None, *, stdin: Optional[str] = None,
     mtime = st.st_mtime  # 延迟计时从 transcript 停止增长算起，而不是从我们醒来算起
     try:
         with _deadline(args.deadline):
-            result = ingest(args.url, key, [path], outcomes=True,
+            result = ingest(args.url, key, [path], close_sessions=True,
                             max_bytes=args.max_bytes, timeout=args.deadline)
     except Exception as exc:  # noqa: BLE001 — 现在每个失败都是监视器的事，与用户无关
         _say(f"hook {key12} failed: {exc.__class__.__name__} — nothing claimed, "

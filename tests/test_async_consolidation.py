@@ -10,12 +10,12 @@ from tests.model_fixtures import MemoryService
 _SENT = "My name is Wei and I live in Shenzhen."  # 固定模型响应包含至少一条事实
 
 
-def test_consolidation_is_synchronous_by_default(monkeypatch):
+def test_raw_note_is_synchronous_with_default_worker(monkeypatch):
     monkeypatch.delenv("MNEMOTRACE_BUFFERED_EXTRACTION", raising=False)
     d = tempfile.mkdtemp(prefix="mnemotrace_sync_")
     try:
         svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
-        assert svc._worker is None  # 没有后台线程
+        assert svc._worker is not None  # 对话 worker 默认开启，原文入口仍可即时处理
         r = svc.remember("u", _SENT)
         assert "queued" not in r and r.get("scope") == "long"  # 内联完成整合
         assert r.get("extracted", 0) >= 1  # 事实立即可用（写完即可查）

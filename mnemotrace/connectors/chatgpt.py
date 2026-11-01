@@ -62,7 +62,7 @@ def parse_conversation(conv: dict, index: int = 0) -> ImportSession:
         if not text:
             continue
         messages.append(ImportMessage(
-            content=text, role=role, event_time=to_epoch(msg.get("create_time"))
+            content=text, role=role, event_time=to_epoch(msg.get("create_time")), message_id=msg.get('id')
         ))
 
     title = conv.get("title") or f"conversation {index + 1}"

@@ -43,14 +43,35 @@ def test_keeps_the_conversation_and_drops_the_machinery():
     assert sessions[0].messages[0].event_time is not None  # 时间戳要存活下来，供双时间轴层使用
 
 
-def test_short_turns_and_tool_echoes_are_dropped():
+def test_short_confirmations_are_kept_and_tool_echoes_are_dropped():
     log = _cc([
         {"type": "user", "message": {"role": "user", "content": "ok"}},
         {"type": "user", "message": {"role": "user", "content": "<tool_use_result>done</tool_use_result>"}},
         {"type": "user", "message": {"role": "user", "content": "My daughter started at Tsinghua this year."}},
     ])
     bodies = [m.content for m in parse_agent_session(log)[0].messages]
-    assert bodies == ["My daughter started at Tsinghua this year."]
+    assert bodies == ["ok", "My daughter started at Tsinghua this year."]
+
+
+def test_agent_message_identity_time_and_short_confirmation_reach_watcher(monkeypatch):
+    from mnemotrace.connectors import watch
+    session, = parse_agent_session(_cc([
+        {'type': 'assistant', 'uuid': 'proposal', 'timestamp': 100,
+         'message': {'role': 'assistant', 'content': 'Use the synthetic local queue.'}},
+        {'type': 'user', 'uuid': 'confirmed', 'timestamp': 101,
+         'message': {'role': 'user', 'content': 'yes'}},
+    ]), session_id='s')
+    monkeypatch.setattr(watch, 'load_sessions', lambda *args, **kwargs: [session])
+    requests = []
+    def post(base, key, path, body, timeout):
+        requests.append((path, body))
+        return {'ok': True, 'sessions': 1, 'episodes': 2}
+    monkeypatch.setattr(watch, '_post', post)
+    watch.ingest('http://synthetic.invalid', 'synthetic-key', ['synthetic-path'])
+    messages = requests[0][1]['sessions'][0]['messages']
+    assert [m['message_id'] for m in messages] == ['proposal', 'confirmed']
+    assert [m['event_time'] for m in messages] == [100, 101]
+    assert messages[1]['role'] == 'user' and messages[1]['content'] == 'yes'
 
 
 def test_sub_agent_turns_are_excluded_by_default():
@@ -188,7 +209,7 @@ def test_watcher_closes_each_session_so_it_gets_distilled(monkeypatch):
 
     assert [c[0] for c in calls] == ["/v1/import", "/v1/sessions/close", "/v1/sessions/close"]
     assert {c[1]["session_id"] for c in calls[1:]} == {"claude-code:a", "codex:b"}
-    assert all(c[1]["outcomes"] is True for c in calls[1:])
+    assert all(c[1]["outcomes"] is False for c in calls[1:])
     assert result["outcomes"] == 6  # 每个会话 3 条
 
 
@@ -243,29 +264,44 @@ def _agent_sessions(prefix: str = "claude-code") -> list[dict]:
     ]
 
 
-def test_agent_session_import_without_llm_defers_per_turn_extraction(tmp_path):
+def test_explicit_raw_agent_session_import_does_not_require_a_model(tmp_path):
     from mnemotrace import Memory
     from mnemotrace.service import MemoryService
 
     mem = Memory()
-    stats = mem.import_messages(_agent_sessions(), user_id="u")
-    assert stats["episodes"] == 2
+    stats = mem.import_messages(_agent_sessions(), user_id="u", consolidate=False)
+    assert stats["episodes"] == 4
     assert stats["facts_added"] == 0, stats
-    assert stats["facts_deferred"] == 2 and stats["deferred_reason"] == "outcomes_only", stats
+    assert stats["facts_deferred"] == 4 and stats["deferred_reason"] == "not_requested", stats
     eps = [ep for ep in mem.episodes_doc.values() if ep.user_id == "u"]
-    assert len(eps) == 2
+    assert len(eps) == 4
     for ep in eps:
         assert ep.consolidated is True  # 下游绝不能再把它排进 LLMExtractor
-        assert ep.metadata["extraction"] == "outcomes_only"
+        assert ep.message_id is not None
         assert ep.metadata["source"] == "agent_session"
     assert stats["summaries"] == 0  # Offline input remains searchable as original events.
 
     # close_session 就是那个"排水口"，否则 pending 的 episode 会被逐轮抽取。
     svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
-    assert svc.import_("u", sessions=_agent_sessions())["facts_deferred"] == 2
+    assert svc.import_("u", sessions=_agent_sessions(), consolidate=False)["facts_deferred"] == 4
     closed = svc.close_session("u", "claude-code:a", outcomes=False)
-    assert closed["episodes"] == 1
+    assert closed["episodes"] == 2
     assert closed["pending_consolidated"] == 0 and closed["facts_added"] == 0, closed
+
+
+@pytest.mark.parametrize('consolidate', [None, True])
+def test_agent_default_automatic_import_requires_model_before_any_write(tmp_path, consolidate):
+    from mnemotrace import Memory
+    from mnemotrace.service import MemoryService
+    from mnemotrace.extraction import LLMNotConfiguredError
+    mem = Memory()
+    with pytest.raises(LLMNotConfiguredError):
+        mem.import_messages(_agent_sessions(), user_id='u', consolidate=consolidate)
+    assert not mem.episodes_doc.values()
+    svc = MemoryService(data_dir=str(tmp_path), embedder_name='hashing', llm_name='')
+    with pytest.raises(LLMNotConfiguredError):
+        svc.import_('u', sessions=_agent_sessions(), consolidate=consolidate)
+    assert not svc.get('u').episodes_doc.values()
 
 
 def test_agent_session_import_with_llm_and_consolidate_true_extracts():
@@ -323,8 +359,8 @@ def _session(sid: str, when: float | None = 1_756_000_000.0):
 def _args(tmp_path, **over):
     import argparse
     base = dict(url="http://127.0.0.1:9", key="k", key_file="", since="", limit=25, quiet_seconds=0,
-                state=str(tmp_path / "state" / "watch_state.json"), no_outcomes=False,
-                extract_facts=False, dry_run=False, once=True, every="")
+                state=str(tmp_path / "state" / "watch_state.json"), no_close=False,
+                immediate=False, dry_run=False, once=True, every="")
     base.update(over)
     return argparse.Namespace(**base)
 
@@ -357,13 +393,15 @@ def test_watcher_payload_carries_source_and_session_time(monkeypatch):
     row = body["sessions"][0]
     assert row["metadata"] == {"source": "agent_session"}
     assert row["event_time"] == 1_756_000_000.0
-    assert set(row["messages"][0]) == {"role", "content"}
+    assert set(row["messages"][0]) == {"message_id", "role", "content", "event_time"}
+    assert row['messages'][0]['message_id'] == 'import:0'
+    assert row['messages'][0]['event_time'] is None
     assert "consolidate" not in body
     assert result["closed_ok"] == ["claude-code:a"] and result["close_failed"] == []
     assert result["sessions_by_path"] == {"p1": ["claude-code:a"]}
 
     bodies.clear()
-    watch.ingest("http://x", "k", ["p1"], extract_facts=True)
+    watch.ingest("http://x", "k", ["p1"], immediate=True)
     assert bodies[0][1]["consolidate"] is True
 
     monkeypatch.setattr(watch, "load_sessions", lambda paths, **kw: [_session("codex:b", when=None)])

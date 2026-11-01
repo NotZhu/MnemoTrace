@@ -19,7 +19,7 @@ from ..store import GraphStore, VectorStore
 from ..types import Episode, WorkingMemory
 from ..extraction import ExtractionError, require_llm
 from ..util import DAY
-from .conflict import ConflictResolver
+from .conflict import ConflictResolver, insert_dialogue_history
 from .decay import is_durable
 from .preferences import (
     EXPLICIT_PREFERENCE_PREDS,
@@ -265,12 +265,23 @@ class ConsolidationEngine:
                 return 0
             # A checkpoint retry repairs projection; it must not reset intervening metadata edits.
             fact = deepcopy(existing)
-        live = [deepcopy(f) for store in stores for f in store.values()
-                if f.user_id == fact.user_id and f.id != fact.id and f.is_live()]
+        records = [deepcopy(f) for store in stores for f in store.values()
+                   if f.user_id == fact.user_id and f.id != fact.id]
+        history = insert_dialogue_history(fact, records)
+        if history is not None:
+            action, updated = history
+            for record in updated:
+                write(record)
+                self.graph.delete_relations_for_fact(record.id)
+                self.graph_builder.add_fact(record)
+            stats['duplicates' if action == 'duplicate' or existing else 'facts_added'] += 1
+            return int(action != 'duplicate' and existing is None)
+        live = [f for f in records if f.is_live()]
         action, invalidated = self.conflict.reconcile(fact, live)
         if action == "duplicate" and existing is None:
             for old in live:
-                if old.slot == fact.slot and old.object.strip().lower() == fact.object.strip().lower():
+                if (old.slot == fact.slot and old.assertion_kind == fact.assertion_kind
+                        and old.object.strip().lower() == fact.object.strip().lower()):
                     if old.source == "extracted":
                         old.provenance = list(dict.fromkeys([*old.provenance, *fact.provenance]))
                         write(old)
@@ -293,7 +304,7 @@ class ConsolidationEngine:
         return int(existing is None)
 
     def _decay_sweep(self) -> None:
-        live = [f for f in self.fact_store.values() if f.is_live()]
+        live = [f for f in self.fact_store.values() if f.is_live() and f.valid_at is not None]
         if not live:
             return
         now_t = max(f.valid_at for f in live)  # 已知的最晚世界时间 = 该 store 的"现在"

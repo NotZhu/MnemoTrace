@@ -29,6 +29,10 @@ def fingerprint(mem, llm):
 
 def one_attempt(llm):
     from .llm.litellm_llm import LiteLLMClient
+    from .llm.cache import CachedLLM
+    if isinstance(llm, CachedLLM):
+        llm = copy(llm)
+        llm.inner = one_attempt(llm.inner)
     if isinstance(llm, LiteLLMClient):
         llm = copy(llm)
         llm.max_attempts = 1
@@ -112,6 +116,7 @@ class BufferedExtraction:
         self.users = OrderedDict()
         self.wake_revision = 0
         self.last_group = {}
+        self.next_kind = {}
         self.stopping = False
         self.abort = threading.Event()
         self.recovery_error = False
@@ -183,10 +188,18 @@ class BufferedExtraction:
         return None
 
     def run_one(self, user, ids=None):
-        if self._run_extraction(user, ids):
-            return True
+        from ._messages import run_one as run_messages
         from ._summaries import run_one as run_summary
-        return run_summary(self.service, user, ids)
+        steps = (lambda: run_messages(self.service, user),
+                 lambda: self._run_extraction(user, ids),
+                 lambda: run_summary(self.service, user, ids))
+        start = self.next_kind.get(user, 0)
+        for offset in range(len(steps)):
+            index = (start + offset) % len(steps)
+            if steps[index]():
+                self.next_kind[user] = (index + 1) % len(steps)
+                return True
+        return False
 
     def _run_extraction(self, user, ids=None):
         """A single lease protects preparation/model/commit, never namespace reads or appends."""
@@ -323,6 +336,24 @@ class BufferedExtraction:
                 return True
 
     def flush(self, user, session_id=None, timeout=30, retry_failed=False, boundary=None):
+        from ._messages import flush as flush_messages
+        from .consolidate.messages import MessageTasks
+        ids = set()
+        with self.service._user_file_lock(user):
+            if self.service._store_version(user) is not None:
+                with self.service._read_scope(user) as mem:
+                    ids = set(MessageTasks(mem, user).rows(session_id, boundary))
+        started = self.monotonic()
+        messages = flush_messages(self.service, user, session_id, timeout, retry_failed, ids) if ids else None
+        result = self._flush_raw(user, session_id, max(0, timeout - (self.monotonic() - started)), retry_failed, boundary)
+        if messages is not None:
+            result['messages'] = messages
+            status = ('timed_out' if 'timed_out' in (result['status'], messages['status']) else
+                      'failed' if 'failed' in (result['status'], messages['status']) else 'completed')
+            result.update(ok=status == 'completed', status=status)
+        return result
+
+    def _flush_raw(self, user, session_id=None, timeout=30, retry_failed=False, boundary=None):
         if type(timeout) not in (int, float) or not 0 <= timeout <= 300:
             raise ValueError('timeout must be between 0 and 300 seconds')
         svc = self.service
@@ -386,6 +417,9 @@ class BufferedExtraction:
                                     from .consolidate.summaries import SummaryTasks
                                     summary_counts = SummaryTasks(mem, user).snapshot()['counts']
                                     active |= any(summary_counts[s] for s in ACTIVE)
+                                    from .consolidate.messages import MessageTasks
+                                    message_counts = MessageTasks(mem, user).snapshot()['counts']
+                                    active |= any(message_counts[s] for s in ACTIVE)
                         if not active:
                             with self.condition:
                                 if self.users.get(user) == wake_revision:

@@ -8,6 +8,7 @@
 MCP server 和导入 CLI 在没有安装 web 依赖时也能使用它。
 """
 from __future__ import annotations
+from .util import time_key
 
 import math
 import os
@@ -205,12 +206,15 @@ class MemoryService:
             ))
         self.config.llm_topics = os.environ.get("MNEMOTRACE_LLM_TOPICS") != "0"
         for field in ("extraction_max_input_bytes", "extraction_context_bytes", "extraction_max_output_tokens",
+                      "joint_max_output_tokens", "joint_core_output_tokens", "joint_summary_output_tokens", "joint_context_tokens",
                       "summary_min_chars", "summary_max_chars", "summary_max_input_bytes", "summary_max_output_tokens"):
             value = os.environ.get("MNEMOTRACE_" + field.upper())
             if value is not None:
                 setattr(self.config, field, int(value))
         from .consolidate.summaries import validate_config
         validate_config(self.config)
+        from .consolidate.message_windows import validate_config as validate_joint_config
+        validate_joint_config(self.config)
         if os.environ.get("MNEMOTRACE_MAX_HOT_FACTS"):
             self.config.max_hot_facts = int(os.environ["MNEMOTRACE_MAX_HOT_FACTS"])
         # 可选开启的 System-2 LLM 冲突检测 -> detect->confirm 循环（需要 LLM）。默认关闭，
@@ -238,7 +242,7 @@ class MemoryService:
         self.metrics = Metrics()
         self._worker: Optional[threading.Thread] = None
         self._buffered = None
-        if os.environ.get('MNEMOTRACE_BUFFERED_EXTRACTION') == '1':
+        if os.environ.get('MNEMOTRACE_BUFFERED_EXTRACTION') != '0':
             from ._buffered import BufferedExtraction
             self._buffered = BufferedExtraction(self)
             self._worker = self._buffered.thread
@@ -376,7 +380,9 @@ class MemoryService:
         try:
             if mem._snapshot_version != self._store_version(user):
                 raise PersistenceError("stale memory snapshot; reload before writing")
-            mem.save()
+            from .consolidate.messages import MessageTasks
+            MessageTasks(mem, user).cancel_missing()
+            mem.save(check_version=True)
         except BaseException:  # noqa: BLE001 -- 不保留只提交了部分内容的缓存对象
             self._discard(user)
             frame.memory = None
@@ -530,7 +536,9 @@ class MemoryService:
                         'summarization': {'counts': {state: 0 for state in sorted(STATES)}, 'jobs': []}}
             with self._read_scope(user) as mem:
                 from .consolidate.summaries import SummaryTasks
+                from .consolidate.messages import MessageTasks
                 return {**ProcessingTasks(mem, user).snapshot(session_id, ids),
+                        'messages': MessageTasks(mem, user).snapshot(session_id, ids),
                         'summarization': SummaryTasks(mem, user).snapshot(session_id, ids)}
 
     @contextmanager
@@ -566,6 +574,11 @@ class MemoryService:
         if self._buffered is None:
             result = self.processing_status(user, session_id)
             incomplete = any(result['counts'][s] for s in ('pending', 'running', 'retry_wait', 'failed', 'cancelled'))
+            if result.get('messages', {}).get('jobs'):
+                from ._messages import flush as flush_messages
+                messages = flush_messages(self, user, session_id, timeout, retry_failed)
+                status = messages['status'] if not incomplete else 'failed'
+                return {**result, 'messages': messages, 'status': status, 'ok': status == 'completed'}
             return {'ok': not incomplete, 'status': 'failed' if incomplete else 'completed', **result}
         return self._buffered.flush(user, session_id, timeout, retry_failed)
 
@@ -585,6 +598,48 @@ class MemoryService:
                 self._worker = None
 
     # --- 写入路径 -----------------------------------------------------------
+    def remember_messages(self, user: str, messages: list[dict], session_id: str,
+                          mode: str = 'live', processing: str = 'buffered', scope: str = 'auto') -> dict:
+        """Accept complete dialogue messages; acknowledge only a durable source/task checkpoint."""
+        from .consolidate.messages import MessageTasks, normalized
+        from ._messages import clock, trigger_ready
+        rows = normalized(messages, session_id, mode, scope)
+        if processing not in {'immediate', 'buffered'}:
+            raise ValueError('processing must be immediate or buffered')
+        with self._read_scope(user) as mem:
+            rows, unseen = MessageTasks(mem, user).inspect(rows, session_id, mode, scope)
+        if unseen:
+            require_llm(self.llm)
+            if processing == 'buffered' and self._buffered is None:
+                raise BufferedProcessingDisabledError()
+        batch = self.embedder.embed_batch(list(unseen.values())) if unseen else []
+        if len(batch) != len(unseen):
+            raise ValueError('Embedding batch length mismatch')
+        embeddings = dict(zip(unseen, batch))
+        with self.write_lock(user):
+            mem = self.get(user)
+            tasks = MessageTasks(mem, user)
+            ids, fresh = tasks.accept(rows, session_id, mode, scope, clock(self), embeddings=embeddings)
+            if fresh:
+                trigger_ready(mem, tasks, clock(self))
+                self._save(user, mem)
+            result = tasks.response(ids)
+            result['accepted'] = len(fresh)
+        if fresh and self._buffered:
+            self._buffered.notify(user)
+        if processing == 'immediate' and fresh:
+            from ._messages import flush
+            result['processing'] = flush(self, user, session_id, boundary=set(ids))
+            with self._read_scope(user) as mem:
+                result['messages'] = MessageTasks(mem, user).response(ids)['messages']
+        result['queued'] = any(r['state'] in {'pending', 'running', 'retry_wait'} for r in result['messages'])
+        return result
+
+    def message_status(self, user: str, session_id: Optional[str] = None) -> dict:
+        from .consolidate.messages import MessageTasks
+        with self._read_scope(user) as mem:
+            return MessageTasks(mem, user).snapshot(session_id)
+
     @timed("remember")
     @_processing_access
     def remember(self, user: str, content: str, session_id: str = "default",
@@ -638,55 +693,103 @@ class MemoryService:
         return result
 
     @timed("import")
-    @_processing_access
     def import_(self, user: str, sessions: Optional[list] = None, format: str = "auto",
                 data: Any = None, consolidate: Optional[bool] = None, summarize: bool = True,
                 session_id: str = "imported", dedupe: bool = True) -> dict:
-        """批量导入：要么传入预解析的 `sessions`（ImportSession/dict 列表），要么传入待解析的原始
-        `data` 并用 `format` 指定格式（chatgpt/messages/records/jsonl/transcript/auto）。
-        单次批量写入 + 整合。默认幂等：重复导入同一份导出会跳过已写入的 episode（计入 `skipped`）。
-        `consolidate=None` 在 Memory.import_messages 内部决定：除 agent-session transcript 外的所有
-        来源都做逐轮抽取；transcript 则先存储，留到关闭会话时再蒸馏。"""
-        with self.write_lock(user):
-            mem = self.get(user)
-            if sessions is None:
-                from .connectors import load_json, parse
-                # 忆痕 导出快照可直接还原（fact 保留双时间轴标记，不做任何重新抽取）——
-                # 要在消息历史解析器之前路由，否则 dict 会被误判为 'records' 而遭拒绝。
-                obj = data
-                if isinstance(obj, (str, bytes, bytearray)):
-                    try:
-                        obj = load_json(obj)
-                    except Exception:  # noqa: BLE001 — 纯文本（transcript 等）：走下面的旧路径
-                        obj = data
-                if format == "mnemotrace" or (format == "auto" and is_snapshot_candidate(obj)):
+        """History adapters submit individual messages to the same durable dialogue entry."""
+        from .connectors import load_json, parse
+        from .connectors.dialogue import batches
+        from .consolidate.messages import MessageTasks
+        if sessions is None:
+            obj = data
+            if isinstance(obj, (str, bytes, bytearray)):
+                try:
+                    obj = load_json(obj)
+                except (ValueError, TypeError):
+                    obj = data
+            if format == 'mnemotrace' or format == 'auto' and is_snapshot_candidate(obj):
+                with self.write_lock(user):
+                    mem = self.get(user)
                     stats = mem.import_snapshot(obj, user_id=user, dedupe=dedupe)
                     self._save(user, mem)
-                    return {"ok": True, **stats}
-                sessions = parse(data, format=format, session_id=session_id)
-            sessions = list(sessions)
-            target_sessions = {(item.get('session_id', 'imported') if isinstance(item, dict)
-                                else item.session_id) or f'imported_{i}'
-                               for i, item in enumerate(sessions)}
-            try:
-                stats = mem.import_messages(sessions, user_id=user, consolidate=consolidate,
-                                            summarize=False, dedupe=dedupe)
-            except ExtractionError as exc:
-                if exc.stored_raw:
+                return {'ok': True, **stats}
+            sessions = parse(data, format=format, session_id=session_id)
+        plans = batches(list(sessions), consolidate)
+        with self._read_scope(user) as mem:
+            tasks = MessageTasks(mem, user)
+            needs_model = any(messages is not None and extract and tasks.inspect(messages, sid, 'historical')[1]
+                              for sid, messages, _, extract in plans)
+            prior_facts = {f.id for f in mem._all_facts()}
+            prior_summaries = {e.id for e in mem.episodes_doc.values() if e.summary}
+        if needs_model:
+            require_llm(self.llm)
+        stats = dict(ok=True, sessions=0, episodes=0, skipped=0, facts_added=0, summaries=0,
+                     facts_deferred=0, deferred_reason=None)
+        results = []
+        for sid, messages, record, extract in plans:
+            if messages is None:
+                with self.write_lock(user):
+                    mem = self.get(user)
+                    result = mem._import_documents([record], user_id=user, consolidate=consolidate,
+                                                    summarize=summarize, dedupe=dedupe)
                     self._save(user, mem)
-                raise
-            self._save(user, mem)
-            summary_ids = {ep.id for ep in mem.episodes_doc.values()
-                           if ep.user_id == user and ep.session_id in target_sessions}
-        if summarize:
-            from ._summaries import attempt
-            with self._read_scope(user) as mem:
-                before = {key for key in summary_ids if mem.episodes_doc.get(key).summary}
-            results = attempt(self, user, summary_ids)
-            stats['summaries'] = sum(value['status'] == 'completed' and key not in before
-                                     for key, value in results.items())
-            stats['summarization'] = results
-        return {"ok": True, **stats}
+                for key in ('sessions', 'episodes', 'skipped', 'facts_added', 'summaries'):
+                    stats[key] += result.get(key, 0)
+                continue
+            if extract:
+                result = self.remember_messages(user, messages, sid, mode='historical',
+                    processing='buffered' if consolidate is None else 'immediate')
+                added = result['accepted']
+                results.append(result)
+                if 'source' in record.get('metadata', {}):
+                    with self.write_lock(user):
+                        mem = self.get(user)
+                        changed = False
+                        for row in result['messages']:
+                            ep = mem.episodes_doc.get(row['episode_id'])
+                            if 'source' not in ep.metadata:
+                                ep.metadata['source'] = record['metadata']['source']
+                                mem._sync_episode(ep)
+                                changed = True
+                        if changed:
+                            self._save(user, mem)
+            else:
+                with self._read_scope(user) as mem:
+                    _, texts = MessageTasks(mem, user).inspect(messages, sid, 'historical', 'raw')
+                batch = self.embedder.embed_batch(list(texts.values())) if texts else []
+                if len(batch) != len(texts):
+                    raise ValueError('Embedding batch length mismatch')
+                vectors = dict(zip(texts, batch))
+                with self.write_lock(user):
+                    mem = self.get(user)
+                    tasks = MessageTasks(mem, user)
+                    ids, fresh = tasks.accept(messages, sid, 'historical', 'raw', now(), vectors)
+                    added = len(fresh)
+                    if added:
+                        stats['facts_deferred'] += added
+                        stats['deferred_reason'] = 'not_requested'
+                    changed = False
+                    for key in ids:
+                        ep = mem.episodes_doc.get(key)
+                        if 'source' in record.get('metadata', {}) and 'source' not in ep.metadata:
+                            ep.metadata['source'] = record['metadata']['source']
+                            mem._sync_episode(ep)
+                            changed = True
+                    if added or changed:
+                        self._save(user, mem)
+                    results.append(tasks.response(ids))
+            stats['sessions'] += bool(added)
+            stats['episodes'] += added
+            stats['skipped'] += len(messages) - added
+        stats['results'] = results
+        stats['queued'] = any(r.get('queued', False) for r in results)
+        episode_ids = {row['episode_id'] for result in results for row in result.get('messages', [])}
+        with self._read_scope(user) as mem:
+            stats['facts_added'] += sum(f.id not in prior_facts and bool(episode_ids.intersection(f.provenance))
+                                        for f in mem._all_facts())
+            stats['summaries'] += sum(e.id in episode_ids and e.id not in prior_summaries and bool(e.summary)
+                                      for e in mem.episodes_doc.values())
+        return stats
 
     @timed("import_document")
     @_processing_access
@@ -779,7 +882,7 @@ class MemoryService:
             SummaryTasks(mem, user).cancel(now())
             self._save(user, mem)
             # 返回实际 `source`：正文修正会成为用户断言，隐私/分类编辑则保留原来源。
-            return {"ok": True, "id": f.id, "text": f.text, "display": display_of(f), "source": f.source,
+            return {"ok": True, "id": f.id, "text": f.text, "display": display_of(f), "source": f.source, "assertion_kind": f.assertion_kind, "source_roles": f.source_roles,
                     "topic": f.topic, "topic_source": f.topic_source}
 
     def delete_fact(self, user: str, fact_id: str) -> dict:
@@ -881,7 +984,7 @@ class MemoryService:
                    "redacted_sensitive": redact_sensitive}
             if answer:
                 full = "\n".join(ep.content for ep in mem.episodes_doc.values()
-                                 if as_of is None or ep.event_time <= as_of)
+                                 if as_of is None or (ep.event_time is not None and ep.event_time <= as_of))
                 out["full_tokens"] = _est_tokens(full)
         # 记忆读取与状态调整已完成；回答生成只使用独立字符串，可在退出读取作用域后执行。
         if answer:
@@ -988,17 +1091,20 @@ class MemoryService:
         with self._read_scope(user) as mem:
             boundary = {ep.id for ep in mem.episodes_doc.values()
                         if ep.user_id == user and ep.session_id == session_id}
+            pending_boundary = {ep.id for ep in mem.episodes_doc.values() if ep.id in boundary and not ep.consolidated}
+            initial_facts = {f.id for f in _all_facts(mem)}
+            initial_summaries = {ep.id for ep in mem.episodes_doc.values() if ep.id in boundary and ep.summary}
             working_boundary = {w.id for w in mem.working_mem.values()
                                 if w.user_id == user and w.session_id == session_id}
         if self._buffered:
             flushed = self._buffered.flush(user, session_id, boundary=boundary)
         else:
-            flushed = self.flush(user, session_id, timeout=0)
+            flushed = self.flush(user, session_id, timeout=30)
         if not flushed['ok']:
-            retained = [job['episode_id'] for job in flushed.get('jobs', []) if job['episode_id'] in boundary]
+            retained = [job['episode_id'] for job in [*flushed.get('jobs', []),
+                        *flushed.get('messages', {}).get('jobs', [])] if job['episode_id'] in boundary]
             raise ProcessingIncompleteError(stored_raw=bool(retained), episode_ids=retained)
-        summaries = 0
-        prior_stats, prior_pending = {}, 0
+        prior_stats = {}
         if summarize:
             # Finish any non-buffered pending extraction before preparing summaries.
             with self._processing_scope(user), self.write_lock(user):
@@ -1006,20 +1112,16 @@ class MemoryService:
                 pending = [ep for ep in mem.episodes_doc.values()
                            if ep.id in boundary and not ep.consolidated]
                 if pending:
-                    prior_pending = len(pending)
                     try:
                         prior_stats = mem.consolidate(pending)
                     except ExtractionError:
                         self._save(user, mem)
                         raise
                     self._save(user, mem)
-                before = {ep.id for ep in mem.episodes_doc.values() if ep.id in boundary and ep.summary}
             from ._summaries import drain
             results = drain(self, user, boundary)
             if any(value['status'] not in {'completed', 'not_needed'} for value in results.values()):
                 raise ProcessingIncompleteError(stored_raw=bool(boundary), episode_ids=sorted(boundary))
-            summaries = sum(value['status'] == 'completed' and key not in before
-                            for key, value in results.items())
         with self._processing_scope(user), self.write_lock(user):
             if (boundary or working_boundary) and self._store_version(user) is None:
                 raise ProcessingIncompleteError()
@@ -1032,12 +1134,15 @@ class MemoryService:
                 raise ProcessingIncompleteError(stored_raw=bool(episodes), episode_ids=[ep.id for ep in episodes])
             from .consolidate.outcomes import extract_outcomes, OUTCOME_PREDICATES, split_outcome_text
             pending = [ep for ep in episodes if not ep.consolidated]
+            # Dialogue conclusions are already part of the bounded joint call.
+            # Keep close-time distillation for the separate raw-note capability.
+            outcome_sources = [ep for ep in episodes if ep.message_id is None]
             want = (self.config.session_outcomes if outcomes is None else outcomes) and not self._outcomes_forced_off
             try:
-                if pending or (want and episodes):
+                if pending or (want and outcome_sources):
                     require_llm(self.llm)
-                prepared = extract_outcomes(self.llm, episodes, user, session_id=session_id,
-                                            llm_topics=self.config.llm_topics) if want and episodes else []
+                prepared = extract_outcomes(self.llm, outcome_sources, user, session_id=session_id,
+                                            llm_topics=self.config.llm_topics) if want and outcome_sources else []
                 stats = mem.consolidate(pending) if pending else {}
                 stats = {key: stats.get(key, 0) + prior_stats.get(key, 0)
                          for key in stats.keys() | prior_stats.keys()}
@@ -1080,12 +1185,12 @@ class MemoryService:
                 "ok": True,
                 "session_id": session_id,
                 "episodes": len(episodes),
-                "pending_consolidated": len(pending) + prior_pending,
-                "facts_added": stats.get("facts_added", 0),
+                "pending_consolidated": sum(ep.id in pending_boundary and ep.consolidated for ep in episodes),
+                "facts_added": sum(f.id not in initial_facts and bool(boundary.intersection(f.provenance)) for f in _all_facts(mem)),
                 "outcomes": outcome_facts,
                 "duplicates": stats.get("duplicates", 0),
                 "invalidated": stats.get("invalidated", 0),
-                "summaries": summaries,
+                "summaries": sum(bool(ep.summary) and ep.id not in initial_summaries for ep in episodes),
                 "reflected": reflected,
                 "working_cleared": working_cleared,
             }
@@ -1195,7 +1300,7 @@ class MemoryService:
             f for f in _all_facts(mem)
             if f.user_id == user and episode_ids.intersection(f.provenance)
         ]
-        session_facts.sort(key=lambda f: f.valid_at, reverse=True)
+        session_facts.sort(key=lambda f: time_key(f.valid_at), reverse=True)
         redacted = 0
 
         def fact_view(f) -> dict:
@@ -1209,7 +1314,7 @@ class MemoryService:
                 "valid_at": fmt_datetime(f.valid_at),
                 "invalid_at": fmt_datetime(f.invalid_at) if f.invalid_at else None,
                 "status": "live" if f.is_live() else "superseded",
-                "source": f.source,
+                "source": f.source, "assertion_kind": f.assertion_kind, "source_roles": f.source_roles,
                 "category": getattr(f, "category", ""),
                 "sensitive": is_sensitive,
                 "redacted": hidden,
@@ -1298,10 +1403,10 @@ class MemoryService:
                 row["summaries"] += 1
             first = row["first_event_at"]
             last = row["last_event_at"]
-            if first is None or ep.event_time < first:
+            if ep.event_time is not None and (first is None or ep.event_time < first):
                 row["first_event_at"] = ep.event_time
                 row["first_event_at_h"] = fmt_datetime(ep.event_time)
-            if last is None or ep.event_time > last:
+            if ep.event_time is not None and (last is None or ep.event_time > last):
                 row["last_event_at"] = ep.event_time
                 row["last_event_at_h"] = fmt_datetime(ep.event_time)
             episode_ids_by_session.setdefault(ep.session_id, set()).add(ep.id)
@@ -1404,8 +1509,8 @@ class MemoryService:
             raise MemoryRevisionChanged("记录已变化，请重新加载")
         # A commit fixes stored records; the evaluation time also fixes membership as time passes.
         evaluated_at = now() if evaluated_at is None else evaluated_at
-        all_facts = sorted(_all_facts(mem), key=lambda f: (f.valid_at, f.id), reverse=True)
-        episodes_all = sorted(mem.episodes_doc.values(), key=lambda ep: (ep.event_time, ep.id), reverse=True)
+        all_facts = sorted(_all_facts(mem), key=lambda f: (time_key(f.valid_at), f.id), reverse=True)
+        episodes_all = sorted(mem.episodes_doc.values(), key=lambda ep: (time_key(ep.event_time), ep.id), reverse=True)
 
         needle = q.strip().lower()
 
@@ -1416,7 +1521,7 @@ class MemoryService:
                 "object": f.object, "valid_at": fmt_datetime(f.valid_at),
                 "invalid_at": fmt_datetime(f.invalid_at) if f.invalid_at else None,
                 "status": "live" if f.is_live(as_of=evaluated_at) else "superseded",
-                "source": f.source, "supersedes": f.supersedes,
+                "source": f.source, "assertion_kind": f.assertion_kind, "source_roles": f.source_roles, "supersedes": f.supersedes,
                 "category": getattr(f, "category", ""), "sensitive": getattr(f, "sensitive", False),
                 "topic": f.topic, "topic_source": f.topic_source,
                 "salience": round(f.salience, 2), "provenance": f.provenance,
@@ -1437,6 +1542,9 @@ class MemoryService:
                 "id": ep.id,
                 "date": ep.metadata.get("date") or fmt_date(ep.event_time),
                 "session": ep.session_id,
+                "role": ep.role,
+                "mode": ep.mode,
+                "coverage": ep.coverage,
                 # 返回全文，而不是 500 字符的截断片段。这个视图是 owner 回答"我到底写了什么"
                 # 的方式——这也是普通 .md 文件一直做对、而此前这里没做对的一点。想要预览的调用方
                 # 自行切片；想要完整记录的调用方需要全文。响应大小已由 episodes_limit/episodes_offset
@@ -1757,8 +1865,8 @@ class MemoryService:
         ephemeral_episodes = [ep for ep in episodes
                               if ep.metadata.get("memory_result") in {"working", "mixed"}
                               or ep.metadata.get("ephemeral")]
-        event_times = [ep.event_time for ep in episodes]
-        fact_times = [f.valid_at for f in facts]
+        event_times = [ep.event_time for ep in episodes if ep.event_time is not None]
+        fact_times = [f.valid_at for f in facts if f.valid_at is not None]
         user_entities = [e for e in mem.graph.entities.values() if e.user_id == user]
         all_relations = mem.graph.relations()
         user_entity_ids = {e.id for e in user_entities}
@@ -1849,7 +1957,7 @@ class MemoryService:
             "focus": mem.get_focus(),
             "facts": [{
                 "id": f.id, "subject": f.subject, "predicate": f.predicate, "object": f.object,
-                "text": f.text, "source": f.source, "status": "live" if f.is_live() else "superseded",
+                "text": f.text, "source": f.source, "assertion_kind": f.assertion_kind, "source_roles": f.source_roles, "status": "live" if f.is_live() else "superseded",
                 "category": getattr(f, "category", ""), "sensitive": getattr(f, "sensitive", False),
                 "topic": f.topic, "topic_source": f.topic_source,
                 "salience": round(f.salience, 3), "confidence": f.confidence,
@@ -1857,11 +1965,11 @@ class MemoryService:
                 "invalid_at": f.invalid_at, "invalid_at_h": fmt_date(f.invalid_at) if f.invalid_at else None,
                 "created_at": f.created_at, "expired_at": f.expired_at,
                 "supersedes": f.supersedes, "provenance": f.provenance,
-            } for f in sorted(_facts, key=lambda x: x.valid_at, reverse=True)],
+            } for f in sorted(_facts, key=lambda x: time_key(x.valid_at), reverse=True)],
             "episodes": [] if not include_sensitive else [{
                 "id": ep.id, "session_id": ep.session_id, "role": ep.role,
                 "event_time": ep.event_time, "date": ep.metadata.get("date") or fmt_date(ep.event_time),
-                "content": ep.content, "summary": ep.summary,
+                "content": ep.content, "summary": ep.summary, "coverage": ep.coverage,
             } for ep in mem.episodes_doc.values()],
             "graph": graph,
         }

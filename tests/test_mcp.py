@@ -327,6 +327,7 @@ async def test_import_tool(local_backend):
     arr = '[{"role":"user","content":"I have a cat named Pixel."}]'
     out = await call("mnemotrace_import", content=arr, format="messages")
     assert "Imported" in out and "episode" in out
+    await call("mnemotrace_flush_processing")
     ctx = await call("mnemotrace_recall", query="What pet do I have?")
     assert "Pixel" in ctx
 
@@ -338,6 +339,7 @@ async def test_recall_and_search_support_as_of(local_backend):
         {"session_id": "new", "content": "Wei works at Moonshot AI.", "event_time": 1_702_592_000.0},
     ])
     await call("mnemotrace_import", content=records, format="records")
+    await call("mnemotrace_flush_processing")
 
     ctx = await call(
         "mnemotrace_recall",

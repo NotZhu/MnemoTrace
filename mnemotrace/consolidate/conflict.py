@@ -26,7 +26,7 @@ from typing import Optional
 
 from ..embed import Embedder
 from ..types import Fact
-from ..util import cosine
+from ..util import cosine, time_key
 from .verdict import parse_verdict
 
 # 包含关系（"Contained"）检测用的实义词——忽略短词/虚词，这样才能识别
@@ -98,6 +98,10 @@ def _protected(old: Fact, new: Fact) -> bool:
     return old.source == "user" and new.source != "user"
 
 
+def _newer(new: Fact, old: Fact) -> bool:
+    return new.valid_at is not None and (old.valid_at is None or new.valid_at >= old.valid_at)
+
+
 def _supersede(old: Fact, new: Fact) -> None:
     """非破坏性失效化：old 从 new.valid_at 起在世界时间上不再成立，从 new.created_at 起不再被
     相信；new 记录它取代了谁。历史被保留，供 as-of 查询使用。"""
@@ -105,6 +109,54 @@ def _supersede(old: Fact, new: Fact) -> None:
         old.invalid_at = new.valid_at
     old.expired_at = new.created_at
     new.supersedes = old.id
+
+
+def insert_dialogue_history(new: Fact, records: list[Fact]):
+    """Place a dated dialogue assertion among the complete slot history.
+
+    Return the records to persist, or None when ordinary reconciliation owns the
+    case. Equal values at different dates remain separate evidence intervals.
+    """
+    if new.source == 'user' or new.assertion_kind == 'unspecified' or new.valid_at is None or not is_single_valued(new.predicate):
+        return None
+    if new.is_user_knowledge and any(f.source == 'user' and f.slot == new.slot and f.is_live() for f in records):
+        return None
+    same = [f for f in records if f.slot == new.slot and f.assertion_kind == new.assertion_kind and f.source != 'user']
+    duplicate = next((f for f in same if f.valid_at == new.valid_at and _norm(f.object) == _norm(new.object)), None)
+    if duplicate:
+        duplicate.provenance = list(dict.fromkeys([*duplicate.provenance, *new.provenance]))
+        return 'duplicate', [duplicate]
+    dated = [f for f in same if f.valid_at is not None]
+    if not dated:
+        return None  # A new slot still needs ordinary cross-predicate reconciliation.
+    before = [f for f in dated if f.valid_at <= new.valid_at]
+    after = [f for f in dated if f.valid_at > new.valid_at]
+    predecessor = successor = None
+    if before:
+        stamp = max(f.valid_at for f in before)
+        tied = [f for f in before if f.valid_at == stamp]
+        referred = {f.supersedes for f in tied}
+        predecessor = next((f for f in tied if f.id not in referred), tied[-1])
+    if after:
+        stamp = min(f.valid_at for f in after)
+        tied = [f for f in after if f.valid_at == stamp]
+        ids = {f.id for f in tied}
+        successor = next((f for f in tied if f.supersedes not in ids), tied[0])
+    updated = [new]
+    new.supersedes = predecessor.id if predecessor else None
+    new.invalid_at = successor.valid_at if successor else None
+    new.expired_at = (new.expired_at or new.created_at) if successor else None
+    if predecessor:
+        predecessor.invalid_at = new.valid_at
+        predecessor.expired_at = predecessor.expired_at or new.created_at
+        updated.append(predecessor)
+    if successor:
+        successor.supersedes = new.id
+        updated.append(successor)
+    for unknown in (f for f in same if f.valid_at is None and f.is_live()):
+        unknown.expired_at, unknown.invalid_at = new.created_at, new.valid_at
+        updated.append(unknown)
+    return 'add', updated
 
 
 _ADJUDICATE_SYSTEM = (
@@ -144,6 +196,11 @@ class ConflictResolver:
 
     def reconcile(self, new: Fact, live: list[Fact]) -> tuple[str, list[Fact]]:
         """返回 (action, invalidated_facts)。action 为 "add" 或 "duplicate"。"""
+        live = [f for f in live if f.assertion_kind == new.assertion_kind or
+                f.source == 'user' and new.assertion_kind in {'unspecified', 'user_statement', 'user_confirmation'} or
+                new.source == 'user' and f.assertion_kind in {'unspecified', 'user_statement', 'user_confirmation'}]
+        # Unknown and older source times cannot supersede a newer dated observation.
+        # Exact duplicates can still merge provenance below.
         same_slot = [f for f in live if f.slot == new.slot]
 
         # 完全相同的断言已存在 -> 去重（不新增 fact，也不失效化）
@@ -156,6 +213,16 @@ class ConflictResolver:
         if new.source != "user" and is_single_valued(new.predicate):
             if any(old.source == "user" for old in same_slot):
                 return ("duplicate", [])
+
+        if new.source != 'user' and is_single_valued(new.predicate):
+            successors = [old for old in same_slot if old.valid_at is not None and
+                          (new.valid_at is None or old.valid_at > new.valid_at)]
+            if successors:
+                # Late historical evidence remains inspectable without becoming a
+                # competing current value. Unknown time stays unknown.
+                new.expired_at = new.created_at
+                if new.valid_at is not None:
+                    new.invalid_at = min(old.valid_at for old in successors)
 
         invalidated: list[Fact] = []
 
@@ -172,7 +239,7 @@ class ConflictResolver:
                 if _norm(old.subject) != _norm(new.subject) or _norm(old.object) != _norm(new.object):
                     continue
                 old_pol = _pref_polarity(old.predicate)
-                if old_pol is not None and old_pol != new_pol and new.valid_at >= old.valid_at:
+                if old_pol is not None and old_pol != new_pol and _newer(new, old):
                     _supersede(old, new)
                     invalidated.append(old)
 
@@ -188,7 +255,7 @@ class ConflictResolver:
                     continue
                 if new_toks < old_toks:  # 新 ⊂ 旧：被包含，无增量
                     return ("duplicate", [])
-                if old_toks < new_toks and new.valid_at >= old.valid_at and not _protected(old, new):
+                if old_toks < new_toks and _newer(new, old) and not _protected(old, new):
                     _supersede(old, new)  # 新 ⊃ 旧：更完整
                     invalidated.append(old)
 
@@ -198,7 +265,7 @@ class ConflictResolver:
             for old in same_slot:
                 if id(old) in _seen or _protected(old, new):
                     continue
-                if _norm(old.object) != _norm(new.object) and new.valid_at >= old.valid_at:
+                if _norm(old.object) != _norm(new.object) and _newer(new, old):
                     _supersede(old, new)
                     invalidated.append(old)
 
@@ -226,7 +293,7 @@ class ConflictResolver:
                     # 跨共享来源取代。真正的更新出现在更晚、独立的 episode 中。
                     if new_prov and new_prov & set(old.provenance):
                         continue
-                    if new.valid_at < old.valid_at:
+                    if not _newer(new, old):
                         continue
                     sim = cosine(new.embedding, old.embedding)
                     if sim >= self.sim_threshold:
@@ -239,5 +306,5 @@ class ConflictResolver:
 
         # 把 supersedes 指向我们取代的最新 fact（演化链的头部）
         if invalidated:
-            new.supersedes = max(invalidated, key=lambda f: f.valid_at).id
+            new.supersedes = max(invalidated, key=lambda f: time_key(f.valid_at)).id
         return ("add", invalidated)

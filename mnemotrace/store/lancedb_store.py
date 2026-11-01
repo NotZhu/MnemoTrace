@@ -138,3 +138,9 @@ class LanceDBVectorStore(VectorStore):
         if table is None:
             return []
         return [_decode_payload(row["payload"]) for row in table.to_arrow().to_pylist()]
+
+    def reset_dimension(self, dimension: int) -> None:
+        """Discard the old fixed-size vector schema during explicit reembedding."""
+        if self._open() is not None:
+            self._db.drop_table(self.table_name)
+        self._table = None

@@ -18,7 +18,7 @@ def fmt_date(epoch: float) -> str:
     """纪元秒 -> 'YYYY-MM-DD'（UTC）。用于给 fact/chunk 打上真实日期。"""
     try:
         return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")
-    except (OverflowError, OSError, ValueError):
+    except (OverflowError, OSError, ValueError, TypeError):
         return "?"
 
 
@@ -29,13 +29,18 @@ def fmt_datetime(epoch: float) -> str:
     LLM 上下文构建器 + eval 刻意继续用 fmt_date：它们不需要时分秒，且依赖稳定的 UTC 纯日期标记。"""
     try:
         return datetime.fromtimestamp(epoch, tz=BEIJING).strftime("%Y-%m-%d %H:%M:%S")
-    except (OverflowError, OSError, ValueError):
+    except (OverflowError, OSError, ValueError, TypeError):
         return "?"
 
 
 def now() -> float:
     """当前墙钟时间（纪元秒）。"""
     return time.time()
+
+
+def time_key(value: float | None) -> float:
+    """Sort unknown source times before known times without fabricating a timestamp."""
+    return float('-inf') if value is None else value
 
 
 def gen_id(prefix: str) -> str:

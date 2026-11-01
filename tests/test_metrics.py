@@ -64,7 +64,7 @@ def test_service_paths_are_timed_and_tokens_recorded(svc):
     assert snap["ops"]["recall"]["p95_ms"] >= snap["ops"]["recall"]["p50_ms"] >= 0
     t = snap["tokens"]
     assert t["context_total"] > 0 and t["full_total"] > 0 and t["recalls_with_baseline"] == 1
-    assert snap["buffered"] == {"enabled": False, "recovery_error": False}
+    assert snap["buffered"] == {"enabled": True, "recovery_error": False}
     assert snap["users_hot"] == 1
 
 

@@ -108,7 +108,7 @@ def test_import_messages_end_to_end_offline():
     mem = Memory()
     sessions = parse(CHATGPT, format="chatgpt")
     stats = mem.import_messages(sessions, user_id="me")
-    assert stats["sessions"] == 1 and stats["episodes"] == 1
+    assert stats["sessions"] == 1 and stats["episodes"] == 3
     # 原始细节应可经 lean 读取路径检索到（确定性，无需 LLM）
     ctx = mem.lean_context("Where is the trip?", user_id="me")
     assert "Tokyo" in ctx
@@ -123,7 +123,7 @@ def test_timestamped_records_preserve_message_times_on_import():
     stats = mem.import_data(records, format="records", user_id="u", summarize=False)
 
     assert stats["sessions"] == 1 and stats["episodes"] == 2
-    chain = mem.history("u", "works_at", user_id="u")
+    chain = mem.history("Wei", "works_at", user_id="u")
     assert sorted(f.valid_at for f in chain) == [1_700_000_000.0, 1_700_086_400.0]
     assert "Tencent" in mem.as_of("Where does Wei work?", 1_700_000_001.0, user_id="u").answer()
     assert "Moonshot AI" in mem.search("Where does Wei work?", user_id="u").answer()
@@ -158,16 +158,16 @@ def test_import_messages_dict_sessions_preserve_message_times():
     }], user_id="u", summarize=False)
 
     assert stats["sessions"] == 1 and stats["episodes"] == 2
-    chain = mem.history("u", "works_at", user_id="u")
+    chain = mem.history("Wei", "works_at", user_id="u")
     assert sorted(f.valid_at for f in chain) == [1_700_000_000.0, 1_702_592_000.0]
     assert "Tencent" in mem.as_of("Where does Wei work?", 1_700_864_000.0, user_id="u").answer()
     assert "Moonshot AI" in mem.search("Where does Wei work?", user_id="u").answer()
 
 
-def test_import_data_autosniff_and_synthetic_clock():
+def test_import_data_autosniff_preserves_unknown_time():
     mem = Memory()
     arr = [{"role": "user", "content": "I work at Tencent."}]
     stats = mem.import_data(arr, user_id="u2", base_time=1_700_000_000.0)
     assert stats["episodes"] == 1
     ep = list(mem.episodes_doc.values())[0]
-    assert ep.metadata.get("date")  # 即使源数据没有时间戳，也会盖上合成日期
+    assert ep.event_time is None and not ep.metadata.get("date")

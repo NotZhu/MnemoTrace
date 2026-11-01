@@ -22,10 +22,9 @@
 刻意做成批处理作业而非守护进程：transcript 只在会话归于安静后才值得读，而文件监视器会在每次击键时把
 说到一半的对话反复导入。调度器只是按间隔运行 `--once`。
 
-成本模型：会话以 `metadata.source = "agent_session"` 提交且不带 `consolidate`，服务器存储+摘要它们，
-并在关闭时逐个蒸馏（每会话 1 次 LLM 调用）。逐轮 fact 提取则约每会话 100 次调用 —— 3108 个会话 ×
-约 100 轮 ≈ 首次回填 30 万次调用，而且没有 LLM 时产出的全是垃圾（12 轮 -> 11 条垃圾 fact）。
-`--extract-facts` 用于显式开启。
+历史对话按稳定消息身份、角色和来源时间提交到统一入口，默认 buffered；关闭时刷新冻结范围。
+联合窗口同时生成事实和逐消息摘要，调用量由实际预算与重试决定，不按会话轮数估算成本。
+`--immediate` 可显式在接收后立即处理，未知来源时间保持未知。
 """
 from __future__ import annotations
 
@@ -253,15 +252,12 @@ def _post(base_url: str, api_key: str, path: str, body: dict, timeout: int) -> d
 
 
 def ingest(base_url: str, api_key: str, paths: list[str], timeout: int = 900,
-           outcomes: bool = True, extract_facts: bool = False,
+           close_sessions: bool = True, immediate: bool = False,
            max_bytes: int = IMPORT_CHUNK_BYTES) -> dict:
-    """导入会话，然后逐个 close 以触发蒸馏。
-
-    只导入只会存储 transcript。蒸馏 —— 决定了什么、发现了什么、学到了什么 —— 发生在 close_session 时，
-    跳过 close 的 watcher 会留下一个满是原始轮次、没有结论的记忆，而这正是整条路径要修复的状态。
+    """提交历史消息，再逐个关闭以完成冻结范围内的联合处理。
 
     返回导入结果外加 `outcomes`、`closed_ok` / `close_failed`（会话 id）和 `sessions_by_path`，调用方
-    据此做到只有会话被蒸馏之后才把 transcript 标记为 seen。
+    据此做到只有范围处理完成后才把 transcript 标记为 seen。
     """
     # 每个文件解析一次，成本与从前相同 —— 但以路径为键，因为 "seen" 是按文件记的台账，一个文件只有在它
     # 包含的每个会话都闭合后才算完成。
@@ -280,12 +276,13 @@ def ingest(base_url: str, api_key: str, paths: list[str], timeout: int = 900,
         return {"ok": True, "sessions": 0, "episodes": 0, "note": "nothing conversational in those files",
                 "outcomes": 0, "closed_ok": [], "close_failed": [], "sessions_by_path": by_path}
 
-    # 只发会话级时间，绝不发逐消息时间戳或文件路径：线上载荷是托管服务器留存的东西，而 `metadata.source`
-    # 决定它绕开逐轮提取。
+    # Preserve source times and stable positions; local file paths are not source identities.
     rows = []
     for s in sessions:
         row: dict = {"session_id": s.session_id, "metadata": {"source": "agent_session"},
-                     "messages": [{"role": m.role, "content": m.content} for m in s.messages]}
+                     "messages": [{"message_id": m.message_id or f'import:{index}', "role": m.role,
+                                   "content": m.content, "event_time": m.event_time}
+                                  for index, m in enumerate(s.messages)]}
         if s.event_time is not None:
             row["event_time"] = s.event_time
         rows.append(row)
@@ -297,7 +294,7 @@ def ingest(base_url: str, api_key: str, paths: list[str], timeout: int = 900,
                     "facts_deferred": 0, "batches": len(batches), "import_failed": 0}
     for batch in batches:
         payload: dict = {"sessions": batch}
-        if extract_facts:
+        if immediate:
             payload["consolidate"] = True
         try:
             part = _post(base_url, api_key, "/v1/import", payload, timeout)
@@ -325,18 +322,17 @@ def ingest(base_url: str, api_key: str, paths: list[str], timeout: int = 900,
     result["oversized_by_path"] = {
         path: ids for path, ids in by_path.items() if ids and set(ids) & set(oversized)
     }
-    if not outcomes:
+    if not close_sessions:
         return result
 
-    # 逐个蒸馏已导入的会话。逐会话而非一次批量调用：提取器要在单场对话的弧线上推理，且一个会话失败
-    # 不能连累其他会话的结论。
+    # One failed session must not prevent the other frozen ranges from finishing.
     distilled = 0
     for s in sessions:
         if s.session_id not in sent_ids:
             continue  # 从未到达服务器；无 close 可做
         try:
             closed = _post(base_url, api_key, "/v1/sessions/close",
-                           {"session_id": s.session_id, "outcomes": True}, timeout)
+                           {"session_id": s.session_id, "outcomes": False}, timeout)
             distilled += int(closed.get("outcomes") or 0)
             result["closed_ok"].append(s.session_id)
         except Exception:  # noqa: BLE001 — transcript 已入库；蒸馏失败可重试
@@ -456,8 +452,8 @@ def run_once(args) -> dict:
         # "已认领但未合并"状态就在这里被重复 close。
         fold_claims(state, claims_path, target=target)
         try:
-            result = ingest(args.url, key, paths, outcomes=not args.no_outcomes,
-                            extract_facts=args.extract_facts,
+            result = ingest(args.url, key, paths, close_sessions=not args.no_close,
+                            immediate=args.immediate,
                             max_bytes=getattr(args, "max_bytes", IMPORT_CHUNK_BYTES))
         except urllib.error.HTTPError as exc:
             # 服务器应答了 —— 是拒绝。不是传输问题，所以不是 exit 75；但也没有存下任何东西：
@@ -495,7 +491,7 @@ def run_once(args) -> dict:
             ids = by_path.get(p, [])
             if not ids:
                 continue  # 它所在批次被拒 —— 下个 tick 恰好重试这些
-            done = args.no_outcomes or all(sid in closed_ok for sid in ids)
+            done = args.no_close or all(sid in closed_ok for sid in ids)
             if not done:
                 # 不标记 seen：transcript 已存储但未蒸馏，下个 tick 必须重试 close。有上限，
                 # 这样一个消化不了的文件不能永远占住名额。
@@ -836,11 +832,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="where the SessionEnd hook records the transcripts it fed")
     ap.add_argument("--max-bytes", type=int, default=IMPORT_CHUNK_BYTES,
                     help="per-request import budget; keep it under the server's MNEMOTRACE_MAX_REQUEST_BYTES")
-    ap.add_argument("--no-outcomes", action="store_true",
-                    help="import transcripts only, skip distilling them into decisions/lessons")
-    ap.add_argument("--extract-facts", action="store_true",
-                    help="also run per-turn fact extraction on the server (needs an LLM there; "
-                         "~1 call per turn)")
+    ap.add_argument("--no-close", action="store_true",
+                    help="accept buffered historical messages without waiting for session close")
+    ap.add_argument("--immediate", action="store_true",
+                    help="process imported message windows immediately instead of accepting buffered work")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--once", action="store_true", help="run one tick (the default)")
     ap.add_argument("--every", default="", metavar="DUR",
