@@ -185,11 +185,11 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
 
     original_ingest, original_save = Ingestor.ingest, MemoryService._save
     original_raw, original_select = LLMExtractor.raw_window, BufferedExtraction._select
-    def ingest(self, content, user_id='default', session_id='default', speaker='user', event_time=None, embedding=None):
+    def ingest(self, content, user_id='default', session_id='default', role='user', event_time=None, embedding=None):
         event = EVENT.get()
         if event is None or content != event['text'] or user_id != event['user']:
             raise ValueError('Replay ingestion identity mismatch')
-        ep = original_ingest(self, content, user_id, session_id, speaker, event['at'], embedding)
+        ep = original_ingest(self, content, user_id, session_id, role, event['at'], embedding)
         with lock:
             episodes[ep.id] = event
             times[event['id']]['episode_id'] = ep.id
@@ -239,7 +239,7 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
         return selected
 
     def raw_window(self, window, max_tokens):
-        prompt = self.template.format(speaker=window.pending[0].episode.speaker, content=window.content)
+        prompt = self.template.format(role=window.pending[0].episode.role, content=window.content)
         parts = payload(prompt)
         row = dict(window_id=window.id, **parts, started_at=stamp(), validated=False,
                    input_bytes=self.window_size(window))

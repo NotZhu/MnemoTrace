@@ -6,7 +6,7 @@
 
 | 类型 | 用途与关键字段 |
 | --- | --- |
-| Episode | 原始内容，关联 user、session、speaker、event_time 与 ingested_at；摘要和整合标记是派生状态 |
+| Episode | 原始内容，关联 user、session、role、event_time 与 ingested_at；摘要和整合标记是派生状态 |
 | Fact | subject/predicate/object 断言，保留 provenance、source、有效时间、事务时间和 supersedes |
 | Entity / Relation | 实体及由 fact 支撑的关系，用于图检索与可视化 |
 | WorkingMemory | 带 session、TTL 和 consumed 状态的短时内容 |
@@ -89,7 +89,7 @@ state 必须包含 focus（track/mute 字符串列表）、policy（四个策略
 
 ## 结构化快照导入
 
-`Memory.import_snapshot()` 和 HTTP `/v1/import` 接受不带格式版本字段的当前结构化导出，要求 facts 和 episodes 列表及各记录必要字段完整。自动导入遇到顶层含 facts 或 episodes 的对象即执行快照校验；失败不回退为对话抽取。事实行须提供原编号、来源类别、topic/topic_source、双时间轴和替代关系；对话行须提供原编号、session、speaker、content 与 event_time，摘要可缺省。时间须为有限 epoch 数值，不从字符串推断单位或用当前时间补齐。导出字段契约与本地存储不同，不能直接将 JSONL 目录当作迁移载荷。
+`Memory.import_snapshot()` 和 HTTP `/v1/import` 接受不带格式版本字段的当前结构化导出，要求 facts 和 episodes 列表及各记录必要字段完整。自动导入遇到顶层含 facts 或 episodes 的对象即执行快照校验；失败不回退为对话抽取。事实行须提供原编号、来源类别、topic/topic_source、双时间轴和替代关系；对话行须提供原编号、session、role、content 与 event_time，摘要可缺省。时间须为有限 epoch 数值，不从字符串推断单位或用当前时间补齐。导出字段契约与本地存储不同，不能直接将 JSONL 目录当作迁移载荷。
 
 导入会为目标用户分配新记录编号、重算向量、重连本批与去重命中的替代链；未包含的替代目标置空，provenance 保留来源编号。目标用户的 focus、policy、identity、aliases 和 import_seen 保持不变；导出的 focus、profile 和 graph 等展示信息不覆盖目标设置。默认分享安全导出允许 episodes=[]。快照导入不提供整库运行状态备份恢复。
 

@@ -67,7 +67,7 @@ def test_missing_fact_history_rejects_before_any_episode_is_added(key):
     assert contents(mem) == before
 
 
-@pytest.mark.parametrize("key", ["id", "session_id", "speaker", "content", "event_time"])
+@pytest.mark.parametrize("key", ["id", "session_id", "role", "content", "event_time"])
 def test_missing_episode_fields_rejects_batch(key):
     payload = snapshot()
     payload["episodes"][0].pop(key)

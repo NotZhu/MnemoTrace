@@ -73,7 +73,7 @@ def ingest(mem: Memory, item: dict, user_id: str) -> None:
         return
     vecs = mem.embedder.embed_batch(texts)
     for (sid, event_time, dstr), text, vec in zip(meta, texts, vecs):
-        ep = mem.add(text, user_id=user_id, session_id=sid, speaker="session",
+        ep = mem.add(text, user_id=user_id, session_id=sid, role="session",
                      event_time=event_time, embedding=vec)
         ep.metadata["date"] = dstr or fmt_date(event_time)
 

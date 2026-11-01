@@ -22,7 +22,7 @@ class Episode:
     content: str
     user_id: str = "default"
     session_id: str = "default"
-    speaker: str = "user"
+    role: str = "user"
     event_time: float = field(default_factory=now)  # 在世界中发生的时间
     ingested_at: float = field(default_factory=now)  # 我们记录它的时间
     embedding: Optional[list[float]] = None

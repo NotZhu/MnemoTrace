@@ -38,7 +38,7 @@ class StubLLM:
 
 def _episodes(n: int = 3) -> list[Episode]:
     return [Episode(content=f"turn {i} with enough words to survive filtering", user_id="u",
-                    session_id="s1", speaker="user" if i % 2 else "assistant",
+                    session_id="s1", role="user" if i % 2 else "assistant",
                     event_time=1_700_000_000.0 + i)
             for i in range(n)]
 

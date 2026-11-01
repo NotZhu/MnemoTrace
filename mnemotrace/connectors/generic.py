@@ -10,7 +10,7 @@ from typing import Any, Optional
 from .base import ImportMessage, ImportSession, extract_text, iter_jsonl, to_epoch
 
 # 消息字典的角色可能放在下面任意一个键里；内容键同理
-_ROLE_KEYS = ("role", "speaker", "author", "from", "sender")
+_ROLE_KEYS = ("role", "role", "author", "from", "sender")
 _CONTENT_KEYS = ("content", "text", "message", "body", "value")
 _TIME_KEYS = ("event_time", "timestamp", "time", "created_at", "create_time", "date", "ts")
 _SESSION_KEYS = ("session_id", "session", "conversation_id", "thread_id", "chat_id")
@@ -30,7 +30,7 @@ def _msg_from_dict(d: dict, default_role: str = "user") -> Optional[ImportMessag
     text = extract_text(_first(d, _CONTENT_KEYS, ""))
     if not text or not str(text).strip():
         return None
-    return ImportMessage(content=str(text).strip(), speaker=str(role),
+    return ImportMessage(content=str(text).strip(), role=str(role),
                          event_time=to_epoch(_first(d, _TIME_KEYS)))
 
 
@@ -56,7 +56,7 @@ def parse_messages(obj: Any, session_id: str = "imported") -> list[ImportSession
 
 
 def parse_records(obj: Any, session_id: str = "imported") -> list[ImportSession]:
-    """扁平的记录字典列表，每条 {content, [session_id], [speaker], [timestamp]}。记录按其会话 id
+    """扁平的记录字典列表，每条 {content, [session_id], [role], [timestamp]}。记录按其会话 id
     分组成会话（没有 id 的共用 `session_id`），保持原有顺序。"""
     if not isinstance(obj, list):
         raise ValueError("records format expects a list of objects.")
@@ -93,19 +93,19 @@ def parse_transcript(text: str, session_id: str = "imported") -> list[ImportSess
     否则整体作为一条 user 消息。"""
     messages: list[ImportMessage] = []
     current: Optional[ImportMessage] = None
-    saw_speaker = False
+    saw_role = False
     for raw in text.splitlines():
         m = _SPEAKER_RE.match(raw)
         if m:
-            saw_speaker = True
-            current = ImportMessage(content=m.group(2).strip(), speaker=m.group(1).strip())
+            saw_role = True
+            current = ImportMessage(content=m.group(2).strip(), role=m.group(1).strip())
             messages.append(current)
         elif current is not None and raw.strip():
             current.content += "\n" + raw.strip()
-        elif raw.strip() and not saw_speaker:
+        elif raw.strip() and not saw_role:
             # 还没有说话者结构 —— 累积进同一条持续追加的消息
             if current is None:
-                current = ImportMessage(content=raw.strip(), speaker="user")
+                current = ImportMessage(content=raw.strip(), role="user")
                 messages.append(current)
             else:
                 current.content += "\n" + raw.strip()

@@ -38,7 +38,7 @@ def test_parse_chatgpt_reconstructs_active_thread():
     s = sessions[0]
     assert s.title == "Trip planning"
     # system 节点被隐藏 -> 可见轮次为 3，按时间顺序排列
-    assert [m.speaker for m in s.messages] == ["user", "assistant", "user"]
+    assert [m.role for m in s.messages] == ["user", "assistant", "user"]
     assert "Tokyo" in s.messages[0].content
     assert s.messages[0].event_time == 1700000000.0
     assert s.start_time() == 1700000000.0
@@ -85,13 +85,13 @@ def test_parse_jsonl():
     assert len(sessions) == 1 and len(sessions[0].messages) == 2
 
 
-def test_parse_transcript_speaker_lines_and_freeform():
+def test_parse_transcript_role_lines_and_freeform():
     tagged = "Alice: Hey there\nBob: Hi Alice\nhow are you?"
     s = parse(tagged, format="transcript")[0]
-    assert [m.speaker for m in s.messages] == ["Alice", "Bob"]
+    assert [m.role for m in s.messages] == ["Alice", "Bob"]
     assert s.messages[1].content == "Hi Alice\nhow are you?"  # 续行被追加到上一条发言
 
-    free = "Just some freeform notes.\nNo speakers here."
+    free = "Just some freeform notes.\nNo roles here."
     assert sniff(free) == "transcript"
     s2 = parse(free)[0]
     assert len(s2.messages) == 1 and "freeform" in s2.messages[0].content

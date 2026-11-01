@@ -299,10 +299,10 @@ def test_records_import_requests_model_extraction():
     from mnemotrace.connectors import parse
     from tests.model_fixtures import Memory
 
-    records = [{"content": m["content"], "speaker": m["role"], "session_id": "r1"}
+    records = [{"content": m["content"], "role": m["role"], "session_id": "r1"}
                for m in _TRANSCRIPT_A + _TRANSCRIPT_B]
     records.append({"content": "I moved to Shenzhen last year and I work at Moonshot AI.",
-                    "speaker": "user", "session_id": "r1"})
+                    "role": "user", "session_id": "r1"})
     mem = Memory()
     stats = mem.import_messages(parse(records, format="records"), user_id="u")
     assert stats["facts_added"] >= 1, stats

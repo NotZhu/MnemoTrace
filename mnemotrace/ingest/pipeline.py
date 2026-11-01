@@ -36,7 +36,7 @@ class Ingestor:
         content: str,
         user_id: str = "default",
         session_id: str = "default",
-        speaker: str = "user",
+        role: str = "user",
         event_time: Optional[float] = None,
         embedding: Optional[list] = None,
     ) -> Episode:
@@ -46,7 +46,7 @@ class Ingestor:
             content: 事件内容。
             user_id: 用户 ID。
             session_id: 会话 ID。
-            speaker: 说话者。
+            role: 说话者。
             event_time: 事件发生时间（世界时间）。
             embedding: 事件内容的预计算嵌入向量。
         Returns:
@@ -56,7 +56,7 @@ class Ingestor:
             content=content,
             user_id=user_id,
             session_id=session_id,
-            speaker=speaker,
+            role=role,
             event_time=event_time if event_time is not None else now(),
         )
         # 优先使用预计算的向量；未提供时由嵌入器处理原文。

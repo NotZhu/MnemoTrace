@@ -428,7 +428,7 @@ class Memory:
         content: str,
         user_id: str = "default",
         session_id: str = "default",
-        speaker: str = "user",
+        role: str = "user",
         event_time: Optional[float] = None,
         consolidate: bool = False,
         embedding: Optional[list] = None,
@@ -439,7 +439,7 @@ class Memory:
             content: 事件内容。
             user_id: 用户 ID。
             session_id: 会话 ID。
-            speaker: 说话者。
+            role: 说话者。
             event_time: 事件时间戳。
             consolidate: 是否立即执行整合。
             embedding: 事件内容的嵌入向量。
@@ -448,7 +448,7 @@ class Memory:
         """
         if consolidate:
             require_llm(self.llm)
-        ep = self.ingestor.ingest(content, user_id, session_id, speaker, event_time, embedding=embedding)
+        ep = self.ingestor.ingest(content, user_id, session_id, role, event_time, embedding=embedding)
         if consolidate:
             self.consolidate()
         return ep
@@ -596,7 +596,7 @@ class Memory:
                 return s
             if isinstance(s, dict) and "messages" in s:
                 msgs = [ImportMessage(content=str(m.get("content", "")),
-                                      speaker=str(m.get("speaker") or m.get("role") or "user"),
+                                      role=str(m.get("role") or m.get("role") or "user"),
                                       event_time=_time_of(m),
                                       metadata=dict(m.get("metadata", {})))
                         for m in s["messages"] if isinstance(m, dict)]
@@ -630,7 +630,7 @@ class Memory:
                     text = (m.content or "").strip()
                     if not text:
                         continue
-                    body = f"{m.speaker}: {text}" if roles else text
+                    body = f"{m.role}: {text}" if roles else text
                     sid = s.session_id or f"imported_{i}"
                     # 逐行指纹包含行号，因此同一 session 内合法重复的消息不会被当成重复——
                     # 只有重导入才会碰撞。
@@ -682,7 +682,7 @@ class Memory:
 
         new_eps: list[Episode] = []
         for (sid, et, title, fp, source), text, vec in zip(metas, texts, vecs):
-            ep = self.add(text, user_id=user_id, session_id=sid, speaker="session",
+            ep = self.add(text, user_id=user_id, session_id=sid, role="session",
                           event_time=et, embedding=vec)
             ep.metadata["date"] = fmt_date(et)
             if title:
@@ -752,7 +752,7 @@ class Memory:
                 eps_skipped += 1
                 continue
             ep = Episode(content=content, user_id=user, session_id=session_id,
-                         speaker=row["speaker"], event_time=row["event_time"],
+                         role=row["role"], event_time=row["event_time"],
                          consolidated=True,  # 它的 fact 在下方恢复；绝不重新抽取
                          summary=row.get("summary", ""))
             ep.embedding = self.embedder.embed(content)
@@ -2731,7 +2731,7 @@ class Memory:
         ep = self.episodes_doc.get(episode_id)
         if ep is None or ep.user_id != user_id:
             return None
-        return dict(id=ep.id, space=ep.user_id, session_id=ep.session_id, speaker=ep.speaker,
+        return dict(id=ep.id, space=ep.user_id, session_id=ep.session_id, role=ep.role,
                     event_time=ep.event_time, ingested_at=ep.ingested_at, content=ep.content)
 
     def retrieve_episodes(

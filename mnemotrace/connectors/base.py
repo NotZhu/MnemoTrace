@@ -27,7 +27,7 @@ class ImportMessage:
     """源导出中的一轮对话/一条消息。"""
 
     content: str
-    speaker: str = "user"  # 作者角色：user | assistant | system | tool | ...
+    role: str = "user"  # 作者角色：user | assistant | system | tool | ...
     event_time: Optional[float] = None  # epoch 秒（若来源带有时间）
     metadata: dict = field(default_factory=dict)
 
@@ -60,7 +60,7 @@ class ImportSession:
             text = (m.content or "").strip()
             if not text:
                 continue
-            lines.append(f"{m.speaker}: {text}" if roles else text)
+            lines.append(f"{m.role}: {text}" if roles else text)
         body = "\n".join(lines)
         if self.title and self.title.strip():
             body = f"# {self.title.strip()}\n{body}"

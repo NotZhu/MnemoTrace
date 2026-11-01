@@ -31,7 +31,7 @@ class SourceSpan:
         ep = self.episode
         return {"id": self.id, "episode_id": ep.id, "start": self.start, "end": self.end,
                 "event_time": ep.event_time, "ingested_at": ep.ingested_at,
-                "speaker": ep.speaker, "content": ep.content[self.start:self.end]}
+                "role": ep.role, "content": ep.content[self.start:self.end]}
 
 
 @dataclass(frozen=True)

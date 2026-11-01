@@ -83,5 +83,5 @@ def to_session(text: str, *, filename: Optional[str] = None, session_id: str = "
                metadata: Optional[dict] = None) -> ImportSession:
     """把提取出的文本（或图片描述）包装成单条消息的 ImportSession，可直接交给 import_messages。"""
     meta = {"source": "document", **(metadata or {})}
-    msg = ImportMessage(content=text, speaker="document", metadata=meta)
+    msg = ImportMessage(content=text, role="document", metadata=meta)
     return ImportSession(session_id=session_id, messages=[msg], title=filename or "", metadata=meta)
