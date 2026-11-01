@@ -255,6 +255,9 @@ def test_native_backend_commit_failure_never_exposes_partial_results(tmp_path, m
     else:
         with pytest.raises(RuntimeError, match='checkpoint failed'):
             mem.search('Synthetic A', user_id='u')
+        with pytest.raises(RuntimeError, match='checkpoint failed'):
+            mem.save(str(tmp_path / 'must-not-save-dirty-state'))
+        assert not (tmp_path / 'must-not-save-dirty-state').exists()
 
 
 @pytest.mark.parametrize('delta', [-1, 1])
@@ -537,3 +540,20 @@ def test_dialogue_fact_retains_sensitive_classification_and_safe_export(services
     assert fact.sensitive and fact.category == '健康' and fact.topic == 'health' and fact.topic_source == 'rule'
     assert svc.export('u')['facts'] == []
     assert svc.export('u', include_sensitive=True)['facts'][0]['sensitive']
+
+
+def test_watcher_history_preserves_reactivated_live_working(services, monkeypatch):
+    from mnemotrace.connectors import watch
+    from mnemotrace.connectors.base import ImportMessage, ImportSession
+    svc, model, _ = services()
+    svc.add_working('u', 'Synthetic reactivated live task', 's')
+    session = ImportSession(session_id='s', messages=[ImportMessage('Synthetic historical note', message_id='old')])
+    monkeypatch.setattr(watch, 'load_sessions', lambda *args, **kwargs: [session])
+    def post(base, key, path, body, timeout):
+        if path == '/v1/import':
+            return svc.import_('u', sessions=body['sessions'], consolidate=body.get('consolidate'))
+        return svc.close_session('u', **body)
+    monkeypatch.setattr(watch, '_post', post)
+    assert watch.ingest('http://synthetic.invalid', 'synthetic-key', ['synthetic-file'])['closed_ok'] == ['s']
+    assert [w['content'] for w in svc.working_memory('u', 's')['items']] == ['Synthetic reactivated live task']
+    assert len(model.calls) == 1
