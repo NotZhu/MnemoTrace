@@ -210,6 +210,7 @@ def test_watcher_closes_each_session_so_it_gets_distilled(monkeypatch):
     assert [c[0] for c in calls] == ["/v1/import", "/v1/sessions/close", "/v1/sessions/close"]
     assert {c[1]["session_id"] for c in calls[1:]} == {"claude-code:a", "codex:b"}
     assert all(c[1]["outcomes"] is False for c in calls[1:])
+    assert all(c[1]['clear_working'] is False for c in calls[1:])
     assert result["outcomes"] == 6  # 每个会话 3 条
 
 

@@ -324,6 +324,8 @@ class Memory:
         embedder/llm 不会被序列化；重新打开时请挂载你想用的运行时后端。常规操作刻意不写 pickle。
         check_version=True 在持久化锁内拒绝覆盖其他写入者已推进的快照。
         """
+        if self._message_broken:
+            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         path = path or self._persist_path
         if not path:
             raise ValueError("no path to save to")

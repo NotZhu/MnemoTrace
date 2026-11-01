@@ -332,7 +332,7 @@ def ingest(base_url: str, api_key: str, paths: list[str], timeout: int = 900,
             continue  # 从未到达服务器；无 close 可做
         try:
             closed = _post(base_url, api_key, "/v1/sessions/close",
-                           {"session_id": s.session_id, "outcomes": False}, timeout)
+                           {"session_id": s.session_id, "outcomes": False, "clear_working": False}, timeout)
             distilled += int(closed.get("outcomes") or 0)
             result["closed_ok"].append(s.session_id)
         except Exception:  # noqa: BLE001 — transcript 已入库；蒸馏失败可重试
