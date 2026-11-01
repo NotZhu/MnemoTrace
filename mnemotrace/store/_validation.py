@@ -115,7 +115,7 @@ _SOURCE = _choice("user", "extracted")
 # Explicit wire fields: adding a dataclass default must not silently change restoration.
 _EPISODE = {
     "id": _identifier, "content": _string, "user_id": _identifier,
-    "session_id": _identifier, "speaker": _identifier, "event_time": _number,
+    "session_id": _identifier, "role": _identifier, "event_time": _number,
     "ingested_at": _number, "embedding": _VECTOR, "consolidated": _boolean,
     "summary": _string, "summary_embedding": _VECTOR, "metadata": _metadata,
 }
@@ -240,7 +240,7 @@ _IMPORT_FACT = {key: _FACT[key] for key in (
 _IMPORT_FACT.update(status=_choice("live", "superseded"), valid_at_h=_string,
                     invalid_at_h=_nullable(_string))
 _IMPORT_EPISODE = {key: _EPISODE[key] for key in (
-    "id", "content", "session_id", "speaker", "event_time", "summary",
+    "id", "content", "session_id", "role", "event_time", "summary",
 )}
 
 

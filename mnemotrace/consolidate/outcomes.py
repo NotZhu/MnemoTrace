@@ -93,7 +93,7 @@ def extract_outcomes(llm: LLM, episodes: list[Episode], user_id: str,
     require_llm(llm)
     chrono = sorted(episodes, key=lambda e: (e.event_time, e.ingested_at))
     transcript = _windowed(
-        [f"[{ep.speaker}] {ep.content}" for ep in chrono if ep.content.strip()], max_chars
+        [f"[{ep.role}] {ep.content}" for ep in chrono if ep.content.strip()], max_chars
     )
     if not transcript.strip():
         return []

@@ -170,7 +170,7 @@ class LLMExtractor:
         require_llm(self.llm)
         scope = ep.metadata.get("memory_scope", "long")
         system = self._system(scope)
-        result = self._complete(self.template.format(speaker=ep.speaker, content=ep.content), system)
+        result = self._complete(self.template.format(role=ep.role, content=ep.content), system)
         return self._validate(result.text, scope)
 
     def _system(self, scope: str, *, window: bool = False) -> str:
@@ -194,7 +194,7 @@ class LLMExtractor:
 
     def _window_request(self, window: ExtractionWindow) -> tuple[str, str]:
         template = _WINDOW_TEMPLATE if self.template == EXTRACT_TEMPLATE else self.template
-        return (template.format(speaker=window.pending[0].episode.speaker, content=window.content),
+        return (template.format(role=window.pending[0].episode.role, content=window.content),
                 self._system(window.scope, window=True))
 
     def window_size(self, window: ExtractionWindow) -> int:

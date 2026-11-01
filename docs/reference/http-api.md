@@ -176,7 +176,7 @@ stats.counts.episodes_ephemeral 统计包含临时记忆内容的历史事件，
 ## 条件摘要与原文读取
 
 `GET /v1/episodes/{episode_id}?space=<space>` 显式读取完整原文。space 默认调用者 home，服务端校验 can_read；无权读取返回 403，空间内事件不存在返回 404。
-响应为 `{id, space, session_id, speaker, event_time, ingested_at, content}`，不含嵌入和内部任务字段。自由文本原文不属于脱敏响应，调用方需要时才显式请求。
+响应为 `{id, space, session_id, role, event_time, ingested_at, content}`，不含嵌入和内部任务字段。自由文本原文不属于脱敏响应，调用方需要时才显式请求。
 
 `POST /v1/remember` 返回独立的 `summarization: {status, error_code}`。status 为 not_needed 或任务状态；摘要失败不撤销已接受的原文和抽取。
 `GET /v1/processing` 增加独立 summarization 区，包含摘要任务 counts/jobs，不改变原抽取计数。

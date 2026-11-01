@@ -40,7 +40,7 @@ export interface OriginalEpisode {
   id: string
   space: string
   session_id: string
-  speaker: string
+  role: string
   event_time: number
   ingested_at: number
   content: string
@@ -446,7 +446,6 @@ export interface FactPatch {
 
 export interface ImportMessageInput {
   role?: string
-  speaker?: string
   content: string
   event_time?: number
 }
@@ -502,7 +501,7 @@ export interface MemoryExportFact extends TopicMetadata {
 export interface MemoryExportEpisode {
   id: string
   session_id: string
-  speaker: string
+  role: string
   event_time: number
   date: string
   content: string

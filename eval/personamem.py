@@ -126,7 +126,7 @@ def ingest_history(mem: Memory, messages: list[dict], pid: str, chunk: int = 6) 
     texts = [t for t, _ in eps]
     vecs = mem.embedder.embed_batch(texts)
     for (text, et), vec in zip(eps, vecs):
-        mem.add(text, user_id=pid, session_id=f"seg{int(et)}", speaker="session", event_time=et, embedding=vec)
+        mem.add(text, user_id=pid, session_id=f"seg{int(et)}", role="session", event_time=et, embedding=vec)
 
 
 def full_history_text(messages: list[dict], budget: int = 120_000) -> str:

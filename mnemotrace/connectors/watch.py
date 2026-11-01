@@ -285,7 +285,7 @@ def ingest(base_url: str, api_key: str, paths: list[str], timeout: int = 900,
     rows = []
     for s in sessions:
         row: dict = {"session_id": s.session_id, "metadata": {"source": "agent_session"},
-                     "messages": [{"role": m.speaker, "content": m.content} for m in s.messages]}
+                     "messages": [{"role": m.role, "content": m.content} for m in s.messages]}
         if s.event_time is not None:
             row["event_time"] = s.event_time
         rows.append(row)

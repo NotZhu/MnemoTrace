@@ -14,7 +14,7 @@
 
 | 方法 | 主要参数 | 返回与语义 |
 | --- | --- | --- |
-| `add` | content；user_id、session_id、speaker、event_time；consolidate=False | Episode；保存事件，可选择立即整合 |
+| `add` | content；user_id、session_id、role、event_time；consolidate=False | Episode；保存事件，可选择立即整合 |
 | `remember` | content；user_id、session_id、scope="auto" | dict；路由 long/working，长期内容仍需显式整合 |
 | `consolidate` | episodes=None | 计数字典；None 处理 pending 事件 |
 | `consolidate_full` | fact_episodes=None、summary_episodes=None | 计数字典；整合与条件摘要，可分别指定两组事件；reflected 固定为 0 |

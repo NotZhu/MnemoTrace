@@ -1859,7 +1859,7 @@ class MemoryService:
                 "supersedes": f.supersedes, "provenance": f.provenance,
             } for f in sorted(_facts, key=lambda x: x.valid_at, reverse=True)],
             "episodes": [] if not include_sensitive else [{
-                "id": ep.id, "session_id": ep.session_id, "speaker": ep.speaker,
+                "id": ep.id, "session_id": ep.session_id, "role": ep.role,
                 "event_time": ep.event_time, "date": ep.metadata.get("date") or fmt_date(ep.event_time),
                 "content": ep.content, "summary": ep.summary,
             } for ep in mem.episodes_doc.values()],

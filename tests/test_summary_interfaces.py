@@ -23,7 +23,7 @@ def test_explicit_original_http_enforces_space_acl_and_omits_internal_state(serv
         assert client.get(path, headers=headers).status_code == 404
         response = client.get(path, params={'space': 'team'}, headers=headers)
         assert response.status_code == 200 and response.json()['content'] == LONG
-        assert set(response.json()) == {'id', 'space', 'session_id', 'speaker', 'event_time', 'ingested_at', 'content'}
+        assert set(response.json()) == {'id', 'space', 'session_id', 'role', 'event_time', 'ingested_at', 'content'}
         assert client.get(path, params={'space': 'team'}, headers={
             'Authorization': 'Bearer sk-other'}).status_code == 403
         assert client.get('/v1/episodes/missing', headers=headers).status_code == 404

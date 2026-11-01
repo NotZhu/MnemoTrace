@@ -77,7 +77,7 @@ def test_long_route_does_not_demonstrate_working_output():
 def test_custom_policy_and_template_are_preserved_and_measured():
     window = recorded_window()
     model = FakeLLM(responses=['{"facts":[],"working":[]}'])
-    extractor = LLMExtractor(model, system='合成自定义抽取策略',template='{speaker}\n{content}\n自定义输出',llm_topics=False)
+    extractor = LLMExtractor(model, system='合成自定义抽取策略',template='{role}\n{content}\n自定义输出',llm_topics=False)
     extractor.instruction = '保留合成标识'
     size = extractor.window_size(window)
     extractor.raw_window(window,2048)

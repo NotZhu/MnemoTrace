@@ -10,7 +10,7 @@
 `format="auto"`（默认）会探测数据形状。支持的格式：
     chatgpt     ChatGPT 数据导出（conversations.json）
     messages    OpenAI 对话数组 — [{role, content}, ...]（或 {messages:[...]}）
-    records     扁平的 {content, [session_id], [speaker], [timestamp]} 列表
+    records     扁平的 {content, [session_id], [role], [timestamp]} 列表
     jsonl       JSON-Lines，每行一条记录
     transcript  纯文本 / markdown（"Speaker: text" 行，或自由文本）
 """
@@ -77,7 +77,7 @@ def _sniff_obj(obj: Any) -> str:
             return "chatgpt"
         if "messages" in sample:
             return "messages"
-        if any(k in sample for k in ("role", "speaker", "author", "from")) and \
+        if any(k in sample for k in ("role", "role", "author", "from")) and \
                 any(k in sample for k in ("content", "text", "message", "body")):
             return "messages" if not any(
                 k in sample for k in ("session_id", "conversation_id", "thread_id")) else "records"

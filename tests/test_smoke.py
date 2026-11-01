@@ -510,7 +510,7 @@ def test_import_style_moving_and_dietary_restrictions_extract_cleanly():
 
 def test_assistant_small_talk_is_not_profile_occupation():
     mem = Memory()
-    mem.add("Exciting! Berlin is great.", user_id="u1", speaker="assistant", event_time=BASE)
+    mem.add("Exciting! Berlin is great.", user_id="u1", role="assistant", event_time=BASE)
     mem.consolidate()
 
     facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}

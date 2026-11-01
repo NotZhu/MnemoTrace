@@ -66,7 +66,7 @@ def convert_sample(sample: dict) -> list[dict]:
     sessions: list[list[dict]] = []
     dates: list[str] = []
     for skey, date, turns in _sessions(conv):
-        msgs = [{"role": t.get("speaker", "user"), "content": _turn_text(t)} for t in turns if _turn_text(t)]
+        msgs = [{"role": t.get("role", "user"), "content": _turn_text(t)} for t in turns if _turn_text(t)]
         if not msgs:
             continue
         session_ids.append(skey)
@@ -115,15 +115,15 @@ def _selftest() -> None:
     sample = {
         "sample_id": "convX",
         "conversation": {
-            "speaker_a": "Ann", "speaker_b": "Bob",
+            "role_a": "Ann", "role_b": "Bob",
             "session_1_date_time": "1:56 pm on 8 May, 2023",
             "session_1": [
-                {"speaker": "Ann", "dia_id": "D1:1", "text": "I adopted a dog named Rex."},
-                {"speaker": "Bob", "dia_id": "D1:2", "text": "Nice!", "blip_caption": "a brown dog"},
+                {"role": "Ann", "dia_id": "D1:1", "text": "I adopted a dog named Rex."},
+                {"role": "Bob", "dia_id": "D1:2", "text": "Nice!", "blip_caption": "a brown dog"},
             ],
             "session_2_date_time": "2:30 pm on 15 June, 2023",
             "session_2": [
-                {"speaker": "Ann", "dia_id": "D2:1", "text": "Rex learned to sit."},
+                {"role": "Ann", "dia_id": "D2:1", "text": "Rex learned to sit."},
             ],
         },
         "qa": [

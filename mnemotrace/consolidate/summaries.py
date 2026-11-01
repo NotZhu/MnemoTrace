@@ -32,7 +32,7 @@ def validate_config(config):
 
 
 def source_identity(ep):
-    return [ep.user_id, ep.session_id, ep.speaker, ep.event_time, ep.ingested_at,
+    return [ep.user_id, ep.session_id, ep.role, ep.event_time, ep.ingested_at,
             hashlib.sha256(ep.content.encode('utf-8')).hexdigest(), str(ep.metadata.get('date', ''))]
 
 

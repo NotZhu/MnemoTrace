@@ -129,7 +129,7 @@ def parse_agent_session(text: str, session_id: str = "agent-session",
         ts = to_epoch(row.get("timestamp"))
         if first_ts is None:
             first_ts = ts
-        messages.append(ImportMessage(content=redact_secrets(body), speaker=role, event_time=ts))
+        messages.append(ImportMessage(content=redact_secrets(body), role=role, event_time=ts))
     if not messages:
         return []
     return [ImportSession(session_id=session_id, messages=messages, event_time=first_ts,
