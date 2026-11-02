@@ -28,8 +28,26 @@ def test_http_dialogue_acl_conflict_and_strict_roles(services, monkeypatch):
         payload['messages'] = [message('b')]
         payload['space'] = 'other'
         assert client.post('/v1/messages', headers=headers, json=payload).status_code == 403
-        status = client.get('/v1/processing', headers=headers).json()['messages']
+        status = client.get('/v1/processing', headers=headers).json()
         assert len(status['jobs']) == 1 and 'content' not in json.dumps(status)
+
+
+def test_shutdown_closes_service_even_when_a_namespace_is_corrupt(services, monkeypatch, caplog):
+    from pathlib import Path
+    from fastapi.testclient import TestClient
+    from mnemotrace.server import app as appmod
+    svc, _, _ = services()
+    svc.add_fact('u', 'owner', 'owns', 'synthetic marker')
+    manifest = Path(svc._path('u')) / 'manifest.json'
+    data = json.loads(manifest.read_text(encoding='utf-8'))
+    data.pop('snapshot_id')
+    manifest.write_text(json.dumps(data), encoding='utf-8')
+    original = manifest.read_bytes()
+    monkeypatch.setattr(appmod, '_svc', svc)
+    with TestClient(appmod.app):
+        pass
+    assert svc._closed and manifest.read_bytes() == original
+    assert 'Shutdown flush failed' in caplog.text
 
 
 @pytest.mark.asyncio

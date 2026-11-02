@@ -642,3 +642,13 @@ class PipelineTasks:
         wins = [self.state['windows'][k] for k in row['window_ids']]
         return dict(status=row['summary'], error_code=next((w['error_code'] for w in reversed(wins)
             if w['operation'] in {'extract', 'summary'} and w['error_code']), None) if row['summary'] in {'pending', 'failed'} else None)
+
+    def identity_saved(self, episode_id):
+        from .fact_rules import _NAME_PREDICATES
+        names = set(self.memory._aliases.get(self.namespace, set()))
+        if self.namespace in self.memory._identity:
+            names.add(self.memory._identity[self.namespace].lower())
+        return bool(names) and any(win['core_saved'] and any(
+            fact['predicate'] in _NAME_PREDICATES and fact['object'].strip().lower() in names and episode_id in fact['source_ids']
+            for fact in (win['result'] or {}).get('facts', []))
+            for win in (self.state or {}).get('windows', {}).values())

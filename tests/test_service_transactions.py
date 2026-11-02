@@ -202,6 +202,9 @@ def test_legacy_manifest_without_commit_identity_is_rejected_without_upgrade(tmp
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     before = manifest_path.read_bytes()
     reopened = service(tmp_path)
+    assert reopened._pipeline_worker.recovery_error
+    reopened.add_fact('healthy', 'project', 'marker', 'unaffected')
+    assert reopened.processing_status('healthy')['recovery_error']
     with pytest.raises(persist.StoreFormatError, match="snapshot_id"):
         reopened.get("u")
     assert manifest_path.read_bytes() == before

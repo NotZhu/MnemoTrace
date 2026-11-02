@@ -498,3 +498,25 @@ def test_erased_shared_window_allows_explicit_retry_of_surviving_summary(service
     ep = svc.get('u').episodes_doc.get(kept)
     assert ep.consolidated and ep.summary == SUMMARY
     assert len(svc.llm.calls) == calls + 1
+
+
+def test_corrupt_namespace_does_not_block_healthy_pending_recovery(services):
+    from pathlib import Path
+    svc, _ = services(buffered=True)
+    accepted = svc.remember('healthy', 'Synthetic queued source', processing='buffered')
+    svc.add_fact('broken', 'owner', 'owns', 'Synthetic marker')
+    manifest = Path(svc._path('broken')) / 'manifest.json'
+    data = json.loads(manifest.read_text(encoding='utf-8'))
+    data.pop('snapshot_id')
+    manifest.write_text(json.dumps(data), encoding='utf-8')
+    original = manifest.read_bytes()
+    svc.close()
+    restored, _ = services(buffered=True)
+    assert restored._pipeline_worker.recovery_error
+    assert 'healthy' in restored._pipeline_worker.users
+    restored._pipeline_worker.clock = lambda: 1061
+    drain(restored, 'healthy')
+    assert restored.get('healthy').episodes_doc.get(accepted['episode_id']).consolidated
+    with pytest.raises(StoreFormatError):
+        restored.get('broken')
+    assert manifest.read_bytes() == original

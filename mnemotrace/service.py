@@ -645,7 +645,7 @@ class MemoryService:
         stats = execute_sources(self, user, [ep], 'extract', summaries=True) if processing == 'immediate' else {}
         with self._read_scope(user) as mem:
             tasks = PipelineTasks(mem, user)
-            durable = any(ep.id in f.provenance for f in mem._all_facts())
+            durable = any(ep.id in f.provenance for f in mem._all_facts()) or tasks.identity_saved(ep.id)
             transient = any(ep.id in w.metadata.get('provenance', []) for w in mem.working_mem.values())
             inferred = 'mixed' if durable and transient else 'long' if durable else 'working' if transient else 'none'
             result = dict(ok=True, episode_id=ep.id, scope=inferred if stats else scope,

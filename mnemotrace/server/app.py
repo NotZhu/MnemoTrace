@@ -21,6 +21,7 @@ pgvector/Qdrant + Kuzu（已在 store 接口后可插拔），再放到你的鉴
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
@@ -117,8 +118,13 @@ async def _lifespan(_app: FastAPI):
     # Freeze shutdown ranges without a second per-namespace wait. close() owns the
     # bounded worker join; accepted work remains in durable checkpoints.
     if _svc is not None:
-        _svc.flush(timeout=0)
-        _svc.close()
+        try:
+            _svc.flush(timeout=0)
+        except PersistenceError:
+            _svc.metrics.count('pipeline_shutdown_failed')
+            logging.getLogger(__name__).warning('Shutdown flush failed; committed work remains recoverable')
+        finally:
+            _svc.close()
 
 
 app = FastAPI(

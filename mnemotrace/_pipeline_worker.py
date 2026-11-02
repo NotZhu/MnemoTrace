@@ -16,7 +16,7 @@ class PipelineWorker:
         self.recovery_error = False
         self.last_scan = 0
         self.thread = threading.Thread(target=self.consume, name='mnemotrace-pipeline', daemon=True)
-        self.scan()
+        self.recover()
 
     def notify(self, user):
         with self.condition:
@@ -26,16 +26,29 @@ class PipelineWorker:
 
     def scan(self):
         from .store.persist import discover_processing_namespaces
-        found = discover_processing_namespaces(self.service.data_dir)
+        errors = []
+        found = discover_processing_namespaces(self.service.data_dir, on_error=errors.append)
         for user, active in found:
             if active:
                 self.notify(user)
         self.last_scan = self.monotonic()
-        self.recovery_error = False
+        self.recovery_error = bool(errors)
+        if errors:
+            self.service.metrics.count('pipeline_recovery_failed')
+            logging.getLogger(__name__).warning('Pipeline recovery failed; inspect namespace storage')
         return [user for user, _ in found]
 
     def status(self, user, session_id=None, ids=None):
         return self.service._processing_status(user, session_id, ids)
+
+    def recover(self):
+        try:
+            self.scan()
+        except Exception:
+            self.recovery_error = True
+            self.last_scan = self.monotonic()
+            self.service.metrics.count('pipeline_recovery_failed')
+            logging.getLogger(__name__).warning('Pipeline recovery failed; inspect namespace storage')
 
     def run_one(self, user):
         from ._pipeline import run_one
@@ -48,13 +61,7 @@ class PipelineWorker:
     def consume(self):
         while not self.abort.is_set():
             if self.monotonic() - self.last_scan >= 5:
-                try:
-                    self.scan()
-                except Exception:
-                    self.recovery_error = True
-                    self.last_scan = self.monotonic()
-                    self.service.metrics.count('pipeline_recovery_failed')
-                    logging.getLogger(__name__).warning('Pipeline recovery failed; inspect namespace storage')
+                self.recover()
             with self.condition:
                 users = list(self.users.items())
             progress = False
