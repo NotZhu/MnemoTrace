@@ -79,6 +79,8 @@ def test_payload_is_aggregate_only(svc):
 
 def test_async_backlog_is_visible(monkeypatch):
     monkeypatch.setenv("MNEMOTRACE_BUFFERED_EXTRACTION", "1")
+    from mnemotrace._pipeline_worker import PipelineWorker
+    monkeypatch.setattr(PipelineWorker, 'consume', lambda _: None)
     d = tempfile.mkdtemp(prefix="mnemotrace_metrics_async_")
     try:
         s = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
