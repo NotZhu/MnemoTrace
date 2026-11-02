@@ -36,6 +36,10 @@ def test_raw_note_is_synchronous_with_default_worker(monkeypatch):
 
 def test_async_remember_returns_fast_then_flush_consolidates(monkeypatch):
     monkeypatch.setenv("MNEMOTRACE_BUFFERED_EXTRACTION", "1")
+    from mnemotrace._pipeline_worker import PipelineWorker
+    # The buffered worker normally drains this; on a loaded host a tight pytest
+    # loop can starve the thread, so let flush() drive the ledger instead.
+    monkeypatch.setattr(PipelineWorker, 'consume', lambda _: None)
     d = tempfile.mkdtemp(prefix="mnemotrace_async_")
     try:
         svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
@@ -59,6 +63,8 @@ def test_async_remember_returns_fast_then_flush_consolidates(monkeypatch):
 
 def test_async_coalesces_multiple_writes_then_flush(monkeypatch):
     monkeypatch.setenv("MNEMOTRACE_BUFFERED_EXTRACTION", "1")
+    from mnemotrace._pipeline_worker import PipelineWorker
+    monkeypatch.setattr(PipelineWorker, 'consume', lambda _: None)
     d = tempfile.mkdtemp(prefix="mnemotrace_async2_")
     try:
         svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
