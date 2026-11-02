@@ -11,14 +11,21 @@ _SENT = "My name is Wei and I live in Shenzhen."  # 固定模型响应包含至�
 
 
 def _drain(svc):
-    """Finish any window the background worker has not picked up yet.
+    """Finish every queued window on the shared ledger, independent of thread timing.
 
-    flush() may return before the worker thread wakes on a slow host; drain the
-    same ledger deterministically so the assertion is not a thread race.
+    A live worker may hold the processing lease, and on a slow host flush() can
+    return before it wakes; keep stepping run_one and yield while the lease is
+    busy so completion is deterministic rather than a race with the worker.
     """
+    import time
     from mnemotrace._pipeline import run_one
-    while run_one(svc, 'u'):
-        pass
+    for _ in range(600):
+        if run_one(svc, 'u'):
+            continue
+        counts = svc.processing_status('u')['counts']
+        if not any(counts[s] for s in ('pending', 'running', 'retry_wait')):
+            return
+        time.sleep(0.05)
 
 
 def test_raw_note_is_synchronous_with_default_worker(monkeypatch):
@@ -50,10 +57,11 @@ def test_async_remember_returns_fast_then_flush_consolidates(monkeypatch):
         # 在整合运行之前，episode 已经持久化（System-1 已保存）
         assert svc.memories("u")["counts"]["episodes"] >= 1
 
-        svc.flush()  # 等 System-2 清空队列
+        flush_result = svc.flush('u')  # 等 System-2 清空队列（直接指定 user，避开 namespace 发现）
         _drain(svc)
         # flush 之后整合已运行，固定模型响应中的事实已落库
-        assert svc.memories("u")["counts"]["facts_live"] >= 1
+        counts = svc.memories("u")["counts"]
+        assert counts["facts_live"] >= 1, (flush_result, counts, svc.processing_status("u"))
 
         svc.close()
         assert not svc._pipeline_worker.thread.is_alive()
@@ -71,7 +79,7 @@ def test_async_coalesces_multiple_writes_then_flush(monkeypatch):
         svc.remember("u", "My name is Wei.", processing="buffered")
         svc.remember("u", "I live in Shenzhen.", processing="buffered")
         svc.remember("u", "I work at Moonshot AI.", processing="buffered")
-        svc.flush()  # 所有排队任务完成（已合并）；不丢失任何写入
+        svc.flush('u')  # 所有排队任务完成（已合并）；不丢失任何写入
         _drain(svc)
         assert svc.memories("u")["counts"]["episodes"] == 3
         assert svc.memories("u")["counts"]["facts_live"] >= 1

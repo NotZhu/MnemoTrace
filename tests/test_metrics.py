@@ -86,10 +86,16 @@ def test_async_backlog_is_visible(monkeypatch):
         s = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
         s.remember("u", "My name is Wei and I live in Shenzhen.", processing="buffered")
         assert s.metrics_snapshot()["buffered"]["enabled"] is True
-        s.flush()
+        s.flush('u')
+        import time
         from mnemotrace._pipeline import run_one
-        while run_one(s, 'u'):  # finish any window the worker has not woken for yet
-            pass
+        for _ in range(600):  # finish any window a slow worker has not woken for yet
+            if run_one(s, 'u'):
+                continue
+            counts = s.processing_status('u')['counts']
+            if not any(counts[k] for k in ('pending', 'running', 'retry_wait')):
+                break
+            time.sleep(0.05)
         assert s.processing_status("u")["counts"]["completed"] == 1
         s.close()
     finally:
