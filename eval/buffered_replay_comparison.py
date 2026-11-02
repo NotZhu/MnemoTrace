@@ -8,7 +8,7 @@ import platform
 import shutil
 import subprocess
 import sys
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
 from buffered_replay import PILOT, SUITE, load_suite
 from buffered_replay_report import summarize, validate_observation
@@ -16,6 +16,15 @@ from extraction_budget import Budget
 from extraction_comparison import export
 from extraction_quality import score_case, suite_hash
 from extraction_runner import require_credentials
+
+def _optional_version(name):
+    # Optional eval dependency: record its version when present, never fail the
+    # harness just because litellm is not installed in this environment.
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return None
+
 
 HARNESS = Path(__file__).parent
 ROOT = HARNESS.parent
@@ -111,7 +120,7 @@ def compare(out, *, runtime='2b434a0', extractor=None, cases=None, runs=2, pilot
             harness_diff=subprocess.check_output(['git', 'diff', '--', 'eval', 'tests/test_buffered_replay*'],
                                                  cwd=ROOT, text=True, encoding='utf-8'),
             python=platform.python_version(), platform=platform.platform(),
-            litellm_version=version('litellm') if extractor else None, extractor=extractor, runs=runs,
+            litellm_version=_optional_version('litellm') if extractor else None, extractor=extractor, runs=runs,
             settings=dict(temperature=0, client_attempts=1, request_timeout=45, storage='memory', embedder='hashing',
                           close_summarize=True, close_clear_working=False, close_outcomes=False),
             expected=ordered_grid(selected, runs), terminal_reason='created')
