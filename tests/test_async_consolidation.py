@@ -10,6 +10,17 @@ from tests.model_fixtures import MemoryService
 _SENT = "My name is Wei and I live in Shenzhen."  # 固定模型响应包含至少一条事实
 
 
+def _drain(svc):
+    """Finish any window the background worker has not picked up yet.
+
+    flush() may return before the worker thread wakes on a slow host; drain the
+    same ledger deterministically so the assertion is not a thread race.
+    """
+    from mnemotrace._pipeline import run_one
+    while run_one(svc, 'u'):
+        pass
+
+
 def test_raw_note_is_synchronous_with_default_worker(monkeypatch):
     monkeypatch.delenv("MNEMOTRACE_BUFFERED_EXTRACTION", raising=False)
     d = tempfile.mkdtemp(prefix="mnemotrace_sync_")
@@ -36,6 +47,7 @@ def test_async_remember_returns_fast_then_flush_consolidates(monkeypatch):
         assert svc.memories("u")["counts"]["episodes"] >= 1
 
         svc.flush()  # 等 System-2 清空队列
+        _drain(svc)
         # flush 之后整合已运行，固定模型响应中的事实已落库
         assert svc.memories("u")["counts"]["facts_live"] >= 1
 
@@ -54,6 +66,7 @@ def test_async_coalesces_multiple_writes_then_flush(monkeypatch):
         svc.remember("u", "I live in Shenzhen.", processing="buffered")
         svc.remember("u", "I work at Moonshot AI.", processing="buffered")
         svc.flush()  # 所有排队任务完成（已合并）；不丢失任何写入
+        _drain(svc)
         assert svc.memories("u")["counts"]["episodes"] == 3
         assert svc.memories("u")["counts"]["facts_live"] >= 1
         svc.close()
