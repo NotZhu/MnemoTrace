@@ -422,3 +422,27 @@ export interface AuditReport {
   findings: AuditFinding[]
   truncated: boolean
 }
+
+export interface PipelineJob {
+  episode_id: string
+  source_kind: 'dialogue' | 'raw' | 'document'
+  operation: 'extract' | 'summary' | 'outcomes' | 'conflicts'
+  phase: 'queued' | 'generate' | 'embed' | 'commit' | 'compensate' | 'done'
+  state: 'pending' | 'running' | 'retry_wait' | 'failed' | 'completed' | 'cancelled'
+  attempts: number
+  embed_attempts: number
+  error_code: string | null
+  core?: 'not_requested' | 'pending' | 'completed' | 'failed'
+  summarization?: 'not_needed' | 'pending' | 'completed' | 'failed'
+  coverage?: {unit: 'unicode_code_points'; ranges: [number, number][]; partial: boolean;
+    policy: string; strategy_completed: boolean} | null
+}
+
+export interface ProcessingStatus {
+  enabled: boolean
+  recovery_error: boolean
+  generation: string | null
+  session_id: string | null
+  counts: Record<PipelineJob['state'], number>
+  jobs: PipelineJob[]
+}

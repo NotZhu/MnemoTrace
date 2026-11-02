@@ -81,4 +81,4 @@ agent_status(session_id)
 远程后端在 HTTP 服务端执行空间读取权限检查；本地后端只读取其配置命名空间。
 recall 返回事件当前的检索表示：有摘要时只用摘要，未摘要时使用原文，不自动展开已摘要事件。
 buffered 会自动生成符合长度条件的事件摘要；processing_status 包含独立 summarization 区。
-flush 默认只等待抽取，include_summaries=true 时包含捕获范围内的摘要；摘要失败不会以摘录冒充成功。
+flush 等待捕获范围内已请求的统一任务，include_summaries=true 额外请求该范围内符合阈值的摘要。任务查询为一份 counts/jobs，区分来源、操作、阶段、失败和覆盖；摘要失败保留已提交核心成果。

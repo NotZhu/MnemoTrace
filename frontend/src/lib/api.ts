@@ -16,6 +16,8 @@ import type { AuditReport,
   MemoryDump,
   Policy,
   PolicyResponse,
+  ProcessingStatus,
+  PipelineJob,
   RecallResult,
   RememberScope,
   RememberResult,
@@ -185,10 +187,10 @@ export const api = {
   rememberMessages: (messages: {message_id: string; role: 'user' | 'assistant'; content: string;
       event_time?: number | null}[], sessionId: string, mode: 'live' | 'historical' = 'live') =>
     request<{ok: boolean; accepted: number; queued: boolean;
-      messages: {episode_id: string; message_id: string; sequence: number; state: string; core: string;
-        summarization: string; error_code: string | null}[]}>('/v1/messages', {
+      messages: (PipelineJob & {message_id: string; sequence: number})[]}>('/v1/messages', {
       method: 'POST', body: json({messages, session_id: sessionId, mode, processing: 'buffered'}),
     }),
+  processingStatus: (sessionId?: string) => request<ProcessingStatus>(`/v1/processing${qs({session_id: sessionId})}`),
   health: () => request<Health>('/health'),
 
   memories: (params: MemoriesQuery = {}, options: Pick<RequestInit, 'signal'> = {}) =>

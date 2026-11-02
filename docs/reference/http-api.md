@@ -200,7 +200,7 @@ stats.counts.episodes_ephemeral 统计包含临时记忆内容的历史事件，
 响应为 `{id, space, session_id, role, event_time, ingested_at, content}`，不含嵌入和内部任务字段。自由文本原文不属于脱敏响应，调用方需要时才显式请求。
 
 `POST /v1/remember` 返回独立的 `summarization: {status, error_code}`。status 为 not_needed 或任务状态；摘要失败不撤销已接受的原文和抽取。
-`GET /v1/processing` 增加独立 summarization 区，包含摘要任务 counts/jobs，不改变原抽取计数。
+`GET /v1/processing` 返回统一 counts/jobs。任务项含 source_kind、operation、phase、error_code 与 coverage；不再并列返回旧任务分区或 completed_through。
 `POST /v1/processing/flush` 增加 include_summaries=false；开启后等待本次固定边界内的抽取与摘要，retry_failed 仅重试所选阶段。
 `POST /v1/sessions/close` 的 summarize=true 只处理长事件的缺失摘要；失败保留工作记忆，返回 processing_incomplete。
 

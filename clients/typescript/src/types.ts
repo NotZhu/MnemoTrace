@@ -30,12 +30,6 @@ export interface SummarizationResult {
   error_code: string | null
 }
 
-export interface SummaryProcessingStatus {
-  counts: Record<ProcessingState, number>
-  jobs: Array<{ episode_id: string; session_id: string; state: ProcessingState;
-    attempts: number; error_code: string | null; completed_through: number | null }>
-}
-
 export interface OriginalEpisode {
   message_id: string | null
   sequence: number | null
@@ -68,24 +62,23 @@ export type ProcessingState = 'pending' | 'running' | 'retry_wait' | 'failed' | 
 
 export interface ProcessingJob {
   episode_id: string
-  session_id: string
-  scope: 'auto' | 'long' | 'working'
+  source_kind: 'dialogue' | 'raw' | 'document'
+  operation: 'extract' | 'summary' | 'outcomes' | 'conflicts'
   state: ProcessingState
+  phase: 'queued' | 'generate' | 'embed' | 'commit' | 'compensate' | 'done'
   attempts: number
-  window_attempts: number
-  completed_through: number
-  source_length: number
-  content_hash: string
-  queued_at: number
-  updated_at: number
-  next_attempt_at: number
+  embed_attempts: number
   error_code: string | null
-  forced: boolean
+  job_id?: string
+  source_ids?: string[]
+  message_id?: string | null
+  sequence?: number
+  core?: 'not_requested' | 'pending' | 'completed' | 'failed'
+  summarization?: 'not_needed' | 'pending' | 'completed' | 'failed'
+  coverage?: OriginalEpisode['coverage']
 }
 
 export interface ProcessingStatus {
-  messages?: {generation: string | null; counts: Record<ProcessingState, number>; jobs: MessageJob[]}
-  summarization?: SummaryProcessingStatus
   enabled: boolean
   generation: string | null
   session_id: string | null
@@ -633,16 +626,11 @@ export interface DialogueMessage {
   event_time?: number | null
 }
 
-export interface MessageJob {
-  episode_id: string
+export interface MessageJob extends ProcessingJob {
   message_id: string
   sequence: number
-  state: 'pending' | 'running' | 'retry_wait' | 'completed' | 'failed' | 'cancelled'
   core: 'not_requested' | 'pending' | 'completed' | 'failed'
   summarization: 'not_needed' | 'pending' | 'completed' | 'failed'
-  error_code: string | null
-  attempts: number
-  embed_attempts: number
 }
 
 export interface MessagesResult {
