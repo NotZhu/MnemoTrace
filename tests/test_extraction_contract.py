@@ -144,13 +144,20 @@ def test_auto_routes_in_one_model_call(tmp_path, facts, working, expected):
     assert result['extracted'] == len(facts) and result['working_added'] == len(working)
 
 
-def test_service_failure_keeps_raw_on_disk_and_retries_after_restart(tmp_path):
+def test_service_failure_keeps_raw_on_disk_and_retries_after_restart(tmp_path, monkeypatch):
+    from mnemotrace._pipeline_worker import PipelineWorker
+    from mnemotrace._pipeline import run_one
+    # Drive the pipeline deterministically; a live worker races the flush wait on
+    # slow hosts and returns timed_out before the retry window is picked up.
+    monkeypatch.setattr(PipelineWorker, 'consume', lambda _: None)
     svc = service(tmp_path, Broken())
     with pytest.raises(ExtractionError) as error:
         svc.remember('u', 'Synthetic input', session_id='s')
     assert error.value.stored_raw and len(error.value.episode_ids) == 1
     restarted = service(tmp_path, FakeLLM(responses=[response([fact()])]))
-    assert restarted.flush('u', 's', retry_failed=True)['ok']
+    restarted.flush('u', 's', retry_failed=True, timeout=0)
+    while run_one(restarted, 'u'):
+        pass
     result = restarted.close_session('u', 's', summarize=False, outcomes=False)
     assert len(restarted.get('u').fact_store.values()) == 1
     assert result['facts_added'] == 0

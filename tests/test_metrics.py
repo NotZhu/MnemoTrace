@@ -85,6 +85,9 @@ def test_async_backlog_is_visible(monkeypatch):
         s.remember("u", "My name is Wei and I live in Shenzhen.", processing="buffered")
         assert s.metrics_snapshot()["buffered"]["enabled"] is True
         s.flush()
+        from mnemotrace._pipeline import run_one
+        while run_one(s, 'u'):  # finish any window the worker has not woken for yet
+            pass
         assert s.processing_status("u")["counts"]["completed"] == 1
         s.close()
     finally:

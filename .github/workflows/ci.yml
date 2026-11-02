@@ -17,7 +17,11 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.12", "3.15"]
     steps:
+      # test_buffered_replay_report resolves a historical runtime commit; a shallow
+      # clone cannot see it, so fetch full history for the Python regression job.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}

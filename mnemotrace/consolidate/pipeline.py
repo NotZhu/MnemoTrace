@@ -602,7 +602,10 @@ class PipelineTasks:
 
     def snapshot(self, session_id=None, ids=None):
         jobs = []
-        for key, row in self.rows(session_id, ids).items():
+        # Persistence sorts keys, so raw dict order is not stable across a restart.
+        # Report dialogue/raw jobs by their session sequence for a stable contract.
+        rows = sorted(self.rows(session_id, ids).items(), key=lambda item: item[1]['sequence'])
+        for key, row in rows:
             wins = [self.state['windows'][k] for k in row['window_ids'] if self.state['windows'][k]['operation'] in {'extract', 'summary'}]
             active = next((w for w in reversed(wins) if w['state'] not in TERMINAL), None)
             failed = next((w for w in reversed(wins) if w['state'] in {'failed', 'cancelled'}), None)
