@@ -14,17 +14,16 @@
 默认值维护在 [Config](../../mnemotrace/config.py)，只是工程起点。规划同时预留核心结果、逐条长消息摘要及格式开销，输出不足时缩小窗口，不复用独立摘要的输出上限。
 可用 `joint_context_tokens` / `MNEMOTRACE_JOINT_CONTEXT_TOKENS` 声明提供方总上下文限制；规划使用输入 UTF-8 字节作为保守 token 上界，同时预留完整联合输出上限。未声明时不声称已验证提供方上下文容量。截断响应整体失败。
 
-后台对话处理默认开启，`MNEMOTRACE_BUFFERED_EXTRACTION=0` 显式关闭。对话仅由最后活动后空闲 60 秒、预算、flush/close 触发，没有最早等待兜底；原文入口的旧抽取配置见下表。
+统一后台处理默认开启，`MNEMOTRACE_BUFFERED_EXTRACTION=0` 显式关闭。自动任务仅由最后活动后空闲 60 秒、预算、flush/close 触发，没有最早等待兜底。所有来源共用以下输入配置。
 
 | Config 字段 | 服务环境变量 | 含义 |
 | --- | --- | --- |
 | extraction_max_input_bytes | MNEMOTRACE_EXTRACTION_MAX_INPUT_BYTES | 系统与用户提示词的 UTF-8 字节总预算，包含来源元数据 |
 | extraction_context_bytes | MNEMOTRACE_EXTRACTION_CONTEXT_BYTES | 每窗前文正文最多占用的 UTF-8 字节数；空间不足时优先减少前文 |
-| extraction_max_output_tokens | MNEMOTRACE_EXTRACTION_MAX_OUTPUT_TOKENS | 模型抽取输出 token 上限；结束状态为截断时不提交结果 |
 
 默认值以 [Config 定义](../../mnemotrace/config.py) 为准。输入使用可离线计算、对中英文都明确的字节预算，
 并非 provider 的精确 token 计数。输入和输出预算必须是正整数，前文预算可以为零。
-调小输入预算会拆成更多窗口；调大输出预算可能增加调用成本。更改预算后重试从已完成的字符位置继续。
+调小输入预算会拆成更多窗口；调大输出预算可能增加调用成本。更改配置会阻止旧结果回写；显式重试从已保存覆盖范围继续规划。
 原文需保持不变；修改原文后不能复用已有处理范围。
 
 ## 条件事件摘要
