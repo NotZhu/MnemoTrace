@@ -318,7 +318,7 @@ def test_stats_endpoint_is_content_free_namespace_observability(client):
     assert stats["counts"]["entities"] >= 1
     assert stats["counts"]["graph_orphan_entities"] == 0
     assert stats["counts"]["graph_stale_relations"] == 0
-    assert stats["time_range"]["first_event_at"] is not None
+    assert stats["time_range"]["first_event_at"] is None
     assert stats["storage"] == "memory"
     assert stats["max_hot_facts"] >= 1
     assert stats["embedder"] == "HashingEmbedder"

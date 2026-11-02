@@ -106,7 +106,9 @@ def test_identity_registration_does_not_depend_on_extraction_order():
         content = data["pending"][0]["content"]
         if content == "I like coffee":
             time.sleep(0.01)
-        return json.dumps({"facts": outputs[content], "working": []})
+        return json.dumps({"facts": [{**item, 'text': f"{item['subject']} {item['predicate']} {item['object']}",
+            'assertion_kind': 'unspecified', 'source_ids': [data['pending'][0]['id']]}
+            for item in outputs[content]], "working": [], "summaries": []})
     seen = []
     for _ in range(3):
         mem = Memory(llm=FakeLLM(handler=complete))

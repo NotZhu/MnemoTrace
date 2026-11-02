@@ -56,7 +56,7 @@ async def test_local_and_remote_mcp_explicit_original_contract(services):
 
 
 @pytest.mark.asyncio
-async def test_mcp_tools_report_independent_summary_failure_and_original_source_times(services):
+async def test_mcp_tools_report_joint_summary_and_original_source_times(services):
     from mnemotrace.mcp import server as tools
     from mnemotrace.mcp.backends import LocalBackend
     from tests.test_mcp import call
@@ -64,7 +64,7 @@ async def test_mcp_tools_report_independent_summary_failure_and_original_source_
     tools.set_backend(LocalBackend(namespace='u', service=svc))
     try:
         response = await call('mnemotrace_remember', content=LONG)
-        assert 'Summarization: pending' in response
+        assert 'Summarization: completed' in response
         episode = next(iter(svc.get('u').episodes_doc.values()))
         original = await call('mnemotrace_get_episode', episode_id=episode.id)
         assert LONG in original and str(episode.event_time) in original and str(episode.ingested_at) in original

@@ -197,7 +197,7 @@ def _read_jsonl(path: str, name: str, limit: int | None = None) -> list[dict[str
     return out
 
 
-def discover_processing_namespaces(root: str) -> list[tuple[str, bool]]:
+def discover_processing_namespaces(root: str, *, on_error=None) -> list[tuple[str, bool]]:
     """Discover only the versioned unified ledger, rejecting old task snapshots."""
     from .._namespace_paths import contained_child, namespace_path
     namespaces = []
@@ -207,8 +207,11 @@ def discover_processing_namespaces(root: str) -> list[tuple[str, bool]]:
         path = contained_child(root, entry.name)
         try:
             loaded = _read_manifest(path)
-        except ValueError as exc:
-            raise StoreFormatError('Unsupported or invalid pipeline snapshot') from exc
+        except (PersistenceError, OSError, ValueError) as exc:
+            if on_error is None:
+                raise StoreFormatError('Unsupported or invalid pipeline snapshot') from exc
+            on_error(exc)
+            continue
         if loaded is None:
             continue
         pipeline = loaded[0]['state'].get('pipeline')
@@ -216,7 +219,11 @@ def discover_processing_namespaces(root: str) -> list[tuple[str, bool]]:
             continue
         for user, state in pipeline['namespaces'].items():
             if namespace_path(root, user) != path:
-                raise StoreFormatError('Pipeline namespace ownership mismatch')
+                error = StoreFormatError('Pipeline namespace ownership mismatch')
+                if on_error is None:
+                    raise error
+                on_error(error)
+                continue
             active = any(win['state'] in {'pending', 'running', 'retry_wait'} for win in state['windows'].values())
             active |= any(not row['cancelled'] and (row['core'] == 'pending' or row['summary'] == 'pending') for row in state['sources'].values())
             namespaces.append((user, active))
