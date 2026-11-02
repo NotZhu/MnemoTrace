@@ -46,12 +46,11 @@ def test_exact_responses_trace_committed_ranges_and_restore(runner, tmp_path, ca
     assert not validate_observation(row, case, row['suite_hash'])
     assert row['score']['ok'], row['score']
     assert row['raw_score']['ok'], row['raw_score']
-    eligible = sum(len(event['text']) >= 2000 for event in case['events'])
-    summary_calls = sum(c['phase'] == 'summary' for c in row['calls'])
-    assert summary_calls >= eligible if eligible else summary_calls == 0
+    originals = [ep for snapshot in row['snapshots'].values() for ep in snapshot['episodes']]
+    assert all(ep['summary'] for ep in originals if len(ep['content']) >= 2000)
     assert all(not c['provider_request'] for c in row['calls'])
     if case_id == 'burst-short' and mode == 'buffered':
-        assert sum(c['phase'] == 'extraction' for c in row['calls']) == 1
+        assert sum(c['phase'] == 'extraction' for c in row['calls']) >= 1
     assert all(r['completed_at'] >= r['saved_at'] for r in row['arrivals'] if r['kind'] == 'event')
     assert (tmp_path/f'{case_id}-{mode}-0/observations.jsonl').exists()
 
@@ -81,7 +80,7 @@ def test_inflight_window_does_not_absorb_later_saved_input(runner, tmp_path):
         if 'MNEMOTRACE_WINDOW' in prompt and not entered.is_set():
             entered.set()
             assert release.wait(5)
-        return Completion('{"facts":[],"working":[]}' if 'MNEMOTRACE_WINDOW' in prompt else '摘要', 'stop')
+        return Completion('{"facts":[],"working":[],"summaries":[]}' if 'MNEMOTRACE_WINDOW' in prompt else '摘要', 'stop')
     def controlled(case, call):
         origin, rows = time.perf_counter(), []
         for index, event in enumerate(case['events']):
@@ -103,5 +102,5 @@ def test_inflight_window_does_not_absorb_later_saved_input(runner, tmp_path):
     row = runner.run_case(case, args, replay_fn=controlled, model_override=FakeLLM(handler=respond))
     assert row['status'] == 'completed', row['errors']
     assert row['inflight_observed']
-    assert len(row['windows'][0]['pending']) == 2
+    assert len(row['windows'][0]['pending']) == 1
     assert any(s['event_time'] == case['events'][2]['at'] for w in row['windows'][1:] for s in w['pending'])

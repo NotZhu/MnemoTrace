@@ -9,7 +9,6 @@ from typing import Optional
 from ..embed import Embedder
 from ..store import DocStore, VectorStore
 from ..types import Episode
-from ..util import now
 
 
 class Ingestor:
@@ -57,7 +56,7 @@ class Ingestor:
             user_id=user_id,
             session_id=session_id,
             role=role,
-            event_time=event_time if event_time is not None else now(),
+            event_time=event_time,
         )
         # 优先使用预计算的向量；未提供时由嵌入器处理原文。
         ep.embedding = embedding if embedding is not None else self.embedder.embed(content)

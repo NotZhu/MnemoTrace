@@ -25,15 +25,6 @@ def require_credentials(extractor):
             raise ValueError('Configure DEEPSEEK_API_KEY before starting DeepSeek evaluation')
 
 
-def summary_call_target():
-    try:
-        from mnemotrace.consolidate.summaries import SummaryStep
-    except ModuleNotFoundError:
-        from mnemotrace.consolidate.summarizer import SessionSummarizer
-        return SessionSummarizer, 'summarize'
-    return SummaryStep, 'execute'
-
-
 def tagged(function, phase):
     @functools.wraps(function)
     def call(*args, **kwargs):
@@ -48,13 +39,12 @@ def tagged(function, phase):
 def run_case(case, args):
     require_credentials(args.extractor)
     from mnemotrace import ExtractionError
-    from mnemotrace.consolidate.windows import WINDOW_PREFIX
-    from mnemotrace.consolidate.llm_extractor import LLMExtractor, _NAME_PREDICATES
+    from mnemotrace.consolidate.planning import WINDOW_PREFIX, validate_response
+    from mnemotrace.consolidate.fact_rules import _NAME_PREDICATES
     from mnemotrace.llm.base import LLM, complete_result
     from mnemotrace.llm import providers
     from mnemotrace.service import MemoryService
     from mnemotrace.ingest.pipeline import Ingestor
-    import mnemotrace.ingest.pipeline as pipeline
     import mnemotrace.memory as memory_module
 
     case_dir = args.out / f'{args.revision}-{args.mode}-{case["id"]}-{args.run}'
@@ -63,26 +53,28 @@ def run_case(case, args):
     current = [None]
     ledger = Budget(args.budget)
     entered = threading.Event()
-    original_ingest, original_pipeline_now, original_memory_now = Ingestor.ingest, pipeline.now, memory_module.now
+    original_ingest, original_memory_now = Ingestor.ingest, memory_module.now
     original_factory = providers.make_llm
     model = original_factory(args.extractor, temperature=0, max_attempts=1, num_retries=0, timeout=45)
     # No change to source text/checkpoints after enqueue: stamp at the ingestion seam.
-    def ingest(self, *values, **kwargs):
-        ep = original_ingest(self, *values, **kwargs)
+    def ingest(self, content, user_id='default', session_id='default', role='user', event_time=None, embedding=None):
         event = current[0]
-        if event is None or ep.content != event['text'] or ep.user_id != event['user']:
+        if event is None or content != event['text'] or user_id != event['user']:
             raise RuntimeError('Unexpected ingestion in evaluator')
+        ep = original_ingest(self, content, user_id, session_id, role, event['at'], embedding)
         episodes[ep.id] = event
         return ep
     Ingestor.ingest = ingest
-    pipeline.now = memory_module.now = lambda: current[0]['at'] if current[0] else 1_700_000_000
+    memory_module.now = lambda: current[0]['at'] if current[0] else 1_700_000_000
 
     class Meter(LLM):
         def complete(self, prompt, **kwargs):
             return self.complete_result(prompt, **kwargs).text
 
         def complete_result(self, prompt, **kwargs):
-            row = dict(call_id=len(calls), phase=PHASE.get(), prompt=prompt, system=kwargs.get('system'), status='started')
+            data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX)[1])[0] if WINDOW_PREFIX in prompt else {}
+            phase = 'summary' if data.get('operation') == 'summary' or '本次仅补缺失摘要' in kwargs.get('system', '') else 'extraction'
+            row = dict(call_id=len(calls), phase=phase, prompt=prompt, system=kwargs.get('system'), status='started')
             calls.append(row)
             claimed, result = False, None
             try:
@@ -136,6 +128,8 @@ def run_case(case, args):
                         and calls and calls[-1].get('injected')):
                     raise
                 # Explicitly retry committed raw input; never upload/create a second event.
+                if not svc.flush(event['user'], event['session'], retry_failed=True)['ok']:
+                    raise RuntimeError('Explicit retry failed')
                 svc.close_session(event['user'], event['session'], summarize=True,
                                   clear_working=False, outcomes=False)
                 response = {'episode_id': exc.episode_ids[0]}
@@ -170,7 +164,7 @@ def run_case(case, args):
     finally:
         if svc:
             svc.close()
-        Ingestor.ingest, pipeline.now, memory_module.now = original_ingest, original_pipeline_now, original_memory_now
+        Ingestor.ingest, memory_module.now = original_ingest, original_memory_now
         providers.make_llm = original_factory
 
     restored = False
@@ -209,8 +203,10 @@ def run_case(case, args):
             continue
         try:
             window = json.JSONDecoder().raw_decode(call['prompt'].split(WINDOW_PREFIX, 1)[1])[0]
-            owner_scope = episodes[window['pending'][0]['episode_id']]['scope']
-            value = LLMExtractor._validate(call['text'], owner_scope, window=True)
+            from mnemotrace import Config
+            value = validate_response(call['text'], window, Config(), compensation='本次仅补缺失摘要' in call['system'])
+            for span in (*window['pending'], *window['context']):
+                span.update(episode_id=span['id'], start=span['ranges'][0][0], end=span['ranges'][-1][1])
             spans = {s['id']: s for s in (*window['pending'], *window['context'])}
             for group in ('facts', 'working'):
                 for item in value[group]:
@@ -274,11 +270,7 @@ def main():
             os.environ.pop(key)
     os.environ.update(MNEMOTRACE_BUFFERED_EXTRACTION='1', MNEMOTRACE_STORAGE='memory',
                       MNEMOTRACE_CONFLICT_DETECTION='0', MNEMOTRACE_SESSION_OUTCOMES='0',
-                      MNEMOTRACE_EXTRACT_WORKERS='1', LITELLM_LOCAL_MODEL_COST_MAP='True')
-    from mnemotrace.consolidate.llm_extractor import LLMExtractor
-    summary_type, summary_method = summary_call_target()
-    LLMExtractor.raw_window = tagged(LLMExtractor.raw_window, 'extraction')
-    setattr(summary_type, summary_method, tagged(getattr(summary_type, summary_method), 'summary'))
+                      LITELLM_LOCAL_MODEL_COST_MAP='True')
     from mnemotrace.llm import providers
     import mnemotrace
     if not Path(mnemotrace.__file__).resolve().is_relative_to(args.root.resolve()):

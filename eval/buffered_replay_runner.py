@@ -17,7 +17,7 @@ from unittest.mock import patch
 from buffered_replay import load_suite, replay
 from extraction_budget import Budget, BudgetStopped
 from extraction_quality import score_case, suite_hash
-from extraction_runner import PHASE, require_credentials, tagged, summary_call_target
+from extraction_runner import PHASE, require_credentials
 
 EVENT = ContextVar('replay_event', default=None)
 WINDOW = ContextVar('replay_window', default=None)
@@ -45,9 +45,17 @@ def recorded_response(case, window, episodes):
     """Fixture oracle for offline tests; no natural-language extraction heuristics."""
     by_event = {}
     for span in (*window['context'], *window['pending']):
-        by_event.setdefault(episodes[span['episode_id']]['id'], []).append(span)
+        by_event.setdefault(episodes[span.get('episode_id', span['id'])]['id'], []).append(span)
     pending = {s['id'] for s in window['pending']}
-    output = dict(facts=[], working=[])
+    def summary_for(span):
+        event = episodes[span.get('episode_id', span['id'])]
+        quotes = [gold.get('evidence', {}).get(event['id'], event['text'].split('。', 1)[0] + '。')
+                  for group in ('facts', 'working') for gold in case[group]
+                  if any(event['id'] in refs for refs in gold['sources'])]
+        visible = list(dict.fromkeys(quote for quote in quotes if quote in span['content']))
+        return '\n'.join(visible)[:800] or '合成摘要'
+    output = dict(facts=[], working=[], summaries=[dict(source_id=span['id'], text=summary_for(span))
+        for span in window['pending'] if span['id'] in window.get('rules', {}).get('summary_required', [])])
     for group in ('facts', 'working'):
         for gold in case[group]:
             sources = gold['sources'][0]
@@ -70,8 +78,14 @@ def recorded_response(case, window, episodes):
                 output[group].append(dict(content=gold['contents'][0], kind=gold['kinds'][0], source_ids=refs))
     for user, names in case['identity'].items():
         for span in window['pending']:
-            if episodes[span['episode_id']]['user'] == user and f'我叫{names[0]}' in span['content']:
+            if episodes[span.get('episode_id', span['id'])]['user'] == user and f'我叫{names[0]}' in span['content']:
                 output['facts'].append(dict(subject=user, predicate='name', object=names[0], source_ids=[span['id']]))
+    for fact in output['facts']:
+        fact.update(text=f"{fact['subject']} {fact['predicate']} {fact['object']}", assertion_kind='unspecified')
+    for working in output['working']:
+        working['assertion_kind'] = 'unspecified'
+    if window.get('operation') == 'summary':
+        output = {'summaries': output['summaries']}
     return json.dumps(output, ensure_ascii=False)
 
 
@@ -92,7 +106,7 @@ def final_state(snapshots, episodes):
 
 
 def raw_state(windows, episodes):
-    from mnemotrace.consolidate.llm_extractor import _NAME_PREDICATES
+    from mnemotrace.consolidate.fact_rules import _NAME_PREDICATES
     raw = dict(facts=[], working=[], identity={})
     for window in windows:
         if not window.get('validated'):
@@ -103,7 +117,7 @@ def raw_state(windows, episodes):
             for item in window['output'][group]:
                 selected = [spans[key] for key in item['source_ids']]
                 anchor = max((s for s in selected if s['id'] in order), key=lambda s: (
-                    s['event_time'], s['ingested_at'], order[s['id']], s['start']))
+                    order[s['id']], s['start']))
                 owner = episodes[anchor['episode_id']]
                 row = dict(item, user=owner['user'], session=owner['session'],
                     sources=list(dict.fromkeys(episodes[s['episode_id']]['id'] for s in selected)),
@@ -124,9 +138,8 @@ def raw_state(windows, episodes):
 
 def run_case(case, args, *, replay_fn=replay, model_override=None):
     from mnemotrace import Memory
-    from mnemotrace._buffered import BufferedExtraction
-    from mnemotrace.consolidate.llm_extractor import LLMExtractor
-    summary_type, summary_method = summary_call_target()
+    from mnemotrace import _pipeline as kernel
+    from mnemotrace.consolidate.planning import validate_response, input_size
     from mnemotrace.ingest.pipeline import Ingestor
     from mnemotrace.llm import Completion, LLM, providers
     from mnemotrace.llm.base import complete_result
@@ -166,10 +179,16 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
                 if model is not None:
                     result = complete_result(model, prompt, **kwargs)
                 else:
-                    text = recorded_response(case, payload(prompt), episodes) if row['phase'] == 'extraction' else '合成摘要'
+                    text = recorded_response(case, payload(prompt), episodes)
                     result = Completion(text, 'stop')
                 row['provider_ended_at'] = stamp()
                 row.update(status='completed', text=result.text, finish_reason=result.finish_reason, usage=result.usage)
+                if row['phase'] == 'extraction':
+                    observed = next(w for w in reversed(windows) if w['window_id'] == row['window'])
+                    data = payload(prompt)
+                    clean = validate_response(result.text, data, service.config, compensation='本次仅补缺失摘要' in kwargs.get('system', ''))
+                    parts = byte_parts(prompt, kwargs.get('system'), data)
+                    observed.update(validated=True, output=clean, ended_at=stamp(), bytes=parts, input_bytes=parts['total'])
                 return result
             except Exception as exc:
                 row.update(status='budget_stopped' if isinstance(exc, BudgetStopped) else 'failed',
@@ -184,7 +203,7 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
                 log('call_finished', row)
 
     original_ingest, original_save = Ingestor.ingest, MemoryService._save
-    original_raw, original_select = LLMExtractor.raw_window, BufferedExtraction._select
+    original_select = kernel._select
     def ingest(self, content, user_id='default', session_id='default', role='user', event_time=None, embedding=None):
         event = EVENT.get()
         if event is None or content != event['text'] or user_id != event['user']:
@@ -205,70 +224,49 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
                     continue
                 t = times[event['id']]
                 t.setdefault('saved_at', timestamp)
-                progress = ep.metadata.get('extraction_progress', {})
-                for part in progress.get('windows', []):
-                    key = (ep.id, part['window_id'], part['start'], part['end'])
-                    if key not in seen_commits:
-                        seen_commits.add(key)
-                        entry = dict(event=event['id'], window_id=part['window_id'], start=part['start'],
-                                     end=part['end'], saved_at=timestamp)
-                        commits.append(entry)
-                        log('committed_range', entry)
+                state = (mem._pipeline_state or {}).get('namespaces', {}).get(user, {})
+                for window in state.get('windows', {}).values():
+                    if window['operation'] != 'extract' or not window['core_saved']:
+                        continue
+                    for span in window['input']['pending']:
+                        if span['id'] != ep.id:
+                            continue
+                        for start, end in span['ranges']:
+                            key = (ep.id, window['input_hash'], start, end)
+                            if key not in seen_commits:
+                                seen_commits.add(key)
+                                entry = dict(event=event['id'], window_id=window['input_hash'][:24], start=start,
+                                             end=end, saved_at=timestamp)
+                                commits.append(entry)
+                                log('committed_range', entry)
                 if ep.consolidated:
                     t.setdefault('completed_at', timestamp)
         return result
 
-    def select(self, mem, tasks, ids=None):
-        selected = original_select(self, mem, tasks, ids)
+    def select(mem, tasks, now):
+        selected = original_select(mem, tasks, now)
         if selected:
-            prepared, keys = selected
-            window = prepared.windows[0]
-            group = [j for j in tasks.rows(ids=ids).values() if j['state'] in {'pending', 'running', 'retry_wait'}
-                     and (j['session_id'], j['scope']) == (window.pending[0].episode.session_id, window.scope)]
-            now = self.clock()
-            # Record simultaneous eligibility, not an invented winning trigger.
-            conditions = dict(shutdown=self.stopping, forced=any(tasks.rows()[k]['forced'] for k in keys),
-                idle=now-max(j['queued_at'] for j in group) >= 5,
-                max_wait=now-min(j['queued_at'] for j in group) >= 30,
-                incomplete=len(keys) < len(group) or any(s.end < len(s.episode.content) for s in window.pending),
-                budget=prepared.extractor.window_size(window) >= mem.config.extraction_max_input_bytes)
-            entry = dict(window_id=window.id, selected_at=stamp(),
-                         conditions=[k for k, satisfied in conditions.items() if satisfied])
-            selections.append(entry)
-            log('selected_window', entry)
+            key, win = selected
+            phase = 'summary' if win['operation'] == 'summary' or win['phase'] == 'compensate' else 'extraction'
+            PHASE.set(phase)
+            WINDOW.set(win['input_hash'][:24])
+            if phase == 'extraction' and win['phase'] == 'generate':
+                data = json.loads(json.dumps(win['input']))
+                for span in (*data['pending'], *data['context']):
+                    span.update(episode_id=span['id'], start=span['ranges'][0][0], end=span['ranges'][-1][1])
+                row = dict(window_id=win['input_hash'][:24], **data, started_at=stamp(), ended_at=stamp(),
+                           validated=False, input_bytes=input_size(win['input'], mem.config))
+                windows.append(row)
+                entry = dict(window_id=row['window_id'], selected_at=stamp(), conditions=['frozen'])
+                selections.append(entry)
+                log('selected_window', entry)
         return selected
-
-    def raw_window(self, window, max_tokens):
-        prompt = self.template.format(role=window.pending[0].episode.role, content=window.content)
-        parts = payload(prompt)
-        row = dict(window_id=window.id, **parts, started_at=stamp(), validated=False,
-                   input_bytes=self.window_size(window))
-        windows.append(row)
-        token = WINDOW.set(window.id)
-        phase = PHASE.set('extraction')
-        try:
-            output = original_raw(self, window, max_tokens)
-            row.update(validated=True, output=output.items)
-            return output
-        except Exception as exc:
-            row['error_code'] = getattr(exc, 'code', type(exc).__name__)
-            raise
-        finally:
-            row['ended_at'] = stamp()
-            matching = [c for c in calls if c['window'] == window.id and c['started_at'] >= row['started_at']]
-            if matching:
-                row['bytes'] = byte_parts(matching[0]['prompt'], matching[0]['system'], parts)
-            log('window_finished', row)
-            WINDOW.reset(token)
-            PHASE.reset(phase)
 
     seen_commits, snapshots, errors, service = set(), {}, [], None
     with ExitStack() as patches:
         patches.enter_context(patch.object(Ingestor, 'ingest', ingest))
         patches.enter_context(patch.object(MemoryService, '_save', save))
-        patches.enter_context(patch.object(LLMExtractor, 'raw_window', raw_window))
-        patches.enter_context(patch.object(BufferedExtraction, '_select', select))
-        patches.enter_context(patch.object(summary_type, summary_method, tagged(getattr(summary_type, summary_method), 'summary')))
+        patches.enter_context(patch.object(kernel, '_select', select))
         patches.enter_context(patch.object(providers, 'make_llm', lambda *a, **kw: Meter()))
         try:
             service = MemoryService(data_dir=str(directory/'store'), embedder_name='hashing',
@@ -304,7 +302,7 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
                 with service._read_scope(user) as mem:
                     snapshots[user] = dict(facts=[asdict(f) for f in mem._all_facts()],
                         working=[asdict(w) for w in mem.working_mem.values()], identity=dict(mem._identity),
-                        episodes=[asdict(e) for e in mem.episodes_doc.values()], processing=mem._processing_state)
+                        episodes=[asdict(e) for e in mem.episodes_doc.values()], processing=mem._pipeline_state)
         except Exception as exc:
             errors.append(getattr(exc, 'code', type(exc).__name__))
             arrivals = list(times.values())
@@ -319,7 +317,7 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
                                       ('episodes', reopened.episodes_doc.values())):
                     if sorted((asdict(v) for v in values), key=lambda v: v['id']) != sorted(snapshot[group], key=lambda v: v['id']):
                         raise ValueError('Replay restore mismatch')
-                if dict(reopened._identity) != snapshot['identity'] or reopened._processing_state != snapshot['processing']:
+                if dict(reopened._identity) != snapshot['identity'] or reopened._pipeline_state != snapshot['processing']:
                     raise ValueError('Replay restore mismatch')
     except Exception as exc:
         restored = False
@@ -336,7 +334,7 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
         elapsed_seconds=stamp(), synthetic=args.extractor is None,
         budgets=dict(input_bytes=service.config.extraction_max_input_bytes,
                      context_bytes=service.config.extraction_context_bytes,
-                     output_tokens=service.config.extraction_max_output_tokens) if service else {},
+                     output_tokens=service.config.joint_max_output_tokens) if service else {},
         inflight_observed=any(w['started_at'] < t.get('saved_at', -1) < w['ended_at']
             and t.get('episode_id') not in {s['episode_id'] for s in w['pending']}
             for w in windows for t in times.values()))
@@ -361,7 +359,7 @@ def main():
             os.environ.pop(key)
     os.environ.update(MNEMOTRACE_BUFFERED_EXTRACTION='1', MNEMOTRACE_STORAGE='memory',
                       MNEMOTRACE_CONFLICT_DETECTION='0', MNEMOTRACE_SESSION_OUTCOMES='0',
-                      MNEMOTRACE_EXTRACT_WORKERS='1', LITELLM_LOCAL_MODEL_COST_MAP='True')
+                      LITELLM_LOCAL_MODEL_COST_MAP='True')
     from mnemotrace.llm import providers
     import mnemotrace
     if not Path(mnemotrace.__file__).resolve().is_relative_to(args.root.resolve()):

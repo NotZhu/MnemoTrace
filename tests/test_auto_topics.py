@@ -1,5 +1,6 @@
 """自动主题的优先级、写入边界和模型调用成本；全部使用合成数据。"""
 from __future__ import annotations
+from tests.model_fixtures import outcome_facts
 
 import json
 from dataclasses import asdict
@@ -9,9 +10,7 @@ import pytest
 from mnemotrace import Config
 
 from tests.model_fixtures import Memory
-from mnemotrace.consolidate.llm_extractor import EXTRACT_SYSTEM
-from tests.model_fixtures import LLMExtractor
-from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY, extract_outcomes
+from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY
 from tests.model_fixtures import MemoryService
 from mnemotrace.types import Episode, Fact
 
@@ -113,21 +112,6 @@ def test_config_controls_llm_topics_without_another_call(enabled, expected):
     assert model.calls[0][2] == {}
 
 
-def test_prompt_extension_preserves_custom_policy_without_growth():
-    model = RecordingLLM([{"subject": "user", "predicate": "prefers", "object": "茶"}])
-    ex = LLMExtractor(model, system="CUSTOM SYSTEM")
-    ex.instruction = "OWNER POLICY"
-    ex.extract(Episode("Synthetic one"))
-    ex.extract(Episode("Synthetic two"))
-    first, second = [call[1] for call in model.calls]
-    assert first == second and first.count("附加主题协议") == 1
-    assert "CUSTOM SYSTEM" in first and "OWNER POLICY" in first
-    ex.llm_topics = False
-    ex.extract(Episode("Synthetic three"))
-    assert "附加主题协议" not in model.calls[-1][1]
-    ex = LLMExtractor(model, llm_topics=False)
-    ex.extract(Episode("Synthetic four"))
-    assert model.calls[-1][1].startswith(EXTRACT_SYSTEM)
 
 
 @pytest.mark.parametrize("hint", [None, "unknown", "music"])
@@ -175,7 +159,7 @@ def test_outcomes_share_topic_protocol_and_keep_one_call(hint):
     if hint is not None:
         row["topic"] = hint
     model = RecordingLLM([row])
-    facts = extract_outcomes(model, [Episode("Synthetic discussion")], "u", session_id="Bank Health Lab")
+    facts = outcome_facts(model, [Episode("Synthetic discussion")], "u", session_id="Bank Health Lab")
     fact, = facts
     assert fact.category == OUTCOME_CATEGORY and len(model.calls) == 1
     assert (fact.topic, fact.topic_source) == {
@@ -250,7 +234,7 @@ def test_service_switch_applies_to_attributes_and_outcomes(tmp_path, monkeypatch
     assert (attr.topic, attr.topic_source) == (("music", "llm") if accepted else ("food", "rule"))
     assert (outcome.topic, outcome.topic_source) == (("music", "llm") if accepted else ("technology", "rule"))
     attributes = [system for prompt, system, _ in model.calls if "JSON 事实" in prompt]
-    outcomes = [system for prompt, system, _ in model.calls if "现在输出 JSON 数组" in prompt]
+    outcomes = [system for prompt, system, _ in model.calls if "<session>" in prompt]
     summaries = [system for prompt, system, _ in model.calls if prompt.endswith("摘要：")]
     assert len(attributes) == len(outcomes) == 1
     assert summaries == []
@@ -328,5 +312,5 @@ def test_extraction_failure_does_not_create_facts_or_retry_for_topics():
     model = BrokenLLM()
     from mnemotrace.extraction import ExtractionError
     with pytest.raises(ExtractionError):
-        extract_outcomes(model, [Episode("Synthetic discussion")], "u")
+        outcome_facts(model, [Episode("Synthetic discussion")], "u")
     assert model.calls == 1

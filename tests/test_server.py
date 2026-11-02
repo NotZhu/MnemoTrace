@@ -1239,9 +1239,7 @@ def test_audit_sorts_before_limit_and_preserves_equal_priority_order(client):
 
 
 def test_import_agent_sessions_defaults_to_buffered_messages_and_feed_stats(client):
-    """watcher 上报的 agent 会话带 `metadata.source` 但不带 `consolidate` 键：服务端必须把它们
-    存起来留到 close 时再蒸馏，绝不逐轮提取（LLMExtractor 曾把 12 个真实轮次变成 11 条垃圾
-    fact）；同时 stats 必须记录记忆最后一次被喂入的时间。"""
+    """watcher 历史会话默认按消息 buffered 接收，并保留来源与摄入统计。"""
     h = hdr("feed-ns")
     transcript = [{"role": "user", "content": "The config file is nearly empty. This is now clear: EKOS "
                                               "is deployed on an Ubuntu server."},

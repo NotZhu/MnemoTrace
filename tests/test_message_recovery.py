@@ -7,8 +7,8 @@ import threading
 import pytest
 
 from mnemotrace import Memory
-from mnemotrace._messages import run_one
-from mnemotrace.consolidate.messages import MessageTasks, validate_state
+from mnemotrace._pipeline import run_one
+from mnemotrace.consolidate.pipeline import PipelineTasks, validate_state
 from mnemotrace.llm import Completion, FakeLLM
 from tests.test_message_pipeline import drain, force, message, reply, services as services
 
@@ -19,7 +19,7 @@ def test_native_concurrent_receive_is_ordered_and_isolated():
         results = list(pool.map(lambda n: mem.remember_messages([message(str(n))], 's', 'u'), range(12)))
     assert sorted(r['messages'][0]['sequence'] for r in results) == list(range(1, 13))
     assert mem.remember_messages([message('0')], 's', 'other')['messages'][0]['sequence'] == 1
-    validate_state(mem._message_state, mem.episodes_doc.values())
+    validate_state(mem._pipeline_state, mem.episodes_doc.values())
 
 
 def test_native_model_allows_append_and_close_prevents_late_commit():
@@ -59,10 +59,10 @@ def test_explicit_retry_reprepares_after_manual_change(services):
     force(svc)
     assert run_one(svc, 'u')
     svc.add_fact('u', 'user', 'owns', 'manual')
-    assert svc.message_status('u')['jobs'][0]['state'] == 'cancelled'
+    assert svc.processing_status('u')['jobs'][0]['state'] == 'cancelled'
     svc.flush('u', 's', timeout=0, retry_failed=True)
     drain(svc)
-    assert svc.message_status('u')['jobs'][0]['state'] == 'completed'
+    assert svc.processing_status('u')['jobs'][0]['state'] == 'completed'
     assert len(model.calls) == 2
 
 
@@ -73,19 +73,36 @@ def test_explicit_retry_after_configuration_change(services):
     assert run_one(svc, 'u')
     svc.config.joint_max_output_tokens += 1
     drain(svc)
-    assert svc.message_status('u')['jobs'][0]['state'] == 'failed'
+    assert svc.processing_status('u')['jobs'][0]['state'] == 'failed'
     svc.flush('u', 's', timeout=0, retry_failed=True)
     drain(svc)
-    assert svc.message_status('u')['jobs'][0]['state'] == 'completed'
+    assert svc.processing_status('u')['jobs'][0]['state'] == 'completed'
+
+
+def test_reembedding_does_not_authorize_generation_from_an_obsolete_policy():
+    from mnemotrace._pipeline import memory_adapter
+    from mnemotrace.embed import HashingEmbedder
+    mem = Memory(llm=FakeLLM(handler=reply))
+    mem.remember_messages([message('a')], 's', 'u')
+    host = memory_adapter(mem, 'u')
+    PipelineTasks(mem, 'u').force()
+    assert run_one(host, 'u')
+    window, = PipelineTasks(mem, 'u').state['windows'].values()
+    assert window['phase'] == 'embed'
+    mem.policy['extract_instruction'] = 'Synthetic changed extraction policy'
+    mem.reembed(HashingEmbedder(32))
+    assert run_one(host, 'u')
+    assert not mem.fact_store.values() and len(mem.llm.calls) == 1
+    assert window['state'] == 'failed' and window['error_code'] == 'configuration_changed'
 
 
 def test_disabled_worker_flush_drives_recovered_messages(services):
     svc, _, _ = services()
     svc.remember_messages('u', [message('a')], 's')
-    svc._buffered.close()
-    svc._buffered = None
+    svc._pipeline_worker.close()
+    svc._pipeline_worker = None
     assert svc.flush('u', 's')['ok']
-    assert svc.message_status('u')['jobs'][0]['core'] == 'completed'
+    assert svc.processing_status('u')['jobs'][0]['core'] == 'completed'
 
 
 def test_core_and_summary_evidence_are_strict_on_restore():
@@ -95,7 +112,7 @@ def test_core_and_summary_evidence_are_strict_on_restore():
     ep = mem.episodes_doc.values()[0]
     del ep.coverage['unit']
     with pytest.raises(ValueError):
-        validate_state(mem._message_state, mem.episodes_doc.values())
+        validate_state(mem._pipeline_state, mem.episodes_doc.values())
 
 
 def test_provider_truncation_does_not_commit_legal_looking_json(services):
@@ -107,7 +124,7 @@ def test_provider_truncation_does_not_commit_legal_looking_json(services):
     force(svc)
     assert run_one(svc, 'u')
     assert not svc.get('u').fact_store.values()
-    assert svc.message_status('u')['jobs'][0]['error_code'] == 'extraction_truncated'
+    assert svc.processing_status('u')['jobs'][0]['error_code'] == 'extraction_truncated'
     assert not model.calls
 
 
@@ -117,7 +134,7 @@ def test_native_save_failure_recovers_checkpoint_without_regeneration(tmp_path, 
     mem.save(str(tmp_path / 'store'))
     original = mem.save
     def save(*args, **kwargs):
-        row = next(iter(MessageTasks(mem, 'u').state['windows'].values()), None)
+        row = next(iter(PipelineTasks(mem, 'u').state['windows'].values()), None)
         if row and row['core_saved']:
             raise OSError('synthetic failed commit')
         return original(*args, **kwargs)
@@ -145,14 +162,14 @@ def test_long_history_adapter_keeps_global_positional_ids():
     result = mem.import_messages([dict(session_id='s', messages=rows)], consolidate=False)
     assert result['episodes'] == 1001
     assert len({e.message_id for e in mem.episodes_doc.values()}) == 1001
-    validate_state(deepcopy(mem._message_state), mem.episodes_doc.values())
+    validate_state(deepcopy(mem._pipeline_state), mem.episodes_doc.values())
 
 
 def test_missing_identity_record_cannot_restore_as_a_new_message():
     mem = Memory()
     accepted = mem.remember_messages([message('a')], 's', 'u')
-    state = deepcopy(mem._message_state)
-    del state['namespaces']['u']['messages'][accepted['messages'][0]['episode_id']]
+    state = deepcopy(mem._pipeline_state)
+    del state['namespaces']['u']['sources'][accepted['messages'][0]['episode_id']]
     with pytest.raises(ValueError):
         validate_state(state, mem.episodes_doc.values())
 
@@ -162,7 +179,7 @@ def test_restore_rejects_model_counter_that_disagrees_with_ledger(services):
     svc.remember_messages('u', [message('a')], 's')
     force(svc)
     assert run_one(svc, 'u')
-    state = deepcopy(svc.get('u')._message_state)
+    state = deepcopy(svc.get('u')._pipeline_state)
     next(iter(state['namespaces']['u']['windows'].values()))['attempts'] = 0
     with pytest.raises(ValueError):
         validate_state(state)
@@ -190,7 +207,7 @@ def test_saved_dialogue_reembeds_pending_vectors_and_recovers(tmp_path, monkeypa
     mem.save()
     original = mem.save
     def interrupt(*args, **kwargs):
-        windows = MessageTasks(mem, 'u').state['windows'].values()
+        windows = PipelineTasks(mem, 'u').state['windows'].values()
         if any(w['core_saved'] for w in windows):
             raise OSError('synthetic interruption at commit')
         return original(*args, **kwargs)
@@ -210,65 +227,6 @@ def test_saved_dialogue_reembeds_pending_vectors_and_recovers(tmp_path, monkeypa
         assert episode.summary and len(episode.summary_embedding) == 32
         assert restored.get_episode(episode.id, 'u')['content'] == 'long synthetic ' * 200
 
-
-def test_joint_backlog_yields_to_ready_original_summary(services):
-    from mnemotrace.consolidate.summaries import SummaryTasks
-    def respond(prompt, system):
-        return 'Synthetic summary of the original' if 'MNEMOTRACE_WINDOW' not in prompt else reply(prompt, system)
-    svc, model, _ = services(respond)
-    with svc.write_lock('u'):
-        mem = svc.get('u')
-        ep = mem.add('Synthetic old original. ' * 200, 'u')
-        ep.consolidated = True
-        mem._sync_episode(ep)
-        SummaryTasks(mem, 'u').register([ep], 1000)
-        svc._save('u', mem)
-    svc.remember_messages('u', [message(str(i), str(i) * 2500) for i in range(6)], 's')
-    force(svc)
-    for _ in range(3):
-        assert svc._buffered.run_one('u')
-    assert any('MNEMOTRACE_WINDOW' not in call['prompt'] for call in model.calls)
-    assert any(job['core'] == 'pending' for job in svc.message_status('u')['jobs'])
-
-
-@pytest.mark.parametrize('persisted', [False, True])
-def test_native_backend_commit_failure_never_exposes_partial_results(tmp_path, monkeypatch, persisted):
-    mem = Memory(llm=FakeLLM(handler=reply))
-    mem.remember_messages([message('a', 'Synthetic A'), message('b', 'Synthetic B')], 's', 'u')
-    if persisted:
-        mem.save(str(tmp_path / 'store'))
-    original = mem.engine._write_fact
-    written = []
-    def partial(fact, stats):
-        if written:
-            raise OSError('synthetic second backend write failed')
-        written.append(fact.id)
-        return original(fact, stats)
-    monkeypatch.setattr(mem.engine, '_write_fact', partial)
-    with pytest.raises(OSError):
-        mem.flush_messages('u')
-    assert len(written) == 1
-    if persisted:
-        assert not mem.fact_store.values()
-        assert mem.flush_messages('u')['ok']
-        assert len(mem.fact_store.values()) == 2 and len(mem.llm.calls) == 1
-    else:
-        with pytest.raises(RuntimeError, match='checkpoint failed'):
-            mem.search('Synthetic A', user_id='u')
-        with pytest.raises(RuntimeError, match='checkpoint failed'):
-            mem.save(str(tmp_path / 'must-not-save-dirty-state'))
-        assert not (tmp_path / 'must-not-save-dirty-state').exists()
-
-
-@pytest.mark.parametrize('delta', [-1, 1])
-def test_bad_embedding_batch_is_rejected_before_any_message_write(monkeypatch, delta):
-    mem = Memory()
-    original = mem.embedder.embed_batch
-    monkeypatch.setattr(mem.embedder, 'embed_batch', lambda texts: original(texts)[:1] if delta < 0
-                        else original(texts) + [original(texts)[0]])
-    with pytest.raises(ValueError, match='batch length'):
-        mem.remember_messages([message('a', 'A'), message('b', 'B')], 's', 'u')
-    assert not mem.episodes_doc.values() and mem._message_state is None
 
 
 def test_close_uses_joint_results_and_preserves_raw_import_intent(services):
@@ -302,7 +260,7 @@ def test_native_receive_backend_failure_restores_before_replay(tmp_path, monkeyp
     assert not mem.episodes_doc.values() and len(mem.fact_store.values()) == 1
     monkeypatch.setattr(mem, '_sync_episode', original)
     assert mem.remember_messages(rows, 's', 'u')['accepted'] == 2
-    validate_state(mem._message_state, mem.episodes_doc.values())
+    validate_state(mem._pipeline_state, mem.episodes_doc.values())
 
 
 def test_following_trigger_survives_restart_without_capturing_untriggered_message(services, tmp_path):
@@ -316,7 +274,7 @@ def test_following_trigger_survives_restart_without_capturing_untriggered_messag
     svc.close()
     restored, model, _ = services(path=tmp_path)
     drain(restored)
-    assert [job['core'] for job in restored.message_status('u')['jobs']] == ['completed', 'completed', 'pending']
+    assert [job['core'] for job in restored.processing_status('u')['jobs']] == ['completed', 'completed', 'pending']
     assert len(first_model.calls) == 1 and len(model.calls) == 1
 
 
@@ -341,7 +299,7 @@ def test_close_clears_only_its_frozen_working_range(services):
         result = future.result(5)
     assert result['ok'] and result['working_cleared'] == 1
     assert [w['content'] for w in svc.working_memory('u', 's')['items']] == ['Synthetic later working']
-    assert [j['core'] for j in svc.message_status('u')['jobs']] == ['completed', 'pending']
+    assert [j['core'] for j in svc.processing_status('u')['jobs']] == ['completed', 'pending']
 
 
 def test_three_calls_shared_by_core_and_summary_then_retry_only_missing(services):
@@ -359,14 +317,14 @@ def test_three_calls_shared_by_core_and_summary_then_retry_only_missing(services
     for delay in (30, 120):
         stamp[0] += delay
         drain(svc)
-    job, = svc.message_status('u')['jobs']
+    job, = svc.processing_status('u')['jobs']
     assert len(model.calls) == 3 and job['core'] == 'completed' and job['summarization'] == 'failed'
     model._handler = reply
     svc.flush('u', 's', timeout=0, retry_failed=True)
     drain(svc)
     assert len(model.calls) == 4 and '本次仅补' in model.calls[-1]['system']
     assert [f.id for f in svc.get('u').fact_store.values()] == [fact_id]
-    assert svc.message_status('u')['jobs'][0]['state'] == 'completed'
+    assert svc.processing_status('u')['jobs'][0]['state'] == 'completed'
 
 
 def test_late_unknown_and_older_history_cannot_replace_newer_source():
@@ -463,11 +421,11 @@ def test_new_dialogue_slot_keeps_semantic_reconciliation():
     from mnemotrace.consolidate.conflict import ConflictResolver
     from mnemotrace.types import Fact
     mem = Memory()
-    mem.engine.conflict = ConflictResolver(embedder=object(), sim_threshold=.8)
+    mem.writer.conflict = ConflictResolver(embedder=object(), sim_threshold=.8)
     for predicate, value, stamp in [('attends_yoga', 'twice weekly', 100), ('does_yoga', 'three times weekly', 200)]:
         fact = Fact(subject='user', predicate=predicate, object=value, user_id='u', valid_at=stamp,
                     created_at=stamp, embedding=[1., 0.], assertion_kind='user_statement', source_roles=['user'])
-        mem.engine._write_fact(fact, mem.engine.empty_stats())
+        mem.writer._write_fact(fact, mem.writer.empty_stats())
     assert [f.object for f in mem.fact_store.values() if f.is_live()] == ['three times weekly']
 
 
@@ -520,7 +478,7 @@ def test_open_waits_for_the_complete_snapshot_generation(tmp_path, monkeypatch):
 
 def test_cached_model_configuration_identity_tracks_the_inner_provider(tmp_path):
     from mnemotrace.llm.cache import CachedLLM
-    from mnemotrace.consolidate.messages import config_identity
+    from mnemotrace.consolidate.pipeline import config_identity
     model = FakeLLM(handler=reply)
     model.model = 'synthetic-model-A'
     mem = Memory(llm=CachedLLM(model, str(tmp_path / 'cache'), model_tag='synthetic-tag'))

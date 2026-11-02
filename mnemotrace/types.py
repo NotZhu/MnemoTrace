@@ -33,10 +33,13 @@ class Episode:
     summary_embedding: Optional[list[float]] = None
     id: str = field(default_factory=lambda: gen_id("ep"))
     metadata: dict = field(default_factory=dict)
+    source_kind: str = "raw"
+    scope: str = "long"
     message_id: Optional[str] = None
     sequence: Optional[int] = None
     mode: Optional[str] = None
     coverage: Optional[dict] = None
+    summary_coverage: Optional[dict] = None
 
 
 @dataclass

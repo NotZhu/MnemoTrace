@@ -198,47 +198,28 @@ def _read_jsonl(path: str, name: str, limit: int | None = None) -> list[dict[str
 
 
 def discover_processing_namespaces(root: str) -> list[tuple[str, bool]]:
-    """Discover explicit extraction or summary work, validating namespace ownership."""
+    """Discover only the versioned unified ledger, rejecting old task snapshots."""
     from .._namespace_paths import contained_child, namespace_path
-    from ..consolidate.tasks import ACTIVE
     namespaces = []
     for entry in os.scandir(root):
-        if not entry.is_dir(follow_symlinks=False):
+        if not entry.is_dir(follow_symlinks=False) or os.path.normcase(os.path.realpath(entry.path)) != os.path.normcase(os.path.abspath(entry.path)):
             continue
-        if os.path.normcase(os.path.realpath(entry.path)) != os.path.normcase(os.path.abspath(entry.path)):
-            continue  # Windows junctions must not alias another namespace during discovery.
         path = contained_child(root, entry.name)
         try:
-            with _open_manifest(os.path.join(path, 'manifest.json')) as fh:
-                raw = json.loads(fh.read().decode('utf-8'))
-        except FileNotFoundError:
-            continue
-        except (ValueError, OSError) as exc:
-            raise StoreFormatError('Cannot read buffered recovery manifest') from exc
-        if not isinstance(raw, dict) or not isinstance(raw.get('state'), dict):
-            continue
-        if not any(k in raw['state'] for k in ('processing', 'summarization', 'messages')):
-            continue
-        try:
-            state = validate_manifest(raw)['state']
-            features = [state['processing']] if state.get('processing') is not None else []
-            features.extend((state.get('summarization') or {}).values())
-            messages = state.get('messages')
-            if messages:
-                for namespace, pipeline in messages['namespaces'].items():
-                    features.append({'namespace': namespace, 'jobs': {
-                        key: {'state': job['state']} for key, job in pipeline['windows'].items()}})
-            if not features:
-                continue
-            user = features[0]['namespace']
-            if namespace_path(root, user) != path or any(f['namespace'] != user for f in features):
-                raise ValueError('Buffered recovery namespace ownership mismatch')
+            loaded = _read_manifest(path)
         except ValueError as exc:
-            raise StoreFormatError('Invalid buffered recovery state') from exc
-        active = any(j['state'] in ACTIVE for f in features for j in f['jobs'].values())
-        active |= bool(messages and any(not r['cancelled'] and r['window_id'] is None and r['core'] == 'pending'
-                                       for pipeline in messages['namespaces'].values() for r in pipeline['messages'].values()))
-        namespaces.append((user, active))
+            raise StoreFormatError('Unsupported or invalid pipeline snapshot') from exc
+        if loaded is None:
+            continue
+        pipeline = loaded[0]['state'].get('pipeline')
+        if pipeline is None:
+            continue
+        for user, state in pipeline['namespaces'].items():
+            if namespace_path(root, user) != path:
+                raise StoreFormatError('Pipeline namespace ownership mismatch')
+            active = any(win['state'] in {'pending', 'running', 'retry_wait'} for win in state['windows'].values())
+            active |= any(not row['cancelled'] and (row['core'] == 'pending' or row['summary'] == 'pending') for row in state['sources'].values())
+            namespaces.append((user, active))
     return namespaces
 
 
@@ -262,16 +243,9 @@ def _memory_state(mem: Any) -> dict[str, Any]:
             "cold_pages_in": getattr(mem, "cold_pages_in", {}),
             "import_seen": sorted(mem._import_seen),
         }
-        if mem._processing_state is not None:
-            from ..consolidate.tasks import validate_task_sources
-            validate_task_sources(mem._processing_state, mem.episodes_doc.values())
-            state['processing'] = mem._processing_state
-        if mem._summary_state is not None:
-            from ..consolidate.summaries import validate_state as validate_summaries
-            state['summarization'] = validate_summaries(mem._summary_state, mem.episodes_doc.values())
-        if mem._message_state is not None:
-            from ..consolidate.messages import validate_state as validate_messages
-            state['messages'] = validate_messages(mem._message_state, mem.episodes_doc.values(), mem.embedder.dim)
+        if mem._pipeline_state is not None:
+            from ..consolidate.pipeline import validate_state as validate_pipeline
+            state['pipeline'] = validate_pipeline(mem._pipeline_state, mem.episodes_doc.values(), mem.embedder.dim)
         return validate_state(state)
     except ValueError as exc:
         raise StoreFormatError(str(exc)) from exc
@@ -318,7 +292,7 @@ def save_memory(mem: Any, path: str, backend: str = "durable", *, check_version:
             rows.sort(key=lambda row: row["id"])
         manifest_path = os.path.join(path, "manifest.json")
         manifest = _validated_manifest({
-            "format_version": 2,
+            "format_version": 3,
             "snapshot_id": uuid.uuid4().hex,
             "mnemotrace_version": __version__,
             "embedder_id": _embedder_id(mem.embedder),
@@ -405,19 +379,9 @@ def _load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
             obj = _restore_record(cls, values)
             prepared[name].append((tier, obj) if name == "facts" else obj)
 
-    from ..consolidate.tasks import validate_task_sources
+    from ..consolidate.pipeline import validate_state as validate_pipeline
     try:
-        validate_task_sources(state.get('processing'), prepared['episodes'])
-    except ValueError as exc:
-        raise StoreFormatError(str(exc)) from exc
-    from ..consolidate.summaries import validate_state as validate_summaries
-    try:
-        validate_summaries(state.get('summarization'), prepared['episodes'])
-    except ValueError as exc:
-        raise StoreFormatError(str(exc)) from exc
-    from ..consolidate.messages import validate_state as validate_messages
-    try:
-        validate_messages(state.get('messages'), prepared['episodes'], stored_dim)
+        validate_pipeline(state.get('pipeline'), prepared['episodes'], stored_dim)
     except ValueError as exc:
         raise StoreFormatError(str(exc)) from exc
     finish_vector_restore = mem._prepare_vector_restore(stored_dim, allow_mismatch)
@@ -461,8 +425,6 @@ def _load_memory(mem: Any, path: str, allow_mismatch: bool = False) -> bool:
     mem.cold_pages_out = state["cold_pages_out"]
     mem.cold_pages_in = state["cold_pages_in"]
     mem._import_seen = import_seen
-    mem._processing_state = state.get('processing')
-    mem._summary_state = state.get('summarization')
-    mem._message_state = state.get('messages')
+    mem._pipeline_state = state.get('pipeline')
     mem._snapshot_version = version
     return True

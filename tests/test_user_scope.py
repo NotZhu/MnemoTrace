@@ -27,7 +27,7 @@ def test_user_scopes_preserve_all_memory_layers_after_restart(tmp_path):
     assert loaded._identity == mem._identity
     assert loaded._aliases == mem._aliases
     for user, (name, city) in users.items():
-        assert loaded.engine.self_name(user) == name
+        assert loaded._identity.get(user) == name
         assert loaded.profile(user)["lives_in"] == city
         assert all(f.user_id == user for f in loaded.search("Where do I live?", user_id=user).facts)
         assert {f.object for f in loaded.history(name, "lives_in", user_id=user)} == {city}

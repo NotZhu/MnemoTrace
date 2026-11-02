@@ -15,9 +15,9 @@ def test_raw_note_is_synchronous_with_default_worker(monkeypatch):
     d = tempfile.mkdtemp(prefix="mnemotrace_sync_")
     try:
         svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
-        assert svc._worker is not None  # 对话 worker 默认开启，原文入口仍可即时处理
+        assert svc._pipeline_worker is not None  # 对话 worker 默认开启，原文入口仍可即时处理
         r = svc.remember("u", _SENT)
-        assert "queued" not in r and r.get("scope") == "long"  # 内联完成整合
+        assert not r.get("queued") and r.get("scope") == "long"  # 内联完成整合
         assert r.get("extracted", 0) >= 1  # 事实立即可用（写完即可查）
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -28,7 +28,7 @@ def test_async_remember_returns_fast_then_flush_consolidates(monkeypatch):
     d = tempfile.mkdtemp(prefix="mnemotrace_async_")
     try:
         svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
-        assert svc._worker is not None  # 后台 worker 已启动
+        assert svc._pipeline_worker is not None  # 后台 worker 已启动
 
         r = svc.remember("u", _SENT, processing="buffered")
         assert r.get("queued") is True  # System-1 返回时没有内联整合
@@ -40,7 +40,7 @@ def test_async_remember_returns_fast_then_flush_consolidates(monkeypatch):
         assert svc.memories("u")["counts"]["facts_live"] >= 1
 
         svc.close()
-        assert svc._worker is None
+        assert not svc._pipeline_worker.thread.is_alive()
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

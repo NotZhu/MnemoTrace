@@ -398,7 +398,7 @@ def test_explicit_preference_does_not_use_polluted_name_guess():
     facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
     assert ("pretty", "loves", "retro-style diners") not in facts
     assert ("Wei", "likes", "jazz") in facts
-    assert mem.engine.self_name("u1") == "Wei"
+    assert mem._identity.get("u1") == "Wei"
 
 
 def test_explicit_preference_skips_weak_objects_by_default():

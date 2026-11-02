@@ -27,7 +27,6 @@ from typing import Optional
 from ..embed import Embedder
 from ..types import Fact
 from ..util import cosine, time_key
-from .verdict import parse_verdict
 
 # 包含关系（"Contained"）检测用的实义词——忽略短词/虚词，这样才能识别
 # "Charles is my boss" ⊂ "Charles is my boss and a branch manager"。
@@ -159,40 +158,11 @@ def insert_dialogue_history(new: Fact, records: list[Fact]):
     return 'add', updated
 
 
-_ADJUDICATE_SYSTEM = (
-    "You decide whether a NEW statement about a user contradicts (replaces) an OLD one, or coexists with "
-    "it. Reply with exactly one word: REPLACES if the new fact updates/overrides the old (same attribute, "
-    "new value), or COEXISTS if both can be true at once. Nothing else."
-)
-
-
 class ConflictResolver:
-    """按同槽位规则及可选的语义相似度判断事实是否取代旧事实。"""
-    def __init__(self, embedder: Optional[Embedder] = None, sim_threshold: float = 0.80,
-                 llm=None, ambiguous_band: float = 0.12) -> None:
-        """初始化冲突解析器。
-
-        Args:
-            embedder: 用于语义相似度计算的嵌入器。
-            sim_threshold: 语义相似度阈值。
-            llm: 可选的大型语言模型裁决器。
-            ambiguous_band: 模糊区间宽度。
-        """
+    """Deterministic slot and embedding rules; optional adjudication is a pipeline task."""
+    def __init__(self, embedder: Optional[Embedder] = None, sim_threshold: float = 0.80) -> None:
         self.embedder = embedder
         self.sim_threshold = sim_threshold
-        self.llm = llm
-        self.ambiguous_band = ambiguous_band
-
-    def _llm_says_replaces(self, new: Fact, old: Fact) -> bool:
-        if self.llm is None:
-            return False
-        try:
-            verdict = self.llm.complete(
-                f"OLD: {old.text}\nNEW: {new.text}\n\nDoes NEW replace OLD?", system=_ADJUDICATE_SYSTEM)
-            return parse_verdict(verdict, {"REPLACES", "COEXISTS"}) == "REPLACES"
-        except Exception:  # noqa: BLE001 -- 绝不让裁决中断整合
-            parse_verdict(None, {"REPLACES", "COEXISTS"})
-            return False
 
     def reconcile(self, new: Fact, live: list[Fact]) -> tuple[str, list[Fact]]:
         """返回 (action, invalidated_facts)。action 为 "add" 或 "duplicate"。"""
@@ -297,10 +267,6 @@ class ConflictResolver:
                         continue
                     sim = cosine(new.embedding, old.embedding)
                     if sim >= self.sim_threshold:
-                        _supersede(old, new)
-                        invalidated.append(old)
-                    elif sim >= self.sim_threshold - self.ambiguous_band and self._llm_says_replaces(new, old):
-                        # 相似度处于边界 -> 交给 LLM 裁决（仅在配置了 LLM 时）
                         _supersede(old, new)
                         invalidated.append(old)
 

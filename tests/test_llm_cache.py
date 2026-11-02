@@ -101,7 +101,7 @@ def test_identity_registration_does_not_depend_on_extraction_order():
         "you can call me Evan": [{"subject":"user","predicate":"name","object":"Evan"}],
     }
     def complete(prompt, system):
-        from mnemotrace.consolidate.windows import WINDOW_PREFIX
+        from mnemotrace.consolidate.planning import WINDOW_PREFIX
         data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
         content = data["pending"][0]["content"]
         if content == "I like coffee":
@@ -114,6 +114,6 @@ def test_identity_registration_does_not_depend_on_extraction_order():
             mem.add(text, user_id="u1", session_id=f"s{i}", event_time=1_700_000_000.0 + i * 86400)
         mem.consolidate()
         seen.append(sorted(f.text for f in mem._all_facts()))
-        assert mem.engine.self_name("u1") == "Evan"
+        assert mem._identity.get("u1") == "Evan"
     assert seen[0] == seen[1] == seen[2]
     assert all("coffee" in " ".join(rows) for rows in seen)

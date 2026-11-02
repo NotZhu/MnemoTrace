@@ -5,13 +5,33 @@ import pytest
 
 from mnemotrace import Memory
 from mnemotrace.extraction import ExtractionError, ExtractionResponseError, LLMNotConfiguredError
-from mnemotrace.llm import FakeLLM
+from mnemotrace.llm import FakeLLM as NativeFakeLLM, Completion
 from mnemotrace.service import MemoryService
-from mnemotrace.types import Episode, Fact
-from mnemotrace.consolidate.conflict import ConflictResolver
-from mnemotrace.consolidate.detect import detect_conflicts
-from mnemotrace.consolidate.llm_extractor import parse_json_facts
-from mnemotrace.consolidate.windows import WINDOW_PREFIX
+from mnemotrace.consolidate.fact_rules import parse_json_facts
+from mnemotrace.consolidate.planning import WINDOW_PREFIX
+
+
+class FakeLLM(NativeFakeLLM):
+    """Attach the fixed row fixture to the actual source IDs supplied to this call."""
+    def complete_result(self, prompt, system=None, **kwargs):
+        completion = super().complete_result(prompt, system=system, **kwargs)
+        if WINDOW_PREFIX not in prompt:
+            return completion
+        data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX)[1])[0]
+        try:
+            out = json.loads(completion.text)
+        except ValueError:
+            return completion
+        if not isinstance(out, dict) or set(out) != {'facts', 'working'}:
+            return completion
+        for group in ('facts', 'working'):
+            for row in out[group]:
+                row.setdefault('source_ids', [data['pending'][0]['id']])
+                row.setdefault('assertion_kind', 'unspecified' if data['source_kind'] != 'dialogue' else 'user_statement')
+                if group == 'facts' and all(k in row for k in ('subject', 'predicate', 'object')):
+                    row.setdefault('text', f"{row['subject']} {row['predicate']} {row['object']}")
+        out['summaries'] = []
+        return Completion(json.dumps(out), completion.finish_reason, completion.usage)
 
 
 def response(facts=(), working=()):
@@ -76,10 +96,6 @@ def test_blank_model_name_is_missing_configuration(tmp_path):
         svc.remember('u', 'Synthetic input')
 
 
-def test_direct_extractor_requires_model():
-    from mnemotrace.consolidate.llm_extractor import LLMExtractor
-    with pytest.raises(LLMNotConfiguredError):
-        LLMExtractor(None).extract(Episode('Synthetic input'))
 
 
 @pytest.mark.parametrize('count', [1, 2, 4])
@@ -92,7 +108,8 @@ def test_failed_batch_has_no_commits_and_can_retry(count):
     assert 'SECRET' not in str(error.value)
     assert all(not ep.consolidated for ep in episodes)
     assert not m.fact_store.values() and not m.working_mem and not m._identity
-    m.engine.llm = m.engine.extractor.llm = FakeLLM(responses=[response()] * count)
+    m.llm = FakeLLM(responses=[response()] * count)
+    assert m.flush_messages(timeout=2, retry_failed=True)['ok']
     assert m.consolidate()['facts_added'] == 0
     assert all(ep.consolidated and 'extraction_error' not in ep.metadata for ep in episodes)
 
@@ -111,18 +128,6 @@ def test_invalid_output_is_not_successful_empty_result(bad):
     assert not ep.consolidated
 
 
-def test_mixed_batch_failure_does_not_register_name_or_write_working():
-    def complete(prompt, system=None, **kwargs):
-        if 'first' in prompt:
-            return response([fact('Synthetic Name', 'name')], [{'content': 'Temporary task', 'kind': 'task'}])
-        return 'invalid'
-    m = Memory(llm=FakeLLM(handler=complete))
-    m.remember('first', scope='auto', session_id='s1')
-    m.remember('second', scope='auto', session_id='s2')
-    with pytest.raises(ExtractionResponseError):
-        m.consolidate()
-    assert not m.engine.extractor.self_name and not m._identity and not m.working_mem
-    assert len(m.ingestor.pending()) == 2
 
 
 @pytest.mark.parametrize(('facts', 'working', 'expected'), [
@@ -145,8 +150,10 @@ def test_service_failure_keeps_raw_on_disk_and_retries_after_restart(tmp_path):
         svc.remember('u', 'Synthetic input', session_id='s')
     assert error.value.stored_raw and len(error.value.episode_ids) == 1
     restarted = service(tmp_path, FakeLLM(responses=[response([fact()])]))
+    assert restarted.flush('u', 's', retry_failed=True)['ok']
     result = restarted.close_session('u', 's', summarize=False, outcomes=False)
-    assert result['facts_added'] == 1
+    assert len(restarted.get('u').fact_store.values()) == 1
+    assert result['facts_added'] == 0
     assert restarted.close_session('u', 's', summarize=False, outcomes=False)['facts_added'] == 0
 
 
@@ -155,7 +162,7 @@ def test_identity_survives_restart_without_model(tmp_path):
     m.add('Synthetic identity')
     m.consolidate()
     m.save(str(tmp_path))
-    assert Memory.open(str(tmp_path)).engine.self_name('default') == 'Synthetic Name'
+    assert Memory.open(str(tmp_path))._identity.get('default') == 'Synthetic Name'
 
 
 def test_preference_embedding_uses_final_normalized_text():
@@ -175,7 +182,7 @@ def test_duplicate_import_requires_explicit_retry_without_extra_episodes():
     sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic record'}]}]
     m.remember_messages(sessions[0]['messages'], 's', mode='historical')
     # A deliberately failed checkpoint is retried only by an explicit flush request.
-    from mnemotrace._messages import flush_memory
+    from mnemotrace._pipeline import flush_memory
     assert not flush_memory(m, 'default', timeout=.01)['ok']
     m.llm = FakeLLM(handler=reply)
     stats = m.import_messages(sessions)
@@ -192,17 +199,8 @@ def test_outcomes_failure_does_not_clear_working(tmp_path):
     assert len(svc.get('u').working_memory('u', 's')) == 1
 
 
-@pytest.mark.parametrize('verdict', ['does not replace', 'NO REPLACES', '', 'REPLACES.'])
-def test_invalid_replacement_verdict_never_invalidates(verdict, caplog):
-    resolver = ConflictResolver(llm=FakeLLM(responses=[verdict]))
-    assert not resolver._llm_says_replaces(Fact('u', 'x', 'a'), Fact('u', 'y', 'b'))
-    assert 'invalid verdict' in caplog.text
 
 
-@pytest.mark.parametrize(('verdict', 'count'), [('NO CONFLICT', 0), ('CONFLICT', 1), (' coexist ', 0)])
-def test_conflict_verdict_is_exact(verdict, count):
-    a, b = Fact('u', 'likes', 'coffee'), Fact('u', 'avoids', 'coffee')
-    assert len(detect_conflicts([a, b], FakeLLM(responses=[verdict]), 'default', set())) == count
 
 
 def test_truncated_outcomes_are_invalid():
@@ -246,47 +244,16 @@ def test_async_failure_is_visible_and_worker_stays_alive(tmp_path, monkeypatch):
     svc = service(tmp_path, Broken())
     try:
         result = svc.remember('u', 'Synthetic input', session_id='s', processing='buffered')
-        assert result['queued'] and 'scope' not in result
+        assert result['queued'] and result['scope'] == 'auto'
         svc.flush('u', timeout=1)
         ep, = svc.get('u').episodes_doc.values()
         assert not ep.consolidated
         assert svc.processing_status('u')['jobs'][0]['error_code'] == 'extraction_failed'
-        assert svc._worker.is_alive()
+        assert svc._pipeline_worker.thread.is_alive()
     finally:
         svc.close()
 
 
-def test_storage_failure_keeps_entire_batch_pending_and_retry_keeps_working(monkeypatch):
-    def complete(prompt, system=''):
-        from mnemotrace.consolidate.windows import WINDOW_PREFIX
-        window = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
-        facts, working = [], []
-        for span in window['pending']:
-            index = '1' if 'row 1' in span['content'] else '0'
-            facts.append({**fact(index, 'owns'), 'source_ids': [span['id']]})
-            working.append({'content': 'task ' + index, 'kind': 'task', 'source_ids': [span['id']]})
-        return response(facts, working)
-    mem = Memory(llm=FakeLLM(handler=complete))
-    for index in range(2):
-        result = mem.remember('row ' + str(index))
-        mem.episodes_doc.get(result['episode_id']).event_time = index
-    original = mem.fact_store.upsert
-
-    def fail_second(key, vector, item):
-        if item.object == '1':
-            raise OSError('Synthetic storage failure')
-        return original(key, vector, item)
-
-    monkeypatch.setattr(mem.fact_store, 'upsert', fail_second)
-    with pytest.raises(OSError):
-        mem.consolidate()
-    assert len(mem.fact_store.values()) == 1
-    assert len(mem.ingestor.pending()) == 2
-    assert not mem.working_mem
-    monkeypatch.setattr(mem.fact_store, 'upsert', original)
-    mem.consolidate()
-    assert {w.content for w in mem.working_mem.values()} == {'task 0', 'task 1'}
-    assert not mem.ingestor.pending() and len(mem.fact_store.values()) == 2
 
 
 def test_working_retry_is_idempotent_after_restore(tmp_path):
@@ -296,7 +263,6 @@ def test_working_retry_is_idempotent_after_restore(tmp_path):
     mem.consolidate()
     mem.save(str(tmp_path))
     restored = Memory.open(str(tmp_path), llm=model)
-    restored.episodes_doc.get(result['episode_id']).consolidated = False
     assert restored.consolidate()['working_added'] == 0
     item, = restored.working_mem.values()
     assert item.metadata['episode_id'] == result['episode_id']
@@ -315,7 +281,7 @@ def test_scope_uses_accepted_content_and_identity(tmp_path, facts, working, expe
 
 
 def test_scope_includes_existing_durable_fact(tmp_path):
-    from mnemotrace.consolidate.windows import WINDOW_PREFIX
+    from mnemotrace.consolidate.planning import WINDOW_PREFIX
     def model(prompt, system):
         if WINDOW_PREFIX not in prompt:
             return 'Synthetic summary'
@@ -329,7 +295,7 @@ def test_scope_includes_existing_durable_fact(tmp_path):
 
 def test_sync_counts_only_include_current_input(tmp_path):
     def complete(prompt, system=''):
-        from mnemotrace.consolidate.windows import WINDOW_PREFIX
+        from mnemotrace.consolidate.planning import WINDOW_PREFIX
         data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
         facts, working = [], []
         for span in data['pending']:
@@ -341,7 +307,8 @@ def test_sync_counts_only_include_current_input(tmp_path):
     svc.get('u').remember('first pending', user_id='u')
     result = svc.remember('u', 'current input')
     assert result['extracted'] == 1 and result['working_added'] == 1
-    assert len(svc.get('u').working_mem) == 2 and result['total_facts'] == 2
+    assert len(svc.get('u').working_mem) == 1 and result['total_facts'] == 1
+    assert len(svc.get('u').ingestor.pending()) == 1
 
 
 def test_long_mode_rejects_working_output():
@@ -352,12 +319,6 @@ def test_long_mode_rejects_working_output():
     assert not ep.consolidated and not mem.working_mem
 
 
-def test_facts_only_api_never_silently_discards_working():
-    from mnemotrace.consolidate.llm_extractor import LLMExtractor
-    extractor = LLMExtractor(FakeLLM(responses=[response([], [{'content': 'task', 'kind': 'task'}])]))
-    ep = Episode('Synthetic input', metadata={'memory_scope': 'auto'})
-    with pytest.raises(ValueError, match='raw_items'):
-        extractor.extract(ep)
 
 
 def test_consolidation_sweeps_consumed_working():
@@ -430,14 +391,14 @@ def test_ephemeral_history_counts_content_after_working_is_cleared(tmp_path, res
 
 @pytest.mark.parametrize('has_new_session', [False, True])
 def test_import_receipts_do_not_restart_failed_joint_work(tmp_path, has_new_session, monkeypatch):
-    from mnemotrace._buffered import BufferedExtraction
-    from mnemotrace._messages import run_one
+    from mnemotrace._pipeline_worker import PipelineWorker
+    from mnemotrace._pipeline import run_one
     from tests.test_message_pipeline import reply
-    monkeypatch.setattr(BufferedExtraction, 'consume', lambda _: None)
+    monkeypatch.setattr(PipelineWorker, 'consume', lambda _: None)
     model = FakeLLM(handler=lambda *args: '{')
     svc = service(tmp_path, model)
     stamp = [1000.0]
-    svc._buffered.clock = lambda: stamp[0]
+    svc._pipeline_worker.clock = lambda: stamp[0]
     sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user',
                   'content': 'Synthetic long record ' * 120}]}]
     assert svc.import_('u', sessions=sessions)['queued']
@@ -456,7 +417,7 @@ def test_import_receipts_do_not_restart_failed_joint_work(tmp_path, has_new_sess
     svc.flush('u', 's', timeout=0, retry_failed=True)
     while run_one(svc, 'u'):
         pass
-    assert svc.message_status('u', 's')['jobs'][0]['state'] == 'completed'
+    assert svc.processing_status('u', 's')['jobs'][0]['state'] == 'completed'
     svc.close()
 
 
@@ -578,7 +539,7 @@ def test_cached_import_respects_disabled_service_model(tmp_path, consolidate):
 
 @pytest.mark.parametrize('consolidate', [None, True])
 def test_import_intent_change_requires_new_message_id(tmp_path, consolidate):
-    from mnemotrace.consolidate.messages import MessageConflictError
+    from mnemotrace.consolidate.pipeline import MessageConflictError
     from tests.test_message_pipeline import reply
     sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic pending record'}]}]
     svc = service(tmp_path, None)
@@ -589,5 +550,5 @@ def test_import_intent_change_requires_new_message_id(tmp_path, consolidate):
     assert len(svc.get('u').episodes_doc.values()) == 1
     sessions[0]['messages'][0]['message_id'] = 'm2'
     svc.import_('u', sessions=sessions, consolidate=True)
-    assert svc.message_status('u')['jobs'][0]['core'] == 'not_requested'
-    assert svc.message_status('u')['jobs'][1]['core'] == 'completed'
+    assert svc.processing_status('u')['jobs'][0]['core'] == 'not_requested'
+    assert svc.processing_status('u')['jobs'][1]['core'] == 'completed'

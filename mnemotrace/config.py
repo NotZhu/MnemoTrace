@@ -47,7 +47,6 @@ class Config:
     # --- 事实抽取与整合 ---
     extraction_max_input_bytes: int = 16_384  # 系统与用户提示词 UTF-8 字节预算；不是模型精确 token 数
     extraction_context_bytes: int = 2_048  # 每个窗口最多携带的前文正文 UTF-8 字节数
-    extraction_max_output_tokens: int = 2_048  # 抽取输出上限；截断响应不提交
     joint_max_output_tokens: int = 8192
     joint_core_output_tokens: int = 2048
     joint_summary_output_tokens: int = 2048

@@ -113,24 +113,25 @@ _ID_OR_NULL = _nullable(_identifier)
 _SOURCE = _choice("user", "extracted")
 
 
-def _coverage(value: Any, path: str) -> None:
+def validate_coverage(value: Any, path: str) -> None:
     _object(value, path)
     if set(value) != {'unit', 'ranges', 'partial', 'policy', 'source', 'original_length', 'input_hash', 'strategy_completed'}:
         _fail(path, 'invalid coverage fields')
     _choice('unicode_code_points')(value['unit'], path + '.unit')
     _boolean(value['partial'], path + '.partial')
     _count(value['original_length'], path + '.original_length')
-    if value['strategy_completed'] is not True:
-        _fail(path, 'coverage must describe a completed strategy')
-    expected = 'head_tail_v1' if value['partial'] else 'full_message_v1'
-    if value['policy'] != expected:
-        _fail(path, 'policy does not match coverage')
+    _boolean(value['strategy_completed'], path + '.strategy_completed')
+    message_policy = value['policy'] in {'head_tail_v1', 'full_message_v1'}
+    if value['policy'] not in {'head_tail_v1', 'full_message_v1', 'full_source_v1', 'summary_source_v1'}:
+        _fail(path, 'invalid coverage policy')
+    if message_policy and (not value['strategy_completed'] or value['partial'] != (value['policy'] == 'head_tail_v1')):
+        _fail(path, 'message coverage does not match strategy')
     for field in ('source', 'input_hash'):
         text = value[field]
         if not isinstance(text, str) or len(text) != 64 or any(c not in '0123456789abcdef' for c in text):
             _fail(path + '.' + field, 'must be a SHA256 fingerprint')
     ranges = value['ranges']
-    if not isinstance(ranges, list) or len(ranges) != (2 if value['partial'] else 1):
+    if not isinstance(ranges, list) or len(ranges) != (2 if value['policy'] == 'head_tail_v1' else 1):
         _fail(path, 'invalid coverage ranges')
     end = 0
     for span in ranges:
@@ -139,18 +140,22 @@ def _coverage(value: Any, path: str) -> None:
         if not end <= span[0] < span[1] <= value['original_length']:
             _fail(path, 'invalid codepoint bounds')
         end = span[1]
-    if ranges[0][0] != 0 or end != value['original_length'] or value['partial'] and ranges[0][1] >= ranges[1][0]:
+    if (ranges[0][0] != 0 or value['strategy_completed'] and end != value['original_length']
+            or value['policy'] == 'head_tail_v1' and ranges[0][1] >= ranges[1][0]
+            or not message_policy and value['partial'] != (end < value['original_length'])):
         _fail(path, 'ranges do not match the declared strategy')
 
 
 # Explicit wire fields: adding a dataclass default must not silently change restoration.
 _EPISODE = {
     "id": _identifier, "content": _string, "user_id": _identifier,
-    "session_id": _identifier, "role": _identifier, "event_time": _TIME_OR_NULL,
+    "session_id": _identifier, "role": _nullable(_identifier), "event_time": _TIME_OR_NULL,
     "ingested_at": _number, "embedding": _VECTOR, "consolidated": _boolean,
     "summary": _string, "summary_embedding": _VECTOR, "metadata": _metadata,
+    "source_kind": _choice("dialogue", "raw", "document"), "scope": _choice("auto", "long", "raw", "working"),
     "message_id": _ID_OR_NULL, "sequence": _nullable(_count),
-    "mode": _nullable(_choice("live", "historical")), "coverage": _nullable(_coverage),
+    "mode": _nullable(_choice("live", "historical")), "coverage": _nullable(validate_coverage),
+    "summary_coverage": _nullable(validate_coverage),
 }
 _FACT = {
     "id": _identifier, "subject": _identifier, "predicate": _identifier, "object": _identifier,
@@ -213,14 +218,14 @@ def validate_record(kind: str, record: Any, path: str, *, jsonl_fact: bool = Fal
         spec = {**spec, "_store": _choice("hot", "cold")}
     result = _fields(record, spec, path)
     if kind == "Episode":
-        if result['coverage'] is not None and result['coverage']['original_length'] != len(result['content']):
-            _fail(path, 'coverage length does not match original content')
+        for name in ('coverage', 'summary_coverage'):
+            if result[name] is not None and result[name]['original_length'] != len(result['content']):
+                _fail(path, 'coverage length does not match original content')
         if result["summary"] and result["summary_embedding"] is None:
             _fail(path, "non-empty summary requires summary_embedding")
-        from ..consolidate.processing import validate_progress
-        progress = validate_progress(result["content"], result["metadata"])
-        if progress and result["consolidated"] != (progress["completed_through"] == len(result["content"])):
-            _fail(path, "completion flag must match processing range")
+        forbidden = {'extraction_progress', 'extraction_counts', 'extraction_error', 'memory_result', 'memory_scope', 'outcome_error', 'extraction'}
+        if forbidden.intersection(result['metadata']):
+            _fail(path, 'legacy processing metadata is unsupported; task migration is not provided')
     if kind == "Fact":
         _validate_topic_pair(result, path)
     if embedding_dim is not None:
@@ -245,15 +250,11 @@ def validate_state(state: Any, path: str = "manifest.state") -> dict:
         "persona_cache": _mapping(_string),
         "cold_pages_out": _mapping(_count), "cold_pages_in": _mapping(_count),
     }, path)
-    if 'summarization' in state:
-        from ..consolidate.summaries import validate_state as validate_summaries
-        result['summarization'] = validate_summaries(state['summarization'])
-    if 'processing' in state:
-        from ..consolidate.tasks import validate_tasks
-        result['processing'] = validate_tasks(state['processing'])
-    if 'messages' in state:
-        from ..consolidate.messages import validate_state as validate_messages
-        result['messages'] = validate_messages(state['messages'])
+    if {'processing', 'summarization', 'messages'}.intersection(state):
+        _fail(path, 'legacy task state is unsupported; task migration is not provided')
+    if 'pipeline' in state:
+        from ..consolidate.pipeline import validate_state as validate_pipeline
+        result['pipeline'] = validate_pipeline(state['pipeline'])
     return result
 
 
@@ -267,7 +268,7 @@ def validate_manifest(manifest: Any) -> dict:
         "counts": lambda v, p: _fields(v, {key: _count for key in COLLECTIONS}, p),
         "state": _object,
     }, "manifest")
-    if result['format_version'] != 2:
+    if result['format_version'] != 3:
         _fail('manifest.format_version', 'unsupported format; use the explicit snapshot upgrade command')
     result["state"] = validate_state(result["state"])
     return result
@@ -283,7 +284,7 @@ _IMPORT_FACT = {key: _FACT[key] for key in (
 _IMPORT_FACT.update(status=_choice("live", "superseded"), valid_at_h=_string,
                     invalid_at_h=_nullable(_string))
 _IMPORT_EPISODE = {key: _EPISODE[key] for key in (
-    "id", "content", "session_id", "role", "event_time", "summary", "coverage",
+    "id", "content", "session_id", "role", "event_time", "summary", "coverage", "summary_coverage",
 )}
 
 
@@ -299,7 +300,7 @@ def validate_snapshot(snapshot: Any) -> dict:
             _fail(f"snapshot.{key}", "missing required field")
     result = {}
     for name, spec, optional in (("facts", _IMPORT_FACT, ("text", "status", "valid_at_h", "invalid_at_h", "assertion_kind", "source_roles")),
-                                 ("episodes", _IMPORT_EPISODE, ("summary", "coverage"))):
+                                 ("episodes", _IMPORT_EPISODE, ("summary", "coverage", "summary_coverage"))):
         rows = snapshot[name]
         if not isinstance(rows, list):
             _fail(f"snapshot.{name}", "must be a list")

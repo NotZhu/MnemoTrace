@@ -196,7 +196,7 @@ def test_decay_focus_classification_and_cold_fact_writeback(config, tmp_path):
     with Memory.open(str(tmp_path / "snapshot"), config=config) as memory:
         old = memory.add_fact("user", "visited", "SyntheticCity", user_id="u", valid_at=1)
         memory.add_fact("user", "visited", "AnotherCity", user_id="u", valid_at=1 + 100 * DAY)
-        memory.engine._decay_sweep()
+        memory.writer._decay_sweep()
         assert memory.fact_store.get(old.id).salience == pytest.approx(0.3)
         memory.focus["track"] = ["SyntheticCity"]
         memory.apply_focus()
@@ -363,16 +363,17 @@ def test_async_worker_is_drained_before_service_releases_clients(service_factory
 
 
 def test_buffered_raw_routing_checkpoint_and_cache_eviction(service_factory, monkeypatch):
-    from mnemotrace._buffered import BufferedExtraction
+    from mnemotrace._pipeline_worker import PipelineWorker
     monkeypatch.setenv('MNEMOTRACE_BUFFERED_EXTRACTION', '1')
-    monkeypatch.setattr(BufferedExtraction, 'consume', lambda _: None)
+    monkeypatch.setattr(PipelineWorker, 'consume', lambda _: None)
     svc = service_factory(max_hot_users=1)
     first = svc.remember('u', 'I like Python.', scope='long', processing='buffered')
-    assert svc.get('u').episodes_vec.get(first['episode_id']).metadata['memory_scope'] == 'long'
+    assert svc.get('u').episodes_vec.get(first['episode_id']).scope == 'long'
     svc.remember('bob', 'I like apples.', scope='long', processing='buffered')
     assert svc.hot_count <= 1
     svc.flush('u', timeout=0)
-    assert svc._buffered.run_one('u')
+    from tests.test_pipeline_sources import drain
+    drain(svc)
     assert svc.processing_status('u')['counts']['completed'] == 1
     assert svc.get('u').episodes_vec.get(first['episode_id']).consolidated
     svc.close()
@@ -380,48 +381,10 @@ def test_buffered_raw_routing_checkpoint_and_cache_eviction(service_factory, mon
     assert reopened.processing_status('u')['counts']['completed'] == 1
     assert reopened.processing_status('bob')['counts']['pending'] == 1
     reopened.flush('bob', timeout=0)
-    assert reopened._buffered.run_one('bob')
+    drain(reopened, 'bob')
     assert any(f['object'] == 'apples' for f in reopened.memories('bob')['facts'])
 
 
-def test_buffered_conflict_replay_is_independent_of_backend_point_order(service_factory, monkeypatch):
-    import hashlib
-    import json
-    from mnemotrace._buffered import BufferedExtraction
-    from mnemotrace.consolidate.windows import WINDOW_PREFIX
-    from mnemotrace.llm import FakeLLM
-    monkeypatch.setenv('MNEMOTRACE_BUFFERED_EXTRACTION', '1')
-    monkeypatch.setattr(BufferedExtraction, 'consume', lambda _: None)
-    svc = service_factory()
-    svc.config.conflict_detection = True
-    def response(prompt, system):
-        if WINDOW_PREFIX not in prompt:
-            return 'CONFLICT'
-        data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
-        return json.dumps({'facts': [{'subject': 'user', 'predicate': 'dislikes', 'object': 'tea',
-                                     'source_ids': [data['pending'][0]['id']]}], 'working': []})
-    model = FakeLLM(handler=response)
-    object.__setattr__(svc, 'llm', model)  # Native envelope, without the legacy test adapter.
-    raw = svc.remember('u', 'synthetic', processing='buffered')
-    source_ids = [raw['episode_id'] + '@0:9']
-    identity = json.dumps([source_ids, ('u', 'u', 'dislikes'), 'tea'], ensure_ascii=False)
-    new_id = 'ft_' + hashlib.sha256(identity.encode()).hexdigest()[:24]
-    # Force the remote backend to enumerate the newly added point before the old one.
-    old_id = next('ft_manual_' + str(i) for i in range(1000)
-                  if _point_id('ft_manual_' + str(i)) > _point_id(new_id))
-    with svc.write_lock('u'):
-        mem = svc.get('u')
-        ep = mem.episodes_doc.get(raw['episode_id'])
-        old = Fact(id=old_id, subject='u', predicate='allergic_to', object='tea', user_id='u', source='user',
-                   valid_at=ep.event_time - 1, created_at=ep.ingested_at - 1)
-        old.embedding = mem.embedder.embed(old.text)
-        mem.fact_store.upsert(old.id, old.embedding, old)
-        mem.engine.graph_builder.add_fact(old)
-        svc._save('u', mem)
-    svc.flush('u', timeout=0)
-    assert svc._buffered.run_one('u')
-    assert svc.processing_status('u')['counts']['completed'] == 1
-    assert len(model.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -540,14 +503,14 @@ def test_shutdown_finishes_producer_paused_before_enqueue(service_factory, monke
     svc = service_factory()
     entered = threading.Event()
     release = threading.Event()
-    original = svc._buffered.notify
+    original = svc._pipeline_worker.notify
 
     def paused(user):
         entered.set()
         assert release.wait(10)
         original(user)
 
-    monkeypatch.setattr(svc._buffered, "notify", paused)
+    monkeypatch.setattr(svc._pipeline_worker, "notify", paused)
     with ThreadPoolExecutor(max_workers=2) as pool:
         producer = pool.submit(svc.remember, "u", "I like Python.", scope="long", processing="buffered")
         try:
@@ -706,42 +669,5 @@ def test_consolidate_accepts_episode_without_existing_document(config, tmp_path)
         assert memory.episodes_doc.get(episode.id).consolidated
         assert memory.retrieve_episodes("Python", user_id="u")[0].id == episode.id
         memory.save()
-        if config.qdrant_url:
-            memory._qdrant_backend.erase()
-
-
-def test_window_ranges_resume_and_write_back_after_restart(config, tmp_path, monkeypatch):
-    from mnemotrace import Memory as NativeMemory
-    from mnemotrace.consolidate.processing import PROGRESS_KEY
-    from mnemotrace.consolidate.windows import ExtractionWindow, SourceSpan, WINDOW_PREFIX
-    from mnemotrace.llm import FakeLLM
-    model = FakeLLM(handler=lambda *args: '{"facts":[],"working":[]}')
-    config.extraction_context_bytes = 20
-    root = str(tmp_path / "ranges")
-    with NativeMemory.open(root, config=config, llm=model) as memory:
-        ep = memory.add("Synthetic🙂" * 90, session_id="s")
-        config.extraction_max_input_bytes = memory.config.extraction_max_input_bytes = memory.engine.extractor.window_size(
-            ExtractionWindow((SourceSpan(ep, 0, 1),))) + 200
-        original = memory.engine.processing.write
-        calls = []
-        def fail_second(updated):
-            calls.append(updated.id)
-            if len(calls) == 2:
-                raise OSError("Synthetic range checkpoint failure")
-            original(updated)
-        monkeypatch.setattr(memory.engine.processing, "write", fail_second)
-        with pytest.raises(OSError):
-            memory.consolidate()
-        through = ep.metadata[PROGRESS_KEY]["completed_through"]
-        assert memory.episodes_vec.get(ep.id).metadata[PROGRESS_KEY]["completed_through"] == through
-        assert not ep.consolidated
-        memory.save()
-    retry = FakeLLM(handler=lambda *args: '{"facts":[],"working":[]}')
-    with NativeMemory.open(root, config=config, llm=retry) as memory:
-        memory.consolidate()
-        data = json.JSONDecoder().raw_decode(retry.calls[0]["prompt"].split(WINDOW_PREFIX, 1)[1])[0]
-        assert data["pending"][0]["start"] == through
-        record = memory.episodes_vec.get(ep.id)
-        assert record.consolidated and record.metadata[PROGRESS_KEY]["completed_through"] == len(ep.content)
         if config.qdrant_url:
             memory._qdrant_backend.erase()

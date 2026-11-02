@@ -116,7 +116,7 @@ def classify_fact(fact) -> None:
     """原地设置 fact.category / fact.sensitive（幂等——仅在未设置时填充）。"""
     if getattr(fact, "category", ""):
         return
-    cat, sens = classify(fact.predicate, fact.object, fact.text)
+    cat, sens = classify(fact.predicate, fact.object, fact.text + "\n" + getattr(fact, "display", ""))
     fact.category = cat
     # 绝不把用户已标记的敏感标志降级
     fact.sensitive = bool(getattr(fact, "sensitive", False) or sens)
