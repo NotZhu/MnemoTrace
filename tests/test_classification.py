@@ -1,5 +1,6 @@
 """分类与画像分组使用语言边界，且不改变事实及独立的敏感标记。"""
 from __future__ import annotations
+from tests.model_fixtures import outcome_facts
 
 from dataclasses import asdict
 
@@ -7,7 +8,7 @@ import pytest
 
 from tests.model_fixtures import Memory
 from mnemotrace.consolidate.classify import classify, classify_fact
-from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY, extract_outcomes
+from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY
 from mnemotrace.consolidate.structured import build_structured_profile
 from mnemotrace.types import Episode, Fact
 
@@ -297,7 +298,7 @@ def test_outcome_reason_stays_sensitive_after_content_edit():
                     '"why":"The password was SYNTHETIC_VALUE"}]')
 
     episode = Episode("Synthetic deployment discussion", user_id="default")
-    fact, = extract_outcomes(StubLLM(), [episode], "default", session_id="synthetic-session")
+    fact, = outcome_facts(StubLLM(), [episode], "default", session_id="synthetic-session")
     assert (fact.category, fact.sensitive) == (OUTCOME_CATEGORY, True)
     mem = Memory()
     fact.embedding = mem.embedder.embed(fact.text)

@@ -30,8 +30,8 @@ class TestSnapshotRoundtrip:
         try:
             svc = self._service(d)
             # 种子数据：一条取代链（Beijing -> Shanghai）+ 一条手工权威事实
-            svc.remember("alice", "I live in Beijing.")
-            svc.remember("alice", "I moved, I now live in Shanghai.")
+            svc.remember_messages("alice", [dict(message_id="old", role="user", content="I live in Beijing.", event_time=100)], "s", processing="immediate")
+            svc.remember_messages("alice", [dict(message_id="new", role="user", content="I moved, I now live in Shanghai.", event_time=200)], "s", processing="immediate")
             svc.add_fact("alice", "alice", "favorite_editor", "vim")
             snap = svc.export("alice", include_sensitive=True)
             assert "mnemotrace_export_version" not in snap and snap["episodes"], "need a full export"

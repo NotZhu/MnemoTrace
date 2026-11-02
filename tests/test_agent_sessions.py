@@ -236,15 +236,8 @@ def test_one_failed_distil_does_not_cost_the_others(monkeypatch):
     assert result["outcomes"] == 4 and result["distil_failed"] == 1
 
 
-# ---------------------------------------------------------------------------------------------------
-# 门槛机制：agent 会话只存储起来供 close 时蒸馏，绝不交给 LLMExtractor。
-# 在加门槛之前实测：12 个真实轮次 -> 11 条垃圾 fact（`The | occupation | nearly empty`），owner 的
-# 存储里 88 条 fact 中有 84 条 `occupation` 行，全部来自无 LLM 的 fallback 时期。
-# ---------------------------------------------------------------------------------------------------
-
-# 一段形似真实工作会话 transcript 的文本：主语是代词/冠词的句子、markdown、一个配置路径。
-# LLMExtractor 会把它变成垃圾（见 test_records_import_requests_model_extraction，它证明了当来源不是
-# agent 会话时，同样的文本确实会被抽取）。
+# 历史记录共用消息入口；自动处理需模型，显式 consolidate=False 保留仅保存的意图。
+# 合成工作会话包含代词、markdown 和配置路径，用于验证导入行为与来源传递。
 _TRANSCRIPT_A = [
     {"role": "user", "content": "The config file is nearly empty. This is now clear: **EKOS is deployed on "
                                 "an Ubuntu server** and the backend framework is FastAPI."},
@@ -277,7 +270,7 @@ def test_explicit_raw_agent_session_import_does_not_require_a_model(tmp_path):
     eps = [ep for ep in mem.episodes_doc.values() if ep.user_id == "u"]
     assert len(eps) == 4
     for ep in eps:
-        assert ep.consolidated is True  # 下游绝不能再把它排进 LLMExtractor
+        assert ep.consolidated is True  # 仅保存策略不进入自动抽取队列
         assert ep.message_id is not None
         assert ep.metadata["source"] == "agent_session"
     assert stats["summaries"] == 0  # Offline input remains searchable as original events.
@@ -331,8 +324,7 @@ def test_agent_session_consolidate_true_without_llm_is_rejected():
 
 
 def test_records_import_requests_model_extraction():
-    """记录导入的抽取回归：门槛看的是 source，而不是文本内容。同样的句子以 `records` 形式
-    到来时，照旧走 LLMExtractor。"""
+    """records 适配器保留逐条角色和正文，默认提交给统一自动处理入口。"""
     from mnemotrace.connectors import parse
     from tests.model_fixtures import Memory
 

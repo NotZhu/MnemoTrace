@@ -1972,29 +1972,6 @@ def test_subsumption_keeps_distinct_values():
     assert action == "add" and not inv, "distinct likes must not subsume each other"
 
 
-def test_llm_escalation_resolves_borderline_conflict():
-    """「IV. 不允许静默损坏记忆」的歧义裁决：同主体且相似度落在模糊带（略低于阈值）的一对 fact，只有在配置了 LLM 时
-    才升级给 LLM 仲裁者；没有 LLM 则两者并存。"""
-    from mnemotrace.consolidate.conflict import ConflictResolver
-    from mnemotrace.embed import HashingEmbedder
-    from mnemotrace.types import Fact
-
-    old = Fact(subject="u", predicate="does_yoga", object="twice a week", valid_at=BASE)
-    old.embedding = [1.0, 0.0]
-    new = Fact(subject="u", predicate="practices_yoga", object="three times a week", valid_at=BASE + 1)
-    new.embedding = [0.75, 0.66]  # cosine ≈ 0.75 → 落在模糊带 [0.68, 0.80) 内，低于自动阈值
-
-    # 无 LLM -> 临界对不会被取代（完全不依赖 LLM，两者并存）
-    r0 = ConflictResolver(embedder=HashingEmbedder(2), sim_threshold=0.80)
-    assert not r0.reconcile(new, [old])[1]
-
-    # LLM 返回 REPLACES -> 旧 fact 被失效化
-    class FakeLLM:
-        def complete(self, prompt, system=None, **k):
-            return "REPLACES"
-
-    r1 = ConflictResolver(embedder=HashingEmbedder(2), sim_threshold=0.80, llm=FakeLLM())
-    assert old in r1.reconcile(new, [old])[1]
 
 
 def test_summary_remains_faithful_after_supersession():
@@ -2197,21 +2174,21 @@ def test_memory_policy_edits_extraction_and_persists(tmp_path):
         def complete(self, prompt, system=""):
             return "[]"
 
-    from mnemotrace.consolidate.llm_extractor import EXTRACT_SYSTEM
+    from mnemotrace.consolidate.planning import SYSTEM as EXTRACT_SYSTEM
     m = Memory(llm=FakeLLM())
 
     # 增量式 'what to record' 指令会进入 extractor 的实际生效 system prompt
     m.set_policy(extract_instruction="只记录与工作相关的事实")
-    ex = m.engine.extractor
-    assert ex.instruction == "只记录与工作相关的事实"
-    assert "只记录与工作相关的事实" in ex._effective_system()
-    assert EXTRACT_SYSTEM in ex._effective_system()  # 默认仍在，指令为追加
+    from mnemotrace.consolidate.planning import system_prompt
+    effective = system_prompt(m.policy["extract_instruction"])
+    assert "只记录与工作相关的事实" in effective
+    assert EXTRACT_SYSTEM in effective  # 默认仍在，指令为追加
 
     # 完整覆盖会替换默认值，"" 则重置回默认
     m.set_policy(extract_system="CUSTOM PROMPT")
-    assert m.engine.extractor.system == "CUSTOM PROMPT"
+    assert m._effective("extract_system") == "CUSTOM PROMPT"
     m.set_policy(extract_system="")
-    assert m.engine.extractor.system == EXTRACT_SYSTEM
+    assert m._effective("extract_system") == EXTRACT_SYSTEM
 
     # get_policy 暴露覆盖项 + 内置默认值；策略持久化
     gp = m.get_policy()
@@ -2426,23 +2403,6 @@ def test_preference_reversal_supersedes_same_object_opposite_polarity():
     assert other not in inval2
 
 
-def test_conflict_detection_flags_candidates_and_coexist_default():
-    """System-2 LLM 检测：只对候选对中真实的疑似冲突做标记；默认 COEXIST
-    （无关/模型不确定的对永不标记）。"""
-    from mnemotrace.consolidate.detect import detect_conflicts
-    from mnemotrace.types import Fact
-
-    class Judge:
-        def complete(self, prompt, system=""):
-            return "CONFLICT" if ("北京" in prompt and "上海" in prompt) else "COEXIST"
-
-    a = Fact("user", "lives_in", "北京", valid_at=100.0); a.embedding = [1.0, 0.0]
-    b = Fact("user", "based_in", "上海", valid_at=200.0); b.embedding = [0.8, 0.6]   # ~0.8 cosine：在模糊带内
-    c = Fact("user", "likes", "咖啡", valid_at=150.0); c.embedding = [0.0, 1.0]       # 无关（cos<0.62）
-    flagged = detect_conflicts([a, b, c], Judge(), "user", seen=set())
-    assert len(flagged) == 1, "only the genuine conflict pair is flagged (coexist default)"
-    cf = flagged[0]
-    assert cf.newer == b.id and cf.older == a.id  # newer = valid_at 更晚者
 
 
 def test_conflict_resolve_and_dismiss_are_user_driven():

@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from .base import ImportSession, to_epoch
-from ..consolidate.messages import normalized
+from ..consolidate.pipeline import normalized
 
 
 def batches(sessions, consolidate=None):

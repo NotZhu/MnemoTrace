@@ -9,9 +9,8 @@ import json
 from pathlib import Path
 
 from mnemotrace import Memory as NativeMemory
-from mnemotrace.consolidate.llm_extractor import LLMExtractor as NativeExtractor
 from mnemotrace.service import MemoryService as NativeService
-from mnemotrace.consolidate.windows import WINDOW_PREFIX
+from mnemotrace.consolidate.planning import WINDOW_PREFIX
 
 RESPONSES = json.loads(Path(__file__).with_name('extraction_responses.json').read_text(encoding='utf-8'))
 for _source, _facts in list(RESPONSES.items()):
@@ -45,14 +44,16 @@ def replay_window(prompt, system, invoke):
                     if key == 'working' and data['mode'] == 'historical':
                         continue
                     fields = ('subject', 'predicate', 'object', 'text') if key == 'facts' else ('content', 'kind')
-                    item = {k: item[k] for k in fields if k in item}
+                    item = {k: item[k] for k in (*fields, 'topic') if k in item}
                     if key == 'facts':
                         item.setdefault('text', f"{item['subject']} {item['predicate']} {item['object']}")
-                    item['assertion_kind'] = 'user_statement' if span['role'] == 'user' else 'assistant_suggestion'
+                    item['assertion_kind'] = 'user_statement' if span['role'] == 'user' else 'assistant_suggestion' if span['role'] == 'assistant' else 'unspecified'
                 result[key].append({**item, 'source_ids': [span['id']]})
     if 'rules' in data:
-        result['summaries'] = [dict(message_id=span['message_id'], text='Synthetic event summary')
-                               for span in data['pending'] if span['message_id'] in data['rules']['summary_required']]
+        result['summaries'] = [dict(source_id=span['id'], text='Synthetic event summary')
+                               for span in data['pending'] if span['id'] in data['rules']['summary_required']]
+    if data['operation'] == 'summary' or '本次仅补缺失摘要' in system:
+        result = {'summaries': result['summaries']}
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -113,11 +114,6 @@ class MemoryService(NativeService):
             self.llm = RecordedLLM()
 
 
-class LLMExtractor(NativeExtractor):
-    def __init__(self, llm, *args, **kwargs):
-        super().__init__(FixtureProtocol(llm), *args, **kwargs)
-
-
 def seed_summaries(memory, episodes):
     """Seed pre-existing summaries for read/restore tests, without simulating an LLM."""
     for supplied in episodes:
@@ -125,3 +121,19 @@ def seed_summaries(memory, episodes):
         ep.summary = ep.content
         ep.summary_embedding = memory.embedder.embed(ep.summary)
         memory._sync_episode(ep)
+
+
+def outcome_facts(model, episodes, user_id, session_id=''):
+    """Seed prior originals and exercise their conclusion through the shared kernel."""
+    from mnemotrace import Memory as NativeMemory
+    from mnemotrace._pipeline import execute_memory
+    mem = NativeMemory(llm=model)
+    originals = []
+    for ep in episodes:
+        ep.user_id = user_id
+        ep.session_id = session_id or ep.session_id
+        mem._sync_episode(ep)
+        originals.append(ep)
+    if originals:
+        execute_memory(mem, user_id, originals, 'outcomes')
+    return list(mem.fact_store.values())

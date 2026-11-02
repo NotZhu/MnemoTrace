@@ -122,7 +122,7 @@ USER_REFS = {"user", "用户", "i", "我", "me", "myself", "本人", "自己", "
 
 def user_aliases(subject: str, user_id: str) -> set[str]:
     """指代用户的 subject：消解出的本人称呼（如 李雷）+ user_id + USER_REFS。
-    依赖提取阶段已把第一人称 subject 归一到本人称呼（见 LLMExtractor）。"""
+    依赖写入内核已把第一人称 subject 归一到本人称呼。"""
     return {subject.lower(), user_id.lower()} | USER_REFS
 
 

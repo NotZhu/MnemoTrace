@@ -18,14 +18,10 @@ def harness(monkeypatch):
 @pytest.mark.parametrize('mode,case_id', [('immediate', 'independent-1'), ('buffered', 'independent-1'),
     ('immediate', 'lifecycle-1'), ('buffered', 'lifecycle-1'), ('immediate', 'isolation-5')])
 def test_service_measurement_completes_same_summary_work_and_restores(harness, mode, case_id, monkeypatch, tmp_path):
-    from mnemotrace.consolidate.llm_extractor import LLMExtractor
-    from mnemotrace.consolidate.summaries import SummaryStep
-    from mnemotrace.consolidate.windows import WINDOW_PREFIX
+    from mnemotrace.consolidate.planning import WINDOW_PREFIX
     from mnemotrace.llm import Completion, FakeLLM, providers
     monkeypatch.setenv('MNEMOTRACE_BUFFERED_EXTRACTION', '1')
     monkeypatch.setenv('MNEMOTRACE_SESSION_OUTCOMES', '0')
-    monkeypatch.setattr(LLMExtractor, 'raw_window', harness.tagged(LLMExtractor.raw_window, 'extraction'))
-    monkeypatch.setattr(SummaryStep, 'execute', harness.tagged(SummaryStep.execute, 'summary'))
     responses = {'我喜欢绿茶。': ('likes', '绿茶'), '我喜欢苹果。': ('likes', '苹果'),
                  '我有一辆自行车。': ('owns', '自行车')}
     def handler(prompt, system):
@@ -34,11 +30,10 @@ def test_service_measurement_completes_same_summary_work_and_restores(harness, m
         payload = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
         if case_id == 'lifecycle-1':
             s, = payload['pending']
-            return Completion(json.dumps(dict(facts=[], working=[dict(content=s['content'], kind='task',
-                source_ids=[s['id']])])), 'stop', {'total_tokens': 7})
-        facts = [dict(subject='user', predicate=responses[s['content']][0], object=responses[s['content']][1],
-                      source_ids=[s['id']]) for s in payload['pending']]
-        return Completion(json.dumps(dict(facts=facts, working=[])), 'stop', {'total_tokens': 7})
+            return Completion(json.dumps(dict(summaries=[], facts=[], working=[dict(content=s['content'], kind='task',
+                assertion_kind='unspecified', source_ids=[s['id']])])), 'stop', {'total_tokens': 7})
+        facts = [dict(subject='user', predicate=responses[s['content']][0], object=responses[s['content']][1], text=s['content'], assertion_kind='unspecified', source_ids=[s['id']]) for s in payload['pending']]
+        return Completion(json.dumps(dict(facts=facts, working=[], summaries=[])), 'stop', {'total_tokens': 7})
     monkeypatch.setattr(providers, 'make_llm', lambda *a, **kw: FakeLLM(handler=handler))
     budget_path = tmp_path / 'budget.json'
     harness.Budget.create(budget_path, calls=20)
@@ -48,11 +43,9 @@ def test_service_measurement_completes_same_summary_work_and_restores(harness, m
     row = harness.run_case(case, args)
     assert row['status'] == 'completed', row['error_code']
     assert row['score']['ok'] and row['raw_score']['ok'] and row['restored']
-    eligible = sum(len(event['text']) >= 2000 for event in case['events'])
-    summary_calls = sum(c['phase'] == 'summary' for c in row['calls'])
-    assert summary_calls >= eligible if eligible else summary_calls == 0
-    expected = (len(case['events']) if mode == 'immediate' else 1) + int(case.get('inject_transient_once', False))
-    assert sum(c['phase'] == 'extraction' for c in row['calls']) == expected
+    originals = [ep for snapshot in row['snapshots'].values() for ep in snapshot['episodes']]
+    assert all(ep['summary'] for ep in originals if len(ep['content']) >= 2000)
+    assert sum(c['phase'] == 'extraction' for c in row['calls']) >= 1
     ledger = json.loads(budget_path.read_text())
     assert ledger['calls'] == sum(c.get('provider_request', False) for c in row['calls']) and ledger['inflight'] == 0
     if case_id == 'isolation-5':

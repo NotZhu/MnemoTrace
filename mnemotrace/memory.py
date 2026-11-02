@@ -13,14 +13,13 @@ from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
 from .config import Config
-from .consolidate import ConsolidationEngine, is_single_valued, reinforce
-from .consolidate.llm_extractor import EXTRACT_SYSTEM
-from .consolidate.processing import EpisodeProcessingStore
+from .consolidate import is_single_valued, reinforce
+from .consolidate.facts import FactWriter
+from .consolidate.planning import SYSTEM as EXTRACT_SYSTEM
 from .consolidate.summarizer import (
     PERSONA_SYSTEM,
     SESSION_SUMMARY_SYSTEM,
     ProfileBuilder,
-    SessionSummarizer,
 )
 from .consolidate.topic_rules import resolve_topic
 from .embed import Embedder, HashingEmbedder
@@ -203,7 +202,6 @@ class Memory:
         except BaseException:
             self.close()
             raise
-        self.summarizer = SessionSummarizer(llm)
         # 初始化用户画像构建器
         self.profiles = ProfileBuilder()
         # 初始化用户画像缓存
@@ -227,16 +225,14 @@ class Memory:
         self.cold_pages_in: dict[str, int] = {}  # 每个用户从冷层调回热层的事实数
         self._persist_path: Optional[str] = None  # 默认快照目录，由 open 或 save 设置
         self._snapshot_version: Optional[str] = None  # 已加载或保存的快照版本，用于检测并发修改
-        self._summary_state = None
-        self._message_state = None
+        self._pipeline_state = None
         import threading
-        self._message_lock = threading.RLock()
-        self._message_step_lock = threading.Lock()
-        self._message_closed = False
-        self._message_broken = False
-        from .consolidate.summaries import validate_config
+        self._pipeline_lock = threading.RLock()
+        self._pipeline_step_lock = threading.Lock()
+        self._pipeline_closed = False
+        self._pipeline_broken = False
+        from .consolidate.planning import validate_config
         validate_config(self.config)
-        self._processing_state = None  # Optional buffered-extraction feature state, committed with the snapshot.
         try:
             self._rewire()
         except BaseException:
@@ -245,7 +241,7 @@ class Memory:
 
     def close(self) -> None:
         """Release owned database resources; this does not save pending state."""
-        self._message_closed = True
+        self._pipeline_closed = True
         if self._qdrant_backend is not None:
             self._qdrant_backend.close()
 
@@ -301,9 +297,7 @@ class Memory:
         """
         # 初始化事件写入器
         self.ingestor = Ingestor(self.episodes_doc, self.episodes_vec, self.embedder)
-        self.engine = ConsolidationEngine(self.fact_store, self.graph, self.embedder, self.config, self.llm,
-                                          processing=EpisodeProcessingStore(self.episodes_doc, self._sync_episode),
-                                          working_mem=self.working_mem, extra_fact_stores=(self.cold_store,))
+        self.writer = FactWriter(self.fact_store, self.graph, self.embedder, self.config, extra_fact_stores=(self.cold_store,))
         self.retriever = HybridRetriever(self.fact_store, self.graph, self.embedder, self.config)
         self.cold_retriever = HybridRetriever(self.cold_store, self.graph, self.embedder, self.config)
         # 初始化多跳查询规划器
@@ -314,8 +308,6 @@ class Memory:
             extra_fact_stores=[self.cold_store],
             llm=self.llm,
         )
-        self.engine.extractor.self_name.update(self._identity)
-        self.engine.extractor.aliases.update({k: set(v) for k, v in self._aliases.items()})
 
     # --- 持久化（让记忆跨进程/session 存活；AGENTS.md 「代码导航」） ---
     def save(self, path: Optional[str] = None, *, check_version: bool = False) -> None:
@@ -324,7 +316,7 @@ class Memory:
         embedder/llm 不会被序列化；重新打开时请挂载你想用的运行时后端。常规操作刻意不写 pickle。
         check_version=True 在持久化锁内拒绝覆盖其他写入者已推进的快照。
         """
-        if self._message_broken:
+        if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         path = path or self._persist_path
         if not path:
@@ -436,17 +428,21 @@ class Memory:
 
         # Saved generation is independent of the embedding space; its checkpoint
         # vectors must be recomputed before a pending commit can resume.
-        if self._message_state:
-            from .consolidate.messages import config_identity, reset_attempts
-            for state in self._message_state['namespaces'].values():
+        if self._pipeline_state:
+            from .consolidate.pipeline import config_identity, reset_attempts
+            for state in self._pipeline_state['namespaces'].values():
                 for window in state['windows'].values():
                     if window['phase'] in {'embed', 'commit'} and window['state'] not in {'completed', 'cancelled'}:
                         window.update(phase='embed', state='pending', vectors={},
-                                      next_attempt_at=0, config=config_identity(self))
+                                      next_attempt_at=0)
+                        # Changing the embedding space cannot authorize a result
+                        # generated under an obsolete model or extraction policy.
+                        if window['generation_config'] == config_identity(self, include_embedding=False):
+                            window['config'] = config_identity(self)
                         reset_attempts(window, 'embed_attempts', 'reembed', now())
 
         self._persona_cache.clear()
-        self._rewire()  # retriever/engine 持有 embedder 引用（以及语义门控）——需重新绑定
+        self._rewire()  # 检索器和事实提交器持有 embedder 引用，需要重新绑定。
         return counts
 
     # --- 写路径 ---
@@ -473,37 +469,46 @@ class Memory:
         Returns:
             Episode: 写入的 episode 对象。
         """
-        if self._message_broken:
-            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
+        if self._pipeline_broken or self._pipeline_closed:
+            raise RuntimeError('Memory checkpoint failed or closed; reopen the authoritative snapshot')
         if consolidate:
             require_llm(self.llm)
-        ep = self.ingestor.ingest(content, user_id, session_id, role, event_time, embedding=embedding)
+        vector = embedding if embedding is not None else self.embedder.embed(content)
+        from .store._validation import validate_embedding
+        validate_embedding(vector, 'source embedding', self.embedder.dim)
+        from ._pipeline import memory_adapter
+        with memory_adapter(self, user_id).write_lock(user_id):
+            ep = self.ingestor.ingest(content, user_id, session_id, role, event_time, embedding=vector)
         if consolidate:
             self.consolidate()
         return ep
 
     def remember(self, content: str, user_id: str = "default", session_id: str = "default",
-                 scope: str = "auto") -> dict:
+                 scope: str = "auto", *, _embedding=None) -> dict:
         """Save raw input and its requested lifecycle policy.
 
         Explicit working entries are ready immediately. Auto/long remain pending until
         consolidate() validates model output; auto may yield both durable and temporary entries.
         """
-        if self._message_broken:
-            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
+        if self._pipeline_broken or self._pipeline_closed:
+            raise RuntimeError('Memory checkpoint failed or closed; reopen the authoritative snapshot')
         if scope not in {"auto", "long", "working"}:
             raise ValueError("scope must be auto, long, or working")
-        ep = self.add(content, user_id=user_id, session_id=session_id)
-        ep.metadata["memory_scope"] = scope
-        if scope == "working":
-            ep.consolidated = True
-            ep.metadata["ephemeral"] = True
-            ep.metadata["memory_result"] = "working"
+        vector = _embedding if _embedding is not None else self.embedder.embed(content)
+        from .store._validation import validate_embedding
+        validate_embedding(vector, 'source embedding', self.embedder.dim)
+        from ._pipeline import memory_adapter
+        with memory_adapter(self, user_id).write_lock(user_id):
+            ep = self.add(content, user_id=user_id, session_id=session_id, embedding=vector)
+            ep.scope = scope
+            if scope == "working":
+                ep.consolidated = True
+                ep.metadata["ephemeral"] = True
+                self._sync_episode(ep)
+                wm = self.remember_working(content, user_id=user_id, session_id=session_id, embedding=ep.embedding)
+                return {"scope": "working", "episode_id": ep.id, "working_id": wm.id, "kind": wm.kind}
             self._sync_episode(ep)
-            wm = self.remember_working(content, user_id=user_id, session_id=session_id)
-            return {"scope": "working", "episode_id": ep.id, "working_id": wm.id, "kind": wm.kind}
-        self._sync_episode(ep)
-        return {"scope": scope, "episode_id": ep.id}
+            return {"scope": scope, "episode_id": ep.id}
 
     def remember_messages(self, messages: list[dict], session_id: str, user_id: str = 'default',
                           mode: str = 'live', scope: str = 'auto') -> dict:
@@ -511,14 +516,14 @@ class Memory:
 
         With an in-memory Memory, durability requires an explicit save, as with add().
         """
-        if self._message_broken:
+        if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
-        from .consolidate.messages import MessageTasks, normalized
+        from .consolidate.pipeline import PipelineTasks, normalized
         rows = normalized(messages, session_id, mode, scope)
-        with self._message_lock:
-            if self._message_closed:
+        with self._pipeline_lock:
+            if self._pipeline_closed:
                 raise RuntimeError('Memory is closed')
-            tasks = MessageTasks(self, user_id)
+            tasks = PipelineTasks(self, user_id)
             rows, unseen = tasks.inspect(rows, session_id, mode, scope)
         batch = self.embedder.embed_batch(list(unseen.values())) if unseen else []
         if len(batch) != len(unseen):
@@ -527,19 +532,19 @@ class Memory:
         for vector in batch:
             validate_embedding(vector, 'message embedding', self.embedder.dim)
         vectors = dict(zip(unseen, batch))
-        with self._message_lock:
-            if self._message_closed:
+        with self._pipeline_lock:
+            if self._pipeline_closed:
                 raise RuntimeError('Memory is closed')
-            tasks = MessageTasks(self, user_id)
+            tasks = PipelineTasks(self, user_id)
             tasks.inspect(rows, session_id, mode, scope)
             try:
                 ids, fresh = tasks.accept(rows, session_id, mode, scope, now(), vectors)
             except BaseException:
-                self._recover_message_checkpoint()
+                self._recover_pipeline_checkpoint()
                 raise
             return {**tasks.response(ids), 'accepted': len(fresh)}
 
-    def _recover_message_checkpoint(self):
+    def _recover_pipeline_checkpoint(self):
         """Discard an interrupted native write or make the dirty object unreadable."""
         try:
             from .store.persist import load_memory
@@ -549,73 +554,43 @@ class Memory:
                 raise RuntimeError('No authoritative checkpoint available')
             self._rewire()
         except BaseException:
-            self._message_broken = True
+            self._pipeline_broken = True
             self.close()
 
-    def consolidate(self, episodes: Optional[list[Episode | EventEvidence]] = None) -> dict[str, int]:
-        """ 执行一次 System-2 整合，抽取 fact、构建图、检测冲突、分类和敏感标志。
-
-        Args:
-            episodes: 可选的 episode 列表。
-        Returns:
-            dict[str, int]: 整合统计信息。
-        """
-        if self._message_broken:
-            raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
-        requested = list(episodes) if episodes is not None else self.ingestor.pending()
-        # Dialogue work has its own joint-call ledger; legacy raw extraction cannot consume it.
-        requested = [ep for ep in requested if self.episodes_doc.get(ep.id) is None
-                     or self.episodes_doc.get(ep.id).message_id is None]
-        # Retrieved payloads may predate summary or metadata updates. Consolidate
-        # authoritative episodes so writing them back cannot revert newer fields.
-        eps = [self.episodes_doc.get(ep.id) or ep for ep in requested]
-        for ep in eps:
-            if self.episodes_doc.get(ep.id) is None:
+    def consolidate(self, episodes=None):
+        """Activate selected source extraction through the shared checkpoint engine."""
+        if self._pipeline_broken or self._pipeline_closed:
+            raise RuntimeError('Memory checkpoint failed or closed; reopen the authoritative snapshot')
+        from ._pipeline import execute_memory
+        supplied = list(episodes) if episodes is not None else self.ingestor.pending()
+        sources = []
+        for value in supplied:
+            ep = self.episodes_doc.get(value.id)
+            if ep is None:
+                if not isinstance(value, Episode):
+                    raise ValueError('Cannot extract an absent original source')
+                ep = value
+                if ep.embedding is None:
+                    ep.embedding = self.embedder.embed(ep.content)
                 self._sync_episode(ep)
-        self._apply_policy()  # 遵循用户可编辑的抽取 prompt / "要记录什么"指令
+            if not ep.consolidated and ep.content.strip():
+                sources.append(ep)
+        if sources:
+            require_llm(self.llm)
         self.sweep_working()
-        try:
-            stats = self.engine.consolidate(eps)
-        except ExtractionError as exc:
-            exc.stored_raw = bool(eps)
-            exc.episode_ids = [ep.id for ep in eps]
-            for ep in eps:
-                if not ep.consolidated:
-                    ep.metadata["extraction_error"] = exc.code
-            raise
-        finally:
-            # Earlier completed windows retain their identities even if a later storage write fails.
-            self._persona_cache.clear()
-            self._identity.update(self.engine.extractor.self_name)
-            for k, v in self.engine.extractor.aliases.items():
-                self._aliases.setdefault(k, set()).update(v)
-            for supplied, ep in zip(requested, eps):
-                if isinstance(supplied, Episode):
-                    supplied.consolidated = ep.consolidated
-                self._sync_episode(ep)
-            from .consolidate.tasks import ProcessingTasks
-            ProcessingTasks.refresh_completed(self, {ep.id for ep in eps}, now())
-        self._classify()  # feature ⑤：给新 fact 打 category + 敏感标志（基于规则）
-        self._detect_conflicts()  # System-2：将疑似冲突浮出给用户（需主动开启、有门控）
-        self._enforce_hot_limit()
-        self._persona_cache.clear()  # fact 变了 -> 缓存的 persona 已过期
-        return stats
+        totals = self.writer.empty_stats()
+        for user in dict.fromkeys(ep.user_id for ep in sources):
+            result = execute_memory(self, user, [ep for ep in sources if ep.user_id == user], 'extract')
+            for key in totals:
+                totals[key] += result.get(key, 0)
+        for value in supplied:
+            if isinstance(value, Episode) and self.episodes_doc.get(value.id):
+                current = self.episodes_doc.get(value.id)
+                value.consolidated, value.coverage = current.consolidated, current.coverage
+        return totals
 
-    def _apply_extraction(self, window, output):
-        """Apply a validated detached result to the current authoritative memory."""
-        self._apply_policy()
-        self.sweep_working()
-        try:
-            stats = self.engine.apply(window, output)
-        finally:
-            self._identity.update(self.engine.extractor.self_name)
-            for key, aliases in self.engine.extractor.aliases.items():
-                self._aliases.setdefault(key, set()).update(aliases)
-            self._persona_cache.clear()
-        self._classify()
-        self._detect_conflicts()
-        self._enforce_hot_limit()
-        return stats
+
+
 
     def consolidate_full(
         self,
@@ -638,11 +613,11 @@ class Memory:
     # --- 批量导入（AGENTS.md 「代码导航」 采用层）：批量接入用户自己的历史 ---
     def flush_messages(self, user_id: str = 'default', session_id: Optional[str] = None,
                        timeout: float = 30, retry_failed: bool = False) -> dict:
-        if self._message_broken:
+        if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
-        if self._message_closed:
+        if self._pipeline_closed:
             raise RuntimeError('Memory is closed; reopen the authoritative snapshot')
-        from ._messages import flush_memory
+        from ._pipeline import flush_memory
         return flush_memory(self, user_id, session_id, timeout, retry_failed)
 
     def import_messages(self, sessions, user_id: str = 'default', consolidate: Optional[bool] = None,
@@ -653,12 +628,12 @@ class Memory:
         Undated messages remain unknown. Positional import IDs are stable within an ordered
         source export; changing an existing position requires an explicit source message ID.
         """
-        if self._message_broken:
+        if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         from .connectors.dialogue import batches
-        from .consolidate.messages import MessageTasks
+        from .consolidate.pipeline import PipelineTasks
         plans = batches(list(sessions), consolidate)
-        tasks = MessageTasks(self, user_id)
+        tasks = PipelineTasks(self, user_id)
         if any(messages is not None and extract and tasks.inspect(messages, sid, 'historical')[1]
                for sid, messages, _, extract in plans):
             require_llm(self.llm)
@@ -696,147 +671,76 @@ class Memory:
                                  if e.user_id == user_id and e.message_id is not None)
         return stats
 
-    def _import_documents(
-        self,
-        sessions,
-        user_id: str = "default",
-        consolidate: Optional[bool] = None,
-        summarize: bool = True,
-        roles: bool = True,
-        batch_size: int = 256,
-        base_time: Optional[float] = None,
-        dedupe: bool = True,
-    ) -> dict[str, int]:
-        """Retain document source grouping, deduplication and optional raw extraction.
+    @staticmethod
+    def _document_inputs(sessions, roles=True, base_time=None):
+        from .connectors.base import ImportSession, ImportMessage, to_epoch
+        records = []
+        for index, value in enumerate(sessions):
+            if isinstance(value, ImportSession):
+                session = value
+            else:
+                session = ImportSession(session_id=value['session_id'], title=value.get('title', ''),
+                    event_time=to_epoch(value.get('event_time')), metadata=dict(value.get('metadata', {})),
+                    messages=[ImportMessage(content=m['content'], role=m.get('role', 'document'), event_time=to_epoch(m.get('event_time'))) for m in value['messages']])
+            content = session.to_text(roles=roles)
+            if not content.strip():
+                continue
+            stamp = session.start_time()
+            if stamp is None and base_time is not None:
+                stamp = base_time + index * DAY
+            records.append(dict(session_id=session.session_id, content=content, event_time=stamp,
+                                title=session.title, metadata=session.metadata))
+        return records
 
-        Dialogue adapters never call this path. Document dates retain their existing
-        ingestion policy; message source times and identities belong to MessageTasks.
-        """
+    def _import_documents(self, sessions, user_id='default', consolidate=None, summarize=True, roles=True,
+                          batch_size=256, base_time=None, dedupe=True, prepared_vectors=None):
         import hashlib
-
-        from .connectors.base import ImportMessage, ImportSession, to_epoch
-
-        def _time_of(d: dict) -> Optional[float]:
-            for key in ("event_time", "timestamp", "time", "created_at", "create_time", "date", "ts"):
-                if key in d and d[key] not in (None, ""):
-                    return to_epoch(d[key])
-            return None
-
-        def _coerce(s) -> Optional[ImportSession]:
-            if isinstance(s, ImportSession):
-                return s
-            if isinstance(s, dict) and "messages" in s:
-                msgs = [ImportMessage(content=str(m.get("content", "")),
-                                      role=str(m.get("role") or "user"),
-                                      event_time=_time_of(m),
-                                      metadata=dict(m.get("metadata", {})))
-                        for m in s["messages"] if isinstance(m, dict)]
-                metadata = dict(s.get("metadata", {}))
-                metadata.setdefault("source", "sessions")
-                return ImportSession(session_id=str(s.get("session_id", "imported")), messages=msgs,
-                                     event_time=_time_of(s), title=str(s.get("title", "")),
-                                     metadata=metadata)
-            return None
-
-        items = [c for c in (_coerce(s) for s in sessions) if c is not None]
-        session_ids = {s.session_id or f"imported_{i}" for i, s in enumerate(items)}
-        do_consolidate = consolidate is not False
-        base = base_time if base_time is not None else now()
-        texts: list[str] = []
-        metas: list[tuple] = []
-        session_count = 0
-        skipped = 0
-
-        def _fp(sid: str, row_key: str) -> str:
-            return hashlib.sha1(f"{user_id}|{sid}|{row_key}".encode()).hexdigest()
-        for i, s in enumerate(items):
-            source = str(s.metadata.get("source", ""))
-            dated_times = {m.event_time for m in s.messages if m.event_time is not None}
-            split_messages = source in {"records", "sessions"} and len(dated_times) > 1
-            if split_messages:
-                added = 0
-                fallback = s.start_time()
-                for j, m in enumerate(s.messages):
-                    text = (m.content or "").strip()
-                    if not text:
-                        continue
-                    body = f"{m.role}: {text}" if roles else text
-                    sid = s.session_id or f"imported_{i}"
-                    # 逐行指纹包含行号，因此同一 session 内合法重复的消息不会被当成重复——
-                    # 只有重导入才会碰撞。
-                    fp = _fp(sid, f"{j}|{body}")
-                    if dedupe and fp in self._import_seen:
-                        skipped += 1
-                        continue
-                    et = m.event_time if m.event_time is not None else fallback
-                    et = et if et is not None else base + i * DAY + j
-                    texts.append(body)
-                    metas.append((sid, et, s.title, fp, source))
-                    added += 1
-                if added:
-                    session_count += 1
-                continue
-
-            body = s.to_text(roles=roles)
-            if not body.strip():
-                continue
-            sid = s.session_id or f"imported_{i}"
-            fp = _fp(sid, body)
-            if dedupe and fp in self._import_seen:
-                skipped += 1
-                continue
-            et = s.start_time()
-            et = et if et is not None else base + i * DAY  # 合成时间但保持有序
-            texts.append(body)
-            metas.append((sid, et, s.title, fp, source))
-            session_count += 1
-        from .consolidate.tasks import ProcessingTasks
-        buffered_ids = ProcessingTasks.registered_ids(self)
-        pending = [ep for ep in self.ingestor.pending()
-                   if ep.id not in buffered_ids
-                   and ep.message_id is None and ep.user_id == user_id
-                   and ep.session_id in session_ids] if do_consolidate else []
-        needs_facts = do_consolidate and bool(pending or metas)
-        if needs_facts:
-            # Deduplication is read-only. Reject before embedding, writing or recording new fingerprints.
-            try:
-                require_llm(self.llm)
-            except ExtractionError as exc:
-                exc.stored_raw = bool(pending)
-                exc.episode_ids = [ep.id for ep in pending]
-                raise
-        vecs: list = []
-        for j in range(0, len(texts), batch_size):
-            vecs.extend(self.embedder.embed_batch(texts[j:j + batch_size]))
-
-        new_eps: list[Episode] = []
-        for (sid, et, title, fp, source), text, vec in zip(metas, texts, vecs):
-            ep = self.add(text, user_id=user_id, session_id=sid, role="session",
-                          event_time=et, embedding=vec)
-            ep.metadata["date"] = fmt_date(et)
-            if title:
-                ep.metadata["title"] = title
-            if source:
-                ep.metadata["source"] = source  # 读取侧（stats.feed、下方门控）以它为键
-            new_eps.append(ep)
-            self._sync_episode(ep)
-            self._import_seen.add(fp)  # 仅在 episode 真正落库之后记录
-
-        extract = pending + new_eps
-
-        stats = {"sessions": session_count, "episodes": len(new_eps), "facts_added": 0, "summaries": 0,
-                 "skipped": skipped}
-        # 防御空列表：consolidate([]) 仍会空跑 _apply_policy/sweep。
-        if do_consolidate and extract:
-            stats.update(self.consolidate(extract))
-        stats["facts_deferred"] = 0
-        stats["deferred_reason"] = None
-        if summarize:
-            # Retried imports may contain both new rows and existing rows without summaries.
-            stats["summaries"] = self.summarize_episodes([
-                ep for ep in self.episodes_doc.values()
-                if ep.user_id == user_id and ep.session_id in session_ids])
+        if type(batch_size) is not int or batch_size <= 0:
+            raise ValueError('batch_size must be a positive integer')
+        records = self._document_inputs(sessions, roles, base_time)
+        def fingerprint(record):
+            return hashlib.sha1(f"{user_id}|{record['session_id']}|{record['content']}".encode()).hexdigest()
+        with self._pipeline_lock:
+            candidates = [r for r in records if not dedupe or fingerprint(r) not in self._import_seen]
+        if consolidate is not False and candidates:
+            require_llm(self.llm)
+        if prepared_vectors is None:
+            texts = list(dict.fromkeys(r['content'] for r in candidates))
+            vectors = []
+            for start in range(0, len(texts), batch_size):
+                batch = texts[start:start + batch_size]
+                encoded = self.embedder.embed_batch(batch)
+                if len(encoded) != len(batch):
+                    raise ValueError('Embedding batch length mismatch')
+                vectors.extend(encoded)
+            prepared_vectors = dict(zip(texts, vectors))
+        added, skipped = [], 0
+        from ._pipeline import memory_adapter
+        with memory_adapter(self, user_id).write_lock(user_id):
+            for record in records:
+                key = fingerprint(record)
+                if dedupe and key in self._import_seen:
+                    skipped += 1
+                    continue
+                ep = self.add(record['content'], user_id, record['session_id'], role='document',
+                              event_time=record['event_time'], embedding=prepared_vectors[record['content']])
+                ep.source_kind, ep.scope = 'document', 'raw' if consolidate is False else 'long'
+                ep.consolidated = consolidate is False
+                ep.metadata.update(record['metadata'])
+                if record['title']:
+                    ep.metadata['title'] = record['title']
+                self._sync_episode(ep)
+                self._import_seen.add(key)
+                added.append(ep)
+        stats = dict(sessions=len({ep.session_id for ep in added}), episodes=len(added), skipped=skipped,
+                     facts_added=0, summaries=0, facts_deferred=0, deferred_reason=None, episode_ids=[ep.id for ep in added])
+        if consolidate is not False and added:
+            from ._pipeline import execute_memory
+            stats.update(execute_memory(self, user_id, added, 'extract', summaries=summarize))
+        elif summarize and added:
+            stats['summaries'] = self.summarize_episodes(added)
         return stats
+
 
     def import_data(self, data, format: str = "auto", user_id: str = "default",
                     session_id: str = "imported", **kwargs) -> dict[str, int]:
@@ -852,7 +756,7 @@ class Memory:
         （重跑抽取会使其重复并抹平历史），episode 则重新进入带日期的原始日志并标记为已整合，
         System-2 永远不会重新消化它们。share-safe 导出不含 episode——只恢复 fact 是那里的预期
         结果。在 `dedupe`（默认）下幂等。"""
-        if self._message_broken:
+        if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         from .store._validation import validate_embedding, validate_snapshot
 
@@ -873,7 +777,7 @@ class Memory:
             ep = Episode(content=content, user_id=user, session_id=session_id,
                          role=row["role"], event_time=row["event_time"],
                          consolidated=True,  # 它的 fact 在下方恢复；绝不重新抽取
-                         summary=row.get("summary", ""), coverage=row.get('coverage'),
+                         summary=row.get("summary", ""), coverage=row.get('coverage'), summary_coverage=row.get('summary_coverage'),
                          metadata={'snapshot_source_id': row['id']})
             ep.embedding = self.embedder.embed(content)
             validate_embedding(ep.embedding, "snapshot.episodes.embedding", self.embedder.dim)
@@ -922,7 +826,7 @@ class Memory:
             self.fact_store.upsert(f.id, f.embedding, f)
             # add_fact 会把 fact.invalid_at 带到关系上，因此被取代的历史落库时就是已失效化的边
             # ——图的时间线在往返中得以保留。
-            self.engine.graph_builder.add_fact(f)
+            self.writer.graph_builder.add_fact(f)
 
         self._enforce_hot_limit()
         self._persona_cache.clear()
@@ -936,7 +840,7 @@ class Memory:
                  category: Optional[str] = None, topic: Optional[Topic] = None) -> Fact:
         """手动断言一条 fact。它被标记为 source='user'（权威）：冲突解决允许它取代同一槽位上
         任何抽取出的值，并且此后受到保护，不会被未来的自动覆盖改写。"""
-        if self._message_broken:
+        if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         user = user_id
         # Fact 构造时校验主题及主题来源，失败发生在嵌入、图操作和存储之前。
@@ -948,8 +852,8 @@ class Memory:
             # 手动新增没有独立的结论依据参数，内容线索只取对象；重置既有结论时另纳入已存依据。
             f.topic, f.topic_source = resolve_topic(predicate, object)
         f.embedding = self.embedder.embed(f.text)
-        from .consolidate.messages import MessageTasks
-        MessageTasks(self, f.user_id).invalidate()
+        from .consolidate.pipeline import PipelineTasks
+        PipelineTasks(self, f.user_id).invalidate()
         from .consolidate.classify import classify_fact
         classify_fact(f)  # 打 category + 敏感标签（feature ⑤）
         if category is not None:
@@ -957,13 +861,13 @@ class Memory:
         if sensitive is not None:
             f.sensitive = sensitive
         live = [x for x in self._all_facts() if x.user_id == user and x.is_live()]
-        action, invalidated = self.engine.conflict.reconcile(f, live)
+        action, invalidated = self.writer.conflict.reconcile(f, live)
         for old in invalidated:
-            self.engine.graph_builder.invalidate(old.id, f.created_at)
+            self.writer.graph_builder.invalidate(old.id, f.created_at)
             self._upsert_fact(old, tier="hot")
         if action != "duplicate":
             self.fact_store.upsert(f.id, f.embedding, f)
-            self.engine.graph_builder.add_fact(f)
+            self.writer.graph_builder.add_fact(f)
         self._enforce_hot_limit()
         self._persona_cache.clear()
         return f
@@ -975,7 +879,7 @@ class Memory:
         """实际修改 fact 内容时标记为用户手写（因此自动抽取不会把它改回去）。
         依据新内容重新分类 category/sensitivity；显式传入的 `sensitive`/`category` 覆盖自动结果
         （用户的选择永远优先）。只修改元数据或回传未变的内容时，保留来源、有效状态与历史。"""
-        if self._message_broken:
+        if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         f = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
         if f is None:
@@ -1054,8 +958,8 @@ class Memory:
             f.display = f.object if f.predicate.lower() in OUTCOME_PREDICATES else ""
         f.embedding = self.embedder.embed(f.text)
         f.source = "user"
-        from .consolidate.messages import MessageTasks
-        MessageTasks(self, f.user_id).invalidate()
+        from .consolidate.pipeline import PipelineTasks
+        PipelineTasks(self, f.user_id).invalidate()
         f.invalid_at = None  # 用户编辑使其重新生效
         f.expired_at = None
         # 依据编辑后的内容重新分类，再应用显式的用户覆盖
@@ -1076,7 +980,7 @@ class Memory:
             why = split_outcome_text(f.text)[1] if f.predicate.lower() in OUTCOME_PREDICATES else ""
             f.topic, f.topic_source = resolve_topic(f.predicate, f"{f.object} {why}")
         self._upsert_fact(f, tier="hot")
-        self.engine.graph_builder.add_fact(f)
+        self.writer.graph_builder.add_fact(f)
         self._persona_cache.clear()
         return f
 
@@ -1084,10 +988,10 @@ class Memory:
         """被遗忘权：硬删除一条 fact（区别于保留历史的自动失效化）。这是用户主动发起的擦除，
         数据真的被移除——热层和冷层都删。"""
         existed = self.fact_store.get(fact_id) is not None or self.cold_store.get(fact_id) is not None
-        if existed and self._message_state:
-            from .consolidate.messages import MessageTasks
+        if existed and self._pipeline_state:
+            from .consolidate.pipeline import PipelineTasks
             record = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
-            MessageTasks(self, record.user_id).invalidate()
+            PipelineTasks(self, record.user_id).invalidate()
         self.graph.delete_relations_for_fact(fact_id)
         self.graph.prune_orphan_entities()
         self.fact_store.delete(fact_id)
@@ -1220,7 +1124,7 @@ class Memory:
 
     def set_policy(self, **fields: str) -> dict:
         """更新策略字段（extract_instruction / extract_system / summary_system / persona_system）。
-        空字符串清除覆盖项（回退到默认值）。立即应用到 extractor/summarizer，下一次整合即生效。"""
+        空字符串清除覆盖项（回退到默认值）。后续流水线按新策略准备并校验输入。"""
         for k, v in fields.items():
             if k in self.policy and v is not None:
                 self.policy[k] = v
@@ -1232,19 +1136,14 @@ class Memory:
         """返回实际生效的策略字段值（用户覆盖或默认值）。"""
         return self.policy.get(key) or POLICY_DEFAULTS[key]
 
-    def _apply_policy(self) -> None:
-        """Apply user policy and extraction options before each model operation."""
-        ex = self.engine.extractor
-        ex.system = self._effective("extract_system")
-        ex.instruction = self.policy.get("extract_instruction", "")
-        ex.llm_topics = self.config.llm_topics
-        ex.preference_object_normalization = self.config.preference_object_normalization
-        self.summarizer.system = self._effective("summary_system")
+    def _apply_policy(self):
+        self.writer.config = self.config
+
 
     # --- 工作记忆层：瞬态的、按 session/TTL 划界的状态，不进长期存储（feature ①） ---
     def remember_working(self, content: str, user_id: str = "default", session_id: str = "default",
                          kind: str = "state", ttl_seconds: Optional[float] = None,
-                         event_time: Optional[float] = None) -> WorkingMemory:
+                         event_time: Optional[float] = None, embedding=None) -> WorkingMemory:
         """把一条瞬态条目存入工作记忆层。不整合进长期存储，也不进入持久 profile。`ttl_seconds`
         设定硬性墙钟过期时间；否则存活到 session 被清除为止。"""
         user = user_id
@@ -1253,7 +1152,7 @@ class Memory:
             event_time=event_time if event_time is not None else now(),
             expires_at=(now() + ttl_seconds) if ttl_seconds else None,
         )
-        wm.embedding = self.embedder.embed(content)
+        wm.embedding = embedding if embedding is not None else self.embedder.embed(content)
         self.working_mem[wm.id] = wm
         return wm
 
@@ -1261,7 +1160,7 @@ class Memory:
                        as_of: Optional[float] = None, kind: Optional[str] = None) -> list[WorkingMemory]:
         """存活的工作记忆条目（可按 session / kind 过滤）；排除已过期和已消费的。
         读取时惰性清扫硬过期条目。"""
-        if self._message_broken:
+        if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         user = user_id
         self.sweep_working(as_of)
@@ -1272,8 +1171,8 @@ class Memory:
         """会话结束/断电重启式清理：丢弃该 session 的工作记忆。返回清除数量。"""
         user = user_id
         ids = [i for i, w in self.working_mem.items() if w.user_id == user and w.session_id == session_id]
-        from .consolidate.messages import MessageTasks
-        MessageTasks(self, user).invalidate(session_id)
+        from .consolidate.pipeline import PipelineTasks
+        PipelineTasks(self, user).invalidate(session_id)
         for i in ids:
             del self.working_mem[i]
         return len(ids)
@@ -1303,19 +1202,6 @@ class Memory:
         return len(dead)
 
     # --- 冲突检测 -> pending（LLM 检测出含糊的部分；由用户确认） ---
-    def _detect_conflicts(self) -> None:
-        if not (self.llm is not None and self.config.conflict_detection):
-            return  # 需主动开启；离线/纯规则模式保持确定性
-        from .consolidate.detect import detect_conflicts
-        seen = {c.pair_key for c in self.conflicts.values()}
-        for user in {f.user_id for f in self._all_facts()}:
-            # Buffered judgement replay must not depend on database point enumeration order.
-            live = sorted((f for f in self._all_facts() if f.user_id == user and f.is_live()),
-                          key=lambda f: (f.created_at, f.id))
-            for c in detect_conflicts(live, self.llm, user, seen, self.embedder):
-                self.conflicts[c.id] = c
-                seen.add(c.pair_key)
-
     def pending_conflicts(self, user_id: str = "default") -> list[Conflict]:
         """等待用户裁决的疑似冲突（两条 fact 都必须仍然 live）。"""
         user = user_id
@@ -1337,8 +1223,8 @@ class Memory:
         c = self.conflicts.get(conflict_id)
         if c is None:
             return False
-        from .consolidate.messages import MessageTasks
-        MessageTasks(self, c.user_id).invalidate()
+        from .consolidate.pipeline import PipelineTasks
+        PipelineTasks(self, c.user_id).invalidate()
         newer = self.fact_store.get(c.newer) or self.cold_store.get(c.newer)
         older = self.fact_store.get(c.older) or self.cold_store.get(c.older)
         if keep in ("newer", "older") and newer is not None and older is not None:
@@ -1347,7 +1233,7 @@ class Memory:
                 loser.invalid_at = max((winner.valid_at, loser.valid_at), key=time_key)
             loser.expired_at = now()
             winner.supersedes = loser.id
-            self.engine.graph_builder.invalidate(loser.id, loser.expired_at)
+            self.writer.graph_builder.invalidate(loser.id, loser.expired_at)
             self._upsert_fact(loser)
             self._upsert_fact(winner)
             self._persona_cache.clear()
@@ -1378,52 +1264,18 @@ class Memory:
                 self._upsert_fact(f)
 
     # --- L2/L3 抽象（整合期间构建，为精简读取而存储） ---
-    def summarize_episodes(self, episodes: list[Episode | EventEvidence]) -> int:
-        """Generate only missing long-event summaries; failures remain observable and retryable.
-
-        Direct Memory is sequential. Concurrent services use the detached service runner.
-        """
-        from .consolidate.summaries import SummaryError, SummaryTasks, advance, prepare_step, seal_progress
-        self._apply_policy()
+    def summarize_episodes(self, episodes):
+        """Explicit summary operation using the shared ledger and bounded runner."""
+        from ._pipeline import execute_memory
+        originals = [self.episodes_doc.get(value.id) for value in episodes]
+        originals = [ep for ep in originals if ep is not None and not ep.summary and len(ep.content) >= self.config.summary_min_chars]
+        if originals:
+            require_llm(self.llm)
         count = 0
-        for supplied in episodes:
-            ep = self.episodes_doc.get(supplied.id)
-            if ep is None:
-                continue
-            tasks = SummaryTasks(self, ep.user_id)
-            tasks.register([ep], now(), retry_failed=True)
-            job = tasks.rows().get(ep.id)
-            while job and job['state'] in {'pending', 'retry_wait'} and not ep.summary:
-                try:
-                    job.update(state='running', attempts=job['attempts'] + 1,
-                               step_attempts=job['step_attempts'] + 1)
-                    if job['phase'] == 'embed':
-                        text = job['pieces'][0]
-                        vector = self.embedder.embed(text)
-                        previous = ep.summary, ep.summary_embedding
-                        try:
-                            ep.summary, ep.summary_embedding = text, vector
-                            self._sync_episode(ep)
-                        except Exception:
-                            ep.summary, ep.summary_embedding = previous
-                            self._sync_episode(ep)
-                            raise
-                        job.update(state='completed', phase='source', position=len(ep.content),
-                                   pieces=[], outputs=[], step_attempts=0, next_attempt_at=0, error_code=None)
-                        seal_progress(job)
-                        count += 1
-                    else:
-                        step = prepare_step(ep, job, self.config, self._effective('summary_system'))
-                        result, _usage = step.execute(self.llm, self.config)
-                        updated, _final = advance(job, step, result, len(ep.content))
-                        tasks.state['jobs'][ep.id] = job = updated
-                except Exception as exc:
-                    job.update(state='failed', error_code=exc.code if isinstance(exc, SummaryError)
-                               else 'summary_failed', updated_at=now())
-                    break
-            if isinstance(supplied, Episode):
-                supplied.summary, supplied.summary_embedding = ep.summary, ep.summary_embedding
+        for user in dict.fromkeys(ep.user_id for ep in originals):
+            count += execute_memory(self, user, [ep for ep in originals if ep.user_id == user], 'summary')['summaries']
         return count
+
 
     def retrieve_summaries(
         self,
@@ -1577,7 +1429,7 @@ class Memory:
             score = len(exact) + (3 if object_hits else 0) + (2 if subject_hits else 0)
             if f.provenance:
                 score += 1
-            rows.append((score, f.valid_at, f))
+            rows.append((score, time_key(f.valid_at), f))
         rows.sort(key=lambda row: (-row[0], -row[1], row[2].text.lower()))
         return [f for _, _, f in rows[:k]]
 
@@ -1606,7 +1458,7 @@ class Memory:
         不受影响（search/lean_context 仍看到全部 fact）。"""
         from .consolidate.structured import build_structured_profile
         user = user_id
-        subject = self.engine.self_name(user)
+        subject = self._identity.get(user, user)
         live = [f for f in self._all_facts() if f.user_id == user and f.is_user_knowledge and f.is_live()]
         return build_structured_profile(live, subject, user)
 
@@ -1615,7 +1467,7 @@ class Memory:
         user = user_id
         if user in self._persona_cache:
             return self._persona_cache[user]
-        subject = self.engine.self_name(user)
+        subject = self._identity.get(user, user)
         mute = self.focus.get("mute", [])
         live = [f for f in self._all_facts()
                 if f.user_id == user and f.is_user_knowledge and f.is_live() and not self._matches(f, mute)]
@@ -1633,7 +1485,7 @@ class Memory:
         时间戳是视图的一部分，不能把当前 fact 泄漏进过去上下文。"""
         if as_of is None:
             return self.build_persona(user)
-        subject = self.engine.self_name(user)
+        subject = self._identity.get(user, user)
         mute = self.focus.get("mute", [])
         live = [
             f for f in self._all_facts()
@@ -2496,7 +2348,7 @@ class Memory:
           * 摘要块提供宽时间覆盖（默认 20），这正是聚合类问题（"how many trips"、"list
             everything"）所需的；摘要很小，覆盖因此仍然廉价。
         `char_budget` 对组装出的上下文硬性封顶，使其永远不可能接近全文历史的规模。"""
-        if self._message_broken:
+        if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         user = user_id
         blocks: list[str] = []
@@ -2784,7 +2636,7 @@ class Memory:
         as_of: Optional[float] = None,
         top_k: Optional[int] = None,
     ) -> SearchResult:
-        if self._message_broken:
+        if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         user = user_id
 
@@ -2871,7 +2723,7 @@ class Memory:
 
     def get_episode(self, episode_id: str, user_id: str = "default") -> dict | None:
         """Explicit original lookup; no embeddings or internal processing state."""
-        if self._message_broken:
+        if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         ep = self.episodes_doc.get(episode_id)
         if ep is None or ep.user_id != user_id:
@@ -2896,7 +2748,7 @@ class Memory:
         融合把这些提上来而不取代语义信号。改善偏好类和精确实体类问题——原始文本词项优于嵌入
         相似度的场景。
         """
-        if self._message_broken:
+        if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         user = user_id
         pool = pool or max(k * 5, 25)
@@ -2962,7 +2814,7 @@ class Memory:
         ranked, _ = self.retriever.retrieve(search_query, user, as_of, top_k)
         # 最新在前：对知识更新类问题，LLM 应在顶部看到最新 fact（如新工作、新城市）——并信任
         # 它甚于列表下方更旧的 fact。
-        ranked_by_date = sorted(ranked, key=lambda x: x[0].valid_at, reverse=True)
+        ranked_by_date = sorted(ranked, key=lambda x: time_key(x[0].valid_at), reverse=True)
         ranked_facts = [f for f, _ in ranked_by_date]
         fact_lines = [f"- [{fmt_date(f.valid_at)}] {f.evidence_text}" for f in ranked_facts]
         facts_block = "\n".join(fact_lines) or "(none)"
@@ -3104,9 +2956,9 @@ class Memory:
         return history(self._all_facts(), user, subject, predicate)
 
     def profile(self, user_id: str = "default") -> dict[str, str]:
-        if self._message_broken:
+        if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
-        subject = self.engine.self_name(user_id)
+        subject = self._identity.get(user_id, user_id)
         live = [f for f in self.fact_store.values() if f.user_id == user_id and f.is_live()]
         return self.profiles.build(subject, live)
 

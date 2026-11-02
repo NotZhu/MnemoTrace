@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from tests.test_conditional_summaries import LONG, services as services
+from tests.test_pipeline_sources import LONG, services as services
 
 
 def test_explicit_original_http_enforces_space_acl_and_omits_internal_state(services, monkeypatch):
@@ -60,11 +60,11 @@ async def test_mcp_tools_report_independent_summary_failure_and_original_source_
     from mnemotrace.mcp import server as tools
     from mnemotrace.mcp.backends import LocalBackend
     from tests.test_mcp import call
-    svc, _ = services(lambda *a: '')
+    svc, _ = services(buffered=True)
     tools.set_backend(LocalBackend(namespace='u', service=svc))
     try:
         response = await call('mnemotrace_remember', content=LONG)
-        assert 'Summarization: failed (summary_invalid_response)' in response
+        assert 'Summarization: pending' in response
         episode = next(iter(svc.get('u').episodes_doc.values()))
         original = await call('mnemotrace_get_episode', episode_id=episode.id)
         assert LONG in original and str(episode.event_time) in original and str(episode.ingested_at) in original

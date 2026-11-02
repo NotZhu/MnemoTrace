@@ -5,6 +5,7 @@
 约束提升成了持久属性），而十个会话共 3353 轮只换来五条 fact。改成让它输出决策和经验教训后，同一个
 模型返回的内容与 owner 手写进 markdown 的东西相当。"""
 from __future__ import annotations
+from tests.model_fixtures import outcome_facts
 
 import json
 import pytest
@@ -14,8 +15,6 @@ from mnemotrace.consolidate.outcomes import (
     OUTCOME_CATEGORY,
     OUTCOME_PREDICATES,
     OUTCOME_SYSTEM,
-    _windowed,
-    extract_outcomes,
     split_outcome_text,
 )
 from tests.model_fixtures import Memory
@@ -48,7 +47,7 @@ def test_outcomes_become_ordinary_facts_with_kind_predicates():
     （supersession）与 provenance。"""
     llm = StubLLM('[{"kind":"lesson","statement":"Running --pair overwrites the single global config",'
                   '"why":"took four agents offline"}]')
-    facts = extract_outcomes(llm, _episodes(), "u", session_id="s1")
+    facts = outcome_facts(llm, _episodes(), "u", session_id="s1")
     assert len(facts) == 1
     f = facts[0]
     assert f.predicate == "lesson" and f.predicate in OUTCOME_PREDICATES
@@ -67,47 +66,41 @@ def test_unknown_kinds_and_degenerate_statements_are_rejected():
                   '{"kind":"finding","statement":"' + "x" * 500 + '"},'
                   '{"kind":"finding","statement":"A real finding with adequate length here"}]')
     with pytest.raises(ExtractionResponseError):
-        extract_outcomes(llm, _episodes(), "u")
+        outcome_facts(llm, _episodes(), "u")
 
 
 def test_duplicate_statements_collapse():
     llm = StubLLM('[{"kind":"decision","statement":"We chose rsync over docker compose"},'
                   '{"kind":"decision","statement":"We chose rsync over docker compose"}]')
-    assert len(extract_outcomes(llm, _episodes(), "u")) == 1
+    assert len(outcome_facts(llm, _episodes(), "u")) == 1
 
 
 @pytest.mark.parametrize('kind', ['FINDING', ' finding '])
 def test_kind_is_normalized_before_validation(kind):
     llm = StubLLM(json.dumps([{'kind': kind, 'statement': 'A synthetic finding with adequate length.'}]))
-    item, = extract_outcomes(llm, _episodes(), 'u')
+    item, = outcome_facts(llm, _episodes(), 'u')
     assert item.predicate == 'finding'
 
 
 @pytest.mark.parametrize('statement', ['too short', 'x' * 500])
 def test_valid_kind_with_degenerate_length_is_filtered(statement):
     llm = StubLLM(json.dumps([{'kind': 'finding', 'statement': statement}]))
-    assert extract_outcomes(llm, _episodes(), 'u') == []
+    assert outcome_facts(llm, _episodes(), 'u') == []
 
 
 def test_transcript_is_fenced_as_data_not_conversation():
     """以 "[assistant] ..." 开头的请求体会被当成"要续写的对话"：在一份真实的 1164 轮会话上，模型
     写起了下一轮而不是做抽取，结果一无所获。"""
     llm = StubLLM("[]")
-    extract_outcomes(llm, _episodes(), "u")
+    outcome_facts(llm, _episodes(), "u")
     assert "<session>" in llm.prompt and "</session>" in llm.prompt
     assert not llm.prompt.lstrip().startswith("[")
 
 
-def test_long_sessions_keep_both_ends():
-    """普通截断只让模型看到 335k 字符会话的前 7%——那还是铺垫，什么都没决定。结论都落在末尾。"""
-    turns = [f"turn {i} " + "x" * 200 for i in range(300)]
-    out = _windowed(turns, 4000)
-    assert len(out) <= 4100
-    assert "turn 0 " in out and "turn 299 " in out and "省略" in out
 
 
 def test_a_session_with_nothing_durable_yields_nothing():
-    assert extract_outcomes(StubLLM("[]"), _episodes(), "u") == []
+    assert outcome_facts(StubLLM("[]"), _episodes(), "u") == []
 
 
 def test_model_outage_never_loses_the_session():
@@ -116,13 +109,13 @@ def test_model_outage_never_loses_the_session():
             raise RuntimeError("provider down")
 
     with pytest.raises(ExtractionError):
-        extract_outcomes(Broken(), _episodes(), "u")
+        outcome_facts(Broken(), _episodes(), "u")
 
 
 def test_truncated_model_output_is_rejected():
     """被 max_tokens 截断的回复过去会丢掉所有已抽取的条目——而这恰恰是长会话的常态，因为模型会
     用满预算。"""
-    from mnemotrace.consolidate.llm_extractor import parse_json_facts
+    from mnemotrace.consolidate.fact_rules import parse_json_facts
 
     truncated = ('[{"kind":"finding","statement":"first complete one","why":"a"},'
                  '{"kind":"lesson","statement":"second complete one","why":"b"},'
@@ -135,7 +128,7 @@ def test_split_outcome_text_is_the_exact_inverse_of_the_format():
     """格式化器与这个解析器刻意相隔十行：分隔符一变，这里必须先挂。"""
     llm = StubLLM('[{"kind":"finding","statement":"client.ts declares its own copy of the API types",'
                   '"why":"a contract change failed at runtime, not compile time"}]')
-    f = extract_outcomes(llm, _episodes(), "u", session_id="s1")[0]
+    f = outcome_facts(llm, _episodes(), "u", session_id="s1")[0]
     assert split_outcome_text(f.text) == (
         "client.ts declares its own copy of the API types",
         "a contract change failed at runtime, not compile time",

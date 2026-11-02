@@ -7,10 +7,10 @@ from copy import deepcopy
 import pytest
 
 from mnemotrace import Memory
-from mnemotrace._buffered import BufferedExtraction
-from mnemotrace._messages import run_one
-from mnemotrace.consolidate.messages import MessageConflictError, validate_state
-from mnemotrace.consolidate.windows import WINDOW_PREFIX
+from mnemotrace._pipeline_worker import PipelineWorker
+from mnemotrace._pipeline import run_one
+from mnemotrace.consolidate.pipeline import MessageConflictError, validate_state
+from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from mnemotrace.llm import FakeLLM
 from mnemotrace.service import MemoryService
 
@@ -23,12 +23,12 @@ def reply(prompt, system):
     data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
     if 'rules' not in data:
         return json.dumps(dict(facts=[], working=[]))
-    result = dict(facts=[], working=[], summaries=[dict(message_id=s['message_id'], text='Synthetic summary')
-        for s in data['pending'] if s['message_id'] in data['rules']['summary_required']])
+    result = dict(facts=[], working=[], summaries=[dict(source_id=s['id'], text='Synthetic summary')
+        for s in data['pending'] if s['id'] in data['rules']['summary_required']])
     if '本次仅补' in system:
         return json.dumps({'summaries': result['summaries']})
     for item in data['pending']:
-        nature = 'user_statement' if item['role'] == 'user' else 'assistant_suggestion'
+        nature = 'user_statement' if item['role'] == 'user' else 'assistant_suggestion' if item['role'] == 'assistant' else 'unspecified'
         result['facts'].append(dict(subject='user', predicate='owns', object=item['content'][:30],
             text=item['content'][:30], assertion_kind=nature, source_ids=[item['id']]))
     return json.dumps(result)
@@ -38,7 +38,7 @@ def reply(prompt, system):
 def services(tmp_path, monkeypatch):
     from mnemotrace.llm import providers
     monkeypatch.setattr(providers, 'load_dotenv', lambda: None)
-    monkeypatch.setattr(BufferedExtraction, 'consume', lambda _: None)
+    monkeypatch.setattr(PipelineWorker, 'consume', lambda _: None)
     monkeypatch.delenv('MNEMOTRACE_BUFFERED_EXTRACTION', raising=False)
     made = []
     def make(handler=reply, path=None):
@@ -46,7 +46,7 @@ def services(tmp_path, monkeypatch):
         monkeypatch.setattr(providers, 'make_llm', lambda *a, **k: model)
         svc = MemoryService(data_dir=str(path or tmp_path), embedder_name='hashing', llm_name='synthetic')
         stamp = [1000.0]
-        svc._buffered.clock = lambda: stamp[0]
+        svc._pipeline_worker.clock = lambda: stamp[0]
         made.append(svc)
         return svc, model, stamp
     yield make
@@ -72,7 +72,7 @@ def test_accept_batch_dedup_conflict_and_legal_repetition(services):
     assert [r['sequence'] for r in result['messages']] == [1, 2, 1]
     stamp[0] += 40
     assert svc.remember_messages('u', [message('a')], 's')['messages'][0] == result['messages'][0]
-    state = svc.get('u')._message_state
+    state = svc.get('u')._pipeline_state
     assert next(iter(state['namespaces']['u']['sessions'].values()))['last_activity'] == 1000
     with pytest.raises(MessageConflictError):
         svc.remember_messages('u', [message('c'), message('a', 'conflict')], 's')
@@ -87,7 +87,7 @@ def test_idle_60_and_single_joint_call_then_restart_idempotence(services, tmp_pa
     # Two summary reservations reach the processing budget, before idle expiry.
     drain(svc)
     assert len(model.calls) == 1
-    assert all(j['state'] == 'completed' for j in svc.message_status('u')['jobs'])
+    assert all(j['state'] == 'completed' for j in svc.processing_status('u')['jobs'])
     mem = svc.get('u')
     assert all(e.summary == 'Synthetic summary' for e in mem.episodes_doc.values())
     assert mem.episodes_vec.values() == []
@@ -105,8 +105,8 @@ def test_offline_raw_tasks_unknown_time_and_strict_corruption(tmp_path):
     restored = Memory.open(str(tmp_path / 'store'))
     ep = restored.episodes_doc.get(result['messages'][0]['episode_id'])
     assert ep.event_time is None and ep.mode == 'historical'
-    broken = deepcopy(restored._message_state)
-    del next(iter(broken['namespaces']['u']['messages'].values()))['source']
+    broken = deepcopy(restored._pipeline_state)
+    del next(iter(broken['namespaces']['u']['sources'].values()))['source']
     with pytest.raises(ValueError):
         validate_state(broken)
 
@@ -128,7 +128,7 @@ def test_bad_json_three_total_calls_and_later_window_continues(services):
     stamp[0] += 120
     drain(svc)
     assert len(model.calls) == 3
-    assert svc.message_status('u')['jobs'][0]['core'] == 'failed'
+    assert svc.processing_status('u')['jobs'][0]['core'] == 'failed'
     stamp[0] += 1000
     drain(svc)
     assert len(model.calls) == 3
@@ -147,12 +147,12 @@ def test_partial_summary_failure_preserves_core_and_compensates_only(services):
     force(svc)
     drain(svc)
     assert len(svc.get('u').fact_store.values()) == 1
-    assert svc.message_status('u')['jobs'][0]['core'] == 'completed'
+    assert svc.processing_status('u')['jobs'][0]['core'] == 'completed'
     stamp[0] += 30
     drain(svc)
     assert len(model.calls) == 2 and '本次仅补' in calls[-1]
     assert len(svc.get('u').fact_store.values()) == 1
-    assert svc.message_status('u')['jobs'][0]['state'] == 'completed'
+    assert svc.processing_status('u')['jobs'][0]['state'] == 'completed'
 
 
 def test_model_outside_lock_new_message_outside_frozen_batch(services):
@@ -173,7 +173,7 @@ def test_model_outside_lock_new_message_outside_frozen_batch(services):
         assert future.result(5)
     drain(svc)
     assert len(model.calls) == 1
-    assert [j['core'] for j in svc.message_status('u')['jobs']] == ['completed', 'pending']
+    assert [j['core'] for j in svc.processing_status('u')['jobs']] == ['completed', 'pending']
 
 
 def test_idle_has_no_oldest_wait_and_retransmission_does_not_reset(services):
@@ -213,7 +213,7 @@ def test_live_working_historical_and_assistant_role_validation(services):
     svc.remember_messages('u', [message('c', role='assistant')], 'forged')
     force(svc, 'forged')
     drain(svc)
-    assert svc.message_status('u', 'forged')['jobs'][0]['core'] == 'pending'
+    assert svc.processing_status('u', 'forged')['jobs'][0]['core'] == 'pending'
     assert len(svc.get('u').working_mem) == 1
 
 
@@ -222,7 +222,7 @@ def test_head_tail_coverage_fixed_after_restart_and_summary_partial(services, tm
     text = '开始' * 5000 + '不可见中间' * 5000 + '结尾' * 5000
     accepted = svc.remember_messages('u', [message('a', text)], 's')
     assert run_one(svc, 'u')  # generation and saved model response
-    saved = deepcopy(next(iter(svc.get('u')._message_state['namespaces']['u']['windows'].values()))['input'])
+    saved = deepcopy(next(iter(svc.get('u')._pipeline_state['namespaces']['u']['windows'].values()))['input'])
     assert saved['pending'][0]['partial'] and len(saved['pending'][0]['ranges']) == 2
     assert '已省略' in saved['pending'][0]['content']
     svc.close()
@@ -241,12 +241,12 @@ def test_completed_flag_corruption_and_saved_result_sources_are_rejected(service
     svc.remember_messages('u', [message('a')], 's')
     force(svc)
     assert run_one(svc, 'u')
-    broken = deepcopy(svc.get('u')._message_state)
+    broken = deepcopy(svc.get('u')._pipeline_state)
     win = next(iter(broken['namespaces']['u']['windows'].values()))
     win.update(state='completed', phase='done', result=None, core_saved=False)
     with pytest.raises(ValueError):
         validate_state(broken)
-    broken = deepcopy(svc.get('u')._message_state)
+    broken = deepcopy(svc.get('u')._pipeline_state)
     next(iter(broken['namespaces']['u']['windows'].values()))['result']['facts'][0]['source_ids'] = ['unknown']
     with pytest.raises(ValueError):
         validate_state(broken)
@@ -263,7 +263,7 @@ def test_embedding_failure_reuses_saved_generation(services, monkeypatch):
     monkeypatch.setattr(svc.embedder, 'embed_batch', original)
     stamp[0] += 30
     drain(svc)
-    assert len(model.calls) == 1 and svc.message_status('u')['jobs'][0]['state'] == 'completed'
+    assert len(model.calls) == 1 and svc.processing_status('u')['jobs'][0]['state'] == 'completed'
 
 
 def test_manual_change_and_configuration_between_generation_and_commit(services):
@@ -276,7 +276,7 @@ def test_manual_change_and_configuration_between_generation_and_commit(services)
     drain(svc)
     assert len(model.calls) == 1
     assert len(svc.get('u').fact_store.values()) == 1
-    assert svc.message_status('u')['jobs'][0]['state'] == 'cancelled'
+    assert svc.processing_status('u')['jobs'][0]['state'] == 'cancelled'
 
 
 def test_erasure_removes_hidden_window_copies(services):
@@ -288,7 +288,7 @@ def test_erasure_removes_hidden_window_copies(services):
         mem = svc.get('u')
         mem.episodes_doc.delete(result['messages'][0]['episode_id'])
         svc._save('u', mem)
-    assert 'unique erased synthetic text' not in json.dumps(svc.get('u')._message_state)
+    assert 'unique erased synthetic text' not in json.dumps(svc.get('u')._pipeline_state)
     assert not run_one(svc, 'u')
 
 
@@ -302,7 +302,7 @@ def test_large_batch_rotates_sessions_and_stops_at_frozen_cutoff(services):
     pending = [json.loads(c['prompt'].split(WINDOW_PREFIX, 1)[1])['pending'] for c in model.calls]
     assert len(pending) == 4 and len(pending[0]) == 2
     assert pending[1][0]['message_id'] == 'other'
-    assert all(j['state'] == 'completed' for j in svc.message_status('u')['jobs'])
+    assert all(j['state'] == 'completed' for j in svc.processing_status('u')['jobs'])
 
 
 def test_no_idle_snapshot_rewrites_and_raw_entry_cannot_consume_dialogue(services):
@@ -313,7 +313,7 @@ def test_no_idle_snapshot_rewrites_and_raw_entry_cannot_consume_dialogue(service
         assert not run_one(svc, 'u')
     assert svc.get('u')._snapshot_version == before
     svc.remember('u', 'manual synthetic raw', processing='immediate')
-    assert svc.message_status('u')['jobs'][0]['core'] == 'pending'
+    assert svc.processing_status('u')['jobs'][0]['core'] == 'pending'
 
 
 def test_standalone_python_uses_same_joint_processor():

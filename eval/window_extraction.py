@@ -16,7 +16,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mnemotrace import Config, ExtractionError, Memory  # noqa: E402
-from mnemotrace.consolidate.windows import WINDOW_PREFIX  # noqa: E402
+from mnemotrace.consolidate.planning import WINDOW_PREFIX  # noqa: E402
 from mnemotrace.llm import Completion, LLM  # noqa: E402
 from mnemotrace.llm.base import complete_result  # noqa: E402
 
@@ -31,7 +31,7 @@ class RecordedExtraction(LLM):
         data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
         return json.dumps({"facts": [
             {"subject": "user", "predicate": "owns", "object": self.responses[s["content"]],
-             "source_ids": [s["id"]]} for s in data["pending"]], "working": []})
+             "text": s["content"], "assertion_kind": "user_statement", "source_ids": [s["id"]]} for s in data["pending"]], "working": [], "summaries": []})
 
 
 class MeteredLLM(LLM):
@@ -65,12 +65,13 @@ def compare(events: int, runs: int, extractor: str | None = None) -> dict:
             sources = {}
             start = time.perf_counter()
             for index, (text, obj) in enumerate(expected.items()):
-                ep = memory.add(text, session_id="synthetic-session", event_time=1_700_000_000 + index)
-                sources[obj] = ep.id
-                if mode == "immediate":
-                    memory.consolidate()
-            if mode == "window":
-                memory.consolidate()
+                accepted = memory.remember_messages([dict(message_id=str(index), role='user', content=text,
+                    event_time=1_700_000_000 + index)], 'synthetic-session')
+                sources[obj] = accepted['messages'][0]['episode_id']
+                if mode == 'immediate':
+                    assert memory.flush_messages()['ok']
+            if mode == 'window':
+                assert memory.flush_messages()['ok']
             elapsed = (time.perf_counter() - start) * 1000
             facts = memory.fact_store.values()
             found = {f.object for f in facts if f.object in sources}
@@ -99,7 +100,7 @@ def compare(events: int, runs: int, extractor: str | None = None) -> dict:
             "synthetic_replay": extractor is None,
             "extractor": extractor, "events": events, "runs": runs,
             "budgets": {k: getattr(Config(), k) for k in (
-                "extraction_max_input_bytes", "extraction_context_bytes", "extraction_max_output_tokens")},
+                "extraction_max_input_bytes", "extraction_context_bytes", "joint_max_output_tokens")},
             "results": results}
 
 
