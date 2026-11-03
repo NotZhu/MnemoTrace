@@ -535,7 +535,9 @@ def test_conflict_cancelled_requires_every_job_to_be_conflict():
 
 
 def test_execute_sources_retries_conflict_only_once(services, monkeypatch):
-    """#17：execute_sources 的冲突重试次数必须有断言（防止 range(2) 悄悄变成更多次）。"""
+    """#17：execute_sources 的冲突重试次数必须有断言（防止 range(2) 悄悄变成更多次），
+    且持续冲突最终必须抛 ExtractionConflictError 而非普通失败。"""
+    from mnemotrace.extraction import ExtractionConflictError
     import mnemotrace._pipeline as pipeline
     svc, _, _ = services()
     attempts = {'n': 0}
@@ -547,28 +549,32 @@ def test_execute_sources_retries_conflict_only_once(services, monkeypatch):
             dict(episode_id='e1', state='cancelled', error_code='manual_change')])
 
     monkeypatch.setattr(pipeline, 'flush', fake_flush)
-    with pytest.raises(Exception):
+    with pytest.raises(ExtractionConflictError):
         pipeline.execute_sources(svc, 'u', [], 'extract')
     assert attempts['n'] == 2  # 原始 + 一次冲突重试；改成 range(3) 会变 3
 
 
 def test_flush_discovers_namespaces_without_user(services, monkeypatch):
-    """#19：无参 flush() 的命名空间发现分支过去全仓无测试。"""
+    """#19：无参 flush() 的命名空间发现分支过去全仓无测试。
+
+    这里断言：discover_processing_namespaces 返回的每个命名空间都被逐个 flush，
+    且聚合状态由子结果推导（全部 completed 才 ok）。"""
     import mnemotrace.store.persist as persist
+    from mnemotrace.service import MemoryService
     svc, _, _ = services()
-    called = []
     monkeypatch.setattr(persist, 'discover_processing_namespaces',
-                        lambda data_dir, on_error=None: [('u', True)])
-    inner = svc.flush
+                        lambda data_dir, on_error=None: [('u', True), ('v', True)])
+    called = []
     def spy(user=None, *args, **kwargs):
         called.append(user)
         return dict(ok=True, status='completed', session_id=None, generation=None,
                     counts={'pending': 0}, jobs=[])
+    # 只替换实例方法，再用未绑定的真实实现调用外层，确保真正走命名空间发现分支。
     monkeypatch.setattr(svc, 'flush', spy)
-    # 调用真实的未绑定方法，避免被 spy 自身拦截外层
-    from mnemotrace.service import MemoryService
     result = MemoryService.flush(svc, None)
-    assert 'u' in called and result['status'] == 'completed'
+    assert called == ['u', 'v']           # 两个命名空间都被发现并 flush
+    assert result['status'] == 'completed' and result['ok'] is True
+    assert len(result['results']) == 2
 
 
 def test_extraction_conflict_importable_and_carries_ids():
