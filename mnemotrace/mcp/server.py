@@ -95,13 +95,16 @@ def _err(e: Exception) -> str:
 
         if isinstance(e, httpx.HTTPStatusError):
             code = e.response.status_code
-            if code in {502, 503}:
-                try:
-                    detail = e.response.json().get("detail", {})
-                    if detail.get("code") in {"llm_not_configured", "buffered_processing_disabled", "processing_incomplete", "extraction_failed", "extraction_invalid_response", "extraction_truncated"}:
-                        return "Error: " + _json(detail)
-                except (ValueError, AttributeError):
-                    pass
+            try:
+                detail = e.response.json().get("detail")
+            except (ValueError, AttributeError):
+                detail = None
+            # 服务端对抽取/冲突/校验错误一律返回结构化 detail（含 code、stored_raw、episode_ids
+            # 或字段原因）。原实现只对 502/503 的固定 code 白名单保留 detail，导致 409/422/500
+            # 被降级为裸状态码，远程 agent 无法区分 message_conflict 与 extraction_conflict。
+            # 只要 detail 是带 code 的对象就如实透传，其余状态码的文案保持原有引导。
+            if isinstance(detail, dict) and isinstance(detail.get("code"), str):
+                return "Error: " + _json(detail)
             if code == 401:
                 return ("Error: the MnemoTrace server rejected the credentials (401). Check MNEMOTRACE_API_KEY "
                         "matches a configured key on the server.")

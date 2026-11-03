@@ -71,6 +71,10 @@ class Config:
     # 有 LLM 时检测疑似冲突并交由用户确认，不自动应用。
     conflict_detection: bool = False
 
+    # 自动抽取产生的工作记忆（当前任务/意图/状态）的墙钟存活时长（秒），到点由清扫移除。
+    # 设为 None 时沿用旧行为：仅随会话关闭/清除而消失，否则持续累积变旧。
+    working_memory_ttl_seconds: Optional[float] = 86_400.0
+
     # --- 条件事件摘要 ---
     summary_min_chars: int = 2000
     summary_max_chars: int = 800

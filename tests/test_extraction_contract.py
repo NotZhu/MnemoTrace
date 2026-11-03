@@ -559,3 +559,28 @@ def test_import_intent_change_requires_new_message_id(tmp_path, consolidate):
     svc.import_('u', sessions=sessions, consolidate=True)
     assert svc.processing_status('u')['jobs'][0]['core'] == 'not_requested'
     assert svc.processing_status('u')['jobs'][1]['core'] == 'completed'
+
+def test_auto_working_memory_gets_config_ttl_and_expires():
+    """#9：自动抽取的工作记忆必须带墙钟过期时间，否则客户端不关闭会话会永久累积。"""
+    model = FakeLLM(responses=[response(working=[{'content': 'Temporary task', 'kind': 'task'}])])
+    m = Memory(llm=model)
+    assert m.config.working_memory_ttl_seconds is not None
+    m.remember_messages([{'message_id': 'a', 'role': 'user', 'content': 'Please migrate the database next week.', 'event_time': 1.0}], 's', 'u')
+    assert m.flush_messages('u')['ok']
+    item, = m.working_mem.values()
+    assert item.expires_at is not None and item.expires_at > item.created_at
+    # 到点后清扫确实删除；未到点保留
+    assert m.sweep_working(as_of=item.expires_at - 1) == 0
+    assert m.sweep_working(as_of=item.expires_at) == 1
+    assert not m.working_mem
+
+
+def test_auto_working_memory_ttl_can_be_disabled():
+    """TTL 设为 None 时保留旧行为（仅随会话清除），不强行设 expires_at。"""
+    model = FakeLLM(responses=[response(working=[{'content': 'Temporary task', 'kind': 'task'}])])
+    m = Memory(llm=model)
+    m.config.working_memory_ttl_seconds = None
+    m.remember_messages([{'message_id': 'a', 'role': 'user', 'content': 'Please migrate the database next week.', 'event_time': 1.0}], 's', 'u')
+    assert m.flush_messages('u')['ok']
+    item, = m.working_mem.values()
+    assert item.expires_at is None

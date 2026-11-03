@@ -757,3 +757,23 @@ async def test_audit_markdown_names_the_slot_of_a_group_finding(local_backend):
     assert "**** —" not in md               # 不能渲染出空的加粗块
     assert "**user occupation ×4**" in md   # 指明是哪个槽位、规模多大
     assert "borrowed title 0" in md         # 行动建议里让读者查看的样本
+
+def test_remote_error_preserves_structured_detail_for_conflict_and_validation():
+    """#12：MCP 远程错误不应把 409/422/500 降级为裸状态码，需如实透传结构化 detail。"""
+    import httpx
+
+    def make(status, detail):
+        req = httpx.Request('POST', 'http://x/v1/messages')
+        resp = httpx.Response(status, json={'detail': detail}, request=req)
+        return httpx.HTTPStatusError('err', request=req, response=resp)
+
+    for status, code in [(409, 'message_conflict'), (409, 'extraction_conflict'),
+                         (422, 'invalid_request'), (500, 'extraction_failed')]:
+        detail = {'code': code, 'message': 'x', 'stored_raw': True, 'episode_ids': ['e1']}
+        msg = S._err(make(status, detail))
+        assert 'returned HTTP' not in msg, msg
+        assert code in msg, msg
+    # 无结构 detail 的状态码仍保持原有引导文案
+    req = httpx.Request('POST', 'http://x/v1/x')
+    plain = httpx.Response(418, json={'detail': 'plain'}, request=req)
+    assert 'HTTP 418' in S._err(httpx.HTTPStatusError('e', request=req, response=plain))

@@ -116,16 +116,17 @@ def test_core_and_summary_evidence_are_strict_on_restore():
 
 
 def test_provider_truncation_does_not_commit_legal_looking_json(services):
-    model = FakeLLM(handler=reply)
     def truncated(prompt, system):
         return Completion(reply(prompt, system), finish_reason='length')
-    svc, _, _ = services(truncated)
+    # Bind the model the service actually uses; the old test asserted on a detached FakeLLM,
+    # so `assert not model.calls` was a tautology that never watched the real call path.
+    svc, model, _ = services(truncated)
     svc.remember_messages('u', [message('a')], 's')
     force(svc)
     assert run_one(svc, 'u')
     assert not svc.get('u').fact_store.values()
     assert svc.processing_status('u')['jobs'][0]['error_code'] == 'extraction_truncated'
-    assert not model.calls
+    assert model.calls and model.calls[-1]['prompt']  # truncation was actually produced by the real model
 
 
 def test_native_save_failure_recovers_checkpoint_without_regeneration(tmp_path, monkeypatch):
@@ -515,3 +516,67 @@ def test_watcher_history_preserves_reactivated_live_working(services, monkeypatc
     assert watch.ingest('http://synthetic.invalid', 'synthetic-key', ['synthetic-file'])['closed_ok'] == ['s']
     assert [w['content'] for w in svc.working_memory('u', 's')['items']] == ['Synthetic reactivated live task']
     assert len(model.calls) == 1
+
+def test_conflict_cancelled_requires_every_job_to_be_conflict():
+    """#16：_conflict_cancelled 的混合失败分支必须有测试。
+
+    过去把内部的 all 改成 any，回归仍全绿；这里直接锁定“只要有一个非冲突失败
+    （如 embedding_failed）就不是良性冲突”的行为。"""
+    from mnemotrace._pipeline import _conflict_cancelled
+    only_conflict = dict(jobs=[dict(state='failed', error_code='manual_change'),
+                               dict(state='cancelled', error_code='source_changed')])
+    assert _conflict_cancelled(only_conflict) is True
+    mixed = dict(jobs=[dict(state='failed', error_code='manual_change'),
+                       dict(state='failed', error_code='embedding_failed')])
+    assert _conflict_cancelled(mixed) is False
+    single_non_conflict = dict(jobs=[dict(state='failed', error_code='extraction_failed')])
+    assert _conflict_cancelled(single_non_conflict) is False
+    assert _conflict_cancelled(dict(jobs=[])) is False
+
+
+def test_execute_sources_retries_conflict_only_once(services, monkeypatch):
+    """#17：execute_sources 的冲突重试次数必须有断言（防止 range(2) 悄悄变成更多次）。"""
+    import mnemotrace._pipeline as pipeline
+    svc, _, _ = services()
+    attempts = {'n': 0}
+
+    def fake_flush(host, user, *args, **kwargs):
+        attempts['n'] += 1
+        # 每次都报告为并发写取消，使循环走到上限
+        return dict(ok=False, status='failed', jobs=[
+            dict(episode_id='e1', state='cancelled', error_code='manual_change')])
+
+    monkeypatch.setattr(pipeline, 'flush', fake_flush)
+    with pytest.raises(Exception):
+        pipeline.execute_sources(svc, 'u', [], 'extract')
+    assert attempts['n'] == 2  # 原始 + 一次冲突重试；改成 range(3) 会变 3
+
+
+def test_flush_discovers_namespaces_without_user(services, monkeypatch):
+    """#19：无参 flush() 的命名空间发现分支过去全仓无测试。"""
+    import mnemotrace.store.persist as persist
+    svc, _, _ = services()
+    called = []
+    monkeypatch.setattr(persist, 'discover_processing_namespaces',
+                        lambda data_dir, on_error=None: [('u', True)])
+    inner = svc.flush
+    def spy(user=None, *args, **kwargs):
+        called.append(user)
+        return dict(ok=True, status='completed', session_id=None, generation=None,
+                    counts={'pending': 0}, jobs=[])
+    monkeypatch.setattr(svc, 'flush', spy)
+    # 调用真实的未绑定方法，避免被 spy 自身拦截外层
+    from mnemotrace.service import MemoryService
+    result = MemoryService.flush(svc, None)
+    assert 'u' in called and result['status'] == 'completed'
+
+
+def test_extraction_conflict_importable_and_carries_ids():
+    """#19：409 extraction_conflict 的对外契约要有守护——异常可从包根导入且带 stored_raw/episode_ids。"""
+    import mnemotrace
+    from mnemotrace import ExtractionConflictError
+    assert mnemotrace.ExtractionConflictError is ExtractionConflictError
+    exc = ExtractionConflictError(stored_raw=True, episode_ids=['e1', 'e2'])
+    assert exc.code == 'extraction_conflict' and exc.status_code == 409
+    assert exc.detail() == {'code': 'extraction_conflict', 'message': exc.message,
+                            'stored_raw': True, 'episode_ids': ['e1', 'e2']}

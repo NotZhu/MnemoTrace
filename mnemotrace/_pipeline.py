@@ -263,9 +263,13 @@ def _commit(mem, tasks, win, now):
             origin = anchor(item)
             working_id = 'wm_' + digest([win['input_hash'], item])[:24]
             if working_id not in mem.working_mem:
+                # 自动抽取的工作记忆也要有墙钟生命周期，否则客户端不关闭会话时会永久累积。
+                # TTL 由配置决定；None 保留旧行为（仅随会话清除）。显式手动写入可另带 TTL。
+                ttl = mem.config.working_memory_ttl_seconds
                 mem.working_mem[working_id] = WorkingMemory(id=working_id, content=item['content'], kind=item['kind'],
                     user_id=tasks.namespace, session_id=tasks.rows()[origin['id']]['session_id'],
-                    event_time=origin['event_time'], created_at=now, embedding=vector(item['content']),
+                    event_time=origin['event_time'], created_at=now,
+                    expires_at=(now + ttl) if ttl else None, embedding=vector(item['content']),
                     metadata=dict(provenance=item['source_ids'], assertion_kind=item['assertion_kind'], episode_id=origin['id']))
                 win['stats']['working_added'] += 1
         if win['operation'] == 'conflicts':
