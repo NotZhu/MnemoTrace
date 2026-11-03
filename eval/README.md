@@ -45,7 +45,7 @@
 
 ```sh
 python eval/window_extraction.py --quality --extractor deepseek \
-  --baseline-ref 5ee0cda --candidate-ref <candidate-commit> \
+  --baseline-ref 85a4ebc --candidate-ref <candidate-commit> \
   --out .artifacts/extraction-quality/my-run \
   --budget-file .artifacts/extraction-quality/shared-budget.json
 python eval/window_extraction.py --report .artifacts/extraction-quality/my-run
@@ -165,7 +165,7 @@ python -c "from mnemotrace.service import MemoryService; s = MemoryService(data_
 
 `window_extraction.py --buffered-replay` 在同一个固定运行时上比较 `immediate` 和 `buffered`。
 场景集为十二个合成中文会话（六类，每类 8/24 条消息），默认两轮共 48 条观测。
-默认运行时为 `2b434a0`，保留原提示词和 16384 字节输入预算；模型调用数不能代替 token 或整个服务成本。
+默认运行时为 `3089ce1`，保留原提示词和 16384 字节输入预算；模型调用数不能代替 token 或整个服务成本。默认引用必须是 main 上可达的提交：分支经 rebase 合并后旧 SHA 会消失。
 
 生产者按固定时间表投递，每个用户的调用按 FIFO 消费；即时模型调用阻塞时，后续消息仍进入客户端队列。
 这代表顺序消费的客户端，不是 HTTP 并发吞吐测试。中途刷新使用 `timeout=0` 捕获并强制已有内容，
