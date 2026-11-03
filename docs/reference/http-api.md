@@ -42,7 +42,7 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 消息 ID 在空间和会话内唯一；同 ID 同输入返回原事件及当前状态，不重置空闲计时，不重复生成。不同输入返回 409/message_conflict；批内冲突在任何写入前拒绝。不同 ID 的相同正文允许存在。
 新消息的原文和任务持久化后返回 HTTP 202、queued=true；messages 数组含事件 ID、消息 ID、序号及分项状态。接收不代表抽取完成。自动处理需要模型，新输入在写入前检查配置。
 
-`GET /v1/processing` 的 messages 区报告对话处理；`POST /v1/processing/flush` 同时冻结并等待相应消息范围。completed、failed、timed_out 和每条 core/summarization/error_code 区分完整成功、部分失败与尚未完成。retry_failed=true 显式重试缺项，普通读取不会重置次数。
+`GET /v1/processing` 返回 `session_id`、`generation`、`counts` 与 `jobs` 任务列表报告对话处理；`POST /v1/processing/flush` 同时冻结并等待相应消息范围。completed、failed、timed_out 和每条 `core`/`summarization`/`error_code` 区分完整成功、部分失败与尚未完成。retry_failed=true 显式重试缺项，普通读取不会重置次数。
 
 下方 `/v1/remember` 保留给单条原文/显式工作状态等非消息数组入口；它不生成对话消息身份，也不接管 `/v1/messages` 的联合任务。
 
@@ -56,12 +56,12 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 | processing | `immediate`；可选 `buffered`，需服务端启用 |
 | space | 未设置时写调用者 home；显式设置需有写权限 |
 
-默认同步提取并保存。正常长期写入返回 `ok`、`scope`、`extracted` 等；显式缓冲在原文和任务提交后返回 HTTP 202、`queued=true`、`processing=pending`、`episode_id`，此时不承诺抽取已完成。提取失败返回 502，错误详情说明 `stored_raw` 与记录 ID。显式 working 无需模型且立即完成。调用方应根据这些分支判断处理进度。
+默认同步提取并保存。正常长期写入返回 `ok`、`scope`、`extracted` 等；显式缓冲在原文和任务提交后返回 HTTP 202、`queued=true`、`episode_id`，此时不承诺抽取已完成；缓冲结果不含 `processing` 字段，进度请查询 `GET /v1/processing`。提取失败返回 502，错误详情说明 `stored_raw` 与记录 ID。显式 working 无需模型且立即完成。调用方应根据这些分支判断处理进度。
 
 ### 缓冲处理状态与刷新
 
-`GET /v1/processing` 支持可选 `session_id`、`space`（需读权限），返回状态计数与任务列表；任务包含事件编号、来源长度、完成位置、尝试次数、下次重试时间和脱敏错误码，不包含原文。
-`attempts` 为事件累计参与次数，`window_attempts` 为当前窗口的重试计数；同窗多个事件共享模型请求，不能将事件次数相加当成调用次数。
+`GET /v1/processing` 支持可选 `session_id`、`space`（需读权限），返回状态计数与任务列表；每个任务包含 `episode_id`、`message_id`、`source_kind`、`operation`、`sequence`、`state`、`phase`、`core`、`summarization`、`coverage`（含来源范围与部分标记）、`error_code`、`attempts` 和 `embed_attempts`，不包含原文。
+`attempts` 为事件所在窗口的模型调用重试计数，`embed_attempts` 为同一窗口的嵌入阶段重试计数；同窗多个事件共享模型请求，不能将事件次数相加当成调用次数。
 
 `POST /v1/processing/flush` 接受 `session_id=null`、`space=null`、`timeout=30`（0–300 秒）、`retry_failed=false`，需写权限。只等待请求捕获的已有任务，返回 `status=completed|failed|timed_out`，仅完成时 `ok=true`。设 `retry_failed=true` 才会重新处理失败或取消的任务。超时不删除已接收内容。
 仅有写权限时只返回 ok 和 status，不返回任务列表、计数或代次；任务详情仍要求读权限。
