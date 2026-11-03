@@ -76,7 +76,10 @@ class PipelineWorker:
                             self.users.move_to_end(user)
                 except Exception:
                     self.service.metrics.count('pipeline_failed')
-                    logging.getLogger(__name__).warning('Pipeline step failed; committed work remains recoverable')
+                    # 带堆栈记录：提交中途失败可能留下未提交的集合文件，只报一句
+                    # “work remains recoverable” 会让这类问题无法定位。
+                    logging.getLogger(__name__).exception(
+                        'Pipeline step failed; inspect the namespace store before retrying')
                 if self.abort.is_set():
                     break
             if not progress:
