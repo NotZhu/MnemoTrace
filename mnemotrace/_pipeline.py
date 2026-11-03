@@ -14,6 +14,10 @@ from .llm.base import complete_result
 from .store._validation import validate_embedding
 from .types import Fact, WorkingMemory
 
+# invalidate() 作废在途窗口（manual_change）与检测到快照更替的窗口取消（source_changed）
+# 都表示并发写到达，而非模型或配置失败。
+_CONFLICT_CODES = frozenset({'manual_change', 'source_changed'})
+
 
 def clock(service):
     return service._pipeline_worker.clock() if service._pipeline_worker else time.time()
@@ -627,29 +631,47 @@ def flush_memory(memory, namespace, session_id=None, timeout=30, retry_failed=Fa
     return flush(memory_adapter(memory, namespace), namespace, session_id, timeout, retry_failed)
 
 
+def _conflict_cancelled(result):
+    """并发写（invalidate）取消的窗口是良性冲突：源已落盘，可从新快照重做，
+    与模型失败必须区分开。仅当全部失败/取消都携带冲突码——没有 retry_wait、
+    embedding 失败等其他失败形态时才成立。"""
+    if not result['jobs']:
+        return False
+    marked = [job for job in result['jobs']
+              if job['state'] in {'failed', 'cancelled'} or job.get('error_code')]
+    return bool(marked) and all(job.get('error_code') in _CONFLICT_CODES for job in marked)
+
+
 def execute_sources(host, user, episodes, operation='extract', retry_failed=False, *, summaries=False):
-    with host.write_lock(user):
-        mem = host.get(user)
-        tasks = PipelineTasks(mem, user)
-        before_facts = {f.id for f in mem._all_facts()}
-        before_working = set(mem.working_mem)
-        before_summaries = {ep.id for ep in episodes if ep.summary}
-        before = {key: dict(win['stats']) for key, win in (tasks.state or {}).get('windows', {}).items()}
-        if operation in {'outcomes', 'conflicts'}:
-            enqueue_operation(mem, user, episodes, operation, clock(host))
-            ids = {ep.id for ep in episodes}
-        else:
-            ids = set(tasks.register(episodes, clock(host), operation, summaries=summaries))
-        host._save(user, mem)
-    result = flush(host, user, timeout=30, retry_failed=retry_failed, boundary=ids,
-                   fail_fast=True, operation=operation)
+    # 冲突取消只重试一次：force 的 explicit_reprepare 路径会基于当前快照重整被取消的
+    # 窗口；仍冲突说明写入方持续竞争，抛出专门的冲突异常交由调用方决定重试节奏。
+    for attempt in range(2):
+        with host.write_lock(user):
+            mem = host.get(user)
+            tasks = PipelineTasks(mem, user)
+            before_facts = {f.id for f in mem._all_facts()}
+            before_working = set(mem.working_mem)
+            before_summaries = {ep.id for ep in episodes if ep.summary}
+            before = {key: dict(win['stats']) for key, win in (tasks.state or {}).get('windows', {}).items()}
+            if operation in {'outcomes', 'conflicts'}:
+                enqueue_operation(mem, user, episodes, operation, clock(host))
+                ids = {ep.id for ep in episodes}
+            else:
+                ids = set(tasks.register(episodes, clock(host), operation, summaries=summaries))
+            host._save(user, mem)
+        result = flush(host, user, timeout=30, retry_failed=retry_failed or attempt > 0, boundary=ids,
+                       fail_fast=True, operation=operation)
+        if result['ok'] or not _conflict_cancelled(result):
+            break
     source_jobs = [j for j in result['jobs'] if 'core' in j]
     core_complete = ({j['episode_id'] for j in source_jobs} == ids and
                      all(j['core'] in {'completed', 'not_requested'} and j['state'] != 'cancelled' for j in source_jobs))
     auxiliary_failed = any('core' not in j and j['state'] in {'failed', 'cancelled'} for j in result['jobs'])
     if not result['ok'] and not (operation == 'extract' and core_complete and not auxiliary_failed):
+        from .extraction import ExtractionConflictError, ExtractionResponseError, ProcessingIncompleteError
+        if _conflict_cancelled(result):
+            raise ExtractionConflictError(stored_raw=bool(ids), episode_ids=sorted(ids))
         code = next((j['error_code'] for j in result['jobs'] if j.get('error_code')), 'processing_incomplete')
-        from .extraction import ExtractionResponseError, ProcessingIncompleteError
         error_type = {'llm_not_configured': LLMNotConfiguredError, 'extraction_invalid_response': ExtractionResponseError,
                       'extraction_truncated': ExtractionTruncatedError, 'processing_incomplete': ProcessingIncompleteError}.get(code, ExtractionError)
         raise error_type(stored_raw=bool(ids), episode_ids=sorted(ids))
