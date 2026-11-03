@@ -185,7 +185,7 @@ stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切�
 
 服务端 remember 的 auto/long 在原文写入前检查 LLM；working 无需模型。同步结果 scope 为 long/working/mixed/none，按过滤后的有效事实、身份更新和工作条目计算；已有重复事实仍算长期内容，身份更新可返回 long 且 extracted=0。extracted 与 working_added 只统计当前输入新增的长期事实和工作条目，不包含同批其他待处理输入。异步接收返回 queued=true、episode_id，尚无最终 scope 或抽取数量。
 
-缺少模型返回 HTTP 503 / llm_not_configured；调用失败返回 502 / extraction_failed；响应无效返回 502 / extraction_invalid_response；输出截断返回 502 / extraction_truncated。关闭会话时缓冲刷新失败、超时或来源已被擦除，返回 503 / processing_incomplete，不执行后续摘要和清理。detail 包含 code、message、stored_raw、episode_ids。stored_raw=true 表示原文已保存，不必重复上传；缓冲任务需要通过刷新接口显式重试 failed/cancelled 后再关闭会话，即时抽取可重新关闭会话重试。会话状态、报告和命名空间统计的 extraction_failures 表示待处理错误的事件数，MCP 的 JSON 和文本均展示此计数。
+缺少模型返回 HTTP 503 / llm_not_configured；调用失败返回 502 / extraction_failed；并发写作废在途抽取返回 409 / extraction_conflict（服务端已自动从新快照重试一次，仍冲突时由调用方决定重试时机）；响应无效返回 502 / extraction_invalid_response；输出截断返回 502 / extraction_truncated。关闭会话时缓冲刷新失败、超时或来源已被擦除，返回 503 / processing_incomplete，不执行后续摘要和清理。detail 包含 code、message、stored_raw、episode_ids。stored_raw=true 表示原文已保存，不必重复上传；缓冲任务需要通过刷新接口显式重试 failed/cancelled 后再关闭会话，即时抽取可重新关闭会话重试。会话状态、报告和命名空间统计的 extraction_failures 表示待处理错误的事件数，MCP 的 JSON 和文本均展示此计数。
 
 stats.counts.episodes_ephemeral 统计包含临时记忆内容的历史事件，包括最终 scope 为 working 或 mixed 的事件；不表示整条事件均为临时内容，也不等于当前存活的 working_live 条目数。清理工作记忆后，历史事件计数仍保留。
 

@@ -304,7 +304,8 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
                         working=[asdict(w) for w in mem.working_mem.values()], identity=dict(mem._identity),
                         episodes=[asdict(e) for e in mem.episodes_doc.values()], processing=mem._pipeline_state)
         except Exception as exc:
-            errors.append(getattr(exc, 'code', type(exc).__name__))
+            label = getattr(exc, 'code', type(exc).__name__)
+            errors.append(f'{label}: {exc}' if str(exc) else str(label))
             arrivals = list(times.values())
         finally:
             if service:
@@ -321,7 +322,8 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
                     raise ValueError('Replay restore mismatch')
     except Exception as exc:
         restored = False
-        errors.append(type(exc).__name__)
+        # 记录完整信息：严格快照恢复的 StoreFormatError 只凭类名无法区分是哪条校验失败。
+        errors.append(f'{type(exc).__name__}: {exc}' if str(exc) else type(exc).__name__)
     final, raw = final_state(snapshots, episodes), raw_state(windows, episodes)
     complete = (restored and len(times) == len(case['events']) and all('completed_at' in t for t in times.values())
                 and not errors and all(r['status'] == 'completed' for r in arrivals)

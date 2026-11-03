@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from mnemotrace import _flock
+from mnemotrace import _pipeline
 
 from mnemotrace import Memory
 from mnemotrace.embed import HashingEmbedder
@@ -608,6 +609,24 @@ def test_concurrent_migration_preserves_both_process_writes(tmp_path, mismatch):
     disk = Memory.open(svc._path("u"), embedder=migration_embedder(mismatch))
     assert {"old", "next"} <= objects(disk)
     assert any("Syntheticville" in ep.content for ep in disk.episodes_doc.values())
+
+
+def test_manual_write_during_inline_extraction_retries_from_fresh_snapshot(tmp_path, monkeypatch):
+    svc = service(tmp_path)
+    real_complete = _pipeline.complete_result
+    raced = threading.Event()
+
+    def racing_complete(meter, prompt, **kwargs):
+        # 并发写恰好在首次抽取生成期间到达：invalidate 作废在途窗口，命中 manual_change。
+        if not raced.is_set():
+            raced.set()
+            svc.add_fact("u", "project", "manual_marker", "manual")
+        return real_complete(meter, prompt, **kwargs)
+
+    monkeypatch.setattr(_pipeline, "complete_result", racing_complete)
+    result = svc.remember("u", "I live in Syntheticville.", scope="long")
+    assert result["ok"] and not result["queued"]
+    assert objects(service(tmp_path).get("u")) == {"Syntheticville", "manual"}
 
 
 @pytest.mark.parametrize("step", ["reembed", "save"])

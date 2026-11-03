@@ -35,6 +35,13 @@ class ProcessingIncompleteError(ExtractionError):
     message = 'Session processing is incomplete; inspect processing status before retrying close.'
 
 
+class ExtractionConflictError(ExtractionError):
+    code = "extraction_conflict"
+    status_code = 409
+    message = ("A concurrent write to this namespace invalidated in-flight extraction; "
+               "the source is stored raw — retry consolidation or flush again later.")
+
+
 class ExtractionResponseError(ExtractionError):
     code = "extraction_invalid_response"
     message = "The model returned an invalid extraction response; check its prompt and retry."
