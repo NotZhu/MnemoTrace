@@ -105,6 +105,7 @@ def compare(events: int, runs: int, extractor: str | None = None) -> dict:
 
 
 def main() -> int:
+    from buffered_replay_comparison import DEFAULT_RUNTIME
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--events", type=int, default=24)
     parser.add_argument("--runs", type=int, help='Default: 2 replay, 3 extraction-only')
@@ -112,11 +113,11 @@ def main() -> int:
     parser.add_argument("--out", type=Path)
     parser.add_argument('--quality', action='store_true', help='Run frozen service quality comparison; --out is a new directory')
     parser.add_argument('--buffered-replay', action='store_true', help='Replay a fixed arrival stream against one runtime')
-    parser.add_argument('--runtime-ref', default='2b434a0')
+    parser.add_argument('--runtime-ref', default=DEFAULT_RUNTIME)
     parser.add_argument('--cases', help='Comma-separated continuous replay case IDs')
     parser.add_argument('--pilot-only', action='store_true')
     parser.add_argument('--resume', action='store_true', help='Only append never-started observations')
-    parser.add_argument('--baseline-ref', default='5ee0cda')
+    parser.add_argument('--baseline-ref', default='85a4ebc')
     parser.add_argument('--candidate-ref', default='HEAD')
     parser.add_argument('--report', type=Path, help='Recompute and validate an existing quality directory without model calls')
     parser.add_argument('--max-calls', type=int, default=2000)

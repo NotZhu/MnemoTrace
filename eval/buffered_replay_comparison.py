@@ -28,6 +28,9 @@ def _optional_version(name):
 
 HARNESS = Path(__file__).parent
 ROOT = HARNESS.parent
+# 冻结的对照运行时。必须是 main 上可达的提交：分支被 rebase 后旧 SHA 会消失，
+# 默认值随之无法解析（同一内容在 main 上的改写副本是 3089ce1）。
+DEFAULT_RUNTIME = '3089ce1'
 FILES = ('buffered_replay.py', 'buffered_replay_runner.py', 'buffered_replay_report.py',
          'buffered_replay_comparison.py', 'extraction_quality.py', 'extraction_budget.py',
          'extraction_runner.py', 'extraction_comparison.py')
@@ -81,7 +84,7 @@ def interrupted_row(out, case_id, mode, run, fingerprint, reason):
         commits=commits, selections=selections, final={}, raw={}, budgets={}, inflight_observed=False)
 
 
-def compare(out, *, runtime='2b434a0', extractor=None, cases=None, runs=2, pilot_only=False, resume=False,
+def compare(out, *, runtime=DEFAULT_RUNTIME, extractor=None, cases=None, runs=2, pilot_only=False, resume=False,
             max_calls=2000, max_tokens=3_000_000, max_seconds=14400):
     if runs < 1:
         raise ValueError('runs must be positive')

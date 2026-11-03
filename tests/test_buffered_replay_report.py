@@ -170,7 +170,8 @@ def test_missing_usage_stops_new_children_and_resume_preserves_ledger(modules, m
     from mnemotrace.llm import providers
     monkeypatch.setattr(providers, 'load_dotenv', lambda: None)
     monkeypatch.setenv('DEEPSEEK_API_KEY', 'synthetic-test-key')
-    revision = comparison.subprocess.check_output(['git','rev-parse','2b434a0'], cwd=comparison.ROOT, text=True).strip()
+    revision = comparison.subprocess.check_output(
+        ['git', 'rev-parse', comparison.DEFAULT_RUNTIME], cwd=comparison.ROOT, text=True).strip()
     def export(ref, target):
         target.mkdir()
         return revision
