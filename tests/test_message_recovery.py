@@ -578,10 +578,13 @@ def test_flush_discovers_namespaces_without_user(services, monkeypatch):
 
 
 def test_extraction_conflict_importable_and_carries_ids():
-    """#19：409 extraction_conflict 的对外契约要有守护——异常可从包根导入且带 stored_raw/episode_ids。"""
+    """#19：409 extraction_conflict 的对外契约要有守护——异常可从包根导入、列入 __all__、
+    且带 stored_raw/episode_ids。仅断言可导入不足：删掉 __all__ 条目时模块属性仍在，
+    契约已经偏离但测试仍绿。"""
     import mnemotrace
     from mnemotrace import ExtractionConflictError
     assert mnemotrace.ExtractionConflictError is ExtractionConflictError
+    assert 'ExtractionConflictError' in mnemotrace.__all__
     exc = ExtractionConflictError(stored_raw=True, episode_ids=['e1', 'e2'])
     assert exc.code == 'extraction_conflict' and exc.status_code == 409
     assert exc.detail() == {'code': 'extraction_conflict', 'message': exc.message,
