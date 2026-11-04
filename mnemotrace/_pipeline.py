@@ -519,6 +519,28 @@ def run_one(service, user):
         return True
 
 
+def raise_for_failed_result(result, ids):
+    """把一次 flush 的失败结果映射成与 /v1/remember 一致的异常。
+
+    immediate 语义要求同步返回结果，失败必须能被调用方识别，而不是悄悄返回 200。
+    冲突取消与模型失败分别映射为 ExtractionConflictError 与其他 ExtractionError 子类，
+    携带 stored_raw 与 episode_ids，和 execute_sources 的错误语义保持一致。
+    """
+    from .extraction import ExtractionConflictError, ExtractionResponseError, ProcessingIncompleteError
+    ids = set(ids)
+    if _conflict_cancelled(result):
+        raise ExtractionConflictError(stored_raw=bool(ids), episode_ids=sorted(ids))
+    code = next((j.get('error_code') for j in result.get('jobs', []) if j.get('error_code')),
+                'processing_incomplete')
+    error_type = {
+        'llm_not_configured': LLMNotConfiguredError,
+        'extraction_invalid_response': ExtractionResponseError,
+        'extraction_truncated': ExtractionTruncatedError,
+        'processing_incomplete': ProcessingIncompleteError,
+    }.get(code, ExtractionError)
+    raise error_type(stored_raw=bool(ids), episode_ids=sorted(ids))
+
+
 def flush(service, user, session_id=None, timeout=30, retry_failed=False, boundary=None, *, fail_fast=False, operation=None):
     if type(timeout) not in (int, float) or not 0 <= timeout <= 300:
         raise ValueError('timeout must be between 0 and 300 seconds')
@@ -672,13 +694,7 @@ def execute_sources(host, user, episodes, operation='extract', retry_failed=Fals
                      all(j['core'] in {'completed', 'not_requested'} and j['state'] != 'cancelled' for j in source_jobs))
     auxiliary_failed = any('core' not in j and j['state'] in {'failed', 'cancelled'} for j in result['jobs'])
     if not result['ok'] and not (operation == 'extract' and core_complete and not auxiliary_failed):
-        from .extraction import ExtractionConflictError, ExtractionResponseError, ProcessingIncompleteError
-        if _conflict_cancelled(result):
-            raise ExtractionConflictError(stored_raw=bool(ids), episode_ids=sorted(ids))
-        code = next((j['error_code'] for j in result['jobs'] if j.get('error_code')), 'processing_incomplete')
-        error_type = {'llm_not_configured': LLMNotConfiguredError, 'extraction_invalid_response': ExtractionResponseError,
-                      'extraction_truncated': ExtractionTruncatedError, 'processing_incomplete': ProcessingIncompleteError}.get(code, ExtractionError)
-        raise error_type(stored_raw=bool(ids), episode_ids=sorted(ids))
+        raise_for_failed_result(result, ids)
     with host._read_scope(user) as mem:
         tasks = PipelineTasks(mem, user)
         stats = mem.writer.empty_stats()
