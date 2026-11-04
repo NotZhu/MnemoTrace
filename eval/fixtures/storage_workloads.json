@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "seed": 20261104,
+  "dimension": 64,
+  "model": "synthetic-uniform-64-v1",
+  "cases": [
+    {"name": "many-small", "spaces": 1000, "facts_per_space": 100, "large_space_facts": 100},
+    {"name": "one-large", "spaces": 1, "facts_per_space": 100000, "large_space_facts": 100000},
+    {"name": "skewed", "spaces": 1000, "facts_per_space": 100, "large_space_facts": 100000}
+  ],
+  "query_space_indices": [0, 1, 9, 99, 999],
+  "queries": ["Where does Person-0 work?", "Company-42", "works at Company-99"],
+  "query_vector_seed": 20261105,
+  "filter_buckets": [1, 10, 100],
+  "time_views": ["current", "before-invalidation", "all-history"],
+  "top_k": [6, 20],
+  "candidate_limits": [100, 1000],
+  "concurrency": [1, 8],
+  "warmup_per_query": 5,
+  "measured_repeats_per_query": 30,
+  "measure": ["exact_filtered_ids", "approx_recall_at_k", "returned_count", "retrieval_p50_ms", "retrieval_p95_ms"],
+  "database_status": "not_run"
+}
