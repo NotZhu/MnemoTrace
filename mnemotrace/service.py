@@ -25,7 +25,7 @@ from ._namespace_lock import NamespaceLock, namespace_lock
 from ._namespace_paths import contained_child, namespace_directory, namespace_path
 from .localize import display_of
 from .memory import Memory
-from .extraction import BufferedProcessingDisabledError, ProcessingIncompleteError, require_llm
+from .extraction import BufferedProcessingDisabledError, ExtractionError, ProcessingIncompleteError, require_llm
 from .metrics import Metrics, timed
 from .store._validation import is_snapshot_candidate
 from .store.persist import (
@@ -732,8 +732,20 @@ class MemoryService:
                     stats[key] += result.get(key, 0)
                 continue
             if extract:
-                result = self.remember_messages(user, messages, sid, mode='historical',
-                    processing='buffered' if consolidate is None else 'immediate')
+                try:
+                    result = self.remember_messages(user, messages, sid, mode='historical',
+                        processing='buffered' if consolidate is None else 'immediate')
+                except ExtractionError as exc:
+                    # 批量导入单条会话抽取失败不应中止整批：原文已持久化（stored_raw），
+                    # 失败记录到 stats 供调用方查看，其余会话继续导入。immediate 抽取的
+                    # 严格报错语义只属于单条 /v1/messages 入口。
+                    stats['failed'] = stats.get('failed', 0) + 1
+                    stats.setdefault('failures', []).append({
+                        'session_id': sid, 'code': exc.code,
+                        'stored_raw': exc.stored_raw, 'episode_ids': list(exc.episode_ids)})
+                    results.append({'session_id': sid, 'accepted': 0, 'ok': False,
+                                    'error_code': exc.code})
+                    continue
                 added = result['accepted']
                 results.append(result)
                 if 'source' in record.get('metadata', {}):

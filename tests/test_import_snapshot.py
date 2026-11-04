@@ -172,3 +172,24 @@ def test_http_invalid_snapshot_is_400_and_does_not_partially_import(client):
     assert "provenance" in response.json()["detail"]
     restored = client.get("/v1/export", params={"include_sensitive": "true"}, headers=_hdr("dst")).json()
     assert restored["facts"] == restored["episodes"] == []
+
+def test_import_session_extraction_failure_does_not_abort_batch():
+    """批量导入时单条会话抽取失败不应中止整批：原文已落库，失败计入 stats，其余继续。"""
+    d = tempfile.mkdtemp(prefix="mnemotrace_impfail_")
+    try:
+        svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
+        sessions = [
+            {"session_id": "s-fail", "messages": [{"role": "user", "content": "Synthetic UNKNOWN XXXX"}]},
+            {"session_id": "s-ok", "messages": [{"role": "user", "content": "I have a dog named Mochi."}]},
+        ]
+        out = svc.import_("importer", sessions=sessions, consolidate=True)
+        assert out["ok"] is True                       # 整体不因单条失败而报错
+        assert out["failed"] == 1                      # 失败会话被计数
+        failure, = out["failures"]
+        assert failure["session_id"] == "s-fail" and failure["code"] == "extraction_failed"
+        assert failure["stored_raw"] is True and failure["episode_ids"]
+        # 两条原文都已持久化（失败的也 stored_raw），成功会话已抽取
+        assert len(list(svc.get("importer").episodes_doc.values())) == 2
+        assert out["episodes"] == 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
