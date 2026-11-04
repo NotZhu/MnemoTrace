@@ -606,10 +606,15 @@ class MemoryService:
         if fresh and self._pipeline_worker:
             self._pipeline_worker.notify(user)
         if processing == 'immediate' and fresh:
-            from ._pipeline import flush
-            result['processing'] = flush(self, user, session_id, boundary=set(ids))
+            from ._pipeline import flush, raise_for_failed_result
+            processing_result = flush(self, user, session_id, boundary=set(ids))
+            result['processing'] = processing_result
             with self._read_scope(user) as mem:
                 result['messages'] = PipelineTasks(mem, user).response(ids)['messages']
+            # immediate 语义要求同步返回结果：失败必须让调用方看到，而不是返回 200/202 静默成功。
+            # 与 /v1/remember 一致，按失败类型抛出携带 stored_raw/episode_ids 的 ExtractionError。
+            if not processing_result['ok']:
+                raise_for_failed_result(processing_result, ids)
         result['queued'] = any(r['state'] in {'pending', 'running', 'retry_wait'} for r in result['messages'])
         return result
 

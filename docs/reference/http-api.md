@@ -40,7 +40,7 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 `mode` 默认为 live；historical 不创建活跃工作记忆。`processing` 默认为 buffered，可显式 immediate；`scope` 支持 auto/long。`space` 的写权限由服务端校验。
 
 消息 ID 在空间和会话内唯一；同 ID 同输入返回原事件及当前状态，不重置空闲计时，不重复生成。不同输入返回 409/message_conflict；批内冲突在任何写入前拒绝。不同 ID 的相同正文允许存在。
-新消息的原文和任务持久化后返回 HTTP 202、queued=true；messages 数组含事件 ID、消息 ID、序号及分项状态。接收不代表抽取完成。自动处理需要模型，新输入在写入前检查配置。
+新消息的原文和任务持久化后返回 HTTP 202、queued=true；messages 数组含事件 ID、消息 ID、序号及分项状态。接收不代表抽取完成。自动处理需要模型，新输入在写入前检查配置。`processing=immediate` 时同步等待抽取完成：成功返回 200，失败按失败类型返回 4xx/5xx（与 `/v1/remember` 一致，错误详情含 `stored_raw` 与 `episode_ids`），不再以 200/202 静默成功。
 
 `GET /v1/processing` 返回 `session_id`、`generation`、`counts` 与 `jobs` 任务列表报告对话处理；`POST /v1/processing/flush` 同时冻结并等待相应消息范围。completed、failed、timed_out 和每条 `core`/`summarization`/`error_code` 区分完整成功、部分失败与尚未完成。retry_failed=true 显式重试缺项，普通读取不会重置次数。
 

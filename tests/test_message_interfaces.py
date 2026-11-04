@@ -67,3 +67,30 @@ async def test_mcp_local_and_remote_use_same_messages(services):
         assert await remote.remember_messages([message('a')], 's', 'historical') == result
     assert requests[0].url.path == '/v1/messages'
     assert json.loads(requests[0].content)['messages'][0]['role'] == 'user'
+
+def test_http_immediate_extraction_failure_is_reported_not_200(services, monkeypatch):
+    """#10：/v1/messages 的 immediate 抽取失败必须让调用方看到（与 /v1/remember 一致），
+    不能返回 200 或 202 顶层 ok=True 把失败当成功。"""
+    from fastapi.testclient import TestClient
+    from mnemotrace.server import app as appmod
+    from mnemotrace.llm import FakeLLM
+
+    def broken(prompt, system):
+        raise RuntimeError('synthetic model failure')
+
+    svc, _, _ = services()
+    svc.llm = FakeLLM(handler=broken)
+    monkeypatch.setattr(appmod, '_svc', svc)
+    monkeypatch.setenv('MNEMOTRACE_SPACES', json.dumps({'synthetic-key': {'home': 'u', 'read': ['u'], 'write': ['u']}}))
+    monkeypatch.setenv('MNEMOTRACE_API_KEYS', '')
+    headers = {'Authorization': 'Bearer synthetic-key'}
+    with TestClient(appmod.app) as client:
+        payload = dict(session_id='s', processing='immediate', messages=[message('a')])
+        resp = client.post('/v1/messages', headers=headers, json=payload)
+        # 失败必须以错误状态码暴露，而不是 200/202 的“成功”外观。
+        assert resp.status_code >= 400, resp.status_code
+        body = resp.json()
+        detail = body.get('detail', {})
+        assert detail.get('stored_raw') is True and detail.get('episode_ids')
+        assert detail.get('code') in {'extraction_failed', 'processing_incomplete',
+                                      'extraction_invalid_response', 'extraction_conflict'}
