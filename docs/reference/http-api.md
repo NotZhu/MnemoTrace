@@ -189,7 +189,7 @@ stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切�
 
 stats.counts.episodes_ephemeral 统计包含临时记忆内容的历史事件，包括最终 scope 为 working 或 mixed 的事件；不表示整条事件均为临时内容，也不等于当前存活的 working_live 条目数。清理工作记忆后，历史事件计数仍保留。
 
-导入先去重，再根据新增内容和相关 pending 判断是否需要抽取；全部重复且已完成时，无需 LLM 即可返回 skipped（包括 consolidate=true）。实际需要抽取时，在新输入写入前采用相同预检与错误语义；consolidate=false 可仅存原文。agent-session 默认在关闭会话时提炼结论；需要模型但未配置时明确报错，不静默跳过。失败不会提前清理工作记忆。服务端强制关闭 outcomes 的设置仍优先。
+导入先去重，再根据新增内容和相关 pending 判断是否需要抽取；全部重复且已完成时，无需 LLM 即可返回 skipped（包括 consolidate=true）。实际需要抽取时，在新输入写入前采用相同预检与错误语义；consolidate=false 可仅存原文。agent-session 默认在关闭会话时提炼结论；需要模型但未配置时明确报错，不静默跳过。失败不会提前清理工作记忆。服务端强制关闭 outcomes 的设置仍优先。批量导入时单个会话的抽取失败不会中止整批：原文仍持久化（`stored_raw=true`），响应 `ok` 保持 `true` 并以 `failed` 计数与 `failures` 列表（含 `session_id`、`code`、`stored_raw`、`episode_ids`）报告，其余会话继续导入；这与单条 `/v1/messages` immediate 的严格报错语义不同。
 
 完整抽取协议见 [Python API](python-api.md#模型抽取与错误契约)。
 
