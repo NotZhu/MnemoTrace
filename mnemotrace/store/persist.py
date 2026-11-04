@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import fields
@@ -19,6 +20,9 @@ from ._validation import (
     COLLECTIONS, validate_manifest, validate_record, validate_state,
 )
 from .memory_store import InMemoryDocStore, InMemoryGraphStore
+
+_MANIFEST_OPEN_ATTEMPTS = 10
+_MANIFEST_OPEN_RETRY_SECONDS = 0.01
 
 
 class PersistenceError(Exception):
@@ -46,8 +50,18 @@ def _open_manifest(path: str):
     # CRT 的 open() 不允许共享删除；版本检查须允许原子提交，
     # 即使另一进程仍持有旧 manifest 的读取句柄也不能阻止替换。
     share_read_write_delete = 0x1 | 0x2 | 0x4
-    handle = _winapi.CreateFile(path, _winapi.GENERIC_READ, share_read_write_delete,
-                               0, _winapi.OPEN_EXISTING, 0x80, 0)
+    for attempt in range(_MANIFEST_OPEN_ATTEMPTS):
+        try:
+            handle = _winapi.CreateFile(path, _winapi.GENERIC_READ, share_read_write_delete,
+                                       0, _winapi.OPEN_EXISTING, 0x80, 0)
+            break
+        except OSError as exc:
+            # ReplaceFileW can briefly deny new opens while replacing the name.
+            # Retry only sharing violations; permission errors and corruption
+            # remain visible, and a persistent lock exhausts this bounded wait.
+            if exc.winerror != 32 or attempt + 1 == _MANIFEST_OPEN_ATTEMPTS:
+                raise
+            time.sleep(_MANIFEST_OPEN_RETRY_SECONDS)
     try:
         fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
     except BaseException:  # noqa: BLE001 -- 句柄所有权尚未转交给 CRT，失败时须自行关闭
