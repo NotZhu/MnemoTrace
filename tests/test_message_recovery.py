@@ -589,3 +589,45 @@ def test_extraction_conflict_importable_and_carries_ids():
     assert exc.code == 'extraction_conflict' and exc.status_code == 409
     assert exc.detail() == {'code': 'extraction_conflict', 'message': exc.message,
                             'stored_raw': True, 'episode_ids': ['e1', 'e2']}
+
+def test_raise_for_failed_result_tolerates_core_success_aux_failure():
+    """核心事实已落库、仅摘要等辅助步骤失败时，不应抛错（与 execute_sources 一致），
+    否则 immediate 客户端会误以为整批失败而重试，可能重复写入。"""
+    from mnemotrace._pipeline import raise_for_failed_result, extract_partial_success
+    # core 完成、摘要失败
+    partial = dict(ok=False, status='failed', jobs=[
+        dict(episode_id='a', core='completed', summarization='failed', state='failed',
+             error_code='summary_invalid_response')])
+    assert extract_partial_success(partial, {'a'}) is True
+    raise_for_failed_result(partial, {'a'})  # 不抛
+    # 核心本身失败 -> 必须抛
+    core_failed = dict(ok=False, status='failed', jobs=[
+        dict(episode_id='a', core='failed', summarization='pending', state='failed',
+             error_code='extraction_failed')])
+    assert extract_partial_success(core_failed, {'a'}) is False
+    with pytest.raises(Exception):
+        raise_for_failed_result(core_failed, {'a'})
+    # 辅助失败但核心未全部完成（缺 id）-> 抛
+    incomplete = dict(ok=False, status='failed', jobs=[
+        dict(episode_id='a', core='completed', summarization='failed', state='failed',
+             error_code='summary_invalid_response')])
+    assert extract_partial_success(incomplete, {'a', 'b'}) is False
+    with pytest.raises(Exception):
+        raise_for_failed_result(incomplete, {'a', 'b'})
+
+
+def test_immediate_messages_core_success_summary_failure_does_not_raise(services, monkeypatch):
+    """immediate 且核心事实已落库、仅摘要失败时，/v1/messages 不应抛错（facts 已成功）。"""
+    import mnemotrace._pipeline as pipeline
+    svc, _, _ = services()
+    # 伪造一个“部分成功”的 flush 结果
+    def fake_flush(host, user, *args, **kwargs):
+        real_ids = list(kwargs.get('boundary') or [])
+        return dict(ok=False, status='failed', session_id=None, generation='g',
+                    counts={'failed': 1}, jobs=[
+                        dict(episode_id=real_ids[0], core='completed', summarization='failed',
+                             state='failed', error_code='summary_invalid_response')])
+    monkeypatch.setattr(pipeline, 'flush', fake_flush)
+    result = svc.remember_messages('u', [message('a')], 's', processing='immediate')
+    assert result['ok'] is True  # 不因辅助失败而整批报错
+    assert result['processing']['ok'] is False  # 但仍如实反映 processing 失败明细

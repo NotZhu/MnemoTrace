@@ -519,14 +519,38 @@ def run_one(service, user):
         return True
 
 
-def raise_for_failed_result(result, ids):
+def extract_partial_success(result, ids, operation='extract'):
+    """抽取窗口的“部分成功”：核心事实已全部落库，仅摘要等辅助步骤失败。
+
+    这种情形 facts 已持久化，调用方不应把它当成整批失败去重试。返回 True 表示
+    “虽然 result['ok'] 为 False，但不需要抛错”。execute_sources 与 /v1/messages 的
+    immediate 分支共用同一判定，避免两处语义漂移。
+    """
+    if result.get('ok'):
+        return False
+    ids = set(ids)
+    if operation != 'extract':
+        return False
+    source_jobs = [j for j in result.get('jobs', []) if 'core' in j]
+    core_complete = ({j['episode_id'] for j in source_jobs} == ids and
+                     all(j['core'] in {'completed', 'not_requested'} and j['state'] != 'cancelled'
+                         for j in source_jobs))
+    auxiliary_failed = any('core' not in j and j['state'] in {'failed', 'cancelled'}
+                           for j in result.get('jobs', []))
+    return core_complete and not auxiliary_failed
+
+
+def raise_for_failed_result(result, ids, operation='extract'):
     """把一次 flush 的失败结果映射成与 /v1/remember 一致的异常。
 
     immediate 语义要求同步返回结果，失败必须能被调用方识别，而不是悄悄返回 200。
     冲突取消与模型失败分别映射为 ExtractionConflictError 与其他 ExtractionError 子类，
     携带 stored_raw 与 episode_ids，和 execute_sources 的错误语义保持一致。
+    “核心成功、仅辅助失败”的部分成功不在此抛错（见 extract_partial_success）。
     """
     from .extraction import ExtractionConflictError, ExtractionResponseError, ProcessingIncompleteError
+    if extract_partial_success(result, ids, operation):
+        return
     ids = set(ids)
     if _conflict_cancelled(result):
         raise ExtractionConflictError(stored_raw=bool(ids), episode_ids=sorted(ids))
@@ -689,12 +713,8 @@ def execute_sources(host, user, episodes, operation='extract', retry_failed=Fals
                        fail_fast=True, operation=operation)
         if result['ok'] or not _conflict_cancelled(result):
             break
-    source_jobs = [j for j in result['jobs'] if 'core' in j]
-    core_complete = ({j['episode_id'] for j in source_jobs} == ids and
-                     all(j['core'] in {'completed', 'not_requested'} and j['state'] != 'cancelled' for j in source_jobs))
-    auxiliary_failed = any('core' not in j and j['state'] in {'failed', 'cancelled'} for j in result['jobs'])
-    if not result['ok'] and not (operation == 'extract' and core_complete and not auxiliary_failed):
-        raise_for_failed_result(result, ids)
+    if not result['ok']:
+        raise_for_failed_result(result, ids, operation)
     with host._read_scope(user) as mem:
         tasks = PipelineTasks(mem, user)
         stats = mem.writer.empty_stats()
