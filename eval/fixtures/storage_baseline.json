@@ -1,0 +1,691 @@
+{
+  "format_version": 1,
+  "clock": 1710368000.0,
+  "config": {
+    "storage": "memory",
+    "data_path": null,
+    "qdrant_url": null,
+    "qdrant_api_key": null,
+    "qdrant_namespace": null,
+    "qdrant_collection_prefix": "mnemotrace",
+    "qdrant_timeout": 10.0,
+    "embed_dim": 256,
+    "top_k": 5,
+    "candidate_k": 24,
+    "ann_candidates": false,
+    "ann_pool": 200,
+    "w_sem": 1.0,
+    "w_lex": 0.6,
+    "w_graph": 0.8,
+    "w_rec": 0.3,
+    "w_sal": 0.25,
+    "w_type_preference": 1.25,
+    "w_type_identity": 1.15,
+    "recency_tau_days": 45.0,
+    "rrf_k": 60,
+    "abstain_threshold": 0.45,
+    "extraction_max_input_bytes": 16384,
+    "extraction_context_bytes": 2048,
+    "joint_max_output_tokens": 8192,
+    "joint_core_output_tokens": 2048,
+    "joint_summary_output_tokens": 2048,
+    "joint_context_tokens": null,
+    "explicit_preference_extraction": true,
+    "preference_object_filter": true,
+    "preference_object_normalization": true,
+    "preference_reversal_extraction": true,
+    "llm_topics": true,
+    "procedural_extraction": true,
+    "session_outcomes": true,
+    "max_hot_facts": 10000,
+    "salience_decay_per_day": 0.02,
+    "access_boost": 0.5,
+    "conflict_sim_threshold": 0.8,
+    "conflict_llm_escalation": false,
+    "conflict_detection": false,
+    "working_memory_ttl_seconds": 86400.0,
+    "summary_min_chars": 2000,
+    "summary_max_chars": 800,
+    "summary_max_input_bytes": 16384,
+    "summary_max_output_tokens": 1024,
+    "evidence_planner": true,
+    "evidence_budgeting": true,
+    "numeric_aggregation_candidates": true,
+    "aggregation_recall_expansion": true,
+    "aggregation_constraint_filter": true,
+    "aggregation_pool_boost": true,
+    "summary_fallback": true,
+    "summary_fallback_k": 6,
+    "procedural_memory": true,
+    "procedural_memory_k": 6,
+    "chain_evidence": true,
+    "temporal_history_queries": true,
+    "chain_current_first": true,
+    "provenance_chunk_promotion": true,
+    "provenance_evidence": true,
+    "max_hops": 2,
+    "graph_proximity": true,
+    "graph_relation_awareness": true,
+    "graph_path_reinforcement": true,
+    "graph_self_anchor": true,
+    "graph_entity_alias_anchor": true,
+    "graph_negative_constraints": true,
+    "planner_location_chains": true,
+    "planner_project_chains": true,
+    "planner_llm_decomposition": true
+  },
+  "rows": [
+    {
+      "id": "sh1",
+      "category": "single_hop",
+      "question": "Where does Ana work?",
+      "gold": "Spotify",
+      "storage": "memory",
+      "ok": true,
+      "answer": "Spotify",
+      "abstained": false,
+      "tokens": 9,
+      "fact_ids": [
+        "fact-2",
+        "fact-1"
+      ],
+      "naive_ok": true,
+      "naive_tokens": 15
+    },
+    {
+      "id": "sh2",
+      "category": "single_hop",
+      "question": "What is Cara's favorite color?",
+      "gold": "blue",
+      "storage": "memory",
+      "ok": true,
+      "answer": "blue",
+      "abstained": false,
+      "tokens": 4,
+      "fact_ids": [
+        "fact-1"
+      ],
+      "naive_ok": true,
+      "naive_tokens": 10
+    },
+    {
+      "id": "ku1",
+      "category": "knowledge_update",
+      "question": "Where does Ben live?",
+      "gold": "Denver",
+      "storage": "memory",
+      "ok": true,
+      "answer": "Denver",
+      "abstained": false,
+      "tokens": 4,
+      "fact_ids": [
+        "fact-2"
+      ],
+      "naive_ok": true,
+      "naive_tokens": 16
+    },
+    {
+      "id": "ku2",
+      "category": "knowledge_update",
+      "question": "What is Cara's favorite color?",
+      "gold": "green",
+      "storage": "memory",
+      "ok": true,
+      "answer": "green",
+      "abstained": false,
+      "tokens": 4,
+      "fact_ids": [
+        "fact-2"
+      ],
+      "naive_ok": true,
+      "naive_tokens": 16
+    },
+    {
+      "id": "mh1",
+      "category": "multi_hop",
+      "question": "Where does Dora's colleague work?",
+      "gold": "Netflix",
+      "storage": "memory",
+      "ok": true,
+      "answer": "Netflix",
+      "abstained": false,
+      "tokens": 7,
+      "fact_ids": [
+        "fact-1",
+        "fact-2"
+      ],
+      "naive_ok": true,
+      "naive_tokens": 10
+    },
+    {
+      "id": "mh2",
+      "category": "multi_hop",
+      "question": "What is the profession of the user's sister who moved to Seattle?",
+      "gold": "pediatrician",
+      "storage": "memory",
+      "ok": true,
+      "answer": "pediatrician",
+      "abstained": false,
+      "tokens": 10,
+      "fact_ids": [
+        "fact-3",
+        "fact-1",
+        "fact-2"
+      ],
+      "naive_ok": true,
+      "naive_tokens": 29
+    },
+    {
+      "id": "tmp1",
+      "category": "temporal",
+      "question": "Where does Finn work?",
+      "gold": "IBM",
+      "storage": "memory",
+      "ok": true,
+      "answer": "IBM",
+      "abstained": false,
+      "tokens": 4,
+      "fact_ids": [
+        "fact-1"
+      ],
+      "naive_ok": false,
+      "naive_tokens": 14
+    },
+    {
+      "id": "tmp2",
+      "category": "temporal",
+      "question": "Where does Finn work?",
+      "gold": "Oracle",
+      "storage": "memory",
+      "ok": true,
+      "answer": "Oracle",
+      "abstained": false,
+      "tokens": 4,
+      "fact_ids": [
+        "fact-2"
+      ],
+      "naive_ok": true,
+      "naive_tokens": 14
+    },
+    {
+      "id": "abs1",
+      "category": "abstention",
+      "question": "What is Gina's favorite food?",
+      "gold": null,
+      "storage": "memory",
+      "ok": true,
+      "answer": "I don't have that in memory.",
+      "abstained": true,
+      "tokens": 4,
+      "fact_ids": [
+        "fact-1"
+      ],
+      "naive_ok": false,
+      "naive_tokens": 9
+    },
+    {
+      "id": "abs2",
+      "category": "abstention",
+      "question": "What is the capital of France?",
+      "gold": null,
+      "storage": "memory",
+      "ok": true,
+      "answer": "I don't have that in memory.",
+      "abstained": true,
+      "tokens": 4,
+      "fact_ids": [
+        "fact-1"
+      ],
+      "naive_ok": false,
+      "naive_tokens": 9
+    }
+  ],
+  "observations": {
+    "sh1": {
+      "facts": [
+        {
+          "id": "fact-1",
+          "subject": "Ana",
+          "predicate": "enjoys",
+          "object": "hiking on weekends",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700086400.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-2"
+          ]
+        },
+        {
+          "id": "fact-2",
+          "subject": "Ana",
+          "predicate": "works_at",
+          "object": "Spotify",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        }
+      ],
+      "ranked": [
+        "fact-2",
+        "fact-1"
+      ],
+      "scores": [
+        0.048281332628239026,
+        0.047659968270756206
+      ],
+      "via": "hybrid"
+    },
+    "sh2": {
+      "facts": [
+        {
+          "id": "fact-1",
+          "subject": "Cara",
+          "predicate": "favorite_color",
+          "object": "blue",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        }
+      ],
+      "ranked": [
+        "fact-1"
+      ],
+      "scores": [
+        0.04836065573770492
+      ],
+      "via": "hybrid"
+    },
+    "ku1": {
+      "facts": [
+        {
+          "id": "fact-1",
+          "subject": "Ben",
+          "predicate": "lives_in",
+          "object": "Boston",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": 1705184000.0,
+          "created_at": 1710368000.0,
+          "expired_at": 1710368000.0,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        },
+        {
+          "id": "fact-2",
+          "subject": "Ben",
+          "predicate": "lives_in",
+          "object": "Denver",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1705184000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": "fact-1",
+          "provenance": [
+            "source-2"
+          ]
+        }
+      ],
+      "ranked": [
+        "fact-2"
+      ],
+      "scores": [
+        0.04836065573770492
+      ],
+      "via": "hybrid"
+    },
+    "ku2": {
+      "facts": [
+        {
+          "id": "fact-1",
+          "subject": "Cara",
+          "predicate": "favorite_color",
+          "object": "blue",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": 1703456000.0,
+          "created_at": 1710368000.0,
+          "expired_at": 1710368000.0,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        },
+        {
+          "id": "fact-2",
+          "subject": "Cara",
+          "predicate": "favorite_color",
+          "object": "green",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1703456000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": "fact-1",
+          "provenance": [
+            "source-2"
+          ]
+        }
+      ],
+      "ranked": [
+        "fact-2"
+      ],
+      "scores": [
+        0.04836065573770492
+      ],
+      "via": "hybrid"
+    },
+    "mh1": {
+      "facts": [
+        {
+          "id": "fact-1",
+          "subject": "Dora",
+          "predicate": "colleague",
+          "object": "Evan",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700086400.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-2"
+          ]
+        },
+        {
+          "id": "fact-2",
+          "subject": "Evan",
+          "predicate": "works_at",
+          "object": "Netflix",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700086400.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-2"
+          ]
+        }
+      ],
+      "ranked": [
+        "fact-1",
+        "fact-2"
+      ],
+      "scores": [],
+      "via": "multi-hop"
+    },
+    "mh2": {
+      "facts": [
+        {
+          "id": "fact-1",
+          "subject": "Maya",
+          "predicate": "lives_in",
+          "object": "Seattle",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700086400.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-2"
+          ]
+        },
+        {
+          "id": "fact-2",
+          "subject": "Maya",
+          "predicate": "occupation",
+          "object": "pediatrician",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        },
+        {
+          "id": "fact-3",
+          "subject": "mh2",
+          "predicate": "sister",
+          "object": "Maya",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        }
+      ],
+      "ranked": [
+        "fact-3",
+        "fact-1",
+        "fact-2"
+      ],
+      "scores": [],
+      "via": "multi-hop"
+    },
+    "tmp1": {
+      "facts": [
+        {
+          "id": "fact-1",
+          "subject": "Finn",
+          "predicate": "works_at",
+          "object": "IBM",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": 1704320000.0,
+          "created_at": 1710368000.0,
+          "expired_at": 1710368000.0,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        },
+        {
+          "id": "fact-2",
+          "subject": "Finn",
+          "predicate": "works_at",
+          "object": "Oracle",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1704320000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": "fact-1",
+          "provenance": [
+            "source-2"
+          ]
+        }
+      ],
+      "ranked": [
+        "fact-1"
+      ],
+      "scores": [
+        0.04836065573770492
+      ],
+      "via": "hybrid"
+    },
+    "tmp2": {
+      "facts": [
+        {
+          "id": "fact-1",
+          "subject": "Finn",
+          "predicate": "works_at",
+          "object": "IBM",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": 1704320000.0,
+          "created_at": 1710368000.0,
+          "expired_at": 1710368000.0,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        },
+        {
+          "id": "fact-2",
+          "subject": "Finn",
+          "predicate": "works_at",
+          "object": "Oracle",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1704320000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": "fact-1",
+          "provenance": [
+            "source-2"
+          ]
+        }
+      ],
+      "ranked": [
+        "fact-2"
+      ],
+      "scores": [
+        0.04836065573770492
+      ],
+      "via": "hybrid"
+    },
+    "abs1": {
+      "facts": [
+        {
+          "id": "fact-1",
+          "subject": "Gina",
+          "predicate": "works_at",
+          "object": "Adobe",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        }
+      ],
+      "ranked": [
+        "fact-1"
+      ],
+      "scores": [
+        0.04836065573770492
+      ],
+      "via": "abstain"
+    },
+    "abs2": {
+      "facts": [
+        {
+          "id": "fact-1",
+          "subject": "Hugo",
+          "predicate": "lives_in",
+          "object": "Lisbon",
+          "source": "extracted",
+          "assertion_kind": "unspecified",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        }
+      ],
+      "ranked": [
+        "fact-1"
+      ],
+      "scores": [
+        0.009016393442622951
+      ],
+      "via": "abstain"
+    }
+  },
+  "lexical": {
+    "tokens": [
+      "wei",
+      "work",
+      "at",
+      "orbit",
+      "worked",
+      "working",
+      "2023",
+      "11"
+    ],
+    "current": {
+      "current": 1.0979275865732145,
+      "repeat": 0.6149580195738596,
+      "empty": 0.0
+    },
+    "history": {
+      "old": 0.5754429423516527,
+      "current": 1.1508858847033054,
+      "repeat": 0.9620970329538673,
+      "empty": 0.0
+    },
+    "empty_query": {
+      "old": 0.0,
+      "current": 0.0,
+      "repeat": 0.0,
+      "empty": 0.0
+    }
+  }
+}
