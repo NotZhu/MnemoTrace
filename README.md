@@ -21,6 +21,8 @@ mnemotrace-quickstart
 
 Optional persistent vector backends are available via `mnemotrace-memory[qdrant]` and `mnemotrace-memory[lancedb]`. Qdrant supports local and remote modes; see the [configuration reference](docs/reference/configuration.md#可选-qdrant) for setup and lifecycle requirements.
 
+Postgres foundations are available via `mnemotrace-memory[postgres]`: schema initialization, accounts, keys, spaces and RLS. Existing memory endpoints have not switched to this backend yet; see [database setup](docs/reference/configuration.md#postgres-数据库基础).
+
 For a minimal integration:
 
 ```python

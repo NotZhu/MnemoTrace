@@ -8,6 +8,98 @@
 
 创建 `Config` 时请使用关键字参数，例如 `Config(top_k=5)`；字段顺序可能随配置分组调整。
 
+## Postgres 数据库基础
+
+安装 `python -m pip install ".[postgres]"`；已发布安装使用 `mnemotrace-memory[postgres]`。
+`serve`/`all` 包含此 extra，纯算法核心不导入驱动。数据库基础当前独立于 MemoryService 和 HTTP/MCP，
+不要把数据库初始化成功理解为现有记忆接口已经切换到数据库。
+
+支持 Postgres 18 与 pgvector 0.8.7，测试镜像及摘要在 [CI](../../.github/workflows/ci.yml) 固定。
+数据库使用 `mnemotrace` schema；不读取、迁入、删除或覆盖旧记忆目录。
+
+`DatabaseConfig` 的参数与默认值以[定义](../../mnemotrace/store/postgres/database.py)为准，
+它独立于算法 `Config`，不从已有文件后端配置推导连接。
+
+| 环境变量 | 用途 |
+| --- | --- |
+| MNEMOTRACE_DATABASE_URL | 普通运行连接，不含账号管理或 DDL 权限 |
+| MNEMOTRACE_MIGRATION_DATABASE_URL | 显式初始化/升级；运行时不自动迁移 |
+| MNEMOTRACE_ADMIN_DATABASE_URL | 账号与 key 管理，不能作为普通数据连接 |
+| MNEMOTRACE_BOOTSTRAP_DATABASE_URL | 仅首次角色/扩展配置使用的 DBA 连接 |
+| MNEMOTRACE_DB_ROLE_PREFIX | 角色名称前缀；初始化后不可直接更换 |
+| MNEMOTRACE_DB_POOL_MIN / MNEMOTRACE_DB_POOL_MAX | 每个池的最小/最大连接数 |
+| MNEMOTRACE_DB_CONNECT_TIMEOUT / MNEMOTRACE_DB_POOL_TIMEOUT | 建连和取连接超时，单位秒 |
+| MNEMOTRACE_DB_OPEN_TIMEOUT | 显式打开连接池的最大等待秒数 |
+
+凭据存放在受保护的环境或本地配置中，不作为管理命令参数，也不把真实连接串提交到仓库。
+首次配置分两步进行：DBA 先创建无登录权限的角色与扩展，再配置三种独立登录账号：
+
+```python
+from mnemotrace.store.postgres import DatabaseConfig
+from mnemotrace.store.postgres.migrate import bootstrap_roles
+
+bootstrap_roles(DatabaseConfig.from_env("bootstrap"))
+```
+
+DBA 在目标库内执行以下 SQL，使用 `psql` 的 `\password` 分别交互设置密码；普通登录账号不授予
+SUPERUSER、BYPASSRLS、CREATEROLE 或 CREATEDB。以下采用默认角色前缀：
+
+```sql
+CREATE ROLE app_runtime LOGIN IN ROLE mnemotrace_runtime;
+CREATE ROLE app_migration LOGIN IN ROLE mnemotrace_migration;
+CREATE ROLE app_account_admin LOGIN IN ROLE mnemotrace_account_admin;
+```
+
+将三种登录凭据分别配置到对应环境变量，再显式初始化和创建账号：
+
+```sh
+python -m mnemotrace.admin init-db
+python -m mnemotrace.admin create-user
+python -m mnemotrace.admin issue-key --user-id USER_ID --name first
+python -m mnemotrace.admin list-keys --user-id USER_ID
+python -m mnemotrace.admin rotate-key --user-id USER_ID --key-id KEY_ID
+python -m mnemotrace.admin revoke-key --user-id USER_ID --key-id KEY_ID
+```
+
+`init-db --bootstrap` 可在已配置 DBA 与迁移凭据时依次重复验证角色/扩展并初始化。
+重复初始化不重建表；升级只执行待应用迁移。结构损坏、脚本校验和不一致和未知版本会拒绝运行，
+不能通过重新初始化静默修复。数据库表、约束与策略以[迁移资源](../../mnemotrace/store/postgres/sql/)为准。
+
+签发和轮换成功时 JSON 输出包含一次性的原始 key；列表只返回标识和时间。
+不要把这两个命令的输出写入日志。撤销后下一次认证失效；轮换撤销旧 key 与签发新 key 同事务完成。
+`delete-user --user-id USER_ID` 锁定并删除账号及全部关联数据，失败回滚，重复执行安全；此命令具有真实删除副作用。
+
+受信任 Python 调用方使用运行连接认证并创建、选择空间：
+
+```python
+import os
+from mnemotrace.store.postgres import Database, DatabaseConfig, Spaces
+
+with Database(DatabaseConfig.from_env()) as database:
+    spaces = Spaces(database)
+    identity = spaces.authenticate(os.environ["MNEMOTRACE_USER_API_KEY"])
+    space = spaces.create(identity.user_id, "Research")
+    context = spaces.authorize(identity.user_id, space.space_id)
+    page = spaces.list(identity.user_id, limit=100)
+    # 后续页传 after_id=page[-1].space_id；列表按稳定 ID 排序。
+```
+
+用户身份属于可信输入，直接构造 `SpaceContext` 不等于授权。
+每次空间事务重新验证账号和空间状态，写入按用户→空间顺序加锁；只读事务使用一致数据库快照。
+认证通过受限 SECURITY DEFINER 函数查询摘要，运行角色不能读取 key 表。
+用户级 RLS 同时约束读写且始终开启；同用户空间范围仍需 DAO 限制，不能用用户级 RLS 代替空间授权。
+原始数据库凭据只交给受信任服务端，不交给终端用户。
+
+数据库回归使用可创建临时库/角色的专用 DBA 连接：
+
+```sh
+python -m pytest tests/postgres tests/test_postgres_configuration.py
+```
+
+通过 `MNEMOTRACE_TEST_POSTGRES_DSN` 指向测试服务器；fixture 每次创建独立数据库与角色，清理前验证归属标记。
+未配置时本地显式跳过数据库测试；`MNEMOTRACE_REQUIRE_POSTGRES=1` 时缺少连接或发生跳过均失败。
+CI 的 Linux 使用固定镜像，Windows 启动专用原生 Postgres 并编译相同 pgvector 版本，均使用实际运行凭据验证隔离。
+
 ## 窗口抽取预算
 
 对话联合输出使用 `joint_max_output_tokens`、`joint_core_output_tokens`、`joint_summary_output_tokens`，分别对应 `MNEMOTRACE_JOINT_MAX_OUTPUT_TOKENS`、`MNEMOTRACE_JOINT_CORE_OUTPUT_TOKENS`、`MNEMOTRACE_JOINT_SUMMARY_OUTPUT_TOKENS`。
@@ -210,6 +302,7 @@ python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000
 | PDF/DOCX 解析 | `.[documents]` |
 | 可选 Qdrant | `.[qdrant]` 或对应 backends extra；本地和远程共用官方客户端 |
 | 可选 LanceDB | `.[lancedb]` 或对应 backends extra |
+| Postgres 数据库基础 | `.[postgres]`；独立初始化与身份/空间接口，尚未切换业务运行入口 |
 | 完整服务常用组合 | `.[serve]`；具体包含项以 pyproject 为准 |
 
 上表的 `.` 表示从源码安装，已发布分发包使用对应包名及 extra。真实模型可能下载文件、联网或产生费用，应按语料语言与任务评测选择。别名对应的具体模型见 factory 源码；哈希嵌入不是语义模型，模型名中同维度也不代表向量兼容。
@@ -225,5 +318,6 @@ python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000
 | mnemotrace-agent-bootstrap | 组合安装入口，有实际配置写入副作用 |
 | mnemotrace-agent-doctor | 检查所选运行环境与接线 |
 | mnemotrace-watch | 发现并导入客户端会话，另有调度器及 hook 安装选项 |
+| python -m mnemotrace.admin | 数据库初始化和受限账号/key 管理，使用独立凭据 |
 
 完整参数用各命令的 `--help` 查询。MCP 的 `--api-url/--api-key-file` 对应远程后端；本地使用 `--namespace` 与数据目录。watcher 的 `--url`、`--key-file`、`--dry-run`、`--no-close`、`--immediate` 及安装选项有各自解析规则，不与其他 CLI 参数名混用。

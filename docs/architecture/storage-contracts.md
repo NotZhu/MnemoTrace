@@ -2,8 +2,8 @@
 
 本文面向阶段二至八的实现者，集中维护目标数据契约、调用方去向和验证输入。
 这是目标设计，**不是当前产品已经具备的能力**；当前运行机制见[架构总览](README.md)和[生命周期](memory.md)。
-[契约代码](../../mnemotrace/store/contracts.py)只由契约测试使用，尚未接入运行路径。
-schema 落地后以迁移代码为结构权威，本页改为解释跨事务与接口取舍，不复制迁移 DDL。
+[契约代码](../../mnemotrace/store/contracts.py)中的 SpaceContext/SpaceSettings 已用于数据库基础；其他业务契约待后续阶段接入。
+数据库基础使用方法见下方 Schema 一节，当前产品运行入口尚未切换。
 
 ## 身份与公共接口
 
@@ -101,75 +101,36 @@ Python 结构校验不能证明数据库记录存在。显著度强化、访问�
 冲突后丢弃旧归并结果，重读必要历史并计算，不重载整个空间，不盲目重放非幂等操作。
 operation_id 回执在空间内唯一；连接中断先查询回执，避免重复应用。
 
-## Schema 设计
+## Schema 与数据库基础
 
-以下为阶段二迁移输入，本阶段不创建数据库。系统 ID 使用随机稳定字符串，客户端按不透明 ID 处理。
-每张业务表有 user_id、space_id；所有关联包含二者。时间列为 timestamptz，Python 边界转换有限 epoch 值。
-业务记录有 record_version；文本对象另有 content_version。JSONB 写入和恢复必须校验必需键、类型、值域及引用。
+[迁移代码](../../mnemotrace/store/postgres/migrate.py)及其 [SQL 资源](../../mnemotrace/store/postgres/sql/)
+是数据库结构、约束、索引与角色策略的权威定义，不在本文复制 DDL。
+数据库基础已经提供账号/key/空间、连接池和授权事务；现有 MemoryService、HTTP/MCP 仍使用当前运行路径，
+业务 DAO、恢复执行器和数据库检索另按阶段接入。没有新旧存储双写或自动回退。
 
-### 账号与归属
+| 数据组 | 结构与所有权 |
+| --- | --- |
+| 账号与空间 | users、api_keys、memory_spaces、sessions；账号不依附某把 key，空间显式创建 |
+| 权威业务数据 | sources/source_summaries、facts/fact_sources、working_memories/working_sources、conflicts、import_receipts |
+| 实体与检索派生数据 | entities/entity_merges、graph_relations、embeddings、lexical_documents/lexical_terms |
+| 操作与恢复 | operations、operation_sources/targets/products/receipts；唯一任务账本，不新增 outbox |
 
-| 表 | 字段与约束 | 访问与删除 |
-| --- | --- | --- |
-| users | user_id PK、status(active/deleting)、created_at | 管理角色创建/删除；业务验证 active |
-| api_keys | key_id PK、user_id FK、key_hash UNIQUE、name、created_at、revoked_at | 高熵随机 key 的 SHA256 摘要；原值只展示一次；首版认证不缓存 |
-| memory_spaces | space_id PK、user_id FK、name、status、core_revision、space_generation、settings JSONB、record_version | UNIQUE(user_id,space_id)，用户列表索引(user_id,status,space_id)；名称可重复，不是身份 |
-| sessions | (user_id,space_id,session_id) PK、session_generation、next_sequence | 会话内顺序与作废，不增加关闭状态 |
+每张空间业务表有 user_id、space_id，关联使用包含归属的复合外键。
+多态目标使用互斥的可空复合外键；向量绑定文本版本、模型及维度，不作为领域记录内联权威字段。
+时间列为 timestamptz，边界转换有限 epoch 值；必要业务字段使用显式列，JSONB 不代替领域建模。
+任务及产物的 stats 必需键、类型和非负整数由数据库约束验证；完整产物读写仍需执行器执行阶段一结构校验。
+实体合并的环检查、图构建规则及候选查询语义由后续业务实现验证，不仅靠外键推断。
 
-### 权威业务数据
+迁移使用顺序版本、脚本校验和和事务级 advisory lock；已应用结构的目录指纹覆盖列、约束、索引、策略、函数及授权。
+普通连接只验证结构；缺失结构、未知版本或漂移明确报错，不自动修复。
+角色/扩展首次配置需要 DBA，普通迁移凭据不具备 SUPERUSER/CREATEROLE。
+初始化、配置及受信任 Python 空间接口见[Postgres 基础配置](../reference/configuration.md#postgres-数据库基础)。
 
-字段核对输入为 [types.py](../../mnemotrace/types.py)和[现有字段校验](../../mnemotrace/store/_validation.py)。
-除下表明确拆分的字段，所有当前必需字段均成为显式列，不能将完整空间或任意对象藏入 JSONB 替代设计。
+保留的检索契约：BM25 使用 stems、k1=1.5、b=0.75，从同授权/时间作用域的文档与词项聚合 N、总长度和 df；
+空文档计入 N，query terms 为集合，不以 Postgres 全文排序替代。
+先做槽位头/图排除，再计算对应语料统计；旧 ANN 候选池统计差异不作为质量等价证据。
+图边认知时间回查支撑事实，沿用实体归一化与谓词建边规则；权威别名/合并不能只靠事实重建。
 
-| 表 | 内容与拆分 | 约束/查询索引 |
-| --- | --- | --- |
-| sources | Episode 的 id/content/session/role/event_time/ingested_at/source_kind/scope/message_id/sequence/mode/metadata，加 agent_id、消息指纹和版本 | PK(归属,id)；非空 message_id 唯一(归属,session,message_id)；唯一(归属,session,sequence)；会话时间/来源 ID 索引 |
-| source_summaries | source_id、summary、coverage、summary_coverage、原文版本、摘要版本、处理状态 | 来源复合 FK；摘要与原文版本分开；consolidated 由核心回执推导，覆盖信息仍持久化 |
-| facts | Fact 的 SPO/text/display、salience/confidence/source/category/sensitive/topic/topic_source/assertion_kind/source_roles、双时间轴、supersedes、last_access/access_count、版本 | provenance 拆 fact_sources，向量拆 embeddings；复合自引用 supersedes；主体/槽位/有效时间、当前/历史索引 |
-| fact_sources | fact_id、source_id | PK(归属,fact_id,source_id)，双方复合 FK；反向来源索引用于擦除 |
-| working_memories | WorkingMemory 除内联向量外全部字段、版本；metadata 内来源另建 working_sources | 会话/expires_at/consumed 索引；来源引用使用复合 FK |
-| conflicts | Conflict 全字段及版本 | older/newer 同空间 FK 且不相同；无序双方唯一，状态索引；删除一方时清理 |
-| import_receipts | 来源种类、稳定去重摘要、必要来源引用和回执 | UNIQUE(归属,种类,摘要)；不保存原文副本；不以 agent 分区 |
-
-settings 固定键对应 SpaceSettings：track/mute、四项 policy、空间内用户主体名称和别名。
-_identity/_aliases 从 user_id 键控改为空间内用户角色信息；assistant 自称不加入用户别名，第三方人物保持独立。
-persona_cache 可重建；冷热分页计数是统计，不作为恢复必需信息。
-
-### 实体与派生检索数据
-
-| 表 | 内容/权威性 | 约束与索引 |
-| --- | --- | --- |
-| entities | id/name/type、规范化名称、权威别名、版本 | UNIQUE(归属,规范化名称)；ID 持久化，重建不变 |
-| entity_merges | merged_id/survivor_id、决定来源/时间、版本 | 同空间复合 FK、禁止自合并，应用检查环；人工决定不能靠重放事实恢复 |
-| graph_relations | id/端点/predicate/fact_id/valid_at/invalid_at、projection_version | 全引用同空间；ID 由空间+事实+端点+谓词稳定生成；正反邻接及 fact_id 索引 |
-| embeddings | 目标种类/ID、field(text/summary)、content_version、model、dimension、vector | 各目标明确复合 FK；唯一(归属,目标,field,model,dimension,content_version)，CHECK维度；不能只有无约束多态 ID |
-| lexical_documents | 目标种类/ID、content_version、分析器版本、文档长度 | 目标复合 FK，文本变化同事务替换 |
-| lexical_terms | 目标、term、tf | UNIQUE(归属,目标,term)、CHECK tf>0；索引(归属,term,目标) |
-
-pgvector 精确与近似查询使用相同授权/时间/状态过滤，不混用 model/dimension；模型/维度变化先校验配置。
-embeddings、lexical_documents、operation_targets 的多种目标使用 source_id/fact_id/working_id/entity_id 可空列，
-CHECK num_nonnulls(...) = 1，各列分别建立包含归属的 FK，种类/目标 ID 与该列一致；不依赖应用层模拟外键。
-重嵌入检查文本版本后切换，旧结果不能覆盖新版本。BM25 保留当前 stems、k1=1.5、b=0.75，
-从过滤后的 lexical_documents/terms 聚合 N、总长度和 df；空文档计入 N，query terms 为集合。
-不维护无法匹配历史视图的单个全空间统计；不直接用 Postgres 全文排序替代 BM25。
-当前完整参考路径先做槽位头/图排除，再算 BM25，数据库语料选择顺序保持一致。
-旧 ANN 路径在候选池上计算词法统计，其与完整语料差异单独报告，不当作等价性证据。
-图边认知时间通过支撑事实回查；保留 GraphBuilder 的实体归一化和文本谓词排除，不将所有事实直接建边。
-必要投影与事实同事务；额外昂贵投影可异步，返回未就绪/过期与覆盖限制，不用内存全图兜底。
-
-### 操作与恢复数据
-
-| 表 | 内容与约束 | 生命周期 |
-| --- | --- | --- |
-| operations | operation_id/kind/session/state/phase、attempts/embed_attempts、next_attempt_at/error_code、lease_token/lease_until、作废/配置/上下文版本、stats、持久化进度 | PK(归属,operation_id)；状态/阶段 CHECK；领取索引(state,next_attempt_at,lease_until)，会话顺序索引 |
-| operation_sources | operation_id/source_id/content_version、输入范围/顺序/角色 | 双方同空间 FK；codepoint 范围校验；保留上下文/片段覆盖 |
-| operation_targets | 操作 ID、维护目标种类/ID/content_version | 目标同空间复合 FK；reembed/graph 可处理无来源人工事实，不伪造 session/原文 |
-| operation_products | 操作 ID、输入结构、校验后结果、格式版本、配置、实际上下文/来源版本、result_hash、必要摘要片段 | 同空间 FK；严格结构/引用/统计校验；损坏不能补默认值 |
-| operation_receipts | 操作 ID、提交 core_revision、事实/工作记忆 ID、完成时间、必要去重信息 | 空间内唯一，与正式结果同事务；普通历史清理不丢仍有效去重凭据 |
-
-operations 是唯一任务账本；关联表不是另一套队列，不增加 outbox/Redis/Kafka。
-任务正文、产物、摘要片段受来源擦除规则约束；完成且不再用于辅助处理/追溯后清理正文和产物，
-保留必要引用、版本、回执。失败任务保留有效产物；不增加多级 TTL 平台。
 
 ## 三阶段提交、恢复与权限
 
@@ -215,8 +176,8 @@ operations 是唯一任务账本；关联表不是另一套队列，不增加 ou
 | worker discovery | 受限函数/权限，仅返回候选操作 ID 与归属，处理时回到 runtime 作用域 |
 
 业务表默认用户级 RLS，USING/WITH CHECK 同时约束；DAO 额外约束空间。
-runtime 不作为表所有者，适用时 FORCE RLS。身份与查询在同一事务/连接，事务局部设置，缺失拒绝访问。
-开发关闭 RLS 必须显式声明。真实运行角色下验证池复用、回滚、撤销和后台上下文，不能用管理员或契约测试代替。
+runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在同一事务/连接，事务局部设置，缺失拒绝访问。
+数据库基础目前不提供关闭 RLS 的配置。真实运行角色下验证池复用、回滚、撤销和后台上下文，不能用管理员或契约测试代替。
 首版不缓存认证：撤销后下一次认证失效，已受理任务按用户状态/空间/租约处理；撤销凭据不等于删除账号或记忆。
 
 ## 调用方清单

@@ -58,6 +58,11 @@ def main() -> int:
         "package license is AGPL-3.0-only",
         errors,
     )
+    extras = pyproject['project']['optional-dependencies']
+    _check(bool(extras.get('postgres')), 'Postgres dependencies are an explicit extra', errors)
+    _check(all('postgres' in ''.join(extras[name]) for name in ('serve', 'all')),
+           'service installations include the Postgres extra', errors)
+    _check(not pyproject['project']['dependencies'], 'algorithm core has no hard dependencies', errors)
 
     required = (
         "LICENSE",
