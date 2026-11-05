@@ -34,7 +34,7 @@ def main():
             pass
         else:
             raise AssertionError('Extraction must require an LLM')
-    for module in ('mnemotrace.agent_doctor', 'mnemotrace.agent_setup',
+    for module in ('mnemotrace.admin', 'mnemotrace.agent_doctor', 'mnemotrace.agent_setup',
                    'mnemotrace.connectors', 'mnemotrace.mcp'):
         subprocess.run([sys.executable, '-m', module, '--help'], cwd=ROOT,
                        check=True, stdout=subprocess.DEVNULL)

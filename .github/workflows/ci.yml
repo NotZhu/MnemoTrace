@@ -47,6 +47,9 @@ jobs:
           wheel, = Path("dist").glob("*.whl")
           with ZipFile(wheel) as archive:
               assert "mnemotrace/py.typed" in archive.namelist()
+              from mnemotrace.store.postgres.migrate import MIGRATIONS
+              for script in MIGRATIONS:
+                  assert f"mnemotrace/store/postgres/sql/{script}" in archive.namelist()
           PY
 
   optional-backends:
@@ -94,6 +97,107 @@ jobs:
           PY
       - run: python -m pytest tests/test_qdrant_store.py tests/test_storage_configuration.py
         timeout-minutes: 10
+
+  postgres-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.15"]
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg18-trixie@sha256:5895949dfcdf308eb0cd31c950c93c14895c77f33fbedfecf1fa511ab1d4bcd2
+        env:
+          POSTGRES_PASSWORD: phase2-ci-only
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      MNEMOTRACE_REQUIRE_POSTGRES: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install -e ".[dev,postgres]"
+      - run: python -m pytest tests/postgres tests/test_postgres_configuration.py --junitxml=.artifacts/storage-phase2/postgres.xml
+        env:
+          MNEMOTRACE_TEST_POSTGRES_DSN: host=127.0.0.1 port=${{ job.services.postgres.ports['5432'] }} dbname=postgres user=postgres password=phase2-ci-only connect_timeout=5
+        timeout-minutes: 10
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: postgres-linux-${{ matrix.python-version }}
+          path: .artifacts/storage-phase2/*.xml
+
+  postgres-windows:
+    # Hosted jobs cannot share a Linux service's private network. A native PG18
+    # server exercises the same extension/schema using actual Windows clients.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.15"]
+    env:
+      MNEMOTRACE_REQUIRE_POSTGRES: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Download dedicated Postgres 18 binaries
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'postgres18.zip'
+          $install = Join-Path $env:RUNNER_TEMP 'mnemotrace-postgres18'
+          Invoke-WebRequest 'https://get.enterprisedb.com/postgresql/postgresql-18.6-1-windows-x64-binaries.zip' -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $install
+          "PGROOT=$install\pgsql" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - uses: actions/checkout@v4
+        with:
+          repository: pgvector/pgvector
+          ref: v0.8.7
+          path: .artifacts/storage-phase2/pgvector
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build pgvector 0.8.7
+        shell: pwsh
+        working-directory: .artifacts/storage-phase2/pgvector
+        run: |
+          nmake /F Makefile.win
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          nmake /F Makefile.win install
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Start disposable native database
+        shell: pwsh
+        run: |
+          $dbData = Join-Path $env:RUNNER_TEMP 'mnemotrace-phase2-data'
+          $passwordFile = Join-Path $env:RUNNER_TEMP 'mnemotrace-phase2-password'
+          [System.IO.File]::WriteAllText($passwordFile, 'phase2-ci-only')
+          & "$env:PGROOT\bin\initdb.exe" -D $dbData -U postgres -A scram-sha-256 --pwfile=$passwordFile --encoding=UTF8 --locale=C
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & "$env:PGROOT\bin\pg_ctl.exe" -D $dbData -l "$dbData\server.log" -o '-h 127.0.0.1 -p 55432' -w start
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "MNEMOTRACE_TEST_POSTGRES_DSN=host=127.0.0.1 port=55432 dbname=postgres user=postgres password=phase2-ci-only connect_timeout=5" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - run: python -m pip install -e ".[dev,postgres]"
+      - run: python -m pytest tests/postgres tests/test_postgres_configuration.py --junitxml=.artifacts/storage-phase2/postgres.xml
+        timeout-minutes: 10
+      - name: Stop disposable native database
+        if: always()
+        shell: pwsh
+        run: |
+          $dbData = Join-Path $env:RUNNER_TEMP 'mnemotrace-phase2-data'
+          if (Test-Path -LiteralPath "$dbData\postmaster.pid") {
+            & "$env:PGROOT\bin\pg_ctl.exe" -D $dbData -m fast -w stop
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: postgres-windows-${{ matrix.python-version }}
+          path: .artifacts/storage-phase2/*.xml
 
   web:
     runs-on: ubuntu-latest
