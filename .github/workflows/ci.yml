@@ -8,14 +8,23 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   python:
+    name: ${{ matrix.suite == 'replay' && format('python replay ({0}, {1})', matrix.os, matrix.python-version) || format('python ({0}, {1})', matrix.os, matrix.python-version) }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.12", "3.15"]
+        suite: [regressions, replay]
+        exclude:
+          - os: ubuntu-latest
+            suite: replay
     steps:
       # test_buffered_replay_report resolves a historical runtime commit; a shallow
       # clone cannot see it, so fetch full history for the Python regression job.
@@ -28,14 +37,31 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev,server,mcp]" build twine
-      - run: python -m ruff check .
+      - if: matrix.suite == 'regressions'
+        run: python -m ruff check .
       - name: Python regressions (including native namespace transactions)
-        run: pytest
+        run: >-
+          pytest
+          ${{ matrix.suite == 'replay' && 'tests/test_buffered_replay_runner.py'
+              || (runner.os == 'Windows' && '--ignore=tests/test_buffered_replay_runner.py' || '') }}
         timeout-minutes: 20
-      - run: python scripts/check_repository.py
-      - run: python scripts/build_landing_pages.py --check
-      - run: python scripts/check_core.py
-      - run: python scripts/check_release.py
+        env:
+          PYTEST_ADDOPTS: >-
+            ${{ runner.os == 'Windows' && '--durations=20 --durations-min=1 --junitxml=.artifacts/ci/python-regressions.xml' || '' }}
+      - name: Upload Windows Python regression report
+        if: ${{ always() && runner.os == 'Windows' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-windows-${{ matrix.python-version }}-${{ matrix.suite }}
+          path: .artifacts/ci/python-regressions.xml
+      - if: matrix.suite == 'regressions'
+        run: python scripts/check_repository.py
+      - if: matrix.suite == 'regressions'
+        run: python scripts/build_landing_pages.py --check
+      - if: matrix.suite == 'regressions'
+        run: python scripts/check_core.py
+      - if: matrix.suite == 'regressions'
+        run: python scripts/check_release.py
       - if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
         run: |
           python -m build
