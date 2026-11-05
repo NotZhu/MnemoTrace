@@ -72,3 +72,32 @@ assert main(['create-user']) == 1
     completed = subprocess.run([sys.executable, '-c', program], check=True,
                                capture_output=True, text=True, env=os.environ.copy())
     assert json.loads(completed.stderr)['error'] == 'database_dependency'
+
+
+def test_connection_loss_with_a_missing_receipt_reports_unknown_outcome(monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from mnemotrace.store.contracts import ChangeSet, CommitConditions, ReadSnapshot, SpaceContext
+    from mnemotrace.store.postgres import dao
+    from mnemotrace.store.postgres.errors import CommitOutcomeUnknown, DatabaseUnavailable
+
+    context = SpaceContext('user', 'space')
+    database = dao.PostgresDAO(Database(DatabaseConfig('unused')), context)
+    attempts = []
+    sql = SimpleNamespace(insert=lambda table, data: attempts.append(data['operation_id']))
+
+    @contextmanager
+    def interrupt_after_commit():
+        yield sql
+        raise DatabaseUnavailable('Synthetic disconnect')
+
+    monkeypatch.setattr(database, '_transaction', interrupt_after_commit)
+    monkeypatch.setattr(dao, '_receipt', lambda sql, operation_id: None)
+    monkeypatch.setattr(dao, '_space_row', lambda sql: (0, 0, {}, None))
+    monkeypatch.setattr(database, 'receipt', lambda operation_id: None)
+    changes = ChangeSet(CommitConditions(ReadSnapshot(context, 0, 0)), 'operation')
+    with pytest.raises(CommitOutcomeUnknown) as error:
+        database.commit(changes)
+    assert error.value.operation_id == 'operation'
+    assert attempts == ['operation']

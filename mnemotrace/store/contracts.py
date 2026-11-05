@@ -242,7 +242,8 @@ class MessageInput:
             raise ValueError('Invalid message role or mode')
         if self.scope not in {'auto', 'long', 'raw'}:
             raise ValueError('Invalid dialogue scope')
-        if not isinstance(self.content, str) or not self.content.strip() or len(self.content) > 1_000_000:
+        if (not isinstance(self.content, str) or not self.content.strip()
+                or '\x00' in self.content or len(self.content) > 1_000_000):
             raise ValueError('Expected non-empty message content, at most 1000000 codepoints')
         self.content.encode('utf-8')
         _time(self.event_time)
@@ -294,7 +295,7 @@ class StoredRecord:
                 raise ValueError('Only sources carry agent provenance')
             _agent(self.agent_id)
         value = json.loads(self.payload_json)
-        checked = validate_record(self.ref.kind.value, value, 'record')
+        checked = validate_record(self.ref.kind.value, value, 'record', detached=True)
         if set(value) != set(checked):
             raise ValueError('Unknown domain record fields')
         if checked['id'] != self.ref.record_id or checked.get('user_id', self.ref.context.user_id) != self.ref.context.user_id:
@@ -498,11 +499,14 @@ class CommitReceipt:
     core_revision: int
     fact_ids: tuple[str, ...] = ()
     working_ids: tuple[str, ...] = ()
+    source_ids: tuple[str, ...] = ()
+    affected_count: int = 0
 
     def __post_init__(self):
         _id(self.operation_id)
-        _count(self.core_revision, 1)
-        for values in (self.fact_ids, self.working_ids):
+        _count(self.core_revision)
+        _count(self.affected_count)
+        for values in (self.fact_ids, self.working_ids, self.source_ids):
             _tuple(values, str)
             for value in values:
                 _id(value)
@@ -717,10 +721,11 @@ class ChangeSet:
             raise ValueError('Expected space settings')
         if self.conditions.lease is not None and self.conditions.lease.operation_id != self.operation_id:
             raise ValueError('Lease belongs to another operation')
+        revision = self.conditions.snapshot.core_revision
         if self.receipt is not None and (not isinstance(self.receipt, CommitReceipt)
                 or self.receipt.operation_id != self.operation_id
-                or self.receipt.core_revision != self.conditions.snapshot.core_revision + 1):
-            raise ValueError('Receipt must describe this commit and its next business revision')
+                or self.receipt.core_revision not in (revision, revision + 1)):
+            raise ValueError('Receipt must describe this commit at its current or next business revision')
 
 
 @dataclass(frozen=True)
