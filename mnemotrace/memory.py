@@ -8,24 +8,24 @@ from __future__ import annotations
 from .util import time_key
 
 import re
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
 from .config import Config
 from .consolidate import is_single_valued, reinforce
 from .consolidate.facts import FactWriter
+from .consolidate.manual import InvalidFactEditError as InvalidFactEditError
+from .consolidate.manual import apply_manual_edit, build_manual_fact
 from .consolidate.planning import SYSTEM as EXTRACT_SYSTEM
 from .consolidate.summarizer import (
     PERSONA_SYSTEM,
     SESSION_SUMMARY_SYSTEM,
     ProfileBuilder,
 )
-from .consolidate.topic_rules import resolve_topic
 from .embed import Embedder, HashingEmbedder
 from .ingest import Ingestor
 from .llm import LLM
-from .localize import display_of
 from .retrieve import (
     HybridRetriever,
     MultiHopPlanner,
@@ -45,14 +45,11 @@ from .store import (
     load_memory,
     save_memory,
 )
-from .topics import Topic, validate_topic
+from .topics import Topic
 from .extraction import ExtractionError, require_llm
 from .types import Conflict, Episode, Fact, WorkingMemory
 from .util import DAY, fmt_date, now
 
-
-class InvalidFactEditError(ValueError):
-    """编辑请求不能安全地应用到该事实，且尚未修改存储。"""
 
 # 默认记忆策略字段值
 POLICY_DEFAULTS = {
@@ -843,23 +840,10 @@ class Memory:
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; reopen the authoritative snapshot')
         user = user_id
-        # Fact 构造时校验主题及主题来源，失败发生在嵌入、图操作和存储之前。
-        f = Fact(subject=subject, predicate=predicate, object=object, user_id=user, source="user",
-                 valid_at=valid_at if valid_at is not None else now(),
-                 topic=topic if topic is not None else "unknown",
-                 topic_source="user" if topic is not None else "unset")
-        if topic is None:
-            # 手动新增没有独立的结论依据参数，内容线索只取对象；重置既有结论时另纳入已存依据。
-            f.topic, f.topic_source = resolve_topic(predicate, object)
+        f = build_manual_fact(subject, predicate, object, user, valid_at, sensitive, category, topic)
         f.embedding = self.embedder.embed(f.text)
         from .consolidate.pipeline import PipelineTasks
         PipelineTasks(self, f.user_id).invalidate()
-        from .consolidate.classify import classify_fact
-        classify_fact(f)  # 打 category + 敏感标签（feature ⑤）
-        if category is not None:
-            f.category = category
-        if sensitive is not None:
-            f.sensitive = sensitive
         live = [x for x in self._all_facts() if x.user_id == user and x.is_live()]
         action, invalidated = self.writer.conflict.reconcile(f, live)
         for old in invalidated:
@@ -884,103 +868,19 @@ class Memory:
         f = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
         if f is None:
             return None
-        if not isinstance(reset_topic, bool):
-            raise InvalidFactEditError("reset_topic must be a boolean")
-        if topic is not None:
-            if reset_topic:
-                raise InvalidFactEditError("topic cannot be combined with reset_topic")
-            # 此入口把主题来源固定为 user；允许人工明确选择 unknown。
-            validate_topic(topic, "user")
-        from .consolidate.outcomes import OUTCOME_CATEGORY, OUTCOME_PREDICATES, split_outcome_text
-        if statement is not None:
-            if any(value is not None for value in (subject, predicate, object)):
-                raise InvalidFactEditError("statement cannot be combined with subject, predicate or object")
-            statement = statement.strip()
-            if not statement:
-                raise InvalidFactEditError("statement must not be blank")
-            # 属性的 object 是关系的取值，整句写入会把画像和图边变成错误的三元组。
-            if f.predicate.lower() not in OUTCOME_PREDICATES:
-                raise InvalidFactEditError(
-                    "statement edits are only supported for session outcome facts; "
-                    "edit subject, predicate and object for attribute facts"
-                )
-        claim_changed = any(
-            value is not None and value != getattr(f, field)
-            for field, value in (("subject", subject), ("predicate", predicate), ("object", object))
-        ) or (statement is not None and statement != display_of(f) and statement != f.text)
-        if not claim_changed:
-            # 表单会回传未变的内容字段；隐私/分类修改不代表用户断言正文，也不应撤销替代历史。
-            if sensitive is not None:
-                f.sensitive = sensitive
-            if category is not None:
-                f.category = category
-            if topic is not None:
-                f.topic, f.topic_source = topic, "user"
-            elif reset_topic:
-                # 即使结论使用三元组式默认正文，也不能将 session 主语带入主题判断。
-                why = split_outcome_text(f.text)[1] if f.predicate.lower() in OUTCOME_PREDICATES else ""
-                f.topic, f.topic_source = resolve_topic(f.predicate, f"{f.object} {why}")
-            self._upsert_fact(f, tier="hot")
-            self._persona_cache.clear()
-            return f
-        self.graph.delete_relations_for_fact(f.id)
-        self.graph.prune_orphan_entities()
-        if subject is not None:
-            f.subject = subject
-        if predicate is not None:
-            f.predicate = predicate
-        if object is not None:
-            f.object = object
-        # outcome 不是三元组：它的 subject 是 session id，object 是整句话，因此按通用的
-        # "subject predicate object" 重建会嵌入 `s-2026-08-31 lesson ...` 并丢掉作为检索依据的
-        # 依据子句（人们按教训的成因搜索教训）。
-        if statement is not None:
-            f.object = statement
-            _, why = split_outcome_text(f.text)
-            f.text = f"{statement} （依据：{why}）" if why else statement
-            f.display = statement
-        elif f.predicate.lower() in OUTCOME_PREDICATES:
-            _, why = split_outcome_text(f.text)
-            f.text = f"{f.object} （依据：{why}）" if why else f.object
-        else:
-            f.text = f"{f.subject} {f.predicate.replace('_', ' ')} {f.object}".strip()
-        # display_of() 优先用 `display` 而非 `text`，因此过期的 display 会让所有界面在用户被告知
-        # 保存成功后仍渲染编辑前的措辞。这不只影响 outcome。outcome 的 display 就是它的 object
-        # （outcomes.py 写入 `display=statement`），可以直接重新赋值。其他所有 fact 的 display 都是
-        # extractor 生成的完整句子（"Wei works at Tencent"），若把裸 object 赋给 display 就会渲染成
-        # "Moonshot AI"——本功能要修复的碎片化问题又从属性侧回来了。正确做法是清空 display，让
-        # display_of() 回退到 render_display(subject, predicate, object)——没有原语言展示文本的 fact
-        # （display=""）本来就是这么渲染的。
-        # 以"text 是否被重建"为门控条件，而非"object 是否变化"：重命名 predicate（finding ->
-        # lesson）或 subject 同样会重写 text，留下旧 display 是同一种过期渲染 bug。
-        if statement is None and (subject is not None or predicate is not None or object is not None) \
-                and (getattr(f, "display", "") or "").strip():
-            f.display = f.object if f.predicate.lower() in OUTCOME_PREDICATES else ""
-        f.embedding = self.embedder.embed(f.text)
-        f.source = "user"
-        from .consolidate.pipeline import PipelineTasks
-        PipelineTasks(self, f.user_id).invalidate()
-        f.invalid_at = None  # 用户编辑使其重新生效
-        f.expired_at = None
-        # 依据编辑后的内容重新分类，再应用显式的用户覆盖
-        from .consolidate.classify import classify
-        f.category, f.sensitive = classify(f.predicate, f.object, f.text)
-        # 结论被纠正后仍是结论。classify() 只认识属性类目，缺了这一步，一次编辑就会把 fact
-        # 悄悄降级出 Journal。
-        if f.predicate.lower() in OUTCOME_PREDICATES:
-            f.category = OUTCOME_CATEGORY
-        if category is not None:
-            f.category = category
-        if sensitive is not None:
-            f.sensitive = sensitive
-        # 内容变化使原主题失去依据；同次编辑明确指定的新主题优先。
-        if topic is not None:
-            f.topic, f.topic_source = topic, "user"
-        else:
-            why = split_outcome_text(f.text)[1] if f.predicate.lower() in OUTCOME_PREDICATES else ""
-            f.topic, f.topic_source = resolve_topic(f.predicate, f"{f.object} {why}")
+        edited = copy(f)
+        claim_changed = apply_manual_edit(edited, subject, predicate, object, sensitive, category,
+                                          statement, topic, reset_topic)
+        if claim_changed:
+            edited.embedding = self.embedder.embed(edited.text)
+            self.graph.delete_relations_for_fact(f.id)
+            self.graph.prune_orphan_entities()
+            from .consolidate.pipeline import PipelineTasks
+            PipelineTasks(self, f.user_id).invalidate()
+        vars(f).update(vars(edited))
         self._upsert_fact(f, tier="hot")
-        self.writer.graph_builder.add_fact(f)
+        if claim_changed:
+            self.writer.graph_builder.add_fact(f)
         self._persona_cache.clear()
         return f
 

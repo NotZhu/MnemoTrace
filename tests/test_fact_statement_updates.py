@@ -69,6 +69,22 @@ def test_invalid_statement_update_leaves_fact_and_graph_unchanged(patch):
     assert mem.graph_data("default") == graph
 
 
+def test_fact_edit_keeps_existing_state_on_embedding_failure(monkeypatch):
+    mem = Memory()
+    fact = mem.add_fact("synthetic_user", "likes", "阅读")
+    before = deepcopy(fact.__dict__)
+    graph = deepcopy(mem.graph_data("default"))
+
+    def fail(text):
+        raise RuntimeError("Synthetic embedding failure")
+
+    monkeypatch.setattr(mem.embedder, "embed", fail)
+    with pytest.raises(RuntimeError, match="Synthetic embedding failure"):
+        mem.update_fact(fact.id, object="绘画")
+    assert fact.__dict__ == before
+    assert mem.graph_data("default") == graph
+
+
 @pytest.mark.parametrize("predicate", ["decision", "finding", "lesson", "open_question"])
 def test_statement_edit_retains_outcome_evidence_and_roundtrips(tmp_path, predicate):
     mem = Memory()

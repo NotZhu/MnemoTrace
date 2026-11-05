@@ -212,7 +212,7 @@ def validate_embedding(vector: Any, path: str, dimension: int) -> None:
 
 
 def validate_record(kind: str, record: Any, path: str, *, jsonl_fact: bool = False,
-                    embedding_dim: int | None = None) -> dict:
+                    embedding_dim: int | None = None, detached: bool = False) -> dict:
     spec = _RECORDS[kind]
     if jsonl_fact:
         spec = {**spec, "_store": _choice("hot", "cold")}
@@ -221,7 +221,7 @@ def validate_record(kind: str, record: Any, path: str, *, jsonl_fact: bool = Fal
         for name in ('coverage', 'summary_coverage'):
             if result[name] is not None and result[name]['original_length'] != len(result['content']):
                 _fail(path, 'coverage length does not match original content')
-        if result["summary"] and result["summary_embedding"] is None:
+        if result["summary"] and result["summary_embedding"] is None and not detached:
             _fail(path, "non-empty summary requires summary_embedding")
         forbidden = {'extraction_progress', 'extraction_counts', 'extraction_error', 'memory_result', 'memory_scope', 'outcome_error', 'extraction'}
         if forbidden.intersection(result['metadata']):

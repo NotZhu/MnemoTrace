@@ -15,6 +15,10 @@ _TEXTUAL_OBJECT_PREDICATES = {
 }
 
 
+def projects_fact(fact: Fact) -> bool:
+    return fact.predicate.lower() not in _TEXTUAL_OBJECT_PREDICATES
+
+
 class GraphBuilder:
     def __init__(self, graph: GraphStore, embedder: Embedder) -> None:
         """初始化图构建器。
@@ -27,7 +31,7 @@ class GraphBuilder:
         self.embedder = embedder
 
     def add_fact(self, fact: Fact) -> None:
-        if fact.predicate.lower() in _TEXTUAL_OBJECT_PREDICATES:
+        if not projects_fact(fact):
             return
         subj = self.graph.upsert_entity(Entity(name=fact.subject, user_id=fact.user_id))
         obj = self.graph.upsert_entity(Entity(name=fact.object, user_id=fact.user_id))

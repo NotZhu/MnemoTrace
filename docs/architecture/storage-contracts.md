@@ -98,6 +98,7 @@ ChangeSet 显式包含记录写入、事实失效、擦除、来源关联、向�
 Python 结构校验不能证明数据库记录存在。显著度强化、访问计数、衰减、focus/policy 都需显式业务提交，
 不能把可持久化副作用留在只读事务。失败可识别，不吞掉后返回成功。
 提交检查并推进预期 core_revision，原子应用变更、必要图/词法更新、已生成向量、后续任务和回执。
+任务完成时若没有正式业务变更，完成回执记录当前 core_revision。
 冲突后丢弃旧归并结果，重读必要历史并计算，不重载整个空间，不盲目重放非幂等操作。
 operation_id 回执在空间内唯一；连接中断先查询回执，避免重复应用。
 
@@ -105,8 +106,40 @@ operation_id 回执在空间内唯一；连接中断先查询回执，避免重�
 
 [迁移代码](../../mnemotrace/store/postgres/migrate.py)及其 [SQL 资源](../../mnemotrace/store/postgres/sql/)
 是数据库结构、约束、索引与角色策略的权威定义，不在本文复制 DDL。
-数据库基础已经提供账号/key/空间、连接池和授权事务；现有 MemoryService、HTTP/MCP 仍使用当前运行路径，
-业务 DAO、恢复执行器和数据库检索另按阶段接入。没有新旧存储双写或自动回退。
+数据库基础提供账号/key/空间、连接池和授权事务。显式 Python 入口使用 Postgres 业务 DAO，现有
+MemoryService、HTTP/MCP 接入端按阶段切换。恢复执行器与数据库检索分别在阶段四和阶段五接入。
+没有新旧存储双写或自动回退。
+
+### 显式 Python 业务入口
+
+`PostgresMemory(database, context)` 接收已打开的运行角色连接池与受信任的 `SpaceContext`。
+调用方管理连接池，DAO 每次在事务中验证账号和空间。读取返回脱离连接的领域记录，
+`memory.dao.read_snapshot()` 提供单次事务内的多表查询及包含版本和 agent 来源的记录封套。
+
+```python
+from mnemotrace.postgres_memory import PostgresMemory
+from mnemotrace.store.contracts import MessageInput
+from mnemotrace.store.postgres import Database, DatabaseConfig, Spaces
+
+with Database(DatabaseConfig.from_env()) as database:
+    context = Spaces(database).authorize(user_id, space_id)
+    memory = PostgresMemory(database, context)
+    receipt = memory.store_messages("thread-A", (
+        MessageInput("m1", "user", "Synthetic input", scope="raw", agent_id="writer-A"),
+    ))
+    episode = memory.get_episode(receipt.source_ids[0])
+    memory.add_fact("Synthetic person", "likes", "tea")
+    memory.remember_working("Synthetic task", "thread-A")
+```
+
+`store_messages` 只接受 `scope="raw"`，返回按输入顺序排列的来源 ID，重复项复用原来源。
+直接提交回执与数据同事务提交；连接中断且无法查证时抛出带操作 ID 的
+`CommitOutcomeUnknown`，可在同空间用 `memory.dao.receipt(operation_id)` 查证。
+原文擦除若遇到多来源派生事实或工作记忆，抛出 `ErasureDependencies` 并回滚；
+经授权可把异常列出的记录与原文一并传给 `erase`。默认 `export_records()` 仅流式导出非敏感事实，
+显式指定 `include_sensitive=True` 可读取全部领域记录，备份恢复另见阶段八。
+裁决冲突时按同一快照检查双方是否仍有效。事实文本超出图实体名或谓词的长度限制时，
+事实照常保存，图中省略该边。
 
 | 数据组 | 结构与所有权 |
 | --- | --- |

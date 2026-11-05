@@ -88,8 +88,11 @@ def database_errors():
         raise DatabaseError('Database operation failed') from exc
 
 
+MAX_IDENTIFIER_LENGTH = 512
+
+
 def identifier(value: str) -> None:
-    if not isinstance(value, str) or not value.strip() or len(value) > 512 or '\x00' in value:
+    if not isinstance(value, str) or not value.strip() or len(value) > MAX_IDENTIFIER_LENGTH or '\x00' in value:
         raise ValueError('Expected a non-empty identifier of at most 512 characters')
     value.encode('utf-8')
 
