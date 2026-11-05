@@ -76,8 +76,12 @@ Python 支持范围、extras 与打包入口以 [pyproject.toml](pyproject.toml)
 - 开始修改前核对工作区已有改动，分别处理本任务内容；发现无关问题时说明影响，避免顺手扩大范围。
 - 普通实现问题自行解决；需要维护者决策的产品语义、接口取舍或授权范围问题，给出具体选项与影响，其他不受阻的工作继续推进。
 - 分支名用 `type/short-desc` 英文短描述。
-- 提交主题用 `type(scope): subject`：`scope` 为简短英文模块或业务领域，`subject` 用简洁中文概括改动。主题与正文空行分隔；正文自由组织，按需补充背景、变化和验证，末尾按需用 `Closes #N` 关联 issue。
-- PR 标题采用相同的 `type(scope): subject` 格式并概括最终变化；正文按 `## 问题`、`## 变化`、`## 验证` 组织并附 CI 运行链接。
+- 提交遵循 [Conventional Commits 1.0](https://www.conventionalcommits.org/en/v1.0.0/)，按语义选择类型；常用类型包括 `feat`、`fix`、`docs`、`refactor`、`perf`、`test`、`build`、`ci`、`chore`、`revert`。
+- 主题采用 `type(scope): subject`；`scope` 可选，填写时使用简短英文模块或业务领域，`subject` 使用简洁中文。
+- 正文可选，与主题空一行，自由说明背景、取舍及必要验证，不要求固定章节。
+- 破坏性变更使用 `type(scope)!: subject`，或在 footer 中写明 `BREAKING CHANGE: 具体影响`；`scope` 仍可省略。
+- footer 按需关联 issue，例如 `Closes #123`。
+- PR 标题采用相同的 Conventional Commits 格式并概括最终变化；正文按 `## 问题`、`## 变化`、`## 验证` 组织并附 CI 运行链接。
 - 合并用 rebase 保持 main 线性并保留提交正文，合并后删除功能分支。
 - 只纳入本任务应提交的内容；提交说明解释问题和最终变化，措辞平实，不添加 AI 署名。
 - 完成时核对最终 diff、受影响的调用方、文件归属和临时产物；交付实际变化、验证命令与结果、跳过项及剩余限制。中断或失败的验证明确说明其覆盖范围。
