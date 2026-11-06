@@ -2,10 +2,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from mnemotrace.store.postgres import Database
+from mnemotrace.postgres_memory import PostgresMemory
+from mnemotrace.store.postgres import Accounts, Database, Spaces
+from mnemotrace.store.postgres.dao import PostgresDAO
 from mnemotrace.store.postgres.database import driver
 from mnemotrace.store.postgres.errors import SchemaMismatch
 from mnemotrace.store.postgres import migrate as migrations
+from mnemotrace.store.postgres.writes import allocate_sequence
 
 
 def test_concurrent_and_repeat_initialization(database_factory):
@@ -65,7 +68,7 @@ def test_unversioned_existing_schema_is_rejected(database_factory):
             migrations.migrate(bundle.migration)
 
 
-@pytest.mark.parametrize('previous_count', [1, 2])
+@pytest.mark.parametrize('previous_count', [1, 2, 3])
 def test_upgrade_applies_only_pending_migrations(database_factory, monkeypatch, previous_count):
     all_migrations = migrations.MIGRATIONS
     with database_factory(initialize=False) as bundle:
@@ -77,3 +80,29 @@ def test_upgrade_applies_only_pending_migrations(database_factory, monkeypatch, 
         migrations.migrate(bundle.migration)
         with Database(bundle.runtime):
             pass
+
+
+def test_upgrade_makes_existing_queued_extract_discoverable(database_factory, monkeypatch):
+    with database_factory(initialize=False) as bundle:
+        with monkeypatch.context() as phase3:
+            phase3.setattr(migrations, 'MIGRATIONS', migrations.MIGRATIONS[:3])
+            migrations.migrate(bundle.migration)
+            with Database(bundle.admin, purpose='admin') as admin, Database(bundle.runtime) as runtime:
+                user = Accounts(admin).create_user()
+                spaces = Spaces(runtime)
+                space = spaces.create(user, 'Upgrade test')
+                context = spaces.authorize(user, space.space_id)
+                source = PostgresMemory(runtime, context).remember_raw('Synthetic queued source', 'chat')
+                with PostgresDAO(runtime, context)._transaction() as sql:
+                    sequence = allocate_sequence(sql, 'chat')
+                    stats = dict.fromkeys(('facts_added', 'duplicates', 'invalidated', 'working_added',
+                                           'model_calls', 'windows_completed'), 0)
+                    sql.insert('operations', dict(operation_id='phase3-queued', kind='extract', session_id='chat',
+                               sequence=sequence, state='pending', phase='queued', attempts=0, embed_attempts=0,
+                               space_generation=0, session_generation=0, stats=stats, stored_raw=True,
+                               extraction_saved=False, core_committed=False))
+                    sql.insert('operation_sources', dict(operation_id='phase3-queued', source_id=source.id,
+                               content_version=1, input_start=0, input_end=len(source.content), input_order=0))
+        migrations.migrate(bundle.migration)
+        with Database(bundle.discovery, purpose='discovery') as discovery:
+            assert discovery.discover_processing() == ((context, 'phase3-queued'),)

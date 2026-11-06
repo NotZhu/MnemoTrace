@@ -2,7 +2,7 @@
 from dataclasses import asdict
 
 from ...util import gen_id
-from ..contracts import OperationKind, OperationStats, RecordRef
+from ..contracts import OperationKind, OperationStats
 from .errors import DatabaseConstraintError, MessageConflict, VersionConflict
 from .records import (
     ENTITY, FACT, SOURCE, WORKING, SCOPE, TARGET_COLUMNS,
@@ -58,7 +58,8 @@ def _source_summary(sql, record, values, old):
         sql.delete('embeddings', "source_id = %s AND field = 'summary'", (source_id,))
     row = sql.run(f'SELECT summary_version,record_version FROM mnemotrace.source_summaries '
                   f'WHERE {SCOPE} AND source_id = %s', (*sql.scope, source_id)).fetchone()
-    version = row[0] + int(summary_changed) if row else 1
+    # Coverage can create the row before the first summary text exists.
+    version = row[0] + int(summary_changed and bool(old['summary'])) if row else 1
     if record.summary_version != (version if values['summary'] else None):
         raise VersionConflict('Source summary version changed')
     data = {key: values[key] for key in keys[:3]}
@@ -137,27 +138,20 @@ def invalidate(sql, item, graph):
     graph.project(record_id)
 
 
-def enqueue(sql, spec, space_generation, session_generation):
+def enqueue(sql, spec, space_generation, session_generation, *, ready_at=None, parent_id=None):
     sequence = None if spec.session_id is None else allocate_sequence(sql, spec.session_id)
+    if ready_at is None and spec.kind in (OperationKind.EXTRACT, OperationKind.SUMMARY):
+        ready_at = sql.run('SELECT clock_timestamp()').fetchone()[0]
     sql.insert('operations', dict(
         operation_id=spec.operation_id, kind=spec.kind.value, session_id=spec.session_id,
         sequence=sequence, state='pending', phase='queued', attempts=0, embed_attempts=0,
         space_generation=space_generation, session_generation=session_generation,
         stats=asdict(OperationStats(0, 0, 0, 0, 0, 0)), stored_raw=True,
         extraction_saved=False, core_committed=False,
+        ready_at=ready_at, parent_id=parent_id,
     ))
     for order, source in enumerate(spec.sources):
-        ref = RecordRef(sql.context, SOURCE, source.source_id)
-        record = sql.get(SOURCE, source.source_id)
-        check_version(sql, ref, source.content_version)
-        episode = domain(record)
-        if episode.session_id != spec.session_id or not episode.content:
-            raise DatabaseConstraintError('Operation input must belong to its session')
-        sql.insert('operation_sources', dict(
-            operation_id=spec.operation_id, source_id=source.source_id,
-            content_version=source.content_version, input_start=0,
-            input_end=len(episode.content), input_order=order, role=episode.role,
-        ))
+        append_input(sql, spec.operation_id, spec.session_id, source, order)
     for target in spec.targets:
         check_version(sql, target.record, target.content_version)
         if spec.session_id is not None and target.record.kind in (SOURCE, WORKING):
@@ -171,6 +165,20 @@ def enqueue(sql, spec, space_generation, session_generation):
         })
 
 
+def append_input(sql, operation_id, session_id, source, order):
+    record = sql.get(SOURCE, source.source_id)
+    if record is None or record.content_version != source.content_version:
+        raise VersionConflict('Referenced content version changed')
+    episode = domain(record)
+    if episode.session_id != session_id or not episode.content:
+        raise DatabaseConstraintError('Operation input must belong to its session')
+    sql.insert('operation_sources', dict(
+        operation_id=operation_id, source_id=source.source_id,
+        content_version=source.content_version, input_start=0,
+        input_end=len(episode.content), input_order=order, role=episode.role,
+    ))
+
+
 def check_lease(sql, conditions):
     lease = conditions.lease
     row = sql.run(f"""SELECT kind, state, extraction_saved FROM mnemotrace.operations WHERE {SCOPE}
@@ -182,8 +190,11 @@ def check_lease(sql, conditions):
         conditions.snapshot.session_generation, conditions.extraction_config)).fetchone()
     if not row or row[1] != 'running' or row[0] == OperationKind.EXTRACT.value and not row[2]:
         raise VersionConflict('Task lease or prerequisites changed')
-    sources = sql.run(f'SELECT DISTINCT source_id, content_version FROM mnemotrace.operation_sources '
-                      f'WHERE {SCOPE} AND operation_id = %s', (*sql.scope, lease.operation_id)).fetchall()
+    product = sql.run(f'SELECT source_versions FROM mnemotrace.operation_products '
+                      f'WHERE {SCOPE} AND operation_id = %s', (*sql.scope, lease.operation_id)).fetchone()
+    sources = [(item['source_id'], item['content_version']) for item in product[0]] if product else sql.run(
+        f'SELECT DISTINCT source_id, content_version FROM mnemotrace.operation_sources '
+        f'WHERE {SCOPE} AND operation_id = %s', (*sql.scope, lease.operation_id)).fetchall()
     targets = sql.run(f'SELECT target_kind, coalesce(source_id, fact_id, working_id, entity_id), '
                       f'content_version FROM mnemotrace.operation_targets WHERE {SCOPE} AND operation_id = %s',
                       (*sql.scope, lease.operation_id)).fetchall()
@@ -204,13 +215,15 @@ def commit_task(sql, lease, receipt):
     ))
 
 
-def store_messages(sql, session_id, messages):
-    sql.ensure_session(session_id)
+def store_messages(sql, session_id, messages, *, check_model=None):
     existing = sql.run(f'SELECT message_id,id,message_fingerprint FROM mnemotrace.sources '
                        f'WHERE {SCOPE} AND session_id = %s AND message_id = ANY(%s)',
                        (*sql.scope, session_id, [msg.message_id for msg in messages])).fetchall()
     known = {key: (record_id, digest) for key, record_id, digest in existing}
-    saved, inserted = [], 0
+    if check_model is not None and any(item.scope != 'raw' and item.message_id not in known for item in messages):
+        check_model()
+    sql.ensure_session(session_id)
+    saved, inserted = [], []
     for item in messages:
         digest = item.fingerprint
         if item.message_id in known:
@@ -228,6 +241,6 @@ def store_messages(sql, session_id, messages):
                 sequence=allocate_sequence(sql, session_id), record_version=1, content_version=1,
             ))
             known[item.message_id] = (record_id, digest)
-            inserted += 1
+            inserted.append(record_id)
         saved.append(record_id)
-    return tuple(saved), inserted
+    return tuple(saved), tuple(inserted)

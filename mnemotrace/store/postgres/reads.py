@@ -1,5 +1,6 @@
 """Structured reads on one authorized, repeatable database snapshot."""
 from dataclasses import fields
+import json
 
 from ..contracts import FactQuery, FactState, SpaceSettings
 from .errors import DataCorruption
@@ -28,6 +29,12 @@ class ReadView:
 
     def sources(self, source_ids):
         return self._sql.select(SOURCE, ('r.id = ANY(%s)',), (list(source_ids),))
+
+    def summary_version(self, source_id):
+        row = self._sql.run(f'SELECT summary_version FROM mnemotrace.source_summaries WHERE {SCOPE} '
+                            'AND source_id = %s', (*self._sql.scope, source_id)).fetchone()
+        # A cleared summary retains the version reserved for its replacement.
+        return row[0] if row else 1
 
     def list_sources(self, *, session_id=None, after_id=None, limit=100):
         conditions, values = [], []
@@ -87,6 +94,40 @@ class ReadView:
         clauses.append('coalesce(r.subject_match_key, lower(btrim(r.subject))) = %s')
         args.append(subject.strip().lower())
         return self._sql.select(FACT, clauses, args)
+
+    def merge_history(self, subjects):
+        return self._sql.select(FACT, ('coalesce(r.subject_match_key, lower(btrim(r.subject))) = ANY(%s)',),
+                                (list(subjects),))
+
+    def fact_vectors(self, records, model, dimension):
+        ids = [record.ref.record_id for record in records]
+        rows = self._sql.run("""SELECT e.fact_id,e.vector::text FROM mnemotrace.embeddings e
+            JOIN mnemotrace.facts f ON (f.user_id,f.space_id,f.id,f.content_version) =
+                (e.user_id,e.space_id,e.fact_id,e.content_version)
+            WHERE e.user_id = %s AND e.space_id = %s AND e.fact_id = ANY(%s)
+            AND e.field = 'text' AND e.model = %s AND e.dimension = %s""",
+            (*self._sql.scope, ids, model, dimension)).fetchall()
+        return {fact_id: json.loads(vector) for fact_id, vector in rows}
+
+    def preceding_sources(self, episode, budget):
+        if not budget or episode.sequence is None:
+            return ()
+        rows = self._sql.run("""WITH preceding AS (
+            SELECT r.id, r.sequence, sum(octet_length(coalesce(nullif(s.summary, ''), r.content)))
+                OVER (ORDER BY r.sequence DESC) AS bytes,
+                bool_and(coalesce(s.processing_state = 'completed', false)
+                    AND (r.mode,r.scope,r.source_kind) IS NOT DISTINCT FROM (%s,%s,%s))
+                OVER (ORDER BY r.sequence DESC) AS contiguous
+            FROM mnemotrace.sources r LEFT JOIN mnemotrace.source_summaries s
+            ON (r.user_id,r.space_id,r.id) = (s.user_id,s.space_id,s.source_id)
+            WHERE r.user_id = %s AND r.space_id = %s AND r.session_id = %s AND r.sequence < %s
+            ORDER BY r.sequence DESC LIMIT %s)
+            SELECT id FROM preceding WHERE contiguous AND bytes <= %s ORDER BY sequence""",
+            (episode.mode, episode.scope, episode.source_kind, *self._sql.scope,
+             episode.session_id, episode.sequence, budget, budget)).fetchall()
+        ids = tuple(row[0] for row in rows)
+        records = {record.ref.record_id: record for record in self.sources(ids)}
+        return tuple(records[source_id] for source_id in ids)
 
     def clearable_slot(self, subject, predicate):
         clauses, args = self._fact_conditions(FactQuery())

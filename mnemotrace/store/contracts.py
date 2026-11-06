@@ -491,6 +491,8 @@ class OperationSpec:
                 raise ValueError('Maintenance requires record targets, not fabricated sources')
         elif not self.sources or self.session_id is None or self.targets:
             raise ValueError('Model operations require a session and unique source versions')
+        if self.kind is OperationKind.SUMMARY and len(self.sources) != 1:
+            raise ValueError('Summary operations require exactly one source')
 
 
 @dataclass(frozen=True)

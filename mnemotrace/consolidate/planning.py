@@ -169,18 +169,24 @@ def plan(memory, tasks, session, cutoff, after=0):
     data = empty_input(session)
     data['context'] = context_for(memory, tasks, pending[0][1])
     policy = memory.policy.get('extract_system', '') + memory.policy.get('extract_instruction', '')
-    for key, row in pending:
-        ep = memory.episodes_doc.get(key)
+    return fit_window(data, ((memory.episodes_doc.get(key), row) for key, row in pending),
+                      memory.config, policy)
+
+
+def fit_window(data, pending, config, policy):
+    """Fit an ordered source prefix, preserving the ranges actually sent to the model."""
+    dialogue = data['source_kind'] == 'dialogue'
+    for ep, row in pending:
         start = row['position'] if row['source_kind'] != 'dialogue' else 0
         view = supplied(ep, row, start=start)
         candidate = {**data, 'pending': [*data['pending'], view]}
-        if output_size(candidate, memory.config) > memory.config.joint_max_output_tokens:
+        if output_size(candidate, config) > config.joint_max_output_tokens:
             break
-        while candidate['context'] and not fits_input(candidate, memory.config, policy):
-            candidate['context'] = user_start(candidate['context'][1:]) if session['source_kind'] == 'dialogue' else candidate['context'][1:]
-        if fits_input(candidate, memory.config, policy):
+        while candidate['context'] and not fits_input(candidate, config, policy):
+            candidate['context'] = user_start(candidate['context'][1:]) if dialogue else candidate['context'][1:]
+        if fits_input(candidate, config, policy):
             data = candidate
-            if session['source_kind'] != 'dialogue':
+            if not dialogue:
                 break
             continue
         if data['pending']:
@@ -190,7 +196,7 @@ def plan(memory, tasks, session, cutoff, after=0):
         lo, hi, best = 2 if view['needs_summary'] else 1, len(text), None
         while lo <= hi:
             count = (lo + hi) // 2
-            if session['source_kind'] == 'dialogue':
+            if dialogue:
                 head, tail = (count + 1) // 2, count // 2
                 clipped = {**view, 'content': text[:head] + OMITTED + (text[-tail:] if tail else ''),
                            'ranges': [[0, head], [len(text) - tail, len(text)]] if tail else [[0, head]], 'partial': True}
@@ -199,7 +205,7 @@ def plan(memory, tasks, session, cutoff, after=0):
                 clipped = supplied(ep, row, start=start, end=end)
             candidate['pending'] = [clipped]
             enough = not view['needs_summary'] or sum(b-a for a, b in clipped['ranges']) >= 2
-            if enough and fits_input(candidate, memory.config, policy):
+            if enough and fits_input(candidate, config, policy):
                 best, lo = deepcopy(candidate), count + 1
             else:
                 hi = count - 1
@@ -221,70 +227,76 @@ def summary_plan(memory, tasks, session, cutoff):
         if row['core'] not in {'completed', 'not_requested'} and not row['summary_requested']:
             continue
         ep = memory.episodes_doc.get(key)
-        parts = sorted(row['parts'], key=lambda p: p['start'])
-        data = empty_input(session, 'summary')
-        if row['source_kind'] == 'dialogue':
-            view = supplied(ep, row)
-            data['pending'] = [view]
-            policy = memory._effective('summary_system')
-            if fits_input(data, memory.config, policy):
-                return data
-            lo, hi, best = 2, len(ep.content), None
-            while lo <= hi:
-                count = (lo + hi) // 2
-                head, tail = (count + 1) // 2, count // 2
-                data['pending'] = [{**view, 'content': ep.content[:head] + OMITTED + (ep.content[-tail:] if tail else ''),
-                    'ranges': [[0, head], [len(ep.content)-tail, len(ep.content)]] if tail else [[0, head]], 'partial': True}]
-                if fits_input(data, memory.config, policy):
-                    best, lo = deepcopy(data), count + 1
-                else:
-                    hi = count - 1
-            if best is None:
-                raise ValueError('Summary input budget cannot fit a message')
-            return best
-        covered, gap_end = 0, len(ep.content)
-        for part in parts:
-            if part['start'] != covered:
-                gap_end = part['start']
-                break
-            covered = part['end']
-        if covered < len(ep.content):
-            # Summary-only requests cover the whole source, with the same checkpoint engine.
-            if row['core'] == 'completed' and not row['summary_requested']:
-                continue  # Missing fragment summaries must be explicitly retried first.
-            start = covered
-            lo, hi, best = 2, gap_end - start, None
-            while lo <= hi:
-                count = (lo + hi) // 2
-                end = start + count - int(gap_end - start - count == 1)
-                data['pending'] = [supplied(ep, row, start=start, end=end)]
-                if end - start >= 2 and fits_input(data, memory.config, memory._effective('summary_system')):
-                    best, lo = deepcopy(data), count + 1
-                else:
-                    hi = count - 1
-            if best is None:
-                raise ValueError('Summary input budget cannot fit a source fragment')
-            return best
-        selected = []
-        for part in parts:
-            candidate = [*selected, part]
-            view = supplied(ep, row)
-            view.update(content='\n\n'.join(p['text'] for p in candidate), representation='summary',
-                        representation_source=None,
-                        ranges=[[candidate[0]['start'], candidate[-1]['end']]], partial=True)
-            data.update(pending=[view], parts=[p['key'] for p in candidate])
-            if not fits_input(data, memory.config, memory._effective('summary_system')):
-                break
-            selected = candidate
-        if len(selected) < 2:
-            raise ValueError('Summary budget cannot combine two fragments')
-        view = supplied(ep, row)
-        view.update(content='\n\n'.join(p['text'] for p in selected), representation='summary',
-                    representation_source=None,
-                    ranges=[[selected[0]['start'], selected[-1]['end']]], partial=True)
-        data.update(pending=[view], parts=[p['key'] for p in selected])
-        return data
+        data = fit_summary(session, ep, row, memory.config, memory._effective('summary_system'))
+        if data is not None:
+            return data
     return None
+
+
+def fit_summary(session, ep, row, config, policy):
+    """Prepare a single summary fragment or a bounded composition of saved parts."""
+    parts = sorted(row['parts'], key=lambda p: p['start'])
+    data = empty_input(session, 'summary')
+    if row['source_kind'] == 'dialogue':
+        view = supplied(ep, row)
+        data['pending'] = [view]
+        if fits_input(data, config, policy):
+            return data
+        lo, hi, best = 2, len(ep.content), None
+        while lo <= hi:
+            count = (lo + hi) // 2
+            head, tail = (count + 1) // 2, count // 2
+            data['pending'] = [{**view, 'content': ep.content[:head] + OMITTED + (ep.content[-tail:] if tail else ''),
+                'ranges': [[0, head], [len(ep.content)-tail, len(ep.content)]] if tail else [[0, head]], 'partial': True}]
+            if fits_input(data, config, policy):
+                best, lo = deepcopy(data), count + 1
+            else:
+                hi = count - 1
+        if best is None:
+            raise ValueError('Summary input budget cannot fit a message')
+        return best
+    covered, gap_end = 0, len(ep.content)
+    for part in parts:
+        if part['start'] != covered:
+            gap_end = part['start']
+            break
+        covered = part['end']
+    if covered < len(ep.content):
+        # Summary-only requests cover the whole source, with the same checkpoint engine.
+        if row['core'] == 'completed' and not row['summary_requested']:
+            return None  # Missing fragment summaries must be explicitly retried first.
+        start = covered
+        lo, hi, best = 2, gap_end - start, None
+        while lo <= hi:
+            count = (lo + hi) // 2
+            end = start + count - int(gap_end - start - count == 1)
+            data['pending'] = [supplied(ep, row, start=start, end=end)]
+            if end - start >= 2 and fits_input(data, config, policy):
+                best, lo = deepcopy(data), count + 1
+            else:
+                hi = count - 1
+        if best is None:
+            raise ValueError('Summary input budget cannot fit a source fragment')
+        return best
+    selected = []
+    for part in parts:
+        candidate = [*selected, part]
+        view = supplied(ep, row)
+        view.update(content='\n\n'.join(p['text'] for p in candidate), representation='summary',
+                    representation_source=None,
+                    ranges=[[candidate[0]['start'], candidate[-1]['end']]], partial=True)
+        data.update(pending=[view], parts=[p['key'] for p in candidate])
+        if not fits_input(data, config, policy):
+            break
+        selected = candidate
+    if len(selected) < 2:
+        raise ValueError('Summary budget cannot combine two fragments')
+    view = supplied(ep, row)
+    view.update(content='\n\n'.join(p['text'] for p in selected), representation='summary',
+                representation_source=None,
+                ranges=[[selected[0]['start'], selected[-1]['end']]], partial=True)
+    data.update(pending=[view], parts=[p['key'] for p in selected])
+    return data
 
 
 def validate_response(raw, data, config, *, compensation=False):

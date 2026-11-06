@@ -57,7 +57,7 @@ def _receipt(sql, operation_id):
     return None
 
 
-def _apply_changes(sql, changes, revision, generation, settings):
+def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=None):
     conditions = changes.conditions
     snapshot = conditions.snapshot
     if (snapshot.core_revision != revision or snapshot.space_generation != generation
@@ -111,7 +111,10 @@ def _apply_changes(sql, changes, revision, generation, settings):
     if conditions.lease is not None:
         if changes.receipt is None:
             raise DatabaseConstraintError('Task completion requires a receipt')
-        commit_task(sql, conditions.lease, changes.receipt)
+        if checkpoint is None:
+            commit_task(sql, conditions.lease, changes.receipt)
+        else:
+            checkpoint(sql)
     refs = [item.ref for item in changes.writes]
     supplied = changes.receipt
     if supplied is not None and supplied.core_revision != revision + int(changed):
@@ -161,7 +164,7 @@ class PostgresDAO:
         with self._transaction() as sql:
             return _receipt(sql, operation_id)
 
-    def _mutate(self, operation_id, apply):
+    def _mutate(self, operation_id, apply, *, segment_of=None):
         identifier(operation_id)
         entered = False
         try:
@@ -178,7 +181,7 @@ class PostgresDAO:
                 sql.insert('record_commit_receipts', dict(
                     operation_id=operation_id, core_revision=revision, fact_ids=list(result.fact_ids),
                     working_ids=list(result.working_ids), source_ids=list(result.source_ids),
-                    affected_count=result.count,
+                    affected_count=result.count, **({'segment_of': segment_of} if segment_of else {}),
                 ))
                 return CommitReceipt(operation_id, revision, result.fact_ids, result.working_ids,
                                      result.source_ids, result.count)
@@ -207,8 +210,8 @@ class PostgresDAO:
             raise ValueError('Expected a non-empty batch of raw MessageInput records')
 
         def apply(sql, *_):
-            ids, count = store_messages(sql, session_id, items)
-            return Applied(bool(count), source_ids=ids, count=count)
+            ids, fresh = store_messages(sql, session_id, items)
+            return Applied(bool(fresh), source_ids=ids, count=len(fresh))
 
         return self._mutate(new_operation_id(), apply)
 

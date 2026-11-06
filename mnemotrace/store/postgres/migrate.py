@@ -9,13 +9,15 @@ import math
 from .database import DatabaseConfig, database_errors, driver
 from .errors import DatabaseConfigurationError, SchemaMismatch
 
-MIGRATIONS = ('001_initial.sql', '002_security.sql', '003_record_commits.sql')
+MIGRATIONS = ('001_initial.sql', '002_security.sql', '003_record_commits.sql',
+              '004_processing.sql')
 
 
 def _roles(prefix):
     return {key: prefix + '_' + suffix for key, suffix in (
         ('migration', 'migration'), ('runtime', 'runtime'),
-        ('admin', 'account_admin'), ('auth', 'auth_lookup'))}
+        ('admin', 'account_admin'), ('auth', 'auth_lookup'),
+        ('discovery', 'worker_discovery'), ('discovery_owner', 'worker_discovery_owner'))}
 
 
 def bootstrap_roles(config: DatabaseConfig) -> None:
@@ -42,6 +44,8 @@ def bootstrap_roles(config: DatabaseConfig) -> None:
                 raise DatabaseConfigurationError('Existing database role has unsafe attributes')
         conn.execute(sql.SQL('GRANT {} TO {}').format(
             sql.Identifier(roles['auth']), sql.Identifier(roles['migration'])))
+        conn.execute(sql.SQL('GRANT {} TO {}').format(
+            sql.Identifier(roles['discovery_owner']), sql.Identifier(roles['migration'])))
         conn.execute(sql.SQL('GRANT CREATE ON DATABASE {} TO {}').format(
             sql.Identifier(conn.info.dbname), sql.Identifier(roles['migration'])))
         conn.execute('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public')
@@ -124,6 +128,11 @@ def check_role(conn, prefix, purpose):
     ).fetchone()
     if row is None or any(row[:4]) or not row[4] or any(row[5:]):
         raise DatabaseConfigurationError('Database credentials have unexpected privileges')
+    roles = _roles(prefix)
+    separated = ('runtime', 'admin') if purpose == 'discovery' else ('discovery',)
+    for key in (*separated, 'discovery_owner'):
+        if conn.execute("SELECT pg_has_role(current_user, %s, 'MEMBER')", (roles[key],)).fetchone()[0]:
+            raise DatabaseConfigurationError('Worker discovery credentials must be separate')
     other = _roles(prefix)['admin' if purpose == 'runtime' else 'runtime']
     if conn.execute("SELECT pg_has_role(current_user, %s, 'MEMBER')", (other,)).fetchone()[0]:
         raise DatabaseConfigurationError('Runtime and administration credentials must be separate')

@@ -3,7 +3,7 @@
 本文面向阶段二至八的实现者，集中维护目标数据契约、调用方去向和验证输入。
 这是目标设计，**不是当前产品已经具备的能力**；当前运行机制见[架构总览](README.md)和[生命周期](memory.md)。
 [契约代码](../../mnemotrace/store/contracts.py)中的 SpaceContext/SpaceSettings 已用于数据库基础；其他业务契约待后续阶段接入。
-数据库基础使用方法见下方 Schema 一节，当前产品运行入口尚未切换。
+显式 Python Postgres 入口已接入三阶段任务流水线。产品接入端的空间参数和进度接口在阶段六切换。
 
 ## 身份与公共接口
 
@@ -106,8 +106,8 @@ operation_id 回执在空间内唯一；连接中断先查询回执，避免重�
 
 [迁移代码](../../mnemotrace/store/postgres/migrate.py)及其 [SQL 资源](../../mnemotrace/store/postgres/sql/)
 是数据库结构、约束、索引与角色策略的权威定义，不在本文复制 DDL。
-数据库基础提供账号/key/空间、连接池和授权事务。显式 Python 入口使用 Postgres 业务 DAO，现有
-MemoryService、HTTP/MCP 接入端按阶段切换。恢复执行器与数据库检索分别在阶段四和阶段五接入。
+数据库基础提供账号/key/空间、连接池和授权事务。显式 Python 入口使用 Postgres 业务 DAO 和恢复执行器。
+数据库混合检索在阶段五接入，现有 MemoryService、HTTP/MCP 接入端在阶段六切换。
 没有新旧存储双写或自动回退。
 
 ### 显式 Python 业务入口
@@ -138,8 +138,19 @@ with Database(DatabaseConfig.from_env()) as database:
 原文擦除若遇到多来源派生事实或工作记忆，抛出 `ErasureDependencies` 并回滚；
 经授权可把异常列出的记录与原文一并传给 `erase`。默认 `export_records()` 仅流式导出非敏感事实，
 显式指定 `include_sensitive=True` 可读取全部领域记录，备份恢复另见阶段八。
+单条 `erase` 清理直接使用该来源的摘要和向量。跨 episode 经其他摘要间接传播的内容仍可能被召回，
+其级联清理留待后续。
 裁决冲突时按同一快照检查双方是否仍有效。事实文本超出图实体名或谓词的长度限制时，
 事实照常保存，图中省略该边。
+
+自动处理通过 `PostgresMemory(database, context, llm=llm)` 启用。使用 `remember_messages(session_id, messages)`
+受理对话，或使用 `remember(content, session_id, source_kind="raw")` 受理原文。已解码文档可传
+`source_kind="document"`。返回值包含 `source_ids`、`operation_ids` 和 `OperationResult` 对象。
+`buffered` 在 T1 后返回，`immediate` 等待核心提交，超时仍返回已接受的操作标识。
+`operation(operation_id)` 查询当前进度，`retry_operation(operation_id)` 重新排队，
+`flush_processing(session_id, include_summaries=True)` 同时等待本批摘要。长原文和文档的分段进度
+保存在来源覆盖记录中，所有连续分段提交后才标记核心完成。公开操作 ID 的最终回执汇总各段仍保留的
+事实、工作记忆和来源。每个摘要任务处理一个来源，摘要片段仅在生成配置指纹匹配时复用。
 
 | 数据组 | 结构与所有权 |
 | --- | --- |
@@ -207,6 +218,12 @@ with Database(DatabaseConfig.from_env()) as database:
 | account_admin | 受限 CLI 创建/删除账号、签发/撤销 key，不向普通用户 key 开放 |
 | auth lookup | 受限函数/权限，仅由摘要查询有效身份/账号状态，不返回业务内容 |
 | worker discovery | 受限函数/权限，仅返回候选操作 ID 与归属，处理时回到 runtime 作用域 |
+
+部署 worker 时，先由 DBA 执行数据库角色初始化，再运行迁移。阶段三数据库升级时也要先执行这一步，
+以建立 worker 的两个 NOLOGIN 角色。向独立登录账号授予 `<prefix>_worker_discovery`，
+通过 `MNEMOTRACE_DISCOVERY_DATABASE_URL` 配置它。函数所有者 `<prefix>_worker_discovery_owner`
+由初始化和迁移维护。使用现有的 `MNEMOTRACE_DATABASE_URL`、`MNEMOTRACE_LLM` 和
+`MNEMOTRACE_EMBEDDER` 运行 `python -m mnemotrace.worker`。请求内执行与 worker 使用相同的模型和空间策略配置。
 
 业务表默认用户级 RLS，USING/WITH CHECK 同时约束；DAO 额外约束空间。
 runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在同一事务/连接，事务局部设置，缺失拒绝访问。
