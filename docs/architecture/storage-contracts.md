@@ -57,8 +57,10 @@ processing/flush 继续提供聚合和等待能力，内部引用这些操作 ID
 | 核心完成、摘要失败 | 主操作仍 completed；auxiliary_operation_ids 指向失败 summary，不要求重发原文 |
 
 原文/人工事实不强制有抽取任务；自动抽取缺少 LLM 在本次输入写入前拒绝。
-Python 底层保存原文、consolidate 检查模型的分工保留。会话关闭的等待、摘要、结论和关闭后写入规则不重新设计。
-现有入口有意保留的辅助等待差异由接口回归锁定，不把所有 immediate 入口变成同一关闭流程。
+Python 底层保存原文、consolidate 检查模型的分工保留。
+阶段六以「整理会话」替换 `close_session`，复用 `flush_processing` 推进并等待本批核心处理。
+摘要沿用现有流程并单独报告进度。移除自动工作记忆清理、专门的会话结论生成逻辑及旧入口。
+现有各入口的辅助等待差异由接口回归锁定。
 错误映射：无效 key=401；未知/他人空间统一 space_not_found=404；参数错误=422；消息/业务版本冲突=409；
 数据库不可用=503；损坏=500；模型错误沿用 ExtractionError 映射。不输出凭据、连接串、原文或内部路径。
 已保存请求的错误必须带操作标识与 stored_raw，不能让调用方猜测是否需要重发。
@@ -107,7 +109,8 @@ operation_id 回执在空间内唯一；连接中断先查询回执，避免重�
 [迁移代码](../../mnemotrace/store/postgres/migrate.py)及其 [SQL 资源](../../mnemotrace/store/postgres/sql/)
 是数据库结构、约束、索引与角色策略的权威定义，不在本文复制 DDL。
 数据库基础提供账号/key/空间、连接池和授权事务。显式 Python 入口使用 Postgres 业务 DAO 和恢复执行器。
-数据库混合检索在阶段五接入，现有 MemoryService、HTTP/MCP 接入端在阶段六切换。
+阶段五通过显式 Python Postgres 入口验收完整的数据库混合检索链路。
+阶段六切换 MemoryService、HTTP/MCP 等产品入口，并验证其实际使用同一条数据库查询链路。
 没有新旧存储双写或自动回退。
 
 ### 显式 Python 业务入口
@@ -173,6 +176,9 @@ with Database(DatabaseConfig.from_env()) as database:
 保留的检索契约：BM25 使用 stems、k1=1.5、b=0.75，从同授权/时间作用域的文档与词项聚合 N、总长度和 df；
 空文档计入 N，query terms 为集合，不以 Postgres 全文排序替代。
 先做槽位头/图排除，再计算对应语料统计；旧 ANN 候选池统计差异不作为质量等价证据。
+参与语义召回的原文在受理事务提交后异步生成向量，阶段五同时覆盖已保存的合格来源补建。
+原文向量绑定 `content_version`、模型及维度，提交时复核来源和作废状态。
+待就绪或失败的向量不参与该信号，查询通过候选覆盖限制报告缺失。原文读取和已就绪的检索信号继续可用。
 图边认知时间回查支撑事实，沿用实体归一化与谓词建边规则；权威别名/合并不能只靠事实重建。
 
 
@@ -266,7 +272,7 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 | memory: _current_state_block/_should_abstain；structured: build_structured_profile；agentic: gather_episodes；aggregate: dedupe_aggregation_candidates；conflict_candidates: candidate_pairs；lexical: bm25_scores | 遍历局部 latest/diag/basic/prefs/seen/best/by_subj/doc_tokens 字典 | 保留局部算法；输入来自授权必要工作集，BM25 统计从同作用域数据库语料提供 | 5 | smoke、profile_display、lean、storage_baseline |
 | memory: lean_context/search/context_for/retrieve_episodes/get_episode；service: recall/recall_multi/get_episode | 内存候选/working_set、完整 token 估算与可选 answerer | DB 候选/必要工作集，逐空间鉴权融合；保留入口差异 | 5—6 | lean、search_answering、spaces |
 | service: processing_status/_processing_status/flush/close | 扫空间来源/任务、按 namespace 等待 | 操作/会话查询、DB 租约恢复 | 4、6 | async_consolidation、message_recovery |
-| service: close_session/session_report/agent_status/sessions | 扫原文/working/facts 汇总，close 捕获边界清理 | 会话查询/聚合、适配原有 close 行为 | 3、6 | agent_sessions、message_recovery、outcomes |
+| service: close_session/session_report/agent_status/sessions | 扫原文/working/facts 汇总，close 捕获边界清理 | 会话查询和聚合。整理会话复用 flush_processing，移除旧关闭入口、自动清理和会话结论 | 3、6 | agent_sessions、message_recovery、outcomes |
 | service: graph/memories/audit/_embedder_blindness/stats | 全量分页、实体/关系统计、敏感过滤与审计 | DB 分页/聚合，审计走显式维护接口 | 3、5—6 | memory_pagination、graph_query、metrics |
 | service: forget/export；persist: save_memory/load_memory/_memory_state | 全空间擦除/导出、manifest 携带策略/身份/去重/任务，缺失可当空库 | 删除事务/作废；新格式流式导出恢复；不迁旧目录 | 3、7—8 | forget_concurrency/lock_cleanup、snapshot_validation、persist_safety |
 | server.app 全业务路由/openai_compat | 部分支持 space/home，部分直接使用认证命名空间 | 全部显式 space_id，代理携带操作标识 | 6 | server、openai_compat、message/topic_interfaces |
