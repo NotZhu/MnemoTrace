@@ -27,6 +27,7 @@ class TestDatabase:
     migration: DatabaseConfig
     runtime: DatabaseConfig
     admin: DatabaseConfig
+    discovery: DatabaseConfig
 
 
 @pytest.fixture(scope='session')
@@ -45,7 +46,8 @@ def database_factory(record_testsuite_property):
         dbname, prefix = 'mt_phase2_fixture_' + token, 'mt_' + token
         marker = 'mnemotrace:storage-phase2:' + token
         roles = _roles(prefix)
-        logins = {kind: prefix + '_' + kind + '_login' for kind in ('runtime', 'admin', 'migration')}
+        logins = {kind: prefix + '_' + kind + '_login'
+                  for kind in ('runtime', 'admin', 'migration', 'discovery')}
         owned_roles = []
         with psycopg.connect(dsn, autocommit=True) as root:
             record_testsuite_property('postgres_version', root.execute('SHOW server_version').fetchone()[0])

@@ -42,6 +42,7 @@ class DatabaseConfig:
     @classmethod
     def from_env(cls, purpose: str = 'runtime') -> DatabaseConfig:
         variables = {'runtime': 'MNEMOTRACE_DATABASE_URL',
+                     'discovery': 'MNEMOTRACE_DISCOVERY_DATABASE_URL',
                      'migration': 'MNEMOTRACE_MIGRATION_DATABASE_URL',
                      'bootstrap': 'MNEMOTRACE_BOOTSTRAP_DATABASE_URL',
                      'admin': 'MNEMOTRACE_ADMIN_DATABASE_URL'}
@@ -101,8 +102,8 @@ class Database:
     """One process owns one explicitly opened pool for a single credential purpose."""
 
     def __init__(self, config: DatabaseConfig, *, purpose: str = 'runtime'):
-        if purpose not in {'runtime', 'admin'}:
-            raise DatabaseConfigurationError('Pools are for runtime or account administration')
+        if purpose not in {'runtime', 'admin', 'discovery'}:
+            raise DatabaseConfigurationError('Unexpected database connection purpose')
         self.config = config
         self.purpose = purpose
         self._pool = None
@@ -203,6 +204,15 @@ class Database:
             if row is None or row[0] != 'active':
                 raise SpaceNotFound('Space unavailable')
             yield conn, SpaceContext(user_id, space_id)
+
+    def discover_processing(self, limit=32):
+        if self.purpose != 'discovery':
+            raise DatabaseConfigurationError('Task discovery requires worker discovery credentials')
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError('Expected discovery batch size from 1 to 100')
+        with self._transaction(read_only=True) as conn:
+            rows = conn.execute('SELECT * FROM mnemotrace.discover_processing(%s)', (limit,)).fetchall()
+            return tuple((SpaceContext(user_id, space_id), operation_id) for user_id, space_id, operation_id in rows)
 
     @contextmanager
     def admin_transaction(self):

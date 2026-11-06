@@ -18,7 +18,8 @@ TIMES = frozenset(('event_time', 'ingested_at', 'created_at', 'valid_at', 'inval
                    'expired_at', 'last_access', 'expires_at', 'detected_at'))
 SCOPE = 'user_id = %s AND space_id = %s'
 ROW_SCOPE = 'r.user_id = %s AND r.space_id = %s'
-JSON_COLUMNS = {'metadata', 'coverage', 'summary_coverage', 'settings', 'stats'}
+JSON_COLUMNS = {'metadata', 'coverage', 'summary_coverage', 'settings', 'stats',
+                'input', 'result', 'source_versions'}
 
 
 def timestamp(value):

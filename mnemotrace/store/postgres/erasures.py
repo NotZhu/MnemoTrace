@@ -49,16 +49,23 @@ def erase(sql, graph, refs):
             if missing:
                 raise ErasureDependencies(missing)
     if sources:
-        sql.delete('operations', f'operation_id IN (SELECT operation_id FROM mnemotrace.operation_sources '
-                   f'WHERE {SCOPE} AND source_id = ANY(%s))', (*sql.scope, sources))
+        _erase_task_sources(sql, sources)
     for kind, column in TARGET_COLUMNS.items():
         if groups[kind]:
             sql.delete('operations', f'operation_id IN (SELECT operation_id FROM mnemotrace.operation_targets '
                        f'WHERE {SCOPE} AND {column} = ANY(%s))', (*sql.scope, sorted(groups[kind])))
     if sources or fact_ids or groups[WORKING]:
+        working_ids = sorted(groups[WORKING])
         sql.delete('record_commit_receipts',
-                   'source_ids && %s OR fact_ids && %s OR working_ids && %s',
-                   (sources, fact_ids, sorted(groups[WORKING])))
+                   'source_ids && %s OR (segment_of IS NULL AND (fact_ids && %s OR working_ids && %s))',
+                   (sources, fact_ids, working_ids))
+        if fact_ids or working_ids:
+            # Keep the segment checkpoint and its surviving outputs available to the final receipt.
+            sql.run(f"""UPDATE mnemotrace.record_commit_receipts
+                SET fact_ids = ARRAY(SELECT id FROM unnest(fact_ids) AS ids(id) WHERE NOT (id = ANY(%s))),
+                    working_ids = ARRAY(SELECT id FROM unnest(working_ids) AS ids(id) WHERE NOT (id = ANY(%s)))
+                WHERE {SCOPE} AND segment_of IS NOT NULL AND (fact_ids && %s OR working_ids && %s)""",
+                (fact_ids, working_ids, *sql.scope, fact_ids, working_ids))
         # Task receipts contain ID references even when the input comes from a different source.
         sql.delete('operation_receipts', 'fact_ids && %s OR working_ids && %s',
                    (fact_ids, sorted(groups[WORKING])))
@@ -69,11 +76,57 @@ def erase(sql, graph, refs):
     return count
 
 
+def _erase_task_sources(sql, sources):
+    affected = tuple(row[0] for row in sql.run(
+        f'SELECT DISTINCT operation_id FROM mnemotrace.operation_sources WHERE {SCOPE} AND source_id = ANY(%s)',
+        (*sql.scope, sources)).fetchall())
+    if not affected:
+        return
+    ids = list(affected)
+    _erase_context_summaries(sql, ids, sources)
+    sql.delete('operations', 'operation_id = ANY(%s) AND (ready_at IS NULL OR NOT EXISTS ('
+               'SELECT 1 FROM mnemotrace.operation_sources r '
+               'WHERE r.user_id = %s AND r.space_id = %s AND r.operation_id = operations.operation_id '
+               'AND NOT r.is_context AND NOT (r.source_id = ANY(%s))))', (ids, *sql.scope, sources))
+    sql.delete('operation_products', 'operation_id = ANY(%s)', (ids,))
+    sql.delete('operation_summary_parts', 'operation_id = ANY(%s)', (ids,))
+    # Keep the original IDs attached to surviving inputs so replay cannot silently requeue them.
+    sql.update('operations', dict(state='cancelled', error_code='source_erased', lease_token=None,
+               lease_until=None, next_attempt_at=None, extraction_saved=False, phase='queued'),
+               "operation_id = ANY(%s) AND state <> 'completed'", (ids,))
+
+
+def _erase_context_summaries(sql, operation_ids, sources):
+    rows = sql.run("""SELECT r.source_id, o.operation_id
+        FROM mnemotrace.operations o JOIN mnemotrace.operation_sources r USING (user_id,space_id,operation_id)
+        WHERE o.user_id = %s AND o.space_id = %s AND o.operation_id = ANY(%s)
+        AND o.kind = 'summary' AND o.state = 'completed' AND NOT r.is_context
+        AND NOT (r.source_id = ANY(%s))""", (*sql.scope, operation_ids, sources)).fetchall()
+    if not rows:
+        return
+    source_ids = sorted({row[0] for row in rows})
+    summary_ids = sorted({row[1] for row in rows})
+    sql.delete('embeddings', "source_id = ANY(%s) AND field = 'summary'", (source_ids,))
+    sql.run(f"""UPDATE mnemotrace.source_summaries
+        SET summary = '', summary_coverage = NULL, summary_version = summary_version + 1,
+            record_version = record_version + 1 WHERE {SCOPE} AND source_id = ANY(%s)""",
+        (*sql.scope, source_ids))
+    sql.run(f'UPDATE mnemotrace.sources SET record_version = record_version + 1 '
+            f'WHERE {SCOPE} AND id = ANY(%s)', (*sql.scope, source_ids))
+    sql.delete('operation_receipts', 'operation_id = ANY(%s)', (summary_ids,))
+    sql.delete('record_commit_receipts', 'operation_id = ANY(%s)', (summary_ids,))
+    sql.update('operations', dict(state='cancelled', phase='queued', error_code='source_erased',
+                                  extraction_saved=False, core_committed=False),
+               'operation_id = ANY(%s)', (summary_ids,))
+
+
 def clear_session(sql, session_id):
     sql.ensure_session(session_id)
     sql.run(f'UPDATE mnemotrace.sessions SET session_generation = session_generation + 1 '
             f'WHERE {SCOPE} AND session_id = %s', (*sql.scope, session_id))
     sql.delete('operation_products', f'operation_id IN (SELECT operation_id FROM mnemotrace.operations '
+               f'WHERE {SCOPE} AND session_id = %s)', (*sql.scope, session_id))
+    sql.delete('operation_summary_parts', f'operation_id IN (SELECT operation_id FROM mnemotrace.operations '
                f'WHERE {SCOPE} AND session_id = %s)', (*sql.scope, session_id))
     sql.run(f"""UPDATE mnemotrace.operations
         SET state = 'cancelled', error_code = 'session_invalidated', lease_token = NULL,

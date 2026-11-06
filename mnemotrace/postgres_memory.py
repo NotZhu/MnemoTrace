@@ -3,11 +3,13 @@ from contextlib import contextmanager
 from dataclasses import asdict, replace
 from typing import TYPE_CHECKING
 
+from ._postgres_pipeline import PostgresPipeline
+from .config import Config
 from .consolidate.conflict import ConflictResolver
 from .consolidate.manual import apply_manual_edit, build_manual_fact
 from .embed import HashingEmbedder
 from .store.contracts import (
-    ChangeSet, CommitConditions, EmbeddingWrite, EntityMerge, FactInvalidation, RecordRef, RecordWrite,
+    ChangeSet, CommitConditions, EmbeddingWrite, EntityMerge, FactInvalidation, MessageInput, RecordRef, RecordWrite,
     SourceLink, StoredRecord,
 )
 from .store.postgres.dao import PostgresDAO, new_operation_id
@@ -19,7 +21,7 @@ from .util import now, time_key
 
 if TYPE_CHECKING:
     from .embed import Embedder
-    from .store.contracts import MessageInput, SpaceContext
+    from .store.contracts import SpaceContext
     from .store.postgres.database import Database
 
 
@@ -27,13 +29,15 @@ class PostgresMemory:
     """Use an open runtime database and an explicit, trusted space. The caller owns the pool."""
 
     def __init__(self, database: 'Database', context: 'SpaceContext', *,
-                 embedder: 'Embedder | None' = None, embedding_model: str | None = None):
+                 embedder: 'Embedder | None' = None, embedding_model: str | None = None,
+                 llm=None, config: Config | None = None):
         if embedder is not None and embedding_model is None:
             raise ValueError('A custom embedder requires a stable embedding_model identifier')
         self.dao = PostgresDAO(database, context)
         self._embedder = embedder if embedder is not None else HashingEmbedder()
         self._model = embedding_model if embedding_model is not None else 'hashing-v1'
         identifier(self._model)
+        self._processing = PostgresPipeline(self.dao, config or Config(), llm, self._embedder, self._model)
 
     @property
     def context(self):
@@ -65,6 +69,69 @@ class PostgresMemory:
     def store_messages(self, session_id: str, messages: 'tuple[MessageInput, ...]'):
         """Store raw dialogue and return source IDs in input order, including duplicates."""
         return self.dao.accept_raw_messages(session_id, messages)
+
+    def remember_messages(self, session_id: str, messages: tuple[MessageInput, ...], *,
+                          processing='buffered', timeout=30):
+        """Accept dialogue and return source IDs and durable operation progress."""
+        identifier(session_id)
+        self._validate_processing(processing, timeout)
+        items = tuple(messages)
+        if not items or any(not isinstance(item, MessageInput) for item in items):
+            raise ValueError('Expected a non-empty batch of MessageInput records')
+        pipeline = self._processing
+        receipt, associations = pipeline.tasks.accept(
+            session_id, items, pipeline.require_model, pipeline.fit_message, immediate=processing == 'immediate')
+        operation_ids = tuple(dict.fromkeys(operation for _, operation in associations))
+        result = self._accepted(operation_ids, processing, timeout)
+        result.update(source_ids=receipt.source_ids, accepted=receipt.affected_count,
+                      messages=tuple(dict(episode_id=source_id, operation_ids=tuple(
+                          operation for source, operation in associations if source == source_id))
+                                     for source_id in receipt.source_ids))
+        return result
+
+    def remember(self, content: str, session_id: str, *, scope='auto', source_kind='raw',
+                 event_time=None, agent_id=None, processing='immediate', timeout=30):
+        """Accept a note or already-decoded document for automatic processing."""
+        identifier(session_id)
+        self._validate_processing(processing, timeout)
+        if (not isinstance(content, str) or not content.strip() or '\x00' in content
+                or scope not in ('auto', 'long', 'working') or source_kind not in ('raw', 'document')):
+            raise ValueError('Invalid source content or routing')
+        source = Episode(content, self.context.user_id, session_id, source_kind=source_kind,
+                         scope=scope, event_time=event_time)
+        record = replace(StoredRecord.from_record(self.context, source), agent_id=agent_id)
+        receipt, operation_id = self._processing.tasks.accept_source(record, self._processing.require_model)
+        result = self._accepted((operation_id,), processing, timeout)
+        result['source_ids'] = receipt.source_ids
+        return result
+
+    @staticmethod
+    def _validate_processing(processing, timeout):
+        from math import isfinite
+        if processing not in ('buffered', 'immediate'):
+            raise ValueError('Expected buffered or immediate processing')
+        if type(timeout) not in (int, float) or not isfinite(timeout) or timeout < 0:
+            raise ValueError('Expected a finite nonnegative timeout')
+
+    def _accepted(self, operation_ids, processing, timeout):
+        if processing == 'immediate':
+            return self._processing.flush(operation_ids=operation_ids, timeout=timeout)
+        return dict(ok=True, status='accepted', operation_ids=operation_ids,
+                    operations=tuple(self.operation(operation_id) for operation_id in operation_ids))
+
+    def operation(self, operation_id):
+        identifier(operation_id)
+        return self._processing.tasks.operation(operation_id)
+
+    def retry_operation(self, operation_id):
+        identifier(operation_id)
+        return self._processing.tasks.retry(operation_id)
+
+    def flush_processing(self, session_id=None, timeout=30, *, retry_failed=False, include_summaries=False):
+        if session_id is not None:
+            identifier(session_id)
+        return self._processing.flush(session_id=session_id, timeout=timeout, retry_failed=retry_failed,
+                                      include_summaries=include_summaries)
 
     def remember_raw(self, content: str, session_id: str, *, role='user',
                      event_time=None, agent_id=None):
