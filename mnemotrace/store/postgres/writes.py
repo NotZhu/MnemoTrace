@@ -2,8 +2,10 @@
 from dataclasses import asdict
 
 from ...util import gen_id
-from ..contracts import OperationKind, OperationStats
+from ..contracts import OperationKind, OperationSpec, OperationStats, RecordRef, RecordVersion
 from .errors import DatabaseConstraintError, MessageConflict, VersionConflict
+from .lexical import project_document, project_text
+from .projection import projection_id
 from .records import (
     ENTITY, FACT, SOURCE, WORKING, SCOPE, TARGET_COLUMNS,
     domain, timestamp,
@@ -66,10 +68,16 @@ def _source_summary(sql, record, values, old):
     data.update(summary_version=version, content_version=record.content_version,
                 record_version=row[1] + 1 if row else 1,
                 processing_state='completed' if values['consolidated'] else 'pending')
+    if summary_changed:
+        data['summary_written_at'] = (
+            sql.run('SELECT clock_timestamp()').fetchone()[0] if values['summary'] else None
+        )
     if row:
         sql.update('source_summaries', data, 'source_id = %s', (source_id,))
     else:
         sql.insert('source_summaries', {'source_id': source_id, **data})
+    if summary_changed:
+        project_document(sql, SOURCE, source_id, version, values['summary'] or None, field='summary')
     return True
 
 
@@ -111,6 +119,8 @@ def write(sql, change, graph, explicit_edges):
         sql.delete('embeddings', f'{column} = %s', (record_id,))
         sql.delete('lexical_documents', f'{column} = %s', (record_id,))
     sql.write_record(record, insert=previous is None)
+    if old is None or text_changed or kind == FACT and current['valid_at'] != old['valid_at']:
+        project_text(sql, kind, record_id, record.content_version, current)
     if kind == SOURCE:
         _source_summary(sql, record, current, old)
     elif kind == FACT:
@@ -138,9 +148,9 @@ def invalidate(sql, item, graph):
     graph.project(record_id)
 
 
-def enqueue(sql, spec, space_generation, session_generation, *, ready_at=None, parent_id=None):
-    sequence = None if spec.session_id is None else allocate_sequence(sql, spec.session_id)
-    if ready_at is None and spec.kind in (OperationKind.EXTRACT, OperationKind.SUMMARY):
+def enqueue(sql, spec, space_generation, session_generation, *, ready_at=None, parent_id=None, embedding=None):
+    sequence = None if spec.session_id is None or embedding is not None else allocate_sequence(sql, spec.session_id)
+    if ready_at is None and (embedding is not None or spec.kind in (OperationKind.EXTRACT, OperationKind.SUMMARY)):
         ready_at = sql.run('SELECT clock_timestamp()').fetchone()[0]
     sql.insert('operations', dict(
         operation_id=spec.operation_id, kind=spec.kind.value, session_id=spec.session_id,
@@ -149,6 +159,7 @@ def enqueue(sql, spec, space_generation, session_generation, *, ready_at=None, p
         stats=asdict(OperationStats(0, 0, 0, 0, 0, 0)), stored_raw=True,
         extraction_saved=False, core_committed=False,
         ready_at=ready_at, parent_id=parent_id,
+        **(dict(embedding_model=embedding[0], embedding_dimension=embedding[1]) if embedding else {}),
     ))
     for order, source in enumerate(spec.sources):
         append_input(sql, spec.operation_id, spec.session_id, source, order)
@@ -163,6 +174,24 @@ def enqueue(sql, spec, space_generation, session_generation, *, ready_at=None, p
             TARGET_COLUMNS[target.record.kind]: target.record.record_id,
             'target_kind': target.record.kind.value, 'content_version': target.content_version,
         })
+
+
+def queue_source_vector(sql, source_id, session_id, version, generation, embedding):
+    from .dao import _session_generation
+
+    model, dimension = embedding
+    if sql.run(f"""SELECT 1 FROM mnemotrace.embeddings WHERE {SCOPE} AND source_id = %s
+        AND field = 'text' AND content_version = %s AND model = %s AND dimension = %s""",
+        (*sql.scope, source_id, version, model, dimension)).fetchone():
+        return None
+    session_generation = _session_generation(sql, session_id)
+    operation_id = projection_id('ev_', repr((source_id, version, model, dimension, generation, session_generation)))
+    if sql.run(f'SELECT 1 FROM mnemotrace.operations WHERE {SCOPE} AND operation_id = %s',
+               (*sql.scope, operation_id)).fetchone() is None:
+        target = RecordVersion(RecordRef(sql.context, SOURCE, source_id), version)
+        spec = OperationSpec(operation_id, OperationKind.REEMBED, session_id, targets=(target,))
+        enqueue(sql, spec, generation, session_generation, embedding=embedding)
+    return operation_id
 
 
 def append_input(sql, operation_id, session_id, source, order):
@@ -215,7 +244,7 @@ def commit_task(sql, lease, receipt):
     ))
 
 
-def store_messages(sql, session_id, messages, *, check_model=None):
+def store_messages(sql, session_id, messages, *, check_model=None, generation=None, embedding=None):
     existing = sql.run(f'SELECT message_id,id,message_fingerprint FROM mnemotrace.sources '
                        f'WHERE {SCOPE} AND session_id = %s AND message_id = ANY(%s)',
                        (*sql.scope, session_id, [msg.message_id for msg in messages])).fetchall()
@@ -240,6 +269,9 @@ def store_messages(sql, session_id, messages, *, check_model=None):
                 agent_id=item.agent_id, message_fingerprint=digest, metadata={},
                 sequence=allocate_sequence(sql, session_id), record_version=1, content_version=1,
             ))
+            project_text(sql, SOURCE, record_id, 1, {'content': item.content})
+            if embedding is not None:
+                queue_source_vector(sql, record_id, session_id, 1, generation, embedding)
             known[item.message_id] = (record_id, digest)
             inserted.append(record_id)
         saved.append(record_id)

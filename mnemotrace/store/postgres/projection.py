@@ -4,7 +4,7 @@ import hashlib
 from ...consolidate.graph_builder import projects_fact
 from .database import MAX_IDENTIFIER_LENGTH
 from .errors import DatabaseConstraintError, VersionConflict
-from .records import ENTITY, FACT, SCOPE, domain, timestamp
+from .records import ENTITY, FACT, SCOPE, anchor_terms, domain, timestamp
 
 
 def projection_id(prefix, value):
@@ -36,7 +36,7 @@ class GraphProjection:
             entity_id = projection_id('en_', key)
             self.sql.insert('entities', dict(
                 id=entity_id, name=name, normalized_name=key, type='entity',
-                aliases=[], record_version=1, content_version=1,
+                aliases=[], anchor_terms=anchor_terms(name, ()), record_version=1, content_version=1,
             ))
         else:
             entity_id = row[0]

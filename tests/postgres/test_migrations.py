@@ -2,13 +2,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from mnemotrace.postgres_memory import PostgresMemory
+from mnemotrace.store.contracts import StoredRecord
 from mnemotrace.store.postgres import Accounts, Database, Spaces
 from mnemotrace.store.postgres.dao import PostgresDAO
 from mnemotrace.store.postgres.database import driver
 from mnemotrace.store.postgres.errors import SchemaMismatch
 from mnemotrace.store.postgres import migrate as migrations
 from mnemotrace.store.postgres.writes import allocate_sequence
+from mnemotrace.types import Episode
 
 
 def test_concurrent_and_repeat_initialization(database_factory):
@@ -68,7 +69,7 @@ def test_unversioned_existing_schema_is_rejected(database_factory):
             migrations.migrate(bundle.migration)
 
 
-@pytest.mark.parametrize('previous_count', [1, 2, 3])
+@pytest.mark.parametrize('previous_count', [1, 2, 3, 4])
 def test_upgrade_applies_only_pending_migrations(database_factory, monkeypatch, previous_count):
     all_migrations = migrations.MIGRATIONS
     with database_factory(initialize=False) as bundle:
@@ -92,8 +93,10 @@ def test_upgrade_makes_existing_queued_extract_discoverable(database_factory, mo
                 spaces = Spaces(runtime)
                 space = spaces.create(user, 'Upgrade test')
                 context = spaces.authorize(user, space.space_id)
-                source = PostgresMemory(runtime, context).remember_raw('Synthetic queued source', 'chat')
                 with PostgresDAO(runtime, context)._transaction() as sql:
+                    source = Episode('Synthetic queued source', user, 'chat', scope='raw')
+                    sql.ensure_session('chat')
+                    sql.write_record(StoredRecord.from_record(context, source), insert=True)
                     sequence = allocate_sequence(sql, 'chat')
                     stats = dict.fromkeys(('facts_added', 'duplicates', 'invalidated', 'working_added',
                                            'model_calls', 'windows_completed'), 0)

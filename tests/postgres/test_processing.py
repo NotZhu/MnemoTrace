@@ -317,9 +317,17 @@ def test_context_erasure_purges_cached_summary_without_erasing_its_source(proces
     assert len(calls) == 2
     assert memory.get_episode(target).summary == 'Recorded detail'
 
+    def lexical_fields():
+        with memory.dao._transaction(read_only=True) as sql:
+            return {field for field, in sql.run("""SELECT DISTINCT d.field FROM mnemotrace.lexical_documents d
+                JOIN mnemotrace.lexical_terms t ON (t.user_id,t.space_id,t.document_id) = (d.user_id,d.space_id,d.id)
+                WHERE d.user_id = %s AND d.space_id = %s AND d.source_id = %s""", (*sql.scope, target))}
+
+    assert lexical_fields() == {'text', 'summary'}
     memory.erase(RecordRef(memory.context, RecordKind.SOURCE, prior))
     surviving = memory.get_episode(target)
     assert surviving.consolidated and surviving.content and surviving.summary == ''
+    assert lexical_fields() == {'text'}
     replay = memory.remember_messages('chat', (dialogue('target', 'A long synthetic record with details'),))
     assert replay['operation_ids'] == second['operation_ids']
     with memory.dao.read_snapshot('chat') as view:

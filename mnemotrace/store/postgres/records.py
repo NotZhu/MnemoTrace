@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 
 from ...types import Conflict, Entity, Episode, Fact, Relation, WorkingMemory
+from ...util import stems, tokenize
 from ..contracts import RecordKind, RecordRef, StoredRecord
 from .database import identifier
 from .errors import DataCorruption
@@ -22,11 +23,23 @@ JSON_COLUMNS = {'metadata', 'coverage', 'summary_coverage', 'settings', 'stats',
                 'input', 'result', 'source_versions'}
 
 
+def anchor_terms(name, aliases):
+    return sorted({term for label in (name, *aliases) for term in (*stems(label), *tokenize(label))})
+
+
 def timestamp(value):
     try:
         return None if value is None else datetime.fromtimestamp(value, tz=timezone.utc)
     except (OverflowError, OSError, ValueError) as exc:
         raise ValueError('Timestamp is outside the supported range') from exc
+
+
+def source_summary_join(known_at=None):
+    join = """ LEFT JOIN mnemotrace.source_summaries s
+        ON (s.user_id,s.space_id,s.source_id) = (r.user_id,r.space_id,r.id)"""
+    if known_at is None:
+        return join, ()
+    return join + ' AND s.summary_written_at <= %s', (timestamp(known_at),)
 
 
 def domain(record: StoredRecord):
@@ -75,6 +88,7 @@ def columns(record, values):
     if kind == ENTITY:
         data['normalized_name'] = values['name'].lower()
         data['authoritative'] = True
+        data['anchor_terms'] = anchor_terms(values['name'], values['aliases'])
     if kind == FACT:
         data['subject_key'] = values['subject'].lower()
         data['predicate_key'] = values['predicate'].lower()
@@ -104,11 +118,12 @@ class ScopedSQL:
         with self.conn.cursor(row_factory=dict_row) as cursor:
             return cursor.execute(query, params).fetchall()
 
-    def run(self, query, params=()):
-        return self.conn.execute(query, params)
+    def run(self, query, params=(), *, prepare=None):
+        return self.conn.execute(query, params, prepare=prepare)
 
-    def select(self, kind, conditions=(), params=(), *, limit=None):
+    def select(self, kind, conditions=(), params=(), *, limit=None, summary_known_at=None):
         extra, joins = '', ''
+        join_params = ()
         if kind in TARGET_COLUMNS:
             extra += ', NULL AS embedding'
         if kind == FACT:
@@ -120,15 +135,14 @@ class ScopedSQL:
                 CASE WHEN s.summary <> '' THEN s.summary_version END AS summary_version,
                 coalesce(s.processing_state = 'completed', false) AS consolidated,
                 s.content_version AS summary_content_version, NULL AS summary_embedding"""
-            joins = """ LEFT JOIN mnemotrace.source_summaries s
-                ON (s.user_id,s.space_id,s.source_id) = (r.user_id,r.space_id,r.id)"""
+            joins, join_params = source_summary_join(summary_known_at)
         where = ' AND '.join((ROW_SCOPE, *conditions))
         query = f'SELECT r.*{extra} FROM mnemotrace.{TABLES[kind]} r{joins} WHERE {where} ORDER BY r.id'
         if limit is not None:
             query += ' LIMIT %s'
             params = (*params, limit)
         return tuple(unpack(self.context, kind, row)
-                     for row in self.rows(query, (*self.scope, *params)))
+                     for row in self.rows(query, (*join_params, *self.scope, *params)))
 
     def get(self, kind, record_id):
         identifier(record_id)

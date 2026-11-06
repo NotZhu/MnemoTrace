@@ -107,8 +107,9 @@ def _erase_context_summaries(sql, operation_ids, sources):
     source_ids = sorted({row[0] for row in rows})
     summary_ids = sorted({row[1] for row in rows})
     sql.delete('embeddings', "source_id = ANY(%s) AND field = 'summary'", (source_ids,))
+    sql.delete('lexical_documents', "source_id = ANY(%s) AND field = 'summary'", (source_ids,))
     sql.run(f"""UPDATE mnemotrace.source_summaries
-        SET summary = '', summary_coverage = NULL, summary_version = summary_version + 1,
+        SET summary = '', summary_coverage = NULL, summary_written_at = NULL, summary_version = summary_version + 1,
             record_version = record_version + 1 WHERE {SCOPE} AND source_id = ANY(%s)""",
         (*sql.scope, source_ids))
     sql.run(f'UPDATE mnemotrace.sources SET record_version = record_version + 1 '

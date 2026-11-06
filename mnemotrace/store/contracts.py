@@ -192,6 +192,7 @@ class FactQuery:
     source_ids: tuple[str, ...] = ()
     limit: int = 100
     after_id: str | None = None
+    exclude_sensitive: bool = False
 
     def __post_init__(self):
         _enum(self.state, FactState)
@@ -201,6 +202,8 @@ class FactQuery:
         if self.limit > 1000:
             raise ValueError('Page/candidate limit exceeds 1000')
         _tuple(self.source_ids, str)
+        if type(self.exclude_sensitive) is not bool:
+            raise ValueError('Expected a boolean sensitive-fact filter')
         for value in (*self.source_ids, self.category, self.subject, self.predicate, self.after_id):
             if value is not None:
                 _id(value)
@@ -784,7 +787,7 @@ class ReadView(Protocol):
 
     snapshot: ReadSnapshot
 
-    def sources(self, source_ids: tuple[str, ...]) -> tuple[StoredRecord, ...]: ...
+    def sources(self, source_ids: tuple[str, ...], *, known_at: float | None = None) -> tuple[StoredRecord, ...]: ...
     def facts(self, query: FactQuery) -> tuple[StoredRecord, ...]: ...
     def history(self, subject: str, predicate: str | None = None) -> tuple[StoredRecord, ...]: ...
     def candidates(self, query: RetrievalQuery) -> CandidateBatch: ...

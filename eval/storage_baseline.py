@@ -28,6 +28,10 @@ SOURCE_FILES = (
     'eval/fixtures/storage_baseline.json', 'eval/fixtures/storage_workloads.json',
     'tests/test_storage_contracts.py', 'tests/test_storage_baseline.py',
     'docs/architecture/storage-contracts.md', 'docs/architecture/README.md', 'eval/README.md',
+    'eval/storage_postgres.py', 'tests/postgres/conftest.py', 'tests/postgres/test_retrieval.py',
+    'tests/postgres/test_migrations.py', 'mnemotrace/retrieve/postgres.py',
+    'mnemotrace/store/postgres/graph_reads.py', 'mnemotrace/store/postgres/lexical.py',
+    'mnemotrace/store/postgres/retrieval.py', 'mnemotrace/store/postgres/sql/005_retrieval.sql',
 )
 EVALUATION_PATHS = ('mnemotrace', 'eval', 'tests/model_fixtures.py',
                     'tests/extraction_responses.json', *SOURCE_FILES)
@@ -101,7 +105,7 @@ def workload_manifest() -> dict:
 
 
 def workload_records(name: str):
-    """Stream stable synthetic inputs for a future Postgres/pgvector adapter.
+    """Stream stable synthetic inputs for the Postgres/pgvector comparison.
 
     Filter bucket zero has exactly 1%, buckets 0..9 exactly 10% per complete
     block of 100 rows. Historical rows are every fourth row. No model is needed.
@@ -132,7 +136,7 @@ def _git(*args: str) -> str:
 def capture_sources() -> tuple[bytes, dict[str, str]]:
     """Include dirty runtime inputs without archiving unrelated workspace files.
 
-    Known phase-one files can be recorded before staging. Future new evaluation
+    Known storage work files can be recorded before staging. Future new evaluation
     sources must be staged or committed so Git can include their complete diff.
     """
     result = subprocess.run(['git', 'ls-files', '-z', '--others', '--exclude-standard',

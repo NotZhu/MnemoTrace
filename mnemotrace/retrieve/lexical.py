@@ -6,6 +6,8 @@ import math
 from ..util import stem, stems
 
 __all__ = ["stem", "stems", "token_overlap", "bm25_scores"]
+BM25_K1 = 1.5
+BM25_B = 0.75
 
 
 def overlap_terms(query: str, text: str) -> set[str]:
@@ -16,7 +18,7 @@ def token_overlap(query: str, text: str) -> int:
     return len(overlap_terms(query, text))
 
 
-def bm25_scores(query: str, docs: list[tuple[str, str]], k1: float = 1.5, b: float = 0.75) -> dict[str, float]:
+def bm25_scores(query: str, docs: list[tuple[str, str]], k1: float = BM25_K1, b: float = BM25_B) -> dict[str, float]:
     """docs:(id, text) 列表。返回 {id: bm25 分数}。"""
     if not docs:
         return {}

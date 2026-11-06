@@ -73,6 +73,8 @@ class MultiHopPlanner:
         config: Config,
         extra_fact_stores: Optional[list[VectorStore]] = None,
         llm=None,
+        *,
+        fact_is_visible=None,
     ) -> None:
         """初始化多跳查询规划器。
 
@@ -88,6 +90,7 @@ class MultiHopPlanner:
         # 事实存储列表,包含主存储和额外存储
         self.fact_stores = [fact_store] + list(extra_fact_stores or [])
         self.config = config
+        self._visible = fact_is_visible if fact_is_visible is not None else Fact.is_live
         # 启用时可调用 LLM 分解查询，增加延迟和费用；关闭或模型结果不可用时使用关键词规则。
         self.llm = llm if getattr(config, "planner_llm_decomposition", True) else None
 
@@ -133,9 +136,10 @@ class MultiHopPlanner:
         for ent in self.graph.entities.values():
             if ent.user_id != user_id:
                 continue
-            name_toks = stems(ent.name)
-            if name_toks and all(t in q for t in name_toks):
-                return ent
+            for name in (ent.name, *ent.aliases):
+                name_toks = stems(name)
+                if name_toks and all(t in q for t in name_toks):
+                    return ent
         return None
 
     def _location_constraint(self, query: str) -> str:
@@ -158,7 +162,7 @@ class MultiHopPlanner:
             name = obj.name if obj else ""
             if target_terms <= set(stems(name)):
                 fact = self._fact(rel.fact_id)
-                if fact is not None and fact.is_live(as_of):
+                if fact is not None and self._visible(fact, as_of):
                     return fact
         return None
 
@@ -252,8 +256,10 @@ class MultiHopPlanner:
                     out[obj_ent.id] = frontier_paths[eid] + [f]
         return out
 
-    def plan(self, query: str, user_id: str, as_of: Optional[float] = None) -> Optional[PlanResult]:
-        anchor, preds = self._make_plan(query, user_id)
+    def plan(self, query: str, user_id: str, as_of: Optional[float] = None, *,
+             decomposition: tuple[str, list[str]] | None = None) -> Optional[PlanResult]:
+        anchor, preds = (self.graph.get_entity(user_id, decomposition[0]), decomposition[1]) if decomposition else (
+            self._make_plan(query, user_id))
         if anchor is None or len(preds) < 2:
             return None  # 不是有把握的 multi-hop 问题;交给 hybrid 处理
 
@@ -275,7 +281,7 @@ class MultiHopPlanner:
                 for rel in self.graph.neighbors(eid, as_of, "out"):
                     if self._pred_matches(pred, rel.predicate):
                         fact = self._fact(rel.fact_id)
-                        if fact is None or not fact.is_live(as_of):
+                        if fact is None or not self._visible(fact, as_of):
                             continue
                         next_paths[rel.object_id] = facts + ([fact] if fact is not None else [])
             if not next_paths and self.llm is not None:

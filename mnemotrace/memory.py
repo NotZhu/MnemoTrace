@@ -110,6 +110,14 @@ def _expected_answer_type(query: str):
     return None
 
 
+def should_abstain(query, facts, semantic_scores, threshold):
+    for fact in facts:
+        attributes = fact.predicate.replace("_", " ") + " " + fact.object
+        if overlap_terms(query, attributes) - _GENERIC_ATTR_TERMS:
+            return False
+    return max(semantic_scores, default=0.0) < threshold
+
+
 @dataclass
 class SearchResult:
     query: str
@@ -118,6 +126,11 @@ class SearchResult:
     via: str = "hybrid"  # "hybrid" | "multi-hop" | "abstain"
     abstained: bool = False
     _answer: Optional[str] = None
+    limitations: tuple[str, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        return not self.limitations
 
     def answer(self) -> str:
         if self.abstained:
@@ -1276,9 +1289,10 @@ class Memory:
                 and (f.predicate.lower() in self._INSTRUCTION_PREDS
                      or any(f.predicate.lower().startswith(p + "_") for p in ("wants", "prefers", "remind")))]
 
-    def _is_procedural_fact(self, f: Fact) -> bool:
+    @staticmethod
+    def _is_procedural_fact(f: Fact) -> bool:
         pred = f.predicate.lower()
-        return pred in self._INSTRUCTION_PREDS or any(
+        return pred in Memory._INSTRUCTION_PREDS or any(
             pred.startswith(p + "_") for p in ("wants", "prefers", "remind")
         )
 
@@ -1305,10 +1319,15 @@ class Memory:
         if not self.config.procedural_memory:
             return []
         k = max(1, int(limit or getattr(self.config, "procedural_memory_k", 6) or 6))
+        return self._rank_procedural(query, (f for f in self._all_facts()
+                                             if f.user_id == user and f.is_live(as_of)), k)
+
+    @staticmethod
+    def _rank_procedural(query, facts, k):
         q_is_proc = bool(_PROCEDURAL_QUERY_RE.search(query))
         rows: list[tuple[int, float, Fact]] = []
-        for f in self._all_facts():
-            if f.user_id != user or not f.is_user_knowledge or not f.is_live(as_of) or not self._is_procedural_fact(f):
+        for f in facts:
+            if not f.is_user_knowledge or not Memory._is_procedural_fact(f):
                 continue
             text = " ".join(
                 part for part in (
@@ -1556,6 +1575,13 @@ class Memory:
             return None
         view_time = now() if as_of is None else as_of
         facts = [f for f in self._all_facts() if f.user_id == user and (f.valid_at is not None and f.valid_at <= view_time)]
+        result = self._history_answer(query, facts, view_time, lambda f: f.is_live(as_of))
+        if result:
+            self._reinforce_fact(result.facts[0])
+        return result
+
+    @staticmethod
+    def _history_answer(query, facts, view_time, is_live):
         if not facts:
             return None
         by_id = {f.id: f for f in facts}
@@ -1570,15 +1596,15 @@ class Memory:
             if not visible_newers:
                 continue
             newer = max(visible_newers, key=lambda f: (time_key(f.valid_at), f.created_at, f.id))
-            if old.is_live(as_of):
+            if is_live(old):
                 continue
-            old_terms = self._chain_terms(old)
-            newer_terms = self._chain_terms(newer)
+            old_terms = Memory._chain_terms(old)
+            newer_terms = Memory._chain_terms(newer)
             overlap = overlap_terms(query, old_terms) | overlap_terms(query, newer_terms)
             score = len(overlap)
-            if self._mentions_value(query, newer.object):
+            if Memory._mentions_value(query, newer.object):
                 score += 6
-            if self._mentions_value(query, old.subject):
+            if Memory._mentions_value(query, old.subject):
                 score += 2
             if overlap_terms(query, old.predicate.replace("_", " ")):
                 score += 3
@@ -1588,7 +1614,6 @@ class Memory:
         if not candidates:
             return None
         _, _, old, newer = max(candidates, key=lambda row: (row[0], row[1], row[2].created_at, row[2].id))
-        self._reinforce_fact(old)
         return SearchResult(query=query, facts=[old, newer], scores=[1.0, 1.0], via="history", _answer=old.object)
 
     def _chain_facts_for_seeds(
@@ -2868,14 +2893,7 @@ class Memory:
         工作，却问 "Gina's favorite food"）。我们要求 predicate+object 有词法重叠，或语义相似度
         足够强。针对 LongMemEval 的拒答（false-premise 类别）。"""
 
-        def attribute_text(f: Fact) -> str:
-            return f.predicate.replace("_", " ") + " " + f.object
-
-        for f in facts:
-            if overlap_terms(query, attribute_text(f)) - _GENERIC_ATTR_TERMS:
-                return False  # 命中了非泛化的属性词 -> 答案在记忆中
-        best_sem = max(diag.get("sem", {}).values(), default=0.0)
-        return best_sem < self.config.abstain_threshold
+        return should_abstain(query, facts, diag.get("sem", {}).values(), self.config.abstain_threshold)
 
     def _summary_fallback(
         self,

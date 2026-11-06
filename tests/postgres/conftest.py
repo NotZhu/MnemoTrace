@@ -30,13 +30,7 @@ class TestDatabase:
     discovery: DatabaseConfig
 
 
-@pytest.fixture(scope='session')
-def database_factory(record_testsuite_property):
-    dsn = os.environ.get('MNEMOTRACE_TEST_POSTGRES_DSN')
-    if not dsn:
-        if os.environ.get('MNEMOTRACE_REQUIRE_POSTGRES') == '1':
-            pytest.fail('Real Postgres is required but MNEMOTRACE_TEST_POSTGRES_DSN is missing')
-        pytest.skip('Set MNEMOTRACE_TEST_POSTGRES_DSN to a disposable-database DBA connection')
+def disposable_database_factory(dsn, record_testsuite_property=lambda *_: None):
     psycopg, _ = driver()
     from psycopg import sql
 
@@ -98,6 +92,16 @@ def database_factory(record_testsuite_property):
                         raise RuntimeError('Refusing to clean an unowned test role')
                     root.execute(sql.SQL('DROP ROLE {}').format(sql.Identifier(role)))
     return create
+
+
+@pytest.fixture(scope='session')
+def database_factory(record_testsuite_property):
+    dsn = os.environ.get('MNEMOTRACE_TEST_POSTGRES_DSN')
+    if not dsn:
+        if os.environ.get('MNEMOTRACE_REQUIRE_POSTGRES') == '1':
+            pytest.fail('Real Postgres is required but MNEMOTRACE_TEST_POSTGRES_DSN is missing')
+        pytest.skip('Set MNEMOTRACE_TEST_POSTGRES_DSN to a disposable-database DBA connection')
+    return disposable_database_factory(dsn, record_testsuite_property)
 
 
 @pytest.fixture(scope='session')

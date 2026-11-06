@@ -32,7 +32,9 @@ def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=
                         del running[candidate]
                         future.result()
                 if len(running) < concurrency:
-                    for candidate in discovery.discover_processing(100):
+                    for candidate in discovery.discover_processing(
+                        100, embedding=(model, embedder.dim), include_extraction=llm is not None,
+                    ):
                         if candidate not in running:
                             running[candidate] = executor.submit(run, candidate)
                             if len(running) == concurrency:
@@ -60,12 +62,10 @@ def main(argv=None):
         parser.error('concurrency must be between 1 and 32')
     load_dotenv()
     name = os.environ.get('MNEMOTRACE_LLM', '').strip()
-    if not name:
-        parser.error('Set MNEMOTRACE_LLM to enable automatic processing')
     embedder_name = os.environ.get('MNEMOTRACE_EMBEDDER', 'hashing')
     model = 'hashing-v1' if embedder_name == 'hashing' else embedder_name
     try:
-        llm, embedder = make_llm(name), make_embedder(embedder_name)
+        llm, embedder = make_llm(name) if name else None, make_embedder(embedder_name)
         config = Config()
         config.llm_topics = os.environ.get('MNEMOTRACE_LLM_TOPICS') != '0'
         with (Database(DatabaseConfig.from_env()) as runtime,

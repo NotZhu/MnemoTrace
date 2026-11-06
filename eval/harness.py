@@ -110,7 +110,7 @@ def run_naive_recall(item: EvalItem) -> tuple[bool, int]:
     return _contains(history_text, item.answer), tokens
 
 
-def evaluate(storage: str = "memory", *, llm) -> tuple[list[dict], dict]:
+def evaluate(storage: str = "memory", *, llm, run_item=None) -> tuple[list[dict], dict]:
     cats = sorted({it.category for it in ITEMS})
     rows: list[dict] = []
     eng_hits: dict[str, list[bool]] = defaultdict(list)
@@ -119,8 +119,9 @@ def evaluate(storage: str = "memory", *, llm) -> tuple[list[dict], dict]:
     base_tokens: list[int] = []
     latencies: list[float] = []
 
+    runner = run_mnemotrace_detail if run_item is None else run_item
     for it in ITEMS:
-        e = run_mnemotrace_detail(it, storage=storage, llm=llm)
+        e = runner(it, storage=storage, llm=llm)
         b_ok, b_tok = run_naive_recall(it)
         row = {
             **e,

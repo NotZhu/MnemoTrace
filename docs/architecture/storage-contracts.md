@@ -3,7 +3,7 @@
 本文面向阶段二至八的实现者，集中维护目标数据契约、调用方去向和验证输入。
 这是目标设计，**不是当前产品已经具备的能力**；当前运行机制见[架构总览](README.md)和[生命周期](memory.md)。
 [契约代码](../../mnemotrace/store/contracts.py)中的 SpaceContext/SpaceSettings 已用于数据库基础；其他业务契约待后续阶段接入。
-显式 Python Postgres 入口已接入三阶段任务流水线。产品接入端的空间参数和进度接口在阶段六切换。
+显式 Python Postgres 入口已接入三阶段任务流水线和数据库混合检索。产品接入端的空间参数和进度接口在阶段六切换。
 
 ## 身份与公共接口
 
@@ -109,7 +109,7 @@ operation_id 回执在空间内唯一；连接中断先查询回执，避免重�
 [迁移代码](../../mnemotrace/store/postgres/migrate.py)及其 [SQL 资源](../../mnemotrace/store/postgres/sql/)
 是数据库结构、约束、索引与角色策略的权威定义，不在本文复制 DDL。
 数据库基础提供账号/key/空间、连接池和授权事务。显式 Python 入口使用 Postgres 业务 DAO 和恢复执行器。
-阶段五通过显式 Python Postgres 入口验收完整的数据库混合检索链路。
+显式 Python Postgres 入口使用下述数据库混合检索链路。
 阶段六切换 MemoryService、HTTP/MCP 等产品入口，并验证其实际使用同一条数据库查询链路。
 没有新旧存储双写或自动回退。
 
@@ -133,6 +133,9 @@ with Database(DatabaseConfig.from_env()) as database:
     episode = memory.get_episode(receipt.source_ids[0])
     memory.add_fact("Synthetic person", "likes", "tea")
     memory.remember_working("Synthetic task", "thread-A")
+    result = memory.search("What does Synthetic person like?")
+    context_result = memory.lean_context("What does Synthetic person like?", session_id="thread-A")
+    print(result.answer(), context_result.context, context_result.limitations)
 ```
 
 `store_messages` 只接受 `scope="raw"`，返回按输入顺序排列的来源 ID，重复项复用原来源。
@@ -155,6 +158,32 @@ with Database(DatabaseConfig.from_env()) as database:
 保存在来源覆盖记录中，所有连续分段提交后才标记核心完成。公开操作 ID 的最终回执汇总各段仍保留的
 事实、工作记忆和来源。每个摘要任务处理一个来源，摘要片段仅在生成配置指纹匹配时复用。
 
+#### 数据库检索与补建
+
+`search` 返回带排序事实和覆盖限制的 `SearchResult`。`retrieve_episodes` 返回带覆盖限制的来源证据，
+优先呈现已有摘要，完整原文由 `get_episode` 读取。`context_for` 和 `lean_context` 返回 `ContextResult`，
+其中 `context` 是组装文本，`coverage_by_space` 给出各空间的限制。`recall_multi` 先校验所有空间的归属，
+再分别读取并标记空间。`as_of` 同时设置有效时间和已知时间。`search(facts=FactQuery(...))` 可独立指定两条时间轴。
+历史检索仅在当前摘要版本的写入时间不晚于已知时间时使用该摘要。摘要生成时间未知或当前版本尚未写入时，
+使用符合时间条件的原文。被替换的摘要版本不保留。
+`FactQuery.limit` 在候选阶段限制各信号的返回数，融合后的结果数由入口参数决定。
+向量、词法、新近度与显著度共用筛选后的事实范围，再应用各自的候选上限。
+搜索结果基于读取快照。若并发写入使访问强化的前置版本失效，本次跳过强化，仍返回快照结果。
+
+向量查询默认精确，并根据本次空间和过滤值规划。词法使用相同作用域的 BM25 语料统计。
+`complete` 表示没有已知的索引或候选覆盖限制。
+`limitations` 区分 `lexical_backfill_pending`、`fact_vectors_incomplete`、`graph_backfill_pending`、
+`graph_candidate_budget` 和原文向量的 `source_vectors_pending_backfill`、`source_vectors_processing`、
+`source_vectors_failed`。数据库连接与查询错误继续通过数据库异常传递。查找实体可用 `graph_entities(name)`，
+邻接和事实边可用 `graph_neighbors`、`graph_relations`，两者接受 `FactQuery` 时间条件。
+检索内部优先解析实体的确切名称，别名仅在合并后指向唯一实体时解析。
+
+从阶段四 schema 升级后，对每个授权空间分别以 `RecordKind.FACT`、`RecordKind.SOURCE` 和 `RecordKind.ENTITY`
+调用 `backfill_retrieval(kind, after_id=cursor, limit=100)`。每种类型从 `None` 开始，传回上一页返回的游标，
+直到返回 `None`。重跑会跳过已投影记录并复用原文向量任务。`source_vector_operation(source_id)` 返回当前模型与维度
+的辅助任务，可通过已有的 `retry_operation` 重试。需要重建边时，`rebuild_graph(after_id=cursor, limit=100)`
+按相同方式分页，根据事实和现有权威实体决定重建。
+
 | 数据组 | 结构与所有权 |
 | --- | --- |
 | 账号与空间 | users、api_keys、memory_spaces、sessions；账号不依附某把 key，空间显式创建 |
@@ -166,7 +195,7 @@ with Database(DatabaseConfig.from_env()) as database:
 多态目标使用互斥的可空复合外键；向量绑定文本版本、模型及维度，不作为领域记录内联权威字段。
 时间列为 timestamptz，边界转换有限 epoch 值；必要业务字段使用显式列，JSONB 不代替领域建模。
 任务及产物的 stats 必需键、类型和非负整数由数据库约束验证；完整产物读写仍需执行器执行阶段一结构校验。
-实体合并的环检查、图构建规则及候选查询语义由后续业务实现验证，不仅靠外键推断。
+实体合并的环检查、图构建规则和候选查询语义由业务层和数据库集成回归验证。
 
 迁移使用顺序版本、脚本校验和和事务级 advisory lock；已应用结构的目录指纹覆盖列、约束、索引、策略、函数及授权。
 普通连接只验证结构；缺失结构、未知版本或漂移明确报错，不自动修复。
@@ -176,7 +205,7 @@ with Database(DatabaseConfig.from_env()) as database:
 保留的检索契约：BM25 使用 stems、k1=1.5、b=0.75，从同授权/时间作用域的文档与词项聚合 N、总长度和 df；
 空文档计入 N，query terms 为集合，不以 Postgres 全文排序替代。
 先做槽位头/图排除，再计算对应语料统计；旧 ANN 候选池统计差异不作为质量等价证据。
-参与语义召回的原文在受理事务提交后异步生成向量，阶段五同时覆盖已保存的合格来源补建。
+参与语义召回的原文在受理事务提交后异步生成向量，已保存的合格来源通过分页任务补建。
 原文向量绑定 `content_version`、模型及维度，提交时复核来源和作废状态。
 待就绪或失败的向量不参与该信号，查询通过候选覆盖限制报告缺失。原文读取和已就绪的检索信号继续可用。
 图边认知时间回查支撑事实，沿用实体归一化与谓词建边规则；权威别名/合并不能只靠事实重建。
@@ -230,6 +259,7 @@ with Database(DatabaseConfig.from_env()) as database:
 通过 `MNEMOTRACE_DISCOVERY_DATABASE_URL` 配置它。函数所有者 `<prefix>_worker_discovery_owner`
 由初始化和迁移维护。使用现有的 `MNEMOTRACE_DATABASE_URL`、`MNEMOTRACE_LLM` 和
 `MNEMOTRACE_EMBEDDER` 运行 `python -m mnemotrace.worker`。请求内执行与 worker 使用相同的模型和空间策略配置。
+未配置 `MNEMOTRACE_LLM` 时，worker 只执行与其 embedding 模型和维度匹配的原文向量任务。
 
 业务表默认用户级 RLS，USING/WITH CHECK 同时约束；DAO 额外约束空间。
 runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在同一事务/连接，事务局部设置，缺失拒绝访问。
@@ -319,8 +349,13 @@ python -m pytest tests/test_storage_contracts.py tests/test_storage_baseline.py
 查询向量使用独立 query_vector_seed，按清单查询次序逐个生成 dimension 个 uniform(-1,1) 坐标，距离 cosine。
 每个负载仅选择实际存在的 query_space_indices，条件为 filter_bucket < 桶数量。
 current 在 BASE+86401，before-invalidation 在 BASE+43200，all-history 忽略失效终点；事件时间固定。
-阶段五精确与近似应用相同授权/时间过滤，精确结果作 recall@k 对照，同分按稳定 ID 排序，不足 k 以实际数量为分母。
-记录精确 ID/近似召回/返回数/检索 p50/p95，建库/embedding/模型耗时分开。数据库尚未运行，不预设绝对延迟门槛。
+用 `python -m eval.storage_postgres --out .artifacts/storage-phase5/comparison` 运行合成质量和向量负载对照。
+设置 `MNEMOTRACE_TEST_POSTGRES_DSN` 指向隔离的测试 DBA 实例，评测为每类负载创建并清理专用数据库。
+使用 Docker 复现八并发负载时，为测试容器配置 `--shm-size=1g`，供 Postgres 并行查询分配共享内存。
+可用 `--case` 和 `--concurrency` 单独补跑负载组。测量样本数至少等于所选最高并发数。
+精确与近似应用相同授权和时间过滤，精确结果作 recall@k 对照，同分按稳定 ID 排序，不足 k 以实际数量为分母。
+HNSW 索引只在评测库创建。原始记录保存执行计划、样本覆盖、返回数和延迟。
+记录精确 ID/近似召回/返回数/检索 p50/p95，建库、索引构建及查询耗时分别记录。验收未预设绝对延迟门槛。
 
 复用事实/冲突、消息流水线/恢复/接口、候选/图、用户/空间、服务事务/损坏/擦除及 eval harness 回归。
 契约测试只证明结构、版本和归属检查；数据库外键/原子性/连接池/RLS/跨进程竞争由阶段二至七真实数据库验证。

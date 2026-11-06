@@ -2,10 +2,10 @@
 from dataclasses import fields
 import json
 
-from ..contracts import FactQuery, FactState, SpaceSettings
+from ..contracts import FactQuery, FactState, RetrievalQuery, SpaceSettings
 from .errors import DataCorruption
 from .records import (
-    CONFLICT, ENTITY, FACT, RELATION, SOURCE, WORKING, SCOPE, TABLES, timestamp,
+    CONFLICT, ENTITY, FACT, RELATION, SOURCE, WORKING, ROW_SCOPE, SCOPE, TABLES, timestamp, unpack,
 )
 
 
@@ -27,8 +27,8 @@ class ReadView:
     def get(self, kind, record_id):
         return self._sql.get(kind, record_id)
 
-    def sources(self, source_ids):
-        return self._sql.select(SOURCE, ('r.id = ANY(%s)',), (list(source_ids),))
+    def sources(self, source_ids, *, known_at=None):
+        return self._sql.select(SOURCE, ('r.id = ANY(%s)',), (list(source_ids),), summary_known_at=known_at)
 
     def summary_version(self, source_id):
         row = self._sql.run(f'SELECT summary_version FROM mnemotrace.source_summaries WHERE {SCOPE} '
@@ -75,12 +75,45 @@ class ReadView:
                 WHERE (p.user_id,p.space_id,p.fact_id) = (r.user_id,r.space_id,r.id)
                 AND p.source_id = ANY(%s))""")
             args.append(list(query.source_ids))
+        if query.exclude_sensitive:
+            clauses.append('NOT r.sensitive')
         return clauses, args
 
     def facts(self, query: FactQuery = FactQuery()):
         clauses, args = self._fact_conditions(query)
         page(clauses, args, query.after_id, query.limit)
         return self._sql.select(FACT, clauses, args, limit=query.limit)
+
+    def facts_by_ids(self, ids, query):
+        clauses, args = self._fact_conditions(query)
+        return self._sql.select(FACT, (*clauses, 'r.id = ANY(%s)'), (*args, list(ids)))
+
+    def slot_facts(self, slots, query):
+        subjects, predicates = zip(*sorted(slots)) if slots else ((), ())
+        clauses, args = self._fact_conditions(query)
+        clauses.append("""EXISTS (SELECT 1 FROM unnest(%s::text[],%s::text[]) s(subject,predicate)
+            WHERE (s.subject,s.predicate) = (coalesce(r.subject_key,lower(r.subject)),
+                                            coalesce(r.predicate_key,lower(r.predicate))))""")
+        return self._sql.select(FACT, clauses, (*args, list(subjects), list(predicates)))
+
+    def fact_chain(self, ids, query):
+        if not ids:
+            return ()
+        clauses, args = self._fact_conditions(query)
+        where = ' AND '.join((ROW_SCOPE, *clauses))
+        rows = self._sql.run(f"""WITH RECURSIVE visible AS NOT MATERIALIZED (
+            SELECT r.id,r.supersedes FROM mnemotrace.facts r WHERE {where}
+        ), chain(id) AS (
+            SELECT id FROM visible WHERE id = ANY(%s)
+            UNION
+            SELECT r.id FROM chain c JOIN visible parent ON parent.id = c.id
+            JOIN visible r ON r.id = parent.supersedes OR r.supersedes = c.id
+        ) SELECT id FROM chain""", (*self._sql.scope, *args, list(ids))).fetchall()
+        return self.facts_by_ids([row[0] for row in rows], query)
+
+    def candidates(self, query: RetrievalQuery, *, config=None, graph=None):
+        from .retrieval import fact_candidates
+        return fact_candidates(self, query, config, graph)
 
     def history(self, subject, predicate=None, *, source_ids=()):
         clauses, args = self._fact_conditions(FactQuery(
@@ -136,9 +169,12 @@ class ReadView:
         args.extend((subject, predicate.strip().lower()))
         return self._sql.select(FACT, clauses, args)
 
-    def working(self, *, session_id=None, kind=None, as_of=None, after_id=None, limit=100):
+    def working(self, *, session_id=None, kind=None, as_of=None, known_at=None, after_id=None, limit=100):
         clauses = ['NOT r.consumed', '(r.expires_at IS NULL OR r.expires_at > %s)']
         args = [self.at if as_of is None else timestamp(as_of)]
+        if known_at is not None or as_of is not None:
+            clauses.append('r.created_at <= %s')
+            args.append(args[0] if known_at is None else timestamp(known_at))
         for name, value in (('session_id', session_id), ('kind', kind)):
             if value is not None:
                 clauses.append(f'r.{name} = %s')
@@ -163,6 +199,27 @@ class ReadView:
 
     def relations(self, fact_id):
         return self._sql.select(RELATION, ('r.fact_id = %s',), (fact_id,))
+
+    def graph_edges(self, entity_ids, query, *, direction='both', predicates=(), excluded=(), limit=None):
+        endpoints = {'out': 'g.subject_id = ANY(%s)', 'in': 'g.object_id = ANY(%s)',
+                     'both': '(g.subject_id = ANY(%s) OR g.object_id = ANY(%s))'}
+        if direction not in endpoints:
+            raise ValueError('Expected graph direction in, out, or both')
+        if not entity_ids:
+            return ()
+        clauses, args = self._fact_conditions(query)
+        if predicates:
+            clauses.append('lower(g.predicate) = ANY(%s)')
+            args.append(list(predicates))
+        if excluded:
+            clauses.append('NOT (g.subject_id = ANY(%s) OR g.object_id = ANY(%s))')
+            args.extend((list(excluded), list(excluded)))
+        where = ' AND '.join((ROW_SCOPE, endpoints[direction], *clauses))
+        params = (*self._sql.scope, *((list(entity_ids),) * (2 if direction == 'both' else 1)), *args)
+        rows = self._sql.rows(f"""SELECT g.* FROM mnemotrace.graph_relations g JOIN mnemotrace.facts r
+            ON (r.user_id,r.space_id,r.id) = (g.user_id,g.space_id,g.fact_id)
+            WHERE {where} ORDER BY g.id LIMIT %s""", (*params, query.limit if limit is None else limit))
+        return tuple(unpack(self.snapshot.context, RELATION, row) for row in rows)
 
     def settings(self):
         try:

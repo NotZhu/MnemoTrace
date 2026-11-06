@@ -6,16 +6,24 @@ from typing import TYPE_CHECKING
 from ._postgres_pipeline import PostgresPipeline
 from .config import Config
 from .consolidate.conflict import ConflictResolver
+from .consolidate.decay import reinforce
 from .consolidate.manual import apply_manual_edit, build_manual_fact
 from .embed import HashingEmbedder
+from .retrieve import postgres as retrieval
+from .retrieve.evidence import plan_evidence
 from .store.contracts import (
-    ChangeSet, CommitConditions, EmbeddingWrite, EntityMerge, FactInvalidation, MessageInput, RecordRef, RecordWrite,
-    SourceLink, StoredRecord,
+    ChangeSet, CommitConditions, EmbeddingWrite, EntityMerge, FactInvalidation, FactQuery, MessageInput,
+    RecordKind, RecordRef, RecordWrite, RetrievalQuery, SourceLink, StoredRecord,
 )
-from .store.postgres.dao import PostgresDAO, new_operation_id
+from .store.postgres.dao import PostgresDAO, _space_row, new_operation_id
 from .store.postgres.database import identifier
 from .store.postgres.errors import VersionConflict
-from .store.postgres.records import CONFLICT, ENTITY, FACT, SOURCE, WORKING, MODELS, domain
+from .store.postgres.graph_reads import RetrievalGraph
+from .store.postgres.identity import Spaces
+from .store.postgres.lexical import project_document, project_text
+from .store.postgres.projection import GraphProjection
+from .store.postgres.records import CONFLICT, ENTITY, FACT, SOURCE, WORKING, MODELS, anchor_terms, domain
+from .store.postgres.writes import queue_source_vector
 from .types import Episode, WorkingMemory
 from .util import now, time_key
 
@@ -37,7 +45,9 @@ class PostgresMemory:
         self._embedder = embedder if embedder is not None else HashingEmbedder()
         self._model = embedding_model if embedding_model is not None else 'hashing-v1'
         identifier(self._model)
-        self._processing = PostgresPipeline(self.dao, config or Config(), llm, self._embedder, self._model)
+        self._database = database
+        self._config = config if config is not None else Config()
+        self._processing = PostgresPipeline(self.dao, self._config, llm, self._embedder, self._model)
 
     @property
     def context(self):
@@ -53,12 +63,12 @@ class PostgresMemory:
             record_version=old.record_version + 1 if old is not None else 1,
         ), old.record_version if old is not None else None)
 
-    def _commit(self, snapshot, *, writes=(), **kwargs):
+    def _commit(self, snapshot, *, writes=(), source_embedding=None, **kwargs):
         links = tuple(SourceLink(write.ref, self._ref(SOURCE, source_id))
                       for write in writes if write.ref.kind == FACT
                       for source_id in domain(write.record).provenance)
         return self.dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=writes,
-                                         source_links=links, **kwargs))
+                                         source_links=links, **kwargs), source_embedding=source_embedding)
 
     def _embedding(self, write, text):
         vector = tuple(self._embedder.embed(text))
@@ -68,7 +78,11 @@ class PostgresMemory:
 
     def store_messages(self, session_id: str, messages: 'tuple[MessageInput, ...]'):
         """Store raw dialogue and return source IDs in input order, including duplicates."""
-        return self.dao.accept_raw_messages(session_id, messages)
+        return self.dao.accept_raw_messages(session_id, messages, embedding=self._embedding_space)
+
+    @property
+    def _embedding_space(self):
+        return self._model, self._embedder.dim
 
     def remember_messages(self, session_id: str, messages: tuple[MessageInput, ...], *,
                           processing='buffered', timeout=30):
@@ -80,7 +94,8 @@ class PostgresMemory:
             raise ValueError('Expected a non-empty batch of MessageInput records')
         pipeline = self._processing
         receipt, associations = pipeline.tasks.accept(
-            session_id, items, pipeline.require_model, pipeline.fit_message, immediate=processing == 'immediate')
+            session_id, items, pipeline.require_model, pipeline.fit_message, immediate=processing == 'immediate',
+            embedding=self._embedding_space)
         operation_ids = tuple(dict.fromkeys(operation for _, operation in associations))
         result = self._accepted(operation_ids, processing, timeout)
         result.update(source_ids=receipt.source_ids, accepted=receipt.affected_count,
@@ -100,7 +115,8 @@ class PostgresMemory:
         source = Episode(content, self.context.user_id, session_id, source_kind=source_kind,
                          scope=scope, event_time=event_time)
         record = replace(StoredRecord.from_record(self.context, source), agent_id=agent_id)
-        receipt, operation_id = self._processing.tasks.accept_source(record, self._processing.require_model)
+        receipt, operation_id = self._processing.tasks.accept_source(
+            record, self._processing.require_model, embedding=self._embedding_space)
         result = self._accepted((operation_id,), processing, timeout)
         result['source_ids'] = receipt.source_ids
         return result
@@ -143,8 +159,154 @@ class PostgresMemory:
         write = RecordWrite(replace(write.record, agent_id=agent_id))
         with self.dao.read_snapshot(session_id) as view:
             snapshot = view.snapshot
-        self._commit(snapshot, writes=(write,))
+        self._commit(snapshot, writes=(write,), source_embedding=self._embedding_space)
         return source
+
+    def source_vector_operation(self, source_id):
+        """Report the current original-text vector task for the configured embedding space."""
+        identifier(source_id)
+        return self._processing.tasks.source_vector_operation(source_id, self._embedding_space)
+
+    def backfill_retrieval(self, kind, *, after_id=None, limit=100):
+        """Project one page of existing records and return a cursor, or None when exhausted."""
+        if not isinstance(kind, RecordKind) or kind not in (FACT, SOURCE, ENTITY):
+            raise ValueError('Expected a Fact, Episode, or Entity RecordKind')
+        if after_id is not None:
+            identifier(after_id)
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError('Expected page size from 1 to 1000')
+        with self.dao._transaction() as sql:
+            _, generation, _, _ = _space_row(sql)
+            conditions = ('r.id > %s',) if after_id is not None else ()
+            records = sql.select(kind, conditions, (after_id,) if conditions else (), limit=limit)
+            for record in records:
+                item = domain(record)
+                if kind == ENTITY:
+                    sql.update('entities', {'anchor_terms': anchor_terms(item.name, item.aliases)},
+                               'id = %s AND anchor_terms IS NULL', (item.id,))
+                    continue
+                project_text(sql, kind, item.id, record.content_version, asdict(item), missing_only=True)
+                if kind == SOURCE:
+                    if item.summary:
+                        project_document(sql, SOURCE, item.id, record.summary_version, item.summary,
+                                         field='summary', missing_only=True)
+                    queue_source_vector(sql, item.id, item.session_id, record.content_version,
+                                        generation, self._embedding_space)
+        return records[-1].ref.record_id if len(records) == limit else None
+
+    def rebuild_graph(self, *, after_id=None, limit=100):
+        """Rebuild one page of graph edges from facts and authoritative entity decisions."""
+        if after_id is not None:
+            identifier(after_id)
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError('Expected page size from 1 to 1000')
+        with self.dao._transaction() as sql:
+            conditions = ('r.id > %s',) if after_id is not None else ()
+            records = sql.select(FACT, conditions, (after_id,) if conditions else (), limit=limit)
+            graph = GraphProjection(sql)
+            for record in records:
+                graph.project(record.ref.record_id)
+            graph.prune()
+        return records[-1].ref.record_id if len(records) == limit else None
+
+    def _query(self, text, *, top_k, as_of=None, facts=None):
+        return retrieval.retrieval_query(text, self._embedder, self._model, self._config,
+                                         top_k=top_k, as_of=as_of, facts=facts)
+
+    def search(self, query: str, *, as_of: float | None = None, top_k: int | None = None,
+               facts: FactQuery | None = None) -> retrieval.SearchResult:
+        """Retrieve and answer from a consistent database snapshot."""
+        count = self._config.top_k if top_k is None else top_k
+        request = self._query(query, top_k=count, as_of=as_of, facts=facts)
+        decomposition = revision = None
+        llm = self._processing.llm
+        if (llm is not None and self._config.planner_llm_decomposition and not request.facts.exclude_sensitive
+                and plan_evidence(query).multi_hop):
+            with self.dao.read_snapshot() as view:
+                revision = view.snapshot.core_revision
+                vocabulary = retrieval.graph_vocabulary(view, request)
+            decomposition = retrieval.decompose(llm, query, vocabulary)
+        with self.dao.read_snapshot() as view:
+            result = retrieval.search(
+                view, request, self._config, count, not isinstance(self._embedder, HashingEmbedder),
+                decomposition if revision == view.snapshot.core_revision else None,
+            )
+            snapshot = view.snapshot
+            hits = result.facts if result.via == 'multi-hop' else result.facts[:1]
+            records = tuple(view.get(FACT, fact.id) for fact in hits) if not result.abstained else ()
+        if records and self._config.access_boost:
+            writes = []
+            for record in records:
+                fact = domain(record)
+                reinforce(fact, self._config.access_boost)
+                writes.append(self._write(fact, record))
+            try:
+                self._commit(snapshot, writes=tuple(writes))
+            except VersionConflict:
+                # Reinforcement is optional once the snapshot answer is ready.
+                pass
+        return result
+
+    def retrieve_episodes(self, query: str, *, k: int = 5, as_of: float | None = None) -> retrieval.SourceSearchResult:
+        request = self._query(query, top_k=k, as_of=as_of)
+        with self.dao.read_snapshot() as view:
+            return retrieval.source_search(view, request, k)
+
+    def lean_context(self, query: str, *, as_of: float | None = None, n_facts: int = 15, n_chunks: int = 2,
+                     n_summaries: int = 20, char_budget: int = 60_000, session_id: str | None = None,
+                     redact_sensitive: bool = False) -> retrieval.ContextResult:
+        if (any(type(value) is not int or not 0 <= value <= 1000 for value in (n_facts, n_chunks, n_summaries))
+                or type(char_budget) is not int or char_budget < 0):
+            raise ValueError('Invalid context budget')
+        count = max(n_facts, n_chunks, n_summaries, 1)
+        facts = FactQuery(valid_at=as_of, known_at=as_of, exclude_sensitive=redact_sensitive,
+                          limit=max(count, self._config.ann_pool))
+        request = self._query(query, top_k=count, facts=facts)
+        need = plan_evidence(query, aggregation_recall_expansion=self._config.aggregation_recall_expansion)
+        subqueries = need.subqueries if need.aggregation else ()
+        related = tuple(self._query(text, top_k=1, facts=facts) for text in subqueries if text != query)
+        with self.dao.read_snapshot(session_id) as view:
+            return retrieval.context(view, request, self._config, not isinstance(self._embedder, HashingEmbedder),
+                                     n_facts=n_facts, n_chunks=n_chunks, n_summaries=n_summaries,
+                                     char_budget=char_budget, session_id=session_id, evidence_queries=related)
+
+    def context_for(self, query: str, *, as_of: float | None = None, top_k: int | None = None, k_chunks: int = 3,
+                    char_budget: int = 60_000) -> retrieval.ContextResult:
+        return self.lean_context(query, as_of=as_of, n_facts=self._config.top_k if top_k is None else top_k,
+                                 n_chunks=k_chunks, n_summaries=0, char_budget=char_budget)
+
+    def recall_multi(self, space_ids, query: str, **options) -> retrieval.ContextResult:
+        if isinstance(space_ids, str):
+            raise ValueError('Expected a collection of space IDs')
+        spaces = Spaces(self._database)
+        ids = tuple(dict.fromkeys(space_ids))
+        contexts = tuple(spaces.authorize(self.context.user_id, space_id) for space_id in ids)
+        blocks, coverage = [], {}
+        for context in contexts:
+            memory = PostgresMemory(self._database, context, embedder=self._embedder, embedding_model=self._model,
+                                    config=self._config)
+            result = memory.lean_context(query, **options)
+            if result.context:
+                blocks.append(f'## Space: {context.space_id}\n{result.context}')
+            coverage.update(result.coverage_by_space)
+        return retrieval.ContextResult('\n\n'.join(blocks), coverage)
+
+    def graph_entities(self, name, *, limit=100):
+        identifier(name)
+        request = RetrievalQuery(FactQuery(limit=limit), '', (0.0,), self._model)
+        with self.dao.read_snapshot() as view:
+            return RetrievalGraph(view, request).find_entities(name)
+
+    def graph_neighbors(self, entity_id, *, direction='both', facts=FactQuery()):
+        identifier(entity_id)
+        with self.dao.read_snapshot() as view:
+            entity_id = GraphProjection(view._sql).canonical(entity_id)
+            return tuple(map(domain, view.graph_edges((entity_id,), facts, direction=direction)))
+
+    def graph_relations(self, fact_id, *, facts=FactQuery()):
+        identifier(fact_id)
+        with self.dao.read_snapshot() as view:
+            return tuple(map(domain, view.relations(fact_id))) if view.facts_by_ids((fact_id,), facts) else ()
 
     def get_episode(self, episode_id):
         return self._get(SOURCE, episode_id)

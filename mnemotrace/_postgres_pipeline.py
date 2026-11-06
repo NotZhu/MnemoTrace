@@ -213,38 +213,44 @@ class PostgresPipeline:
         self.tasks.commit(self._changes(conditions, (write,), (embedding,)))
 
     def run_one(self, operation_id, *, force=False):
-        lease = self.tasks.claim(operation_id, force=force)
+        lease = self.tasks.claim(operation_id, force=force, embedding=(self.model, self.embedder.dim))
         if lease is None:
             return False
         phase = 'generate'
         with _heartbeat(self.tasks, lease):
             try:
-                self.require_model()
                 with self.dao.read_snapshot() as view:
                     snapshot, row, records = self.tasks.load(view, lease)
                     phase = row['phase']
-                    settings = view.settings()
-                    fingerprint = self._fingerprint(settings)
-                    product = self.tasks.product(view, snapshot, lease, row)
-                    if product is None:
-                        prepared = self._prepare(view, row, records, settings, fingerprint)
-                    else:
-                        source_records = view.sources(tuple(ref.source_id for ref in product.conditions.sources))
-                        versions = tuple(SourceVersion(record.ref.record_id, record.content_version)
-                                         for record in source_records)
-                        reuse = product.reusable(snapshot, versions, fingerprint)
-                        if reuse:
-                            data, result = json.loads(product.input_json), json.loads(product.result_json)
-                            if row['kind'] == 'extract':
-                                now = view.at.timestamp()
-                                facts, working, new_settings = materialize(
-                                    snapshot.context, data, result, settings, self.config, now)
-                                history = view.merge_history({fact.subject.strip().lower() for fact in facts})
-                                vectors = view.fact_vectors(history, self.model, self.embedder.dim)
-                                merged = facts, working, new_settings, history, vectors, now
-                            else:
-                                summary_base = view.summary_version(records[0].ref.record_id)
-                if product is None:
+                    if row['kind'] != 'reembed':
+                        self.require_model()
+                        settings = view.settings()
+                        fingerprint = self._fingerprint(settings)
+                        product = self.tasks.product(view, snapshot, lease, row)
+                        if product is None:
+                            prepared = self._prepare(view, row, records, settings, fingerprint)
+                        else:
+                            source_records = view.sources(tuple(ref.source_id for ref in product.conditions.sources))
+                            versions = tuple(SourceVersion(record.ref.record_id, record.content_version)
+                                             for record in source_records)
+                            reuse = product.reusable(snapshot, versions, fingerprint)
+                            if reuse:
+                                data, result = json.loads(product.input_json), json.loads(product.result_json)
+                                if row['kind'] == 'extract':
+                                    now = view.at.timestamp()
+                                    facts, working, new_settings = materialize(
+                                        snapshot.context, data, result, settings, self.config, now)
+                                    history = view.merge_history({fact.subject.strip().lower() for fact in facts})
+                                    vectors = view.fact_vectors(history, self.model, self.embedder.dim)
+                                    merged = facts, working, new_settings, history, vectors, now
+                                else:
+                                    summary_base = view.summary_version(records[0].ref.record_id)
+                if row['kind'] == 'reembed':
+                    record, = records
+                    text = domain(record).content
+                    vector = embed_texts(self.embedder, [text])[text]
+                    self.tasks.commit_source_vector(lease, record, self.model, tuple(vector))
+                elif product is None:
                     self._generate(lease, snapshot, settings, fingerprint, prepared)
                 elif not reuse:
                     self.tasks.regenerate(lease)
@@ -320,8 +326,8 @@ def _failure(exc, phase):
         return 'database_unavailable', True
     if isinstance(exc, ExtractionError):
         return exc.code, _retryable(exc)
+    if isinstance(exc, (TypeError, ValueError)):
+        return ('embedding_invalid' if phase == 'embed' else 'configuration_invalid'), False
     if phase == 'embed':
         return 'embedding_or_commit_failed', _retryable(exc)
-    if isinstance(exc, (TypeError, ValueError)):
-        return 'configuration_invalid', False
     return 'extraction_failed', _retryable(exc)
