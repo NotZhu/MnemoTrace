@@ -7,6 +7,42 @@ import pytest
 from mnemotrace.credentials import store_key
 
 
+@pytest.mark.asyncio
+async def test_revoked_key_is_rejected_on_next_http_and_remote_mcp_request(product_service, spaces, accounts):
+    import httpx
+
+    from mnemotrace.mcp.backends import RemoteBackend
+    from mnemotrace.server.app import app
+
+    user = accounts.create_user()
+    other_user = accounts.create_user()
+    try:
+        space = spaces.create(user, 'Authorized space')
+        other_space = spaces.create(other_user, 'Unauthorized space')
+        key = accounts.issue_key(user)
+        active_key = accounts.issue_key(user)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            headers = {'Authorization': f'Bearer {key.value}'}
+            remote = RemoteBackend('http://test', key.value, space.space_id, client=client)
+            params = {'space_id': space.space_id}
+            path = '/v1/agent/status'
+            assert (await client.get(path, headers=headers, params=params)).status_code == 200
+            assert (await remote.agent_status())['space_id'] == space.space_id
+            denied = await client.get(path, headers=headers, params={'space_id': other_space.space_id})
+            assert denied.status_code == 404
+
+            accounts.revoke_key(user, key.info.key_id)
+            assert (await client.get(path, headers=headers, params=params)).status_code == 401
+            with pytest.raises(httpx.HTTPStatusError) as error:
+                await remote.agent_status()
+            assert error.value.response.status_code == 401
+            active = RemoteBackend('http://test', active_key.value, space.space_id, client=client)
+            assert (await active.agent_status())['space_id'] == space.space_id
+    finally:
+        accounts.delete_user(user)
+        accounts.delete_user(other_user)
+
+
 @pytest.mark.parametrize("launch_source", ["install", "snippet", "rendered", "toml"])
 def test_installed_file_reference_reaches_same_tenant_over_real_stdio(tmp_path, monkeypatch, launch_source, product_service, product_scope):
     import asyncio
