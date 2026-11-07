@@ -100,31 +100,3 @@ def test_async_backlog_is_visible(monkeypatch):
         s.close()
     finally:
         shutil.rmtree(d, ignore_errors=True)
-
-
-def test_http_metrics_endpoint(monkeypatch):
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-    d = tempfile.mkdtemp(prefix="mnemotrace_metrics_http_")
-    monkeypatch.setenv("MNEMOTRACE_DATA_DIR", d)
-    monkeypatch.setenv("MNEMOTRACE_EMBEDDER", "hashing")
-    monkeypatch.setenv("MNEMOTRACE_OPEN", "1")
-    # 置空而不是 delenv：load_dotenv 只补缺失的变量，delenv 会让本地 .env 的值重新生效
-    for var in ("MNEMOTRACE_API_KEYS", "MNEMOTRACE_SPACES", "MNEMOTRACE_LLM", "MNEMOTRACE_ANSWERER"):
-        monkeypatch.setenv(var, "")
-    from mnemotrace.server import app as appmod
-    appmod._svc = None
-    try:
-        with TestClient(appmod.app) as c:
-            h = {"Authorization": "Bearer metricsuser"}
-            c.post("/v1/remember", json={"content": "I live in Shenzhen."}, headers=h)
-            c.post("/v1/recall", json={"query": "where do I live"}, headers=h)
-            r = c.get("/metrics")  # 和 /health 一样开放访问
-            assert r.status_code == 200
-            body = r.json()
-            assert body["ops"]["remember"]["n"] >= 1 and body["ops"]["recall"]["n"] >= 1
-            assert body["tokens"]["recalls_with_baseline"] >= 1  # HTTP recall 会计算 full 基线
-            assert "metricsuser" not in r.text
-    finally:
-        appmod._svc = None
-        shutil.rmtree(d, ignore_errors=True)

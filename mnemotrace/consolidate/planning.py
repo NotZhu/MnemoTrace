@@ -42,7 +42,7 @@ def request(data, config):
 
 
 def input_size(data, config, policy=''):
-    if data['operation'] in {'outcomes', 'conflicts'}:
+    if data['operation'] == 'conflicts':
         from .operations import prepare
         prompt, system, _ = prepare(data, config, policy)
         return len((prompt + system).encode('utf-8'))
@@ -361,27 +361,20 @@ def validate_result(result, data, config, *, normalized=False):
     if normalized and (not isinstance(result, dict) or not isinstance(result.get('facts'), list) or
             any(not isinstance(item, dict) or not {'display', 'subject_input'}.issubset(item) for item in result['facts'])):
         raise ValueError('Saved facts are missing normalization provenance')
-    if data['operation'] in {'outcomes', 'conflicts'}:
+    if data['operation'] == 'conflicts':
         if not isinstance(result, dict) or set(result) != {'facts', 'working', 'summaries', 'decisions'}:
             raise ValueError('Invalid saved auxiliary result')
-        if data['operation'] == 'outcomes':
-            copy = {k: v for k, v in result.items() if k != 'decisions'}
-            wire = {**copy, 'summaries': [dict(source_id=k, text=v) for k, v in copy['summaries'].items()]}
-            clean_input = {**data, 'operation': 'extract', 'pending': [{**s, 'needs_summary': False} for s in data['pending']]}
-            if validate_response(json.dumps(wire), clean_input, config) != copy:
-                raise ValueError('Invalid saved outcome sources')
-        else:
-            pairs = {(p['older']['id'], p['newer']['id']) for p in data['candidates']}
-            seen = set()
-            if result['facts'] or result['working'] or result['summaries'] or not isinstance(result['decisions'], list):
-                raise ValueError('Invalid saved conflict result')
-            for decision in result['decisions']:
-                if (not isinstance(decision, dict) or set(decision) != {'older', 'newer', 'decision', 'reason'}
-                        or (decision['older'], decision['newer']) not in pairs or (decision['older'], decision['newer']) in seen
-                        or decision['older'] == decision['newer'] or decision['decision'] not in {'replaces', 'coexists', 'conflict'}
-                        or not isinstance(decision['reason'], str)):
-                    raise ValueError('Invalid conflict decision')
-                seen.add((decision['older'], decision['newer']))
+        pairs = {(p['older']['id'], p['newer']['id']) for p in data['candidates']}
+        seen = set()
+        if result['facts'] or result['working'] or result['summaries'] or not isinstance(result['decisions'], list):
+            raise ValueError('Invalid saved conflict result')
+        for decision in result['decisions']:
+            if (not isinstance(decision, dict) or set(decision) != {'older', 'newer', 'decision', 'reason'}
+                    or (decision['older'], decision['newer']) not in pairs or (decision['older'], decision['newer']) in seen
+                    or decision['older'] == decision['newer'] or decision['decision'] not in {'replaces', 'coexists', 'conflict'}
+                    or not isinstance(decision['reason'], str)):
+                raise ValueError('Invalid conflict decision')
+            seen.add((decision['older'], decision['newer']))
         return result
     if not isinstance(result, dict) or set(result) != {'facts', 'working', 'summaries'} or not isinstance(result['summaries'], dict):
         raise ValueError('Invalid pipeline result')

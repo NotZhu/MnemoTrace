@@ -62,18 +62,29 @@ class Tasks:
         self.dao = dao
 
     def _results(self, sql, rows):
-        results = []
-        for row in rows:
-            children = sql.run(f'SELECT operation_id FROM mnemotrace.operations WHERE {SCOPE} '
-                               'AND parent_id = %s ORDER BY sequence,operation_id',
-                               (*sql.scope, row['operation_id'])).fetchall()
-            results.append(_result(row, tuple(child[0] for child in children)))
-        return tuple(results)
+        if not rows:
+            return ()
+        children = {row['operation_id']: [] for row in rows}
+        linked = sql.run(f'SELECT parent_id,operation_id FROM mnemotrace.operations WHERE {SCOPE} '
+                         'AND parent_id = ANY(%s) ORDER BY parent_id,sequence,operation_id',
+                         (*sql.scope, list(children))).fetchall()
+        for parent_id, child_id in linked:
+            children[parent_id].append(child_id)
+        return tuple(_result(row, tuple(children[row['operation_id']])) for row in rows)
 
     def operation(self, operation_id):
         with self.dao._transaction(read_only=True) as sql:
             row = _operation(sql, operation_id)
             return self._results(sql, [row])[0] if row else None
+
+    def list_operations(self, session_id, after_id, limit):
+        with self.dao._transaction(read_only=True) as sql:
+            rows = sql.rows(f'SELECT * FROM mnemotrace.operations WHERE {SCOPE} '
+                            'AND (%s::text IS NULL OR session_id = %s) '
+                            'AND (%s::text IS NULL OR operation_id > %s) '
+                            'ORDER BY operation_id LIMIT %s',
+                            (*sql.scope, session_id, session_id, after_id, after_id, limit))
+            return self._results(sql, rows)
 
     def source_vector_operation(self, source_id, embedding):
         with self.dao._transaction(read_only=True) as sql:
@@ -94,6 +105,7 @@ class Tasks:
         with self.dao._transaction() as sql:
             if operation_ids is None:
                 rows = sql.run(f'SELECT operation_id FROM mnemotrace.operations WHERE {SCOPE} '
+                               "AND state <> 'cancelled' "
                                'AND kind = ANY(%s) AND (session_id = %s OR %s) ORDER BY sequence,operation_id',
                                (*sql.scope, list(MODEL_OPERATIONS if include_summaries else ('extract',)),
                                 session_id, session_id is None)).fetchall()
@@ -118,10 +130,10 @@ class Tasks:
                 (*sql.scope, list(operation_ids), list(ACTIVE))).fetchall()
             return tuple(row[0] for row in rows)
 
-    def accept(self, session_id, messages, check_model, fit, *, immediate=False, embedding=None):
+    def accept(self, session_id, messages, check_model, fit, *, immediate=False, embedding=None, source_metadata=None):
         def apply(sql, revision, generation, settings):
             ids, fresh = store_messages(sql, session_id, messages, check_model=check_model,
-                                        generation=generation, embedding=embedding)
+                                        generation=generation, embedding=embedding, source_metadata=source_metadata)
             records = (sql.get(SOURCE, source_id) for source_id in fresh)
             new_records = [record for record in records if domain(record).scope != 'raw']
             if new_records:
@@ -134,12 +146,27 @@ class Tasks:
         with self.dao._transaction(read_only=True) as sql:
             return receipt, self._associated(sql, receipt.source_ids)
 
-    def accept_source(self, record, check_model, *, embedding=None):
+    def accept_source(self, record, check_model, *, embedding=None, import_digest=None,
+                      kind=OperationKind.EXTRACT):
         episode = domain(record)
-        operation_id = new_operation_id()
+        operation_id = new_operation_id() if kind is not None else None
+        acceptance_id = 'accept_' + operation_id if operation_id is not None else new_operation_id()
 
         def apply(sql, revision, generation, settings):
-            check_model()
+            nonlocal operation_id
+            if import_digest is not None:
+                previous = sql.run(f'SELECT source_id,receipt FROM mnemotrace.import_receipts WHERE {SCOPE} '
+                                   'AND source_kind = %s AND digest = %s',
+                                   (*sql.scope, episode.source_kind, import_digest)).fetchone()
+                if previous is not None:
+                    source_id, payload = previous
+                    if (not source_id or not isinstance(payload, dict) or set(payload) != {'operation_id'}
+                            or payload['operation_id'] is not None and not isinstance(payload['operation_id'], str)):
+                        raise DataCorruption('Invalid import receipt')
+                    operation_id = payload['operation_id']
+                    return Applied(False, source_ids=(source_id,))
+            if kind is not None:
+                check_model()
             sql.ensure_session(episode.session_id)
             episode.sequence = allocate_sequence(sql, episode.session_id)
             stored = replace(StoredRecord.from_record(sql.context, episode), agent_id=record.agent_id)
@@ -147,12 +174,18 @@ class Tasks:
             project_text(sql, SOURCE, episode.id, stored.content_version, {'content': episode.content})
             if embedding is not None:
                 queue_source_vector(sql, episode.id, episode.session_id, stored.content_version, generation, embedding)
-            enqueue(sql, _spec(operation_id, OperationKind.EXTRACT, episode.session_id, (stored,)), generation,
-                    _session_generation(sql, episode.session_id),
-                    ready_at=sql.run('SELECT clock_timestamp()').fetchone()[0])
+            if kind is not None:
+                enqueue(sql, _spec(operation_id, kind, episode.session_id, (stored,)), generation,
+                        _session_generation(sql, episode.session_id),
+                        ready_at=sql.run('SELECT clock_timestamp()').fetchone()[0])
+            if import_digest is not None:
+                from psycopg.types.json import Jsonb
+                sql.run("""INSERT INTO mnemotrace.import_receipts
+                    (user_id,space_id,source_kind,digest,source_id,receipt) VALUES (%s,%s,%s,%s,%s,%s)""",
+                    (*sql.scope, episode.source_kind, import_digest, episode.id, Jsonb(dict(operation_id=operation_id))))
             return Applied(True, source_ids=(episode.id,), count=1)
 
-        return self.dao._mutate('accept_' + operation_id, apply), operation_id
+        return self.dao._mutate(acceptance_id, apply), operation_id
 
     def _associated(self, sql, source_ids):
         return sql.run("""SELECT DISTINCT source_id, operation_id

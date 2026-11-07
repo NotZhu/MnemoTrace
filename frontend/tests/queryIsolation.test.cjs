@@ -43,7 +43,7 @@ function setup(savedErrors = null) {
   let runtime, handler = async () => { throw new TypeError('synthetic network failure') }
   const moduleData = { exports: {} }
   vm.runInNewContext(source, {
-    module: moduleData, exports: moduleData.exports, Headers, URLSearchParams,
+    module: moduleData, exports: moduleData.exports, Headers, URLSearchParams, AbortController, AbortSignal,
     setTimeout, clearTimeout, console, localStorage,
     window: { localStorage, sessionStorage }, document: { getElementById: () => ({}) },
     require(name) {
@@ -65,7 +65,7 @@ function setup(savedErrors = null) {
   return {
     ...runtime, requests, localStorage, sessionStorage,
     respond: next => { handler = next },
-    login: space => runtime.useAuth.getState().login(space),
+    login: space => { runtime.useAuth.getState().login(space); runtime.useAuth.getState().selectSpace(space) },
     query: space => runtime.queryClient.fetchQuery({ queryKey: keyFor(space), queryFn: () => runtime.api.memories(), retry: false }),
     retry: () => runtime.GlobalErrorBanner().props.children.props.action.props.onClick(),
     cleanup: () => runtime.queryClient.clear(),

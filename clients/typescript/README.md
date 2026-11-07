@@ -17,7 +17,7 @@ In a consuming application, install the built package using its absolute directo
 npm install /absolute/path/to/MnemoTrace/clients/typescript
 ```
 
-Registry availability depends on the actual published release. The examples below use the package's declared name. Run the HTTP server separately using the [deployment guide](https://github.com/NotZhu/MnemoTrace/blob/main/deploy/README.md).
+The examples below use the package's declared name. Initialize the Postgres database and create an account and Bearer key before running the HTTP server. The memory extraction example requires a configured server LLM. See the [database configuration](https://github.com/NotZhu/MnemoTrace/blob/main/docs/reference/configuration.md#postgres-数据库基础).
 
 ## Connect and use memory
 
@@ -29,17 +29,21 @@ const client = new MnemoTraceClient({
   apiKey: 'YOUR_API_KEY',
 })
 
-await client.rememberMessages([
+const { space_id: spaceId } = await client.createSpace('Research')
+const scope = { spaceId }
+const accepted = await client.rememberMessages([
   { message_id: 'm1', role: 'user', content: 'I live in Paris.' },
-], { sessionId: 'demo' })
-await client.flushProcessing({ sessionId: 'demo', includeSummaries: true })
-const result = await client.recall('Where do I live?', { sessionId: 'demo' })
+], { ...scope, sessionId: 'demo' })
+await client.flushProcessing({ ...scope, sessionId: 'demo' })
+for (const operationId of accepted.operation_ids) {
+  console.log(await client.getOperation(operationId, scope))
+}
+const result = await client.recall('Where do I live?', { ...scope, sessionId: 'demo' })
 console.log(result.context)
-await client.closeSession('demo')
-console.log(await client.sessionReport('demo'))
 ```
 
-The server maps the Bearer key to an identity and permissions. A namespace or session name is not a credential. For browser use, configure same-origin access or an appropriate gateway; the client does not make cross-origin access policy disappear.
+The server resolves the Bearer key to the account and checks each requested space.
+Use `listSpaces()` to select an existing space. Keep the returned ID when renaming the space.
 
 ## Constructor
 
@@ -52,31 +56,33 @@ The server maps the Bearer key to an identity and permissions. A namespace or se
 
 ## API reference
 
-All operations below return promises. Option names are camelCase except where an imported payload type mirrors the HTTP body.
+All methods return promises. Pass `{ spaceId }` to single-space methods. For multi-space recall pass `{ spaceIds }`. Chat uses `memory.space_id`.
 
 | Method | Parameters and result |
 | --- | --- |
 | `health()` | Health; readiness is a separate HTTP endpoint |
-| `remember(content, options?)` | sessionId, scope, space; RememberResult |
-| `rememberMessages(messages, options)` | required sessionId; mode, processing, scope, space; MessagesResult |
-| `recall(query, options?)` | nChunks=6, sessionId, asOf, redactSensitive=false, spaces; RecallResult |
-| `search(query, options?)` | asOf, redactSensitive; SearchResult via lean=false |
-| `closeSession(sessionId?, options?)` | default session; summarize/clearWorking default true; CloseSessionResult |
-| `sessionReport(sessionId, options?)` | includeSensitive=false; SessionReport |
-| `sessions(options?)` | limit, offset, query; SessionIndex |
-| `memories(options?)` | pagination and filters described below; MemoryDump |
-| `stats()` | MemoryStats without memory text |
-| `agentStatus(options?)` | optional sessionId; AgentStatus |
-| `profile()` | ProfileResult |
-| `addFact(fact)` | predicate/object plus optional subject/sensitive/category/topic; id, text and topic metadata |
-| `updateFact(id, patch)` | FactPatch, including topic/reset_topic; id, text and topic metadata |
-| `deleteFact(id)` | deletion result; inspect ok |
-| `getFocus()` / `setFocus(partial)` | track/mute lists |
-| `getPolicy()` / `setPolicy(partial)` | extraction, summary and persona overrides |
-| `graph(options?)` | asOf, includeSensitive=false; GraphResponse（nodes、edges、has_more） |
-| `import(params)` | ImportParams sent as the HTTP import payload; ImportResult |
-| `export(options?)` | includeSensitive=false; MemoryExport by default |
-| `forget({ confirm: true })` | irreversible namespace erase; missing confirmation fails before sending |
+| `remember(content, options)` | sessionId, scope, agentId; RememberResult |
+| `rememberMessages(messages, options)` | required sessionId; mode, processing, scope, agentId; MessagesResult |
+| `recall(query, options)` | nChunks=6, sessionId, asOf, redactSensitive=false, spaceIds; RecallResult |
+| `search(query, options)` | asOf, redactSensitive; SearchResult via lean=false |
+| `listSpaces(options?)` / `createSpace(name)` | list or create spaces owned by the authenticated account |
+| `getOperation(id, options)` / `retryOperation(id, options)` | query or retry a stable operation ID |
+| `flushProcessing(options)` | wait for core processing, with optional sessionId and includeSummaries |
+| `sessionReport(sessionId, options)` | includeSensitive=false, limit=100, offset=0. Use facts_page.next_offset for subsequent pages |
+| `sessions(options)` | limit, offset, query; SessionIndex |
+| `memories(options)` | pagination and filters described below; MemoryDump |
+| `stats(options)` | MemoryStats without memory text |
+| `agentStatus(options)` | optional sessionId; AgentStatus |
+| `profile(options)` | ProfileResult |
+| `addFact(fact, options)` | predicate/object plus optional subject/sensitive/category/topic; id, text and topic metadata |
+| `updateFact(id, patch, options)` | FactPatch, including topic/reset_topic; id, text and topic metadata |
+| `deleteFact(id, options)` | deletion result; inspect ok |
+| `getFocus(options)` / `setFocus(partial, options)` | track/mute lists |
+| `getPolicy(options)` / `setPolicy(partial, options)` | extraction, summary and persona overrides |
+| `graph(options)` | asOf, includeSensitive=false; GraphResponse（nodes、edges、has_more） |
+| `import(params, options)` | ImportParams sent as the HTTP import payload; ImportResult |
+| `export(options)` | includeSensitive=false; MemoryExport by default |
+| `forget({ spaceId, confirm: true })` | irreversible space clearing; missing confirmation fails before sending |
 | `chat.completions.create(params)` | ChatCompletion, or AsyncIterable when stream=true |
 
 MemoryListOptions supports topic, factsLimit/factsOffset, episodesLimit/episodesOffset, status, kind, outcomeKind, query, includeSensitive, expectedRevision, and evaluatedAt. The existing q alias is also accepted by sessions/memories, with query taking precedence. Use query in new callers. Other legacy status aliases remain server-defined; this documentation does not change them.
@@ -85,13 +91,13 @@ The optional topic is an exact stored-topic filter, applied before paging; `'unk
 
 For consistent pagination, carry the response's data_revision and evaluated_at into expectedRevision/evaluatedAt on the next request. On a 409 revision change, start again from the first page.
 
-The SDK does not expose every HTTP endpoint or filter: category filtering, document upload, structured profiles, standalone working memory, conflict resolution, slot clearing, and the close request's outcomes override require direct HTTP access where applicable.
+Use the HTTP API directly for category filtering, document uploads, structured profiles, standalone working memory, conflict resolution, and slot clearing.
 
 ## Types and errors
 
 Public types are exported from [types.ts](https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/src/types.ts). Core results include RememberResult, RecallResult, SearchResult, Fact, MemoryDump, SessionIndex, SessionReport, ImportResult, MemoryExport, and chat completion types.
 
-`Topic` is a fixed set of main topics, with a separate `TopicSource`. Omitting `topic` or passing null leaves it unspecified; selecting `'unknown'` explicitly records a manual choice. Use `{ reset_topic: true }` to re-evaluate the current content with offline rules, without a model call or a supplied topic. The result is a known topic with source `'rule'`, or `'unknown'/'unset'`. New facts without a manual topic and content edits without a replacement use rules. Topic-only edits preserve fact provenance and history. Attribute and session-outcome extraction can also obtain topics from the existing LLM request; the server's `MNEMOTRACE_LLM_TOPICS=0` disables this enhancement while retaining rules. Existing snapshots are restored without reclassification. Profile preference grouping consumes stored topics; unknown facts belong to the other group, with explicit restriction relations kept as a separate exception. Redacted session report rows omit topic metadata. Structured exports preserve both fields and carry no format version. Imports validate the current fields and constraints before applying any records. See the [topic contract](https://github.com/NotZhu/MnemoTrace/blob/main/docs/architecture/memory.md#主题与来源) for precedence and abstention behavior.
+`Topic` is a fixed set of main topics, with a separate `TopicSource`. Omitting `topic` or passing null leaves it unspecified; selecting `'unknown'` explicitly records a manual choice. Use `{ reset_topic: true }` to re-evaluate the current content with offline rules, without a model call or a supplied topic. The result is a known topic with source `'rule'`, or `'unknown'/'unset'`. New facts without a manual topic and content edits without a replacement use rules. Topic-only edits preserve fact provenance and history. Fact extraction can also obtain topics from its LLM request; the server's `MNEMOTRACE_LLM_TOPICS=0` disables this enhancement while retaining rules. Existing snapshots are restored without reclassification. Profile preference grouping consumes stored topics; unknown facts belong to the other group, with explicit restriction relations kept as a separate exception. Redacted session report rows omit topic metadata. Structured exports preserve both fields and carry no format version. Batch imports return accepted receipts and individual session failures. See the [topic contract](https://github.com/NotZhu/MnemoTrace/blob/main/docs/architecture/memory.md#主题与来源) for precedence and abstention behavior.
 
 Non-2xx responses throw `MnemoTraceError` with status and the parsed error body in detail. Network failures can remain native fetch errors. A successful HTTP response can contain a queued acknowledgement or a rejected business result; inspect the operation's payload. Extraction failures return HTTP 502/503 with a stable error code, `stored_raw`, and `episode_ids`; they are not successful degraded results.
 
@@ -99,7 +105,7 @@ Non-2xx responses throw `MnemoTraceError` with status and the parsed error body 
 import { MnemoTraceError } from 'mnemotrace-memory'
 
 try {
-  await client.sessionReport('demo')
+  await client.sessionReport('demo', { spaceId })
 } catch (error) {
   if (error instanceof MnemoTraceError) console.error(error.status, error.message)
   else throw error
@@ -108,9 +114,9 @@ try {
 
 ## Chat and privacy
 
-The chat surface requires a configured server-side answerer. memory options support recall, remember, session_id, scope, n_chunks, as_of, and redact_sensitive. Its model field does not select an arbitrary backend. stream=true exposes SSE chunks; the current server splits a completed response rather than forwarding live model tokens.
+Chat uses the configured server LLM. The memory object requires space_id and supports recall, remember, session_id, scope, n_chunks, as_of, and redact_sensitive. Its model field does not select an arbitrary backend. stream=true exposes SSE chunks; the current server splits a completed response rather than forwarding live model tokens.
 
-Sensitive filtering is view-specific and not a complete anonymization guarantee. Export defaults to a restricted structured view; includeSensitive=true opts into private text. Deleting a fact or closing a session does not erase all source conversations.
+Export defaults to a restricted structured view. Set `includeSensitive: true` to include private text. Fact deletion preserves its original sources, which can be erased by clearing or deleting the space.
 
 ## Development and license
 
@@ -120,4 +126,4 @@ Source: [NotZhu/MnemoTrace](https://github.com/NotZhu/MnemoTrace).
 License: [AGPL-3.0](https://github.com/NotZhu/MnemoTrace/blob/main/LICENSE); see [commercial terms](https://github.com/NotZhu/MnemoTrace/blob/main/COMMERCIAL-LICENSE.md).
 
 
-`getEpisode(episodeId, {space?})` explicitly reads the complete original event referenced by recall. Recall uses only an event's summary once available; it does not expand the original automatically. `flushProcessing({includeSummaries: true})` also waits for eligible summaries; the default remains extraction-only. Remember returns a separate `summarization` status/error without failing an already accepted write.
+`getEpisode(episodeId, { spaceId })` reads the complete original event referenced by recall. Recall uses the event summary when available. `flushProcessing({ spaceId, includeSummaries: true })` also waits for eligible summaries. Inspect the core operation's `auxiliary_operation_ids` to look up individual summary results.

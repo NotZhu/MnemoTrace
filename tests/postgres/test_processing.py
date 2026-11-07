@@ -176,7 +176,7 @@ def test_segmented_document_keeps_operation_id_and_summary_is_independent(proces
     assert len(extracts) > 1 and all(a[1] == b[0] for a, b in zip(extracts, extracts[1:]))
 
 
-def test_timeout_and_erase_while_model_runs(processing):
+def test_timeout_and_clear_space_while_model_runs(processing):
     entered, release = Event(), Event()
 
     def block(_):
@@ -190,7 +190,7 @@ def test_timeout_and_erase_while_model_runs(processing):
         operation_id, = result['operation_ids']
         source_id, = result['source_ids']
         assert entered.is_set() and result['status'] == 'timed_out'
-        memory.erase(RecordRef(memory.context, RecordKind.SOURCE, source_id))
+        memory.clear_space()
     finally:
         release.set()
     assert memory.operation(operation_id) is None
@@ -297,7 +297,7 @@ def test_semantic_reconciliation_and_manual_authority(processing):
     assert tuple(fact.id for fact in memory.facts()) == (pinned.id,)
 
 
-def test_context_erasure_purges_cached_summary_without_erasing_its_source(processing):
+def test_rejected_source_erasure_preserves_summary_and_its_context(processing):
     def extract(data):
         if data['operation'] == 'summary':
             return dict(summaries=[dict(source_id=data['pending'][0]['id'], text='Rebuilt detail')])
@@ -324,24 +324,14 @@ def test_context_erasure_purges_cached_summary_without_erasing_its_source(proces
                 WHERE d.user_id = %s AND d.space_id = %s AND d.source_id = %s""", (*sql.scope, target))}
 
     assert lexical_fields() == {'text', 'summary'}
-    memory.erase(RecordRef(memory.context, RecordKind.SOURCE, prior))
-    surviving = memory.get_episode(target)
-    assert surviving.consolidated and surviving.content and surviving.summary == ''
-    assert lexical_fields() == {'text'}
+    with pytest.raises(ValueError, match='only supports'):
+        memory.erase(RecordRef(memory.context, RecordKind.SOURCE, prior))
+    assert memory.get_episode(prior) is not None
+    assert memory.get_episode(target).summary == 'Recorded detail'
+    assert lexical_fields() == {'text', 'summary'}
     replay = memory.remember_messages('chat', (dialogue('target', 'A long synthetic record with details'),))
     assert replay['operation_ids'] == second['operation_ids']
-    with memory.dao.read_snapshot('chat') as view:
-        conditions = CommitConditions(view.snapshot)
-    summary = OperationSpec('summary-rebuild', OperationKind.SUMMARY, 'chat', (SourceVersion(target, 1),))
-    memory.dao.commit(ChangeSet(conditions, 'enqueue-rebuild', operations=(summary,)))
-    assert memory._processing.run_one(summary.operation_id)
-    assert memory._processing.run_one(summary.operation_id)
-    assert memory.operation(summary.operation_id).core_committed
-    assert memory.get_episode(target).summary == 'Rebuilt detail'
-    with memory.dao._transaction(read_only=True) as sql:
-        assert sql.run("""SELECT content_version FROM mnemotrace.embeddings
-            WHERE user_id = %s AND space_id = %s AND source_id = %s AND field = 'summary'""",
-            (*sql.scope, target)).fetchall() == [(2,)]
+
 
 
 def test_summary_requires_one_source_and_rejects_old_multi_source_tasks(processing):
@@ -382,6 +372,33 @@ def test_policy_change_reextracts_and_summary_failure_preserves_core(processing)
     assert memory._processing.run_one(summary_id)
     assert memory.operation(summary_id).error_code == 'extraction_invalid_response'
     assert memory.operation(operation_id).core_committed
+
+
+def test_operation_page_batches_auxiliary_lookups(processing, monkeypatch):
+    from mnemotrace.store.postgres.records import ScopedSQL
+
+    memory, _ = processing(config=Config(summary_min_chars=35, summary_max_chars=20))
+    expected = {}
+    for session in ('first', 'second'):
+        result = memory.remember_messages(session, (dialogue('one', 'A long synthetic record with details'),))
+        operation_id, = result['operation_ids']
+        assert memory.flush_processing(session)['ok']
+        auxiliary, = memory.operation(operation_id).auxiliary_operation_ids
+        expected[operation_id] = (auxiliary,)
+
+    queries = []
+    original = ScopedSQL.run
+
+    def record(sql, query, params=(), *, prepare=None):
+        if 'AND parent_id' in query:
+            queries.append(query)
+        return original(sql, query, params, prepare=prepare)
+
+    monkeypatch.setattr(ScopedSQL, 'run', record)
+    operations = memory.list_operations()
+    assert {operation.operation_id: operation.auxiliary_operation_ids
+            for operation in operations if operation.operation_id in expected} == expected
+    assert len(queries) == 1
 
 
 def test_repeated_config_changes_exhaust_generation_budget(processing):

@@ -36,7 +36,6 @@
     "preference_reversal_extraction": true,
     "llm_topics": true,
     "procedural_extraction": true,
-    "session_outcomes": true,
     "max_hot_facts": 10000,
     "salience_decay_per_day": 0.02,
     "access_boost": 0.5,

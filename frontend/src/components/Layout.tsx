@@ -5,9 +5,11 @@ import { GlobalErrorBanner } from './GlobalErrorBanner'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { Toaster } from './Toast'
+import { useAuth } from '../store/auth'
 
 export default function Layout() {
   const [navOpen, setNavOpen] = useState(false)
+  const spaceId = useAuth(state => state.spaceId)
   const isGraphPage = Boolean(useMatch('/graph'))
   const isTimelinePage = Boolean(useMatch('/timeline'))
   const isProfilePage = Boolean(useMatch('/profile'))
@@ -27,7 +29,7 @@ export default function Layout() {
         <main className={`mx-auto max-w-[1600px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8 ${isGraphPage ? 'min-h-0 w-full flex-1' : stretchesContent ? 'flex w-full flex-1 flex-col' : ''}`}>
           {showGlobalError && <GlobalErrorBanner />}
           {/* 保留页面的独立错误与草稿；顶部提示不替代卡片内的失败反馈。 */}
-          <Outlet />
+          {spaceId ? <Outlet /> : <p className="text-sm text-ghost">请选择一个记忆空间，或创建新空间。</p>}
         </main>
       </div>
       <Toaster />

@@ -6,11 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 DynamicUser=yes
-StateDirectory=mnemotrace
 WorkingDirectory=/opt/mnemotrace
 Environment=PYTHONPATH=/opt/mnemotrace
 Environment=PYTHONUNBUFFERED=1
-Environment=MNEMOTRACE_DATA_DIR=/var/lib/mnemotrace
 EnvironmentFile=/etc/mnemotrace/mnemotrace.env
 ExecStart=/opt/mnemotrace/.venv/bin/python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000 --workers 1
 Restart=on-failure

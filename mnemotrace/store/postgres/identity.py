@@ -163,6 +163,12 @@ def _page(after_id, limit):
         identifier(after_id)
 
 
+def _validate_space_name(name):
+    if (not isinstance(name, str) or not name.strip() or not 1 <= len(name) <= 128
+            or '\x00' in name):
+        raise ValueError('Space name must contain 1 to 128 characters and not be blank')
+
+
 class Spaces:
     def __init__(self, database: Database):
         if database.purpose != 'runtime':
@@ -181,9 +187,7 @@ class Spaces:
             return Identity(*row)
 
     def create(self, user_id: str, name: str) -> Space:
-        if (not isinstance(name, str) or not name.strip() or not 1 <= len(name) <= 128
-                or '\x00' in name):
-            raise ValueError('Space name must contain 1 to 128 characters and not be blank')
+        _validate_space_name(name)
         from psycopg.types.json import Jsonb
         with self.database.user_transaction(user_id) as conn:
             row = conn.execute(
@@ -208,3 +212,14 @@ class Spaces:
     def authorize(self, user_id: str, space_id: str) -> SpaceContext:
         with self.database.space_transaction(user_id, space_id, read_only=True) as (_, context):
             return context
+
+    def rename(self, user_id: str, space_id: str, name: str) -> Space:
+        _validate_space_name(name)
+        with self.database.space_transaction(user_id, space_id) as (conn, _):
+            row = conn.execute(
+                'UPDATE mnemotrace.memory_spaces SET name = %s, record_version = record_version + 1 '
+                'WHERE user_id = %s AND space_id = %s RETURNING '
+                'space_id,user_id,name,status,core_revision,space_generation,record_version,settings',
+                (name, user_id, space_id),
+            ).fetchone()
+        return _space(row)

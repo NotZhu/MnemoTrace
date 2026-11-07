@@ -8,8 +8,6 @@ import json
 import shutil
 import tempfile
 
-import pytest
-
 from tests.model_fixtures import MemoryService
 from mnemotrace.spaces import Principal, principal_for_token
 
@@ -55,65 +53,3 @@ def test_recall_multi_fuses_spaces():
 
 
 # --- HTTP 写入/读取授权 --------------------------------------------------------
-
-
-@pytest.fixture()
-def spaces_client(monkeypatch):
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-    d = tempfile.mkdtemp(prefix="mnemotrace_spsrv_")
-    cfg = {
-        "sk-agent": {"home": "agentA", "read": ["agentA", "team"], "write": ["agentA", "team"]},
-        "sk-alice": {"home": "alice"},  # 读写默认都只有 [home]
-    }
-    monkeypatch.setenv("MNEMOTRACE_DATA_DIR", d)
-    monkeypatch.setenv("MNEMOTRACE_EMBEDDER", "hashing")
-    monkeypatch.setenv("MNEMOTRACE_SPACES", json.dumps(cfg))
-    # 置空而不是 delenv：load_dotenv 只补缺失的变量，delenv 会让本地 .env 的值重新生效
-    for var in ("MNEMOTRACE_API_KEYS", "MNEMOTRACE_OPEN", "MNEMOTRACE_ALLOW_ANONYMOUS", "MNEMOTRACE_LLM", "MNEMOTRACE_ANSWERER"):
-        monkeypatch.setenv(var, "")
-    from mnemotrace.server import app as appmod
-    appmod._svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
-    with TestClient(appmod.app) as c:
-        yield c
-    appmod._svc = None
-    shutil.rmtree(d, ignore_errors=True)
-
-
-def _h(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
-
-
-def test_write_home_and_shared_then_read_fuses(spaces_client):
-    c = spaces_client
-    assert c.post("/v1/remember", json={"content": "Agent A note: the API base is api.acme.dev."},
-                  headers=_h("sk-agent")).json()["ok"] is True
-    assert c.post("/v1/remember", json={"content": "Team standup is daily at 10am.", "space": "team"},
-                  headers=_h("sk-agent")).json()["ok"] is True
-    r = c.post("/v1/recall", json={"query": "standup", "spaces": ["agentA", "team"]},
-               headers=_h("sk-agent")).json()
-    assert r["spaces"] == ["agentA", "team"]
-    assert "Space: agentA" in r["context"] and "Space: team" in r["context"]
-
-
-def test_write_to_unwritable_space_is_forbidden(spaces_client):
-    r = spaces_client.post("/v1/remember", json={"content": "x", "space": "team"}, headers=_h("sk-alice"))
-    assert r.status_code == 403
-
-
-def test_read_unreadable_space_is_forbidden(spaces_client):
-    r = spaces_client.post("/v1/recall", json={"query": "x", "spaces": ["team"]}, headers=_h("sk-alice"))
-    assert r.status_code == 403
-
-
-def test_unknown_token_is_unauthorized(spaces_client):
-    # 不是 spaces key、没有 MNEMOTRACE_API_KEYS、也不是 open 模式 -> 回落到单空间鉴权并拒绝
-    assert spaces_client.post("/v1/recall", json={"query": "x"}, headers=_h("sk-nope")).status_code == 401
-
-
-def test_home_default_single_space_answer_shape(spaces_client):
-    c = spaces_client
-    c.post("/v1/remember", json={"content": "Alice lives in Berlin."}, headers=_h("sk-alice"))
-    r = c.post("/v1/recall", json={"query": "Where does the user live?"}, headers=_h("sk-alice")).json()
-    # 单空间路径保持既有的 recall(answer=True) 返回结构（context + token 估算）
-    assert "context" in r and "tokens_est" in r

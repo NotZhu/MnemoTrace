@@ -63,11 +63,3 @@ class CommitOutcomeUnknown(DatabaseUnavailable):
     def __init__(self, operation_id: str):
         self.operation_id = operation_id
         super().__init__('Commit outcome could not be verified')
-
-
-class ErasureDependencies(DatabaseError):
-    code = 'erasure_dependencies'
-
-    def __init__(self, records):
-        self.records = tuple(records)
-        super().__init__('Additional records require explicit erasure authorization')

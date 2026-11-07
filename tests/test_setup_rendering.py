@@ -52,7 +52,7 @@ def test_rendered_outputs_preserve_syntax_and_connection_values(tmp_path, monkey
     url = f"http://mnemotrace.test/{key}"
     python = str(tmp_path / "python bin" / "python")
     session = f"codex:{key}:thread"
-    args = ["-m", "mnemotrace.mcp", "--api-url", url, "--api-key-file", reference]
+    args = ["-m", "mnemotrace.mcp", "--space-id", "synthetic-space", "--api-url", url, "--api-key-file", reference]
     server = {"type": "stdio", "command": python, "args": args}
     block = '[mcp_servers.mnemotrace]\ncommand = ' + json.dumps(python, ensure_ascii=False) + '\nargs = ' + json.dumps(args, ensure_ascii=False) + '\n'
     common = {"action": "install", "changed": True, "dry_run": False,
@@ -64,10 +64,10 @@ def test_rendered_outputs_preserve_syntax_and_connection_values(tmp_path, monkey
               "summary": {"ok": 1, "warn": 0, "fail": 0},
               "checks": [{"name": "MCP mnemotrace", "status": "ok", "detail": f"Bearer {key}"}]}
     before = copy.deepcopy((codex, mcp, report))
-    options = dict(python_cmd=python, api_url=url, api_key=key, doctor_skipped=f"Synthetic reason: Bearer {key}")
+    options = dict(python_cmd=python, api_url=url, api_key=key, space_id="synthetic-space", doctor_skipped=f"Synthetic reason: Bearer {key}")
     if entry == "markdown":
         setup.main(["--client", "all", "--api-key-file", reference, "--api-url", url,
-                    "--python", python, "--session-id", session])
+                    "--python", python, "--session-id", session, "--space-id", "synthetic-space"])
         output = capsys.readouterr().out
     elif entry == "codex":
         output = setup.render_codex_config_result(codex, doctor_report=report, **options)
@@ -85,7 +85,7 @@ def test_rendered_outputs_preserve_syntax_and_connection_values(tmp_path, monkey
         commands = [shlex.split(b) for b in _blocks(output, "bash")]
         assert len(commands) == 1
         assert commands[0] == ["mnemotrace-agent-doctor", "--client", "none" if entry == "mcp" else "codex",
-                               "--python", python, "--api-url", url, "--api-key-file", reference]
+                               "--python", python, "--api-url", url, "--api-key-file", reference, "--space-id", "synthetic-space"]
         assert common["path"] in output and common["backup"] in output
         assert "Synthetic reason: Bearer <REDACTED>" in output
         assert "PASS MCP mnemotrace: Bearer <REDACTED>" in output
@@ -93,7 +93,7 @@ def test_rendered_outputs_preserve_syntax_and_connection_values(tmp_path, monkey
     if entry == "mcp":
         assert f"Configured server `mnemotrace-{key}`" in output
     if entry in ("markdown", "bootstrap"):
-        assert "mnemotrace_recall" in output and "mnemotrace_close_session" in output
+        assert "mnemotrace_recall" in output and "mnemotrace_flush_processing" in output
         assert session in output
     if entry == "markdown":
         for source in _blocks(output, "python"):
@@ -105,12 +105,12 @@ def test_rendered_outputs_preserve_syntax_and_connection_values(tmp_path, monkey
 
 
 @pytest.mark.parametrize("entry", ["codex", "mcp", "bootstrap"])
-def test_local_namespace_is_separate_from_redaction_key(tmp_path, entry):
-    namespace = "mnemotrace"
-    server = {"command": "python", "args": ["-m", "mnemotrace.mcp", "--namespace", namespace]}
+def test_local_scope_is_separate_from_redaction_key(tmp_path, entry):
+    owner = "mnemotrace"
+    server = {"command": "python", "args": ["-m", "mnemotrace.mcp", "--space-id", "synthetic-space", "--user-id", owner]}
     result = {"action": "install", "changed": True, "path": "synthetic.config", "server": server,
               "block": '[mcp_servers.mnemotrace]\ncommand = "python"\nargs = ' + json.dumps(server["args"], ensure_ascii=False)}
-    options = dict(api_url=None, api_key=None, namespace=namespace)
+    options = dict(api_url=None, api_key=None, space_id="synthetic-space", user_id=owner)
     if entry == "codex":
         output = setup.render_codex_config_result(result, **options)
     elif entry == "mcp":
@@ -119,7 +119,7 @@ def test_local_namespace_is_separate_from_redaction_key(tmp_path, entry):
         output = setup.render_bootstrap_result(results=[("Codex", result)], python_cmd="python",
                                               session_id="codex:synthetic:thread", **options)
     verify = shlex.split(_blocks(output, "bash")[0])
-    assert verify[-2:] == ["--api-key", namespace]
+    assert verify[-4:] == ["--user-id", owner, "--space-id", "synthetic-space"]
     assert "--api-key-file" not in verify
 
 
@@ -130,7 +130,7 @@ def test_cli_output_matches_installed_config(tmp_path, monkeypatch, capsys, entr
     codex = tmp_path / "config.toml"
     mcp = tmp_path / ".mcp.json"
     command = ["--api-key", "mnemotrace", "--api-url", "http://mnemotrace.test",
-               "--codex-config", str(codex), "--mcp-json", str(mcp)]
+               "--codex-config", str(codex), "--mcp-json", str(mcp), "--space-id", "synthetic-space"]
     if entry == "bootstrap":
         command += ["--bootstrap", "--no-doctor"]
     else:
@@ -141,12 +141,12 @@ def test_cli_output_matches_installed_config(tmp_path, monkeypatch, capsys, entr
     output = capsys.readouterr().out
     verify = shlex.split(_blocks(output, "bash")[-1])
     assert verify[0] == "mnemotrace-agent-doctor"
-    expected_args = ["-m", "mnemotrace.mcp", "--api-url", "http://mnemotrace.test",
-                     "--api-key-file", verify[-1]]
+    expected_args = ["-m", "mnemotrace.mcp", "--space-id", "synthetic-space", "--api-url", "http://mnemotrace.test",
+                     "--api-key-file", verify[verify.index("--api-key-file") + 1]]
     if entry != "bootstrap":
         assert next(_servers(output))["args"] == expected_args
     if dry_run:
-        assert verify[-1] == "<private-credential-file>"
+        assert verify[verify.index("--api-key-file") + 1] == "<private-credential-file>"
         assert not codex.exists() and not mcp.exists() and not (tmp_path / ".mnemotrace").exists()
     else:
         if entry in ("codex", "bootstrap"):
@@ -163,7 +163,7 @@ def test_pure_generators_have_no_key_input_and_keep_direct_output(tmp_path):
     for generator in (setup.mcp_args, setup.codex_toml_block, setup.render_markdown):
         assert "api_key" not in inspect.signature(generator).parameters
     reference = str(tmp_path / ".mnemotrace" / "credentials with spaces" / "synthetic.key")
-    options = dict(api_url="http://mnemotrace.test", api_key_file=reference, namespace=None)
+    options = dict(api_url="http://mnemotrace.test", api_key_file=reference, space_id=None)
     expected = setup.mcp_args(**options)
     block = setup.codex_toml_block(**options, python_cmd="python")
     assert _toml(block)["mcp_servers"]["mnemotrace"]["args"] == expected

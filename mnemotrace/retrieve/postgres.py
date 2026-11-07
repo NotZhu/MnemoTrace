@@ -32,6 +32,7 @@ class SourceSearchResult:
 class ContextResult:
     context: str
     coverage_by_space: dict[str, tuple[str, ...]]
+    fact_ids: tuple[str, ...] = ()
 
     @property
     def limitations(self):
@@ -104,7 +105,8 @@ class _FactLookup:
 
 def graph_vocabulary(view, query):
     graph = RetrievalGraph(view, query)
-    names = tuple(entity.name for entity in graph.entities.values())[:_MAX_VOCAB]
+    names = tuple(entity.name for entity in graph.entities.values()
+                  if not any(term in entity.name.lower() for term in view.mute_terms))[:_MAX_VOCAB]
     clauses, args = view._fact_conditions(query.facts)
     sql = view._sql
     where = ' AND '.join(('r.user_id = %s', 'r.space_id = %s', *clauses))
@@ -258,4 +260,5 @@ def context(view, query, config, semantic, *, n_facts, n_chunks, n_summaries, ch
         if aggregate:
             blocks.insert(0, aggregate)
     return ContextResult('\n\n'.join(blocks)[:char_budget],
-                         {view.snapshot.context.space_id: tuple(dict.fromkeys(flags))})
+                         {view.snapshot.context.space_id: tuple(dict.fromkeys(flags))},
+                         tuple(fact.id for fact in facts))

@@ -1,53 +1,68 @@
-// Run against a local MnemoTrace server:
-//   pip install "mnemotrace-memory[serve]"
-//   MNEMOTRACE_OPEN=1 MNEMOTRACE_EMBEDDER=hashing MNEMOTRACE_LLM=deepseek uvicorn mnemotrace.server.app:app
-//   node examples/node.mjs
+// Start the Postgres-backed HTTP service as described in deploy/README.md.
+// Set MNEMOTRACE_API_KEY to an issued key and MNEMOTRACE_SPACE_ID to a space you own.
+// From clients/typescript, run npm run build and then node examples/node.mjs.
 //
 // (After `npm run build`, import from 'mnemotrace-memory'. Here we import the built dist directly.)
 import { MnemoTraceClient } from '../dist/index.js'
 
+const apiKey = process.env.MNEMOTRACE_API_KEY
+const spaceId = process.env.MNEMOTRACE_SPACE_ID
+if (!apiKey || !spaceId) {
+  throw new Error('Set MNEMOTRACE_API_KEY and MNEMOTRACE_SPACE_ID before running this example')
+}
+
 const mnemotrace = new MnemoTraceClient({
   baseUrl: process.env.MNEMOTRACE_URL ?? 'http://localhost:8000',
-  apiKey: process.env.MNEMOTRACE_API_KEY ?? 'demo-user',
+  apiKey,
 })
 
 const sessionId = process.env.MNEMOTRACE_SESSION_ID ?? 'sdk-demo:node'
+const scope = { spaceId }
+const session = { ...scope, sessionId }
 
-const status = await mnemotrace.agentStatus({ sessionId })
+const status = await mnemotrace.agentStatus(session)
 console.log('--- agent memory status ---')
 console.log({
-  namespace: status.user,
+  space: status.space_id,
   session: status.session,
   focus: status.focus,
   facts: status.counts.facts_live,
 })
 
-await mnemotrace.remember('I live in Shenzhen and my favorite language is Python.', { sessionId })
-await mnemotrace.remember('Actually I just switched jobs — I now work at Moonshot AI.', { sessionId })
+const memoryScope = status.llm_configured ? 'long' : 'raw'
+const accepted = await mnemotrace.rememberMessages([
+  { message_id: `node-demo:${memoryScope}:1`, role: 'user', content: 'I live in Shenzhen.' },
+  { message_id: `node-demo:${memoryScope}:2`, role: 'user', content: 'I work at Acme.' },
+], { ...session, scope: memoryScope, processing: 'buffered' })
+console.log('\naccepted:', accepted.operation_ids)
+if (accepted.operation_ids.length) {
+  const flushed = await mnemotrace.flushProcessing(session)
+  console.log('core processing:', flushed.status)
+  const operations = await Promise.all(accepted.operation_ids.map((id) => mnemotrace.getOperation(id, scope)))
+  console.log('operations:', operations)
+  if (!flushed.ok) process.exitCode = 1
+}
 
-const { context } = await mnemotrace.recall('where do I work and live?', { sessionId })
+const { context } = await mnemotrace.recall('where do I work and live?', session)
 console.log('--- recalled memory ---\n' + context)
 
-const { answer } = await mnemotrace.search('What is my favorite programming language?')
+const { answer } = await mnemotrace.search('Where do I work?', scope)
 console.log('\nsearch answer:', answer)
 
 // OpenAI-compatible chat with automatic memory injection (requires MNEMOTRACE_LLM on the server).
-try {
+if (status.llm_configured) {
   const completion = await mnemotrace.chat.completions.create({
     model: 'mnemotrace',
     messages: [{ role: 'user', content: 'Remind me where I work.' }],
-    memory: { session_id: sessionId, scope: 'auto' },
+    memory: { space_id: spaceId, session_id: sessionId, scope: 'auto' },
   })
   console.log('\nchat answer:', completion.choices[0].message.content)
   console.log('memory used:', completion.mnemotrace)
-} catch (err) {
+} else {
   console.log('\n(chat skipped — set MNEMOTRACE_LLM on the server to enable generation)')
 }
 
-await mnemotrace.closeSession(sessionId)
-console.log('\nclosed memory session:', sessionId)
-
-const report = await mnemotrace.sessionReport(sessionId)
+const report = await mnemotrace.sessionReport(sessionId, scope)
 console.log('\n--- session memory report ---')
 console.log({
   episodes: report.episodes,
@@ -56,7 +71,7 @@ console.log({
   facts: report.facts.map((f) => f.text),
 })
 
-const sessions = await mnemotrace.sessions({ limit: 10, query: 'sdk-demo' })
+const sessions = await mnemotrace.sessions({ ...scope, limit: 10, query: 'sdk-demo' })
 console.log('\n--- cross-agent session index ---')
 console.log(sessions.sessions.map((s) => ({
   id: s.id,
@@ -66,6 +81,7 @@ console.log(sessions.sessions.map((s) => ({
 })))
 
 const memoryPage = await mnemotrace.memories({
+  ...scope,
   factsLimit: 10,
   episodesLimit: 0,
   status: 'live',
@@ -81,7 +97,7 @@ console.log({
   })),
 })
 
-const portable = await mnemotrace.export()
+const portable = await mnemotrace.export(scope)
 console.log('\n--- share-safe export ---')
 console.log({
   includeSensitive: portable.include_sensitive,

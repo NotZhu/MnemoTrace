@@ -137,31 +137,20 @@ def test_service_stats_reports_consolidation_backlog_without_content(tmp_path):
     assert after["consolidation_backlog"] is False
 
 
-def test_service_close_session_grooms_one_session_and_clears_working(tmp_path):
+def test_service_flush_grooms_one_session_and_leaves_working_for_explicit_clear(tmp_path):
     svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing")
-    mem = svc.get("u")
-    mem.add("I work at Acme.", user_id="u", session_id="s1")
+    svc.remember("u", "I work at Acme.", session_id="s1", scope="long", processing="buffered")
     svc.add_working("u", "today I am focused on testing", session_id="s1")
 
-    out = svc.close_session("u", "s1")
-
-    assert out["ok"] is True
-    assert out["session_id"] == "s1"
-    assert out["episodes"] == 1
-    assert out["pending_consolidated"] == 1
-    assert out["facts_added"] >= 1
-    assert out["summaries"] == 0
-    assert out["working_cleared"] == 1
-    assert svc.working_memory("u", session_id="s1")["items"] == []
-
-    stats = svc.stats("u")
-    assert stats["counts"]["episodes_pending"] == 0
-    dump = svc.memories("u", include_sensitive=True)
-    assert dump["counts"]["summaries"] == 0
-    assert not dump["episodes"][0]["summary"]
+    assert svc.flush("u", "s1", include_summaries=True)["ok"]
+    assert svc.stats("u")["counts"]["episodes_pending"] == 0
+    assert svc.memories("u")["facts"]
+    assert len(svc.working_memory("u", session_id="s1")["items"]) == 1
+    assert svc.clear_working("u", "s1")["cleared"] == 1
 
     reloaded = MemoryService(data_dir=str(tmp_path), embedder_name="hashing")
     assert reloaded.memories("u")["counts"]["summaries"] == 0
+    assert reloaded.working_memory("u", session_id="s1")["items"] == []
 
 
 def test_service_handoffs_memory_across_agent_sessions(tmp_path):
@@ -178,7 +167,7 @@ def test_service_handoffs_memory_across_agent_sessions(tmp_path):
     )
     assert written["ok"] is True
     assert written["extracted"] >= 1
-    assert svc.close_session(user, codex_session)["ok"] is True
+    assert svc.flush(user, codex_session)["ok"] is True
 
     recalled = svc.recall(
         user,
@@ -219,7 +208,7 @@ def test_service_refreshes_cached_namespace_after_external_process_write(tmp_pat
         scope="long",
     )
     assert written["ok"] is True
-    assert codex.close_session(user, codex_session)["ok"] is True
+    assert codex.flush(user, codex_session)["ok"] is True
 
     recalled = claude.recall(
         user,
@@ -304,7 +293,7 @@ def test_service_agent_status_is_content_free_and_session_aware(tmp_path):
     assert status["focus"] == {"track": ["project decisions"], "mute": ["health details"]}
     assert status["counts"]["facts_live"] >= 1
     assert "mnemotrace_recall" in status["tools"]["read_context"]
-    assert any("mnemotrace_close_session" in item for item in status["recommended_next_actions"])
+    assert any("mnemotrace_flush_processing" in item for item in status["recommended_next_actions"])
 
     rendered = str(status).lower()
     assert "diabetes" not in rendered

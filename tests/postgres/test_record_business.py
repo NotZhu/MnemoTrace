@@ -12,7 +12,7 @@ from mnemotrace.store.contracts import (
 )
 from mnemotrace.store.postgres import Database
 from mnemotrace.store.postgres.errors import (
-    DatabaseConstraintError, DatabaseUnavailable, ErasureDependencies, MessageConflict, SpaceNotFound,
+    DatabaseConstraintError, DatabaseUnavailable, MessageConflict, SpaceNotFound,
     VersionConflict,
 )
 from mnemotrace.types import Conflict, Fact, WorkingMemory
@@ -166,7 +166,7 @@ def test_space_isolation_and_unauthorized_context(memory, runtime, accounts, spa
         accounts.delete_user(outsider)
 
 
-def test_source_erasure_requires_shared_dependencies_and_removes_task_copies(memory):
+def test_mixed_erasure_is_atomic_and_supported_erasure_preserves_sources(memory):
     a = memory.remember_raw('Synthetic source A', 'chat')
     b = memory.remember_raw('Synthetic source B', 'chat')
     who = memory.context.user_id
@@ -177,16 +177,26 @@ def test_source_erasure_requires_shared_dependencies_and_removes_task_copies(mem
     assert memory.dao.operation(task.operation_id).stored_raw
     source = RecordRef(memory.context, RecordKind.SOURCE, a.id)
     fact_ref = RecordRef(memory.context, RecordKind.FACT, fact.id)
-    with pytest.raises(ErasureDependencies) as failure:
-        memory.erase(source)
-    assert failure.value.records == (fact_ref,)
+    with memory.dao.read_snapshot() as view:
+        snapshot = view.snapshot
+    with pytest.raises(ValueError, match='only supports'):
+        ChangeSet(CommitConditions(snapshot), 'unsupported', erasures=(fact_ref, source))
+    with pytest.raises(ValueError, match='only supports'):
+        memory.erase(fact_ref, source)
+    with memory.dao.read_snapshot() as view:
+        assert view.snapshot.core_revision == snapshot.core_revision
+    assert memory.dao.receipt('unsupported') is None
+    assert memory.dao.receipt('derived') is not None
     assert memory.get_episode(a.id) is not None
-    assert memory.erase(source, fact_ref).affected_count == 3
-    assert memory.dao.operation(task.operation_id) is None
-    assert memory.dao.receipt('derived') is None
+    assert memory.get_fact(fact.id) is not None
+    work_ref = RecordRef(memory.context, RecordKind.WORKING, wm.id)
+    assert memory.erase(fact_ref, work_ref).affected_count == 2
+    assert memory.dao.operation(task.operation_id).stored_raw
+    assert memory.get_episode(a.id) is not None
     assert memory.get_episode(b.id) is not None
     assert memory.working_memory() == ()
     assert memory.facts() == ()
+
 
 
 def test_clear_scopes_session_generation_and_preserves_space_settings(memory):

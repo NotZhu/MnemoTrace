@@ -1,134 +1,23 @@
-"""Session outcomes——与 owner 实际工作方式匹配的记忆单元。
-
-逐 episode 的抽取器找的是个人履历类三元组，这对 LongMemEval 合适，对技术工作会话却不行：在一份
-真实的 115 轮 transcript 上它产出了 `user requires_no_commit_push_publish = true`（把一次性的任务
-约束提升成了持久属性），而十个会话共 3353 轮只换来五条 fact。改成让它输出决策和经验教训后，同一个
-模型返回的内容与 owner 手写进 markdown 的东西相当。"""
+"""Read and edit historical conclusion facts, and audit scoped fact slots."""
 from __future__ import annotations
-from tests.model_fixtures import outcome_facts
+from tests.model_fixtures import saved_outcome
 
 import json
-import pytest
-from mnemotrace.extraction import ExtractionError, ExtractionResponseError, LLMNotConfiguredError
 
 from mnemotrace.consolidate.outcomes import (
     OUTCOME_CATEGORY,
     OUTCOME_PREDICATES,
-    OUTCOME_SYSTEM,
     split_outcome_text,
 )
 from tests.model_fixtures import Memory
 from tests.model_fixtures import MemoryService
-from mnemotrace.types import Episode, Fact
-
-
-class StubLLM:
-    """记录 prompt，供测试断言 transcript 是以何种形式呈现的。"""
-
-    def __init__(self, reply: str):
-        self.reply = reply
-        self.prompt = ""
-        self.system = ""
-
-    def complete(self, prompt: str, system: str = "", **kwargs) -> str:
-        self.prompt, self.system = prompt, system
-        return self.reply
-
-
-def _episodes(n: int = 3) -> list[Episode]:
-    return [Episode(content=f"turn {i} with enough words to survive filtering", user_id="u",
-                    session_id="s1", role="user" if i % 2 else "assistant",
-                    event_time=1_700_000_000.0 + i)
-            for i in range(n)]
-
-
-def test_outcomes_become_ordinary_facts_with_kind_predicates():
-    """不新增类型也不新增存储：outcomes 搭 Fact 表的便车，从而免费继承双时间轴有效期、取代链
-    （supersession）与 provenance。"""
-    llm = StubLLM('[{"kind":"lesson","statement":"Running --pair overwrites the single global config",'
-                  '"why":"took four agents offline"}]')
-    facts = outcome_facts(llm, _episodes(), "u", session_id="s1")
-    assert len(facts) == 1
-    f = facts[0]
-    assert f.predicate == "lesson" and f.predicate in OUTCOME_PREDICATES
-    assert f.object.startswith("Running --pair")
-    assert "took four agents offline" in f.text  # 理由内嵌在文本里，所以原因可被检索
-    assert f.display == f.object
-    # 归属到整个会话：一个结论靠的是全过程，而不是某一轮
-    assert len(f.provenance) == 3
-    assert f.valid_at == _episodes()[-1].event_time
-
-
-def test_unknown_kinds_and_degenerate_statements_are_rejected():
-    llm = StubLLM('['
-                  '{"kind":"gossip","statement":"something long enough to pass length checks"},'
-                  '{"kind":"lesson","statement":"too short"},'
-                  '{"kind":"finding","statement":"' + "x" * 500 + '"},'
-                  '{"kind":"finding","statement":"A real finding with adequate length here"}]')
-    with pytest.raises(ExtractionResponseError):
-        outcome_facts(llm, _episodes(), "u")
-
-
-def test_duplicate_statements_collapse():
-    llm = StubLLM('[{"kind":"decision","statement":"We chose rsync over docker compose"},'
-                  '{"kind":"decision","statement":"We chose rsync over docker compose"}]')
-    assert len(outcome_facts(llm, _episodes(), "u")) == 1
-
-
-@pytest.mark.parametrize('kind', ['FINDING', ' finding '])
-def test_kind_is_normalized_before_validation(kind):
-    llm = StubLLM(json.dumps([{'kind': kind, 'statement': 'A synthetic finding with adequate length.'}]))
-    item, = outcome_facts(llm, _episodes(), 'u')
-    assert item.predicate == 'finding'
-
-
-@pytest.mark.parametrize('statement', ['too short', 'x' * 500])
-def test_valid_kind_with_degenerate_length_is_filtered(statement):
-    llm = StubLLM(json.dumps([{'kind': 'finding', 'statement': statement}]))
-    assert outcome_facts(llm, _episodes(), 'u') == []
-
-
-def test_transcript_is_fenced_as_data_not_conversation():
-    """以 "[assistant] ..." 开头的请求体会被当成"要续写的对话"：在一份真实的 1164 轮会话上，模型
-    写起了下一轮而不是做抽取，结果一无所获。"""
-    llm = StubLLM("[]")
-    outcome_facts(llm, _episodes(), "u")
-    assert "<session>" in llm.prompt and "</session>" in llm.prompt
-    assert not llm.prompt.lstrip().startswith("[")
-
-
-
-
-def test_a_session_with_nothing_durable_yields_nothing():
-    assert outcome_facts(StubLLM("[]"), _episodes(), "u") == []
-
-
-def test_model_outage_never_loses_the_session():
-    class Broken:
-        def complete(self, *a, **k):
-            raise RuntimeError("provider down")
-
-    with pytest.raises(ExtractionError):
-        outcome_facts(Broken(), _episodes(), "u")
-
-
-def test_truncated_model_output_is_rejected():
-    """被 max_tokens 截断的回复过去会丢掉所有已抽取的条目——而这恰恰是长会话的常态，因为模型会
-    用满预算。"""
-    from mnemotrace.consolidate.fact_rules import parse_json_facts
-
-    truncated = ('[{"kind":"finding","statement":"first complete one","why":"a"},'
-                 '{"kind":"lesson","statement":"second complete one","why":"b"},'
-                 '{"kind":"decis')
-    with pytest.raises(ExtractionResponseError):
-        parse_json_facts(truncated)
+from mnemotrace.types import Fact
 
 
 def test_split_outcome_text_is_the_exact_inverse_of_the_format():
-    """格式化器与这个解析器刻意相隔十行：分隔符一变，这里必须先挂。"""
-    llm = StubLLM('[{"kind":"finding","statement":"client.ts declares its own copy of the API types",'
-                  '"why":"a contract change failed at runtime, not compile time"}]')
-    f = outcome_facts(llm, _episodes(), "u", session_id="s1")[0]
+    f = saved_outcome(Memory(), user_id="u", session_id="s1", kind="finding",
+                      statement="client.ts declares its own copy of the API types",
+                      why="a contract change failed at runtime, not compile time")
     assert split_outcome_text(f.text) == (
         "client.ts declares its own copy of the API types",
         "a contract change failed at runtime, not compile time",
@@ -139,69 +28,23 @@ def test_split_outcome_text_is_the_exact_inverse_of_the_format():
 
 # --- service 层：console 和 MCP 客户端实际看到的 outcome 层 ---
 
-def _svc(tmp_path, llm=None):
-    """离线 service（llm_name="" => self.llm 为 None），之后可选地注入一个 stub LLM。"""
-    svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
-    if llm is not None:
-        svc.llm = llm
-    return svc
+def _svc(tmp_path):
+    return MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
 
 
-def _session(svc, user="u", session_id="s1"):
-    svc.remember(user, "我们把部署方式从 docker compose 换成了 rsync", session_id=session_id, scope="working")
-    svc.remember(user, "重新配对会覆盖唯一的全局配置文件", session_id=session_id, scope="working")
-
-
-def test_close_session_requires_llm_when_outcomes_requested(tmp_path):
-    from mnemotrace.service import MemoryService as NativeService
-    svc = NativeService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
-    _session(svc)
-    with pytest.raises(LLMNotConfiguredError):
-        svc.close_session("u", "s1")
-    assert len(svc.get("u").working_memory("u", "s1")) == 2
-
-
-def test_env_kill_switch_turns_outcomes_off(tmp_path, monkeypatch):
-    monkeypatch.setenv("MNEMOTRACE_SESSION_OUTCOMES", "0")
-    assert _svc(tmp_path).config.session_outcomes is False
-
-
-def test_env_kill_switch_outranks_a_client_opt_in(tmp_path, monkeypatch):
-    """这个开关是运营方的成本上限，所以不能只是个默认值：/v1/sessions/close 接受 `outcomes` 字段，
-    而 connectors/watch.py 对它 import 的每个会话都会 post `outcomes: True`——那是唯一无人值守
-    运行的调用方。只靠默认值的开关会让这条路径照样烧钱。"""
-    monkeypatch.setenv("MNEMOTRACE_SESSION_OUTCOMES", "0")
-    llm = StubLLM('[{"kind":"decision","statement":"部署方式从 docker compose 换成 rsync",'
-                  '"why":"compose 在共享机上会重建别人的容器"}]')
-    svc = _svc(tmp_path, llm)
-    _session(svc)
-    assert svc.close_session("u", "s1", outcomes=True)["outcomes"] == 0
-    # 不只是"没有写入 fact"：蒸馏调用本身就不该发生。outcome 调用是 close 流程里最后一次 LLM 调用，
-    # 所以一个从未见过 OUTCOME_SYSTEM 的 stub 就是从未被要求蒸馏。
-    assert llm.system != OUTCOME_SYSTEM
-    assert svc.memories("u", kind="outcomes")["facts"] == []
-
-
-def test_reclosing_an_unchanged_session_adds_no_duplicates(tmp_path):
-    """connectors/watch.py 会重发变长了的 transcript 并再次 close；extract_outcomes 只在单次调用内
-    去重，所以没有守卫的话每次 re-close 都会让结论翻倍。"""
-    llm = StubLLM('[{"kind":"decision","statement":"部署方式从 docker compose 换成 rsync",'
-                  '"why":"compose 在共享机上会重建别人的容器"}]')
-    svc = _svc(tmp_path, llm)
-    _session(svc)
-    assert svc.close_session("u", "s1")["outcomes"] == 1
-    assert svc.close_session("u", "s1")["outcomes"] == 0
-    outcomes = svc.memories("u", kind="outcomes")["facts"]
-    assert len(outcomes) == 1
+def _seed_conclusion(svc, response):
+    with svc.write_lock("u"):
+        mem = svc.get("u")
+        saved_outcome(mem, user_id="u", session_id="s1", **response)
+        svc._save("u", mem)
 
 
 def test_kind_partitions_the_fact_set_exactly(tmp_path):
-    llm = StubLLM('[{"kind":"lesson","statement":"重新配对会覆盖唯一的全局配置文件",'
-                  '"why":"四个 agent 掉线"}]')
-    svc = _svc(tmp_path, llm)
-    _session(svc)
+    response = json.loads('[{"kind":"lesson","statement":"重新配对会覆盖唯一的全局配置文件",'
+                  '"why":"四个 agent 掉线"}]')[0]
+    svc = _svc(tmp_path)
     svc.add_fact("u", "user", "occupation", "engineer")
-    svc.close_session("u", "s1")
+    _seed_conclusion(svc, response)
 
     everything = svc.memories("u")
     outcomes = svc.memories("u", kind="outcomes")
@@ -225,11 +68,10 @@ def test_unknown_kind_is_ignored_not_rejected(tmp_path):
 
 
 def test_outcome_facts_carry_their_evidence_split_out(tmp_path):
-    llm = StubLLM('[{"kind":"finding","statement":"共享机上不要执行 docker build","why":"会重建别人的容器"}]')
-    svc = _svc(tmp_path, llm)
-    _session(svc)
+    response = json.loads('[{"kind":"finding","statement":"共享机上不要执行 docker build","why":"会重建别人的容器"}]')[0]
+    svc = _svc(tmp_path)
     svc.add_fact("u", "user", "occupation", "engineer")
-    svc.close_session("u", "s1")
+    _seed_conclusion(svc, response)
     row = svc.memories("u", kind="outcomes")["facts"][0]
     assert row["why"] == "会重建别人的容器"
     assert svc.memories("u", kind="attributes")["facts"][0]["why"] == ""
@@ -238,10 +80,9 @@ def test_outcome_facts_carry_their_evidence_split_out(tmp_path):
 def test_outcomes_never_reach_the_graph(tmp_path):
     """结论的 object 是一个句子、subject 是会话 id，建边的话每条陈述会铸造一个垃圾实体、每个会话
     再铸一个——然后 audit 还会把它们报成孤儿节点。"""
-    llm = StubLLM('[{"kind":"lesson","statement":"重新配对会覆盖唯一的全局配置文件","why":"四个 agent 掉线"}]')
-    svc = _svc(tmp_path, llm)
-    _session(svc)
-    svc.close_session("u", "s1")
+    response = json.loads('[{"kind":"lesson","statement":"重新配对会覆盖唯一的全局配置文件","why":"四个 agent 掉线"}]')[0]
+    svc = _svc(tmp_path)
+    _seed_conclusion(svc, response)
     names = {n["name"] for n in svc.graph("u", include_sensitive=True)["nodes"]}
     assert "s1" not in names
     assert not any("重新配对会覆盖" in n for n in names)
@@ -250,11 +91,10 @@ def test_outcomes_never_reach_the_graph(tmp_path):
 def test_audit_reports_one_slot_overflow_and_leaves_outcomes_alone(tmp_path):
     """owner 的真实存储里躺着 84 条存活的 `occupation` fact。每一行都能通过逐条规则；缺陷只在
     槽位层面可见。报告一次，而不是 84 次。"""
-    llm = StubLLM('[{"kind":"lesson","statement":"配置文件路径 ~/.cumora/computer.json 没有覆盖机制",'
-                  '"why":"跑 --pair 覆盖了线上那份"}]')
-    svc = _svc(tmp_path, llm)
-    _session(svc)
-    svc.close_session("u", "s1")
+    response = json.loads('[{"kind":"lesson","statement":"配置文件路径 ~/.cumora/computer.json 没有覆盖机制",'
+                  '"why":"跑 --pair 覆盖了线上那份"}]')[0]
+    svc = _svc(tmp_path)
+    _seed_conclusion(svc, response)
     # 直接写进存储，而不走 add_fact：冲突消解会在这个单值槽位上逐条 supersede 前值，而 field 现场
     # 恰恰没有发生这种收敛——逐轮抽取器让 84 条全部存活，这才是该检查必须捕获的状态。
     mem = svc.get("u")
@@ -280,10 +120,9 @@ def test_audit_reports_one_slot_overflow_and_leaves_outcomes_alone(tmp_path):
 def test_editing_an_outcome_keeps_its_shape_and_refreshes_display(tmp_path):
     """通用的重建逻辑会把 "s1 lesson ..." 写进 `text`——把会话 id 嵌进嵌入向量，丢掉 recall 匹配
     所依赖的依据从句——还会让 `display` 永远停留在编辑前的措辞。"""
-    llm = StubLLM('[{"kind":"lesson","statement":"重新配对会覆盖唯一的全局配置文件","why":"四个 agent 掉线"}]')
-    svc = _svc(tmp_path, llm)
-    _session(svc)
-    svc.close_session("u", "s1")
+    response = json.loads('[{"kind":"lesson","statement":"重新配对会覆盖唯一的全局配置文件","why":"四个 agent 掉线"}]')[0]
+    svc = _svc(tmp_path)
+    _seed_conclusion(svc, response)
     fact_id = svc.memories("u", kind="outcomes")["facts"][0]["id"]
 
     svc.update_fact("u", fact_id, object="重新配对会覆盖 ~/.cumora/computer.json")
@@ -436,10 +275,9 @@ def test_a_conclusion_is_classified_for_sensitivity_like_every_other_write(tmp_p
     这条若不跑，fact 生来 sensitive=False，会落入可分享的 `/v1/memories` 和 `/v1/export` 视图——
     而且只有在 owner 编辑它之后才会开始被隐藏，因为 update_fact 会做 classify。"""
     secret = "把生产数据库密码从 .env 换成 vault，密码不要再写进仓库"
-    llm = StubLLM('[{"kind":"lesson","statement":"%s","why":"泄露过一次"}]' % secret)
-    svc = _svc(tmp_path, llm)
-    _session(svc)
-    svc.close_session("u", "s1")
+    response = json.loads('[{"kind":"lesson","statement":"%s","why":"泄露过一次"}]' % secret)[0]
+    svc = _svc(tmp_path)
+    _seed_conclusion(svc, response)
 
     owner = svc.memories("u", kind="outcomes", include_sensitive=True)["facts"]
     assert len(owner) == 1 and owner[0]["sensitive"] is True
@@ -449,11 +287,10 @@ def test_a_conclusion_is_classified_for_sensitivity_like_every_other_write(tmp_p
 
 def test_an_ordinary_conclusion_is_not_swept_up_by_the_sensitivity_check(tmp_path):
     """上面的守卫不能把每条结论都变成私密——那会清空可分享视图。"""
-    llm = StubLLM('[{"kind":"decision","statement":"部署方式从 docker compose 换成 rsync",'
-                  '"why":"compose 在共享机上会重建别人的容器"}]')
-    svc = _svc(tmp_path, llm)
-    _session(svc)
-    svc.close_session("u", "s1")
+    response = json.loads('[{"kind":"decision","statement":"部署方式从 docker compose 换成 rsync",'
+                  '"why":"compose 在共享机上会重建别人的容器"}]')[0]
+    svc = _svc(tmp_path)
+    _seed_conclusion(svc, response)
 
     shared = svc.memories("u")["facts"]
     assert len(shared) == 1 and shared[0]["sensitive"] is False

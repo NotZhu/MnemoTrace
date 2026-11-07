@@ -4,15 +4,16 @@
 
     python examples/cross_agent_lifecycle.py --local
 
-先启动 忆痕 服务：
+按 docs/reference/configuration.md 的 Postgres 数据库基础章节初始化数据库、创建账号和空间，
+设置 MNEMOTRACE_DATABASE_URL 为运行角色连接串，再启动服务：
 
-    MNEMOTRACE_OPEN=1 MNEMOTRACE_EMBEDDER=hashing uvicorn mnemotrace.server.app:app --port 8000
+    python -m uvicorn mnemotrace.server.app:app --port 8000
 
 然后模拟一个 Codex 线程：
 
     python examples/cross_agent_lifecycle.py \
         --base http://localhost:8000 \
-        --key me \
+        --key "$MNEMOTRACE_API_KEY" --space-id "<SPACE_ID>" \
         --agent codex \
         --project super-memory \
         --thread demo
@@ -21,13 +22,14 @@
   1. agent_status: 不含内容的状态/接线检查
   2. recall: 开始工作前拉取相关的用户/项目记忆
   3. remember: 保存持久的 fact/决策与短期的 working 状态
-  4. close_session: 会话结束时触发整合并清空 working 状态
+  4. 整理当前会话的核心处理并保留 working 状态
   5. session_report: 审计本次会话保存了什么
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 import urllib.error
@@ -54,10 +56,16 @@ VERIFY_QUERY = "What project rule should I follow for benchmark claims?"
 VERIFY_PHRASE = "committed raw logs"
 
 
-def http_call(base: str, key: str) -> Call:
+def http_call(base: str, key: str, space_id: str) -> Call:
+    from urllib.parse import urlencode
+
     base = base.rstrip("/")
 
     def call(path: str, body: dict | None = None, method: str = "POST") -> dict:
+        if method == "GET":
+            path += ("&" if "?" in path else "?") + urlencode({"space_id": space_id})
+        else:
+            body = {**(body or {}), "space_id": space_id}
         req = urllib.request.Request(
             base + path,
             data=json.dumps(body).encode() if body is not None else None,
@@ -132,12 +140,11 @@ def local_call(key: str, data_dir: str) -> Call:
                 redact_sensitive=body.get("redact_sensitive", False),
                 answer=True,
             )
-        if route == "/v1/sessions/close":
-            return svc.close_session(
+        if route == "/v1/processing/flush":
+            return svc.flush(
                 key,
                 body.get("session_id", "default"),
-                summarize=body.get("summarize", True),
-                clear_working=body.get("clear_working", True),
+                include_summaries=body.get("include_summaries", False),
             )
         raise ValueError(f"local lifecycle smoke does not implement {route}")
 
@@ -162,7 +169,7 @@ def exercise_lifecycle(
     agent: str = "codex",
     project: str = "super-memory",
     thread: str = "demo",
-    no_close: bool = False,
+    no_flush: bool = False,
     output: Callable[[str], None] = print,
 ) -> dict:
     session_id = f"{agent}:{project}:{thread}"
@@ -224,15 +231,14 @@ def exercise_lifecycle(
         f"working_live={session_after_write.get('working_live', 0)}"
     )
 
-    closed = None
-    if not no_close:
-        output("\n== 5. Close the agent session ==")
-        closed = call("/v1/sessions/close", {
+    flushed = None
+    if not no_flush:
+        output("\n== 5. Flush processing for the agent session ==")
+        flushed = call("/v1/processing/flush", {
             "session_id": session_id,
-            "summarize": True,
-            "clear_working": True,
+            "include_summaries": True,
         }, "POST")
-        output(json.dumps(closed, ensure_ascii=False, indent=2))
+        output(json.dumps(flushed, ensure_ascii=False, indent=2))
 
     output("\n== 6. Session report: what this session saved ==")
     report = call(_report_path(session_id), None, "GET")
@@ -252,8 +258,6 @@ def exercise_lifecycle(
     )
     if found:
         output("\nPASS: lifecycle saved durable memory and the session report audits it.")
-    if closed and closed.get("working_cleared", 0) > 0:
-        output("PASS: close_session cleared this session's working memory.")
 
     return {
         "session_id": session_id,
@@ -265,7 +269,7 @@ def exercise_lifecycle(
         "recalled_after": recalled_after,
         "context_after": context_after,
         "status_after_write": status_after_write,
-        "closed": closed,
+        "flushed": flushed,
         "report": report,
         "found": found,
     }
@@ -278,11 +282,12 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--data-dir", default=None,
                     help="local MnemoTrace data dir for --local (default: temporary smoke-test dir)")
     ap.add_argument("--base", default="http://localhost:8000", help="MnemoTrace HTTP base URL")
-    ap.add_argument("--key", default="me", help="Bearer key = user memory namespace")
+    ap.add_argument("--key", default=None, help="Bearer key for HTTP or synthetic owner for offline mode")
+    ap.add_argument("--space-id", default=os.environ.get("MNEMOTRACE_SPACE_ID"))
     ap.add_argument("--agent", default="codex", help="agent name used in the session id")
     ap.add_argument("--project", default="super-memory", help="project/workspace name")
     ap.add_argument("--thread", default="demo", help="thread/conversation id")
-    ap.add_argument("--no-close", action="store_true", help="skip /v1/sessions/close")
+    ap.add_argument("--no-flush", action="store_true", help="skip /v1/processing/flush")
     ap.add_argument("--no-verify", action="store_true", help="do not fail if recall/report misses the test phrase")
     args = ap.parse_args(argv)
 
@@ -290,30 +295,31 @@ def main(argv: list[str] | None = None) -> None:
         data_dir = args.data_dir or tempfile.mkdtemp(prefix="mnemotrace-lifecycle.")
         print("mode: local")
         print(f"data_dir: {data_dir}")
-        call = local_call(args.key, data_dir)
+        call = local_call(args.key or "me", data_dir)
     else:
         base = args.base.rstrip("/")
         print("mode: http")
         print(f"base: {base}")
-        call = http_call(base, args.key)
+        key = args.key or os.environ.get("MNEMOTRACE_API_KEY")
+        if not key or not args.space_id:
+            ap.error("HTTP mode requires a Bearer key and --space-id")
+        call = http_call(base, key, args.space_id)
 
     result = exercise_lifecycle(
         call,
-        namespace=args.key,
+        namespace=(args.key or "me") if args.local else args.space_id,
         agent=args.agent,
         project=args.project,
         thread=args.thread,
-        no_close=args.no_close,
+        no_flush=args.no_flush,
     )
 
     if not result["found"] and not args.no_verify:
         print("\nFAIL: lifecycle did not recall or report the saved durable memory.", file=sys.stderr)
         raise SystemExit(1)
 
-    if args.local:
-        print("\nFor a real local Codex setup, point its MCP config at the same MnemoTrace namespace/data dir.")
-    else:
-        print(f"\nInspect in the console: {args.base.rstrip('/')}/ui/  (key: {args.key})")
+    if not args.local:
+        print(f"\nInspect in the console: {args.base.rstrip('/')}/ui/")
 
 
 if __name__ == "__main__":

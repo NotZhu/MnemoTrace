@@ -11,8 +11,8 @@
 ## Postgres 数据库基础
 
 安装 `python -m pip install ".[postgres]"`；已发布安装使用 `mnemotrace-memory[postgres]`。
-`serve`/`all` 包含此 extra，纯算法核心不导入驱动。数据库基础当前独立于 MemoryService 和 HTTP/MCP，
-不要把数据库初始化成功理解为现有记忆接口已经切换到数据库。
+`serve` 和 `all` 包含此 extra。产品 HTTP 服务、可信直连 MCP 和 CLI 使用运行角色连接数据库。
+纯算法核心可单独安装。
 
 支持 Postgres 18 与 pgvector 0.8.7，测试镜像及摘要在 [CI](../../.github/workflows/ci.yml) 固定。
 数据库使用 `mnemotrace` schema；不读取、迁入、删除或覆盖旧记忆目录。
@@ -214,7 +214,6 @@ Qdrant 承担向量和 payload 存储，图、原始日志及其他状态仍由�
 - 数值聚合：numeric_aggregation_candidates、aggregation_recall_expansion、aggregation_constraint_filter、aggregation_pool_boost。
 - 派生读取：summary_fallback、summary_fallback_k、procedural_extraction、procedural_memory、procedural_memory_k。
 - 图与规划：graph_proximity、graph_relation_awareness、graph_path_reinforcement、graph_self_anchor、graph_entity_alias_anchor、graph_negative_constraints、planner_location_chains、planner_project_chains、planner_llm_decomposition。
-- 会话收尾：session_outcomes。
 
 多数增强当前默认开启，但具体是否执行还取决于调用路径和模型是否可用。不要从字段默认值推断已经发生外部模型调用。算法消融、数据范围与成本记录见[评测说明](../../eval/README.md)。
 
@@ -226,83 +225,49 @@ fact = memory.add_fact("user", "uses", "storage engine")
 assert (fact.topic, fact.topic_source) == ("technology", "rule")
 ```
 
-有 LLM 时该开关只控制主题协议，不关闭原有事实或结论提取。开启后不增加模型调用次数或 token 上限，但会增加输入和输出 token；有效提示词改变也会改变提示词缓存键。关闭时保留原有请求形状与提示词缓存语义。主题判定与重置规则见[主题与来源](../architecture/memory.md#主题与来源)。
+有 LLM 时该开关只控制主题协议，不关闭原有事实提取。开启后不增加模型调用次数或 token 上限，但会增加输入和输出 token；有效提示词改变也会改变提示词缓存键。关闭时保留原有请求形状与提示词缓存语义。主题判定与重置规则见[主题与来源](../architecture/memory.md#主题与来源)。
 
 ## 服务环境变量
 
+HTTP、直连 MCP 和普通 CLI 使用[数据库运行连接](#postgres-数据库基础)。
+远程 MCP stdio、SDK 和导入器使用 HTTP 地址、账号 key 和显式空间。
+
 | 变量 | 未设置时的行为或默认值 |
 | --- | --- |
-| MNEMOTRACE_STORAGE | `memory`；可选 `durable`、`lancedb`、`qdrant`，由 HTTP 与本地 MCP 共用 |
-| MNEMOTRACE_QDRANT_URL | 未设置时使用每用户快照目录下的本地 Qdrant；设置时连接远程服务 |
-| MNEMOTRACE_QDRANT_API_KEY | 未设置；仅通过服务配置传入远程客户端 |
-| MNEMOTRACE_QDRANT_COLLECTION_PREFIX | 使用 Config 默认前缀；服务始终另行派生每用户命名空间 |
-| MNEMOTRACE_QDRANT_TIMEOUT | 使用 Config 的连接超时默认值，单位秒 |
-| MNEMOTRACE_DATA_DIR | `~/.mnemotrace/data`；服务按命名空间管理目录 |
-| MNEMOTRACE_API_KEYS | 未配置；保护路由拒绝访问，需显式配置鉴权 |
-| MNEMOTRACE_SPACES | 未配置；remember/recall 的扩展 principal/ACL 配置 |
-| MNEMOTRACE_OPEN | 关闭；显式开启后把 Bearer 文本作为 namespace |
-| MNEMOTRACE_ALLOW_ANONYMOUS | 关闭；仅开放模式下控制共享 anonymous |
+| MNEMOTRACE_DATABASE_URL | 运行角色连接配置，启动数据库服务时必填 |
+| MNEMOTRACE_DISCOVERY_DATABASE_URL | 独立 worker 的任务发现连接 |
+| MNEMOTRACE_USER_ID | 可信直连的账号 ID，也可传 `--user-id` |
+| MNEMOTRACE_SPACE_ID | MCP stdio 和普通 CLI 的空间 ID，也可传 `--space-id` |
+| MNEMOTRACE_API_URL | MCP stdio 使用 HTTP 代理时的服务地址 |
+| MNEMOTRACE_API_KEY | HTTP 客户端凭据，也可使用受保护的 key 文件 |
 | MNEMOTRACE_EMBEDDER | hashing，不下载模型 |
-| MNEMOTRACE_LLM | 空；请求抽取时报配置错误 |
-| MNEMOTRACE_LLM_TOPICS | 默认开启；设为 0 关闭 LLM 主题增强，保留规则判断；HTTP 服务和本地 MCP 生效，代理 MCP 由目标服务控制 |
-| MNEMOTRACE_ANSWERER | 未设置时复用主 LLM |
-| MNEMOTRACE_VISION_LLM | 未设置时复用主 LLM；没有模型时不生成图片语义描述 |
-| MNEMOTRACE_MAX_REQUEST_BYTES | 2097152，HTTP 请求体字节上限，必须为正整数 |
-| MNEMOTRACE_MAX_HOT_USERS | 64，服务的热用户缓存容量 |
-| MNEMOTRACE_MAX_HOT_FACTS | 使用 Config 的热层上限 |
-| MNEMOTRACE_BUFFERED_EXTRACTION | 默认开启后台处理；设为 0 关闭 worker，显式 flush 仍可执行；对话默认 buffered，原文 remember 默认 immediate；接口见 HTTP 参考 |
-| MNEMOTRACE_CONFLICT_DETECTION | 设为 1 且配置 LLM 时启用待确认冲突检测 |
-| MNEMOTRACE_SESSION_OUTCOMES | 设为 0 时强制禁止会话结论提取，客户端不能覆盖 |
-| MNEMOTRACE_REEMBED_ON_MISMATCH | 默认关闭；设为 1 可触发显式模型迁移路径 |
+| MNEMOTRACE_LLM | 空，自动抽取请求在持久化前返回配置错误 |
+| MNEMOTRACE_LLM_TOPICS | 默认开启，设为 0 后只使用主题规则 |
+| MNEMOTRACE_ANSWERER | 复用主 LLM |
+| MNEMOTRACE_VISION_LLM | 复用主 LLM，未配置时图片不生成语义描述 |
+| MNEMOTRACE_MAX_REQUEST_BYTES | 2097152，HTTP 请求体字节上限 |
 
-例如在 PowerShell 中为 HTTP / 本地 MCP 选择本地 Qdrant：
+服务与 worker 使用相同的嵌入模型和抽取配置。服务会加载当前目录的 `.env`，
+已有进程环境变量优先。真实凭据保存在本机配置或环境中。
 
-```powershell
-$env:MNEMOTRACE_STORAGE = "qdrant"
-$env:MNEMOTRACE_DATA_DIR = "./synthetic-service-data"
-# HTTP 还需按下方说明配置鉴权。
-python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000
-# 或在另一条独立命令中启动本地 MCP：python -m mnemotrace.mcp
-```
+## 账号与空间
 
-远程部署再设置 `MNEMOTRACE_QDRANT_URL`，需要鉴权时提供 `MNEMOTRACE_QDRANT_API_KEY`。本地模式不能让 HTTP 与 MCP 两个进程同时持有同一用户数据库；多进程使用远程 Qdrant，同时共享相同快照目录和文件锁。仅共享 Qdrant、各自持有快照的跨主机部署不在当前事务保证范围内。
-
-服务擦除会先清理该用户的精确四个集合，再清理本地状态；远程失败返回错误，保留快照以便重试。操作中断会留下索引标记，下一次访问从已提交快照恢复。HTTP 存储错误见 [HTTP 参考](http-api.md)；异步整合失败计入 `consolidation_failed` 指标，原始已提交 episode 可再次整合。
-
-生产 Compose 模板只传入其中一部分变量；需要其他设置时应明确修改自己的部署环境，不能假定本机全部变量会自动传进容器。systemd 读取模板指定的 EnvironmentFile。
-
-服务与部分工具会加载当前工作目录的 `.env`，不覆盖已有进程环境变量。MCP 的 namespace/API URL 等是在相应入口解析的，配置在进程启动前提供最可靠。真实凭据只保存在本机配置或环境中，见[部署说明](../../deploy/README.md)。
-
-## 命名空间与 ACL
-
-普通鉴权格式为 `tenant:key,tenant:key2`。多个 key 映射同一 tenant 可用于轮换。
-
-扩展 space 配置是 JSON：每个 key 对应 home、read 和 write。home 始终属于该 principal 的读写范围。当前 remember/recall 使用扩展 ACL，其他管理路由仍走普通鉴权；需要管理访问时同时配置相应普通映射。只配置 SPACES 也不能代替 /ready 所需的正常服务鉴权条件。
-
-```json
-{
-  "YOUR_API_KEY": {
-    "home": "user123",
-    "read": ["user123", "my-app"],
-    "write": ["user123"]
-  }
-}
-```
-
-这是结构示例，不是可用于生产的凭据。权限在服务端校验，客户端传 space/spaces 不会自行获得权限。
+用管理 CLI 创建用户及 key，再通过 `POST /v1/spaces` 为该账号显式创建空间。
+同一账号的有效 key 可访问该账号拥有的全部空间。远程客户端提交 `space_id`，
+后端根据 key 查得所有者并验证空间归属。详见 [HTTP 参考](http-api.md)。
 
 ## 模型与可选依赖
 
 | 能力 | 安装入口与选择 |
 | --- | --- |
-| HTTP 服务 | `.[server]` |
-| MCP、本地或 HTTP 代理 | `.[mcp]` |
+| HTTP 服务 | `.[server,postgres]` |
+| MCP | HTTP 代理用 `.[mcp]`，可信直连用 `.[mcp,postgres]` |
 | 本地语义嵌入 | `.[embeddings]`；multilingual、bge-small-zh、bge-small、bge-m3、bge-large 或 st:模型名 |
 | LLM / API 嵌入 | `.[llm]`；模型名和凭据规则由 [providers.py](../../mnemotrace/llm/providers.py) 解析 |
 | PDF/DOCX 解析 | `.[documents]` |
 | 可选 Qdrant | `.[qdrant]` 或对应 backends extra；本地和远程共用官方客户端 |
 | 可选 LanceDB | `.[lancedb]` 或对应 backends extra |
-| Postgres 数据库基础 | `.[postgres]`；独立初始化与身份/空间接口，尚未切换业务运行入口 |
+| Postgres 数据库基础 | `.[postgres]`；包含数据库初始化、身份和业务接口 |
 | 完整服务常用组合 | `.[serve]`；具体包含项以 pyproject 为准 |
 
 上表的 `.` 表示从源码安装，已发布分发包使用对应包名及 extra。真实模型可能下载文件、联网或产生费用，应按语料语言与任务评测选择。别名对应的具体模型见 factory 源码；哈希嵌入不是语义模型，模型名中同维度也不代表向量兼容。
@@ -313,6 +278,7 @@ python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000
 | --- | --- |
 | mnemotrace-quickstart | 使用已配置 LLM 的示例 |
 | mnemotrace-mcp / python -m mnemotrace.mcp | 本地工具服务或远程 HTTP 代理 |
+| mnemotrace | 授权空间内摄入、操作查询、重试、检索和事实擦除 |
 | mnemotrace-import / python -m mnemotrace.connectors | 解析与导入，先使用 --dry-run |
 | mnemotrace-agent-setup | 输出或安装客户端配置与受管接入说明 |
 | mnemotrace-agent-bootstrap | 组合安装入口，有实际配置写入副作用 |
@@ -320,4 +286,7 @@ python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000
 | mnemotrace-watch | 发现并导入客户端会话，另有调度器及 hook 安装选项 |
 | python -m mnemotrace.admin | 数据库初始化和受限账号/key 管理，使用独立凭据 |
 
-完整参数用各命令的 `--help` 查询。MCP 的 `--api-url/--api-key-file` 对应远程后端；本地使用 `--namespace` 与数据目录。watcher 的 `--url`、`--key-file`、`--dry-run`、`--no-close`、`--immediate` 及安装选项有各自解析规则，不与其他 CLI 参数名混用。
+完整参数见各命令的 `--help`。MCP stdio 代理使用 `--api-url`、`--api-key-file` 和 `--space-id`，
+本地直连使用 `--user-id` 与 `--space-id`。watcher 使用 `--url`、`--key-file` 和 `--space-id`，
+默认受理历史后交给 worker，`--immediate` 等待核心处理。
+若原文已保存而核心处理失败或等待超时，watcher 保留已确认的原文游标，报告非零退出状态及可查询、重试的操作 ID。

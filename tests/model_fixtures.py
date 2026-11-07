@@ -123,17 +123,17 @@ def seed_summaries(memory, episodes):
         memory._sync_episode(ep)
 
 
-def outcome_facts(model, episodes, user_id, session_id=''):
-    """Seed prior originals and exercise their conclusion through the shared kernel."""
-    from mnemotrace import Memory as NativeMemory
-    from mnemotrace._pipeline import execute_memory
-    mem = NativeMemory(llm=model)
-    originals = []
-    for ep in episodes:
-        ep.user_id = user_id
-        ep.session_id = session_id or ep.session_id
-        mem._sync_episode(ep)
-        originals.append(ep)
-    if originals:
-        execute_memory(mem, user_id, originals, 'outcomes')
-    return list(mem.fact_store.values())
+def saved_outcome(mem, *, user_id, session_id, kind, statement, why='', provenance=()):
+    """Seed the stored representation of a historical conclusion."""
+    from mnemotrace.consolidate.classify import classify_fact
+    from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY
+    from mnemotrace.types import Fact
+
+    fact = Fact(subject=session_id, predicate=kind, object=statement, display=statement,
+                text=statement + (f' （依据：{why}）' if why else ''), user_id=user_id,
+                provenance=list(provenance))
+    classify_fact(fact)
+    fact.category = OUTCOME_CATEGORY
+    fact.embedding = mem.embedder.embed(fact.text)
+    mem.writer._write_fact(fact, mem.writer.empty_stats())
+    return fact

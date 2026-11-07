@@ -9,11 +9,14 @@
  *   await mnemotrace.remember('I live in Shenzhen and work at Tencent.')
  *   const { context } = await mnemotrace.recall('where do I live?')
  */
+export interface SpaceOptions { spaceId: string }
+
 import type {
   ChatCompletion,
   ChatCompletionChunk,
   ChatCompletionCreateParams,
-  CloseSessionResult,
+  OperationResult,
+  MemorySpace,
   AgentStatus,
   Fact,
   FactInput,
@@ -121,7 +124,16 @@ export class MnemoTraceClient {
     throw new MnemoTraceError(res.status, message, detail)
   }
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}, spaceId?: string): Promise<T> {
+    if (spaceId !== undefined) {
+      if (!spaceId.trim()) throw new MnemoTraceError(422, 'A space ID is required')
+      if (typeof init.body === 'string') {
+        init = { ...init, body: JSON.stringify({ ...JSON.parse(init.body), space_id: spaceId }) }
+      } else {
+        const separator = path.includes('?') ? '&' : '?'
+        path += separator + new URLSearchParams({ space_id: spaceId })
+      }
+    }
     const hasBody = init.body != null
     const res = await this._fetch(`${this.baseUrl}${path}`, {
       ...init,
@@ -132,8 +144,8 @@ export class MnemoTraceClient {
     return (await res.json()) as T
   }
 
-  private post<T>(path: string, body?: unknown): Promise<T> {
-    return this.request<T>(path, { method: 'POST', body: body === undefined ? '{}' : JSON.stringify(body) })
+  private post<T>(path: string, body: object, spaceId?: string): Promise<T> {
+    return this.request<T>(path, { method: 'POST', body: JSON.stringify(body) }, spaceId)
   }
 
   // --- 健康检查 ---------------------------------------------------------------
@@ -141,131 +153,125 @@ export class MnemoTraceClient {
     return this.request<Health>('/health')
   }
 
-  // --- 写入 / 读取记忆 -------------------------------------------------------
-  rememberMessages(messages: import('./types.js').DialogueMessage[], options: {
+  listSpaces(options: { afterId?: string; limit?: number } = {}): Promise<{
+    spaces: MemorySpace[]; next_after_id: string | null
+  }> {
+    const params = new URLSearchParams()
+    if (options.afterId !== undefined) params.set('after_id', options.afterId)
+    if (options.limit !== undefined) params.set('limit', String(options.limit))
+    return this.request(`/v1/spaces${params.size ? `?${params}` : ''}`)
+  }
+
+  createSpace(name: string): Promise<MemorySpace> {
+    return this.post('/v1/spaces', { name })
+  }
+
+  renameSpace(spaceId: string, name: string): Promise<MemorySpace> {
+    return this.request(`/v1/spaces/${encodeURIComponent(spaceId)}`, {
+      method: 'PATCH', body: JSON.stringify({ name }),
+    })
+  }
+
+  deleteSpace(spaceId: string, options: { confirm: true }): Promise<OkMessage> {
+    if (!options?.confirm) throw new MnemoTraceError(400, 'Space deletion requires confirmation')
+    return this.request(`/v1/spaces/${encodeURIComponent(spaceId)}?confirm=true`, { method: 'DELETE' })
+  }
+
+  rememberMessages(messages: import('./types.js').DialogueMessage[], options: SpaceOptions & {
     sessionId: string; mode?: 'live' | 'historical'; processing?: 'immediate' | 'buffered';
-    scope?: 'auto' | 'long'; space?: string
+    scope?: 'auto' | 'long' | 'raw'; agentId?: string; timeout?: number
   }): Promise<import('./types.js').MessagesResult> {
     return this.post('/v1/messages', { messages, session_id: options.sessionId,
-      mode: options.mode ?? 'live', processing: options.processing ?? 'buffered',
-      scope: options.scope ?? 'auto', space: options.space })
+      mode: options.mode, processing: options.processing, scope: options.scope,
+      agent_id: options.agentId, timeout: options.timeout }, options.spaceId)
   }
 
-  /**
-   * 存储一条消息并将其整合为 bi-temporal 事实。
-   * `space` 写入共享/agent 命名空间而非调用者自己的主命名空间（需要服务器端通过
-   * MNEMOTRACE_SPACES 授予写权限）。
-   */
-  remember(
-    content: string,
-    options: { sessionId?: string; scope?: 'auto' | 'long' | 'working'; space?: string;
-      processing?: 'immediate' | 'buffered' } = {},
-  ): Promise<RememberResult> {
-    return this.post<RememberResult>('/v1/remember', {
-      content,
-      session_id: options.sessionId ?? 'default',
-      scope: options.scope ?? 'auto',
-      space: options.space,
-      processing: options.processing ?? 'immediate',
-    })
+  remember(content: string, options: SpaceOptions & {
+    sessionId?: string; scope?: 'auto' | 'long' | 'working' | 'raw';
+    processing?: 'immediate' | 'buffered'; agentId?: string; timeout?: number
+  }): Promise<RememberResult> {
+    return this.post('/v1/remember', {
+      content, session_id: options.sessionId, scope: options.scope, processing: options.processing,
+      agent_id: options.agentId, timeout: options.timeout,
+    }, options.spaceId)
   }
 
-  processingStatus(options: { sessionId?: string; space?: string } = {}): Promise<ProcessingStatus> {
+  getOperation(operationId: string, options: SpaceOptions): Promise<OperationResult> {
+    return this.request(`/v1/operations/${encodeURIComponent(operationId)}`, {}, options.spaceId)
+  }
+
+  retryOperation(operationId: string, options: SpaceOptions): Promise<OperationResult> {
+    return this.post(`/v1/operations/${encodeURIComponent(operationId)}/retry`, {}, options.spaceId)
+  }
+
+  processingStatus(options: SpaceOptions & {
+    sessionId?: string; afterId?: string; limit?: number
+  }): Promise<ProcessingStatus> {
     const query = new URLSearchParams()
     if (options.sessionId !== undefined) query.set('session_id', options.sessionId)
-    if (options.space !== undefined) query.set('space', options.space)
-    return this.request<ProcessingStatus>(`/v1/processing${query.size ? `?${query}` : ''}`)
+    if (options.afterId !== undefined) query.set('after_id', options.afterId)
+    if (options.limit !== undefined) query.set('limit', String(options.limit))
+    return this.request(`/v1/processing${query.size ? `?${query}` : ''}`, {}, options.spaceId)
   }
 
-  flushProcessing(options: { sessionId?: string; space?: string; timeout?: number;
-    retryFailed?: boolean; includeSummaries?: boolean } = {}): Promise<ProcessingFlushResult> {
-    return this.post<ProcessingFlushResult>('/v1/processing/flush', {
-      session_id: options.sessionId, space: options.space,
-      timeout: options.timeout ?? 30, retry_failed: options.retryFailed ?? false,
-      include_summaries: options.includeSummaries ?? false,
-    })
+  flushProcessing(options: SpaceOptions & { sessionId?: string; timeout?: number;
+    retryFailed?: boolean; includeSummaries?: boolean }): Promise<ProcessingFlushResult> {
+    return this.post('/v1/processing/flush', {
+      session_id: options.sessionId, timeout: options.timeout,
+      retry_failed: options.retryFailed, include_summaries: options.includeSummaries,
+    }, options.spaceId)
   }
 
-  /** Explicitly read the full source of an event returned by recall. */
-  getEpisode(episodeId: string, options: { space?: string } = {}): Promise<import('./types.js').OriginalEpisode> {
-    const query = new URLSearchParams()
-    if (options.space !== undefined) query.set('space', options.space)
-    return this.request(`/v1/episodes/${encodeURIComponent(episodeId)}${query.size ? `?${query}` : ''}`)
+  getEpisode(episodeId: string, options: SpaceOptions): Promise<import('./types.js').OriginalEpisode> {
+    return this.request(`/v1/episodes/${encodeURIComponent(episodeId)}`, {}, options.spaceId)
   }
 
-  /**
-   * 检索一小段相关、带日期的上下文用于作答（lean 读路径）。
-   * `spaces` 读取并融合多个命名空间（如 agent 自己的 + 共享团队空间）；每个命名空间
-   * 都必须对该 key 的 MNEMOTRACE_SPACES 主体可读。
-   */
-  recall(
-    query: string,
-    options: {
-      nChunks?: number
-      sessionId?: string
-      asOf?: number
-      redactSensitive?: boolean
-      spaces?: string[]
-    } = {},
-  ): Promise<RecallResult> {
-    return this.post<RecallResult>('/v1/recall', {
-      query,
-      lean: true,
-      n_chunks: options.nChunks ?? 6,
-      session_id: options.sessionId ?? null,
-      as_of: options.asOf ?? null,
-      redact_sensitive: options.redactSensitive ?? false,
-      spaces: options.spaces,
-    })
-  }
-
-  /** 结束一个会话/任务：整合待处理的 episode、生成摘要、清空工作记忆并持久化。 */
-  closeSession(
-    sessionId = 'default',
-    options: { summarize?: boolean; clearWorking?: boolean } = {},
-  ): Promise<CloseSessionResult> {
-    return this.post<CloseSessionResult>('/v1/sessions/close', {
-      session_id: sessionId,
-      summarize: options.summarize ?? true,
-      clear_working: options.clearWorking ?? true,
-    })
+  recall(query: string, options: ({ spaceId: string; spaceIds?: never } | { spaceIds: string[]; spaceId?: never }) & {
+    nChunks?: number; sessionId?: string; asOf?: number; redactSensitive?: boolean
+  }): Promise<RecallResult> {
+    return this.post('/v1/recall', {
+      query, lean: true, n_chunks: options.nChunks, session_id: options.sessionId,
+      as_of: options.asOf, redact_sensitive: options.redactSensitive, space_ids: options.spaceIds,
+    }, options.spaceId)
   }
 
   /** 审计某个会话贡献了哪些持久事实。敏感事实文本默认脱敏。 */
   sessionReport(
     sessionId: string,
-    options: { includeSensitive?: boolean } = {},
+    options: SpaceOptions & { includeSensitive?: boolean; limit?: number; offset?: number },
   ): Promise<SessionReport> {
     const params = new URLSearchParams({
       session_id: sessionId,
       include_sensitive: options.includeSensitive ? 'true' : 'false',
     })
-    return this.request<SessionReport>(`/v1/sessions/report?${params}`)
+    if (options.limit !== undefined) params.set('limit', String(options.limit))
+    if (options.offset !== undefined) params.set('offset', String(options.offset))
+    return this.request<SessionReport>(`/v1/sessions/report?${params}`, {}, options.spaceId)
   }
 
   /** 不含内容的跨 agent/应用会话索引，用于记忆管理界面。 */
-  sessions(options: SessionListOptions = {}): Promise<SessionIndex> {
+  sessions(options: SpaceOptions & SessionListOptions): Promise<SessionIndex> {
     const params = new URLSearchParams()
     if (options.limit !== undefined) params.set('limit', String(options.limit))
     if (options.offset !== undefined) params.set('offset', String(options.offset))
     const query = options.query ?? options.q
     if (query !== undefined) params.set('q', query)
     const qs = params.toString()
-    return this.request<SessionIndex>(`/v1/sessions${qs ? `?${qs}` : ''}`)
+    return this.request<SessionIndex>(`/v1/sessions${qs ? `?${qs}` : ''}`, {}, options.spaceId)
   }
 
   /** 直接回答单个事实性问题（记忆中没有答案时选择拒答）。 */
-  search(query: string, options: { asOf?: number; redactSensitive?: boolean } = {}): Promise<SearchResult> {
+  search(query: string, options: SpaceOptions & { asOf?: number; redactSensitive?: boolean }): Promise<SearchResult> {
     return this.post<SearchResult>('/v1/recall', {
       query,
       lean: false,
       as_of: options.asOf ?? null,
       redact_sensitive: options.redactSensitive ?? false,
-    })
+    }, options.spaceId)
   }
 
   /** 该命名空间下存储的全部记忆，支持分页/过滤，用于用户自有记忆管理界面。 */
-  memories(options: MemoryListOptions = {}): Promise<MemoryDump> {
+  memories(options: SpaceOptions & MemoryListOptions): Promise<MemoryDump> {
     const params = new URLSearchParams()
     if (options.topic !== undefined) params.set('topic', options.topic)
     if (options.factsLimit !== undefined) params.set('facts_limit', String(options.factsLimit))
@@ -283,89 +289,89 @@ export class MnemoTraceClient {
       params.set('include_sensitive', options.includeSensitive ? 'true' : 'false')
     }
     const qs = params.toString()
-    return this.request<MemoryDump>(`/v1/memories${qs ? `?${qs}` : ''}`)
+    return this.request<MemoryDump>(`/v1/memories${qs ? `?${qs}` : ''}`, {}, options.spaceId)
   }
 
   /** 不含内容的命名空间统计，用于仪表盘；服务就绪检查使用 /ready。 */
-  stats(): Promise<MemoryStats> {
-    return this.request<MemoryStats>('/v1/stats')
+  stats(options: SpaceOptions): Promise<MemoryStats> {
+    return this.request<MemoryStats>('/v1/stats', {}, options.spaceId)
   }
 
   /** 不含内容的 agent/会话状态：命名空间、focus、计数以及建议的记忆操作。 */
-  agentStatus(options: { sessionId?: string } = {}): Promise<AgentStatus> {
+  agentStatus(options: SpaceOptions & { sessionId?: string }): Promise<AgentStatus> {
     const qs = options.sessionId === undefined ? '' : `?session_id=${encodeURIComponent(options.sessionId)}`
-    return this.request<AgentStatus>(`/v1/agent/status${qs}`)
+    return this.request<AgentStatus>(`/v1/agent/status${qs}`, {}, options.spaceId)
   }
 
   /** 合成后的用户画像 + 关键事实。 */
-  profile(): Promise<ProfileResult> {
-    return this.request<ProfileResult>('/v1/profile')
+  profile(options: SpaceOptions): Promise<ProfileResult> {
+    return this.request<ProfileResult>('/v1/profile', {}, options.spaceId)
   }
 
   // --- 可编辑的事实 ----------------------------------------------------------
   /** 断言一条权威事实（用户来源；绝不会被静默覆盖）。 */
-  addFact(fact: FactInput): Promise<{ ok: boolean; id: string; text: string } & TopicMetadata> {
-    return this.post('/v1/facts', { subject: 'user', ...fact })
+  addFact(fact: FactInput, options: SpaceOptions): Promise<{ ok: boolean; id: string; text: string } & TopicMetadata> {
+    return this.post('/v1/facts', { subject: 'user', ...fact }, options.spaceId)
   }
 
-  updateFact(id: string, patch: FactPatch): Promise<{ ok: boolean; id: string; text: string } & TopicMetadata> {
+  updateFact(id: string, patch: FactPatch, options: SpaceOptions): Promise<{ ok: boolean; id: string; text: string } & TopicMetadata> {
     return this.request(`/v1/facts/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
-    })
+    }, options.spaceId)
   }
 
-  deleteFact(id: string): Promise<{ ok: boolean }> {
-    return this.request(`/v1/facts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  deleteFact(id: string, options: SpaceOptions): Promise<{ ok: boolean }> {
+    return this.request(`/v1/facts/${encodeURIComponent(id)}`, { method: 'DELETE' }, options.spaceId)
   }
 
   // --- focus / policy / graph ----------------------------------------------
-  getFocus(): Promise<Focus> {
-    return this.request<Focus>('/v1/focus')
+  getFocus(options: SpaceOptions): Promise<Focus> {
+    return this.request<Focus>('/v1/focus', {}, options.spaceId)
   }
 
-  setFocus(focus: Partial<Focus>): Promise<{ ok: boolean; focus: Focus }> {
-    return this.request('/v1/focus', { method: 'PUT', body: JSON.stringify(focus) })
+  setFocus(focus: Partial<Focus>, options: SpaceOptions): Promise<{ ok: boolean; focus: Focus }> {
+    return this.request('/v1/focus', { method: 'PUT', body: JSON.stringify(focus) }, options.spaceId)
   }
 
-  getPolicy(): Promise<PolicyResponse> {
-    return this.request<PolicyResponse>('/v1/policy')
+  getPolicy(options: SpaceOptions): Promise<PolicyResponse> {
+    return this.request<PolicyResponse>('/v1/policy', {}, options.spaceId)
   }
 
-  setPolicy(patch: Partial<Policy>): Promise<{ ok: boolean } & PolicyResponse> {
-    return this.request('/v1/policy', { method: 'PUT', body: JSON.stringify(patch) })
+  setPolicy(patch: Partial<Policy>, options: SpaceOptions): Promise<{ ok: boolean } & PolicyResponse> {
+    return this.request('/v1/policy', { method: 'PUT', body: JSON.stringify(patch) }, options.spaceId)
   }
 
   /** 语义图谱。默认返回可安全分享的版本；传入 includeSensitive=true 获取完整的所有者可见图谱。 */
-  graph(options: { asOf?: number; includeSensitive?: boolean } = {}): Promise<GraphResponse> {
+  graph(options: SpaceOptions & { asOf?: number; includeSensitive?: boolean }): Promise<GraphResponse> {
     const params = new URLSearchParams()
     if (options.asOf !== undefined) params.set('as_of', String(options.asOf))
     if (options.includeSensitive !== undefined) {
       params.set('include_sensitive', options.includeSensitive ? 'true' : 'false')
     }
     const qs = params.toString()
-    return this.request<GraphResponse>(`/v1/graph${qs ? `?${qs}` : ''}`)
+    return this.request<GraphResponse>(`/v1/graph${qs ? `?${qs}` : ''}`, {}, options.spaceId)
   }
 
   // --- 批量导入 / 导出 / 遗忘 -------------------------------------------------
   /** 一次性批量导入历史记录（ChatGPT 导出、OpenAI messages、JSONL、transcript）。 */
-  import(params: ImportParams): Promise<ImportResult> {
-    return this.post<ImportResult>('/v1/import', params)
+  import(params: ImportParams, options: SpaceOptions): Promise<ImportResult> {
+    return this.post<ImportResult>('/v1/import', params, options.spaceId)
   }
 
   /** 数据导出。默认返回可安全分享的结构化导出；传入 includeSensitive=true 获取完整私有导出。 */
-  export<T = MemoryExport>(options: { includeSensitive?: boolean } = {}): Promise<T> {
+  export<T = MemoryExport>(options: SpaceOptions & { includeSensitive?: boolean }): Promise<T> {
     const includeSensitive = options.includeSensitive ?? false
     const qs = `?include_sensitive=${includeSensitive ? 'true' : 'false'}`
-    return this.request<T>(`/v1/export${qs}`)
+    return this.request<T>(`/v1/export${qs}`, {}, options.spaceId)
   }
 
   /** 清空该命名空间下的所有记忆（不可逆）；需要显式确认。 */
-  forget(options: ForgetOptions): Promise<OkMessage> {
+  forget(options: SpaceOptions & ForgetOptions): Promise<OkMessage> {
     if (!options?.confirm) {
       throw new MnemoTraceError(400, 'forget requires { confirm: true } because it permanently erases this namespace')
     }
-    return this.post<OkMessage>('/v1/forget', { confirm: true })
+    return this.post<OkMessage>('/v1/forget', { confirm: true }, options.spaceId)
   }
 
   // --- OpenAI 兼容 chat ------------------------------------------------------

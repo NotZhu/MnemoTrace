@@ -1,18 +1,11 @@
-"""自检跨 agent 的 忆痕 记忆配置。
-
-setup 生成器只负责打印配置；本 doctor 验证的是 agent 实际会启动的运行时：
-所选 Python 必须已安装 忆痕 + MCP，且 MCP 工具必须能在临时命名空间里跑通
-status -> remember -> close -> report -> recall 全流程。它还会真实启动
-Codex/Claude/Cursor 将要拉起的 `python -m mnemotrace.mcp` stdio server，
-避免"配置看着没问题"与"运行时确实能用"出现偏差。
-"""
+"""Verify the Python/MCP runtime and access to an explicitly selected space."""
 from __future__ import annotations
 
 import argparse
 import json
 import shutil
 import subprocess
-import time
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,7 +15,6 @@ from typing import Any
 
 from .agent_config import ConfigReadError, load_codex_server
 from .credentials import CredentialError, read_key, redact, resolve_key
-from .store._validation import validate_snapshot
 
 CLIENTS = ("none", "codex", "claude-code", "cursor", "openai")
 
@@ -30,325 +22,41 @@ CLIENTS = ("none", "codex", "claude-code", "cursor", "openai")
 _PROBE = r"""
 import asyncio
 import json
-import os
-import shutil
-import sys
-import tempfile
-
-from mnemotrace.mcp import server as S
-from mnemotrace.mcp.backends import LocalBackend
-from mnemotrace.service import MemoryService
-from mnemotrace.store._validation import validate_snapshot
-
-SOURCE_SESSION = "doctor:source:smoke"
-TARGET_SESSION = "doctor:target:smoke"
-USER = "doctor"
-PHRASE = "cross-agent handoff through MCP lifecycle"
-
-def text_of(res):
-    seq = res[0] if isinstance(res, tuple) else res
-    return seq[0].text
-
-async def call(name, **args):
-    return text_of(await S.mcp.call_tool(name, args))
+from mnemotrace import PostgresMemory
+from mnemotrace.mcp.server import mcp
 
 async def main():
-    data_dir = tempfile.mkdtemp(prefix="mnemotrace_agent_doctor_")
-    svc = MemoryService(data_dir=data_dir, embedder_name="hashing", llm_name="")
-    svc.config.session_outcomes = False
-    S.set_backend(LocalBackend(namespace=USER, service=svc))
-    before = json.loads(await call(
-        "mnemotrace_recall",
-        query="MnemoTrace doctor smoke memory",
-        max_chunks=0,
-        session_id=TARGET_SESSION,
-        response_format="json",
-    ))
-    remembered = await call(
-        "mnemotrace_add_fact",
-        subject="project", predicate="rule", object=f"MnemoTrace doctor verifies {PHRASE}.",
-    )
-    await call("mnemotrace_remember", content=f"Synthetic handoff {PHRASE}",
-               session_id=SOURCE_SESSION, scope="working")
-    focus_set = json.loads(await call(
-        "mnemotrace_set_focus",
-        track=["MCP lifecycle"],
-        mute=["temporary diagnostics"],
-        response_format="json",
-    ))
-    focus = json.loads(await call("mnemotrace_get_focus", response_format="json"))
-    status = json.loads(await call(
-        "mnemotrace_agent_status",
-        session_id=TARGET_SESSION,
-        response_format="json",
-    ))
-    closed_source = json.loads(await call(
-        "mnemotrace_close_session",
-        session_id=SOURCE_SESSION,
-        response_format="json",
-    ))
-    report = json.loads(await call(
-        "mnemotrace_session_report",
-        session_id=SOURCE_SESSION,
-        response_format="json",
-    ))
-    sessions = json.loads(await call(
-        "mnemotrace_list_sessions",
-        q="doctor:source",
-        response_format="json",
-    ))
-    exported = json.loads(await call(
-        "mnemotrace_export",
-        response_format="json",
-    ))
-    validate_snapshot(exported)
-    recalled = json.loads(await call(
-        "mnemotrace_recall",
-        query="What does MnemoTrace doctor verify across agents?",
-        max_chunks=3,
-        session_id=TARGET_SESSION,
-        response_format="json",
-    ))
-    closed_target = json.loads(await call(
-        "mnemotrace_close_session",
-        session_id=TARGET_SESSION,
-        response_format="json",
-    ))
-    context = recalled.get("context") or ""
-    report_text = json.dumps(report, ensure_ascii=False)
-    sessions_text = json.dumps(sessions, ensure_ascii=False)
-    stats = svc.stats(USER).get("counts", {})
-    S.set_backend(None)
-    shutil.rmtree(data_dir, ignore_errors=True)
-    print(json.dumps({
-        "python": sys.executable,
-        "llm_configured": bool(os.environ.get("MNEMOTRACE_LLM", "").strip()),
-        "before_empty": not bool((before.get("context") or "").strip()),
-        "remembered": "Error:" not in remembered,
-        "source_session": SOURCE_SESSION,
-        "target_session": TARGET_SESSION,
-        "focus_ok": (
-            focus_set.get("ok") is True
-            and focus.get("track") == ["MCP lifecycle"]
-            and focus.get("mute") == ["temporary diagnostics"]
-        ),
-        "status_ok": (
-            status.get("ok") is True
-            and (status.get("session") or {}).get("id") == TARGET_SESSION
-            and "facts_live" in (status.get("counts") or {})
-        ),
-        "report_ok": (
-            report.get("ok") is True
-            and report.get("session_id") == SOURCE_SESSION
-            and int(report.get("episodes") or 0) >= 1
-            and SOURCE_SESSION in report_text
-        ),
-        "sessions_ok": (
-            sessions.get("ok") is True
-            and any(
-                row.get("id") == SOURCE_SESSION
-                and int(row.get("episodes") or 0) >= 1
-                for row in (sessions.get("sessions") or [])
-            )
-            and PHRASE not in sessions_text
-        ),
-        "export_ok": (
-            exported.get("include_sensitive") is False
-            and len(exported.get("facts") or []) >= 1
-        ),
-        "recalled": PHRASE in context and SOURCE_SESSION in context,
-        "closed": bool(closed_source.get("ok")) and bool(closed_target.get("ok")),
-        "recalled_phrase": PHRASE in context,
-        "recalled_source_session": SOURCE_SESSION in context,
-        "facts_live": stats.get("facts_live", 0),
-        "summaries": stats.get("summaries", 0),
-    }, ensure_ascii=False))
+    tools = {tool.name for tool in await mcp.list_tools()}
+    required = {"mnemotrace_remember_messages", "mnemotrace_recall",
+                "mnemotrace_get_operation", "mnemotrace_retry_operation", "mnemotrace_flush_processing"}
+    print(json.dumps(dict(missing_tools=sorted(required - tools), postgres_entry=PostgresMemory.__name__)))
 
 asyncio.run(main())
 """
-
 
 _STDIO_PROBE = r"""
 import asyncio
 import json
 import os
-import shutil
 import sys
-import tempfile
-
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mnemotrace.store._validation import validate_snapshot
-
-SOURCE_SESSION = "doctor:source:stdio"
-TARGET_SESSION = "doctor:target:stdio"
-NAMESPACE = "doctor-stdio"
-PHRASE = "cross-agent handoff through the launched MCP server"
-
-def text_of(result):
-    return "\n".join(getattr(item, "text", "") for item in result.content).strip()
-
-async def call(session, name, **args):
-    return text_of(await session.call_tool(name, args))
 
 async def main():
-    data_dir = tempfile.mkdtemp(prefix="mnemotrace_agent_doctor_stdio_")
-    try:
-        env = os.environ.copy()
-        env["MNEMOTRACE_DATA_DIR"] = data_dir
-        env["MNEMOTRACE_EMBEDDER"] = "hashing"
-        env["MNEMOTRACE_LLM"] = ""
-        env["MNEMOTRACE_SESSION_OUTCOMES"] = "0"
-
-        target_params = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "mnemotrace.mcp", "--namespace", NAMESPACE],
-            env=env,
-        )
-        source_params = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "mnemotrace.mcp", "--namespace", NAMESPACE],
-            env=env,
-        )
-        async with stdio_client(target_params) as (target_read, target_write):
-            async with ClientSession(target_read, target_write) as target:
-                await target.initialize()
-                tools = {tool.name for tool in (await target.list_tools()).tools}
-                required = {
-                    "mnemotrace_add_fact",
-                    "mnemotrace_remember",
-                    "mnemotrace_recall",
-                    "mnemotrace_close_session",
-                    "mnemotrace_session_report",
-                    "mnemotrace_list_sessions",
-                    "mnemotrace_export",
-                    "mnemotrace_agent_status",
-                    "mnemotrace_get_focus",
-                    "mnemotrace_set_focus",
-                }
-                status_before = json.loads(await call(
-                    target,
-                    "mnemotrace_agent_status",
-                    session_id=TARGET_SESSION,
-                    response_format="json",
-                ))
-                async with stdio_client(source_params) as (source_read, source_write):
-                    async with ClientSession(source_read, source_write) as source:
-                        await source.initialize()
-                        remembered = await call(
-                            source,
-                            "mnemotrace_add_fact",
-                            subject="project", predicate="rule",
-                            object=f"MnemoTrace stdio doctor verifies {PHRASE}.",
-                        )
-                        await call(
-                            source,
-                            "mnemotrace_remember",
-                            content=f"Project rule: MnemoTrace stdio doctor verifies {PHRASE}.",
-                            session_id=SOURCE_SESSION,
-                            scope="working",
-                        )
-                        focus = json.loads(await call(
-                            source,
-                            "mnemotrace_set_focus",
-                            track=["launched MCP server"],
-                            response_format="json",
-                        ))
-                        closed_source = json.loads(await call(
-                            source,
-                            "mnemotrace_close_session",
-                            session_id=SOURCE_SESSION,
-                            response_format="json",
-                        ))
-                        report = json.loads(await call(
-                            source,
-                            "mnemotrace_session_report",
-                            session_id=SOURCE_SESSION,
-                            response_format="json",
-                        ))
-                        sessions = json.loads(await call(
-                            source,
-                            "mnemotrace_list_sessions",
-                            q="doctor:source",
-                            response_format="json",
-                        ))
-                        exported = json.loads(await call(
-                            source,
-                            "mnemotrace_export",
-                            response_format="json",
-                        ))
-                        validate_snapshot(exported)
-                recalled = json.loads(await call(
-                    target,
-                    "mnemotrace_recall",
-                    query="What does the stdio doctor verify across agents?",
-                    max_chunks=3,
-                    session_id=TARGET_SESSION,
-                    response_format="json",
-                ))
-                closed_target = json.loads(await call(
-                    target,
-                    "mnemotrace_close_session",
-                    session_id=TARGET_SESSION,
-                    response_format="json",
-                ))
-                context = recalled.get("context") or ""
-                report_text = json.dumps(report, ensure_ascii=False)
-                sessions_text = json.dumps(sessions, ensure_ascii=False)
-
-        result = {
-            "python": sys.executable,
-            "isolated_processes": True,
-            "required_tools": sorted(required),
-            "missing_tools": sorted(required - tools),
-            "remembered": "Error:" not in remembered,
-            "focused": focus.get("ok") is True,
-            "target_preloaded": (
-                status_before.get("ok") is True
-                and (status_before.get("session") or {}).get("id") == TARGET_SESSION
-                and (status_before.get("session") or {}).get("episodes") == 0
-            ),
-            "status_ok": (
-                status_before.get("ok") is True
-                and (status_before.get("session") or {}).get("id") == TARGET_SESSION
-            ),
-            "report_ok": (
-                report.get("ok") is True
-                and report.get("session_id") == SOURCE_SESSION
-                and int(report.get("episodes") or 0) >= 1
-                and SOURCE_SESSION in report_text
-            ),
-            "sessions_ok": (
-                sessions.get("ok") is True
-                and any(
-                    row.get("id") == SOURCE_SESSION
-                    and int(row.get("episodes") or 0) >= 1
-                    for row in (sessions.get("sessions") or [])
-                )
-                and PHRASE not in sessions_text
-            ),
-            "export_ok": (
-                exported.get("include_sensitive") is False
-                and len(exported.get("facts") or []) >= 1
-            ),
-            "source_session": SOURCE_SESSION,
-            "target_session": TARGET_SESSION,
-            "recalled": PHRASE in context and SOURCE_SESSION in context,
-            "closed": bool(closed_source.get("ok")) and bool(closed_target.get("ok")),
-            "recalled_phrase": PHRASE in context,
-            "recalled_source_session": SOURCE_SESSION in context,
-        }
-    finally:
-        shutil.rmtree(data_dir, ignore_errors=True)
-
-    print(json.dumps(result, ensure_ascii=False))
+    params = StdioServerParameters(command=sys.executable, args=["-m", "mnemotrace.mcp"], env=dict(os.environ))
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool("mnemotrace_stats", {"response_format": "json"})
+            payload = json.loads(result.content[0].text)
+            print(json.dumps(dict(space_id=payload["space_id"], storage=payload["storage"])))
 
 asyncio.run(main())
 """
 
 
-def _run(parts: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(parts, capture_output=True, text=True, timeout=timeout, check=False)
+def _run(parts: list[str], timeout: float = 30.0, env=None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(parts, capture_output=True, text=True, timeout=timeout, env=env, check=False)
 
 
 def _check(
@@ -395,6 +103,8 @@ def _check_mcp_server_config(
     python_cmd: str,
     api_url: str | None,
     api_key: str | None,
+    space_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     failures: list[str] = []
     data = {
@@ -402,7 +112,8 @@ def _check_mcp_server_config(
         "args_prefix_ok": False,
         "api_url_ok": api_url is None,
         "api_key_ok": api_url is None or api_key is None,
-        "namespace_ok": api_url is not None or api_key is None,
+        "space_id_ok": False,
+        "user_id_ok": api_url is not None,
     }
     if not isinstance(server, dict):
         failures.append("server entry is not an object")
@@ -430,11 +141,13 @@ def _check_mcp_server_config(
                 data["api_key_ok"] = False
             if not data["api_key_ok"]:
                 failures.append("private credential reference is missing, unsafe, or has a different identity")
-    elif api_key is not None:
-        if isinstance(args, list) and _arg_value(args, "--namespace") == api_key:
-            data["namespace_ok"] = True
-        else:
-            failures.append("args do not include the requested local namespace")
+    else:
+        data['user_id_ok'] = isinstance(args, list) and _arg_value(args, '--user-id') == user_id and bool(user_id)
+        if not data['user_id_ok']:
+            failures.append('args do not include the requested local user ID')
+    data['space_id_ok'] = isinstance(args, list) and _arg_value(args, '--space-id') == space_id and bool(space_id)
+    if not data['space_id_ok']:
+        failures.append('args do not include the requested space ID')
     ok = not failures
     return {
         "name": name,
@@ -454,6 +167,8 @@ def _codex_config_probe(
     python_cmd: str,
     api_url: str | None,
     api_key: str | None,
+    space_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     path = Path(config_path).expanduser()
     try:
@@ -485,6 +200,8 @@ def _codex_config_probe(
         python_cmd=python_cmd,
         api_url=api_url,
         api_key=api_key,
+        space_id=space_id,
+        user_id=user_id,
     )
     check["data"] = {**check.get("data", {}), "path": str(path)}
     return check
@@ -497,6 +214,8 @@ def _mcp_json_config_probe(
     python_cmd: str,
     api_url: str | None,
     api_key: str | None,
+    space_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     path = Path(config_path).expanduser()
     try:
@@ -522,6 +241,8 @@ def _mcp_json_config_probe(
         python_cmd=python_cmd,
         api_url=api_url,
         api_key=api_key,
+        space_id=space_id,
+        user_id=user_id,
     )
     check["data"] = {
         **check.get("data", {}),
@@ -529,27 +250,6 @@ def _mcp_json_config_probe(
         "server_name": server_name,
     }
     return check
-
-
-def _http_json(
-    api_url: str,
-    api_key: str,
-    path: str,
-    body: dict[str, Any],
-    *,
-    timeout: float = 30.0,
-) -> dict[str, Any]:
-    req = urllib.request.Request(
-        api_url.rstrip("/") + path,
-        data=json.dumps(body).encode(),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read() or "{}")
 
 
 def _http_get_json(
@@ -574,283 +274,56 @@ def _http_get_json(
         return json.loads(resp.read() or "{}")
 
 
-def _python_probe(python_cmd: str) -> dict[str, Any]:
-    cmd = [python_cmd, "-c", _PROBE]
-    display_cmd = [python_cmd, "-c", "<mnemotrace-agent-doctor MCP lifecycle probe>"]
-    try:
-        proc = _run(cmd, timeout=60.0)
-    except FileNotFoundError:
-        return {
-            "name": "Python MCP lifecycle",
-            "status": "fail",
-            "detail": f"Python executable not found: {python_cmd}",
-            "command": display_cmd,
-        }
-    except subprocess.TimeoutExpired:
-        return {
-            "name": "Python MCP lifecycle",
-            "status": "fail",
-            "detail": "Timed out while running the local MCP lifecycle smoke test.",
-            "command": display_cmd,
-        }
-    if proc.returncode != 0:
-        detail = _tail(proc.stderr or proc.stdout)
-        if "MCP server needs" in detail or "mcp" in detail.lower():
-            detail += '\nInstall in that environment with: pip install "mnemotrace-memory[mcp]"'
-        return {
-            "name": "Python MCP lifecycle",
-            "status": "fail",
-            "detail": detail or f"Python exited with status {proc.returncode}.",
-            "command": display_cmd,
-        }
-    try:
-        data = json.loads(proc.stdout.strip().splitlines()[-1])
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "name": "Python MCP lifecycle",
-            "status": "fail",
-            "detail": f"Could not parse probe output: {exc}: {_tail(proc.stdout)}",
-            "command": display_cmd,
-        }
-    ok = (
-        data.get("before_empty") is True
-        and data.get("remembered") is True
-        and data.get("focus_ok") is True
-        and data.get("status_ok") is True
-        and data.get("report_ok") is True
-        and data.get("sessions_ok") is True
-        and data.get("export_ok") is True
-        and data.get("recalled") is True
-        and data.get("closed") is True
-        and int(data.get("facts_live") or 0) >= 1
-    )
-    return {
-        "name": "Python MCP lifecycle",
-        "status": "ok" if ok else "fail",
-        "detail": (
-            f"{data.get('python', python_cmd)} saved from `{data.get('source_session')}`, "
-            f"reported saved facts, listed a content-free session index, exported a safe memory payload, recalled from "
-            f"`{data.get('target_session')}`, checked agent status, focused, closed both sessions, "
-            f"and persisted {data.get('facts_live', 0)} live fact(s), "
-            f"{data.get('summaries', 0)} summary(ies)."
-        ),
-        "command": display_cmd,
-        "data": data,
-    }
+def _probe_result(name, status, detail, *, command=None, data=None):
+    result = dict(name=name, status=status, detail=detail, command=command or [])
+    if data is not None:
+        result['data'] = data
+    return result
 
 
-def _stdio_probe(python_cmd: str) -> dict[str, Any]:
-    cmd = [python_cmd, "-c", _STDIO_PROBE]
-    display_cmd = [python_cmd, "-c", "<mnemotrace-agent-doctor stdio MCP probe>"]
+def _probe_python(python_cmd, script, label, *, env=None):
+    command = [python_cmd, '-c', f'<{label} probe>']
     try:
-        proc = _run(cmd, timeout=60.0)
-    except FileNotFoundError:
-        return {
-            "name": "MCP stdio server",
-            "status": "fail",
-            "detail": f"Python executable not found: {python_cmd}",
-            "command": display_cmd,
-        }
-    except subprocess.TimeoutExpired:
-        return {
-            "name": "MCP stdio server",
-            "status": "fail",
-            "detail": "Timed out while launching and calling `python -m mnemotrace.mcp` over stdio.",
-            "command": display_cmd,
-        }
-    if proc.returncode != 0:
-        detail = _tail((proc.stderr or "") + "\n" + (proc.stdout or ""))
-        if "No module named 'mcp'" in detail or "mnemotrace-memory[mcp]" in detail:
-            detail += '\nInstall in that environment with: pip install "mnemotrace-memory[mcp]"'
-        return {
-            "name": "MCP stdio server",
-            "status": "fail",
-            "detail": detail or f"stdio probe exited with status {proc.returncode}.",
-            "command": display_cmd,
-        }
-    try:
-        data = json.loads(proc.stdout.strip().splitlines()[-1])
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "name": "MCP stdio server",
-            "status": "fail",
-            "detail": f"Could not parse stdio probe output: {exc}: {_tail(proc.stdout)}",
-            "command": display_cmd,
-        }
-    ok = (
-        data.get("isolated_processes") is True
-        and data.get("missing_tools") == []
-        and data.get("remembered") is True
-        and data.get("focused") is True
-        and data.get("target_preloaded") is True
-        and data.get("status_ok") is True
-        and data.get("report_ok") is True
-        and data.get("sessions_ok") is True
-        and data.get("export_ok") is True
-        and data.get("recalled") is True
-        and data.get("closed") is True
-    )
-    missing = data.get("missing_tools") or []
-    detail = (
-        f"{data.get('python', python_cmd)} launched two `python -m mnemotrace.mcp` stdio servers, "
-        f"preloaded the target session, listed tools, saved from `{data.get('source_session')}`, "
-        f"reported saved facts, listed a content-free session index, exported a safe memory payload, recalled from "
-        f"`{data.get('target_session')}`, checked agent status, focused, and closed both sessions."
-    ) if ok else (
-        f"stdio server launched but did not complete the tool lifecycle "
-        f"(isolated_processes={data.get('isolated_processes')}, missing_tools={missing}, "
-        f"remembered={data.get('remembered')}, focused={data.get('focused')}, "
-        f"target_preloaded={data.get('target_preloaded')}, status_ok={data.get('status_ok')}, "
-        f"report_ok={data.get('report_ok')}, sessions_ok={data.get('sessions_ok')}, "
-        f"export_ok={data.get('export_ok')}, "
-        f"recalled={data.get('recalled')}, "
-        f"closed={data.get('closed')})."
-    )
-    return {
-        "name": "MCP stdio server",
-        "status": "ok" if ok else "fail",
-        "detail": detail,
-        "command": display_cmd,
-        "data": data,
-    }
+        process = _run([python_cmd, '-c', script], timeout=60, env=env)
+        if process.returncode:
+            return _probe_result(label, 'fail', f'Probe exited with status {process.returncode}', command=command)
+        data = json.loads(process.stdout.strip().splitlines()[-1])
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+        return _probe_result(label, 'fail', 'Probe could not run or returned invalid output', command=command)
+    return _probe_result(label, 'ok', 'Probe completed', command=command, data=data)
 
 
-def _remote_http_probe(api_url: str, api_key: str) -> dict[str, Any]:
-    base = api_url.rstrip("/")
-    stamp = str(int(time.time() * 1000))
-    source_session = f"doctor:source:{stamp}"
-    target_session = f"doctor:target:{stamp}"
-    phrase = "remote doctor verifies cross-agent handoff"
-    command = [
-        "HTTP",
-        f"{base}/v1/remember",
-        f"{base}/v1/recall",
-        f"{base}/v1/sessions/close",
-        f"{base}/v1/sessions/report",
-        f"{base}/v1/sessions",
-        f"{base}/v1/export",
-    ]
+def _python_probe(python_cmd):
+    result = _probe_python(python_cmd, _PROBE, 'Python MCP runtime')
+    if result.get('data', {}).get('missing_tools'):
+        result.update(status='fail', detail='Required MCP operation tools are missing')
+    return result
+
+
+def _stdio_probe(python_cmd, *, space_id, user_id, api_url, api_key):
+    env = {key: value for key, value in os.environ.items()
+           if key not in {'MNEMOTRACE_API_URL', 'MNEMOTRACE_API_KEY', 'MNEMOTRACE_USER_ID'}}
+    env['MNEMOTRACE_SPACE_ID'] = space_id
+    if api_url:
+        env.update(MNEMOTRACE_API_URL=api_url, MNEMOTRACE_API_KEY=api_key)
+    else:
+        env['MNEMOTRACE_USER_ID'] = user_id
+    result = _probe_python(python_cmd, _STDIO_PROBE, 'MCP stdio space access', env=env)
+    if result['status'] == 'ok' and result.get('data') != dict(space_id=space_id, storage='postgres'):
+        result.update(status='fail', detail='MCP did not reach the requested Postgres space')
+    return result
+
+
+def _remote_http_probe(api_url, api_key, space_id):
+    label = 'Remote HTTP space access'
     try:
-        _http_json(base, api_key, "/v1/facts", {
-            "subject": "project", "predicate": "decision", "object": f"MnemoTrace {phrase}.",
-        })
-        remembered = _http_json(base, api_key, "/v1/remember", {
-            "content": f"Project decision: MnemoTrace {phrase}.",
-            "session_id": source_session,
-            "scope": "working",
-        })
-        closed_source = _http_json(base, api_key, "/v1/sessions/close", {
-            "session_id": source_session,
-            "summarize": True,
-            "clear_working": True,
-            "outcomes": False,
-        })
-        report = _http_get_json(base, api_key, "/v1/sessions/report", {
-            "session_id": source_session,
-        })
-        sessions = _http_get_json(base, api_key, "/v1/sessions", {
-            "q": source_session,
-            "limit": 10,
-            "offset": 0,
-        })
-        exported = _http_get_json(base, api_key, "/v1/export", {
-            "include_sensitive": "false",
-        })
-        validate_snapshot(exported)
-        recalled = _http_json(base, api_key, "/v1/recall", {
-            "query": "What does the MnemoTrace remote doctor verify?",
-            "session_id": target_session,
-            "n_chunks": 3,
-        })
-        closed_target = _http_json(base, api_key, "/v1/sessions/close", {
-            "session_id": target_session,
-            "summarize": True,
-            "clear_working": True,
-            "outcomes": False,
-        })
+        result = _http_get_json(api_url.rstrip('/'), api_key, '/v1/stats', {'space_id': space_id})
     except urllib.error.HTTPError as exc:
-        detail = "Request failed."
-        if exc.code == 401:
-            detail = "HTTP 401: the MnemoTrace server rejected this API key."
-        else:
-            detail = f"HTTP {exc.code}: {detail}"
-        return {"name": "Remote HTTP lifecycle", "status": "fail", "detail": detail, "command": command}
-    except urllib.error.URLError as exc:
-        return {
-            "name": "Remote HTTP lifecycle",
-            "status": "fail",
-            "detail": f"Could not reach MnemoTrace at {base}: {exc.reason}",
-            "command": command,
-        }
-    except TimeoutError:
-        return {
-            "name": "Remote HTTP lifecycle",
-            "status": "fail",
-            "detail": f"Timed out reaching MnemoTrace at {base}.",
-            "command": command,
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "name": "Remote HTTP lifecycle",
-            "status": "fail",
-            "detail": f"{type(exc).__name__}: {exc}",
-            "command": command,
-        }
-
-    context = recalled.get("context") or ""
-    report_text = json.dumps(report, ensure_ascii=False)
-    sessions_text = json.dumps(sessions, ensure_ascii=False)
-    ok = (
-        remembered.get("ok") is True
-        and closed_source.get("ok") is True
-        and closed_target.get("ok") is True
-        and report.get("ok") is True
-        and int(report.get("episodes") or 0) >= 1
-        and exported.get("include_sensitive") is False
-        and len(exported.get("facts") or []) >= 1
-        and source_session in report_text
-        and sessions.get("ok") is True
-        and any(
-            row.get("id") == source_session
-            and int(row.get("episodes") or 0) >= 1
-            for row in (sessions.get("sessions") or [])
-        )
-        and phrase not in sessions_text
-        and phrase in context
-        and source_session in context
-    )
-    return {
-        "name": "Remote HTTP lifecycle",
-        "status": "ok" if ok else "fail",
-        "detail": (
-            f"{base} saved from `{source_session}`, recalled from `{target_session}`, "
-            f"reported saved facts, listed a content-free session index, exported a safe memory payload, "
-            f"and preserved source-session provenance."
-        ) if ok else (
-            f"{base} responded, but recall did not prove cross-agent handoff "
-            f"(remember_ok={remembered.get('ok')}, close_ok={closed_source.get('ok')}, "
-            f"report_ok={report.get('ok')}, sessions_ok={sessions.get('ok')}, "
-            f"export_facts={len(exported.get('facts') or [])}, "
-            f"target_close_ok={closed_target.get('ok')})."
-        ),
-        "command": command,
-        "data": {
-            "source_session": source_session,
-            "target_session": target_session,
-            "remembered": remembered.get("ok") is True,
-            "closed_source": closed_source.get("ok") is True,
-            "closed_target": closed_target.get("ok") is True,
-            "reported": report.get("ok") is True,
-            "report_facts": int(report.get("facts_added") or 0),
-            "sessions_ok": sessions.get("ok") is True,
-            "sessions_count": len(sessions.get("sessions") or []),
-            "export_ok": (
-                exported.get("include_sensitive") is False
-            ),
-            "recalled_phrase": phrase in context,
-            "recalled_source_session": source_session in context,
-        },
-    }
+        return _probe_result(label, 'fail', f'HTTP {exc.code}')
+    except (OSError, ValueError):
+        return _probe_result(label, 'fail', 'The server could not return space statistics')
+    ok = result.get('space_id') == space_id and result.get('storage') == 'postgres'
+    return _probe_result(label, 'ok' if ok else 'fail', 'Postgres space statistics' if ok else 'Unexpected space response')
 
 
 def _client_probe(client: str) -> list[dict[str, Any]]:
@@ -924,23 +397,31 @@ def diagnose(
     codex_config: str | None = None,
     mcp_json: str | None = None,
     mcp_server_name: str = "mnemotrace",
+    space_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
+    space_id = space_id or os.environ.get('MNEMOTRACE_SPACE_ID')
+    user_id = None if api_url else user_id or os.environ.get('MNEMOTRACE_USER_ID')
     if api_url:
-        api_key = resolve_key(key=api_key, key_file=api_key_file)
-    else:
-        api_key = api_key or "me"
+        api_key = resolve_key(key=api_key, key_file=api_key_file, required=True)
     python_check = _python_probe(python_cmd)
     checks = [python_check]
-    if python_check["status"] == "ok":
-        checks.append(_stdio_probe(python_cmd))
-    if api_url:
-        checks.append(_remote_http_probe(api_url, api_key))
+    if python_check['status'] == 'ok':
+        if space_id and (api_url or user_id):
+            checks.append(_stdio_probe(python_cmd, space_id=space_id, user_id=user_id,
+                                       api_url=api_url, api_key=api_key))
+            if api_url:
+                checks.append(_remote_http_probe(api_url, api_key, space_id))
+        else:
+            checks.append(_probe_result('Memory space access', 'warn', 'Provide a space ID and local user ID or remote API'))
     if codex_config:
         checks.append(_codex_config_probe(
             codex_config,
             python_cmd=python_cmd,
             api_url=api_url,
             api_key=api_key,
+            space_id=space_id,
+            user_id=user_id,
         ))
     if mcp_json:
         checks.append(_mcp_json_config_probe(
@@ -949,6 +430,8 @@ def diagnose(
             python_cmd=python_cmd,
             api_url=api_url,
             api_key=api_key,
+            space_id=space_id,
+            user_id=user_id,
         ))
     checks.extend(_client_probe(client))
     if python_check["status"] == "ok":
@@ -1014,8 +497,10 @@ def main(argv: list[str] | None = None) -> None:
                     help="Python executable that the agent will launch for `python -m mnemotrace.mcp`")
     ap.add_argument("--api-url", default=None,
                     help="optional MnemoTrace HTTP server to verify with a remote lifecycle smoke test")
+    ap.add_argument("--space-id")
+    ap.add_argument("--user-id")
     credentials = ap.add_mutually_exclusive_group()
-    credentials.add_argument("--api-key", help="Explicit Bearer key or expected local namespace")
+    credentials.add_argument("--api-key", help="Explicit remote Bearer key")
     credentials.add_argument("--api-key-file", help="Private credential file for remote access")
     ap.add_argument("--codex-config", default=None,
                     help="optional Codex config.toml path to verify [mcp_servers.mnemotrace]")
@@ -1041,6 +526,8 @@ def main(argv: list[str] | None = None) -> None:
         codex_config=args.codex_config,
         mcp_json=args.mcp_json,
         mcp_server_name=args.mcp_server_name,
+        space_id=args.space_id,
+        user_id=args.user_id,
     )
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))

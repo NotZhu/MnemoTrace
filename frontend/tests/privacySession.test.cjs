@@ -46,7 +46,7 @@ function setup(mode = 'compact') {
   }
   const moduleData = { exports: {} }
   vm.runInNewContext(source, {
-    module: moduleData, exports: moduleData.exports, Headers, URLSearchParams,
+    module: moduleData, exports: moduleData.exports, Headers, URLSearchParams, AbortController, AbortSignal,
     require: name => modules[name] ?? require(name),
     fetch: (...args) => handler(...args),
     URL: { createObjectURL: () => 'blob:synthetic', revokeObjectURL() {} },
@@ -64,7 +64,7 @@ function setup(mode = 'compact') {
   }
   return {
     ...runtime, calls,
-    login: key => runtime.useAuth.getState().login(key),
+    login: key => { runtime.useAuth.getState().login(key); runtime.useAuth.getState().selectSpace('space-test') },
     logout: () => runtime.useAuth.getState().logout(),
     respond: next => { handler = next },
     export: () => { stateIndex = 0; return find(runtime.Privacy()).props.onClick() },
@@ -126,7 +126,7 @@ for (const mode of ['compact', 'with-originals']) {
     const s = setup(mode)
     s.login('synthetic-A')
     s.respond(async url => {
-      assert.ok(url.endsWith(`include_sensitive=${mode === 'with-originals'}`))
+      assert.equal(new URL(url, 'http://test').searchParams.get('include_sensitive'), String(mode === 'with-originals'))
       return { ok: true, status: 200, blob: async () => new Blob(['synthetic']) }
     })
     await s.export()

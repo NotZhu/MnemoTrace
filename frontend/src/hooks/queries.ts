@@ -13,13 +13,13 @@ import { currentSession, isCurrentSession, useAuth } from '../store/auth'
 import type { FactEdit, FactWrite, Focus, Policy } from '../types'
 
 // 查询 key 按登录 key 做命名空间隔离，切换账号时缓存不会串味。
-const ns = () => useAuth.getState().apiKey ?? 'anon'
+const ns = () => useAuth.getState().spaceId ?? 'unselected'
 export const qk = {
   memoriesRoot: () => ['memories', ns()] as const,
   memories: (params: MemoriesQuery = {}) => ['memories', ns(), params] as const,
   sessionsRoot: () => ['sessions', ns()] as const,
   sessions: (params: SessionsQuery = {}) => ['sessions', ns(), params] as const,
-  agentStatus: (sessionId?: string) => ['agent-status', ns(), sessionId ?? 'default'] as const,
+  agentStatus: (sessionId?: string) => ['agent-status', ns(), sessionId ?? null] as const,
   sessionReport: (sessionId: string) => ['session-report', ns(), sessionId] as const,
   graphRoot: () => ['graph', ns()] as const,
   graph: (params: GraphQuery = {}) => ['graph', ns(), params] as const,
@@ -27,7 +27,7 @@ export const qk = {
   policy: () => ['policy', ns()] as const,
   profile: () => ['profile', ns()] as const,
   sourceEpisodes: () => ['source-episodes', ns()] as const,
-  working: (sessionId?: string) => ['working', ns(), sessionId ?? 'all'] as const,
+  working: (sessionId?: string) => ['working', ns(), sessionId ?? null] as const,
   conflicts: () => ['conflicts', ns()] as const,
   health: () => ['health'] as const,
   // 与其他 key 一样按命名空间隔离（见上面的 ns()）— 审计是按记忆空间进行的，
@@ -52,7 +52,7 @@ function memoriesScope(params: MemoriesQuery) {
 }
 
 export function useMemories(params: MemoriesQuery = {}, options: { keepPreviousData?: boolean } = {}) {
-  const namespace = useAuth((s) => s.apiKey)
+  const namespace = useAuth((s) => s.spaceId)
   return useQuery({
     queryKey: qk.memories(params), queryFn: () => api.memories(params), enabled: !!namespace, retry: false,
     placeholderData: options.keepPreviousData ? (previousData, previousQuery) => {
@@ -64,7 +64,7 @@ export function useMemories(params: MemoriesQuery = {}, options: { keepPreviousD
 }
 
 export function useSessions(params: SessionsQuery = {}, options: { keepPreviousData?: boolean } = {}) {
-  const namespace = useAuth((s) => s.apiKey)
+  const namespace = useAuth((s) => s.spaceId)
   return useQuery({
     queryKey: qk.sessions(params), queryFn: () => api.sessions(params), enabled: !!namespace, retry: false,
     // 搜索换词时保留本空间的列表，切换账号时不能显示其他空间的会话。
@@ -74,21 +74,23 @@ export function useSessions(params: SessionsQuery = {}, options: { keepPreviousD
 }
 
 export function useAgentStatus(sessionId?: string) {
-  const enabled = !!useAuth((s) => s.apiKey)
+  const enabled = !!useAuth((s) => s.spaceId)
   return useQuery({
     queryKey: qk.agentStatus(sessionId),
-    queryFn: () => api.agentStatus(sessionId),
+    queryFn: ({ signal }) => api.agentStatus(sessionId, signal),
+    gcTime: sessionId ? 0 : undefined,
     enabled,
     retry: false,
     staleTime: 15_000,
   })
 }
 
-export function useSessionReport(sessionId: string | null | undefined, includeSensitive = false) {
-  const enabled = !!useAuth((s) => s.apiKey) && !!sessionId
+export function useSessionReport(sessionId: string | null | undefined, includeSensitive = false, offset = 0) {
+  const enabled = !!useAuth((s) => s.spaceId) && !!sessionId
   return useQuery({
-    queryKey: qk.sessionReport(sessionId ?? ''),
-    queryFn: () => api.sessionReport(sessionId!, includeSensitive),
+    queryKey: [...qk.sessionReport(sessionId ?? ''), includeSensitive, offset],
+    queryFn: ({ signal }) => api.sessionReport(sessionId!, includeSensitive, offset, signal),
+    gcTime: 0,
     enabled,
     retry: false,
   })
@@ -100,7 +102,7 @@ function graphScope(params: GraphQuery) {
 }
 
 export function useGraph(params: GraphQuery = {}, options: { keepPreviousData?: boolean } = {}) {
-  const namespace = useAuth((s) => s.apiKey)
+  const namespace = useAuth((s) => s.spaceId)
   return useQuery({
     queryKey: qk.graph(params), queryFn: () => api.graph(params), enabled: !!namespace, retry: false,
     // 仅当前开关可借用旧图；搜索、隐私及身份变化必须清除旧响应。
@@ -113,13 +115,13 @@ export function useGraph(params: GraphQuery = {}, options: { keepPreviousData?: 
 }
 
 export function useFocus() {
-  const enabled = !!useAuth((s) => s.apiKey)
+  const enabled = !!useAuth((s) => s.spaceId)
   return useQuery({ queryKey: qk.focus(), queryFn: api.focus, enabled, retry: false })
 }
 
 function refreshAfterWrite(client: QueryClient, roots: readonly QueryKey[]) {
   const session = currentSession()
-  if (session.key === null || roots.some(key => key[1] !== session.key)) return
+  if (session.spaceId === null || roots.some(key => key[1] !== session.spaceId)) return
   // Invalidation reuses pending first loads. Cancel them even when no data has been committed yet.
   void Promise.all(roots.map(queryKey => client.cancelQueries({ queryKey }))).then(() => {
     if (!isCurrentSession(session)) return
@@ -139,7 +141,7 @@ function useInvalidateMemory() {
 
 /** 原始 episode，仅在需要把某条事实的 provenance id 解析回源文本时才拉取。 */
 export function useSourceEpisodes(enabled: boolean) {
-  const namespace = useAuth((s) => s.apiKey)
+  const namespace = useAuth((s) => s.spaceId)
   return useQuery({
     queryKey: qk.sourceEpisodes(),
     queryFn: () => api.memories({ facts_limit: 0, episodes_limit: 200, include_sensitive: true }),
@@ -156,17 +158,18 @@ export function useAudit(limit = 60) {
 }
 
 export function useStructuredProfile() {
-  const enabled = !!useAuth((s) => s.apiKey)
+  const enabled = !!useAuth((s) => s.spaceId)
   return useQuery({ queryKey: qk.profile(), queryFn: api.structuredProfile, enabled, retry: false })
 }
 
 export function useWorking(sessionId?: string) {
-  const enabled = !!useAuth((s) => s.apiKey)
-  return useQuery({ queryKey: qk.working(sessionId), queryFn: () => api.working(sessionId), enabled, retry: false })
+  const enabled = !!useAuth((s) => s.spaceId)
+  return useQuery({ queryKey: qk.working(sessionId), queryFn: ({ signal }) => api.working(sessionId, signal),
+    enabled, retry: false, gcTime: sessionId ? 0 : undefined })
 }
 
 export function useConflicts() {
-  const enabled = !!useAuth((s) => s.apiKey)
+  const enabled = !!useAuth((s) => s.spaceId)
   return useQuery({ queryKey: qk.conflicts(), queryFn: api.conflicts, enabled, retry: false })
 }
 
@@ -179,10 +182,10 @@ export function useResolveConflict() {
   })
 }
 
-export function useClearWorking() {
+export function useClearWorking(signal?: AbortSignal) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (session_id?: string) => api.clearWorking(session_id),
+    mutationFn: (session_id?: string) => api.clearWorking(session_id, signal),
     onSuccess: () => refreshAfterWrite(qc, [['working', ns()]]),
   })
 }
@@ -196,20 +199,20 @@ export function useRemember() {
   })
 }
 
-export function useRememberMessages() {
+export function useRememberMessages(signal?: AbortSignal) {
   const invalidate = useInvalidateMemory()
   return useMutation({
     mutationFn: (req: {messages: Parameters<typeof api.rememberMessages>[0]; sessionId: string;
-      mode?: 'live' | 'historical'}) => api.rememberMessages(req.messages, req.sessionId, req.mode),
+      mode?: 'live' | 'historical'}) => api.rememberMessages(req.messages, req.sessionId, req.mode, signal),
     onSuccess: invalidate,
   })
 }
 
-export function useCloseSession() {
+export function useOrganizeSession(signal?: AbortSignal) {
   const invalidate = useInvalidateMemory()
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (session_id?: string) => api.closeSession(session_id),
+    mutationFn: (session_id: string) => api.organizeSession(session_id, signal),
     onSuccess: () => {
       invalidate()
       refreshAfterWrite(qc, [['working', ns()]])
@@ -262,7 +265,7 @@ export function useForget() {
 }
 
 export function usePolicy() {
-  const enabled = !!useAuth((s) => s.apiKey)
+  const enabled = !!useAuth((s) => s.spaceId)
   return useQuery({ queryKey: qk.policy(), queryFn: api.policy, enabled, retry: false })
 }
 

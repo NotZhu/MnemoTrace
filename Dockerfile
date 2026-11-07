@@ -13,24 +13,21 @@ FROM python:3.12-slim-bookworm AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    MNEMOTRACE_DATA_DIR=/data \
     MNEMOTRACE_EMBEDDER=hashing \
     MNEMOTRACE_MAX_REQUEST_BYTES=2097152
 
 WORKDIR /app
 
 RUN groupadd --gid 10001 mnemotrace \
-    && useradd --uid 10001 --gid mnemotrace --home-dir /nonexistent --shell /usr/sbin/nologin mnemotrace \
-    && install -d -o mnemotrace -g mnemotrace /data
+    && useradd --uid 10001 --gid mnemotrace --home-dir /nonexistent --shell /usr/sbin/nologin mnemotrace
 
 COPY pyproject.toml README.md LICENSE COMMERCIAL-LICENSE.md ./
 COPY mnemotrace/ ./mnemotrace/
-RUN python -m pip install ".[server,mcp,llm,qdrant]"
+RUN python -m pip install ".[server,mcp,llm,postgres]"
 
 COPY --from=console-build /build/frontend/dist/ ./frontend/dist/
 
 USER 10001:10001
-VOLUME ["/data"]
 EXPOSE 8000
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=4 \

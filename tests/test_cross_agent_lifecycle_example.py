@@ -37,8 +37,7 @@ def test_cross_agent_lifecycle_example_local_mode(tmp_path):
     assert VERIFY_PHRASE in result["context_after"]
     assert result["status_after_write"]["session"]["episodes"] == 3
     assert result["status_after_write"]["session"]["working_live"] == 1
-    assert result["closed"]["ok"] is True
-    assert result["closed"]["working_cleared"] == 1
+    assert result["flushed"]["ok"] is True
     assert result["report"]["episodes"] == 3
     assert len(result["report"]["facts"]) == 2
     assert any(VERIFY_PHRASE in fact["text"] for fact in result["report"]["facts"])
@@ -68,7 +67,6 @@ def test_cross_agent_lifecycle_main_local_mode(tmp_path, capsys):
     assert "agent_status:" in out
     assert "session_report: episodes=3 facts=2 redacted=0" in out
     assert "PASS: lifecycle saved durable memory and the session report audits it." in out
-    assert "PASS: close_session cleared this session's working memory." in out
 
 
 def test_cross_agent_lifecycle_main_exits_when_verify_fails(tmp_path, monkeypatch):

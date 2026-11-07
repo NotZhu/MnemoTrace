@@ -4,6 +4,8 @@ import test from 'node:test'
 import { MnemoTraceClient, MnemoTraceError } from '../dist/index.js'
 import { createRequire } from 'node:module'
 
+const space = {spaceId: 'space-test'}
+
 test('dialogue messages preserve identities, roles, unknown time and batch policy', async () => {
   const calls = []
   const client = new MnemoTraceClient({fetch: async (url, init) => {
@@ -12,23 +14,23 @@ test('dialogue messages preserve identities, roles, unknown time and batch polic
   }})
   const messages = [{message_id: 'u1', role: 'user', content: 'Synthetic dialogue'},
     {message_id: 'a1', role: 'assistant', content: 'Synthetic suggestion', event_time: null}]
-  await client.rememberMessages(messages, {sessionId: 's', mode: 'historical'})
+  await client.rememberMessages(messages, {...space, sessionId: 's', mode: 'historical'})
   assert.equal(new URL(calls[0].url).pathname, '/v1/messages')
-  assert.deepEqual(calls[0].body, {messages, session_id: 's', mode: 'historical', processing: 'buffered', scope: 'auto'})
+  assert.deepEqual(calls[0].body, {messages, session_id: 's', mode: 'historical', space_id: 'space-test'})
 })
 
 test('buffered writes accept 202 and expose status and explicit retry controls', async () => {
   const calls = []
   const client = new MnemoTraceClient({ fetch: async (url, init) => {
     calls.push({url, body: init.body && JSON.parse(init.body)})
-    return new Response(JSON.stringify({ok: true, queued: true}), {status: calls.length === 1 ? 202 : 200})
+    return new Response(JSON.stringify({ok: true, status: 'accepted'}), {status: calls.length === 1 ? 202 : 200})
   } })
-  assert.equal((await client.remember('synthetic', {processing: 'buffered'})).queued, true)
-  await client.processingStatus({sessionId: 'synthetic session', space: 'team'})
-  await client.flushProcessing({sessionId: 'synthetic session', retryFailed: true, timeout: 0})
+  assert.equal((await client.remember('synthetic', {...space, processing: 'buffered'})).status, 'accepted')
+  await client.processingStatus({sessionId: 'synthetic session', spaceId: 'team'})
+  await client.flushProcessing({...space, sessionId: 'synthetic session', retryFailed: true, timeout: 0})
   assert.equal(calls[0].body.processing, 'buffered')
   assert.equal(new URL(calls[1].url).searchParams.get('session_id'), 'synthetic session')
-  assert.deepEqual(calls[2].body, {session_id: 'synthetic session', timeout: 0, retry_failed: true, include_summaries: false})
+  assert.deepEqual(calls[2].body, {session_id: 'synthetic session', timeout: 0, retry_failed: true, space_id: 'space-test'})
 })
 
 for (const [status, code, storedRaw] of [
@@ -47,7 +49,7 @@ for (const [status, code, storedRaw] of [
       calls += 1
       return new Response(JSON.stringify({ detail }), { status })
     } })
-    await assert.rejects(client.remember('Synthetic input'), error => {
+    await assert.rejects(client.remember('Synthetic input', space), error => {
       assert.ok(error instanceof MnemoTraceError)
       assert.equal(error.status, status)
       assert.deepEqual(error.detail, { detail })
@@ -61,7 +63,7 @@ test('remember reports scheduling without fabricating an extraction result', asy
   const result = { ok: true, queued: true, episode_id: 'synthetic-episode' }
   const client = new MnemoTraceClient({ fetch: async () =>
     new Response(JSON.stringify(result), { status: 200 }) })
-  assert.deepEqual(await client.remember('Synthetic input'), result)
+  assert.deepEqual(await client.remember('Synthetic input', space), result)
 })
 
 test('memories sends the stored-topic filter alongside paging and search', async () => {
@@ -70,11 +72,11 @@ test('memories sends the stored-topic filter alongside paging and search', async
     calls.push(new URL(url))
     return new Response(JSON.stringify({facts: []}), {status: 200})
   } })
-  await client.memories({topic: 'unknown', kind: 'outcomes', factsLimit: 1, query: 'synthetic'})
+  await client.memories({ ...space,topic: 'unknown', kind: 'outcomes', factsLimit: 1, query: 'synthetic'})
   assert.deepEqual(Object.fromEntries(calls[0].searchParams), {
-    topic: 'unknown', kind: 'outcomes', facts_limit: '1', q: 'synthetic',
+    topic: 'unknown', kind: 'outcomes', facts_limit: '1', q: 'synthetic', space_id: 'space-test',
   })
-  await client.memories()
+  await client.memories(space)
   assert.equal(calls[1].searchParams.has('topic'), false)
 })
 
@@ -87,17 +89,17 @@ test('fact topics and reset are passed through with server-assigned origins', as
       topic: body.reset_topic ? 'food' : body.topic,
       topic_source: body.reset_topic ? 'rule' : 'user'}), {status: 200})
   }})
-  const added = await client.addFact({predicate: 'prefers', object: 'tea', topic: 'food'})
+  const added = await client.addFact({predicate: 'prefers', object: 'tea', topic: 'food'}, space)
   assert.equal(added.topic, 'food')
   assert.equal(added.topic_source, 'user')
-  const explicitUnknown = await client.updateFact(added.id, {topic: 'unknown'})
+  const explicitUnknown = await client.updateFact(added.id, {topic: 'unknown'}, space)
   assert.equal(explicitUnknown.topic_source, 'user')
-  const reset = await client.updateFact(added.id, {reset_topic: true})
+  const reset = await client.updateFact(added.id, {reset_topic: true}, space)
   assert.equal(reset.topic, 'food')
   assert.equal(reset.topic_source, 'rule')
   assert.deepEqual(calls.map(call => call.body), [
-    {subject: 'user', predicate: 'prefers', object: 'tea', topic: 'food'},
-    {topic: 'unknown'}, {reset_topic: true},
+    {subject: 'user', predicate: 'prefers', object: 'tea', topic: 'food', space_id: 'space-test'},
+    {topic: 'unknown', space_id: 'space-test'}, {reset_topic: true, space_id: 'space-test'},
   ])
 })
 
@@ -108,10 +110,10 @@ test('graph exposes completeness metadata and preserves safe default query optio
     calls.push(url)
     return new Response(JSON.stringify(response),{status:200})
   }})
-  assert.deepEqual(await client.graph(),response)
-  assert.equal(calls[0],'http://localhost:8000/v1/graph')
-  await client.graph({asOf:100,includeSensitive:true})
-  assert.equal(calls[1],'http://localhost:8000/v1/graph?as_of=100&include_sensitive=true')
+  assert.deepEqual(await client.graph(space),response)
+  assert.equal(calls[0],'http://localhost:8000/v1/graph?space_id=space-test')
+  await client.graph({...space, asOf:100,includeSensitive:true})
+  assert.equal(calls[1],'http://localhost:8000/v1/graph?as_of=100&include_sensitive=true&space_id=space-test')
 })
 
 const counts = {
@@ -239,12 +241,12 @@ test('agentStatus calls the content-free agent status endpoint', async () => {
     fetch,
   })
 
-  const status = await client.agentStatus({ sessionId: 'codex:repo/thread 1' })
+  const status = await client.agentStatus({ ...space, sessionId: 'codex:repo/thread 1' })
 
   assert.equal(calls.length, 1)
   assert.equal(
     calls[0].url,
-    'http://mnemotrace.test/v1/agent/status?session_id=codex%3Arepo%2Fthread%201',
+    'http://mnemotrace.test/v1/agent/status?session_id=codex%3Arepo%2Fthread%201&space_id=space-test',
   )
   assert.equal(calls[0].init.method, undefined)
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
@@ -269,6 +271,7 @@ test('sessionReport calls the session audit endpoint with redaction default', as
       facts_added: 1,
       facts_redacted: 0,
       facts: [],
+      facts_page: { items: [], total: 1, offset: 100, limit: 10, has_more: false, next_offset: null },
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -280,16 +283,17 @@ test('sessionReport calls the session audit endpoint with redaction default', as
     fetch,
   })
 
-  const report = await client.sessionReport('codex:repo/thread 1')
+  const report = await client.sessionReport('codex:repo/thread 1', { ...space, offset: 100, limit: 10 })
 
   assert.equal(calls.length, 1)
   assert.equal(
     calls[0].url,
-    'http://mnemotrace.test/v1/sessions/report?session_id=codex%3Arepo%2Fthread+1&include_sensitive=false',
+    'http://mnemotrace.test/v1/sessions/report?session_id=codex%3Arepo%2Fthread+1&include_sensitive=false&limit=10&offset=100&space_id=space-test',
   )
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
   assert.equal(report.session_id, 'codex:repo/thread 1')
   assert.equal(report.include_sensitive, false)
+  assert.equal(report.facts_page.next_offset, null)
 })
 
 test('sessions calls the content-free cross-agent session index endpoint', async () => {
@@ -335,10 +339,10 @@ test('sessions calls the content-free cross-agent session index endpoint', async
     fetch,
   })
 
-  const index = await client.sessions({ limit: 2, offset: 4, query: 'claude-code' })
+  const index = await client.sessions({ ...space, limit: 2, offset: 4, query: 'claude-code' })
 
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].url, 'http://mnemotrace.test/v1/sessions?limit=2&offset=4&q=claude-code')
+  assert.equal(calls[0].url, 'http://mnemotrace.test/v1/sessions?limit=2&offset=4&q=claude-code&space_id=space-test')
   assert.equal(calls[0].init.method, undefined)
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
   assert.equal(calls[0].init.headers['Content-Type'], undefined)
@@ -407,7 +411,7 @@ test('memories supports paging search and share-safe filtering for owner UIs', a
     fetch,
   })
 
-  const dump = await client.memories({
+  const dump = await client.memories({ ...space,
     factsLimit: 2,
     factsOffset: 4,
     episodesLimit: 0,
@@ -419,7 +423,7 @@ test('memories supports paging search and share-safe filtering for owner UIs', a
   assert.equal(calls.length, 1)
   assert.equal(
     calls[0].url,
-    'http://mnemotrace.test/v1/memories?facts_limit=2&facts_offset=4&episodes_limit=0&status=live&q=work&include_sensitive=false',
+    'http://mnemotrace.test/v1/memories?facts_limit=2&facts_offset=4&episodes_limit=0&status=live&q=work&include_sensitive=false&space_id=space-test',
   )
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
   assert.equal(dump.facts_page.next_offset, 6)
@@ -431,7 +435,7 @@ test('export defaults to share-safe payload and can request full private export'
   const calls = []
   const fetch = async (url, init = {}) => {
     calls.push({ url, init })
-    const includeSensitive = url.endsWith('include_sensitive=true')
+    const includeSensitive = url.endsWith('include_sensitive=true&space_id=space-test')
     return new Response(JSON.stringify({
       include_sensitive: includeSensitive,
       redacted_sensitive: !includeSensitive,
@@ -452,11 +456,11 @@ test('export defaults to share-safe payload and can request full private export'
     fetch,
   })
 
-  const safeExport = await client.export()
-  const fullExport = await client.export({ includeSensitive: true })
+  const safeExport = await client.export(space)
+  const fullExport = await client.export({ ...space, includeSensitive: true })
 
-  assert.equal(calls[0].url, 'http://mnemotrace.test/v1/export?include_sensitive=false')
-  assert.equal(calls[1].url, 'http://mnemotrace.test/v1/export?include_sensitive=true')
+  assert.equal(calls[0].url, 'http://mnemotrace.test/v1/export?include_sensitive=false&space_id=space-test')
+  assert.equal(calls[1].url, 'http://mnemotrace.test/v1/export?include_sensitive=true&space_id=space-test')
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
   assert.equal('mnemotrace_export_version' in safeExport, false)
   assert.equal(Object.hasOwn(safeExport, 'engram_export_version'), false)
@@ -491,13 +495,13 @@ test('forget requires explicit confirmation before sending destructive request',
   )
   assert.equal(calls.length, 0)
 
-  const done = await client.forget({ confirm: true })
+  const done = await client.forget({ ...space, confirm: true })
 
   assert.equal(calls.length, 1)
   assert.equal(calls[0].url, 'http://mnemotrace.test/v1/forget')
   assert.equal(calls[0].init.method, 'POST')
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
-  assert.deepEqual(JSON.parse(calls[0].init.body), { confirm: true })
+  assert.deepEqual(JSON.parse(calls[0].init.body), { confirm: true, space_id: 'space-test' })
   assert.equal(done.ok, true)
 })
 
@@ -508,7 +512,7 @@ test('memory browse sends outcome and complete context and exposes the response 
     calls.push(new URL(url))
     return new Response(JSON.stringify({ data_revision: 'synthetic-v1', evaluated_at: 1000, facts: [] }))
   } })
-  const dump = await client.memories({ outcomeKind: 'lesson', expectedRevision: 'synthetic-v1', evaluatedAt: 1000, factsOffset: 60, factsLimit: 60 })
+  const dump = await client.memories({ ...space, outcomeKind: 'lesson', expectedRevision: 'synthetic-v1', evaluatedAt: 1000, factsOffset: 60, factsLimit: 60 })
   assert.equal(calls[0].searchParams.get('outcome_kind'), 'lesson')
   assert.equal(calls[0].searchParams.get('expected_revision'), 'synthetic-v1')
   assert.equal(calls[0].searchParams.get('evaluated_at'), '1000')
@@ -524,7 +528,7 @@ test('memory revision conflict retains the structured HTTP error without automat
     calls++
     return new Response(JSON.stringify(body), { status: 409 })
   } })
-  await assert.rejects(client.memories({ expectedRevision: 'synthetic-v1', evaluatedAt: 1000 }), error => {
+  await assert.rejects(client.memories({ ...space, expectedRevision: 'synthetic-v1', evaluatedAt: 1000 }), error => {
     assert.ok(error instanceof MnemoTraceError)
     assert.equal(error.status, 409)
     assert.deepEqual(error.detail, body)
@@ -540,9 +544,22 @@ test('original lookup encodes the event ID and preserves space selection', async
     calls.push({url, body: init.body && JSON.parse(init.body)})
     return new Response(JSON.stringify({id: 'event/id', content: 'complete original'}))
   }})
-  assert.equal((await client.getEpisode('event/id', {space: 'shared space'})).content, 'complete original')
+  assert.equal((await client.getEpisode('event/id', {spaceId: 'shared space'})).content, 'complete original')
   assert.equal(new URL(calls[0].url).pathname, '/v1/episodes/event%2Fid')
-  assert.equal(new URL(calls[0].url).searchParams.get('space'), 'shared space')
-  await client.flushProcessing({includeSummaries: true})
+  assert.equal(new URL(calls[0].url).searchParams.get('space_id'), 'shared space')
+  await client.flushProcessing({...space, includeSummaries: true})
   assert.equal(calls[1].body.include_summaries, true)
+})
+
+test('queries and retries the same scoped operation ID', async () => {
+  const requests = []
+  const client = new MnemoTraceClient({ fetch: async (url, init) => {
+    requests.push({ url: new URL(url), body: init.body && JSON.parse(init.body) })
+    return Response.json({ operation_id: 'synthetic-op', core_committed: false, stored_raw: true })
+  } })
+  assert.equal((await client.getOperation('synthetic-op', space)).stored_raw, true)
+  assert.equal((await client.retryOperation('synthetic-op', space)).operation_id, 'synthetic-op')
+  assert.equal(requests[0].url.searchParams.get('space_id'), space.spaceId)
+  assert.equal(requests[1].url.pathname, '/v1/operations/synthetic-op/retry')
+  assert.deepEqual(requests[1].body, { space_id: space.spaceId })
 })

@@ -27,7 +27,7 @@ def _successful_runtime(monkeypatch, key, remote_status):
         },
     ]
     monkeypatch.setattr(doctor, "_python_probe", lambda *a: probes[0])
-    monkeypatch.setattr(doctor, "_stdio_probe", lambda *a: probes[1])
+    monkeypatch.setattr(doctor, "_stdio_probe", lambda *a, **k: probes[1])
     monkeypatch.setattr(doctor, "_remote_http_probe", lambda *a: probes[2])
     monkeypatch.setattr(doctor, "_client_probe", lambda *a: [])
     return probes
@@ -51,7 +51,7 @@ def test_diagnose_preserves_structure_and_sanitizes_content(monkeypatch, key, re
     before = copy.deepcopy(probes)
     report = doctor.diagnose(
         client="codex", python_cmd=f"runtime/{key}/python",
-        api_url=f"http://example.invalid/{key}", api_key=key,
+        api_url=f"http://example.invalid/{key}", api_key=key, space_id="synthetic-space",
     )
     assert set(report) == {"ok", "client", "python", "api_url", "checks", "summary"}
     assert report["ok"] is (remote_status != "fail")
@@ -84,7 +84,7 @@ def test_diagnose_preserves_structure_and_sanitizes_content(monkeypatch, key, re
 @pytest.mark.parametrize("remote_status", ["ok", "warn", "fail"])
 def test_doctor_cli_exit_matches_probes_with_key_ok(monkeypatch, capsys, json_mode, remote_status):
     _successful_runtime(monkeypatch, "ok", remote_status)
-    command = ["--api-url", "http://example.invalid/ok", "--api-key", "ok"]
+    command = ["--api-url", "http://example.invalid/ok", "--api-key", "ok", "--space-id", "synthetic-space"]
     if json_mode:
         command.append("--json")
     with pytest.raises(SystemExit) as stopped:
@@ -109,7 +109,7 @@ def test_doctor_cli_exit_matches_probes_with_key_ok(monkeypatch, capsys, json_mo
 def test_setup_decisions_use_preserved_doctor_report(tmp_path, monkeypatch, capsys, entry, remote_status):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     _successful_runtime(monkeypatch, "ok", remote_status)
-    command = ["--api-key", "ok", "--api-url", "http://example.invalid"]
+    command = ["--api-key", "ok", "--api-url", "http://example.invalid", "--space-id", "synthetic-space"]
     if entry == "codex":
         command += ["--install-codex", "--doctor", "--codex-config", str(tmp_path / "config.toml")]
     elif entry == "mcp":

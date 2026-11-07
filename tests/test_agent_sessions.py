@@ -67,7 +67,7 @@ def test_agent_message_identity_time_and_short_confirmation_reach_watcher(monkey
         requests.append((path, body))
         return {'ok': True, 'sessions': 1, 'episodes': 2}
     monkeypatch.setattr(watch, '_post', post)
-    watch.ingest('http://synthetic.invalid', 'synthetic-key', ['synthetic-path'])
+    watch.ingest('http://synthetic.invalid', 'synthetic-key', ['synthetic-path'], space_id='space-test')
     messages = requests[0][1]['sessions'][0]['messages']
     assert [m['message_id'] for m in messages] == ['proposal', 'confirmed']
     assert [m['event_time'] for m in messages] == [100, 101]
@@ -185,55 +185,35 @@ class TestWatcher:
         assert watch.pending_sessions(state, now=later, quiet_seconds=900) == [str(f)]
 
 
-def test_watcher_closes_each_session_so_it_gets_distilled(monkeypatch):
-    """只做 import 只会存下 transcript。蒸馏成 decisions/findings/lessons 发生在 close_session，
-    所以跳过 close 的 watcher 会让记忆堆满原始轮次而没有结论——这正是整条路径要修复的状态。"""
+def test_watcher_claims_only_durable_session_inputs(monkeypatch):
     from mnemotrace.connectors import watch
     from mnemotrace.connectors.base import ImportMessage, ImportSession
 
-    sessions = [
-        ImportSession(session_id="claude-code:a", messages=[ImportMessage(content="a long enough turn")]),
-        ImportSession(session_id="codex:b", messages=[ImportMessage(content="another long enough turn")]),
-    ]
-    monkeypatch.setattr(watch, "load_sessions", lambda paths, **kw: sessions)
+    monkeypatch.setattr(watch, "load_sessions", lambda paths: [
+        ImportSession(session_id=paths[0], messages=[ImportMessage(content="Synthetic history")]),
+    ])
     calls = []
 
-    def fake_post(base, key, path, body, timeout):
+    def post(base, key, path, body, timeout):
         calls.append((path, body))
-        if path == "/v1/import":
-            return {"ok": True, "sessions": 2, "episodes": 2}
-        return {"ok": True, "outcomes": 3}
+        return {"ok": False, "sessions": 2, "episodes": 2,
+                "results": [{"session_id": "accepted", "source_ids": ["raw-1"], "operation_ids": ["op-1"]},
+                            {"session_id": "core-failed", "source_ids": ["raw-2"], "operation_ids": ["op-2"]}],
+                "failures": [{"session_id": "core-failed", "stored_raw": True,
+                              "code": "failed", "operation_ids": ["op-2"]},
+                             {"session_id": "refused", "stored_raw": False}]}
 
-    monkeypatch.setattr(watch, "_post", fake_post)
-    result = watch.ingest("http://x", "k", ["p1", "p2"])
+    monkeypatch.setattr(watch, "_post", post)
+    result = watch.ingest("http://test.invalid", "synthetic-key",
+                          ["accepted", "core-failed", "refused"], space_id="space-test")
 
-    assert [c[0] for c in calls] == ["/v1/import", "/v1/sessions/close", "/v1/sessions/close"]
-    assert {c[1]["session_id"] for c in calls[1:]} == {"claude-code:a", "codex:b"}
-    assert all(c[1]["outcomes"] is False for c in calls[1:])
-    assert all(c[1]['clear_working'] is False for c in calls[1:])
-    assert result["outcomes"] == 6  # 每个会话 3 条
-
-
-def test_one_failed_distil_does_not_cost_the_others(monkeypatch):
-    """transcript 到那时已经存好了；蒸馏失败可以重试，并非致命。"""
-    from mnemotrace.connectors import watch
-    from mnemotrace.connectors.base import ImportMessage, ImportSession
-
-    monkeypatch.setattr(watch, "load_sessions", lambda paths, **kw: [
-        ImportSession(session_id=f"s{i}", messages=[ImportMessage(content="a long enough turn")])
-        for i in range(3)
-    ])
-
-    def flaky(base, key, path, body, timeout):
-        if path == "/v1/import":
-            return {"ok": True, "sessions": 3}
-        if body["session_id"] == "s1":
-            raise RuntimeError("model timeout")
-        return {"ok": True, "outcomes": 2}
-
-    monkeypatch.setattr(watch, "_post", flaky)
-    result = watch.ingest("http://x", "k", ["p"])
-    assert result["outcomes"] == 4 and result["distil_failed"] == 1
+    assert [path for path, _ in calls] == ["/v1/import"]
+    assert calls[0][1]["space_id"] == "space-test"
+    assert result["sessions_by_path"] == {"accepted": ["accepted"], "core-failed": ["core-failed"]}
+    assert not result["ok"] and result["import_failed"] == 1
+    assert result["processing_failures"] == [
+        {"session_id": "core-failed", "code": "failed", "operation_ids": ["op-2"]},
+    ]
 
 
 # 历史记录共用消息入口；自动处理需模型，显式 consolidate=False 保留仅保存的意图。
@@ -275,12 +255,11 @@ def test_explicit_raw_agent_session_import_does_not_require_a_model(tmp_path):
         assert ep.metadata["source"] == "agent_session"
     assert stats["summaries"] == 0  # Offline input remains searchable as original events.
 
-    # close_session 就是那个"排水口"，否则 pending 的 episode 会被逐轮抽取。
     svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
     assert svc.import_("u", sessions=_agent_sessions(), consolidate=False)["facts_deferred"] == 4
-    closed = svc.close_session("u", "claude-code:a", outcomes=False)
-    assert closed["episodes"] == 2
-    assert closed["pending_consolidated"] == 0 and closed["facts_added"] == 0, closed
+    assert svc.flush("u", "claude-code:a")["ok"]
+    assert svc.session_report("u", "claude-code:a")["episodes"] == 2
+    assert not svc.get("u").fact_store.values()
 
 
 @pytest.mark.parametrize('consolidate', [None, True])
@@ -352,7 +331,7 @@ def _session(sid: str, when: float | None = 1_756_000_000.0):
 def _args(tmp_path, **over):
     import argparse
     base = dict(url="http://127.0.0.1:9", key="k", key_file="", since="", limit=25, quiet_seconds=0,
-                state=str(tmp_path / "state" / "watch_state.json"), no_close=False,
+                state=str(tmp_path / "state" / "watch_state.json"), space_id="space-test", agent_id=None,
                 immediate=False, dry_run=False, once=True, every="")
     base.update(over)
     return argparse.Namespace(**base)
@@ -377,10 +356,11 @@ def test_watcher_payload_carries_source_and_session_time(monkeypatch):
 
     def fake_post(base, key, path, body, timeout):
         bodies.append((path, body))
-        return {"ok": True, "sessions": 1, "episodes": 1, "outcomes": 1}
+        return {"ok": True, "sessions": 1, "episodes": 1,
+                "results": [{"session_id": "claude-code:a", "source_ids": ["synthetic-source"]}]}
 
     monkeypatch.setattr(watch, "_post", fake_post)
-    result = watch.ingest("http://x", "k", ["p1"])
+    result = watch.ingest("http://x", "k", ["p1"], space_id="space-test")
     path, body = bodies[0]
     assert path == "/v1/import"
     row = body["sessions"][0]
@@ -390,16 +370,16 @@ def test_watcher_payload_carries_source_and_session_time(monkeypatch):
     assert row['messages'][0]['message_id'] == 'import:0'
     assert row['messages'][0]['event_time'] is None
     assert "consolidate" not in body
-    assert result["closed_ok"] == ["claude-code:a"] and result["close_failed"] == []
+    assert result["ok"]
     assert result["sessions_by_path"] == {"p1": ["claude-code:a"]}
 
     bodies.clear()
-    watch.ingest("http://x", "k", ["p1"], immediate=True)
+    watch.ingest("http://x", "k", ["p1"], space_id="space-test", immediate=True)
     assert bodies[0][1]["consolidate"] is True
 
     monkeypatch.setattr(watch, "load_sessions", lambda paths, **kw: [_session("codex:b", when=None)])
     bodies.clear()
-    watch.ingest("http://x", "k", ["p2"])
+    watch.ingest("http://x", "k", ["p2"], space_id="space-test")
     assert "event_time" not in bodies[0][1]["sessions"][0]
 
 
@@ -413,7 +393,8 @@ def test_watcher_does_not_strand_sessions_older_than_last_run(tmp_path, monkeypa
     monkeypatch.setattr(watch, "find_sessions",
                         lambda since=None, **kw: [old] if since is None or mtime >= since else [])
     monkeypatch.setattr(watch, "load_sessions", lambda paths, **kw: [_session("s")])
-    monkeypatch.setattr(watch, "_post", lambda *a, **k: {"ok": True, "episodes": 1, "outcomes": 0})
+    monkeypatch.setattr(watch, "_post", lambda *a, **k: {"ok": True, "episodes": 1,
+                                                            "results": [{"session_id": "s", "source_ids": ["raw"]}]})
 
     state_path = tmp_path / "state" / "watch_state.json"
     state_path.parent.mkdir()
@@ -423,32 +404,41 @@ def test_watcher_does_not_strand_sessions_older_than_last_run(tmp_path, monkeypa
     assert old in json.loads(state_path.read_text())["seen"]
 
 
-def test_failed_close_is_not_marked_seen_until_third_failure(tmp_path, monkeypatch):
-    """已存储但未蒸馏的 transcript 必须重试，否则记忆里只剩原始轮次而没有结论——但要有限度，
-    免得一个无法消化的文件占掉每轮 --limit 的一个名额。"""
+def test_refused_import_does_not_advance_watcher_cursor(tmp_path, monkeypatch):
     from mnemotrace.connectors import watch
 
     path = _quiet_file(tmp_path)
     monkeypatch.setattr(watch, "find_sessions", lambda **kw: [path])
     monkeypatch.setattr(watch, "load_sessions", lambda paths, **kw: [_session("s")])
-
-    def flaky(base, key, route, body, timeout):
-        if route == "/v1/import":
-            return {"ok": True, "episodes": 1}
-        raise RuntimeError("model timeout")
-
-    monkeypatch.setattr(watch, "_post", flaky)
+    monkeypatch.setattr(watch, "_post", lambda *a, **k: {
+        "ok": False, "failures": [{"session_id": "s", "stored_raw": False}],
+    })
     args = _args(tmp_path)
-    for n in (1, 2):
-        out = watch.run_once(args)
-        assert out["exit"] == 0 and out["close_failed"] == 1
-        state = watch._load_state(args.state)
-        assert path not in state["seen"], state
-        assert state["close_failures"][path] == n
-        assert state["last_result"]["close_failed"] == 1
-    watch.run_once(args)
+    for _ in range(3):
+        result = watch.run_once(args)
+        assert result["import_failed"] == 1
+        assert path not in watch._load_state(args.state)["seen"]
+
+
+def test_watcher_retains_raw_cursor_and_reports_failed_processing(tmp_path, monkeypatch):
+    from mnemotrace.connectors import watch
+
+    path = _quiet_file(tmp_path)
+    monkeypatch.setattr(watch, "find_sessions", lambda **kw: [path])
+    monkeypatch.setattr(watch, "load_sessions", lambda paths, **kw: [_session("s")])
+    monkeypatch.setattr(watch, "_post", lambda *a, **k: {
+        "ok": False, "episodes": 1,
+        "results": [{"session_id": "s", "source_ids": ["raw"], "operation_ids": ["op"]}],
+        "failures": [{"session_id": "s", "code": "timed_out", "stored_raw": True, "operation_ids": ["op"]}],
+    })
+    args = _args(tmp_path, immediate=True)
+    result = watch.run_once(args)
     state = watch._load_state(args.state)
-    assert path in state["seen"] and path not in state["close_failures"], state
+    assert result["exit"] == watch.EXIT_USAGE and not result["result"]["ok"]
+    assert result["import_failed"] == 0
+    assert state["last_result"]["processing_failed"] == 1
+    assert state["last_result"]["operation_ids"] == ["op"]
+    assert path in state["seen"]
 
 
 def test_unreachable_server_exits_75_and_leaves_state_untouched(tmp_path, monkeypatch):

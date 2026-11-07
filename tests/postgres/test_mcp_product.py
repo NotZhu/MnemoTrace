@@ -1,10 +1,8 @@
-"""MCP 服务器工具测试：通过 FastMCP.call_tool 驱动，注入本地后端（hashing 嵌入器、固定合成模型响应）——
-离线、零配置。验证各工具、其 schema，以及 markdown/json 输出。"""
+"""MCP tool schemas, scoped local execution, and remote request encoding."""
 from __future__ import annotations
 
 import json
 import re
-import tempfile
 
 import pytest
 
@@ -12,16 +10,17 @@ pytest.importorskip("mcp")
 
 from mnemotrace.mcp import server as S  # noqa: E402
 from mnemotrace.mcp.backends import LocalBackend, RemoteBackend  # noqa: E402
-from tests.model_fixtures import MemoryService  # noqa: E402
 
 
 @pytest.fixture()
-def local_backend():
-    d = tempfile.mkdtemp(prefix="mnemotrace_mcp_")
-    svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
-    S.set_backend(LocalBackend(namespace="me", service=svc))
-    yield svc
-    S.set_backend(None)
+def local_backend(product_service, product_scope):
+    context, _ = product_scope()
+    backend = LocalBackend(context.user_id, context.space_id, service=product_service)
+    S.set_backend(backend)
+    try:
+        yield backend
+    finally:
+        S.set_backend(None)
 
 
 def text_of(res) -> str:
@@ -37,7 +36,7 @@ async def call(name: str, **args) -> str:
 async def test_tools_are_registered_with_flat_schema():
     tools = {t.name: t for t in await S.mcp.list_tools()}
     assert all(name.startswith("mnemotrace_") for name in tools)
-    assert {"mnemotrace_remember", "mnemotrace_recall", "mnemotrace_close_session", "mnemotrace_session_report",
+    assert {"mnemotrace_remember", "mnemotrace_recall", "mnemotrace_flush_processing", "mnemotrace_session_report",
             "mnemotrace_list_sessions", "mnemotrace_search",
             "mnemotrace_list_facts", "mnemotrace_profile", "mnemotrace_agent_status", "mnemotrace_stats",
             "mnemotrace_add_fact", "mnemotrace_update_fact", "mnemotrace_delete_fact", "mnemotrace_get_focus",
@@ -70,7 +69,7 @@ async def test_tools_are_registered_with_flat_schema():
     assert tools["mnemotrace_session_report"].annotations.readOnlyHint is True
     assert tools["mnemotrace_list_sessions"].annotations.readOnlyHint is True
     assert tools["mnemotrace_export"].annotations.readOnlyHint is True
-    assert tools["mnemotrace_close_session"].annotations.readOnlyHint is False
+    assert tools["mnemotrace_flush_processing"].annotations.readOnlyHint is False
     assert tools["mnemotrace_forget"].annotations.destructiveHint is True
 
 
@@ -88,7 +87,7 @@ async def test_remember_then_recall_and_search(local_backend):
 
 @pytest.mark.asyncio
 async def test_recall_can_include_session_working_memory(local_backend):
-    local_backend.add_working("me", "today I am checking release notes", session_id="agent-thread-1")
+    local_backend.svc.add_working(local_backend.context, "today I am checking release notes", session_id="agent-thread-1")
 
     ctx = await call(
         "mnemotrace_recall",
@@ -110,8 +109,8 @@ async def test_remember_scope_working_keeps_state_out_of_durable_facts(local_bac
     )
 
     assert "working memory" in out
-    assert local_backend.stats("me")["counts"]["working_live"] == 1
-    assert local_backend.stats("me")["counts"]["facts_live"] == 0
+    assert local_backend.svc.stats(local_backend.context)["counts"]["working_live"] == 1
+    assert local_backend.svc.stats(local_backend.context)["counts"]["facts_live"] == 0
     ctx = await call(
         "mnemotrace_recall",
         query="what am I doing right now?",
@@ -122,16 +121,14 @@ async def test_remember_scope_working_keeps_state_out_of_durable_facts(local_bac
 
 
 @pytest.mark.asyncio
-async def test_close_session_tool(local_backend):
-    await call("mnemotrace_remember", content="I work at Acme.", session_id="s1")
-    out = await call("mnemotrace_close_session", session_id="s1")
-    assert "Closed session `s1`" in out
-    assert "episode" in out
-
-    raw = await call("mnemotrace_close_session", session_id="s1", response_format="json")
-    data = json.loads(raw)
-    assert data["ok"] is True
-    assert data["session_id"] == "s1"
+async def test_flush_processing_tool(local_backend):
+    accepted = await call("mnemotrace_remember", content="I work at Acme.", session_id="s1",
+                          processing="buffered", response_format="json")
+    operation, = json.loads(accepted)["operation_ids"]
+    data = json.loads(await call("mnemotrace_flush_processing", session_id="s1"))
+    assert data["ok"]
+    status = json.loads(await call("mnemotrace_get_operation", operation_id=operation))
+    assert status["core_committed"]
 
 
 @pytest.mark.asyncio
@@ -142,7 +139,7 @@ async def test_session_report_tool_audits_saved_facts(local_backend):
         content="Project decision: the launch checklist must include committed eval logs.",
         session_id=session,
     )
-    await call("mnemotrace_close_session", session_id=session)
+    await call("mnemotrace_flush_processing", session_id=session)
 
     report = await call("mnemotrace_session_report", session_id=session)
 
@@ -192,7 +189,7 @@ async def test_focus_tools(local_backend):
     out = await call("mnemotrace_set_focus", track=["project decisions"], mute=["health details"])
     assert "project decisions" in out
     assert "health details" in out
-    assert local_backend.get_focus("me") == {
+    assert local_backend.svc.get_focus(local_backend.context) == {
         "track": ["project decisions"],
         "mute": ["health details"],
     }
@@ -204,7 +201,7 @@ async def test_focus_tools(local_backend):
     }
 
     await call("mnemotrace_set_focus", mute=[], response_format="json")
-    assert local_backend.get_focus("me") == {"track": ["project decisions"], "mute": []}
+    assert local_backend.svc.get_focus(local_backend.context) == {"track": ["project decisions"], "mute": []}
 
     guard = await call("mnemotrace_set_focus")
     assert "provide `track` or `mute`" in guard
@@ -225,8 +222,8 @@ async def test_stats_tool_is_content_free(local_backend):
     raw = await call("mnemotrace_stats", response_format="json")
     data = json.loads(raw)
     assert data["counts"]["episodes"] >= 1
-    assert "graph_orphan_entities" in data["counts"]
-    assert "graph_stale_relations" in data["counts"]
+    assert "entities" in data["counts"]
+    assert "relations" in data["counts"]
     assert "time_range" in data
     assert "diabetes" not in raw.lower()
 
@@ -247,7 +244,7 @@ async def test_export_tool_defaults_to_share_safe_payload(local_backend):
     assert safe["redacted_sensitive"] is True
     assert {f["object"] for f in safe["facts"]} == {"Moonshot AI"}
     assert safe["episodes"] == []
-    assert safe["profile"] == ""
+    assert not safe.get("profile")
 
     full = json.loads(await call(
         "mnemotrace_export",
@@ -266,7 +263,7 @@ async def test_agent_status_tool_is_content_free_and_session_aware(local_backend
         content="My private diagnosis is diabetes and I work at Acme.",
         session_id=session,
     )
-    local_backend.add_working("me", "today I am drafting a private launch note", session_id=session)
+    local_backend.svc.add_working(local_backend.context, "today I am drafting a private launch note", session_id=session)
     await call("mnemotrace_set_focus", track=["project decisions"], mute=["health details"])
 
     status = await call("mnemotrace_agent_status", session_id=session)
@@ -303,7 +300,7 @@ async def test_list_sessions_tool_is_content_free(local_backend):
         content="My private diagnosis is diabetes.",
         session_id=claude_session,
     )
-    local_backend.add_working("me", "temporary launch state", session_id=claude_session)
+    local_backend.svc.add_working(local_backend.context, "temporary launch state", session_id=claude_session)
 
     summary = await call("mnemotrace_list_sessions", q="repo")
 
@@ -326,7 +323,7 @@ async def test_list_sessions_tool_is_content_free(local_backend):
 async def test_import_tool(local_backend):
     arr = '[{"role":"user","content":"I have a cat named Pixel."}]'
     out = await call("mnemotrace_import", content=arr, format="messages")
-    assert "Imported" in out and "episode" in out
+    assert "Accepted" in out and "source" in out
     await call("mnemotrace_flush_processing")
     ctx = await call("mnemotrace_recall", query="What pet do I have?")
     assert "Pixel" in ctx
@@ -406,7 +403,7 @@ async def test_remote_backend_forwards_as_of():
             return FakeResponse()
 
     client = FakeClient()
-    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", client=client)
+    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
     await backend.recall(
         "Where does Wei work?",
         lean=False,
@@ -441,12 +438,13 @@ async def test_remote_backend_forwards_remember_scope():
             return FakeResponse()
 
     client = FakeClient()
-    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", client=client)
+    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
     data = await backend.remember("temporary state", session_id="s1", scope="working")
 
     url, body, headers = client.posts[-1]
     assert url == "http://mnemotrace.test/v1/remember"
-    assert body == {"content": "temporary state", "session_id": "s1", "scope": "working", "processing": "immediate"}
+    assert body == {"space_id": "synthetic-space", "content": "temporary state", "session_id": "s1",
+                    "scope": "working", "processing": "immediate", "agent_id": None}
     assert headers["Authorization"] == "Bearer sk-test"
     assert data["scope"] == "working"
 
@@ -477,16 +475,16 @@ async def test_remote_backend_updates_and_deletes_fact():
             return FakeResponse({"ok": True})
 
     client = FakeClient()
-    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", client=client)
+    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
     updated = await backend.update_fact("fact/a b", object="Moonshot AI", sensitive=False)
     deleted = await backend.delete_fact("fact/a b")
 
     patch_url, body, patch_headers = client.patches[-1]
     assert patch_url == "http://mnemotrace.test/v1/facts/fact%2Fa%20b"
-    assert body == {"object": "Moonshot AI", "sensitive": False}
+    assert body == {"space_id": "synthetic-space", "object": "Moonshot AI", "sensitive": False}
     assert patch_headers["Authorization"] == "Bearer sk-test"
     delete_url, delete_headers = client.deletes[-1]
-    assert delete_url == "http://mnemotrace.test/v1/facts/fact%2Fa%20b"
+    assert delete_url == "http://mnemotrace.test/v1/facts/fact%2Fa%20b?space_id=synthetic-space"
     assert delete_headers["Authorization"] == "Bearer sk-test"
     assert updated["ok"] is True and deleted["ok"] is True
 
@@ -517,23 +515,23 @@ async def test_remote_backend_gets_and_sets_focus():
             return FakeResponse({"ok": True, "focus": json})
 
     client = FakeClient()
-    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", client=client)
+    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
     current = await backend.get_focus()
     updated = await backend.set_focus(track=["project decisions"], mute=None)
 
     get_url, get_headers = client.gets[-1]
-    assert get_url == "http://mnemotrace.test/v1/focus"
+    assert get_url == "http://mnemotrace.test/v1/focus?space_id=synthetic-space"
     assert get_headers["Authorization"] == "Bearer sk-test"
     put_url, body, put_headers = client.puts[-1]
     assert put_url == "http://mnemotrace.test/v1/focus"
-    assert body == {"track": ["project decisions"]}
+    assert body == {"space_id": "synthetic-space", "track": ["project decisions"]}
     assert put_headers["Authorization"] == "Bearer sk-test"
     assert current["track"] == ["project decisions"]
-    assert updated["focus"] == {"track": ["project decisions"]}
+    assert updated["focus"]["track"] == ["project decisions"]
 
 
 @pytest.mark.asyncio
-async def test_remote_backend_closes_session():
+async def test_remote_backend_flushes_session():
     class FakeResponse:
         def raise_for_status(self):
             pass
@@ -545,17 +543,19 @@ async def test_remote_backend_closes_session():
         def __init__(self):
             self.posts = []
 
-        async def post(self, url, json=None, headers=None):
+        async def post(self, url, json=None, headers=None, timeout=None):
+            assert timeout == 40
             self.posts.append((url, json, headers))
             return FakeResponse()
 
     client = FakeClient()
-    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", client=client)
-    data = await backend.close_session("s1", summarize=False, clear_working=False)
+    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
+    data = await backend.flush_processing("s1")
 
     url, body, headers = client.posts[-1]
-    assert url == "http://mnemotrace.test/v1/sessions/close"
-    assert body == {"session_id": "s1", "summarize": False, "clear_working": False}
+    assert url == "http://mnemotrace.test/v1/processing/flush"
+    assert body == {"space_id": "synthetic-space", "session_id": "s1", "timeout": 30,
+                    "retry_failed": False, "include_summaries": False}
     assert headers["Authorization"] == "Bearer sk-test"
     assert data["session_id"] == "s1"
 
@@ -578,13 +578,13 @@ async def test_remote_backend_fetches_session_report():
             return FakeResponse()
 
     client = FakeClient()
-    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", client=client)
-    data = await backend.session_report("codex:repo/thread 1", include_sensitive=True)
+    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
+    data = await backend.session_report("codex:repo/thread 1", include_sensitive=True, limit=10, offset=100)
 
     url, headers = client.gets[-1]
     assert url == (
         "http://mnemotrace.test/v1/sessions/report?"
-        "session_id=codex%3Arepo%2Fthread+1&include_sensitive=true"
+        "session_id=codex%3Arepo%2Fthread+1&include_sensitive=true&limit=10&offset=100&space_id=synthetic-space"
     )
     assert headers["Authorization"] == "Bearer sk-test"
     assert data["ok"] is True
@@ -608,11 +608,11 @@ async def test_remote_backend_fetches_sessions_index():
             return FakeResponse()
 
     client = FakeClient()
-    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", client=client)
+    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
     data = await backend.sessions(limit=2, offset=4, q="claude-code")
 
     url, headers = client.gets[-1]
-    assert url == "http://mnemotrace.test/v1/sessions?limit=2&offset=4&q=claude-code"
+    assert url == "http://mnemotrace.test/v1/sessions?limit=2&offset=4&q=claude-code&space_id=synthetic-space"
     assert headers["Authorization"] == "Bearer sk-test"
     assert data["sessions"][0]["id"] == "claude-code:repo/thread 2"
 
@@ -635,13 +635,13 @@ async def test_remote_backend_exports_memory():
             return FakeResponse()
 
     client = FakeClient()
-    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", client=client)
+    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
     safe = await backend.export()
     full = await backend.export(include_sensitive=True)
 
-    assert client.gets[0][0] == "http://mnemotrace.test/v1/export?include_sensitive=false"
+    assert client.gets[0][0] == "http://mnemotrace.test/v1/export?include_sensitive=false&space_id=synthetic-space"
     assert client.gets[0][1]["Authorization"] == "Bearer sk-test"
-    assert client.gets[1][0] == "http://mnemotrace.test/v1/export?include_sensitive=true"
+    assert client.gets[1][0] == "http://mnemotrace.test/v1/export?include_sensitive=true&space_id=synthetic-space"
     assert "mnemotrace_export_version" not in safe
     assert "mnemotrace_export_version" not in full
 
@@ -664,12 +664,12 @@ async def test_remote_backend_forget_sends_confirm():
             return FakeResponse()
 
     client = FakeClient()
-    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", client=client)
+    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
     data = await backend.forget()
 
     url, body, headers = client.posts[-1]
     assert url == "http://mnemotrace.test/v1/forget"
-    assert body == {"confirm": True}
+    assert body == {"confirm": True, "space_id": "synthetic-space"}
     assert headers["Authorization"] == "Bearer sk-test"
     assert data["ok"] is True
 
@@ -692,11 +692,11 @@ async def test_remote_backend_fetches_stats():
             return FakeResponse()
 
     client = FakeClient()
-    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", client=client)
+    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
     data = await backend.stats()
 
     url, headers = client.gets[-1]
-    assert url == "http://mnemotrace.test/v1/stats"
+    assert url == "http://mnemotrace.test/v1/stats?space_id=synthetic-space"
     assert headers["Authorization"] == "Bearer sk-test"
     assert data["counts"]["episodes"] == 0
 
@@ -719,11 +719,11 @@ async def test_remote_backend_fetches_agent_status():
             return FakeResponse()
 
     client = FakeClient()
-    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", client=client)
+    backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
     data = await backend.agent_status(session_id="codex:repo:thread")
 
     url, headers = client.gets[-1]
-    assert url == "http://mnemotrace.test/v1/agent/status?session_id=codex%3Arepo%3Athread"
+    assert url == "http://mnemotrace.test/v1/agent/status?session_id=codex%3Arepo%3Athread&space_id=synthetic-space"
     assert headers["Authorization"] == "Bearer sk-test"
     assert data["ok"] is True
 
@@ -746,17 +746,18 @@ async def test_audit_markdown_names_the_slot_of_a_group_finding(local_backend):
     被要求"清空该槽位"却不知道是哪个槽位——而这条发现恰恰是唯一 remedy 为不可逆批量删除的发现。"""
     from mnemotrace.types import Fact
 
-    mem = local_backend.get("me")
-    for i in range(4):
-        junk = Fact(subject="user", predicate="occupation", object=f"borrowed title {i}", user_id="me")
-        junk.embedding = mem.embedder.embed(junk.text)
-        mem.fact_store.upsert(junk.id, junk.embedding, junk)
+    from tests.postgres.test_http_product import seed_facts
+    seed_facts(local_backend.svc, local_backend.context, [
+        Fact(subject="user", predicate="occupation", object=f"borrowed title {i}",
+             user_id=local_backend.context.user_id)
+        for i in range(4)
+    ])
 
     md = await call("mnemotrace_audit")
     assert "`slot_overflow`: 1" in md
     assert "**** —" not in md               # 不能渲染出空的加粗块
     assert "**user occupation ×4**" in md   # 指明是哪个槽位、规模多大
-    assert "borrowed title 0" in md         # 行动建议里让读者查看的样本
+    assert "borrowed title 0" in md or "user occupation borrowed title" in md         # 行动建议里让读者查看的样本
 
 def test_remote_error_preserves_structured_detail_for_conflict_and_validation():
     """#12：MCP 远程错误不应把 409/422/500 降级为裸状态码，需如实透传结构化 detail。"""

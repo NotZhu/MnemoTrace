@@ -76,8 +76,6 @@ def fact_snapshot(fact):
 
 def enqueue_operation(mem, user, episodes, operation, now):
     """Freeze an explicit auxiliary operation in the same durable ledger."""
-    if operation == 'outcomes' and any(ep.source_kind != 'raw' for ep in episodes):
-        raise ValueError('Session conclusions require raw-note sources')
     tasks = PipelineTasks(mem, user)
     ids = tasks.register(episodes, now, operation='none')
     if not ids:
@@ -91,17 +89,14 @@ def enqueue_operation(mem, user, episodes, operation, now):
     for key in ids:
         ep = mem.episodes_doc.get(key)
         data['pending'].append(supplied(ep, tasks.rows()[key], context=bool(ep.summary)))
-    if operation == 'outcomes':
-        data['candidates'] = [dict(session_id=row['session_id'])]
-    else:
-        seen = {c.pair_key for c in mem.conflicts.values()}
-        from .consolidate.conflict_candidates import candidate_pairs
-        pairs = candidate_pairs([f for f in mem._all_facts() if f.user_id == user and f.is_live()], seen, .62, .94)
-        if not pairs:
-            return None
-        from .util import time_key
-        ordered = [sorted(pair, key=lambda f: (time_key(f.valid_at), f.created_at, f.id)) for pair in pairs[:16]]
-        data['candidates'] = [dict(older=fact_snapshot(a), newer=fact_snapshot(b)) for a, b in ordered]
+    seen = {c.pair_key for c in mem.conflicts.values()}
+    from .consolidate.conflict_candidates import candidate_pairs
+    pairs = candidate_pairs([f for f in mem._all_facts() if f.user_id == user and f.is_live()], seen, .62, .94)
+    if not pairs:
+        return None
+    from .util import time_key
+    ordered = [sorted(pair, key=lambda f: (time_key(f.valid_at), f.created_at, f.id)) for pair in pairs[:16]]
+    data['candidates'] = [dict(older=fact_snapshot(a), newer=fact_snapshot(b)) for a, b in ordered]
     # Auxiliary tasks use summaries where available and explicitly cropped visible
     # ranges otherwise. Their provenance never claims the omitted text was input.
     policy = ''
@@ -244,16 +239,13 @@ def _commit(mem, tasks, win, now):
             if tasks.namespace in mem._identity:
                 owner_refs.add(mem._identity[tasks.namespace].lower())
             owner_name = subject_input in owner_refs
-            topic, topic_source = resolve_topic(item['predicate'], item['text'] if win['operation'] == 'outcomes' else item['object'], item.get('topic') if mem.config.llm_topics else None)
+            topic, topic_source = resolve_topic(item['predicate'], item['object'], item.get('topic') if mem.config.llm_topics else None)
             fact = Fact(subject=item['subject'], predicate=item['predicate'], object=item['object'], text=item['text'],
-                display=item['object'] if win['operation'] == 'outcomes' else item.get('display', item['text']), user_id=tasks.namespace, valid_at=origin['event_time'], created_at=now, last_access=now,
+                display=item.get('display', item['text']), user_id=tasks.namespace, valid_at=origin['event_time'], created_at=now, last_access=now,
                 provenance=item['source_ids'], assertion_kind=item['assertion_kind'],
                 source_roles=list(dict.fromkeys(views[k]['role'] for k in item['source_ids'] if views[k]['role'])),
                 topic=topic, topic_source=topic_source, id='ft_' + digest([win['input_hash'], item])[:24], embedding=vector(item['text']))
             classify_fact(fact)
-            if win['operation'] == 'outcomes':
-                from .consolidate.outcomes import OUTCOME_CATEGORY
-                fact.category = OUTCOME_CATEGORY
             if not (data['source_kind'] != 'dialogue' and win['operation'] == 'extract' and item['predicate'] in _NAME_PREDICATES and owner_name):
                 mem.writer._write_fact(fact, win['stats'])
             if owner_name and item['predicate'] in _NAME_PREDICATES and item['assertion_kind'] in {'user_statement', 'user_confirmation', 'unspecified'}:
@@ -398,7 +390,7 @@ def run_one(service, user):
                 return True
             if win['phase'] in {'generate', 'compensate'}:
                 budget_policy = mem._effective('summary_system') if win['operation'] == 'summary' else (
-                    '' if win['operation'] in {'outcomes', 'conflicts'} else
+                    '' if win['operation'] == 'conflicts' else
                     mem.policy.get('extract_system', '') + mem.policy.get('extract_instruction', ''))
                 if not fits_input(win['input'], mem.config, budget_policy):
                     _fail(tasks, win, 'configuration_invalid', clock(service), retryable=False)
@@ -420,7 +412,7 @@ def run_one(service, user):
                 finished_at=None, outcome='in_flight', finish_reason=None, usage=None, error_code=None))
             config, data, phase = deepcopy(mem.config), deepcopy(win['input']), win['phase']
             model, embedder = mem.llm, mem.embedder
-            policy = ('' if win['operation'] in {'outcomes', 'conflicts'} else
+            policy = ('' if win['operation'] == 'conflicts' else
                       mem._effective('summary_system') if win['operation'] == 'summary' else
                       mem.policy.get('extract_system', '') + mem.policy.get('extract_instruction', ''))
             texts = texts_for(win) if embedding else []
@@ -584,7 +576,7 @@ def flush(service, user, session_id=None, timeout=30, retry_failed=False, bounda
             result = tasks.snapshot(session_id, ids)
         present = {job['episode_id'] for job in result['jobs'] if 'core' in job}
         invalidated = result['generation'] != generation or present != ids
-        if operation in {'outcomes', 'conflicts'}:
+        if operation == 'conflicts':
             result['jobs'] = [j for j in result['jobs'] if j['operation'] == operation and 'core' not in j]
         if operation == 'summary':
             result['jobs'] = [j for j in result['jobs'] if 'core' in j]
@@ -592,7 +584,7 @@ def flush(service, user, session_id=None, timeout=30, retry_failed=False, bounda
                 if 'core' in job:
                     state = job['summarization']
                     job['state'] = 'completed' if state in {'completed', 'not_needed'} else 'failed' if state == 'failed' else 'retry_wait' if job['state'] == 'retry_wait' else 'pending'
-        if operation in {'summary', 'outcomes', 'conflicts'}:
+        if operation in {'summary', 'conflicts'}:
             result['counts'] = {s: sum(j['state'] == s for j in result['jobs']) for s in TERMINAL | {'pending', 'running', 'retry_wait'}}
         counts = result['counts']
         active = any(counts[s] for s in ('pending', 'running', 'retry_wait'))
@@ -703,7 +695,7 @@ def execute_sources(host, user, episodes, operation='extract', retry_failed=Fals
             before_working = set(mem.working_mem)
             before_summaries = {ep.id for ep in episodes if ep.summary}
             before = {key: dict(win['stats']) for key, win in (tasks.state or {}).get('windows', {}).items()}
-            if operation in {'outcomes', 'conflicts'}:
+            if operation == 'conflicts':
                 enqueue_operation(mem, user, episodes, operation, clock(host))
                 ids = {ep.id for ep in episodes}
             else:

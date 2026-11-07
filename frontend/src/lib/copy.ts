@@ -264,9 +264,9 @@ export const copy = {
     scopeAuto: '自动判断',
     scopeLong: '长期记忆',
     scopeWorking: '短期记忆',
-    closeSession: '结束会话',
+    organizeSession: '整理会话',
     closingSession: '整理中…',
-    closeSessionHint: '整理本次会话，提取长期记忆和会话结论，并清空本会话的短期记忆。原始对话历史仍会保留。',
+    organizeSessionHint: '推进并等待本次会话的核心处理。摘要和工作记忆可分别查看。',
     closedSession: (n: number) => `会话已整理——写入 ${n} 条长期事实`,
     closedSessionOutcomes: (facts: number, outcomes: number) =>
       `会话已整理——写入 ${facts} 条长期事实、${outcomes} 条结论`,

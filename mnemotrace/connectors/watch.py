@@ -1,30 +1,8 @@
-"""用本机上正在发生的 agent 会话持续喂饱记忆。
+"""Import quiet local agent transcripts into an explicitly selected memory space.
 
-存在的原因：记忆是空的。不是"质量低"—— 是空的。MCP 工具接进 Claude Code 和 Codex 好几个月，
-`mnemotrace_remember` 一次都没被调用，因为它依赖 agent 在任务中途*主动选择*记忆。对所有者的 1909 个会话
-实测：mnemotrace_recall / remember / search / close_session 的调用次数为零。与此同时，磁盘上堆积了 1600+
-份 Claude Code transcript 和 1200+ 份 Codex transcript。永远有效的写路径，是不需要任何人记得去用的
-路径 —— 也是不需要任何人记得去*运行*的路径，这正是那些调度器参数的用途。
-
-    mnemotrace-watch --once                       # 导入上次运行之后有变动的会话
-    mnemotrace-watch --since 7d                   # 或显式指定窗口
-    mnemotrace-watch --dry-run                    # 只显示将要导入什么
-    mnemotrace-watch --install --key <api-key>    # 每 30m 调度一个 tick（launchd / systemd / cron 行）
-    mnemotrace-watch --status                     # 任务是否已加载、上次何时喂过、积压多少
-    mnemotrace-watch --uninstall [--purge]        # 移除任务（+ key 文件、状态、锁、日志）
-    mnemotrace-watch --every 30m                  # 或者保持一个前台循环，不用调度器
-    mnemotrace-watch --install-hook [--dry-run]   # 另外在每个 Claude Code 会话结束时立即闭合它
-    mnemotrace-watch --uninstall-hook             # （SessionEnd 钩子；见 connectors/session_hook.py）
-
-状态保存在数据目录旁的一个小 JSON 文件里，因此重跑廉价且幂等：大小未变的会话被跳过，上次之后变大过的
-会话被重发（导入器自己的内容指纹会去掉它已有的轮次）。
-
-刻意做成批处理作业而非守护进程：transcript 只在会话归于安静后才值得读，而文件监视器会在每次击键时把
-说到一半的对话反复导入。调度器只是按间隔运行 `--once`。
-
-历史对话按稳定消息身份、角色和来源时间提交到统一入口，默认 buffered；关闭时刷新冻结范围。
-联合窗口同时生成事实和逐消息摘要，调用量由实际预算与重试决定，不按会话轮数估算成本。
-`--immediate` 可显式在接收后立即处理，未知来源时间保持未知。
+The scheduler runs the same incremental import as `--once`. SessionEnd can submit
+earlier, with the same stable message IDs. The cursor advances after PostgreSQL
+confirms the original sources are durable. Use `--immediate` to wait for core work.
 """
 from __future__ import annotations
 
@@ -62,7 +40,6 @@ IMPORT_CHUNK_BYTES = 1_500_000  # 低于服务器 2 MiB 默认值，留出 JSON 
 
 # 一个 close 一直失败的路径（模型故障、蒸馏器无法消化的 transcript）会在后续 tick 重试，但不是永远：
 # 达到此次数后标记为 seen，避免一个坏文件从此占据每个 tick `--limit` 的一个名额。
-MAX_CLOSE_FAILURES = 3
 
 EXIT_OK = 0
 EXIT_USAGE = 1
@@ -157,7 +134,7 @@ def fold_claims(state: dict, path: str, target: Optional[str] = None) -> int:
 
     先轮转再合并，而不是读完就截断：否则在"我们读完"与"我们 unlink"之间追加的钩子会无声丢失它的 claim。
     钩子若跨轮转持有 fd 仍可能丢 —— 这是权衡中有意接受的一侧，代价是一次重复导入，由 /v1/import 的内容
-    指纹和服务器的结论去重吸收；另一种做法的代价则是台账里一个永久的洞。
+    消息身份去重吸收；另一种做法的代价则是台账里一个永久的洞。
     """
     merging = path + ".merging"
     try:
@@ -216,8 +193,7 @@ def _row_bytes(row: dict) -> int:
 def chunk_rows(rows: list[dict], max_bytes: int = IMPORT_CHUNK_BYTES) -> tuple[list[list[dict]], list[dict]]:
     """把导入行按请求大小分批，并单独列出完全装不下的那些。
 
-    会话是最小原子：它的结论要从整个弧线蒸馏而来，把一个会话拆进两个请求等于让提取器只看到半场对话。
-    因此超过预算的会话无法发送 —— 单独返回，让调用方只说一次，而不是每个 tick 都重试到天荒地老。
+    每个会话对应一个摄入结果。超出单次请求预算的会话单独返回，避免在每个 tick 重试相同输入。
     """
     batches: list[list[dict]] = []
     oversized: list[dict] = []
@@ -252,29 +228,19 @@ def _post(base_url: str, api_key: str, path: str, body: dict, timeout: int) -> d
 
 
 def ingest(base_url: str, api_key: str, paths: list[str], timeout: int = 900,
-           close_sessions: bool = True, immediate: bool = False,
+           *, space_id: str, agent_id: str | None = None, immediate: bool = False,
            max_bytes: int = IMPORT_CHUNK_BYTES) -> dict:
-    """提交历史消息，再逐个关闭以完成冻结范围内的联合处理。
-
-    返回导入结果外加 `outcomes`、`closed_ok` / `close_failed`（会话 id）和 `sessions_by_path`，调用方
-    据此做到只有范围处理完成后才把 transcript 标记为 seen。
-    """
-    # 每个文件解析一次，成本与从前相同 —— 但以路径为键，因为 "seen" 是按文件记的台账，一个文件只有在它
-    # 包含的每个会话都闭合后才算完成。
+    """Accept historical input and return paths confirmed durable by the server."""
     by_path: dict[str, list[str]] = {}
     sessions = []
-    known: set[str] = set()
     for p in paths:
         by_path[p] = []
         for s in load_sessions([p]):
             by_path[p].append(s.session_id)
-            if s.session_id in known:
-                continue  # 两个文件出现同一 id：服务器会去重，close 一次即可
-            known.add(s.session_id)
             sessions.append(s)
     if not sessions:
         return {"ok": True, "sessions": 0, "episodes": 0, "note": "nothing conversational in those files",
-                "outcomes": 0, "closed_ok": [], "close_failed": [], "sessions_by_path": by_path}
+                "sessions_by_path": {}}
 
     # Preserve source times and stable positions; local file paths are not source identities.
     rows = []
@@ -289,11 +255,13 @@ def ingest(base_url: str, api_key: str, paths: list[str], timeout: int = 900,
     batches, oversized_rows = chunk_rows(rows, max_bytes)
     oversized = [r["session_id"] for r in oversized_rows]
     sent_ids: set[str] = set()
+    rejected: set[str] = set()
+    response_received = False
     first_error: Optional[BaseException] = None
     result: dict = {"ok": True, "sessions": 0, "episodes": 0, "skipped": 0,
-                    "facts_deferred": 0, "batches": len(batches), "import_failed": 0}
+                    "facts_deferred": 0, "batches": len(batches), "import_failed": 0, "processing_failures": []}
     for batch in batches:
-        payload: dict = {"sessions": batch}
+        payload: dict = {"sessions": batch, "space_id": space_id, "agent_id": agent_id}
         if immediate:
             payload["consolidate"] = True
         try:
@@ -304,42 +272,39 @@ def ingest(base_url: str, api_key: str, paths: list[str], timeout: int = 900,
             # 而不是"今天什么都没导入" —— 所以当一个批次都没成功时，在下方重新抛出该错误。
             result["import_failed"] += len(batch)
             result.setdefault("import_errors", []).append(f"{len(batch)} session(s): {exc}")
+            rejected.update(row["session_id"] for row in batch)
             first_error = first_error or exc
             continue
-        sent_ids.update(r["session_id"] for r in batch)
+        response_received = True
+        confirmed = {row['session_id'] for row in part.get('results', ())
+                     if row.get('source_ids')}
+        refused = set()
+        for failure in part.get('failures', ()):
+            if not failure.get('stored_raw'):
+                refused.add(failure['session_id'])
+                continue
+            result['processing_failures'].append({
+                'session_id': failure['session_id'],
+                'code': failure['code'],
+                'operation_ids': failure.get('operation_ids', []),
+            })
+        sent_ids.update(confirmed)
+        rejected.update({row['session_id'] for row in batch} - confirmed | refused)
+        result['import_failed'] += len(refused)
         for key in ("sessions", "episodes", "skipped", "facts_deferred"):
             result[key] = result.get(key, 0) + int(part.get(key) or 0)
-    if batches and not sent_ids and first_error is not None:
+    if batches and not response_received and first_error is not None:
         raise first_error  # 一个都没成功：交给 main 分类（传输 -> 75，HTTP -> 拒绝）
     if oversized:
         result["oversized"] = oversized
-    result.setdefault("outcomes", 0)
-    result["closed_ok"], result["close_failed"] = [], []
     # 只有解析出的每个会话都真正到达服务器，一份 transcript 才算"完成"。
     result["sessions_by_path"] = {
-        path: ids for path, ids in by_path.items() if ids and set(ids) <= sent_ids
+        path: ids for path, ids in by_path.items() if ids and set(ids) <= sent_ids - rejected
     }
     result["oversized_by_path"] = {
         path: ids for path, ids in by_path.items() if ids and set(ids) & set(oversized)
     }
-    if not close_sessions:
-        return result
-
-    # One failed session must not prevent the other frozen ranges from finishing.
-    distilled = 0
-    for s in sessions:
-        if s.session_id not in sent_ids:
-            continue  # 从未到达服务器；无 close 可做
-        try:
-            closed = _post(base_url, api_key, "/v1/sessions/close",
-                           {"session_id": s.session_id, "outcomes": False, "clear_working": False}, timeout)
-            distilled += int(closed.get("outcomes") or 0)
-            result["closed_ok"].append(s.session_id)
-        except Exception:  # noqa: BLE001 — transcript 已入库；蒸馏失败可重试
-            result["close_failed"].append(s.session_id)
-    result["outcomes"] = distilled
-    if result["close_failed"]:
-        result["distil_failed"] = len(result["close_failed"])
+    result['ok'] = not (result['import_failed'] or result['processing_failures'] or oversized or rejected)
     return result
 
 
@@ -359,10 +324,10 @@ def _lock(path: str):
     return fh
 
 
-def _target(url: str, key: str) -> str:
+def _target(url: str, key: str, space_id: str) -> str:
     """这份台账属于哪个 服务器+命名空间。target 变化必须从空 `seen` 重新开始：旧服务器对这些文件的
     记忆对新服务器毫无意义。"""
-    return hashlib.sha1(f"{url}|{key}".encode("utf-8")).hexdigest()[:8]
+    return hashlib.sha256(json.dumps([url, key, space_id]).encode("utf-8")).hexdigest()
 
 
 def _ts() -> str:
@@ -389,14 +354,14 @@ def _resolve_key(args) -> str:
 def run_once(args) -> dict:
     """一个 tick。返回带 `exit` 码的运行摘要（见 EXIT_*）。"""
     key = _resolve_key(args)
-    if not key and not args.dry_run:
-        print("set --key, --key-file or MNEMOTRACE_API_KEY (it is the namespace this memory belongs to)")
+    if (not key or not args.space_id) and not args.dry_run:
+        print("Provide --space-id and an API key")
         return {"exit": EXIT_USAGE, "error": "no key"}
 
     state = _load_state(args.state)
-    target = _target(args.url, key)
+    target = _target(args.url, key, args.space_id)
     if state.get("target") and state.get("target") != target:
-        state["seen"], state["close_failures"] = {}, {}
+        state["seen"], state["oversized"] = {}, {}
     # `since` 只取显式窗口。从 `last_run` 推导会困住上一个 tick 没够到的所有会话（3000 个文件的
     # `--limit 25` 回填会"见过"25 个并悄悄丢掉其余）；大小台账已经让重扫足够廉价。
     since = _parse_since(args.since) if args.since else None
@@ -452,8 +417,14 @@ def run_once(args) -> dict:
         # "已认领但未合并"状态就在这里被重复 close。
         fold_claims(state, claims_path, target=target)
         try:
-            result = ingest(args.url, key, paths, close_sessions=not args.no_close,
-                            immediate=args.immediate,
+            sizes = {}
+            for path in paths:
+                try:
+                    sizes[path] = os.stat(path).st_size
+                except OSError:
+                    continue
+            result = ingest(args.url, key, list(sizes), space_id=args.space_id,
+                            agent_id=args.agent_id, immediate=args.immediate,
                             max_bytes=getattr(args, "max_bytes", IMPORT_CHUNK_BYTES))
         except urllib.error.HTTPError as exc:
             # 服务器应答了 —— 是拒绝。不是传输问题，所以不是 exit 75；但也没有存下任何东西：
@@ -471,9 +442,7 @@ def run_once(args) -> dict:
         # `skipped` 是服务器告诉我们它已经有多少轮次：重发变大过的会话是正常且廉价的，
         # 因为 /v1/import 对内容做指纹，不信任调用方。
         seen = state.get("seen") or {}
-        failures = state.get("close_failures") or {}
-        closed_ok = set(result.get("closed_ok") or [])
-        by_path = result.get("sessions_by_path") or {p: [] for p in paths}
+        by_path = result.get("sessions_by_path", {})
         # 单个请求装不下的 transcript：记录 (大小, 上限)，让它们不再每个 tick 占一个名额，
         # 并带着能放行它们的旋钮提示说一次。
         over_by_path = result.get("oversized_by_path") or {}
@@ -484,45 +453,33 @@ def run_once(args) -> dict:
             state["oversized"] = ledger
             _log(f"{len(over_by_path)} transcript(s) exceed the {getattr(args, 'max_bytes', IMPORT_CHUNK_BYTES):,}-byte request budget and "
                  f"were skipped; raise MNEMOTRACE_MAX_REQUEST_BYTES on the server and --max-bytes here to include them")
-        close_failed_paths = 0
-        for p in paths:
-            if p in over_by_path:
-                continue  # 上面已跳过；不算 seen，也不算 close 失败
-            ids = by_path.get(p, [])
-            if not ids:
-                continue  # 它所在批次被拒 —— 下个 tick 恰好重试这些
-            done = args.no_close or all(sid in closed_ok for sid in ids)
-            if not done:
-                # 不标记 seen：transcript 已存储但未蒸馏，下个 tick 必须重试 close。有上限，
-                # 这样一个消化不了的文件不能永远占住名额。
-                n = failures.get(p, 0) + 1
-                failures[p] = n
-                close_failed_paths += 1
-                if n < MAX_CLOSE_FAILURES:
-                    continue
-                failures.pop(p, None)
-            else:
-                failures.pop(p, None)
-            try:
-                seen[p] = os.stat(p).st_size
-            except OSError:
-                continue
+        for path, sessions in by_path.items():
+            if sessions and path not in over_by_path and path in sizes:
+                seen[path] = sizes[path]
         # 给台账设上限，避免在有数千份 transcript 的机器上无限增长。
         if len(seen) > 5000:
             seen = dict(sorted(seen.items())[-5000:])
         seconds = round(time.time() - started, 1)
+        processing_failures = result.get("processing_failures") or []
+        operation_ids = list(dict.fromkeys(operation_id for failure in processing_failures
+                                           for operation_id in failure["operation_ids"]))
         summary = {
             "at": started, "sessions": len(paths), "new": fresh, "grown": grown,
-            "episodes": int(result.get("episodes") or 0), "outcomes": int(result.get("outcomes") or 0),
-            "close_failed": len(result.get("close_failed") or []), "error": None, "seconds": seconds,
+            "episodes": int(result.get("episodes") or 0),
+            "import_failed": int(result.get("import_failed") or 0), "error": None, "seconds": seconds,
+            "processing_failed": len(processing_failures), "operation_ids": operation_ids,
         }
-        state.update({"seen": seen, "close_failures": failures, "last_run": started,
+        state.update({"seen": seen, "last_run": started,
                       "target": target, "last_result": summary})
         _save_state(args.state, state)
         _log(f"fed {len(paths)} session(s) ({fresh} new) · {summary['episodes']} episode(s) · "
-             f"{summary['outcomes']} conclusion(s) · {summary['close_failed']} close failure(s) · "
+             f"{summary['import_failed']} import failure(s) · "
+             f"{summary['processing_failed']} core processing failure(s) · "
              f"{seconds}s")
-        return {"exit": EXIT_OK, **summary, "result": result, "backlog": backlog - len(paths)}
+        if operation_ids:
+            _log("inspect or retry operation(s): " + ", ".join(operation_ids))
+        return {"exit": EXIT_USAGE if processing_failures else EXIT_OK,
+                **summary, "result": result, "backlog": backlog - len(paths)}
     finally:
         lock.close()
 
@@ -544,6 +501,11 @@ def _job_argv(args, paths: dict) -> list[str]:
     也不带它自己状态文件之外的任何文件路径。"""
     argv = ["--once", "--url", args.url, "--key-file", paths["key"], "--state", paths["state"],
             "--limit", str(args.limit if args.limit is not None else DEFAULT_LIMIT)]
+    argv += ["--space-id", args.space_id]
+    if args.agent_id:
+        argv += ["--agent-id", args.agent_id]
+    if args.immediate:
+        argv.append("--immediate")
     if args.since:
         argv += ["--since", args.since]
     return argv
@@ -653,7 +615,7 @@ def _hook_settings(args) -> tuple[str, str, str, str, str]:
     return os.path.expanduser(args.settings), args.python or sys.executable, url, key_file, source
 
 
-def _hook_target(url: str, key_file: str, state_path: str) -> tuple[str, str]:
+def _hook_target(url: str, key_file: str, state_path: str, space_id: str) -> tuple[str, str]:
     """(target 哈希, 与监视器台账的比较结论)。不含内容：一个哈希加一个判定。"""
     try:
         with open(key_file, encoding="utf-8") as fh:
@@ -662,7 +624,7 @@ def _hook_target(url: str, key_file: str, state_path: str) -> tuple[str, str]:
         return "?", f"cannot read the key file {key_file} — the hook would refuse at runtime"
     if not key:
         return "?", f"the key file {key_file} is empty — the hook would refuse at runtime"
-    target = _target(url, key)
+    target = _target(url, key, space_id)
     installed = _load_state(state_path).get("target")
     if not installed:
         return target, "the watcher has no target yet (it has never run)"
@@ -682,12 +644,12 @@ def _install_hook(args) -> int:
               f"with `mnemotrace-watch --install --key <api-key>`.")
         return EXIT_USAGE
     try:
-        command = hi.render_command(python, url, key_file, log, args.deadline)
+        command = hi.render_command(python, url, key_file, log, args.deadline, space_id=args.space_id)
     except hi.RefuseError as exc:
         print(f"refusing to build the hook command: {exc}")
         return EXIT_USAGE
 
-    target, verdict = _hook_target(url, key_file, args.state)
+    target, verdict = _hook_target(url, key_file, args.state, args.space_id)
     # 用 hook 模块而不是 watcher 自己的：settings 命令实际运行的是
     # `python -m mnemotrace.connectors.session_hook`，而过期的可编辑安装可能只有其中一个。
     problem = wi.preflight_import(python, module="mnemotrace.connectors.session_hook")
@@ -801,8 +763,11 @@ def _status(args) -> int:
             print(f"last run    : {at} — error: {last['error']}")
         else:
             print(f"last run    : {at} — fed {last.get('sessions', 0)} session(s), "
-                  f"{last.get('outcomes', 0)} conclusion(s), {last.get('close_failed', 0)} close failure(s), "
+                  f"{last.get('import_failed', 0)} import failure(s), "
+                  f"{last.get('processing_failed', 0)} core processing failure(s), "
                   f"{last.get('seconds', 0)}s")
+            if last.get("operation_ids"):
+                print("operations  : " + ", ".join(last["operation_ids"]))
     else:
         print("last run    : never")
     since = _parse_since(args.since) if args.since else None
@@ -832,8 +797,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="where the SessionEnd hook records the transcripts it fed")
     ap.add_argument("--max-bytes", type=int, default=IMPORT_CHUNK_BYTES,
                     help="per-request import budget; keep it under the server's MNEMOTRACE_MAX_REQUEST_BYTES")
-    ap.add_argument("--no-close", action="store_true",
-                    help="accept buffered historical messages without waiting for session close")
+    ap.add_argument("--space-id", default=os.environ.get("MNEMOTRACE_SPACE_ID"))
+    ap.add_argument("--agent-id")
     ap.add_argument("--immediate", action="store_true",
                     help="process imported message windows immediately instead of accepting buffered work")
     ap.add_argument("--dry-run", action="store_true")
@@ -852,9 +817,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     sched.add_argument("--purge", action="store_true",
                        help="with --uninstall: also remove the key file, state, lock and log")
     hook = ap.add_argument_group(
-        "session-close hook (Claude Code)",
-        "Close each session the moment it ends instead of at the next tick. The scheduler above is the "
-        "floor for everything else; this is the only way to get lag under a minute.")
+        "SessionEnd import hook (Claude Code)",
+        "Submit ended sessions before the next scheduled tick.")
     hook.add_argument("--install-hook", action="store_true",
                       help="add the SessionEnd entry to ~/.claude/settings.json (use --dry-run first)")
     hook.add_argument("--uninstall-hook", action="store_true", help="remove that entry")
@@ -873,6 +837,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     if len(modes) > 1:
         ap.error("--install / --uninstall / --status / --install-hook / --uninstall-hook / --every "
                  "are mutually exclusive")
+    if (args.install or args.install_hook) and not args.space_id:
+        ap.error('Select --space-id')
     if args.install:
         return _install(args)
     if args.uninstall:

@@ -30,6 +30,7 @@ from mnemotrace.credentials import read_key
 def isolated_credentials(tmp_path, monkeypatch):
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     monkeypatch.setenv("MNEMOTRACE_API_KEY", "me")
+    monkeypatch.setenv("MNEMOTRACE_SPACE_ID", "synthetic-space")
 
 
 def test_hidden_install_reuses_reference_and_never_prints_key(tmp_path, monkeypatch, capsys):
@@ -107,11 +108,11 @@ def test_failed_private_write_preserves_installed_config(tmp_path, monkeypatch):
 
 
 def test_mcp_args_remote_and_local():
-    assert mcp_args(api_url="http://localhost:8000", namespace=None) == [
-        "-m", "mnemotrace.mcp", "--api-url", "http://localhost:8000", "--api-key-file", "<private-credential-file>",
+    assert mcp_args(api_url="http://localhost:8000", space_id="synthetic-space") == [
+        "-m", "mnemotrace.mcp", "--space-id", "synthetic-space", "--api-url", "http://localhost:8000", "--api-key-file", "<private-credential-file>",
     ]
-    assert mcp_args(api_url=None, namespace="work") == [
-        "-m", "mnemotrace.mcp", "--namespace", "work",
+    assert mcp_args(api_url=None, space_id="work", user_id="local-me") == [
+        "-m", "mnemotrace.mcp", "--space-id", "work", "--user-id", "local-me",
     ]
 
 
@@ -125,7 +126,7 @@ def test_render_codex_setup_contains_lifecycle_and_config():
     out = render_markdown(
         "codex",
         api_url="http://localhost:8000",
-        namespace=None,
+        space_id="synthetic-space",
         session_id="codex:repo:thread",
         python_cmd="/opt/mnemotrace/bin/python",
     )
@@ -136,7 +137,7 @@ def test_render_codex_setup_contains_lifecycle_and_config():
     assert "--api-url" in out and "--api-key" in out
     assert "mnemotrace_recall" in out
     assert "mnemotrace_remember" in out
-    assert "mnemotrace_close_session" in out
+    assert "mnemotrace_flush_processing" in out
     assert "mnemotrace_update_fact" in out
     assert "mnemotrace_delete_fact" in out
     assert "mnemotrace_export" in out
@@ -144,16 +145,16 @@ def test_render_codex_setup_contains_lifecycle_and_config():
     assert "codex:<project>:<thread>" in out
 
 
-def test_render_local_claude_setup_uses_namespace_not_api_key():
+def test_render_local_claude_setup_uses_explicit_local_identity():
     out = render_markdown(
         "claude-code",
         api_url=None,
-        namespace="local-me",
+        space_id="local-space", user_id="local-me",
         session_id="claude-code:repo:thread",
     )
 
     assert "claude mcp add-json mnemotrace" in out
-    assert "--namespace" in out
+    assert "--space-id" in out and "--user-id" in out
     assert "local-me" in out
     assert "--api-key" not in out
     assert ".mcp.json" in out
@@ -166,7 +167,7 @@ def test_install_mcp_json_config_creates_file(tmp_path):
         config_path=str(config),
         api_url="http://mnemotrace.test",
         api_key="sk-test",
-        namespace=None,
+        space_id="synthetic-space",
         python_cmd="/opt/mnemotrace/bin/python",
     )
 
@@ -176,7 +177,7 @@ def test_install_mcp_json_config_creates_file(tmp_path):
     assert data["mcpServers"]["mnemotrace"] == {
         "type": "stdio",
         "command": "/opt/mnemotrace/bin/python",
-        "args": ["-m", "mnemotrace.mcp", "--api-url", "http://mnemotrace.test", "--api-key-file", result["api_key_file"]],
+        "args": ["-m", "mnemotrace.mcp", "--space-id", "synthetic-space", "--api-url", "http://mnemotrace.test", "--api-key-file", result["api_key_file"]],
     }
 
 
@@ -194,7 +195,7 @@ def test_install_mcp_json_config_preserves_other_servers_and_backs_up(tmp_path):
         config_path=str(config),
         api_url=None,
         api_key=None,
-        namespace="local-me",
+        space_id="local-space", user_id="local-me",
         python_cmd="/opt/mnemotrace/bin/python",
     )
 
@@ -203,7 +204,7 @@ def test_install_mcp_json_config_preserves_other_servers_and_backs_up(tmp_path):
     data = json.loads(config.read_text())
     assert data["notes"] == {"keep": True}
     assert data["mcpServers"]["other"] == {"command": "other", "args": []}
-    assert data["mcpServers"]["mnemotrace"]["args"] == ["-m", "mnemotrace.mcp", "--namespace", "local-me"]
+    assert data["mcpServers"]["mnemotrace"]["args"] == ["-m", "mnemotrace.mcp", "--space-id", "local-space", "--user-id", "local-me"]
 
 
 def test_install_mcp_json_config_dry_run_does_not_write(tmp_path):
@@ -214,7 +215,7 @@ def test_install_mcp_json_config_dry_run_does_not_write(tmp_path):
         config_path=str(config),
         api_url="http://mnemotrace.test",
         api_key="me",
-        namespace=None,
+        space_id="synthetic-space",
         python_cmd="python",
         dry_run=True,
     )
@@ -324,18 +325,18 @@ def test_uninstall_mcp_json_config_removes_only_mnemotrace_server(tmp_path):
     assert data["mcpServers"]["other"] == {"command": "other", "args": []}
 
 
-def test_render_openai_setup_contains_memory_extension_and_close_call():
+def test_render_openai_setup_contains_memory_extension_and_flush_call():
     out = render_markdown(
         "openai",
         api_url="http://mnemotrace.test",
-        namespace=None,
+        space_id="synthetic-space",
         session_id="app:product:conversation",
     )
 
     assert "OpenAI(base_url='http://mnemotrace.test/v1'" in out
     assert "'session_id': session_id" in out
     assert "'scope': 'auto'" in out
-    assert "/v1/sessions/close" in out
+    assert "/v1/processing/flush" in out
     assert "Authorization: Bearer <API_KEY>" in out
     assert "sk-test" not in out
 
@@ -347,7 +348,7 @@ def test_install_codex_config_creates_file(tmp_path):
         config_path=str(config),
         api_url="http://mnemotrace.test",
         api_key="sk-test",
-        namespace=None,
+        space_id="synthetic-space",
         python_cmd="/opt/mnemotrace/bin/python",
     )
 
@@ -377,7 +378,7 @@ def test_install_codex_config_replaces_mnemotrace_table_and_backs_up(tmp_path):
         config_path=str(config),
         api_url=None,
         api_key=None,
-        namespace="local-me",
+        space_id="local-space", user_id="local-me",
         python_cmd="/opt/mnemotrace/bin/python",
     )
 
@@ -389,7 +390,7 @@ def test_install_codex_config_replaces_mnemotrace_table_and_backs_up(tmp_path):
     assert "[mcp_servers.other]" in text
     assert "[profiles.default]" in text
     assert "old-python" not in text
-    assert '"--namespace", "local-me"' in text
+    assert '"--user-id", "local-me"' in text
 
 
 def test_install_codex_config_dry_run_does_not_write(tmp_path):
@@ -400,7 +401,7 @@ def test_install_codex_config_dry_run_does_not_write(tmp_path):
         config_path=str(config),
         api_url="http://mnemotrace.test",
         api_key="me",
-        namespace=None,
+        space_id="synthetic-space",
         python_cmd="python",
         dry_run=True,
     )
@@ -420,7 +421,7 @@ def test_render_codex_config_result_verify_command_matches_remote_mode(tmp_path)
         config_path=str(config),
         api_url="http://mnemotrace.test",
         api_key="sk-test",
-        namespace=None,
+        space_id="synthetic-space",
         python_cmd="/opt/mnemotrace/bin/python",
         dry_run=True,
     )
@@ -438,13 +439,13 @@ def test_render_codex_config_result_verify_command_matches_remote_mode(tmp_path)
     ) in report
 
 
-def test_render_codex_config_result_verify_command_matches_local_namespace(tmp_path):
+def test_render_codex_config_result_verify_command_matches_local_scope(tmp_path):
     config = tmp_path / "config.toml"
     result = install_codex_config(
         config_path=str(config),
         api_url=None,
         api_key=None,
-        namespace="local-me",
+        space_id="local-space", user_id="local-me",
         python_cmd="/opt/mnemotrace/bin/python",
         dry_run=True,
     )
@@ -453,14 +454,14 @@ def test_render_codex_config_result_verify_command_matches_local_namespace(tmp_p
         result,
         python_cmd="/opt/mnemotrace/bin/python",
         api_url=None,
-        namespace="local-me",
+        space_id="local-space", user_id="local-me",
     )
 
     assert (
         "mnemotrace-agent-doctor --client codex --python /opt/mnemotrace/bin/python "
-        "--api-key local-me"
+        "--user-id local-me"
     ) in report
-    assert '"--namespace", "local-me"' in report
+    assert '"--user-id", "local-me"' in report
 
 
 def test_render_codex_config_result_includes_doctor_report(tmp_path):
@@ -469,7 +470,7 @@ def test_render_codex_config_result_includes_doctor_report(tmp_path):
         config_path=str(config),
         api_url="http://mnemotrace.test",
         api_key="me",
-        namespace=None,
+        space_id="synthetic-space",
         python_cmd="python",
     )
     report = {
@@ -782,7 +783,7 @@ def test_main_bootstrap_installs_both_and_runs_codex_doctor(tmp_path, monkeypatc
     assert "Doctor result:" in out
 
 
-def test_main_bootstrap_local_namespace_is_installed_and_verified(tmp_path, monkeypatch, capsys):
+def test_main_bootstrap_local_scope_is_installed_and_verified(tmp_path, monkeypatch, capsys):
     codex = tmp_path / "codex.toml"
     mcp_json = tmp_path / ".mcp.json"
     calls = []
@@ -802,7 +803,9 @@ def test_main_bootstrap_local_namespace_is_installed_and_verified(tmp_path, monk
     main([
         "--bootstrap",
         "--local",
-        "--namespace",
+        "--space-id",
+        "local-space",
+        "--user-id",
         "local-me",
         "--codex-config",
         str(codex),
@@ -813,12 +816,12 @@ def test_main_bootstrap_local_namespace_is_installed_and_verified(tmp_path, monk
     ])
 
     assert calls[0]["api_url"] is None
-    assert calls[0]["api_key"] == "local-me"
-    assert '"--namespace", "local-me"' in codex.read_text()
+    assert calls[0]["user_id"] == "local-me"
+    assert '"--user-id", "local-me"' in codex.read_text()
     server = json.loads(mcp_json.read_text())["mcpServers"]["mnemotrace"]
-    assert server["args"] == ["-m", "mnemotrace.mcp", "--namespace", "local-me"]
+    assert server["args"] == ["-m", "mnemotrace.mcp", "--space-id", "local-space", "--user-id", "local-me"]
     out = capsys.readouterr().out
-    assert "--api-key local-me" in out
+    assert "--user-id local-me" in out
     assert "Codex: installed" in out
     assert "MCP JSON: installed" in out
 
@@ -967,7 +970,7 @@ def test_uninstall_codex_config_removes_only_mnemotrace_table_and_backs_up(tmp_p
     config = tmp_path / "config.toml"
     block = codex_toml_block(
         api_url="http://mnemotrace.test",
-        namespace=None,
+        space_id="synthetic-space",
         python_cmd="python",
     )
     config.write_text(
@@ -997,7 +1000,7 @@ def test_codex_config_backups_do_not_overwrite_within_same_second(tmp_path, monk
         config_path=str(config),
         api_url="http://mnemotrace.test",
         api_key="me",
-        namespace=None,
+        space_id="synthetic-space",
         python_cmd="python",
     )
     uninstalled = uninstall_codex_config(config_path=str(config))

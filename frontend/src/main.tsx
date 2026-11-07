@@ -14,8 +14,8 @@ type QueryIdentity = Pick<Query, 'queryKey' | 'queryHash'>
 const queryEpochs = new WeakMap<QueryIdentity, number>()
 
 function isCurrentQuery(query: QueryIdentity) {
-  const { key, epoch } = currentSession()
-  return key !== null && query.queryKey[1] === key
+  const { key, spaceId, epoch } = currentSession()
+  return key !== null && (query.queryKey[0] === 'spaces' || query.queryKey[1] === spaceId)
     && queryEpochs.get(query) === epoch
     && queryClient.getQueryCache().get(query.queryHash) === query
 }

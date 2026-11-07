@@ -1,11 +1,6 @@
-"""MemoryService — 所有接入面共享的多租户记忆核心（AGENTS.md 「代码导航」）。
+"""File-backed service adapter for offline algorithms and snapshot validation.
 
-一个进程承载多个相互隔离的命名空间（每个用户/api-key 一个 `Memory`），落盘持久化，热用户常驻内存
-并用 LRU 管理。HTTP API（`mnemotrace/server/app.py`）、MCP server（`mnemotrace/mcp/`）与 OpenAI 兼容代理
-都构建在这同一个对象之上，因此这里修一处等于处处修复，三个接入面永远不会彼此漂移。
-
-刻意不依赖 FastAPI：导入本模块只会引入核心库（外加你选择的 embedder/LLM），
-MCP server 和导入 CLI 在没有安装 web 依赖时也能使用它。
+HTTP, MCP, and the product CLIs use the PostgreSQL service.
 """
 from __future__ import annotations
 from .util import time_key
@@ -22,10 +17,11 @@ from functools import wraps
 from typing import Any, Optional
 
 from ._namespace_lock import NamespaceLock, namespace_lock
+from .audit import AUDIT_KIND_PRIORITY, embedder_blindness, fact_finding, finding
 from ._namespace_paths import contained_child, namespace_directory, namespace_path
 from .localize import display_of
 from .memory import Memory
-from .extraction import BufferedProcessingDisabledError, ExtractionError, ProcessingIncompleteError, require_llm
+from .extraction import BufferedProcessingDisabledError, ExtractionError, require_llm
 from .metrics import Metrics, timed
 from .store._validation import is_snapshot_candidate
 from .store.persist import (
@@ -50,14 +46,6 @@ DEFAULT_DATA_DIR = os.path.expanduser("~/.mnemotrace/data")
 # _BASIC 归一化字段中允许多值共存的那些。audit 的 slot_overflow 预扫描（"单值槽位不该有 N 个值"）
 # 只对其余字段成立。
 _MULTI_VALUED_FIELDS = {"children", "language", "education"}
-
-# 与控制台 Health 的颜色优先级一致。截取 limit 前排序，避免高优先级发现被低优先级占满首页。
-_AUDIT_KIND_PRIORITY = {
-    "empty_value": 0, "embedder_blind": 0,
-    "machine_token": 1, "slot_overflow": 1, "fragment": 1, "dangling_subject": 1,
-    "unreduced_claim": 2, "code_artifact": 2,
-    "orphan_entity": 3,
-}
 
 # 为 /v1/recall 的 answerer（控制台的"问答"视图）准备拼装好的记忆框架。
 _ANSWER_SYSTEM = (
@@ -226,15 +214,6 @@ class MemoryService:
         # 使离线/零配置路径保持确定性（纯规则的冲突处理）。
         if os.environ.get("MNEMOTRACE_CONFLICT_DETECTION") == "1" and self.llm is not None:
             self.config.conflict_detection = True
-        # 运维侧的强制关闭开关。session outcomes 是唯一默认就要在每个 session 关闭时花一次 LLM 调用的
-        # 功能，而部署中的服务端无法控制客户端在请求体里传什么——所以成本上限必须能在服务端设置，
-        # 而不是逐请求设置。这意味着它不能只是个默认值：/v1/sessions/close 接受 `outcomes` 字段，
-        # 且本仓库自己的 watcher（connectors/watch.py）导入每个 session 时都会传 `outcomes: True`，
-        # 只改默认值的开关会恰好放走那个无人值守运行的调用方，让运维的成本上限形同虚设。
-        # 因此保留该标记，并在 close_session 里作为强制覆盖执行。
-        self._outcomes_forced_off = os.environ.get("MNEMOTRACE_SESSION_OUTCOMES") == "0"
-        if self._outcomes_forced_off:
-            self.config.session_outcomes = False
         self._hot: "OrderedDict[str, Memory]" = OrderedDict()
         self._hot_versions: dict[str, str | None] = {}
         self._locks: dict[str, NamespaceLock] = {}
@@ -1061,62 +1040,6 @@ class MemoryService:
             self._save(user, mem)
             return {"ok": True, "cleared": n}
 
-    def close_session(self, user, session_id, summarize=True, clear_working=True, outcomes=None):
-        from .consolidate.pipeline import PipelineTasks
-        from ._pipeline import clock, execute_sources, flush
-        with self._read_scope(user) as mem:
-            episodes = [ep for ep in mem.episodes_doc.values() if ep.user_id == user and ep.session_id == session_id]
-            boundary = {ep.id for ep in episodes}
-            working_boundary = {w.id for w in mem.working_mem.values() if w.user_id == user and w.session_id == session_id}
-            pending = {ep.id for ep in episodes if not ep.consolidated}
-            initial_facts = {f.id for f in mem._all_facts()}
-            initial_summaries = {ep.id for ep in episodes if ep.summary}
-            from .consolidate.pipeline import config_identity
-            closing_config = config_identity(mem)
-        with self.write_lock(user):
-            mem = self.get(user)
-            tasks = PipelineTasks(mem, user)
-            tasks.register([ep for ep in episodes if ep.source_kind == 'raw'], clock(self), 'none')
-            raw = [ep for ep in episodes if ep.source_kind != 'dialogue' and ep.scope not in {'raw', 'working'} and not ep.consolidated]
-            if raw:
-                tasks.register(raw, clock(self), 'extract', summaries=summarize)
-            if summarize:
-                tasks.register([ep for ep in episodes if ep.scope != 'working'], clock(self), 'summary')
-            closing_generation = tasks.state['generation'] if tasks.state else None
-            self._save(user, mem)
-        result = flush(self, user, session_id, boundary=boundary, fail_fast=True)
-        if not result['ok']:
-            raise ProcessingIncompleteError(stored_raw=bool(boundary), episode_ids=sorted(boundary))
-        want = (self.config.session_outcomes if outcomes is None else outcomes) and not self._outcomes_forced_off
-        raw = [ep for ep in episodes if ep.source_kind == 'raw']
-        outcome_count = 0
-        if want and raw:
-            outcome_count = execute_sources(self, user, raw, 'outcomes')['facts_added']
-        with self.write_lock(user):
-            if boundary and self._store_version(user) is None:
-                raise ProcessingIncompleteError()
-            mem = self.get(user)
-            current = [mem.episodes_doc.get(key) for key in boundary]
-            if any(ep is None for ep in current):
-                raise ProcessingIncompleteError(stored_raw=True, episode_ids=sorted(boundary))
-            current_tasks = PipelineTasks(mem, user)
-            if (config_identity(mem) != closing_config or
-                    (current_tasks.state['generation'] if current_tasks.state else None) != closing_generation):
-                raise ProcessingIncompleteError(stored_raw=bool(boundary), episode_ids=sorted(boundary))
-            doomed = [w.id for w in mem.working_mem.values() if w.user_id == user and w.session_id == session_id and
-                      (w.id in working_boundary or w.metadata.get('provenance') and set(w.metadata['provenance']).issubset(boundary))]
-            if clear_working:
-                for key in doomed:
-                    del mem.working_mem[key]
-            self._save(user, mem)
-            return dict(ok=True, session_id=session_id, episodes=len(current),
-                pending_consolidated=sum(ep.id in pending and ep.consolidated for ep in current),
-                facts_added=sum(f.id not in initial_facts and bool(boundary.intersection(f.provenance)) for f in mem._all_facts()) - outcome_count,
-                outcomes=outcome_count, duplicates=0, invalidated=0,
-                summaries=sum(bool(ep.summary) and ep.id not in initial_summaries for ep in current),
-                reflected=0, working_cleared=len(doomed) if clear_working else 0)
-
-
     @_read_access
     def profile(self, user: str) -> dict:
         mem = self.get(user)
@@ -1156,8 +1079,8 @@ class MemoryService:
         next_actions = [
             "Call mnemotrace_recall before answering tasks that depend on prior user/project context.",
             "Call mnemotrace_remember(scope='long' or 'auto') for durable preferences, decisions, and reusable facts.",
-            "Use scope='working' for current-task state that should be cleared when the session closes.",
-            "Call mnemotrace_close_session when this thread ends or switches tasks.",
+            "Use scope='working' for current-task state and clear it explicitly when done.",
+            "Call mnemotrace_flush_processing to finish core processing for this session.",
         ]
         if (stats.get("counts") or {}).get("pending_conflicts", 0):
             next_actions.append("Review pending conflicts before relying on disputed memories.")
@@ -1190,7 +1113,7 @@ class MemoryService:
             "tools": {
                 "read_context": "mnemotrace_recall",
                 "write_memory": "mnemotrace_remember",
-                "close_session": "mnemotrace_close_session",
+                "flush_processing": "mnemotrace_flush_processing",
                 "inspect_facts": "mnemotrace_list_facts",
                 "correct_fact": "mnemotrace_update_fact",
                 "delete_fact": "mnemotrace_delete_fact",
@@ -1560,80 +1483,10 @@ class MemoryService:
         BM25 看到的也是同样的空 token 流——因此无需模型调用即可检测：统计语料中非 ASCII 的占比。
         由 audit() 和 agent_status() 共享，保证控制台与 agent 看到同一个结论。
         """
-        from .embed import HashingEmbedder
-
-        embedder = self.embedder
-        if isinstance(embedder, HashingEmbedder):
-            exact = True  # 这种失明是分词器的固有属性，不是启发式
-        elif (embedder.__class__.__name__ == "SentenceTransformerEmbedder"
-              and "-en-" in str(getattr(embedder, "model_name", "") or "")):
-            exact = False  # 纯英文模型在 CJK 上是退化而非归零
-        else:
-            return None
-
-        def split(text: str) -> tuple[int, int]:
-            """返回 (rankable, dark) 字符数。rankable = ASCII 字母数字，是 hashing 词干器
-            [a-z0-9]+ 分词器唯一保留的内容；dark = 其他任何文字系统的字母，会被直接丢弃。
-            标点和空白两者都不算：一段 JSON 或一行 shell 是 100% 可排序的，哪怕大部分字符是
-            花括号和管道符——第一版把这些计入不利侧，把一个代码类 fact 的存储判定为
-            "33% 不可排序"。"""
-            rankable = dark = 0
-            for c in text:
-                if c.isascii():
-                    if c.isalnum():
-                        rankable += 1
-                elif c.isalpha():
-                    dark += 1
-            return rankable, dark
-
-        def blind(text: str) -> bool:
-            rankable, dark = split(text)
-            return (rankable + dark) > 0 and dark / (rankable + dark) >= 0.5
-
-        facts = [f for f in _all_facts(mem)
-                 if f.user_id == user and f.is_live()]
+        facts = (f.text for f in _all_facts(mem) if f.user_id == user and f.is_live())
         episodes = sorted((ep for ep in mem.episodes_doc.values() if ep.user_id == user),
                           key=lambda ep: ep.ingested_at, reverse=True)[:2000]
-        facts_blind = sum(1 for f in facts if blind(f.text or ""))
-        episodes_blind = sum(1 for ep in episodes if blind(ep.content or ""))
-        checked = len(facts) + len(episodes)
-        total_blind = facts_blind + episodes_blind
-        # 按字母量而非条目数设门槛：一个存着两份 12 万字符中文 transcript 的命名空间完全不可排序，
-        # 不能因为"只有 2 条记忆"而保持沉默。200 个字母是一段的量——足以让只有三行内容的存储
-        # 不触发，也小到一打单行笔记不会触发。（十几条英文 fact 里带一个 CJK 人名，无论哪种口径
-        # 都远低于 20% 的占比。）
-        rankable_chars = dark_chars = 0
-        for text in [f.text or "" for f in facts] + [ep.content or "" for ep in episodes]:
-            r, d = split(text)
-            rankable_chars += r
-            dark_chars += d
-        if rankable_chars + dark_chars < 200:
-            return None
-        ratio = total_blind / checked if checked else 0.0
-        mass_ratio = dark_chars / (rankable_chars + dark_chars)
-        if ratio < 0.20 and mass_ratio < 0.20:
-            return None
-        ratio = max(ratio, mass_ratio)
-        name = embedder.__class__.__name__
-        pct = round(ratio * 100)
-        migrate = "MNEMOTRACE_EMBEDDER=multilingual MNEMOTRACE_REEMBED_ON_MISMATCH=1"
-        return {
-            "kind": "embedder_blind",
-            "text": f"{name} cannot rank {pct}% of {checked} memories",
-            "why": (f"{pct}% of what this namespace holds is written in a script {name} cannot "
-                    f"tokenize — it only indexes [a-z0-9] tokens, so those memories are invisible to both "
-                    f"the semantic and lexical channels and recall returns the same items for unrelated "
-                    f"queries"),
-            "action": (f"switch the server embedder and re-embed: {migrate} "
-                       f"(or bge-small-zh, 92MB, if memory is tight)"),
-            "embedder": name,
-            "model": getattr(embedder, "model_name", None),
-            "blind": total_blind, "checked": checked, "ratio": ratio,
-            "dark_chars": dark_chars, "rankable_chars": rankable_chars,
-            "facts_blind": facts_blind, "episodes_blind": episodes_blind,
-            "exact": exact, "recommended": "multilingual", "alternative": "bge-small-zh",
-            "migrate": migrate,
-        }
+        return embedder_blindness(self.embedder, facts, (ep.content for ep in episodes))
 
     @_read_access
     def audit(self, user: str, limit: int = 40) -> dict:
@@ -1644,8 +1497,6 @@ class MemoryService:
         永远不会被召回的一次性噪声），而今天除非去翻原始 fact 列表，否则这些全都不可见。
         每条发现都带 `why` 和建议的 `action`，让控制台能提供修复入口，而不只是一个计数。
         """
-        import re
-
         from .consolidate.outcomes import OUTCOME_PREDICATES
         from .consolidate.structured import _BASIC
 
@@ -1657,17 +1508,6 @@ class MemoryService:
         referenced = {e["source"] for e in graph.get("edges", [])} | {e["target"] for e in graph.get("edges", [])}
 
         findings: list[dict] = []
-
-        def add(kind: str, why: str, action: str, fact=None, entity: str = "") -> None:
-            row = {"kind": kind, "why": why, "action": action}
-            if fact is not None:
-                row.update({"fact_id": fact.id, "text": fact.text, "display": display_of(fact), "subject": fact.subject,
-                            "predicate": fact.predicate, "object": fact.object,
-                            "source": fact.source, "valid_at": fact.valid_at,
-                            "valid_at_h": fmt_date(fact.valid_at)})
-            if entity:
-                row["entity"] = entity
-            findings.append(row)
 
         # 预扫描：一个存着 84 条 live `occupation` fact 的存储，问题不在任何一行——每一行都能通过
         # 单条规则——而在于一个单值身份槽位装了 84 个值。只有 _BASIC predicate 适用此规则：
@@ -1716,41 +1556,15 @@ class MemoryService:
             # 单条规则的存在目的是抓住抽取器搞砸的三元组。
             if f.predicate.lower() in OUTCOME_PREDICATES or f.id in overflowed:
                 continue
-            obj, pred = f.object.strip(), f.predicate.strip()
-            # snake_case 的 object 是从未被转成取值的源文本："user interested in
-            # kind_bar_fruit_nut_flavor" 读起来就是机器输出，检索时匹配不到任何自然表述。
-            if "_" in obj and " " not in obj and len(obj) > 12:
-                add("machine_token", f"object '{obj}' looks like a raw token, not a value",
-                    "edit into natural wording, or delete if meaningless", f)
-            # object 复述 predicate 时不含任何信息（"occupation: named Rex"）。
-            elif obj.lower().replace("_", " ") == pred.lower().replace("_", " "):
-                add("empty_value", f"object repeats the predicate ('{pred}')",
-                    "delete: it asserts nothing", f)
-            # 句子长度的 object 是抽取器没能压缩成 fact 的断言。
-            elif len(obj) > 120:
-                add("unreduced_claim", f"object is {len(obj)} chars — a sentence, not a value",
-                    "shorten to the value, or delete", f)
-            # 以下规则来自对真实个人语料（笔记 + 技术文档）的审计，离线抽取器在其中批量产出
-            # 这些形态。没有它们，这个检查会在一个明显满是碎片的存储上报告"一切正常"。
-            elif re.search(r'[)"\'`\]]\s*$|^[("\'`\[]', obj) or "`" in obj:
-                add("fragment", f"object '{obj[:40]}' carries stray punctuation — a clipped sentence",
-                    "rewrite as a plain value, or delete", f)
-            elif re.search(r"[/\\]|\.(py|ts|md|json|yaml|sh)\b", obj):
-                add("code_artifact", f"object '{obj[:40]}' looks like a path or code, not a memory",
-                    "delete: source-code detail does not belong in a personal profile", f)
-            elif len(obj.split()) <= 2 and obj.isupper():
-                add("empty_value", f"object '{obj}' is a bare token with no statement around it",
-                    "delete: it asserts nothing on its own", f)
-            elif f.subject.lower() in {"this", "that", "it", "these", "those", "there", "here"}:
-                add("dangling_subject", f"subject is the pronoun '{f.subject}' — no identifiable entity",
-                    "delete, or rewrite naming who/what it refers to", f)
+            if row := fact_finding(f):
+                findings.append(row)
 
         for node in graph.get("nodes", []):
             if node.get("id") not in referenced:
-                add("orphan_entity", f"entity '{node.get('name')}' has no relations",
-                    "harmless, but it means no fact connects it", entity=node.get("name", ""))
+                findings.append(finding("orphan_entity", f"entity '{node.get('name')}' has no relations",
+                                        "No fact connects this entity", entity=node.get("name", "")))
 
-        findings.sort(key=lambda row: _AUDIT_KIND_PRIORITY.get(row["kind"], 3))
+        findings.sort(key=lambda row: AUDIT_KIND_PRIORITY.get(row["kind"], 3))
         by_kind: dict[str, int] = {}
         for row in findings:
             by_kind[row["kind"]] = by_kind.get(row["kind"], 0) + 1
@@ -1802,7 +1616,7 @@ class MemoryService:
         }
         stale_relations = [r for r in user_relations if r.fact_id not in facts_by_id]
         # Feed：这台机器的 agent 会话到底有没有在给这份记忆喂数据？在此功能出现前测得：owner
-        # 自己的 1909 个 session 里，remember/recall/close_session 的调用次数为零——空记忆与
+        # 自己的 1909 个 session 里，remember/recall 的调用次数为零——空记忆与
         # 健康记忆看起来一模一样，除非有什么东西说明上次喂入时间。由 episode 元数据推导，
         # 不持久化任何内容。
         from .consolidate.outcomes import OUTCOME_PREDICATES

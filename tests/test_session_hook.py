@@ -5,7 +5,7 @@
 * **绝不以写方式打开 owner 真实的 ~/.claude/settings.json。** 每个测试都显式传入 `--settings`
   指向 tmp 路径，且 `test_dry_run_touches_nothing` 断言 dry run 前后真实文件的 sha256 完全一致。
 * **这里没有任何东西会碰网络、LLM 或真实 transcript。** transcript 全是合成的，server 是一个
-  只做记录的替身，顶替 `/v1/import` + `/v1/sessions/close`，settings 夹具均手工构造并带第三方路径。
+  只做记录的替身，顶替 `/v1/import`，settings 夹具均手工构造并带第三方路径。
 """
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ def preflight(monkeypatch):
 def _never_really_detach(monkeypatch):
     """进程内调用 os.setsid() 会把整个 pytest 运行挪进一个新会话。"""
     calls: list[int] = []
+    monkeypatch.setenv("MNEMOTRACE_SPACE_ID", "synthetic-space")
     monkeypatch.setattr(session_hook, "_setsid", lambda: calls.append(1))
     return calls
 
@@ -99,29 +100,28 @@ def _transcript(tmp_path, turns: int = 3, secret: str = "") -> str:
 
 
 class StubServer:
-    """替身 pilot：记录导入了什么、关闭了什么，并用同一份记录回答 harness 的 L1 join 所需的
-    唯一读请求（`GET /v1/sessions`）。"""
+    """Record imports and report which sessions have durable sources."""
 
-    def __init__(self, close_fails: bool = False):
-        self.imports: list[dict] = []
-        self.closed: list[str] = []
-        self.close_fails = close_fails
+    def __init__(self, import_fails=False):
+        self.imports = []
+        self.persisted = []
+        self.import_fails = import_fails
 
     def post(self, base_url, api_key, path, body, timeout):
-        if path == "/v1/import":
-            self.imports.append(body)
-            return {"ok": True, "sessions": len(body["sessions"]),
-                    "episodes": sum(len(s["messages"]) for s in body["sessions"]), "skipped": 0}
-        if path == "/v1/sessions/close":
-            if self.close_fails:
-                raise RuntimeError("the distiller is down")
-            self.closed.append(body["session_id"])
-            return {"ok": True, "outcomes": 2}
-        raise AssertionError(f"unexpected POST {path}")
+        assert path == "/v1/import" and body["space_id"] == "synthetic-space"
+        self.imports.append(body)
+        if self.import_fails:
+            return {"ok": False, "results": [], "failures": [
+                {"session_id": row["session_id"], "stored_raw": False} for row in body["sessions"]
+            ]}
+        ids = [row["session_id"] for row in body["sessions"]]
+        self.persisted.extend(ids)
+        return {"ok": True, "sessions": len(ids),
+                "episodes": sum(len(row["messages"]) for row in body["sessions"]),
+                "results": [{"session_id": sid, "source_ids": ["ep-synthetic"]} for sid in ids]}
 
-    def sessions(self) -> dict:
-        """`GET /v1/sessions?limit=...` 的返回值 —— C1 判定 "closed" 时所依据的证据库。"""
-        return {"sessions": [{"id": sid, "facts_added": 2} for sid in self.closed]}
+    def sessions(self):
+        return {"sessions": [{"id": sid, "facts_added": 0} for sid in self.persisted]}
 
 
 def _hook_args(tmp_path, url="http://127.0.0.1:8766", target_in_state=None) -> tuple[list[str], str]:
@@ -144,7 +144,7 @@ def test_dry_run_touches_neither_the_temp_file_nor_the_owners(tmp_path, capsys, 
     key_file = tmp_path / "watch.key"
     key_file.write_text("demo-key\n")
     state = tmp_path / "watch_state.json"
-    state.write_text(json.dumps({"target": watch._target("http://127.0.0.1:8766", "demo-key")}))
+    state.write_text(json.dumps({"target": watch._target("http://127.0.0.1:8766", "demo-key", space_id="synthetic-space")}))
 
     before, before_mtime = _sha(str(settings)), settings.stat().st_mtime
     real_before = _sha(REAL_SETTINGS)
@@ -158,7 +158,8 @@ def test_dry_run_touches_neither_the_temp_file_nor_the_owners(tmp_path, capsys, 
     preflight.assert_called_once_with(sys.executable, module=hi.HOOK_MODULE)
     assert "[dry-run] nothing was written" in out
     assert '+    "SessionEnd": [' in out                    # 真正的 unified diff，不是一行摘要
-    assert f"target      : {watch._target('http://127.0.0.1:8766', 'demo-key')}" in out
+    target = watch._target("http://127.0.0.1:8766", "demo-key", space_id="synthetic-space")
+    assert f"target      : {target}" in out
     assert "matches watch_state.json" in out
     assert _sha(str(settings)) == before and settings.stat().st_mtime == before_mtime
     assert _sha(REAL_SETTINGS) == real_before
@@ -187,7 +188,7 @@ def test_uninstall_undoes_install_byte_for_byte(name):
     original = SETTINGS_FIXTURES[name]
     raw = hi.dumps(original, 2)
     command = hi.render_command(PY, "http://127.0.0.1:8766", "/h/.mnemotrace/watch.key",
-                                "/h/.mnemotrace/logs/hook.log")
+                                "/h/.mnemotrace/logs/hook.log", space_id="synthetic-space")
 
     installed = hi.install(original, command)
     assert hi.find_command(installed) == command
@@ -209,7 +210,7 @@ def test_uninstall_undoes_install_byte_for_byte(name):
 def test_uninstall_keeps_a_third_party_session_end_entry():
     """如果 `_strip` 哪天扩大了范围，这个测试必须失败：我们自己槽位里的邻居不是我们的。"""
     original = SETTINGS_FIXTURES["third_party_session_end"]
-    command = hi.render_command(PY, "http://x", "/k", "/l")
+    command = hi.render_command(PY, "http://x", "/k", "/l", space_id="synthetic-space")
     installed = hi.install(original, command)
     assert len(installed["hooks"][hi.SLOT]) == 2
 
@@ -222,19 +223,19 @@ def test_uninstall_keeps_a_third_party_session_end_entry():
 
 def test_reinstall_with_a_new_url_replaces_rather_than_doubles():
     """出现两条记录就意味着一个 session 被喂给了两个 server —— 正是这个功能要避免的失败。"""
-    first = hi.install({}, hi.render_command(PY, "http://a", "/k", "/l"))
-    second = hi.install(first, hi.render_command(PY, "http://b", "/k", "/l"))
+    first = hi.install({}, hi.render_command(PY, "http://a", "/k", "/l", space_id="synthetic-space"))
+    second = hi.install(first, hi.render_command(PY, "http://b", "/k", "/l", space_id="synthetic-space"))
     leaves = [leaf for group in second["hooks"][hi.SLOT] for leaf in group["hooks"]]
     assert len(leaves) == 1 and "http://b" in leaves[0]["command"]
 
 
 def test_render_command_matches_the_agreed_shape():
-    command = hi.render_command("/usr/bin/python3", "http://127.0.0.1:8766", "/h/watch.key", "/h/hook.log")
+    command = hi.render_command("/usr/bin/python3", "http://127.0.0.1:8766", "/h/watch.key", "/h/hook.log", space_id="synthetic-space")
     assert command == (
         "if [ -x '/usr/bin/python3' ]; then p=$({ command -p cat 2>/dev/null || cat; }); "
         "[ -n \"$p\" ] && { printf '%s' \"$p\" | nohup '/usr/bin/python3' "
         "-m mnemotrace.connectors.session_hook --url 'http://127.0.0.1:8766' "
-        "--key-file '/h/watch.key' >>'/h/hook.log' 2>&1; } & "
+        "--key-file '/h/watch.key' --space-id 'synthetic-space' >>'/h/hook.log' 2>&1; } & "
         "else { command -p cat 2>/dev/null || cat; } >/dev/null 2>&1 || :; fi; exit 0")
     assert hi.entry_for(command) == {"hooks": [{"type": "command", "command": command, "timeout": 5}]}
     assert "matcher" not in json.dumps(hi.entry_for(command))  # SessionEnd 的每种 `reason` 都值得喂入
@@ -329,7 +330,7 @@ def test_session_end_feeds_exactly_once_and_says_so_without_naming_anything(tmp_
     assert len(calls) == 1
     url, key, paths, kwargs = calls[0]
     assert (url, key, paths) == ("http://127.0.0.1:8766", "demo-key", [path])
-    assert kwargs["close_sessions"] is True
+    assert kwargs["space_id"] == "synthetic-space"
     assert _never_really_detach == [1]  # 在做任何慢操作之前先脱离会话
 
     claims = watch.load_claims(str(tmp_path / "hook_claims.jsonl"))
@@ -338,7 +339,7 @@ def test_session_end_feeds_exactly_once_and_says_so_without_naming_anything(tmp_
         assert oct(os.stat(tmp_path / "hook_claims.jsonl").st_mode)[-3:] == "600"
 
     out = capsys.readouterr().out.strip()
-    assert out.count("\n") == 0 and "conclusion(s)" in out and "lag_s" in out
+    assert out.count("\n") == 0 and "episode(s)" in out and "lag_s" in out
     for secret in (str(tmp_path), "-Users-demo-Projects-widget", os.path.basename(path), "widget"):
         assert secret not in out
     assert session_hook._path_key(path)[:12] in out
@@ -365,10 +366,10 @@ def test_a_second_run_on_an_unchanged_transcript_is_a_no_op(tmp_path, capsys):
     assert len(server.imports) == 1
 
 
-def test_a_failed_close_claims_nothing_so_the_watcher_retries(tmp_path, capsys):
+def test_an_unconfirmed_import_claims_nothing_so_the_watcher_retries(tmp_path, capsys):
     path = _transcript(tmp_path)
     argv, _ = _hook_args(tmp_path)
-    server = StubServer(close_fails=True)
+    server = StubServer(import_fails=True)
     import mnemotrace.connectors.watch as w
     original_post = w._post
     w._post = server.post
@@ -378,7 +379,7 @@ def test_a_failed_close_claims_nothing_so_the_watcher_retries(tmp_path, capsys):
             roots=[str(tmp_path / "roots")])
     finally:
         w._post = original_post
-    assert server.imports and server.closed == []
+    assert server.imports and server.persisted == []
     assert not os.path.exists(tmp_path / "hook_claims.jsonl")
     assert "nothing claimed" in capsys.readouterr().out
 
@@ -427,7 +428,7 @@ def test_the_hook_never_writes_the_watchers_state_file(tmp_path):
     path = _transcript(tmp_path)
     argv, _ = _hook_args(tmp_path)
     state = tmp_path / "watch_state.json"
-    state.write_text(json.dumps({"target": watch._target("http://127.0.0.1:8766", "demo-key"),
+    state.write_text(json.dumps({"target": watch._target("http://127.0.0.1:8766", "demo-key", space_id="synthetic-space"),
                                  "seen": {}}))
     before, before_mtime = _sha(str(state)), state.stat().st_mtime
     server = StubServer()
@@ -440,15 +441,14 @@ def test_the_hook_never_writes_the_watchers_state_file(tmp_path):
                          roots=[str(tmp_path / "roots")])
     finally:
         w._post = original_post
-    assert server.closed  # 确实完成了实际工作
+    assert server.persisted  # 确实完成了实际工作
     assert _sha(str(state)) == before and state.stat().st_mtime == before_mtime
 
 
 # --- 5. 握手，以及覆盖率指标 join 所依赖的证据 ---
 
-def test_hook_close_is_visible_to_harness(tmp_path):
-    """耦合测试。钩子以 `_session_label(path)` 关闭一个 session；C1 把一条 transcript 定义为
-    CLOSED，当且仅当同一个 label 出现在 `GET /v1/sessions` 中。一个测试同时覆盖两侧。"""
+def test_hook_import_is_visible_to_harness(tmp_path):
+    """The persisted session label can be joined with the local transcript."""
     path = _transcript(tmp_path)
     argv, _ = _hook_args(tmp_path)
     server = StubServer()
@@ -463,7 +463,7 @@ def test_hook_close_is_visible_to_harness(tmp_path):
         w._post = original_post
 
     label = _session_label(path)
-    assert server.closed == [label]
+    assert server.persisted == [label]
     assert label in {row["id"] for row in server.sessions()["sessions"]}
 
 
@@ -557,7 +557,7 @@ def test_a_pasted_key_is_redacted_before_the_hook_posts_anything(tmp_path):
 
 def test_status_reports_the_hook_without_naming_a_transcript(tmp_path, capsys, monkeypatch):
     settings = tmp_path / "s.json"
-    command = hi.render_command(PY, "http://127.0.0.1:8766", "/h/watch.key", "/h/hook.log")
+    command = hi.render_command(PY, "http://127.0.0.1:8766", "/h/watch.key", "/h/hook.log", space_id="synthetic-space")
     settings.write_text(hi.dumps(hi.install({}, command), 2))
     claims = tmp_path / "hook_claims.jsonl"
     session_hook.claim(str(claims), "/roots/proj/abc.jsonl", 4096, "0ed09d5f")

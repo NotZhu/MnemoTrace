@@ -1,15 +1,7 @@
-"""OpenAI 兼容的 chat 端点，透明叠加长期记忆（AGENTS.md 「代码导航」 采用层）。
+"""Compose OpenAI-shaped responses with context from an authorized memory space.
 
-把任何 OpenAI 客户端的 `base_url` 指向 忆痕 服务器即可免费获得记忆：模型回答之前，忆痕
-检索一小段相关的用户历史并注入；回答之后，在关键路径之外记住这一轮。这是最大的即插即用采用
-杠杆——只改一个 URL，保留现有 OpenAI SDK 代码。
-
-    from openai import OpenAI
-    client = OpenAI(base_url="http://localhost:8000/v1", api_key="sk-alice-123")
-    client.chat.completions.create(model="mnemotrace", messages=[{"role":"user","content":"where do I live?"}])
-
-本模块刻意不依赖 FastAPI（纯粹基于 MemoryService + LLM 接口的编排），因此组装逻辑无需 web 栈
-即可单元测试。路由接线在 mnemotrace/server/app.py。
+The HTTP route validates `memory.space_id` and passes its authorized context here.
+This module assembles the prompt and response without depending on FastAPI.
 """
 from __future__ import annotations
 
@@ -168,6 +160,8 @@ def iter_sse(response: dict, slice_size: int = 48):
 
     def chunk(delta: dict, finish: Optional[str]):
         payload = {**base, "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+        if finish is not None and "mnemotrace" in response:
+            payload["mnemotrace"] = response["mnemotrace"]
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     content = response["choices"][0]["message"]["content"] or ""

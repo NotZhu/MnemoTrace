@@ -98,24 +98,3 @@ def test_statement_edit_retains_outcome_evidence_and_roundtrips(tmp_path, predic
     loaded = Memory.open(str(tmp_path / "snapshot")).fact_store.get(fact.id)
     assert loaded.object == fact.object and loaded.text == fact.text
     assert loaded.slot == fact.slot and loaded.provenance == fact.provenance
-
-
-def test_http_edit_route_maps_attribute_statement_rejection_to_422(tmp_path, monkeypatch):
-    pytest.importorskip("fastapi")
-    from fastapi import HTTPException
-    from mnemotrace.server import app as appmod
-    from tests.model_fixtures import MemoryService
-
-    service = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
-    created = service.add_fact("synthetic_user", "user", "lives_in", "Beijing")
-    monkeypatch.setattr(appmod, "svc", lambda: service)
-    with pytest.raises(HTTPException) as error:
-        appmod.edit_fact(created["id"], appmod.FactEdit(statement="用户住在上海。"), "synthetic_user")
-    assert error.value.status_code == 422
-    service._hot.clear()
-    assert service.get("synthetic_user").fact_store.get(created["id"]).object == "Beijing"
-    result = appmod.edit_fact(created["id"], appmod.FactEdit(object="Shanghai"), "synthetic_user")
-    assert result["ok"] and "Shanghai" in result["text"]
-    with pytest.raises(HTTPException) as missing:
-        appmod.edit_fact("missing", appmod.FactEdit(statement="新结论"), "synthetic_user")
-    assert missing.value.status_code == 404

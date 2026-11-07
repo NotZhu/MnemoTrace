@@ -103,29 +103,6 @@ def test_manifest_describes_namespace_and_store_directory(copied_seed):
     assert "API Key" in markdown and "开放模式" in markdown
 
 
-@pytest.mark.parametrize("protected", [False, True])
-def test_login_identity_reaches_generated_namespace(copied_seed, monkeypatch, protected):
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-    from mnemotrace.server import app as appmod
-
-    _, data = copied_seed
-    monkeypatch.setattr(appmod, "_svc", service_at(data))
-    if protected:
-        monkeypatch.setenv("MNEMOTRACE_API_KEYS", "1:synthetic-seed-key,2:synthetic-other-key")
-        token, other = "synthetic-seed-key", "synthetic-other-key"
-    else:
-        monkeypatch.setenv("MNEMOTRACE_OPEN", "1")
-        token, other = "1", "2"
-    with TestClient(appmod.app) as client:
-        response = client.get("/v1/memories", headers={"Authorization": f"Bearer {token}"})
-        assert response.status_code == 200
-        assert {f["object"] for f in response.json()["facts"]} == {"Paris"}
-        other_response = client.get("/v1/memories", headers={"Authorization": f"Bearer {other}"})
-        assert other_response.status_code == 200
-        assert other_response.json()["facts"] == []
-
-
 @pytest.mark.parametrize("collision", [FIRST_DIRECTORY, "manifest.json", "manifest.md"])
 @pytest.mark.parametrize("miss_preflight", [False, True])
 def test_existing_outputs_are_rejected_before_loading_models(

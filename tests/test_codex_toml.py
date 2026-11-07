@@ -29,15 +29,15 @@ def _parse(text):
     "".join(chr(code) for code in range(32)) + "\x7f",
 ])
 def test_command_and_local_args_roundtrip_as_utf8_toml(value):
-    block = setup.codex_toml_block(api_url=None, namespace=value, python_cmd=value)
+    block = setup.codex_toml_block(api_url=None, space_id=value, user_id=value, python_cmd=value)
     parsed = _parse(block)
-    assert parsed == {"command": value, "args": ["-m", "mnemotrace.mcp", "--namespace", value]}
+    assert parsed == {"command": value, "args": ["-m", "mnemotrace.mcp", "--space-id", value, "--user-id", value]}
 
 
 @pytest.mark.parametrize("field", ["api_url", "api_key_file"])
 @pytest.mark.parametrize("segment", ["中文", "😀", "𠀀", "with spaces"])
 def test_remote_parameters_roundtrip_without_writing(tmp_path, field, segment):
-    options = dict(api_url="http://example.invalid", api_key_file=None, namespace=None)
+    options = dict(api_url="http://example.invalid", api_key_file=None, space_id="synthetic-space")
     options[field] = f"http://example.invalid/{segment}" if field == "api_url" else str(tmp_path / segment / "server.key")
     expected = setup.mcp_args(**options)
     block = setup.codex_toml_block(python_cmd="python", **options)
@@ -45,10 +45,10 @@ def test_remote_parameters_roundtrip_without_writing(tmp_path, field, segment):
     assert not list(tmp_path.iterdir())
 
 
-@pytest.mark.parametrize("field", ["python_cmd", "namespace"])
+@pytest.mark.parametrize("field", ["python_cmd", "space_id"])
 @pytest.mark.parametrize("surrogate", ["\ud800", "\udfff", "\ud83d\ude00"], ids=["high", "low", "pair-code-units"])
 def test_surrogate_code_units_fail_with_safe_error(field, surrogate):
-    options = dict(api_url=None, namespace="synthetic", python_cmd="python")
+    options = dict(api_url=None, space_id="synthetic", user_id="synthetic-user", python_cmd="python")
     options[field] = "synthetic-prefix" + surrogate
     with pytest.raises(CredentialError) as stopped:
         setup.codex_toml_block(**options)
@@ -65,7 +65,7 @@ def test_surrogate_does_not_overwrite_config_or_backup(tmp_path, capsys):
         setup.install_codex_config(config_path=str(path), api_key_file=reference, python_cmd="synthetic\ud800")
     with pytest.raises(SystemExit) as stopped:
         setup.main(["--install-codex", "--codex-config", str(path), "--api-key-file", reference,
-                    "--python", "synthetic\ud800"])
+                    "--python", "synthetic\ud800", "--space-id", "synthetic-space"])
     assert str(stopped.value) == "Codex config strings must contain valid Unicode scalar values."
     assert path.read_bytes() == before and set(tmp_path.rglob("*")) == files
     assert not capsys.readouterr().out
@@ -80,6 +80,7 @@ def test_unicode_install_reuse_and_reader_paths(tmp_path, monkeypatch, capsys, f
     monkeypatch.setattr(Path, "home", lambda: home)
     key = "synthetic-unicode-key"
     monkeypatch.setenv("MNEMOTRACE_API_KEY", key)
+    monkeypatch.setenv("MNEMOTRACE_SPACE_ID", "synthetic-space")
     reference = store_key(key, directory=home / "显式😀 credentials") if credential_source == "explicit" else None
     if fallback:
         original = builtins.__import__
@@ -99,7 +100,7 @@ def test_unicode_install_reuse_and_reader_paths(tmp_path, monkeypatch, capsys, f
 
     def install():
         if entry == "direct":
-            return setup.install_codex_config(config_path=str(path), api_key_file=reference, python_cmd=python)["block"]
+            return setup.install_codex_config(config_path=str(path), api_key_file=reference, python_cmd=python, space_id="synthetic-space")["block"]
         command = ["--codex-config", str(path), "--python", python]
         if reference:
             command += ["--api-key-file", reference]
@@ -125,7 +126,7 @@ def test_unicode_install_reuse_and_reader_paths(tmp_path, monkeypatch, capsys, f
     assert read_key(saved_reference) == key
     install()
     assert path.read_bytes() == first and set(home.rglob("*")) == installed_files
-    check = doctor._codex_config_probe(str(path), python_cmd=python, api_url="http://localhost:8000", api_key=key)
+    check = doctor._codex_config_probe(str(path), python_cmd=python, api_url="http://localhost:8000", api_key=key, space_id="synthetic-space")
     assert check["status"] == "ok"
     snapshot = set(home.rglob("*"))
     setup.main(["--client", "codex", "--api-key-file", saved_reference, "--python", python])

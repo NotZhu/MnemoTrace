@@ -43,8 +43,10 @@ def no_tomllib(monkeypatch):
 @pytest.fixture(autouse=True)
 def private_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("MNEMOTRACE_SPACE_ID", "synthetic-space")
     monkeypatch.setenv("USERPROFILE" if os.name == "nt" else "HOME", str(tmp_path))
     monkeypatch.setenv("MNEMOTRACE_API_KEY", "synthetic-config-key")
+    monkeypatch.setenv("MNEMOTRACE_SPACE_ID", "synthetic-space")
 
 
 def test_generated_reference_survives_changed_working_directory(tmp_path, monkeypatch, capsys):
@@ -131,7 +133,7 @@ def test_cli_and_direct_recipes_share_absolute_paths(tmp_path, monkeypatch, caps
     assert set(tmp_path.rglob("*")) == before
     command = setup._doctor_verify_command(
         client=client, python_cmd="python", api_url="http://localhost:8000",
-        namespace=None, api_key_file=supplied,
+        space_id=None, api_key_file=supplied,
     )
     assert command[-1] == reference
 
@@ -139,9 +141,9 @@ def test_cli_and_direct_recipes_share_absolute_paths(tmp_path, monkeypatch, caps
 def test_direct_generators_do_not_create_files_and_keep_placeholder(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     for value in (None, "<private-credential-file>", "not-created/key"):
-        args = setup.mcp_args(api_url="http://localhost:8000", namespace=None, api_key_file=value)
+        args = setup.mcp_args(api_url="http://localhost:8000", space_id=None, api_key_file=value)
         block = setup.codex_toml_block(
-            api_url="http://localhost:8000", namespace=None,
+            api_url="http://localhost:8000", space_id=None,
             api_key_file=value, python_cmd="python",
         )
         assert _toml_args(block) == args
@@ -256,7 +258,7 @@ def test_link_reference_is_not_resolved_before_rejection(tmp_path, monkeypatch, 
         supplied = str(Path("alias") / reference.name)
         absolute = credential_path(supplied)
         assert absolute.parent == alias
-        args = setup.mcp_args(api_url="http://localhost:8000", namespace=None, api_key_file=supplied)
+        args = setup.mcp_args(api_url="http://localhost:8000", space_id=None, api_key_file=supplied)
         assert args[-1] == str(absolute)
         with pytest.raises(CredentialError):
             read_key(args[-1])

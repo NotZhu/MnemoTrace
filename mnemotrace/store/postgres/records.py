@@ -121,7 +121,8 @@ class ScopedSQL:
     def run(self, query, params=(), *, prepare=None):
         return self.conn.execute(query, params, prepare=prepare)
 
-    def select(self, kind, conditions=(), params=(), *, limit=None, summary_known_at=None):
+    def select(self, kind, conditions=(), params=(), *, limit=None, offset=0, summary_known_at=None,
+               order_by='r.id'):
         extra, joins = '', ''
         join_params = ()
         if kind in TARGET_COLUMNS:
@@ -137,10 +138,13 @@ class ScopedSQL:
                 s.content_version AS summary_content_version, NULL AS summary_embedding"""
             joins, join_params = source_summary_join(summary_known_at)
         where = ' AND '.join((ROW_SCOPE, *conditions))
-        query = f'SELECT r.*{extra} FROM mnemotrace.{TABLES[kind]} r{joins} WHERE {where} ORDER BY r.id'
+        query = f'SELECT r.*{extra} FROM mnemotrace.{TABLES[kind]} r{joins} WHERE {where} ORDER BY {order_by}'
         if limit is not None:
             query += ' LIMIT %s'
             params = (*params, limit)
+        if offset:
+            query += ' OFFSET %s'
+            params = (*params, offset)
         return tuple(unpack(self.context, kind, row)
                      for row in self.rows(query, (*join_params, *self.scope, *params)))
 

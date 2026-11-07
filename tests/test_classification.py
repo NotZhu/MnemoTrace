@@ -1,6 +1,6 @@
 """分类与画像分组使用语言边界，且不改变事实及独立的敏感标记。"""
 from __future__ import annotations
-from tests.model_fixtures import outcome_facts
+from tests.model_fixtures import saved_outcome
 
 from dataclasses import asdict
 
@@ -10,7 +10,7 @@ from tests.model_fixtures import Memory
 from mnemotrace.consolidate.classify import classify, classify_fact
 from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY
 from mnemotrace.consolidate.structured import build_structured_profile
-from mnemotrace.types import Episode, Fact
+from mnemotrace.types import Fact
 
 
 @pytest.mark.parametrize(("predicate", "obj", "text", "expected"), [
@@ -292,17 +292,10 @@ def test_unknown_restriction_spelling_is_not_inferred():
 
 
 def test_outcome_reason_stays_sensitive_after_content_edit():
-    class StubLLM:
-        def complete(self, *args, **kwargs):
-            return ('[{"kind":"lesson","statement":"Choose the synthetic deployment option",'
-                    '"why":"The password was SYNTHETIC_VALUE"}]')
-
-    episode = Episode("Synthetic deployment discussion", user_id="default")
-    fact, = outcome_facts(StubLLM(), [episode], "default", session_id="synthetic-session")
-    assert (fact.category, fact.sensitive) == (OUTCOME_CATEGORY, True)
     mem = Memory()
-    fact.embedding = mem.embedder.embed(fact.text)
-    mem.fact_store.upsert(fact.id, fact.embedding, fact)
+    fact = saved_outcome(mem, user_id="default", session_id="synthetic-session", kind="lesson",
+                         statement="Choose the synthetic deployment option", why="The password was SYNTHETIC_VALUE")
+    assert (fact.category, fact.sensitive) == (OUTCOME_CATEGORY, True)
     mem.update_fact(fact.id, statement="Choose the revised synthetic deployment option")
     assert "SYNTHETIC_VALUE" in fact.text
     assert (fact.category, fact.sensitive) == (OUTCOME_CATEGORY, True)

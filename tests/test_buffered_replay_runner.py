@@ -17,7 +17,6 @@ def runner(monkeypatch):
     monkeypatch.setattr(providers, 'load_dotenv', lambda: None)
     monkeypatch.setenv('MNEMOTRACE_BUFFERED_EXTRACTION', '1')
     monkeypatch.setenv('MNEMOTRACE_CONFLICT_DETECTION', '0')
-    monkeypatch.setenv('MNEMOTRACE_SESSION_OUTCOMES', '0')
     return importlib.import_module('buffered_replay_runner')
 
 

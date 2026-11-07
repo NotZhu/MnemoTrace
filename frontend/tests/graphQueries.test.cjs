@@ -17,8 +17,8 @@ const flush = () => new Promise(resolve => setImmediate(resolve))
 function setup() {
   let namespace = 'synthetic-A'
   const pending = []
-  const useAuth = selector => selector({apiKey:namespace})
-  useAuth.getState = () => ({apiKey:namespace})
+  const useAuth = selector => selector({spaceId:namespace})
+  useAuth.getState = () => ({spaceId:namespace})
   const moduleData = {exports:{}}
   vm.runInNewContext(source, {module:moduleData,exports:moduleData.exports,require(name) {
     if(name==='@tanstack/react-query') return {...rq,useQuery:options=>options}

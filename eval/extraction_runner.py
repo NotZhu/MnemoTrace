@@ -130,8 +130,8 @@ def run_case(case, args):
                 # Explicitly retry committed raw input; never upload/create a second event.
                 if not svc.flush(event['user'], event['session'], retry_failed=True)['ok']:
                     raise RuntimeError('Explicit retry failed')
-                svc.close_session(event['user'], event['session'], summarize=True,
-                                  clear_working=False, outcomes=False)
+                if not svc.flush(event['user'], event['session'], include_summaries=True)['ok']:
+                    raise RuntimeError('Session summary processing failed')
                 response = {'episode_id': exc.episode_ids[0]}
                 recovered = True
             ack_times.append(dict(event=event['id'], ms=(time.perf_counter() - t0) * 1000,
@@ -152,7 +152,8 @@ def run_case(case, args):
                 raise RuntimeError('Buffered extraction failed')
         for user in sorted({e['user'] for e in case['events']}):
             for session in sorted({e['session'] for e in case['events'] if e['user'] == user}):
-                svc.close_session(user, session, summarize=True, clear_working=False, outcomes=False)
+                if not svc.flush(user, session, include_summaries=True)["ok"]:
+                    raise RuntimeError("Session summary processing failed")
             with svc._read_scope(user) as mem:
                 snapshots[user] = dict(facts=[asdict(f) for f in mem._all_facts()],
                     working=[asdict(w) for w in mem.working_mem.values()], identity=dict(mem._identity),
@@ -269,7 +270,7 @@ def main():
         if key.startswith('MNEMOTRACE_'):
             os.environ.pop(key)
     os.environ.update(MNEMOTRACE_BUFFERED_EXTRACTION='1', MNEMOTRACE_STORAGE='memory',
-                      MNEMOTRACE_CONFLICT_DETECTION='0', MNEMOTRACE_SESSION_OUTCOMES='0',
+                      MNEMOTRACE_CONFLICT_DETECTION='0',
                       LITELLM_LOCAL_MODEL_COST_MAP='True')
     from mnemotrace.llm import providers
     import mnemotrace

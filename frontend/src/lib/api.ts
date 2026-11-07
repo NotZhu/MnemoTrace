@@ -3,7 +3,9 @@ import { copy as t } from '../lib/copy'
 import { isValidApiKey } from './apiKey'
 import type { AuditReport,
   AgentStatus,
-  CloseSessionResult,
+  MemorySpace,
+  OperationResult,
+  ProcessingResult,
   Conflict,
   Focus,
   FactEdit,
@@ -17,7 +19,6 @@ import type { AuditReport,
   Policy,
   PolicyResponse,
   ProcessingStatus,
-  PipelineJob,
   RecallResult,
   RememberScope,
   RememberResult,
@@ -41,7 +42,7 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
-    public detail?: { code?: string; stored_raw?: boolean; episode_ids?: string[] },
+    public detail?: { code?: string; stored_raw?: boolean; episode_ids?: string[]; operation_ids?: string[]; operations?: OperationResult[] },
   ) {
     super(message)
     this.name = 'ApiError'
@@ -86,14 +87,31 @@ function requestSession(publicRequest = false) {
   return { session, check, wait }
 }
 
+let scopeRequests = new AbortController()
+useAuth.subscribe((state, previous) => {
+  if (state.epoch === previous.epoch) return
+  scopeRequests.abort()
+  scopeRequests = new AbortController()
+})
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const guard = requestSession(path === '/health')
-  const { key } = guard.session
+  const { key, spaceId } = guard.session
+  if (path.startsWith('/v1/') && !path.startsWith('/v1/spaces')) {
+    if (!spaceId) throw new ApiError(422, '请先选择记忆空间')
+    if (typeof init.body === 'string') {
+      init = { ...init, body: JSON.stringify({ ...JSON.parse(init.body), space_id: spaceId }) }
+    } else {
+      path += (path.includes('?') ? '&' : '?') + new URLSearchParams({ space_id: spaceId })
+    }
+  }
+  const signal = path === '/health' ? init.signal
+    : init.signal ? AbortSignal.any([init.signal, scopeRequests.signal]) : scopeRequests.signal
   const headers = new Headers(init.headers)
   headers.set('Content-Type', 'application/json')
   if (key) headers.set('Authorization', `Bearer ${key}`)
 
-  const res = await guard.wait(fetch(`${BASE}${path}`, { ...init, headers }))
+  const res = await guard.wait(fetch(`${BASE}${path}`, { ...init, headers, signal }))
   // 旧请求的迟到响应不能退出新账号，也不能驱动新账号的写后回调。
   guard.check()
 
@@ -104,7 +122,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!res.ok) {
     let code: string | undefined
-    let failure: { code?: string; stored_raw?: boolean; episode_ids?: string[] } | undefined
+    let failure: { code?: string; stored_raw?: boolean; episode_ids?: string[]; operation_ids?: string[]; operations?: OperationResult[] } | undefined
     let detail = t.errors.requestFailed(res.status)
     try {
       const body = await guard.wait(res.json())
@@ -184,23 +202,39 @@ export interface RememberOptions {
 }
 
 export const api = {
+  spaces: async (signal?: AbortSignal): Promise<MemorySpace[]> => {
+    const spaces: MemorySpace[] = []
+    let afterId: string | null = null
+    do {
+      const page: { spaces: MemorySpace[]; next_after_id: string | null } =
+        await request(`/v1/spaces${qs({ after_id: afterId })}`, { signal })
+      spaces.push(...page.spaces)
+      afterId = page.next_after_id
+    } while (afterId !== null)
+    return spaces
+  },
+  createSpace: (name: string) => request<MemorySpace>('/v1/spaces', {
+    method: 'POST', body: json({ name }),
+  }),
   rememberMessages: (messages: {message_id: string; role: 'user' | 'assistant'; content: string;
-      event_time?: number | null}[], sessionId: string, mode: 'live' | 'historical' = 'live') =>
-    request<{ok: boolean; accepted: number; queued: boolean;
-      messages: (PipelineJob & {message_id: string; sequence: number})[]}>('/v1/messages', {
-      method: 'POST', body: json({messages, session_id: sessionId, mode, processing: 'buffered'}),
-    }),
-  processingStatus: (sessionId?: string) => request<ProcessingStatus>(`/v1/processing${qs({session_id: sessionId})}`),
+      event_time?: number | null}[], sessionId: string, mode: 'live' | 'historical' = 'live', signal?: AbortSignal) =>
+    request<RememberResult & {accepted: number; messages: {episode_id: string; operation_ids: string[]}[]}>(
+      '/v1/messages', { method: 'POST', body: json({messages, session_id: sessionId, mode, processing: 'buffered'}), signal }),
+  processingStatus: (sessionId?: string, signal?: AbortSignal, afterId?: string) =>
+    request<ProcessingStatus>(`/v1/processing${qs({session_id: sessionId, after_id: afterId})}`, { signal }),
+  retryOperation: (id: string, signal?: AbortSignal) => request<OperationResult>(`/v1/operations/${encodeURIComponent(id)}/retry`, {
+    method: 'POST', body: json({}), signal,
+  }),
   health: () => request<Health>('/health'),
 
   memories: (params: MemoriesQuery = {}, options: Pick<RequestInit, 'signal'> = {}) =>
     request<MemoryDump>(`/v1/memories${qs(params)}`, options),
   audit: (limit = 60) => request<AuditReport>(`/v1/audit?limit=${limit}`),
   sessions: (params: SessionsQuery = {}) => request<SessionsIndex>(`/v1/sessions${qs(params)}`),
-  agentStatus: (sessionId?: string) =>
-    request<AgentStatus>(`/v1/agent/status${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`),
-  sessionReport: (sessionId: string, includeSensitive = false) =>
-    request<SessionReport>(`/v1/sessions/report${qs({ session_id: sessionId, include_sensitive: includeSensitive })}`),
+  agentStatus: (sessionId?: string, signal?: AbortSignal) =>
+    request<AgentStatus>(`/v1/agent/status${qs({ session_id: sessionId })}`, { signal }),
+  sessionReport: (sessionId: string, includeSensitive = false, offset?: number, signal?: AbortSignal) =>
+    request<SessionReport>(`/v1/sessions/report${qs({ session_id: sessionId, include_sensitive: includeSensitive, offset })}`, { signal }),
   graph: (params: GraphQuery = {}) => request<GraphResponse>(`/v1/graph${qs(params)}`),
   focus: () => request<Focus>('/v1/focus'),
 
@@ -215,10 +249,9 @@ export const api = {
       }),
     }),
 
-  closeSession: (session_id = 'default') =>
-    request<CloseSessionResult>('/v1/sessions/close', {
-      method: 'POST',
-      body: json({ session_id, summarize: true, clear_working: true }),
+  organizeSession: (session_id: string, signal?: AbortSignal) =>
+    request<ProcessingResult>('/v1/processing/flush', {
+      method: 'POST', body: json({ session_id }), signal,
     }),
 
   recall: (query: string, options: RecallOptions = {}) =>
@@ -270,8 +303,8 @@ export const api = {
   forget: () =>
     request<{ ok: boolean; message: string }>('/v1/forget', { method: 'POST', body: json({ confirm: true }) }),
 
-  working: (sessionId?: string) =>
-    request<{ items: WorkingItem[] }>(`/v1/working${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`),
+  working: (sessionId?: string, signal?: AbortSignal) =>
+    request<{ items: WorkingItem[] }>(`/v1/working${qs({ session_id: sessionId })}`, { signal }),
 
   addWorking: (content: string, kind = 'state', ttl_seconds?: number, session_id = 'default') =>
     request<{ ok: boolean; id: string }>('/v1/working', {
@@ -279,9 +312,9 @@ export const api = {
       body: json({ content, kind, ttl_seconds, session_id }),
     }),
 
-  clearWorking: (session_id = 'default') =>
+  clearWorking: (session_id = 'default', signal?: AbortSignal) =>
     request<{ ok: boolean; cleared: number }>(`/v1/working?session_id=${encodeURIComponent(session_id)}`, {
-      method: 'DELETE',
+      method: 'DELETE', signal,
     }),
 
   conflicts: () => request<{ conflicts: Conflict[] }>('/v1/conflicts'),
@@ -292,9 +325,11 @@ export const api = {
   /** 触发浏览器下载记忆导出（默认安全；保留 Bearer 请求头）。 */
   async exportDownload(filenameHint = 'me', includeSensitive = false): Promise<void> {
     const guard = requestSession()
-    const { key } = guard.session
-    const qs = `?include_sensitive=${includeSensitive ? 'true' : 'false'}`
-    const res = await guard.wait(fetch(`${BASE}/v1/export${qs}`, {
+    const { key, spaceId } = guard.session
+    if (!spaceId) throw new ApiError(422, '请先选择记忆空间')
+    const qs = new URLSearchParams({ include_sensitive: String(includeSensitive), space_id: spaceId })
+    const res = await guard.wait(fetch(`${BASE}/v1/export?${qs}`, {
+      signal: scopeRequests.signal,
       headers: key ? { Authorization: `Bearer ${key}` } : undefined,
     }))
     guard.check()

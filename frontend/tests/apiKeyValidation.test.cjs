@@ -21,12 +21,12 @@ function client(key) {
   let authorization
   const moduleData = { exports: {} }
   vm.runInNewContext(apiSource, {
-    module: moduleData, exports: moduleData.exports, Headers, URLSearchParams,
+    module: moduleData, exports: moduleData.exports, Headers, URLSearchParams, AbortController, AbortSignal,
     require: name => {
       assert.equal(name, '../store/auth')
-      return { currentSession: () => ({ key, epoch: 1 }),
+      return { currentSession: () => ({ key, epoch: 1, spaceId: key ? 'space-test' : null }),
         isCurrentSession: session => session.key === key && session.epoch === 1,
-        useAuth: { getState: () => ({ logout: () => { loggedOut = true } }) } }
+        useAuth: { subscribe() {}, getState: () => ({ logout: () => { loggedOut = true } }) } }
     },
     fetch: async (_, init) => {
       // Native Headers validates the export path too, just as browser fetch does.

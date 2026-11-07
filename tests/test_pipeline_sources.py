@@ -326,13 +326,13 @@ def test_explicit_dialogue_summary_has_its_own_cropped_proof():
     assert sum(b-a for a, b in evidence.coverage['ranges']) < len(ep.content)
 
 
-def test_document_save_only_intent_is_preserved_when_closing(services):
+def test_document_save_only_intent_is_preserved_by_flush(services):
     svc, model = services()
     svc.import_document('u', 'Synthetic offline document', filename='synthetic.txt',
                         consolidate=False, summarize=False)
     assert not model.calls
-    result = svc.close_session('u', 'document', summarize=False, outcomes=False)
-    assert result['ok'] and result['facts_added'] == 0 and not model.calls
+    result = svc.flush('u', 'document')
+    assert result['ok'] and not svc.get('u').fact_store.values() and not model.calls
     ep = svc.get('u').episodes_doc.values()[0]
     assert ep.source_kind == 'document' and ep.scope == 'raw' and ep.coverage is None
 

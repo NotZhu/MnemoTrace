@@ -10,6 +10,8 @@ try {
 
 interface AuthState {
   apiKey: string | null
+  spaceId: string | null
+  selectSpace: (spaceId: string | null) => void
   epoch: number
   keyError: string | null
   login: (key: string) => void
@@ -18,6 +20,8 @@ interface AuthState {
 
 export const useAuth = create<AuthState>((set) => ({
   apiKey: null,
+  spaceId: null,
+  selectSpace: (spaceId) => set(state => state.spaceId === spaceId ? state : { spaceId, epoch: state.epoch + 1 }),
   epoch: 0,
   keyError: null,
   login: (key) => {
@@ -25,11 +29,11 @@ export const useAuth = create<AuthState>((set) => ({
     const next = isValidApiKey(key.trim())
       ? { apiKey: key.trim(), keyError: null }
       : { apiKey: null, keyError: t.errors.invalidApiKey }
-    set(state => ({ ...next, epoch: state.epoch + 1 }))
+    set(state => ({ ...next, spaceId: null, epoch: state.epoch + 1 }))
   },
   logout: () => {
     useQueryErrors.getState().clear()
-    set(state => ({ apiKey: null, keyError: null, epoch: state.epoch + 1 }))
+    set(state => ({ apiKey: null, spaceId: null, keyError: null, epoch: state.epoch + 1 }))
   },
 }))
 
@@ -38,15 +42,15 @@ export function currentKey(): string | null {
   return useAuth.getState().apiKey
 }
 
-export type AuthSession = Readonly<{ key: string | null; epoch: number }>
+export type AuthSession = Readonly<{ key: string | null; spaceId: string | null; epoch: number }>
 
 export function currentSession(): AuthSession {
-  const { apiKey: key, epoch } = useAuth.getState()
-  return { key, epoch }
+  const { apiKey: key, spaceId, epoch } = useAuth.getState()
+  return { key, spaceId, epoch }
 }
 
 export function isCurrentSession(session: AuthSession): boolean {
   const current = currentSession()
   // 同一 Key 再次登录也属于新周期，旧任务不能重新生效。
-  return session.epoch === current.epoch && session.key === current.key
+  return session.epoch === current.epoch && session.key === current.key && session.spaceId === current.spaceId
 }

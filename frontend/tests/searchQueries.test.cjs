@@ -13,8 +13,8 @@ const source = esbuild.buildSync({
 
 function setup(resource = 'memories', options = {keepPreviousData:true}) {
   let namespace = 'synthetic-space-a'
-  const useAuth = selector => selector({apiKey:namespace})
-  useAuth.getState = () => ({apiKey:namespace})
+  const useAuth = selector => selector({spaceId:namespace})
+  useAuth.getState = () => ({spaceId:namespace})
   const moduleData = {exports:{}}
   vm.runInNewContext(source,{module:moduleData,exports:moduleData.exports,require:name=>{
     if(name==='@tanstack/react-query') return {...reactQuery,useQuery:options=>options}
