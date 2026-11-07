@@ -14,7 +14,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mnemotrace import Memory  # noqa: E402
+from mnemotrace import MemoryEngine  # noqa: E402
 from mnemotrace.connectors import parse, sniff  # noqa: E402
 
 # 一个迷你版 ChatGPT `conversations.json`（单会话，含一个活跃的 2 节点线程）。
@@ -48,7 +48,7 @@ def main() -> None:
     model = os.environ.get("MNEMOTRACE_LLM", "").strip()
     if not model:
         raise SystemExit(str(LLMNotConfiguredError()))
-    mem = Memory(llm=make_llm(model))
+    mem = MemoryEngine(llm=make_llm(model))
 
     print("== Detect + parse two different export formats ==")
     chatgpt_sessions = parse(CHATGPT_EXPORT)  # 自动嗅探格式

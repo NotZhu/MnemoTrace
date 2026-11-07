@@ -6,7 +6,7 @@ from dataclasses import asdict
 
 import pytest
 
-from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryEngine
 from mnemotrace.types import Episode, Fact
 
 
@@ -19,7 +19,7 @@ def snapshot():
 
 
 def target():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Existing", "likes", "tea", user_id="target")
     mem.set_focus(track=["existing"], mute=["muted"])
     mem.set_policy(extract_instruction="existing policy")
@@ -37,7 +37,6 @@ def contents(mem):
         "relations": [asdict(r) for r in mem.graph.relations()],
         "focus": mem.focus, "policy": mem.policy, "identity": mem._identity,
         "aliases": mem._aliases, "import_seen": mem._import_seen,
-        "version": mem._snapshot_version,
     })
 
 
@@ -72,7 +71,7 @@ def test_missing_episode_fields_rejects_batch(key):
     payload = snapshot()
     payload["episodes"][0].pop(key)
     with pytest.raises(ValueError, match=key):
-        Memory().import_snapshot(payload)
+        MemoryEngine().import_snapshot(payload)
 
 
 @pytest.mark.parametrize("key,value", [
@@ -98,7 +97,7 @@ def test_invalid_last_record_does_not_partially_import_or_echo_values(key, value
 def test_additional_snapshot_fields_are_not_format_selectors(value):
     payload = snapshot()
     payload["mnemotrace_export_version"] = value
-    stats = Memory().import_snapshot(payload)
+    stats = MemoryEngine().import_snapshot(payload)
     assert stats["facts_restored"] == 1
 
 
@@ -120,12 +119,12 @@ def test_migration_preserves_source_history_and_target_settings():
     ep = mem.episodes_doc.values()[0]
     assert ep.id != "ep_source" and ep.event_time == 0 and ep.consolidated
     after = contents(mem)
-    for key in ("focus", "policy", "identity", "aliases", "import_seen", "version"):
+    for key in ("focus", "policy", "identity", "aliases", "import_seen"):
         assert after[key] == before[key]
 
 
 def test_new_successor_links_to_previously_imported_duplicate():
-    mem = Memory()
+    mem = MemoryEngine()
     first = snapshot()
     first["episodes"] = []
     mem.import_snapshot(first)

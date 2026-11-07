@@ -9,7 +9,7 @@ import pytest
 from mnemotrace import cli
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from mnemotrace.llm import FakeLLM
-from mnemotrace.postgres_service import MemoryService
+from mnemotrace.service import MemoryService
 
 
 @pytest.fixture

@@ -6,7 +6,7 @@ from dataclasses import asdict
 
 import pytest
 
-from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryEngine
 from mnemotrace.consolidate.classify import classify, classify_fact
 from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY
 from mnemotrace.consolidate.structured import build_structured_profile
@@ -97,7 +97,7 @@ def test_fact_category_boundaries_and_predicate_precedence(predicate, obj, text,
     ("prefers", "synthetic-option", "其他"),
 ])
 def test_profile_grouping_boundaries_and_predicate_precedence(predicate, obj, expected):
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("user", predicate, obj)
     assert list(mem.structured_profile()["preferences"]) == [expected]
 
@@ -148,7 +148,7 @@ def test_profile_groups_without_rewriting_fact(predicate, obj, expected):
 
 
 def test_memory_writes_and_content_edits_use_category_rules():
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact("user", "works_at", "Storage Labs")
     assert fact.category == "工作"
     mem.update_fact(fact.id, predicate="uses", object="storage engine")
@@ -165,7 +165,7 @@ def test_memory_writes_and_content_edits_use_category_rules():
 
 
 def test_offline_extraction_uses_category_rules():
-    mem = Memory()
+    mem = MemoryEngine()
     episode = mem.add("I work at Storage Labs.", user_id="synthetic-user")
     mem.consolidate()
     facts = [f for f in mem.fact_store.values() if episode.id in f.provenance]
@@ -186,7 +186,7 @@ def test_offline_extraction_uses_category_rules():
     ("照片", "其他"), ("书桌", "其他"), ("课程评分", "学习"),
 ])
 def test_profile_common_chinese_expressions(obj, expected):
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("user", "prefers", obj)
     profile = mem.structured_profile()
     item, = profile["preferences"][expected]
@@ -206,7 +206,7 @@ def test_fact_common_chinese_expressions(obj, expected):
 
 @pytest.mark.parametrize("subject", ["user", "Bank of China", "Health Center", "Age Lab"])
 def test_subject_does_not_change_category_on_add_or_edit(subject):
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact(subject, "uses", "Vim")
     assert fact.category == "其他"
     mem.update_fact(fact.id, object="Neovim")
@@ -226,7 +226,7 @@ def test_fact_body_still_marks_sensitive_without_changing_category():
 
 
 def test_existing_category_and_metadata_edits_do_not_reclassify():
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact("user", "works_at", "Storage Labs", category="身份")
     classify_fact(fact)
     mem.update_fact(fact.id, sensitive=False)
@@ -249,7 +249,7 @@ def test_existing_category_and_metadata_edits_do_not_reclassify():
     ("favorite_allergy", "books", "阅读", True),
 ])
 def test_profile_restrictions_require_explicit_relation(predicate, obj, expected, sensitive):
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact("user", predicate, obj)
     before = asdict(fact)
     item, = mem.structured_profile()["preferences"][expected]
@@ -285,14 +285,14 @@ def test_normalized_restriction_relations_reach_profile(predicate):
 
 
 def test_unknown_restriction_spelling_is_not_inferred():
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact("user", "allic", "peanuts")
     assert (fact.category, fact.sensitive) == ("其他", False)
     assert mem.structured_profile()["preferences"] == {}
 
 
 def test_outcome_reason_stays_sensitive_after_content_edit():
-    mem = Memory()
+    mem = MemoryEngine()
     fact = saved_outcome(mem, user_id="default", session_id="synthetic-session", kind="lesson",
                          statement="Choose the synthetic deployment option", why="The password was SYNTHETIC_VALUE")
     assert (fact.category, fact.sensitive) == (OUTCOME_CATEGORY, True)

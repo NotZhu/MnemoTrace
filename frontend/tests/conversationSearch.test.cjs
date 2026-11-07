@@ -207,11 +207,12 @@ test('默认使用 default 会话，列表中的使用此会话会同步顶部�
 })
 
 
-for (const [status, message] of [['pending', '摘要处理中；当前使用原文检索'], ['failed', '摘要未完成；当前使用原文检索']]) {
-  test(`事件摘要 ${status} 独立展示，所有者仍能浏览原文`, () => {
-    const s = setup([], [{id:'synthetic', content:'完整原文仍在', date:'2026-10-31', session:'s', summary:'', summarization:{status}}])
-    const tree = s.render()
-    assert.ok(findNode(tree, node => node.type === 'p' && node.props.children === message))
-    assert.ok(findNode(tree, node => node.type === 'p' && node.props.children === '完整原文仍在'))
-  })
-}
+test('列表显示已有摘要与原文，没有摘要时仍可浏览原文', () => {
+  const s = setup([], [
+    {id:'one', content:'完整原文仍在', date:'2026-10-31', session:'s', summary:''},
+    {id:'two', content:'另一条完整原文', date:'2026-10-31', session:'s', summary:'已保存摘要'},
+  ])
+  const tree = s.render()
+  assert.ok(findNode(tree, node => node.type === 'p' && node.props.children === '完整原文仍在'))
+  assert.ok(findNode(tree, node => node.type === 'p' && node.props.children.includes('已保存摘要')))
+})

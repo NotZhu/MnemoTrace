@@ -1,29 +1,19 @@
-"""忆痕 —— 开源长期记忆引擎。项目章程见 AGENTS.md。
-
-Memory facade 接好后，公共 API 在本模块定稿（见 mnemotrace/memory.py）。
-"""
+"""忆痕长期记忆的产品入口和离线算法引擎。"""
 
 __version__ = "0.1.0"
 
 from .config import Config
 from .types import Entity, Episode, Fact, Relation
 from .topics import Topic, TopicSource
-from .postgres_memory import PostgresMemory
+from .memory import Memory
+from .memory_engine import MemoryEngine
 
 __all__ = ["__version__", "Config", "Episode", "Fact", "Entity", "Relation", "Topic", "TopicSource",
-           "PostgresMemory"]
+           "Memory", "MemoryEngine"]
 
-# Memory facade 延迟挂载以避免导入开销；见 mnemotrace/memory.py。
-try:  # pragma: no cover - exercised once memory.py lands
-    from .memory import Memory  # noqa: F401
-
-    __all__.append("Memory")
-except Exception:  # noqa: BLE001 - 开发期部分构建的容错
-    pass
-
-from .extraction import (BufferedProcessingDisabledError, ExtractionConflictError, ExtractionError,
+from .extraction import (ExtractionConflictError, ExtractionError,
                          ExtractionResponseError, ExtractionTruncatedError, LLMNotConfiguredError,
                          ProcessingIncompleteError)
 
 __all__ += ["ExtractionError", "ExtractionResponseError", "ExtractionTruncatedError", "LLMNotConfiguredError",
-            "BufferedProcessingDisabledError", "ProcessingIncompleteError", "ExtractionConflictError"]
+            "ProcessingIncompleteError", "ExtractionConflictError"]

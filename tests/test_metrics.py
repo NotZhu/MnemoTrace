@@ -3,26 +3,12 @@ token 节省比来自真实的 recall 调用，异步积压可见，且载荷只
 没有用户内容。全部离线运行。"""
 from __future__ import annotations
 
-import json
-import shutil
-import tempfile
 
-import pytest
 
 from mnemotrace.metrics import Metrics
-from tests.model_fixtures import MemoryService
 
 _SECRET_NS = "alice-secret-ns"
 _SECRET_TEXT = "I live in Shenzhen"
-
-
-@pytest.fixture()
-def svc():
-    d = tempfile.mkdtemp(prefix="mnemotrace_metrics_")
-    try:
-        yield MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
-    finally:
-        shutil.rmtree(d, ignore_errors=True)
 
 
 # --- Metrics 原语 -------------------------------------------------------------
@@ -51,52 +37,3 @@ def test_savings_ratio_needs_both_sides():
 
 
 # --- service 接线 ----------------------------------------------------------------
-
-
-def test_service_paths_are_timed_and_tokens_recorded(svc):
-    svc.remember(_SECRET_NS, f"My name is Wei and {_SECRET_TEXT}.")
-    svc.recall(_SECRET_NS, "where do I live")                 # 只记 context tokens
-    svc.recall(_SECRET_NS, "where do I live", answer=True)    # + full 基线，固定响应的 answer 为空
-    snap = svc.metrics_snapshot()
-
-    assert snap["ops"]["remember"]["n"] == 1
-    assert snap["ops"]["recall"]["n"] == 2
-    assert snap["ops"]["recall"]["p95_ms"] >= snap["ops"]["recall"]["p50_ms"] >= 0
-    t = snap["tokens"]
-    assert t["context_total"] > 0 and t["full_total"] > 0 and t["recalls_with_baseline"] == 1
-    assert snap["buffered"] == {"enabled": True, "recovery_error": False}
-    assert snap["users_hot"] == 1
-
-
-def test_payload_is_aggregate_only(svc):
-    svc.remember(_SECRET_NS, f"My name is Wei and {_SECRET_TEXT}.")
-    svc.recall(_SECRET_NS, "where do I live", answer=True)
-    raw = json.dumps(svc.metrics_snapshot(), ensure_ascii=False)
-    assert _SECRET_NS not in raw      # 没有命名空间名
-    assert "Shenzhen" not in raw      # 没有用户内容
-    assert "where do I live" not in raw  # 没有查询文本
-
-
-def test_async_backlog_is_visible(monkeypatch):
-    monkeypatch.setenv("MNEMOTRACE_BUFFERED_EXTRACTION", "1")
-    from mnemotrace._pipeline_worker import PipelineWorker
-    monkeypatch.setattr(PipelineWorker, 'consume', lambda _: None)
-    d = tempfile.mkdtemp(prefix="mnemotrace_metrics_async_")
-    try:
-        s = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
-        s.remember("u", "My name is Wei and I live in Shenzhen.", processing="buffered")
-        assert s.metrics_snapshot()["buffered"]["enabled"] is True
-        s.flush('u')
-        import time
-        from mnemotrace._pipeline import run_one
-        for _ in range(600):  # finish any window a slow worker has not woken for yet
-            if run_one(s, 'u'):
-                continue
-            counts = s.processing_status('u')['counts']
-            if not any(counts[k] for k in ('pending', 'running', 'retry_wait')):
-                break
-            time.sleep(0.05)
-        assert s.processing_status("u")["counts"]["completed"] == 1
-        s.close()
-    finally:
-        shutil.rmtree(d, ignore_errors=True)

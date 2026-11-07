@@ -8,7 +8,7 @@ import sys
 
 from .store.postgres import Accounts, Database, DatabaseConfig
 from .store.postgres.errors import DatabaseError
-from .store.postgres.migrate import bootstrap_roles, migrate
+from .store.postgres.migrate import bootstrap_roles, check_restore_target, migrate, provision_logins
 
 
 def main(argv=None) -> int:
@@ -17,6 +17,11 @@ def main(argv=None) -> int:
     init = sub.add_parser('init-db')
     init.add_argument('--bootstrap', action='store_true',
                       help='Provision roles/extension with MNEMOTRACE_BOOTSTRAP_DATABASE_URL first')
+    init.add_argument('--provision-logins', action='store_true',
+                      help='Create or validate the four login roles from their configured DSNs')
+    init.add_argument('--roles-only', action='store_true',
+                      help='Prepare a restore target without applying migrations')
+    sub.add_parser('check-db', help='Validate the current schema and runtime credentials')
     sub.add_parser('create-user')
     for command in ('delete-user', 'issue-key', 'list-keys', 'revoke-key', 'rotate-key'):
         command_parser = sub.add_parser(command)
@@ -31,10 +36,24 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == 'init-db':
+            if (args.provision_logins or args.roles_only) and not args.bootstrap:
+                parser.error('--provision-logins and --roles-only require --bootstrap')
             if args.bootstrap:
-                bootstrap_roles(DatabaseConfig.from_env('bootstrap'))
-            migrate(DatabaseConfig.from_env('migration'))
-            result = {'initialized': True}
+                bootstrap = DatabaseConfig.from_env('bootstrap')
+                if args.roles_only:
+                    check_restore_target(bootstrap)
+                bootstrap_roles(bootstrap)
+                if args.provision_logins:
+                    provision_logins(bootstrap, {
+                        purpose: DatabaseConfig.from_env(purpose)
+                        for purpose in ('runtime', 'migration', 'admin', 'discovery')
+                    })
+            if not args.roles_only:
+                migrate(DatabaseConfig.from_env('migration'))
+            result = {'initialized': not args.roles_only}
+        elif args.command == 'check-db':
+            with Database(DatabaseConfig.from_env()):
+                result = {'ready': True}
         else:
             with Database(DatabaseConfig.from_env('admin'), purpose='admin') as database:
                 accounts = Accounts(database)

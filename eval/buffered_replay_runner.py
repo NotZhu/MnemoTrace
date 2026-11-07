@@ -137,16 +137,29 @@ def raw_state(windows, episodes):
 
 
 def run_case(case, args, *, replay_fn=replay, model_override=None):
+    if args.extractor:
+        require_credentials(args.extractor)
+
     from mnemotrace import Memory
-    from mnemotrace import _pipeline as kernel
+    if not callable(getattr(Memory, 'open', None)):
+        raise ValueError('Select the historical runtime commit recorded with the results')
+    try:
+        import mnemotrace._pipeline as kernel
+    except ModuleNotFoundError as exc:
+        if exc.name != 'mnemotrace._pipeline':
+            raise
+        raise ValueError('Select a historical runtime with the buffered window kernel') from None
     from mnemotrace.consolidate.planning import validate_response, input_size
     from mnemotrace.ingest.pipeline import Ingestor
     from mnemotrace.llm import Completion, LLM, providers
     from mnemotrace.llm.base import complete_result
-    from mnemotrace.service import MemoryService
+    try:
+        from mnemotrace.service import MemoryService
+    except ModuleNotFoundError as exc:
+        if exc.name != 'mnemotrace.service':
+            raise
+        raise ValueError('Select the historical runtime commit recorded with the results') from None
 
-    if args.extractor:
-        require_credentials(args.extractor)
     directory = args.out / f'{case["id"]}-{args.mode}-{args.run}'
     directory.mkdir()
     started = time.perf_counter()

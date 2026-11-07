@@ -16,22 +16,12 @@ def isolated_runtime_configuration(monkeypatch, request):
     from mnemotrace.llm import providers
 
     for name in list(os.environ):
-        if name.startswith("MNEMOTRACE_"):
+        if name.startswith("MNEMOTRACE_") and name not in {
+            "MNEMOTRACE_TEST_POSTGRES_DSN", "MNEMOTRACE_TEST_POSTGRES_BIN", "MNEMOTRACE_REQUIRE_POSTGRES",
+        }:
             monkeypatch.delenv(name)
     for name in ("MNEMOTRACE_LLM", "MNEMOTRACE_ANSWERER", "MNEMOTRACE_VISION_LLM"):
         monkeypatch.setenv(name, "")
     # 单元测试只认自己的环境设置；供应商凭据不能从开发者的 .env 重新注入。
     if request.node.get_closest_marker("dotenv") is None:
         monkeypatch.setattr(providers, "load_dotenv", lambda *args, **kwargs: None)
-    # The default worker owns a thread even for tests that exercise raw-note APIs.
-    # Release every service before the next test restores environment/provider settings.
-    from mnemotrace.service import MemoryService
-    initialize, close = MemoryService.__init__, MemoryService.close
-    services = []
-    def tracked(service, *args, **kwargs):
-        initialize(service, *args, **kwargs)
-        services.append(service)
-    monkeypatch.setattr(MemoryService, '__init__', tracked)
-    yield
-    for service in reversed(services):
-        close(service)

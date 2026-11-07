@@ -48,15 +48,15 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 ### POST /v1/remember
 
 传 `space_id`、`content`，可选 `session_id`、`agent_id`、`scope` 和 `processing`。
-`scope=raw` 只保存原文，`auto`、`long`、`working` 走自动处理。
-自动处理默认 immediate，buffered 在原文和任务提交后返回。没有配置 LLM 时可以保存原文或手工添加事实。
+`scope=raw` 只保存原文，`scope=working` 直接保存原文和工作条目。这两种范围返回 `status="stored"`、`source_ids` 和空的 `operation_ids`、`operations`，无需模型。
+`scope=auto` 和 `scope=long` 请求自动抽取，默认 immediate；选择 buffered 时在原文和任务提交后返回 `status="accepted"` 及操作回执。没有配置 LLM 时仍可手工添加事实。
 
 ### 缓冲处理状态与刷新
 
 摄入返回 `source_ids`、`operation_ids` 和 `operations`。对话批次的 `messages` 项各自记录
 `episode_id` 和关联的 `operation_ids`。通过 `GET /v1/operations/{operation_id}?space_id=…` 查询阶段，
 通过 `POST /v1/operations/{operation_id}/retry` 携带 `space_id` 重试已有任务。
-`GET /v1/processing` 按空间和可选会话分页浏览操作。
+`GET /v1/processing` 按空间和可选的 `session_id` 分页浏览操作，返回 `operations` 和 `next_after_id`。`limit` 默认 100，范围 1–1000。下一页将响应的 `next_after_id` 作为 `after_id` 传入；游标为 `null` 或返回空页时结束。
 `POST /v1/processing/flush` 可带 `session_id` 整理指定会话并等待本批核心处理。
 独立设置 `include_summaries` 可同时等待摘要，工作记忆使用自己的清理入口。
 
@@ -164,8 +164,8 @@ stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切�
 
 ## 模型抽取状态与错误
 
-buffered 返回 `202`，表示原文和任务已持久化。immediate 核心结果已提交时返回 `200`。
-`operations` 含 `state`、`phase`、`stored_raw`、`extraction_saved`、`core_committed`、
+自动抽取的 buffered 请求返回 `202`，表示原文和任务已持久化。immediate 核心结果已提交时返回 `200`。
+`operations` 的每项含 `operation_id`、`kind`、`state`、`phase`、`stored_raw`、`extraction_saved`、`core_committed`、
 `error_code` 及 `auxiliary_operation_ids`。摘要或向量辅助任务有独立进度。
 等待超时以 `processing_incomplete` 和 `timed_out` 返回当前操作与持久化标志，已接受的任务继续处理。
 缺少抽取模型返回 `503 llm_not_configured`，原文未写入。
@@ -175,9 +175,6 @@ buffered 返回 `202`，表示原文和任务已持久化。immediate 核心结�
 `GET /v1/episodes/{episode_id}?space_id=<SPACE_ID>` 显式读取完整原文。未知空间、他人空间和不存在的事件返回 404。
 响应包含 `id`、`space_id`、`session_id`、`role`、`agent_id`、`event_time`、`ingested_at` 和 `content`。
 
-`POST /v1/remember` 返回独立的 `summarization: {status, error_code}`。status 为 not_needed 或任务状态；摘要失败不撤销已接受的原文和抽取。
-`GET /v1/processing` 返回统一 counts/jobs。任务项含 source_kind、operation、phase、error_code 与 coverage；不再并列返回旧任务分区或 completed_through。
-`POST /v1/processing/flush` 增加 include_summaries=false；开启后等待本次固定边界内的抽取与摘要，retry_failed 仅重试所选阶段。
-摘要进度通过核心操作的 `auxiliary_operation_ids` 查询。显式等待摘要时调用 `/v1/processing/flush` 并设置 `include_summaries=true`。
+摘要进度通过核心操作的 `auxiliary_operation_ids` 查询。摘要失败不撤销已接受的原文和抽取。显式等待摘要时调用 `/v1/processing/flush` 并设置 `include_summaries=true`，将摘要纳入本次等待范围；`retry_failed=true` 重试范围内的失败操作。
 
 成功摘要是事件的唯一 agent 检索文本；原文不参与向量、词法、重排、来源补充或自动上下文展开。owner 的管理搜索与导出仍可访问原文。

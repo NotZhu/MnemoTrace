@@ -4,7 +4,7 @@ import pytest
 
 from mnemotrace import Config
 from mnemotrace.embed import HashingEmbedder
-from mnemotrace.postgres_memory import PostgresMemory
+from mnemotrace.memory import Memory
 from mnemotrace.retrieve.hybrid import date_terms
 from mnemotrace.retrieve.lexical import bm25_scores
 from mnemotrace.store.contracts import ChangeSet, CommitConditions, FactQuery, FactState, RecordKind, RecordWrite
@@ -21,7 +21,7 @@ from mnemotrace.worker import run_worker
 @pytest.fixture
 def memory(runtime, spaces, user):
     context = spaces.authorize(user, spaces.create(user, 'Retrieval').space_id)
-    return PostgresMemory(runtime, context, config=Config(access_boost=0))
+    return Memory(runtime, context, config=Config(access_boost=0))
 
 
 def test_exact_vector_and_bm25_use_full_scoped_corpus(memory, runtime, spaces, user, accounts):
@@ -29,12 +29,12 @@ def test_exact_vector_and_bm25_use_full_scoped_corpus(memory, runtime, spaces, u
     current = memory.add_fact('Ana', 'works_at', 'Orbit', valid_at=200)
     repeat = memory.add_fact('Bo', 'likes', 'Orbit Orbit', valid_at=150)
     sibling = spaces.authorize(user, spaces.create(user, 'Other space').space_id)
-    sibling_memory = PostgresMemory(runtime, sibling)
+    sibling_memory = Memory(runtime, sibling)
     sibling_memory.add_fact('Ana', 'works_at', 'Orbit Orbit Orbit', valid_at=200)
     other = accounts.create_user()
     try:
         unrelated = spaces.authorize(other, spaces.create(other, 'Other user').space_id)
-        PostgresMemory(runtime, unrelated).add_fact('Ana', 'works_at', 'Orbit', valid_at=200)
+        Memory(runtime, unrelated).add_fact('Ana', 'works_at', 'Orbit', valid_at=200)
         vector = tuple(memory._embedder.embed('works Orbit'))
         with memory.dao.read_snapshot() as view:
             for state, facts in ((FactState.CURRENT, (current, repeat)), (FactState.ALL, (old, current, repeat))):
@@ -175,7 +175,7 @@ def test_search_returns_snapshot_result_when_access_reinforcement_conflicts(memo
     memory._config.access_boost = 0.5
     commit = memory._commit
     with Database(cluster.runtime) as second:
-        concurrent = PostgresMemory(second, memory.context)
+        concurrent = Memory(second, memory.context)
 
         def interleaved_commit(*args, **kwargs):
             assert concurrent.search('What does Ana like?').answer() == 'Clover'
@@ -319,7 +319,7 @@ def test_source_failure_is_visible_and_retry_keeps_the_original(memory, runtime)
 
     source = memory.remember_raw('The synthetic archive code is Clover', 'chat')
     task = memory.source_vector_operation(source.id)
-    broken = PostgresMemory(runtime, memory.context, embedder=InvalidEmbedder(), embedding_model='hashing-v1')
+    broken = Memory(runtime, memory.context, embedder=InvalidEmbedder(), embedding_model='hashing-v1')
     assert broken._processing.run_one(task.operation_id)
     assert memory.operation(task.operation_id).error_code == 'embedding_invalid'
     assert memory.retrieve_episodes('Clover').limitations == ('source_vectors_failed',)
@@ -334,7 +334,7 @@ def test_source_vector_retrieves_without_lexical_overlap(memory, runtime):
         def embed(self, text):
             return [1.0, 0.0]
 
-    memory = PostgresMemory(runtime, memory.context, embedder=SynonymEmbedder(2), embedding_model='synthetic')
+    memory = Memory(runtime, memory.context, embedder=SynonymEmbedder(2), embedding_model='synthetic')
     source = memory.remember_raw('Celestial star', 'chat')
     assert memory.retrieve_episodes('Daybreak').episodes == ()
     operation = memory.source_vector_operation(source.id)
@@ -356,7 +356,7 @@ def test_snapshot_keeps_all_signals_at_one_version_and_failure_stays_visible(mem
     memory.add_fact('Ana', 'likes', 'Clover')
     request = memory._query('Clover', top_k=5)
     with Database(cluster.runtime) as second:
-        writer = PostgresMemory(second, memory.context)
+        writer = Memory(second, memory.context)
         with memory.dao.read_snapshot() as view:
             before = view.candidates(request)
             writer.add_fact('Bo', 'likes', 'Clover')

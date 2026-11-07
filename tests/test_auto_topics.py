@@ -8,9 +8,8 @@ import pytest
 
 from mnemotrace import Config
 
-from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryEngine
 from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY
-from tests.model_fixtures import MemoryService
 from mnemotrace.types import Fact
 
 
@@ -26,7 +25,7 @@ class RecordingLLM:
 
 def extracted(row, config=None):
     model = RecordingLLM([{"subject": "user", "predicate": "prefers", **row}])
-    mem = Memory(llm=model, config=config)
+    mem = MemoryEngine(llm=model, config=config)
     episode = mem.add("Synthetic conversation", user_id="synthetic-user")
     assert mem.consolidate()["facts_added"] == 1
     fact, = mem.fact_store.values()
@@ -59,7 +58,7 @@ def extracted(row, config=None):
     ("prefers", "Python 运行环境", "technology"), ("prefers", "股票", "finance"),
 ])
 def test_rule_topics_use_relations_or_unambiguous_object_evidence(predicate, obj, expected):
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact("Age Health Bank Lab", predicate, obj)
     assert (fact.topic, fact.topic_source) == (expected, "unset" if expected == "unknown" else "rule")
     if obj == "storage engine":
@@ -68,12 +67,12 @@ def test_rule_topics_use_relations_or_unambiguous_object_evidence(predicate, obj
 
 @pytest.mark.parametrize("obj", ["黑茶", "普洱", "白茶", "龙井", "披萨", "寿司"])
 def test_food_topic_additions_drive_profile_grouping_and_preserve_conflict_abstention(obj):
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact("user", "prefers", obj)
     assert (fact.topic, fact.topic_source) == ("food", "rule")
     item, = mem.structured_profile()["preferences"]["饮食"]
     assert item["fact_id"] == fact.id
-    conflict = Memory().add_fact("user", "prefers", f"{obj}与数据库")
+    conflict = MemoryEngine().add_fact("user", "prefers", f"{obj}与数据库")
     assert (conflict.topic, conflict.topic_source) == ("unknown", "unset")
 
 
@@ -128,7 +127,7 @@ def test_topics_follow_final_normalized_objects_without_losing_abstention(hint):
 
 def test_manual_updates_do_not_call_models():
     model = RecordingLLM([])
-    mem = Memory(llm=model)
+    mem = MemoryEngine(llm=model)
     fact = mem.add_fact("user", "prefers", "茶", topic="unknown")
     mem.update_fact(fact.id, reset_topic=True)
     assert (fact.topic, fact.topic_source) == ("food", "rule")
@@ -140,7 +139,7 @@ def test_manual_updates_do_not_call_models():
 
 
 def test_reset_is_metadata_only_even_on_historical_facts():
-    mem = Memory()
+    mem = MemoryEngine()
     fact = Fact("user", "prefers", "茶", source="extracted", invalid_at=2, expired_at=3,
                 topic="music", topic_source="user", category="偏好")
     fact.embedding = mem.embedder.embed(fact.text)
@@ -153,7 +152,7 @@ def test_reset_is_metadata_only_even_on_historical_facts():
 def test_invalid_topics_are_reported_without_echoing_payloads(caplog):
     rows = [{"subject": "user", "predicate": "prefers", "object": obj, "topic": "SYNTHETIC_SECRET"}
             for obj in ["茶", "羽毛球", "看书"]]
-    mem = Memory(llm=RecordingLLM(rows))
+    mem = MemoryEngine(llm=RecordingLLM(rows))
     mem.add("SYNTHETIC_CONVERSATION")
     assert mem.consolidate()["facts_added"] == 3
     warnings = [record for record in caplog.records if record.levelname == "WARNING"]
@@ -161,71 +160,24 @@ def test_invalid_topics_are_reported_without_echoing_payloads(caplog):
     assert "SYNTHETIC_SECRET" not in caplog.text and "SYNTHETIC_CONVERSATION" not in caplog.text
 
 
-def test_load_and_snapshot_import_do_not_backfill_topics(tmp_path):
-    mem = Memory()
+def test_snapshot_import_does_not_backfill_topics():
+    mem = MemoryEngine()
     fact = Fact("user", "prefers", "茶", category="偏好")
     fact.embedding = mem.embedder.embed(fact.text)
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
-    mem.save(str(tmp_path / "store"))
     model = RecordingLLM([])
-    restored = Memory.open(str(tmp_path / "store"), llm=model)
-    assert restored.fact_store.get(fact.id).topic_source == "unset" and model.calls == []
-    svc = MemoryService(data_dir=str(tmp_path / "service"), embedder_name="hashing", llm_name="")
-    svc.import_("u", data={"facts": [asdict(fact)], "episodes": []})
-    assert svc.memories("u")["facts"][0]["topic_source"] == "unset"
+    restored = MemoryEngine(llm=model)
+    restored.import_snapshot({"facts": [asdict(fact)], "episodes": []})
+    assert restored.fact_store.values()[0].topic_source == "unset" and model.calls == []
 
 
 def test_manual_unknown_survives_duplicate_extraction():
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact("default", "likes", "tea", topic="unknown")
     mem.add("I like tea.")
     mem.consolidate()
     assert len(mem.fact_store.values()) == 1
     assert (fact.topic, fact.topic_source) == ("unknown", "user")
-
-
-@pytest.mark.parametrize("enabled", [True, False])
-@pytest.mark.parametrize("model_topic", ["music", "SYNTHETIC_INVALID_TOPIC"])
-def test_service_switch_applies_to_extracted_attributes(tmp_path, monkeypatch, caplog, enabled, model_topic):
-    monkeypatch.setenv("MNEMOTRACE_LLM_TOPICS", "1" if enabled else "0")
-
-    class LifecycleLLM:
-        def __init__(self):
-            self.calls = []
-
-        def complete(self, prompt, system="", **kwargs):
-            self.calls.append((prompt, system, kwargs))
-            if "JSON 事实" in prompt:
-                return json.dumps([{"subject": "user", "predicate": "prefers", "object": "茶",
-                                    "topic": model_topic}])
-            if prompt.endswith("摘要："):
-                return "Synthetic summary"
-            return json.dumps([{"kind": "decision", "statement": "决定采用一项已经验证的合成实现方案",
-                                "why": "数据库需要索引", "topic": model_topic}])
-
-    service = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
-    model = LifecycleLLM()
-    service.llm = model
-    service.remember("u", "Synthetic conversation", session_id="synthetic-session", scope="long")
-    assert service.flush("u", "synthetic-session")["ok"]
-    facts = service.get("u").fact_store.values()
-    attr, = [f for f in facts if f.predicate == "prefers"]
-    accepted = enabled and model_topic == "music"
-    assert (attr.topic, attr.topic_source) == (("music", "llm") if accepted else ("food", "rule"))
-    attributes = [system for prompt, system, _ in model.calls if "JSON 事实" in prompt]
-    summaries = [system for prompt, system, _ in model.calls if prompt.endswith("摘要：")]
-    assert len(attributes) == 1
-    assert summaries == []
-    assert len(model.calls) == 1  # Short events do not request a summary.
-    assert all(("附加主题协议" in system) is enabled for system in attributes)
-    warnings = [record.getMessage() for record in caplog.records
-                if record.name == "mnemotrace.consolidate.topic_rules" and record.levelname == "WARNING"]
-    assert warnings == (["LLM topic fallback: invalid=1"]
-                        if enabled and model_topic == "SYNTHETIC_INVALID_TOPIC" else [])
-    assert all(text not in caplog.text for text in (
-        "SYNTHETIC_INVALID_TOPIC", "Synthetic conversation", "synthetic-session", "茶",
-        "决定采用一项已经验证的合成实现方案", "数据库需要索引",
-    ))
 
 
 def test_parallel_extraction_preserves_independent_hints():
@@ -239,7 +191,7 @@ def test_parallel_extraction_preserves_independent_hints():
             obj, topic = [("茶", "food"), ("羽毛球", "sports"), ("Inception", "film_tv")][index]
             return json.dumps([{"subject": "user", "predicate": "prefers", "object": obj, "topic": topic}])
     model = ParallelLLM()
-    mem = Memory(llm=model)
+    mem = MemoryEngine(llm=model)
     for index in range(3):
         mem.add(f"Synthetic row {index}", event_time=index + 1)
     assert mem.consolidate()["facts_added"] == 3
@@ -250,7 +202,7 @@ def test_parallel_extraction_preserves_independent_hints():
 
 
 def test_outcome_edits_recompute_using_statement_and_reason():
-    mem = Memory()
+    mem = MemoryEngine()
     fact = Fact("Health Bank Session", "lesson", "采用一项已验证的合成方案来检查实际效果",
                 text="采用一项已验证的合成方案来检查实际效果 （依据：数据库需要索引）",
                 category=OUTCOME_CATEGORY, topic="music", topic_source="user")
@@ -261,7 +213,7 @@ def test_outcome_edits_recompute_using_statement_and_reason():
 
 
 def test_outcome_reset_ignores_session_even_with_default_rendered_text():
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact("数据库索引合成会话", "lesson", "采用一项已经验证的合成实现方案", topic="music")
     mem.update_fact(fact.id, reset_topic=True)
     assert (fact.topic, fact.topic_source) == ("unknown", "unset")
@@ -270,11 +222,11 @@ def test_outcome_reset_ignores_session_even_with_default_rendered_text():
 @pytest.mark.parametrize("obj", ["STORAGE ENGINE", "storage-engine", "storage_engine",
                                  "storage  engine", "storage\tengine"])
 def test_automatic_topics_share_separator_boundaries(obj):
-    fact = Memory().add_fact("user", "uses", obj)
+    fact = MemoryEngine().add_fact("user", "uses", obj)
     assert (fact.topic, fact.topic_source) == ("technology", "rule")
 
 
 @pytest.mark.parametrize("obj", ["teammate", "engineer", "bookkeeping", "流行", "资料片段"])
 def test_automatic_topics_reject_similar_fragments(obj):
-    fact = Memory().add_fact("user", "uses", obj)
+    fact = MemoryEngine().add_fact("user", "uses", obj)
     assert (fact.topic, fact.topic_source) == ("unknown", "unset")

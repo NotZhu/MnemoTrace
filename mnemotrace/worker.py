@@ -3,7 +3,8 @@ from argparse import ArgumentParser
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import logging
 import os
-import time
+import signal
+from time import sleep
 
 from ._postgres_pipeline import PostgresPipeline
 from .config import Config
@@ -15,7 +16,8 @@ from .store.postgres.errors import AccountNotFound, DatabaseError, DatabaseUnava
 logger = logging.getLogger(__name__)
 
 
-def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=2, once=False):
+def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=2, once=False,
+               should_stop=lambda: False):
     def run(candidate):
         context, operation_id = candidate
         try:
@@ -25,7 +27,7 @@ def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=
 
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         running = {}
-        while True:
+        while not should_stop():
             try:
                 for candidate, future in tuple(running.items()):
                     if future.done():
@@ -35,6 +37,8 @@ def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=
                     for candidate in discovery.discover_processing(
                         100, embedding=(model, embedder.dim), include_extraction=llm is not None,
                     ):
+                        if should_stop():
+                            break
                         if candidate not in running:
                             running[candidate] = executor.submit(run, candidate)
                             if len(running) == concurrency:
@@ -50,7 +54,8 @@ def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=
                 if once:
                     raise
                 logger.warning('Postgres processing is temporarily unavailable')
-            time.sleep(1)
+            if not should_stop():
+                sleep(1)
 
 
 def main(argv=None):
@@ -64,18 +69,27 @@ def main(argv=None):
     name = os.environ.get('MNEMOTRACE_LLM', '').strip()
     embedder_name = os.environ.get('MNEMOTRACE_EMBEDDER', 'hashing')
     model = 'hashing-v1' if embedder_name == 'hashing' else embedder_name
+    stopping = False
+
+    def request_stop(*_):
+        # A signal can interrupt the main thread while it holds a threading lock.
+        nonlocal stopping
+        stopping = True
+
+    previous_handler = signal.signal(signal.SIGTERM, request_stop)
     try:
         llm, embedder = make_llm(name) if name else None, make_embedder(embedder_name)
-        config = Config()
-        config.llm_topics = os.environ.get('MNEMOTRACE_LLM_TOPICS') != '0'
+        config = Config.from_env()
         with (Database(DatabaseConfig.from_env()) as runtime,
               Database(DatabaseConfig.from_env('discovery'), purpose='discovery') as discovery):
             run_worker(discovery, runtime, config, llm, embedder, model,
-                       concurrency=args.concurrency, once=args.once)
+                       concurrency=args.concurrency, once=args.once, should_stop=lambda: stopping)
     except KeyboardInterrupt:
         return 0
     except (DatabaseError, ImportError, ValueError):
         parser.exit(1, 'Worker configuration or database access failed. Check credentials, schema and model settings.\n')
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
     return 0
 
 

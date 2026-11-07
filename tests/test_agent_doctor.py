@@ -11,14 +11,14 @@ from mnemotrace import agent_doctor as doctor
 from mnemotrace.credentials import store_key
 
 
-def test_runtime_exports_postgres_entry_and_operation_tools(tmp_path, monkeypatch):
+def test_runtime_exports_memory_entry_and_operation_tools(tmp_path, monkeypatch):
     pytest.importorskip('mcp')
     monkeypatch.setenv('PYTHONPATH', str(Path(__file__).resolve().parents[1]))
     monkeypatch.setenv('PYTHONDONTWRITEBYTECODE', '1')
     monkeypatch.chdir(tmp_path)
     probe = doctor._python_probe(sys.executable)
     assert probe['status'] == 'ok', probe
-    assert probe['data'] == {'missing_tools': [], 'postgres_entry': 'PostgresMemory'}
+    assert probe['data'] == {'missing_tools': [], 'memory_entry': 'Memory'}
 
 
 @pytest.mark.parametrize('remote', [False, True])

@@ -5,16 +5,15 @@
 模型；无 captioner 的路径必须降级为占位符而不是崩溃（零配置不变量）。"""
 from __future__ import annotations
 
-import importlib.util
-import shutil
-import tempfile
+from io import BytesIO
 
 import pytest
+
+
 
 from mnemotrace.connectors import documents as D
 from mnemotrace.llm import vision
 from mnemotrace.server import openai_compat as oc
-from tests.model_fixtures import MemoryService
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32  # 魔数检测所需的最低限度文件头
 
@@ -23,15 +22,6 @@ class _StubCaptioner:
     """替代视觉模型：任何带 `.caption(ref, prompt)` 方法的对象都算 captioner。"""
     def caption(self, image_ref, prompt=None):  # noqa: ARG002
         return "a red bicycle leaning on a wall"
-
-
-@pytest.fixture()
-def svc():
-    d = tempfile.mkdtemp(prefix="mnemotrace_doc_")
-    try:
-        yield MemoryService(data_dir=d, embedder_name="hashing", llm_name="")  # captioner=None，离线
-    finally:
-        shutil.rmtree(d, ignore_errors=True)
 
 
 # --- 纯辅助函数（不涉及 service） ----------------------------------------------
@@ -43,6 +33,15 @@ def test_detect_kind():
     assert D.detect_kind(b"\xff\xd8\xff\xe0", None, None) == "image"  # JPEG 魔数，无其他提示
     assert D.detect_kind("plain notes", "n.txt", "text/plain") == "text"
     assert D.detect_kind(b"PK\x03\x04", "a.docx", None) == "docx"
+
+
+def test_docx_parser_uses_optional_dependency():
+    docx = pytest.importorskip("docx")
+    document = docx.Document()
+    document.add_paragraph("Synthetic project note")
+    stream = BytesIO()
+    document.save(stream)
+    assert D.document_text(stream.getvalue(), "docx") == "Synthetic project note"
 
 
 def test_vision_caption_image_guards():
@@ -59,41 +58,6 @@ def test_vision_image_refs_and_content():
 
 
 # --- 经由 service 的文档导入 ----------------------------------------------------
-
-
-def test_text_document_is_ingested_and_searchable(svc):
-    res = svc.import_document("u", "Apollo program notes. Lead engineer: Wei Zhang. Launched 1969.",
-                              filename="notes.txt", content_type="text/plain")
-    assert res["ok"] is True and res["kind"] == "text"
-    mem = svc.memories("u", include_sensitive=True)
-    assert mem["counts"]["episodes"] >= 1
-    assert any("Apollo" in ep["content"] for ep in mem["episodes"])
-    # 而且可以作为 lean context 检索到
-    ctx = svc.recall("u", "Apollo program", lean=True)["context"]
-    assert "Apollo" in ctx
-
-
-def test_image_is_captioned_into_memory(svc):
-    svc.captioner = _StubCaptioner()  # 假装配置了视觉模型
-    res = svc.import_document("u", _PNG, filename="bike.png", content_type="image/png")
-    assert res["ok"] is True and res["kind"] == "image"
-    mem = svc.memories("u", include_sensitive=True)
-    assert any("red bicycle" in ep["content"] for ep in mem["episodes"])
-
-
-def test_image_without_captioner_stores_placeholder(svc):
-    # captioner 为 None（离线）-> 存入占位符，图片依然留下痕迹，且不崩溃
-    res = svc.import_document("u", _PNG, filename="x.png", content_type="image/png")
-    assert res["ok"] is True and res["kind"] == "image"
-    mem = svc.memories("u", include_sensitive=True)
-    assert any("[image]" in ep["content"] for ep in mem["episodes"])
-
-
-def test_pdf_without_pypdf_returns_actionable_error(svc):
-    if importlib.util.find_spec("pypdf") is not None:
-        pytest.skip("pypdf installed — the missing-dep error path isn't exercised")
-    res = svc.import_document("u", b"%PDF-1.4 not-really", filename="a.pdf", content_type="application/pdf")
-    assert res["ok"] is False and "pypdf" in res["error"]
 
 
 # --- OpenAI 兼容层：经代理发送的图片会被以说明文字的形式记住 --------------------

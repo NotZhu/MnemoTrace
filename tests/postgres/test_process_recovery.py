@@ -13,7 +13,7 @@ from mnemotrace import Config
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from mnemotrace.embed import HashingEmbedder
 from mnemotrace.llm import FakeLLM
-from mnemotrace.postgres_memory import PostgresMemory
+from mnemotrace.memory import Memory
 from mnemotrace.store.postgres import Accounts, Database
 from mnemotrace.store.postgres.dao import PostgresDAO
 from mnemotrace.store.postgres.errors import (
@@ -98,7 +98,7 @@ def _model(calls, pause=None):
 @pytest.fixture
 def memory(runtime, spaces, user):
     space = spaces.create(user, 'Process recovery')
-    return PostgresMemory(runtime, spaces.authorize(user, space.space_id), llm=_model([]))
+    return Memory(runtime, spaces.authorize(user, space.space_id), llm=_model([]))
 
 
 def _accept(memory, key='one', content='Synthetic lab', session='chat'):
@@ -144,7 +144,7 @@ def _interrupt_transaction(config, scope, stage, committed, operation_id, *, rea
                 _pause(ready, resume)
 
     with Database(config) as runtime, patch.object(PostgresDAO, '_transaction', interrupt):
-        memory = PostgresMemory(runtime, scope, llm=_model([]))
+        memory = Memory(runtime, scope, llm=_model([]))
         result = (_accept(memory) if stage == 'accept'
                   else memory._processing.run_one(operation_id, force=True))
         assert checkpoint_committed
@@ -156,7 +156,7 @@ def _recover(runtime_config, discovery_config, scope, operation_id, *, ready, re
     llm = _model(calls)
     with (Database(runtime_config) as runtime,
           Database(discovery_config, purpose='discovery') as discovery):
-        memory = PostgresMemory(runtime, scope, llm=llm)
+        memory = Memory(runtime, scope, llm=llm)
         if operation_id is None:
             operation_id = _accept(memory)
         memory.flush_processing('chat', timeout=0)
@@ -237,7 +237,7 @@ def _run_stage(config, scope, operation_id, pause_at, *, ready, resume):
     embedder = _PausedEmbedder(pause) if pause_at == 'embedding' else None
     gates = {'model': pause, 'heartbeat': lambda: _wait_for_resume(resume)}
     with Database(config) as runtime:
-        memory = PostgresMemory(runtime, scope, llm=_model(calls, gates.get(pause_at)),
+        memory = Memory(runtime, scope, llm=_model(calls, gates.get(pause_at)),
                                 embedder=embedder, embedding_model='hashing-v1')
         if pause_at == 'heartbeat':
             with (patch.object(Tasks, 'renew', fail_renewal),
@@ -291,7 +291,7 @@ def test_repeated_process_death_exhausts_attempt_budget(memory, cluster):
 
 def _accept_in_process(config, scope, *, ready, resume):
     with Database(config) as runtime:
-        memory = PostgresMemory(runtime, scope, llm=_model([]))
+        memory = Memory(runtime, scope, llm=_model([]))
         _pause(ready, resume)
         return memory.remember_messages('chat', (dialogue('one', 'Synthetic lab'),))
 
@@ -332,7 +332,7 @@ def test_space_write_lock_does_not_block_sibling_space(memory, cluster, spaces):
 
 def test_discovered_tasks_commit_only_in_their_own_spaces(memory, cluster, runtime, product_scope):
     other_context, _ = product_scope('Other account')
-    other = PostgresMemory(runtime, other_context, llm=_model([]))
+    other = Memory(runtime, other_context, llm=_model([]))
     first = _accept(memory)
     second = _accept(other, content='Another person at Another lab')
     for scoped in (memory, other):
@@ -460,7 +460,7 @@ def _delete_in_process(config, admin_config, context, scope, *, ready, resume):
         with Database(admin_config, purpose='admin') as admin:
             return Accounts(admin).delete_user(context.user_id)
     with Database(config) as runtime:
-        _delete_scope(PostgresMemory(runtime, context), None, scope)
+        _delete_scope(Memory(runtime, context), None, scope)
     return True
 
 
@@ -496,7 +496,7 @@ def test_delete_prevents_late_processing_writes(memory, cluster, runtime, spaces
     user_id = memory.context.user_id
     key = accounts.issue_key(user_id)
     sibling = spaces.create(user_id, 'Sibling')
-    sibling_memory = PostgresMemory(runtime, spaces.authorize(user_id, sibling.space_id))
+    sibling_memory = Memory(runtime, spaces.authorize(user_id, sibling.space_id))
     sibling_source = sibling_memory.remember_raw('Sibling synthetic source', 'chat')
     settings = memory.set_settings(extract_instruction='Keep this setting on clear')
     seed = memory.add_fact('Synthetic maintainer', 'works_at', 'Seed lab')
@@ -550,7 +550,7 @@ def _rebuild_in_process(config, context, *, ready, resume):
         _pause(ready, resume)
 
     with Database(config) as runtime, patch.object(GraphProjection, 'prune', pause_after_rebuild):
-        return PostgresMemory(runtime, context).rebuild_graph()
+        return Memory(runtime, context).rebuild_graph()
 
 
 def test_clear_waits_for_graph_rebuild_and_removes_rebuilt_edges(memory, cluster, runtime):
@@ -601,7 +601,7 @@ def test_wrong_embedding_dimension_keeps_the_saved_product_for_retry(memory, run
             return [[1.0] for _ in texts]
 
     operation_id = _pending_write(memory, 'core')
-    invalid = PostgresMemory(runtime, memory.context, embedder=InvalidDimension(), embedding_model='hashing-v1',
+    invalid = Memory(runtime, memory.context, embedder=InvalidDimension(), embedding_model='hashing-v1',
                              llm=_model([]))
     assert not invalid.flush_processing('chat')['ok']
     status = memory.operation(operation_id)

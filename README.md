@@ -5,40 +5,15 @@
 
 Long-term memory for LLM agents, with a Python library, HTTP service, MCP tools, TypeScript SDK, and a management console.
 
-MnemoTrace stores conversation episodes, extracts facts with time and provenance, and retrieves relevant context across sessions. Memory updates can retain superseded facts for historical queries. Natural-language fact extraction requires a configured LLM. Raw records, explicit facts, existing memory reads, and snapshot restoration work without one. Hashing embeddings remain available for lexical smoke checks; they do not establish semantic retrieval quality.
+MnemoTrace stores conversation episodes, extracts facts with time and provenance, and retrieves relevant context across sessions. Memory updates can retain superseded facts for historical queries. Natural-language fact extraction requires a configured LLM. Raw records, explicit facts, existing memory reads, and database restoration work without one. Hashing embeddings remain available for lexical smoke checks; they do not establish semantic retrieval quality.
 
 [中文](README.zh-CN.md) · [Documentation](docs/README.md) · [Quickstart](docs/quickstart.md)
 
 ## Try it
 
-From a source checkout, with Python 3.10 or later:
+Start with the [deployment guide](deploy/README.md) to initialize Postgres and create an account and space. Use the [quickstart](docs/quickstart.md) to ingest a conversation and query the result.
 
-```sh
-python -m pip install ".[llm]"
-# Set MNEMOTRACE_LLM and the provider credentials before running.
-mnemotrace-quickstart
-```
-
-Optional persistent vector backends are available via `mnemotrace-memory[qdrant]` and `mnemotrace-memory[lancedb]`. Qdrant supports local and remote modes; see the [configuration reference](docs/reference/configuration.md#可选-qdrant) for setup and lifecycle requirements.
-
-The HTTP service, MCP tools, SDK clients, and CLI use Postgres-backed memory in explicitly selected spaces. Direct Python integrations use `PostgresMemory`. Install `mnemotrace-memory[postgres]` for direct database access or `mnemotrace-memory[serve]` for the service. See [database setup](docs/reference/configuration.md#postgres-数据库基础).
-
-For a minimal example using the in-memory Python library:
-
-```python
-from mnemotrace import Memory
-from mnemotrace.llm.providers import make_llm
-
-memory = Memory(llm=make_llm("deepseek"))
-memory.remember_messages([
-    {"message_id": "m1", "role": "user", "content": "I live in Paris."}
-], user_id="user123", session_id="demo")
-assert memory.flush_messages(user_id="user123")["ok"]
-print(memory.search("Where do I live?", user_id="user123").answer())
-# Paris
-```
-
-This instance lives in memory. See the [quickstart](docs/quickstart.md) to save and reopen it, or [deployment](deploy/README.md) to run a persistent service and console.
+The HTTP service, MCP tools, SDK clients, CLI and direct Python integrations use explicitly selected Postgres spaces. Install `mnemotrace-memory[serve]` for the service or `mnemotrace-memory[postgres,llm]` for the Python quickstart. The in-memory `MemoryEngine` class remains available for offline algorithm experiments.
 
 ## Choose an entry point
 

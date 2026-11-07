@@ -8,13 +8,13 @@ from __future__ import annotations
 
 from mnemotrace.config import Config
 from mnemotrace.embed import HashingEmbedder
-from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryEngine
 
 _TEXT = "My name is Wei and I live in Shenzhen."  # 固定响应包含 (Wei, lives_in, Shenzhen)
 
 
-def _mem(ann: bool) -> Memory:
-    m = Memory(config=Config(ann_candidates=ann), embedder=HashingEmbedder(64))
+def _mem(ann: bool) -> MemoryEngine:
+    m = MemoryEngine(config=Config(ann_candidates=ann), embedder=HashingEmbedder(64))
     m.add(_TEXT, user_id="u", consolidate=True)
     return m
 

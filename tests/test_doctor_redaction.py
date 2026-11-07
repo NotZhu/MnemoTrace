@@ -64,7 +64,7 @@ def test_diagnose_preserves_structure_and_sanitizes_content(monkeypatch, key, re
     assert report["api_url"] == "http://example.invalid/<REDACTED>"
     assert [check["name"] for check in report["checks"]] == [p["name"] for p in probes] + ["LLM extraction"]
     assert [check["status"] for check in report["checks"]] == ["ok", "ok", remote_status, "warn"]
-    assert report["checks"][-1]["data"] == {"llm_configured": False, "model_call_performed": False}
+    assert report["checks"][-1]["data"] == {"llm_configured": None, "model_call_performed": False}
     remote = report["checks"][2]
     assert remote["detail"] == "Synthetic provider output: Bearer <REDACTED>"
     assert remote["command"] == ["HTTP", "http://example.invalid/<REDACTED>", "<REDACTED>"]
@@ -78,6 +78,33 @@ def test_diagnose_preserves_structure_and_sanitizes_content(monkeypatch, key, re
     rendered = doctor.render_report(report)
     assert "summary: " + str(report["summary"]["ok"]) + " passed" in rendered
     assert f"{'PASS' if remote_status == 'ok' else remote_status.upper()} Remote HTTP lifecycle" in rendered
+
+
+@pytest.mark.parametrize("remote", [False, True], ids=["local", "remote"])
+@pytest.mark.parametrize("configured,detail", [
+    (True, "LLM configuration detected"),
+    (False, "requires MNEMOTRACE_LLM"),
+    (None, "could not be determined"),
+])
+def test_doctor_uses_the_target_spaces_model_configuration(monkeypatch, remote, configured, detail):
+    space = "synthetic-space"
+    stats = {"space_id": space, "storage": "postgres"}
+    if configured is not None:
+        stats["llm_configured"] = configured
+    monkeypatch.setattr(doctor, "_python_probe", lambda *a: {"name": "Python", "status": "ok"})
+    monkeypatch.setattr(doctor, "_client_probe", lambda *a: [])
+    monkeypatch.setattr(doctor, "_probe_python", lambda *a, **k: {
+        "name": "stdio", "status": "ok", "data": {**stats, "llm_configured": True} if remote else stats,
+    })
+    monkeypatch.setattr(doctor, "_http_get_json", lambda *a: stats)
+
+    target = {"api_url": "http://example.invalid", "api_key": "synthetic-key"} if remote else {"user_id": "user"}
+    report = doctor.diagnose(client="none", space_id=space, **target)
+
+    assert report["ok"]
+    model = report["checks"][-1]
+    assert model["data"] == {"llm_configured": configured, "model_call_performed": False}
+    assert detail in model["detail"]
 
 
 @pytest.mark.parametrize("json_mode", [False, True], ids=["text", "json"])

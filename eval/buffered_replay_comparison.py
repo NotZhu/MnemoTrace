@@ -28,9 +28,8 @@ def _optional_version(name):
 
 HARNESS = Path(__file__).parent
 ROOT = HARNESS.parent
-# 冻结的对照运行时。必须是 main 上可达的提交：分支被 rebase 后旧 SHA 会消失，
-# 默认值随之无法解析（同一内容在 main 上的改写副本是 3089ce1）。
-DEFAULT_RUNTIME = '3089ce1'
+# Pin a main commit that contains both the historical file service and the window kernel.
+DEFAULT_RUNTIME = '9bdc903'
 FILES = ('buffered_replay.py', 'buffered_replay_runner.py', 'buffered_replay_report.py',
          'buffered_replay_comparison.py', 'extraction_quality.py', 'extraction_budget.py',
          'extraction_runner.py', 'extraction_comparison.py')

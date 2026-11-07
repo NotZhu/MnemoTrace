@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from mnemotrace import Config
 
-from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryEngine
 from mnemotrace.types import Episode
 from mnemotrace.util import DAY
 
@@ -23,8 +23,8 @@ SESSIONS = [
 ]
 
 
-def build(summarize=True) -> Memory:
-    mem = Memory()
+def build(summarize=True) -> MemoryEngine:
+    mem = MemoryEngine()
     eps = [mem.add(text, user_id="u1", session_id=f"s{i}", event_time=BASE + day * DAY)
            for i, (text, day) in enumerate(SESSIONS)]
     for ep in eps:  # 离线打上日期戳，与 eval 的 ingest 流程保持一致
@@ -112,7 +112,7 @@ def test_evidence_budgeting_keeps_exact_raw_detail_under_tight_budget():
     from mnemotrace.types import Fact
 
     def make(enabled: bool) -> str:
-        mem = Memory(config=Config(evidence_budgeting=enabled))
+        mem = MemoryEngine(config=Config(evidence_budgeting=enabled))
         ep = mem.add(
             "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
             user_id="u1",
@@ -164,7 +164,7 @@ def test_lean_context_is_leaner_than_full_history():
 
 
 def test_consolidate_full_builds_facts_and_summaries():
-    mem = Memory()
+    mem = MemoryEngine()
     eps = [mem.add(t, user_id="u1", session_id=f"s{i}", event_time=BASE + d * DAY)
            for i, (t, d) in enumerate(SESSIONS)]
     stats = mem.consolidate_full(fact_episodes=eps, summary_episodes=eps)
@@ -202,7 +202,7 @@ def test_user_fact_is_authoritative_over_extraction():
 def test_memory_crud_add_edit_delete():
     """管理界面的操作：add_fact（用户撰写）、update_fact（编辑并重新署名）、delete_fact
     （被遗忘权，硬删除）。"""
-    mem = Memory()
+    mem = MemoryEngine()
     f = mem.add_fact("user", "works_at", "ByteDance", user_id="u1")
     assert f.source == "user" and f.text == "user works at ByteDance"
     assert mem.fact_store.get(f.id) is not None
@@ -217,7 +217,7 @@ def test_memory_crud_add_edit_delete():
 
 
 def test_update_fact_rebuilds_graph_relation():
-    mem = Memory()
+    mem = MemoryEngine()
     f = mem.add_fact("user", "works_at", "ByteDance", user_id="u1")
 
     mem.update_fact(f.id, object="Moonshot AI")
@@ -230,7 +230,7 @@ def test_update_fact_rebuilds_graph_relation():
 
 
 def test_delete_fact_removes_graph_export_edge():
-    mem = Memory()
+    mem = MemoryEngine()
     f = mem.add_fact("user", "has_disease", "diabetes", user_id="u1")
     assert f.id in {edge["fact_id"] for edge in mem.graph_data("u1")["edges"]}
 
@@ -376,7 +376,7 @@ def test_lean_context_auto_adds_preference_records():
 
 
 def test_lean_context_auto_adds_explicit_preference_records():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I prefer aisle seats and avoid red-eye flights.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
@@ -390,7 +390,7 @@ def test_lean_context_auto_adds_explicit_preference_records():
 def test_lean_context_auto_adds_procedural_memory_block():
     from mnemotrace.types import Fact
 
-    mem = Memory()
+    mem = MemoryEngine()
     ep = mem.add(
         "PAT runbook source: rotate the PAT by opening security settings and updating CI secrets.",
         user_id="u1",
@@ -422,7 +422,7 @@ def test_lean_context_auto_adds_procedural_memory_block():
 
 
 def test_lean_context_auto_adds_dietary_restriction_records():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I'm vegetarian and allergic to peanuts.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
@@ -440,7 +440,7 @@ def test_lean_context_auto_adds_aggregation_evidence():
 
 
 def test_aggregation_evidence_keeps_raw_candidates_when_summaries_drop_details():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add(
         "I recently finished a Tamiya 1/48 scale Spitfire Mk.V model kit.",
         user_id="u1",
@@ -492,7 +492,7 @@ def test_structured_aggregation_candidates_filter_furniture_accessories():
 
 
 def test_lean_context_renders_structured_aggregation_candidates():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I bought scratch guards from IKEA to protect the furniture.", user_id="u1", event_time=BASE)
     mem.add("I just got a new coffee table from West Elm.", user_id="u1", event_time=BASE + DAY)
     mem.add("I finally assembled that IKEA bookshelf for my home office.", user_id="u1", event_time=BASE + 2 * DAY)
@@ -584,7 +584,7 @@ def test_aggregation_constraint_filter_excludes_conflicting_month_values():
 
 
 def test_numeric_aggregation_candidates_can_be_disabled():
-    mem = Memory(config=Config(numeric_aggregation_candidates=False))
+    mem = MemoryEngine(config=Config(numeric_aggregation_candidates=False))
     mem.add("I attended a digital marketing workshop. I paid $500 to attend.", user_id="u1", event_time=BASE)
 
     ctx = mem.lean_context(
@@ -601,7 +601,7 @@ def test_numeric_aggregation_candidates_can_be_disabled():
 
 
 def test_lean_context_auto_adds_duration_evidence_for_time_totals():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I started reading 'The Nightingale' today.", user_id="u1", session_id="s1", event_time=BASE)
     mem.add("I finished reading 'The Nightingale' today.", user_id="u1", session_id="s2",
             event_time=BASE + 14 * DAY)
@@ -643,7 +643,7 @@ def test_lean_context_auto_adds_current_state_for_now_queries():
 
 
 def test_lean_context_as_of_profile_does_not_leak_current_facts():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("Wei works at Tencent.", user_id="u1", session_id="old", event_time=BASE)
     mem.add("Wei works at Moonshot AI.", user_id="u1", session_id="new", event_time=BASE + 30 * DAY)
     mem.consolidate()
@@ -661,7 +661,7 @@ def test_lean_context_as_of_profile_does_not_leak_current_facts():
 
 
 def test_lean_context_adds_history_for_previous_value_queries():
-    mem = Memory()
+    mem = MemoryEngine()
     old = mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
     new = mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
 
@@ -680,7 +680,7 @@ def test_lean_context_adds_history_for_previous_value_queries():
 
 
 def test_search_answers_previous_value_from_supersession_history():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
     mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
 
@@ -700,7 +700,7 @@ def test_search_answers_previous_value_from_supersession_history():
 def test_temporal_history_query_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(temporal_history_queries=False))
+    mem = MemoryEngine(config=Config(temporal_history_queries=False))
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
     mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
 
@@ -719,7 +719,7 @@ def test_temporal_history_query_can_be_disabled_for_ablation():
 
 
 def test_lean_context_adds_evolution_chain_for_current_lookup():
-    mem = Memory()
+    mem = MemoryEngine()
     old = mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
     new = mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
 
@@ -740,7 +740,7 @@ def test_lean_context_adds_evolution_chain_for_current_lookup():
 
 
 def test_lean_context_evolution_chain_respects_as_of_boundary():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
     mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
 
@@ -759,7 +759,7 @@ def test_lean_context_evolution_chain_respects_as_of_boundary():
 
 
 def test_context_for_adds_fact_evolution_chain():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
     mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
 
@@ -773,7 +773,7 @@ def test_context_for_adds_fact_evolution_chain():
 def test_chain_evidence_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(chain_evidence=False))
+    mem = MemoryEngine(config=Config(chain_evidence=False))
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
     mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
 
@@ -793,7 +793,7 @@ def test_lean_context_adds_provenance_raw_evidence_for_retrieved_fact():
     from mnemotrace.config import Config
     from mnemotrace.types import Fact
 
-    mem = Memory(config=Config(evidence_planner=False))
+    mem = MemoryEngine(config=Config(evidence_planner=False))
     ep = mem.add(
         "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
         user_id="u1",
@@ -829,7 +829,7 @@ def test_provenance_evidence_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
     from mnemotrace.types import Fact
 
-    mem = Memory(config=Config(evidence_planner=False, provenance_evidence=False))
+    mem = MemoryEngine(config=Config(evidence_planner=False, provenance_evidence=False))
     ep = mem.add(
         "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
         user_id="u1",
@@ -863,7 +863,7 @@ def test_provenance_evidence_can_be_disabled_for_ablation():
 def test_provenance_raw_evidence_dedups_full_detail_chunk():
     from mnemotrace.types import Fact
 
-    mem = Memory()
+    mem = MemoryEngine()
     ep = mem.add(
         "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
         user_id="u1",
@@ -899,7 +899,7 @@ def test_provenance_source_episode_is_promoted_into_detail_chunks():
     from mnemotrace.types import Fact
 
     def make(enabled: bool) -> str:
-        mem = Memory(
+        mem = MemoryEngine(
             config=Config(
                 evidence_planner=False,
                 provenance_evidence=False,
@@ -953,7 +953,7 @@ def test_chain_provenance_promotes_superseded_source_for_history_query():
     from mnemotrace.config import Config
 
     def make(enabled: bool) -> str:
-        mem = Memory(
+        mem = MemoryEngine(
             config=Config(
                 chain_evidence=enabled,
                 provenance_evidence=False,
@@ -999,7 +999,7 @@ def test_provenance_raw_evidence_is_hidden_in_redacted_context():
     from mnemotrace.config import Config
     from mnemotrace.types import Fact
 
-    mem = Memory(config=Config(evidence_planner=False))
+    mem = MemoryEngine(config=Config(evidence_planner=False))
     ep = mem.add(
         "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
         user_id="u1",
@@ -1034,7 +1034,7 @@ def test_provenance_raw_evidence_is_hidden_in_redacted_context():
 def test_context_for_adds_provenance_raw_evidence_for_fact_sources():
     from mnemotrace.types import Fact
 
-    mem = Memory()
+    mem = MemoryEngine()
     ep = mem.add(
         "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
         user_id="u1",
@@ -1059,7 +1059,7 @@ def test_context_for_adds_provenance_raw_evidence_for_fact_sources():
 
 
 def test_current_state_preserves_multi_valued_attributes():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Wei", "owns", "a bike", user_id="u1")
     mem.add_fact("Wei", "owns", "a camera", user_id="u1")
 
@@ -1076,7 +1076,7 @@ def test_current_state_preserves_multi_valued_attributes():
 
 
 def test_lean_context_uses_multi_hop_subqueries_for_detail_chunks():
-    mem = Memory()
+    mem = MemoryEngine()
     eps = [
         mem.add("My sister Maya is a pediatrician at a children's hospital.", user_id="u1",
                 session_id="s1", event_time=BASE),
@@ -1102,7 +1102,7 @@ def test_lean_context_uses_multi_hop_subqueries_for_detail_chunks():
 
 
 def test_lean_context_graph_paths_use_clean_multihop_plan():
-    mem = Memory()
+    mem = MemoryEngine()
     eps = [
         mem.add("My sister Anna is a lawyer.", user_id="u1", session_id="s1", event_time=BASE),
         mem.add("My sister Maya is a pediatrician.", user_id="u1", session_id="s2", event_time=BASE + DAY),
@@ -1126,7 +1126,7 @@ def test_lean_context_graph_paths_use_clean_multihop_plan():
 
 
 def test_multihop_planner_includes_cold_tier_relation_facts():
-    mem = Memory()
+    mem = MemoryEngine()
     eps = [
         mem.add("My sister Maya is a pediatrician.", user_id="u1", session_id="s1", event_time=BASE),
         mem.add("Maya just moved to Seattle.", user_id="u1", session_id="s2", event_time=BASE + DAY),
@@ -1152,7 +1152,7 @@ def test_multihop_planner_includes_cold_tier_relation_facts():
 
 
 def test_deleted_relation_fact_does_not_drive_multihop_planner():
-    mem = Memory()
+    mem = MemoryEngine()
     eps = [
         mem.add("My sister Maya is a pediatrician.", user_id="u1", session_id="s1", event_time=BASE),
         mem.add("Maya just moved to Seattle.", user_id="u1", session_id="s2", event_time=BASE + DAY),
@@ -1168,7 +1168,7 @@ def test_deleted_relation_fact_does_not_drive_multihop_planner():
 
 
 def test_graph_scores_expand_beyond_one_hop_for_bridge_facts():
-    mem = Memory()
+    mem = MemoryEngine()
     direct = mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     bridge = mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     second_hop = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -1186,7 +1186,7 @@ def test_graph_scores_expand_beyond_one_hop_for_bridge_facts():
 
 
 def test_graph_scores_respect_as_of_during_expansion():
-    mem = Memory()
+    mem = MemoryEngine()
     direct = mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     future_bridge = mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     older_target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
@@ -1212,7 +1212,7 @@ def test_graph_scores_respect_as_of_during_expansion():
 def test_graph_proximity_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(graph_proximity=False))
+    mem = MemoryEngine(config=Config(graph_proximity=False))
     direct = mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     bridge = mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     second_hop = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -1235,7 +1235,7 @@ def test_graph_proximity_can_be_disabled_for_ablation():
 def test_graph_relation_awareness_prioritizes_query_relevant_edges():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(graph_relation_awareness=True))
+    mem = MemoryEngine(config=Config(graph_relation_awareness=True))
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     distractor = mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -1255,7 +1255,7 @@ def test_graph_relation_awareness_prioritizes_query_relevant_edges():
 def test_graph_relation_awareness_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(graph_relation_awareness=False))
+    mem = MemoryEngine(config=Config(graph_relation_awareness=False))
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     distractor = mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -1276,7 +1276,7 @@ def test_graph_path_reinforcement_boosts_multi_path_targets():
     from mnemotrace.config import Config
 
     def build_mem(enabled: bool):
-        mem = Memory(config=Config(graph_path_reinforcement=enabled))
+        mem = MemoryEngine(config=Config(graph_path_reinforcement=enabled))
         mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
         mem.add_fact("Wei", "mentor", "Maya", user_id="u1", valid_at=BASE + DAY)
         mem.add_fact("Lin", "works_on", "Atlas", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -1309,7 +1309,7 @@ def test_graph_path_reinforcement_boosts_multi_path_targets():
 
 
 def test_graph_self_anchor_retrieves_first_person_graph_paths():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("u1", "works_on", "Atlas", user_id="u1", valid_at=BASE)
     target = mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY)
     live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
@@ -1330,7 +1330,7 @@ def test_graph_self_anchor_retrieves_first_person_graph_paths():
 def test_graph_self_anchor_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(graph_self_anchor=False))
+    mem = MemoryEngine(config=Config(graph_self_anchor=False))
     mem.add_fact("u1", "works_on", "Atlas", user_id="u1", valid_at=BASE)
     target = mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY)
     live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
@@ -1349,7 +1349,7 @@ def test_graph_self_anchor_can_be_disabled_for_ablation():
 
 
 def test_graph_entity_alias_anchor_matches_unique_short_name():
-    mem = Memory()
+    mem = MemoryEngine()
     target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
     live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
 
@@ -1369,7 +1369,7 @@ def test_graph_entity_alias_anchor_matches_unique_short_name():
 def test_graph_entity_alias_anchor_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(graph_entity_alias_anchor=False))
+    mem = MemoryEngine(config=Config(graph_entity_alias_anchor=False))
     target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
     live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
 
@@ -1387,7 +1387,7 @@ def test_graph_entity_alias_anchor_can_be_disabled_for_ablation():
 
 
 def test_graph_entity_alias_anchor_requires_unique_token():
-    mem = Memory()
+    mem = MemoryEngine()
     first = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
     second = mem.add_fact("Moonshot Labs", "based_in", "Shanghai", user_id="u1", valid_at=BASE + DAY)
     live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
@@ -1405,7 +1405,7 @@ def test_graph_entity_alias_anchor_requires_unique_token():
 
 
 def test_graph_negative_constraints_filter_excluded_location_paths():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
     mem.add_fact("Wei", "works_on", "Zephyr", user_id="u1", valid_at=BASE + DAY)
     target = mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -1426,7 +1426,7 @@ def test_graph_negative_constraints_filter_excluded_location_paths():
 def test_graph_negative_constraints_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(graph_negative_constraints=False))
+    mem = MemoryEngine(config=Config(graph_negative_constraints=False))
     mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
     mem.add_fact("Wei", "works_on", "Zephyr", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -1439,7 +1439,7 @@ def test_graph_negative_constraints_can_be_disabled_for_ablation():
 
 
 def test_multihop_planner_reaches_company_location_chain():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -1454,7 +1454,7 @@ def test_multihop_planner_reaches_company_location_chain():
 def test_multihop_planner_location_chain_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(planner_location_chains=False))
+    mem = MemoryEngine(config=Config(planner_location_chains=False))
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -1468,7 +1468,7 @@ def test_multihop_planner_location_chain_can_be_disabled_for_ablation():
 
 
 def test_multihop_planner_reaches_project_location_chain():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
     mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY)
 
@@ -1482,7 +1482,7 @@ def test_multihop_planner_reaches_project_location_chain():
 def test_multihop_planner_project_chain_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(planner_project_chains=False))
+    mem = MemoryEngine(config=Config(planner_project_chains=False))
     mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
     mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY)
 
@@ -1582,7 +1582,7 @@ def test_heat_tiered_eviction_pages_cold_preserves_durable():
     持久的偏好/身份 fact 永不被驱逐。"""
     from mnemotrace.types import Fact
 
-    mem = Memory()
+    mem = MemoryEngine()
     u = "u1"
     for i in range(5):  # 偶发 fact，显著度递增
         f = Fact(subject="u1", predicate="parked_at", object=f"lot{i}", user_id=u,
@@ -1599,7 +1599,7 @@ def test_heat_tiered_eviction_pages_cold_preserves_durable():
 
 
 def test_history_includes_cold_tier_facts():
-    mem = Memory()
+    mem = MemoryEngine()
     cold = mem.add_fact("project", "project_note", "cold audit trail", user_id="u1")
     hot = mem.add_fact("project", "project_note", "hot audit trail", user_id="u1")
     cold.salience = 0.0
@@ -1612,7 +1612,7 @@ def test_history_includes_cold_tier_facts():
 
 
 def test_add_fact_supersedes_live_cold_tier_fact():
-    mem = Memory()
+    mem = MemoryEngine()
     old = mem.add_fact("user", "project_status", "alpha", user_id="u1")
     filler = mem.add_fact("user", "project_note", "hot filler", user_id="u1")
     old.salience = 0.0
@@ -1628,7 +1628,7 @@ def test_add_fact_supersedes_live_cold_tier_fact():
 
 
 def test_search_pages_relevant_cold_fact_back_to_hot():
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact("project", "project_status", "alpha", user_id="u1")
     assert mem.evict_cold(max_hot=0) == 1
     assert mem.fact_store.get(fact.id) is None
@@ -1644,7 +1644,7 @@ def test_search_pages_relevant_cold_fact_back_to_hot():
 def test_cold_page_in_preserves_hot_limit():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(max_hot_facts=0, abstain_threshold=2.0))
+    mem = MemoryEngine(config=Config(max_hot_facts=0, abstain_threshold=2.0))
     target = mem.add_fact("apollo", "launch_code", "alpha", user_id="u1")
     filler = mem.add_fact("zephyr", "project_note", "background filler", user_id="u1")
     target.salience = 0.0
@@ -1665,7 +1665,7 @@ def test_cold_page_in_preserves_hot_limit():
 def test_max_hot_facts_auto_pages_on_add_fact():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(max_hot_facts=1))
+    mem = MemoryEngine(config=Config(max_hot_facts=1))
     a = mem.add_fact("project", "project_status", "alpha", user_id="u1")
     b = mem.add_fact("project", "project_note", "beta", user_id="u1")
     a.salience = 0.0
@@ -1678,7 +1678,7 @@ def test_max_hot_facts_auto_pages_on_add_fact():
 
 
 def test_lean_context_pages_cold_fact_when_hot_misses():
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact("project", "project_status", "alpha", user_id="u1")
     assert mem.evict_cold(max_hot=0) == 1
 
@@ -1689,7 +1689,7 @@ def test_lean_context_pages_cold_fact_when_hot_misses():
 
 
 def test_graph_related_facts_include_cold_tier_facts():
-    mem = Memory()
+    mem = MemoryEngine()
     cold = mem.add_fact("project", "project_note", "cold graph evidence", user_id="u1")
     hot = mem.add_fact("project", "project_status", "hot graph evidence", user_id="u1")
     cold.salience = 0.0
@@ -1702,7 +1702,7 @@ def test_graph_related_facts_include_cold_tier_facts():
 
 
 def test_graph_related_facts_expand_beyond_one_hop():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -1713,7 +1713,7 @@ def test_graph_related_facts_expand_beyond_one_hop():
 
 
 def test_graph_related_facts_respect_as_of_during_expansion():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
@@ -1726,7 +1726,7 @@ def test_graph_related_facts_respect_as_of_during_expansion():
 
 
 def test_context_for_graph_includes_multihop_related_facts():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -1738,7 +1738,7 @@ def test_context_for_graph_includes_multihop_related_facts():
 
 
 def test_graph_paths_include_cold_tier_facts():
-    mem = Memory()
+    mem = MemoryEngine()
     cold = mem.add_fact("project", "project_note", "cold path evidence", user_id="u1")
     hot = mem.add_fact("project", "project_status", "hot path evidence", user_id="u1")
     cold.salience = 0.0
@@ -1750,7 +1750,7 @@ def test_graph_paths_include_cold_tier_facts():
 
 
 def test_graph_paths_fallback_expands_beyond_one_hop():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
@@ -1763,7 +1763,7 @@ def test_graph_paths_fallback_expands_beyond_one_hop():
 
 
 def test_graph_paths_fallback_respects_as_of_during_expansion():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
@@ -1778,7 +1778,7 @@ def test_graph_paths_fallback_respects_as_of_during_expansion():
 def test_pending_conflict_and_resolution_include_cold_tier_facts():
     from mnemotrace.types import Conflict
 
-    mem = Memory()
+    mem = MemoryEngine()
     old = mem.add_fact("project", "status", "alpha", user_id="u1")
     new = mem.add_fact("project", "status", "beta", user_id="u1")
     old.invalid_at = None
@@ -1798,7 +1798,7 @@ def test_pending_conflict_and_resolution_include_cold_tier_facts():
 
 
 def test_update_cold_fact_promotes_without_duplicate():
-    mem = Memory()
+    mem = MemoryEngine()
     cold = mem.add_fact("project", "project_note", "old value", user_id="u1")
     hot = mem.add_fact("project", "project_status", "hot value", user_id="u1")
     cold.salience = 0.0
@@ -1833,7 +1833,7 @@ def test_resolve_conflict_writes_back_to_copying_vector_store():
         def values(self):
             return [deepcopy(payload) for payload in super().values()]
 
-    mem = Memory()
+    mem = MemoryEngine()
     older = mem.add_fact("user", "likes", "tea", user_id="u1")
     newer = mem.add_fact("user", "likes", "coffee", user_id="u1")
     copy_hot = CopyingVectorStore()
@@ -1896,7 +1896,7 @@ def test_procedural_memory_surfaces_instructions():
     """程序性记忆：一个独立的类型化视图，返回用户长期有效的 how-to/指令类 fact。"""
     from mnemotrace.types import Fact
 
-    mem = Memory()
+    mem = MemoryEngine()
     u = "u1"
     mem.fact_store.upsert("f1", [0.0], Fact(subject="u1", predicate="wants_reminder",
                                             object="water the plants", user_id=u))
@@ -1907,7 +1907,7 @@ def test_procedural_memory_surfaces_instructions():
 
 
 def test_procedural_memory_includes_cold_tier_instructions():
-    mem = Memory()
+    mem = MemoryEngine()
     cold = mem.add_fact("u1", "wants_reminder", "water the plants", user_id="u1")
     hot = mem.add_fact("u1", "works_at", "Tencent", user_id="u1")
     cold.salience = 0.0
@@ -1978,7 +1978,7 @@ def test_summary_remains_faithful_after_supersession():
     """在知识更新前定稿的摘要，应由 reflector 把当前值追加进去。"""
     from mnemotrace.types import Fact
 
-    mem = Memory()
+    mem = MemoryEngine()
     ep = mem.add("I do yoga twice a week.", user_id="u1", session_id="s1", event_time=BASE)
     # 一条旧 fact（来源于 ep），随后被新 fact 取代
     old = Fact(subject="u1", predicate="yoga_frequency", object="twice a week",
@@ -2000,7 +2000,7 @@ def test_summary_remains_faithful_after_supersession():
 def test_summary_remains_faithful_with_cold_tier_history():
     from mnemotrace.types import Fact
 
-    mem = Memory()
+    mem = MemoryEngine()
     ep = mem.add("I do yoga twice a week.", user_id="u1", session_id="s1", event_time=BASE)
     old = Fact(subject="u1", predicate="yoga_frequency", object="twice a week",
                user_id="u1", valid_at=BASE, provenance=[ep.id],
@@ -2061,7 +2061,7 @@ def test_focus_track_boosts_salience_and_mute_hides():
     """关注点面板是真实接线而非摆设（AGENTS.md 「检索与模块」）：被跟踪的话题会提升 fact 的显著度
     （作为检索打分 + 豁免衰减的信号），被静音的话题则同时从组装的读取 context 和合成的
     persona 中剔除。"""
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("user", "uses", "Python", user_id="u1")
     mem.add_fact("user", "plays", "guitar", user_id="u1")
     py = next(f for f in mem.fact_store.values() if "python" in f.text.lower())
@@ -2080,7 +2080,7 @@ def test_focus_track_boosts_salience_and_mute_hides():
 
 
 def test_persona_includes_cold_tier_facts():
-    mem = Memory()
+    mem = MemoryEngine()
     cold = mem.add_fact("user", "favorite_language", "Python", user_id="u1")
     hot = mem.add_fact("user", "project_note", "hot note", user_id="u1")
     cold.salience = 0.0
@@ -2088,15 +2088,6 @@ def test_persona_includes_cold_tier_facts():
     assert mem.evict_cold(max_hot=1) == 1
 
     assert "Python" in mem.build_persona("u1")
-
-
-def test_focus_persists_across_save_open(tmp_path):
-    mem = Memory()
-    mem.add_fact("user", "uses", "Python", user_id="u1")
-    mem.set_focus(track=["python", "work"], mute=["weight"])
-    p = str(tmp_path / "u.pkl")
-    mem.save(p)
-    assert Memory.open(p).get_focus() == {"track": ["python", "work"], "mute": ["weight"]}
 
 
 def test_graph_data_has_no_dangling_edges():
@@ -2118,7 +2109,7 @@ def test_graph_data_has_no_dangling_edges():
 def test_graph_data_as_of_excludes_future_relations():
     """图谱视图必须遵守与 search/as_of 相同的 valid-time 边界：未来才生效的边，
     不能仅因为“尚未被失效化”就出现在过去快照中。"""
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("Wei works at Tencent.", user_id="u1", event_time=BASE)
     mem.add("Wei works at Moonshot AI.", user_id="u1", event_time=BASE + 30 * DAY)
     mem.consolidate()
@@ -2134,7 +2125,7 @@ def test_graph_data_as_of_excludes_future_relations():
 
 
 def test_graph_data_can_exclude_sensitive_fact_edges():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("user", "has_disease", "diabetes", user_id="u1")
     mem.add_fact("user", "works_at", "Acme", user_id="u1")
 
@@ -2150,7 +2141,7 @@ def test_graph_data_can_exclude_sensitive_fact_edges():
 
 
 def test_graph_data_can_exclude_sensitive_cold_fact_edges():
-    mem = Memory()
+    mem = MemoryEngine()
     disease = mem.add_fact("user", "has_disease", "diabetes", user_id="u1")
     work = mem.add_fact("user", "project_note", "Acme", user_id="u1")
     disease.salience = 0.0
@@ -2167,15 +2158,15 @@ def test_graph_data_can_exclude_sensitive_cold_fact_edges():
     assert all(e["fact_id"] != disease.id for e in safe["edges"])
 
 
-def test_memory_policy_edits_extraction_and_persists(tmp_path):
+def test_memory_policy_edits_extraction():
     """记忆策略页面是真实接线：用户的 'what to record' 指令会追加到提取 system prompt 后面，
-    完整 prompt 覆盖会替换默认值（传 '' 则清回默认），且整套策略在 save/open 往返后仍保留。"""
+    完整 prompt 覆盖会替换默认值，传空字符串重置。"""
     class FakeLLM:
         def complete(self, prompt, system=""):
             return "[]"
 
     from mnemotrace.consolidate.planning import SYSTEM as EXTRACT_SYSTEM
-    m = Memory(llm=FakeLLM())
+    m = MemoryEngine(llm=FakeLLM())
 
     # 增量式 'what to record' 指令会进入 extractor 的实际生效 system prompt
     m.set_policy(extract_instruction="只记录与工作相关的事实")
@@ -2190,12 +2181,9 @@ def test_memory_policy_edits_extraction_and_persists(tmp_path):
     m.set_policy(extract_system="")
     assert m._effective("extract_system") == EXTRACT_SYSTEM
 
-    # get_policy 暴露覆盖项 + 内置默认值；策略持久化
+    # get_policy 暴露覆盖项和内置默认值。
     gp = m.get_policy()
     assert set(gp) == {"policy", "defaults"} and len(gp["defaults"]) == 4
-    p = str(tmp_path / "u.pkl")
-    m.save(p)
-    assert Memory.open(p).get_policy()["policy"]["extract_instruction"] == "只记录与工作相关的事实"
 
 
 def test_structured_profile_tiers_display_only_and_preserves_recall():
@@ -2203,7 +2191,7 @@ def test_structured_profile_tiers_display_only_and_preserves_recall():
     划分仅用于展示，证据保持诚实（不编造权重）。关键不变量：tentative 划分只是呈现层面 ——
     tentative fact 仍必须留在 fact store 中且可检索（召回绝不被画像视图限制）。"""
     from mnemotrace.types import Fact
-    m = Memory()
+    m = MemoryEngine()
     m.add_fact("user", "favorite_music", "周杰伦", user_id="u")     # 显式 favorite -> confirmed
     casual = Fact(subject="user", predicate="likes", object="jazz", user_id="u",
                   source="extracted", provenance=["ep1"])          # 单次随意提及 -> tentative
@@ -2228,7 +2216,7 @@ def test_structured_profile_tiers_display_only_and_preserves_recall():
 
 
 def test_structured_profile_includes_cold_tier_facts():
-    m = Memory()
+    m = MemoryEngine()
     cold = m.add_fact("user", "favorite_music", "周杰伦", user_id="u")
     hot = m.add_fact("user", "project_note", "hot note", user_id="u")
     cold.salience = 0.0
@@ -2240,12 +2228,12 @@ def test_structured_profile_includes_cold_tier_facts():
     assert "周杰伦" in items
 
 
-def test_working_memory_is_ephemeral_and_never_enters_long_term(tmp_path):
+def test_working_memory_is_ephemeral_and_never_enters_long_term():
     """特性①：working-memory 层保存瞬态状态但不进长期记忆，以 session + TTL 限定作用域，
     session 结束即清空。核心不变量：ephemeral 条目绝不变成持久 fact。"""
     import mnemotrace.util as u
-    m = Memory()
-    assert not hasattr(Memory, "is_ephemeral")
+    m = MemoryEngine()
+    assert not hasattr(MemoryEngine, "is_ephemeral")
 
     m.remember_working("today my throat hurts", user_id="u", session_id="s1", kind="state")
     m.remember_working("this trip front seat is my wife", user_id="u", session_id="s1",
@@ -2266,13 +2254,6 @@ def test_working_memory_is_ephemeral_and_never_enters_long_term(tmp_path):
     assert [w.kind for w in m.working_memory("u", session_id="s1", as_of=later)] == ["state"]
     assert m.clear_session("u", "s1") == 1 and m.working_memory("u", session_id="s1") == []
 
-    # 跨 save/open 持久保留
-    m.remember_working("persist me", user_id="u", session_id="s3")
-    p = str(tmp_path / "u.pkl")
-    m.save(p)
-    assert [w.content for w in Memory.open(p).working_memory("u", session_id="s3")] == ["persist me"]
-
-
 def test_classification_and_sensitivity_redaction_preserves_recall():
     """特性⑤：fact 由规则得到类别 + 敏感标志；敏感 fact 可在共享/导出 context 中被脱敏 ——
     同时在 store 中完整保留（召回和本人视图均不受影响）。"""
@@ -2282,7 +2263,7 @@ def test_classification_and_sensitivity_redaction_preserves_recall():
     assert classify("works_at", "Acme", "user works_at Acme") == ("工作", False)
     assert classify("id_number", "310101199001011234", "x")[1] is True  # 连续数字 PII
 
-    m = Memory()
+    m = MemoryEngine()
     m.add_fact("user", "has_disease", "diabetes", user_id="u")  # 敏感
     m.add_fact("user", "works_at", "Acme", user_id="u")          # 非敏感
     sensitive_fact = next(f for f in m.fact_store.values() if f.object == "diabetes")
@@ -2298,7 +2279,7 @@ def test_classification_and_sensitivity_redaction_preserves_recall():
 def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content():
     """脱敏/共享 context 不得通过摘要、chunk 或工作记忆文本泄漏敏感内容。
     它只能依赖已分类、非敏感的结构化 facts。"""
-    m = Memory()
+    m = MemoryEngine()
     ep = m.add("My private diagnosis is diabetes. I work at Acme.", user_id="u", session_id="s1")
     ep.summary = "Private diagnosis: diabetes. Job: Acme."
     m.summary_vec.upsert(ep.id, m.embedder.embed(ep.summary), ep)
@@ -2327,7 +2308,7 @@ def test_ephemeral_remember_keeps_dated_episode_but_creates_no_durable_fact():
     """修正后的特性①模型（用户指出的）：ephemeral != 删除。瞬态状态进入工作记忆，
     同时保留为带日期的 EPISODE（因此 'when did my throat hurt?' 可从历史中作答），
     但不会变成持久的画像 fact（因此绝不会滞留为当前属性）。"""
-    m = Memory()
+    m = MemoryEngine()
     r = m.remember("today my throat is uncomfortable", user_id="u", session_id="s1", scope="working")
     assert r["scope"] == "working"
 
@@ -2355,7 +2336,7 @@ def test_display_localization_keeps_canonical_predicate():
     # 英文数据不被强制翻译
     assert render_display("user", "works_at", "Acme", "user works at Acme") == "user works at Acme"
     # 规范 predicate/slot 不因展示而改变（引擎仍据此去重）
-    m = Memory()
+    m = MemoryEngine()
     f = m.add_fact("user", "works_at", "字节跳动", user_id="u")
     assert f.predicate == "works_at" and f.slot[2] == "works_at"
 
@@ -2409,7 +2390,7 @@ def test_conflict_resolve_and_dismiss_are_user_driven():
     """检测绝不自动解决 —— 只有用户的 resolve()/dismiss() 会生效；resolve 使选定的败方被取代，
     dismiss 则两者都保留。"""
     from mnemotrace.types import Conflict
-    m = Memory()
+    m = MemoryEngine()
     fa = m.add_fact("user", "likes", "北京", user_id="u")   # 多值 -> 两者并存（不自动合并）
     fb = m.add_fact("user", "likes", "上海", user_id="u")
     cf = Conflict(older=fa.id, newer=fb.id, user_id="u")
@@ -2436,7 +2417,7 @@ def test_promotion_never_evicts_every_semantic_chunk():
     from mnemotrace.config import Config
     from mnemotrace.types import Fact
 
-    mem = Memory(config=Config(evidence_planner=False, provenance_evidence=False,
+    mem = MemoryEngine(config=Config(evidence_planner=False, provenance_evidence=False,
                                provenance_chunk_promotion=True))
     # 答案所在的 session 只有语义检索才会给它高排名
     mem.add("The screening room access code is painted behind the velvet poster.",
@@ -2463,7 +2444,7 @@ def test_evolution_block_leads_with_the_current_value():
     作为结论陈述，被替换的值明显居于从属地位。"""
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(evidence_planner=False))
+    mem = MemoryEngine(config=Config(evidence_planner=False))
     mem.add("I live in Hawaii.", user_id="u1", event_time=BASE)
     mem.consolidate()
     mem.add("I moved. I live in Paris now.", user_id="u1", event_time=BASE + 30 * DAY)

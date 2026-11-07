@@ -17,8 +17,8 @@ except Exception as exc:  # noqa: BLE001
     raise SystemExit("the server needs FastAPI — `pip install \"mnemotrace-memory[server]\"`") from exc
 
 from .. import __version__
-from ..memory import InvalidFactEditError
-from ..postgres_service import MemoryService, ProcessingFailure
+from ..consolidate.manual import InvalidFactEditError
+from ..service import MemoryRevisionChanged, MemoryService, ProcessingFailure
 from ..extraction import ExtractionError
 from ..topics import Topic
 from ..store.contracts import SpaceContext
@@ -70,7 +70,11 @@ def svc() -> MemoryService:
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     global _svc
-    service = svc()
+    try:
+        service = svc()
+    except DatabaseError as exc:
+        # Uvicorn logs startup tracebacks, so suppress the driver's chained error.
+        raise RuntimeError(str(exc)) from None
     try:
         yield
     finally:
@@ -504,7 +508,6 @@ def memories(
     `topic` 精确筛选已存主题，与其他事实筛选取交集，分页前执行；unknown 不区分来源。
     主题筛选不缩小分类候选范围，不过滤原始 episode。
     """
-    from ..service import MemoryRevisionChanged
 
     try:
         return svc().memories(

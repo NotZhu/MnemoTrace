@@ -25,9 +25,6 @@ dependencies = []
 [project.optional-dependencies]
 postgres = ["psycopg[binary]==3.3.8", "psycopg-pool==3.3.3"]
 # Real embedding/LLM/vector/graph backends slot in behind the same interfaces.
-backends = ["lancedb>=0.6", "numpy>=1.24", "qdrant-client>=1.19.1,<2"]
-lancedb = ["lancedb>=0.6"]
-qdrant = ["qdrant-client>=1.19.1,<2"]
 embeddings = ["sentence-transformers>=2.2"]  # local BGE embeddings (MNEMOTRACE_EMBEDDER=bge-*; no API key)
 llm = ["litellm>=1.40"]
 # Serving / adoption layer; see docs/architecture/README.md.
@@ -40,7 +37,7 @@ documents = ["pypdf>=4.0", "python-docx>=1.1"]                 # PDF/DOCX text e
 serve = ["mnemotrace-memory[server,mcp,embeddings,llm,postgres]"]
 eval = ["numpy>=1.24"]
 dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "ruff>=0.4", "tomli>=2; python_version < '3.11'"]
-all = ["mnemotrace-memory[server,mcp,embeddings,backends,llm,documents,eval,dev,postgres]"]
+all = ["mnemotrace-memory[server,mcp,embeddings,llm,documents,eval,dev,postgres]"]
 
 [project.scripts]
 mnemotrace = "mnemotrace.cli:main"

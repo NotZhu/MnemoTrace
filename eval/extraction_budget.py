@@ -1,9 +1,22 @@
 """Shared, fail-closed request budget for sequential evaluation subprocesses."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import time
+
+
+@contextmanager
+def _budget_lock(path):
+    from mnemotrace import _flock
+
+    with Path(str(path) + '.lock').open('a') as stream:
+        _flock.acquire(stream)
+        try:
+            yield
+        finally:
+            _flock.release(stream)
 
 
 class BudgetStopped(RuntimeError):
@@ -24,8 +37,7 @@ class Budget:
         return cls(path)
 
     def _change(self, function):
-        from mnemotrace._namespace_lock import namespace_lock
-        with namespace_lock(str(self.path) + '.lock').file_lock():
+        with _budget_lock(self.path):
             data = json.loads(self.path.read_text(encoding='utf-8'))
             result = function(data)
             pending = self.path.with_suffix('.pending')

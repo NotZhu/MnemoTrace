@@ -38,12 +38,19 @@ def tagged(function, phase):
 
 def run_case(case, args):
     require_credentials(args.extractor)
-    from mnemotrace import ExtractionError
+    from mnemotrace import ExtractionError, Memory
+    if not callable(getattr(Memory, 'open', None)):
+        raise ValueError('Select the historical runtime commit recorded with the results')
     from mnemotrace.consolidate.planning import WINDOW_PREFIX, validate_response
     from mnemotrace.consolidate.fact_rules import _NAME_PREDICATES
     from mnemotrace.llm.base import LLM, complete_result
     from mnemotrace.llm import providers
-    from mnemotrace.service import MemoryService
+    try:
+        from mnemotrace.service import MemoryService
+    except ModuleNotFoundError as exc:
+        if exc.name != 'mnemotrace.service':
+            raise
+        raise ValueError('Select the historical runtime commit recorded with the results') from None
     from mnemotrace.ingest.pipeline import Ingestor
     import mnemotrace.memory as memory_module
 
@@ -171,7 +178,6 @@ def run_case(case, args):
     restored = False
     if snapshots:
         try:
-            from mnemotrace import Memory
             for user, snapshot in snapshots.items():
                 with Memory.open(svc._path(user)) as reopened:
                     for group, actual in (('facts', reopened._all_facts()), ('working', reopened.working_mem.values()),

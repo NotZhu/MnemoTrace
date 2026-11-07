@@ -10,8 +10,8 @@ MnemoTrace 将原始事件、可更新事实和派生上下文分开管理。Pyt
 | 摄入 | [ingest/](../../mnemotrace/ingest/) 保存事件并建立嵌入；[connectors/](../../mnemotrace/connectors/) 解析外部导出与会话记录 |
 | 整合 | [consolidate/](../../mnemotrace/consolidate/) 抽取事实、处理重复与冲突、构建摘要和派生画像 |
 | 检索 | [retrieve/](../../mnemotrace/retrieve/) 生成候选、融合信号、规划证据和组装上下文 |
-| 存储 | [store/base.py](../../mnemotrace/store/base.py) 定义接口；内存实现、JSONL 快照与可选向量后端提供存储 |
-| 组合入口 | [Memory](../../mnemotrace/memory.py) 连接管线；[MemoryService](../../mnemotrace/service.py) 管理命名空间、锁、缓存及提交 |
+| 存储 | [store/base.py](../../mnemotrace/store/base.py) 定义接口；Postgres 按记录保存，内存实现支持算法实验 |
+| 组合入口 | [Memory](../../mnemotrace/memory.py) 处理授权空间内的业务操作，[MemoryService](../../mnemotrace/service.py) 对接服务入口 |
 | 接入面 | [HTTP](../../mnemotrace/server/)、[MCP](../../mnemotrace/mcp/)、[TypeScript SDK](../../clients/typescript/)、[控制台](../../frontend/) |
 | 测量 | [eval/](../../eval/) 固定数据、摄入、answerer 和 judge，对比不同记忆策略 |
 
@@ -53,11 +53,11 @@ Python 的 `add()`、`remember()` 和 `consolidate()` 是显式操作，保存�
 
 ## 服务、隔离与一致性
 
-服务按命名空间管理持久化 Memory；热缓存有容量上限，读取会核对 manifest 提交标识。写入协调覆盖加载、修改和保存，进程内读写协调与命名空间文件锁共同约束访问，避免基于过期对象覆盖新提交。
+服务将请求绑定到已授权的账号与空间。Postgres 以记录级事务提交业务变化，以读取版本阻止过期工作集覆盖新提交。后台任务通过租约、来源版本和回执协调。
 
-HTTP 的凭据映射及 space ACL 在服务器执行。跨 space 读写目前集中在 remember/recall；其他管理路由使用自己的鉴权路径，不能假定任意 space 凭据都能调用所有管理功能。
+HTTP 从 Bearer key 获取账号，并验证每个目标空间的归属。数据库用户级 RLS 和 DAO 的空间过滤共同约束运行角色。账号管理和后台发现使用独立权限。
 
-MCP 本地后端固定一个 namespace；远程后端转发到 HTTP。SDK 负责序列化、鉴权头与错误封装。控制台通过服务 API 管理状态，生产资源由服务的 `/ui/` 提供，开发运行方式见[贡献指南](../../CONTRIBUTING.md)。
+MCP 本地后端绑定显式账号与空间，远程后端转发到 HTTP。SDK 负责序列化、鉴权头与错误封装。控制台通过服务 API 管理状态，生产资源由服务的 `/ui/` 提供，开发运行方式见[贡献指南](../../CONTRIBUTING.md)。
 
 ## 当前设计取舍
 
@@ -67,9 +67,9 @@ MCP 本地后端固定一个 namespace；远程后端转发到 HTTP。SDK 负责
 | 时间与替代链 | 更新后仍可检查历史；查询和擦除必须处理链路语义 |
 | 确定性离线实现 | 无外部服务即可运行；语言覆盖和语义质量有限 |
 | 服务入口共用 MemoryService | 持久化与生命周期逻辑集中；不同接入面的参数能力仍有差异 |
-| JSONL + manifest | 可检查、无对象反序列化执行；不等同于具备完整事务恢复能力的数据库 |
+| 同库保存业务记录、向量和任务 | 事务统一覆盖权威记录、必要投影及进度，部署需 Postgres 和 pgvector |
 | 可选异步整合 | 缩短写入关键路径；引入积压、收尾和可见性边界 |
 
 当前契约说明见 [memory.md](memory.md)，真实限制在对应接口或使用说明中解释。独立重大设计只有在需要持续引用时才保留专题说明，常规修复通过代码、测试与 PR 表达。
 
-计划中的 Postgres 改造见[目标存储契约与行为对照](storage-contracts.md)：身份与空间、记录级提交、任务恢复、schema 设计及调用方去向。该设计尚未切换当前运行路径。
+身份、空间、记录提交和任务恢复见[存储契约与行为对照](storage-contracts.md)。

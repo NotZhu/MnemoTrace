@@ -5,7 +5,7 @@ import json
 import os
 
 from .extraction import ExtractionError
-from .postgres_service import MemoryService, ProcessingFailure
+from .service import MemoryService, ProcessingFailure
 from .store.postgres.errors import DatabaseError
 
 

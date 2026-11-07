@@ -9,9 +9,9 @@ search()/answer()/add_fact 时的冲突处理，benchmark 的 lean_context 从�
 """
 from __future__ import annotations
 
-from tests.model_fixtures import Memory, seed_summaries
+from tests.model_fixtures import MemoryEngine, seed_summaries
 from mnemotrace.consolidate.conflict import ConflictResolver
-from mnemotrace.memory import _ANSWER_TYPE_MATCH, _expected_answer_type
+from mnemotrace.retrieve.answers import _ANSWER_TYPE_MATCH, _expected_answer_type
 from mnemotrace.types import Fact
 
 _SENTINEL_EMBEDDER = object()  # 非 None 即可启用语义路径；不会真正调用 .embed()
@@ -63,7 +63,7 @@ def test_type_helpers():
 
 
 def test_search_prefers_type_matching_fact():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("project alpha", "owner", "Alice Wang", user_id="u1")
     mem.add_fact("project alpha", "id", "PROJ-1024", user_id="u1")
     ans = mem.search("What is the project alpha ID?", user_id="u1").answer()
@@ -71,7 +71,7 @@ def test_search_prefers_type_matching_fact():
 
 
 def test_search_abstains_instead_of_fabricating_wrong_type():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("project alpha", "owner", "Alice Wang", user_id="u1")  # 只有名字；没有存储任何 id
     res = mem.search("What is the project alpha ID?", user_id="u1")
     assert res.abstained, "must abstain when the demanded type isn't in memory"
@@ -80,7 +80,7 @@ def test_search_abstains_instead_of_fabricating_wrong_type():
 
 # ---------------- #3b 摘要回退 ----------------
 def test_summary_fallback_answers_from_summary():
-    mem = Memory()
+    mem = MemoryEngine()
     ep = mem.add("To reset the PAT: open settings, regenerate the token, then update CI.",
                  user_id="u1", session_id="s1")
     seed_summaries(mem, [ep])
@@ -90,7 +90,7 @@ def test_summary_fallback_answers_from_summary():
 
 
 def test_search_uses_summary_fallback_when_no_fact_ranked():
-    mem = Memory()
+    mem = MemoryEngine()
     ep = mem.add("To reset the PAT: open settings, regenerate the token, then update CI.",
                  user_id="u1", session_id="s1")
     seed_summaries(mem, [ep])
@@ -104,7 +104,7 @@ def test_search_uses_summary_fallback_when_no_fact_ranked():
 def test_summary_fallback_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(summary_fallback=False))
+    mem = MemoryEngine(config=Config(summary_fallback=False))
     ep = mem.add("To reset the PAT: open settings, regenerate the token, then update CI.",
                  user_id="u1", session_id="s1")
     seed_summaries(mem, [ep])
@@ -116,7 +116,7 @@ def test_summary_fallback_can_be_disabled_for_ablation():
 
 
 def test_summary_fallback_selects_best_source_backed_summary():
-    mem = Memory()
+    mem = MemoryEngine()
     weak = mem.add("PAT policy note: keep credentials private.",
                    user_id="u1", session_id="weak")
     strong = mem.add("To reset the PAT: open settings, regenerate the token, then update CI.",
@@ -131,7 +131,7 @@ def test_summary_fallback_selects_best_source_backed_summary():
 
 
 def test_summary_fallback_respects_as_of():
-    mem = Memory()
+    mem = MemoryEngine()
     old = mem.add("To reset the PAT: use the legacy token page.",
                   user_id="u1", session_id="old", event_time=1_700_000_000.0)
     new = mem.add("To reset the PAT: use the new security console.",
@@ -149,7 +149,7 @@ def test_summary_fallback_respects_as_of():
 def test_search_prefers_source_backed_procedural_memory_for_runbook_queries():
     from mnemotrace.types import Fact
 
-    mem = Memory()
+    mem = MemoryEngine()
     ep = mem.add(
         "PAT runbook source: rotate the PAT by opening security settings and updating CI secrets.",
         user_id="u1",
@@ -176,7 +176,7 @@ def test_procedural_memory_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
     from mnemotrace.types import Fact
 
-    mem = Memory(config=Config(procedural_memory=False, abstain_threshold=2.0))
+    mem = MemoryEngine(config=Config(procedural_memory=False, abstain_threshold=2.0))
     ep = mem.add(
         "PAT runbook source: rotate the PAT by opening security settings and updating CI secrets.",
         user_id="u1",
@@ -201,7 +201,7 @@ def test_procedural_memory_can_be_disabled_for_ablation():
 def test_procedural_extraction_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(procedural_extraction=False))
+    mem = MemoryEngine(config=Config(procedural_extraction=False))
     mem.add(
         "PAT runbook source: rotate the PAT by opening security settings and updating CI secrets.",
         user_id="u1",
@@ -215,7 +215,7 @@ def test_procedural_extraction_can_be_disabled_for_ablation():
 def test_explicit_preference_extraction_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(explicit_preference_extraction=False))
+    mem = MemoryEngine(config=Config(explicit_preference_extraction=False))
     mem.add("I prefer aisle seats and avoid red-eye flights.", user_id="u1")
     mem.consolidate()
 

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from mnemotrace.postgres_memory import PostgresMemory
+from mnemotrace.memory import Memory
 from mnemotrace.store.contracts import (
     ChangeSet, CommitConditions, CommitReceipt, EmbeddingWrite, FactQuery, FactState, Lease, MessageInput,
     OperationKind, OperationSpec, ProcessingState, RecordKind, RecordRef, RecordWrite, SourceLink, SourceVersion,
@@ -21,7 +21,7 @@ from mnemotrace.types import Conflict, Fact, WorkingMemory
 @pytest.fixture
 def memory(runtime, spaces, user):
     space = spaces.create(user, 'Record tests')
-    return PostgresMemory(runtime, spaces.authorize(user, space.space_id))
+    return Memory(runtime, spaces.authorize(user, space.space_id))
 
 
 def message(key, content='Synthetic content', **fields):
@@ -47,7 +47,7 @@ def test_record_business_roundtrip_and_selective_updates(memory, cluster):
     memory.dao._database.close()
 
     with Database(cluster.runtime) as reopened:
-        fresh = PostgresMemory(reopened, memory.context)
+        fresh = Memory(reopened, memory.context)
         assert fresh.get_episode(accepted.source_ids[0]).content == 'Synthetic content'
         assert [fact.id for fact in fresh.history('Synthetic person', 'lives_in')] == [first.id, current.id]
         assert fresh.get_fact(current.id).supersedes == first.id
@@ -80,7 +80,7 @@ def test_record_business_roundtrip_and_selective_updates(memory, cluster):
 
 def test_concurrent_message_reuse_conflict_and_batch_rollback(memory, cluster):
     with Database(cluster.runtime) as second_db, ThreadPoolExecutor(max_workers=2) as workers:
-        second = PostgresMemory(second_db, memory.context)
+        second = Memory(second_db, memory.context)
         batch = (message('exact', event_time=1),)
         first = workers.submit(memory.store_messages, 'chat', batch)
         other = workers.submit(second.store_messages, 'chat', batch)
@@ -100,7 +100,7 @@ def test_read_view_is_consistent_and_stale_commit_rejected(memory, cluster):
     with memory.dao.read_snapshot('chat') as view:
         assert view.facts() == ()
         with Database(cluster.runtime) as writer:
-            PostgresMemory(writer, memory.context).remember_raw('New input', 'chat')
+            Memory(writer, memory.context).remember_raw('New input', 'chat')
         assert view.list_sources() == ()
         assert view.counts()[RecordKind.SOURCE] == 0
         snapshot = view.snapshot
@@ -151,13 +151,13 @@ def test_response_lost_after_commit_is_recovered_by_receipt(memory, monkeypatch,
 
 def test_space_isolation_and_unauthorized_context(memory, runtime, accounts, spaces):
     receipt = memory.store_messages('chat', (message('m'),))
-    sibling = PostgresMemory(runtime, SpaceContext(
+    sibling = Memory(runtime, SpaceContext(
         memory.context.user_id, spaces.create(memory.context.user_id, 'Sibling').space_id))
     assert sibling.get_episode(receipt.source_ids[0]) is None
     assert sibling.dao.receipt(receipt.operation_id) is None
     outsider = accounts.create_user()
     try:
-        other = PostgresMemory(runtime, SpaceContext(outsider, memory.context.space_id))
+        other = Memory(runtime, SpaceContext(outsider, memory.context.space_id))
         with pytest.raises(SpaceNotFound):
             other.store_messages('chat', (message('m'),))
         with pytest.raises(SpaceNotFound):
@@ -319,7 +319,7 @@ def test_raw_ingest_never_calls_embedder(memory, runtime):
         def embed(self, text):
             raise RuntimeError('Synthetic embedder unavailable')
 
-    offline = PostgresMemory(runtime, memory.context, embedder=UnavailableEmbedder(), embedding_model='fake')
+    offline = Memory(runtime, memory.context, embedder=UnavailableEmbedder(), embedding_model='fake')
     assert offline.store_messages('chat', (message('m'),)).source_ids
     assert offline.remember_raw('Synthetic raw input', 'chat').id
 

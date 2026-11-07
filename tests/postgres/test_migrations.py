@@ -69,7 +69,7 @@ def test_unversioned_existing_schema_is_rejected(database_factory):
             migrations.migrate(bundle.migration)
 
 
-@pytest.mark.parametrize('previous_count', [1, 2, 3, 4])
+@pytest.mark.parametrize('previous_count', [1, 2, 3, 4, 5])
 def test_upgrade_applies_only_pending_migrations(database_factory, monkeypatch, previous_count):
     all_migrations = migrations.MIGRATIONS
     with database_factory(initialize=False) as bundle:

@@ -82,7 +82,7 @@ def _json(obj) -> str:
 def _err(e: Exception) -> str:
     """可操作、不泄露内部信息的错误文案（最佳实践：引导 agent 修复）。"""
     from ..extraction import ExtractionError
-    from ..postgres_service import ProcessingFailure
+    from ..service import ProcessingFailure
     from ..store.postgres.errors import DatabaseError
 
     if isinstance(e, ProcessingFailure):

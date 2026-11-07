@@ -77,7 +77,7 @@ def main():
         if args.http:
             if args.api_url or args.api_key or args.api_key_file or args.user_id or args.space_id:
                 parser.error('--http receives caller credentials and space on each request')
-            from ..postgres_service import MemoryService
+            from ..service import MemoryService
 
             service = MemoryService.from_env()
             try:

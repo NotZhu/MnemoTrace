@@ -9,9 +9,9 @@ MnemoTrace（忆痕）为 LLM 智能体提供长期记忆，关注记忆正确�
 
 | 涉及的工作              | 从这里开始                                                                                                                   |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| 记忆模型与生命周期      | [types.py](mnemotrace/types.py)、[memory.py](mnemotrace/memory.py)、[consolidate/](mnemotrace/consolidate/)                  |
+| 记忆模型与生命周期      | [types.py](mnemotrace/types.py)、[memory_engine.py](mnemotrace/memory_engine.py)、[consolidate/](mnemotrace/consolidate/)                  |
 | 检索、排序与上下文      | [retrieve/](mnemotrace/retrieve/)、[config.py](mnemotrace/config.py)                                                         |
-| 持久化、命名空间与服务  | [store/](mnemotrace/store/)、[service.py](mnemotrace/service.py)、[spaces.py](mnemotrace/spaces.py)                          |
+| 持久化、空间与服务      | [store/postgres/](mnemotrace/store/postgres/)、[memory.py](mnemotrace/memory.py)、[service.py](mnemotrace/service.py) |
 | HTTP、MCP 与数据导入    | [server/](mnemotrace/server/)、[mcp/](mnemotrace/mcp/)、[connectors/](mnemotrace/connectors/)、[ingest/](mnemotrace/ingest/) |
 | 控制台与 TypeScript SDK | [frontend/](frontend/)、[clients/typescript/](clients/typescript/)                                                           |
 | 算法评测与结果检查      | [bench.py](eval/bench.py)、[report.py](eval/report.py)、[validate_results.py](eval/validate_results.py)                      |
@@ -39,7 +39,7 @@ Python 支持范围、extras 与打包入口以 [pyproject.toml](pyproject.toml)
 
 ## 验证与评测
 
-<a id="principle-ii"></a>模型抽取契约：自然语言事实抽取、自动生命周期判断和会话结论需要配置 LLM。服务端在本次输入写入前拒绝缺少模型的抽取请求；底层 Memory.remember 仅保存原文及路由策略，由 consolidate 检查模型。`python examples/quickstart.py` 与安装后的 `mnemotrace-quickstart` 使用真实模型，不维护离线完整演示。pytest 使用合成事实与固定模型响应，可离线运行；原文保存、手动事实、已有记忆读取和快照恢复不依赖 LLM。
+<a id="principle-ii"></a>模型抽取契约：产品入口在本次输入写入前拒绝缺少模型的自动抽取请求。原文保存、手动事实、已有记忆读取和数据库恢复可独立运行。`python examples/quickstart.py` 与安装后的 `mnemotrace-quickstart` 使用真实模型和显式 Postgres 空间。回归使用合成事实与固定模型响应，算法套件可离线运行。
 
 - 为新增行为和缺陷修复补充能区分正确与错误行为的回归；已有测试足以覆盖时直接复用。测试面向可观察结果，避免只复刻实现细节。
 - 先运行受影响的检查，再根据影响面扩大验证。接口、存储、隔离和异步生命周期的变化，应覆盖对应集成边界；用户可见的交互变化按需要实际运行验证。

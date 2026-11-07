@@ -1,41 +1,26 @@
-"""用 LongMemEval_S 给 MnemoTrace 控制台做种子，让部署好的服务有丰富、真实的记忆可浏览、可测试
-——每个问题一个独立用户命名空间（namespace = 问题序号）。
-
-为什么本地构建再上传：先选择与服务端相同的 embedder，在本地构建每用户的存储
-（向量兼容）。生成到独立的 --out 目录，停服后按清单将完整的存储目录拷进
-MNEMOTRACE_DATA_DIR，保留目录名且拒绝覆盖；用相同 embedder 启动服务。输出冲突会报错，
-失败后换新的 --out 目录重新生成，不自动清理或导入旧输出。完整步骤见 eval/README.md。
-
-所有自然语言事实均使用显式配置的 LLM 抽取；不提供规则抽取回退。
-
-从仓库根目录运行（以便读到带 provider key 的 .env）：
-  python eval/seed_console.py \
-      --data ~/.cache/huggingface/hub/datasets--xiaowu0162--longmemeval/snapshots/*/longmemeval_s \
-      --out /tmp/console_stores --llm volcano:doubao-seed-1-6-flash-250615
-"""
+"""Seed one Postgres memory space per selected LongMemEval item."""
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
+from pathlib import Path
 import re
 import sys
-import time
-from datetime import datetime, timezone
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mnemotrace import Memory
-from mnemotrace._namespace_paths import namespace_path
-from mnemotrace.util import DAY, fmt_date
+from mnemotrace.config import Config
+from mnemotrace.memory import Memory
+from mnemotrace.store.contracts import MessageInput
+from mnemotrace.store.postgres import Database, DatabaseConfig, Spaces
+from mnemotrace.util import DAY
 
 BASE = 1_700_000_000.0
 
 
-# --- LongMemEval ingest（从 eval/longmemeval.py 内联，避免引入 LLM 评测栈） ---
 def sessions_of(item: dict):
     sessions = item.get("haystack_sessions", [])
     ids = item.get("haystack_session_ids") or [f"sess_{i}" for i in range(len(sessions))]
@@ -57,152 +42,59 @@ def parse_date(s):
         return None
 
 
-def ingest(mem: Memory, item: dict, user_id: str) -> None:
-    """每个 session 一个 episode（拼接各 turn），用一次 encode 调用批量嵌入。"""
+def ingest(memory, item):
     dates = item.get("haystack_dates") or []
-    texts, meta = [], []
-    for idx, (sid, turns) in enumerate(sessions_of(item)):
-        parsed = parse_date(dates[idx] if idx < len(dates) else None)
-        event_time, dstr = parsed if parsed else (BASE + idx * DAY, None)
-        text = "\n".join(f"{t.get('role', 'user')}: {t.get('content', '')}"
-                         for t in turns if t.get("content"))
-        if text.strip():
-            texts.append(text)
-            meta.append((sid, event_time, dstr))
-    if not texts:
-        return
-    vecs = mem.embedder.embed_batch(texts)
-    for (sid, event_time, dstr), text, vec in zip(meta, texts, vecs):
-        ep = mem.add(text, user_id=user_id, session_id=sid, role="session",
-                     event_time=event_time, embedding=vec)
-        ep.metadata["date"] = dstr or fmt_date(event_time)
+    for index, (session_id, turns) in enumerate(sessions_of(item)):
+        parsed = parse_date(dates[index] if index < len(dates) else None)
+        event_time = parsed[0] if parsed else BASE + index * DAY
+        messages = tuple(
+            MessageInput(message_id=str(position), role=turn.get("role", "user"),
+                         content=turn["content"], event_time=event_time, mode="historical")
+            for position, turn in enumerate(turns) if turn.get("content", "").strip()
+        )
+        if messages:
+            memory.remember_messages(session_id, messages)
+    result = memory.flush_processing(timeout=300)
+    if not result["ok"]:
+        raise RuntimeError("Seed processing is incomplete; inspect the space's operation status")
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--data", required=True, help="path to longmemeval_s json")
-    ap.add_argument(
-        "--out",
-        default="/tmp/console_stores",
-        help="staging root for service-compatible JSONL store directories; existing outputs are rejected",
-    )
-    ap.add_argument("--embedder", default="bge-small")
-    ap.add_argument("--llm", default="volcano:doubao-seed-1-6-flash-250615")
-    ap.add_argument("--limit", type=int, default=0, help="0 = all")
-    ap.add_argument("--offset", type=int, default=0)
-    ap.add_argument("--device", default=None, help="embedder device: mps | cpu | cuda (default auto)")
-    ap.add_argument("--batch", type=int, default=64, help="embedder batch size")
-    ap.add_argument("--shard", default=None, help="i/N — only process items where index %% N == i (parallel)")
-    args = ap.parse_args()
-
+def main(argv=None):
     from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm
 
     load_dotenv()
-    args.llm = args.llm or os.environ.get("MNEMOTRACE_LLM", "")
-    if not args.llm:
-        ap.error("configure --llm or MNEMOTRACE_LLM before generating any output")
-    args.out = os.path.abspath(os.path.expanduser(args.out))
-
-    with open(os.path.expanduser(args.data), encoding="utf-8") as fh:
-        items = json.load(fh)
-    if args.limit:
-        items = items[: args.limit]
-
-    shard_i, shard_n = (None, None)
-    if args.shard:
-        try:
-            shard_i, shard_n = (int(x) for x in args.shard.split("/"))
-            if not 0 <= shard_i < shard_n:
-                raise ValueError
-        except ValueError:
-            ap.error("--shard must be i/N with 0 <= i < N")
-
-    selected = [
-        (i, item, str(i + 1), namespace_path(args.out, str(i + 1)))
-        for i, item in enumerate(items)
-        if i >= args.offset and (shard_n is None or i % shard_n == shard_i)
-    ]
-    mfile = f"manifest.shard{shard_i}.json" if shard_n is not None else "manifest.json"
-    manifest_paths = [os.path.join(args.out, mfile)]
-    if shard_n is None:
-        manifest_paths.append(os.path.join(args.out, "manifest.md"))
-    for path in [entry[3] for entry in selected] + manifest_paths:
-        if os.path.lexists(path):
-            ap.error(f"output already exists: {path}; use a fresh --out directory")
-    # Reserve this run's outputs before loading models. Disjoint shards can share a root;
-    # a competing run for the same space or manifest must fail instead of overwriting it.
-    try:
-        os.makedirs(args.out, exist_ok=True)
-        for path in manifest_paths:
-            with open(path, "x", encoding="utf-8"):
-                pass
-        for _, _, _, path in selected:
-            os.mkdir(path)
-    except FileExistsError as exc:
-        ap.error(f"output already exists: {exc.filename}; use a fresh --out directory")
-
-    embedder = make_embedder(args.embedder, device=args.device, batch_size=args.batch)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True, help="New JSONL file mapping cases to space IDs")
+    parser.add_argument("--user-id", default=os.environ.get("MNEMOTRACE_USER_ID"))
+    parser.add_argument("--llm", default=os.environ.get("MNEMOTRACE_LLM"))
+    parser.add_argument("--embedder", default=os.environ.get("MNEMOTRACE_EMBEDDER", "hashing"))
+    parser.add_argument("--offset", type=int, default=0)
+    parser.add_argument("--limit", type=int, default=0, help="0 selects all remaining cases")
+    args = parser.parse_args(argv)
+    if not args.user_id or not args.llm or args.offset < 0 or args.limit < 0:
+        parser.error("An existing user, explicit LLM, and nonnegative offset/limit are required")
+    items = json.loads(args.data.expanduser().read_text(encoding="utf-8"))
+    if not isinstance(items, list):
+        parser.error("Expected a JSON list of cases")
     llm = make_llm(args.llm)
-    print(f"{len(items)} questions | explicit LLM extraction")
-
-    manifest = []
-    t0 = time.time()
-    for i, item, namespace, path in selected:
-        mem = Memory(embedder=embedder, llm=llm)
-        ingest(mem, item, user_id=namespace)
-        extraction_error = None
-        try:
-            mem.consolidate()
-            mem.summarize_episodes(list(mem.episodes_doc.values()))
-        except Exception as exc:  # noqa: BLE001 -- 绝不让一个坏条目中断整个种子流程
-            extraction_error = type(exc).__name__
-            print(f"  [{namespace}] extraction failed: {extraction_error}; raw records saved")
-        n_live = sum(1 for f in mem.fact_store.values() if f.is_live())
-        mem.save(path)
-        manifest.append({
-            "namespace": namespace,
-            "directory": os.path.basename(path),
-            "category": item.get("question_type", "?"),
-            "question": item.get("question", ""),
-            "answer": str(item.get("answer", "")),
-            "sessions": len(sessions_of(item)),
-            "facts_live": n_live,
-            "extractor": "llm",
-            "extraction_error": extraction_error,
-        })
-        if (i + 1) % 10 == 0 or i + 1 == len(items):
-            rate = (i + 1 - args.offset) / max(1e-6, time.time() - t0)
-            print(f"  {i + 1}/{len(items)}  ({rate:.1f}/s)  last={namespace} facts={n_live} "
-                  "LLM")
-
-    # 分片时每个 worker 只写自己的清单，不生成合并清单或 Markdown。
-    with open(os.path.join(args.out, mfile), "w", encoding="utf-8") as fh:
-        json.dump(manifest, fh, ensure_ascii=False, indent=2)
-    if shard_n is not None:
-        print(f"shard {shard_i}/{shard_n} done in {time.time() - t0:.0f}s -> {mfile} ({len(manifest)} users)")
-        if any(row["extraction_error"] for row in manifest):
-            raise SystemExit(1)
-        return
-    # 人类可读的表格
-    lines = ["# MnemoTrace console seed — LongMemEval_S\n",
-             f"{len(manifest)} namespaces. ★ = LLM-extracted.\n",
-             "开放模式使用 namespace 登录；受保护模式使用管理员映射到该 namespace 的 API Key。\n",
-             "停服后将清单中的完整 directory 复制到 MNEMOTRACE_DATA_DIR，保留目录名且拒绝覆盖；"
-             "使用与生成时相同的 embedder 启动服务。完整步骤见 eval/README.md。\n",
-             "| namespace | directory | cat | facts | question | answer |",
-             "|--:|---|---|--:|---|---|"]
-    for m in manifest:
-        star = " ★" if m["extractor"] == "llm" else ""
-        q = m["question"].replace("|", "\\|")[:90]
-        a = m["answer"].replace("|", "\\|").replace("\n", " ")[:60]
-        lines.append(f"| {m['namespace']}{star} | {m['directory']} | {m['category']} | "
-                     f"{m['facts_live']} | {q} | {a} |")
-    with open(os.path.join(args.out, "manifest.md"), "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines))
-    print(f"done in {time.time() - t0:.0f}s -> {args.out} (manifest.json + manifest.md)")
-
-    if any(row["extraction_error"] for row in manifest):
-        raise SystemExit(1)
+    embedder = make_embedder(args.embedder)
+    model = "hashing-v1" if args.embedder == "hashing" else args.embedder
+    end = args.offset + args.limit if args.limit else None
+    output = args.out.expanduser()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    config = Config.from_env()
+    with output.open("x", encoding="utf-8") as manifest:
+        with Database(DatabaseConfig.from_env()) as database:
+            spaces = Spaces(database)
+            for position, item in enumerate(items[args.offset:end], start=args.offset + 1):
+                space = spaces.create(args.user_id, f"LongMemEval {position}")
+                manifest.write(json.dumps(dict(case=position, space_id=space.space_id)) + "\n")
+                manifest.flush()
+                scope = spaces.authorize(args.user_id, space.space_id)
+                memory = Memory(database, scope, config=config, llm=llm,
+                                        embedder=embedder, embedding_model=model)
+                ingest(memory, item)
 
 
 if __name__ == "__main__":

@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import json
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from mnemotrace.embed.litellm_embed import LiteLLMEmbedder
 from mnemotrace.llm.providers import make_embedder
-from tests.model_fixtures import MemoryService
-from mnemotrace.store import DimensionMismatchError, EmbedderMismatchError
 
 
 @pytest.fixture
@@ -102,53 +98,3 @@ def test_response_dimension_mismatch_does_not_change_declared_dimension(
     with pytest.raises(ValueError, match="dimension"):
         embedder.embed_batch(["synthetic memory"] * len(dimensions))
     assert embedder.dim == 1024
-
-
-@pytest.mark.parametrize("model", ["openai:", "openai:openai/BAAI/bge-m3"])
-def test_bge_service_reopens_without_api_calls_or_reembedding(
-    embedding_api, monkeypatch, tmp_path, model
-):
-    monkeypatch.setenv("MNEMOTRACE_ANSWERER", "")
-    monkeypatch.setenv("MNEMOTRACE_VISION_LLM", "")
-    monkeypatch.delenv("MNEMOTRACE_REEMBED_ON_MISMATCH", raising=False)
-    service = MemoryService(data_dir=str(tmp_path), embedder_name=model, llm_name="")
-    service.remember("user123", "I live in Shenzhen.")
-    manifest_path = Path(service._path("user123")) / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["embedding_dim"] == 1024
-    assert embedding_api
-    episode_count = len(service.get("user123").episodes_doc.values())
-    embedding_api.clear()
-
-    restarted = MemoryService(data_dir=str(tmp_path), embedder_name=model, llm_name="")
-    memory = restarted.get("user123")
-    assert len(memory.episodes_doc.values()) == episode_count
-    assert memory.fact_store.values()
-    assert all(len(fact.embedding) == 1024 for fact in memory.fact_store.values())
-    assert embedding_api == []
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "error"),
-    [("embedding_dim", 1536, DimensionMismatchError),
-     ("embedder_id", "another-model", EmbedderMismatchError)],
-)
-def test_bge_reopen_still_rejects_incompatible_store(
-    embedding_api, monkeypatch, tmp_path, field, value, error
-):
-    monkeypatch.setenv("MNEMOTRACE_ANSWERER", "")
-    monkeypatch.setenv("MNEMOTRACE_VISION_LLM", "")
-    monkeypatch.delenv("MNEMOTRACE_REEMBED_ON_MISMATCH", raising=False)
-    model = "openai:openai/BAAI/bge-m3"
-    service = MemoryService(data_dir=str(tmp_path), embedder_name=model, llm_name="")
-    service.remember("user123", "I live in Shenzhen.")
-    manifest_path = Path(service._path("user123")) / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest[field] = value
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    embedding_api.clear()
-
-    restarted = MemoryService(data_dir=str(tmp_path), embedder_name=model, llm_name="")
-    with pytest.raises(error):
-        restarted.get("user123")
-    assert embedding_api == []

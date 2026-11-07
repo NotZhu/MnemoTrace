@@ -16,7 +16,7 @@ import subprocess
 from unittest.mock import patch
 
 from eval import harness
-from mnemotrace import Config, Memory
+from mnemotrace import Config, MemoryEngine
 from mnemotrace.retrieve.lexical import bm25_scores
 from mnemotrace.util import stems
 
@@ -32,6 +32,7 @@ SOURCE_FILES = (
     'tests/postgres/test_migrations.py', 'mnemotrace/retrieve/postgres.py',
     'mnemotrace/store/postgres/graph_reads.py', 'mnemotrace/store/postgres/lexical.py',
     'mnemotrace/store/postgres/retrieval.py', 'mnemotrace/store/postgres/sql/005_retrieval.sql',
+    'mnemotrace/store/postgres/sql/006_backup_constraints.sql',
 )
 EVALUATION_PATHS = ('mnemotrace', 'eval', 'tests/model_fixtures.py',
                     'tests/extraction_responses.json', *SOURCE_FILES)
@@ -54,10 +55,10 @@ def observe() -> tuple[list[dict], dict, dict]:
 
     observations, captured = {}, {}
 
-    def memory_for(storage, llm, data_path=None):
+    def memory_for(storage, llm):
         if storage != 'memory':
             raise ValueError('This baseline only observes the offline memory reference')
-        memory = Memory(llm=llm)
+        memory = MemoryEngine(llm=llm)
         search = memory.search
 
         def recorded_search(query, user_id, as_of=None, **kwargs):

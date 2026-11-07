@@ -34,7 +34,7 @@ os.environ.setdefault("LITELLM_LOG", "CRITICAL")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mnemotrace import Memory  # noqa: E402
+from mnemotrace import MemoryEngine  # noqa: E402
 from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm, make_reranker  # noqa: E402
 from mnemotrace.util import DAY, fmt_date  # noqa: E402
 
@@ -356,7 +356,7 @@ def parse_date(s):
         return None
 
 
-def ingest(mem: Memory, item: dict, user_id: str) -> None:
+def ingest(mem: MemoryEngine, item: dict, user_id: str) -> None:
     # 每个会话一个 episode（拼接各 turn）：抽取调用比按 turn 少约 10 倍，且 episode->session 映射
     # 一一对应，便于 recall。会话是一个连贯的记忆单元。
     dates = item.get("haystack_dates") or []
@@ -419,7 +419,7 @@ def run_recall(items, embedder, top_k):
         evidence = set(item.get("answer_session_ids") or [])
         if not evidence:
             continue
-        mem = Memory(embedder=embedder)  # 不传 llm：纯检索
+        mem = MemoryEngine(embedder=embedder)  # 不传 llm：纯检索
         ingest(mem, item, item["question_id"])
         qvec = embedder.embed(item["question"])
         results = mem.episodes_vec.search(qvec, top_k)
@@ -435,7 +435,7 @@ def eval_one(item, embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_ch
     """评测单个问题。返回结果 dict；绝不抛异常（错误会被捕获）。"""
     qid, cat, q = item["question_id"], item.get("question_type", "?"), item["question"]
     try:
-        mem = Memory(embedder=embedder, llm=extractor_llm, reranker=reranker)
+        mem = MemoryEngine(embedder=embedder, llm=extractor_llm, reranker=reranker)
         ingest(mem, item, qid)
         if extract_k and extract_k > 0:
             # _S 规模：先检索再抽取。对全部约 500 个会话抽取 fact 不可行，所以针对当前问题检索

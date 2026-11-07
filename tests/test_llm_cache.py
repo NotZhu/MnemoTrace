@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import tempfile
 import json
-from mnemotrace import Memory
+from mnemotrace import MemoryEngine
 
 from mnemotrace.llm.cache import CachedLLM
 
@@ -111,7 +111,7 @@ def test_identity_registration_does_not_depend_on_extraction_order():
             for item in outputs[content]], "working": [], "summaries": []})
     seen = []
     for _ in range(3):
-        mem = Memory(llm=FakeLLM(handler=complete))
+        mem = MemoryEngine(llm=FakeLLM(handler=complete))
         for i, text in enumerate(outputs):
             mem.add(text, user_id="u1", session_id=f"s{i}", event_time=1_700_000_000.0 + i * 86400)
         mem.consolidate()

@@ -17,7 +17,7 @@ In a consuming application, install the built package using its absolute directo
 npm install /absolute/path/to/MnemoTrace/clients/typescript
 ```
 
-The examples below use the package's declared name. Initialize the Postgres database and create an account and Bearer key before running the HTTP server. The memory extraction example requires a configured server LLM. See the [database configuration](https://github.com/NotZhu/MnemoTrace/blob/main/docs/reference/configuration.md#postgres-数据库基础).
+The examples below use the package's declared name. Follow the [deployment guide](https://github.com/NotZhu/MnemoTrace/blob/main/deploy/README.md) to initialize Postgres, start the service and issue a Bearer key. The memory extraction example requires a configured server LLM.
 
 ## Connect and use memory
 

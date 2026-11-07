@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryEngine
 from mnemotrace.connectors import parse, sniff
 from mnemotrace.connectors.base import to_epoch
 
@@ -105,7 +105,7 @@ def test_to_epoch_forms():
 
 
 def test_import_messages_end_to_end_offline():
-    mem = Memory()
+    mem = MemoryEngine()
     sessions = parse(CHATGPT, format="chatgpt")
     stats = mem.import_messages(sessions, user_id="me")
     assert stats["sessions"] == 1 and stats["episodes"] == 3
@@ -115,7 +115,7 @@ def test_import_messages_end_to_end_offline():
 
 
 def test_timestamped_records_preserve_message_times_on_import():
-    mem = Memory()
+    mem = MemoryEngine()
     records = [
         {"session_id": "career", "content": "Wei works at Tencent.", "event_time": 1_700_000_000.0},
         {"session_id": "career", "content": "Wei works at Moonshot AI.", "event_time": 1_700_086_400.0},
@@ -130,7 +130,7 @@ def test_timestamped_records_preserve_message_times_on_import():
 
 
 def test_import_messages_dict_sessions_coerce_iso_timestamps():
-    mem = Memory()
+    mem = MemoryEngine()
     stats = mem.import_messages([{
         "session_id": "career",
         "messages": [{
@@ -148,7 +148,7 @@ def test_import_messages_dict_sessions_coerce_iso_timestamps():
 
 
 def test_import_messages_dict_sessions_preserve_message_times():
-    mem = Memory()
+    mem = MemoryEngine()
     stats = mem.import_messages([{
         "session_id": "career",
         "messages": [
@@ -165,7 +165,7 @@ def test_import_messages_dict_sessions_preserve_message_times():
 
 
 def test_import_data_autosniff_preserves_unknown_time():
-    mem = Memory()
+    mem = MemoryEngine()
     arr = [{"role": "user", "content": "I work at Tencent."}]
     stats = mem.import_data(arr, user_id="u2", base_time=1_700_000_000.0)
     assert stats["episodes"] == 1

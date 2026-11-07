@@ -31,7 +31,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mnemotrace import Memory  # noqa: E402
+from mnemotrace import MemoryEngine  # noqa: E402
 from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
 from eval.bench import mnemotrace_config  # noqa: E402
 from eval.longmemeval import ingest, load_data  # noqa: E402
@@ -89,7 +89,7 @@ def answer_in_context(context: str, gold: str) -> bool:
 def context_for_item(item: dict, embedder, extractor, ablations: tuple[str, ...],
                      topk: int, chunks: int, extract_k: int) -> tuple[str, int]:
     qid, q = item["question_id"], item["question"]
-    mem = Memory(config=mnemotrace_config(ablations=ablations), embedder=embedder, llm=extractor)
+    mem = MemoryEngine(config=mnemotrace_config(ablations=ablations), embedder=embedder, llm=extractor)
     ingest(mem, item, qid)
     if extract_k > 0:
         mem.consolidate(mem.retrieve_episodes(q, qid, extract_k))

@@ -1,30 +1,85 @@
 name: mnemotrace
 
+x-database: &runtime
+  MNEMOTRACE_DATABASE_URL: "${MNEMOTRACE_DATABASE_URL:?set the runtime DSN}"
+  MNEMOTRACE_DB_ROLE_PREFIX: "${MNEMOTRACE_DB_ROLE_PREFIX:-mnemotrace}"
+
+x-models: &models
+  MNEMOTRACE_EMBEDDER: "${MNEMOTRACE_EMBEDDER:-hashing}"
+  MNEMOTRACE_LLM: "${MNEMOTRACE_LLM:-}"
+  MNEMOTRACE_LLM_TOPICS: "${MNEMOTRACE_LLM_TOPICS:-1}"
+  DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+
+x-app: &app
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  image: "${MNEMOTRACE_IMAGE:-mnemotrace-memory:0.1.0}"
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  stop_grace_period: 40s
+  depends_on:
+    db:
+      condition: service_healthy
+
 services:
-  mnemotrace:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    image: mnemotrace-memory:0.1.0
-    init: true
+  db:
+    image: pgvector/pgvector:0.8.7-pg18-trixie@sha256:5895949dfcdf308eb0cd31c950c93c14895c77f33fbedfecf1fa511ab1d4bcd2
     restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: "${MNEMOTRACE_POSTGRES_PASSWORD:?set the database bootstrap password}"
+      POSTGRES_DB: mnemotrace
+    networks: [database]
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, postgres, -d, mnemotrace]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  db-init:
+    <<: *app
+    profiles: [operations]
+    command: [python, -m, mnemotrace.admin, init-db, --bootstrap, --provision-logins]
+    networks: [database]
+    environment:
+      <<: *runtime
+      MNEMOTRACE_BOOTSTRAP_DATABASE_URL: "${MNEMOTRACE_BOOTSTRAP_DATABASE_URL:?set the bootstrap DSN}"
+      MNEMOTRACE_MIGRATION_DATABASE_URL: "${MNEMOTRACE_MIGRATION_DATABASE_URL:?set the migration DSN}"
+      MNEMOTRACE_ADMIN_DATABASE_URL: "${MNEMOTRACE_ADMIN_DATABASE_URL:?set the account management DSN}"
+      MNEMOTRACE_DISCOVERY_DATABASE_URL: "${MNEMOTRACE_DISCOVERY_DATABASE_URL:?set the worker discovery DSN}"
+    healthcheck:
+      disable: true
+
+  admin:
+    <<: *app
+    profiles: [operations]
+    entrypoint: [python, -m, mnemotrace.admin]
+    command: [--help]
+    networks: [database]
+    environment:
+      MNEMOTRACE_ADMIN_DATABASE_URL: "${MNEMOTRACE_ADMIN_DATABASE_URL:?set the account management DSN}"
+      MNEMOTRACE_DB_ROLE_PREFIX: "${MNEMOTRACE_DB_ROLE_PREFIX:-mnemotrace}"
+    healthcheck:
+      disable: true
+
+  mnemotrace:
+    <<: *app
+    restart: unless-stopped
+    networks: [database, default]
     ports:
       - "127.0.0.1:${MNEMOTRACE_PORT:-8000}:8000"
     environment:
-      MNEMOTRACE_DATABASE_URL: "${MNEMOTRACE_DATABASE_URL:?set MNEMOTRACE_DATABASE_URL in deploy/.env}"
-      MNEMOTRACE_DB_ROLE_PREFIX: "${MNEMOTRACE_DB_ROLE_PREFIX:-mnemotrace}"
-      MNEMOTRACE_EMBEDDER: "${MNEMOTRACE_EMBEDDER:-hashing}"
-      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
-      MNEMOTRACE_LLM: "${MNEMOTRACE_LLM:-}"
+      <<: [*runtime, *models]
       MNEMOTRACE_ANSWERER: "${MNEMOTRACE_ANSWERER:-}"
       MNEMOTRACE_MAX_REQUEST_BYTES: "${MNEMOTRACE_MAX_REQUEST_BYTES:-2097152}"
-    read_only: true
-    tmpfs:
-      - /tmp:size=64m,mode=1777
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
     healthcheck:
       test:
         - CMD
@@ -35,3 +90,21 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 4
+
+  worker:
+    <<: *app
+    command: [python, -m, mnemotrace.worker]
+    restart: unless-stopped
+    networks: [database, default]
+    environment:
+      <<: [*runtime, *models]
+      MNEMOTRACE_DISCOVERY_DATABASE_URL: "${MNEMOTRACE_DISCOVERY_DATABASE_URL:?set the worker discovery DSN}"
+    healthcheck:
+      disable: true
+
+networks:
+  database:
+    internal: true
+
+volumes:
+  postgres:

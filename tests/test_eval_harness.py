@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-
-import pytest
+import sys
+from types import ModuleType
 
 from eval.harness import evaluate, run_mnemotrace, write_jsonl
 from eval.report import format_synthetic_report, load
@@ -10,18 +10,29 @@ from eval.synthetic import ITEMS
 from tests.model_fixtures import RecordedLLM
 
 
-def test_synthetic_harness_durable_storage_smoke():
-    item = next(it for it in ITEMS if it.id == "tmp2")
-    ok, tokens, latency = run_mnemotrace(item, storage="durable", llm=RecordedLLM())
-    assert ok is True
-    assert tokens > 0
-    assert latency >= 0.0
+def test_mem0_baseline_loads_the_third_party_memory_class(monkeypatch):
+    from eval.bench import SYSTEMS, Rig
+
+    class Memory:
+        @classmethod
+        def from_config(cls, config):
+            return cls()
+
+        def search(self, **kwargs):
+            return {"results": [{"memory": "Synthetic fact"}]}
+
+    mem0 = ModuleType("mem0")
+    mem0.Memory = Memory
+    monkeypatch.setitem(sys.modules, "mem0", mem0)
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-key")
+
+    baseline = SYSTEMS["mem0"](Rig(None, None, None, None))
+    assert baseline.context({"question_id": "synthetic", "question": "What was stored?"}) == "FACTS:\n- Synthetic fact"
 
 
-def test_synthetic_harness_lancedb_storage_smoke():
-    pytest.importorskip("lancedb")
+def test_synthetic_harness_in_memory_smoke():
     item = next(it for it in ITEMS if it.id == "tmp2")
-    ok, tokens, latency = run_mnemotrace(item, storage="lancedb", llm=RecordedLLM())
+    ok, tokens, latency = run_mnemotrace(item, storage="memory", llm=RecordedLLM())
     assert ok is True
     assert tokens > 0
     assert latency >= 0.0

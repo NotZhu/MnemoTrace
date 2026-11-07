@@ -1,13 +1,15 @@
 """Assemble query results from authorized, request-local Postgres reads."""
 from dataclasses import dataclass, replace
 
-from ..memory import Memory, SearchResult, _ANSWER_TYPE_MATCH, _GENERIC_ATTR_TERMS, _TEMPORAL_HISTORY_RE
-from ..memory import _expected_answer_type, should_abstain
 from ..store.contracts import FactQuery, FactState, RetrievalQuery
 from ..store.postgres.graph_reads import RetrievalGraph
 from ..store.postgres.records import FACT, SOURCE, domain
 from ..store.postgres.retrieval import Corpus
 from ..util import fmt_date, time_key
+from .answers import (
+    SearchResult, _ANSWER_TYPE_MATCH, _GENERIC_ATTR_TERMS, _TEMPORAL_HISTORY_RE,
+    _expected_answer_type, history_answer, rank_procedural, should_abstain,
+)
 from .aggregate import extract_aggregation_candidates, render_aggregation_candidates
 from .events import EventEvidence, event_evidence
 from .evidence import plan_evidence
@@ -154,14 +156,14 @@ def search(view, query, config, top_k, semantic, decomposition=None):
         chain = [fact for fact in map(domain, view.fact_chain(sorted(seeds), history)) if fact.valid_at is not None]
         at = view.at.timestamp() if history.valid_at is None else history.valid_at
         known = at if history.known_at is None else history.known_at
-        result = Memory._history_answer(query.text, chain, at, lambda fact: (
+        result = history_answer(query.text, chain, at, lambda fact: (
             (fact.invalid_at is None or fact.invalid_at > at)
             and (fact.expired_at is None or fact.expired_at > known)))
         if result:
             return replace(result, limitations=tuple(dict.fromkeys((*batch.limitations, *corpus.limitations()))))
 
     if config.procedural_memory:
-        procedural = Memory._rank_procedural(query.text, (fact for fact, _ in ranked), 1)
+        procedural = rank_procedural(query.text, (fact for fact, _ in ranked), 1)
         if procedural:
             fact = procedural[0]
             sessions = list(dict.fromkeys(domain(item).session_id for item in view.sources(tuple(fact.provenance))))

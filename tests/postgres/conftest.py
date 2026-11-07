@@ -137,7 +137,7 @@ def spaces(runtime):
 @pytest.fixture
 def product_service(runtime, monkeypatch):
     pytest.importorskip('fastapi')
-    from mnemotrace.postgres_service import MemoryService
+    from mnemotrace.service import MemoryService
     from mnemotrace.server import app
     from tests.model_fixtures import RecordedLLM
 

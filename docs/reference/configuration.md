@@ -4,7 +4,7 @@
 
 ## Python Config
 
-`from mnemotrace import Config`，再传给 `Memory(config=...)`。完整字段和精确默认值在 [config.py](../../mnemotrace/config.py) 维护。
+`from mnemotrace import Config`，再传给 `MemoryEngine(config=...)`。完整字段和精确默认值在 [config.py](../../mnemotrace/config.py) 维护。
 
 创建 `Config` 时请使用关键字参数，例如 `Config(top_k=5)`；字段顺序可能随配置分组调整。
 
@@ -24,6 +24,7 @@
 | --- | --- |
 | MNEMOTRACE_DATABASE_URL | 普通运行连接，不含账号管理或 DDL 权限 |
 | MNEMOTRACE_MIGRATION_DATABASE_URL | 显式初始化/升级；运行时不自动迁移 |
+| MNEMOTRACE_DISCOVERY_DATABASE_URL | 独立 worker 发现连接，领取后的业务处理仍使用运行连接 |
 | MNEMOTRACE_ADMIN_DATABASE_URL | 账号与 key 管理，不能作为普通数据连接 |
 | MNEMOTRACE_BOOTSTRAP_DATABASE_URL | 仅首次角色/扩展配置使用的 DBA 连接 |
 | MNEMOTRACE_DB_ROLE_PREFIX | 角色名称前缀；初始化后不可直接更换 |
@@ -32,7 +33,7 @@
 | MNEMOTRACE_DB_OPEN_TIMEOUT | 显式打开连接池的最大等待秒数 |
 
 凭据存放在受保护的环境或本地配置中，不作为管理命令参数，也不把真实连接串提交到仓库。
-首次配置分两步进行：DBA 先创建无登录权限的角色与扩展，再配置三种独立登录账号：
+首次配置分两步进行：DBA 先创建无登录权限的角色与扩展，再配置四种独立登录账号：
 
 ```python
 from mnemotrace.store.postgres import DatabaseConfig
@@ -48,9 +49,10 @@ SUPERUSER、BYPASSRLS、CREATEROLE 或 CREATEDB。以下采用默认角色前缀
 CREATE ROLE app_runtime LOGIN IN ROLE mnemotrace_runtime;
 CREATE ROLE app_migration LOGIN IN ROLE mnemotrace_migration;
 CREATE ROLE app_account_admin LOGIN IN ROLE mnemotrace_account_admin;
+CREATE ROLE app_worker_discovery LOGIN IN ROLE mnemotrace_worker_discovery;
 ```
 
-将三种登录凭据分别配置到对应环境变量，再显式初始化和创建账号：
+将四种登录凭据分别配置到对应环境变量，再显式初始化和创建账号：
 
 ```sh
 python -m mnemotrace.admin init-db
@@ -112,7 +114,7 @@ DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读
 默认值维护在 [Config](../../mnemotrace/config.py)，只是工程起点。规划同时预留核心结果、逐条长消息摘要及格式开销，输出不足时缩小窗口，不复用独立摘要的输出上限。
 可用 `joint_context_tokens` / `MNEMOTRACE_JOINT_CONTEXT_TOKENS` 声明提供方总上下文限制；规划使用输入 UTF-8 字节作为保守 token 上界，同时预留完整联合输出上限。未声明时不声称已验证提供方上下文容量。截断响应整体失败。
 
-统一后台处理默认开启，`MNEMOTRACE_BUFFERED_EXTRACTION=0` 显式关闭。自动任务仅由最后活动后空闲 60 秒、预算、flush/close 触发，没有最早等待兜底。所有来源共用以下输入配置。
+缓冲请求将原文和任务提交到 Postgres。后台处理由独立 worker 执行，部署方式见[部署指南](../../deploy/README.md)。对话窗口在最后活动后空闲 60 秒、达到预算或显式刷新时可处理，原文和文档的抽取任务提交后即可领取。显式刷新也可主动推进本次等待范围内的任务。各来源共用以下输入配置。
 
 | Config 字段 | 服务环境变量 | 含义 |
 | --- | --- | --- |
@@ -141,7 +143,6 @@ DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读
 
 | 参数组 | 主要字段与默认行为 | 影响 |
 | --- | --- | --- |
-| 存储 | storage=memory、data_path=None | 可选 LanceDB / Qdrant；向量数据库不代替完整快照的 open/save |
 | 嵌入 | embed_dim=256 | 默认 HashingEmbedder 维度；显式 embedder 有自己的身份与维度 |
 | 融合 | w_sem=1.0、w_lex=0.6、w_graph=0.8、w_rec=0.3、w_sal=0.25 | 不同检索信号的配置权重 |
 | 类型先验 | w_type_preference=1.25、w_type_identity=1.15 | 在相关候选中调整优先级 |
@@ -153,85 +154,7 @@ DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读
 | 工作记忆 | working_memory_ttl_seconds=86400 | 自动抽取工作记忆的墙钟存活秒数；到点由清扫移除，None 表示仅随会话清除（仅 Python Config 可设，无对应服务环境变量） |
 | 冲突 | conflict_sim_threshold=0.80；conflict_llm_escalation=False、conflict_detection=False | 规则与可选模型冲突处理 |
 
-使用内置 LanceDB 向量后端时，直接构造 `Memory` 必须提供非空 `data_path`；缺失或空字符串会在后端初始化前抛出 `ValueError`，不会自动创建临时数据库。该路径是向量数据库位置，不代替保存完整记忆状态所需的 `save()`：
 
-```python
-from mnemotrace import Config, Memory
-
-memory = Memory(config=Config(storage="lancedb", data_path="./vectors"))
-memory.save("./snapshot")
-```
-
-`Memory.open()` 已接收快照根目录，在 `data_path=None` 时会使用其下的 `lancedb` 子目录，不修改传入的 Config。显式提供的非空 `data_path` 优先；空字符串仍报错，不触发路径推导：
-
-```python
-memory = Memory.open("./snapshot", config=Config(storage="lancedb"))
-# 向量数据库位置为 ./snapshot/lancedb；加载完整记忆快照。
-```
-
-上述要求仅针对内置 LanceDB 后端。使用自定义 `vector_store_factory` 时，存储位置由工厂管理。LanceDB 的安装依赖见下方[模型与可选依赖](#模型与可选依赖)。
-
-### 可选 Qdrant
-
-安装 `python -m pip install "mnemotrace-memory[qdrant]"`（源码安装用 `".[qdrant]"`）。默认内存路径不导入 Qdrant，LanceDB 仍可独立选择。
-
-本地模式适合单进程开发与测试。四个索引共享一个客户端，退出上下文会释放数据库锁；`close()` 不隐式保存：
-
-```python
-from mnemotrace import Config, Memory
-
-with Memory.open("./synthetic-snapshot", config=Config(storage="qdrant")) as memory:
-    memory.add("I like Python.", user_id="synthetic-user", consolidate=True)
-    memory.save()
-# 本地向量库在 ./synthetic-snapshot/qdrant，完整状态仍在 JSONL + manifest 中。
-```
-
-直接使用 `Memory(config=Config(storage="qdrant", data_path="./vectors"))` 时必须指定非空本地路径。`Memory.open()` 仅在 `data_path=None` 时推导路径，不修改传入的 Config。重复持有同一路径会报错，重新打开前应关闭原实例。
-
-远程模式用于自建或云端 Qdrant；除回环地址用于本机测试外，连接要求 HTTPS。凭据通过环境或本地配置传入，不写入快照、配置 repr 或响应：
-
-```python
-import os
-from mnemotrace import Config, Memory
-
-config = Config(
-    storage="qdrant",
-    qdrant_url=os.environ["MNEMOTRACE_QDRANT_URL"],
-    qdrant_api_key=os.environ.get("MNEMOTRACE_QDRANT_API_KEY"),
-)
-with Memory.open("./synthetic-snapshot", config=config) as memory:
-    memory.add_fact("user", "likes", "Python", user_id="synthetic-user")
-    memory.save()
-```
-
-远程 URL 与 `data_path` 互斥。直接构造远程 `Memory` 时还需要显式 `qdrant_namespace`；`open()` 可从规范化快照绝对路径的 SHA-256 摘要推导。更换快照位置会改变推导出的远程命名空间；需要固定身份时显式配置 namespace。不同 Memory 不应使用同一远程 namespace 并各自管理不同快照。
-
-`qdrant_collection_prefix` 默认 `mnemotrace`，用于区分共享集群中的部署；命名空间摘要和索引名进一步隔离四个集合。`qdrant_timeout` 默认 10 秒。自定义 `vector_store_factory` 仍由调用方管理后端；直接使用 `QdrantVectorStore(client, collection, dimension)` 时，注入客户端由调用方关闭。
-
-Qdrant 承担向量和 payload 存储，图、原始日志及其他状态仍由完整快照恢复。打开快照前先校验全部记录，再重建该命名空间索引；首次打开没有 manifest 的目录视为空快照。未调用 `save()` 的改动不会成为恢复依据。维度不匹配时失败，显式 `open(..., allow_mismatch=True)` 后调用 `reembed()` 和 `save()` 才能迁移；迁移失败可从原有效快照以 `allow_mismatch=True` 重新打开并重试。
-
-带 Python 谓词的查询会分页扫描全部记录、先过滤再排序，以保持现有结果语义。首版没有过滤下推或默认 ANN 加速，不能仅凭切换后端推断检索变快。
-
-开关按职责分组：
-
-- 证据与预算：evidence_planner、evidence_budgeting、chain_evidence、temporal_history_queries、chain_current_first、provenance_evidence、provenance_chunk_promotion。
-- 抽取与偏好：explicit_preference_extraction、preference_object_filter、preference_object_normalization、preference_reversal_extraction。
-- 自动主题：llm_topics=True，在既有属性抽取和会话结论调用中附加主题协议；关闭时忽略模型主题，仍执行离线规则。
-- 数值聚合：numeric_aggregation_candidates、aggregation_recall_expansion、aggregation_constraint_filter、aggregation_pool_boost。
-- 派生读取：summary_fallback、summary_fallback_k、procedural_extraction、procedural_memory、procedural_memory_k。
-- 图与规划：graph_proximity、graph_relation_awareness、graph_path_reinforcement、graph_self_anchor、graph_entity_alias_anchor、graph_negative_constraints、planner_location_chains、planner_project_chains、planner_llm_decomposition。
-
-多数增强当前默认开启，但具体是否执行还取决于调用路径和模型是否可用。不要从字段默认值推断已经发生外部模型调用。算法消融、数据范围与成本记录见[评测说明](../../eval/README.md)。
-
-```python
-from mnemotrace import Config, Memory
-
-memory = Memory(config=Config(llm_topics=False))
-fact = memory.add_fact("user", "uses", "storage engine")
-assert (fact.topic, fact.topic_source) == ("technology", "rule")
-```
-
-有 LLM 时该开关只控制主题协议，不关闭原有事实提取。开启后不增加模型调用次数或 token 上限，但会增加输入和输出 token；有效提示词改变也会改变提示词缓存键。关闭时保留原有请求形状与提示词缓存语义。主题判定与重置规则见[主题与来源](../architecture/memory.md#主题与来源)。
 
 ## 服务环境变量
 
@@ -271,8 +194,6 @@ HTTP、直连 MCP 和普通 CLI 使用[数据库运行连接](#postgres-数据�
 | 本地语义嵌入 | `.[embeddings]`；multilingual、bge-small-zh、bge-small、bge-m3、bge-large 或 st:模型名 |
 | LLM / API 嵌入 | `.[llm]`；模型名和凭据规则由 [providers.py](../../mnemotrace/llm/providers.py) 解析 |
 | PDF/DOCX 解析 | `.[documents]` |
-| 可选 Qdrant | `.[qdrant]` 或对应 backends extra；本地和远程共用官方客户端 |
-| 可选 LanceDB | `.[lancedb]` 或对应 backends extra |
 | Postgres 数据库基础 | `.[postgres]`；包含数据库初始化、身份和业务接口 |
 | 完整服务常用组合 | `.[serve]`；具体包含项以 pyproject 为准 |
 

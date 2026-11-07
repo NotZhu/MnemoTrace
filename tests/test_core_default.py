@@ -5,25 +5,15 @@ from pathlib import Path
 import subprocess
 import sys
 
-from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryEngine
 import pytest
 
 
-def test_default_memory_does_not_import_lancedb(tmp_path):
-    sys.modules.pop("lancedb", None)
-    mem = Memory()
+def test_algorithm_memory_does_not_import_postgres_driver():
+    before = "psycopg" in sys.modules
+    mem = MemoryEngine()
     mem.add("I like Python.", user_id="u")
-    mem.save(str(tmp_path / "store"))
-    assert "lancedb" not in sys.modules
-
-
-def test_default_save_uses_jsonl_manifest(tmp_path):
-    path = tmp_path / "store"
-    mem = Memory()
-    mem.add("I like Python.", user_id="u")
-    mem.save(str(path))
-    assert (path / "manifest.json").exists()
-    assert (path / "episodes.jsonl").exists()
+    assert ("psycopg" in sys.modules) == before
 
 
 def test_offline_core_script_runs_without_services(tmp_path):
@@ -53,6 +43,8 @@ def test_quickstart_missing_optional_dependency_has_actionable_message(monkeypat
     monkeypatch.setattr(providers, 'make_llm', missing_dependency)
     monkeypatch.setattr(providers, 'load_dotenv', lambda: None)
     monkeypatch.setenv('MNEMOTRACE_LLM', 'synthetic-fixture')
+    monkeypatch.setenv('MNEMOTRACE_USER_ID', 'user')
+    monkeypatch.setenv('MNEMOTRACE_SPACE_ID', 'space')
     with pytest.raises(SystemExit, match=r'\[llm\]'):
         quickstart.main()
 

@@ -6,28 +6,21 @@
 export interface Health {
   ok: boolean
   ready: boolean
-  service: string
-  auth_mode: 'api_keys' | 'open' | 'disabled'
-  anonymous_allowed: boolean
-  embedder: string
-  llm_configured: boolean
-  answerer_configured: boolean
-  storage: string
-  users_hot: number
-  max_hot_users: number
-  max_hot_facts: number
+  storage: 'postgres'
+  auth_mode: 'api_keys'
+  service?: string
+  version?: string
+  anonymous_allowed?: false
+  embedder?: string
+  llm_configured?: boolean
+  answerer_configured?: boolean
 }
 
 export interface ExtractionFailure {
-  code: 'llm_not_configured' | 'buffered_processing_disabled' | 'processing_incomplete' | 'extraction_failed' | 'extraction_invalid_response' | 'extraction_truncated'
+  code: 'llm_not_configured' | 'processing_incomplete' | 'extraction_failed' | 'extraction_invalid_response' | 'extraction_truncated'
   message: string
   stored_raw: boolean
   episode_ids: string[]
-}
-
-export interface SummarizationResult {
-  status: ProcessingState | 'not_needed'
-  error_code: string | null
 }
 
 export interface OriginalEpisode {
@@ -217,7 +210,6 @@ export interface Fact extends TopicMetadata {
 
 export interface EpisodeView {
   id: string
-  summarization: SummarizationResult
   date: string
   session: string
   role: string

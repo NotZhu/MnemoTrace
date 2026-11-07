@@ -10,11 +10,13 @@ import uuid
 import warnings
 from pathlib import Path
 
-from .spaces import is_valid_api_key
-
-
 class CredentialError(ValueError):
     """Safe to display: never includes credential contents or provider output."""
+
+
+def is_valid_api_key(key: str) -> bool:
+    """Require a non-blank, printable ASCII key without altering its identity."""
+    return bool(key.strip()) and all(" " <= char <= "~" for char in key)
 
 
 def validate_key(key: str) -> str:

@@ -1,7 +1,4 @@
-"""Postgres foundations. Drivers are imported only when opening a connection.
-
-The snapshot runtime is intentionally not connected to these foundations yet.
-"""
+"""Postgres connections and space authorization. Drivers load when needed."""
 from .database import Database, DatabaseConfig
 from .identity import Accounts, Identity, IssuedKey, Spaces
 

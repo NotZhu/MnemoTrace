@@ -6,36 +6,32 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
 def main():
-    from mnemotrace import Memory, LLMNotConfiguredError
+    from mnemotrace import MemoryEngine, LLMNotConfiguredError
 
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact('user', 'lives_in', 'Paris')
     mem.add('Synthetic pending record')
     from mnemotrace.connectors import parse
-    raw_import = Memory()
+    raw_import = MemoryEngine()
     imported = raw_import.import_messages(parse(
         [{'role': 'user', 'content': 'Synthetic imported record'}], format='messages'),
         consolidate=False, summarize=False)
     assert imported['episodes'] == 1 and not raw_import.fact_store.values()
-    with tempfile.TemporaryDirectory(prefix='mnemotrace_core_') as directory:
-        mem.save(directory)
-        reopened = Memory.open(directory)
-        assert reopened.search('Where do I live?').answer() == 'Paris'
-        try:
-            reopened.consolidate()
-        except LLMNotConfiguredError:
-            pass
-        else:
-            raise AssertionError('Extraction must require an LLM')
+    assert mem.search('Where do I live?').answer() == 'Paris'
+    try:
+        mem.consolidate()
+    except LLMNotConfiguredError:
+        pass
+    else:
+        raise AssertionError('Extraction must require an LLM')
     for module in ('mnemotrace.admin', 'mnemotrace.agent_doctor', 'mnemotrace.agent_setup',
-                   'mnemotrace.connectors', 'mnemotrace.mcp'):
+                   'mnemotrace.connectors', 'mnemotrace.mcp', 'mnemotrace.worker'):
         subprocess.run([sys.executable, '-m', module, '--help'], cwd=ROOT,
                        check=True, stdout=subprocess.DEVNULL)
     subprocess.run([sys.executable, '-c',
