@@ -23,7 +23,7 @@ jobs:
     steps:
       # test_buffered_replay_report resolves a historical runtime commit; a shallow
       # clone cannot see it, so fetch full history for the Python regression job.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v5
@@ -61,7 +61,7 @@ jobs:
   documents:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -88,7 +88,7 @@ jobs:
     env:
       MNEMOTRACE_REQUIRE_POSTGRES: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -115,7 +115,7 @@ jobs:
     env:
       MNEMOTRACE_REQUIRE_POSTGRES: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -128,7 +128,7 @@ jobs:
           Invoke-WebRequest 'https://get.enterprisedb.com/postgresql/postgresql-18.6-1-windows-x64-binaries.zip' -OutFile $archive
           Expand-Archive -LiteralPath $archive -DestinationPath $install
           "PGROOT=$install\pgsql" | Out-File -FilePath $env:GITHUB_ENV -Append
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: pgvector/pgvector
           ref: v0.8.7
@@ -179,7 +179,7 @@ jobs:
   web:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -200,7 +200,7 @@ jobs:
   container:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
