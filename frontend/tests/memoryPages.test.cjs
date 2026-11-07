@@ -50,10 +50,10 @@ function setup({ episodes = false, count = 601, holdInitial = false } = {}) {
     }
     if (name === '../lib/api') return { api, MemoryRevisionChangedError: RevisionError, StaleSessionError: SessionError }
     if (name === '../store/auth') {
-      const useAuth = select => select({ apiKey: namespace })
-      useAuth.getState = () => ({ apiKey: namespace })
+      const useAuth = select => select({ spaceId: namespace })
+      useAuth.getState = () => ({ spaceId: namespace })
       return { useAuth,
-      currentSession: () => ({ key: namespace, epoch }),
+      currentSession: () => ({ key: namespace, spaceId: namespace, epoch }),
       isCurrentSession: session => session.epoch === epoch && session.key === namespace,
     }
     }
@@ -66,7 +66,7 @@ function setup({ episodes = false, count = 601, holdInitial = false } = {}) {
     return { id }
   }
   Object.assign(api, { addFact: commit, editFact: commit, deleteFact: commit, clearSlot: commit,
-    remember: commit, closeSession: commit, forget: commit, setFocus: commit, resolveConflict: commit, setPolicy: commit })
+    remember: commit, organizeSession: commit, forget: commit, setFocus: commit, resolveConflict: commit, setPolicy: commit })
   const h = mod.exports
   let params = episodes ? { facts_limit: 0, episodes_limit: 20 } : { facts_limit: 60, episodes_limit: 0, kind: 'outcomes' }
   observer = new rq.InfiniteQueryObserver(client, h.memoryPagesOptions(namespace, params))
@@ -378,7 +378,7 @@ test('a login cycle change during the cancellation barrier leaves the new cache 
   } finally { release?.(); s.close() }
 })
 
-for (const entry of ['useRemember', 'useCloseSession', 'useEditFact', 'useDeleteFact', 'useClearSlot',
+for (const entry of ['useRemember', 'useOrganizeSession', 'useEditFact', 'useDeleteFact', 'useClearSlot',
   'useForget', 'useSetFocus', 'useResolveConflict', 'useSetPolicy']) {
   test(`${entry} refreshes an uncached first page through the shared barrier`, async () => {
     const s = setup({ holdInitial: true })

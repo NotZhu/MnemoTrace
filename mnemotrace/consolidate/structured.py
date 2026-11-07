@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from ..localize import display_of
 from ..types import Fact
 from ._rule_match import normalize_predicate
@@ -126,18 +128,18 @@ def user_aliases(subject: str, user_id: str) -> set[str]:
     return {subject.lower(), user_id.lower()} | USER_REFS
 
 
-def build_structured_profile(facts: list[Fact], subject: str, user_id: str = "default") -> dict:
+def build_structured_profile(facts: Iterable[Fact], subject: str, user_id: str = "default") -> dict:
     """把用户存活的 fact 分组为基本信息 / 无权重偏好 / 习惯，并按 confirmed 与 tentative
     拆分展示。`facts` 应当已经是存活集。"""
     who = user_aliases(subject, user_id)
-    mine = [f for f in facts if f.subject.lower() in who]
-
     basic: dict[str, dict] = {}
     prefs: dict[str, list] = {}
     habits: list[dict] = []
     tentative: list[dict] = []
 
-    for f in mine:
+    for f in facts:
+        if f.subject.lower() not in who:
+            continue
         pred = f.predicate.lower()
         # 1) 基本身份槽位（单值：每个字段保留证据最强的一条）
         if pred in _BASIC:
@@ -190,4 +192,5 @@ def build_structured_profile(facts: list[Fact], subject: str, user_id: str = "de
 
 def _rank(f: Fact) -> tuple:
     """为单值槽位挑选最可信的 fact：用户断言优先，其次印证最多，最后 valid 时间最近。"""
-    return (1 if f.source == "user" else 0, len(set(f.provenance)), f.valid_at)
+    return (1 if f.source == "user" else 0, len(set(f.provenance)),
+            f.valid_at if f.valid_at is not None else float('-inf'))

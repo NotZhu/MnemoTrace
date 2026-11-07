@@ -1,34 +1,15 @@
-"""忆痕 Memory Service — 多租户 HTTP API，任何人都可以接入并管理自己的记忆
-（AGENTS.md 「代码导航」，服务化/采用层）。每个 API key 对应一个隔离的记忆命名空间；记忆持久化到磁盘，
-跨请求和重启均可用。
-
-启动方式：
-    pip install "mnemotrace-memory[server]"
-    export MNEMOTRACE_API_KEYS="alice:sk-alice-123,bob:sk-bob-456"   # user:key 键值对（开发环境可用 MNEMOTRACE_OPEN=1）
-    export MNEMOTRACE_EMBEDDER=hashing          # 零下载默认值；想要更好的本地嵌入可用 bge-small
-    export MNEMOTRACE_LLM=deepseek              # 自动事实抽取必需；需要对应 provider 的 key
-    uvicorn mnemotrace.server.app:app --host 0.0.0.0 --port 8000
-
-然后客户端（curl / SDK / MCP bridge）用 `Authorization: Bearer <key>` 调用：
-    POST /v1/remember  {"content": "...", "session_id": "..."}   -> 存储 + 整合
-    POST /v1/recall    {"query": "...", "lean": true}            -> 返回一小段检索到的上下文用于回答
-    GET  /v1/profile                                             -> 用户的合成画像
-    POST /v1/forget {"confirm": true}                            -> 清空该用户的记忆
-
-这是托管产品（类似 Hy-Memory）的基础。默认单节点 + 文件存储——把内存 store 换成
-pgvector/Qdrant + Kuzu（已在 store 接口后可插拔），再放到你的鉴权/网关后面，即可扩展为公开服务。
-"""
+"""HTTP API for key-authenticated PostgreSQL memory spaces."""
 from __future__ import annotations
 
-import hmac
-import logging
+from threading import Lock
 import os
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
 try:
-    from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
-    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+    from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, ConfigDict, Field
     from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -37,36 +18,17 @@ except Exception as exc:  # noqa: BLE001
 
 from .. import __version__
 from ..memory import InvalidFactEditError
-from ..service import MemoryService
+from ..postgres_service import MemoryService, ProcessingFailure
 from ..extraction import ExtractionError
-from ..spaces import AuthConfigError, Principal, is_valid_api_key, load_spaces, principal_for_token
 from ..topics import Topic
-from ..store import PersistenceError, StoreFormatError
+from ..store.contracts import SpaceContext
+from ..store.postgres.errors import (
+    AccountNotFound, AuthenticationError, CommitOutcomeUnknown, DatabaseConfigurationError,
+    DatabaseError, DatabaseUnavailable, MessageConflict, SchemaMismatch, SpaceNotFound, VersionConflict,
+)
 
 
 DEFAULT_MAX_REQUEST_BYTES = 2 * 1024 * 1024
-
-
-def _load_keys() -> dict[str, str]:
-    """从 MNEMOTRACE_API_KEYS（'alice:sk-a,bob:sk-b'）解析 API key -> user_id 映射。"""
-    out: dict[str, str] = {}
-    raw = os.environ.get("MNEMOTRACE_API_KEYS", "").strip()
-    if not raw:
-        return out
-    for index, pair in enumerate(raw.split(","), start=1):
-        pair = pair.strip()
-        if ":" not in pair:
-            raise AuthConfigError(f"MNEMOTRACE_API_KEYS entry {index} must use tenant:key")
-        user, key = (part.strip() for part in pair.split(":", 1))
-        if not user or not key:
-            raise AuthConfigError(f"MNEMOTRACE_API_KEYS entry {index} has an empty tenant or key")
-        if not is_valid_api_key(key):
-            raise AuthConfigError(f"MNEMOTRACE_API_KEYS entry {index} key must be non-empty printable ASCII")
-        previous = out.get(key)
-        if previous is not None and previous != user:
-            raise AuthConfigError("one API key cannot map to multiple tenants")
-        out[key] = user
-    return out
 
 
 def _max_request_bytes() -> int:
@@ -74,20 +36,14 @@ def _max_request_bytes() -> int:
     try:
         value = int(raw)
     except ValueError as exc:
-        raise AuthConfigError("MNEMOTRACE_MAX_REQUEST_BYTES must be a positive integer") from exc
+        raise ValueError("MNEMOTRACE_MAX_REQUEST_BYTES must be a positive integer") from exc
     if value <= 0:
-        raise AuthConfigError("MNEMOTRACE_MAX_REQUEST_BYTES must be a positive integer")
+        raise ValueError("MNEMOTRACE_MAX_REQUEST_BYTES must be a positive integer")
     return value
 
 
-def _env_flag(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _bearer_token(authorization: str) -> str:
-    """严格解析 Bearer 头。把"缺少鉴权"和"格式错误的鉴权"区分开，既保留本地匿名模式的可能，
-    又不会把意外或伪造的 scheme 当作命名空间接受。"""
-    # 在 strip 和任何模式分支之前拒绝非法字符，避免隐藏控制字符或进入不支持 Unicode 的比较。
+    """Reject malformed bearer credentials before accessing the database."""
     if any(not (" " <= char <= "~") for char in authorization):
         raise HTTPException(401, "bearer key must use printable ASCII characters")
     value = authorization.strip()
@@ -99,32 +55,28 @@ def _bearer_token(authorization: str) -> str:
     return token.strip()
 
 
-_svc: Optional[MemoryService] = None
+_svc: MemoryService | None = None
+_service_lock = Lock()
 
 
 def svc() -> MemoryService:
-    """共享的多租户核心（每进程一个）。MCP server 和 OpenAI 兼容代理用的是同一个类，
-    因此三个入口共享一套实现。"""
     global _svc
-    if _svc is None:
-        _svc = MemoryService()
-    return _svc
+    with _service_lock:
+        if _svc is None:
+            _svc = MemoryService.from_env()
+        return _svc
 
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    svc()  # 启动时加载一次 embedder（和 LLM），避免首个请求产生竞态
-    yield
-    # Freeze shutdown ranges without a second per-namespace wait. close() owns the
-    # bounded worker join; accepted work remains in durable checkpoints.
-    if _svc is not None:
-        try:
-            _svc.flush(timeout=0)
-        except PersistenceError:
-            _svc.metrics.count('pipeline_shutdown_failed')
-            logging.getLogger(__name__).warning('Shutdown flush failed; committed work remains recoverable')
-        finally:
-            _svc.close()
+    global _svc
+    service = svc()
+    try:
+        yield
+    finally:
+        with _service_lock:
+            service.close()
+            _svc = None
 
 
 app = FastAPI(
@@ -158,19 +110,42 @@ async def extraction_failure(_request: Request, error: ExtractionError):
     return JSONResponse(status_code=error.status_code, content={"detail": error.detail()})
 
 
-@app.exception_handler(StoreFormatError)
-async def store_validation_failure(_request: Request, _error: StoreFormatError):
-    # 存储异常可能包含文件路径和记录细节；客户端只接收稳定、无内容的错误。
-    return JSONResponse(status_code=500, content={"detail": {
-        "code": "store_validation_failed", "message": "记忆数据校验失败",
-    }})
+@app.exception_handler(DatabaseError)
+async def database_failure(_request: Request, error: DatabaseError):
+    status, message = 500, 'Memory storage operation failed'
+    if isinstance(error, (AuthenticationError, AccountNotFound)):
+        status, message = 401, 'Invalid or missing API key'
+    elif isinstance(error, SpaceNotFound):
+        status, message = 404, 'Memory space unavailable'
+    elif isinstance(error, (VersionConflict, MessageConflict)):
+        status, message = 409, 'Memory operation conflicts with existing data'
+    elif isinstance(error, (DatabaseUnavailable, DatabaseConfigurationError, SchemaMismatch)):
+        status, message = 503, 'Memory database unavailable'
+    detail = dict(code=error.code, message=message)
+    if isinstance(error, CommitOutcomeUnknown):
+        detail['operation_id'] = error.operation_id
+    return JSONResponse(status_code=status, content={'detail': detail})
 
 
-@app.exception_handler(PersistenceError)
-async def store_operation_failure(_request: Request, _error: PersistenceError):
-    return JSONResponse(status_code=503, content={"detail": {
-        "code": "store_unavailable", "message": "记忆存储暂不可用",
-    }})
+@app.exception_handler(ProcessingFailure)
+async def processing_failure(_request: Request, error: ProcessingFailure):
+    detail = error.detail()
+    status = {'processing_incomplete': 503, 'database_unavailable': 503, 'data_corruption': 500,
+              'version_conflict': 409, 'extraction_conflict': 409}.get(detail['code'], 502)
+    return JSONResponse(status_code=status, content={'detail': detail})
+
+
+@app.exception_handler(ValueError)
+async def invalid_parameter(_request: Request, _error: ValueError):
+    return JSONResponse(status_code=422, content={'detail': {'code': 'invalid_parameter',
+                                                           'message': 'Invalid memory operation parameters'}})
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid_request(_request: Request, error: RequestValidationError):
+    fields = [{'location': issue['loc'], 'code': issue['type']} for issue in error.errors()]
+    return JSONResponse(status_code=422, content={'detail': {'code': 'invalid_parameter',
+                                                           'message': 'Invalid request', 'fields': fields}})
 
 
 @app.middleware("http")
@@ -178,7 +153,7 @@ async def request_limits_and_security_headers(request: Request, call_next):
     path = request.url.path
     try:
         max_bytes = _max_request_bytes()
-    except AuthConfigError:
+    except ValueError:
         return _apply_security_headers(
             JSONResponse({"detail": "invalid server request-limit configuration"}, status_code=503),
             path,
@@ -217,49 +192,17 @@ async def request_limits_and_security_headers(request: Request, call_next):
     return _apply_security_headers(await call_next(request), path)
 
 
-def auth(authorization: str = Header(default="")) -> str:
-    """从 Bearer key 解析调用者的 user_id。开发开放模式直接用 key 文本本身作为命名空间，
-    这样无需预先配置 key 即可试用，同时除非显式启用，仍避免共享匿名记忆。"""
-    try:
-        keys = _load_keys()
-    except AuthConfigError as exc:
-        raise HTTPException(503, "invalid API key configuration") from exc
+def auth(authorization: str = Header(default='')) -> str:
     token = _bearer_token(authorization)
-    if keys:
-        matched_user = None
-        for key, user in keys.items():
-            if hmac.compare_digest(token, key):
-                matched_user = user
-        if matched_user is None:
-            raise HTTPException(401, "invalid or missing API key")
-        return matched_user
-    if _env_flag("MNEMOTRACE_OPEN"):
-        if token:
-            return token
-        if _env_flag("MNEMOTRACE_ALLOW_ANONYMOUS"):
-            return "anonymous"
-        raise HTTPException(
-            401,
-            "missing bearer namespace: in MNEMOTRACE_OPEN mode send Authorization: Bearer <namespace>, "
-            "or set MNEMOTRACE_ALLOW_ANONYMOUS=1 to allow shared anonymous memory",
-        )
-    raise HTTPException(401, "set MNEMOTRACE_API_KEYS (user:key,...) or MNEMOTRACE_OPEN=1")
+    if not token:
+        raise AuthenticationError('Invalid API key')
+    return svc().spaces.authenticate(token).user_id
 
 
-def auth_principal(authorization: str = Header(default="")) -> Principal:
-    """把调用者解析为 Principal —— 其 home space 加上可读/可写的 space 列表。
 
-    MNEMOTRACE_SPACES 的 key（多 space、常量时间匹配）优先；其余 token 走既有的单 space `auth`，
-    因此 MNEMOTRACE_API_KEYS / 开放模式的行为——包括全部加固措施——完全不变，多 space 是纯增量。
-    只有感知 space 的路由（remember/recall）依赖它；其余一切仍用普通的 `auth` home 字符串。"""
-    token = _bearer_token(authorization)
-    try:
-        principal = principal_for_token(token)
-    except AuthConfigError as exc:
-        raise HTTPException(503, "invalid API key configuration") from exc
-    if principal is not None:
-        return principal
-    return Principal.single(auth(authorization))
+def authorized_space(space_id: str = Query(min_length=1, max_length=512),
+                     owner: str = Depends(auth)) -> SpaceContext:
+    return svc().spaces.authorize(owner, space_id)
 
 
 @app.get("/metrics")
@@ -270,12 +213,23 @@ def metrics():
     return svc().metrics_snapshot()
 
 
-class RememberReq(BaseModel):
+class SpaceRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    space_id: str = Field(min_length=1, max_length=512)
+
+
+class SpaceName(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(min_length=1, max_length=128)
+
+
+class RememberReq(SpaceRequest):
     content: str = Field(min_length=1, max_length=1_000_000)
     session_id: str = Field(default="default", min_length=1, max_length=512)
-    scope: Literal["auto", "long", "working"] = "auto"
+    scope: Literal["auto", "long", "working", "raw"] = "auto"
     processing: Literal['immediate', 'buffered'] = 'immediate'
-    space: Optional[str] = Field(default=None, max_length=512)  # 目标命名空间（默认：调用者的 home）
+    agent_id: str | None = None
+    timeout: float = Field(default=30, ge=0, le=300)
 
 
 class DialogueMessage(BaseModel):
@@ -286,78 +240,46 @@ class DialogueMessage(BaseModel):
     event_time: Optional[float] = None
 
 
-class MessagesReq(BaseModel):
+class MessagesReq(SpaceRequest):
     model_config = {'extra': 'forbid'}
     session_id: str = Field(min_length=1, max_length=512)
     messages: list[DialogueMessage] = Field(min_length=1, max_length=1000)
     mode: Literal['live', 'historical'] = 'live'
     processing: Literal['immediate', 'buffered'] = 'buffered'
-    scope: Literal['auto', 'long'] = 'auto'
-    space: Optional[str] = Field(default=None, max_length=512)
+    scope: Literal['auto', 'long', 'raw'] = 'auto'
+    agent_id: str | None = None
+    timeout: float = Field(default=30, ge=0, le=300)
 
 
-class ProcessingFlushReq(BaseModel):
+class ProcessingFlushReq(SpaceRequest):
     session_id: Optional[str] = Field(default=None, min_length=1, max_length=512)
-    space: Optional[str] = Field(default=None, max_length=512)
     timeout: float = Field(default=30, ge=0, le=300)
     retry_failed: bool = False
     include_summaries: bool = False
 
 
 class RecallReq(BaseModel):
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    space_id: str | None = Field(default=None, min_length=1, max_length=512)
+    space_ids: list[str] | None = Field(default=None, min_length=1, max_length=16)
     query: str = Field(min_length=1, max_length=32_768)
     lean: bool = True
     n_chunks: int = Field(default=6, ge=0, le=50)
     session_id: Optional[str] = Field(default=None, max_length=512)
     as_of: Optional[float] = None  # epoch 秒：某时间点的记忆视图（as-of）
     redact_sensitive: bool = False  # 在返回的上下文/fact 列表中隐藏被标记为敏感的 fact
-    spaces: Optional[list[str]] = Field(default=None, max_length=16)  # 要读取并融合的命名空间（默认：[home]）
-
-
-class CloseSessionReq(BaseModel):
-    session_id: str = Field(default="default", min_length=1, max_length=512)
-    summarize: bool = True
-    clear_working: bool = True
-    # 将 session 蒸馏为 decision/finding/lesson fact。None = 跟随服务端的 session_outcomes
-    # 配置（现默认开启）；True/False 允许客户端仅针对这一次关闭选择退出或重新加入蒸馏，而不改变
-    # 服务端默认值。这不是绕过运营方成本上限的后门：无论传什么，MNEMOTRACE_SESSION_OUTCOMES=0
-    # 都会强制关闭。
-    outcomes: Optional[bool] = None
 
 
 @app.get("/health")
 def health():
-    service = svc()
-    config_error = False
     try:
-        keys = _load_keys()
-        load_spaces()
-        _max_request_bytes()
-    except AuthConfigError:
-        keys = {}
-        config_error = True
-    auth_mode = (
-        "invalid"
-        if config_error
-        else ("api_keys" if keys else ("open" if _env_flag("MNEMOTRACE_OPEN") else "disabled"))
-    )
-    data_ready = os.path.isdir(service.data_dir) and os.access(service.data_dir, os.W_OK)
-    ready = auth_mode in {"api_keys", "open"} and data_ready
-    return {
-        "ok": True,
-        "ready": ready,
-        "service": "mnemotrace",
-        "version": __version__,
-        "auth_mode": auth_mode,
-        "anonymous_allowed": auth_mode == "open" and _env_flag("MNEMOTRACE_ALLOW_ANONYMOUS"),
-        "embedder": service.embedder.__class__.__name__,
-        "llm_configured": service.llm is not None,
-        "answerer_configured": service.answerer is not None,
-        "storage": service.config.storage,
-        "users_hot": service.hot_count,
-        "max_hot_users": service.max_hot_users,
-        "max_hot_facts": service.config.max_hot_facts,
-    }
+        service = svc()
+        service.ready()
+    except DatabaseError:
+        return dict(ok=True, ready=False, storage='postgres', auth_mode='api_keys')
+    return dict(ok=True, ready=True, service='mnemotrace', version=__version__, storage='postgres',
+                auth_mode='api_keys', anonymous_allowed=False, embedder=service.embedding_model,
+                llm_configured=service.llm is not None, answerer_configured=service.answerer is not None)
 
 
 @app.get("/ready")
@@ -406,92 +328,106 @@ def robots_txt():
     )
 
 
+def _space_payload(space):
+    return dict(space_id=space.space_id, name=space.name, status=space.status)
+
+
+@app.get('/v1/spaces')
+def list_spaces(after_id: str | None = None, limit: int = Query(100, ge=1, le=1000),
+                owner: str = Depends(auth)):
+    spaces = svc().spaces.list(owner, after_id=after_id, limit=limit)
+    return dict(spaces=[_space_payload(space) for space in spaces],
+                next_after_id=spaces[-1].space_id if len(spaces) == limit else None)
+
+
+@app.post('/v1/spaces', status_code=201)
+def create_space(req: SpaceName, owner: str = Depends(auth)):
+    return _space_payload(svc().spaces.create(owner, req.name))
+
+
+@app.patch('/v1/spaces/{space_id}')
+def rename_space(space_id: str, req: SpaceName, owner: str = Depends(auth)):
+    return _space_payload(svc().spaces.rename(owner, space_id, req.name))
+
+
+@app.delete('/v1/spaces/{space_id}')
+def delete_space(space_id: str, confirm: bool = False, owner: str = Depends(auth)):
+    context = svc().spaces.authorize(owner, space_id)
+    if not confirm:
+        raise HTTPException(400, 'Space deletion requires confirm=true')
+    svc().memory(context).delete_space()
+    return dict(ok=True, space_id=space_id)
+
+
 @app.post('/v1/messages')
-def remember_messages(req: MessagesReq, principal: Principal = Depends(auth_principal)):
-    target = req.space or principal.home
-    if not principal.can_write(target):
-        raise HTTPException(403, 'Not allowed to write this space')
-    data = svc().remember_messages(target, [m.model_dump() for m in req.messages], req.session_id,
-                                  req.mode, req.processing, req.scope)
-    return JSONResponse(data, status_code=202) if data['queued'] else data
+def remember_messages(req: MessagesReq, owner: str = Depends(auth)):
+    context = svc().spaces.authorize(owner, req.space_id)
+    data = svc().remember_messages(context, [message.model_dump() for message in req.messages],
+                                   req.session_id, req.mode, req.processing, req.scope,
+                                   agent_id=req.agent_id, timeout=req.timeout)
+    return JSONResponse(data, status_code=202) if req.processing == 'buffered' else data
 
 
-@app.post("/v1/remember")
-def remember(req: RememberReq, principal: Principal = Depends(auth_principal)):
-    # 写入指定的 space（默认：调用者的 home）；ACL 决定一个 key 可以写哪些 space。
-    target = req.space or principal.home
-    if not principal.can_write(target):
-        raise HTTPException(403, f"not allowed to write to space '{target}'")
-    # 在 service 内部按易逝性路由：无论走哪条路，带日期的 episode 都会被存储（历史仍可回答）；
-    # 临时状态还会进入 working memory，且不会被提升为持久 fact。
-    data = svc().remember(target, req.content, session_id=req.session_id, scope=req.scope,
-                          processing=req.processing)
-    return JSONResponse(data, status_code=202) if data.get('queued') else data
+@app.post('/v1/remember')
+def remember(req: RememberReq, owner: str = Depends(auth)):
+    context = svc().spaces.authorize(owner, req.space_id)
+    data = svc().remember(context, req.content, req.session_id, req.scope, req.processing,
+                          agent_id=req.agent_id, timeout=req.timeout)
+    return JSONResponse(data, status_code=202) if req.processing == 'buffered' else data
 
 
-@app.get('/v1/processing')
-def processing_status(session_id: Optional[str] = None, space: Optional[str] = None,
-                      principal: Principal = Depends(auth_principal)):
-    target = space or principal.home
-    if not principal.can_read(target):
-        raise HTTPException(403, 'Not allowed to read this space')
-    return svc().processing_status(target, session_id)
-
-
-@app.post('/v1/processing/flush')
-def processing_flush(req: ProcessingFlushReq, principal: Principal = Depends(auth_principal)):
-    target = req.space or principal.home
-    if not principal.can_write(target):
-        raise HTTPException(403, 'Not allowed to write this space')
-    result = svc().flush(target, req.session_id, req.timeout, req.retry_failed, req.include_summaries)
-    if not principal.can_read(target):
-        return {'ok': result['ok'], 'status': result['status']}
+@app.get('/v1/operations/{operation_id}')
+def get_operation(operation_id: str, context: SpaceContext = Depends(authorized_space)):
+    result = svc().operation(context, operation_id)
+    if result is None:
+        raise HTTPException(404, {'code': 'operation_not_found', 'message': 'Operation unavailable'})
     return result
 
 
+@app.post('/v1/operations/{operation_id}/retry')
+def retry_operation(operation_id: str, req: SpaceRequest, owner: str = Depends(auth)):
+    context = svc().spaces.authorize(owner, req.space_id)
+    result = svc().operation(context, operation_id, retry=True)
+    if result is None:
+        raise HTTPException(404, {'code': 'operation_not_found', 'message': 'Operation unavailable'})
+    return result
+
+
+@app.get('/v1/processing')
+def processing_status(session_id: str | None = None, after_id: str | None = None,
+                      limit: int = Query(100, ge=1, le=1000), context: SpaceContext = Depends(authorized_space)):
+    return svc().processing_status(context, session_id, after_id=after_id, limit=limit)
+
+
+@app.post('/v1/processing/flush')
+def processing_flush(req: ProcessingFlushReq, owner: str = Depends(auth)):
+    context = svc().spaces.authorize(owner, req.space_id)
+    return svc().flush(context, req.session_id, req.timeout, req.retry_failed, req.include_summaries)
+
+
 @app.get('/v1/episodes/{episode_id}')
-def get_episode(episode_id: str, space: Optional[str] = None,
-                principal: Principal = Depends(auth_principal)):
-    target = space or principal.home
-    if not principal.can_read(target):
-        raise HTTPException(403, 'Not allowed to read this space')
-    result = svc().get_episode(target, episode_id)
+def get_episode(episode_id: str, context: SpaceContext = Depends(authorized_space)):
+    result = svc().get_episode(context, episode_id)
     if result is None:
         raise HTTPException(404, 'Episode not found')
     return result
 
 
-@app.post("/v1/recall")
-def recall(req: RecallReq, principal: Principal = Depends(auth_principal)):
-    spaces = req.spaces or [principal.home]
-    for s in spaces:
-        if not principal.can_read(s):
-            raise HTTPException(403, f"not allowed to read space '{s}'")
-    if len(spaces) > 1:
-        # 跨 space 读取：融合各 space 的 lean 上下文（agent + 团队 + 用户记忆），并打上来源标签。
-        return svc().recall_multi(spaces, req.query, n_chunks=req.n_chunks, session_id=req.session_id,
-                                  as_of=req.as_of, redact_sensitive=req.redact_sensitive)
-    # answer=True：在 lean 上下文上生成真实答案，并报告 full-context 基线的 token 数，
-    # 这样控制台的 问答 视图能同时展示答案和 token 节省。
-    return svc().recall(spaces[0], req.query, lean=req.lean, n_chunks=req.n_chunks,
-                        session_id=req.session_id, as_of=req.as_of,
-                        redact_sensitive=req.redact_sensitive, answer=True)
-
-
-@app.post("/v1/sessions/close")
-def close_session(req: CloseSessionReq, user: str = Depends(auth)):
-    """结束一个客户端 session：排空待处理的整合、为摘要建立索引、清空临时 working 状态。
-
-    原始 episode 仍保留以供溯源和未来的 as-of 读取；这是面向 agent 客户端的生命周期/整理钩子，
-    不是删除对话记录的端点。
-    """
-    return svc().close_session(
-        user,
-        req.session_id,
-        summarize=req.summarize,
-        clear_working=req.clear_working,
-        outcomes=req.outcomes,
-    )
+@app.post('/v1/recall')
+def recall(req: RecallReq, owner: str = Depends(auth)):
+    if (req.space_id is None) == (req.space_ids is None):
+        raise ValueError('Provide space_id or space_ids')
+    ids = req.space_ids if req.space_ids is not None else [req.space_id]
+    if len(set(ids)) != len(ids):
+        raise ValueError('Duplicate space IDs')
+    contexts = [svc().spaces.authorize(owner, space_id) for space_id in ids]
+    options = dict(n_chunks=req.n_chunks, session_id=req.session_id, as_of=req.as_of,
+                   redact_sensitive=req.redact_sensitive)
+    if len(contexts) > 1:
+        if not req.lean:
+            raise ValueError('Multi-space recall requires lean context')
+        return svc().recall_multi(contexts, req.query, **options)
+    return svc().recall(contexts[0], req.query, lean=req.lean, answer=True, **options)
 
 
 @app.get("/v1/sessions")
@@ -499,7 +435,7 @@ def sessions(
     limit: Optional[int] = None,
     offset: int = 0,
     q: str = "",
-    user: str = Depends(auth),
+    user: SpaceContext = Depends(authorized_space),
 ):
     """不含内容的 session 索引：session id、计数、时间戳和积压状态。
 
@@ -513,23 +449,25 @@ def sessions(
 def session_report(
     session_id: str,
     include_sensitive: bool = False,
-    user: str = Depends(auth),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: SpaceContext = Depends(authorized_space),
 ):
     """审计某个具体 session 向持久记忆贡献了什么。
 
     敏感 fact 文本默认脱敏。仅在用户明确拥有、且有意展示私有 fact 文本的审计场景下才传
     include_sensitive=true。
     """
-    return svc().session_report(user, session_id, include_sensitive=include_sensitive)
+    return svc().session_report(user, session_id, include_sensitive=include_sensitive, limit=limit, offset=offset)
 
 
 @app.get("/v1/profile")
-def profile(user: str = Depends(auth)):
+def profile(user: SpaceContext = Depends(authorized_space)):
     return svc().profile(user)
 
 
 @app.get("/v1/profile/structured")
-def structured_profile(user: str = Depends(auth)):
+def structured_profile(user: SpaceContext = Depends(authorized_space)):
     """L2 结构化画像：基本信息 + 偏好（按类别）+ 习惯，分为 confirmed 与 待确认 (tentative) 两层。
     仅用于展示的分层——不影响 recall/search 能看到的内容。"""
     return svc().structured_profile(user)
@@ -550,7 +488,7 @@ def memories(
     expected_revision: Optional[str] = None,
     evaluated_at: Optional[float] = None,
     topic: Optional[Topic] = None,
-    user: str = Depends(auth),
+    user: SpaceContext = Depends(authorized_space),
 ):
     """浏览已存储的记忆。
 
@@ -592,7 +530,7 @@ def memories(
 
 
 @app.get("/v1/audit")
-def audit(limit: int = 40, user: str = Depends(auth)):
+def audit(limit: int = 40, user: SpaceContext = Depends(authorized_space)):
     """记忆健康检查：列出值得修复的条目，每条都带被标记的原因和处理建议。
 
     个人记忆库赢得信任靠的是可检查，而不是体量大。在真实语料上做抽取必然产生垃圾，
@@ -602,14 +540,14 @@ def audit(limit: int = 40, user: str = Depends(auth)):
 
 
 @app.get("/v1/stats")
-def stats(user: str = Depends(auth)):
+def stats(user: SpaceContext = Depends(authorized_space)):
     """不含内容的命名空间统计，供 dashboard 和就绪检查使用。与 /v1/memories 不同，它不返回
     profile 文本、fact 文本、episode 片段或存储路径。"""
     return svc().stats(user)
 
 
 @app.get("/v1/agent/status")
-def agent_status(session_id: Optional[str] = None, user: str = Depends(auth)):
+def agent_status(session_id: Optional[str] = None, user: SpaceContext = Depends(authorized_space)):
     """给 agent 客户端在决定 recall/remember/close 之前查看的不含内容状态。
 
     返回命名空间/session 计数、focus 策略和推荐的工具调用，不暴露 fact 文本、profile 文字、
@@ -618,50 +556,52 @@ def agent_status(session_id: Optional[str] = None, user: str = Depends(auth)):
     return svc().agent_status(user, session_id=session_id)
 
 
-class ForgetReq(BaseModel):
+class ForgetReq(SpaceRequest):
     confirm: bool = False
 
 
 @app.post("/v1/forget")
-def forget(req: Optional[ForgetReq] = None, confirm: bool = False, user: str = Depends(auth)):
-    if user in {"anonymous", "mnemotrace-test"}:
-        raise HTTPException(403, "the public demo/anonymous namespace cannot be wiped")
-    if not confirm and not (req and req.confirm):
-        raise HTTPException(400, "forget requires explicit confirm=true because it permanently erases this namespace")
-    return svc().forget(user)
+def forget(req: ForgetReq, owner: str = Depends(auth)):
+    context = svc().spaces.authorize(owner, req.space_id)
+    if not req.confirm:
+        raise HTTPException(400, 'Space clearing requires confirm=true')
+    return svc().forget(context)
 
 
 # --- 批量导入：自带历史（ChatGPT 导出 / OpenAI messages / JSONL / 对话记录）---
-class ImportReq(BaseModel):
+class ImportReq(SpaceRequest):
     # 传入已解析的 `sessions`（来自 mnemotrace.connectors.parse / 导入 CLI），或原始 `data` + 一个
     # `format` 由服务端解析。两者同时给出时以 `sessions` 为准。
     sessions: Optional[list] = None
     data: Optional[object] = None
     format: str = "auto"
-    # None = 对除 agent-session 对话记录之外的所有来源逐轮抽取 fact（对话记录会先存储，留待
-    # close 时蒸馏；对它们做逐轮抽取需要显式 true 且有 LLM）。
+    # None submits buffered extraction; False keeps original sources only.
     consolidate: Optional[bool] = None
     summarize: bool = True
+    agent_id: str | None = None
     dedupe: bool = True  # 幂等的重复导入：跳过已入库的 episode（按内容指纹）
 
 
 @app.post("/v1/import")
-def import_history(req: ImportReq, user: str = Depends(auth)):
+def import_history(req: ImportReq, owner: str = Depends(auth)):
     """单次批量摄入外部历史。解析常见导出并 POST 到这里的 CLI 见 `python -m mnemotrace.connectors`。"""
+    user = svc().spaces.authorize(owner, req.space_id)
     if req.sessions is None and req.data is None:
         raise HTTPException(400, "provide either 'sessions' (pre-parsed) or 'data' (+ 'format') to import")
     try:
         return svc().import_(user, sessions=req.sessions, data=req.data, format=req.format,
-                             consolidate=req.consolidate, summarize=req.summarize, dedupe=req.dedupe)
+                             consolidate=req.consolidate, summarize=req.summarize, dedupe=req.dedupe,
+                             agent_id=req.agent_id)
     except ValueError as exc:
         # 未知/不匹配的 format 是调用者的 payload 问题，不是服务端故障 -> 400，绝不能 500
-        raise HTTPException(400, f"could not parse import data: {exc}")
+        raise HTTPException(400, "Could not parse import data") from exc
 
 
-class DocumentReq(BaseModel):
+class DocumentReq(SpaceRequest):
     """上传单个文档/图片作为记忆。可在 `data_base64` 中发送 base64 编码的原始字节
     （PDF/DOCX/图片），或传已抽取的 `text`。图片由视觉模型（MNEMOTRACE_VISION_LLM）生成
     可检索的文字描述。"""
+    agent_id: str | None = None
     filename: Optional[str] = Field(default=None, max_length=512)
     content_type: Optional[str] = Field(default=None, max_length=256)
     data_base64: Optional[str] = None  # 原始文件字节，base64 编码（受请求大小上限约束）
@@ -670,88 +610,86 @@ class DocumentReq(BaseModel):
 
 
 @app.post("/v1/documents")
-def import_document(req: DocumentReq, user: str = Depends(auth)):
+def import_document(req: DocumentReq, owner: str = Depends(auth)):
     """把 PDF/DOCX/text 文档或图片作为长期记忆摄入（多模态，AGENTS.md 「代码导航」）。"""
+    user = svc().spaces.authorize(owner, req.space_id)
     if req.text is not None:
         data: object = req.text
     elif req.data_base64:
         import base64
         try:
-            data = base64.b64decode(req.data_base64)
+            data = base64.b64decode(req.data_base64, validate=True)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(400, f"data_base64 is not valid base64: {exc}")
+            raise HTTPException(400, "data_base64 is not valid base64") from exc
     else:
         raise HTTPException(400, "provide 'data_base64' (raw file bytes) or 'text'")
     return svc().import_document(user, data, filename=req.filename, content_type=req.content_type,
-                                 session_id=req.session_id)
+                                 session_id=req.session_id, agent_id=req.agent_id)
 
 
 # --- OpenAI 兼容 chat，透明叠加记忆（即插即用：把 OpenAI 客户端的 base_url 指到这里）--
+class ChatMemoryRequest(SpaceRequest):
+    recall: bool = True
+    remember: bool = True
+    session_id: str = Field(default='default', min_length=1, max_length=512)
+    scope: Literal['auto', 'long', 'working'] = 'auto'
+    n_chunks: int = Field(default=6, ge=0, le=50)
+    as_of: float | None = None
+    redact_sensitive: bool = False
+    message_id: str | None = Field(default=None, min_length=1, max_length=512)
+    agent_id: str | None = None
+
+
 class ChatCompletionReq(BaseModel):
     model_config = ConfigDict(extra="allow")  # 接受（并忽略）temperature/top_p 等参数。
     model: str = "mnemotrace"
     messages: list[dict] = []
     stream: bool = False
     # 忆痕 扩展：recall/remember/session_id/scope/n_chunks/as_of/redact_sensitive。
-    memory: Optional[dict] = None
+    memory: ChatMemoryRequest
 
 
-@app.post("/v1/chat/completions")
-def chat_completions(req: ChatCompletionReq, background: BackgroundTasks, user: str = Depends(auth)):
-    """OpenAI 兼容的 chat completions，叠加长期记忆：为最新一条 user 消息检索相关片段、注入
-    上下文、用配置的 LLM 生成，然后在关键路径之外记住这一轮。通过 body.memory={"recall":false}、
-    {"remember":false}、{"session_id":"..."}、{"scope":"working"}、{"as_of":...} 或
-    {"redact_sensitive":true} 控制记忆层。"""
+@app.post('/v1/chat/completions')
+def chat_completions(req: ChatCompletionReq, owner: str = Depends(auth)):
     from . import openai_compat as oc
 
+    opts = req.memory
+    context = svc().spaces.authorize(owner, opts.space_id)
     if not req.messages:
-        raise HTTPException(400, "messages must be a non-empty list")
-    opts = req.memory or {}
-    session_id = str(opts.get("session_id") or "default")
-    scope = str(opts.get("scope") or "auto")
-    if scope not in {"auto", "long", "working"}:
-        raise HTTPException(422, "scope must be auto, long, or working")
+        raise HTTPException(400, 'messages must be a non-empty list')
+    session_id, scope = opts.session_id, opts.scope
     body = req.model_dump()
     try:
-        resp = oc.chat_completion(
-            svc(),
-            user,
-            body,
-            n_chunks=int(opts.get("n_chunks", 6)),
-            do_recall=opts.get("recall", True),
-            as_of=opts.get("as_of"),
-            redact_sensitive=bool(opts.get("redact_sensitive", False)),
-            session_id=session_id,
-        )
+        response = oc.chat_completion(svc(), context, body, n_chunks=opts.n_chunks,
+                                      do_recall=opts.recall, as_of=opts.as_of,
+                                      redact_sensitive=opts.redact_sensitive,
+                                      session_id=session_id)
     except oc.NoLLMConfigured as exc:
-        raise HTTPException(503, str(exc))
+        raise HTTPException(503, str(exc)) from exc
 
-    # 记住本轮文本 + 任意图片部分的描述（多模态）；没有图片/描述器时与纯文本完全一致，
-    # 纯文本的即插即用路径不受影响。
-    user_text = oc.remembered_text(svc().captioner, body.get("messages", []))
-    if opts.get("remember", True) and user_text:
-        if scope == 'working':
-            svc().remember(user, user_text, session_id=session_id, scope='working')
-        else:
-            # The upstream response is already complete, including when SSE is requested.
-            # Persist both sources/tasks before claiming that this turn was accepted.
-            svc().remember_messages(user, [
-                {'message_id': opts.get('message_id') or resp['id'] + ':user',
-                 'role': 'user', 'content': user_text},
-                {'message_id': resp['id'], 'role': 'assistant',
-                 'content': resp['choices'][0]['message']['content'], 'event_time': resp['created']},
-            ], session_id, scope=scope)
-        resp["mnemotrace"]["remember_queued"] = True
-        resp["mnemotrace"]["remember_scope"] = scope
-
+    if opts.remember:
+        content = oc.remembered_text(svc().captioner, req.messages)
+        if content:
+            agent_id = opts.agent_id
+            if scope == 'working':
+                result = svc().remember(context, content, session_id, scope=scope,
+                                        processing='buffered', agent_id=agent_id)
+            else:
+                result = svc().remember_messages(context, [
+                    dict(message_id=opts.message_id or response['id'] + ':user', role='user', content=content),
+                    dict(message_id=response['id'], role='assistant', event_time=response['created'],
+                         content=response['choices'][0]['message']['content']),
+                ], session_id, scope=scope, agent_id=agent_id)
+            response['mnemotrace'].update(remembered=True, remember_queued=bool(result['operation_ids']), remember_scope=scope,
+                                          operation_ids=result['operation_ids'])
+    response['mnemotrace']['space_id'] = context.space_id
     if req.stream:
-        from fastapi.responses import StreamingResponse
-        return StreamingResponse(oc.iter_sse(resp), media_type="text/event-stream")
-    return resp
+        return StreamingResponse(oc.iter_sse(response), media_type='text/event-stream')
+    return response
 
 
 # --- 用户自写的记忆管理（可编辑层；用户断言具有最高优先级）---
-class FactReq(BaseModel):
+class FactReq(SpaceRequest):
     subject: str = "user"
     predicate: str
     object: str
@@ -760,7 +698,7 @@ class FactReq(BaseModel):
     topic: Optional[Topic] = None
 
 
-class FactEdit(BaseModel):
+class FactEdit(SpaceRequest):
     subject: Optional[str] = None
     predicate: Optional[str] = None
     object: Optional[str] = None
@@ -772,8 +710,9 @@ class FactEdit(BaseModel):
 
 
 @app.post("/v1/facts")
-def add_fact(req: FactReq, user: str = Depends(auth)):
+def add_fact(req: FactReq, owner: str = Depends(auth)):
     """手动添加一条你断言的 fact——它是权威的，不会被自动覆盖。"""
+    user = svc().spaces.authorize(owner, req.space_id)
     return svc().add_fact(
         user,
         req.subject,
@@ -786,8 +725,9 @@ def add_fact(req: FactReq, user: str = Depends(auth)):
 
 
 @app.patch("/v1/facts/{fact_id}")
-def edit_fact(fact_id: str, req: FactEdit, user: str = Depends(auth)):
+def edit_fact(fact_id: str, req: FactEdit, owner: str = Depends(auth)):
     """修改 fact 内容后变为用户撰写；仅修改敏感标记或分类时保留原来源。"""
+    user = svc().spaces.authorize(owner, req.space_id)
     if req.statement is not None and (not req.statement.strip() or
             any(value is not None for value in (req.subject, req.predicate, req.object))):
         raise HTTPException(422, "statement must not be blank or combined with subject, predicate or object")
@@ -803,12 +743,12 @@ def edit_fact(fact_id: str, req: FactEdit, user: str = Depends(auth)):
 
 
 @app.delete("/v1/facts/{fact_id}")
-def remove_fact(fact_id: str, user: str = Depends(auth)):
+def remove_fact(fact_id: str, user: SpaceContext = Depends(authorized_space)):
     """被遗忘权：永久删除单个 fact。"""
     return svc().delete_fact(user, fact_id)
 
 
-class ClearSlotReq(BaseModel):
+class ClearSlotReq(SpaceRequest):
     subject: str
     predicate: str
     # 所有者批准时看到的计数。必填：不受保护的批量删除是这个端点绝不能提供的形态，
@@ -819,33 +759,35 @@ class ClearSlotReq(BaseModel):
 # 用 POST 而不是 DELETE /v1/facts/{slot}：slot 是 (subject, predicate) 对，若作为路径段路由
 # 会与 /v1/facts/{fact_id} 冲突。
 @app.post("/v1/facts/clear-slot")
-def clear_slot(req: ClearSlotReq, user: str = Depends(auth)):
+def clear_slot(req: ClearSlotReq, owner: str = Depends(auth)):
     """处理 audit 中的 slot_overflow 发现：清空被塞进单个单值 slot 的所有 fact。"""
+    user = svc().spaces.authorize(owner, req.space_id)
     if not req.subject.strip() or not req.predicate.strip():
         raise HTTPException(400, "subject and predicate are both required")
     return svc().clear_slot(user, req.subject, req.predicate, expect_count=req.expect_count)
 
 
 # --- ③ focus 领域：自定义记忆强调（track）或抑制（mute）的内容 ---
-class FocusReq(BaseModel):
+class FocusReq(SpaceRequest):
     track: Optional[list[str]] = None  # None = 不变；[] = 清空
     mute: Optional[list[str]] = None
 
 
 @app.get("/v1/focus")
-def get_focus(user: str = Depends(auth)):
+def get_focus(user: SpaceContext = Depends(authorized_space)):
     return svc().get_focus(user)
 
 
 @app.put("/v1/focus")
-def put_focus(req: FocusReq, user: str = Depends(auth)):
+def put_focus(req: FocusReq, owner: str = Depends(auth)):
     """设置用户跟踪/静音的主题。被跟踪的主题显著度提升（排名更靠前、保持活跃）；
     被静音的主题在 recall 和 profile 中被隐藏。"""
+    user = svc().spaces.authorize(owner, req.space_id)
     return svc().set_focus(user, track=req.track, mute=req.mute)
 
 
 # --- 记忆策略：可编辑的 prompt + "记录什么"指令（记忆策略 页面）---
-class PolicyReq(BaseModel):
+class PolicyReq(SpaceRequest):
     extract_instruction: Optional[str] = None  # None = 不变；"" = 重置为默认
     extract_system: Optional[str] = None
     summary_system: Optional[str] = None
@@ -853,20 +795,21 @@ class PolicyReq(BaseModel):
 
 
 @app.get("/v1/policy")
-def get_policy(user: str = Depends(auth)):
+def get_policy(user: SpaceContext = Depends(authorized_space)):
     """用户的 prompt 覆盖项以及内置默认值（控制台可以查看/编辑任意一方）。"""
     return svc().get_policy(user)
 
 
 @app.put("/v1/policy")
-def put_policy(req: PolicyReq, user: str = Depends(auth)):
+def put_policy(req: PolicyReq, owner: str = Depends(auth)):
     """设置可编辑的抽取/摘要/persona prompt 和"记录什么"指令。在下一次 remember()/
     整合时生效。"""
-    return svc().set_policy(user, **req.model_dump())
+    user = svc().spaces.authorize(owner, req.space_id)
+    return svc().set_policy(user, **req.model_dump(exclude={'space_id'}))
 
 
 # --- ① working memory：临时的、按 session/TTL 作用域的状态，不进入长期记忆 ---
-class WorkingReq(BaseModel):
+class WorkingReq(SpaceRequest):
     content: str
     session_id: str = "default"
     kind: str = "state"  # state | intent | schedule | note | ...
@@ -874,39 +817,41 @@ class WorkingReq(BaseModel):
 
 
 @app.post("/v1/working")
-def add_working(req: WorkingReq, user: str = Depends(auth)):
+def add_working(req: WorkingReq, owner: str = Depends(auth)):
     """存储一个临时条目（不会被整合进长期记忆或 profile）。"""
+    user = svc().spaces.authorize(owner, req.space_id)
     return svc().add_working(user, req.content, session_id=req.session_id, kind=req.kind,
                              ttl_seconds=req.ttl_seconds)
 
 
 @app.get("/v1/working")
-def list_working(session_id: Optional[str] = None, user: str = Depends(auth)):
+def list_working(session_id: Optional[str] = None, user: SpaceContext = Depends(authorized_space)):
     """存活的 working-memory 条目（可选按 session 过滤）。已过期/已消费的不包含。"""
     return svc().working_memory(user, session_id=session_id)
 
 
 @app.delete("/v1/working")
-def clear_working(session_id: str, user: str = Depends(auth)):
+def clear_working(session_id: str, user: SpaceContext = Depends(authorized_space)):
     """session 结束/重启时的清空：删除该 session 的 working memory。"""
     return svc().clear_working(user, session_id)
 
 
 # --- 疑似冲突（System-2 中由 LLM 检出，需用户确认；绝不自动解决）---
-class ResolveReq(BaseModel):
+class ResolveReq(SpaceRequest):
     keep: str = "newer"  # newer | older | both(=撤销)
 
 
 @app.get("/v1/conflicts")
-def conflicts(user: str = Depends(auth)):
+def conflicts(user: SpaceContext = Depends(authorized_space)):
     """等待用户裁决的疑似冲突（绝不自动解决）。需要启用 System-2 LLM 检测器
     （MNEMOTRACE_CONFLICT_DETECTION=1）。"""
     return svc().conflicts(user)
 
 
 @app.post("/v1/conflicts/{conflict_id}/resolve")
-def resolve_conflict(conflict_id: str, req: ResolveReq, user: str = Depends(auth)):
+def resolve_conflict(conflict_id: str, req: ResolveReq, owner: str = Depends(auth)):
     """执行用户的裁决：保留较新/较旧（失效化另一方）或 both（撤销）。"""
+    user = svc().spaces.authorize(owner, req.space_id)
     return svc().resolve_conflict(user, conflict_id, keep=req.keep)
 
 
@@ -918,7 +863,7 @@ def graph(
     q: str = "",
     live_only: bool = False,
     limit: Optional[int] = None,
-    user: str = Depends(auth),
+    user: SpaceContext = Depends(authorized_space),
 ):
     """该用户语义图的节点（实体）+ 边（双时间轴关系）。
     默认是可分享的安全图，省略由敏感 fact 支撑的边。仅在明确的所有者图检查场景传
@@ -934,19 +879,20 @@ def graph(
 
 
 # --- ④ 隐私：完整数据导出（GDPR 式可携带性）；擦除用 POST /v1/forget ---
-@app.get("/v1/export")
-def export(include_sensitive: bool = False, user: str = Depends(auth)):
-    """以 JSON 下载该用户的记忆（数据可携带）。
+@app.get('/v1/export')
+def export(include_sensitive: bool = False, context: SpaceContext = Depends(authorized_space)):
+    stream = svc().iter_export(context, include_sensitive)
+    first = next(stream)
 
-    默认是可分享的安全结构化导出：非敏感 fact 及其图，省略自由文本的 profile/episode/摘要。
-    仅在明确的完整私有导出场景传 `include_sensitive=true`，此时包含每个 fact 的双时间轴
-    时间戳 + 溯源、原始 episode、摘要、profile 和 focus。
-    """
-    from fastapi.responses import JSONResponse
+    def content():
+        try:
+            yield first
+            yield from stream
+        finally:
+            stream.close()
 
-    data = svc().export(user, include_sensitive=include_sensitive)
-    fname = f"mnemotrace_{''.join(c for c in user if c.isalnum()) or 'me'}_export.json"
-    return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+    return StreamingResponse(content(), media_type='application/json',
+                             headers={'Content-Disposition': 'attachment; filename="mnemotrace_export.json"'})
 
 
 # --- 在 /ui 下以单页应用形式提供生产控制台（frontend/dist）---

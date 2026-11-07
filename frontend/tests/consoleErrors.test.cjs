@@ -11,7 +11,7 @@ function setup(pageName) {
   const source = esbuild.buildSync({
     entryPoints: [path.resolve(__dirname, `../src/pages/${pageName}.tsx`)],
     bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
-    external: ['react', 'react/jsx-runtime', 'lucide-react', 'react-router-dom', '../components/*', '../hooks/queries', '../store/preferences', '../lib/api'],
+    external: ['react', 'react/jsx-runtime', 'lucide-react', 'react-router-dom', '../components/*', '../hooks/queries', '../store/preferences', '../store/auth', '../lib/api'],
   }).outputFiles[0].text
   const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', display: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', topic: 'food', topic_source: 'rule' }
   const finding = { kind: 'fragment', fact_id: fact.id, ...fact }
@@ -57,7 +57,7 @@ function setup(pageName) {
     const result = typeof results[name] === 'function' ? results[name](...args) : results[name]
     return { ...result, refetch: result.refetch ?? (() => retries.push(name)) }
   } })
-  vm.runInNewContext(source, { module: modules, exports: modules.exports, console, performance, setTimeout, clearTimeout,
+  vm.runInNewContext(source, { module: modules, exports: modules.exports, console, performance, setTimeout, clearTimeout, AbortController,
     window: { setTimeout, clearTimeout, location: { origin: 'http://synthetic' } },
     document: { addEventListener() {}, removeEventListener() {} },
     crypto: require('node:crypto').webcrypto,
@@ -66,6 +66,7 @@ function setup(pageName) {
       if (name === 'react-router-dom') return { Link: component('Link') }
       if (name === 'lucide-react') return new Proxy({}, { get: () => () => null })
       if (name === '../hooks/queries') return queries
+      if (name === '../store/auth') return { useAuth: selector => selector({spaceId:'synthetic-space'}) }
       if (name === '../lib/api') return { apiBaseUrl: () => 'http://synthetic' }
       if (name === '../store/preferences') return { useSpacePreference: (_page, field) => react.useState(field === 'status' ? 'live' : field === 'category' || field === 'topic' ? '' : false) }
       if (name === '../components/Toast') return { toast: { success: text => toasts.push(text), error() {}, info() {} } }

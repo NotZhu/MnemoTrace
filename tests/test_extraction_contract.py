@@ -7,7 +7,6 @@ from mnemotrace import Memory
 from mnemotrace.extraction import ExtractionError, ExtractionResponseError, LLMNotConfiguredError
 from mnemotrace.llm import FakeLLM as NativeFakeLLM, Completion
 from mnemotrace.service import MemoryService
-from mnemotrace.consolidate.fact_rules import parse_json_facts
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
 
 
@@ -96,8 +95,6 @@ def test_blank_model_name_is_missing_configuration(tmp_path):
         svc.remember('u', 'Synthetic input')
 
 
-
-
 @pytest.mark.parametrize('count', [1, 2, 4])
 def test_failed_batch_has_no_commits_and_can_retry(count):
     m = Memory(llm=Broken())
@@ -128,8 +125,6 @@ def test_invalid_output_is_not_successful_empty_result(bad):
     assert not ep.consolidated
 
 
-
-
 @pytest.mark.parametrize(('facts', 'working', 'expected'), [
     ([fact()], [], 'long'), ([], [{'content': 'Temporary task', 'kind': 'task'}], 'working'),
     ([fact()], [{'content': 'Temporary task', 'kind': 'task'}], 'mixed'), ([], [], 'none'),
@@ -158,10 +153,10 @@ def test_service_failure_keeps_raw_on_disk_and_retries_after_restart(tmp_path, m
     restarted.flush('u', 's', retry_failed=True, timeout=0)
     while run_one(restarted, 'u'):
         pass
-    result = restarted.close_session('u', 's', summarize=False, outcomes=False)
+    result = restarted.flush('u', 's')
     assert len(restarted.get('u').fact_store.values()) == 1
-    assert result['facts_added'] == 0
-    assert restarted.close_session('u', 's', summarize=False, outcomes=False)['facts_added'] == 0
+    assert result['ok'] and restarted.flush('u', 's')['ok']
+    assert len(restarted.get('u').fact_store.values()) == 1
 
 
 def test_identity_survives_restart_without_model(tmp_path):
@@ -198,41 +193,13 @@ def test_duplicate_import_requires_explicit_retry_without_extra_episodes():
     assert len(m.episodes_doc.values()) == 1 and len(m.fact_store.values()) == 1
 
 
-def test_outcomes_failure_does_not_clear_working(tmp_path):
+def test_failed_core_flush_preserves_working(tmp_path):
     svc = service(tmp_path, Broken())
     svc.remember('u', 'Synthetic temporary task', session_id='s', scope='working')
     with pytest.raises(ExtractionError):
-        svc.close_session('u', 's')
+        svc.remember('u', 'Synthetic core input', session_id='s', scope='long')
+    assert not svc.flush('u', 's', timeout=0)['ok']
     assert len(svc.get('u').working_memory('u', 's')) == 1
-
-
-
-
-
-
-def test_truncated_outcomes_are_invalid():
-    with pytest.raises(ExtractionResponseError):
-        parse_json_facts('[{"kind":"finding","statement":"Synthetic complete item"},{"kind":')
-
-
-def test_http_missing_model_and_provider_failure_are_safe(tmp_path, monkeypatch):
-    from fastapi.testclient import TestClient
-    from mnemotrace.server import app as appmod
-    monkeypatch.setenv('MNEMOTRACE_OPEN', '1')
-    svc = service(tmp_path, None)
-    monkeypatch.setattr(appmod, '_svc', svc)
-    with TestClient(appmod.app) as client:
-        headers = {'Authorization': 'Bearer synthetic-user'}
-        rejected = client.post('/v1/remember', json={'content': 'SYNTHETIC_RAW_SECRET'}, headers=headers)
-        assert rejected.status_code == 503
-        assert rejected.json()['detail']['stored_raw'] is False
-        assert not svc.get('synthetic-user').episodes_doc.values()
-        svc.llm = Broken()
-        svc._discard("synthetic-user")
-        failed = client.post('/v1/remember', json={'content': 'SYNTHETIC_RAW_SECRET'}, headers=headers)
-        assert failed.status_code == 502 and failed.json()['detail']['stored_raw']
-        assert 'SYNTHETIC' not in failed.text
-        assert len(svc.get('synthetic-user').ingestor.pending()) == 1
 
 
 def test_remote_mcp_preserves_safe_extraction_error_details():
@@ -259,8 +226,6 @@ def test_async_failure_is_visible_and_worker_stays_alive(tmp_path, monkeypatch):
         assert svc._pipeline_worker.thread.is_alive()
     finally:
         svc.close()
-
-
 
 
 def test_working_retry_is_idempotent_after_restore(tmp_path):
@@ -326,8 +291,6 @@ def test_long_mode_rejects_working_output():
     assert not ep.consolidated and not mem.working_mem
 
 
-
-
 def test_consolidation_sweeps_consumed_working():
     mem = Memory()
     item = mem.remember_working('Synthetic finished task')
@@ -336,48 +299,12 @@ def test_consolidation_sweeps_consumed_working():
     assert not mem.working_mem
 
 
-def test_close_missing_model_reports_existing_raw(tmp_path):
+def test_explicit_working_can_be_flushed_without_model(tmp_path):
     svc = service(tmp_path, None)
-    result = svc.remember('u', 'Synthetic explicit task', session_id='s', scope='working')
-    with pytest.raises(LLMNotConfiguredError) as error:
-        svc.close_session('u', 's')
-    assert error.value.stored_raw and error.value.episode_ids == [result['episode_id']]
+    svc.remember('u', 'Synthetic explicit task', session_id='s', scope='working')
+    assert svc.flush('u', 's')['ok']
     assert len(svc.get('u').working_mem) == 1
-    assert svc.stats('u')['counts']['extraction_failures'] == 1
-    assert svc.sessions('u')['sessions'][0]['extraction_failures'] == 1
-
-
-@pytest.mark.parametrize('endpoint', ['/v1/remember', '/v1/chat/completions'])
-def test_invalid_http_scope_is_rejected_before_model_or_input(tmp_path, monkeypatch, endpoint):
-    from fastapi.testclient import TestClient
-    from mnemotrace.server import app as appmod
-    svc = service(tmp_path, None)
-    monkeypatch.setenv('MNEMOTRACE_OPEN', '1')
-    monkeypatch.setattr(appmod, '_svc', svc)
-    body = {'content': 'Synthetic input', 'scope': 'invalid'} if endpoint == '/v1/remember' else {
-        'messages': [{'role': 'user', 'content': 'Synthetic input'}], 'memory': {'scope': 'invalid'}}
-    with TestClient(appmod.app) as client:
-        result = client.post(endpoint, json=body, headers={'Authorization': 'Bearer synthetic-user'})
-        assert result.status_code == 422
-        assert not svc.get('synthetic-user').episodes_doc.values()
-
-
-@pytest.mark.parametrize(('scope', 'facts', 'working'), [
-    ('mixed', [fact()], [{'content': 'task', 'kind': 'task'}]), ('none', [], []),
-])
-def test_mcp_reports_final_scope_and_working(tmp_path, scope, facts, working):
-    import asyncio
-    from mnemotrace.mcp import server as mcp
-    from mnemotrace.mcp.backends import LocalBackend
-    svc = service(tmp_path, FakeLLM(handler=lambda *args: response(facts, working)))
-    mcp.set_backend(LocalBackend(namespace='u', service=svc))
-    try:
-        text = asyncio.run(mcp.mnemotrace_remember('Synthetic input'))
-        assert 'scope=' + scope in text
-        if working:
-            assert '1 working item' in text
-    finally:
-        mcp.set_backend(None)
+    assert svc.stats('u')['counts']['extraction_failures'] == 0
 
 
 @pytest.mark.parametrize('result_scope', ['none', 'long', 'working', 'mixed', 'explicit'])
@@ -426,41 +353,6 @@ def test_import_receipts_do_not_restart_failed_joint_work(tmp_path, has_new_sess
         pass
     assert svc.processing_status('u', 's')['jobs'][0]['state'] == 'completed'
     svc.close()
-
-
-@pytest.mark.parametrize('predicate', ['FINDING', 'Finding'])
-def test_outcome_dedup_survives_predicate_case_edit_and_restart(tmp_path, predicate):
-    statement = 'Synthetic conclusion: use a local queue for background processing.'
-    model = FakeLLM(handler=lambda *args: json.dumps([{'kind': 'finding', 'statement': statement}]))
-    svc = service(tmp_path, model)
-    svc.remember('u', 'Synthetic source event', session_id='s', scope='working')
-    assert svc.close_session('u', 's', summarize=False)['outcomes'] == 1
-    stored, = svc.get('u').fact_store.values()
-    svc.update_fact('u', stored.id, predicate=predicate)
-    restarted = service(tmp_path, model)
-    for _ in range(2):
-        assert restarted.close_session('u', 's', summarize=False)['outcomes'] == 0
-    remaining, = restarted.get('u').fact_store.values()
-    assert remaining.predicate == predicate and remaining.text == statement
-
-
-@pytest.mark.parametrize('tool', ['agent_status', 'session_report', 'stats'])
-def test_mcp_text_displays_extraction_failures(tmp_path, tool):
-    import asyncio
-    from mnemotrace.mcp import server as mcp
-    from mnemotrace.mcp.backends import LocalBackend
-    svc = service(tmp_path, Broken())
-    with pytest.raises(ExtractionError):
-        svc.remember('u', 'Synthetic failed input', session_id='s')
-    mcp.set_backend(LocalBackend(namespace='u', service=svc))
-    try:
-        function = getattr(mcp, 'mnemotrace_' + tool)
-        kwargs = {} if tool == 'stats' else {'session_id': 's'}
-        text = asyncio.run(function(**kwargs))
-        assert 'extraction failures: 1 episode(s)' in text.lower()
-        assert 'Synthetic failed input' not in text
-    finally:
-        mcp.set_backend(None)
 
 
 @pytest.mark.parametrize('layer', ['core', 'service'])

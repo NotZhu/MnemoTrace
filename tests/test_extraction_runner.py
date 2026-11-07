@@ -21,7 +21,6 @@ def test_service_measurement_completes_same_summary_work_and_restores(harness, m
     from mnemotrace.consolidate.planning import WINDOW_PREFIX
     from mnemotrace.llm import Completion, FakeLLM, providers
     monkeypatch.setenv('MNEMOTRACE_BUFFERED_EXTRACTION', '1')
-    monkeypatch.setenv('MNEMOTRACE_SESSION_OUTCOMES', '0')
     responses = {'我喜欢绿茶。': ('likes', '绿茶'), '我喜欢苹果。': ('likes', '苹果'),
                  '我有一辆自行车。': ('owns', '自行车')}
     def handler(prompt, system):

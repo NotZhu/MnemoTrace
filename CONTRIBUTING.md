@@ -42,7 +42,9 @@ python -m pytest tests/test_conflict.py
 python -m pytest
 ```
 
-测试依赖已安装后，默认套件应不需要 API key 或外部服务。测试入口会隔离模型相关环境，并禁止通常的本地 dotenv 自动加载；只有专门验证 dotenv 的 fixture 才显式恢复该行为。可选后端未安装时，相关测试可能跳过。
+离线回归可在无 API key 和外部服务的环境中运行。测试入口隔离模型相关环境，并关闭常规 dotenv 自动加载。专门验证 dotenv 的 fixture 会显式恢复该行为。
+
+产品接口和数据库隔离的集成测试需要独立的 Postgres/pgvector 测试实例。安装 `.[dev,server,mcp,postgres]`，用 `MNEMOTRACE_TEST_POSTGRES_DSN` 提供可创建临时库和测试角色的连接，并设置 `MNEMOTRACE_REQUIRE_POSTGRES=1`。运行 `python -m pytest tests/postgres tests/test_postgres_configuration.py`。镜像版本与平台矩阵见 [CI](.github/workflows/ci.yml)。
 
 涉及 LanceDB 或文档导入时，安装对应 extras 后运行实际后端回归；CI 的 `optional-backends` job 也执行这一组离线检查：
 

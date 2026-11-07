@@ -21,9 +21,9 @@ mnemotrace-quickstart
 
 需要持久化向量后端时，可选安装 `mnemotrace-memory[qdrant]` 或 `mnemotrace-memory[lancedb]`；Qdrant 支持本地与远程模式，配置及生命周期见[配置参考](docs/reference/configuration.md#可选-qdrant)。
 
-`mnemotrace-memory[postgres]` 提供数据库初始化、账号/key、空间和 RLS 基础，现有记忆入口尚未切换到该后端；使用方式见 [Postgres 基础配置](docs/reference/configuration.md#postgres-数据库基础)。
+HTTP 服务、MCP 工具、SDK 客户端和 CLI 使用 Postgres 记忆，并显式选择空间。Python 直连使用 `PostgresMemory`。直连数据库可安装 `mnemotrace-memory[postgres]`，运行服务可安装 `mnemotrace-memory[serve]`。见 [Postgres 基础配置](docs/reference/configuration.md#postgres-数据库基础)。
 
-最小接入示例：
+以下示例使用内存版 Python 库。
 
 ```python
 from mnemotrace import Memory

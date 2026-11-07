@@ -23,14 +23,15 @@ from ..topics import Topic
 class Backend(Protocol):
     mode: str
     async def remember_messages(self, messages: list[dict], session_id: str, mode: str = 'live',
-                                processing: str = 'buffered', scope: str = 'auto') -> dict: ...
+                                processing: str = 'buffered', scope: str = 'auto', *, agent_id: str | None = None) -> dict: ...
 
     async def remember(self, content: str, session_id: str = "default", scope: str = "auto",
-                       processing: str = "immediate") -> dict: ...
+                       processing: str = "immediate", *, agent_id: str | None = None) -> dict: ...
+    async def operation(self, operation_id: str, *, retry: bool = False) -> dict | None: ...
     async def processing_status(self, session_id: str | None = None) -> dict: ...
     async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
                                retry_failed: bool = False, include_summaries: bool = False) -> dict: ...
-    async def get_episode(self, episode_id: str, space: str | None = None) -> dict | None: ...
+    async def get_episode(self, episode_id: str, space_id: str | None = None) -> dict | None: ...
     async def recall(
         self,
         query: str,
@@ -40,16 +41,13 @@ class Backend(Protocol):
         as_of: float | None = None,
         redact_sensitive: bool = False,
     ) -> dict: ...
-    async def close_session(
-        self,
-        session_id: str = "default",
-        summarize: bool = True,
-        clear_working: bool = True,
-    ) -> dict: ...
     async def session_report(
         self,
         session_id: str,
         include_sensitive: bool = False,
+        *,
+        limit: int = 100,
+        offset: int = 0,
     ) -> dict: ...
     async def sessions(
         self,
@@ -57,7 +55,7 @@ class Backend(Protocol):
         offset: int = 0,
         q: str = "",
     ) -> dict: ...
-    async def memories(self, topic: Topic | None = None) -> dict: ...
+    async def memories(self, *, topic: Topic | None, limit: int, offset: int, include_superseded: bool) -> dict: ...
     async def stats(self) -> dict: ...
 
     async def audit(self, limit: int = 40) -> dict: ...
@@ -97,36 +95,48 @@ class Backend(Protocol):
 
 
 class LocalBackend:
-    """通过 MemoryService 提供进程内记忆，限定单个命名空间。同步的 service 调用放入
+    """使用可信 user_id 连接一个授权的 Postgres 空间。同步的 service 调用放入
     worker 线程执行，避免 embedder/LLM 阻塞 MCP 事件循环。"""
 
     mode = "local"
 
-    def __init__(self, namespace: str = "me", service: Any = None) -> None:
-        from ..service import MemoryService  # 惰性导入：仅在真正本地运行时需要
+    def __init__(self, user_id: str, space_id: str, service: Any = None) -> None:
+        from ..postgres_service import MemoryService
 
-        self.ns = namespace
-        self.svc = service or MemoryService()
+        self._owns_service = service is None
+        self.svc = service if service is not None else MemoryService.from_env()
+        try:
+            self.context = self.svc.spaces.authorize(user_id, space_id)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        if self._owns_service:
+            self.svc.close()
 
     async def remember_messages(self, messages: list[dict], session_id: str, mode: str = 'live',
-                                processing: str = 'buffered', scope: str = 'auto') -> dict:
-        return await asyncio.to_thread(self.svc.remember_messages, self.ns, messages, session_id, mode, processing, scope)
+                                processing: str = 'buffered', scope: str = 'auto', *, agent_id: str | None = None) -> dict:
+        return await asyncio.to_thread(self.svc.remember_messages, self.context, messages, session_id, mode, processing, scope, agent_id=agent_id)
 
     async def remember(self, content: str, session_id: str = "default", scope: str = "auto",
-                       processing: str = "immediate") -> dict:
-        return await asyncio.to_thread(self.svc.remember, self.ns, content, session_id, scope, processing)
+                       processing: str = "immediate", *, agent_id: str | None = None) -> dict:
+        return await asyncio.to_thread(self.svc.remember, self.context, content, session_id, scope, processing, agent_id=agent_id)
+
+    async def operation(self, operation_id: str, *, retry: bool = False) -> dict | None:
+        return await asyncio.to_thread(self.svc.operation, self.context, operation_id, retry=retry)
 
     async def processing_status(self, session_id: str | None = None) -> dict:
-        return await asyncio.to_thread(self.svc.processing_status, self.ns, session_id)
+        return await asyncio.to_thread(self.svc.processing_status, self.context, session_id)
 
     async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
                                retry_failed: bool = False, include_summaries: bool = False) -> dict:
-        return await asyncio.to_thread(self.svc.flush, self.ns, session_id, timeout, retry_failed, include_summaries)
+        return await asyncio.to_thread(self.svc.flush, self.context, session_id, timeout, retry_failed, include_summaries)
 
-    async def get_episode(self, episode_id: str, space: str | None = None) -> dict | None:
-        if space is not None and space != self.ns:
-            raise ValueError('The local backend only reads its configured namespace')
-        return await asyncio.to_thread(self.svc.get_episode, self.ns, episode_id)
+    async def get_episode(self, episode_id: str, space_id: str | None = None) -> dict | None:
+        context = self.context if space_id is None else await asyncio.to_thread(
+            self.svc.spaces.authorize, self.context.user_id, space_id)
+        return await asyncio.to_thread(self.svc.get_episode, context, episode_id)
 
     async def recall(
         self,
@@ -139,7 +149,7 @@ class LocalBackend:
     ) -> dict:
         return await asyncio.to_thread(
             self.svc.recall,
-            self.ns,
+            self.context,
             query,
             lean=lean,
             n_chunks=n_chunks,
@@ -148,59 +158,52 @@ class LocalBackend:
             redact_sensitive=redact_sensitive,
         )
 
-    async def close_session(
-        self,
-        session_id: str = "default",
-        summarize: bool = True,
-        clear_working: bool = True,
-    ) -> dict:
-        return await asyncio.to_thread(
-            self.svc.close_session,
-            self.ns,
-            session_id,
-            summarize=summarize,
-            clear_working=clear_working,
-        )
-
     async def session_report(
         self,
         session_id: str,
         include_sensitive: bool = False,
+        *,
+        limit: int = 100,
+        offset: int = 0,
     ) -> dict:
         return await asyncio.to_thread(
             self.svc.session_report,
-            self.ns,
+            self.context,
             session_id,
             include_sensitive,
+            limit=limit,
+            offset=offset,
         )
 
     async def sessions(self, limit: int = 20, offset: int = 0, q: str = "") -> dict:
-        return await asyncio.to_thread(self.svc.sessions, self.ns, limit, offset, q)
+        return await asyncio.to_thread(self.svc.sessions, self.context, limit, offset, q)
 
-    async def memories(self, topic: Topic | None = None) -> dict:
-        return await asyncio.to_thread(self.svc.memories, self.ns, topic=topic)
+    async def memories(self, *, topic: Topic | None, limit: int, offset: int, include_superseded: bool) -> dict:
+        return await asyncio.to_thread(self.svc.memories, self.context, topic=topic, facts_limit=limit,
+                                       facts_offset=offset, episodes_limit=0,
+                                       status=None if include_superseded else 'live')
 
     async def stats(self) -> dict:
-        return await asyncio.to_thread(self.svc.stats, self.ns)
+        return await asyncio.to_thread(self.svc.stats, self.context)
 
     async def audit(self, limit: int = 40) -> dict:
-        return await asyncio.to_thread(self.svc.audit, self.ns, limit)
+        return await asyncio.to_thread(self.svc.audit, self.context, limit)
 
     async def agent_status(self, session_id: str | None = None) -> dict:
-        return await asyncio.to_thread(self.svc.agent_status, self.ns, session_id)
+        return await asyncio.to_thread(self.svc.agent_status, self.context, session_id)
 
     async def profile(self) -> dict:
-        return await asyncio.to_thread(self.svc.profile, self.ns)
+        return await asyncio.to_thread(self.svc.profile, self.context)
 
     async def get_focus(self) -> dict:
-        return await asyncio.to_thread(self.svc.get_focus, self.ns)
+        return await asyncio.to_thread(self.svc.get_focus, self.context)
 
     async def set_focus(
         self,
         track: list[str] | None = None,
         mute: list[str] | None = None,
     ) -> dict:
-        return await asyncio.to_thread(self.svc.set_focus, self.ns, track=track, mute=mute)
+        return await asyncio.to_thread(self.svc.set_focus, self.context, track=track, mute=mute)
 
     async def add_fact(
         self,
@@ -213,7 +216,7 @@ class LocalBackend:
     ) -> dict:
         return await asyncio.to_thread(
             self.svc.add_fact,
-            self.ns,
+            self.context,
             subject,
             predicate,
             object,
@@ -235,11 +238,11 @@ class LocalBackend:
     ) -> dict | None:
         return await asyncio.to_thread(
             self.svc.update_fact,
-            self.ns,
+            self.context,
             fact_id,
-            subject,
-            predicate,
-            object,
+            subject=subject,
+            predicate=predicate,
+            object=object,
             sensitive=sensitive,
             category=category,
             topic=topic,
@@ -247,31 +250,32 @@ class LocalBackend:
         )
 
     async def delete_fact(self, fact_id: str) -> dict:
-        return await asyncio.to_thread(self.svc.delete_fact, self.ns, fact_id)
+        return await asyncio.to_thread(self.svc.delete_fact, self.context, fact_id)
 
     async def import_(self, data: Any, format: str = "auto") -> dict:
-        return await asyncio.to_thread(self.svc.import_, self.ns, None, format, data)
+        return await asyncio.to_thread(self.svc.import_, self.context, format=format, data=data)
 
     async def export(self, include_sensitive: bool = False) -> dict:
-        return await asyncio.to_thread(self.svc.export, self.ns, include_sensitive)
+        return await asyncio.to_thread(self.svc.export, self.context, include_sensitive)
 
     async def forget(self) -> dict:
-        return await asyncio.to_thread(self.svc.forget, self.ns)
+        return await asyncio.to_thread(self.svc.forget, self.context)
 
     def describe(self) -> str:
-        return f"local store at {self.svc.data_dir} (namespace '{self.ns}')"
+        return f"Postgres space {self.context.space_id}"
 
 
 class RemoteBackend:
-    """代理一个运行中的 忆痕 HTTP 服务器。api-key（Bearer）在服务端选择命名空间。"""
+    """通过 Bearer key 访问产品 HTTP 服务，并传递所选空间。"""
 
     mode = "remote"
 
-    def __init__(self, api_url: str, key: str = "", client: Any = None) -> None:
+    def __init__(self, api_url: str, key: str, space_id: str, client: Any = None) -> None:
         import httpx  # 惰性导入：仅在真正远程运行时需要
 
         self.api_url = api_url.rstrip("/")
         self.key = key
+        self.space_id = space_id
         self._client = client or httpx.AsyncClient(timeout=120.0)
 
     @property
@@ -282,44 +286,57 @@ class RemoteBackend:
         return h
 
     async def _post(self, path: str, body: dict, *, timeout: float | None = None) -> dict:
-        r = await self._client.post(self.api_url + path, json=body, headers=self._headers,
+        r = await self._client.post(self.api_url + path, json={"space_id": self.space_id, **body}, headers=self._headers,
                                     **({'timeout': timeout} if timeout is not None else {}))
         r.raise_for_status()
         return r.json()
 
     async def _patch(self, path: str, body: dict) -> dict:
-        r = await self._client.patch(self.api_url + path, json=body, headers=self._headers)
+        r = await self._client.patch(self.api_url + path, json={"space_id": self.space_id, **body}, headers=self._headers)
         r.raise_for_status()
         return r.json()
 
     async def _put(self, path: str, body: dict) -> dict:
-        r = await self._client.put(self.api_url + path, json=body, headers=self._headers)
+        r = await self._client.put(self.api_url + path, json={"space_id": self.space_id, **body}, headers=self._headers)
         r.raise_for_status()
         return r.json()
 
+    def _scoped_path(self, path):
+        from urllib.parse import parse_qsl
+
+        route, _, query = path.partition('?')
+        params = dict(parse_qsl(query, keep_blank_values=True))
+        params.setdefault('space_id', self.space_id)
+        return route + '?' + urlencode(params)
+
     async def _delete(self, path: str) -> dict:
-        r = await self._client.delete(self.api_url + path, headers=self._headers)
+        r = await self._client.delete(self.api_url + self._scoped_path(path), headers=self._headers)
         r.raise_for_status()
         return r.json()
 
     async def _get(self, path: str) -> dict:
-        r = await self._client.get(self.api_url + path, headers=self._headers)
+        r = await self._client.get(self.api_url + self._scoped_path(path), headers=self._headers)
         r.raise_for_status()
         return r.json()
 
     async def remember_messages(self, messages: list[dict], session_id: str, mode: str = 'live',
-                                processing: str = 'buffered', scope: str = 'auto') -> dict:
+                                processing: str = 'buffered', scope: str = 'auto', *, agent_id: str | None = None) -> dict:
         return await self._post('/v1/messages', dict(messages=messages, session_id=session_id,
-            mode=mode, processing=processing, scope=scope))
+            mode=mode, processing=processing, scope=scope, agent_id=agent_id))
 
     async def remember(self, content: str, session_id: str = "default", scope: str = "auto",
-                       processing: str = "immediate") -> dict:
+                       processing: str = "immediate", *, agent_id: str | None = None) -> dict:
         return await self._post("/v1/remember", {
             "content": content,
             "session_id": session_id,
             "scope": scope,
             "processing": processing,
+            "agent_id": agent_id,
         })
+
+    async def operation(self, operation_id: str, *, retry: bool = False) -> dict:
+        path = '/v1/operations/' + quote(operation_id, safe='')
+        return await self._post(path + '/retry', {}) if retry else await self._get(path)
 
     async def processing_status(self, session_id: str | None = None) -> dict:
         query = '?' + urlencode({'session_id': session_id}) if session_id is not None else ''
@@ -331,8 +348,8 @@ class RemoteBackend:
             'session_id': session_id, 'timeout': timeout, 'retry_failed': retry_failed,
             'include_summaries': include_summaries}, timeout=timeout + 10)
 
-    async def get_episode(self, episode_id: str, space: str | None = None) -> dict:
-        query = '?' + urlencode({'space': space}) if space is not None else ''
+    async def get_episode(self, episode_id: str, space_id: str | None = None) -> dict:
+        query = '?' + urlencode({'space_id': space_id}) if space_id is not None else ''
         return await self._get('/v1/episodes/' + quote(episode_id, safe='') + query)
 
     async def recall(
@@ -353,36 +370,35 @@ class RemoteBackend:
             body["redact_sensitive"] = True
         return await self._post("/v1/recall", body)
 
-    async def close_session(
-        self,
-        session_id: str = "default",
-        summarize: bool = True,
-        clear_working: bool = True,
-    ) -> dict:
-        return await self._post("/v1/sessions/close", {
-            "session_id": session_id,
-            "summarize": summarize,
-            "clear_working": clear_working,
-        })
-
     async def session_report(
         self,
         session_id: str,
         include_sensitive: bool = False,
+        *,
+        limit: int = 100,
+        offset: int = 0,
     ) -> dict:
-        qs = urlencode({
+        params = {
             "session_id": session_id,
             "include_sensitive": "true" if include_sensitive else "false",
-        })
-        return await self._get("/v1/sessions/report?" + qs)
+        }
+        if limit != 100:
+            params["limit"] = str(limit)
+        if offset:
+            params["offset"] = str(offset)
+        return await self._get("/v1/sessions/report?" + urlencode(params))
 
     async def sessions(self, limit: int = 20, offset: int = 0, q: str = "") -> dict:
         qs = urlencode({"limit": limit, "offset": offset, "q": q})
         return await self._get("/v1/sessions?" + qs)
 
-    async def memories(self, topic: Topic | None = None) -> dict:
-        qs = "?" + urlencode({"topic": topic}) if topic is not None else ""
-        return await self._get("/v1/memories" + qs)
+    async def memories(self, *, topic: Topic | None, limit: int, offset: int, include_superseded: bool) -> dict:
+        params = dict(facts_limit=limit, facts_offset=offset, episodes_limit=0)
+        if topic is not None:
+            params['topic'] = topic
+        if not include_superseded:
+            params['status'] = 'live'
+        return await self._get("/v1/memories?" + urlencode(params))
 
     async def stats(self) -> dict:
         return await self._get("/v1/stats")
@@ -476,9 +492,14 @@ class RemoteBackend:
 
 
 def make_backend() -> Backend:
-    """根据环境选择后端：有 MNEMOTRACE_API_URL -> 远程代理；否则使用 MNEMOTRACE_NAMESPACE 命名空间
-    （默认 'me'）的本地进程内记忆。"""
-    api_url = os.environ.get("MNEMOTRACE_API_URL")
+    from ..credentials import resolve_key
+    from ..store.postgres.database import identifier
+
+    space_id = os.environ.get('MNEMOTRACE_SPACE_ID')
+    identifier(space_id)
+    api_url = os.environ.get('MNEMOTRACE_API_URL')
     if api_url:
-        return RemoteBackend(api_url, os.environ.get("MNEMOTRACE_API_KEY", ""))
-    return LocalBackend(os.environ.get("MNEMOTRACE_NAMESPACE", "me"))
+        return RemoteBackend(api_url, resolve_key(required=True), space_id)
+    user_id = os.environ.get('MNEMOTRACE_USER_ID')
+    identifier(user_id)
+    return LocalBackend(user_id, space_id)

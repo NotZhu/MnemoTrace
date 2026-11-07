@@ -12,26 +12,27 @@ httpx = pytest.importorskip("httpx")
 
 from mnemotrace.mcp import server as server  # noqa: E402
 from mnemotrace.mcp.backends import LocalBackend, RemoteBackend  # noqa: E402
-from tests.model_fixtures import MemoryService  # noqa: E402
 
 
 @pytest.mark.asyncio
-async def test_mcp_local_and_proxy_preserve_topic_contract(tmp_path):
-    service = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
-    local = LocalBackend(namespace="synthetic", service=service)
+async def test_mcp_local_and_proxy_preserve_topic_contract(product_service, product_scope):
+    service = product_service
+    context, key = product_scope()
+    local = LocalBackend(context.user_id, context.space_id, service=service)
     requests = []
 
     def route(request):
         payload = json.loads(request.content)
-        requests.append(payload)
+        requests.append(dict(payload))
+        assert payload.pop("space_id") == context.space_id
         if request.method == "POST":
-            result = service.add_fact("synthetic", **payload)
+            result = service.add_fact(context, **payload)
         else:
-            result = service.update_fact("synthetic", request.url.path.rsplit("/", 1)[-1], **payload)
+            result = service.update_fact(context, request.url.path.rsplit("/", 1)[-1], **payload)
         return httpx.Response(200, json=result)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as transport:
-        remote = RemoteBackend("http://synthetic.test", key="sk-synthetic", client=transport)
+        remote = RemoteBackend("http://synthetic.test", key=key, space_id=context.space_id, client=transport)
         for backend, obj in [(local, "茶"), (remote, "咖啡")]:
             added = await backend.add_fact("user", "prefers", obj, topic="food")
             assert (added["topic"], added["topic_source"]) == ("food", "user")
@@ -44,34 +45,37 @@ async def test_mcp_local_and_proxy_preserve_topic_contract(tmp_path):
             await server.mcp.call_tool("mnemotrace_add_fact", {
                 "predicate": "prefers", "object": "jazz", "topic": "music",
             })
-            fact = next(f for f in service.get("synthetic").fact_store.values() if f.object == "jazz")
+            fact = next(f for f in service.memory(context).facts() if f.object == "jazz")
             response = await server.mcp.call_tool("mnemotrace_update_fact", {
                 "fact_id": fact.id, "topic": "unknown", "response_format": "json",
             })
             blocks = response[0] if isinstance(response, tuple) else response
             assert json.loads(blocks[0].text)["topic_source"] == "user"
             await server.mcp.call_tool("mnemotrace_update_fact", {"fact_id": fact.id, "reset_topic": True})
-            assert (fact.topic, fact.topic_source) == ("music", "rule")
+            edited = service.memory(context).get_fact(fact.id)
+            assert (edited.topic, edited.topic_source) == ("music", "rule")
         finally:
             server.set_backend(None)
 
 
 @pytest.mark.asyncio
-async def test_topic_filter_is_forwarded_by_both_backends_and_applied_before_tool_paging(tmp_path):
-    service = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
+async def test_topic_filter_is_forwarded_by_both_backends_and_applied_before_tool_paging(product_service, product_scope):
+    from mnemotrace.server.app import app
+
+    service = product_service
+    context, key = product_scope()
     for obj, topic in [("合成茶", "food"), ("合成作品", "music"), ("合成咖啡", "food")]:
-        service.add_fact("synthetic", "user", "prefers", obj, topic=topic)
-    local = LocalBackend(namespace="synthetic", service=service)
+        service.add_fact(context, "user", "prefers", obj, topic=topic)
+    local = LocalBackend(context.user_id, context.space_id, service=service)
     requests = []
 
-    def route(request):
+    async def record(request):
         requests.append(dict(request.url.params))
-        return httpx.Response(200, json=service.memories("synthetic", topic=request.url.params.get("topic")))
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as transport:
-        remote = RemoteBackend("http://synthetic.test", key="sk-synthetic", client=transport)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), event_hooks={"request": [record]}) as transport:
+        remote = RemoteBackend("http://synthetic.test", key=key, space_id=context.space_id, client=transport)
         for backend in [local, remote]:
-            data = await backend.memories(topic="food")
+            data = await backend.memories(topic="food", limit=10, offset=0, include_superseded=False)
             assert len(data["facts"]) == 2 and all(f["topic"] == "food" for f in data["facts"])
             server.set_backend(backend)
             try:
@@ -84,4 +88,5 @@ async def test_topic_filter_is_forwarded_by_both_backends_and_applied_before_too
                 assert page["facts"][0]["topic"] == "food"
             finally:
                 server.set_backend(None)
-        assert requests == [{"topic": "food"}, {"topic": "food"}]
+        assert len(requests) == 2
+        assert all(row["topic"] == "food" and row["space_id"] == context.space_id for row in requests)

@@ -6,18 +6,18 @@
 
 | 场景 | 使用方式 |
 | --- | --- |
-| 在 Python 进程内使用 | `Memory`；应用显式整合和保存 |
-| 多个应用访问同一份持久记忆 | HTTP 服务；Bearer 凭据由服务端映射到命名空间 |
+| 在 Python 进程内使用 | `PostgresMemory`，通过运行角色连接数据库并显式选择空间 |
+| 多个应用访问同一份持久记忆 | HTTP 服务；服务端验证 Bearer key 与显式空间归属 |
 | 为 Agent 提供工具 | 本地 MCP 或代理 HTTP 服务的远程 MCP |
 | 从 TypeScript/JavaScript 调用 | [SDK](../../clients/typescript/README.md) |
 
-`user_id` 或命名空间决定记忆归属，`session_id` 在其中区分会话。直接使用 Python 库时，这些标识不是鉴权系统；网络访问需要服务端认证与权限配置。
+`space_id` 划定持久记录的读写范围，`session_id` 在空间内区分会话。直连客户端提供可信的 `user_id`，数据库校验空间归属。
 
 ## 写入与检索
 
 持久事实、偏好和可复用决定使用 `remember(..., scope="long")`；不确定时使用 `scope="auto"`。当前任务的短时状态可以使用 `scope="working"`，并在检索时携带同一个 session id。
 
-在 Python 库中，长期内容写入后需调用 `consolidate()`。HTTP 和 MCP 经由服务层处理：默认同步整合；启用异步整合后，`queued=true` 表示原始事件已保存、事实仍待处理。运行失败返回结构化错误，`stored_raw=true` 表示原文仍保留，不能将其视为抽取完成。
+摄入确认返回原文和操作 ID。`buffered` 在原文与任务落库后返回，`immediate` 等待核心处理提交。根据操作 ID 查询结果，必要时用原 ID 重试。保存原文和手工添加事实可离线使用，自动抽取需要 LLM。
 
 需要把依据交给自己的模型时，读取上下文；需要单个事实答案时，使用 search 或 HTTP 的 `lean=false`。答案、画像和图谱均为派生视图，应结合来源核对。事实抽取由 LLM 完成；哈希嵌入仅提供词汇信号，质量需要以实际评测为准。
 
@@ -29,13 +29,13 @@
 python -m mnemotrace.connectors --file /path/to/export.json --format auto --dry-run
 ```
 
-支持格式及名称以 `--help` 为准，常见入口包括 ChatGPT 导出、OpenAI messages、JSONL、对话文本和 Agent 会话记录。需要真正导入时，去掉 `--dry-run` 并明确本地目录或 HTTP 目标：
+支持格式及名称以 `--help` 为准，常见入口包括 ChatGPT 导出、OpenAI messages、JSONL、对话文本和 Agent 会话记录。需要真正导入时，去掉 `--dry-run` 并明确 Postgres 空间及直连身份，或提供 HTTP 服务和 Bearer 凭据：
 
 ```sh
-python -m mnemotrace.connectors --file /path/to/export.json --namespace user123 --data-dir /path/to/memory-data
+python -m mnemotrace.connectors --file /path/to/export.json --user-id "<USER_ID>" --space-id "<SPACE_ID>"
 ```
 
-默认去重依据内容指纹。Agent 会话记录默认先保存原始内容，在收尾时蒸馏结论；逐轮提取有不同的模型与成本条件。导入前确认数据归属，完整导出包含敏感原文，不要作为公共样本提交。
+对话消息按同一空间和会话内的稳定消息 ID 去重。缺少消息 ID 时由导入器使用稳定位置 ID。导入返回逐会话结果，watcher 只记录确认落库的会话。完整导出可包含敏感原文，验证使用合成样本。
 
 ## 浏览事实与会话
 
@@ -52,11 +52,9 @@ python -m mnemotrace.connectors --file /path/to/export.json --namespace user123 
 - 记忆策略可覆盖抽取、摘要和画像提示，空字符串恢复默认值。自定义抽取提示需遵循统一的结构化协议。
 - 体检提供启发式发现与处理建议，不是全面的数据审计；没有发现不代表记忆完全正确。待确认冲突需要用户裁决。
 
-## 结束会话
+## 整理会话
 
-Agent 或应用完成任务后调用 `close_session`：处理待整合内容、按配置生成摘要与结论，并清理该 session 的 working 状态。随后读取 session report 核对保存结果。
-
-收尾不会删除原始事件，也不会删除整个命名空间。会话结论依赖配置的 LLM；无 LLM 时，不应期待自动生成 decision/finding/lesson。调用流程见[Agent 指南](agents.md#会话调用顺序)。
+用带 `session_id` 的 `flush_processing` 推进并等待本批核心处理，再读取会话报告。摘要进度独立查询。需要清理工作记忆时，使用该会话的专用清理入口。调用流程见 [Agent 指南](agents.md#会话调用顺序)。
 
 ## 隐私与擦除
 
@@ -66,6 +64,6 @@ Agent 或应用完成任务后调用 `close_session`：处理待整合内容、�
 | 删除单个 fact | 删除选定事实，原始 episode 仍可能保留相关文字 |
 | 清空一个槽位 | 仅清理已确认范围内的 live、非手写事实，受计数与替代链保护 |
 | 导出 | 默认省略敏感 fact 和自由文本层；完整私有导出需要显式开启 |
-| 清空命名空间 | 不可逆地擦除该命名空间，需要明确确认 |
+| 清空空间 | 确认后清除空间中的内容，保留空间 ID 与配置 |
 
-当前没有删除单个原始会话的通用端点。切勿把“关闭会话”当作该能力。对敏感原文的完整擦除，应确认事实、事件、工作状态和外部备份的实际范围。相关需求在 [删除单个会话 #26](https://github.com/NotZhu/MnemoTrace/issues/26) 跟踪，仍处于暂缓、待决策状态。
+单个事实和工作记忆支持显式擦除。原文随空间清空或删除处理。对敏感原文的完整擦除，应确认事实、事件、工作状态和外部备份的实际范围。相关需求在 [删除单个会话 #26](https://github.com/NotZhu/MnemoTrace/issues/26) 跟踪，仍处于暂缓、待决策状态。

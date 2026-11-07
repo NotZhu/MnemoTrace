@@ -1,6 +1,8 @@
 # Python API
 
-面向嵌入式应用的公共入口为 `from mnemotrace import Memory, Config`；还导出 Episode、Fact、Entity 和 Relation。核心不需要第三方运行时依赖。入门步骤见[快速开始](../quickstart.md)。
+面向产品集成的 Python 入口是 `from mnemotrace import PostgresMemory`。先打开运行角色的数据库连接，再用 `Spaces(database).authorize(user_id, space_id)` 获取授权上下文并构造 `PostgresMemory(database, context)`。连接由调用方负责关闭。详见 [Postgres 存储契约](../architecture/storage-contracts.md)。
+
+`from mnemotrace import Memory, Config` 用于离线验证。核心不需要第三方运行时依赖，支持 Episode、Fact、Entity 和 Relation。
 
 ## 构造与运行配置
 
@@ -8,7 +10,7 @@
 
 默认 Config、HashingEmbedder 和内存文档/向量/图存储。传入 LLM 才能抽取自然语言事实；可选实现通过各自 extras 安装。参数字段和默认值见[配置参考](configuration.md)及 [Config](../../mnemotrace/config.py)。
 
-直接使用 Memory 不读取服务端的凭据映射，也不自动提供鉴权、服务级锁或逐操作保存。并发与持久化由应用管理，或改用 [MemoryService](../../mnemotrace/service.py)/HTTP。
+直接使用 Memory 不读取服务端的凭据映射，也不自动提供鉴权、服务级锁或逐操作保存。并发与持久化由应用管理。产品调用使用 PostgresMemory 或 HTTP。
 
 ## 写入与导入
 
@@ -16,8 +18,7 @@
 每条消息包含 message_id、role、content 和可选 event_time，角色限定为 user/assistant。返回每条事件 ID、持久化顺序和处理状态；相同 ID 的冲突输入报 MessageConflictError。
 底层写入不依赖 LLM；内存实例仍需显式 save 才获得持久性。`Memory.flush_messages(user_id="default", session_id=None, timeout=30, retry_failed=False)` 使用同一联合状态机处理已记录范围，需配置 LLM。保存失败优先恢复权威快照；无法恢复的实例必须重新打开。
 
-服务端使用 `MemoryService.remember_messages(user, messages, session_id, mode="live", processing="buffered", scope="auto")`，确认接收前保存原文和任务。后台默认开启，`MNEMOTRACE_BUFFERED_EXTRACTION=0` 可显式关闭；关闭后台仍可使用 immediate 和显式 flush。缺少模型时拒绝新的自动抽取输入。
-`processing_status` 返回一份统一任务列表，报告来源类型、操作、核心、摘要、嵌入阶段和覆盖证据；`flush`、`close_session` 冻结调用开始时的范围并显式报告失败，保留后来追加的消息与工作记忆。
+Postgres 使用 `PostgresMemory.remember_messages(session_id, messages, processing="buffered")` 在确认接收前提交原文与任务。使用 `operation(operation_id)` 查询持久化状态，使用 `retry_operation(operation_id)` 重试原操作。按会话调用 `flush_processing` 可等待核心处理，工作记忆由独立入口清理。
 
 历史导入适配后逐条提交 historical 消息，超过入口批量上限时顺序分批。来源没有消息 ID 时，适配器采用稳定源位置 ID；修订原位置应使用明确的新消息 ID，不能以正文哈希删除合法重复。来源时间缺失保持未知，不再生成今天的合成时间。
 文档、手工事实和下述原文 API 保留独立契约；`consolidate()` 不会绕过联合任务处理对话消息。
@@ -68,7 +69,7 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 | `delete_fact(fact_id)` | 删除指定事实，返回 bool |
 | `remember_working(content, user_id=..., session_id=..., kind="state", ttl_seconds=None)` | 返回 WorkingMemory |
 | `working_memory(user_id=..., session_id=None, as_of=None, kind=None)` | 活跃工作条目 |
-| `clear_session(user_id=..., session_id=...)` | 清理该 session 工作记忆，返回数量；不是服务层 close_session |
+| `clear_session(user_id=..., session_id=...)` | 清理该 session 工作记忆，返回数量 |
 | `consume_working(wm_id)`、`sweep_working(as_of=None)` | 标记消费或清理过期/已消费工作条目 |
 | `get_focus()`、`set_focus(track=None, mute=None)` | 查询或更新关注点，None 保持不变，[] 清空对应列表 |
 | `get_policy()`、`set_policy(**fields)` | 查询或覆盖抽取、摘要与画像策略 |
@@ -122,18 +123,18 @@ memory.save()
 不能将其解释为零用量或已确认正常结束。LiteLLM 适配器和 `CachedLLM` 保留这些信息；
 仅实现字符串接口的自定义适配器仍可使用，但只能通过内容校验检测不完整响应。
 
-抽取模型输出 `{"facts": [...], "working": [...]}`；facts 条目包含非空字符串 subject、predicate、object，可附 text 和 topic；working 条目包含非空 content 和 kind（state/intent/task），不接受模型设置 TTL。两个数组均为必需；混合内容分别生成两类记录，无记忆价值时两个数组为空。自定义 extract_system 必须遵循该协议，旧数组响应不兼容。会话结论仍使用对象数组协议。
+抽取模型输出 `{"facts": [...], "working": [...]}`；facts 条目包含非空字符串 subject、predicate、object，可附 text 和 topic；working 条目包含非空 content 和 kind（state/intent/task），不接受模型设置 TTL。两个数组均为必需；混合内容分别生成两类记录，无记忆价值时两个数组为空。自定义 extract_system 必须遵循该协议，旧数组响应不兼容。
 
 `consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实和工作条目。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，已完成的窗口范围保留，未完成范围继续待处理；重试跳过完成范围并消解重复事实和工作条目。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
 
 对话历史导入使用消息身份和联合任务；同 ID 的重传不重新生成。文档和可移植快照保留各自导入契约。显式摘要与 include_summaries 仍通过同一任务内核，并保留既有摘要。
 
-公开异常为 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError、ExtractionConflictError；未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated；同一命名空间的并发写作废在途抽取时抛 ExtractionConflictError（code 为 extraction_conflict），内核会先基于新快照自动重试一次。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。原文保存不等同于事实抽取完成。模型输出的 working.kind 限定为 state/intent/task，显式工作记忆接口仍可使用其他 kind。会话结论 kind 在校验前忽略大小写和首尾空白，未知类型仍报响应无效。
+公开异常为 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError、ExtractionConflictError；未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated；同一命名空间的并发写作废在途抽取时抛 ExtractionConflictError（code 为 extraction_conflict），内核会先基于新快照自动重试一次。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。原文保存不等同于事实抽取完成。模型输出的 working.kind 限定为 state/intent/task，显式工作记忆接口仍可使用其他 kind。
 
 替代裁决仅接受 REPLACES/COEXISTS，冲突检测仅接受 CONFLICT/COEXIST（忽略首尾空白与大小写）；其他响应记录安全警告并不执行对应替代或冲突标记。
 
 
-服务层 `MemoryService.close_session()` 遇到缓冲刷新失败或超时会抛出 `ProcessingIncompleteError`（code=`processing_incomplete`），不会报告关闭成功或执行后续清理。先查询处理状态，必要时显式重试失败任务，再关闭会话。缓冲关闭配置错误另用 `BufferedProcessingDisabledError` 表达。
+处理等待超时后可查询原操作 ID。核心完成后，辅助摘要通过独立操作 ID 查询。
 
 ## 数据库资源生命周期
 
@@ -142,13 +143,13 @@ memory.save()
 
 ### 摘要与显式原文读取
 
-对话、原文、文档、`consolidate`、`summarize_episodes` 和原文会话结论都使用统一任务与执行内核。
+离线对话、原文、文档、`consolidate` 和 `summarize_episodes` 共用任务执行内核。
 `processing_status` 只返回统一 counts/jobs；每项区分 source_kind、operation、phase、失败和 coverage，删除旧任务分区和 completed_through。
 原文 `remember` 通过联合生成处理事实和条件摘要；核心合法但摘要缺失时保留成果，仅补摘要。
 原文和文档按连续片段覆盖全文，再按预算归并摘要；对话只概括可见的完整或裁切输入。
 flush 等待冻结范围内已经请求的处理；include_summaries=True 额外请求该范围中符合阈值的显式摘要。
 关闭后台后，显式 flush 仍驱动同一执行器。retry_failed=True 只重试缺失成果，读取与普通调度不重置次数。
-close_session 未完成时返回 processing_incomplete 并保留工作记忆，只清理本次冻结范围。summarize=False 不取消既有任务。
+
 
 摘要成功后，所有 agent 事件检索、来源证据、聚合和上下文只使用摘要。检索文本带事件 ID；通过 get_episode 显式读取原文。
 Fact 仍从原文抽取且独立检索；历史事件摘要不追加后续事实。owner 管理浏览、全文搜索及导出保留。

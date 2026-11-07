@@ -11,7 +11,7 @@ import { useAgentStatus, useForget } from '../hooks/queries'
 import { copy as t } from '../lib/copy'
 
 export default function Privacy() {
-  const user = useAuth((s) => s.apiKey) ?? 'me'
+  const user = useAuth((s) => s.spaceId) ?? 'space'
   const spaceStatus = useAgentStatus()
   const forget = useForget()
   const [exporting, setExporting] = useState(false)
@@ -47,7 +47,7 @@ export default function Privacy() {
               <Download className="h-4 w-4 text-brand-cyan" /> {t.privacy.exportTitle}
             </span>
           </CardTitle>
-          <p className="break-words text-sm leading-relaxed text-ghost">{t.privacy.exportDesc(spaceStatus.data?.user)}</p>
+          <p className="break-words text-sm leading-relaxed text-ghost">{t.privacy.exportDesc(spaceStatus.data?.space_id)}</p>
           <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
             <div className="min-w-0 flex-1 basis-64">
               <ExportRangeSelect value={exportMode} onChange={setExportMode} disabled={exporting} />

@@ -1,22 +1,9 @@
-"""mnemotrace_mcp — 忆痕 长期记忆的 Model Context Protocol 服务器（AGENTS.md 「代码导航」，
-2026 年 agent 技术栈中杠杆率最高的采用入口）。
-
-给任何 MCP 客户端（Claude Desktop、Claude Code、Cursor 等）一个持久的双时间轴记忆：它可以在
-session 之间 `mnemotrace_remember` fact，并 `mnemotrace_recall` 一小段相关内容来锚定下一个回答——
-而不是重新塞入整个历史。
-
-运行（stdio，供桌面客户端使用）：
-    pip install "mnemotrace-memory[mcp]"
-    python -m mnemotrace.mcp                       # 本地记忆在 ~/.mnemotrace/data，命名空间 'me'
-    MNEMOTRACE_API_URL=http://localhost:8000 MNEMOTRACE_API_KEY=sk-… python -m mnemotrace.mcp   # 代理服务器
-
-这些工具是对共享 MemoryService / HTTP 契约的薄格式化层（见 mnemotrace/mcp/backends.py），
-因此本地与托管部署行为完全一致。
-"""
+"""MnemoTrace MCP tools for authorized memory spaces."""
 # NOTE: 这里不要加 `from __future__ import annotations` —— FastMCP 会在运行时内省这些工具签名
 # （对每个参数的注解做 issubclass 检查），字符串化注解会破坏它。
 
 import json
+from contextvars import ContextVar
 from enum import Enum
 from typing import Annotated, Literal, Optional
 
@@ -37,8 +24,8 @@ INSTRUCTIONS = (
     "`mnemotrace_remember` whenever the user states a durable fact, preference, or decision worth keeping "
     "(use scope='long' or the default scope='auto'); use scope='working' for temporary current-session "
     "state that should not become a long-term profile fact. "
-    "Use `mnemotrace_close_session` when a thread/task ends to finish consolidation and clear ephemeral "
-    "working state for that session; use `mnemotrace_session_report` when the user asks what that session "
+    "Use `mnemotrace_flush_processing` with the session ID to finish core processing; "
+    "use `mnemotrace_session_report` when the user asks what that session "
     "saved; use `mnemotrace_list_sessions` when the user asks which agent/app sessions touched memory. "
     "`mnemotrace_search` gives a single direct answer; `mnemotrace_agent_status` checks the current namespace, "
     "session, focus, and next memory actions without exposing memory contents; `mnemotrace_stats` checks "
@@ -54,10 +41,16 @@ mcp = FastMCP("mnemotrace_mcp", instructions=INSTRUCTIONS)
 
 # --- backend 单例（测试/嵌入场景可覆盖） ------------------
 _backend: Optional[Backend] = None
+request_backend: ContextVar[Backend | None] = ContextVar("request_backend", default=None)
+require_request_backend = False
 
 
 def backend() -> Backend:
     global _backend
+    if current := request_backend.get():
+        return current
+    if require_request_backend:
+        raise RuntimeError('An authorized request scope is required')
     if _backend is None:
         _backend = make_backend()
     return _backend
@@ -77,6 +70,7 @@ class ResponseFormat(str, Enum):
 
 class RememberScope(str, Enum):
     AUTO = "auto"
+    RAW = "raw"
     LONG = "long"
     WORKING = "working"
 
@@ -88,6 +82,13 @@ def _json(obj) -> str:
 def _err(e: Exception) -> str:
     """可操作、不泄露内部信息的错误文案（最佳实践：引导 agent 修复）。"""
     from ..extraction import ExtractionError
+    from ..postgres_service import ProcessingFailure
+    from ..store.postgres.errors import DatabaseError
+
+    if isinstance(e, ProcessingFailure):
+        return "Error: " + _json(e.detail())
+    if isinstance(e, DatabaseError):
+        return "Error: " + _json(dict(code=e.code, message='Memory database operation failed'))
     if isinstance(e, ExtractionError):
         return "Error: " + _json(e.detail())
     try:
@@ -118,7 +119,7 @@ def _err(e: Exception) -> str:
                     "(uvicorn mnemotrace.server.app:app)?")
     except Exception:  # noqa: BLE001 —— 纯本地模式下可能没有 httpx
         pass
-    return f"Error: {type(e).__name__}: {e}"
+    return "Error: Memory tool request failed."
 
 
 def _format_feed(feed: dict) -> str:
@@ -193,20 +194,20 @@ async def mnemotrace_recall(
 async def mnemotrace_get_episode(
     episode_id: Annotated[str, Field(description="Event ID returned by recall; reads its full original.",
                                    min_length=1, max_length=512)],
-    space: Annotated[Optional[str], Field(description="Source space shown beside the event ID.",
+    space_id: Annotated[Optional[str], Field(description="Source space shown beside the event ID.",
                                          max_length=512)] = None,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
 ) -> str:
     """Explicitly read a source event. Recall does not expand summarized events automatically."""
     try:
-        data = await backend().get_episode(episode_id, space)
+        data = await backend().get_episode(episode_id, space_id)
     except Exception as exc:  # noqa: BLE001 -- shared sanitized adapter errors
         return _err(exc)
     if data is None:
         return "Error: episode not found."
     if response_format == ResponseFormat.JSON:
         return _json(data)
-    return (f"Event {data['id']} (space: {data['space']}; session: {data['session_id']}; "
+    return (f"Event {data['id']} (space: {data['space_id']}; session: {data['session_id']}; "
             f"event_time: {data['event_time']}; ingested_at: {data['ingested_at']})\n\n{data['content']}")
 
 
@@ -245,14 +246,14 @@ async def mnemotrace_search(
 async def mnemotrace_remember_messages(messages: list[dict], session_id: str,
         mode: Literal['live', 'historical'] = 'live',
         processing: Literal['immediate', 'buffered'] = 'buffered',
-        scope: Literal['auto', 'long'] = 'auto') -> str:
+        scope: Literal['auto', 'long', 'raw'] = 'auto', agent_id: str | None = None) -> str:
     """Store complete user/assistant messages with required stable message_id, role and content.
 
     event_time may be unknown. Reuse IDs on retransmission; historical never activates old tasks.
     Acceptance persists raw sources and tasks; inspect processing status or flush for completion.
     """
     try:
-        return _json(await backend().remember_messages(messages, session_id, mode, processing, scope))
+        return _json(await backend().remember_messages(messages, session_id, mode, processing, scope, agent_id=agent_id))
     except Exception as exc:
         return _err(exc)
 
@@ -267,6 +268,8 @@ async def mnemotrace_remember(
                                            "fact extraction; working = current-session state that should not "
                                            "be promoted to long-term profile facts.")] = RememberScope.AUTO,
     processing: Literal['immediate', 'buffered'] = 'immediate',
+    agent_id: str | None = None,
+    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
 ) -> str:
     """把内容存入用户长期记忆并整合（抽取原子双时间轴 fact、与已有认知解决矛盾、更新知识图）。
 
@@ -275,27 +278,18 @@ async def mnemotrace_remember(
     （as-of 查询依然可用）。auto/long 需要配置 LLM；抽取失败会返回可识别错误并保留原文供重试。
     """
     try:
-        data = await backend().remember(content, session_id=session_id, scope=scope.value, processing=processing)
+        data = await backend().remember(content, session_id=session_id, scope=scope.value, processing=processing, agent_id=agent_id)
     except Exception as e:  # noqa: BLE001
         return _err(e)
-    summary = data['summarization']
-    summary_status = f" Summarization: {summary['status']}"
-    if summary['error_code']:
-        summary_status += f" ({summary['error_code']})"
-    summary_status += "."
-    if data.get("queued"):
-        return (f"Queued raw episode {data['episode_id']} for model extraction; extraction is not complete."
-                + summary_status)
-    if data.get("scope") == "working":
-        return (
-            "Stored as working memory for this session. It remains in dated history, but will not be "
-            "promoted to durable profile facts." + summary_status
-        )
-    if data.get("scope") == "none":
-        return "Saved raw history. No durable facts or working memory were extracted (scope=none)." + summary_status
-    return (f"Remembered. Extracted {data.get('extracted', 0)} new fact(s); "
-            f"added {data.get('working_added', 0)} working item(s) (scope={data.get('scope')}); "
-            f"{data.get('total_facts', '?')} live facts total." + summary_status)
+    if response_format == ResponseFormat.JSON:
+        return _json(data)
+    if data.get('scope') == 'working':
+        return 'Stored as working memory for this session.'
+    if scope == RememberScope.RAW:
+        return 'Saved raw history.'
+    operation_ids = data.get('operation_ids', ())
+    progress = 'Accepted for processing.' if data.get('status') == 'accepted' else 'Remembered.'
+    return progress + (f" Operations: {', '.join(operation_ids)}" if operation_ids else '')
 
 
 @mcp.tool(name='mnemotrace_processing_status', annotations=ToolAnnotations(title='Memory processing status', **_READ))
@@ -317,52 +311,22 @@ async def mnemotrace_flush_processing(session_id: Optional[str] = None, timeout:
         return _err(exc)
 
 
-@mcp.tool(
-    name="mnemotrace_close_session",
-    annotations=ToolAnnotations(title="Close a memory session", **_WRITE),
-)
-async def mnemotrace_close_session(
-    session_id: Annotated[str, Field(description="Conversation/thread id to close.")] = "default",
-    summarize: Annotated[
-        bool,
-        Field(description="Create missing long-event summaries within the captured session boundary."),
-    ] = True,
-    clear_working: Annotated[
-        bool,
-        Field(description="Clear ephemeral working memory for this session."),
-    ] = True,
-    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
-) -> str:
-    """结束一个客户端线程的记忆生命周期，但不删除原始对话记录。
-
-    在 Claude Code / Codex / Cursor 完成任务或切换 session 时调用。它会排空该 session 待处理的
-    整合、补齐缺失的摘要、把知识更新反映到摘要中、清空短时效的 working memory，并持久化命名空间。
-
-    返回（json）：{"ok","session_id","episodes","pending_consolidated","facts_added","outcomes",
-    "summaries","working_cleared",...}。
-    """
+@mcp.tool(name='mnemotrace_get_operation', annotations=ToolAnnotations(title='Read memory operation', **_READ))
+async def mnemotrace_get_operation(operation_id: str) -> str:
     try:
-        data = await backend().close_session(
-            session_id=session_id,
-            summarize=summarize,
-            clear_working=clear_working,
-        )
-    except Exception as e:  # noqa: BLE001
-        return _err(e)
-    if response_format == ResponseFormat.JSON:
-        return _json(data)
-    # session 结论是关闭动作中最值得让人看到的部分；只报数字会让蒸馏在 agent 唯一汇报的
-    # 地方变得不可见。
-    distilled = data.get("outcomes") or 0
-    return (
-        f"Closed session `{data.get('session_id', session_id)}`. "
-        f"Processed {data.get('episodes', 0)} episode(s), "
-        f"consolidated {data.get('pending_consolidated', 0)} pending episode(s), "
-        f"added {data.get('facts_added', 0)} fact(s), "
-        f"created {data.get('summaries', 0)} summary(ies), "
-        f"cleared {data.get('working_cleared', 0)} working item(s)"
-        + (f", distilled {distilled} conclusion(s)." if distilled else ".")
-    )
+        result = await backend().operation(operation_id)
+        return _json(result) if result is not None else 'Error: operation not found.'
+    except Exception as exc:
+        return _err(exc)
+
+
+@mcp.tool(name='mnemotrace_retry_operation', annotations=ToolAnnotations(title='Retry memory operation', **_WRITE))
+async def mnemotrace_retry_operation(operation_id: str) -> str:
+    try:
+        result = await backend().operation(operation_id, retry=True)
+        return _json(result) if result is not None else 'Error: operation not found.'
+    except Exception as exc:
+        return _err(exc)
 
 
 @mcp.tool(name="mnemotrace_session_report", annotations=ToolAnnotations(title="Audit a memory session", **_READ))
@@ -373,6 +337,8 @@ async def mnemotrace_session_report(
         Field(description="When false (default), redact sensitive fact text from the report."),
     ] = False,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+    limit: Annotated[int, Field(ge=1, le=500)] = 100,
+    offset: Annotated[int, Field(ge=0)] = 0,
 ) -> str:
     """展示某个具体 session 向记忆贡献了哪些持久 fact。
 
@@ -385,6 +351,8 @@ async def mnemotrace_session_report(
         data = await backend().session_report(
             session_id=session_id,
             include_sensitive=include_sensitive,
+            limit=limit,
+            offset=offset,
         )
     except Exception as e:  # noqa: BLE001
         return _err(e)
@@ -402,7 +370,7 @@ async def mnemotrace_session_report(
         f"- Durable facts linked to this session: {data.get('facts_added', 0)}",
         f"- Sensitive facts redacted: {data.get('facts_redacted', 0)}",
     ]
-    if not facts:
+    if not facts and not data.get("facts_added"):
         lines += ["", "No durable facts are linked to this session yet."]
         return "\n".join(lines)
     lines += ["", "Facts:"]
@@ -410,6 +378,8 @@ async def mnemotrace_session_report(
         tag = " _(superseded)_" if f.get("status") != "live" else ""
         redacted = " 🔒 redacted" if f.get("redacted") else ""
         lines.append(f"- `{f.get('id', '?')}` [{f.get('valid_at', '?')}] {f.get('text', '')}{tag}{redacted}")
+    if (next_offset := (data.get("facts_page") or {}).get("next_offset")) is not None:
+        lines.append(f"\nFor more facts, call this tool with offset={next_offset}.")
     return "\n".join(lines)
 
 
@@ -479,15 +449,12 @@ async def mnemotrace_list_facts(
     返回（json）：{"total","count","offset","has_more","next_offset","facts":[...]}。
     """
     try:
-        dump = await backend().memories(topic=topic)
+        dump = await backend().memories(topic=topic, limit=limit, offset=offset,
+                                        include_superseded=include_superseded)
     except Exception as e:  # noqa: BLE001
         return _err(e)
-    facts = dump.get("facts", [])
-    if not include_superseded:
-        facts = [f for f in facts if f.get("status") == "live"]
-    total = len(facts)
-    page = facts[offset:offset + limit]
-    nxt = offset + len(page) if offset + len(page) < total else None
+    result = dump['facts_page']
+    page, total, nxt = result['items'], result['total'], result['next_offset']
     if response_format == ResponseFormat.JSON:
         return _json({"total": total, "count": len(page), "offset": offset,
                       "has_more": nxt is not None, "next_offset": nxt, "facts": page})
@@ -594,7 +561,7 @@ async def mnemotrace_agent_status(
     lines = [
         "# MnemoTrace agent status",
         "",
-        f"- Namespace: `{data.get('user', '?')}`",
+        f"- Space: `{data.get('space_id', '?')}`",
         f"- Session: `{s.get('id') or '(none supplied)'}`",
         f"- Session episodes: {s.get('episodes', 0)} "
         f"({s.get('episodes_pending', 0)} pending consolidation)",
@@ -684,8 +651,6 @@ async def mnemotrace_stats(response_format: ResponseFormat = ResponseFormat.MARK
         f"- Extraction failures: {c.get('extraction_failures', 0)} episode(s)",
         f"- Facts: {c.get('facts_live', 0)} live, {c.get('facts_superseded', 0)} superseded, "
         f"{c.get('facts_sensitive', 0)} sensitive",
-        f"- Heat tiering: {c.get('facts_hot', 0)} hot, {c.get('facts_cold', 0)} cold, "
-        f"{c.get('cold_pages_out', 0)} paged out, {c.get('cold_pages_in', 0)} paged back",
         f"- Working memory: {c.get('working_live', 0)} live",
         f"- Graph: {c.get('entities', 0)} entities, {c.get('relations', 0)} relations",
         f"- Graph hygiene: {c.get('graph_orphan_entities', 0)} orphan entities, "
@@ -804,6 +769,7 @@ async def mnemotrace_import(
                              "Paste the file contents (JSON text, an array, or transcript text).")],
     format: Annotated[str, Field(description="chatgpt | messages | records | jsonl | transcript | auto "
                                  "(default, sniffs the shape).")] = "auto",
+    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
 ) -> str:
     """单次批量把导出的聊天历史导入记忆（抽取 fact + 摘要）。
 
@@ -814,15 +780,17 @@ async def mnemotrace_import(
         data = await backend().import_(content, format=format)
     except Exception as e:  # noqa: BLE001
         return _err(e)
-    text = (f"Imported {data.get('sessions', 0)} session(s) / {data.get('episodes', 0)} episode(s); "
-            f"extracted {data.get('facts_added', 0)} fact(s), {data.get('summaries', 0)} summary(ies).")
+    if response_format == ResponseFormat.JSON:
+        return _json(data)
+    text = f"Accepted {data.get('episodes', 0)} new source(s) in {data.get('sessions', 0)} session(s)."
     if data.get('queued'):
-        text += '\nProcessing queued; use processing_status or flush_processing before treating extraction as complete.'
-    if data.get('summarization'):
-        text += "\nSummarization by event: " + _json(data['summarization'])
-    deferred = int(data.get("facts_deferred") or 0)
-    if deferred:
-        text += f"; {deferred} message(s) stored without automatic extraction"
+        text += '\nCore processing queued.'
+    if data.get('failures'):
+        text += '\nSession failures: ' + _json(data['failures'])
+    operations = list(dict.fromkeys(operation for session in data.get('results', [])
+                                    for operation in session.get('operation_ids', [])))
+    if operations:
+        text += '\nOperations: ' + _json(operations)
     return text
 
 
@@ -855,7 +823,7 @@ async def mnemotrace_export(
     lines = [
         "# MnemoTrace export",
         "",
-        f"- Namespace: `{data.get('user', '?')}`",
+        f"- Space: `{data.get('space_id', '?')}`",
         f"- Include sensitive: {bool(data.get('include_sensitive'))}",
         f"- Redacted sensitive: {bool(data.get('redacted_sensitive'))}",
         f"- Facts: {len(facts)}",

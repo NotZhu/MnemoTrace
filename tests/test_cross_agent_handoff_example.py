@@ -24,8 +24,8 @@ def test_cross_agent_handoff_example_local_mode(tmp_path):
 
     assert result["found"] is True
     assert result["remembered"]["ok"] is True
-    assert result["closed_source"]["ok"] is True
-    assert result["closed_target"]["ok"] is True
+    assert result["flushed_source"]["ok"] is True
+    assert result["flushed_target"]["ok"] is True
     assert "committed eval logs" in result["context"]
     assert result["source_session"] in result["context"]
     assert any("PASS: target agent recalled" in line for line in lines)

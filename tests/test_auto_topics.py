@@ -1,6 +1,5 @@
 """自动主题的优先级、写入边界和模型调用成本；全部使用合成数据。"""
 from __future__ import annotations
-from tests.model_fixtures import outcome_facts
 
 import json
 from dataclasses import asdict
@@ -12,7 +11,7 @@ from mnemotrace import Config
 from tests.model_fixtures import Memory
 from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY
 from tests.model_fixtures import MemoryService
-from mnemotrace.types import Episode, Fact
+from mnemotrace.types import Fact
 
 
 class RecordingLLM:
@@ -112,8 +111,6 @@ def test_config_controls_llm_topics_without_another_call(enabled, expected):
     assert model.calls[0][2] == {}
 
 
-
-
 @pytest.mark.parametrize("hint", [None, "unknown", "music"])
 def test_topics_follow_final_normalized_objects_without_losing_abstention(hint):
     row = {"predicate": "likes", "object": "the idea of 茶"}
@@ -153,21 +150,6 @@ def test_reset_is_metadata_only_even_on_historical_facts():
     assert asdict(fact) == {**before, "topic": "food", "topic_source": "rule"}
 
 
-@pytest.mark.parametrize("hint", ["technology", "unknown", None])
-def test_outcomes_share_topic_protocol_and_keep_one_call(hint):
-    row = {"kind": "lesson", "statement": "使用明确的实现方案来验证合成案例", "why": "数据库需要索引"}
-    if hint is not None:
-        row["topic"] = hint
-    model = RecordingLLM([row])
-    facts = outcome_facts(model, [Episode("Synthetic discussion")], "u", session_id="Bank Health Lab")
-    fact, = facts
-    assert fact.category == OUTCOME_CATEGORY and len(model.calls) == 1
-    assert (fact.topic, fact.topic_source) == {
-        "technology": ("technology", "llm"), "unknown": ("unknown", "unset"), None: ("technology", "rule"),
-    }[hint]
-    assert "附加主题协议" in model.calls[0][1]
-
-
 def test_invalid_topics_are_reported_without_echoing_payloads(caplog):
     rows = [{"subject": "user", "predicate": "prefers", "object": obj, "topic": "SYNTHETIC_SECRET"}
             for obj in ["茶", "羽毛球", "看书"]]
@@ -204,9 +186,8 @@ def test_manual_unknown_survives_duplicate_extraction():
 
 @pytest.mark.parametrize("enabled", [True, False])
 @pytest.mark.parametrize("model_topic", ["music", "SYNTHETIC_INVALID_TOPIC"])
-def test_service_switch_applies_to_attributes_and_outcomes(tmp_path, monkeypatch, caplog, enabled, model_topic):
+def test_service_switch_applies_to_extracted_attributes(tmp_path, monkeypatch, caplog, enabled, model_topic):
     monkeypatch.setenv("MNEMOTRACE_LLM_TOPICS", "1" if enabled else "0")
-    monkeypatch.delenv("MNEMOTRACE_SESSION_OUTCOMES", raising=False)
 
     class LifecycleLLM:
         def __init__(self):
@@ -226,23 +207,20 @@ def test_service_switch_applies_to_attributes_and_outcomes(tmp_path, monkeypatch
     model = LifecycleLLM()
     service.llm = model
     service.remember("u", "Synthetic conversation", session_id="synthetic-session", scope="long")
-    service.close_session("u", "synthetic-session", summarize=False)
+    assert service.flush("u", "synthetic-session")["ok"]
     facts = service.get("u").fact_store.values()
     attr, = [f for f in facts if f.predicate == "prefers"]
-    outcome, = [f for f in facts if f.predicate == "decision"]
     accepted = enabled and model_topic == "music"
     assert (attr.topic, attr.topic_source) == (("music", "llm") if accepted else ("food", "rule"))
-    assert (outcome.topic, outcome.topic_source) == (("music", "llm") if accepted else ("technology", "rule"))
     attributes = [system for prompt, system, _ in model.calls if "JSON 事实" in prompt]
-    outcomes = [system for prompt, system, _ in model.calls if "<session>" in prompt]
     summaries = [system for prompt, system, _ in model.calls if prompt.endswith("摘要：")]
-    assert len(attributes) == len(outcomes) == 1
+    assert len(attributes) == 1
     assert summaries == []
-    assert len(model.calls) == 2  # Short events do not request a summary.
-    assert all(("附加主题协议" in system) is enabled for system in attributes + outcomes)
+    assert len(model.calls) == 1  # Short events do not request a summary.
+    assert all(("附加主题协议" in system) is enabled for system in attributes)
     warnings = [record.getMessage() for record in caplog.records
                 if record.name == "mnemotrace.consolidate.topic_rules" and record.levelname == "WARNING"]
-    assert warnings == (["LLM topic fallback: invalid=1"] * 2
+    assert warnings == (["LLM topic fallback: invalid=1"]
                         if enabled and model_topic == "SYNTHETIC_INVALID_TOPIC" else [])
     assert all(text not in caplog.text for text in (
         "SYNTHETIC_INVALID_TOPIC", "Synthetic conversation", "synthetic-session", "茶",
@@ -300,17 +278,3 @@ def test_automatic_topics_share_separator_boundaries(obj):
 def test_automatic_topics_reject_similar_fragments(obj):
     fact = Memory().add_fact("user", "uses", obj)
     assert (fact.topic, fact.topic_source) == ("unknown", "unset")
-
-
-def test_extraction_failure_does_not_create_facts_or_retry_for_topics():
-    class BrokenLLM:
-        calls = 0
-
-        def complete(self, *args, **kwargs):
-            self.calls += 1
-            raise RuntimeError("synthetic failure")
-    model = BrokenLLM()
-    from mnemotrace.extraction import ExtractionError
-    with pytest.raises(ExtractionError):
-        outcome_facts(model, [Episode("Synthetic discussion")], "u")
-    assert model.calls == 1

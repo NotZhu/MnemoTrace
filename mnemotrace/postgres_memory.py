@@ -8,12 +8,13 @@ from .config import Config
 from .consolidate.conflict import ConflictResolver
 from .consolidate.decay import reinforce
 from .consolidate.manual import apply_manual_edit, build_manual_fact
+from .consolidate.pipeline import digest
 from .embed import HashingEmbedder
 from .retrieve import postgres as retrieval
 from .retrieve.evidence import plan_evidence
 from .store.contracts import (
-    ChangeSet, CommitConditions, EmbeddingWrite, EntityMerge, FactInvalidation, FactQuery, MessageInput,
-    RecordKind, RecordRef, RecordWrite, RetrievalQuery, SourceLink, StoredRecord,
+    ChangeSet, CommitConditions, EmbeddingWrite, EntityMerge, FactInvalidation, FactQuery, MessageInput, OperationKind,
+    RecordKind, RecordRef, RecordWrite, RetrievalQuery, SourceLink, StoredRecord, validate_erasures,
 )
 from .store.postgres.dao import PostgresDAO, _space_row, new_operation_id
 from .store.postgres.database import identifier
@@ -85,7 +86,7 @@ class PostgresMemory:
         return self._model, self._embedder.dim
 
     def remember_messages(self, session_id: str, messages: tuple[MessageInput, ...], *,
-                          processing='buffered', timeout=30):
+                          processing='buffered', timeout=30, source_metadata=None):
         """Accept dialogue and return source IDs and durable operation progress."""
         identifier(session_id)
         self._validate_processing(processing, timeout)
@@ -95,13 +96,13 @@ class PostgresMemory:
         pipeline = self._processing
         receipt, associations = pipeline.tasks.accept(
             session_id, items, pipeline.require_model, pipeline.fit_message, immediate=processing == 'immediate',
-            embedding=self._embedding_space)
+            embedding=self._embedding_space, source_metadata=source_metadata)
         operation_ids = tuple(dict.fromkeys(operation for _, operation in associations))
         result = self._accepted(operation_ids, processing, timeout)
         result.update(source_ids=receipt.source_ids, accepted=receipt.affected_count,
-                      messages=tuple(dict(episode_id=source_id, operation_ids=tuple(
+                      messages=tuple(dict(message_id=item.message_id, episode_id=source_id, operation_ids=tuple(
                           operation for source, operation in associations if source == source_id))
-                                     for source_id in receipt.source_ids))
+                                     for item, source_id in zip(items, receipt.source_ids)))
         return result
 
     def remember(self, content: str, session_id: str, *, scope='auto', source_kind='raw',
@@ -115,6 +116,20 @@ class PostgresMemory:
         source = Episode(content, self.context.user_id, session_id, source_kind=source_kind,
                          scope=scope, event_time=event_time)
         record = replace(StoredRecord.from_record(self.context, source), agent_id=agent_id)
+        if scope == 'working':
+            wall_time = now()
+            ttl = self._config.working_memory_ttl_seconds
+            working = WorkingMemory(content=content, user_id=self.context.user_id, session_id=session_id,
+                                    event_time=event_time if event_time is not None else wall_time,
+                                    expires_at=wall_time + ttl if ttl is not None else None,
+                                    metadata={'provenance': [source.id]})
+            write = self._write(working)
+            with self.dao.read_snapshot(session_id) as view:
+                snapshot = view.snapshot
+            self._commit(snapshot, writes=(RecordWrite(record), write),
+                         embeddings=(self._embedding(write, working.content),))
+            return dict(ok=True, status='stored', source_ids=(source.id,), operation_ids=(), operations=(),
+                        id=working.id, kind=working.kind, scope='working')
         receipt, operation_id = self._processing.tasks.accept_source(
             record, self._processing.require_model, embedding=self._embedding_space)
         result = self._accepted((operation_id,), processing, timeout)
@@ -129,6 +144,26 @@ class PostgresMemory:
         if type(timeout) not in (int, float) or not isfinite(timeout) or timeout < 0:
             raise ValueError('Expected a finite nonnegative timeout')
 
+    def import_document(self, content, session_id, *, event_time=None, metadata=None, agent_id=None,
+                        extract=True, summarize=True, dedupe=True, processing='buffered', timeout=30):
+        identifier(session_id)
+        self._validate_processing(processing, timeout)
+        if not isinstance(content, str) or not content.strip() or '\x00' in content:
+            raise ValueError('Expected non-empty document content')
+        episode = Episode(content, self.context.user_id, session_id, source_kind='document',
+                          scope='long' if extract else 'raw', event_time=event_time,
+                          metadata={**(metadata or {}), 'summary_requested': summarize})
+        record = replace(StoredRecord.from_record(self.context, episode), agent_id=agent_id)
+        kind = (OperationKind.EXTRACT if extract else OperationKind.SUMMARY
+                if summarize and len(content) >= self._config.summary_min_chars else None)
+        import_digest = digest([session_id, content, agent_id, extract, summarize]) if dedupe else None
+        receipt, operation_id = self._processing.tasks.accept_source(
+            record, self._processing.require_model, embedding=self._embedding_space, import_digest=import_digest,
+            kind=kind)
+        ids = (operation_id,) if operation_id else ()
+        return dict(self._accepted(ids, processing, timeout), source_ids=receipt.source_ids,
+                    accepted=receipt.affected_count)
+
     def _accepted(self, operation_ids, processing, timeout):
         if processing == 'immediate':
             return self._processing.flush(operation_ids=operation_ids, timeout=timeout)
@@ -142,6 +177,14 @@ class PostgresMemory:
     def retry_operation(self, operation_id):
         identifier(operation_id)
         return self._processing.tasks.retry(operation_id)
+
+    def list_operations(self, *, session_id=None, after_id=None, limit=100):
+        for value in (session_id, after_id):
+            if value is not None:
+                identifier(value)
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError('Expected page size from 1 to 1000')
+        return self._processing.tasks.list_operations(session_id, after_id, limit)
 
     def flush_processing(self, session_id=None, timeout=30, *, retry_failed=False, include_summaries=False):
         if session_id is not None:
@@ -224,51 +267,64 @@ class PostgresMemory:
                 and plan_evidence(query).multi_hop):
             with self.dao.read_snapshot() as view:
                 revision = view.snapshot.core_revision
-                vocabulary = retrieval.graph_vocabulary(view, request)
+                vocabulary = retrieval.graph_vocabulary(view.focused(), request)
             decomposition = retrieval.decompose(llm, query, vocabulary)
         with self.dao.read_snapshot() as view:
             result = retrieval.search(
-                view, request, self._config, count, not isinstance(self._embedder, HashingEmbedder),
+                view.focused(), request, self._config, count, not isinstance(self._embedder, HashingEmbedder),
                 decomposition if revision == view.snapshot.core_revision else None,
             )
             snapshot = view.snapshot
             hits = result.facts if result.via == 'multi-hop' else result.facts[:1]
             records = tuple(view.get(FACT, fact.id) for fact in hits) if not result.abstained else ()
-        if records and self._config.access_boost:
-            writes = []
-            for record in records:
-                fact = domain(record)
-                reinforce(fact, self._config.access_boost)
-                writes.append(self._write(fact, record))
-            try:
-                self._commit(snapshot, writes=tuple(writes))
-            except VersionConflict:
-                # Reinforcement is optional once the snapshot answer is ready.
-                pass
+        self._reinforce(snapshot, records)
         return result
+
+    def _reinforce(self, snapshot, records):
+        if not records or not self._config.access_boost:
+            return
+        writes = []
+        for record in records:
+            fact = domain(record)
+            reinforce(fact, self._config.access_boost)
+            writes.append(self._write(fact, record))
+        try:
+            self._commit(snapshot, writes=tuple(writes))
+        except VersionConflict:
+            # Reinforcement is optional once the snapshot answer is ready.
+            pass
 
     def retrieve_episodes(self, query: str, *, k: int = 5, as_of: float | None = None) -> retrieval.SourceSearchResult:
         request = self._query(query, top_k=k, as_of=as_of)
         with self.dao.read_snapshot() as view:
-            return retrieval.source_search(view, request, k)
+            return retrieval.source_search(view.focused(), request, k)
 
     def lean_context(self, query: str, *, as_of: float | None = None, n_facts: int = 15, n_chunks: int = 2,
                      n_summaries: int = 20, char_budget: int = 60_000, session_id: str | None = None,
-                     redact_sensitive: bool = False) -> retrieval.ContextResult:
+                     redact_sensitive: bool = False, facts: FactQuery | None = None,
+                     reinforce_hits: bool = False) -> retrieval.ContextResult:
         if (any(type(value) is not int or not 0 <= value <= 1000 for value in (n_facts, n_chunks, n_summaries))
                 or type(char_budget) is not int or char_budget < 0):
             raise ValueError('Invalid context budget')
         count = max(n_facts, n_chunks, n_summaries, 1)
-        facts = FactQuery(valid_at=as_of, known_at=as_of, exclude_sensitive=redact_sensitive,
-                          limit=max(count, self._config.ann_pool))
+        if facts is not None and as_of is not None:
+            raise ValueError('Use either as_of or explicit fact conditions')
+        facts = replace(facts, exclude_sensitive=facts.exclude_sensitive or redact_sensitive,
+                        limit=max(count, self._config.ann_pool)) if facts is not None else FactQuery(
+                            valid_at=as_of, known_at=as_of, exclude_sensitive=redact_sensitive,
+                            limit=max(count, self._config.ann_pool))
         request = self._query(query, top_k=count, facts=facts)
         need = plan_evidence(query, aggregation_recall_expansion=self._config.aggregation_recall_expansion)
         subqueries = need.subqueries if need.aggregation else ()
         related = tuple(self._query(text, top_k=1, facts=facts) for text in subqueries if text != query)
         with self.dao.read_snapshot(session_id) as view:
-            return retrieval.context(view, request, self._config, not isinstance(self._embedder, HashingEmbedder),
-                                     n_facts=n_facts, n_chunks=n_chunks, n_summaries=n_summaries,
-                                     char_budget=char_budget, session_id=session_id, evidence_queries=related)
+            result = retrieval.context(view.focused(), request, self._config, not isinstance(self._embedder, HashingEmbedder),
+                                       n_facts=n_facts, n_chunks=n_chunks, n_summaries=n_summaries,
+                                       char_budget=char_budget, session_id=session_id, evidence_queries=related)
+            snapshot = view.snapshot
+            records = view.facts_by_ids(result.fact_ids, facts) if reinforce_hits and result.fact_ids else ()
+        self._reinforce(snapshot, records)
+        return result
 
     def context_for(self, query: str, *, as_of: float | None = None, top_k: int | None = None, k_chunks: int = 3,
                     char_budget: int = 60_000) -> retrieval.ContextResult:
@@ -278,8 +334,10 @@ class PostgresMemory:
     def recall_multi(self, space_ids, query: str, **options) -> retrieval.ContextResult:
         if isinstance(space_ids, str):
             raise ValueError('Expected a collection of space IDs')
+        ids = tuple(space_ids)
+        if not ids or len(set(ids)) != len(ids):
+            raise ValueError('Expected a nonempty collection of distinct space IDs')
         spaces = Spaces(self._database)
-        ids = tuple(dict.fromkeys(space_ids))
         contexts = tuple(spaces.authorize(self.context.user_id, space_id) for space_id in ids)
         blocks, coverage = [], {}
         for context in contexts:
@@ -321,17 +379,21 @@ class PostgresMemory:
             return tuple(map(domain, view.list_sources(**filters)))
 
     def add_fact(self, subject, predicate, object, *, valid_at=None, sensitive=None,
-                 category=None, topic=None):
-        """Return the new fact, or None when the existing assertion already covers it."""
+                 category=None, topic=None, return_existing=False):
+        """Return the new fact. For a covered assertion, optionally return the stored fact."""
         fact = build_manual_fact(subject, predicate, object, self.context.user_id,
                                  valid_at, sensitive, category, topic)
         with self.dao.read_snapshot() as view:
             snapshot = view.snapshot
             current = view.facts_for_manual_add(subject)
         candidates = [domain(item) for item in current]
-        action, invalidated = ConflictResolver().reconcile(fact, candidates)
+        resolver = ConflictResolver()
+        action, invalidated = resolver.reconcile(fact, candidates)
         if action == 'duplicate':
-            return None
+            if not return_existing:
+                return None
+            return next(candidate for candidate in map(domain, current)
+                        if resolver.reconcile(replace(fact), [replace(candidate)])[0] == 'duplicate')
         versions = {item.ref.record_id: item for item in current}
         invalidations = tuple(FactInvalidation(
             versions[old.id].ref, versions[old.id].record_version, old.invalid_at, old.expired_at,
@@ -387,6 +449,7 @@ class PostgresMemory:
         return self._commit(snapshot, erasures=tuple(record.ref for record in records))
 
     def erase(self, *records: RecordRef):
+        validate_erasures(records)
         with self.dao.read_snapshot() as view:
             snapshot = view.snapshot
         return self._commit(snapshot, erasures=records)

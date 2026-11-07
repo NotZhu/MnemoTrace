@@ -117,7 +117,7 @@ export const usePreferences = create<PreferencesState>()(persist((set, get) => (
     }
     const scope = get().activeScope
     if (scope) apply(scope)
-    else void preferenceScopeFor(credential).then(apply)
+    else void preferenceScopeFor(credential, apiBaseUrl(), session.spaceId).then(apply)
   },
 }), {
   name: STORAGE_KEY, version: 2, storage,
@@ -130,8 +130,8 @@ export const usePreferences = create<PreferencesState>()(persist((set, get) => (
 // 与现有查询缓存保持同一隔离边界；持久化内容只包含指纹和偏好，不包含凭据。
 const scopes = new Map<string, Promise<string>>()
 let volatileId = 0
-export function preferenceScopeFor(credential: string, server = apiBaseUrl()): Promise<string> {
-  const identity = JSON.stringify([server, credential])
+export function preferenceScopeFor(credential: string, server = apiBaseUrl(), spaceId: string | null = null): Promise<string> {
+  const identity = JSON.stringify(spaceId === null ? [server, credential] : [server, credential, spaceId])
   let scope = scopes.get(identity)
   if (!scope) {
     scope = (async () => {
@@ -154,13 +154,13 @@ export function preferenceScopeFor(credential: string, server = apiBaseUrl()): P
 function activateScope(session: AuthSession) {
   usePreferences.setState({ activeScope: null })
   const credential = session.key
-  if (credential) void preferenceScopeFor(credential).then(activeScope => {
+  if (credential) void preferenceScopeFor(credential, apiBaseUrl(), session.spaceId).then(activeScope => {
     if (isCurrentSession(session)) usePreferences.setState({ activeScope })
   })
 }
 activateScope(currentSession())
 useAuth.subscribe((state, previous) => {
-  if (state.epoch !== previous.epoch) activateScope({ key: state.apiKey, epoch: state.epoch })
+  if (state.epoch !== previous.epoch) activateScope(currentSession())
 })
 if (typeof window !== 'undefined') window.addEventListener('pagehide', flushPreferences)
 

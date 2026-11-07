@@ -64,7 +64,7 @@ def _quotable(value: str, what: str) -> str:
 
 
 def render_command(python: str, url: str, key_file: str, log: str,
-                   deadline: int = DEFAULT_DEADLINE_S) -> str:
+                   deadline: int = DEFAULT_DEADLINE_S, *, space_id: str) -> str:
     """写入 `hooks.SessionEnd` 的精确字符串。
 
     形状照搬自本机已在运行的一个第三方 Claude Code 钩子：`[ -x ... ]` 让缺失或被移动的解释器退化为
@@ -75,13 +75,14 @@ def render_command(python: str, url: str, key_file: str, log: str,
     py = _quotable(python, "--python")
     url_ = _quotable(url, "--url")
     kf = _quotable(key_file, "--key-file")
+    space = _quotable(space_id, "--space-id")
     lg = _quotable(log, "--hook-log")
     # 仅在与 worker 自身默认值不同时才写出，让常见情况保持为 settings.json 里人能读到的最短可审计字符串。
     extra = f" --deadline {int(deadline)}" if int(deadline) != DEFAULT_DEADLINE_S else ""
     return (
         f"if [ -x '{py}' ]; then p=$({{ command -p cat 2>/dev/null || cat; }}); "
         f"[ -n \"$p\" ] && {{ printf '%s' \"$p\" | nohup '{py}' -m {HOOK_MODULE} "
-        f"--url '{url_}' --key-file '{kf}'{extra} >>'{lg}' 2>&1; }} & "
+        f"--url '{url_}' --key-file '{kf}' --space-id '{space}'{extra} >>'{lg}' 2>&1; }} & "
         f"else {{ command -p cat 2>/dev/null || cat; }} >/dev/null 2>&1 || :; fi; exit 0"
     )
 

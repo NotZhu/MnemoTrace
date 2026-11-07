@@ -8,7 +8,7 @@ const React = require('react')
 const source = esbuild.buildSync({
   entryPoints: [path.resolve(__dirname, '../src/pages/Conversations.tsx')],
   bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
-  external: ['react', 'react/jsx-runtime', 'lucide-react', '../components/ui', '../components/Modal', '../components/Toast', '../hooks/queries'],
+  external: ['react', 'react/jsx-runtime', 'lucide-react', '../components/ui', '../components/Modal', '../components/Toast', '../components/OperationProgress', '../hooks/queries'],
 }).outputFiles[0].text
 
 function findNode(node, predicate) {
@@ -20,9 +20,9 @@ function findNode(node, predicate) {
   }
 }
 
-function setup(sessionItems = [], episodes = []) {
+function setup(sessionItems = [], episodes = [], { deferOrganize = false, reportPage } = {}) {
   const states = [], effects = [], timers = new Map(), queries = []
-  const closed = [], reports = [], submitted = []
+  const closed = [], reports = [], reportOffsets = [], submitted = [], organizing = []
   let stateIndex, effectIndex, pendingEffects, now = 0, timerId = 0
   const hookReact = {
     ...React,
@@ -44,7 +44,7 @@ function setup(sessionItems = [], episodes = []) {
   }
   const moduleData = {exports: {}}
   vm.runInNewContext(source, {
-    module: moduleData, exports: moduleData.exports,
+    module: moduleData, exports: moduleData.exports, AbortController,
     crypto: {randomUUID: () => `synthetic-${submitted.length + 1}`},
     window: {
       setTimeout(callback, delay) {const id = ++timerId; timers.set(id, {callback, at: now + delay}); return id},
@@ -54,15 +54,24 @@ function setup(sessionItems = [], episodes = []) {
       if (name === 'react') return hookReact
       if (name === '../hooks/queries') return {
         useMemoryPages: () => ({data: {episodes}}),
-        useAgentStatus: () => ({}), useWorking: () => ({refetch(){}}), useSessionReport: (id) => {reports.push(id);return {}},
+        useAgentStatus: () => ({}), useWorking: () => ({refetch(){}}),
+        useSessionReport: (id, _, offset) => {
+          reports.push(id); reportOffsets.push(offset)
+          return reportPage && id ? {data: reportPage(offset)} : {}
+        },
         useRememberMessages: () => ({mutate(input, callbacks) {submitted.push({input, callbacks})}}), useClearWorking: () => ({}),
-        useCloseSession: () => ({mutate(id, callbacks){closed.push(id);callbacks.onSuccess({facts_added:1,outcomes:1})}}),
+        useOrganizeSession: signal => ({mutate(id, callbacks){
+          closed.push(id)
+          if (deferOrganize) organizing.push({signal, callbacks})
+          else callbacks.onSuccess({ok:true,status:"completed"})
+        }}),
         useSessions(params, options) {queries.push({params, options}); return {data: {sessions: sessionItems}}},
       }
       if (name === '../components/ui') return Object.fromEntries(
         ['Badge', 'Button', 'Card', 'CardTitle', 'EmptyState', 'ErrorState', 'Field', 'PageHeader', 'Spinner'].map(key => [key, () => null]),
       )
       if (name === '../components/Modal') return {Modal: () => null}
+      if (name === '../components/OperationProgress') return {OperationProgress: () => null}
       if (name === '../components/Toast') return {toast: {success(){}, info(){}, error(){}}}
       return require(name)
     },
@@ -75,7 +84,7 @@ function setup(sessionItems = [], episodes = []) {
     return tree
   }
   return {
-    render, closed, reports, submitted,
+    render, closed, reports, reportOffsets, submitted, organizing,
     input: () => findNode(render(), node => node.type === 'input' && node.props.className.includes('mb-3')),
     tick(ms) {
       now += ms
@@ -144,10 +153,10 @@ test('会话列表不查询中文组词中的拼音，清空后立即恢复全�
   assert.equal(s.query(), '')
 })
 
-test('结束会话只处理所点卡片的 ID，报告打开相同会话，上方输入保持不变', () => {
+test('整理会话只处理所点卡片的 ID，报告打开相同会话，上方输入保持不变', () => {
   const s=setup([{id:'synthetic-a',episodes:2,facts_added:1},{id:'synthetic-b',episodes:3,facts_added:2}])
   const card=findNode(s.render(),node=>node.type==='li' && node.key==='synthetic-b')
-  const finish=findNode(card,node=>node.type==='button' && node.props.children==='结束会话')
+  const finish=findNode(card,node=>node.type==='button' && node.props.children==='整理会话')
   assert.ok(finish)
   finish.props.onClick()
   const tree=s.render()
@@ -157,9 +166,36 @@ test('结束会话只处理所点卡片的 ID，报告打开相同会话，上�
   assert.equal(picker.props.value,'default')
 })
 
-test('空会话列表不在添加记忆区域提供结束会话入口', () => {
+test('空会话列表不在添加记忆区域提供整理会话入口', () => {
   const s=setup()
   assert.equal(findNode(s.render(),node=>node.props?.title==='整理本次会话，提取长期记忆和会话结论。'),undefined)
+})
+
+test('切换会话会取消旧整理请求，迟到的成功响应不再打开旧报告', () => {
+  const s = setup([{id:'synthetic-a',episodes:1,facts_added:1}], [], {deferOrganize: true})
+  const card = findNode(s.render(), node => node.type==='li' && node.key==='synthetic-a')
+  findNode(card, node => node.type==='button' && node.props.children==='整理会话').props.onClick()
+  const { signal, callbacks } = s.organizing[0]
+  assert.equal(signal.aborted, false)
+  findNode(s.render(), node => node.type?.name==='SessionPicker').props.onChange('synthetic-b')
+  assert.equal(signal.aborted, true)
+  callbacks.onSuccess({ok:true,status:'completed'})
+  s.render()
+  assert.equal(s.reports.at(-1), null)
+})
+
+test('会话报告使用服务端的下一页偏移，新会话报告从第一页开始', () => {
+  const s = setup([{id:'synthetic-a',episodes:1,facts_added:101}], [], {reportPage: offset => ({
+    facts: [], facts_page: {has_more: offset === 0, next_offset: offset === 0 ? 100 : null},
+  })})
+  const open = () => findNode(s.render(), node => node.type==='button' && node.props.children==='查看详情')
+  open().props.onClick()
+  findNode(s.render(), node => node.props?.children==='下一页').props.onClick()
+  s.render()
+  assert.equal(s.reportOffsets.at(-1), 100)
+  open().props.onClick()
+  s.render()
+  assert.equal(s.reportOffsets.at(-1), 0)
 })
 
 test('默认使用 default 会话，列表中的使用此会话会同步顶部选择', () => {

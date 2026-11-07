@@ -3,7 +3,7 @@
 本文面向阶段二至八的实现者，集中维护目标数据契约、调用方去向和验证输入。
 这是目标设计，**不是当前产品已经具备的能力**；当前运行机制见[架构总览](README.md)和[生命周期](memory.md)。
 [契约代码](../../mnemotrace/store/contracts.py)中的 SpaceContext/SpaceSettings 已用于数据库基础；其他业务契约待后续阶段接入。
-显式 Python Postgres 入口已接入三阶段任务流水线和数据库混合检索。产品接入端的空间参数和进度接口在阶段六切换。
+产品接入端使用授权空间内的 `PostgresMemory`，共享三阶段任务流水线和数据库混合检索。
 
 ## 身份与公共接口
 
@@ -34,7 +34,7 @@ role、正文、规范化为浮点的事件时间、agent_id、mode、scope 共�
 唯一键为 `(user_id,space_id,session_id,message_id)`，space_id 本身全局唯一。
 同键同指纹复用来源和任务，同键异指纹返回 message_conflict；原文修正通过新消息提交。
 
-目标 messages 请求示例，阶段六切换参数：
+messages 请求示例：
 
 ```json
 {"space_id":"space-A","session_id":"thread-A","agent_id":"writer-A","mode":"live","scope":"auto","processing":"buffered","messages":[{"message_id":"m1","role":"user","content":"Synthetic input","event_time":1700000000}]}
@@ -64,6 +64,30 @@ Python 底层保存原文、consolidate 检查模型的分工保留。
 错误映射：无效 key=401；未知/他人空间统一 space_not_found=404；参数错误=422；消息/业务版本冲突=409；
 数据库不可用=503；损坏=500；模型错误沿用 ExtractionError 映射。不输出凭据、连接串、原文或内部路径。
 已保存请求的错误必须带操作标识与 stored_raw，不能让调用方猜测是否需要重发。
+
+### 接入示例
+
+用管理 CLI 创建账号与 key 后，使用 `POST /v1/spaces` 和请求体 `{"name":"研究"}` 创建空间。
+`GET /v1/spaces` 返回 `spaces` 和 `next_after_id`，包含空空间。
+`PATCH /v1/spaces/{space_id}` 用同样的请求体改名。
+`DELETE /v1/spaces/{space_id}?confirm=true` 删除空间。
+`POST /v1/forget` 用 `{"space_id":"…","confirm":true}` 清空空间并保留其 ID 与配置。
+
+直连 Python 从 `mnemotrace` 导入 `PostgresMemory`。直连 CLI、导入和 MCP stdio 使用
+`MNEMOTRACE_DATABASE_URL`，并显式传入 `--user-id`、`--space-id`。
+MCP stdio 代理使用 `--api-url`、`--api-key-file`、`--space-id`。
+Streamable HTTP MCP 每次调用携带 Bearer 凭据和 `X-MnemoTrace-Space-Id`。
+OpenAI 兼容请求通过 `memory.space_id` 选择空间，受理的操作 ID 通过 `mnemotrace.operation_ids` 返回，
+流式响应在结束帧返回同一字段。
+
+```text
+mnemotrace --user-id <USER_ID> --space-id <SPACE_ID> operation <OPERATION_ID>
+mnemotrace --user-id <USER_ID> --space-id <SPACE_ID> retry <OPERATION_ID>
+mnemotrace-import --api-url http://localhost:8000 --key-file <KEY_FILE> --space-id <SPACE_ID> --file history.json
+```
+
+TypeScript SDK 的单空间方法接受 `{ spaceId }`，多空间 recall 接受 `{ spaceIds }`。
+buffered 请求由独立 Postgres worker 推进，也可以通过 `/v1/processing/flush` 等待指定会话的核心处理。
 
 ## 工作集、版本与变更集合
 
@@ -110,7 +134,7 @@ operation_id 回执在空间内唯一；连接中断先查询回执，避免重�
 是数据库结构、约束、索引与角色策略的权威定义，不在本文复制 DDL。
 数据库基础提供账号/key/空间、连接池和授权事务。显式 Python 入口使用 Postgres 业务 DAO 和恢复执行器。
 显式 Python Postgres 入口使用下述数据库混合检索链路。
-阶段六切换 MemoryService、HTTP/MCP 等产品入口，并验证其实际使用同一条数据库查询链路。
+HTTP/MCP 等产品入口通过 PostgreSQL 版 MemoryService 使用同一条数据库查询链路。
 没有新旧存储双写或自动回退。
 
 ### 显式 Python 业务入口
@@ -141,13 +165,8 @@ with Database(DatabaseConfig.from_env()) as database:
 `store_messages` 只接受 `scope="raw"`，返回按输入顺序排列的来源 ID，重复项复用原来源。
 直接提交回执与数据同事务提交；连接中断且无法查证时抛出带操作 ID 的
 `CommitOutcomeUnknown`，可在同空间用 `memory.dao.receipt(operation_id)` 查证。
-当前可信 Python 入口支持单条来源擦除。遇到多来源派生事实或工作记忆时，
-`erase` 抛出 `ErasureDependencies` 并回滚。经授权可将异常列出的记录与原文一并提交。
-来源擦除会清理直接使用该来源的摘要和向量。内容经其他摘要间接传播时仍可能被召回。
-
-**阶段六计划**：切换产品接入端前，将 `erase` 和 `ChangeSet.erasures` 收窄为 `FACT` 和 `WORKING`。
-批次包含其他类型时整批拒绝且不写入变更。下线单条来源、实体、关系及冲突记录擦除。
-若将来需要按来源擦除，再一并设计派生摘要、索引和在途任务的清理规则。
+`erase` 和 `ChangeSet.erasures` 接受 `FACT` 和 `WORKING`。
+批次包含其他类型时，在开始写事务前整批拒绝。单条来源、实体、关系及冲突记录没有显式擦除入口。
 
 `clear_working(session_id)` 清除指定会话的工作记忆并作废该会话的任务，保留原文和长期事实。
 空间清空、空间删除和账号删除各自按授权范围清理数据与任务。

@@ -81,7 +81,6 @@ class ProcessingPhase(str, Enum):
 class OperationKind(str, Enum):
     EXTRACT = 'extract'
     SUMMARY = 'summary'
-    OUTCOMES = 'outcomes'
     CONFLICTS = 'conflicts'
     REEMBED = 'reembed'
     GRAPH = 'graph'
@@ -590,7 +589,7 @@ def _validate_product_input(data: dict) -> None:
     required = {'operation', 'source_kind', 'mode', 'scope', 'pending', 'context', 'parts', 'candidates'}
     if not isinstance(data, dict) or set(data) != required:
         raise ValueError('Missing prepared input fields')
-    if data['operation'] not in {'extract', 'summary', 'outcomes', 'conflicts'}:
+    if data['operation'] not in {'extract', 'summary', 'conflicts'}:
         raise ValueError('Invalid model operation')
     if data['source_kind'] not in {'dialogue', 'raw', 'document'} or data['scope'] not in {'auto', 'long', 'raw', 'working'}:
         raise ValueError('Invalid source routing')
@@ -626,14 +625,7 @@ def _validate_product_input(data: dict) -> None:
         _id(part)
     if len(set(data['parts'])) != len(data['parts']):
         raise ValueError('Duplicate summary parts')
-    if data['operation'] == 'outcomes':
-        if data['source_kind'] != 'raw' or data['context'] or len(data['candidates']) != 1:
-            raise ValueError('Invalid outcomes input')
-        candidate = data['candidates'][0]
-        if not isinstance(candidate, dict) or set(candidate) != {'session_id'}:
-            raise ValueError('Invalid outcome session')
-        _id(candidate['session_id'])
-    elif data['operation'] == 'conflicts':
+    if data['operation'] == 'conflicts':
         if data['context'] or not data['candidates']:
             raise ValueError('Invalid conflict candidates')
         for pair in data['candidates']:
@@ -659,6 +651,12 @@ def _validate_product_input(data: dict) -> None:
         raise ValueError('Unexpected candidates')
 
 
+def validate_erasures(records: tuple[RecordRef, ...]) -> None:
+    _tuple(records, RecordRef)
+    if any(record.kind not in (RecordKind.FACT, RecordKind.WORKING) for record in records):
+        raise ValueError('Record erasure only supports facts and working memory')
+
+
 @dataclass(frozen=True)
 class ChangeSet:
     conditions: CommitConditions
@@ -680,10 +678,11 @@ class ChangeSet:
         context = self.conditions.snapshot.context
         refs = []
         for values, kind in ((self.writes, RecordWrite), (self.invalidations, FactInvalidation),
-                             (self.erasures, RecordRef), (self.source_links, SourceLink),
+                             (self.source_links, SourceLink),
                              (self.embeddings, EmbeddingWrite), (self.entity_merges, EntityMerge),
                              (self.operations, OperationSpec)):
             _tuple(values, kind)
+        validate_erasures(self.erasures)
         mutations = [w.ref for w in self.writes] + [i.ref for i in self.invalidations] + list(self.erasures)
         if len(set(mutations)) != len(mutations):
             raise ValueError('Multiple mutations of one record in a commit')

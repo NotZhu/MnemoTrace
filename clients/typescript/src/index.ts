@@ -3,5 +3,5 @@
  * 见 https://github.com/NotZhu/MnemoTrace 与 忆痕服务器（mnemotrace/server/app.py）。
  */
 export { MnemoTraceClient, MnemoTraceError } from './client'
-export type { MnemoTraceClientOptions, ChatCompletionsCreate } from './client'
+export type { MnemoTraceClientOptions, SpaceOptions, ChatCompletionsCreate } from './client'
 export * from './types'

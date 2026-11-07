@@ -322,7 +322,6 @@ def test_failed_write_discards_client_and_restores_committed_state(service_facto
     assert {f["object"] for f in svc.memories("alice")["facts"]} == {"apples"}
 
 
-
 def test_deployment_prefixes_keep_collections_independent(config, tmp_path):
     from dataclasses import replace
     # Same namespace and endpoint, different deployment prefixes.
@@ -385,38 +384,6 @@ def test_buffered_raw_routing_checkpoint_and_cache_eviction(service_factory, mon
     assert any(f['object'] == 'apples' for f in reopened.memories('bob')['facts'])
 
 
-
-
-@pytest.mark.asyncio
-async def test_mcp_uses_qdrant_service_and_worker_threads(service_factory):
-    from mnemotrace.mcp.backends import LocalBackend
-    svc = service_factory()
-    backend = LocalBackend(namespace="u", service=svc)
-    await backend.remember("I like Python.", scope="long")
-    assert (await backend.stats())["storage"] == "qdrant"
-    assert (await backend.memories())["facts"]
-    assert (await backend.forget())["ok"]
-
-
-def test_http_config_and_namespace_isolation(service_factory, monkeypatch):
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-    from mnemotrace.server import app as appmod
-    svc = service_factory()
-    monkeypatch.setenv("MNEMOTRACE_OPEN", "1")
-    monkeypatch.setattr(appmod, "_svc", svc)
-    with TestClient(appmod.app) as client:
-        assert client.get("/health").json()["storage"] == "qdrant"
-        for user, text in (("alice", "I like apples."), ("bob", "I like bananas.")):
-            response = client.post("/v1/remember", headers={"Authorization": "Bearer " + user},
-                                   json={"content": text, "scope": "long"})
-            assert response.status_code == 200, response.text
-        for user, expected in (("alice", "apples"), ("bob", "bananas")):
-            response = client.get("/v1/memories", headers={"Authorization": "Bearer " + user})
-            assert {f["object"] for f in response.json()["facts"]} == {expected}
-
-
-
 def test_unsaved_dimension_migration_can_restore_original_snapshot(config, tmp_path):
     root = str(tmp_path / "snapshot")
     with Memory.open(root, config=config) as memory:
@@ -430,7 +397,6 @@ def test_unsaved_dimension_migration_can_restore_original_snapshot(config, tmp_p
         memory.save()
         if config.qdrant_url:
             memory._qdrant_backend.erase()
-
 
 
 def test_corrupt_original_vector_fails_instead_of_changing_scores(store):
@@ -474,28 +440,6 @@ def test_remote_other_service_cache_recovers_failed_write(service_factory, mode)
             first.get("alice").add_fact("user", "likes", "uncommitted", user_id="alice")
             raise RuntimeError("synthetic interruption")
     assert {f["object"] for f in other.memories("alice")["facts"]} == {"apples"}
-
-
-
-def test_real_connection_failure_is_http_503_not_empty_success(monkeypatch, tmp_path):
-    import socket
-    from fastapi.testclient import TestClient
-    from mnemotrace.server import app as appmod
-    with socket.socket() as reserved:
-        reserved.bind(("127.0.0.1", 0))
-        port = reserved.getsockname()[1]
-        monkeypatch.setenv("MNEMOTRACE_STORAGE", "qdrant")
-        monkeypatch.setenv("MNEMOTRACE_QDRANT_URL", f"http://127.0.0.1:{port}")
-        monkeypatch.setenv("MNEMOTRACE_QDRANT_TIMEOUT", "1")
-        monkeypatch.setenv("MNEMOTRACE_OPEN", "1")
-        svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
-        monkeypatch.setattr(appmod, "_svc", svc)
-        with TestClient(appmod.app) as client:
-            response = client.get("/v1/memories", headers={"Authorization": "Bearer synthetic"})
-            assert response.status_code == 503
-            assert response.json()["detail"]["code"] == "store_unavailable"
-            assert str(port) not in response.text
-
 
 
 def test_shutdown_finishes_producer_paused_before_enqueue(service_factory, monkeypatch):
@@ -566,7 +510,6 @@ faulthandler.cancel_dump_traceback_later()
     assert result.returncode == 0, result.stderr
     assert svc.flush("u")["ok"]
     assert any(f["object"] == "Python" for f in svc.memories("u")["facts"])
-
 
 
 def test_consolidate_full_preserves_state_with_separate_episode_retrievals(config, tmp_path):

@@ -1,6 +1,6 @@
 # MCP 工具参考
 
-安装和客户端配置见[Agent 接入](../guides/agents.md)。工具通过本地 MemoryService 或远程 HTTP 后端执行，默认 stdio；工具定义见 [server.py](../../mnemotrace/mcp/server.py)。
+安装和客户端配置见[Agent 接入](../guides/agents.md)。可信本地 stdio 绑定显式账号和空间，远程代理使用 HTTP key 与空间；工具定义见 [server.py](../../mnemotrace/mcp/server.py)。
 
 ## 读取与会话
 
@@ -10,8 +10,9 @@
 同空间、会话和消息 ID 的重传返回现有事件状态；内容或不可变处理意图改变时冲突。
 原文笔记保留 `mnemotrace_remember`，其 `processing=immediate|buffered` 默认 immediate。
 `mnemotrace_processing_status(session_id=null)` 查询无原文的任务状态；
-`mnemotrace_flush_processing(session_id=null, timeout=30, retry_failed=false, include_summaries=false)` 处理当前捕获范围。
-刷新返回 completed、failed 或 timed_out，仅完成时 ok=true；retry_failed 显式重新处理失败或取消任务。
+`mnemotrace_flush_processing(session_id=null, timeout=30, retry_failed=false, include_summaries=false)` 推进并等待当前会话的核心处理。
+使用 `mnemotrace_get_operation(operation_id)` 查询操作，`mnemotrace_retry_operation(operation_id)` 重试原操作。
+刷新返回 completed、failed 或 timed_out，仅完成时 ok=true；retry_failed 显式重新处理可重试的失败任务。
 工具在本地与远程后端使用相同契约，缓冲接收不表示事实已可检索。
 
 多数读取工具支持 `response_format="markdown"`（默认）或 `"json"`。JSON 指格式化后的工具结果，不应假定其等同于原始 HTTP 响应的所有字段。
@@ -22,7 +23,7 @@
 | `mnemotrace_recall` | query 必填；max_chunks=6（0–20）、session_id、as_of、redact_sensitive=false、response_format | 返回相关上下文，JSON 含 context、tokens_est 等 |
 | `mnemotrace_search` | query 必填；as_of、redact_sensitive=false、response_format | 直接事实答案与依据 |
 | `mnemotrace_list_sessions` | limit=20（1–100）、offset=0、q=""、response_format | 不含正文的会话索引 |
-| `mnemotrace_session_report` | session_id 必填；include_sensitive=false、response_format | 会话贡献审计 |
+| `mnemotrace_session_report` | session_id 必填，include_sensitive=false、limit=100、offset=0、response_format | 按页查看会话事实，使用 facts_page.next_offset 读取后续结果 |
 | `mnemotrace_list_facts` | limit=20（1–100）、offset=0、include_superseded=false、response_format | 分页事实，用于检查或定位 id |
 | `mnemotrace_profile` | response_format | 派生画像与关键事实 |
 | `mnemotrace_stats` | response_format | 不含内容的命名空间统计 |
@@ -35,9 +36,10 @@
 
 | 工具 | 主要参数 | 用途 |
 | --- | --- | --- |
-| `mnemotrace_remember_messages` | messages、session_id 必填；mode=live/historical、processing=buffered/immediate、scope=auto/long | 逐条接收对话，返回幂等身份与处理状态 |
-| `mnemotrace_remember` | content 必填；session_id=default、scope=auto/long/working | 保存并通过服务层处理整合 |
-| `mnemotrace_close_session` | session_id=default、summarize=true、clear_working=true、response_format | 收尾，不删除原始事件 |
+| `mnemotrace_remember_messages` | messages、session_id 必填；mode=live/historical、processing=buffered/immediate、scope=auto/long/raw | 逐条接收对话，返回幂等身份与处理状态 |
+| `mnemotrace_remember` | content 必填；session_id=default、scope=auto/long/working/raw | 保存并通过服务层处理整合 |
+| `mnemotrace_flush_processing` | session_id、timeout、include_summaries | 整理会话并等待核心处理 |
+| `mnemotrace_retry_operation` | operation_id | 重试同一操作 |
 | `mnemotrace_add_fact` | predicate、object 必填；subject=user、sensitive、category、topic | 添加用户明确断言 |
 | `mnemotrace_update_fact` | fact_id 必填；subject、predicate、object、sensitive、category、topic、reset_topic、response_format | 编辑事实，找不到时检查错误结果 |
 | `mnemotrace_set_focus` | track、mute 可选；response_format | None 不变，[] 清空 |
@@ -54,7 +56,8 @@ topic 使用工具 schema 的固定枚举；来源由服务端记录。人工选
 
 ## 权限与能力边界
 
-- 本地后端绑定一个 namespace；远程后端使用服务端凭据解析身份。现有 MCP 工具未暴露 HTTP recall/remember 的任意 spaces/space 参数。
+- 本地 stdio 使用 `--user-id` 和 `--space-id`。远程 stdio 代理使用 `--api-url`、`--api-key-file` 和 `--space-id`。
+  Streamable HTTP 在每次请求中使用 Bearer key 和 `X-MnemoTrace-Space-Id`。
 - MCP 不提供 HTTP 的所有管理端点，例如独立工作记忆管理、结构化画像、记忆策略、冲突裁决和槽位清理。需要这些能力时选择 HTTP。
 - delete_fact 与 forget 必须 confirm=true；读取工具的只读注解只是客户端提示，实际副作用由工具实现决定。
 - 工具错误可能表现为错误文本，而非标准 HTTP 状态。调用方应检查结果并在失败时报告，不能因为工具调用已返回就宣布完成。
@@ -66,7 +69,7 @@ topic 使用工具 schema 的固定枚举；来源由服务端记录。人工选
 agent_status(session_id)
 → recall(query, session_id)
 → remember_messages(messages, session_id)
-→ close_session(session_id)
+→ flush_processing(session_id)
 → session_report(session_id)
 ```
 
@@ -77,8 +80,6 @@ agent_status(session_id)
 
 ## 条件摘要与原文读取
 
-`mnemotrace_get_episode(episode_id, space=null, response_format)` 读取 recall 返回的事件 ID 对应的完整原文，不调用模型。
-远程后端在 HTTP 服务端执行空间读取权限检查；本地后端只读取其配置命名空间。
-recall 返回事件当前的检索表示：有摘要时只用摘要，未摘要时使用原文，不自动展开已摘要事件。
-buffered 会自动生成符合长度条件的事件摘要；processing_status 包含独立 summarization 区。
-flush 等待捕获范围内已请求的统一任务，include_summaries=true 额外请求该范围内符合阈值的摘要。任务查询为一份 counts/jobs，区分来源、操作、阶段、失败和覆盖；摘要失败保留已提交核心成果。
+用 `mnemotrace_get_episode(episode_id, space_id=null, response_format)` 读取召回结果的原文。
+默认在绑定空间读取，指定其他空间时验证同一账号对该空间的归属。
+核心任务和摘要状态各自可见，`auxiliary_operation_ids` 指向辅助任务。

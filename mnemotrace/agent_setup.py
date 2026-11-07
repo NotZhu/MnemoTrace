@@ -10,6 +10,7 @@ config.toml，因为 Codex 是第一个能用 doctor 做端到端验证的适配
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import shlex
 import shutil
@@ -43,13 +44,13 @@ def _credential_file_argument(path: str | None) -> str:
     return str(credential_path(path))
 
 
-def mcp_args(*, api_url: str | None, namespace: str | None, api_key_file: str | None = None) -> list[str]:
-    args = ["-m", "mnemotrace.mcp"]
+def mcp_args(*, api_url: str | None, space_id: str | None, api_key_file: str | None = None, user_id: str | None = None) -> list[str]:
+    args = ["-m", "mnemotrace.mcp", "--space-id", space_id or "<SPACE_ID>"]
     if api_url:
         args += ["--api-url", api_url]
         args += ["--api-key-file", _credential_file_argument(api_key_file)]
     else:
-        args += ["--namespace", namespace or "me"]
+        args += ["--user-id", user_id or "<USER_ID>"]
     return args
 
 
@@ -95,8 +96,8 @@ def _toml_string(value: str) -> str:
 
 
 def codex_toml_block(*, api_url: str | None,
-                     namespace: str | None, python_cmd: str, api_key_file: str | None = None) -> str:
-    args = mcp_args(api_url=api_url, namespace=namespace, api_key_file=api_key_file)
+                     space_id: str | None, python_cmd: str, api_key_file: str | None = None, user_id: str | None = None) -> str:
+    args = mcp_args(api_url=api_url, space_id=space_id, api_key_file=api_key_file, user_id=user_id)
     toml_args = ", ".join(_toml_string(a) for a in args)
     return "\n".join([
         "[mcp_servers.mnemotrace]",
@@ -270,7 +271,8 @@ def install_codex_config(
     api_url: str | None = "http://localhost:8000",
     api_key: str | None = None,
     api_key_file: str | None = None,
-    namespace: str | None = None,
+    space_id: str | None = None,
+    user_id: str | None = None,
     python_cmd: str = "python",
     dry_run: bool = False,
 ) -> dict:
@@ -280,7 +282,8 @@ def install_codex_config(
     block = codex_toml_block(
         api_url=api_url,
         api_key_file=api_key_file,
-        namespace=namespace,
+        space_id=space_id,
+        user_id=user_id,
         python_cmd=python_cmd,
     )
     after = _replace_toml_table(before, "[mcp_servers.mnemotrace]", block)
@@ -386,7 +389,8 @@ def install_mcp_json_config(
     api_url: str | None = "http://localhost:8000",
     api_key: str | None = None,
     api_key_file: str | None = None,
-    namespace: str | None = None,
+    space_id: str | None = None,
+    user_id: str | None = None,
     python_cmd: str = "python",
     server_name: str = "mnemotrace",
     dry_run: bool = False,
@@ -402,7 +406,7 @@ def install_mcp_json_config(
     data["mcpServers"] = servers
     api_key_file = _credential_reference(path, "json", api_url, api_key, api_key_file, dry_run, server_name)
     server = _stdio_server(
-        mcp_args(api_url=api_url, namespace=namespace, api_key_file=api_key_file),
+        mcp_args(api_url=api_url, space_id=space_id, api_key_file=api_key_file, user_id=user_id),
         python_cmd,
     )
     servers[server_name] = server
@@ -473,7 +477,9 @@ def run_codex_doctor(
     *,
     python_cmd: str = "python",
     api_url: str | None = None,
-    api_key: str = "me",
+    api_key: str | None = None,
+    space_id: str | None = None,
+    user_id: str | None = None,
     codex_config: str | None = None,
     mcp_json: str | None = None,
     mcp_server_name: str = "mnemotrace",
@@ -488,6 +494,8 @@ def run_codex_doctor(
         codex_config=codex_config,
         mcp_json=mcp_json,
         mcp_server_name=mcp_server_name,
+        space_id=space_id,
+        user_id=user_id,
     )
 
 
@@ -496,7 +504,9 @@ def run_mcp_doctor(
     client: str = "none",
     python_cmd: str = "python",
     api_url: str | None = None,
-    api_key: str = "me",
+    api_key: str | None = None,
+    space_id: str | None = None,
+    user_id: str | None = None,
     mcp_json: str | None = None,
     mcp_server_name: str = "mnemotrace",
 ) -> dict:
@@ -509,6 +519,8 @@ def run_mcp_doctor(
         api_key=api_key,
         mcp_json=mcp_json,
         mcp_server_name=mcp_server_name,
+        space_id=space_id,
+        user_id=user_id,
     )
 
 
@@ -517,15 +529,18 @@ def _doctor_verify_command(
     client: str,
     python_cmd: str,
     api_url: str | None,
-    namespace: str | None,
+    space_id: str | None,
+    user_id: str | None = None,
     api_key_file: str | None = None,
 ) -> list[str]:
     verify = ["mnemotrace-agent-doctor", "--client", client, "--python", python_cmd]
     if api_url:
         verify += ["--api-url", api_url]
         verify += ["--api-key-file", _credential_file_argument(api_key_file)]
-    elif namespace:
-        verify += ["--api-key", namespace]
+    elif user_id:
+        verify += ["--user-id", user_id]
+    if space_id:
+        verify += ["--space-id", space_id]
     return verify
 
 
@@ -535,7 +550,8 @@ def render_codex_config_result(
     python_cmd: str = "python",
     api_url: str | None = None,
     api_key: str | None = None,
-    namespace: str | None = None,
+    space_id: str | None = None,
+    user_id: str | None = None,
     doctor_report: dict | None = None,
     doctor_skipped: str | None = None,
 ) -> str:
@@ -563,7 +579,8 @@ def render_codex_config_result(
             client="codex",
             python_cmd=python_cmd,
             api_url=api_url,
-            namespace=namespace,
+            space_id=space_id,
+            user_id=user_id,
             api_key_file=api_key_file,
         )
         lines += [
@@ -590,7 +607,8 @@ def render_mcp_json_config_result(
     doctor_client: str = "none",
     api_url: str | None = None,
     api_key: str | None = None,
-    namespace: str | None = None,
+    space_id: str | None = None,
+    user_id: str | None = None,
     doctor_report: dict | None = None,
     doctor_skipped: str | None = None,
 ) -> str:
@@ -624,7 +642,8 @@ def render_mcp_json_config_result(
             client=doctor_client,
             python_cmd=python_cmd,
             api_url=api_url,
-            namespace=namespace,
+            space_id=space_id,
+            user_id=user_id,
             api_key_file=api_key_file,
         )
         lines += ["", "Verify with:", "", "```bash", _shell(verify), "```"]
@@ -669,7 +688,7 @@ When the user asks to correct or delete a memory, call mnemotrace_list_facts to 
 When the user asks to export their memory, call mnemotrace_export(response_format="json"); set include_sensitive=true only for an explicit private export.
 When the user asks you to pay more attention to or suppress a class of memories, call mnemotrace_set_focus; use mnemotrace_get_focus to inspect the current policy.
 When the user asks what was saved from a thread, call mnemotrace_session_report for that session.
-When the thread ends or you switch tasks, call mnemotrace_close_session with the same session_id.
+When the thread ends or you switch tasks, call mnemotrace_flush_processing with the same session_id.
 Do not store secrets, credentials, large logs, or short-lived state as durable memory.
 For this client, use session IDs shaped like `{agent}:<project>:<thread>`."""
 
@@ -684,7 +703,7 @@ When the user asks to correct or delete a memory, call mnemotrace_list_facts to 
 When the user asks to export their memory, call mnemotrace_export(response_format="json"); set include_sensitive=true only for an explicit private export.
 When the user asks you to pay more attention to or suppress a class of memories, call mnemotrace_set_focus; use mnemotrace_get_focus to inspect the current policy.
 When the user asks what was saved from a thread, call mnemotrace_session_report for that session.
-When the thread ends or you switch tasks, call mnemotrace_close_session with the same session_id.
+When the thread ends or you switch tasks, call mnemotrace_flush_processing with the same session_id.
 Do not store secrets, credentials, large logs, or short-lived state as durable memory.
 Use session IDs shaped like `<agent>:<project>:<thread>`, for example `codex:<repo>:<thread>` or `claude-code:<repo>:<thread>`."""
 
@@ -720,7 +739,8 @@ def render_bootstrap_result(
     session_id: str,
     doctor_reports: list[dict] | None = None,
     doctor_skipped: str | None = None,
-    namespace: str | None = None,
+    space_id: str | None = None,
+    user_id: str | None = None,
 ) -> str:
     api_key_file = next((r.get("api_key_file") for _, r in results if r.get("api_key_file")), None)
     lines = ["# MnemoTrace Agent Bootstrap", ""]
@@ -742,7 +762,8 @@ def render_bootstrap_result(
         client="codex" if any(label == "Codex" for label, _ in results) else "none",
         python_cmd=python_cmd,
         api_url=api_url,
-        namespace=namespace,
+        space_id=space_id,
+        user_id=user_id,
         api_key_file=api_key_file,
     )
     lines += ["", "Verify later with:", "", "```bash", _shell(verify), "```", ""]
@@ -770,11 +791,12 @@ def render_markdown(
     *,
     api_url: str | None = "http://localhost:8000",
     api_key_file: str | None = None,
-    namespace: str | None = None,
+    space_id: str | None = None,
+    user_id: str | None = None,
     session_id: str = "codex:super-memory:thread-123",
     python_cmd: str = "python",
 ) -> str:
-    args = mcp_args(api_url=api_url, namespace=namespace, api_key_file=api_key_file)
+    args = mcp_args(api_url=api_url, space_id=space_id, api_key_file=api_key_file, user_id=user_id)
     server = _stdio_server(args, python_cmd)
     out: list[str] = [
         "# MnemoTrace Agent Setup",
@@ -782,7 +804,7 @@ def render_markdown(
         "Shared lifecycle:",
         "",
         "```text",
-        "recall before work -> remember durable information -> close the session",
+        "recall before work -> remember durable information -> flush session processing",
         "```",
         "",
     ]
@@ -829,7 +851,8 @@ def render_markdown(
             codex_toml_block(
                 api_url=api_url,
                 api_key_file=api_key_file,
-                namespace=namespace,
+                space_id=space_id,
+                user_id=user_id,
                 python_cmd=python_cmd,
             ).rstrip(),
             "```",
@@ -877,6 +900,7 @@ def render_markdown(
             "    model='mnemotrace',",
             "    messages=[{'role': 'user', 'content': 'Continue the work.'}],",
             "    extra_body={'memory': {",
+            f"        'space_id': {space_id or '<SPACE_ID>'!r},",
             "        'session_id': session_id,",
             "        'recall': True,",
             "        'remember': True,",
@@ -885,14 +909,14 @@ def render_markdown(
             ")",
             "```",
             "",
-            "Close the thread:",
+            "Finish core processing:",
             "",
             "```bash",
             _shell([
-                "curl", "-s", "-X", "POST", (api_url or "http://localhost:8000").rstrip("/") + "/v1/sessions/close",
+                "curl", "-s", "-X", "POST", (api_url or "http://localhost:8000").rstrip("/") + "/v1/processing/flush",
                 "-H", f"Authorization: Bearer {key}",
                 "-H", "Content-Type: application/json",
-                "-d", json.dumps({"session_id": session_id}),
+                "-d", json.dumps({"session_id": session_id, "space_id": space_id or "<SPACE_ID>"}),
             ]),
             "```",
             "",
@@ -913,7 +937,8 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
     credentials.add_argument("--api-key-file", help="Private credential file")
     credentials.add_argument("--prompt-api-key", action="store_true", help="Read API key without echo")
     ap.add_argument("--local", action="store_true", help="use local MCP storage instead of an HTTP server")
-    ap.add_argument("--namespace", default="me", help="local MCP namespace when --local is set")
+    ap.add_argument("--space-id", default=os.environ.get("MNEMOTRACE_SPACE_ID"))
+    ap.add_argument("--user-id", default=os.environ.get("MNEMOTRACE_USER_ID"))
     ap.add_argument("--session-id", default="codex:super-memory:thread-123",
                     help="example session id to show in generated snippets")
     ap.add_argument("--python", default="python",
@@ -989,7 +1014,12 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
             )
     except CredentialError as exc:
         ap.error(str(exc))
-    namespace = args.namespace if args.local else None
+    space_id = args.space_id
+    user_id = args.user_id if args.local else None
+    if (args.bootstrap or args.install_codex or args.install_mcp_json) and not space_id:
+        ap.error('Select --space-id before installing an agent configuration')
+    if args.local and (args.bootstrap or args.install_codex or args.install_mcp_json) and not user_id:
+        ap.error('Local agent configuration requires --user-id')
     if args.bootstrap:
         try:
             targets = parse_bootstrap_targets(args.bootstrap_targets)
@@ -1004,7 +1034,8 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
                     api_url=api_url,
                     api_key=api_key,
                     api_key_file=args.api_key_file,
-                    namespace=namespace,
+                    space_id=space_id,
+                    user_id=user_id,
                     python_cmd=args.python,
                     dry_run=args.dry_run,
                 ),
@@ -1017,7 +1048,8 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
                     api_url=api_url,
                     api_key=api_key,
                     api_key_file=args.api_key_file,
-                    namespace=namespace,
+                    space_id=space_id,
+                    user_id=user_id,
                     python_cmd=args.python,
                     server_name=args.mcp_server_name,
                     dry_run=args.dry_run,
@@ -1044,7 +1076,9 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
             doctor_reports.append(run_codex_doctor(
                 python_cmd=args.python,
                 api_url=api_url,
-                api_key=api_key or args.namespace,
+                api_key=api_key,
+                space_id=space_id,
+                user_id=user_id,
                 codex_config=codex_path,
                 mcp_json=mcp_json_path_,
                 mcp_server_name=args.mcp_server_name,
@@ -1054,7 +1088,9 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
                     client=args.doctor_client,
                     python_cmd=args.python,
                     api_url=api_url,
-                    api_key=api_key or args.namespace,
+                    api_key=api_key,
+                    space_id=space_id,
+                    user_id=user_id,
                     mcp_json=mcp_json_path_,
                     mcp_server_name=args.mcp_server_name,
                 ))
@@ -1064,7 +1100,9 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
                 client=args.doctor_client,
                 python_cmd=args.python,
                 api_url=api_url,
-                api_key=api_key or args.namespace,
+                api_key=api_key,
+                space_id=space_id,
+                user_id=user_id,
                 mcp_json=mcp_json_path_,
                 mcp_server_name=args.mcp_server_name,
             ))
@@ -1074,7 +1112,8 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
                 python_cmd=args.python,
                 api_url=api_url,
                 api_key=api_key,
-                namespace=namespace,
+                space_id=space_id,
+                user_id=user_id,
                 session_id=args.session_id,
                 doctor_reports=doctor_reports,
                 doctor_skipped=doctor_skipped,
@@ -1090,7 +1129,8 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
             api_url=api_url,
             api_key=api_key,
             api_key_file=args.api_key_file,
-            namespace=namespace,
+            space_id=space_id,
+            user_id=user_id,
             python_cmd=args.python,
             dry_run=args.dry_run,
         )
@@ -1102,7 +1142,9 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
             doctor_report = run_codex_doctor(
                 python_cmd=args.python,
                 api_url=api_url,
-                api_key=api_key or args.namespace,
+                api_key=api_key,
+                space_id=space_id,
+                user_id=user_id,
                 codex_config=result["path"],
             )
         print(
@@ -1111,7 +1153,8 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
                 python_cmd=args.python,
                 api_url=api_url,
                 api_key=api_key,
-                namespace=namespace,
+                space_id=space_id,
+                user_id=user_id,
                 doctor_report=doctor_report,
                 doctor_skipped=doctor_skipped,
             ),
@@ -1130,7 +1173,8 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
             api_url=api_url,
             api_key=api_key,
             api_key_file=args.api_key_file,
-            namespace=namespace,
+            space_id=space_id,
+            user_id=user_id,
             python_cmd=args.python,
             server_name=args.mcp_server_name,
             dry_run=args.dry_run,
@@ -1144,7 +1188,9 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
                 client=args.doctor_client,
                 python_cmd=args.python,
                 api_url=api_url,
-                api_key=api_key or args.namespace,
+                api_key=api_key,
+                space_id=space_id,
+                user_id=user_id,
                 mcp_json=result["path"],
                 mcp_server_name=args.mcp_server_name,
             )
@@ -1155,7 +1201,8 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
                 doctor_client=args.doctor_client,
                 api_url=api_url,
                 api_key=api_key,
-                namespace=namespace,
+                space_id=space_id,
+                user_id=user_id,
                 doctor_report=doctor_report,
                 doctor_skipped=doctor_skipped,
             ),
@@ -1188,7 +1235,8 @@ def _main(argv: list[str] | None = None, *, prog: str = "mnemotrace-agent-setup"
         args.client,
         api_url=api_url,
         api_key_file=args.api_key_file,
-        namespace=namespace,
+        space_id=space_id,
+        user_id=user_id,
         session_id=args.session_id,
         python_cmd=args.python,
     ), end="")

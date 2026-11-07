@@ -16,6 +16,8 @@ def batches(sessions, consolidate=None):
         sid = record.get('session_id')
         if not isinstance(sid, str) or not sid:
             raise ValueError('Imported sessions require session_id')
+        if any(not isinstance(item, dict) for item in record['messages']):
+            raise ValueError('Expected each message to be an object')
         if record['messages'] and all(m.get('role') == 'document' for m in record['messages']):
             output.append((sid, None, record, False))
             continue

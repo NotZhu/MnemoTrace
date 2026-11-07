@@ -244,7 +244,8 @@ def commit_task(sql, lease, receipt):
     ))
 
 
-def store_messages(sql, session_id, messages, *, check_model=None, generation=None, embedding=None):
+def store_messages(sql, session_id, messages, *, check_model=None, generation=None, embedding=None,
+                   source_metadata=None):
     existing = sql.run(f'SELECT message_id,id,message_fingerprint FROM mnemotrace.sources '
                        f'WHERE {SCOPE} AND session_id = %s AND message_id = ANY(%s)',
                        (*sql.scope, session_id, [msg.message_id for msg in messages])).fetchall()
@@ -266,7 +267,7 @@ def store_messages(sql, session_id, messages, *, check_model=None, generation=No
                 content=item.content, role=item.role, event_time=timestamp(item.event_time),
                 ingested_at=sql.run('SELECT clock_timestamp()').fetchone()[0],
                 source_kind='dialogue', scope=item.scope, mode=item.mode,
-                agent_id=item.agent_id, message_fingerprint=digest, metadata={},
+                agent_id=item.agent_id, message_fingerprint=digest, metadata=source_metadata or {},
                 sequence=allocate_sequence(sql, session_id), record_version=1, content_version=1,
             ))
             project_text(sql, SOURCE, record_id, 1, {'content': item.content})

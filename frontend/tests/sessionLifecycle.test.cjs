@@ -25,7 +25,7 @@ function setup(options = {}) {
   const calls = { requests: [], urls: [], clicks: [], removed: 0, revoked: [] }
   const moduleData = { exports: {} }
   vm.runInNewContext(source, {
-    module: moduleData, exports: moduleData.exports, require, Headers, URLSearchParams,
+    module: moduleData, exports: moduleData.exports, require, Headers, URLSearchParams, AbortController, AbortSignal,
     fetch: (url, init) => { calls.requests.push({ url, init }); return handler(url, init) },
     URL: {
       createObjectURL(blob) { calls.urls.push(blob); options.onCreate?.(); return 'blob:synthetic' },
@@ -45,7 +45,11 @@ function setup(options = {}) {
   return {
     ...moduleData.exports, calls,
     respond: next => { handler = next },
-    login: key => moduleData.exports.useAuth.getState().login(key),
+    login: key => {
+      const auth = moduleData.exports.useAuth.getState()
+      auth.login(key)
+      if (moduleData.exports.useAuth.getState().apiKey) auth.selectSpace('synthetic-space')
+    },
     logout: () => moduleData.exports.useAuth.getState().logout(),
   }
 }
@@ -86,11 +90,11 @@ test('login and logout atomically publish a new in-memory session, including inv
   const s = setup(), observed = []
   assert.equal(s.currentSession().epoch, 0)
   s.useAuth.subscribe(state => observed.push({ key: state.apiKey, epoch: state.epoch }))
-  s.login('synthetic-A')
+  s.useAuth.getState().login('synthetic-A')
   const first = s.currentSession()
-  s.login('synthetic-A')
+  s.useAuth.getState().login('synthetic-A')
   assert.equal(s.isCurrentSession(first), false)
-  s.login('invalid\nkey')
+  s.useAuth.getState().login('invalid\nkey')
   assert.ok(s.useAuth.getState().keyError)
   s.logout()
   s.logout()
@@ -199,7 +203,7 @@ for (const sensitive of [false, true]) {
     s.respond(async () => ({ ok: true, status: 200, blob: async () => blob }))
     await s.api.exportDownload('synthetic', sensitive)
     const [{ url, init }] = s.calls.requests
-    assert.ok(url.endsWith(`include_sensitive=${sensitive}`))
+    assert.equal(new URL(url, 'http://test').searchParams.get('include_sensitive'), String(sensitive))
     assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer synthetic-A')
     assert.equal(s.calls.urls[0], blob)
     assert.deepEqual(s.calls.clicks, ['mnemotrace_synthetic_export.json'])
@@ -252,8 +256,23 @@ test('memory browse forwards cancellation and the complete browsing context to f
   s.login('synthetic-A')
   s.respond(async () => ({ ok: true, status: 200, json: async () => ({ data_revision: 'synthetic-v1', evaluated_at: 1000 }) }))
   const result = await s.api.memories({ outcome_kind: 'lesson', expected_revision: 'synthetic-v1', evaluated_at: 1000 }, { signal: controller.signal })
-  assert.equal(s.calls.requests[0].init.signal, controller.signal)
+  assert.equal(s.calls.requests[0].init.signal.aborted, false)
+  controller.abort()
+  assert.equal(s.calls.requests[0].init.signal.aborted, true)
   const url = s.calls.requests[0].url
   assert.ok(url.includes('outcome_kind=lesson') && url.includes('expected_revision=synthetic-v1') && url.includes('evaluated_at=1000'))
   assert.equal(result.evaluated_at, 1000)
+})
+
+test('switching space with the same key aborts the old scoped request', async () => {
+  const s = setup()
+  s.login('synthetic-A')
+  const response = deferred()
+  s.respond(() => response.promise)
+  const pending = s.api.memories()
+  assert.match(s.calls.requests[0].url, /space_id=synthetic-space/)
+  s.useAuth.getState().selectSpace('synthetic-other')
+  assert.equal(s.calls.requests[0].init.signal.aborted, true)
+  response.resolve({ok: true, json: async () => ({facts: []})})
+  await assert.rejects(pending, s.StaleSessionError)
 })

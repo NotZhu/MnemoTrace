@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from tests.model_fixtures import MemoryService
 
-import os
 import shutil
 import tempfile
 from dataclasses import asdict
@@ -118,60 +117,6 @@ class TestSnifferAndMemoryLevel:
             })
         assert dst.fact_store.values() == dst.episodes_doc.values() == []
 
-
-pytest_fastapi = pytest.importorskip("fastapi")
-from fastapi.testclient import TestClient  # noqa: E402
-
-
-@pytest.fixture()
-def client():
-    d = tempfile.mkdtemp(prefix="mnemotrace_snap_srv_")
-    os.environ.update(MNEMOTRACE_DATA_DIR=d, MNEMOTRACE_EMBEDDER="hashing", MNEMOTRACE_OPEN="1")
-    # 显式置空而不是 pop：MemoryService 初始化会 load_dotenv()，pop 掉的变量会被本地 .env 重新注入
-    os.environ["MNEMOTRACE_LLM"] = ""
-    os.environ["MNEMOTRACE_ANSWERER"] = ""
-    os.environ["MNEMOTRACE_API_KEYS"] = ""
-    os.environ["MNEMOTRACE_ALLOW_ANONYMOUS"] = ""
-    from mnemotrace.server import app as appmod
-    appmod._svc = MemoryService(data_dir=d, embedder_name="hashing", llm_name="")
-    with TestClient(appmod.app) as c:
-        yield c
-    shutil.rmtree(d, ignore_errors=True)
-
-
-def _hdr(ns: str) -> dict:
-    return {"Authorization": f"Bearer {ns}"}
-
-
-def test_http_unparseable_import_is_400_not_500(client):
-    # 任何不匹配已知导出结构的 JSON 对象，过去会让解析器崩溃 -> 500。
-    r = client.post("/v1/import", json={"data": {"foo": "bar"}}, headers=_hdr("qa"))
-    assert r.status_code == 400
-    assert "could not parse" in r.json()["detail"]
-
-
-def test_http_export_import_roundtrip(client):
-    r = client.post("/v1/remember", json={"content": "My cat is named Miso."}, headers=_hdr("src"))
-    assert r.status_code == 200
-    snap = client.get("/v1/export", params={"include_sensitive": "true"}, headers=_hdr("src")).json()
-    r = client.post("/v1/import", json={"data": snap}, headers=_hdr("dst"))
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["ok"] is True and body["format"] == "mnemotrace" and body["facts_restored"] >= 1
-    ctx = client.post("/v1/recall", json={"query": "what is my cat's name?"},
-                      headers=_hdr("dst")).json()["context"]
-    assert "Miso" in ctx
-
-
-def test_http_invalid_snapshot_is_400_and_does_not_partially_import(client):
-    client.post("/v1/remember", json={"content": "My cat is named Miso."}, headers=_hdr("src"))
-    snap = client.get("/v1/export", params={"include_sensitive": "true"}, headers=_hdr("src")).json()
-    snap["facts"][-1]["provenance"] = 42
-    response = client.post("/v1/import", json={"data": snap}, headers=_hdr("dst"))
-    assert response.status_code == 400
-    assert "provenance" in response.json()["detail"]
-    restored = client.get("/v1/export", params={"include_sensitive": "true"}, headers=_hdr("dst")).json()
-    assert restored["facts"] == restored["episodes"] == []
 
 def test_import_session_extraction_failure_does_not_abort_batch():
     """批量导入时单条会话抽取失败不应中止整批：原文已落库，失败计入 stats，其余继续。"""

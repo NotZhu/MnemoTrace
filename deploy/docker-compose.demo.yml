@@ -1,11 +1,7 @@
-# 公开演示实例（open 模式）—— 与生产模板 docker-compose.yml 的区别，仅在演示语义所必需的两点：
-#   1. MNEMOTRACE_OPEN=1：任意 bearer 即命名空间（`mnemotrace-test` 是公开演示空间），不配置 MNEMOTRACE_API_KEYS。
-#   2. 端口绑定 0.0.0.0：演示实例直接对公网提供 UI/API。
-# 其余与生产模板保持一致：持久卷（重启不丢数据）、非 root、只读根文件系统、丢弃 capabilities、
-# /ready 门禁。生产部署请用 docker-compose.yml，不要用本文件。
+# 演示实例使用独立的 Postgres 数据库和签发的 Bearer key。
 #
 #   docker compose -f deploy/docker-compose.demo.yml up -d --build
-name: mnemotrace
+name: mnemotrace-demo
 
 services:
   mnemotrace:
@@ -16,18 +12,15 @@ services:
     init: true
     restart: unless-stopped
     ports:
-      - "${MNEMOTRACE_PORT:-8456}:8000"
+      - "127.0.0.1:${MNEMOTRACE_PORT:-8456}:8000"
     environment:
-      MNEMOTRACE_OPEN: "1"
-      MNEMOTRACE_DATA_DIR: /data
+      MNEMOTRACE_DATABASE_URL: "${MNEMOTRACE_DEMO_DATABASE_URL:?set the demo Postgres runtime connection}"
+      MNEMOTRACE_DB_ROLE_PREFIX: "${MNEMOTRACE_DB_ROLE_PREFIX:-mnemotrace}"
       MNEMOTRACE_EMBEDDER: "${MNEMOTRACE_EMBEDDER:-hashing}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       MNEMOTRACE_LLM: "${MNEMOTRACE_LLM:-}"
       MNEMOTRACE_ANSWERER: "${MNEMOTRACE_ANSWERER:-}"
       MNEMOTRACE_MAX_REQUEST_BYTES: "${MNEMOTRACE_MAX_REQUEST_BYTES:-2097152}"
-      MNEMOTRACE_MAX_HOT_USERS: "${MNEMOTRACE_MAX_HOT_USERS:-64}"
-      MNEMOTRACE_MAX_HOT_FACTS: "${MNEMOTRACE_MAX_HOT_FACTS:-10000}"
-    volumes:
-      - mnemotrace_demo_data:/data
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -45,6 +38,3 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 4
-
-volumes:
-  mnemotrace_demo_data:

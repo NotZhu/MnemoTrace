@@ -190,33 +190,3 @@ def test_operator_can_copy_confirmed_reserved_legacy_store_without_changing_sour
     Memory.open(str(source)).save(str(destination))
     assert objects(service_at(tmp_path), user) == {"SYNTHETIC_OWNER_ONLY"}
     assert {path.name: path.read_bytes() for path in source.iterdir() if path.is_file()} == before
-
-
-def test_authenticated_http_namespace_alias_stays_isolated(tmp_path, monkeypatch):
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-    from mnemotrace.server import app as appmod
-
-    service = service_at(tmp_path)
-    owner = "synthetic-owner"
-    other = service._safe_user(owner)
-    service.add_fact(owner, "project", "marker", "SYNTHETIC_OWNER_ONLY")
-    monkeypatch.setattr(appmod, "_svc", service)
-    monkeypatch.setenv("MNEMOTRACE_API_KEYS", f"{owner}:synthetic-key-a,{other}:synthetic-key-b")
-    client = TestClient(appmod.app)
-    headers = {"Authorization": "Bearer synthetic-key-b"}
-    try:
-        response = client.get("/v1/memories", headers=headers)
-        assert response.status_code == 200
-        assert response.json()["facts"] == []
-        written = client.post("/v1/facts", headers=headers, json={
-            "subject": "project", "predicate": "marker", "object": "SYNTHETIC_OTHER_ONLY",
-        })
-        assert written.status_code == 200
-        assert client.post("/v1/forget", headers=headers, json={"confirm": True}).status_code == 200
-        assert objects(service_at(tmp_path), owner) == {"SYNTHETIC_OWNER_ONLY"}
-        owner_response = client.get("/v1/memories", headers={"Authorization": "Bearer synthetic-key-a"})
-        assert owner_response.status_code == 200
-        assert {fact["object"] for fact in owner_response.json()["facts"]} == {"SYNTHETIC_OWNER_ONLY"}
-    finally:
-        client.close()

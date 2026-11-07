@@ -39,7 +39,7 @@ def test_workload_stream_is_reproducible_scoped_and_has_declared_filters():
     assert {case['name'] for case in manifest['cases']} == {'many-small', 'one-large', 'skewed'}
 
 
-def test_run_records_reproduction_inputs_and_never_overwrites_an_existing_run(tmp_path):
+def test_run_records_reproduction_inputs_and_never_overwrites_an_existing_run(tmp_path, source_repository):
     out = tmp_path / 'reference'
     main(['--out', str(out)])
     metadata = json.loads((out / 'metadata.json').read_text(encoding='utf-8'))
@@ -62,7 +62,10 @@ def source_repository(tmp_path, monkeypatch):
     path = tmp_path / 'mnemotrace/memory.py'
     path.parent.mkdir()
     path.write_text('version = 1\n', encoding='utf-8')
-    git('add', 'mnemotrace/memory.py')
+    responses = tmp_path / 'tests/extraction_responses.json'
+    responses.parent.mkdir()
+    responses.write_bytes(Path(__file__).with_name('extraction_responses.json').read_bytes())
+    git('add', 'mnemotrace/memory.py', 'tests/extraction_responses.json')
     git('-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.invalid',
         '-c', 'commit.gpgsign=false', 'commit', '-m', 'fixture')
     monkeypatch.setattr(storage_baseline, 'ROOT', tmp_path)

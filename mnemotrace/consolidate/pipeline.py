@@ -286,7 +286,7 @@ def validate_state(value, episodes=None, embedding_dim=None):
                 require(isinstance(session['batch_id'], str))
             for key, win in state['windows'].items():
                 require(isinstance(key, str) and len(key) == 24 and isinstance(win, dict) and set(win) == WINDOW_FIELDS)
-                require(win['route'] in state['sessions'] and win['operation'] in {'extract', 'summary', 'outcomes', 'conflicts'})
+                require(win['route'] in state['sessions'] and win['operation'] in {'extract', 'summary', 'conflicts'})
                 require(win['state'] in STATES and win['phase'] in {'generate', 'embed', 'commit', 'compensate', 'done'})
                 require(win['input_hash'] == digest(win['input']) and isinstance(win['config'], str) and len(win['config']) == 64)
                 require(isinstance(win['generation_config'], str) and len(win['generation_config']) == 64
@@ -332,10 +332,7 @@ def validate_state(value, episodes=None, embedding_dim=None):
                         require(set(data['parts']).issubset(p['key'] for p in row['parts']))
                 else:
                     require(not data['parts'])
-                if win['operation'] == 'outcomes':
-                    require(data['source_kind'] == 'raw' and not data['context'])
-                    require(data['candidates'] == [dict(session_id=session['session_id'])])
-                elif win['operation'] == 'conflicts':
+                if win['operation'] == 'conflicts':
                     require(bool(data['candidates']) and not data['context'])
                     for pair in data['candidates']:
                         require(isinstance(pair, dict) and set(pair) == {'older', 'newer'})
@@ -363,7 +360,7 @@ def validate_state(value, episodes=None, embedding_dim=None):
                     row = state['sources'][item['id']]
                     require(row['session_id'] == session['session_id'] and row['source_kind'] == data['source_kind'])
                     require(row['mode'] == data['mode'])
-                    require(win['operation'] in {'outcomes', 'conflicts'} or row['scope'] == data['scope'])
+                    require(win['operation'] == 'conflicts' or row['scope'] == data['scope'])
                     require(item['message_id'] == row['message_id'] and item['sequence'] == row['sequence'] and item['source_length'] == row['length'])
                     require((item['role'] in {'user', 'assistant'}) == (data['source_kind'] == 'dialogue'))
                     if docs is not None and not state['sources'][item['id']]['cancelled']:
@@ -618,7 +615,7 @@ class PipelineTasks:
                 error_code=win['error_code'] if win else 'source_changed' if state == 'failed' else None, attempts=win['attempts'] if win else 0,
                 embed_attempts=win['embed_attempts'] if win else 0))
         for key, win in (self.state or {}).get('windows', {}).items():
-            if win['operation'] not in {'outcomes', 'conflicts'}:
+            if win['operation'] != 'conflicts':
                 continue
             keys = {s['id'] for s in win['input']['pending']}
             if ids is not None and not keys.intersection(ids) or session_id is not None and not any(r['session_id'] == session_id for k, r in self.rows().items() if k in keys):

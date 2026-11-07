@@ -7,6 +7,7 @@ import { copyText } from '../lib/clipboard'
 
 import { toast } from './Toast'
 import { ThemeToggle } from './ThemeToggle'
+import { SpacePicker } from './SpacePicker'
 
 function maskKey(key: string | null | undefined, reveal: boolean) {
   if (!key) return '?'
@@ -36,6 +37,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
           <Menu className="h-5 w-5" />
         </button>
 
+        <SpacePicker />
         <div className="flex-1" />
 
         <div className="flex min-w-0 items-center gap-1.5 rounded-xl border border-line bg-ink-700 px-2 py-1.5">

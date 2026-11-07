@@ -239,7 +239,7 @@ def test_source_vector_coverage_worker_and_erase_fencing(memory, runtime, cluste
     lease = tasks.claim(operation.operation_id, embedding=memory._embedding_space)
     with memory.dao.read_snapshot() as view:
         record = view.get(SOURCE, another.id)
-    memory.erase(record.ref)
+    memory.clear_space()
     with pytest.raises(VersionConflict):
         tasks.commit_source_vector(lease, record, 'hashing-v1',
                                    tuple(memory._embedder.embed(domain(record).content)))

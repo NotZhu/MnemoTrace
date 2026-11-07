@@ -62,7 +62,7 @@ export function mergeMemoryPages(data: InfiniteData<MemoryDump> | undefined): Me
 }
 
 export function useMemoryPages(params: BrowseQuery) {
-  const namespace = useAuth(s => s.apiKey)
+  const namespace = useAuth(s => s.spaceId)
   const query = useInfiniteQuery(memoryPagesOptions(namespace, params))
   const revisionChanged = query.error instanceof MemoryRevisionChangedError
   const protocolError = query.error instanceof PaginationProtocolError

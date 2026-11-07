@@ -132,3 +132,58 @@ def user(accounts):
 @pytest.fixture
 def spaces(runtime):
     return Spaces(runtime)
+
+
+@pytest.fixture
+def product_service(runtime, monkeypatch):
+    pytest.importorskip('fastapi')
+    from mnemotrace.postgres_service import MemoryService
+    from mnemotrace.server import app
+    from tests.model_fixtures import RecordedLLM
+
+    service = MemoryService(runtime, llm=RecordedLLM())
+    monkeypatch.setattr(app, '_svc', service)
+    return service
+
+
+@pytest.fixture
+def product_scope(accounts, spaces):
+    users = {}
+
+    def create(label='synthetic'):
+        if label not in users:
+            user = accounts.create_user()
+            space = spaces.create(user, label)
+            users[label] = spaces.authorize(user, space.space_id), accounts.issue_key(user).value
+        return users[label]
+
+    yield create
+    for context, _ in users.values():
+        accounts.delete_user(context.user_id)
+
+
+@pytest.fixture()
+def product_client(product_service, product_scope):
+    from fastapi.testclient import TestClient
+    from urllib.parse import parse_qsl, urlsplit
+    from mnemotrace.server import app
+
+    class ScopedClient(TestClient):
+        def request(self, method, url, *, headers=None, **kwargs):
+            headers = dict(headers or {})
+            label = headers.pop('X-Synthetic-Scope', None)
+            if label is not None:
+                context, key = product_scope(label)
+                headers['Authorization'] = f'Bearer {key}'
+                if method in {'GET', 'HEAD', 'DELETE'}:
+                    query = dict(parse_qsl(urlsplit(url).query))
+                    kwargs['params'] = {**query, **(kwargs.get('params') or {}), 'space_id': context.space_id}
+                elif urlsplit(url).path == '/v1/chat/completions':
+                    body = kwargs['json']
+                    kwargs['json'] = {**body, 'memory': {'space_id': context.space_id, **body.get('memory', {})}}
+                elif kwargs.get('content') is None and kwargs.get('data') is None:
+                    kwargs['json'] = {'space_id': context.space_id, **(kwargs.get('json') or {})}
+            return super().request(method, url, headers=headers, **kwargs)
+
+    with ScopedClient(app.app) as http:
+        yield http

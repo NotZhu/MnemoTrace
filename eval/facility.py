@@ -4,7 +4,7 @@ AGENTS.md 的 Bet D 纪律说：无法复现的数字等于不存在。这条纪
 对准另一个没人度量的问题：记忆正在被快速填充——所有者自己的机器上已有数千条 session 结论——
 但可能几乎没被读过。填满一个存储不是设施；被读到、且读得有用，才是。
 
-    python eval/facility.py --days 7 --url http://127.0.0.1:8766 --key-file ~/.mnemotrace/watch.key
+    python eval/facility.py --days 7 --url http://127.0.0.1:8766 --key-file ~/.mnemotrace/watch.key --space-id <SPACE_ID>
 
 所有者定义的阶梯：
 
@@ -152,7 +152,11 @@ def _rate(num: int, den: int) -> float:
 # ---------------------------------------------------------------------------
 
 
-def _get(url: str, key: str, path: str, timeout: int = 60) -> dict:
+def _get(url: str, key: str, path: str, space_id: str, timeout: int = 60) -> dict:
+    from urllib.parse import urlencode
+
+    separator = "&" if "?" in path else "?"
+    path += separator + urlencode({"space_id": space_id})
     req = urllib.request.Request(url.rstrip("/") + path,
                                  headers={"Authorization": f"Bearer {key}"}, method="GET")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -178,27 +182,27 @@ class ServerFacts:
         self.session_facts: dict[str, int] = {}
 
     @classmethod
-    def load(cls, url: str, key: str) -> "ServerFacts":
+    def load(cls, url: str, key: str, space_id: str) -> "ServerFacts":
         self = cls()
         try:
-            stats = _get(url, key, "/v1/stats")
+            stats = _get(url, key, "/v1/stats", space_id)
             counts = stats.get("counts") or {}
             self.episodes = int(counts.get("episodes") or 0)
 
             base = "/v1/memories?facts_limit=0&episodes_limit=0"
-            mem = _get(url, key, base)
+            mem = _get(url, key, base, space_id)
             self.conclusions = int((mem.get("counts") or {}).get("facts_outcomes") or 0)
             self.outcomes_live_incl_sensitive = self.conclusions
-            live = _get(url, key, base + "&kind=outcomes&status=live")
+            live = _get(url, key, base + "&kind=outcomes&status=live", space_id)
             self.outcomes_live = int((live.get("facts_page") or {}).get("total") or 0)
-            sup = _get(url, key, base + "&kind=outcomes&status=superseded")
+            sup = _get(url, key, base + "&kind=outcomes&status=superseded", space_id)
             self.outcomes_superseded = int((sup.get("facts_page") or {}).get("total") or 0)
-            attrs = _get(url, key, base + "&kind=attributes&status=live")
+            attrs = _get(url, key, base + "&kind=attributes&status=live", space_id)
             self.attribute_facts = int((attrs.get("facts_page") or {}).get("total") or 0)
 
             offset = 0
             while True:
-                page = _get(url, key, f"/v1/sessions?limit=500&offset={offset}")
+                page = _get(url, key, f"/v1/sessions?limit=500&offset={offset}", space_id)
                 rows = page.get("sessions") or []
                 for row in rows:
                     sid = row.get("id")
@@ -498,16 +502,28 @@ def parse_hook_lag(log_path: str) -> list[float]:
 # ---------------------------------------------------------------------------
 
 
-def _read_target(mcp_config: str) -> tuple[str, str]:
+def _read_target(mcp_config: str) -> tuple[str, str, str]:
     """所有者的 agent 实际从哪里 READ 的 URL+key。只读；本 harness 绝不修改它。"""
     try:
         with open(os.path.expanduser(mcp_config), encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        return "", ""
+        return "", "", ""
     server = ((data.get("mcpServers") or {}).get("mnemotrace") or {})
     env = server.get("env") or {}
-    return str(env.get("MNEMOTRACE_API_URL") or ""), str(env.get("MNEMOTRACE_API_KEY") or "")
+    from mnemotrace.agent_doctor import _arg_value
+    from mnemotrace.credentials import CredentialError, read_key
+
+    args = server.get("args") or []
+    url = _arg_value(args, "--api-url") or env.get("MNEMOTRACE_API_URL", "")
+    space = _arg_value(args, "--space-id") or env.get("MNEMOTRACE_SPACE_ID", "")
+    key = env.get("MNEMOTRACE_API_KEY", "")
+    if reference := _arg_value(args, "--api-key-file"):
+        try:
+            key = read_key(reference)
+        except CredentialError:
+            key = ""
+    return str(url), str(key), str(space)
 
 
 def _previous_line(out_path: str, window_days: Optional[int]) -> Optional[dict]:
@@ -551,7 +567,7 @@ def build_report(args) -> dict:
     if not key:
         key = os.environ.get("MNEMOTRACE_API_KEY", "")
 
-    server = ServerFacts.load(args.url, key)
+    server = ServerFacts.load(args.url, key, args.space_id)
     state = watch._load_state(os.path.expanduser(args.state))
 
     # --- L1 -----------------------------------------------------------------
@@ -653,7 +669,7 @@ def build_report(args) -> dict:
         "L4": "not_measurable",
     }
 
-    read_url, read_key = _read_target(args.mcp_config)
+    read_url, read_key, read_space = _read_target(args.mcp_config)
     last_result = state.get("last_result") or {}
     last_fed_at = last_result.get("at")
 
@@ -663,10 +679,10 @@ def build_report(args) -> dict:
         "scan": {"files": scan.files, "bytes": scan.bytes, "seconds": scan.seconds},
         "targets": {
             "write_url": args.url,
-            "write_target": watch._target(args.url, key),
+            "write_target": watch._target(args.url, key, args.space_id),
             "read_url": read_url,
-            "read_target": watch._target(read_url, read_key) if read_url else "",
-            "same_memory": bool(read_url) and read_url == args.url and read_key == key,
+            "read_target": watch._target(read_url, read_key, read_space) if read_url and read_space else "",
+            "same_memory": bool(read_url) and read_url == args.url and read_key == key and read_space == args.space_id,
         },
         "rungs": rungs,
         "l0": {"episodes": server.episodes, "conclusions": server.conclusions,
@@ -832,6 +848,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--url", default=os.environ.get("MNEMOTRACE_URL") or DEFAULT_URL,
                     help="write target (the server the watcher/hook feeds)")
     ap.add_argument("--key", default="", help="API key; precedence --key > --key-file > MNEMOTRACE_API_KEY")
+    ap.add_argument("--space-id", default=os.environ.get("MNEMOTRACE_SPACE_ID"), required=not os.environ.get("MNEMOTRACE_SPACE_ID"))
     ap.add_argument("--key-file", default="", help="read the API key from this file")
     ap.add_argument("--days", type=int, default=7, help="scan window in days (default 7)")
     ap.add_argument("--all", action="store_true", help="scan the whole corpus instead of a window")

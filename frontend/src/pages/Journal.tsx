@@ -9,7 +9,7 @@ import { ConfirmDialog } from '../components/Modal'
 import { FilterSelect } from '../components/FilterSelect'
 import { TopicBadge, TopicEditor } from '../components/TopicEditor'
 import { toast } from '../components/Toast'
-import { useCloseSession, useDeleteFact, useEditFact, useMemories, useMemoryPages, useSessions } from '../hooks/queries'
+import { useOrganizeSession, useDeleteFact, useEditFact, useMemories, useMemoryPages, useSessions } from '../hooks/queries'
 import { useDebouncedSearch } from '../hooks/useDebouncedSearch'
 import { useSpacePreference } from '../store/preferences'
 import { copy as t } from '../lib/copy'
@@ -547,23 +547,19 @@ function JournalEmpty() {
   )
 }
 
-/** 蒸馏一个已存在的会话。只有关闭会话才会写出结论，因此这是控制台触达那些从未通过
- *  agent 客户端关闭的历史记录的唯一入口。 */
+/** 推进已保存会话的核心处理。 */
 function BackfillSessions({ className }: { className?: string }) {
   const sessions = useSessions({ limit: 8 })
-  const closeSession = useCloseSession()
+  const organizeSession = useOrganizeSession()
   const [pending, setPending] = useState<string | null>(null)
 
   const distil = (id: string) => {
     setPending(id)
-    closeSession.mutate(id, {
+    organizeSession.mutate(id, {
       onSuccess: (r) => {
         setPending(null)
-        if (r.outcomes > 0) {
-          toast.success(t.journal.backfillDone(r.outcomes))
-        } else {
-          toast.info(t.journal.backfillNoNew)
-        }
+        if (r.ok) toast.success('会话核心处理完成')
+        else toast.info(r.status === 'timed_out' ? '等待超时，任务继续处理' : '处理未完成，请查看操作进度')
       },
       onError: (e) => {
         setPending(null)

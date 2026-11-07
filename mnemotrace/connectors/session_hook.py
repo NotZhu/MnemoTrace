@@ -1,17 +1,7 @@
-"""会话一结束就闭合它，而不是等监视器的下一个 tick。
+"""SessionEnd 立即把指定会话交给数据库后台处理。
 
-存在的原因：watcher（connectors/watch.py）每 30 分钟轮询一次，且只看已静默 15 分钟（QUIET_SECONDS）的
-transcript，所以"会话结束 -> 结论进入记忆"的结构性下限是 15-45 分钟，而实测 p50 还要差得多，因为积压
-超过单个 tick 的 `--limit`。一个两天后才能回答某会话问题的记忆，是没人会去用的记忆。Claude Code 触发
-`SessionEnd` 时携带 transcript 路径；就地喂这一个文件的成本恰好是一次 `/v1/import` + 一次
-`/v1/sessions/close` —— 一次 LLM 调用 —— 即可把延迟降到秒级。
-
-    # 安装后运行，从不手动执行（URL 和 key 已烧进 settings.json 的命令里）：
-    mnemotrace-watch --install-hook --dry-run --settings ~/.claude/settings.json
-    mnemotrace-watch --install-hook
-
-    # 每个结束的会话运行一次，钩子载荷从 stdin 传入：
-    python -m mnemotrace.connectors.session_hook --url URL --key-file PATH
+钩子将 Claude Code transcript 发送到 `/v1/import`。只有原文得到持久化确认后才写入 watcher 的认领台账。
+用 `mnemotrace-watch --install-hook --space-id <SPACE_ID>` 生成带明确空间的钩子配置。
 
 本模块恪守四条规则。
 
@@ -27,15 +17,8 @@ transcript，所以"会话结束 -> 结论进入记忆"的结构性下限是 15-
 * **只记录计数和速率，从不记录内容。** 不写路径、项目名、会话标题、结论文本 —— transcript 用
   `sha1(path)[:12]` 标识。（`watch.log` 会打印目录名；那是本模块绝不能照抄的缺陷。）
 
-为什么是 `SessionEnd` 而不是 `Stop`：对 160 份真实 transcript 的测量显示，每个会话平均 23.4 个用户轮次
-（中位数 3，p90 87），所以在每次 `Stop` 都闭合意味着约 23 次完整蒸馏才能产出同样的一批结论 —— 而且
-`Stop` 触发时 transcript 还在写入，正是 `QUIET_SECONDS` 要避开的移动目标。也不是 `SubagentStop`：
-子 agent transcript 在两个既有层（`agent_sessions.find_sessions`、`isSidechain` 过滤）都被丢弃，
-钩子再喂它们就与导入层自相矛盾。
-
-为什么分离运行：不是因为钩子超时（`"timeout": 5` 确实只给 5 秒），而是因为导入+关闭是一次延迟无上界的
-LLM 调用 —— 且 `SessionEnd` 时 CLI 正在退出，由垂死进程监管的作业归属就是错的。settings 命令里的
-`nohup` 加上本进程的第一个动作 `setsid()`（macOS 没有 /usr/bin/setsid）。
+`SessionEnd` 捕获停止写入的会话。`Stop` 时记录可能仍在增长，子 Agent 记录由导入器的现有规则过滤。
+钩子脱离即将退出的 Agent 进程，给持久化请求留出完成时间。
 """
 from __future__ import annotations
 
@@ -153,6 +136,7 @@ def _parse(argv: Optional[list[str]]) -> argparse.Namespace:
                                  description="Feed one finished Claude Code session to MnemoTrace.")
     ap.add_argument("--url", default=watch.DEFAULT_URL)
     ap.add_argument("--key-file", default=os.path.expanduser("~/.mnemotrace/watch.key"))
+    ap.add_argument("--space-id", default=os.environ.get("MNEMOTRACE_SPACE_ID"))
     ap.add_argument("--state", default=watch.DEFAULT_STATE,
                     help="read-only: the watcher's ledger, consulted for `target` and `seen`")
     ap.add_argument("--claims", default=watch.DEFAULT_CLAIMS)
@@ -204,7 +188,10 @@ def run(argv: Optional[list[str]] = None, *, stdin: Optional[str] = None,
 
     # 目标守卫。`_target` 与 run_once 用来在服务器或命名空间变化时清空 `seen` 的是同一字段，所以与它
     # 一致正是"钩子与监视器喂同一个记忆"的含义。state 文件在这里以只读方式打开，且本进程仅此一处。
-    target = watch._target(args.url, key)
+    if not args.space_id:
+        _say(f"hook {key12} refused: missing space ID")
+        return 0
+    target = watch._target(args.url, key, args.space_id)
     state = watch._load_state(args.state)
     installed = state.get("target")
     if installed and installed != target:
@@ -227,7 +214,7 @@ def run(argv: Optional[list[str]] = None, *, stdin: Optional[str] = None,
     if (state.get("seen") or {}).get(path) == st.st_size:
         _say(f"hook {key12} skipped (seen)")
         return 0
-    if watch.load_claims(args.claims).get(path) == st.st_size:
+    if watch.load_claims(args.claims, target=target).get(path) == st.st_size:
         _say(f"hook {key12} skipped (seen)")
         return 0
 
@@ -240,7 +227,7 @@ def run(argv: Optional[list[str]] = None, *, stdin: Optional[str] = None,
     mtime = st.st_mtime  # 延迟计时从 transcript 停止增长算起，而不是从我们醒来算起
     try:
         with _deadline(args.deadline):
-            result = ingest(args.url, key, [path], close_sessions=True,
+            result = ingest(args.url, key, [path], space_id=args.space_id,
                             max_bytes=args.max_bytes, timeout=args.deadline)
     except Exception as exc:  # noqa: BLE001 — 现在每个失败都是监视器的事，与用户无关
         _say(f"hook {key12} failed: {exc.__class__.__name__} — nothing claimed, "
@@ -249,19 +236,15 @@ def run(argv: Optional[list[str]] = None, *, stdin: Optional[str] = None,
     finally:
         lock.close()
 
-    # 与监视器相同的"完成"判据：一份 transcript 只有在解析出的每个会话都到达服务器 AND 被闭合后才算喂过。
-    # 没导入任何东西的 close 返回 outcomes: 0，看起来也像成功，所以光导入成功还不是证据。
     ids = (result.get("sessions_by_path") or {}).get(path) or []
-    closed = set(result.get("closed_ok") or [])
-    if not ids or not set(ids) <= closed:
-        _say(f"hook {key12} failed: import or close did not complete — nothing claimed")
+    if not ids:
+        _say(f"hook {key12} failed: import was not confirmed — nothing claimed")
         return 0
 
     claim(args.claims, path, st.st_size, target)
     finished = time.time()
     _say(f"hook {key12} · {st.st_size // 1024}KB · {len(ids)} session · "
-         f"{int(result.get('episodes') or 0)} episode(s) · {int(result.get('outcomes') or 0)} "
-         f"conclusion(s) · lag_s {round(finished - mtime, 1)} · {round(finished - started, 1)}s")
+         f"{int(result.get('episodes') or 0)} episode(s) · lag_s {round(finished - mtime, 1)} · {round(finished - started, 1)}s")
     return 0
 
 

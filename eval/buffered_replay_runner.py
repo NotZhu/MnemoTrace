@@ -298,7 +298,8 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
                 errors.append('final_flush_incomplete')
             for user in sorted({e['user'] for e in case['events']}):
                 for session in sorted({e['session'] for e in case['events'] if e['user'] == user}):
-                    service.close_session(user, session, summarize=True, clear_working=False, outcomes=False)
+                    if not service.flush(user, session, include_summaries=True)["ok"]:
+                        raise RuntimeError("Session summary processing failed")
                 with service._read_scope(user) as mem:
                     snapshots[user] = dict(facts=[asdict(f) for f in mem._all_facts()],
                         working=[asdict(w) for w in mem.working_mem.values()], identity=dict(mem._identity),
@@ -360,7 +361,7 @@ def main():
         if key.startswith('MNEMOTRACE_'):
             os.environ.pop(key)
     os.environ.update(MNEMOTRACE_BUFFERED_EXTRACTION='1', MNEMOTRACE_STORAGE='memory',
-                      MNEMOTRACE_CONFLICT_DETECTION='0', MNEMOTRACE_SESSION_OUTCOMES='0',
+                      MNEMOTRACE_CONFLICT_DETECTION='0',
                       LITELLM_LOCAL_MODEL_COST_MAP='True')
     from mnemotrace.llm import providers
     import mnemotrace

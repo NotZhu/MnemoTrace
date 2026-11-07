@@ -11,18 +11,13 @@ services:
     ports:
       - "127.0.0.1:${MNEMOTRACE_PORT:-8000}:8000"
     environment:
-      MNEMOTRACE_API_KEYS: "${MNEMOTRACE_API_KEYS:?set MNEMOTRACE_API_KEYS in deploy/.env}"
-      MNEMOTRACE_DATA_DIR: /data
-      MNEMOTRACE_BUFFERED_EXTRACTION: "${MNEMOTRACE_BUFFERED_EXTRACTION:-1}"
+      MNEMOTRACE_DATABASE_URL: "${MNEMOTRACE_DATABASE_URL:?set MNEMOTRACE_DATABASE_URL in deploy/.env}"
+      MNEMOTRACE_DB_ROLE_PREFIX: "${MNEMOTRACE_DB_ROLE_PREFIX:-mnemotrace}"
       MNEMOTRACE_EMBEDDER: "${MNEMOTRACE_EMBEDDER:-hashing}"
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       MNEMOTRACE_LLM: "${MNEMOTRACE_LLM:-}"
       MNEMOTRACE_ANSWERER: "${MNEMOTRACE_ANSWERER:-}"
       MNEMOTRACE_MAX_REQUEST_BYTES: "${MNEMOTRACE_MAX_REQUEST_BYTES:-2097152}"
-      MNEMOTRACE_MAX_HOT_USERS: "${MNEMOTRACE_MAX_HOT_USERS:-64}"
-      MNEMOTRACE_MAX_HOT_FACTS: "${MNEMOTRACE_MAX_HOT_FACTS:-10000}"
-    volumes:
-      - mnemotrace_data:/data
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -40,6 +35,3 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 4
-
-volumes:
-  mnemotrace_data:

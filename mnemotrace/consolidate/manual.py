@@ -87,7 +87,7 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
         f.text = f"{f.subject} {f.predicate.replace('_', ' ')} {f.object}".strip()
     # display_of() 优先用 `display` 而非 `text`，因此过期的 display 会让所有界面在用户被告知
     # 保存成功后仍渲染编辑前的措辞。这不只影响 outcome。outcome 的 display 就是它的 object
-    # （outcomes.py 写入 `display=statement`），可以直接重新赋值。其他所有 fact 的 display 都是
+    # （历史结论记录保存 `display=statement`），可以直接重新赋值。其他所有 fact 的 display 都是
     # extractor 生成的完整句子（"Wei works at Tencent"），若把裸 object 赋给 display 就会渲染成
     # "Moonshot AI"——本功能要修复的碎片化问题又从属性侧回来了。正确做法是清空 display，让
     # display_of() 回退到 render_display(subject, predicate, object)——没有原语言展示文本的 fact

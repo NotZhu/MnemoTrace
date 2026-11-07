@@ -5,8 +5,21 @@ artifacts; storage schema compatibility is documented separately when it changes
 
 ## [Unreleased] - 2026-10-25
 
+### Added
+
+- Added explicit space management, durable operation lookup and retry, and the `mnemotrace` CLI for
+  operation status, retrieval, and fact deletion.
+
 ### Changed
 
+- Switched the HTTP service, MCP tools, SDK clients, CLI, and console to Postgres-backed memory.
+  HTTP and remote MCP verify issued Bearer keys per request, and recall authorizes every requested space.
+  Python integrations can use `PostgresMemory` directly. Deployment requires an initialized Postgres
+  database and a runtime role connection.
+- Buffered ingestion acknowledges durable input and returns operation IDs. Immediate ingestion waits
+  for core processing. Auxiliary tasks have their own operation IDs. Session flush preserves working memory.
+- Explicit record erasure accepts facts and working memory. Space clearing, space deletion, and account
+  deletion use their own operations.
 - Rebuilt documentation around quickstart, usage, integration, API references, architecture,
   deployment, and evaluation; consolidated overlapping architecture and frontend development pages.
   AGENTS.md now defines shared engineering guidance with scoped validation and document lifecycles.
@@ -18,11 +31,7 @@ artifacts; storage schema compatibility is documented separately when it changes
   current documentation no longer carries historical benchmark scores as current claims.
 - Unified frontend test discovery in CI, enabled unused TypeScript checks, and narrowed Docker build
   context to exclude local runtime data and scratch files. Pytest cache now uses .artifacts/pytest/.
-- HTTP and local MCP default to `~/.mnemotrace/data`; containers keep `/data` and systemd uses
-  `/var/lib/mnemotrace`. Old data directories are neither discovered nor migrated automatically.
-- MemoryService now reads, writes, and erases only the namespace's digest directory. Runtime fallback
-  to account-named directories or `.pkl` candidates has been removed. Existing digest stores keep the
-  same names and format; old paths remain untouched and require explicit, ownership-verified migration.
+- Product services use a newly initialized database. Existing file-backed stores are left in place.
 - Memory ownership uses the exact supplied `user_id`; names, nicknames, and entity aliases still resolve
   within that scope. Snapshots with actual historical user-ID links fail before any store mutation;
   empty or self-only mappings remain loadable without rewriting records.
@@ -33,7 +42,9 @@ artifacts; storage schema compatibility is documented separately when it changes
   engineering checks no longer require their historical files or workflow.
 - Completed specification suites, redundant reports, obsolete diagnostics, and stale integration
   inventory. Local scratch files use .artifacts/; the downloaded LOCOMO dataset is no longer vendored.
-- The user-ID linking interface and resolver. API-key authentication and space isolation are unchanged.
+- The user-ID linking interface and resolver.
+- The `close_session` product route, tool, and SDK method. Use session-scoped `flush_processing` to
+  wait for core work and the dedicated operation to clear working memory.
 - The legacy pickle converter, its console command, and migration guidance. Existing pickle files are
   left untouched and are no longer supported as conversion sources.
 

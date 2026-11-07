@@ -370,7 +370,7 @@ def _args(home: str, url: str, **over) -> Namespace:
         json.dump({"mcpServers": {"mnemotrace": {"env": {"MNEMOTRACE_API_URL": "http://elsewhere:8456",
                                                      "MNEMOTRACE_API_KEY": "other"}}}}, fh)
     args = Namespace(
-        url=url, key="k", key_file="", days=7, all=False,
+        url=url, space_id="synthetic-space", key="k", key_file="", days=7, all=False,
         roots=f"{home}/.claude/projects,{home}/.codex/sessions",
         state=os.path.join(home, "watch_state.json"),
         watch_log=os.path.join(home, "watch.log"),
@@ -518,7 +518,7 @@ def test_bare_run_exits_zero_even_when_the_instrument_is_broken(tmp_path, monkey
     mcp = os.path.join(home, "claude.json")
     with open(mcp, "w", encoding="utf-8") as fh:
         json.dump({"mcpServers": {}}, fh)
-    argv = ["--url", "http://127.0.0.1:1", "--key", "k", "--no-out", "--mcp-config", mcp,
+    argv = ["--url", "http://127.0.0.1:1", "--key", "k", "--space-id", "synthetic-space", "--no-out", "--mcp-config", mcp,
             "--roots", f"{home}/.claude/projects,{home}/.codex/sessions",
             "--state", os.path.join(home, "watch_state.json"),
             "--watch-log", os.path.join(home, "watch.log"),
@@ -536,7 +536,7 @@ def test_ledger_appends_one_line_per_run(tmp_path, stub_server, monkeypatch):
     with open(mcp, "w", encoding="utf-8") as fh:
         json.dump({"mcpServers": {}}, fh)
     out = os.path.join(home, "facility.jsonl")
-    argv = ["--url", stub_server, "--key", "k", "--out", out, "--mcp-config", mcp,
+    argv = ["--url", stub_server, "--key", "k", "--space-id", "synthetic-space", "--out", out, "--mcp-config", mcp,
             "--roots", f"{home}/.claude/projects,{home}/.codex/sessions",
             "--state", os.path.join(home, "watch_state.json"),
             "--watch-log", os.path.join(home, "watch.log"),

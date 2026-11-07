@@ -37,7 +37,8 @@ export interface OriginalEpisode {
   coverage: {unit: 'unicode_code_points'; ranges: [number, number][]; partial: boolean;
     policy: string; original_length: number; input_hash: string; source: string; strategy_completed: boolean} | null
   id: string
-  space: string
+  space_id: string
+  agent_id: string | null
   session_id: string
   role: string
   event_time: number | null
@@ -45,55 +46,51 @@ export interface OriginalEpisode {
   content: string
 }
 
-export interface RememberResult {
-  summarization: SummarizationResult
-  ok: boolean
-  scope?: 'long' | 'working' | 'mixed' | 'none'
-  queued?: boolean
-  processing?: 'pending' | 'completed'
-  episode_id?: string
-  extracted?: number
-  working_added?: number
-  total_facts?: number
-  kind?: string
+export interface MemorySpace {
+  space_id: string
+  name: string
+  status: 'active'
 }
 
 export type ProcessingState = 'pending' | 'running' | 'retry_wait' | 'failed' | 'completed' | 'cancelled'
 
-export interface ProcessingJob {
-  episode_id: string
-  source_kind: 'dialogue' | 'raw' | 'document'
-  operation: 'extract' | 'summary' | 'outcomes' | 'conflicts'
+export interface OperationResult {
+  operation_id: string
+  kind: 'extract' | 'summary' | 'reembed' | 'graph' | 'conflicts' | 'outcomes'
   state: ProcessingState
   phase: 'queued' | 'generate' | 'embed' | 'commit' | 'compensate' | 'done'
+  stored_raw: boolean
+  extraction_saved: boolean
+  core_committed: boolean
   attempts: number
-  embed_attempts: number
+  next_attempt_at: number | null
   error_code: string | null
-  job_id?: string
-  source_ids?: string[]
-  message_id?: string | null
-  sequence?: number
-  core?: 'not_requested' | 'pending' | 'completed' | 'failed'
-  summarization?: 'not_needed' | 'pending' | 'completed' | 'failed'
-  coverage?: OriginalEpisode['coverage']
+  auxiliary_operation_ids: string[]
 }
 
 export interface ProcessingStatus {
-  enabled: boolean
-  generation: string | null
-  session_id: string | null
-  counts: Record<ProcessingState, number>
-  jobs: ProcessingJob[]
-  recovery_error?: boolean
+  operations: OperationResult[]
+  next_after_id: string | null
 }
 
-export interface ProcessingFlushResult extends Partial<ProcessingStatus> {
+export interface ProcessingFlushResult {
   ok: boolean
   status: 'completed' | 'failed' | 'timed_out'
+  operation_ids: string[]
+  operations: OperationResult[]
+}
+
+export interface RememberResult extends Omit<ProcessingFlushResult, 'status'> {
+  status: ProcessingFlushResult['status'] | 'accepted' | 'stored'
+  source_ids: string[]
 }
 
 /** 检索到的精简上下文 — 用于作答的一小段带日期切片（recall）。 */
 export interface RecallResult {
+  space_id?: string
+  space_ids?: string[]
+  coverage_by_space: Record<string, string[]>
+  limitations: string[]
   context: string
   tokens_est: number
   as_of: number | null
@@ -104,25 +101,12 @@ export interface RecallResult {
 
 /** 直接给出的事实性答案及支撑事实（search）。 */
 export interface SearchResult {
+  space_id: string
+  limitations: string[]
   answer: string
   facts: string[]
   as_of: number | null
   redacted_sensitive: boolean
-}
-
-export interface CloseSessionResult {
-  ok: boolean
-  session_id: string
-  episodes: number
-  pending_consolidated: number
-  facts_added: number
-  duplicates: number
-  invalidated: number
-  summaries: number
-  reflected: number
-  working_cleared: number
-  /** 本次会话新提炼的结论。未变更的会话重复关闭不会新增；设置 `MNEMOTRACE_SESSION_OUTCOMES=0` 时不运行；未配置模型而请求提炼时返回错误。 */
-  outcomes?: number
 }
 
 export interface SessionReportFact {
@@ -147,7 +131,7 @@ export interface SessionReportFact {
 
 export interface SessionReport {
   ok: boolean
-  user: string
+  space_id: string
   session_id: string
   include_sensitive: boolean
   episodes: number
@@ -158,6 +142,7 @@ export interface SessionReport {
   facts_added: number
   facts_redacted: number
   facts: SessionReportFact[]
+  facts_page: MemoryPage<SessionReportFact>
 }
 
 export interface SessionIndexItem {
@@ -178,7 +163,7 @@ export interface SessionIndexItem {
 
 export interface SessionIndex {
   ok: boolean
-  user: string
+  space_id: string
   sessions: SessionIndexItem[]
   page: MemoryPage<SessionIndexItem>
   next_offset: number | null
@@ -292,7 +277,7 @@ export type MemoryKindFilter = 'outcomes' | 'attributes'
 
 /** 分页的记忆视图（GET /v1/memories）；默认可安全分享。 */
 export interface MemoryDump {
-  user: string
+  space_id: string
   data_revision: string
   evaluated_at: number
   profile: string
@@ -308,40 +293,24 @@ export interface MemoryDump {
 }
 
 export interface MemoryStats {
-  user: string
+  space_id: string
   counts: {
     episodes: number
     episodes_consolidated: number
-    extraction_failures?: number
-  episodes_pending: number
-    episodes_ephemeral: number
-    facts_hot: number
-    facts_cold: number
-    cold_pages_out: number
-    cold_pages_in: number
+    episodes_pending: number
+    extraction_failures: number
+    facts: number
     facts_live: number
     facts_superseded: number
     facts_sensitive: number
+    facts_outcomes: number
     working_live: number
     summaries: number
     entities: number
     relations: number
-    graph_orphan_entities: number
-    graph_stale_relations: number
     pending_conflicts: number
   }
-  time_range: {
-    first_event_at: number | null
-    first_event_at_h: string | null
-    last_event_at: number | null
-    last_event_at_h: string | null
-    oldest_fact_valid_at: number | null
-    oldest_fact_valid_at_h: string | null
-    newest_fact_valid_at: number | null
-    newest_fact_valid_at_h: string | null
-  }
-  storage: string
-  max_hot_facts: number
+  storage: 'postgres'
   embedder: string
   llm_configured: boolean
   answerer_configured: boolean
@@ -350,7 +319,7 @@ export interface MemoryStats {
 
 export interface AgentStatus {
   ok: boolean
-  user: string
+  space_id: string
   session_id: string | null
   mode: 'content_free_agent_status'
   focus: Focus
@@ -358,7 +327,7 @@ export interface AgentStatus {
     id: string | null
     episodes: number
     extraction_failures?: number
-  episodes_pending: number
+    episodes_pending: number
     working_live: number
   }
   counts: MemoryStats['counts']
@@ -370,7 +339,7 @@ export interface AgentStatus {
   tools: {
     read_context: string
     write_memory: string
-    close_session: string
+    flush_processing: string
     inspect_facts: string
     correct_fact: string
     delete_fact: string
@@ -464,6 +433,8 @@ export interface ImportSessionInput {
 
 /** 批量导入：传入已解析的 `sessions`，或传入原始 `data` + `format` 由服务器解析。 */
 export interface ImportParams {
+  agent_id?: string
+  dedupe?: boolean
   sessions?: ImportSessionInput[]
   data?: unknown
   /** chatgpt | messages | records | jsonl | transcript | auto（默认） */
@@ -473,12 +444,20 @@ export interface ImportParams {
 }
 
 export interface ImportResult {
-  summarization?: Record<string, SummarizationResult>
   ok: boolean
   sessions: number
   episodes: number
-  facts_added: number
-  summaries: number
+  skipped: number
+  queued: boolean
+  failed: number
+  failures: Array<{
+    session_id: string | null
+    session_index?: number
+    code: string
+    stored_raw: boolean
+    operation_ids: string[]
+  }>
+  results: Array<RememberResult & {session_id: string; accepted: number; messages?: MessageReceipt[]}>
 }
 
 export interface MemoryExportFact extends TopicMetadata {
@@ -514,10 +493,9 @@ export interface MemoryExportEpisode {
 }
 
 export interface MemoryExport {
-  user: string
+  space_id: string
   include_sensitive: boolean
   redacted_sensitive: boolean
-  profile: string
   focus: Focus
   facts: MemoryExportFact[]
   episodes: MemoryExportEpisode[]
@@ -542,6 +520,9 @@ export interface ChatMessage {
 
 /** 忆痕扩展，用于按请求控制记忆层。 */
 export interface MemoryControls {
+  space_id: string
+  agent_id?: string
+  message_id?: string
   /** 回答前检索并注入相关记忆（默认 true） */
   recall?: boolean
   /** 回答后记住用户这一轮输入（默认 true） */
@@ -562,7 +543,7 @@ export interface ChatCompletionCreateParams {
   messages: ChatMessage[]
   model?: string
   stream?: boolean
-  memory?: MemoryControls
+  memory: MemoryControls
   temperature?: number
   max_tokens?: number
   [key: string]: unknown
@@ -581,6 +562,8 @@ export interface ChatUsage {
 }
 
 export interface MnemoTraceChatMeta {
+  space_id: string
+  operation_ids?: string[]
   recalled: boolean
   memory_tokens_est: number
   session_id?: string | null
@@ -605,6 +588,7 @@ export interface ChatCompletion {
 export interface ChatCompletionChunk {
   id: string
   object: 'chat.completion.chunk'
+  mnemotrace?: MnemoTraceChatMeta
   created: number
   model: string
   choices: Array<{
@@ -626,17 +610,13 @@ export interface DialogueMessage {
   event_time?: number | null
 }
 
-export interface MessageJob extends ProcessingJob {
+export interface MessageReceipt {
   message_id: string
-  sequence: number
-  core: 'not_requested' | 'pending' | 'completed' | 'failed'
-  summarization: 'not_needed' | 'pending' | 'completed' | 'failed'
+  episode_id: string
+  operation_ids: string[]
 }
 
-export interface MessagesResult {
-  ok: boolean
+export interface MessagesResult extends RememberResult {
   accepted: number
-  queued: boolean
-  messages: MessageJob[]
-  processing?: { ok: boolean; status: 'completed' | 'failed' | 'timed_out'; jobs: MessageJob[] }
+  messages: MessageReceipt[]
 }

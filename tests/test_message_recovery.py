@@ -230,16 +230,17 @@ def test_saved_dialogue_reembeds_pending_vectors_and_recovers(tmp_path, monkeypa
 
 
 
-def test_close_uses_joint_results_and_preserves_raw_import_intent(services):
+def test_flush_uses_joint_results_and_preserves_raw_import_intent(services):
     svc, model, _ = services()
     svc.remember_messages('u', [message('a', 'Synthetic durable record ' * 100)], 's')
-    result = svc.close_session('u', 's')
-    assert result['ok'] and result['pending_consolidated'] == 1
-    assert result['facts_added'] == 1 and result['summaries'] == 1 and result['outcomes'] == 0
+    result = svc.flush('u', 's', include_summaries=True)
+    assert result['ok'] and result['jobs'][0]['core'] == 'completed'
+    assert len(svc.get('u').fact_store.values()) == 1
+    assert svc.get('u').episodes_doc.values()[0].summary
     assert len(model.calls) == 1
     svc.import_('u', sessions=[dict(session_id='raw', messages=[message('raw')])], consolidate=False)
-    result = svc.close_session('u', 'raw')
-    assert result['ok'] and result['pending_consolidated'] == 0 and result['facts_added'] == 0
+    result = svc.flush('u', 'raw')
+    assert result['ok'] and len(svc.get('u').fact_store.values()) == 1
     assert len(model.calls) == 1
 
 
@@ -279,7 +280,7 @@ def test_following_trigger_survives_restart_without_capturing_untriggered_messag
     assert len(first_model.calls) == 1 and len(model.calls) == 1
 
 
-def test_close_clears_only_its_frozen_working_range(services):
+def test_flush_freezes_core_scope_and_preserves_working(services):
     entered, release = threading.Event(), threading.Event()
     def respond(prompt, system):
         entered.set()
@@ -290,16 +291,19 @@ def test_close_clears_only_its_frozen_working_range(services):
                                   source_ids=[data['pending'][0]['id']])]
         return json.dumps(result)
     svc, _, _ = services(respond)
+    svc.add_working('u', 'Synthetic earlier working', 's')
     svc.remember_messages('u', [message('a')], 's')
     with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(svc.close_session, 'u', 's')
+        future = pool.submit(svc.flush, 'u', 's')
         assert entered.wait(5)
         svc.remember_messages('u', [message('b')], 's')
         svc.add_working('u', 'Synthetic later working', 's')
         release.set()
         result = future.result(5)
-    assert result['ok'] and result['working_cleared'] == 1
-    assert [w['content'] for w in svc.working_memory('u', 's')['items']] == ['Synthetic later working']
+    assert result['ok']
+    assert {'Synthetic earlier working', 'Synthetic later working'} <= {
+        w['content'] for w in svc.working_memory('u', 's')['items']
+    }
     assert [j['core'] for j in svc.processing_status('u')['jobs']] == ['completed', 'pending']
 
 
@@ -509,11 +513,13 @@ def test_watcher_history_preserves_reactivated_live_working(services, monkeypatc
     session = ImportSession(session_id='s', messages=[ImportMessage('Synthetic historical note', message_id='old')])
     monkeypatch.setattr(watch, 'load_sessions', lambda *args, **kwargs: [session])
     def post(base, key, path, body, timeout):
-        if path == '/v1/import':
-            return svc.import_('u', sessions=body['sessions'], consolidate=body.get('consolidate'))
-        return svc.close_session('u', **body)
+        assert path == '/v1/import' and body['space_id'] == 'synthetic-space'
+        imported = svc.import_('u', sessions=body['sessions'], consolidate=True)
+        return {**imported, 'results': [{'session_id': 's', 'source_ids': ['synthetic-source']}]}
     monkeypatch.setattr(watch, '_post', post)
-    assert watch.ingest('http://synthetic.invalid', 'synthetic-key', ['synthetic-file'])['closed_ok'] == ['s']
+    result = watch.ingest('http://synthetic.invalid', 'synthetic-key', ['synthetic-file'],
+                          space_id='synthetic-space', immediate=True)
+    assert result['sessions_by_path'] == {'synthetic-file': ['s']}
     assert [w['content'] for w in svc.working_memory('u', 's')['items']] == ['Synthetic reactivated live task']
     assert len(model.calls) == 1
 

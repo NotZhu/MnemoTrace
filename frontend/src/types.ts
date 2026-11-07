@@ -105,7 +105,7 @@ export interface FeedStatus {
 
 export interface AgentStatus {
   ok: boolean
-  user: string
+  space_id: string
   session_id: string | null
   mode: 'content_free_agent_status'
   focus: Focus
@@ -113,7 +113,7 @@ export interface AgentStatus {
     id: string | null
     episodes: number
     extraction_failures?: number
-  episodes_pending: number
+    episodes_pending: number
     working_live: number
   }
   counts: MemoryStatsCounts
@@ -126,7 +126,7 @@ export interface AgentStatus {
   tools: {
     read_context: string
     write_memory: string
-    close_session: string
+    flush_processing: string
     inspect_facts: string
     correct_fact: string
     delete_fact: string
@@ -152,7 +152,7 @@ export interface SessionIndexItem {
 
 export interface SessionsIndex {
   ok: boolean
-  user: string
+  space_id: string
   sessions: SessionIndexItem[]
   page: Page<SessionIndexItem>
   next_offset: number | null
@@ -161,7 +161,7 @@ export interface SessionsIndex {
 export interface MemoryDump {
   data_revision: string
   evaluated_at: number
-  user: string
+  space_id: string
   profile: string
   counts: MemoryCounts
   facts: MemoryFact[]
@@ -197,7 +197,7 @@ export interface SessionReportFact {
 
 export interface SessionReport {
   ok: boolean
-  user: string
+  space_id: string
   session_id: string
   include_sensitive: boolean
   episodes: number
@@ -208,6 +208,7 @@ export interface SessionReport {
   facts_added: number
   facts_redacted: number
   facts: SessionReportFact[]
+  facts_page: Page<SessionReportFact>
 }
 
 export interface Page<T> {
@@ -260,30 +261,22 @@ export interface ExtractionFailure {
   episode_ids: string[]
 }
 
-export interface RememberResult {
-  ok: boolean
-  scope?: 'long' | 'working' | 'mixed' | 'none'
-  queued?: boolean
-  processing?: 'pending' | 'completed'
-  episode_id?: string
-  extracted?: number
-  working_added?: number
-  total_facts?: number
-  kind?: string
+export interface MemorySpace {
+  space_id: string
+  name: string
+  status: 'active'
 }
 
-export interface CloseSessionResult {
+export interface ProcessingResult {
   ok: boolean
-  session_id: string
-  episodes: number
-  pending_consolidated: number
-  facts_added: number
-  duplicates: number
-  invalidated: number
-  summaries: number
-  reflected: number
-  working_cleared: number
-  outcomes: number // 本次会话新提炼的结论数（重复关闭同一会话不会新增）
+  status: 'completed' | 'failed' | 'timed_out'
+  operation_ids: string[]
+  operations: OperationResult[]
+}
+
+export interface RememberResult extends Omit<ProcessingResult, 'status'> {
+  status: ProcessingResult['status'] | 'accepted' | 'stored'
+  source_ids: string[]
 }
 
 export interface RecallResult {
@@ -415,7 +408,7 @@ export interface AuditFinding {
 }
 
 export interface AuditReport {
-  user: string
+  space_id: string
   checked: { facts: number; entities: number }
   total_findings: number
   by_kind: Record<string, number>
@@ -423,26 +416,21 @@ export interface AuditReport {
   truncated: boolean
 }
 
-export interface PipelineJob {
-  episode_id: string
-  source_kind: 'dialogue' | 'raw' | 'document'
-  operation: 'extract' | 'summary' | 'outcomes' | 'conflicts'
-  phase: 'queued' | 'generate' | 'embed' | 'commit' | 'compensate' | 'done'
+export interface OperationResult {
+  operation_id: string
+  kind: 'extract' | 'summary' | 'reembed' | 'graph' | 'conflicts' | 'outcomes'
   state: 'pending' | 'running' | 'retry_wait' | 'failed' | 'completed' | 'cancelled'
+  phase: 'queued' | 'generate' | 'embed' | 'commit' | 'compensate' | 'done'
+  stored_raw: boolean
+  extraction_saved: boolean
+  core_committed: boolean
   attempts: number
-  embed_attempts: number
+  next_attempt_at: number | null
   error_code: string | null
-  core?: 'not_requested' | 'pending' | 'completed' | 'failed'
-  summarization?: 'not_needed' | 'pending' | 'completed' | 'failed'
-  coverage?: {unit: 'unicode_code_points'; ranges: [number, number][]; partial: boolean;
-    policy: string; strategy_completed: boolean} | null
+  auxiliary_operation_ids: string[]
 }
 
 export interface ProcessingStatus {
-  enabled: boolean
-  recovery_error: boolean
-  generation: string | null
-  session_id: string | null
-  counts: Record<PipelineJob['state'], number>
-  jobs: PipelineJob[]
+  operations: OperationResult[]
+  next_after_id: string | null
 }

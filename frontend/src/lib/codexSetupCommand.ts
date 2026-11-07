@@ -4,7 +4,7 @@ export function defaultSetupShell(platform: string): SetupShell {
   return /^win|windows/i.test(platform) ? 'powershell' : 'bash'
 }
 
-export function codexSetupCommand(shell: SetupShell, apiUrl: string): string {
+export function codexSetupCommand(shell: SetupShell, apiUrl: string, spaceId = '<SPACE_ID>'): string {
   const quote = (value: string) => shell === 'powershell'
     ? `'${value.replace(/'/g, "''")}'`
     : `'${value.replace(/'/g, "'\\''")}'`
@@ -13,6 +13,7 @@ export function codexSetupCommand(shell: SetupShell, apiUrl: string): string {
     'python -m mnemotrace.agent_setup',
     '--client codex',
     '--api-url', quote(apiUrl),
+    '--space-id', quote(spaceId),
     '--prompt-api-key',
     shell === 'powershell'
       ? "--python (python -c 'import sys; print(sys.executable)')"

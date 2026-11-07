@@ -260,7 +260,7 @@ def test_cli_install_dry_run_prints_plist_and_writes_nothing(tmp_path, monkeypat
     monkeypatch.setattr(wi, "paths_for", lambda home=None: orig(str(tmp_path)))
     preflight = Mock(return_value=None)
     monkeypatch.setattr(wi, "preflight_import", preflight)
-    code = watch.main(["--install", "--scheduler", "launchd", "--label", "com.mnemotrace.watch.t",
+    code = watch.main(["--space-id", "synthetic-space", "--install", "--scheduler", "launchd", "--label", "com.mnemotrace.watch.t",
                        "--interval", "1h", "--url", "http://127.0.0.1:9", "--key", "test", "--dry-run"])
     out = capsys.readouterr().out
     assert code == 0 and "[dry-run] preflight:" in out
@@ -278,7 +278,7 @@ def test_cli_install_cron_writes_key_file_and_never_edits_crontab(tmp_path, monk
 
     orig = wi.paths_for
     monkeypatch.setattr(wi, "paths_for", lambda home=None: orig(str(tmp_path)))
-    code = watch.main(["--install", "--scheduler", "cron", "--interval", "30m",
+    code = watch.main(["--space-id", "synthetic-space", "--install", "--scheduler", "cron", "--interval", "30m",
                        "--url", "http://127.0.0.1:9", "--key", "test"])
     out = capsys.readouterr().out
     assert code == 0 and "crontab -e" in out and "*/30 * * * * " in out
@@ -289,4 +289,4 @@ def test_cli_install_cron_writes_key_file_and_never_edits_crontab(tmp_path, monk
     assert "--key-file" in out and "--key test" not in out  # 打印的行只携带文件路径，绝不携带密钥
     # 没有密钥且也没有 key 文件时，安装应拒绝，而不是打印一行根本无法运行的命令
     key.unlink()
-    assert watch.main(["--install", "--scheduler", "cron", "--url", "http://127.0.0.1:9"]) == 1
+    assert watch.main(["--space-id", "synthetic-space", "--install", "--scheduler", "cron", "--url", "http://127.0.0.1:9"]) == 1

@@ -1,16 +1,17 @@
 
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { CircleAlert, Hourglass, Send, ShieldAlert, Trash2 } from 'lucide-react'
 
 import { Badge, Button, Card, CardTitle, EmptyState, ErrorState, PageHeader, Spinner } from '../components/ui'
 import { Modal } from '../components/Modal'
 import { SessionPicker } from '../components/SessionPicker'
+import { OperationProgress } from '../components/OperationProgress'
 import { toast } from '../components/Toast'
 import {
   useAgentStatus,
   useClearWorking,
-  useCloseSession,
+  useOrganizeSession,
   useMemoryPages,
   useRememberMessages,
   useSessionReport,
@@ -29,16 +30,18 @@ export default function Conversations() {
     episodes_limit: 20,
     include_sensitive: true,
   })
-  const remember = useRememberMessages()
   const [sessionId, setSessionId] = useState('default')
   const currentSession = sessionId.trim() || 'default'
+  const sessionEpoch = useRef(0)
+  const [sessionRequest, setSessionRequest] = useState(() => new AbortController())
+  const remember = useRememberMessages(sessionRequest.signal)
   const [role, setRole] = useState<'user' | 'assistant'>('user')
   const [mode, setMode] = useState<'live' | 'historical'>('live')
   const [pendingInput, setPendingInput] = useState<{identity: string; id: string} | null>(null)
   const status = useAgentStatus(currentSession)
   const working = useWorking(currentSession)
-  const clearWorking = useClearWorking()
-  const closeSession = useCloseSession()
+  const clearWorking = useClearWorking(sessionRequest.signal)
+  const organizeSession = useOrganizeSession(sessionRequest.signal)
   const [text, setText] = useState('')
   const [sessionSearch, setSessionSearch] = useState('')
   const [searchComposing, setSearchComposing] = useState(false)
@@ -46,7 +49,25 @@ export default function Conversations() {
   const sessions = useSessions({ limit: 12, q: sessionQuery }, { keepPreviousData: true })
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [auditSession, setAuditSession] = useState<string | null>(null)
-  const report = useSessionReport(auditSession)
+  const [reportOffset, setReportOffset] = useState(0)
+  const report = useSessionReport(auditSession, false, reportOffset)
+
+  const showReport = (id: string | null) => {
+    setAuditSession(id)
+    setReportOffset(0)
+  }
+
+  const chooseSession = (value: string) => {
+    if ((value.trim() || 'default') !== currentSession) {
+      sessionEpoch.current += 1
+      sessionRequest.abort()
+      setSessionRequest(new AbortController())
+      if (pendingInput) setText('')
+      setPendingInput(null)
+      showReport(null)
+    }
+    setSessionId(value)
+  }
 
   const submit = () => {
     const content = text.trim()
@@ -54,30 +75,51 @@ export default function Conversations() {
     const identity = JSON.stringify([currentSession, content, role, mode])
     const messageId = pendingInput?.identity === identity ? pendingInput.id : crypto.randomUUID()
     setPendingInput({identity, id: messageId})
+    const epoch = sessionEpoch.current
     remember.mutate({messages: [{message_id: messageId, role, content}], sessionId: currentSession, mode}, {
       onSuccess: (r) => {
+        if (epoch !== sessionEpoch.current) return
         setText('')
         setPendingInput(null)
         working.refetch()
-        if (r.queued) toast.info('原文已保存，正在等待模型抽取')
+        if (r.status === 'accepted' && r.operation_ids.length) toast.info('原文已保存，正在等待模型抽取')
         else toast.success('消息已保存')
       },
-      onError: (e) => toast.error(String((e as Error).message)),
+      onError: (e) => {
+        if (epoch === sessionEpoch.current) toast.error(String((e as Error).message))
+      },
     })
   }
 
-  const finishSession = (id: string) => closeSession.mutate(id, {
-    onSuccess: (r) => {
-      toast.success(r.outcomes > 0
-        ? t.conversations.closedSessionOutcomes(r.facts_added, r.outcomes)
-        : t.conversations.closedSession(r.facts_added))
-      setAuditSession(id)
-      if (id === currentSession) working.refetch()
-    },
-    onError: (e) => toast.error(String((e as Error).message)),
-  })
+  const finishSession = (id: string) => {
+    const epoch = sessionEpoch.current
+    organizeSession.mutate(id, {
+      onSuccess: (r) => {
+        if (epoch !== sessionEpoch.current) return
+        if (r.ok) toast.success('会话核心处理完成')
+        else toast.info(r.status === 'timed_out' ? '等待超时，任务继续处理' : '处理未完成，请查看操作进度')
+        showReport(id)
+        if (id === currentSession) working.refetch()
+      },
+      onError: (e) => {
+        if (epoch === sessionEpoch.current) toast.error(String((e as Error).message))
+      },
+    })
+  }
+
+  const clearSessionWorking = () => {
+    const epoch = sessionEpoch.current
+    clearWorking.mutate(currentSession, {
+      onSuccess: () => {
+        if (epoch !== sessionEpoch.current) return
+        working.refetch()
+        toast.success(t.conversations.clearedWorking)
+      },
+    })
+  }
 
   const episodes = data?.episodes ?? []
+  const reportNextOffset = report.data?.facts_page?.next_offset
 
   return (
     <div className="space-y-6">
@@ -89,7 +131,7 @@ export default function Conversations() {
           <h3 className="text-sm font-medium tracking-wide text-foreground">{t.conversations.rememberTitle}</h3>
           {status.data && !status.isError && (
             <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-ghost">
-              <span className="min-w-0 break-all">{t.conversations.statusNamespace(status.data.user)}</span>
+              <span className="min-w-0 break-all">{t.conversations.statusNamespace(status.data.space_id)}</span>
               <span aria-hidden="true">·</span>
               <span className="whitespace-nowrap">{t.conversations.statusFacts(status.data.counts.facts_live)}</span>
             </div>
@@ -108,7 +150,7 @@ export default function Conversations() {
         <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pl-2">
           <div className="flex min-w-0 max-w-full items-center gap-5">
             <div className="min-w-0 max-w-full sm:max-w-[420px]">
-              <SessionPicker value={sessionId} onChange={setSessionId} />
+              <SessionPicker value={sessionId} onChange={chooseSession} />
             </div>
             <div className="shrink-0">
               <select aria-label="消息角色" className="input" value={role}
@@ -141,20 +183,15 @@ export default function Conversations() {
         </div>
       </Card>
 
+      <OperationProgress key={currentSession} sessionId={currentSession} sessionSignal={sessionRequest.signal} />
+
       {working.isError && <ErrorState message={`工作记忆读取失败${working.data ? '，显示上次结果' : ''}：${(working.error as Error).message}`} onRetry={() => { void working.refetch() }} />}
       {(working.data?.items.length ?? 0) > 0 && (
         <Card>
           <CardTitle
             hint={
               <button
-                onClick={() =>
-                  clearWorking.mutate(currentSession, {
-                    onSuccess: () => {
-                      working.refetch()
-                      toast.success(t.conversations.clearedWorking)
-                    },
-                  })
-                }
+                onClick={clearSessionWorking}
                 className="inline-flex items-center gap-1 text-brand-rose hover:underline"
               >
                 <Trash2 className="h-3.5 w-3.5" /> {t.conversations.clearSession}
@@ -206,18 +243,18 @@ export default function Conversations() {
                   <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-[11px] text-ghost">
                     {s.last_event_at_h && <span className="whitespace-nowrap">{t.conversations.sessionCardLast(s.last_event_at_h)}</span>}
                     <div className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
-                      <button type="button" className={SESSION_ACTION_CLASS} title={t.conversations.auditSessionHint} onClick={() => setAuditSession(s.id)}>
+                      <button type="button" className={SESSION_ACTION_CLASS} title={t.conversations.auditSessionHint} onClick={() => showReport(s.id)}>
                         {t.conversations.auditSession}
                       </button>
-                      <button type="button" className={SESSION_ACTION_CLASS} title={t.conversations.useSessionHint} onClick={() => setSessionId(s.id)}>
+                      <button type="button" className={SESSION_ACTION_CLASS} title={t.conversations.useSessionHint} onClick={() => chooseSession(s.id)}>
                         {t.conversations.useSession}
                       </button>
                       <button type="button" className={SESSION_ACTION_CLASS}
-                        title={t.conversations.closeSessionHint}
-                        disabled={closeSession.isPending}
-                        aria-busy={closeSession.isPending && closeSession.variables === s.id}
+                        title={t.conversations.organizeSessionHint}
+                        disabled={organizeSession.isPending}
+                        aria-busy={organizeSession.isPending && organizeSession.variables === s.id}
                         onClick={() => finishSession(s.id)}>
-                        {closeSession.isPending && closeSession.variables === s.id ? t.conversations.closingSession : t.conversations.closeSession}
+                        {organizeSession.isPending && organizeSession.variables === s.id ? t.conversations.closingSession : t.conversations.organizeSession}
                       </button>
                     </div>
                   </div>
@@ -291,7 +328,7 @@ export default function Conversations() {
 
       <Modal
         open={!!auditSession}
-        onClose={() => setAuditSession(null)}
+        onClose={() => showReport(null)}
         title={auditSession ? t.conversations.auditTitle(auditSession) : t.conversations.auditTitle('')}
       >
         {report.isLoading && <Spinner label={t.conversations.auditLoading} />}
@@ -327,8 +364,16 @@ export default function Conversations() {
                   </li>
                 ))}
               </ul>
-            ) : (
+            ) : reportOffset === 0 ? (
               <EmptyState title={t.conversations.auditEmptyTitle} hint={t.conversations.auditEmptyHint} />
+            ) : null}
+            {(reportOffset > 0 || report.data.facts_page?.has_more) && (
+              <div className="flex justify-end gap-2">
+                {reportOffset > 0 && <Button variant="ghost" onClick={() => setReportOffset(0)}>回到首页</Button>}
+                {reportNextOffset != null && (
+                  <Button variant="ghost" onClick={() => setReportOffset(reportNextOffset)}>下一页</Button>
+                )}
+              </div>
             )}
           </div>
         )}

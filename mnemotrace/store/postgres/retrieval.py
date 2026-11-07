@@ -12,6 +12,7 @@ from .lexical import ANALYZER
 from .records import FACT, ROW_SCOPE, SOURCE, TARGET_COLUMNS, domain, source_summary_join, timestamp
 
 _MULTI_PREDICATE = '^(?:' + '|'.join(re.escape(value) for value in sorted(MULTI_VALUED)) + ')(?:_|$)'
+_TRACK_BOOST = 0.5
 
 
 class Corpus:
@@ -26,14 +27,18 @@ class Corpus:
             raise ValueError('Retrieval does not accept a browsing cursor')
         if kind == FACT:
             conditions, params = view._fact_conditions(facts)
-            select = """SELECT r.user_id,r.space_id,r.id,r.content_version,
-                'text' AS field,r.content_version AS text_version,r.valid_at,r.salience,
+            salience = 'r.salience'
+            if view.track_terms:
+                salience += f' + CASE WHEN {view.focus_matches("r.text")} THEN %s ELSE 0 END'
+                join_params = (list(view.track_terms), _TRACK_BOOST)
+            select = f"""SELECT r.user_id,r.space_id,r.id,r.content_version,
+                'text' AS field,r.content_version AS text_version,r.valid_at,{salience} AS salience,
                 coalesce(r.subject_key,lower(r.subject)) AS subject_key,
                 coalesce(r.predicate_key,lower(r.predicate)) AS predicate_key,
                 r.object,r.source,r.created_at,r.assertion_kind
                 FROM mnemotrace.facts r"""
         else:
-            conditions, params = [], []
+            conditions, params = ["r.scope <> 'working'"], []
             for column, value in (('event_time', facts.valid_at), ('ingested_at', facts.known_at)):
                 if value is not None:
                     conditions.append(f'r.{column} <= %s')
@@ -47,6 +52,7 @@ class Corpus:
                 conditions.append("s.summary <> ''")
             elif source_field == 'text':
                 conditions.append("(s.summary IS NULL OR s.summary = '')")
+            view.exclude_muted(conditions, params, 'r.content', "coalesce(s.summary, '')")
         self.source_field = source_field
         scoped = select + ' WHERE ' + ' AND '.join((ROW_SCOPE, *conditions))
         self.eligible, self.params = self._eligibility(
@@ -268,7 +274,8 @@ def fact_candidates(view, query, config=None, graph=None):
     as_of = view.at.timestamp() if query.facts.valid_at is None else query.facts.valid_at
     candidates = tuple(Candidate(
         records[fact.id], semantic.get(fact.id, 0), lexical.get(fact.id, 0), graph_scores.get(fact.id, 0),
-        recency(max(0, as_of - time_key(fact.valid_at)), config.recency_tau_days), fact.salience,
+        recency(max(0, as_of - time_key(fact.valid_at)), config.recency_tau_days),
+        fact.salience + (_TRACK_BOOST if any(term in fact.text.lower() for term in view.track_terms) else 0),
     ) for fact in sorted(facts, key=lambda fact: fact.id))
     flags = (*corpus.limitations(), *graph.limitations())
     return CandidateBatch(view.snapshot, candidates, not flags, flags)

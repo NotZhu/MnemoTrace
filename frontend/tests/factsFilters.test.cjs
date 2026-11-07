@@ -8,7 +8,7 @@ const React = require('react')
 const source = esbuild.buildSync({
   entryPoints: [path.resolve(__dirname, '../src/pages/Facts.tsx')],
   bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
-  external: ['react', 'react/jsx-runtime', '../components/ui', '../components/Modal', '../components/Toast', '../hooks/queries', '../store/preferences'],
+  external: ['../store/auth', './SpacePicker', 'react', 'react/jsx-runtime', '../components/ui', '../components/Modal', '../components/Toast', '../hooks/queries', '../store/preferences'],
 }).outputFiles[0].text
 function nodes(tree) {
   if (!tree || typeof tree !== 'object') return []
@@ -97,7 +97,7 @@ test('问答与隐私保留全局提示，接入页由自己的状态错误占�
   const layout = esbuild.buildSync({
     entryPoints: [path.resolve(__dirname, '../src/components/Layout.tsx')],
     bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
-    external: ['react', 'react/jsx-runtime', 'react-router-dom', './GlobalErrorBanner', './Sidebar', './Topbar', './Toast', '../store/queryErrors'],
+    external: ['react', 'react/jsx-runtime', 'react-router-dom', './GlobalErrorBanner', './Sidebar', './Topbar', './Toast', '../store/queryErrors', '../store/auth'],
   }).outputFiles[0].text
   for (const route of ['/facts', '/profile', '/settings', '/conversations', '/focus', '/journal', '/health', '/ask', '/graph', '/timeline', '/', '/privacy']) {
     const moduleData = { exports: {} }, Outlet = () => null, GlobalErrorBanner = () => null
@@ -105,6 +105,7 @@ test('问答与隐私保留全局提示，接入页由自己的状态错误占�
       if (name === 'react') return { ...React, useState: () => [false, () => {}] }
       if (name === 'react-router-dom') return { Outlet, useMatch: pattern => route === pattern }
       if (name === './GlobalErrorBanner') return { GlobalErrorBanner }
+      if (name === '../store/auth') return {useAuth: select => select({spaceId:'synthetic-space'})}
       if (name === '../store/queryErrors') return { useQueryErrors: selector => selector({ failures: [{ message: 'synthetic failure' }] }) }
       if (name.startsWith('./')) return new Proxy({}, { get: () => () => null })
       return require(name)

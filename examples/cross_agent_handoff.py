@@ -4,24 +4,26 @@
 
     python examples/cross_agent_handoff.py --local
 
-先启动 忆痕 服务：
+按 docs/reference/configuration.md 的 Postgres 数据库基础章节初始化数据库、创建账号和空间，
+设置 MNEMOTRACE_DATABASE_URL 为运行角色连接串，再启动服务：
 
-    MNEMOTRACE_OPEN=1 MNEMOTRACE_EMBEDDER=hashing uvicorn mnemotrace.server.app:app --port 8000
+    python -m uvicorn mnemotrace.server.app:app --port 8000
 
 然后运行：
 
     python examples/cross_agent_handoff.py \
         --base http://localhost:8000 \
-        --key me \
+        --key "$MNEMOTRACE_API_KEY" --space-id "<SPACE_ID>" \
         --project super-memory
 
 脚本扮演 Codex 写入一条持久的项目决策，再由 Claude Code 用另一个 session_id 把它召回。
-相同的 Bearer key = 相同的用户记忆命名空间。
+参与交接的客户端使用授权凭据，并选择同一个 Postgres 空间。
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 import urllib.error
@@ -41,10 +43,16 @@ QUERY = "What launch checklist decision did the previous agent record?"
 VERIFY_PHRASE = "committed eval logs"
 
 
-def http_call(base: str, key: str) -> Call:
+def http_call(base: str, key: str, space_id: str) -> Call:
+    from urllib.parse import urlencode
+
     base = base.rstrip("/")
 
     def call(path: str, body: dict | None = None, method: str = "POST") -> dict:
+        if method == "GET":
+            path += ("&" if "?" in path else "?") + urlencode({"space_id": space_id})
+        else:
+            body = {**(body or {}), "space_id": space_id}
         req = urllib.request.Request(
             base + path,
             data=json.dumps(body).encode() if body is not None else None,
@@ -89,12 +97,11 @@ def local_call(key: str, data_dir: str) -> Call:
                 session_id=body.get("session_id"),
                 n_chunks=body.get("n_chunks", 3),
             )
-        if path == "/v1/sessions/close":
-            return svc.close_session(
+        if path == "/v1/processing/flush":
+            return svc.flush(
                 key,
                 body.get("session_id", "default"),
-                summarize=body.get("summarize", True),
-                clear_working=body.get("clear_working", True),
+                include_summaries=body.get("include_summaries", False),
             )
         raise ValueError(f"local handoff smoke does not implement {path}")
 
@@ -110,7 +117,7 @@ def exercise_handoff(
     target_agent: str = "claude-code",
     source_thread: str = "handoff-source",
     target_thread: str = "handoff-target",
-    no_close: bool = False,
+    no_flush: bool = False,
     output: Callable[[str], None] = print,
 ) -> dict:
     source_session = f"{source_agent}:{project}:{source_thread}"
@@ -128,17 +135,16 @@ def exercise_handoff(
     }, "POST")
     output(json.dumps(remembered, ensure_ascii=False, indent=2))
 
-    closed_source = None
-    if not no_close:
-        output("\n== 2. Source agent closes its session ==")
-        closed_source = call("/v1/sessions/close", {
+    flushed_source = None
+    if not no_flush:
+        output("\n== 2. Source agent flushes its session ==")
+        flushed_source = call("/v1/processing/flush", {
             "session_id": source_session,
-            "summarize": True,
-            "clear_working": True,
+            "include_summaries": True,
         }, "POST")
-        output(json.dumps(closed_source, ensure_ascii=False, indent=2))
+        output(json.dumps(flushed_source, ensure_ascii=False, indent=2))
 
-    output("\n== 3. Target agent recalls from the same user namespace ==")
+    output("\n== 3. Target agent recalls from the same memory space ==")
     recalled = call("/v1/recall", {
         "query": QUERY,
         "session_id": target_session,
@@ -151,25 +157,24 @@ def exercise_handoff(
     if found:
         output("\nPASS: target agent recalled the source agent's durable memory.")
 
-    closed_target = None
-    if not no_close:
-        output("\n== 4. Target agent closes its session ==")
-        closed_target = call("/v1/sessions/close", {
+    flushed_target = None
+    if not no_flush:
+        output("\n== 4. Target agent flushes its session ==")
+        flushed_target = call("/v1/processing/flush", {
             "session_id": target_session,
-            "summarize": True,
-            "clear_working": True,
+            "include_summaries": True,
         }, "POST")
-        output(json.dumps(closed_target, ensure_ascii=False, indent=2))
+        output(json.dumps(flushed_target, ensure_ascii=False, indent=2))
 
     return {
         "source_session": source_session,
         "target_session": target_session,
         "remembered": remembered,
-        "closed_source": closed_source,
+        "flushed_source": flushed_source,
         "recalled": recalled,
         "context": context,
         "found": found,
-        "closed_target": closed_target,
+        "flushed_target": flushed_target,
     }
 
 
@@ -180,13 +185,14 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--data-dir", default=None,
                     help="local MnemoTrace data dir for --local (default: temporary smoke-test dir)")
     ap.add_argument("--base", default="http://localhost:8000", help="MnemoTrace HTTP base URL")
-    ap.add_argument("--key", default="me", help="Bearer key = user memory namespace")
+    ap.add_argument("--key", default=None, help="Bearer key for HTTP or synthetic owner for offline mode")
+    ap.add_argument("--space-id", default=os.environ.get("MNEMOTRACE_SPACE_ID"))
     ap.add_argument("--project", default="super-memory", help="project/workspace name")
     ap.add_argument("--source-agent", default="codex", help="agent that writes the memory")
     ap.add_argument("--target-agent", default="claude-code", help="agent that recalls the memory")
     ap.add_argument("--source-thread", default="handoff-source", help="source thread id")
     ap.add_argument("--target-thread", default="handoff-target", help="target thread id")
-    ap.add_argument("--no-close", action="store_true", help="skip session close calls")
+    ap.add_argument("--no-flush", action="store_true", help="skip session flush calls")
     ap.add_argument("--no-verify", action="store_true", help="do not fail if recall misses the test phrase")
     args = ap.parse_args(argv)
 
@@ -194,32 +200,33 @@ def main(argv: list[str] | None = None) -> None:
         data_dir = args.data_dir or tempfile.mkdtemp(prefix="mnemotrace-handoff.")
         print("mode: local")
         print(f"data_dir: {data_dir}")
-        call = local_call(args.key, data_dir)
+        call = local_call(args.key or "me", data_dir)
     else:
         base = args.base.rstrip("/")
         print("mode: http")
         print(f"base: {base}")
-        call = http_call(base, args.key)
+        key = args.key or os.environ.get("MNEMOTRACE_API_KEY")
+        if not key or not args.space_id:
+            ap.error("HTTP mode requires a Bearer key and --space-id")
+        call = http_call(base, key, args.space_id)
 
     result = exercise_handoff(
         call,
-        namespace=args.key,
+        namespace=(args.key or "me") if args.local else args.space_id,
         project=args.project,
         source_agent=args.source_agent,
         target_agent=args.target_agent,
         source_thread=args.source_thread,
         target_thread=args.target_thread,
-        no_close=args.no_close,
+        no_flush=args.no_flush,
     )
 
     if not result["found"] and not args.no_verify:
         print("\nFAIL: target agent did not recall the source memory.", file=sys.stderr)
         raise SystemExit(1)
 
-    if args.local:
-        print("\nFor a real local agent setup, point MCP at the same namespace/data dir.")
-    else:
-        print(f"\nInspect in the console: {args.base.rstrip('/')}/ui/  (key: {args.key})")
+    if not args.local:
+        print(f"\nInspect in the console: {args.base.rstrip('/')}/ui/")
 
 
 if __name__ == "__main__":

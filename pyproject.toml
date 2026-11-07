@@ -43,6 +43,7 @@ dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "ruff>=0.4", "tomli>=2; python_ver
 all = ["mnemotrace-memory[server,mcp,embeddings,backends,llm,documents,eval,dev,postgres]"]
 
 [project.scripts]
+mnemotrace = "mnemotrace.cli:main"
 mnemotrace-quickstart = "mnemotrace.quickstart:main"       # configured-LLM example
 mnemotrace-mcp = "mnemotrace.mcp.__main__:main"            # run the MCP server
 mnemotrace-import = "mnemotrace.connectors.__main__:main"  # import a chat/history export

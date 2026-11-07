@@ -48,7 +48,7 @@ function setup({ empty = false, history = false } = {}) {
           return { data: { facts, facts_page: { has_more: false } }, isLoading: false, isFetching: fetching, isError: false }
         },
         useSessions: () => ({ data: { sessions: [] } }),
-        useCloseSession: mutation, useEditFact: mutation, useDeleteFact: mutation,
+        useOrganizeSession: mutation, useEditFact: mutation, useDeleteFact: mutation,
       }
       return require(name)
     },

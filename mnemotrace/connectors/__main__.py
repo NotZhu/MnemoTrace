@@ -1,19 +1,4 @@
-"""CLI：把外部聊天/历史记录导出导入 忆痕。
-
-  # 本地文件存储（事实抽取需要 --llm 配置）：
-  python -m mnemotrace.connectors --file conversations.json --namespace me
-
-  # 更高质量的本地导入（真实嵌入 / LLM 提取器；需要可选依赖 + key）：
-  python -m mnemotrace.connectors -f conversations.json -n me --embedder bge-small --llm deepseek
-
-  # 推送到运行中的 忆痕 服务器，而不是本地存储：
-  python -m mnemotrace.connectors -f conversations.json --api-url http://localhost:8000 --key sk-alice-123
-
-  # 从 stdin 读取并显式指定格式：
-  cat log.jsonl | python -m mnemotrace.connectors --format jsonl -n me
-
-本模块是纯标准库实现；远程 POST 使用 urllib（不需要 httpx），因此在零配置安装下也能完成导入。
-"""
+"""Import a chat/history export into a PostgreSQL memory space."""
 from __future__ import annotations
 
 import argparse
@@ -34,8 +19,11 @@ def _read_input(path: str | None) -> str:
     return sys.stdin.read()
 
 
-def _post_remote(api_url: str, key: str, sessions: list, consolidate: bool, summarize: bool) -> dict:
+def _post_remote(api_url: str, key: str, space_id: str, sessions: list,
+                 consolidate: bool, summarize: bool, agent_id: str | None) -> dict:
     body = json.dumps({
+        "space_id": space_id,
+        "agent_id": agent_id,
         "sessions": [dataclasses.asdict(s) for s in sessions],
         "consolidate": consolidate,
         "summarize": summarize,
@@ -50,20 +38,11 @@ def _post_remote(api_url: str, key: str, sessions: list, consolidate: bool, summ
 
 
 def _import_local(args, sessions) -> dict:
-    from ..service import MemoryService
+    from ..cli import local_space
 
-    # 与 HTTP/MCP 共用摘要路径和完整读-改-存锁；不能另行选择旧账号名目录。
-    # 默认使用 hashing 嵌入；事实抽取需要显式选择模型。
-    service = MemoryService(data_dir=args.data_dir, embedder_name=args.embedder or "hashing",
-                            llm_name=args.llm or "")
-    try:
-        stats = service.import_(args.namespace, sessions=sessions,
-                                consolidate=not args.no_consolidate,
-                                summarize=not args.no_summarize)
-        stats["store"] = service._path(args.namespace)
-        return stats
-    finally:
-        service.close()
+    with local_space(args) as (service, context):
+        return service.import_(context, sessions=sessions, consolidate=not args.no_consolidate,
+                               summarize=not args.no_summarize, agent_id=args.agent_id)
 
 
 def main() -> None:
@@ -72,11 +51,13 @@ def main() -> None:
     ap.add_argument("--file", "-f", help="export file (default: stdin)")
     ap.add_argument("--format", default="auto",
                     help="chatgpt | messages | records | jsonl | transcript | auto (default)")
-    ap.add_argument("--namespace", "-n", default="me", help="memory namespace / user id (default: me)")
-    ap.add_argument("--data-dir", default=os.environ.get("MNEMOTRACE_DATA_DIR", "~/.mnemotrace/data"),
-                    help="local store dir (local mode; default ~/.mnemotrace/data)")
-    ap.add_argument("--api-url", help="push to a running MnemoTrace server instead of a local store")
-    ap.add_argument("--key", default=os.environ.get("MNEMOTRACE_API_KEY", ""), help="Bearer key for --api-url")
+    ap.add_argument("--space-id", default=os.environ.get("MNEMOTRACE_SPACE_ID"))
+    ap.add_argument("--user-id", default=os.environ.get("MNEMOTRACE_USER_ID"))
+    ap.add_argument("--agent-id")
+    ap.add_argument("--api-url", help="Push to a running MnemoTrace HTTP server")
+    key = ap.add_mutually_exclusive_group()
+    key.add_argument("--key")
+    key.add_argument("--key-file")
     ap.add_argument("--embedder", help="local mode: real embedder (e.g. bge-small); default hashing")
     ap.add_argument("--llm", help="local mode: LLM for fact extraction (e.g. deepseek); required unless --no-consolidate is used")
     ap.add_argument("--no-consolidate", action="store_true", help="skip fact extraction (raw episodes only)")
@@ -99,33 +80,38 @@ def main() -> None:
         print("nothing to import.", file=sys.stderr)
         return
 
+    from ..credentials import CredentialError, resolve_key
     from ..extraction import ExtractionError
+    from ..store.postgres.errors import DatabaseError
 
+    if not args.space_id or (not args.api_url and not args.user_id):
+        ap.error('Select --space-id and, for direct database access, --user-id')
     try:
         if args.api_url:
-            stats = _post_remote(args.api_url, args.key, sessions,
-                                 not args.no_consolidate, not args.no_summarize)
+            if args.user_id:
+                ap.error('Remote identity is determined by the API key')
+            key = resolve_key(key=args.key, key_file=args.key_file, required=True)
+            stats = _post_remote(args.api_url, key, args.space_id, sessions,
+                                 not args.no_consolidate, not args.no_summarize, args.agent_id)
         else:
             stats = _import_local(args, sessions)
     except ExtractionError as exc:
         ap.exit(1, json.dumps(exc.detail(), ensure_ascii=False) + "\n")
-    except ImportError:
-        ap.exit(1, 'Install mnemotrace-memory[llm] for model extraction.\n')
+    except DatabaseError as exc:
+        ap.exit(1, f'Import failed ({exc.code}).\n')
     except urllib.error.HTTPError as exc:
-        from ..extraction import LLMNotConfiguredError, ExtractionResponseError
-        errors = {e.code: e for e in (ExtractionError, LLMNotConfiguredError, ExtractionResponseError)}
         try:
-            detail = json.load(exc).get("detail", {})
-            error_type = errors.get(detail.get("code")) if isinstance(detail, dict) else None
-            if error_type is not None:
-                ids = detail.get("episode_ids", [])
-                error = error_type(stored_raw=detail.get("stored_raw") is True,
-                                   episode_ids=ids if isinstance(ids, list) and all(isinstance(i, str) for i in ids) else [])
-                ap.exit(1, json.dumps(error.detail(), ensure_ascii=False) + "\n")
+            detail = json.load(exc).get('detail')
         except (ValueError, AttributeError):
-            pass
-        ap.exit(1, f'Import failed: HTTP {exc.code}. Check server extraction configuration and session status.\n')
+            detail = None
+        if isinstance(detail, dict) and 'code' in detail:
+            ap.exit(1, json.dumps(detail, ensure_ascii=False) + '\n')
+        ap.exit(1, f'Import failed: HTTP {exc.code}.\n')
+    except (CredentialError, ImportError, urllib.error.URLError, ValueError):
+        ap.exit(1, 'Invalid import configuration or request.\n')
     print(json.dumps(stats, ensure_ascii=False))
+    if stats.get('ok') is False:
+        ap.exit(1)
 
 
 if __name__ == "__main__":
