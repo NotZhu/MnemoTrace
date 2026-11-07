@@ -101,7 +101,7 @@ class LocalBackend:
     mode = "local"
 
     def __init__(self, user_id: str, space_id: str, service: Any = None) -> None:
-        from ..postgres_service import MemoryService
+        from ..service import MemoryService
 
         self._owns_service = service is None
         self.svc = service if service is not None else MemoryService.from_env()

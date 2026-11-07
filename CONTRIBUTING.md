@@ -46,11 +46,11 @@ python -m pytest
 
 产品接口和数据库隔离的集成测试需要独立的 Postgres/pgvector 测试实例。安装 `.[dev,server,mcp,postgres]`，用 `MNEMOTRACE_TEST_POSTGRES_DSN` 提供可创建临时库和测试角色的连接，并设置 `MNEMOTRACE_REQUIRE_POSTGRES=1`。运行 `python -m pytest tests/postgres tests/test_postgres_configuration.py`。镜像版本与平台矩阵见 [CI](.github/workflows/ci.yml)。
 
-涉及 LanceDB 或文档导入时，安装对应 extras 后运行实际后端回归；CI 的 `optional-backends` job 也执行这一组离线检查：
+涉及文档导入时，安装对应 extras 后运行解析回归。CI 的 `documents` 作业也执行这一组检查。
 
 ```sh
-python -m pip install -e ".[dev,server,mcp,lancedb,documents]"
-python -m pytest tests/test_lancedb_store.py tests/test_documents.py
+python -m pip install -e ".[dev,server,mcp,documents]"
+python -m pytest tests/test_documents.py
 ```
 
 运行安装与默认路径检查：

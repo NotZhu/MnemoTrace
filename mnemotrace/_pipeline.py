@@ -1,11 +1,10 @@
-"""One recoverable write step, shared by all sources and both public facades."""
+"""Processing steps for the in-memory algorithm runner."""
 from __future__ import annotations
 
 from copy import deepcopy
 import time
 import uuid
 
-from ._namespace_lock import namespace_lock
 from .consolidate.pipeline import KINDS, PipelineTasks, TERMINAL, config_identity, digest, reset_attempts, source
 from .consolidate.planning import input_size, output_size, plan, summary_plan, busy, supplied, empty_input, fits_input
 from .consolidate.operations import prepare, decode
@@ -17,10 +16,6 @@ from .types import Fact, WorkingMemory
 # invalidate() 作废在途窗口（manual_change）与检测到快照更替的窗口取消（source_changed）
 # 都表示并发写到达，而非模型或配置失败。
 _CONFLICT_CODES = frozenset({'manual_change', 'source_changed'})
-
-
-def clock(service):
-    return service._pipeline_worker.clock() if service._pipeline_worker else time.time()
 
 
 def _pending(tasks, session, after=0):
@@ -354,61 +349,49 @@ def _commit(mem, tasks, win, now):
 
 
 def run_one(service, user):
-    lease = (service.processing_lease() if hasattr(service, 'processing_lease') else
-             namespace_lock(service._contained_child('@' + service._safe_user(user) + '.processing.lock')).try_file_lock())
-    with lease as acquired:
-        if not acquired or service._closed or service._pipeline_worker and service._pipeline_worker.abort.is_set():
+    with service.processing_lease() as acquired:
+        if not acquired or service._closed:
             return False
         with service.write_lock(user):
-            if service._store_version(user) is None:
-                return False
             mem = service.get(user)
             tasks = PipelineTasks(mem, user)
             if tasks.state is None:
                 return False
-            before = digest(tasks.state)
             tasks.cancel_missing()
-            selected = _select(mem, tasks, clock(service))
+            selected = _select(mem, tasks, time.time())
             if selected is None:
-                if digest(tasks.state) != before:
-                    service._save(user, mem)
                 return False
             key, win = selected
             if win['history'] and win['history'][-1]['outcome'] == 'in_flight':
                 win['history'][-1]['outcome'] = 'interrupted'
             if config_identity(mem) != win['config']:
-                _fail(tasks, win, 'configuration_changed', clock(service), retryable=False)
-                service._save(user, mem)
+                _fail(tasks, win, 'configuration_changed', time.time(), retryable=False)
                 return True
             if tasks.state['generation'] != win['guard'] or not _current(mem, tasks, win, win['guard'], mem.llm):
                 tasks.cancel_window(win, 'derived_state_changed')
-                service._save(user, mem)
                 return True
             if win['phase'] == 'commit':
-                _commit(mem, tasks, win, clock(service))
-                service._save(user, mem)
+                _commit(mem, tasks, win, time.time())
                 return True
             if win['phase'] in {'generate', 'compensate'}:
                 budget_policy = mem._effective('summary_system') if win['operation'] == 'summary' else (
                     '' if win['operation'] == 'conflicts' else
                     mem.policy.get('extract_system', '') + mem.policy.get('extract_instruction', ''))
                 if not fits_input(win['input'], mem.config, budget_policy):
-                    _fail(tasks, win, 'configuration_invalid', clock(service), retryable=False)
-                    service._save(user, mem)
+                    _fail(tasks, win, 'configuration_invalid', time.time(), retryable=False)
                     return True
             embedding = win['phase'] == 'embed'
             counter = 'embed_attempts' if embedding else 'attempts'
             if win[counter] >= 3:
                 _fail(tasks, win, 'embedding_failed' if embedding else 'extraction_failed',
-                      clock(service), retryable=False, embedding=embedding)
+                      time.time(), retryable=False, embedding=embedding)
                 _advance(tasks, tasks.state['sessions'][win['route']])
-                service._save(user, mem)
                 return True
             win[counter] += 1
             if not embedding:
                 win['stats']['model_calls'] += 1
             win['state'] = 'running'
-            win['history'].append(dict(stage=win['phase'], attempt=win[counter], started_at=clock(service),
+            win['history'].append(dict(stage=win['phase'], attempt=win[counter], started_at=time.time(),
                 finished_at=None, outcome='in_flight', finish_reason=None, usage=None, error_code=None))
             config, data, phase = deepcopy(mem.config), deepcopy(win['input']), win['phase']
             model, embedder = mem.llm, mem.embedder
@@ -418,7 +401,6 @@ def run_one(service, user):
             texts = texts_for(win) if embedding else []
             saved_summaries = list(win['summary_saved'])
             token = tasks.state['generation']
-            service._save(user, mem)
             mem = tasks = win = None
         failure, output, completion = None, None, None
         try:
@@ -443,17 +425,15 @@ def run_one(service, user):
 
         except Exception as exc:
             failure = exc
-        if service._closed or service._pipeline_worker and service._pipeline_worker.abort.is_set():
+        if service._closed:
             return False
         with service.write_lock(user):
-            if service._store_version(user) is None:
-                return False
             mem = service.get(user)
             tasks = PipelineTasks(mem, user)
             win = tasks.state['windows'].get(key) if tasks.state else None
             if win is None or win['state'] != 'running':
                 return False
-            win['history'][-1].update(finished_at=clock(service),
+            win['history'][-1].update(finished_at=time.time(),
                 finish_reason=completion.finish_reason if completion is not None else None,
                 usage=completion.usage if completion is not None else None,
                 outcome='failed' if failure is not None else 'saved')
@@ -463,7 +443,7 @@ def run_one(service, user):
             elif failure is not None:
                 code = 'embedding_failed' if embedding else (
                     failure.code if isinstance(failure, ExtractionError) else 'extraction_failed')
-                _fail(tasks, win, code, clock(service), retryable=_retryable(failure), embedding=embedding)
+                _fail(tasks, win, code, time.time(), retryable=_retryable(failure), embedding=embedding)
                 win['history'][-1]['error_code'] = code
             elif embedding:
                 win['vectors'] = output
@@ -505,9 +485,8 @@ def run_one(service, user):
                     win['result'] = output
                 win['result_hash'] = digest(win['result'])
                 win.update(phase='embed' if texts_for(win) else 'commit', state='pending', next_attempt_at=0)
-                reset_attempts(win, 'embed_attempts', 'generated_result', clock(service))
+                reset_attempts(win, 'embed_attempts', 'generated_result', time.time())
             _advance(tasks, tasks.state['sessions'][win['route']])
-            service._save(user, mem)
         return True
 
 
@@ -566,9 +545,6 @@ def flush(service, user, session_id=None, timeout=30, retry_failed=False, bounda
         ids = set(tasks.rows(session_id, boundary))
         generation = tasks.state['generation'] if tasks.state else None
         tasks.force(session_id, ids, retry_failed, operation)
-        service._save(user, mem)
-    if service._pipeline_worker:
-        service._pipeline_worker.notify(user)
     deadline = time.monotonic() + timeout
     while True:
         with service._read_scope(user) as mem:
@@ -592,52 +568,27 @@ def flush(service, user, session_id=None, timeout=30, retry_failed=False, bounda
         status = 'timed_out' if active else 'failed' if failed else 'completed'
         if not active or time.monotonic() >= deadline or fail_fast and counts['retry_wait']:
             return dict(ok=status == 'completed', status=status, **result)
-        # Immediate mode also works when the background worker was explicitly disabled.
-        if service._pipeline_worker is None or not service._pipeline_worker.thread.is_alive():
-            if run_one(service, user):
-                continue
+        if run_one(service, user):
+            continue
         time.sleep(min(.02, max(0, deadline - time.monotonic())))
 
 
 def memory_adapter(memory, namespace):
     """Drive the same checkpoint machine for the standalone Python facade."""
     from contextlib import contextmanager
-    from pathlib import Path
     from .metrics import Metrics
-    from .store.persist import snapshot_version
 
     class LocalExecution:
-        _pipeline_worker = None
         metrics = Metrics()
 
         @property
         def _closed(self):
             return memory._pipeline_closed
 
-        def _safe_user(self, user):
-            return digest(user)
-
-        def _contained_child(self, name):
-            root = Path(memory._persist_path).parent if memory._persist_path else Path('.')
-            return str(root / name)
-
         @contextmanager
         def processing_lease(self):
             with memory._pipeline_step_lock:
-                if memory._persist_path:
-                    # Match the service lease when opening its namespace directly.
-                    root = Path(memory._persist_path)
-                    from ._namespace_paths import namespace_directory
-                    lock_path = (root.parent / ('@' + root.name + '.processing.lock')
-                                 if root.name == namespace_directory(namespace)
-                                 else Path(str(root) + '.processing.lock'))
-                    with namespace_lock(str(lock_path)).try_file_lock() as acquired:
-                        yield acquired
-                else:
-                    yield True
-
-        def _store_version(self, user):
-            return memory._snapshot_version or 'memory'
+                yield True
 
         def get(self, user):
             return memory
@@ -646,7 +597,7 @@ def memory_adapter(memory, namespace):
         def write_lock(self, user):
             with memory._pipeline_lock:
                 if memory._pipeline_closed:
-                    raise RuntimeError('Memory is closed; reopen the authoritative snapshot')
+                    raise RuntimeError('Memory is closed; create a new instance')
                 try:
                     yield
                 except BaseException:
@@ -659,12 +610,6 @@ def memory_adapter(memory, namespace):
         def _read_scope(self, user):
             with memory._pipeline_lock:
                 yield memory
-
-        def _save(self, user, mem):
-            if mem._persist_path:
-                if snapshot_version(mem._persist_path) != mem._snapshot_version:
-                    raise RuntimeError('Snapshot changed; reopen before processing')
-                mem.save(check_version=True)
 
     return LocalExecution()
 
@@ -696,11 +641,10 @@ def execute_sources(host, user, episodes, operation='extract', retry_failed=Fals
             before_summaries = {ep.id for ep in episodes if ep.summary}
             before = {key: dict(win['stats']) for key, win in (tasks.state or {}).get('windows', {}).items()}
             if operation == 'conflicts':
-                enqueue_operation(mem, user, episodes, operation, clock(host))
+                enqueue_operation(mem, user, episodes, operation, time.time())
                 ids = {ep.id for ep in episodes}
             else:
-                ids = set(tasks.register(episodes, clock(host), operation, summaries=summaries))
-            host._save(user, mem)
+                ids = set(tasks.register(episodes, time.time(), operation, summaries=summaries))
         result = flush(host, user, timeout=30, retry_failed=retry_failed or attempt > 0, boundary=ids,
                        fail_fast=True, operation=operation)
         if result['ok'] or not _conflict_cancelled(result):

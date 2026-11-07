@@ -1,21 +1,13 @@
 """检索、整合与存储的可调参数。精确默认值在本模块维护；算法调整通过统一评测验证。"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+import os
 from typing import Optional
 
 
 @dataclass
 class Config:
-    # --- 存储与嵌入 ---
-    storage: str = "memory"  # memory | durable | lancedb | qdrant
-    data_path: Optional[str] = None  # 本地 LanceDB / Qdrant 路径；open() 可从快照根目录派生
-
-    qdrant_url: Optional[str] = None  # None: 本地模式，使用 data_path
-    qdrant_api_key: Optional[str] = field(default=None, repr=False)  # Qdrant API 密钥，打印时不会显示
-    qdrant_namespace: Optional[str] = None  # open() 从快照根目录派生一个哈希值，用于命名空间
-    qdrant_collection_prefix: str = "mnemotrace"
-    qdrant_timeout: float = 10.0  # Qdrant 请求超时时间，单位秒
     embed_dim: int = 256  # 默认 HashingEmbedder 的向量维度；显式嵌入器使用自身维度
 
     # --- 检索数量与候选范围 ---
@@ -106,3 +98,11 @@ class Config:
     planner_location_chains: bool = True  # 启用地点相关的多跳关系链
     planner_project_chains: bool = True  # 启用项目与地点相关的多跳关系链
     planner_llm_decomposition: bool = True  # 有 LLM 时可调用它分解多跳查询；关闭后使用规则
+
+    @classmethod
+    def from_env(cls) -> Config:
+        """Apply the same deployment overrides at each task-processing entry point."""
+        config = cls()
+        if (topics := os.environ.get('MNEMOTRACE_LLM_TOPICS')) is not None:
+            config.llm_topics = topics != '0'
+        return config

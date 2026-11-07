@@ -3,27 +3,37 @@ from __future__ import annotations
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def synthetic_model_service(monkeypatch):
-    from tests.model_fixtures import MemoryService
-    monkeypatch.setattr("mnemotrace.service.MemoryService", MemoryService)
-
-
 import json
-
 
 from examples.cross_agent_lifecycle import (
     VERIFY_PHRASE,
     exercise_lifecycle,
-    local_call,
     main,
 )
 
 
-def test_cross_agent_lifecycle_example_local_mode(tmp_path):
+@pytest.fixture
+def example_http(product_client, product_scope):
+    from urllib.parse import urlsplit
+
+    scope, key = product_scope()
+    def call(path, body=None, method='POST'):
+        headers = {'Authorization': 'Bearer ' + key}
+        if method == 'GET':
+            separator = '&' if urlsplit(path).query else '?'
+            response = product_client.get(path + separator + 'space_id=' + scope.space_id, headers=headers)
+        else:
+            response = product_client.request(method, path, json={**(body or {}), 'space_id': scope.space_id},
+                                              headers=headers)
+        response.raise_for_status()
+        return response.json()
+    return call
+
+
+def test_cross_agent_lifecycle_example_http(example_http):
     lines: list[str] = []
     result = exercise_lifecycle(
-        local_call("me", str(tmp_path)),
+        example_http,
         namespace="me",
         agent="codex",
         project="super-memory",
@@ -48,30 +58,20 @@ def test_cross_agent_lifecycle_example_local_mode(tmp_path):
     assert "Current task state" not in status_payload
 
 
-def test_cross_agent_lifecycle_main_local_mode(tmp_path, capsys):
-    main([
-        "--local",
-        "--data-dir",
-        str(tmp_path),
-        "--key",
-        "me",
-        "--project",
-        "super-memory",
-        "--thread",
-        "codex-smoke",
-    ])
+def test_cross_agent_lifecycle_main_http(example_http, monkeypatch, capsys):
+    monkeypatch.setattr("examples.cross_agent_lifecycle.http_call", lambda *_: example_http)
+    main(["--space-id", "synthetic", "--key", "synthetic"])
 
     out = capsys.readouterr().out
-    assert "mode: local" in out
-    assert f"data_dir: {tmp_path}" in out
+    assert "mode: http" in out
     assert "agent_status:" in out
     assert "session_report: episodes=3 facts=2 redacted=0" in out
     assert "PASS: lifecycle saved durable memory and the session report audits it." in out
 
 
-def test_cross_agent_lifecycle_main_exits_when_verify_fails(tmp_path, monkeypatch):
-    def empty_local_call(key: str, data_dir: str):
-        call = local_call(key, data_dir)
+def test_cross_agent_lifecycle_main_exits_when_verify_fails(example_http, monkeypatch):
+    def empty_http_call(*_):
+        call = example_http
 
         def wrapper(path: str, body: dict | None = None, method: str = "POST") -> dict:
             if path == "/v1/recall":
@@ -82,9 +82,9 @@ def test_cross_agent_lifecycle_main_exits_when_verify_fails(tmp_path, monkeypatc
 
         return wrapper
 
-    monkeypatch.setattr("examples.cross_agent_lifecycle.local_call", empty_local_call)
+    monkeypatch.setattr("examples.cross_agent_lifecycle.http_call", empty_http_call)
 
     with pytest.raises(SystemExit) as exc:
-        main(["--local", "--data-dir", str(tmp_path)])
+        main(["--space-id", "synthetic", "--key", "synthetic"])
 
     assert exc.value.code == 1

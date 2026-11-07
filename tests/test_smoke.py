@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from mnemotrace.config import Config
-from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryEngine
 from mnemotrace.embed import HashingEmbedder
 from mnemotrace.types import Fact
 from mnemotrace.util import DAY
@@ -20,8 +20,8 @@ SCRIPT = [
 ]
 
 
-def build() -> Memory:
-    mem = Memory()
+def build() -> MemoryEngine:
+    mem = MemoryEngine()
     for text, day in SCRIPT:
         mem.add(text, user_id="u1", event_time=BASE + day * DAY)
     mem.consolidate()
@@ -29,7 +29,7 @@ def build() -> Memory:
 
 
 def test_zero_dependency_defaults():
-    mem = Memory()
+    mem = MemoryEngine()
     assert isinstance(mem.embedder, HashingEmbedder)
 
 
@@ -46,7 +46,7 @@ def test_knowledge_update_supersedes_current_answer():
 
 
 def test_multi_sentence_episode_extracts_every_fact():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("Wei works at Tencent.\nWei works at Moonshot AI.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
@@ -56,7 +56,7 @@ def test_multi_sentence_episode_extracts_every_fact():
 
 
 def test_records_import_same_session_extracts_multiple_messages():
-    mem = Memory()
+    mem = MemoryEngine()
     stats = mem.import_data([
         {"session_id": "career", "content": "Wei works at Tencent.", "event_time": BASE},
         {"session_id": "career", "content": "Wei works at Moonshot AI.", "event_time": BASE + DAY},
@@ -70,7 +70,7 @@ def test_records_import_same_session_extracts_multiple_messages():
 
 
 def test_duplicate_live_identity_slot_reads_current_head():
-    mem = Memory(config=Config(w_sem=0.0, w_lex=0.0, w_graph=0.0, w_rec=0.0, w_sal=1.0))
+    mem = MemoryEngine(config=Config(w_sem=0.0, w_lex=0.0, w_graph=0.0, w_rec=0.0, w_sal=1.0))
     old = Fact(
         "Wei",
         "works_at",
@@ -100,7 +100,7 @@ def test_duplicate_live_slot_for_non_identity_single_valued_predicate_reads_curr
     """slot-head 去重覆盖所有单值 predicate，而不只是 _IDENTITY_PREDS 这个小列表。
     像 `major` 这样的 predicate 是单值（状态）但不在身份集合里——同一槽位的两个 live payload
     仍必须收敛到当前 head，而不是在融合中互相竞争。"""
-    mem = Memory(config=Config(w_sem=0.0, w_lex=0.0, w_graph=0.0, w_rec=0.0, w_sal=1.0))
+    mem = MemoryEngine(config=Config(w_sem=0.0, w_lex=0.0, w_graph=0.0, w_rec=0.0, w_sal=1.0))
     old = Fact(
         "Wei",
         "major",
@@ -132,7 +132,7 @@ def test_duplicate_live_slot_for_non_identity_single_valued_predicate_reads_curr
 
 
 def test_multi_valued_identity_facts_are_not_slot_deduped():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add_fact("Wei", "owns", "a bike", user_id="u1")
     mem.add_fact("Wei", "owns", "a camera", user_id="u1")
 
@@ -147,7 +147,7 @@ def test_zero_score_evidence_signals_do_not_boost_irrelevant_salient_facts():
     排序把零分文档也纳入，distractor 几乎能借到与真实命中相同的 lexical RRF 贡献，从而反超它。
     过滤掉零证据才能让相关性优先。
     """
-    mem = Memory(config=Config(w_sem=0.0, w_lex=1.0, w_graph=0.0, w_rec=0.0, w_sal=0.6))
+    mem = MemoryEngine(config=Config(w_sem=0.0, w_lex=1.0, w_graph=0.0, w_rec=0.0, w_sal=0.6))
     target = Fact(
         "Wei",
         "ticket_code",
@@ -175,7 +175,7 @@ def test_zero_score_evidence_signals_do_not_boost_irrelevant_salient_facts():
 
 
 def test_project_rules_are_structured_multi_value_memory():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add(
         "Project rule: benchmark claims require committed raw logs before public copy changes.",
         user_id="codex-e2e",
@@ -198,7 +198,7 @@ def test_project_rules_are_structured_multi_value_memory():
 
 
 def test_runbook_source_extracts_procedural_fact_with_full_steps():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add(
         "PAT runbook source: rotate the PAT by opening security settings, regenerating the token, "
         "then updating CI secrets.",
@@ -219,7 +219,7 @@ def test_runbook_source_extracts_procedural_fact_with_full_steps():
 
 
 def test_to_colon_howto_extracts_procedural_fact():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add(
         "To rotate the PAT: open security settings, regenerate the token, then update CI secrets.",
         user_id="u1",
@@ -236,7 +236,7 @@ def test_to_colon_howto_extracts_procedural_fact():
 
 
 def test_short_project_rule_context_preserves_key_constraint():
-    mem = Memory()
+    mem = MemoryEngine()
     user = "codex-e2e"
     session = "codex:repo:thread"
     mem.add(
@@ -290,7 +290,7 @@ def test_multi_hop_reasoning():
 
 
 def test_family_profession_multi_session_reasoning():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("My sister Maya is a pediatrician at a children's hospital.", user_id="u1",
             session_id="s1", event_time=BASE)
     mem.add("Maya just moved to Seattle for a fellowship.", user_id="u1",
@@ -308,7 +308,7 @@ def test_family_profession_multi_session_reasoning():
 
 
 def test_multiple_family_relations_accumulate_and_disambiguate():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("My sister Anna is a lawyer.", user_id="u1", session_id="s1", event_time=BASE)
     mem.add("My sister Maya is a pediatrician.", user_id="u1", session_id="s2", event_time=BASE + DAY)
     mem.add("Maya just moved to Seattle.", user_id="u1", session_id="s3", event_time=BASE + 2 * DAY)
@@ -344,7 +344,7 @@ def test_profile_reflects_current_state():
 
 
 def test_first_person_occupation_reaches_profile():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I am a pediatrician.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
@@ -355,7 +355,7 @@ def test_first_person_occupation_reaches_profile():
 
 
 def test_first_person_works_as_role_is_atomic():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I work as a data engineer at Spotify.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
@@ -365,7 +365,7 @@ def test_first_person_works_as_role_is_atomic():
 
 
 def test_first_person_fan_of_is_preference_not_occupation():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I'm a fan of jazz.", user_id="u1", event_time=BASE)
     mem.add("I'm into synthwave.", user_id="u1", event_time=BASE + DAY)
     mem.consolidate()
@@ -377,7 +377,7 @@ def test_first_person_fan_of_is_preference_not_occupation():
 
 
 def test_explicit_preference_verbs_extract_profile_facts():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I prefer aisle seats and avoid red-eye flights.", user_id="u1", event_time=BASE)
     mem.add("I don't like crowded lounges.", user_id="u1", event_time=BASE + DAY)
     mem.consolidate()
@@ -389,7 +389,7 @@ def test_explicit_preference_verbs_extract_profile_facts():
 
 
 def test_explicit_preference_does_not_use_polluted_name_guess():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I'm pretty sure I love retro-style diners.", user_id="u1", event_time=BASE)
     mem.add("My name is Wei.", user_id="u1", event_time=BASE + DAY)
     mem.add("I like jazz.", user_id="u1", event_time=BASE + 2 * DAY)
@@ -402,7 +402,7 @@ def test_explicit_preference_does_not_use_polluted_name_guess():
 
 
 def test_explicit_preference_skips_weak_objects_by_default():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I love it. I love retro-style diners. I like these ideas.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
@@ -415,7 +415,7 @@ def test_explicit_preference_skips_weak_objects_by_default():
 def test_preference_object_filter_can_be_disabled():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(preference_object_filter=False))
+    mem = MemoryEngine(config=Config(preference_object_filter=False))
     mem.add("I love it. I love retro-style diners.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
@@ -425,7 +425,7 @@ def test_preference_object_filter_can_be_disabled():
 
 
 def test_preference_object_normalization_canonicalizes_wrappers():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add(
         "I like the sound of the avocado sauce. I like the idea of fruit kebabs.",
         user_id="u1",
@@ -443,7 +443,7 @@ def test_preference_object_normalization_canonicalizes_wrappers():
 def test_preference_object_normalization_can_be_disabled():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(preference_object_normalization=False))
+    mem = MemoryEngine(config=Config(preference_object_normalization=False))
     mem.add("I like the sound of the avocado sauce.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
@@ -452,7 +452,7 @@ def test_preference_object_normalization_can_be_disabled():
 
 
 def test_preference_reversal_extraction_invalidates_old_like():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I like jazz.", user_id="u1", event_time=BASE)
     mem.add("I no longer like jazz.", user_id="u1", event_time=BASE + DAY)
     mem.consolidate()
@@ -466,7 +466,7 @@ def test_preference_reversal_extraction_invalidates_old_like():
 
 
 def test_preference_reversal_extraction_handles_stopped_liking():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I love crowded lounges.", user_id="u1", event_time=BASE)
     mem.add("I stopped enjoying crowded lounges.", user_id="u1", event_time=BASE + DAY)
     mem.consolidate()
@@ -480,7 +480,7 @@ def test_preference_reversal_extraction_handles_stopped_liking():
 def test_preference_reversal_extraction_can_be_disabled():
     from mnemotrace.config import Config
 
-    mem = Memory(config=Config(preference_reversal_extraction=False))
+    mem = MemoryEngine(config=Config(preference_reversal_extraction=False))
     mem.add("I like jazz.", user_id="u1", event_time=BASE)
     mem.add("I no longer like jazz.", user_id="u1", event_time=BASE + DAY)
     mem.consolidate()
@@ -491,7 +491,7 @@ def test_preference_reversal_extraction_can_be_disabled():
 
 
 def test_import_style_moving_and_dietary_restrictions_extract_cleanly():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I'm moving to Berlin next month for a job at Acme.", user_id="u1", event_time=BASE)
     mem.add("By the way, I'm vegetarian and allergic to peanuts.", user_id="u1", event_time=BASE + DAY)
     mem.consolidate()
@@ -509,7 +509,7 @@ def test_import_style_moving_and_dietary_restrictions_extract_cleanly():
 
 
 def test_assistant_small_talk_is_not_profile_occupation():
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("Exciting! Berlin is great.", user_id="u1", role="assistant", event_time=BASE)
     mem.consolidate()
 

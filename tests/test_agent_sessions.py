@@ -238,55 +238,16 @@ def _agent_sessions(prefix: str = "claude-code") -> list[dict]:
     ]
 
 
-def test_explicit_raw_agent_session_import_does_not_require_a_model(tmp_path):
-    from mnemotrace import Memory
-    from mnemotrace.service import MemoryService
-
-    mem = Memory()
-    stats = mem.import_messages(_agent_sessions(), user_id="u", consolidate=False)
-    assert stats["episodes"] == 4
-    assert stats["facts_added"] == 0, stats
-    assert stats["facts_deferred"] == 4 and stats["deferred_reason"] == "not_requested", stats
-    eps = [ep for ep in mem.episodes_doc.values() if ep.user_id == "u"]
-    assert len(eps) == 4
-    for ep in eps:
-        assert ep.consolidated is True  # 仅保存策略不进入自动抽取队列
-        assert ep.message_id is not None
-        assert ep.metadata["source"] == "agent_session"
-    assert stats["summaries"] == 0  # Offline input remains searchable as original events.
-
-    svc = MemoryService(data_dir=str(tmp_path), embedder_name="hashing", llm_name="")
-    assert svc.import_("u", sessions=_agent_sessions(), consolidate=False)["facts_deferred"] == 4
-    assert svc.flush("u", "claude-code:a")["ok"]
-    assert svc.session_report("u", "claude-code:a")["episodes"] == 2
-    assert not svc.get("u").fact_store.values()
-
-
-@pytest.mark.parametrize('consolidate', [None, True])
-def test_agent_default_automatic_import_requires_model_before_any_write(tmp_path, consolidate):
-    from mnemotrace import Memory
-    from mnemotrace.service import MemoryService
-    from mnemotrace.extraction import LLMNotConfiguredError
-    mem = Memory()
-    with pytest.raises(LLMNotConfiguredError):
-        mem.import_messages(_agent_sessions(), user_id='u', consolidate=consolidate)
-    assert not mem.episodes_doc.values()
-    svc = MemoryService(data_dir=str(tmp_path), embedder_name='hashing', llm_name='')
-    with pytest.raises(LLMNotConfiguredError):
-        svc.import_('u', sessions=_agent_sessions(), consolidate=consolidate)
-    assert not svc.get('u').episodes_doc.values()
-
-
 def test_agent_session_import_with_llm_and_consolidate_true_extracts():
     """有 LLM 时同样的 12 个轮次产出了 10 条干净的 fact（`EKOS | deployed_on | Ubuntu server`），
     所以显式选择加入时仍必须执行逐轮抽取。"""
-    from tests.model_fixtures import Memory
+    from tests.model_fixtures import MemoryEngine
 
     class StubLLM:
         def complete(self, prompt: str, system: str = "", **kw) -> str:
             return '[{"subject": "EKOS", "predicate": "deployed_on", "object": "Ubuntu server"}]'
 
-    mem = Memory(llm=StubLLM())
+    mem = MemoryEngine(llm=StubLLM())
     stats = mem.import_messages(_agent_sessions(), user_id="u", consolidate=True)
     assert stats["facts_added"] >= 1, stats
     assert stats["facts_deferred"] == 0 and stats["deferred_reason"] is None, stats
@@ -294,9 +255,9 @@ def test_agent_session_import_with_llm_and_consolidate_true_extracts():
 
 
 def test_agent_session_consolidate_true_without_llm_is_rejected():
-    from mnemotrace import Memory
+    from mnemotrace import MemoryEngine
     from mnemotrace.extraction import LLMNotConfiguredError
-    mem = Memory()
+    mem = MemoryEngine()
     with pytest.raises(LLMNotConfiguredError):
         mem.import_messages(_agent_sessions(), user_id="u", consolidate=True)
     assert not mem.episodes_doc.values()
@@ -305,13 +266,13 @@ def test_agent_session_consolidate_true_without_llm_is_rejected():
 def test_records_import_requests_model_extraction():
     """records 适配器保留逐条角色和正文，默认提交给统一自动处理入口。"""
     from mnemotrace.connectors import parse
-    from tests.model_fixtures import Memory
+    from tests.model_fixtures import MemoryEngine
 
     records = [{"content": m["content"], "role": m["role"], "session_id": "r1"}
                for m in _TRANSCRIPT_A + _TRANSCRIPT_B]
     records.append({"content": "I moved to Shenzhen last year and I work at Moonshot AI.",
                     "role": "user", "session_id": "r1"})
-    mem = Memory()
+    mem = MemoryEngine()
     stats = mem.import_messages(parse(records, format="records"), user_id="u")
     assert stats["facts_added"] >= 1, stats
     assert stats["facts_deferred"] == 0 and stats["deferred_reason"] is None

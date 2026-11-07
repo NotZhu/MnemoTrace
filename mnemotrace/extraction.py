@@ -20,19 +20,13 @@ class ExtractionError(RuntimeError):
 class LLMNotConfiguredError(ExtractionError):
     code = "llm_not_configured"
     status_code = 503
-    message = "Configure an LLM: pass llm= to Memory, or set MNEMOTRACE_LLM for the service."
-
-
-class BufferedProcessingDisabledError(ExtractionError):
-    code = 'buffered_processing_disabled'
-    status_code = 503
-    message = 'Enable MNEMOTRACE_BUFFERED_EXTRACTION to use buffered processing.'
+    message = "Configure an LLM: pass llm= to the Python entry point, or set MNEMOTRACE_LLM for the service."
 
 
 class ProcessingIncompleteError(ExtractionError):
     code = 'processing_incomplete'
     status_code = 503
-    message = 'Session processing is incomplete; inspect processing status before retrying close.'
+    message = 'Session processing is incomplete. Inspect processing status before retrying.'
 
 
 class ExtractionConflictError(ExtractionError):

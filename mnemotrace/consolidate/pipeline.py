@@ -125,10 +125,10 @@ WINDOW_FIELDS = {'route', 'batch_id', 'input', 'input_hash', 'config', 'generati
 
 
 def validate_state(value, episodes=None, embedding_dim=None):
-    """Validate the ledger and its references before restoring any backend."""
+    """Validate an offline processing checkpoint and its references."""
     def require(condition):
         if not condition:
-            raise ValueError('manifest.state.pipeline: invalid checkpoint')
+            raise ValueError('Invalid offline processing checkpoint')
     try:
         docs = {ep.id: ep for ep in episodes} if episodes is not None else None
         if value is None:
@@ -388,7 +388,7 @@ def validate_state(value, episodes=None, embedding_dim=None):
             require(all(ep.message_id is None or ep.user_id in value['namespaces'] and ep.id in value['namespaces'][ep.user_id]['sources'] for ep in docs.values()))
         return value
     except (KeyError, TypeError, AttributeError, IndexError, RecursionError, StopIteration, OverflowError) as exc:
-        raise ValueError('manifest.state.pipeline: malformed checkpoint') from exc
+        raise ValueError('Malformed offline processing checkpoint') from exc
 
 
 class PipelineTasks:

@@ -1,6 +1,6 @@
 """文档导入（AGENTS.md 「代码导航」 采纳层）—— 把上传的文件转成 忆痕 会话。
 
-文档（PDF/DOCX/文本）被压平为文本，通过与聊天历史相同的 `Memory.import_messages` 路径导入；图片由服务层
+文档（PDF/DOCX/文本）被压平为文本，通过与聊天历史相同的 `MemoryEngine.import_messages` 路径导入；图片由服务层
 （持有视觉模型）生成描述，导入的是描述文本。本模块是纯标准库实现，不做描述生成也不做嵌入：只识别文件
 类型并提取文本。PDF/DOCX 提取需要可选依赖（`mnemotrace-memory[documents]`），缺失时抛出清晰、可执行的
 ImportError —— 核心/离线路径绝不导入它们。
@@ -10,7 +10,8 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from .base import ImportMessage, ImportSession
+from ..util import DAY
+from .base import ImportMessage, ImportSession, to_epoch
 
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 
@@ -85,3 +86,23 @@ def to_session(text: str, *, filename: Optional[str] = None, session_id: str = "
     meta = {"source": "document", **(metadata or {})}
     msg = ImportMessage(content=text, role="document", metadata=meta)
     return ImportSession(session_id=session_id, messages=[msg], title=filename or "", metadata=meta)
+
+
+def document_inputs(sessions, roles=True, base_time=None):
+    records = []
+    for index, value in enumerate(sessions):
+        if isinstance(value, ImportSession):
+            session = value
+        else:
+            session = ImportSession(session_id=value['session_id'], title=value.get('title', ''),
+                event_time=to_epoch(value.get('event_time')), metadata=dict(value.get('metadata', {})),
+                messages=[ImportMessage(content=m['content'], role=m.get('role', 'document'), event_time=to_epoch(m.get('event_time'))) for m in value['messages']])
+        content = session.to_text(roles=roles)
+        if not content.strip():
+            continue
+        stamp = session.start_time()
+        if stamp is None and base_time is not None:
+            stamp = base_time + index * DAY
+        records.append(dict(session_id=session.session_id, content=content, event_time=stamp,
+                            title=session.title, metadata=session.metadata))
+    return records

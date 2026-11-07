@@ -16,7 +16,7 @@ import time
 from eval import harness
 from eval.storage_baseline import _git, capture_sources, observe, workload_manifest, workload_records
 from mnemotrace import Config
-from mnemotrace.postgres_memory import PostgresMemory
+from mnemotrace.memory import Memory
 from mnemotrace.store.contracts import FactQuery, FactState, RetrievalQuery, SpaceContext, SpaceSettings
 from mnemotrace.store.postgres import Accounts, Database, Spaces
 from mnemotrace.store.postgres.dao import PostgresDAO
@@ -30,7 +30,7 @@ from mnemotrace.util import DAY, stems
 INDEX = 'phase5_experiment_hnsw'
 
 
-def quality(factory, out):
+def quality(factory, out, *, processing='immediate'):
     from tests.model_fixtures import RecordedLLM
 
     ref_rows, ref_summary, reference = observe()
@@ -43,14 +43,28 @@ def quality(factory, out):
 
         def run_item(item, *, storage, llm):
             scope = spaces.authorize(user, spaces.create(user, item.id).space_id)
-            memory = PostgresMemory(runtime, scope, llm=llm, config=Config(access_boost=0))
+            memory = Memory(runtime, scope, llm=llm, config=Config(access_boost=0))
             origins = {}
             for index, (text, day) in enumerate(item.sessions, 1):
-                accepted = memory.remember(text, 'eval', event_time=harness.BASE + day * DAY)
-                if accepted['status'] != 'completed':
+                accepted = memory.remember(text, 'eval', event_time=harness.BASE + day * DAY,
+                                           processing=processing)
+                expected = 'completed' if processing == 'immediate' else 'accepted'
+                if accepted['status'] != expected:
                     raise RuntimeError(f'{item.id}: fixed-response ingestion failed')
                 source_id, = accepted['source_ids']
                 origins[source_id] = f'source-{index}'
+                if processing == 'immediate':
+                    task = memory.source_vector_operation(source_id)
+                    memory._processing.run_one(task.operation_id, force=True)
+            if processing == 'buffered':
+                if not memory.flush_processing('eval')['ok']:
+                    raise RuntimeError(f'{item.id}: fixed-response buffered processing failed')
+                # A new pool must observe the same accepted sources and completed receipts.
+                with Database(bundle.runtime) as reopened:
+                    restored = Memory(reopened, scope)
+                    if not all(restored.get_episode(source_id).consolidated for source_id in origins):
+                        raise RuntimeError(f'{item.id}: completed sources missing after reopening')
+            for source_id in origins if processing == 'buffered' else ():
                 task = memory.source_vector_operation(source_id)
                 memory._processing.run_one(task.operation_id, force=True)
             when = None if item.as_of_day is None else harness.BASE + item.as_of_day * DAY
@@ -246,6 +260,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--mode', choices=('quality', 'performance', 'both'), default='both')
+    parser.add_argument('--processing', choices=('immediate', 'buffered'), default='immediate',
+                        help='Ingestion mode for the fixed-response quality replay')
     parser.add_argument('--case', action='append', choices=[case['name'] for case in manifest['cases']])
     parser.add_argument('--concurrency', action='append', type=int, choices=manifest['concurrency'],
                         help='Run only the selected concurrency level, repeat to select more than one')
@@ -259,7 +275,9 @@ def main(argv=None):
     if args.mode != 'quality' and args.repeats < max(concurrency_levels):
         parser.error('Measured repeats must be at least the highest selected concurrency')
     metadata = dict(commit=_git('rev-parse', 'HEAD'), platform=platform.platform(), python=platform.python_version(),
+                    processing=args.processing,
                     command=['python', '-m', 'eval.storage_postgres', '--out', str(args.out), '--mode', args.mode,
+                             '--processing', args.processing,
                              '--warmups', str(args.warmups), '--repeats', str(args.repeats),
                              *(part for case in (args.case or ()) for part in ('--case', case)),
                              *(part for level in concurrency_levels for part in ('--concurrency', str(level)))],
@@ -276,7 +294,7 @@ def main(argv=None):
     (args.out / 'untracked.json').write_text(json.dumps(sources, ensure_ascii=False), encoding='utf-8')
     factory = disposable_database_factory(dsn)
     if args.mode in ('quality', 'both'):
-        quality(factory, args.out)
+        quality(factory, args.out, processing=args.processing)
     if args.mode in ('performance', 'both'):
         performance(factory, args.out, manifest, warmups=args.warmups, repeats=args.repeats, case_names=args.case,
                     concurrency_levels=concurrency_levels)

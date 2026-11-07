@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryEngine
 from mnemotrace.consolidate.structured import build_structured_profile
 from mnemotrace.types import Fact
 
@@ -13,7 +13,7 @@ def _preference(profile: dict) -> dict:
 
 
 def test_content_edit_retains_source_count_and_marks_user():
-    mem = Memory()
+    mem = MemoryEngine()
     episode = mem.add("I like jazz.", user_id="synthetic-user")
     mem.consolidate()
     fact = next(f for f in mem._all_facts() if episode.id in f.provenance)
@@ -55,7 +55,7 @@ def test_reinforcement_does_not_inflate_source_count(provenance):
 
 
 def test_manual_fact_without_sources_does_not_invent_count():
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact("user", "prefers", "synthetic-option", user_id="synthetic-user")
     evidence = _preference(mem.structured_profile("synthetic-user"))["evidence"]
     assert evidence == {"kind": "user", "source_count": 0, "reinforcement_count": 0}

@@ -1,11 +1,11 @@
 """批量导入连接器（AGENTS.md 「代码导航」 采纳层）：把外部的历史导出转成 忆痕 会话，再由
-`Memory.import_messages()` 用少量批量调用完成导入。
+`MemoryEngine.import_messages()` 用少量批量调用完成导入。
 
-    from mnemotrace import Memory
+    from mnemotrace import MemoryEngine
     from mnemotrace.connectors import parse
 
     sessions = parse(open("conversations.json").read(), format="chatgpt")
-    Memory().import_messages(sessions, user_id="me")
+    MemoryEngine().import_messages(sessions, user_id="me")
 
 `format="auto"`（默认）会探测数据形状。支持的格式：
     chatgpt     ChatGPT 数据导出（conversations.json）
@@ -114,8 +114,8 @@ def parse(data: Any, format: str = "auto", session_id: str = "imported") -> list
     obj = load_json(data)
     if fmt == "mnemotrace":
         raise ValueError(
-            "this is an MnemoTrace export snapshot, not a message history -- restore it with "
-            "Memory.import_snapshot() (or POST it to /v1/import, which routes it automatically).")
+            "Use MemoryEngine.import_snapshot() to inspect this export in an offline work set. "
+            "History import accepts conversation exports; Postgres recovery uses a database backup.")
     if fmt == "chatgpt":
         return parse_chatgpt(obj)
     if fmt in ("messages", "openai"):

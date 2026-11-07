@@ -18,7 +18,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mnemotrace import Memory  # noqa: E402
+from mnemotrace import MemoryEngine  # noqa: E402
 from mnemotrace.config import Config  # noqa: E402
 from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
 from eval.longmemeval import ingest, load_data  # noqa: E402
@@ -33,7 +33,7 @@ def build_dev(items, embedder, extractor, extract_k=20):
         evidence = set(it.get("answer_session_ids") or [])
         if not evidence:
             continue
-        mem = Memory(embedder=embedder, llm=extractor)
+        mem = MemoryEngine(embedder=embedder, llm=extractor)
         ingest(mem, it, qid)
         # episode.id -> session_id，从而可以按 provenance 所在 session 标注 fact
         ep_session = {ep.id: ep.session_id for ep in mem.episodes_doc.values()}

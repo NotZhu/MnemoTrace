@@ -1,5 +1,5 @@
 import { useRef, useState, type FormEvent } from 'react'
-import { ArrowRight, BrainCircuit, KeyRound, Sparkles, X } from 'lucide-react'
+import { ArrowRight, BrainCircuit, KeyRound, X } from 'lucide-react'
 
 import { Button } from '../components/ui'
 import { ThemeToggle } from '../components/ThemeToggle'
@@ -17,7 +17,6 @@ export default function Login() {
   const health = useHealth()
   const keyInput = useRef<HTMLInputElement>(null)
   const [key, setKey] = useState('')
-  const isOpenMode = health.isSuccess && health.data.auth_mode === 'open'
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
@@ -25,15 +24,9 @@ export default function Login() {
   }
 
   const mode =
-    health.data?.auth_mode === 'api_keys'
-      ? t.login.modeApiKeys
-      : health.data?.auth_mode === 'disabled'
-        ? t.login.modeDisabled
-        : isOpenMode
-          ? t.login.modeOpen
-          : health.isPending
-            ? t.login.modeChecking
-            : t.login.modeUnavailable
+    health.isPending ? t.login.modeChecking
+      : health.data?.ready ? t.login.modeApiKeys
+        : t.login.modeUnavailable
 
   return (
     <div className="login-page relative grid min-h-screen place-items-center px-4">
@@ -59,10 +52,9 @@ export default function Login() {
         <form onSubmit={submit} className="login-card" aria-label={t.login.title}>
           <p id="login-key-notice" className="login-notice text-ghost" aria-live="polite">
             {mode}
-            {health.data?.anonymous_allowed ? <>{' '}{t.login.anonymousOn}</> : null}
           </p>
           <div className="login-key-label">
-            <label className="sr-only" htmlFor="login-api-key">{isOpenMode ? t.login.openKeyLabel : t.login.keyLabel}</label>
+            <label className="sr-only" htmlFor="login-api-key">{t.login.keyLabel}</label>
             <div className="login-key-field">
               <KeyRound className="h-4 w-4 text-ghost" />
               <input
@@ -72,7 +64,7 @@ export default function Login() {
                 aria-describedby={keyError ? 'login-key-notice login-key-error' : 'login-key-notice'}
                 aria-invalid={!!keyError}
                 className="w-full bg-transparent py-2.5 text-sm outline-none placeholder:text-ghost/70"
-                placeholder={isOpenMode ? t.login.openPlaceholder : t.login.placeholder}
+                placeholder={t.login.placeholder}
                 value={key}
                 onChange={(e) => setKey(e.target.value)}
               />
@@ -97,18 +89,6 @@ export default function Login() {
               {keyError}
             </p>
           )}
-          <div className="login-actions">
-            <Button type="button" variant="ghost" disabled={!isOpenMode} onClick={() => {
-              const nextKey = makePrivateKey()
-              setKey(nextKey)
-              keyInput.current?.focus()
-            }}>
-              <Sparkles className="h-4 w-4" /> {t.login.generateKey}
-            </Button>
-            <Button type="button" variant="ghost" disabled={!isOpenMode} onClick={() => setKey('mnemotrace-test')}>
-              <KeyRound className="h-4 w-4" /> {t.login.useDemoKey}
-            </Button>
-          </div>
           <Button type="submit" className="login-submit w-full" disabled={!key.trim()}>
             {t.login.submit} <ArrowRight className="h-4 w-4" />
           </Button>
@@ -116,9 +96,4 @@ export default function Login() {
       </div>
     </div>
   )
-}
-
-function makePrivateKey() {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return `mnemotrace-${crypto.randomUUID()}`
-  return `mnemotrace-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
 }

@@ -7,6 +7,8 @@ artifacts; storage schema compatibility is documented separately when it changes
 
 ### Added
 
+- Added a Compose stack for PostgreSQL 18, the API and an independent worker, with explicit
+  role provisioning and migration. Added logical backup and restore verification for schema 6.
 - Added explicit space management, durable operation lookup and retry, and the `mnemotrace` CLI for
   operation status, retrieval, and fact deletion.
 
@@ -14,7 +16,8 @@ artifacts; storage schema compatibility is documented separately when it changes
 
 - Switched the HTTP service, MCP tools, SDK clients, CLI, and console to Postgres-backed memory.
   HTTP and remote MCP verify issued Bearer keys per request, and recall authorizes every requested space.
-  Python integrations can use `PostgresMemory` directly. Deployment requires an initialized Postgres
+  Python integrations use `Memory(database, context)`. The offline entry is now `MemoryEngine()`.
+  Deployment requires an initialized Postgres
   database and a runtime role connection.
 - Buffered ingestion acknowledges durable input and returns operation IDs. Immediate ingestion waits
   for core processing. Auxiliary tasks have their own operation IDs. Session flush preserves working memory.
@@ -38,6 +41,8 @@ artifacts; storage schema compatibility is documented separately when it changes
 
 ### Removed
 
+- Removed the file-backed product store and its LanceDB and Qdrant extras. The in-memory
+  algorithm work set remains available for tests and evaluation.
 - Retired RESULTS.md, results/, paper/, and Spec Kit scaffolding from the maintained tree;
   engineering checks no longer require their historical files or workflow.
 - Completed specification suites, redundant reports, obsolete diagnostics, and stale integration

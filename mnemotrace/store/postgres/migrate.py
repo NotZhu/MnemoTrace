@@ -10,7 +10,7 @@ from .database import DatabaseConfig, database_errors, driver
 from .errors import DatabaseConfigurationError, SchemaMismatch
 
 MIGRATIONS = ('001_initial.sql', '002_security.sql', '003_record_commits.sql',
-              '004_processing.sql', '005_retrieval.sql')
+              '004_processing.sql', '005_retrieval.sql', '006_backup_constraints.sql')
 
 
 def _roles(prefix):
@@ -56,6 +56,93 @@ def bootstrap_roles(config: DatabaseConfig) -> None:
         conn.execute('REVOKE CREATE ON SCHEMA public FROM PUBLIC')
         conn.execute(sql.SQL('GRANT USAGE ON SCHEMA public TO {}, {}').format(
             sql.Identifier(roles['migration']), sql.Identifier(roles['runtime'])))
+
+
+def provision_logins(bootstrap: DatabaseConfig, configs: dict[str, DatabaseConfig]) -> None:
+    """Provision the dedicated logins for one deployment, without rotating credentials."""
+    psycopg, _ = driver()
+    from psycopg import sql
+
+    roles = _roles(bootstrap.role_prefix)
+    endpoint_keys = ('host', 'port', 'dbname')
+    with database_errors():
+        target = psycopg.conninfo.conninfo_to_dict(bootstrap.dsn)
+        logins = {}
+        for purpose, config in configs.items():
+            settings = psycopg.conninfo.conninfo_to_dict(config.dsn)
+            name, password = settings.get('user'), settings.get('password')
+            if (set(settings) - {*endpoint_keys, 'user', 'password', 'sslmode'}
+                    or any(not target.get(key) or settings.get(key) != target[key]
+                           for key in endpoint_keys)
+                    or not name or not name.isascii() or len(name) > 63 or not password
+                    or name == target.get('user') or name in roles.values()
+                    or name in (login for login, _ in logins.values())):
+                raise DatabaseConfigurationError('Expected distinct login DSNs for the bootstrap database')
+            logins[purpose] = (name, password)
+
+        with psycopg.connect(bootstrap.dsn, connect_timeout=math.ceil(bootstrap.connect_timeout)) as conn:
+            conn.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))',
+                         ('mnemotrace:roles:' + bootstrap.role_prefix,))
+            for purpose, (name, password) in logins.items():
+                existing = conn.execute(
+                    'SELECT rolcanlogin, rolinherit, rolsuper, rolbypassrls, rolcreaterole, '
+                    'rolcreatedb, rolreplication FROM pg_roles WHERE rolname=%s', (name,),
+                ).fetchone()
+                if existing is None:
+                    verifier = conn.pgconn.encrypt_password(
+                        password.encode('utf-8'), name.encode('ascii'), b'scram-sha-256')
+                    conn.execute(sql.SQL('CREATE ROLE {} LOGIN PASSWORD {}').format(
+                        sql.Identifier(name), sql.Literal(verifier.decode('ascii'))))
+                    conn.execute(sql.SQL('GRANT {} TO {}').format(
+                        sql.Identifier(roles[purpose]), sql.Identifier(name)))
+                elif existing != (True, True, False, False, False, False, False):
+                    raise DatabaseConfigurationError('Existing database login has unsafe attributes')
+                memberships = conn.execute(
+                    'SELECT parent.rolname, m.admin_option, m.inherit_option, m.set_option '
+                    'FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid '
+                    'JOIN pg_roles member ON member.oid=m.member WHERE member.rolname=%s',
+                    (name,),
+                ).fetchall()
+                if memberships != [(roles[purpose], False, True, True)]:
+                    raise DatabaseConfigurationError('Existing database login has unexpected memberships')
+
+        for config in configs.values():
+            with psycopg.connect(config.dsn, connect_timeout=math.ceil(config.connect_timeout)):
+                pass
+
+
+def check_restore_target(config: DatabaseConfig) -> None:
+    """Reject databases containing application objects before restore preparation."""
+    psycopg, _ = driver()
+    with database_errors(), psycopg.connect(
+            config.dsn, connect_timeout=math.ceil(config.connect_timeout)) as conn:
+        occupied, = conn.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM pg_namespace
+                WHERE nspname NOT IN ('public', 'information_schema') AND nspname !~ '^pg_'
+                UNION ALL
+                SELECT 1 FROM pg_extension WHERE extname NOT IN ('plpgsql', 'vector')
+                UNION ALL
+                SELECT 1 FROM (
+                    SELECT 'pg_class'::regclass AS catalog, oid FROM pg_class
+                        WHERE relnamespace = 'public'::regnamespace
+                    UNION ALL
+                    SELECT 'pg_proc'::regclass, oid FROM pg_proc
+                        WHERE pronamespace = 'public'::regnamespace
+                    UNION ALL
+                    SELECT 'pg_type'::regclass, oid FROM pg_type
+                        WHERE typnamespace = 'public'::regnamespace
+                ) AS objects
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM pg_depend d JOIN pg_extension e ON e.oid = d.refobjid
+                    WHERE d.classid = objects.catalog AND d.objid = objects.oid
+                      AND d.refclassid = 'pg_extension'::regclass AND d.deptype = 'e'
+                      AND e.extname = 'vector'
+                )
+            )
+        """).fetchone()
+        if occupied:
+            raise DatabaseConfigurationError('Restore target must be a new empty database')
 
 
 def _scripts(prefix):

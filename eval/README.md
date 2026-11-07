@@ -136,38 +136,19 @@ facility 会读取所选会话目录、watcher/hook 状态并可能访问服务�
 
 ### 控制台演示数据
 
-`seed_console.py` 使用基准或合成数据建立演示 namespace，不是生产用户数据迁移器。每个问题的原始序号（从 1 开始）是空间 ID；目录名由核心库的命名空间规则生成，例如空间 `1` 对应 `1--6b86b273ff34fce1`。空间 ID 与登录凭证需要区分。
-
-1. 选择独立的输出目录，明确指定数据范围、embedder 和 LLM。默认配置可能加载模型或调用付费 LLM，先通过 `--help` 核对设置。下面的最小示例全程离线。
-2. 检查生成的 `manifest.json` 和 `manifest.md`。JSON 中每条记录的 `namespace` 是空间 ID，`directory` 是输出根目录下的相对存储目录名；其余字段描述问题和记忆数量。使用 `--shard i/N` 时只生成对应的 `manifest.shard<i>.json`，按各分片清单操作，没有自动合并步骤。`--offset` 和 `--limit` 不会重新编号。
-3. 停止目标服务，确认清单中的空间 ID 都是本次演示空间。将清单列出的每个完整目录从 `<out>/<directory>` 复制到 `<MNEMOTRACE_DATA_DIR>/<directory>`，保留目录名。目标目录已存在时停止操作，不覆盖或合并；不要把整个 `<out>` 再嵌套到数据根目录下。
-4. 配置目标服务使用与生成时相同的 embedder，并启动服务。开放模式下用 `namespace`（例如 `1`）登录；受保护模式下由管理员将 API Key 映射到该空间，使用该 API Key 登录。受保护部署不能只凭空间编号登录。核对记忆内容和清单中的 `facts_live`，重启服务后再次核对。
-
-最小离线示例：将以下合成输入保存为 `.artifacts/console-demo-input.json`，从仓库根目录生成到一个全新的输出目录：
-
-```json
-[{"question_type":"synthetic","question":"Where do I live?","answer":"Paris","haystack_sessions":[[{"role":"user","content":"I live in Paris."}]]}]
-```
+`seed_console.py` 用显式配置的模型把选中的 LongMemEval 项写入演示账号下的新 Postgres 空间。先按[数据库配置](../docs/reference/configuration.md#postgres-数据库基础)准备账号、运行角色连接和模型。每项创建独立空间，并把原始题号与空间 ID 写入新建 JSONL 清单。失败时保留已创建空间及其任务回执，使用清单定位待处理数据。
 
 ```sh
-python eval/seed_console.py --data .artifacts/console-demo-input.json --out .artifacts/console-demo --embedder hashing --llm deepseek
+python eval/seed_console.py --data synthetic-input.json --out .artifacts/console-spaces.jsonl --limit 3
 ```
-
-按上述步骤复制后，空间 `1` 应能看到居住地 `Paris`。若仅在本机核对复制结果，可先不启动 HTTP 服务，直接使用服务的读取入口（将路径替换为本次复制目标）：
-
-```sh
-python -c "from mnemotrace.service import MemoryService; s = MemoryService(data_dir=r'<MNEMOTRACE_DATA_DIR>', embedder_name='hashing', llm_name=''); print(s.memories('1')['facts'])"
-```
-
-脚本会在加载模型前检查本次计划写入的空间目录和清单文件；任何目标已存在就报错，并以排他创建防止两个生成进程覆盖同一目标。不同分片可以共享输出根目录，但重复运行同一分片会报错。失败可能留下不完整的目录或清单；换新的 `--out` 重新生成，不把失败输出复制到服务中。旧版编号目录不会自动读取、认领或迁移，旧源存储保持不动；需要数据时重新生成。
-
-所有测量都应在授权范围内执行。核心、安装和工程检查成功不表示算法提升。
 
 ## 连续会话缓冲对照
 
+当前产品可用 `python -m eval.storage_postgres --mode quality --processing buffered --out .artifacts/eval/postgres-buffered` 做固定响应的入库、续处理、重连和检索对照。真实进程中断与会话隔离由 Postgres 回归套件覆盖。以下历史结果使用各运行清单中的源码提交复现。
+
 `window_extraction.py --buffered-replay` 在同一个固定运行时上比较 `immediate` 和 `buffered`。
 场景集为十二个合成中文会话（六类，每类 8/24 条消息），默认两轮共 48 条观测。
-默认运行时为 `3089ce1`，保留原提示词和 16384 字节输入预算；模型调用数不能代替 token 或整个服务成本。默认引用必须是 main 上可达的提交：分支经 rebase 合并后旧 SHA 会消失。
+当前回放工具默认使用 `9bdc903`，其中同时包含文件服务和窗口内核。更早的评测使用其运行清单记录的工具与源码提交复现。模型调用数与 token、服务总成本分别记录。
 
 生产者按固定时间表投递，每个用户的调用按 FIFO 消费；即时模型调用阻塞时，后续消息仍进入客户端队列。
 这代表顺序消费的客户端，不是 HTTP 并发吞吐测试。中途刷新使用 `timeout=0` 捕获并强制已有内容，

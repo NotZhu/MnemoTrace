@@ -1,24 +1,47 @@
 # Python API
 
-面向产品集成的 Python 入口是 `from mnemotrace import PostgresMemory`。先打开运行角色的数据库连接，再用 `Spaces(database).authorize(user_id, space_id)` 获取授权上下文并构造 `PostgresMemory(database, context)`。连接由调用方负责关闭。详见 [Postgres 存储契约](../architecture/storage-contracts.md)。
+面向产品集成的 Python 入口是 `from mnemotrace import Memory`。先打开运行角色的数据库连接，再用 `Spaces(database).authorize(user_id, space_id)` 获取授权上下文并构造 `Memory(database, context)`。连接由调用方负责关闭。详见 [Postgres 存储契约](../architecture/storage-contracts.md)。
 
-`from mnemotrace import Memory, Config` 用于离线验证。核心不需要第三方运行时依赖，支持 Episode、Fact、Entity 和 Relation。
+`from mnemotrace import Config, MemoryEngine` 用于离线验证。核心不需要第三方运行时依赖，支持 Episode、Fact、Entity 和 Relation。
 
-## 构造与运行配置
+## Postgres 产品入口
 
-`Memory(config=None, embedder=None, llm=None, reranker=None, vector_store_factory=..., graph_store_factory=...)`
+`Memory` 绑定一个授权空间，调用方法时无需再次传 `user_id`。连接由直连调用方持有，用 `Database` 上下文管理器覆盖完整的调用范围。传入 `llm=` 启用抽取；需要与服务读取同一组环境参数时传入 `config=Config.from_env()`。模型和连接的完整示例见 [Quickstart](../quickstart.md)。
 
-默认 Config、HashingEmbedder 和内存文档/向量/图存储。传入 LLM 才能抽取自然语言事实；可选实现通过各自 extras 安装。参数字段和默认值见[配置参考](configuration.md)及 [Config](../../mnemotrace/config.py)。
+从存储契约模块导入消息输入、查询条件和任务回执类型。
 
-直接使用 Memory 不读取服务端的凭据映射，也不自动提供鉴权、服务级锁或逐操作保存。并发与持久化由应用管理。产品调用使用 PostgresMemory 或 HTTP。
+```python
+from mnemotrace.store.contracts import FactQuery, MessageInput, OperationResult
+```
 
-## 写入与导入
+| 方法 | 用途 |
+| --- | --- |
+| `remember_raw(content, session_id)` | 保存原文并返回 Episode，无需抽取模型 |
+| `remember(content, session_id, *, scope="auto", processing="immediate")` | 接收笔记；`auto` 和 `long` 请求抽取，`working` 直接保存原文和工作条目 |
+| `remember_messages(session_id, messages, *, processing="buffered")` | 接收 `MessageInput` 序列，在确认接收前提交原文与任务 |
+| `operation(operation_id)`、`retry_operation(operation_id)` | 查询或重试原操作，返回 `OperationResult` 或 `None` |
+| `list_operations(*, session_id=None, after_id=None, limit=100)` | 分页返回操作对象；下一页用最后一个操作的 `operation_id` 作游标 |
+| `flush_processing(session_id=None, timeout=30, *, retry_failed=False, include_summaries=False)` | 推进并等待本次捕获范围内的任务 |
+| `search(query, *, as_of=None, top_k=None)`、`get_episode(episode_id)` | 检索事实或显式读取原文 |
+| `add_fact(subject, predicate, object, ...)`、`working_memory(...)`、`clear_working(session_id)` | 写入人工事实、读取或清理工作条目 |
 
-对话使用 `Memory.remember_messages(messages, session_id, user_id="default", mode="live", scope="auto")`。
+`remember` 和 `remember_messages` 返回 `source_ids`、`operation_ids` 和 `operations`。缓冲接收只确认持久化，任务由独立 worker 或显式 `flush_processing` 推进。刷新返回 `completed`、`failed` 或 `timed_out`，仅完成时 `ok=True`。等待超时后可继续查询原操作。自动抽取缺少模型时在写入前失败。
+
+Memory 在授权空间内按记录提交。现有记录与向量按文本版本、模型标识及维度关联，查询按当前配置筛选匹配的向量。备份和恢复见[部署与恢复流程](../../deploy/README.md#备份与恢复)。更多方法见 [Memory 实现](../../mnemotrace/memory.py)。
+
+## 离线算法入口与运行配置
+
+`MemoryEngine(config=None, embedder=None, llm=None, reranker=None, vector_store_factory=..., graph_store_factory=...)`
+
+算法工作集使用 Config、HashingEmbedder 和内存文档、向量及图存储。传入 LLM 才能抽取自然语言事实；可选实现通过各自 extras 安装。参数字段和默认值见[配置参考](configuration.md)及 [Config](../../mnemotrace/config.py)。
+
+直接使用 MemoryEngine 只在进程内维护算法状态。产品调用使用 Memory 或 HTTP。
+
+## 离线写入与导入
+
+对话使用 `MemoryEngine.remember_messages(messages, session_id, user_id="default", mode="live", scope="auto")`。
 每条消息包含 message_id、role、content 和可选 event_time，角色限定为 user/assistant。返回每条事件 ID、持久化顺序和处理状态；相同 ID 的冲突输入报 MessageConflictError。
-底层写入不依赖 LLM；内存实例仍需显式 save 才获得持久性。`Memory.flush_messages(user_id="default", session_id=None, timeout=30, retry_failed=False)` 使用同一联合状态机处理已记录范围，需配置 LLM。保存失败优先恢复权威快照；无法恢复的实例必须重新打开。
-
-Postgres 使用 `PostgresMemory.remember_messages(session_id, messages, processing="buffered")` 在确认接收前提交原文与任务。使用 `operation(operation_id)` 查询持久化状态，使用 `retry_operation(operation_id)` 重试原操作。按会话调用 `flush_processing` 可等待核心处理，工作记忆由独立入口清理。
+内存算法入口可记录原文，并通过 `MemoryEngine.flush_messages` 驱动固定模型或配置的 LLM。持久写入及恢复由 Postgres 入口提供。
 
 历史导入适配后逐条提交 historical 消息，超过入口批量上限时顺序分批。来源没有消息 ID 时，适配器采用稳定源位置 ID；修订原位置应使用明确的新消息 ID，不能以正文哈希删除合法重复。来源时间缺失保持未知，不再生成今天的合成时间。
 文档、手工事实和下述原文 API 保留独立契约；`consolidate()` 不会绕过联合任务处理对话消息。
@@ -37,7 +60,7 @@ Postgres 使用 `PostgresMemory.remember_messages(session_id, messages, processi
 
 `scope="auto"` 在整合时由同一次模型调用识别长期事实与临时状态；`long` 仅请求长期事实，`working` 显式写入工作记忆。时间词不决定生命周期。底层 remember 仅保存原文和请求的 scope，auto/long 仍需 consolidate。Python 记忆实例中的写入不会自动保存到磁盘。
 
-## 检索与上下文
+## 离线检索与上下文
 
 | 方法 | 主要参数 | 返回 |
 | --- | --- | --- |
@@ -54,13 +77,13 @@ Postgres 使用 `PostgresMemory.remember_messages(session_id, messages, processi
 
 <a id="profile-evidence"></a>结构化画像条目的 `evidence` 包含 `kind`、`source_count` 和 `reinforcement_count`。`source_count` 是事实 provenance 中不同来源 Episode ID 的数量；手动添加且没有来源、或仅从身份消解补全的姓名，来源数为 0。`reinforcement_count` 是事实的 `access_count`，记录检索使用时的强化次数；手动设定和多来源事实同样返回该次数，身份消解补全的姓名为 0。`kind` 优先用 `user` 表示手动设定；非手动事实在来源不足两条且曾被检索强化时为 `reinforced`，其余为 `mentions`。三者分别表达状态、来源数和强化次数，读取画像不会增加强化次数。
 
-偏好条目提供 topic/topic_source，按已存主题分组；unknown 均进入“其他”，明确禁忌关系是独立特例。条目的 category 为画像分组标签，完整规则见[主题与来源](../architecture/memory.md#主题与来源)。Python 服务入口 `MemoryService.memories(..., topic=None)` 按已存主题精确筛选；unknown 包含人工及未赋值的未知，非法枚举抛出 ValueError。与其他事实筛选取交集，在分页前执行，不筛选原始 episode。
+偏好条目提供 topic/topic_source，按已存主题分组；unknown 均进入“其他”，明确禁忌关系是独立特例。条目的 category 为画像分组标签，完整规则见[主题与来源](../architecture/memory.md#主题与来源)。产品的主题分页筛选见 [HTTP API](http-api.md)。
 
 SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answer()` 返回已生成答案或最高事实的 object/text；拒答时返回固定提示。`top()` 返回首条 Fact 或 None。它不是对任何问题都调用外部模型的通用聊天接口。
 
 `as_of`、时间字段使用 epoch 秒。查询需要沿用正确的 user_id；携带 session_id 才能在相应上下文中包含该 session 的工作记忆。Python `graph_data()` 默认包含敏感事实支持的关系，与 HTTP 的安全视图默认值不同。
 
-## 事实、工作状态与策略
+## 离线事实、工作状态与策略
 
 | 方法 | 用途 |
 | --- | --- |
@@ -86,34 +109,11 @@ memory.update_fact(fact.id, topic="unknown")  # unknown/user
 memory.update_fact(fact.id, reset_topic=True)  # 按当前内容重新判断，来源为 rule 或 unset
 ```
 
-## 保存与模型切换
-
-```python
-from mnemotrace import Memory
-
-memory = Memory.open("/path/to/owned-memory-store")
-memory.add("I prefer Python.", user_id="user123")
-memory.consolidate()
-memory.save()
-```
-
-`save(path=None, check_version=False)` 使用指定目录或上次打开/保存的路径；没有路径时抛出 ValueError。`check_version=True` 在快照锁内拒绝覆盖其他写入者已推进的版本；消息处理器和服务端保存使用此保护。`open(path, allow_mismatch=False, **kwargs)` 是类方法，支持与构造函数一致的运行组件参数，恢复在同一快照锁内读取完整代次。
-
-异常类型从 `mnemotrace.store.persist` 导入：PersistenceError、StoreFormatError、DimensionMismatchError、EmbedderMismatchError。当前恢复条件和重嵌入流程见[持久化契约](../architecture/memory.md)。
-
-当前格式缺少必要信息、类型非法或缺少提交编号的历史存档会被明确拒绝，不自动升级。自定义 embedder 必须提供正整数 `dim`；`allow_mismatch` 只放宽模型匹配，不跳过格式校验。
-
-## 扩展与研究入口
-
-服务端 `MemoryService.remember(user, content, session_id="default", scope="auto", processing="immediate")`
-可显式选择 buffered，后台默认开启；显式关闭后不可提交新的 buffered 输入。这不改变底层 `Memory.remember()` 仅保存原文与路由的职责。
-`processing_status(user, session_id=None)` 查看任务；`flush(user, session_id=None, timeout=30, retry_failed=False, include_summaries=False)`
-等待本次捕获范围并返回 completed、failed 或 timed_out，只有 completed 对应 ok=true。
-取消、失败和超时不会删除原始事件。模型或存储失败不能通过 queued 响应解释为抽取成功。
+## 离线扩展与研究入口
 
 摘要和派生层操作还包括 `summarize_episodes`、`retrieve_summaries`、`procedural`；热层管理包括 `evict_cold`、`apply_focus`。这些方法改变派生状态或工作集，调用方负责后续保存及必要验证。
 
-精确签名、类型和行为以 [Memory](../../mnemotrace/memory.py)、[记录类型](../../mnemotrace/types.py) 和对应[测试](../../tests/)为核对来源。HTTP/MCP 的方法、默认值及能力不与嵌入式 API 一一对应。
+精确签名、类型和行为以 [MemoryEngine](../../mnemotrace/memory_engine.py)、[记录类型](../../mnemotrace/types.py) 和对应[测试](../../tests/)为核对来源。HTTP/MCP 的方法、默认值及能力不与嵌入式 API 一一对应。
 
 ## 模型抽取与错误契约
 
@@ -125,31 +125,18 @@ memory.save()
 
 抽取模型输出 `{"facts": [...], "working": [...]}`；facts 条目包含非空字符串 subject、predicate、object，可附 text 和 topic；working 条目包含非空 content 和 kind（state/intent/task），不接受模型设置 TTL。两个数组均为必需；混合内容分别生成两类记录，无记忆价值时两个数组为空。自定义 extract_system 必须遵循该协议，旧数组响应不兼容。
 
-`consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实和工作条目。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，已完成的窗口范围保留，未完成范围继续待处理；重试跳过完成范围并消解重复事实和工作条目。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
+离线 `MemoryEngine.consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实和工作条目。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，已完成的窗口范围保留，未完成范围继续待处理；重试跳过完成范围并消解重复事实和工作条目。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
 
 对话历史导入使用消息身份和联合任务；同 ID 的重传不重新生成。文档和可移植快照保留各自导入契约。显式摘要与 include_summaries 仍通过同一任务内核，并保留既有摘要。
 
-公开异常为 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError、ExtractionConflictError；未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated；同一命名空间的并发写作废在途抽取时抛 ExtractionConflictError（code 为 extraction_conflict），内核会先基于新快照自动重试一次。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。原文保存不等同于事实抽取完成。模型输出的 working.kind 限定为 state/intent/task，显式工作记忆接口仍可使用其他 kind。
+离线抽取异常包括 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError、ExtractionConflictError。未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated；同一命名空间的并发写作废在途抽取时抛 ExtractionConflictError（code 为 extraction_conflict），内核会先基于新快照自动重试一次。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。Postgres 已接收任务的进度和错误从操作回执读取。模型输出的 working.kind 限定为 state/intent/task，显式工作记忆接口仍可使用其他 kind。
 
 替代裁决仅接受 REPLACES/COEXISTS，冲突检测仅接受 CONFLICT/COEXIST（忽略首尾空白与大小写）；其他响应记录安全警告并不执行对应替代或冲突标记。
 
 
-处理等待超时后可查询原操作 ID。核心完成后，辅助摘要通过独立操作 ID 查询。
+## 摘要与显式原文读取
 
-## 数据库资源生命周期
-
-`Memory.close()` 幂等释放 Memory 内部创建的数据库客户端，不隐式保存。`with Memory.open(...) as memory:` 可保证退出时释放；需要持久化改动时在退出前调用 `save()`。直接注入 `QdrantVectorStore` 的客户端由调用方管理。可选后端的选择、路径和远程配置见[配置参考](configuration.md#可选-qdrant)。
-
-
-### 摘要与显式原文读取
-
-离线对话、原文、文档、`consolidate` 和 `summarize_episodes` 共用任务执行内核。
-`processing_status` 只返回统一 counts/jobs；每项区分 source_kind、operation、phase、失败和 coverage，删除旧任务分区和 completed_through。
-原文 `remember` 通过联合生成处理事实和条件摘要；核心合法但摘要缺失时保留成果，仅补摘要。
-原文和文档按连续片段覆盖全文，再按预算归并摘要；对话只概括可见的完整或裁切输入。
-flush 等待冻结范围内已经请求的处理；include_summaries=True 额外请求该范围中符合阈值的显式摘要。
-关闭后台后，显式 flush 仍驱动同一执行器。retry_failed=True 只重试缺失成果，读取与普通调度不重置次数。
-
+Postgres 核心操作通过 `auxiliary_operation_ids` 关联独立的摘要任务。调用 `flush_processing(include_summaries=True)` 可把符合条件的摘要纳入本次处理范围，`retry_failed=True` 重试范围内的失败操作。摘要失败时保留已提交的事实和原文。
 
 摘要成功后，所有 agent 事件检索、来源证据、聚合和上下文只使用摘要。检索文本带事件 ID；通过 get_episode 显式读取原文。
 Fact 仍从原文抽取且独立检索；历史事件摘要不追加后续事实。owner 管理浏览、全文搜索及导出保留。

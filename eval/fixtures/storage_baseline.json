@@ -2,13 +2,6 @@
   "format_version": 1,
   "clock": 1710368000.0,
   "config": {
-    "storage": "memory",
-    "data_path": null,
-    "qdrant_url": null,
-    "qdrant_api_key": null,
-    "qdrant_namespace": null,
-    "qdrant_collection_prefix": "mnemotrace",
-    "qdrant_timeout": 10.0,
     "embed_dim": 256,
     "top_k": 5,
     "candidate_k": 24,

@@ -8,7 +8,6 @@ from typing import Any, Callable
 
 from ..topics import TOPICS, TOPIC_SOURCES, validate_topic
 
-COLLECTIONS = ("episodes", "facts", "entities", "relations", "working", "conflicts")
 Validator = Callable[[Any, str], None]
 
 
@@ -87,14 +86,6 @@ def _list(check: Validator) -> Validator:
             _fail(path, "must be a list")
         for index, item in enumerate(value):
             check(item, f"{path}[{index}]")
-    return validate
-
-
-def _mapping(check: Validator) -> Validator:
-    def validate(value: Any, path: str) -> None:
-        _object(value, path)
-        for item in value.values():
-            check(item, f"{path}.values")
     return validate
 
 
@@ -186,12 +177,6 @@ _RECORDS = {
                  "reason": _string, "status": _choice("pending", "resolved", "dismissed"),
                  "detected_at": _number},
 }
-_POLICY = {key: _string for key in (
-    "extract_instruction", "extract_system", "summary_system", "persona_system",
-)}
-_FOCUS = {"track": _STRINGS, "mute": _STRINGS}
-
-
 def _fields(value: Any, spec: dict[str, Validator], path: str,
             optional: tuple[str, ...] = ()) -> dict[str, Any]:
     _object(value, path)
@@ -211,11 +196,9 @@ def validate_embedding(vector: Any, path: str, dimension: int) -> None:
         _fail(path, "length must match embedding_dim")
 
 
-def validate_record(kind: str, record: Any, path: str, *, jsonl_fact: bool = False,
+def validate_record(kind: str, record: Any, path: str, *,
                     embedding_dim: int | None = None, detached: bool = False) -> dict:
     spec = _RECORDS[kind]
-    if jsonl_fact:
-        spec = {**spec, "_store": _choice("hot", "cold")}
     result = _fields(record, spec, path)
     if kind == "Episode":
         for name in ('coverage', 'summary_coverage'):
@@ -240,38 +223,6 @@ def _validate_topic_pair(record: dict, path: str) -> None:
         validate_topic(record["topic"], record["topic_source"])
     except ValueError as exc:
         _fail(path, str(exc))
-
-
-def validate_state(state: Any, path: str = "manifest.state") -> dict:
-    result = _fields(state, {
-        "focus": lambda v, p: _fields(v, _FOCUS, p),
-        "policy": lambda v, p: _fields(v, _POLICY, p),
-        "identity": _mapping(_string), "aliases": _mapping(_STRINGS), "import_seen": _STRINGS,
-        "persona_cache": _mapping(_string),
-        "cold_pages_out": _mapping(_count), "cold_pages_in": _mapping(_count),
-    }, path)
-    if {'processing', 'summarization', 'messages'}.intersection(state):
-        _fail(path, 'legacy task state is unsupported; task migration is not provided')
-    if 'pipeline' in state:
-        from ..consolidate.pipeline import validate_state as validate_pipeline
-        result['pipeline'] = validate_pipeline(state['pipeline'])
-    return result
-
-
-def validate_manifest(manifest: Any) -> dict:
-    _object(manifest, "manifest")
-    result = _fields(manifest, {
-        "format_version": _integer,
-        "snapshot_id": _identifier, "embedder_id": _identifier,
-        "embedding_dim": _dimension, "backend": _choice("durable", "lancedb", "qdrant"),
-        "mnemotrace_version": _identifier, "created_at": _number, "updated_at": _number,
-        "counts": lambda v, p: _fields(v, {key: _count for key in COLLECTIONS}, p),
-        "state": _object,
-    }, "manifest")
-    if result['format_version'] != 3:
-        _fail('manifest.format_version', 'unsupported format; use the explicit snapshot upgrade command')
-    result["state"] = validate_state(result["state"])
-    return result
 
 
 # A migration carries source identities/history, not the target user's runtime state.

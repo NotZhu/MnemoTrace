@@ -1,7 +1,7 @@
 """Graph limits apply to matching relations; lookahead must not leak nodes."""
 import pytest
 
-from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryEngine
 
 
 def add_relation(mem, index, *, historical=False, sensitive=False):
@@ -17,7 +17,7 @@ def add_relation(mem, index, *, historical=False, sensitive=False):
 
 @pytest.mark.parametrize("count", [0, 119, 120, 121])
 def test_graph_has_more_uses_an_extra_matching_relation(count):
-    mem = Memory()
+    mem = MemoryEngine()
     ids = [add_relation(mem, i) for i in range(count)]
     graph = mem.graph_data(limit=120)
     assert [edge["fact_id"] for edge in graph["edges"]] == ids[:120]
@@ -30,7 +30,7 @@ def test_graph_has_more_uses_an_extra_matching_relation(count):
 
 @pytest.mark.parametrize("interleaved", [False, True])
 def test_current_graph_limit_is_not_consumed_by_history(interleaved):
-    mem = Memory()
+    mem = MemoryEngine()
     current = []
     for i in range(121):
         add_relation(mem, f"old_{i}", historical=True)
@@ -45,7 +45,7 @@ def test_current_graph_limit_is_not_consumed_by_history(interleaved):
 
 
 def test_graph_lookahead_obeys_search_privacy_time_and_namespace():
-    mem = Memory()
+    mem = MemoryEngine()
     match = add_relation(mem, "match")
     for i in range(121):
         add_relation(mem, f"sensitive_{i}", sensitive=True)

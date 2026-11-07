@@ -32,7 +32,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mnemotrace import Config, Memory  # noqa: E402
+from mnemotrace import Config, MemoryEngine  # noqa: E402
 from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm, make_reranker  # noqa: E402
 from mnemotrace.util import stems  # noqa: E402
 from eval.longmemeval import (  # noqa: E402
@@ -58,7 +58,7 @@ from eval.longmemeval import (  # noqa: E402
 from mnemotrace.retrieve.evidence import plan_evidence  # noqa: E402
 
 
-def retrieve_evidence_episodes(mem: Memory, query: str, user_id: str, limit: int, use_planner: bool = True):
+def retrieve_evidence_episodes(mem: MemoryEngine, query: str, user_id: str, limit: int, use_planner: bool = True):
     """用与 lean_context 相同的 evidence-shape 扩展来检索会话，供预整合使用。
 
     lean 读取路径之后可以用子查询检索原始 chunk，但 L1 facts 和 L2 摘要只对预先整合过的会话存在。
@@ -307,7 +307,7 @@ class MnemoTraceSystem:
 
     def context(self, item: dict) -> str:
         rig, qid, q = self.rig, item["question_id"], item["question"]
-        mem = Memory(
+        mem = MemoryEngine(
             config=mnemotrace_config(ablations=rig.ablations),
             embedder=rig.embedder,
             llm=rig.extractor_llm,
@@ -345,7 +345,7 @@ class RAGSystem:
 
     def context(self, item: dict) -> str:
         rig, qid, q = self.rig, item["question_id"], item["question"]
-        mem = Memory(embedder=rig.embedder, reranker=rig.reranker)  # 不传 llm -> 不做抽取
+        mem = MemoryEngine(embedder=rig.embedder, reranker=rig.reranker)  # 不传 llm -> 不做抽取
         ingest(mem, item, qid)
         eps = mem.retrieve_episodes(q, qid, rig.chunks)
         return "\n\n".join(f"[{e.metadata.get('date', '?')}]\n{e.text}" for e in eps)
@@ -359,7 +359,7 @@ class Mem0System:
 
     def __init__(self, rig: Rig):
         self.rig = rig
-        from mem0 import Memory as Mem0Memory  # noqa: F401  (--systems 包含 mem0 时才校验)
+        from mem0 import Memory as Mem0Memory
 
         self._Mem0 = Mem0Memory
         # Mem0 的内部抽取 LLM 指向可用的 ARK（火山）账号（doubao-flash）：与 MnemoTrace 用的是同一个
@@ -487,7 +487,7 @@ class MnemoTraceFullSystem:
 
     def context(self, item: dict) -> str:
         rig, qid, q = self.rig, item["question_id"], item["question"]
-        mem = Memory(embedder=rig.embedder, llm=rig.extractor_llm, reranker=rig.reranker)
+        mem = MemoryEngine(embedder=rig.embedder, llm=rig.extractor_llm, reranker=rig.reranker)
         ingest(mem, item, qid)
         # 从 top-k 检索到的会话中抽取（与 MnemoTraceSystem 相同）
         if rig.extract_k > 0:
@@ -532,7 +532,7 @@ class MnemoTraceLeanSystem:
         rig, qid, q = self.rig, item["question_id"], item["question"]
         if getattr(self._tl, "qid", None) == qid and getattr(self._tl, "mem", None) is not None:
             return self._tl.mem  # verify 重试时复用（不再重新摄取/重新摘要）
-        mem = Memory(
+        mem = MemoryEngine(
             config=mnemotrace_config(
                 evidence_planner=self.evidence_planner,
                 ablations=tuple(self.ablations) + tuple(rig.ablations),

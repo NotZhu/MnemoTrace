@@ -14,17 +14,12 @@ concurrency:
 
 jobs:
   python:
-    name: ${{ matrix.suite == 'replay' && format('python replay ({0}, {1})', matrix.os, matrix.python-version) || format('python ({0}, {1})', matrix.os, matrix.python-version) }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.12", "3.15"]
-        suite: [regressions, replay]
-        exclude:
-          - os: ubuntu-latest
-            suite: replay
     steps:
       # test_buffered_replay_report resolves a historical runtime commit; a shallow
       # clone cannot see it, so fetch full history for the Python regression job.
@@ -37,13 +32,9 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev,server,mcp]" build twine
-      - if: matrix.suite == 'regressions'
-        run: python -m ruff check .
-      - name: Python regressions (including native namespace transactions)
-        run: >-
-          pytest
-          ${{ matrix.suite == 'replay' && 'tests/test_buffered_replay_runner.py'
-              || (runner.os == 'Windows' && '--ignore=tests/test_buffered_replay_runner.py' || '') }}
+      - run: python -m ruff check .
+      - name: Python regressions
+        run: python -m pytest
         timeout-minutes: 20
         env:
           PYTEST_ADDOPTS: >-
@@ -52,33 +43,22 @@ jobs:
         if: ${{ always() && runner.os == 'Windows' }}
         uses: actions/upload-artifact@v4
         with:
-          name: python-windows-${{ matrix.python-version }}-${{ matrix.suite }}
+          name: python-windows-${{ matrix.python-version }}
           path: .artifacts/ci/python-regressions.xml
-      - if: matrix.suite == 'regressions'
-        run: python scripts/check_repository.py
-      - if: matrix.suite == 'regressions'
-        run: python scripts/build_landing_pages.py --check
-      - if: matrix.suite == 'regressions'
-        run: python scripts/check_core.py
-      - if: matrix.suite == 'regressions'
-        run: python scripts/check_release.py
+      - run: python scripts/check_repository.py
+      - run: python scripts/build_landing_pages.py --check
+      - run: python scripts/check_core.py
+      - run: python scripts/check_release.py
       - if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
         run: |
           python -m build
           python -m twine check dist/*
-          python - <<'PY'
-          from pathlib import Path
-          from zipfile import ZipFile
+          python scripts/check_release.py --wheel dist/*.whl
+          python -m venv "$RUNNER_TEMP/mnemotrace-wheel"
+          "$RUNNER_TEMP/mnemotrace-wheel/bin/python" -m pip install --no-deps dist/*.whl
+          "$RUNNER_TEMP/mnemotrace-wheel/bin/python" -I -c 'from mnemotrace import Memory, MemoryEngine; from mnemotrace.service import MemoryService; assert Memory.__module__ == "mnemotrace.memory"; assert MemoryEngine().search("empty").abstained'
 
-          wheel, = Path("dist").glob("*.whl")
-          with ZipFile(wheel) as archive:
-              assert "mnemotrace/py.typed" in archive.namelist()
-              from mnemotrace.store.postgres.migrate import MIGRATIONS
-              for script in MIGRATIONS:
-                  assert f"mnemotrace/store/postgres/sql/{script}" in archive.namelist()
-          PY
-
-  optional-backends:
+  documents:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,43 +66,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev,server,mcp,lancedb,qdrant,documents]"
-      - run: python -m pytest tests/test_lancedb_store.py tests/test_qdrant_store.py tests/test_storage_configuration.py tests/test_documents.py
-        timeout-minutes: 10
-
-  qdrant-remote:
-    runs-on: ubuntu-latest
-    services:
-      qdrant:
-        image: qdrant/qdrant:v1.19.1
-        ports:
-          - 6333:6333
-    env:
-      MNEMOTRACE_TEST_QDRANT_URL: http://127.0.0.1:6333
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: python -m pip install -e ".[dev,server,mcp,qdrant]"
-      - name: Wait for real Qdrant
-        run: |
-          python - <<'PY'
-          import time
-          import urllib.request
-          for attempt in range(30):
-              try:
-                  urllib.request.urlopen("http://127.0.0.1:6333/readyz", timeout=2).close()
-                  break
-              except OSError:
-                  if attempt == 29:
-                      raise
-                  time.sleep(1)
-          PY
-      - run: python -m pytest tests/test_qdrant_store.py tests/test_storage_configuration.py
-        timeout-minutes: 10
+      - run: python -m pip install -e ".[dev,server,mcp,documents]"
+      - run: python -m pytest tests/test_documents.py
 
   postgres-linux:
     runs-on: ubuntu-latest
@@ -211,6 +156,12 @@ jobs:
       - run: python -m pip install -e ".[dev,postgres,server,mcp]"
       - run: python -m pytest tests/postgres tests/test_postgres_configuration.py --junitxml=.artifacts/storage-phase2/postgres.xml
         timeout-minutes: 10
+      - name: Verify logical backup and restore with PostgreSQL 18 utilities
+        if: matrix.python-version == '3.12'
+        shell: pwsh
+        run: |
+          $env:MNEMOTRACE_TEST_POSTGRES_BIN = Join-Path $env:PGROOT 'bin'
+          python -m pytest tests/test_postgres_backup.py --junitxml=.artifacts/storage-phase2/backup.xml
       - name: Stop disposable native database
         if: always()
         shell: pwsh
@@ -250,4 +201,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build --tag mnemotrace-memory:ci .
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/check_compose.py
+        timeout-minutes: 20

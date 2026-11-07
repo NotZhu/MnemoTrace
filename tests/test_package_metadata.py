@@ -86,12 +86,3 @@ def test_contributing_links_to_authoritative_zero_setup_contract():
     text = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
     assert "](AGENTS.md#principle-ii)" in text
     assert "mnemotrace-quickstart" not in text
-
-
-def test_console_seed_default_names_jsonl_stores_not_pickles():
-    seed_console = (ROOT / "eval/seed_console.py").read_text(encoding="utf-8")
-
-    assert 'default="/tmp/console_stores"' in seed_console
-    assert "JSONL store directories" in seed_console
-    assert "console_pkls" not in seed_console
-    assert "sys.path.insert(0, str(ROOT))" in seed_console

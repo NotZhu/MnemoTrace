@@ -19,7 +19,7 @@ from contextvars import ContextVar
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mnemotrace import Config, Memory  # noqa: E402
+from mnemotrace import Config, MemoryEngine  # noqa: E402
 from mnemotrace.types import Fact  # noqa: E402
 from mnemotrace.util import DAY  # noqa: E402
 
@@ -27,7 +27,7 @@ _MODEL = ContextVar("ablation_model", default=None)
 
 
 def _memory(**kwargs):
-    return Memory(llm=_MODEL.get(), **kwargs)
+    return MemoryEngine(llm=_MODEL.get(), **kwargs)
 
 
 BASE = 1_700_000_000.0

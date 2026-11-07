@@ -2,11 +2,13 @@
 
 安装和客户端配置见[Agent 接入](../guides/agents.md)。可信本地 stdio 绑定显式账号和空间，远程代理使用 HTTP key 与空间；工具定义见 [server.py](../../mnemotrace/mcp/server.py)。
 
+自托管环境先按[部署说明](../../deploy/README.md)初始化 Postgres 并创建空间。部署的数据库只对内部网络开放时，外部客户端通过 HTTP 或远程 MCP 接入。
+
 ## 读取与会话
 
 对话使用 `mnemotrace_remember_messages(messages, session_id, mode="live", processing="buffered", scope="auto")`。
 每条要求 message_id、role（user/assistant）和完整 content；event_time 可省略，表示来源时间未知。
-一次请求属于同一会话与模式；历史使用 historical，不生成活跃工作记忆。后台默认开启，空闲 60 秒、预算或显式刷新触发。
+一次请求属于同一会话与模式；历史使用 historical，不生成活跃工作记忆。缓冲对话由独立 worker 在窗口空闲 60 秒或达到预算后处理，也可显式刷新。
 同空间、会话和消息 ID 的重传返回现有事件状态；内容或不可变处理意图改变时冲突。
 原文笔记保留 `mnemotrace_remember`，其 `processing=immediate|buffered` 默认 immediate。
 `mnemotrace_processing_status(session_id=null)` 查询无原文的任务状态；

@@ -61,7 +61,7 @@ def test_remember_recall_roundtrip(client):
 
 def test_recall_answers_with_extraction_model_unless_answerer_overrides(client, runtime, monkeypatch):
     from mnemotrace.llm.fake import FakeLLM
-    from mnemotrace.postgres_service import MemoryService
+    from mnemotrace.service import MemoryService
     from mnemotrace.server import app
 
     h = hdr("synthetic-answer-fallback")

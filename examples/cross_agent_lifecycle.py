@@ -1,10 +1,6 @@
 """演示单个 agent 会话中面向用户的 忆痕 完整生命周期。
 
-先配置 MNEMOTRACE_LLM 与对应凭据，再运行无服务端的本地示例：
-
-    python examples/cross_agent_lifecycle.py --local
-
-按 docs/reference/configuration.md 的 Postgres 数据库基础章节初始化数据库、创建账号和空间，
+先配置 MNEMOTRACE_LLM 与对应凭据。按 docs/reference/configuration.md 的 Postgres 数据库基础章节初始化数据库、创建账号和空间，
 设置 MNEMOTRACE_DATABASE_URL 为运行角色连接串，再启动服务：
 
     python -m uvicorn mnemotrace.server.app:app --port 8000
@@ -31,13 +27,12 @@ import argparse
 import json
 import os
 import sys
-import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import urlencode
 
 
 if __package__ in {None, ""}:
@@ -83,70 +78,6 @@ def http_call(base: str, key: str, space_id: str) -> Call:
             raise SystemExit(f"MnemoTrace returned HTTP {exc.code} for {path}: {detail}") from exc
         except urllib.error.URLError as exc:
             raise SystemExit(f"Could not reach MnemoTrace at {base}: {exc}") from exc
-
-    return call
-
-
-def _first_query_value(query: dict[str, list[str]], key: str, default: str | None = None) -> str | None:
-    values = query.get(key)
-    return values[0] if values else default
-
-
-def _bool_query_value(query: dict[str, list[str]], key: str, default: bool = False) -> bool:
-    value = _first_query_value(query, key)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def local_call(key: str, data_dir: str) -> Call:
-    from mnemotrace.service import MemoryService
-
-    svc = MemoryService(data_dir=data_dir, embedder_name="hashing")
-
-    def call(path: str, body: dict | None = None, method: str = "POST") -> dict:
-        body = body or {}
-        parsed = urlparse(path)
-        query = parse_qs(parsed.query)
-        route = parsed.path
-        if route == "/v1/agent/status":
-            return svc.agent_status(key, session_id=_first_query_value(query, "session_id"))
-        if route == "/v1/sessions/report":
-            session_id = _first_query_value(query, "session_id")
-            if not session_id:
-                raise ValueError("session_id is required for /v1/sessions/report")
-            return svc.session_report(
-                key,
-                session_id,
-                include_sensitive=_bool_query_value(query, "include_sensitive"),
-            )
-        if method != "POST":
-            raise ValueError(f"local lifecycle smoke only supports GET status/report and POST writes, got {method}")
-        if route == "/v1/remember":
-            return svc.remember(
-                key,
-                body["content"],
-                session_id=body.get("session_id", "default"),
-                scope=body.get("scope", "auto"),
-            )
-        if route == "/v1/recall":
-            return svc.recall(
-                key,
-                body["query"],
-                lean=body.get("lean", True),
-                n_chunks=body.get("n_chunks", 3),
-                session_id=body.get("session_id"),
-                as_of=body.get("as_of"),
-                redact_sensitive=body.get("redact_sensitive", False),
-                answer=True,
-            )
-        if route == "/v1/processing/flush":
-            return svc.flush(
-                key,
-                body.get("session_id", "default"),
-                include_summaries=body.get("include_summaries", False),
-            )
-        raise ValueError(f"local lifecycle smoke does not implement {route}")
 
     return call
 
@@ -277,12 +208,8 @@ def exercise_lifecycle(
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="Exercise MnemoTrace's agent memory lifecycle.")
-    ap.add_argument("--local", action="store_true",
-                    help="use local MemoryService storage instead of an HTTP server")
-    ap.add_argument("--data-dir", default=None,
-                    help="local MnemoTrace data dir for --local (default: temporary smoke-test dir)")
     ap.add_argument("--base", default="http://localhost:8000", help="MnemoTrace HTTP base URL")
-    ap.add_argument("--key", default=None, help="Bearer key for HTTP or synthetic owner for offline mode")
+    ap.add_argument("--key", default=None, help="Bearer key for HTTP")
     ap.add_argument("--space-id", default=os.environ.get("MNEMOTRACE_SPACE_ID"))
     ap.add_argument("--agent", default="codex", help="agent name used in the session id")
     ap.add_argument("--project", default="super-memory", help="project/workspace name")
@@ -291,23 +218,17 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--no-verify", action="store_true", help="do not fail if recall/report misses the test phrase")
     args = ap.parse_args(argv)
 
-    if args.local:
-        data_dir = args.data_dir or tempfile.mkdtemp(prefix="mnemotrace-lifecycle.")
-        print("mode: local")
-        print(f"data_dir: {data_dir}")
-        call = local_call(args.key or "me", data_dir)
-    else:
-        base = args.base.rstrip("/")
-        print("mode: http")
-        print(f"base: {base}")
-        key = args.key or os.environ.get("MNEMOTRACE_API_KEY")
-        if not key or not args.space_id:
-            ap.error("HTTP mode requires a Bearer key and --space-id")
-        call = http_call(base, key, args.space_id)
+    base = args.base.rstrip("/")
+    print("mode: http")
+    print(f"base: {base}")
+    key = args.key or os.environ.get("MNEMOTRACE_API_KEY")
+    if not key or not args.space_id:
+        ap.error("HTTP mode requires a Bearer key and --space-id")
+    call = http_call(base, key, args.space_id)
 
     result = exercise_lifecycle(
         call,
-        namespace=(args.key or "me") if args.local else args.space_id,
+        namespace=args.space_id,
         agent=args.agent,
         project=args.project,
         thread=args.thread,
@@ -318,8 +239,7 @@ def main(argv: list[str] | None = None) -> None:
         print("\nFAIL: lifecycle did not recall or report the saved durable memory.", file=sys.stderr)
         raise SystemExit(1)
 
-    if not args.local:
-        print(f"\nInspect in the console: {args.base.rstrip('/')}/ui/")
+    print(f"\nInspect in the console: {args.base.rstrip('/')}/ui/")
 
 
 if __name__ == "__main__":

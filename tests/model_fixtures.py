@@ -8,8 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mnemotrace import Memory as NativeMemory
-from mnemotrace.service import MemoryService as NativeService
+from mnemotrace import MemoryEngine as NativeMemory
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
 
 RESPONSES = json.loads(Path(__file__).with_name('extraction_responses.json').read_text(encoding='utf-8'))
@@ -92,7 +91,7 @@ class FixtureProtocol:
         return raw
 
 
-class Memory(NativeMemory):
+class MemoryEngine(NativeMemory):
     def __init__(self, *args, **kwargs):
         if len(args) < 3:
             if 'llm' not in kwargs:
@@ -100,18 +99,6 @@ class Memory(NativeMemory):
             elif kwargs['llm'] is not None:
                 kwargs['llm'] = FixtureProtocol(kwargs['llm'])
         super().__init__(*args, **kwargs)
-
-
-class MemoryService(NativeService):
-    def __setattr__(self, name, value):
-        if name == 'llm' and value is not None and not isinstance(value, (RecordedLLM, FixtureProtocol)):
-            value = FixtureProtocol(value)
-        super().__setattr__(name, value)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        if self.llm is None:
-            self.llm = RecordedLLM()
 
 
 def seed_summaries(memory, episodes):

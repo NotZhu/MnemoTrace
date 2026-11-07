@@ -5,40 +5,15 @@
 
 为 LLM 智能体提供长期记忆，包含 Python 库、HTTP 服务、MCP 工具、TypeScript SDK 和管理控制台。
 
-MnemoTrace 保存原始会话，从中提取带时间和来源的事实，并跨会话检索相关上下文。知识更新可以保留被替代的事实，支持历史查询。自然语言事实抽取需要配置 LLM；原文保存、手动事实、已有记忆读取和快照恢复可独立使用。默认哈希嵌入仍可用于词汇烟测，不代表语义检索质量。
+MnemoTrace 保存原始会话，从中提取带时间和来源的事实，并跨会话检索相关上下文。知识更新可以保留被替代的事实，支持历史查询。自然语言事实抽取需要配置 LLM；原文保存、手动事实、已有记忆读取和数据库恢复可独立使用。默认哈希嵌入仍可用于词汇烟测，不代表语义检索质量。
 
 [English](README.md) · [文档导航](docs/README.md) · [快速开始](docs/quickstart.md)
 
 ## 试用
 
-在源码仓库根目录执行，需要 Python 3.10 或更高版本：
+按[部署说明](deploy/README.md)初始化 Postgres、创建账号和空间，再按[快速开始](docs/quickstart.md)写入会话并检索结果。
 
-```sh
-python -m pip install ".[llm]"
-# Set MNEMOTRACE_LLM and the provider credentials before running.
-mnemotrace-quickstart
-```
-
-需要持久化向量后端时，可选安装 `mnemotrace-memory[qdrant]` 或 `mnemotrace-memory[lancedb]`；Qdrant 支持本地与远程模式，配置及生命周期见[配置参考](docs/reference/configuration.md#可选-qdrant)。
-
-HTTP 服务、MCP 工具、SDK 客户端和 CLI 使用 Postgres 记忆，并显式选择空间。Python 直连使用 `PostgresMemory`。直连数据库可安装 `mnemotrace-memory[postgres]`，运行服务可安装 `mnemotrace-memory[serve]`。见 [Postgres 基础配置](docs/reference/configuration.md#postgres-数据库基础)。
-
-以下示例使用内存版 Python 库。
-
-```python
-from mnemotrace import Memory
-from mnemotrace.llm.providers import make_llm
-
-memory = Memory(llm=make_llm("deepseek"))
-memory.remember_messages([
-    {"message_id": "m1", "role": "user", "content": "I live in Paris."}
-], user_id="user123", session_id="demo")
-assert memory.flush_messages(user_id="user123")["ok"]
-print(memory.search("Where do I live?", user_id="user123").answer())
-# Paris
-```
-
-该实例只在内存中存活。保存和重开见[快速开始](docs/quickstart.md)；运行持久化服务和控制台见[部署说明](deploy/README.md)。
+HTTP 服务、MCP 工具、SDK、CLI 和 Python 直连均使用显式选择的 Postgres 空间。运行服务安装 `mnemotrace-memory[serve]`，运行 Python 示例安装 `mnemotrace-memory[postgres,llm]`。离线 `MemoryEngine` 用于离线算法实验。
 
 ## 选择入口
 

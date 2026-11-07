@@ -2,10 +2,12 @@
 """核对发行元数据、交付文件和部署配置；文档导航由独立检查负责。"""
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
 from pathlib import Path
+from zipfile import ZipFile
 
 try:
     import tomllib
@@ -28,7 +30,7 @@ def _check(condition: bool, message: str, errors: list[str]) -> None:
         errors.append(message)
 
 
-def main() -> int:
+def main(*, wheel=None) -> int:
     errors: list[str] = []
     pyproject = tomllib.loads(_read("pyproject.toml"))
     sdk = json.loads(_read("clients/typescript/package.json"))
@@ -89,6 +91,23 @@ def main() -> int:
     _check("USER 10001:10001" in docker_text, "container runs as non-root", errors)
     _check("MNEMOTRACE_OPEN" not in docker_text + compose_text, "container is not open by default", errors)
     _check("/ready" in docker_text + compose_text, "container health uses readiness", errors)
+    _check(all(service in compose_text for service in (
+        'pgvector/pgvector:0.8.7-pg18', 'db-init:', 'mnemotrace.worker', 'postgres:/var/lib/postgresql',
+    )), 'Compose defines database, initialization, worker and persistent storage', errors)
+    if wheel is not None:
+        sys.path.insert(0, str(ROOT))
+        from mnemotrace.store.postgres.migrate import MIGRATIONS
+
+        with ZipFile(wheel) as archive:
+            files = set(archive.namelist())
+        required_wheel = {
+            'mnemotrace/py.typed', 'mnemotrace/admin.py', 'mnemotrace/worker.py',
+            'mnemotrace/quickstart.py', 'mnemotrace/memory.py',
+            'mnemotrace/memory_engine.py', 'mnemotrace/service.py',
+            *(f'mnemotrace/store/postgres/sql/{script}' for script in MIGRATIONS),
+        }
+        for path in sorted(required_wheel):
+            _check(path in files, f'wheel contains {path}', errors)
 
     _check("商业授权" in _read("COMMERCIAL-LICENSE.md"), "commercial license has Chinese terms", errors)
     _check("漏洞" in _read("SECURITY.md"), "security policy has Chinese reporting guidance", errors)
@@ -101,4 +120,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--wheel', type=Path)
+    raise SystemExit(main(wheel=parser.parse_args().wheel))

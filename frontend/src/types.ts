@@ -53,7 +53,6 @@ export interface WorkingItem {
 }
 
 export interface MemoryEpisode {
-  summarization?: { status: string; error_code: string | null }
   id: string
   date: string
   session: string
@@ -255,7 +254,7 @@ export interface Focus {
 export type RememberScope = 'auto' | 'long' | 'working'
 
 export interface ExtractionFailure {
-  code: 'llm_not_configured' | 'buffered_processing_disabled' | 'processing_incomplete' | 'extraction_failed' | 'extraction_invalid_response' | 'extraction_truncated'
+  code: 'llm_not_configured' | 'processing_incomplete' | 'extraction_failed' | 'extraction_invalid_response' | 'extraction_truncated'
   message: string
   stored_raw: boolean
   episode_ids: string[]
@@ -308,17 +307,15 @@ export interface FactEdit {
 
 export interface Health {
   ok: boolean
-  service: string
-  users_hot: number
-  ready?: boolean
-  auth_mode?: 'api_keys' | 'open' | 'disabled'
-  anonymous_allowed?: boolean
+  ready: boolean
+  storage: 'postgres'
+  auth_mode: 'api_keys'
+  service?: string
+  version?: string
+  anonymous_allowed?: false
   embedder?: string
   llm_configured?: boolean
   answerer_configured?: boolean
-  storage?: string
-  max_hot_users?: number
-  max_hot_facts?: number
 }
 
 export interface Policy {

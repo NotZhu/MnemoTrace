@@ -6,7 +6,7 @@
 
 | 场景 | 使用方式 |
 | --- | --- |
-| 在 Python 进程内使用 | `PostgresMemory`，通过运行角色连接数据库并显式选择空间 |
+| 在 Python 进程内使用 | `Memory`，通过运行角色连接数据库并显式选择空间 |
 | 多个应用访问同一份持久记忆 | HTTP 服务；服务端验证 Bearer key 与显式空间归属 |
 | 为 Agent 提供工具 | 本地 MCP 或代理 HTTP 服务的远程 MCP |
 | 从 TypeScript/JavaScript 调用 | [SDK](../../clients/typescript/README.md) |

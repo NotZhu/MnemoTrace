@@ -15,7 +15,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mnemotrace import Config, ExtractionError, Memory  # noqa: E402
+from mnemotrace import Config, ExtractionError, MemoryEngine  # noqa: E402
 from mnemotrace.consolidate.planning import WINDOW_PREFIX  # noqa: E402
 from mnemotrace.llm import Completion, LLM  # noqa: E402
 from mnemotrace.llm.base import complete_result  # noqa: E402
@@ -61,7 +61,7 @@ def compare(events: int, runs: int, extractor: str | None = None) -> dict:
             else:
                 inner = RecordedExtraction(expected)
             meter = MeteredLLM(inner)
-            memory = Memory(llm=meter)
+            memory = MemoryEngine(llm=meter)
             sources = {}
             start = time.perf_counter()
             for index, (text, obj) in enumerate(expected.items()):

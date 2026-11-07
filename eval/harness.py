@@ -1,7 +1,7 @@
 """可复现的评测 harness。
 
     python eval/harness.py
-    python eval/harness.py --storage durable --out .artifacts/eval/synthetic_durable.jsonl
+    python eval/harness.py --out .artifacts/eval/synthetic.jsonl
     python eval/report.py .artifacts/eval/synthetic_durable.jsonl
 
 让 MnemoTrace 跑每个 item 的历史并按类别打分，报告章程要求的三元组（准确率 + context token + 延迟）。
@@ -13,9 +13,7 @@ full-context+LLM 基线。）
 from __future__ import annotations
 
 import os
-import shutil
 import sys
-import tempfile
 import time
 import argparse
 import json
@@ -23,7 +21,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mnemotrace import Config, Memory  # noqa: E402
+from mnemotrace import MemoryEngine  # noqa: E402
 from mnemotrace.util import DAY, stems  # noqa: E402
 from eval.synthetic import ITEMS, EvalItem  # noqa: E402
 
@@ -46,11 +44,10 @@ def _percentile(values: list[float], p: float) -> float:
     return s[idx]
 
 
-def _memory_for(storage: str, llm, data_path: str | None = None) -> Memory:
-    if storage == "memory":
-        return Memory(llm=llm)
-    cfg = Config(storage="lancedb", data_path=data_path) if storage == "lancedb" else Config()
-    return Memory(config=cfg, llm=llm)
+def _memory_for(storage: str, llm) -> MemoryEngine:
+    if storage != "memory":
+        raise ValueError("Use eval.storage_postgres for database evaluation")
+    return MemoryEngine(llm=llm)
 
 
 def run_mnemotrace(item: EvalItem, storage: str = "memory", *, llm) -> tuple[bool, int, float]:
@@ -59,19 +56,10 @@ def run_mnemotrace(item: EvalItem, storage: str = "memory", *, llm) -> tuple[boo
 
 
 def run_mnemotrace_detail(item: EvalItem, storage: str = "memory", *, llm) -> dict:
-    tmp = tempfile.mkdtemp(prefix=f"mnemotrace_eval_{storage}_") if storage != "memory" else None
-    mem = _memory_for(storage, llm, os.path.join(tmp, "vectors") if tmp else None)
+    mem = _memory_for(storage, llm)
     for text, day in item.sessions:
         mem.add(text, user_id=item.id, event_time=BASE + day * DAY)
     mem.consolidate()
-    if tmp is not None:
-        path = os.path.join(tmp, "store")
-        mem.save(path)
-        mem = Memory.open(
-            path,
-            config=Config(storage="lancedb", data_path=os.path.join(tmp, "vectors"))
-            if storage == "lancedb" else Config(),
-        )
     when = None if item.as_of_day is None else BASE + item.as_of_day * DAY
 
     t0 = time.perf_counter()
@@ -83,8 +71,6 @@ def run_mnemotrace_detail(item: EvalItem, storage: str = "memory", *, llm) -> di
     else:
         correct = (not res.abstained) and _contains(res.answer(), item.answer)
     context_tokens = len(stems(" ".join(f.text for f in res.facts)))
-    if tmp is not None:
-        shutil.rmtree(tmp, ignore_errors=True)
     return {
         "id": item.id,
         "category": item.category,
@@ -171,8 +157,8 @@ def write_jsonl(path: str, rows: list[dict], summary: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run the synthetic MnemoTrace eval with an explicit LLM.")
-    ap.add_argument("--storage", choices=["memory", "durable", "lancedb"], default="memory",
-                    help="memory uses RAM only; durable/lancedb save and reopen before search")
+    ap.add_argument("--storage", choices=["memory"], default="memory",
+                    help="use eval.storage_postgres for the database path")
     ap.add_argument("--out", help="write per-item raw logs plus a final summary record as JSONL")
     ap.add_argument("--llm", help="model name, or set MNEMOTRACE_LLM")
     args = ap.parse_args()
@@ -187,7 +173,7 @@ def main() -> None:
         write_jsonl(args.out, rows, summary)
 
     print(f"MnemoTrace eval harness -- {len(ITEMS)} items, LLM extraction with hashing embeddings")
-    print(f"storage={args.storage} ({'save/reopen before search' if args.storage != 'memory' else 'RAM only'})\n")
+    print(f"storage={args.storage} (RAM only)\n")
     print(f"  {'id':5} {'category':16} {'MnemoTrace':10} {'naive':6}  question")
     print("  " + "-" * 78)
     for row in rows:

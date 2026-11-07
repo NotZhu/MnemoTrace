@@ -35,7 +35,6 @@ test('buffered writes accept 202 and expose status and explicit retry controls',
 
 for (const [status, code, storedRaw] of [
   [503, 'llm_not_configured', false],
-  [503, 'buffered_processing_disabled', false],
   [503, 'processing_incomplete', true],
   [502, 'extraction_failed', true],
   [502, 'extraction_invalid_response', true],

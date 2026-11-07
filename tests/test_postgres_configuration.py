@@ -52,11 +52,12 @@ class BlockDrivers(importlib.abc.MetaPathFinder):
         if fullname.split('.')[0] in {'psycopg', 'psycopg_pool'}:
             raise ModuleNotFoundError(fullname)
 sys.meta_path.insert(0, BlockDrivers())
-from mnemotrace import Memory
+from mnemotrace import Memory, MemoryEngine
 from mnemotrace.store.postgres import Database, DatabaseConfig
 from mnemotrace.store.postgres.errors import DatabaseDependencyError
 assert not any(name.startswith('psycopg') for name in sys.modules)
-memory = Memory()
+assert Memory.__module__ == 'mnemotrace.memory'
+memory = MemoryEngine()
 memory.add_fact('Synthetic user', 'likes', 'tea')
 try:
     Database(DatabaseConfig('dbname=unused')).open()

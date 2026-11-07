@@ -1,8 +1,7 @@
-"""Target Postgres contracts; not wired into the current snapshot runtime.
+"""Operation contracts for authorized Postgres memory spaces.
 
-These are operation contracts, not a backend abstraction. SQL, authorization and
-cross-record existence checks belong to the future DAO. See the storage design
-for transaction boundaries and the distinction between acceptance and completion.
+The DAO applies SQL authorization and cross-record existence checks. See the
+storage design for transaction boundaries and operation acceptance and completion.
 """
 from __future__ import annotations
 

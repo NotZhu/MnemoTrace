@@ -296,12 +296,6 @@ export default function Conversations() {
                       {isOpen ? t.conversations.collapseEntry : t.conversations.expandEntry}
                     </button>
                   )}
-                  {!e.summary && e.summarization && e.summarization.status !== 'not_needed' && (
-                    <p className="mt-2 text-xs text-ghost">
-                      {['failed', 'cancelled'].includes(e.summarization.status)
-                        ? t.conversations.summaryFailed : t.conversations.summaryPending}
-                    </p>
-                  )}
                   {e.summary && (
                     <p className="mt-2 border-l-2 border-brand-violet/40 pl-3 text-xs leading-relaxed text-ghost">
                       {t.conversations.summaryPrefix}

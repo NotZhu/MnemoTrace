@@ -10,7 +10,7 @@ from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from mnemotrace.embed import HashingEmbedder
 from mnemotrace.extraction import LLMNotConfiguredError
 from mnemotrace.llm import FakeLLM
-from mnemotrace.postgres_memory import PostgresMemory
+from mnemotrace.memory import Memory
 from mnemotrace.store.contracts import (
     ChangeSet, CommitConditions, FactQuery, MessageInput, OperationKind, OperationSpec, RecordKind, RecordRef,
     SourceVersion,
@@ -46,7 +46,7 @@ def processing(runtime, spaces, user):
                           source_ids=[item['id']]) for item in data['pending']]
             return json.dumps(dict(facts=facts, working=[], summaries=[]))
 
-        memory = PostgresMemory(database, context, llm=FakeLLM(handler=respond), config=config,
+        memory = Memory(database, context, llm=FakeLLM(handler=respond), config=config,
                                 embedder=embedder, embedding_model='fixture' if embedder else None)
         return memory, calls
 
@@ -93,7 +93,7 @@ def test_three_checkpoints_and_durable_retry(processing, cluster):
 
 def test_duplicate_concurrency_and_atomic_rejection(processing, cluster, runtime):
     memory, _ = processing()
-    offline = PostgresMemory(runtime, memory.context)
+    offline = Memory(runtime, memory.context)
     with pytest.raises(LLMNotConfiguredError):
         offline.remember_messages('chat', (dialogue('raw', scope='raw'), dialogue('auto')))
     assert offline.list_sources() == ()

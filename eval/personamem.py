@@ -31,7 +31,7 @@ warnings.filterwarnings("ignore")  # litellm/pydantic 对 doubao 回复会发出
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mnemotrace import Memory  # noqa: E402
+from mnemotrace import MemoryEngine  # noqa: E402
 from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
 
 HF = "https://huggingface.co/datasets/bowen-upenn/PersonaMem-v2/resolve/main"
@@ -109,7 +109,7 @@ def load_items(n_personas: int, per_persona: int, seed: int = 0) -> list[dict]:
     return items
 
 
-def ingest_history(mem: Memory, messages: list[dict], pid: str, chunk: int = 6) -> None:
+def ingest_history(mem: MemoryEngine, messages: list[dict], pid: str, chunk: int = 6) -> None:
     """把对话按顺序摄取为 episode（system persona = episode 0；之后每段约 chunk 条消息）。
     event_time 递增保持顺序，让 UPDATED 偏好以最近一次出现为准（双时间轴）。"""
     eps: list[tuple[str, float]] = []
@@ -152,14 +152,14 @@ def ask_mc(llm, context: str, query: str, options: list[str]) -> int:
 
 # ---- 按 persona 缓存 MnemoTrace memory（摄取一次，回答其全部查询）----
 _MEM_LOCK = threading.Lock()
-_MEM_CACHE: dict[str, Memory] = {}
+_MEM_CACHE: dict[str, MemoryEngine] = {}
 
 
-def mnemotrace_mem(pid: str, messages: list[dict], embedder, extractor, rig) -> Memory:
+def mnemotrace_mem(pid: str, messages: list[dict], embedder, extractor, rig) -> MemoryEngine:
     with _MEM_LOCK:
         if pid in _MEM_CACHE:
             return _MEM_CACHE[pid]
-    mem = Memory(embedder=embedder, llm=extractor)
+    mem = MemoryEngine(embedder=embedder, llm=extractor)
     ingest_history(mem, messages, pid)
     # 在高召回检索集合上做整合依赖具体查询；对 persona 存储我们一次性整合全部（规模不大的）历史，
     # 让 facts + persona 覆盖查询可能探查的每个偏好。

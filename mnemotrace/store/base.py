@@ -1,5 +1,4 @@
-"""存储接口。参考实现是内存版（零配置）；生产环境在同一套 API 后面换用 LanceDB/Qdrant/pgvector（向量）、
-Kuzu/Neo4j（图）以及真正的文档存储。"""
+"""存储接口。内存实现供算法工作集和离线测试使用。"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

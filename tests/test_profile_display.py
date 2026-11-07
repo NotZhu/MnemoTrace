@@ -6,7 +6,7 @@ from dataclasses import asdict
 
 import pytest
 
-from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryEngine
 from mnemotrace.consolidate.structured import build_structured_profile
 from mnemotrace.types import Fact
 
@@ -69,7 +69,7 @@ def test_llm_display_reaches_memory_profile_without_another_model_call(sentence)
             }], ensure_ascii=False)
 
     llm = FakeLLM()
-    memory = Memory(llm=llm)
+    memory = MemoryEngine(llm=llm)
     episode = memory.add(sentence, user_id="synthetic-profile-user")
     assert memory.consolidate()["facts_added"] == 1
     fact, = memory.fact_store.values()

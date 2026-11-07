@@ -3,7 +3,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from mnemotrace import Memory
+from mnemotrace import MemoryEngine
 from mnemotrace.retrieve.events import event_evidence
 from mnemotrace.types import Fact
 
@@ -17,7 +17,7 @@ def summarized(memory, content="RAW_ONLY_8844 was disclosed. " * 100):
 
 
 def test_summary_replaces_raw_index_and_retrieval_payload():
-    mem = Memory()
+    mem = MemoryEngine()
     ep = summarized(mem)
     assert mem.episodes_vec.get(ep.id) is None
     assert mem.summary_vec.get(ep.id) is not None
@@ -34,7 +34,7 @@ def test_summary_replaces_raw_index_and_retrieval_payload():
 
 @pytest.mark.parametrize("cascade", [False, True])
 def test_contexts_do_not_expand_summary_even_for_provenance(cascade):
-    mem = Memory()
+    mem = MemoryEngine()
     ep = summarized(mem)
     fact = mem.add_fact("user", "finding", "connection issue resolved", user_id="u")
     fact.provenance = [ep.id]
@@ -48,22 +48,20 @@ def test_contexts_do_not_expand_summary_even_for_provenance(cascade):
         assert ep.id in text
 
 
-def test_summary_survives_restore_and_reembedding_without_raw_index(tmp_path):
-    mem = Memory()
+def test_summary_survives_reembedding_without_raw_index():
+    mem = MemoryEngine()
     ep = summarized(mem)
-    mem.save(str(tmp_path))
-    reopened = Memory.open(str(tmp_path))
-    assert reopened.episodes_vec.get(ep.id) is None
-    assert reopened.summary_vec.get(ep.id) is not None
-    reopened.reembed()
-    assert reopened.episodes_vec.get(ep.id) is None
-    assert reopened.get_episode(ep.id, "u")["content"] == ep.content
+    assert mem.episodes_vec.get(ep.id) is None
+    assert mem.summary_vec.get(ep.id) is not None
+    mem.reembed()
+    assert mem.episodes_vec.get(ep.id) is None
+    assert mem.get_episode(ep.id, "u")["content"] == ep.content
 
 
 def test_raw_word_changes_do_not_change_ranked_summary_evidence():
     outputs = []
     for marker in ("RAW_ONLY_8844", "OTHER_PRIVATE_MARKER"):
-        mem = Memory()
+        mem = MemoryEngine()
         ep = summarized(mem, marker * 100)
         hits = mem.retrieve_episodes("RAW_ONLY_8844", "u")
         outputs.append([(h.text, h.representation) for h in hits])
@@ -73,7 +71,7 @@ def test_raw_word_changes_do_not_change_ranked_summary_evidence():
 
 def test_aggregation_and_duration_use_summary_not_original():
     from mnemotrace.retrieve.aggregate import extract_aggregation_candidates
-    mem = Memory()
+    mem = MemoryEngine()
     ep = summarized(mem, "I bought a Tamiya Spitfire model kit. Started RAW_ONLY_8844 today.")
     ep.summary = "No purchases were made."
     assert not extract_aggregation_candidates("How many model kits did I buy?", [], [ep])
@@ -81,7 +79,7 @@ def test_aggregation_and_duration_use_summary_not_original():
 
 
 def test_supersession_does_not_rewrite_event_summary():
-    mem = Memory()
+    mem = MemoryEngine()
     ep = summarized(mem)
     previous = ep.summary
     old = Fact(subject="user", predicate="works_at", object="A", user_id="u", provenance=[ep.id])
@@ -102,7 +100,7 @@ def test_reembed_never_embeds_summarized_original():
         def embed_batch(self, texts):
             self.inputs.extend(texts)
             return super().embed_batch(texts)
-    mem = Memory()
+    mem = MemoryEngine()
     ep = summarized(mem)
     embedder = RecordingEmbedder()
     mem.reembed(embedder)
@@ -114,7 +112,7 @@ def test_default_context_budget_does_not_inspect_summarized_original_length():
     class UnreadableOriginal(str):
         def __len__(self):
             raise AssertionError('retrieval must not inspect original length')
-    mem = Memory()
+    mem = MemoryEngine()
     ep = summarized(mem)
     ep.content = UnreadableOriginal(ep.content)
     context = mem.lean_context('connection issue', 'u', persona=False)
@@ -123,7 +121,7 @@ def test_default_context_budget_does_not_inspect_summarized_original_length():
 
 def test_reembed_discards_orphaned_summary_vector_without_embedding_an_excerpt():
     from mnemotrace.embed import HashingEmbedder
-    mem = Memory()
+    mem = MemoryEngine()
     ep = mem.add('A synthetic original without a summary.', user_id='u')
     ep.summary_embedding = [1.0] * mem.embedder.dim
     mem.reembed(HashingEmbedder(dim=16))

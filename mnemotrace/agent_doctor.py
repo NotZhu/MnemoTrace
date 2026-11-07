@@ -22,14 +22,14 @@ CLIENTS = ("none", "codex", "claude-code", "cursor", "openai")
 _PROBE = r"""
 import asyncio
 import json
-from mnemotrace import PostgresMemory
+from mnemotrace import Memory
 from mnemotrace.mcp.server import mcp
 
 async def main():
     tools = {tool.name for tool in await mcp.list_tools()}
     required = {"mnemotrace_remember_messages", "mnemotrace_recall",
                 "mnemotrace_get_operation", "mnemotrace_retry_operation", "mnemotrace_flush_processing"}
-    print(json.dumps(dict(missing_tools=sorted(required - tools), postgres_entry=PostgresMemory.__name__)))
+    print(json.dumps(dict(missing_tools=sorted(required - tools), memory_entry=Memory.__name__)))
 
 asyncio.run(main())
 """
@@ -49,7 +49,9 @@ async def main():
             await session.initialize()
             result = await session.call_tool("mnemotrace_stats", {"response_format": "json"})
             payload = json.loads(result.content[0].text)
-            print(json.dumps(dict(space_id=payload["space_id"], storage=payload["storage"])))
+            configured = payload.get("llm_configured")
+            print(json.dumps(dict(space_id=payload["space_id"], storage=payload["storage"],
+                                  llm_configured=configured if isinstance(configured, bool) else None)))
 
 asyncio.run(main())
 """
@@ -309,7 +311,8 @@ def _stdio_probe(python_cmd, *, space_id, user_id, api_url, api_key):
     else:
         env['MNEMOTRACE_USER_ID'] = user_id
     result = _probe_python(python_cmd, _STDIO_PROBE, 'MCP stdio space access', env=env)
-    if result['status'] == 'ok' and result.get('data') != dict(space_id=space_id, storage='postgres'):
+    data = result.get('data', {})
+    if result['status'] == 'ok' and (data.get('space_id'), data.get('storage')) != (space_id, 'postgres'):
         result.update(status='fail', detail='MCP did not reach the requested Postgres space')
     return result
 
@@ -322,8 +325,11 @@ def _remote_http_probe(api_url, api_key, space_id):
         return _probe_result(label, 'fail', f'HTTP {exc.code}')
     except (OSError, ValueError):
         return _probe_result(label, 'fail', 'The server could not return space statistics')
-    ok = result.get('space_id') == space_id and result.get('storage') == 'postgres'
-    return _probe_result(label, 'ok' if ok else 'fail', 'Postgres space statistics' if ok else 'Unexpected space response')
+    if not isinstance(result, dict) or (result.get('space_id'), result.get('storage')) != (space_id, 'postgres'):
+        return _probe_result(label, 'fail', 'Unexpected space response')
+    configured = result.get('llm_configured')
+    return _probe_result(label, 'ok', 'Postgres space statistics',
+                         data={'llm_configured': configured if isinstance(configured, bool) else None})
 
 
 def _client_probe(client: str) -> list[dict[str, Any]]:
@@ -406,12 +412,15 @@ def diagnose(
         api_key = resolve_key(key=api_key, key_file=api_key_file, required=True)
     python_check = _python_probe(python_cmd)
     checks = [python_check]
+    model_probe = None
     if python_check['status'] == 'ok':
         if space_id and (api_url or user_id):
-            checks.append(_stdio_probe(python_cmd, space_id=space_id, user_id=user_id,
-                                       api_url=api_url, api_key=api_key))
+            model_probe = _stdio_probe(python_cmd, space_id=space_id, user_id=user_id,
+                                       api_url=api_url, api_key=api_key)
+            checks.append(model_probe)
             if api_url:
-                checks.append(_remote_http_probe(api_url, api_key, space_id))
+                model_probe = _remote_http_probe(api_url, api_key, space_id)
+                checks.append(model_probe)
         else:
             checks.append(_probe_result('Memory space access', 'warn', 'Provide a space ID and local user ID or remote API'))
     if codex_config:
@@ -434,14 +443,16 @@ def diagnose(
             user_id=user_id,
         ))
     checks.extend(_client_probe(client))
-    if python_check["status"] == "ok":
-        configured = bool(python_check.get("data", {}).get("llm_configured"))
-        checks.append({
-            "name": "LLM extraction", "status": "warn",
-            "detail": "LLM configuration detected; live extraction was not tested." if configured else
-                      "Automatic extraction requires MNEMOTRACE_LLM and provider credentials; the lifecycle probes use explicit memories.",
-            "data": {"llm_configured": configured, "model_call_performed": False},
-        })
+    configured = None
+    if model_probe is not None and model_probe['status'] == 'ok':
+        value = model_probe.get('data', {}).get('llm_configured')
+        if isinstance(value, bool):
+            configured = value
+    checks.append(_probe_result('LLM extraction', 'warn', {
+        True: 'LLM configuration detected. Live extraction was not tested.',
+        False: 'Automatic extraction requires MNEMOTRACE_LLM and provider credentials.',
+        None: 'LLM configuration could not be determined from the target space.',
+    }[configured], data={'llm_configured': configured, 'model_call_performed': False}))
     failed = [c for c in checks if c["status"] == "fail"]
     warned = [c for c in checks if c["status"] == "warn"]
     return _redact_report({

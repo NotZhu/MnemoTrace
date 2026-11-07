@@ -2,7 +2,7 @@
 
 `mnemotrace.connectors` 里的所有东西都是**纯标准库**（无第三方依赖），因此在零配置安装下也能导入历史
 （AGENTS.md 「代码导航」）。*解析器*把原始导出 —— ChatGPT 的 `conversations.json`、OpenAI `messages` 数组、
-JSONL 日志、纯 transcript —— 转换成 `ImportSession` 列表，再由 `Memory.import_messages()`
+JSONL 日志、纯 transcript —— 转换成 `ImportSession` 列表，再由 `MemoryEngine.import_messages()`
 按原始顺序逐条保存消息，并通过统一窗口执行历史抽取。
 
 这个接缝填补的空白：此前唯一的批量加载器是仅供 eval 使用的 `seed_console.py`。这是 「代码导航」 采纳层需要的、
@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
-# 规范化模型 —— 所有解析器都输出这些类型，Memory.import_messages() 因此只需
+# 规范化模型 —— 所有解析器都输出这些类型，MemoryEngine.import_messages() 因此只需
 # 面对一种形状，与来源格式无关。
 # ---------------------------------------------------------------------------
 

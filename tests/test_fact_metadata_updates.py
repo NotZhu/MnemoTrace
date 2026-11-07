@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import pytest
 
-from tests.model_fixtures import Memory
+from tests.model_fixtures import MemoryEngine
 
 
 @pytest.mark.parametrize("patch", [{"sensitive": True}, {"category": "测试分类"}])
 @pytest.mark.parametrize("resubmit_claim", [False, True])
 def test_metadata_update_preserves_superseded_fact(patch, resubmit_claim):
-    mem = Memory()
+    mem = MemoryEngine()
     old = mem.add_fact("demo_user", "lives_in", "北京", valid_at=1)
     current = mem.add_fact("demo_user", "lives_in", "上海", valid_at=2)
     assert not old.is_live() and current.supersedes == old.id
@@ -32,7 +32,7 @@ def test_metadata_update_preserves_superseded_fact(patch, resubmit_claim):
 
 
 def test_metadata_update_preserves_active_fact_content_and_classification():
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact("demo_user", "lives_in", "北京", category="自定义分类", sensitive=True)
     fact.text = "A synthetic source statement with additional context."
     fact.display = "演示用户住在北京。"
@@ -46,7 +46,7 @@ def test_metadata_update_preserves_active_fact_content_and_classification():
 
 
 def test_changed_claim_retains_existing_edit_behavior():
-    mem = Memory()
+    mem = MemoryEngine()
     fact = mem.add_fact("demo_user", "lives_in", "北京")
     mem.update_fact(fact.id, object="上海")
     assert fact.object == "上海" and "上海" in fact.text
@@ -58,7 +58,7 @@ def test_changed_claim_retains_existing_edit_behavior():
 @pytest.mark.parametrize("resubmit_claim", [False, True])
 @pytest.mark.parametrize("operation", ["sensitive", "category", "noop"])
 def test_metadata_save_preserves_fact_source(source, resubmit_claim, operation):
-    mem = Memory()
+    mem = MemoryEngine()
     if source == "extracted":
         mem.add("I live in Beijing.", user_id="demo_user", session_id="synthetic-source")
         mem.consolidate()
@@ -85,7 +85,7 @@ def test_metadata_save_preserves_fact_source(source, resubmit_claim, operation):
 
 @pytest.mark.parametrize("patch", [{"subject": "demo_alias"}, {"predicate": "based_in"}, {"object": "Shanghai"}])
 def test_content_edit_marks_extracted_fact_as_user_and_keeps_provenance(patch):
-    mem = Memory()
+    mem = MemoryEngine()
     mem.add("I live in Beijing.", user_id="demo_user", session_id="synthetic-source")
     mem.consolidate()
     fact = mem._all_facts()[0]

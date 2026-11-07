@@ -461,18 +461,10 @@
   }
 }
 
-.login-page .login-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 16px;
-}
-
 .login-page .login-submit {
   margin-top: 24px;
 }
 
-.login-page .btn-ghost,
 .login-page .btn-primary {
   border: 0;
   min-height: 52px;
@@ -486,33 +478,9 @@
   opacity: 0.7;
 }
 
-.login-page .btn-ghost {
-  background: rgb(var(--memory-secondary));
-  border-color: rgb(var(--memory-control-border));
-  color: var(--login-text);
-  font-weight: 500;
-  min-height: 46px;
-  gap: 8px;
-  padding: 10px 8px;
-  font-size: 14px;
-}
-
-.login-page .login-actions svg,
 .login-page .login-submit svg {
   width: 18px;
   height: 18px;
-}
-
-.login-page .btn-ghost:hover:not(:disabled) {
-  background: rgb(var(--memory-secondary-hover));
-  border-color: rgb(var(--memory-control-hover-border));
-}
-
-.login-page .login-actions .btn-ghost:disabled {
-  background: rgb(var(--memory-disabled-background));
-  border-color: rgb(var(--memory-disabled-border));
-  color: rgb(var(--memory-disabled-text));
-  opacity: 1;
 }
 
 .login-page .btn-primary {
@@ -612,19 +580,6 @@
     padding: 22px 16px;
   }
 
-  .login-page .login-actions {
-    gap: 8px;
-  }
-
-  .login-page .btn-ghost {
-    font-size: 13px;
-    padding: 10px 6px;
-  }
-
-  .login-page .btn-ghost svg {
-    width: 17px;
-    height: 17px;
-  }
 }
 
 [data-theme="light"] .login-page {
