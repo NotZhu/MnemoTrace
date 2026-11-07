@@ -1,8 +1,6 @@
 """HTTP contracts backed by disposable PostgreSQL spaces."""
 from __future__ import annotations
 
-import os
-
 import pytest
 
 pytest.importorskip("fastapi")
@@ -930,7 +928,15 @@ def test_forget_clears_namespace(client, namespace):
     assert client.get("/v1/memories", headers=h).json()["counts"]["episodes"] == 0
 
 
-def test_static_cache_headers_and_robots(client):
+def test_static_cache_headers_and_robots(client, monkeypatch, tmp_path):
+    from mnemotrace.server import app as appmod
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (tmp_path / "index.html").write_text("<!doctype html><title>Synthetic console</title>", encoding="utf-8")
+    (assets / "app.js").write_text("/* synthetic asset */", encoding="utf-8")
+    monkeypatch.setattr(appmod, "_DIST", str(tmp_path))
+
     robots = client.get("/robots.txt")
     assert robots.status_code == 200
     assert "Disallow: /ui" in robots.text
@@ -939,15 +945,10 @@ def test_static_cache_headers_and_robots(client):
     root = client.get("/", follow_redirects=False)
     assert root.headers["Cache-Control"] == "no-cache"
 
-    from mnemotrace.server import app as appmod
-    if not appmod._spa_built():
-        pytest.skip("SPA dist is not built")
-    asset_dir = os.path.join(appmod._DIST, "assets")
-    asset = sorted(os.listdir(asset_dir))[0]
     ui_head = client.head("/ui")
     assert ui_head.status_code == 200
     assert ui_head.headers["Cache-Control"] == "no-cache"
-    resp = client.get(f"/ui/assets/{asset}")
+    resp = client.get("/ui/assets/app.js")
     assert resp.status_code == 200
     assert resp.headers["Cache-Control"] == "public, max-age=31536000, immutable"
 
