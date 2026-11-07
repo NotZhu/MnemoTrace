@@ -1,9 +1,9 @@
 # Postgres 改造契约与行为对照
 
-本文面向阶段二至八的实现者，集中维护目标数据契约、调用方去向和验证输入。
-这是目标设计，**不是当前产品已经具备的能力**；当前运行机制见[架构总览](README.md)和[生命周期](memory.md)。
-[契约代码](../../mnemotrace/store/contracts.py)中的 SpaceContext/SpaceSettings 已用于数据库基础；其他业务契约待后续阶段接入。
-产品接入端使用授权空间内的 `PostgresMemory`，共享三阶段任务流水线和数据库混合检索。
+本文维护 Postgres 产品路径的数据契约、调用方对照和验证输入。
+[契约代码](../../mnemotrace/store/contracts.py)约束授权空间、记录变更、读取版本、任务产物和提交回执。
+产品接入端使用授权空间内的 `PostgresMemory`，共享三阶段任务流水线和数据库混合检索；
+数据库连接、角色和运行方式见[配置参考](../reference/configuration.md#postgres-数据库基础)。
 
 ## 身份与公共接口
 
@@ -219,7 +219,7 @@ with Database(DatabaseConfig.from_env()) as database:
 每张空间业务表有 user_id、space_id，关联使用包含归属的复合外键。
 多态目标使用互斥的可空复合外键；向量绑定文本版本、模型及维度，不作为领域记录内联权威字段。
 时间列为 timestamptz，边界转换有限 epoch 值；必要业务字段使用显式列，JSONB 不代替领域建模。
-任务及产物的 stats 必需键、类型和非负整数由数据库约束验证；完整产物读写仍需执行器执行阶段一结构校验。
+任务及产物的 stats 必需键、类型和非负整数由数据库约束验证；执行器在完整产物写入和恢复时校验结构与引用。
 实体合并的环检查、图构建规则和候选查询语义由业务层和数据库集成回归验证。
 
 迁移使用顺序版本、脚本校验和和事务级 advisory lock；已应用结构的目录指纹覆盖列、约束、索引、策略、函数及授权。
@@ -247,7 +247,7 @@ with Database(DatabaseConfig.from_env()) as database:
 状态沿用 pending → running → completed，暂时故障进入 retry_wait，确定性错误进入 failed，擦除/作废进入 cancelled。
 阶段沿用 queued/generate/embed/commit/compensate/done，持久化标志独立表达。T2 不是正式事实发布。
 领取原子增加执行尝试数，重领同样消耗预算；续租不增加次数、不推进业务版本。
-阶段四沿用当前尝试上限和退避定义，不能以进程中断为由无限领取。
+尝试上限和退避定义维护在[任务实现](../../mnemotrace/store/postgres/tasks.py)，进程中断后的重新领取同样消耗预算。
 模型与 embedding 在事务外执行，API 与 worker 共用执行器；同会话依赖有序，跨会话可并行。
 
 | 变化 | 抽取产物有效性 | 归并/向量 |
@@ -294,9 +294,9 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 ## 调用方清单
 
 按实际函数职责核对完整集合读取和字段写入；同组共享目标操作，不以搜索命中计数代替检查。
-阶段号表示实施归属；验证列使用现有测试名称，数据库边界另在对应阶段补充。
+下表保留改造前的调用位置，供核对消费者和清理旧路径；阶段号表示实施归属，验证列列出对应回归。
 
-| 调用入口 | 当前行为 | 目标契约 | 阶段 | 验证 |
+| 改造前调用入口 | 改造前行为 | 产品契约及清理要求 | 阶段 | 验证 |
 | --- | --- | --- | --- | --- |
 | types: 六类记录、Fact.slot；spaces: Principal/load_spaces/principal_for_token；server: auth/auth_principal | user_id 同时分区/身份，Relation 无归属，home/共享 ACL/开放 key 命名空间 | 账号与必填空间分开，subject 独立，复合关联；移除旧默认/共享兼容 | 2—3、6 | user_scope、spaces、api_key_validation、storage_contracts |
 | service: __init__/_safe_user/_contained_child/_secure_path/_path | 数据目录/文件名/后端选择 | 连接生命周期；归属不拼接文件路径 | 2、8 | service_paths、storage_configuration |
@@ -340,17 +340,24 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 底层内存/第三方向量后端迭代在阶段八按消费者清理，纯算法替身保留。
 临时新对象赋值随新增记录提交；已加载对象字段修改必须进入所属变更集合。
 
-## 现状差异与验证输入
+## 行为对照与验证输入
 
-| 分类 | 当前证据 | 后续验收 |
+| 分类 | 保留的语义或改造前问题 | 验证入口 |
 | --- | --- | --- |
-| 保留 | 人工权威、来源/双时间轴/历史、同会话顺序、角色区分、关闭行为 | 固定模型回归和离线基线 |
+| 保留 | 人工权威、来源/双时间轴/历史、同会话顺序、角色区分、会话范围 | 固定模型回归和离线基线 |
 | 改变 | default/home、跨用户 ACL、文件快照、全空间内存检索 | 新契约和真实数据库测试 |
-| 缺陷：提交非原子 | save_memory 逐个替换集合，最后替换 manifest | 阶段三/七中断全回滚 |
-| 缺陷：缺 manifest 当空库 | _load_memory 缺失返回分支 | 阶段二/三坏库与未知空间明确失败 |
-| 缺陷：stats 校验不足 | validate_state 未逐键验证，_commit 直接访问统计 | OperationStats 必需字段测试；阶段四/七损坏拒绝 |
-| 缺陷：向量先于原文 | service.remember/messages、ingest.add 先 embed | 阶段三/四故障仍保留已接受原文/有效产物 |
-| 缺陷：会话作废扩大 | invalidate(session_id) 改空间 generation、取消全部未终态任务 | 阶段四/七仅目标会话作废 |
+| 记录级原子提交 | save_memory 逐个替换集合，最后替换 manifest | [记录事务](../../tests/postgres/test_record_business.py)的回滚/一致读取，以及[进程恢复](../../tests/postgres/test_process_recovery.py)的三个提交点前后中断 |
+| 未知空间与损坏拒绝 | _load_memory 缺失 manifest 时返回空库 | [空间身份](../../tests/postgres/test_identity.py)及[数据库事务](../../tests/postgres/test_transactions.py)的未知空间、损坏与连接失败区分 |
+| 任务与产物校验 | validate_state 未逐键验证 stats，提交直接访问统计 | [数据库约束](../../tests/postgres/test_constraints.py)及[恢复校验](../../tests/postgres/test_process_recovery.py)的必需字段、检查点缺失、非法引用和向量维度 |
+| 原文先落库 | service.remember/messages、ingest.add 先 embed | [流水线恢复](../../tests/postgres/test_processing.py)验证向量失败仍保留原文/产物，重试复用有效产物 |
+| 会话精确作废 | invalidate(session_id) 改空间 generation、取消全部未终态窗口 | [会话并发清理](../../tests/postgres/test_process_recovery.py)验证目标会话任务取消，其他会话继续处理，原文和长期事实保留 |
+
+[跨进程回归](../../tests/postgres/test_process_recovery.py)使用 `spawn` 和独立数据库连接，
+在模型调用、向量生成和数据库提交边界同步进程，覆盖租约转移、迟到提交、重试预算、重复消息及版本冲突后的重新归并。
+删除竞争分别验证清理先提交时拒绝旧结果，以及业务提交或图重建持锁时删除等待、随后完整清除结果。
+清理范围同时核对原文、事实、工作记忆、向量、词法、图、任务产物和完成回执。
+[凭据传输回归](../../tests/postgres/test_mcp_credential_transport.py)验证撤销 key 后下一次 HTTP 与远程 MCP 请求失败，同用户另一把有效 key 仍可访问。
+测试数据库、实际角色和禁止跳过的配置见[数据库回归说明](../reference/configuration.md#postgres-数据库基础)。
 
 [离线基线](../../eval/storage_baseline.py)复用 eval.harness、完整十题合成集及固定响应，固定时钟，
 随机 ID 映射为按事实内容排序的 fact-N 和输入顺序的 source-N。
@@ -383,5 +390,5 @@ HNSW 索引只在评测库创建。原始记录保存执行计划、样本覆盖
 记录精确 ID/近似召回/返回数/检索 p50/p95，建库、索引构建及查询耗时分别记录。验收未预设绝对延迟门槛。
 
 复用事实/冲突、消息流水线/恢复/接口、候选/图、用户/空间、服务事务/损坏/擦除及 eval harness 回归。
-契约测试只证明结构、版本和归属检查；数据库外键/原子性/连接池/RLS/跨进程竞争由阶段二至七真实数据库验证。
-实际命令、结果、失败和跳过范围记录在当前任务及 `.artifacts/storage-phase1/`，本页不维护进度表。
+契约测试验证结构、版本和归属检查；数据库外键、原子性、连接池、RLS 和跨进程竞争使用真实数据库回归验证。
+实际命令、结果、失败和跳过范围记录在对应任务、提交或 CI；评测产物按各入口要求保存，本页不维护进度表。

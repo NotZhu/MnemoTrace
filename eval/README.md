@@ -2,7 +2,7 @@
 
 本目录保留通用评测、报告和结果校验工具。当前页面说明如何测量，不维护历史成绩榜单。公开结论的要求见 [AGENTS.md](../AGENTS.md#principle-i)。
 
-存储改造的固定响应基线使用 `python -m eval.storage_baseline --out <全新输出目录>`，复用本目录合成评测；[契约与复现说明](../docs/architecture/storage-contracts.md#现状差异与验证输入)包含稳定观察及后续数据库负载定义。它不调用真实模型，不代表数据库性能或真实模型质量。
+存储改造的固定响应基线使用 `python -m eval.storage_baseline --out <全新输出目录>`，复用本目录合成评测；[契约与复现说明](../docs/architecture/storage-contracts.md#行为对照与验证输入)包含稳定观察及数据库负载对照。它不调用真实模型，不代表数据库性能或真实模型质量。
 
 ## 选择测量范围
 

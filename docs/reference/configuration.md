@@ -100,6 +100,12 @@ python -m pytest tests/postgres tests/test_postgres_configuration.py
 未配置时本地显式跳过数据库测试；`MNEMOTRACE_REQUIRE_POSTGRES=1` 时缺少连接或发生跳过均失败。
 CI 的 Linux 使用固定镜像，Windows 启动专用原生 Postgres 并编译相同 pgvector 版本，均使用实际运行凭据验证隔离。
 
+[进程恢复与并发回归](../../tests/postgres/test_process_recovery.py)也由上述入口收集。
+测试使用 `spawn` 启动独立进程，各进程自行建立连接；业务处理使用 runtime 角色，后台发现和账号操作分别使用 discovery 与 admin 角色。
+DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读写通过实际运行角色验证。
+测试仅使用合成输入、固定模型响应和本地 embedder，在提交边界同步并强制终止测试进程，结束时回收子进程。
+回归覆盖范围见[存储契约中的行为对照](../architecture/storage-contracts.md#行为对照与验证输入)。
+
 ## 窗口抽取预算
 
 对话联合输出使用 `joint_max_output_tokens`、`joint_core_output_tokens`、`joint_summary_output_tokens`，分别对应 `MNEMOTRACE_JOINT_MAX_OUTPUT_TOKENS`、`MNEMOTRACE_JOINT_CORE_OUTPUT_TOKENS`、`MNEMOTRACE_JOINT_SUMMARY_OUTPUT_TOKENS`。
