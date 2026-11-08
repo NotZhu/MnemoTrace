@@ -25,7 +25,6 @@ class FakeLLM(NativeFakeLLM):
         for group in ('facts', 'working'):
             for row in out[group]:
                 row.setdefault('source_ids', [data['pending'][0]['id']])
-                row.setdefault('assertion_kind', 'unspecified' if data['source_kind'] != 'dialogue' else 'user_statement')
                 if group == 'facts' and all(k in row for k in ('subject', 'predicate', 'object')):
                     row.setdefault('category', '其他')
                     row.setdefault('sensitive', False)

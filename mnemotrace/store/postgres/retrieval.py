@@ -31,7 +31,7 @@ class Corpus:
                 'text' AS field,r.content_version AS text_version,r.valid_at,{salience} AS salience,
                 coalesce(r.subject_key,lower(r.subject)) AS subject_key,
                 coalesce(r.predicate_key,lower(r.predicate)) AS predicate_key,
-                r.object,r.source,r.created_at,r.assertion_kind
+                r.object,r.source,r.created_at
                 FROM mnemotrace.facts r"""
         else:
             conditions, params = ["r.scope <> 'working'"], []

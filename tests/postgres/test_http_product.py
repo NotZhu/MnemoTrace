@@ -589,8 +589,6 @@ def test_structured_profile_pages_user_aliases_and_excludes_other_assertions(cli
         Fact(id="fact-zz-alias", user_id=context.user_id, subject="我", predicate="likes", object="alias-visible"),
         Fact(id="fact-zz-other", user_id=context.user_id, subject="Synthetic Friend",
              predicate="likes", object="other-hidden"),
-        Fact(id="fact-zz-assistant", user_id=context.user_id, subject="user", predicate="likes",
-             object="assistant-hidden", assertion_kind="assistant_suggestion"),
     ))
     seed_facts(product_service, context, facts)
     response = client.get("/v1/profile/structured", headers=hdr(label))

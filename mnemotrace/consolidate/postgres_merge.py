@@ -2,11 +2,11 @@
 from dataclasses import replace
 from itertools import chain
 
-from .planning import fact_valid_at
+from .planning import fact_valid_at, source_anchor
 from .adjudication import plan_merge
 from .fact_rules import _NAME_PREDICATES, _SELF_REFS, _norm_predicate
 from .facts import FactWriter
-from .pipeline import KINDS, digest
+from .pipeline import digest
 from .topic_rules import resolve_topic
 from ..embed import HashingEmbedder
 from ..store._validation import validate_embedding
@@ -29,14 +29,12 @@ def write_record(context, value, previous=None, *, summary_base=1):
 
 def materialize(context, data, result, settings, config, now):
     views = {s['id']: s for s in (*data['context'], *data['pending'])}
-    pending = {s['id'] for s in data['pending']}
+    pending = {s['id']: s for s in data['pending']}
     content = '\n'.join(s['content'] for s in data['pending'])
     dialogue = data['source_kind'] == 'dialogue'
 
     def anchor(item):
-        return max((views[key] for key in item['source_ids'] if key in pending and
-                    (not dialogue or views[key]['role'] == KINDS[item['assertion_kind']])),
-                   key=lambda item: item['sequence'])
+        return source_anchor(item['source_ids'], pending, data['source_kind'])
 
     owner = {*_SELF_REFS, *(value.lower() for value in settings.subject_aliases)}
     if settings.subject_name:
@@ -47,9 +45,9 @@ def materialize(context, data, result, settings, config, now):
     facts = []
     for item in sorted(result['facts'], key=lambda item: anchor(item)['sequence']):
         origin = anchor(item)
-        subject, nature = item['subject'].strip(), item['assertion_kind']
+        subject = item['subject'].strip()
         predicate = _norm_predicate(item['predicate'])
-        is_owner = subject.lower() in owner and not nature.startswith('assistant_')
+        is_owner = subject.lower() in owner
         if is_owner and predicate in _NAME_PREDICATES:
             owner_name = owner_name or item['object']
             if item['object'].lower() not in owner:
@@ -59,15 +57,13 @@ def materialize(context, data, result, settings, config, now):
                 continue
         if is_owner:
             subject = owner_name or 'user'
-        elif nature.startswith('assistant_') and subject.lower() in _SELF_REFS:
-            subject = 'assistant'
         if data['scope'] == 'working':
             continue
         topic, topic_source = resolve_topic(predicate, item['object'], item.get('topic') if config.llm_topics else None)
         fact = Fact(subject, predicate, item['object'], text=item['text'] if dialogue else '',
                     display=item['text'], user_id=context.user_id, valid_at=fact_valid_at(item, origin['event_time']),
                     category=item['category'], sensitive=item['sensitive'],
-                    created_at=now, last_access=now, provenance=item['source_ids'], assertion_kind=nature,
+                    created_at=now, last_access=now, provenance=item['source_ids'],
                     source_roles=list(dict.fromkeys(views[key]['role'] for key in item['source_ids']
                                                     if views[key]['role'])),
                     topic=topic, topic_source=topic_source,
@@ -103,7 +99,7 @@ def merge_records(context, config, embedder, model, data, session_id, now,
     work = [WorkingMemory(id='wm_' + digest([data, item])[:24], content=item['content'],
                           kind=item['kind'], user_id=context.user_id, session_id=session_id,
                           event_time=origin['event_time'], created_at=now, expires_at=expires,
-                          metadata=dict(provenance=item['source_ids'], assertion_kind=item['assertion_kind'],
+                          metadata=dict(provenance=item['source_ids'],
                                         episode_id=origin['id'])) for item, origin, expires in working]
     semantic_subjects = {fact.subject.strip().lower() for fact in facts}
     missing = [fact for fact in old_facts if not isinstance(embedder, HashingEmbedder)

@@ -14,7 +14,7 @@ from mnemotrace.types import Fact
 
 def claim(source_id, value='Paris', **fields):
     return dict(subject='Ana', predicate='lives_in', object=value, text=f'Ana lives in {value}',
-                assertion_kind='unspecified', source_ids=[source_id], category='位置', sensitive=False,
+                source_ids=[source_id], category='位置', sensitive=False,
                 time_kind='current', effective_date=None) | fields
 
 
@@ -54,11 +54,12 @@ def merge(incoming, previous=(), *, judge='replaces', now=100, model=None):
 
 
 def test_exact_duplicates_merge_provenance_and_keep_sensitive():
-    first = fact('first', 'Paris', 1)
-    duplicate = fact('duplicate', 'PARIS', 1, sensitive=True)
+    first = fact('first', 'Paris', 1, source_roles=['user'])
+    duplicate = fact('duplicate', 'PARIS', 1, sensitive=True, source_roles=['assistant', 'user'])
     changed, conflicts, stats = merge([duplicate], [first])
     assert not conflicts and stats['model_calls'] == 0
     assert changed['first'].provenance == ['first-source', 'duplicate-source']
+    assert changed['first'].source_roles == ['user', 'assistant']
     assert changed['first'].sensitive
     assert not first.sensitive
 
@@ -82,14 +83,13 @@ def test_future_transition_preserves_old_value_until_effective_date():
     assert changed['future'].is_live(200)
 
 
-def test_shared_source_and_assertion_kind_prevent_retirement():
-    first = fact('first', 'Paris', 10, assertion_kind='user_statement')
-    shared = fact('shared', 'Oslo', 20, assertion_kind='user_statement')
+def test_shared_source_prevents_retirement():
+    first = fact('first', 'Paris', 10)
+    shared = fact('shared', 'Oslo', 20)
     shared.provenance = first.provenance
-    other = fact('other', 'Berlin', 30, assertion_kind='assistant_suggestion')
-    changed, conflicts, stats = merge([shared, other], [first])
+    changed, conflicts, stats = merge([shared], [first])
     assert not conflicts and stats['model_calls'] == 1
-    assert set(changed) == {'shared', 'other'}
+    assert set(changed) == {'shared'}
     assert changed['shared'].invalid_at is None
 
 
@@ -253,3 +253,82 @@ def test_snapshot_rejects_an_unlinked_held_fact_before_restoring():
     with pytest.raises(ValueError, match='pending fact has no conflict'):
         restored.import_snapshot(dict(facts=[asdict(held)], episodes=[]))
     assert restored._all_facts(include_unpublished=True) == []
+
+
+def test_snapshot_rejects_legacy_assertion_before_writing_sources_or_facts():
+    from dataclasses import asdict
+
+    restored = MemoryEngine()
+    snapshot = dict(
+        facts=[asdict(fact('current', 'Paris', 10)),
+               dict(asdict(fact('legacy', 'Oslo', 20)), assertion_kind='assistant_suggestion')],
+        episodes=[dict(id='ep-1', content='Synthetic source', session_id='s', role='user', event_time=10)],
+    )
+    with pytest.raises(ValueError, match='legacy fact format'):
+        restored.import_snapshot(snapshot)
+    assert restored._all_facts(include_unpublished=True) == []
+    assert not restored.episodes_doc.values()
+
+
+FUTURE = 4_102_444_800
+
+
+def test_future_manual_interval_holds_a_conflicting_extraction():
+    mem = MemoryEngine(llm=FakeLLM(handler=model_response))
+    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=FUTURE)
+    mem.add('Oslo', event_time=FUTURE + 10, consolidate=True)
+    conflict, = mem.pending_conflicts()
+    assert conflict.older == manual.id
+    assert mem.fact_store.get(conflict.newer).review_pending
+    assert mem.resolve_conflict(conflict.id, 'newer')
+    assert [f.object for f in mem._all_facts() if f.is_live(FUTURE + 9)] == ['Paris']
+    assert [f.object for f in mem._all_facts() if f.is_live(FUTURE + 10)] == ['Oslo']
+
+
+def test_manual_add_splices_scheduled_facts_in_valid_time_order():
+    mem = MemoryEngine()
+    first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10)
+    last = mem.add_fact('Ana', 'lives_in', 'Oslo', valid_at=FUTURE + 20)
+    middle = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=FUTURE + 10)
+    following = mem.add_fact('Ana', 'lives_in', 'Rome', valid_at=FUTURE + 30)
+    assert [(f.invalid_at, f.supersedes) for f in (first, middle, last, following)] == [
+        (FUTURE + 10, None), (FUTURE + 20, first.id), (FUTURE + 30, middle.id), (None, last.id),
+    ]
+    assert all(f.expired_at is None for f in (first, middle, last))
+
+
+def test_listing_before_effective_time_keeps_future_conflict_pending(monkeypatch):
+    mem = MemoryEngine(llm=FakeLLM(handler=model_response))
+    mem.add('Paris', event_time=FUTURE, consolidate=True)
+    mem.add('Oslo', event_time=FUTURE + 10, consolidate=True)
+    assert mem.pending_conflicts() == []
+    monkeypatch.setattr('mnemotrace.memory_engine.now', lambda: FUTURE + 10)
+    conflict, = mem.pending_conflicts()
+    assert conflict.status == 'pending'
+
+
+def weekday_response(prompt, system):
+    if prompt.startswith(WINDOW_PREFIX):
+        data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
+        origin = data['pending'][0]
+        return json.dumps(dict(facts=[claim(origin['id'], origin['content'], predicate='works_on_days',
+                                           text='Ana works only on Wednesday')],
+                               working=[], summaries=[]))
+    return decisions(prompt, 'conflict')
+
+
+@pytest.mark.parametrize('other_decision', [None, 'older', 'dismiss'])
+def test_approval_respects_other_manual_conflict_decisions(other_decision):
+    mem = MemoryEngine(llm=FakeLLM(handler=weekday_response))
+    tuesday = mem.add_fact('Ana', 'works_on_days', 'Tuesday', valid_at=10)
+    thursday = mem.add_fact('Ana', 'works_on_days', 'Thursday', valid_at=10)
+    mem.add('Wednesday only', event_time=20, consolidate=True)
+    conflicts = {c.older: c for c in mem.pending_conflicts()}
+    if other_decision is not None:
+        assert mem.resolve_conflict(conflicts[thursday.id].id, other_decision)
+    approved = other_decision == 'dismiss'
+    assert mem.resolve_conflict(conflicts[tuesday.id].id, 'newer') is approved
+    assert {f.object for f in mem._all_facts() if f.is_live()} == (
+        {'Wednesday only', 'Thursday'} if approved else {'Tuesday', 'Thursday'}
+    )
+    assert conflicts[tuesday.id].status == ('resolved' if approved else 'pending')

@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
 
 import pytest
 
@@ -67,6 +68,37 @@ def test_unversioned_existing_schema_is_rejected(database_factory):
             conn.execute('CREATE TABLE mnemotrace.previous_data(id text)')
         with pytest.raises(SchemaMismatch):
             migrations.migrate(bundle.migration)
+
+
+def test_pre_removal_database_is_rejected_without_modifying_it(database_factory, monkeypatch):
+    psycopg, _ = driver()
+    current_scripts = migrations._scripts
+
+    def old_scripts(prefix):
+        scripts = current_scripts(prefix)
+        initial, _ = scripts[0]
+        initial = initial.replace('    source_roles text[]', (
+            "    assertion_kind text NOT NULL CHECK (assertion_kind IN "
+            "('unspecified','user_statement','assistant_suggestion','user_confirmation','assistant_report')),\n"
+            '    source_roles text[]'
+        )).replace('CHECK (format_version = 2)', 'CHECK (format_version = 1)')
+        return [(initial, sha256(initial.encode()).hexdigest()), *scripts[1:]]
+
+    with database_factory(initialize=False) as bundle:
+        with monkeypatch.context() as old:
+            old.setattr(migrations, '_scripts', old_scripts)
+            migrations.migrate(bundle.migration)
+            with Database(bundle.admin, purpose='admin') as admin:
+                user = Accounts(admin).create_user()
+        with pytest.raises(SchemaMismatch, match='migration history is incompatible'):
+            Database(bundle.runtime).open()
+        with pytest.raises(SchemaMismatch, match='migration history is incompatible'):
+            migrations.migrate(bundle.migration)
+        with psycopg.connect(bundle.bootstrap.dsn) as conn:
+            assert conn.execute('SELECT user_id FROM mnemotrace.users').fetchall() == [(user,)]
+            assert conn.execute("""SELECT column_name FROM information_schema.columns
+                WHERE table_schema = 'mnemotrace' AND table_name = 'facts' AND column_name = 'assertion_kind'
+                """).fetchone() == ('assertion_kind',)
 
 
 @pytest.mark.parametrize('previous_count', [1, 2, 3, 4, 5, 6])

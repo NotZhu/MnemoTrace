@@ -35,7 +35,7 @@ class RecordedExtraction(LLM):
         data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
         return json.dumps({"facts": [
             {"category": "其他", "sensitive": False, "time_kind": "current", "effective_date": None, "subject": "user", "predicate": "owns", "object": self.responses[s["content"]],
-             "text": s["content"], "assertion_kind": "user_statement", "source_ids": [s["id"]]} for s in data["pending"]], "working": [], "summaries": []})
+             "text": s["content"], "source_ids": [s["id"]]} for s in data["pending"]], "working": [], "summaries": []})
 
 
 class MeteredLLM(LLM):

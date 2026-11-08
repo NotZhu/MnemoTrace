@@ -170,10 +170,6 @@ export default function Facts() {
                       </span>
                     )}
                     <TopicBadge topic={f.topic} topic_source={f.topic_source} />
-                    {f.assertion_kind && f.assertion_kind !== 'unspecified' && (
-                      <span className="text-ghost">{{user_statement: '用户陈述', assistant_suggestion: 'AI 建议',
-                        user_confirmation: '用户确认', assistant_report: 'AI 完成报告'}[f.assertion_kind]}</span>
-                    )}
                     {f.invalid_at && <span>{t.facts.invalidAt(f.invalid_at)}</span>}
                   </div>
                 </div>

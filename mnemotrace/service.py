@@ -307,7 +307,7 @@ class MemoryService:
         if fact is None:
             return None
         return dict(ok=True, id=fact.id, text=fact.text, display=fact.display, source=fact.source,
-                    assertion_kind=fact.assertion_kind, source_roles=fact.source_roles,
+                    source_roles=fact.source_roles,
                     topic=fact.topic, topic_source=fact.topic_source)
 
     def delete_fact(self, context, fact_id):

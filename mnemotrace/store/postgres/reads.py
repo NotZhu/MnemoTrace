@@ -110,8 +110,7 @@ class ReadView:
         after_id = None
         while True:
             clauses, args = self._fact_conditions(FactQuery(exclude_sensitive=True))
-            clauses.extend(('lower(r.subject) = ANY(%s)',
-                            "r.assertion_kind IN ('unspecified','user_statement','user_confirmation')"))
+            clauses.append('lower(r.subject) = ANY(%s)')
             args.append(sorted(aliases))
             page(clauses, args, after_id, page_size)
             records = self._sql.select(FACT, clauses, args, limit=page_size)
@@ -158,11 +157,12 @@ class ReadView:
         # History used for a write must also include future-dated records.
         return self._sql.select(FACT, clauses[1:], args[1:])
 
-    def facts_for_manual_add(self, subject):
-        clauses, args = self._fact_conditions(FactQuery())
-        clauses.append('coalesce(r.subject_match_key, lower(btrim(r.subject))) = %s')
-        args.append(subject.strip().lower())
-        return self._sql.select(FACT, clauses, args)
+    def facts_for_manual_add(self, subject, predicate):
+        return self._sql.select(FACT, (
+            'coalesce(r.subject_match_key, lower(btrim(r.subject))) = %s',
+            'lower(btrim(r.predicate)) = %s',
+            'NOT r.review_pending AND (r.approved_at IS NULL OR r.approved_at <= %s)',
+        ), (subject.strip().lower(), predicate.strip().lower(), self.at))
 
     def merge_history(self, subjects):
         return self._sql.select(FACT, ('coalesce(r.subject_match_key, lower(btrim(r.subject))) = ANY(%s)',),
@@ -227,6 +227,19 @@ class ReadView:
             f'SELECT least(older,newer),greatest(older,newer) FROM mnemotrace.conflicts WHERE {SCOPE} '
             'AND (older = ANY(%s) OR newer = ANY(%s))', (*self._sql.scope, ids, ids)).fetchall()
 
+    def related_conflicts(self, fact_id, excluding):
+        from .records import domain
+
+        conflicts = tuple(map(domain, self._sql.select(CONFLICT, (
+            'r.id <> %s AND r.status <> \'dismissed\' AND (r.older = %s OR r.newer = %s)',
+        ), (excluding, fact_id, fact_id))))
+        if not conflicts:
+            return ()
+        others = [c.newer if c.older == fact_id else c.older for c in conflicts]
+        facts = {record.ref.record_id: domain(record)
+                 for record in self._sql.select(FACT, ('r.id = ANY(%s)',), (others,))}
+        return tuple((conflict, facts.get(other)) for conflict, other in zip(conflicts, others, strict=True))
+
     def conflicts(self, *, after_id=None, limit=100, pending_only=True):
         clauses, args = [], []
         if pending_only:
@@ -236,22 +249,21 @@ class ReadView:
                 CROSS JOIN (SELECT %s::timestamptz AS at) clock
                 WHERE (a.user_id,a.space_id) = (r.user_id,r.space_id)
                   AND a.id IN (r.older,r.newer) AND b.id IN (r.older,r.newer) AND a.id <> b.id
-                  AND NOT a.review_pending AND (
+                  AND NOT a.review_pending AND (a.approved_at IS NULL OR a.approved_at <= clock.at) AND (
                     (a.valid_at IS NULL OR a.valid_at <= clock.at)
                     AND (a.invalid_at IS NULL OR a.invalid_at > clock.at)
                     AND (a.expired_at IS NULL OR a.expired_at > clock.at)
-                    AND (a.approved_at IS NULL OR a.approved_at <= clock.at)
                     AND (
                       (NOT b.review_pending AND (b.valid_at IS NULL OR b.valid_at <= clock.at)
                         AND (b.invalid_at IS NULL OR b.invalid_at > clock.at)
                         AND (b.expired_at IS NULL OR b.expired_at > clock.at)
                         AND (b.approved_at IS NULL OR b.approved_at <= clock.at))
                       OR (b.review_pending AND a.source = 'user' AND b.valid_at IS NULL)
-                      OR (b.review_pending AND a.source = 'user' AND a.invalid_at IS NULL
-                        AND (a.valid_at IS NULL OR a.valid_at <= b.valid_at))
                     )
                     OR (b.review_pending AND a.source = 'user' AND b.valid_at IS NOT NULL
-                      AND (a.valid_at IS NULL OR a.valid_at <= b.valid_at) AND b.valid_at < a.invalid_at)
+                      AND (a.valid_at IS NULL OR a.valid_at <= b.valid_at)
+                      AND (a.invalid_at IS NULL OR b.valid_at < a.invalid_at)
+                      AND (a.invalid_at IS NOT NULL OR a.expired_at IS NULL OR a.expired_at > clock.at))
                   ))""")
             args.append(self.at)
         page(clauses, args, after_id, limit)

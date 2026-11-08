@@ -191,7 +191,7 @@ def search(view, query, config, top_k, semantic, decomposition=None):
         if matched:
             hits, best = max(matched, key=lambda row: (row[0], time_key(row[1].event_time), row[1].id))
             if hits:
-                answer = f'[{fmt_date(best.event_time)}] (episode: {best.id}; session: {best.session_id}) {best.text}'
+                answer = f'[{fmt_date(best.event_time)}] (episode: {best.id}; session: {best.session_id}; role={best.role}) {best.text}'
                 return SearchResult(query.text, via='summary', _answer=answer, limitations=flags)
     return SearchResult(query.text, facts, [score for _, score in chosen],
                         via='abstain' if abstained else 'hybrid', abstained=abstained, limitations=flags)
@@ -218,13 +218,13 @@ def context(view, query, config, semantic, *, n_facts, n_chunks, n_summaries, ch
         if working:
             blocks.append('WORKING MEMORY\n' + '\n'.join(f'- {item.content}' for item in working))
     if facts:
-        blocks.append('FACTS\n' + '\n'.join(f'- [{fmt_date(fact.valid_at)}] {fact.evidence_text}' for fact in facts))
+        blocks.append('FACTS\n' + '\n'.join(f'- [{fmt_date(fact.valid_at)}] {fact.text}' for fact in facts))
     if need.history or need.timeline:
         chain = tuple(map(domain, view.fact_chain([fact.id for fact in facts], replace(query.facts, state=FactState.ALL))))
         if len(chain) > 1:
             chain = sorted(chain, key=lambda fact: (time_key(fact.valid_at), fact.id))
             blocks.append('FACT HISTORY\n' + '\n'.join(
-                f'- [{fmt_date(fact.valid_at)}] {fact.evidence_text}' for fact in chain[:n_facts]))
+                f'- [{fmt_date(fact.valid_at)}] {fact.text}' for fact in chain[:n_facts]))
     evidence = {}
     include_sources = not query.facts.exclude_sensitive and bool(n_chunks or n_summaries)
     if include_sources:
@@ -244,7 +244,7 @@ def context(view, query, config, semantic, *, n_facts, n_chunks, n_summaries, ch
                  + [ep for ep in evidence.values() if ep.derived][:n_summaries])
         if shown:
             blocks.append('SOURCE EVIDENCE\n' + '\n'.join(
-                f'- [{fmt_date(ep.event_time)}] (episode: {ep.id}; session: {ep.session_id}) {ep.text}'
+                f'- [{fmt_date(ep.event_time)}] (episode: {ep.id}; session: {ep.session_id}; role={ep.role}) {ep.text}'
                 for ep in shown))
     if need.aggregation:
         aggregation_facts = {fact.id: fact for fact in facts}

@@ -28,6 +28,8 @@ def replay_window(prompt, system, invoke):
     data = window_input(prompt)
     result = {'facts': [], 'working': []}
     for span in data['pending']:
+        if data['source_kind'] == 'dialogue' and span['role'] != 'user':
+            continue
         raw = invoke('对话：\n' + span['content'] + '\n\nJSON 事实：', system=system)
         try:
             value = json.loads(raw)
@@ -48,7 +50,6 @@ def replay_window(prompt, system, invoke):
                         category = '工作' if item['predicate'] == 'works_at' else '其他'
                         item = dict(category=category, sensitive=False, time_kind='current', effective_date=None) | item
                         item.setdefault('text', f"{item['subject']} {item['predicate']} {item['object']}")
-                    item['assertion_kind'] = 'user_statement' if span['role'] == 'user' else 'assistant_suggestion' if span['role'] == 'assistant' else 'unspecified'
                 result[key].append({**item, 'source_ids': [span['id']]})
     if 'rules' in data:
         result['summaries'] = [dict(source_id=span['id'], text='Synthetic event summary')

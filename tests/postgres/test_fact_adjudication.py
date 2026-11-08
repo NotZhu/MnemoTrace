@@ -2,8 +2,10 @@ import pytest
 
 from mnemotrace.llm import FakeLLM
 from mnemotrace.memory import Memory
+from mnemotrace.store.contracts import FactQuery
+from mnemotrace.store.postgres.errors import VersionConflict
 from mnemotrace.store.postgres.records import FACT, domain
-from tests.test_fact_adjudication import model_response
+from tests.test_fact_adjudication import FUTURE, model_response, weekday_response
 
 
 @pytest.mark.parametrize('keep,published', [('older', False), ('dismiss', False), ('newer', True), ('both', True)])
@@ -143,8 +145,6 @@ def test_private_export_remains_importable_after_erasing_a_conflict_endpoint(run
 
 
 def test_approving_a_future_fact_preserves_current_value_until_effective_date(runtime, spaces, user):
-    from mnemotrace.store.contracts import FactQuery
-
     space = spaces.create(user, 'Future review')
     context = spaces.authorize(user, space.space_id)
     mem = Memory(runtime, context, llm=FakeLLM(handler=model_response))
@@ -155,3 +155,46 @@ def test_approving_a_future_fact_preserves_current_value_until_effective_date(ru
     assert mem.resolve_conflict(conflict.id, 'newer')
     assert [f.id for f in mem.facts()] == [manual.id]
     assert [f.id for f in mem.facts(FactQuery(valid_at=effective_at))] == [conflict.newer]
+
+
+def test_future_manual_blocker_can_be_reviewed_before_it_is_effective(runtime, spaces, user):
+    space = spaces.create(user, 'Scheduled manual review')
+    mem = Memory(runtime, spaces.authorize(user, space.space_id), llm=FakeLLM(handler=model_response))
+    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=FUTURE)
+    assert mem.remember('Oslo', 'review', event_time=FUTURE + 10)['status'] == 'completed'
+    conflict, = mem.conflicts()
+    assert conflict.older == manual.id and mem.get_fact(conflict.newer) is None
+    assert mem.resolve_conflict(conflict.id, 'newer')
+    assert [f.id for f in mem.facts(FactQuery(valid_at=FUTURE + 9))] == [manual.id]
+    assert [f.id for f in mem.facts(FactQuery(valid_at=FUTURE + 10))] == [conflict.newer]
+
+
+def test_manual_add_links_scheduled_predecessor_and_successor(runtime, spaces, user):
+    space = spaces.create(user, 'Scheduled manual values')
+    mem = Memory(runtime, spaces.authorize(user, space.space_id))
+    first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10)
+    last = mem.add_fact('Ana', 'lives_in', 'Oslo', valid_at=FUTURE + 20)
+    middle = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=FUTURE + 10)
+    following = mem.add_fact('Ana', 'lives_in', 'Rome', valid_at=FUTURE + 30)
+    records = [mem.get_fact(fact.id) for fact in (first, middle, last, following)]
+    assert [(f.invalid_at, f.supersedes) for f in records] == [
+        (FUTURE + 10, None), (FUTURE + 20, first.id), (FUTURE + 30, middle.id), (None, last.id),
+    ]
+    assert [f.object for f in mem.facts(FactQuery(valid_at=FUTURE + 20))] == ['Oslo']
+
+
+@pytest.mark.parametrize('keep', ['newer', 'both'])
+def test_approval_respects_other_manual_conflict_decisions(runtime, spaces, user, keep):
+    space = spaces.create(user, 'Multiple manual blockers')
+    mem = Memory(runtime, spaces.authorize(user, space.space_id), llm=FakeLLM(handler=weekday_response))
+    tuesday = mem.add_fact('Ana', 'works_on_days', 'Tuesday', valid_at=10)
+    thursday = mem.add_fact('Ana', 'works_on_days', 'Thursday', valid_at=10)
+    assert mem.remember('Wednesday only', 'review', event_time=20)['status'] == 'completed'
+    conflicts = {c.older: c for c in mem.conflicts()}
+    with pytest.raises(VersionConflict, match='Other conflicts'):
+        mem.resolve_conflict(conflicts[tuesday.id].id, keep)
+    assert mem.resolve_conflict(conflicts[thursday.id].id, 'older')
+    with pytest.raises(VersionConflict, match='Other conflicts'):
+        mem.resolve_conflict(conflicts[tuesday.id].id, keep)
+    assert {f.id for f in mem.facts()} == {tuesday.id, thursday.id}
+    assert mem.get_fact(conflicts[tuesday.id].newer) is None

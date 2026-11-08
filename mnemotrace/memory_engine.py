@@ -560,11 +560,10 @@ class MemoryEngine:
             ep_seen.add(row['id'])
 
         # --- facts：同时恢复 live 与被取代的行，保留 valid/transaction 时间 ---
-        def fact_key(subject, predicate, obj, valid_at, assertion_kind, was_held):
-            return (subject, predicate, obj, round(valid_at, 1) if valid_at is not None else None,
-                    assertion_kind, was_held)
+        def fact_key(subject, predicate, obj, valid_at, was_held):
+            return (subject, predicate, obj, round(valid_at, 1) if valid_at is not None else None, was_held)
 
-        fact_seen = {fact_key(f.subject, f.predicate, f.object, f.valid_at, f.assertion_kind,
+        fact_seen = {fact_key(f.subject, f.predicate, f.object, f.valid_at,
                               f.review_pending or f.approved_at is not None): f.id
                      for f in self._all_facts(include_unpublished=True) if f.user_id == user}
         id_map: dict[str, str] = {}  # 旧快照 id -> 新 id，用于重连取代链
@@ -573,7 +572,7 @@ class MemoryEngine:
         for row in snapshot["facts"]:
             s, p, o = row["subject"], row["predicate"], row["object"]
             valid_at = row["valid_at"]
-            key = fact_key(s, p, o, valid_at, row.get('assertion_kind', 'unspecified'),
+            key = fact_key(s, p, o, valid_at,
                            row.get('review_pending', False) or row.get('approved_at') is not None)
             if dedupe and key in fact_seen:
                 id_map[row["id"]] = fact_seen[key]
@@ -581,7 +580,7 @@ class MemoryEngine:
                 continue
             f = Fact(subject=s, predicate=p, object=o, user_id=user,
                      text=row.get("text", ""), source=row["source"],
-                     assertion_kind=row.get("assertion_kind", "unspecified"), source_roles=row.get("source_roles", []),
+                     source_roles=row.get("source_roles", []),
                      category=row["category"], sensitive=row["sensitive"],
                      sensitive_override=row.get("sensitive_override", False),
                      review_pending=row.get("review_pending", False), approved_at=row.get("approved_at"),
@@ -636,11 +635,12 @@ class MemoryEngine:
         f.embedding = self.embedder.embed(f.text)
         from .consolidate.pipeline import PipelineTasks
         PipelineTasks(self, f.user_id).invalidate()
-        live = [x for x in self._all_facts() if x.user_id == user and x.is_live()]
-        action, invalidated = reconcile_manual(f, live)
-        for old in invalidated:
-            self.writer.graph_builder.invalidate(old.id, f.created_at)
+        history = [x for x in self._all_facts() if x.slot == f.slot]
+        action, changed = reconcile_manual(f, history, now())
+        for old in changed:
             self._upsert_fact(old, tier="hot")
+            self.graph.delete_relations_for_fact(old.id)
+            self.writer.graph_builder.add_fact(old)
         if action != "duplicate":
             self.fact_store.upsert(f.id, f.embedding, f)
             self.writer.graph_builder.add_fact(f)
@@ -896,8 +896,6 @@ class MemoryEngine:
             b = self.fact_store.get(c.newer) or self.cold_store.get(c.newer)
             if conflict_is_reviewable(a, b, at):
                 out.append(c)
-            else:
-                c.status = "dismissed"  # 有一侧已变化 -> 不再是存活冲突
         return out
 
     def resolve_conflict(self, conflict_id: str, keep: str = "newer") -> bool:
@@ -907,13 +905,26 @@ class MemoryEngine:
         c = self.conflicts.get(conflict_id)
         if c is None or c.status != 'pending':
             return False
-        from .consolidate.adjudication import conflict_is_reviewable, resolve_facts
+        from .consolidate.adjudication import (
+            approval_candidate, conflict_is_reviewable, has_other_manual_blocker, resolve_facts,
+        )
         from .consolidate.pipeline import PipelineTasks
-        facts = {key: self.fact_store.get(getattr(c, key)) or self.cold_store.get(getattr(c, key))
-                 for key in ('older', 'newer')}
+
+        def get_fact(fact_id):
+            return self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
+
+        facts = {key: get_fact(getattr(c, key)) for key in ('older', 'newer')}
         at = now()
-        if keep != 'dismiss' and not conflict_is_reviewable(facts['older'], facts['newer'], at):
-            return False
+        if keep != 'dismiss':
+            if not conflict_is_reviewable(facts['older'], facts['newer'], at):
+                return False
+            candidate = approval_candidate(facts, keep)
+            if candidate is not None:
+                related = ((pair, get_fact(pair.newer if pair.older == candidate.id else pair.older))
+                           for pair in self.conflicts.values()
+                           if pair.user_id == c.user_id and candidate.id in (pair.older, pair.newer))
+                if has_other_manual_blocker(candidate, conflict_id, related, at):
+                    return False
         PipelineTasks(self, c.user_id).invalidate()
         history = ()
         if keep in facts and facts[keep].review_pending:
@@ -1033,7 +1044,7 @@ class MemoryEngine:
         """该用户的长期指令 / how-to fact（程序性记忆）。"""
         user = user_id
         return [f for f in self._all_facts()
-                if f.user_id == user and f.is_user_knowledge and f.is_live(as_of)
+                if f.user_id == user and f.is_live(as_of)
                 and (f.predicate.lower() in _INSTRUCTION_PREDS
                      or any(f.predicate.lower().startswith(p + "_") for p in ("wants", "prefers", "remind")))]
 
@@ -1089,7 +1100,7 @@ class MemoryEngine:
         from .consolidate.structured import build_structured_profile
         user = user_id
         subject = self._identity.get(user, user)
-        live = [f for f in self._all_facts() if f.user_id == user and f.is_user_knowledge and f.is_live()]
+        live = [f for f in self._all_facts() if f.user_id == user and f.is_live()]
         return build_structured_profile(live, subject, user)
 
     def build_persona(self, user_id: str = "default") -> str:
@@ -1100,7 +1111,7 @@ class MemoryEngine:
         subject = self._identity.get(user, user)
         mute = self.focus.get("mute", [])
         live = [f for f in self._all_facts()
-                if f.user_id == user and f.is_user_knowledge and f.is_live() and not self._matches(f, mute)]
+                if f.user_id == user and f.is_live() and not self._matches(f, mute)]
         persona = (self.profiles.narrative(subject, live, llm=self.llm,
                                            system=self._effective("persona_system")) if live else "")
         track = self.focus.get("track", [])
@@ -1119,7 +1130,7 @@ class MemoryEngine:
         mute = self.focus.get("mute", [])
         live = [
             f for f in self._all_facts()
-            if f.user_id == user and f.is_user_knowledge and f.is_live(as_of) and not self._matches(f, mute)
+            if f.user_id == user and f.is_live(as_of) and not self._matches(f, mute)
         ]
         return self.profiles.narrative(
             subject,
@@ -1687,7 +1698,7 @@ class MemoryEngine:
             for f in plan.facts[:limit]:
                 if redact_sensitive and getattr(f, "sensitive", False):
                     continue
-                lines.append(f"- [{fmt_date(f.valid_at)}] {f.evidence_text}")
+                lines.append(f"- [{fmt_date(f.valid_at)}] {f.text}")
             if lines:
                 return "GRAPH PATHS (relation evidence):\n" + "\n".join(lines)
             return ""
@@ -2014,7 +2025,7 @@ class MemoryEngine:
             for f in all_facts:  # 访问即强化：被浮出的 fact 保持显著（间隔效应）
                 self._reinforce_fact(f)
             by_date = sorted(all_facts, key=lambda f: time_key(f.valid_at), reverse=True)  # 最新在前（更新优先）
-            fl = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.evidence_text}" for f in by_date)
+            fl = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.text}" for f in by_date)
             blocks.append(f"FACTS (current, dated):\n{fl}")
             if need is not None and need.current_state:
                 state = self._current_state_block(all_facts)
@@ -2028,7 +2039,7 @@ class MemoryEngine:
             # 从顺序读出，日期算术为模型铺好而不是留给心算（时间类问题的主要失败模式）。
             if timeline:
                 chrono = sorted(all_facts, key=lambda f: time_key(f.valid_at))
-                tl = "\n".join(f"- {fmt_date(f.valid_at)}: {f.evidence_text}" for f in chrono)
+                tl = "\n".join(f"- {fmt_date(f.valid_at)}: {f.text}" for f in chrono)
                 blocks.append(f"TIMELINE (oldest to newest — use for ordering and durations):\n{tl}")
             if need is not None and need.multi_hop:
                 paths = self._graph_paths_block(query, user, as_of, redact_sensitive=redact_sensitive)
@@ -2395,7 +2406,7 @@ class MemoryEngine:
         # 它甚于列表下方更旧的 fact。
         ranked_by_date = sorted(ranked, key=lambda x: time_key(x[0].valid_at), reverse=True)
         ranked_facts = [f for f, _ in ranked_by_date]
-        fact_lines = [f"- [{fmt_date(f.valid_at)}] {f.evidence_text}" for f in ranked_facts]
+        fact_lines = [f"- [{fmt_date(f.valid_at)}] {f.text}" for f in ranked_facts]
         facts_block = "\n".join(fact_lines) or "(none)"
 
         chunk_block = ""
@@ -2438,14 +2449,14 @@ class MemoryEngine:
         if timeline:
             # 相关 fact 的显式时间顺序——有助于 "first/after/how long"（M2b）
             ordered = sorted((f for f, _ in ranked), key=lambda f: time_key(f.valid_at))
-            tl = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.evidence_text}" for f in ordered) or "(none)"
+            tl = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.text}" for f in ordered) or "(none)"
             result = f"TIMELINE (oldest to newest):\n{tl}\n\n" + result
         if graph:
             # L2：从查询的锚实体出发遍历实体图，跨 session 拉取相连的 fact
             # （multi-hop / multi-session）。
             related = self._graph_related_facts(search_query, user, as_of)
             if related:
-                block = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.evidence_text}" for f in related)
+                block = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.text}" for f in related)
                 result += f"\n\nRELATED FACTS (graph traversal):\n{block}"
         if wiki:
             # L4：LLM 精编的逐实体笔记（区分当前与过去），查询时合成。
@@ -2518,7 +2529,7 @@ class MemoryEngine:
             if not facts:
                 continue
             lines = "\n".join(
-                f"[{fmt_date(f.valid_at)}] {f.evidence_text}" + ("" if f.is_live(as_of) else " (past)")
+                f"[{fmt_date(f.valid_at)}] {f.text}" + ("" if f.is_live(as_of) else " (past)")
                 for f in sorted(facts, key=lambda x: time_key(x.valid_at))
             )
             note = self.llm.complete(

@@ -154,7 +154,6 @@ _FACT = {
     "salience": _number, "confidence": _number, "source": _SOURCE,
     "category": _string, "sensitive": _boolean, "valid_at": _TIME_OR_NULL,
     "sensitive_override": _boolean, "review_pending": _boolean, "approved_at": _TIME_OR_NULL,
-    "assertion_kind": _choice("unspecified", "user_statement", "assistant_suggestion", "user_confirmation", "assistant_report"),
     "source_roles": _list(_choice("user", "assistant")),
     "topic": _choice(*TOPICS), "topic_source": _choice(*TOPIC_SOURCES),
     "invalid_at": _TIME_OR_NULL, "created_at": _number, "expired_at": _TIME_OR_NULL,
@@ -233,7 +232,7 @@ _IMPORT_FACT = {key: _FACT[key] for key in (
     "id", "subject", "predicate", "object", "text", "source", "category", "sensitive",
     "topic", "topic_source",
     "salience", "confidence", "valid_at", "invalid_at", "created_at", "expired_at",
-    "supersedes", "provenance", "assertion_kind", "source_roles", "sensitive_override", "review_pending", "approved_at",
+    "supersedes", "provenance", "source_roles", "sensitive_override", "review_pending", "approved_at",
 )}
 _IMPORT_FACT.update(status=_choice("live", "superseded"), valid_at_h=_string,
                     invalid_at_h=_nullable(_string))
@@ -256,12 +255,16 @@ def validate_snapshot(snapshot: Any) -> dict:
         if key not in snapshot:
             _fail(f"snapshot.{key}", "missing required field")
     result = {}
-    for name, spec, optional in (("facts", _IMPORT_FACT, ("text", "status", "valid_at_h", "invalid_at_h", "assertion_kind", "source_roles", "sensitive_override", "review_pending", "approved_at")),
+    for name, spec, optional in (("facts", _IMPORT_FACT, ("text", "status", "valid_at_h", "invalid_at_h", "source_roles", "sensitive_override", "review_pending", "approved_at")),
                                  ("episodes", _IMPORT_EPISODE, ("summary", "coverage", "summary_coverage")),
                                  ("conflicts", _IMPORT_CONFLICT, ())):
         rows = snapshot.get(name, [])
         if not isinstance(rows, list):
             _fail(f"snapshot.{name}", "must be a list")
+        if name == "facts":
+            for i, row in enumerate(rows):
+                if isinstance(row, dict) and "assertion_kind" in row:
+                    _fail(f"snapshot.facts[{i}].assertion_kind", "legacy fact format is unsupported")
         result[name] = [_fields(row, spec, f"snapshot.{name}[{i}]", optional)
                         for i, row in enumerate(rows)]
         if name == "facts":

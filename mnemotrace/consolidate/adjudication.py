@@ -30,21 +30,10 @@ def _subject(fact):
     return fact.user_id, fact.subject.strip().lower()
 
 
-def _compatible(a, b):
-    return a.assertion_kind == b.assertion_kind or (
-        a.is_user_knowledge and b.is_user_knowledge and (a.source == 'user' or b.source == 'user')
-    )
-
-
 def _same_value(a, b):
     return (a.slot == b.slot and a.object.strip().casefold() == b.object.strip().casefold()
-            and a.valid_at == b.valid_at and _compatible(a, b)
+            and a.valid_at == b.valid_at
             and (a.valid_at is not None or bool(set(a.provenance) & set(b.provenance))))
-
-
-def _covers(fact, at):
-    return ((fact.valid_at is None or fact.valid_at <= at)
-            and (fact.invalid_at is None or fact.invalid_at > at))
 
 
 def _timeline_candidates(new, candidates, now):
@@ -52,7 +41,7 @@ def _timeline_candidates(new, candidates, now):
     selected = {old.id for old in candidates if old.source == 'user' and old.is_live(now)}
     if at is None:
         return selected | {old.id for old in candidates if old.is_live(now)}
-    selected.update(old.id for old in candidates if _covers(old, at))
+    selected.update(old.id for old in candidates if old.is_valid_at(at))
     earlier = max((old.valid_at for old in candidates if old.valid_at is not None and old.valid_at < at), default=None)
     later = min((old.valid_at for old in candidates if old.valid_at is not None and old.valid_at > at), default=None)
     return selected | {old.id for old in candidates if old.valid_at is not None and old.valid_at in (earlier, at, later)}
@@ -65,7 +54,7 @@ def _pairs(incoming, facts, config, embedder, now):
             subjects[_subject(fact)].append(fact)
     pairs = {}
     for new in incoming:
-        peers = [old for old in subjects[_subject(new)] if old.id != new.id and _compatible(old, new)]
+        peers = [old for old in subjects[_subject(new)] if old.id != new.id]
         selected = _timeline_candidates(new, [old for old in peers if old.slot == new.slot], now)
         polarity = _pref_polarity(new.predicate)
         if polarity:
@@ -88,7 +77,7 @@ def _judge(pairs, llm, config):
     def view(fact):
         return dict(text=fact.text, subject=fact.subject, predicate=fact.predicate, object=fact.object,
                     valid_at=fact.valid_at, invalid_at=fact.invalid_at,
-                    assertion_kind=fact.assertion_kind, source=fact.source)
+                    source=fact.source)
 
     input_limit = config.extraction_max_input_bytes
     if config.joint_context_tokens is not None:
@@ -172,9 +161,11 @@ def plan_merge(incoming, previous, llm, config, embedder, now, existing_pairs=()
             duplicates += 1
             if new.id != old.id:
                 provenance = list(dict.fromkeys((*old.provenance, *new.provenance)))
+                source_roles = list(dict.fromkeys((*old.source_roles, *new.source_roles)))
                 sensitive = old.sensitive or (old.source != 'user' and new.sensitive and not old.sensitive_override)
-                if provenance != old.provenance or sensitive != old.sensitive:
+                if provenance != old.provenance or source_roles != old.source_roles or sensitive != old.sensitive:
                     old.provenance = provenance
+                    old.source_roles = source_roles
                     old.sensitive = sensitive
                     changed[old.id] = old
             continue
@@ -270,7 +261,8 @@ def plan_merge(incoming, previous, llm, config, embedder, now, existing_pairs=()
 def _protected_interval(manual, challenger, at):
     if challenger.valid_at is None:
         return manual.is_live(at)
-    return _covers(manual, challenger.valid_at) and (manual.is_live(at) or manual.invalid_at is not None)
+    return (manual.is_published(at) and manual.is_valid_at(challenger.valid_at)
+            and (manual.invalid_at is not None or manual.expired_at is None or manual.expired_at > at))
 
 
 def conflict_is_reviewable(first, second, at):
@@ -280,6 +272,21 @@ def conflict_is_reviewable(first, second, at):
         return True
     return any(held.review_pending and manual.source == 'user' and _protected_interval(manual, held, at)
                for held, manual in ((first, second), (second, first)))
+
+
+def approval_candidate(facts, keep):
+    if keep == 'both':
+        return next((fact for fact in facts.values() if fact.review_pending), None)
+    if keep in facts and facts[keep].review_pending:
+        return facts[keep]
+    return None
+
+
+def has_other_manual_blocker(challenger, conflict_id, related, at):
+    # A resolved pair can still protect its manual fact while the challenger is held.
+    return any(conflict.id != conflict_id and conflict.status != 'dismissed'
+               and other is not None and other.source == 'user' and _protected_interval(other, challenger, at)
+               for conflict, other in related)
 
 
 def resolve_facts(facts, keep, at, history=()):
@@ -300,7 +307,7 @@ def resolve_facts(facts, keep, at, history=()):
     if winner.review_pending:
         winner.review_pending = False
         winner.approved_at = at
-        if other.invalid_at is not None and winner.valid_at is not None and _covers(other, winner.valid_at):
+        if other.invalid_at is not None and winner.valid_at is not None and other.is_valid_at(winner.valid_at):
             winner.invalid_at = other.invalid_at
             winner.expired_at = at if winner.invalid_at <= at else None
             if keep != 'both':
