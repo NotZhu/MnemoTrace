@@ -66,7 +66,7 @@ def test_chat_completions_endpoint_supports_sensitive_redaction(client_with_llm)
     c, service, model = client_with_llm
     h = hdr("chat_redact")
     c.post("/v1/facts", json={"predicate": "has_disease", "object": "diabetes"}, headers=h)
-    c.post("/v1/facts", json={"predicate": "works_at", "object": "Acme"}, headers=h)
+    c.post("/v1/facts", json={"predicate": "works_at", "object": "Acme", "sensitive": False}, headers=h)
 
     r = c.post("/v1/chat/completions", json={
         "model": "mnemotrace",

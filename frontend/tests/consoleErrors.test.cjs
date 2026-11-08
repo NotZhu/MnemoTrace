@@ -278,12 +278,24 @@ for (const [action, fields] of [['keep', {}], ['food', { topic: 'food' }], ['unk
     const mutation = s.mutations.find(m => m.name === 'useEditFact')
     const patch = JSON.parse(JSON.stringify(mutation.args[0].patch))
     assert.deepEqual(Object.fromEntries(Object.entries(patch).filter(([key]) => key.startsWith('topic') || key === 'reset_topic')), fields)
+    assert.equal(Object.hasOwn(patch, 'sensitive'), false)
     mutation.args[1].onError(new Error('synthetic write failure'))
     assert.equal(editor().props.value, action)
     mutation.args[1].onSuccess({ source: 'extracted' })
     assert.equal(s.toasts.at(-1), '已更新')
   })
 }
+
+test('Facts 显式切换敏感开关才发送敏感标记', () => {
+  const s = setup('Facts')
+  s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
+  const toggle = s.find(n => n.type === 'button' && n.props['aria-label'] === '设为敏感内容')
+  const previous = toggle.props['aria-checked']
+  toggle.props.onClick()
+  s.find(n => n.type === 'Button' && n.props.loading !== undefined).props.onClick()
+  const mutation = s.mutations.find(m => m.name === 'useEditFact')
+  assert.equal(mutation.args[0].patch.sensitive, !previous)
+})
 
 for (const [action, fields] of [['unknown', { topic: 'unknown' }], ['reset', { reset_topic: true }]]) {
   test(`Journal 仅修改主题 ${action} 时不发送正文，失败后保留草稿`, () => {

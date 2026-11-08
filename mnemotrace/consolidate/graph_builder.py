@@ -16,7 +16,7 @@ _TEXTUAL_OBJECT_PREDICATES = {
 
 
 def projects_fact(fact: Fact) -> bool:
-    return fact.predicate.lower() not in _TEXTUAL_OBJECT_PREDICATES
+    return not fact.review_pending and fact.predicate.lower() not in _TEXTUAL_OBJECT_PREDICATES
 
 
 class GraphBuilder:

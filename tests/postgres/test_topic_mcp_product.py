@@ -65,7 +65,7 @@ async def test_topic_filter_is_forwarded_by_both_backends_and_applied_before_too
     service = product_service
     context, key = product_scope()
     for obj, topic in [("合成茶", "food"), ("合成作品", "music"), ("合成咖啡", "food")]:
-        service.add_fact(context, "user", "prefers", obj, topic=topic)
+        service.add_fact(context, "user", "prefers", obj, topic=topic, sensitive=False)
     local = LocalBackend(context.user_id, context.space_id, service=service)
     requests = []
 

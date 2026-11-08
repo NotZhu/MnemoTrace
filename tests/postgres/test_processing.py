@@ -31,17 +31,22 @@ def processing(runtime, spaces, user):
     space = spaces.create(user, 'Processing tests')
     context = spaces.authorize(user, space.space_id)
 
-    def make(*, database=runtime, embedder=None, config=None, handle=None):
+    def make(*, database=runtime, embedder=None, config=None, handle=None, adjudicate=None):
         calls = []
 
         def respond(prompt, system=''):
+            if 'pair id' in system:
+                if adjudicate is not None:
+                    return adjudicate(prompt)
+                from tests.model_fixtures import adjudication_reply
+                return adjudication_reply(prompt)
             data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
             calls.append(data)
             if handle:
                 return json.dumps(handle(data))
             if data['operation'] == 'summary':
                 return json.dumps({'summaries': [{'source_id': data['pending'][0]['id'], 'text': 'Recorded preference'}]})
-            facts = [dict(subject='Synthetic person', predicate='likes', object='tea', text='Synthetic person likes tea',
+            facts = [dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='Synthetic person', predicate='likes', object='tea', text='Synthetic person likes tea',
                           assertion_kind='user_statement' if item['role'] else 'unspecified',
                           source_ids=[item['id']]) for item in data['pending']]
             return json.dumps(dict(facts=facts, working=[], summaries=[]))
@@ -275,12 +280,13 @@ def test_semantic_reconciliation_and_manual_authority(processing):
     def extract(data):
         item = data['pending'][0]
         predicate, value = item['content'].split()
-        fact = dict(subject='Synthetic person', predicate=predicate, object=value,
+        fact = dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='Synthetic person', predicate=predicate, object=value,
                     text=f'Synthetic person {predicate} {value}', assertion_kind='user_statement',
                     source_ids=[item['id']])
         return dict(facts=[fact], working=[], summaries=[])
 
-    memory, _ = processing(embedder=SemanticEmbedder(), handle=extract)
+    from tests.test_fact_adjudication import decisions
+    memory, _ = processing(embedder=SemanticEmbedder(), handle=extract, adjudicate=decisions)
     old = MessageInput('old', 'user', 'lives_in Beijing', event_time=100)
     new = MessageInput('new', 'user', 'based_in Shanghai', event_time=200)
     assert memory.remember_messages('chat', (old,), processing='immediate')['ok']
@@ -295,6 +301,8 @@ def test_semantic_reconciliation_and_manual_authority(processing):
     attempt = MessageInput('pinned', 'user', 'based_in Shenzhen', event_time=400)
     assert memory.remember_messages('chat', (attempt,), processing='immediate')['ok']
     assert tuple(fact.id for fact in memory.facts()) == (pinned.id,)
+    conflict, = memory.conflicts()
+    assert conflict.older == pinned.id and conflict.text_newer.endswith('Shenzhen')
 
 
 def test_rejected_source_erasure_preserves_summary_and_its_context(processing):
@@ -480,7 +488,7 @@ def test_final_receipt_includes_surviving_outputs_from_earlier_segments(processi
         item, = data['pending']
         if item['ranges'][0][0]:
             return dict(facts=[], working=[], summaries=[])
-        facts = [dict(subject='Synthetic person', predicate='likes', object=value,
+        facts = [dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='Synthetic person', predicate='likes', object=value,
                       text=f'Synthetic person likes {value}', assertion_kind='unspecified', source_ids=[item['id']])
                  for value in ('tea', 'coffee')]
         working = [dict(content='Synthetic task', kind='task', assertion_kind='unspecified', source_ids=[item['id']])]

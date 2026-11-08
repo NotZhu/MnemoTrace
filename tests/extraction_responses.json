@@ -558,14 +558,18 @@
     {
       "subject": "user",
       "predicate": "medical_condition",
-      "object": "diabetes"
+      "object": "diabetes",
+      "category": "健康",
+      "sensitive": true
     }
   ],
   "My private diagnosis is diabetes. I work at Acme.": [
     {
       "subject": "user",
       "predicate": "occupation",
-      "object": "diabetes"
+      "object": "diabetes",
+      "category": "健康",
+      "sensitive": true
     },
     {
       "subject": "user",
@@ -613,7 +617,9 @@
     {
       "subject": "user",
       "predicate": "occupation",
-      "object": "diabetes"
+      "object": "diabetes",
+      "category": "健康",
+      "sensitive": true
     },
     {
       "subject": "user",

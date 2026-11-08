@@ -69,7 +69,7 @@ def test_unversioned_existing_schema_is_rejected(database_factory):
             migrations.migrate(bundle.migration)
 
 
-@pytest.mark.parametrize('previous_count', [1, 2, 3, 4, 5])
+@pytest.mark.parametrize('previous_count', [1, 2, 3, 4, 5, 6])
 def test_upgrade_applies_only_pending_migrations(database_factory, monkeypatch, previous_count):
     all_migrations = migrations.MIGRATIONS
     with database_factory(initialize=False) as bundle:
@@ -109,3 +109,37 @@ def test_upgrade_makes_existing_queued_extract_discoverable(database_factory, mo
         migrations.migrate(bundle.migration)
         with Database(bundle.discovery, purpose='discovery') as discovery:
             assert discovery.discover_processing() == ((context, 'phase3-queued'),)
+
+
+def test_upgrade_regenerates_saved_pre_review_extraction(database_factory, monkeypatch):
+    from mnemotrace.memory import Memory
+    from mnemotrace.llm import FakeLLM
+    from tests.test_fact_adjudication import model_response
+
+    with database_factory(initialize=False) as bundle:
+        with monkeypatch.context() as phase6:
+            phase6.setattr(migrations, 'MIGRATIONS', migrations.MIGRATIONS[:6])
+            migrations.migrate(bundle.migration)
+            with Database(bundle.admin, purpose='admin') as admin, Database(bundle.runtime) as runtime:
+                user = Accounts(admin).create_user()
+                spaces = Spaces(runtime)
+                space = spaces.create(user, 'Review migration test')
+                context = spaces.authorize(user, space.space_id)
+                mem = Memory(runtime, context, llm=FakeLLM(handler=model_response))
+                accepted = mem.remember('Oslo', 'review', event_time=20, processing='buffered')
+                operation, = accepted['operation_ids']
+                assert mem._processing.run_one(operation, force=True)
+                assert mem._processing.tasks.operation(operation).extraction_saved
+                with mem.dao._transaction() as sql:
+                    sql.run("UPDATE mnemotrace.operation_products SET result = result #- %s::text[] "
+                            "WHERE user_id = %s AND space_id = %s AND operation_id = %s",
+                            (['facts', '0', 'sensitive'], *sql.scope, operation))
+        migrations.migrate(bundle.migration)
+        with Database(bundle.runtime) as runtime:
+            llm = FakeLLM(handler=model_response)
+            mem = Memory(runtime, context, llm=llm)
+            assert not mem._processing.tasks.operation(operation).extraction_saved
+            assert mem.flush_processing('review')['status'] == 'completed'
+            fact, = mem.facts()
+            assert fact.object == 'Oslo' and not fact.review_pending
+            assert len(llm.calls) == 1

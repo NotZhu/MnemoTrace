@@ -23,7 +23,7 @@ def product(runtime, user, accounts, spaces, monkeypatch):
     def extract(prompt, system=''):
         data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
         return json.dumps(dict(facts=[
-            dict(subject='Synthetic person', predicate='likes', object='Bluebird tea',
+            dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='Synthetic person', predicate='likes', object='Bluebird tea',
                  text='Synthetic person likes Bluebird tea', assertion_kind='user_statement',
                  source_ids=[source['id']])
             for source in data['pending']
@@ -188,8 +188,8 @@ def test_direct_and_proxy_mcp_and_cli_share_records(product, monkeypatch, capsys
     from mnemotrace.mcp.backends import LocalBackend, RemoteBackend
 
     service, context, key, client = product
-    source = service.memory(context).add_fact('Synthetic archive', 'access_code', 'Emerald')
-    service.memory(context).add_fact('Synthetic garden', 'favorite_flower', 'Iris')
+    source = service.memory(context).add_fact('Synthetic archive', 'access_code', 'Emerald', sensitive=False)
+    service.memory(context).add_fact('Synthetic garden', 'favorite_flower', 'Iris', sensitive=False)
 
     async def mcp_lifecycle():
         local = LocalBackend(context.user_id, context.space_id, service)

@@ -6,7 +6,7 @@ import time
 import uuid
 
 from .consolidate.pipeline import KINDS, PipelineTasks, TERMINAL, config_identity, digest, reset_attempts, source
-from .consolidate.planning import input_size, output_size, plan, summary_plan, busy, supplied, empty_input, fits_input
+from .consolidate.planning import input_size, output_size, plan, summary_plan, busy, fits_input
 from .consolidate.operations import prepare, decode
 from .extraction import ExtractionError, ExtractionTruncatedError, LLMNotConfiguredError, require_llm
 from .llm.base import complete_result
@@ -61,63 +61,6 @@ def new_window(mem, tasks, route_key, data):
         error_code=None, history=[], guard=tasks.state['generation'], result_hash=None, operation=data['operation'],
         stats=mem.writer.empty_stats(), limits=dict(summary_min_chars=mem.config.summary_min_chars,
                                                    summary_max_chars=mem.config.summary_max_chars))
-
-
-def fact_snapshot(fact):
-    return dict(id=fact.id, subject=fact.subject, predicate=fact.predicate, object=fact.object,
-                text=fact.text, valid_at=fact.valid_at, source=fact.source,
-                assertion_kind=fact.assertion_kind, source_roles=fact.source_roles)
-
-
-def enqueue_operation(mem, user, episodes, operation, now):
-    """Freeze an explicit auxiliary operation in the same durable ledger."""
-    tasks = PipelineTasks(mem, user)
-    ids = tasks.register(episodes, now, operation='none')
-    if not ids:
-        return None
-    ids.sort(key=lambda key: tasks.rows()[key]['sequence'])
-    row = tasks.rows()[ids[0]]
-    session = tasks.group(row, now)
-    from .consolidate.pipeline import route
-    route_key = route(row['session_id'], row['mode'], row['scope'], row['source_kind'])
-    data = empty_input(session, operation)
-    for key in ids:
-        ep = mem.episodes_doc.get(key)
-        data['pending'].append(supplied(ep, tasks.rows()[key], context=bool(ep.summary)))
-    seen = {c.pair_key for c in mem.conflicts.values()}
-    from .consolidate.conflict_candidates import candidate_pairs
-    pairs = candidate_pairs([f for f in mem._all_facts() if f.user_id == user and f.is_live()], seen, .62, .94)
-    if not pairs:
-        return None
-    from .util import time_key
-    ordered = [sorted(pair, key=lambda f: (time_key(f.valid_at), f.created_at, f.id)) for pair in pairs[:16]]
-    data['candidates'] = [dict(older=fact_snapshot(a), newer=fact_snapshot(b)) for a, b in ordered]
-    # Auxiliary tasks use summaries where available and explicitly cropped visible
-    # ranges otherwise. Their provenance never claims the omitted text was input.
-    policy = ''
-    while not fits_input(data, mem.config, policy):
-        if operation == 'conflicts' and len(data['candidates']) > 1:
-            data['candidates'] = data['candidates'][:-1]
-            continue
-        item = max(data['pending'], key=lambda s: len(s['content']))
-        if len(item['content']) < 4:
-            raise ValueError('Auxiliary input budget cannot fit frozen sources')
-        if item['representation'] == 'summary':
-            item['content'] = item['content'][:len(item['content']) // 2]
-        else:
-            ep = mem.episodes_doc.get(item['id'])
-            count = max(2, (sum(b-a for a, b in item['ranges'])) // 2)
-            head, tail = (count + 1)//2, count//2
-            from .consolidate.planning import OMITTED
-            item.update(content=ep.content[:head] + OMITTED + ep.content[-tail:],
-                        ranges=[[0, head], [len(ep.content)-tail, len(ep.content)]])
-        item['partial'] = True
-    key = digest([operation, data, config_identity(mem)])[:24]
-    if key not in tasks.state['windows']:
-        tasks.state['windows'][key] = new_window(mem, tasks, route_key, data)
-        for source_id in ids:
-            tasks.rows()[source_id]['window_ids'].append(key)
-    return key
 
 
 def _select(mem, tasks, now):
@@ -195,10 +138,6 @@ def _current(mem, tasks, win, token, model):
         row = tasks.rows()[win['input']['pending'][0]['id']]
         if not set(win['input']['parts']).issubset(p['key'] for p in row['parts']):
             return False
-    if win['operation'] == 'conflicts':
-        current = {f.id: fact_snapshot(f) for f in mem._all_facts() if f.is_live()}
-        if any(current.get(f['id']) != f for pair in win['input']['candidates'] for f in pair.values()):
-            return False
     return True
 
 
@@ -211,7 +150,53 @@ def _parts_complete(row):
     return end == row['length']
 
 
-def _commit(mem, tasks, win, now):
+def _merge_input(mem, namespace, win, now):
+    from .consolidate.planning import fact_valid_at
+    from .consolidate.topic_rules import resolve_topic
+    from .consolidate.fact_rules import _NAME_PREDICATES, _SELF_REFS
+
+    data, result = win['input'], win['result']
+    views = {s['id']: s for s in (*data['context'], *data['pending'])}
+    pending = {s['id'] for s in data['pending']}
+    facts, names = [], []
+
+    def anchor(item):
+        return max((views[k] for k in item['source_ids'] if k in pending and
+                    (data['source_kind'] != 'dialogue' or views[k]['role'] == KINDS[item['assertion_kind']])),
+                   key=lambda s: s['sequence'])
+
+    def vector(text):
+        return win['vectors'][digest(text)]
+
+    for item in sorted(result['facts'], key=lambda item: anchor(item)['sequence']):
+        origin = anchor(item)
+        subject_input = item.get('subject_input', item['subject']).strip().lower()
+        owner_refs = {*_SELF_REFS, namespace.lower(), *mem._aliases.get(namespace, set())}
+        if namespace in mem._identity:
+            owner_refs.add(mem._identity[namespace].lower())
+        owner_name = subject_input in owner_refs
+        topic, topic_source = resolve_topic(item['predicate'], item['object'], item.get('topic') if mem.config.llm_topics else None)
+        fact = Fact(subject=item['subject'], predicate=item['predicate'], object=item['object'], text=item['text'],
+            display=item.get('display', item['text']), user_id=namespace, valid_at=fact_valid_at(item, origin['event_time']), created_at=now, last_access=now,
+            category=item['category'], sensitive=item['sensitive'],
+            provenance=item['source_ids'], assertion_kind=item['assertion_kind'],
+            source_roles=list(dict.fromkeys(views[k]['role'] for k in item['source_ids'] if views[k]['role'])),
+            topic=topic, topic_source=topic_source, id='ft_' + digest([win['input_hash'], item])[:24], embedding=vector(item['text']))
+        if not (data['source_kind'] != 'dialogue' and item['predicate'] in _NAME_PREDICATES and owner_name):
+            facts.append(fact)
+        if owner_name and item['predicate'] in _NAME_PREDICATES and fact.is_user_knowledge:
+            names.append(item['object'])
+    return facts, names
+
+
+def _merge_snapshot(mem, namespace, facts):
+    subjects = {fact.subject.strip().lower() for fact in facts}
+    return sorted((fact for fact in mem._all_facts(include_unpublished=True)
+                   if fact.user_id == namespace and fact.subject.strip().lower() in subjects),
+                  key=lambda fact: fact.id)
+
+
+def _commit(mem, tasks, win, now, merge=None, names=()):
     data, result = win['input'], win['result']
     views = {s['id']: s for s in (*data['context'], *data['pending'])}
     pending = {s['id'] for s in data['pending']}
@@ -223,29 +208,20 @@ def _commit(mem, tasks, win, now):
     def vector(text):
         return win['vectors'][digest(text)]
     if not win['core_saved']:
-        from .consolidate.classify import classify_fact
-        from .consolidate.topic_rules import resolve_topic
-        from .consolidate.fact_rules import _NAME_PREDICATES
-        for item in sorted(result['facts'], key=lambda item: anchor(item)['sequence']):
-            origin = anchor(item)
-            subject_input = item.get('subject_input', item['subject']).strip().lower()
-            from .consolidate.fact_rules import _SELF_REFS
-            owner_refs = {*_SELF_REFS, tasks.namespace.lower(), *mem._aliases.get(tasks.namespace, set())}
-            if tasks.namespace in mem._identity:
-                owner_refs.add(mem._identity[tasks.namespace].lower())
-            owner_name = subject_input in owner_refs
-            topic, topic_source = resolve_topic(item['predicate'], item['object'], item.get('topic') if mem.config.llm_topics else None)
-            fact = Fact(subject=item['subject'], predicate=item['predicate'], object=item['object'], text=item['text'],
-                display=item.get('display', item['text']), user_id=tasks.namespace, valid_at=origin['event_time'], created_at=now, last_access=now,
-                provenance=item['source_ids'], assertion_kind=item['assertion_kind'],
-                source_roles=list(dict.fromkeys(views[k]['role'] for k in item['source_ids'] if views[k]['role'])),
-                topic=topic, topic_source=topic_source, id='ft_' + digest([win['input_hash'], item])[:24], embedding=vector(item['text']))
-            classify_fact(fact)
-            if not (data['source_kind'] != 'dialogue' and win['operation'] == 'extract' and item['predicate'] in _NAME_PREDICATES and owner_name):
-                mem.writer._write_fact(fact, win['stats'])
-            if owner_name and item['predicate'] in _NAME_PREDICATES and item['assertion_kind'] in {'user_statement', 'user_confirmation', 'unspecified'}:
-                mem._identity.setdefault(tasks.namespace, item['object'])
-                mem._aliases.setdefault(tasks.namespace, set()).add(item['object'].lower())
+        if merge is not None:
+            changed, conflicts, stats = merge
+            for fact in changed:
+                mem._upsert_fact(fact)
+                mem.graph.delete_relations_for_fact(fact.id)
+                if fact.is_published():
+                    mem.writer.graph_builder.add_fact(fact)
+            for conflict in conflicts:
+                mem.conflicts.setdefault(conflict.id, conflict)
+            for field, count in stats.items():
+                win['stats'][field] += count
+            for name in names:
+                mem._identity.setdefault(tasks.namespace, name)
+                mem._aliases.setdefault(tasks.namespace, set()).add(name.lower())
         for item in result['working']:
             origin = anchor(item)
             working_id = 'wm_' + digest([win['input_hash'], item])[:24]
@@ -259,25 +235,6 @@ def _commit(mem, tasks, win, now):
                     expires_at=(now + ttl) if ttl else None, embedding=vector(item['content']),
                     metadata=dict(provenance=item['source_ids'], assertion_kind=item['assertion_kind'], episode_id=origin['id']))
                 win['stats']['working_added'] += 1
-        if win['operation'] == 'conflicts':
-            from .types import Conflict
-            candidates = {f.id: f for f in mem._all_facts() if f.is_live()}
-            for decision in result['decisions']:
-                older, newer = candidates[decision['older']], candidates[decision['newer']]
-                if decision['decision'] == 'coexists':
-                    continue
-                if (decision['decision'] == 'replaces' and mem.config.conflict_llm_escalation and older.source != 'user'
-                        and older.assertion_kind == newer.assertion_kind and newer.valid_at is not None
-                        and (older.valid_at is None or newer.valid_at >= older.valid_at)):
-                    older.invalid_at, older.expired_at, newer.supersedes = newer.valid_at, now, older.id
-                    mem._upsert_fact(older)
-                    mem._upsert_fact(newer)
-                    mem.graph.delete_relations_for_fact(older.id)
-                    mem.writer.graph_builder.add_fact(older)
-                elif mem.config.conflict_detection:
-                    conflict_id = 'cf_' + digest([win['input_hash'], decision])[:24]
-                    mem.conflicts.setdefault(conflict_id, Conflict(id=conflict_id, older=older.id, newer=newer.id,
-                        text_older=older.text, text_newer=newer.text, user_id=tasks.namespace, reason=decision['reason']))
         win['core_saved'] = True
         if win['operation'] == 'extract':
             for item in data['pending']:
@@ -342,8 +299,6 @@ def _commit(mem, tasks, win, now):
     else:
         win['stats']['windows_completed'] += 1
         win.update(phase='done', state='completed', error_code=None, next_attempt_at=0, vectors={})
-        if win['operation'] == 'extract' and (mem.config.conflict_detection or mem.config.conflict_llm_escalation):
-            enqueue_operation(mem, tasks.namespace, [mem.episodes_doc.get(s['id']) for s in data['pending']], 'conflicts', now)
     _advance(tasks, tasks.state['sessions'][win['route']])
 
 
@@ -370,33 +325,37 @@ def run_one(service, user):
             if tasks.state['generation'] != win['guard'] or not _current(mem, tasks, win, win['guard'], mem.llm):
                 tasks.cancel_window(win, 'derived_state_changed')
                 return True
-            if win['phase'] == 'commit':
+            adjudicate = win['phase'] == 'commit' and win['operation'] == 'extract' and not win['core_saved']
+            if win['phase'] == 'commit' and not adjudicate:
                 _commit(mem, tasks, win, time.time())
                 return True
+            if adjudicate:
+                merge_at = time.time()
+                facts, names = _merge_input(mem, user, win, merge_at)
+                previous = deepcopy(_merge_snapshot(mem, user, facts))
+                existing_pairs = tuple(c.pair_key for c in mem.conflicts.values() if c.user_id == user)
             if win['phase'] in {'generate', 'compensate'}:
                 budget_policy = mem._effective('summary_system') if win['operation'] == 'summary' else (
-                    '' if win['operation'] == 'conflicts' else
                     mem.policy.get('extract_system', '') + mem.policy.get('extract_instruction', ''))
                 if not fits_input(win['input'], mem.config, budget_policy):
                     _fail(tasks, win, 'configuration_invalid', time.time(), retryable=False)
                     return True
             embedding = win['phase'] == 'embed'
-            counter = 'embed_attempts' if embedding else 'attempts'
+            counter = 'embed_attempts' if embedding or adjudicate else 'attempts'
             if win[counter] >= 3:
-                _fail(tasks, win, 'embedding_failed' if embedding else 'extraction_failed',
-                      time.time(), retryable=False, embedding=embedding)
+                _fail(tasks, win, 'adjudication_failed' if adjudicate else 'embedding_failed' if embedding else 'extraction_failed',
+                      time.time(), retryable=False, embedding=embedding or adjudicate)
                 _advance(tasks, tasks.state['sessions'][win['route']])
                 return True
             win[counter] += 1
-            if not embedding:
+            if not embedding and not adjudicate:
                 win['stats']['model_calls'] += 1
             win['state'] = 'running'
-            win['history'].append(dict(stage=win['phase'], attempt=win[counter], started_at=time.time(),
+            win['history'].append(dict(stage='adjudicate' if adjudicate else win['phase'], attempt=win[counter], started_at=time.time(),
                 finished_at=None, outcome='in_flight', finish_reason=None, usage=None, error_code=None))
             config, data, phase = deepcopy(mem.config), deepcopy(win['input']), win['phase']
             model, embedder = mem.llm, mem.embedder
-            policy = ('' if win['operation'] == 'conflicts' else
-                      mem._effective('summary_system') if win['operation'] == 'summary' else
+            policy = (mem._effective('summary_system') if win['operation'] == 'summary' else
                       mem.policy.get('extract_system', '') + mem.policy.get('extract_instruction', ''))
             texts = texts_for(win) if embedding else []
             saved_summaries = list(win['summary_saved'])
@@ -404,7 +363,12 @@ def run_one(service, user):
             mem = tasks = win = None
         failure, output, completion = None, None, None
         try:
-            if embedding:
+            if adjudicate:
+                from .consolidate.adjudication import plan_merge
+                from .llm.execution import ModelMeter, one_attempt
+                output = plan_merge(facts, previous, ModelMeter(one_attempt(model), service.metrics, 'pipeline'),
+                                    config, embedder, merge_at, existing_pairs)
+            elif embedding:
                 vectors = embedder.embed_batch(texts) if texts else []
                 if len(vectors) != len(texts):
                     raise ValueError('Embedding batch length mismatch')
@@ -441,12 +405,20 @@ def run_one(service, user):
                 tasks.cancel_window(win, 'source_changed')
                 win['history'][-1]['outcome'] = 'discarded'
             elif failure is not None:
-                code = 'embedding_failed' if embedding else (
+                code = 'adjudication_failed' if adjudicate else 'embedding_failed' if embedding else (
                     failure.code if isinstance(failure, ExtractionError) else 'extraction_failed')
-                _fail(tasks, win, code, time.time(), retryable=_retryable(failure), embedding=embedding)
+                _fail(tasks, win, code, time.time(), retryable=_retryable(failure), embedding=embedding or adjudicate)
                 win['history'][-1]['error_code'] = code
+            elif adjudicate:
+                if previous != _merge_snapshot(mem, user, facts):
+                    win['history'][-1].update(outcome='discarded', error_code='version_conflict')
+                    _fail(tasks, win, 'version_conflict', time.time(), embedding=True)
+                else:
+                    _commit(mem, tasks, win, merge_at, output, names)
+                return True
             elif embedding:
                 win['vectors'] = output
+                reset_attempts(win, 'embed_attempts', 'adjudication_pending', time.time())
                 win.update(phase='commit', state='pending', next_attempt_at=0)
             else:
                 if phase == 'compensate':
@@ -552,15 +524,13 @@ def flush(service, user, session_id=None, timeout=30, retry_failed=False, bounda
             result = tasks.snapshot(session_id, ids)
         present = {job['episode_id'] for job in result['jobs'] if 'core' in job}
         invalidated = result['generation'] != generation or present != ids
-        if operation == 'conflicts':
-            result['jobs'] = [j for j in result['jobs'] if j['operation'] == operation and 'core' not in j]
         if operation == 'summary':
             result['jobs'] = [j for j in result['jobs'] if 'core' in j]
             for job in result['jobs']:
                 if 'core' in job:
                     state = job['summarization']
                     job['state'] = 'completed' if state in {'completed', 'not_needed'} else 'failed' if state == 'failed' else 'retry_wait' if job['state'] == 'retry_wait' else 'pending'
-        if operation in {'summary', 'conflicts'}:
+        if operation == 'summary':
             result['counts'] = {s: sum(j['state'] == s for j in result['jobs']) for s in TERMINAL | {'pending', 'running', 'retry_wait'}}
         counts = result['counts']
         active = any(counts[s] for s in ('pending', 'running', 'retry_wait'))
@@ -640,11 +610,7 @@ def execute_sources(host, user, episodes, operation='extract', retry_failed=Fals
             before_working = set(mem.working_mem)
             before_summaries = {ep.id for ep in episodes if ep.summary}
             before = {key: dict(win['stats']) for key, win in (tasks.state or {}).get('windows', {}).items()}
-            if operation == 'conflicts':
-                enqueue_operation(mem, user, episodes, operation, time.time())
-                ids = {ep.id for ep in episodes}
-            else:
-                ids = set(tasks.register(episodes, time.time(), operation, summaries=summaries))
+            ids = set(tasks.register(episodes, time.time(), operation, summaries=summaries))
         result = flush(host, user, timeout=30, retry_failed=retry_failed or attempt > 0, boundary=ids,
                        fail_fast=True, operation=operation)
         if result['ok'] or not _conflict_cancelled(result):

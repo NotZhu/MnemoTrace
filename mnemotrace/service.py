@@ -19,7 +19,7 @@ from .metrics import Metrics, timed
 from .store.contracts import FactQuery, FactState, MessageInput
 from .store.postgres import Database, DatabaseConfig, Spaces
 from .store.postgres.errors import MessageConflict
-from .store.postgres.records import ENTITY, FACT, RELATION, SOURCE, domain
+from .store.postgres.records import CONFLICT, ENTITY, FACT, RELATION, SOURCE, domain
 from .util import fmt_date, fmt_datetime
 
 
@@ -570,11 +570,15 @@ class MemoryService:
             for name, kind in (('facts', FACT), ('episodes', SOURCE)):
                 yield f',"{name}":['
                 cursor, first = None, True
-                while (kind != SOURCE or include_sensitive) and (batch := view.records(kind, after_id=cursor)):
+                while kind != SOURCE or include_sensitive:
+                    batch = (view.portable_facts(after_id=cursor) if kind == FACT and include_sensitive
+                             else view.records(kind, after_id=cursor))
+                    if not batch:
+                        break
                     for record in batch:
                         if kind == FACT:
                             item = domain(record)
-                            if item.sensitive and not include_sensitive:
+                            if not include_sensitive and (item.sensitive or not item.is_published()):
                                 continue
                             payload = asdict(item)
                             payload.pop('embedding', None)
@@ -584,6 +588,17 @@ class MemoryService:
                                            invalid_at_h=fmt_date(item.invalid_at) if item.invalid_at is not None else None)
                         else:
                             payload = _source_view(record)
+                        yield ('' if first else ',') + json.dumps(payload, ensure_ascii=False)
+                        first = False
+                    cursor = batch[-1].ref.record_id
+                yield ']'
+            if include_sensitive:
+                yield ',"conflicts":['
+                cursor, first = None, True
+                while batch := view.records(CONFLICT, after_id=cursor):
+                    for record in batch:
+                        payload = asdict(domain(record))
+                        payload.pop('user_id')
                         yield ('' if first else ',') + json.dumps(payload, ensure_ascii=False)
                         first = False
                     cursor = batch[-1].ref.record_id

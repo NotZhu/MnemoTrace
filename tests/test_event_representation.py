@@ -36,7 +36,7 @@ def test_summary_replaces_raw_index_and_retrieval_payload():
 def test_contexts_do_not_expand_summary_even_for_provenance(cascade):
     mem = MemoryEngine()
     ep = summarized(mem)
-    fact = mem.add_fact("user", "finding", "connection issue resolved", user_id="u")
+    fact = mem.add_fact("user", "finding", "connection issue resolved", user_id="u", sensitive=False)
     fact.provenance = [ep.id]
     mem._upsert_fact(fact)
     for text in (

@@ -77,6 +77,9 @@ def _kill_at_checkpoint(child):
 
 def _model(calls, pause=None):
     def respond(prompt, system=None):
+        if 'pair id' in (system or ''):
+            from tests.model_fixtures import adjudication_reply
+            return adjudication_reply(prompt)
         request = json.loads(prompt.removeprefix(WINDOW_PREFIX))
         calls.append(request['operation'])
         if pause:
@@ -87,7 +90,7 @@ def _model(calls, pause=None):
         for item in request['pending']:
             subject, _, employer = item['content'].rpartition(' at ')
             subject = subject or 'Synthetic person'
-            facts.append(dict(subject=subject, predicate='works_at', object=employer,
+            facts.append(dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject=subject, predicate='works_at', object=employer,
                               text=f'{subject} works at {employer}', assertion_kind='user_statement',
                               source_ids=[item['id']]))
         return json.dumps(dict(facts=facts, working=[], summaries=[]))

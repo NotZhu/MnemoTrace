@@ -258,7 +258,7 @@ def test_entity_alias_and_merge_survive_incremental_projection(memory):
 
 
 def test_pending_conflict_resolution_and_default_export(memory):
-    a = memory.add_fact('Synthetic person', 'likes', 'tea')
+    a = memory.add_fact('Synthetic person', 'likes', 'tea', sensitive=False)
     b = memory.add_fact('Synthetic person', 'likes', 'coffee', sensitive=True)
     memory.remember_raw('Synthetic private source', 'chat')
     conflict = Conflict(a.id, b.id, user_id=memory.context.user_id)

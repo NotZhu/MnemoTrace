@@ -67,8 +67,9 @@ class ReadView:
     def _fact_conditions(self, query):
         valid = self.at if query.valid_at is None else timestamp(query.valid_at)
         known = valid if query.known_at is None else timestamp(query.known_at)
-        clauses = ['(r.valid_at IS NULL OR r.valid_at <= %s)']
-        args = [valid]
+        clauses = ['(r.valid_at IS NULL OR r.valid_at <= %s)',
+                   'NOT r.review_pending AND (r.approved_at IS NULL OR r.approved_at <= %s)']
+        args = [valid, known]
         if query.known_at is not None:
             clauses.append('r.created_at <= %s')
             args.append(known)
@@ -218,15 +219,41 @@ class ReadView:
         self.exclude_muted(clauses, args, 'r.content')
         return self._sql.select(WORKING, clauses, args, limit=limit)
 
+    def conflict_pairs(self, records):
+        ids = [record.ref.record_id for record in records]
+        if not ids:
+            return ()
+        return self._sql.run(
+            f'SELECT least(older,newer),greatest(older,newer) FROM mnemotrace.conflicts WHERE {SCOPE} '
+            'AND (older = ANY(%s) OR newer = ANY(%s))', (*self._sql.scope, ids, ids)).fetchall()
+
     def conflicts(self, *, after_id=None, limit=100, pending_only=True):
         clauses, args = [], []
         if pending_only:
-            clauses.append("""r.status = 'pending' AND 2 = (
-                SELECT count(*) FROM mnemotrace.facts f WHERE (f.user_id,f.space_id) = (r.user_id,r.space_id)
-                AND f.id IN (r.older,r.newer) AND (f.valid_at IS NULL OR f.valid_at <= %s)
-                AND (f.invalid_at IS NULL OR f.invalid_at > %s)
-                AND (f.expired_at IS NULL OR f.expired_at > %s))""")
-            args.extend((self.at,) * 3)
+            clauses.append("""r.status = 'pending' AND EXISTS (
+                SELECT 1 FROM mnemotrace.facts a JOIN mnemotrace.facts b
+                  ON (a.user_id,a.space_id) = (b.user_id,b.space_id)
+                CROSS JOIN (SELECT %s::timestamptz AS at) clock
+                WHERE (a.user_id,a.space_id) = (r.user_id,r.space_id)
+                  AND a.id IN (r.older,r.newer) AND b.id IN (r.older,r.newer) AND a.id <> b.id
+                  AND NOT a.review_pending AND (
+                    (a.valid_at IS NULL OR a.valid_at <= clock.at)
+                    AND (a.invalid_at IS NULL OR a.invalid_at > clock.at)
+                    AND (a.expired_at IS NULL OR a.expired_at > clock.at)
+                    AND (a.approved_at IS NULL OR a.approved_at <= clock.at)
+                    AND (
+                      (NOT b.review_pending AND (b.valid_at IS NULL OR b.valid_at <= clock.at)
+                        AND (b.invalid_at IS NULL OR b.invalid_at > clock.at)
+                        AND (b.expired_at IS NULL OR b.expired_at > clock.at)
+                        AND (b.approved_at IS NULL OR b.approved_at <= clock.at))
+                      OR (b.review_pending AND a.source = 'user' AND b.valid_at IS NULL)
+                      OR (b.review_pending AND a.source = 'user' AND a.invalid_at IS NULL
+                        AND (a.valid_at IS NULL OR a.valid_at <= b.valid_at))
+                    )
+                    OR (b.review_pending AND a.source = 'user' AND b.valid_at IS NOT NULL
+                      AND (a.valid_at IS NULL OR a.valid_at <= b.valid_at) AND b.valid_at < a.invalid_at)
+                  ))""")
+            args.append(self.at)
         page(clauses, args, after_id, limit)
         return self._sql.select(CONFLICT, clauses, args, limit=limit)
 
@@ -277,6 +304,16 @@ class ReadView:
             for kind, table in TABLES.items()
         }
 
+    def portable_facts(self, *, after_id=None, limit=100):
+        # Erasing either side cascades the conflict. An orphaned held fact has no portable review state.
+        clauses = ["""(NOT r.review_pending OR EXISTS (
+            SELECT 1 FROM mnemotrace.conflicts c
+            WHERE (c.user_id,c.space_id) = (r.user_id,r.space_id) AND r.id IN (c.older,c.newer)
+        ))"""]
+        args = []
+        page(clauses, args, after_id, limit)
+        return self._sql.select(FACT, clauses, args, limit=limit)
+
     def records(self, kind, *, after_id=None, limit=100):
         clauses, args = [], []
         page(clauses, args, after_id, limit)
@@ -310,7 +347,7 @@ class ReadView:
         return records, total
 
     def fact_categories(self, *, include_sensitive, outcomes):
-        clauses, args = [ROW_SCOPE], list(self._sql.scope)
+        clauses, args = [ROW_SCOPE, 'NOT r.review_pending'], list(self._sql.scope)
         if not include_sensitive:
             clauses.append('NOT r.sensitive')
         if outcomes is not None:

@@ -369,11 +369,11 @@ function ConflictsCard() {
             <div className="grid gap-1.5 sm:grid-cols-2">
               <div className="rounded-lg bg-brand-mint/10 px-2.5 py-1.5 text-sm">
                 <span className="text-[10px] text-brand-mint">{t.facts.conflictNew}</span>
-                <div className="text-slate-100">{c.newer_text}</div>
+                <div className="text-slate-100">{c.text_newer}</div>
               </div>
               <div className="rounded-lg bg-ink-700/60 px-2.5 py-1.5 text-sm">
                 <span className="text-[10px] text-ghost">{t.facts.conflictOld}</span>
-                <div className="text-ghost line-through">{c.older_text}</div>
+                <div className="text-ghost line-through">{c.text_older}</div>
               </div>
             </div>
             <div className="mt-2.5 flex flex-wrap gap-2">
@@ -410,7 +410,9 @@ function FactModal({
   const [subject, setSubject] = useState('')
   const [predicate, setPredicate] = useState('')
   const [object, setObject] = useState('')
-  const [sensitive, setSensitive] = useState(false)
+  const [sensitiveOverride, setSensitiveOverride] = useState<boolean>()
+  const claimChanged = initial && (initial.subject !== subject || initial.predicate !== predicate || initial.object !== object)
+  const sensitive = sensitiveOverride ?? (!initial || claimChanged || initial.sensitive)
   const [topicAction, setTopicAction] = useState<TopicAction>('keep')
 
   // 每次弹窗带着（可能是新的）事实打开时，同步一次表单值。
@@ -421,7 +423,7 @@ function FactModal({
     setSubject(initial?.subject ?? '')
     setPredicate(initial?.predicate ?? '')
     setObject(initial?.object ?? '')
-    setSensitive(initial?.sensitive ?? false)
+    setSensitiveOverride(undefined)
     setTopicAction('keep')
   }
 
@@ -438,7 +440,7 @@ function FactModal({
               role="switch"
               aria-checked={sensitive}
               aria-label={t.facts.markSensitive}
-              onClick={() => setSensitive((value) => !value)}
+              onClick={() => setSensitiveOverride(!sensitive)}
               className="inline-flex min-h-[38px] select-none items-center gap-2.5 rounded-full text-sm text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan"
             >
               <span aria-hidden="true" className="switch-track">
@@ -452,7 +454,7 @@ function FactModal({
           <Button variant="ghost" disabled={loading} onClick={onClose} className="h-9 px-4 py-2 text-sm">
             {t.common.cancel}
           </Button>
-          <Button loading={loading} disabled={loading || !predicate.trim() || !object.trim()} onClick={() => onSubmit({ subject, predicate, object, sensitive, ...topicPatch(topicAction) })} className="h-9 px-4 py-2 text-sm">
+          <Button loading={loading} disabled={loading || !predicate.trim() || !object.trim()} onClick={() => onSubmit({ subject, predicate, object, sensitive: sensitiveOverride, ...topicPatch(topicAction) })} className="h-9 px-4 py-2 text-sm">
             {t.common.save}
           </Button>
           </div>

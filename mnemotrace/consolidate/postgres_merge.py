@@ -2,8 +2,8 @@
 from dataclasses import replace
 from itertools import chain
 
-from .classify import classify_fact
-from .conflict import is_single_valued
+from .planning import fact_valid_at
+from .adjudication import plan_merge
 from .fact_rules import _NAME_PREDICATES, _SELF_REFS, _norm_predicate
 from .facts import FactWriter
 from .pipeline import KINDS, digest
@@ -11,7 +11,6 @@ from .topic_rules import resolve_topic
 from ..embed import HashingEmbedder
 from ..store._validation import validate_embedding
 from ..store.contracts import EmbeddingWrite, RecordRef, RecordWrite, SourceLink, StoredRecord
-from ..store.memory_store import InMemoryGraphStore, InMemoryVectorStore
 from ..store.postgres.records import FACT, SOURCE, domain
 from ..types import Fact, WorkingMemory
 
@@ -66,14 +65,14 @@ def materialize(context, data, result, settings, config, now):
             continue
         topic, topic_source = resolve_topic(predicate, item['object'], item.get('topic') if config.llm_topics else None)
         fact = Fact(subject, predicate, item['object'], text=item['text'] if dialogue else '',
-                    display=item['text'], user_id=context.user_id, valid_at=origin['event_time'],
+                    display=item['text'], user_id=context.user_id, valid_at=fact_valid_at(item, origin['event_time']),
+                    category=item['category'], sensitive=item['sensitive'],
                     created_at=now, last_access=now, provenance=item['source_ids'], assertion_kind=nature,
                     source_roles=list(dict.fromkeys(views[key]['role'] for key in item['source_ids']
                                                     if views[key]['role'])),
                     topic=topic, topic_source=topic_source,
                     id='ft_' + digest([data, item])[:24])
         if policy._accepted(fact, content):
-            classify_fact(fact)
             facts.append(fact)
 
     working = []
@@ -98,9 +97,7 @@ def embed_texts(embedder, texts):
 
 
 def merge_records(context, config, embedder, model, data, session_id, now,
-                  facts, working, previous, vectors):
-    fact_store = InMemoryVectorStore()
-    writer = FactWriter(fact_store, InMemoryGraphStore(), embedder, config)
+                  facts, working, previous, vectors, llm, existing_pairs):
     old_records = {record.ref.record_id: record for record in previous}
     old_facts = [domain(record) for record in previous]
     work = [WorkingMemory(id='wm_' + digest([data, item])[:24], content=item['content'],
@@ -108,27 +105,25 @@ def merge_records(context, config, embedder, model, data, session_id, now,
                           event_time=origin['event_time'], created_at=now, expires_at=expires,
                           metadata=dict(provenance=item['source_ids'], assertion_kind=item['assertion_kind'],
                                         episode_id=origin['id'])) for item, origin, expires in working]
-    semantic_subjects = {fact.subject.strip().lower() for fact in facts if is_single_valued(fact.predicate)}
+    semantic_subjects = {fact.subject.strip().lower() for fact in facts}
     missing = [fact for fact in old_facts if not isinstance(embedder, HashingEmbedder)
-               and fact.subject.strip().lower() in semantic_subjects and is_single_valued(fact.predicate)
-               and fact.is_live() and fact.source != 'user' and fact.id not in vectors]
+               and fact.subject.strip().lower() in semantic_subjects
+               and not fact.review_pending and fact.id not in vectors]
     fresh = embed_texts(embedder, chain((fact.text for fact in facts), (item.content for item in work),
                                        (fact.text for fact in missing)))
     for fact in old_facts:
         fact.embedding = vectors.get(fact.id)
-        fact_store.upsert(fact.id, fact.embedding or [], fact)
     extra_vectors = []
     for fact in missing:
         fact.embedding = fresh[fact.text]
         record = old_records[fact.id]
         extra_vectors.append(EmbeddingWrite(record.ref, record.content_version, model, tuple(fact.embedding)))
 
-    stats = writer.empty_stats()
     for fact in facts:
         fact.embedding = fresh[fact.text]
-        writer._write_fact(fact, stats)
+    changed, conflicts, _ = plan_merge(facts, old_facts, llm, config, embedder, now, existing_pairs)
     writes, embeddings, links = [], extra_vectors, []
-    for value in chain(fact_store.values(), work):
+    for value in chain(changed, work):
         previous = old_records.get(value.id)
         vector = value.embedding if isinstance(value, Fact) else fresh[value.content]
         value.embedding = None
@@ -141,4 +136,5 @@ def merge_records(context, config, embedder, model, data, session_id, now,
         if write.ref.kind == FACT:
             links.extend(SourceLink(write.ref, RecordRef(context, SOURCE, source_id))
                          for source_id in value.provenance)
+    writes.extend(write_record(context, conflict) for conflict in conflicts)
     return writes, embeddings, links

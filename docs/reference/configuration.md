@@ -152,7 +152,7 @@ DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读
 | 热层与拒答 | max_hot_facts=10000、abstain_threshold=0.45 | 工作集容量和低证据回退 |
 | 整合 | salience_decay_per_day=0.02、access_boost=0.5 | 显著度更新 |
 | 工作记忆 | working_memory_ttl_seconds=86400 | 自动抽取工作记忆的墙钟存活秒数；到点由清扫移除，None 表示仅随会话清除（仅 Python Config 可设，无对应服务环境变量） |
-| 冲突 | conflict_sim_threshold=0.80；conflict_llm_escalation=False、conflict_detection=False | 规则与可选模型冲突处理 |
+| 冲突 | conflict_sim_threshold=0.80 | 使用语义向量召回同主体的跨槽位候选 |
 
 
 

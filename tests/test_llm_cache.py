@@ -101,12 +101,16 @@ def test_identity_registration_does_not_depend_on_extraction_order():
         "you can call me Evan": [{"subject":"user","predicate":"name","object":"Evan"}],
     }
     def complete(prompt, system):
+        if 'pair id' in system:
+            from tests.model_fixtures import adjudication_reply
+            return adjudication_reply(prompt)
         from mnemotrace.consolidate.planning import WINDOW_PREFIX
         data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
         content = data["pending"][0]["content"]
         if content == "I like coffee":
             time.sleep(0.01)
         return json.dumps({"facts": [{**item, 'text': f"{item['subject']} {item['predicate']} {item['object']}",
+            'category': '其他', 'sensitive': False, 'time_kind': 'current', 'effective_date': None,
             'assertion_kind': 'unspecified', 'source_ids': [data['pending'][0]['id']]}
             for item in outputs[content]], "working": [], "summaries": []})
     seen = []

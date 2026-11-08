@@ -110,54 +110,6 @@ def _supersede(old: Fact, new: Fact) -> None:
     new.supersedes = old.id
 
 
-def insert_dialogue_history(new: Fact, records: list[Fact]):
-    """Place a dated dialogue assertion among the complete slot history.
-
-    Return the records to persist, or None when ordinary reconciliation owns the
-    case. Equal values at different dates remain separate evidence intervals.
-    """
-    if new.source == 'user' or new.assertion_kind == 'unspecified' or new.valid_at is None or not is_single_valued(new.predicate):
-        return None
-    if new.is_user_knowledge and any(f.source == 'user' and f.slot == new.slot and f.is_live() for f in records):
-        return None
-    same = [f for f in records if f.slot == new.slot and f.assertion_kind == new.assertion_kind and f.source != 'user']
-    duplicate = next((f for f in same if f.valid_at == new.valid_at and _norm(f.object) == _norm(new.object)), None)
-    if duplicate:
-        duplicate.provenance = list(dict.fromkeys([*duplicate.provenance, *new.provenance]))
-        return 'duplicate', [duplicate]
-    dated = [f for f in same if f.valid_at is not None]
-    if not dated:
-        return None  # A new slot still needs ordinary cross-predicate reconciliation.
-    before = [f for f in dated if f.valid_at <= new.valid_at]
-    after = [f for f in dated if f.valid_at > new.valid_at]
-    predecessor = successor = None
-    if before:
-        stamp = max(f.valid_at for f in before)
-        tied = [f for f in before if f.valid_at == stamp]
-        referred = {f.supersedes for f in tied}
-        predecessor = next((f for f in tied if f.id not in referred), tied[-1])
-    if after:
-        stamp = min(f.valid_at for f in after)
-        tied = [f for f in after if f.valid_at == stamp]
-        ids = {f.id for f in tied}
-        successor = next((f for f in tied if f.supersedes not in ids), tied[0])
-    updated = [new]
-    new.supersedes = predecessor.id if predecessor else None
-    new.invalid_at = successor.valid_at if successor else None
-    new.expired_at = (new.expired_at or new.created_at) if successor else None
-    if predecessor:
-        predecessor.invalid_at = new.valid_at
-        predecessor.expired_at = predecessor.expired_at or new.created_at
-        updated.append(predecessor)
-    if successor:
-        successor.supersedes = new.id
-        updated.append(successor)
-    for unknown in (f for f in same if f.valid_at is None and f.is_live()):
-        unknown.expired_at, unknown.invalid_at = new.created_at, new.valid_at
-        updated.append(unknown)
-    return 'add', updated
-
-
 class ConflictResolver:
     """Deterministic slot and embedding rules; optional adjudication is a pipeline task."""
     def __init__(self, embedder: Optional[Embedder] = None, sim_threshold: float = 0.80) -> None:

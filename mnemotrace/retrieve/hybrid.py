@@ -7,7 +7,6 @@ import re
 from typing import Optional
 
 from ..config import Config
-from ..consolidate.conflict import is_single_valued
 from ..embed import Embedder
 from ..store import GraphStore, VectorStore
 from ..types import Fact
@@ -345,40 +344,6 @@ class HybridRetriever:
                         out.append(f)
         return out
 
-    def _current_slot_heads(self, facts: list[Fact]) -> list[Fact]:
-        """对单值(当前状态)槽位,只检索该槽位的 head。
-
-        冲突消解通常会在检索前把过期的槽位值失效化。这是读路径上的防御性守卫,针对部分后端或手动
-        导入产生的重复 live 数据。基数判定用 `is_single_valued`(与冲突消解同一个谓词分类器):任何
-        非累积谓词 —— works_at、lives_in、studies、salary、attends_yoga —— 每个槽位只有一个当前值,
-        因此同一槽位的两个 live fact 不得在融合中竞争。累积谓词(likes、owns、visited 等)是多值的,
-        豁免。
-        """
-        heads: dict[tuple[str, str, str], Fact] = {}
-        for fact in facts:
-            if not is_single_valued(fact.predicate):
-                continue
-            slot = (*fact.slot, fact.assertion_kind)
-            cur = heads.get(slot)
-            # 手动 fact 具有权威性;否则以最新且有效的观测作为 head。
-            if cur is None or (
-                fact.source == "user",
-                time_key(fact.valid_at),
-                fact.created_at,
-                fact.id,
-            ) > (
-                cur.source == "user",
-                time_key(cur.valid_at),
-                cur.created_at,
-                cur.id,
-            ):
-                heads[slot] = fact
-        return [
-            fact
-            for fact in facts
-            if not is_single_valued(fact.predicate) or heads.get((*fact.slot, fact.assertion_kind)) is fact
-        ]
-
     def retrieve(
         self, query: str, user_id: str, as_of: Optional[float] = None, top_k: Optional[int] = None
     ) -> tuple[list[tuple[Fact, float]], dict]:
@@ -392,7 +357,6 @@ class HybridRetriever:
             live = self._ann_candidates(query, user_id, as_of, qvec)
         else:
             live = [f for f in self.fact_store.values() if f.user_id == user_id and f.is_live(as_of)]
-        live = self._current_slot_heads(live)
         excluded = self.graph_exclusion_zone(query, user_id, as_of)
         if excluded:
             live = [f for f in live if not self._fact_touches_entities(f, excluded)]

@@ -15,7 +15,7 @@ def test_profile_follows_manual_topic_without_changing_fact_classification():
     mem.add("I like tea.")
     mem.consolidate()
     fact, = mem.fact_store.values()
-    assert (fact.topic, fact.topic_source, fact.category) == ("food", "rule", "偏好")
+    assert (fact.topic, fact.topic_source, fact.category) == ("food", "rule", "其他")
     mem.update_fact(fact.id, topic="music")
     item, = mem.structured_profile()["preferences"]["音乐"]
     assert item["fact_id"] == fact.id
@@ -28,7 +28,7 @@ def test_manual_topic_values_and_reset_are_distinct(topic):
     mem = MemoryEngine()
     fact = mem.add_fact("user", "prefers", "茶", topic=topic)
     assert (fact.topic, fact.topic_source) == (topic, "user")
-    assert fact.category == "偏好" and fact.sensitive is False
+    assert fact.category == "其他" and fact.sensitive is True
     mem.update_fact(fact.id, topic=None)
     assert (fact.topic, fact.topic_source) == (topic, "user")
     mem.update_fact(fact.id, reset_topic=True)

@@ -52,13 +52,8 @@ class Config:
     max_hot_facts: int = 10_000  # 热层事实数量上限；换出的事实保留在冷层
     salience_decay_per_day: float = 0.02  # 适用事实的显著度按有效时间指数衰减的日系数
     access_boost: float = 0.5  # 访问事实时增加的显著度
-    # 对符合其他条件的同一主体的不同槽位事实，语义相似度达到阈值时可触发替代。
-    # HashingEmbedder 不启用语义冲突路径，同槽位规则仍生效。
+    # Threshold for cross-slot candidate recall with a semantic embedder.
     conflict_sim_threshold: float = 0.80
-    # 有 LLM 时，可对相似度略低于阈值的候选调用模型判断是否替代。
-    conflict_llm_escalation: bool = False
-    # 有 LLM 时检测疑似冲突并交由用户确认，不自动应用。
-    conflict_detection: bool = False
 
     # 自动抽取产生的工作记忆（当前任务/意图/状态）的墙钟存活时长（秒），到点由清扫移除。
     # 设为 None 时沿用旧行为：仅随会话关闭/清除而消失，否则持续累积变旧。

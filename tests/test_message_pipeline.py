@@ -12,6 +12,9 @@ def message(mid, content='Synthetic item', role='user', event_time=100):
 
 
 def reply(prompt, system):
+    if 'pair id' in system:
+        from tests.model_fixtures import adjudication_reply
+        return adjudication_reply(prompt)
     data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
     if 'rules' not in data:
         return json.dumps(dict(facts=[], working=[]))
@@ -21,7 +24,7 @@ def reply(prompt, system):
         return json.dumps({'summaries': result['summaries']})
     for item in data['pending']:
         nature = 'user_statement' if item['role'] == 'user' else 'assistant_suggestion' if item['role'] == 'assistant' else 'unspecified'
-        result['facts'].append(dict(subject='user', predicate='owns', object=item['content'][:30],
+        result['facts'].append(dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='user', predicate='owns', object=item['content'][:30],
             text=item['content'][:30], assertion_kind=nature, source_ids=[item['id']]))
     return json.dumps(result)
 

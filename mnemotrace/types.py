@@ -66,6 +66,9 @@ class Fact:
     # 默认值供离线构造与写入后的分类使用；敏感 fact 可在共享/导出场景中脱敏。
     category: str = ""
     sensitive: bool = False
+    sensitive_override: bool = False
+    review_pending: bool = False
+    approved_at: Optional[float] = None
 
     # --- 有效时间（世界）---
     valid_at: Optional[float] = field(default_factory=now)
@@ -99,7 +102,7 @@ class Fact:
     @property
     def slot(self) -> tuple[str, str, str]:
         """(user, subject, predicate) 键。共享同一槽位的两个 fact 是候选冲突。"""
-        return (self.user_id, self.subject.lower(), self.predicate.lower())
+        return (self.user_id, self.subject.strip().lower(), self.predicate.strip().lower())
 
     @property
     def evidence_text(self) -> str:
@@ -109,12 +112,16 @@ class Fact:
     def is_user_knowledge(self) -> bool:
         return self.assertion_kind in {'unspecified', 'user_statement', 'user_confirmation'}
 
+    def is_published(self, known_at: Optional[float] = None) -> bool:
+        return not self.review_pending and (self.approved_at is None or
+                                            self.approved_at <= (now() if known_at is None else known_at))
+
     def is_live(self, as_of: Optional[float] = None) -> bool:
         """当该 fact 在 `as_of` 时刻既仍被认知、又在世界中有效时返回 True。"""
         t = now() if as_of is None else as_of
         believed = self.expired_at is None or self.expired_at > t
         valid = (self.valid_at is None or self.valid_at <= t) and (self.invalid_at is None or self.invalid_at > t)
-        return believed and valid
+        return self.is_published(t) and believed and valid
 
 
 @dataclass
