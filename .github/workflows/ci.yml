@@ -41,7 +41,7 @@ jobs:
             ${{ runner.os == 'Windows' && '--durations=20 --durations-min=1 --junitxml=.artifacts/ci/python-regressions.xml' || '' }}
       - name: Upload Windows Python regression report
         if: ${{ always() && runner.os == 'Windows' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-windows-${{ matrix.python-version }}
           path: .artifacts/ci/python-regressions.xml
@@ -98,7 +98,7 @@ jobs:
         env:
           MNEMOTRACE_TEST_POSTGRES_DSN: host=127.0.0.1 port=${{ job.services.postgres.ports['5432'] }} dbname=postgres user=postgres password=phase2-ci-only connect_timeout=5
         timeout-minutes: 10
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: postgres-linux-${{ matrix.python-version }}
@@ -170,7 +170,7 @@ jobs:
           if (Test-Path -LiteralPath "$dbData\postmaster.pid") {
             & "$env:PGROOT\bin\pg_ctl.exe" -D $dbData -m fast -w stop
           }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: postgres-windows-${{ matrix.python-version }}
