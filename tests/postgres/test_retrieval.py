@@ -107,9 +107,10 @@ def test_shared_alias_is_resolved_independently_of_candidate_budget(memory):
 
 
 def test_limited_candidates_can_rank_both_published_facts_in_a_slot(memory):
-    # Independently published assertions remain eligible for ranking.
+    # The salience shortlist should find Orbit while the other shortlists find Orion.
     manual = memory.add_fact('Ana', 'works_at', 'Orbit', valid_at=100)
-    shadow = Fact('Ana', 'works_at', 'Orion', user_id=memory.context.user_id, valid_at=200, source='extracted')
+    shadow = Fact('Ana', 'works_at', 'Orion', user_id=memory.context.user_id, valid_at=200,
+                  source='extracted', salience=0.5, id='fixture-retrieval-orion')
     write = memory._write(shadow)
     with memory.dao.read_snapshot() as view:
         snapshot = view.snapshot
