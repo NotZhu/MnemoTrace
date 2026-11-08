@@ -9,7 +9,7 @@ from .config import Config
 from .connectors.documents import document_inputs
 from .consolidate import is_single_valued, reinforce
 from .consolidate.facts import FactWriter
-from .consolidate.manual import apply_manual_edit, build_manual_fact
+from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual
 from .consolidate.policy import POLICY_DEFAULTS
 from .consolidate.summarizer import ProfileBuilder
 from .embed import Embedder, HashingEmbedder
@@ -139,8 +139,9 @@ class MemoryEngine:
             self.episodes_vec.upsert(ep.id, ep.embedding or [], ep)
             self.summary_vec.delete(ep.id)
 
-    def _all_facts(self) -> list[Fact]:
-        return self.fact_store.values() + self.cold_store.values()
+    def _all_facts(self, *, include_unpublished=False) -> list[Fact]:
+        facts = self.fact_store.values() + self.cold_store.values()
+        return facts if include_unpublished else [fact for fact in facts if fact.is_published()]
 
     def _upsert_fact(self, fact: Fact, *, tier: str = "existing") -> None:
         """把被修改的 fact 写回所属层，或强制提升到热层。
@@ -165,7 +166,7 @@ class MemoryEngine:
         """
         # 初始化事件写入器
         self.ingestor = Ingestor(self.episodes_doc, self.episodes_vec, self.embedder)
-        self.writer = FactWriter(self.fact_store, self.graph, self.embedder, self.config, extra_fact_stores=(self.cold_store,))
+        self.writer = FactWriter(self.fact_store, self.graph, self.embedder, self.config)
         self.retriever = HybridRetriever(self.fact_store, self.graph, self.embedder, self.config)
         self.cold_retriever = HybridRetriever(self.cold_store, self.graph, self.embedder, self.config)
         # 初始化多跳查询规划器
@@ -559,15 +560,21 @@ class MemoryEngine:
             ep_seen.add(row['id'])
 
         # --- facts：同时恢复 live 与被取代的行，保留 valid/transaction 时间 ---
-        fact_seen = {(f.subject, f.predicate, f.object, (round(f.valid_at, 1) if f.valid_at is not None else None), f.assertion_kind): f.id
-                     for f in self._all_facts() if f.user_id == user}
+        def fact_key(subject, predicate, obj, valid_at, assertion_kind, was_held):
+            return (subject, predicate, obj, round(valid_at, 1) if valid_at is not None else None,
+                    assertion_kind, was_held)
+
+        fact_seen = {fact_key(f.subject, f.predicate, f.object, f.valid_at, f.assertion_kind,
+                              f.review_pending or f.approved_at is not None): f.id
+                     for f in self._all_facts(include_unpublished=True) if f.user_id == user}
         id_map: dict[str, str] = {}  # 旧快照 id -> 新 id，用于重连取代链
         staged: list[tuple[Fact, str | None]] = []
         facts_skipped = 0
         for row in snapshot["facts"]:
             s, p, o = row["subject"], row["predicate"], row["object"]
             valid_at = row["valid_at"]
-            key = (s, p, o, (round(valid_at, 1) if valid_at is not None else None), row.get('assertion_kind', 'unspecified'))
+            key = fact_key(s, p, o, valid_at, row.get('assertion_kind', 'unspecified'),
+                           row.get('review_pending', False) or row.get('approved_at') is not None)
             if dedupe and key in fact_seen:
                 id_map[row["id"]] = fact_seen[key]
                 facts_skipped += 1
@@ -576,6 +583,8 @@ class MemoryEngine:
                      text=row.get("text", ""), source=row["source"],
                      assertion_kind=row.get("assertion_kind", "unspecified"), source_roles=row.get("source_roles", []),
                      category=row["category"], sensitive=row["sensitive"],
+                     sensitive_override=row.get("sensitive_override", False),
+                     review_pending=row.get("review_pending", False), approved_at=row.get("approved_at"),
                       topic=row["topic"], topic_source=row["topic_source"],
                      salience=row["salience"], confidence=row["confidence"],
                      valid_at=valid_at,
@@ -589,6 +598,14 @@ class MemoryEngine:
             id_map[row["id"]] = f.id
             staged.append((f, row["supersedes"]))
             fact_seen[key] = f.id
+        known_pairs = {item.pair_key for item in self.conflicts.values() if item.user_id == user}
+        restored_conflicts = []
+        for row in snapshot['conflicts']:
+            fields = {key: value for key, value in row.items() if key not in {'id', 'older', 'newer'}}
+            conflict = Conflict(id_map[row['older']], id_map[row['newer']], user_id=user, **fields)
+            if conflict.older != conflict.newer and conflict.pair_key not in known_pairs:
+                restored_conflicts.append(conflict)
+                known_pairs.add(conflict.pair_key)
         # 校验和向量准备全部成功后才写入；取代链也链接到去重命中的已有事实。
         for ep in prepared_episodes:
             self._sync_episode(ep)
@@ -599,6 +616,7 @@ class MemoryEngine:
             # ——图的时间线在往返中得以保留。
             self.writer.graph_builder.add_fact(f)
 
+        self.conflicts.update((conflict.id, conflict) for conflict in restored_conflicts)
         self._enforce_hot_limit()
         self._persona_cache.clear()
         return {"format": "mnemotrace", "facts_restored": len(staged), "facts_skipped": facts_skipped,
@@ -619,7 +637,7 @@ class MemoryEngine:
         from .consolidate.pipeline import PipelineTasks
         PipelineTasks(self, f.user_id).invalidate()
         live = [x for x in self._all_facts() if x.user_id == user and x.is_live()]
-        action, invalidated = self.writer.conflict.reconcile(f, live)
+        action, invalidated = reconcile_manual(f, live)
         for old in invalidated:
             self.writer.graph_builder.invalidate(old.id, f.created_at)
             self._upsert_fact(old, tier="hot")
@@ -635,12 +653,12 @@ class MemoryEngine:
                     category: Optional[str] = None, statement: Optional[str] = None,
                     topic: Optional[Topic] = None, reset_topic: bool = False) -> Optional[Fact]:
         """实际修改 fact 内容时标记为用户手写（因此自动抽取不会把它改回去）。
-        依据新内容重新分类 category/sensitivity；显式传入的 `sensitive`/`category` 覆盖自动结果
+        修改正文时默认标记敏感并沿用原分类；显式参数优先
         （用户的选择永远优先）。只修改元数据或回传未变的内容时，保留来源、有效状态与历史。"""
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
         f = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
-        if f is None:
+        if f is None or not f.is_published():
             return None
         edited = copy(f)
         claim_changed = apply_manual_edit(edited, subject, predicate, object, sensitive, category,
@@ -730,29 +748,18 @@ class MemoryEngine:
         user = user_id
         ents = {e.id: e for e in self.graph.entities.values() if e.user_id == user}
         relations = self.graph.relations()
-        live_relation_fact_ids = {
-            r.fact_id for r in relations
-            if r.invalid_at is None
-        }
+        at = now() if as_of is None else as_of
         needle = q.strip().lower()
         edges, touched = [], set()
         has_more = False
         for r in relations:
             if r.subject_id not in ents or r.object_id not in ents:
                 continue
-            live = (
-                r.invalid_at is None
-                if as_of is None
-                else (r.valid_at is not None and r.valid_at <= as_of) and (r.invalid_at is None or r.invalid_at > as_of)
-            )
-            if live_only and not live:
-                continue
-            if as_of is None and not live and r.fact_id in live_relation_fact_ids:
-                continue
-            if as_of is not None and not live:
-                continue
             fact = self.fact_store.get(r.fact_id) or self.cold_store.get(r.fact_id)
-            if fact is None:
+            if fact is None or not fact.is_published(at):
+                continue
+            live = fact.is_live(at)
+            if (live_only or as_of is not None) and not live:
                 continue
             if not include_sensitive and getattr(fact, "sensitive", False):
                 continue
@@ -877,67 +884,52 @@ class MemoryEngine:
 
     # --- 冲突检测 -> pending（LLM 检测出含糊的部分；由用户确认） ---
     def pending_conflicts(self, user_id: str = "default") -> list[Conflict]:
-        """等待用户裁决的疑似冲突（两条 fact 都必须仍然 live）。"""
-        user = user_id
+        """等待用户裁决的当前冲突及有效区间内的手动历史冲突。"""
+        from .consolidate.adjudication import conflict_is_reviewable
+
+        user, at = user_id, now()
         out = []
         for c in self.conflicts.values():
             if c.user_id != user or c.status != "pending":
                 continue
             a = self.fact_store.get(c.older) or self.cold_store.get(c.older)
             b = self.fact_store.get(c.newer) or self.cold_store.get(c.newer)
-            if a is not None and b is not None and a.is_live() and b.is_live():
+            if conflict_is_reviewable(a, b, at):
                 out.append(c)
             else:
                 c.status = "dismissed"  # 有一侧已变化 -> 不再是存活冲突
         return out
 
     def resolve_conflict(self, conflict_id: str, keep: str = "newer") -> bool:
-        """应用用户的裁决：keep='newer'|'older' 使另一方被取代；keep='both' 仅驳回。
-        这是唯一会作用于已检出冲突的路径——始终由用户驱动。"""
+        """Apply an explicit user decision to a pending conflict."""
+        if keep not in {'older', 'newer', 'both', 'dismiss'}:
+            raise ValueError('Invalid conflict resolution')
         c = self.conflicts.get(conflict_id)
-        if c is None:
+        if c is None or c.status != 'pending':
             return False
+        from .consolidate.adjudication import conflict_is_reviewable, resolve_facts
         from .consolidate.pipeline import PipelineTasks
+        facts = {key: self.fact_store.get(getattr(c, key)) or self.cold_store.get(getattr(c, key))
+                 for key in ('older', 'newer')}
+        at = now()
+        if keep != 'dismiss' and not conflict_is_reviewable(facts['older'], facts['newer'], at):
+            return False
         PipelineTasks(self, c.user_id).invalidate()
-        newer = self.fact_store.get(c.newer) or self.cold_store.get(c.newer)
-        older = self.fact_store.get(c.older) or self.cold_store.get(c.older)
-        if keep in ("newer", "older") and newer is not None and older is not None:
-            winner, loser = (newer, older) if keep == "newer" else (older, newer)
-            if loser.invalid_at is None:
-                loser.invalid_at = max((winner.valid_at, loser.valid_at), key=time_key)
-            loser.expired_at = now()
-            winner.supersedes = loser.id
-            self.writer.graph_builder.invalidate(loser.id, loser.expired_at)
-            self._upsert_fact(loser)
-            self._upsert_fact(winner)
-            self._persona_cache.clear()
-        c.status = "resolved"
+        history = ()
+        if keep in facts and facts[keep].review_pending:
+            history = (f for f in self._all_facts() if f.user_id == c.user_id)
+        for fact in resolve_facts(facts, keep, at, history):
+            self._upsert_fact(fact)
+            self.graph.delete_relations_for_fact(fact.id)
+            if fact.is_published():
+                self.writer.graph_builder.add_fact(fact)
+        self._persona_cache.clear()
+        c.status = 'dismissed' if keep == 'dismiss' else 'resolved'
         return True
 
     def dismiss_conflict(self, conflict_id: str) -> bool:
-        """不是冲突（两条都保留）——不会再被标记。"""
-        c = self.conflicts.get(conflict_id)
-        if c is None:
-            return False
-        c.status = "dismissed"
-        return True
+        return self.resolve_conflict(conflict_id, 'dismiss')
 
-    # --- 分类 + 敏感性（feature ⑤） ---
-    def _classify(self) -> None:
-        """给每条 fact 打粗粒度 category + 敏感标志（基于规则，幂等）。"""
-        from .consolidate.classify import classify_fact
-        for f in self.fact_store.values():
-            before = (f.category, f.sensitive)
-            classify_fact(f)
-            if (f.category, f.sensitive) != before:
-                self._upsert_fact(f)
-        for f in self.cold_store.values():
-            before = (f.category, f.sensitive)
-            classify_fact(f)
-            if (f.category, f.sensitive) != before:
-                self._upsert_fact(f)
-
-    # --- L2/L3 抽象（整合期间构建，为精简读取而存储） ---
     def summarize_episodes(self, episodes):
         """Explicit summary operation using the shared ledger and bounded runner."""
         from ._pipeline import execute_memory

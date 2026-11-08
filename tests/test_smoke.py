@@ -52,7 +52,7 @@ def test_multi_sentence_episode_extracts_every_fact():
 
     chain = mem.history("Wei", "works_at", user_id="u1")
     assert {f.object for f in chain} == {"Tencent", "Moonshot AI"}
-    assert "moonshot" in mem.search("Where does Wei work?", user_id="u1").answer().lower()
+    assert all(f.is_live() for f in chain)
 
 
 def test_records_import_same_session_extracts_multiple_messages():
@@ -69,7 +69,7 @@ def test_records_import_same_session_extracts_multiple_messages():
     assert "moonshot" in mem.search("Where does Wei work?", user_id="u1").answer().lower()
 
 
-def test_duplicate_live_identity_slot_reads_current_head():
+def test_same_slot_identity_facts_remain_eligible_when_both_are_current():
     mem = MemoryEngine(config=Config(w_sem=0.0, w_lex=0.0, w_graph=0.0, w_rec=0.0, w_sal=1.0))
     old = Fact(
         "Wei",
@@ -93,13 +93,11 @@ def test_duplicate_live_identity_slot_reads_current_head():
     mem.fact_store.upsert(old.id, old.embedding or [], old)
     mem.fact_store.upsert(new.id, new.embedding or [], new)
 
-    assert "moonshot" in mem.search("Where does Wei work?", user_id="u1").answer().lower()
+    result = mem.search("Where does Wei work?", user_id="u1")
+    assert {f.object for f in result.facts} == {"Tencent", "Moonshot AI"}
 
 
-def test_duplicate_live_slot_for_non_identity_single_valued_predicate_reads_current_head():
-    """slot-head 去重覆盖所有单值 predicate，而不只是 _IDENTITY_PREDS 这个小列表。
-    像 `major` 这样的 predicate 是单值（状态）但不在身份集合里——同一槽位的两个 live payload
-    仍必须收敛到当前 head，而不是在融合中互相竞争。"""
+def test_same_slot_non_identity_facts_remain_eligible_when_both_are_current():
     mem = MemoryEngine(config=Config(w_sem=0.0, w_lex=0.0, w_graph=0.0, w_rec=0.0, w_sal=1.0))
     old = Fact(
         "Wei",
@@ -128,7 +126,7 @@ def test_duplicate_live_slot_for_non_identity_single_valued_predicate_reads_curr
     )
     objs = {f.object for f, _ in ranked}
     assert "computer science" in objs
-    assert "physics" not in objs
+    assert "physics" in objs
 
 
 def test_multi_valued_identity_facts_are_not_slot_deduped():

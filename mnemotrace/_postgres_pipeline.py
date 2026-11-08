@@ -161,9 +161,9 @@ class PostgresPipeline:
 
     def _commit_core(self, conditions, settings, data, result, records, merged):
         context = conditions.snapshot.context
-        facts, working, new_settings, previous, vectors, now = merged
+        facts, working, new_settings, previous, vectors, now, existing_pairs = merged
         writes, embeddings, links = merge_records(context, self.config, self.embedder, self.model, data,
-                                                  conditions.snapshot.session_id, now, facts, working, previous, vectors)
+                                                  conditions.snapshot.session_id, now, facts, working, previous, vectors, self.llm, existing_pairs)
         by_id = {record.ref.record_id: record for record in records}
         completed = {record.ref.record_id for record in records if domain(record).consolidated}
         newly_completed = set()
@@ -243,7 +243,7 @@ class PostgresPipeline:
                                         snapshot.context, data, result, settings, self.config, now)
                                     history = view.merge_history({fact.subject.strip().lower() for fact in facts})
                                     vectors = view.fact_vectors(history, self.model, self.embedder.dim)
-                                    merged = facts, working, new_settings, history, vectors, now
+                                    merged = facts, working, new_settings, history, vectors, now, view.conflict_pairs(history)
                                 else:
                                     summary_base = view.summary_version(records[0].ref.record_id)
                 if row['kind'] == 'reembed':

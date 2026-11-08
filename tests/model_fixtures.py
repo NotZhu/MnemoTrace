@@ -43,8 +43,10 @@ def replay_window(prompt, system, invoke):
                     if key == 'working' and data['mode'] == 'historical':
                         continue
                     fields = ('subject', 'predicate', 'object', 'text') if key == 'facts' else ('content', 'kind')
-                    item = {k: item[k] for k in (*fields, 'topic') if k in item}
+                    item = {k: item[k] for k in (*fields, 'topic', 'category', 'sensitive', 'time_kind', 'effective_date') if k in item}
                     if key == 'facts':
+                        category = '工作' if item['predicate'] == 'works_at' else '其他'
+                        item = dict(category=category, sensitive=False, time_kind='current', effective_date=None) | item
                         item.setdefault('text', f"{item['subject']} {item['predicate']} {item['object']}")
                     item['assertion_kind'] = 'user_statement' if span['role'] == 'user' else 'assistant_suggestion' if span['role'] == 'assistant' else 'unspecified'
                 result[key].append({**item, 'source_ids': [span['id']]})
@@ -56,8 +58,24 @@ def replay_window(prompt, system, invoke):
     return json.dumps(result, ensure_ascii=False)
 
 
+def adjudication_reply(prompt):
+    """Fixed decisions for the legacy consumer fixtures; native tests specify verdicts."""
+    from mnemotrace.consolidate.conflict import is_single_valued
+
+    decisions = []
+    for pair in json.loads(prompt):
+        first, second = pair['first'], pair['second']
+        replaces = first['predicate'] == second['predicate'] and is_single_valued(first['predicate'])
+        reverses = ({first['predicate'], second['predicate']} in ({'likes', 'dislikes'}, {'loves', 'dislikes'})
+                    and first['object'] == second['object'])
+        decisions.append(dict(id=pair['id'], decision='replaces' if replaces or reverses else 'coexists'))
+    return json.dumps(dict(decisions=decisions))
+
+
 class RecordedLLM:
     def complete(self, prompt, system='', **kwargs):
+        if prompt.startswith('[') and system and 'pair id' in system:
+            return adjudication_reply(prompt)
         if window_input(prompt) is not None:
             return replay_window(prompt, system, self.complete)
         if '对话：\n' in prompt and '\n\nJSON 事实：' in prompt:
@@ -78,6 +96,8 @@ class FixtureProtocol:
         self.model = model
 
     def complete(self, prompt, **kwargs):
+        if prompt.startswith('[') and 'pair id' in (kwargs.get('system') or ''):
+            return adjudication_reply(prompt)
         if window_input(prompt) is not None:
             return replay_window(prompt, kwargs.get('system', ''), self.complete)
         raw = self.model.complete(prompt, **kwargs)
@@ -112,15 +132,15 @@ def seed_summaries(memory, episodes):
 
 def saved_outcome(mem, *, user_id, session_id, kind, statement, why='', provenance=()):
     """Seed the stored representation of a historical conclusion."""
-    from mnemotrace.consolidate.classify import classify_fact
     from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY
     from mnemotrace.types import Fact
 
     fact = Fact(subject=session_id, predicate=kind, object=statement, display=statement,
                 text=statement + (f' （依据：{why}）' if why else ''), user_id=user_id,
                 provenance=list(provenance))
-    classify_fact(fact)
     fact.category = OUTCOME_CATEGORY
+    fact.sensitive = bool(why)
     fact.embedding = mem.embedder.embed(fact.text)
-    mem.writer._write_fact(fact, mem.writer.empty_stats())
+    mem._upsert_fact(fact)
+    mem.writer.graph_builder.add_fact(fact)
     return fact

@@ -10,7 +10,8 @@ from .database import DatabaseConfig, database_errors, driver
 from .errors import DatabaseConfigurationError, SchemaMismatch
 
 MIGRATIONS = ('001_initial.sql', '002_security.sql', '003_record_commits.sql',
-              '004_processing.sql', '005_retrieval.sql', '006_backup_constraints.sql')
+              '004_processing.sql', '005_retrieval.sql', '006_backup_constraints.sql',
+              '007_fact_review.sql')
 
 
 def _roles(prefix):

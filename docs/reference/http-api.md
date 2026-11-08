@@ -138,7 +138,7 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 `consolidate=true` 等待核心提交，`consolidate=false` 保存原文。PDF/DOCX 依赖 documents extra，
 图片描述依赖视觉模型。批量导入的 `results` 包含已接受的数据及持久化回执，`failures` 标记失败会话。
 批次部分失败时 HTTP 返回 200，响应中的 `ok` 为 false。无法解析出会话 ID 时，使用从 0 开始的 `session_index` 指明输入位置。
-默认导出省略敏感事实及原文，显式设置 `include_sensitive=true` 获取私有导出。
+默认导出省略敏感事实及原文，显式设置 `include_sensitive=true` 获取私有导出，其中 `conflicts` 引用同一快照内的事实编号。
 
 ## OpenAI 兼容聊天
 

@@ -106,8 +106,8 @@ def test_shared_alias_is_resolved_independently_of_candidate_budget(memory):
         assert graph.get_entity(memory.context.user_id, 'Shared').id == orbit.id
 
 
-def test_limited_candidates_keep_manual_slot_head_and_bm25_excludes_shadow(memory):
-    # Record-level imports can leave two current assertions in one slot.
+def test_limited_candidates_can_rank_both_published_facts_in_a_slot(memory):
+    # Independently published assertions remain eligible for ranking.
     manual = memory.add_fact('Ana', 'works_at', 'Orbit', valid_at=100)
     shadow = Fact('Ana', 'works_at', 'Orion', user_id=memory.context.user_id, valid_at=200, source='extracted')
     write = memory._write(shadow)
@@ -118,11 +118,12 @@ def test_limited_candidates_keep_manual_slot_head_and_bm25_excludes_shadow(memor
     query = memory._query(shadow.text, top_k=1, facts=FactQuery(limit=1))
     with memory.dao.read_snapshot() as view:
         batch = view.candidates(query)
-        assert [item.record.ref.record_id for item in batch.candidates] == [manual.id]
+        assert {item.record.ref.record_id for item in batch.candidates} == {manual.id, shadow.id}
         corpus = Corpus(view, query, RecordKind.FACT)
-        assert tuple(corpus.vector_scores()) == (manual.id,)
-        expected = bm25_scores(query.text, [(manual.id, f'{manual.text} {date_terms(manual.valid_at)}')])
-        assert corpus.lexical_scores() == pytest.approx(expected)
+        assert tuple(corpus.vector_scores()) == (shadow.id,)
+        expected = bm25_scores(query.text, [(item.id, f'{item.text} {date_terms(item.valid_at)}')
+                                            for item in (manual, shadow)])
+        assert corpus.lexical_scores() == pytest.approx({shadow.id: expected[shadow.id]})
 
 
 def test_vector_and_scalar_budgets_exclude_graph_matches_before_cutoff(memory):

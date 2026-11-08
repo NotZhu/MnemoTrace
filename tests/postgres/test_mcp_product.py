@@ -156,7 +156,7 @@ async def test_session_report_tool_audits_saved_facts(local_backend):
 
 @pytest.mark.asyncio
 async def test_add_fact_list_and_profile(local_backend):
-    await call("mnemotrace_add_fact", predicate="works_at", object="Moonshot AI")
+    await call("mnemotrace_add_fact", predicate="works_at", object="Moonshot AI", sensitive=False)
     facts = await call("mnemotrace_list_facts")
     assert "Moonshot AI" in facts and "🔒" in facts  # 用户断言的事实 -> 上锁标记
     assert re.search(r"`ft_[^`]+`", facts)
@@ -166,7 +166,7 @@ async def test_add_fact_list_and_profile(local_backend):
 
 @pytest.mark.asyncio
 async def test_update_and_delete_fact_tools(local_backend):
-    await call("mnemotrace_add_fact", predicate="works_at", object="ByteDance")
+    await call("mnemotrace_add_fact", predicate="works_at", object="ByteDance", sensitive=False)
     raw = await call("mnemotrace_list_facts", response_format="json")
     fid = json.loads(raw)["facts"][0]["id"]
 
@@ -362,7 +362,7 @@ async def test_recall_and_search_support_as_of(local_backend):
 @pytest.mark.asyncio
 async def test_recall_and_search_support_sensitive_redaction(local_backend):
     await call("mnemotrace_add_fact", predicate="has_disease", object="diabetes")
-    await call("mnemotrace_add_fact", predicate="works_at", object="Acme")
+    await call("mnemotrace_add_fact", predicate="works_at", object="Acme", sensitive=False)
 
     ctx = await call(
         "mnemotrace_recall",

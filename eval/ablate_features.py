@@ -176,7 +176,7 @@ def _preference_object_filter_context(enabled: bool) -> str:
     )
     mem.consolidate()
     profile = mem.structured_profile("u1")
-    facts = [f.text for f in mem.fact_store.values() if f.user_id == "u1" and f.is_live()]
+    facts = sorted(f.text for f in mem.fact_store.values() if f.user_id == "u1" and f.is_live())
     ctx = mem.lean_context(
         "What food or place preferences should you remember?",
         user_id="u1",
@@ -198,7 +198,7 @@ def _preference_object_normalization_context(enabled: bool) -> str:
     )
     mem.consolidate()
     profile = mem.structured_profile("u1")
-    facts = [f.text for f in mem.fact_store.values() if f.user_id == "u1" and f.is_live()]
+    facts = sorted(f.text for f in mem.fact_store.values() if f.user_id == "u1" and f.is_live())
     ctx = mem.lean_context(
         "What food preferences should you remember?",
         user_id="u1",

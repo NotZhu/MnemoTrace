@@ -27,6 +27,10 @@ class FakeLLM(NativeFakeLLM):
                 row.setdefault('source_ids', [data['pending'][0]['id']])
                 row.setdefault('assertion_kind', 'unspecified' if data['source_kind'] != 'dialogue' else 'user_statement')
                 if group == 'facts' and all(k in row for k in ('subject', 'predicate', 'object')):
+                    row.setdefault('category', '其他')
+                    row.setdefault('sensitive', False)
+                    row.setdefault('time_kind', 'current')
+                    row.setdefault('effective_date', None)
                     row.setdefault('text', f"{row['subject']} {row['predicate']} {row['object']}")
         out['summaries'] = []
         return Completion(json.dumps(out), completion.finish_reason, completion.usage)

@@ -153,6 +153,7 @@ _FACT = {
     "text": _string, "display": _string, "user_id": _identifier, "embedding": _VECTOR,
     "salience": _number, "confidence": _number, "source": _SOURCE,
     "category": _string, "sensitive": _boolean, "valid_at": _TIME_OR_NULL,
+    "sensitive_override": _boolean, "review_pending": _boolean, "approved_at": _TIME_OR_NULL,
     "assertion_kind": _choice("unspecified", "user_statement", "assistant_suggestion", "user_confirmation", "assistant_report"),
     "source_roles": _list(_choice("user", "assistant")),
     "topic": _choice(*TOPICS), "topic_source": _choice(*TOPIC_SOURCES),
@@ -211,6 +212,8 @@ def validate_record(kind: str, record: Any, path: str, *,
             _fail(path, 'legacy processing metadata is unsupported; task migration is not provided')
     if kind == "Fact":
         _validate_topic_pair(result, path)
+        if result["review_pending"] and result["approved_at"] is not None:
+            _fail(path, "pending fact cannot have an approval time")
     if embedding_dim is not None:
         for key in ("embedding", "summary_embedding"):
             if result.get(key) is not None:
@@ -230,13 +233,16 @@ _IMPORT_FACT = {key: _FACT[key] for key in (
     "id", "subject", "predicate", "object", "text", "source", "category", "sensitive",
     "topic", "topic_source",
     "salience", "confidence", "valid_at", "invalid_at", "created_at", "expired_at",
-    "supersedes", "provenance", "assertion_kind", "source_roles",
+    "supersedes", "provenance", "assertion_kind", "source_roles", "sensitive_override", "review_pending", "approved_at",
 )}
 _IMPORT_FACT.update(status=_choice("live", "superseded"), valid_at_h=_string,
                     invalid_at_h=_nullable(_string))
 _IMPORT_EPISODE = {key: _EPISODE[key] for key in (
     "id", "content", "session_id", "role", "event_time", "summary", "coverage", "summary_coverage",
 )}
+
+
+_IMPORT_CONFLICT = {key: value for key, value in _RECORDS["Conflict"].items() if key != "user_id"}
 
 
 def is_snapshot_candidate(value: Any) -> bool:
@@ -250,9 +256,10 @@ def validate_snapshot(snapshot: Any) -> dict:
         if key not in snapshot:
             _fail(f"snapshot.{key}", "missing required field")
     result = {}
-    for name, spec, optional in (("facts", _IMPORT_FACT, ("text", "status", "valid_at_h", "invalid_at_h", "assertion_kind", "source_roles")),
-                                 ("episodes", _IMPORT_EPISODE, ("summary", "coverage", "summary_coverage"))):
-        rows = snapshot[name]
+    for name, spec, optional in (("facts", _IMPORT_FACT, ("text", "status", "valid_at_h", "invalid_at_h", "assertion_kind", "source_roles", "sensitive_override", "review_pending", "approved_at")),
+                                 ("episodes", _IMPORT_EPISODE, ("summary", "coverage", "summary_coverage")),
+                                 ("conflicts", _IMPORT_CONFLICT, ())):
+        rows = snapshot.get(name, [])
         if not isinstance(rows, list):
             _fail(f"snapshot.{name}", "must be a list")
         result[name] = [_fields(row, spec, f"snapshot.{name}[{i}]", optional)
@@ -260,9 +267,23 @@ def validate_snapshot(snapshot: Any) -> dict:
         if name == "facts":
             for i, row in enumerate(result[name]):
                 _validate_topic_pair(row, f"snapshot.facts[{i}]")
+                if row.get("review_pending") and row.get("approved_at") is not None:
+                    _fail(f"snapshot.facts[{i}]", "pending fact cannot have an approval time")
         seen = set()
         for i, row in enumerate(result[name]):
             if row["id"] in seen:
                 _fail(f"snapshot.{name}[{i}].id", "duplicate source identifier")
             seen.add(row["id"])
+    fact_ids = {row["id"] for row in result["facts"]}
+    paired = set()
+    pairs = set()
+    for i, row in enumerate(result["conflicts"]):
+        pair = frozenset((row["older"], row["newer"]))
+        if len(pair) != 2 or not pair <= fact_ids or pair in pairs:
+            _fail(f"snapshot.conflicts[{i}]", "invalid or duplicate fact pair")
+        pairs.add(pair)
+        paired.update(pair)
+    for i, row in enumerate(result["facts"]):
+        if row.get("review_pending") and row["id"] not in paired:
+            _fail(f"snapshot.facts[{i}]", "pending fact has no conflict")
     return result

@@ -16,7 +16,7 @@ TABLES = dict(zip(RecordKind, (
 ), strict=True))
 TARGET_COLUMNS = {SOURCE: 'source_id', FACT: 'fact_id', WORKING: 'working_id', ENTITY: 'entity_id'}
 TIMES = frozenset(('event_time', 'ingested_at', 'created_at', 'valid_at', 'invalid_at',
-                   'expired_at', 'last_access', 'expires_at', 'detected_at'))
+                   'expired_at', 'approved_at', 'last_access', 'expires_at', 'detected_at'))
 SCOPE = 'user_id = %s AND space_id = %s'
 ROW_SCOPE = 'r.user_id = %s AND r.space_id = %s'
 JSON_COLUMNS = {'metadata', 'coverage', 'summary_coverage', 'settings', 'stats',

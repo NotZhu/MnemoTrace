@@ -3,8 +3,7 @@ from ..localize import display_of
 from ..topics import validate_topic
 from ..types import Fact
 from ..util import now
-from .classify import classify, classify_fact
-from .outcomes import OUTCOME_CATEGORY, OUTCOME_PREDICATES, split_outcome_text
+from .outcomes import OUTCOME_PREDICATES, split_outcome_text
 from .topic_rules import resolve_topic
 
 
@@ -15,15 +14,12 @@ class InvalidFactEditError(ValueError):
 def build_manual_fact(subject, predicate, object_, user_id, valid_at, sensitive, category, topic):
     fact = Fact(subject=subject, predicate=predicate, object=object_, user_id=user_id, source='user',
                 valid_at=valid_at if valid_at is not None else now(),
+                category='其他' if category is None else category, sensitive=True if sensitive is None else sensitive,
+                sensitive_override=sensitive is not None,
                 topic=topic if topic is not None else 'unknown',
                 topic_source='user' if topic is not None else 'unset')
     if topic is None:
         fact.topic, fact.topic_source = resolve_topic(predicate, object_)
-    classify_fact(fact)
-    if category is not None:
-        fact.category = category
-    if sensitive is not None:
-        fact.sensitive = sensitive
     return fact
 
 
@@ -57,6 +53,7 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
         # 表单会回传未变的内容字段；隐私/分类修改不代表用户断言正文，也不应撤销替代历史。
         if sensitive is not None:
             f.sensitive = sensitive
+            f.sensitive_override = True
         if category is not None:
             f.category = category
         if topic is not None:
@@ -100,16 +97,10 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
     f.source = "user"
     f.invalid_at = None  # 用户编辑使其重新生效
     f.expired_at = None
-    # 依据编辑后的内容重新分类，再应用显式的用户覆盖
-    f.category, f.sensitive = classify(f.predicate, f.object, f.text)
-    # 结论被纠正后仍是结论。classify() 只认识属性类目，缺了这一步，一次编辑就会把 fact
-    # 悄悄降级出 Journal。
-    if f.predicate.lower() in OUTCOME_PREDICATES:
-        f.category = OUTCOME_CATEGORY
     if category is not None:
         f.category = category
-    if sensitive is not None:
-        f.sensitive = sensitive
+    f.sensitive = True if sensitive is None else sensitive
+    f.sensitive_override = sensitive is not None
     # 内容变化使原主题失去依据；同次编辑明确指定的新主题优先。
     if topic is not None:
         f.topic, f.topic_source = topic, "user"
@@ -117,3 +108,24 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
         why = split_outcome_text(f.text)[1] if f.predicate.lower() in OUTCOME_PREDICATES else ""
         f.topic, f.topic_source = resolve_topic(f.predicate, f"{f.object} {why}")
     return True
+
+
+def reconcile_manual(new, current):
+    """Explicit edits can replace a single value in the same slot."""
+    from .conflict import is_single_valued
+    from ..util import time_key
+
+    same_slot = [old for old in current if old.slot == new.slot and old.is_user_knowledge]
+    if any(old.object.strip().casefold() == new.object.strip().casefold() for old in same_slot):
+        return 'duplicate', []
+    if not is_single_valued(new.predicate):
+        return 'add', []
+    invalidated = [old for old in same_slot if new.valid_at is not None
+                   and (old.valid_at is None or old.valid_at <= new.valid_at)]
+    for old in invalidated:
+        old.invalid_at = new.valid_at
+        if new.valid_at <= new.created_at:
+            old.expired_at = new.created_at
+    if invalidated:
+        new.supersedes = max(invalidated, key=lambda old: (time_key(old.valid_at), old.created_at, old.id)).id
+    return 'add', invalidated

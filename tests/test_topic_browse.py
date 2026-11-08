@@ -15,7 +15,7 @@ from mnemotrace.types import Fact
 ])
 def test_profile_consumes_stored_topic_even_when_relation_and_object_disagree(topic, group):
     mem = MemoryEngine()
-    fact = mem.add_fact("user", "favorite_music", "茶", topic=topic)
+    fact = mem.add_fact("user", "favorite_music", "茶", topic=topic, category="偏好")
     before = asdict(fact)
     item, = mem.structured_profile()["preferences"][group]
     assert (item["topic"], item["topic_source"], item["category"]) == (topic, "user", group)

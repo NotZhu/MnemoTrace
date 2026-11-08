@@ -64,30 +64,19 @@ def test_restore_binds_coverage_and_summary_parts_to_the_committed_source(mutati
         validate_state(state, mem.episodes_doc.values(), mem.embedder.dim)
 
 
-@pytest.mark.parametrize('other_nature,expected_calls', [('assistant_suggestion', 1), ('user_statement', 2)])
-def test_optional_conflict_checks_are_ledgered_and_cannot_cross_assertion_nature(other_nature, expected_calls):
-    from mnemotrace.types import Fact
-    def model(prompt, system):
-        if WINDOW_PREFIX in prompt:
-            return respond(prompt, system)
-        data = json.loads(prompt)
-        pair = data['candidates'][0]
-        return json.dumps({'decisions': [dict(older=pair['older']['id'], newer=pair['newer']['id'],
-            decision='replaces', reason='synthetic same-slot update')]})
-    llm = FakeLLM(handler=model)
-    mem = MemoryEngine(llm=llm, config=Config(conflict_llm_escalation=True))
-    older = Fact('u', 'lives_in', 'City', user_id='u', valid_at=100, assertion_kind='user_statement')
-    newer = Fact('u', 'based_in', 'City', user_id='u', valid_at=200, assertion_kind=other_nature)
-    for fact in (older, newer):
-        fact.embedding = mem.embedder.embed(fact.text)
-        mem.fact_store.upsert(fact.id, fact.embedding, fact)
-    ep = mem.add('Synthetic evidence', user_id='u')
-    mem.consolidate([ep])
-    assert len(llm.calls) == expected_calls
-    assert (mem.fact_store.get(older.id).invalid_at is not None) == (expected_calls == 2)
-    windows = PipelineTasks(mem, 'u').state['windows'].values()
-    assert sum(w['operation'] == 'conflicts' for w in windows) == expected_calls - 1
-    assert all(w['attempts'] == 1 for w in windows)
+def test_adjudication_is_ledgered_before_core_commit():
+    from tests.test_fact_adjudication import model_response
+
+    llm = FakeLLM(handler=model_response)
+    mem = MemoryEngine(llm=llm)
+    mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False)
+    mem.add('Oslo', event_time=20, consolidate=True)
+    win, = PipelineTasks(mem, 'default').state['windows'].values()
+    assert len(llm.calls) == win['stats']['model_calls'] == 2
+    assert [entry['stage'] for entry in win['history'] if not entry['stage'].startswith('reset')] == [
+        'generate', 'embed', 'adjudicate']
+    assert win['state'] == 'completed' and win['core_saved']
+    validate_state(mem._pipeline_state, mem.episodes_doc.values(), mem.embedder.dim)
 
 
 def test_explicit_dialogue_summary_has_its_own_cropped_proof():
@@ -125,9 +114,9 @@ def test_third_party_name_never_becomes_the_owner_identity(kind):
         data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX)[1])[0]
         nature = 'unspecified' if kind == 'raw' else 'user_statement'
         source_id = data['pending'][0]['id']
-        return json.dumps(dict(facts=[dict(subject='friend', predicate='name', object='Alice',
+        return json.dumps(dict(facts=[dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='friend', predicate='name', object='Alice',
             text='The friend is Alice', assertion_kind=nature, source_ids=[source_id]),
-            dict(subject='user', predicate='owns', object='bicycle', text='I own a bicycle',
+            dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='user', predicate='owns', object='bicycle', text='I own a bicycle',
                  assertion_kind=nature, source_ids=[source_id])], working=[], summaries=[]))
     mem = MemoryEngine(llm=FakeLLM(handler=names))
     if kind == 'raw':

@@ -11,6 +11,7 @@ from mnemotrace._pipeline import run_one
 from mnemotrace.consolidate.pipeline import PipelineTasks, validate_state
 from mnemotrace.llm import FakeLLM
 from tests.test_message_pipeline import message, reply
+from tests.test_fact_adjudication import decisions
 
 
 def test_native_concurrent_receive_is_ordered_and_isolated():
@@ -44,7 +45,7 @@ def test_native_model_allows_append_and_close_prevents_late_commit():
 def test_source_time_comes_from_matching_role():
     def respond(prompt, system):
         data = json.loads(prompt.split('MNEMOTRACE_WINDOW\n', 1)[1])
-        return json.dumps(dict(facts=[dict(subject='user', predicate='lives_in', object='Synthetic city',
+        return json.dumps(dict(facts=[dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='user', predicate='lives_in', object='Synthetic city',
             text='Synthetic city', assertion_kind='user_statement', source_ids=[s['id'] for s in data['pending']])],
             working=[], summaries=[]))
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
@@ -118,6 +119,8 @@ def test_native_missing_model_fails_without_waiting_for_retry():
 
 def test_late_unknown_and_older_history_cannot_replace_newer_source():
     def respond(prompt, system):
+        if 'pair id' in system:
+            return decisions(prompt)
         result = json.loads(reply(prompt, system))
         for fact in result['facts']:
             fact['predicate'] = 'lives_in'
@@ -127,7 +130,7 @@ def test_late_unknown_and_older_history_cannot_replace_newer_source():
         mem.remember_messages([message(mid, mid, event_time=stamp)], 's', 'u', mode=mode)
         assert mem.flush_messages('u')['ok']
     latest = [f.object for f in mem.fact_store.values() if f.is_live()]
-    assert latest == ['new']
+    assert set(latest) == {'new', 'unknown'}
 
 
 @pytest.mark.parametrize('arrivals,expected', [
@@ -136,6 +139,8 @@ def test_late_unknown_and_older_history_cannot_replace_newer_source():
 ])
 def test_out_of_order_history_has_disjoint_intervals_and_a_complete_chain(arrivals, expected):
     def respond(prompt, system):
+        if 'pair id' in system:
+            return decisions(prompt)
         result = json.loads(reply(prompt, system))
         for fact in result['facts']:
             fact['predicate'] = 'lives_in'
@@ -152,20 +157,10 @@ def test_out_of_order_history_has_disjoint_intervals_and_a_complete_chain(arriva
     assert all((relations[f.id].valid_at, relations[f.id].invalid_at) == (f.valid_at, f.invalid_at) for f in facts)
 
 
-def test_new_dialogue_slot_keeps_semantic_reconciliation():
-    from mnemotrace.consolidate.conflict import ConflictResolver
-    from mnemotrace.types import Fact
-    mem = MemoryEngine()
-    mem.writer.conflict = ConflictResolver(embedder=object(), sim_threshold=.8)
-    for predicate, value, stamp in [('attends_yoga', 'twice weekly', 100), ('does_yoga', 'three times weekly', 200)]:
-        fact = Fact(subject='user', predicate=predicate, object=value, user_id='u', valid_at=stamp,
-                    created_at=stamp, embedding=[1., 0.], assertion_kind='user_statement', source_roles=['user'])
-        mem.writer._write_fact(fact, mem.writer.empty_stats())
-    assert [f.object for f in mem.fact_store.values() if f.is_live()] == ['three times weekly']
-
-
-def test_equal_time_facts_commit_in_source_sequence_not_model_order():
+def test_equal_time_facts_do_not_retire_each_other_in_model_order():
     def respond(prompt, system):
+        if 'pair id' in system:
+            return decisions(prompt)
         result = json.loads(reply(prompt, system))
         for fact in result['facts']:
             fact['predicate'] = 'lives_in'
@@ -174,7 +169,8 @@ def test_equal_time_facts_commit_in_source_sequence_not_model_order():
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
     mem.remember_messages([message('a', 'old', event_time=100), message('b', 'new', event_time=100)], 's', 'u')
     assert mem.flush_messages('u')['ok']
-    assert [f.object for f in mem.fact_store.values() if f.is_live()] == ['new']
+    assert {f.object for f in mem.fact_store.values() if f.is_live()} == {'new', 'old'}
+    assert len(mem.pending_conflicts('u')) == 1
 
 
 def test_cached_model_configuration_identity_tracks_the_inner_provider(tmp_path):

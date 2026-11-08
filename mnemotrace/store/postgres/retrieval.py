@@ -1,8 +1,5 @@
 """Scoped PostgreSQL queries for retrieval signals and coverage."""
-import re
-
 from ...config import Config
-from ...consolidate.conflict import MULTI_VALUED, is_single_valued
 from ...retrieve.hybrid import HybridRetriever
 from ...retrieve.lexical import BM25_B, BM25_K1
 from ...util import recency, stems, time_key
@@ -11,7 +8,6 @@ from .graph_reads import RetrievalGraph
 from .lexical import ANALYZER
 from .records import FACT, ROW_SCOPE, SOURCE, TARGET_COLUMNS, domain, source_summary_join, timestamp
 
-_MULTI_PREDICATE = '^(?:' + '|'.join(re.escape(value) for value in sorted(MULTI_VALUED)) + ')(?:_|$)'
 _TRACK_BOOST = 0.5
 
 
@@ -64,16 +60,6 @@ class Corpus:
             return f'WITH eligible AS ({scoped})', params
         statement = f'WITH fact_scope AS ({scoped})'
         eligible = 'fact_scope'
-        if self.query.facts.state == FactState.CURRENT:
-            statement += """, heads AS (
-                SELECT * FROM (SELECT *, row_number() OVER (
-                    PARTITION BY subject_key,predicate_key,assertion_kind
-                    ORDER BY (source = 'user') DESC,valid_at DESC NULLS LAST,created_at DESC,id DESC) AS slot_rank
-                    FROM fact_scope) ranked
-                WHERE slot_rank = 1 OR predicate_key ~ %s
-            )"""
-            eligible = 'heads'
-            params = (*params, _MULTI_PREDICATE)
         if not excluded:
             return statement + f', eligible AS (SELECT * FROM {eligible})', params
         statement += f""", eligible AS (
@@ -255,13 +241,6 @@ def fact_candidates(view, query, config=None, graph=None):
                 frontier = set(sorted(frontier)[:query.facts.limit])
     records = {record.ref.record_id: record for record in view.facts_by_ids(sorted(ids), query.facts)}
     facts = list(map(domain, records.values()))
-    # A cropped signal pool cannot decide the head of a current single-value slot.
-    if query.facts.state == FactState.CURRENT:
-        slots = {(fact.subject.lower(), fact.predicate.lower()) for fact in facts
-                 if is_single_valued(fact.predicate)}
-        for record in view.slot_facts(slots, query.facts):
-            records.setdefault(record.ref.record_id, record)
-        facts = retriever._current_slot_heads(list(map(domain, records.values())))
     if excluded:
         facts = [fact for fact in facts if not retriever._fact_touches_entities(fact, excluded)]
     graph_scores, _ = retriever._graph_scores(query.text, account, facts, None)

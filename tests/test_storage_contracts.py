@@ -36,7 +36,7 @@ def product():
                               message_id='message-1', sequence=1, event_time=100, representation='raw',
                               representation_source=None, source='a' * 64, source_length=len(text),
                               ranges=[[0, len(text)]], partial=False)])
-    result = dict(facts=[dict(subject='Ana', predicate='works_at', object='Orbit', text='Ana works at Orbit',
+    result = dict(facts=[dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='Ana', predicate='works_at', object='Orbit', text='Ana works at Orbit',
                              display='Ana works at Orbit', subject_input='I', assertion_kind='user_statement',
                              source_ids=['source-1'])], working=[], summaries={})
     return ExtractionProduct(CONDITIONS, json.dumps(data), json.dumps(result),

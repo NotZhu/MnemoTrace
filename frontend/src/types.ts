@@ -38,8 +38,8 @@ export interface Conflict {
   id: string
   older: string
   newer: string
-  older_text: string
-  newer_text: string
+  text_older: string
+  text_newer: string
   reason: string
 }
 

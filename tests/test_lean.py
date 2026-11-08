@@ -2127,7 +2127,7 @@ def test_graph_data_as_of_excludes_future_relations():
 def test_graph_data_can_exclude_sensitive_fact_edges():
     mem = MemoryEngine()
     mem.add_fact("user", "has_disease", "diabetes", user_id="u1")
-    mem.add_fact("user", "works_at", "Acme", user_id="u1")
+    mem.add_fact("user", "works_at", "Acme", user_id="u1", sensitive=False)
 
     full = mem.graph_data("u1")
     assert "diabetes" in str(full).lower()
@@ -2254,28 +2254,6 @@ def test_working_memory_is_ephemeral_and_never_enters_long_term():
     assert [w.kind for w in m.working_memory("u", session_id="s1", as_of=later)] == ["state"]
     assert m.clear_session("u", "s1") == 1 and m.working_memory("u", session_id="s1") == []
 
-def test_classification_and_sensitivity_redaction_preserves_recall():
-    """特性⑤：fact 由规则得到类别 + 敏感标志；敏感 fact 可在共享/导出 context 中被脱敏 ——
-    同时在 store 中完整保留（召回和本人视图均不受影响）。"""
-    from mnemotrace.consolidate.classify import classify
-    assert classify("has_disease", "diabetes", "user has_disease diabetes") == ("健康", True)
-    assert classify("salary", "25000", "user salary 25000")[1] is True
-    assert classify("works_at", "Acme", "user works_at Acme") == ("工作", False)
-    assert classify("id_number", "310101199001011234", "x")[1] is True  # 连续数字 PII
-
-    m = MemoryEngine()
-    m.add_fact("user", "has_disease", "diabetes", user_id="u")  # 敏感
-    m.add_fact("user", "works_at", "Acme", user_id="u")          # 非敏感
-    sensitive_fact = next(f for f in m.fact_store.values() if f.object == "diabetes")
-    assert sensitive_fact.sensitive and sensitive_fact.category == "健康"
-
-    redacted = m.lean_context("about me", user_id="u", n_chunks=0, redact_sensitive=True)
-    assert "diabetes" not in redacted.lower(), "sensitive fact must be redacted from a shared context"
-    assert "acme" in redacted.lower(), "non-sensitive facts stay"
-    # 召回不变量：脱敏是视图过滤而非删除 —— fact 仍在存储中且 live
-    assert any(f.object == "diabetes" for f in m.fact_store.values() if f.is_live())
-
-
 def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content():
     """脱敏/共享 context 不得通过摘要、chunk 或工作记忆文本泄漏敏感内容。
     它只能依赖已分类、非敏感的结构化 facts。"""
@@ -2284,7 +2262,7 @@ def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content
     ep.summary = "Private diagnosis: diabetes. Job: Acme."
     m.summary_vec.upsert(ep.id, m.embedder.embed(ep.summary), ep)
     m.add_fact("user", "has_disease", "diabetes", user_id="u")
-    m.add_fact("user", "works_at", "Acme", user_id="u")
+    m.add_fact("user", "works_at", "Acme", user_id="u", sensitive=False)
     m.remember_working("diabetes flare today", user_id="u", session_id="s1")
 
     redacted = m.lean_context(

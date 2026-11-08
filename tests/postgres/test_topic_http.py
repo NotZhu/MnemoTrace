@@ -15,7 +15,7 @@ def test_http_topic_write_read_reset_export_and_namespace_isolation(topic_client
     client, _ = topic_client
     headers = hdr("synthetic-alpha")
     added = client.post("/v1/facts", headers=headers, json={
-        "predicate": "prefers", "object": "茶", "topic": "food",
+        "predicate": "prefers", "object": "茶", "topic": "food", "sensitive": False,
     })
     assert added.status_code == 200
     data = added.json()
@@ -42,7 +42,7 @@ def test_http_topic_filters_before_paging_and_rejects_invalid_values(topic_clien
     headers = hdr("synthetic-topic")
     for obj, topic in [("合成茶", "food"), ("合成作品", "music"), ("合成咖啡", "food"), ("合成未知", "unknown")]:
         assert client.post("/v1/facts", headers=headers, json={
-            "predicate": "prefers", "object": obj, "topic": topic,
+            "predicate": "prefers", "object": obj, "topic": topic, "sensitive": False,
         }).status_code == 200
     page = client.get("/v1/memories", headers=headers, params={"topic": "food", "facts_limit": 1}).json()
     assert page["facts_page"]["total"] == 2 and page["facts"][0]["topic"] == "food"
@@ -60,7 +60,7 @@ def test_http_invalid_topic_does_not_mutate_fact(topic_client, patch):
     client, _ = topic_client
     headers = hdr("synthetic-alpha")
     fact = client.post("/v1/facts", headers=headers,
-                       json={"predicate": "prefers", "object": "茶", "topic": "food"}).json()
+                       json={"predicate": "prefers", "object": "茶", "topic": "food", "sensitive": False}).json()
     before = client.get("/v1/memories", headers=headers).json()["facts"]
     result = client.patch(f"/v1/facts/{fact['id']}", headers=headers, json={"object": "咖啡", **patch})
     assert result.status_code == 422

@@ -33,8 +33,6 @@
     "salience_decay_per_day": 0.02,
     "access_boost": 0.5,
     "conflict_sim_threshold": 0.8,
-    "conflict_llm_escalation": false,
-    "conflict_detection": false,
     "working_memory_ttl_seconds": 86400.0,
     "summary_min_chars": 2000,
     "summary_max_chars": 800,

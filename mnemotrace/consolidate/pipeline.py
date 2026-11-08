@@ -77,7 +77,7 @@ def config_identity(mem, *, include_embedding=True):
                if k.startswith(('extraction_', 'joint_', 'summary_')) or k in {
                    'llm_topics', 'explicit_preference_extraction', 'preference_object_filter',
                    'preference_object_normalization', 'preference_reversal_extraction',
-                   'procedural_extraction', 'conflict_detection', 'conflict_llm_escalation',
+                   'procedural_extraction',
                    'conflict_sim_threshold', 'max_hot_facts', 'salience_decay_per_day'}}
     llm = mem.llm
     def setting(value, depth=0):
@@ -302,8 +302,8 @@ def validate_state(value, episodes=None, embedding_dim=None):
                 for attempt in win['history']:
                     require(isinstance(attempt, dict) and set(attempt) == {'stage', 'attempt', 'started_at', 'finished_at', 'outcome', 'finish_reason', 'usage', 'error_code'})
                     reset = attempt['stage'] in {'reset_model', 'reset_embed'}
-                    require(attempt['stage'] in {'generate', 'embed', 'compensate', 'reset_model', 'reset_embed'})
-                    field = 'embed_attempts' if attempt['stage'] in {'embed', 'reset_embed'} else 'attempts'
+                    require(attempt['stage'] in {'generate', 'embed', 'adjudicate', 'compensate', 'reset_model', 'reset_embed'})
+                    field = 'embed_attempts' if attempt['stage'] in {'embed', 'adjudicate', 'reset_embed'} else 'attempts'
                     counts[field] = 0 if reset else counts[field] + 1
                     require(type(attempt['attempt']) is int and attempt['attempt'] == counts[field])
                     require(_number(attempt['started_at']) and (attempt['finished_at'] is None or _number(attempt['finished_at'])))

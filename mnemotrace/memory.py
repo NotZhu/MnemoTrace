@@ -5,9 +5,8 @@ from typing import TYPE_CHECKING
 
 from ._postgres_pipeline import PostgresPipeline
 from .config import Config
-from .consolidate.conflict import ConflictResolver
 from .consolidate.decay import reinforce
-from .consolidate.manual import apply_manual_edit, build_manual_fact
+from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual
 from .consolidate.pipeline import digest
 from .embed import HashingEmbedder
 from .retrieve import postgres as retrieval
@@ -387,13 +386,12 @@ class Memory:
             snapshot = view.snapshot
             current = view.facts_for_manual_add(subject)
         candidates = [domain(item) for item in current]
-        resolver = ConflictResolver()
-        action, invalidated = resolver.reconcile(fact, candidates)
+        action, invalidated = reconcile_manual(fact, candidates)
         if action == 'duplicate':
             if not return_existing:
                 return None
             return next(candidate for candidate in map(domain, current)
-                        if resolver.reconcile(replace(fact), [replace(candidate)])[0] == 'duplicate')
+                        if reconcile_manual(replace(fact), [replace(candidate)])[0] == 'duplicate')
         versions = {item.ref.record_id: item for item in current}
         invalidations = tuple(FactInvalidation(
             versions[old.id].ref, versions[old.id].record_version, old.invalid_at, old.expired_at,
@@ -404,7 +402,8 @@ class Memory:
         return fact
 
     def get_fact(self, fact_id):
-        return self._get(FACT, fact_id)
+        fact = self._get(FACT, fact_id)
+        return fact if fact is not None and fact.is_published() else None
 
     def facts(self, query=None):
         with self.dao.read_snapshot() as view:
@@ -423,6 +422,8 @@ class Memory:
         if old is None:
             return None
         fact = domain(old)
+        if not fact.is_published():
+            return None
         before = asdict(fact)
         apply_manual_edit(fact, subject, predicate, object, sensitive, category,
                           statement, topic, reset_topic)
@@ -518,24 +519,30 @@ class Memory:
             conflict = domain(record)
             if conflict.status != 'pending':
                 return False
-            facts = {key: view.get(FACT, getattr(conflict, key)) for key in ('older', 'newer')}
             at = view.at.timestamp()
+            writes = []
+            if keep != 'dismiss':
+                from .consolidate.adjudication import conflict_is_reviewable, resolve_facts
+
+                facts = {key: view.get(FACT, getattr(conflict, key)) for key in ('older', 'newer')}
+                if any(value is None for value in facts.values()):
+                    raise VersionConflict('Conflict facts no longer exist')
+                domain_facts = {key: domain(value) for key, value in facts.items()}
+                if not conflict_is_reviewable(domain_facts['older'], domain_facts['newer'], at):
+                    raise VersionConflict('Conflict facts are no longer current')
+                previous = {value.ref.record_id: value for value in facts.values()}
+                history = []
+                if keep in domain_facts and domain_facts[keep].review_pending:
+                    other = domain_facts['newer' if keep == 'older' else 'older']
+                    if other.invalid_at is not None:
+                        records = view.merge_history({other.subject.strip().lower()})
+                        previous.update((value.ref.record_id, value) for value in records)
+                        history = list(map(domain, records))
+                writes.extend(self._write(fact, previous[fact.id])
+                              for fact in resolve_facts(domain_facts, keep, at, history))
         conflict.status = 'dismissed' if keep == 'dismiss' else 'resolved'
-        writes = [self._write(conflict, record)]
-        invalidations = ()
-        if keep in facts:
-            winning, losing = facts[keep], facts['older' if keep == 'newer' else 'newer']
-            if winning is None or losing is None:
-                raise VersionConflict('Conflict facts no longer exist')
-            winner, loser = domain(winning), domain(losing)
-            if not winner.is_live(at) or not loser.is_live(at):
-                raise VersionConflict('Conflict facts are no longer current')
-            winner.supersedes = loser.id
-            invalid_at = (loser.invalid_at if loser.invalid_at is not None
-                          else max((winner.valid_at, loser.valid_at), key=time_key))
-            invalidations = (FactInvalidation(losing.ref, losing.record_version, invalid_at, now()),)
-            writes.append(self._write(winner, winning))
-        self._commit(snapshot, writes=tuple(writes), invalidations=invalidations)
+        writes.append(self._write(conflict, record))
+        self._commit(snapshot, writes=tuple(writes))
         return True
 
     def entity(self, name):
@@ -572,8 +579,11 @@ class Memory:
                     cursor = None
                     while batch := view.records(kind, after_id=cursor):
                         for record in batch:
-                            if kind != FACT or include_sensitive or not domain(record).sensitive:
-                                yield record
+                            if kind == FACT and not include_sensitive:
+                                fact = domain(record)
+                                if fact.sensitive or not fact.is_published():
+                                    continue
+                            yield record
                         cursor = batch[-1].ref.record_id
 
             yield records()

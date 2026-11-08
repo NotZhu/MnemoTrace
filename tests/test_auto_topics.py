@@ -62,7 +62,7 @@ def test_rule_topics_use_relations_or_unambiguous_object_evidence(predicate, obj
     fact = mem.add_fact("Age Health Bank Lab", predicate, obj)
     assert (fact.topic, fact.topic_source) == (expected, "unset" if expected == "unknown" else "rule")
     if obj == "storage engine":
-        assert fact.category == "其他" and fact.sensitive is False
+        assert fact.category == "其他" and fact.sensitive is True
 
 
 @pytest.mark.parametrize("obj", ["黑茶", "普洱", "白茶", "龙井", "披萨", "寿司"])
@@ -95,11 +95,11 @@ def test_llm_topics_preserve_facts_and_respect_precedence(row, expected):
     assert (fact.topic, fact.topic_source) == expected
 
 
-def test_model_cannot_claim_manual_origin_or_override_classification():
+def test_model_labels_are_independent_of_server_owned_origin():
     fact, _ = extracted({"object": "synthetic-value", "topic": "health", "topic_source": "user",
-                          "source": "user", "category": "forged", "sensitive": True})
+                          "source": "user", "category": "健康", "sensitive": True})
     assert (fact.topic, fact.topic_source) == ("health", "llm")
-    assert fact.source == "extracted" and fact.category == "偏好" and fact.sensitive is False
+    assert fact.source == "extracted" and fact.category == "健康" and fact.sensitive is True
 
 
 @pytest.mark.parametrize(("enabled", "expected"), [(True, ("music", "llm")), (False, ("food", "rule"))])
@@ -173,8 +173,8 @@ def test_snapshot_import_does_not_backfill_topics():
 
 def test_manual_unknown_survives_duplicate_extraction():
     mem = MemoryEngine()
-    fact = mem.add_fact("default", "likes", "tea", topic="unknown")
-    mem.add("I like tea.")
+    fact = mem.add_fact("default", "likes", "tea", topic="unknown", valid_at=100)
+    mem.add("I like tea.", event_time=100)
     mem.consolidate()
     assert len(mem.fact_store.values()) == 1
     assert (fact.topic, fact.topic_source) == ("unknown", "user")

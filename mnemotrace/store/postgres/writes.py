@@ -126,7 +126,7 @@ def write(sql, change, graph, explicit_edges):
     elif kind == FACT:
         _replace_links(sql, 'fact_sources', 'fact_id', record_id,
                        list(dict.fromkeys(current['provenance'])), ordered=True)
-        graph_fields = ('subject', 'predicate', 'object', 'valid_at', 'invalid_at', 'expired_at')
+        graph_fields = ('subject', 'predicate', 'object', 'valid_at', 'invalid_at', 'expired_at', 'review_pending', 'approved_at')
         if record_id not in explicit_edges and (old is None or any(old[k] != current[k] for k in graph_fields)):
             graph.project(record_id)
     elif kind == WORKING:
