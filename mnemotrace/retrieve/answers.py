@@ -114,7 +114,7 @@ def rank_procedural(query, facts, k):
     q_is_proc = bool(_PROCEDURAL_QUERY_RE.search(query))
     rows: list[tuple[int, float, Fact]] = []
     for f in facts:
-        if not f.is_user_knowledge or not is_procedural_fact(f):
+        if not is_procedural_fact(f):
             continue
         text = " ".join(
             part for part in (

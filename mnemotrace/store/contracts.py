@@ -539,7 +539,7 @@ class ExtractionProduct:
     stats: OperationStats
     summary_max_chars: int
     context_revision: int | None
-    format_version: int = 1
+    format_version: int = 2
 
     def __post_init__(self):
         if not isinstance(self.conditions, CommitConditions) or self.conditions.lease is None:
@@ -547,7 +547,7 @@ class ExtractionProduct:
         if not isinstance(self.stats, OperationStats):
             raise ValueError('Validated operation statistics are required')
         _count(self.summary_max_chars, 1)
-        if type(self.format_version) is not int or self.format_version != 1:
+        if type(self.format_version) is not int or self.format_version != 2:
             raise ValueError('Unsupported model product format')
         if self.context_revision is not None:
             _count(self.context_revision)
@@ -631,7 +631,7 @@ def _validate_product_input(data: dict) -> None:
             if not isinstance(pair, dict) or set(pair) != {'older', 'newer'}:
                 raise ValueError('Invalid conflict pair')
             for candidate in pair.values():
-                fields = {'id', 'subject', 'predicate', 'object', 'text', 'valid_at', 'source', 'assertion_kind', 'source_roles'}
+                fields = {'id', 'subject', 'predicate', 'object', 'text', 'valid_at', 'source', 'source_roles'}
                 if not isinstance(candidate, dict) or set(candidate) != fields:
                     raise ValueError('Invalid conflict fact view')
                 for key in ('id', 'subject', 'predicate', 'object'):
@@ -639,12 +639,10 @@ def _validate_product_input(data: dict) -> None:
                 if not isinstance(candidate['text'], str) or candidate['source'] not in {'user', 'extracted'}:
                     raise ValueError('Invalid conflict fact content')
                 _time(candidate['valid_at'])
-                if candidate['assertion_kind'] not in {'unspecified', 'user_statement', 'user_confirmation', 'assistant_suggestion', 'assistant_report'}:
-                    raise ValueError('Invalid assertion kind')
                 if not isinstance(candidate['source_roles'], list) or any(r not in {'user', 'assistant'} for r in candidate['source_roles']):
                     raise ValueError('Invalid conflict source roles')
-            if (pair['older']['id'] == pair['newer']['id'] or pair['older']['subject'].lower() != pair['newer']['subject'].lower()
-                    or pair['older']['assertion_kind'] != pair['newer']['assertion_kind']):
+            if (pair['older']['id'] == pair['newer']['id']
+                    or pair['older']['subject'].lower() != pair['newer']['subject'].lower()):
                 raise ValueError('Inconsistent conflict pair')
     elif data['candidates']:
         raise ValueError('Unexpected candidates')

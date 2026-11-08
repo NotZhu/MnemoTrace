@@ -112,12 +112,11 @@ def test_native_close_rejects_raw_acceptance():
 def test_third_party_name_never_becomes_the_owner_identity(kind):
     def names(prompt, system):
         data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX)[1])[0]
-        nature = 'unspecified' if kind == 'raw' else 'user_statement'
         source_id = data['pending'][0]['id']
         return json.dumps(dict(facts=[dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='friend', predicate='name', object='Alice',
-            text='The friend is Alice', assertion_kind=nature, source_ids=[source_id]),
+            text='The friend is Alice', source_ids=[source_id]),
             dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='user', predicate='owns', object='bicycle', text='I own a bicycle',
-                 assertion_kind=nature, source_ids=[source_id])], working=[], summaries=[]))
+                 source_ids=[source_id])], working=[], summaries=[]))
     mem = MemoryEngine(llm=FakeLLM(handler=names))
     if kind == 'raw':
         mem.add('Synthetic owner and friend')

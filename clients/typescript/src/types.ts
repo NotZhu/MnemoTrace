@@ -183,7 +183,6 @@ export interface TopicMetadata {
 }
 
 export interface Fact extends TopicMetadata {
-  assertion_kind?: 'unspecified' | 'user_statement' | 'assistant_suggestion' | 'user_confirmation' | 'assistant_report'
   source_roles?: ('user' | 'assistant')[]
   id: string
   text: string

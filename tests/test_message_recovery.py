@@ -46,7 +46,7 @@ def test_source_time_comes_from_matching_role():
     def respond(prompt, system):
         data = json.loads(prompt.split('MNEMOTRACE_WINDOW\n', 1)[1])
         return json.dumps(dict(facts=[dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='user', predicate='lives_in', object='Synthetic city',
-            text='Synthetic city', assertion_kind='user_statement', source_ids=[s['id'] for s in data['pending']])],
+            text='Synthetic city', source_ids=[s['id'] for s in data['pending']])],
             working=[], summaries=[]))
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
     mem.remember_messages([message('u', event_time=None), message('a', role='assistant', event_time=200)], 's', 'u')
@@ -84,7 +84,7 @@ def test_core_and_summary_evidence_are_strict_on_restore():
 def test_manual_fact_keeps_authority_over_dialogue_fact():
     mem = MemoryEngine(llm=FakeLLM(handler=reply))
     old = mem.add_fact('user', 'lives_in', 'A', 'u')
-    old.source, old.assertion_kind, old.valid_at = 'extracted', 'user_statement', 100
+    old.source, old.valid_at = 'extracted', 100
     mem.fact_store.upsert(old.id, old.embedding, old)
     new = mem.add_fact('user', 'lives_in', 'B', 'u', valid_at=200)
     assert not mem.fact_store.get(old.id).is_live() and new.source == 'user'

@@ -5,8 +5,8 @@ from copy import deepcopy
 import time
 import uuid
 
-from .consolidate.pipeline import KINDS, PipelineTasks, TERMINAL, config_identity, digest, reset_attempts, source
-from .consolidate.planning import input_size, output_size, plan, summary_plan, busy, fits_input
+from .consolidate.pipeline import PipelineTasks, TERMINAL, config_identity, digest, reset_attempts, source
+from .consolidate.planning import input_size, output_size, plan, summary_plan, busy, fits_input, source_anchor
 from .consolidate.operations import prepare, decode
 from .extraction import ExtractionError, ExtractionTruncatedError, LLMNotConfiguredError, require_llm
 from .llm.base import complete_result
@@ -157,13 +157,11 @@ def _merge_input(mem, namespace, win, now):
 
     data, result = win['input'], win['result']
     views = {s['id']: s for s in (*data['context'], *data['pending'])}
-    pending = {s['id'] for s in data['pending']}
+    pending = {s['id']: s for s in data['pending']}
     facts, names = [], []
 
     def anchor(item):
-        return max((views[k] for k in item['source_ids'] if k in pending and
-                    (data['source_kind'] != 'dialogue' or views[k]['role'] == KINDS[item['assertion_kind']])),
-                   key=lambda s: s['sequence'])
+        return source_anchor(item['source_ids'], pending, data['source_kind'])
 
     def vector(text):
         return win['vectors'][digest(text)]
@@ -179,12 +177,12 @@ def _merge_input(mem, namespace, win, now):
         fact = Fact(subject=item['subject'], predicate=item['predicate'], object=item['object'], text=item['text'],
             display=item.get('display', item['text']), user_id=namespace, valid_at=fact_valid_at(item, origin['event_time']), created_at=now, last_access=now,
             category=item['category'], sensitive=item['sensitive'],
-            provenance=item['source_ids'], assertion_kind=item['assertion_kind'],
+            provenance=item['source_ids'],
             source_roles=list(dict.fromkeys(views[k]['role'] for k in item['source_ids'] if views[k]['role'])),
             topic=topic, topic_source=topic_source, id='ft_' + digest([win['input_hash'], item])[:24], embedding=vector(item['text']))
         if not (data['source_kind'] != 'dialogue' and item['predicate'] in _NAME_PREDICATES and owner_name):
             facts.append(fact)
-        if owner_name and item['predicate'] in _NAME_PREDICATES and fact.is_user_knowledge:
+        if owner_name and item['predicate'] in _NAME_PREDICATES:
             names.append(item['object'])
     return facts, names
 
@@ -198,13 +196,10 @@ def _merge_snapshot(mem, namespace, facts):
 
 def _commit(mem, tasks, win, now, merge=None, names=()):
     data, result = win['input'], win['result']
-    views = {s['id']: s for s in (*data['context'], *data['pending'])}
-    pending = {s['id'] for s in data['pending']}
+    pending = {s['id']: s for s in data['pending']}
     key = next(key for key, candidate in tasks.state['windows'].items() if candidate is win)
     def anchor(item):
-        return max((views[k] for k in item['source_ids'] if k in pending and
-                    (data['source_kind'] != 'dialogue' or views[k]['role'] == KINDS[item['assertion_kind']])),
-                   key=lambda s: s['sequence'])
+        return source_anchor(item['source_ids'], pending, data['source_kind'])
     def vector(text):
         return win['vectors'][digest(text)]
     if not win['core_saved']:
@@ -233,7 +228,7 @@ def _commit(mem, tasks, win, now, merge=None, names=()):
                     user_id=tasks.namespace, session_id=tasks.rows()[origin['id']]['session_id'],
                     event_time=origin['event_time'], created_at=now,
                     expires_at=(now + ttl) if ttl else None, embedding=vector(item['content']),
-                    metadata=dict(provenance=item['source_ids'], assertion_kind=item['assertion_kind'], episode_id=origin['id']))
+                    metadata=dict(provenance=item['source_ids'], episode_id=origin['id']))
                 win['stats']['working_added'] += 1
         win['core_saved'] = True
         if win['operation'] == 'extract':
@@ -434,17 +429,14 @@ def run_one(service, user):
                     if user in mem._identity:
                         owner_refs.add(mem._identity[user].lower())
                     identities = [item for item in output['facts'] if item['predicate'] in _NAME_PREDICATES
-                                  and item['subject'].strip().lower() in owner_refs
-                                  and item['assertion_kind'] in {'unspecified', 'user_statement', 'user_confirmation'}]
+                                  and item['subject'].strip().lower() in owner_refs]
                     pending_order = {v['id']: v['sequence'] for v in data['pending']}
                     identities.sort(key=lambda item: min(pending_order.get(k, 10**18) for k in item['source_ids']))
                     self_name = mem._identity.get(user, identities[0]['object'] if identities else user)
                     accepted = []
                     for item in output['facts']:
                         subject = item['subject'].strip()
-                        if item['assertion_kind'].startswith('assistant_') and subject.lower() in _SELF_REFS:
-                            subject = 'assistant'
-                        elif subject.lower() in _SELF_REFS or subject.lower() in mem._aliases.get(user, set()):
+                        if subject.lower() in _SELF_REFS or subject.lower() in mem._aliases.get(user, set()):
                             subject = self_name
                         canonical = data['source_kind'] != 'dialogue' and win['operation'] == 'extract'
                         candidate = Fact(subject=subject, predicate=_norm_predicate(item['predicate']), object=item['object'],

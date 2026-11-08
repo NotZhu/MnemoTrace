@@ -88,7 +88,6 @@ class Fact:
     # 与事实来源、管理分类及敏感标记独立；自动赋值由写入路径接入。
     topic: Topic = "unknown"
     topic_source: TopicSource = "unset"
-    assertion_kind: str = "unspecified"
     source_roles: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -104,24 +103,19 @@ class Fact:
         """(user, subject, predicate) 键。共享同一槽位的两个 fact 是候选冲突。"""
         return (self.user_id, self.subject.strip().lower(), self.predicate.strip().lower())
 
-    @property
-    def evidence_text(self) -> str:
-        return self.text if self.assertion_kind == 'unspecified' else f'[{self.assertion_kind}] {self.text}'
-
-    @property
-    def is_user_knowledge(self) -> bool:
-        return self.assertion_kind in {'unspecified', 'user_statement', 'user_confirmation'}
-
     def is_published(self, known_at: Optional[float] = None) -> bool:
         return not self.review_pending and (self.approved_at is None or
                                             self.approved_at <= (now() if known_at is None else known_at))
+
+    def is_valid_at(self, at: float) -> bool:
+        """Whether the effective interval covers at, independent of publication and expiry."""
+        return (self.valid_at is None or self.valid_at <= at) and (self.invalid_at is None or self.invalid_at > at)
 
     def is_live(self, as_of: Optional[float] = None) -> bool:
         """当该 fact 在 `as_of` 时刻既仍被认知、又在世界中有效时返回 True。"""
         t = now() if as_of is None else as_of
         believed = self.expired_at is None or self.expired_at > t
-        valid = (self.valid_at is None or self.valid_at <= t) and (self.invalid_at is None or self.invalid_at > t)
-        return self.is_published(t) and believed and valid
+        return self.is_published(t) and believed and self.is_valid_at(t)
 
 
 @dataclass

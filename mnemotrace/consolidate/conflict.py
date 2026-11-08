@@ -118,9 +118,6 @@ class ConflictResolver:
 
     def reconcile(self, new: Fact, live: list[Fact]) -> tuple[str, list[Fact]]:
         """返回 (action, invalidated_facts)。action 为 "add" 或 "duplicate"。"""
-        live = [f for f in live if f.assertion_kind == new.assertion_kind or
-                f.source == 'user' and new.assertion_kind in {'unspecified', 'user_statement', 'user_confirmation'} or
-                new.source == 'user' and f.assertion_kind in {'unspecified', 'user_statement', 'user_confirmation'}]
         # Unknown and older source times cannot supersede a newer dated observation.
         # Exact duplicates can still merge provenance below.
         same_slot = [f for f in live if f.slot == new.slot]

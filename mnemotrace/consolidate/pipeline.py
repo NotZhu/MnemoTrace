@@ -12,10 +12,8 @@ import uuid
 from ..types import Episode
 from ..extraction import ExtractionError
 
-VERSION = 1
+VERSION = 2
 TERMINAL = {'completed', 'failed', 'cancelled'}
-KINDS = {'user_statement': 'user', 'user_confirmation': 'user',
-         'assistant_suggestion': 'assistant', 'assistant_report': 'assistant'}
 
 
 class MessageConflictError(ExtractionError):
@@ -338,15 +336,13 @@ def validate_state(value, episodes=None, embedding_dim=None):
                         require(isinstance(pair, dict) and set(pair) == {'older', 'newer'})
                         for fact in pair.values():
                             require(isinstance(fact, dict) and set(fact) == {'id', 'subject', 'predicate', 'object',
-                                'text', 'valid_at', 'source', 'assertion_kind', 'source_roles'})
+                                'text', 'valid_at', 'source', 'source_roles'})
                             require(all(isinstance(fact[k], str) and fact[k] for k in ('id', 'subject', 'predicate', 'object')))
                             require(isinstance(fact['text'], str) and fact['source'] in {'user', 'extracted'})
-                            require(fact['assertion_kind'] in {*KINDS, 'unspecified'})
                             require(isinstance(fact['source_roles'], list) and all(r in {'user', 'assistant'} for r in fact['source_roles']))
                             require(fact['valid_at'] is None or type(fact['valid_at']) in (int, float) and math.isfinite(fact['valid_at']))
                         require(pair['older']['id'] != pair['newer']['id'])
                         require(pair['older']['subject'].lower() == pair['newer']['subject'].lower())
-                        require(pair['older']['assertion_kind'] == pair['newer']['assertion_kind'])
                 else:
                     require(not data['candidates'])
 

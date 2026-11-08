@@ -110,22 +110,37 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
     return True
 
 
-def reconcile_manual(new, current):
-    """Explicit edits can replace a single value in the same slot."""
+def reconcile_manual(new, history, at):
+    """Place a manually asserted value in the slot's valid-time history."""
     from .conflict import is_single_valued
     from ..util import time_key
 
-    same_slot = [old for old in current if old.slot == new.slot and old.is_user_knowledge]
-    if any(old.object.strip().casefold() == new.object.strip().casefold() for old in same_slot):
+    same_slot = [old for old in history if old.slot == new.slot and old.is_published(at)
+                 and (old.expired_at is None or old.expired_at > at or old.invalid_at is not None)]
+    effective = new.valid_at if new.valid_at is not None else at
+    covering = [old for old in same_slot if old.is_valid_at(effective)]
+    if any(old.object.strip().casefold() == new.object.strip().casefold() for old in covering):
         return 'duplicate', []
-    if not is_single_valued(new.predicate):
+    if new.valid_at is None or not is_single_valued(new.predicate):
         return 'add', []
-    invalidated = [old for old in same_slot if new.valid_at is not None
-                   and (old.valid_at is None or old.valid_at <= new.valid_at)]
-    for old in invalidated:
-        old.invalid_at = new.valid_at
-        if new.valid_at <= new.created_at:
-            old.expired_at = new.created_at
-    if invalidated:
-        new.supersedes = max(invalidated, key=lambda old: (time_key(old.valid_at), old.created_at, old.id)).id
-    return 'add', invalidated
+
+    def order(fact):
+        return time_key(fact.valid_at), fact.created_at, fact.id
+
+    successor = min((old for old in same_slot if old.valid_at is not None and old.valid_at > effective
+                     and old.is_valid_at(old.valid_at)), key=order, default=None)
+    changed = list(covering)
+    for old in covering:
+        old.invalid_at = effective
+        if effective <= at and old.expired_at is None:
+            old.expired_at = at
+    if covering:
+        new.supersedes = max(covering, key=order).id
+    if successor is not None:
+        new.invalid_at = successor.valid_at
+        if new.invalid_at <= at:
+            new.expired_at = at
+        if successor.supersedes is None or any(old.id == successor.supersedes for old in covering):
+            successor.supersedes = new.id
+            changed.append(successor)
+    return 'add', changed

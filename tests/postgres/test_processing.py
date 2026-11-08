@@ -20,6 +20,7 @@ from mnemotrace.store.postgres.errors import (
     CommitOutcomeUnknown, DatabaseConfigurationError, DatabaseUnavailable, MessageConflict, VersionConflict,
 )
 from mnemotrace.worker import run_worker
+from tests.test_message_pipeline import PROPOSAL, REPORT, dialogue_evidence
 
 
 def dialogue(key, content='Synthetic person prefers tea', *, scope='auto'):
@@ -47,8 +48,7 @@ def processing(runtime, spaces, user):
             if data['operation'] == 'summary':
                 return json.dumps({'summaries': [{'source_id': data['pending'][0]['id'], 'text': 'Recorded preference'}]})
             facts = [dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='Synthetic person', predicate='likes', object='tea', text='Synthetic person likes tea',
-                          assertion_kind='user_statement' if item['role'] else 'unspecified',
-                          source_ids=[item['id']]) for item in data['pending']]
+                          source_ids=[item['id']]) for item in data['pending'] if item['role'] != 'assistant']
             return json.dumps(dict(facts=facts, working=[], summaries=[]))
 
         memory = Memory(database, context, llm=FakeLLM(handler=respond), config=config,
@@ -56,6 +56,39 @@ def processing(runtime, spaces, user):
         return memory, calls
 
     return make
+
+
+def test_assistant_evidence_stays_in_session_until_user_confirmation(processing):
+    def adjudicate(prompt):
+        return json.dumps(dict(decisions=[dict(id=pair['id'], decision='replaces')
+                                          for pair in json.loads(prompt)]))
+
+    memory, _ = processing(handle=dialogue_evidence, adjudicate=adjudicate)
+
+    def send(key, role, content, event_time):
+        result = memory.remember_messages('chat', (MessageInput(key, role, content, event_time),))
+        assert memory.flush_processing('chat')['ok']
+        source_id, = result['source_ids']
+        return source_id
+
+    send('task', 'user', 'Prepare my release checklist.', 100)
+    send('before', 'user', 'My default package manager is npm.', 110)
+    proposal = send('proposal', 'assistant', PROPOSAL, 200)
+    send('report', 'assistant', REPORT, 250)
+    old, = memory.facts()
+    assert old.object == 'npm'
+    assert any(ep.id == proposal and ep.role == 'assistant' for ep in memory.retrieve_episodes(PROPOSAL).episodes)
+    context = memory.context_for(PROPOSAL, top_k=0).context
+    assert 'role=assistant' in context and PROPOSAL in context
+    with memory.dao.read_snapshot() as view:
+        assert [record.ref.record_id for record in view.profile_facts({'user'})] == [old.id]
+    assert [item.content for item in memory.working_memory()] == ['Prepare my release checklist.']
+
+    confirmation = send('confirmation', 'user', 'Yes, use that by default.', 300)
+    new, = memory.facts()
+    assert (new.object, new.valid_at, new.supersedes) == ('pnpm', 300, old.id)
+    assert set(new.provenance) == {proposal, confirmation}
+    assert new.source_roles == ['assistant', 'user']
 
 
 def test_three_checkpoints_and_durable_retry(processing, cluster):
@@ -281,7 +314,7 @@ def test_semantic_reconciliation_and_manual_authority(processing):
         item = data['pending'][0]
         predicate, value = item['content'].split()
         fact = dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='Synthetic person', predicate=predicate, object=value,
-                    text=f'Synthetic person {predicate} {value}', assertion_kind='user_statement',
+                    text=f'Synthetic person {predicate} {value}',
                     source_ids=[item['id']])
         return dict(facts=[fact], working=[], summaries=[])
 
@@ -489,9 +522,9 @@ def test_final_receipt_includes_surviving_outputs_from_earlier_segments(processi
         if item['ranges'][0][0]:
             return dict(facts=[], working=[], summaries=[])
         facts = [dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='Synthetic person', predicate='likes', object=value,
-                      text=f'Synthetic person likes {value}', assertion_kind='unspecified', source_ids=[item['id']])
+                      text=f'Synthetic person likes {value}', source_ids=[item['id']])
                  for value in ('tea', 'coffee')]
-        working = [dict(content='Synthetic task', kind='task', assertion_kind='unspecified', source_ids=[item['id']])]
+        working = [dict(content='Synthetic task', kind='task', source_ids=[item['id']])]
         return dict(facts=facts, working=working, summaries=[])
 
     config = Config(extraction_max_input_bytes=7000, summary_min_chars=100000)

@@ -37,7 +37,7 @@ def product():
                               representation_source=None, source='a' * 64, source_length=len(text),
                               ranges=[[0, len(text)]], partial=False)])
     result = dict(facts=[dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='Ana', predicate='works_at', object='Orbit', text='Ana works at Orbit',
-                             display='Ana works at Orbit', subject_input='I', assertion_kind='user_statement',
+                             display='Ana works at Orbit', subject_input='I',
                              source_ids=['source-1'])], working=[], summaries={})
     return ExtractionProduct(CONDITIONS, json.dumps(data), json.dumps(result),
                              OperationStats(0, 0, 0, 0, 1, 0), 800, 7)
@@ -50,6 +50,27 @@ def test_context_is_immutable_and_preserves_identity():
         context.space_id = 'other'
     with pytest.raises(TypeError):
         SpaceContext('owner')
+
+
+@pytest.mark.parametrize('kind', ['facts', 'working'])
+def test_dialogue_output_requires_a_pending_user_source(kind):
+    from mnemotrace.config import Config
+    from mnemotrace.consolidate.planning import validate_response
+    from mnemotrace.extraction import ExtractionResponseError
+
+    checkpoint = product()
+    data = json.loads(checkpoint.input_json)
+    old_user, = data['pending']
+    data.update(context=[old_user], pending=[dict(old_user, id='assistant', role='assistant', sequence=2)])
+    output = dict(facts=[], working=[], summaries=[])
+    refs = ['source-1', 'assistant']
+    if kind == 'facts':
+        fact, = json.loads(checkpoint.result_json)['facts']
+        output[kind] = [dict(fact, source_ids=refs)]
+    else:
+        output[kind] = [dict(content='Synthetic task', kind='task', source_ids=refs)]
+    with pytest.raises(ExtractionResponseError):
+        validate_response(json.dumps(output), data, Config())
 
 
 @pytest.mark.parametrize('value', ['', ' ', None, 1, 'x' * 513])
@@ -206,7 +227,7 @@ def test_invalidation_entities_and_settings_are_narrow_types():
 def test_extraction_product_checks_sources_schema_stats_and_format():
     saved = product()
     assert saved.reusable(SNAPSHOT, SOURCES, 'config-1')
-    for kwargs in (dict(format_version=True), dict(format_version=2), dict(context_revision=6),
+    for kwargs in (dict(format_version=True), dict(format_version=1), dict(context_revision=6),
                    dict(result_json='{}'), dict(input_json='{}'), dict(stats={})):
         with pytest.raises(ValueError):
             replace(saved, **kwargs)

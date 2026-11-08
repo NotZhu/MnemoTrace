@@ -12,7 +12,7 @@ from .embed import HashingEmbedder
 from .retrieve import postgres as retrieval
 from .retrieve.evidence import plan_evidence
 from .store.contracts import (
-    ChangeSet, CommitConditions, EmbeddingWrite, EntityMerge, FactInvalidation, FactQuery, MessageInput, OperationKind,
+    ChangeSet, CommitConditions, EmbeddingWrite, EntityMerge, FactQuery, MessageInput, OperationKind,
     RecordKind, RecordRef, RecordWrite, RetrievalQuery, SourceLink, StoredRecord, validate_erasures,
 )
 from .store.postgres.dao import PostgresDAO, _space_row, new_operation_id
@@ -384,20 +384,19 @@ class Memory:
                                  valid_at, sensitive, category, topic)
         with self.dao.read_snapshot() as view:
             snapshot = view.snapshot
-            current = view.facts_for_manual_add(subject)
-        candidates = [domain(item) for item in current]
-        action, invalidated = reconcile_manual(fact, candidates)
+            at = view.at.timestamp()
+            history = view.facts_for_manual_add(subject, predicate)
+        candidates = [domain(item) for item in history]
+        action, changed = reconcile_manual(fact, candidates, at)
         if action == 'duplicate':
             if not return_existing:
                 return None
-            return next(candidate for candidate in map(domain, current)
-                        if reconcile_manual(replace(fact), [replace(candidate)])[0] == 'duplicate')
-        versions = {item.ref.record_id: item for item in current}
-        invalidations = tuple(FactInvalidation(
-            versions[old.id].ref, versions[old.id].record_version, old.invalid_at, old.expired_at,
-        ) for old in invalidated)
+            return next(candidate for candidate in candidates
+                        if reconcile_manual(replace(fact), [replace(candidate)], at)[0] == 'duplicate')
+        versions = {item.ref.record_id: item for item in history}
+        updates = tuple(self._write(old, versions[old.id]) for old in changed)
         write = self._write(fact)
-        self._commit(snapshot, writes=(write,), invalidations=invalidations,
+        self._commit(snapshot, writes=(write, *updates),
                      embeddings=(self._embedding(write, fact.text),))
         return fact
 
@@ -522,7 +521,9 @@ class Memory:
             at = view.at.timestamp()
             writes = []
             if keep != 'dismiss':
-                from .consolidate.adjudication import conflict_is_reviewable, resolve_facts
+                from .consolidate.adjudication import (
+                    approval_candidate, conflict_is_reviewable, has_other_manual_blocker, resolve_facts,
+                )
 
                 facts = {key: view.get(FACT, getattr(conflict, key)) for key in ('older', 'newer')}
                 if any(value is None for value in facts.values()):
@@ -530,6 +531,11 @@ class Memory:
                 domain_facts = {key: domain(value) for key, value in facts.items()}
                 if not conflict_is_reviewable(domain_facts['older'], domain_facts['newer'], at):
                     raise VersionConflict('Conflict facts are no longer current')
+                candidate = approval_candidate(domain_facts, keep)
+                if candidate is not None and has_other_manual_blocker(
+                    candidate, conflict_id, view.related_conflicts(candidate.id, excluding=conflict_id), at,
+                ):
+                    raise VersionConflict('Other conflicts still protect manual facts from this candidate')
                 previous = {value.ref.record_id: value for value in facts.values()}
                 history = []
                 if keep in domain_facts and domain_facts[keep].review_pending:

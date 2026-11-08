@@ -24,7 +24,7 @@ def product(runtime, user, accounts, spaces, monkeypatch):
         data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
         return json.dumps(dict(facts=[
             dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='Synthetic person', predicate='likes', object='Bluebird tea',
-                 text='Synthetic person likes Bluebird tea', assertion_kind='user_statement',
+                 text='Synthetic person likes Bluebird tea',
                  source_ids=[source['id']])
             for source in data['pending']
         ], working=[], summaries=[]))

@@ -75,11 +75,11 @@ def observe() -> tuple[list[dict], dict, dict]:
     for user_id, (memory, result) in captured.items():
         sources = {ep.id: f'source-{i}' for i, ep in enumerate(memory.episodes_doc.values(), 1)}
         facts = sorted(memory._all_facts(), key=lambda f: (
-            f.subject, f.predicate, f.object, f.valid_at or 0, f.assertion_kind))
+            f.subject, f.predicate, f.object, f.valid_at or 0))
         identities = {fact.id: f'fact-{i}' for i, fact in enumerate(facts, 1)}
         observations[user_id] = {
                 'facts': [dict(id=identities[f.id], subject=f.subject, predicate=f.predicate,
-                               object=f.object, source=f.source, assertion_kind=f.assertion_kind,
+                               object=f.object, source=f.source,
                                source_roles=f.source_roles, valid_at=f.valid_at, invalid_at=f.invalid_at,
                                created_at=f.created_at, expired_at=f.expired_at,
                                supersedes=identities.get(f.supersedes),
