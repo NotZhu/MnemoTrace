@@ -115,21 +115,24 @@ class Memory:
             raise ValueError('Invalid source content or routing')
         source = Episode(content, self.context.user_id, session_id, source_kind=source_kind,
                          scope=scope, event_time=event_time)
-        record = replace(StoredRecord.from_record(self.context, source), agent_id=agent_id)
         if scope == 'working':
-            wall_time = now()
+            with self.dao.read_snapshot(session_id) as view:
+                snapshot = view.snapshot
+                wall_time = view.at.timestamp()
+            source.ingested_at = wall_time
             ttl = self._config.working_memory_ttl_seconds
             working = WorkingMemory(content=content, user_id=self.context.user_id, session_id=session_id,
                                     event_time=event_time if event_time is not None else wall_time,
+                                    created_at=wall_time,
                                     expires_at=wall_time + ttl if ttl is not None else None,
                                     metadata={'provenance': [source.id]})
+            record = replace(StoredRecord.from_record(self.context, source), agent_id=agent_id)
             write = self._write(working)
-            with self.dao.read_snapshot(session_id) as view:
-                snapshot = view.snapshot
             self._commit(snapshot, writes=(RecordWrite(record), write),
                          embeddings=self._embeddings(write, working.content))
             return dict(ok=True, status='stored', source_ids=(source.id,), operation_ids=(), operations=(),
                         id=working.id, kind=working.kind, scope='working')
+        record = replace(StoredRecord.from_record(self.context, source), agent_id=agent_id)
         receipt, operation_id = self._processing.tasks.accept_source(
             record, self._processing.require_model, embedding=self._embedding_space)
         result = self._accepted((operation_id,), processing, timeout)
@@ -198,10 +201,12 @@ class Memory:
             raise ValueError('Expected non-empty raw content')
         source = Episode(content=content, user_id=self.context.user_id, session_id=session_id,
                          role=role, event_time=event_time, scope='raw')
-        write = self._write(source)
-        write = RecordWrite(replace(write.record, agent_id=agent_id))
         with self.dao.read_snapshot(session_id) as view:
             snapshot = view.snapshot
+            # Match the database clock used by known_at cutoffs and message ingestion.
+            source.ingested_at = view.at.timestamp()
+        write = self._write(source)
+        write = RecordWrite(replace(write.record, agent_id=agent_id))
         self._commit(snapshot, writes=(write,), source_embedding=self._embedding_space)
         return source
 

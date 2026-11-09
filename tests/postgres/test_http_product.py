@@ -1155,16 +1155,36 @@ def test_memories_http_echoes_context_and_freezes_time(client, product_service, 
     assert [first["facts"][0]["object"], second["facts"][0]["object"]] == ["current", "older"]
 
 
-def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, product_service, product_scope):
+@pytest.mark.parametrize('clock_skew', [0, -60, 60])
+@pytest.mark.parametrize('source_entry', ['raw', 'note', 'document', 'working'])
+def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, product_service, product_scope,
+                                                                  monkeypatch, clock_skew, source_entry):
+    from mnemotrace.types import Episode
+
+    def client_clock_source(*args, **kwargs):
+        source = Episode(*args, **kwargs)
+        source.ingested_at += clock_skew
+        return source
+
+    monkeypatch.setattr('mnemotrace.memory.Episode', client_clock_source)
     label = "recall_temporal_baseline"
     context, _ = product_scope(label)
     memory = product_service.memory(context)
+
+    def remember_source(content, session_id, *, event_time):
+        if source_entry == 'raw':
+            return memory.remember_raw(content, session_id, event_time=event_time)
+        if source_entry == 'document':
+            return memory.import_document(content, session_id, event_time=event_time, extract=False, summarize=False)
+        return memory.remember(content, session_id, event_time=event_time, processing='buffered',
+                               scope='working' if source_entry == 'working' else 'long')
+
     fact = memory.add_fact("Ana", "works_at", "Orbit", valid_at=100)
-    memory.remember_raw("Ana works at Orbit.", "earlier", event_time=100)
+    remember_source("Ana works at Orbit.", "earlier", event_time=100)
     with memory.dao.read_snapshot() as view:
         known_at = view.at.timestamp()
-    memory.remember_raw("Ana used to work on a different synthetic project.", "late-arrival", event_time=100)
-    memory.remember_raw("Ana plans a synthetic project.", "future", event_time=400)
+    remember_source("Ana used to work on a different synthetic project.", "late-arrival", event_time=100)
+    remember_source("Ana plans a synthetic project.", "future", event_time=400)
 
     def recall(**options):
         response = client.post("/v1/recall", json={"query": "Where does Ana work?", **options}, headers=hdr(label))
