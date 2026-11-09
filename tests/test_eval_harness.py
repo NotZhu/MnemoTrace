@@ -64,3 +64,12 @@ def test_report_reads_synthetic_harness_jsonl(tmp_path):
     assert "avg context tokens" in report
     assert "p50 latency ms" in report
     assert "p95 latency ms" in report
+
+
+def test_window_extraction_smoke_uses_current_fact_schema():
+    from eval.window_extraction import compare
+
+    result = compare(events=1, runs=1)
+    assert [(row['mode'], row['facts_found'], row['wrong_sources']) for row in result['results']] == [
+        ('immediate', 1, 0), ('window', 1, 0),
+    ]

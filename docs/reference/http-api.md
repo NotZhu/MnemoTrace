@@ -67,6 +67,14 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 单空间的 `lean=false` 返回事实性答案及支撑事实。支持 `as_of` 和 `redact_sensitive`。
 HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据。Python 直连可用 `FactQuery` 单独指定已知时间。
 
+
+`POST /v1/recall` 使用混合召回，可传 `state`、`valid_at` 和 `known_at` 选择历史视图。显式时间与 `as_of` 互斥。
+
+| 路径 | 请求与返回 |
+| --- | --- |
+| `POST /v1/aggregate` | 必填 `space_id` 和 `predicate`，`operation` 为 `count` 或 `count_distinct`。可传 `subject`、有效时间区间 `[start,end)`、事实状态与时间、`redact_sensitive`、`limit`。返回 `count`、证据 `facts`、来源 `candidates` 及 `limitations`。空匹配时可传 `query` 检索来源候选。 |
+| `POST /v1/follow-path` | 必填 `space_id`、`anchor` 和 2–4 个有序 `predicates`，可传同样的事实状态、时间、脱敏与证据预算。返回 `paths`，每项含 `endpoint` 和支持路径的 `facts`，以及结果的 `limitations`。 |
+
 ## 会话与检查
 
 `GET /v1/sessions` 返回无正文的会话索引。用 `GET /v1/sessions/report` 按会话审计来源和事实。
@@ -118,7 +126,7 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 
 内容编辑使事实变为用户来源；只改敏感标记、分类或主题保留原来源。槽位清理可能通过 JSON 结果表达拒绝，不能只检查 HTTP 状态。服务端权限不会被客户端筛选或隐私开关替代。
 
-事实读写响应包含 topic/topic_source；主题的固定枚举会出现在 OpenAPI 中。topic 省略或 null 表示未指定，`"unknown"` 表示人工选择未知；`reset_topic=true` 按当前内容执行离线规则，不调用模型，结果为明确主题/rule 或 unknown/unset，不能与明确 topic 同传。主题来源由服务端决定，非法主题或编辑组合返回 422。新增未指定主题、内容变化且未指定新主题时使用规则，完整契约见[主题与来源](../architecture/memory.md#主题与来源)。脱敏会话报告省略主题元数据。
+手动事实可显式设置 `topic`，省略或清除时为 `unknown/unset`。仅编辑主题保留来源和历史。`reset_topic` 与显式主题互斥。新增或修改事实时可指定 `cardinality` 与 `retention`，默认分别为 `unknown`。
 
 `GET /v1/memories?topic=food` 按已存主题精确筛选；省略表示全部，`topic=unknown` 包含人工未知和未赋值未知，空字符串及非法枚举返回 422。与 category、status、kind、outcome_kind、q 取交集并在分页前执行，facts_page.total 为筛选后总数；原始 episode 和既有全局计数不随主题筛选改变。fact_categories 的候选范围不随主题、搜索、状态或分页收缩。后续页继续成对携带 expected_revision/evaluated_at。
 

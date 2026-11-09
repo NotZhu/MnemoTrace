@@ -110,7 +110,7 @@ def test_identity_registration_does_not_depend_on_extraction_order():
         if content == "I like coffee":
             time.sleep(0.01)
         return json.dumps({"facts": [{**item, 'text': f"{item['subject']} {item['predicate']} {item['object']}",
-            'category': '其他', 'sensitive': False, 'time_kind': 'current', 'effective_date': None,
+            'category': '其他', 'sensitive': False, 'time_kind': 'current', 'effective_date': None, 'cardinality': 'unknown', 'retention': 'unknown',
             'source_ids': [data['pending'][0]['id']]}
             for item in outputs[content]], "working": [], "summaries": []})
     seen = []

@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import math
+import re
 import unicodedata
 
-from ..util import stem, stems
+from ..util import stem
 
-__all__ = ["stem", "stems", "token_overlap", "bm25_scores"]
+__all__ = ["stem", "lexical_terms", "token_overlap", "bm25_scores"]
 BM25_K1 = 1.5
 BM25_B = 0.75
 _BM25_STOP_WORDS = frozenset({
@@ -53,6 +54,16 @@ def lexical_terms(text: str, *, query: bool = False, exact: bool = False) -> lis
     flush_word()
     flush_han()
     return terms
+
+
+def literal_value_match(query: str, value: str) -> bool:
+    """Check the literal value rather than inferring equality from shared tokens."""
+    value = value.strip().casefold()
+    if (not value.isascii() or any(char.isspace() for char in value)
+            or not any(char.isalpha() for char in value) or not any(char.isdigit() for char in value)):
+        return False
+    pattern = r'(?<!\w)(?<!\w[./-])' + re.escape(value) + r'(?!\w)(?![./-]\w)'
+    return re.search(pattern, query.casefold()) is not None
 
 
 def overlap_terms(query: str, text: str) -> set[str]:

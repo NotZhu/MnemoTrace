@@ -8,7 +8,7 @@ export const TOPIC_LABELS: Record<Topic, string> = {
 export const TOPIC_OPTIONS = (Object.entries(TOPIC_LABELS) as [Topic, string][])
   .map(([value, label]) => ({ value, label }))
 export const TOPIC_SOURCE_LABELS: Record<TopicSource, string> = {
-  unset: '未确定', rule: '规则判断', llm: '模型判断', user: '人工设置',
+  unset: '未确定', llm: '模型判断', user: '人工设置',
 }
 export type TopicAction = 'keep' | 'reset' | Topic
 export function topicPatch(action: TopicAction): Pick<FactEdit, 'topic' | 'reset_topic'> {

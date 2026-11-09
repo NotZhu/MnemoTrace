@@ -172,7 +172,6 @@ HTTP、直连 MCP 和普通 CLI 使用[数据库运行连接](#postgres-数据�
 | FASTEMBED_CACHE_PATH | 默认用户目录下的 .cache/mnemotrace/fastembed，Compose 使用持久缓存卷 |
 | MNEMOTRACE_EMBED_OFFLINE | 设为 1 时只读取已经预热的 FastEmbed 缓存 |
 | MNEMOTRACE_LLM | 空，自动抽取请求在持久化前返回配置错误 |
-| MNEMOTRACE_LLM_TOPICS | 默认开启，设为 0 后只使用主题规则 |
 | MNEMOTRACE_ANSWERER | 复用主 LLM |
 | MNEMOTRACE_VISION_LLM | 复用主 LLM，未配置时图片不生成语义描述 |
 | MNEMOTRACE_MAX_REQUEST_BYTES | 2097152，HTTP 请求体字节上限 |

@@ -716,7 +716,7 @@ def test_sensitive_edit_preserves_history_across_reload(client):
     old_response = client.post("/v1/facts", json=claim, headers=h)
     assert old_response.status_code == 200
     old_id = old_response.json()["id"]
-    current_response = client.post("/v1/facts", json={**claim, "object": "上海"}, headers=h)
+    current_response = client.post("/v1/facts", json={**claim, "object": "上海", "cardinality": "single"}, headers=h)
     assert current_response.status_code == 200
     current_id = current_response.json()["id"]
     url = "/v1/memories?include_sensitive=true&episodes_limit=0"
@@ -773,7 +773,7 @@ def test_metadata_edit_preserves_extracted_source_across_reload(client):
 def test_graph_endpoint_supports_query_live_only_and_limit(client):
     h = hdr("graph_query")
     client.post("/v1/facts", json={"predicate": "works_at", "object": "Acme", "sensitive": False}, headers=h)
-    client.post("/v1/facts", json={"predicate": "works_at", "object": "Moonshot AI", "sensitive": False}, headers=h)
+    client.post("/v1/facts", json={"predicate": "works_at", "object": "Moonshot AI", "sensitive": False, "cardinality": "single"}, headers=h)
     client.post("/v1/facts", json={"predicate": "likes_food", "object": "ramen"}, headers=h)
 
     old_company = client.get("/v1/graph?q=Acme&live_only=true", headers=h).json()
@@ -1153,3 +1153,29 @@ def test_memories_http_echoes_context_and_freezes_time(client, product_service, 
     assert second["evaluated_at"] == first["evaluated_at"]
     assert second["facts_page"]["total"] == 2
     assert [first["facts"][0]["object"], second["facts"][0]["object"]] == ["current", "older"]
+
+
+def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, product_service, product_scope):
+    label = "recall_temporal_baseline"
+    context, _ = product_scope(label)
+    memory = product_service.memory(context)
+    fact = memory.add_fact("Ana", "works_at", "Orbit", valid_at=100)
+    memory.remember_raw("Ana works at Orbit.", "earlier", event_time=100)
+    with memory.dao.read_snapshot() as view:
+        known_at = view.at.timestamp()
+    memory.remember_raw("Ana used to work on a different synthetic project.", "late-arrival", event_time=100)
+    memory.remember_raw("Ana plans a synthetic project.", "future", event_time=400)
+
+    def recall(**options):
+        response = client.post("/v1/recall", json={"query": "Where does Ana work?", **options}, headers=hdr(label))
+        assert response.status_code == 200
+        return response.json()
+
+    for lean in (True, False):
+        for cutoff in ({"as_of": 200}, {"valid_at": 200}, {"known_at": known_at}):
+            recall(lean=lean, **cutoff)
+    assert memory.get_fact(fact.id).access_count == 0
+    assert recall(as_of=200)["full_tokens"] == recall(valid_at=200)["full_tokens"]
+    assert recall(valid_at=200, known_at=known_at)["full_tokens"] == 5
+    assert recall()["full_tokens"] > recall(valid_at=200)["full_tokens"]
+    assert memory.get_fact(fact.id).access_count > 0

@@ -27,14 +27,14 @@ def test_http_topic_write_read_reset_export_and_namespace_isolation(topic_client
     unknown = client.patch(endpoint, headers=headers, json={"topic": "unknown"}).json()
     assert unknown["topic_source"] == "user"
     reset = client.patch(endpoint, headers=headers, json={"reset_topic": True}).json()
-    assert (reset["topic"], reset["topic_source"]) == ("food", "rule")
+    assert (reset["topic"], reset["topic_source"]) == ("unknown", "unset")
     snapshot = client.get("/v1/export", headers=headers).json()
     assert "mnemotrace_export_version" not in snapshot
-    assert snapshot["facts"][0]["topic_source"] == "rule"
+    assert snapshot["facts"][0]["topic_source"] == "unset"
     denied = client.patch(endpoint, headers=hdr("synthetic-beta"),
                           json={"topic": "finance"})
     assert denied.status_code == 404
-    assert client.get("/v1/memories", headers=headers).json()["facts"][0]["topic"] == "food"
+    assert client.get("/v1/memories", headers=headers).json()["facts"][0]["topic"] == "unknown"
 
 
 def test_http_topic_filters_before_paging_and_rejects_invalid_values(topic_client):

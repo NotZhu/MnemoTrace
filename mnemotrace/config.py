@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 from typing import Optional
 
 
@@ -45,7 +44,6 @@ class Config:
     preference_object_filter: bool = True  # 过滤 it、these ideas 等含义不明确的偏好对象
     preference_object_normalization: bool = True  # 将 sound/idea of X 等偏好对象规范化为 X
     preference_reversal_extraction: bool = True  # 抽取 no longer like X 等明确的偏好反转
-    llm_topics: bool = True  # 在已有 LLM 抽取调用中生成主题；关闭后仍使用规则判定主题
     procedural_extraction: bool = True  # 将长期操作步骤抽取为过程类事实
     max_hot_facts: int = 10_000  # 热层事实数量上限；换出的事实保留在冷层
     salience_decay_per_day: float = 0.02  # 适用事实的显著度按有效时间指数衰减的日系数
@@ -64,38 +62,22 @@ class Config:
     summary_max_output_tokens: int = 1024
 
     # --- 上下文与证据 ---
-    evidence_planner: bool = True  # 根据查询意图选择 lean_context 的证据组织方式
-    evidence_budgeting: bool = True  # 根据查询意图分配上下文预算
-    numeric_aggregation_candidates: bool = True  # 为计数或求和查询收集金额、小时等数值证据
-    aggregation_recall_expansion: bool = True  # 扩展聚合查询的证据检索范围
-    aggregation_constraint_filter: bool = True  # 将不满足查询约束的数值候选标记为 EXCLUDE
-    aggregation_pool_boost: bool = True  # 扩大计数、列举和求和查询的会话候选范围
+    evidence_budgeting: bool = True  # 按证据块优先级分配上下文预算
     summary_fallback: bool = True  # 事实无法回答时尝试从会话摘要中作答
     summary_fallback_k: int = 6  # 摘要回退最多检查的候选数量
-    procedural_memory: bool = True  # 在读取结果中提供长期规则和操作步骤
-    procedural_memory_k: int = 6  # 读取过程类事实时默认检查的候选数量
     chain_evidence: bool = True  # 为检索事实附带有限长度的替代与演化链
-    temporal_history_queries: bool = True  # 使用替代链处理之前、过去等历史查询
     chain_current_first: bool = True  # 演化链先展示每个槽位的当前值，再展示历史
     provenance_chunk_promotion: bool = True  # 将事实的来源事件提升为原始文本片段
     provenance_evidence: bool = True  # 为检索事实附带简洁的来源事件
 
-    # --- 图检索与多跳规划 ---
-    max_hops: int = 2  # 图遍历和多跳规划的最大跳数
+    # --- 图检索 ---
+    max_hops: int = 2  # 混合召回中图信号的最大跳数
     graph_proximity: bool = True  # 使用图邻近关系打分并遍历图
     graph_relation_awareness: bool = True  # 根据查询条件调整图关系类型的权重
     graph_path_reinforcement: bool = True  # 多条路径指向同一节点时提高其图得分
     graph_self_anchor: bool = True  # 将第一人称查询锚定到用户自己的图节点
-    graph_entity_alias_anchor: bool = True  # 用唯一的实体名或别名词匹配图节点
-    graph_negative_constraints: bool = True  # 图检索时处理 not、except 等实体排除条件
-    planner_location_chains: bool = True  # 启用地点相关的多跳关系链
-    planner_project_chains: bool = True  # 启用项目与地点相关的多跳关系链
-    planner_llm_decomposition: bool = True  # 有 LLM 时可调用它分解多跳查询；关闭后使用规则
 
     @classmethod
     def from_env(cls) -> Config:
         """Apply the same deployment overrides at each task-processing entry point."""
-        config = cls()
-        if (topics := os.environ.get('MNEMOTRACE_LLM_TOPICS')) is not None:
-            config.llm_topics = topics != '0'
-        return config
+        return cls()

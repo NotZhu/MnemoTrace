@@ -6,6 +6,7 @@ import math
 from copy import deepcopy
 from typing import Any, Callable
 
+from ..types import CARDINALITIES, RETENTIONS, validate_validity_revisions
 from ..topics import TOPICS, TOPIC_SOURCES, validate_topic
 
 Validator = Callable[[Any, str], None]
@@ -104,6 +105,13 @@ _ID_OR_NULL = _nullable(_identifier)
 _SOURCE = _choice("user", "extracted")
 
 
+def _validity_revisions(value: Any, path: str) -> None:
+    try:
+        validate_validity_revisions(value)
+    except ValueError as exc:
+        _fail(path, str(exc))
+
+
 def validate_coverage(value: Any, path: str) -> None:
     _object(value, path)
     if set(value) != {'unit', 'ranges', 'partial', 'policy', 'source', 'original_length', 'input_hash', 'strategy_completed'}:
@@ -156,7 +164,9 @@ _FACT = {
     "sensitive_override": _boolean, "review_pending": _boolean, "approved_at": _TIME_OR_NULL,
     "source_roles": _list(_choice("user", "assistant")),
     "topic": _choice(*TOPICS), "topic_source": _choice(*TOPIC_SOURCES),
+    "cardinality": _choice(*CARDINALITIES), "retention": _choice(*RETENTIONS),
     "invalid_at": _TIME_OR_NULL, "created_at": _number, "expired_at": _TIME_OR_NULL,
+    "validity_revisions": _validity_revisions,
     "supersedes": _ID_OR_NULL, "provenance": _STRINGS, "last_access": _number,
     "access_count": _count,
 }
@@ -230,8 +240,8 @@ def _validate_topic_pair(record: dict, path: str) -> None:
 # A migration carries source identities/history, not the target user's runtime state.
 _IMPORT_FACT = {key: _FACT[key] for key in (
     "id", "subject", "predicate", "object", "text", "source", "category", "sensitive",
-    "topic", "topic_source",
-    "salience", "confidence", "valid_at", "invalid_at", "created_at", "expired_at",
+    "topic", "topic_source", "cardinality", "retention",
+    "salience", "confidence", "valid_at", "invalid_at", "created_at", "expired_at", "validity_revisions",
     "supersedes", "provenance", "source_roles", "sensitive_override", "review_pending", "approved_at",
 )}
 _IMPORT_FACT.update(status=_choice("live", "superseded"), valid_at_h=_string,

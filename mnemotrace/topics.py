@@ -6,7 +6,7 @@ from typing import Literal, get_args
 Topic = Literal["food", "travel", "music", "film_tv", "sports", "reading", "hobbies",
                 "environment", "health", "work", "learning", "technology", "finance",
                 "relationships", "unknown"]
-TopicSource = Literal["unset", "rule", "llm", "user"]
+TopicSource = Literal["unset", "llm", "user"]
 TOPICS = get_args(Topic)
 TOPIC_SOURCES = get_args(TopicSource)
 
@@ -19,5 +19,5 @@ def validate_topic(topic: str, source: str) -> None:
         raise ValueError("topic_source must be one of " + ", ".join(TOPIC_SOURCES))
     if source == "unset" and topic != "unknown":
         raise ValueError("topic_source unset requires topic unknown")
-    if source in {"rule", "llm"} and topic == "unknown":
-        raise ValueError("topic_source rule/llm requires a known topic")
+    if source == "llm" and topic == "unknown":
+        raise ValueError("topic_source llm requires a known topic")

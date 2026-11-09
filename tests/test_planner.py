@@ -1,98 +1,108 @@
-"""多跳规划器测试（AGENTS.md Bet B）。在一张手工搭建的小图上驱动新的 LLM 分解路径及其各层回退，
-因此是确定性的、无需真实模型。
-
-被测链条：Wei -colleague-> Lei -works_at-> Moonshot。两跳问题（"where does Wei's colleague work?"）
-必须解析出 Moonshot。覆盖：LLM 计划沿图行走、捏造的谓词被丢弃、格式错误的输出回退到关键词分解器、
-fact-store 桥接找回缺失边、以及离线路径保持逐字节不变（无桥接、无 LLM）。"""
-from __future__ import annotations
-
-from mnemotrace.config import Config
-from mnemotrace.llm.fake import FakeLLM
-from mnemotrace.retrieve.planner import MultiHopPlanner
-from mnemotrace.store.memory_store import InMemoryGraphStore, InMemoryVectorStore
-from mnemotrace.types import Entity, Fact, Relation
-
-_Q = "Where does Wei's colleague work?"  # 词干化为 wei/colleague/work -> 得到锚点并做关键词分解
+from mnemotrace import MemoryEngine
+from mnemotrace.store.contracts import FactQuery
 
 
-def _build(bridge_last: bool = False):
-    """Wei -colleague-> Lei -works_at-> Moonshot。当 bridge_last=True 时，works_at 这一跳只以
-    Fact 形式存在（没有图边），规划器必须回退到 fact-store 桥接才能补全链条。"""
-    g = InMemoryGraphStore()
-    fs = InMemoryVectorStore()
-    ents = {name: g.upsert_entity(Entity(name=name, user_id="u")) for name in ("Wei", "Lei", "Moonshot")}
-
-    def add(subj, pred, obj, edge=True):
-        f = Fact(subject=subj, predicate=pred, object=obj, user_id="u")
-        fs.upsert(f.id, [0.0], f)  # 规划器从不调用嵌入；哑向量即可
-        if edge:
-            g.add_relation(Relation(subject_id=ents[subj].id, predicate=pred,
-                                    object_id=ents[obj].id, fact_id=f.id))
-        return f
-
-    add("Wei", "colleague", "Lei")
-    add("Lei", "works_at", "Moonshot", edge=not bridge_last)
-    return g, fs
+def test_explicit_path_returns_all_endpoints_and_supporting_facts():
+    memory = MemoryEngine()
+    one = memory.add_fact('user', 'sister', 'Ana')
+    two = memory.add_fact('user', 'sister', 'Bea')
+    three = memory.add_fact('Ana', 'works_at', 'Orbit')
+    four = memory.add_fact('Bea', 'works_at', 'Nadir')
+    result = memory.follow_path('user', ['sister', 'works_at'])
+    assert {path.endpoint: path.facts for path in result.paths} == {
+        'Orbit': (one, three), 'Nadir': (two, four),
+    }
+    assert not result.limitations
+    assert memory.follow_path('user', ['sister', 'lives_in']).paths == ()
+    assert memory.follow_path('user', ['sister', 'works_at'], facts=FactQuery(limit=1)).limitations
+    assert not memory.follow_path('user', ['sister', 'works_at'], facts=FactQuery(exclude_sensitive=True)).paths
 
 
-def _planner(g, fs, llm=None):
-    return MultiHopPlanner(g, fs, Config(), llm=llm)
+def test_statistics_respect_window_and_do_not_limit_count_to_evidence():
+    memory = MemoryEngine()
+    memory.add_fact('Ana', 'visited', 'OrBit', valid_at=1, sensitive=False)
+    memory.add_fact('Bea', 'visited', 'orbit', valid_at=2, sensitive=False)
+    memory.add_fact('Bea', 'visited', 'Nadir', valid_at=3, sensitive=True)
+    memory.add_fact('Other', 'visited', 'Elsewhere', valid_at=2, user_id='other')
+    scope = FactQuery(limit=1, exclude_sensitive=True)
+    result = memory.aggregate_facts('visited', start=1, end=3, facts=scope)
+    assert result.count == 2 and len(result.facts) == 1
+    assert memory.aggregate_facts('visited', operation='count_distinct', facts=scope).count == 1
+    assert memory.aggregate_facts('visited', start=2, end=3, facts=scope).count == 1
 
 
-def test_llm_plan_walks_the_graph():
-    g, fs = _build()
-    llm = FakeLLM(responses=['{"anchor":"Wei","predicates":["colleague","works_at"]}'])
-    res = _planner(g, fs, llm).plan(_Q, "u")
-    assert res is not None
-    assert res.answer == "Moonshot"
-    assert res.chain == ["colleague", "works_at"]
-    assert len(res.facts) >= 2  # 两跳的证据都收集到了
+def test_statistics_return_source_evidence_for_an_unmodeled_event():
+    memory = MemoryEngine()
+    source = memory.add('I bought a synthetic model kit')
+    result = memory.aggregate_facts('bought', query='model kit')
+    assert result.count == 0 and result.limitations == ('source_candidates_only',)
+    assert [candidate.id for candidate in result.candidates] == [source.id]
+    redacted = memory.aggregate_facts('bought', query='model kit', facts=FactQuery(exclude_sensitive=True))
+    assert not redacted.candidates
 
 
-def test_invented_predicate_is_dropped_then_keyword_fallback_recovers():
-    g, fs = _build()
-    # 'bogus_pred' 不在用户的谓词表里 -> 被过滤 -> 只剩 1 个有效谓词 -> LLM 计划被拒绝
-    # -> 确定性的关键词分解器接管，仍能解析出整条链。
-    llm = FakeLLM(responses=['{"anchor":"Wei","predicates":["colleague","bogus_pred"]}'])
-    res = _planner(g, fs, llm).plan(_Q, "u")
-    assert res is not None and res.answer == "Moonshot"
+def test_plain_query_does_not_plan_or_execute_an_aggregate():
+    class NoModelCalls:
+        def complete(self, *args, **kwargs):
+            raise AssertionError("The recall path must not plan a natural-language query")
+
+    memory = MemoryEngine(llm=NoModelCalls())
+    fact = memory.add_fact('Ana', 'visited', 'Orbit')
+    query = 'How many times did Ana visit Orbit?'
+    assert memory.search(query).top().id == fact.id
+    assert 'AGGREGATION' not in memory.lean_context(query, persona=False)
 
 
-def test_malformed_llm_output_falls_back_to_keywords():
-    g, fs = _build()
-    res = _planner(g, fs, FakeLLM(responses=["I cannot help with that."])).plan(_Q, "u")
-    assert res is not None and res.answer == "Moonshot"
+def test_historical_context_filters_sources_before_top_k():
+    from unittest.mock import patch
+
+    memory = MemoryEngine()
+    with patch('time.time', return_value=100):
+        old = memory.add('violet cipher archived in Cedar folder', event_time=10)
+    with patch('time.time', return_value=200):
+        new = memory.add('violet cipher', event_time=20)
+    scope = FactQuery(valid_at=30, known_at=150)
+    query = 'violet cipher'
+    assert memory.retrieve_episodes(query, k=1)[0].id == new.id
+    options = dict(facts=scope, persona=False, n_facts=0)
+    context = memory.lean_context(query, n_chunks=1, n_summaries=0, **options)
+    assert old.id in context and new.id not in context
+
+    for source in (old, new):
+        source.summary = source.content
+        memory._sync_episode(source)
+    for chunks, cascade in ((0, False), (1, True)):
+        context = memory.lean_context(query, n_chunks=chunks, n_summaries=1, cascade=cascade, **options)
+        assert old.id in context and new.id not in context
 
 
-def test_bridge_recovers_a_missing_graph_edge():
-    g, fs = _build(bridge_last=True)  # works_at 只以 Fact 形式存在，没有图边
-    llm = FakeLLM(responses=['{"anchor":"Wei","predicates":["colleague","works_at"]}'])
-    res = _planner(g, fs, llm).plan(_Q, "u")
-    assert res is not None and res.answer == "Moonshot"
-    assert res.chain == ["colleague", "works_at"]
+def test_backfilled_replacements_keep_previous_validity_boundaries():
+    from unittest.mock import patch
+
+    memory = MemoryEngine()
+    for known, valid, value in ((100, 1, 'First'), (200, 800, 'Last'), (300, 400, 'Middle')):
+        with patch('time.time', return_value=known):
+            memory.add_fact('Ana', 'works_at', value, valid_at=valid, cardinality='single')
+
+    from dataclasses import asdict
+
+    restored = MemoryEngine()
+    restored.import_snapshot(dict(facts=[asdict(fact) for fact in memory.fact_store.values()], episodes=[]))
+    for known, expected, end in ((150, 'First', None), (250, 'First', 800), (350, 'Middle', 800)):
+        result = restored.aggregate_facts('works_at', facts=FactQuery(valid_at=600, known_at=known))
+        assert [(fact.object, fact.invalid_at) for fact in result.facts] == [(expected, end)]
 
 
-def test_offline_path_is_unchanged_no_bridge():
-    # llm=None：关键词分解器，桥接默认关闭。缺失边意味着给不出有把握的多跳答案，
-    # 于是 plan() 返回 None，search() 落回 hybrid（既有行为）。
-    g, fs = _build(bridge_last=True)
-    assert _planner(g, fs, None).plan(_Q, "u") is None
+def test_backfill_does_not_withdraw_a_fact_before_it_is_known():
+    from unittest.mock import patch
 
+    memory = MemoryEngine()
+    with patch('time.time', return_value=100):
+        memory.add_fact('Ana', 'works_at', 'First', valid_at=1, cardinality='single')
+    with patch('time.time', return_value=200):
+        memory.add_fact('Ana', 'works_at', 'Second', valid_at=2, cardinality='single')
 
-def test_offline_path_resolves_when_edges_present():
-    g, fs = _build()
-    res = _planner(g, fs, None).plan(_Q, "u")
-    assert res is not None and res.answer == "Moonshot"
-
-
-def test_single_hop_question_is_not_planned():
-    g, fs = _build()
-    # 一个谓词 -> 不是多跳 -> None（交给 hybrid 处理）
-    assert _planner(g, fs, None).plan("Where does Wei live?", "u") is None
-
-
-def test_unknown_anchor_returns_none():
-    g, fs = _build()
-    # LLM 给出的锚点不在图里，查询里也没有实体词 -> 没有锚点 -> None
-    llm = FakeLLM(responses=['{"anchor":"Nobody","predicates":["colleague","works_at"]}'])
-    assert _planner(g, fs, llm).plan("Where does the colleague work and live?", "u") is None
+    before = memory.aggregate_facts('works_at', facts=FactQuery(valid_at=3, known_at=150))
+    after = memory.aggregate_facts('works_at', facts=FactQuery(valid_at=3, known_at=200))
+    assert [(fact.object, fact.invalid_at, fact.expired_at) for fact in before.facts] == [('First', None, None)]
+    assert [fact.object for fact in after.facts] == ['Second']

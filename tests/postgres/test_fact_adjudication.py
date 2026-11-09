@@ -109,7 +109,7 @@ def test_historical_review_round_trips_through_private_export(runtime, spaces, u
     service = MemoryService(runtime, llm=FakeLLM(handler=respond))
     mem = service.memory(context)
     first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False)
-    last = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=30, sensitive=False)
+    last = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=30, sensitive=False, cardinality='single')
     assert mem.remember('Oslo', 'review', event_time=20)['status'] == 'completed'
     conflict, = mem.conflicts()
     assert conflict.older == first.id
@@ -173,9 +173,9 @@ def test_manual_add_links_scheduled_predecessor_and_successor(runtime, spaces, u
     space = spaces.create(user, 'Scheduled manual values')
     mem = Memory(runtime, spaces.authorize(user, space.space_id))
     first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10)
-    last = mem.add_fact('Ana', 'lives_in', 'Oslo', valid_at=FUTURE + 20)
-    middle = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=FUTURE + 10)
-    following = mem.add_fact('Ana', 'lives_in', 'Rome', valid_at=FUTURE + 30)
+    last = mem.add_fact('Ana', 'lives_in', 'Oslo', valid_at=FUTURE + 20, cardinality='single')
+    middle = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=FUTURE + 10, cardinality='single')
+    following = mem.add_fact('Ana', 'lives_in', 'Rome', valid_at=FUTURE + 30, cardinality='single')
     records = [mem.get_fact(fact.id) for fact in (first, middle, last, following)]
     assert [(f.invalid_at, f.supersedes) for f in records] == [
         (FUTURE + 10, None), (FUTURE + 20, first.id), (FUTURE + 30, middle.id), (None, last.id),

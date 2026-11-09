@@ -13,7 +13,7 @@ function setup(pageName) {
     bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
     external: ['react', 'react/jsx-runtime', 'lucide-react', 'react-router-dom', '../components/*', '../hooks/queries', '../store/preferences', '../store/auth', '../lib/api'],
   }).outputFiles[0].text
-  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', display: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', topic: 'food', topic_source: 'rule' }
+  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', display: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', topic: 'food', topic_source: 'llm' }
   const finding = { kind: 'fragment', fact_id: fact.id, ...fact }
   const results = {
     usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', summary_system: 'synthetic', persona_system: 'synthetic' } } },
@@ -272,7 +272,7 @@ for (const [action, fields] of [['keep', {}], ['food', { topic: 'food' }], ['unk
     const s = setup('Facts')
     s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
     const editor = () => s.find(n => n.type === 'TopicEditor')
-    assert.equal(editor().props.current.topic_source, 'rule')
+    assert.equal(editor().props.current.topic_source, 'llm')
     editor().props.onChange(action)
     s.find(n => n.type === 'Button' && n.props.loading !== undefined).props.onClick()
     const mutation = s.mutations.find(m => m.name === 'useEditFact')

@@ -31,14 +31,14 @@ export function TopicEditor({ current, value, onChange, disabled = false }: {
       <select id={id} aria-describedby={`${id}-hint`} className="input w-full"
         value={value} onChange={event => onChange(event.target.value as TopicAction)} disabled={disabled}>
         <option value="keep">{current ? '不修改主题' : '自动判断'}</option>
-        {current && <option value="reset">重新判断</option>}
+        {current && <option value="reset">清除主题</option>}
         {TOPIC_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
       <p id={`${id}-hint`} className="text-xs leading-relaxed text-ghost">
-        {value === 'reset' ? '保存后按当前内容使用离线规则重新判断，可能仍为未知，不调用模型。'
+        {value === 'reset' ? '保存后主题会清为未知。'
           : value !== 'keep' ? '保存为人工主题；选择“未知”也会保留为人工设置。'
-          : current ? '仅修改其他元数据会保留当前主题；正文变化后按规则重新判断。'
-          : '未指定时按内容使用规则判断主题。'}
+          : current ? '仅修改其他元数据会保留当前主题；正文变化后主题清为未知。'
+          : '未指定时主题为未知。'}
       </p>
     </div>
   )

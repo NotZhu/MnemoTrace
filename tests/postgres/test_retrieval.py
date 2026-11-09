@@ -44,9 +44,9 @@ def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, s
                            sql.scope).fetchall()
     fresh = Memory(runtime, context)
     assert fresh.search('绿茶').answer() == '绿茶'
-    result = fresh.search('我的姐姐在哪里工作？')
-    assert result.via == 'multi-hop' and result.answer() == '月亮公司'
-    assert [fact.predicate for fact in result.facts] == ['sister', 'works_at']
+    result = fresh.follow_path('user', ['sister', 'works_at'])
+    assert result.paths[0].endpoint == '月亮公司'
+    assert [fact.predicate for fact in result.paths[0].facts] == ['sister', 'works_at']
     assert fresh.retrieve_episodes('绿茶').episodes[0].id == original.id
     assert fresh.search('Where do I live?').answer() == 'Shenzhen'
     with fresh.dao.read_snapshot() as view:
@@ -72,7 +72,7 @@ def test_source_bm25_rejects_english_stop_word_only_matches(memory):
 
 def test_exact_vector_and_bm25_use_full_scoped_corpus(memory, runtime, spaces, user, accounts):
     old = memory.add_fact('Ana', 'works_at', 'Acme', valid_at=100)
-    current = memory.add_fact('Ana', 'works_at', 'Orbit', valid_at=200)
+    current = memory.add_fact('Ana', 'works_at', 'Orbit', valid_at=200, cardinality='single')
     repeat = memory.add_fact('Bo', 'likes', 'Orbit Orbit', valid_at=150)
     sibling = spaces.authorize(user, spaces.create(user, 'Other space').space_id)
     sibling_memory = Memory(runtime, sibling)
@@ -94,7 +94,7 @@ def test_exact_vector_and_bm25_use_full_scoped_corpus(memory, runtime, spaces, u
                 assert Corpus(view, replace(query, embedding_model='other'), RecordKind.FACT).vector_scores() == {}
             assert Corpus(view, replace(query, vector=(0.0,) * len(vector)), RecordKind.FACT).vector_scores() == {}
         assert memory.search('Where does Ana work?').answer() == 'Orbit'
-        assert memory.search('Where did Ana work before Orbit?').answer() == 'Acme'
+        assert memory.search('Where did Ana work?', facts=FactQuery(state=FactState.HISTORY)).answer() == 'Acme'
         assert 'Other space' not in memory.lean_context('Where does Ana work?').context
         with pytest.raises(SpaceNotFound):
             memory.recall_multi((sibling.space_id, unrelated.space_id), 'Orbit')
@@ -102,22 +102,20 @@ def test_exact_vector_and_bm25_use_full_scoped_corpus(memory, runtime, spaces, u
         accounts.delete_user(other)
 
 
-def test_graph_alias_multihop_exclusion_and_known_at(memory):
+def test_graph_alias_path_and_known_at(memory):
     memory.add_fact('Wei', 'colleague', 'Lin', valid_at=100)
     job = memory.add_fact('Lin', 'works_at', 'Orbit', valid_at=100)
     memory.add_fact('Orbit', 'based_in', 'Lisbon', valid_at=100)
     memory.set_entity_aliases('Orbit', ['Orbital Lab'])
     orbit, = memory.graph_entities('Orbital Lab')
     assert {edge.fact_id for edge in memory.graph_neighbors(orbit.id, direction='in')} == {job.id}
-    assert memory.search("Where does Wei's colleague work?").answer() == 'Orbit'
-    result = memory.search('Lin works except Orbit')
-    assert all(fact.id != job.id for fact in result.facts)
+    assert memory.follow_path('Wei', ['colleague', 'works_at']).paths[0].endpoint == 'Orbit'
+    assert memory.follow_path('Orbital Lab', ['based_in', 'unknown']).paths == ()
     memory.add_fact('Former Orbit', 'based_in', 'Lisbon', valid_at=100)
     memory.set_entity_aliases('Former Orbit', ['Old Lab'])
     former, = memory.graph_entities('Old Lab')
     memory.merge_entities(orbit.id, former.id)
-    result = memory.search('Lin works except Old Lab')
-    assert all(fact.id != job.id for fact in result.facts)
+    assert memory.follow_path('Wei', ['colleague', 'works_at']).paths[0].endpoint == 'Orbit'
     assert memory.graph_relations(job.id, facts=FactQuery(valid_at=150, known_at=150)) == ()
     assert memory.graph_relations(job.id, facts=FactQuery(valid_at=150))
     original, = memory.graph_relations(job.id)
@@ -141,9 +139,7 @@ def test_shared_alias_is_resolved_independently_of_candidate_budget(memory):
     query = memory._query('except Orbit', top_k=1, facts=FactQuery(limit=1))
     with memory.dao.read_snapshot() as view:
         graph = RetrievalGraph(view, query)
-        graph.exclude((orbit.id,))
         assert graph.get_entity(memory.context.user_id, 'Shared') is None
-        assert 'shared' not in graph.excluded_names()
         unanchored = RetrievalGraph(view, replace(query, text=''))
         assert unanchored.get_entity(memory.context.user_id, 'Orbit').id == orbit.id
     memory.merge_entities(orbit.id, elsewhere.id)
@@ -173,31 +169,6 @@ def test_limited_candidates_can_rank_both_published_facts_in_a_slot(memory):
         assert corpus.lexical_scores() == pytest.approx({shadow.id: expected[shadow.id]})
 
 
-def test_vector_and_scalar_budgets_exclude_graph_matches_before_cutoff(memory):
-    allowed = memory.add_fact('Ana', 'likes', 'Clover', valid_at=100)
-    excluded = memory.add_fact('Ana', 'likes', 'Orbit', valid_at=200)
-    with memory.dao.read_snapshot() as view:
-        snapshot, record = view.snapshot, view.get(RecordKind.FACT, excluded.id)
-    memory._commit(snapshot, writes=(memory._write(replace(domain(record), salience=100), record),))
-    orbit, = memory.graph_entities('Orbit')
-    query = memory._query(excluded.text, top_k=1, facts=FactQuery(limit=1))
-    with memory.dao.read_snapshot() as view:
-        corpus = Corpus(view, query, RecordKind.FACT, excluded=(orbit.id,))
-        assert tuple(corpus.vector_scores()) == (allowed.id,)
-        assert corpus.scalar_candidates() == (allowed.id,)
-
-
-def test_graph_exclusion_covers_unprojected_facts_with_an_excluded_alias(memory):
-    allowed = memory.add_fact('Ana', 'likes', 'Clover', valid_at=100)
-    memory.add_fact('Bo', 'likes', 'Orbit', valid_at=200)
-    memory.set_entity_aliases('Orbit', ['Orbital Lab'])
-    hidden = memory.add_fact('Orbital Lab', 'procedure', 'Synthetic notes', valid_at=300)
-    assert memory.graph_relations(hidden.id) == ()
-    query = memory._query('except Orbit', top_k=1, facts=FactQuery(limit=1))
-    with memory.dao.read_snapshot() as view:
-        assert tuple(candidate.record.ref.record_id for candidate in view.candidates(query).candidates) == (allowed.id,)
-
-
 def test_explicit_candidate_limit_is_independent_of_output_count(memory):
     request = memory._query('Clover', top_k=10, facts=FactQuery(limit=1))
     assert request.facts.limit == 1
@@ -205,10 +176,23 @@ def test_explicit_candidate_limit_is_independent_of_output_count(memory):
 
 def test_redacted_aggregation_does_not_include_original_source_evidence(memory):
     memory.remember_raw('I recently finished a Tamiya 1/48 scale Spitfire Mk.V model kit.', 'chat', event_time=100)
-    query = 'How many model kits have I worked on or bought?'
-    assert 'Spitfire' in memory.lean_context(query).context
-    context = memory.lean_context(query, redact_sensitive=True).context
-    assert 'Spitfire' not in context and 'AGGREGATION CANDIDATES' not in context
+    result = memory.aggregate_facts('bought', query='Spitfire model kit')
+    assert result.count == 0 and result.candidates
+    assert 'source_candidates_only' in result.limitations
+    hidden = memory.aggregate_facts('bought', query='Spitfire model kit',
+                                    facts=FactQuery(exclude_sensitive=True))
+    assert not hidden.candidates
+
+
+def test_aggregate_counts_full_snapshot_and_respects_time_and_redaction(memory):
+    memory.add_fact('Ana', 'visited', 'Orbit', valid_at=10, sensitive=False)
+    memory.add_fact('Bea', 'visited', 'ORBIT', valid_at=20, sensitive=False)
+    memory.add_fact('Bea', 'visited', 'Elsewhere', valid_at=30, sensitive=True)
+    scope = FactQuery(limit=1, exclude_sensitive=True)
+    matches = memory.aggregate_facts('visited', start=10, end=30, facts=scope)
+    assert matches.count == 2 and len(matches.facts) == 1
+    assert memory.aggregate_facts('visited', operation='count_distinct', facts=scope).count == 1
+    assert memory.aggregate_facts('visited', start=20, end=30, facts=scope).count == 1
 
 
 def test_historical_context_excludes_working_memory_created_later(memory):
@@ -413,3 +397,74 @@ def test_snapshot_keeps_all_signals_at_one_version_and_failure_stays_visible(mem
         second.close()
         with pytest.raises(DatabaseUnavailable):
             writer.search('Clover')
+
+
+def test_http_structured_queries_use_authorized_space_and_redaction(product_client, product_scope):
+    context, key = product_scope()
+    space_id = context.space_id
+    headers = {'Authorization': f'Bearer {key}'}
+
+    def post(path, **body):
+        return product_client.post(path, json={'space_id': space_id, **body}, headers=headers)
+
+    for subject, predicate, object_, sensitive in (
+        ('user', 'sister', 'Ana', False),
+        ('Ana', 'works_at', 'Orbit', False),
+        ('Ana', 'works_at', 'Secret', True),
+    ):
+        assert post('/v1/facts', subject=subject, predicate=predicate,
+                    object=object_, sensitive=sensitive).status_code == 200
+    result = post('/v1/aggregate', predicate='works_at', redact_sensitive=True, limit=1)
+    assert result.status_code == 200
+    assert result.json()['count'] == 1
+    result = post('/v1/follow-path', anchor='user', predicates=['sister', 'works_at'], redact_sensitive=True)
+    assert result.status_code == 200
+    assert [path['endpoint'] for path in result.json()['paths']] == ['Orbit']
+    assert post('/v1/follow-path', anchor='user', predicates=['sister']).status_code == 422
+    foreign, _ = product_scope('foreign')
+    denied = product_client.post('/v1/aggregate', json={'space_id': foreign.space_id, 'predicate': 'works_at'},
+                                 headers=headers)
+    assert denied.status_code in (403, 404)
+
+
+def test_explicit_path_disambiguates_only_visible_anchors(memory):
+    memory.add_fact('Ana', 'sister', 'Cora', sensitive=False)
+    memory.add_fact('Bea', 'sister', 'Cora', sensitive=True)
+    memory.add_fact('Cora', 'works_at', 'Orbit', sensitive=False)
+    memory.set_entity_aliases('Ana', ['Shared'])
+    memory.set_entity_aliases('Bea', ['Shared'])
+    with pytest.raises(ValueError, match='canonical entity name'):
+        memory.follow_path('Shared', ['sister', 'works_at'])
+    result = memory.follow_path('Shared', ['sister', 'works_at'], facts=FactQuery(exclude_sensitive=True))
+    assert result.paths[0].endpoint == 'Orbit'
+    assert result.paths[0].facts[0].subject == 'Ana'
+
+
+def test_backfilled_validity_is_read_at_the_selected_knowledge_time(memory, cluster):
+    from time import time
+
+    base = time()
+    memory.add_fact('Ana', 'works_at', 'First', valid_at=base - 100, cardinality='single')
+    with memory.dao.read_snapshot() as view:
+        first_known = view.at.timestamp()
+    memory.add_fact('Ana', 'works_at', 'Last', valid_at=base + 800, cardinality='single')
+    with memory.dao.read_snapshot() as view:
+        last_known = view.at.timestamp()
+    memory.add_fact('Ana', 'works_at', 'Middle', valid_at=base + 400, cardinality='single')
+    with memory.dao.read_snapshot() as view:
+        middle_known = view.at.timestamp()
+
+    with Database(cluster.runtime) as reopened:
+        fresh = Memory(reopened, memory.context)
+        for known, expected, end in ((first_known, 'First', None), (last_known, 'First', base + 800),
+                                     (middle_known, 'Middle', base + 800)):
+            scope = FactQuery(valid_at=base + 600, known_at=known)
+            fact, = fresh.aggregate_facts('works_at', facts=scope).facts
+            assert fact.object == expected
+            if end is None:
+                assert fact.invalid_at is None
+            else:
+                assert fact.invalid_at == pytest.approx(end, abs=1e-6, rel=0)
+            assert fresh.search('Where does Ana work?', facts=scope).top().id == fact.id
+        history = FactQuery(state=FactState.HISTORY, valid_at=base + 600, known_at=last_known)
+        assert fresh.aggregate_facts('works_at', facts=history).count == 0

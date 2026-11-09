@@ -9,7 +9,6 @@ from .consolidate.decay import reinforce
 from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual
 from .consolidate.pipeline import digest
 from .retrieve import postgres as retrieval
-from .retrieve.evidence import plan_evidence
 from .store.contracts import (
     ChangeSet, CommitConditions, EmbeddingWrite, EntityMerge, FactQuery, MessageInput, OperationKind,
     RecordKind, RecordRef, RecordWrite, RetrievalQuery, SourceLink, StoredRecord, validate_erasures,
@@ -265,24 +264,38 @@ class Memory:
         """Retrieve and answer from a consistent database snapshot."""
         count = self._config.top_k if top_k is None else top_k
         request = self._query(query, top_k=count, as_of=as_of, facts=facts)
-        decomposition = revision = None
-        llm = self._processing.llm
-        if (llm is not None and self._config.planner_llm_decomposition and not request.facts.exclude_sensitive
-                and plan_evidence(query).multi_hop):
-            with self.dao.read_snapshot() as view:
-                revision = view.snapshot.core_revision
-                vocabulary = retrieval.graph_vocabulary(view.focused(), request)
-            decomposition = retrieval.decompose(llm, query, vocabulary)
         with self.dao.read_snapshot() as view:
-            result = retrieval.search(
-                view.focused(), request, self._config, count, self._embedder is not None,
-                decomposition if revision == view.snapshot.core_revision else None,
-            )
+            result = retrieval.search(view.focused(), request, self._config, count, self._embedder is not None)
             snapshot = view.snapshot
-            hits = result.facts if result.via == 'multi-hop' else result.facts[:1]
-            records = tuple(view.get(FACT, fact.id) for fact in hits) if not result.abstained else ()
+            hits = result.facts[:1] if request.facts.is_current_view and not result.abstained else ()
+            records = tuple(view.get(FACT, fact.id) for fact in hits)
         self._reinforce(snapshot, records)
         return result
+
+    def aggregate_facts(self, predicate, *, operation='count', subject=None, start=None, end=None,
+                        query=None, facts=None):
+        """Count structured facts and optionally recall source candidates for an empty match."""
+        from .retrieve.structured import validate_aggregate
+
+        scope = FactQuery(limit=10) if facts is None else facts
+        if not isinstance(scope, FactQuery):
+            raise ValueError('Expected structured fact conditions')
+        scope = replace(scope, predicate=predicate, subject=subject if subject is not None else scope.subject)
+        validate_aggregate(operation, scope, start, end, query)
+        evidence = None
+        if query is not None and not scope.exclude_sensitive:
+            evidence = self._query(query, top_k=scope.limit, facts=scope)
+        with self.dao.read_snapshot() as view:
+            return retrieval.aggregate_facts(view.focused(), scope, operation, start, end, evidence)
+
+    def follow_path(self, anchor, predicates, *, facts=None):
+        """Traverse an explicit relation path within one authorized snapshot."""
+        from .retrieve.structured import validate_path
+
+        scope = FactQuery(limit=20) if facts is None else facts
+        predicates = validate_path(anchor, predicates, scope)
+        with self.dao.read_snapshot() as view:
+            return retrieval.follow_path(view.focused(), scope, anchor, predicates)
 
     def _reinforce(self, snapshot, records):
         if not records or not self._config.access_boost:
@@ -306,7 +319,7 @@ class Memory:
     def lean_context(self, query: str, *, as_of: float | None = None, n_facts: int = 15, n_chunks: int = 2,
                      n_summaries: int = 20, char_budget: int = 60_000, session_id: str | None = None,
                      redact_sensitive: bool = False, facts: FactQuery | None = None,
-                     reinforce_hits: bool = False) -> retrieval.ContextResult:
+                     reinforce_hits: bool = False, include_full_tokens: bool = False) -> retrieval.ContextResult:
         if (any(type(value) is not int or not 0 <= value <= 1000 for value in (n_facts, n_chunks, n_summaries))
                 or type(char_budget) is not int or char_budget < 0):
             raise ValueError('Invalid context budget')
@@ -318,15 +331,16 @@ class Memory:
                             valid_at=as_of, known_at=as_of, exclude_sensitive=redact_sensitive,
                             limit=max(count, self._config.ann_pool))
         request = self._query(query, top_k=count, facts=facts)
-        need = plan_evidence(query, aggregation_recall_expansion=self._config.aggregation_recall_expansion)
-        subqueries = need.subqueries if need.aggregation else ()
-        related = tuple(self._query(text, top_k=1, facts=facts) for text in subqueries if text != query)
         with self.dao.read_snapshot(session_id) as view:
             result = retrieval.context(view.focused(), request, self._config, self._embedder is not None,
                                        n_facts=n_facts, n_chunks=n_chunks, n_summaries=n_summaries,
-                                       char_budget=char_budget, session_id=session_id, evidence_queries=related)
+                                       char_budget=char_budget, session_id=session_id)
             snapshot = view.snapshot
-            records = view.facts_by_ids(result.fact_ids, facts) if reinforce_hits and result.fact_ids else ()
+            records = ()
+            if reinforce_hits and facts.is_current_view and result.fact_ids:
+                records = view.facts_by_ids(result.fact_ids, facts)
+            if include_full_tokens and not facts.exclude_sensitive:
+                result = replace(result, full_tokens=view.full_context_tokens(facts))
         self._reinforce(snapshot, records)
         return result
 
@@ -363,12 +377,19 @@ class Memory:
         identifier(entity_id)
         with self.dao.read_snapshot() as view:
             entity_id = GraphProjection(view._sql).canonical(entity_id)
-            return tuple(map(domain, view.graph_edges((entity_id,), facts, direction=direction)))
+            edges = tuple(map(domain, view.graph_edges((entity_id,), facts, direction=direction)))
+            visible = {row.ref.record_id: domain(row).as_known_at(facts.known_at)
+                       for row in view.facts_by_ids(tuple(edge.fact_id for edge in edges), facts)}
+            return tuple(replace(edge, invalid_at=visible[edge.fact_id].invalid_at) for edge in edges)
 
     def graph_relations(self, fact_id, *, facts=FactQuery()):
         identifier(fact_id)
         with self.dao.read_snapshot() as view:
-            return tuple(map(domain, view.relations(fact_id))) if view.facts_by_ids((fact_id,), facts) else ()
+            records = view.facts_by_ids((fact_id,), facts)
+            if not records:
+                return ()
+            fact = domain(records[0]).as_known_at(facts.known_at)
+            return tuple(replace(domain(row), invalid_at=fact.invalid_at) for row in view.relations(fact_id))
 
     def get_episode(self, episode_id):
         return self._get(SOURCE, episode_id)
@@ -383,10 +404,10 @@ class Memory:
             return tuple(map(domain, view.list_sources(**filters)))
 
     def add_fact(self, subject, predicate, object, *, valid_at=None, sensitive=None,
-                 category=None, topic=None, return_existing=False):
+                 category=None, topic=None, cardinality="unknown", retention="unknown", return_existing=False):
         """Return the new fact. For a covered assertion, optionally return the stored fact."""
         fact = build_manual_fact(subject, predicate, object, self.context.user_id,
-                                 valid_at, sensitive, category, topic)
+                                 valid_at, sensitive, category, topic, cardinality, retention)
         with self.dao.read_snapshot() as view:
             snapshot = view.snapshot
             at = view.at.timestamp()
@@ -412,7 +433,8 @@ class Memory:
     def facts(self, query=None):
         with self.dao.read_snapshot() as view:
             records = view.facts() if query is None else view.facts(query)
-            return tuple(map(domain, records))
+            known_at = None if query is None else query.known_at
+            return tuple(domain(record).as_known_at(known_at) for record in records)
 
     def history(self, subject, predicate=None, *, source_ids=()):
         with self.dao.read_snapshot() as view:
@@ -420,9 +442,10 @@ class Memory:
         return tuple(sorted(map(domain, records), key=lambda fact: (time_key(fact.valid_at), fact.id)))
 
     def update_fact(self, fact_id, *, subject=None, predicate=None, object=None,
-                    sensitive=None, category=None, statement=None, topic=None, reset_topic=False):
+                    sensitive=None, category=None, statement=None, topic=None, reset_topic=False, cardinality=None, retention=None):
         with self.dao.read_snapshot() as view:
             snapshot, old = view.snapshot, view.get(FACT, fact_id)
+            at = view.at.timestamp()
         if old is None:
             return None
         fact = domain(old)
@@ -430,7 +453,7 @@ class Memory:
             return None
         before = asdict(fact)
         apply_manual_edit(fact, subject, predicate, object, sensitive, category,
-                          statement, topic, reset_topic)
+                          statement, topic, reset_topic, cardinality, retention, at=at)
         if asdict(fact) == before:
             return fact
         text_changed = fact.text != before['text']

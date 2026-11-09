@@ -20,7 +20,7 @@ TIMES = frozenset(('event_time', 'ingested_at', 'created_at', 'valid_at', 'inval
 SCOPE = 'user_id = %s AND space_id = %s'
 ROW_SCOPE = 'r.user_id = %s AND r.space_id = %s'
 JSON_COLUMNS = {'metadata', 'coverage', 'summary_coverage', 'settings', 'stats',
-                'input', 'result', 'source_versions'}
+                'input', 'result', 'source_versions', 'validity_revisions'}
 
 
 def anchor_terms(name, aliases):

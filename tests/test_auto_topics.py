@@ -33,62 +33,19 @@ def extracted(row, config=None):
     return fact, model
 
 
-@pytest.mark.parametrize(("predicate", "obj", "expected"), [
-    ("prefers", "茶", "food"), ("prefers", "晚餐", "food"), ("prefers", "早饭", "food"),
-    ("prefers", "羽毛球", "sports"), ("prefers", "看书", "reading"), ("prefers", "短片", "film_tv"),
-    ("uses", "storage engine", "technology"), ("prefers", "流行的编程框架", "technology"),
-    ("prefers", "整理参考资料", "unknown"), ("prefers", "保留原始对话片段", "unknown"),
-    ("prefers", "team collaboration", "unknown"), ("prefers", "秘书", "unknown"),
-    ("prefers", "有游泳池的酒店", "travel"), ("prefers", "数据库与晚餐", "unknown"),
-    ("prefers", "有晚餐和游泳池的酒店", "unknown"),
-    ("works_at", "Storage Labs", "work"), ("employer", "SyntheticCo", "work"),
-    ("occupation", "synthetic-role", "work"), ("job", "synthetic-role", "work"),
-    ("profession", "synthetic-role", "work"), ("studied_at", "Synthetic School", "learning"),
-    ("graduated_from", "Synthetic School", "learning"), ("education", "synthetic-degree", "learning"),
-    ("degree", "synthetic-degree", "learning"), ("has_disease", "synthetic-value", "health"),
-    ("allergic_to", "花生", "health"), ("cannot_eat", "花生", "health"),
-    ("salary", "24", "finance"), ("bank_account", "synthetic-value", "finance"),
-    ("married_to", "Synthetic Name", "relationships"), ("friends_with", "Synthetic Name", "relationships"),
-    ("favorite_music", "茶", "music"), ("FAVOURITE--MOVIES", "Synthetic Title", "film_tv"),
-    ("favorite_book", "tea history", "reading"), ("favorite_drink", "synthetic-value", "food"),
-    ("favorite_sport", "synthetic-value", "sports"), ("favorite_hotel", "synthetic-value", "travel"),
-    ("prefers_quiet_environments", "synthetic-value", "environment"),
-    ("age", "24", "unknown"), ("name", "Synthetic Name", "unknown"),
-    ("lives_in", "北京", "unknown"), ("uses_bank_api", "synthetic-value", "unknown"),
-    ("prefers", "Python 运行环境", "technology"), ("prefers", "股票", "finance"),
-])
-def test_rule_topics_use_relations_or_unambiguous_object_evidence(predicate, obj, expected):
-    mem = MemoryEngine()
-    fact = mem.add_fact("Age Health Bank Lab", predicate, obj)
-    assert (fact.topic, fact.topic_source) == (expected, "unset" if expected == "unknown" else "rule")
-    if obj == "storage engine":
-        assert fact.category == "其他" and fact.sensitive is True
-
-
-@pytest.mark.parametrize("obj", ["黑茶", "普洱", "白茶", "龙井", "披萨", "寿司"])
-def test_food_topic_additions_drive_profile_grouping_and_preserve_conflict_abstention(obj):
-    mem = MemoryEngine()
-    fact = mem.add_fact("user", "prefers", obj)
-    assert (fact.topic, fact.topic_source) == ("food", "rule")
-    item, = mem.structured_profile()["preferences"]["饮食"]
-    assert item["fact_id"] == fact.id
-    conflict = MemoryEngine().add_fact("user", "prefers", f"{obj}与数据库")
-    assert (conflict.topic, conflict.topic_source) == ("unknown", "unset")
-
-
 @pytest.mark.parametrize(("row", "expected"), [
     ({"object": "Inception", "topic": "film_tv"}, ("film_tv", "llm")),
     ({"object": "茶", "topic": "unknown"}, ("unknown", "unset")),
-    ({"object": "茶"}, ("food", "rule")),
-    ({"object": "茶", "topic": "音乐"}, ("food", "rule")),
-    ({"object": "茶", "topic": "Music"}, ("food", "rule")),
-    ({"object": "茶", "topic": ""}, ("food", "rule")),
-    ({"object": "茶", "topic": None}, ("food", "rule")),
-    ({"object": "茶", "topic": []}, ("food", "rule")),
-    ({"object": "茶", "topic": {}}, ("food", "rule")),
-    ({"object": "茶", "topic": True}, ("food", "rule")),
-    ({"predicate": "favorite_music", "object": "茶", "topic": "food"}, ("music", "rule")),
-    ({"predicate": "favorite_music", "object": "茶", "topic": "unknown"}, ("music", "rule")),
+    ({"object": "茶"}, ("unknown", "unset")),
+    ({"object": "茶", "topic": "音乐"}, ("unknown", "unset")),
+    ({"object": "茶", "topic": "Music"}, ("unknown", "unset")),
+    ({"object": "茶", "topic": ""}, ("unknown", "unset")),
+    ({"object": "茶", "topic": None}, ("unknown", "unset")),
+    ({"object": "茶", "topic": []}, ("unknown", "unset")),
+    ({"object": "茶", "topic": {}}, ("unknown", "unset")),
+    ({"object": "茶", "topic": True}, ("unknown", "unset")),
+    ({"predicate": "favorite_music", "object": "茶", "topic": "food"}, ("food", "llm")),
+    ({"predicate": "favorite_music", "object": "茶", "topic": "unknown"}, ("unknown", "unset")),
 ])
 def test_llm_topics_preserve_facts_and_respect_precedence(row, expected):
     fact, _ = extracted(row)
@@ -102,14 +59,6 @@ def test_model_labels_are_independent_of_server_owned_origin():
     assert fact.source == "extracted" and fact.category == "健康" and fact.sensitive is True
 
 
-@pytest.mark.parametrize(("enabled", "expected"), [(True, ("music", "llm")), (False, ("food", "rule"))])
-def test_config_controls_llm_topics_without_another_call(enabled, expected):
-    fact, model = extracted({"object": "茶", "topic": "music"}, Config(llm_topics=enabled))
-    assert (fact.topic, fact.topic_source) == expected
-    assert ("附加主题协议" in model.calls[0][1]) is enabled
-    assert model.calls[0][2] == {}
-
-
 @pytest.mark.parametrize("hint", [None, "unknown", "music"])
 def test_topics_follow_final_normalized_objects_without_losing_abstention(hint):
     row = {"predicate": "likes", "object": "the idea of 茶"}
@@ -118,7 +67,7 @@ def test_topics_follow_final_normalized_objects_without_losing_abstention(hint):
     fact, _ = extracted(row)
     assert fact.object == "茶"
     assert (fact.topic, fact.topic_source) == {
-        None: ("food", "rule"), "unknown": ("unknown", "unset"), "music": ("music", "llm"),
+        None: ("unknown", "unset"), "unknown": ("unknown", "unset"), "music": ("music", "llm"),
     }[hint]
     fact, _ = extracted({"predicate": "likes", "object": "the idea of 茶"},
                          Config(preference_object_normalization=False))
@@ -130,9 +79,9 @@ def test_manual_updates_do_not_call_models():
     mem = MemoryEngine(llm=model)
     fact = mem.add_fact("user", "prefers", "茶", topic="unknown")
     mem.update_fact(fact.id, reset_topic=True)
-    assert (fact.topic, fact.topic_source) == ("food", "rule")
+    assert (fact.topic, fact.topic_source) == ("unknown", "unset")
     mem.update_fact(fact.id, object="羽毛球")
-    assert (fact.topic, fact.topic_source) == ("sports", "rule")
+    assert (fact.topic, fact.topic_source) == ("unknown", "unset")
     mem.update_fact(fact.id, object="看书", topic="music")
     assert (fact.topic, fact.topic_source) == ("music", "user")
     assert model.calls == []
@@ -146,7 +95,7 @@ def test_reset_is_metadata_only_even_on_historical_facts():
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
     before = asdict(fact)
     mem.update_fact(fact.id, reset_topic=True)
-    assert asdict(fact) == {**before, "topic": "food", "topic_source": "rule"}
+    assert asdict(fact) == {**before, "topic": "unknown", "topic_source": "unset"}
 
 
 def test_invalid_topics_are_reported_without_echoing_payloads(caplog):
@@ -209,7 +158,7 @@ def test_outcome_edits_recompute_using_statement_and_reason():
     fact.embedding = mem.embedder.embed(fact.text)
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
     mem.update_fact(fact.id, statement="采用另一项已验证的合成方案来检查实际效果")
-    assert (fact.topic, fact.topic_source, fact.category) == ("technology", "rule", OUTCOME_CATEGORY)
+    assert (fact.topic, fact.topic_source, fact.category) == ("unknown", "unset", OUTCOME_CATEGORY)
 
 
 def test_outcome_reset_ignores_session_even_with_default_rendered_text():
@@ -217,13 +166,6 @@ def test_outcome_reset_ignores_session_even_with_default_rendered_text():
     fact = mem.add_fact("数据库索引合成会话", "lesson", "采用一项已经验证的合成实现方案", topic="music")
     mem.update_fact(fact.id, reset_topic=True)
     assert (fact.topic, fact.topic_source) == ("unknown", "unset")
-
-
-@pytest.mark.parametrize("obj", ["STORAGE ENGINE", "storage-engine", "storage_engine",
-                                 "storage  engine", "storage\tengine"])
-def test_automatic_topics_share_separator_boundaries(obj):
-    fact = MemoryEngine().add_fact("user", "uses", obj)
-    assert (fact.topic, fact.topic_source) == ("technology", "rule")
 
 
 @pytest.mark.parametrize("obj", ["teammate", "engineer", "bookkeeping", "流行", "资料片段"])

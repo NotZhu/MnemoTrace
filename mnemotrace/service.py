@@ -19,7 +19,7 @@ from .store.contracts import FactQuery, FactState, MessageInput
 from .store.postgres import Database, DatabaseConfig, Spaces
 from .store.postgres.errors import MessageConflict
 from .store.postgres.records import CONFLICT, ENTITY, FACT, RELATION, SOURCE, domain
-from .util import fmt_date, fmt_datetime
+from .util import fmt_date, fmt_datetime, now
 
 
 class MemoryRevisionChanged(ValueError):
@@ -86,13 +86,24 @@ def _bounds(limit, offset=0, *, minimum=1):
     return min(500, max(minimum, 100 if limit is None else limit)), max(0, offset)
 
 
-def _fact_view(fact, at):
+def _recall_conditions(as_of, state, valid_at, known_at, redact_sensitive):
+    if as_of is not None:
+        if valid_at is not None or known_at is not None:
+            raise ValueError('Use either as_of or explicit time conditions')
+        valid_at = as_of
+    return FactQuery(state=state, valid_at=valid_at, known_at=known_at, exclude_sensitive=redact_sensitive)
+
+
+def _fact_view(fact, at, *, known_at=None):
     row = asdict(fact)
-    for key in ('embedding', 'user_id'):
+    for key in ('embedding', 'user_id', 'validity_revisions'):
         row.pop(key, None)
+    known = at if known_at is None else known_at
+    live = (fact.is_published(known) and fact.is_valid_at(at)
+            and (fact.expired_at is None or fact.expired_at > known))
     row.update(display=fact.display or fact.text, valid_at=fmt_datetime(fact.valid_at),
                invalid_at=fmt_datetime(fact.invalid_at) if fact.invalid_at is not None else None,
-               status='live' if fact.is_live(at) else 'superseded',
+               status='live' if live else 'superseded',
                why=split_outcome_text(fact.text)[1] if fact.predicate.lower() in OUTCOME_PREDICATES else '')
     return row
 
@@ -258,34 +269,57 @@ class MemoryService:
 
     @timed('recall')
     def recall(self, context, query, lean=True, n_chunks=6, session_id=None, as_of=None,
-               redact_sensitive=False, answer=False):
+               redact_sensitive=False, answer=False, state=FactState.CURRENT, valid_at=None, known_at=None):
         memory = self.memory(context)
         output = dict(space_id=context.space_id, as_of=as_of, redacted_sensitive=redact_sensitive)
-        facts = FactQuery(valid_at=as_of, exclude_sensitive=redact_sensitive)
+        facts = _recall_conditions(as_of, state, valid_at, known_at, redact_sensitive)
         if not lean:
             result = memory.search(query, facts=facts)
             return dict(**output, answer=result.answer(), facts=[fact.text for fact in result.facts],
                         limitations=result.limitations)
         result = memory.lean_context(query, n_chunks=n_chunks, session_id=session_id,
-                                     facts=facts, reinforce_hits=as_of is None)
+                                     facts=facts, reinforce_hits=True, include_full_tokens=answer)
         tokens = _est_tokens(result.context)
         output.update(context=result.context, tokens_est=tokens, limitations=result.limitations,
                       coverage_by_space=result.coverage_by_space)
         if answer:
             output['answer'] = _answer_from_memory(self.answerer, query, result.context)
-            if not redact_sensitive:
-                with memory.dao.read_snapshot() as view:
-                    output['full_tokens'] = view.full_context_tokens(as_of)
+            if result.full_tokens is not None:
+                output['full_tokens'] = result.full_tokens
         self.metrics.tokens(tokens, output.get('full_tokens'))
         return output
 
-    def recall_multi(self, contexts, query, *, n_chunks=6, session_id=None, as_of=None, redact_sensitive=False):
+    def recall_multi(self, contexts, query, *, n_chunks=6, session_id=None, as_of=None, redact_sensitive=False,
+                     state=FactState.CURRENT, valid_at=None, known_at=None):
         ids = [context.space_id for context in contexts]
         result = self.memory(contexts[0]).recall_multi(ids, query, n_chunks=n_chunks, session_id=session_id,
-                                                       facts=FactQuery(valid_at=as_of, exclude_sensitive=redact_sensitive))
+                                                       facts=_recall_conditions(as_of, state, valid_at, known_at, redact_sensitive))
         return dict(context=result.context, tokens_est=_est_tokens(result.context), space_ids=ids,
                     as_of=as_of, redacted_sensitive=redact_sensitive, limitations=result.limitations,
                     coverage_by_space=result.coverage_by_space)
+
+    def aggregate_facts(self, context, predicate, *, operation='count', subject=None, start=None,
+                        end=None, query=None, state=FactState.CURRENT, valid_at=None, known_at=None,
+                        redact_sensitive=False, limit=10):
+        scope = FactQuery(state=state, valid_at=valid_at, known_at=known_at,
+                          exclude_sensitive=redact_sensitive, limit=limit)
+        result = self.memory(context).aggregate_facts(
+            predicate, operation=operation, subject=subject, start=start, end=end, query=query, facts=scope)
+        at = now() if valid_at is None else valid_at
+        return dict(count=result.count, facts=[_fact_view(fact, at, known_at=known_at) for fact in result.facts],
+                    candidates=[dict(id=ep.id, session_id=ep.session_id, text=ep.text,
+                                     event_time=ep.event_time, role=ep.role,
+                                     representation=ep.representation) for ep in result.candidates],
+                    limitations=result.limitations)
+
+    def follow_path(self, context, anchor, predicates, *, state=FactState.CURRENT, valid_at=None,
+                    known_at=None, redact_sensitive=False, limit=20):
+        scope = FactQuery(state=state, valid_at=valid_at, known_at=known_at,
+                          exclude_sensitive=redact_sensitive, limit=limit)
+        result = self.memory(context).follow_path(anchor, predicates, facts=scope)
+        at = now() if valid_at is None else valid_at
+        return dict(paths=[dict(endpoint=path.endpoint, facts=[_fact_view(fact, at, known_at=known_at) for fact in path.facts])
+                           for path in result.paths], limitations=result.limitations)
 
     def get_episode(self, context, episode_id):
         with self.memory(context).dao.read_snapshot() as view:
@@ -294,7 +328,8 @@ class MemoryService:
 
     def add_fact(self, context, subject, predicate, object, **fields):
         fact = self.memory(context).add_fact(subject, predicate, object, return_existing=True, **fields)
-        return dict(ok=True, id=fact.id, text=fact.text, topic=fact.topic, topic_source=fact.topic_source)
+        return dict(ok=True, id=fact.id, text=fact.text, topic=fact.topic, topic_source=fact.topic_source,
+                    cardinality=fact.cardinality, retention=fact.retention)
 
     def update_fact(self, context, fact_id, **fields):
         fact = self.memory(context).update_fact(fact_id, **fields)
@@ -302,7 +337,8 @@ class MemoryService:
             return None
         return dict(ok=True, id=fact.id, text=fact.text, display=fact.display, source=fact.source,
                     source_roles=fact.source_roles,
-                    topic=fact.topic, topic_source=fact.topic_source)
+                    topic=fact.topic, topic_source=fact.topic_source,
+                    cardinality=fact.cardinality, retention=fact.retention)
 
     def delete_fact(self, context, fact_id):
         return dict(ok=self.memory(context).delete_fact(fact_id))

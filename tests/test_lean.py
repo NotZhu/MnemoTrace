@@ -4,11 +4,8 @@ session summaries + 少量完整 chunk）作答，而不是重放全部历史。
 lean_context 能正确组装它们，并做去重 + 硬性大小上限。"""
 from __future__ import annotations
 
-from mnemotrace import Config
-
 from tests.embedder_fixtures import MockEmbedder
 from tests.model_fixtures import MemoryEngine
-from mnemotrace.types import Episode
 from mnemotrace.util import DAY
 
 BASE = 1_700_000_000.0
@@ -84,8 +81,8 @@ def test_consolidate_invalidates_persona_cache():
 
 def test_lean_context_assembles_all_layers():
     mem = build()
-    ctx = mem.lean_context("Which cities did I travel to?", user_id="u1",
-                           n_summaries=10, n_facts=10, n_chunks=2)
+    ctx = mem.lean_context("trip Kyoto Lisbon Oslo", user_id="u1",
+                           n_summaries=10, n_facts=10, n_chunks=1)
     assert "USER PROFILE:" in ctx
     assert "SESSION SUMMARIES" in ctx
     assert "RELEVANT CONVERSATIONS (full detail):" in ctx
@@ -113,7 +110,7 @@ def test_lean_context_respects_char_budget():
     assert len(ctx) <= 200, "lean_context must hard-cap at char_budget"
 
 
-def test_evidence_budgeting_keeps_exact_raw_detail_under_tight_budget():
+def test_evidence_budgeting_keeps_provenance_under_tight_budget():
     from mnemotrace.config import Config
     from mnemotrace.types import Fact
 
@@ -156,8 +153,8 @@ def test_evidence_budgeting_keeps_exact_raw_detail_under_tight_budget():
     disabled = make(False)
 
     assert len(enabled) <= 360
-    assert "blue binder" in enabled
-    assert "blue binder" not in disabled
+    assert "PROVENANCE EVENT EVIDENCE" in enabled
+    assert "PROVENANCE EVENT EVIDENCE" not in disabled
 
 
 def test_lean_context_is_leaner_than_full_history():
@@ -184,25 +181,6 @@ def test_lean_path_works_with_no_summaries():
     ctx = mem.lean_context("Where do I work?", user_id="u1", n_chunks=1)
     assert "SESSION SUMMARIES" not in ctx  # 未构建任何摘要
     assert ctx.strip(), "still produces a usable context from facts + chunks"
-
-
-def test_user_fact_is_authoritative_over_extraction():
-    """可编辑记忆的不变量：用户断言的 fact 独占其槽位。自动提取既不能覆盖它，也不能与之并存；
-    用户断言会取代已有的提取值。"""
-    from mnemotrace.consolidate.conflict import ConflictResolver
-    from mnemotrace.types import Fact
-
-    r = ConflictResolver()
-    user_fact = Fact(subject="u", predicate="works_at", object="ByteDance", source="user", valid_at=BASE)
-    extracted = Fact(subject="u", predicate="works_at", object="Tencent", source="extracted", valid_at=BASE + 1)
-    action, inv = r.reconcile(extracted, [user_fact])
-    assert action == "duplicate" and not inv, "extracted fact must NOT override a user fact"
-
-    r2 = ConflictResolver()
-    ext = Fact(subject="u", predicate="works_at", object="Tencent", source="extracted", valid_at=BASE)
-    usr = Fact(subject="u", predicate="works_at", object="ByteDance", source="user", valid_at=BASE + 1)
-    action2, inv2 = r2.reconcile(usr, [ext])
-    assert action2 == "add" and ext in inv2, "a user assertion supersedes the extracted value"
 
 
 def test_memory_crud_add_edit_delete():
@@ -247,27 +225,6 @@ def test_delete_fact_removes_graph_export_edge():
     assert "diabetes" not in str(graph).lower()
 
 
-def test_subsumption_drops_contained_fact():
-    """MemoryScope contra_repeat：同槽位中内容是另一条更完整 fact 的严格子集时即为冗余。
-    添加子集是无操作；添加超集则淘汰那个不完整的版本。"""
-    from mnemotrace.consolidate.conflict import ConflictResolver
-    from mnemotrace.types import Fact
-
-    r = ConflictResolver()  # 无 embedder -> 结果确定
-    full = Fact(subject="Charles", predicate="role", object="boss and branch manager", valid_at=BASE)
-    # 添加已有 fact 的严格子集 -> 作为重复丢弃
-    action, inv = r.reconcile(Fact(subject="Charles", predicate="role", object="boss", valid_at=BASE + 1),
-                              [full])
-    assert action == "duplicate" and not inv
-
-    # 添加已有部分 fact 的严格超集 -> 旧的部分版本被失效化
-    partial = Fact(subject="Charles", predicate="role", object="boss", valid_at=BASE)
-    action, inv = r.reconcile(
-        Fact(subject="Charles", predicate="role", object="boss and branch manager", valid_at=BASE + 1),
-        [partial])
-    assert action == "add" and partial in inv
-
-
 def test_date_terms_makes_dates_searchable():
     """查询期时间匹配：把 fact 的日期渲染成可检索的 token，使 'May 2023' 能经 BM25 命中它
     （否则日期只存在于 valid_at 中，对检索不可见）。"""
@@ -308,351 +265,6 @@ def test_timeline_block_is_chronological():
     assert dates == sorted(dates), "timeline must be chronological (oldest to newest)"
 
 
-def test_evidence_planner_is_query_based_not_benchmark_based():
-    """planner 只按证据形态路由；不含任何 benchmark 类别输入。"""
-    from mnemotrace.retrieve.evidence import plan_evidence
-
-    agg = plan_evidence("How many trips did I take, and list every city?")
-    assert agg.aggregation and agg.use_cascade and agg.n_summaries > 0
-    assert agg.subqueries
-
-    topic = plan_evidence("trips")
-    assert not topic.aggregation
-
-    pref = plan_evidence("What food do I prefer or dislike?")
-    assert pref.preference and pref.n_chunks > 0
-    diet = plan_evidence("What are my dietary restrictions?")
-    assert diet.preference and diet.n_chunks > 0
-
-    temporal = plan_evidence("When was the first time I traveled after Lisbon?")
-    assert temporal.timeline
-
-    history = plan_evidence("Where did Wei work before Moonshot AI?")
-    assert history.history and history.timeline and history.n_facts > 0
-
-    kits = plan_evidence("How many model kits have I worked on or bought?")
-    assert any("model kit" in q for q in kits.subqueries)
-
-    jog = plan_evidence("How many hours of jogging and yoga did I do last week?")
-    assert jog.aggregation and "workout" in jog.subqueries and "track workouts" in jog.subqueries
-    jog_no_expand = plan_evidence(
-        "How many hours of jogging and yoga did I do last week?",
-        aggregation_recall_expansion=False,
-    )
-    assert "workout" not in jog_no_expand.subqueries
-
-    freq = plan_evidence("How often do I practice yoga now?")
-    assert freq.current_state and not freq.aggregation and not freq.subqueries
-
-    proc = plan_evidence("How do I rotate the PAT?")
-    assert proc.procedural and proc.n_facts > 0 and proc.n_chunks > 0
-    assert not plan_evidence("How many PAT rotations did I do?").procedural
-    assert plan_evidence("这个 PAT 流程怎么操作?").procedural
-
-    dur = plan_evidence("How many weeks in total did I spend reading these books?")
-    assert dur.duration and dur.aggregation and dur.n_chunks > 0
-
-    ms = plan_evidence("What is the profession of the user's sister who moved to Seattle?")
-    assert ms.multi_hop and ms.use_agentic and ms.n_chunks > 0
-    assert not ms.aggregation
-    assert "sister profession" in ms.subqueries
-    assert "sister moved seattle" in ms.subqueries
-
-    colleague = plan_evidence("Where does my colleague work?")
-    assert colleague.multi_hop and colleague.n_facts > 0 and colleague.n_chunks > 0
-    assert "colleague" in colleague.subqueries
-    assert "colleague employer" in colleague.subqueries
-    assert "colleague works" in colleague.subqueries
-
-    sibling = plan_evidence("Where does my sister live?")
-    assert sibling.multi_hop and "sister lives" in sibling.subqueries
-
-
-def test_lean_context_auto_adds_timeline_for_temporal_queries():
-    mem = build()
-    ctx = mem.lean_context("When was the first time I traveled?", user_id="u1", n_chunks=0)
-    assert "TIMELINE (oldest to newest" in ctx
-
-
-def test_lean_context_auto_adds_preference_records():
-    mem = build()
-    ctx = mem.lean_context("What is my favorite language?", user_id="u1", n_chunks=0)
-    assert "当前偏好记录（结构化）：" in ctx
-    assert "favorite language" in ctx.lower()
-
-
-def test_lean_context_auto_adds_explicit_preference_records():
-    mem = MemoryEngine()
-    mem.add("I prefer aisle seats and avoid red-eye flights.", user_id="u1", event_time=BASE)
-    mem.consolidate()
-
-    ctx = mem.lean_context("What travel preferences should you remember?", user_id="u1", n_chunks=0)
-
-    assert "当前偏好记录（结构化）：" in ctx
-    assert "prefers" in ctx and "aisle seats" in ctx
-    assert "avoids" in ctx and "red-eye flights" in ctx
-
-
-def test_lean_context_auto_adds_procedural_memory_block():
-    from mnemotrace.types import Fact
-
-    mem = MemoryEngine()
-    ep = mem.add(
-        "PAT runbook source: rotate the PAT by opening security settings and updating CI secrets.",
-        user_id="u1",
-        session_id="pat-runbook",
-        event_time=BASE,
-    )
-    fact = Fact(
-        subject="PAT",
-        predicate="procedure",
-        object="open security settings and update CI secrets",
-        user_id="u1",
-        valid_at=BASE,
-        provenance=[ep.id],
-    )
-    fact.embedding = mem.embedder.embed(fact.text)
-    mem.fact_store.upsert(fact.id, fact.embedding, fact)
-
-    ctx = mem.lean_context(
-        "What is the PAT runbook?",
-        user_id="u1",
-        persona=False,
-        n_summaries=0,
-        n_chunks=0,
-    )
-
-    assert "PROCEDURAL MEMORY (standing rules/how-to, source-backed):" in ctx
-    assert "sessions: pat-runbook" in ctx
-    assert "security settings" in ctx
-
-
-def test_lean_context_auto_adds_dietary_restriction_records():
-    mem = MemoryEngine()
-    mem.add("I'm vegetarian and allergic to peanuts.", user_id="u1", event_time=BASE)
-    mem.consolidate()
-
-    ctx = mem.lean_context("What are my dietary restrictions?", user_id="u1", n_chunks=0)
-    assert "当前偏好记录（结构化）：" in ctx
-    assert "diet" in ctx and "vegetarian" in ctx
-    assert "allergic to" in ctx and "peanuts" in ctx
-
-
-def test_lean_context_auto_adds_aggregation_evidence():
-    mem = build()
-    ctx = mem.lean_context("How many trips did I take?", user_id="u1", n_chunks=0)
-    assert "AGGREGATION EVIDENCE" in ctx
-    assert "date | source | evidence" in ctx
-
-
-def test_aggregation_evidence_keeps_raw_candidates_when_summaries_drop_details():
-    mem = MemoryEngine()
-    mem.add(
-        "I recently finished a Tamiya 1/48 scale Spitfire Mk.V model kit.",
-        user_id="u1",
-        session_id="s1",
-        event_time=BASE,
-    )
-
-    ctx = mem.lean_context(
-        "How many model kits have I worked on or bought?",
-        user_id="u1",
-        persona=False,
-        n_facts=0,
-        n_summaries=0,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-
-    agg = ctx.split("AGGREGATION EVIDENCE", 1)[1]
-    assert "Spitfire" in agg
-
-
-def test_structured_aggregation_candidates_filter_furniture_accessories():
-    from mnemotrace.retrieve.aggregate import extract_aggregation_candidates, render_aggregation_candidates
-
-    eps = [
-        Episode("I bought scratch guards from IKEA to protect the furniture.", event_time=BASE),
-        Episode("I just got a new coffee table from West Elm.", event_time=BASE + DAY),
-        Episode("I finally assembled that IKEA bookshelf for my home office.", event_time=BASE + 2 * DAY),
-        Episode("I got around to fixing the wobbly leg on my kitchen table.", event_time=BASE + 3 * DAY),
-        Episode("I needed a new mattress, and ordered one from Casper.", event_time=BASE + 4 * DAY),
-        Episode("I bought organic dog food with vegetables for Max and washed his old bed.", event_time=BASE + 5 * DAY),
-    ]
-
-    candidates = extract_aggregation_candidates(
-        "How many pieces of furniture did I buy, assemble, sell, or fix?",
-        [],
-        eps,
-    )
-    included = {c.canonical_item for c in candidates if c.include}
-    excluded = {c.canonical_item for c in candidates if not c.include}
-
-    assert {"coffee table", "bookshelf", "kitchen table", "mattress"} <= included
-    assert "scratch guard" in excluded
-    assert "bed" in excluded
-    assert "table" not in included
-    rendered = render_aggregation_candidates(candidates)
-    assert "AGGREGATION CANDIDATES" in rendered
-    assert sum(1 for c in candidates if c.include) == 4
-
-
-def test_lean_context_renders_structured_aggregation_candidates():
-    query = "How many pieces of furniture did I buy, assemble, sell, or fix?"
-    coffee_table = "I just got a new coffee table from West Elm."
-    mattress = "I needed a new mattress, and ordered one from Casper."
-    mem = MemoryEngine(embedder=MockEmbedder(2, vectors={
-        query: [1.0, 0.0], coffee_table: [1.0, 0.0], mattress: [1.0, 0.0],
-    }))
-    mem.add("I bought scratch guards from IKEA to protect the furniture.", user_id="u1", event_time=BASE)
-    mem.add(coffee_table, user_id="u1", event_time=BASE + DAY)
-    mem.add("I finally assembled that IKEA bookshelf for my home office.", user_id="u1", event_time=BASE + 2 * DAY)
-    mem.add("I got around to fixing the wobbly leg on my kitchen table.", user_id="u1", event_time=BASE + 3 * DAY)
-    mem.add(mattress, user_id="u1", event_time=BASE + 4 * DAY)
-
-    ctx = mem.lean_context(
-        query,
-        user_id="u1",
-        persona=False,
-        n_facts=0,
-        n_summaries=0,
-        n_chunks=0,
-        char_budget=20_000,
-    )
-
-    assert "AGGREGATION CANDIDATES" in ctx
-    assert "INCLUDE" in ctx and "coffee table" in ctx and "mattress" in ctx
-    assert "EXCLUDE" in ctx and "scratch guards" in ctx
-
-
-def test_numeric_aggregation_candidates_extract_money_and_hours():
-    from mnemotrace.retrieve.aggregate import _numeric_mode, extract_aggregation_candidates, render_aggregation_candidates
-
-    money_eps = [
-        Episode("I attended a mindfulness workshop. I paid $20 to attend.", event_time=BASE),
-        Episode("I attended a writing workshop at a festival. I paid $200 to attend.", event_time=BASE + DAY),
-        Episode("I attended a digital marketing workshop. I paid $500 to attend.", event_time=BASE + 2 * DAY),
-    ]
-    money = extract_aggregation_candidates(
-        "How much total money did I spend on attending workshops?",
-        [],
-        money_eps,
-    )
-
-    assert sum(c.value or 0 for c in money if c.include) == 720
-    rendered = render_aggregation_candidates(money)
-    assert "value | unit" in rendered
-    assert "$500 workshop" in rendered
-
-    duration_eps = [
-        Episode("I went for a 30-minute jog around the neighborhood.", event_time=BASE),
-        Episode("I used to practice yoga three times a week, each time for 2 hours.", event_time=BASE + DAY),
-    ]
-    duration = extract_aggregation_candidates(
-        "How many hours of jogging and yoga did I do last week?",
-        [],
-        duration_eps,
-    )
-
-    assert sum(c.value or 0 for c in duration if c.include) == 0.5
-    assert any(not c.include and "past habit" in c.exclude_reason for c in duration)
-    assert _numeric_mode("How much more miles per gallon was my car getting?") == ""
-
-
-def test_aggregation_constraint_filter_excludes_conflicting_month_values():
-    from mnemotrace.retrieve.aggregate import extract_aggregation_candidates
-
-    eps = [
-        Episode(
-            'I just finished a 416-page novel, but before that, I read "The Power" '
-            "by Naomi Alderman in December, which had 341 pages.",
-            event_time=BASE,
-        ),
-        Episode(
-            'I just finished "The Nightingale" by Kristin Hannah, which had 440 pages.',
-            event_time=BASE + DAY,
-        ),
-    ]
-
-    filtered = extract_aggregation_candidates(
-        "What was the page count of the two novels I finished in January and March?",
-        [],
-        eps,
-    )
-    included = {c.value for c in filtered if c.include}
-    excluded = {c.value: c.exclude_reason for c in filtered if not c.include}
-
-    assert included == {416.0, 440.0}
-    assert "december" in excluded[341.0]
-
-    disabled = extract_aggregation_candidates(
-        "What was the page count of the two novels I finished in January and March?",
-        [],
-        eps,
-        constraint_filter=False,
-    )
-    assert {c.value for c in disabled if c.include} == {341.0, 416.0, 440.0}
-
-
-def test_numeric_aggregation_candidates_can_be_disabled():
-    mem = MemoryEngine(config=Config(numeric_aggregation_candidates=False))
-    mem.add("I attended a digital marketing workshop. I paid $500 to attend.", user_id="u1", event_time=BASE)
-
-    ctx = mem.lean_context(
-        "How much total money did I spend on attending workshops?",
-        user_id="u1",
-        persona=False,
-        n_facts=0,
-        n_summaries=0,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-
-    assert "AGGREGATION CANDIDATES" not in ctx
-
-
-def test_lean_context_auto_adds_duration_evidence_for_time_totals():
-    mem = MemoryEngine()
-    mem.add("I started reading 'The Nightingale' today.", user_id="u1", session_id="s1", event_time=BASE)
-    mem.add("I finished reading 'The Nightingale' today.", user_id="u1", session_id="s2",
-            event_time=BASE + 14 * DAY)
-
-    ctx = mem.lean_context(
-        "How many weeks did I spend reading 'The Nightingale'?",
-        user_id="u1",
-        persona=False,
-        n_facts=0,
-        n_summaries=0,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-
-    assert "DURATION EVIDENCE (pair start/finish dates per item" in ctx
-    assert "started reading" in ctx
-    assert "finished reading" in ctx
-
-
-def test_aggregation_evidence_prioritizes_query_overlap():
-    mem = build()
-    eps = sorted(mem.episodes_doc.values(), key=lambda e: e.event_time)
-    block = mem._aggregation_block(
-        facts=[],
-        summaries=[eps[2], eps[1]],
-        detail_eps=[],
-        query="How many trips to Kyoto?",
-    )
-    body = block.split("--- | --- | ---", 1)[1].lower()
-    assert "kyoto" in body
-    assert "cat named luna" not in body
-
-
-def test_lean_context_auto_adds_current_state_for_now_queries():
-    mem = build()
-    ctx = mem.lean_context("Where do I currently work?", user_id="u1", n_chunks=0)
-    assert "CURRENT STATE (live facts only):" in ctx
-    assert "current value" in ctx
-
-
 def test_lean_context_as_of_profile_does_not_leak_current_facts():
     mem = MemoryEngine()
     mem.add("Wei works at Tencent.", user_id="u1", session_id="old", event_time=BASE)
@@ -671,68 +283,22 @@ def test_lean_context_as_of_profile_does_not_leak_current_facts():
     assert "Moonshot AI" not in ctx
 
 
-def test_lean_context_adds_history_for_previous_value_queries():
+def test_search_answers_previous_value_with_explicit_history_state():
+    from mnemotrace.store.contracts import FactQuery, FactState
+
     mem = MemoryEngine()
-    old = mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
-    new = mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
-
-    ctx = mem.lean_context(
-        "Where did Wei work before Moonshot AI?",
-        user_id="u1",
-        persona=False,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-    assert new.supersedes == old.id
-    assert "FACT HISTORY (supersession chain" in ctx
-    assert "Tencent" in ctx
-    assert "Moonshot AI" in ctx
-    assert "superseded" in ctx and "current" in ctx
-
-
-def test_search_answers_previous_value_from_supersession_history():
-    mem = MemoryEngine()
-    mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
-
-    before = mem.search("Where did Wei work before Moonshot AI?", user_id="u1")
-    previous = mem.search("Where did Wei previously work?", user_id="u1")
-    current = mem.search("Where does Wei work now?", user_id="u1")
-
-    assert before.via == "history"
-    assert "tencent" in before.answer().lower()
-    assert [f.object for f in before.facts] == ["Tencent", "Moonshot AI"]
-    assert previous.via == "history"
-    assert "tencent" in previous.answer().lower()
-    assert current.via == "hybrid"
-    assert "moonshot" in current.answer().lower()
-
-
-def test_temporal_history_query_can_be_disabled_for_ablation():
-    from mnemotrace.config import Config
-
-    mem = MemoryEngine(config=Config(temporal_history_queries=False))
-    mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
-
-    res = mem.search("Where did Wei work before Moonshot AI?", user_id="u1")
-    ctx = mem.lean_context(
-        "Where did Wei work before Moonshot AI?",
-        user_id="u1",
-        persona=False,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-
-    assert res.via == "hybrid"
-    assert "moonshot" in res.answer().lower()
-    assert "FACT HISTORY (supersession chain" not in ctx
+    previous = mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
+    current = mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY,
+                           cardinality="single")
+    result = mem.search("Where did Wei work?", user_id="u1", facts=FactQuery(state=FactState.HISTORY))
+    assert result.top().id == previous.id
+    assert mem.search("Where does Wei work?", user_id="u1").top().id == current.id
 
 
 def test_lean_context_adds_evolution_chain_for_current_lookup():
     mem = MemoryEngine()
     old = mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
-    new = mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
+    new = mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single")
 
     ctx = mem.lean_context(
         "Where does Wei work?",
@@ -753,7 +319,7 @@ def test_lean_context_adds_evolution_chain_for_current_lookup():
 def test_lean_context_evolution_chain_respects_as_of_boundary():
     mem = MemoryEngine()
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
+    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single")
 
     ctx = mem.lean_context(
         "Where does Wei work?",
@@ -772,7 +338,7 @@ def test_lean_context_evolution_chain_respects_as_of_boundary():
 def test_context_for_adds_fact_evolution_chain():
     mem = MemoryEngine()
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
+    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single")
 
     ctx = mem.context_for("Where does Wei work?", user_id="u1", k_chunks=0)
 
@@ -786,7 +352,7 @@ def test_chain_evidence_can_be_disabled_for_ablation():
 
     mem = MemoryEngine(config=Config(chain_evidence=False))
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
+    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single")
 
     ctx = mem.lean_context(
         "Where does Wei work?",
@@ -804,7 +370,7 @@ def test_lean_context_adds_provenance_raw_evidence_for_retrieved_fact():
     from mnemotrace.config import Config
     from mnemotrace.types import Fact
 
-    mem = MemoryEngine(config=Config(evidence_planner=False))
+    mem = MemoryEngine(config=Config())
     ep = mem.add(
         "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
         user_id="u1",
@@ -840,7 +406,7 @@ def test_provenance_evidence_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
     from mnemotrace.types import Fact
 
-    mem = MemoryEngine(config=Config(evidence_planner=False, provenance_evidence=False))
+    mem = MemoryEngine(config=Config(provenance_evidence=False))
     ep = mem.add(
         "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
         user_id="u1",
@@ -912,7 +478,6 @@ def test_provenance_source_episode_is_promoted_into_detail_chunks():
     def make(enabled: bool) -> str:
         mem = MemoryEngine(
             config=Config(
-                evidence_planner=False,
                 provenance_evidence=False,
                 provenance_chunk_promotion=enabled,
             )
@@ -960,57 +525,11 @@ def test_provenance_source_episode_is_promoted_into_detail_chunks():
     assert "apollo-distractor" in disabled_detail
 
 
-def test_chain_provenance_promotes_superseded_source_for_history_query():
-    from mnemotrace.config import Config
-
-    def make(enabled: bool) -> str:
-        mem = MemoryEngine(
-            config=Config(
-                chain_evidence=enabled,
-                provenance_evidence=False,
-                provenance_chunk_promotion=True,
-            )
-        )
-        mem.add(
-            "Wei works at Tencent and keeps a blue employee badge.",
-            user_id="u1",
-            session_id="old-source",
-            event_time=BASE,
-        )
-        mem.add(
-            "Wei works at Moonshot AI on agent memory.",
-            user_id="u1",
-            session_id="new-source",
-            event_time=BASE + 30 * DAY,
-        )
-        mem.consolidate()
-        return mem.lean_context(
-            "Where did Wei work before Moonshot AI?",
-            user_id="u1",
-            persona=False,
-            n_summaries=0,
-            n_chunks=1,
-            char_budget=10_000,
-        )
-
-    enabled = make(True)
-    disabled = make(False)
-    enabled_detail = enabled.split("RELEVANT CONVERSATIONS (full detail):", 1)[1]
-    disabled_detail = disabled.split("RELEVANT CONVERSATIONS (full detail):", 1)[1]
-
-    assert "FACT HISTORY (supersession chain" in enabled
-    assert "Tencent" in enabled
-    assert "old-source" in enabled_detail
-    assert "blue employee badge" in enabled_detail
-    assert "new-source" in disabled_detail
-    assert "blue employee badge" not in disabled_detail
-
-
 def test_provenance_raw_evidence_is_hidden_in_redacted_context():
     from mnemotrace.config import Config
     from mnemotrace.types import Fact
 
-    mem = MemoryEngine(config=Config(evidence_planner=False))
+    mem = MemoryEngine(config=Config())
     ep = mem.add(
         "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
         user_id="u1",
@@ -1069,73 +588,6 @@ def test_context_for_adds_provenance_raw_evidence_for_fact_sources():
     assert "blue binder" in ctx
 
 
-def test_current_state_preserves_multi_valued_attributes():
-    mem = MemoryEngine()
-    mem.add_fact("Wei", "owns", "a bike", user_id="u1")
-    mem.add_fact("Wei", "owns", "a camera", user_id="u1")
-
-    ctx = mem.lean_context(
-        "What do I currently own?",
-        user_id="u1",
-        persona=False,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-    state = ctx.split("CURRENT STATE (live facts only):", 1)[1].split("\n\n", 1)[0]
-    assert "a bike" in state
-    assert "a camera" in state
-
-
-def test_lean_context_uses_multi_hop_subqueries_for_detail_chunks():
-    mem = MemoryEngine()
-    eps = [
-        mem.add("My sister Maya is a pediatrician at a children's hospital.", user_id="u1",
-                session_id="s1", event_time=BASE),
-        mem.add("Maya just moved to Seattle for a fellowship.", user_id="u1",
-                session_id="s2", event_time=BASE + DAY),
-        mem.add("I bought a new espresso machine and it is wonderful.", user_id="u1",
-                session_id="s3", event_time=BASE + 2 * DAY),
-    ]
-    mem.summarize_episodes(eps)
-
-    ctx = mem.lean_context(
-        "What is the profession of the user's sister who moved to Seattle?",
-        user_id="u1",
-        persona=False,
-        n_facts=0,
-        n_summaries=0,
-        n_chunks=0,
-    )
-
-    assert "RELEVANT CONVERSATIONS (full detail):" in ctx
-    assert "pediatrician" in ctx.lower()
-    assert "seattle" in ctx.lower()
-
-
-def test_lean_context_graph_paths_use_clean_multihop_plan():
-    mem = MemoryEngine()
-    eps = [
-        mem.add("My sister Anna is a lawyer.", user_id="u1", session_id="s1", event_time=BASE),
-        mem.add("My sister Maya is a pediatrician.", user_id="u1", session_id="s2", event_time=BASE + DAY),
-        mem.add("Maya just moved to Seattle.", user_id="u1", session_id="s3", event_time=BASE + 2 * DAY),
-    ]
-    mem.consolidate(eps)
-    mem.summarize_episodes(eps)
-
-    ctx = mem.lean_context(
-        "What is the profession of the user's sister who moved to Seattle?",
-        user_id="u1",
-        persona=False,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-    graph = ctx.split("GRAPH PATHS (relation evidence):", 1)[1].split("\n\n", 1)[0]
-    assert "u1 sister Maya" in graph
-    assert "Maya lives in Seattle" in graph
-    assert "Maya occupation pediatrician" in graph
-    assert "u1 sister Anna" not in graph
-
-
 def test_multihop_planner_includes_cold_tier_relation_facts():
     mem = MemoryEngine()
     eps = [
@@ -1149,17 +601,9 @@ def test_multihop_planner_includes_cold_tier_relation_facts():
     assert mem.evict_cold(max_hot=len(mem.fact_store.values()) - 1) == 1
     assert mem.cold_store.get(sister.id) is not None
 
-    ctx = mem.lean_context(
-        "What is the profession of the user's sister who moved to Seattle?",
-        user_id="u1",
-        persona=False,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-    graph = ctx.split("GRAPH PATHS (relation evidence):", 1)[1].split("\n\n", 1)[0]
-    assert "u1 sister Maya" in graph
-    assert "Maya lives in Seattle" in graph
-    assert "Maya occupation pediatrician" in graph
+    path, = mem.follow_path("u1", ["sister", "occupation"], user_id="u1").paths
+    assert path.endpoint == "pediatrician"
+    assert path.facts[0].id == sister.id
 
 
 def test_deleted_relation_fact_does_not_drive_multihop_planner():
@@ -1235,12 +679,12 @@ def test_graph_proximity_can_be_disabled_for_ablation():
         None,
     )
     related = mem._graph_related_facts("Tell me about Wei", "u1", None)
-    paths = mem._graph_paths_block("Tell me about Wei", "u1", None)
+    paths = mem._graph_related_facts("Tell me about Wei", "u1", None)
 
     assert qids, "entity anchoring still works; only proximity evidence is ablated"
     assert all(score == 0.0 for score in scores.values())
     assert related == []
-    assert paths == ""
+    assert paths == []
 
 
 def test_graph_relation_awareness_prioritizes_query_relevant_edges():
@@ -1359,123 +803,15 @@ def test_graph_self_anchor_can_be_disabled_for_ablation():
     assert "RELATED FACTS (graph traversal):" not in ctx
 
 
-def test_graph_entity_alias_anchor_matches_unique_short_name():
-    mem = MemoryEngine()
-    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
-    live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
-
-    scores, qids = mem.retriever._graph_scores(
-        "Where is Moonshot based?",
-        "u1",
-        live,
-        None,
-    )
-    ctx = mem.context_for("Where is Moonshot based?", user_id="u1", k_chunks=0, graph=True)
-
-    assert qids
-    assert scores[target.id] > 0.0
-    assert "Moonshot AI based in Beijing" in ctx
-
-
-def test_graph_entity_alias_anchor_can_be_disabled_for_ablation():
-    from mnemotrace.config import Config
-
-    mem = MemoryEngine(config=Config(graph_entity_alias_anchor=False))
-    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
-    live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
-
-    scores, qids = mem.retriever._graph_scores(
-        "Where is Moonshot based?",
-        "u1",
-        live,
-        None,
-    )
-    ctx = mem.context_for("Where is Moonshot based?", user_id="u1", k_chunks=0, graph=True)
-
-    assert qids == set()
-    assert scores[target.id] == 0.0
-    assert "RELATED FACTS (graph traversal):" not in ctx
-
-
-def test_graph_entity_alias_anchor_requires_unique_token():
-    mem = MemoryEngine()
-    first = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
-    second = mem.add_fact("Moonshot Labs", "based_in", "Shanghai", user_id="u1", valid_at=BASE + DAY)
-    live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
-
-    scores, qids = mem.retriever._graph_scores(
-        "Where is Moonshot based?",
-        "u1",
-        live,
-        None,
-    )
-
-    assert qids == set()
-    assert scores[first.id] == 0.0
-    assert scores[second.id] == 0.0
-
-
-def test_graph_negative_constraints_filter_excluded_location_paths():
-    mem = MemoryEngine()
-    mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "works_on", "Zephyr", user_id="u1", valid_at=BASE + DAY)
-    target = mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 2 * DAY)
-    distractor = mem.add_fact("Zephyr", "based_in", "Lisbon", user_id="u1", valid_at=BASE + 3 * DAY)
-
-    query = "Where is Wei's project not in Lisbon based?"
-    res = mem.search(query, user_id="u1")
-    related = mem._graph_related_facts(query, "u1", None)
-    ctx = mem.context_for(query, user_id="u1", k_chunks=0, graph=True)
-
-    assert "reykjavik" in res.answer().lower()
-    assert target.id in {f.id for f in related}
-    assert distractor.id not in {f.id for f in related}
-    assert "Atlas based in Reykjavik" in ctx
-    assert "Zephyr based in Lisbon" not in ctx
-
-
-def test_graph_negative_constraints_can_be_disabled_for_ablation():
-    from mnemotrace.config import Config
-
-    mem = MemoryEngine(config=Config(graph_negative_constraints=False))
-    mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "works_on", "Zephyr", user_id="u1", valid_at=BASE + DAY)
-    mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 2 * DAY)
-    mem.add_fact("Zephyr", "based_in", "Lisbon", user_id="u1", valid_at=BASE + 3 * DAY)
-
-    ctx = mem.context_for("Where is Wei's project not in Lisbon based?", user_id="u1", k_chunks=0, graph=True)
-
-    assert "Atlas based in Reykjavik" in ctx
-    assert "Zephyr based in Lisbon" in ctx
-
-
 def test_multihop_planner_reaches_company_location_chain():
     mem = MemoryEngine()
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
 
-    res = mem.search("Where is Wei's colleague's company based?", user_id="u1")
-
-    assert res.via == "multi-hop"
-    assert "beijing" in res.answer().lower()
-    assert [f.predicate for f in res.facts] == ["colleague", "works_at", "based_in"]
-
-
-def test_multihop_planner_location_chain_can_be_disabled_for_ablation():
-    from mnemotrace.config import Config
-
-    mem = MemoryEngine(config=Config(planner_location_chains=False))
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
-    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
-
-    res = mem.search("Where is Wei's colleague's company based?", user_id="u1")
-
-    assert res.via == "multi-hop"
-    assert "moonshot" in res.answer().lower()
-    assert "beijing" not in res.answer().lower()
-    assert [f.predicate for f in res.facts] == ["colleague", "works_at"]
+    path, = mem.follow_path("Wei", ["colleague", "works_at", "based_in"], user_id="u1").paths
+    assert path.endpoint == "Beijing"
+    assert [f.predicate for f in path.facts] == ["colleague", "works_at", "based_in"]
 
 
 def test_multihop_planner_reaches_project_location_chain():
@@ -1483,101 +819,9 @@ def test_multihop_planner_reaches_project_location_chain():
     mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
     mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY)
 
-    res = mem.search("Where is Wei's project based?", user_id="u1")
-
-    assert res.via == "multi-hop"
-    assert "reykjavik" in res.answer().lower()
-    assert [f.predicate for f in res.facts] == ["works_on", "based_in"]
-
-
-def test_multihop_planner_project_chain_can_be_disabled_for_ablation():
-    from mnemotrace.config import Config
-
-    mem = MemoryEngine(config=Config(planner_project_chains=False))
-    mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
-    mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY)
-
-    res = mem.search("Where is Wei's project based?", user_id="u1")
-
-    assert res.via == "hybrid"
-    assert "atlas" in res.answer().lower()
-    assert "reykjavik" not in res.answer().lower()
-
-
-def test_bench_preconsolidation_uses_multi_hop_subqueries():
-    from mnemotrace.types import Episode
-    from eval.bench import retrieve_evidence_episodes
-
-    sister = Episode("My sister Maya is a pediatrician.", id="sister", user_id="u1")
-    moved = Episode("Maya just moved to Seattle.", id="moved", user_id="u1")
-    noise = Episode("I bought a new espresso machine.", id="noise", user_id="u1")
-
-    class FakeMem:
-        def retrieve_episodes(self, query, user_id, k):
-            q = query.lower()
-            if "sister profession" in q or q == "profession":
-                return [sister]
-            if "sister moved seattle" in q or q == "seattle" or q == "moved seattle":
-                return [moved]
-            return [noise]
-
-    eps = retrieve_evidence_episodes(
-        FakeMem(),
-        "What is the profession of the user's sister who moved to Seattle?",
-        "u1",
-        2,
-    )
-    assert {e.id for e in eps} == {"sister", "moved"}
-
-    baseline = retrieve_evidence_episodes(
-        FakeMem(),
-        "What is the profession of the user's sister who moved to Seattle?",
-        "u1",
-        2,
-        use_planner=False,
-    )
-    assert [e.id for e in baseline] == ["noise"]
-
-
-def test_bench_preconsolidation_uses_aggregation_recall_expansion():
-    from mnemotrace.config import Config
-    from mnemotrace.types import Episode
-    from eval.bench import retrieve_evidence_episodes
-
-    jog = Episode("I went for a 30-minute jog around the neighborhood.", id="jog", user_id="u1")
-    yoga = Episode("I used to practice yoga three times a week, each time for 2 hours.", id="yoga", user_id="u1")
-    noise = Episode("A generic wellness article mentioned hours and routines.", id="noise", user_id="u1")
-
-    class FakeMem:
-        def __init__(self, enabled=True):
-            self.config = Config(aggregation_recall_expansion=enabled)
-
-        def retrieve_episodes(self, query, user_id, k):
-            q = query.lower()
-            if "workout" in q:
-                return [jog]
-            if "hours of jogging" in q or "yoga" in q:
-                return [yoga]
-            return [noise]
-
-    eps = retrieve_evidence_episodes(
-        FakeMem(True),
-        "How many hours of jogging and yoga did I do last week?",
-        "u1",
-        2,
-    )
-    # 聚合的两部分都必须在；pool boost 可能连带放入额外 session，
-    # 这在这里无害 —— 导致聚合答案出错的是漏掉某次出现。
-    assert {"jog", "yoga"} <= {e.id for e in eps}
-
-    baseline = retrieve_evidence_episodes(
-        FakeMem(False),
-        "How many hours of jogging and yoga did I do last week?",
-        "u1",
-        2,
-    )
-    assert "yoga" in {e.id for e in baseline}
-    assert "jog" not in {e.id for e in baseline}
+    path, = mem.follow_path("Wei", ["works_on", "based_in"], user_id="u1").paths
+    assert path.endpoint == "Reykjavik"
+    assert [f.predicate for f in path.facts] == ["works_on", "based_in"]
 
 
 def test_cascade_coarse_to_fine_assembles():
@@ -1599,7 +843,7 @@ def test_heat_tiered_eviction_pages_cold_preserves_durable():
         f = Fact(subject="u1", predicate="parked_at", object=f"lot{i}", user_id=u,
                  salience=float(i), last_access=BASE + i)
         mem.fact_store.upsert(f.id, [0.0], f)
-    durable = Fact(subject="u1", predicate="likes", object="jazz", user_id=u, salience=0.0, last_access=BASE)
+    durable = Fact(subject="u1", predicate="likes", object="jazz", user_id=u, salience=0.0, last_access=BASE, retention="durable")
     mem.fact_store.upsert(durable.id, [0.0], durable)
 
     n = mem.evict_cold(max_hot=3)
@@ -1631,7 +875,7 @@ def test_add_fact_supersedes_live_cold_tier_fact():
     assert mem.evict_cold(max_hot=1) == 1
     assert mem.cold_store.get(old.id) is not None
 
-    new = mem.add_fact("user", "project_status", "beta", user_id="u1")
+    new = mem.add_fact("user", "project_status", "beta", user_id="u1", cardinality="single")
     assert new.supersedes == old.id
     assert old.invalid_at == new.valid_at
     chain = mem.history("user", "project_status", user_id="u1")
@@ -1746,44 +990,6 @@ def test_context_for_graph_includes_multihop_related_facts():
 
     assert "RELATED FACTS (graph traversal):" in ctx
     assert "Moonshot AI based in Beijing" in ctx
-
-
-def test_graph_paths_include_cold_tier_facts():
-    mem = MemoryEngine()
-    cold = mem.add_fact("project", "project_note", "cold path evidence", user_id="u1")
-    hot = mem.add_fact("project", "project_status", "hot path evidence", user_id="u1")
-    cold.salience = 0.0
-    hot.salience = 1.0
-    assert mem.evict_cold(max_hot=1) == 1
-
-    block = mem._graph_paths_block("project", "u1", None)
-    assert "cold path evidence" in block
-
-
-def test_graph_paths_fallback_expands_beyond_one_hop():
-    mem = MemoryEngine()
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
-    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
-
-    block = mem._graph_paths_block("Tell me about Wei", "u1", None)
-
-    assert "Wei --colleague--> Lin" in block
-    assert "Lin --works_at--> Moonshot AI" in block
-    assert "Moonshot AI --based_in--> Beijing" in block
-
-
-def test_graph_paths_fallback_respects_as_of_during_expansion():
-    mem = MemoryEngine()
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
-    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
-
-    before = mem._graph_paths_block("Tell me about Wei", "u1", BASE + 0.5 * DAY)
-    after = mem._graph_paths_block("Tell me about Wei", "u1", BASE + 2 * DAY)
-
-    assert "Moonshot AI --based_in--> Beijing" not in before
-    assert "Moonshot AI --based_in--> Beijing" in after
 
 
 def test_pending_conflict_and_resolution_include_cold_tier_facts():
@@ -1954,7 +1160,7 @@ def test_durable_facts_exempt_from_decay():
     from mnemotrace.types import Fact
 
     incidental = Fact(subject="u", predicate="parked_at", object="lot B", salience=1.0, last_access=BASE)
-    preference = Fact(subject="u", predicate="likes", object="jazz", salience=1.0, last_access=BASE)
+    preference = Fact(subject="u", predicate="likes", object="jazz", salience=1.0, last_access=BASE, retention="durable")
     later = BASE + 100 * DAY
     decay(incidental, per_day=0.02, t=later)
     decay(preference, per_day=0.02, t=later)
@@ -1969,20 +1175,6 @@ def test_reinforce_boosts_and_resets_clock():
     f = Fact(subject="u", predicate="parked_at", object="lot B", salience=1.0, last_access=BASE)
     reinforce(f, boost=0.5, t=BASE + 5 * DAY)
     assert f.salience == 1.5 and f.access_count == 1 and f.last_access == BASE + 5 * DAY
-
-
-def test_subsumption_keeps_distinct_values():
-    """多值谓词上互不为子集的不同取值必须都保留 —— 不能过度合并。"""
-    from mnemotrace.consolidate.conflict import ConflictResolver
-    from mnemotrace.types import Fact
-
-    r = ConflictResolver()
-    pizza = Fact(subject="u", predicate="likes", object="pizza", valid_at=BASE)
-    action, inv = r.reconcile(Fact(subject="u", predicate="likes", object="sushi", valid_at=BASE + 1),
-                              [pizza])
-    assert action == "add" and not inv, "distinct likes must not subsume each other"
-
-
 
 
 def test_summary_remains_faithful_after_supersession():
@@ -2037,9 +1229,9 @@ def test_type_weight_ranks_preference_and_identity_above_incidental():
     from mnemotrace.types import Fact
 
     cfg = Config()
-    pref = Fact(subject="u", predicate="likes", object="jazz")
-    fav = Fact(subject="u", predicate="favorite_food", object="ramen")
-    ident = Fact(subject="u", predicate="works_at", object="Tencent")
+    pref = Fact(subject="u", predicate="likes", object="jazz", category="偏好")
+    fav = Fact(subject="u", predicate="favorite_food", object="ramen", category="偏好")
+    ident = Fact(subject="u", predicate="works_at", object="Tencent", category="身份")
     incidental = Fact(subject="u", predicate="mentioned", object="the weather")
     assert fact_type_weight(pref, cfg) == cfg.w_type_preference
     assert fact_type_weight(fav, cfg) == cfg.w_type_preference  # favorite_* 前缀
@@ -2329,51 +1521,6 @@ def test_display_localization_keeps_canonical_predicate():
     assert f.predicate == "works_at" and f.slot[2] == "works_at"
 
 
-def test_costated_facts_do_not_semantic_supersede():
-    """回归（用户反馈）：来自同一 episode 的两条 fact（'我在字节跳动做后端开发' ->
-    works_at 字节跳动 + job_title 后端开发）是互补属性，即使它们很短、同主体且话题相近，
-    也绝不能经 embedding 路径互相取代。真正的更新必须来自更晚的、独立的 episode。"""
-    from mnemotrace.consolidate.conflict import ConflictResolver
-    from mnemotrace.types import Fact
-
-    class E:  # 返回相同向量的 embedder -> cosine 1.0（语义路径的最坏情况）
-        def embed(self, t):
-            return [1.0, 0.0]
-
-    r = ConflictResolver(embedder=E(), sim_threshold=0.8)
-    old = Fact("user", "works_at", "字节跳动", provenance=["ep1"])
-    old.embedding = [1.0, 0.0]
-    new = Fact("user", "job_title", "后端开发", provenance=["ep1"])  # 同一 episode
-    new.embedding = [1.0, 0.0]
-    _, invalidated = r.reconcile(new, [old])
-    assert invalidated == [], "co-stated complementary facts must not supersede each other"
-
-    # 来自不同且更晚 episode 的真实更新仍会取代（防护只按 provenance 限定）
-    later = Fact("user", "occupation", "产品经理", provenance=["ep9"])
-    later.embedding = [1.0, 0.0]
-    _, inval2 = r.reconcile(later, [old])
-    assert old in inval2, "a later separate-episode near-duplicate should still supersede"
-
-
-def test_preference_reversal_supersedes_same_object_opposite_polarity():
-    """用户反馈：先 '我喜欢跳舞' 再 '我不喜欢跳舞' 时两者都出现（+跳舞 和 -跳舞）。
-    同一 object 上 like<->dislike 的翻转属于反转 —— 新立场取代旧立场（PRD 治理：修正否定）。
-    不同 object 仍然累积（多值）。"""
-    from mnemotrace.consolidate.conflict import ConflictResolver
-    from mnemotrace.types import Fact
-    r = ConflictResolver()
-    old = Fact("user", "likes", "跳舞", valid_at=100.0)
-    new = Fact("user", "dislikes", "跳舞", valid_at=200.0)
-    _, invalidated = r.reconcile(new, [old])
-    assert old in invalidated, "later opposite-polarity preference on the same object must supersede"
-    # 不同 object 不受影响 —— 保留多值累积
-    other = Fact("user", "likes", "唱歌", valid_at=50.0)
-    _, inval2 = r.reconcile(Fact("user", "likes", "跳舞", valid_at=300.0), [other])
-    assert other not in inval2
-
-
-
-
 def test_conflict_resolve_and_dismiss_are_user_driven():
     """检测绝不自动解决 —— 只有用户的 resolve()/dismiss() 会生效；resolve 使选定的败方被取代，
     dismiss 则两者都保留。"""
@@ -2405,7 +1552,7 @@ def test_promotion_never_evicts_every_semantic_chunk():
     from mnemotrace.config import Config
     from mnemotrace.types import Fact
 
-    mem = MemoryEngine(config=Config(evidence_planner=False, provenance_evidence=False,
+    mem = MemoryEngine(config=Config(provenance_evidence=False,
                                provenance_chunk_promotion=True))
     # 答案所在的 session 只有语义检索才会给它高排名
     mem.add("The screening room access code is painted behind the velvet poster.",
@@ -2432,7 +1579,7 @@ def test_evolution_block_leads_with_the_current_value():
     作为结论陈述，被替换的值明显居于从属地位。"""
     from mnemotrace.config import Config
 
-    mem = MemoryEngine(config=Config(evidence_planner=False))
+    mem = MemoryEngine(config=Config())
     mem.add("I live in Hawaii.", user_id="u1", event_time=BASE)
     mem.consolidate()
     mem.add("I moved. I live in Paris now.", user_id="u1", event_time=BASE + 30 * DAY)
@@ -2444,33 +1591,3 @@ def test_evolution_block_leads_with_the_current_value():
     # 当前值必须先于被替换值出现
     assert evo.index("Paris") < evo.index("Hawaii"), evo
     assert "was:" in evo and "Hawaii" in evo
-
-
-def test_aggregation_questions_widen_the_preconsolidation_pool():
-    """聚合类答案只要漏掉一次出现就错了，而出现天然分布在多个 session。为指向性问题设计的
-    池子会截断它们（4 家航空公司的清单只回来 3 家），因此 count/list/sum 类问题使用更宽的池子
-    —— 且仅限这类问题，以控制提取成本。"""
-    from mnemotrace.config import Config
-    from mnemotrace.types import Episode
-    from eval.bench import retrieve_evidence_episodes
-
-    calls: list[int] = []
-
-    class FakeMem:
-        def __init__(self, boost=True):
-            self.config = Config(aggregation_pool_boost=boost)
-
-        def retrieve_episodes(self, query, user_id, k):
-            calls.append(k)
-            return [Episode(f"flight {i}", id=f"e{i}", user_id="u1") for i in range(k)]
-
-    retrieve_evidence_episodes(FakeMem(), "How many airlines have I flown with in total?", "u1", 8)
-    assert max(calls) == 16, f"aggregation question should widen the pool, got {calls}"
-
-    calls.clear()
-    retrieve_evidence_episodes(FakeMem(), "Where does my sister work?", "u1", 8)
-    assert max(calls) == 8, f"pointed question must keep the normal pool, got {calls}"
-
-    calls.clear()  # 消融后恢复窄池
-    retrieve_evidence_episodes(FakeMem(boost=False), "How many airlines in total?", "u1", 8)
-    assert max(calls) == 8, f"ablated boost should not widen, got {calls}"

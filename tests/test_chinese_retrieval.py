@@ -3,7 +3,6 @@ from dataclasses import replace
 import pytest
 
 from mnemotrace import Config, MemoryEngine
-from mnemotrace.retrieve.evidence import plan_evidence
 from mnemotrace.retrieve.hybrid import mentioned_entities
 from mnemotrace.retrieve.lexical import bm25_scores, lexical_terms
 from mnemotrace.types import Entity
@@ -52,10 +51,10 @@ def test_lexical_memory_resolves_chinese_two_hop_fact_chain():
     memory = MemoryEngine(config=Config(graph_self_anchor=True))
     relationship = memory.add_fact('user', 'sister', '王小明')
     employer = memory.add_fact('王小明', 'works_at', '月亮公司')
-    result = memory.search('我的姐姐在哪里工作？')
-    assert result.via == 'multi-hop'
-    assert [fact.id for fact in result.facts] == [relationship.id, employer.id]
-    assert result.answer() == '月亮公司'
+    result = memory.follow_path('user', ['sister', 'works_at'])
+    match, = result.paths
+    assert [fact.id for fact in match.facts] == [relationship.id, employer.id]
+    assert match.endpoint == '月亮公司'
 
 
 @pytest.mark.parametrize('query', ['我的姐姐喜欢哪家公司？', '我的姐姐的公司在哪里？',
@@ -66,7 +65,6 @@ def test_chinese_two_hop_does_not_infer_employment_from_company(query):
     memory.add_fact('Ana', 'works_at', 'Orbit')
     memory.add_fact('Ana', 'likes', 'Nadir')
     memory.add_fact('Orbit', 'based_in', 'Taipei')
-    assert not plan_evidence(query).multi_hop
     assert memory.search(query).via != 'multi-hop'
 
 
@@ -77,3 +75,11 @@ def test_lexical_episode_recall_requires_more_than_english_stop_words():
         memory.add(f'Apollo launch code rehearsal note {index}.')
     assert 'Apollo launch code' in memory.retrieve_episodes("What is Apollo's launch code?", k=1)[0].text
     assert not memory.retrieve_episodes('What is Kryptonite?')
+
+
+def test_search_prefers_a_literal_identifier_over_identical_lexical_terms():
+    memory = MemoryEngine()
+    exact = memory.add_fact('Project', 'reference', 'AB-104', valid_at=1)
+    memory.add_fact('Project', 'reference', 'AB/104', valid_at=2)
+    memory.add_fact('Project', 'reference', 'AB-104-B', valid_at=3)
+    assert memory.search('Find AB-104').top().id == exact.id

@@ -46,10 +46,15 @@ def replay_window(prompt, system, invoke):
                     if key == 'working' and data['mode'] == 'historical':
                         continue
                     fields = ('subject', 'predicate', 'object', 'text') if key == 'facts' else ('content', 'kind')
-                    item = {k: item[k] for k in (*fields, 'topic', 'category', 'sensitive', 'time_kind', 'effective_date') if k in item}
+                    item = {k: item[k] for k in (*fields, 'topic', 'category', 'sensitive', 'time_kind', 'effective_date', 'cardinality', 'retention') if k in item}
                     if key == 'facts':
                         category = '工作' if item['predicate'] == 'works_at' else '其他'
-                        item = dict(category=category, sensitive=False, time_kind='current', effective_date=None) | item
+                        single = item['predicate'] in {'works_at', 'lives_in', 'current_city', 'occupation',
+                                                        'works_remotely', 'favorite_food', 'favorite_color',
+                                                        'favorite_drink', 'studying', 'job_title', 'does_yoga'}
+                        durable = single or item['predicate'] in {'likes', 'dislikes', 'loves', 'prefers'}
+                        item = dict(category=category, sensitive=False, time_kind='current', effective_date=None, cardinality='single' if single else 'multi',
+                                    retention='durable' if durable else 'normal') | item
                         item.setdefault('text', f"{item['subject']} {item['predicate']} {item['object']}")
                 result[key].append({**item, 'source_ids': [span['id']]})
     if 'rules' in data:
@@ -62,12 +67,10 @@ def replay_window(prompt, system, invoke):
 
 def adjudication_reply(prompt):
     """Fixed decisions for the legacy consumer fixtures; native tests specify verdicts."""
-    from mnemotrace.consolidate.conflict import is_single_valued
-
     decisions = []
     for pair in json.loads(prompt):
         first, second = pair['first'], pair['second']
-        replaces = first['predicate'] == second['predicate'] and is_single_valued(first['predicate'])
+        replaces = first['predicate'] == second['predicate'] and second['cardinality'] == 'single'
         reverses = ({first['predicate'], second['predicate']} in ({'likes', 'dislikes'}, {'loves', 'dislikes'})
                     and first['object'] == second['object'])
         decisions.append(dict(id=pair['id'], decision='replaces' if replaces or reverses else 'coexists'))

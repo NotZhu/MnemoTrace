@@ -16,6 +16,9 @@ except Exception as exc:  # noqa: BLE001
 
 from .backends import Backend, make_backend
 from ..topics import Topic
+from ..retrieve.structured import AmbiguousAnchor
+from ..types import Cardinality, Retention
+from ..store.contracts import FactState
 
 INSTRUCTIONS = (
     "MnemoTrace is the user's long-term memory. Use `mnemotrace_recall` BEFORE answering anything that may "
@@ -27,6 +30,7 @@ INSTRUCTIONS = (
     "Use `mnemotrace_flush_processing` with the session ID to finish core processing; "
     "use `mnemotrace_session_report` when the user asks what that session "
     "saved; use `mnemotrace_list_sessions` when the user asks which agent/app sessions touched memory. "
+    "Use `mnemotrace_aggregate` for counts and `mnemotrace_follow_path` for ordered relations. "
     "`mnemotrace_search` gives a single direct answer; `mnemotrace_agent_status` checks the current namespace, "
     "session, focus, and next memory actions without exposing memory contents; `mnemotrace_stats` checks "
     "content-free memory health; "
@@ -161,6 +165,9 @@ async def mnemotrace_recall(
     redact_sensitive: Annotated[bool, Field(description="When true, omit facts tagged sensitive from the "
                                             "returned context.")] = False,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+    state: FactState = FactState.CURRENT,
+    valid_at: float | None = None,
+    known_at: float | None = None,
 ) -> str:
     """检索一小段相关、带日期的用户长期记忆，用于锚定你的回答。
 
@@ -178,7 +185,7 @@ async def mnemotrace_recall(
             lean=True,
             session_id=session_id,
             as_of=as_of,
-            redact_sensitive=redact_sensitive,
+            redact_sensitive=redact_sensitive, state=state, valid_at=valid_at, known_at=known_at,
         )
     except Exception as e:  # noqa: BLE001
         return _err(e)
@@ -188,6 +195,54 @@ async def mnemotrace_recall(
     if not ctx:
         return "No relevant memory found for that query."
     return f"Relevant memory (~{data.get('tokens_est', '?')} tokens):\n\n{ctx}"
+
+
+@mcp.tool(name="mnemotrace_aggregate", annotations=ToolAnnotations(title="Count structured facts", **_READ))
+async def mnemotrace_aggregate(
+    predicate: Annotated[str, Field(min_length=1, max_length=512)],
+    operation: Literal['count', 'count_distinct'] = 'count',
+    subject: str | None = None,
+    start: float | None = None,
+    end: float | None = None,
+    query: str | None = None,
+    state: FactState = FactState.CURRENT,
+    valid_at: float | None = None,
+    known_at: float | None = None,
+    redact_sensitive: bool = False,
+    limit: Annotated[int, Field(ge=1, le=1000)] = 10,
+) -> str:
+    """Count facts with an explicit predicate. Use count_distinct for distinct object values.
+    Provide optional valid-time bounds [start, end) in epoch seconds. If only original
+    text supports the question, pass a query and treat source candidates as incomplete evidence.
+    """
+    try:
+        return _json(await backend().aggregate_facts(
+            predicate, operation=operation, subject=subject, start=start, end=end, query=query,
+            state=state, valid_at=valid_at, known_at=known_at, redact_sensitive=redact_sensitive, limit=limit))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@mcp.tool(name="mnemotrace_follow_path", annotations=ToolAnnotations(title="Follow explicit fact relations", **_READ))
+async def mnemotrace_follow_path(
+    anchor: Annotated[str, Field(min_length=1, max_length=512)],
+    predicates: Annotated[list[str], Field(min_length=2, max_length=4)],
+    state: FactState = FactState.CURRENT,
+    valid_at: float | None = None,
+    known_at: float | None = None,
+    redact_sensitive: bool = False,
+    limit: Annotated[int, Field(ge=1, le=1000)] = 20,
+) -> str:
+    """Follow two to four outbound predicates in order, for example sister then works_at.
+    Use an exact entity name or unambiguous alias. Each result includes supporting facts.
+    """
+    try:
+        return _json(await backend().follow_path(anchor, predicates, state=state, valid_at=valid_at,
+                                                known_at=known_at, redact_sensitive=redact_sensitive, limit=limit))
+    except AmbiguousAnchor as exc:
+        return "Error: " + _json(dict(code="ambiguous_anchor", message=str(exc)))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
 
 
 @mcp.tool(name="mnemotrace_get_episode", annotations=ToolAnnotations(title="Read original event", **_READ))
@@ -220,6 +275,9 @@ async def mnemotrace_search(
     redact_sensitive: Annotated[bool, Field(description="When true, omit facts tagged sensitive and abstain "
                                             "instead of returning sensitive answers.")] = False,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+    state: FactState = FactState.CURRENT,
+    valid_at: float | None = None,
+    known_at: float | None = None,
 ) -> str:
     """直接从记忆回答单个事实性问题（附支撑的 fact）。
 
@@ -230,7 +288,8 @@ async def mnemotrace_search(
     返回（json）：{"answer": str, "facts": [str, ...], "as_of": float|null, "redacted_sensitive": bool}。
     """
     try:
-        data = await backend().recall(query, lean=False, as_of=as_of, redact_sensitive=redact_sensitive)
+        data = await backend().recall(query, lean=False, as_of=as_of, redact_sensitive=redact_sensitive,
+                                      state=state, valid_at=valid_at, known_at=known_at)
     except Exception as e:  # noqa: BLE001
         return _err(e)
     if response_format == ResponseFormat.JSON:
@@ -675,16 +734,15 @@ async def mnemotrace_add_fact(
     sensitive: Annotated[Optional[bool], Field(description="Optional user override for sensitivity.")] = None,
     category: Annotated[Optional[str], Field(description="Optional user-visible category label.")] = None,
     topic: Annotated[Optional[Topic], Field(description="Optional manually selected main topic.")] = None,
+    cardinality: Cardinality = "unknown",
+    retention: Retention = "unknown",
 ) -> str:
-    """断言单条权威的 (subject, predicate, object) fact。
-
-    与 `mnemotrace_remember`（从自由文本抽取 fact）不同，这里记录的是用户明确断言的一条精确 fact。
-    它会被标记为用户撰写且是权威的：自动抽取绝不会悄悄覆盖它，并且它会失效化同一 slot 上
-    任何冲突的抽取值。
+    """Assert a fact. Set cardinality to single to update the same slot over time.
+    Use multi when values can coexist and durable to exempt it from decay.
     """
     try:
         data = await backend().add_fact(subject, predicate, object, sensitive=sensitive, category=category,
-                                        topic=topic)
+                                        topic=topic, cardinality=cardinality, retention=retention)
     except Exception as e:  # noqa: BLE001
         return _err(e)
     return (f"Stored authoritative fact: {data.get('text', f'{subject} {predicate} {object}')}\n"
@@ -701,8 +759,10 @@ async def mnemotrace_update_fact(
     category: Annotated[Optional[str], Field(description="Optional category override.")] = None,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
     topic: Annotated[Optional[Topic], Field(description="Optional manual main topic; unknown is explicit.")] = None,
-    reset_topic: Annotated[bool, Field(description="Re-evaluate topic with offline rules, without a model call; "
+    reset_topic: Annotated[bool, Field(description="Clear topic; "
                                                   "cannot be combined with topic.")] = False,
+    cardinality: Cardinality | None = None,
+    retention: Retention | None = None,
 ) -> str:
     """按 id 修正一条已存的 fact。
 
@@ -711,7 +771,7 @@ async def mnemotrace_update_fact(
 
     返回（json）：{"ok": true, "id": str, "text": str}，找不到时返回错误字符串。
     """
-    if all(v is None for v in (subject, predicate, object, sensitive, category, topic)) and not reset_topic:
+    if all(v is None for v in (subject, predicate, object, sensitive, category, topic, cardinality, retention)) and not reset_topic:
         return "Error: provide at least one field to update."
     try:
         data = await backend().update_fact(
@@ -723,6 +783,8 @@ async def mnemotrace_update_fact(
             category=category,
             topic=topic,
             reset_topic=reset_topic,
+            cardinality=cardinality,
+            retention=retention,
         )
     except Exception as e:  # noqa: BLE001
         return _err(e)

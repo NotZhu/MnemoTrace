@@ -15,7 +15,7 @@ from mnemotrace.types import Fact
 def claim(source_id, value='Paris', **fields):
     return dict(subject='Ana', predicate='lives_in', object=value, text=f'Ana lives in {value}',
                 source_ids=[source_id], category='位置', sensitive=False,
-                time_kind='current', effective_date=None) | fields
+                time_kind='current', effective_date=None, cardinality='unknown', retention='unknown') | fields
 
 
 def decisions(prompt, decision='replaces'):
@@ -25,6 +25,7 @@ def decisions(prompt, decision='replaces'):
 
 @pytest.mark.parametrize('fields', [
     {'category': 'undefined'}, {'sensitive': 'false'}, {'effective_date': '2024-01-01'},
+    {'cardinality': 'scalar'}, {'retention': None},
     {'time_kind': 'dated'}, {'time_kind': 'dated', 'effective_date': '2024-02-30'},
     {'time_kind': 'dated', 'effective_date': '20240101'}, {'time_kind': 'inferred'},
 ])
@@ -217,7 +218,7 @@ def test_historical_manual_conflict_is_reviewable_and_revises_only_its_interval(
 
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
     first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10)
-    last = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=30)
+    last = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=30, cardinality='single')
     mem.add('Oslo', event_time=20, consolidate=True)
     conflict, = mem.pending_conflicts()
     assert mem.resolve_conflict(conflict.id, 'newer')
@@ -288,9 +289,9 @@ def test_future_manual_interval_holds_a_conflicting_extraction():
 def test_manual_add_splices_scheduled_facts_in_valid_time_order():
     mem = MemoryEngine()
     first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10)
-    last = mem.add_fact('Ana', 'lives_in', 'Oslo', valid_at=FUTURE + 20)
-    middle = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=FUTURE + 10)
-    following = mem.add_fact('Ana', 'lives_in', 'Rome', valid_at=FUTURE + 30)
+    last = mem.add_fact('Ana', 'lives_in', 'Oslo', valid_at=FUTURE + 20, cardinality='single')
+    middle = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=FUTURE + 10, cardinality='single')
+    following = mem.add_fact('Ana', 'lives_in', 'Rome', valid_at=FUTURE + 30, cardinality='single')
     assert [(f.invalid_at, f.supersedes) for f in (first, middle, last, following)] == [
         (FUTURE + 10, None), (FUTURE + 20, first.id), (FUTURE + 30, middle.id), (None, last.id),
     ]

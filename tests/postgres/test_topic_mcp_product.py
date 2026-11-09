@@ -37,7 +37,7 @@ async def test_mcp_local_and_proxy_preserve_topic_contract(product_service, prod
             added = await backend.add_fact("user", "prefers", obj, topic="food")
             assert (added["topic"], added["topic_source"]) == ("food", "user")
             updated = await backend.update_fact(added["id"], reset_topic=True)
-            assert (updated["topic"], updated["topic_source"]) == ("food", "rule")
+            assert (updated["topic"], updated["topic_source"]) == ("unknown", "unset")
         assert requests[0]["topic"] == "food" and requests[1]["reset_topic"] is True
 
         server.set_backend(local)
@@ -53,7 +53,7 @@ async def test_mcp_local_and_proxy_preserve_topic_contract(product_service, prod
             assert json.loads(blocks[0].text)["topic_source"] == "user"
             await server.mcp.call_tool("mnemotrace_update_fact", {"fact_id": fact.id, "reset_topic": True})
             edited = service.memory(context).get_fact(fact.id)
-            assert (edited.topic, edited.topic_source) == ("music", "rule")
+            assert (edited.topic, edited.topic_source) == ("unknown", "unset")
         finally:
             server.set_backend(None)
 

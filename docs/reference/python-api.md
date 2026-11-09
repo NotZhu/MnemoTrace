@@ -101,12 +101,12 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 
 图谱的状态、搜索、敏感内容与时间筛选均在 `limit` 前执行；正数 `limit` 限制返回关系数，节点仅包含这些关系的端点。`has_more=true` 表示当前查询条件下仍有未返回的匹配关系；恰好达到上限不表示截断。不限量查询返回全部匹配关系，`has_more=false`。该字段不提供命名空间总数，展示数量仅描述已返回的图。
 
-主题可使用导出的 `Topic`、`TopicSource` 类型。`topic=None` 表示未指定，`topic="unknown"` 是人工选择未知。`reset_topic=True` 按当前内容重新执行离线规则，不调用模型，结果为明确主题/rule 或 unknown/unset，不能与明确 topic 同传。仅修改主题不改变事实来源或历史；新增未指定主题、内容变化且未指定新主题时使用规则。完整契约见[主题与来源](../architecture/memory.md#主题与来源)。
+手动事实可显式设置 `topic`，省略或清除时为 `unknown/unset`。仅编辑主题保留来源和历史。`reset_topic` 与显式主题互斥。新增或修改事实时可指定 `cardinality` 与 `retention`，默认分别为 `unknown`。
 
 ```python
 fact = memory.add_fact("user", "prefers", "茶", topic="food")
 memory.update_fact(fact.id, topic="unknown")  # unknown/user
-memory.update_fact(fact.id, reset_topic=True)  # 按当前内容重新判断，来源为 rule 或 unset
+memory.update_fact(fact.id, reset_topic=True)  # 清除主题，来源为 unset
 ```
 
 ## 离线扩展与研究入口
@@ -140,3 +140,5 @@ Postgres 核心操作通过 `auxiliary_operation_ids` 关联独立的摘要任�
 
 摘要成功后，所有 agent 事件检索、来源证据、聚合和上下文只使用摘要。检索文本带事件 ID；通过 get_episode 显式读取原文。
 Fact 仍从原文抽取且独立检索；历史事件摘要不追加后续事实。owner 管理浏览、全文搜索及导出保留。
+
+使用 `memory.aggregate_facts("visited", operation="count_distinct")` 统计不同对象，使用 `memory.follow_path("user", ["sister", "works_at"])` 获取路径和支持事实。两者可通过 `FactQuery` 设置有效时间、认知时间、事实状态和脱敏条件。

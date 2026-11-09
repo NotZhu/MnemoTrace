@@ -54,7 +54,7 @@ def test_missing_envelope_rejects_entire_batch(key):
 @pytest.mark.parametrize("key", [
     "id", "subject", "predicate", "object", "source", "valid_at", "invalid_at",
     "created_at", "expired_at", "supersedes", "provenance", "category", "sensitive",
-    "salience", "confidence", "topic", "topic_source",
+    "salience", "confidence", "topic", "topic_source", "validity_revisions",
 ])
 def test_missing_fact_history_rejects_before_any_episode_is_added(key):
     payload = snapshot()
@@ -168,4 +168,20 @@ def test_invalid_recomputed_vector_does_not_apply_prepared_episodes(monkeypatch)
     monkeypatch.setattr(mem.embedder, "embed", malformed_fact_vector)
     with pytest.raises(ValueError, match="embedding"):
         mem.import_snapshot(snapshot())
+    assert contents(mem) == before
+
+
+@pytest.mark.parametrize("revisions", [
+    {}, [{"changed_at": 1}],
+    [{"changed_at": True, "invalid_at": None, "expired_at": None}],
+    [{"changed_at": 2, "invalid_at": None, "expired_at": None},
+     {"changed_at": 1, "invalid_at": None, "expired_at": None}],
+])
+def test_invalid_validity_revisions_reject_before_partial_import(revisions):
+    payload = snapshot()
+    payload["facts"][0]["validity_revisions"] = revisions
+    mem = target()
+    before = contents(mem)
+    with pytest.raises(ValueError):
+        mem.import_snapshot(payload)
     assert contents(mem) == before

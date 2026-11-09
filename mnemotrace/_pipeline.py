@@ -173,13 +173,14 @@ def _merge_input(mem, namespace, win, now):
         if namespace in mem._identity:
             owner_refs.add(mem._identity[namespace].lower())
         owner_name = subject_input in owner_refs
-        topic, topic_source = resolve_topic(item['predicate'], item['object'], item.get('topic') if mem.config.llm_topics else None)
+        topic, topic_source = resolve_topic(item.get('topic'))
         fact = Fact(subject=item['subject'], predicate=item['predicate'], object=item['object'], text=item['text'],
             display=item.get('display', item['text']), user_id=namespace, valid_at=fact_valid_at(item, origin['event_time']), created_at=now, last_access=now,
             category=item['category'], sensitive=item['sensitive'],
             provenance=item['source_ids'],
             source_roles=list(dict.fromkeys(views[k]['role'] for k in item['source_ids'] if views[k]['role'])),
-            topic=topic, topic_source=topic_source, id='ft_' + digest([win['input_hash'], item])[:24], embedding=vector(item['text']))
+            topic=topic, topic_source=topic_source,
+                    cardinality=item['cardinality'], retention=item['retention'], id='ft_' + digest([win['input_hash'], item])[:24], embedding=vector(item['text']))
         if not (data['source_kind'] != 'dialogue' and item['predicate'] in _NAME_PREDICATES and owner_name):
             facts.append(fact)
         if owner_name and item['predicate'] in _NAME_PREDICATES:
@@ -424,9 +425,6 @@ def run_one(service, user):
                             win['result']['summaries'][mid] = text
                 else:
                     from .consolidate.fact_rules import _norm_predicate, _SELF_REFS, _NAME_PREDICATES
-                    from .consolidate.topic_rules import log_topic_inputs
-                    if mem.config.llm_topics:
-                        log_topic_inputs(output['facts'])
                     owner_refs = {*_SELF_REFS, user.lower(), *mem._aliases.get(user, set())}
                     if user in mem._identity:
                         owner_refs.add(mem._identity[user].lower())

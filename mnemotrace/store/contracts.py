@@ -192,6 +192,10 @@ class FactQuery:
     after_id: str | None = None
     exclude_sensitive: bool = False
 
+    @property
+    def is_current_view(self) -> bool:
+        return self.state == FactState.CURRENT and self.valid_at is None and self.known_at is None
+
     def __post_init__(self):
         _enum(self.state, FactState)
         _time(self.valid_at)

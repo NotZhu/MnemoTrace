@@ -85,8 +85,8 @@ test('fact topics and reset are passed through with server-assigned origins', as
     const body = JSON.parse(init.body)
     calls.push({url, body})
     return new Response(JSON.stringify({ok: true, id: 'synthetic-fact', text: 'user prefers tea',
-      topic: body.reset_topic ? 'food' : body.topic,
-      topic_source: body.reset_topic ? 'rule' : 'user'}), {status: 200})
+      topic: body.reset_topic ? 'unknown' : body.topic,
+      topic_source: body.reset_topic ? 'unset' : 'user'}), {status: 200})
   }})
   const added = await client.addFact({predicate: 'prefers', object: 'tea', topic: 'food'}, space)
   assert.equal(added.topic, 'food')
@@ -94,8 +94,8 @@ test('fact topics and reset are passed through with server-assigned origins', as
   const explicitUnknown = await client.updateFact(added.id, {topic: 'unknown'}, space)
   assert.equal(explicitUnknown.topic_source, 'user')
   const reset = await client.updateFact(added.id, {reset_topic: true}, space)
-  assert.equal(reset.topic, 'food')
-  assert.equal(reset.topic_source, 'rule')
+  assert.equal(reset.topic, 'unknown')
+  assert.equal(reset.topic_source, 'unset')
   assert.deepEqual(calls.map(call => call.body), [
     {subject: 'user', predicate: 'prefers', object: 'tea', topic: 'food', space_id: 'space-test'},
     {topic: 'unknown', space_id: 'space-test'}, {reset_topic: true, space_id: 'space-test'},
@@ -561,4 +561,19 @@ test('queries and retries the same scoped operation ID', async () => {
   assert.equal(requests[0].url.searchParams.get('space_id'), space.spaceId)
   assert.equal(requests[1].url.pathname, '/v1/operations/synthetic-op/retry')
   assert.deepEqual(requests[1].body, { space_id: space.spaceId })
+})
+
+
+test('structured reads use explicit scoped tools and forward time conditions', async () => {
+  const calls = []
+  const client = new MnemoTraceClient({fetch: async (url, init) => {
+    calls.push([new URL(url).pathname, JSON.parse(init.body)])
+    return new Response('{}', {status: 200})
+  }})
+  await client.aggregateFacts('visited', {...space, operation: 'count_distinct', start: 1, limit: 2})
+  await client.followPath('user', ['sister', 'works_at'], {...space, known_at: 20, redact_sensitive: true})
+  assert.deepEqual(calls, [
+    ['/v1/aggregate', {space_id: 'space-test', predicate: 'visited', operation: 'count_distinct', start: 1, limit: 2}],
+    ['/v1/follow-path', {space_id: 'space-test', anchor: 'user', predicates: ['sister', 'works_at'], known_at: 20, redact_sensitive: true}],
+  ])
 })

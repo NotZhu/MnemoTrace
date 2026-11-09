@@ -16,7 +16,9 @@ import os
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote, urlencode
 
+from ..store.contracts import FactState
 from ..topics import Topic
+from ..types import Cardinality, Retention
 
 
 @runtime_checkable
@@ -32,6 +34,9 @@ class Backend(Protocol):
     async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
                                retry_failed: bool = False, include_summaries: bool = False) -> dict: ...
     async def get_episode(self, episode_id: str, space_id: str | None = None) -> dict | None: ...
+    async def aggregate_facts(self, predicate: str, **options) -> dict: ...
+    async def follow_path(self, anchor: str, predicates: list[str], **options) -> dict: ...
+
     async def recall(
         self,
         query: str,
@@ -40,6 +45,9 @@ class Backend(Protocol):
         session_id: str | None = None,
         as_of: float | None = None,
         redact_sensitive: bool = False,
+        state: FactState = FactState.CURRENT,
+        valid_at: float | None = None,
+        known_at: float | None = None,
     ) -> dict: ...
     async def session_report(
         self,
@@ -75,6 +83,8 @@ class Backend(Protocol):
         sensitive: bool | None = None,
         category: str | None = None,
         topic: Topic | None = None,
+        cardinality: Cardinality = "unknown",
+        retention: Retention = "unknown",
     ) -> dict: ...
     async def update_fact(
         self,
@@ -86,6 +96,8 @@ class Backend(Protocol):
         category: str | None = None,
         topic: Topic | None = None,
         reset_topic: bool = False,
+        cardinality: Cardinality | None = None,
+        retention: Retention | None = None,
     ) -> dict | None: ...
     async def delete_fact(self, fact_id: str) -> dict: ...
     async def import_(self, data: Any, format: str = "auto") -> dict: ...
@@ -138,6 +150,12 @@ class LocalBackend:
             self.svc.spaces.authorize, self.context.user_id, space_id)
         return await asyncio.to_thread(self.svc.get_episode, context, episode_id)
 
+    async def aggregate_facts(self, predicate: str, **options) -> dict:
+        return await asyncio.to_thread(self.svc.aggregate_facts, self.context, predicate, **options)
+
+    async def follow_path(self, anchor: str, predicates: list[str], **options) -> dict:
+        return await asyncio.to_thread(self.svc.follow_path, self.context, anchor, predicates, **options)
+
     async def recall(
         self,
         query: str,
@@ -146,6 +164,9 @@ class LocalBackend:
         session_id: str | None = None,
         as_of: float | None = None,
         redact_sensitive: bool = False,
+        state: FactState = FactState.CURRENT,
+        valid_at: float | None = None,
+        known_at: float | None = None,
     ) -> dict:
         return await asyncio.to_thread(
             self.svc.recall,
@@ -155,7 +176,7 @@ class LocalBackend:
             n_chunks=n_chunks,
             session_id=session_id,
             as_of=as_of,
-            redact_sensitive=redact_sensitive,
+            redact_sensitive=redact_sensitive, state=state, valid_at=valid_at, known_at=known_at,
         )
 
     async def session_report(
@@ -213,6 +234,8 @@ class LocalBackend:
         sensitive: bool | None = None,
         category: str | None = None,
         topic: Topic | None = None,
+        cardinality: Cardinality = "unknown",
+        retention: Retention = "unknown",
     ) -> dict:
         return await asyncio.to_thread(
             self.svc.add_fact,
@@ -223,6 +246,8 @@ class LocalBackend:
             sensitive=sensitive,
             category=category,
             topic=topic,
+            cardinality=cardinality,
+            retention=retention,
         )
 
     async def update_fact(
@@ -235,6 +260,8 @@ class LocalBackend:
         category: str | None = None,
         topic: Topic | None = None,
         reset_topic: bool = False,
+        cardinality: Cardinality | None = None,
+        retention: Retention | None = None,
     ) -> dict | None:
         return await asyncio.to_thread(
             self.svc.update_fact,
@@ -247,6 +274,8 @@ class LocalBackend:
             category=category,
             topic=topic,
             reset_topic=reset_topic,
+            cardinality=cardinality,
+            retention=retention,
         )
 
     async def delete_fact(self, fact_id: str) -> dict:
@@ -352,6 +381,12 @@ class RemoteBackend:
         query = '?' + urlencode({'space_id': space_id}) if space_id is not None else ''
         return await self._get('/v1/episodes/' + quote(episode_id, safe='') + query)
 
+    async def aggregate_facts(self, predicate: str, **options) -> dict:
+        return await self._post('/v1/aggregate', {'predicate': predicate, **options})
+
+    async def follow_path(self, anchor: str, predicates: list[str], **options) -> dict:
+        return await self._post('/v1/follow-path', {'anchor': anchor, 'predicates': predicates, **options})
+
     async def recall(
         self,
         query: str,
@@ -360,8 +395,12 @@ class RemoteBackend:
         session_id: str | None = None,
         as_of: float | None = None,
         redact_sensitive: bool = False,
+        state: FactState = FactState.CURRENT,
+        valid_at: float | None = None,
+        known_at: float | None = None,
     ) -> dict:
-        body = {"query": query, "lean": lean, "n_chunks": n_chunks}
+        body = {"query": query, "lean": lean, "n_chunks": n_chunks, "state": state,
+                "valid_at": valid_at, "known_at": known_at}
         if session_id is not None:
             body["session_id"] = session_id
         if as_of is not None:
@@ -436,8 +475,11 @@ class RemoteBackend:
         sensitive: bool | None = None,
         category: str | None = None,
         topic: Topic | None = None,
+        cardinality: Cardinality = "unknown",
+        retention: Retention = "unknown",
     ) -> dict:
-        body = {"subject": subject, "predicate": predicate, "object": object}
+        body = {"subject": subject, "predicate": predicate, "object": object,
+                "cardinality": cardinality, "retention": retention}
         if sensitive is not None:
             body["sensitive"] = sensitive
         if category is not None:
@@ -456,6 +498,8 @@ class RemoteBackend:
         category: str | None = None,
         topic: Topic | None = None,
         reset_topic: bool = False,
+        cardinality: Cardinality | None = None,
+        retention: Retention | None = None,
     ) -> dict | None:
         body: dict[str, Any] = {}
         if subject is not None:
@@ -472,6 +516,10 @@ class RemoteBackend:
             body["topic"] = topic
         if reset_topic:
             body["reset_topic"] = True
+        if cardinality is not None:
+            body["cardinality"] = cardinality
+        if retention is not None:
+            body["retention"] = retention
         return await self._patch(f"/v1/facts/{quote(fact_id, safe='')}", body)
 
     async def delete_fact(self, fact_id: str) -> dict:

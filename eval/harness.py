@@ -22,14 +22,17 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mnemotrace import MemoryEngine  # noqa: E402
-from mnemotrace.util import DAY, stems  # noqa: E402
+from mnemotrace.retrieve.lexical import lexical_terms  # noqa: E402
+from mnemotrace.retrieve.answers import SearchResult  # noqa: E402
+from mnemotrace.store.contracts import FactQuery  # noqa: E402
+from mnemotrace.util import DAY  # noqa: E402
 from eval.synthetic import ITEMS, EvalItem  # noqa: E402
 
 BASE = 1_700_000_000.0
 
 
 def _norm(s: str) -> str:
-    return " ".join(stems(s))
+    return " ".join(lexical_terms(s))
 
 
 def _contains(answer: str, gold: str) -> bool:
@@ -55,7 +58,15 @@ def run_mnemotrace(item: EvalItem, storage: str = "memory", *, llm) -> tuple[boo
     return detail["ok"], detail["tokens"], detail["latency_ms"]
 
 
-def run_mnemotrace_detail(item: EvalItem, storage: str = "memory", *, llm) -> dict:
+def path_answer(item, result):
+    matches = result.paths
+    facts = list({fact.id: fact for match in matches for fact in match.facts}.values())
+    return SearchResult(item.question, facts, via="multi-hop", abstained=not matches,
+                        _answer=", ".join(dict.fromkeys(match.endpoint for match in matches)),
+                        limitations=result.limitations)
+
+
+def run_mnemotrace_detail(item: EvalItem, storage: str = "memory", *, llm, capture=None) -> dict:
     mem = _memory_for(storage, llm)
     for text, day in item.sessions:
         mem.add(text, user_id=item.id, event_time=BASE + day * DAY)
@@ -63,14 +74,20 @@ def run_mnemotrace_detail(item: EvalItem, storage: str = "memory", *, llm) -> di
     when = None if item.as_of_day is None else BASE + item.as_of_day * DAY
 
     t0 = time.perf_counter()
-    res = mem.search(item.question, user_id=item.id, as_of=when)
+    if item.path:
+        result = mem.follow_path(item.path[0], item.path[1:], user_id=item.id, facts=FactQuery(valid_at=when))
+        res = path_answer(item, result)
+    else:
+        res = mem.search(item.question, user_id=item.id, as_of=when)
     latency_ms = (time.perf_counter() - t0) * 1000.0
 
+    if capture is not None:
+        capture(item.id, mem, res)
     if item.answer is None:
         correct = res.abstained
     else:
         correct = (not res.abstained) and _contains(res.answer(), item.answer)
-    context_tokens = len(stems(" ".join(f.text for f in res.facts)))
+    context_tokens = len(lexical_terms(" ".join(f.text for f in res.facts)))
     return {
         "id": item.id,
         "category": item.category,
@@ -88,7 +105,7 @@ def run_mnemotrace_detail(item: EvalItem, storage: str = "memory", *, llm) -> di
 
 def run_naive_recall(item: EvalItem) -> tuple[bool, int]:
     history_text = " ".join(t for t, _ in item.sessions)
-    tokens = len(stems(history_text))
+    tokens = len(lexical_terms(history_text))
     if item.answer is None:
         return False, tokens  # naive 读者无法拒答
     if item.as_of_day is not None:

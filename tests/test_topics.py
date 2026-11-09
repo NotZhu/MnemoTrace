@@ -15,7 +15,7 @@ def test_profile_follows_manual_topic_without_changing_fact_classification():
     mem.add("I like tea.")
     mem.consolidate()
     fact, = mem.fact_store.values()
-    assert (fact.topic, fact.topic_source, fact.category) == ("food", "rule", "其他")
+    assert (fact.topic, fact.topic_source, fact.category) == ("unknown", "unset", "其他")
     mem.update_fact(fact.id, topic="music")
     item, = mem.structured_profile()["preferences"]["音乐"]
     assert item["fact_id"] == fact.id
@@ -32,7 +32,7 @@ def test_manual_topic_values_and_reset_are_distinct(topic):
     mem.update_fact(fact.id, topic=None)
     assert (fact.topic, fact.topic_source) == (topic, "user")
     mem.update_fact(fact.id, reset_topic=True)
-    assert (fact.topic, fact.topic_source) == ("food", "rule")
+    assert (fact.topic, fact.topic_source) == ("unknown", "unset")
 
 
 @pytest.mark.parametrize("resubmit", [False, True])
@@ -41,7 +41,7 @@ def test_topic_edit_preserves_extracted_history_and_graph(resubmit):
     mem.add("I live in Beijing.", event_time=1)
     mem.consolidate()
     old, = mem.fact_store.values()
-    mem.add_fact(old.subject, old.predicate, "Shanghai", valid_at=2)
+    mem.add_fact(old.subject, old.predicate, "Shanghai", valid_at=2, cardinality="single")
     assert old.source == "extracted" and not old.is_live()
     before = asdict(old)
     graph = mem.graph_data()
@@ -58,7 +58,7 @@ def test_content_edit_resets_old_topic_unless_explicitly_replaced(patch):
     mem = MemoryEngine()
     fact = mem.add_fact("user", "prefers", "tea", topic="food")
     mem.update_fact(fact.id, **patch)
-    assert (fact.topic, fact.topic_source) == ("food", "rule")
+    assert (fact.topic, fact.topic_source) == ("unknown", "unset")
     mem.update_fact(fact.id, object="jazz", topic="music")
     assert (fact.topic, fact.topic_source) == ("music", "user")
 
@@ -88,7 +88,7 @@ def test_topic_and_reset_conflict_does_not_edit_content():
 
 @pytest.mark.parametrize(("topic", "source"), [
     ("unknown", "unset"), ("unknown", "user"), ("music", "user"),
-    ("food", "rule"), ("technology", "llm"),
+    ("food", "llm"), ("technology", "llm"),
 ])
 @pytest.mark.parametrize("tier", ["hot", "cold"])
 def test_topics_roundtrip_exported_records(topic, source, tier):
@@ -141,7 +141,7 @@ def test_manual_topic_writes_do_not_call_llm():
     fact = mem.add_fact("user", "prefers", "tea", topic="food")
     mem.update_fact(fact.id, topic="reading")
     mem.update_fact(fact.id, reset_topic=True)
-    assert (fact.topic, fact.topic_source) == ("food", "rule")
+    assert (fact.topic, fact.topic_source) == ("unknown", "unset")
     assert model.calls == 0
 
 

@@ -19,7 +19,6 @@ from collections.abc import Iterable
 from ..localize import display_of
 from ..types import Fact
 from ._rule_match import normalize_predicate
-from ._topic_keywords import RESTRICTION_PREDICATES
 
 # predicate -> (规范字段键, 展示标签)。身份/基本信息槽位（单值）。
 _BASIC: dict[str, tuple[str, str]] = {
@@ -84,9 +83,12 @@ def _is_habit(pred: str) -> bool:
     return p in _HABIT or any(p.startswith(h + "_") for h in _HABIT)
 
 
+_RESTRICTION_PREDICATES = frozenset({"allergic_to", "allergic", "cannot_eat", "cant_eat"})
+
+
 def _preference_group(fact: Fact) -> str:
     # 禁忌是明确关系的独立展示特例，不能仅凭 health 主题推断。
-    if normalize_predicate(fact.predicate) in RESTRICTION_PREDICATES:
+    if normalize_predicate(fact.predicate) in _RESTRICTION_PREDICATES:
         return "健康禁忌"
     return _GROUP_LABELS[fact.topic]
 

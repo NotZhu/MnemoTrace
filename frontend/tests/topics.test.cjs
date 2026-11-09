@@ -31,22 +31,22 @@ test('主题标签枚举完整，未知保留为可选值', () => {
 })
 
 test('主题和主题依据展示独立于事实来源', () => {
-  for (const [source, label] of [['rule', '规则判断'], ['llm', '模型判断'], ['user', '人工设置'], ['unset', '未确定']]) {
+  for (const [source, label] of [['llm', '模型判断'], ['user', '人工设置'], ['unset', '未确定']]) {
     const html = renderToStaticMarkup(React.createElement(TopicBadge, { topic: 'unknown', topic_source: source }))
     assert.match(html, /未知/)
     assert.ok(html.includes(label))
   }
 })
 
-test('编辑默认保持主题，解释正文变化会重判；新建默认自动判断且不能重置', () => {
+test('编辑默认保持主题，正文变化时清除；新建默认未知', () => {
   const edit = renderToStaticMarkup(React.createElement(TopicEditor, {
-    current: { topic: 'food', topic_source: 'rule' }, value: 'keep', onChange() {}, disabled: true,
+    current: { topic: 'food', topic_source: 'llm' }, value: 'keep', onChange() {}, disabled: true,
   }))
   assert.match(edit, /不修改主题/)
   assert.match(edit, /正文/)
-  assert.match(edit, /重新判断/)
+  assert.match(edit, /清除主题/)
   assert.match(edit, /disabled/)
   const add = renderToStaticMarkup(React.createElement(TopicEditor, { value: 'keep', onChange() {} }))
-  assert.match(add, /自动判断/)
+  assert.match(add, /未指定时主题为未知/)
   assert.doesNotMatch(add, /value="reset"/)
 })

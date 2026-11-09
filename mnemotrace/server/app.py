@@ -21,8 +21,10 @@ from ..consolidate.manual import InvalidFactEditError
 from ..embed import EmbeddingUnavailable
 from ..service import MemoryRevisionChanged, MemoryService, ProcessingFailure
 from ..extraction import ExtractionError
+from ..retrieve.structured import AmbiguousAnchor
 from ..topics import Topic
-from ..store.contracts import SpaceContext
+from ..types import Cardinality, Retention
+from ..store.contracts import FactState, SpaceContext
 from ..store.postgres.errors import (
     AccountNotFound, AuthenticationError, CommitOutcomeUnknown, DatabaseConfigurationError,
     DatabaseError, DatabaseUnavailable, MessageConflict, SchemaMismatch, SpaceNotFound, VersionConflict,
@@ -286,6 +288,9 @@ class RecallReq(BaseModel):
     lean: bool = True
     n_chunks: int = Field(default=6, ge=0, le=50)
     session_id: Optional[str] = Field(default=None, max_length=512)
+    state: FactState = FactState.CURRENT
+    valid_at: float | None = None
+    known_at: float | None = None
     as_of: Optional[float] = None  # epoch 秒：某时间点的记忆视图（as-of）
     redact_sensitive: bool = False  # 在返回的上下文/fact 列表中隐藏被标记为敏感的 fact
 
@@ -445,12 +450,53 @@ def recall(req: RecallReq, owner: str = Depends(auth)):
         raise ValueError('Duplicate space IDs')
     contexts = [svc().spaces.authorize(owner, space_id) for space_id in ids]
     options = dict(n_chunks=req.n_chunks, session_id=req.session_id, as_of=req.as_of,
-                   redact_sensitive=req.redact_sensitive)
+                   redact_sensitive=req.redact_sensitive, state=req.state,
+                   valid_at=req.valid_at, known_at=req.known_at)
     if len(contexts) > 1:
         if not req.lean:
             raise ValueError('Multi-space recall requires lean context')
         return svc().recall_multi(contexts, req.query, **options)
     return svc().recall(contexts[0], req.query, lean=req.lean, answer=True, **options)
+
+
+class StructuredRead(SpaceRequest):
+    state: FactState = FactState.CURRENT
+    valid_at: float | None = None
+    known_at: float | None = None
+    redact_sensitive: bool = False
+
+
+class AggregateReq(StructuredRead):
+    predicate: str = Field(min_length=1, max_length=512)
+    operation: Literal['count', 'count_distinct'] = 'count'
+    subject: str | None = Field(default=None, max_length=512)
+    start: float | None = None
+    end: float | None = None
+    query: str | None = Field(default=None, min_length=1, max_length=512)
+    limit: int = Field(default=10, ge=1, le=1000)
+
+
+class PathReq(StructuredRead):
+    anchor: str = Field(min_length=1, max_length=512)
+    predicates: list[str] = Field(min_length=2, max_length=4)
+    limit: int = Field(default=20, ge=1, le=1000)
+
+
+@app.post('/v1/aggregate')
+def aggregate(req: AggregateReq, owner: str = Depends(auth)):
+    service = svc()
+    context = service.spaces.authorize(owner, req.space_id)
+    return service.aggregate_facts(context, **req.model_dump(exclude={'space_id'}))
+
+
+@app.post('/v1/follow-path')
+def follow_path(req: PathReq, owner: str = Depends(auth)):
+    service = svc()
+    context = service.spaces.authorize(owner, req.space_id)
+    try:
+        return service.follow_path(context, **req.model_dump(exclude={'space_id'}))
+    except AmbiguousAnchor as exc:
+        raise HTTPException(422, detail={'code': 'ambiguous_anchor', 'message': str(exc)}) from exc
 
 
 @app.get("/v1/sessions")
@@ -718,6 +764,8 @@ class FactReq(SpaceRequest):
     sensitive: Optional[bool] = None
     category: Optional[str] = None
     topic: Optional[Topic] = None
+    cardinality: Cardinality | None = None
+    retention: Retention | None = None
 
 
 class FactEdit(SpaceRequest):
@@ -728,6 +776,8 @@ class FactEdit(SpaceRequest):
     category: Optional[str] = None
     statement: Optional[str] = Field(default=None, min_length=1)
     topic: Optional[Topic] = None
+    cardinality: Cardinality | None = None
+    retention: Retention | None = None
     reset_topic: bool = False
 
 
@@ -743,6 +793,7 @@ def add_fact(req: FactReq, owner: str = Depends(auth)):
         sensitive=req.sensitive,
         category=req.category,
         topic=req.topic,
+        cardinality=req.cardinality or "unknown", retention=req.retention or "unknown",
     )
 
 
@@ -756,7 +807,8 @@ def edit_fact(fact_id: str, req: FactEdit, owner: str = Depends(auth)):
     try:
         result = svc().update_fact(user, fact_id, subject=req.subject, predicate=req.predicate,
                                    object=req.object, sensitive=req.sensitive, category=req.category,
-                                    statement=req.statement, topic=req.topic, reset_topic=req.reset_topic)
+                                    statement=req.statement, topic=req.topic, reset_topic=req.reset_topic,
+                                    cardinality=req.cardinality, retention=req.retention)
     except InvalidFactEditError as exc:
         raise HTTPException(422, str(exc)) from exc
     if result is None:

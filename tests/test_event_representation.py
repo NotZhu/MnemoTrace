@@ -70,15 +70,6 @@ def test_raw_keyword_match_returns_only_the_summary():
     assert outputs == [[(ep.summary, 'summary')], []]
 
 
-def test_aggregation_and_duration_use_summary_not_original():
-    from mnemotrace.retrieve.aggregate import extract_aggregation_candidates
-    mem = MemoryEngine(embedder=MockEmbedder())
-    ep = summarized(mem, "I bought a Tamiya Spitfire model kit. Started RAW_ONLY_8844 today.")
-    ep.summary = "No purchases were made."
-    assert not extract_aggregation_candidates("How many model kits did I buy?", [], [ep])
-    assert "RAW_ONLY_8844" not in mem._duration_block("RAW_ONLY_8844", [], [ep])
-
-
 def test_supersession_does_not_rewrite_event_summary():
     mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
