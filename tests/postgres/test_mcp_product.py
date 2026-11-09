@@ -43,7 +43,8 @@ async def test_tools_are_registered_with_flat_schema():
             "mnemotrace_set_focus", "mnemotrace_import", "mnemotrace_export", "mnemotrace_forget"} <= set(tools)
     # 顶层平铺的参数（不嵌套在 "params" 之下）
     props = tools["mnemotrace_recall"].inputSchema.get("properties", {})
-    assert "query" in props and "max_chunks" in props and "session_id" in props and "as_of" in props
+    assert {"query", "max_chunks", "as_of"} <= set(props)
+    assert "session_id" not in props
     assert "redact_sensitive" in props
     remember_props = tools["mnemotrace_remember"].inputSchema.get("properties", {})
     assert "content" in remember_props and "session_id" in remember_props and "scope" in remember_props
@@ -83,41 +84,6 @@ async def test_remember_then_recall_and_search(local_backend):
     assert '"context"' in js
     ans = await call("mnemotrace_search", query="Where does the user live?")
     assert "Answer" in ans
-
-
-@pytest.mark.asyncio
-async def test_recall_can_include_session_working_memory(local_backend):
-    local_backend.svc.add_working(local_backend.context, "today I am checking release notes", session_id="agent-thread-1")
-
-    ctx = await call(
-        "mnemotrace_recall",
-        query="what am I doing right now?",
-        max_chunks=0,
-        session_id="agent-thread-1",
-    )
-
-    assert "release notes" in ctx
-
-
-@pytest.mark.asyncio
-async def test_remember_scope_working_keeps_state_out_of_durable_facts(local_backend):
-    out = await call(
-        "mnemotrace_remember",
-        content="today I am checking release notes",
-        session_id="agent-thread-1",
-        scope="working",
-    )
-
-    assert "working memory" in out
-    assert local_backend.svc.stats(local_backend.context)["counts"]["working_live"] == 1
-    assert local_backend.svc.stats(local_backend.context)["counts"]["facts_live"] == 0
-    ctx = await call(
-        "mnemotrace_recall",
-        query="what am I doing right now?",
-        max_chunks=0,
-        session_id="agent-thread-1",
-    )
-    assert "release notes" in ctx
 
 
 @pytest.mark.asyncio
@@ -233,11 +199,11 @@ async def test_export_tool_defaults_to_share_safe_payload(local_backend):
     await call("mnemotrace_add_fact", predicate="works_at", object="Moonshot AI", sensitive=False)
     await call("mnemotrace_add_fact", predicate="has_disease", object="diabetes", sensitive=True)
 
-    summary = await call("mnemotrace_export")
-    assert "MnemoTrace export" in summary
-    assert "Include sensitive: False" in summary
-    assert "Facts: 1" in summary
-    assert "diabetes" not in summary.lower()
+    digest = await call("mnemotrace_export")
+    assert "MnemoTrace export" in digest
+    assert "Include sensitive: False" in digest
+    assert "Facts: 1" in digest
+    assert "diabetes" not in digest.lower()
 
     safe = json.loads(await call("mnemotrace_export", response_format="json"))
     assert safe["include_sensitive"] is False
@@ -263,14 +229,12 @@ async def test_agent_status_tool_is_content_free_and_session_aware(local_backend
         content="My private diagnosis is diabetes and I work at Acme.",
         session_id=session,
     )
-    local_backend.svc.add_working(local_backend.context, "today I am drafting a private launch note", session_id=session)
     await call("mnemotrace_set_focus", track=["project decisions"], mute=["health details"])
 
     status = await call("mnemotrace_agent_status", session_id=session)
 
     assert "MnemoTrace agent status" in status
     assert f"Session: `{session}`" in status
-    assert "Session working memory: 1 live item" in status
     assert "project decisions" in status
     assert "mnemotrace_recall" in status
     assert "diabetes" not in status.lower()
@@ -280,7 +244,6 @@ async def test_agent_status_tool_is_content_free_and_session_aware(local_backend
     raw = await call("mnemotrace_agent_status", session_id=session, response_format="json")
     data = json.loads(raw)
     assert data["ok"] is True
-    assert data["session"]["working_live"] == 1
     assert data["focus"] == {"track": ["project decisions"], "mute": ["health details"]}
     assert "diabetes" not in raw.lower()
     assert "acme" not in raw.lower()
@@ -300,21 +263,19 @@ async def test_list_sessions_tool_is_content_free(local_backend):
         content="My private diagnosis is diabetes.",
         session_id=claude_session,
     )
-    local_backend.svc.add_working(local_backend.context, "temporary launch state", session_id=claude_session)
 
-    summary = await call("mnemotrace_list_sessions", q="repo")
+    digest = await call("mnemotrace_list_sessions", q="repo")
 
-    assert "Memory sessions" in summary
-    assert codex_session in summary
-    assert claude_session in summary
-    assert "diabetes" not in summary.lower()
-    assert "launch notes" not in summary.lower()
-    assert "temporary launch" not in summary.lower()
+    assert "Memory sessions" in digest
+    assert codex_session in digest
+    assert claude_session in digest
+    assert "diabetes" not in digest.lower()
+    assert "launch notes" not in digest.lower()
+    assert "temporary launch" not in digest.lower()
 
     raw = await call("mnemotrace_list_sessions", q="claude-code", response_format="json")
     data = json.loads(raw)
     assert data["sessions"][0]["id"] == claude_session
-    assert data["sessions"][0]["working_live"] == 1
     assert data["sessions"][0]["facts_sensitive"] >= 1
     assert "diabetes" not in raw.lower()
 
@@ -407,14 +368,13 @@ async def test_remote_backend_forwards_as_of():
     await backend.recall(
         "Where does Wei work?",
         lean=False,
-        session_id="s1",
+
         as_of=1_700_864_000.0,
         redact_sensitive=True,
     )
 
     url, body, headers = client.posts[-1]
     assert url == "http://mnemotrace.test/v1/recall"
-    assert body["session_id"] == "s1"
     assert body["as_of"] == 1_700_864_000.0
     assert body["redact_sensitive"] is True
     assert headers["Authorization"] == "Bearer sk-test"
@@ -427,7 +387,7 @@ async def test_remote_backend_forwards_remember_scope():
             pass
 
         def json(self):
-            return {"ok": True, "scope": "working"}
+            return {"ok": True, "scope": "long"}
 
     class FakeClient:
         def __init__(self):
@@ -439,14 +399,14 @@ async def test_remote_backend_forwards_remember_scope():
 
     client = FakeClient()
     backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
-    data = await backend.remember("temporary state", session_id="s1", scope="working")
+    data = await backend.remember("Synthetic reusable decision", session_id="s1", scope="long")
 
     url, body, headers = client.posts[-1]
     assert url == "http://mnemotrace.test/v1/remember"
-    assert body == {"space_id": "synthetic-space", "content": "temporary state", "session_id": "s1",
-                    "scope": "working", "processing": "immediate", "agent_id": None}
+    assert body == {"space_id": "synthetic-space", "content": "Synthetic reusable decision", "session_id": "s1",
+                    "scope": "long", "processing": "immediate", "agent_id": None}
     assert headers["Authorization"] == "Bearer sk-test"
-    assert data["scope"] == "working"
+    assert data["scope"] == "long"
 
 
 @pytest.mark.asyncio
@@ -555,7 +515,7 @@ async def test_remote_backend_flushes_session():
     url, body, headers = client.posts[-1]
     assert url == "http://mnemotrace.test/v1/processing/flush"
     assert body == {"space_id": "synthetic-space", "session_id": "s1", "timeout": 30,
-                    "retry_failed": False, "include_summaries": False}
+                    "retry_failed": False, "include_digests": False}
     assert headers["Authorization"] == "Bearer sk-test"
     assert data["session_id"] == "s1"
 

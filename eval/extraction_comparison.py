@@ -58,7 +58,7 @@ def summarize(directory):
                 spans.update((s['id'], s) for s in (*payload['pending'], *payload['context']))
             except (ValueError, KeyError, IndexError):
                 continue
-        for item in (*row.get('raw', {}).get('facts', []), *row.get('raw', {}).get('working', [])):
+        for item in row.get('raw', {}).get('facts', []):
             for cited, ref in zip(item.get('spans', []), item.get('source_ids', [])):
                 if ref in spans:
                     cited.update(start=spans[ref]['start'], end=spans[ref]['end'])
@@ -70,7 +70,7 @@ def summarize(directory):
     for row in rows:
         if row['status'] != 'not_run':
             groups[(row['revision'], row['mode'])].append(row)
-    summaries = {}
+    digests = {}
     for (revision, mode), group in groups.items():
         phases = defaultdict(list)
         for row in group:
@@ -96,7 +96,7 @@ def summarize(directory):
         def percentiles(values):
             return dict(p50_ms=values[math.ceil(.5*len(values))-1],
                         p95_ms=values[math.ceil(.95*len(values))-1]) if values else None
-        summaries[revision + '/' + mode] = dict(final=aggregate(group),
+        digests[revision + '/' + mode] = dict(final=aggregate(group),
             raw=aggregate([dict(row, score=row['raw_score']) for row in group]), phases=phase_results,
             acknowledgement=percentiles(ack), scenario=percentiles(elapsed))
         waits = []
@@ -112,7 +112,7 @@ def summarize(directory):
                 except (ValueError, KeyError, IndexError):
                     continue
                 waits.append(max(0, (call['started_at'] - min(times))*1000))
-        summaries[revision + '/' + mode]['confirmed_to_window_start'] = percentiles(sorted(waits)) if mode == 'buffered' else None
+        digests[revision + '/' + mode]['confirmed_to_window_start'] = percentiles(sorted(waits)) if mode == 'buffered' else None
     core = {c['id'] for c in load_suite(manifest['suite'])['cases'] if c['core']}
     candidate_core = [r for r in rows if r['revision'] == 'candidate' and r['case_id'] in core]
     core_passed = len(candidate_core) == len(core)*2*3 and all(passed(r) for r in candidate_core)
@@ -128,12 +128,12 @@ def summarize(directory):
         if row['revision'] == 'candidate' and row['status'] == 'completed' and before and severe(row) and not severe(before):
             severe_regressions.append((row['mode'], row['case_id'], row['run']))
     for mode in ('immediate', 'buffered'):
-        old, new = summaries.get('baseline/'+mode), summaries.get('candidate/'+mode)
+        old, new = digests.get('baseline/'+mode), digests.get('candidate/'+mode)
         if old is None or new is None:
             nondecreasing = False
             continue
         for field in ('fact_precision', 'fact_recall', 'source_precision', 'source_recall', 'joint_recall',
-                      'working_precision', 'working_recall', 'working_joint_recall'):
+                      ):
             a, b = old['final'][field], new['final'][field]
             if (a is None) != (b is None) or (a is not None and b < a):
                 nondecreasing = False
@@ -145,9 +145,9 @@ def summarize(directory):
         runtime_accepted=not errors and core_passed and nondecreasing and not severe_regressions
             and all(r['status'] == 'completed' and r.get('restored') and not r.get('invalid_outputs')
                     and r.get('append_inflight', True) for r in rows)
-            and not any(r['score']['unreviewed_working'] for r in rows if r['revision'] == 'candidate'),
+,
         severe_regressions=severe_regressions,
-        groups=summaries, differences=[dict(revision=r['revision'], mode=r['mode'], case_id=r['case_id'],
+        groups=digests, differences=[dict(revision=r['revision'], mode=r['mode'], case_id=r['case_id'],
             run=r['run'], status=r['status'], score=r['score'], raw_score=r['raw_score'])
             for r in rows if r['status'] != 'not_run' and not passed(r)])
     (directory / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -184,7 +184,7 @@ def compare_quality(out, baseline, candidate, extractor, suite, *, max_calls=200
         extractor=extractor, temperature=0, timeout=45, client_attempts=1,
         python=platform.python_version(), platform=platform.platform(), litellm_version=version('litellm'),
         environment=dict(storage='memory', embedder='hashing', buffered_enabled=True,
-                         conflict_model=False, close_summarize=True, close_clear_working=False, close_outcomes=False),
+                         conflict_model=False, close_generate_digests=True, close_outcomes=False),
         expected=expected, terminal_reason=None)
     def save_manifest():
         (out/'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')

@@ -20,7 +20,7 @@ def percentiles(values):
 def costs(rows):
     calls = [c for r in rows for c in r.get('calls', [])]
     result = {}
-    for phase in ('extraction', 'summary', 'unknown', 'total'):
+    for phase in ('extraction', 'digest', 'unknown', 'total'):
         chosen = [c for c in calls if phase == 'total' or c['phase'] == phase]
         provider = [c for c in chosen if c.get('provider_request')]
         group = dict(attempts=len(chosen), provider_requests=len(provider),
@@ -118,11 +118,11 @@ def validate_observation(row, case, fingerprint):
             errors.append('byte_accounting')
         allowed = {s['id'] for s in (*window['pending'], *window['context'])}
         pending = {s['id'] for s in window['pending']}
-        for item in (*window.get('output', {}).get('facts', []), *window.get('output', {}).get('working', [])):
+        for item in window.get('output', {}).get('facts', []):
             if not set(item['source_ids']) <= allowed or not pending.intersection(item['source_ids']):
                 errors.append('source_outside_window')
     for call in row['calls']:
-        if call['phase'] not in {'extraction', 'summary'}:
+        if call['phase'] not in {'extraction', 'digest'}:
             errors.append('unknown_model_phase')
     for span in [s for w in row['windows'] for s in w['context']]:
         if span['episode_id'] not in by_episode:
@@ -151,8 +151,15 @@ def summarize(directory):
     if fingerprint != manifest['suite_hash']:
         raise ValueError('Frozen replay suite changed')
     for name, expected in manifest['runner_hashes'].items():
+        if Path(name).name != name or name in {'.', '..'}:
+            raise ValueError('Invalid frozen replay runner filename')
         if hashlib.sha256((directory/name).read_bytes()).hexdigest() != expected:
             raise ValueError('Frozen replay runner changed')
+    for name in ('buffered_replay_report.py', 'extraction_quality.py'):
+        expected = manifest['runner_hashes'].get(name)
+        if expected is not None and hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() != expected:
+            raise ValueError('Replay report version differs from the frozen run. '
+                             'Use the original reporting checkout to recompute this run.')
     cases = {c['id']: c for c in load_suite(suite)['cases']}
     path = directory/'results.jsonl'
     rows = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()] if path.exists() else []
@@ -193,7 +200,7 @@ def summarize(directory):
             regressions.append(dict(case_id=case_id, run=run))
     paired = {mode: costs([pair[i] for pair in pairs]) for i, mode in enumerate(('immediate', 'buffered'))}
     savings = {}
-    for phase in ('extraction', 'summary', 'total'):
+    for phase in ('extraction', 'digest', 'total'):
         savings[phase] = {}
         for field in ('attempts', 'prompt_tokens', 'completion_tokens', 'total_tokens'):
             a, b = paired['immediate'][phase][field], paired['buffered'][phase][field]
@@ -202,7 +209,7 @@ def summarize(directory):
     nondecreasing = True
     quality = {m: aggregate([p[i] for p in pairs]) for i, m in enumerate(('immediate', 'buffered'))}
     for field in ('fact_precision', 'fact_recall', 'source_precision', 'source_recall', 'joint_recall',
-                  'working_precision', 'working_recall', 'working_joint_recall'):
+                  ):
         a, b = quality['immediate'][field], quality['buffered'][field]
         if (a is None) != (b is None) or a is not None and b < a:
             nondecreasing = False
@@ -215,7 +222,7 @@ def summarize(directory):
         paired_cost=paired, paired_savings=savings, paired_observations=len(pairs), excluded_pairs=excluded,
         quality_nondecreasing=nondecreasing, severe_regressions=regressions,
         quality_maintained=bool(pairs) and nondecreasing and not regressions and not any(
-            r['score']['unreviewed_working'] or r['score']['unexpected'] for pair in pairs for r in pair),
+            r['score']['unexpected'] for pair in pairs for r in pair),
         windows=dict(count=len(window_rows), events_per_window=percentiles([len({s['episode_id'] for s in w['pending']}) for w in window_rows]),
             utilization=percentiles([w['input_bytes']/r['budgets']['input_bytes'] for r in rows for w in r['windows'] if r.get('budgets')]),
             triggers=dict(Counter(c for r in rows for s in r['selections'] for c in s['conditions']))),

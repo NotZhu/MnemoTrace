@@ -17,13 +17,13 @@ from mnemotrace.store.contracts import FactQuery, MessageInput, OperationResult
 | 方法 | 用途 |
 | --- | --- |
 | `remember_raw(content, session_id)` | 保存原文并返回 Episode，无需抽取模型 |
-| `remember(content, session_id, *, scope="auto", processing="immediate")` | 接收笔记；`auto` 和 `long` 请求抽取，`working` 直接保存原文和工作条目 |
+| `remember(content, session_id, *, scope="auto", processing="immediate")` | 接收笔记；`auto` 和 `long` 请求抽取；原文可通过 `remember_raw` 独立保存 |
 | `remember_messages(session_id, messages, *, processing="buffered")` | 接收 `MessageInput` 序列，在确认接收前提交原文与任务 |
 | `operation(operation_id)`、`retry_operation(operation_id)` | 查询或重试原操作，返回 `OperationResult` 或 `None` |
 | `list_operations(*, session_id=None, after_id=None, limit=100)` | 分页返回操作对象；下一页用最后一个操作的 `operation_id` 作游标 |
-| `flush_processing(session_id=None, timeout=30, *, retry_failed=False, include_summaries=False)` | 推进并等待本次捕获范围内的任务 |
+| `flush_processing(session_id=None, timeout=30, *, retry_failed=False, include_digests=False)` | 推进并等待本次捕获范围内的任务 |
 | `search(query, *, as_of=None, top_k=None)`、`get_episode(episode_id)` | 检索事实或显式读取原文 |
-| `add_fact(subject, predicate, object, ...)`、`working_memory(...)`、`clear_working(session_id)` | 写入人工事实、读取或清理工作条目 |
+| `add_fact(subject, predicate, object, ...)` | 写入人工事实 |
 
 `remember` 和 `remember_messages` 返回 `source_ids`、`operation_ids` 和 `operations`。缓冲接收只确认持久化，任务由独立 worker 或显式 `flush_processing` 推进。刷新返回 `completed`、`failed` 或 `timed_out`，仅完成时 `ok=True`。等待超时后可继续查询原操作。自动抽取缺少模型时在写入前失败。
 
@@ -49,16 +49,16 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 | 方法 | 主要参数 | 返回与语义 |
 | --- | --- | --- |
 | `add` | content；user_id、session_id、role、event_time；consolidate=False | Episode；保存事件，可选择立即整合 |
-| `remember` | content；user_id、session_id、scope="auto" | dict；路由 long/working，长期内容仍需显式整合 |
+| `remember` | content；user_id、session_id、scope="auto" | dict；保存原文并记录抽取范围，事实仍需显式整合 |
 | `consolidate` | episodes=None | 计数字典；None 处理 pending 事件 |
-| `consolidate_full` | fact_episodes=None、summary_episodes=None | 计数字典；整合与条件摘要，可分别指定两组事件；reflected 固定为 0 |
-| `import_messages` | sessions、user_id；consolidate=None、summarize=True、dedupe=True 等 | 计数字典；导入已解析会话 |
+| `consolidate_full` | fact_episodes=None、digest_episodes=None | 计数字典；整合与条件摘要，可分别指定两组事件；reflected 固定为 0 |
+| `import_messages` | sessions、user_id；consolidate=None、generate_digests=True、dedupe=True 等 | 计数字典；导入已解析会话 |
 | `import_data` | data、format="auto"、user_id、session_id；其余导入选项 | 计数字典；先解析再导入 |
 | `import_snapshot` | snapshot、user_id、dedupe=True | dict；导入结构化导出，不等同于打开存储目录 |
 
 结构化快照不使用格式版本字段，按当前必要字段整批校验，错误抛出 `ValueError`，不部分导入。导入保留目标用户的运行设置；字段、来源编号和替代链语义见[结构化快照导入](../architecture/memory.md#结构化快照导入)。
 
-`scope="auto"` 在整合时由同一次模型调用识别长期事实与临时状态；`long` 仅请求长期事实，`working` 显式写入工作记忆。时间词不决定生命周期。底层 remember 仅保存原文和请求的 scope，auto/long 仍需 consolidate。Python 记忆实例中的写入不会自动保存到磁盘。
+`scope="auto"` 和 `long` 均请求事实抽取。仅执行请求不生成任务记忆；明确陈述的决定、计划和时间化事实保留其条件与时间。底层 remember 保存原文，随后通过 consolidate 推进抽取。
 
 ## 离线检索与上下文
 
@@ -66,7 +66,7 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 | --- | --- | --- |
 | `search` | query、user_id、as_of=None、top_k=None | SearchResult |
 | `as_of` | query、when、user_id、top_k=None | SearchResult；时间查询便捷入口 |
-| `lean_context` | query、user_id；as_of、session_id、redact_sensitive；n_summaries、n_facts、n_chunks、char_budget 等 | 按预算组合的上下文字符串 |
+| `lean_context` | query、user_id；as_of、redact_sensitive；n_digests、n_facts、n_chunks、char_budget 等 | 按预算组合的上下文字符串 |
 | `context_for` | query、user_id；as_of、top_k、k_chunks 及按需增强选项 | 上下文字符串 |
 | `retrieve_episodes` | query、user_id、k=5、pool=None、as_of=None | 不可变 EventEvidence；text 为该事件当前的原文或摘要，不含原文副本 |
 | `get_episode` | episode_id、user_id=default | 原文记录字典或 None；仅含身份、来源时间和完整 content |
@@ -81,7 +81,7 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 
 SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answer()` 返回已生成答案或最高事实的 object/text；拒答时返回固定提示。`top()` 返回首条 Fact 或 None。它不是对任何问题都调用外部模型的通用聊天接口。
 
-`as_of`、时间字段使用 epoch 秒。查询需要沿用正确的 user_id；携带 session_id 才能在相应上下文中包含该 session 的工作记忆。Python `graph_data()` 默认包含敏感事实支持的关系，与 HTTP 的安全视图默认值不同。
+`as_of`、时间字段使用 epoch 秒。查询需要沿用正确的 user_id；recall 和上下文组装不接收 session_id；会话标识用于写入、浏览和处理刷新。Python `graph_data()` 默认包含敏感事实支持的关系，与 HTTP 的安全视图默认值不同。
 
 ## 离线事实、工作状态与策略
 
@@ -90,10 +90,6 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 | `add_fact(subject, predicate, object, user_id=..., valid_at=None, sensitive=None, category=None, topic=None)` | 返回用户来源 Fact |
 | `update_fact(fact_id, ..., topic=None, reset_topic=False)` | 修改内容或元数据，返回 Fact 或 None；statement 不与三元组字段混用 |
 | `delete_fact(fact_id)` | 删除指定事实，返回 bool |
-| `remember_working(content, user_id=..., session_id=..., kind="state", ttl_seconds=None)` | 返回 WorkingMemory |
-| `working_memory(user_id=..., session_id=None, as_of=None, kind=None)` | 活跃工作条目 |
-| `clear_session(user_id=..., session_id=...)` | 清理该 session 工作记忆，返回数量 |
-| `consume_working(wm_id)`、`sweep_working(as_of=None)` | 标记消费或清理过期/已消费工作条目 |
 | `get_focus()`、`set_focus(track=None, mute=None)` | 查询或更新关注点，None 保持不变，[] 清空对应列表 |
 | `get_policy()`、`set_policy(**fields)` | 查询或覆盖抽取、摘要与画像策略 |
 | `graph_data(user_id=..., as_of=None, include_sensitive=True, q="", live_only=False, limit=None)` | 返回 nodes、edges、has_more；见下述图谱完整性契约 |
@@ -111,7 +107,7 @@ memory.update_fact(fact.id, reset_topic=True)  # 清除主题，来源为 unset
 
 ## 离线扩展与研究入口
 
-摘要和派生层操作还包括 `summarize_episodes`、`retrieve_summaries`、`procedural`；热层管理包括 `evict_cold`、`apply_focus`。这些方法改变派生状态或工作集，调用方负责后续保存及必要验证。
+摘要和派生层操作还包括 `generate_digests`、`retrieve_digests`、`procedural`；热层管理包括 `evict_cold`、`apply_focus`。这些方法改变派生状态或工作集，调用方负责后续保存及必要验证。
 
 精确签名、类型和行为以 [MemoryEngine](../../mnemotrace/memory_engine.py)、[记录类型](../../mnemotrace/types.py) 和对应[测试](../../tests/)为核对来源。HTTP/MCP 的方法、默认值及能力不与嵌入式 API 一一对应。
 
@@ -123,20 +119,20 @@ memory.update_fact(fact.id, reset_topic=True)  # 清除主题，来源为 unset
 不能将其解释为零用量或已确认正常结束。LiteLLM 适配器和 `CachedLLM` 保留这些信息；
 仅实现字符串接口的自定义适配器仍可使用，但只能通过内容校验检测不完整响应。
 
-抽取模型输出 `{"facts": [...], "working": [...]}`；facts 条目包含非空字符串 subject、predicate、object，可附 text 和 topic；working 条目包含非空 content 和 kind（state/intent/task），不接受模型设置 TTL。两个数组均为必需；混合内容分别生成两类记录，无记忆价值时两个数组为空。自定义 extract_system 必须遵循该协议，旧数组响应不兼容。
+抽取模型输出 `{"facts": [...], "digests": [...]}`。facts 包含主体、关系、取值、正文、来源及时间/类别/敏感性/生命周期标签；digests 每项包含 source_id 和 text，按请求中的 digest_required 为来源生成摘要。两个数组均为必需。具体字段和严格校验见 [planning.py](../../mnemotrace/consolidate/planning.py)。自定义 extract_system 必须遵循该协议。
 
 离线 `MemoryEngine.consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实和工作条目。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，已完成的窗口范围保留，未完成范围继续待处理；重试跳过完成范围并消解重复事实和工作条目。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
 
-对话历史导入使用消息身份和联合任务；同 ID 的重传不重新生成。文档和可移植快照保留各自导入契约。显式摘要与 include_summaries 仍通过同一任务内核，并保留既有摘要。
+对话历史导入使用消息身份和联合任务；同 ID 的重传不重新生成。文档和可移植快照保留各自导入契约。显式摘要与 include_digests 仍通过同一任务内核，并保留既有摘要。
 
-离线抽取异常包括 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError、ExtractionConflictError。未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated；同一命名空间的并发写作废在途抽取时抛 ExtractionConflictError（code 为 extraction_conflict），内核会先基于新快照自动重试一次。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。Postgres 已接收任务的进度和错误从操作回执读取。模型输出的 working.kind 限定为 state/intent/task，显式工作记忆接口仍可使用其他 kind。
+离线抽取异常包括 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError、ExtractionConflictError。未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated；同一命名空间的并发写作废在途抽取时抛 ExtractionConflictError（code 为 extraction_conflict），内核会先基于新快照自动重试一次。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。Postgres 已接收任务的进度和错误从操作回执读取。
 
 替代裁决仅接受 REPLACES/COEXISTS，冲突检测仅接受 CONFLICT/COEXIST（忽略首尾空白与大小写）；其他响应记录安全警告并不执行对应替代或冲突标记。
 
 
 ## 摘要与显式原文读取
 
-Postgres 核心操作通过 `auxiliary_operation_ids` 关联独立的摘要任务。调用 `flush_processing(include_summaries=True)` 可把符合条件的摘要纳入本次处理范围，`retry_failed=True` 重试范围内的失败操作。摘要失败时保留已提交的事实和原文。
+Postgres 核心操作通过 `auxiliary_operation_ids` 关联独立的摘要任务。调用 `flush_processing(include_digests=True)` 可把符合条件的摘要纳入本次处理范围，`retry_failed=True` 重试范围内的失败操作。摘要失败时保留已提交的事实和原文。
 
 摘要成功后，所有 agent 事件检索、来源证据、聚合和上下文只使用摘要。检索文本带事件 ID；通过 get_episode 显式读取原文。
 Fact 仍从原文抽取且独立检索；历史事件摘要不追加后续事实。owner 管理浏览、全文搜索及导出保留。

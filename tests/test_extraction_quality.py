@@ -19,7 +19,7 @@ def predicted(case):
     return {'facts': [dict(id=g['id'], subject=g['variants'][0][0], predicate=g['variants'][0][1],
                           object=g['variants'][0][2], user='u', sources=g['sources'][0],
                           valid_at=next(e['at'] for e in case['events'] if e['id'] == g['at']),
-                          invalid_at=None, supersedes=None) for g in case['facts']], 'working': []}
+                          invalid_at=None, supersedes=None) for g in case['facts']], }
 
 
 def test_frozen_suite_has_all_categories_and_disjoint_splits():
@@ -62,24 +62,24 @@ def test_quality_errors_cannot_be_hidden_by_valid_ids(case, mutation):
 
 def test_duplicate_cannot_satisfy_two_distinct_expected_facts(case):
     row = predicted(case)['facts'][0]
-    score = quality.score_case(case, {'facts': [row, deepcopy(row)], 'working': []})
+    score = quality.score_case(case, {'facts': [row, deepcopy(row)], })
     assert score['counts']['fact_tp'] == 1 and score['unexpected'] and score['omitted']
 
 
 def test_empty_result_is_separate_from_missing_facts(case):
-    assert not quality.score_case(case, {'facts': [], 'working': []})['ok']
+    assert not quality.score_case(case, {'facts': [], })['ok']
     case['facts'] = []
-    score = quality.score_case(case, {'facts': [], 'working': []})
+    score = quality.score_case(case, {'facts': [], })
     assert score['ok']
-    summary = quality.aggregate([{'score': score, 'status': 'completed'}])
-    assert summary['fact_precision'] is summary['fact_recall'] is None
+    digest = quality.aggregate([{'score': score, 'status': 'completed'}])
+    assert digest['fact_precision'] is digest['fact_recall'] is None
 
 
 def test_raw_evidence_must_be_in_the_actual_cited_fragment():
     case = deepcopy(next(c for c in quality.load_suite()['cases'] if c['id'] == 'long-2'))
     row = predicted(case)['facts'][0]
     row['spans'] = [{'event': 'e1', 'content': '无关的尾部文字'}]
-    score = quality.score_case(case, {'facts': [row], 'working': []}, raw=True)
+    score = quality.score_case(case, {'facts': [row], }, raw=True)
     assert not score['ok'] and not score['facts'][0]['evidence_ok']
 
 
@@ -89,9 +89,9 @@ def test_raw_evidence_uses_character_coverage_not_concatenated_fragments():
     row = predicted(case)['facts'][0]
     row['spans'] = [dict(event='e1', content='我喜', start=0, end=2),
                     dict(event='e1', content='绿茶。', start=3, end=6)]
-    assert not quality.score_case(case, {'facts': [row], 'working': []}, raw=True)['ok']
+    assert not quality.score_case(case, {'facts': [row], }, raw=True)['ok']
     row['spans'] = [dict(event='e1', content='我喜欢绿茶。', start=0, end=6)]
-    assert quality.score_case(case, {'facts': [row], 'working': []}, raw=True)['ok']
+    assert quality.score_case(case, {'facts': [row], }, raw=True)['ok']
 
 
 def test_identity_aliases_share_canonical_user_without_guessing_names():
@@ -108,8 +108,8 @@ def test_raw_repetitions_have_precision_but_no_future_fact_recall(case):
     result = predicted(case)
     result['facts'] *= 2
     score = quality.score_case(case, result, raw=True)
-    summary = quality.aggregate([dict(score=score, status='completed')])
-    assert summary['fact_precision'] == 1 and summary['fact_recall'] is None
+    digest = quality.aggregate([dict(score=score, status='completed')])
+    assert digest['fact_precision'] == 1 and digest['fact_recall'] is None
 
 
 def test_manual_value_keeps_user_authority_without_transcript_sources():
@@ -139,16 +139,6 @@ def test_history_chain_is_scored_not_just_live_fact_text():
     assert quality.score_case(case, result)['ok']
     result['facts'][1]['supersedes'] = None
     assert not quality.score_case(case, result)['ok']
-
-
-def test_wrong_working_kind_and_paraphrases_are_visible():
-    case = next(c for c in quality.load_suite()['cases'] if c['id'] == 'lifecycle-1')
-    gold = case['working'][0]
-    row = dict(content=gold['contents'][0], kind='intent', sources=['e1'], event_time=case['events'][0]['at'])
-    score = quality.score_case(case, {'facts': [], 'working': [row]})
-    assert not score['ok'] and not score['working'][0]['kind_ok']
-    row.update(kind='task', content='未标注的自由概括')
-    assert quality.score_case(case, {'facts': [], 'working': [row]})['unreviewed_working'] == [0]
 
 
 def test_result_completeness_rejects_duplicates_missing_rows_and_wrong_suite():

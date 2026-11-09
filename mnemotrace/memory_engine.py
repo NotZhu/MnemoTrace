@@ -33,7 +33,7 @@ from .store import (
 )
 from .topics import Topic
 from .extraction import ExtractionError, require_llm
-from .types import Cardinality, Conflict, Episode, Fact, Retention, WorkingMemory
+from .types import Cardinality, Conflict, Episode, Fact, Retention
 from .util import fmt_date, now, time_key
 
 
@@ -67,7 +67,7 @@ class MemoryEngine:
         self.episodes_vec = vector_store_factory()  # 原始事件的向量索引，用于检索相关片段
         self.fact_store = vector_store_factory()  # 热层事实的向量存储，用于主要检索
         self.cold_store = vector_store_factory()  # 冷层事实的向量存储，保留从热层换出的事实
-        self.summary_vec = vector_store_factory()  # 会话摘要的向量索引，用于检索相关摘要
+        self.digest_vec = vector_store_factory()  # 会话摘要的向量索引，用于检索相关摘要
         # 初始化图存储
         try:
             self.graph = graph_store_factory()
@@ -81,14 +81,12 @@ class MemoryEngine:
         # 查询工作集：记录 lean_context 最近一次执行到事实组装时选出的事实，供检查。
         # 后续 lean_context 执行到此阶段时会覆盖它；该列表不写入快照。
         self.working_set: list[Fact] = []
-        # 短期工作记忆：按条目 ID 保存用户和会话相关的临时状态，支持过期、消费和清除。
         # 条目可随快照保存并恢复；短期指其生命周期，不会因此成为长期事实。
-        self.working_mem: dict[str, WorkingMemory] = {}
         # 关注主题：track 提升相关事实的显著度；mute 在上下文和画像中抑制相关事实。
         self.focus: dict[str, list[str]] = {"track": [], "mute": []}
         # 记忆策略：抽取指令及抽取、摘要、画像提示词；空提示词使用内置默认值。
         self.policy: dict[str, str] = {"extract_instruction": "", "extract_system": "",
-                                       "summary_system": "", "persona_system": ""}
+                                       "digest_system": "", "persona_system": ""}
         self._identity: dict[str, str] = {}  # 用户 ID -> 已解析的自称
         self._aliases: dict[str, set] = {}  # 用户 ID -> 已解析的名字或昵称集合
         self._import_seen: set[str] = set()  # 已导入事件的指纹，用于重复导入去重
@@ -149,17 +147,17 @@ class MemoryEngine:
         return vectors
 
     def _sync_episode(self, ep: Episode) -> None:
-        if self.embedder is not None and ep.summary and ep.summary_embedding is None:
-            raise ValueError("A searchable summary requires its embedding")
+        if self.embedder is not None and ep.digest and ep.digest_embedding is None:
+            raise ValueError("A searchable digest requires its embedding")
         self.episodes_doc.put(ep.id, ep)
         if self.embedder is None:
             return
-        if ep.summary:
-            self.summary_vec.upsert(ep.id, ep.summary_embedding, ep)
+        if ep.digest:
+            self.digest_vec.upsert(ep.id, ep.digest_embedding, ep)
             self.episodes_vec.delete(ep.id)
         else:
             self.episodes_vec.upsert(ep.id, ep.embedding, ep)
-            self.summary_vec.delete(ep.id)
+            self.digest_vec.delete(ep.id)
 
     def _all_facts(self, *, include_unpublished=False) -> list[Fact]:
         facts = self.fact_store.values() + self.cold_store.values()
@@ -216,7 +214,7 @@ class MemoryEngine:
 
         episodes = list(self.episodes_doc.values())  # doc 日志是 episode 文本的权威来源
         _clear(self.episodes_vec)
-        raw_episodes = [ep for ep in episodes if not ep.summary]
+        raw_episodes = [ep for ep in episodes if not ep.digest]
         vecs = self.embedder.embed_batch([ep.content for ep in raw_episodes]) if raw_episodes else []
         for ep in episodes:
             ep.embedding = None
@@ -224,23 +222,20 @@ class MemoryEngine:
             ep.embedding = v
         counts["episodes"] = len(episodes)
 
-        summarized = [ep for ep in episodes if ep.summary]
-        _clear(self.summary_vec)
+        digested = [ep for ep in episodes if ep.digest]
+        _clear(self.digest_vec)
         for ep in raw_episodes:
-            ep.summary_embedding = None
-        vecs = (self.embedder.embed_batch([ep.summary for ep in summarized])
-                if summarized else [])
-        for ep, v in zip(summarized, vecs):
-            ep.summary_embedding = v
+            ep.digest_embedding = None
+        vecs = (self.embedder.embed_batch([ep.digest for ep in digested])
+                if digested else [])
+        for ep, v in zip(digested, vecs):
+            ep.digest_embedding = v
         # Copying backends must receive the complete episode only after both
         # selected embeddings have entered the new space.
         for ep in episodes:
             self._sync_episode(ep)
-        counts["summaries"] = len(summarized)
+        counts["digests"] = len(digested)
 
-        for wm in self.working_mem.values():
-            wm.embedding = self.embedder.embed(wm.content)
-        counts["working"] = len(self.working_mem)
 
         # Saved generation is independent of the embedding space; its checkpoint
         # vectors must be recomputed before a pending commit can resume.
@@ -301,24 +296,18 @@ class MemoryEngine:
                  scope: str = "auto", *, _embedding=None) -> dict:
         """Save raw input and its requested lifecycle policy.
 
-        Explicit working entries are ready immediately. Auto/long remain pending until
-        consolidate() validates model output; auto may yield both durable and temporary entries.
+        Auto/long remain pending until consolidate() validates model output.
+        Reusable facts retain their source attribution and time qualifiers.
         """
         if self._pipeline_broken or self._pipeline_closed:
             raise RuntimeError('Memory checkpoint failed or closed; create a new instance')
-        if scope not in {"auto", "long", "working"}:
-            raise ValueError("scope must be auto, long, or working")
+        if scope not in {"auto", "long"}:
+            raise ValueError("scope must be auto or long")
         vector = self._encode(content, _embedding)
         from ._pipeline import memory_adapter
         with memory_adapter(self, user_id).write_lock(user_id):
             ep = self.add(content, user_id=user_id, session_id=session_id, embedding=vector)
             ep.scope = scope
-            if scope == "working":
-                ep.consolidated = True
-                ep.metadata["ephemeral"] = True
-                self._sync_episode(ep)
-                wm = self.remember_working(content, user_id=user_id, session_id=session_id, embedding=ep.embedding)
-                return {"scope": "working", "episode_id": ep.id, "working_id": wm.id, "kind": wm.kind}
             self._sync_episode(ep)
             return {"scope": scope, "episode_id": ep.id}
 
@@ -378,7 +367,6 @@ class MemoryEngine:
                 sources.append(ep)
         if sources:
             require_llm(self.llm)
-        self.sweep_working()
         totals = self.writer.empty_stats()
         for user in dict.fromkeys(ep.user_id for ep in sources):
             result = execute_memory(self, user, [ep for ep in sources if ep.user_id == user], 'extract')
@@ -391,22 +379,20 @@ class MemoryEngine:
         return totals
 
 
-
-
     def consolidate_full(
         self,
         fact_episodes: Optional[list[Episode | EventEvidence]] = None,
-        summary_episodes: Optional[list[Episode | EventEvidence]] = None,
+        digest_episodes: Optional[list[Episode | EventEvidence]] = None,
     ) -> dict[str, int]:
         """一次连贯的 System-2 处理，构建所有读取期层：
           L1 facts     来自 `fact_episodes`     （对最相关 session 做深度抽取），
-          L2 summaries 来自 `summary_episodes`  （广泛、廉价的覆盖，用于聚合），
+          L2 digests 来自 `digest_episodes`  （广泛、廉价的覆盖，用于聚合），
           L3 persona   从产出的 facts 刷新（惰性，首次读取时）。
-        两个 episode 集合刻意不同：facts 需要在少数 session 上做深，summaries 需要广。
+        两个 episode 集合刻意不同：facts 需要在少数 session 上做深，digests 需要广。
         未指定时两者都默认取 pending 队列。"""
         stats = self.consolidate(fact_episodes)
-        stats["summaries"] = self.summarize_episodes(
-            summary_episodes if summary_episodes is not None else self.ingestor.pending()
+        stats["digests"] = self.generate_digests(
+            digest_episodes if digest_episodes is not None else self.ingestor.pending()
         )
         stats["reflected"] = 0
         return stats
@@ -422,7 +408,7 @@ class MemoryEngine:
         return flush_memory(self, user_id, session_id, timeout, retry_failed)
 
     def import_messages(self, sessions, user_id: str = 'default', consolidate: Optional[bool] = None,
-                        summarize: bool = True, roles: bool = True, batch_size: int = 256,
+                        generate_digests: bool = True, roles: bool = True, batch_size: int = 256,
                         base_time: Optional[float] = None, dedupe: bool = True) -> dict:
         """Adapt history to individual historical messages; documents retain their own input path.
 
@@ -438,15 +424,15 @@ class MemoryEngine:
         if any(messages is not None and extract and tasks.inspect(messages, sid, 'historical')[1]
                for sid, messages, _, extract in plans):
             require_llm(self.llm)
-        stats = dict(sessions=0, episodes=0, skipped=0, facts_added=0, summaries=0,
+        stats = dict(sessions=0, episodes=0, skipped=0, facts_added=0, digests=0,
                      facts_deferred=0, deferred_reason=None)
         before = len(self.fact_store.values())
-        prior_summaries = {e.id for e in self.episodes_doc.values() if e.summary}
+        prior_digests = {e.id for e in self.episodes_doc.values() if e.digest}
         for sid, messages, record, extract in plans:
             if messages is None:
-                result = self._import_documents([record], user_id, consolidate, summarize, roles,
+                result = self._import_documents([record], user_id, consolidate, generate_digests, roles,
                                                 batch_size, base_time, dedupe)
-                for key in ('sessions', 'episodes', 'skipped', 'facts_added', 'summaries'):
+                for key in ('sessions', 'episodes', 'skipped', 'facts_added', 'digests'):
                     stats[key] += result.get(key, 0)
                 continue
             result = self.remember_messages(messages, sid, user_id, 'historical', 'auto' if extract else 'raw')
@@ -468,11 +454,11 @@ class MemoryEngine:
                 if not result['ok']:
                     raise ExtractionError(stored_raw=True, episode_ids=[r['episode_id'] for r in result['jobs']])
         stats['facts_added'] = len(self.fact_store.values()) - before
-        stats['summaries'] = sum(bool(e.summary) and e.id not in prior_summaries for e in self.episodes_doc.values()
+        stats['digests'] = sum(bool(e.digest) and e.id not in prior_digests for e in self.episodes_doc.values()
                                  if e.user_id == user_id and e.message_id is not None)
         return stats
 
-    def _import_documents(self, sessions, user_id='default', consolidate=None, summarize=True, roles=True,
+    def _import_documents(self, sessions, user_id='default', consolidate=None, generate_digests=True, roles=True,
                           batch_size=256, base_time=None, dedupe=True, prepared_vectors=None):
         import hashlib
         if type(batch_size) is not int or batch_size <= 0:
@@ -513,12 +499,12 @@ class MemoryEngine:
                 self._import_seen.add(key)
                 added.append(ep)
         stats = dict(sessions=len({ep.session_id for ep in added}), episodes=len(added), skipped=skipped,
-                     facts_added=0, summaries=0, facts_deferred=0, deferred_reason=None, episode_ids=[ep.id for ep in added])
+                     facts_added=0, digests=0, facts_deferred=0, deferred_reason=None, episode_ids=[ep.id for ep in added])
         if consolidate is not False and added:
             from ._pipeline import execute_memory
-            stats.update(execute_memory(self, user_id, added, 'extract', summaries=summarize))
-        elif summarize and added:
-            stats['summaries'] = self.summarize_episodes(added)
+            stats.update(execute_memory(self, user_id, added, 'extract', digests=generate_digests))
+        elif generate_digests and added:
+            stats['digests'] = self.generate_digests(added)
         return stats
 
 
@@ -557,11 +543,11 @@ class MemoryEngine:
             ep = Episode(content=content, user_id=user, session_id=session_id,
                          role=row["role"], event_time=row["event_time"],
                          consolidated=True,  # 它的 fact 在下方恢复；绝不重新抽取
-                         summary=row.get("summary", ""), coverage=row.get('coverage'), summary_coverage=row.get('summary_coverage'),
+                         digest=row.get("digest", ""), coverage=row.get('coverage'), digest_coverage=row.get('digest_coverage'),
                          metadata={'snapshot_source_id': row['id']})
             ep.embedding = self._encode(content)
-            if ep.summary:
-                ep.summary_embedding = self._encode(ep.summary)
+            if ep.digest:
+                ep.digest_embedding = self._encode(ep.digest)
             prepared_episodes.append(ep)
             ep_seen.add(row['id'])
 
@@ -812,7 +798,7 @@ class MemoryEngine:
         return {"policy": dict(self.policy), "defaults": dict(POLICY_DEFAULTS)}
 
     def set_policy(self, **fields: str) -> dict:
-        """更新策略字段（extract_instruction / extract_system / summary_system / persona_system）。
+        """更新策略字段（extract_instruction / extract_system / digest_system / persona_system）。
         空字符串清除覆盖项（回退到默认值）。后续流水线按新策略准备并校验输入。"""
         for k, v in fields.items():
             if k in self.policy and v is not None:
@@ -828,67 +814,6 @@ class MemoryEngine:
     def _apply_policy(self):
         self.writer.config = self.config
 
-
-    # --- 工作记忆层：瞬态的、按 session/TTL 划界的状态，不进长期存储（feature ①） ---
-    def remember_working(self, content: str, user_id: str = "default", session_id: str = "default",
-                         kind: str = "state", ttl_seconds: Optional[float] = None,
-                         event_time: Optional[float] = None, embedding=None) -> WorkingMemory:
-        """把一条瞬态条目存入工作记忆层。不整合进长期存储，也不进入持久 profile。`ttl_seconds`
-        设定硬性墙钟过期时间；否则存活到 session 被清除为止。"""
-        user = user_id
-        wm = WorkingMemory(
-            content=content, user_id=user, session_id=session_id, kind=kind,
-            event_time=event_time if event_time is not None else now(),
-            expires_at=(now() + ttl_seconds) if ttl_seconds else None,
-        )
-        wm.embedding = self._encode(content, embedding)
-        self.working_mem[wm.id] = wm
-        return wm
-
-    def working_memory(self, user_id: str = "default", session_id: Optional[str] = None,
-                       as_of: Optional[float] = None, kind: Optional[str] = None) -> list[WorkingMemory]:
-        """存活的工作记忆条目（可按 session / kind 过滤）；排除已过期和已消费的。
-        读取时惰性清扫硬过期条目。"""
-        if self._pipeline_broken:
-            raise RuntimeError('Memory checkpoint failed; create a new instance')
-        user = user_id
-        self.sweep_working(as_of)
-        return [w for w in self.working_mem.values()
-                if w.user_id == user and w.is_live(as_of, session_id) and (kind is None or w.kind == kind)]
-
-    def clear_session(self, user_id: str = "default", session_id: str = "default") -> int:
-        """会话结束/断电重启式清理：丢弃该 session 的工作记忆。返回清除数量。"""
-        user = user_id
-        ids = [i for i, w in self.working_mem.items() if w.user_id == user and w.session_id == session_id]
-        from .consolidate.pipeline import PipelineTasks
-        PipelineTasks(self, user).invalidate(session_id)
-        for i in ids:
-            del self.working_mem[i]
-        return len(ids)
-
-    def consume_working(self, wm_id: str) -> bool:
-        """软清除：把工作条目标记为已消费，使其不再浮出（它已完成任务）。"""
-        w = self.working_mem.get(wm_id)
-        if w is None:
-            return False
-        w.consumed = True
-        return True
-
-    def sweep_working(self, as_of: Optional[float] = None) -> int:
-        """清扫工作记忆层：丢弃已过期/已消费的工作条目。
-
-        Args:
-            as_of (Optional[float]): 可选的时间戳，用于判断哪些工作
-        Returns:
-            int: 被清扫的工作条目数量。
-        """
-        t = now() if as_of is None else as_of
-        # 标记为已消费的条目或已过期的条目都被清除
-        dead = [i for i, w in self.working_mem.items()
-                if w.consumed or (w.expires_at is not None and w.expires_at <= t)]
-        for i in dead:
-            del self.working_mem[i]
-        return len(dead)
 
     # --- 冲突检测 -> pending（LLM 检测出含糊的部分；由用户确认） ---
     def pending_conflicts(self, user_id: str = "default") -> list[Conflict]:
@@ -949,20 +874,20 @@ class MemoryEngine:
     def dismiss_conflict(self, conflict_id: str) -> bool:
         return self.resolve_conflict(conflict_id, 'dismiss')
 
-    def summarize_episodes(self, episodes):
-        """Explicit summary operation using the shared ledger and bounded runner."""
+    def generate_digests(self, episodes):
+        """Explicit digest operation using the shared ledger and bounded runner."""
         from ._pipeline import execute_memory
         originals = [self.episodes_doc.get(value.id) for value in episodes]
-        originals = [ep for ep in originals if ep is not None and not ep.summary and len(ep.content) >= self.config.summary_min_chars]
+        originals = [ep for ep in originals if ep is not None and not ep.digest and len(ep.content) >= self.config.digest_min_chars]
         if originals:
             require_llm(self.llm)
         count = 0
         for user in dict.fromkeys(ep.user_id for ep in originals):
-            count += execute_memory(self, user, [ep for ep in originals if ep.user_id == user], 'summary')['summaries']
+            count += execute_memory(self, user, [ep for ep in originals if ep.user_id == user], 'digest')['digests']
         return count
 
 
-    def retrieve_summaries(
+    def retrieve_digests(
         self,
         query: str,
         user_id: str = "default",
@@ -974,9 +899,9 @@ class MemoryEngine:
         RRF）信号。词法匹配在这里很重要：聚合类问题（"how many trips"）依赖摘要里提到的精确词，
         纯嵌入查找可能把它们排在模糊相似项之后。返回只包含选定文本的只读事件证据。"""
         return self._event_candidates(query, user_id, as_of, k, max(k * 3, 30),
-                                      summaries_only=True, known_at=known_at)[:k]
+                                      digests_only=True, known_at=known_at)[:k]
 
-    def _event_candidates(self, query, user_id, as_of, k, pool, *, summaries_only=False,
+    def _event_candidates(self, query, user_id, as_of, k, pool, *, digests_only=False,
                           known_at=None, start=None, end=None):
         from .retrieve.fusion import weighted_rrf
         from .retrieve.hybrid import date_terms, order_positive
@@ -989,21 +914,21 @@ class MemoryEngine:
                     and (end is None or (ep.event_time is not None and ep.event_time < end)))
 
         episodes = {ep.id: ep for ep in self.episodes_doc.values()
-                    if visible(ep) and (not summaries_only or ep.summary)}
+                    if visible(ep) and (not digests_only or ep.digest)}
         documents = {}
         for ep in episodes.values():
             date = date_terms(ep.event_time)
             documents[(ep.id, 'text')] = f'{ep.content} {date}'
-            if ep.summary:
-                documents[(ep.id, 'summary')] = f'{ep.summary} {date}'
+            if ep.digest:
+                documents[(ep.id, 'digest')] = f'{ep.digest} {date}'
         lexical = {}
         for (episode_id, _), score in bm25_scores(query, list(documents.items())).items():
             lexical[episode_id] = max(score, lexical.get(episode_id, 0.0))
         semantic = {}
         if self.embedder is not None:
             vector = self.embedder.embed(query)
-            hits = self.summary_vec.search(vector, pool, where=visible)
-            if not summaries_only:
+            hits = self.digest_vec.search(vector, pool, where=visible)
+            if not digests_only:
                 hits += self.episodes_vec.search(vector, pool, where=visible)
             for score, ep in hits:
                 if ep.id in episodes:
@@ -1419,12 +1344,10 @@ class MemoryEngine:
             return "procedural"
         if title.startswith("FACTS"):
             return "facts"
-        if title.startswith("SESSION SUMMARIES"):
-            return "summaries"
+        if title.startswith("SESSION DIGESTS"):
+            return "digests"
         if title.startswith("TIMELINE"):
             return "timeline"
-        if title.startswith("WORKING MEMORY"):
-            return "working"
         if title.startswith("USER PROFILE"):
             return "profile"
         return "other"
@@ -1442,7 +1365,6 @@ class MemoryEngine:
 
     def _evidence_priority(self, kind: str) -> int:
         score = {
-            "working": 95,
             "facts": 90,
             "current_state": 88,
             "procedural": 86,
@@ -1455,7 +1377,7 @@ class MemoryEngine:
             "aggregation": 66,
             "duration": 66,
             "preference": 66,
-            "summaries": 58,
+            "digests": 58,
             "profile": 38,
             "other": 40,
         }.get(kind, 40)
@@ -1472,11 +1394,10 @@ class MemoryEngine:
             "evolution": 0.42,
             "facts": 0.42,
             "timeline": 0.35,
-            "summaries": 0.35,
+            "digests": 0.35,
             "current_state": 0.35,
             "procedural": 0.38,
             "preference": 0.35,
-            "working": 0.25,
             "profile": 0.18,
             "other": 0.25,
         }.get(kind, 0.25)
@@ -1542,7 +1463,7 @@ class MemoryEngine:
         user_id: str = "default",
         as_of: Optional[float] = None,
         top_k: Optional[int] = None,
-        n_summaries: int = 20,
+        n_digests: int = 20,
         n_facts: int = 15,
         n_chunks: int = 2,
         persona: bool = True,
@@ -1550,7 +1471,6 @@ class MemoryEngine:
         cascade: bool = False,  # _S 最优为关；它是 _M/10M 的扩展原语（由粗到细的下钻）
         timeline: bool = False,  # 追加按时间排序的事件时间线（有助于时序/时长问题）
         char_budget: int = 60_000,
-        session_id: Optional[str] = None,  # 设置时，在最前面加上本 session 的瞬态工作记忆
         redact_sensitive: bool = False,  # 安全/共享视图：只显示非敏感的结构化 fact
         *, facts=None,
     ) -> str:
@@ -1581,10 +1501,10 @@ class MemoryEngine:
             redact_sensitive = redact_sensitive or facts.exclude_sensitive
             visible = tuple(self._structured_facts(user, replace(facts, exclude_sensitive=redact_sensitive)))
         if redact_sensitive:
-            # 自由文本层（persona、摘要、原始 chunk、工作记忆）可能把敏感内容揉进散文。因此
+            # 自由文本层（persona、来源摘要、原始 chunk）可能把敏感内容揉进散文。因此
             # 脱敏上下文刻意只含 fact，且在 fact 级敏感性分类之后，使共享/第三方注入有清晰的
             # 隐私边界。
-            n_summaries = 0
+            n_digests = 0
             n_chunks = 0
             cascade = False
 
@@ -1601,16 +1521,6 @@ class MemoryEngine:
                 label = "USER PROFILE" if as_of is None else f"USER PROFILE (as of {fmt_date(as_of)})"
                 blocks.append(f"{label}:\n{p}")
 
-        # 工作记忆：当前 session 的瞬态状态（"今天我嗓子疼"、本次出行的意图）——浮出以让答案
-        # 反映"此刻"，但绝不整合进长期存储或 profile。
-        if session_id is not None and not redact_sensitive:
-            wm = self.working_memory(user, session_id=session_id, as_of=as_of)
-            if facts is not None and facts.known_at is not None:
-                wm = [item for item in wm if item.created_at <= facts.known_at]
-            if wm:
-                wl = "\n".join(f"- [{w.kind}] {w.content}"
-                               for w in sorted(wm, key=lambda x: time_key(x.event_time)))
-                blocks.append(f"WORKING MEMORY (this session, ephemeral):\n{wl}")
 
         # L1 fact：对每个（子）查询做 hybrid 检索后取并集；再从查询实体做 n-hop 图扩展。
         fact_map: dict[str, Fact] = {}
@@ -1684,9 +1594,9 @@ class MemoryEngine:
         # 突破模型窗口（_M / 10M 前沿）的关键。
         summ_ranked: list[EventEvidence] = []
         seen_s: set[str] = set()
-        if n_summaries:
+        if n_digests:
             for q in queries:
-                for e in self.retrieve_summaries(q, user, n_summaries, as_of=as_of, known_at=known_at):
+                for e in self.retrieve_digests(q, user, n_digests, as_of=as_of, known_at=known_at):
                     if e.id not in seen_s:
                         seen_s.add(e.id)
                         summ_ranked.append(e)
@@ -1731,14 +1641,14 @@ class MemoryEngine:
             if promoted:
                 detail_eps = self._merge_promoted_chunks(promoted, detail_eps, n_chunks)
                 detail_ids = {e.id for e in detail_eps}
-        summaries = [e for e in summ_ranked if e.id not in detail_ids]
+        digests = [e for e in summ_ranked if e.id not in detail_ids]
 
-        if summaries:
-            chrono = sorted(summaries, key=lambda e: time_key(e.event_time))
+        if digests:
+            chrono = sorted(digests, key=lambda e: time_key(e.event_time))
             sm = "\n".join(
                 f"- [{e.metadata.get('date') or fmt_date(e.event_time)}] (episode: {e.id}; space: {e.user_id}) {e.text}" for e in chrono
             )
-            blocks.append(f"SESSION SUMMARIES (relevant, chronological):\n{sm}")
+            blocks.append(f"SESSION DIGESTS (relevant, chronological):\n{sm}")
 
         if detail_eps:
             chunks = "\n\n".join(
@@ -1888,7 +1798,7 @@ class MemoryEngine:
                 cold_facts = [fact for fact, _ in cold]
                 if cold_facts and not self._should_abstain(query, cold_facts, cold_diag):
                     return SearchResult(query, cold_facts, [score for _, score in cold], via="cold")
-            fallback = self._summary_fallback(query, user, as_of=as_of) if facts is None else None
+            fallback = self._digest_fallback(query, user, as_of=as_of) if facts is None else None
             return fallback or SearchResult(query, via="abstain", abstained=True)
 
         scores = [score for _, score in ranked]
@@ -2046,7 +1956,7 @@ class MemoryEngine:
                 system="You write a concise, strictly faithful synthesis of the given context.",
             )
             if syn.strip():
-                result = f"SUMMARY:\n{syn.strip()}\n\n" + result
+                result = f"DIGEST:\n{syn.strip()}\n\n" + result
         if intent and self.llm is not None:
             # L6：前瞻性意图提示。如实说明：不预期对 QA benchmark 有帮助；为完整性和消融实验
             # 而保留。
@@ -2131,7 +2041,7 @@ class MemoryEngine:
 
         return should_abstain(query, facts, diag.get("sem", {}).values(), self.config.abstain_threshold)
 
-    def _summary_fallback(
+    def _digest_fallback(
         self,
         query: str,
         user_id: str,
@@ -2140,11 +2050,11 @@ class MemoryEngine:
         """#3b：当原子化 fact 无法作答时，若最相关的 session 摘要与查询确实重叠，则浮出该摘要
         （信息可能只存在于摘要中——某个 how-to、规则、安装命令——extractor 从未把它蒸馏成
         fact）。保守策略：要求非泛化的词法重叠，绝不把模糊相似的摘要当作答案返回。"""
-        if not self.config.summary_fallback:
+        if not self.config.digest_fallback:
             return None
         candidates: list[tuple[int, int, float, EventEvidence, str]] = []
-        k = max(1, int(getattr(self.config, "summary_fallback_k", 6) or 6))
-        for ep in self.retrieve_summaries(query, user_id, k=k, as_of=as_of):
+        k = max(1, int(getattr(self.config, "digest_fallback_k", 6) or 6))
+        for ep in self.retrieve_digests(query, user_id, k=k, as_of=as_of):
             text = ep.text.strip()
             if not text:
                 continue
@@ -2154,5 +2064,5 @@ class MemoryEngine:
         if candidates:
             _, _, _, ep, text = max(candidates, key=lambda row: (row[0], row[1], row[2]))
             dated = f"[{ep.metadata.get('date') or fmt_date(ep.event_time)}] (episode: {ep.id}; space: {ep.user_id}; session: {ep.session_id}) {text}"
-            return SearchResult(query=query, via="summary", _answer=dated)
+            return SearchResult(query=query, via="digest", _answer=dated)
         return None

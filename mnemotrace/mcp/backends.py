@@ -32,7 +32,7 @@ class Backend(Protocol):
     async def operation(self, operation_id: str, *, retry: bool = False) -> dict | None: ...
     async def processing_status(self, session_id: str | None = None) -> dict: ...
     async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
-                               retry_failed: bool = False, include_summaries: bool = False) -> dict: ...
+                               retry_failed: bool = False, include_digests: bool = False) -> dict: ...
     async def get_episode(self, episode_id: str, space_id: str | None = None) -> dict | None: ...
     async def aggregate_facts(self, predicate: str, **options) -> dict: ...
     async def follow_path(self, anchor: str, predicates: list[str], **options) -> dict: ...
@@ -42,7 +42,7 @@ class Backend(Protocol):
         query: str,
         n_chunks: int = 6,
         lean: bool = True,
-        session_id: str | None = None,
+
         as_of: float | None = None,
         redact_sensitive: bool = False,
         state: FactState = FactState.CURRENT,
@@ -142,8 +142,8 @@ class LocalBackend:
         return await asyncio.to_thread(self.svc.processing_status, self.context, session_id)
 
     async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
-                               retry_failed: bool = False, include_summaries: bool = False) -> dict:
-        return await asyncio.to_thread(self.svc.flush, self.context, session_id, timeout, retry_failed, include_summaries)
+                               retry_failed: bool = False, include_digests: bool = False) -> dict:
+        return await asyncio.to_thread(self.svc.flush, self.context, session_id, timeout, retry_failed, include_digests)
 
     async def get_episode(self, episode_id: str, space_id: str | None = None) -> dict | None:
         context = self.context if space_id is None else await asyncio.to_thread(
@@ -161,7 +161,7 @@ class LocalBackend:
         query: str,
         n_chunks: int = 6,
         lean: bool = True,
-        session_id: str | None = None,
+
         as_of: float | None = None,
         redact_sensitive: bool = False,
         state: FactState = FactState.CURRENT,
@@ -174,7 +174,6 @@ class LocalBackend:
             query,
             lean=lean,
             n_chunks=n_chunks,
-            session_id=session_id,
             as_of=as_of,
             redact_sensitive=redact_sensitive, state=state, valid_at=valid_at, known_at=known_at,
         )
@@ -372,10 +371,10 @@ class RemoteBackend:
         return await self._get('/v1/processing' + query)
 
     async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
-                               retry_failed: bool = False, include_summaries: bool = False) -> dict:
+                               retry_failed: bool = False, include_digests: bool = False) -> dict:
         return await self._post('/v1/processing/flush', {
             'session_id': session_id, 'timeout': timeout, 'retry_failed': retry_failed,
-            'include_summaries': include_summaries}, timeout=timeout + 10)
+            'include_digests': include_digests}, timeout=timeout + 10)
 
     async def get_episode(self, episode_id: str, space_id: str | None = None) -> dict:
         query = '?' + urlencode({'space_id': space_id}) if space_id is not None else ''
@@ -392,7 +391,7 @@ class RemoteBackend:
         query: str,
         n_chunks: int = 6,
         lean: bool = True,
-        session_id: str | None = None,
+
         as_of: float | None = None,
         redact_sensitive: bool = False,
         state: FactState = FactState.CURRENT,
@@ -401,8 +400,6 @@ class RemoteBackend:
     ) -> dict:
         body = {"query": query, "lean": lean, "n_chunks": n_chunks, "state": state,
                 "valid_at": valid_at, "known_at": known_at}
-        if session_id is not None:
-            body["session_id"] = session_id
         if as_of is not None:
             body["as_of"] = as_of
         if redact_sensitive:

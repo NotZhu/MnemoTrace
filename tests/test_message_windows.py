@@ -41,11 +41,11 @@ def test_failed_core_gap_is_not_context():
     assert [s['message_id'] for s in context_for(mem, tasks, first)] == ['2']
 
 
-def test_summary_replaces_long_raw_as_context():
+def test_digest_replaces_long_raw_as_context():
     mem, tasks, first = prepared([message('long', 'x' * 2500)])
     supplied = context_for(mem, tasks, first)
-    assert supplied[0]['representation'] == 'summary'
-    assert supplied[0]['content'] == 'Synthetic summary'
+    assert supplied[0]['representation'] == 'digest'
+    assert supplied[0]['content'] == 'Synthetic digest'
     assert supplied[0]['source_length'] == 2500 and supplied[0]['ranges'] == [[0, 2500]]
 
 
@@ -90,5 +90,4 @@ def test_import_has_individual_roles_and_unknown_times():
     assert result['episodes'] == 2
     assert [e.role for e in mem.episodes_doc.values()] == ['user', 'assistant']
     assert all(e.event_time is None and e.mode == 'historical' for e in mem.episodes_doc.values())
-    assert not mem.working_mem
     assert mem.import_messages(json.loads(json.dumps(source)))['skipped'] == 2

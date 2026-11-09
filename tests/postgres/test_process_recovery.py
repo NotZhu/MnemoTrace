@@ -84,8 +84,8 @@ def _model(calls, pause=None):
         calls.append(request['operation'])
         if pause:
             pause()
-        if request['operation'] == 'summary':
-            return json.dumps({'summaries': [{'source_id': request['pending'][0]['id'], 'text': 'Synthetic summary'}]})
+        if request['operation'] == 'digest':
+            return json.dumps({'digests': [{'source_id': request['pending'][0]['id'], 'text': 'Synthetic digest'}]})
         facts = []
         for item in request['pending']:
             subject, _, employer = item['content'].rpartition(' at ')
@@ -93,7 +93,7 @@ def _model(calls, pause=None):
             facts.append(dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='single', retention='unknown', subject=subject, predicate='works_at', object=employer,
                               text=f'{subject} works at {employer}',
                               source_ids=[item['id']]))
-        return json.dumps(dict(facts=facts, working=[], summaries=[]))
+        return json.dumps(dict(facts=facts, digests=[]))
 
     return FakeLLM(handler=respond)
 
@@ -391,40 +391,12 @@ def test_model_call_respects_concurrent_business_change(memory, cluster, change)
     assert current.object == ('Pinned lab' if change == 'manual' else 'Old lab')
 
 
-def test_session_clear_cancels_only_its_inflight_work(memory, cluster):
-    pinned = memory.add_fact('Synthetic person', 'works_at', 'Pinned lab')
-    memory.remember_working('Clear this item', 'chat')
-    retained = memory.remember_working('Retain this item', 'other')
-    first = _accept(memory)
-    with _process(_run_stage, cluster.runtime, memory.context, first, 'model') as active:
-        assert active.ready.wait(WAIT)
-        queued = _accept(memory, key='two')
-        other = _accept(memory, key='three', content='Another person at Another lab', session='other')
-        with _process(_run_stage, cluster.runtime, memory.context, queued, None) as successor:
-            assert _result(successor) == []
-        assert memory.operation(queued).attempts == 0
-        with _process(_run_stage, cluster.runtime, memory.context, other, None) as independent:
-            assert _result(independent) == ['extract']
-        assert memory.clear_working('chat') == 1
-        active.resume.set()
-        assert _result(active) == ['extract']
-    for operation_id in (first, queued):
-        status = memory.operation(operation_id)
-        assert (status.state.value, status.error_code) == ('cancelled', 'session_invalidated')
-        assert status.stored_raw and not status.extraction_saved and not status.core_committed
-    assert memory.operation(other).extraction_saved
-    assert memory.flush_processing('other')['ok']
-    assert {item.id for item in memory.working_memory()} == {retained.id}
-    assert len(memory.list_sources()) == 3
-    assert memory.get_fact(pinned.id) is not None
-
-
 def _pending_write(memory, kind):
     if kind == 'vector':
         source = memory.remember_raw('Synthetic input for a source vector', 'chat')
         return memory.source_vector_operation(source.id).operation_id
-    if kind == 'summary':
-        result = memory.import_document('Synthetic summary input. ' * 100, 'chat', extract=False)
+    if kind == 'digest':
+        result = memory.import_document('Synthetic digest input. ' * 100, 'chat', extract=False)
         operation_id, = result['operation_ids']
     else:
         operation_id = _accept(memory)
@@ -437,10 +409,10 @@ def _pending_write(memory, kind):
 def _scope_counts(runtime, scope):
     from psycopg import sql
 
-    tables = ('sessions', 'sources', 'source_summaries', 'facts', 'fact_sources', 'conflicts',
-              'working_memories', 'working_sources',
+    tables = ('sessions', 'sources', 'source_digests', 'facts', 'fact_sources', 'conflicts',
+
               'entities', 'entity_merges', 'graph_relations', 'embeddings', 'lexical_documents', 'lexical_terms',
-              'operations', 'operation_sources', 'operation_targets', 'operation_products', 'operation_summary_parts',
+              'operations', 'operation_sources', 'operation_targets', 'operation_products', 'operation_digest_parts',
               'operation_receipts', 'import_receipts')
     with runtime._transaction() as conn:
         conn.execute("SELECT set_config('mnemotrace.user_id', %s, true)", (scope.user_id,))
@@ -494,7 +466,7 @@ def _blocked_deletion(cluster, context, scope):
 
 
 @pytest.mark.parametrize('scope', ['clear', 'space', 'account'])
-@pytest.mark.parametrize('kind', ['extract', 'core', 'summary', 'vector'])
+@pytest.mark.parametrize('kind', ['extract', 'core', 'digest', 'vector'])
 def test_delete_prevents_late_processing_writes(memory, cluster, runtime, spaces, accounts, scope, kind):
     user_id = memory.context.user_id
     key = accounts.issue_key(user_id)
@@ -503,7 +475,6 @@ def test_delete_prevents_late_processing_writes(memory, cluster, runtime, spaces
     sibling_source = sibling_memory.remember_raw('Sibling synthetic source', 'chat')
     settings = memory.set_settings(extract_instruction='Keep this setting on clear')
     seed = memory.add_fact('Synthetic maintainer', 'works_at', 'Seed lab')
-    memory.remember_working('Synthetic state', 'chat')
     assert memory.graph_relations(seed.id)
     operation_id = _pending_write(memory, kind)
     gate = 'model' if kind == 'extract' else 'embedding'
@@ -572,17 +543,17 @@ def test_clear_waits_for_graph_rebuild_and_removes_rebuilt_edges(memory, cluster
 @pytest.mark.parametrize('damage', ['missing', 'invalid-result', 'invalid-reference'])
 def test_worker_rejects_corrupt_extraction_checkpoint(memory, cluster, damage):
     from psycopg.types.json import Jsonb
-    from mnemotrace.consolidate.pipeline import digest
+    from mnemotrace.consolidate.pipeline import content_hash
 
     operation_id = _pending_write(memory, 'core')
     with memory.dao._transaction() as sql:
         if damage == 'missing':
             sql.delete('operation_products', 'operation_id = %s', (operation_id,))
         elif damage == 'invalid-result':
-            result = {'facts': [], 'summaries': {}}
+            result = {'facts': [], 'digests': {}, 'working': []}
             assert sql.run('UPDATE mnemotrace.operation_products SET result = %s, result_hash = %s '
                            'WHERE user_id = %s AND space_id = %s AND operation_id = %s',
-                           (Jsonb(result), digest(result), *sql.scope, operation_id)).rowcount == 1
+                           (Jsonb(result), content_hash(result), *sql.scope, operation_id)).rowcount == 1
         else:
             assert sql.run('UPDATE mnemotrace.operation_products SET source_versions = %s '
                            'WHERE user_id = %s AND space_id = %s AND operation_id = %s',

@@ -27,7 +27,7 @@ def main(argv=None):
     remember.add_argument('content')
     remember.add_argument('--session-id', required=True)
     remember.add_argument('--agent-id')
-    remember.add_argument('--scope', choices=('auto', 'long', 'working', 'raw'), default='auto')
+    remember.add_argument('--scope', choices=('auto', 'long', 'raw'), default='auto')
     remember.add_argument('--processing', choices=('buffered', 'immediate'), default='buffered')
     for command in ('operation', 'retry'):
         commands.add_parser(command).add_argument('operation_id')

@@ -15,7 +15,7 @@ from ..types import Fact
 from ..util import time_key
 
 # 默认会话摘要系统 prompt
-_SESSION_SUMMARY_SYSTEM = (
+_SESSION_DIGEST_SYSTEM = (
     "将一段带日期的对话压缩为信息密集、忠于事实的摘要，供记忆索引使用。"
     "后续问题应当能够仅依据这份摘要得到回答。\n"
     "使用与原对话相同的主要语言撰写摘要。专有名称、准确数值及需要逐字保留的原文值保持原样。"
@@ -92,5 +92,5 @@ class ProfileBuilder:
 
 
 # 公开别名，让 Memory policy 层能把内置 prompt 作为可编辑默认值暴露出去。
-SESSION_SUMMARY_SYSTEM = _SESSION_SUMMARY_SYSTEM
+SESSION_DIGEST_SYSTEM = _SESSION_DIGEST_SYSTEM
 PERSONA_SYSTEM = _PERSONA_SYSTEM

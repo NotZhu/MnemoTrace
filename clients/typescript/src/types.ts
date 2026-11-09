@@ -49,7 +49,7 @@ export type ProcessingState = 'pending' | 'running' | 'retry_wait' | 'failed' | 
 
 export interface OperationResult {
   operation_id: string
-  kind: 'extract' | 'summary' | 'reembed' | 'graph' | 'conflicts' | 'outcomes'
+  kind: 'extract' | 'digest' | 'reembed' | 'graph' | 'conflicts' | 'outcomes'
   state: ProcessingState
   phase: 'queued' | 'generate' | 'embed' | 'commit' | 'compensate' | 'done'
   stored_raw: boolean
@@ -131,7 +131,6 @@ export interface SessionReport {
   episodes_consolidated: number
   extraction_failures?: number
   episodes_pending: number
-  working_live: number
   facts_added: number
   facts_redacted: number
   facts: SessionReportFact[]
@@ -146,8 +145,7 @@ export interface SessionIndexItem {
   episodes_pending: number
   facts_added: number
   facts_sensitive: number
-  working_live: number
-  summaries: number
+  digests: number
   first_event_at: number | null
   first_event_at_h: string | null
   last_event_at: number | null
@@ -217,14 +215,14 @@ export interface EpisodeView {
   mode: 'live' | 'historical' | null
   coverage: { partial: boolean } | null
   content: string
-  summary: string
+  digest: string
 }
 
 export interface MemoryCounts {
   episodes: number
   facts_live: number
   facts_superseded: number
-  summaries: number
+  digests: number
   /** 属于会话结论的存活事实。与上面两项一样，按未过滤集合统计。 */
   facts_outcomes?: number
 }
@@ -297,8 +295,7 @@ export interface MemoryStats {
     facts_superseded: number
     facts_sensitive: number
     facts_outcomes: number
-    working_live: number
-    summaries: number
+    digests: number
     entities: number
     relations: number
     pending_conflicts: number
@@ -321,7 +318,6 @@ export interface AgentStatus {
     episodes: number
     extraction_failures?: number
     episodes_pending: number
-    working_live: number
   }
   counts: MemoryStats['counts']
   consolidation_backlog: boolean
@@ -353,7 +349,7 @@ export interface Focus {
 export interface Policy {
   extract_instruction: string
   extract_system: string
-  summary_system: string
+  digest_system: string
   persona_system: string
 }
 
@@ -437,7 +433,7 @@ export interface ImportParams {
   /** chatgpt | messages | records | jsonl | transcript | auto（默认） */
   format?: string
   consolidate?: boolean
-  summarize?: boolean
+  generateDigests?: boolean
 }
 
 export interface ImportResult {
@@ -489,7 +485,7 @@ export interface MemoryExportEpisode {
   event_time: number
   date: string
   content: string
-  summary: string
+  digest: string
 }
 
 export interface MemoryExport {
@@ -529,8 +525,8 @@ export interface MemoryControls {
   remember?: boolean
   /** 用于检索和后台写入的会话/线程 id */
   session_id?: string
-  /** auto | long | working；控制后台写入的路由方式 */
-  scope?: 'auto' | 'long' | 'working'
+  /** auto | long；控制后台写入的路由方式 */
+  scope?: 'auto' | 'long'
   /** 为补充细节而包含的完整历史对话数量（默认 6） */
   n_chunks?: number
   /** 用于按时间点查看记忆的 epoch 秒数 */

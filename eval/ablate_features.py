@@ -69,22 +69,18 @@ def _chain_context(enabled: bool) -> str:
     )
 
 
-
-
-def _summary_fallback_context(enabled: bool) -> str:
-    mem = _memory(config=Config(summary_fallback=enabled))
+def _digest_fallback_context(enabled: bool) -> str:
+    mem = _memory(config=Config(digest_fallback=enabled))
     ep = mem.add(
         "To rotate the PAT: open security settings, regenerate the token, then update CI secrets.",
         user_id="u1",
         session_id="pat-runbook",
         event_time=BASE,
     )
-    ep.summary = ep.content
+    ep.digest = ep.content
     mem._sync_episode(ep)
     res = mem.search("How do I rotate the PAT?", user_id="u1")
     return f"{res.via}\n{res.answer()}"
-
-
 
 
 def _procedural_extraction_context(enabled: bool) -> str:
@@ -101,7 +97,7 @@ def _procedural_extraction_context(enabled: bool) -> str:
         "What is the PAT runbook?",
         user_id="u1",
         persona=False,
-        n_summaries=0,
+        n_digests=0,
         n_chunks=0,
         char_budget=10_000,
     )
@@ -123,7 +119,7 @@ def _explicit_preference_extraction_context(enabled: bool) -> str:
         "What travel preferences should you remember?",
         user_id="u1",
         persona=False,
-        n_summaries=0,
+        n_digests=0,
         n_chunks=0,
         char_budget=10_000,
     )
@@ -145,7 +141,7 @@ def _preference_object_filter_context(enabled: bool) -> str:
         "What food or place preferences should you remember?",
         user_id="u1",
         persona=False,
-        n_summaries=0,
+        n_digests=0,
         n_chunks=0,
         char_budget=10_000,
     )
@@ -167,7 +163,7 @@ def _preference_object_normalization_context(enabled: bool) -> str:
         "What food preferences should you remember?",
         user_id="u1",
         persona=False,
-        n_summaries=0,
+        n_digests=0,
         n_chunks=0,
         char_budget=10_000,
     )
@@ -193,17 +189,11 @@ def _preference_reversal_extraction_context(enabled: bool) -> str:
         "Do I still like jazz?",
         user_id="u1",
         persona=False,
-        n_summaries=0,
+        n_digests=0,
         n_chunks=0,
         char_budget=10_000,
     )
     return f"FACTS={json.dumps(facts, ensure_ascii=False, sort_keys=True)}\n\n{ctx}"
-
-
-
-
-
-
 
 
 def _raw_context(enabled: bool) -> str:
@@ -265,7 +255,7 @@ def _provenance_chunk_context(enabled: bool) -> str:
         "What is Apollo's launch code?",
         user_id="u1",
         persona=False,
-        n_summaries=0,
+        n_digests=0,
         n_chunks=1,
         char_budget=10_000,
     )
@@ -296,7 +286,7 @@ def _chain_provenance_context(enabled: bool) -> str:
         "Where did Wei work before Moonshot AI?",
         user_id="u1",
         persona=False,
-        n_summaries=0,
+        n_digests=0,
         n_chunks=1,
         char_budget=10_000,
     )
@@ -331,7 +321,7 @@ def _evidence_budget_context(enabled: bool) -> str:
         "What is Apollo's launch code and where is the printed checklist?",
         user_id="u1",
         persona=False,
-        n_summaries=0,
+        n_digests=0,
         n_chunks=0,
         char_budget=360,
     )
@@ -373,14 +363,6 @@ def _graph_self_anchor_context(enabled: bool) -> str:
     return mem.context_for("Where is my project based?", user_id="u1", k_chunks=0, graph=True)
 
 
-
-
-
-
-
-
-
-
 def _contains(marker: str, target: str):
     return lambda ctx: marker in ctx and target in ctx
 
@@ -402,10 +384,10 @@ def _run_ablation() -> tuple[list[AblationResult], dict]:
             "Tencent",
         ),
         (
-            "summary_fallback",
-            _summary_fallback_context,
-            lambda answer: "summary" in answer and "security settings" in answer and "pat-runbook" in answer,
-            "derived session summary answers fact-miss how-to query",
+            "digest_fallback",
+            _digest_fallback_context,
+            lambda answer: "digest" in answer and "security settings" in answer and "pat-runbook" in answer,
+            "derived session digest answers fact-miss how-to query",
         ),
         (
             "procedural_extraction",

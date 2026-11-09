@@ -1,6 +1,6 @@
 ALTER TABLE mnemotrace.lexical_documents
-    ADD COLUMN field text NOT NULL DEFAULT 'text' CHECK (field IN ('text', 'summary')),
-    ADD CHECK (field <> 'summary' OR source_id IS NOT NULL);
+    ADD COLUMN field text NOT NULL DEFAULT 'text' CHECK (field IN ('text', 'digest')),
+    ADD CHECK (field <> 'digest' OR source_id IS NOT NULL);
 DO $$
 DECLARE old_unique name;
 BEGIN
@@ -9,7 +9,7 @@ BEGIN
     EXECUTE format('ALTER TABLE mnemotrace.lexical_documents DROP CONSTRAINT %I', old_unique);
 END $$;
 ALTER TABLE mnemotrace.lexical_documents
-    ADD UNIQUE NULLS NOT DISTINCT(user_id, space_id, source_id, fact_id, working_id, entity_id, field);
+    ADD UNIQUE NULLS NOT DISTINCT(user_id, space_id, source_id, fact_id, entity_id, field);
 
 CREATE INDEX embeddings_retrieval
     ON mnemotrace.embeddings(user_id, space_id, target_kind, field, model, dimension);
@@ -23,7 +23,7 @@ CREATE INDEX operation_targets_source_version
 ALTER TABLE mnemotrace.entities ADD COLUMN anchor_terms text[];
 CREATE INDEX entity_anchor_terms ON mnemotrace.entities USING gin(anchor_terms);
 
-ALTER TABLE mnemotrace.source_summaries ADD COLUMN summary_written_at timestamptz;
+ALTER TABLE mnemotrace.source_digests ADD COLUMN digest_written_at timestamptz;
 
 ALTER TABLE mnemotrace.operations
     ADD COLUMN embedding_model mnemotrace.identifier,
@@ -41,7 +41,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
     JOIN mnemotrace.users u ON u.user_id = o.user_id AND u.status = 'active'
     JOIN mnemotrace.memory_spaces s ON (s.user_id,s.space_id) = (o.user_id,o.space_id)
         AND s.status = 'active'
-    WHERE ((include_extraction AND o.kind IN ('extract', 'summary'))
+    WHERE ((include_extraction AND o.kind IN ('extract', 'digest'))
         OR (o.kind = 'reembed' AND o.embedding_model = model AND o.embedding_dimension = dimension)) AND (
         (o.state = 'pending' AND (o.phase <> 'queued' OR o.ready_at <= statement_timestamp()))
         OR (o.state = 'retry_wait' AND o.next_attempt_at <= statement_timestamp())

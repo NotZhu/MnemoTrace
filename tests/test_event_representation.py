@@ -1,4 +1,4 @@
-"""Strict event evidence: summaries replace raw text across every automatic read."""
+"""Strict event evidence: digests replace raw text across every automatic read."""
 from dataclasses import FrozenInstanceError
 
 import pytest
@@ -11,19 +11,19 @@ from mnemotrace.types import Fact
 
 def summarized(memory, content="RAW_ONLY_8844 was disclosed. " * 100):
     ep = memory.add(content, user_id="u", session_id="s", event_time=100)
-    ep.summary = "A connection issue was investigated and resolved."
-    ep.summary_embedding = memory.embedder.embed(ep.summary)
+    ep.digest = "A connection issue was investigated and resolved."
+    ep.digest_embedding = memory.embedder.embed(ep.digest)
     memory._sync_episode(ep)
     return ep
 
 
-def test_summary_replaces_raw_index_and_retrieval_payload():
+def test_digest_replaces_raw_index_and_retrieval_payload():
     mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
     assert mem.episodes_vec.get(ep.id) is None
-    assert mem.summary_vec.get(ep.id) is not None
+    assert mem.digest_vec.get(ep.id) is not None
     hit, = mem.retrieve_episodes("connection issue", "u")
-    assert hit.text == ep.summary and hit.representation == "summary"
+    assert hit.text == ep.digest and hit.representation == "digest"
     assert not hasattr(hit, "content")
     with pytest.raises(FrozenInstanceError):
         hit.text = "changed"
@@ -34,7 +34,7 @@ def test_summary_replaces_raw_index_and_retrieval_payload():
 
 
 @pytest.mark.parametrize("cascade", [False, True])
-def test_contexts_do_not_expand_summary_even_for_provenance(cascade):
+def test_contexts_do_not_expand_digest_even_for_provenance(cascade):
     mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
     fact = mem.add_fact("user", "finding", "connection issue resolved", user_id="u", sensitive=False)
@@ -49,38 +49,38 @@ def test_contexts_do_not_expand_summary_even_for_provenance(cascade):
         assert ep.id in text
 
 
-def test_summary_survives_reembedding_without_raw_index():
+def test_digest_survives_reembedding_without_raw_index():
     mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
     assert mem.episodes_vec.get(ep.id) is None
-    assert mem.summary_vec.get(ep.id) is not None
+    assert mem.digest_vec.get(ep.id) is not None
     mem.reembed()
     assert mem.episodes_vec.get(ep.id) is None
     assert mem.get_episode(ep.id, "u")["content"] == ep.content
 
 
-def test_raw_keyword_match_returns_only_the_summary():
+def test_raw_keyword_match_returns_only_the_digest():
     outputs = []
     for marker in ("RAW_ONLY_8844", "OTHER_PRIVATE_MARKER"):
         mem = MemoryEngine(embedder=MockEmbedder())
         ep = summarized(mem, marker * 100)
         hits = mem.retrieve_episodes("RAW_ONLY_8844", "u")
         outputs.append([(h.text, h.representation) for h in hits])
-        assert event_evidence(ep).text == ep.summary
-    assert outputs == [[(ep.summary, 'summary')], []]
+        assert event_evidence(ep).text == ep.digest
+    assert outputs == [[(ep.digest, 'digest')], []]
 
 
-def test_supersession_does_not_rewrite_event_summary():
+def test_supersession_does_not_rewrite_event_digest():
     mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
-    previous = ep.summary
+    previous = ep.digest
     old = Fact(subject="user", predicate="works_at", object="A", user_id="u", provenance=[ep.id])
     new = Fact(subject="user", predicate="works_at", object="B", user_id="u", supersedes=old.id)
     old.invalid_at = old.expired_at = new.valid_at
     for fact in (old, new):
         mem.fact_store.upsert(fact.id, mem.embedder.embed(fact.text), fact)
     assert mem.consolidate_full([], [ep])["reflected"] == 0
-    assert ep.summary == previous
+    assert ep.digest == previous
 
 
 def test_reembed_never_embeds_summarized_original():
@@ -96,7 +96,7 @@ def test_reembed_never_embeds_summarized_original():
     embedder = RecordingEmbedder()
     mem.reembed(embedder)
     assert ep.content not in embedder.inputs
-    assert ep.summary in embedder.inputs
+    assert ep.digest in embedder.inputs
 
 
 def test_default_context_budget_does_not_inspect_summarized_original_length():
@@ -107,13 +107,13 @@ def test_default_context_budget_does_not_inspect_summarized_original_length():
     ep = summarized(mem)
     ep.content = UnreadableOriginal(ep.content)
     context = mem.lean_context('connection issue', 'u', persona=False)
-    assert ep.summary in context and ep.id in context
+    assert ep.digest in context and ep.id in context
 
 
-def test_reembed_discards_orphaned_summary_vector_without_embedding_an_excerpt():
+def test_reembed_discards_orphaned_digest_vector_without_embedding_an_excerpt():
     mem = MemoryEngine(embedder=MockEmbedder())
-    ep = mem.add('A synthetic original without a summary.', user_id='u')
-    ep.summary_embedding = [1.0] * mem.embedder.dim
+    ep = mem.add('A synthetic original without a digest.', user_id='u')
+    ep.digest_embedding = [1.0] * mem.embedder.dim
     mem.reembed(MockEmbedder(dim=16))
-    assert ep.summary_embedding is None
-    assert mem.summary_vec.get(ep.id) is None and mem.episodes_vec.get(ep.id) is not None
+    assert ep.digest_embedding is None
+    assert mem.digest_vec.get(ep.id) is None and mem.episodes_vec.get(ep.id) is not None

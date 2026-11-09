@@ -6,10 +6,9 @@
 
 | 类型 | 用途与关键字段 |
 | --- | --- |
-| Episode | 原始内容，关联 user、session、role、event_time 与 ingested_at；摘要和整合标记是派生状态 |
+| Episode | 原始内容，关联 user、session、role、event_time 与 ingested_at；digest 和整合标记是派生状态 |
 | Fact | subject/predicate/object 断言，保留 provenance、source、source_roles、有效时间、事务时间和 supersedes |
 | Entity / Relation | 实体及由 fact 支撑的关系，用于图检索与可视化 |
-| WorkingMemory | 带 session、TTL 和 consumed 状态的短时内容 |
 | Conflict | 对疑似冲突的待裁决记录，关联新旧事实及处理状态 |
 
 画像、摘要和图谱都是派生视图，不能代替原始来源。Fact 的 `provenance` 指向 Episode id，`source="user"` 标识用户明确添加或内容编辑的事实。
@@ -30,7 +29,7 @@ Fact 的 `topic` 是单一主主题，独立于管理分类 category、敏感标
 
 手动新增或修改正文时，省略主题会保存为 `unknown/unset`。仅修改其他元数据时保留主题。`reset_topic=True` 清除主题，与显式主题互斥。主题编辑保留原事实的来源、向量、有效时间和替代链。
 
-事实同时保存 `cardinality`（`single`、`multi` 或 `unknown`）与 `retention`（`durable`、`normal` 或 `unknown`）。模型根据来源声明两者。离线手工新增时显式声明 `single` 才接续同槽位历史。自动写入继续裁决具体冲突并保留双时间和来源。内存引擎中的 `durable` 事实免于衰减和热集淘汰。工作记忆由现有 TTL 管理。
+事实同时保存 `cardinality`（`single`、`multi` 或 `unknown`）与 `retention`（`durable`、`normal` 或 `unknown`）。模型根据来源声明两者。离线手工新增时显式声明 `single` 才接续同槽位历史。自动写入继续裁决具体冲突并保留双时间和来源。内存引擎中的 `durable` 事实免于衰减和热集淘汰。
 
 ## 时间与知识更新
 
@@ -45,13 +44,11 @@ Fact 的 `topic` 是单一主主题，独立于管理分类 category、敏感标
 
 对有明确生效时间的新证据，人工事实按其有效区间提供保护，包括已安排的未来区间。人工添加单值事实也按生效顺序接入历史。同一条待审事实如果还关联其他有效的人工冲突，必须先处理这些冲突。忽略某组冲突只关闭该组审核。选择保留人工事实后，该裁决仍会阻止从另一组冲突发布新证据。
 
-## 工作记忆与会话收尾
+## 会话与任务状态
 
-`Memory.remember(scope="working")` 保存带日期的 Episode，并把内容放入 working 层，避免作为持久画像事实提取；直接调用 `remember_working()` 则只添加 working 条目。
+session 标识来源所属的会话，用于摄入、浏览和按会话推进后台处理。MnemoTrace 保存可跨会话复用的事实，任务进度、执行意图和临时状态由 agent 的任务工具、checkpoint 或文件管理。
 
-working 的“临时”指可见性与清理生命周期。Postgres 保存活跃工作条目，使其随服务重启恢复。`working_set` 是查询时的工作集合，与上述条目不同。
-
-过期、消费或明确清空后，working 条目不再作为活跃状态返回。按会话调用 `flush_processing` 可推进核心处理。摘要独立跟踪，工作记忆通过专用入口清理，原始 Episode 保留。
+`flush_processing` 推进已受理的核心处理；`include_digests=True` 同时等待来源摘要。时间化事实保留有效区间及历史，持续时间短不意味着无需长期留存。
 
 ## 保存与提交边界
 
@@ -92,7 +89,7 @@ buffered 在原文和任务提交后返回操作 ID；immediate 等待核心业�
 实现见[记录类型](../../mnemotrace/types.py)、[空间 DAO](../../mnemotrace/store/postgres/dao.py)和[服务入口](../../mnemotrace/service.py)。
 
 
-## 条件事件摘要与严格检索表示
+## 条件来源摘要与严格检索表示
 
 所有事件共用摘要优先的检索表示。对话摘要由联合生成及有限补偿产生；原文与文档支持显式全文摘要。
 
@@ -101,11 +98,11 @@ Episode 保留完整原文。原文达到配置长度阈值才生成该事件的
 检索只返回不可变的选定文本及来源身份，Fact 的来源提升、聚合、时长和迭代检索不能另行读取原文补漏。
 显式按 ID 读取、owner 管理浏览和备份导出保留全文。摘要是历史原文的缩减版，不被后续事实反射改写。
 
-Postgres 通过操作及其来源关联记录摘要输入，用 `operation_summary_parts` 保存片段、`operation_products` 保存待提交产物，正式摘要写入 `source_summaries`。处理进度、完成计数和错误状态从持久化操作读取。
+Postgres 通过操作及其来源关联记录摘要输入，用 `operation_digest_parts` 保存片段、`operation_products` 保存待提交产物，正式摘要写入 `source_digests`。处理进度、完成计数和错误状态从持久化操作读取。
 每个生成、嵌入和提交步骤均保存检查点。每个窗口的联合生成与摘要补偿合计最多三次模型调用；
 显式摘要片段、归并、原文结论和冲突检查各步骤最多三次，退避 30、120 秒。嵌入另限三次，复用已保存模型结果。
 读取和普通调度不重置次数；只有显式 retry_failed 才重新尝试缺失阶段。
 模型及嵌入调用在数据库事务外执行。提交时校验租约、来源版本、处理代次和配置，过期响应无法提交。
 
 既有非空摘要继续保留，系统不为其补造生成证明，也不自动付费重建；其中可能包含历史摘录降级或旧反射追加内容。
-配置默认值及环境变量见[配置参考](../reference/configuration.md#条件事件摘要)，接口见[Python API](../reference/python-api.md#摘要与显式原文读取)。
+配置默认值及环境变量见[配置参考](../reference/configuration.md#条件来源摘要)，接口见[Python API](../reference/python-api.md#摘要与显式原文读取)。

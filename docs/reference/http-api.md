@@ -39,7 +39,7 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 ```
 
 `message_id`、`role`、`content` 必填；role 仅支持 user/assistant，不接收流式碎片。每条独立保存，数组顺序成为会话持久化序号。`event_time` 可省略或为 null，表示来源时间未知。
-`mode` 默认为 live；historical 不创建活跃工作记忆。`processing` 默认为 buffered，可显式 immediate；`scope` 支持 auto、long 和 raw。可选 `agent_id` 记录摄入来源。
+`mode` 默认为 live；historical 标记为历史摄入。`processing` 默认为 buffered，可显式 immediate；`scope` 支持 auto、long 和 raw。可选 `agent_id` 记录摄入来源。
 
 消息 ID 在空间和会话内唯一；同 ID 同输入返回原事件及当前状态，不重置空闲计时，不重复生成。不同输入返回 409/message_conflict；批内冲突在任何写入前拒绝。不同 ID 的相同正文允许存在。
 自动处理先验证模型配置，再提交原文与任务。immediate 等待核心提交，buffered 返回当前操作状态。
@@ -48,7 +48,7 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 ### POST /v1/remember
 
 传 `space_id`、`content`，可选 `session_id`、`agent_id`、`scope` 和 `processing`。
-`scope=raw` 只保存原文，`scope=working` 直接保存原文和工作条目。这两种范围返回 `status="stored"`、`source_ids` 和空的 `operation_ids`、`operations`，无需模型。
+`scope=raw` 只保存原文，返回 `status="stored"`、`source_ids` 和空的 `operation_ids`、`operations`，无需模型。
 `scope=auto` 和 `scope=long` 请求自动抽取，默认 immediate；选择 buffered 时在原文和任务提交后返回 `status="accepted"` 及操作回执。没有配置 LLM 时仍可手工添加事实。
 
 ### 缓冲处理状态与刷新
@@ -58,7 +58,7 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 通过 `POST /v1/operations/{operation_id}/retry` 携带 `space_id` 重试已有任务。
 `GET /v1/processing` 按空间和可选的 `session_id` 分页浏览操作，返回 `operations` 和 `next_after_id`。`limit` 默认 100，范围 1–1000。下一页将响应的 `next_after_id` 作为 `after_id` 传入；游标为 `null` 或返回空页时结束。
 `POST /v1/processing/flush` 可带 `session_id` 整理指定会话并等待本批核心处理。
-独立设置 `include_summaries` 可同时等待摘要，工作记忆使用自己的清理入口。
+独立设置 `include_digests` 可同时等待摘要。
 
 ### POST /v1/recall
 
@@ -114,7 +114,7 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 | `GET /v1/profile/structured` | 结构化画像的确认与待确认视图 |
 | `GET /v1/graph` | as_of、include_sensitive=false、q、live_only=false、limit |
 | `GET /v1/focus` / `PUT /v1/focus` | track/mute 列表，省略保持，[] 清空 |
-| `GET /v1/policy` / `PUT /v1/policy` | extract_instruction、extract_system、summary_system、persona_system；空字符串恢复默认 |
+| `GET /v1/policy` / `PUT /v1/policy` | extract_instruction、extract_system、digest_system、persona_system；空字符串恢复默认 |
 | `GET /v1/conflicts` | 待确认冲突，需要相应检测配置 |
 | `POST /v1/conflicts/{conflict_id}/resolve` | keep=newer、older 或 both |
 
@@ -130,14 +130,11 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 
 `GET /v1/memories?topic=food` 按已存主题精确筛选；省略表示全部，`topic=unknown` 包含人工未知和未赋值未知，空字符串及非法枚举返回 422。与 category、status、kind、outcome_kind、q 取交集并在分页前执行，facts_page.total 为筛选后总数；原始 episode 和既有全局计数不随主题筛选改变。fact_categories 的候选范围不随主题、搜索、状态或分页收缩。后续页继续成对携带 expected_revision/evaluated_at。
 
-## 工作记忆、导入与导出
+## 导入与导出
 
 | 端点 | 输入与语义 |
 | --- | --- |
-| `POST /v1/working` | content；session_id=default、kind=state、ttl_seconds 可选 |
-| `GET /v1/working` | session_id 可选；仅返回活跃条目 |
-| `DELETE /v1/working` | session_id 必填；清理该 session 的工作条目 |
-| `POST /v1/import` | sessions 或 data + format；consolidate=null、summarize=true、dedupe=true |
+| `POST /v1/import` | sessions 或 data + format；consolidate=null、generate_digests=true、dedupe=true |
 | `POST /v1/documents` | text 或 data_base64；filename、content_type 可选，session_id=document |
 | `GET /v1/export` | include_sensitive=false；返回结构化导出 |
 | `POST /v1/forget` | JSON `{"space_id":"…","confirm":true}`，清空指定空间并保留 ID 和设置 |
@@ -183,6 +180,6 @@ stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切�
 `GET /v1/episodes/{episode_id}?space_id=<SPACE_ID>` 显式读取完整原文。未知空间、他人空间和不存在的事件返回 404。
 响应包含 `id`、`space_id`、`session_id`、`role`、`agent_id`、`event_time`、`ingested_at` 和 `content`。
 
-摘要进度通过核心操作的 `auxiliary_operation_ids` 查询。摘要失败不撤销已接受的原文和抽取。显式等待摘要时调用 `/v1/processing/flush` 并设置 `include_summaries=true`，将摘要纳入本次等待范围；`retry_failed=true` 重试范围内的失败操作。
+摘要进度通过核心操作的 `auxiliary_operation_ids` 查询。摘要失败不撤销已接受的原文和抽取。显式等待摘要时调用 `/v1/processing/flush` 并设置 `include_digests=true`，将摘要纳入本次等待范围；`retry_failed=true` 重试范围内的失败操作。
 
 成功摘要是事件的唯一 agent 检索文本；原文不参与向量、词法、重排、来源补充或自动上下文展开。owner 的管理搜索与导出仍可访问原文。

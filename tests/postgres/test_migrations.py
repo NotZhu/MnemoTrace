@@ -27,8 +27,8 @@ def test_failed_initialization_rolls_back_all_tables(database_factory, monkeypat
     original = migrations._scripts
     def broken(prefix):
         scripts = original(prefix)
-        return [(text + (';SELECT 1/0' if i == 1 else ''), digest)
-                for i, (text, digest) in enumerate(scripts)]
+        return [(text + (';SELECT 1/0' if i == 1 else ''), content_hash)
+                for i, (text, content_hash) in enumerate(scripts)]
     with database_factory(initialize=False) as bundle:
         monkeypatch.setattr(migrations, '_scripts', broken)
         with pytest.raises(Exception):
@@ -40,7 +40,7 @@ def test_failed_initialization_rolls_back_all_tables(database_factory, monkeypat
 
 
 @pytest.mark.parametrize('damage', [
-    'DROP TABLE mnemotrace.source_summaries',
+    'DROP TABLE mnemotrace.source_digests',
     "UPDATE mnemotrace.schema_migrations SET checksum='wrong' WHERE version=1",
     'UPDATE mnemotrace.schema_migrations SET version=99 WHERE version=2',
     'DROP TABLE mnemotrace.schema_migrations',
@@ -81,7 +81,7 @@ def test_pre_removal_database_is_rejected_without_modifying_it(database_factory,
             "    assertion_kind text NOT NULL CHECK (assertion_kind IN "
             "('unspecified','user_statement','assistant_suggestion','user_confirmation','assistant_report')),\n"
             '    source_roles text[]'
-        )).replace('CHECK (format_version = 2)', 'CHECK (format_version = 1)')
+        )).replace('CHECK (format_version = 3)', 'CHECK (format_version = 2)')
         return [(initial, sha256(initial.encode()).hexdigest()), *scripts[1:]]
 
     with database_factory(initialize=False) as bundle:
@@ -130,11 +130,11 @@ def test_upgrade_makes_existing_queued_extract_discoverable(database_factory, mo
                     sql.ensure_session('chat')
                     sql.write_record(StoredRecord.from_record(context, source), insert=True)
                     sequence = allocate_sequence(sql, 'chat')
-                    stats = dict.fromkeys(('facts_added', 'duplicates', 'invalidated', 'working_added',
+                    stats = dict.fromkeys(('facts_added', 'duplicates', 'invalidated',
                                            'model_calls', 'windows_completed'), 0)
                     sql.insert('operations', dict(operation_id='phase3-queued', kind='extract', session_id='chat',
                                sequence=sequence, state='pending', phase='queued', attempts=0, embed_attempts=0,
-                               space_generation=0, session_generation=0, stats=stats, stored_raw=True,
+                               space_generation=0, stats=stats, stored_raw=True,
                                extraction_saved=False, core_committed=False))
                     sql.insert('operation_sources', dict(operation_id='phase3-queued', source_id=source.id,
                                content_version=1, input_start=0, input_end=len(source.content), input_order=0))

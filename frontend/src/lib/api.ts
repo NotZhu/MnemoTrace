@@ -25,7 +25,6 @@ import type { AuditReport,
   SessionReport,
   SessionsIndex,
   StructuredProfile,
-  WorkingItem,
 } from '../types'
 
 // 默认同源（FastAPI 同时托管 SPA 与 API）。当 API 部署在其他位置时，用
@@ -302,20 +301,6 @@ export const api = {
 
   forget: () =>
     request<{ ok: boolean; message: string }>('/v1/forget', { method: 'POST', body: json({ confirm: true }) }),
-
-  working: (sessionId?: string, signal?: AbortSignal) =>
-    request<{ items: WorkingItem[] }>(`/v1/working${qs({ session_id: sessionId })}`, { signal }),
-
-  addWorking: (content: string, kind = 'state', ttl_seconds?: number, session_id = 'default') =>
-    request<{ ok: boolean; id: string }>('/v1/working', {
-      method: 'POST',
-      body: json({ content, kind, ttl_seconds, session_id }),
-    }),
-
-  clearWorking: (session_id = 'default', signal?: AbortSignal) =>
-    request<{ ok: boolean; cleared: number }>(`/v1/working?session_id=${encodeURIComponent(session_id)}`, {
-      method: 'DELETE', signal,
-    }),
 
   conflicts: () => request<{ conflicts: Conflict[] }>('/v1/conflicts'),
 

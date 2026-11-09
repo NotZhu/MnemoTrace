@@ -6,23 +6,23 @@ from .planning import fact_valid_at, source_anchor
 from .adjudication import plan_merge
 from .fact_rules import _NAME_PREDICATES, _SELF_REFS, _norm_predicate
 from .facts import FactWriter
-from .pipeline import digest
+from .pipeline import content_hash
 from .topic_rules import resolve_topic
 from ..store._validation import validate_embedding
 from ..store.contracts import EmbeddingWrite, RecordRef, RecordWrite, SourceLink, StoredRecord
 from ..store.postgres.records import FACT, SOURCE, domain
-from ..types import Fact, WorkingMemory
+from ..types import Fact
 
 
-def write_record(context, value, previous=None, *, summary_base=1):
+def write_record(context, value, previous=None, *, digest_base=1):
     if previous is None:
         return RecordWrite(StoredRecord.from_record(context, value), None)
     old = domain(previous)
-    version = previous.summary_version
-    if hasattr(value, 'summary') and value.summary != old.summary:
-        version = (version + 1 if version is not None else summary_base) if value.summary else None
+    version = previous.digest_version
+    if hasattr(value, 'digest') and value.digest != old.digest:
+        version = (version + 1 if version is not None else digest_base) if value.digest else None
     record = StoredRecord.from_record(context, value, content_version=previous.content_version,
-                                      record_version=previous.record_version + 1, summary_version=version)
+                                      record_version=previous.record_version + 1, digest_version=version)
     return RecordWrite(replace(record, agent_id=previous.agent_id), previous.record_version)
 
 
@@ -56,8 +56,6 @@ def materialize(context, data, result, settings, config, now):
                 continue
         if is_owner:
             subject = owner_name or 'user'
-        if data['scope'] == 'working':
-            continue
         topic, topic_source = resolve_topic(item.get('topic'))
         fact = Fact(subject, predicate, item['object'], text=item['text'] if dialogue else '',
                     display=item['text'], user_id=context.user_id, valid_at=fact_valid_at(item, origin['event_time']),
@@ -67,17 +65,12 @@ def materialize(context, data, result, settings, config, now):
                                                     if views[key]['role'])),
                     topic=topic, topic_source=topic_source,
                     cardinality=item['cardinality'], retention=item['retention'],
-                    id='ft_' + digest([data, item])[:24])
+                    id='ft_' + content_hash([data, item])[:24])
         if policy._accepted(fact, content):
             facts.append(fact)
 
-    working = []
-    for item in result['working']:
-        origin = anchor(item)
-        ttl = config.working_memory_ttl_seconds
-        working.append((item, origin, now + ttl if ttl else None))
     new_settings = replace(settings, subject_name=owner_name, subject_aliases=tuple(aliases))
-    return facts, working, new_settings
+    return facts, new_settings
 
 
 def embed_texts(embedder, texts):
@@ -92,20 +85,15 @@ def embed_texts(embedder, texts):
     return dict(zip(texts, vectors, strict=True))
 
 
-def merge_records(context, config, embedder, model, data, session_id, now,
-                  facts, working, previous, vectors, llm, existing_pairs):
+def merge_records(context, config, embedder, model, data, now,
+                  facts, previous, vectors, llm, existing_pairs):
     old_records = {record.ref.record_id: record for record in previous}
     old_facts = [domain(record) for record in previous]
-    work = [WorkingMemory(id='wm_' + digest([data, item])[:24], content=item['content'],
-                          kind=item['kind'], user_id=context.user_id, session_id=session_id,
-                          event_time=origin['event_time'], created_at=now, expires_at=expires,
-                          metadata=dict(provenance=item['source_ids'],
-                                        episode_id=origin['id'])) for item, origin, expires in working]
     semantic_subjects = {fact.subject.strip().lower() for fact in facts}
     missing = [fact for fact in old_facts if embedder is not None
                and fact.subject.strip().lower() in semantic_subjects
                and not fact.review_pending and fact.id not in vectors]
-    fresh = embed_texts(embedder, chain((fact.text for fact in facts), (item.content for item in work),
+    fresh = embed_texts(embedder, chain((fact.text for fact in facts),
                                        (fact.text for fact in missing)))
     for fact in old_facts:
         fact.embedding = vectors.get(fact.id)
@@ -119,9 +107,9 @@ def merge_records(context, config, embedder, model, data, session_id, now,
         fact.embedding = fresh.get(fact.text)
     changed, conflicts, _ = plan_merge(facts, old_facts, llm, config, embedder, now, existing_pairs)
     writes, embeddings, links = [], extra_vectors, []
-    for value in chain(changed, work):
+    for value in changed:
         previous = old_records.get(value.id)
-        vector = value.embedding if isinstance(value, Fact) else fresh.get(value.content)
+        vector = value.embedding
         value.embedding = None
         if previous is not None and value == domain(previous):
             continue

@@ -4,7 +4,7 @@
 数据文件 = JSON 数组（或 {"records": [...]}）。每条记录是以下二者之一：
   • 一段原始对话  -> POST /v1/remember（服务端自动抽取 fact）
       {"content": "用户：我在字节做后端，最爱周杰伦。\n助手：好的", "session_id": "s1", "scope": "long"}
-      scope: "auto"（默认，临时状态路由到 working 记忆）| "long"（强制长期）| "working"
+      scope: "auto"（默认，抽取事实）| "long"（显式请求抽取）| "raw"（仅保存原文）
   • 一条结构化 fact -> POST /v1/facts（权威写入，不会被自动覆盖）
       {"subject": "user", "predicate": "works_at", "object": "字节跳动"}
 
@@ -26,7 +26,7 @@ def main() -> None:
     ap.add_argument("--key", required=True, help="your API key = your isolated memory namespace")
     ap.add_argument("--data", required=True, help="path to the JSON dataset")
     ap.add_argument("--reset", action="store_true", help="wipe this key's memory before loading")
-    ap.add_argument("--scope", default="", help="override scope for ALL conversations (long|working|auto)")
+    ap.add_argument("--scope", default="", help="override scope for ALL conversations (long|raw|auto)")
     ap.add_argument("--probe", action="append", default=[], help="a query to test recall after loading (repeatable)")
     ap.add_argument("--no-proxy", action="store_true", help="bypass any HTTP(S)_PROXY env for direct connect")
     args = ap.parse_args()
@@ -79,7 +79,7 @@ def main() -> None:
     mem = call("/v1/memories", method="GET")
     c = mem["counts"]
     print(f"\nloaded: {convos} conversations + {facts} facts -> "
-          f"{c['facts_live']} live facts / {c['episodes']} episodes / {c['summaries']} summaries")
+          f"{c['facts_live']} live facts / {c['episodes']} episodes / {c['digests']} digests")
 
     for q in args.probe:
         r = call("/v1/recall", {"query": q, "n_chunks": 4})

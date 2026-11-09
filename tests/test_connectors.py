@@ -120,7 +120,7 @@ def test_timestamped_records_preserve_message_times_on_import():
         {"session_id": "career", "content": "Wei works at Tencent.", "event_time": 1_700_000_000.0},
         {"session_id": "career", "content": "Wei works at Moonshot AI.", "event_time": 1_700_086_400.0},
     ]
-    stats = mem.import_data(records, format="records", user_id="u", summarize=False)
+    stats = mem.import_data(records, format="records", user_id="u", generate_digests=False)
 
     assert stats["sessions"] == 1 and stats["episodes"] == 2
     chain = mem.history("Wei", "works_at", user_id="u")
@@ -138,7 +138,7 @@ def test_import_messages_dict_sessions_coerce_iso_timestamps():
             "content": "Wei works at Tencent.",
             "event_time": "2023-11-14T00:00:00Z",
         }],
-    }], user_id="u", summarize=False)
+    }], user_id="u", generate_digests=False)
 
     assert stats["episodes"] == 1 and stats["facts_added"] == 1
     fact = next(iter(mem.fact_store.values()))
@@ -155,7 +155,7 @@ def test_import_messages_dict_sessions_preserve_message_times():
             {"role": "user", "content": "Wei works at Tencent.", "event_time": 1_700_000_000.0},
             {"role": "user", "content": "Wei works at Moonshot AI.", "event_time": 1_702_592_000.0},
         ],
-    }], user_id="u", summarize=False)
+    }], user_id="u", generate_digests=False)
 
     assert stats["sessions"] == 1 and stats["episodes"] == 2
     chain = mem.history("Wei", "works_at", user_id="u")

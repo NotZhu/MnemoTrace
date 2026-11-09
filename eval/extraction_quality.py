@@ -13,8 +13,8 @@ SUITE = Path(__file__).with_name('fixtures') / 'extraction_quality.json'
 
 def load_suite(path=SUITE):
     data = json.loads(Path(path).read_text(encoding='utf-8'))
-    # Revision 1 remains readable so its immutable measured evidence can be rescored.
-    if data.get('version') not in {1, 2} or not isinstance(data.get('cases'), list):
+    # Historical suites remain readable for fact-only scoring.
+    if data.get('version') not in {1, 2, 3} or not isinstance(data.get('cases'), list):
         raise ValueError('Invalid extraction suite')
     ids = set()
     for case in data['cases']:
@@ -25,7 +25,7 @@ def load_suite(path=SUITE):
         events = {e['id'] for e in case['events']}
         if len(events) != len(case['events']):
             raise ValueError('Duplicate event')
-        for group in ('facts', 'working'):
+        for group in ('facts',):
             for item in case[group]:
                 if not item['sources'] or any(not set(s) <= events for s in item['sources']):
                     raise ValueError('Invalid gold sources')
@@ -128,18 +128,6 @@ def score_case(case, result, *, raw=False):
         details.append(detail)
     matched_p = {p for p, _ in pairs}
     matched_g = {g for _, g in pairs}
-    working = result.get('working', [])
-    def accepts_work(row, g):
-        event = events[g['at']]
-        return (row.get('user', 'u') == event['user'] and row.get('session', 's') == event['session']
-                and normalize(row['content']) in {normalize(c) for c in g['contents']})
-    wpairs = _matching(working, case['working'], accepts_work)
-    wd = []
-    for p, g in wpairs:
-        row, expected = working[p], case['working'][g]
-        wd.append(dict(predicted=p, gold=expected['id'], kind_ok=row.get('kind') in expected['kinds'],
-                       time_ok=row.get('event_time') == events[expected['at']]['at'],
-                       **_sources(row.get('sources', []), expected['sources'])))
     identity_ok = all(result.get('identity', {}).get(user) in names
                       for user, names in case.get('identity', {}).items()) if not raw else True
     unexpected = [p for p in range(len(facts)) if p not in matched_p]
@@ -147,21 +135,16 @@ def score_case(case, result, *, raw=False):
         _triple(dict(zip(('subject', 'predicate', 'object'), t)), aliases)
         for t in g.get('weaker_variants', [])} for g in gold)]
     counts = dict(fact_tp=len(pairs), fact_predicted=len(facts), fact_expected=0 if raw else len(gold),
-                  working_tp=len(wpairs), working_predicted=len(working), working_expected=0 if raw else len(case['working']),
-                  source_tp=sum(d['source_tp'] for d in (*details, *wd)),
-                  source_predicted=sum(d['source_predicted'] for d in (*details, *wd)),
-                  source_expected=sum(d['source_expected'] for d in (*details, *wd)),
+                  source_tp=sum(d['source_tp'] for d in details),
+                  source_predicted=sum(d['source_predicted'] for d in details),
+                  source_expected=sum(d['source_expected'] for d in details),
                   joint_correct=sum(d['source_exact'] and d['time_ok'] and d['history_ok'] and d['evidence_ok']
-                                    for d in details),
-                  working_joint_correct=sum(d['source_exact'] and d['kind_ok'] and d['time_ok'] for d in wd))
+                                    for d in details))
     ok = (not unexpected and (raw or len(matched_g) == len(gold)) and identity_ok
-          and all(d['source_exact'] and d['time_ok'] and d['history_ok'] and d['evidence_ok'] for d in details)
-          and len(wpairs) == len(working) and (raw or len(wpairs) == len(case['working']))
-          and all(d['source_exact'] and d['kind_ok'] and d['time_ok'] for d in wd))
-    return dict(ok=bool(ok), counts=counts, facts=details, working=wd, identity_ok=identity_ok,
+          and all(d['source_exact'] and d['time_ok'] and d['history_ok'] and d['evidence_ok'] for d in details))
+    return dict(ok=bool(ok), counts=counts, facts=details, identity_ok=identity_ok,
                 omitted=[] if raw else [g['id'] for i, g in enumerate(gold) if i not in matched_g],
-                unexpected=unexpected, specificity_loss=weaker,
-                unreviewed_working=[i for i in range(len(working)) if i not in {p for p, _ in wpairs}])
+                unexpected=unexpected, specificity_loss=weaker)
 
 
 def aggregate(rows):
@@ -174,10 +157,7 @@ def aggregate(rows):
                 failures=sum(row['status'] != 'completed' for row in rows), counts=dict(counts),
                 fact_precision=ratio('fact_tp', 'fact_predicted'), fact_recall=ratio('fact_tp', 'fact_expected'),
                 source_precision=ratio('source_tp', 'source_predicted'), source_recall=ratio('source_tp', 'source_expected'),
-                joint_recall=ratio('joint_correct', 'fact_expected'),
-                working_precision=ratio('working_tp', 'working_predicted'),
-                working_recall=ratio('working_tp', 'working_expected'),
-                working_joint_recall=ratio('working_joint_correct', 'working_expected'))
+                joint_recall=ratio('joint_correct', 'fact_expected'))
 
 
 def validate_rows(rows, expected_keys, fingerprint):

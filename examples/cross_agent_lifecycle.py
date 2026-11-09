@@ -17,8 +17,8 @@
 本示例展示 agent 客户端应遵循的产品闭环：
   1. agent_status: 不含内容的状态/接线检查
   2. recall: 开始工作前拉取相关的用户/项目记忆
-  3. remember: 保存持久的 fact/决策与短期的 working 状态
-  4. 整理当前会话的核心处理并保留 working 状态
+  3. remember: 保存可跨会话复用的事实与决策
+  4. 整理当前会话的核心处理
   5. session_report: 审计本次会话保存了什么
 """
 from __future__ import annotations
@@ -44,9 +44,6 @@ DURABLE_MEMORIES = [
     "Project rule: benchmark claims require committed raw logs before public copy changes.",
     "Project preference: keep MnemoTrace memory integrations automatic; users should not manually decide every remember call.",
 ]
-WORKING_MEMORY = (
-    "Current task state: testing the Codex adapter lifecycle; verify the session report before final reply."
-)
 VERIFY_QUERY = "What project rule should I follow for benchmark claims?"
 VERIFY_PHRASE = "committed raw logs"
 
@@ -114,20 +111,18 @@ def exercise_lifecycle(
     output(
         "agent_status: "
         f"user={status_before.get('user')} "
-        f"episodes={session_before.get('episodes', 0)} "
-        f"working_live={session_before.get('working_live', 0)}"
+        f"episodes={session_before.get('episodes', 0)}"
     )
 
     output("\n== 2. Recall before work ==")
     recalled_before = call("/v1/recall", {
         "query": f"Current rules and preferences for project {project}",
-        "session_id": session_id,
         "n_chunks": 3,
     }, "POST")
     context_before = (recalled_before.get("context") or "").strip()
     output(context_before[:600] if context_before else "(no relevant memory yet)")
 
-    output("\n== 3. Remember durable memory and working state ==")
+    output("\n== 3. Remember facts and decisions ==")
     remembered: list[dict] = []
     for text in DURABLE_MEMORIES:
         out = call("/v1/remember", {
@@ -138,17 +133,10 @@ def exercise_lifecycle(
         remembered.append(out)
         output(f"- long ({out.get('extracted', 0)} extracted): {text}")
 
-    working = call("/v1/remember", {
-        "content": WORKING_MEMORY,
-        "session_id": session_id,
-        "scope": "working",
-    }, "POST")
-    output(f"- working ({working.get('kind', 'state')}): {WORKING_MEMORY}")
 
     output("\n== 4. Recall the saved durable memory ==")
     recalled_after = call("/v1/recall", {
         "query": VERIFY_QUERY,
-        "session_id": session_id,
         "n_chunks": 3,
     }, "POST")
     context_after = (recalled_after.get("context") or "").strip()
@@ -158,8 +146,7 @@ def exercise_lifecycle(
     session_after_write = status_after_write.get("session") or {}
     output(
         "agent_status_after_write: "
-        f"episodes={session_after_write.get('episodes', 0)} "
-        f"working_live={session_after_write.get('working_live', 0)}"
+        f"episodes={session_after_write.get('episodes', 0)}"
     )
 
     flushed = None
@@ -167,7 +154,7 @@ def exercise_lifecycle(
         output("\n== 5. Flush processing for the agent session ==")
         flushed = call("/v1/processing/flush", {
             "session_id": session_id,
-            "include_summaries": True,
+            "include_digests": True,
         }, "POST")
         output(json.dumps(flushed, ensure_ascii=False, indent=2))
 
@@ -196,7 +183,6 @@ def exercise_lifecycle(
         "recalled_before": recalled_before,
         "context_before": context_before,
         "remembered": remembered,
-        "working": working,
         "recalled_after": recalled_after,
         "context_after": context_after,
         "status_after_write": status_after_write,

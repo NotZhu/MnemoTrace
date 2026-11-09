@@ -41,7 +41,7 @@ def test_cli_remote_extraction_error_preserves_retry_details(monkeypatch, capsys
     from mnemotrace.connectors import __main__ as cli
     error = ExtractionError(stored_raw=True, episode_ids=["synthetic-episode"])
 
-    def remote(url, key, space_id, sessions, consolidate, summarize, agent_id):
+    def remote(url, key, space_id, sessions, consolidate, generate_digests, agent_id):
         assert space_id == "synthetic-space"
         raise urllib.error.HTTPError(url, 502, "failed", {}, io.BytesIO(
             json.dumps({"detail": error.detail()}).encode()))
@@ -58,10 +58,10 @@ def test_cli_remote_extraction_error_preserves_retry_details(monkeypatch, capsys
 def test_cli_and_service_share_scope_and_dedupe_after_restart(direct_cli, product_service, product_scope,
                                                          monkeypatch, capsys):
     context, args = direct_cli
-    invoke(monkeypatch, [*args, "--no-consolidate", "--no-summarize", "--agent-id", "synthetic-cli"])
+    invoke(monkeypatch, [*args, "--no-consolidate", "--no-generate-digests", "--agent-id", "synthetic-cli"])
     first = json.loads(capsys.readouterr().out)
     assert first["episodes"] == 1
-    invoke(monkeypatch, [*args, "--no-consolidate", "--no-summarize", "--agent-id", "synthetic-cli"])
+    invoke(monkeypatch, [*args, "--no-consolidate", "--no-generate-digests", "--agent-id", "synthetic-cli"])
     replay = json.loads(capsys.readouterr().out)
     assert replay["episodes"] == 0 and replay["skipped"] == 1
     source, = replay["results"][0]["source_ids"]

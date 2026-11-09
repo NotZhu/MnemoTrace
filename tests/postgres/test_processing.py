@@ -45,11 +45,11 @@ def processing(runtime, spaces, user):
             calls.append(data)
             if handle:
                 return json.dumps(handle(data))
-            if data['operation'] == 'summary':
-                return json.dumps({'summaries': [{'source_id': data['pending'][0]['id'], 'text': 'Recorded preference'}]})
+            if data['operation'] == 'digest':
+                return json.dumps({'digests': [{'source_id': data['pending'][0]['id'], 'text': 'Recorded preference'}]})
             facts = [dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='Synthetic person', predicate='likes', object='tea', text='Synthetic person likes tea',
                           source_ids=[item['id']]) for item in data['pending'] if item['role'] != 'assistant']
-            return json.dumps(dict(facts=facts, working=[], summaries=[]))
+            return json.dumps(dict(facts=facts, digests=[]))
 
         memory = Memory(database, context, llm=FakeLLM(handler=respond), config=config,
                                 embedder=embedder, embedding_model='fixture' if embedder else None)
@@ -82,7 +82,6 @@ def test_assistant_evidence_stays_in_session_until_user_confirmation(processing)
     assert 'role=assistant' in context and PROPOSAL in context
     with memory.dao.read_snapshot() as view:
         assert [record.ref.record_id for record in view.profile_facts({'user'})] == [old.id]
-    assert [item.content for item in memory.working_memory()] == ['Prepare my release checklist.']
 
     confirmation = send('confirmation', 'user', 'Yes, use that by default.', 300)
     new, = memory.facts()
@@ -168,11 +167,8 @@ def test_leases_order_sessions_and_fence_old_executors(processing, cluster):
         assert replacement.token != lease.token
         with pytest.raises(VersionConflict):
             memory._processing.tasks.renew(lease)
-        other.clear_working('chat')
-        assert other.operation(first).state.value == 'cancelled'
+        other._processing.tasks.renew(replacement)
         assert other.operation(parallel).state.value == 'running'
-        with pytest.raises(VersionConflict):
-            other._processing.tasks.renew(replacement)
 
 
 def test_discovery_credentials_only_and_worker_runs_both_stages(processing, cluster, runtime):
@@ -193,8 +189,8 @@ def test_discovery_credentials_only_and_worker_runs_both_stages(processing, clus
     assert memory.operation(operation_id).core_committed
 
 
-def test_segmented_document_keeps_operation_id_and_summary_is_independent(processing):
-    config = Config(extraction_max_input_bytes=7000, summary_min_chars=300, summary_max_chars=100)
+def test_segmented_document_keeps_operation_id_and_digest_is_independent(processing):
+    config = Config(extraction_max_input_bytes=7000, digest_min_chars=300, digest_max_chars=100)
     memory, calls = processing(config=config)
     text = 'Synthetic document with preference details. ' * 300
     accepted = memory.remember(text, 'docs', source_kind='document', processing='buffered')
@@ -204,12 +200,12 @@ def test_segmented_document_keeps_operation_id_and_summary_is_independent(proces
     assert memory._processing.run_one(operation_id)
     assert not memory.operation(operation_id).core_committed
     assert memory.get_episode(source_id).coverage['partial']
-    result = memory.flush_processing('docs', include_summaries=True, timeout=15)
+    result = memory.flush_processing('docs', include_digests=True, timeout=15)
     assert result['ok'], result
     assert memory.operation(operation_id).core_committed
     episode = memory.get_episode(source_id)
     assert episode.coverage['ranges'] == [[0, len(text)]]
-    assert episode.summary_coverage['ranges'] == [[0, len(text)]]
+    assert episode.digest_coverage['ranges'] == [[0, len(text)]]
     extracts = [call['pending'][0]['ranges'][0] for call in calls if call['operation'] == 'extract']
     assert len(extracts) > 1 and all(a[1] == b[0] for a, b in zip(extracts, extracts[1:]))
 
@@ -220,7 +216,7 @@ def test_timeout_and_clear_space_while_model_runs(processing):
     def block(_):
         entered.set()
         assert release.wait(10)
-        return dict(facts=[], working=[], summaries=[])
+        return dict(facts=[], digests=[])
 
     memory, _ = processing(handle=block)
     try:
@@ -316,7 +312,7 @@ def test_semantic_reconciliation_and_manual_authority(processing):
         fact = dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='Synthetic person', predicate=predicate, object=value,
                     text=f'Synthetic person {predicate} {value}',
                     source_ids=[item['id']])
-        return dict(facts=[fact], working=[], summaries=[])
+        return dict(facts=[fact], digests=[])
 
     from tests.test_fact_adjudication import decisions
     memory, _ = processing(embedder=SemanticEmbedder(), handle=extract, adjudicate=decisions)
@@ -338,25 +334,25 @@ def test_semantic_reconciliation_and_manual_authority(processing):
     assert conflict.older == pinned.id and conflict.text_newer.endswith('Shenzhen')
 
 
-def test_rejected_source_erasure_preserves_summary_and_its_context(processing):
+def test_rejected_source_erasure_preserves_digest_and_its_context(processing):
     def extract(data):
-        if data['operation'] == 'summary':
-            return dict(summaries=[dict(source_id=data['pending'][0]['id'], text='Rebuilt detail')])
-        return dict(facts=[], working=[], summaries=[
+        if data['operation'] == 'digest':
+            return dict(digests=[dict(source_id=data['pending'][0]['id'], text='Rebuilt detail')])
+        return dict(facts=[], digests=[
             dict(source_id=item['id'], text='Recorded detail')
-            for item in data['pending'] if item['needs_summary']
+            for item in data['pending'] if item['needs_digest']
         ])
 
-    memory, calls = processing(config=Config(summary_min_chars=35, summary_max_chars=20), handle=extract)
+    memory, calls = processing(config=Config(digest_min_chars=35, digest_max_chars=20), handle=extract)
     first = memory.remember_messages('chat', (dialogue('context', 'Short background'),), processing='immediate')
     second = memory.remember_messages('chat', (dialogue('target', 'A long synthetic record with details'),),
                                       processing='immediate')
     prior, = first['source_ids']
     target, = second['source_ids']
     assert calls[-1]['context'][0]['id'] == prior
-    assert memory.flush_processing('chat', include_summaries=True)['ok']
+    assert memory.flush_processing('chat', include_digests=True)['ok']
     assert len(calls) == 2
-    assert memory.get_episode(target).summary == 'Recorded detail'
+    assert memory.get_episode(target).digest == 'Recorded detail'
 
     def lexical_fields():
         with memory.dao._transaction(read_only=True) as sql:
@@ -364,61 +360,60 @@ def test_rejected_source_erasure_preserves_summary_and_its_context(processing):
                 JOIN mnemotrace.lexical_terms t ON (t.user_id,t.space_id,t.document_id) = (d.user_id,d.space_id,d.id)
                 WHERE d.user_id = %s AND d.space_id = %s AND d.source_id = %s""", (*sql.scope, target))}
 
-    assert lexical_fields() == {'text', 'summary'}
+    assert lexical_fields() == {'text', 'digest'}
     with pytest.raises(ValueError, match='only supports'):
         memory.erase(RecordRef(memory.context, RecordKind.SOURCE, prior))
     assert memory.get_episode(prior) is not None
-    assert memory.get_episode(target).summary == 'Recorded detail'
-    assert lexical_fields() == {'text', 'summary'}
+    assert memory.get_episode(target).digest == 'Recorded detail'
+    assert lexical_fields() == {'text', 'digest'}
     replay = memory.remember_messages('chat', (dialogue('target', 'A long synthetic record with details'),))
     assert replay['operation_ids'] == second['operation_ids']
 
 
-
-def test_summary_requires_one_source_and_rejects_old_multi_source_tasks(processing):
+def test_digest_requires_one_source_and_rejects_old_multi_source_tasks(processing):
     memory, calls = processing()
     first = memory.remember_raw('First synthetic source', 'chat')
     second = memory.remember_raw('Second synthetic source', 'chat')
     sources = (SourceVersion(first.id, 1), SourceVersion(second.id, 1))
     with pytest.raises(ValueError, match='exactly one source'):
-        OperationSpec('multi-summary', OperationKind.SUMMARY, 'chat', sources)
+        OperationSpec('multi-digest', OperationKind.DIGEST, 'chat', sources)
     with memory.dao.read_snapshot('chat') as view:
         conditions = CommitConditions(view.snapshot)
-    summary = OperationSpec('old-summary', OperationKind.SUMMARY, 'chat', sources[:1])
-    memory.dao.commit(ChangeSet(conditions, 'enqueue-old-summary', operations=(summary,)))
+    digest = OperationSpec('old-digest', OperationKind.DIGEST, 'chat', sources[:1])
+    memory.dao.commit(ChangeSet(conditions, 'enqueue-old-digest', operations=(digest,)))
     with memory.dao._transaction() as sql:
-        sql.insert('operation_sources', dict(operation_id=summary.operation_id, source_id=second.id,
+        sql.insert('operation_sources', dict(operation_id=digest.operation_id, source_id=second.id,
                    content_version=1, input_start=0, input_end=len(second.content), input_order=1))
-    assert memory._processing.run_one(summary.operation_id)
-    status = memory.operation(summary.operation_id)
+    assert memory._processing.run_one(digest.operation_id)
+    status = memory.operation(digest.operation_id)
     assert status.state.value == 'failed'
     assert status.error_code == 'data_corruption'
     assert calls == []
 
 
-def test_policy_change_reextracts_and_summary_failure_preserves_core(processing):
+def test_policy_change_reextracts_and_digest_failure_preserves_core(processing):
     def extract(data):
-        if data['operation'] == 'summary':
-            return dict(summaries=[])
-        return dict(facts=[], working=[], summaries=[])
+        if data['operation'] == 'digest':
+            return dict(digests=[])
+        return dict(facts=[], digests=[])
 
-    memory, calls = processing(config=Config(summary_min_chars=35, summary_max_chars=20), handle=extract)
+    memory, calls = processing(config=Config(digest_min_chars=35, digest_max_chars=20), handle=extract)
     accepted = memory.remember_messages('chat', (dialogue('one', 'A long synthetic record with details'),))
     operation_id, = accepted['operation_ids']
     assert memory._processing.run_one(operation_id, force=True)
     memory.set_settings(extract_instruction='Changed synthetic extraction rule')
     assert memory.flush_processing('chat')['ok']
     assert len(calls) == 2
-    summary_id, = memory.operation(operation_id).auxiliary_operation_ids
-    assert memory._processing.run_one(summary_id)
-    assert memory.operation(summary_id).error_code == 'extraction_invalid_response'
+    digest_id, = memory.operation(operation_id).auxiliary_operation_ids
+    assert memory._processing.run_one(digest_id)
+    assert memory.operation(digest_id).error_code == 'extraction_invalid_response'
     assert memory.operation(operation_id).core_committed
 
 
 def test_operation_page_batches_auxiliary_lookups(processing, monkeypatch):
     from mnemotrace.store.postgres.records import ScopedSQL
 
-    memory, _ = processing(config=Config(summary_min_chars=35, summary_max_chars=20))
+    memory, _ = processing(config=Config(digest_min_chars=35, digest_max_chars=20))
     expected = {}
     for session in ('first', 'second'):
         result = memory.remember_messages(session, (dialogue('one', 'A long synthetic record with details'),))
@@ -474,45 +469,45 @@ def test_dao_enqueued_extract_is_discoverable_before_later_session_work(processi
 
 
 @pytest.mark.parametrize('config_change', ['length', 'policy'])
-def test_summary_draft_regenerated_after_configuration_change(processing, config_change):
+def test_digest_draft_regenerated_after_configuration_change(processing, config_change):
     def draft(data):
-        return dict(facts=[], working=[], summaries=[
+        return dict(facts=[], digests=[
             dict(source_id=data['pending'][0]['id'], text='d' * 60)])
 
-    config = Config(summary_min_chars=90, summary_max_chars=80)
+    config = Config(digest_min_chars=90, digest_max_chars=80)
     memory, _ = processing(config=config, handle=draft)
-    result = memory.remember_messages('chat', (dialogue('draft', 'Synthetic summary material. ' * 8),),
+    result = memory.remember_messages('chat', (dialogue('draft', 'Synthetic digest material. ' * 8),),
                                       processing='immediate')
     assert result['ok']
     source_id, = result['source_ids']
     if config_change == 'length':
-        config = Config(summary_min_chars=90, summary_max_chars=40)
+        config = Config(digest_min_chars=90, digest_max_chars=40)
     else:
-        memory.set_settings(summary_system='Synthetic new summary policy')
+        memory.set_settings(digest_system='Synthetic new digest policy')
     restarted, calls = processing(config=config)
-    assert restarted.flush_processing('chat', include_summaries=True, timeout=3)['ok']
-    assert [call['operation'] for call in calls] == ['summary']
-    assert restarted.get_episode(source_id).summary == 'Recorded preference'
+    assert restarted.flush_processing('chat', include_digests=True, timeout=3)['ok']
+    assert [call['operation'] for call in calls] == ['digest']
+    assert restarted.get_episode(source_id).digest == 'Recorded preference'
 
 
-def test_summary_policy_change_can_recommit_the_same_fragment_range(processing):
-    config = Config(extraction_max_input_bytes=7000, summary_min_chars=300, summary_max_chars=100)
+def test_digest_policy_change_can_recommit_the_same_fragment_range(processing):
+    config = Config(extraction_max_input_bytes=7000, digest_min_chars=300, digest_max_chars=100)
     memory, old_calls = processing(config=config)
-    memory.set_settings(summary_system='Original policy')
-    result = memory.remember('Synthetic summary material. ' * 450, 'notes')
+    memory.set_settings(digest_system='Original policy')
+    result = memory.remember('Synthetic digest material. ' * 450, 'notes')
     assert result['ok']
     operation_id, = result['operation_ids']
-    summary_id, = memory.operation(operation_id).auxiliary_operation_ids
-    assert memory._processing.run_one(summary_id)
-    assert memory._processing.run_one(summary_id)
-    assert not memory.operation(summary_id).core_committed
+    digest_id, = memory.operation(operation_id).auxiliary_operation_ids
+    assert memory._processing.run_one(digest_id)
+    assert memory._processing.run_one(digest_id)
+    assert not memory.operation(digest_id).core_committed
     old_range = old_calls[-1]['pending'][0]['ranges']
 
-    memory.set_settings(summary_system='Adjusted policy')
+    memory.set_settings(digest_system='Adjusted policy')
     restarted, calls = processing(config=config)
-    assert restarted.flush_processing('notes', include_summaries=True, timeout=5)['ok']
+    assert restarted.flush_processing('notes', include_digests=True, timeout=5)['ok']
     assert calls[0]['pending'][0]['ranges'] == old_range
-    assert restarted.operation(summary_id).core_committed
+    assert restarted.operation(digest_id).core_committed
 
 
 @pytest.mark.parametrize('erase_early_fact', [False, True])
@@ -520,14 +515,13 @@ def test_final_receipt_includes_surviving_outputs_from_earlier_segments(processi
     def extract(data):
         item, = data['pending']
         if item['ranges'][0][0]:
-            return dict(facts=[], working=[], summaries=[])
+            return dict(facts=[], digests=[])
         facts = [dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='Synthetic person', predicate='likes', object=value,
                       text=f'Synthetic person likes {value}', source_ids=[item['id']])
                  for value in ('tea', 'coffee')]
-        working = [dict(content='Synthetic task', kind='task', source_ids=[item['id']])]
-        return dict(facts=facts, working=working, summaries=[])
+        return dict(facts=facts, digests=[])
 
-    config = Config(extraction_max_input_bytes=7000, summary_min_chars=100000)
+    config = Config(extraction_max_input_bytes=7000, digest_min_chars=100000)
     memory, _ = processing(config=config, handle=extract)
     accepted = memory.remember('Synthetic source material. ' * 450, 'notes', processing='buffered')
     operation_id, = accepted['operation_ids']
@@ -536,11 +530,9 @@ def test_final_receipt_includes_surviving_outputs_from_earlier_segments(processi
     assert not memory.operation(operation_id).core_committed
     assert memory.dao.receipt(operation_id) is None
     early_facts = {fact.id for fact in memory.facts()}
-    early_working = {item.id for item in memory.working_memory()}
-    assert len(early_facts) == 2 and len(early_working) == 1
+    assert len(early_facts) == 2
     if erase_early_fact:
         memory.erase(RecordRef(memory.context, RecordKind.FACT, early_facts.pop()))
     assert memory.flush_processing('notes', timeout=5)['ok']
     receipt = memory.dao.receipt(operation_id)
     assert set(receipt.fact_ids) == early_facts
-    assert set(receipt.working_ids) == early_working

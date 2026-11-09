@@ -67,7 +67,7 @@ All methods return promises. Pass `{ spaceId }` to single-space methods. For mul
 | `search(query, options)` | asOf, redactSensitive; SearchResult via lean=false |
 | `listSpaces(options?)` / `createSpace(name)` | list or create spaces owned by the authenticated account |
 | `getOperation(id, options)` / `retryOperation(id, options)` | query or retry a stable operation ID |
-| `flushProcessing(options)` | wait for core processing, with optional sessionId and includeSummaries |
+| `flushProcessing(options)` | wait for core processing, with optional sessionId and includeDigests |
 | `sessionReport(sessionId, options)` | includeSensitive=false, limit=100, offset=0. Use facts_page.next_offset for subsequent pages |
 | `sessions(options)` | limit, offset, query; SessionIndex |
 | `memories(options)` | pagination and filters described below; MemoryDump |
@@ -78,7 +78,7 @@ All methods return promises. Pass `{ spaceId }` to single-space methods. For mul
 | `updateFact(id, patch, options)` | FactPatch, including topic/reset_topic; id, text and topic metadata |
 | `deleteFact(id, options)` | deletion result; inspect ok |
 | `getFocus(options)` / `setFocus(partial, options)` | track/mute lists |
-| `getPolicy(options)` / `setPolicy(partial, options)` | extraction, summary and persona overrides |
+| `getPolicy(options)` / `setPolicy(partial, options)` | extraction, digest and persona overrides |
 | `graph(options)` | asOf, includeSensitive=false; GraphResponse（nodes、edges、has_more） |
 | `import(params, options)` | ImportParams sent as the HTTP import payload; ImportResult |
 | `export(options)` | includeSensitive=false; MemoryExport by default |
@@ -91,7 +91,7 @@ The optional topic is an exact stored-topic filter, applied before paging; `'unk
 
 For consistent pagination, carry the response's data_revision and evaluated_at into expectedRevision/evaluatedAt on the next request. On a 409 revision change, start again from the first page.
 
-Use the HTTP API directly for category filtering, document uploads, structured profiles, standalone working memory, conflict resolution, and slot clearing.
+Use the HTTP API directly for category filtering, document uploads, structured profiles, conflict resolution, and slot clearing.
 
 ## Types and errors
 
@@ -126,4 +126,4 @@ Source: [NotZhu/MnemoTrace](https://github.com/NotZhu/MnemoTrace).
 License: [AGPL-3.0](https://github.com/NotZhu/MnemoTrace/blob/main/LICENSE); see [commercial terms](https://github.com/NotZhu/MnemoTrace/blob/main/COMMERCIAL-LICENSE.md).
 
 
-`getEpisode(episodeId, { spaceId })` reads the complete original event referenced by recall. Recall uses the event summary when available. `flushProcessing({ spaceId, includeSummaries: true })` also waits for eligible summaries. Inspect the core operation's `auxiliary_operation_ids` to look up individual summary results.
+`getEpisode(episodeId, { spaceId })` reads the complete original event referenced by recall. Recall uses the event digest when available. `flushProcessing({ spaceId, includeDigests: true })` also waits for eligible digests. Inspect the core operation's `auxiliary_operation_ids` to look up individual digest results.

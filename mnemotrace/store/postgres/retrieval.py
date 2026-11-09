@@ -6,7 +6,7 @@ from ...util import recency, time_key
 from ..contracts import Candidate, CandidateBatch
 from .graph_reads import RetrievalGraph
 from .lexical import ANALYZER
-from .records import FACT, ROW_SCOPE, SOURCE, TARGET_COLUMNS, domain, source_summary_join, timestamp
+from .records import FACT, ROW_SCOPE, SOURCE, TARGET_COLUMNS, domain, source_digest_join, timestamp
 
 _TRACK_BOOST = 0.5
 
@@ -31,7 +31,7 @@ class Corpus:
                 'text' AS field,r.content_version AS text_version,r.valid_at,{salience} AS salience
                 FROM mnemotrace.facts r"""
         else:
-            conditions, params = ["r.scope <> 'working'"], []
+            conditions, params = [], []
             for column, value in (('event_time', facts.valid_at), ('ingested_at', facts.known_at)):
                 if value is not None:
                     conditions.append(f'r.{column} <= %s')
@@ -42,16 +42,16 @@ class Corpus:
             if end is not None:
                 conditions.append('r.event_time < %s')
                 params.append(timestamp(end))
-            joins, join_params = source_summary_join(facts.known_at)
+            joins, join_params = source_digest_join(facts.known_at)
             select = """SELECT r.user_id,r.space_id,r.id,r.content_version,r.session_id,
-                CASE WHEN s.summary <> '' THEN 'summary' ELSE 'text' END AS field,
-                CASE WHEN s.summary <> '' THEN s.summary_version ELSE r.content_version END AS text_version
+                CASE WHEN s.digest <> '' THEN 'digest' ELSE 'text' END AS field,
+                CASE WHEN s.digest <> '' THEN s.digest_version ELSE r.content_version END AS text_version
                 FROM mnemotrace.sources r""" + joins + ' AND s.content_version = r.content_version'
-            if source_field == 'summary':
-                conditions.append("s.summary <> ''")
+            if source_field == 'digest':
+                conditions.append("s.digest <> ''")
             elif source_field == 'text':
-                conditions.append("(s.summary IS NULL OR s.summary = '')")
-            view.exclude_muted(conditions, params, 'r.content', "coalesce(s.summary, '')")
+                conditions.append("(s.digest IS NULL OR s.digest = '')")
+            view.exclude_muted(conditions, params, 'r.content', "coalesce(s.digest, '')")
         self.source_field = source_field
         scoped = select + ' WHERE ' + ' AND '.join((ROW_SCOPE, *conditions))
         self.eligible = f'WITH eligible AS ({scoped})'
@@ -134,7 +134,7 @@ class Corpus:
     def _lexical(self):
         representations = 'SELECT x.field AS field, x.text_version AS version'
         if self.kind == SOURCE and self.source_field != 'text':
-            representations += " UNION ALL SELECT 'text', x.content_version WHERE x.field = 'summary'"
+            representations += " UNION ALL SELECT 'text', x.content_version WHERE x.field = 'digest'"
         statement = self.eligible + f""", documents AS MATERIALIZED (
             SELECT x.user_id,x.space_id,x.id,d.id AS document_id,d.document_length
             FROM eligible x CROSS JOIN LATERAL ({representations}) p
@@ -167,7 +167,7 @@ class Corpus:
         return tuple(flags)
 
     def _source_vector_limitations(self):
-        # Coverage is about original text even when the preferred evidence is a summary.
+        # Coverage is about original text even when the preferred evidence is a digest.
         rows = self.sql.run(self.eligible + """ SELECT DISTINCT
             CASE WHEN o.state = 'failed' THEN 'source_vectors_failed'
                  WHEN o.state IN ('pending','running','retry_wait') THEN 'source_vectors_processing'
@@ -182,7 +182,6 @@ class Corpus:
                     (x.user_id,x.space_id,x.id,x.content_version)
                 AND task.kind = 'reembed' AND task.embedding_model = %s AND task.embedding_dimension = %s
                 AND task.space_generation = s.space_generation
-                AND task.session_generation = session.session_generation
                 ORDER BY task.operation_id LIMIT 1
             ) o ON true
             WHERE NOT EXISTS (SELECT 1 FROM mnemotrace.embeddings e

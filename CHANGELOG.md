@@ -14,14 +14,18 @@ artifacts; storage schema compatibility is documented separately when it changes
 
 ### Changed
 
+- Removed independent working-memory storage and task-state APIs. Source summaries now use
+  `digest` / `digests` throughout Python, HTTP, MCP, SDK, configuration and storage. Recall no
+  longer accepts a session ID. This format requires a new database; old schemas and checkpoints
+  are rejected rather than converted. Agent task tools or files own temporary execution state.
 - Switched the HTTP service, MCP tools, SDK clients, CLI, and console to Postgres-backed memory.
   HTTP and remote MCP verify issued Bearer keys per request, and recall authorizes every requested space.
   Python integrations use `Memory(database, context)`. The offline entry is now `MemoryEngine()`.
   Deployment requires an initialized Postgres
   database and a runtime role connection.
 - Buffered ingestion acknowledges durable input and returns operation IDs. Immediate ingestion waits
-  for core processing. Auxiliary tasks have their own operation IDs. Session flush preserves working memory.
-- Explicit record erasure accepts facts and working memory. Space clearing, space deletion, and account
+  for core processing. Auxiliary tasks have their own operation IDs.
+- Explicit record erasure accepts facts. Space clearing, space deletion, and account
   deletion use their own operations.
 - Rebuilt documentation around quickstart, usage, integration, API references, architecture,
   deployment, and evaluation; consolidated overlapping architecture and frontend development pages.

@@ -110,7 +110,7 @@ DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读
 
 ## 窗口抽取预算
 
-对话联合输出使用 `joint_max_output_tokens`、`joint_core_output_tokens`、`joint_summary_output_tokens`，分别对应 `MNEMOTRACE_JOINT_MAX_OUTPUT_TOKENS`、`MNEMOTRACE_JOINT_CORE_OUTPUT_TOKENS`、`MNEMOTRACE_JOINT_SUMMARY_OUTPUT_TOKENS`。
+对话联合输出使用 `joint_max_output_tokens`、`joint_core_output_tokens`、`joint_digest_output_tokens`，分别对应 `MNEMOTRACE_JOINT_MAX_OUTPUT_TOKENS`、`MNEMOTRACE_JOINT_CORE_OUTPUT_TOKENS`、`MNEMOTRACE_JOINT_DIGEST_OUTPUT_TOKENS`。
 默认值维护在 [Config](../../mnemotrace/config.py)，只是工程起点。规划同时预留核心结果、逐条长消息摘要及格式开销，输出不足时缩小窗口，不复用独立摘要的输出上限。
 可用 `joint_context_tokens` / `MNEMOTRACE_JOINT_CONTEXT_TOKENS` 声明提供方总上下文限制；规划使用输入 UTF-8 字节作为保守 token 上界，同时预留完整联合输出上限。未声明时不声称已验证提供方上下文容量。截断响应整体失败。
 
@@ -126,14 +126,14 @@ DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读
 调小输入预算会拆成更多窗口；调大输出预算可能增加调用成本。更改配置会阻止旧结果回写；显式重试从已保存覆盖范围继续规划。
 原文需保持不变；修改原文后不能复用已有处理范围。
 
-## 条件事件摘要
+## 条件来源摘要
 
 | Config 字段 | 服务环境变量 | 含义 |
 | --- | --- | --- |
-| summary_min_chars | MNEMOTRACE_SUMMARY_MIN_CHARS | 原文达到此 Python 字符数才请求摘要 |
-| summary_max_chars | MNEMOTRACE_SUMMARY_MAX_CHARS | 成功摘要的字符上限，必须小于生成阈值 |
-| summary_max_input_bytes | MNEMOTRACE_SUMMARY_MAX_INPUT_BYTES | 系统和用户提示词合计 UTF-8 字节预算 |
-| summary_max_output_tokens | MNEMOTRACE_SUMMARY_MAX_OUTPUT_TOKENS | 每次摘要调用的输出 token 上限 |
+| digest_min_chars | MNEMOTRACE_DIGEST_MIN_CHARS | 原文达到此 Python 字符数才请求摘要 |
+| digest_max_chars | MNEMOTRACE_DIGEST_MAX_CHARS | 成功摘要的字符上限，必须小于生成阈值 |
+| digest_max_input_bytes | MNEMOTRACE_DIGEST_MAX_INPUT_BYTES | 系统和用户提示词合计 UTF-8 字节预算 |
+| digest_max_output_tokens | MNEMOTRACE_DIGEST_MAX_OUTPUT_TOKENS | 每次摘要调用的输出 token 上限 |
 
 四项均为正整数，精确默认值在 [Config](../../mnemotrace/config.py) 中维护。这些是工程初值，未完成真实模型质量或成本验收。
 超长事件按实际输入预算分段并保存中间进度，之后合并成一份事件摘要；中间结果不参与检索。
@@ -150,9 +150,7 @@ DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读
 | 时间与图 | recency_tau_days=45、max_hops=2 | 时近性先验和图遍历 |
 | 热层与拒答 | max_hot_facts=10000、abstain_threshold=0.45 | 工作集容量和低证据回退 |
 | 整合 | salience_decay_per_day=0.02、access_boost=0.5 | 显著度更新 |
-| 工作记忆 | working_memory_ttl_seconds=86400 | 自动抽取工作记忆的墙钟存活秒数；到点由清扫移除，None 表示仅随会话清除（仅 Python Config 可设，无对应服务环境变量） |
 | 冲突 | conflict_sim_threshold=0.80 | 使用语义向量召回同主体的跨槽位候选 |
-
 
 
 ## 服务环境变量

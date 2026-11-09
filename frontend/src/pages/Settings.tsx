@@ -54,7 +54,7 @@ export default function Settings() {
 
   const PROMPT_FIELDS: Array<{ key: keyof Policy; label: string; hint: string }> = [
     { key: 'extract_system', label: t.settings.promptExtractLabel, hint: t.settings.promptExtractHint },
-    { key: 'summary_system', label: t.settings.promptSummaryLabel, hint: t.settings.promptSummaryHint },
+    { key: 'digest_system', label: t.settings.promptDigestLabel, hint: t.settings.promptDigestHint },
     { key: 'persona_system', label: t.settings.promptPersonaLabel, hint: t.settings.promptPersonaHint },
   ]
 
@@ -68,7 +68,7 @@ export default function Settings() {
       setInstruction(data.policy.extract_instruction || '')
       setPrompts({
         extract_system: data.policy.extract_system || data.defaults.extract_system,
-        summary_system: data.policy.summary_system || data.defaults.summary_system,
+        digest_system: data.policy.digest_system || data.defaults.digest_system,
         persona_system: data.policy.persona_system || data.defaults.persona_system,
       })
     }
@@ -82,7 +82,7 @@ export default function Settings() {
     const patch: Partial<Policy> = {
       extract_instruction: instruction,
       extract_system: isDefault('extract_system') ? '' : prompts.extract_system,
-      summary_system: isDefault('summary_system') ? '' : prompts.summary_system,
+      digest_system: isDefault('digest_system') ? '' : prompts.digest_system,
       persona_system: isDefault('persona_system') ? '' : prompts.persona_system,
     }
     save.mutate(patch, {

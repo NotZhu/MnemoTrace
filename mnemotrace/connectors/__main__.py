@@ -20,13 +20,13 @@ def _read_input(path: str | None) -> str:
 
 
 def _post_remote(api_url: str, key: str, space_id: str, sessions: list,
-                 consolidate: bool, summarize: bool, agent_id: str | None) -> dict:
+                 consolidate: bool, generate_digests: bool, agent_id: str | None) -> dict:
     body = json.dumps({
         "space_id": space_id,
         "agent_id": agent_id,
         "sessions": [dataclasses.asdict(s) for s in sessions],
         "consolidate": consolidate,
-        "summarize": summarize,
+        "generate_digests": generate_digests,
     }).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if key:
@@ -42,7 +42,7 @@ def _import_local(args, sessions) -> dict:
 
     with local_space(args) as (service, context):
         return service.import_(context, sessions=sessions, consolidate=not args.no_consolidate,
-                               summarize=not args.no_summarize, agent_id=args.agent_id)
+                               generate_digests=not args.no_generate_digests, agent_id=args.agent_id)
 
 
 def main() -> None:
@@ -61,7 +61,7 @@ def main() -> None:
     ap.add_argument("--embedder", help="local mode: lexical (default), fastembed, or another configured embedder")
     ap.add_argument("--llm", help="local mode: LLM for fact extraction (e.g. deepseek); required unless --no-consolidate is used")
     ap.add_argument("--no-consolidate", action="store_true", help="skip fact extraction (raw episodes only)")
-    ap.add_argument("--no-summarize", action="store_true", help="skip L2 session summaries")
+    ap.add_argument("--no-generate-digests", action="store_true", help="skip L2 session digests")
     ap.add_argument("--dry-run", action="store_true", help="parse + report only; don't ingest")
     args = ap.parse_args()
 
@@ -92,7 +92,7 @@ def main() -> None:
                 ap.error('Remote identity is determined by the API key')
             key = resolve_key(key=args.key, key_file=args.key_file, required=True)
             stats = _post_remote(args.api_url, key, args.space_id, sessions,
-                                 not args.no_consolidate, not args.no_summarize, args.agent_id)
+                                 not args.no_consolidate, not args.no_generate_digests, args.agent_id)
         else:
             stats = _import_local(args, sessions)
     except ExtractionError as exc:

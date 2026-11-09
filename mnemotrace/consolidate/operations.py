@@ -13,7 +13,7 @@ def prepare(data, config, policy, compensation=False):
                   'Do not infer missing facts. Prefer coexists when unsure.')
         return json.dumps(data, ensure_ascii=False), system, config.joint_max_output_tokens
     system = system_prompt(policy, compensation=compensation, operation=operation)
-    return request(data, config), system, config.summary_max_output_tokens if operation == 'summary' else config.joint_max_output_tokens
+    return request(data, config), system, config.digest_max_output_tokens if operation == 'digest' else config.joint_max_output_tokens
 
 
 def decode(raw, data, config, compensation=False):
@@ -22,7 +22,7 @@ def decode(raw, data, config, compensation=False):
             obj = json.loads(raw)
             if not isinstance(obj, dict) or set(obj) != {'decisions'}:
                 raise ValueError()
-            result = dict(facts=[], working=[], summaries={}, decisions=obj['decisions'])
+            result = dict(facts=[], digests={}, decisions=obj['decisions'])
         except (ValueError, TypeError) as exc:
             raise ExtractionResponseError() from exc
     else:

@@ -36,7 +36,7 @@ class RecordedExtraction(LLM):
         return json.dumps({"facts": [
             {"category": "其他", "sensitive": False, "time_kind": "current", "effective_date": None,
              "cardinality": "multi", "retention": "unknown", "subject": "user", "predicate": "owns", "object": self.responses[s["content"]],
-             "text": s["content"], "source_ids": [s["id"]]} for s in data["pending"]], "working": [], "summaries": []})
+             "text": s["content"], "source_ids": [s["id"]]} for s in data["pending"]], "digests": []})
 
 
 class MeteredLLM(LLM):
@@ -151,7 +151,10 @@ def main() -> int:
             manifest = json.loads((args.report/'manifest.json').read_text(encoding='utf-8'))
             if manifest['kind'] == 'buffered_replay':
                 from buffered_replay_report import summarize as summarize_replay
-                report = summarize_replay(args.report)
+                try:
+                    report = summarize_replay(args.report)
+                except ValueError as exc:
+                    parser.error(str(exc))
                 print(json.dumps({k: v for k, v in report.items() if k != 'rows'}, ensure_ascii=False, indent=2))
                 return int(not report['execution_complete'])
             report = summarize(args.report)

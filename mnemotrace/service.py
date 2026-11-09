@@ -110,7 +110,7 @@ def _fact_view(fact, at, *, known_at=None):
 
 def _source_view(record):
     source = domain(record)
-    return dict(id=source.id, content=source.content, chars=len(source.content), summary=source.summary,
+    return dict(id=source.id, content=source.content, chars=len(source.content), digest=source.digest,
                 date=source.metadata.get('date') or fmt_date(source.event_time),
                 session=source.session_id, session_id=source.session_id, role=source.role, mode=source.mode,
                 message_id=source.message_id, sequence=source.sequence, event_time=source.event_time,
@@ -187,12 +187,12 @@ class MemoryService:
         return dict(operations=[operation.to_dict() for operation in operations],
                     next_after_id=operations[-1].operation_id if len(operations) == limit else None)
 
-    def flush(self, context, session_id=None, timeout=30, retry_failed=False, include_summaries=False):
+    def flush(self, context, session_id=None, timeout=30, retry_failed=False, include_digests=False):
         return operation_payload(self.memory(context).flush_processing(
-            session_id, timeout, retry_failed=retry_failed, include_summaries=include_summaries))
+            session_id, timeout, retry_failed=retry_failed, include_digests=include_digests))
 
     def import_(self, context, *, sessions=None, data=None, format='auto', consolidate=None,
-                summarize=True, dedupe=True, agent_id=None):
+                generate_digests=True, dedupe=True, agent_id=None):
         from .connectors import parse
         from .connectors.dialogue import batches
         from .consolidate.pipeline import MessageConflictError
@@ -217,10 +217,10 @@ class MemoryService:
                     result = operation_payload(memory.import_document(
                         document['content'], session_id, event_time=document['event_time'],
                         metadata=document['metadata'], agent_id=agent_id, extract=consolidate is not False,
-                        summarize=summarize, dedupe=dedupe,
+                        generate_digests=generate_digests, dedupe=dedupe,
                         processing='immediate' if consolidate is True else 'buffered'))
                 else:
-                    source_metadata = {'summary_requested': summarize}
+                    source_metadata = {'digest_requested': generate_digests}
                     metadata = source.get('metadata')
                     if isinstance(metadata, dict) and metadata.get('source') == 'agent_session':
                         source_metadata['source'] = 'agent_session'
@@ -268,7 +268,7 @@ class MemoryService:
         return dict(kind=kind, **self.import_(context, sessions=[source], agent_id=agent_id))
 
     @timed('recall')
-    def recall(self, context, query, lean=True, n_chunks=6, session_id=None, as_of=None,
+    def recall(self, context, query, lean=True, n_chunks=6, as_of=None,
                redact_sensitive=False, answer=False, state=FactState.CURRENT, valid_at=None, known_at=None):
         memory = self.memory(context)
         output = dict(space_id=context.space_id, as_of=as_of, redacted_sensitive=redact_sensitive)
@@ -277,7 +277,7 @@ class MemoryService:
             result = memory.search(query, facts=facts)
             return dict(**output, answer=result.answer(), facts=[fact.text for fact in result.facts],
                         limitations=result.limitations)
-        result = memory.lean_context(query, n_chunks=n_chunks, session_id=session_id,
+        result = memory.lean_context(query, n_chunks=n_chunks,
                                      facts=facts, reinforce_hits=True, include_full_tokens=answer)
         tokens = _est_tokens(result.context)
         output.update(context=result.context, tokens_est=tokens, limitations=result.limitations,
@@ -289,10 +289,10 @@ class MemoryService:
         self.metrics.tokens(tokens, output.get('full_tokens'))
         return output
 
-    def recall_multi(self, contexts, query, *, n_chunks=6, session_id=None, as_of=None, redact_sensitive=False,
+    def recall_multi(self, contexts, query, *, n_chunks=6, as_of=None, redact_sensitive=False,
                      state=FactState.CURRENT, valid_at=None, known_at=None):
         ids = [context.space_id for context in contexts]
-        result = self.memory(contexts[0]).recall_multi(ids, query, n_chunks=n_chunks, session_id=session_id,
+        result = self.memory(contexts[0]).recall_multi(ids, query, n_chunks=n_chunks,
                                                        facts=_recall_conditions(as_of, state, valid_at, known_at, redact_sensitive))
         return dict(context=result.context, tokens_est=_est_tokens(result.context), space_ids=ids,
                     as_of=as_of, redacted_sensitive=redact_sensitive, limitations=result.limitations,
@@ -367,18 +367,6 @@ class MemoryService:
         self.memory(context).set_settings(**{k: v for k, v in fields.items() if v is not None})
         return dict(ok=True, **self.get_policy(context))
 
-    def add_working(self, context, content, **fields):
-        item = self.memory(context).remember_working(content, **fields)
-        return dict(ok=True, id=item.id, kind=item.kind, session_id=item.session_id)
-
-    def working_memory(self, context, session_id=None):
-        rows = self.memory(context).working_memory(session_id=session_id)
-        return dict(items=[dict(id=w.id, content=w.content, kind=w.kind, session_id=w.session_id,
-                                created=fmt_date(w.created_at), expires_at=fmt_date(w.expires_at) if w.expires_at else None)
-                           for w in rows])
-
-    def clear_working(self, context, session_id):
-        return dict(ok=True, cleared=self.memory(context).clear_working(session_id))
 
     def conflicts(self, context):
         return dict(conflicts=[asdict(c) for c in self.memory(context).conflicts()])
@@ -424,7 +412,7 @@ class MemoryService:
                     row.pop(key, None)
                 row['text'] = row['display'] = '[redacted sensitive fact]'
         report = rows[0] if rows else dict(episodes=0, episodes_consolidated=0, episodes_pending=0,
-                                          extraction_failures=0, working_live=0)
+                                          extraction_failures=0, )
         redacted = 0 if include_sensitive else report.get('facts_sensitive', 0)
         page = _page(facts, total, offset, limit)
         return {**report, 'ok': True, 'space_id': context.space_id, 'session_id': session_id,
@@ -504,7 +492,7 @@ class MemoryService:
                     llm_configured=self.llm is not None, answerer_configured=self.answerer is not None)
 
     def agent_status(self, context, session_id=None):
-        session = dict(id=session_id, episodes=0, episodes_pending=0, extraction_failures=0, working_live=0)
+        session = dict(id=session_id, episodes=0, episodes_pending=0, extraction_failures=0, )
         if session_id is not None:
             with self.memory(context).dao.read_snapshot(session_id) as view:
                 rows, _ = view.session_index(session_id=session_id, limit=1)

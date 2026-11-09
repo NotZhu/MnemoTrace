@@ -45,7 +45,7 @@ FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
         "explicit_preference_extraction", "preference_object_filter",
         "preference_object_normalization", "preference_reversal_extraction",
     ),
-    "derived layers": ("summary_fallback", "procedural_extraction"),
+    "derived layers": ("digest_fallback", "procedural_extraction"),
 }
 ALL_FEATURES = tuple(f for group in FEATURE_GROUPS.values() for f in group)
 

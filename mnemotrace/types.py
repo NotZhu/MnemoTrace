@@ -30,8 +30,8 @@ class Episode:
     consolidated: bool = False
     # L2 抽象：该 episode/session 的紧凑摘要，整合时计算一次，读取时用它（而非完整原文）
     # 构建精简上下文——这是让一小片检索结果就能廉价覆盖大量 session 的扩展性基石（AGENTS.md Bet A/E）。
-    summary: str = ""
-    summary_embedding: Optional[list[float]] = None
+    digest: str = ""
+    digest_embedding: Optional[list[float]] = None
     id: str = field(default_factory=lambda: gen_id("ep"))
     metadata: dict = field(default_factory=dict)
     source_kind: str = "raw"
@@ -40,7 +40,7 @@ class Episode:
     sequence: Optional[int] = None
     mode: Optional[str] = None
     coverage: Optional[dict] = None
-    summary_coverage: Optional[dict] = None
+    digest_coverage: Optional[dict] = None
 
 
 Cardinality = Literal["single", "multi", "unknown"]
@@ -207,37 +207,6 @@ class Relation:
     invalid_at: Optional[float] = None
     # 边 id
     id: str = field(default_factory=lambda: gen_id("rel"))
-
-
-@dataclass
-class WorkingMemory:
-    """临时状态，可随快照持久化；会话清理、到期或消费后移除。
-
-    与查询时的 working_set 不同，工作记忆有独立生命周期，不作为长期事实保存。
-    """
-
-    content: str
-    user_id: str = "default"
-    session_id: str = "default"
-    # 模型抽取只输出 state/intent/task；显式写入也可用 schedule/note/passenger 等自定义类型。
-    kind: str = "state"
-    event_time: Optional[float] = field(default_factory=now)
-    created_at: float = field(default_factory=now)
-    expires_at: Optional[float] = None  # 硬性墙钟过期时间；None => 仅随 session 存活
-    consumed: bool = False  # 是否已被消费
-    embedding: Optional[list[float]] = None
-    id: str = field(default_factory=lambda: gen_id("wm"))
-    metadata: dict = field(default_factory=dict)
-
-    def is_live(self, as_of: Optional[float] = None, session_id: Optional[str] = None) -> bool:
-        t = now() if as_of is None else as_of
-        if self.consumed:
-            return False
-        if self.expires_at is not None and self.expires_at <= t:
-            return False
-        if session_id is not None and self.session_id != session_id:
-            return False
-        return True
 
 
 @dataclass

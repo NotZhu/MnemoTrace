@@ -4,7 +4,6 @@ CREATE TABLE mnemotrace.record_commit_receipts (
     operation_id mnemotrace.identifier NOT NULL,
     core_revision mnemotrace.counter NOT NULL,
     fact_ids text[] NOT NULL,
-    working_ids text[] NOT NULL,
     source_ids text[] NOT NULL,
     affected_count mnemotrace.counter NOT NULL,
     PRIMARY KEY (user_id, space_id, operation_id),
@@ -31,6 +30,5 @@ CREATE INDEX facts_slot_normalized ON mnemotrace.facts
     (user_id, space_id, coalesce(subject_key, lower(subject)), coalesce(predicate_key, lower(predicate)), id);
 ALTER TABLE mnemotrace.fact_sources ADD COLUMN source_order mnemotrace.counter;
 CREATE INDEX facts_predecessor ON mnemotrace.facts(user_id, space_id, supersedes);
-CREATE INDEX working_sources_source ON mnemotrace.working_sources(user_id, space_id, source_id);
 CREATE INDEX operation_sources_source ON mnemotrace.operation_sources(user_id, space_id, source_id);
 ALTER TABLE mnemotrace.entities ADD COLUMN authoritative boolean NOT NULL DEFAULT false;

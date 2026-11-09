@@ -1,5 +1,5 @@
 """Lean 读取路径（AGENTS.md Bet A/E）：可扩展的获胜条件 —— 从一小段检索结果（persona + facts +
-session summaries + 少量完整 chunk）作答，而不是重放全部历史。这些测试在离线环境下（MockEmbedder
+session digests + 少量完整 chunk）作答，而不是重放全部历史。这些测试在离线环境下（MockEmbedder
 + 规则 extractor，零依赖、确定性）固定框架行为：L2 摘要会被构建并索引，L3 persona 会被合成，
 lean_context 能正确组装它们，并做去重 + 硬性大小上限。"""
 from __future__ import annotations
@@ -21,43 +21,43 @@ SESSIONS = [
 ]
 
 
-def build(summarize=True) -> MemoryEngine:
+def build(generate_digests=True) -> MemoryEngine:
     mem = MemoryEngine()
     eps = [mem.add(text, user_id="u1", session_id=f"s{i}", event_time=BASE + day * DAY)
            for i, (text, day) in enumerate(SESSIONS)]
     for ep in eps:  # 离线打上日期戳，与 eval 的 ingest 流程保持一致
         ep.metadata["date"] = "2023-01-0%d" % (eps.index(ep) + 1)
     mem.consolidate(eps)
-    if summarize:
-        # Seed existing summaries: these tests exercise read consumers, not model compression.
+    if generate_digests:
+        # Seed existing digests: these tests exercise read consumers, not model compression.
         for ep in eps:
-            ep.summary = ep.content
-            ep.summary_embedding = mem.embedder.embed(ep.summary)
+            ep.digest = ep.content
+            ep.digest_embedding = mem.embedder.embed(ep.digest)
             mem._sync_episode(ep)
     return mem
 
 
-def test_existing_summaries_are_indexed_exclusively():
+def test_existing_digests_are_indexed_exclusively():
     mem = build()
     assert not mem.episodes_vec.values()
-    assert len(mem.summary_vec.values()) == len(SESSIONS)
+    assert len(mem.digest_vec.values()) == len(SESSIONS)
     for ep in mem.episodes_doc.values():
-        assert ep.summary, "each episode should carry a summary after summarize_episodes"
-        assert ep.summary_embedding is not None
+        assert ep.digest, "each episode should carry a digest after generate_digests"
+        assert ep.digest_embedding is not None
 
 
 def test_summarize_is_idempotent():
     mem = build()
-    n = mem.summarize_episodes(list(mem.episodes_doc.values()))  # 已经摘要过
+    n = mem.generate_digests(list(mem.episodes_doc.values()))  # 已经摘要过
     assert n == 0, "re-summarizing already-summarized episodes is a no-op"
 
 
-def test_retrieve_summaries_is_relevant():
+def test_retrieve_digests_is_relevant():
     mem = build()
     query = "Which cities did I travel to?"
     mem.reembed(MockEmbedder(2, vectors={query: [1.0, 0.0], SESSIONS[1][0]: [1.0, 0.0]}))
-    hits = mem.retrieve_summaries(query, user_id="u1", k=3)
-    assert hits, "summary retrieval returns something"
+    hits = mem.retrieve_digests(query, user_id="u1", k=3)
+    assert hits, "digest retrieval returns something"
     joined = " ".join(h.text.lower() for h in hits)
     # 旅行相关的 session 应排在猫/吉他之前
     assert any(city in joined for city in ("kyoto", "lisbon", "oslo"))
@@ -82,9 +82,9 @@ def test_consolidate_invalidates_persona_cache():
 def test_lean_context_assembles_all_layers():
     mem = build()
     ctx = mem.lean_context("trip Kyoto Lisbon Oslo", user_id="u1",
-                           n_summaries=10, n_facts=10, n_chunks=1)
+                           n_digests=10, n_facts=10, n_chunks=1)
     assert "USER PROFILE:" in ctx
-    assert "SESSION SUMMARIES" in ctx
+    assert "SESSION DIGESTS" in ctx
     assert "RELEVANT CONVERSATIONS (full detail):" in ctx
 
 
@@ -97,11 +97,11 @@ def test_lean_context_dedup_no_session_twice():
     mem.reembed(product_embedder())
     detail = mem.retrieve_episodes("Kyoto temples", "u1", 2)
     detail_dates = {e.metadata.get("date") for e in detail}
-    ctx = mem.lean_context("Kyoto temples", user_id="u1", n_summaries=10, n_chunks=2)
-    summ_block = ctx.split("SESSION SUMMARIES")[1].split("RELEVANT CONVERSATIONS")[0]
+    ctx = mem.lean_context("Kyoto temples", user_id="u1", n_digests=10, n_chunks=2)
+    summ_block = ctx.split("SESSION DIGESTS")[1].split("RELEVANT CONVERSATIONS")[0]
     for d in detail_dates:
         # detail session 的日期不应再作为某条摘要行的开头
-        assert f"- [{d}]" not in summ_block, "detail session leaked into the summary block (dup)"
+        assert f"- [{d}]" not in summ_block, "detail session leaked into the digest block (dup)"
 
 
 def test_lean_context_respects_char_budget():
@@ -144,7 +144,7 @@ def test_evidence_budgeting_keeps_provenance_under_tight_budget():
             "What is Apollo's launch code and where is the printed checklist?",
             user_id="u1",
             persona=False,
-            n_summaries=0,
+            n_digests=0,
             n_chunks=0,
             char_budget=360,
         )
@@ -166,20 +166,20 @@ def test_lean_context_is_leaner_than_full_history():
     assert len(lean) <= max(2048, len(full) * 3)  # sanity：不能大得离谱
 
 
-def test_consolidate_full_builds_facts_and_summaries():
+def test_consolidate_full_builds_facts_and_digests():
     mem = MemoryEngine()
     eps = [mem.add(t, user_id="u1", session_id=f"s{i}", event_time=BASE + d * DAY)
            for i, (t, d) in enumerate(SESSIONS)]
-    stats = mem.consolidate_full(fact_episodes=eps, summary_episodes=eps)
-    assert stats["facts_added"] >= 0 and stats["summaries"] == 0
-    assert len(mem.summary_vec.values()) == 0
+    stats = mem.consolidate_full(fact_episodes=eps, digest_episodes=eps)
+    assert stats["facts_added"] >= 0 and stats["digests"] == 0
+    assert len(mem.digest_vec.values()) == 0
 
 
-def test_lean_path_works_with_no_summaries():
+def test_lean_path_works_with_no_digests():
     """优雅降级：即使从未构建摘要，lean_context 仍能返回 facts + chunks。"""
-    mem = build(summarize=False)
+    mem = build(generate_digests=False)
     ctx = mem.lean_context("Where do I work?", user_id="u1", n_chunks=1)
-    assert "SESSION SUMMARIES" not in ctx  # 未构建任何摘要
+    assert "SESSION DIGESTS" not in ctx  # 未构建任何摘要
     assert ctx.strip(), "still produces a usable context from facts + chunks"
 
 
@@ -261,7 +261,7 @@ def test_timeline_block_is_chronological():
     assert "TIMELINE" in ctx
     tl = ctx.split("TIMELINE")[1]
     import re
-    dates = re.findall(r"(\d{4}-\d{2}-\d{2})", tl.split("SESSION SUMMARIES")[0])
+    dates = re.findall(r"(\d{4}-\d{2}-\d{2})", tl.split("SESSION DIGESTS")[0])
     assert dates == sorted(dates), "timeline must be chronological (oldest to newest)"
 
 
@@ -509,7 +509,7 @@ def test_provenance_source_episode_is_promoted_into_detail_chunks():
             "What is Apollo's launch code?",
             user_id="u1",
             persona=False,
-            n_summaries=0,
+            n_digests=0,
             n_chunks=1,
             char_budget=10_000,
         )
@@ -1085,7 +1085,7 @@ def test_agentic_multihop_decomposition():
     mem.llm = FakeLLM()
     ctx1 = mem.lean_context("Which cities did I visit and how many trips?", user_id="u1",
                             agentic=True, n_chunks=1)
-    assert ctx1.strip() and "SESSION SUMMARIES" in ctx1
+    assert ctx1.strip() and "SESSION DIGESTS" in ctx1
 
 
 def test_agentic_episode_gather_respects_as_of():
@@ -1177,7 +1177,7 @@ def test_reinforce_boosts_and_resets_clock():
     assert f.salience == 1.5 and f.access_count == 1 and f.last_access == BASE + 5 * DAY
 
 
-def test_summary_remains_faithful_after_supersession():
+def test_digest_remains_faithful_after_supersession():
     """在知识更新前定稿的摘要，应由 reflector 把当前值追加进去。"""
     from mnemotrace.types import Fact
 
@@ -1191,16 +1191,16 @@ def test_summary_remains_faithful_after_supersession():
                user_id="u1", valid_at=BASE + 5 * DAY, supersedes=old.id)
     mem.fact_store.upsert(old.id, [0.0], old)
     mem.fact_store.upsert(new.id, [0.0], new)
-    mem.summarize_episodes([ep])  # 冻结 "twice a week" 的摘要
-    assert "[updated:" not in ep.summary
-    before = ep.summary
-    stats = mem.consolidate_full(fact_episodes=[], summary_episodes=[ep])
+    mem.generate_digests([ep])  # 冻结 "twice a week" 的摘要
+    assert "[updated:" not in ep.digest
+    before = ep.digest
+    stats = mem.consolidate_full(fact_episodes=[], digest_episodes=[ep])
     assert stats["reflected"] == 0
-    assert ep.summary == before
-    assert "[updated:" not in ep.summary and "three times a week" not in ep.summary
+    assert ep.digest == before
+    assert "[updated:" not in ep.digest and "three times a week" not in ep.digest
 
 
-def test_summary_remains_faithful_with_cold_tier_history():
+def test_digest_remains_faithful_with_cold_tier_history():
     from mnemotrace.types import Fact
 
     mem = MemoryEngine()
@@ -1213,13 +1213,13 @@ def test_summary_remains_faithful_with_cold_tier_history():
                salience=1.0)
     mem.fact_store.upsert(old.id, [0.0], old)
     mem.fact_store.upsert(new.id, [0.0], new)
-    mem.summarize_episodes([ep])
+    mem.generate_digests([ep])
     assert mem.evict_cold(max_hot=1) == 1
 
-    before = ep.summary
-    assert mem.consolidate_full(fact_episodes=[], summary_episodes=[ep])["reflected"] == 0
-    assert ep.summary == before
-    assert "three times a week" not in ep.summary
+    before = ep.digest
+    assert mem.consolidate_full(fact_episodes=[], digest_episodes=[ep])["reflected"] == 0
+    assert ep.digest == before
+    assert "three times a week" not in ep.digest
 
 
 def test_type_weight_ranks_preference_and_identity_above_incidental():
@@ -1430,48 +1430,21 @@ def test_structured_profile_includes_cold_tier_facts():
     assert "周杰伦" in items
 
 
-def test_working_memory_is_ephemeral_and_never_enters_long_term():
-    """特性①：working-memory 层保存瞬态状态但不进长期记忆，以 session + TTL 限定作用域，
-    session 结束即清空。核心不变量：ephemeral 条目绝不变成持久 fact。"""
-    import mnemotrace.util as u
-    m = MemoryEngine()
-    assert not hasattr(MemoryEngine, "is_ephemeral")
-
-    m.remember_working("today my throat hurts", user_id="u", session_id="s1", kind="state")
-    m.remember_working("this trip front seat is my wife", user_id="u", session_id="s1",
-                       kind="passenger", ttl_seconds=7200)
-    m.remember_working("note in another session", user_id="u", session_id="s2")
-
-    # 以 session 为作用域 + 完全不进长期记忆
-    assert {w.content for w in m.working_memory("u", session_id="s1")} == {
-        "today my throat hurts", "this trip front seat is my wife"}
-    assert list(m.fact_store.values()) == [], "working memory must NOT create long-term facts"
-
-    # 会出现在该 session 的读取 context 中，但属临时性质
-    ctx = m.lean_context("how am I", user_id="u", session_id="s1", n_chunks=0)
-    assert "WORKING MEMORY" in ctx and "throat" in ctx.lower()
-
-    # TTL 硬过期，之后按 session 清空
-    later = u.now() + 8000
-    assert [w.kind for w in m.working_memory("u", session_id="s1", as_of=later)] == ["state"]
-    assert m.clear_session("u", "s1") == 1 and m.working_memory("u", session_id="s1") == []
-
 def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content():
     """脱敏/共享 context 不得通过摘要、chunk 或工作记忆文本泄漏敏感内容。
     它只能依赖已分类、非敏感的结构化 facts。"""
     m = MemoryEngine()
     ep = m.add("My private diagnosis is diabetes. I work at Acme.", user_id="u", session_id="s1")
-    ep.summary = "Private diagnosis: diabetes. Job: Acme."
-    m.summary_vec.upsert(ep.id, m.embedder.embed(ep.summary), ep)
+    ep.digest = "Private diagnosis: diabetes. Job: Acme."
+    m.digest_vec.upsert(ep.id, m.embedder.embed(ep.digest), ep)
     m.add_fact("user", "has_disease", "diabetes", user_id="u")
     m.add_fact("user", "works_at", "Acme", user_id="u", sensitive=False)
-    m.remember_working("diabetes flare today", user_id="u", session_id="s1")
 
     redacted = m.lean_context(
         "what do you know about my diagnosis and work?",
         user_id="u",
-        session_id="s1",
-        n_summaries=5,
+
+        n_digests=5,
         n_chunks=5,
         redact_sensitive=True,
         char_budget=10_000,
@@ -1479,30 +1452,9 @@ def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content
 
     assert "Acme" in redacted
     assert "diabetes" not in redacted.lower()
-    assert "SESSION SUMMARIES" not in redacted
+    assert "SESSION DIGESTS" not in redacted
     assert "RELEVANT CONVERSATIONS" not in redacted
     assert "WORKING MEMORY" not in redacted
-
-
-def test_ephemeral_remember_keeps_dated_episode_but_creates_no_durable_fact():
-    """修正后的特性①模型（用户指出的）：ephemeral != 删除。瞬态状态进入工作记忆，
-    同时保留为带日期的 EPISODE（因此 'when did my throat hurt?' 可从历史中作答），
-    但不会变成持久的画像 fact（因此绝不会滞留为当前属性）。"""
-    m = MemoryEngine()
-    r = m.remember("today my throat is uncomfortable", user_id="u", session_id="s1", scope="working")
-    assert r["scope"] == "working"
-
-    # 事件保留在带日期的情景日志中 -> 可按历史查询
-    eps = m.retrieve_episodes("throat uncomfortable", user_id="u", k=3)
-    assert any("throat" in e.text.lower() for e in eps), "dated episode must remain retrievable"
-    # 当前 session 的工作记忆同样持有它
-    assert any("throat" in w.content.lower() for w in m.working_memory("u", session_id="s1"))
-
-    # 但绝不生成持久画像 fact —— 且后续 consolidate 不得将该临时 episode 收入
-    m.remember("I work at Acme", user_id="u", session_id="s1")
-    m.consolidate()
-    assert not any("throat" in f.text.lower() for f in m.fact_store.values()), \
-        "transient state must not become a durable profile fact"
 
 
 def test_display_localization_keeps_canonical_predicate():

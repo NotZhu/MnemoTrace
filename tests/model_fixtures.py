@@ -27,7 +27,7 @@ def window_input(prompt):
 def replay_window(prompt, system, invoke):
     """Keep legacy consumer fixtures per source; native window tests bypass this adapter."""
     data = window_input(prompt)
-    result = {'facts': [], 'working': []}
+    result = {'facts': [], }
     for span in data['pending']:
         if data['source_kind'] == 'dialogue' and span['role'] != 'user':
             continue
@@ -37,15 +37,13 @@ def replay_window(prompt, system, invoke):
         except (ValueError, TypeError):
             return raw
         if isinstance(value, list):
-            value = {'facts': value, 'working': []}
+            value = {'facts': value, }
         if not isinstance(value, dict):
             return raw
         for key in result:
             for item in value.get(key, []):
                 if 'rules' in data:
-                    if key == 'working' and data['mode'] == 'historical':
-                        continue
-                    fields = ('subject', 'predicate', 'object', 'text') if key == 'facts' else ('content', 'kind')
+                    fields = ('subject', 'predicate', 'object', 'text')
                     item = {k: item[k] for k in (*fields, 'topic', 'category', 'sensitive', 'time_kind', 'effective_date', 'cardinality', 'retention') if k in item}
                     if key == 'facts':
                         category = '工作' if item['predicate'] == 'works_at' else '其他'
@@ -58,10 +56,10 @@ def replay_window(prompt, system, invoke):
                         item.setdefault('text', f"{item['subject']} {item['predicate']} {item['object']}")
                 result[key].append({**item, 'source_ids': [span['id']]})
     if 'rules' in data:
-        result['summaries'] = [dict(source_id=span['id'], text='Synthetic event summary')
-                               for span in data['pending'] if span['id'] in data['rules']['summary_required']]
-    if data['operation'] == 'summary' or '本次仅补缺失摘要' in system:
-        result = {'summaries': result['summaries']}
+        result['digests'] = [dict(source_id=span['id'], text='Synthetic event digest')
+                               for span in data['pending'] if span['id'] in data['rules']['digest_required']]
+    if data['operation'] == 'digest' or '本次仅补缺失摘要' in system:
+        result = {'digests': result['digests']}
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -87,7 +85,7 @@ class RecordedLLM:
             content = prompt.split('对话：\n', 1)[1].rsplit('\n\nJSON 事实：', 1)[0]
             if content not in RESPONSES:
                 raise AssertionError('Missing synthetic model response: ' + repr(content))
-            return json.dumps({'facts': RESPONSES[content], 'working': []}, ensure_ascii=False)
+            return json.dumps({'facts': RESPONSES[content], }, ensure_ascii=False)
         if '<session>' in prompt:
             return '[]'
         if '用户事实：' in prompt:
@@ -112,7 +110,7 @@ class FixtureProtocol:
             except (ValueError, TypeError):
                 return raw
             if isinstance(data, list):
-                return json.dumps({'facts': data, 'working': []}, ensure_ascii=False)
+                return json.dumps({'facts': data, }, ensure_ascii=False)
         return raw
 
 
@@ -128,12 +126,12 @@ class MemoryEngine(NativeMemory):
         super().__init__(*args, **kwargs)
 
 
-def seed_summaries(memory, episodes):
-    """Seed pre-existing summaries for read/restore tests, without simulating an LLM."""
+def seed_digests(memory, episodes):
+    """Seed pre-existing digests for read/restore tests, without simulating an LLM."""
     for supplied in episodes:
         ep = memory.episodes_doc.get(supplied.id)
-        ep.summary = ep.content
-        ep.summary_embedding = memory.embedder.embed(ep.summary)
+        ep.digest = ep.content
+        ep.digest_embedding = memory.embedder.embed(ep.digest)
         memory._sync_episode(ep)
 
 

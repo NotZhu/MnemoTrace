@@ -101,14 +101,14 @@ def exercise_handoff(
         output("\n== 2. Source agent flushes its session ==")
         flushed_source = call("/v1/processing/flush", {
             "session_id": source_session,
-            "include_summaries": True,
+            "include_digests": True,
         }, "POST")
         output(json.dumps(flushed_source, ensure_ascii=False, indent=2))
 
     output("\n== 3. Target agent recalls from the same memory space ==")
     recalled = call("/v1/recall", {
         "query": QUERY,
-        "session_id": target_session,
+
         "n_chunks": 3,
     }, "POST")
     context = (recalled.get("context") or "").strip()
@@ -123,7 +123,7 @@ def exercise_handoff(
         output("\n== 4. Target agent flushes its session ==")
         flushed_target = call("/v1/processing/flush", {
             "session_id": target_session,
-            "include_summaries": True,
+            "include_digests": True,
         }, "POST")
         output(json.dumps(flushed_target, ensure_ascii=False, indent=2))
 

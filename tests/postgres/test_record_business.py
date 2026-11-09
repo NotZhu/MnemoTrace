@@ -15,7 +15,7 @@ from mnemotrace.store.postgres.errors import (
     DatabaseConstraintError, DatabaseUnavailable, MessageConflict, SpaceNotFound,
     VersionConflict,
 )
-from mnemotrace.types import Conflict, Fact, WorkingMemory
+from mnemotrace.types import Conflict, Fact
 
 
 @pytest.fixture
@@ -46,7 +46,6 @@ def test_record_business_roundtrip_and_selective_updates(memory, cluster):
     first = memory.add_fact('Synthetic person', 'lives_in', 'Beijing', valid_at=1)
     current = memory.add_fact('Synthetic person', 'lives_in', 'Shanghai', valid_at=2, cardinality='single')
     unrelated = memory.add_fact('Someone else', 'likes', 'tea')
-    work = memory.remember_working('Synthetic task', 'chat')
     memory.dao._database.close()
 
     with Database(cluster.runtime) as reopened:
@@ -54,7 +53,6 @@ def test_record_business_roundtrip_and_selective_updates(memory, cluster):
         assert fresh.get_episode(accepted.source_ids[0]).content == 'Synthetic content'
         assert [fact.id for fact in fresh.history('Synthetic person', 'lives_in')] == [first.id, current.id]
         assert fresh.get_fact(current.id).supersedes == first.id
-        assert fresh.working_memory(session_id='chat')[0].id == work.id
         with fresh.dao.read_snapshot() as view:
             edge = view.relations(first.id)[0]
             assert view.get(RecordKind.SOURCE, accepted.source_ids[0]).agent_id == 'agent-1'
@@ -76,9 +74,6 @@ def test_record_business_roundtrip_and_selective_updates(memory, cluster):
         page = fresh.facts(FactQuery(limit=1))
         tail = fresh.facts(FactQuery(after_id=page[-1].id))
         assert {fact.id for fact in page + tail} == {current.id, unrelated.id}
-        assert fresh.consume_working(work.id)
-        assert fresh.working_memory(session_id='chat') == ()
-        assert fresh.sweep_working() == 1
 
 
 def test_concurrent_message_reuse_conflict_and_batch_rollback(memory, cluster):
@@ -174,9 +169,8 @@ def test_mixed_erasure_is_atomic_and_supported_erasure_preserves_sources(memory)
     b = memory.remember_raw('Synthetic source B', 'chat')
     who = memory.context.user_id
     fact = Fact('Synthetic person', 'likes', 'tea', user_id=who, provenance=[a.id, b.id])
-    wm = WorkingMemory('Derived state', user_id=who, session_id='chat', metadata={'provenance': [a.id]})
-    task = OperationSpec('summary-a', OperationKind.SUMMARY, 'chat', (SourceVersion(a.id, 1),))
-    commit(memory, 'derived', (fact, wm), operations=(task,))
+    task = OperationSpec('digest-a', OperationKind.DIGEST, 'chat', (SourceVersion(a.id, 1),))
+    commit(memory, 'derived', (fact,), operations=(task,))
     assert memory.dao.operation(task.operation_id).stored_raw
     source = RecordRef(memory.context, RecordKind.SOURCE, a.id)
     fact_ref = RecordRef(memory.context, RecordKind.FACT, fact.id)
@@ -192,40 +186,11 @@ def test_mixed_erasure_is_atomic_and_supported_erasure_preserves_sources(memory)
     assert memory.dao.receipt('derived') is not None
     assert memory.get_episode(a.id) is not None
     assert memory.get_fact(fact.id) is not None
-    work_ref = RecordRef(memory.context, RecordKind.WORKING, wm.id)
-    assert memory.erase(fact_ref, work_ref).affected_count == 2
+    assert memory.erase(fact_ref).affected_count == 1
     assert memory.dao.operation(task.operation_id).stored_raw
     assert memory.get_episode(a.id) is not None
     assert memory.get_episode(b.id) is not None
-    assert memory.working_memory() == ()
     assert memory.facts() == ()
-
-
-
-def test_clear_scopes_session_generation_and_preserves_space_settings(memory):
-    memory.set_settings(track=('work',))
-    memory.remember_working('A task', 'a')
-    memory.remember_working('B task', 'b')
-    with memory.dao.read_snapshot('a') as view:
-        a = view.snapshot
-    with memory.dao.read_snapshot('b') as view:
-        b = view.snapshot
-    assert memory.clear_working('a') == 1
-    assert memory.working_memory(session_id='a') == ()
-    assert len(memory.working_memory(session_id='b')) == 1
-    with memory.dao.read_snapshot('a') as view:
-        assert view.snapshot.session_generation == a.session_generation + 1
-    with memory.dao.read_snapshot('b') as view:
-        assert view.snapshot.session_generation == b.session_generation
-        before_clear = view.snapshot
-    memory.clear_space()
-    with pytest.raises(VersionConflict):
-        memory.dao.commit(ChangeSet(CommitConditions(before_clear), 'before-clear'))
-    assert memory.working_memory() == ()
-    assert memory.get_settings().track == ('work',)
-    memory.delete_space()
-    with pytest.raises(SpaceNotFound):
-        memory.stats()
 
 
 def test_stale_vector_rejected_and_previous_embedding_removed(memory):
@@ -341,7 +306,7 @@ def test_clear_slot_checks_count_and_preserves_manual_assertions(memory):
 def test_task_commit_checks_lease_and_its_persisted_source_references(memory, runtime, business_change):
     source = memory.remember_raw('Synthetic task input', 'chat')
     other = memory.remember_raw('Another source in the same session', 'chat')
-    queued = OperationSpec('task', OperationKind.SUMMARY, 'chat', (SourceVersion(source.id, 1),))
+    queued = OperationSpec('task', OperationKind.DIGEST, 'chat', (SourceVersion(source.id, 1),))
     commit(memory, 'queue', operations=(queued,))
     with runtime.space_transaction(memory.context.user_id, memory.context.space_id) as (conn, _):
         conn.execute("""UPDATE mnemotrace.operations SET state='running', phase='generate',

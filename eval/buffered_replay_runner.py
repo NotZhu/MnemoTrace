@@ -50,13 +50,14 @@ def recorded_response(case, window, episodes):
     def summary_for(span):
         event = episodes[span.get('episode_id', span['id'])]
         quotes = [gold.get('evidence', {}).get(event['id'], event['text'].split('。', 1)[0] + '。')
-                  for group in ('facts', 'working') for gold in case[group]
+                  for group in ('facts',) for gold in case[group]
                   if any(event['id'] in refs for refs in gold['sources'])]
         visible = list(dict.fromkeys(quote for quote in quotes if quote in span['content']))
         return '\n'.join(visible)[:800] or '合成摘要'
+    # This runner invokes a pinned historical file-backed service and its wire format.
     output = dict(facts=[], working=[], summaries=[dict(source_id=span['id'], text=summary_for(span))
         for span in window['pending'] if span['id'] in window.get('rules', {}).get('summary_required', [])])
-    for group in ('facts', 'working'):
+    for group in ('facts',):
         for gold in case[group]:
             sources = gold['sources'][0]
             if not all(key in by_event for key in sources):
@@ -82,15 +83,13 @@ def recorded_response(case, window, episodes):
                 output['facts'].append(dict(subject=user, predicate='name', object=names[0], source_ids=[span['id']]))
     for fact in output['facts']:
         fact.update(text=f"{fact['subject']} {fact['predicate']} {fact['object']}", assertion_kind='unspecified')
-    for working in output['working']:
-        working['assertion_kind'] = 'unspecified'
     if window.get('operation') == 'summary':
         output = {'summaries': output['summaries']}
     return json.dumps(output, ensure_ascii=False)
 
 
 def final_state(snapshots, episodes):
-    final = dict(facts=[], working=[], identity={})
+    final = dict(facts=[], identity={})
     def sources(ids):
         return [episodes[key]['id'] if key in episodes else 'UNKNOWN:'+key for key in ids]
     for user, snapshot in snapshots.items():
@@ -99,21 +98,18 @@ def final_state(snapshots, episodes):
             final['facts'].append(dict(id=f['id'], subject=f['subject'], predicate=f['predicate'], object=f['object'],
                 user=user, source=f['source'], sources=sources(f['provenance']), valid_at=f['valid_at'],
                 invalid_at=f['invalid_at'], supersedes=f['supersedes']))
-        for w in snapshot['working']:
-            final['working'].append(dict(content=w['content'], kind=w['kind'], user=user, session=w['session_id'],
-                event_time=w['event_time'], sources=sources(w['metadata'].get('provenance', []))))
     return final
 
 
 def raw_state(windows, episodes):
     from mnemotrace.consolidate.fact_rules import _NAME_PREDICATES
-    raw = dict(facts=[], working=[], identity={})
+    raw = dict(facts=[], identity={})
     for window in windows:
         if not window.get('validated'):
             continue
         spans = {s['id']: s for s in (*window['context'], *window['pending'])}
         order = {s['id']: i for i, s in enumerate(window['pending'])}
-        for group in ('facts', 'working'):
+        for group in ('facts',):
             for item in window['output'][group]:
                 selected = [spans[key] for key in item['source_ids']]
                 anchor = max((s for s in selected if s['id'] in order), key=lambda s: (
@@ -260,7 +256,7 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
         selected = original_select(mem, tasks, now)
         if selected:
             key, win = selected
-            phase = 'summary' if win['operation'] == 'summary' or win['phase'] == 'compensate' else 'extraction'
+            phase = 'digest' if win['operation'] == 'summary' or win['phase'] == 'compensate' else 'extraction'
             PHASE.set(phase)
             WINDOW.set(win['input_hash'][:24])
             if phase == 'extraction' and win['phase'] == 'generate':
@@ -312,10 +308,10 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
             for user in sorted({e['user'] for e in case['events']}):
                 for session in sorted({e['session'] for e in case['events'] if e['user'] == user}):
                     if not service.flush(user, session, include_summaries=True)["ok"]:
-                        raise RuntimeError("Session summary processing failed")
+                        raise RuntimeError("Session digest processing failed")
                 with service._read_scope(user) as mem:
                     snapshots[user] = dict(facts=[asdict(f) for f in mem._all_facts()],
-                        working=[asdict(w) for w in mem.working_mem.values()], identity=dict(mem._identity),
+                        identity=dict(mem._identity),
                         episodes=[asdict(e) for e in mem.episodes_doc.values()], processing=mem._pipeline_state)
         except Exception as exc:
             label = getattr(exc, 'code', type(exc).__name__)
@@ -328,7 +324,7 @@ def run_case(case, args, *, replay_fn=replay, model_override=None):
     try:
         for user, snapshot in snapshots.items():
             with Memory.open(service._path(user)) as reopened:
-                for group, values in (('facts', reopened._all_facts()), ('working', reopened.working_mem.values()),
+                for group, values in (('facts', reopened._all_facts()),
                                       ('episodes', reopened.episodes_doc.values())):
                     if sorted((asdict(v) for v in values), key=lambda v: v['id']) != sorted(snapshot[group], key=lambda v: v['id']):
                         raise ValueError('Replay restore mismatch')
