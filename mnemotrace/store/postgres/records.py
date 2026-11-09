@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import json
 
 from ...types import Conflict, Entity, Episode, Fact, Relation, WorkingMemory
-from ...util import stems, tokenize
+from ...retrieve.lexical import lexical_terms
 from ..contracts import RecordKind, RecordRef, StoredRecord
 from .database import identifier
 from .errors import DataCorruption
@@ -24,7 +24,7 @@ JSON_COLUMNS = {'metadata', 'coverage', 'summary_coverage', 'settings', 'stats',
 
 
 def anchor_terms(name, aliases):
-    return sorted({term for label in (name, *aliases) for term in (*stems(label), *tokenize(label))})
+    return sorted({term for label in (name, *aliases) for term in lexical_terms(label, exact=True)})
 
 
 def timestamp(value):

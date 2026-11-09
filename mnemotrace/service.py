@@ -11,7 +11,6 @@ from .connectors.documents import document_inputs
 from .consolidate.outcomes import OUTCOME_PREDICATES, split_outcome_text
 from .consolidate.policy import POLICY_DEFAULTS
 from .consolidate.structured import _BASIC, build_structured_profile, user_aliases
-from .embed import HashingEmbedder
 from .extraction import LLMNotConfiguredError, require_llm
 from .llm import providers
 from .memory import Memory
@@ -55,13 +54,8 @@ def _answer_from_memory(answerer, query: str, ctx: str) -> str:
 
 
 def _est_tokens(text: str) -> int:
-    """对中文更公平的 token 估算：每个 CJK 字符 ≈ 1 token，每个非 CJK 单词 ≈ 1 token。
-    （中文不按空格分词，`len(text.split())` 会严重低估。）"""
-    import re
-
-    cjk = len(re.findall(r"[一-鿿]", text))
-    words = len(re.findall(r"[A-Za-z0-9]+", re.sub(r"[一-鿿]", " ", text)))
-    return cjk + words
+    """Display estimate, mirrored by Postgres for the full-context total."""
+    return (len(text.encode('utf-8')) + 3) // 4
 
 
 class ProcessingFailure(RuntimeError):
@@ -114,7 +108,7 @@ def _source_view(record):
 
 
 class MemoryService:
-    def __init__(self, database, *, embedder=None, embedding_model='hashing-v1', llm=None,
+    def __init__(self, database, *, embedder=None, embedding_model=None, llm=None,
                  answerer=None, captioner=None, config=None):
         self.database = database
         self.spaces = Spaces(database)
@@ -129,15 +123,15 @@ class MemoryService:
     @classmethod
     def from_env(cls, *, embedder_name=None, llm_name=None):
         providers.load_dotenv()
-        embedder = embedder_name or os.environ.get('MNEMOTRACE_EMBEDDER', 'hashing')
         models = {}
         for field, variable in (('llm', 'LLM'), ('answerer', 'ANSWERER'), ('captioner', 'VISION_LLM')):
             if name := (llm_name if field == 'llm' and llm_name is not None
                         else os.environ.get(f'MNEMOTRACE_{variable}', '')).strip():
                 models[field] = providers.make_llm(name)
         config = Config.from_env()
-        service = cls(Database(DatabaseConfig.from_env()), embedder=providers.make_embedder(embedder),
-                      embedding_model='hashing-v1' if embedder == 'hashing' else embedder, config=config, **models)
+        embedder, model = providers.configured_embedder(embedder_name)
+        service = cls(Database(DatabaseConfig.from_env()), embedder=embedder,
+                      embedding_model=model, config=config, **models)
         service.database.open()
         return service
 
@@ -467,7 +461,7 @@ class MemoryService:
             times = view.time_range()
         feed = dict(last_fed_at=fed_at, last_fed_at_h=fmt_datetime(fed_at) if fed_at is not None else None,
                     sessions=sessions, conclusions=0)
-        return dict(space_id=context.space_id, counts=counts, storage='postgres', embedder=self.embedding_model,
+        return dict(space_id=context.space_id, counts=counts, storage='postgres', embedder=self.embedding_model or 'lexical',
                     feed=feed, time_range={**times, **{key + '_h': fmt_datetime(value) if value is not None else None
                                                        for key, value in times.items()}},
                     consolidation_backlog=counts['episodes_pending'] > 0,
@@ -495,7 +489,7 @@ class MemoryService:
     def audit(self, context, limit=40):
         predicates = [name for name, (field, _) in _BASIC.items() if field not in _MULTI_VALUED_FIELDS]
         memory = self.memory(context)
-        coverage = EmbedderCoverage(self.embedder if self.embedder is not None else HashingEmbedder())
+        coverage = EmbedderCoverage(self.embedder)
         by_kind = Counter()
         by_priority = [[] for _ in range(4)]
 

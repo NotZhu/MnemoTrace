@@ -11,7 +11,7 @@ import pytest
 
 from mnemotrace import Config
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
-from mnemotrace.embed import HashingEmbedder
+from tests.embedder_fixtures import MockEmbedder, product_embedder
 from mnemotrace.llm import FakeLLM
 from mnemotrace.memory import Memory
 from mnemotrace.store.postgres import Accounts, Database
@@ -101,7 +101,7 @@ def _model(calls, pause=None):
 @pytest.fixture
 def memory(runtime, spaces, user):
     space = spaces.create(user, 'Process recovery')
-    return Memory(runtime, spaces.authorize(user, space.space_id), llm=_model([]))
+    return Memory(runtime, spaces.authorize(user, space.space_id), llm=_model([]), embedder=product_embedder(), embedding_model='test-vectors-v1')
 
 
 def _accept(memory, key='one', content='Synthetic lab', session='chat'):
@@ -147,7 +147,7 @@ def _interrupt_transaction(config, scope, stage, committed, operation_id, *, rea
                 _pause(ready, resume)
 
     with Database(config) as runtime, patch.object(PostgresDAO, '_transaction', interrupt):
-        memory = Memory(runtime, scope, llm=_model([]))
+        memory = Memory(runtime, scope, llm=_model([]), embedder=product_embedder(), embedding_model='test-vectors-v1')
         result = (_accept(memory) if stage == 'accept'
                   else memory._processing.run_one(operation_id, force=True))
         assert checkpoint_committed
@@ -166,7 +166,7 @@ def _recover(runtime_config, discovery_config, scope, operation_id, *, ready, re
         for _ in range(3):
             if memory.operation(operation_id).core_committed:
                 break
-            run_worker(discovery, runtime, Config(), llm, HashingEmbedder(), 'hashing-v1', once=True)
+            run_worker(discovery, runtime, Config(), llm, product_embedder(), 'test-vectors-v1', once=True)
         assert memory.operation(operation_id).core_committed
         return operation_id, calls
 
@@ -217,7 +217,7 @@ def test_process_death_at_each_durable_checkpoint(memory, cluster, stage, commit
     assert _accept(memory) == recovered
 
 
-class _PausedEmbedder(HashingEmbedder):
+class _PausedEmbedder(MockEmbedder):
     def __init__(self, pause):
         super().__init__()
         self.pause = pause
@@ -237,11 +237,11 @@ def _run_stage(config, scope, operation_id, pause_at, *, ready, resume):
         ready.set()
         raise DatabaseUnavailable('Synthetic heartbeat interruption')
 
-    embedder = _PausedEmbedder(pause) if pause_at == 'embedding' else None
+    embedder = _PausedEmbedder(pause) if pause_at == 'embedding' else product_embedder()
     gates = {'model': pause, 'heartbeat': lambda: _wait_for_resume(resume)}
     with Database(config) as runtime:
         memory = Memory(runtime, scope, llm=_model(calls, gates.get(pause_at)),
-                                embedder=embedder, embedding_model='hashing-v1')
+                                embedder=embedder, embedding_model='test-vectors-v1')
         if pause_at == 'heartbeat':
             with (patch.object(Tasks, 'renew', fail_renewal),
                   patch('mnemotrace._postgres_pipeline.RENEW_SECONDS', 0.01)):
@@ -294,7 +294,7 @@ def test_repeated_process_death_exhausts_attempt_budget(memory, cluster):
 
 def _accept_in_process(config, scope, *, ready, resume):
     with Database(config) as runtime:
-        memory = Memory(runtime, scope, llm=_model([]))
+        memory = Memory(runtime, scope, llm=_model([]), embedder=product_embedder(), embedding_model='test-vectors-v1')
         _pause(ready, resume)
         return memory.remember_messages('chat', (dialogue('one', 'Synthetic lab'),))
 
@@ -335,7 +335,7 @@ def test_space_write_lock_does_not_block_sibling_space(memory, cluster, spaces):
 
 def test_discovered_tasks_commit_only_in_their_own_spaces(memory, cluster, runtime, product_scope):
     other_context, _ = product_scope('Other account')
-    other = Memory(runtime, other_context, llm=_model([]))
+    other = Memory(runtime, other_context, llm=_model([]), embedder=product_embedder(), embedding_model='test-vectors-v1')
     first = _accept(memory)
     second = _accept(other, content='Another person at Another lab')
     for scoped in (memory, other):
@@ -599,13 +599,13 @@ def test_worker_rejects_corrupt_extraction_checkpoint(memory, cluster, damage):
 
 
 def test_wrong_embedding_dimension_keeps_the_saved_product_for_retry(memory, runtime):
-    class InvalidDimension(HashingEmbedder):
+    class InvalidDimension(MockEmbedder):
         def embed_batch(self, texts):
             return [[1.0] for _ in texts]
 
     operation_id = _pending_write(memory, 'core')
-    invalid = Memory(runtime, memory.context, embedder=InvalidDimension(), embedding_model='hashing-v1',
-                             llm=_model([]))
+    invalid = Memory(runtime, memory.context, embedder=InvalidDimension(), embedding_model='test-vectors-v1',
+                     llm=_model([]))
     assert not invalid.flush_processing('chat')['ok']
     status = memory.operation(operation_id)
     assert (status.state.value, status.error_code) == ('failed', 'embedding_invalid')

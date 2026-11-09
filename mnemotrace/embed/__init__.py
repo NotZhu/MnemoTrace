@@ -1,12 +1,14 @@
-"""嵌入器。离线的 HashingEmbedder 立即加载（零依赖）；真实后端以惰性方式暴露，
-确保 `import mnemotrace` 永远不会拉起 torch / litellm。"""
-from .base import Embedder
-from .hashing import HashingEmbedder
+"""Optional embedding backends are imported on demand."""
+from .base import Embedder, EmbeddingUnavailable
 
-__all__ = ["Embedder", "HashingEmbedder", "SentenceTransformerEmbedder", "LiteLLMEmbedder"]
+__all__ = ["Embedder", "EmbeddingUnavailable", "FastEmbedEmbedder", "SentenceTransformerEmbedder", "LiteLLMEmbedder"]
 
 
 def __getattr__(name: str):  # PEP 562 惰性子模块属性
+    if name == "FastEmbedEmbedder":
+        from .fastembed_embed import FastEmbedEmbedder
+
+        return FastEmbedEmbedder
     if name == "SentenceTransformerEmbedder":
         from .sentence_transformers_embed import SentenceTransformerEmbedder
 

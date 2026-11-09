@@ -8,7 +8,8 @@ from time import sleep
 
 from ._postgres_pipeline import PostgresPipeline
 from .config import Config
-from .llm.providers import load_dotenv, make_embedder, make_llm
+from .embed import EmbeddingUnavailable
+from .llm.providers import configured_embedder, load_dotenv, make_llm
 from .store.postgres.dao import PostgresDAO
 from .store.postgres.database import Database, DatabaseConfig
 from .store.postgres.errors import AccountNotFound, DatabaseError, DatabaseUnavailable, SpaceNotFound
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=2, once=False,
                should_stop=lambda: False):
+    embedding = (model, embedder.dim) if embedder is not None else None
+
     def run(candidate):
         context, operation_id = candidate
         try:
@@ -35,7 +38,7 @@ def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=
                         future.result()
                 if len(running) < concurrency:
                     for candidate in discovery.discover_processing(
-                        100, embedding=(model, embedder.dim), include_extraction=llm is not None,
+                        100, embedding=embedding, include_extraction=llm is not None,
                     ):
                         if should_stop():
                             break
@@ -67,8 +70,6 @@ def main(argv=None):
         parser.error('concurrency must be between 1 and 32')
     load_dotenv()
     name = os.environ.get('MNEMOTRACE_LLM', '').strip()
-    embedder_name = os.environ.get('MNEMOTRACE_EMBEDDER', 'hashing')
-    model = 'hashing-v1' if embedder_name == 'hashing' else embedder_name
     stopping = False
 
     def request_stop(*_):
@@ -78,7 +79,8 @@ def main(argv=None):
 
     previous_handler = signal.signal(signal.SIGTERM, request_stop)
     try:
-        llm, embedder = make_llm(name) if name else None, make_embedder(embedder_name)
+        llm = make_llm(name) if name else None
+        embedder, model = configured_embedder()
         config = Config.from_env()
         with (Database(DatabaseConfig.from_env()) as runtime,
               Database(DatabaseConfig.from_env('discovery'), purpose='discovery') as discovery):
@@ -86,6 +88,8 @@ def main(argv=None):
                        concurrency=args.concurrency, once=args.once, should_stop=lambda: stopping)
     except KeyboardInterrupt:
         return 0
+    except EmbeddingUnavailable as exc:
+        parser.exit(1, f"{exc}\n")
     except (DatabaseError, ImportError, ValueError):
         parser.exit(1, 'Worker configuration or database access failed. Check credentials, schema and model settings.\n')
     finally:

@@ -20,6 +20,7 @@ def deployment(monkeypatch):
     monkeypatch.setenv('MNEMOTRACE_USER_ID', 'synthetic-user')
     monkeypatch.setenv('MNEMOTRACE_SPACE_ID', 'synthetic-space')
     monkeypatch.setenv('MNEMOTRACE_LLM', 'synthetic-model')
+    monkeypatch.setenv('MNEMOTRACE_EMBEDDER', 'lexical')
     monkeypatch.setenv('MNEMOTRACE_LLM_TOPICS', '0')
     monkeypatch.setattr(providers, 'make_llm', Mock())
 

@@ -164,7 +164,7 @@ def _merge_input(mem, namespace, win, now):
         return source_anchor(item['source_ids'], pending, data['source_kind'])
 
     def vector(text):
-        return win['vectors'][digest(text)]
+        return win['vectors'][digest(text)] if mem.embedder is not None else None
 
     for item in sorted(result['facts'], key=lambda item: anchor(item)['sequence']):
         origin = anchor(item)
@@ -201,7 +201,7 @@ def _commit(mem, tasks, win, now, merge=None, names=()):
     def anchor(item):
         return source_anchor(item['source_ids'], pending, data['source_kind'])
     def vector(text):
-        return win['vectors'][digest(text)]
+        return win['vectors'][digest(text)] if mem.embedder is not None else None
     if not win['core_saved']:
         if merge is not None:
             changed, conflicts, stats = merge
@@ -363,6 +363,8 @@ def run_one(service, user):
                 from .llm.execution import ModelMeter, one_attempt
                 output = plan_merge(facts, previous, ModelMeter(one_attempt(model), service.metrics, 'pipeline'),
                                     config, embedder, merge_at, existing_pairs)
+            elif embedding and embedder is None:
+                output = {}
             elif embedding:
                 vectors = embedder.embed_batch(texts) if texts else []
                 if len(vectors) != len(texts):

@@ -16,6 +16,7 @@ def configure(monkeypatch, cluster, context):
     monkeypatch.setenv('MNEMOTRACE_USER_ID', context.user_id)
     monkeypatch.setenv('MNEMOTRACE_SPACE_ID', context.space_id)
     monkeypatch.setenv('MNEMOTRACE_LLM', 'synthetic')
+    monkeypatch.setenv('MNEMOTRACE_EMBEDDER', 'lexical')
     monkeypatch.setattr(providers, 'make_llm', lambda *_: RecordedLLM())
 
 

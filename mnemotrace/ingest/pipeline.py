@@ -17,7 +17,7 @@ class Ingestor:
         self,
         episodes_doc: DocStore,
         episodes_vec: VectorStore,
-        embedder: Embedder,
+        embedder: Optional[Embedder],
     ) -> None:
         """初始化事件写入器。
 
@@ -59,10 +59,13 @@ class Ingestor:
             event_time=event_time,
         )
         # 优先使用预计算的向量；未提供时由嵌入器处理原文。
-        ep.embedding = embedding if embedding is not None else self.embedder.embed(content)
+        ep.embedding = embedding
+        if ep.embedding is None and self.embedder is not None:
+            ep.embedding = self.embedder.embed(content)
         # 新事件默认为待整合，后续由调用方触发 System-2 处理。
         self.episodes_doc.put(ep.id, ep)  # 保存原始事件
-        self.episodes_vec.upsert(ep.id, ep.embedding, ep)  # 保存向量及关联事件，供检索
+        if ep.embedding is not None:
+            self.episodes_vec.upsert(ep.id, ep.embedding, ep)
         return ep
 
     def pending(self) -> list[Episode]:

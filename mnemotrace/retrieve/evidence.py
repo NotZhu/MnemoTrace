@@ -106,6 +106,31 @@ def _has_phrase(q: str, phrases: tuple[str, ...]) -> bool:
     return any(p in q for p in phrases)
 
 
+_CHINESE_RELATIONS = {
+    '姐姐': 'sister', '妹妹': 'sister', '哥哥': 'brother', '弟弟': 'brother',
+    '妈妈': 'mother', '母亲': 'mother', '爸爸': 'father', '父亲': 'father',
+    '同事': 'colleague', '伴侣': 'spouse', '孩子': 'child',
+}
+_CHINESE_SELF_CHAIN = re.compile(r'(?:请问[，,]?\s*)?(?:我|我们|用户)\s*的\s*('
+                                 + '|'.join(_CHINESE_RELATIONS) + ')')
+_CHINESE_ATTRIBUTE_QUESTIONS = (
+    ('works_at', r'(?:在哪(?:里|儿|家(?:公司|单位))?(?:工作|任职|上班)|的?雇主是(?:谁|哪家公司))'),
+    ('occupation', r'(?:的?(?:职业|职位)是什么|做什么工作)'),
+    ('lives_in', r'(?:住在?|居住在?)哪(?:里|儿)'),
+)
+
+
+def chinese_self_chain(query: str) -> tuple[str, ...]:
+    query = query.strip()
+    relation = _CHINESE_SELF_CHAIN.match(query)
+    if relation is not None:
+        question = ''.join(query[relation.end():].split()).rstrip('？?。')
+        for predicate, pattern in _CHINESE_ATTRIBUTE_QUESTIONS:
+            if re.fullmatch(r'(?:现在|目前|当前)?' + pattern + r'呢?', question):
+                return _CHINESE_RELATIONS[relation[1]], predicate
+    return ()
+
+
 def _token_hit(tokens: set[str], terms: set[str]) -> bool:
     return bool(tokens & {stems(t)[0] if stems(t) else t for t in terms})
 
@@ -323,12 +348,10 @@ def plan_evidence(query: str, aggregation_recall_expansion: bool = True) -> Evid
     relation_re = "|".join(re.escape(r) for r in _BRIDGE_RELATIONS)
     named_bridge = bool(re.search(rf"\b(?:my|user's|the user's|their|his|her)\s+(?:{relation_re})\b", q))
     answer_attr = _token_hit(toks, _ANSWER_ATTRS)
-    multi_hop = relation_hits and (
-        possessive_chain
-        or aggregation
-        or " of " in q
-        or " 的 " in q
-        or (named_bridge and answer_attr)
+    multi_hop = bool(chinese_self_chain(q)) or (
+        _CHINESE_SELF_CHAIN.match(q.strip()) is None and relation_hits and (
+            possessive_chain or aggregation or " of " in q or " 的 " in q or (named_bridge and answer_attr)
+        )
     )
     if multi_hop:
         reasons.append("multi_hop")

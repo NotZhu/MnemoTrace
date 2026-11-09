@@ -18,7 +18,8 @@ BASE = 1_700_000_000.0  # 固定纪元，保证 demo 可复现
 
 def main() -> None:
     import os
-    from .llm.providers import load_dotenv, make_embedder, make_llm
+    from .embed import EmbeddingUnavailable
+    from .llm.providers import configured_embedder, load_dotenv, make_llm
     from .extraction import LLMNotConfiguredError
 
     load_dotenv()
@@ -29,15 +30,16 @@ def main() -> None:
     space_id = os.environ.get('MNEMOTRACE_SPACE_ID')
     if not user_id or not space_id:
         raise SystemExit('Set MNEMOTRACE_USER_ID and MNEMOTRACE_SPACE_ID to an existing demo space.')
-    embedder_name = os.environ.get('MNEMOTRACE_EMBEDDER', 'hashing')
     try:
         llm = make_llm(model)
-        embedder = make_embedder(embedder_name)
+        embedder, embedding_model = configured_embedder(default='fastembed')
         with Database(DatabaseConfig.from_env()) as database:
             scope = Spaces(database).authorize(user_id, space_id)
             memory = Memory(database, scope, config=Config.from_env(), llm=llm, embedder=embedder,
-                                    embedding_model='hashing-v1' if embedder_name == 'hashing' else embedder_name)
+                                    embedding_model=embedding_model)
             run_demo(memory)
+    except EmbeddingUnavailable as exc:
+        raise SystemExit(str(exc)) from None
     except ImportError:
         raise SystemExit('Install mnemotrace-memory[llm] to run the quickstart.') from None
     except DatabaseError as exc:

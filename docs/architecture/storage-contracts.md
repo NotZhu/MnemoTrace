@@ -373,7 +373,7 @@ python -m pytest tests/test_storage_contracts.py tests/test_storage_baseline.py
 ```
 
 输出目录必须全新，不覆盖旧 run，保留至整体验收；之后只清理本任务产物。长期 fixture 随代码维护。
-这是 hashing+固定响应的离线结果，没有真实 answerer/judge，naive recall 不是正式 full-context 模型基线，
+这是词法检索加固定响应的离线结果，没有真实 answerer/judge，naive recall 不是正式 full-context 模型基线，
 不用于公开端到端质量/总模型 token 或数据库性能结论；上下文 token 不称为提供方总 token。
 
 [负载清单](../../eval/fixtures/storage_workloads.json)固定种子、三种空间分布、64 维向量、25% 历史、

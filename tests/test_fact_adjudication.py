@@ -6,7 +6,7 @@ import pytest
 from mnemotrace import Config, MemoryEngine
 from mnemotrace.consolidate.adjudication import plan_merge
 from mnemotrace.consolidate.planning import WINDOW_PREFIX, fact_valid_at, validate_response
-from mnemotrace.embed import HashingEmbedder
+from tests.embedder_fixtures import MockEmbedder
 from mnemotrace.extraction import ExtractionResponseError
 from mnemotrace.llm import FakeLLM
 from mnemotrace.types import Fact
@@ -49,7 +49,7 @@ def fact(key, obj, at, **fields):
 
 def merge(incoming, previous=(), *, judge='replaces', now=100, model=None):
     model = model or FakeLLM(handler=lambda prompt, system: decisions(prompt, judge))
-    changed, conflicts, stats = plan_merge(incoming, previous, model, Config(), HashingEmbedder(), now)
+    changed, conflicts, stats = plan_merge(incoming, previous, model, Config(), MockEmbedder(), now)
     return {item.id: item for item in changed}, conflicts, stats
 
 
@@ -168,7 +168,7 @@ def test_manual_duplicate_links_support_without_changing_user_labels():
     assert (kept.source, kept.category, kept.sensitive) == ('user', 'Custom category', False)
 
 
-def test_hashing_recall_includes_explicit_preference_reversal():
+def test_lexical_recall_includes_explicit_preference_reversal():
     old, new = fact('old', 'jazz', 10), fact('new', 'jazz', 20)
     old.predicate, new.predicate = 'likes', 'dislikes'
     changed, _, stats = merge([new], [old])

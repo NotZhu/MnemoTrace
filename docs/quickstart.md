@@ -7,10 +7,10 @@
 在可以访问 Postgres 的受信任环境安装 Python 包。Compose 的 Postgres 仅开放给内部网络，宿主机直连需要使用自行管理的 Postgres 连接。
 
 ```sh
-python -m pip install "mnemotrace-memory[postgres,llm]"
+python -m pip install "mnemotrace-memory[postgres,llm,fastembed]"
 ```
 
-源码安装使用 `python -m pip install ".[postgres,llm]"`。设置 `MNEMOTRACE_DATABASE_URL` 为运行角色连接串，并将 `MNEMOTRACE_USER_ID` 和 `MNEMOTRACE_SPACE_ID` 设为已有演示账号和空间。配置 `MNEMOTRACE_LLM` 与模型提供方凭据，使用与服务相同的嵌入模型设置。参数见[配置参考](reference/configuration.md#postgres-数据库基础)。
+源码安装使用 `python -m pip install ".[postgres,llm,fastembed]"`。设置 `MNEMOTRACE_DATABASE_URL` 为运行角色连接串，并将 `MNEMOTRACE_USER_ID` 和 `MNEMOTRACE_SPACE_ID` 设为已有演示账号和空间。配置 `MNEMOTRACE_LLM` 与模型提供方凭据。Quickstart 默认使用 FastEmbed，首次运行需要下载模型。连接已有服务空间时，使用与服务一致的 `MNEMOTRACE_EMBEDDER` 设置。参数见[配置参考](reference/configuration.md#postgres-数据库基础)。
 
 ```sh
 mnemotrace-quickstart

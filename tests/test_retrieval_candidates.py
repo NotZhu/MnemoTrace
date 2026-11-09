@@ -7,14 +7,14 @@ LanceDB。
 from __future__ import annotations
 
 from mnemotrace.config import Config
-from mnemotrace.embed import HashingEmbedder
+from tests.embedder_fixtures import MockEmbedder
 from tests.model_fixtures import MemoryEngine
 
 _TEXT = "My name is Wei and I live in Shenzhen."  # 固定响应包含 (Wei, lives_in, Shenzhen)
 
 
 def _mem(ann: bool) -> MemoryEngine:
-    m = MemoryEngine(config=Config(ann_candidates=ann), embedder=HashingEmbedder(64))
+    m = MemoryEngine(config=Config(ann_candidates=ann), embedder=MockEmbedder(64))
     m.add(_TEXT, user_id="u", consolidate=True)
     return m
 
@@ -31,6 +31,17 @@ def test_ann_path_retrieves_the_fact():
     ranked, _ = _mem(ann=True).retriever.retrieve("where do I live", "u")
     assert ranked, "the ANN candidate path should return candidates"
     assert any("shenzhen" in ((f.object or "") + " " + f.text).lower() for f, _ in ranked)
+
+
+def test_ann_path_does_not_enumerate_fact_store(monkeypatch):
+    memory = _mem(ann=True)
+
+    def reject_full_scan():
+        raise AssertionError('ANN retrieval must not enumerate the fact store')
+
+    monkeypatch.setattr(memory.fact_store, 'values', reject_full_scan)
+    ranked, _ = memory.retriever.retrieve('where do I live', 'u')
+    assert ranked
 
 
 def test_ann_equals_full_scan_on_small_store():

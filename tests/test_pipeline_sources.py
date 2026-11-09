@@ -61,7 +61,7 @@ def test_restore_binds_coverage_and_summary_parts_to_the_committed_source(mutati
         view[{'role': 'role', 'time': 'event_time', 'length': 'source_length'}[mutation]] = 'user' if mutation == 'role' else 42
         win['input_hash'] = digest(win['input'])
     with pytest.raises(ValueError):
-        validate_state(state, mem.episodes_doc.values(), mem.embedder.dim)
+        validate_state(state, mem.episodes_doc.values())
 
 
 def test_adjudication_is_ledgered_before_core_commit():
@@ -76,7 +76,7 @@ def test_adjudication_is_ledgered_before_core_commit():
     assert [entry['stage'] for entry in win['history'] if not entry['stage'].startswith('reset')] == [
         'generate', 'embed', 'adjudicate']
     assert win['state'] == 'completed' and win['core_saved']
-    validate_state(mem._pipeline_state, mem.episodes_doc.values(), mem.embedder.dim)
+    validate_state(mem._pipeline_state, mem.episodes_doc.values())
 
 
 def test_explicit_dialogue_summary_has_its_own_cropped_proof():
@@ -144,4 +144,4 @@ def test_cropped_dialogue_coverage_must_match_its_commit_receipt(mutation):
     else:
         ep.coverage['policy'] = 'full_source_v1'
     with pytest.raises(ValueError):
-        validate_state(mem._pipeline_state, mem.episodes_doc.values(), mem.embedder.dim)
+        validate_state(mem._pipeline_state, mem.episodes_doc.values())

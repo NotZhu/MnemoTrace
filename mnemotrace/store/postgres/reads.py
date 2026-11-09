@@ -386,8 +386,7 @@ class ReadView:
                              (*self._sql.scope, *args)).fetchone()[0]
 
     def full_context_tokens(self, as_of):
-        row = self._sql.run(f"""SELECT coalesce(sum(regexp_count(content COLLATE "C", '[A-Za-z0-9]+')
-                + regexp_count(content COLLATE "C", '[一-鿿]')), 0)
+        row = self._sql.run(f"""SELECT coalesce(sum((octet_length(convert_to(content, 'UTF8')) + 3) / 4), 0)
             FROM mnemotrace.sources WHERE {SCOPE} AND (%s OR event_time <= %s)""",
             (*self._sql.scope, as_of is None, timestamp(as_of))).fetchone()
         return row[0]

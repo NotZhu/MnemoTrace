@@ -8,7 +8,6 @@ from .fact_rules import _NAME_PREDICATES, _SELF_REFS, _norm_predicate
 from .facts import FactWriter
 from .pipeline import digest
 from .topic_rules import resolve_topic
-from ..embed import HashingEmbedder
 from ..store._validation import validate_embedding
 from ..store.contracts import EmbeddingWrite, RecordRef, RecordWrite, SourceLink, StoredRecord
 from ..store.postgres.records import FACT, SOURCE, domain
@@ -82,7 +81,7 @@ def materialize(context, data, result, settings, config, now):
 
 def embed_texts(embedder, texts):
     texts = tuple(dict.fromkeys(texts))
-    if not texts:
+    if embedder is None or not texts:
         return {}
     vectors = embedder.embed_batch(list(texts))
     if len(vectors) != len(texts):
@@ -102,7 +101,7 @@ def merge_records(context, config, embedder, model, data, session_id, now,
                           metadata=dict(provenance=item['source_ids'],
                                         episode_id=origin['id'])) for item, origin, expires in working]
     semantic_subjects = {fact.subject.strip().lower() for fact in facts}
-    missing = [fact for fact in old_facts if not isinstance(embedder, HashingEmbedder)
+    missing = [fact for fact in old_facts if embedder is not None
                and fact.subject.strip().lower() in semantic_subjects
                and not fact.review_pending and fact.id not in vectors]
     fresh = embed_texts(embedder, chain((fact.text for fact in facts), (item.content for item in work),
@@ -111,23 +110,23 @@ def merge_records(context, config, embedder, model, data, session_id, now,
         fact.embedding = vectors.get(fact.id)
     extra_vectors = []
     for fact in missing:
-        fact.embedding = fresh[fact.text]
+        fact.embedding = fresh.get(fact.text)
         record = old_records[fact.id]
         extra_vectors.append(EmbeddingWrite(record.ref, record.content_version, model, tuple(fact.embedding)))
 
     for fact in facts:
-        fact.embedding = fresh[fact.text]
+        fact.embedding = fresh.get(fact.text)
     changed, conflicts, _ = plan_merge(facts, old_facts, llm, config, embedder, now, existing_pairs)
     writes, embeddings, links = [], extra_vectors, []
     for value in chain(changed, work):
         previous = old_records.get(value.id)
-        vector = value.embedding if isinstance(value, Fact) else fresh[value.content]
+        vector = value.embedding if isinstance(value, Fact) else fresh.get(value.content)
         value.embedding = None
         if previous is not None and value == domain(previous):
             continue
         write = write_record(context, value, previous)
         writes.append(write)
-        if previous is None:
+        if previous is None and vector is not None:
             embeddings.append(EmbeddingWrite(write.ref, write.record.content_version, model, tuple(vector)))
         if write.ref.kind == FACT:
             links.extend(SourceLink(write.ref, RecordRef(context, SOURCE, source_id))

@@ -8,7 +8,6 @@ from typing import Optional
 
 @dataclass
 class Config:
-    embed_dim: int = 256  # 默认 HashingEmbedder 的向量维度；显式嵌入器使用自身维度
 
     # --- 检索数量与候选范围 ---
     top_k: int = 5  # 未单独指定数量时，混合检索默认返回的事实数上限
@@ -29,7 +28,6 @@ class Config:
 
     # 按事实类型调整语义相似度，倾向于让相关的偏好和身份事实排在偶发信息之前。
     # 乘数作用于语义分数，而非融合后的排名分数；其他类型使用 1.0。
-    # HashingEmbedder 下不启用类型加权，因为哈希相似度不是可靠的语义信号。
     w_type_preference: float = 1.25  # 偏好类事实，如 likes、favorite_food
     w_type_identity: float = 1.15  # 身份类事实，如 works_at
     recency_tau_days: float = 45.0  # 新近度指数衰减的时间常数（天）；<= 0 时不衰减

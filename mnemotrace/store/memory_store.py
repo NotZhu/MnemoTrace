@@ -15,9 +15,9 @@ class InMemoryVectorStore(VectorStore):
     def __init__(self) -> None:
         """初始化向量存储。"""
         # 以 key 为索引，存储 (vector, payload) 元组
-        self._d: dict[str, tuple[list[float], Any]] = {}
+        self._d: dict[str, tuple[list[float] | None, Any]] = {}
 
-    def upsert(self, key: str, vector: list[float], payload: Any) -> None:
+    def upsert(self, key: str, vector: list[float] | None, payload: Any) -> None:
         """插入或更新向量存储中的条目。"""
         self._d[key] = (vector, payload)
 
@@ -27,7 +27,7 @@ class InMemoryVectorStore(VectorStore):
         scored = [
             (cosine(vector, vec), payload)
             for vec, payload in self._d.values()
-            if where is None or where(payload)
+            if vec is not None and (where is None or where(payload))
         ]
         scored.sort(key=lambda x: x[0], reverse=True)
         return scored[:top_k]

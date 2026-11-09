@@ -3,7 +3,6 @@ from collections import defaultdict
 from copy import deepcopy
 import json
 
-from ..embed import HashingEmbedder
 from ..extraction import ExtractionResponseError, ExtractionTruncatedError
 from ..llm.base import complete_result
 from ..llm.execution import one_attempt
@@ -62,7 +61,7 @@ def _pairs(incoming, facts, config, embedder, now):
             reversals = [old for old in peers if old.object.strip().casefold() == obj
                          and _pref_polarity(old.predicate) not in (None, polarity)]
             selected.update(_timeline_candidates(new, reversals, now))
-        if new.embedding and not isinstance(embedder, HashingEmbedder):
+        if new.embedding and embedder is not None:
             scores = [(cosine(new.embedding, old.embedding), old.id) for old in peers
                       if old.slot != new.slot and old.embedding]
             selected.update(key for score, key in sorted(scores, key=lambda item: (-item[0], item[1]))[:8]

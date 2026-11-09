@@ -12,7 +12,7 @@ from ..store import GraphStore, VectorStore
 from ..types import Fact
 from ..util import cosine, fmt_date, now, recency, tokenize
 from .fusion import order_by_score, weighted_rrf
-from .lexical import bm25_scores, stem, stems
+from .lexical import bm25_scores, lexical_terms, normalize, stem, stems
 
 _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august",
            "september", "october", "november", "december")
@@ -121,35 +121,57 @@ def graph_relation_relevance(query: str, fact: Fact) -> float:
     works_at/based_in 边,而不是同一节点的 likes/owns 之类干扰项。若查询不含关系线索
     ("tell me about Wei"),调用方应完全跳过关系加权。
     """
-    q_terms = set(stems(query)) | {stem(t) for t in tokenize(query)}
+    q_terms = set(lexical_terms(query, query=True))
     pred_terms = _graph_predicate_terms(fact.predicate)
     if q_terms & pred_terms:
         return 1.0
-    text_terms = set(stems(f"{fact.subject} {fact.object} {fact.text}"))
+    text_terms = set(lexical_terms(f"{fact.subject} {fact.object} {fact.text}"))
     if q_terms & text_terms:
         return 0.75
     return 0.0
 
 
 def _entity_anchor_terms(name: str, aliases: list[str]) -> set[str]:
-    terms: set[str] = set()
-    for text in (name, *aliases):
-        for tok in tokenize(text):
-            term = stem(tok)
-            if len(term) >= 3 and not term.isdigit() and term not in _ENTITY_ANCHOR_STOP:
-                terms.add(term)
-    return terms
+    return {term for text in (name, *aliases) for term in lexical_terms(text, query=True, exact=True)
+            if term.isascii() and len(term) >= 3 and not term.isdigit() and stem(term) not in _ENTITY_ANCHOR_STOP}
 
 
 def _entity_name_mentions(text: str, name: str) -> list[re.Match]:
-    if not name.strip() or len(name) > 96 or len(tokenize(name)) > 12:
+    if not name.strip() or len(name) > 96:
         return []
-    escaped = re.escape(name.lower())
+    name = normalize(name)
+    escaped = re.escape(name)
     if name.isascii():
         pattern = re.compile(r"(?<![a-z0-9])" + escaped + r"(?![a-z0-9])", re.IGNORECASE)
     else:
         pattern = re.compile(escaped, re.IGNORECASE)
     return list(pattern.finditer(text))
+
+
+def mentioned_entities(query, entities, resolve_alias=None):
+    query = normalize(query)
+    mentions = {}
+    for entity in tuple(entities):
+        for name in (entity.name, *entity.aliases):
+            matches = _entity_name_mentions(query, name)
+            if not matches:
+                continue
+            target = resolve_alias(name) if resolve_alias is not None and name != entity.name else entity
+            for match in matches:
+                mentions.setdefault(match.span(), {})[target.id if target is not None else None] = target
+    selected = []
+    occupied = set()
+    for (start, end), matches in sorted(mentions.items(), key=lambda item: (
+        item[0][0] - item[0][1], item[0][0],
+    )):
+        positions = set(range(start, end))
+        if positions & occupied:
+            continue
+        occupied.update(positions)
+        if len(matches) == 1 and None not in matches:
+            entity_id, entity = next(iter(matches.items()))
+            selected.append((start, entity_id, entity))
+    return {entity_id: entity for _, entity_id, entity in sorted(selected, key=lambda item: item[0])}
 
 
 def _is_excluded_mention(query_l: str, name: str) -> bool:
@@ -162,7 +184,7 @@ def _is_excluded_mention(query_l: str, name: str) -> bool:
 
 class HybridRetriever:
     """混合检索器:融合语义、词法、图关系、显著度和新近度的检索。"""
-    def __init__(self, fact_store: VectorStore, graph: GraphStore, embedder: Embedder, config: Config) -> None:
+    def __init__(self, fact_store: VectorStore, graph: GraphStore, embedder: Embedder | None, config: Config) -> None:
         """初始化混合检索器。
 
         Args:
@@ -175,24 +197,17 @@ class HybridRetriever:
         self.graph = graph
         self.embedder = embedder
         self.config = config
-        # 哈希相似度不适合语义类型加权；使用 HashingEmbedder 时关闭该加权。
-        from ..embed import HashingEmbedder
-        # 是否使用语义加权
-        self._semantic = not isinstance(embedder, HashingEmbedder)
+        self._semantic = embedder is not None
 
     def query_entity_ids(self, query: str, user_id: str) -> set[str]:
         """全名出现在查询中的实体节点(即查询的锚点实体)。"""
-        q = set(stems(query)) | set(tokenize(query))
-        ids: set[str] = set()
+        q = set(lexical_terms(query, query=True, exact=True))
         entities = [ent for ent in self.graph.entities.values() if ent.user_id == user_id]
-        for ent in entities:
-            names = (ent.name, *ent.aliases)
-            if any((toks := [stem(t) for t in tokenize(name)]) and all(t in q for t in toks) for name in names):
-                ids.add(ent.id)
-        if self.config.graph_entity_alias_anchor:
+        ids = set(mentioned_entities(query, entities, getattr(self.graph, 'resolve_mention_alias', None)))
+        if self.config.graph_entity_alias_anchor and not ids:
             term_to_ids: dict[str, set[str]] = {}
             for ent in entities:
-                for term in _entity_anchor_terms(ent.name, ent.aliases):
+                for term in _entity_anchor_terms(ent.name, []):
                     term_to_ids.setdefault(term, set()).add(ent.id)
             for term in q:
                 hits = term_to_ids.get(term)
@@ -214,7 +229,7 @@ class HybridRetriever:
         """
         if not (self.config.graph_proximity and self.config.graph_negative_constraints):
             return set()
-        query_l = query.lower()
+        query_l = normalize(query)
         direct: set[str] = set()
         entities = [ent for ent in self.graph.entities.values() if ent.user_id == user_id]
         for ent in entities:
@@ -317,9 +332,7 @@ class HybridRetriever:
     def _ann_candidates(
         self, query: str, user_id: str, as_of: Optional[float], qvec: list[float]
     ) -> list[Fact]:
-        """面向大存储的有界候选集:vector-ANN 池 UNION 查询锚点实体相关关系所依据的 fact。图并集保证
-        关系命中不会因为其向量没进 ANN 池而被静默丢弃(这是纯 ANN 最大的召回漏洞)——这是完整的
-        vector∪lexical∪graph 并集的廉价一半(真正的词法索引仍是 TODO)。"""
+        """Collect vector and graph candidates without enumerating the fact store."""
         pool = max(self.config.ann_pool, self.config.top_k)
         hits = self.fact_store.search(
             qvec, pool, where=lambda f: f.user_id == user_id and f.is_live(as_of)
@@ -348,12 +361,12 @@ class HybridRetriever:
         self, query: str, user_id: str, as_of: Optional[float] = None, top_k: Optional[int] = None
     ) -> tuple[list[tuple[Fact, float]], dict]:
         top_k = top_k or self.config.top_k
-        qvec = self.embedder.embed(query)
+        qvec = self.embedder.embed(query) if self.embedder is not None else None
         # 候选集。默认:扫描该用户全部 live fact(精确,几千条以内没问题)。可选(config.ann_candidates):
-        # 来自向量索引的有界 ANN 池 ∪ 查询的图邻居 fact —— 大存储的次线性读路径。下游一切
+        # 来自向量索引的有界 ANN 池 ∪ 查询的图邻居 fact。BM25 只对候选事实打分。下游一切
         # (slot-head 收敛、排除区、5 信号融合)完全相同;改变的只是哪些 fact 参与打分。
         # 当池覆盖全部 fact 时两者等价。
-        if self.config.ann_candidates:
+        if self.config.ann_candidates and qvec is not None:
             live = self._ann_candidates(query, user_id, as_of, qvec)
         else:
             live = [f for f in self.fact_store.values() if f.user_id == user_id and f.is_live(as_of)]
@@ -363,10 +376,9 @@ class HybridRetriever:
         if not live:
             return [], {"sem": {}, "lex": {}, "qids": set()}
 
-        sem = {f.id: cosine(qvec, f.embedding or []) for f in live}
+        sem = {f.id: cosine(qvec, f.embedding or []) for f in live} if qvec is not None else {}
         # 按类型加权的检索:用 fact 类型缩放 SEMANTIC 分数。因为离题 fact 的 sem≈0,乘子只在真正
         # 相关的候选间重排(preference fact 胜过同等相关的偶发 fact),绝不会把不相关 fact 抬上来。
-        # 仅在真实嵌入下启用 —— hashing 回退的余弦值是噪声,在那里乘子会导致误排。
         if self._semantic:
             for f in live:
                 tw = fact_type_weight(f, self.config)

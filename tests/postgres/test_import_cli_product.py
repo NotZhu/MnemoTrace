@@ -16,7 +16,7 @@ def direct_cli(cluster, product_scope, monkeypatch):
     monkeypatch.setenv("MNEMOTRACE_DATABASE_URL", cluster.runtime.dsn)
     monkeypatch.setenv("MNEMOTRACE_DB_ROLE_PREFIX", cluster.runtime.role_prefix)
     monkeypatch.setenv("MNEMOTRACE_LLM", "")
-    monkeypatch.setenv("MNEMOTRACE_EMBEDDER", "hashing")
+    monkeypatch.setenv("MNEMOTRACE_EMBEDDER", "lexical")
     return context, ["--space-id", context.space_id, "--user-id", context.user_id]
 
 

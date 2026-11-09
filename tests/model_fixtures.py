@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from mnemotrace import MemoryEngine as NativeMemory
+from tests.embedder_fixtures import MockEmbedder
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
 
 RESPONSES = json.loads(Path(__file__).with_name('extraction_responses.json').read_text(encoding='utf-8'))
@@ -114,6 +115,8 @@ class FixtureProtocol:
 
 class MemoryEngine(NativeMemory):
     def __init__(self, *args, **kwargs):
+        if len(args) < 2:
+            kwargs.setdefault('embedder', MockEmbedder())
         if len(args) < 3:
             if 'llm' not in kwargs:
                 kwargs['llm'] = RecordedLLM()

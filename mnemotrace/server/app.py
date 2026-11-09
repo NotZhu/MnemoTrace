@@ -18,6 +18,7 @@ except Exception as exc:  # noqa: BLE001
 
 from .. import __version__
 from ..consolidate.manual import InvalidFactEditError
+from ..embed import EmbeddingUnavailable
 from ..service import MemoryRevisionChanged, MemoryService, ProcessingFailure
 from ..extraction import ExtractionError
 from ..topics import Topic
@@ -56,12 +57,15 @@ def _bearer_token(authorization: str) -> str:
 
 
 _svc: MemoryService | None = None
+_embedding_startup_error: str | None = None
 _service_lock = Lock()
 
 
 def svc() -> MemoryService:
     global _svc
     with _service_lock:
+        if _embedding_startup_error is not None:
+            raise EmbeddingUnavailable(_embedding_startup_error)
         if _svc is None:
             _svc = MemoryService.from_env()
         return _svc
@@ -69,9 +73,12 @@ def svc() -> MemoryService:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    global _svc
+    global _svc, _embedding_startup_error
+    service = None
     try:
         service = svc()
+    except EmbeddingUnavailable as exc:
+        _embedding_startup_error = str(exc)
     except DatabaseError as exc:
         # Uvicorn logs startup tracebacks, so suppress the driver's chained error.
         raise RuntimeError(str(exc)) from None
@@ -79,8 +86,10 @@ async def _lifespan(_app: FastAPI):
         yield
     finally:
         with _service_lock:
-            service.close()
+            if service is not None:
+                service.close()
             _svc = None
+            _embedding_startup_error = None
 
 
 app = FastAPI(
@@ -112,6 +121,13 @@ def _apply_security_headers(response, path: str):
 @app.exception_handler(ExtractionError)
 async def extraction_failure(_request: Request, error: ExtractionError):
     return JSONResponse(status_code=error.status_code, content={"detail": error.detail()})
+
+
+@app.exception_handler(EmbeddingUnavailable)
+async def embedding_failure(_request: Request, error: EmbeddingUnavailable):
+    return JSONResponse(status_code=503, content={'detail': {
+        'code': 'embedding_unavailable', 'message': str(error),
+    }})
 
 
 @app.exception_handler(DatabaseError)
@@ -279,10 +295,13 @@ def health():
     try:
         service = svc()
         service.ready()
+    except EmbeddingUnavailable as exc:
+        return dict(ok=True, ready=False, storage='postgres', auth_mode='api_keys',
+                    detail=dict(code='embedding_unavailable', message=str(exc)))
     except DatabaseError:
         return dict(ok=True, ready=False, storage='postgres', auth_mode='api_keys')
     return dict(ok=True, ready=True, service='mnemotrace', version=__version__, storage='postgres',
-                auth_mode='api_keys', anonymous_allowed=False, embedder=service.embedding_model,
+                auth_mode='api_keys', anonymous_allowed=False, embedder=service.embedding_model or 'lexical',
                 llm_configured=service.llm is not None, answerer_configured=service.answerer is not None)
 
 

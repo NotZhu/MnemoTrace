@@ -149,12 +149,12 @@ def test_audit_counts_scoped_findings_before_limiting_and_samples_clearable_slot
     report = client.get('/v1/audit', params=scope).json()
     limited = client.get('/v1/audit', params={**scope, 'limit': 2}).json()
     assert report['checked']['facts'] == len(values)
-    assert report['by_kind'] == dict(embedder_blind=1, empty_value=1, slot_overflow=1,
+    assert report['by_kind'] == dict(empty_value=1, slot_overflow=1,
                                      machine_token=1, fragment=1, dangling_subject=1,
                                      unreduced_claim=1, code_artifact=1, orphan_entity=1)
     assert limited['by_kind'] == report['by_kind']
-    assert limited['total_findings'] == 9 and limited['truncated']
-    assert {row['kind'] for row in limited['findings']} == {'empty_value', 'embedder_blind'}
+    assert limited['total_findings'] == 8 and limited['truncated']
+    assert {row['kind'] for row in limited['findings']} == {'empty_value', 'slot_overflow'}
     slot = next(row for row in report['findings'] if row['kind'] == 'slot_overflow')
     assert slot['count'] == 3 and len(slot['samples']) == 3
     assert all(row['text'] and row['fact_id'] for row in slot['samples'])

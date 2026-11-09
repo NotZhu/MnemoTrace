@@ -2,11 +2,11 @@
 from collections import Counter
 
 from ...retrieve.hybrid import date_terms
-from ...util import stems
+from ...retrieve.lexical import lexical_terms
 from .projection import projection_id
 from .records import FACT, SOURCE, SCOPE, TARGET_COLUMNS
 
-ANALYZER = 'stems-v1'
+ANALYZER = 'unicode-v2'
 
 
 def project_document(sql, kind, record_id, version, text, *, field='text', missing_only=False):
@@ -19,7 +19,7 @@ def project_document(sql, kind, record_id, version, text, *, field='text', missi
     sql.delete('lexical_documents', f'{column} = %s AND field = %s', (record_id, field))
     if text is None:
         return
-    terms = Counter(stems(text))
+    terms = Counter(lexical_terms(text))
     sql.insert('lexical_documents', {
         'id': document_id, column: record_id, 'target_kind': kind.value, 'field': field,
         'content_version': version, 'analyzer_version': ANALYZER, 'document_length': terms.total(),

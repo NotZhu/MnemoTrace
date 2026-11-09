@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from .events import EventEvidence, event_evidence
 from ..types import Episode, Fact
 from ..util import fmt_date, stems
-from .lexical import overlap_terms
+from .lexical import lexical_terms, overlap_terms
 
 
 @dataclass(frozen=True)
@@ -382,12 +382,12 @@ def _candidate_from_text(query: str, target: str, text: str, date: float) -> lis
 
 
 def _query_terms(query: str) -> set[str]:
-    return {t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) > 2}
+    return {term for term in lexical_terms(query, query=True) if len(term) > 2 or not term.isascii()}
 
 
 def _evidence_score(query: str, text: str) -> int:
     lower = text.lower()
-    score = len(_query_terms(query) & set(re.findall(r"[a-z0-9]+", lower)))
+    score = len(_query_terms(query) & set(lexical_terms(text)))
     for _, pattern in _ACTION_PATTERNS:
         if re.search(pattern, lower):
             score += 4

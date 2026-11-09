@@ -10,7 +10,7 @@
 | 源码启动 | 本地开发、调试或自行管理进程 |
 | systemd 模板 | 已准备 Python 环境与部署目录的 Linux 主机 |
 
-默认嵌入使用 hashing，不下载模型；自动事实抽取需要 LLM 配置和凭据，缺少时写入请求明确报错。真实嵌入、回答或图片描述需要对应 extras。Python wheel 本身不包含控制台构建。
+Compose 默认使用 FastEmbed。首次由 model-init 下载固定模型到 model-cache 卷，API 和 worker 从同一缓存离线加载。设置 MNEMOTRACE_EMBEDDER=lexical 可运行无向量模式。自动事实抽取需要 LLM 配置和凭据，缺少时写入请求明确报错。Python wheel 本身不包含控制台构建。
 
 ## Compose
 
@@ -52,7 +52,7 @@ Bash 环境示例，请换成自己的运行角色连接串：
 
 ```sh
 export MNEMOTRACE_DATABASE_URL="postgresql://app_runtime:REPLACE_ME@localhost:5432/mnemotrace"
-export MNEMOTRACE_EMBEDDER="hashing"
+export MNEMOTRACE_EMBEDDER="lexical"
 export MNEMOTRACE_LLM="deepseek"
 python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000 --workers 1
 ```
@@ -61,7 +61,7 @@ PowerShell 对应设置方式：
 
 ```powershell
 $env:MNEMOTRACE_DATABASE_URL = "postgresql://app_runtime:REPLACE_ME@localhost:5432/mnemotrace"
-$env:MNEMOTRACE_EMBEDDER = "hashing"
+$env:MNEMOTRACE_EMBEDDER = "lexical"
 $env:MNEMOTRACE_LLM = "deepseek"
 python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000 --workers 1
 ```

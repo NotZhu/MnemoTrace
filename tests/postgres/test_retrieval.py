@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 
 from mnemotrace import Config
-from mnemotrace.embed import HashingEmbedder
+from tests.embedder_fixtures import MockEmbedder, product_embedder
 from mnemotrace.memory import Memory
 from mnemotrace.retrieve.hybrid import date_terms
 from mnemotrace.retrieve.lexical import bm25_scores
@@ -21,7 +21,53 @@ from mnemotrace.worker import run_worker
 @pytest.fixture
 def memory(runtime, spaces, user):
     context = spaces.authorize(user, spaces.create(user, 'Retrieval').space_id)
-    return Memory(runtime, context, config=Config(access_boost=0))
+    return Memory(runtime, context, config=Config(access_boost=0),
+                  embedder=product_embedder(), embedding_model='test-vectors-v1')
+
+
+def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, spaces, user):
+    from tests.model_fixtures import RecordedLLM
+
+    context = spaces.authorize(user, spaces.create(user, 'Lexical mode').space_id)
+    memory = Memory(runtime, context, llm=RecordedLLM())
+    original = memory.remember_raw('无关内容。' * 120 + '末尾记录绿茶', 'chat')
+    memory.add_fact('user', 'sister', '王小明')
+    memory.add_fact('王小明', 'works_at', '月亮公司')
+    memory.add_fact('user', 'likes', '绿茶')
+    memory.remember('I live in Shenzhen.', 'chat')
+    assert memory.source_vector_operation(original.id) is None
+    with memory.dao.read_snapshot() as view:
+        sql = view._sql
+        assert not sql.run('SELECT 1 FROM mnemotrace.embeddings WHERE user_id=%s AND space_id=%s',
+                           sql.scope).fetchall()
+        assert not sql.run("SELECT 1 FROM mnemotrace.operations WHERE user_id=%s AND space_id=%s AND kind='reembed'",
+                           sql.scope).fetchall()
+    fresh = Memory(runtime, context)
+    assert fresh.search('绿茶').answer() == '绿茶'
+    result = fresh.search('我的姐姐在哪里工作？')
+    assert result.via == 'multi-hop' and result.answer() == '月亮公司'
+    assert [fact.predicate for fact in result.facts] == ['sister', 'works_at']
+    assert fresh.retrieve_episodes('绿茶').episodes[0].id == original.id
+    assert fresh.search('Where do I live?').answer() == 'Shenzhen'
+    with fresh.dao.read_snapshot() as view:
+        previous = view.get(SOURCE, original.id)
+        snapshot = view.snapshot
+    summary = replace(domain(previous), summary='A short summary.')
+    record = StoredRecord.from_record(context, summary, summary_version=1,
+                                      record_version=previous.record_version + 1)
+    fresh.dao.commit(ChangeSet(CommitConditions(snapshot), 'lexical-summary',
+                               writes=(RecordWrite(record, previous.record_version),)))
+    result = fresh.lean_context('末尾记录', n_facts=0, n_chunks=0, n_summaries=1)
+    assert 'A short summary.' in result.context and '末尾记录绿茶' not in result.context
+
+
+def test_source_bm25_rejects_english_stop_word_only_matches(memory):
+    memory.remember_raw('A17 is written on a blue folder.', 'chat')
+    sources = [memory.remember_raw(f'Apollo launch code rehearsal note {i}.', 'chat') for i in range(5)]
+    assert memory.retrieve_episodes("What is Apollo's launch code?", k=1).episodes[0].id in {
+        source.id for source in sources
+    }
+    assert not memory.retrieve_episodes('What is Kryptonite?').episodes
 
 
 def test_exact_vector_and_bm25_use_full_scoped_corpus(memory, runtime, spaces, user, accounts):
@@ -38,13 +84,13 @@ def test_exact_vector_and_bm25_use_full_scoped_corpus(memory, runtime, spaces, u
         vector = tuple(memory._embedder.embed('works Orbit'))
         with memory.dao.read_snapshot() as view:
             for state, facts in ((FactState.CURRENT, (current, repeat)), (FactState.ALL, (old, current, repeat))):
-                query = RetrievalQuery(FactQuery(state=state, limit=1), 'works Orbit', vector, 'hashing-v1')
+                query = RetrievalQuery(FactQuery(state=state, limit=1), 'works Orbit', vector, 'test-vectors-v1')
                 corpus = Corpus(view, query, RecordKind.FACT)
                 expected = bm25_scores(query.text, [(fact.id, f'{fact.text} {date_terms(fact.valid_at)}') for fact in facts])
                 assert corpus.lexical_scores(ids=[fact.id for fact in facts]) == pytest.approx(expected)
                 assert corpus.lexical_scores() == pytest.approx(dict(sorted(expected.items(), key=lambda row: -row[1])[:1]))
                 semantic = {fact.id: cosine(list(vector), memory._embedder.embed(fact.text)) for fact in facts}
-                assert corpus.vector_scores() == pytest.approx(dict(sorted(semantic.items(), key=lambda row: -row[1])[:1]))
+                assert corpus.vector_scores() == pytest.approx(dict(sorted(semantic.items(), key=lambda row: (-row[1], row[0]))[:1]))
                 assert Corpus(view, replace(query, embedding_model='other'), RecordKind.FACT).vector_scores() == {}
             assert Corpus(view, replace(query, vector=(0.0,) * len(vector)), RecordKind.FACT).vector_scores() == {}
         assert memory.search('Where does Ana work?').answer() == 'Orbit'
@@ -115,7 +161,7 @@ def test_limited_candidates_can_rank_both_published_facts_in_a_slot(memory):
     with memory.dao.read_snapshot() as view:
         snapshot = view.snapshot
     memory.dao.commit(ChangeSet(CommitConditions(snapshot), 'synthetic-competing-record', writes=(write,),
-                                embeddings=(memory._embedding(write, shadow.text),)))
+                                embeddings=memory._embeddings(write, shadow.text)))
     query = memory._query(shadow.text, top_k=1, facts=FactQuery(limit=1))
     with memory.dao.read_snapshot() as view:
         batch = view.candidates(query)
@@ -195,7 +241,7 @@ def test_retrieval_ignores_old_text_vectors_after_edit(memory):
     with memory.dao._transaction() as sql:
         sql.insert('embeddings', {
             'fact_id': old.id, 'target_kind': 'Fact', 'field': 'text', 'content_version': 1,
-            'model': 'hashing-v1', 'dimension': len(request.vector),
+            'model': 'test-vectors-v1', 'dimension': len(request.vector),
             'vector': '[' + ','.join(map(str, request.vector)) + ']',
         })
     with memory.dao.read_snapshot() as view:
@@ -228,7 +274,7 @@ def test_source_vector_coverage_worker_and_erase_fencing(memory, runtime, cluste
         revision = view.snapshot.core_revision
     with Database(cluster.discovery, purpose='discovery') as discovery:
         assert discovery.discover_processing(embedding=('other', 256), include_extraction=False) == ()
-        run_worker(discovery, runtime, Config(), None, HashingEmbedder(), 'hashing-v1', once=True)
+        run_worker(discovery, runtime, Config(), None, product_embedder(), 'test-vectors-v1', once=True)
     after = memory.retrieve_episodes('Bluebird')
     assert after.complete and after.episodes[0].id == source.id
     assert memory.operation(operation.operation_id).state.value == 'completed'
@@ -243,7 +289,7 @@ def test_source_vector_coverage_worker_and_erase_fencing(memory, runtime, cluste
         record = view.get(SOURCE, another.id)
     memory.clear_space()
     with pytest.raises(VersionConflict):
-        tasks.commit_source_vector(lease, record, 'hashing-v1',
+        tasks.commit_source_vector(lease, record, 'test-vectors-v1',
                                    tuple(memory._embedder.embed(domain(record).content)))
     assert memory.get_episode(another.id) is None
 
@@ -315,13 +361,13 @@ def test_retrieval_backfill_is_paged_and_deduplicated(memory):
 
 
 def test_source_failure_is_visible_and_retry_keeps_the_original(memory, runtime):
-    class InvalidEmbedder(HashingEmbedder):
+    class InvalidEmbedder(MockEmbedder):
         def embed_batch(self, texts):
             return []
 
     source = memory.remember_raw('The synthetic archive code is Clover', 'chat')
     task = memory.source_vector_operation(source.id)
-    broken = Memory(runtime, memory.context, embedder=InvalidEmbedder(), embedding_model='hashing-v1')
+    broken = Memory(runtime, memory.context, embedder=InvalidEmbedder(), embedding_model='test-vectors-v1')
     assert broken._processing.run_one(task.operation_id)
     assert memory.operation(task.operation_id).error_code == 'embedding_invalid'
     assert memory.retrieve_episodes('Clover').limitations == ('source_vectors_failed',)
@@ -332,7 +378,7 @@ def test_source_failure_is_visible_and_retry_keeps_the_original(memory, runtime)
 
 
 def test_source_vector_retrieves_without_lexical_overlap(memory, runtime):
-    class SynonymEmbedder(HashingEmbedder):
+    class SynonymEmbedder(MockEmbedder):
         def embed(self, text):
             return [1.0, 0.0]
 

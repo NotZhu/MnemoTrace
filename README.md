@@ -5,7 +5,7 @@
 
 Long-term memory for LLM agents, with a Python library, HTTP service, MCP tools, TypeScript SDK, and a management console.
 
-MnemoTrace stores conversation episodes, extracts facts with time and provenance, and retrieves relevant context across sessions. Memory updates can retain superseded facts for historical queries. Natural-language fact extraction requires a configured LLM. Raw records, explicit facts, existing memory reads, and database restoration work without one. Hashing embeddings remain available for lexical smoke checks; they do not establish semantic retrieval quality.
+MnemoTrace stores conversation episodes, extracts facts with time and provenance, and retrieves relevant context across sessions. Memory updates can retain superseded facts for historical queries. Natural-language fact extraction requires a configured LLM. Raw records, explicit facts, existing memory reads, and database restoration work without one. The base package supports Chinese and English lexical retrieval without an embedding model. The official deployment uses a pinned FastEmbed model for hybrid retrieval.
 
 [中文](README.zh-CN.md) · [Documentation](docs/README.md) · [Quickstart](docs/quickstart.md)
 
@@ -13,7 +13,7 @@ MnemoTrace stores conversation episodes, extracts facts with time and provenance
 
 Start with the [deployment guide](deploy/README.md) to initialize Postgres and create an account and space. Use the [quickstart](docs/quickstart.md) to ingest a conversation and query the result.
 
-The HTTP service, MCP tools, SDK clients, CLI and direct Python integrations use explicitly selected Postgres spaces. Install `mnemotrace-memory[serve]` for the service or `mnemotrace-memory[postgres,llm]` for the Python quickstart. The in-memory `MemoryEngine` class remains available for offline algorithm experiments.
+The HTTP service, MCP tools, SDK clients, CLI and direct Python integrations use explicitly selected Postgres spaces. Install `mnemotrace-memory[serve]` for the service or `mnemotrace-memory[postgres,llm,fastembed]` for the Python quickstart. The in-memory `MemoryEngine` class remains available for offline algorithm experiments.
 
 ## Choose an entry point
 

@@ -172,7 +172,7 @@ def main() -> None:
     if args.out:
         write_jsonl(args.out, rows, summary)
 
-    print(f"MnemoTrace eval harness -- {len(ITEMS)} items, LLM extraction with hashing embeddings")
+    print(f"MnemoTrace eval harness -- {len(ITEMS)} items, LLM extraction with lexical retrieval")
     print(f"storage={args.storage} (RAM only)\n")
     print(f"  {'id':5} {'category':16} {'MnemoTrace':10} {'naive':6}  question")
     print("  " + "-" * 78)

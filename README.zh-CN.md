@@ -13,7 +13,7 @@ MnemoTrace 保存原始会话，从中提取带时间和来源的事实，并跨
 
 按[部署说明](deploy/README.md)初始化 Postgres、创建账号和空间，再按[快速开始](docs/quickstart.md)写入会话并检索结果。
 
-HTTP 服务、MCP 工具、SDK、CLI 和 Python 直连均使用显式选择的 Postgres 空间。运行服务安装 `mnemotrace-memory[serve]`，运行 Python 示例安装 `mnemotrace-memory[postgres,llm]`。离线 `MemoryEngine` 用于离线算法实验。
+HTTP 服务、MCP 工具、SDK、CLI 和 Python 直连均使用显式选择的 Postgres 空间。运行服务安装 `mnemotrace-memory[serve]`，运行 Python 示例安装 `mnemotrace-memory[postgres,llm,fastembed]`。离线 `MemoryEngine` 用于离线算法实验。
 
 ## 选择入口
 

@@ -168,7 +168,7 @@ def main(argv=None) -> None:
         'python': platform.python_version(), 'platform': platform.platform(),
         'clock': CLOCK, 'config': stable['config'], 'workloads': workload_manifest(),
         'fixture_sha256': hashlib.sha256((ROOT / 'tests/extraction_responses.json').read_bytes()).hexdigest(),
-        'scope': 'offline synthetic reference; hashing vectors; no answerer or judge; not database performance',
+        'scope': 'offline synthetic reference; lexical retrieval; no answerer or judge; not database performance',
     }
     (args.out / 'metadata.json').write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(summary, ensure_ascii=False))

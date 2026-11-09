@@ -21,7 +21,10 @@ from mnemotrace.types import Conflict, Fact, WorkingMemory
 @pytest.fixture
 def memory(runtime, spaces, user):
     space = spaces.create(user, 'Record tests')
-    return Memory(runtime, spaces.authorize(user, space.space_id))
+    from tests.embedder_fixtures import product_embedder
+
+    return Memory(runtime, spaces.authorize(user, space.space_id), embedder=product_embedder(),
+                  embedding_model='test-vectors-v1')
 
 
 def message(key, content='Synthetic content', **fields):

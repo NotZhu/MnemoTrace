@@ -21,6 +21,8 @@ import re
 from ..config import Config
 from ..store import GraphStore, VectorStore
 from ..types import Fact
+from .evidence import chinese_self_chain
+from .hybrid import mentioned_entities
 from .jsonio import loads_object
 from .lexical import stem, stems
 
@@ -102,6 +104,9 @@ class MultiHopPlanner:
         return None
 
     def _ordered_predicates(self, query: str) -> list[str]:
+        chinese = chinese_self_chain(query)
+        if chinese:
+            return list(chinese)
         toks = stems(query)
         tokset = set(toks)
         hits: list[tuple[int, str]] = []
@@ -130,17 +135,11 @@ class MultiHopPlanner:
         return ordered
 
     def _anchor_entity(self, query: str, user_id: str):
-        if re.search(r"\b(my|user's|the user's|their|his|her)\b", query.lower()):
+        if chinese_self_chain(query) or re.search(r"\b(my|user's|the user's|their|his|her)\b", query.lower()):
             return self.graph.get_entity(user_id, user_id) or self.graph.get_entity(user_id, "user")
-        q = set(stems(query))
-        for ent in self.graph.entities.values():
-            if ent.user_id != user_id:
-                continue
-            for name in (ent.name, *ent.aliases):
-                name_toks = stems(name)
-                if name_toks and all(t in q for t in name_toks):
-                    return ent
-        return None
+        matches = mentioned_entities(query, (ent for ent in self.graph.entities.values() if ent.user_id == user_id),
+                                      getattr(self.graph, 'resolve_mention_alias', None))
+        return next(iter(matches.values()), None)
 
     def _location_constraint(self, query: str) -> str:
         q = query.lower()

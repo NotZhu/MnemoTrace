@@ -1,11 +1,12 @@
 """Lean 读取路径（AGENTS.md Bet A/E）：可扩展的获胜条件 —— 从一小段检索结果（persona + facts +
-session summaries + 少量完整 chunk）作答，而不是重放全部历史。这些测试在离线环境下（HashingEmbedder
+session summaries + 少量完整 chunk）作答，而不是重放全部历史。这些测试在离线环境下（MockEmbedder
 + 规则 extractor，零依赖、确定性）固定框架行为：L2 摘要会被构建并索引，L3 persona 会被合成，
 lean_context 能正确组装它们，并做去重 + 硬性大小上限。"""
 from __future__ import annotations
 
 from mnemotrace import Config
 
+from tests.embedder_fixtures import MockEmbedder
 from tests.model_fixtures import MemoryEngine
 from mnemotrace.types import Episode
 from mnemotrace.util import DAY
@@ -56,7 +57,9 @@ def test_summarize_is_idempotent():
 
 def test_retrieve_summaries_is_relevant():
     mem = build()
-    hits = mem.retrieve_summaries("Which cities did I travel to?", user_id="u1", k=3)
+    query = "Which cities did I travel to?"
+    mem.reembed(MockEmbedder(2, vectors={query: [1.0, 0.0], SESSIONS[1][0]: [1.0, 0.0]}))
+    hits = mem.retrieve_summaries(query, user_id="u1", k=3)
     assert hits, "summary retrieval returns something"
     joined = " ".join(h.text.lower() for h in hits)
     # 旅行相关的 session 应排在猫/吉他之前
@@ -91,7 +94,10 @@ def test_lean_context_assembles_all_layers():
 def test_lean_context_dedup_no_session_twice():
     """以完整形式展示的 session（detail chunk）绝不能再出现在摘要块里 —— 否则就是重复烧 token。
     这是 leanness 的核心不变量。"""
+    from tests.embedder_fixtures import product_embedder
+
     mem = build()
+    mem.reembed(product_embedder())
     detail = mem.retrieve_episodes("Kyoto temples", "u1", 2)
     detail_dates = {e.metadata.get("date") for e in detail}
     ctx = mem.lean_context("Kyoto temples", user_id="u1", n_summaries=10, n_chunks=2)
@@ -492,15 +498,20 @@ def test_structured_aggregation_candidates_filter_furniture_accessories():
 
 
 def test_lean_context_renders_structured_aggregation_candidates():
-    mem = MemoryEngine()
+    query = "How many pieces of furniture did I buy, assemble, sell, or fix?"
+    coffee_table = "I just got a new coffee table from West Elm."
+    mattress = "I needed a new mattress, and ordered one from Casper."
+    mem = MemoryEngine(embedder=MockEmbedder(2, vectors={
+        query: [1.0, 0.0], coffee_table: [1.0, 0.0], mattress: [1.0, 0.0],
+    }))
     mem.add("I bought scratch guards from IKEA to protect the furniture.", user_id="u1", event_time=BASE)
-    mem.add("I just got a new coffee table from West Elm.", user_id="u1", event_time=BASE + DAY)
+    mem.add(coffee_table, user_id="u1", event_time=BASE + DAY)
     mem.add("I finally assembled that IKEA bookshelf for my home office.", user_id="u1", event_time=BASE + 2 * DAY)
     mem.add("I got around to fixing the wobbly leg on my kitchen table.", user_id="u1", event_time=BASE + 3 * DAY)
-    mem.add("I needed a new mattress, and ordered one from Casper.", user_id="u1", event_time=BASE + 4 * DAY)
+    mem.add(mattress, user_id="u1", event_time=BASE + 4 * DAY)
 
     ctx = mem.lean_context(
-        "How many pieces of furniture did I buy, assemble, sell, or fix?",
+        query,
         user_id="u1",
         persona=False,
         n_facts=0,
@@ -2041,14 +2052,13 @@ def test_type_weighting_is_relevance_gated_and_embedder_gated():
     """修正后类型加权的两个安全性质：
       (1) 它只作用于 SEMANTIC 分数，因此只在相关 facts 之间重排，绝不会抬升离题项 ——
           'where do I work?' 仍须返回雇主，而不是某个偏好；
-      (2) 对离线 HashingEmbedder（cosine 噪声大）则整体关闭。"""
-    from mnemotrace.embed import HashingEmbedder
+      (2) 对无向量模式则整体关闭。"""
     from mnemotrace.retrieve.hybrid import HybridRetriever
     from mnemotrace.store import InMemoryGraphStore, InMemoryVectorStore
     from mnemotrace.config import Config
 
-    r = HybridRetriever(InMemoryVectorStore(), InMemoryGraphStore(), HashingEmbedder(64), Config())
-    assert r._semantic is False, "type-weighting must be gated off for the hashing embedder"
+    r = HybridRetriever(InMemoryVectorStore(), InMemoryGraphStore(), None, Config())
+    assert r._semantic is False, "type-weighting must be gated off in lexical mode"
 
     # 相关性仍然优先（这正是此前乘数导致的回归：对工作类查询，'favorite_language'
     # 的 fact 排在了 'works_at' 前面）
