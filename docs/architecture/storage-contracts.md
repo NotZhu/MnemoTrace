@@ -112,6 +112,7 @@ SpaceDAO 的 claim/renew/save_product/product 是空间内任务路径；跨空�
 
 FactQuery 两条时间轴独立。valid_at=null 取快照时间；known_at=null 沿用有效时间检查 expired_at，
 不额外加 created_at 截止，以保持当前 Fact.is_live(as_of) 对晚摄入历史来源的可观察结果。
+产品新写入事实的认知时间与原文摄入时间统一使用数据库时钟；有效时间和导入快照中的显式历史时间保留输入值。
 显式 known_at 要求 created_at ≤ known_at。事实的结束时间被修改时，同一提交记录修改前的有效与认知结束时间。显式 known_at 先还原当时可见的结束时间，再判断有效与认知区间。
 CURRENT 要求有效时间和适用的认知时间均未结束；HISTORY 返回已失效/撤回版本，ALL 合并二者。
 三者均排除所选视图之后才生效的事实，显式 known_at 的创建时间截止也适用于 HISTORY/ALL；未知事件时间不补造。

@@ -168,6 +168,7 @@ class Tasks:
             if kind is not None:
                 check_model()
             sql.ensure_session(episode.session_id)
+            episode.ingested_at = sql.run('SELECT clock_timestamp()').fetchone()[0].timestamp()
             episode.sequence = allocate_sequence(sql, episode.session_id)
             stored = replace(StoredRecord.from_record(sql.context, episode), agent_id=record.agent_id)
             sql.write_record(stored, insert=True)
