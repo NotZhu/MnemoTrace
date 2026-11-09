@@ -6,10 +6,10 @@ ALTER TABLE mnemotrace.operations
     ADD FOREIGN KEY (user_id, space_id, parent_id)
         REFERENCES mnemotrace.operations ON DELETE CASCADE;
 UPDATE mnemotrace.operations SET ready_at = statement_timestamp()
-    WHERE kind IN ('extract', 'summary') AND phase = 'queued';
+    WHERE kind IN ('extract', 'digest') AND phase = 'queued';
 ALTER TABLE mnemotrace.operations ALTER COLUMN ready_at SET DEFAULT statement_timestamp();
 ALTER TABLE mnemotrace.operations ADD CHECK (
-    kind NOT IN ('extract', 'summary') OR phase <> 'queued' OR state <> 'pending' OR ready_at IS NOT NULL
+    kind NOT IN ('extract', 'digest') OR phase <> 'queued' OR state <> 'pending' OR ready_at IS NOT NULL
 );
 ALTER TABLE mnemotrace.operation_sources
     ADD COLUMN is_context boolean NOT NULL DEFAULT false;
@@ -17,7 +17,7 @@ ALTER TABLE mnemotrace.operation_products
     ADD COLUMN input_hash text CHECK (input_hash ~ '^[0-9a-f]{64}$');
 CREATE INDEX operations_parent ON mnemotrace.operations(user_id, space_id, parent_id);
 CREATE INDEX operations_ready ON mnemotrace.operations(ready_at)
-    WHERE state = 'pending' AND kind IN ('extract', 'summary');
+    WHERE state = 'pending' AND kind IN ('extract', 'digest');
 
 ALTER TABLE mnemotrace.record_commit_receipts
     ADD COLUMN segment_of mnemotrace.identifier,
@@ -25,9 +25,9 @@ ALTER TABLE mnemotrace.record_commit_receipts
         REFERENCES mnemotrace.operations ON DELETE CASCADE;
 CREATE INDEX record_commit_receipts_segment ON mnemotrace.record_commit_receipts(user_id, space_id, segment_of)
     WHERE segment_of IS NOT NULL;
-GRANT UPDATE (fact_ids, working_ids) ON mnemotrace.record_commit_receipts TO {runtime};
+GRANT UPDATE (fact_ids) ON mnemotrace.record_commit_receipts TO {runtime};
 
-CREATE TABLE mnemotrace.operation_summary_parts (
+CREATE TABLE mnemotrace.operation_digest_parts (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
     operation_id mnemotrace.identifier NOT NULL,
@@ -41,14 +41,14 @@ CREATE TABLE mnemotrace.operation_summary_parts (
     FOREIGN KEY (user_id,space_id,operation_id) REFERENCES mnemotrace.operations ON DELETE CASCADE,
     FOREIGN KEY (user_id,space_id,source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE
 );
-ALTER TABLE mnemotrace.operation_summary_parts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mnemotrace.operation_summary_parts FORCE ROW LEVEL SECURITY;
-GRANT SELECT, INSERT, UPDATE, DELETE ON mnemotrace.operation_summary_parts TO {runtime};
-GRANT SELECT, DELETE ON mnemotrace.operation_summary_parts TO {admin};
-CREATE POLICY migration ON mnemotrace.operation_summary_parts TO {migration} USING (true) WITH CHECK (true);
-CREATE POLICY account_read ON mnemotrace.operation_summary_parts FOR SELECT TO {admin} USING (true);
-CREATE POLICY account_delete ON mnemotrace.operation_summary_parts FOR DELETE TO {admin} USING (true);
-CREATE POLICY user_scope ON mnemotrace.operation_summary_parts TO {runtime}
+ALTER TABLE mnemotrace.operation_digest_parts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mnemotrace.operation_digest_parts FORCE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON mnemotrace.operation_digest_parts TO {runtime};
+GRANT SELECT, DELETE ON mnemotrace.operation_digest_parts TO {admin};
+CREATE POLICY migration ON mnemotrace.operation_digest_parts TO {migration} USING (true) WITH CHECK (true);
+CREATE POLICY account_read ON mnemotrace.operation_digest_parts FOR SELECT TO {admin} USING (true);
+CREATE POLICY account_delete ON mnemotrace.operation_digest_parts FOR DELETE TO {admin} USING (true);
+CREATE POLICY user_scope ON mnemotrace.operation_digest_parts TO {runtime}
     USING (user_id::text = nullif(current_setting('mnemotrace.user_id', true), ''))
     WITH CHECK (user_id::text = nullif(current_setting('mnemotrace.user_id', true), ''));
 
@@ -70,7 +70,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
     JOIN mnemotrace.users u ON u.user_id = o.user_id AND u.status = 'active'
     JOIN mnemotrace.memory_spaces s ON (s.user_id,s.space_id) = (o.user_id,o.space_id)
         AND s.status = 'active'
-    WHERE o.kind IN ('extract', 'summary') AND (
+    WHERE o.kind IN ('extract', 'digest') AND (
         (o.state = 'pending' AND (o.phase <> 'queued' OR o.ready_at <= statement_timestamp()))
         OR (o.state = 'retry_wait' AND o.next_attempt_at <= statement_timestamp())
         OR (o.state = 'running' AND o.lease_until <= statement_timestamp()))

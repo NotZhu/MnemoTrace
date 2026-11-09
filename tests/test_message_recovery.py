@@ -47,7 +47,7 @@ def test_source_time_comes_from_matching_role():
         data = json.loads(prompt.split('MNEMOTRACE_WINDOW\n', 1)[1])
         return json.dumps(dict(facts=[dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='user', predicate='lives_in', object='Synthetic city',
             text='Synthetic city', source_ids=[s['id'] for s in data['pending']])],
-            working=[], summaries=[]))
+            digests=[]))
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
     mem.remember_messages([message('u', event_time=None), message('a', role='assistant', event_time=200)], 's', 'u')
     assert mem.flush_messages('u')['ok']
@@ -71,7 +71,7 @@ def test_reembedding_does_not_authorize_generation_from_an_obsolete_policy():
     assert window['state'] == 'failed' and window['error_code'] == 'configuration_changed'
 
 
-def test_core_and_summary_evidence_are_strict_on_restore():
+def test_core_and_digest_evidence_are_strict_on_restore():
     mem = MemoryEngine(llm=FakeLLM(handler=reply))
     mem.remember_messages([message('a')], 's', 'u')
     assert mem.flush_messages('u')['ok']
@@ -221,7 +221,7 @@ def test_raise_for_failed_result_tolerates_core_success_aux_failure():
     # core 完成、摘要失败
     partial = dict(ok=False, status='failed', jobs=[
         dict(episode_id='a', core='completed', summarization='failed', state='failed',
-             error_code='summary_invalid_response')])
+             error_code='digest_invalid_response')])
     assert extract_partial_success(partial, {'a'}) is True
     raise_for_failed_result(partial, {'a'})  # 不抛
     # 核心本身失败 -> 必须抛
@@ -234,7 +234,7 @@ def test_raise_for_failed_result_tolerates_core_success_aux_failure():
     # 辅助失败但核心未全部完成（缺 id）-> 抛
     incomplete = dict(ok=False, status='failed', jobs=[
         dict(episode_id='a', core='completed', summarization='failed', state='failed',
-             error_code='summary_invalid_response')])
+             error_code='digest_invalid_response')])
     assert extract_partial_success(incomplete, {'a', 'b'}) is False
     with pytest.raises(Exception):
         raise_for_failed_result(incomplete, {'a', 'b'})

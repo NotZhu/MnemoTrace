@@ -12,7 +12,7 @@ import uuid
 from ..types import Episode
 from ..extraction import ExtractionError
 
-VERSION = 2
+VERSION = 3
 TERMINAL = {'completed', 'failed', 'cancelled'}
 
 
@@ -22,7 +22,7 @@ class MessageConflictError(ExtractionError):
     message = 'This message ID already identifies different input.'
 
 
-def digest(value):
+def content_hash(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                                     separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
 
@@ -32,7 +32,7 @@ def route(session_id, mode, scope, source_kind='dialogue'):
 
 
 def identity(message, mode, scope):
-    return digest([message['role'], message['content'], message['event_time'], mode, scope])
+    return content_hash([message['role'], message['content'], message['event_time'], mode, scope])
 
 
 def normalized(messages, session_id, mode, scope):
@@ -65,14 +65,14 @@ def normalized(messages, session_id, mode, scope):
 
 
 def source(ep):
-    return digest([ep.user_id, ep.session_id, ep.message_id, ep.sequence, ep.role,
+    return content_hash([ep.user_id, ep.session_id, ep.message_id, ep.sequence, ep.role,
                    ep.event_time, ep.ingested_at, ep.mode, ep.content, ep.source_kind, ep.scope])
 
 
 def config_identity(mem, *, include_embedding=True):
     # Stable across restarts; runtime provider object identity is checked separately.
     options = {k: v for k, v in asdict(mem.config).items()
-               if k.startswith(('extraction_', 'joint_', 'summary_')) or k in {
+               if k.startswith(('extraction_', 'joint_', 'digest_')) or k in {
                    'explicit_preference_extraction', 'preference_object_filter',
                    'preference_object_normalization', 'preference_reversal_extraction',
                    'procedural_extraction',
@@ -101,7 +101,7 @@ def config_identity(mem, *, include_embedding=True):
         type(embedder).__module__, type(embedder).__qualname__, embedder.dim,
         *[setting(getattr(embedder, k, None)) for k in ('model', 'model_name', 'model_id')],
     ]
-    return digest([options, mem.policy, provider, embedding] if include_embedding else [options, mem.policy, provider])
+    return content_hash([options, mem.policy, provider, embedding] if include_embedding else [options, mem.policy, provider])
 
 
 def _number(value):
@@ -117,10 +117,10 @@ def reset_attempts(window, field, reason, now):
 
 STATES = {'pending', 'running', 'retry_wait', 'completed', 'failed', 'cancelled'}
 SOURCE_FIELDS = {'session_id', 'message_id', 'fingerprint', 'source', 'length', 'sequence', 'mode',
-                 'scope', 'source_kind', 'core', 'summary', 'window_ids', 'cancelled', 'position', 'parts', 'summary_requested', 'commits', 'summary_receipt'}
+                 'scope', 'source_kind', 'core', 'digest', 'window_ids', 'cancelled', 'position', 'parts', 'digest_requested', 'commits', 'digest_receipt'}
 SESSION_FIELDS = {'session_id', 'mode', 'scope', 'source_kind', 'last_activity', 'cutoff', 'following', 'batch_id', 'last_turn'}
 WINDOW_FIELDS = {'route', 'batch_id', 'input', 'input_hash', 'config', 'generation_config', 'state', 'phase', 'attempts',
-                 'embed_attempts', 'next_attempt_at', 'result', 'vectors', 'core_saved', 'summary_saved',
+                 'embed_attempts', 'next_attempt_at', 'result', 'vectors', 'core_saved', 'digest_saved',
                  'error_code', 'history', 'guard', 'limits', 'result_hash', 'operation', 'stats'}
 
 
@@ -151,10 +151,10 @@ def validate_state(value, episodes=None, embedding_dim=None):
                 require(isinstance(row['session_id'], str) and bool(row['session_id']))
                 require(row['mode'] in {'live', 'historical'} if dialogue else row['mode'] is None)
                 require(isinstance(row['message_id'], str) and bool(row['message_id']) if dialogue else row['message_id'] is None)
-                require(row['scope'] in {'auto', 'long', 'raw', 'working'})
+                require(row['scope'] in {'auto', 'long', 'raw'})
                 require(row['core'] in {'not_requested', 'pending', 'completed', 'failed'})
-                require(row['summary'] in {'not_needed', 'pending', 'completed', 'failed'})
-                require(type(row['cancelled']) is bool and type(row['summary_requested']) is bool and type(row['sequence']) is int and row['sequence'] > 0)
+                require(row['digest'] in {'not_needed', 'pending', 'completed', 'failed'})
+                require(type(row['cancelled']) is bool and type(row['digest_requested']) is bool and type(row['sequence']) is int and row['sequence'] > 0)
                 require(type(row['length']) is int and type(row['position']) is int and 0 <= row['position'] <= row['length'])
                 require(all(isinstance(row[k], str) and len(row[k]) == 64 for k in ('source', 'fingerprint')))
                 require(isinstance(row['window_ids'], list) and len(set(row['window_ids'])) == len(row['window_ids']))
@@ -214,18 +214,18 @@ def validate_state(value, episodes=None, embedding_dim=None):
                     require(last <= part['start'])
                     last = part['end']
                     window = state['windows'][part['key']]
-                    require(window['result'] is not None and window['result']['summaries'].get(key) == part['text'])
-                    require(key in window['summary_saved'])
+                    require(window['result'] is not None and window['result']['digests'].get(key) == part['text'])
+                    require(key in window['digest_saved'])
                     view = next(v for v in window['input']['pending'] if v['id'] == key)
                     require((part['start'], part['end']) == (view['ranges'][0][0], view['ranges'][-1][1]))
-                receipt = row['summary_receipt']
+                receipt = row['digest_receipt']
                 if receipt is not None:
-                    require(isinstance(receipt, dict) and set(receipt) == {'key', 'summary_hash', 'coverage', 'erased_sources'})
+                    require(isinstance(receipt, dict) and set(receipt) == {'key', 'digest_hash', 'coverage', 'erased_sources'})
                     require(isinstance(receipt['key'], str) and len(receipt['key']) == 24)
-                    require(isinstance(receipt['summary_hash'], str) and len(receipt['summary_hash']) == 64 and
-                            all(c in '0123456789abcdef' for c in receipt['summary_hash']))
+                    require(isinstance(receipt['digest_hash'], str) and len(receipt['digest_hash']) == 64 and
+                            all(c in '0123456789abcdef' for c in receipt['digest_hash']))
                     from ..store._validation import validate_coverage
-                    validate_coverage(receipt['coverage'], 'pipeline.summary_receipt.coverage')
+                    validate_coverage(receipt['coverage'], 'pipeline.digest_receipt.coverage')
                     require(isinstance(receipt['erased_sources'], list) and all(isinstance(k, str) and k for k in receipt['erased_sources']))
                     require(len(set(receipt['erased_sources'])) == len(receipt['erased_sources']))
                     require(receipt['coverage']['source'] == row['source'] and receipt['coverage']['original_length'] == row['length'])
@@ -248,26 +248,26 @@ def validate_state(value, episodes=None, embedding_dim=None):
                     require(ep is not None and ep.user_id == namespace and source(ep) == row['source'])
                     require(len(ep.content) == row['length'] and ep.source_kind == row['source_kind'])
                     require(row['core'] != 'completed' or ep.consolidated and ep.coverage is not None)
-                    require(row['summary'] != 'completed' or bool(ep.summary))
+                    require(row['digest'] != 'completed' or bool(ep.digest))
                     if dialogue:
                         require((ep.message_id, ep.sequence, ep.mode) == (row['message_id'], row['sequence'], row['mode']))
                         require(identity({'role': ep.role, 'content': ep.content, 'event_time': ep.event_time}, row['mode'], row['scope']) == row['fingerprint'])
-                    receipt = row['summary_receipt']
-                    if row['summary'] == 'completed' and any(key in state['windows'][wid]['summary_saved'] for wid in row['window_ids']):
+                    receipt = row['digest_receipt']
+                    if row['digest'] == 'completed' and any(key in state['windows'][wid]['digest_saved'] for wid in row['window_ids']):
                         require(receipt is not None)
                     if receipt is not None:
-                        require(ep.summary and row['summary'] == 'completed')
-                        require(receipt['summary_hash'] == digest(ep.summary) and receipt['coverage'] == ep.summary_coverage)
+                        require(ep.digest and row['digest'] == 'completed')
+                        require(receipt['digest_hash'] == content_hash(ep.digest) and receipt['coverage'] == ep.digest_coverage)
                         require(receipt['coverage']['source'] == row['source'])
                         window = state['windows'].get(receipt['key'])
                         if window is not None:
-                            require(key in window['summary_saved'] and receipt['summary_hash'] == digest(window['result']['summaries'][key]))
+                            require(key in window['digest_saved'] and receipt['digest_hash'] == content_hash(window['result']['digests'][key]))
                             require(receipt['coverage']['input_hash'] == window['input_hash'])
                             if dialogue:
                                 view = next(v for v in window['input']['pending'] if v['id'] == key)
                                 require(receipt['coverage']['ranges'] == view['ranges'])
                             else:
-                                require(len(row['parts']) == 1 and row['parts'][0]['text'] == ep.summary)
+                                require(len(row['parts']) == 1 and row['parts'][0]['text'] == ep.digest)
                                 require(row['parts'][0]['start'] == 0 and row['parts'][0]['end'] == row['length'])
                     if row['position']:
                         last_commit = row['commits'][-1]
@@ -286,17 +286,17 @@ def validate_state(value, episodes=None, embedding_dim=None):
                 require(isinstance(session['batch_id'], str))
             for key, win in state['windows'].items():
                 require(isinstance(key, str) and len(key) == 24 and isinstance(win, dict) and set(win) == WINDOW_FIELDS)
-                require(win['route'] in state['sessions'] and win['operation'] in {'extract', 'summary', 'conflicts'})
+                require(win['route'] in state['sessions'] and win['operation'] in {'extract', 'digest', 'conflicts'})
                 require(win['state'] in STATES and win['phase'] in {'generate', 'embed', 'commit', 'compensate', 'done'})
-                require(win['input_hash'] == digest(win['input']) and isinstance(win['config'], str) and len(win['config']) == 64)
+                require(win['input_hash'] == content_hash(win['input']) and isinstance(win['config'], str) and len(win['config']) == 64)
                 require(isinstance(win['generation_config'], str) and len(win['generation_config']) == 64
                         and all(c in '0123456789abcdef' for c in win['generation_config']))
                 require(isinstance(win['guard'], str) and bool(win['guard']) and _number(win['next_attempt_at']))
-                require(type(win['core_saved']) is bool and isinstance(win['summary_saved'], list) and isinstance(win['vectors'], dict))
+                require(type(win['core_saved']) is bool and isinstance(win['digest_saved'], list) and isinstance(win['vectors'], dict))
                 require(win['error_code'] is None or isinstance(win['error_code'], str))
                 require(isinstance(win['stats'], dict) and all(type(n) is int and n >= 0 for n in win['stats'].values()))
-                require(isinstance(win['limits'], dict) and set(win['limits']) == {'summary_min_chars', 'summary_max_chars'})
-                require(all(type(n) is int and n > 0 for n in win['limits'].values()) and win['limits']['summary_max_chars'] < win['limits']['summary_min_chars'])
+                require(isinstance(win['limits'], dict) and set(win['limits']) == {'digest_min_chars', 'digest_max_chars'})
+                require(all(type(n) is int and n > 0 for n in win['limits'].values()) and win['limits']['digest_max_chars'] < win['limits']['digest_min_chars'])
                 counts = dict(attempts=0, embed_attempts=0)
                 require(isinstance(win['history'], list))
                 for attempt in win['history']:
@@ -312,7 +312,7 @@ def validate_state(value, episodes=None, embedding_dim=None):
                     Completion('', attempt['finish_reason'], attempt['usage'])
                     require(attempt['error_code'] is None or isinstance(attempt['error_code'], str))
                 require(all(type(win[k]) is int and 0 <= win[k] <= 3 and win[k] == n for k, n in counts.items()))
-                require(win['result_hash'] == (digest(win['result']) if win['result'] is not None else None))
+                require(win['result_hash'] == (content_hash(win['result']) if win['result'] is not None else None))
                 require(win['phase'] not in {'embed', 'commit', 'compensate', 'done'} or isinstance(win['result'], dict))
                 require(win['state'] != 'completed' or win['phase'] == 'done' and win['core_saved'])
                 data = win['input']
@@ -324,7 +324,7 @@ def validate_state(value, episodes=None, embedding_dim=None):
                 require(isinstance(data['parts'], list) and all(isinstance(k, str) for k in data['parts']))
                 require(len(set(data['parts'])) == len(data['parts']) and key not in data['parts'])
                 require(isinstance(data['candidates'], list))
-                if win['operation'] == 'summary':
+                if win['operation'] == 'digest':
                     require(len(data['pending']) == 1 and not data['context'] and not data['candidates'])
                     require(not data['parts'] or len(data['parts']) >= 2)
                     if win['state'] not in TERMINAL:
@@ -375,14 +375,14 @@ def validate_state(value, episodes=None, embedding_dim=None):
                     from types import SimpleNamespace
                     from .planning import validate_result
                     validate_result(win['result'], data, SimpleNamespace(**win['limits']), normalized=True)
-                    require(set(win['summary_saved']).issubset(win['result']['summaries']))
+                    require(set(win['digest_saved']).issubset(win['result']['digests']))
                 for vector in win['vectors'].values():
                     from ..store._validation import validate_embedding
                     validate_embedding(vector, 'pipeline vector', embedding_dim or len(vector))
                 if win['phase'] == 'commit':
                     from .._pipeline import texts_for
                     vectors_expected = embedding_dim is not None or bool(win['vectors'])
-                    expected = {digest(text) for text in texts_for(win)} if vectors_expected else set()
+                    expected = {content_hash(text) for text in texts_for(win)} if vectors_expected else set()
                     require(set(win['vectors']) == expected)
         if docs is not None:
             require(all(ep.message_id is None or ep.user_id in value['namespaces'] and ep.id in value['namespaces'][ep.user_id]['sources'] for ep in docs.values()))
@@ -432,9 +432,9 @@ class PipelineTasks:
     def _record(self, ep, *, fingerprint, sequence, timestamp, requested):
         row = dict(session_id=ep.session_id, message_id=ep.message_id, fingerprint=fingerprint, source=source(ep),
             length=len(ep.content), sequence=sequence, mode=ep.mode, scope=ep.scope, source_kind=ep.source_kind,
-            core='pending' if requested else 'not_requested', summary='completed' if ep.summary else
-                'pending' if requested and len(ep.content) >= self.memory.config.summary_min_chars else 'not_needed',
-            window_ids=[], cancelled=False, position=0, parts=[], summary_requested=False, commits=[], summary_receipt=None)
+            core='pending' if requested else 'not_requested', digest='completed' if ep.digest else
+                'pending' if requested and len(ep.content) >= self.memory.config.digest_min_chars else 'not_needed',
+            window_ids=[], cancelled=False, position=0, parts=[], digest_requested=False, commits=[], digest_receipt=None)
         state = self.ensure()
         state['sources'][ep.id] = row
         state['sequences'][ep.session_id] = sequence
@@ -470,7 +470,7 @@ class PipelineTasks:
             fresh.append(ep.id)
         return output, fresh
 
-    def register(self, episodes, timestamp, operation='extract', *, summaries=False):
+    def register(self, episodes, timestamp, operation='extract', *, digests=False):
         ids = []
         for ep in episodes:
             if ep.user_id != self.namespace:
@@ -483,12 +483,12 @@ class PipelineTasks:
                 raise ValueError('Source changed; register a new event identity')
             if operation == 'extract' and row['core'] == 'not_requested' and not ep.consolidated:
                 row['core'] = 'pending'
-                if summaries and len(ep.content) >= self.memory.config.summary_min_chars and not ep.summary:
-                    row['summary'] = 'pending'
-            if operation == 'summary' and len(ep.content) >= self.memory.config.summary_min_chars and not ep.summary:
-                if row['summary'] == 'not_needed':
-                    row['summary'] = 'pending'
-                row['summary_requested'] = row['core'] != 'pending'
+                if digests and len(ep.content) >= self.memory.config.digest_min_chars and not ep.digest:
+                    row['digest'] = 'pending'
+            if operation == 'digest' and len(ep.content) >= self.memory.config.digest_min_chars and not ep.digest:
+                if row['digest'] == 'not_needed':
+                    row['digest'] = 'pending'
+                row['digest_requested'] = row['core'] != 'pending'
             ids.append(ep.id)
         return ids
 
@@ -502,25 +502,25 @@ class PipelineTasks:
 
     def force(self, session_id=None, ids=None, retry_failed=False, operation=None):
         selected = self.rows(session_id, ids)
-        if retry_failed and operation in {None, 'summary'}:
+        if retry_failed and operation in {None, 'digest'}:
             for row in selected.values():
                 # Erasure removes the cached window and its plaintext. An explicit
-                # retry can prepare missing summaries from the surviving source.
-                if (not row['cancelled'] and row['summary'] == 'failed' and not any(
+                # retry can prepare missing digests from the surviving source.
+                if (not row['cancelled'] and row['digest'] == 'failed' and not any(
                         self.state['windows'][key]['state'] != 'completed'
-                        and self.state['windows'][key]['operation'] in {'extract', 'summary'}
+                        and self.state['windows'][key]['operation'] in {'extract', 'digest'}
                         for key in row['window_ids'])):
-                    row.update(summary='pending', summary_requested=True)
+                    row.update(digest='pending', digest_requested=True)
         cutoffs = {}
         for row in selected.values():
-            if not row['cancelled'] and (row['core'] != 'not_requested' or row['summary'] == 'pending'):
+            if not row['cancelled'] and (row['core'] != 'not_requested' or row['digest'] == 'pending'):
                 key = route(row['session_id'], row['mode'], row['scope'], row['source_kind'])
                 cutoffs[key] = max(cutoffs.get(key, 0), row['sequence'])
         for key, cutoff in cutoffs.items():
             self.trigger(self.state['sessions'][key], cutoff)
         if retry_failed and self.state:
             for win in self.state['windows'].values():
-                if operation == 'summary' and not (win['operation'] == 'summary' or win['operation'] == 'extract' and win['core_saved']):
+                if operation == 'digest' and not (win['operation'] == 'digest' or win['operation'] == 'extract' and win['core_saved']):
                     continue
                 if win['state'] not in {'failed', 'cancelled', 'retry_wait'} or not any(v['id'] in selected for v in win['input']['pending']):
                     continue
@@ -531,8 +531,8 @@ class PipelineTasks:
                         row = self.state['sources'][item['id']]
                         if not row['cancelled']:
                             row['core'] = 'pending' if win['operation'] == 'extract' else row['core']
-                            if row['summary'] == 'failed':
-                                row['summary'] = 'pending'
+                            if row['digest'] == 'failed':
+                                row['digest'] = 'pending'
                     continue
                 win.update(guard=self.state['generation'], config=config_identity(self.memory),
                     generation_config=config_identity(self.memory, include_embedding=False),
@@ -544,8 +544,8 @@ class PipelineTasks:
                     row = self.state['sources'][item['id']]
                     if row['core'] == 'failed':
                         row['core'] = 'pending'
-                    if row['summary'] == 'failed':
-                        row['summary'] = 'pending'
+                    if row['digest'] == 'failed':
+                        row['digest'] = 'pending'
 
     def cancel_missing(self):
         if not self.state:
@@ -571,13 +571,13 @@ class PipelineTasks:
                 for commit in row['commits']:
                     if commit['key'] == key:
                         commit['erased_sources'] = sorted(erased)
-                if row['summary_receipt'] is not None and row['summary_receipt']['key'] == key:
-                    row['summary_receipt']['erased_sources'] = sorted(erased)
+                if row['digest_receipt'] is not None and row['digest_receipt']['key'] == key:
+                    row['digest_receipt']['erased_sources'] = sorted(erased)
                 if key in row['window_ids']:
                     row['window_ids'].remove(key)
                     row['parts'] = [p for p in row['parts'] if p['key'] != key]
-                    if row['summary'] == 'pending':
-                        row['summary'] = 'failed'
+                    if row['digest'] == 'pending':
+                        row['digest'] = 'failed'
             del self.state['windows'][key]
 
     def cancel_window(self, win, code):
@@ -589,8 +589,8 @@ class PipelineTasks:
             row = self.rows()[item['id']]
             if win['operation'] == 'extract' and not win['core_saved']:
                 row['core'] = 'failed'
-            if row['summary'] == 'pending':
-                row['summary'] = 'failed'
+            if row['digest'] == 'pending':
+                row['digest'] = 'failed'
 
     def invalidate(self, session_id=None):
         if not self.state:
@@ -606,15 +606,15 @@ class PipelineTasks:
         # Report dialogue/raw jobs by their session sequence for a stable contract.
         rows = sorted(self.rows(session_id, ids).items(), key=lambda item: item[1]['sequence'])
         for key, row in rows:
-            wins = [self.state['windows'][k] for k in row['window_ids'] if self.state['windows'][k]['operation'] in {'extract', 'summary'}]
+            wins = [self.state['windows'][k] for k in row['window_ids'] if self.state['windows'][k]['operation'] in {'extract', 'digest'}]
             active = next((w for w in reversed(wins) if w['state'] not in TERMINAL), None)
             failed = next((w for w in reversed(wins) if w['state'] in {'failed', 'cancelled'}), None)
-            complete = row['core'] in {'completed', 'not_requested'} and row['summary'] in {'completed', 'not_needed'}
+            complete = row['core'] in {'completed', 'not_requested'} and row['digest'] in {'completed', 'not_needed'}
             win = active or failed or (wins[-1] if wins else None)
-            state = 'cancelled' if row['cancelled'] else 'completed' if complete else (active['state'] if active else failed['state'] if failed and row['core'] != 'pending' else 'failed' if row['core'] == 'failed' or row['summary'] == 'failed' else 'pending')
+            state = 'cancelled' if row['cancelled'] else 'completed' if complete else (active['state'] if active else failed['state'] if failed and row['core'] != 'pending' else 'failed' if row['core'] == 'failed' or row['digest'] == 'failed' else 'pending')
             jobs.append(dict(episode_id=key, message_id=row['message_id'], source_kind=row['source_kind'], operation=win['operation'] if win else 'extract',
                 sequence=row['sequence'], state=state, phase=win['phase'] if win else 'queued', core=row['core'],
-                summarization=row['summary'], coverage=deepcopy(self.memory.episodes_doc.get(key).coverage) if self.memory.episodes_doc.get(key) else None,
+                summarization=row['digest'], coverage=deepcopy(self.memory.episodes_doc.get(key).coverage) if self.memory.episodes_doc.get(key) else None,
                 error_code=win['error_code'] if win else 'source_changed' if state == 'failed' else None, attempts=win['attempts'] if win else 0,
                 embed_attempts=win['embed_attempts'] if win else 0))
         for key, win in (self.state or {}).get('windows', {}).items():
@@ -633,18 +633,18 @@ class PipelineTasks:
         jobs = {j['episode_id']: j for j in self.snapshot(ids=set(ids))['jobs'] if 'core' in j}
         return dict(ok=True, messages=[deepcopy(jobs[k]) for k in ids])
 
-    def summary_result(self, episode_id):
+    def digest_result(self, episode_id):
         row = self.rows().get(episode_id)
         ep = self.memory.episodes_doc.get(episode_id)
         if ep is None:
             return dict(status='cancelled', error_code='source_changed')
-        if ep.summary:
+        if ep.digest:
             return dict(status='completed', error_code=None)
         if row is None:
-            return dict(status='not_needed' if len(ep.content) < self.memory.config.summary_min_chars else 'pending', error_code=None)
+            return dict(status='not_needed' if len(ep.content) < self.memory.config.digest_min_chars else 'pending', error_code=None)
         wins = [self.state['windows'][k] for k in row['window_ids']]
-        return dict(status=row['summary'], error_code=next((w['error_code'] for w in reversed(wins)
-            if w['operation'] in {'extract', 'summary'} and w['error_code']), None) if row['summary'] in {'pending', 'failed'} else None)
+        return dict(status=row['digest'], error_code=next((w['error_code'] for w in reversed(wins)
+            if w['operation'] in {'extract', 'digest'} and w['error_code']), None) if row['digest'] in {'pending', 'failed'} else None)
 
     def identity_saved(self, episode_id):
         from .fact_rules import _NAME_PREDICATES

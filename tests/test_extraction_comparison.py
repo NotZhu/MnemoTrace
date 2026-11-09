@@ -23,7 +23,7 @@ def comparison(monkeypatch, tmp_path):
     facts = [dict(id=g['id'], subject=g['variants'][0][0], predicate=g['variants'][0][1],
         object=g['variants'][0][2], user='u', sources=g['sources'][0], valid_at=case['events'][i]['at'],
         invalid_at=None, supersedes=None) for i, g in enumerate(case['facts'])]
-    final = dict(facts=facts, working=[], identity={})
+    final = dict(facts=facts, identity={})
     rows = [dict(revision=r, mode=m, case_id=c, run=n, suite_hash=fingerprint, status='completed',
         final=deepcopy(final), raw=deepcopy(final), restored=True, elapsed_ms=10,
         calls=[dict(phase='extraction', provider_request=True, status='completed',

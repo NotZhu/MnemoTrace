@@ -77,7 +77,6 @@ console.log(sessions.sessions.map((s) => ({
   id: s.id,
   episodes: s.episodes,
   factsAdded: s.facts_added,
-  workingLive: s.working_live,
 })))
 
 const memoryPage = await mnemotrace.memories({

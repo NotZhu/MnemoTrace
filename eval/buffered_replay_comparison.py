@@ -45,11 +45,11 @@ def pilot_errors(row, case, fingerprint):
     errors = validate_observation(row, case, fingerprint)
     if row['status'] != 'completed' or not row['restored']:
         errors.append('incomplete_execution')
-    if any(c['phase'] not in {'extraction', 'summary'} or c.get('provider_request') and
+    if any(c['phase'] not in {'extraction', 'digest'} or c.get('provider_request') and
            (c.get('usage') or {}).get('total_tokens') is None for c in row['calls']):
         errors.append('incomplete_metering')
     score = score_case(case, row['final'])
-    if any(not d['source_exact'] for d in (*score['facts'], *score['working'])):
+    if any(not d['source_exact'] for d in score['facts']):
         errors.append('wrong_gold_source')
     return errors
 
@@ -124,7 +124,7 @@ def compare(out, *, runtime=DEFAULT_RUNTIME, extractor=None, cases=None, runs=2,
             python=platform.python_version(), platform=platform.platform(),
             litellm_version=_optional_version('litellm') if extractor else None, extractor=extractor, runs=runs,
             settings=dict(temperature=0, client_attempts=1, request_timeout=45, storage='memory', embedder='hashing',
-                          close_summarize=True, close_clear_working=False, close_outcomes=False),
+                          close_generate_digests=True, close_outcomes=False),
             expected=ordered_grid(selected, runs), terminal_reason='created')
         Budget.create(out/'budget.json', calls=max_calls, tokens=max_tokens, seconds=max_seconds)
     suite = {c['id']: c for c in load_suite(out/'suite.json')['cases']}

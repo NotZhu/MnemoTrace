@@ -52,13 +52,13 @@ def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, s
     with fresh.dao.read_snapshot() as view:
         previous = view.get(SOURCE, original.id)
         snapshot = view.snapshot
-    summary = replace(domain(previous), summary='A short summary.')
-    record = StoredRecord.from_record(context, summary, summary_version=1,
+    digest = replace(domain(previous), digest='A short digest.')
+    record = StoredRecord.from_record(context, digest, digest_version=1,
                                       record_version=previous.record_version + 1)
-    fresh.dao.commit(ChangeSet(CommitConditions(snapshot), 'lexical-summary',
+    fresh.dao.commit(ChangeSet(CommitConditions(snapshot), 'lexical-digest',
                                writes=(RecordWrite(record, previous.record_version),)))
-    result = fresh.lean_context('末尾记录', n_facts=0, n_chunks=0, n_summaries=1)
-    assert 'A short summary.' in result.context and '末尾记录绿茶' not in result.context
+    result = fresh.lean_context('末尾记录', n_facts=0, n_chunks=0, n_digests=1)
+    assert 'A short digest.' in result.context and '末尾记录绿茶' not in result.context
 
 
 def test_source_bm25_rejects_english_stop_word_only_matches(memory):
@@ -195,13 +195,6 @@ def test_aggregate_counts_full_snapshot_and_respects_time_and_redaction(memory):
     assert memory.aggregate_facts('visited', start=20, end=30, facts=scope).count == 1
 
 
-def test_historical_context_excludes_working_memory_created_later(memory):
-    item = memory.remember_working('Synthetic pending task', 'chat', event_time=100)
-    assert item.content in memory.lean_context('pending task', session_id='chat').context
-    historical = memory.lean_context('pending task', session_id='chat', as_of=item.created_at - 1)
-    assert item.content not in historical.context
-
-
 def test_search_returns_snapshot_result_when_access_reinforcement_conflicts(memory, cluster, monkeypatch):
     fact = memory.add_fact('Ana', 'likes', 'Clover')
     memory._config.access_boost = 0.5
@@ -278,33 +271,33 @@ def test_source_vector_coverage_worker_and_erase_fencing(memory, runtime, cluste
     assert memory.get_episode(another.id) is None
 
 
-def test_summary_lexical_projection_follows_text_version(memory):
+def test_digest_lexical_projection_follows_text_version(memory):
     source = memory.remember_raw('Synthetic material', 'chat')
     for version, text in enumerate(('Clover', 'Snowdrop'), 1):
         with memory.dao.read_snapshot() as view:
             previous = view.get(SOURCE, source.id)
             snapshot = view.snapshot
-        updated = replace(domain(previous), summary=text)
-        record = StoredRecord.from_record(memory.context, updated, summary_version=version,
+        updated = replace(domain(previous), digest=text)
+        record = StoredRecord.from_record(memory.context, updated, digest_version=version,
                                           record_version=previous.record_version + 1)
-        memory.dao.commit(ChangeSet(CommitConditions(snapshot), f'summary-test-{version}',
+        memory.dao.commit(ChangeSet(CommitConditions(snapshot), f'digest-test-{version}',
                                     writes=(RecordWrite(record, previous.record_version),)))
         result = memory.retrieve_episodes(text)
         assert [(ep.id, ep.text, ep.derived) for ep in result.episodes] == [(source.id, text, True)]
     assert memory.retrieve_episodes('Clover').episodes == ()
 
 
-def test_historical_retrieval_uses_raw_text_until_the_current_summary_is_known(memory):
+def test_historical_retrieval_uses_raw_text_until_the_current_digest_is_known(memory):
     source = memory.remember_raw('Project Orchid original wording', 'chat', event_time=100)
     cutoffs = []
-    for version, text in enumerate(('Project Orchid first summary', 'Project Orchid later detail'), 1):
+    for version, text in enumerate(('Project Orchid first digest', 'Project Orchid later detail'), 1):
         with memory.dao.read_snapshot() as view:
             previous = view.get(SOURCE, source.id)
             snapshot = view.snapshot
             cutoffs.append(view.at.timestamp())
-        record = StoredRecord.from_record(memory.context, replace(domain(previous), summary=text),
-                                          summary_version=version, record_version=previous.record_version + 1)
-        memory.dao.commit(ChangeSet(CommitConditions(snapshot), f'historical-summary-{version}',
+        record = StoredRecord.from_record(memory.context, replace(domain(previous), digest=text),
+                                          digest_version=version, record_version=previous.record_version + 1)
+        memory.dao.commit(ChangeSet(CommitConditions(snapshot), f'historical-digest-{version}',
                                     writes=(RecordWrite(record, previous.record_version),)))
 
     for cutoff in cutoffs:
@@ -315,13 +308,13 @@ def test_historical_retrieval_uses_raw_text_until_the_current_summary_is_known(m
     current, = memory.retrieve_episodes('Orchid').episodes
     assert current.text == 'Project Orchid later detail' and current.derived
     with memory.dao.read_snapshot() as view:
-        after_summary = view.at.timestamp()
-    historical, = memory.retrieve_episodes('Orchid', as_of=after_summary).episodes
+        after_digest = view.at.timestamp()
+    historical, = memory.retrieve_episodes('Orchid', as_of=after_digest).episodes
     assert historical == current
 
     with memory.dao._transaction() as sql:
-        sql.update('source_summaries', {'summary_written_at': None}, 'source_id = %s', (source.id,))
-    historical, = memory.retrieve_episodes('Orchid', as_of=after_summary).episodes
+        sql.update('source_digests', {'digest_written_at': None}, 'source_id = %s', (source.id,))
+    historical, = memory.retrieve_episodes('Orchid', as_of=after_digest).episodes
     assert historical.text == source.content and not historical.derived
     assert memory.retrieve_episodes('Orchid').episodes == (current,)
 
@@ -375,12 +368,12 @@ def test_source_vector_retrieves_without_lexical_overlap(memory, runtime):
     with memory.dao.read_snapshot() as view:
         previous = view.get(SOURCE, source.id)
         snapshot = view.snapshot
-    summary = replace(domain(previous), summary='Condensed evidence')
-    record = StoredRecord.from_record(memory.context, summary, summary_version=1,
+    digest = replace(domain(previous), digest='Condensed evidence')
+    record = StoredRecord.from_record(memory.context, digest, digest_version=1,
                                       record_version=previous.record_version + 1)
-    memory.dao.commit(ChangeSet(CommitConditions(snapshot), 'source-summary',
+    memory.dao.commit(ChangeSet(CommitConditions(snapshot), 'source-digest',
                                 writes=(RecordWrite(record, previous.record_version),)))
-    context = memory.lean_context('Daybreak', n_facts=0, n_chunks=0, n_summaries=1)
+    context = memory.lean_context('Daybreak', n_facts=0, n_chunks=0, n_digests=1)
     assert 'Condensed evidence' in context.context
 
 

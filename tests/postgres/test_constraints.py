@@ -108,7 +108,7 @@ def test_account_deletion_cleans_sources_facts_derived_data(accounts, runtime, s
 
 def test_task_references_and_required_stats(runtime, spaces, user):
     from psycopg.types.json import Jsonb
-    stats = dict.fromkeys(('facts_added','duplicates','invalidated','working_added','model_calls','windows_completed'), 0)
+    stats = dict.fromkeys(('facts_added','duplicates','invalidated','model_calls','windows_completed'), 0)
     a, b = spaces.create(user, 'A'), spaces.create(user, 'B')
     def operation(conn, space, counters):
         conn.execute('INSERT INTO mnemotrace.operations(user_id,space_id,operation_id,kind,state,phase,attempts,'

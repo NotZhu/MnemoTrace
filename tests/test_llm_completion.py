@@ -22,7 +22,7 @@ def provider_client(reason, content, usage=None):
 
 @pytest.mark.parametrize("reason", ["stop", "length", "content_filter"])
 def test_provider_metadata_is_retained_even_for_complete_json(reason):
-    client = provider_client(reason, '{"facts":[],"working":[]}', SimpleNamespace(
+    client = provider_client(reason, '{"facts":[],}', SimpleNamespace(
         prompt_tokens=23, completion_tokens=7, total_tokens=30))
     result = client.complete_result("synthetic")
     assert result.finish_reason == reason

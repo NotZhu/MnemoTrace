@@ -45,10 +45,9 @@ def test_cross_agent_lifecycle_example_http(example_http):
     assert result["status_before"]["ok"] is True
     assert result["status_before"]["session"]["episodes"] == 0
     assert VERIFY_PHRASE in result["context_after"]
-    assert result["status_after_write"]["session"]["episodes"] == 3
-    assert result["status_after_write"]["session"]["working_live"] == 1
+    assert result["status_after_write"]["session"]["episodes"] == 2
     assert result["flushed"]["ok"] is True
-    assert result["report"]["episodes"] == 3
+    assert result["report"]["episodes"] == 2
     assert len(result["report"]["facts"]) == 2
     assert any(VERIFY_PHRASE in fact["text"] for fact in result["report"]["facts"])
     assert any("PASS: lifecycle saved durable memory" in line for line in lines)
@@ -65,7 +64,7 @@ def test_cross_agent_lifecycle_main_http(example_http, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "mode: http" in out
     assert "agent_status:" in out
-    assert "session_report: episodes=3 facts=2 redacted=0" in out
+    assert "session_report: episodes=2 facts=2 redacted=0" in out
     assert "PASS: lifecycle saved durable memory and the session report audits it." in out
 
 

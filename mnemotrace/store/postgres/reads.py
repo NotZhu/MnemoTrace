@@ -5,7 +5,7 @@ import json
 from ..contracts import FactQuery, FactState, RetrievalQuery, SpaceSettings
 from .errors import DataCorruption
 from .records import (
-    CONFLICT, ENTITY, FACT, RELATION, SOURCE, WORKING, ROW_SCOPE, SCOPE, TABLES, timestamp, unpack,
+    CONFLICT, ENTITY, FACT, RELATION, SOURCE, ROW_SCOPE, SCOPE, TABLES, timestamp, unpack,
 )
 
 
@@ -47,13 +47,13 @@ class ReadView:
 
     def sources(self, source_ids, *, known_at=None):
         clauses, args = ['r.id = ANY(%s)'], [list(source_ids)]
-        self.exclude_muted(clauses, args, 'r.content', "coalesce(s.summary, '')")
-        return self._sql.select(SOURCE, clauses, args, summary_known_at=known_at)
+        self.exclude_muted(clauses, args, 'r.content', "coalesce(s.digest, '')")
+        return self._sql.select(SOURCE, clauses, args, digest_known_at=known_at)
 
-    def summary_version(self, source_id):
-        row = self._sql.run(f'SELECT summary_version FROM mnemotrace.source_summaries WHERE {SCOPE} '
+    def digest_version(self, source_id):
+        row = self._sql.run(f'SELECT digest_version FROM mnemotrace.source_digests WHERE {SCOPE} '
                             'AND source_id = %s', (*self._sql.scope, source_id)).fetchone()
-        # A cleared summary retains the version reserved for its replacement.
+        # A cleared digest retains the version reserved for its replacement.
         return row[0] if row else 1
 
     def list_sources(self, *, session_id=None, after_id=None, limit=100):
@@ -199,12 +199,12 @@ class ReadView:
         if not budget or episode.sequence is None:
             return ()
         rows = self._sql.run("""WITH preceding AS (
-            SELECT r.id, r.sequence, sum(octet_length(coalesce(nullif(s.summary, ''), r.content)))
+            SELECT r.id, r.sequence, sum(octet_length(coalesce(nullif(s.digest, ''), r.content)))
                 OVER (ORDER BY r.sequence DESC) AS bytes,
                 bool_and(coalesce(s.processing_state = 'completed', false)
                     AND (r.mode,r.scope,r.source_kind) IS NOT DISTINCT FROM (%s,%s,%s))
                 OVER (ORDER BY r.sequence DESC) AS contiguous
-            FROM mnemotrace.sources r LEFT JOIN mnemotrace.source_summaries s
+            FROM mnemotrace.sources r LEFT JOIN mnemotrace.source_digests s
             ON (r.user_id,r.space_id,r.id) = (s.user_id,s.space_id,s.source_id)
             WHERE r.user_id = %s AND r.space_id = %s AND r.session_id = %s AND r.sequence < %s
             ORDER BY r.sequence DESC LIMIT %s)
@@ -222,19 +222,6 @@ class ReadView:
         args.extend((subject, predicate.strip().lower()))
         return self._sql.select(FACT, clauses, args)
 
-    def working(self, *, session_id=None, kind=None, as_of=None, known_at=None, after_id=None, limit=100):
-        clauses = ['NOT r.consumed', '(r.expires_at IS NULL OR r.expires_at > %s)']
-        args = [self.at if as_of is None else timestamp(as_of)]
-        if known_at is not None or as_of is not None:
-            clauses.append('r.created_at <= %s')
-            args.append(args[0] if known_at is None else timestamp(known_at))
-        for name, value in (('session_id', session_id), ('kind', kind)):
-            if value is not None:
-                clauses.append(f'r.{name} = %s')
-                args.append(value)
-        page(clauses, args, after_id, limit)
-        self.exclude_muted(clauses, args, 'r.content')
-        return self._sql.select(WORKING, clauses, args, limit=limit)
 
     def conflict_pairs(self, records):
         ids = [record.ref.record_id for record in records]
@@ -389,7 +376,7 @@ class ReadView:
         clauses, args = [], []
         if text:
             clauses.append("""strpos(lower(concat_ws(' ', r.content,r.session_id,
-                (SELECT s.summary FROM mnemotrace.source_summaries s
+                (SELECT s.digest FROM mnemotrace.source_digests s
                  WHERE (s.user_id,s.space_id,s.source_id) = (r.user_id,r.space_id,r.id)))), %s) > 0""")
             args.append(text.lower())
         return self._sql.select(SOURCE, clauses, args, limit=limit, offset=offset), self._count('sources r', clauses, args)
@@ -427,18 +414,14 @@ class ReadView:
 
     def overview(self, at):
         sql = self._sql
-        timestamp_at = timestamp(at)
         counts = self.counts()
         fact_sql, args = self._fact_conditions(FactQuery(valid_at=at))
         live = self._count('facts r', fact_sql, args)
         sensitive = self._count('facts r', ('r.sensitive',), ())
         _, outcomes = self.browse_facts(FactQuery(valid_at=at, limit=1), outcomes=True, count_only=True)
-        summary, consolidated = sql.run(f"""SELECT count(*) FILTER (WHERE summary <> ''),
+        digest, consolidated = sql.run(f"""SELECT count(*) FILTER (WHERE digest <> ''),
             count(*) FILTER (WHERE processing_state = 'completed')
-            FROM mnemotrace.source_summaries WHERE {SCOPE}""", sql.scope).fetchone()
-        working = sql.run(f"""SELECT count(*) FROM mnemotrace.working_memories
-            WHERE {SCOPE} AND NOT consumed AND (expires_at IS NULL OR expires_at > %s)""",
-            (*sql.scope, timestamp_at)).fetchone()[0]
+            FROM mnemotrace.source_digests WHERE {SCOPE}""", sql.scope).fetchone()
         pending, failures = sql.run("""SELECT
             count(DISTINCT p.source_id) FILTER (WHERE o.state IN ('pending','running','retry_wait')),
             count(DISTINCT p.source_id) FILTER (WHERE o.state = 'failed')
@@ -447,9 +430,9 @@ class ReadView:
             sql.scope).fetchone()
         conflicts = self._count('conflicts r', ("r.status = 'pending'",), ())
         return dict(episodes=counts[SOURCE], episodes_consolidated=consolidated, episodes_pending=pending,
-                    extraction_failures=failures, summaries=summary, facts=counts[FACT], facts_live=live,
+                    extraction_failures=failures, digests=digest, facts=counts[FACT], facts_live=live,
                     facts_superseded=counts[FACT] - live, facts_sensitive=sensitive, facts_outcomes=outcomes,
-                    working_live=working, pending_conflicts=conflicts, entities=counts[ENTITY],
+                    pending_conflicts=conflicts, entities=counts[ENTITY],
                     relations=counts[RELATION])
 
     def overflowing_slots(self, predicates):
@@ -491,9 +474,9 @@ class ReadView:
         args = (*self._sql.scope, text.lower(), session_id, session_id)
         where = f'{ROW_SCOPE} AND strpos(lower(r.session_id), %s) > 0 AND (%s::text IS NULL OR r.session_id = %s)'
         rows = self._sql.rows(f"""SELECT r.session_id AS id,
-            e.episodes, e.episodes_consolidated, e.episodes_pending, e.extraction_failures, e.summaries,
+            e.episodes, e.episodes_consolidated, e.episodes_pending, e.extraction_failures, e.digests,
             extract(epoch FROM e.first_event_at)::float8 AS first_event_at,
-            extract(epoch FROM e.last_event_at)::float8 AS last_event_at, w.working_live,
+            extract(epoch FROM e.last_event_at)::float8 AS last_event_at,
             f.facts_added, f.facts_sensitive
             FROM mnemotrace.sessions r
             CROSS JOIN LATERAL (
@@ -501,9 +484,9 @@ class ReadView:
                     count(*) FILTER (WHERE ss.processing_state = 'completed') AS episodes_consolidated,
                     count(*) FILTER (WHERE core.pending) AS episodes_pending,
                     count(*) FILTER (WHERE core.failed) AS extraction_failures,
-                    count(*) FILTER (WHERE ss.summary <> '') AS summaries,
+                    count(*) FILTER (WHERE ss.digest <> '') AS digests,
                     min(s.event_time) AS first_event_at, max(s.event_time) AS last_event_at
-                FROM mnemotrace.sources s LEFT JOIN mnemotrace.source_summaries ss
+                FROM mnemotrace.sources s LEFT JOIN mnemotrace.source_digests ss
                     ON (ss.user_id,ss.space_id,ss.source_id) = (s.user_id,s.space_id,s.id)
                 CROSS JOIN LATERAL (
                     SELECT bool_or(o.state IN ('pending','running','retry_wait')) AS pending,
@@ -516,11 +499,6 @@ class ReadView:
                 WHERE (s.user_id,s.space_id,s.session_id) = (r.user_id,r.space_id,r.session_id)
             ) e
             CROSS JOIN LATERAL (
-                SELECT count(*) AS working_live FROM mnemotrace.working_memories w
-                WHERE (w.user_id,w.space_id,w.session_id) = (r.user_id,r.space_id,r.session_id)
-                    AND NOT w.consumed AND (w.expires_at IS NULL OR w.expires_at > %s)
-            ) w
-            CROSS JOIN LATERAL (
                 SELECT count(*) AS facts_added, count(*) FILTER (WHERE fact.sensitive) AS facts_sensitive
                 FROM mnemotrace.facts fact
                 WHERE (fact.user_id,fact.space_id) = (r.user_id,r.space_id)
@@ -531,7 +509,7 @@ class ReadView:
                       AND s.session_id = r.session_id)
             ) f
             WHERE {where} ORDER BY e.last_event_at DESC NULLS LAST, r.session_id LIMIT %s OFFSET %s""",
-            (self.at, *args, limit, offset))
+            (*args, limit, offset))
         total = self._sql.run(f'SELECT count(*) FROM mnemotrace.sessions r WHERE {where}', args).fetchone()[0]
         return rows, total
 

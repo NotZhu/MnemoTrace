@@ -469,7 +469,6 @@
     <div class="mcard rv d2"><div class="t"><span>语义记忆</span></div><div class="s"><span>提炼出的事实，以及实体之间的关系</span></div></div>
     <div class="mcard rv d3"><div class="t"><span>用户画像</span></div><div class="s"><span>根据已有事实，归纳身份、偏好与习惯</span></div></div>
     <div class="mcard rv d3"><div class="t"><span>程序记忆</span></div><div class="s"><span>交代过的规则、指令与操作步骤</span></div></div>
-    <div class="mcard rv d4"><div class="t"><span>工作记忆</span></div><div class="s"><span>当前会话的临时状态，可设置有效期</span></div></div>
   </div>
 </div></section>
 
@@ -569,7 +568,7 @@ python eval/validate_results.py --expected-rows 500 --require-complete --system 
     <article class="chip rv d2"><h3>双时间轴事实</h3><p>有效时间 + 事务时间,<b>as-of 时点查询</b>、知识更新一等公民</p></article>
     <article class="chip rv d3"><h3>非破坏式冲突解决</h3><p>精确槽 + 语义 + 子集,仅模糊时 LLM 裁决;<b>失效不删除、全溯源</b></p></article>
     <article class="chip rv d3"><h3>混合检索</h3><p>语义 + 词法 BM25 + 图 n 跳 + 时近/显著度,<b>RRF 融合</b>(可选重排)</p></article>
-    <article class="chip rv d4"><h3>类型化记忆</h3><p>情节 / 语义图谱 / 画像身份 / 程序性 / 工作记忆,各有存储与策略</p></article>
+    <article class="chip rv d4"><h3>类型化记忆</h3><p>情节 / 语义图谱 / 画像身份 / 程序性,各有存储与策略</p></article>
     <article class="chip rv d4"><h3>显著度衰减 + Reflector</h3><p>强化与遗忘、摘要刷新、答案验证回路</p></article>
   </div>
   <p class="sources-note rv d4"><span>LLM 负责语义抽取；嵌入器、向量库和图库通过接口接入。使用 <code>python scripts/check_core.py</code> 离线验证核心存储与配置错误契约。</span></p>

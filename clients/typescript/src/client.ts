@@ -191,7 +191,7 @@ export class MnemoTraceClient {
   }
 
   remember(content: string, options: SpaceOptions & {
-    sessionId?: string; scope?: 'auto' | 'long' | 'working' | 'raw';
+    sessionId?: string; scope?: 'auto' | 'long' | 'raw';
     processing?: 'immediate' | 'buffered'; agentId?: string; timeout?: number
   }): Promise<RememberResult> {
     return this.post('/v1/remember', {
@@ -219,10 +219,10 @@ export class MnemoTraceClient {
   }
 
   flushProcessing(options: SpaceOptions & { sessionId?: string; timeout?: number;
-    retryFailed?: boolean; includeSummaries?: boolean }): Promise<ProcessingFlushResult> {
+    retryFailed?: boolean; includeDigests?: boolean }): Promise<ProcessingFlushResult> {
     return this.post('/v1/processing/flush', {
       session_id: options.sessionId, timeout: options.timeout,
-      retry_failed: options.retryFailed, include_summaries: options.includeSummaries,
+      retry_failed: options.retryFailed, include_digests: options.includeDigests,
     }, options.spaceId)
   }
 
@@ -231,11 +231,11 @@ export class MnemoTraceClient {
   }
 
   recall(query: string, options: ({ spaceId: string; spaceIds?: never } | { spaceIds: string[]; spaceId?: never }) & {
-    nChunks?: number; sessionId?: string; asOf?: number; redactSensitive?: boolean
+    nChunks?: number; asOf?: number; redactSensitive?: boolean
     state?: StructuredReadOptions["state"]; validAt?: number; knownAt?: number
   }): Promise<RecallResult> {
     return this.post('/v1/recall', {
-      query, lean: true, n_chunks: options.nChunks, session_id: options.sessionId,
+      query, lean: true, n_chunks: options.nChunks,
       as_of: options.asOf, state: options.state, valid_at: options.validAt, known_at: options.knownAt, redact_sensitive: options.redactSensitive, space_ids: options.spaceIds,
     }, options.spaceId)
   }
@@ -373,7 +373,8 @@ export class MnemoTraceClient {
   // --- 批量导入 / 导出 / 遗忘 -------------------------------------------------
   /** 一次性批量导入历史记录（ChatGPT 导出、OpenAI messages、JSONL、transcript）。 */
   import(params: ImportParams, options: SpaceOptions): Promise<ImportResult> {
-    return this.post<ImportResult>('/v1/import', params, options.spaceId)
+    const { generateDigests, ...payload } = params
+    return this.post<ImportResult>('/v1/import', { ...payload, generate_digests: generateDigests }, options.spaceId)
   }
 
   /** 数据导出。默认返回可安全分享的结构化导出；传入 includeSensitive=true 获取完整私有导出。 */

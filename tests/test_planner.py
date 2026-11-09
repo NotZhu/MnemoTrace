@@ -65,14 +65,14 @@ def test_historical_context_filters_sources_before_top_k():
     query = 'violet cipher'
     assert memory.retrieve_episodes(query, k=1)[0].id == new.id
     options = dict(facts=scope, persona=False, n_facts=0)
-    context = memory.lean_context(query, n_chunks=1, n_summaries=0, **options)
+    context = memory.lean_context(query, n_chunks=1, n_digests=0, **options)
     assert old.id in context and new.id not in context
 
     for source in (old, new):
-        source.summary = source.content
+        source.digest = source.content
         memory._sync_episode(source)
     for chunks, cascade in ((0, False), (1, True)):
-        context = memory.lean_context(query, n_chunks=chunks, n_summaries=1, cascade=cascade, **options)
+        context = memory.lean_context(query, n_chunks=chunks, n_digests=1, cascade=cascade, **options)
         assert old.id in context and new.id not in context
 
 

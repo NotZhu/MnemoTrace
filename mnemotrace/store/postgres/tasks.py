@@ -4,11 +4,11 @@ from datetime import timedelta
 import json
 from uuid import uuid4
 
-from ...consolidate.pipeline import digest, source
+from ...consolidate.pipeline import content_hash, source
 from ..contracts import CommitConditions, CommitReceipt, EmbeddingWrite, ExtractionProduct, Lease
 from ..contracts import OperationKind, OperationResult, RecordRef
 from ..contracts import OperationSpec, OperationStats, ProcessingPhase, ProcessingState, SourceVersion, StoredRecord
-from .dao import Applied, _apply_changes, _session_generation, _space_row, new_operation_id
+from .dao import Applied, _apply_changes, _space_row, new_operation_id
 from .errors import DataCorruption, VersionConflict
 from .lexical import project_text
 from .records import SCOPE, SOURCE, domain
@@ -20,7 +20,7 @@ RENEW_SECONDS = 20
 ATTEMPT_LIMIT = 3
 RETRY_DELAYS = (30, 120)
 ACTIVE = ('pending', 'retry_wait', 'running')
-MODEL_OPERATIONS = ('extract', 'summary')
+MODEL_OPERATIONS = ('extract', 'digest')
 RUNNABLE = (*MODEL_OPERATIONS, 'reembed')
 
 
@@ -97,17 +97,17 @@ class Tasks:
                     (o.user_id,o.space_id,o.session_id)
                 WHERE t.user_id = %s AND t.space_id = %s AND t.source_id = %s
                 AND o.embedding_model = %s AND o.embedding_dimension = %s
-                AND o.space_generation = s.space_generation AND o.session_generation = session.session_generation
+                AND o.space_generation = s.space_generation
                 ORDER BY o.operation_id LIMIT 1""", (*sql.scope, source_id, *embedding))
             return _result(rows[0]) if rows else None
 
-    def freeze(self, operation_ids, session_id, include_summaries):
+    def freeze(self, operation_ids, session_id, include_digests):
         with self.dao._transaction() as sql:
             if operation_ids is None:
                 rows = sql.run(f'SELECT operation_id FROM mnemotrace.operations WHERE {SCOPE} '
                                "AND state <> 'cancelled' "
                                'AND kind = ANY(%s) AND (session_id = %s OR %s) ORDER BY sequence,operation_id',
-                               (*sql.scope, list(MODEL_OPERATIONS if include_summaries else ('extract',)),
+                               (*sql.scope, list(MODEL_OPERATIONS if include_digests else ('extract',)),
                                 session_id, session_id is None)).fetchall()
                 operation_ids = [row[0] for row in rows]
             self._freeze(sql, operation_ids)
@@ -146,7 +146,7 @@ class Tasks:
         with self.dao._transaction(read_only=True) as sql:
             return receipt, self._associated(sql, receipt.source_ids)
 
-    def accept_source(self, record, check_model, *, embedding=None, import_digest=None,
+    def accept_source(self, record, check_model, *, embedding=None, import_hash=None,
                       kind=OperationKind.EXTRACT):
         episode = domain(record)
         operation_id = new_operation_id() if kind is not None else None
@@ -154,10 +154,10 @@ class Tasks:
 
         def apply(sql, revision, generation, settings):
             nonlocal operation_id
-            if import_digest is not None:
+            if import_hash is not None:
                 previous = sql.run(f'SELECT source_id,receipt FROM mnemotrace.import_receipts WHERE {SCOPE} '
-                                   'AND source_kind = %s AND digest = %s',
-                                   (*sql.scope, episode.source_kind, import_digest)).fetchone()
+                                   'AND source_kind = %s AND content_hash = %s',
+                                   (*sql.scope, episode.source_kind, import_hash)).fetchone()
                 if previous is not None:
                     source_id, payload = previous
                     if (not source_id or not isinstance(payload, dict) or set(payload) != {'operation_id'}
@@ -177,13 +177,12 @@ class Tasks:
                 queue_source_vector(sql, episode.id, episode.session_id, stored.content_version, generation, embedding)
             if kind is not None:
                 enqueue(sql, _spec(operation_id, kind, episode.session_id, (stored,)), generation,
-                        _session_generation(sql, episode.session_id),
                         ready_at=sql.run('SELECT clock_timestamp()').fetchone()[0])
-            if import_digest is not None:
+            if import_hash is not None:
                 from psycopg.types.json import Jsonb
                 sql.run("""INSERT INTO mnemotrace.import_receipts
-                    (user_id,space_id,source_kind,digest,source_id,receipt) VALUES (%s,%s,%s,%s,%s,%s)""",
-                    (*sql.scope, episode.source_kind, import_digest, episode.id, Jsonb(dict(operation_id=operation_id))))
+                    (user_id,space_id,source_kind,content_hash,source_id,receipt) VALUES (%s,%s,%s,%s,%s,%s)""",
+                    (*sql.scope, episode.source_kind, import_hash, episode.id, Jsonb(dict(operation_id=operation_id))))
             return Applied(True, source_ids=(episode.id,), count=1)
 
         return self.dao._mutate(acceptance_id, apply), operation_id
@@ -198,7 +197,6 @@ class Tasks:
 
     def _queue_messages(self, sql, session, generation, settings, records, fit):
         now = sql.run('SELECT clock_timestamp()').fetchone()[0]
-        session_generation = _session_generation(sql, session)
         # Only the latest unclaimed extraction window can grow without reordering sources.
         row = next(iter(sql.rows(f'SELECT * FROM mnemotrace.operations WHERE {SCOPE} '
                                  "AND session_id = %s AND kind = 'extract' ORDER BY sequence DESC LIMIT 1",
@@ -220,7 +218,7 @@ class Tasks:
             else:
                 open_id = new_operation_id()
                 enqueue(sql, _spec(open_id, OperationKind.EXTRACT, session, (record,)),
-                        generation, session_generation, ready_at=due)
+                        generation, ready_at=due)
             current.append(record)
             if ready:
                 open_id, current = None, []
@@ -263,8 +261,7 @@ class Tasks:
             return Lease(operation_id, token)
 
     def _current(self, sql, row):
-        return (row['space_generation'] == _space_row(sql)[1]
-                and row['session_generation'] == _session_generation(sql, row['session_id']))
+        return row['space_generation'] == _space_row(sql)[1]
 
     def _leased(self, sql, lease):
         row = _operation(sql, lease.operation_id)
@@ -314,16 +311,14 @@ class Tasks:
         row = _operation(sql, lease.operation_id)
         if not row or row['state'] != 'running' or row['lease_token'] != lease.token:
             raise VersionConflict('Task lease changed')
-        session_generation = _session_generation(sql, row['session_id'])
-        if (row['space_generation'] != view.snapshot.space_generation
-                or row['session_generation'] != session_generation):
+        if row['space_generation'] != view.snapshot.space_generation:
             raise VersionConflict('Task generation changed')
-        snapshot = replace(view.snapshot, session_id=row['session_id'], session_generation=session_generation)
+        snapshot = replace(view.snapshot, session_id=row['session_id'])
         if row['kind'] == 'reembed':
             return snapshot, row, (self.source_vector_input(view, lease.operation_id),)
         refs = _sources(sql, lease.operation_id)
-        if row['kind'] == 'summary' and len(refs) != 1:
-            raise DataCorruption('Summary operation requires exactly one source')
+        if row['kind'] == 'digest' and len(refs) != 1:
+            raise DataCorruption('Digest operation requires exactly one source')
         records = {record.ref.record_id: record for record in view.sources(tuple(s.source_id for s in refs))}
         if not refs or any(s.source_id not in records or records[s.source_id].content_version != s.content_version
                            for s in refs):
@@ -365,8 +360,8 @@ class Tasks:
             return None
         try:
             data = saved[0]
-            if (not row['extraction_saved'] or data['result_hash'] != digest(data['result'])
-                    or data['input_hash'] != digest(data['input'])
+            if (not row['extraction_saved'] or data['result_hash'] != content_hash(data['result'])
+                    or data['input_hash'] != content_hash(data['input'])
                     or data['input']['operation'] != row['kind']
                     or row['extraction_config'] != data['extraction_config']
                     or row['context_revision'] != data['context_revision']):
@@ -378,7 +373,7 @@ class Tasks:
                 raise ValueError('Checkpoint references differ from operation')
             return ExtractionProduct(CommitConditions(snapshot, versions, lease, data['extraction_config']),
                                      json.dumps(data['input']), json.dumps(data['result']),
-                                     OperationStats(**data['stats']), data['summary_max_chars'],
+                                     OperationStats(**data['stats']), data['digest_max_chars'],
                                      data['context_revision'], data['format_version'])
         except (TypeError, ValueError, KeyError) as exc:
             raise DataCorruption('Invalid extraction checkpoint') from exc
@@ -406,7 +401,7 @@ class Tasks:
                 episode = domain(record)
                 if (episode.session_id != row['session_id'] or source(episode) != item['source']
                         or item['representation_source'] is not None
-                        and digest(episode.summary) != item['representation_source']):
+                        and content_hash(episode.digest) != item['representation_source']):
                     raise VersionConflict('Source representation changed while extracting')
             for index, item in enumerate(data['context'], start=len(members)):
                 if item['id'] not in {ref.source_id for ref in members}:
@@ -419,7 +414,7 @@ class Tasks:
                 operation_id=lease.operation_id, input=data, result=result, format_version=product.format_version,
                 extraction_config=conditions.extraction_config, context_revision=product.context_revision,
                 source_versions=[asdict(ref) for ref in conditions.sources], stats=asdict(product.stats),
-                summary_max_chars=product.summary_max_chars, result_hash=digest(result), input_hash=digest(data)))
+                digest_max_chars=product.digest_max_chars, result_hash=content_hash(result), input_hash=content_hash(data)))
             self._release(sql, row, 'pending', phase='embed', embed_attempts=0, ready_at=now,
                           extraction_saved=True, extraction_config=conditions.extraction_config,
                           context_revision=product.context_revision)
@@ -429,13 +424,13 @@ class Tasks:
             row, now = self._leased(sql, lease)
             self._reset_checkpoint(sql, row, now)
 
-    def summary_parts(self, view, operation_id, source_id, fingerprint):
+    def digest_parts(self, view, operation_id, source_id, fingerprint):
         return view._sql.rows(f'SELECT part_id AS key,input_start AS start,input_end AS end,text '
-                              f'FROM mnemotrace.operation_summary_parts WHERE {SCOPE} '
+                              f'FROM mnemotrace.operation_digest_parts WHERE {SCOPE} '
                               'AND operation_id = %s AND source_id = %s AND extraction_config = %s ORDER BY input_start',
                               (*view._sql.scope, operation_id, source_id, fingerprint))
 
-    def save_summaries(self, sql, operation_id, generation, session_generation, session_id,
+    def save_digests(self, sql, operation_id, generation, session_id,
                        inputs, drafts, completed, minimum, fingerprint):
         for item in inputs:
             source_id = item['id']
@@ -444,13 +439,13 @@ class Tasks:
             if source_id not in completed or item['source_length'] < minimum:
                 continue
             record = sql.get(SOURCE, source_id)
-            if domain(record).summary:
+            if domain(record).digest:
                 continue
             child_id = new_operation_id()
-            enqueue(sql, _spec(child_id, OperationKind.SUMMARY, session_id, (record,)), generation,
-                    session_generation, ready_at=sql.run('SELECT clock_timestamp()').fetchone()[0],
+            enqueue(sql, _spec(child_id, OperationKind.DIGEST, session_id, (record,)), generation,
+                    ready_at=sql.run('SELECT clock_timestamp()').fetchone()[0],
                     parent_id=operation_id)
-            moved = sql.update('operation_summary_parts', {'operation_id': child_id},
+            moved = sql.update('operation_digest_parts', {'operation_id': child_id},
                                'operation_id = %s AND source_id = %s', (operation_id, source_id)).rowcount
             if moved:
                 # A cached draft saw the joint input even when it summarizes one source.
@@ -462,15 +457,15 @@ class Tasks:
                     WHERE {SCOPE} AND operation_id = %s AND source_id <> %s""",
                     (child_id, *sql.scope, operation_id, source_id))
 
-    def save_part(self, sql, operation_id, item, summary, fingerprint, replaced=()):
+    def save_part(self, sql, operation_id, item, digest, fingerprint, replaced=()):
         if replaced:
-            deleted = sql.delete('operation_summary_parts', 'operation_id = %s AND part_id = ANY(%s)',
+            deleted = sql.delete('operation_digest_parts', 'operation_id = %s AND part_id = ANY(%s)',
                                  (operation_id, list(replaced))).rowcount
             if deleted != len(replaced):
-                raise VersionConflict('Summary fragments changed')
-        sql.insert('operation_summary_parts', dict(
+                raise VersionConflict('Digest fragments changed')
+        sql.insert('operation_digest_parts', dict(
             operation_id=operation_id, source_id=item['id'], part_id=uuid4().hex,
-            input_start=item['ranges'][0][0], input_end=item['ranges'][-1][1], text=summary,
+            input_start=item['ranges'][0][0], input_end=item['ranges'][-1][1], text=digest,
             extraction_config=fingerprint))
 
     def _reset_checkpoint(self, sql, row, now):
@@ -492,25 +487,23 @@ class Tasks:
 
             commit = changes
             if not continuation:
-                earlier = sql.run(f'SELECT fact_ids,working_ids,source_ids FROM mnemotrace.record_commit_receipts '
+                earlier = sql.run(f'SELECT fact_ids,source_ids FROM mnemotrace.record_commit_receipts '
                                   f'WHERE {SCOPE} AND segment_of = %s ORDER BY core_revision,operation_id',
                                   (*sql.scope, operation_id)).fetchall()
                 receipt = changes.receipt
                 if earlier:
-                    facts = tuple(dict.fromkeys(item for ids, _, _ in earlier for item in ids))
-                    working = tuple(dict.fromkeys(item for _, ids, _ in earlier for item in ids))
-                    receipt = replace(receipt, fact_ids=tuple(dict.fromkeys((*facts, *receipt.fact_ids))),
-                                      working_ids=tuple(dict.fromkeys((*working, *receipt.working_ids))))
+                    facts = tuple(dict.fromkeys(item for ids, _ in earlier for item in ids))
+                    receipt = replace(receipt, fact_ids=tuple(dict.fromkeys((*facts, *receipt.fact_ids))))
                     commit = replace(changes, receipt=receipt)
             applied = _apply_changes(sql, commit, revision, generation, settings,
                                      checkpoint=checkpoint if continuation else None)
             if after is not None:
-                after(sql, generation, _session_generation(sql, changes.conditions.snapshot.session_id))
+                after(sql, generation)
             if not continuation:
                 sql.delete('operation_products', 'operation_id = %s', (operation_id,))
-                sql.delete('operation_summary_parts', 'operation_id = %s', (operation_id,))
+                sql.delete('operation_digest_parts', 'operation_id = %s', (operation_id,))
                 if earlier:
-                    sources = tuple(dict.fromkeys(item for _, _, ids in earlier for item in ids))
+                    sources = tuple(dict.fromkeys(item for _, ids in earlier for item in ids))
                     applied = replace(applied, source_ids=tuple(dict.fromkeys((*sources, *applied.source_ids))))
             return applied
 

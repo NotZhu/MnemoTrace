@@ -5,7 +5,7 @@ import pytest
 
 from mnemotrace.llm import FakeLLM
 from mnemotrace.store.postgres.errors import SpaceNotFound
-from tests.test_pipeline_sources import LONG, SUMMARY, respond
+from tests.test_pipeline_sources import LONG, DIGEST, respond
 
 
 def test_explicit_original_http_enforces_scope_and_omits_internal_state(product_service, product_client, product_scope):
@@ -42,14 +42,14 @@ async def test_local_and_remote_mcp_explicit_original_contract(product_service, 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         remote = RemoteBackend("https://synthetic.invalid", key, context.space_id, client)
         await remote.get_episode("event/id", "shared space")
-        await remote.flush_processing(include_summaries=True)
+        await remote.flush_processing(include_digests=True)
     assert requests[0].url.params["space_id"] == "shared space"
     assert requests[0].url.raw_path.startswith(b"/v1/episodes/event%2Fid?")
-    assert json.loads(requests[1].content)["include_summaries"] is True
+    assert json.loads(requests[1].content)["include_digests"] is True
 
 
 @pytest.mark.asyncio
-async def test_mcp_reports_summary_and_original_source_times(product_service, product_scope):
+async def test_mcp_reports_digest_and_original_source_times(product_service, product_scope):
     from mnemotrace.mcp import server
     from mnemotrace.mcp.backends import LocalBackend
     from tests.postgres.test_mcp_product import call
@@ -64,7 +64,7 @@ async def test_mcp_reports_summary_and_original_source_times(product_service, pr
         source, = result["source_ids"]
         original = json.loads(await call("mnemotrace_get_episode", episode_id=source, response_format="json"))
         assert original["content"] == LONG and original["ingested_at"] > 0
-        assert original["summary"] in {"", SUMMARY}
+        assert original["digest"] in {"", DIGEST}
         assert "event_time" in original
     finally:
         server.set_backend(None)

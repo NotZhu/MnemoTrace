@@ -6,6 +6,22 @@ import { createRequire } from 'node:module'
 
 const space = {spaceId: 'space-test'}
 
+test('import maps generateDigests to the HTTP field and preserves the server default', async () => {
+  const calls = []
+  const client = new MnemoTraceClient({ fetch: async (url, init) => {
+    assert.equal(new URL(url).pathname, '/v1/import')
+    calls.push(JSON.parse(init.body))
+    return new Response(JSON.stringify({ ok: true }))
+  } })
+  const data = [{ role: 'user', content: 'Synthetic history' }]
+  await client.import({ data, generateDigests: false }, space)
+  await client.import({ data }, space)
+  assert.deepEqual(calls, [
+    { data, generate_digests: false, space_id: 'space-test' },
+    { data, space_id: 'space-test' },
+  ])
+})
+
 test('dialogue messages preserve identities, roles, unknown time and batch policy', async () => {
   const calls = []
   const client = new MnemoTraceClient({fetch: async (url, init) => {
@@ -127,8 +143,7 @@ const counts = {
   facts_live: 0,
   facts_superseded: 0,
   facts_sensitive: 0,
-  working_live: 0,
-  summaries: 0,
+  digests: 0,
   entities: 0,
   relations: 0,
   graph_orphan_entities: 0,
@@ -210,7 +225,6 @@ test('agentStatus calls the content-free agent status endpoint', async () => {
         id: 'codex:repo/thread 1',
         episodes: 0,
         episodes_pending: 0,
-        working_live: 0,
       },
       counts,
       consolidation_backlog: false,
@@ -266,7 +280,6 @@ test('sessionReport calls the session audit endpoint with redaction default', as
       episodes: 1,
       episodes_consolidated: 1,
       episodes_pending: 0,
-      working_live: 0,
       facts_added: 1,
       facts_redacted: 0,
       facts: [],
@@ -310,8 +323,7 @@ test('sessions calls the content-free cross-agent session index endpoint', async
           episodes_pending: 0,
           facts_added: 3,
           facts_sensitive: 1,
-          working_live: 0,
-          summaries: 1,
+          digests: 1,
           first_event_at: 1782500000,
           first_event_at_h: '2026-06-27 10:00:00',
           last_event_at: 1782503600,
@@ -360,7 +372,7 @@ test('memories supports paging search and share-safe filtering for owner UIs', a
         episodes: 2,
         facts_live: 3,
         facts_superseded: 1,
-        summaries: 1,
+        digests: 1,
       },
       facts: [
         {
@@ -546,8 +558,8 @@ test('original lookup encodes the event ID and preserves space selection', async
   assert.equal((await client.getEpisode('event/id', {spaceId: 'shared space'})).content, 'complete original')
   assert.equal(new URL(calls[0].url).pathname, '/v1/episodes/event%2Fid')
   assert.equal(new URL(calls[0].url).searchParams.get('space_id'), 'shared space')
-  await client.flushProcessing({...space, includeSummaries: true})
-  assert.equal(calls[1].body.include_summaries, true)
+  await client.flushProcessing({...space, includeDigests: true})
+  assert.equal(calls[1].body.include_digests, true)
 })
 
 test('queries and retries the same scoped operation ID', async () => {

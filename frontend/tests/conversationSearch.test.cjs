@@ -209,8 +209,8 @@ test('默认使用 default 会话，列表中的使用此会话会同步顶部�
 
 test('列表显示已有摘要与原文，没有摘要时仍可浏览原文', () => {
   const s = setup([], [
-    {id:'one', content:'完整原文仍在', date:'2026-10-31', session:'s', summary:''},
-    {id:'two', content:'另一条完整原文', date:'2026-10-31', session:'s', summary:'已保存摘要'},
+    {id:'one', content:'完整原文仍在', date:'2026-10-31', session:'s', digest:''},
+    {id:'two', content:'另一条完整原文', date:'2026-10-31', session:'s', digest:'已保存摘要'},
   ])
   const tree = s.render()
   assert.ok(findNode(tree, node => node.type === 'p' && node.props.children === '完整原文仍在'))

@@ -38,7 +38,7 @@ class Config:
     extraction_context_bytes: int = 2_048  # 每个窗口最多携带的前文正文 UTF-8 字节数
     joint_max_output_tokens: int = 8192
     joint_core_output_tokens: int = 2048
-    joint_summary_output_tokens: int = 2048
+    joint_digest_output_tokens: int = 2048
     joint_context_tokens: Optional[int] = None  # 提供方总上下文；未知时不冒充已验证
     explicit_preference_extraction: bool = True  # 抽取 like、prefer、avoid 等显式偏好
     preference_object_filter: bool = True  # 过滤 it、these ideas 等含义不明确的偏好对象
@@ -51,20 +51,17 @@ class Config:
     # Threshold for cross-slot candidate recall with a semantic embedder.
     conflict_sim_threshold: float = 0.80
 
-    # 自动抽取产生的工作记忆（当前任务/意图/状态）的墙钟存活时长（秒），到点由清扫移除。
-    # 设为 None 时沿用旧行为：仅随会话关闭/清除而消失，否则持续累积变旧。
-    working_memory_ttl_seconds: Optional[float] = 86_400.0
 
     # --- 条件事件摘要 ---
-    summary_min_chars: int = 2000
-    summary_max_chars: int = 800
-    summary_max_input_bytes: int = 16_384
-    summary_max_output_tokens: int = 1024
+    digest_min_chars: int = 2000
+    digest_max_chars: int = 800
+    digest_max_input_bytes: int = 16_384
+    digest_max_output_tokens: int = 1024
 
     # --- 上下文与证据 ---
     evidence_budgeting: bool = True  # 按证据块优先级分配上下文预算
-    summary_fallback: bool = True  # 事实无法回答时尝试从会话摘要中作答
-    summary_fallback_k: int = 6  # 摘要回退最多检查的候选数量
+    digest_fallback: bool = True  # 事实无法回答时尝试从会话摘要中作答
+    digest_fallback_k: int = 6  # 摘要回退最多检查的候选数量
     chain_evidence: bool = True  # 为检索事实附带有限长度的替代与演化链
     chain_current_first: bool = True  # 演化链先展示每个槽位的当前值，再展示历史
     provenance_chunk_promotion: bool = True  # 将事实的来源事件提升为原始文本片段

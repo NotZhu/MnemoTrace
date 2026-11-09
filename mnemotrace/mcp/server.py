@@ -25,8 +25,8 @@ INSTRUCTIONS = (
     "depend on what you've learned about the user in past sessions (their preferences, projects, "
     "people, decisions) — it returns a small, dated, relevant context to ground your answer. Use "
     "`mnemotrace_remember` whenever the user states a durable fact, preference, or decision worth keeping "
-    "(use scope='long' or the default scope='auto'); use scope='working' for temporary current-session "
-    "state that should not become a long-term profile fact. "
+    "(use scope='long' or the default scope='auto'). "
+    "Keep temporary execution state in the agent's task tools or files. "
     "Use `mnemotrace_flush_processing` with the session ID to finish core processing; "
     "use `mnemotrace_session_report` when the user asks what that session "
     "saved; use `mnemotrace_list_sessions` when the user asks which agent/app sessions touched memory. "
@@ -76,7 +76,6 @@ class RememberScope(str, Enum):
     AUTO = "auto"
     RAW = "raw"
     LONG = "long"
-    WORKING = "working"
 
 
 def _json(obj) -> str:
@@ -157,9 +156,7 @@ async def mnemotrace_recall(
                                 "e.g. 'the user's dietary restrictions' or 'what we decided about the API'.",
                                 min_length=1)],
     max_chunks: Annotated[int, Field(description="How many event evidence records to include "
-                                     "(0 = facts/summaries only). Default 6.", ge=0, le=20)] = 6,
-    session_id: Annotated[Optional[str], Field(description="Optional conversation/thread id; when set, "
-                                           "session-scoped working memory is included.")] = None,
+                                     "(0 = facts/digests only). Default 6.", ge=0, le=20)] = 6,
     as_of: Annotated[Optional[float], Field(description="Optional epoch seconds for a point-in-time memory "
                                            "view, e.g. what was believed before a later update.")] = None,
     redact_sensitive: Annotated[bool, Field(description="When true, omit facts tagged sensitive from the "
@@ -183,7 +180,7 @@ async def mnemotrace_recall(
             query,
             n_chunks=max_chunks,
             lean=True,
-            session_id=session_id,
+
             as_of=as_of,
             redact_sensitive=redact_sensitive, state=state, valid_at=valid_at, known_at=known_at,
         )
@@ -323,9 +320,8 @@ async def mnemotrace_remember(
                                   "language. e.g. 'I just moved to Berlin and started a new job at Acme.'",
                                   min_length=1)],
     session_id: Annotated[str, Field(description="Optional conversation id to group related turns.")] = "default",
-    scope: Annotated[RememberScope, Field(description="auto = route by ephemerality; long = force durable "
-                                           "fact extraction; working = current-session state that should not "
-                                           "be promoted to long-term profile facts.")] = RememberScope.AUTO,
+    scope: Annotated[RememberScope, Field(description="auto/long = extract reusable facts; raw = save "
+                                           "the original source without extraction.")] = RememberScope.AUTO,
     processing: Literal['immediate', 'buffered'] = 'immediate',
     agent_id: str | None = None,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
@@ -333,7 +329,7 @@ async def mnemotrace_remember(
     """把内容存入用户长期记忆并整合（抽取原子双时间轴 fact、与已有认知解决矛盾、更新知识图）。
 
     当用户说出值得跨 session 记住的持久 fact、偏好、计划或决定时调用。临时性的当前 session
-    状态用 `scope=working`。存储与旧值矛盾的值不会删除历史——旧 fact 被失效化并保留
+    状态由 agent 的任务工具管理。存储与旧值矛盾的值不会删除历史——旧 fact 被失效化并保留
     （as-of 查询依然可用）。auto/long 需要配置 LLM；抽取失败会返回可识别错误并保留原文供重试。
     """
     try:
@@ -342,8 +338,6 @@ async def mnemotrace_remember(
         return _err(e)
     if response_format == ResponseFormat.JSON:
         return _json(data)
-    if data.get('scope') == 'working':
-        return 'Stored as working memory for this session.'
     if scope == RememberScope.RAW:
         return 'Saved raw history.'
     operation_ids = data.get('operation_ids', ())
@@ -362,10 +356,10 @@ async def mnemotrace_processing_status(session_id: Optional[str] = None) -> str:
 
 @mcp.tool(name='mnemotrace_flush_processing', annotations=ToolAnnotations(title='Flush memory processing', **_WRITE))
 async def mnemotrace_flush_processing(session_id: Optional[str] = None, timeout: float = 30,
-                                     retry_failed: bool = False, include_summaries: bool = False) -> str:
+                                     retry_failed: bool = False, include_digests: bool = False) -> str:
     """Process the currently accepted boundary; retry_failed explicitly retries failed/cancelled work."""
     try:
-        return _json(await backend().flush_processing(session_id, timeout, retry_failed, include_summaries))
+        return _json(await backend().flush_processing(session_id, timeout, retry_failed, include_digests))
     except Exception as exc:
         return _err(exc)
 
@@ -425,7 +419,6 @@ async def mnemotrace_session_report(
         f"- Episodes: {data.get('episodes', 0)} "
         f"({data.get('episodes_pending', 0)} pending consolidation)",
         f"- Extraction failures: {data.get('extraction_failures', 0)} episode(s)",
-        f"- Working memory still live: {data.get('working_live', 0)} item(s)",
         f"- Durable facts linked to this session: {data.get('facts_added', 0)}",
         f"- Sensitive facts redacted: {data.get('facts_redacted', 0)}",
     ]
@@ -475,7 +468,6 @@ async def mnemotrace_list_sessions(
         parts = [
             f"{row.get('episodes', 0)} episode(s)",
             f"{row.get('facts_added', 0)} fact(s)",
-            f"{row.get('working_live', 0)} working",
         ]
         if row.get("episodes_pending", 0):
             parts.append(f"{row.get('episodes_pending')} pending")
@@ -626,10 +618,8 @@ async def mnemotrace_agent_status(
         f"({s.get('episodes_pending', 0)} pending consolidation)",
         f"- Session extraction failures: {s.get('extraction_failures', 0)} episode(s)",
         f"- Overall extraction failures: {c.get('extraction_failures', 0)} episode(s)",
-        f"- Session working memory: {s.get('working_live', 0)} live item(s)",
         f"- Long-term memory: {c.get('facts_live', 0)} live fact(s), "
-        f"{c.get('summaries', 0)} summary(ies), {c.get('pending_conflicts', 0)} pending conflict(s)",
-        f"- Overall working memory: {c.get('working_live', 0)} live item(s)",
+        f"{c.get('digests', 0)} digest(ies), {c.get('pending_conflicts', 0)} pending conflict(s)",
         f"- Consolidation backlog: {'yes' if data.get('consolidation_backlog') else 'no'}",
         _format_feed(data.get("feed") or {}),
         "- Focus:",
@@ -705,12 +695,10 @@ async def mnemotrace_stats(response_format: ResponseFormat = ResponseFormat.MARK
         "# MnemoTrace stats",
         "",
         f"- Episodes: {c.get('episodes', 0)} "
-        f"({c.get('episodes_consolidated', 0)} consolidated, {c.get('episodes_pending', 0)} pending, "
-        f"{c.get('episodes_ephemeral', 0)} with working content)",
+        f"({c.get('episodes_consolidated', 0)} consolidated, {c.get('episodes_pending', 0)} pending)",
         f"- Extraction failures: {c.get('extraction_failures', 0)} episode(s)",
         f"- Facts: {c.get('facts_live', 0)} live, {c.get('facts_superseded', 0)} superseded, "
         f"{c.get('facts_sensitive', 0)} sensitive",
-        f"- Working memory: {c.get('working_live', 0)} live",
         f"- Graph: {c.get('entities', 0)} entities, {c.get('relations', 0)} relations",
         f"- Graph hygiene: {c.get('graph_orphan_entities', 0)} orphan entities, "
         f"{c.get('graph_stale_relations', 0)} stale relations",

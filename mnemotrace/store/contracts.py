@@ -15,7 +15,7 @@ import re
 from typing import Protocol
 from types import SimpleNamespace
 
-from ..types import Conflict, Entity, Episode, Fact, Relation, WorkingMemory
+from ..types import Conflict, Entity, Episode, Fact, Relation
 from ..extraction import ExtractionResponseError
 from ._validation import validate_record
 
@@ -79,7 +79,7 @@ class ProcessingPhase(str, Enum):
 
 class OperationKind(str, Enum):
     EXTRACT = 'extract'
-    SUMMARY = 'summary'
+    DIGEST = 'digest'
     CONFLICTS = 'conflicts'
     REEMBED = 'reembed'
     GRAPH = 'graph'
@@ -88,7 +88,6 @@ class OperationKind(str, Enum):
 class RecordKind(str, Enum):
     SOURCE = 'Episode'
     FACT = 'Fact'
-    WORKING = 'WorkingMemory'
     ENTITY = 'Entity'
     RELATION = 'Relation'
     CONFLICT = 'Conflict'
@@ -118,18 +117,14 @@ class ReadSnapshot:
     core_revision: int
     space_generation: int
     session_id: str | None = None
-    session_generation: int | None = None
 
     def __post_init__(self):
         if not isinstance(self.context, SpaceContext):
             raise ValueError('A space context is required')
         _count(self.core_revision)
         _count(self.space_generation)
-        if (self.session_id is None) != (self.session_generation is None):
-            raise ValueError('Session ID and generation must occur together')
         if self.session_id is not None:
             _id(self.session_id)
-            _count(self.session_generation)
 
 
 @dataclass(frozen=True)
@@ -292,7 +287,7 @@ class StoredRecord:
     payload_json: str
     agent_id: str | None = None
     record_version: int = 1
-    summary_version: int | None = None
+    digest_version: int | None = None
 
     def __post_init__(self):
         if not isinstance(self.ref, RecordRef):
@@ -309,22 +304,22 @@ class StoredRecord:
             raise ValueError('Unknown domain record fields')
         if checked['id'] != self.ref.record_id or checked.get('user_id', self.ref.context.user_id) != self.ref.context.user_id:
             raise ValueError('Record identity/owner differs from its scoped reference')
-        if self.summary_version is not None:
-            _count(self.summary_version, 1)
-            if self.ref.kind != RecordKind.SOURCE or not checked['summary']:
-                raise ValueError('Summary versions only belong to non-empty source summaries')
-        elif self.ref.kind == RecordKind.SOURCE and checked['summary']:
-            raise ValueError('A source summary requires its independent text version')
+        if self.digest_version is not None:
+            _count(self.digest_version, 1)
+            if self.ref.kind != RecordKind.SOURCE or not checked['digest']:
+                raise ValueError('Digest versions only belong to non-empty source digests')
+        elif self.ref.kind == RecordKind.SOURCE and checked['digest']:
+            raise ValueError('A source digest requires its independent text version')
         object.__setattr__(self, 'payload_json', _json(checked))
 
     @classmethod
     def from_record(cls, context: SpaceContext,
-                    record: Episode | Fact | WorkingMemory | Entity | Relation | Conflict,
+                    record: Episode | Fact | Entity | Relation | Conflict,
                     *, content_version: int = 1, record_version: int = 1,
-                    summary_version: int | None = None) -> StoredRecord:
+                    digest_version: int | None = None) -> StoredRecord:
         kind = RecordKind(type(record).__name__)
         return cls(RecordRef(context, kind, record.id), content_version, _json(asdict(record)),
-                   record_version=record_version, summary_version=summary_version)
+                   record_version=record_version, digest_version=digest_version)
 
 
 @dataclass(frozen=True)
@@ -424,8 +419,8 @@ class EmbeddingWrite:
         if not isinstance(self.record, RecordRef):
             raise ValueError('A scoped embedding target is required')
         _count(self.content_version, 1)
-        allowed = {RecordKind.SOURCE: {'text', 'summary'}, RecordKind.FACT: {'text'},
-                   RecordKind.WORKING: {'text'}, RecordKind.ENTITY: {'text'}}
+        allowed = {RecordKind.SOURCE: {'text', 'digest'}, RecordKind.FACT: {'text'},
+                   RecordKind.ENTITY: {'text'}}
         if self.field not in allowed.get(self.record.kind, set()):
             raise ValueError('Invalid embedding field for this record kind')
         RetrievalQuery(FactQuery(), '', self.vector, self.model)
@@ -449,7 +444,7 @@ class SpaceSettings:
     mute: tuple[str, ...] = ()
     extract_instruction: str = ''
     extract_system: str = ''
-    summary_system: str = ''
+    digest_system: str = ''
     persona_system: str = ''
     subject_name: str | None = None
     subject_aliases: tuple[str, ...] = ()
@@ -461,7 +456,7 @@ class SpaceSettings:
         if self.subject_name is not None:
             _id(self.subject_name)
         if any(not isinstance(value, str) for value in (
-                self.extract_instruction, self.extract_system, self.summary_system, self.persona_system)):
+                self.extract_instruction, self.extract_system, self.digest_system, self.persona_system)):
             raise ValueError('Policy fields must be strings')
 
 
@@ -500,8 +495,8 @@ class OperationSpec:
                 raise ValueError('Maintenance requires record targets, not fabricated sources')
         elif not self.sources or self.session_id is None or self.targets:
             raise ValueError('Model operations require a session and unique source versions')
-        if self.kind is OperationKind.SUMMARY and len(self.sources) != 1:
-            raise ValueError('Summary operations require exactly one source')
+        if self.kind is OperationKind.DIGEST and len(self.sources) != 1:
+            raise ValueError('Digest operations require exactly one source')
 
 
 @dataclass(frozen=True)
@@ -509,7 +504,6 @@ class CommitReceipt:
     operation_id: str
     core_revision: int
     fact_ids: tuple[str, ...] = ()
-    working_ids: tuple[str, ...] = ()
     source_ids: tuple[str, ...] = ()
     affected_count: int = 0
 
@@ -517,7 +511,7 @@ class CommitReceipt:
         _id(self.operation_id)
         _count(self.core_revision)
         _count(self.affected_count)
-        for values in (self.fact_ids, self.working_ids, self.source_ids):
+        for values in (self.fact_ids, self.source_ids):
             _tuple(values, str)
             for value in values:
                 _id(value)
@@ -530,7 +524,6 @@ class OperationStats:
     facts_added: int
     duplicates: int
     invalidated: int
-    working_added: int
     model_calls: int
     windows_completed: int
 
@@ -545,17 +538,17 @@ class ExtractionProduct:
     input_json: str
     result_json: str
     stats: OperationStats
-    summary_max_chars: int
+    digest_max_chars: int
     context_revision: int | None
-    format_version: int = 2
+    format_version: int = 3
 
     def __post_init__(self):
         if not isinstance(self.conditions, CommitConditions) or self.conditions.lease is None:
             raise ValueError('Saving a model product requires task commit conditions')
         if not isinstance(self.stats, OperationStats):
             raise ValueError('Validated operation statistics are required')
-        _count(self.summary_max_chars, 1)
-        if type(self.format_version) is not int or self.format_version != 2:
+        _count(self.digest_max_chars, 1)
+        if type(self.format_version) is not int or self.format_version != 3:
             raise ValueError('Unsupported model product format')
         if self.context_revision is not None:
             _count(self.context_revision)
@@ -565,13 +558,13 @@ class ExtractionProduct:
         try:
             _validate_product_input(data)
             if self.context_revision is None and (data['operation'] == 'conflicts'
-                    or any(view['representation'] == 'summary' for view in (*data['context'], *data['pending']))):
-                raise ValueError('Summary/fact inputs require a business context revision')
+                    or any(view['representation'] == 'digest' for view in (*data['context'], *data['pending']))):
+                raise ValueError('Digest/fact inputs require a business context revision')
             ids = [s['id'] for s in (*data['pending'], *data['context'])]
             if not data['pending'] or len(set(ids)) != len(ids) or set(ids) != {s.source_id for s in self.conditions.sources}:
                 raise ValueError('Product source references differ from input versions')
             from ..consolidate.planning import validate_result
-            validate_result(result, data, SimpleNamespace(summary_max_chars=self.summary_max_chars), normalized=True)
+            validate_result(result, data, SimpleNamespace(digest_max_chars=self.digest_max_chars), normalized=True)
         except (KeyError, TypeError, ValueError, ExtractionResponseError) as exc:
             raise ValueError('Invalid model product or source references') from exc
         object.__setattr__(self, 'input_json', _json(data))
@@ -584,7 +577,7 @@ class ExtractionProduct:
         before = self.conditions.snapshot
         return (snapshot.context == before.context
                 and snapshot.space_generation == before.space_generation
-                and (snapshot.session_id, snapshot.session_generation) == (before.session_id, before.session_generation)
+                and snapshot.session_id == before.session_id
                 and set(sources) == set(self.conditions.sources)
                 and extraction_config == self.conditions.extraction_config
                 and (self.context_revision is None or snapshot.core_revision == self.context_revision))
@@ -596,9 +589,9 @@ def _validate_product_input(data: dict) -> None:
     required = {'operation', 'source_kind', 'mode', 'scope', 'pending', 'context', 'parts', 'candidates'}
     if not isinstance(data, dict) or set(data) != required:
         raise ValueError('Missing prepared input fields')
-    if data['operation'] not in {'extract', 'summary', 'conflicts'}:
+    if data['operation'] not in {'extract', 'digest', 'conflicts'}:
         raise ValueError('Invalid model operation')
-    if data['source_kind'] not in {'dialogue', 'raw', 'document'} or data['scope'] not in {'auto', 'long', 'raw', 'working'}:
+    if data['source_kind'] not in {'dialogue', 'raw', 'document'} or data['scope'] not in {'auto', 'long', 'raw'}:
         raise ValueError('Invalid source routing')
     dialogue = data['source_kind'] == 'dialogue'
     if data['mode'] not in ({'live', 'historical'} if dialogue else {None}):
@@ -615,23 +608,23 @@ def _validate_product_input(data: dict) -> None:
         for key in ('source', 'representation_source'):
             if view[key] is not None and re.fullmatch('[0-9a-f]{64}', view[key]) is None:
                 raise ValueError('Invalid source fingerprint')
-        composing = data['operation'] == 'summary' and data['parts'] and view in data['pending']
+        composing = data['operation'] == 'digest' and data['parts'] and view in data['pending']
         if ((view['representation'] == 'raw' and view['representation_source'] is not None)
-                or view['representation'] == 'summary' and view['representation_source'] is None and not composing):
+                or view['representation'] == 'digest' and view['representation_source'] is None and not composing):
             raise ValueError('Representation and its source fingerprint disagree')
     if any(a['sequence'] >= b['sequence'] for a, b in zip(views, views[1:])):
         raise ValueError('Input views must follow source sequence')
-    if data['operation'] == 'summary':
+    if data['operation'] == 'digest':
         if len(data['pending']) != 1 or data['context'] or data['candidates']:
-            raise ValueError('Invalid summary input')
+            raise ValueError('Invalid digest input')
         if data['parts'] and len(data['parts']) < 2:
-            raise ValueError('Summary composition requires at least two parts')
+            raise ValueError('Digest composition requires at least two parts')
     elif data['parts']:
-        raise ValueError('Only summaries compose parts')
+        raise ValueError('Only digests compose parts')
     for part in data['parts']:
         _id(part)
     if len(set(data['parts'])) != len(data['parts']):
-        raise ValueError('Duplicate summary parts')
+        raise ValueError('Duplicate digest parts')
     if data['operation'] == 'conflicts':
         if data['context'] or not data['candidates']:
             raise ValueError('Invalid conflict candidates')
@@ -658,8 +651,8 @@ def _validate_product_input(data: dict) -> None:
 
 def validate_erasures(records: tuple[RecordRef, ...]) -> None:
     _tuple(records, RecordRef)
-    if any(record.kind not in (RecordKind.FACT, RecordKind.WORKING) for record in records):
-        raise ValueError('Record erasure only supports facts and working memory')
+    if any(record.kind != RecordKind.FACT for record in records):
+        raise ValueError('Record erasure only supports facts')
 
 
 @dataclass(frozen=True)
@@ -717,8 +710,8 @@ class ChangeSet:
             if write.ref.kind == RecordKind.FACT and set(fields['provenance']) != {
                     link.source.record_id for link in self.source_links if link.fact == write.ref}:
                 raise ValueError('Fact provenance requires matching explicit source links')
-            for key, field in (('embedding', 'text'), ('summary_embedding', 'summary')):
-                version = write.record.summary_version if field == 'summary' else write.record.content_version
+            for key, field in (('embedding', 'text'), ('digest_embedding', 'digest')):
+                version = write.record.digest_version if field == 'digest' else write.record.content_version
                 if any(e.record == write.ref and e.field == field and e.content_version != version
                        for e in self.embeddings):
                     raise ValueError('Embedding text version differs from its record')

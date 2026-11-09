@@ -15,7 +15,7 @@
 
 ## 写入与检索
 
-持久事实、偏好和可复用决定使用 `remember(..., scope="long")`；不确定时使用 `scope="auto"`。当前任务的短时状态可以使用 `scope="working"`，并在检索时携带同一个 session id。
+持久事实、偏好和可复用决定使用 `remember(..., scope="long")`；不确定时使用 `scope="auto"`。当前任务的进度和临时执行状态放在 agent 的任务工具、checkpoint 或文件中。
 
 摄入确认返回原文和操作 ID。`buffered` 在原文与任务落库后返回，`immediate` 等待核心处理提交。根据操作 ID 查询结果，必要时用原 ID 重试。保存原文和手工添加事实可离线使用，自动抽取需要 LLM。
 
@@ -54,7 +54,7 @@ python -m mnemotrace.connectors --file /path/to/export.json --user-id "<USER_ID>
 
 ## 整理会话
 
-用带 `session_id` 的 `flush_processing` 推进并等待本批核心处理，再读取会话报告。摘要进度独立查询。需要清理工作记忆时，使用该会话的专用清理入口。调用流程见 [Agent 指南](agents.md#会话调用顺序)。
+用带 `session_id` 的 `flush_processing` 推进并等待本批核心处理，再读取会话报告。摘要进度独立查询。调用流程见 [Agent 指南](agents.md#会话调用顺序)。
 
 ## 隐私与擦除
 
@@ -66,4 +66,4 @@ python -m mnemotrace.connectors --file /path/to/export.json --user-id "<USER_ID>
 | 导出 | 默认省略敏感 fact 和自由文本层；完整私有导出需要显式开启 |
 | 清空空间 | 确认后清除空间中的内容，保留空间 ID 与配置 |
 
-单个事实和工作记忆支持显式擦除。原文随空间清空或删除处理。对敏感原文的完整擦除，应确认事实、事件、工作状态和外部备份的实际范围。相关需求在 [删除单个会话 #26](https://github.com/NotZhu/MnemoTrace/issues/26) 跟踪，仍处于暂缓、待决策状态。
+单个事实支持显式擦除。原文随空间清空或删除处理。对敏感原文的完整擦除，应确认事实、事件和外部备份的实际范围。相关需求在 [删除单个会话 #26](https://github.com/NotZhu/MnemoTrace/issues/26) 跟踪，仍处于暂缓、待决策状态。

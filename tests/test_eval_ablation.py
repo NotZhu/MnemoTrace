@@ -1,6 +1,8 @@
+import sys
+
 import pytest
 
-from eval import ablate_features
+from eval import ablate_features, bench
 from eval.bench import SYSTEMS, mnemotrace_config
 from tests.model_fixtures import RecordedLLM
 
@@ -17,8 +19,8 @@ def test_mnemotrace_config_applies_algorithm_ablation_flags():
     budget_cfg = mnemotrace_config(ablations=("evidence_budget",))
     assert budget_cfg.evidence_budgeting is False
 
-    summary_cfg = mnemotrace_config(ablations=("summary_fallback",))
-    assert summary_cfg.summary_fallback is False
+    digest_cfg = mnemotrace_config(ablations=("digest_fallback",))
+    assert digest_cfg.digest_fallback is False
 
     procedural_extraction_cfg = mnemotrace_config(ablations=("procedural_extraction",))
     assert procedural_extraction_cfg.procedural_extraction is False
@@ -58,7 +60,7 @@ def test_bench_exposes_named_lean_ablation_systems():
         "engram_lean_no_raw",
         "engram_lean_no_provenance_chunks",
         "engram_lean_no_evidence_budget",
-        "engram_lean_no_summary_fallback",
+        "engram_lean_no_digest_fallback",
         "engram_lean_no_procedural_extraction",
         "engram_lean_no_explicit_preference_extraction",
         "engram_lean_no_preference_object_filter",
@@ -76,7 +78,7 @@ def test_bench_exposes_named_lean_ablation_systems():
     assert SYSTEMS["engram_lean_no_raw"].ablations == ("raw",)
     assert SYSTEMS["engram_lean_no_provenance_chunks"].ablations == ("provenance_chunks",)
     assert SYSTEMS["engram_lean_no_evidence_budget"].ablations == ("evidence_budget",)
-    assert SYSTEMS["engram_lean_no_summary_fallback"].ablations == ("summary_fallback",)
+    assert SYSTEMS["engram_lean_no_digest_fallback"].ablations == ("digest_fallback",)
     assert SYSTEMS["engram_lean_no_procedural_extraction"].ablations == ("procedural_extraction",)
     assert SYSTEMS["engram_lean_no_explicit_preference_extraction"].ablations == (
         "explicit_preference_extraction",
@@ -95,8 +97,18 @@ def test_bench_exposes_named_lean_ablation_systems():
     assert SYSTEMS["engram_lean_core"].ablations == ("chain", "raw", "graph")
 
 
+@pytest.mark.parametrize('flag', ['summary_fallback', 'typo'])
+def test_bench_rejects_unknown_ablation_before_setup(monkeypatch, capsys, flag):
+    monkeypatch.setattr(sys, 'argv', ['bench.py', '--ablate', f'chain,{flag}'])
+    monkeypatch.setattr(bench, 'load_dotenv', lambda: pytest.fail('started setup'))
+    with pytest.raises(SystemExit) as exc:
+        bench.main()
+    assert exc.value.code == 2
+    assert f'Unknown ablation option(s): {flag}' in capsys.readouterr().err
+
+
 def test_offline_feature_ablation_proves_each_enabled_feature_changes_target_evidence():
-    rows, summary = run_ablation()
+    rows, digest = run_ablation()
 
 
 @pytest.mark.parametrize("context, expected_hit", [

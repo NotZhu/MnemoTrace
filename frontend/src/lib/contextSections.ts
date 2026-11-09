@@ -2,7 +2,7 @@ import type { Copy } from './copy'
 
 type SectionKey = Extract<
   keyof Copy['ask'],
-  'sectionUserProfile' | 'sectionFacts' | 'sectionTimeline' | 'sectionSummaries' | 'sectionConversations'
+  'sectionUserProfile' | 'sectionFacts' | 'sectionTimeline' | 'sectionDigests' | 'sectionConversations'
 >
 
 export interface ContextSection {
@@ -15,7 +15,7 @@ const SECTION_KEYS: Array<[RegExp, SectionKey]> = [
   [/^(?:USER PROFILE|用户画像)/i, 'sectionUserProfile'],
   [/^(?:FACTS|相关事实)/i, 'sectionFacts'],
   [/^(?:TIMELINE|时间线)/i, 'sectionTimeline'],
-  [/^(?:SESSION SUMMARIES|会话摘要)/i, 'sectionSummaries'],
+  [/^(?:SESSION DIGESTS|会话摘要)/i, 'sectionDigests'],
   [/^(?:RELEVANT CONVERSATIONS|原文片段)/i, 'sectionConversations'],
 ]
 

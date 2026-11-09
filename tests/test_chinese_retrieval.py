@@ -22,13 +22,13 @@ def test_tail_keyword_is_recalled_outside_vector_pool_without_exposing_raw():
     embedder = MockEmbedder(2, vectors={'绿茶': [1.0, 0.0], '无关关键词': [0.0, 0.0]}, default=[0.0, 1.0])
     memory = MemoryEngine(embedder=embedder)
     target = memory.add('A long original. ' * 100 + '最后提到绿茶')
-    target.summary = 'A short summary.'
-    target.summary_embedding = embedder.embed(target.summary)
+    target.digest = 'A short digest.'
+    target.digest_embedding = embedder.embed(target.digest)
     memory._sync_episode(target)
     memory.add('Coffee', embedding=[1.0, 0.0])
     hits = memory.retrieve_episodes('绿茶', k=2, pool=1)
-    assert any(hit.id == target.id and hit.text == target.summary for hit in hits)
-    assert [hit.id for hit in memory.retrieve_summaries('绿茶')] == [target.id]
+    assert any(hit.id == target.id and hit.text == target.digest for hit in hits)
+    assert [hit.id for hit in memory.retrieve_digests('绿茶')] == [target.id]
     assert not memory.retrieve_episodes('无关关键词', k=2)
 
 

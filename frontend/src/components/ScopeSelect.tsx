@@ -5,7 +5,6 @@ import type { RememberScope } from '../types'
 const options: { value: RememberScope; label: string }[] = [
   { value: 'auto', label: t.conversations.scopeAuto },
   { value: 'long', label: t.conversations.scopeLong },
-  { value: 'working', label: t.conversations.scopeWorking },
 ]
 
 export function ScopeSelect({ value, onChange }: { value: RememberScope; onChange: (value: RememberScope) => void }) {

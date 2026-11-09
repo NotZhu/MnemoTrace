@@ -20,9 +20,9 @@ class FakeLLM(NativeFakeLLM):
             out = json.loads(completion.text)
         except ValueError:
             return completion
-        if not isinstance(out, dict) or set(out) != {'facts', 'working'}:
+        if not isinstance(out, dict) or set(out) != {'facts'}:
             return completion
-        for group in ('facts', 'working'):
+        for group in ('facts',):
             for row in out[group]:
                 row.setdefault('source_ids', [data['pending'][0]['id']])
                 if group == 'facts' and all(k in row for k in ('subject', 'predicate', 'object')):
@@ -33,12 +33,12 @@ class FakeLLM(NativeFakeLLM):
                     row.setdefault('cardinality', 'unknown')
                     row.setdefault('retention', 'unknown')
                     row.setdefault('text', f"{row['subject']} {row['predicate']} {row['object']}")
-        out['summaries'] = []
+        out['digests'] = []
         return Completion(json.dumps(out), completion.finish_reason, completion.usage)
 
 
-def response(facts=(), working=()):
-    return json.dumps({'facts': list(facts), 'working': list(working)}, ensure_ascii=False)
+def response(facts=()):
+    return json.dumps({'facts': list(facts)}, ensure_ascii=False)
 
 
 def fact(obj='Beijing', predicate='lives_in'):
@@ -69,16 +69,16 @@ def test_failed_batch_has_no_commits_and_can_retry(count):
     assert error.value.code == 'extraction_failed'
     assert 'SECRET' not in str(error.value)
     assert all(not ep.consolidated for ep in episodes)
-    assert not m.fact_store.values() and not m.working_mem and not m._identity
+    assert not m.fact_store.values() and not m._identity
     m.llm = FakeLLM(responses=[response()] * count)
     assert m.flush_messages(timeout=2, retry_failed=True)['ok']
     assert m.consolidate()['facts_added'] == 0
     assert all(ep.consolidated and 'extraction_error' not in ep.metadata for ep in episodes)
 
 
-@pytest.mark.parametrize('bad', ['', '[]', '{}', '{"facts":[],"working":[]',
-                                 '[{"facts":[],"working":[]}]',
-                                 '{"facts":[{}],"working":[]}',
+@pytest.mark.parametrize('bad', ['', '[]', '{}', '{"facts":[],',
+                                 '[{"facts":[],}]',
+                                 '{"facts":[{}],}',
                                  '{"facts":[],"working":[{"content":"x","kind":[]}]}',
                                  '{"facts":[],"working":[{"content":"x","kind":"task","ttl":999}]}',
                                  '{"facts":[],"working":[{"content":"x","kind":"bad"}]}'])
@@ -129,34 +129,18 @@ def test_remote_mcp_preserves_safe_extraction_error_details():
     assert 'extraction_failed' in rendered and 'synthetic-episode' in rendered
 
 
-def test_long_mode_rejects_working_output():
-    mem = MemoryEngine(llm=FakeLLM(responses=[response([], [{'content': 'task', 'kind': 'task'}])]))
-    ep = mem.add('Synthetic long input')
-    with pytest.raises(ExtractionResponseError):
-        mem.consolidate()
-    assert not ep.consolidated and not mem.working_mem
-
-
-def test_consolidation_sweeps_consumed_working():
-    mem = MemoryEngine()
-    item = mem.remember_working('Synthetic finished task')
-    item.consumed = True
-    mem.consolidate([])
-    assert not mem.working_mem
-
-
 @pytest.mark.parametrize('consolidate', [None, True])
-@pytest.mark.parametrize('summarize', [False, True])
-def test_completed_duplicate_import_does_not_require_model(consolidate, summarize):
+@pytest.mark.parametrize('generate_digests', [False, True])
+def test_completed_duplicate_import_does_not_require_model(consolidate, generate_digests):
     from tests.test_message_pipeline import reply
     sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic completed record'}]}]
     model = FakeLLM(handler=reply)
     mem = MemoryEngine(llm=model)
     mem.import_messages(sessions, user_id='u')
     mem.llm = None
-    result = mem.import_messages(sessions, user_id='u', consolidate=consolidate, summarize=summarize)
+    result = mem.import_messages(sessions, user_id='u', consolidate=consolidate, generate_digests=generate_digests)
     assert result['skipped'] == 1 and result['episodes'] == 0 and result['facts_added'] == 0
-    assert result['summaries'] == 0 and len(mem.fact_store.values()) == 1
+    assert result['digests'] == 0 and len(mem.fact_store.values()) == 1
 
 
 @pytest.mark.parametrize('consolidate', [None, True])
@@ -187,29 +171,3 @@ def test_empty_import_does_not_require_model(consolidate, sessions):
     mem = MemoryEngine()
     assert mem.import_messages(sessions, consolidate=consolidate)['episodes'] == 0
     assert not mem.episodes_doc.values()
-
-
-def test_auto_working_memory_gets_config_ttl_and_expires():
-    """#9：自动抽取的工作记忆必须带墙钟过期时间，否则客户端不关闭会话会永久累积。"""
-    model = FakeLLM(responses=[response(working=[{'content': 'Temporary task', 'kind': 'task'}])])
-    m = MemoryEngine(llm=model)
-    assert m.config.working_memory_ttl_seconds is not None
-    m.remember_messages([{'message_id': 'a', 'role': 'user', 'content': 'Please migrate the database next week.', 'event_time': 1.0}], 's', 'u')
-    assert m.flush_messages('u')['ok']
-    item, = m.working_mem.values()
-    assert item.expires_at is not None and item.expires_at > item.created_at
-    # 到点后清扫确实删除；未到点保留
-    assert m.sweep_working(as_of=item.expires_at - 1) == 0
-    assert m.sweep_working(as_of=item.expires_at) == 1
-    assert not m.working_mem
-
-
-def test_auto_working_memory_ttl_can_be_disabled():
-    """TTL 设为 None 时保留旧行为（仅随会话清除），不强行设 expires_at。"""
-    model = FakeLLM(responses=[response(working=[{'content': 'Temporary task', 'kind': 'task'}])])
-    m = MemoryEngine(llm=model)
-    m.config.working_memory_ttl_seconds = None
-    m.remember_messages([{'message_id': 'a', 'role': 'user', 'content': 'Please migrate the database next week.', 'event_time': 1.0}], 's', 'u')
-    assert m.flush_messages('u')['ok']
-    item, = m.working_mem.values()
-    assert item.expires_at is None

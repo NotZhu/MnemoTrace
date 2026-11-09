@@ -95,37 +95,32 @@ def search(view, query, config, top_k, semantic):
     facts = [fact for fact, _ in chosen]
     flags = batch.limitations
     abstained = not facts or should_abstain(query.text, facts, sem.values(), config.abstain_threshold)
-    if abstained and config.summary_fallback and not query.facts.exclude_sensitive:
-        sources = source_search(view, query, config.summary_fallback_k, field='summary')
+    if abstained and config.digest_fallback and not query.facts.exclude_sensitive:
+        sources = source_search(view, query, config.digest_fallback_k, field='digest')
         flags = tuple(dict.fromkeys((*flags, *sources.limitations)))
         matched = [(len(overlap_terms(query.text, ep.text) - _GENERIC_ATTR_TERMS), ep) for ep in sources.episodes]
         if matched:
             hits, best = max(matched, key=lambda row: (row[0], time_key(row[1].event_time), row[1].id))
             if hits > 0:
                 answer = f'[{fmt_date(best.event_time)}] (episode: {best.id}; session: {best.session_id}; role={best.role}) {best.text}'
-                return SearchResult(query.text, via='summary', _answer=answer, limitations=flags)
+                return SearchResult(query.text, via='digest', _answer=answer, limitations=flags)
     return SearchResult(query.text, facts, [score for _, score in chosen],
                         via='abstain' if abstained else 'hybrid', abstained=abstained, limitations=flags)
 
 
-def context(view, query, config, semantic, *, n_facts, n_chunks, n_summaries, char_budget, session_id):
+def context(view, query, config, semantic, *, n_facts, n_chunks, n_digests, char_budget):
     graph = RetrievalGraph(view, query)
     batch = view.candidates(query, config=config, graph=graph)
     ranked, _ = _score(batch.candidates, config, semantic, query)
     facts = [fact for fact, _ in ranked[:n_facts]]
     blocks = []
     flags = [*batch.limitations, *graph.limitations()]
-    if session_id and not query.facts.exclude_sensitive:
-        working = tuple(map(domain, view.working(session_id=session_id, as_of=query.facts.valid_at,
-                                                 known_at=query.facts.known_at)))
-        if working:
-            blocks.append('WORKING MEMORY\n' + '\n'.join(f'- {item.content}' for item in working))
     if facts:
         blocks.append('FACTS\n' + '\n'.join(f'- [{fmt_date(fact.valid_at)}] {fact.text}' for fact in facts))
     evidence = {}
-    include_sources = not query.facts.exclude_sensitive and bool(n_chunks or n_summaries)
+    include_sources = not query.facts.exclude_sensitive and bool(n_chunks or n_digests)
     if include_sources:
-        for field, count in (('text', n_chunks), ('summary', n_summaries)):
+        for field, count in (('text', n_chunks), ('digest', n_digests)):
             if count:
                 sources = source_search(view, query, count, field=field)
                 flags.extend(sources.limitations)
@@ -138,7 +133,7 @@ def context(view, query, config, semantic, *, n_facts, n_chunks, n_summaries, ch
                     and (query.facts.known_at is None or ep.ingested_at <= query.facts.known_at)):
                 evidence.setdefault(ep.id, ep)
         shown = ([ep for ep in evidence.values() if not ep.derived][:n_chunks]
-                 + [ep for ep in evidence.values() if ep.derived][:n_summaries])
+                 + [ep for ep in evidence.values() if ep.derived][:n_digests])
         if shown:
             blocks.append('SOURCE EVIDENCE\n' + '\n'.join(
                 f'- [{fmt_date(ep.event_time)}] (episode: {ep.id}; session: {ep.session_id}; role={ep.role}) {ep.text}'

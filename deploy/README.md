@@ -117,7 +117,7 @@ dump_archive() (
 )
 ```
 
-用独立 Compose 项目和新的数据库卷恢复。在 `deploy/.env.restore` 配置与归档一致的角色前缀、目标登录凭据和独立的 API 端口。角色预置步骤会拒绝已有应用 schema 的目标。使用与备份匹配的 schema 版本启动恢复后的实例。
+用独立 Compose 项目和新的数据库卷恢复。在 `deploy/.env.restore` 配置与归档一致的角色前缀、目标登录凭据和独立的 API 端口。角色预置步骤会拒绝已有应用 schema 的目标。使用与备份匹配的 schema 版本启动恢复后的实例。当前 working 移除与 digest 改名为新库格式：旧库和旧归档需由旧版本读取，本版不执行转换；重新部署需创建新库，不能对已有卷直接初始化。
 
 ```sh
 restore_dc() {

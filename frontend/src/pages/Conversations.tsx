@@ -1,7 +1,7 @@
 
 
 import { useRef, useState } from 'react'
-import { CircleAlert, Hourglass, Send, ShieldAlert, Trash2 } from 'lucide-react'
+import { CircleAlert, Send, ShieldAlert } from 'lucide-react'
 
 import { Badge, Button, Card, CardTitle, EmptyState, ErrorState, PageHeader, Spinner } from '../components/ui'
 import { Modal } from '../components/Modal'
@@ -10,13 +10,11 @@ import { OperationProgress } from '../components/OperationProgress'
 import { toast } from '../components/Toast'
 import {
   useAgentStatus,
-  useClearWorking,
   useOrganizeSession,
   useMemoryPages,
   useRememberMessages,
   useSessionReport,
   useSessions,
-  useWorking,
 } from '../hooks/queries'
 import { useDebouncedSearch } from '../hooks/useDebouncedSearch'
 import { copy as t } from '../lib/copy'
@@ -39,8 +37,6 @@ export default function Conversations() {
   const [mode, setMode] = useState<'live' | 'historical'>('live')
   const [pendingInput, setPendingInput] = useState<{identity: string; id: string} | null>(null)
   const status = useAgentStatus(currentSession)
-  const working = useWorking(currentSession)
-  const clearWorking = useClearWorking(sessionRequest.signal)
   const organizeSession = useOrganizeSession(sessionRequest.signal)
   const [text, setText] = useState('')
   const [sessionSearch, setSessionSearch] = useState('')
@@ -81,7 +77,6 @@ export default function Conversations() {
         if (epoch !== sessionEpoch.current) return
         setText('')
         setPendingInput(null)
-        working.refetch()
         if (r.status === 'accepted' && r.operation_ids.length) toast.info('原文已保存，正在等待模型抽取')
         else toast.success('消息已保存')
       },
@@ -99,7 +94,6 @@ export default function Conversations() {
         if (r.ok) toast.success('会话核心处理完成')
         else toast.info(r.status === 'timed_out' ? '等待超时，任务继续处理' : '处理未完成，请查看操作进度')
         showReport(id)
-        if (id === currentSession) working.refetch()
       },
       onError: (e) => {
         if (epoch === sessionEpoch.current) toast.error(String((e as Error).message))
@@ -107,16 +101,6 @@ export default function Conversations() {
     })
   }
 
-  const clearSessionWorking = () => {
-    const epoch = sessionEpoch.current
-    clearWorking.mutate(currentSession, {
-      onSuccess: () => {
-        if (epoch !== sessionEpoch.current) return
-        working.refetch()
-        toast.success(t.conversations.clearedWorking)
-      },
-    })
-  }
 
   const episodes = data?.episodes ?? []
   const reportNextOffset = report.data?.facts_page?.next_offset
@@ -185,35 +169,6 @@ export default function Conversations() {
 
       <OperationProgress key={currentSession} sessionId={currentSession} sessionSignal={sessionRequest.signal} />
 
-      {working.isError && <ErrorState message={`工作记忆读取失败${working.data ? '，显示上次结果' : ''}：${(working.error as Error).message}`} onRetry={() => { void working.refetch() }} />}
-      {(working.data?.items.length ?? 0) > 0 && (
-        <Card>
-          <CardTitle
-            hint={
-              <button
-                onClick={clearSessionWorking}
-                className="inline-flex items-center gap-1 text-brand-rose hover:underline"
-              >
-                <Trash2 className="h-3.5 w-3.5" /> {t.conversations.clearSession}
-              </button>
-            }
-          >
-            <span className="inline-flex items-center gap-2">
-              <Hourglass className="h-4 w-4 text-brand-amber" /> {t.conversations.workingTitle}
-            </span>
-          </CardTitle>
-          <ul className="space-y-1.5">
-            {working.data!.items.map((w) => (
-              <li key={w.id} className="flex items-center gap-2 text-sm text-slate-200">
-                <Badge tone="cyan">{w.kind}</Badge>
-                <span className="flex-1">{w.content}</span>
-                {w.expires_at && <span className="text-[11px] text-ghost">{t.conversations.expires(w.expires_at)}</span>}
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
-
       <Card>
         <CardTitle>{t.conversations.sessionsTitle}</CardTitle>
         <input
@@ -236,7 +191,6 @@ export default function Conversations() {
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-ghost">
                     <span>{t.conversations.sessionCardEpisodes(s.episodes)} · {t.conversations.sessionCardFacts(s.facts_added)}</span>
-                    {s.working_live > 0 && <span>{t.conversations.sessionCardWorking(s.working_live)}</span>}
                     {s.episodes_pending > 0 && <span className="text-brand-amber">{t.conversations.sessionCardPending(s.episodes_pending)}</span>}
                     {s.facts_sensitive > 0 && <span className="text-brand-rose">{t.conversations.sessionCardSensitive(s.facts_sensitive)}</span>}
                   </div>
@@ -296,11 +250,11 @@ export default function Conversations() {
                       {isOpen ? t.conversations.collapseEntry : t.conversations.expandEntry}
                     </button>
                   )}
-                  {e.summary && (
+                  {e.digest && (
                     <p className="mt-2 border-l-2 border-brand-violet/40 pl-3 text-xs leading-relaxed text-ghost">
-                      {t.conversations.summaryPrefix}
+                      {t.conversations.digestPrefix}
                       {e.coverage?.partial && <span>（仅覆盖可见首尾）</span>}
-                      {e.summary}
+                      {e.digest}
                     </p>
                   )}
                 </li>
@@ -333,7 +287,6 @@ export default function Conversations() {
               <AuditMetric label={t.conversations.auditEpisodes} value={report.data.episodes} />
               <AuditMetric label={t.conversations.auditFacts} value={report.data.facts_added} />
               <AuditMetric label={t.conversations.auditPending} value={report.data.episodes_pending} />
-              <AuditMetric label={t.conversations.auditWorking} value={report.data.working_live} />
             </div>
             {report.data.facts_redacted > 0 && (
               <p className="inline-flex items-center gap-2 rounded-lg border border-brand-amber/30 bg-brand-amber/10 px-3 py-2 text-xs text-brand-amber">

@@ -16,14 +16,14 @@ function setup(pageName) {
   const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', display: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', topic: 'food', topic_source: 'llm' }
   const finding = { kind: 'fragment', fact_id: fact.id, ...fact }
   const results = {
-    usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', summary_system: 'synthetic', persona_system: 'synthetic' } } },
+    usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', digest_system: 'synthetic', persona_system: 'synthetic' } } },
     useFocus: { data: { track: ['synthetic'], mute: [] } },
     useMemoryPages: { data: { facts: [fact], episodes: [], facts_page: { total: 1 }, fact_categories: [] } },
     useMemories: {}, useStructuredProfile: {},
     useAudit: { data: { checked: { facts: 1, entities: 0 }, total_findings: 1, by_kind: { fragment: 1 }, findings: [finding] } },
     useSessions: { data: { sessions: [] } }, useHealth: { data: { ready: true } },
     useAgentStatus: { data: { user: 'synthetic', counts: { facts_live: 1 }, session: { episodes: 1, episodes_pending: 0 } } },
-    useWorking: { data: { items: [] } }, useSessionReport: {}, useSourceEpisodes: {}, useConflicts: { data: { conflicts: [] } },
+    useSessionReport: {}, useSourceEpisodes: {}, useConflicts: { data: { conflicts: [] } },
   }
   let active, hookIndex, nextId = 0, tree
   const instances = new Map(), pendingEffects = [], retries = [], mutations = [], toasts = []
@@ -119,11 +119,11 @@ test('Facts 请求失败使用共享错误条的重新加载按钮，只重试�
 test('Conversations 会话状态提示在卡片上方，其他各条读取错误和独立重试保留', () => {
   const s = setup('Conversations')
   s.find(n => n.type === 'textarea').props.onChange({ target: { value: 'synthetic preserved draft' } })
-  for (const name of ['useMemoryPages', 'useAgentStatus', 'useWorking', 'useSessions']) {
+  for (const name of ['useMemoryPages', 'useAgentStatus', 'useSessions']) {
     Object.assign(s.results[name], { isError: true, error: new Error('synthetic failure') })
   }
   const nodes = s.nodes(), errors = nodes.filter(n => n.type === 'ErrorState')
-  assert.equal(errors.length, 4, '每条错误独立保留，不合并')
+  assert.equal(errors.length, 3, '每条错误独立保留，不合并')
   const statusError = errors.find(n => n.props.message.startsWith('会话状态读取失败'))
   assert.ok(nodes.indexOf(statusError) < nodes.findIndex(n => n.type === 'Card'))
   statusError.props.onRetry()

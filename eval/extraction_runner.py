@@ -56,7 +56,7 @@ def run_case(case, args):
 
     case_dir = args.out / f'{args.revision}-{args.mode}-{case["id"]}-{args.run}'
     case_dir.mkdir()
-    calls, episodes, direct_working, ack_times = [], {}, {}, []
+    calls, episodes, ack_times = [], {}, []
     current = [None]
     ledger = Budget(args.budget)
     entered = threading.Event()
@@ -80,7 +80,7 @@ def run_case(case, args):
 
         def complete_result(self, prompt, **kwargs):
             data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX)[1])[0] if WINDOW_PREFIX in prompt else {}
-            phase = 'summary' if data.get('operation') == 'summary' or '本次仅补缺失摘要' in kwargs.get('system', '') else 'extraction'
+            phase = 'digest' if data.get('operation') == 'summary' or '本次仅补缺失摘要' in kwargs.get('system', '') else 'extraction'
             row = dict(call_id=len(calls), phase=phase, prompt=prompt, system=kwargs.get('system'), status='started')
             calls.append(row)
             claimed, result = False, None
@@ -128,8 +128,10 @@ def run_case(case, args):
             t0 = time.perf_counter()
             recovered = False
             try:
-                response = svc.remember(event['user'], event['text'], session_id=event['session'],
-                                        scope=event['scope'], processing=args.mode)
+                # Historical runtimes expose working as their verbatim temporary-note route.
+                scope = 'working' if event['scope'] == 'raw' else event['scope']
+                svc.remember(event['user'], event['text'], session_id=event['session'],
+                             scope=scope, processing=args.mode)
             except ExtractionError as exc:
                 if not (case.get('inject_transient_once') and args.mode == 'immediate' and exc.stored_raw
                         and calls and calls[-1].get('injected')):
@@ -138,13 +140,10 @@ def run_case(case, args):
                 if not svc.flush(event['user'], event['session'], retry_failed=True)['ok']:
                     raise RuntimeError('Explicit retry failed')
                 if not svc.flush(event['user'], event['session'], include_summaries=True)['ok']:
-                    raise RuntimeError('Session summary processing failed')
-                response = {'episode_id': exc.episode_ids[0]}
+                    raise RuntimeError('Session digest processing failed')
                 recovered = True
             ack_times.append(dict(event=event['id'], ms=(time.perf_counter() - t0) * 1000,
                                   confirmed_at=time.perf_counter(), recovered_after_retry=recovered))
-            if event['scope'] == 'working':
-                direct_working[response['id']] = event['id']
             if args.mode == 'buffered':
                 if index in case.get('flush_after', []):
                     flushed = svc.flush(event['user'], event['session'], timeout=180)
@@ -160,10 +159,10 @@ def run_case(case, args):
         for user in sorted({e['user'] for e in case['events']}):
             for session in sorted({e['session'] for e in case['events'] if e['user'] == user}):
                 if not svc.flush(user, session, include_summaries=True)["ok"]:
-                    raise RuntimeError("Session summary processing failed")
+                    raise RuntimeError("Session digest processing failed")
             with svc._read_scope(user) as mem:
                 snapshots[user] = dict(facts=[asdict(f) for f in mem._all_facts()],
-                    working=[asdict(w) for w in mem.working_mem.values()], identity=dict(mem._identity),
+                    identity=dict(mem._identity),
                     episodes=[asdict(e) for e in mem.episodes_doc.values()])
         metrics = svc.metrics_snapshot()
     except Exception as exc:
@@ -180,7 +179,7 @@ def run_case(case, args):
         try:
             for user, snapshot in snapshots.items():
                 with Memory.open(svc._path(user)) as reopened:
-                    for group, actual in (('facts', reopened._all_facts()), ('working', reopened.working_mem.values()),
+                    for group, actual in (('facts', reopened._all_facts()),
                                           ('episodes', reopened.episodes_doc.values())):
                         if sorted((asdict(v) for v in actual), key=lambda v: v['id']) != sorted(
                                 snapshot[group], key=lambda v: v['id']):
@@ -193,18 +192,14 @@ def run_case(case, args):
     elapsed = (time.perf_counter() - started) * 1000
     def source_ids(ids):
         return [episodes.get(key, {}).get('id', 'UNKNOWN:' + key) for key in ids]
-    final = dict(facts=[], working=[], identity={})
+    final = dict(facts=[], identity={})
     for user, snapshot in snapshots.items():
         final['identity'].update(snapshot['identity'])
         for f in snapshot['facts']:
             final['facts'].append(dict(id=f['id'], subject=f['subject'], predicate=f['predicate'], object=f['object'],
                 user=user, source=f['source'], sources=source_ids(f['provenance']), valid_at=f['valid_at'],
                 invalid_at=f['invalid_at'], supersedes=f['supersedes']))
-        for w in snapshot['working']:
-            final['working'].append(dict(content=w['content'], kind=w['kind'], user=user, session=w['session_id'],
-                event_time=w['event_time'], sources=([direct_working[w['id']]] if w['id'] in direct_working
-                    else source_ids(w['metadata'].get('provenance', [])))))
-    raw, invalid_outputs = dict(facts=[], working=[]), []
+    raw, invalid_outputs = dict(facts=[], ), []
     for index, call in enumerate(calls):
         if call['phase'] != 'extraction' or call['status'] != 'completed':
             continue
@@ -215,7 +210,7 @@ def run_case(case, args):
             for span in (*window['pending'], *window['context']):
                 span.update(episode_id=span['id'], start=span['ranges'][0][0], end=span['ranges'][-1][1])
             spans = {s['id']: s for s in (*window['pending'], *window['context'])}
-            for group in ('facts', 'working'):
+            for group in ('facts',):
                 for item in value[group]:
                     refs = item.get('source_ids', [s['id'] for s in window['pending']] if len(window['pending']) == 1 else [])
                     if not refs or any(ref not in spans for ref in refs):

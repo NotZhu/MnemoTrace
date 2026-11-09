@@ -94,7 +94,7 @@ class Rig:
     session_map: bool = False
     cascade: bool = False  # engram_lean: 粗到细的钻取（_M/10M 规模下必需）
     summ_k: int = 25      # engram_lean: 摘要多少个会话（高召回覆盖）
-    n_summaries: int = 12  # engram_lean: 取多少条会话摘要进入 lean context
+    n_digests: int = 12  # engram_lean: 取多少条会话摘要进入 lean context
     agentic: bool = False
     timeline: bool = False
     hyde: bool = False
@@ -107,6 +107,25 @@ class Rig:
     ablations: tuple[str, ...] = ()
 
 
+_ABLATION_FLAGS = {
+    "evidence_budgeting": ("evidence_budget", "evidence_budgeting"),
+    "digest_fallback": ("digest_fallback", "digest", "derived_digest"),
+    "procedural_extraction": ("procedural_extraction", "procedure_extraction", "derived_procedural_extraction"),
+    "explicit_preference_extraction": ("explicit_preference_extraction", "preference_extraction", "preference_profile_extraction"),
+    "preference_object_filter": ("preference_object_filter", "weak_preference_filter", "preference_specificity_filter"),
+    "preference_object_normalization": ("preference_object_normalization", "preference_normalization", "preference_object_canonicalization"),
+    "preference_reversal_extraction": ("preference_reversal_extraction", "preference_reversal", "preference_update_extraction"),
+    "chain_evidence": ("chain",),
+    "provenance_evidence": ("raw", "provenance"),
+    "provenance_chunk_promotion": ("raw", "provenance", "provenance_chunks", "chunk_promotion", "provenance_chunk_promotion"),
+    "graph_proximity": ("graph", "graph_proximity"),
+    "graph_relation_awareness": ("graph_relation", "relation_graph", "graph_relation_awareness"),
+    "graph_path_reinforcement": ("graph_reinforcement", "path_reinforcement", "graph_path_reinforcement"),
+    "graph_self_anchor": ("graph_self_anchor", "self_anchor", "self"),
+}
+_KNOWN_ABLATIONS = frozenset(flag for flags in _ABLATION_FLAGS.values() for flag in flags)
+
+
 def mnemotrace_config(ablations: tuple[str, ...] = ()) -> Config:
     """供评测台内消融实验使用的 Config 辅助函数。
 
@@ -114,64 +133,11 @@ def mnemotrace_config(ablations: tuple[str, ...] = ()) -> Config:
     正常行为，让统一 harness 可以一次只关掉一个算法。
     """
     disabled = set(ablations)
-    return Config(
-        evidence_budgeting="evidence_budget" not in disabled and "evidence_budgeting" not in disabled,
-        summary_fallback=(
-            "summary_fallback" not in disabled
-            and "summary" not in disabled
-            and "derived_summary" not in disabled
-        ),
-        procedural_extraction=(
-            "procedural_extraction" not in disabled
-            and "procedure_extraction" not in disabled
-            and "derived_procedural_extraction" not in disabled
-        ),
-        explicit_preference_extraction=(
-            "explicit_preference_extraction" not in disabled
-            and "preference_extraction" not in disabled
-            and "preference_profile_extraction" not in disabled
-        ),
-        preference_object_filter=(
-            "preference_object_filter" not in disabled
-            and "weak_preference_filter" not in disabled
-            and "preference_specificity_filter" not in disabled
-        ),
-        preference_object_normalization=(
-            "preference_object_normalization" not in disabled
-            and "preference_normalization" not in disabled
-            and "preference_object_canonicalization" not in disabled
-        ),
-        preference_reversal_extraction=(
-            "preference_reversal_extraction" not in disabled
-            and "preference_reversal" not in disabled
-            and "preference_update_extraction" not in disabled
-        ),
-        chain_evidence="chain" not in disabled,
-        provenance_evidence="raw" not in disabled and "provenance" not in disabled,
-        provenance_chunk_promotion=(
-            "raw" not in disabled
-            and "provenance" not in disabled
-            and "provenance_chunks" not in disabled
-            and "chunk_promotion" not in disabled
-            and "provenance_chunk_promotion" not in disabled
-        ),
-        graph_proximity="graph" not in disabled and "graph_proximity" not in disabled,
-        graph_relation_awareness=(
-            "graph_relation" not in disabled
-            and "relation_graph" not in disabled
-            and "graph_relation_awareness" not in disabled
-        ),
-        graph_path_reinforcement=(
-            "graph_reinforcement" not in disabled
-            and "path_reinforcement" not in disabled
-            and "graph_path_reinforcement" not in disabled
-        ),
-        graph_self_anchor=(
-            "graph_self_anchor" not in disabled
-            and "self_anchor" not in disabled
-            and "self" not in disabled
-        ),
-    )
+    unknown = disabled - _KNOWN_ABLATIONS
+    if unknown:
+        raise ValueError("Unknown ablation option(s): " + ", ".join(sorted(unknown))
+                         + ". See --ablate in --help for supported options.")
+    return Config(**{name: disabled.isdisjoint(flags) for name, flags in _ABLATION_FLAGS.items()})
 
 
 # ---------------- 系统适配器（各自实现 context(item) -> str） ----------------
@@ -421,7 +387,7 @@ class MnemoTraceLeanSystem:
         retrieved = mem.retrieve_episodes(q, qid, max(rig.extract_k, rig.summ_k))
         mem.consolidate_full(
             fact_episodes=retrieved[: rig.extract_k] if rig.extract_k > 0 else retrieved,
-            summary_episodes=retrieved[: rig.summ_k],
+            digest_episodes=retrieved[: rig.summ_k],
         )
         self._tl.mem, self._tl.qid = mem, qid
         return mem
@@ -432,13 +398,11 @@ class MnemoTraceLeanSystem:
         # expand>0（验证重试）：加宽切片 —— 更多完整细节会话、时间线、多跳分解 —— 把第一轮 lean 切片
         # 漏掉的证据找出来（针对 "I don't know" 的修复）。
         return mem.lean_context(
-            q, user_id=qid, n_summaries=rig.n_summaries, n_facts=rig.topk,
+            q, user_id=qid, n_digests=rig.n_digests, n_facts=rig.topk,
             n_chunks=rig.chunks + expand * 5, persona=rig.persona,
             agentic=rig.agentic or expand > 0, cascade=rig.cascade,
             timeline=rig.timeline or expand > 0,
         )
-
-
 
 
 class MnemoTraceLeanNoChainSystem(MnemoTraceLeanSystem):
@@ -469,13 +433,11 @@ class MnemoTraceLeanNoEvidenceBudgetSystem(MnemoTraceLeanSystem):
     ablations = ("evidence_budget",)
 
 
-class MnemoTraceLeanNoSummaryFallbackSystem(MnemoTraceLeanSystem):
+class MnemoTraceLeanNoDigestFallbackSystem(MnemoTraceLeanSystem):
     """A/B 基线：lean 系统，但搜索落空时没有派生摘要回退。"""
 
-    name = "engram_lean_no_summary_fallback"
-    ablations = ("summary_fallback",)
-
-
+    name = "engram_lean_no_digest_fallback"
+    ablations = ("digest_fallback",)
 
 
 class MnemoTraceLeanNoProceduralExtractionSystem(MnemoTraceLeanSystem):
@@ -513,14 +475,6 @@ class MnemoTraceLeanNoPreferenceReversalExtractionSystem(MnemoTraceLeanSystem):
     ablations = ("preference_reversal_extraction",)
 
 
-
-
-
-
-
-
-
-
 class MnemoTraceLeanNoGraphSystem(MnemoTraceLeanSystem):
     """A/B 基线：lean 系统，但关闭 n-hop 图邻近打分/遍历。"""
 
@@ -549,14 +503,6 @@ class MnemoTraceLeanNoGraphSelfAnchorSystem(MnemoTraceLeanSystem):
     ablations = ("graph_self_anchor",)
 
 
-
-
-
-
-
-
-
-
 class MnemoTraceLeanCoreSystem(MnemoTraceLeanSystem):
     """A/B 基线：lean 系统，同时关闭最新的证据增强项。"""
 
@@ -571,7 +517,7 @@ SYSTEMS = {"engram": MnemoTraceSystem, "full_context": FullContextSystem, "rag":
            "engram_lean_no_raw": MnemoTraceLeanNoRawSystem,
            "engram_lean_no_provenance_chunks": MnemoTraceLeanNoProvenanceChunksSystem,
            "engram_lean_no_evidence_budget": MnemoTraceLeanNoEvidenceBudgetSystem,
-           "engram_lean_no_summary_fallback": MnemoTraceLeanNoSummaryFallbackSystem,
+           "engram_lean_no_digest_fallback": MnemoTraceLeanNoDigestFallbackSystem,
            "engram_lean_no_procedural_extraction": MnemoTraceLeanNoProceduralExtractionSystem,
            "engram_lean_no_explicit_preference_extraction": MnemoTraceLeanNoExplicitPreferenceExtractionSystem,
            "engram_lean_no_preference_object_filter": MnemoTraceLeanNoPreferenceObjectFilterSystem,
@@ -708,11 +654,11 @@ def main():
     ap.add_argument("--session-map", action="store_true", dest="session_map",
                     help="engram_full: insert an L2 complete session-by-session digest (multi-session aggregation)")
     ap.add_argument("--summ-k", type=int, default=25, dest="summ_k",
-                    help="engram_lean: number of sessions to summarize for the L2 index (default 25)")
-    ap.add_argument("--n-summaries", type=int, default=12, dest="n_summaries",
-                    help="engram_lean: number of session summaries to pull into the lean context (default 12)")
+                    help="engram_lean: number of sessions to generate_digests for the L2 index (default 25)")
+    ap.add_argument("--n-digests", type=int, default=12, dest="n_digests",
+                    help="engram_lean: number of session digests to pull into the lean context (default 12)")
     ap.add_argument("--cascade", action="store_true",
-                    help="engram_lean: coarse-to-fine drill (detail from top summaries) — needed at _M/10M scale")
+                    help="engram_lean: coarse-to-fine drill (detail from top digests) — needed at _M/10M scale")
     ap.add_argument("--agentic", action="store_true", help="engram: LLM-decomposed iterative retrieval (M2a)")
     ap.add_argument("--timeline", action="store_true", help="engram: prepend a chronological timeline (M2b)")
     ap.add_argument("--hyde", action="store_true", help="engram: HyDE query expansion for recall (M2c)")
@@ -725,7 +671,7 @@ def main():
     ap.add_argument("--intent", action="store_true", help="engram: L6 intent hint (benchmark-neutral)")
     ap.add_argument("--ablate", default="",
                     help="comma-separated MnemoTrace algorithm switches to disable for all MnemoTrace systems in this run: "
-                         "evidence_budget, summary_fallback, procedural_extraction, explicit_preference_extraction, preference_object_filter, preference_object_normalization, preference_reversal_extraction, chain, raw/provenance, provenance_chunks, "
+                         "evidence_budget, digest_fallback, procedural_extraction, explicit_preference_extraction, preference_object_filter, preference_object_normalization, preference_reversal_extraction, chain, raw/provenance, provenance_chunks, "
                          "graph/graph_proximity, graph_relation, "
                          "graph_reinforcement, graph_self_anchor")
     ap.add_argument("--full", action="store_true",
@@ -744,6 +690,11 @@ def main():
                     help="emit {question_id,hypothesis} JSONL per system (to <emit>.<system>.jsonl) for the "
                          "OFFICIAL LongMemEval evaluate_qa.py judge — instead of self-judging here")
     args = ap.parse_args()
+    ablations = tuple(flag.strip() for flag in args.ablate.split(",") if flag.strip())
+    try:
+        mnemotrace_config(ablations)
+    except ValueError as exc:
+        ap.error(str(exc))
     if args.full:  # 一个开关打开全部 engram 差异化特性
         args.agentic = args.timeline = args.hyde = args.graph = args.wiki = True
         args.summary = args.verify = args.intent = True
@@ -797,10 +748,10 @@ def main():
         topk=args.topk, chunks=args.chunks, extract_k=args.extract_k,
         reasoning=args.reasoning, strategies=args.strategies, sc_on=args.sc_on, sc_k=args.sc_k,
         persona=args.persona, session_map=args.session_map, cascade=args.cascade,
-        summ_k=args.summ_k, n_summaries=args.n_summaries,
+        summ_k=args.summ_k, n_digests=args.n_digests,
         agentic=args.agentic, timeline=args.timeline, hyde=args.hyde, graph=args.graph, wiki=args.wiki,
         summary=args.summary, verify=args.verify, verify_retry=args.verify_retry, intent=args.intent,
-        ablations=tuple(a.strip() for a in args.ablate.split(",") if a.strip()),
+        ablations=ablations,
     )
 
     systems = []

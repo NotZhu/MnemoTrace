@@ -108,7 +108,7 @@ def test_migration_preserves_source_history_and_target_settings():
     payload["focus"] = {"track": ["source setting"], "mute": []}
     payload["facts"][0]["provenance"] = ["ep_source"]
     payload["facts"][0].pop("text")
-    payload["episodes"][0].pop("summary")
+    payload["episodes"][0].pop("digest")
     stats = mem.import_snapshot(payload, user_id="target")
     assert stats["facts_restored"] == stats["episodes_restored"] == 1
     assert stats["malformed"] == 0

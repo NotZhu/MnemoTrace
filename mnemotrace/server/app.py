@@ -221,7 +221,6 @@ def auth(authorization: str = Header(default='')) -> str:
     return svc().spaces.authenticate(token).user_id
 
 
-
 def authorized_space(space_id: str = Query(min_length=1, max_length=512),
                      owner: str = Depends(auth)) -> SpaceContext:
     return svc().spaces.authorize(owner, space_id)
@@ -248,7 +247,7 @@ class SpaceName(BaseModel):
 class RememberReq(SpaceRequest):
     content: str = Field(min_length=1, max_length=1_000_000)
     session_id: str = Field(default="default", min_length=1, max_length=512)
-    scope: Literal["auto", "long", "working", "raw"] = "auto"
+    scope: Literal["auto", "long", "raw"] = "auto"
     processing: Literal['immediate', 'buffered'] = 'immediate'
     agent_id: str | None = None
     timeout: float = Field(default=30, ge=0, le=300)
@@ -277,7 +276,7 @@ class ProcessingFlushReq(SpaceRequest):
     session_id: Optional[str] = Field(default=None, min_length=1, max_length=512)
     timeout: float = Field(default=30, ge=0, le=300)
     retry_failed: bool = False
-    include_summaries: bool = False
+    include_digests: bool = False
 
 
 class RecallReq(BaseModel):
@@ -287,7 +286,6 @@ class RecallReq(BaseModel):
     query: str = Field(min_length=1, max_length=32_768)
     lean: bool = True
     n_chunks: int = Field(default=6, ge=0, le=50)
-    session_id: Optional[str] = Field(default=None, max_length=512)
     state: FactState = FactState.CURRENT
     valid_at: float | None = None
     known_at: float | None = None
@@ -430,7 +428,7 @@ def processing_status(session_id: str | None = None, after_id: str | None = None
 @app.post('/v1/processing/flush')
 def processing_flush(req: ProcessingFlushReq, owner: str = Depends(auth)):
     context = svc().spaces.authorize(owner, req.space_id)
-    return svc().flush(context, req.session_id, req.timeout, req.retry_failed, req.include_summaries)
+    return svc().flush(context, req.session_id, req.timeout, req.retry_failed, req.include_digests)
 
 
 @app.get('/v1/episodes/{episode_id}')
@@ -449,7 +447,7 @@ def recall(req: RecallReq, owner: str = Depends(auth)):
     if len(set(ids)) != len(ids):
         raise ValueError('Duplicate space IDs')
     contexts = [svc().spaces.authorize(owner, space_id) for space_id in ids]
-    options = dict(n_chunks=req.n_chunks, session_id=req.session_id, as_of=req.as_of,
+    options = dict(n_chunks=req.n_chunks, as_of=req.as_of,
                    redact_sensitive=req.redact_sensitive, state=req.state,
                    valid_at=req.valid_at, known_at=req.known_at)
     if len(contexts) > 1:
@@ -645,7 +643,7 @@ class ImportReq(SpaceRequest):
     format: str = "auto"
     # None submits buffered extraction; False keeps original sources only.
     consolidate: Optional[bool] = None
-    summarize: bool = True
+    generate_digests: bool = True
     agent_id: str | None = None
     dedupe: bool = True  # 幂等的重复导入：跳过已入库的 episode（按内容指纹）
 
@@ -658,7 +656,7 @@ def import_history(req: ImportReq, owner: str = Depends(auth)):
         raise HTTPException(400, "provide either 'sessions' (pre-parsed) or 'data' (+ 'format') to import")
     try:
         return svc().import_(user, sessions=req.sessions, data=req.data, format=req.format,
-                             consolidate=req.consolidate, summarize=req.summarize, dedupe=req.dedupe,
+                             consolidate=req.consolidate, generate_digests=req.generate_digests, dedupe=req.dedupe,
                              agent_id=req.agent_id)
     except ValueError as exc:
         # 未知/不匹配的 format 是调用者的 payload 问题，不是服务端故障 -> 400，绝不能 500
@@ -700,7 +698,7 @@ class ChatMemoryRequest(SpaceRequest):
     recall: bool = True
     remember: bool = True
     session_id: str = Field(default='default', min_length=1, max_length=512)
-    scope: Literal['auto', 'long', 'working'] = 'auto'
+    scope: Literal['auto', 'long'] = 'auto'
     n_chunks: int = Field(default=6, ge=0, le=50)
     as_of: float | None = None
     redact_sensitive: bool = False
@@ -739,15 +737,11 @@ def chat_completions(req: ChatCompletionReq, owner: str = Depends(auth)):
         content = oc.remembered_text(svc().captioner, req.messages)
         if content:
             agent_id = opts.agent_id
-            if scope == 'working':
-                result = svc().remember(context, content, session_id, scope=scope,
-                                        processing='buffered', agent_id=agent_id)
-            else:
-                result = svc().remember_messages(context, [
-                    dict(message_id=opts.message_id or response['id'] + ':user', role='user', content=content),
-                    dict(message_id=response['id'], role='assistant', event_time=response['created'],
-                         content=response['choices'][0]['message']['content']),
-                ], session_id, scope=scope, agent_id=agent_id)
+            result = svc().remember_messages(context, [
+                dict(message_id=opts.message_id or response['id'] + ':user', role='user', content=content),
+                dict(message_id=response['id'], role='assistant', event_time=response['created'],
+                     content=response['choices'][0]['message']['content']),
+            ], session_id, scope=scope, agent_id=agent_id)
             response['mnemotrace'].update(remembered=True, remember_queued=bool(result['operation_ids']), remember_scope=scope,
                                           operation_ids=result['operation_ids'])
     response['mnemotrace']['space_id'] = context.space_id
@@ -864,7 +858,7 @@ def put_focus(req: FocusReq, owner: str = Depends(auth)):
 class PolicyReq(SpaceRequest):
     extract_instruction: Optional[str] = None  # None = 不变；"" = 重置为默认
     extract_system: Optional[str] = None
-    summary_system: Optional[str] = None
+    digest_system: Optional[str] = None
     persona_system: Optional[str] = None
 
 
@@ -880,34 +874,6 @@ def put_policy(req: PolicyReq, owner: str = Depends(auth)):
     整合时生效。"""
     user = svc().spaces.authorize(owner, req.space_id)
     return svc().set_policy(user, **req.model_dump(exclude={'space_id'}))
-
-
-# --- ① working memory：临时的、按 session/TTL 作用域的状态，不进入长期记忆 ---
-class WorkingReq(SpaceRequest):
-    content: str
-    session_id: str = "default"
-    kind: str = "state"  # state | intent | schedule | note | ...
-    ttl_seconds: Optional[float] = None  # 硬性过期；None => 存活到 session 被清空
-
-
-@app.post("/v1/working")
-def add_working(req: WorkingReq, owner: str = Depends(auth)):
-    """存储一个临时条目（不会被整合进长期记忆或 profile）。"""
-    user = svc().spaces.authorize(owner, req.space_id)
-    return svc().add_working(user, req.content, session_id=req.session_id, kind=req.kind,
-                             ttl_seconds=req.ttl_seconds)
-
-
-@app.get("/v1/working")
-def list_working(session_id: Optional[str] = None, user: SpaceContext = Depends(authorized_space)):
-    """存活的 working-memory 条目（可选按 session 过滤）。已过期/已消费的不包含。"""
-    return svc().working_memory(user, session_id=session_id)
-
-
-@app.delete("/v1/working")
-def clear_working(session_id: str, user: SpaceContext = Depends(authorized_space)):
-    """session 结束/重启时的清空：删除该 session 的 working memory。"""
-    return svc().clear_working(user, session_id)
 
 
 # --- 疑似冲突（System-2 中由 LLM 检出，需用户确认；绝不自动解决）---

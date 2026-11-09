@@ -17,11 +17,11 @@ def reply(prompt, system):
         return adjudication_reply(prompt)
     data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
     if 'rules' not in data:
-        return json.dumps(dict(facts=[], working=[]))
-    result = dict(facts=[], working=[], summaries=[dict(source_id=s['id'], text='Synthetic summary')
-        for s in data['pending'] if s['id'] in data['rules']['summary_required']])
+        return json.dumps(dict(facts=[], ))
+    result = dict(facts=[], digests=[dict(source_id=s['id'], text='Synthetic digest')
+        for s in data['pending'] if s['id'] in data['rules']['digest_required']])
     if '本次仅补' in system:
-        return json.dumps({'summaries': result['summaries']})
+        return json.dumps({'digests': result['digests']})
     for item in data['pending']:
         if item['role'] == 'assistant':
             continue
@@ -43,12 +43,10 @@ REPORT = 'I already completed your release checklist.'
 
 def dialogue_evidence(data):
     """Recorded responses for the role and provenance contract."""
-    facts, working = [], []
+    facts = []
     for item in data['pending']:
         content = item['content']
-        if content == 'Prepare my release checklist.':
-            working.append(dict(content=content, kind='task', source_ids=[item['id']]))
-        elif content in {'My default package manager is npm.', 'Yes, use that by default.'}:
+        if content in {'My default package manager is npm.', 'Yes, use that by default.'}:
             refs = [item['id']]
             value = 'npm'
             if content.startswith('Yes'):
@@ -60,7 +58,7 @@ def dialogue_evidence(data):
                               text=f'I prefer {value} as my default package manager.',
                               category='偏好', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown',
                               source_ids=refs))
-    return dict(facts=facts, working=working, summaries=[])
+    return dict(facts=facts, digests=[])
 
 
 def test_assistant_evidence_is_retrievable_and_confirmation_has_user_time():
@@ -84,7 +82,6 @@ def test_assistant_evidence_is_retrievable_and_confirmation_has_user_time():
     assert proposal.role == 'assistant'
     assert [f.object for f in mem._all_facts() if f.is_live()] == ['npm']
     assert 'pnpm' not in json.dumps(mem.structured_profile())
-    assert [item.content for item in mem.working_memory()] == ['Prepare my release checklist.']
 
     send(message('confirmation', 'Yes, use that by default.', event_time=300))
     old = next(f for f in mem._all_facts() if f.object == 'npm')

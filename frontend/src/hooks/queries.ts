@@ -27,7 +27,6 @@ export const qk = {
   policy: () => ['policy', ns()] as const,
   profile: () => ['profile', ns()] as const,
   sourceEpisodes: () => ['source-episodes', ns()] as const,
-  working: (sessionId?: string) => ['working', ns(), sessionId ?? null] as const,
   conflicts: () => ['conflicts', ns()] as const,
   health: () => ['health'] as const,
   // 与其他 key 一样按命名空间隔离（见上面的 ns()）— 审计是按记忆空间进行的，
@@ -162,11 +161,6 @@ export function useStructuredProfile() {
   return useQuery({ queryKey: qk.profile(), queryFn: api.structuredProfile, enabled, retry: false })
 }
 
-export function useWorking(sessionId?: string) {
-  const enabled = !!useAuth((s) => s.spaceId)
-  return useQuery({ queryKey: qk.working(sessionId), queryFn: ({ signal }) => api.working(sessionId, signal),
-    enabled, retry: false, gcTime: sessionId ? 0 : undefined })
-}
 
 export function useConflicts() {
   const enabled = !!useAuth((s) => s.spaceId)
@@ -182,13 +176,6 @@ export function useResolveConflict() {
   })
 }
 
-export function useClearWorking(signal?: AbortSignal) {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (session_id?: string) => api.clearWorking(session_id, signal),
-    onSuccess: () => refreshAfterWrite(qc, [['working', ns()]]),
-  })
-}
 
 export function useRemember() {
   const invalidate = useInvalidateMemory()
@@ -210,12 +197,10 @@ export function useRememberMessages(signal?: AbortSignal) {
 
 export function useOrganizeSession(signal?: AbortSignal) {
   const invalidate = useInvalidateMemory()
-  const qc = useQueryClient()
   return useMutation({
     mutationFn: (session_id: string) => api.organizeSession(session_id, signal),
     onSuccess: () => {
       invalidate()
-      refreshAfterWrite(qc, [['working', ns()]])
     },
   })
 }

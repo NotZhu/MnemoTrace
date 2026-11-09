@@ -13,7 +13,7 @@ class FactWriter:
 
     @staticmethod
     def empty_stats():
-        return {"facts_added": 0, "duplicates": 0, "invalidated": 0, "working_added": 0,
+        return {"facts_added": 0, "duplicates": 0, "invalidated": 0,
                 "model_calls": 0, "windows_completed": 0}
 
     def _accepted(self, fact, content: str) -> bool:

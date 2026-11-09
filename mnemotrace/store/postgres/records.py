@@ -3,23 +3,23 @@ from dataclasses import fields
 from datetime import datetime, timezone
 import json
 
-from ...types import Conflict, Entity, Episode, Fact, Relation, WorkingMemory
+from ...types import Conflict, Entity, Episode, Fact, Relation
 from ...retrieve.lexical import lexical_terms
 from ..contracts import RecordKind, RecordRef, StoredRecord
 from .database import identifier
 from .errors import DataCorruption
 
-SOURCE, FACT, WORKING, ENTITY, RELATION, CONFLICT = RecordKind
-MODELS = dict(zip(RecordKind, (Episode, Fact, WorkingMemory, Entity, Relation, Conflict), strict=True))
+SOURCE, FACT, ENTITY, RELATION, CONFLICT = RecordKind
+MODELS = dict(zip(RecordKind, (Episode, Fact, Entity, Relation, Conflict), strict=True))
 TABLES = dict(zip(RecordKind, (
-    'sources', 'facts', 'working_memories', 'entities', 'graph_relations', 'conflicts',
+    'sources', 'facts', 'entities', 'graph_relations', 'conflicts',
 ), strict=True))
-TARGET_COLUMNS = {SOURCE: 'source_id', FACT: 'fact_id', WORKING: 'working_id', ENTITY: 'entity_id'}
+TARGET_COLUMNS = {SOURCE: 'source_id', FACT: 'fact_id', ENTITY: 'entity_id'}
 TIMES = frozenset(('event_time', 'ingested_at', 'created_at', 'valid_at', 'invalid_at',
                    'expired_at', 'approved_at', 'last_access', 'expires_at', 'detected_at'))
 SCOPE = 'user_id = %s AND space_id = %s'
 ROW_SCOPE = 'r.user_id = %s AND r.space_id = %s'
-JSON_COLUMNS = {'metadata', 'coverage', 'summary_coverage', 'settings', 'stats',
+JSON_COLUMNS = {'metadata', 'coverage', 'digest_coverage', 'settings', 'stats',
                 'input', 'result', 'source_versions', 'validity_revisions'}
 
 
@@ -34,12 +34,12 @@ def timestamp(value):
         raise ValueError('Timestamp is outside the supported range') from exc
 
 
-def source_summary_join(known_at=None):
-    join = """ LEFT JOIN mnemotrace.source_summaries s
+def source_digest_join(known_at=None):
+    join = """ LEFT JOIN mnemotrace.source_digests s
         ON (s.user_id,s.space_id,s.source_id) = (r.user_id,r.space_id,r.id)"""
     if known_at is None:
         return join, ()
-    return join + ' AND s.summary_written_at <= %s', (timestamp(known_at),)
+    return join + ' AND s.digest_written_at <= %s', (timestamp(known_at),)
 
 
 def domain(record: StoredRecord):
@@ -49,9 +49,9 @@ def domain(record: StoredRecord):
 def unpack(context, kind, row):
     values = {}
     try:
-        if (kind == SOURCE and row['summary_content_version'] is not None
-                and row['summary_content_version'] != row['content_version']):
-            raise ValueError('Source summary refers to an obsolete content version')
+        if (kind == SOURCE and row['digest_content_version'] is not None
+                and row['digest_content_version'] != row['content_version']):
+            raise ValueError('Source digest refers to an obsolete content version')
         for field in fields(MODELS[kind]):
             key = field.name
             value = row[key]
@@ -62,7 +62,7 @@ def unpack(context, kind, row):
             RecordRef(context, kind, row['id']), row.get('content_version', 1),
             json.dumps(values, ensure_ascii=False, allow_nan=False),
             row.get('agent_id'), row.get('record_version', row.get('projection_version', 1)),
-            row.get('summary_version'),
+            row.get('digest_version'),
         )
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         raise DataCorruption('Invalid stored domain record') from exc
@@ -72,7 +72,7 @@ def columns(record, values):
     kind = record.ref.kind
     excluded = {'id', 'user_id', 'embedding'}
     if kind == SOURCE:
-        excluded.update(('summary', 'summary_embedding', 'coverage', 'summary_coverage', 'consolidated'))
+        excluded.update(('digest', 'digest_embedding', 'coverage', 'digest_coverage', 'consolidated'))
     if kind == FACT:
         excluded.add('provenance')
     data = {key: timestamp(value) if key in TIMES else value
@@ -121,7 +121,7 @@ class ScopedSQL:
     def run(self, query, params=(), *, prepare=None):
         return self.conn.execute(query, params, prepare=prepare)
 
-    def select(self, kind, conditions=(), params=(), *, limit=None, offset=0, summary_known_at=None,
+    def select(self, kind, conditions=(), params=(), *, limit=None, offset=0, digest_known_at=None,
                order_by='r.id'):
         extra, joins = '', ''
         join_params = ()
@@ -132,11 +132,11 @@ class ScopedSQL:
                 WHERE (p.user_id,p.space_id,p.fact_id) = (r.user_id,r.space_id,r.id)
                 ORDER BY p.source_order NULLS LAST, p.source_id) AS provenance"""
         elif kind == SOURCE:
-            extra += """, coalesce(s.summary, '') AS summary, s.coverage, s.summary_coverage,
-                CASE WHEN s.summary <> '' THEN s.summary_version END AS summary_version,
+            extra += """, coalesce(s.digest, '') AS digest, s.coverage, s.digest_coverage,
+                CASE WHEN s.digest <> '' THEN s.digest_version END AS digest_version,
                 coalesce(s.processing_state = 'completed', false) AS consolidated,
-                s.content_version AS summary_content_version, NULL AS summary_embedding"""
-            joins, join_params = source_summary_join(summary_known_at)
+                s.content_version AS digest_content_version, NULL AS digest_embedding"""
+            joins, join_params = source_digest_join(digest_known_at)
         where = ' AND '.join((ROW_SCOPE, *conditions))
         query = f'SELECT r.*{extra} FROM mnemotrace.{TABLES[kind]} r{joins} WHERE {where} ORDER BY {order_by}'
         if limit is not None:
@@ -173,10 +173,10 @@ class ScopedSQL:
         return self.run(f'DELETE FROM mnemotrace.{table} WHERE {SCOPE} AND ({condition})',
                         (*self.scope, *params))
 
-    def version(self, ref, *, summary=False):
-        if summary:
-            row = self.run(f'SELECT summary_version FROM mnemotrace.source_summaries WHERE {SCOPE}'
-                           " AND source_id = %s AND summary <> ''", (*self.scope, ref.record_id)).fetchone()
+    def version(self, ref, *, digest=False):
+        if digest:
+            row = self.run(f'SELECT digest_version FROM mnemotrace.source_digests WHERE {SCOPE}'
+                           " AND source_id = %s AND digest <> ''", (*self.scope, ref.record_id)).fetchone()
         else:
             row = self.run(f'SELECT content_version FROM mnemotrace.{TABLES[ref.kind]} WHERE {SCOPE}'
                            ' AND id = %s', (*self.scope, ref.record_id)).fetchone()

@@ -26,11 +26,11 @@ test('中文画像四个小节保留在同一卡片，偏好表独立分区', ()
 
 test('旧英文 STYLE 合并到画像，旧标题和正文保留原文', () => {
   const profile = 'IDENTITY & ANCHORS:\nLives in Example City.\n\nSTYLE:\nPrefers concise answers.'
-  const sections = splitContextSections(`USER PROFILE:\n${profile}\n\nPREFERENCE RECORDS (current, structured):\ndate | subject | preference | value\n\nSESSION SUMMARIES (relevant, chronological):\nA summary.`)
+  const sections = splitContextSections(`USER PROFILE:\n${profile}\n\nPREFERENCE RECORDS (current, structured):\ndate | subject | preference | value\n\nSESSION DIGESTS (relevant, chronological):\nA digest.`)
   assert.equal(sections.length, 3)
   assert.equal(sections[0].body, profile)
   assert.equal(sections[1].rawLabel, 'PREFERENCE RECORDS (current, structured)')
-  assert.equal(sections[2].key, 'sectionSummaries')
+  assert.equal(sections[2].key, 'sectionDigests')
 })
 
 test('中文顶层标题和 Windows 换行均能识别，保留事实关系值', () => {

@@ -164,7 +164,7 @@ def mnemotrace_mem(pid: str, messages: list[dict], embedder, extractor, rig) -> 
     # 在高召回检索集合上做整合依赖具体查询；对 persona 存储我们一次性整合全部（规模不大的）历史，
     # 让 facts + persona 覆盖查询可能探查的每个偏好。
     eps = list(mem.episodes_doc.values())
-    mem.consolidate_full(fact_episodes=eps[: rig["extract_k"]] if rig["extract_k"] else eps, summary_episodes=eps)
+    mem.consolidate_full(fact_episodes=eps[: rig["extract_k"]] if rig["extract_k"] else eps, digest_episodes=eps)
     with _MEM_LOCK:
         _MEM_CACHE[pid] = mem
     return mem
@@ -181,7 +181,7 @@ def run():
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--extract-k", type=int, default=10, dest="extract_k")
     ap.add_argument("--topk", type=int, default=12)
-    ap.add_argument("--n-summaries", type=int, default=15, dest="n_summaries")
+    ap.add_argument("--n-digests", type=int, default=15, dest="n_digests")
     ap.add_argument("--chunks", type=int, default=3)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=None)
@@ -192,7 +192,7 @@ def run():
     embedder = make_embedder(args.embedder)
     answerer = make_llm(args.answerer, max_tokens=8, num_retries=3, timeout=60)
     extractor = make_llm(args.extractor, max_tokens=512, num_retries=3, timeout=60)
-    rig = {"extract_k": args.extract_k, "topk": args.topk, "n_summaries": args.n_summaries, "chunks": args.chunks}
+    rig = {"extract_k": args.extract_k, "topk": args.topk, "n_digests": args.n_digests, "chunks": args.chunks}
 
     items = load_items(args.n_personas, args.per_persona, args.seed)
     print(f"PersonaMem-v2 | {len(items)} questions / {args.n_personas} personas | systems={systems}", flush=True)
@@ -230,7 +230,7 @@ def run():
                 else:
                     mem = mnemotrace_mem(pid, msgs, embedder, extractor, rig)
                     ctx = mem.lean_context(it["query"], user_id=pid, n_facts=rig["topk"],
-                                           n_summaries=rig["n_summaries"], n_chunks=rig["chunks"], persona=True)
+                                           n_digests=rig["n_digests"], n_chunks=rig["chunks"], persona=True)
                 pick = ask_mc(answerer, ctx, it["query"], option_texts)
                 res[sysname] = {"ok": pick == correct_idx, "pick": pick, "tok": len(ctx.split()),
                                 "lat": (time.perf_counter() - t0) * 1000.0}

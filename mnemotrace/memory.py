@@ -7,7 +7,7 @@ from ._postgres_pipeline import PostgresPipeline
 from .config import Config
 from .consolidate.decay import reinforce
 from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual
-from .consolidate.pipeline import digest
+from .consolidate.pipeline import content_hash
 from .retrieve import postgres as retrieval
 from .store.contracts import (
     ChangeSet, CommitConditions, EmbeddingWrite, EntityMerge, FactQuery, MessageInput, OperationKind,
@@ -20,10 +20,10 @@ from .store.postgres.graph_reads import RetrievalGraph
 from .store.postgres.identity import Spaces
 from .store.postgres.lexical import project_document, project_text
 from .store.postgres.projection import GraphProjection
-from .store.postgres.records import CONFLICT, ENTITY, FACT, SOURCE, WORKING, MODELS, anchor_terms, domain
+from .store.postgres.records import CONFLICT, ENTITY, FACT, SOURCE, MODELS, anchor_terms, domain
 from .store.postgres.writes import queue_source_vector
-from .types import Episode, WorkingMemory
-from .util import now, time_key
+from .types import Episode
+from .util import time_key
 
 if TYPE_CHECKING:
     from .embed import Embedder
@@ -111,27 +111,10 @@ class Memory:
         identifier(session_id)
         self._validate_processing(processing, timeout)
         if (not isinstance(content, str) or not content.strip() or '\x00' in content
-                or scope not in ('auto', 'long', 'working') or source_kind not in ('raw', 'document')):
+                or scope not in ('auto', 'long') or source_kind not in ('raw', 'document')):
             raise ValueError('Invalid source content or routing')
         source = Episode(content, self.context.user_id, session_id, source_kind=source_kind,
                          scope=scope, event_time=event_time)
-        if scope == 'working':
-            with self.dao.read_snapshot(session_id) as view:
-                snapshot = view.snapshot
-                wall_time = view.at.timestamp()
-            source.ingested_at = wall_time
-            ttl = self._config.working_memory_ttl_seconds
-            working = WorkingMemory(content=content, user_id=self.context.user_id, session_id=session_id,
-                                    event_time=event_time if event_time is not None else wall_time,
-                                    created_at=wall_time,
-                                    expires_at=wall_time + ttl if ttl is not None else None,
-                                    metadata={'provenance': [source.id]})
-            record = replace(StoredRecord.from_record(self.context, source), agent_id=agent_id)
-            write = self._write(working)
-            self._commit(snapshot, writes=(RecordWrite(record), write),
-                         embeddings=self._embeddings(write, working.content))
-            return dict(ok=True, status='stored', source_ids=(source.id,), operation_ids=(), operations=(),
-                        id=working.id, kind=working.kind, scope='working')
         record = replace(StoredRecord.from_record(self.context, source), agent_id=agent_id)
         receipt, operation_id = self._processing.tasks.accept_source(
             record, self._processing.require_model, embedding=self._embedding_space)
@@ -148,20 +131,20 @@ class Memory:
             raise ValueError('Expected a finite nonnegative timeout')
 
     def import_document(self, content, session_id, *, event_time=None, metadata=None, agent_id=None,
-                        extract=True, summarize=True, dedupe=True, processing='buffered', timeout=30):
+                        extract=True, generate_digests=True, dedupe=True, processing='buffered', timeout=30):
         identifier(session_id)
         self._validate_processing(processing, timeout)
         if not isinstance(content, str) or not content.strip() or '\x00' in content:
             raise ValueError('Expected non-empty document content')
         episode = Episode(content, self.context.user_id, session_id, source_kind='document',
                           scope='long' if extract else 'raw', event_time=event_time,
-                          metadata={**(metadata or {}), 'summary_requested': summarize})
+                          metadata={**(metadata or {}), 'digest_requested': generate_digests})
         record = replace(StoredRecord.from_record(self.context, episode), agent_id=agent_id)
-        kind = (OperationKind.EXTRACT if extract else OperationKind.SUMMARY
-                if summarize and len(content) >= self._config.summary_min_chars else None)
-        import_digest = digest([session_id, content, agent_id, extract, summarize]) if dedupe else None
+        kind = (OperationKind.EXTRACT if extract else OperationKind.DIGEST
+                if generate_digests and len(content) >= self._config.digest_min_chars else None)
+        import_hash = content_hash([session_id, content, agent_id, extract, generate_digests]) if dedupe else None
         receipt, operation_id = self._processing.tasks.accept_source(
-            record, self._processing.require_model, embedding=self._embedding_space, import_digest=import_digest,
+            record, self._processing.require_model, embedding=self._embedding_space, import_hash=import_hash,
             kind=kind)
         ids = (operation_id,) if operation_id else ()
         return dict(self._accepted(ids, processing, timeout), source_ids=receipt.source_ids,
@@ -189,11 +172,11 @@ class Memory:
             raise ValueError('Expected page size from 1 to 1000')
         return self._processing.tasks.list_operations(session_id, after_id, limit)
 
-    def flush_processing(self, session_id=None, timeout=30, *, retry_failed=False, include_summaries=False):
+    def flush_processing(self, session_id=None, timeout=30, *, retry_failed=False, include_digests=False):
         if session_id is not None:
             identifier(session_id)
         return self._processing.flush(session_id=session_id, timeout=timeout, retry_failed=retry_failed,
-                                      include_summaries=include_summaries)
+                                      include_digests=include_digests)
 
     def remember_raw(self, content: str, session_id: str, *, role='user',
                      event_time=None, agent_id=None):
@@ -237,9 +220,9 @@ class Memory:
                     continue
                 project_text(sql, kind, item.id, record.content_version, asdict(item), missing_only=True)
                 if kind == SOURCE:
-                    if item.summary:
-                        project_document(sql, SOURCE, item.id, record.summary_version, item.summary,
-                                         field='summary', missing_only=True)
+                    if item.digest:
+                        project_document(sql, SOURCE, item.id, record.digest_version, item.digest,
+                                         field='digest', missing_only=True)
                     if self._embedding_space is not None:
                         queue_source_vector(sql, item.id, item.session_id, record.content_version,
                                             generation, self._embedding_space)
@@ -322,13 +305,13 @@ class Memory:
             return retrieval.source_search(view.focused(), request, k)
 
     def lean_context(self, query: str, *, as_of: float | None = None, n_facts: int = 15, n_chunks: int = 2,
-                     n_summaries: int = 20, char_budget: int = 60_000, session_id: str | None = None,
+                     n_digests: int = 20, char_budget: int = 60_000,
                      redact_sensitive: bool = False, facts: FactQuery | None = None,
                      reinforce_hits: bool = False, include_full_tokens: bool = False) -> retrieval.ContextResult:
-        if (any(type(value) is not int or not 0 <= value <= 1000 for value in (n_facts, n_chunks, n_summaries))
+        if (any(type(value) is not int or not 0 <= value <= 1000 for value in (n_facts, n_chunks, n_digests))
                 or type(char_budget) is not int or char_budget < 0):
             raise ValueError('Invalid context budget')
-        count = max(n_facts, n_chunks, n_summaries, 1)
+        count = max(n_facts, n_chunks, n_digests, 1)
         if facts is not None and as_of is not None:
             raise ValueError('Use either as_of or explicit fact conditions')
         facts = replace(facts, exclude_sensitive=facts.exclude_sensitive or redact_sensitive,
@@ -336,10 +319,10 @@ class Memory:
                             valid_at=as_of, known_at=as_of, exclude_sensitive=redact_sensitive,
                             limit=max(count, self._config.ann_pool))
         request = self._query(query, top_k=count, facts=facts)
-        with self.dao.read_snapshot(session_id) as view:
+        with self.dao.read_snapshot() as view:
             result = retrieval.context(view.focused(), request, self._config, self._embedder is not None,
-                                       n_facts=n_facts, n_chunks=n_chunks, n_summaries=n_summaries,
-                                       char_budget=char_budget, session_id=session_id)
+                                       n_facts=n_facts, n_chunks=n_chunks, n_digests=n_digests,
+                                       char_budget=char_budget)
             snapshot = view.snapshot
             records = ()
             if reinforce_hits and facts.is_current_view and result.fact_ids:
@@ -352,7 +335,7 @@ class Memory:
     def context_for(self, query: str, *, as_of: float | None = None, top_k: int | None = None, k_chunks: int = 3,
                     char_budget: int = 60_000) -> retrieval.ContextResult:
         return self.lean_context(query, as_of=as_of, n_facts=self._config.top_k if top_k is None else top_k,
-                                 n_chunks=k_chunks, n_summaries=0, char_budget=char_budget)
+                                 n_chunks=k_chunks, n_digests=0, char_budget=char_budget)
 
     def recall_multi(self, space_ids, query: str, **options) -> retrieval.ContextResult:
         if isinstance(space_ids, str):
@@ -489,39 +472,6 @@ class Memory:
             snapshot = view.snapshot
         return self._commit(snapshot, erasures=records)
 
-    def remember_working(self, content, session_id, *, kind='state', ttl_seconds=None,
-                         event_time=None):
-        wall_time = now()
-        item = WorkingMemory(
-            content=content, user_id=self.context.user_id, session_id=session_id, kind=kind,
-            event_time=wall_time if event_time is None else event_time,
-            expires_at=wall_time + ttl_seconds if ttl_seconds else None,
-        )
-        with self.dao.read_snapshot(session_id) as view:
-            snapshot = view.snapshot
-        write = self._write(item)
-        self._commit(snapshot, writes=(write,), embeddings=self._embeddings(write, item.content))
-        return item
-
-    def working_memory(self, **filters):
-        with self.dao.read_snapshot() as view:
-            return tuple(map(domain, view.working(**filters)))
-
-    def consume_working(self, record_id):
-        with self.dao.read_snapshot() as view:
-            snapshot, old = view.snapshot, view.get(WORKING, record_id)
-        if old is None:
-            return False
-        item = domain(old)
-        if not item.consumed:
-            self._commit(snapshot, writes=(self._write(replace(item, consumed=True), old),))
-        return True
-
-    def clear_working(self, session_id):
-        return self.dao.clear_working(session_id).affected_count
-
-    def sweep_working(self, as_of=None):
-        return self.dao.sweep_working(as_of).affected_count
 
     def clear_space(self):
         return self.dao.clear_space()

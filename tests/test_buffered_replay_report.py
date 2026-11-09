@@ -29,7 +29,7 @@ def observation(case, mode, fingerprint, *, tokens=100):
         calls=[dict(phase='extraction', window='w', status='completed', provider_request=True,
                     usage=dict(prompt_tokens=tokens-10, completion_tokens=10, total_tokens=tokens),
                     started_at=2, ended_at=2.5)],
-        windows=[dict(window_id='w', pending=pending, context=[], validated=True, output=dict(facts=[],working=[]),
+        windows=[dict(window_id='w', pending=pending, context=[], validated=True, output=dict(facts=[],),
                       started_at=2, ended_at=2.5, input_bytes=8000, bytes=dict(body=6000, system=2000, total=8000))])
 
 
@@ -137,6 +137,22 @@ def test_frozen_runner_and_duplicate_results_fail_closed(modules, tmp_path):
     manifest_path.write_text(json.dumps(manifest))
     (tmp_path/'runner.py').write_text('changed')
     with pytest.raises(ValueError, match='runner changed'):
+        report.summarize(tmp_path)
+
+
+@pytest.mark.parametrize('name', ['buffered_replay_report.py', 'extraction_quality.py'])
+def test_report_rejects_a_different_frozen_reporting_version(modules, tmp_path, name):
+    report, _ = modules
+    _, rows = directory(tmp_path)
+    rows[0]['calls'][0]['phase'] = 'summary'
+    write_rows(tmp_path, rows)
+    manifest_path = tmp_path/'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    archived = b'raise RuntimeError("archived source must never be executed")\n'
+    (tmp_path/name).write_bytes(archived)
+    manifest['runner_hashes'][name] = hashlib.sha256(archived).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='Use the original reporting checkout'):
         report.summarize(tmp_path)
 
 

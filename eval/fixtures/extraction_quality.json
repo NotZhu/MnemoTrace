@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "cases": [
     {
       "id": "independent-1",
@@ -64,8 +64,7 @@
           "at": "e2",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "independent-2",
@@ -82,8 +81,7 @@
           "at": 1700000001
         }
       ],
-      "facts": [],
-      "working": []
+      "facts": []
     },
     {
       "id": "independent-3",
@@ -118,8 +116,7 @@
           "at": "e1",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "independent-4",
@@ -169,8 +166,7 @@
           "at": "e1",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "independent-5",
@@ -222,8 +218,7 @@
           "at": "e1",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "reference-1",
@@ -306,7 +301,6 @@
           "weaker_variants": []
         }
       ],
-      "working": [],
       "flush_after": [
         1
       ]
@@ -361,7 +355,6 @@
           "weaker_variants": []
         }
       ],
-      "working": [],
       "aliases": {
         "小舟": "林舟"
       },
@@ -444,8 +437,7 @@
           "at": "e2",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "reference-4",
@@ -517,8 +509,7 @@
           "at": "e2",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "reference-5",
@@ -588,8 +579,7 @@
           "at": "e1",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "relation-1",
@@ -640,8 +630,7 @@
             ]
           ]
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "relation-2",
@@ -686,8 +675,7 @@
           "at": "e1",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "relation-3",
@@ -727,8 +715,7 @@
           "at": "e1",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "relation-4",
@@ -773,8 +760,7 @@
           "at": "e1",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "relation-5",
@@ -824,8 +810,7 @@
           "at": "e1",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "update-1",
@@ -887,7 +872,6 @@
           "weaker_variants": []
         }
       ],
-      "working": [],
       "flush_after": [
         1
       ]
@@ -951,8 +935,7 @@
           "at": "e2",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "update-3",
@@ -1023,8 +1006,7 @@
           "at": "e2",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "update-4",
@@ -1085,8 +1067,7 @@
           "at": "e2",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "update-5",
@@ -1147,8 +1128,7 @@
           "at": "e2",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "lifecycle-1",
@@ -1165,28 +1145,7 @@
           "at": 1700000001
         }
       ],
-      "facts": [],
-      "working": [
-        {
-          "id": "w1",
-          "contents": [
-            "请在本次会话结束前提醒我上传测试报告。",
-            "提醒用户在本次会话结束前上传测试报告。",
-            "用户要求在本次会话结束前提醒其上传测试报告。",
-            "用户希望在本次会话结束前被提醒上传测试报告。",
-            "本次会话结束前提醒用户上传测试报告。"
-          ],
-          "kinds": [
-            "task"
-          ],
-          "sources": [
-            [
-              "e1"
-            ]
-          ],
-          "at": "e1"
-        }
-      ]
+      "facts": []
     },
     {
       "id": "lifecycle-2",
@@ -1203,26 +1162,7 @@
           "at": 1700000001
         }
       ],
-      "facts": [],
-      "working": [
-        {
-          "id": "w1",
-          "contents": [
-            "我现在正在等待这次测试的结果。",
-            "用户正在等待本次测试结果。",
-            "用户正在等待这次测试的结果。"
-          ],
-          "kinds": [
-            "state"
-          ],
-          "sources": [
-            [
-              "e1"
-            ]
-          ],
-          "at": "e1"
-        }
-      ]
+      "facts": []
     },
     {
       "id": "lifecycle-3",
@@ -1239,26 +1179,7 @@
           "at": 1700000001
         }
       ],
-      "facts": [],
-      "working": [
-        {
-          "id": "w1",
-          "contents": [
-            "这次讨论结束前，我想试着画一张草图。",
-            "用户想在这次讨论结束前尝试画一张草图。"
-          ],
-          "kinds": [
-            "intent",
-            "task"
-          ],
-          "sources": [
-            [
-              "e1"
-            ]
-          ],
-          "at": "e1"
-        }
-      ]
+      "facts": []
     },
     {
       "id": "lifecycle-4",
@@ -1292,24 +1213,6 @@
           ],
           "at": "e1",
           "weaker_variants": []
-        }
-      ],
-      "working": [
-        {
-          "id": "w1",
-          "contents": [
-            "这次会话结束前提醒我提交测试表。",
-            "提醒用户在本次会话结束前提交测试表。"
-          ],
-          "kinds": [
-            "task"
-          ],
-          "sources": [
-            [
-              "e1"
-            ]
-          ],
-          "at": "e1"
         }
       ]
     },
@@ -1346,8 +1249,7 @@
           "at": "e1",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "long-1",
@@ -1410,8 +1312,7 @@
             "e1": "我在星河实验室工作。"
           }
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "long-2",
@@ -1449,8 +1350,7 @@
             "e1": "我喜欢绿茶。"
           }
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "long-3",
@@ -1488,8 +1388,7 @@
             "e1": "我对花生过敏。"
           }
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "long-4",
@@ -1562,8 +1461,7 @@
             "e2": "齐宁在青石公司工作。"
           }
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "long-5",
@@ -1580,8 +1478,7 @@
           "at": 1700000001
         }
       ],
-      "facts": [],
-      "working": []
+      "facts": []
     },
     {
       "id": "append-1",
@@ -1672,7 +1569,6 @@
           "weaker_variants": []
         }
       ],
-      "working": [],
       "append_during_model": true
     },
     {
@@ -1733,8 +1629,7 @@
             "e2"
           ]
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "append-3",
@@ -1819,8 +1714,7 @@
           "at": "e3",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "append-4",
@@ -1886,7 +1780,6 @@
           "weaker_variants": []
         }
       ],
-      "working": [],
       "flush_after": [
         1
       ]
@@ -1902,28 +1795,11 @@
           "text": "当前会话临时记录：测试步骤已完成。",
           "user": "u",
           "session": "s",
-          "scope": "working",
+          "scope": "raw",
           "at": 1700000001
         }
       ],
-      "facts": [],
-      "working": [
-        {
-          "id": "w1",
-          "contents": [
-            "当前会话临时记录：测试步骤已完成。"
-          ],
-          "kinds": [
-            "state"
-          ],
-          "sources": [
-            [
-              "e1"
-            ]
-          ],
-          "at": "e1"
-        }
-      ]
+      "facts": []
     },
     {
       "id": "isolation-1",
@@ -1983,8 +1859,7 @@
           "at": "e2",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "isolation-2",
@@ -2044,8 +1919,7 @@
           "at": "e2",
           "weaker_variants": []
         }
-      ],
-      "working": []
+      ]
     },
     {
       "id": "isolation-3",
@@ -2080,7 +1954,6 @@
           "manual": true
         }
       ],
-      "working": [],
       "manual": [
         {
           "user": "u",
@@ -2128,7 +2001,7 @@
           "text": "提醒我本次会话结束前提交测试表。",
           "user": "u",
           "session": "s",
-          "scope": "working",
+          "scope": "raw",
           "at": 1700000002
         }
       ],
@@ -2149,24 +2022,6 @@
           ],
           "at": "e1",
           "weaker_variants": []
-        }
-      ],
-      "working": [
-        {
-          "id": "w1",
-          "contents": [
-            "提醒我本次会话结束前提交测试表。"
-          ],
-          "kinds": [
-            "state",
-            "task"
-          ],
-          "sources": [
-            [
-              "e2"
-            ]
-          ],
-          "at": "e2"
         }
       ]
     },
@@ -2234,7 +2089,6 @@
           "weaker_variants": []
         }
       ],
-      "working": [],
       "inject_transient_once": true
     }
   ]

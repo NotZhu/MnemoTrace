@@ -42,14 +42,6 @@ export interface Conflict {
   reason: string
 }
 
-export interface WorkingItem {
-  id: string
-  content: string
-  kind: string
-  session_id: string
-  created: string
-  expires_at: string | null
-}
 
 export interface MemoryEpisode {
   id: string
@@ -59,14 +51,14 @@ export interface MemoryEpisode {
   mode: 'live' | 'historical' | null
   coverage: { partial: boolean } | null
   content: string
-  summary: string
+  digest: string
 }
 
 export interface MemoryCounts {
   episodes: number
   facts_live: number
   facts_superseded: number
-  summaries: number
+  digests: number
   facts_outcomes: number
 }
 
@@ -83,8 +75,7 @@ export interface MemoryStatsCounts {
   facts_live: number
   facts_superseded: number
   facts_sensitive: number
-  working_live: number
-  summaries: number
+  digests: number
   entities: number
   relations: number
   graph_orphan_entities: number
@@ -112,7 +103,6 @@ export interface AgentStatus {
     episodes: number
     extraction_failures?: number
     episodes_pending: number
-    working_live: number
   }
   counts: MemoryStatsCounts
   consolidation_backlog: boolean
@@ -140,8 +130,7 @@ export interface SessionIndexItem {
   episodes_pending: number
   facts_added: number
   facts_sensitive: number
-  working_live: number
-  summaries: number
+  digests: number
   first_event_at: number | null
   first_event_at_h: string | null
   last_event_at: number | null
@@ -202,7 +191,6 @@ export interface SessionReport {
   episodes_consolidated: number
   extraction_failures?: number
   episodes_pending: number
-  working_live: number
   facts_added: number
   facts_redacted: number
   facts: SessionReportFact[]
@@ -250,7 +238,7 @@ export interface Focus {
   mute: string[]
 }
 
-export type RememberScope = 'auto' | 'long' | 'working'
+export type RememberScope = 'auto' | 'long'
 
 export interface ExtractionFailure {
   code: 'llm_not_configured' | 'processing_incomplete' | 'extraction_failed' | 'extraction_invalid_response' | 'extraction_truncated'
@@ -322,7 +310,7 @@ export interface Health {
 export interface Policy {
   extract_instruction: string
   extract_system: string
-  summary_system: string
+  digest_system: string
   persona_system: string
 }
 
@@ -416,7 +404,7 @@ export interface AuditReport {
 
 export interface OperationResult {
   operation_id: string
-  kind: 'extract' | 'summary' | 'reembed' | 'graph' | 'conflicts' | 'outcomes'
+  kind: 'extract' | 'digest' | 'reembed' | 'graph' | 'conflicts' | 'outcomes'
   state: 'pending' | 'running' | 'retry_wait' | 'failed' | 'completed' | 'cancelled'
   phase: 'queued' | 'generate' | 'embed' | 'commit' | 'compensate' | 'done'
   stored_raw: boolean

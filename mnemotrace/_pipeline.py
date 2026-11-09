@@ -5,13 +5,13 @@ from copy import deepcopy
 import time
 import uuid
 
-from .consolidate.pipeline import PipelineTasks, TERMINAL, config_identity, digest, reset_attempts, source
-from .consolidate.planning import input_size, output_size, plan, summary_plan, busy, fits_input, source_anchor
+from .consolidate.pipeline import PipelineTasks, TERMINAL, config_identity, content_hash, reset_attempts, source
+from .consolidate.planning import input_size, output_size, plan, digest_plan, busy, fits_input, source_anchor
 from .consolidate.operations import prepare, decode
 from .extraction import ExtractionError, ExtractionTruncatedError, LLMNotConfiguredError, require_llm
 from .llm.base import complete_result
 from .store._validation import validate_embedding
-from .types import Fact, WorkingMemory
+from .types import Fact
 
 # invalidate() 作废在途窗口（manual_change）与检测到快照更替的窗口取消（source_changed）
 # 都表示并发写到达，而非模型或配置失败。
@@ -21,7 +21,7 @@ _CONFLICT_CODES = frozenset({'manual_change', 'source_changed'})
 def _pending(tasks, session, after=0):
     return [r for r in tasks.rows(session['session_id']).values() if not r['cancelled']
             and (r['mode'], r['scope'], r['source_kind']) == (session['mode'], session['scope'], session['source_kind'])
-            and r['sequence'] > after and not busy(tasks, r) and (r['core'] == 'pending' or r['summary'] == 'pending')]
+            and r['sequence'] > after and not busy(tasks, r) and (r['core'] == 'pending' or r['digest'] == 'pending')]
 
 
 def trigger_ready(mem, tasks, now):
@@ -36,10 +36,10 @@ def trigger_ready(mem, tasks, now):
             tasks.trigger(session, cutoff)
         else:
             # Budget triggers freeze only the next window. No oldest-message timeout.
-            data = plan(mem, tasks, session, cutoff, after=session['cutoff']) or summary_plan(mem, tasks, session, cutoff)
+            data = plan(mem, tasks, session, cutoff, after=session['cutoff']) or digest_plan(mem, tasks, session, cutoff)
             if data and (len(data['pending']) < len(rows) or any(s['partial'] for s in data['pending'])
                     or input_size(data, mem.config) >= mem.config.extraction_max_input_bytes
-                    or output_size(data, mem.config) + mem.config.joint_summary_output_tokens > mem.config.joint_max_output_tokens):
+                    or output_size(data, mem.config) + mem.config.joint_digest_output_tokens > mem.config.joint_max_output_tokens):
                 tasks.trigger(session, data['pending'][-1]['sequence'])
 
 
@@ -47,7 +47,7 @@ def _advance(tasks, session):
     rows = [r for r in tasks.rows(session['session_id']).values()
             if (r['mode'], r['scope'], r['source_kind']) == (session['mode'], session['scope'], session['source_kind'])
             and r['sequence'] <= session['cutoff'] and not r['cancelled']]
-    if any(busy(tasks, r) or r['core'] == 'pending' or r['summary'] == 'pending' for r in rows):
+    if any(busy(tasks, r) or r['core'] == 'pending' or r['digest'] == 'pending' for r in rows):
         return
     session.update(cutoff=session['following'], following=0,
                    batch_id=uuid.uuid4().hex if session['following'] else '')
@@ -55,12 +55,12 @@ def _advance(tasks, session):
 
 def new_window(mem, tasks, route_key, data):
     return dict(route=route_key, batch_id=tasks.state['sessions'][route_key]['batch_id'], input=data,
-        input_hash=digest(data), config=config_identity(mem), generation_config=config_identity(mem, include_embedding=False),
+        input_hash=content_hash(data), config=config_identity(mem), generation_config=config_identity(mem, include_embedding=False),
         state='pending', phase='generate', attempts=0,
-        embed_attempts=0, next_attempt_at=0, result=None, vectors={}, core_saved=False, summary_saved=[],
+        embed_attempts=0, next_attempt_at=0, result=None, vectors={}, core_saved=False, digest_saved=[],
         error_code=None, history=[], guard=tasks.state['generation'], result_hash=None, operation=data['operation'],
-        stats=mem.writer.empty_stats(), limits=dict(summary_min_chars=mem.config.summary_min_chars,
-                                                   summary_max_chars=mem.config.summary_max_chars))
+        stats=mem.writer.empty_stats(), limits=dict(digest_min_chars=mem.config.digest_min_chars,
+                                                   digest_max_chars=mem.config.digest_max_chars))
 
 
 def _select(mem, tasks, now):
@@ -77,7 +77,7 @@ def _select(mem, tasks, now):
                 continue
             if not session['cutoff']:
                 continue
-            data = summary_plan(mem, tasks, session, session['cutoff']) or plan(mem, tasks, session, session['cutoff'])
+            data = digest_plan(mem, tasks, session, session['cutoff']) or plan(mem, tasks, session, session['cutoff'])
             if data is None:
                 _advance(tasks, session)
                 continue
@@ -101,8 +101,8 @@ def _fail(tasks, win, code, now, *, retryable=True, embedding=False):
             row = tasks.state['sources'][item['id']]
             if not win['core_saved'] and win['operation'] == 'extract':
                 row['core'] = 'failed'
-            if row['summary'] == 'pending' and win['operation'] in {'extract', 'summary'}:
-                row['summary'] = 'failed'
+            if row['digest'] == 'pending' and win['operation'] in {'extract', 'digest'}:
+                row['digest'] = 'failed'
 
 
 def _retryable(exc):
@@ -116,8 +116,7 @@ def texts_for(win):
     texts = []
     if not win['core_saved']:
         texts.extend(f['text'] for f in result['facts'])
-        texts.extend(w['content'] for w in result['working'])
-    texts.extend(text for key, text in result['summaries'].items() if key not in win['summary_saved'])
+    texts.extend(text for key, text in result['digests'].items() if key not in win['digest_saved'])
     return list(dict.fromkeys(texts))
 
 
@@ -132,9 +131,9 @@ def _current(mem, tasks, win, token, model):
                 or (ep.role if ep.source_kind == 'dialogue' else None) != item['role']
                 or tasks.rows()[ep.id]['sequence'] != item['sequence']):
             return False
-        if item['representation_source'] is not None and digest(ep.summary) != item['representation_source']:
+        if item['representation_source'] is not None and content_hash(ep.digest) != item['representation_source']:
             return False
-    if win['operation'] == 'summary' and win['input']['parts']:
+    if win['operation'] == 'digest' and win['input']['parts']:
         row = tasks.rows()[win['input']['pending'][0]['id']]
         if not set(win['input']['parts']).issubset(p['key'] for p in row['parts']):
             return False
@@ -164,7 +163,7 @@ def _merge_input(mem, namespace, win, now):
         return source_anchor(item['source_ids'], pending, data['source_kind'])
 
     def vector(text):
-        return win['vectors'][digest(text)] if mem.embedder is not None else None
+        return win['vectors'][content_hash(text)] if mem.embedder is not None else None
 
     for item in sorted(result['facts'], key=lambda item: anchor(item)['sequence']):
         origin = anchor(item)
@@ -180,7 +179,7 @@ def _merge_input(mem, namespace, win, now):
             provenance=item['source_ids'],
             source_roles=list(dict.fromkeys(views[k]['role'] for k in item['source_ids'] if views[k]['role'])),
             topic=topic, topic_source=topic_source,
-                    cardinality=item['cardinality'], retention=item['retention'], id='ft_' + digest([win['input_hash'], item])[:24], embedding=vector(item['text']))
+                    cardinality=item['cardinality'], retention=item['retention'], id='ft_' + content_hash([win['input_hash'], item])[:24], embedding=vector(item['text']))
         if not (data['source_kind'] != 'dialogue' and item['predicate'] in _NAME_PREDICATES and owner_name):
             facts.append(fact)
         if owner_name and item['predicate'] in _NAME_PREDICATES:
@@ -202,7 +201,7 @@ def _commit(mem, tasks, win, now, merge=None, names=()):
     def anchor(item):
         return source_anchor(item['source_ids'], pending, data['source_kind'])
     def vector(text):
-        return win['vectors'][digest(text)] if mem.embedder is not None else None
+        return win['vectors'][content_hash(text)] if mem.embedder is not None else None
     if not win['core_saved']:
         if merge is not None:
             changed, conflicts, stats = merge
@@ -218,19 +217,6 @@ def _commit(mem, tasks, win, now, merge=None, names=()):
             for name in names:
                 mem._identity.setdefault(tasks.namespace, name)
                 mem._aliases.setdefault(tasks.namespace, set()).add(name.lower())
-        for item in result['working']:
-            origin = anchor(item)
-            working_id = 'wm_' + digest([win['input_hash'], item])[:24]
-            if working_id not in mem.working_mem:
-                # 自动抽取的工作记忆也要有墙钟生命周期，否则客户端不关闭会话时会永久累积。
-                # TTL 由配置决定；None 保留旧行为（仅随会话清除）。显式手动写入可另带 TTL。
-                ttl = mem.config.working_memory_ttl_seconds
-                mem.working_mem[working_id] = WorkingMemory(id=working_id, content=item['content'], kind=item['kind'],
-                    user_id=tasks.namespace, session_id=tasks.rows()[origin['id']]['session_id'],
-                    event_time=origin['event_time'], created_at=now,
-                    expires_at=(now + ttl) if ttl else None, embedding=vector(item['content']),
-                    metadata=dict(provenance=item['source_ids'], episode_id=origin['id']))
-                win['stats']['working_added'] += 1
         win['core_saved'] = True
         if win['operation'] == 'extract':
             for item in data['pending']:
@@ -257,46 +243,45 @@ def _commit(mem, tasks, win, now, merge=None, names=()):
         mem._enforce_hot_limit()
     for item in data['pending']:
         source_id = item['id']
-        if source_id not in result['summaries'] or source_id in win['summary_saved']:
+        if source_id not in result['digests'] or source_id in win['digest_saved']:
             continue
         row, ep = tasks.rows()[source_id], mem.episodes_doc.get(source_id)
-        text = result['summaries'][source_id]
+        text = result['digests'][source_id]
         if data['source_kind'] == 'dialogue':
-            ep.summary, ep.summary_embedding = text, vector(text)
-            ep.summary_coverage = dict(unit='unicode_code_points', ranges=item['ranges'], partial=item['partial'],
+            ep.digest, ep.digest_embedding = text, vector(text)
+            ep.digest_coverage = dict(unit='unicode_code_points', ranges=item['ranges'], partial=item['partial'],
                 policy='head_tail_v1' if item['partial'] else 'full_message_v1', source=item['source'],
                 original_length=item['source_length'], input_hash=win['input_hash'], strategy_completed=True)
-            row['summary'], row['summary_requested'] = 'completed', False
+            row['digest'], row['digest_requested'] = 'completed', False
         else:
             row['parts'] = [p for p in row['parts'] if p['key'] not in [key, *data['parts']]]
             row['parts'].append(dict(key=key, text=text, start=item['ranges'][0][0], end=item['ranges'][-1][1]))
             row['parts'].sort(key=lambda part: part['start'])
             if _parts_complete(row):
                 if len(row['parts']) == 1:
-                    ep.summary, ep.summary_embedding = text, vector(text)
-                    row['summary'], row['summary_requested'] = 'completed', False
-                    ep.summary_coverage = dict(unit='unicode_code_points', ranges=[[0, len(ep.content)]], partial=False,
-                        policy='summary_source_v1', source=item['source'], original_length=len(ep.content),
+                    ep.digest, ep.digest_embedding = text, vector(text)
+                    row['digest'], row['digest_requested'] = 'completed', False
+                    ep.digest_coverage = dict(unit='unicode_code_points', ranges=[[0, len(ep.content)]], partial=False,
+                        policy='digest_source_v1', source=item['source'], original_length=len(ep.content),
                         input_hash=win['input_hash'], strategy_completed=True)
                 else:
-                    row['summary'] = 'pending'
-        if row['summary'] == 'completed':
-            row['summary_receipt'] = dict(key=key, summary_hash=digest(ep.summary),
-                                          coverage=deepcopy(ep.summary_coverage), erased_sources=[])
+                    row['digest'] = 'pending'
+        if row['digest'] == 'completed':
+            row['digest_receipt'] = dict(key=key, digest_hash=content_hash(ep.digest),
+                                          coverage=deepcopy(ep.digest_coverage), erased_sources=[])
         mem._sync_episode(ep)
-        win['summary_saved'].append(source_id)
-    wanted = [item['id'] for item in data['pending'] if win['operation'] == 'summary' or
-              win['operation'] == 'extract' and item['needs_summary']]
-    missing = [source_id for source_id in wanted if source_id not in win['summary_saved']]
+        win['digest_saved'].append(source_id)
+    wanted = [item['id'] for item in data['pending'] if win['operation'] == 'digest' or
+              win['operation'] == 'extract' and item['needs_digest']]
+    missing = [source_id for source_id in wanted if source_id not in win['digest_saved']]
     if missing:
         win.update(phase='compensate', vectors={})
-        reset_attempts(win, 'embed_attempts', 'summary_pending', now)
-        _fail(tasks, win, 'summary_invalid_response', now)
+        reset_attempts(win, 'embed_attempts', 'digest_pending', now)
+        _fail(tasks, win, 'digest_invalid_response', now)
     else:
         win['stats']['windows_completed'] += 1
         win.update(phase='done', state='completed', error_code=None, next_attempt_at=0, vectors={})
     _advance(tasks, tasks.state['sessions'][win['route']])
-
 
 
 def run_one(service, user):
@@ -331,7 +316,7 @@ def run_one(service, user):
                 previous = deepcopy(_merge_snapshot(mem, user, facts))
                 existing_pairs = tuple(c.pair_key for c in mem.conflicts.values() if c.user_id == user)
             if win['phase'] in {'generate', 'compensate'}:
-                budget_policy = mem._effective('summary_system') if win['operation'] == 'summary' else (
+                budget_policy = mem._effective('digest_system') if win['operation'] == 'digest' else (
                     mem.policy.get('extract_system', '') + mem.policy.get('extract_instruction', ''))
                 if not fits_input(win['input'], mem.config, budget_policy):
                     _fail(tasks, win, 'configuration_invalid', time.time(), retryable=False)
@@ -351,10 +336,10 @@ def run_one(service, user):
                 finished_at=None, outcome='in_flight', finish_reason=None, usage=None, error_code=None))
             config, data, phase = deepcopy(mem.config), deepcopy(win['input']), win['phase']
             model, embedder = mem.llm, mem.embedder
-            policy = (mem._effective('summary_system') if win['operation'] == 'summary' else
+            policy = (mem._effective('digest_system') if win['operation'] == 'digest' else
                       mem.policy.get('extract_system', '') + mem.policy.get('extract_instruction', ''))
             texts = texts_for(win) if embedding else []
-            saved_summaries = list(win['summary_saved'])
+            saved_digests = list(win['digest_saved'])
             token = tasks.state['generation']
             mem = tasks = win = None
         failure, output, completion = None, None, None
@@ -372,12 +357,12 @@ def run_one(service, user):
                     raise ValueError('Embedding batch length mismatch')
                 for v in vectors:
                     validate_embedding(v, 'message embedding', embedder.dim)
-                output = {digest(text): vector for text, vector in zip(texts, vectors)}
+                output = {content_hash(text): vector for text, vector in zip(texts, vectors)}
             else:
                 from .llm.execution import ModelMeter, one_attempt
                 require_llm(model)
                 if phase == 'compensate':
-                    data['pending'] = [item for item in data['pending'] if item['id'] not in saved_summaries]
+                    data['pending'] = [item for item in data['pending'] if item['id'] not in saved_digests]
                 prompt, system, max_tokens = prepare(data, config, policy, phase == 'compensate')
                 completion = complete_result(ModelMeter(one_attempt(model), service.metrics, 'pipeline'), prompt,
                     system=system, max_tokens=max_tokens)
@@ -420,9 +405,9 @@ def run_one(service, user):
                 win.update(phase='commit', state='pending', next_attempt_at=0)
             else:
                 if phase == 'compensate':
-                    for mid, text in output['summaries'].items():
-                        if mid not in win['summary_saved']:
-                            win['result']['summaries'][mid] = text
+                    for mid, text in output['digests'].items():
+                        if mid not in win['digest_saved']:
+                            win['result']['digests'][mid] = text
                 else:
                     from .consolidate.fact_rules import _norm_predicate, _SELF_REFS, _NAME_PREDICATES
                     owner_refs = {*_SELF_REFS, user.lower(), *mem._aliases.get(user, set())}
@@ -447,7 +432,7 @@ def run_one(service, user):
                                              'subject_input': item['subject'].strip()})
                     output['facts'] = accepted
                     win['result'] = output
-                win['result_hash'] = digest(win['result'])
+                win['result_hash'] = content_hash(win['result'])
                 win.update(phase='embed' if texts_for(win) else 'commit', state='pending', next_attempt_at=0)
                 reset_attempts(win, 'embed_attempts', 'generated_result', time.time())
             _advance(tasks, tasks.state['sessions'][win['route']])
@@ -516,13 +501,13 @@ def flush(service, user, session_id=None, timeout=30, retry_failed=False, bounda
             result = tasks.snapshot(session_id, ids)
         present = {job['episode_id'] for job in result['jobs'] if 'core' in job}
         invalidated = result['generation'] != generation or present != ids
-        if operation == 'summary':
+        if operation == 'digest':
             result['jobs'] = [j for j in result['jobs'] if 'core' in j]
             for job in result['jobs']:
                 if 'core' in job:
                     state = job['summarization']
                     job['state'] = 'completed' if state in {'completed', 'not_needed'} else 'failed' if state == 'failed' else 'retry_wait' if job['state'] == 'retry_wait' else 'pending'
-        if operation == 'summary':
+        if operation == 'digest':
             result['counts'] = {s: sum(j['state'] == s for j in result['jobs']) for s in TERMINAL | {'pending', 'running', 'retry_wait'}}
         counts = result['counts']
         active = any(counts[s] for s in ('pending', 'running', 'retry_wait'))
@@ -591,7 +576,7 @@ def _conflict_cancelled(result):
     return bool(marked) and all(job.get('error_code') in _CONFLICT_CODES for job in marked)
 
 
-def execute_sources(host, user, episodes, operation='extract', retry_failed=False, *, summaries=False):
+def execute_sources(host, user, episodes, operation='extract', retry_failed=False, *, digests=False):
     # 冲突取消只重试一次：force 的 explicit_reprepare 路径会基于当前快照重整被取消的
     # 窗口；仍冲突说明写入方持续竞争，抛出专门的冲突异常交由调用方决定重试节奏。
     for attempt in range(2):
@@ -599,10 +584,9 @@ def execute_sources(host, user, episodes, operation='extract', retry_failed=Fals
             mem = host.get(user)
             tasks = PipelineTasks(mem, user)
             before_facts = {f.id for f in mem._all_facts()}
-            before_working = set(mem.working_mem)
-            before_summaries = {ep.id for ep in episodes if ep.summary}
+            before_digests = {ep.id for ep in episodes if ep.digest}
             before = {key: dict(win['stats']) for key, win in (tasks.state or {}).get('windows', {}).items()}
-            ids = set(tasks.register(episodes, time.time(), operation, summaries=summaries))
+            ids = set(tasks.register(episodes, time.time(), operation, digests=digests))
         result = flush(host, user, timeout=30, retry_failed=retry_failed or attempt > 0, boundary=ids,
                        fail_fast=True, operation=operation)
         if result['ok'] or not _conflict_cancelled(result):
@@ -618,11 +602,10 @@ def execute_sources(host, user, episodes, operation='extract', retry_failed=Fals
             for name in stats:
                 stats[name] += max(0, win['stats'].get(name, 0) - before.get(key, {}).get(name, 0))
         stats['facts_added'] = sum(f.id not in before_facts and bool(ids.intersection(f.provenance)) for f in mem._all_facts())
-        stats['working_added'] = len(set(mem.working_mem) - before_working)
-        stats['summaries'] = sum(ep.id in ids and ep.id not in before_summaries and bool(ep.summary) for ep in mem.episodes_doc.values())
+        stats['digests'] = sum(ep.id in ids and ep.id not in before_digests and bool(ep.digest) for ep in mem.episodes_doc.values())
         return stats
 
 
-def execute_memory(memory, user, episodes, operation='extract', *, summaries=False):
+def execute_memory(memory, user, episodes, operation='extract', *, digests=False):
     return execute_sources(memory_adapter(memory, user), user, episodes, operation,
-                           retry_failed=operation == 'summary', summaries=summaries)
+                           retry_failed=operation == 'digest', digests=digests)

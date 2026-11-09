@@ -27,7 +27,7 @@ def product(runtime, user, accounts, spaces, monkeypatch):
                  text='Synthetic person likes Bluebird tea',
                  source_ids=[source['id']])
             for source in data['pending']
-        ], working=[], summaries=[]))
+        ], digests=[]))
 
     service = MemoryService(runtime, llm=FakeLLM(handler=extract))
     monkeypatch.setattr(app, '_svc', service)
@@ -63,10 +63,8 @@ def test_http_space_and_operation_lifecycle(product, user, accounts, spaces):
     assert client.get(f'/v1/episodes/{source_id}', params=scope).json()['agent_id'] == 'synthetic-agent'
     assert client.post(operation_path + '/retry', json=scope).json()['operation_id'] == operation_id
 
-    working = service.memory(context).remember_working('Synthetic working state', 'synthetic-thread')
     completed = client.post('/v1/processing/flush', json={**scope, 'session_id': 'synthetic-thread'})
     assert completed.json()['ok'], completed.text
-    assert service.memory(context).working_memory(session_id='synthetic-thread')[0].id == working.id
     assert client.get(operation_path, params=scope).json()['core_committed']
     retrieved = client.post('/v1/recall', json={**scope, 'query': 'What does Synthetic person like?', 'lean': False})
     assert retrieved.status_code == 200 and 'Bluebird' in retrieved.text

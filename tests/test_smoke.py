@@ -60,7 +60,7 @@ def test_records_import_same_session_extracts_multiple_messages():
     stats = mem.import_data([
         {"session_id": "career", "content": "Wei works at Tencent.", "event_time": BASE},
         {"session_id": "career", "content": "Wei works at Moonshot AI.", "event_time": BASE + DAY},
-    ], format="records", user_id="u1", summarize=False)
+    ], format="records", user_id="u1", generate_digests=False)
 
     assert stats["sessions"] == 1
     assert stats["episodes"] == 2
@@ -250,7 +250,7 @@ def test_short_project_rule_context_preserves_key_constraint():
     ctx = mem.lean_context(
         "What should Codex remember about benchmark claims and session closing?",
         user_id=user,
-        session_id=session,
+
         n_chunks=4,
     )
     assert "raw logs" in ctx

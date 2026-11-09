@@ -121,7 +121,7 @@ def validate_coverage(value: Any, path: str) -> None:
     _count(value['original_length'], path + '.original_length')
     _boolean(value['strategy_completed'], path + '.strategy_completed')
     message_policy = value['policy'] in {'head_tail_v1', 'full_message_v1'}
-    if value['policy'] not in {'head_tail_v1', 'full_message_v1', 'full_source_v1', 'summary_source_v1'}:
+    if value['policy'] not in {'head_tail_v1', 'full_message_v1', 'full_source_v1', 'digest_source_v1'}:
         _fail(path, 'invalid coverage policy')
     if message_policy and (not value['strategy_completed'] or value['partial'] != (value['policy'] == 'head_tail_v1')):
         _fail(path, 'message coverage does not match strategy')
@@ -150,11 +150,11 @@ _EPISODE = {
     "id": _identifier, "content": _string, "user_id": _identifier,
     "session_id": _identifier, "role": _nullable(_identifier), "event_time": _TIME_OR_NULL,
     "ingested_at": _number, "embedding": _VECTOR, "consolidated": _boolean,
-    "summary": _string, "summary_embedding": _VECTOR, "metadata": _metadata,
-    "source_kind": _choice("dialogue", "raw", "document"), "scope": _choice("auto", "long", "raw", "working"),
+    "digest": _string, "digest_embedding": _VECTOR, "metadata": _metadata,
+    "source_kind": _choice("dialogue", "raw", "document"), "scope": _choice("auto", "long", "raw"),
     "message_id": _ID_OR_NULL, "sequence": _nullable(_count),
     "mode": _nullable(_choice("live", "historical")), "coverage": _nullable(validate_coverage),
-    "summary_coverage": _nullable(validate_coverage),
+    "digest_coverage": _nullable(validate_coverage),
 }
 _FACT = {
     "id": _identifier, "subject": _identifier, "predicate": _identifier, "object": _identifier,
@@ -178,10 +178,6 @@ _RECORDS = {
     "Relation": {"id": _identifier, "subject_id": _identifier, "predicate": _identifier,
                  "object_id": _identifier, "fact_id": _identifier,
                  "valid_at": _TIME_OR_NULL, "invalid_at": _TIME_OR_NULL},
-    "WorkingMemory": {"id": _identifier, "content": _string, "user_id": _identifier,
-                      "session_id": _identifier, "kind": _identifier, "event_time": _TIME_OR_NULL,
-                      "created_at": _number, "expires_at": _TIME_OR_NULL, "consumed": _boolean,
-                      "embedding": _VECTOR, "metadata": _metadata},
     "Conflict": {"id": _identifier, "older": _identifier, "newer": _identifier,
                  "text_older": _string, "text_newer": _string, "user_id": _identifier,
                  "reason": _string, "status": _choice("pending", "resolved", "dismissed"),
@@ -190,6 +186,10 @@ _RECORDS = {
 def _fields(value: Any, spec: dict[str, Validator], path: str,
             optional: tuple[str, ...] = ()) -> dict[str, Any]:
     _object(value, path)
+    retired = {'summary', 'summary_embedding', 'summary_coverage', 'summary_version',
+               'working', 'working_ids', 'working_added', 'working_live', 'session_generation'}
+    for key in retired.intersection(value):
+        _fail(f"{path}.{key}", "unsupported field")
     for key, check in spec.items():
         if key not in value:
             if key in optional:
@@ -211,11 +211,11 @@ def validate_record(kind: str, record: Any, path: str, *,
     spec = _RECORDS[kind]
     result = _fields(record, spec, path)
     if kind == "Episode":
-        for name in ('coverage', 'summary_coverage'):
+        for name in ('coverage', 'digest_coverage'):
             if result[name] is not None and result[name]['original_length'] != len(result['content']):
                 _fail(path, 'coverage length does not match original content')
-        if embedding_dim is not None and result["summary"] and result["summary_embedding"] is None and not detached:
-            _fail(path, "non-empty summary requires summary_embedding")
+        if embedding_dim is not None and result["digest"] and result["digest_embedding"] is None and not detached:
+            _fail(path, "non-empty digest requires digest_embedding")
         forbidden = {'extraction_progress', 'extraction_counts', 'extraction_error', 'memory_result', 'memory_scope', 'outcome_error', 'extraction'}
         if forbidden.intersection(result['metadata']):
             _fail(path, 'legacy processing metadata is unsupported; task migration is not provided')
@@ -224,7 +224,7 @@ def validate_record(kind: str, record: Any, path: str, *,
         if result["review_pending"] and result["approved_at"] is not None:
             _fail(path, "pending fact cannot have an approval time")
     if embedding_dim is not None:
-        for key in ("embedding", "summary_embedding"):
+        for key in ("embedding", "digest_embedding"):
             if result.get(key) is not None:
                 validate_embedding(result[key], f"{path}.{key}", embedding_dim)
     return result
@@ -247,7 +247,7 @@ _IMPORT_FACT = {key: _FACT[key] for key in (
 _IMPORT_FACT.update(status=_choice("live", "superseded"), valid_at_h=_string,
                     invalid_at_h=_nullable(_string))
 _IMPORT_EPISODE = {key: _EPISODE[key] for key in (
-    "id", "content", "session_id", "role", "event_time", "summary", "coverage", "summary_coverage",
+    "id", "content", "session_id", "role", "event_time", "digest", "coverage", "digest_coverage",
 )}
 
 
@@ -261,12 +261,14 @@ def is_snapshot_candidate(value: Any) -> bool:
 
 def validate_snapshot(snapshot: Any) -> dict:
     _object(snapshot, "snapshot")
+    if 'working' in snapshot:
+        _fail('snapshot.working', 'unsupported field')
     for key in ("facts", "episodes"):
         if key not in snapshot:
             _fail(f"snapshot.{key}", "missing required field")
     result = {}
     for name, spec, optional in (("facts", _IMPORT_FACT, ("text", "status", "valid_at_h", "invalid_at_h", "source_roles", "sensitive_override", "review_pending", "approved_at")),
-                                 ("episodes", _IMPORT_EPISODE, ("summary", "coverage", "summary_coverage")),
+                                 ("episodes", _IMPORT_EPISODE, ("digest", "coverage", "digest_coverage")),
                                  ("conflicts", _IMPORT_CONFLICT, ())):
         rows = snapshot.get(name, [])
         if not isinstance(rows, list):

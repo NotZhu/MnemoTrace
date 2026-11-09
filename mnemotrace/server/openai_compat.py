@@ -112,7 +112,7 @@ def chat_completion(
                 query,
                 lean=True,
                 n_chunks=n_chunks,
-                session_id=session_id,
+
                 as_of=as_of,
                 redact_sensitive=redact_sensitive,
             ).get("context") or ""

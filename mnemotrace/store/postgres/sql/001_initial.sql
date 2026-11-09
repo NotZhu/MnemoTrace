@@ -46,7 +46,6 @@ CREATE TABLE mnemotrace.sessions (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
     session_id mnemotrace.identifier NOT NULL,
-    session_generation mnemotrace.counter NOT NULL DEFAULT 0,
     next_sequence mnemotrace.counter NOT NULL DEFAULT 0,
     PRIMARY KEY(user_id, space_id, session_id),
     FOREIGN KEY(user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE
@@ -62,7 +61,7 @@ CREATE TABLE mnemotrace.sources (
     event_time timestamptz,
     ingested_at timestamptz NOT NULL,
     source_kind text NOT NULL CHECK (source_kind IN ('raw','dialogue','document')),
-    scope text NOT NULL CHECK (scope IN ('auto','long','raw','working')),
+    scope text NOT NULL CHECK (scope IN ('auto','long','raw')),
     message_id mnemotrace.identifier,
     sequence mnemotrace.counter,
     mode text CHECK (mode IN ('live','historical')),
@@ -80,15 +79,15 @@ CREATE TABLE mnemotrace.sources (
     FOREIGN KEY(user_id, space_id, session_id) REFERENCES mnemotrace.sessions ON DELETE CASCADE
 );
 CREATE INDEX sources_session_time ON mnemotrace.sources(user_id, space_id, session_id, event_time, id);
-CREATE TABLE mnemotrace.source_summaries (
+CREATE TABLE mnemotrace.source_digests (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
     source_id mnemotrace.identifier NOT NULL,
-    summary text NOT NULL,
+    digest text NOT NULL,
     coverage jsonb,
-    summary_coverage jsonb,
+    digest_coverage jsonb,
     content_version mnemotrace.positive_version NOT NULL,
-    summary_version mnemotrace.positive_version NOT NULL,
+    digest_version mnemotrace.positive_version NOT NULL,
     record_version mnemotrace.positive_version NOT NULL,
     processing_state text NOT NULL CHECK (processing_state IN ('pending','running','retry_wait','failed','completed','cancelled')),
     PRIMARY KEY(user_id, space_id, source_id),
@@ -141,33 +140,6 @@ CREATE TABLE mnemotrace.fact_sources (
     FOREIGN KEY(user_id, space_id, source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE
 );
 CREATE INDEX fact_sources_source ON mnemotrace.fact_sources(user_id, space_id, source_id);
-CREATE TABLE mnemotrace.working_memories (
-    user_id mnemotrace.identifier NOT NULL,
-    space_id mnemotrace.identifier NOT NULL,
-    id mnemotrace.identifier NOT NULL,
-    content text NOT NULL,
-    session_id mnemotrace.identifier NOT NULL,
-    kind mnemotrace.identifier NOT NULL,
-    event_time timestamptz,
-    created_at timestamptz NOT NULL,
-    expires_at timestamptz,
-    consumed boolean NOT NULL,
-    metadata jsonb NOT NULL CHECK (jsonb_typeof(metadata) = 'object'),
-    record_version mnemotrace.positive_version NOT NULL,
-    content_version mnemotrace.positive_version NOT NULL,
-    PRIMARY KEY(user_id, space_id, id),
-    FOREIGN KEY(user_id, space_id, session_id) REFERENCES mnemotrace.sessions ON DELETE CASCADE
-);
-CREATE INDEX working_session ON mnemotrace.working_memories(user_id, space_id, session_id, consumed, expires_at);
-CREATE TABLE mnemotrace.working_sources (
-    user_id mnemotrace.identifier NOT NULL,
-    space_id mnemotrace.identifier NOT NULL,
-    working_id mnemotrace.identifier NOT NULL,
-    source_id mnemotrace.identifier NOT NULL,
-    PRIMARY KEY(user_id, space_id, working_id, source_id),
-    FOREIGN KEY(user_id, space_id, working_id) REFERENCES mnemotrace.working_memories ON DELETE CASCADE,
-    FOREIGN KEY(user_id, space_id, source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE
-);
 CREATE TABLE mnemotrace.conflicts (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
@@ -191,10 +163,10 @@ CREATE TABLE mnemotrace.import_receipts (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
     source_kind text NOT NULL,
-    digest text NOT NULL CHECK (digest ~ '^[0-9a-f]{64}$'),
+    content_hash text NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
     source_id mnemotrace.identifier,
     receipt jsonb NOT NULL CHECK (jsonb_typeof(receipt) = 'object'),
-    PRIMARY KEY(user_id, space_id, source_kind, digest),
+    PRIMARY KEY(user_id, space_id, source_kind, content_hash),
     FOREIGN KEY(user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE
 );
@@ -251,23 +223,21 @@ CREATE TABLE mnemotrace.embeddings (
     space_id mnemotrace.identifier NOT NULL,
     source_id mnemotrace.identifier,
     fact_id mnemotrace.identifier,
-    working_id mnemotrace.identifier,
     entity_id mnemotrace.identifier,
     target_kind text NOT NULL,
-    field text NOT NULL CHECK (field IN ('text','summary')),
+    field text NOT NULL CHECK (field IN ('text','digest')),
     content_version mnemotrace.positive_version NOT NULL,
     model mnemotrace.identifier NOT NULL,
     dimension integer NOT NULL CHECK (dimension > 0),
     vector public.vector NOT NULL,
     CHECK (public.vector_dims(vector) = dimension),
-    CHECK (num_nonnulls(source_id, fact_id, working_id, entity_id) = 1),
+    CHECK (num_nonnulls(source_id, fact_id, entity_id) = 1),
     CHECK ((target_kind = 'Episode' AND source_id IS NOT NULL) OR (target_kind = 'Fact' AND fact_id IS NOT NULL)
-        OR (target_kind = 'WorkingMemory' AND working_id IS NOT NULL) OR (target_kind = 'Entity' AND entity_id IS NOT NULL)),
-    CHECK (field <> 'summary' OR source_id IS NOT NULL),
-    UNIQUE NULLS NOT DISTINCT(user_id, space_id, source_id, fact_id, working_id, entity_id, field, model, dimension, content_version),
+        OR (target_kind = 'Entity' AND entity_id IS NOT NULL)),
+    CHECK (field <> 'digest' OR source_id IS NOT NULL),
+    UNIQUE NULLS NOT DISTINCT(user_id, space_id, source_id, fact_id, entity_id, field, model, dimension, content_version),
     FOREIGN KEY(user_id, space_id, source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, fact_id) REFERENCES mnemotrace.facts ON DELETE CASCADE,
-    FOREIGN KEY(user_id, space_id, working_id) REFERENCES mnemotrace.working_memories ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, entity_id) REFERENCES mnemotrace.entities ON DELETE CASCADE
 );
 CREATE TABLE mnemotrace.lexical_documents (
@@ -276,20 +246,18 @@ CREATE TABLE mnemotrace.lexical_documents (
     id mnemotrace.identifier NOT NULL,
     source_id mnemotrace.identifier,
     fact_id mnemotrace.identifier,
-    working_id mnemotrace.identifier,
     entity_id mnemotrace.identifier,
     target_kind text NOT NULL,
     content_version mnemotrace.positive_version NOT NULL,
     analyzer_version mnemotrace.identifier NOT NULL,
     document_length mnemotrace.counter NOT NULL,
     PRIMARY KEY(user_id, space_id, id),
-    CHECK (num_nonnulls(source_id, fact_id, working_id, entity_id) = 1),
+    CHECK (num_nonnulls(source_id, fact_id, entity_id) = 1),
     CHECK ((target_kind = 'Episode' AND source_id IS NOT NULL) OR (target_kind = 'Fact' AND fact_id IS NOT NULL)
-        OR (target_kind = 'WorkingMemory' AND working_id IS NOT NULL) OR (target_kind = 'Entity' AND entity_id IS NOT NULL)),
-    UNIQUE NULLS NOT DISTINCT(user_id, space_id, source_id, fact_id, working_id, entity_id),
+        OR (target_kind = 'Entity' AND entity_id IS NOT NULL)),
+    UNIQUE NULLS NOT DISTINCT(user_id, space_id, source_id, fact_id, entity_id),
     FOREIGN KEY(user_id, space_id, source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, fact_id) REFERENCES mnemotrace.facts ON DELETE CASCADE,
-    FOREIGN KEY(user_id, space_id, working_id) REFERENCES mnemotrace.working_memories ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, entity_id) REFERENCES mnemotrace.entities ON DELETE CASCADE
 );
 CREATE TABLE mnemotrace.lexical_terms (
@@ -307,7 +275,7 @@ CREATE TABLE mnemotrace.operations (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
     operation_id mnemotrace.identifier NOT NULL,
-    kind text NOT NULL CHECK (kind IN ('extract','summary','outcomes','conflicts','reembed','graph')),
+    kind text NOT NULL CHECK (kind IN ('extract','digest','outcomes','conflicts','reembed','graph')),
     session_id mnemotrace.identifier,
     sequence mnemotrace.counter,
     state text NOT NULL CHECK (state IN ('pending','running','retry_wait','failed','completed','cancelled')),
@@ -319,7 +287,6 @@ CREATE TABLE mnemotrace.operations (
     lease_token mnemotrace.identifier,
     lease_until timestamptz,
     space_generation mnemotrace.counter NOT NULL,
-    session_generation mnemotrace.counter,
     extraction_config text,
     context_revision mnemotrace.counter,
     stats jsonb NOT NULL CHECK (jsonb_typeof(stats) = 'object'),
@@ -327,7 +294,6 @@ CREATE TABLE mnemotrace.operations (
     extraction_saved boolean NOT NULL,
     core_committed boolean NOT NULL,
     PRIMARY KEY(user_id, space_id, operation_id),
-    CHECK ((session_id IS NULL) = (session_generation IS NULL)),
     CHECK ((lease_token IS NULL) = (lease_until IS NULL)),
     CHECK (state <> 'running' OR lease_token IS NOT NULL),
     CHECK (state <> 'retry_wait' OR next_attempt_at IS NOT NULL),
@@ -364,18 +330,16 @@ CREATE TABLE mnemotrace.operation_targets (
     operation_id mnemotrace.identifier NOT NULL,
     source_id mnemotrace.identifier,
     fact_id mnemotrace.identifier,
-    working_id mnemotrace.identifier,
     entity_id mnemotrace.identifier,
     target_kind text NOT NULL,
     content_version mnemotrace.positive_version NOT NULL,
-    CHECK (num_nonnulls(source_id, fact_id, working_id, entity_id) = 1),
+    CHECK (num_nonnulls(source_id, fact_id, entity_id) = 1),
     CHECK ((target_kind = 'Episode' AND source_id IS NOT NULL) OR (target_kind = 'Fact' AND fact_id IS NOT NULL)
-        OR (target_kind = 'WorkingMemory' AND working_id IS NOT NULL) OR (target_kind = 'Entity' AND entity_id IS NOT NULL)),
-    UNIQUE NULLS NOT DISTINCT(user_id, space_id, operation_id, source_id, fact_id, working_id, entity_id),
+        OR (target_kind = 'Entity' AND entity_id IS NOT NULL)),
+    UNIQUE NULLS NOT DISTINCT(user_id, space_id, operation_id, source_id, fact_id, entity_id),
     FOREIGN KEY(user_id, space_id, operation_id) REFERENCES mnemotrace.operations ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, fact_id) REFERENCES mnemotrace.facts ON DELETE CASCADE,
-    FOREIGN KEY(user_id, space_id, working_id) REFERENCES mnemotrace.working_memories ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, entity_id) REFERENCES mnemotrace.entities ON DELETE CASCADE
 );
 CREATE TABLE mnemotrace.operation_products (
@@ -384,12 +348,12 @@ CREATE TABLE mnemotrace.operation_products (
     operation_id mnemotrace.identifier NOT NULL,
     input jsonb NOT NULL CHECK (jsonb_typeof(input) = 'object'),
     result jsonb NOT NULL CHECK (jsonb_typeof(result) = 'object'),
-    format_version integer NOT NULL CHECK (format_version = 2),
+    format_version integer NOT NULL CHECK (format_version = 3),
     extraction_config text NOT NULL,
     context_revision mnemotrace.counter,
     source_versions jsonb NOT NULL CHECK (jsonb_typeof(source_versions) = 'array'),
     stats jsonb NOT NULL CHECK (jsonb_typeof(stats) = 'object'),
-    summary_max_chars integer NOT NULL CHECK (summary_max_chars >= 0),
+    digest_max_chars integer NOT NULL CHECK (digest_max_chars >= 0),
     result_hash text NOT NULL CHECK (result_hash ~ '^[0-9a-f]{64}$'),
     PRIMARY KEY(user_id, space_id, operation_id),
     FOREIGN KEY(user_id, space_id, operation_id) REFERENCES mnemotrace.operations ON DELETE CASCADE
@@ -400,7 +364,6 @@ CREATE TABLE mnemotrace.operation_receipts (
     operation_id mnemotrace.identifier NOT NULL,
     core_revision mnemotrace.counter NOT NULL,
     fact_ids text[] NOT NULL,
-    working_ids text[] NOT NULL,
     completed_at timestamptz NOT NULL,
     PRIMARY KEY(user_id, space_id, operation_id),
     FOREIGN KEY(user_id, space_id, operation_id) REFERENCES mnemotrace.operations ON DELETE CASCADE
@@ -410,21 +373,21 @@ CREATE TABLE mnemotrace.operation_receipts (
 CREATE FUNCTION mnemotrace.valid_stats(value jsonb) RETURNS boolean
 LANGUAGE sql IMMUTABLE SET search_path = pg_catalog AS $$
     SELECT jsonb_typeof(value) = 'object'
-       AND value ?& ARRAY['facts_added','duplicates','invalidated','working_added','model_calls','windows_completed']
+       AND value ?& ARRAY['facts_added','duplicates','invalidated','model_calls','windows_completed']
        AND NOT EXISTS (
-          SELECT 1 FROM unnest(ARRAY['facts_added','duplicates','invalidated','working_added','model_calls','windows_completed']) AS key
+          SELECT 1 FROM unnest(ARRAY['facts_added','duplicates','invalidated','model_calls','windows_completed']) AS key
           WHERE jsonb_typeof(value -> key) <> 'number' OR (value ->> key) !~ '^[0-9]+$')
 $$;
 ALTER TABLE mnemotrace.operations ADD CHECK (mnemotrace.valid_stats(stats));
 ALTER TABLE mnemotrace.operation_products ADD CHECK (mnemotrace.valid_stats(stats));
 
 -- Authorization helpers have no caller-controlled search path or table names.
-CREATE FUNCTION mnemotrace.authenticate(digest text)
+CREATE FUNCTION mnemotrace.authenticate(content_hash text)
 RETURNS TABLE(user_id text, key_id text)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
     SELECT u.user_id::text, k.key_id::text
     FROM mnemotrace.api_keys k JOIN mnemotrace.users u USING(user_id)
-    WHERE k.key_hash = digest AND k.revoked_at IS NULL AND u.status = 'active'
+    WHERE k.key_hash = content_hash AND k.revoked_at IS NULL AND u.status = 'active'
 $$;
 GRANT CREATE ON SCHEMA mnemotrace TO {auth};
 ALTER FUNCTION mnemotrace.authenticate(text) OWNER TO {auth};

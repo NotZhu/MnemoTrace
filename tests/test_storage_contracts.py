@@ -14,7 +14,7 @@ from mnemotrace.store.contracts import (
 from mnemotrace.types import Fact, Episode
 
 SPACE = SpaceContext('owner', 'space-1')
-SNAPSHOT = ReadSnapshot(SPACE, 7, 2, 'thread', 3)
+SNAPSHOT = ReadSnapshot(SPACE, 7, 2, 'thread')
 SOURCES = (SourceVersion('source-1', 1),)
 CONDITIONS = CommitConditions(SNAPSHOT, SOURCES, Lease('operation-1', 'lease-1'), 'config-1')
 
@@ -32,15 +32,15 @@ def fact_record(**kwargs):
 def product():
     text = 'I work at Orbit.'
     data = dict(operation='extract', source_kind='dialogue', mode='live', scope='auto', context=[], parts=[], candidates=[],
-                pending=[dict(id='source-1', role='user', content=text, needs_summary=False,
+                pending=[dict(id='source-1', role='user', content=text, needs_digest=False,
                               message_id='message-1', sequence=1, event_time=100, representation='raw',
                               representation_source=None, source='a' * 64, source_length=len(text),
                               ranges=[[0, len(text)]], partial=False)])
     result = dict(facts=[dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='Ana', predicate='works_at', object='Orbit', text='Ana works at Orbit',
                              display='Ana works at Orbit', subject_input='I',
-                             source_ids=['source-1'])], working=[], summaries={})
+                             source_ids=['source-1'])], digests={})
     return ExtractionProduct(CONDITIONS, json.dumps(data), json.dumps(result),
-                             OperationStats(0, 0, 0, 0, 1, 0), 800, 7)
+                             OperationStats(0, 0, 0, 1, 0), 800, 7)
 
 
 def test_context_is_immutable_and_preserves_identity():
@@ -52,7 +52,7 @@ def test_context_is_immutable_and_preserves_identity():
         SpaceContext('owner')
 
 
-@pytest.mark.parametrize('kind', ['facts', 'working'])
+@pytest.mark.parametrize('kind', ['facts'])
 def test_dialogue_output_requires_a_pending_user_source(kind):
     from mnemotrace.config import Config
     from mnemotrace.consolidate.planning import validate_response
@@ -62,7 +62,7 @@ def test_dialogue_output_requires_a_pending_user_source(kind):
     data = json.loads(checkpoint.input_json)
     old_user, = data['pending']
     data.update(context=[old_user], pending=[dict(old_user, id='assistant', role='assistant', sequence=2)])
-    output = dict(facts=[], working=[], summaries=[])
+    output = dict(facts=[], digests=[])
     refs = ['source-1', 'assistant']
     if kind == 'facts':
         fact, = json.loads(checkpoint.result_json)['facts']
@@ -80,7 +80,7 @@ def test_invalid_identity(value):
 
 
 @pytest.mark.parametrize('kwargs', [dict(core_revision=True), dict(core_revision=-1),
-    dict(space_generation=-1), dict(session_id=None), dict(session_generation=None)])
+    dict(space_generation=-1), dict(session_id='')])
 def test_snapshot_rejects_missing_or_invalid_versions(kwargs):
     with pytest.raises(ValueError):
         replace(SNAPSHOT, **kwargs)
@@ -163,13 +163,13 @@ def test_candidates_distinguish_empty_success_from_degradation_and_wrong_scope()
         replace(limited, snapshot=replace(SNAPSHOT, context=SpaceContext('other', 'space-1')))
 
 
-def test_summary_vector_uses_summary_version_not_immutable_raw_version():
-    source = Episode('Synthetic source', user_id='owner', summary='Summary', summary_embedding=[1.0])
-    stored = StoredRecord.from_record(SPACE, source, content_version=1, record_version=4, summary_version=3)
-    changes = ChangeSet(CommitConditions(SNAPSHOT), 'summary-commit', writes=(RecordWrite(stored, 3),),
-                        embeddings=(EmbeddingWrite(stored.ref, 3, 'model', (1.0,), 'summary'),))
+def test_digest_vector_uses_digest_version_not_immutable_raw_version():
+    source = Episode('Synthetic source', user_id='owner', digest='Digest', digest_embedding=[1.0])
+    stored = StoredRecord.from_record(SPACE, source, content_version=1, record_version=4, digest_version=3)
+    changes = ChangeSet(CommitConditions(SNAPSHOT), 'digest-commit', writes=(RecordWrite(stored, 3),),
+                        embeddings=(EmbeddingWrite(stored.ref, 3, 'model', (1.0,), 'digest'),))
     with pytest.raises(ValueError, match='version'):
-        replace(changes, embeddings=(EmbeddingWrite(stored.ref, 1, 'model', (1.0,), 'summary'),))
+        replace(changes, embeddings=(EmbeddingWrite(stored.ref, 1, 'model', (1.0,), 'digest'),))
 
 
 def test_maintenance_can_target_source_free_manual_fact_and_cannot_cross_space():
@@ -200,7 +200,7 @@ def test_changeset_checks_scope_provenance_duplicate_mutations_and_receipt():
     source = ref(RecordKind.SOURCE, 'source-1')
     changes = ChangeSet(CONDITIONS, 'operation-1', writes=(write,),
         source_links=(SourceLink(write.ref, source),), embeddings=(EmbeddingWrite(write.ref, 1, 'model', (1.0, 0.0)),),
-        operations=(OperationSpec('summary-1', OperationKind.SUMMARY, 'thread', SOURCES),),
+        operations=(OperationSpec('digest-1', OperationKind.DIGEST, 'thread', SOURCES),),
         receipt=CommitReceipt('operation-1', 8, ('fact-1',)))
     assert changes.receipt.core_revision == 8
     for kwargs in (dict(erasures=(write.ref,)), dict(writes=(write, write)),
@@ -227,21 +227,21 @@ def test_invalidation_entities_and_settings_are_narrow_types():
 def test_extraction_product_checks_sources_schema_stats_and_format():
     saved = product()
     assert saved.reusable(SNAPSHOT, SOURCES, 'config-1')
-    for kwargs in (dict(format_version=True), dict(format_version=1), dict(context_revision=6),
+    for kwargs in (dict(format_version=True), dict(format_version=2), dict(context_revision=6),
                    dict(result_json='{}'), dict(input_json='{}'), dict(stats={})):
         with pytest.raises(ValueError):
             replace(saved, **kwargs)
     with pytest.raises(TypeError):
         OperationStats(**{'facts_added': 0})
     with pytest.raises(ValueError):
-        OperationStats(0, 0, 0, 0, True, 0)
+        OperationStats(0, 0, 0, True, 0)
 
 
 def test_generation_reuse_depends_on_actual_context_and_not_embedder():
     saved = product()
     for snapshot, sources, config in (
         (replace(SNAPSHOT, core_revision=8), SOURCES, 'config-1'),
-        (replace(SNAPSHOT, session_generation=4), SOURCES, 'config-1'),
+        (replace(SNAPSHOT, session_id='other'), SOURCES, 'config-1'),
         (replace(SNAPSHOT, space_generation=3), SOURCES, 'config-1'),
         (replace(SNAPSHOT, context=SpaceContext('owner', 'space-2')), SOURCES, 'config-1'),
         (SNAPSHOT, (SourceVersion('source-1', 2),), 'config-1'),
@@ -259,7 +259,7 @@ def test_empty_model_result_cannot_hide_missing_prepared_input_fields(field):
     data = json.loads(saved.input_json)
     del data[field]
     with pytest.raises(ValueError):
-        replace(saved, input_json=json.dumps(data), result_json='{"facts":[],"working":[],"summaries":{}}')
+        replace(saved, input_json=json.dumps(data), result_json='{"facts":[],"digests":{}}')
 
 
 @pytest.mark.parametrize('field', ['role', 'content', 'ranges', 'representation', 'source_length'])
@@ -268,15 +268,15 @@ def test_empty_model_result_cannot_hide_corrupt_source_views(field):
     data = json.loads(saved.input_json)
     del data['pending'][0][field]
     with pytest.raises(ValueError):
-        replace(saved, input_json=json.dumps(data), result_json='{"facts":[],"working":[],"summaries":{}}')
+        replace(saved, input_json=json.dumps(data), result_json='{"facts":[],"digests":{}}')
 
 
-def test_summary_context_requires_business_version_and_representation_fingerprint():
+def test_digest_context_requires_business_version_and_representation_fingerprint():
     saved = product()
     data = json.loads(saved.input_json)
     data['pending'][0]['sequence'] = 2
     context = {**data['pending'][0], 'id': 'context-source', 'sequence': 1,
-               'representation': 'summary', 'representation_source': 'b' * 64}
+               'representation': 'digest', 'representation_source': 'b' * 64}
     data['context'] = [context]
     conditions = replace(CONDITIONS, sources=(*SOURCES, SourceVersion('context-source', 1)))
     guarded = replace(saved, conditions=conditions, input_json=json.dumps(data))
@@ -290,10 +290,10 @@ def test_summary_context_requires_business_version_and_representation_fingerprin
 
 def test_completion_serialization_and_independent_auxiliary_operations():
     result = OperationResult('operation-1', OperationKind.EXTRACT, ProcessingState.COMPLETED,
-                             ProcessingPhase.DONE, True, True, True, auxiliary_operation_ids=('summary-1',))
+                             ProcessingPhase.DONE, True, True, True, auxiliary_operation_ids=('digest-1',))
     wire = json.loads(json.dumps(result.to_dict(), allow_nan=False))
-    assert wire['state'] == 'completed' and wire['auxiliary_operation_ids'] == ['summary-1']
-    child = OperationResult('summary-1', OperationKind.SUMMARY, ProcessingState.FAILED,
+    assert wire['state'] == 'completed' and wire['auxiliary_operation_ids'] == ['digest-1']
+    child = OperationResult('digest-1', OperationKind.DIGEST, ProcessingState.FAILED,
                            ProcessingPhase.GENERATE, True, False, False, error_code='model_unavailable')
     assert child.to_dict()['state'] == 'failed' and result.core_committed
 

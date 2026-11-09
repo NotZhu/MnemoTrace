@@ -27,6 +27,35 @@ def test_health(client):
     assert client.get("/ready").status_code == 200
 
 
+@pytest.mark.parametrize('method', ['get', 'post', 'delete'])
+def test_working_route_has_been_removed(client, method):
+    assert getattr(client, method)('/v1/working', headers=hdr('retired-route')).status_code == 404
+
+
+@pytest.mark.parametrize('path,payload', [
+    ('/v1/remember', dict(content='Synthetic task', scope='working')),
+    ('/v1/recall', dict(query='Synthetic query', session_id='s')),
+    ('/v1/processing/flush', dict(include_summaries=True)),
+    ('/v1/import', dict(data=[], summarize=False)),
+])
+def test_retired_parameters_are_rejected_before_writing(client, path, payload):
+    h = hdr('retired-parameters')
+    assert client.post(path, json=payload, headers=h).status_code == 422
+    counts = client.get('/v1/memories', headers=h).json()['counts']
+    assert counts['episodes'] == counts['facts'] == 0
+    assert 'working_live' not in counts
+
+
+def test_digest_policy_uses_only_current_field_names(client):
+    h = hdr('digest-policy')
+    response = client.put('/v1/policy', json=dict(digest_system='Synthetic source digest policy'), headers=h)
+    assert response.is_success
+    policy = client.get('/v1/policy', headers=h).json()
+    assert policy['policy']['digest_system'] == 'Synthetic source digest policy'
+    assert 'summary_system' not in policy['defaults']
+    assert client.put('/v1/policy', json=dict(summary_system='Retired policy'), headers=h).status_code == 422
+
+
 @pytest.mark.parametrize("payload", [{"facts": []}, {"episodes": []}, {"facts": "bad", "episodes": []}])
 def test_incomplete_snapshot_is_rejected_instead_of_message_ingestion(client, payload):
     response = client.post("/v1/import", json={"data": payload}, headers=hdr("synthetic-invalid-import"))
@@ -149,24 +178,9 @@ def test_tenant_data_rights_operations_remain_isolated(client):
     assert fact_a["id"] != fact_b["id"]
 
 
-def test_flush_endpoint_consolidates_and_preserves_working(client):
-    h = hdr("session-flush")
-    accepted = client.post("/v1/remember", json={"content": "I work at Acme.", "session_id": "s1",
-                                                "processing": "buffered"}, headers=h)
-    assert accepted.status_code == 202
-    client.post("/v1/working", json={"content": "Checking the release notes", "session_id": "s1"}, headers=h)
-    response = client.post("/v1/processing/flush", json={"session_id": "s1"}, headers=h)
-    assert response.status_code == 200 and response.json()["ok"]
-    assert client.get("/v1/memories", headers=h).json()["facts"]
-    assert len(client.get("/v1/working?session_id=s1", headers=h).json()["items"]) == 1
-    assert client.delete("/v1/working?session_id=s1", headers=h).status_code == 200
-    assert not client.get("/v1/working?session_id=s1", headers=h).json()["items"]
-
-
 def test_http_handoff_across_agent_sessions_in_same_namespace(client):
     h = hdr("agent_handoff")
     codex_session = "codex:super-memory:handoff-source"
-    claude_session = "claude-code:super-memory:handoff-target"
 
     written = client.post("/v1/remember", json={
         "content": "Project decision: the launch checklist must include committed eval logs.",
@@ -179,13 +193,12 @@ def test_http_handoff_across_agent_sessions_in_same_namespace(client):
 
     recalled = client.post("/v1/recall", json={
         "query": "What launch checklist decision did Codex record?",
-        "session_id": claude_session,
+
         "n_chunks": 3,
     }, headers=h).json()
 
     assert "committed eval logs" in recalled["context"]
     assert codex_session in recalled["context"]
-    assert client.get(f"/v1/working?session_id={claude_session}", headers=h).json()["items"] == []
 
 
 def test_session_report_endpoint_audits_saved_facts(client):
@@ -222,10 +235,6 @@ def test_sessions_endpoint_lists_cross_agent_sessions_without_content(client):
         "session_id": claude_session,
         "scope": "long",
     }, headers=h)
-    client.post("/v1/working", json={
-        "content": "temporary launch checklist state",
-        "session_id": claude_session,
-    }, headers=h)
 
     data = client.get("/v1/sessions?limit=10", headers=h).json()
 
@@ -234,7 +243,6 @@ def test_sessions_endpoint_lists_cross_agent_sessions_without_content(client):
     assert {codex_session, claude_session} <= set(rows)
     assert rows[codex_session]["episodes"] == 1
     assert rows[codex_session]["facts_added"] >= 1
-    assert rows[claude_session]["working_live"] == 1
     assert rows[claude_session]["facts_sensitive"] >= 1
     assert data["page"]["total"] >= 2
     rendered = str(data).lower()
@@ -283,10 +291,6 @@ def test_agent_status_endpoint_is_content_free_and_session_aware(client):
         "session_id": session,
         "scope": "long",
     }, headers=h)
-    client.post("/v1/working", json={
-        "content": "today I am preparing a private launch note",
-        "session_id": session,
-    }, headers=h)
     client.put("/v1/focus", json={
         "track": ["project decisions"],
         "mute": ["health details"],
@@ -298,7 +302,6 @@ def test_agent_status_endpoint_is_content_free_and_session_aware(client):
     assert status["space_id"]
     assert status["session_id"] == session
     assert status["session"]["episodes"] == 1
-    assert status["session"]["working_live"] == 1
     assert status["focus"] == {"track": ["project decisions"], "mute": ["health details"]}
     assert status["counts"]["facts_live"] >= 1
     assert "mnemotrace_recall" in status["tools"]["read_context"]
@@ -375,7 +378,7 @@ def test_import_sessions_accept_iso_timestamps(client):
                 },
             ],
         }],
-        "summarize": False,
+        "generate_digests": False,
     }, headers=h).json()
 
     assert out["ok"] and out["sessions"] == 1 and out["episodes"] == 2
@@ -1156,7 +1159,7 @@ def test_memories_http_echoes_context_and_freezes_time(client, product_service, 
 
 
 @pytest.mark.parametrize('clock_skew', [0, -60, 60])
-@pytest.mark.parametrize('source_entry', ['raw', 'note', 'document', 'working'])
+@pytest.mark.parametrize('source_entry', ['raw', 'note', 'document'])
 def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, product_service, product_scope,
                                                                   monkeypatch, clock_skew, source_entry):
     from mnemotrace.types import Episode
@@ -1175,9 +1178,9 @@ def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, pro
         if source_entry == 'raw':
             return memory.remember_raw(content, session_id, event_time=event_time)
         if source_entry == 'document':
-            return memory.import_document(content, session_id, event_time=event_time, extract=False, summarize=False)
+            return memory.import_document(content, session_id, event_time=event_time, extract=False, generate_digests=False)
         return memory.remember(content, session_id, event_time=event_time, processing='buffered',
-                               scope='working' if source_entry == 'working' else 'long')
+                               scope='long')
 
     fact = memory.add_fact("Ana", "works_at", "Orbit", valid_at=100)
     remember_source("Ana works at Orbit.", "earlier", event_time=100)

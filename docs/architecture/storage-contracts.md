@@ -54,12 +54,12 @@ processing/flush 继续提供聚合和等待能力，内部引用这些操作 ID
 | immediate 完成 | 200；state=completed、phase=done，三个持久化标志均 true；辅助操作独立 |
 | 等待超时 | 沿用 processing_incomplete / timed_out 形式，带 operation_ids 和实际进度；任务不取消 |
 | embedding 失败 | failed/retry_wait、phase=embed、extraction_saved=true、core_committed=false、error_code 可见 |
-| 核心完成、摘要失败 | 主操作仍 completed；auxiliary_operation_ids 指向失败 summary，不要求重发原文 |
+| 核心完成、摘要失败 | 主操作仍 completed；auxiliary_operation_ids 指向失败 digest，不要求重发原文 |
 
 原文/人工事实不强制有抽取任务；自动抽取缺少 LLM 在本次输入写入前拒绝。
 Python 底层保存原文、consolidate 检查模型的分工保留。
 阶段六以「整理会话」替换 `close_session`，复用 `flush_processing` 推进并等待本批核心处理。
-摘要沿用现有流程并单独报告进度。移除自动工作记忆清理、专门的会话结论生成逻辑及旧入口。
+摘要沿用现有流程并单独报告进度。任务进度由 agent 管理，来源摘要单独跟踪。
 现有各入口的辅助等待差异由接口回归锁定。
 错误映射：无效 key=401；未知/他人空间统一 space_not_found=404；参数错误=422；消息/业务版本冲突=409；
 数据库不可用=503；损坏=500；模型错误沿用 ExtractionError 映射。不输出凭据、连接串、原文或内部路径。
@@ -105,9 +105,8 @@ SpaceDAO 的 claim/renew/save_product/product 是空间内任务路径；跨空�
 | core_revision | 空间正式业务内容变化时 +1；任务状态、心跳、错误不推进 |
 | record_version | 单条业务记录变化时 +1，插入为 1；摘要/显著度等元数据也推进 |
 | content_version | 用于抽取/嵌入的正文变化时推进；原文不可变，摘要更新不改变原文版本 |
-| summary_version | 来源摘要自己的文本版本；summary 向量绑定此版本，不绑定原文 content_version |
+| digest_version | 来源摘要自己的文本版本；digest 向量绑定此版本，不绑定原文 content_version |
 | space_generation | 清空/删除等空间级作废推进；普通业务更新使用 core_revision |
-| session_generation | 只清理/作废目标会话时推进，其他会话不受影响 |
 | lease token | 每次领取生成新值；续租/保存/提交校验 token 和数据库时间下的有效期 |
 
 FactQuery 两条时间轴独立。valid_at=null 取快照时间；known_at=null 沿用有效时间检查 expired_at，
@@ -157,19 +156,17 @@ with Database(DatabaseConfig.from_env()) as database:
     ))
     episode = memory.get_episode(receipt.source_ids[0])
     memory.add_fact("Synthetic person", "likes", "tea")
-    memory.remember_working("Synthetic task", "thread-A")
     result = memory.search("What does Synthetic person like?")
-    context_result = memory.lean_context("What does Synthetic person like?", session_id="thread-A")
+    context_result = memory.lean_context("What does Synthetic person like?")
     print(result.answer(), context_result.context, context_result.limitations)
 ```
 
 `store_messages` 只接受 `scope="raw"`，返回按输入顺序排列的来源 ID，重复项复用原来源。
 直接提交回执与数据同事务提交；连接中断且无法查证时抛出带操作 ID 的
 `CommitOutcomeUnknown`，可在同空间用 `memory.dao.receipt(operation_id)` 查证。
-`erase` 和 `ChangeSet.erasures` 接受 `FACT` 和 `WORKING`。
+`erase` 和 `ChangeSet.erasures` 接受 `FACT`。
 批次包含其他类型时，在开始写事务前整批拒绝。单条来源、实体、关系及冲突记录没有显式擦除入口。
 
-`clear_working(session_id)` 清除指定会话的工作记忆并作废该会话的任务，保留原文和长期事实。
 空间清空、空间删除和账号删除各自按授权范围清理数据与任务。
 默认 `export_records()` 仅流式导出非敏感事实。显式指定 `include_sensitive=True` 可读取全部领域记录。整库恢复使用[数据库归档](../../deploy/README.md#备份与恢复)。
 裁决冲突时按同一快照检查双方是否仍有效。事实文本超出图实体名或谓词的长度限制时，
@@ -180,9 +177,9 @@ with Database(DatabaseConfig.from_env()) as database:
 `source_kind="document"`。返回值包含 `source_ids`、`operation_ids` 和 `OperationResult` 对象。
 `buffered` 在 T1 后返回，`immediate` 等待核心提交，超时仍返回已接受的操作标识。
 `operation(operation_id)` 查询当前进度，`retry_operation(operation_id)` 重新排队，
-`flush_processing(session_id, include_summaries=True)` 同时等待本批摘要。长原文和文档的分段进度
+`flush_processing(session_id, include_digests=True)` 同时等待本批摘要。长原文和文档的分段进度
 保存在来源覆盖记录中，所有连续分段提交后才标记核心完成。公开操作 ID 的最终回执汇总各段仍保留的
-事实、工作记忆和来源。每个摘要任务处理一个来源，摘要片段仅在生成配置指纹匹配时复用。
+事实和来源。每个摘要任务处理一个来源，摘要片段仅在生成配置指纹匹配时复用。
 
 #### 数据库检索与补建
 
@@ -213,7 +210,7 @@ with Database(DatabaseConfig.from_env()) as database:
 | 数据组 | 结构与所有权 |
 | --- | --- |
 | 账号与空间 | users、api_keys、memory_spaces、sessions；账号不依附某把 key，空间显式创建 |
-| 权威业务数据 | sources/source_summaries、facts/fact_sources、working_memories/working_sources、conflicts、import_receipts |
+| 权威业务数据 | sources/source_digests、facts/fact_sources、conflicts、import_receipts |
 | 实体与检索派生数据 | entities/entity_merges、graph_relations、embeddings、lexical_documents/lexical_terms |
 | 操作与恢复 | operations、operation_sources/targets/products/receipts；唯一任务账本，不新增 outbox |
 
@@ -243,7 +240,7 @@ with Database(DatabaseConfig.from_env()) as database:
 | --- | --- | --- |
 | T1 接受 | 校验身份/空间/模型配置后，保存原文、分配序号、登记任务 | 提交后确认接受；原文持久化不依赖先生成向量 |
 | T2 产物 | 校验租约/来源/配置/上下文与作废标记，保存校验后的模型产物 | 生成必要向量；失败复用有效产物，不重复调用模型；T2 本身不推进正式业务版本 |
-| T3 完成 | 校验前置条件、当前必要历史；提交事实/失效/链路/工作记忆/必要投影/向量/回执 | 主任务完成，辅助操作独立；未完成语义归并的候选不进入默认事实读取 |
+| T3 完成 | 校验前置条件、当前必要历史；提交事实/失效/链路/必要投影/向量/回执 | 主任务完成，辅助操作独立；未完成语义归并的候选不进入默认事实读取 |
 
 状态沿用 pending → running → completed，暂时故障进入 retry_wait，确定性错误进入 failed，擦除/作废进入 cancelled。
 阶段沿用 queued/generate/embed/commit/compensate/done，持久化标志独立表达。T2 不是正式事实发布。
@@ -254,7 +251,7 @@ with Database(DatabaseConfig.from_env()) as database:
 | 变化 | 抽取产物有效性 | 归并/向量 |
 | --- | --- | --- |
 | 租约转移 | 新执行者重新校验后可复用，旧执行者不能提交 | 新执行者重新检查当前必要历史 |
-| 来源缺失或版本变化、空间或当前会话的 generation 变化 | 作废旧产物，已删来源不重新抽取 | 拒绝提交失效结果 |
+| 来源缺失或版本变化、空间代次变化 | 作废旧产物，已删来源不重新抽取 | 拒绝提交失效结果 |
 | 抽取配置/策略变化 | 重新抽取 | 按当前配置归并 |
 | 实际用于模型的业务上下文版本改变 | 保守重新抽取，不建细粒度依赖图 | 旧计算结果作废 |
 | 未用于抽取的业务事实改变 | 可复用；context_revision=null 必须由输入准备逻辑证明未读取相关上下文 | 总是重读/重算归并，不直接提交旧结果 |
@@ -266,7 +263,7 @@ with Database(DatabaseConfig.from_env()) as database:
 
 统一锁顺序为 users → memory_spaces → sessions → operations → sources/其他业务记录，同类按 ID 排序。
 普通提交在用户行取共享锁、空间行取排他锁，同账号不同空间仍可并行；账号删除取用户排他锁阻止新提交再按空间 ID 清理。
-空间删除争用同一空间行；会话清理锁对应会话并推进 session_generation，提交在同事务检查，不能先查后在另一事务写入。
+空间删除争用同一空间行，提交在同事务校验空间代次、业务版本、来源版本及租约，不能先查后在另一事务写入。
 领取/续租也遵守用户/空间先行顺序；后台发现只返回候选 ID/归属，不持任务锁反向锁用户。
 领取使用短事务的 FOR UPDATE SKIP LOCKED；保存/提交再次校验 token 与 lease_until。模型期间释放全部数据库锁。
 清空保留空间 ID/名称/配置，删除 ID 不复用；直接事务清理相关原文、事实、派生数据、产物及正文副本，失败不提前确认完成。
@@ -306,33 +303,32 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 | memory: _all_facts/_upsert_fact/_sync_episode/_rewire；store.memory_store | 可变对象及完整内存索引 | 记录工作集、显式提交；内存实现留作算法对照 | 3、5 | core_default、retrieval_candidates |
 | ingest.pipeline: add；memory: add/remember/remember_messages；service: remember/remember_messages | embedding 后写原文，默认用户、路由/任务随快照保存 | T1 原文/任务、消息去重、来源 agent；原文不依赖向量 | 3—4、6 | extraction_contract、message_pipeline/interfaces、pipeline_sources |
 | memory: import_messages/_document_inputs/_import_documents/import_data/import_snapshot；service: import_/import_document | 来源扫描、内存 import_seen、快照导入、全量统计 | 正常导入走新协议/import_receipts；不增加旧快照迁移 | 3、6、8 | import_dedupe/snapshot/cli、connectors、documents |
-| consolidate.pipeline: inspect/accept/register/rows/trigger/retry/snapshot/response/invalidate/validate_state | 空间 ledger、序号、窗口/覆盖、单 generation，stats 恢复校验不足 | 操作/来源/产物/回执；会话精确 generation，必需字段严格校验 | 4、7 | message_pipeline/windows/recovery、storage_contracts |
-| _pipeline: new_window/trigger_ready/enqueue_operation/_commit/_advance/_fail/run_one/execute_sources/execute_memory/flush | 修改事实、身份/aliases、working、来源摘要/覆盖、窗口统计 | T2/T3、租约/版本守卫、统一执行器，摘要片段可靠保存 | 4 | processing、original_product、process_recovery |
-| consolidate.planning: plan/summary_plan/supplied；fact_rules 主体归一化 | 来源上下文、身份/别名、窗口预算和主体推断 | 必要会话/主体上下文，记录实际业务版本；用户/assistant 自称分开 | 3—4 | message_windows、pipeline_sources、profile_evidence |
+| consolidate.pipeline: inspect/accept/register/rows/trigger/retry/snapshot/response/invalidate/validate_state | 空间 ledger、序号、窗口/覆盖、单 generation，stats 恢复校验不足 | 操作/来源/产物/回执，必需字段严格校验 | 4、7 | message_pipeline/windows/recovery、storage_contracts |
+| _pipeline: new_window/trigger_ready/enqueue_operation/_commit/_advance/_fail/run_one/execute_sources/execute_memory/flush | 修改事实、身份/aliases、来源摘要/覆盖、窗口统计 | T2/T3、租约/版本守卫、统一执行器，摘要片段可靠保存 | 4 | processing、original_product、process_recovery |
+| consolidate.planning: plan/digest_plan/supplied；fact_rules 主体归一化 | 来源上下文、身份/别名、窗口预算和主体推断 | 必要会话/主体上下文，记录实际业务版本；用户/assistant 自称分开 | 3—4 | message_windows、pipeline_sources、profile_evidence |
 | consolidate.facts: _accepted/_write_fact/_ensure_projection/_decay_sweep | 全事实归并、规范化对象/文本、去重 provenance、失效链路、显著度 | 完整必要主体/槽位/语义历史；显式修改，衰减为维护操作 | 3—4 | fact_statement_updates、conflict、message_recovery |
 | consolidate.conflict: _supersede/insert_dialogue_history/reconcile；conflict_candidates | 双时间轴/链路重连、重复来源、语义候选 | 必要历史读取，同事务更新；归并向量先就绪 | 3—4 | conflict、search_answering |
 | consolidate.decay: reinforce；memory: _reinforce_fact/apply_focus/_classify | 查询中改 access_count/last_access/salience，分类/focus 改字段 | 显式业务提交或维护事务，不隐藏持久化副作用 | 3、5 | transactions、retrieval、classification |
 | memory: reembed/evict_cold/_enforce_hot_limit/_page_hot/_retrieve_cold | 全量重嵌入/冷热搬运和内存索引 | 版本化批处理；正常读取不依赖完整冷热内存 | 3、5、8 | reembed、retrieval_candidates |
 | memory: add_fact/update_fact/delete_fact；service: 对应方法/clear_slot | 修改 SPO/text/display、人工权威、分类/topic/时间，删除来源/关系 | 人工记录提交、精确擦除，保留历史/来源/修正 | 3、6 | fact_metadata_updates、fact_statement_updates、record_business |
-| memory: remember_working/working_memory/clear_session/consume_working/sweep_working | 全量筛会话、TTL、消费与删除 | 会话/到期查询、显式更新与精确作废 | 3、7 | smoke/outcomes、message_recovery |
 | memory: pending_conflicts/resolve_conflict/dismiss_conflict；service: conflicts/resolve_conflict | 状态修改、双方失效和 supersedes | 冲突、双方事实、必要图同事务 | 3 | conflict、record_business |
 | memory: set_focus/set_policy/_apply_policy/build_persona/structured_profile/profile | 修改配置、扫描事实、缓存 persona | settings 权威、条件读取；persona 可重建 | 3、5 | profile_display/evidence、configuration_isolation |
-| memory: summarize_episodes/retrieve_summaries；consolidate.summarizer | 来源/摘要扫描及内存向量 | 版本化摘要、summary 向量、辅助任务 | 4—5 | summary_interfaces、pipeline_sources |
+| memory: generate_digests/retrieve_digests；consolidate.summarizer | 来源/摘要扫描及内存向量 | 版本化摘要、digest 向量、辅助任务 | 4—5 | digest_interfaces、pipeline_sources |
 | retrieve.hybrid: retrieve/_ann_candidates/_graph_scores/_graph_neighbor_facts/graph_exclusion_zone | 全 live 或 ANN+图池、内存 BM25/五信号 | DB 候选/作用域统计/局部图，Python 槽位头/排除/融合 | 5 | retrieval_candidates、storage_baseline、search_answering |
 | retrieve.planner；memory: _graph_related_facts/_entity_notes/_graph_paths_block/graph_data | 实体、全关系、邻接与事实回查 | 授权空间/时间下结构化遍历和事实查询 | 5 | graph_query、planner |
 | memory: _persona_at/_preference_block/_history_block/_temporal_history_result/_chain_facts_for_seeds/history | 扫事实形成当前槽位、历史、偏好 | 主体/槽位/历史链查询，必要历史不受候选预算截断 | 3、5 | smoke temporal/history、fact_statement_updates |
 | memory: _provenance_raw_block/_provenance_detail_chunks/_aggregation_block/_duration_block/_procedural_candidates/procedural | 扫来源/事实补证据、计数/时长/规则 | 来源 ID 回查、聚合和条件读取，保留证据/排除规则 | 5 | lean、profile_evidence、event_representation |
-| service: _working_sources；pipeline: cancel_missing/identity_saved；_pipeline: _pending/_select/_current | 来源/窗口集合扫描，检查取消、身份完成和会话队头 | 按来源/会话查询操作关联和回执；只遍历已读取候选/冲突对 | 3—4 | pipeline_sources、message_recovery |
+| pipeline: cancel_missing/identity_saved；_pipeline: _pending/_select/_current | 来源/窗口集合扫描，检查取消、身份完成和会话队头 | 按来源/会话查询操作关联和回执；只遍历已读取候选/冲突对 | 3—4 | pipeline_sources、message_recovery |
 | hybrid: query_entity_ids/graph_excluded_entity_ids；planner: _anchor_entity/_user_predicates/_user_entities/_bridge_paths | 实体/谓词/桥接路径完整扫描 | 名称/别名/主体查询、局部邻接与谓词聚合 | 5 | planner、graph_query、lean |
 | memory.reembed 内部 _clear；classify: classify_fact；memory_store: upsert_entity/invalidate_relations_for_fact/delete_relations_for_fact/prune_orphan_entities | 清索引、修改分类/别名和关系有效时间、删除邻接/孤立实体 | 版本化重嵌入、显式分类/图事务；人工别名/合并锚点不随派生图清理丢失 | 3—5 | reembed、classification、record_business |
 | memory: _current_state_block/_should_abstain；structured: build_structured_profile；agentic: gather_episodes；aggregate: dedupe_aggregation_candidates；conflict_candidates: candidate_pairs；lexical: bm25_scores | 遍历局部 latest/diag/basic/prefs/seen/best/by_subj/doc_tokens 字典 | 保留局部算法；输入来自授权必要工作集，BM25 统计从同作用域数据库语料提供 | 5 | smoke、profile_display、lean、storage_baseline |
 | memory: lean_context/search/context_for/retrieve_episodes/get_episode；service: recall/recall_multi/get_episode | 内存候选/working_set、完整 token 估算与可选 answerer | DB 候选/必要工作集，逐空间鉴权融合；保留入口差异 | 5—6 | lean、search_answering、spaces |
 | service: processing_status/_processing_status/flush/close | 扫空间来源/任务、按 namespace 等待 | 操作/会话查询、DB 租约恢复 | 4、6 | processing、process_recovery |
-| service: close_session/session_report/agent_status/sessions | 扫原文/working/facts 汇总，close 捕获边界清理 | 会话查询和聚合。整理会话复用 flush_processing，移除旧关闭入口、自动清理和会话结论 | 3、6 | agent_sessions、message_recovery、outcomes |
+| service: close_session/session_report/agent_status/sessions | 查询原文和 facts 汇总，close 捕获边界清理 | 会话查询和聚合。整理会话复用 flush_processing，移除旧关闭入口、自动清理和会话结论 | 3、6 | agent_sessions、message_recovery、outcomes |
 | service: graph/memories/audit/_embedder_blindness/stats | 全量分页、实体/关系统计、敏感过滤与审计 | DB 分页/聚合，审计走显式维护接口 | 3、5—6 | http_product、graph_query、http_metrics |
 | service: forget/export；persist: save_memory/load_memory/_memory_state | 全空间擦除/导出、manifest 携带策略/身份/去重/任务，缺失可当空库 | 删除事务/作废；新格式流式导出恢复；不迁旧目录 | 3、7—8 | process_recovery、snapshot_validation、postgres_backup |
 | server.app 全业务路由/openai_compat | 部分支持 space/home，部分直接使用认证命名空间 | 全部显式 space_id，代理携带操作标识 | 6 | server、openai_compat、message/topic_interfaces |
-| mcp.server/backends/__main__ | 本地固定 namespace，远程旧参数 | 配置身份/空间，共享新进度 | 6 | mcp、mcp_credentials、message/summary_interfaces |
+| mcp.server/backends/__main__ | 本地固定 namespace，远程旧参数 | 配置身份/空间，共享新进度 | 6 | mcp、mcp_credentials、message/digest_interfaces |
 | TypeScript client/types；frontend api/auth/queries/ScopeSelect | 可选 space/home、旧任务类型和凭据缓存 | 同步参数/结果，空间列表/创建，隔离切换状态 | 6 | SDK typecheck/test，前端 query-isolation/test/build |
 | connectors.__main__/watch/session_hook；agent_config/setup/doctor | namespace/文件参数、导入去重/采集游标、配置与诊断 | 显式空间/新进度；watcher 游标保留但不是权威记忆 | 6、8 | import_cli、watch_install、session_hook、agent_setup/doctor |
 | eval harness/bench/facility/ingest/seed_console；examples/quickstart | 内存/文件 Memory、用 user 分数据 | 算法离线对照保留；产品显式数据库空间；真实模型评测另授权 | 5、8 | eval_harness、facility、stage8_entrypoints、core/release |
@@ -351,12 +347,12 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 | 未知空间与损坏拒绝 | _load_memory 缺失 manifest 时返回空库 | [空间身份](../../tests/postgres/test_identity.py)及[数据库事务](../../tests/postgres/test_transactions.py)的未知空间、损坏与连接失败区分 |
 | 任务与产物校验 | validate_state 未逐键验证 stats，提交直接访问统计 | [数据库约束](../../tests/postgres/test_constraints.py)及[恢复校验](../../tests/postgres/test_process_recovery.py)的必需字段、检查点缺失、非法引用和向量维度 |
 | 原文先落库 | service.remember/messages、ingest.add 先 embed | [流水线恢复](../../tests/postgres/test_processing.py)验证向量失败仍保留原文/产物，重试复用有效产物 |
-| 会话精确作废 | invalidate(session_id) 改空间 generation、取消全部未终态窗口 | [会话并发清理](../../tests/postgres/test_process_recovery.py)验证目标会话任务取消，其他会话继续处理，原文和长期事实保留 |
+| 空间作废 | 清空、删除或账号删除使旧任务失效 | [并发擦除回归](../../tests/postgres/test_process_recovery.py)验证旧租约不能提交，其他空间继续处理 |
 
 [跨进程回归](../../tests/postgres/test_process_recovery.py)使用 `spawn` 和独立数据库连接，
 在模型调用、向量生成和数据库提交边界同步进程，覆盖租约转移、迟到提交、重试预算、重复消息及版本冲突后的重新归并。
 删除竞争分别验证清理先提交时拒绝旧结果，以及业务提交或图重建持锁时删除等待、随后完整清除结果。
-清理范围同时核对原文、事实、工作记忆、向量、词法、图、任务产物和完成回执。
+清理范围同时核对原文、事实、向量、词法、图、任务产物和完成回执。
 [凭据传输回归](../../tests/postgres/test_mcp_credential_transport.py)验证撤销 key 后下一次 HTTP 与远程 MCP 请求失败，同用户另一把有效 key 仍可访问。
 测试数据库、实际角色和禁止跳过的配置见[数据库回归说明](../reference/configuration.md#postgres-数据库基础)。
 

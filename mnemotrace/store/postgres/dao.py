@@ -6,14 +6,14 @@ from uuid import uuid4
 from ..contracts import CommitReceipt, MessageInput, OperationKind, OperationResult, ProcessingPhase
 from ..contracts import ProcessingState, ReadSnapshot, RecordRef, SpaceContext
 from .database import identifier
-from .erasures import clear_session, clear_space, erase
+from .erasures import clear_space, erase
 from .errors import (
     AccountNotFound, CommitOutcomeUnknown, DatabaseConstraintError, DatabaseUnavailable,
     SpaceNotFound, VersionConflict,
 )
 from .projection import GraphProjection
 from .reads import ReadView
-from .records import CONFLICT, ENTITY, FACT, RELATION, SOURCE, WORKING, SCOPE, ScopedSQL, domain, timestamp
+from .records import CONFLICT, ENTITY, FACT, RELATION, SOURCE, SCOPE, ScopedSQL, domain
 from .writes import check_lease, check_version, commit_task, enqueue, invalidate, queue_source_vector
 from .writes import save_embedding, store_messages, write
 
@@ -22,7 +22,6 @@ from .writes import save_embedding, store_messages, write
 class Applied:
     changed: bool
     fact_ids: tuple[str, ...] = ()
-    working_ids: tuple[str, ...] = ()
     source_ids: tuple[str, ...] = ()
     count: int = 0
 
@@ -36,37 +35,28 @@ def _space_row(sql):
                    f'FROM mnemotrace.memory_spaces WHERE {SCOPE}', sql.scope).fetchone()
 
 
-def _session_generation(sql, session_id):
-    if session_id is None:
-        return None
-    row = sql.run(f'SELECT session_generation FROM mnemotrace.sessions WHERE {SCOPE} AND session_id = %s',
-                  (*sql.scope, session_id)).fetchone()
-    return row[0] if row else 0
-
-
 def _receipt(sql, operation_id):
-    row = sql.run(f'SELECT core_revision,fact_ids,working_ids,source_ids,affected_count '
+    row = sql.run(f'SELECT core_revision,fact_ids,source_ids,affected_count '
                   f'FROM mnemotrace.record_commit_receipts WHERE {SCOPE} AND operation_id = %s',
                   (*sql.scope, operation_id)).fetchone()
     if row is not None:
-        revision, facts, working, sources, count = row
-        return CommitReceipt(operation_id, revision, tuple(facts), tuple(working), tuple(sources), count)
-    row = sql.run(f'SELECT core_revision,fact_ids,working_ids FROM mnemotrace.operation_receipts '
+        revision, facts, sources, count = row
+        return CommitReceipt(operation_id, revision, tuple(facts), tuple(sources), count)
+    row = sql.run(f'SELECT core_revision,fact_ids FROM mnemotrace.operation_receipts '
                   f'WHERE {SCOPE} AND operation_id = %s', (*sql.scope, operation_id)).fetchone()
     if row is not None:
-        return CommitReceipt(operation_id, row[0], tuple(row[1]), tuple(row[2]))
+        return CommitReceipt(operation_id, row[0], tuple(row[1]))
     return None
 
 
 def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=None):
     conditions = changes.conditions
     snapshot = conditions.snapshot
-    if (snapshot.core_revision != revision or snapshot.space_generation != generation
-            or snapshot.session_generation != _session_generation(sql, snapshot.session_id)):
-        raise VersionConflict('Space or session version changed')
+    if snapshot.core_revision != revision or snapshot.space_generation != generation:
+        raise VersionConflict('Space version changed')
     sessions = {spec.session_id for spec in changes.operations if spec.session_id is not None}
     sessions.update(domain(item.record).session_id for item in changes.writes
-                    if item.ref.kind in (SOURCE, WORKING))
+                    if item.ref.kind == SOURCE)
     for session_id in sorted(sessions):
         sql.ensure_session(session_id)
     if snapshot.session_id is not None:
@@ -87,7 +77,7 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
     if {link.fact for link in changes.source_links} - {item.ref for item in changes.writes}:
         raise DatabaseConstraintError('Source links require an explicit fact write')
     explicit_edges = {domain(item.record).fact_id for item in changes.writes if item.ref.kind == RELATION}
-    rank = {kind: index for index, kind in enumerate((SOURCE, ENTITY, FACT, WORKING, CONFLICT, RELATION))}
+    rank = {kind: index for index, kind in enumerate((SOURCE, ENTITY, FACT, CONFLICT, RELATION))}
     for item in sorted(changes.writes, key=lambda item: (rank[item.ref.kind], item.ref.record_id)):
         changed |= write(sql, item, graph, explicit_edges)
     for item in changes.invalidations:
@@ -108,7 +98,7 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
             sql.update('memory_spaces', {'settings': new_settings}, 'true')
             changed = True
     for spec in changes.operations:
-        enqueue(sql, spec, generation, _session_generation(sql, spec.session_id))
+        enqueue(sql, spec, generation)
     if conditions.lease is not None:
         if changes.receipt is None:
             raise DatabaseConstraintError('Task completion requires a receipt')
@@ -122,7 +112,6 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
         raise VersionConflict('Receipt revision differs from committed business revision')
     return Applied(changed,
                    supplied.fact_ids if supplied else tuple(ref.record_id for ref in refs if ref.kind == FACT),
-                   supplied.working_ids if supplied else tuple(ref.record_id for ref in refs if ref.kind == WORKING),
                    tuple(ref.record_id for ref in refs if ref.kind == SOURCE), erased)
 
 
@@ -156,8 +145,7 @@ class PostgresDAO:
             identifier(session_id)
         with self._transaction(read_only=True) as sql:
             revision, generation, settings, at = _space_row(sql)
-            snapshot = ReadSnapshot(self.context, revision, generation, session_id,
-                                    _session_generation(sql, session_id))
+            snapshot = ReadSnapshot(self.context, revision, generation, session_id)
             yield ReadView(sql, snapshot, at, settings)
 
     def receipt(self, operation_id):
@@ -181,10 +169,10 @@ class PostgresDAO:
                     sql.update('memory_spaces', {'core_revision': revision}, 'true')
                 sql.insert('record_commit_receipts', dict(
                     operation_id=operation_id, core_revision=revision, fact_ids=list(result.fact_ids),
-                    working_ids=list(result.working_ids), source_ids=list(result.source_ids),
+                    source_ids=list(result.source_ids),
                     affected_count=result.count, **({'segment_of': segment_of} if segment_of else {}),
                 ))
-                return CommitReceipt(operation_id, revision, result.fact_ids, result.working_ids,
+                return CommitReceipt(operation_id, revision, result.fact_ids,
                                      result.source_ids, result.count)
         except DatabaseUnavailable as exc:
             if not entered:
@@ -226,27 +214,6 @@ class PostgresDAO:
 
         return self._mutate(new_operation_id(), apply)
 
-    def clear_working(self, session_id):
-        identifier(session_id)
-
-        def apply(sql, *_):
-            count = clear_session(sql, session_id)
-            return Applied(bool(count), count=count)
-
-        return self._mutate(new_operation_id(), apply)
-
-    def sweep_working(self, as_of=None):
-        def apply(sql, *_):
-            cutoff = timestamp(as_of)
-            ids = sql.run(f'SELECT id FROM mnemotrace.working_memories WHERE {SCOPE}'
-                          ' AND (consumed OR expires_at <= coalesce(%s, transaction_timestamp()))',
-                          (*sql.scope, cutoff)).fetchall()
-            count = erase(sql, GraphProjection(sql), (
-                RecordRef(self.context, WORKING, record_id) for (record_id,) in ids
-            ))
-            return Applied(bool(count), count=count)
-
-        return self._mutate(new_operation_id(), apply)
 
     def clear_space(self):
         def apply(sql, *_):

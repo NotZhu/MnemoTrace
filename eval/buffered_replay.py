@@ -25,7 +25,7 @@ def build_suite():
     for family in ('burst', 'continuous', 'idle', 'longinput', 'inflight', 'isolation'):
         for size, count in (('short', 8), ('long', 24)):
             case = dict(id=f'{family}-{size}', category=family, split='development', core=size == 'short',
-                        events=[], facts=[], working=[], identity={}, controls=[])
+                        events=[], facts=[], identity={}, controls=[])
             previous = {}
             for i in range(count):
                 block, slot = divmod(i, 8)
@@ -88,8 +88,6 @@ def build_suite():
                 elif slot == 6:
                     task = ('提交报销单', '领取快递', '预约会议室')[block]
                     text = f'今天下午需要{task}，这是临时待办，办完即结束，不作为长期事实。'
-                    case['working'].append(dict(id=f'w{i+1}', contents=[text, f'今天下午需要{task}',
-                        f'今天下午{task}', task], kinds=['task'], sources=[[key]], at=key))
                 else:
                     text = '好的，谢谢。此条没有新增个人事实，也没有新的任务或状态。'
                 event['text'] = text + padding

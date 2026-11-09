@@ -468,7 +468,6 @@
     <div class="mcard rv d2"><div class="t"><span>语义记忆</span></div><div class="s"><span>提炼出的事实，以及实体之间的关系</span></div></div>
     <div class="mcard rv d3"><div class="t"><span>用户画像</span></div><div class="s"><span>根据已有事实，归纳身份、偏好与习惯</span></div></div>
     <div class="mcard rv d3"><div class="t"><span>程序记忆</span></div><div class="s"><span>交代过的规则、指令与操作步骤</span></div></div>
-    <div class="mcard rv d4"><div class="t"><span>工作记忆</span></div><div class="s"><span>当前会话的临时状态，可设置有效期</span></div></div>
   </div>
 </div></section>
 
