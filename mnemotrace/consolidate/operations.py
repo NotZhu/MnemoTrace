@@ -12,7 +12,7 @@ def prepare(data, config, policy, compensation=False):
                   '"decision":"conflict|replaces|coexists","reason":"brief reason"}]}. '
                   'Do not infer missing facts. Prefer coexists when unsure.')
         return json.dumps(data, ensure_ascii=False), system, config.joint_max_output_tokens
-    system = system_prompt(policy, compensation=compensation, llm_topics=config.llm_topics, operation=operation)
+    system = system_prompt(policy, compensation=compensation, operation=operation)
     return request(data, config), system, config.summary_max_output_tokens if operation == 'summary' else config.joint_max_output_tokens
 
 

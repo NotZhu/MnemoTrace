@@ -90,7 +90,7 @@ def _model(calls, pause=None):
         for item in request['pending']:
             subject, _, employer = item['content'].rpartition(' at ')
             subject = subject or 'Synthetic person'
-            facts.append(dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject=subject, predicate='works_at', object=employer,
+            facts.append(dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='single', retention='unknown', subject=subject, predicate='works_at', object=employer,
                               text=f'{subject} works at {employer}',
                               source_ids=[item['id']]))
         return json.dumps(dict(facts=facts, working=[], summaries=[]))

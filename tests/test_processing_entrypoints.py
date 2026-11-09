@@ -21,7 +21,6 @@ def deployment(monkeypatch):
     monkeypatch.setenv('MNEMOTRACE_SPACE_ID', 'synthetic-space')
     monkeypatch.setenv('MNEMOTRACE_LLM', 'synthetic-model')
     monkeypatch.setenv('MNEMOTRACE_EMBEDDER', 'lexical')
-    monkeypatch.setenv('MNEMOTRACE_LLM_TOPICS', '0')
     monkeypatch.setattr(providers, 'make_llm', Mock())
 
 
@@ -35,7 +34,7 @@ def test_quickstart_passes_deployment_config_to_memory(deployment, monkeypatch):
 
     quickstart.main()
 
-    assert memory.call_args.kwargs['config'].llm_topics is False
+    assert memory.call_args.kwargs['config'] is not None
     run_demo.assert_called_once_with(memory.return_value)
 
 
@@ -55,7 +54,7 @@ def test_seed_creates_new_output_directory_and_passes_deployment_config(deployme
 
     seed_console.main(args)
 
-    assert memory.call_args.kwargs['config'].llm_topics is False
+    assert memory.call_args.kwargs['config'] is not None
     ingest.assert_called_once_with(memory.return_value, {})
     assert json.loads(output.read_text(encoding='utf-8')) == {'case': 1, 'space_id': 'synthetic-space'}
     with pytest.raises(FileExistsError):

@@ -25,7 +25,7 @@ def reply(prompt, system):
     for item in data['pending']:
         if item['role'] == 'assistant':
             continue
-        result['facts'].append(dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='user', predicate='owns', object=item['content'][:30],
+        result['facts'].append(dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='user', predicate='owns', object=item['content'][:30],
             text=item['content'][:30], source_ids=[item['id']]))
     return json.dumps(result)
 
@@ -58,7 +58,7 @@ def dialogue_evidence(data):
                 value = 'pnpm'
             facts.append(dict(subject='user', predicate='prefers', object=value,
                               text=f'I prefer {value} as my default package manager.',
-                              category='偏好', sensitive=False, time_kind='current', effective_date=None,
+                              category='偏好', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown',
                               source_ids=refs))
     return dict(facts=facts, working=working, summaries=[])
 

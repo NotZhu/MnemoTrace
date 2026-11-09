@@ -1,5 +1,4 @@
 """Request-local graph access for the existing graph retrieval algorithms."""
-from ...retrieve.hybrid import _EXCLUSION_VALUE_PREDS
 from ...retrieve.lexical import lexical_terms
 from .projection import GraphProjection
 from .records import ENTITY, SCOPE, domain
@@ -15,9 +14,7 @@ class RetrievalGraph:
         self._names = {}
         self._adjacent = {}
         self._canonical = {}
-        self.excluded = set()
         self._edge_budget = 4 * query.facts.limit
-        self._incoming = ()
         self.truncated = False
         terms = sorted(set(lexical_terms(query.text, query=True, exact=True)))
         settings = view.settings()
@@ -53,6 +50,12 @@ class RetrievalGraph:
         self._load_ids(ids)
         return tuple(self.entities[entity_id] for entity_id in ids)
 
+    def path_anchors(self, name, predicate):
+        rows = self._entity_matches(name.strip().lower(), predicate)
+        ids = tuple(row[0] for row in rows)
+        self._load_ids(ids)
+        return tuple(self.entities[key] for key in ids)
+
     def get_entity(self, user_id, name):
         if user_id != self.view.snapshot.context.user_id:
             return None
@@ -73,8 +76,23 @@ class RetrievalGraph:
         return self.get_entity(self.view.snapshot.context.user_id, name)
 
     def _unique_entity_id(self, name):
+        rows = self._entity_matches(name)
+        return rows[0][0] if len(rows) == 1 else None
+
+    def _entity_matches(self, name, predicate=None):
         # Deduplicate merge targets before checking ambiguity, independent of traversal limits.
-        rows = self.sql.run(f"""WITH RECURSIVE matches(id, exact) AS (
+        visible = ''
+        params = ()
+        if predicate is not None:
+            clauses, values = self.view._fact_conditions(self.query.facts)
+            visible = f""" AND EXISTS (
+                SELECT 1 FROM mnemotrace.graph_relations g JOIN mnemotrace.facts r
+                  ON (r.user_id,r.space_id,r.id) = (g.user_id,g.space_id,g.fact_id)
+                WHERE g.user_id = %s AND g.space_id = %s AND g.subject_id::text = r_anchor.id
+                  AND lower(g.predicate) = %s AND {' AND '.join(clauses)}
+            )"""
+            params = (*self.sql.scope, predicate, *values)
+        return self.sql.run(f"""WITH RECURSIVE matches(id, exact) AS (
             SELECT id::text,normalized_name = %s FROM mnemotrace.entities
             WHERE {SCOPE} AND (normalized_name = %s OR EXISTS
                 (SELECT 1 FROM unnest(aliases) a WHERE lower(a) = %s))
@@ -84,14 +102,13 @@ class RetrievalGraph:
             SELECT m.survivor_id::text FROM mnemotrace.entity_merges m JOIN resolved r ON m.merged_id = r.id
             WHERE m.user_id = %s AND m.space_id = %s
         )
-        SELECT r.id FROM resolved r WHERE NOT EXISTS (
-            SELECT 1 FROM mnemotrace.entity_merges m WHERE m.user_id = %s AND m.space_id = %s AND m.merged_id = r.id
-        ) LIMIT 2""", (name, *self.sql.scope, name, name, *self.sql.scope, *self.sql.scope)).fetchall()
-        return rows[0][0] if len(rows) == 1 else None
+        SELECT r_anchor.id FROM resolved r_anchor WHERE NOT EXISTS (
+            SELECT 1 FROM mnemotrace.entity_merges m WHERE m.user_id = %s AND m.space_id = %s AND m.merged_id = r_anchor.id
+        ){visible} ORDER BY r_anchor.id LIMIT 2""", (name, *self.sql.scope, name, name, *self.sql.scope, *self.sql.scope, *params)).fetchall()
 
-    def _edges(self, ids, direction, limit, predicates=(), *, excluded=()):
+    def _edges(self, ids, direction, limit, predicates=()):
         records = self.view.graph_edges(ids, self.query.facts, direction=direction,
-                                        predicates=predicates, excluded=excluded, limit=limit + 1)
+                                        predicates=predicates, limit=limit + 1)
         self.truncated |= len(records) > limit
         relations = tuple(map(domain, records[:limit]))
         self._load_ids(entity_id for rel in relations for entity_id in (rel.subject_id, rel.object_id))
@@ -102,44 +119,10 @@ class RetrievalGraph:
         key = (self._resolve(entity_id), direction)
         if key not in self._adjacent:
             limit = min(self._edge_budget, self.query.facts.limit)
-            edges = self._edges((key[0],), direction, limit, excluded=self.excluded)
+            edges = self._edges((key[0],), direction, limit)
             self._edge_budget -= len(edges)
             self._adjacent[key] = edges
-        return tuple(edge for edge in self._adjacent[key]
-                     if edge.subject_id not in self.excluded and edge.object_id not in self.excluded)
-
-    def relations(self):
-        return self._incoming
-
-    def exclude(self, entity_ids):
-        direct = {self._resolve(entity_id) for entity_id in entity_ids}
-        # Resolve merge decisions before following incoming value relationships.
-        self._incoming = self._edges(tuple(sorted(direct)), 'in', self.query.facts.limit, _EXCLUSION_VALUE_PREDS)
-        self.excluded = direct | {edge.subject_id for edge in self._incoming}
-        return self.excluded
-
-    def excluded_names(self):
-        """Resolve names of excluded entities for facts that have no projected edge."""
-        if not self.excluded:
-            return ()
-        rows = self.sql.run("""WITH RECURSIVE members(id) AS (
-            SELECT unnest(%s::text[])
-            UNION
-            SELECT m.merged_id FROM mnemotrace.entity_merges m JOIN members x ON x.id = m.survivor_id
-            WHERE m.user_id = %s AND m.space_id = %s
-        )
-        SELECT e.normalized_name,e.aliases FROM mnemotrace.entities e JOIN members x ON x.id = e.id
-        WHERE e.user_id = %s AND e.space_id = %s""",
-            (sorted(self.excluded), *self.sql.scope, *self.sql.scope)).fetchall()
-        names = {name for name, _ in rows}
-        account = self.view.snapshot.context.user_id
-        for name in {alias.lower() for _, aliases in rows for alias in aliases} - names:
-            match = self.get_entity(account, name)
-            if match is not None and match.id in self.excluded:
-                names.add(name)
-        if self._self.lower() in names:
-            names.add(account.lower())
-        return names
+        return self._adjacent[key]
 
     def limitations(self):
         flags = ['graph_candidate_budget'] if self.truncated else []

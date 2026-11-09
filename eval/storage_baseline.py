@@ -18,13 +18,13 @@ from unittest.mock import patch
 from eval import harness
 from mnemotrace import Config, MemoryEngine
 from mnemotrace.retrieve.lexical import bm25_scores
-from mnemotrace.util import stems
+from mnemotrace.retrieve.lexical import lexical_terms
 
 ROOT = Path(__file__).resolve().parents[1]
 CLOCK = harness.BASE + 120 * 86400
 WORKLOADS = Path(__file__).with_name('fixtures') / 'storage_workloads.json'
 SOURCE_FILES = (
-    'mnemotrace/store/contracts.py', 'eval/storage_baseline.py',
+    'mnemotrace/store/contracts.py', 'mnemotrace/retrieve/structured.py', 'eval/storage_baseline.py',
     'eval/fixtures/storage_baseline.json', 'eval/fixtures/storage_workloads.json',
     'tests/test_storage_contracts.py', 'tests/test_storage_baseline.py',
     'docs/architecture/storage-contracts.md', 'docs/architecture/README.md', 'eval/README.md',
@@ -42,7 +42,7 @@ def lexical_observations() -> dict:
     docs = [('old', 'Ana works at Acme'), ('current', 'Ana works at Orbit'),
             ('repeat', 'Orbit Orbit office'), ('empty', '')]
     return {
-        'tokens': stems('Wei works_at Orbit; worked working 中文 2023-11'),
+        'tokens': lexical_terms('Wei works_at Orbit; worked working 中文 2023-11'),
         'current': bm25_scores('works Orbit', docs[1:]),
         'history': bm25_scores('works Orbit', docs),
         'empty_query': bm25_scores('', docs),
@@ -58,19 +58,16 @@ def observe() -> tuple[list[dict], dict, dict]:
     def memory_for(storage, llm):
         if storage != 'memory':
             raise ValueError('This baseline only observes the offline memory reference')
-        memory = MemoryEngine(llm=llm)
-        search = memory.search
+        return MemoryEngine(llm=llm)
 
-        def recorded_search(query, user_id, as_of=None, **kwargs):
-            result = search(query, user_id=user_id, as_of=as_of, **kwargs)
-            captured[user_id] = memory, result
-            return result
+    def capture(user_id, memory, result):
+        captured[user_id] = memory, result
 
-        memory.search = recorded_search
-        return memory
+    def run(item, **kwargs):
+        return harness.run_mnemotrace_detail(item, capture=capture, **kwargs)
 
     with patch('time.time', return_value=CLOCK), patch.object(harness, '_memory_for', memory_for):
-        rows, summary = harness.evaluate(storage='memory', llm=RecordedLLM())
+        rows, summary = harness.evaluate(storage='memory', llm=RecordedLLM(), run_item=run)
     # Materialize observations after the harness stops its retrieval timer.
     for user_id, (memory, result) in captured.items():
         sources = {ep.id: f'source-{i}' for i, ep in enumerate(memory.episodes_doc.values(), 1)}

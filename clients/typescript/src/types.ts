@@ -176,13 +176,15 @@ export type FactSource = 'extracted' | 'user'
 
 export type Topic = 'food' | 'travel' | 'music' | 'film_tv' | 'sports' | 'reading' | 'hobbies'
   | 'environment' | 'health' | 'work' | 'learning' | 'technology' | 'finance' | 'relationships' | 'unknown'
-export type TopicSource = 'unset' | 'rule' | 'llm' | 'user'
+export type TopicSource = 'unset' | 'llm' | 'user'
 export interface TopicMetadata {
   topic: Topic
   topic_source: TopicSource
 }
 
 export interface Fact extends TopicMetadata {
+  cardinality: 'single' | 'multi' | 'unknown'
+  retention: 'durable' | 'normal' | 'unknown'
   source_roles?: ('user' | 'assistant')[]
   id: string
   text: string
@@ -390,6 +392,8 @@ export interface GraphResponse extends GraphData {
 }
 
 export interface FactInput {
+  cardinality?: 'single' | 'multi' | 'unknown'
+  retention?: 'durable' | 'normal' | 'unknown'
   subject?: string
   predicate: string
   object: string
@@ -399,6 +403,8 @@ export interface FactInput {
 }
 
 export interface FactPatch {
+  cardinality?: 'single' | 'multi' | 'unknown'
+  retention?: 'durable' | 'normal' | 'unknown'
   subject?: string
   predicate?: string
   object?: string
@@ -452,6 +458,9 @@ export interface ImportResult {
 }
 
 export interface MemoryExportFact extends TopicMetadata {
+  cardinality: Fact["cardinality"]
+  retention: Fact["retention"]
+  validity_revisions: { changed_at: number; invalid_at: number | null; expired_at: number | null }[]
   id: string
   subject: string
   predicate: string
@@ -610,4 +619,33 @@ export interface MessageReceipt {
 export interface MessagesResult extends RememberResult {
   accepted: number
   messages: MessageReceipt[]
+}
+
+
+export interface StructuredReadOptions {
+  state?: 'current' | 'history' | 'all'
+  valid_at?: number
+  known_at?: number
+  redact_sensitive?: boolean
+  limit?: number
+}
+
+export interface AggregateFactsOptions extends StructuredReadOptions {
+  operation?: 'count' | 'count_distinct'
+  subject?: string
+  start?: number
+  end?: number
+  query?: string
+}
+
+export interface AggregateFactsResult {
+  count: number
+  facts: Fact[]
+  candidates: { id: string; session_id: string; text: string; event_time: number | null; role: string; representation: string }[]
+  limitations: string[]
+}
+
+export interface FollowPathResult {
+  paths: { endpoint: string; facts: Fact[] }[]
+  limitations: string[]
 }

@@ -1,30 +1,29 @@
 """Shared rules for user-authored facts and explicit fact corrections."""
 from ..localize import display_of
 from ..topics import validate_topic
-from ..types import Fact
+from ..types import Fact, validate_lifecycle
 from ..util import now
 from .outcomes import OUTCOME_PREDICATES, split_outcome_text
-from .topic_rules import resolve_topic
 
 
 class InvalidFactEditError(ValueError):
     """A user-supplied fact edit is invalid."""
 
 
-def build_manual_fact(subject, predicate, object_, user_id, valid_at, sensitive, category, topic):
+def build_manual_fact(subject, predicate, object_, user_id, valid_at, sensitive, category, topic,
+                      cardinality="unknown", retention="unknown"):
     fact = Fact(subject=subject, predicate=predicate, object=object_, user_id=user_id, source='user',
                 valid_at=valid_at if valid_at is not None else now(),
                 category='其他' if category is None else category, sensitive=True if sensitive is None else sensitive,
                 sensitive_override=sensitive is not None,
                 topic=topic if topic is not None else 'unknown',
-                topic_source='user' if topic is not None else 'unset')
-    if topic is None:
-        fact.topic, fact.topic_source = resolve_topic(predicate, object_)
+                topic_source='user' if topic is not None else 'unset',
+                cardinality=cardinality, retention=retention)
     return fact
 
 
 def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=None, category=None,
-                      statement=None, topic=None, reset_topic=False):
+                      statement=None, topic=None, reset_topic=False, cardinality=None, retention=None, *, at=None):
     """Apply a correction to one domain record and report whether its claim changed."""
     if not isinstance(reset_topic, bool):
         raise InvalidFactEditError("reset_topic must be a boolean")
@@ -49,6 +48,10 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
         value is not None and value != getattr(f, field)
         for field, value in (("subject", subject), ("predicate", predicate), ("object", object))
     ) or (statement is not None and statement != display_of(f) and statement != f.text)
+    new_cardinality = (f.cardinality if not claim_changed else "unknown") if cardinality is None else cardinality
+    new_retention = (f.retention if not claim_changed else "unknown") if retention is None else retention
+    validate_lifecycle(new_cardinality, new_retention)
+    f.cardinality, f.retention = new_cardinality, new_retention
     if not claim_changed:
         # 表单会回传未变的内容字段；隐私/分类修改不代表用户断言正文，也不应撤销替代历史。
         if sensitive is not None:
@@ -59,9 +62,7 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
         if topic is not None:
             f.topic, f.topic_source = topic, "user"
         elif reset_topic:
-            # 即使结论使用三元组式默认正文，也不能将 session 主语带入主题判断。
-            why = split_outcome_text(f.text)[1] if f.predicate.lower() in OUTCOME_PREDICATES else ""
-            f.topic, f.topic_source = resolve_topic(f.predicate, f"{f.object} {why}")
+            f.topic, f.topic_source = "unknown", "unset"
         return False
     if subject is not None:
         f.subject = subject
@@ -95,8 +96,7 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
             and (getattr(f, "display", "") or "").strip():
         f.display = f.object if f.predicate.lower() in OUTCOME_PREDICATES else ""
     f.source = "user"
-    f.invalid_at = None  # 用户编辑使其重新生效
-    f.expired_at = None
+    f.revise_end_times(None, None, changed_at=now() if at is None else at)
     if category is not None:
         f.category = category
     f.sensitive = True if sensitive is None else sensitive
@@ -105,14 +105,12 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
     if topic is not None:
         f.topic, f.topic_source = topic, "user"
     else:
-        why = split_outcome_text(f.text)[1] if f.predicate.lower() in OUTCOME_PREDICATES else ""
-        f.topic, f.topic_source = resolve_topic(f.predicate, f"{f.object} {why}")
+        f.topic, f.topic_source = "unknown", "unset"
     return True
 
 
 def reconcile_manual(new, history, at):
     """Place a manually asserted value in the slot's valid-time history."""
-    from .conflict import is_single_valued
     from ..util import time_key
 
     same_slot = [old for old in history if old.slot == new.slot and old.is_published(at)
@@ -121,7 +119,7 @@ def reconcile_manual(new, history, at):
     covering = [old for old in same_slot if old.is_valid_at(effective)]
     if any(old.object.strip().casefold() == new.object.strip().casefold() for old in covering):
         return 'duplicate', []
-    if new.valid_at is None or not is_single_valued(new.predicate):
+    if new.valid_at is None or new.cardinality != "single":
         return 'add', []
 
     def order(fact):
@@ -131,9 +129,8 @@ def reconcile_manual(new, history, at):
                      and old.is_valid_at(old.valid_at)), key=order, default=None)
     changed = list(covering)
     for old in covering:
-        old.invalid_at = effective
-        if effective <= at and old.expired_at is None:
-            old.expired_at = at
+        expired_at = at if effective <= at and old.expired_at is None else old.expired_at
+        old.revise_end_times(effective, expired_at, changed_at=at)
     if covering:
         new.supersedes = max(covering, key=order).id
     if successor is not None:

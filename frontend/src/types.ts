@@ -5,7 +5,7 @@ export type FactSource = 'extracted' | 'user'
 
 export type Topic = 'food' | 'travel' | 'music' | 'film_tv' | 'sports' | 'reading' | 'hobbies'
   | 'environment' | 'health' | 'work' | 'learning' | 'technology' | 'finance' | 'relationships' | 'unknown'
-export type TopicSource = 'unset' | 'rule' | 'llm' | 'user'
+export type TopicSource = 'unset' | 'llm' | 'user'
 export interface TopicMetadata {
   topic: Topic
   topic_source: TopicSource
@@ -294,6 +294,8 @@ export interface FactWrite {
 }
 
 export interface FactEdit {
+  cardinality?: 'single' | 'multi' | 'unknown'
+  retention?: 'durable' | 'normal' | 'unknown'
   statement?: string
   subject?: string
   predicate?: string

@@ -52,7 +52,7 @@
 
 格式名称以工具 schema 为准。写入可能产生模型调用、持久化与派生状态变化；原始写入、异步排队和整合降级的状态应分别解释。
 
-topic 使用工具 schema 的固定枚举；来源由服务端记录。人工选择 unknown 与 `reset_topic=true` 不同：重置立即按当前内容执行离线规则，不调用模型，结果为明确主题/rule 或 unknown/unset。不能同时指定主题与重置标志；仅改主题不改变事实来源和历史。新增未指定主题、内容变化且未指定新主题时使用规则。新增或编辑结果展示主题及来源，列表的 JSON 与 Markdown 结果保留该元数据；脱敏报告省略它。完整语义见[主题与来源](../architecture/memory.md#主题与来源)。
+手动事实可显式设置 `topic`，省略或清除时为 `unknown/unset`。仅编辑主题保留来源和历史。`reset_topic` 与显式主题互斥。新增或修改事实时可指定 `cardinality` 与 `retention`，默认分别为 `unknown`。
 
 `mnemotrace_list_facts` 增加可选 topic，省略表示全部，unknown 同时匹配人工未知与未赋值未知。主题过滤由本地服务或远端 HTTP 服务先执行，再应用工具的历史过滤和分页，total 为这些筛选后的总数。非法枚举由工具 schema 拒绝；默认敏感过滤及命名空间权限保持生效。
 
@@ -85,3 +85,5 @@ agent_status(session_id)
 用 `mnemotrace_get_episode(episode_id, space_id=null, response_format)` 读取召回结果的原文。
 默认在绑定空间读取，指定其他空间时验证同一账号对该空间的归属。
 核心任务和摘要状态各自可见，`auxiliary_operation_ids` 指向辅助任务。
+
+按事实谓词统计使用 `mnemotrace_aggregate`，指定 `count` 或 `count_distinct`。仅有原文时可给 `query` 返回候选证据。多跳使用 `mnemotrace_follow_path`，传入实体名称和 2–4 个有序的出边谓词。普通召回、统计和多跳都支持显式历史条件。

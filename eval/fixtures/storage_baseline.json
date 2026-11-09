@@ -26,7 +26,6 @@
     "preference_object_filter": true,
     "preference_object_normalization": true,
     "preference_reversal_extraction": true,
-    "llm_topics": true,
     "procedural_extraction": true,
     "max_hot_facts": 10000,
     "salience_decay_per_day": 0.02,
@@ -37,18 +36,10 @@
     "summary_max_chars": 800,
     "summary_max_input_bytes": 16384,
     "summary_max_output_tokens": 1024,
-    "evidence_planner": true,
     "evidence_budgeting": true,
-    "numeric_aggregation_candidates": true,
-    "aggregation_recall_expansion": true,
-    "aggregation_constraint_filter": true,
-    "aggregation_pool_boost": true,
     "summary_fallback": true,
     "summary_fallback_k": 6,
-    "procedural_memory": true,
-    "procedural_memory_k": 6,
     "chain_evidence": true,
-    "temporal_history_queries": true,
     "chain_current_first": true,
     "provenance_chunk_promotion": true,
     "provenance_evidence": true,
@@ -56,12 +47,7 @@
     "graph_proximity": true,
     "graph_relation_awareness": true,
     "graph_path_reinforcement": true,
-    "graph_self_anchor": true,
-    "graph_entity_alias_anchor": true,
-    "graph_negative_constraints": true,
-    "planner_location_chains": true,
-    "planner_project_chains": true,
-    "planner_llm_decomposition": true
+    "graph_self_anchor": true
   },
   "rows": [
     {
@@ -149,16 +135,15 @@
     {
       "id": "mh2",
       "category": "multi_hop",
-      "question": "What is the profession of the user's sister who moved to Seattle?",
+      "question": "What is my sister's profession?",
       "gold": "pediatrician",
       "storage": "memory",
       "ok": true,
       "answer": "pediatrician",
       "abstained": false,
-      "tokens": 10,
+      "tokens": 6,
       "fact_ids": [
         "fact-3",
-        "fact-1",
         "fact-2"
       ],
       "naive_ok": true,
@@ -205,10 +190,8 @@
       "ok": true,
       "answer": "I don't have that in memory.",
       "abstained": true,
-      "tokens": 4,
-      "fact_ids": [
-        "fact-1"
-      ],
+      "tokens": 0,
+      "fact_ids": [],
       "naive_ok": false,
       "naive_tokens": 9
     },
@@ -221,10 +204,8 @@
       "ok": true,
       "answer": "I don't have that in memory.",
       "abstained": true,
-      "tokens": 4,
-      "fact_ids": [
-        "fact-1"
-      ],
+      "tokens": 0,
+      "fact_ids": [],
       "naive_ok": false,
       "naive_tokens": 9
     }
@@ -483,7 +464,6 @@
       ],
       "ranked": [
         "fact-3",
-        "fact-1",
         "fact-2"
       ],
       "scores": [],
@@ -594,12 +574,8 @@
           ]
         }
       ],
-      "ranked": [
-        "fact-1"
-      ],
-      "scores": [
-        0.0319672131147541
-      ],
+      "ranked": [],
+      "scores": [],
       "via": "abstain"
     },
     "abs2": {
@@ -621,12 +597,8 @@
           ]
         }
       ],
-      "ranked": [
-        "fact-1"
-      ],
-      "scores": [
-        0.009016393442622951
-      ],
+      "ranked": [],
+      "scores": [],
       "via": "abstain"
     }
   },
@@ -638,6 +610,9 @@
       "orbit",
       "worked",
       "working",
+      "中",
+      "文",
+      "中文",
       "2023",
       "11"
     ],

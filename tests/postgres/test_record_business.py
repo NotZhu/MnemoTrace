@@ -44,7 +44,7 @@ def commit(memory, operation_id, records=(), **changes):
 def test_record_business_roundtrip_and_selective_updates(memory, cluster):
     accepted = memory.store_messages('chat', (message('m', agent_id='agent-1'),))
     first = memory.add_fact('Synthetic person', 'lives_in', 'Beijing', valid_at=1)
-    current = memory.add_fact('Synthetic person', 'lives_in', 'Shanghai', valid_at=2)
+    current = memory.add_fact('Synthetic person', 'lives_in', 'Shanghai', valid_at=2, cardinality='single')
     unrelated = memory.add_fact('Someone else', 'likes', 'tea')
     work = memory.remember_working('Synthetic task', 'chat')
     memory.dao._database.close()
@@ -282,7 +282,7 @@ def test_stale_conflict_cannot_invalidate_current_fact(memory):
     conflict = Conflict(current.id, old.id, user_id=memory.context.user_id)
     commit(memory, 'stale-conflict', (conflict,))
     assert [item.id for item in memory.conflicts()] == [conflict.id]
-    replacement = memory.add_fact('Synthetic person', 'lives_in', 'Shanghai', valid_at=2)
+    replacement = memory.add_fact('Synthetic person', 'lives_in', 'Shanghai', valid_at=2, cardinality='single')
     assert memory.conflicts() == ()
     with pytest.raises(VersionConflict):
         memory.resolve_conflict(conflict.id, keep='newer')

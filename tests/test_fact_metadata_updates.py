@@ -11,7 +11,7 @@ from tests.model_fixtures import MemoryEngine
 def test_metadata_update_preserves_superseded_fact(patch, resubmit_claim):
     mem = MemoryEngine()
     old = mem.add_fact("demo_user", "lives_in", "北京", valid_at=1)
-    current = mem.add_fact("demo_user", "lives_in", "上海", valid_at=2)
+    current = mem.add_fact("demo_user", "lives_in", "上海", valid_at=2, cardinality="single")
     assert not old.is_live() and current.supersedes == old.id
     temporal = (old.valid_at, old.invalid_at, old.created_at, old.expired_at, old.supersedes)
     relations = [(r.fact_id, r.valid_at, r.invalid_at) for r in mem.graph.relations()]

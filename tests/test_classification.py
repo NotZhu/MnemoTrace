@@ -1,4 +1,4 @@
-"""分类与画像分组使用语言边界，且不改变事实及独立的敏感标记。"""
+"""画像按存储的主题分组，并保留事实与独立的敏感标记。"""
 from __future__ import annotations
 from tests.model_fixtures import saved_outcome
 
@@ -12,54 +12,16 @@ from mnemotrace.consolidate.structured import build_structured_profile
 from mnemotrace.types import Fact
 
 
-@pytest.mark.parametrize(("predicate", "obj", "expected"), [
-    ("prefers", "team collaboration", "其他"),
-    ("prefers", "teamwork", "其他"),
-    ("prefers", "thread management", "其他"),
-    ("prefers", "showcase code", "其他"),
-    ("prefers", "bandwidth monitoring", "其他"),
-    ("prefers", "整理参考资料", "其他"),
-    ("prefers", "流行的编程框架", "技术"),
-    ("prefers", "保留事实和原始对话片段", "其他"),
-    ("prefers", "秘书协作", "其他"),
-    ("prefers", "课程评分", "学习"),
-    ("prefers", "tea", "饮食"),
-    ("prefers", "TEA, please!", "饮食"),
-    ("prefers", "tea2", "其他"),
-    ("prefers", "black_tea", "饮食"),
-    ("prefers", "茶", "饮食"),
-    ("prefers", "喝绿茶", "饮食"),
-    ("prefers", "奶茶", "饮食"),
-    ("prefers", "川菜", "饮食"),
-    ("prefers", "吃辣", "饮食"),
-    ("prefers", "食材", "饮食"),
-    ("prefers", "烹饪调料", "饮食"),
-    ("prefers", "cooking spicy dishes", "饮食"),
-    ("prefers", "流行音乐", "音乐"),
-    ("prefers", "pop music", "音乐"),
-    ("prefers", "songs", "音乐"),
-    ("prefers", "电影", "影视"),
-    ("prefers", "纪录片", "影视"),
-    ("prefers", "movies", "影视"),
-    ("prefers", "游泳", "运动"),
-    ("prefers", "running", "运动"),
-    ("prefers", "books", "阅读"),
-    ("prefers", "阅读小说", "阅读"),
-    ("prefers", "有游泳池的酒店", "出行"),
-    ("favorite_music", "周杰伦", "音乐"),
-    ("FAVOURITE_MOVIES", "Synthetic Title", "影视"),
-    ("favorite_movie", "Inception", "影视"),
-    ("favorite_book", "tea history", "阅读"),
-    ("likes_music", "tea", "音乐"),
-    ("prefers_quiet_environments", "music", "环境"),
-    ("allergic_to", "花生", "健康禁忌"),
-    ("allergic_to", "synthetic hotel", "健康禁忌"),
-    ("prefers", "lactose intolerance", "其他"),
-    ("prefers", "synthetic-option", "其他"),
+@pytest.mark.parametrize(("predicate", "obj", "topic", "expected"), [
+    ("prefers", "茶", None, "其他"),
+    ("favorite_music", "茶", "food", "饮食"),
+    ("prefers", "流行的编程框架", "technology", "技术"),
+    ("prefers", "课程评分", "learning", "学习"),
+    ("allergic_to", "花生", "food", "健康禁忌"),
 ])
-def test_profile_grouping_boundaries_and_predicate_precedence(predicate, obj, expected):
+def test_profile_groups_by_stored_topic_and_preserves_explicit_restrictions(predicate, obj, topic, expected):
     mem = MemoryEngine()
-    mem.add_fact("user", predicate, obj)
+    mem.add_fact("user", predicate, obj, topic=topic)
     assert list(mem.structured_profile()["preferences"]) == [expected]
 
 
@@ -73,7 +35,7 @@ def test_profile_groups_without_rewriting_fact(predicate, obj, expected):
     fact = Fact("user", predicate, obj, source="user", category="人工分类", sensitive=True,
                 provenance=["synthetic-episode"], supersedes="synthetic-previous",
                 topic="music" if predicate == "likes_music" else "unknown",
-                topic_source="rule" if predicate == "likes_music" else "unset")
+                topic_source="user" if predicate == "likes_music" else "unset")
     before = asdict(fact)
     profile = build_structured_profile([fact], "user")
     item, = profile["preferences"][expected]
@@ -108,26 +70,6 @@ def test_offline_extraction_stores_model_category():
     assert facts[0].predicate == "works_at" and facts[0].category == "工作"
 
 
-@pytest.mark.parametrize(("obj", "expected"), [
-    ("吃饭", "饮食"), ("吃外卖", "饮食"), ("点外卖", "饮食"), ("做菜", "饮食"),
-    ("早餐", "饮食"), ("午餐", "饮食"), ("晚餐", "饮食"),
-    ("早饭", "饮食"), ("午饭", "饮食"), ("晚饭", "饮食"),
-    ("菜谱", "饮食"), ("菜单", "饮食"), ("外卖", "饮食"), ("麻辣烫", "饮食"), ("乌龙茶", "饮食"),
-    ("羽毛球", "运动"), ("打羽毛球", "运动"), ("网球", "运动"), ("打网球", "运动"),
-    ("乒乓球", "运动"), ("打乒乓球", "运动"), ("排球", "运动"), ("打排球", "运动"),
-    ("看书", "阅读"), ("书店", "阅读"), ("看小说", "阅读"),
-    ("听歌", "音乐"), ("唱歌", "音乐"), ("短片", "影视"),
-    ("秘书", "其他"), ("地球仪", "其他"), ("曲线", "其他"), ("诗歌", "其他"),
-    ("照片", "其他"), ("书桌", "其他"), ("课程评分", "学习"),
-])
-def test_profile_common_chinese_expressions(obj, expected):
-    mem = MemoryEngine()
-    mem.add_fact("user", "prefers", obj)
-    profile = mem.structured_profile()
-    item, = profile["preferences"][expected]
-    assert item["item"] == obj
-
-
 @pytest.mark.parametrize("subject", ["user", "Bank of China", "Health Center", "Age Lab"])
 def test_subject_does_not_change_category_on_add_or_edit(subject):
     mem = MemoryEngine()
@@ -153,11 +95,11 @@ def test_existing_category_and_metadata_edits_do_not_reclassify():
     ("cant_eat", "peanuts", "健康禁忌", False),
     ("prefers", "喜欢过敏知识书籍", "其他", True),
     ("prefers", "allergy books", "其他", True),
-    ("prefers", "过敏", "健康", True),
+    ("prefers", "过敏", "其他", True),
     ("prefers", "lactose intolerance", "其他", False),
     ("dietary_restriction", "peanuts", "其他", False),
-    ("dietary_restriction", "seafood", "饮食", False),
-    ("favorite_allergy", "books", "阅读", True),
+    ("dietary_restriction", "seafood", "其他", False),
+    ("favorite_allergy", "books", "其他", True),
 ])
 def test_profile_restrictions_require_explicit_relation(predicate, obj, expected, sensitive):
     mem = MemoryEngine()

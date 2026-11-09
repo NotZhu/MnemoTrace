@@ -3,7 +3,7 @@ from ...config import Config
 from ...retrieve.hybrid import HybridRetriever
 from ...retrieve.lexical import BM25_B, BM25_K1, bm25_query_terms
 from ...util import recency, time_key
-from ..contracts import Candidate, CandidateBatch, FactState
+from ..contracts import Candidate, CandidateBatch
 from .graph_reads import RetrievalGraph
 from .lexical import ANALYZER
 from .records import FACT, ROW_SCOPE, SOURCE, TARGET_COLUMNS, domain, source_summary_join, timestamp
@@ -12,7 +12,7 @@ _TRACK_BOOST = 0.5
 
 
 class Corpus:
-    def __init__(self, view, query, kind, *, source_field=None, excluded=(), excluded_names=()):
+    def __init__(self, view, query, kind, *, source_field=None, start=None, end=None):
         self.sql = view._sql
         self.query = query
         self.kind = kind
@@ -28,10 +28,7 @@ class Corpus:
                 salience += f' + CASE WHEN {view.focus_matches("r.text")} THEN %s ELSE 0 END'
                 join_params = (list(view.track_terms), _TRACK_BOOST)
             select = f"""SELECT r.user_id,r.space_id,r.id,r.content_version,
-                'text' AS field,r.content_version AS text_version,r.valid_at,{salience} AS salience,
-                coalesce(r.subject_key,lower(r.subject)) AS subject_key,
-                coalesce(r.predicate_key,lower(r.predicate)) AS predicate_key,
-                r.object,r.source,r.created_at
+                'text' AS field,r.content_version AS text_version,r.valid_at,{salience} AS salience
                 FROM mnemotrace.facts r"""
         else:
             conditions, params = ["r.scope <> 'working'"], []
@@ -39,6 +36,12 @@ class Corpus:
                 if value is not None:
                     conditions.append(f'r.{column} <= %s')
                     params.append(timestamp(value))
+            if start is not None:
+                conditions.append('r.event_time >= %s')
+                params.append(timestamp(start))
+            if end is not None:
+                conditions.append('r.event_time < %s')
+                params.append(timestamp(end))
             joins, join_params = source_summary_join(facts.known_at)
             select = """SELECT r.user_id,r.space_id,r.id,r.content_version,r.session_id,
                 CASE WHEN s.summary <> '' THEN 'summary' ELSE 'text' END AS field,
@@ -51,29 +54,8 @@ class Corpus:
             view.exclude_muted(conditions, params, 'r.content', "coalesce(s.summary, '')")
         self.source_field = source_field
         scoped = select + ' WHERE ' + ' AND '.join((ROW_SCOPE, *conditions))
-        self.eligible, self.params = self._eligibility(
-            scoped, (*join_params, *self.sql.scope, *params), excluded, excluded_names,
-        )
-
-    def _eligibility(self, scoped, params, excluded, excluded_names):
-        if self.kind != FACT or (self.query.facts.state != FactState.CURRENT and not excluded):
-            return f'WITH eligible AS ({scoped})', params
-        statement = f'WITH fact_scope AS ({scoped})'
-        eligible = 'fact_scope'
-        if not excluded:
-            return statement + f', eligible AS (SELECT * FROM {eligible})', params
-        statement += f""", eligible AS (
-            SELECT * FROM {eligible} x WHERE NOT EXISTS (
-                SELECT 1 FROM mnemotrace.graph_relations g
-                WHERE (g.user_id,g.space_id,g.fact_id) = (x.user_id,x.space_id,x.id)
-                AND (g.subject_id = ANY(%s) OR g.object_id = ANY(%s))
-            ) AND NOT EXISTS (SELECT 1 FROM mnemotrace.entities ent
-                WHERE (ent.user_id,ent.space_id) = (x.user_id,x.space_id)
-                AND ent.id = ANY(%s) AND ent.normalized_name IN (x.subject_key,lower(x.object)))
-            AND NOT (x.subject_key = ANY(%s) OR lower(x.object) = ANY(%s))
-        )"""
-        ids, names = sorted(excluded), sorted(excluded_names)
-        return statement, (*params, ids, ids, ids, names, names)
+        self.eligible = f'WITH eligible AS ({scoped})'
+        self.params = (*join_params, *self.sql.scope, *params)
 
     def vector_scores(self, *, ids=None):
         statement = self._vector_statement(ids)
@@ -225,8 +207,7 @@ def fact_candidates(view, query, config=None, graph=None):
     graph = graph if graph is not None else RetrievalGraph(view, query)
     retriever = HybridRetriever(None, graph, None, config)
     account = view.snapshot.context.user_id
-    excluded = graph.exclude(retriever.graph_excluded_entity_ids(query.text, account))
-    corpus = Corpus(view, query, FACT, excluded=excluded, excluded_names=graph.excluded_names())
+    corpus = Corpus(view, query, FACT)
     semantic, lexical = corpus.vector_scores(), corpus.lexical_scores()
     ids = set(semantic) | set(lexical) | set(corpus.scalar_candidates())
     if config.graph_proximity:
@@ -248,8 +229,6 @@ def fact_candidates(view, query, config=None, graph=None):
                 frontier = set(sorted(frontier)[:query.facts.limit])
     records = {record.ref.record_id: record for record in view.facts_by_ids(sorted(ids), query.facts)}
     facts = list(map(domain, records.values()))
-    if excluded:
-        facts = [fact for fact in facts if not retriever._fact_touches_entities(fact, excluded)]
     graph_scores, _ = retriever._graph_scores(query.text, account, facts, None)
     missing_sem = [fact.id for fact in facts if fact.id not in semantic]
     missing_lex = [fact.id for fact in facts if fact.id not in lexical]

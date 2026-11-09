@@ -73,13 +73,19 @@ class ReadView:
         if query.known_at is not None:
             clauses.append('r.created_at <= %s')
             args.append(known)
-        if query.state == FactState.CURRENT:
-            clauses.append('(r.invalid_at IS NULL OR r.invalid_at > %s) '
-                           'AND (r.expired_at IS NULL OR r.expired_at > %s)')
-            args.extend((valid, known))
-        elif query.state == FactState.HISTORY:
-            clauses.append('((r.invalid_at IS NOT NULL AND r.invalid_at <= %s) '
-                           'OR (r.expired_at IS NOT NULL AND r.expired_at <= %s))')
+        if query.state != FactState.ALL:
+            ended = '((r.invalid_at IS NOT NULL AND r.invalid_at <= %s) ' \
+                    'OR (r.expired_at IS NOT NULL AND r.expired_at <= %s))'
+            if query.known_at is not None:
+                # The first revision after the cutoff records the interval visible at the cutoff.
+                ended = f"""coalesce((SELECT
+                    (item->>'invalid_at' IS NOT NULL AND (item->>'invalid_at')::double precision <= %s)
+                    OR (item->>'expired_at' IS NOT NULL AND (item->>'expired_at')::double precision <= %s)
+                    FROM jsonb_array_elements(r.validity_revisions) WITH ORDINALITY AS revision(item, position)
+                    WHERE (item->>'changed_at')::double precision > %s
+                    ORDER BY position LIMIT 1), {ended})"""
+                args.extend((valid.timestamp(), known.timestamp(), known.timestamp()))
+            clauses.append(f'NOT {ended}' if query.state == FactState.CURRENT else ended)
             args.extend((valid, known))
         for name in ('category', 'subject', 'predicate'):
             value = getattr(query, name)
@@ -105,6 +111,17 @@ class ReadView:
         clauses, args = self._fact_conditions(query)
         page(clauses, args, query.after_id, query.limit)
         return self._sql.select(FACT, clauses, args, limit=query.limit)
+
+    def aggregation_facts(self, query, start, end, *, after_id=None):
+        clauses, args = self._fact_conditions(query)
+        if start is not None:
+            clauses.append('r.valid_at >= %s')
+            args.append(timestamp(start))
+        if end is not None:
+            clauses.append('r.valid_at < %s')
+            args.append(timestamp(end))
+        page(clauses, args, after_id, 1000)
+        return self._sql.select(FACT, clauses, args, limit=1000)
 
     def profile_facts(self, aliases, *, page_size=100):
         after_id = None
@@ -275,7 +292,7 @@ class ReadView:
     def relations(self, fact_id):
         return self._sql.select(RELATION, ('r.fact_id = %s',), (fact_id,))
 
-    def graph_edges(self, entity_ids, query, *, direction='both', predicates=(), excluded=(), limit=None):
+    def graph_edges(self, entity_ids, query, *, direction='both', predicates=(), limit=None):
         endpoints = {'out': 'g.subject_id = ANY(%s)', 'in': 'g.object_id = ANY(%s)',
                      'both': '(g.subject_id = ANY(%s) OR g.object_id = ANY(%s))'}
         if direction not in endpoints:
@@ -286,9 +303,6 @@ class ReadView:
         if predicates:
             clauses.append('lower(g.predicate) = ANY(%s)')
             args.append(list(predicates))
-        if excluded:
-            clauses.append('NOT (g.subject_id = ANY(%s) OR g.object_id = ANY(%s))')
-            args.extend((list(excluded), list(excluded)))
         where = ' AND '.join((ROW_SCOPE, endpoints[direction], *clauses))
         params = (*self._sql.scope, *((list(entity_ids),) * (2 if direction == 'both' else 1)), *args)
         rows = self._sql.rows(f"""SELECT g.* FROM mnemotrace.graph_relations g JOIN mnemotrace.facts r
@@ -385,10 +399,15 @@ class ReadView:
         return self._sql.run(f'SELECT count(*) FROM mnemotrace.{table} WHERE {where}',
                              (*self._sql.scope, *args)).fetchone()[0]
 
-    def full_context_tokens(self, as_of):
+    def full_context_tokens(self, query: FactQuery):
+        clauses = [SCOPE]
+        args = list(self._sql.scope)
+        for column, cutoff in (('event_time', query.valid_at), ('ingested_at', query.known_at)):
+            if cutoff is not None:
+                clauses.append(f'{column} <= %s')
+                args.append(timestamp(cutoff))
         row = self._sql.run(f"""SELECT coalesce(sum((octet_length(convert_to(content, 'UTF8')) + 3) / 4), 0)
-            FROM mnemotrace.sources WHERE {SCOPE} AND (%s OR event_time <= %s)""",
-            (*self._sql.scope, as_of is None, timestamp(as_of))).fetchone()
+            FROM mnemotrace.sources WHERE {' AND '.join(clauses)}""", args).fetchone()
         return row[0]
 
     def agent_feed(self):

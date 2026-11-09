@@ -2,7 +2,6 @@
 from __future__ import annotations
 import math
 from ..util import DAY
-from .decay import is_durable
 from .graph_builder import GraphBuilder
 from .preferences import EXPLICIT_PREFERENCE_PREDS, is_preference_reversal_fact, is_specific_preference_object, preference_topic_object
 _PROCEDURAL_EXTRACTED_PREDS = {"procedure", "how_to", "routine", "instruction", "agent_instruction"}
@@ -39,7 +38,7 @@ class FactWriter:
             return
         now_t = max(f.valid_at for f in live)  # 已知的最晚世界时间 = 该 store 的"现在"
         for f in live:
-            if is_durable(f.predicate) or f.access_count > 0:
+            if f.retention == "durable" or f.access_count > 0:
                 continue  # 用户是谁/喜欢什么，以及已被使用过的内容，不淡出
             days = max(0.0, (now_t - f.valid_at) / DAY)
             f.salience = max(0.3, math.exp(-self.config.salience_decay_per_day * days))

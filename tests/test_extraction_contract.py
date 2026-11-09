@@ -30,6 +30,8 @@ class FakeLLM(NativeFakeLLM):
                     row.setdefault('sensitive', False)
                     row.setdefault('time_kind', 'current')
                     row.setdefault('effective_date', None)
+                    row.setdefault('cardinality', 'unknown')
+                    row.setdefault('retention', 'unknown')
                     row.setdefault('text', f"{row['subject']} {row['predicate']} {row['object']}")
         out['summaries'] = []
         return Completion(json.dumps(out), completion.finish_reason, completion.usage)

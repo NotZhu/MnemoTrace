@@ -69,12 +69,6 @@ def _chain_context(enabled: bool) -> str:
     )
 
 
-def _temporal_history_context(enabled: bool) -> str:
-    mem = _memory(config=Config(temporal_history_queries=enabled))
-    mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
-    res = mem.search("Where did Wei work before Moonshot AI?", user_id="u1")
-    return res.answer()
 
 
 def _summary_fallback_context(enabled: bool) -> str:
@@ -91,34 +85,6 @@ def _summary_fallback_context(enabled: bool) -> str:
     return f"{res.via}\n{res.answer()}"
 
 
-def _procedural_memory_context(enabled: bool) -> str:
-    mem = _memory(config=Config(procedural_memory=enabled, abstain_threshold=2.0))
-    ep = mem.add(
-        "PAT runbook source: rotate the PAT by opening security settings, regenerating the token, "
-        "then updating CI secrets.",
-        user_id="u1",
-        session_id="pat-runbook",
-        event_time=BASE,
-    )
-    fact = Fact(
-        subject="PAT",
-        predicate="procedure",
-        object="open security settings, regenerate the token, then update CI secrets",
-        user_id="u1",
-        valid_at=BASE,
-        provenance=[ep.id],
-    )
-    mem.fact_store.upsert(fact.id, fact.embedding, fact)
-    ctx = mem.lean_context(
-        "What is the PAT runbook?",
-        user_id="u1",
-        persona=False,
-        n_summaries=0,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-    res = mem.search("What is the PAT runbook?", user_id="u1")
-    return f"{ctx}\n\nSEARCH {res.via}\n{res.answer()}"
 
 
 def _procedural_extraction_context(enabled: bool) -> str:
@@ -234,84 +200,14 @@ def _preference_reversal_extraction_context(enabled: bool) -> str:
     return f"FACTS={json.dumps(facts, ensure_ascii=False, sort_keys=True)}\n\n{ctx}"
 
 
-def _numeric_aggregation_candidates_context(enabled: bool) -> str:
-    mem = _memory(config=Config(numeric_aggregation_candidates=enabled))
-    mem.add(
-        "I attended a mindfulness workshop. I paid $20 to attend.",
-        user_id="u1",
-        session_id="workshop-mindfulness",
-        event_time=BASE,
-    )
-    mem.add(
-        "I attended a writing workshop at a festival. I paid $200 to attend.",
-        user_id="u1",
-        session_id="workshop-writing",
-        event_time=BASE + DAY,
-    )
-    mem.add(
-        "I attended a digital marketing workshop. I paid $500 to attend.",
-        user_id="u1",
-        session_id="workshop-marketing",
-        event_time=BASE + 2 * DAY,
-    )
-    return mem.lean_context(
-        "How much total money did I spend on attending workshops?",
-        user_id="u1",
-        persona=False,
-        n_facts=0,
-        n_summaries=0,
-        n_chunks=0,
-        char_budget=20_000,
-    )
 
 
-def _aggregation_recall_expansion_context(enabled: bool) -> str:
-    from mnemotrace.retrieve.evidence import plan_evidence
-
-    need = plan_evidence(
-        "How many hours of jogging and yoga did I do last week?",
-        aggregation_recall_expansion=enabled,
-    )
-    return json.dumps(
-        {
-            "aggregation": need.aggregation,
-            "subqueries": need.subqueries,
-            "has_workout": "workout" in need.subqueries,
-            "has_track_workouts": "track workouts" in need.subqueries,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-    )
 
 
-def _aggregation_constraint_filter_context(enabled: bool) -> str:
-    mem = _memory(config=Config(aggregation_constraint_filter=enabled))
-    mem.add(
-        'I just finished a 416-page novel, but before that, I read "The Power" '
-        "by Naomi Alderman in December, which had 341 pages.",
-        user_id="u1",
-        session_id="books-jan",
-        event_time=BASE,
-    )
-    mem.add(
-        'I just finished "The Nightingale" by Kristin Hannah, which had 440 pages.',
-        user_id="u1",
-        session_id="books-mar",
-        event_time=BASE + DAY,
-    )
-    return mem.lean_context(
-        "What was the page count of the two novels I finished in January and March?",
-        user_id="u1",
-        persona=False,
-        n_facts=0,
-        n_summaries=0,
-        n_chunks=0,
-        char_budget=20_000,
-    )
 
 
 def _raw_context(enabled: bool) -> str:
-    mem = _memory(config=Config(evidence_planner=False, provenance_evidence=enabled))
+    mem = _memory(config=Config(provenance_evidence=enabled))
     ep = mem.add(
         "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
         user_id="u1",
@@ -339,7 +235,6 @@ def _raw_context(enabled: bool) -> str:
 def _provenance_chunk_context(enabled: bool) -> str:
     mem = _memory(
         config=Config(
-            evidence_planner=False,
             provenance_evidence=False,
             provenance_chunk_promotion=enabled,
         )
@@ -478,36 +373,12 @@ def _graph_self_anchor_context(enabled: bool) -> str:
     return mem.context_for("Where is my project based?", user_id="u1", k_chunks=0, graph=True)
 
 
-def _graph_entity_alias_context(enabled: bool) -> str:
-    mem = _memory(config=Config(graph_entity_alias_anchor=enabled))
-    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE)
-    return mem.context_for("Where is Moonshot based?", user_id="u1", k_chunks=0, graph=True)
 
 
-def _graph_negative_context(enabled: bool) -> str:
-    mem = _memory(config=Config(graph_negative_constraints=enabled))
-    mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "works_on", "Zephyr", user_id="u1", valid_at=BASE + DAY)
-    mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 2 * DAY)
-    mem.add_fact("Zephyr", "based_in", "Lisbon", user_id="u1", valid_at=BASE + 3 * DAY)
-    return mem.context_for("Where is Wei's project not in Lisbon based?", user_id="u1", k_chunks=0, graph=True)
 
 
-def _planner_location_context(enabled: bool) -> str:
-    mem = _memory(config=Config(planner_location_chains=enabled))
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
-    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
-    res = mem.search("Where is Wei's colleague's company based?", user_id="u1")
-    return res.answer()
 
 
-def _planner_project_context(enabled: bool) -> str:
-    mem = _memory(config=Config(planner_project_chains=enabled))
-    mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE)
-    mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY)
-    res = mem.search("Where is Wei's project based?", user_id="u1")
-    return res.answer()
 
 
 def _contains(marker: str, target: str):
@@ -531,27 +402,10 @@ def _run_ablation() -> tuple[list[AblationResult], dict]:
             "Tencent",
         ),
         (
-            "temporal_history_queries",
-            _temporal_history_context,
-            lambda answer: "Tencent" in answer,
-            "natural-language previous-value query reads supersession history",
-        ),
-        (
             "summary_fallback",
             _summary_fallback_context,
             lambda answer: "summary" in answer and "security settings" in answer and "pat-runbook" in answer,
             "derived session summary answers fact-miss how-to query",
-        ),
-        (
-            "procedural_memory",
-            _procedural_memory_context,
-            lambda ctx: (
-                "PROCEDURAL MEMORY" in ctx
-                and "security settings" in ctx
-                and "sessions: pat-runbook" in ctx
-                and "SEARCH procedural" in ctx
-            ),
-            "typed procedural memory surfaces source-backed runbook",
         ),
         (
             "procedural_extraction",
@@ -600,34 +454,6 @@ def _run_ablation() -> tuple[list[AblationResult], dict]:
             "high-confidence reversal phrase invalidates the old preference",
         ),
         (
-            "numeric_aggregation_candidates",
-            _numeric_aggregation_candidates_context,
-            lambda ctx: (
-                "AGGREGATION CANDIDATES" in ctx
-                and "$20 workshop" in ctx
-                and "$200 workshop" in ctx
-                and "$500 workshop" in ctx
-                and "value | unit" in ctx
-            ),
-            "deterministic numeric candidates expose money rows for sum questions",
-        ),
-        (
-            "aggregation_recall_expansion",
-            _aggregation_recall_expansion_context,
-            lambda ctx: '"has_workout": true' in ctx and '"has_track_workouts": true' in ctx,
-            "aggregation planner adds high-recall activity subqueries",
-        ),
-        (
-            "aggregation_constraint_filter",
-            _aggregation_constraint_filter_context,
-            lambda ctx: (
-                "416-page novel" in ctx
-                and "440 pages novel" in ctx
-                and "EXCLUDE (local month december" in ctx
-            ),
-            "aggregation candidates exclude numeric values tied to conflicting local month constraints",
-        ),
-        (
             "provenance_evidence",
             _raw_context,
             _contains("PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):", "blue binder"),
@@ -674,30 +500,6 @@ def _run_ablation() -> tuple[list[AblationResult], dict]:
             _graph_self_anchor_context,
             _contains("RELATED FACTS (graph traversal):", "Atlas based in Reykjavik"),
             "first-person query anchors to user graph node",
-        ),
-        (
-            "graph_entity_alias_anchor",
-            _graph_entity_alias_context,
-            _contains("RELATED FACTS (graph traversal):", "Moonshot AI based in Beijing"),
-            "unique short name anchors to full graph entity",
-        ),
-        (
-            "graph_negative_constraints",
-            _graph_negative_context,
-            lambda ctx: "Atlas based in Reykjavik" in ctx and "Zephyr based in Lisbon" not in ctx,
-            "negative query constraint filters excluded graph path",
-        ),
-        (
-            "planner_location_chains",
-            _planner_location_context,
-            lambda answer: "Beijing" in answer,
-            "multi-hop planner reaches company location",
-        ),
-        (
-            "planner_project_chains",
-            _planner_project_context,
-            lambda answer: "Reykjavik" in answer,
-            "multi-hop planner reaches project location",
         ),
     ]
     rows: list[AblationResult] = []

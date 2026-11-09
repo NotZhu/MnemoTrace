@@ -25,7 +25,8 @@ from mnemotrace.store.postgres.migrate import _roles
 from mnemotrace.store.postgres.reads import ReadView
 from mnemotrace.store.postgres.records import FACT, domain, timestamp
 from mnemotrace.store.postgres.retrieval import Corpus
-from mnemotrace.util import DAY, stems
+from mnemotrace.retrieve.lexical import lexical_terms
+from mnemotrace.util import DAY
 
 INDEX = 'phase5_experiment_hnsw'
 
@@ -72,7 +73,11 @@ def quality(factory, out, *, processing='immediate'):
             # together. Compare on valid time here; known-at is covered separately.
             conditions = FactQuery(valid_at=when)
             start = time.perf_counter()
-            result = memory.search(item.question, facts=conditions)
+            if item.path:
+                anchor = 'user' if item.path[0] == item.id else item.path[0]
+                result = harness.path_answer(item, memory.follow_path(anchor, item.path[1:], facts=conditions))
+            else:
+                result = memory.search(item.question, facts=conditions)
             elapsed = 1000 * (time.perf_counter() - start)
             request = memory._query(item.question, facts=conditions, top_k=memory._config.top_k)
             with memory.dao.read_snapshot() as view:
@@ -86,7 +91,7 @@ def quality(factory, out, *, processing='immediate'):
                         storage=storage, ok=result.abstained if item.answer is None else (
                             not result.abstained and harness._contains(answer, item.answer)),
                         answer=answer, abstained=result.abstained, latency_ms=elapsed,
-                        tokens=len(stems(' '.join(fact.text for fact in result.facts))), via=result.via,
+                        tokens=len(lexical_terms(' '.join(fact.text for fact in result.facts))), via=result.via,
                         fact_ids=[fact.id for fact in result.facts], ranked=ranked, candidates=candidates,
                         limitations=result.limitations)
 
@@ -137,10 +142,10 @@ def _load_workload(bundle, manifest, case):
                                 row['filter_bucket'], vector))
         conn.execute('INSERT INTO workload.filters SELECT user_id,space_id,id,bucket FROM input')
         conn.execute("""INSERT INTO mnemotrace.facts (user_id,space_id,id,subject,predicate,object,text,display,
-            salience,confidence,source,category,sensitive,topic,topic_source,source_roles,
+            salience,confidence,source,category,sensitive,topic,topic_source,cardinality,retention,source_roles,
             valid_at,invalid_at,created_at,last_access,access_count,record_version,content_version)
             SELECT user_id,space_id,id,subject,predicate,object,body,body,1,1,'user','state',false,
-                   'unknown','unset','{}',valid_at,invalid_at,valid_at,valid_at,0,1,1 FROM input""")
+                   'unknown','unset','unknown','unknown','{}',valid_at,invalid_at,valid_at,valid_at,0,1,1 FROM input""")
         conn.execute("""INSERT INTO mnemotrace.embeddings(user_id,space_id,fact_id,target_kind,field,
             content_version,model,dimension,vector)
             SELECT user_id,space_id,id,'Fact','text',1,%s,%s,vector FROM input""",

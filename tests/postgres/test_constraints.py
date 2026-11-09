@@ -9,6 +9,8 @@ from mnemotrace.store.postgres.errors import DatabaseConstraintError
 
 def fact(conn, user, space, record_id='fact-1', **changes):
     from psycopg import sql
+    from psycopg.types.json import Jsonb
+
     fields = asdict(Fact('Synthetic user', 'likes', 'tea', id=record_id))
     for key in ('embedding', 'provenance', 'user_id'):
         fields.pop(key)
@@ -16,6 +18,7 @@ def fact(conn, user, space, record_id='fact-1', **changes):
     for key in ('valid_at', 'invalid_at', 'created_at', 'expired_at', 'last_access'):
         if fields[key] is not None:
             fields[key] = datetime.fromtimestamp(fields[key], timezone.utc)
+    fields["validity_revisions"] = Jsonb(fields["validity_revisions"])
     conn.execute(sql.SQL('INSERT INTO mnemotrace.facts ({}) VALUES ({})').format(
         sql.SQL(',').join(map(sql.Identifier, fields)),
         sql.SQL(',').join(sql.Placeholder() for _ in fields)), tuple(fields.values()))

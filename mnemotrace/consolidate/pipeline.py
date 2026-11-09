@@ -73,7 +73,7 @@ def config_identity(mem, *, include_embedding=True):
     # Stable across restarts; runtime provider object identity is checked separately.
     options = {k: v for k, v in asdict(mem.config).items()
                if k.startswith(('extraction_', 'joint_', 'summary_')) or k in {
-                   'llm_topics', 'explicit_preference_extraction', 'preference_object_filter',
+                   'explicit_preference_extraction', 'preference_object_filter',
                    'preference_object_normalization', 'preference_reversal_extraction',
                    'procedural_extraction',
                    'conflict_sim_threshold', 'max_hot_facts', 'salience_decay_per_day'}}

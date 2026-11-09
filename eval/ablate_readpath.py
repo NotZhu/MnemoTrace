@@ -39,25 +39,13 @@ from eval.longmemeval import ingest, load_data  # noqa: E402
 # mnemotrace_config() 能关掉的每一个 read-path 开关，按主题分组，让报告读起来是一个个主题，
 # 而不是 25 个不分青红皂白的布尔值。
 FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
-    "graph / multi-hop": (
-        "graph_proximity", "graph_relation_awareness", "graph_path_reinforcement",
-        "graph_self_anchor", "graph_entity_alias_anchor", "graph_negative_constraints",
-        "planner_location_chains", "planner_project_chains", "planner_llm_decomposition",
-    ),
-    "evidence planning": ("evidence_planner", "evidence_budgeting"),
-    "temporal / chains": (
-        "chain_evidence", "temporal_history_queries",
-        "provenance_chunk_promotion", "provenance_evidence",
-    ),
+    "graph": ("graph_proximity", "graph_relation_awareness", "graph_path_reinforcement", "graph_self_anchor"),
+    "evidence": ("evidence_budgeting", "chain_evidence", "provenance_chunk_promotion", "provenance_evidence"),
     "preference extraction": (
         "explicit_preference_extraction", "preference_object_filter",
         "preference_object_normalization", "preference_reversal_extraction",
     ),
-    "aggregation": (
-        "numeric_aggregation_candidates", "aggregation_recall_expansion",
-        "aggregation_constraint_filter",
-    ),
-    "derived layers": ("summary_fallback", "procedural_memory", "procedural_extraction"),
+    "derived layers": ("summary_fallback", "procedural_extraction"),
 }
 ALL_FEATURES = tuple(f for group in FEATURE_GROUPS.values() for f in group)
 

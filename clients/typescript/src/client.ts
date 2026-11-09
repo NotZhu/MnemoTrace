@@ -20,6 +20,10 @@ import type {
   AgentStatus,
   Fact,
   FactInput,
+  AggregateFactsOptions,
+  AggregateFactsResult,
+  FollowPathResult,
+  StructuredReadOptions,
   FactPatch,
   TopicMetadata,
   ForgetOptions,
@@ -228,10 +232,11 @@ export class MnemoTraceClient {
 
   recall(query: string, options: ({ spaceId: string; spaceIds?: never } | { spaceIds: string[]; spaceId?: never }) & {
     nChunks?: number; sessionId?: string; asOf?: number; redactSensitive?: boolean
+    state?: StructuredReadOptions["state"]; validAt?: number; knownAt?: number
   }): Promise<RecallResult> {
     return this.post('/v1/recall', {
       query, lean: true, n_chunks: options.nChunks, session_id: options.sessionId,
-      as_of: options.asOf, redact_sensitive: options.redactSensitive, space_ids: options.spaceIds,
+      as_of: options.asOf, state: options.state, valid_at: options.validAt, known_at: options.knownAt, redact_sensitive: options.redactSensitive, space_ids: options.spaceIds,
     }, options.spaceId)
   }
 
@@ -260,12 +265,24 @@ export class MnemoTraceClient {
     return this.request<SessionIndex>(`/v1/sessions${qs ? `?${qs}` : ''}`, {}, options.spaceId)
   }
 
+  aggregateFacts(predicate: string, options: SpaceOptions & AggregateFactsOptions): Promise<AggregateFactsResult> {
+    const { spaceId, ...filters } = options
+    return this.post('/v1/aggregate', { predicate, ...filters }, spaceId)
+  }
+
+  followPath(anchor: string, predicates: string[], options: SpaceOptions & StructuredReadOptions): Promise<FollowPathResult> {
+    const { spaceId, ...filters } = options
+    return this.post('/v1/follow-path', { anchor, predicates, ...filters }, spaceId)
+  }
+
   /** 直接回答单个事实性问题（记忆中没有答案时选择拒答）。 */
-  search(query: string, options: SpaceOptions & { asOf?: number; redactSensitive?: boolean }): Promise<SearchResult> {
+  search(query: string, options: SpaceOptions & { asOf?: number; redactSensitive?: boolean;
+    state?: StructuredReadOptions["state"]; validAt?: number; knownAt?: number }): Promise<SearchResult> {
     return this.post<SearchResult>('/v1/recall', {
       query,
       lean: false,
       as_of: options.asOf ?? null,
+      state: options.state, valid_at: options.validAt, known_at: options.knownAt,
       redact_sensitive: options.redactSensitive ?? false,
     }, options.spaceId)
   }
@@ -310,11 +327,11 @@ export class MnemoTraceClient {
 
   // --- 可编辑的事实 ----------------------------------------------------------
   /** 断言一条权威事实（用户来源；绝不会被静默覆盖）。 */
-  addFact(fact: FactInput, options: SpaceOptions): Promise<{ ok: boolean; id: string; text: string } & TopicMetadata> {
+  addFact(fact: FactInput, options: SpaceOptions): Promise<{ ok: boolean; id: string; text: string } & TopicMetadata & Pick<Fact, "cardinality" | "retention">> {
     return this.post('/v1/facts', { subject: 'user', ...fact }, options.spaceId)
   }
 
-  updateFact(id: string, patch: FactPatch, options: SpaceOptions): Promise<{ ok: boolean; id: string; text: string } & TopicMetadata> {
+  updateFact(id: string, patch: FactPatch, options: SpaceOptions): Promise<{ ok: boolean; id: string; text: string } & TopicMetadata & Pick<Fact, "cardinality" | "retention">> {
     return this.request(`/v1/facts/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),

@@ -226,11 +226,9 @@ def test_to_colon_howto_extracts_procedural_fact():
     )
     mem.consolidate()
 
-    res = mem.search("How do I rotate the PAT?", user_id="u1")
-
-    assert res.via == "procedural"
-    assert "security settings" in res.answer()
-    assert "sessions: pat-runbook" in res.answer()
+    fact, = mem.procedural("u1")
+    assert "security settings" in fact.object
+    assert fact.provenance
 
 
 def test_short_project_rule_context_preserves_key_constraint():
@@ -282,9 +280,8 @@ def test_bitemporal_as_of_query():
 
 def test_multi_hop_reasoning():
     mem = build()
-    r = mem.search("Where does Wei's colleague work?", user_id="u1")
-    assert r.via == "multi-hop"
-    assert "moonshot" in r.answer().lower()
+    path, = mem.follow_path("Wei", ["colleague", "works_at"], user_id="u1").paths
+    assert "moonshot" in path.endpoint.lower()
 
 
 def test_family_profession_multi_session_reasoning():
@@ -300,9 +297,8 @@ def test_family_profession_multi_session_reasoning():
     assert ("Maya", "occupation", "pediatrician") in facts
     assert ("Maya", "lives_in", "Seattle") in facts
 
-    r = mem.search("What is the profession of the user's sister who moved to Seattle?", user_id="u1")
-    assert r.via == "multi-hop"
-    assert "pediatrician" in r.answer().lower()
+    path, = mem.follow_path("u1", ["sister", "occupation"], user_id="u1").paths
+    assert path.endpoint == "pediatrician"
 
 
 def test_multiple_family_relations_accumulate_and_disambiguate():
@@ -315,14 +311,10 @@ def test_multiple_family_relations_accumulate_and_disambiguate():
     sisters = [f for f in mem.history("u1", "sister", user_id="u1") if f.is_live()]
     assert {f.object for f in sisters} == {"Anna", "Maya"}
 
-    r = mem.search("What is the profession of the user's sister who moved to Seattle?", user_id="u1")
-    assert r.via == "multi-hop"
-    assert "pediatrician" in r.answer().lower()
-    evidence = {f.text for f in r.facts}
-    assert "u1 sister Maya" in evidence
-    assert "Maya lives in Seattle" in evidence
-    assert "Maya occupation pediatrician" in evidence
-    assert "u1 sister Anna" not in evidence
+    paths = mem.follow_path("u1", ["sister", "occupation"], user_id="u1").paths
+    assert {path.endpoint: path.facts[0].object for path in paths} == {
+        "lawyer": "Anna", "pediatrician": "Maya",
+    }
 
 
 def test_abstention_unknown_attribute():
@@ -519,7 +511,7 @@ def test_assistant_small_talk_is_not_profile_occupation():
 def test_stemmer_aligns_inflections_for_lexical_retrieval():
     """BM25 lexical 打分器使用英文词干。复数以及 -y/-ies 的形态
     必须归约到共同的词干，否则 lexical 检索会静默漏掉匹配。"""
-    from mnemotrace.util import stem, stems
+    from mnemotrace.retrieve.lexical import lexical_terms, stem
 
     assert stem("works") == stem("work")
     assert stem("colleagues") == stem("colleague")
@@ -535,6 +527,6 @@ def test_stemmer_aligns_inflections_for_lexical_retrieval():
     assert stem("lies") == stem("lie")
     assert stem("dies") == stem("die")
 
-    # Sanity 检查：stems() 把同一规则应用到自由格式的查询上
-    q_stems = set(stems("Which cities did Wei study in?"))
+    # Sanity 检查：lexical_terms() 把同一规则应用到自由格式的查询上
+    q_stems = set(lexical_terms("Which cities did Wei study in?"))
     assert "city" in q_stems and "studi" not in q_stems  # 只有 -ies 规则失效时才会出现 studi

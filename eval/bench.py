@@ -34,7 +34,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mnemotrace import Config, MemoryEngine  # noqa: E402
 from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm, make_reranker  # noqa: E402
-from mnemotrace.util import stems  # noqa: E402
 from eval.longmemeval import (  # noqa: E402
     ANSWER_SYSTEM,
     ANSWER_TEMPLATE,
@@ -55,72 +54,6 @@ from eval.longmemeval import (  # noqa: E402
     needs_two_stage_pref,
     sessions_of,
 )
-from mnemotrace.retrieve.evidence import plan_evidence  # noqa: E402
-
-
-def retrieve_evidence_episodes(mem: MemoryEngine, query: str, user_id: str, limit: int, use_planner: bool = True):
-    """用与 lean_context 相同的 evidence-shape 扩展来检索会话，供预整合使用。
-
-    lean 读取路径之后可以用子查询检索原始 chunk，但 L1 facts 和 L2 摘要只对预先整合过的会话存在。
-    多跳问题命中的那些子查询会话也必须进入整合池，否则图里恰好缺少读取路径想要走的那几条边。
-    """
-    if limit <= 0:
-        return []
-    need = (
-        plan_evidence(
-            query,
-            aggregation_recall_expansion=getattr(
-                getattr(mem, "config", None),
-                "aggregation_recall_expansion",
-                True,
-            ),
-        )
-        if use_planner
-        else None
-    )
-    subqueries = sorted((need.subqueries if need is not None else ()), key=lambda q: (-len(stems(q)), q))
-    # 每个子查询保证一个席位，其余名额全部留给主查询。旧的等权交错排列会让单个弱子查询
-    # （"occupation"）吃掉半个池子，挤掉主查询的中段命中（曾有一个金标准会话排在主查询第 6 位，
-    # 却被 8 席的池子挤掉）—— 与 provenance-promotion bug 的"挤掉主信号"形态相同，只是低一层。
-    # 多跳仍然可用：每个跳的子查询都占住自己的最佳命中（小 limit 时子查询命中恰好就是答案的两半）。
-    # planner 的子查询很少（<=3），在现实的 limit 下这些保底席位不至于挤掉主查询。
-    # 聚合类问题（"how many..."、"list all..."）只要漏掉一次出现就答错，而出现位置天然分散在多个
-    # 会话里 —— 按指向性问题规模设的池子会系统性截断它们（曾观察到航空公司清单只答出 3/4）。
-    # 只对这类问题扩大池子，而不是为每个问题都付出额外的抽取成本。
-    if (need is not None and getattr(need, "aggregation", False)
-            and getattr(getattr(mem, "config", None), "aggregation_pool_boost", True)):
-        limit = limit * 2
-
-    main_eps = mem.retrieve_episodes(query, user_id, limit)
-    if not subqueries:
-        return main_eps[:limit]
-    per_sub = [mem.retrieve_episodes(q, user_id, 2) for q in subqueries]
-    out: list = []
-    seen: set[str] = set()
-    for eps in per_sub:  # 保底席位：每个子查询尚未入选的最佳命中
-        for ep in eps:
-            if ep.id not in seen:
-                seen.add(ep.id)
-                out.append(ep)
-                break
-        if len(out) >= limit:
-            return out
-    for ep in main_eps:  # 剩余名额全部由主查询填充
-        if len(out) >= limit:
-            return out
-        if ep.id not in seen:
-            seen.add(ep.id)
-            out.append(ep)
-    for eps in per_sub:  # 仅当池子仍未满时，才用剩余的子查询命中回填
-        for ep in eps:
-            if len(out) >= limit:
-                return out
-            if ep.id not in seen:
-                seen.add(ep.id)
-                out.append(ep)
-    return out
-
-
 def _maybe_pinned(llm, cache_dir: str, model_tag: str):
     """给出 --pin-extraction 时固定（缓存）extractor 的回复。
 
@@ -174,7 +107,7 @@ class Rig:
     ablations: tuple[str, ...] = ()
 
 
-def mnemotrace_config(evidence_planner: bool = True, ablations: tuple[str, ...] = ()) -> Config:
+def mnemotrace_config(ablations: tuple[str, ...] = ()) -> Config:
     """供评测台内消融实验使用的 Config 辅助函数。
 
     A/B 系统之间只能差在指定的 memory 干预点上，不能有隐藏的配置漂移。这些开关默认是 MnemoTrace 的
@@ -182,17 +115,11 @@ def mnemotrace_config(evidence_planner: bool = True, ablations: tuple[str, ...] 
     """
     disabled = set(ablations)
     return Config(
-        evidence_planner=evidence_planner,
         evidence_budgeting="evidence_budget" not in disabled and "evidence_budgeting" not in disabled,
         summary_fallback=(
             "summary_fallback" not in disabled
             and "summary" not in disabled
             and "derived_summary" not in disabled
-        ),
-        procedural_memory=(
-            "procedural" not in disabled
-            and "procedural_memory" not in disabled
-            and "derived_procedural" not in disabled
         ),
         procedural_extraction=(
             "procedural_extraction" not in disabled
@@ -219,31 +146,7 @@ def mnemotrace_config(evidence_planner: bool = True, ablations: tuple[str, ...] 
             and "preference_reversal" not in disabled
             and "preference_update_extraction" not in disabled
         ),
-        numeric_aggregation_candidates=(
-            "numeric_aggregation_candidates" not in disabled
-            and "numeric_aggregation" not in disabled
-            and "aggregation_numeric" not in disabled
-        ),
-        aggregation_recall_expansion=(
-            "aggregation_recall_expansion" not in disabled
-            and "aggregation_recall" not in disabled
-            and "aggregation_query_expansion" not in disabled
-        ),
-        aggregation_constraint_filter=(
-            "aggregation_constraint_filter" not in disabled
-            and "aggregation_constraints" not in disabled
-            and "constraint_filter" not in disabled
-        ),
-        aggregation_pool_boost=(
-            "aggregation_pool_boost" not in disabled
-            and "agg_pool_boost" not in disabled
-        ),
         chain_evidence="chain" not in disabled,
-        temporal_history_queries=(
-            "temporal_history" not in disabled
-            and "history_queries" not in disabled
-            and "temporal_history_queries" not in disabled
-        ),
         provenance_evidence="raw" not in disabled and "provenance" not in disabled,
         provenance_chunk_promotion=(
             "raw" not in disabled
@@ -267,33 +170,6 @@ def mnemotrace_config(evidence_planner: bool = True, ablations: tuple[str, ...] 
             "graph_self_anchor" not in disabled
             and "self_anchor" not in disabled
             and "self" not in disabled
-        ),
-        graph_entity_alias_anchor=(
-            "graph_entity_alias" not in disabled
-            and "entity_alias" not in disabled
-            and "alias_anchor" not in disabled
-        ),
-        graph_negative_constraints=(
-            "graph" not in disabled
-            and "graph_proximity" not in disabled
-            and "graph_negative" not in disabled
-            and "negative_constraints" not in disabled
-            and "graph_negative_constraints" not in disabled
-        ),
-        planner_location_chains=(
-            "planner_location" not in disabled
-            and "location_chain" not in disabled
-            and "planner_location_chains" not in disabled
-        ),
-        planner_project_chains=(
-            "planner_project" not in disabled
-            and "project_chain" not in disabled
-            and "planner_project_chains" not in disabled
-        ),
-        planner_llm_decomposition=(
-            "planner_llm_decomposition" not in disabled
-            and "planner_llm" not in disabled
-            and "llm_decomposition" not in disabled
         ),
     )
 
@@ -521,7 +397,6 @@ class MnemoTraceLeanSystem:
     不进入 prompt，进入的只是一小段有组织的、检索出来的 context。"""
 
     name = "engram_lean"
-    evidence_planner = True
     ablations: tuple[str, ...] = ()
 
     def __init__(self, rig: Rig):
@@ -534,7 +409,6 @@ class MnemoTraceLeanSystem:
             return self._tl.mem  # verify 重试时复用（不再重新摄取/重新摘要）
         mem = MemoryEngine(
             config=mnemotrace_config(
-                evidence_planner=self.evidence_planner,
                 ablations=tuple(self.ablations) + tuple(rig.ablations),
             ),
             embedder=rig.embedder,
@@ -544,9 +418,7 @@ class MnemoTraceLeanSystem:
         ingest(mem, item, qid)
         # L1 facts 取自 top-k 检索会话；L2 摘要基于高召回集合（_S 上 recall@25≈98%，所以对 top-summ_k
         # 个检索会话做摘要既能覆盖证据，又保持精简）。
-        retrieved = retrieve_evidence_episodes(
-            mem, q, qid, max(rig.extract_k, rig.summ_k), use_planner=self.evidence_planner
-        )
+        retrieved = mem.retrieve_episodes(q, qid, max(rig.extract_k, rig.summ_k))
         mem.consolidate_full(
             fact_episodes=retrieved[: rig.extract_k] if rig.extract_k > 0 else retrieved,
             summary_episodes=retrieved[: rig.summ_k],
@@ -567,11 +439,6 @@ class MnemoTraceLeanSystem:
         )
 
 
-class MnemoTraceLeanNoPlannerSystem(MnemoTraceLeanSystem):
-    """A/B 基线：同一个 lean 系统，但关闭 benchmark 无关的证据规划。"""
-
-    name = "engram_lean_no_planner"
-    evidence_planner = False
 
 
 class MnemoTraceLeanNoChainSystem(MnemoTraceLeanSystem):
@@ -609,11 +476,6 @@ class MnemoTraceLeanNoSummaryFallbackSystem(MnemoTraceLeanSystem):
     ablations = ("summary_fallback",)
 
 
-class MnemoTraceLeanNoProceduralMemorySystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但不含派生的程序性/规则记忆。"""
-
-    name = "engram_lean_no_procedural_memory"
-    ablations = ("procedural_memory",)
 
 
 class MnemoTraceLeanNoProceduralExtractionSystem(MnemoTraceLeanSystem):
@@ -651,32 +513,12 @@ class MnemoTraceLeanNoPreferenceReversalExtractionSystem(MnemoTraceLeanSystem):
     ablations = ("preference_reversal_extraction",)
 
 
-class MnemoTraceLeanNoNumericAggregationCandidatesSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但关闭确定性的金额/时长/页数聚合候选。"""
-
-    name = "engram_lean_no_numeric_aggregation_candidates"
-    ablations = ("numeric_aggregation_candidates",)
 
 
-class MnemoTraceLeanNoAggregationRecallExpansionSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但聚合问题不做扩展召回查询。"""
-
-    name = "engram_lean_no_aggregation_recall_expansion"
-    ablations = ("aggregation_recall_expansion",)
 
 
-class MnemoTraceLeanNoAggregationConstraintFilterSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但聚合候选不做查询约束过滤。"""
-
-    name = "engram_lean_no_aggregation_constraint_filter"
-    ablations = ("aggregation_constraint_filter",)
 
 
-class MnemoTraceLeanNoTemporalHistorySystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但关闭自然语言的历史/取代（supersession）查询。"""
-
-    name = "engram_lean_no_temporal_history"
-    ablations = ("temporal_history",)
 
 
 class MnemoTraceLeanNoGraphSystem(MnemoTraceLeanSystem):
@@ -707,32 +549,12 @@ class MnemoTraceLeanNoGraphSelfAnchorSystem(MnemoTraceLeanSystem):
     ablations = ("graph_self_anchor",)
 
 
-class MnemoTraceLeanNoGraphEntityAliasSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但关闭唯一短名/别名的图锚定。"""
-
-    name = "engram_lean_no_graph_entity_alias"
-    ablations = ("graph_entity_alias",)
 
 
-class MnemoTraceLeanNoGraphNegativeSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但关闭 not/except/excluding 类图约束。"""
-
-    name = "engram_lean_no_graph_negative"
-    ablations = ("graph_negative",)
 
 
-class MnemoTraceLeanNoPlannerLocationSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但 planner 不支持 based_in/located_in 答案链。"""
-
-    name = "engram_lean_no_planner_location"
-    ablations = ("planner_location",)
 
 
-class MnemoTraceLeanNoPlannerProjectSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但 planner 不支持 works_on/project 答案链。"""
-
-    name = "engram_lean_no_planner_project"
-    ablations = ("planner_project",)
 
 
 class MnemoTraceLeanCoreSystem(MnemoTraceLeanSystem):
@@ -745,30 +567,20 @@ class MnemoTraceLeanCoreSystem(MnemoTraceLeanSystem):
 SYSTEMS = {"engram": MnemoTraceSystem, "full_context": FullContextSystem, "rag": RAGSystem,
            "mem0": Mem0System, "zep": ZepSystem, "hipporag": HippoRAGSystem,
            "engram_full": MnemoTraceFullSystem, "engram_lean": MnemoTraceLeanSystem,
-           "engram_lean_no_planner": MnemoTraceLeanNoPlannerSystem,
            "engram_lean_no_chain": MnemoTraceLeanNoChainSystem,
            "engram_lean_no_raw": MnemoTraceLeanNoRawSystem,
            "engram_lean_no_provenance_chunks": MnemoTraceLeanNoProvenanceChunksSystem,
            "engram_lean_no_evidence_budget": MnemoTraceLeanNoEvidenceBudgetSystem,
            "engram_lean_no_summary_fallback": MnemoTraceLeanNoSummaryFallbackSystem,
-           "engram_lean_no_procedural_memory": MnemoTraceLeanNoProceduralMemorySystem,
            "engram_lean_no_procedural_extraction": MnemoTraceLeanNoProceduralExtractionSystem,
            "engram_lean_no_explicit_preference_extraction": MnemoTraceLeanNoExplicitPreferenceExtractionSystem,
            "engram_lean_no_preference_object_filter": MnemoTraceLeanNoPreferenceObjectFilterSystem,
            "engram_lean_no_preference_object_normalization": MnemoTraceLeanNoPreferenceObjectNormalizationSystem,
            "engram_lean_no_preference_reversal_extraction": MnemoTraceLeanNoPreferenceReversalExtractionSystem,
-           "engram_lean_no_numeric_aggregation_candidates": MnemoTraceLeanNoNumericAggregationCandidatesSystem,
-           "engram_lean_no_aggregation_recall_expansion": MnemoTraceLeanNoAggregationRecallExpansionSystem,
-           "engram_lean_no_aggregation_constraint_filter": MnemoTraceLeanNoAggregationConstraintFilterSystem,
-           "engram_lean_no_temporal_history": MnemoTraceLeanNoTemporalHistorySystem,
            "engram_lean_no_graph": MnemoTraceLeanNoGraphSystem,
            "engram_lean_no_graph_relation": MnemoTraceLeanNoGraphRelationSystem,
            "engram_lean_no_graph_reinforcement": MnemoTraceLeanNoGraphReinforcementSystem,
            "engram_lean_no_graph_self_anchor": MnemoTraceLeanNoGraphSelfAnchorSystem,
-           "engram_lean_no_graph_entity_alias": MnemoTraceLeanNoGraphEntityAliasSystem,
-           "engram_lean_no_graph_negative": MnemoTraceLeanNoGraphNegativeSystem,
-           "engram_lean_no_planner_location": MnemoTraceLeanNoPlannerLocationSystem,
-           "engram_lean_no_planner_project": MnemoTraceLeanNoPlannerProjectSystem,
            "engram_lean_core": MnemoTraceLeanCoreSystem}
 
 
@@ -913,10 +725,9 @@ def main():
     ap.add_argument("--intent", action="store_true", help="engram: L6 intent hint (benchmark-neutral)")
     ap.add_argument("--ablate", default="",
                     help="comma-separated MnemoTrace algorithm switches to disable for all MnemoTrace systems in this run: "
-                         "evidence_budget, summary_fallback, procedural_memory, procedural_extraction, explicit_preference_extraction, preference_object_filter, preference_object_normalization, preference_reversal_extraction, numeric_aggregation_candidates, aggregation_recall_expansion, aggregation_constraint_filter, chain, temporal_history, raw/provenance, provenance_chunks, "
+                         "evidence_budget, summary_fallback, procedural_extraction, explicit_preference_extraction, preference_object_filter, preference_object_normalization, preference_reversal_extraction, chain, raw/provenance, provenance_chunks, "
                          "graph/graph_proximity, graph_relation, "
-                         "graph_reinforcement, graph_self_anchor, graph_entity_alias, graph_negative, "
-                         "planner_location, planner_project")
+                         "graph_reinforcement, graph_self_anchor")
     ap.add_argument("--full", action="store_true",
                     help="engram: turn ON ALL differentiators (agentic+timeline+hyde+graph+wiki+summary+verify+intent)")
     ap.add_argument("--workers", type=int, default=4)

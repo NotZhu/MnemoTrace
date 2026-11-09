@@ -23,7 +23,7 @@ def product(runtime, user, accounts, spaces, monkeypatch):
     def extract(prompt, system=''):
         data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
         return json.dumps(dict(facts=[
-            dict(category='其他', sensitive=False, time_kind='current', effective_date=None, subject='Synthetic person', predicate='likes', object='Bluebird tea',
+            dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='Synthetic person', predicate='likes', object='Bluebird tea',
                  text='Synthetic person likes Bluebird tea',
                  source_ids=[source['id']])
             for source in data['pending']

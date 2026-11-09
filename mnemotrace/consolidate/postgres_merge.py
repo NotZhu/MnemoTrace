@@ -58,7 +58,7 @@ def materialize(context, data, result, settings, config, now):
             subject = owner_name or 'user'
         if data['scope'] == 'working':
             continue
-        topic, topic_source = resolve_topic(predicate, item['object'], item.get('topic') if config.llm_topics else None)
+        topic, topic_source = resolve_topic(item.get('topic'))
         fact = Fact(subject, predicate, item['object'], text=item['text'] if dialogue else '',
                     display=item['text'], user_id=context.user_id, valid_at=fact_valid_at(item, origin['event_time']),
                     category=item['category'], sensitive=item['sensitive'],
@@ -66,6 +66,7 @@ def materialize(context, data, result, settings, config, now):
                     source_roles=list(dict.fromkeys(views[key]['role'] for key in item['source_ids']
                                                     if views[key]['role'])),
                     topic=topic, topic_source=topic_source,
+                    cardinality=item['cardinality'], retention=item['retention'],
                     id='ft_' + digest([data, item])[:24])
         if policy._accepted(fact, content):
             facts.append(fact)

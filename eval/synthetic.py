@@ -18,6 +18,7 @@ class EvalItem:
     question: str
     answer: Optional[str]  # None => 期望拒答
     as_of_day: Optional[int] = None
+    path: tuple[str, ...] = ()  # Explicit caller input: anchor followed by outbound predicates.
 
 
 ITEMS: list[EvalItem] = [
@@ -44,7 +45,7 @@ ITEMS: list[EvalItem] = [
     EvalItem(
         "mh1", "multi_hop",
         [("My name is Dora.", 0), ("My colleague Evan works at Netflix.", 1)],
-        "Where does Dora's colleague work?", "Netflix",
+        "Where does Dora's colleague work?", "Netflix", path=("Dora", "colleague", "works_at"),
     ),
     EvalItem(
         "mh2", "multi_hop",
@@ -53,7 +54,7 @@ ITEMS: list[EvalItem] = [
             ("Maya just moved to Seattle for a fellowship.", 1),
             ("I bought a new espresso machine and it's wonderful.", 2),
         ],
-        "What is the profession of the user's sister who moved to Seattle?", "pediatrician",
+        "What is my sister\x27s profession?", "pediatrician", path=("mh2", "sister", "occupation"),
     ),
     EvalItem(
         "tmp1", "temporal",

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import math
-import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -48,14 +47,6 @@ def gen_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
-
-
-def tokenize(text: str) -> list[str]:
-    """提取小写 ASCII 字母与数字组成的 token；其他字符作为分隔符。"""
-    return _TOKEN_RE.findall(text.lower())
-
-
 def stem(token: str) -> str:
     """粗糙的单数化，使 work/works、study/studies、colleague/colleagues 对齐。由词汇打分器
     和离线 embedder 共享，保证离线时语义与词汇信号一致。
@@ -68,17 +59,6 @@ def stem(token: str) -> str:
     if len(token) > 4 and token.endswith("ies"):
         return token[:-3] + "y"
     return token[:-1] if len(token) > 3 and token.endswith("s") else token
-
-
-def stems(text: str) -> list[str]:
-    """把文本切分成 token 并单数化。
-
-    Args:
-        text: 文本。
-    Returns:
-        token 列表。
-    """
-    return [stem(t) for t in tokenize(text)]
 
 
 def cosine(a: list[float], b: list[float]) -> float:

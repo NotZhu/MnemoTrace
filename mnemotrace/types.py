@@ -8,8 +8,9 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass, field, replace
+import math
+from typing import Literal, Optional, get_args
 
 from .topics import Topic, TopicSource, validate_topic
 from .util import gen_id, now
@@ -40,6 +41,36 @@ class Episode:
     mode: Optional[str] = None
     coverage: Optional[dict] = None
     summary_coverage: Optional[dict] = None
+
+
+Cardinality = Literal["single", "multi", "unknown"]
+Retention = Literal["durable", "normal", "unknown"]
+CARDINALITIES = get_args(Cardinality)
+RETENTIONS = get_args(Retention)
+
+
+def validate_lifecycle(cardinality: Cardinality, retention: Retention) -> None:
+    if cardinality not in CARDINALITIES:
+        raise ValueError("Invalid fact cardinality")
+    if retention not in RETENTIONS:
+        raise ValueError("Invalid fact retention")
+
+
+def validate_validity_revisions(revisions: object) -> None:
+    if not isinstance(revisions, list):
+        raise ValueError("validity_revisions must be a list")
+    previous = float("-inf")
+    for revision in revisions:
+        if not isinstance(revision, dict) or set(revision) != {"changed_at", "invalid_at", "expired_at"}:
+            raise ValueError("Invalid validity revision fields")
+        for name, value in revision.items():
+            if value is None and name != "changed_at":
+                continue
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError("Invalid validity revision timestamp")
+        if revision["changed_at"] < previous:
+            raise ValueError("Validity revisions must be ordered by change time")
+        previous = revision["changed_at"]
 
 
 @dataclass
@@ -77,6 +108,7 @@ class Fact:
     # --- 事务时间（认知）---
     created_at: float = field(default_factory=now)
     expired_at: Optional[float] = None  # None => 仍被认为成立
+    validity_revisions: list[dict[str, float | None]] = field(default_factory=list)
 
     supersedes: Optional[str] = None  # 本 fact 所取代的 fact 的 id（演化链）
     provenance: list[str] = field(default_factory=list)  # 来源 Episode 的 id 列表
@@ -88,10 +120,14 @@ class Fact:
     # 与事实来源、管理分类及敏感标记独立；自动赋值由写入路径接入。
     topic: Topic = "unknown"
     topic_source: TopicSource = "unset"
+    cardinality: Cardinality = "unknown"
+    retention: Retention = "unknown"
     source_roles: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         validate_topic(self.topic, self.topic_source)
+        validate_lifecycle(self.cardinality, self.retention)
+        validate_validity_revisions(self.validity_revisions)
         if not self.text:
             # 把 predicate 渲染成自然语言（"works_at" -> "works at"），让嵌入和词汇匹配
             # 看到的是真实文本，而不是 snake_case token。
@@ -106,6 +142,25 @@ class Fact:
     def is_published(self, known_at: Optional[float] = None) -> bool:
         return not self.review_pending and (self.approved_at is None or
                                             self.approved_at <= (now() if known_at is None else known_at))
+
+    def revise_end_times(self, invalid_at: float | None, expired_at: float | None, *, changed_at: float) -> None:
+        """Keep the interval known before each change for transaction-time reads."""
+        if (self.invalid_at, self.expired_at) != (invalid_at, expired_at):
+            revisions = [
+                *self.validity_revisions,
+                dict(changed_at=changed_at, invalid_at=self.invalid_at, expired_at=self.expired_at),
+            ]
+            validate_validity_revisions(revisions)
+            self.validity_revisions = revisions
+            self.invalid_at, self.expired_at = invalid_at, expired_at
+
+    def as_known_at(self, known_at: float | None) -> Fact:
+        if known_at is not None:
+            for index, revision in enumerate(self.validity_revisions):
+                if revision["changed_at"] > known_at:
+                    return replace(self, invalid_at=revision["invalid_at"], expired_at=revision["expired_at"],
+                                   validity_revisions=self.validity_revisions[:index])
+        return self
 
     def is_valid_at(self, at: float) -> bool:
         """Whether the effective interval covers at, independent of publication and expiry."""
