@@ -440,8 +440,17 @@ def test_explicit_path_disambiguates_only_visible_anchors(memory):
     assert result.paths[0].facts[0].subject == 'Ana'
 
 
-def test_backfilled_validity_is_read_at_the_selected_knowledge_time(memory, cluster):
+@pytest.mark.parametrize('clock_skew', [0, -60, 60])
+def test_backfilled_validity_is_read_at_the_selected_knowledge_time(memory, cluster, monkeypatch, clock_skew):
     from time import time
+    from mnemotrace.consolidate.manual import build_manual_fact
+
+    def client_clock_fact(*args, **kwargs):
+        fact = build_manual_fact(*args, **kwargs)
+        fact.created_at += clock_skew
+        return fact
+
+    monkeypatch.setattr('mnemotrace.memory.build_manual_fact', client_clock_fact)
 
     base = time()
     memory.add_fact('Ana', 'works_at', 'First', valid_at=base - 100, cardinality='single')

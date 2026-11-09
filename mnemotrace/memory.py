@@ -412,6 +412,8 @@ class Memory:
             snapshot = view.snapshot
             at = view.at.timestamp()
             history = view.facts_for_manual_add(subject, predicate)
+        # Creation and interval revisions must use the same database clock for known_at reads.
+        fact.created_at = fact.last_access = at
         candidates = [domain(item) for item in history]
         action, changed = reconcile_manual(fact, candidates, at)
         if action == 'duplicate':
