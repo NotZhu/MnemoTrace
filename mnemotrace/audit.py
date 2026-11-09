@@ -50,11 +50,8 @@ def fact_finding(f):
 
 class EmbedderCoverage:
     def __init__(self, embedder):
-        from .embed import HashingEmbedder
-
         self.embedder = embedder
-        self.exact = isinstance(embedder, HashingEmbedder)
-        self.enabled = self.exact or (
+        self.enabled = (
             embedder.__class__.__name__ == "SentenceTransformerEmbedder"
             and "-en-" in str(getattr(embedder, "model_name", "") or "")
         )
@@ -95,15 +92,15 @@ class EmbedderCoverage:
         name = embedder.__class__.__name__
         pct = round(ratio * 100)
         if postgres:
-            migrate = "MNEMOTRACE_EMBEDDER=multilingual"
+            migrate = "MNEMOTRACE_EMBEDDER=fastembed"
             why = (f"{name} has limited ranking coverage for {pct}% of the space's content. "
-                   "The lexical index also has limited coverage for these scripts.")
-            action = f"configure a multilingual embedder and rebuild vectors: {migrate}"
+                   "Multilingual embeddings can improve semantic coverage.")
+            action = f"select multilingual embeddings for new deployments: {migrate}"
         else:
-            migrate = "MNEMOTRACE_EMBEDDER=multilingual MNEMOTRACE_REEMBED_ON_MISMATCH=1"
+            migrate = "MNEMOTRACE_EMBEDDER=fastembed"
             why = (f"{pct}% of what this namespace holds is written in a script {name} cannot tokenize. "
-                   "These memories have limited semantic and lexical coverage.")
-            action = f"switch the server embedder and re-embed: {migrate} (or bge-small-zh)"
+                   "These memories have limited semantic coverage.")
+            action = "use a multilingual embedder when building the in-memory index"
         return {
             "kind": "embedder_blind",
             "text": f"{name} cannot rank {pct}% of {checked} memories",
@@ -114,7 +111,7 @@ class EmbedderCoverage:
             "blind": total_blind, "checked": checked, "ratio": ratio,
             "dark_chars": dark_chars, "rankable_chars": rankable_chars,
             "facts_blind": facts_blind, "episodes_blind": episodes_blind,
-            "exact": self.exact, "recommended": "multilingual", "alternative": "bge-small-zh",
+            "exact": False, "recommended": "fastembed", "alternative": "bge-small-zh",
             "migrate": migrate,
         }
 

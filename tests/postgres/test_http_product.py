@@ -21,7 +21,7 @@ def test_health(client):
     assert response.status_code == 200 and data["ok"] and data["ready"]
     assert data["auth_mode"] == "api_keys"
     assert data["anonymous_allowed"] is False
-    assert data["embedder"] == "hashing-v1"
+    assert data["embedder"] == "lexical"
     assert data["llm_configured"] and data["storage"] == "postgres"
     assert "data_dir" not in data and "api_keys" not in data
     assert client.get("/ready").status_code == 200
@@ -74,7 +74,7 @@ def test_recall_answers_with_extraction_model_unless_answerer_overrides(client, 
         response = client.post("/v1/recall", json={"query": "Where do I live?"}, headers=h)
         assert response.is_success
         assert response.json()["answer"] == expected
-        assert response.json()["full_tokens"] == 4
+        assert response.json()["full_tokens"] == 5
 
 
 def test_structured_profile_source_count_survives_edit_and_reload(client):
@@ -266,7 +266,7 @@ def test_stats_endpoint_is_content_free_namespace_observability(client):
     assert stats["counts"]["facts_sensitive"] >= 1
     assert stats["counts"]["entities"] >= 1
     assert stats["storage"] == "postgres"
-    assert stats["embedder"] == "hashing-v1"
+    assert stats["embedder"] == "lexical"
     assert stats["consolidation_backlog"] is False
     rendered = str(stats).lower()
     assert "diabetes" not in rendered

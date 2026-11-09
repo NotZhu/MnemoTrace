@@ -1,4 +1,4 @@
-"""Connectors + 批量导入：使用 hashing 嵌入器和固定合成模型响应离线验证。"""
+"""Connectors + 批量导入：使用 测试嵌入器和固定合成模型响应离线验证。"""
 from __future__ import annotations
 
 import json

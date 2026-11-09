@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 
 from mnemotrace import Config
-from mnemotrace.embed import HashingEmbedder
+from tests.embedder_fixtures import product_embedder
 from mnemotrace.memory import Memory
 from mnemotrace.store.postgres import Accounts, Database, Spaces
 from mnemotrace.store.postgres.database import driver
@@ -71,7 +71,7 @@ def test_full_logical_backup_and_worker_resume(tmp_path):
             space = spaces.create(user_id, 'Restored')
             scope = spaces.authorize(user_id, space.space_id)
             calls = []
-            memory = Memory(runtime, scope, llm=_model(calls))
+            memory = Memory(runtime, scope, llm=_model(calls), embedder=product_embedder(), embedding_model='test-vectors-v1')
             complete = _accept(memory, 'first', 'Ada works at Synthetic Lab')
             assert memory.flush_processing('chat')['ok']
             assert memory.operation(complete).core_committed
@@ -101,7 +101,7 @@ def test_full_logical_backup_and_worker_resume(tmp_path):
                 assert spaces.authorize(user_id, space.space_id) == scope
                 with pytest.raises(SpaceNotFound):
                     spaces.authorize(user_id, other_space.space_id)
-                memory = Memory(runtime, scope, llm=llm)
+                memory = Memory(runtime, scope, llm=llm, embedder=product_embedder(), embedding_model='test-vectors-v1')
                 assert memory.get_episode(prior_fact.provenance[0]).content == 'Ada works at Synthetic Lab'
                 assert 'Synthetic alias' in memory.entity('Ada works').aliases
                 assert memory.operation(complete).core_committed
@@ -110,7 +110,7 @@ def test_full_logical_backup_and_worker_resume(tmp_path):
                     assert view.snapshot.core_revision == revision
                 assert prior_fact.id in {fact.id for fact in memory.search('Ada works Synthetic Lab').facts}
                 for _ in range(6):
-                    run_worker(discovery, runtime, Config(), llm, HashingEmbedder(), 'hashing-v1', once=True)
+                    run_worker(discovery, runtime, Config(), llm, product_embedder(), 'test-vectors-v1', once=True)
                 assert memory.operation(pending).core_committed
                 assert 'extract' not in restored_calls
                 assert len(memory.history('Grace works', 'works_at')) == 1

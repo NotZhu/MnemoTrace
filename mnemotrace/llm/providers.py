@@ -75,21 +75,19 @@ def make_llm(name: str, **overrides):
     return LiteLLMClient(n, **overrides)
 
 
-def make_embedder(name: str = "hashing", **overrides):
-    """hashing（零依赖离线）| bge-small | bge-m3 | bge-large | multilingual | bge-small-zh
+def make_embedder(name: str = "lexical", **overrides):
+    """lexical | fastembed | bge-small | bge-m3 | bge-large | multilingual | bge-small-zh
     | st:<model>（sentence-transformers）| openai:<model>（LiteLLM）。
     openai: 省略模型时使用 BAAI/bge-m3（1024 维）；其他 API 模型需显式传 dim。
 
     记忆内容含非英文文本时选 `multilingual`；bge-* 预设只支持英文。"""
     n = name.strip()
-    # 确定性、零依赖的回退 —— 让 server/MCP 在完全不下载模型的情况下运行（MNEMOTRACE_EMBEDDER=hashing），
-    # 并保证测试离线可用。不是基准级；只能捕捉词汇重合。
-    if n in ("hashing", "hash", "offline", "none"):
-        from ..config import Config
-        from ..embed import HashingEmbedder
+    if n == 'lexical':
+        return None
+    if n == 'fastembed':
+        from ..embed import FastEmbedEmbedder
 
-        dim = overrides.get("dim") or Config().embed_dim
-        return HashingEmbedder(dim)
+        return FastEmbedEmbedder(**overrides)
     presets = {
         "bge-small": "BAAI/bge-small-en-v1.5",
         "bge-large": "BAAI/bge-large-en-v1.5",
@@ -111,9 +109,17 @@ def make_embedder(name: str = "hashing", **overrides):
 
         model = n.split(":", 1)[1]
         return LiteLLMEmbedder(model, **overrides) if model else LiteLLMEmbedder(**overrides)
+    if "/" not in n:
+        raise ValueError('Unknown embedder. Use lexical, fastembed, or an explicit model identifier.')
     from ..embed import SentenceTransformerEmbedder
 
     return SentenceTransformerEmbedder(n, **overrides)
+
+
+def configured_embedder(name=None, *, default='lexical'):
+    name = (name if name is not None else os.environ.get('MNEMOTRACE_EMBEDDER', default)).strip()
+    embedder = make_embedder(name)
+    return embedder, getattr(embedder, 'model_id', name) if embedder is not None else None
 
 
 def make_reranker(name: str = "none", **overrides):

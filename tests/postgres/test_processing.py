@@ -7,7 +7,7 @@ import pytest
 
 from mnemotrace import Config
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
-from mnemotrace.embed import HashingEmbedder
+from tests.embedder_fixtures import MockEmbedder
 from mnemotrace.extraction import LLMNotConfiguredError
 from mnemotrace.llm import FakeLLM
 from mnemotrace.memory import Memory
@@ -92,7 +92,7 @@ def test_assistant_evidence_stays_in_session_until_user_confirmation(processing)
 
 
 def test_three_checkpoints_and_durable_retry(processing, cluster):
-    class InterruptedEmbedder(HashingEmbedder):
+    class InterruptedEmbedder(MockEmbedder):
         def embed_batch(self, texts):
             raise RuntimeError('synthetic embedding failure')
 

@@ -8,7 +8,6 @@ from .config import Config
 from .consolidate.decay import reinforce
 from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual
 from .consolidate.pipeline import digest
-from .embed import HashingEmbedder
 from .retrieve import postgres as retrieval
 from .retrieve.evidence import plan_evidence
 from .store.contracts import (
@@ -39,12 +38,13 @@ class Memory:
     def __init__(self, database: 'Database', context: 'SpaceContext', *,
                  embedder: 'Embedder | None' = None, embedding_model: str | None = None,
                  llm=None, config: Config | None = None):
-        if embedder is not None and embedding_model is None:
-            raise ValueError('A custom embedder requires a stable embedding_model identifier')
+        if (embedder is None) != (embedding_model is None):
+            raise ValueError('Pair an embedder with its stable embedding_model identifier')
         self.dao = PostgresDAO(database, context)
-        self._embedder = embedder if embedder is not None else HashingEmbedder()
-        self._model = embedding_model if embedding_model is not None else 'hashing-v1'
-        identifier(self._model)
+        self._embedder = embedder
+        self._model = embedding_model
+        if self._model is not None:
+            identifier(self._model)
         self._database = database
         self._config = config if config is not None else Config()
         self._processing = PostgresPipeline(self.dao, self._config, llm, self._embedder, self._model)
@@ -70,11 +70,13 @@ class Memory:
         return self.dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=writes,
                                          source_links=links, **kwargs), source_embedding=source_embedding)
 
-    def _embedding(self, write, text):
+    def _embeddings(self, write, text):
+        if self._embedder is None:
+            return ()
         vector = tuple(self._embedder.embed(text))
         if len(vector) != self._embedder.dim:
             raise ValueError('Embedding dimensions differ from the configured model')
-        return EmbeddingWrite(write.ref, write.record.content_version, self._model, vector)
+        return (EmbeddingWrite(write.ref, write.record.content_version, self._model, vector),)
 
     def store_messages(self, session_id: str, messages: 'tuple[MessageInput, ...]'):
         """Store raw dialogue and return source IDs in input order, including duplicates."""
@@ -82,7 +84,7 @@ class Memory:
 
     @property
     def _embedding_space(self):
-        return self._model, self._embedder.dim
+        return (self._model, self._embedder.dim) if self._embedder is not None else None
 
     def remember_messages(self, session_id: str, messages: tuple[MessageInput, ...], *,
                           processing='buffered', timeout=30, source_metadata=None):
@@ -126,7 +128,7 @@ class Memory:
             with self.dao.read_snapshot(session_id) as view:
                 snapshot = view.snapshot
             self._commit(snapshot, writes=(RecordWrite(record), write),
-                         embeddings=(self._embedding(write, working.content),))
+                         embeddings=self._embeddings(write, working.content))
             return dict(ok=True, status='stored', source_ids=(source.id,), operation_ids=(), operations=(),
                         id=working.id, kind=working.kind, scope='working')
         receipt, operation_id = self._processing.tasks.accept_source(
@@ -207,6 +209,8 @@ class Memory:
     def source_vector_operation(self, source_id):
         """Report the current original-text vector task for the configured embedding space."""
         identifier(source_id)
+        if self._embedding_space is None:
+            return None
         return self._processing.tasks.source_vector_operation(source_id, self._embedding_space)
 
     def backfill_retrieval(self, kind, *, after_id=None, limit=100):
@@ -232,8 +236,9 @@ class Memory:
                     if item.summary:
                         project_document(sql, SOURCE, item.id, record.summary_version, item.summary,
                                          field='summary', missing_only=True)
-                    queue_source_vector(sql, item.id, item.session_id, record.content_version,
-                                        generation, self._embedding_space)
+                    if self._embedding_space is not None:
+                        queue_source_vector(sql, item.id, item.session_id, record.content_version,
+                                            generation, self._embedding_space)
         return records[-1].ref.record_id if len(records) == limit else None
 
     def rebuild_graph(self, *, after_id=None, limit=100):
@@ -270,7 +275,7 @@ class Memory:
             decomposition = retrieval.decompose(llm, query, vocabulary)
         with self.dao.read_snapshot() as view:
             result = retrieval.search(
-                view.focused(), request, self._config, count, not isinstance(self._embedder, HashingEmbedder),
+                view.focused(), request, self._config, count, self._embedder is not None,
                 decomposition if revision == view.snapshot.core_revision else None,
             )
             snapshot = view.snapshot
@@ -317,7 +322,7 @@ class Memory:
         subqueries = need.subqueries if need.aggregation else ()
         related = tuple(self._query(text, top_k=1, facts=facts) for text in subqueries if text != query)
         with self.dao.read_snapshot(session_id) as view:
-            result = retrieval.context(view.focused(), request, self._config, not isinstance(self._embedder, HashingEmbedder),
+            result = retrieval.context(view.focused(), request, self._config, self._embedder is not None,
                                        n_facts=n_facts, n_chunks=n_chunks, n_summaries=n_summaries,
                                        char_budget=char_budget, session_id=session_id, evidence_queries=related)
             snapshot = view.snapshot
@@ -350,7 +355,7 @@ class Memory:
 
     def graph_entities(self, name, *, limit=100):
         identifier(name)
-        request = RetrievalQuery(FactQuery(limit=limit), '', (0.0,), self._model)
+        request = RetrievalQuery(FactQuery(limit=limit), '')
         with self.dao.read_snapshot() as view:
             return RetrievalGraph(view, request).find_entities(name)
 
@@ -397,7 +402,7 @@ class Memory:
         updates = tuple(self._write(old, versions[old.id]) for old in changed)
         write = self._write(fact)
         self._commit(snapshot, writes=(write, *updates),
-                     embeddings=(self._embedding(write, fact.text),))
+                     embeddings=self._embeddings(write, fact.text))
         return fact
 
     def get_fact(self, fact_id):
@@ -430,7 +435,7 @@ class Memory:
             return fact
         text_changed = fact.text != before['text']
         write = self._write(fact, old, text_changed=text_changed)
-        embeddings = (self._embedding(write, fact.text),) if text_changed else ()
+        embeddings = self._embeddings(write, fact.text) if text_changed else ()
         self._commit(snapshot, writes=(write,), embeddings=embeddings)
         return fact
 
@@ -465,7 +470,7 @@ class Memory:
         with self.dao.read_snapshot(session_id) as view:
             snapshot = view.snapshot
         write = self._write(item)
-        self._commit(snapshot, writes=(write,), embeddings=(self._embedding(write, item.content),))
+        self._commit(snapshot, writes=(write,), embeddings=self._embeddings(write, item.content))
         return item
 
     def working_memory(self, **filters):

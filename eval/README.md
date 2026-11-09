@@ -53,7 +53,8 @@ python eval/window_extraction.py --quality --extractor deepseek \
 python eval/window_extraction.py --report .artifacts/extraction-quality/my-run
 ```
 
-两个版本均从指定提交导出，在独立子进程中使用同一 runner。存储为独立内存快照，嵌入器为 hashing，
+这套历史实验使用文件型 MemoryService，只能用支持该接口的历史提交复现。当前版本的检索对照使用下文的统一评测入口。
+两个历史版本均从指定提交导出，在独立子进程中使用同一 runner。存储为独立内存快照，嵌入器为 hashing，
 冲突模型和会话结论关闭；两组均完成摘要并保留工作记忆供评分。这是同等收尾对照，不是默认完整服务或问答基准。
 按抽取、摘要及未知阶段分别报告调用、提供方 token 和延迟；写入确认与场景完成耗时分别统计。
 缓冲的 confirmed_to_window_start 从本窗最早来源的写入确认计至模型开始，包含调度及前窗处理等待；

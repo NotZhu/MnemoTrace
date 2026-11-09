@@ -5,6 +5,7 @@ import pytest
 
 from mnemotrace import MemoryEngine
 from mnemotrace.retrieve.events import event_evidence
+from tests.embedder_fixtures import MockEmbedder
 from mnemotrace.types import Fact
 
 
@@ -17,7 +18,7 @@ def summarized(memory, content="RAW_ONLY_8844 was disclosed. " * 100):
 
 
 def test_summary_replaces_raw_index_and_retrieval_payload():
-    mem = MemoryEngine()
+    mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
     assert mem.episodes_vec.get(ep.id) is None
     assert mem.summary_vec.get(ep.id) is not None
@@ -34,7 +35,7 @@ def test_summary_replaces_raw_index_and_retrieval_payload():
 
 @pytest.mark.parametrize("cascade", [False, True])
 def test_contexts_do_not_expand_summary_even_for_provenance(cascade):
-    mem = MemoryEngine()
+    mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
     fact = mem.add_fact("user", "finding", "connection issue resolved", user_id="u", sensitive=False)
     fact.provenance = [ep.id]
@@ -49,7 +50,7 @@ def test_contexts_do_not_expand_summary_even_for_provenance(cascade):
 
 
 def test_summary_survives_reembedding_without_raw_index():
-    mem = MemoryEngine()
+    mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
     assert mem.episodes_vec.get(ep.id) is None
     assert mem.summary_vec.get(ep.id) is not None
@@ -58,20 +59,20 @@ def test_summary_survives_reembedding_without_raw_index():
     assert mem.get_episode(ep.id, "u")["content"] == ep.content
 
 
-def test_raw_word_changes_do_not_change_ranked_summary_evidence():
+def test_raw_keyword_match_returns_only_the_summary():
     outputs = []
     for marker in ("RAW_ONLY_8844", "OTHER_PRIVATE_MARKER"):
-        mem = MemoryEngine()
+        mem = MemoryEngine(embedder=MockEmbedder())
         ep = summarized(mem, marker * 100)
         hits = mem.retrieve_episodes("RAW_ONLY_8844", "u")
         outputs.append([(h.text, h.representation) for h in hits])
         assert event_evidence(ep).text == ep.summary
-    assert outputs[0] == outputs[1]
+    assert outputs == [[(ep.summary, 'summary')], []]
 
 
 def test_aggregation_and_duration_use_summary_not_original():
     from mnemotrace.retrieve.aggregate import extract_aggregation_candidates
-    mem = MemoryEngine()
+    mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem, "I bought a Tamiya Spitfire model kit. Started RAW_ONLY_8844 today.")
     ep.summary = "No purchases were made."
     assert not extract_aggregation_candidates("How many model kits did I buy?", [], [ep])
@@ -79,7 +80,7 @@ def test_aggregation_and_duration_use_summary_not_original():
 
 
 def test_supersession_does_not_rewrite_event_summary():
-    mem = MemoryEngine()
+    mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
     previous = ep.summary
     old = Fact(subject="user", predicate="works_at", object="A", user_id="u", provenance=[ep.id])
@@ -92,15 +93,14 @@ def test_supersession_does_not_rewrite_event_summary():
 
 
 def test_reembed_never_embeds_summarized_original():
-    from mnemotrace.embed import HashingEmbedder
-    class RecordingEmbedder(HashingEmbedder):
+    class RecordingEmbedder(MockEmbedder):
         def __init__(self):
             super().__init__()
             self.inputs = []
         def embed_batch(self, texts):
             self.inputs.extend(texts)
             return super().embed_batch(texts)
-    mem = MemoryEngine()
+    mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
     embedder = RecordingEmbedder()
     mem.reembed(embedder)
@@ -112,7 +112,7 @@ def test_default_context_budget_does_not_inspect_summarized_original_length():
     class UnreadableOriginal(str):
         def __len__(self):
             raise AssertionError('retrieval must not inspect original length')
-    mem = MemoryEngine()
+    mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
     ep.content = UnreadableOriginal(ep.content)
     context = mem.lean_context('connection issue', 'u', persona=False)
@@ -120,10 +120,9 @@ def test_default_context_budget_does_not_inspect_summarized_original_length():
 
 
 def test_reembed_discards_orphaned_summary_vector_without_embedding_an_excerpt():
-    from mnemotrace.embed import HashingEmbedder
-    mem = MemoryEngine()
+    mem = MemoryEngine(embedder=MockEmbedder())
     ep = mem.add('A synthetic original without a summary.', user_id='u')
     ep.summary_embedding = [1.0] * mem.embedder.dim
-    mem.reembed(HashingEmbedder(dim=16))
+    mem.reembed(MockEmbedder(dim=16))
     assert ep.summary_embedding is None
     assert mem.summary_vec.get(ep.id) is None and mem.episodes_vec.get(ep.id) is not None

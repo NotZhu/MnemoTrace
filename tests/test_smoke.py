@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from mnemotrace.config import Config
 from tests.model_fixtures import MemoryEngine
-from mnemotrace.embed import HashingEmbedder
 from mnemotrace.types import Fact
 from mnemotrace.util import DAY
 
@@ -29,8 +28,9 @@ def build() -> MemoryEngine:
 
 
 def test_zero_dependency_defaults():
-    mem = MemoryEngine()
-    assert isinstance(mem.embedder, HashingEmbedder)
+    from mnemotrace import MemoryEngine as NativeMemory
+
+    assert NativeMemory().embedder is None
 
 
 def test_single_hop_qa():
@@ -517,7 +517,7 @@ def test_assistant_small_talk_is_not_profile_occupation():
 
 
 def test_stemmer_aligns_inflections_for_lexical_retrieval():
-    """BM25 lexical 打分器和离线 HashingEmbedder 都建立在 stem() 之上。复数以及 -y/-ies 的形态
+    """BM25 lexical 打分器使用英文词干。复数以及 -y/-ies 的形态
     必须归约到共同的词干，否则 lexical 检索会静默漏掉匹配。"""
     from mnemotrace.util import stem, stems
 

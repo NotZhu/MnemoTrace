@@ -30,7 +30,7 @@ MCP 客户端配置示例，Python 路径应替换为实际环境的绝对路径
       "args": ["-m", "mnemotrace.mcp", "--user-id", "<USER_ID>", "--space-id", "<SPACE_ID>"],
       "env": {
         "MNEMOTRACE_DATABASE_URL": "<RUNTIME_DSN>",
-        "MNEMOTRACE_EMBEDDER": "hashing",
+        "MNEMOTRACE_EMBEDDER": "lexical",
         "MNEMOTRACE_LLM": ""
       }
     }

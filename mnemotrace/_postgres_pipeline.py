@@ -15,6 +15,7 @@ from .consolidate.planning import (
     OMITTED, empty_input, fit_summary, fit_window, input_size, output_size, supplied, user_start, validate_config,
 )
 from .consolidate.postgres_merge import embed_texts, materialize, merge_records, write_record
+from .embed import EmbeddingUnavailable
 from .extraction import ExtractionError, ExtractionResponseError, ExtractionTruncatedError, require_llm
 from .llm.base import complete_result
 from .llm.execution import one_attempt
@@ -209,12 +210,16 @@ class PostgresPipeline:
         episode.summary = text
         episode.summary_coverage = _coverage(item, data, item['ranges'], 'summary_source_v1', True)
         write = write_record(conditions.snapshot.context, episode, record, summary_base=summary_base)
-        vector = embed_texts(self.embedder, [text])[text]
-        embedding = EmbeddingWrite(write.ref, write.record.summary_version, self.model, tuple(vector), field='summary')
-        self.tasks.commit(self._changes(conditions, (write,), (embedding,)))
+        embeddings = ()
+        if self.embedder is not None:
+            vector = embed_texts(self.embedder, [text])[text]
+            embeddings = (EmbeddingWrite(write.ref, write.record.summary_version, self.model,
+                                         tuple(vector), field='summary'),)
+        self.tasks.commit(self._changes(conditions, (write,), embeddings))
 
     def run_one(self, operation_id, *, force=False):
-        lease = self.tasks.claim(operation_id, force=force, embedding=(self.model, self.embedder.dim))
+        space = (self.model, self.embedder.dim) if self.embedder is not None else None
+        lease = self.tasks.claim(operation_id, force=force, embedding=space)
         if lease is None:
             return False
         phase = 'generate'
@@ -242,7 +247,7 @@ class PostgresPipeline:
                                     facts, working, new_settings = materialize(
                                         snapshot.context, data, result, settings, self.config, now)
                                     history = view.merge_history({fact.subject.strip().lower() for fact in facts})
-                                    vectors = view.fact_vectors(history, self.model, self.embedder.dim)
+                                    vectors = view.fact_vectors(history, *space) if space is not None else {}
                                     merged = facts, working, new_settings, history, vectors, now, view.conflict_pairs(history)
                                 else:
                                     summary_base = view.summary_version(records[0].ref.record_id)
@@ -319,6 +324,8 @@ class PostgresPipeline:
 
 
 def _failure(exc, phase):
+    if isinstance(exc, EmbeddingUnavailable):
+        return 'embedding_unavailable', _retryable(exc)
     if isinstance(exc, DataCorruption):
         return 'data_corruption', False
     if isinstance(exc, VersionConflict):

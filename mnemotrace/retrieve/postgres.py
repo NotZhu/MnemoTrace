@@ -59,6 +59,8 @@ def retrieval_query(text, embedder, model, config, *, top_k, as_of=None, facts=N
     )
     if scope.after_id is not None:
         raise ValueError('Retrieval does not accept a browsing cursor')
+    if embedder is None:
+        return RetrievalQuery(scope, text)
     vector = tuple(embedder.embed(text))
     if len(vector) != embedder.dim:
         raise ValueError('Embedding dimensions differ from the configured model')

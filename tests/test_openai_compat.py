@@ -1,5 +1,5 @@
 """OpenAI 兼容的 /v1/chat/completions —— 记忆注入 + 生成 + 后台 remember。
-离线验证：hashing 嵌入器、固定抽取响应，以及用于生成的确定性 FakeLLM。"""
+离线验证：测试嵌入器、固定抽取响应，以及用于生成的确定性 FakeLLM。"""
 from __future__ import annotations
 
 

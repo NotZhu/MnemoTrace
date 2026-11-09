@@ -56,7 +56,7 @@ def test_source_time_comes_from_matching_role():
 
 def test_reembedding_does_not_authorize_generation_from_an_obsolete_policy():
     from mnemotrace._pipeline import memory_adapter
-    from mnemotrace.embed import HashingEmbedder
+    from tests.embedder_fixtures import MockEmbedder
     mem = MemoryEngine(llm=FakeLLM(handler=reply))
     mem.remember_messages([message('a')], 's', 'u')
     host = memory_adapter(mem, 'u')
@@ -65,7 +65,7 @@ def test_reembedding_does_not_authorize_generation_from_an_obsolete_policy():
     window, = PipelineTasks(mem, 'u').state['windows'].values()
     assert window['phase'] == 'embed'
     mem.policy['extract_instruction'] = 'Synthetic changed extraction policy'
-    mem.reembed(HashingEmbedder(32))
+    mem.reembed(MockEmbedder(32))
     assert run_one(host, 'u')
     assert not mem.fact_store.values() and len(mem.llm.calls) == 1
     assert window['state'] == 'failed' and window['error_code'] == 'configuration_changed'

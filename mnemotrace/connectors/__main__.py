@@ -58,7 +58,7 @@ def main() -> None:
     key = ap.add_mutually_exclusive_group()
     key.add_argument("--key")
     key.add_argument("--key-file")
-    ap.add_argument("--embedder", help="local mode: real embedder (e.g. bge-small); default hashing")
+    ap.add_argument("--embedder", help="local mode: lexical (default), fastembed, or another configured embedder")
     ap.add_argument("--llm", help="local mode: LLM for fact extraction (e.g. deepseek); required unless --no-consolidate is used")
     ap.add_argument("--no-consolidate", action="store_true", help="skip fact extraction (raw episodes only)")
     ap.add_argument("--no-summarize", action="store_true", help="skip L2 session summaries")

@@ -1,8 +1,8 @@
 """Scoped PostgreSQL queries for retrieval signals and coverage."""
 from ...config import Config
 from ...retrieve.hybrid import HybridRetriever
-from ...retrieve.lexical import BM25_B, BM25_K1
-from ...util import recency, stems, time_key
+from ...retrieve.lexical import BM25_B, BM25_K1, bm25_query_terms
+from ...util import recency, time_key
 from ..contracts import Candidate, CandidateBatch, FactState
 from .graph_reads import RetrievalGraph
 from .lexical import ANALYZER
@@ -87,7 +87,7 @@ class Corpus:
 
     def _vector_statement(self, ids):
         query = self.query
-        if not any(query.vector):
+        if query.vector is None or not any(query.vector):
             return None
         dimension = len(query.vector)
         literal = '[' + ','.join(map(str, query.vector)) + ']'
@@ -124,7 +124,7 @@ class Corpus:
             (*self.params, literal, *params, *self.sql.scope, limit))
 
     def lexical_scores(self, *, ids=None):
-        terms = sorted(set(stems(self.query.text)))
+        terms = sorted(bm25_query_terms(self.query.text))
         if not terms:
             return {}
         limit = self.query.facts.limit if ids is None else len(ids)
@@ -134,26 +134,31 @@ class Corpus:
                 SELECT count(*) AS n, greatest(1.0,avg(document_length))::float8 AS avgdl,
                     %s::float8 AS k1,%s::float8 AS b FROM documents WHERE document_id IS NOT NULL
             ), matches AS MATERIALIZED (
-                SELECT x.id,x.document_length,t.term,t.tf
+                SELECT x.id,x.document_id,x.document_length,t.term,t.tf
                 FROM mnemotrace.lexical_terms t JOIN documents x
                 ON (t.user_id,t.space_id,t.document_id) = (x.user_id,x.space_id,x.document_id)
                 WHERE t.term = ANY(%s)
             ), frequencies AS (
                 SELECT term,count(*) AS df FROM matches GROUP BY term
-            )
-            SELECT x.id,sum(ln(1.0 + (s.n-f.df+0.5)::float8/(f.df+0.5)::float8)
-                * (x.tf*(s.k1+1))/(x.tf+s.k1*(1-s.b+s.b*x.document_length/s.avgdl))) AS score
-            FROM matches x JOIN frequencies f USING (term) CROSS JOIN totals s
-            {extra} GROUP BY x.id ORDER BY score DESC,x.id LIMIT %s""",
+            ), scores AS (
+                SELECT x.id,sum(ln(1.0 + (s.n-f.df+0.5)::float8/(f.df+0.5)::float8)
+                    * (x.tf*(s.k1+1))/(x.tf+s.k1*(1-s.b+s.b*x.document_length/s.avgdl))) AS score
+                FROM matches x JOIN frequencies f USING (term) CROSS JOIN totals s
+                {extra} GROUP BY x.id,x.document_id
+            ) SELECT id,max(score) AS score FROM scores GROUP BY id ORDER BY score DESC,id LIMIT %s""",
             (*params, BM25_K1, BM25_B, terms, *((list(ids),) if ids is not None else ()), limit)).fetchall()
         return dict(rows)
 
     def _lexical(self):
+        representations = 'SELECT x.field AS field, x.text_version AS version'
+        if self.kind == SOURCE and self.source_field != 'text':
+            representations += " UNION ALL SELECT 'text', x.content_version WHERE x.field = 'summary'"
         statement = self.eligible + f""", documents AS MATERIALIZED (
             SELECT x.user_id,x.space_id,x.id,d.id AS document_id,d.document_length
-            FROM eligible x LEFT JOIN mnemotrace.lexical_documents d
-            ON (d.user_id,d.space_id,d.{self.column},d.field,d.content_version) =
-               (x.user_id,x.space_id,x.id,x.field,x.text_version)
+            FROM eligible x CROSS JOIN LATERAL ({representations}) p
+            LEFT JOIN mnemotrace.lexical_documents d
+            ON (d.user_id,d.space_id,d.{self.column}) = (x.user_id,x.space_id,x.id)
+            AND (d.field,d.content_version) = (p.field,p.version)
             AND d.analyzer_version = %s
         )"""
         return statement, (*self.params, ANALYZER)
@@ -164,6 +169,8 @@ class Corpus:
         if self.sql.run(statement + ' SELECT EXISTS(SELECT 1 FROM documents WHERE document_id IS NULL)',
                         params).fetchone()[0]:
             flags.append('lexical_backfill_pending')
+        if self.query.vector is None:
+            return tuple(flags)
         if self.kind == SOURCE:
             flags.extend(self._source_vector_limitations())
         elif self.sql.run(self.eligible + """ SELECT EXISTS (SELECT 1 FROM eligible x WHERE NOT EXISTS (

@@ -60,7 +60,7 @@ def ingest(memory, item):
 
 
 def main(argv=None):
-    from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm
+    from mnemotrace.llm.providers import configured_embedder, load_dotenv, make_llm
 
     load_dotenv()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -68,7 +68,7 @@ def main(argv=None):
     parser.add_argument("--out", type=Path, required=True, help="New JSONL file mapping cases to space IDs")
     parser.add_argument("--user-id", default=os.environ.get("MNEMOTRACE_USER_ID"))
     parser.add_argument("--llm", default=os.environ.get("MNEMOTRACE_LLM"))
-    parser.add_argument("--embedder", default=os.environ.get("MNEMOTRACE_EMBEDDER", "hashing"))
+    parser.add_argument("--embedder", default=os.environ.get("MNEMOTRACE_EMBEDDER", "lexical"))
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int, default=0, help="0 selects all remaining cases")
     args = parser.parse_args(argv)
@@ -78,8 +78,7 @@ def main(argv=None):
     if not isinstance(items, list):
         parser.error("Expected a JSON list of cases")
     llm = make_llm(args.llm)
-    embedder = make_embedder(args.embedder)
-    model = "hashing-v1" if args.embedder == "hashing" else args.embedder
+    embedder, model = configured_embedder(args.embedder)
     end = args.offset + args.limit if args.limit else None
     output = args.out.expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)

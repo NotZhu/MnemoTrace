@@ -86,7 +86,6 @@ def _summary_fallback_context(enabled: bool) -> str:
         event_time=BASE,
     )
     ep.summary = ep.content
-    ep.summary_embedding = mem.embedder.embed(ep.summary)
     mem._sync_episode(ep)
     res = mem.search("How do I rotate the PAT?", user_id="u1")
     return f"{res.via}\n{res.answer()}"
@@ -109,7 +108,6 @@ def _procedural_memory_context(enabled: bool) -> str:
         valid_at=BASE,
         provenance=[ep.id],
     )
-    fact.embedding = mem.embedder.embed(fact.text)
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
     ctx = mem.lean_context(
         "What is the PAT runbook?",
@@ -328,7 +326,6 @@ def _raw_context(enabled: bool) -> str:
         valid_at=BASE,
         provenance=[ep.id],
     )
-    fact.embedding = mem.embedder.embed(fact.text)
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
     return mem.lean_context(
         "What is Apollo's launch code?",
@@ -368,7 +365,6 @@ def _provenance_chunk_context(enabled: bool) -> str:
         valid_at=BASE,
         provenance=[source.id],
     )
-    fact.embedding = mem.embedder.embed(fact.text)
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
     return mem.lean_context(
         "What is Apollo's launch code?",
@@ -427,7 +423,6 @@ def _evidence_budget_context(enabled: bool) -> str:
         valid_at=BASE,
         provenance=[ep.id],
     )
-    fact.embedding = mem.embedder.embed(fact.text)
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
     for i in range(12):
         mem.add_fact(

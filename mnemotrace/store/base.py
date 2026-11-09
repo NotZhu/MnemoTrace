@@ -10,10 +10,10 @@ Predicate = Callable[[Any], bool]
 
 
 class VectorStore(ABC):
-    """向量存储接口。支持 key 映射到 (vector, payload)，并支持带可选过滤条件的最近邻检索。"""
+    """Store payloads with optional vectors. Search only records with vectors."""
 
     @abstractmethod
-    def upsert(self, key: str, vector: list[float], payload: Any) -> None: ...
+    def upsert(self, key: str, vector: list[float] | None, payload: Any) -> None: ...
 
     @abstractmethod
     def search(

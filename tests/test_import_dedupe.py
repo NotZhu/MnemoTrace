@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-from mnemotrace.embed import HashingEmbedder
+from tests.embedder_fixtures import MockEmbedder
 from tests.model_fixtures import MemoryEngine
 
 _SESSIONS = [
@@ -13,7 +13,7 @@ _SESSIONS = [
 
 
 def test_reimport_is_skipped():
-    m = MemoryEngine(embedder=HashingEmbedder(64))
+    m = MemoryEngine(embedder=MockEmbedder(64))
     first = m.import_messages(_SESSIONS, user_id="u")
     assert first["episodes"] == 2 and first["skipped"] == 0
     again = m.import_messages(_SESSIONS, user_id="u")
@@ -22,7 +22,7 @@ def test_reimport_is_skipped():
 
 
 def test_dialogue_ids_remain_idempotent_and_new_ids_allow_equal_content():
-    m = MemoryEngine(embedder=HashingEmbedder(64))
+    m = MemoryEngine(embedder=MockEmbedder(64))
     m.import_messages(_SESSIONS, user_id="u")
     raw = m.import_messages(_SESSIONS, user_id="u", dedupe=False)
     assert raw["episodes"] == 0
@@ -33,7 +33,7 @@ def test_dialogue_ids_remain_idempotent_and_new_ids_allow_equal_content():
 
 
 def test_new_sessions_still_ingest_alongside_skips():
-    m = MemoryEngine(embedder=HashingEmbedder(64))
+    m = MemoryEngine(embedder=MockEmbedder(64))
     m.import_messages(_SESSIONS, user_id="u")
     mixed = m.import_messages(
         _SESSIONS + [{"session_id": "s3", "messages": [{"role": "user", "content": "I started judo."}]}],

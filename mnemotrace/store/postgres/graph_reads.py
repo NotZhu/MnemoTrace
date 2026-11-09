@@ -1,6 +1,6 @@
 """Request-local graph access for the existing graph retrieval algorithms."""
 from ...retrieve.hybrid import _EXCLUSION_VALUE_PREDS
-from ...util import stems, tokenize
+from ...retrieve.lexical import lexical_terms
 from .projection import GraphProjection
 from .records import ENTITY, SCOPE, domain
 
@@ -19,7 +19,7 @@ class RetrievalGraph:
         self._edge_budget = 4 * query.facts.limit
         self._incoming = ()
         self.truncated = False
-        terms = sorted(set(stems(query.text)) | set(tokenize(query.text)))
+        terms = sorted(set(lexical_terms(query.text, query=True, exact=True)))
         settings = view.settings()
         self._self = settings.subject_name or 'user'
         aliases = (*settings.subject_aliases, self._self, 'user')
@@ -67,6 +67,10 @@ class RetrievalGraph:
         canonical = self._resolve(entity_id)
         self._load_ids((canonical,))
         return self.entities.get(canonical)
+
+    def resolve_mention_alias(self, name):
+        # Resolve against the full space even when the candidate budget omitted a matching entity.
+        return self.get_entity(self.view.snapshot.context.user_id, name)
 
     def _unique_entity_id(self, name):
         # Deduplicate merge targets before checking ambiguity, independent of traversal limits.

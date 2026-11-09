@@ -5,7 +5,8 @@ x-database: &runtime
   MNEMOTRACE_DB_ROLE_PREFIX: "${MNEMOTRACE_DB_ROLE_PREFIX:-mnemotrace}"
 
 x-models: &models
-  MNEMOTRACE_EMBEDDER: "${MNEMOTRACE_EMBEDDER:-hashing}"
+  MNEMOTRACE_EMBEDDER: "${MNEMOTRACE_EMBEDDER:-fastembed}"
+  MNEMOTRACE_EMBED_OFFLINE: "1"
   MNEMOTRACE_LLM: "${MNEMOTRACE_LLM:-}"
   MNEMOTRACE_LLM_TOPICS: "${MNEMOTRACE_LLM_TOPICS:-1}"
   DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
@@ -70,10 +71,28 @@ services:
     healthcheck:
       disable: true
 
+  model-init:
+    <<: *app
+    command: [python, -m, mnemotrace.embed.fastembed_embed]
+    environment:
+      <<: *models
+      MNEMOTRACE_EMBED_OFFLINE: "0"
+    volumes:
+      - model-cache:/var/cache/mnemotrace/fastembed
+    healthcheck:
+      disable: true
+
   mnemotrace:
     <<: *app
     restart: unless-stopped
     networks: [database, default]
+    depends_on: &model-dependencies
+      db:
+        condition: service_healthy
+      model-init:
+        condition: service_completed_successfully
+    volumes: &model-cache
+      - model-cache:/var/cache/mnemotrace/fastembed:ro
     ports:
       - "127.0.0.1:${MNEMOTRACE_PORT:-8000}:8000"
     environment:
@@ -96,6 +115,8 @@ services:
     command: [python, -m, mnemotrace.worker]
     restart: unless-stopped
     networks: [database, default]
+    depends_on: *model-dependencies
+    volumes: *model-cache
     environment:
       <<: [*runtime, *models]
       MNEMOTRACE_DISCOVERY_DATABASE_URL: "${MNEMOTRACE_DISCOVERY_DATABASE_URL:?set the worker discovery DSN}"
@@ -108,3 +129,4 @@ networks:
 
 volumes:
   postgres:
+  model-cache:

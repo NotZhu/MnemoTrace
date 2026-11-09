@@ -4,6 +4,19 @@
 name: mnemotrace-demo
 
 services:
+  model-init:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: mnemotrace-memory:demo
+    command: [python, -m, mnemotrace.embed.fastembed_embed]
+    environment:
+      MNEMOTRACE_EMBEDDER: "${MNEMOTRACE_EMBEDDER:-fastembed}"
+    volumes:
+      - model-cache:/var/cache/mnemotrace/fastembed
+    healthcheck:
+      disable: true
+
   mnemotrace:
     build:
       context: ..
@@ -16,12 +29,18 @@ services:
     environment:
       MNEMOTRACE_DATABASE_URL: "${MNEMOTRACE_DEMO_DATABASE_URL:?set the demo Postgres runtime connection}"
       MNEMOTRACE_DB_ROLE_PREFIX: "${MNEMOTRACE_DB_ROLE_PREFIX:-mnemotrace}"
-      MNEMOTRACE_EMBEDDER: "${MNEMOTRACE_EMBEDDER:-hashing}"
+      MNEMOTRACE_EMBEDDER: "${MNEMOTRACE_EMBEDDER:-fastembed}"
+      MNEMOTRACE_EMBED_OFFLINE: "1"
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       MNEMOTRACE_LLM: "${MNEMOTRACE_LLM:-}"
       MNEMOTRACE_ANSWERER: "${MNEMOTRACE_ANSWERER:-}"
       MNEMOTRACE_MAX_REQUEST_BYTES: "${MNEMOTRACE_MAX_REQUEST_BYTES:-2097152}"
     read_only: true
+    depends_on:
+      model-init:
+        condition: service_completed_successfully
+    volumes:
+      - model-cache:/var/cache/mnemotrace/fastembed:ro
     tmpfs:
       - /tmp:size=64m,mode=1777
     cap_drop:
@@ -38,3 +57,6 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 4
+
+volumes:
+  model-cache:

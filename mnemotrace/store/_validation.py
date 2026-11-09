@@ -204,7 +204,7 @@ def validate_record(kind: str, record: Any, path: str, *,
         for name in ('coverage', 'summary_coverage'):
             if result[name] is not None and result[name]['original_length'] != len(result['content']):
                 _fail(path, 'coverage length does not match original content')
-        if result["summary"] and result["summary_embedding"] is None and not detached:
+        if embedding_dim is not None and result["summary"] and result["summary_embedding"] is None and not detached:
             _fail(path, "non-empty summary requires summary_embedding")
         forbidden = {'extraction_progress', 'extraction_counts', 'extraction_error', 'memory_result', 'memory_scope', 'outcome_error', 'extraction'}
         if forbidden.intersection(result['metadata']):

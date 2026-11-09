@@ -1,5 +1,5 @@
 """基于 sentence-transformers 的本地嵌入后端（如 BAAI/bge-*）。无需 API key —— 模型从 HuggingFace
-下载一次后在本地运行。这是基准测试默认的*真实*嵌入器；离线的 HashingEmbedder 仍是零依赖回退。"""
+下载一次后在本地运行。这是基准测试默认的嵌入器。"""
 from __future__ import annotations
 
 import threading

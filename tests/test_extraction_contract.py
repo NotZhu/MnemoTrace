@@ -89,7 +89,9 @@ def test_invalid_output_is_not_successful_empty_result(bad):
 
 
 def test_preference_embedding_uses_final_normalized_text():
-    m = MemoryEngine(llm=FakeLLM(responses=[response([fact('the idea of tea', 'likes')])]))
+    from tests.embedder_fixtures import MockEmbedder
+
+    m = MemoryEngine(embedder=MockEmbedder(), llm=FakeLLM(responses=[response([fact('the idea of tea', 'likes')])]))
     m.add('Synthetic preference')
     m.consolidate()
     stored, = m.fact_store.values()

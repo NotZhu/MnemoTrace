@@ -97,8 +97,10 @@ def config_identity(mem, *, include_embedding=True):
         return identity
     provider = provider_identity(llm)
     embedder = mem.embedder
-    embedding = [type(embedder).__module__, type(embedder).__qualname__, embedder.dim,
-                 *[setting(getattr(embedder, k, None)) for k in ('model', 'model_name')]]
+    embedding = None if embedder is None else [
+        type(embedder).__module__, type(embedder).__qualname__, embedder.dim,
+        *[setting(getattr(embedder, k, None)) for k in ('model', 'model_name', 'model_id')],
+    ]
     return digest([options, mem.policy, provider, embedding] if include_embedding else [options, mem.policy, provider])
 
 
@@ -379,7 +381,9 @@ def validate_state(value, episodes=None, embedding_dim=None):
                     validate_embedding(vector, 'pipeline vector', embedding_dim or len(vector))
                 if win['phase'] == 'commit':
                     from .._pipeline import texts_for
-                    require(set(win['vectors']) == {digest(t) for t in texts_for(win)})
+                    vectors_expected = embedding_dim is not None or bool(win['vectors'])
+                    expected = {digest(text) for text in texts_for(win)} if vectors_expected else set()
+                    require(set(win['vectors']) == expected)
         if docs is not None:
             require(all(ep.message_id is None or ep.user_id in value['namespaces'] and ep.id in value['namespaces'][ep.user_id]['sources'] for ep in docs.values()))
         return value
@@ -443,7 +447,10 @@ class PipelineTasks:
         if not isinstance(embeddings, dict) or any(k not in embeddings for k in unseen):
             raise ValueError('Missing prepared message embeddings')
         for key in unseen:
-            validate_embedding(embeddings[key], 'message embedding', self.memory.embedder.dim)
+            if self.memory.embedder is not None:
+                validate_embedding(embeddings[key], 'message embedding', self.memory.embedder.dim)
+            elif embeddings[key] is not None:
+                raise ValueError('Unexpected vector in lexical mode')
         existing = {(r['session_id'], r['message_id']): key for key, r in self.rows().items() if r['source_kind'] == 'dialogue'}
         output, fresh = [], []
         for row in rows:

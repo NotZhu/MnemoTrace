@@ -143,11 +143,10 @@ DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读
 
 | 参数组 | 主要字段与默认行为 | 影响 |
 | --- | --- | --- |
-| 嵌入 | embed_dim=256 | 默认 HashingEmbedder 维度；显式 embedder 有自己的身份与维度 |
 | 融合 | w_sem=1.0、w_lex=0.6、w_graph=0.8、w_rec=0.3、w_sal=0.25 | 不同检索信号的配置权重 |
 | 类型先验 | w_type_preference=1.25、w_type_identity=1.15 | 在相关候选中调整优先级 |
 | 候选与输出 | top_k=5、rrf_k=60；candidate_k=24 当前未使用 | 检索返回规模与排序融合 |
-| 扩展候选 | ann_candidates=False、ann_pool=200 | 可选有界向量候选路径，可能改变召回覆盖 |
+| 扩展候选 | ann_candidates=False、ann_pool=200 | 内存引擎可选的有界向量候选路径。BM25 仅重排向量与图候选 |
 | 时间与图 | recency_tau_days=45、max_hops=2 | 时近性先验和图遍历 |
 | 热层与拒答 | max_hot_facts=10000、abstain_threshold=0.45 | 工作集容量和低证据回退 |
 | 整合 | salience_decay_per_day=0.02、access_boost=0.5 | 显著度更新 |
@@ -169,7 +168,9 @@ HTTP、直连 MCP 和普通 CLI 使用[数据库运行连接](#postgres-数据�
 | MNEMOTRACE_SPACE_ID | MCP stdio 和普通 CLI 的空间 ID，也可传 `--space-id` |
 | MNEMOTRACE_API_URL | MCP stdio 使用 HTTP 代理时的服务地址 |
 | MNEMOTRACE_API_KEY | HTTP 客户端凭据，也可使用受保护的 key 文件 |
-| MNEMOTRACE_EMBEDDER | hashing，不下载模型 |
+| MNEMOTRACE_EMBEDDER | Python 服务默认 lexical。Docker 和 Quickstart 默认 fastembed |
+| FASTEMBED_CACHE_PATH | 默认用户目录下的 .cache/mnemotrace/fastembed，Compose 使用持久缓存卷 |
+| MNEMOTRACE_EMBED_OFFLINE | 设为 1 时只读取已经预热的 FastEmbed 缓存 |
 | MNEMOTRACE_LLM | 空，自动抽取请求在持久化前返回配置错误 |
 | MNEMOTRACE_LLM_TOPICS | 默认开启，设为 0 后只使用主题规则 |
 | MNEMOTRACE_ANSWERER | 复用主 LLM |
@@ -191,13 +192,15 @@ HTTP、直连 MCP 和普通 CLI 使用[数据库运行连接](#postgres-数据�
 | --- | --- |
 | HTTP 服务 | `.[server,postgres]` |
 | MCP | HTTP 代理用 `.[mcp]`，可信直连用 `.[mcp,postgres]` |
-| 本地语义嵌入 | `.[embeddings]`；multilingual、bge-small-zh、bge-small、bge-m3、bge-large 或 st:模型名 |
+| 本地语义嵌入 | `.[fastembed]` 提供固定的多语 MiniLM；`.[embeddings]` 提供 SentenceTransformer 模型 |
 | LLM / API 嵌入 | `.[llm]`；模型名和凭据规则由 [providers.py](../../mnemotrace/llm/providers.py) 解析 |
 | PDF/DOCX 解析 | `.[documents]` |
 | Postgres 数据库基础 | `.[postgres]`；包含数据库初始化、身份和业务接口 |
 | 完整服务常用组合 | `.[serve]`；具体包含项以 pyproject 为准 |
 
-上表的 `.` 表示从源码安装，已发布分发包使用对应包名及 extra。真实模型可能下载文件、联网或产生费用，应按语料语言与任务评测选择。别名对应的具体模型见 factory 源码；哈希嵌入不是语义模型，模型名中同维度也不代表向量兼容。
+上表的 `.` 表示从源码安装，已发布分发包使用对应包名及 extra。真实模型可能下载文件、联网或产生费用，应按语料语言与任务评测选择。别名对应的具体模型见 factory 源码。模型名中同维度也不代表向量兼容。
+
+FastEmbed 每条原文保留一份向量，超过模型输入窗口的内容仍可通过全文 BM25 匹配。模型缓存或推理失败会报告嵌入不可用。
 
 ## 命令入口
 

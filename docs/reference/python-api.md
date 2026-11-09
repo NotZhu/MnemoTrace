@@ -33,7 +33,7 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 
 `MemoryEngine(config=None, embedder=None, llm=None, reranker=None, vector_store_factory=..., graph_store_factory=...)`
 
-算法工作集使用 Config、HashingEmbedder 和内存文档、向量及图存储。传入 LLM 才能抽取自然语言事实；可选实现通过各自 extras 安装。参数字段和默认值见[配置参考](configuration.md)及 [Config](../../mnemotrace/config.py)。
+算法工作集使用 Config 和内存文档及图存储，默认使用无向量检索。可显式传入 FastEmbedEmbedder 等嵌入器。传入 LLM 才能抽取自然语言事实；可选实现通过各自 extras 安装。参数字段和默认值见[配置参考](configuration.md)及 [Config](../../mnemotrace/config.py)。
 
 直接使用 MemoryEngine 只在进程内维护算法状态。产品调用使用 Memory 或 HTTP。
 

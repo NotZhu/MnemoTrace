@@ -211,16 +211,20 @@ class FactQuery:
 class RetrievalQuery:
     facts: FactQuery
     text: str
-    vector: tuple[float, ...]
-    embedding_model: str
+    vector: tuple[float, ...] | None = None
+    embedding_model: str | None = None
     exact: bool = True
 
     def __post_init__(self):
         if not isinstance(self.facts, FactQuery) or not isinstance(self.text, str):
             raise ValueError('Expected fact conditions and query text')
+        if type(self.exact) is not bool or (self.vector is None) != (self.embedding_model is None):
+            raise ValueError('Expected an exact flag and a vector paired with its model')
+        if self.vector is None:
+            return
         _id(self.embedding_model)
-        if type(self.exact) is not bool or not isinstance(self.vector, tuple) or not self.vector:
-            raise ValueError('Expected an exact flag and a non-empty vector tuple')
+        if not isinstance(self.vector, tuple) or not self.vector:
+            raise ValueError('Expected a non-empty vector tuple')
         for number in self.vector:
             if number is None:
                 raise ValueError('Null vector coordinate')

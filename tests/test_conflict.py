@@ -67,7 +67,7 @@ def test_semantic_below_threshold_keeps_both():
 
 
 def test_semantic_off_without_embedder():
-    # 离线/hashing 路径：只有精确槽位会触发，所以谓词相近但不相同的一对不会被合并。
+    # 无向量 路径：只有精确槽位会触发，所以谓词相近但不相同的一对不会被合并。
     r = ConflictResolver(None)
     old = _fact("user", "does_yoga", "twice a week", 1, emb=[1.0, 0.0])
     new = _fact("user", "attends_yoga", "three times a week", 2, emb=[1.0, 0.0])

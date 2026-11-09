@@ -34,7 +34,7 @@ def main():
                 ('DISCOVERY_DATABASE_URL', 'app_worker_discovery', secrets.token_urlsafe(24)),
             )
         }
-        variables = dict(urls, POSTGRES_PASSWORD=password, PORT=str(port), IMAGE=image, EMBEDDER='hashing',
+        variables = dict(urls, POSTGRES_PASSWORD=password, PORT=str(port), IMAGE=image, EMBEDDER='fastembed',
                          LLM='', ANSWERER='')
         env_file.write_text(''.join(f'MNEMOTRACE_{name}={value}\n'
                                     for name, value in variables.items()), encoding='utf-8')
@@ -48,6 +48,9 @@ def main():
             result = subprocess.run([*command, *args], cwd=ROOT, env={**env, **(extra or {})},
                                     stdout=subprocess.PIPE if capture else None, text=True, timeout=900)
             if result.returncode != expected:
+                if args[0] == 'up':
+                    subprocess.run([*command, 'logs', '--tail', '40', 'model-init', 'mnemotrace', 'worker'],
+                                   cwd=ROOT, env=env, timeout=30, check=False)
                 raise RuntimeError(f'Compose {args[0]} exited with status {result.returncode}')
             return json.loads(result.stdout) if capture else None
 
@@ -72,14 +75,18 @@ def main():
             built = True
             compose('run', '--rm', 'db-init', 'python', '-m', 'mnemotrace.admin',
                     'init-db', '--bootstrap', '--provision-logins', '--roles-only')
-            compose('run', '--rm', 'mnemotrace', 'python', '-m', 'mnemotrace.admin',
+            compose('run', '--rm', '--no-deps', 'mnemotrace', 'python', '-m', 'mnemotrace.admin',
                     'check-db', expected=1)
             for _ in range(2):
                 assert compose('run', '--rm', 'db-init', capture=True)['initialized']
-            compose('run', '--rm', 'mnemotrace', 'python', '-m', 'mnemotrace.admin',
+            compose('run', '--rm', '--no-deps', 'mnemotrace', 'python', '-m', 'mnemotrace.admin',
                     'check-db', expected=1,
                     extra={'MNEMOTRACE_DATABASE_URL': urls['ADMIN_DATABASE_URL']})
             compose('up', '-d', '--wait', 'mnemotrace', 'worker')
+            assert http('/ready')['embedder'].startswith('fastembed:')
+            compose('run', '--rm', '--no-deps', '-e', 'FASTEMBED_CACHE_PATH=/tmp/empty-model-cache',
+                    'mnemotrace', 'python', '-c',
+                    'from mnemotrace.server.app import ready; assert ready().status_code == 503')
             user = compose('run', '--rm', 'admin', 'create-user', capture=True)['user_id']
             key = compose('run', '--rm', 'admin', 'issue-key', '--user-id', user,
                           capture=True)['key']

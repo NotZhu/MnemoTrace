@@ -12,7 +12,7 @@ from .consolidate.facts import FactWriter
 from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual
 from .consolidate.policy import POLICY_DEFAULTS
 from .consolidate.summarizer import ProfileBuilder
-from .embed import Embedder, HashingEmbedder
+from .embed import Embedder
 from .ingest import Ingestor
 from .llm import LLM
 from .retrieve import (
@@ -63,7 +63,7 @@ class MemoryEngine:
             graph_store_factory: 创建图存储的无参工厂，默认使用内存存储。
         """
         self.config = config or Config()
-        self.embedder = embedder or HashingEmbedder(self.config.embed_dim)
+        self.embedder = embedder
         self.reranker = reranker  # 可选 cross-encoder；提升 chunk/session 检索精度 (AGENTS.md「检索与模块」)
         self.llm = llm  # 启用时供 agentic 检索（查询分解）使用
         # 初始化文档存储
@@ -128,15 +128,42 @@ class MemoryEngine:
         reinforce(fact, self.config.access_boost)
         self._upsert_fact(fact)
 
+    def _encode(self, text, vector=None):
+        if self.embedder is None:
+            if vector is not None:
+                raise ValueError('A supplied vector requires an embedder')
+            return None
+        from .store._validation import validate_embedding
+
+        vector = self.embedder.embed(text) if vector is None else vector
+        validate_embedding(vector, 'memory embedding', self.embedder.dim)
+        return vector
+
+    def _encode_batch(self, texts):
+        if self.embedder is None:
+            return [None] * len(texts)
+        if not texts:
+            return []
+        from .store._validation import validate_embedding
+
+        vectors = self.embedder.embed_batch(texts)
+        if len(vectors) != len(texts):
+            raise ValueError('Embedding batch length mismatch')
+        for vector in vectors:
+            validate_embedding(vector, 'memory embedding', self.embedder.dim)
+        return vectors
+
     def _sync_episode(self, ep: Episode) -> None:
-        if ep.summary and ep.summary_embedding is None:
+        if self.embedder is not None and ep.summary and ep.summary_embedding is None:
             raise ValueError("A searchable summary requires its embedding")
         self.episodes_doc.put(ep.id, ep)
+        if self.embedder is None:
+            return
         if ep.summary:
             self.summary_vec.upsert(ep.id, ep.summary_embedding, ep)
             self.episodes_vec.delete(ep.id)
         else:
-            self.episodes_vec.upsert(ep.id, ep.embedding or [], ep)
+            self.episodes_vec.upsert(ep.id, ep.embedding, ep)
             self.summary_vec.delete(ep.id)
 
     def _all_facts(self, *, include_unpublished=False) -> list[Fact]:
@@ -153,11 +180,11 @@ class MemoryEngine:
         in_hot = self.fact_store.get(fact.id) is not None
         if tier == "hot" or (tier == "existing" and not in_cold):
             self.cold_store.delete(fact.id)
-            self.fact_store.upsert(fact.id, fact.embedding or [], fact)
+            self.fact_store.upsert(fact.id, fact.embedding, fact)
             return
         if in_hot:
             self.fact_store.delete(fact.id)
-        self.cold_store.upsert(fact.id, fact.embedding or [], fact)
+        self.cold_store.upsert(fact.id, fact.embedding, fact)
 
     def _rewire(self) -> None:
         """重建处理组件，使其引用当前存储、嵌入器和配置。
@@ -182,6 +209,8 @@ class MemoryEngine:
         """Regenerate the vectors in this in-memory instance."""
         if embedder is not None:
             self.embedder = embedder
+        if self.embedder is None:
+            raise ValueError('Configure an embedder to build vectors')
 
         def _clear(store) -> None:
             for payload in list(store.values()):
@@ -274,9 +303,7 @@ class MemoryEngine:
             raise RuntimeError('Memory checkpoint failed or closed; create a new instance')
         if consolidate:
             require_llm(self.llm)
-        vector = embedding if embedding is not None else self.embedder.embed(content)
-        from .store._validation import validate_embedding
-        validate_embedding(vector, 'source embedding', self.embedder.dim)
+        vector = self._encode(content, embedding)
         from ._pipeline import memory_adapter
         with memory_adapter(self, user_id).write_lock(user_id):
             ep = self.ingestor.ingest(content, user_id, session_id, role, event_time, embedding=vector)
@@ -295,9 +322,7 @@ class MemoryEngine:
             raise RuntimeError('Memory checkpoint failed or closed; create a new instance')
         if scope not in {"auto", "long", "working"}:
             raise ValueError("scope must be auto, long, or working")
-        vector = _embedding if _embedding is not None else self.embedder.embed(content)
-        from .store._validation import validate_embedding
-        validate_embedding(vector, 'source embedding', self.embedder.dim)
+        vector = self._encode(content, _embedding)
         from ._pipeline import memory_adapter
         with memory_adapter(self, user_id).write_lock(user_id):
             ep = self.add(content, user_id=user_id, session_id=session_id, embedding=vector)
@@ -326,12 +351,9 @@ class MemoryEngine:
                 raise RuntimeError('Memory is closed')
             tasks = PipelineTasks(self, user_id)
             rows, unseen = tasks.inspect(rows, session_id, mode, scope)
-        batch = self.embedder.embed_batch(list(unseen.values())) if unseen else []
+        batch = self._encode_batch(list(unseen.values()))
         if len(batch) != len(unseen):
             raise ValueError('Embedding batch length mismatch')
-        from .store._validation import validate_embedding
-        for vector in batch:
-            validate_embedding(vector, 'message embedding', self.embedder.dim)
         vectors = dict(zip(unseen, batch))
         with self._pipeline_lock:
             if self._pipeline_closed:
@@ -363,8 +385,8 @@ class MemoryEngine:
                 if not isinstance(value, Episode):
                     raise ValueError('Cannot extract an absent original source')
                 ep = value
-                if ep.embedding is None:
-                    ep.embedding = self.embedder.embed(ep.content)
+                if ep.embedding is None and self.embedder is not None:
+                    ep.embedding = self._encode(ep.content)
                 self._sync_episode(ep)
             if not ep.consolidated and ep.content.strip():
                 sources.append(ep)
@@ -481,7 +503,7 @@ class MemoryEngine:
             vectors = []
             for start in range(0, len(texts), batch_size):
                 batch = texts[start:start + batch_size]
-                encoded = self.embedder.embed_batch(batch)
+                encoded = self._encode_batch(batch)
                 if len(encoded) != len(batch):
                     raise ValueError('Embedding batch length mismatch')
                 vectors.extend(encoded)
@@ -530,7 +552,7 @@ class MemoryEngine:
         结果。在 `dedupe`（默认）下幂等。"""
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
-        from .store._validation import validate_embedding, validate_snapshot
+        from .store._validation import validate_snapshot
 
         snapshot = validate_snapshot(snapshot)
         user = user_id
@@ -551,11 +573,9 @@ class MemoryEngine:
                          consolidated=True,  # 它的 fact 在下方恢复；绝不重新抽取
                          summary=row.get("summary", ""), coverage=row.get('coverage'), summary_coverage=row.get('summary_coverage'),
                          metadata={'snapshot_source_id': row['id']})
-            ep.embedding = self.embedder.embed(content)
-            validate_embedding(ep.embedding, "snapshot.episodes.embedding", self.embedder.dim)
+            ep.embedding = self._encode(content)
             if ep.summary:
-                ep.summary_embedding = self.embedder.embed(ep.summary)
-                validate_embedding(ep.summary_embedding, "snapshot.episodes.summary_embedding", self.embedder.dim)
+                ep.summary_embedding = self._encode(ep.summary)
             prepared_episodes.append(ep)
             ep_seen.add(row['id'])
 
@@ -592,8 +612,7 @@ class MemoryEngine:
                      # 来源 episode id：原样保留以保审计诚实——被引用的 episode 在这里拿到了新 id，
                      # 这些字段记录的是该 fact 当初来自哪里。
                      provenance=row["provenance"])
-            f.embedding = self.embedder.embed(f.text)
-            validate_embedding(f.embedding, "snapshot.facts.embedding", self.embedder.dim)
+            f.embedding = self._encode(f.text)
             id_map[row["id"]] = f.id
             staged.append((f, row["supersedes"]))
             fact_seen[key] = f.id
@@ -632,7 +651,7 @@ class MemoryEngine:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
         user = user_id
         f = build_manual_fact(subject, predicate, object, user, valid_at, sensitive, category, topic)
-        f.embedding = self.embedder.embed(f.text)
+        f.embedding = self._encode(f.text)
         from .consolidate.pipeline import PipelineTasks
         PipelineTasks(self, f.user_id).invalidate()
         history = [x for x in self._all_facts() if x.slot == f.slot]
@@ -664,7 +683,7 @@ class MemoryEngine:
         claim_changed = apply_manual_edit(edited, subject, predicate, object, sensitive, category,
                                           statement, topic, reset_topic)
         if claim_changed:
-            edited.embedding = self.embedder.embed(edited.text)
+            edited.embedding = self._encode(edited.text)
             self.graph.delete_relations_for_fact(f.id)
             self.graph.prune_orphan_entities()
             from .consolidate.pipeline import PipelineTasks
@@ -833,7 +852,7 @@ class MemoryEngine:
             event_time=event_time if event_time is not None else now(),
             expires_at=(now() + ttl_seconds) if ttl_seconds else None,
         )
-        wm.embedding = embedding if embedding is not None else self.embedder.embed(content)
+        wm.embedding = self._encode(content, embedding)
         self.working_mem[wm.id] = wm
         return wm
 
@@ -964,27 +983,40 @@ class MemoryEngine:
         """为查询取 top-k 条 session 摘要，使用与 fact/episode 检索相同的 hybrid（dense + BM25,
         RRF）信号。词法匹配在这里很重要：聚合类问题（"how many trips"）依赖摘要里提到的精确词，
         纯嵌入查找可能把它们排在模糊相似项之后。返回只包含选定文本的只读事件证据。"""
-        user = user_id
-        pool = max(k * 3, 30)
-        cands = self.summary_vec.search(
-            self.embedder.embed(query),
-            pool,
-            where=lambda e: e.user_id == user and (as_of is None or (e.event_time is not None and e.event_time <= as_of)),
-        )
-        eps = [event_evidence(ep) for _, ep in cands]
-        if len(eps) <= k:
-            return eps
-        from .retrieve.hybrid import date_terms
-        bm25 = bm25_scores(query, [
-            (ep.id, f"{ep.text} {date_terms(ep.event_time)}") for ep in eps])
-        if bm25:
-            bm25_rank = {eid: r for r, (eid, _) in
-                         enumerate(sorted(bm25.items(), key=lambda x: x[1], reverse=True))}
-            K = 60  # 标准 RRF 常数
-            order = sorted(range(len(eps)), key=lambda i: -(
-                1.0 / (K + i + 1) + 1.0 / (K + bm25_rank.get(eps[i].id, len(eps)) + 1)))
-            eps = [eps[i] for i in order]
-        return eps[:k]
+        return self._event_candidates(query, user_id, as_of, k, max(k * 3, 30), summaries_only=True)[:k]
+
+    def _event_candidates(self, query, user_id, as_of, k, pool, *, summaries_only=False):
+        from .retrieve.fusion import weighted_rrf
+        from .retrieve.hybrid import date_terms, order_positive
+
+        def visible(ep):
+            return ep.user_id == user_id and (as_of is None or
+                                             (ep.event_time is not None and ep.event_time <= as_of))
+
+        episodes = {ep.id: ep for ep in self.episodes_doc.values()
+                    if visible(ep) and (not summaries_only or ep.summary)}
+        documents = {}
+        for ep in episodes.values():
+            date = date_terms(ep.event_time)
+            documents[(ep.id, 'text')] = f'{ep.content} {date}'
+            if ep.summary:
+                documents[(ep.id, 'summary')] = f'{ep.summary} {date}'
+        lexical = {}
+        for (episode_id, _), score in bm25_scores(query, list(documents.items())).items():
+            lexical[episode_id] = max(score, lexical.get(episode_id, 0.0))
+        semantic = {}
+        if self.embedder is not None:
+            vector = self.embedder.embed(query)
+            hits = self.summary_vec.search(vector, pool, where=visible)
+            if not summaries_only:
+                hits += self.episodes_vec.search(vector, pool, where=visible)
+            for score, ep in hits:
+                if ep.id in episodes:
+                    semantic[ep.id] = max(score, semantic.get(ep.id, 0.0))
+        scores = weighted_rrf({'sem': order_positive(semantic)[:pool],
+                               'lex': order_positive(lexical)[:pool]}, {})
+        ranked = sorted(scores, key=lambda key: (-scores[key], key))
+        return [event_evidence(episodes[key]) for key in ranked[:max(k, pool)]]
 
     # 程序性记忆：how-to / 指令性知识——用户声明过的关于事情该怎么做的规则（"always remind
     # me…"、"I prefer responses in bullet points"）。这是 fact store 之上的一个独立类型化视图
@@ -1004,7 +1036,7 @@ class MemoryEngine:
         evictable.sort(key=lambda f: (f.salience, f.last_access))  # 最冷的（显著度最低/最旧）优先
         n_out = min(len(evictable), len(hot) - max_hot)
         for f in evictable[:n_out]:
-            self.cold_store.upsert(f.id, f.embedding or [], f)  # 保留在冷层
+            self.cold_store.upsert(f.id, f.embedding, f)  # 保留在冷层
             self.fact_store.delete(f.id)  # 仅从热层索引移除
             self.cold_pages_out[f.user_id] = self.cold_pages_out.get(f.user_id, 0) + 1
         return n_out
@@ -1022,7 +1054,7 @@ class MemoryEngine:
             if self.cold_store.get(f.id) is not None:
                 self.cold_store.delete(f.id)
                 reinforce(f, self.config.access_boost)
-                self.fact_store.upsert(f.id, f.embedding or [], f)
+                self.fact_store.upsert(f.id, f.embedding, f)
                 self.cold_pages_in[f.user_id] = self.cold_pages_in.get(f.user_id, 0) + 1
                 moved = True
         if moved:
@@ -2340,27 +2372,8 @@ class MemoryEngine:
         """
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
-        user = user_id
         pool = pool or max(k * 5, 25)
-        query_vector = self.embedder.embed(query)
-        predicate = lambda e: e.user_id == user and (as_of is None or (e.event_time is not None and e.event_time <= as_of))
-        candidates = self.episodes_vec.search(query_vector, pool, where=predicate)
-        candidates += self.summary_vec.search(query_vector, pool, where=predicate)
-        candidates.sort(key=lambda row: row[0], reverse=True)
-        eps = [event_evidence(ep) for _, ep in candidates[:pool]]
-
-        # 候选数多于要返回的数量时，做 BM25 + 嵌入的 RRF 融合。
-        if len(eps) > k:
-            bm25 = bm25_scores(query, [(ep.id, ep.text) for ep in eps])
-            if bm25:
-                bm25_rank = {eid: r for r, (eid, _) in
-                             enumerate(sorted(bm25.items(), key=lambda x: x[1], reverse=True))}
-                K_RRF = 60  # 标准 RRF 常数——在 [30, 100] 区间内不敏感
-                fused_order = sorted(range(len(eps)), key=lambda i: -(
-                    1.0 / (K_RRF + i + 1) +  # 嵌入排名贡献
-                    1.0 / (K_RRF + bm25_rank.get(eps[i].id, len(eps)) + 1)  # BM25 排名贡献
-                ))
-                eps = [eps[i] for i in fused_order]
+        eps = self._event_candidates(query, user_id, as_of, k, pool)
 
         if self.reranker is not None and len(eps) > k:
             ranked = self.reranker.rerank(query, [(i, ep.text) for i, ep in enumerate(eps)], k)

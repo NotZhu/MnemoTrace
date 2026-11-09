@@ -215,7 +215,7 @@ test('agentStatus calls the content-free agent status endpoint', async () => {
       counts,
       consolidation_backlog: false,
       storage: 'memory',
-      embedder: 'HashingEmbedder',
+      embedder: 'lexical',
       llm_configured: false,
       recommended_next_actions: [
         'Call mnemotrace_recall before answering tasks that depend on prior user/project context.',

@@ -13,17 +13,21 @@ FROM python:3.12-slim-bookworm AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    MNEMOTRACE_EMBEDDER=hashing \
+    MNEMOTRACE_EMBEDDER=fastembed \
+    FASTEMBED_CACHE_PATH=/var/cache/mnemotrace/fastembed \
+    HF_HOME=/var/cache/mnemotrace/fastembed \
     MNEMOTRACE_MAX_REQUEST_BYTES=2097152
 
 WORKDIR /app
 
 RUN groupadd --gid 10001 mnemotrace \
-    && useradd --uid 10001 --gid mnemotrace --home-dir /nonexistent --shell /usr/sbin/nologin mnemotrace
+    && useradd --uid 10001 --gid mnemotrace --home-dir /nonexistent --shell /usr/sbin/nologin mnemotrace \
+    && install -d -o 10001 -g 10001 /var/cache/mnemotrace/fastembed \
+    && touch /var/cache/mnemotrace/fastembed/.keep
 
 COPY pyproject.toml README.md LICENSE COMMERCIAL-LICENSE.md ./
 COPY mnemotrace/ ./mnemotrace/
-RUN python -m pip install ".[server,mcp,llm,postgres]"
+RUN python -m pip install ".[serve]"
 
 COPY --from=console-build /build/frontend/dist/ ./frontend/dist/
 
