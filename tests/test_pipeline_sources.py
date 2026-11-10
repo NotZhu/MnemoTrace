@@ -113,9 +113,9 @@ def test_third_party_name_never_becomes_the_owner_identity(kind):
     def names(prompt, system):
         data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX)[1])[0]
         source_id = data['pending'][0]['id']
-        return json.dumps(dict(facts=[dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='friend', predicate='name', object='Alice',
+        return json.dumps(dict(facts=[dict(categories=[], object_kind='unknown', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='friend', predicate='name', object='Alice',
             text='The friend is Alice', source_ids=[source_id]),
-            dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='user', predicate='owns', object='bicycle', text='I own a bicycle',
+            dict(categories=[], object_kind='unknown', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='user', predicate='owns', object='bicycle', text='I own a bicycle',
                  source_ids=[source_id])], digests=[]))
     mem = MemoryEngine(llm=FakeLLM(handler=names))
     if kind == 'raw':
@@ -124,9 +124,8 @@ def test_third_party_name_never_becomes_the_owner_identity(kind):
     else:
         mem.remember_messages([dict(message_id='a', role='user', content='Synthetic owner and friend')], 's')
         assert mem.flush_messages()['ok']
-    assert not mem._identity and not mem._aliases
     facts = mem.fact_store.values()
-    assert next(f for f in facts if f.predicate == 'owns').subject == 'default'
+    assert next(f for f in facts if f.predicate == 'owns').subject == 'user'
     assert next(f for f in facts if f.predicate == 'name').subject == 'friend'
 
 

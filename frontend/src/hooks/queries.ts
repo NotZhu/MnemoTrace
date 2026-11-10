@@ -46,7 +46,7 @@ function memoriesScope(params: MemoriesQuery) {
   return hashKey([{
     ...scope,
     include_sensitive: params.include_sensitive ?? false,
-    category: params.category?.trim() || undefined,
+    categories: params.categories?.length ? [...new Set(params.categories)].sort() : undefined,
   }])
 }
 
@@ -228,15 +228,6 @@ export function useEditFact() {
 export function useDeleteFact() {
   const invalidate = useInvalidateMemory()
   return useMutation({ mutationFn: (id: string) => api.deleteFact(id), onSuccess: invalidate })
-}
-
-export function useClearSlot() {
-  const invalidate = useInvalidateMemory()
-  return useMutation({
-    mutationFn: ({ subject, predicate, count }: { subject: string; predicate: string; count: number }) =>
-      api.clearSlot(subject, predicate, count),
-    onSuccess: invalidate,
-  })
 }
 
 export function useSetFocus() {

@@ -4,10 +4,10 @@ from mnemotrace.store.contracts import FactQuery
 
 def test_explicit_path_returns_all_endpoints_and_supporting_facts():
     memory = MemoryEngine()
-    one = memory.add_fact('user', 'sister', 'Ana')
-    two = memory.add_fact('user', 'sister', 'Bea')
-    three = memory.add_fact('Ana', 'works_at', 'Orbit')
-    four = memory.add_fact('Bea', 'works_at', 'Nadir')
+    one = memory.add_fact('user', 'sister', 'Ana', object_kind="entity")
+    two = memory.add_fact('user', 'sister', 'Bea', object_kind="entity")
+    three = memory.add_fact('Ana', 'works_at', 'Orbit', object_kind="entity")
+    four = memory.add_fact('Bea', 'works_at', 'Nadir', object_kind="entity")
     result = memory.follow_path('user', ['sister', 'works_at'])
     assert {path.endpoint: path.facts for path in result.paths} == {
         'Orbit': (one, three), 'Nadir': (two, four),
@@ -87,7 +87,7 @@ def test_backfilled_replacements_keep_previous_validity_boundaries():
     from dataclasses import asdict
 
     restored = MemoryEngine()
-    restored.import_snapshot(dict(facts=[asdict(fact) for fact in memory.fact_store.values()], episodes=[]))
+    restored.import_snapshot(dict(format_version=2, facts=[asdict(fact) for fact in memory.fact_store.values()], episodes=[]))
     for known, expected, end in ((150, 'First', None), (250, 'First', 800), (350, 'Middle', 800)):
         result = restored.aggregate_facts('works_at', facts=FactQuery(valid_at=600, known_at=known))
         assert [(fact.object, fact.invalid_at) for fact in result.facts] == [(expected, end)]

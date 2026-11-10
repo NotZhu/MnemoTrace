@@ -211,7 +211,7 @@ with Database(DatabaseConfig.from_env()) as database:
 | --- | --- |
 | 账号与空间 | users、api_keys、memory_spaces、sessions；账号不依附某把 key，空间显式创建 |
 | 权威业务数据 | sources/source_digests、facts/fact_sources、conflicts、import_receipts |
-| 实体与检索派生数据 | entities/entity_merges、graph_relations、embeddings、lexical_documents/lexical_terms |
+| 实体与检索派生数据 | entities、graph_relations、embeddings、lexical_documents/lexical_terms |
 | 操作与恢复 | operations、operation_sources/targets/products/receipts；唯一任务账本，不新增 outbox |
 
 每张空间业务表有 user_id、space_id，关联使用包含归属的复合外键。
@@ -304,7 +304,7 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 | ingest.pipeline: add；memory: add/remember/remember_messages；service: remember/remember_messages | embedding 后写原文，默认用户、路由/任务随快照保存 | T1 原文/任务、消息去重、来源 agent；原文不依赖向量 | 3—4、6 | extraction_contract、message_pipeline/interfaces、pipeline_sources |
 | memory: import_messages/_document_inputs/_import_documents/import_data/import_snapshot；service: import_/import_document | 来源扫描、内存 import_seen、快照导入、全量统计 | 正常导入走新协议/import_receipts；不增加旧快照迁移 | 3、6、8 | import_dedupe/snapshot/cli、connectors、documents |
 | consolidate.pipeline: inspect/accept/register/rows/trigger/retry/snapshot/response/invalidate/validate_state | 空间 ledger、序号、窗口/覆盖、单 generation，stats 恢复校验不足 | 操作/来源/产物/回执，必需字段严格校验 | 4、7 | message_pipeline/windows/recovery、storage_contracts |
-| _pipeline: new_window/trigger_ready/enqueue_operation/_commit/_advance/_fail/run_one/execute_sources/execute_memory/flush | 修改事实、身份/aliases、来源摘要/覆盖、窗口统计 | T2/T3、租约/版本守卫、统一执行器，摘要片段可靠保存 | 4 | processing、original_product、process_recovery |
+| _pipeline: new_window/trigger_ready/enqueue_operation/_commit/_advance/_fail/run_one/execute_sources/execute_memory/flush | 修改事实、来源摘要/覆盖、窗口统计 | T2/T3、租约/版本守卫、统一执行器，摘要片段可靠保存 | 4 | processing、original_product、process_recovery |
 | consolidate.planning: plan/digest_plan/supplied；fact_rules 主体归一化 | 来源上下文、身份/别名、窗口预算和主体推断 | 必要会话/主体上下文，记录实际业务版本；用户/assistant 自称分开 | 3—4 | message_windows、pipeline_sources、profile_evidence |
 | consolidate.facts: _accepted/_write_fact/_ensure_projection/_decay_sweep | 全事实归并、规范化对象/文本、去重 provenance、失效链路、显著度 | 完整必要主体/槽位/语义历史；显式修改，衰减为维护操作 | 3—4 | fact_statement_updates、conflict、message_recovery |
 | consolidate.conflict: _supersede/insert_dialogue_history/reconcile；conflict_candidates | 双时间轴/链路重连、重复来源、语义候选 | 必要历史读取，同事务更新；归并向量先就绪 | 3—4 | conflict、search_answering |
@@ -317,15 +317,15 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 | retrieve.hybrid: retrieve/_ann_candidates/_graph_scores/_graph_neighbor_facts/graph_exclusion_zone | 全 live 或 ANN+图池、内存 BM25/五信号 | DB 候选/作用域统计/局部图，Python 槽位头/排除/融合 | 5 | retrieval_candidates、storage_baseline、search_answering |
 | retrieve.planner；memory: _graph_related_facts/_entity_notes/_graph_paths_block/graph_data | 实体、全关系、邻接与事实回查 | 授权空间/时间下结构化遍历和事实查询 | 5 | graph_query、planner |
 | memory: _persona_at/_preference_block/_history_block/_temporal_history_result/_chain_facts_for_seeds/history | 扫事实形成当前槽位、历史、偏好 | 主体/槽位/历史链查询，必要历史不受候选预算截断 | 3、5 | smoke temporal/history、fact_statement_updates |
-| memory: _provenance_raw_block/_provenance_detail_chunks/_aggregation_block/_duration_block/_procedural_candidates/procedural | 扫来源/事实补证据、计数/时长/规则 | 来源 ID 回查、聚合和条件读取，保留证据/排除规则 | 5 | lean、profile_evidence、event_representation |
+| memory: _provenance_raw_block/_provenance_detail_chunks/_aggregation_block/_duration_block | 扫来源/事实补证据、计数和时长 | 来源 ID 回查、聚合和条件读取，保留证据/排除规则 | 5 | lean、profile_evidence、event_representation |
 | pipeline: cancel_missing/identity_saved；_pipeline: _pending/_select/_current | 来源/窗口集合扫描，检查取消、身份完成和会话队头 | 按来源/会话查询操作关联和回执；只遍历已读取候选/冲突对 | 3—4 | pipeline_sources、message_recovery |
-| hybrid: query_entity_ids/graph_excluded_entity_ids；planner: _anchor_entity/_user_predicates/_user_entities/_bridge_paths | 实体/谓词/桥接路径完整扫描 | 名称/别名/主体查询、局部邻接与谓词聚合 | 5 | planner、graph_query、lean |
-| memory.reembed 内部 _clear；classify: classify_fact；memory_store: upsert_entity/invalidate_relations_for_fact/delete_relations_for_fact/prune_orphan_entities | 清索引、修改分类/别名和关系有效时间、删除邻接/孤立实体 | 版本化重嵌入、显式分类/图事务；人工别名/合并锚点不随派生图清理丢失 | 3—5 | reembed、classification、record_business |
+| hybrid: query_entity_ids/graph_excluded_entity_ids；planner: _anchor_entity/_user_predicates/_user_entities/_bridge_paths | 实体/谓词/桥接路径完整扫描 | 实体名称和主体查询、局部邻接与谓词聚合 | 5 | planner、graph_query、lean |
+| memory.reembed 内部 _clear；classify: classify_fact；memory_store: upsert_entity/invalidate_relations_for_fact/delete_relations_for_fact/prune_orphan_entities | 清索引、修改分类和关系有效时间、删除邻接/孤立实体 | 版本化重嵌入、显式分类与图投影事务 | 3—5 | reembed、classification、record_business |
 | memory: _current_state_block/_should_abstain；structured: build_structured_profile；agentic: gather_episodes；aggregate: dedupe_aggregation_candidates；conflict_candidates: candidate_pairs；lexical: bm25_scores | 遍历局部 latest/diag/basic/prefs/seen/best/by_subj/doc_tokens 字典 | 保留局部算法；输入来自授权必要工作集，BM25 统计从同作用域数据库语料提供 | 5 | smoke、profile_display、lean、storage_baseline |
 | memory: lean_context/search/context_for/retrieve_episodes/get_episode；service: recall/recall_multi/get_episode | 内存候选/working_set、完整 token 估算与可选 answerer | DB 候选/必要工作集，逐空间鉴权融合；保留入口差异 | 5—6 | lean、search_answering、spaces |
 | service: processing_status/_processing_status/flush/close | 扫空间来源/任务、按 namespace 等待 | 操作/会话查询、DB 租约恢复 | 4、6 | processing、process_recovery |
 | service: close_session/session_report/agent_status/sessions | 查询原文和 facts 汇总，close 捕获边界清理 | 会话查询和聚合。整理会话复用 flush_processing，移除旧关闭入口、自动清理和会话结论 | 3、6 | agent_sessions、message_recovery、outcomes |
-| service: graph/memories/audit/_embedder_blindness/stats | 全量分页、实体/关系统计、敏感过滤与审计 | DB 分页/聚合，审计走显式维护接口 | 3、5—6 | http_product、graph_query、http_metrics |
+| service: graph/memories/audit/stats | 全量分页、实体/关系统计、敏感过滤与审计 | DB 分页/聚合，审计走显式维护接口 | 3、5—6 | http_product、graph_query、http_metrics |
 | service: forget/export；persist: save_memory/load_memory/_memory_state | 全空间擦除/导出、manifest 携带策略/身份/去重/任务，缺失可当空库 | 删除事务/作废；新格式流式导出恢复；不迁旧目录 | 3、7—8 | process_recovery、snapshot_validation、postgres_backup |
 | server.app 全业务路由/openai_compat | 部分支持 space/home，部分直接使用认证命名空间 | 全部显式 space_id，代理携带操作标识 | 6 | server、openai_compat、message/topic_interfaces |
 | mcp.server/backends/__main__ | 本地固定 namespace，远程旧参数 | 配置身份/空间，共享新进度 | 6 | mcp、mcp_credentials、message/digest_interfaces |

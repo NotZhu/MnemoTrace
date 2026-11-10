@@ -31,4 +31,3 @@ CREATE INDEX facts_slot_normalized ON mnemotrace.facts
 ALTER TABLE mnemotrace.fact_sources ADD COLUMN source_order mnemotrace.counter;
 CREATE INDEX facts_predecessor ON mnemotrace.facts(user_id, space_id, supersedes);
 CREATE INDEX operation_sources_source ON mnemotrace.operation_sources(user_id, space_id, source_id);
-ALTER TABLE mnemotrace.entities ADD COLUMN authoritative boolean NOT NULL DEFAULT false;

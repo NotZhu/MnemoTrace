@@ -6,12 +6,12 @@ import pytest
 from tests.model_fixtures import MemoryEngine
 
 
-@pytest.mark.parametrize("patch", [{"sensitive": True}, {"category": "测试分类"}])
+@pytest.mark.parametrize("patch", [{"sensitive": True}, {"categories": ["technology"]}])
 @pytest.mark.parametrize("resubmit_claim", [False, True])
 def test_metadata_update_preserves_superseded_fact(patch, resubmit_claim):
     mem = MemoryEngine()
-    old = mem.add_fact("demo_user", "lives_in", "北京", valid_at=1)
-    current = mem.add_fact("demo_user", "lives_in", "上海", valid_at=2, cardinality="single")
+    old = mem.add_fact("demo_user", "lives_in", "北京", valid_at=1, object_kind="entity")
+    current = mem.add_fact("demo_user", "lives_in", "上海", valid_at=2, cardinality="single", object_kind="entity")
     assert not old.is_live() and current.supersedes == old.id
     temporal = (old.valid_at, old.invalid_at, old.created_at, old.expired_at, old.supersedes)
     relations = [(r.fact_id, r.valid_at, r.invalid_at) for r in mem.graph.relations()]
@@ -26,29 +26,29 @@ def test_metadata_update_preserves_superseded_fact(patch, resubmit_claim):
     assert (old.valid_at, old.invalid_at, old.created_at, old.expired_at, old.supersedes) == temporal
     assert current.is_live() and current.supersedes == old.id
     assert [(r.fact_id, r.valid_at, r.invalid_at) for r in mem.graph.relations()] == relations
-    for field in ("sensitive", "category"):
+    for field in ("sensitive", "categories"):
         if field in patch:
             assert getattr(old, field) == patch[field]
 
 
 def test_metadata_update_preserves_active_fact_content_and_classification():
     mem = MemoryEngine()
-    fact = mem.add_fact("demo_user", "lives_in", "北京", category="自定义分类", sensitive=True)
+    fact = mem.add_fact("demo_user", "lives_in", "北京", categories=["personal_details"], sensitive=True)
     fact.text = "A synthetic source statement with additional context."
     fact.display = "演示用户住在北京。"
     fact.provenance = ["synthetic_episode"]
-    content = (fact.text, fact.display, fact.embedding, list(fact.provenance), fact.category)
+    content = (fact.text, fact.display, fact.embedding, list(fact.provenance), fact.categories)
 
     mem.update_fact(fact.id, subject=fact.subject, predicate=fact.predicate, object=fact.object, sensitive=False)
 
     assert fact.is_live() and not fact.sensitive
-    assert (fact.text, fact.display, fact.embedding, fact.provenance, fact.category) == content
+    assert (fact.text, fact.display, fact.embedding, fact.provenance, fact.categories) == content
 
 
 def test_changed_claim_retains_existing_edit_behavior():
     mem = MemoryEngine()
-    fact = mem.add_fact("demo_user", "lives_in", "北京")
-    mem.update_fact(fact.id, object="上海")
+    fact = mem.add_fact("demo_user", "lives_in", "北京", object_kind="entity")
+    mem.update_fact(fact.id, object="上海", object_kind="entity")
     assert fact.object == "上海" and "上海" in fact.text
     assert fact.is_live() and fact.source == "user"
     assert "上海" in str(mem.graph_data("default"))
@@ -56,7 +56,7 @@ def test_changed_claim_retains_existing_edit_behavior():
 
 @pytest.mark.parametrize("source", ["extracted", "user"])
 @pytest.mark.parametrize("resubmit_claim", [False, True])
-@pytest.mark.parametrize("operation", ["sensitive", "category", "noop"])
+@pytest.mark.parametrize("operation", ["sensitive", "categories", "noop"])
 def test_metadata_save_preserves_fact_source(source, resubmit_claim, operation):
     mem = MemoryEngine()
     if source == "extracted":
@@ -70,7 +70,7 @@ def test_metadata_save_preserves_fact_source(source, resubmit_claim, operation):
     claim = {field: getattr(fact, field) for field in ("subject", "predicate", "object")}
     patches = {
         "sensitive": [{"sensitive": True}, {"sensitive": False}],
-        "category": [{"category": "测试分类"}],
+        "categories": [{"categories": ["technology"]}],
         "noop": [{}],
     }[operation]
 

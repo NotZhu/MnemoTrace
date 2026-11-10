@@ -3,10 +3,7 @@ from __future__ import annotations
 from tests.model_fixtures import saved_outcome
 
 
-from mnemotrace.consolidate.outcomes import (
-    OUTCOME_CATEGORY,
-    split_outcome_text,
-)
+from mnemotrace.consolidate.outcomes import OUTCOME_PREDICATES, split_outcome_text
 from tests.model_fixtures import MemoryEngine
 from mnemotrace.types import Fact
 
@@ -27,7 +24,7 @@ def test_split_outcome_text_is_the_exact_inverse_of_the_format():
 
 def _stored_outcome(mem, predicate="finding", statement="分页游标在第二页丢失排序键", why="实测第二页重复"):
     f = Fact(user_id="u", subject="s-1", predicate=predicate, object=statement,
-             text=f"{statement} （依据：{why}）", display=statement, category=OUTCOME_CATEGORY)
+             text=f"{statement} （依据：{why}）", display=statement)
     f.embedding = mem.embedder.embed(f.text)
     mem.fact_store.upsert(f.id, f.embedding, f)
     return f
@@ -43,14 +40,11 @@ def test_renaming_a_predicate_refreshes_the_stale_display():
     got = mem.fact_store.get(f.id)
     assert got.predicate == "lesson"
     assert got.display == got.object       # 已刷新，而不是编辑前的措辞
-    assert got.category == OUTCOME_CATEGORY
 
 
 def test_editing_a_conclusion_keeps_it_in_the_journal():
-    """classify() 只认识 attribute 的桶，所以没有显式守卫的话，一次编辑会悄悄把结论降级出 Journal
-    和 audit 跳过规则都依赖的那个 category。"""
     mem = MemoryEngine()
     f = _stored_outcome(mem, predicate="decision", statement="读路径用混合检索：事实加原始片段")
     mem.update_fact(f.id, object="读路径用混合检索：consolidated facts 加 raw chunks")
 
-    assert mem.fact_store.get(f.id).category == OUTCOME_CATEGORY
+    assert mem.fact_store.get(f.id).predicate in OUTCOME_PREDICATES

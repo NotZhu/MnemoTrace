@@ -6,10 +6,6 @@ from ..types import Fact
 from .events import EventEvidence
 
 
-class AmbiguousAnchor(ValueError):
-    """More than one visible entity matches the supplied alias."""
-
-
 @dataclass(frozen=True)
 class AggregateResult:
     count: int

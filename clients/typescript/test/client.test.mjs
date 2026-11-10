@@ -81,40 +81,39 @@ test('remember reports scheduling without fabricating an extraction result', asy
   assert.deepEqual(await client.remember('Synthetic input', space), result)
 })
 
-test('memories sends the stored-topic filter alongside paging and search', async () => {
+test('memories sends multiple category filters alongside paging and search', async () => {
   const calls = []
   const client = new MnemoTraceClient({ fetch: async url => {
     calls.push(new URL(url))
-    return new Response(JSON.stringify({facts: []}), {status: 200})
+    return new Response(JSON.stringify({ facts: [] }), { status: 200 })
   } })
-  await client.memories({ ...space,topic: 'unknown', kind: 'outcomes', factsLimit: 1, query: 'synthetic'})
-  assert.deepEqual(Object.fromEntries(calls[0].searchParams), {
-    topic: 'unknown', kind: 'outcomes', facts_limit: '1', q: 'synthetic', space_id: 'space-test',
-  })
+  await client.memories({ ...space, categories: ['food', 'music'], kind: 'outcomes', factsLimit: 1, query: 'synthetic' })
+  assert.deepEqual(calls[0].searchParams.getAll('categories'), ['food', 'music'])
+  assert.equal(calls[0].searchParams.get('facts_limit'), '1')
+  assert.equal(calls[0].searchParams.get('q'), 'synthetic')
   await client.memories(space)
-  assert.equal(calls[1].searchParams.has('topic'), false)
+  assert.equal(calls[1].searchParams.has('categories'), false)
 })
 
-test('fact topics and reset are passed through with server-assigned origins', async () => {
+test('fact category edits preserve explicit clear and carry object kind', async () => {
   const calls = []
-  const client = new MnemoTraceClient({fetch: async (url, init) => {
+  const client = new MnemoTraceClient({ fetch: async (_url, init) => {
     const body = JSON.parse(init.body)
-    calls.push({url, body})
-    return new Response(JSON.stringify({ok: true, id: 'synthetic-fact', text: 'user prefers tea',
-      topic: body.reset_topic ? 'unknown' : body.topic,
-      topic_source: body.reset_topic ? 'unset' : 'user'}), {status: 200})
-  }})
-  const added = await client.addFact({predicate: 'prefers', object: 'tea', topic: 'food'}, space)
-  assert.equal(added.topic, 'food')
-  assert.equal(added.topic_source, 'user')
-  const explicitUnknown = await client.updateFact(added.id, {topic: 'unknown'}, space)
-  assert.equal(explicitUnknown.topic_source, 'user')
-  const reset = await client.updateFact(added.id, {reset_topic: true}, space)
-  assert.equal(reset.topic, 'unknown')
-  assert.equal(reset.topic_source, 'unset')
-  assert.deepEqual(calls.map(call => call.body), [
-    {subject: 'user', predicate: 'prefers', object: 'tea', topic: 'food', space_id: 'space-test'},
-    {topic: 'unknown', space_id: 'space-test'}, {reset_topic: true, space_id: 'space-test'},
+    calls.push(body)
+    return new Response(JSON.stringify({ ok: true, id: 'synthetic-fact', text: 'user prefers tea',
+      categories: body.categories, categories_source: body.categories.length ? 'user' : 'unset',
+      object_kind: body.object_kind ?? 'entity' }), { status: 200 })
+  } })
+  const added = await client.addFact({ predicate: 'prefers', object: 'tea', categories: ['food'], object_kind: 'entity' }, space)
+  assert.deepEqual(added.categories, ['food'])
+  assert.equal(added.categories_source, 'user')
+  assert.equal(added.object_kind, 'entity')
+  const cleared = await client.updateFact(added.id, { categories: [] }, space)
+  assert.deepEqual(cleared.categories, [])
+  assert.equal(cleared.categories_source, 'unset')
+  assert.deepEqual(calls, [
+    { subject: 'user', predicate: 'prefers', object: 'tea', categories: ['food'], object_kind: 'entity', space_id: 'space-test' },
+    { categories: [], space_id: 'space-test' },
   ])
 })
 
@@ -387,7 +386,9 @@ test('memories supports paging search and share-safe filtering for owner UIs', a
           status: 'live',
           source: 'user',
           supersedes: null,
-          category: 'work',
+          categories: ['professional_details'],
+          categories_source: 'user',
+          object_kind: 'entity',
           sensitive: false,
           salience: 1,
           provenance: [],

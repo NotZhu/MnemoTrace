@@ -1,16 +1,15 @@
 """Product adapters for one authorized PostgreSQL memory space."""
-from collections import Counter
 from dataclasses import asdict
 import json
 import math
 import os
 
-from .audit import AUDIT_KIND_PRIORITY, EmbedderCoverage, fact_finding, finding
+from .audit import graph_audit
 from .config import Config
 from .connectors.documents import document_inputs
 from .consolidate.outcomes import OUTCOME_PREDICATES, split_outcome_text
 from .consolidate.policy import POLICY_DEFAULTS
-from .consolidate.structured import _BASIC, build_structured_profile, user_aliases
+from .consolidate.structured import build_structured_profile
 from .extraction import LLMNotConfiguredError, require_llm
 from .llm import providers
 from .memory import Memory
@@ -25,10 +24,6 @@ from .util import fmt_date, fmt_datetime, now
 class MemoryRevisionChanged(ValueError):
     """A later page belongs to a different committed collection."""
 
-
-# _BASIC 归一化字段中允许多值共存的那些。audit 的 slot_overflow 预扫描（"单值槽位不该有 N 个值"）
-# 只对其余字段成立。
-_MULTI_VALUED_FIELDS = {"children", "language", "education"}
 
 # 为 /v1/recall 的 answerer（控制台的"问答"视图）准备拼装好的记忆框架。
 _ANSWER_SYSTEM = (
@@ -328,7 +323,8 @@ class MemoryService:
 
     def add_fact(self, context, subject, predicate, object, **fields):
         fact = self.memory(context).add_fact(subject, predicate, object, return_existing=True, **fields)
-        return dict(ok=True, id=fact.id, text=fact.text, topic=fact.topic, topic_source=fact.topic_source,
+        return dict(ok=True, id=fact.id, text=fact.text, categories=fact.categories, categories_source=fact.categories_source,
+                    object_kind=fact.object_kind,
                     cardinality=fact.cardinality, retention=fact.retention)
 
     def update_fact(self, context, fact_id, **fields):
@@ -337,7 +333,8 @@ class MemoryService:
             return None
         return dict(ok=True, id=fact.id, text=fact.text, display=fact.display, source=fact.source,
                     source_roles=fact.source_roles,
-                    topic=fact.topic, topic_source=fact.topic_source,
+                    categories=fact.categories, categories_source=fact.categories_source,
+                    object_kind=fact.object_kind,
                     cardinality=fact.cardinality, retention=fact.retention)
 
     def delete_fact(self, context, fact_id):
@@ -377,13 +374,11 @@ class MemoryService:
     def structured_profile(self, context):
         memory = self.memory(context)
         with memory.dao.read_snapshot() as view:
-            subject = view.settings().subject_name or 'user'
-            facts = view.focused().profile_facts(user_aliases(subject, context.user_id))
-            return build_structured_profile(map(domain, facts), subject, context.user_id)
+            return build_structured_profile(map(domain, view.focused().profile_facts()))
 
     def profile(self, context):
         with self.memory(context).dao.read_snapshot() as view:
-            facts = [domain(record).text for record in view.focused().facts(FactQuery(limit=50, exclude_sensitive=True))]
+            facts = [domain(record).text for record in view.focused().facts(FactQuery(subject="user", limit=50, exclude_sensitive=True))]
         return dict(profile='\n'.join(facts), facts=facts)
 
     def sessions(self, context, limit=None, offset=0, q=''):
@@ -408,7 +403,7 @@ class MemoryService:
             row['provenance'] = [source for source in row['provenance'] if source in sources]
             row['redacted'] = row['sensitive'] and not include_sensitive
             if row['redacted']:
-                for key in ('subject', 'predicate', 'object', 'why', 'category', 'topic', 'topic_source'):
+                for key in ('subject', 'predicate', 'object', 'why', 'categories', 'categories_source', 'object_kind'):
                     row.pop(key, None)
                 row['text'] = row['display'] = '[redacted sensitive fact]'
         report = rows[0] if rows else dict(episodes=0, episodes_consolidated=0, episodes_pending=0,
@@ -420,8 +415,8 @@ class MemoryService:
                 'facts_redacted': redacted, 'facts': facts, 'facts_page': page}
 
     def memories(self, context, facts_limit=None, facts_offset=0, episodes_limit=None, episodes_offset=0,
-                 status=None, kind=None, q='', include_sensitive=False, category=None, outcome_kind=None,
-                 expected_revision=None, evaluated_at=None, topic=None):
+                 status=None, kind=None, q='', include_sensitive=False, categories=None, outcome_kind=None,
+                 expected_revision=None, evaluated_at=None):
         facts_limit, facts_offset = _bounds(facts_limit, facts_offset, minimum=0)
         episodes_limit, episodes_offset = _bounds(episodes_limit, episodes_offset, minimum=0)
         if (expected_revision is None) != (evaluated_at is None):
@@ -438,9 +433,9 @@ class MemoryService:
                 raise MemoryRevisionChanged('Records changed; reload the current page')
             at = view.at.timestamp() if evaluated_at is None else evaluated_at
             request = FactQuery(state=state, valid_at=at, predicate=outcome_kind,
+                                categories=tuple(categories or ()),
                                 limit=max(1, facts_limit), exclude_sensitive=not include_sensitive)
-            rows, fact_total = view.browse_facts(request, text=q.strip(), topic=topic, offset=facts_offset,
-                                                category=(category or '').strip(),
+            rows, fact_total = view.browse_facts(request, text=q.strip(), offset=facts_offset,
                                                 outcomes={'outcomes': True, 'attributes': False}.get(kind),
                                                 count_only=facts_limit == 0)
             categories = view.fact_categories(include_sensitive=include_sensitive,
@@ -511,64 +506,8 @@ class MemoryService:
                                focus='mnemotrace_get_focus'))
 
     def audit(self, context, limit=40):
-        predicates = [name for name, (field, _) in _BASIC.items() if field not in _MULTI_VALUED_FIELDS]
-        memory = self.memory(context)
-        coverage = EmbedderCoverage(self.embedder)
-        by_kind = Counter()
-        by_priority = [[] for _ in range(4)]
-
-        def add(row):
-            kind = row['kind']
-            by_kind[kind] += 1
-            bucket = by_priority[AUDIT_KIND_PRIORITY[kind]]
-            if len(bucket) < limit:
-                bucket.append(row)
-
-        with memory.dao.read_snapshot() as view:
-            overflowing = set()
-            for slot in view.overflowing_slots(predicates):
-                subject, predicate = slot['subject'], slot['predicate']
-                overflowing.add((subject, predicate))
-                add(dict(kind='slot_overflow', why='Several extracted facts occupy a single-valued slot',
-                         action='Review the facts before clearing the slot', subject=subject,
-                         predicate=predicate, label=_BASIC[predicate][1], count=slot['count']))
-
-            cursor, checked_facts = None, 0
-            while batch := view.facts(FactQuery(after_id=cursor)):
-                for record in batch:
-                    fact = domain(record)
-                    coverage.add(fact.text, is_fact=True)
-                    predicate = fact.predicate.strip().lower()
-                    if predicate in OUTCOME_PREDICATES or (
-                        fact.source != 'user' and (fact.subject, predicate) in overflowing
-                    ):
-                        continue
-                    if row := fact_finding(fact):
-                        add(row)
-                checked_facts += len(batch)
-                cursor = batch[-1].ref.record_id
-
-            if coverage.enabled:
-                for content in view.recent_source_texts():
-                    coverage.add(content, is_fact=False)
-                if row := coverage.finding(postgres=True):
-                    add(row)
-
-            orphans, orphan_count = view.orphan_entities(limit)
-            for row in orphans:
-                name = row['name']
-                add(finding('orphan_entity', f"entity '{name}' has no relations",
-                            'No fact connects this entity', entity=name))
-            if orphan_count:
-                by_kind['orphan_entity'] = orphan_count
-            checked_entities = view.counts()[ENTITY]
-            findings = [row for bucket in by_priority for row in bucket][:limit]
-            for row in findings:
-                if row['kind'] == 'slot_overflow':
-                    row['samples'] = view.slot_samples(row['subject'], row['predicate'])
-        total = by_kind.total()
-        return dict(space_id=context.space_id, checked=dict(facts=checked_facts, entities=checked_entities),
-                    total_findings=total, by_kind=dict(by_kind), findings=findings, truncated=total > len(findings))
+        with self.memory(context).dao.read_snapshot() as view:
+            return graph_audit(view, limit)
 
     def metrics_snapshot(self):
         return self.metrics.snapshot()
@@ -578,11 +517,13 @@ class MemoryService:
             conn.execute('SELECT 1')
 
     def iter_export(self, context, include_sensitive=False):
+        from .store._validation import SNAPSHOT_FORMAT_VERSION
+
         memory = self.memory(context)
         with memory.dao.read_snapshot() as view:
             at = view.at.timestamp()
             settings = view.settings()
-            head = dict(space_id=context.space_id, include_sensitive=include_sensitive,
+            head = dict(format_version=SNAPSHOT_FORMAT_VERSION, space_id=context.space_id, include_sensitive=include_sensitive,
                         redacted_sensitive=not include_sensitive, focus=dict(track=settings.track, mute=settings.mute))
             yield json.dumps(head, ensure_ascii=False)[:-1]
             for name, kind in (('facts', FACT), ('episodes', SOURCE)):

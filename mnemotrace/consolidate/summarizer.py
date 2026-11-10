@@ -70,7 +70,7 @@ class ProfileBuilder:
         fact 渲染成可读文本。`system` 覆盖画像 prompt（可按用户编辑的 policy）。"""
         user_facts = [f for f in live_facts if f.subject.lower() == subject.lower()]
         if not user_facts:
-            user_facts = live_facts
+            return ""
         # #7: 权威（固定）的 fact 排最前，其后按显著度——确保它们在 [:12]/[:120] 截断中存活。
         ordered = sorted(user_facts, key=lambda x: (x.source != "user", -x.salience))
         if llm is None:

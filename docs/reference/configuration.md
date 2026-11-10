@@ -144,7 +144,6 @@ DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读
 | 参数组 | 主要字段与默认行为 | 影响 |
 | --- | --- | --- |
 | 融合 | w_sem=1.0、w_lex=0.6、w_graph=0.8、w_rec=0.3、w_sal=0.25 | 不同检索信号的配置权重 |
-| 类型先验 | w_type_preference=1.25、w_type_identity=1.15 | 在相关候选中调整优先级 |
 | 候选与输出 | top_k=5、rrf_k=60；candidate_k=24 当前未使用 | 检索返回规模与排序融合 |
 | 扩展候选 | ann_candidates=False、ann_pool=200 | 内存引擎可选的有界向量候选路径。BM25 仅重排向量与图候选 |
 | 时间与图 | recency_tau_days=45、max_hops=2 | 时近性先验和图遍历 |

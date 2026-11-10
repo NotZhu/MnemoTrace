@@ -13,14 +13,13 @@ function setup(pageName) {
     bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
     external: ['react', 'react/jsx-runtime', 'lucide-react', 'react-router-dom', '../components/*', '../hooks/queries', '../store/preferences', '../store/auth', '../lib/api'],
   }).outputFiles[0].text
-  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', display: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', topic: 'food', topic_source: 'llm' }
-  const finding = { kind: 'fragment', fact_id: fact.id, ...fact }
+  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', display: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', categories: ['food'], categories_source: 'llm', object_kind: 'literal' }
   const results = {
     usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', digest_system: 'synthetic', persona_system: 'synthetic' } } },
     useFocus: { data: { track: ['synthetic'], mute: [] } },
     useMemoryPages: { data: { facts: [fact], episodes: [], facts_page: { total: 1 }, fact_categories: [] } },
     useMemories: {}, useStructuredProfile: {},
-    useAudit: { data: { checked: { facts: 1, entities: 0 }, total_findings: 1, by_kind: { fragment: 1 }, findings: [finding] } },
+    useAudit: { data: { checked: { facts: 1, entities: 0 }, total_findings: 1, by_kind: { missing_edge: 1 }, findings: [{ kind: 'missing_edge', fact_id: 'synthetic-fact' }] } },
     useSessions: { data: { sessions: [] } }, useHealth: { data: { ready: true } },
     useAgentStatus: { data: { user: 'synthetic', counts: { facts_live: 1 }, session: { episodes: 1, episodes_pending: 0 } } },
     useSessionReport: {}, useSourceEpisodes: {}, useConflicts: { data: { conflicts: [] } },
@@ -68,7 +67,7 @@ function setup(pageName) {
       if (name === '../hooks/queries') return queries
       if (name === '../store/auth') return { useAuth: selector => selector({spaceId:'synthetic-space'}) }
       if (name === '../lib/api') return { apiBaseUrl: () => 'http://synthetic' }
-      if (name === '../store/preferences') return { useSpacePreference: (_page, field) => react.useState(field === 'status' ? 'live' : field === 'category' || field === 'topic' ? '' : false) }
+      if (name === '../store/preferences') return { useSpacePreference: (_page, field) => react.useState(field === 'status' ? 'live' : field === 'categories' ? [] : false) }
       if (name === '../components/Toast') return { toast: { success: text => toasts.push(text), error() {}, info() {} } }
       if (name.startsWith('../components/')) return new Proxy({}, { get: (_, key) => key === 'cx' ? (...args) => args.filter(Boolean).join(' ') : component(key) })
       return require(name)
@@ -267,17 +266,17 @@ test('Profile 主请求或辅助请求失败均可见，并只重试失败请求
   assert.deepEqual(s.retries.slice(1), ['useStructuredProfile', 'useMemories'])
 })
 
-for (const [action, fields] of [['keep', {}], ['food', { topic: 'food' }], ['unknown', { topic: 'unknown' }], ['reset', { reset_topic: true }]]) {
-  test(`Facts 主题操作 ${action} 仅发送用户明确操作的主题字段，失败保留选择`, () => {
+for (const [action, fields] of [[undefined, {}], [['food', 'music'], { categories: ['food', 'music'] }], [[], { categories: [] }]]) {
+  test(`Facts 标签操作 ${action} 仅发送用户明确操作的标签字段，失败保留选择`, () => {
     const s = setup('Facts')
     s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
-    const editor = () => s.find(n => n.type === 'TopicEditor')
-    assert.equal(editor().props.current.topic_source, 'llm')
+    const editor = () => s.find(n => n.type === 'CategoryEditor')
+    assert.equal(editor().props.current.categories_source, 'llm')
     editor().props.onChange(action)
     s.find(n => n.type === 'Button' && n.props.loading !== undefined).props.onClick()
     const mutation = s.mutations.find(m => m.name === 'useEditFact')
     const patch = JSON.parse(JSON.stringify(mutation.args[0].patch))
-    assert.deepEqual(Object.fromEntries(Object.entries(patch).filter(([key]) => key.startsWith('topic') || key === 'reset_topic')), fields)
+    assert.deepEqual(Object.fromEntries(Object.entries(patch).filter(([key]) => key === 'categories')), fields)
     assert.equal(Object.hasOwn(patch, 'sensitive'), false)
     mutation.args[1].onError(new Error('synthetic write failure'))
     assert.equal(editor().props.value, action)
@@ -297,11 +296,11 @@ test('Facts 显式切换敏感开关才发送敏感标记', () => {
   assert.equal(mutation.args[0].patch.sensitive, !previous)
 })
 
-for (const [action, fields] of [['unknown', { topic: 'unknown' }], ['reset', { reset_topic: true }]]) {
-  test(`Journal 仅修改主题 ${action} 时不发送正文，失败后保留草稿`, () => {
+for (const [action, fields] of [[['misc'], { categories: ['misc'] }], [[], { categories: [] }]]) {
+  test(`Journal 仅修改标签 ${action} 时不发送正文，失败后保留草稿`, () => {
     const s = setup('Journal')
     s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
-    const editor = () => s.find(n => n.type === 'TopicEditor')
+    const editor = () => s.find(n => n.type === 'CategoryEditor')
     editor().props.onChange(action)
     s.find(n => n.type === 'button' && n.props['aria-label'] === '保存').props.onClick()
     const mutation = s.mutations.find(m => m.name === 'useEditFact')
@@ -312,7 +311,7 @@ for (const [action, fields] of [['unknown', { topic: 'unknown' }], ['reset', { r
     assert.ok(s.find(n => n.type === 'textarea' && n.props.value === 'synthetic original'))
     s.find(n => n.type === 'button' && n.props['aria-label'] === '保存').props.onClick()
     s.mutations.at(-1).args[1].onSuccess({ source: 'extracted' })
-    assert.equal(s.toasts.at(-1), '主题已保存')
+    assert.equal(s.toasts.at(-1), '标签已保存')
   })
 }
 
@@ -353,7 +352,7 @@ test('会话输入不依赖历史查询成功，失败及重试保留正文和�
   assert.equal(input()?.props.value, 'synthetic conversation draft')
 })
 
-for (const [page, query, editor] of [['Journal', 'useMemoryPages', 'OutcomeRow'], ['Health', 'useAudit', 'FindingRow']]) {
+for (const [page, query, editor] of [['Journal', 'useMemoryPages', 'OutcomeRow']]) {
   test(`${page} 后台刷新失败保留正在编辑的行和草稿`, () => {
     const s = setup(page)
     const button = s.find(n => n.type === 'button' && ['编辑', '编辑这条记忆'].includes(n.props['aria-label']))

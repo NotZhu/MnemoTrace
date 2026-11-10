@@ -25,27 +25,27 @@ ITEMS: list[EvalItem] = [
     EvalItem(
         "sh1", "single_hop",
         [("My name is Ana and I work at Spotify.", 0), ("I really enjoy hiking on weekends.", 1)],
-        "Where does Ana work?", "Spotify",
+        "Where do I work?", "Spotify",
     ),
     EvalItem(
         "sh2", "single_hop",
         [("My name is Cara and my favorite color is blue.", 0)],
-        "What is Cara's favorite color?", "blue",
+        "What is my favorite color?", "blue",
     ),
     EvalItem(
         "ku1", "knowledge_update",
         [("My name is Ben and I live in Boston.", 0), ("I moved — I now live in Denver.", 60)],
-        "Where does Ben live?", "Denver",
+        "Where do I live?", "Denver",
     ),
     EvalItem(
         "ku2", "knowledge_update",
         [("My name is Cara and my favorite color is blue.", 0), ("My favorite color is green now.", 40)],
-        "What is Cara's favorite color?", "green",
+        "What is my favorite color?", "green",
     ),
     EvalItem(
         "mh1", "multi_hop",
         [("My name is Dora.", 0), ("My colleague Evan works at Netflix.", 1)],
-        "Where does Dora's colleague work?", "Netflix", path=("Dora", "colleague", "works_at"),
+        "Where does my colleague work?", "Netflix", path=("user", "colleague", "works_at"),
     ),
     EvalItem(
         "mh2", "multi_hop",
@@ -54,22 +54,22 @@ ITEMS: list[EvalItem] = [
             ("Maya just moved to Seattle for a fellowship.", 1),
             ("I bought a new espresso machine and it's wonderful.", 2),
         ],
-        "What is my sister\x27s profession?", "pediatrician", path=("mh2", "sister", "occupation"),
+        "What is my sister\x27s profession?", "pediatrician", path=("user", "sister", "occupation"),
     ),
     EvalItem(
         "tmp1", "temporal",
         [("My name is Finn and I work at IBM.", 0), ("I now work at Oracle.", 50)],
-        "Where does Finn work?", "IBM", as_of_day=20,
+        "Where do I work?", "IBM", as_of_day=20,
     ),
     EvalItem(
         "tmp2", "temporal",
         [("My name is Finn and I work at IBM.", 0), ("I now work at Oracle.", 50)],
-        "Where does Finn work?", "Oracle",  # 当前状态（无 as_of）
+        "Where do I work?", "Oracle",  # 当前状态（无 as_of）
     ),
     EvalItem(
         "abs1", "abstention",
         [("My name is Gina and I work at Adobe.", 0)],
-        "What is Gina's favorite food?", None,  # 属性从未提及 -> 拒答
+        "What is my favorite food?", None,  # 属性从未提及 -> 拒答
     ),
     EvalItem(
         "abs2", "abstention",

@@ -19,7 +19,7 @@ def _mk_memory() -> MemoryEngine:
 class TestSnifferAndMemoryLevel:
     def test_sniff_recognizes_snapshot_and_parse_gives_actionable_error(self):
         from mnemotrace.connectors import parse, sniff
-        snap = {"facts": [], "episodes": []}
+        snap = {"format_version": 2, "facts": [], "episodes": []}
         assert sniff(snap) == "mnemotrace"
         with pytest.raises(ValueError, match="import_snapshot"):
             parse(snap)
@@ -30,15 +30,32 @@ class TestSnifferAndMemoryLevel:
         src.consolidate()
         facts = [asdict(f) for f in src._all_facts()]
         dst = _mk_memory()
-        stats = dst.import_snapshot({"facts": facts, "episodes": []},
+        stats = dst.import_snapshot({"format_version": 2, "facts": facts, "episodes": []},
                                     user_id="u2")
         assert stats["facts_restored"] == len(facts) > 0
         assert stats["malformed"] == 0
+
+    def test_v2_graph_is_rebuilt_from_fact_types(self):
+        src = _mk_memory()
+        src.add_fact("user", "works_at", "Synthetic Lab", object_kind="entity")
+        src.add_fact("user", "note", "Synthetic literal", object_kind="literal")
+        snap = {
+            "format_version": 2, "facts": [asdict(f) for f in src._all_facts()], "episodes": [],
+            "graph": {"nodes": [{"name": "Stale alias"}], "edges": []},
+        }
+        dst = _mk_memory()
+        dst.import_snapshot(snap)
+        dst.import_snapshot(snap)
+        graph = dst.graph_data()
+        assert {node["name"] for node in graph["nodes"]} == {"user", "Synthetic Lab"}
+        assert len(graph["edges"]) == 1
+        assert len(dst._all_facts()) == 2
 
     def test_malformed_rows_reject_the_entire_snapshot(self):
         dst = _mk_memory()
         with pytest.raises(ValueError, match="snapshot.facts"):
             dst.import_snapshot({
+                "format_version": 2,
                 "facts": [{"subject": "a"}, "not-a-dict"],
                 "episodes": [{"no_content": True}, "junk"],
             })

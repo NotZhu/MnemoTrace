@@ -41,7 +41,8 @@
         "predicate": "likes",
         "object": "绿茶",
         "text": "用户长期喜欢绿茶。",
-        "topic": "food",
+        "categories": ["food"],
+        "object_kind": "entity",
         "source_ids": [
           "c2"
         ]
@@ -51,7 +52,8 @@
         "predicate": "owns",
         "object": "蓝色自行车",
         "text": "用户拥有一辆蓝色自行车。",
-        "topic": "hobbies",
+        "categories": ["hobbies"],
+        "object_kind": "literal",
         "source_ids": [
           "c3"
         ]
@@ -61,7 +63,8 @@
         "predicate": "received_gift_from",
         "object": "林岚",
         "text": "用户的蓝色自行车是林岚送给用户的。",
-        "topic": "relationships",
+        "categories": ["family"],
+        "object_kind": "entity",
         "source_ids": [
           "c3",
           "c4"
@@ -72,7 +75,8 @@
         "predicate": "lives_in",
         "object": "苏州",
         "text": "用户从这条消息开始搬到苏州居住，之前的住处已经失效。",
-        "topic": "environment",
+        "categories": ["user_preferences"],
+        "object_kind": "literal",
         "source_ids": [
           "c6"
         ]

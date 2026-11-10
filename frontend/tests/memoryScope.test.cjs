@@ -40,8 +40,8 @@ function setup(params = initial, data = full) {
 }
 
 for (const [name, patch] of Object.entries({
-  topic: { topic: 'food' },
-  sensitive: { include_sensitive: false }, kind: { kind: 'outcomes' }, category: { category: 'work' },
+  categories: { categories: ['food', 'music'] },
+  sensitive: { include_sensitive: false }, kind: { kind: 'outcomes' },
   status: { status: 'superseded' }, factsOffset: { facts_offset: 40 }, episodesOffset: { episodes_offset: 20 },
   futureFilter: { future_filter: 'restricted' },
 })) {
@@ -56,10 +56,10 @@ for (const [name, patch] of Object.entries({
   })
 }
 
-test('scope: widening also waits; omitted sensitive equals false and empty category equals omitted', () => {
+test('scope: widening also waits; omitted sensitive equals false and empty categories equals omitted', () => {
   const s = setup({ ...initial, include_sensitive: false }, safe)
   try {
-    assert.equal(s.change({ ...initial, include_sensitive: undefined, category: '', q: 'new' }).data, safe)
+    assert.equal(s.change({ ...initial, include_sensitive: undefined, categories: [], q: 'new' }).data, safe)
     assert.equal(s.change(initial).data, undefined)
   } finally { s.close() }
 })

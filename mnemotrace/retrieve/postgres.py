@@ -6,11 +6,11 @@ from ..store.postgres.graph_reads import RetrievalGraph
 from ..store.postgres.records import SOURCE, domain
 from ..store.postgres.retrieval import Corpus
 from ..util import fmt_date, time_key
-from .answers import SearchResult, _GENERIC_ATTR_TERMS, should_abstain
+from .answers import SearchResult, digest_match, should_abstain
 from .events import EventEvidence, event_evidence
 from .fusion import order_by_score, weighted_rrf
-from .hybrid import fact_type_weight, order_positive
-from .lexical import literal_value_match, overlap_terms
+from .hybrid import order_positive
+from .lexical import literal_value_match
 
 
 @dataclass(frozen=True)
@@ -61,12 +61,10 @@ def retrieval_query(text, embedder, model, config, *, top_k, as_of=None, facts=N
     return RetrievalQuery(scope, text, vector, model)
 
 
-def _score(candidates, config, semantic, query):
+def _score(candidates, config, query):
     sem = {item.record.ref.record_id: item.semantic for item in candidates}
     records = {item.record.ref.record_id: item.record for item in candidates}
     facts = {key: domain(record).as_known_at(query.facts.known_at) for key, record in records.items()}
-    if semantic:
-        sem = {key: score * fact_type_weight(facts[key], config) for key, score in sem.items()}
     rankings = {'sem': order_positive(sem)}
     for name, key, order in (('lex', 'lexical', order_positive), ('graph', 'graph', order_positive),
                              ('rec', 'recency', order_by_score), ('sal', 'salience', order_by_score)):
@@ -87,10 +85,10 @@ def source_search(view, query, k, *, field=None, start=None, end=None):
     return SourceSearchResult(evidence, corpus.limitations())
 
 
-def search(view, query, config, top_k, semantic):
+def search(view, query, config, top_k):
     graph = RetrievalGraph(view, query)
     batch = view.candidates(query, config=config, graph=graph)
-    ranked, sem = _score(batch.candidates, config, semantic, query)
+    ranked, sem = _score(batch.candidates, config, query)
     chosen = ranked[:top_k]
     facts = [fact for fact, _ in chosen]
     flags = batch.limitations
@@ -98,7 +96,7 @@ def search(view, query, config, top_k, semantic):
     if abstained and config.digest_fallback and not query.facts.exclude_sensitive:
         sources = source_search(view, query, config.digest_fallback_k, field='digest')
         flags = tuple(dict.fromkeys((*flags, *sources.limitations)))
-        matched = [(len(overlap_terms(query.text, ep.text) - _GENERIC_ATTR_TERMS), ep) for ep in sources.episodes]
+        matched = [(digest_match(query.text, ep.text), ep) for ep in sources.episodes]
         if matched:
             hits, best = max(matched, key=lambda row: (row[0], time_key(row[1].event_time), row[1].id))
             if hits > 0:
@@ -108,10 +106,10 @@ def search(view, query, config, top_k, semantic):
                         via='abstain' if abstained else 'hybrid', abstained=abstained, limitations=flags)
 
 
-def context(view, query, config, semantic, *, n_facts, n_chunks, n_digests, char_budget):
+def context(view, query, config, *, n_facts, n_chunks, n_digests, char_budget):
     graph = RetrievalGraph(view, query)
     batch = view.candidates(query, config=config, graph=graph)
-    ranked, _ = _score(batch.candidates, config, semantic, query)
+    ranked, _ = _score(batch.candidates, config, query)
     facts = [fact for fact, _ in ranked[:n_facts]]
     blocks = []
     flags = [*batch.limitations, *graph.limitations()]
@@ -164,12 +162,10 @@ def aggregate_facts(view, scope, operation, start, end, evidence_query):
 
 
 def follow_path(view, scope, anchor, predicates):
-    from .structured import AmbiguousAnchor, PathMatch, PathResult, traverse
+    from .structured import PathMatch, PathResult, traverse
 
     graph = RetrievalGraph(view, RetrievalQuery(scope, ''))
-    anchors = graph.path_anchors(anchor, predicates[0])
-    if len(anchors) > 1:
-        raise AmbiguousAnchor('Ambiguous anchor. Provide a canonical entity name.')
+    anchors = graph.find_entities(anchor)
     if not anchors:
         return PathResult(())
     graph.truncated = False  # Only the explicit traversal contributes to path coverage.
@@ -180,9 +176,7 @@ def follow_path(view, scope, anchor, predicates):
                  for record in view.facts_by_ids(tuple(edge.fact_id for edge in edges), scope)}
         for edge in edges:
             if edge.fact_id in facts:
-                target = graph._resolve(edge.object_id)
-                graph._load_ids((target,))
-                yield target, facts[edge.fact_id]
+                yield edge.object_id, facts[edge.fact_id]
 
     paths, flags = traverse(anchors[0].id, predicates, neighbors, scope.limit)
     return PathResult(tuple(PathMatch(graph.entities[key].name, facts) for key, facts in paths),

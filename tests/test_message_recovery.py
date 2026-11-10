@@ -45,7 +45,7 @@ def test_native_model_allows_append_and_close_prevents_late_commit():
 def test_source_time_comes_from_matching_role():
     def respond(prompt, system):
         data = json.loads(prompt.split('MNEMOTRACE_WINDOW\n', 1)[1])
-        return json.dumps(dict(facts=[dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='user', predicate='lives_in', object='Synthetic city',
+        return json.dumps(dict(facts=[dict(categories=[], object_kind='unknown', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='user', predicate='lives_in', object='Synthetic city',
             text='Synthetic city', source_ids=[s['id'] for s in data['pending']])],
             digests=[]))
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
@@ -79,6 +79,15 @@ def test_core_and_digest_evidence_are_strict_on_restore():
     del ep.coverage['unit']
     with pytest.raises(ValueError):
         validate_state(mem._pipeline_state, mem.episodes_doc.values())
+
+
+def test_prior_processing_checkpoint_version_is_rejected():
+    mem = MemoryEngine()
+    mem.remember_messages([message('a')], 's', 'u')
+    state = deepcopy(mem._pipeline_state)
+    state['version'] = 4
+    with pytest.raises(ValueError, match='Unsupported.*version'):
+        validate_state(state, mem.episodes_doc.values())
 
 
 def test_manual_fact_keeps_authority_over_dialogue_fact():
@@ -124,6 +133,7 @@ def test_late_unknown_and_older_history_cannot_replace_newer_source():
         result = json.loads(reply(prompt, system))
         for fact in result['facts']:
             fact['predicate'] = 'lives_in'
+            fact['object_kind'] = 'entity'
         return json.dumps(result)
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
     for mid, stamp, mode in [('new', 200, 'live'), ('unknown', None, 'historical'), ('old', 100, 'historical')]:
@@ -144,6 +154,7 @@ def test_out_of_order_history_has_disjoint_intervals_and_a_complete_chain(arriva
         result = json.loads(reply(prompt, system))
         for fact in result['facts']:
             fact['predicate'] = 'lives_in'
+            fact['object_kind'] = 'entity'
         return json.dumps(result)
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
     for index, (value, stamp) in enumerate(arrivals):
@@ -164,6 +175,7 @@ def test_equal_time_facts_do_not_retire_each_other_in_model_order():
         result = json.loads(reply(prompt, system))
         for fact in result['facts']:
             fact['predicate'] = 'lives_in'
+            fact['object_kind'] = 'entity'
         result['facts'].reverse()
         return json.dumps(result)
     mem = MemoryEngine(llm=FakeLLM(handler=respond))

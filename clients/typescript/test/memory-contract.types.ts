@@ -1,4 +1,4 @@
-import type { GraphResponse, MemoryDump, MemoryListOptions, OutcomeKind, Topic, TopicSource } from '../src/types'
+import type { GraphResponse, MemoryDump, MemoryListOptions, OutcomeKind, Category, CategoriesSource, ObjectKind } from '../src/types'
 import type { MnemoTraceClient } from '../src/client'
 
 declare const client: MnemoTraceClient
@@ -26,17 +26,17 @@ graph.then(result => {
   return hasMore
 })
 
-client.addFact({ predicate: 'prefers', object: 'tea', topic: 'food' }, space).then(result => {
-  const topic: Topic = result.topic
-  const source: TopicSource = result.topic_source
-  return [topic, source]
+client.addFact({ predicate: 'prefers', object: 'tea', categories: ['food'], object_kind: 'entity' }, space).then(result => {
+  const categories: Category[] = result.categories
+  const source: CategoriesSource = result.categories_source
+  const kind: ObjectKind = result.object_kind
+  return [categories, source, kind]
 })
-client.updateFact('synthetic-fact', { reset_topic: true }, space)
-client.updateFact('synthetic-fact', { topic: null }, space)
-// @ts-expect-error unsupported topic
-client.updateFact('synthetic-fact', { topic: '音乐' }, space)
-// @ts-expect-error callers cannot choose the topic source
-client.addFact({ predicate: 'prefers', object: 'tea', topic_source: 'llm' }, space)
+client.updateFact('synthetic-fact', { categories: [] }, space)
+// @ts-expect-error unsupported label
+client.updateFact('synthetic-fact', { categories: ['音乐'] }, space)
+// @ts-expect-error callers cannot choose classification source
+client.addFact({ predicate: 'prefers', object: 'tea', categories_source: 'llm' }, space)
 
 // @ts-expect-error space must be explicit
 client.remember('Synthetic input', {sessionId: 's'})

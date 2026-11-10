@@ -31,9 +31,9 @@ def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, s
     context = spaces.authorize(user, spaces.create(user, 'Lexical mode').space_id)
     memory = Memory(runtime, context, llm=RecordedLLM())
     original = memory.remember_raw('无关内容。' * 120 + '末尾记录绿茶', 'chat')
-    memory.add_fact('user', 'sister', '王小明')
-    memory.add_fact('王小明', 'works_at', '月亮公司')
-    memory.add_fact('user', 'likes', '绿茶')
+    memory.add_fact('user', 'sister', '王小明', object_kind="entity")
+    memory.add_fact('王小明', 'works_at', '月亮公司', object_kind="entity")
+    memory.add_fact('user', 'likes', '绿茶', object_kind="entity")
     memory.remember('I live in Shenzhen.', 'chat')
     assert memory.source_vector_operation(original.id) is None
     with memory.dao.read_snapshot() as view:
@@ -102,20 +102,14 @@ def test_exact_vector_and_bm25_use_full_scoped_corpus(memory, runtime, spaces, u
         accounts.delete_user(other)
 
 
-def test_graph_alias_path_and_known_at(memory):
-    memory.add_fact('Wei', 'colleague', 'Lin', valid_at=100)
-    job = memory.add_fact('Lin', 'works_at', 'Orbit', valid_at=100)
-    memory.add_fact('Orbit', 'based_in', 'Lisbon', valid_at=100)
-    memory.set_entity_aliases('Orbit', ['Orbital Lab'])
-    orbit, = memory.graph_entities('Orbital Lab')
+def test_graph_name_path_and_known_at(memory):
+    memory.add_fact('Wei', 'colleague', 'Lin', valid_at=100, object_kind="entity")
+    job = memory.add_fact('Lin', 'works_at', 'Orbit', valid_at=100, object_kind="entity")
+    memory.add_fact('Orbit', 'based_in', 'Lisbon', valid_at=100, object_kind="entity")
+    orbit, = memory.graph_entities('orbit')
     assert {edge.fact_id for edge in memory.graph_neighbors(orbit.id, direction='in')} == {job.id}
     assert memory.follow_path('Wei', ['colleague', 'works_at']).paths[0].endpoint == 'Orbit'
     assert memory.follow_path('Orbital Lab', ['based_in', 'unknown']).paths == ()
-    memory.add_fact('Former Orbit', 'based_in', 'Lisbon', valid_at=100)
-    memory.set_entity_aliases('Former Orbit', ['Old Lab'])
-    former, = memory.graph_entities('Old Lab')
-    memory.merge_entities(orbit.id, former.id)
-    assert memory.follow_path('Wei', ['colleague', 'works_at']).paths[0].endpoint == 'Orbit'
     assert memory.graph_relations(job.id, facts=FactQuery(valid_at=150, known_at=150)) == ()
     assert memory.graph_relations(job.id, facts=FactQuery(valid_at=150))
     original, = memory.graph_relations(job.id)
@@ -124,28 +118,54 @@ def test_graph_alias_path_and_known_at(memory):
     memory.rebuild_graph()
     rebuilt, = memory.graph_relations(job.id)
     assert rebuilt.id == original.id
-    assert memory.graph_entities('Orbital Lab') == (orbit,)
+    assert memory.graph_entities('Orbit') == (orbit,)
+    with memory.dao.read_snapshot() as view:
+        first_projection, = view.relations(job.id)
+    memory.rebuild_graph()
+    with memory.dao.read_snapshot() as view:
+        assert view.relations(job.id) == (first_projection,)
 
 
-def test_shared_alias_is_resolved_independently_of_candidate_budget(memory):
+def test_graph_retrieval_uses_query_names_and_explicit_subject_scope(memory):
     from mnemotrace.store.postgres.graph_reads import RetrievalGraph
 
-    memory.add_fact('Ana', 'likes', 'Orbit')
-    memory.add_fact('Bo', 'likes', 'Elsewhere')
-    memory.set_entity_aliases('Orbit', ['Shared'])
-    orbit, = memory.graph_entities('Orbit')
-    elsewhere, = memory.graph_entities('Elsewhere')
-    memory.set_entity_aliases('Elsewhere', ['Shared', 'Orbit'])
-    query = memory._query('except Orbit', top_k=1, facts=FactQuery(limit=1))
+    fact = memory.add_fact('user', 'lives_in', 'Synthetic City', object_kind='entity')
+    memory.add_fact('Other Person', 'lives_in', 'Synthetic Harbor', object_kind='entity')
     with memory.dao.read_snapshot() as view:
-        graph = RetrievalGraph(view, query)
-        assert graph.get_entity(memory.context.user_id, 'Shared') is None
-        unanchored = RetrievalGraph(view, replace(query, text=''))
-        assert unanchored.get_entity(memory.context.user_id, 'Orbit').id == orbit.id
-    memory.merge_entities(orbit.id, elsewhere.id)
+        for text in ('Where do I live?', 'Where does his sister live?'):
+            assert not RetrievalGraph(view, memory._query(text, top_k=1)).entities
+        graph = RetrievalGraph(view, memory._query('Synthetic City', top_k=1))
+        assert {entity.name for entity in graph.entities.values()} == {'Synthetic City', 'Synthetic Harbor'}
+    assert memory.search('Where do I live?', facts=FactQuery(subject='user')).top().id == fact.id
+
+
+def test_answer_evidence_matches_offline_without_domain_vocabulary(runtime, spaces, user):
+    from mnemotrace import MemoryEngine
+
+    context = spaces.authorize(user, spaces.create(user, 'Answer evidence').space_id)
+    offline, persistent = MemoryEngine(), Memory(runtime, context)
+    for engine in (offline, persistent):
+        engine.add_fact('Ana', 'preferred_format', 'Synthetic blocks')
+        assert engine.search("What is Ana's preferred language?").abstained
+        assert engine.search("What is Ana's preferred format?").answer() == 'Synthetic blocks'
+        assert engine.search("Tell me about blocks").answer() == 'Synthetic blocks'
+        assert engine.search("What is it?").abstained
+
+
+def test_digest_answer_requires_full_query_coverage(runtime, spaces, user):
+    context = spaces.authorize(user, spaces.create(user, 'Digest evidence').space_id)
+    memory = Memory(runtime, context)
+    original = memory.remember_raw("Ana's favorite programming language is Python.", 'chat')
     with memory.dao.read_snapshot() as view:
-        graph = RetrievalGraph(view, query)
-        assert graph.get_entity(memory.context.user_id, 'Shared').id == orbit.id
+        previous = view.get(SOURCE, original.id)
+        snapshot = view.snapshot
+    digest = replace(domain(previous), digest=original.content)
+    record = StoredRecord.from_record(context, digest, content_version=previous.content_version,
+                                      record_version=previous.record_version + 1, digest_version=1)
+    memory._commit(snapshot, writes=(RecordWrite(record, previous.record_version),))
+    assert memory.search("What is Ana's favorite food?").abstained
+    result = memory.search("What is Ana's favorite programming language?")
+    assert result.via == 'digest' and 'Python' in result.answer()
 
 
 def test_limited_candidates_can_rank_both_published_facts_in_a_slot(memory):
@@ -406,7 +426,7 @@ def test_http_structured_queries_use_authorized_space_and_redaction(product_clie
         ('Ana', 'works_at', 'Secret', True),
     ):
         assert post('/v1/facts', subject=subject, predicate=predicate,
-                    object=object_, sensitive=sensitive).status_code == 200
+                    object=object_, sensitive=sensitive, object_kind="entity").status_code == 200
     result = post('/v1/aggregate', predicate='works_at', redact_sensitive=True, limit=1)
     assert result.status_code == 200
     assert result.json()['count'] == 1
@@ -420,15 +440,13 @@ def test_http_structured_queries_use_authorized_space_and_redaction(product_clie
     assert denied.status_code in (403, 404)
 
 
-def test_explicit_path_disambiguates_only_visible_anchors(memory):
-    memory.add_fact('Ana', 'sister', 'Cora', sensitive=False)
-    memory.add_fact('Bea', 'sister', 'Cora', sensitive=True)
-    memory.add_fact('Cora', 'works_at', 'Orbit', sensitive=False)
-    memory.set_entity_aliases('Ana', ['Shared'])
-    memory.set_entity_aliases('Bea', ['Shared'])
-    with pytest.raises(ValueError, match='canonical entity name'):
-        memory.follow_path('Shared', ['sister', 'works_at'])
-    result = memory.follow_path('Shared', ['sister', 'works_at'], facts=FactQuery(exclude_sensitive=True))
+def test_explicit_path_respects_visible_facts(memory):
+    memory.add_fact('Ana', 'sister', 'Cora', sensitive=False, object_kind="entity")
+    memory.add_fact('Bea', 'sister', 'Cora', sensitive=True, object_kind="entity")
+    memory.add_fact('Cora', 'works_at', 'Orbit', sensitive=False, object_kind="entity")
+    scope = FactQuery(exclude_sensitive=True)
+    assert not memory.follow_path('Bea', ['sister', 'works_at'], facts=scope).paths
+    result = memory.follow_path('ANA', ['sister', 'works_at'], facts=scope)
     assert result.paths[0].endpoint == 'Orbit'
     assert result.paths[0].facts[0].subject == 'Ana'
 

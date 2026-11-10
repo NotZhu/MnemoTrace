@@ -74,8 +74,8 @@ All methods return promises. Pass `{ spaceId }` to single-space methods. For mul
 | `stats(options)` | MemoryStats without memory text |
 | `agentStatus(options)` | optional sessionId; AgentStatus |
 | `profile(options)` | ProfileResult |
-| `addFact(fact, options)` | predicate/object plus optional subject/sensitive/category/topic; id, text and topic metadata |
-| `updateFact(id, patch, options)` | FactPatch, including topic/reset_topic; id, text and topic metadata |
+| `addFact(fact, options)` | predicate/object plus optional subject, sensitivity, categories and object kind; returns id, text and fact metadata |
+| `updateFact(id, patch, options)` | FactPatch, including categories and object kind; returns id, text and fact metadata |
 | `deleteFact(id, options)` | deletion result; inspect ok |
 | `getFocus(options)` / `setFocus(partial, options)` | track/mute lists |
 | `getPolicy(options)` / `setPolicy(partial, options)` | extraction, digest and persona overrides |
@@ -85,19 +85,19 @@ All methods return promises. Pass `{ spaceId }` to single-space methods. For mul
 | `forget({ spaceId, confirm: true })` | irreversible space clearing; missing confirmation fails before sending |
 | `chat.completions.create(params)` | ChatCompletion, or AsyncIterable when stream=true |
 
-MemoryListOptions supports topic, factsLimit/factsOffset, episodesLimit/episodesOffset, status, kind, outcomeKind, query, includeSensitive, expectedRevision, and evaluatedAt. The existing q alias is also accepted by sessions/memories, with query taking precedence. Use query in new callers. Other legacy status aliases remain server-defined; this documentation does not change them.
+MemoryListOptions supports categories, factsLimit/factsOffset, episodesLimit/episodesOffset, status, kind, outcomeKind, query, includeSensitive, expectedRevision, and evaluatedAt. The existing q alias is also accepted by sessions/memories, with query taking precedence. Use query in new callers. Other legacy status aliases remain server-defined; this documentation does not change them.
 
-The optional topic is an exact stored-topic filter, applied before paging; `'unknown'` includes manual and unassigned unknown facts. It intersects with other fact filters and does not filter raw episodes.
+The optional `categories` array matches any of the supplied labels before pagination. It intersects with other fact filters and does not filter raw episodes.
 
 For consistent pagination, carry the response's data_revision and evaluated_at into expectedRevision/evaluatedAt on the next request. On a 409 revision change, start again from the first page.
 
-Use the HTTP API directly for category filtering, document uploads, structured profiles, conflict resolution, and slot clearing.
+Use the HTTP API directly for document uploads, structured profiles, conflict resolution, and slot clearing.
 
 ## Types and errors
 
 Public types are exported from [types.ts](https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/src/types.ts). Core results include RememberResult, RecallResult, SearchResult, Fact, MemoryDump, SessionIndex, SessionReport, ImportResult, MemoryExport, and chat completion types.
 
-`Topic` is a fixed set of main topics, with a separate `TopicSource`. Omitting `topic` or passing null leaves it unspecified; selecting `'unknown'` explicitly records a manual choice. Use `{ reset_topic: true }` to clear the topic to `unknown/unset`. Manual facts and content edits without a supplied topic also use `unknown/unset`. Topic-only edits preserve fact provenance and history. Fact extraction chooses topics from the fixed enum in the existing model call. Snapshots in the current format preserve stored topic metadata. Profile preference grouping consumes stored topics; unknown facts belong to the other group, with explicit restriction relations kept as a separate exception. Redacted session report rows omit topic metadata. Structured exports preserve both fields and carry no format version. Batch imports return accepted receipts and individual session failures. See the [topic contract](https://github.com/NotZhu/MnemoTrace/blob/main/docs/architecture/memory.md#主题与来源) for precedence and abstention behavior.
+`Category` defines the fixed label catalog. Fact results return `categories`, server-assigned `categories_source`, and `object_kind`. Use `{ categories: [] }` to clear the labels. Metadata-only edits preserve provenance and history. Redacted session report rows omit these fields. Structured exports carry `format_version: 2`. See the [classification contract](https://github.com/NotZhu/MnemoTrace/blob/main/docs/architecture/memory.md#分类与对象类型) for edit semantics.
 
 Non-2xx responses throw `MnemoTraceError` with status and the parsed error body in detail. Network failures can remain native fetch errors. A successful HTTP response can contain a queued acknowledgement or a rejected business result; inspect the operation's payload. Extraction failures return HTTP 502/503 with a stable error code, `stored_raw`, and `episode_ids`; they are not successful degraded results.
 

@@ -110,18 +110,12 @@ class Rig:
 _ABLATION_FLAGS = {
     "evidence_budgeting": ("evidence_budget", "evidence_budgeting"),
     "digest_fallback": ("digest_fallback", "digest", "derived_digest"),
-    "procedural_extraction": ("procedural_extraction", "procedure_extraction", "derived_procedural_extraction"),
-    "explicit_preference_extraction": ("explicit_preference_extraction", "preference_extraction", "preference_profile_extraction"),
-    "preference_object_filter": ("preference_object_filter", "weak_preference_filter", "preference_specificity_filter"),
-    "preference_object_normalization": ("preference_object_normalization", "preference_normalization", "preference_object_canonicalization"),
-    "preference_reversal_extraction": ("preference_reversal_extraction", "preference_reversal", "preference_update_extraction"),
     "chain_evidence": ("chain",),
     "provenance_evidence": ("raw", "provenance"),
     "provenance_chunk_promotion": ("raw", "provenance", "provenance_chunks", "chunk_promotion", "provenance_chunk_promotion"),
     "graph_proximity": ("graph", "graph_proximity"),
     "graph_relation_awareness": ("graph_relation", "relation_graph", "graph_relation_awareness"),
     "graph_path_reinforcement": ("graph_reinforcement", "path_reinforcement", "graph_path_reinforcement"),
-    "graph_self_anchor": ("graph_self_anchor", "self_anchor", "self"),
 }
 _KNOWN_ABLATIONS = frozenset(flag for flags in _ABLATION_FLAGS.values() for flag in flags)
 
@@ -440,41 +434,6 @@ class MnemoTraceLeanNoDigestFallbackSystem(MnemoTraceLeanSystem):
     ablations = ("digest_fallback",)
 
 
-class MnemoTraceLeanNoProceduralExtractionSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但关闭规则/操作手册类流程的抽取。"""
-
-    name = "engram_lean_no_procedural_extraction"
-    ablations = ("procedural_extraction",)
-
-
-class MnemoTraceLeanNoExplicitPreferenceExtractionSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但关闭显式 like/prefer/avoid 偏好抽取。"""
-
-    name = "engram_lean_no_explicit_preference_extraction"
-    ablations = ("explicit_preference_extraction",)
-
-
-class MnemoTraceLeanNoPreferenceObjectFilterSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但显式偏好不做弱宾语过滤。"""
-
-    name = "engram_lean_no_preference_object_filter"
-    ablations = ("preference_object_filter",)
-
-
-class MnemoTraceLeanNoPreferenceObjectNormalizationSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但偏好宾语不做规范化（canonicalization）。"""
-
-    name = "engram_lean_no_preference_object_normalization"
-    ablations = ("preference_object_normalization",)
-
-
-class MnemoTraceLeanNoPreferenceReversalExtractionSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但关闭高置信度的偏好更新抽取。"""
-
-    name = "engram_lean_no_preference_reversal_extraction"
-    ablations = ("preference_reversal_extraction",)
-
-
 class MnemoTraceLeanNoGraphSystem(MnemoTraceLeanSystem):
     """A/B 基线：lean 系统，但关闭 n-hop 图邻近打分/遍历。"""
 
@@ -496,13 +455,6 @@ class MnemoTraceLeanNoGraphReinforcementSystem(MnemoTraceLeanSystem):
     ablations = ("graph_reinforcement",)
 
 
-class MnemoTraceLeanNoGraphSelfAnchorSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但关闭第一人称/用户的图锚定。"""
-
-    name = "engram_lean_no_graph_self_anchor"
-    ablations = ("graph_self_anchor",)
-
-
 class MnemoTraceLeanCoreSystem(MnemoTraceLeanSystem):
     """A/B 基线：lean 系统，同时关闭最新的证据增强项。"""
 
@@ -518,15 +470,9 @@ SYSTEMS = {"engram": MnemoTraceSystem, "full_context": FullContextSystem, "rag":
            "engram_lean_no_provenance_chunks": MnemoTraceLeanNoProvenanceChunksSystem,
            "engram_lean_no_evidence_budget": MnemoTraceLeanNoEvidenceBudgetSystem,
            "engram_lean_no_digest_fallback": MnemoTraceLeanNoDigestFallbackSystem,
-           "engram_lean_no_procedural_extraction": MnemoTraceLeanNoProceduralExtractionSystem,
-           "engram_lean_no_explicit_preference_extraction": MnemoTraceLeanNoExplicitPreferenceExtractionSystem,
-           "engram_lean_no_preference_object_filter": MnemoTraceLeanNoPreferenceObjectFilterSystem,
-           "engram_lean_no_preference_object_normalization": MnemoTraceLeanNoPreferenceObjectNormalizationSystem,
-           "engram_lean_no_preference_reversal_extraction": MnemoTraceLeanNoPreferenceReversalExtractionSystem,
            "engram_lean_no_graph": MnemoTraceLeanNoGraphSystem,
            "engram_lean_no_graph_relation": MnemoTraceLeanNoGraphRelationSystem,
            "engram_lean_no_graph_reinforcement": MnemoTraceLeanNoGraphReinforcementSystem,
-           "engram_lean_no_graph_self_anchor": MnemoTraceLeanNoGraphSelfAnchorSystem,
            "engram_lean_core": MnemoTraceLeanCoreSystem}
 
 
@@ -671,9 +617,9 @@ def main():
     ap.add_argument("--intent", action="store_true", help="engram: L6 intent hint (benchmark-neutral)")
     ap.add_argument("--ablate", default="",
                     help="comma-separated MnemoTrace algorithm switches to disable for all MnemoTrace systems in this run: "
-                         "evidence_budget, digest_fallback, procedural_extraction, explicit_preference_extraction, preference_object_filter, preference_object_normalization, preference_reversal_extraction, chain, raw/provenance, provenance_chunks, "
+                         "evidence_budget, digest_fallback, chain, raw/provenance, provenance_chunks, "
                          "graph/graph_proximity, graph_relation, "
-                         "graph_reinforcement, graph_self_anchor")
+                         "graph_reinforcement")
     ap.add_argument("--full", action="store_true",
                     help="engram: turn ON ALL differentiators (agentic+timeline+hyde+graph+wiki+summary+verify+intent)")
     ap.add_argument("--workers", type=int, default=4)

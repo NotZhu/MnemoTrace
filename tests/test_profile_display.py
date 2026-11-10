@@ -22,7 +22,7 @@ def test_habit_uses_source_language_display_without_changing_fact(predicate, obj
                 provenance=["synthetic-episode"], supersedes="synthetic-previous-fact")
     before = asdict(fact)
 
-    profile = build_structured_profile([fact], "user")
+    profile = build_structured_profile([fact])
 
     assert profile["habits"] == [{
         "text": display,
@@ -45,7 +45,7 @@ def test_habit_without_display_keeps_existing_fallback(predicate, obj, text, exp
     fact = Fact("user", predicate, obj, text=text, display=display)
     before = asdict(fact)
 
-    habit = build_structured_profile([fact], "user")["habits"][0]
+    habit = build_structured_profile([fact])["habits"][0]
 
     assert habit["text"] == expected
     assert habit["fact_id"] == fact.id
@@ -74,7 +74,7 @@ def test_llm_display_reaches_memory_profile_without_another_model_call(sentence)
     assert memory.consolidate()["facts_added"] == 1
     fact, = memory.fact_store.values()
     assert fact.display == sentence
-    assert fact.text == "synthetic-profile-user weekly reads example-book"
+    assert fact.text == "user weekly reads example-book"
     assert fact.provenance == [episode.id]
     before = asdict(fact)
     assert llm.calls == 1

@@ -83,119 +83,6 @@ def _digest_fallback_context(enabled: bool) -> str:
     return f"{res.via}\n{res.answer()}"
 
 
-def _procedural_extraction_context(enabled: bool) -> str:
-    mem = _memory(config=Config(procedural_extraction=enabled, abstain_threshold=2.0))
-    mem.add(
-        "PAT runbook source: rotate the PAT by opening security settings, regenerating the token, "
-        "then updating CI secrets.",
-        user_id="u1",
-        session_id="pat-runbook",
-        event_time=BASE,
-    )
-    mem.consolidate()
-    ctx = mem.lean_context(
-        "What is the PAT runbook?",
-        user_id="u1",
-        persona=False,
-        n_digests=0,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-    res = mem.search("What is the PAT runbook?", user_id="u1")
-    return f"{ctx}\n\nSEARCH {res.via}\n{res.answer()}"
-
-
-def _explicit_preference_extraction_context(enabled: bool) -> str:
-    mem = _memory(config=Config(explicit_preference_extraction=enabled))
-    mem.add(
-        "I prefer aisle seats and avoid red-eye flights.",
-        user_id="u1",
-        session_id="travel-prefs",
-        event_time=BASE,
-    )
-    mem.consolidate()
-    profile = mem.structured_profile("u1")
-    ctx = mem.lean_context(
-        "What travel preferences should you remember?",
-        user_id="u1",
-        persona=False,
-        n_digests=0,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-    return f"{json.dumps(profile, ensure_ascii=False, sort_keys=True)}\n\n{ctx}"
-
-
-def _preference_object_filter_context(enabled: bool) -> str:
-    mem = _memory(config=Config(preference_object_filter=enabled))
-    mem.add(
-        "I love it. I love retro-style diners.",
-        user_id="u1",
-        session_id="pref-specificity",
-        event_time=BASE,
-    )
-    mem.consolidate()
-    profile = mem.structured_profile("u1")
-    facts = sorted(f.text for f in mem.fact_store.values() if f.user_id == "u1" and f.is_live())
-    ctx = mem.lean_context(
-        "What food or place preferences should you remember?",
-        user_id="u1",
-        persona=False,
-        n_digests=0,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-    return f"FACTS={json.dumps(facts, ensure_ascii=False, sort_keys=True)}\n{json.dumps(profile, ensure_ascii=False, sort_keys=True)}\n\n{ctx}"
-
-
-def _preference_object_normalization_context(enabled: bool) -> str:
-    mem = _memory(config=Config(preference_object_normalization=enabled))
-    mem.add(
-        "I like the sound of the avocado sauce. I like the idea of fruit kebabs.",
-        user_id="u1",
-        session_id="pref-normalization",
-        event_time=BASE,
-    )
-    mem.consolidate()
-    profile = mem.structured_profile("u1")
-    facts = sorted(f.text for f in mem.fact_store.values() if f.user_id == "u1" and f.is_live())
-    ctx = mem.lean_context(
-        "What food preferences should you remember?",
-        user_id="u1",
-        persona=False,
-        n_digests=0,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-    return f"FACTS={json.dumps(facts, ensure_ascii=False, sort_keys=True)}\n{json.dumps(profile, ensure_ascii=False, sort_keys=True)}\n\n{ctx}"
-
-
-def _preference_reversal_extraction_context(enabled: bool) -> str:
-    mem = _memory(config=Config(preference_reversal_extraction=enabled))
-    mem.add("I like jazz.", user_id="u1", session_id="prefs-old", event_time=BASE)
-    mem.add("I no longer like jazz.", user_id="u1", session_id="prefs-new", event_time=BASE + DAY)
-    mem.consolidate()
-    facts = [
-        {
-            "text": f.text,
-            "live": f.is_live(),
-            "supersedes": bool(f.supersedes),
-            "invalidated": f.invalid_at is not None,
-        }
-        for f in mem.fact_store.values()
-        if f.user_id == "u1"
-    ]
-    ctx = mem.lean_context(
-        "Do I still like jazz?",
-        user_id="u1",
-        persona=False,
-        n_digests=0,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-    return f"FACTS={json.dumps(facts, ensure_ascii=False, sort_keys=True)}\n\n{ctx}"
-
-
 def _raw_context(enabled: bool) -> str:
     mem = _memory(config=Config(provenance_evidence=enabled))
     ep = mem.add(
@@ -329,38 +216,31 @@ def _evidence_budget_context(enabled: bool) -> str:
 
 def _graph_context(enabled: bool) -> str:
     mem = _memory(config=Config(graph_proximity=enabled))
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
-    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY)
+    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
+    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
+    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
     return mem.context_for("Tell me about Wei", user_id="u1", k_chunks=0, graph=True)
 
 
 def _graph_relation_context(enabled: bool) -> str:
     mem = _memory(config=Config(graph_relation_awareness=enabled))
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY)
-    mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY)
-    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY)
+    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
+    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
+    mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
+    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity")
     return mem.context_for("Where is Wei's colleague's company based?", user_id="u1", k_chunks=0, graph=True)
 
 
 def _graph_reinforcement_context(enabled: bool) -> str:
     mem = _memory(config=Config(graph_path_reinforcement=enabled))
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "mentor", "Maya", user_id="u1", valid_at=BASE + DAY)
-    mem.add_fact("Lin", "works_on", "Atlas", user_id="u1", valid_at=BASE + 2 * DAY)
-    mem.add_fact("Maya", "works_on", "Atlas", user_id="u1", valid_at=BASE + 3 * DAY)
-    mem.add_fact("Lin", "works_on", "Zephyr", user_id="u1", valid_at=BASE + 4 * DAY)
-    mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 5 * DAY)
-    mem.add_fact("Zephyr", "based_in", "Lisbon", user_id="u1", valid_at=BASE + 6 * DAY)
+    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
+    mem.add_fact("Wei", "mentor", "Maya", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
+    mem.add_fact("Lin", "works_on", "Atlas", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
+    mem.add_fact("Maya", "works_on", "Atlas", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity")
+    mem.add_fact("Lin", "works_on", "Zephyr", user_id="u1", valid_at=BASE + 4 * DAY, object_kind="entity")
+    mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 5 * DAY, object_kind="entity")
+    mem.add_fact("Zephyr", "based_in", "Lisbon", user_id="u1", valid_at=BASE + 6 * DAY, object_kind="entity")
     return mem.context_for("Where is Wei's project based?", user_id="u1", k_chunks=0, graph=True)
-
-
-def _graph_self_anchor_context(enabled: bool) -> str:
-    mem = _memory(config=Config(graph_self_anchor=enabled))
-    mem.add_fact("u1", "works_on", "Atlas", user_id="u1", valid_at=BASE)
-    mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY)
-    return mem.context_for("Where is my project based?", user_id="u1", k_chunks=0, graph=True)
 
 
 def _contains(marker: str, target: str):
@@ -388,52 +268,6 @@ def _run_ablation() -> tuple[list[AblationResult], dict]:
             _digest_fallback_context,
             lambda answer: "digest" in answer and "security settings" in answer and "pat-runbook" in answer,
             "derived session digest answers fact-miss how-to query",
-        ),
-        (
-            "procedural_extraction",
-            _procedural_extraction_context,
-            lambda ctx: (
-                "PROCEDURAL MEMORY" in ctx
-                and "security settings" in ctx
-                and "sessions: pat-runbook" in ctx
-                and "SEARCH procedural" in ctx
-            ),
-            "model extraction promotes runbook source into procedural memory",
-        ),
-        (
-            "explicit_preference_extraction",
-            _explicit_preference_extraction_context,
-            lambda ctx: (
-                "当前偏好记录（结构化）：" in ctx
-                and "aisle seats" in ctx
-                and "red-eye flights" in ctx
-            ),
-            "model extraction promotes explicit prefer/avoid statements into profile memory",
-        ),
-        (
-            "preference_object_filter",
-            _preference_object_filter_context,
-            lambda ctx: "retro-style diners" in ctx and "loves it" not in ctx,
-            "weak-object filter drops generic 'it' preference while preserving specific preference",
-        ),
-        (
-            "preference_object_normalization",
-            _preference_object_normalization_context,
-            lambda ctx: (
-                'FACTS=["u1 likes avocado sauce", "u1 likes fruit kebabs"]' in ctx
-            ),
-            "preference object normalization canonicalizes sound/idea wrappers",
-        ),
-        (
-            "preference_reversal_extraction",
-            _preference_reversal_extraction_context,
-            lambda ctx: (
-                '"text": "u1 dislikes jazz"' in ctx
-                and '"live": true' in ctx
-                and '"text": "u1 likes jazz"' in ctx
-                and '"invalidated": true' in ctx
-            ),
-            "high-confidence reversal phrase invalidates the old preference",
         ),
         (
             "provenance_evidence",
@@ -476,12 +310,6 @@ def _run_ablation() -> tuple[list[AblationResult], dict]:
             _graph_reinforcement_context,
             _before("Atlas based in Reykjavik", "Zephyr based in Lisbon"),
             "multi-path target before single-path distractor",
-        ),
-        (
-            "graph_self_anchor",
-            _graph_self_anchor_context,
-            _contains("RELATED FACTS (graph traversal):", "Atlas based in Reykjavik"),
-            "first-person query anchors to user graph node",
         ),
     ]
     rows: list[AblationResult] = []

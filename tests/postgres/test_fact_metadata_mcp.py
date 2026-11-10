@@ -1,4 +1,4 @@
-"""主题元数据跨 MCP 本地后端、HTTP 代理和工具层保持一致。"""
+"""分类和对象类型跨 MCP 本地后端、HTTP 代理和工具层保持一致。"""
 from __future__ import annotations
 
 import json
@@ -15,7 +15,7 @@ from mnemotrace.mcp.backends import LocalBackend, RemoteBackend  # noqa: E402
 
 
 @pytest.mark.asyncio
-async def test_mcp_local_and_proxy_preserve_topic_contract(product_service, product_scope):
+async def test_mcp_local_and_proxy_preserve_fact_metadata_contract(product_service, product_scope):
     service = product_service
     context, key = product_scope()
     local = LocalBackend(context.user_id, context.space_id, service=service)
@@ -34,38 +34,38 @@ async def test_mcp_local_and_proxy_preserve_topic_contract(product_service, prod
     async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as transport:
         remote = RemoteBackend("http://synthetic.test", key=key, space_id=context.space_id, client=transport)
         for backend, obj in [(local, "茶"), (remote, "咖啡")]:
-            added = await backend.add_fact("user", "prefers", obj, topic="food")
-            assert (added["topic"], added["topic_source"]) == ("food", "user")
-            updated = await backend.update_fact(added["id"], reset_topic=True)
-            assert (updated["topic"], updated["topic_source"]) == ("unknown", "unset")
-        assert requests[0]["topic"] == "food" and requests[1]["reset_topic"] is True
+            added = await backend.add_fact("user", "prefers", obj, categories=["food"], object_kind="entity")
+            assert (added["categories"], added["categories_source"], added["object_kind"]) == (["food"], "user", "entity")
+            updated = await backend.update_fact(added["id"], categories=[])
+            assert (updated["categories"], updated["categories_source"]) == ([], "unset")
+        assert requests[0]["categories"] == ["food"] and requests[1]["categories"] == []
 
         server.set_backend(local)
         try:
             await server.mcp.call_tool("mnemotrace_add_fact", {
-                "predicate": "prefers", "object": "jazz", "topic": "music",
+                "predicate": "prefers", "object": "jazz", "categories": ["music"],
             })
             fact = next(f for f in service.memory(context).facts() if f.object == "jazz")
             response = await server.mcp.call_tool("mnemotrace_update_fact", {
-                "fact_id": fact.id, "topic": "unknown", "response_format": "json",
+                "fact_id": fact.id, "categories": ["misc"], "response_format": "json",
             })
             blocks = response[0] if isinstance(response, tuple) else response
-            assert json.loads(blocks[0].text)["topic_source"] == "user"
-            await server.mcp.call_tool("mnemotrace_update_fact", {"fact_id": fact.id, "reset_topic": True})
+            assert json.loads(blocks[0].text)["categories_source"] == "user"
+            await server.mcp.call_tool("mnemotrace_update_fact", {"fact_id": fact.id, "categories": []})
             edited = service.memory(context).get_fact(fact.id)
-            assert (edited.topic, edited.topic_source) == ("unknown", "unset")
+            assert (edited.categories, edited.categories_source) == ([], "unset")
         finally:
             server.set_backend(None)
 
 
 @pytest.mark.asyncio
-async def test_topic_filter_is_forwarded_by_both_backends_and_applied_before_tool_paging(product_service, product_scope):
+async def test_categories_filter_is_forwarded_by_both_backends_and_applied_before_tool_paging(product_service, product_scope):
     from mnemotrace.server.app import app
 
     service = product_service
     context, key = product_scope()
-    for obj, topic in [("合成茶", "food"), ("合成作品", "music"), ("合成咖啡", "food")]:
-        service.add_fact(context, "user", "prefers", obj, topic=topic, sensitive=False)
+    for obj, category in [("合成茶", "food"), ("合成作品", "music"), ("合成咖啡", "food")]:
+        service.add_fact(context, "user", "prefers", obj, categories=[category], sensitive=False)
     local = LocalBackend(context.user_id, context.space_id, service=service)
     requests = []
 
@@ -75,18 +75,18 @@ async def test_topic_filter_is_forwarded_by_both_backends_and_applied_before_too
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), event_hooks={"request": [record]}) as transport:
         remote = RemoteBackend("http://synthetic.test", key=key, space_id=context.space_id, client=transport)
         for backend in [local, remote]:
-            data = await backend.memories(topic="food", limit=10, offset=0, include_superseded=False)
-            assert len(data["facts"]) == 2 and all(f["topic"] == "food" for f in data["facts"])
+            data = await backend.memories(categories=["food"], limit=10, offset=0, include_superseded=False)
+            assert len(data["facts"]) == 2 and all("food" in f["categories"] for f in data["facts"])
             server.set_backend(backend)
             try:
                 response = await server.mcp.call_tool("mnemotrace_list_facts", {
-                    "topic": "food", "limit": 1, "response_format": "json",
+                    "categories": ["food"], "limit": 1, "response_format": "json",
                 })
                 blocks = response[0] if isinstance(response, tuple) else response
                 page = json.loads(blocks[0].text)
                 assert page["total"] == 2 and page["count"] == 1 and page["has_more"]
-                assert page["facts"][0]["topic"] == "food"
+                assert "food" in page["facts"][0]["categories"]
             finally:
                 server.set_backend(None)
         assert len(requests) == 2
-        assert all(row["topic"] == "food" and row["space_id"] == context.space_id for row in requests)
+        assert all(row["categories"] == "food" and row["space_id"] == context.space_id for row in requests)

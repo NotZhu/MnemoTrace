@@ -12,7 +12,7 @@ import uuid
 from ..types import Episode
 from ..extraction import ExtractionError
 
-VERSION = 3
+VERSION = 5
 TERMINAL = {'completed', 'failed', 'cancelled'}
 
 
@@ -73,9 +73,6 @@ def config_identity(mem, *, include_embedding=True):
     # Stable across restarts; runtime provider object identity is checked separately.
     options = {k: v for k, v in asdict(mem.config).items()
                if k.startswith(('extraction_', 'joint_', 'digest_')) or k in {
-                   'explicit_preference_extraction', 'preference_object_filter',
-                   'preference_object_normalization', 'preference_reversal_extraction',
-                   'procedural_extraction',
                    'conflict_sim_threshold', 'max_hot_facts', 'salience_decay_per_day'}}
     llm = mem.llm
     def setting(value, depth=0):
@@ -134,6 +131,8 @@ def validate_state(value, episodes=None, embedding_dim=None):
         if value is None:
             require(docs is None or not any(ep.message_id is not None for ep in docs.values()))
             return None
+        if isinstance(value, dict) and value.get('version') != VERSION:
+            raise ValueError('Unsupported offline processing checkpoint version')
         require(isinstance(value, dict) and set(value) == {'version', 'namespaces'} and value['version'] == VERSION)
         require(isinstance(value['namespaces'], dict))
         for namespace, state in value['namespaces'].items():
@@ -645,13 +644,3 @@ class PipelineTasks:
         wins = [self.state['windows'][k] for k in row['window_ids']]
         return dict(status=row['digest'], error_code=next((w['error_code'] for w in reversed(wins)
             if w['operation'] in {'extract', 'digest'} and w['error_code']), None) if row['digest'] in {'pending', 'failed'} else None)
-
-    def identity_saved(self, episode_id):
-        from .fact_rules import _NAME_PREDICATES
-        names = set(self.memory._aliases.get(self.namespace, set()))
-        if self.namespace in self.memory._identity:
-            names.add(self.memory._identity[self.namespace].lower())
-        return bool(names) and any(win['core_saved'] and any(
-            fact['predicate'] in _NAME_PREDICATES and fact['object'].strip().lower() in names and episode_id in fact['source_ids']
-            for fact in (win['result'] or {}).get('facts', []))
-            for win in (self.state or {}).get('windows', {}).values())

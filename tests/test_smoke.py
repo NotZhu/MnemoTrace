@@ -35,14 +35,14 @@ def test_zero_dependency_defaults():
 
 def test_single_hop_qa():
     mem = build()
-    assert "shenzhen" in mem.search("Which city does Wei live in?", user_id="u1").answer().lower()
+    assert "shenzhen" in mem.search("Which city do I live in?", user_id="u1").answer().lower()
     assert "python" in mem.search("What is my favorite programming language?", user_id="u1").answer().lower()
 
 
 def test_knowledge_update_supersedes_current_answer():
     mem = build()
     # 当前答案必须反映换工作这件事，而不是过期的旧 fact
-    assert "moonshot" in mem.search("Where does Wei work?", user_id="u1").answer().lower()
+    assert "moonshot" in mem.search("Where do I work?", user_id="u1").answer().lower()
 
 
 def test_multi_sentence_episode_extracts_every_fact():
@@ -65,8 +65,8 @@ def test_records_import_same_session_extracts_multiple_messages():
     assert stats["sessions"] == 1
     assert stats["episodes"] == 2
     assert stats["facts_added"] == 2
-    assert "tencent" in mem.as_of("Where does Wei work?", BASE + 1, user_id="u1").answer().lower()
-    assert "moonshot" in mem.search("Where does Wei work?", user_id="u1").answer().lower()
+    assert "tencent" in mem.as_of("Where do I work?", BASE + 1, user_id="u1").answer().lower()
+    assert "moonshot" in mem.search("Where do I work?", user_id="u1").answer().lower()
 
 
 def test_same_slot_identity_facts_remain_eligible_when_both_are_current():
@@ -93,7 +93,7 @@ def test_same_slot_identity_facts_remain_eligible_when_both_are_current():
     mem.fact_store.upsert(old.id, old.embedding or [], old)
     mem.fact_store.upsert(new.id, new.embedding or [], new)
 
-    result = mem.search("Where does Wei work?", user_id="u1")
+    result = mem.search("Where do I work?", user_id="u1")
     assert {f.object for f in result.facts} == {"Tencent", "Moonshot AI"}
 
 
@@ -195,7 +195,7 @@ def test_project_rules_are_structured_multi_value_memory():
     assert len(live) == 2
 
 
-def test_runbook_source_extracts_procedural_fact_with_full_steps():
+def test_runbook_source_extracts_literal_fact_with_full_steps():
     mem = MemoryEngine()
     mem.add(
         "PAT runbook source: rotate the PAT by opening security settings, regenerating the token, "
@@ -210,13 +210,15 @@ def test_runbook_source_extracts_procedural_fact_with_full_steps():
     assert len(facts) == 1
     fact = facts[0]
     assert fact.subject == "PAT"
+    assert fact.object_kind == "literal"
     assert "security settings" in fact.object
     assert "regenerating the token" in fact.object
     assert "updating CI secrets" in fact.object
     assert all("security settings" not in ent.name for ent in mem.graph.entities.values())
+    assert mem.retrieve_episodes("PAT runbook", user_id="u1")[0].id == fact.provenance[0]
 
 
-def test_to_colon_howto_extracts_procedural_fact():
+def test_to_colon_howto_extracts_literal_fact():
     mem = MemoryEngine()
     mem.add(
         "To rotate the PAT: open security settings, regenerate the token, then update CI secrets.",
@@ -226,7 +228,8 @@ def test_to_colon_howto_extracts_procedural_fact():
     )
     mem.consolidate()
 
-    fact, = mem.procedural("u1")
+    fact, = mem.fact_store.values()
+    assert fact.object_kind == "literal"
     assert "security settings" in fact.object
     assert fact.provenance
 
@@ -259,7 +262,7 @@ def test_short_project_rule_context_preserves_key_constraint():
 
 def test_no_hard_delete_history_preserved():
     mem = build()
-    chain = mem.history("Wei", "works_at", user_id="u1")
+    chain = mem.history("user", "works_at", user_id="u1")
     objects = {f.object for f in chain}
     assert objects == {"Tencent", "Moonshot AI"}
     live = [f for f in chain if f.is_live()]
@@ -272,15 +275,15 @@ def test_no_hard_delete_history_preserved():
 
 def test_bitemporal_as_of_query():
     mem = build()
-    before = mem.as_of("Where does Wei work?", BASE + 10 * DAY, user_id="u1")
+    before = mem.as_of("Where do I work?", BASE + 10 * DAY, user_id="u1")
     assert "tencent" in before.answer().lower()
-    after = mem.search("Where does Wei work?", user_id="u1")
+    after = mem.search("Where do I work?", user_id="u1")
     assert "moonshot" in after.answer().lower()
 
 
 def test_multi_hop_reasoning():
     mem = build()
-    path, = mem.follow_path("Wei", ["colleague", "works_at"], user_id="u1").paths
+    path, = mem.follow_path("user", ["colleague", "works_at"], user_id="u1").paths
     assert "moonshot" in path.endpoint.lower()
 
 
@@ -293,11 +296,11 @@ def test_family_profession_multi_session_reasoning():
     mem.consolidate()
 
     facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("u1", "sister", "Maya") in facts
+    assert ("user", "sister", "Maya") in facts
     assert ("Maya", "occupation", "pediatrician") in facts
     assert ("Maya", "lives_in", "Seattle") in facts
 
-    path, = mem.follow_path("u1", ["sister", "occupation"], user_id="u1").paths
+    path, = mem.follow_path("user", ["sister", "occupation"], user_id="u1").paths
     assert path.endpoint == "pediatrician"
 
 
@@ -308,10 +311,10 @@ def test_multiple_family_relations_accumulate_and_disambiguate():
     mem.add("Maya just moved to Seattle.", user_id="u1", session_id="s3", event_time=BASE + 2 * DAY)
     mem.consolidate()
 
-    sisters = [f for f in mem.history("u1", "sister", user_id="u1") if f.is_live()]
+    sisters = [f for f in mem.history("user", "sister", user_id="u1") if f.is_live()]
     assert {f.object for f in sisters} == {"Anna", "Maya"}
 
-    paths = mem.follow_path("u1", ["sister", "occupation"], user_id="u1").paths
+    paths = mem.follow_path("user", ["sister", "occupation"], user_id="u1").paths
     assert {path.endpoint: path.facts[0].object for path in paths} == {
         "lawyer": "Anna", "pediatrician": "Maya",
     }
@@ -319,8 +322,8 @@ def test_multiple_family_relations_accumulate_and_disambiguate():
 
 def test_abstention_unknown_attribute():
     mem = build()
-    # entity（Wei）是已知的，但该属性（喜欢的食物）从未被提及
-    r = mem.search("What is Wei's favorite food?", user_id="u1")
+    # 已有本人事实，但尚无喜欢的食物。
+    r = mem.search("What is my favorite food?", user_id="u1")
     assert r.abstained
     # 完全无关的查询
     assert mem.search("What is the capital of France?", user_id="u1").abstained
@@ -338,7 +341,7 @@ def test_first_person_occupation_reaches_profile():
     mem.add("I am a pediatrician.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
-    assert ("u1", "occupation", "pediatrician") in {
+    assert ("user", "occupation", "pediatrician") in {
         (f.subject, f.predicate, f.object) for f in mem.fact_store.values()
     }
     assert mem.profile("u1").get("occupation") == "pediatrician"
@@ -349,7 +352,7 @@ def test_first_person_works_as_role_is_atomic():
     mem.add("I work as a data engineer at Spotify.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
-    assert ("u1", "occupation", "data engineer") in {
+    assert ("user", "occupation", "data engineer") in {
         (f.subject, f.predicate, f.object) for f in mem.fact_store.values()
     }
 
@@ -361,8 +364,8 @@ def test_first_person_fan_of_is_preference_not_occupation():
     mem.consolidate()
 
     facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("u1", "likes", "jazz") in facts
-    assert ("u1", "likes", "synthwave") in facts
+    assert ("user", "likes", "jazz") in facts
+    assert ("user", "likes", "synthwave") in facts
     assert "occupation" not in {p for _, p, _ in facts}
 
 
@@ -373,111 +376,37 @@ def test_explicit_preference_verbs_extract_profile_facts():
     mem.consolidate()
 
     facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("u1", "prefers", "aisle seats") in facts
-    assert ("u1", "avoids", "red-eye flights") in facts
-    assert ("u1", "dislikes", "crowded lounges") in facts
+    assert ("user", "prefers", "aisle seats") in facts
+    assert ("user", "avoids", "red-eye flights") in facts
+    assert ("user", "dislikes", "crowded lounges") in facts
 
 
-def test_explicit_preference_does_not_use_polluted_name_guess():
+def test_names_are_facts_and_do_not_rewrite_the_owner_subject():
     mem = MemoryEngine()
-    mem.add("I'm pretty sure I love retro-style diners.", user_id="u1", event_time=BASE)
-    mem.add("My name is Wei.", user_id="u1", event_time=BASE + DAY)
-    mem.add("I like jazz.", user_id="u1", event_time=BASE + 2 * DAY)
+    mem.add("My name is Wei.", user_id="u1", event_time=BASE)
+    mem.add("I like jazz.", user_id="u1", event_time=BASE + DAY)
     mem.consolidate()
-
     facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("pretty", "loves", "retro-style diners") not in facts
-    assert ("Wei", "likes", "jazz") in facts
-    assert mem._identity.get("u1") == "Wei"
+    assert ("user", "name", "Wei") in facts
+    assert ("user", "likes", "jazz") in facts
 
 
-def test_explicit_preference_skips_weak_objects_by_default():
+def test_preference_objects_are_preserved_as_returned_by_the_model():
     mem = MemoryEngine()
-    mem.add("I love it. I love retro-style diners. I like these ideas.", user_id="u1", event_time=BASE)
-    mem.consolidate()
-
-    facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("u1", "loves", "retro-style diners") in facts
-    assert ("u1", "loves", "it") not in facts
-    assert ("u1", "likes", "these ideas") not in facts
-
-
-def test_preference_object_filter_can_be_disabled():
-    from mnemotrace.config import Config
-
-    mem = MemoryEngine(config=Config(preference_object_filter=False))
-    mem.add("I love it. I love retro-style diners.", user_id="u1", event_time=BASE)
-    mem.consolidate()
-
-    facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("u1", "loves", "it") in facts
-    assert ("u1", "loves", "retro-style diners") in facts
-
-
-def test_preference_object_normalization_canonicalizes_wrappers():
-    mem = MemoryEngine()
-    mem.add(
-        "I like the sound of the avocado sauce. I like the idea of fruit kebabs.",
-        user_id="u1",
-        event_time=BASE,
-    )
-    mem.consolidate()
-
-    facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("u1", "likes", "avocado sauce") in facts
-    assert ("u1", "likes", "fruit kebabs") in facts
-    assert ("u1", "likes", "sound of the avocado sauce") not in facts
-    assert ("u1", "likes", "idea of fruit kebabs") not in facts
-
-
-def test_preference_object_normalization_can_be_disabled():
-    from mnemotrace.config import Config
-
-    mem = MemoryEngine(config=Config(preference_object_normalization=False))
     mem.add("I like the sound of the avocado sauce.", user_id="u1", event_time=BASE)
     mem.consolidate()
+    assert [(f.subject, f.object) for f in mem.fact_store.values()] == [
+        ("user", "sound of the avocado sauce")]
 
-    facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("u1", "likes", "sound of the avocado sauce") in facts
 
-
-def test_preference_reversal_extraction_invalidates_old_like():
+def test_pure_withdrawal_is_saved_as_source_without_a_negative_fact():
     mem = MemoryEngine()
     mem.add("I like jazz.", user_id="u1", event_time=BASE)
-    mem.add("I no longer like jazz.", user_id="u1", event_time=BASE + DAY)
+    source = mem.add("I no longer like jazz.", user_id="u1", event_time=BASE + DAY)
     mem.consolidate()
-
-    live = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values() if f.is_live()}
-    retired = [f for f in mem.fact_store.values() if f.predicate == "likes" and f.object == "jazz"]
-    current = [f for f in mem.fact_store.values() if f.predicate == "dislikes" and f.object == "jazz"]
-    assert ("u1", "dislikes", "jazz") in live
-    assert retired and retired[0].invalid_at == BASE + DAY
-    assert current and current[0].supersedes == retired[0].id
-
-
-def test_preference_reversal_extraction_handles_stopped_liking():
-    mem = MemoryEngine()
-    mem.add("I love crowded lounges.", user_id="u1", event_time=BASE)
-    mem.add("I stopped enjoying crowded lounges.", user_id="u1", event_time=BASE + DAY)
-    mem.consolidate()
-
-    live = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values() if f.is_live()}
-    assert ("u1", "dislikes", "crowded lounges") in live
-    assert not any(f.predicate == "loves" and f.object == "crowded lounges" and f.is_live()
-                   for f in mem.fact_store.values())
-
-
-def test_preference_reversal_extraction_can_be_disabled():
-    from mnemotrace.config import Config
-
-    mem = MemoryEngine(config=Config(preference_reversal_extraction=False))
-    mem.add("I like jazz.", user_id="u1", event_time=BASE)
-    mem.add("I no longer like jazz.", user_id="u1", event_time=BASE + DAY)
-    mem.consolidate()
-
-    live = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values() if f.is_live()}
-    assert ("u1", "likes", "jazz") in live
-    assert ("u1", "dislikes", "jazz") not in live
+    assert mem.episodes_doc.get(source.id).content == "I no longer like jazz."
+    fact, = mem.fact_store.values()
+    assert (fact.subject, fact.predicate, fact.object, fact.is_live()) == ("user", "likes", "jazz", True)
 
 
 def test_import_style_moving_and_dietary_restrictions_extract_cleanly():
@@ -487,10 +416,10 @@ def test_import_style_moving_and_dietary_restrictions_extract_cleanly():
     mem.consolidate()
 
     facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("u1", "lives_in", "Berlin") in facts
-    assert ("u1", "works_at", "Acme") in facts
-    assert ("u1", "diet", "vegetarian") in facts
-    assert ("u1", "allergic_to", "peanuts") in facts
+    assert ("user", "lives_in", "Berlin") in facts
+    assert ("user", "works_at", "Acme") in facts
+    assert ("user", "diet", "vegetarian") in facts
+    assert ("user", "allergic_to", "peanuts") in facts
 
     profile = mem.structured_profile("u1")
     dietary_items = [it for items in profile["preferences"].values() for it in items]

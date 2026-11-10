@@ -74,23 +74,23 @@ def run_demo(memory: Memory) -> None:
     print("\n== 查询记忆 ==")
     for q in [
         "What is my favorite programming language?",  # 第一人称属性
-        "Which city does Wei live in?",
-        "Where does Wei's colleague work?",  # 多跳：Wei -> Lin -> Moonshot
+        "Which city do I live in?",
+        "Where does my colleague work?",  # 多跳：Wei -> Lin -> Moonshot
         "What is the capital of France?",  # 记忆中没有 -> 拒答
     ]:
         r = memory.search(q)
         print(f"   [{r.via:9}] {q}\n              -> {r.answer()!r}")
 
     print("\n== 记忆更新：Wei 的工作单位历史 ==")
-    for f in memory.history("Wei", "works_at"):
+    for f in memory.history("user", "works_at"):
         state = "当前" if f.is_live() else "已被取代"
         print(f"   {f.object:12} [{state}]  取代的事实 ID={f.supersedes}")
 
     print("\n== 时间查询：第 10 天（换工作前）记录的工作单位 ==")
-    question = "Where does Wei work?"
+    question = "Where do I work?"
     historical = memory.search(question, facts=FactQuery(
-        subject="Wei", predicate="works_at", valid_at=BASE + 10 * DAY))
-    current = memory.search(question, facts=FactQuery(subject="Wei", predicate="works_at"))
+        subject="user", predicate="works_at", valid_at=BASE + 10 * DAY))
+    current = memory.search(question, facts=FactQuery(subject="user", predicate="works_at"))
     print(f"   第 10 天 -> {historical.answer()!r}   （当前 -> {current.answer()!r}）")
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ def test_protected_evidence_is_committed_and_only_published_by_explicit_resoluti
         assert any(row.ref.kind == FACT and domain(row).review_pending for row in rows)
     assert mem.resolve_conflict(conflict.id, keep)
     assert ('Oslo' in {fact.object for fact in mem.facts()}) is published
+    assert bool(mem.graph_entities('Oslo')) is published
     assert mem.conflicts() == ()
 
 
@@ -81,12 +82,12 @@ def test_duplicate_manual_fact_gets_provenance_without_model_overrides(runtime, 
     context = spaces.authorize(user, space.space_id)
     model = FakeLLM(handler=model_response)
     mem = Memory(runtime, context, llm=model)
-    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, category='User category', sensitive=True)
+    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, categories=['personal_details'], sensitive=True)
     result = mem.remember('Paris', 'review', event_time=10)
     assert result['status'] == 'completed'
     kept, = mem.facts()
     assert kept.id == manual.id and tuple(kept.provenance) == result['source_ids']
-    assert (kept.category, kept.sensitive) == ('User category', True)
+    assert (kept.categories, kept.categories_source, kept.sensitive) == (['personal_details'], 'user', True)
     assert len(model.calls) == 1 and mem.conflicts() == ()
 
 

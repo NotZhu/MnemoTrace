@@ -3,15 +3,18 @@
 export type FactStatus = 'live' | 'superseded'
 export type FactSource = 'extracted' | 'user'
 
-export type Topic = 'food' | 'travel' | 'music' | 'film_tv' | 'sports' | 'reading' | 'hobbies'
-  | 'environment' | 'health' | 'work' | 'learning' | 'technology' | 'finance' | 'relationships' | 'unknown'
-export type TopicSource = 'unset' | 'llm' | 'user'
-export interface TopicMetadata {
-  topic: Topic
-  topic_source: TopicSource
+export type Category = 'personal_details' | 'family' | 'professional_details' | 'sports' | 'travel'
+  | 'food' | 'music' | 'health' | 'technology' | 'hobbies' | 'fashion' | 'entertainment'
+  | 'milestones' | 'user_preferences' | 'misc'
+export type CategoriesSource = 'unset' | 'llm' | 'user'
+export type ObjectKind = 'entity' | 'literal' | 'unknown'
+export interface FactMetadata {
+  categories: Category[]
+  categories_source: CategoriesSource
+  object_kind: ObjectKind
 }
 
-export interface MemoryFact extends TopicMetadata {
+export interface MemoryFact extends FactMetadata {
   source_roles?: ('user' | 'assistant')[]
   id: string
   text: string
@@ -24,7 +27,6 @@ export interface MemoryFact extends TopicMetadata {
   status: FactStatus
   source: FactSource
   supersedes: string | null
-  category: string
   sensitive: boolean
   salience: number
   provenance: string[]
@@ -152,7 +154,7 @@ export interface MemoryDump {
   profile: string
   counts: MemoryCounts
   facts: MemoryFact[]
-  fact_categories?: string[]
+  fact_categories?: Category[]
   episodes: MemoryEpisode[]
   facts_page?: Page<MemoryFact>
   episodes_page?: Page<MemoryEpisode>
@@ -170,10 +172,10 @@ export interface SessionReportFact {
   invalid_at: string | null
   status: FactStatus
   source: FactSource
-  category: string
-  // 脱敏占位条目不返回主题元数据。
-  topic?: Topic
-  topic_source?: TopicSource
+  // 脱敏占位条目不返回分类和对象类型。
+  categories?: Category[]
+  categories_source?: CategoriesSource
+  object_kind?: ObjectKind
   sensitive: boolean
   redacted: boolean
   provenance: string[]
@@ -277,8 +279,8 @@ export interface FactWrite {
   predicate: string
   object: string
   sensitive?: boolean
-  category?: string
-  topic?: Topic | null
+  categories?: Category[]
+  object_kind?: ObjectKind
 }
 
 export interface FactEdit {
@@ -289,9 +291,8 @@ export interface FactEdit {
   predicate?: string
   object?: string
   sensitive?: boolean
-  category?: string
-  topic?: Topic | null
-  reset_topic?: boolean
+  categories?: Category[]
+  object_kind?: ObjectKind
 }
 
 export interface Health {
@@ -335,7 +336,7 @@ export interface ProfileBasic {
   fact_id: string
 }
 
-export interface ProfileItem extends TopicMetadata {
+export interface ProfileItem extends Pick<FactMetadata, 'categories' | 'categories_source'> {
   item: string
   polarity: 'like' | 'dislike'
   category: string
@@ -362,35 +363,12 @@ export interface StructuredProfile {
 }
 
 export interface AuditFinding {
-  kind:
-    | 'machine_token'
-    | 'empty_value'
-    | 'unreduced_claim'
-    | 'orphan_entity'
-    | 'fragment'
-    | 'code_artifact'
-    | 'dangling_subject'
-    | 'slot_overflow'
-    | 'embedder_blind'
+  kind: 'missing_edge' | 'edge_mismatch' | 'orphan_entity'
   why: string
   action: string
   fact_id?: string
-  text?: string
-  display?: string
-  subject?: string
-  predicate?: string
-  object?: string
-  source?: FactSource
-  valid_at_h?: string
-  entity?: string
-  // slot_overflow 是一种分组结果：N 条事实挤进同一个单值槽位只占一行，因此它
-  // 不携带单个 fact_id，而是携带数量、槽位的人类可读标签和几条样例。
-  label?: string
-  count?: number
-  samples?: Array<{ fact_id: string; text: string }>
-  embedder?: string
-  ratio?: number
-  migrate?: string
+  edge_id?: string
+  entity_id?: string
 }
 
 export interface AuditReport {

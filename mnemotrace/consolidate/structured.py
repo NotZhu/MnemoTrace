@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from ..categories import CATEGORIES
 from ..localize import display_of
 from ..types import Fact
 from ._rule_match import normalize_predicate
@@ -50,14 +51,12 @@ _NEGATIVE = {"dislikes", "dislike", "hates", "hate", "avoids", "avoid", "allergi
 _HABIT = {"usually", "often", "routine", "regularly", "habit", "tends_to", "commutes", "frequently",
           "daily", "weekly", "every_day", "every_week", "every_morning"}
 
-# 这里只把已存主题映射为展示分组，不在读取时重新判断主题。
-_GROUP_LABELS = {"food": "饮食", "travel": "出行", "music": "音乐", "film_tv": "影视",
-                 "sports": "运动", "reading": "阅读", "hobbies": "兴趣", "environment": "环境",
-                 "health": "健康", "work": "工作", "learning": "学习", "technology": "技术",
-                 "finance": "财务", "relationships": "人际", "unknown": "其他"}
+_GROUP_LABELS = dict(zip(CATEGORIES, (
+    "个人信息", "家庭", "职业", "运动", "出行", "饮食", "音乐", "健康", "技术",
+    "兴趣", "时尚", "娱乐", "里程碑", "偏好", "其他",
+), strict=True))
 _GROUP_ORDER = list(_GROUP_LABELS.values())
 _GROUP_ORDER.insert(_GROUP_ORDER.index("健康"), "健康禁忌")
-
 
 _POS_PREFIX = ("favorite", "favourite", "likes_", "loves_", "enjoys_", "prefers_", "prefer_",
                "interested", "fond_", "fan_")
@@ -90,7 +89,7 @@ def _preference_group(fact: Fact) -> str:
     # 禁忌是明确关系的独立展示特例，不能仅凭 health 主题推断。
     if normalize_predicate(fact.predicate) in _RESTRICTION_PREDICATES:
         return "健康禁忌"
-    return _GROUP_LABELS[fact.topic]
+    return next((_GROUP_LABELS[label] for label in CATEGORIES if label in fact.categories), "其他")
 
 
 def _evidence(f: Fact) -> dict:
@@ -118,29 +117,16 @@ def _confirmed(f: Fact) -> bool:
     return False
 
 
-# 通用的第一人称/用户指称（英文 + 中文共指）。它们指代用户本人——不是特例，而是每个记忆系统
-# 都需要的基础身份消解。关于他人的 fact（儿子/外婆/朋友 ...）根本不在这个集合里，因此无需任何
-# 亲属词表或猜测即可排除。
-USER_REFS = {"user", "用户", "i", "我", "me", "myself", "本人", "自己", "俺"}
-
-
-def user_aliases(subject: str, user_id: str) -> set[str]:
-    """指代用户的 subject：消解出的本人称呼（如 李雷）+ user_id + USER_REFS。
-    依赖写入内核已把第一人称 subject 归一到本人称呼。"""
-    return {subject.lower(), user_id.lower()} | USER_REFS
-
-
-def build_structured_profile(facts: Iterable[Fact], subject: str, user_id: str = "default") -> dict:
+def build_structured_profile(facts: Iterable[Fact]) -> dict:
     """把用户存活的 fact 分组为基本信息 / 无权重偏好 / 习惯，并按 confirmed 与 tentative
     拆分展示。`facts` 应当已经是存活集。"""
-    who = user_aliases(subject, user_id)
     basic: dict[str, dict] = {}
     prefs: dict[str, list] = {}
     habits: list[dict] = []
     tentative: list[dict] = []
 
     for f in facts:
-        if f.subject.lower() not in who:
+        if f.subject != "user":
             continue
         pred = f.predicate.lower()
         # 1) 基本身份槽位（单值：每个字段保留证据最强的一条）
@@ -153,11 +139,11 @@ def build_structured_profile(facts: Iterable[Fact], subject: str, user_id: str =
                 cand["_rank"] = _rank(f)
                 basic[field] = cand
             continue
-        # 2) 偏好（带极性标记），消费已存主题；未知不回退到关键词。
+        # 2) 偏好（带极性标记），消费已存标签；未知不回退到关键词。
         pol = _polarity(pred)
         if pol is not None:
             item = {"item": f.object, "polarity": pol, "category": _preference_group(f),
-                    "topic": f.topic, "topic_source": f.topic_source,
+                    "categories": f.categories, "categories_source": f.categories_source,
                     "evidence": _evidence(f), "source": f.source, "fact_id": f.id,
                     "subject": f.subject, "predicate": f.predicate, "object": f.object}
             if _confirmed(f):
@@ -169,13 +155,6 @@ def build_structured_profile(facts: Iterable[Fact], subject: str, user_id: str =
         if _is_habit(pred):
             habits.append({"text": display_of(f), "evidence": _evidence(f), "fact_id": f.id})
 
-    # 用户姓名被消解进身份（本人称呼）而不是作为 fact 存储，所以在拿到它时
-    # （且尚无 name fact 提供时）显式地放入 基本信息。
-    if "name" not in basic and subject and subject.lower() not in (USER_REFS | {user_id.lower()}):
-        basic["name"] = {"field": "name", "label": "姓名", "value": subject,
-                         "evidence": {"kind": "mentions", "source_count": 0,
-                                      "reinforcement_count": 0},
-                         "source": "extracted", "fact_id": ""}
     for b in basic.values():
         b.pop("_rank", None)
     return {

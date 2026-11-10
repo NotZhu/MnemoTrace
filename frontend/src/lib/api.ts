@@ -11,8 +11,8 @@ import type { AuditReport,
   FactEdit,
   FactSource,
   FactWrite,
-  TopicMetadata,
-  Topic,
+  FactMetadata,
+  Category,
   GraphResponse,
   Health,
   MemoryDump,
@@ -148,8 +148,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 const json = (body: unknown) => JSON.stringify(body)
 const qs = (params: object) => {
   const search = new URLSearchParams()
-  for (const [key, value] of Object.entries(params as Record<string, string | number | boolean | null | undefined>)) {
-    if (value !== undefined && value !== null && value !== '') search.set(key, String(value))
+  for (const [key, value] of Object.entries(params as Record<string, string | number | boolean | string[] | null | undefined>)) {
+    if (Array.isArray(value)) {
+      for (const item of value) search.append(key, item)
+    } else if (value !== undefined && value !== null && value !== '') search.set(key, String(value))
   }
   const s = search.toString()
   return s ? `?${s}` : ''
@@ -158,7 +160,7 @@ const qs = (params: object) => {
 export type OutcomeKind = 'decision' | 'finding' | 'lesson' | 'open_question'
 
 export interface MemoriesQuery {
-  topic?: Topic
+  categories?: Category[]
   outcome_kind?: OutcomeKind
   expected_revision?: string
   evaluated_at?: number
@@ -167,7 +169,6 @@ export interface MemoriesQuery {
   episodes_limit?: number
   episodes_offset?: number
   status?: 'live' | 'superseded'
-  category?: string
   q?: string
   include_sensitive?: boolean
   // 服务器端对两类事实的划分：会话结论 vs. 逐轮属性。放在服务器侧意味着
@@ -266,28 +267,20 @@ export const api = {
     }),
 
   addFact: (fact: FactWrite) =>
-    request<{ ok: boolean; id: string; text: string } & TopicMetadata>('/v1/facts', {
+    request<{ ok: boolean; id: string; text: string } & FactMetadata>('/v1/facts', {
       method: 'POST',
       body: json({ subject: 'user', ...fact }),
     }),
 
   // 实际修改内容后 `source` 为 'user'；只改敏感标记或分类时保留原来源。
   editFact: (id: string, patch: FactEdit) =>
-    request<{ ok: boolean; id: string; text: string; display?: string; source: FactSource } & TopicMetadata>(`/v1/facts/${id}`, {
+    request<{ ok: boolean; id: string; text: string; display?: string; source: FactSource } & FactMetadata>(`/v1/facts/${id}`, {
       method: 'PATCH',
       body: json(patch),
     }),
 
   deleteFact: (id: string) =>
     request<{ ok: boolean }>(`/v1/facts/${id}`, { method: 'DELETE' }),
-
-  // expect_count 是所有者确认时看到的数量：如果自审计以来该槽位发生了变化，服务器会
-  // 拒绝执行，而不是删除超过该数量的行。
-  clearSlot: (subject: string, predicate: string, expect_count: number) =>
-    request<{ ok: boolean; deleted: number; found?: number; reason?: string }>(
-      '/v1/facts/clear-slot',
-      { method: 'POST', body: json({ subject, predicate, expect_count }) },
-    ),
 
   setFocus: (focus: Partial<Focus>) =>
     request<{ ok: boolean; focus: Focus }>('/v1/focus', { method: 'PUT', body: json(focus) }),

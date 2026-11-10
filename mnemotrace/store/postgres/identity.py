@@ -56,7 +56,7 @@ def _space(row):
         values = dict(row[-1])
         if set(values) != set(asdict(SpaceSettings())):
             raise ValueError('Missing or unknown space settings')
-        for key in ('track', 'mute', 'subject_aliases'):
+        for key in ('track', 'mute'):
             if not isinstance(values[key], list):
                 raise ValueError('Expected JSON array')
             values[key] = tuple(values[key])

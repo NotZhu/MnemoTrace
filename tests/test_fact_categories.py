@@ -1,0 +1,96 @@
+"""Fact metadata contracts, independent of the extraction model provider."""
+import json
+from dataclasses import asdict
+
+import pytest
+
+from mnemotrace import Fact, MemoryEngine
+from mnemotrace.consolidate.operations import decode
+from mnemotrace.extraction import ExtractionResponseError
+from mnemotrace.config import Config
+from mnemotrace.consolidate.facts import materialize_facts
+from mnemotrace.consolidate.summarizer import ProfileBuilder
+from mnemotrace.store._validation import SNAPSHOT_FORMAT_VERSION
+
+
+def window():
+    source = dict(id="s1", role="user", event_time=100, sequence=1, needs_digest=False)
+    return dict(operation="extract", source_kind="dialogue", context=[], pending=[source])
+
+
+def item(**patch):
+    return dict(subject="user", predicate="prefers", object="decaf when working late",
+                text="I prefer decaf when working late", source_ids=["s1"],
+                categories=["food", "user_preferences", "food"], object_kind="literal",
+                sensitive=False, time_kind="current", effective_date=None, cardinality="unknown",
+                retention="unknown") | patch
+
+
+def extract(rows):
+    data = window()
+    product = decode(json.dumps(dict(facts=rows, digests=[])), data, Config())
+    return materialize_facts("account", data, product, 101)
+
+
+def test_model_facts_preserve_subject_name_and_qualified_preferences():
+    name, friend, preference = extract([
+        item(predicate="name", object="Jules", text="My name is Jules", object_kind="literal",
+             categories=["personal_details"]),
+        item(subject="Jules", object="jazz", text="My friend Jules prefers jazz"),
+        item(),
+    ])
+    assert (name.subject, name.object) == ("user", "Jules")
+    assert friend.subject == "Jules"
+    assert (preference.subject, preference.object, preference.text) == (
+        "user", "decaf when working late", "I prefer decaf when working late")
+    assert (preference.categories, preference.categories_source, preference.object_kind) == (
+        ["food", "user_preferences"], "llm", "literal")
+
+
+@pytest.mark.parametrize(("labels", "source"), [([], "unset"), (["misc"], "llm")])
+def test_empty_and_misc_are_distinct(labels, source):
+    fact, = extract([item(categories=labels)])
+    assert (fact.categories, fact.categories_source) == (labels, source)
+
+
+@pytest.mark.parametrize("patch", [
+    {"categories": "food"}, {"categories": ["bogus"]}, {"categories": [["food"]]},
+    {"object_kind": "text"}, {"source_ids": ["missing"]}, {"categories_source": "user"},
+    {"subject": "  "},
+])
+def test_invalid_model_metadata_is_rejected(patch):
+    with pytest.raises(ExtractionResponseError):
+        extract([item(**patch)])
+
+
+def test_manual_metadata_edit_and_claim_change_without_a_model():
+    memory = MemoryEngine()
+    fact = memory.add_fact("user", "prefers", "tea", categories=["food", "food"],
+                           object_kind="entity", sensitive=False)
+    assert (fact.categories, fact.categories_source) == (["food"], "user")
+    memory.update_fact(fact.id, categories=[], object="tea")
+    fact = memory.fact_store.get(fact.id)
+    assert (fact.categories, fact.categories_source, fact.object_kind) == ([], "unset", "entity")
+    memory.update_fact(fact.id, categories=["misc"])
+    memory.update_fact(fact.id, sensitive=False)
+    fact = memory.fact_store.get(fact.id)
+    assert (fact.categories, fact.categories_source) == (["misc"], "user")
+    memory.update_fact(fact.id, object="coffee")
+    fact = memory.fact_store.get(fact.id)
+    assert (fact.categories, fact.categories_source, fact.object_kind) == ([], "unset", "unknown")
+
+
+def test_snapshot_preserves_metadata_and_checks_version():
+    fact = Fact("user", "prefers", "tea", categories=["food"], categories_source="user", object_kind="entity")
+    snapshot = dict(format_version=SNAPSHOT_FORMAT_VERSION, facts=[asdict(fact)], episodes=[])
+    memory = MemoryEngine()
+    memory.import_snapshot(snapshot)
+    restored, = memory.fact_store.values()
+    assert (restored.categories, restored.categories_source, restored.object_kind) == (
+        ["food"], "user", "entity")
+    with pytest.raises(ValueError, match="unsupported snapshot version"):
+        memory.import_snapshot({**snapshot, "format_version": 1})
+
+
+def test_narrative_does_not_fall_back_to_third_party_facts():
+    assert ProfileBuilder().narrative("user", [Fact("Jules", "prefers", "tea")]) == ""

@@ -20,7 +20,7 @@ from .retrieve import (
     history,
 )
 from .retrieve.answers import (
-    SearchResult, _GENERIC_ATTR_TERMS, _INSTRUCTION_PREDS, chain_terms, should_abstain,
+    SearchResult, chain_terms, digest_match, should_abstain,
 )
 from .retrieve.events import EventEvidence, event_evidence
 from .retrieve.lexical import bm25_scores, overlap_terms
@@ -31,7 +31,7 @@ from .store import (
     InMemoryVectorStore,
     VectorStore,
 )
-from .topics import Topic
+from .categories import Category, ObjectKind
 from .extraction import ExtractionError, require_llm
 from .types import Cardinality, Conflict, Episode, Fact, Retention
 from .util import fmt_date, now, time_key
@@ -87,8 +87,6 @@ class MemoryEngine:
         # 记忆策略：抽取指令及抽取、摘要、画像提示词；空提示词使用内置默认值。
         self.policy: dict[str, str] = {"extract_instruction": "", "extract_system": "",
                                        "digest_system": "", "persona_system": ""}
-        self._identity: dict[str, str] = {}  # 用户 ID -> 已解析的自称
-        self._aliases: dict[str, set] = {}  # 用户 ID -> 已解析的名字或昵称集合
         self._import_seen: set[str] = set()  # 已导入事件的指纹，用于重复导入去重
         self.conflicts: dict[str, Conflict] = {}  # 疑似冲突及其处理状态，按冲突 ID 保存
         self.cold_pages_out: dict[str, int] = {}  # 每个用户从热层换出到冷层的事实数
@@ -573,10 +571,10 @@ class MemoryEngine:
             f = Fact(subject=s, predicate=p, object=o, user_id=user,
                      text=row.get("text", ""), source=row["source"],
                      source_roles=row.get("source_roles", []),
-                     category=row["category"], sensitive=row["sensitive"],
+                     sensitive=row["sensitive"],
                      sensitive_override=row.get("sensitive_override", False),
                      review_pending=row.get("review_pending", False), approved_at=row.get("approved_at"),
-                      topic=row["topic"], topic_source=row["topic_source"],
+                      categories=row["categories"], categories_source=row["categories_source"], object_kind=row["object_kind"],
                       cardinality=row["cardinality"], retention=row["retention"],
                      salience=row["salience"], confidence=row["confidence"],
                      valid_at=valid_at,
@@ -617,14 +615,14 @@ class MemoryEngine:
     # --- 用户手写的记忆管理（管理界面驱动的可编辑层） ---
     def add_fact(self, subject: str, predicate: str, object: str, user_id: str = "default",
                  valid_at: Optional[float] = None, sensitive: Optional[bool] = None,
-                 category: Optional[str] = None, topic: Optional[Topic] = None,
+                 categories: list[Category] | None = None, object_kind: ObjectKind = "unknown",
                  cardinality: Cardinality = "unknown", retention: Retention = "unknown") -> Fact:
         """手动断言一条 fact。它被标记为 source='user'（权威）：冲突解决允许它取代同一槽位上
         任何抽取出的值，并且此后受到保护，不会被未来的自动覆盖改写。"""
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
         user = user_id
-        f = build_manual_fact(subject, predicate, object, user, valid_at, sensitive, category, topic, cardinality, retention)
+        f = build_manual_fact(subject, predicate, object, user, valid_at, sensitive, categories, object_kind, cardinality, retention)
         f.embedding = self._encode(f.text)
         from .consolidate.pipeline import PipelineTasks
         PipelineTasks(self, f.user_id).invalidate()
@@ -632,8 +630,9 @@ class MemoryEngine:
         action, changed = reconcile_manual(f, history, now())
         for old in changed:
             self._upsert_fact(old, tier="hot")
-            self.graph.delete_relations_for_fact(old.id)
             self.writer.graph_builder.add_fact(old)
+        if changed:
+            self.graph.prune_orphan_entities()
         if action != "duplicate":
             self.fact_store.upsert(f.id, f.embedding, f)
             self.writer.graph_builder.add_fact(f)
@@ -643,11 +642,11 @@ class MemoryEngine:
 
     def update_fact(self, fact_id: str, subject: Optional[str] = None, predicate: Optional[str] = None,
                     object: Optional[str] = None, sensitive: Optional[bool] = None,
-                    category: Optional[str] = None, statement: Optional[str] = None,
-                    topic: Optional[Topic] = None, reset_topic: bool = False,
+                    categories: list[Category] | None = None, statement: Optional[str] = None,
+                    object_kind: ObjectKind | None = None,
                     cardinality: Cardinality | None = None, retention: Retention | None = None) -> Optional[Fact]:
         """实际修改 fact 内容时标记为用户手写（因此自动抽取不会把它改回去）。
-        修改正文时默认标记敏感并沿用原分类；显式参数优先
+        修改正文时默认标记敏感并清空分类；显式参数优先
         （用户的选择永远优先）。只修改元数据或回传未变的内容时，保留来源、有效状态与历史。"""
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
@@ -655,18 +654,18 @@ class MemoryEngine:
         if f is None or not f.is_published():
             return None
         edited = copy(f)
-        claim_changed = apply_manual_edit(edited, subject, predicate, object, sensitive, category,
-                                          statement, topic, reset_topic, cardinality, retention)
+        claim_changed = apply_manual_edit(edited, subject, predicate, object, sensitive, categories,
+                                          statement, object_kind, cardinality, retention)
+        projection_changed = claim_changed or edited.object_kind != f.object_kind
         if claim_changed:
             edited.embedding = self._encode(edited.text)
-            self.graph.delete_relations_for_fact(f.id)
-            self.graph.prune_orphan_entities()
             from .consolidate.pipeline import PipelineTasks
             PipelineTasks(self, f.user_id).invalidate()
         vars(f).update(vars(edited))
         self._upsert_fact(f, tier="hot")
-        if claim_changed:
+        if projection_changed:
             self.writer.graph_builder.add_fact(f)
+            self.graph.prune_orphan_entities()
         self._persona_cache.clear()
         return f
 
@@ -765,7 +764,7 @@ class MemoryEngine:
                 r.predicate,
                 getattr(fact, "text", ""),
                 getattr(fact, "object", ""),
-                getattr(fact, "category", ""),
+                " ".join(fact.categories),
             ]).lower()
             if needle and needle not in haystack:
                 continue
@@ -864,9 +863,8 @@ class MemoryEngine:
             history = (f for f in self._all_facts() if f.user_id == c.user_id)
         for fact in resolve_facts(facts, keep, at, history):
             self._upsert_fact(fact)
-            self.graph.delete_relations_for_fact(fact.id)
-            if fact.is_published():
-                self.writer.graph_builder.add_fact(fact)
+            self.writer.graph_builder.add_fact(fact)
+        self.graph.prune_orphan_entities()
         self._persona_cache.clear()
         c.status = 'dismissed' if keep == 'dismiss' else 'resolved'
         return True
@@ -938,9 +936,6 @@ class MemoryEngine:
         ranked = sorted(scores, key=lambda key: (-scores[key], key))
         return [event_evidence(episodes[key]) for key in ranked[:max(k, pool)]]
 
-    # 程序性记忆：how-to / 指令性知识——用户声明过的关于事情该怎么做的规则（"always remind
-    # me…"、"I prefer responses in bullet points"）。这是 fact store 之上的一个独立类型化视图
-    # （AGENTS.md 「架构概览与代码导航」 typed memory），浮出以便助手遵循长期有效的指令。
     def evict_cold(self, max_hot: int) -> int:
         """冷热分层分页（MemoryOS，AGENTS.md 「架构概览与代码导航」 / Bet E）。当热层 fact 集超过容量时，把最冷的
         fact（显著度最低、访问最旧）换页到冷层——但持久的身份/偏好 fact 除外，它们保持热层。
@@ -991,30 +986,21 @@ class MemoryEngine:
             self._page_hot([f for f, _ in ranked])
         return ranked, diag
 
-    def procedural(self, user_id: str = "default", as_of: Optional[float] = None) -> list[Fact]:
-        """该用户的长期指令 / how-to fact（程序性记忆）。"""
-        user = user_id
-        return [f for f in self._all_facts()
-                if f.user_id == user and f.is_live(as_of)
-                and (f.predicate.lower() in _INSTRUCTION_PREDS
-                     or any(f.predicate.lower().startswith(p + "_") for p in ("wants", "prefers", "remind")))]
-
     def structured_profile(self, user_id: str = "default") -> dict:
         """L2 结构化 profile：把用户的 live fact 按 基本信息/偏好/习惯 分组，并为展示区分
         "已确认"与"待确认"。这是只读的派生视图——从不过滤 fact store 或检索路径，因此召回
         不受影响（search/lean_context 仍看到全部 fact）。"""
         from .consolidate.structured import build_structured_profile
         user = user_id
-        subject = self._identity.get(user, user)
         live = [f for f in self._all_facts() if f.user_id == user and f.is_live()]
-        return build_structured_profile(live, subject, user)
+        return build_structured_profile(live)
 
     def build_persona(self, user_id: str = "default") -> str:
         """L3：由 live fact 合成的紧凑叙事式 profile（偏好/习惯/所有物）。"""
         user = user_id
         if user in self._persona_cache:
             return self._persona_cache[user]
-        subject = self._identity.get(user, user)
+        subject = "user"
         mute = self.focus.get("mute", [])
         live = [f for f in self._all_facts()
                 if f.user_id == user and f.is_live() and not self._matches(f, mute)]
@@ -1032,7 +1018,7 @@ class MemoryEngine:
         时间戳是视图的一部分，不能把当前 fact 泄漏进过去上下文。"""
         if as_of is None:
             return self.build_persona(user)
-        subject = self._identity.get(user, user)
+        subject = "user"
         mute = self.focus.get("mute", [])
         live = [
             f for f in self._all_facts()
@@ -1340,8 +1326,6 @@ class MemoryEngine:
             return "current_state"
         if title.startswith("当前偏好记录（结构化）"):
             return "preference"
-        if title.startswith("PROCEDURAL MEMORY"):
-            return "procedural"
         if title.startswith("FACTS"):
             return "facts"
         if title.startswith("SESSION DIGESTS"):
@@ -1367,7 +1351,6 @@ class MemoryEngine:
         score = {
             "facts": 90,
             "current_state": 88,
-            "procedural": 86,
             "provenance": 82,
             "raw": 78,
             "graph": 76,
@@ -1396,7 +1379,6 @@ class MemoryEngine:
             "timeline": 0.35,
             "digests": 0.35,
             "current_state": 0.35,
-            "procedural": 0.38,
             "preference": 0.35,
             "profile": 0.18,
             "other": 0.25,
@@ -1709,7 +1691,7 @@ class MemoryEngine:
                 continue
             if scope.predicate is not None and fact.predicate.lower() != scope.predicate.lower():
                 continue
-            if scope.category is not None and scope.category != fact.category:
+            if scope.categories and not set(scope.categories).intersection(fact.categories):
                 continue
             if scope.source_ids and not set(scope.source_ids).intersection(fact.provenance):
                 continue
@@ -1738,7 +1720,7 @@ class MemoryEngine:
         return result
 
     def follow_path(self, anchor, predicates, *, facts=None, user_id='default'):
-        from .retrieve.structured import AmbiguousAnchor, PathMatch, PathResult, traverse, validate_path
+        from .retrieve.structured import PathMatch, PathResult, traverse, validate_path
         from .store.contracts import FactQuery
 
         scope = FactQuery(limit=20) if facts is None else facts
@@ -1753,14 +1735,7 @@ class MemoryEngine:
 
         entity = self.graph.get_entity(user_id, anchor)
         if entity is None:
-            matches = [item for item in self.graph.entities.values() if item.user_id == user_id
-                       and any(alias.lower() == anchor for alias in item.aliases)
-                       and next(neighbors(item.id, predicates[0]), None) is not None]
-            if len(matches) > 1:
-                raise AmbiguousAnchor('Ambiguous anchor. Provide a canonical entity name.')
-            if not matches:
-                return PathResult(())
-            entity = matches[0]
+            return PathResult(())
         paths, flags = traverse(entity.id, predicates, neighbors, scope.limit)
         return PathResult(tuple(PathMatch(self.graph.entities[key].name, row) for key, row in paths), flags)
 
@@ -2029,15 +2004,13 @@ class MemoryEngine:
     def profile(self, user_id: str = "default") -> dict[str, str]:
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
-        subject = self._identity.get(user_id, user_id)
+        subject = "user"
         live = [f for f in self.fact_store.values() if f.user_id == user_id and f.is_live()]
         return self.profiles.build(subject, live)
 
     # --- 内部实现 ---
     def _should_abstain(self, query: str, facts: list[Fact], diag: dict) -> bool:
-        """当查询的*属性*不在记忆中时拒答——关键在于，仅匹配实体名是不够的（只知道 Gina 在哪
-        工作，却问 "Gina's favorite food"）。我们要求 predicate+object 有词法重叠，或语义相似度
-        足够强。针对 LongMemEval 的拒答（false-premise 类别）。"""
+        """Require a complete attribute match, object evidence or sufficient semantic similarity."""
 
         return should_abstain(query, facts, diag.get("sem", {}).values(), self.config.abstain_threshold)
 
@@ -2047,9 +2020,7 @@ class MemoryEngine:
         user_id: str,
         as_of: Optional[float] = None,
     ) -> Optional[SearchResult]:
-        """#3b：当原子化 fact 无法作答时，若最相关的 session 摘要与查询确实重叠，则浮出该摘要
-        （信息可能只存在于摘要中——某个 how-to、规则、安装命令——extractor 从未把它蒸馏成
-        fact）。保守策略：要求非泛化的词法重叠，绝不把模糊相似的摘要当作答案返回。"""
+        """Surface a source-backed digest covering all informative query terms."""
         if not self.config.digest_fallback:
             return None
         candidates: list[tuple[int, int, float, EventEvidence, str]] = []
@@ -2058,9 +2029,9 @@ class MemoryEngine:
             text = ep.text.strip()
             if not text:
                 continue
-            exact = overlap_terms(query, text) - _GENERIC_ATTR_TERMS
+            exact = digest_match(query, text)
             if exact:
-                candidates.append((len(exact), len(overlap_terms(query, text)), ep.event_time, ep, text))
+                candidates.append((exact, len(overlap_terms(query, text)), time_key(ep.event_time), ep, text))
         if candidates:
             _, _, _, ep, text = max(candidates, key=lambda row: (row[0], row[1], row[2]))
             dated = f"[{ep.metadata.get('date') or fmt_date(ep.event_time)}] (episode: {ep.id}; space: {ep.user_id}; session: {ep.session_id}) {text}"

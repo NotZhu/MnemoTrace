@@ -15,6 +15,7 @@ import re
 from typing import Protocol
 from types import SimpleNamespace
 
+from ..categories import Category, normalize_categories
 from ..types import Conflict, Entity, Episode, Fact, Relation
 from ..extraction import ExtractionResponseError
 from ._validation import validate_record
@@ -179,7 +180,7 @@ class FactQuery:
     state: FactState = FactState.CURRENT
     valid_at: float | None = None
     known_at: float | None = None
-    category: str | None = None
+    categories: tuple[Category, ...] = ()
     subject: str | None = None
     predicate: str | None = None
     source_ids: tuple[str, ...] = ()
@@ -199,9 +200,11 @@ class FactQuery:
         if self.limit > 1000:
             raise ValueError('Page/candidate limit exceeds 1000')
         _tuple(self.source_ids, str)
+        _tuple(self.categories, str)
+        normalize_categories(self.categories)
         if type(self.exclude_sensitive) is not bool:
             raise ValueError('Expected a boolean sensitive-fact filter')
-        for value in (*self.source_ids, self.category, self.subject, self.predicate, self.after_id):
+        for value in (*self.source_ids, self.subject, self.predicate, self.after_id):
             if value is not None:
                 _id(value)
 
@@ -427,18 +430,6 @@ class EmbeddingWrite:
 
 
 @dataclass(frozen=True)
-class EntityMerge:
-    survivor: RecordRef
-    merged: RecordRef
-
-    def __post_init__(self):
-        if (not isinstance(self.survivor, RecordRef) or not isinstance(self.merged, RecordRef)
-                or self.survivor.kind != RecordKind.ENTITY or self.merged.kind != RecordKind.ENTITY
-                or self.survivor.context != self.merged.context or self.survivor == self.merged):
-            raise ValueError('Entity merge requires two distinct entities in the same space')
-
-
-@dataclass(frozen=True)
 class SpaceSettings:
     track: tuple[str, ...] = ()
     mute: tuple[str, ...] = ()
@@ -446,15 +437,10 @@ class SpaceSettings:
     extract_system: str = ''
     digest_system: str = ''
     persona_system: str = ''
-    subject_name: str | None = None
-    subject_aliases: tuple[str, ...] = ()
 
     def __post_init__(self):
         _tuple(self.track, str)
         _tuple(self.mute, str)
-        _tuple(self.subject_aliases, str)
-        if self.subject_name is not None:
-            _id(self.subject_name)
         if any(not isinstance(value, str) for value in (
                 self.extract_instruction, self.extract_system, self.digest_system, self.persona_system)):
             raise ValueError('Policy fields must be strings')
@@ -540,7 +526,7 @@ class ExtractionProduct:
     stats: OperationStats
     digest_max_chars: int
     context_revision: int | None
-    format_version: int = 3
+    format_version: int = 5
 
     def __post_init__(self):
         if not isinstance(self.conditions, CommitConditions) or self.conditions.lease is None:
@@ -548,7 +534,7 @@ class ExtractionProduct:
         if not isinstance(self.stats, OperationStats):
             raise ValueError('Validated operation statistics are required')
         _count(self.digest_max_chars, 1)
-        if type(self.format_version) is not int or self.format_version != 3:
+        if type(self.format_version) is not int or self.format_version != 5:
             raise ValueError('Unsupported model product format')
         if self.context_revision is not None:
             _count(self.context_revision)
@@ -664,7 +650,6 @@ class ChangeSet:
     erasures: tuple[RecordRef, ...] = ()
     source_links: tuple[SourceLink, ...] = ()
     embeddings: tuple[EmbeddingWrite, ...] = ()
-    entity_merges: tuple[EntityMerge, ...] = ()
     operations: tuple[OperationSpec, ...] = ()
     settings: SpaceSettings | None = None
     receipt: CommitReceipt | None = None
@@ -677,7 +662,7 @@ class ChangeSet:
         refs = []
         for values, kind in ((self.writes, RecordWrite), (self.invalidations, FactInvalidation),
                              (self.source_links, SourceLink),
-                             (self.embeddings, EmbeddingWrite), (self.entity_merges, EntityMerge),
+                             (self.embeddings, EmbeddingWrite),
                              (self.operations, OperationSpec)):
             _tuple(values, kind)
         validate_erasures(self.erasures)
@@ -689,8 +674,6 @@ class ChangeSet:
         refs.extend(target.record for target in self.conditions.targets)
         for link in self.source_links:
             refs.extend((link.fact, link.source))
-        for merge in self.entity_merges:
-            refs.extend((merge.survivor, merge.merged))
         for operation in self.operations:
             refs.extend(target.record for target in operation.targets)
         if len({operation.operation_id for operation in self.operations}) != len(self.operations):
@@ -706,6 +689,8 @@ class ChangeSet:
         if len(keys) != len(set(keys)):
             raise ValueError('Duplicate embedding writes')
         for write in self.writes:
+            if write.ref.kind in (RecordKind.ENTITY, RecordKind.RELATION):
+                raise ValueError('Graph records are derived from facts')
             fields = json.loads(write.record.payload_json)
             if write.ref.kind == RecordKind.FACT and set(fields['provenance']) != {
                     link.source.record_id for link in self.source_links if link.fact == write.ref}:

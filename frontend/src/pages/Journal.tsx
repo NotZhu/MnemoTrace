@@ -6,16 +6,14 @@ import { Check, ChevronRight, HelpCircle, Loader2, NotebookText, Pencil, Search,
 import { Button, Card, CardTitle, ErrorState, PageHeader, Spinner } from '../components/ui'
 import { PageEmptyState } from '../components/PageEmptyState'
 import { ConfirmDialog } from '../components/Modal'
-import { FilterSelect } from '../components/FilterSelect'
-import { TopicBadge, TopicEditor } from '../components/TopicEditor'
+import { CategoryBadges, CategoryEditor, CategoryFilter } from '../components/CategoryEditor'
 import { toast } from '../components/Toast'
 import { useOrganizeSession, useDeleteFact, useEditFact, useMemories, useMemoryPages, useSessions } from '../hooks/queries'
 import { useDebouncedSearch } from '../hooks/useDebouncedSearch'
 import { useSpacePreference } from '../store/preferences'
 import { copy as t } from '../lib/copy'
 import { splitStamp } from '../lib/format'
-import type { MemoryFact, Topic } from '../types'
-import { TOPIC_OPTIONS, topicPatch, type TopicAction } from '../lib/topics'
+import type { Category, MemoryFact } from '../types'
 
 /** 会话结论的档案。
  *
@@ -67,12 +65,12 @@ export default function Journal() {
   const [composing, setComposing] = useState(false)
   const searchQuery = useDebouncedSearch(q, composing)
   const [showSuperseded, setShowSuperseded] = useSpacePreference('journal', 'showSuperseded')
-  const [topic, setTopic] = useSpacePreference('journal', 'topic')
+  const [categories, setCategories] = useSpacePreference('journal', 'categories')
   const [kindChip, setKindChip] = useState<OutcomeKind | 'all'>('all')
 
   const { data, isLoading, isFetching, isError, error, refetch, loadMore, isPlaceholderData } = useMemoryPages({
     kind: 'outcomes',
-    topic: topic || undefined,
+    categories: categories.length ? categories : undefined,
     facts_limit: 60,
     outcome_kind: kindChip === 'all' ? undefined : kindChip,
     episodes_limit: 0,
@@ -86,18 +84,18 @@ export default function Journal() {
   const groups = groupOutcomes(rows)
   const hasMore = data?.facts_page?.has_more ?? false
   const openQuery = useMemories({ kind: 'outcomes', outcome_kind: 'open_question', status: 'live',
-    facts_limit: 8, episodes_limit: 0, q: searchQuery, topic: topic || undefined, include_sensitive: true })
+    facts_limit: 8, episodes_limit: 0, q: searchQuery, categories: categories.length ? categories : undefined, include_sensitive: true })
   const open = openQuery.data?.facts ?? []
   const hasSearch = Boolean(q.trim())
   const hasKindFilter = kindChip !== 'all'
-  const hasFilters = hasSearch || hasKindFilter || Boolean(topic)
+  const hasFilters = hasSearch || hasKindFilter || categories.length > 0
   const searchUpdating = composing || q !== searchQuery || isFetching
 
   const clearFilters = () => {
     setQ('')
     setComposing(false)
     setKindChip('all')
-    setTopic('')
+    setCategories([])
     searchInput.current?.focus()
   }
   const resetControl = hasFilters ? (
@@ -157,8 +155,7 @@ export default function Journal() {
             ))}
           </div>
           <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
-            <FilterSelect<Topic | ''> label="主题" value={topic} onChange={setTopic}
-              options={[{ value: '', label: '全部主题' }, ...TOPIC_OPTIONS]} />
+            <CategoryFilter value={categories} onChange={setCategories} />
             <button
               type="button"
               role="switch"
@@ -319,7 +316,7 @@ function OutcomeRow({
   const deleteFact = useDeleteFact()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
-  const [topicAction, setTopicAction] = useState<TopicAction>('keep')
+  const [categories, setCategories] = useState<Category[]>()
   const [confirming, setConfirming] = useState(false)
   const [mine, setMine] = useState(false)
   const [evidenceOpen, setEvidenceOpen] = useState(false)
@@ -338,7 +335,7 @@ function OutcomeRow({
   const start = () => {
     if (!editable) return
     setDraft(statement)
-    setTopicAction('keep')
+    setCategories(undefined)
     setEditing(true)
   }
 
@@ -346,7 +343,7 @@ function OutcomeRow({
     if (saveInFlight.current || editFact.isPending) return
     const next = draft.trim()
     if (!next) return
-    const patch = { ...(next === statement ? {} : { statement: next }), ...topicPatch(topicAction) }
+    const patch = { ...(next === statement ? {} : { statement: next }), ...(categories === undefined ? {} : { categories }) }
     if (!Object.keys(patch).length) {
       setEditing(false)
       return
@@ -356,9 +353,9 @@ function OutcomeRow({
       { id: fact.id, patch },
       {
         onSuccess: (r) => {
-          // 正文变化才会成为用户来源；仅改主题时以服务返回的原来源为准。
+          // 正文变化才会成为用户来源；仅改标签时以服务返回的原来源为准。
           setMine(r.source === 'user')
-          toast.success(next === statement ? t.journal.topicSaved : t.journal.saved)
+          toast.success(next === statement ? t.journal.categoriesSaved : t.journal.saved)
           setEditing(false)
         },
         onError: (e) => toast.error(String((e as Error).message)),
@@ -393,8 +390,8 @@ function OutcomeRow({
           </div>
         )}
         <div className="mt-2">
-          {editing ? <TopicEditor current={fact} value={topicAction} onChange={setTopicAction} disabled={editFact.isPending} />
-            : <TopicBadge topic={fact.topic} topic_source={fact.topic_source} />}
+          {editing ? <CategoryEditor current={fact} value={categories} onChange={setCategories} disabled={editFact.isPending} />
+            : <CategoryBadges categories={fact.categories} categories_source={fact.categories_source} />}
         </div>
         {fact.why && (
           <div className="mt-2">

@@ -77,18 +77,18 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 
 <a id="profile-evidence"></a>结构化画像条目的 `evidence` 包含 `kind`、`source_count` 和 `reinforcement_count`。`source_count` 是事实 provenance 中不同来源 Episode ID 的数量；手动添加且没有来源、或仅从身份消解补全的姓名，来源数为 0。`reinforcement_count` 是事实的 `access_count`，记录检索使用时的强化次数；手动设定和多来源事实同样返回该次数，身份消解补全的姓名为 0。`kind` 优先用 `user` 表示手动设定；非手动事实在来源不足两条且曾被检索强化时为 `reinforced`，其余为 `mentions`。三者分别表达状态、来源数和强化次数，读取画像不会增加强化次数。
 
-偏好条目提供 topic/topic_source，按已存主题分组；unknown 均进入“其他”，明确禁忌关系是独立特例。条目的 category 为画像分组标签，完整规则见[主题与来源](../architecture/memory.md#主题与来源)。产品的主题分页筛选见 [HTTP API](http-api.md)。
+偏好条目按已存标签分组，规则见[分类与对象类型](../architecture/memory.md#分类与对象类型)。
 
 SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answer()` 返回已生成答案或最高事实的 object/text；拒答时返回固定提示。`top()` 返回首条 Fact 或 None。它不是对任何问题都调用外部模型的通用聊天接口。
 
-`as_of`、时间字段使用 epoch 秒。查询需要沿用正确的 user_id；recall 和上下文组装不接收 session_id；会话标识用于写入、浏览和处理刷新。Python `graph_data()` 默认包含敏感事实支持的关系，与 HTTP 的安全视图默认值不同。
+`as_of`、时间字段使用 epoch 秒。查询需要沿用正确的 user_id；recall 和上下文组装不接收 session_id；会话标识用于写入、浏览和处理刷新。Python `graph_data()` 默认包含敏感事实支持的关系，与 HTTP 的安全视图默认值不同。图谱由已通过审核且 `object_kind="entity"` 的事实生成。主体、谓词和对象须为长度符合图标识约束的单行文本。手工新增默认 `unknown`，编辑类型即可补入或移出图谱。名称按大小写无关的规范化文本查找。
 
 ## 离线事实、工作状态与策略
 
 | 方法 | 用途 |
 | --- | --- |
-| `add_fact(subject, predicate, object, user_id=..., valid_at=None, sensitive=None, category=None, topic=None)` | 返回用户来源 Fact |
-| `update_fact(fact_id, ..., topic=None, reset_topic=False)` | 修改内容或元数据，返回 Fact 或 None；statement 不与三元组字段混用 |
+| `add_fact(subject, predicate, object, user_id=..., valid_at=None, sensitive=None, categories=None, object_kind="unknown")` | 返回用户来源 Fact |
+| `update_fact(fact_id, ..., categories=None, object_kind=None)` | 修改内容或元数据，返回 Fact 或 None；statement 不与三元组字段混用 |
 | `delete_fact(fact_id)` | 删除指定事实，返回 bool |
 | `get_focus()`、`set_focus(track=None, mute=None)` | 查询或更新关注点，None 保持不变，[] 清空对应列表 |
 | `get_policy()`、`set_policy(**fields)` | 查询或覆盖抽取、摘要与画像策略 |
@@ -97,17 +97,17 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 
 图谱的状态、搜索、敏感内容与时间筛选均在 `limit` 前执行；正数 `limit` 限制返回关系数，节点仅包含这些关系的端点。`has_more=true` 表示当前查询条件下仍有未返回的匹配关系；恰好达到上限不表示截断。不限量查询返回全部匹配关系，`has_more=false`。该字段不提供命名空间总数，展示数量仅描述已返回的图。
 
-手动事实可显式设置 `topic`，省略或清除时为 `unknown/unset`。仅编辑主题保留来源和历史。`reset_topic` 与显式主题互斥。新增或修改事实时可指定 `cardinality` 与 `retention`，默认分别为 `unknown`。
+字段及编辑规则见[分类与对象类型](../architecture/memory.md#分类与对象类型)。
 
 ```python
-fact = memory.add_fact("user", "prefers", "茶", topic="food")
-memory.update_fact(fact.id, topic="unknown")  # unknown/user
-memory.update_fact(fact.id, reset_topic=True)  # 清除主题，来源为 unset
+fact = memory.add_fact("user", "prefers", "茶", categories=["food"], object_kind="entity")
+memory.update_fact(fact.id, categories=["misc"])
+memory.update_fact(fact.id, categories=[])  # 清除标签，来源为 unset
 ```
 
 ## 离线扩展与研究入口
 
-摘要和派生层操作还包括 `generate_digests`、`retrieve_digests`、`procedural`；热层管理包括 `evict_cold`、`apply_focus`。这些方法改变派生状态或工作集，调用方负责后续保存及必要验证。
+摘要和派生层操作还包括 `generate_digests`、`retrieve_digests`；热层管理包括 `evict_cold`、`apply_focus`。这些方法改变派生状态或工作集，调用方负责后续保存及必要验证。
 
 精确签名、类型和行为以 [MemoryEngine](../../mnemotrace/memory_engine.py)、[记录类型](../../mnemotrace/types.py) 和对应[测试](../../tests/)为核对来源。HTTP/MCP 的方法、默认值及能力不与嵌入式 API 一一对应。
 

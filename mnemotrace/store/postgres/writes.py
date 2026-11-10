@@ -81,7 +81,7 @@ def _source_digest(sql, record, values, old):
     return True
 
 
-def write(sql, change, graph, explicit_edges):
+def write(sql, change, graph):
     record = change.record
     kind, record_id = record.ref.kind, record.ref.record_id
     previous = sql.get(kind, record_id)
@@ -126,8 +126,8 @@ def write(sql, change, graph, explicit_edges):
     elif kind == FACT:
         _replace_links(sql, 'fact_sources', 'fact_id', record_id,
                        list(dict.fromkeys(current['provenance'])), ordered=True)
-        graph_fields = ('subject', 'predicate', 'object', 'valid_at', 'invalid_at', 'expired_at', 'review_pending', 'approved_at')
-        if record_id not in explicit_edges and (old is None or any(old[k] != current[k] for k in graph_fields)):
+        graph_fields = ('subject', 'predicate', 'object', 'object_kind', 'valid_at', 'invalid_at', 'expired_at', 'review_pending', 'approved_at')
+        if old is None or any(old[k] != current[k] for k in graph_fields):
             graph.project(record_id)
     return True
 

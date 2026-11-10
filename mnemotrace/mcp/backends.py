@@ -17,7 +17,7 @@ from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote, urlencode
 
 from ..store.contracts import FactState
-from ..topics import Topic
+from ..categories import Category, ObjectKind
 from ..types import Cardinality, Retention
 
 
@@ -63,7 +63,7 @@ class Backend(Protocol):
         offset: int = 0,
         q: str = "",
     ) -> dict: ...
-    async def memories(self, *, topic: Topic | None, limit: int, offset: int, include_superseded: bool) -> dict: ...
+    async def memories(self, *, categories: list[Category] | None, limit: int, offset: int, include_superseded: bool) -> dict: ...
     async def stats(self) -> dict: ...
 
     async def audit(self, limit: int = 40) -> dict: ...
@@ -81,8 +81,8 @@ class Backend(Protocol):
         predicate: str,
         object: str,
         sensitive: bool | None = None,
-        category: str | None = None,
-        topic: Topic | None = None,
+        categories: list[Category] | None = None,
+        object_kind: ObjectKind = "unknown",
         cardinality: Cardinality = "unknown",
         retention: Retention = "unknown",
     ) -> dict: ...
@@ -93,9 +93,8 @@ class Backend(Protocol):
         predicate: str | None = None,
         object: str | None = None,
         sensitive: bool | None = None,
-        category: str | None = None,
-        topic: Topic | None = None,
-        reset_topic: bool = False,
+        categories: list[Category] | None = None,
+        object_kind: ObjectKind | None = None,
         cardinality: Cardinality | None = None,
         retention: Retention | None = None,
     ) -> dict | None: ...
@@ -198,8 +197,8 @@ class LocalBackend:
     async def sessions(self, limit: int = 20, offset: int = 0, q: str = "") -> dict:
         return await asyncio.to_thread(self.svc.sessions, self.context, limit, offset, q)
 
-    async def memories(self, *, topic: Topic | None, limit: int, offset: int, include_superseded: bool) -> dict:
-        return await asyncio.to_thread(self.svc.memories, self.context, topic=topic, facts_limit=limit,
+    async def memories(self, *, categories: list[Category] | None, limit: int, offset: int, include_superseded: bool) -> dict:
+        return await asyncio.to_thread(self.svc.memories, self.context, categories=categories, facts_limit=limit,
                                        facts_offset=offset, episodes_limit=0,
                                        status=None if include_superseded else 'live')
 
@@ -231,8 +230,8 @@ class LocalBackend:
         predicate: str,
         object: str,
         sensitive: bool | None = None,
-        category: str | None = None,
-        topic: Topic | None = None,
+        categories: list[Category] | None = None,
+        object_kind: ObjectKind = "unknown",
         cardinality: Cardinality = "unknown",
         retention: Retention = "unknown",
     ) -> dict:
@@ -243,8 +242,8 @@ class LocalBackend:
             predicate,
             object,
             sensitive=sensitive,
-            category=category,
-            topic=topic,
+            categories=categories,
+            object_kind=object_kind,
             cardinality=cardinality,
             retention=retention,
         )
@@ -256,9 +255,8 @@ class LocalBackend:
         predicate: str | None = None,
         object: str | None = None,
         sensitive: bool | None = None,
-        category: str | None = None,
-        topic: Topic | None = None,
-        reset_topic: bool = False,
+        categories: list[Category] | None = None,
+        object_kind: ObjectKind | None = None,
         cardinality: Cardinality | None = None,
         retention: Retention | None = None,
     ) -> dict | None:
@@ -270,9 +268,8 @@ class LocalBackend:
             predicate=predicate,
             object=object,
             sensitive=sensitive,
-            category=category,
-            topic=topic,
-            reset_topic=reset_topic,
+            categories=categories,
+            object_kind=object_kind,
             cardinality=cardinality,
             retention=retention,
         )
@@ -428,13 +425,13 @@ class RemoteBackend:
         qs = urlencode({"limit": limit, "offset": offset, "q": q})
         return await self._get("/v1/sessions?" + qs)
 
-    async def memories(self, *, topic: Topic | None, limit: int, offset: int, include_superseded: bool) -> dict:
+    async def memories(self, *, categories: list[Category] | None, limit: int, offset: int, include_superseded: bool) -> dict:
         params = dict(facts_limit=limit, facts_offset=offset, episodes_limit=0)
-        if topic is not None:
-            params['topic'] = topic
+        if categories:
+            params['categories'] = categories
         if not include_superseded:
             params['status'] = 'live'
-        return await self._get("/v1/memories?" + urlencode(params))
+        return await self._get("/v1/memories?" + urlencode(params, doseq=True))
 
     async def stats(self) -> dict:
         return await self._get("/v1/stats")
@@ -470,8 +467,8 @@ class RemoteBackend:
         predicate: str,
         object: str,
         sensitive: bool | None = None,
-        category: str | None = None,
-        topic: Topic | None = None,
+        categories: list[Category] | None = None,
+        object_kind: ObjectKind = "unknown",
         cardinality: Cardinality = "unknown",
         retention: Retention = "unknown",
     ) -> dict:
@@ -479,10 +476,10 @@ class RemoteBackend:
                 "cardinality": cardinality, "retention": retention}
         if sensitive is not None:
             body["sensitive"] = sensitive
-        if category is not None:
-            body["category"] = category
-        if topic is not None:
-            body["topic"] = topic
+        if categories is not None:
+            body["categories"] = categories
+        if object_kind is not None:
+            body["object_kind"] = object_kind
         return await self._post("/v1/facts", body)
 
     async def update_fact(
@@ -492,9 +489,8 @@ class RemoteBackend:
         predicate: str | None = None,
         object: str | None = None,
         sensitive: bool | None = None,
-        category: str | None = None,
-        topic: Topic | None = None,
-        reset_topic: bool = False,
+        categories: list[Category] | None = None,
+        object_kind: ObjectKind | None = None,
         cardinality: Cardinality | None = None,
         retention: Retention | None = None,
     ) -> dict | None:
@@ -507,12 +503,10 @@ class RemoteBackend:
             body["object"] = object
         if sensitive is not None:
             body["sensitive"] = sensitive
-        if category is not None:
-            body["category"] = category
-        if topic is not None:
-            body["topic"] = topic
-        if reset_topic:
-            body["reset_topic"] = True
+        if categories is not None:
+            body["categories"] = categories
+        if object_kind is not None:
+            body["object_kind"] = object_kind
         if cardinality is not None:
             body["cardinality"] = cardinality
         if retention is not None:

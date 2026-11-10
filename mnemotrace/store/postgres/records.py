@@ -23,8 +23,8 @@ JSON_COLUMNS = {'metadata', 'coverage', 'digest_coverage', 'settings', 'stats',
                 'input', 'result', 'source_versions', 'validity_revisions'}
 
 
-def anchor_terms(name, aliases):
-    return sorted({term for label in (name, *aliases) for term in lexical_terms(label, exact=True)})
+def anchor_terms(name):
+    return sorted(set(lexical_terms(name, exact=True)))
 
 
 def timestamp(value):
@@ -87,8 +87,7 @@ def columns(record, values):
         data['agent_id'] = record.agent_id
     if kind == ENTITY:
         data['normalized_name'] = values['name'].lower()
-        data['authoritative'] = True
-        data['anchor_terms'] = anchor_terms(values['name'], values['aliases'])
+        data['anchor_terms'] = anchor_terms(values['name'])
     if kind == FACT:
         data['subject_key'] = values['subject'].lower()
         data['predicate_key'] = values['predicate'].lower()

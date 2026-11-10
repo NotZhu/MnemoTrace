@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 import math
 from typing import Literal, Optional, get_args
 
-from .topics import Topic, TopicSource, validate_topic
+from .categories import Category, CategoriesSource, ObjectKind, validate_categories, validate_object_kind
 from .util import gen_id, now
 
 
@@ -95,7 +95,6 @@ class Fact:
     source: str = "extracted"
     # 分类（feature ⑤）：粗粒度的领域/类别标签和敏感标记（PII/健康/财务等）。
     # 默认值供离线构造与写入后的分类使用；敏感 fact 可在共享/导出场景中脱敏。
-    category: str = ""
     sensitive: bool = False
     sensitive_override: bool = False
     review_pending: bool = False
@@ -118,14 +117,16 @@ class Fact:
     id: str = field(default_factory=lambda: gen_id("ft"))
 
     # 与事实来源、管理分类及敏感标记独立；自动赋值由写入路径接入。
-    topic: Topic = "unknown"
-    topic_source: TopicSource = "unset"
+    categories: list[Category] = field(default_factory=list)
+    categories_source: CategoriesSource = "unset"
+    object_kind: ObjectKind = "unknown"
     cardinality: Cardinality = "unknown"
     retention: Retention = "unknown"
     source_roles: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        validate_topic(self.topic, self.topic_source)
+        validate_categories(self.categories, self.categories_source)
+        validate_object_kind(self.object_kind)
         validate_lifecycle(self.cardinality, self.retention)
         validate_validity_revisions(self.validity_revisions)
         if not self.text:
@@ -184,8 +185,6 @@ class Entity:
     user_id: str = "default"
     # 实体向量
     embedding: Optional[list[float]] = None
-    # 实体别名
-    aliases: list[str] = field(default_factory=list)
     # 实体 id
     id: str = field(default_factory=lambda: gen_id("en"))
 

@@ -3,21 +3,25 @@
     {
       "subject": "EKOS",
       "predicate": "deployed_on",
+      "object_kind": "entity",
       "object": "Ubuntu server"
     },
     {
       "subject": "EKOS",
       "predicate": "backend_framework",
+      "object_kind": "entity",
       "object": "FastAPI"
     },
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Shenzhen"
     },
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Moonshot AI"
     }
   ],
@@ -25,6 +29,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Shenzhen"
     }
   ],
@@ -37,6 +42,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Shenzhen"
     }
   ],
@@ -51,6 +57,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Moonshot AI"
     }
   ],
@@ -65,6 +72,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Storage Labs"
     }
   ],
@@ -84,6 +92,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Tencent"
     }
   ],
@@ -91,6 +100,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Moonshot AI"
     }
   ],
@@ -98,6 +108,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Tencent"
     }
   ],
@@ -105,6 +116,7 @@
     {
       "subject": "project",
       "predicate": "decision",
+      "object_kind": "literal",
       "object": "launch checklist must include committed eval logs"
     }
   ],
@@ -112,6 +124,7 @@
     {
       "subject": "project",
       "predicate": "rule",
+      "object_kind": "literal",
       "object": "benchmark claims require committed raw logs before public copy changes"
     }
   ],
@@ -129,6 +142,7 @@
     {
       "subject": "PAT",
       "predicate": "procedure",
+      "object_kind": "literal",
       "object": "rotate the PAT by opening security settings, regenerating the token, then updating CI secrets"
     }
   ],
@@ -175,17 +189,12 @@
       "object": "jazz"
     }
   ],
-  "I no longer like jazz.": [
-    {
-      "subject": "user",
-      "predicate": "dislikes",
-      "object": "jazz"
-    }
-  ],
+  "I no longer like jazz.": [],
   "Wei works at Tencent and keeps a blue employee badge.": [
     {
       "subject": "Wei",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Tencent"
     }
   ],
@@ -193,6 +202,7 @@
     {
       "subject": "Wei",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Moonshot AI on agent memory"
     }
   ],
@@ -205,6 +215,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "IBM"
     }
   ],
@@ -212,6 +223,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Oracle"
     }
   ],
@@ -224,6 +236,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Spotify"
     }
   ],
@@ -255,6 +268,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Boston"
     }
   ],
@@ -262,6 +276,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Denver"
     }
   ],
@@ -283,11 +298,13 @@
     {
       "subject": "user",
       "predicate": "colleague",
+      "object_kind": "entity",
       "object": "Evan"
     },
     {
       "subject": "Evan",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Netflix"
     }
   ],
@@ -295,11 +312,13 @@
     {
       "subject": "user",
       "predicate": "sister",
+      "object_kind": "entity",
       "object": "Maya"
     },
     {
       "subject": "Maya",
       "predicate": "occupation",
+      "object_kind": "entity",
       "object": "pediatrician"
     }
   ],
@@ -307,6 +326,7 @@
     {
       "subject": "Maya",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Seattle"
     }
   ],
@@ -320,6 +340,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Adobe"
     }
   ],
@@ -332,6 +353,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Lisbon"
     }
   ],
@@ -339,6 +361,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Beijing"
     }
   ],
@@ -346,6 +369,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "SyntheticCity"
     }
   ],
@@ -357,6 +381,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Shanghai"
     }
   ],
@@ -371,6 +396,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Acme Corp"
     }
   ],
@@ -392,6 +418,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Tencent"
     },
     {
@@ -409,6 +436,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Moonshot AI"
     }
   ],
@@ -428,6 +456,7 @@
     {
       "subject": "Wei",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Tencent"
     }
   ],
@@ -435,6 +464,7 @@
     {
       "subject": "Wei",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Moonshot AI"
     }
   ],
@@ -442,11 +472,13 @@
     {
       "subject": "user",
       "predicate": "sister",
+      "object_kind": "entity",
       "object": "Anna"
     },
     {
       "subject": "Anna",
       "predicate": "occupation",
+      "object_kind": "entity",
       "object": "lawyer"
     }
   ],
@@ -454,11 +486,13 @@
     {
       "subject": "user",
       "predicate": "sister",
+      "object_kind": "entity",
       "object": "Maya"
     },
     {
       "subject": "Maya",
       "predicate": "occupation",
+      "object_kind": "entity",
       "object": "pediatrician"
     }
   ],
@@ -466,6 +500,7 @@
     {
       "subject": "Maya",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Seattle"
     }
   ],
@@ -473,6 +508,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Acme"
     }
   ],
@@ -490,6 +526,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Hawaii"
     }
   ],
@@ -497,6 +534,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Paris"
     }
   ],
@@ -504,11 +542,13 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Shenzhen"
     },
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Tencent"
     }
   ],
@@ -523,6 +563,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Tencent"
     }
   ],
@@ -530,6 +571,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Moonshot AI"
     }
   ],
@@ -537,6 +579,7 @@
     {
       "subject": "PAT",
       "predicate": "procedure",
+      "object_kind": "literal",
       "object": "rotate the PAT by opening security settings and updating CI secrets"
     }
   ],
@@ -544,6 +587,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Acme"
     }
   ],
@@ -551,6 +595,7 @@
     {
       "subject": "project",
       "predicate": "decision",
+      "object_kind": "literal",
       "object": "release notes require committed raw logs"
     }
   ],
@@ -559,7 +604,8 @@
       "subject": "user",
       "predicate": "medical_condition",
       "object": "diabetes",
-      "category": "健康",
+      "categories": ["health"],
+      "object_kind": "unknown",
       "sensitive": true
     }
   ],
@@ -568,12 +614,14 @@
       "subject": "user",
       "predicate": "occupation",
       "object": "diabetes",
-      "category": "健康",
+      "categories": ["health"],
+      "object_kind": "unknown",
       "sensitive": true
     },
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Acme"
     }
   ],
@@ -591,11 +639,13 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Shenzhen"
     },
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Moonshot AI"
     }
   ],
@@ -603,6 +653,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Acme"
     }
   ],
@@ -610,6 +661,7 @@
     {
       "subject": "project",
       "predicate": "decision",
+      "object_kind": "literal",
       "object": "local MCP agents must refresh disk snapshots before recall"
     }
   ],
@@ -618,12 +670,14 @@
       "subject": "user",
       "predicate": "occupation",
       "object": "diabetes",
-      "category": "健康",
+      "categories": ["health"],
+      "object_kind": "unknown",
       "sensitive": true
     },
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Acme"
     }
   ],
@@ -632,6 +686,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Syntheticville"
     }
   ],
@@ -646,6 +701,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Moonshot AI"
     }
   ],
@@ -653,11 +709,13 @@
     {
       "subject": "user",
       "predicate": "colleague",
+      "object_kind": "entity",
       "object": "Lin"
     },
     {
       "subject": "Lin",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Moonshot AI"
     }
   ],
@@ -665,11 +723,13 @@
     {
       "subject": "Wei",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Tencent"
     },
     {
       "subject": "Wei",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Moonshot AI"
     }
   ],
@@ -684,6 +744,7 @@
     {
       "subject": "PAT",
       "predicate": "procedure",
+      "object_kind": "literal",
       "object": "open security settings, regenerate the token, then update CI secrets"
     }
   ],
@@ -691,6 +752,7 @@
     {
       "subject": "project",
       "predicate": "rule",
+      "object_kind": "literal",
       "object": "MnemoTrace benchmark claims must be backed by committed raw logs before public copy changes"
     }
   ],
@@ -705,6 +767,7 @@
     {
       "subject": "user",
       "predicate": "occupation",
+      "object_kind": "entity",
       "object": "pediatrician"
     }
   ],
@@ -764,22 +827,18 @@
       "object": "crowded lounges"
     }
   ],
-  "I stopped enjoying crowded lounges.": [
-    {
-      "subject": "user",
-      "predicate": "dislikes",
-      "object": "crowded lounges"
-    }
-  ],
+  "I stopped enjoying crowded lounges.": [],
   "I'm moving to Berlin next month for a job at Acme.": [
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Berlin"
     },
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Acme"
     }
   ],
@@ -810,6 +869,7 @@
     {
       "subject": "Alice",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Berlin"
     }
   ],
@@ -822,6 +882,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Paris"
     }
   ],
@@ -834,6 +895,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Berlin"
     }
   ],
@@ -841,6 +903,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Paris"
     }
   ],
@@ -848,6 +911,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "London"
     }
   ],
@@ -855,6 +919,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Tokyo"
     }
   ],
@@ -862,6 +927,7 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Berlin"
     }
   ],
@@ -872,6 +938,7 @@
     {
       "subject": "project",
       "predicate": "decision",
+      "object_kind": "literal",
       "object": "child-write-beta must survive concurrent local MCP writes"
     }
   ],
@@ -888,6 +955,7 @@
     {
       "subject": "project",
       "predicate": "decision",
+      "object_kind": "literal",
       "object": "launch notes require committed raw logs"
     }
   ],
@@ -934,6 +1002,7 @@
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Tencent"
     }
   ],
@@ -945,11 +1014,13 @@
     {
       "subject": "user",
       "predicate": "lives_in",
+      "object_kind": "entity",
       "object": "Shenzhen"
     },
     {
       "subject": "user",
       "predicate": "works_at",
+      "object_kind": "entity",
       "object": "Moonshot AI"
     }
   ],
@@ -957,6 +1028,7 @@
     {
       "subject": "EKOS",
       "predicate": "deployed_on",
+      "object_kind": "entity",
       "object": "Ubuntu server"
     }
   ],

@@ -76,15 +76,11 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
     changed = bool(erased)
     if {link.fact for link in changes.source_links} - {item.ref for item in changes.writes}:
         raise DatabaseConstraintError('Source links require an explicit fact write')
-    explicit_edges = {domain(item.record).fact_id for item in changes.writes if item.ref.kind == RELATION}
     rank = {kind: index for index, kind in enumerate((SOURCE, ENTITY, FACT, CONFLICT, RELATION))}
     for item in sorted(changes.writes, key=lambda item: (rank[item.ref.kind], item.ref.record_id)):
-        changed |= write(sql, item, graph, explicit_edges)
+        changed |= write(sql, item, graph)
     for item in changes.invalidations:
         invalidate(sql, item, graph)
-        changed = True
-    for item in changes.entity_merges:
-        graph.merge(item)
         changed = True
     graph.prune()
     for item in changes.embeddings:

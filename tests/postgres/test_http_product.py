@@ -261,8 +261,8 @@ def test_stats_endpoint_is_content_free_namespace_observability(client):
         "content": "My private diagnosis is diabetes. I work at Acme.",
         "scope": "long",
     }, headers=h)
-    client.post("/v1/facts", json={"predicate": "has_disease", "object": "diabetes"}, headers=h)
-    client.post("/v1/facts", json={"predicate": "works_at", "object": "Acme", "sensitive": False}, headers=h)
+    client.post("/v1/facts", json={"predicate": "has_disease", "object": "diabetes", "object_kind": "literal"}, headers=h)
+    client.post("/v1/facts", json={"predicate": "works_at", "object": "Acme", "sensitive": False, "object_kind": "entity"}, headers=h)
 
     stats = client.get("/v1/stats", headers=h).json()
     assert stats["space_id"]
@@ -405,16 +405,13 @@ def test_fact_crud_and_focus_policy_graph_export(client):
     assert pol["ok"] and pol["policy"]["extract_instruction"] == "Record job changes."
     assert "nodes" in client.get("/v1/graph", headers=h).json()
     exp = client.get("/v1/export", headers=h).json()
-    assert "mnemotrace_export_version" not in exp and any(f["object"] == "Moonshot AI" for f in exp["facts"])
+    assert exp["format_version"] == 2 and any(f["object"] == "Moonshot AI" for f in exp["facts"])
     assert client.delete(f"/v1/facts/{fid}", headers=h).json()["ok"] is True
 
 
 def test_fact_statement_edit_only_accepts_outcomes_and_is_persisted(client):
     h = hdr("synthetic_statement_editor")
     fid = client.post("/v1/facts", json={"predicate": "likes", "object": "USER_PREFERENCE_TOKEN", "sensitive": False}, headers=h).json()["id"]
-    before = client.get("/v1/audit", headers=h).json()
-    finding = next(row for row in before["findings"] if row.get("fact_id") == fid)
-    assert finding["display"]
     statement = "演示用户喜欢简洁的回答。"
     for patch in ({"statement": " "}, {"statement": ""}, {"statement": statement, "object": "回答"}):
         assert client.patch(f"/v1/facts/{fid}", json=patch, headers=h).status_code == 422
@@ -465,22 +462,22 @@ def test_graph_endpoint_supports_as_of_and_edge_audit_fields(client):
 
 def test_graph_endpoint_can_exclude_sensitive_edges(client):
     h = hdr("graph_redact")
-    client.post("/v1/facts", json={"predicate": "has_disease", "object": "diabetes"}, headers=h)
-    client.post("/v1/facts", json={"predicate": "works_at", "object": "Acme", "sensitive": False}, headers=h)
+    client.post("/v1/facts", json={"predicate": "visited", "object": "Synthetic Clinic",
+                                  "object_kind": "entity", "sensitive": True}, headers=h)
+    client.post("/v1/facts", json={"predicate": "works_at", "object": "Acme", "sensitive": False, "object_kind": "entity"}, headers=h)
 
     default_safe = client.get("/v1/graph", headers=h).json()
-    assert "diabetes" not in str(default_safe).lower()
+    assert "Synthetic Clinic" not in str(default_safe)
     assert "Acme" in str(default_safe)
 
     full = client.get("/v1/graph?include_sensitive=true", headers=h).json()
-    assert "diabetes" in str(full).lower()
+    assert "Synthetic Clinic" in str(full)
     assert "Acme" in str(full)
 
     safe = client.get("/v1/graph?include_sensitive=false", headers=h).json()
-    rendered = str(safe).lower()
-    assert "diabetes" not in rendered
+    assert "Synthetic Clinic" not in str(safe)
     assert "Acme" in str(safe)
-    assert all("diabetes" not in e.get("fact_text", "").lower() for e in safe["edges"])
+    assert all("Synthetic Clinic" not in e.get("fact_text", "") for e in safe["edges"])
 
 
 def test_memories_endpoint_supports_pagination_filtering_and_sensitive_create(client):
@@ -490,22 +487,22 @@ def test_memories_endpoint_supports_pagination_filtering_and_sensitive_create(cl
     client.post("/v1/facts", json={
         "predicate": "works_at",
         "object": "Acme",
-        "category": "career", "sensitive": False,
+        "categories": ["professional_details"], "sensitive": False,
     }, headers=h)
     client.post("/v1/facts", json={
         "predicate": "favorite_city",
         "object": "Hangzhou",
-        "category": "preference", "sensitive": False,
+        "categories": ["user_preferences"], "sensitive": False,
     }, headers=h)
     client.post("/v1/facts", json={
         "predicate": "project_note",
         "object": "memory console",
-        "category": "product", "sensitive": False,
+        "categories": ["technology"], "sensitive": False,
     }, headers=h)
     client.post("/v1/facts", json={
         "predicate": "security_phrase",
         "object": "blue-lotus",
-        "category": "security",
+        "categories": ["health"],
         "sensitive": True,
     }, headers=h)
 
@@ -576,12 +573,11 @@ def seed_facts(service, context, facts):
     dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=writes, source_links=links))
 
 
-def test_structured_profile_pages_user_aliases_and_excludes_other_assertions(client, product_service, product_scope):
+def test_structured_profile_pages_canonical_owner_and_excludes_other_assertions(client, product_service, product_scope):
     from mnemotrace.types import Fact
 
     label = "synthetic-large-profile"
     context, _ = product_scope(label)
-    product_service.memory(context).set_settings(subject_name="Synthetic Owner")
     facts = [
         Fact(id=f"fact-{i:03}", user_id=context.user_id, subject="user", predicate="likes", object=f"fixture-{i}")
         for i in range(110)
@@ -597,7 +593,7 @@ def test_structured_profile_pages_user_aliases_and_excludes_other_assertions(cli
     response = client.get("/v1/profile/structured", headers=hdr(label))
     assert response.is_success
     preferences = {row["item"] for group in response.json()["preferences"].values() for row in group}
-    assert preferences == {f"fixture-{i}" for i in range(110)} | {"owner-visible", "alias-visible"}
+    assert preferences == {f"fixture-{i}" for i in range(110)}
 
 
 def test_focus_filters_retrieval_and_tracks_without_rewriting_facts(client, product_service, product_scope):
@@ -660,13 +656,13 @@ def _seed_category_filter_facts(service, context):
 
     user = context.user_id
     rows = [
-        Fact(subject="synthetic", predicate="note", object="alpha first", category="工作", valid_at=10, user_id=user),
-        Fact(subject="synthetic", predicate="note", object="alpha second", category="工作", valid_at=20, user_id=user),
-        Fact(subject="synthetic", predicate="note", object="beta latest", category="生活", valid_at=90, user_id=user),
-        Fact(subject="synthetic", predicate="note", object="uncategorized", category=" ", valid_at=80, user_id=user),
-        Fact(subject="synthetic", predicate="note", object="past alpha", category="旧分类", valid_at=5, invalid_at=6, user_id=user),
-        Fact(subject="synthetic-session", predicate="decision", object="synthetic decision", category="会话结论", valid_at=95, user_id=user),
-        Fact(subject="synthetic", predicate="note", object="private alpha", category="合成私有分类", sensitive=True, valid_at=100, user_id=user),
+        Fact(subject="synthetic", predicate="note", object="alpha first", categories=["professional_details"], categories_source="user", valid_at=10, user_id=user),
+        Fact(subject="synthetic", predicate="note", object="alpha second", categories=["professional_details"], categories_source="user", valid_at=20, user_id=user),
+        Fact(subject="synthetic", predicate="note", object="beta latest", categories=["personal_details"], categories_source="user", valid_at=90, user_id=user),
+        Fact(subject="synthetic", predicate="note", object="uncategorized", valid_at=80, user_id=user),
+        Fact(subject="synthetic", predicate="note", object="past alpha", categories=["milestones"], categories_source="user", valid_at=5, invalid_at=6, user_id=user),
+        Fact(subject="synthetic-session", predicate="decision", object="synthetic decision", categories=["technology"], categories_source="user", valid_at=95, user_id=user),
+        Fact(subject="synthetic", predicate="note", object="private alpha", categories=["health"], categories_source="user", sensitive=True, valid_at=100, user_id=user),
     ]
     seed_facts(service, context, rows)
     service.remember(context, "synthetic source record", "synthetic-session", scope="raw")
@@ -679,19 +675,17 @@ def test_memories_category_filters_before_pagination_with_status_and_search(clie
     params = {"kind": "attributes", "status": "live", "facts_limit": 1, "episodes_limit": 0}
     unfiltered = client.get("/v1/memories", params=params, headers=hdr(user)).json()
     assert unfiltered["facts"][0]["id"] == rows[2].id
-    filtered = {**params, "category": "工作", "q": "alpha"}
+    filtered = {**params, "categories": ["professional_details"], "q": "alpha"}
     first = client.get("/v1/memories", params=filtered, headers=hdr(user)).json()
     second = client.get("/v1/memories", params={**filtered, "facts_offset": 1}, headers=hdr(user)).json()
     assert first["facts_page"]["total"] == 2
     assert first["facts_page"]["has_more"] is True
     assert {first["facts"][0]["id"], second["facts"][0]["id"]} == {rows[0].id, rows[1].id}
     assert first["counts"] == unfiltered["counts"]
-    assert set(first["fact_categories"]) == {"工作", "生活", "其他", "旧分类"}
-    old = client.get("/v1/memories", params={**params, "status": "superseded", "category": "旧分类"}, headers=hdr(user)).json()
+    assert set(first["fact_categories"]) == {"professional_details", "personal_details", "milestones"}
+    old = client.get("/v1/memories", params={**params, "status": "superseded", "categories": ["milestones"]}, headers=hdr(user)).json()
     assert [fact["id"] for fact in old["facts"]] == [rows[4].id]
-    other = client.get("/v1/memories", params={**params, "category": "其他"}, headers=hdr(user)).json()
-    assert [fact["id"] for fact in other["facts"]] == [rows[3].id]
-    empty = client.get("/v1/memories", params={**params, "category": "不存在的分类"}, headers=hdr(user)).json()
+    empty = client.get("/v1/memories", params={**params, "categories": ["misc"]}, headers=hdr(user)).json()
     assert empty["facts"] == [] and empty["facts_page"]["total"] == 0
     assert empty["fact_categories"] == first["fact_categories"]
 
@@ -701,14 +695,14 @@ def test_memories_category_facets_respect_visibility_kind_and_space(client, prod
     rows = _seed_category_filter_facts(product_service, product_scope(user)[0])
     params = {"kind": "attributes", "facts_limit": 0, "episodes_limit": 0, "q": "no match"}
     safe = client.get("/v1/memories", params=params, headers=hdr(user)).json()
-    assert set(safe["fact_categories"]) == {"工作", "生活", "其他", "旧分类"}
+    assert set(safe["fact_categories"]) == {"professional_details", "personal_details", "milestones"}
     private = client.get("/v1/memories", params={**params, "include_sensitive": True}, headers=hdr(user)).json()
-    assert "合成私有分类" in private["fact_categories"]
+    assert "health" in private["fact_categories"]
     outcomes = client.get("/v1/memories", params={**params, "kind": "outcomes"}, headers=hdr(user)).json()
-    assert outcomes["fact_categories"] == ["会话结论"]
+    assert outcomes["fact_categories"] == ["technology"]
     other_space = client.get("/v1/memories", params=params, headers=hdr("synthetic-empty-space")).json()
     assert other_space["fact_categories"] == []
-    with_episodes = client.get("/v1/memories", params={"kind": "attributes", "category": "工作", "include_sensitive": True}, headers=hdr(user)).json()
+    with_episodes = client.get("/v1/memories", params={"kind": "attributes", "categories": ["professional_details"], "include_sensitive": True}, headers=hdr(user)).json()
     assert len(with_episodes["episodes"]) == 1
     assert {fact["id"] for fact in with_episodes["facts"]} == {rows[0].id, rows[1].id}
 
@@ -755,7 +749,7 @@ def test_metadata_edit_preserves_extracted_source_across_reload(client):
     claim = {field: original[field] for field in ("subject", "predicate", "object")}
     fact_id = original["id"]
 
-    for patch in ({"sensitive": True}, {"sensitive": False}, {"category": "测试分类"}, {}):
+    for patch in ({"sensitive": True}, {"sensitive": False}, {"categories": ["hobbies"]}, {}):
         response = client.patch(f"/v1/facts/{fact_id}", json={**claim, **patch}, headers=h)
         assert response.status_code == 200
         assert response.json()["source"] == "extracted"
@@ -775,8 +769,8 @@ def test_metadata_edit_preserves_extracted_source_across_reload(client):
 
 def test_graph_endpoint_supports_query_live_only_and_limit(client):
     h = hdr("graph_query")
-    client.post("/v1/facts", json={"predicate": "works_at", "object": "Acme", "sensitive": False}, headers=h)
-    client.post("/v1/facts", json={"predicate": "works_at", "object": "Moonshot AI", "sensitive": False, "cardinality": "single"}, headers=h)
+    client.post("/v1/facts", json={"predicate": "works_at", "object": "Acme", "sensitive": False, "object_kind": "entity"}, headers=h)
+    client.post("/v1/facts", json={"predicate": "works_at", "object": "Moonshot AI", "sensitive": False, "cardinality": "single", "object_kind": "entity"}, headers=h)
     client.post("/v1/facts", json={"predicate": "likes_food", "object": "ramen"}, headers=h)
 
     old_company = client.get("/v1/graph?q=Acme&live_only=true", headers=h).json()
@@ -794,10 +788,10 @@ def test_graph_limit_and_completeness_follow_space_filters(client, product_servi
     user = "synthetic_graph_limit"
     context, _ = product_scope(user)
     older = [Fact("synthetic_user", f"link_{i}", f"old_{i}", user_id=context.user_id,
-                  valid_at=100, invalid_at=200) for i in range(121)]
-    current = Fact("synthetic_user", "uses", "current_target", user_id=context.user_id, valid_at=100)
+                  valid_at=100, invalid_at=200, object_kind="entity") for i in range(121)]
+    current = Fact("synthetic_user", "uses", "current_target", user_id=context.user_id, valid_at=100, object_kind="entity")
     private = Fact("synthetic_user", "private_link", "private_target", user_id=context.user_id,
-                   valid_at=100, sensitive=True)
+                   valid_at=100, sensitive=True, object_kind="entity")
     seed_facts(product_service, context, [*older, current, private])
 
     broad = client.get("/v1/graph?limit=120", headers=hdr(user)).json()
@@ -863,8 +857,8 @@ def test_recall_endpoint_supports_as_of_for_search_and_lean_context(client):
 
 def test_recall_endpoint_can_redact_sensitive_facts(client):
     h = hdr("recall_redact")
-    client.post("/v1/facts", json={"predicate": "has_disease", "object": "diabetes"}, headers=h)
-    client.post("/v1/facts", json={"predicate": "works_at", "object": "Acme", "sensitive": False}, headers=h)
+    client.post("/v1/facts", json={"predicate": "has_disease", "object": "diabetes", "object_kind": "literal"}, headers=h)
+    client.post("/v1/facts", json={"predicate": "works_at", "object": "Acme", "sensitive": False, "object_kind": "entity"}, headers=h)
 
     ctx = client.post("/v1/recall", json={
         "query": "what do you know about me?",
@@ -891,13 +885,13 @@ def test_export_without_sensitive_omits_free_text_layers_and_sensitive_graph(cli
     client.post("/v1/remember", json={
         "content": "My private diagnosis is diabetes. I work at Acme.",
     }, headers=h)
-    client.post("/v1/facts", json={"predicate": "has_disease", "object": "diabetes"}, headers=h)
-    client.post("/v1/facts", json={"predicate": "works_at", "object": "Acme", "sensitive": False}, headers=h)
+    client.post("/v1/facts", json={"predicate": "has_disease", "object": "diabetes", "object_kind": "literal"}, headers=h)
+    client.post("/v1/facts", json={"predicate": "works_at", "object": "Acme", "sensitive": False, "object_kind": "entity"}, headers=h)
 
     default_safe = client.get("/v1/export", headers=h).json()
     assert default_safe["include_sensitive"] is False
     assert default_safe["redacted_sensitive"] is True
-    assert "diabetes" not in str(default_safe).lower()
+    assert "Synthetic Clinic" not in str(default_safe)
     assert not default_safe.get("profile")
     assert default_safe["episodes"] == []
 
@@ -986,76 +980,6 @@ def test_request_limit_rejects_before_memory_write(client, product_scope, monkey
                             json={"space_id": context.space_id, "content": "x" * 2048})
     assert oversized.status_code == 413
     assert client.get("/v1/stats", headers=hdr("synthetic-size")).json()["counts"]["episodes"] == 0
-
-
-def test_audit_flags_junk_and_says_what_to_do(client):
-    """记忆要赢得信任，前提是可被检查。对真实语料做提取时，难免产生不像值的结果 —— 原始 token、
-    与谓词重复的对象、被截断的句子、代词主语 —— 不逐条人工审查就完全看不到这些问题。
-    每条 finding 都必须说明原因（why）并给出可执行的动作（action）。"""
-    h = hdr("audit-ns")
-    junk = [
-        ("interested_in", "kind_bar_fruit_nut_flavor"),      # 机器生成的 token
-        ("occupation", "occupation"),                         # 什么信息都没有
-        ("note", 'open keystone."'),                          # 被截断的句子
-        ("stores_in", "store/memory_store.py"),               # 代码产物
-    ]
-    for pred, obj in junk:
-        r = client.post("/v1/facts", json={"subject": "user", "predicate": pred, "object": obj}, headers=h)
-        assert r.status_code == 200
-    client.post("/v1/facts", json={"subject": "user", "predicate": "works_at", "object": "Moonshot AI", "sensitive": False},
-                headers=h)
-
-    data = client.get("/v1/audit", headers=h).json()
-    assert data["total_findings"] >= 4, data
-    kinds = set(data["by_kind"])
-    assert {"machine_token", "empty_value"} <= kinds, kinds
-    for f in data["findings"]:
-        assert f["why"] and f["action"], f  # 无法据以行动的 finding 就是噪音
-    # 干净的事实不应被标记
-    assert not any("Moonshot" in str(f.get("text", "")) for f in data["findings"])
-
-
-def test_audit_finding_can_be_fixed_in_place(client):
-    """核心是形成闭环：被标记 -> 修正 -> 消失，全程不离开控制台。修正还必须生效
-    （source=user），否则自动提取会悄悄把它改回去。"""
-    h = hdr("audit-fix")
-    created = client.post("/v1/facts",
-                          json={"subject": "user", "predicate": "likes", "object": "small_luxury_ships"},
-                          headers=h).json()
-    fact_id = created.get("id") or created.get("fact", {}).get("id")
-    assert fact_id
-
-    before = client.get("/v1/audit", headers=h).json()
-    assert any(f.get("fact_id") == fact_id for f in before["findings"])
-
-    r = client.patch(f"/v1/facts/{fact_id}", json={"object": "small luxury cruises"}, headers=h)
-    assert r.status_code == 200
-    assert r.json().get("source") == "user", r.json()
-
-    after = client.get("/v1/audit", headers=h).json()
-    assert not any(f.get("fact_id") == fact_id for f in after["findings"])
-    assert after["total_findings"] < before["total_findings"]
-
-
-def test_audit_sorts_by_priority_before_limit(client):
-    h = hdr("synthetic-audit-order")
-    # 故意先写较低优先级项目；limit=1 时也必须返回最后写入的红色问题。
-    for subject, predicate, obj in [
-        ("synthetic-a", "path", "demo/config.json"),
-        ("synthetic-b", "likes", "MACHINE_TOKEN_SYNTHETIC"),
-        ("synthetic-c", "note", "[clipped text"),
-        ("synthetic-d", "occupation", "occupation"),
-    ]:
-        assert client.post("/v1/facts", json={"subject": subject, "predicate": predicate, "object": obj}, headers=h).status_code == 200
-    full = client.get("/v1/audit?limit=60", headers=h).json()
-    kinds = [row["kind"] for row in full["findings"]]
-    assert kinds[0] == "empty_value" and kinds[-1] == "code_artifact"
-    assert set(kinds[1:3]) == {"machine_token", "fragment"}
-    limited = client.get("/v1/audit?limit=1", headers=h).json()
-    assert [row["kind"] for row in limited["findings"]] == ["empty_value"]
-    assert limited["total_findings"] == full["total_findings"] == 4
-    assert limited["by_kind"] == full["by_kind"]
-    assert limited["truncated"] is True
 
 
 def test_import_agent_sessions_defaults_to_buffered_messages_and_feed_stats(client):

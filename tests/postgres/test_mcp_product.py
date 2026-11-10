@@ -49,9 +49,9 @@ async def test_tools_are_registered_with_flat_schema():
     remember_props = tools["mnemotrace_remember"].inputSchema.get("properties", {})
     assert "content" in remember_props and "session_id" in remember_props and "scope" in remember_props
     add_props = tools["mnemotrace_add_fact"].inputSchema.get("properties", {})
-    assert {"subject", "predicate", "object", "sensitive", "category"} <= set(add_props)
+    assert {"subject", "predicate", "object", "sensitive", "categories", "object_kind"} <= set(add_props)
     update_props = tools["mnemotrace_update_fact"].inputSchema.get("properties", {})
-    assert {"fact_id", "subject", "predicate", "object", "sensitive", "category"} <= set(update_props)
+    assert {"fact_id", "subject", "predicate", "object", "sensitive", "categories", "object_kind"} <= set(update_props)
     focus_props = tools["mnemotrace_set_focus"].inputSchema.get("properties", {})
     assert {"track", "mute"} <= set(focus_props)
     status_props = tools["mnemotrace_agent_status"].inputSchema.get("properties", {})
@@ -584,7 +584,7 @@ async def test_remote_backend_exports_memory():
             pass
 
         def json(self):
-            return {"include_sensitive": False, "facts": [], "episodes": []}
+            return {"format_version": 2, "include_sensitive": False, "facts": [], "episodes": []}
 
     class FakeClient:
         def __init__(self):
@@ -602,8 +602,8 @@ async def test_remote_backend_exports_memory():
     assert client.gets[0][0] == "http://mnemotrace.test/v1/export?include_sensitive=false&space_id=synthetic-space"
     assert client.gets[0][1]["Authorization"] == "Bearer sk-test"
     assert client.gets[1][0] == "http://mnemotrace.test/v1/export?include_sensitive=true&space_id=synthetic-space"
-    assert "mnemotrace_export_version" not in safe
-    assert "mnemotrace_export_version" not in full
+    assert safe["format_version"] == 2
+    assert full["format_version"] == 2
 
 
 @pytest.mark.asyncio
@@ -700,24 +700,15 @@ async def test_forget_requires_confirm(local_backend):
 
 
 @pytest.mark.asyncio
-async def test_audit_markdown_names_the_slot_of_a_group_finding(local_backend):
-    """`slot_overflow` 这类发现描述的是整个 (subject, predicate) 槽位，因此没有 `text` 字段——
-    而 `text` 正是 markdown 渲染器逐条打印的事实字段。若没有回退处理，智能体会拿到一个空的加粗块，
-    被要求"清空该槽位"却不知道是哪个槽位——而这条发现恰恰是唯一 remedy 为不可逆批量删除的发现。"""
-    from mnemotrace.types import Fact
+async def test_audit_markdown_identifies_the_missing_edge(local_backend):
+    memory = local_backend.svc.memory(local_backend.context)
+    fact = memory.add_fact('user', 'works_at', 'Private statement', object_kind='entity', sensitive=False)
+    with memory.dao._transaction() as sql:
+        sql.delete('graph_relations', 'fact_id = %s', (fact.id,))
+    report = await call('mnemotrace_audit')
+    assert '`missing_edge`: 1' in report and fact.id in report
+    assert fact.object not in report
 
-    from tests.postgres.test_http_product import seed_facts
-    seed_facts(local_backend.svc, local_backend.context, [
-        Fact(subject="user", predicate="occupation", object=f"borrowed title {i}",
-             user_id=local_backend.context.user_id)
-        for i in range(4)
-    ])
-
-    md = await call("mnemotrace_audit")
-    assert "`slot_overflow`: 1" in md
-    assert "**** —" not in md               # 不能渲染出空的加粗块
-    assert "**user occupation ×4**" in md   # 指明是哪个槽位、规模多大
-    assert "borrowed title 0" in md or "user occupation borrowed title" in md         # 行动建议里让读者查看的样本
 
 def test_remote_error_preserves_structured_detail_for_conflict_and_validation():
     """#12：MCP 远程错误不应把 409/422/500 降级为裸状态码，需如实透传结构化 detail。"""

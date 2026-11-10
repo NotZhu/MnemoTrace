@@ -90,7 +90,7 @@ def _model(calls, pause=None):
         for item in request['pending']:
             subject, _, employer = item['content'].rpartition(' at ')
             subject = subject or 'Synthetic person'
-            facts.append(dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='single', retention='unknown', subject=subject, predicate='works_at', object=employer,
+            facts.append(dict(categories=[], object_kind='entity', sensitive=False, time_kind='current', effective_date=None, cardinality='single', retention='unknown', subject=subject, predicate='works_at', object=employer,
                               text=f'{subject} works at {employer}',
                               source_ids=[item['id']]))
         return json.dumps(dict(facts=facts, digests=[]))
@@ -411,7 +411,7 @@ def _scope_counts(runtime, scope):
 
     tables = ('sessions', 'sources', 'source_digests', 'facts', 'fact_sources', 'conflicts',
 
-              'entities', 'entity_merges', 'graph_relations', 'embeddings', 'lexical_documents', 'lexical_terms',
+              'entities', 'graph_relations', 'embeddings', 'lexical_documents', 'lexical_terms',
               'operations', 'operation_sources', 'operation_targets', 'operation_products', 'operation_digest_parts',
               'operation_receipts', 'import_receipts')
     with runtime._transaction() as conn:
@@ -474,7 +474,7 @@ def test_delete_prevents_late_processing_writes(memory, cluster, runtime, spaces
     sibling_memory = Memory(runtime, spaces.authorize(user_id, sibling.space_id))
     sibling_source = sibling_memory.remember_raw('Sibling synthetic source', 'chat')
     settings = memory.set_settings(extract_instruction='Keep this setting on clear')
-    seed = memory.add_fact('Synthetic maintainer', 'works_at', 'Seed lab')
+    seed = memory.add_fact('Synthetic maintainer', 'works_at', 'Seed lab', object_kind="entity")
     assert memory.graph_relations(seed.id)
     operation_id = _pending_write(memory, kind)
     gate = 'model' if kind == 'extract' else 'embedding'
@@ -519,8 +519,8 @@ def _rebuild_in_process(config, context, *, ready, resume):
 
     prune = GraphProjection.prune
 
-    def pause_after_rebuild(graph):
-        prune(graph)
+    def pause_after_rebuild(graph, **kwargs):
+        prune(graph, **kwargs)
         _pause(ready, resume)
 
     with Database(config) as runtime, patch.object(GraphProjection, 'prune', pause_after_rebuild):
@@ -528,7 +528,7 @@ def _rebuild_in_process(config, context, *, ready, resume):
 
 
 def test_clear_waits_for_graph_rebuild_and_removes_rebuilt_edges(memory, cluster, runtime):
-    fact = memory.add_fact('Synthetic person', 'works_at', 'Synthetic lab')
+    fact = memory.add_fact('Synthetic person', 'works_at', 'Synthetic lab', object_kind="entity")
     assert memory.graph_relations(fact.id)
     with memory.dao._transaction() as sql:
         sql.delete('graph_relations', 'fact_id = %s', (fact.id,))
