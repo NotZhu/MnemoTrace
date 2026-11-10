@@ -10,7 +10,7 @@ from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_
 from .consolidate.pipeline import content_hash
 from .retrieve import postgres as retrieval
 from .store.contracts import (
-    ChangeSet, CommitConditions, EmbeddingWrite, EntityMerge, FactQuery, MessageInput, OperationKind,
+    ChangeSet, CommitConditions, EmbeddingWrite, FactQuery, MessageInput, OperationKind,
     RecordKind, RecordRef, RecordWrite, RetrievalQuery, SourceLink, StoredRecord, validate_erasures,
 )
 from .store.postgres.dao import PostgresDAO, _space_row, new_operation_id
@@ -215,7 +215,7 @@ class Memory:
             for record in records:
                 item = domain(record)
                 if kind == ENTITY:
-                    sql.update('entities', {'anchor_terms': anchor_terms(item.name, item.aliases)},
+                    sql.update('entities', {'anchor_terms': anchor_terms(item.name)},
                                'id = %s AND anchor_terms IS NULL', (item.id,))
                     continue
                 project_text(sql, kind, item.id, record.content_version, asdict(item), missing_only=True)
@@ -229,7 +229,7 @@ class Memory:
         return records[-1].ref.record_id if len(records) == limit else None
 
     def rebuild_graph(self, *, after_id=None, limit=100):
-        """Rebuild one page of graph edges from facts and authoritative entity decisions."""
+        """Rebuild one page of graph edges from stored facts."""
         if after_id is not None:
             identifier(after_id)
         if type(limit) is not int or not 1 <= limit <= 1000:
@@ -240,7 +240,7 @@ class Memory:
             graph = GraphProjection(sql)
             for record in records:
                 graph.project(record.ref.record_id)
-            graph.prune()
+            graph.prune(all_nodes=len(records) < limit)
         return records[-1].ref.record_id if len(records) == limit else None
 
     def _query(self, text, *, top_k, as_of=None, facts=None):
@@ -253,7 +253,7 @@ class Memory:
         count = self._config.top_k if top_k is None else top_k
         request = self._query(query, top_k=count, as_of=as_of, facts=facts)
         with self.dao.read_snapshot() as view:
-            result = retrieval.search(view.focused(), request, self._config, count, self._embedder is not None)
+            result = retrieval.search(view.focused(), request, self._config, count)
             snapshot = view.snapshot
             hits = result.facts[:1] if request.facts.is_current_view and not result.abstained else ()
             records = tuple(view.get(FACT, fact.id) for fact in hits)
@@ -320,7 +320,7 @@ class Memory:
                             limit=max(count, self._config.ann_pool))
         request = self._query(query, top_k=count, facts=facts)
         with self.dao.read_snapshot() as view:
-            result = retrieval.context(view.focused(), request, self._config, self._embedder is not None,
+            result = retrieval.context(view.focused(), request, self._config,
                                        n_facts=n_facts, n_chunks=n_chunks, n_digests=n_digests,
                                        char_budget=char_budget)
             snapshot = view.snapshot
@@ -364,7 +364,6 @@ class Memory:
     def graph_neighbors(self, entity_id, *, direction='both', facts=FactQuery()):
         identifier(entity_id)
         with self.dao.read_snapshot() as view:
-            entity_id = GraphProjection(view._sql).canonical(entity_id)
             edges = tuple(map(domain, view.graph_edges((entity_id,), facts, direction=direction)))
             visible = {row.ref.record_id: domain(row).as_known_at(facts.known_at)
                        for row in view.facts_by_ids(tuple(edge.fact_id for edge in edges), facts)}
@@ -392,14 +391,14 @@ class Memory:
             return tuple(map(domain, view.list_sources(**filters)))
 
     def add_fact(self, subject, predicate, object, *, valid_at=None, sensitive=None,
-                 category=None, topic=None, cardinality="unknown", retention="unknown", return_existing=False):
+                 categories=None, object_kind="unknown", cardinality="unknown", retention="unknown", return_existing=False):
         """Return the new fact. For a covered assertion, optionally return the stored fact."""
         fact = build_manual_fact(subject, predicate, object, self.context.user_id,
-                                 valid_at, sensitive, category, topic, cardinality, retention)
+                                 valid_at, sensitive, categories, object_kind, cardinality, retention)
         with self.dao.read_snapshot() as view:
             snapshot = view.snapshot
             at = view.at.timestamp()
-            history = view.facts_for_manual_add(subject, predicate)
+            history = view.facts_for_manual_add(fact.subject, predicate)
         # Creation and interval revisions must use the same database clock for known_at reads.
         fact.created_at = fact.last_access = at
         candidates = [domain(item) for item in history]
@@ -432,7 +431,7 @@ class Memory:
         return tuple(sorted(map(domain, records), key=lambda fact: (time_key(fact.valid_at), fact.id)))
 
     def update_fact(self, fact_id, *, subject=None, predicate=None, object=None,
-                    sensitive=None, category=None, statement=None, topic=None, reset_topic=False, cardinality=None, retention=None):
+                    sensitive=None, categories=None, statement=None, object_kind=None, cardinality=None, retention=None):
         with self.dao.read_snapshot() as view:
             snapshot, old = view.snapshot, view.get(FACT, fact_id)
             at = view.at.timestamp()
@@ -442,8 +441,8 @@ class Memory:
         if not fact.is_published():
             return None
         before = asdict(fact)
-        apply_manual_edit(fact, subject, predicate, object, sensitive, category,
-                          statement, topic, reset_topic, cardinality, retention, at=at)
+        apply_manual_edit(fact, subject, predicate, object, sensitive, categories,
+                          statement, object_kind, cardinality, retention, at=at)
         if asdict(fact) == before:
             return fact
         text_changed = fact.text != before['text']
@@ -540,22 +539,6 @@ class Memory:
         with self.dao.read_snapshot() as view:
             record = view.entity(name)
         return domain(record) if record is not None else None
-
-    def set_entity_aliases(self, name, aliases):
-        with self.dao.read_snapshot() as view:
-            snapshot, record = view.snapshot, view.entity(name)
-        if record is None:
-            return None
-        entity = domain(record)
-        entity.aliases = list(aliases)
-        self._commit(snapshot, writes=(self._write(entity, record),))
-        return entity
-
-    def merge_entities(self, survivor_id, merged_id):
-        with self.dao.read_snapshot() as view:
-            snapshot = view.snapshot
-        change = EntityMerge(self._ref(ENTITY, survivor_id), self._ref(ENTITY, merged_id))
-        return self._commit(snapshot, entity_merges=(change,))
 
     def stats(self):
         with self.dao.read_snapshot() as view:

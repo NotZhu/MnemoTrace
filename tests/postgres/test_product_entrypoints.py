@@ -23,7 +23,7 @@ def product(runtime, user, accounts, spaces, monkeypatch):
     def extract(prompt, system=''):
         data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
         return json.dumps(dict(facts=[
-            dict(category='其他', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='Synthetic person', predicate='likes', object='Bluebird tea',
+            dict(categories=[], object_kind='entity', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='Synthetic person', predicate='likes', object='Bluebird tea',
                  text='Synthetic person likes Bluebird tea',
                  source_ids=[source['id']])
             for source in data['pending']
@@ -114,50 +114,33 @@ def test_http_allows_raw_and_manual_writes_without_a_model(product):
     assert manual.status_code == 200 and manual.json()['id']
 
 
-def test_audit_counts_scoped_findings_before_limiting_and_samples_clearable_slot(product, spaces):
-    from mnemotrace.store.contracts import ChangeSet, CommitConditions, RecordWrite, StoredRecord
-    from mnemotrace.store.postgres.dao import new_operation_id
-    from mnemotrace.types import Entity, Fact
-
+def test_graph_audit_reports_scoped_structural_issues_before_limiting(product, spaces):
     service, context, _, client = product
     scope = {'space_id': context.space_id}
-    dao = service.memory(context).dao
-    values = [
-        ('Synthetic person', 'likes', 'synthetic_machine_token'),
-        ('Synthetic person', 'occupation', 'occupation'),
-        ('Synthetic person', 'note', '[clipped value'),
-        ('Synthetic person', 'path', 'fixture/demo.json'),
-        ('Synthetic person', 'claim', 'a synthetic long statement ' * 6),
-        ('this', 'color', 'a blue shade'),
-        ('Synthetic session', 'finding', 'fixture/ignored.json'),
-    ]
-    values.extend(('Synthetic slot', 'occupation', f'candidate {index}') for index in range(3))
-    writes = tuple(RecordWrite(StoredRecord.from_record(context, Fact(
-        subject, predicate, obj, user_id=context.user_id, source='extracted',
-    ))) for subject, predicate, obj in values)
-    with dao.read_snapshot() as view:
-        snapshot = view.snapshot
-    orphan = RecordWrite(StoredRecord.from_record(
-        context, Entity('Synthetic disconnected entity', user_id=context.user_id)))
-    dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=(*writes, orphan)))
-    client.post('/v1/remember', json={**scope, 'scope': 'raw', 'content': '合成测试内容' * 100})
-    sibling = spaces.create(context.user_id, 'Another audit space')
-    client.post('/v1/facts', json={'space_id': sibling.space_id, 'predicate': 'likes', 'object': 'NOISE'})
+    memory = service.memory(context)
+    missing = memory.add_fact('user', 'works_at', 'Missing Ltd.', object_kind='entity', sensitive=False)
+    mismatch = memory.add_fact('user', 'based_in', 'Mismatch City', object_kind='entity', sensitive=False)
+    private = memory.add_fact('user', 'knows', 'Synthetic private person', object_kind='entity', sensitive=True)
+    memory.add_fact('this', 'path', 'fixture/demo.json', object_kind='literal', sensitive=False)
+    sibling = service.memory(spaces.authorize(context.user_id, spaces.create(context.user_id, 'Sibling').space_id))
+    outside = sibling.add_fact('user', 'works_at', 'Outside Ltd.', object_kind='entity', sensitive=False)
+    with sibling.dao._transaction() as sql:
+        sql.delete('graph_relations', 'fact_id = %s', (outside.id,))
+    with memory.dao._transaction() as sql:
+        sql.delete('graph_relations', 'fact_id = ANY(%s)', ([missing.id, private.id],))
+        sql.update('graph_relations', {'predicate': 'wrong'}, 'fact_id = %s', (mismatch.id,))
 
     report = client.get('/v1/audit', params=scope).json()
     limited = client.get('/v1/audit', params={**scope, 'limit': 2}).json()
-    assert report['checked']['facts'] == len(values)
-    assert report['by_kind'] == dict(empty_value=1, slot_overflow=1,
-                                     machine_token=1, fragment=1, dangling_subject=1,
-                                     unreduced_claim=1, code_artifact=1, orphan_entity=1)
+    assert report['checked']['facts'] == 3
+    assert report['by_kind'] == {'missing_edge': 1, 'edge_mismatch': 1, 'orphan_entity': 2}
     assert limited['by_kind'] == report['by_kind']
-    assert limited['total_findings'] == 8 and limited['truncated']
-    assert {row['kind'] for row in limited['findings']} == {'empty_value', 'slot_overflow'}
-    slot = next(row for row in report['findings'] if row['kind'] == 'slot_overflow')
-    assert slot['count'] == 3 and len(slot['samples']) == 3
-    assert all(row['text'] and row['fact_id'] for row in slot['samples'])
-    assert service.clear_slot(context, slot['subject'], slot['predicate'], slot['count'])['ok']
-    assert 'slot_overflow' not in client.get('/v1/audit', params=scope).json()['by_kind']
+    assert limited['total_findings'] == 4 and limited['truncated']
+    assert [row['kind'] for row in limited['findings']] == ['missing_edge', 'edge_mismatch']
+    assert [row['fact_id'] for row in limited['findings']] == [missing.id, mismatch.id]
+    assert 'Synthetic private person' not in str(report) and private.id not in str(report)
+    assert memory.rebuild_graph() is None
+    assert client.get('/v1/audit', params=scope).json()['findings'] == []
 
 
 @pytest.mark.parametrize('stream', [False, True])
@@ -200,8 +183,8 @@ def test_direct_and_proxy_mcp_and_cli_share_records(product, monkeypatch, capsys
             assert (await remote.flush_processing('mcp-thread'))['ok']
             recalled = await local.recall('What is the synthetic archive access code?', lean=False)
             assert 'Emerald' in recalled['answer']
-            first = await remote.memories(topic=None, limit=1, offset=0, include_superseded=False)
-            second = await local.memories(topic=None, limit=1, offset=1, include_superseded=False)
+            first = await remote.memories(categories=None, limit=1, offset=0, include_superseded=False)
+            second = await local.memories(categories=None, limit=1, offset=1, include_superseded=False)
             assert first['facts_page']['next_offset'] == 1
             assert first['facts'][0]['id'] != second['facts'][0]['id']
             assert (await remote.delete_fact(source.id))['ok']

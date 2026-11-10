@@ -21,8 +21,7 @@ from ..consolidate.manual import InvalidFactEditError
 from ..embed import EmbeddingUnavailable
 from ..service import MemoryRevisionChanged, MemoryService, ProcessingFailure
 from ..extraction import ExtractionError
-from ..retrieve.structured import AmbiguousAnchor
-from ..topics import Topic
+from ..categories import Category, ObjectKind
 from ..types import Cardinality, Retention
 from ..store.contracts import FactState, SpaceContext
 from ..store.postgres.errors import (
@@ -491,10 +490,7 @@ def aggregate(req: AggregateReq, owner: str = Depends(auth)):
 def follow_path(req: PathReq, owner: str = Depends(auth)):
     service = svc()
     context = service.spaces.authorize(owner, req.space_id)
-    try:
-        return service.follow_path(context, **req.model_dump(exclude={'space_id'}))
-    except AmbiguousAnchor as exc:
-        raise HTTPException(422, detail={'code': 'ambiguous_anchor', 'message': str(exc)}) from exc
+    return service.follow_path(context, **req.model_dump(exclude={'space_id'}))
 
 
 @app.get("/v1/sessions")
@@ -550,11 +546,10 @@ def memories(
     kind: Optional[str] = None,
     q: str = "",
     include_sensitive: bool = False,
-    category: Optional[str] = None,
+    categories: list[Category] | None = Query(default=None),
     outcome_kind: Optional[str] = None,
     expected_revision: Optional[str] = None,
     evaluated_at: Optional[float] = None,
-    topic: Optional[Topic] = None,
     user: SpaceContext = Depends(authorized_space),
 ):
     """浏览已存储的记忆。
@@ -566,10 +561,8 @@ def memories(
     `kind=attributes` 只保留其余内容；其他值和 `status` 一样被忽略。
     `outcome_kind` 精确筛选四类结论；后续页成对携带 `expected_revision` 和 `evaluated_at`，
     分别固定已提交集合与状态评估时刻。提交版本不符时返回 409。
-    `category` 精确筛选事实分类（空分类归入“其他”），在分页前生效；
+    categories 按任一标签匹配，在分页前执行，不过滤原始 episode。
     `fact_categories` 返回同一事实类型及敏感可见范围内的分类，不受搜索、状态及分页限制。
-    `topic` 精确筛选已存主题，与其他事实筛选取交集，分页前执行；unknown 不区分来源。
-    主题筛选不缩小分类候选范围，不过滤原始 episode。
     """
 
     try:
@@ -583,11 +576,10 @@ def memories(
             kind=kind,
             q=q,
             include_sensitive=include_sensitive,
-            category=category,
+            categories=categories,
             outcome_kind=outcome_kind,
             expected_revision=expected_revision,
             evaluated_at=evaluated_at,
-            topic=topic,
         )
     except MemoryRevisionChanged as exc:
         raise HTTPException(409, {"code": "memory_revision_changed", "message": str(exc)}) from exc
@@ -756,8 +748,8 @@ class FactReq(SpaceRequest):
     predicate: str
     object: str
     sensitive: Optional[bool] = None
-    category: Optional[str] = None
-    topic: Optional[Topic] = None
+    categories: list[Category] | None = None
+    object_kind: ObjectKind = "unknown"
     cardinality: Cardinality | None = None
     retention: Retention | None = None
 
@@ -767,12 +759,11 @@ class FactEdit(SpaceRequest):
     predicate: Optional[str] = None
     object: Optional[str] = None
     sensitive: Optional[bool] = None  # 用户对自动敏感标记的覆盖（⑤）
-    category: Optional[str] = None
+    categories: list[Category] | None = None
     statement: Optional[str] = Field(default=None, min_length=1)
-    topic: Optional[Topic] = None
+    object_kind: ObjectKind | None = None
     cardinality: Cardinality | None = None
     retention: Retention | None = None
-    reset_topic: bool = False
 
 
 @app.post("/v1/facts")
@@ -785,8 +776,8 @@ def add_fact(req: FactReq, owner: str = Depends(auth)):
         req.predicate,
         req.object,
         sensitive=req.sensitive,
-        category=req.category,
-        topic=req.topic,
+        categories=req.categories,
+        object_kind=req.object_kind,
         cardinality=req.cardinality or "unknown", retention=req.retention or "unknown",
     )
 
@@ -800,8 +791,8 @@ def edit_fact(fact_id: str, req: FactEdit, owner: str = Depends(auth)):
         raise HTTPException(422, "statement must not be blank or combined with subject, predicate or object")
     try:
         result = svc().update_fact(user, fact_id, subject=req.subject, predicate=req.predicate,
-                                   object=req.object, sensitive=req.sensitive, category=req.category,
-                                    statement=req.statement, topic=req.topic, reset_topic=req.reset_topic,
+                                   object=req.object, sensitive=req.sensitive, categories=req.categories,
+                                    statement=req.statement, object_kind=req.object_kind,
                                     cardinality=req.cardinality, retention=req.retention)
     except InvalidFactEditError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -828,7 +819,7 @@ class ClearSlotReq(SpaceRequest):
 # 会与 /v1/facts/{fact_id} 冲突。
 @app.post("/v1/facts/clear-slot")
 def clear_slot(req: ClearSlotReq, owner: str = Depends(auth)):
-    """处理 audit 中的 slot_overflow 发现：清空被塞进单个单值 slot 的所有 fact。"""
+    """按预期数量清理指定槽位的自动事实。"""
     user = svc().spaces.authorize(owner, req.space_id)
     if not req.subject.strip() or not req.predicate.strip():
         raise HTTPException(400, "subject and predicate are both required")

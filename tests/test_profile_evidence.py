@@ -33,7 +33,7 @@ def test_source_count_counts_distinct_records(source, access_count):
     fact = Fact(subject="user", predicate="prefers", object="synthetic-option",
                 source=source, provenance=["synthetic-a", "synthetic-b", "synthetic-a"],
                 access_count=access_count)
-    evidence = _preference(build_structured_profile([fact], "user"))["evidence"]
+    evidence = _preference(build_structured_profile([fact]))["evidence"]
     assert evidence == {
         "kind": "user" if source == "user" else "mentions",
         "source_count": 2, "reinforcement_count": access_count,
@@ -46,7 +46,7 @@ def test_source_count_counts_distinct_records(source, access_count):
 def test_reinforcement_does_not_inflate_source_count(provenance):
     fact = Fact(subject="user", predicate="prefers", object="synthetic-option",
                 provenance=provenance.copy(), access_count=7)
-    evidence = _preference(build_structured_profile([fact], "user"))["evidence"]
+    evidence = _preference(build_structured_profile([fact]))["evidence"]
     assert evidence == {
         "kind": "reinforced", "source_count": len(provenance), "reinforcement_count": 7,
     }
@@ -62,11 +62,9 @@ def test_manual_fact_without_sources_does_not_invent_count():
     assert fact.provenance == []
 
 
-def test_resolved_name_without_fact_has_no_direct_source_count():
-    profile = build_structured_profile([], subject="Synthetic Person")
-    assert profile["basic"][0]["evidence"] == {
-        "kind": "mentions", "source_count": 0, "reinforcement_count": 0,
-    }
+def test_profile_does_not_invent_name_from_third_party_fact():
+    profile = build_structured_profile([Fact("Synthetic Person", "name", "Synthetic Person")])
+    assert profile["basic"] == []
 
 
 @pytest.mark.parametrize("predicate, section", [
@@ -76,7 +74,7 @@ def test_resolved_name_without_fact_has_no_direct_source_count():
 def test_reinforcement_count_is_available_in_all_profile_sections(predicate, section, source):
     fact = Fact("user", predicate, "synthetic-value", source=source, access_count=11)
 
-    profile = build_structured_profile([fact], "user")
+    profile = build_structured_profile([fact])
     item = _preference(profile) if section == "preferences" else profile[section][0]
 
     assert item["evidence"] == {

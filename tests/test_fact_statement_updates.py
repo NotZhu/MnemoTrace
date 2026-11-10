@@ -16,7 +16,7 @@ def test_structured_attribute_edit_preserves_values_graph_and_profile():
     fact = mem._all_facts()[0]
     provenance, slot = list(fact.provenance), fact.slot
 
-    mem.update_fact(fact.id, subject=fact.subject, predicate="lives_in", object="Shanghai")
+    mem.update_fact(fact.id, subject=fact.subject, predicate="lives_in", object="Shanghai", object_kind="entity")
 
     assert fact.object == "Shanghai"
     assert fact.slot == slot and fact.source == "user" and fact.provenance == provenance
@@ -37,7 +37,7 @@ def test_attribute_statement_edit_is_rejected_without_mutating_fact_or_graph(sta
     graph = deepcopy(mem.graph_data("synthetic_user"))
     with pytest.raises(ValueError, match="statement.*session outcome"):
         mem.update_fact(fact.id, statement=display_of(fact) if statement is None else statement,
-                        sensitive=True, category="不应保存")
+                        sensitive=True, categories=["misc"])
     assert fact.__dict__ == before
     assert mem.graph_data("synthetic_user") == graph
 

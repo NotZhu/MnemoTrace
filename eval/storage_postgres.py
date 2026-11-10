@@ -142,9 +142,9 @@ def _load_workload(bundle, manifest, case):
                                 row['filter_bucket'], vector))
         conn.execute('INSERT INTO workload.filters SELECT user_id,space_id,id,bucket FROM input')
         conn.execute("""INSERT INTO mnemotrace.facts (user_id,space_id,id,subject,predicate,object,text,display,
-            salience,confidence,source,category,sensitive,topic,topic_source,cardinality,retention,source_roles,
+            salience,confidence,source,categories,sensitive,object_kind,categories_source,cardinality,retention,source_roles,
             valid_at,invalid_at,created_at,last_access,access_count,record_version,content_version)
-            SELECT user_id,space_id,id,subject,predicate,object,body,body,1,1,'user','state',false,
+            SELECT user_id,space_id,id,subject,predicate,object,body,body,1,1,'user','{}',false,
                    'unknown','unset','unknown','unknown','{}',valid_at,invalid_at,valid_at,valid_at,0,1,1 FROM input""")
         conn.execute("""INSERT INTO mnemotrace.embeddings(user_id,space_id,fact_id,target_kind,field,
             content_version,model,dimension,vector)

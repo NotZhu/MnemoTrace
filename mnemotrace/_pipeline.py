@@ -6,12 +6,12 @@ import time
 import uuid
 
 from .consolidate.pipeline import PipelineTasks, TERMINAL, config_identity, content_hash, reset_attempts, source
-from .consolidate.planning import input_size, output_size, plan, digest_plan, busy, fits_input, source_anchor
+from .consolidate.planning import input_size, output_size, plan, digest_plan, busy, fits_input
 from .consolidate.operations import prepare, decode
 from .extraction import ExtractionError, ExtractionTruncatedError, LLMNotConfiguredError, require_llm
 from .llm.base import complete_result
 from .store._validation import validate_embedding
-from .types import Fact
+from .consolidate.facts import materialize_facts
 
 # invalidate() 作废在途窗口（manual_change）与检测到快照更替的窗口取消（source_changed）
 # 都表示并发写到达，而非模型或配置失败。
@@ -150,41 +150,11 @@ def _parts_complete(row):
 
 
 def _merge_input(mem, namespace, win, now):
-    from .consolidate.planning import fact_valid_at
-    from .consolidate.topic_rules import resolve_topic
-    from .consolidate.fact_rules import _NAME_PREDICATES, _SELF_REFS
-
-    data, result = win['input'], win['result']
-    views = {s['id']: s for s in (*data['context'], *data['pending'])}
-    pending = {s['id']: s for s in data['pending']}
-    facts, names = [], []
-
-    def anchor(item):
-        return source_anchor(item['source_ids'], pending, data['source_kind'])
-
-    def vector(text):
-        return win['vectors'][content_hash(text)] if mem.embedder is not None else None
-
-    for item in sorted(result['facts'], key=lambda item: anchor(item)['sequence']):
-        origin = anchor(item)
-        subject_input = item.get('subject_input', item['subject']).strip().lower()
-        owner_refs = {*_SELF_REFS, namespace.lower(), *mem._aliases.get(namespace, set())}
-        if namespace in mem._identity:
-            owner_refs.add(mem._identity[namespace].lower())
-        owner_name = subject_input in owner_refs
-        topic, topic_source = resolve_topic(item.get('topic'))
-        fact = Fact(subject=item['subject'], predicate=item['predicate'], object=item['object'], text=item['text'],
-            display=item.get('display', item['text']), user_id=namespace, valid_at=fact_valid_at(item, origin['event_time']), created_at=now, last_access=now,
-            category=item['category'], sensitive=item['sensitive'],
-            provenance=item['source_ids'],
-            source_roles=list(dict.fromkeys(views[k]['role'] for k in item['source_ids'] if views[k]['role'])),
-            topic=topic, topic_source=topic_source,
-                    cardinality=item['cardinality'], retention=item['retention'], id='ft_' + content_hash([win['input_hash'], item])[:24], embedding=vector(item['text']))
-        if not (data['source_kind'] != 'dialogue' and item['predicate'] in _NAME_PREDICATES and owner_name):
-            facts.append(fact)
-        if owner_name and item['predicate'] in _NAME_PREDICATES:
-            names.append(item['object'])
-    return facts, names
+    facts = materialize_facts(namespace, win['input'], win['result'], now)
+    if mem.embedder is not None:
+        for fact in facts:
+            fact.embedding = win['vectors'][content_hash(fact.text)]
+    return facts
 
 
 def _merge_snapshot(mem, namespace, facts):
@@ -194,12 +164,9 @@ def _merge_snapshot(mem, namespace, facts):
                   key=lambda fact: fact.id)
 
 
-def _commit(mem, tasks, win, now, merge=None, names=()):
+def _commit(mem, tasks, win, now, merge=None):
     data, result = win['input'], win['result']
-    pending = {s['id']: s for s in data['pending']}
     key = next(key for key, candidate in tasks.state['windows'].items() if candidate is win)
-    def anchor(item):
-        return source_anchor(item['source_ids'], pending, data['source_kind'])
     def vector(text):
         return win['vectors'][content_hash(text)] if mem.embedder is not None else None
     if not win['core_saved']:
@@ -207,16 +174,13 @@ def _commit(mem, tasks, win, now, merge=None, names=()):
             changed, conflicts, stats = merge
             for fact in changed:
                 mem._upsert_fact(fact)
-                mem.graph.delete_relations_for_fact(fact.id)
-                if fact.is_published():
-                    mem.writer.graph_builder.add_fact(fact)
+                mem.writer.graph_builder.add_fact(fact)
+            if changed:
+                mem.graph.prune_orphan_entities()
             for conflict in conflicts:
                 mem.conflicts.setdefault(conflict.id, conflict)
             for field, count in stats.items():
                 win['stats'][field] += count
-            for name in names:
-                mem._identity.setdefault(tasks.namespace, name)
-                mem._aliases.setdefault(tasks.namespace, set()).add(name.lower())
         win['core_saved'] = True
         if win['operation'] == 'extract':
             for item in data['pending']:
@@ -312,7 +276,7 @@ def run_one(service, user):
                 return True
             if adjudicate:
                 merge_at = time.time()
-                facts, names = _merge_input(mem, user, win, merge_at)
+                facts = _merge_input(mem, user, win, merge_at)
                 previous = deepcopy(_merge_snapshot(mem, user, facts))
                 existing_pairs = tuple(c.pair_key for c in mem.conflicts.values() if c.user_id == user)
             if win['phase'] in {'generate', 'compensate'}:
@@ -397,7 +361,7 @@ def run_one(service, user):
                     win['history'][-1].update(outcome='discarded', error_code='version_conflict')
                     _fail(tasks, win, 'version_conflict', time.time(), embedding=True)
                 else:
-                    _commit(mem, tasks, win, merge_at, output, names)
+                    _commit(mem, tasks, win, merge_at, output)
                 return True
             elif embedding:
                 win['vectors'] = output
@@ -409,28 +373,6 @@ def run_one(service, user):
                         if mid not in win['digest_saved']:
                             win['result']['digests'][mid] = text
                 else:
-                    from .consolidate.fact_rules import _norm_predicate, _SELF_REFS, _NAME_PREDICATES
-                    owner_refs = {*_SELF_REFS, user.lower(), *mem._aliases.get(user, set())}
-                    if user in mem._identity:
-                        owner_refs.add(mem._identity[user].lower())
-                    identities = [item for item in output['facts'] if item['predicate'] in _NAME_PREDICATES
-                                  and item['subject'].strip().lower() in owner_refs]
-                    pending_order = {v['id']: v['sequence'] for v in data['pending']}
-                    identities.sort(key=lambda item: min(pending_order.get(k, 10**18) for k in item['source_ids']))
-                    self_name = mem._identity.get(user, identities[0]['object'] if identities else user)
-                    accepted = []
-                    for item in output['facts']:
-                        subject = item['subject'].strip()
-                        if subject.lower() in _SELF_REFS or subject.lower() in mem._aliases.get(user, set()):
-                            subject = self_name
-                        canonical = data['source_kind'] != 'dialogue' and win['operation'] == 'extract'
-                        candidate = Fact(subject=subject, predicate=_norm_predicate(item['predicate']), object=item['object'],
-                                         text='' if canonical else item['text'])
-                        if mem.writer._accepted(candidate, '\n'.join(s['content'] for s in data['pending'])):
-                            accepted.append({**item, 'subject': candidate.subject, 'predicate': candidate.predicate,
-                                             'object': candidate.object, 'text': candidate.text, 'display': item['text'],
-                                             'subject_input': item['subject'].strip()})
-                    output['facts'] = accepted
                     win['result'] = output
                 win['result_hash'] = content_hash(win['result'])
                 win.update(phase='embed' if texts_for(win) else 'commit', state='pending', next_attempt_at=0)

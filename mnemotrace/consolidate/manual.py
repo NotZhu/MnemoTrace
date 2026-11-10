@@ -1,6 +1,6 @@
 """Shared rules for user-authored facts and explicit fact corrections."""
 from ..localize import display_of
-from ..topics import validate_topic
+from ..categories import normalize_categories, validate_object_kind
 from ..types import Fact, validate_lifecycle
 from ..util import now
 from .outcomes import OUTCOME_PREDICATES, split_outcome_text
@@ -10,28 +10,29 @@ class InvalidFactEditError(ValueError):
     """A user-supplied fact edit is invalid."""
 
 
-def build_manual_fact(subject, predicate, object_, user_id, valid_at, sensitive, category, topic,
+def _manual_subject(subject):
+    return 'user' if subject.strip().casefold() == 'user' else subject
+
+
+def build_manual_fact(subject, predicate, object_, user_id, valid_at, sensitive, categories, object_kind,
                       cardinality="unknown", retention="unknown"):
-    fact = Fact(subject=subject, predicate=predicate, object=object_, user_id=user_id, source='user',
+    labels = normalize_categories(categories) if categories is not None else []
+    fact = Fact(subject=_manual_subject(subject), predicate=predicate, object=object_, user_id=user_id, source='user',
                 valid_at=valid_at if valid_at is not None else now(),
-                category='其他' if category is None else category, sensitive=True if sensitive is None else sensitive,
+                sensitive=True if sensitive is None else sensitive,
                 sensitive_override=sensitive is not None,
-                topic=topic if topic is not None else 'unknown',
-                topic_source='user' if topic is not None else 'unset',
+                categories=labels, categories_source='user' if labels else 'unset', object_kind=object_kind,
                 cardinality=cardinality, retention=retention)
     return fact
 
 
-def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=None, category=None,
-                      statement=None, topic=None, reset_topic=False, cardinality=None, retention=None, *, at=None):
+def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=None, categories=None,
+                      statement=None, object_kind=None, cardinality=None, retention=None, *, at=None):
     """Apply a correction to one domain record and report whether its claim changed."""
-    if not isinstance(reset_topic, bool):
-        raise InvalidFactEditError("reset_topic must be a boolean")
-    if topic is not None:
-        if reset_topic:
-            raise InvalidFactEditError("topic cannot be combined with reset_topic")
-        # 此入口把主题来源固定为 user；允许人工明确选择 unknown。
-        validate_topic(topic, "user")
+    subject = _manual_subject(subject) if subject is not None else None
+    labels = normalize_categories(categories) if categories is not None else None
+    if object_kind is not None:
+        validate_object_kind(object_kind)
     if statement is not None:
         if any(value is not None for value in (subject, predicate, object)):
             raise InvalidFactEditError("statement cannot be combined with subject, predicate or object")
@@ -48,6 +49,14 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
         value is not None and value != getattr(f, field)
         for field, value in (("subject", subject), ("predicate", predicate), ("object", object))
     ) or (statement is not None and statement != display_of(f) and statement != f.text)
+    object_changed = (object is not None and object != f.object) or (statement is not None and claim_changed)
+    if object_kind is not None:
+        f.object_kind = object_kind
+    elif object_changed:
+        f.object_kind = "unknown"
+    if labels is not None or claim_changed:
+        f.categories = labels or []
+        f.categories_source = "user" if labels else "unset"
     new_cardinality = (f.cardinality if not claim_changed else "unknown") if cardinality is None else cardinality
     new_retention = (f.retention if not claim_changed else "unknown") if retention is None else retention
     validate_lifecycle(new_cardinality, new_retention)
@@ -57,12 +66,6 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
         if sensitive is not None:
             f.sensitive = sensitive
             f.sensitive_override = True
-        if category is not None:
-            f.category = category
-        if topic is not None:
-            f.topic, f.topic_source = topic, "user"
-        elif reset_topic:
-            f.topic, f.topic_source = "unknown", "unset"
         return False
     if subject is not None:
         f.subject = subject
@@ -97,15 +100,8 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
         f.display = f.object if f.predicate.lower() in OUTCOME_PREDICATES else ""
     f.source = "user"
     f.revise_end_times(None, None, changed_at=now() if at is None else at)
-    if category is not None:
-        f.category = category
     f.sensitive = True if sensitive is None else sensitive
     f.sensitive_override = sensitive is not None
-    # 内容变化使原主题失去依据；同次编辑明确指定的新主题优先。
-    if topic is not None:
-        f.topic, f.topic_source = topic, "user"
-    else:
-        f.topic, f.topic_source = "unknown", "unset"
     return True
 
 

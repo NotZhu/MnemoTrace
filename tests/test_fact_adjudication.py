@@ -14,7 +14,7 @@ from mnemotrace.types import Fact
 
 def claim(source_id, value='Paris', **fields):
     return dict(subject='Ana', predicate='lives_in', object=value, text=f'Ana lives in {value}',
-                source_ids=[source_id], category='位置', sensitive=False,
+                source_ids=[source_id], categories=[], object_kind='unknown', sensitive=False,
                 time_kind='current', effective_date=None, cardinality='unknown', retention='unknown') | fields
 
 
@@ -105,7 +105,7 @@ def model_response(prompt, system):
     if prompt.startswith(WINDOW_PREFIX):
         data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
         origin = data['pending'][0]
-        return json.dumps(dict(facts=[claim(origin['id'], origin['content'])], digests=[]))
+        return json.dumps(dict(facts=[claim(origin['id'], origin['content'], object_kind='entity')], digests=[]))
     return decisions(prompt, 'conflict')
 
 
@@ -116,9 +116,11 @@ def test_offline_manual_conflict_is_hidden_until_approval():
     conflict, = mem.pending_conflicts()
     pending = mem.fact_store.get(conflict.newer)
     assert pending.review_pending
+    assert mem.graph.get_entity('default', 'Oslo') is None
     assert [item.id for item in mem._all_facts()] == [manual.id]
     assert mem.resolve_conflict(conflict.id, 'both')
     assert {item.object for item in mem._all_facts()} == {'Paris', 'Oslo'}
+    assert mem.graph.get_entity('default', 'Oslo') is not None
     assert not pending.is_live(10)
 
 
@@ -130,8 +132,8 @@ def test_manual_sensitive_override_survives_duplicate_evidence():
 
 
 def test_semantic_recall_crosses_categories_with_a_real_vector_signal():
-    previous = fact('first', 'Paris', 1, category='位置', embedding=[1.0, 0.0])
-    incoming = fact('second', 'Oslo', 2, category='事件', embedding=[1.0, 0.0])
+    previous = fact('first', 'Paris', 1, categories=['travel'], categories_source='llm', embedding=[1.0, 0.0])
+    incoming = fact('second', 'Oslo', 2, categories=['milestones'], categories_source='llm', embedding=[1.0, 0.0])
     incoming.predicate = 'based_in'
     model = FakeLLM(handler=lambda prompt, system: decisions(prompt))
     changed, conflicts, stats = plan_merge([incoming], [previous], model, Config(), object(), 100)
@@ -161,12 +163,12 @@ def test_partial_semantic_workset_cannot_drop_a_confirmed_predecessor():
 
 
 def test_manual_duplicate_links_support_without_changing_user_labels():
-    old = fact('manual', 'Paris', 1, source='user', category='Custom category')
+    old = fact('manual', 'Paris', 1, source='user', categories=['personal_details'], categories_source='user')
     changed, conflicts, stats = merge([fact('duplicate', 'Paris', 1, sensitive=True)], [old])
     assert not conflicts and stats['model_calls'] == 0
     kept = changed[old.id]
     assert kept.provenance == ['manual-source', 'duplicate-source']
-    assert (kept.source, kept.category, kept.sensitive) == ('user', 'Custom category', False)
+    assert (kept.source, kept.categories, kept.sensitive) == ('user', ['personal_details'], False)
 
 
 def test_lexical_recall_includes_explicit_preference_reversal():
@@ -234,7 +236,7 @@ def test_snapshot_restores_pending_conflict_with_remapped_fact_ids():
 
     old, held = fact('old', 'Paris', 10, source='user'), fact('held', 'Oslo', 20, review_pending=True)
     conflict = Conflict(old.id, held.id, old.text, held.text)
-    payload = dict(facts=[asdict(old), asdict(held)], episodes=[], conflicts=[asdict(conflict)])
+    payload = dict(format_version=2, facts=[asdict(old), asdict(held)], episodes=[], conflicts=[asdict(conflict)])
     restored = MemoryEngine()
     restored.import_snapshot(payload, user_id='target')
     restored.import_snapshot(payload, user_id='target')
@@ -252,7 +254,7 @@ def test_snapshot_rejects_an_unlinked_held_fact_before_restoring():
     held = fact('held', 'Oslo', 20, review_pending=True)
     restored = MemoryEngine()
     with pytest.raises(ValueError, match='pending fact has no conflict'):
-        restored.import_snapshot(dict(facts=[asdict(held)], episodes=[]))
+        restored.import_snapshot(dict(format_version=2, facts=[asdict(held)], episodes=[]))
     assert restored._all_facts(include_unpublished=True) == []
 
 
@@ -261,6 +263,7 @@ def test_snapshot_rejects_legacy_assertion_before_writing_sources_or_facts():
 
     restored = MemoryEngine()
     snapshot = dict(
+        format_version=2,
         facts=[asdict(fact('current', 'Paris', 10)),
                dict(asdict(fact('legacy', 'Oslo', 20)), assertion_kind='assistant_suggestion')],
         episodes=[dict(id='ep-1', content='Synthetic source', session_id='s', role='user', event_time=10)],

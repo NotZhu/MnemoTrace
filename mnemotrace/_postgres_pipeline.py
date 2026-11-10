@@ -10,11 +10,12 @@ from types import SimpleNamespace
 
 from ._pipeline import _retryable
 from .consolidate.operations import decode, prepare
+from .consolidate.facts import materialize_facts
 from .consolidate.pipeline import config_identity, content_hash
 from .consolidate.planning import (
     OMITTED, empty_input, fit_digest, fit_window, input_size, output_size, supplied, user_start, validate_config,
 )
-from .consolidate.postgres_merge import embed_texts, materialize, merge_records, write_record
+from .consolidate.postgres_merge import embed_texts, merge_records, write_record
 from .embed import EmbeddingUnavailable
 from .extraction import ExtractionError, ExtractionResponseError, ExtractionTruncatedError, require_llm
 from .llm.base import complete_result
@@ -135,8 +136,6 @@ class PostgresPipeline:
             if completion.finish_reason not in {None, 'stop', 'end_turn'}:
                 raise ExtractionTruncatedError()
             result = decode(completion.text, data, self.config)
-            for item in result['facts']:
-                item.update(display=item['text'], subject_input=item['subject'])
         else:
             result = dict(facts=[], digests={data['pending'][0]['id']: cached_digest})
         if data['operation'] == 'digest' and not result['digests']:
@@ -151,17 +150,17 @@ class PostgresPipeline:
                                     self.config.digest_max_chars, context_revision)
         self.tasks.save_product(product, settings)
 
-    def _changes(self, conditions, writes=(), embeddings=(), links=(), settings=None):
+    def _changes(self, conditions, writes=(), embeddings=(), links=()):
         operation_id = conditions.lease.operation_id
-        revision = conditions.snapshot.core_revision + int(bool(writes) or settings is not None)
+        revision = conditions.snapshot.core_revision + int(bool(writes))
         receipt = CommitReceipt(operation_id, revision,
                                 fact_ids=tuple(w.ref.record_id for w in writes if w.ref.kind == FACT))
         return ChangeSet(conditions, operation_id, tuple(writes), source_links=tuple(links),
-                         embeddings=tuple(embeddings), settings=settings, receipt=receipt)
+                         embeddings=tuple(embeddings), receipt=receipt)
 
-    def _commit_core(self, conditions, settings, data, result, records, merged):
+    def _commit_core(self, conditions, data, result, records, merged):
         context = conditions.snapshot.context
-        facts, new_settings, previous, vectors, now, existing_pairs = merged
+        facts, previous, vectors, now, existing_pairs = merged
         writes, embeddings, links = merge_records(context, self.config, self.embedder, self.model, data,
                                                   now, facts, previous, vectors, self.llm, existing_pairs)
         by_id = {record.ref.record_id: record for record in records}
@@ -182,8 +181,7 @@ class PostgresPipeline:
         operation_id = conditions.lease.operation_id
         continuation = ('seg_' + content_hash([operation_id, data])[:48]
                         if completed | newly_completed != set(by_id) else None)
-        changes = self._changes(conditions, writes, embeddings, links,
-                                new_settings if settings != new_settings else None)
+        changes = self._changes(conditions, writes, embeddings, links)
 
         def digests(sql, generation):
             self.tasks.save_digests(sql, operation_id, generation,
@@ -243,11 +241,10 @@ class PostgresPipeline:
                                 data, result = json.loads(product.input_json), json.loads(product.result_json)
                                 if row['kind'] == 'extract':
                                     now = view.at.timestamp()
-                                    facts, new_settings = materialize(
-                                        snapshot.context, data, result, settings, self.config, now)
+                                    facts = materialize_facts(snapshot.context.user_id, data, result, now)
                                     history = view.merge_history({fact.subject.strip().lower() for fact in facts})
                                     vectors = view.fact_vectors(history, *space) if space is not None else {}
-                                    merged = facts, new_settings, history, vectors, now, view.conflict_pairs(history)
+                                    merged = facts, history, vectors, now, view.conflict_pairs(history)
                                 else:
                                     digest_base = view.digest_version(records[0].ref.record_id)
                 if row['kind'] == 'reembed':
@@ -264,7 +261,7 @@ class PostgresPipeline:
                     if row['kind'] == 'digest':
                         self._commit_digest(conditions, data, result, records[0], digest_base)
                     else:
-                        self._commit_core(conditions, settings, data, result, records, merged)
+                        self._commit_core(conditions, data, result, records, merged)
             except (AccountNotFound, SpaceNotFound, CommitOutcomeUnknown):
                 return True  # Deletion or the next claim resolves the durable outcome.
             except Exception as exc:

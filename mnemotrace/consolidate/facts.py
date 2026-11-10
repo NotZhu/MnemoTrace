@@ -2,9 +2,38 @@
 from __future__ import annotations
 import math
 from ..util import DAY
+from ..types import Fact
+from .pipeline import content_hash
+from .planning import fact_valid_at, source_anchor
 from .graph_builder import GraphBuilder
-from .preferences import EXPLICIT_PREFERENCE_PREDS, is_preference_reversal_fact, is_specific_preference_object, preference_topic_object
-_PROCEDURAL_EXTRACTED_PREDS = {"procedure", "how_to", "routine", "instruction", "agent_instruction"}
+
+
+def materialize_facts(user_id, data, result, now):
+    """Build the same facts from a saved extraction in either storage adapter."""
+    views = {item['id']: item for item in (*data['context'], *data['pending'])}
+    pending = {item['id']: item for item in data['pending']}
+    input_hash = content_hash(data)
+
+    def anchor(item):
+        return source_anchor(item['source_ids'], pending, data['source_kind'])
+
+    facts = []
+    for item in sorted(result['facts'], key=lambda item: anchor(item)['sequence']):
+        source_ids = item['source_ids']
+        labels = item['categories']
+        facts.append(Fact(
+            subject=item['subject'], predicate=item['predicate'], object=item['object'],
+            text=item['text'], display=item['display'], user_id=user_id,
+            valid_at=fact_valid_at(item, anchor(item)['event_time']), created_at=now, last_access=now,
+            categories=list(labels), categories_source='llm' if labels else 'unset',
+            object_kind=item['object_kind'], sensitive=item['sensitive'],
+            provenance=list(source_ids),
+            source_roles=list(dict.fromkeys(views[key]['role'] for key in source_ids if views[key]['role'])),
+            cardinality=item['cardinality'], retention=item['retention'],
+            id='ft_' + content_hash([input_hash, item])[:24],
+        ))
+    return facts
+
 
 class FactWriter:
     def __init__(self, fact_store, graph, embedder, config):
@@ -15,22 +44,6 @@ class FactWriter:
     def empty_stats():
         return {"facts_added": 0, "duplicates": 0, "invalidated": 0,
                 "model_calls": 0, "windows_completed": 0}
-
-    def _accepted(self, fact, content: str) -> bool:
-        pred = fact.predicate.lower()
-        if not self.config.procedural_extraction and pred in _PROCEDURAL_EXTRACTED_PREDS:
-            return False
-        if pred in EXPLICIT_PREFERENCE_PREDS:
-            if not self.config.explicit_preference_extraction:
-                return False
-            if self.config.preference_object_filter and not is_specific_preference_object(fact.object):
-                return False
-            if self.config.preference_object_normalization:
-                obj = preference_topic_object(pred, fact.object, True)
-                if obj != fact.object:
-                    fact.object = obj
-                    fact.text = f"{fact.subject} {pred.replace('_', ' ')} {obj}".strip()
-        return self.config.preference_reversal_extraction or not is_preference_reversal_fact(fact, content)
 
     def _decay_sweep(self) -> None:
         live = [f for f in self.fact_store.values() if f.is_live() and f.valid_at is not None]

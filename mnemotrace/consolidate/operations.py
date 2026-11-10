@@ -2,6 +2,7 @@
 import json
 
 from ..extraction import ExtractionResponseError
+from .fact_rules import _norm_predicate
 from .planning import request, system_prompt, validate_response, validate_result
 
 
@@ -26,7 +27,21 @@ def decode(raw, data, config, compensation=False):
         except (ValueError, TypeError) as exc:
             raise ExtractionResponseError() from exc
     else:
-        return validate_response(raw, data, config, compensation=compensation)
+        result = validate_response(raw, data, config, compensation=compensation)
+        facts = []
+        for item in result['facts']:
+            subject = item['subject'].strip()
+            if subject.casefold() == 'user':
+                subject = 'user'
+            predicate = _norm_predicate(item['predicate'])
+            if not predicate:
+                raise ExtractionResponseError()
+            display = item['text']
+            text = (display if data['source_kind'] == 'dialogue'
+                    else f"{subject} {predicate.replace('_', ' ')} {item['object']}".strip())
+            facts.append({**item, 'subject': subject, 'predicate': predicate, 'display': display, 'text': text})
+        result['facts'] = facts
+        return result
     try:
         return validate_result(result, data, config)
     except ValueError as exc:

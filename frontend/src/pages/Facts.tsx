@@ -6,7 +6,7 @@ import { FileSearch, GitMerge, Loader2, Pencil, Plus, Search, ShieldAlert, Trash
 import { Button, Card, CardTitle, ErrorState, Field, PageHeader, Spinner } from '../components/ui'
 import { PageEmptyState } from '../components/PageEmptyState'
 import { FilterSelect } from '../components/FilterSelect'
-import { TopicBadge, TopicEditor } from '../components/TopicEditor'
+import { CategoryBadges, CategoryEditor, CategoryFilter } from '../components/CategoryEditor'
 import { ConfirmDialog, Modal } from '../components/Modal'
 import { toast } from '../components/Toast'
 import {
@@ -21,8 +21,8 @@ import {
 import { copy as t } from '../lib/copy'
 import { splitStamp } from '../lib/format'
 import { useSpacePreference } from '../store/preferences'
-import type { FactEdit, MemoryEpisode, MemoryFact, Topic } from '../types'
-import { TOPIC_OPTIONS, topicPatch, type TopicAction } from '../lib/topics'
+import type { Category, FactEdit, MemoryEpisode, MemoryFact, ObjectKind } from '../types'
+import { OBJECT_KIND_LABELS } from '../lib/categories'
 
 export default function Facts() {
   const addFact = useAddFact()
@@ -32,8 +32,7 @@ export default function Facts() {
   const [q, setQ] = useState('')
   const searchInput = useRef<HTMLInputElement>(null)
   const [status, setStatus] = useSpacePreference('facts', 'status')
-  const [category, setCategory] = useSpacePreference('facts', 'category')
-  const [topic, setTopic] = useSpacePreference('facts', 'topic')
+  const [categories, setCategories] = useSpacePreference('facts', 'categories')
   const [hideSensitive, setHideSensitive] = useSpacePreference('facts', 'hideSensitive')
   const [editing, setEditing] = useState<MemoryFact | null>(null)
   const [sourceOf, setSourceOf] = useState<MemoryFact | null>(null)
@@ -48,20 +47,17 @@ export default function Facts() {
     episodes_limit: 0,
     q,
     status: status === 'all' ? undefined : status,
-    category: category || undefined,
-    topic: topic || undefined,
+    categories: categories.length ? categories : undefined,
     include_sensitive: !hideSensitive,
   })
   const facts = data?.facts ?? []
   const sourceQuery = useSourceEpisodes(!!sourceOf)
   const factsPage = data?.facts_page
   const hasMore = factsPage?.has_more ?? false
-  const categories = [...new Set([...(data?.fact_categories ?? []), ...(category ? [category] : [])])]
-  const hasFilters = Boolean(q.trim() || category || topic || status !== 'live')
+  const hasFilters = Boolean(q.trim() || categories.length || status !== 'live')
   const clearFilters = () => {
     setQ('')
-    setCategory('')
-    setTopic('')
+    setCategories([])
     setStatus('live')
     searchInput.current?.focus()
   }
@@ -112,10 +108,7 @@ export default function Facts() {
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 pt-1">
           <p className="text-xs text-ghost" aria-live="polite">{!data || isPlaceholderData || isError ? t.facts.countPending : t.facts.factCount(factsPage?.total ?? facts.length)}</p>
           <div className="ml-auto flex flex-wrap items-center justify-end gap-x-6 gap-y-3 pr-3">
-            <FilterSelect label={t.facts.categoryFilter} value={category} onChange={setCategory}
-              options={[{ value: '', label: t.facts.allCategories }, ...categories.map(item => ({ value: item, label: item }))]} />
-            <FilterSelect<Topic | ''> label="主题" value={topic} onChange={setTopic}
-              options={[{ value: '', label: '全部主题' }, ...TOPIC_OPTIONS]} />
+            <CategoryFilter value={categories} onChange={setCategories} />
             <FilterSelect label={t.facts.statusFilter} value={status} onChange={(value) => setStatus(value as typeof status)}
               options={[
                 { value: 'live', label: t.facts.currentOnly },
@@ -156,9 +149,6 @@ export default function Facts() {
                       {f.status === 'live' ? t.facts.statusLive : t.facts.statusOld}
                     </span>
                     <time className="tabular-nums">{date}{time && ` · ${time}`}</time>
-                    {f.category && f.category !== '其他' && (
-                      <span className="rounded bg-ghost/10 px-1.5 py-px text-ghost">{f.category}</span>
-                    )}
                     {f.sensitive && (
                       <span className="inline-flex items-center gap-1 rounded bg-brand-rose/15 px-1.5 py-px text-brand-rose">
                         <ShieldAlert className="h-3 w-3" /> {t.facts.sensitive}
@@ -169,7 +159,7 @@ export default function Facts() {
                         {t.profile.evidenceUser}
                       </span>
                     )}
-                    <TopicBadge topic={f.topic} topic_source={f.topic_source} />
+                    <CategoryBadges categories={f.categories} categories_source={f.categories_source} />
                     {f.invalid_at && <span>{t.facts.invalidAt(f.invalid_at)}</span>}
                   </div>
                 </div>
@@ -293,8 +283,8 @@ export default function Facts() {
               predicate: vals.predicate!,
               object: vals.object!,
               sensitive: vals.sensitive,
-              category: vals.category,
-              topic: vals.topic,
+              categories: vals.categories,
+              object_kind: vals.object_kind,
             },
             {
               onSuccess: () => {
@@ -409,7 +399,8 @@ function FactModal({
   const [sensitiveOverride, setSensitiveOverride] = useState<boolean>()
   const claimChanged = initial && (initial.subject !== subject || initial.predicate !== predicate || initial.object !== object)
   const sensitive = sensitiveOverride ?? (!initial || claimChanged || initial.sensitive)
-  const [topicAction, setTopicAction] = useState<TopicAction>('keep')
+  const [categories, setCategories] = useState<Category[]>()
+  const [objectKind, setObjectKind] = useState<ObjectKind>()
 
   // 每次弹窗带着（可能是新的）事实打开时，同步一次表单值。
   const [seen, setSeen] = useState<string | null>(null)
@@ -420,7 +411,8 @@ function FactModal({
     setPredicate(initial?.predicate ?? '')
     setObject(initial?.object ?? '')
     setSensitiveOverride(undefined)
-    setTopicAction('keep')
+    setCategories(undefined)
+    setObjectKind(undefined)
   }
 
   return (
@@ -450,7 +442,7 @@ function FactModal({
           <Button variant="ghost" disabled={loading} onClick={onClose} className="h-9 px-4 py-2 text-sm">
             {t.common.cancel}
           </Button>
-          <Button loading={loading} disabled={loading || !predicate.trim() || !object.trim()} onClick={() => onSubmit({ subject, predicate, object, sensitive: sensitiveOverride, ...topicPatch(topicAction) })} className="h-9 px-4 py-2 text-sm">
+          <Button loading={loading} disabled={loading || !predicate.trim() || !object.trim()} onClick={() => onSubmit({ subject, predicate, object, sensitive: sensitiveOverride, categories, object_kind: objectKind })} className="h-9 px-4 py-2 text-sm">
             {t.common.save}
           </Button>
           </div>
@@ -467,7 +459,15 @@ function FactModal({
         <Field label={t.facts.objectLabel}>
           <FactTextInput originalValue={initial?.object} value={object} onChange={setObject} />
         </Field>
-        <TopicEditor current={initial} value={topicAction} onChange={setTopicAction} disabled={loading} />
+        <Field label="对象类型">
+          <select className="input w-full" value={objectKind ?? ''}
+            onChange={event => setObjectKind((event.target.value || undefined) as ObjectKind | undefined)}>
+            <option value="">{initial && initial.object === object
+              ? `保持当前类型（${OBJECT_KIND_LABELS[initial.object_kind]}）` : '默认未知'}</option>
+            {Object.entries(OBJECT_KIND_LABELS).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
+          </select>
+        </Field>
+        <CategoryEditor current={initial} value={categories} onChange={setCategories} disabled={loading} />
       </div>
     </Modal>
   )

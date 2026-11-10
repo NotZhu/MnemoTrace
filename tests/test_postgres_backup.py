@@ -1,6 +1,7 @@
 """Opt-in PostgreSQL 18 logical backup drill with the real client utilities."""
 from contextlib import contextmanager
 from dataclasses import replace
+from hashlib import sha256
 import os
 from pathlib import Path
 import subprocess
@@ -13,7 +14,8 @@ from tests.embedder_fixtures import product_embedder
 from mnemotrace.memory import Memory
 from mnemotrace.store.postgres import Accounts, Database, Spaces
 from mnemotrace.store.postgres.database import driver
-from mnemotrace.store.postgres.errors import DatabaseConfigurationError, SpaceNotFound
+from mnemotrace.store.postgres.errors import DatabaseConfigurationError, SchemaMismatch, SpaceNotFound
+from mnemotrace.store.postgres import migrate as migrations
 from mnemotrace.store.postgres.migrate import bootstrap_roles, check_restore_target
 from mnemotrace.worker import run_worker
 from tests.postgres.conftest import disposable_database_factory
@@ -54,12 +56,17 @@ def pg(bin_dir, executable, config, *args):
                    env=env, check=True, timeout=60)
 
 
-def test_full_logical_backup_and_worker_resume(tmp_path):
+@pytest.fixture
+def backup_environment():
     dsn = os.environ.get('MNEMOTRACE_TEST_POSTGRES_DSN')
     bin_dir = os.environ.get('MNEMOTRACE_TEST_POSTGRES_BIN')
     if not dsn or not bin_dir:
         pytest.skip('Set MNEMOTRACE_TEST_POSTGRES_DSN and MNEMOTRACE_TEST_POSTGRES_BIN for the backup drill')
-    bin_dir = Path(bin_dir).resolve()
+    return dsn, Path(bin_dir).resolve()
+
+
+def test_full_logical_backup_and_worker_resume(tmp_path, backup_environment):
+    dsn, bin_dir = backup_environment
     archive = tmp_path / 'deployment.dump'
     with disposable_database_factory(dsn)() as source:
         with Database(source.admin, purpose='admin') as admin, Database(source.runtime) as runtime:
@@ -75,12 +82,12 @@ def test_full_logical_backup_and_worker_resume(tmp_path):
             complete = _accept(memory, 'first', 'Ada works at Synthetic Lab')
             assert memory.flush_processing('chat')['ok']
             assert memory.operation(complete).core_committed
-            memory.set_entity_aliases('Ada works', ['Synthetic alias'])
             pending = _accept(memory, 'next', 'Grace works at Synthetic Studio', session='next')
             assert memory._processing.run_one(pending, force=True)
             assert memory.operation(pending).phase == 'embed'
             assert len(calls) >= 2
             prior_fact, = memory.history('Ada works', 'works_at')
+            prior_edge, = memory.graph_relations(prior_fact.id)
             with memory.dao.read_snapshot() as view:
                 revision = view.snapshot.core_revision
 
@@ -103,7 +110,7 @@ def test_full_logical_backup_and_worker_resume(tmp_path):
                     spaces.authorize(user_id, other_space.space_id)
                 memory = Memory(runtime, scope, llm=llm, embedder=product_embedder(), embedding_model='test-vectors-v1')
                 assert memory.get_episode(prior_fact.provenance[0]).content == 'Ada works at Synthetic Lab'
-                assert 'Synthetic alias' in memory.entity('Ada works').aliases
+                assert memory.graph_relations(prior_fact.id) == (prior_edge,)
                 assert memory.operation(complete).core_committed
                 assert memory.operation(pending).phase == 'embed'
                 with memory.dao.read_snapshot() as view:
@@ -114,3 +121,29 @@ def test_full_logical_backup_and_worker_resume(tmp_path):
                 assert memory.operation(pending).core_committed
                 assert 'extract' not in restored_calls
                 assert len(memory.history('Grace works', 'works_at')) == 1
+
+
+def test_restored_prior_graph_schema_is_rejected(tmp_path, backup_environment, monkeypatch):
+    dsn, bin_dir = backup_environment
+    archive = tmp_path / 'previous-graph.dump'
+    current_scripts = migrations._scripts
+
+    def prior_scripts(prefix):
+        scripts = current_scripts(prefix)
+        initial = scripts[0][0].replace(
+            '    normalized_name mnemotrace.identifier NOT NULL,',
+            '    normalized_name mnemotrace.identifier NOT NULL,\n    aliases text[] NOT NULL,',
+        ).replace('CHECK (format_version = 5)', 'CHECK (format_version = 4)')
+        return [(initial, sha256(initial.encode()).hexdigest()), *scripts[1:]]
+
+    with disposable_database_factory(dsn)(initialize=False) as source:
+        with monkeypatch.context() as previous:
+            previous.setattr(migrations, '_scripts', prior_scripts)
+            migrations.migrate(source.migration)
+        pg(bin_dir, 'pg_dump', source.bootstrap, '-Fc', '--file', archive)
+        with restore_target(source) as target:
+            check_restore_target(target.bootstrap)
+            bootstrap_roles(target.bootstrap)
+            pg(bin_dir, 'pg_restore', target.bootstrap, '--single-transaction', '--exit-on-error', archive)
+            with pytest.raises(SchemaMismatch, match='migration history is incompatible'):
+                Database(target.runtime).open()

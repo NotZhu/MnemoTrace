@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import hashlib
+from itertools import count
 import json
 from pathlib import Path
 import platform
@@ -24,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CLOCK = harness.BASE + 120 * 86400
 WORKLOADS = Path(__file__).with_name('fixtures') / 'storage_workloads.json'
 SOURCE_FILES = (
-    'mnemotrace/store/contracts.py', 'mnemotrace/retrieve/structured.py', 'eval/storage_baseline.py',
+    'mnemotrace/categories.py', 'mnemotrace/store/contracts.py', 'mnemotrace/retrieve/structured.py', 'eval/storage_baseline.py',
     'eval/fixtures/storage_baseline.json', 'eval/fixtures/storage_workloads.json',
     'tests/test_storage_contracts.py', 'tests/test_storage_baseline.py',
     'docs/architecture/storage-contracts.md', 'docs/architecture/README.md', 'eval/README.md',
@@ -66,7 +67,11 @@ def observe() -> tuple[list[dict], dict, dict]:
     def run(item, **kwargs):
         return harness.run_mnemotrace_detail(item, capture=capture, **kwargs)
 
-    with patch('time.time', return_value=CLOCK), patch.object(harness, '_memory_for', memory_for):
+    # Tied ranks can depend on IDs, so the synthetic run fixes IDs as well as the clock.
+    ids = count(1)
+    with (patch('time.time', return_value=CLOCK),
+          patch('mnemotrace.types.gen_id', side_effect=lambda prefix: f'{prefix}_{next(ids):012x}'),
+          patch.object(harness, '_memory_for', memory_for)):
         rows, summary = harness.evaluate(storage='memory', llm=RecordedLLM(), run_item=run)
     # Materialize observations after the harness stops its retrieval timer.
     for user_id, (memory, result) in captured.items():

@@ -12,6 +12,7 @@ from mnemotrace.types import Episode, Fact
 
 def snapshot():
     return {
+        "format_version": 2,
         "facts": [asdict(Fact(id="ft_source", subject="Synthetic", predicate="works_at",
                               object="SyntheticCo", valid_at=0, created_at=-1, source="user"))],
         "episodes": [asdict(Episode(id="ep_source", content="Synthetic source", event_time=0))],
@@ -23,7 +24,6 @@ def target():
     mem.add_fact("Existing", "likes", "tea", user_id="target")
     mem.set_focus(track=["existing"], mute=["muted"])
     mem.set_policy(extract_instruction="existing policy")
-    mem._identity = {"target": "Existing"}
     mem._aliases = {"target": {"Existing"}}
     mem._import_seen = {"existing-fingerprint"}
     return mem
@@ -31,11 +31,12 @@ def target():
 
 def contents(mem):
     return copy.deepcopy({
+        "format_version": 2,
         "facts": [asdict(f) for f in mem._all_facts()],
         "episodes": [asdict(ep) for ep in mem.episodes_doc.values()],
         "entities": [asdict(e) for e in mem.graph.entities.values()],
         "relations": [asdict(r) for r in mem.graph.relations()],
-        "focus": mem.focus, "policy": mem.policy, "identity": mem._identity,
+        "focus": mem.focus, "policy": mem.policy,
         "aliases": mem._aliases, "import_seen": mem._import_seen,
     })
 
@@ -53,8 +54,8 @@ def test_missing_envelope_rejects_entire_batch(key):
 
 @pytest.mark.parametrize("key", [
     "id", "subject", "predicate", "object", "source", "valid_at", "invalid_at",
-    "created_at", "expired_at", "supersedes", "provenance", "category", "sensitive",
-    "salience", "confidence", "topic", "topic_source", "validity_revisions",
+    "created_at", "expired_at", "supersedes", "provenance", "categories", "sensitive",
+    "salience", "confidence", "categories_source", "object_kind", "validity_revisions",
 ])
 def test_missing_fact_history_rejects_before_any_episode_is_added(key):
     payload = snapshot()
@@ -119,7 +120,7 @@ def test_migration_preserves_source_history_and_target_settings():
     ep = mem.episodes_doc.values()[0]
     assert ep.id != "ep_source" and ep.event_time == 0 and ep.consolidated
     after = contents(mem)
-    for key in ("focus", "policy", "identity", "aliases", "import_seen"):
+    for key in ("focus", "policy", "aliases", "import_seen"):
         assert after[key] == before[key]
 
 

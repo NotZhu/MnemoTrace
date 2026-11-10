@@ -110,10 +110,10 @@ export interface SessionReportFact {
   invalid_at: string | null
   status: FactStatus
   source: FactSource
-  category: string
   /** Omitted for redacted rows. */
-  topic?: Topic
-  topic_source?: TopicSource
+  categories?: Category[]
+  categories_source?: CategoriesSource
+  object_kind?: ObjectKind
   sensitive: boolean
   redacted: boolean
   provenance: string[]
@@ -172,15 +172,18 @@ export interface SessionListOptions {
 export type FactStatus = 'live' | 'superseded'
 export type FactSource = 'extracted' | 'user'
 
-export type Topic = 'food' | 'travel' | 'music' | 'film_tv' | 'sports' | 'reading' | 'hobbies'
-  | 'environment' | 'health' | 'work' | 'learning' | 'technology' | 'finance' | 'relationships' | 'unknown'
-export type TopicSource = 'unset' | 'llm' | 'user'
-export interface TopicMetadata {
-  topic: Topic
-  topic_source: TopicSource
+export type Category = 'personal_details' | 'family' | 'professional_details' | 'sports' | 'travel'
+  | 'food' | 'music' | 'health' | 'technology' | 'hobbies' | 'fashion' | 'entertainment'
+  | 'milestones' | 'user_preferences' | 'misc'
+export type CategoriesSource = 'unset' | 'llm' | 'user'
+export type ObjectKind = 'entity' | 'literal' | 'unknown'
+export interface FactMetadata {
+  categories: Category[]
+  categories_source: CategoriesSource
+  object_kind: ObjectKind
 }
 
-export interface Fact extends TopicMetadata {
+export interface Fact extends FactMetadata {
   cardinality: 'single' | 'multi' | 'unknown'
   retention: 'durable' | 'normal' | 'unknown'
   source_roles?: ('user' | 'assistant')[]
@@ -197,7 +200,6 @@ export interface Fact extends TopicMetadata {
   status: FactStatus
   source: FactSource
   supersedes: string | null
-  category?: string
   sensitive?: boolean
   redacted?: boolean
   salience: number
@@ -241,8 +243,8 @@ export interface MemoryPage<T> {
 export type OutcomeKind = 'decision' | 'finding' | 'lesson' | 'open_question'
 
 export interface MemoryListOptions {
-  /** Exact stored main topic. unknown includes manual and unassigned unknown facts. */
-  topic?: Topic
+  /** Match facts that have any of these labels. */
+  categories?: Category[]
   outcomeKind?: OutcomeKind
   /** Pair with evaluatedAt from the first page; a changed commit returns HTTP 409. */
   expectedRevision?: string
@@ -274,6 +276,7 @@ export interface MemoryDump {
   profile: string
   counts: MemoryCounts
   facts: Fact[]
+  fact_categories: Category[]
   episodes: EpisodeView[]
   facts_page: MemoryPage<Fact>
   episodes_page: MemoryPage<EpisodeView>
@@ -394,8 +397,8 @@ export interface FactInput {
   predicate: string
   object: string
   sensitive?: boolean
-  category?: string
-  topic?: Topic | null
+  categories?: Category[]
+  object_kind?: ObjectKind
 }
 
 export interface FactPatch {
@@ -405,9 +408,8 @@ export interface FactPatch {
   predicate?: string
   object?: string
   sensitive?: boolean
-  category?: string
-  topic?: Topic | null
-  reset_topic?: boolean
+  categories?: Category[]
+  object_kind?: ObjectKind
 }
 
 export interface ImportMessageInput {
@@ -453,7 +455,7 @@ export interface ImportResult {
   results: Array<RememberResult & {session_id: string; accepted: number; messages?: MessageReceipt[]}>
 }
 
-export interface MemoryExportFact extends TopicMetadata {
+export interface MemoryExportFact extends FactMetadata {
   cardinality: Fact["cardinality"]
   retention: Fact["retention"]
   validity_revisions: { changed_at: number; invalid_at: number | null; expired_at: number | null }[]
@@ -464,7 +466,6 @@ export interface MemoryExportFact extends TopicMetadata {
   text: string
   source: FactSource
   status: FactStatus
-  category: string
   sensitive: boolean
   salience: number
   confidence: number
@@ -489,6 +490,7 @@ export interface MemoryExportEpisode {
 }
 
 export interface MemoryExport {
+  format_version: 2
   space_id: string
   include_sensitive: boolean
   redacted_sensitive: boolean

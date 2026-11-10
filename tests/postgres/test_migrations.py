@@ -81,7 +81,7 @@ def test_pre_removal_database_is_rejected_without_modifying_it(database_factory,
             "    assertion_kind text NOT NULL CHECK (assertion_kind IN "
             "('unspecified','user_statement','assistant_suggestion','user_confirmation','assistant_report')),\n"
             '    source_roles text[]'
-        )).replace('CHECK (format_version = 3)', 'CHECK (format_version = 2)')
+        )).replace('CHECK (format_version = 5)', 'CHECK (format_version = 4)')
         return [(initial, sha256(initial.encode()).hexdigest()), *scripts[1:]]
 
     with database_factory(initialize=False) as bundle:

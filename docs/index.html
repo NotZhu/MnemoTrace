@@ -568,7 +568,7 @@ python eval/validate_results.py --expected-rows 500 --require-complete --system 
     <article class="chip rv d2"><h3>双时间轴事实</h3><p>有效时间 + 事务时间,<b>as-of 时点查询</b>、知识更新一等公民</p></article>
     <article class="chip rv d3"><h3>非破坏式冲突解决</h3><p>精确槽 + 语义 + 子集,仅模糊时 LLM 裁决;<b>失效不删除、全溯源</b></p></article>
     <article class="chip rv d3"><h3>混合检索</h3><p>语义 + 词法 BM25 + 图 n 跳 + 时近/显著度,<b>RRF 融合</b>(可选重排)</p></article>
-    <article class="chip rv d4"><h3>类型化记忆</h3><p>情节 / 语义图谱 / 画像身份 / 程序性,各有存储与策略</p></article>
+    <article class="chip rv d4"><h3>类型化记忆</h3><p>原文、事实和摘要提供检索证据；语义图谱从实体事实派生</p></article>
     <article class="chip rv d4"><h3>显著度衰减 + Reflector</h3><p>强化与遗忘、摘要刷新、答案验证回路</p></article>
   </div>
   <p class="sources-note rv d4"><span>LLM 负责语义抽取；嵌入器、向量库和图库通过接口接入。使用 <code>python scripts/check_core.py</code> 离线验证核心存储与配置错误契约。</span></p>

@@ -92,7 +92,7 @@ def test_unknown_attributes_fall_through_to_the_real_model():
         assert CachedLLM(FlakyLLM(), d).model == "flaky-1"
 
 
-def test_identity_registration_does_not_depend_on_extraction_order():
+def test_owner_subject_does_not_depend_on_extraction_order():
     import time
     from mnemotrace.llm import FakeLLM
     outputs = {
@@ -110,7 +110,7 @@ def test_identity_registration_does_not_depend_on_extraction_order():
         if content == "I like coffee":
             time.sleep(0.01)
         return json.dumps({"facts": [{**item, 'text': f"{item['subject']} {item['predicate']} {item['object']}",
-            'category': '其他', 'sensitive': False, 'time_kind': 'current', 'effective_date': None, 'cardinality': 'unknown', 'retention': 'unknown',
+            'categories': [], 'object_kind': 'literal', 'sensitive': False, 'time_kind': 'current', 'effective_date': None, 'cardinality': 'unknown', 'retention': 'unknown',
             'source_ids': [data['pending'][0]['id']]}
             for item in outputs[content]], "digests": []})
     seen = []
@@ -120,6 +120,8 @@ def test_identity_registration_does_not_depend_on_extraction_order():
             mem.add(text, user_id="u1", session_id=f"s{i}", event_time=1_700_000_000.0 + i * 86400)
         mem.consolidate()
         seen.append(sorted(f.text for f in mem._all_facts()))
-        assert mem._identity.get("u1") == "Evan"
+        assert {(f.subject, f.predicate, f.object) for f in mem._all_facts()} == {
+            ("user", "name", "Evan"), ("user", "likes", "coffee"), ("user", "likes", "hiking"),
+        }
     assert seen[0] == seen[1] == seen[2]
     assert all("coffee" in " ".join(rows) for rows in seen)

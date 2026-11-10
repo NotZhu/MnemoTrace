@@ -27,8 +27,6 @@ class Config:
 
     # 按事实类型调整语义相似度，倾向于让相关的偏好和身份事实排在偶发信息之前。
     # 乘数作用于语义分数，而非融合后的排名分数；其他类型使用 1.0。
-    w_type_preference: float = 1.25  # 偏好类事实，如 likes、favorite_food
-    w_type_identity: float = 1.15  # 身份类事实，如 works_at
     recency_tau_days: float = 45.0  # 新近度指数衰减的时间常数（天）；<= 0 时不衰减
     rrf_k: int = 60  # RRF 排名融合常数，控制不同排名之间的贡献差距
     abstain_threshold: float = 0.45  # 无属性匹配时，最佳语义相似度低于此值则拒答
@@ -40,11 +38,6 @@ class Config:
     joint_core_output_tokens: int = 2048
     joint_digest_output_tokens: int = 2048
     joint_context_tokens: Optional[int] = None  # 提供方总上下文；未知时不冒充已验证
-    explicit_preference_extraction: bool = True  # 抽取 like、prefer、avoid 等显式偏好
-    preference_object_filter: bool = True  # 过滤 it、these ideas 等含义不明确的偏好对象
-    preference_object_normalization: bool = True  # 将 sound/idea of X 等偏好对象规范化为 X
-    preference_reversal_extraction: bool = True  # 抽取 no longer like X 等明确的偏好反转
-    procedural_extraction: bool = True  # 将长期操作步骤抽取为过程类事实
     max_hot_facts: int = 10_000  # 热层事实数量上限；换出的事实保留在冷层
     salience_decay_per_day: float = 0.02  # 适用事实的显著度按有效时间指数衰减的日系数
     access_boost: float = 0.5  # 访问事实时增加的显著度
@@ -72,7 +65,6 @@ class Config:
     graph_proximity: bool = True  # 使用图邻近关系打分并遍历图
     graph_relation_awareness: bool = True  # 根据查询条件调整图关系类型的权重
     graph_path_reinforcement: bool = True  # 多条路径指向同一节点时提高其图得分
-    graph_self_anchor: bool = True  # 将第一人称查询锚定到用户自己的图节点
 
     @classmethod
     def from_env(cls) -> Config:

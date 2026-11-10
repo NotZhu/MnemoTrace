@@ -7,12 +7,13 @@ import { currentSession, isCurrentSession, useAuth, type AuthSession } from './a
 import { apiBaseUrl } from '../lib/api'
 import { DEFAULT_QUARTZ_SETTINGS } from '../vendor/quartz/types'
 import type { QuartzGraphSettings } from '../vendor/quartz/types'
-import { savedTopic } from '../lib/topics'
+import { savedCategories } from '../lib/categories'
+import type { Category } from '../types'
 
 export const DEFAULT_SPACE_PREFERENCES = {
   graph: { liveOnly: true, hideSensitive: false },
-  facts: { status: 'live' as 'live' | 'superseded' | 'all', category: '', topic: '' as ReturnType<typeof savedTopic>, hideSensitive: false },
-  journal: { showSuperseded: false, topic: '' as ReturnType<typeof savedTopic> },
+  facts: { status: 'live' as 'live' | 'superseded' | 'all', categories: [] as Category[], hideSensitive: false },
+  journal: { showSuperseded: false, categories: [] as Category[] },
   ask: { chunks: 6, redactSensitive: false },
 }
 type SpacePreferences = typeof DEFAULT_SPACE_PREFERENCES
@@ -50,11 +51,10 @@ function validateSpace(value: unknown): SpacePreferences {
     facts: {
       status: facts.status === 'live' || facts.status === 'superseded' || facts.status === 'all'
         ? facts.status : 'live',
-      category: typeof facts.category === 'string' ? facts.category.trim() : '',
-      topic: savedTopic(facts.topic),
+      categories: savedCategories(facts.categories),
       hideSensitive: boolean(facts.hideSensitive, false),
     },
-    journal: { showSuperseded: boolean(journal.showSuperseded, false), topic: savedTopic(journal.topic) },
+    journal: { showSuperseded: boolean(journal.showSuperseded, false), categories: savedCategories(journal.categories) },
     ask: { chunks: Number.isInteger(ask.chunks) ? number(ask.chunks, 2, 12, 6) : 6,
       redactSensitive: boolean(ask.redactSensitive, false) },
   }

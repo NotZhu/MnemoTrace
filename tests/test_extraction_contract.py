@@ -26,7 +26,8 @@ class FakeLLM(NativeFakeLLM):
             for row in out[group]:
                 row.setdefault('source_ids', [data['pending'][0]['id']])
                 if group == 'facts' and all(k in row for k in ('subject', 'predicate', 'object')):
-                    row.setdefault('category', '其他')
+                    row.setdefault('categories', [])
+                    row.setdefault('object_kind', 'unknown')
                     row.setdefault('sensitive', False)
                     row.setdefault('time_kind', 'current')
                     row.setdefault('effective_date', None)
@@ -69,7 +70,7 @@ def test_failed_batch_has_no_commits_and_can_retry(count):
     assert error.value.code == 'extraction_failed'
     assert 'SECRET' not in str(error.value)
     assert all(not ep.consolidated for ep in episodes)
-    assert not m.fact_store.values() and not m._identity
+    assert not m.fact_store.values()
     m.llm = FakeLLM(responses=[response()] * count)
     assert m.flush_messages(timeout=2, retry_failed=True)['ok']
     assert m.consolidate()['facts_added'] == 0
@@ -90,14 +91,14 @@ def test_invalid_output_is_not_successful_empty_result(bad):
     assert not ep.consolidated
 
 
-def test_preference_embedding_uses_final_normalized_text():
+def test_preference_embedding_uses_preserved_text():
     from tests.embedder_fixtures import MockEmbedder
 
     m = MemoryEngine(embedder=MockEmbedder(), llm=FakeLLM(responses=[response([fact('the idea of tea', 'likes')])]))
     m.add('Synthetic preference')
     m.consolidate()
     stored, = m.fact_store.values()
-    assert stored.object == 'tea'
+    assert stored.object == 'the idea of tea'
     assert stored.embedding == m.embedder.embed(stored.text)
 
 

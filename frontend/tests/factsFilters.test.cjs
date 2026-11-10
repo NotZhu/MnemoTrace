@@ -15,7 +15,7 @@ function nodes(tree) {
   return [tree, ...(Array.isArray(tree) ? tree : [].concat(tree.props?.children ?? [], tree.props?.footer ?? [], tree.props?.action ?? [])).flatMap(nodes)]
 }
 function setup({ empty = false, hideSensitive = false } = {}) {
-  const states = [], effects = [], queries = [], preferences = { status: 'live', category: '', topic: '', hideSensitive }
+  const states = [], effects = [], queries = [], preferences = { status: 'live', categories: [], hideSensitive }
   let queryResult = {}, retries = 0
   let cursor, effectCursor, pending
   const mutation = () => ({ mutate() {} })
@@ -38,6 +38,7 @@ function setup({ empty = false, hideSensitive = false } = {}) {
   const find = predicate => nodes(render()).find(predicate)
   return { render, preferences, queries,
     setResult: result => { queryResult = result }, retries: () => retries,
+    categoryFilter: () => find(node => node.type?.name === 'CategoryFilter'),
     select: label => find(node => node.type?.name === 'FilterSelect' && node.props.label === label),
     search: value => find(node => node.type === 'input').props.onChange({ target: { value } }),
     button: label => find(node => node.props?.children === label || (node.type === 'button' && node.props['aria-label'] === label)),
@@ -45,21 +46,19 @@ function setup({ empty = false, hideSensitive = false } = {}) {
   }
 }
 
-test('分类、主题和状态下拉框位于隐藏敏感开关左侧', () => {
-  const s = setup(), controls = nodes(s.render()).filter(node => node.type?.name === 'FilterSelect' || node.props?.role === 'switch')
-  assert.deepEqual(controls.map(node => node.props.label ?? node.props['aria-label']), ['事实分类', '主题', '事实状态', '隐藏敏感内容'])
-  assert.equal(s.select('事实分类').props.value, '')
+test('标签筛选和状态下拉框位于隐藏敏感开关左侧', () => {
+  const s = setup(), controls = nodes(s.render()).filter(node => ['FilterSelect', 'CategoryFilter'].includes(node.type?.name) || node.props?.role === 'switch')
+  assert.deepEqual(controls.map(node => node.props.label ?? node.props['aria-label'] ?? node.type.name), ['CategoryFilter', '事实状态', '隐藏敏感内容'])
+  assert.deepEqual(Array.from(s.categoryFilter().props.value), [])
   assert.equal(s.select('事实状态').props.value, 'live')
-  assert.deepEqual(Array.from(s.select('事实分类').props.options, option => option.value), ['', '工作', '其他', '历史分类'])
 })
 
 test('加载时保留开关和筛选，旧计数、分类、列表及分页一起退出', () => {
   const s = setup()
-  s.select('事实分类').props.onChange('工作')
+  s.categoryFilter().props.onChange(['professional_details', 'technology'])
   s.setResult({ data: undefined, isLoading: true, isFetching: true, isSuccess: false })
   s.button('隐藏敏感内容').props.onClick()
   assert.equal(s.query().include_sensitive, false)
-  assert.deepEqual(Array.from(s.select('事实分类').props.options, o => o.value), ['', '工作'])
   const tree = nodes(s.render())
   assert.ok(tree.some(n => n.props?.label === '加载事实…'))
   assert.ok(tree.some(n => n.props?.children === '正在统计…'))
@@ -119,16 +118,14 @@ test('分类、历史状态和搜索词共同送入服务查询，切换筛选�
   const s = setup()
   s.button('加载更多事实').props.onClick()
   assert.equal(s.query().facts_limit, 40)
-  s.select('事实分类').props.onChange('工作')
-  s.select('主题').props.onChange('technology')
+  s.categoryFilter().props.onChange(['professional_details', 'technology'])
   s.select('事实状态').props.onChange('superseded')
   s.search('synthetic')
   s.render()
   const query = s.query()
   assert.equal(query.facts_limit, 40)
   assert.equal(query.kind, 'attributes')
-  assert.equal(query.category, '工作')
-  assert.equal(query.topic, 'technology')
+  assert.deepEqual(Array.from(query.categories), ['professional_details', 'technology'])
   assert.equal(query.status, 'superseded')
   assert.equal(query.q, 'synthetic')
   assert.equal(query.include_sensitive, true)
@@ -138,16 +135,14 @@ test('分类、历史状态和搜索词共同送入服务查询，切换筛选�
 
 test('无结果时通过底部重置筛选清空分类、状态和搜索，隐藏敏感设置保持不变', () => {
   const s = setup({ empty: true, hideSensitive: true })
-  s.select('事实分类').props.onChange('工作')
+  s.categoryFilter().props.onChange(['professional_details', 'technology'])
   s.select('事实状态').props.onChange('all')
-  s.select('主题').props.onChange('unknown')
   s.search('不存在的合成内容')
   const empty = nodes(s.render()).find(node => node.type?.name === 'PageEmptyState')
   assert.equal(empty.props.footer.props['aria-label'], '重置筛选')
   s.button('重置筛选').props.onClick()
   const query = s.query()
-  assert.equal(query.category, undefined)
-  assert.equal(query.topic, undefined)
+  assert.equal(query.categories, undefined)
   assert.equal(query.status, 'live')
   assert.equal(query.q, '')
   assert.equal(query.include_sensitive, false)

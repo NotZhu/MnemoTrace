@@ -11,8 +11,6 @@
     "w_graph": 0.8,
     "w_rec": 0.3,
     "w_sal": 0.25,
-    "w_type_preference": 1.25,
-    "w_type_identity": 1.15,
     "recency_tau_days": 45.0,
     "rrf_k": 60,
     "abstain_threshold": 0.45,
@@ -22,11 +20,6 @@
     "joint_core_output_tokens": 2048,
     "joint_digest_output_tokens": 2048,
     "joint_context_tokens": null,
-    "explicit_preference_extraction": true,
-    "preference_object_filter": true,
-    "preference_object_normalization": true,
-    "preference_reversal_extraction": true,
-    "procedural_extraction": true,
     "max_hot_facts": 10000,
     "salience_decay_per_day": 0.02,
     "access_boost": 0.5,
@@ -45,23 +38,23 @@
     "max_hops": 2,
     "graph_proximity": true,
     "graph_relation_awareness": true,
-    "graph_path_reinforcement": true,
-    "graph_self_anchor": true
+    "graph_path_reinforcement": true
   },
   "rows": [
     {
       "id": "sh1",
       "category": "single_hop",
-      "question": "Where does Ana work?",
+      "question": "Where do I work?",
       "gold": "Spotify",
       "storage": "memory",
       "ok": true,
       "answer": "Spotify",
       "abstained": false,
-      "tokens": 9,
+      "tokens": 12,
       "fact_ids": [
-        "fact-2",
-        "fact-1"
+        "fact-3",
+        "fact-1",
+        "fact-2"
       ],
       "naive_ok": true,
       "naive_tokens": 15
@@ -69,15 +62,16 @@
     {
       "id": "sh2",
       "category": "single_hop",
-      "question": "What is Cara's favorite color?",
+      "question": "What is my favorite color?",
       "gold": "blue",
       "storage": "memory",
       "ok": true,
       "answer": "blue",
       "abstained": false,
-      "tokens": 4,
+      "tokens": 7,
       "fact_ids": [
-        "fact-1"
+        "fact-1",
+        "fact-2"
       ],
       "naive_ok": true,
       "naive_tokens": 10
@@ -85,15 +79,16 @@
     {
       "id": "ku1",
       "category": "knowledge_update",
-      "question": "Where does Ben live?",
+      "question": "Where do I live?",
       "gold": "Denver",
       "storage": "memory",
       "ok": true,
       "answer": "Denver",
       "abstained": false,
-      "tokens": 4,
+      "tokens": 7,
       "fact_ids": [
-        "fact-2"
+        "fact-2",
+        "fact-3"
       ],
       "naive_ok": true,
       "naive_tokens": 16
@@ -101,15 +96,16 @@
     {
       "id": "ku2",
       "category": "knowledge_update",
-      "question": "What is Cara's favorite color?",
+      "question": "What is my favorite color?",
       "gold": "green",
       "storage": "memory",
       "ok": true,
       "answer": "green",
       "abstained": false,
-      "tokens": 4,
+      "tokens": 7,
       "fact_ids": [
-        "fact-2"
+        "fact-2",
+        "fact-3"
       ],
       "naive_ok": true,
       "naive_tokens": 16
@@ -117,7 +113,7 @@
     {
       "id": "mh1",
       "category": "multi_hop",
-      "question": "Where does Dora's colleague work?",
+      "question": "Where does my colleague work?",
       "gold": "Netflix",
       "storage": "memory",
       "ok": true,
@@ -125,8 +121,8 @@
       "abstained": false,
       "tokens": 7,
       "fact_ids": [
-        "fact-1",
-        "fact-2"
+        "fact-2",
+        "fact-1"
       ],
       "naive_ok": true,
       "naive_tokens": 10
@@ -151,14 +147,15 @@
     {
       "id": "tmp1",
       "category": "temporal",
-      "question": "Where does Finn work?",
+      "question": "Where do I work?",
       "gold": "IBM",
       "storage": "memory",
       "ok": true,
       "answer": "IBM",
       "abstained": false,
-      "tokens": 4,
+      "tokens": 7,
       "fact_ids": [
+        "fact-2",
         "fact-1"
       ],
       "naive_ok": false,
@@ -167,15 +164,16 @@
     {
       "id": "tmp2",
       "category": "temporal",
-      "question": "Where does Finn work?",
+      "question": "Where do I work?",
       "gold": "Oracle",
       "storage": "memory",
       "ok": true,
       "answer": "Oracle",
       "abstained": false,
-      "tokens": 4,
+      "tokens": 7,
       "fact_ids": [
-        "fact-2"
+        "fact-3",
+        "fact-1"
       ],
       "naive_ok": true,
       "naive_tokens": 14
@@ -183,7 +181,7 @@
     {
       "id": "abs1",
       "category": "abstention",
-      "question": "What is Gina's favorite food?",
+      "question": "What is my favorite food?",
       "gold": null,
       "storage": "memory",
       "ok": true,
@@ -214,7 +212,7 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "Ana",
+          "subject": "user",
           "predicate": "enjoys",
           "object": "hiking on weekends",
           "source": "extracted",
@@ -230,7 +228,23 @@
         },
         {
           "id": "fact-2",
-          "subject": "Ana",
+          "subject": "user",
+          "predicate": "name",
+          "object": "Ana",
+          "source": "extracted",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        },
+        {
+          "id": "fact-3",
+          "subject": "user",
           "predicate": "works_at",
           "object": "Spotify",
           "source": "extracted",
@@ -246,12 +260,14 @@
         }
       ],
       "ranked": [
-        "fact-2",
-        "fact-1"
+        "fact-3",
+        "fact-1",
+        "fact-2"
       ],
       "scores": [
-        0.03188789000528821,
-        0.0315309360126917
+        0.018773135906927554,
+        0.008950290851401376,
+        0.00873015873015873
       ],
       "via": "hybrid"
     },
@@ -259,9 +275,25 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "Cara",
+          "subject": "user",
           "predicate": "favorite_color",
           "object": "blue",
+          "source": "extracted",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        },
+        {
+          "id": "fact-2",
+          "subject": "user",
+          "predicate": "name",
+          "object": "Cara",
           "source": "extracted",
           "source_roles": [],
           "valid_at": 1700000000.0,
@@ -275,10 +307,12 @@
         }
       ],
       "ranked": [
-        "fact-1"
+        "fact-1",
+        "fact-2"
       ],
       "scores": [
-        0.0319672131147541
+        0.018707033315705977,
+        0.009016393442622951
       ],
       "via": "hybrid"
     },
@@ -286,7 +320,7 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "Ben",
+          "subject": "user",
           "predicate": "lives_in",
           "object": "Boston",
           "source": "extracted",
@@ -302,7 +336,7 @@
         },
         {
           "id": "fact-2",
-          "subject": "Ben",
+          "subject": "user",
           "predicate": "lives_in",
           "object": "Denver",
           "source": "extracted",
@@ -315,13 +349,31 @@
           "provenance": [
             "source-2"
           ]
+        },
+        {
+          "id": "fact-3",
+          "subject": "user",
+          "predicate": "name",
+          "object": "Ben",
+          "source": "extracted",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
         }
       ],
       "ranked": [
-        "fact-2"
+        "fact-2",
+        "fact-3"
       ],
       "scores": [
-        0.0319672131147541
+        0.018852459016393444,
+        0.008870967741935482
       ],
       "via": "hybrid"
     },
@@ -329,7 +381,7 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "Cara",
+          "subject": "user",
           "predicate": "favorite_color",
           "object": "blue",
           "source": "extracted",
@@ -345,7 +397,7 @@
         },
         {
           "id": "fact-2",
-          "subject": "Cara",
+          "subject": "user",
           "predicate": "favorite_color",
           "object": "green",
           "source": "extracted",
@@ -358,13 +410,31 @@
           "provenance": [
             "source-2"
           ]
+        },
+        {
+          "id": "fact-3",
+          "subject": "user",
+          "predicate": "name",
+          "object": "Cara",
+          "source": "extracted",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
         }
       ],
       "ranked": [
-        "fact-2"
+        "fact-2",
+        "fact-3"
       ],
       "scores": [
-        0.0319672131147541
+        0.018852459016393444,
+        0.008870967741935482
       ],
       "via": "hybrid"
     },
@@ -372,7 +442,23 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "Dora",
+          "subject": "Evan",
+          "predicate": "works_at",
+          "object": "Netflix",
+          "source": "extracted",
+          "source_roles": [],
+          "valid_at": 1700086400.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-2"
+          ]
+        },
+        {
+          "id": "fact-2",
+          "subject": "user",
           "predicate": "colleague",
           "object": "Evan",
           "source": "extracted",
@@ -387,25 +473,25 @@
           ]
         },
         {
-          "id": "fact-2",
-          "subject": "Evan",
-          "predicate": "works_at",
-          "object": "Netflix",
+          "id": "fact-3",
+          "subject": "user",
+          "predicate": "name",
+          "object": "Dora",
           "source": "extracted",
           "source_roles": [],
-          "valid_at": 1700086400.0,
+          "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
           "supersedes": null,
           "provenance": [
-            "source-2"
+            "source-1"
           ]
         }
       ],
       "ranked": [
-        "fact-1",
-        "fact-2"
+        "fact-2",
+        "fact-1"
       ],
       "scores": [],
       "via": "multi-hop"
@@ -446,7 +532,7 @@
         },
         {
           "id": "fact-3",
-          "subject": "mh2",
+          "subject": "user",
           "predicate": "sister",
           "object": "Maya",
           "source": "extracted",
@@ -472,7 +558,23 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "Finn",
+          "subject": "user",
+          "predicate": "name",
+          "object": "Finn",
+          "source": "extracted",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        },
+        {
+          "id": "fact-2",
+          "subject": "user",
           "predicate": "works_at",
           "object": "IBM",
           "source": "extracted",
@@ -487,8 +589,8 @@
           ]
         },
         {
-          "id": "fact-2",
-          "subject": "Finn",
+          "id": "fact-3",
+          "subject": "user",
           "predicate": "works_at",
           "object": "Oracle",
           "source": "extracted",
@@ -497,17 +599,19 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": "fact-1",
+          "supersedes": "fact-2",
           "provenance": [
             "source-2"
           ]
         }
       ],
       "ranked": [
+        "fact-2",
         "fact-1"
       ],
       "scores": [
-        0.0319672131147541
+        0.018852459016393444,
+        0.008870967741935482
       ],
       "via": "hybrid"
     },
@@ -515,7 +619,23 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "Finn",
+          "subject": "user",
+          "predicate": "name",
+          "object": "Finn",
+          "source": "extracted",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        },
+        {
+          "id": "fact-2",
+          "subject": "user",
           "predicate": "works_at",
           "object": "IBM",
           "source": "extracted",
@@ -530,8 +650,8 @@
           ]
         },
         {
-          "id": "fact-2",
-          "subject": "Finn",
+          "id": "fact-3",
+          "subject": "user",
           "predicate": "works_at",
           "object": "Oracle",
           "source": "extracted",
@@ -540,17 +660,19 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": "fact-1",
+          "supersedes": "fact-2",
           "provenance": [
             "source-2"
           ]
         }
       ],
       "ranked": [
-        "fact-2"
+        "fact-3",
+        "fact-1"
       ],
       "scores": [
-        0.0319672131147541
+        0.018852459016393444,
+        0.008870967741935482
       ],
       "via": "hybrid"
     },
@@ -558,7 +680,23 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "Gina",
+          "subject": "user",
+          "predicate": "name",
+          "object": "Gina",
+          "source": "extracted",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        },
+        {
+          "id": "fact-2",
+          "subject": "user",
           "predicate": "works_at",
           "object": "Adobe",
           "source": "extracted",
@@ -581,9 +719,25 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "Hugo",
+          "subject": "user",
           "predicate": "lives_in",
           "object": "Lisbon",
+          "source": "extracted",
+          "source_roles": [],
+          "valid_at": 1700000000.0,
+          "invalid_at": null,
+          "created_at": 1710368000.0,
+          "expired_at": null,
+          "supersedes": null,
+          "provenance": [
+            "source-1"
+          ]
+        },
+        {
+          "id": "fact-2",
+          "subject": "user",
+          "predicate": "name",
+          "object": "Hugo",
           "source": "extracted",
           "source_roles": [],
           "valid_at": 1700000000.0,

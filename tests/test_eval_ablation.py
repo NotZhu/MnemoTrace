@@ -22,21 +22,6 @@ def test_mnemotrace_config_applies_algorithm_ablation_flags():
     digest_cfg = mnemotrace_config(ablations=("digest_fallback",))
     assert digest_cfg.digest_fallback is False
 
-    procedural_extraction_cfg = mnemotrace_config(ablations=("procedural_extraction",))
-    assert procedural_extraction_cfg.procedural_extraction is False
-
-    preference_extraction_cfg = mnemotrace_config(ablations=("explicit_preference_extraction",))
-    assert preference_extraction_cfg.explicit_preference_extraction is False
-
-    preference_filter_cfg = mnemotrace_config(ablations=("preference_object_filter",))
-    assert preference_filter_cfg.preference_object_filter is False
-
-    preference_norm_cfg = mnemotrace_config(ablations=("preference_object_normalization",))
-    assert preference_norm_cfg.preference_object_normalization is False
-
-    preference_reversal_cfg = mnemotrace_config(ablations=("preference_reversal_extraction",))
-    assert preference_reversal_cfg.preference_reversal_extraction is False
-
     provenance_chunk_cfg = mnemotrace_config(ablations=("provenance_chunks",))
     assert provenance_chunk_cfg.provenance_evidence is True
     assert provenance_chunk_cfg.provenance_chunk_promotion is False
@@ -49,10 +34,6 @@ def test_mnemotrace_config_applies_algorithm_ablation_flags():
     assert reinforcement_cfg.graph_proximity is True
     assert reinforcement_cfg.graph_path_reinforcement is False
 
-    self_anchor_cfg = mnemotrace_config(ablations=("graph_self_anchor",))
-    assert self_anchor_cfg.graph_proximity is True
-    assert self_anchor_cfg.graph_self_anchor is False
-
 
 def test_bench_exposes_named_lean_ablation_systems():
     names = {
@@ -61,15 +42,9 @@ def test_bench_exposes_named_lean_ablation_systems():
         "engram_lean_no_provenance_chunks",
         "engram_lean_no_evidence_budget",
         "engram_lean_no_digest_fallback",
-        "engram_lean_no_procedural_extraction",
-        "engram_lean_no_explicit_preference_extraction",
-        "engram_lean_no_preference_object_filter",
-        "engram_lean_no_preference_object_normalization",
-        "engram_lean_no_preference_reversal_extraction",
         "engram_lean_no_graph",
         "engram_lean_no_graph_relation",
         "engram_lean_no_graph_reinforcement",
-        "engram_lean_no_graph_self_anchor",
         "engram_lean_core",
     }
 
@@ -79,21 +54,9 @@ def test_bench_exposes_named_lean_ablation_systems():
     assert SYSTEMS["engram_lean_no_provenance_chunks"].ablations == ("provenance_chunks",)
     assert SYSTEMS["engram_lean_no_evidence_budget"].ablations == ("evidence_budget",)
     assert SYSTEMS["engram_lean_no_digest_fallback"].ablations == ("digest_fallback",)
-    assert SYSTEMS["engram_lean_no_procedural_extraction"].ablations == ("procedural_extraction",)
-    assert SYSTEMS["engram_lean_no_explicit_preference_extraction"].ablations == (
-        "explicit_preference_extraction",
-    )
-    assert SYSTEMS["engram_lean_no_preference_object_filter"].ablations == ("preference_object_filter",)
-    assert SYSTEMS["engram_lean_no_preference_object_normalization"].ablations == (
-        "preference_object_normalization",
-    )
-    assert SYSTEMS["engram_lean_no_preference_reversal_extraction"].ablations == (
-        "preference_reversal_extraction",
-    )
     assert SYSTEMS["engram_lean_no_graph"].ablations == ("graph",)
     assert SYSTEMS["engram_lean_no_graph_relation"].ablations == ("graph_relation",)
     assert SYSTEMS["engram_lean_no_graph_reinforcement"].ablations == ("graph_reinforcement",)
-    assert SYSTEMS["engram_lean_no_graph_self_anchor"].ablations == ("graph_self_anchor",)
     assert SYSTEMS["engram_lean_core"].ablations == ("chain", "raw", "graph")
 
 
@@ -109,27 +72,3 @@ def test_bench_rejects_unknown_ablation_before_setup(monkeypatch, capsys, flag):
 
 def test_offline_feature_ablation_proves_each_enabled_feature_changes_target_evidence():
     rows, digest = run_ablation()
-
-
-@pytest.mark.parametrize("context, expected_hit", [
-    ("当前偏好记录（结构化）：\naisle seats\nred-eye flights", True),
-    ("PREFERENCE RECORDS (current, structured):\naisle seats\nred-eye flights", False),
-    ("RELEVANT CONVERSATIONS (full detail):\naisle seats\nred-eye flights", False),
-    ("当前偏好记录（结构化）：\naisle seats", False),
-    ("PREFERENCE RECORDS (current, structured):\nred-eye flights", False),
-])
-def test_preference_ablation_requires_structured_block_and_both_values(
-    monkeypatch, context, expected_hit
-):
-    monkeypatch.setattr(
-        ablate_features,
-        "_explicit_preference_extraction_context",
-        lambda enabled: context if enabled else "",
-    )
-
-    rows, _ = run_ablation()
-    preference = next(row for row in rows if row.feature == "explicit_preference_extraction")
-
-    assert preference.enabled_hit is expected_hit
-    assert preference.disabled_hit is False
-    assert preference.improved is expected_hit

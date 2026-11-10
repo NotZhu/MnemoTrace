@@ -25,7 +25,7 @@ import type {
   FollowPathResult,
   StructuredReadOptions,
   FactPatch,
-  TopicMetadata,
+  FactMetadata,
   ForgetOptions,
   Focus,
   GraphResponse,
@@ -290,7 +290,7 @@ export class MnemoTraceClient {
   /** 该命名空间下存储的全部记忆，支持分页/过滤，用于用户自有记忆管理界面。 */
   memories(options: SpaceOptions & MemoryListOptions): Promise<MemoryDump> {
     const params = new URLSearchParams()
-    if (options.topic !== undefined) params.set('topic', options.topic)
+    for (const category of options.categories ?? []) params.append('categories', category)
     if (options.factsLimit !== undefined) params.set('facts_limit', String(options.factsLimit))
     if (options.factsOffset !== undefined) params.set('facts_offset', String(options.factsOffset))
     if (options.episodesLimit !== undefined) params.set('episodes_limit', String(options.episodesLimit))
@@ -327,11 +327,11 @@ export class MnemoTraceClient {
 
   // --- 可编辑的事实 ----------------------------------------------------------
   /** 断言一条权威事实（用户来源；绝不会被静默覆盖）。 */
-  addFact(fact: FactInput, options: SpaceOptions): Promise<{ ok: boolean; id: string; text: string } & TopicMetadata & Pick<Fact, "cardinality" | "retention">> {
+  addFact(fact: FactInput, options: SpaceOptions): Promise<{ ok: boolean; id: string; text: string } & FactMetadata & Pick<Fact, "cardinality" | "retention">> {
     return this.post('/v1/facts', { subject: 'user', ...fact }, options.spaceId)
   }
 
-  updateFact(id: string, patch: FactPatch, options: SpaceOptions): Promise<{ ok: boolean; id: string; text: string } & TopicMetadata & Pick<Fact, "cardinality" | "retention">> {
+  updateFact(id: string, patch: FactPatch, options: SpaceOptions): Promise<{ ok: boolean; id: string; text: string } & FactMetadata & Pick<Fact, "cardinality" | "retention">> {
     return this.request(`/v1/facts/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),

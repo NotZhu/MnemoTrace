@@ -15,8 +15,7 @@ except Exception as exc:  # noqa: BLE001
     raise SystemExit('the MCP server needs the MCP SDK — `pip install "mnemotrace-memory[mcp]"`') from exc
 
 from .backends import Backend, make_backend
-from ..topics import Topic
-from ..retrieve.structured import AmbiguousAnchor
+from ..categories import Category, ObjectKind
 from ..types import Cardinality, Retention
 from ..store.contracts import FactState
 
@@ -231,13 +230,11 @@ async def mnemotrace_follow_path(
     limit: Annotated[int, Field(ge=1, le=1000)] = 20,
 ) -> str:
     """Follow two to four outbound predicates in order, for example sister then works_at.
-    Use an exact entity name or unambiguous alias. Each result includes supporting facts.
+    Use an exact entity name. Each result includes supporting facts.
     """
     try:
         return _json(await backend().follow_path(anchor, predicates, state=state, valid_at=valid_at,
                                                 known_at=known_at, redact_sensitive=redact_sensitive, limit=limit))
-    except AmbiguousAnchor as exc:
-        return "Error: " + _json(dict(code="ambiguous_anchor", message=str(exc)))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -489,8 +486,7 @@ async def mnemotrace_list_facts(
     include_superseded: Annotated[bool, Field(description="Also show old facts that were superseded by a "
                                               "newer value (the bi-temporal history).")] = False,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
-    topic: Annotated[Optional[Topic], Field(description="Exact stored main topic; unknown matches both "
-                                          "manual unknown and unassigned facts. Omit for all topics.")] = None,
+    categories: Annotated[list[Category] | None, Field(description="Match any of these fact labels.")] = None,
 ) -> str:
     """浏览 忆痕 存储的关于用户的原子 fact（分页）。
 
@@ -500,7 +496,7 @@ async def mnemotrace_list_facts(
     返回（json）：{"total","count","offset","has_more","next_offset","facts":[...]}。
     """
     try:
-        dump = await backend().memories(topic=topic, limit=limit, offset=offset,
+        dump = await backend().memories(categories=categories, limit=limit, offset=offset,
                                         include_superseded=include_superseded)
     except Exception as e:  # noqa: BLE001
         return _err(e)
@@ -516,7 +512,7 @@ async def mnemotrace_list_facts(
         tag = "" if f.get("status") == "live" else " _(superseded)_"
         lock = " 🔒" if f.get("source") == "user" else ""
         lines.append(f"- `{f.get('id', '?')}` [{f.get('valid_at', '?')}] {f.get('text', '')}{tag}{lock}"
-                     f" · topic: {f.get('topic', 'unknown')} ({f.get('topic_source', 'unset')})")
+                     f" · categories: {', '.join(f.get('categories', [])) or '—'}")
     if nxt is not None:
         lines += ["", f"…{total - nxt} more — call again with offset={nxt}."]
     return "\n".join(lines)
@@ -633,15 +629,7 @@ async def mnemotrace_agent_status(
 
 @mcp.tool(name="mnemotrace_audit", annotations=ToolAnnotations(title="Check memory health", **_READ))
 async def mnemotrace_audit(limit: int = 40, response_format: ResponseFormat = ResponseFormat.MARKDOWN) -> str:
-    """找出值得修复的已存记忆，每条都带被标记的原因和处理办法。
-
-    个人记忆库赢得信任靠的是可检查，而不是体量大：在真实对话上做抽取必然留下垃圾（把原始
-    token 当值用、object 只是重复 predicate、从未压缩成 fact 的整句陈述），不逐条阅读根本
-    发现不了。在信任一个 profile 之前、或 recall 返回奇怪结果时使用。只读——只提出修复建议，
-    不执行（执行见 mnemotrace_update_fact/mnemotrace_delete_fact）。
-
-    返回（json）：{"checked", "total_findings", "by_kind", "findings":[{kind, why, action, ...}]}。
-    """
+    """Read-only audit of missing edges, projection mismatches and unreferenced graph nodes."""
     try:
         data = await backend().audit(limit)
     except Exception as e:  # noqa: BLE001
@@ -653,7 +641,7 @@ async def mnemotrace_audit(limit: int = 40, response_format: ResponseFormat = Re
         "# Memory health",
         "",
         f"Checked {checked.get('facts', 0)} facts / {checked.get('entities', 0)} entities — "
-        f"**{data.get('total_findings', 0)} worth a look**",
+        f"**{data.get('total_findings', 0)} projection findings**",
         "",
     ]
     for kind, n in (data.get("by_kind") or {}).items():
@@ -662,15 +650,8 @@ async def mnemotrace_audit(limit: int = 40, response_format: ResponseFormat = Re
     if findings:
         lines += ["", "## Details", ""]
         for f in findings:
-            what = f.get("text") or f.get("entity") or ""
-            if not what and f.get("predicate"):
-                # 组级发现（slot_overflow）描述的是整个 (subject, predicate) slot，而不是某一行，
-                # 所以它没有 `text`。没有这段兜底，该行会渲染成空的加粗文本，agent 会被要求
-                # "clear this slot" 却不知道是哪个 slot。
-                what = f"{f.get('subject', '')} {f.get('predicate')} ×{f.get('count', 0)}".strip()
-            lines.append(f"- **{what}** — {f.get('why', '')} → _{f.get('action', '')}_")
-            for sample in (f.get("samples") or [])[:3]:
-                lines.append(f"  - {sample.get('text', '')}")
+            refs = ", ".join(f"`{f[key]}`" for key in ("fact_id", "edge_id", "entity_id") if key in f)
+            lines.append(f"- `{f['kind']}` {refs} — {f['why']} → _{f['action']}_")
     if data.get("truncated"):
         lines += ["", f"_(showing {len(findings)}; raise `limit` for more)_"]
     return "\n".join(lines)
@@ -720,8 +701,8 @@ async def mnemotrace_add_fact(
                                  min_length=1)],
     subject: Annotated[str, Field(description="Who/what the fact is about. Default 'user'.")] = "user",
     sensitive: Annotated[Optional[bool], Field(description="Optional user override for sensitivity.")] = None,
-    category: Annotated[Optional[str], Field(description="Optional user-visible category label.")] = None,
-    topic: Annotated[Optional[Topic], Field(description="Optional manually selected main topic.")] = None,
+    categories: Annotated[list[Category] | None, Field(description="Set fact labels; use [] to clear.")] = None,
+    object_kind: ObjectKind = "unknown",
     cardinality: Cardinality = "unknown",
     retention: Retention = "unknown",
 ) -> str:
@@ -729,12 +710,12 @@ async def mnemotrace_add_fact(
     Use multi when values can coexist and durable to exempt it from decay.
     """
     try:
-        data = await backend().add_fact(subject, predicate, object, sensitive=sensitive, category=category,
-                                        topic=topic, cardinality=cardinality, retention=retention)
+        data = await backend().add_fact(subject, predicate, object, sensitive=sensitive, categories=categories,
+                                        object_kind=object_kind, cardinality=cardinality, retention=retention)
     except Exception as e:  # noqa: BLE001
         return _err(e)
     return (f"Stored authoritative fact: {data.get('text', f'{subject} {predicate} {object}')}\n"
-            f"Topic: {data.get('topic', 'unknown')} ({data.get('topic_source', 'unset')})")
+            f"Categories: {', '.join(data.get('categories', [])) or '—'} ({data.get('categories_source', 'unset')})")
 
 
 @mcp.tool(name="mnemotrace_update_fact", annotations=ToolAnnotations(title="Correct a stored fact", **_WRITE))
@@ -744,11 +725,9 @@ async def mnemotrace_update_fact(
     predicate: Annotated[Optional[str], Field(description="Optional replacement predicate.")] = None,
     object: Annotated[Optional[str], Field(description="Optional replacement object/value.")] = None,
     sensitive: Annotated[Optional[bool], Field(description="Optional sensitivity override.")] = None,
-    category: Annotated[Optional[str], Field(description="Optional category override.")] = None,
+    categories: Annotated[list[Category] | None, Field(description="Set fact labels; use [] to clear.")] = None,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
-    topic: Annotated[Optional[Topic], Field(description="Optional manual main topic; unknown is explicit.")] = None,
-    reset_topic: Annotated[bool, Field(description="Clear topic; "
-                                                  "cannot be combined with topic.")] = False,
+    object_kind: ObjectKind | None = None,
     cardinality: Cardinality | None = None,
     retention: Retention | None = None,
 ) -> str:
@@ -759,7 +738,7 @@ async def mnemotrace_update_fact(
 
     返回（json）：{"ok": true, "id": str, "text": str}，找不到时返回错误字符串。
     """
-    if all(v is None for v in (subject, predicate, object, sensitive, category, topic, cardinality, retention)) and not reset_topic:
+    if all(v is None for v in (subject, predicate, object, sensitive, categories, object_kind, cardinality, retention)):
         return "Error: provide at least one field to update."
     try:
         data = await backend().update_fact(
@@ -768,9 +747,8 @@ async def mnemotrace_update_fact(
             predicate=predicate,
             object=object,
             sensitive=sensitive,
-            category=category,
-            topic=topic,
-            reset_topic=reset_topic,
+            categories=categories,
+            object_kind=object_kind,
             cardinality=cardinality,
             retention=retention,
         )
@@ -781,7 +759,7 @@ async def mnemotrace_update_fact(
     if response_format == ResponseFormat.JSON:
         return _json(data)
     return (f"Updated fact `{data.get('id', fact_id)}`: {data.get('text', '')}\n"
-            f"Topic: {data.get('topic', 'unknown')} ({data.get('topic_source', 'unset')})")
+            f"Categories: {', '.join(data.get('categories', [])) or '—'} ({data.get('categories_source', 'unset')})")
 
 
 @mcp.tool(name="mnemotrace_delete_fact", annotations=ToolAnnotations(title="Delete one stored fact", **_DESTRUCTIVE))

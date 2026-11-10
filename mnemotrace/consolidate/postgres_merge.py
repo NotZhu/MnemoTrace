@@ -2,16 +2,10 @@
 from dataclasses import replace
 from itertools import chain
 
-from .planning import fact_valid_at, source_anchor
 from .adjudication import plan_merge
-from .fact_rules import _NAME_PREDICATES, _SELF_REFS, _norm_predicate
-from .facts import FactWriter
-from .pipeline import content_hash
-from .topic_rules import resolve_topic
 from ..store._validation import validate_embedding
 from ..store.contracts import EmbeddingWrite, RecordRef, RecordWrite, SourceLink, StoredRecord
 from ..store.postgres.records import FACT, SOURCE, domain
-from ..types import Fact
 
 
 def write_record(context, value, previous=None, *, digest_base=1):
@@ -24,53 +18,6 @@ def write_record(context, value, previous=None, *, digest_base=1):
     record = StoredRecord.from_record(context, value, content_version=previous.content_version,
                                       record_version=previous.record_version + 1, digest_version=version)
     return RecordWrite(replace(record, agent_id=previous.agent_id), previous.record_version)
-
-
-def materialize(context, data, result, settings, config, now):
-    views = {s['id']: s for s in (*data['context'], *data['pending'])}
-    pending = {s['id']: s for s in data['pending']}
-    content = '\n'.join(s['content'] for s in data['pending'])
-    dialogue = data['source_kind'] == 'dialogue'
-
-    def anchor(item):
-        return source_anchor(item['source_ids'], pending, data['source_kind'])
-
-    owner = {*_SELF_REFS, *(value.lower() for value in settings.subject_aliases)}
-    if settings.subject_name:
-        owner.add(settings.subject_name.lower())
-    owner_name = settings.subject_name
-    aliases = list(settings.subject_aliases)
-    policy = FactWriter(None, None, None, config)
-    facts = []
-    for item in sorted(result['facts'], key=lambda item: anchor(item)['sequence']):
-        origin = anchor(item)
-        subject = item['subject'].strip()
-        predicate = _norm_predicate(item['predicate'])
-        is_owner = subject.lower() in owner
-        if is_owner and predicate in _NAME_PREDICATES:
-            owner_name = owner_name or item['object']
-            if item['object'].lower() not in owner:
-                aliases.append(item['object'])
-                owner.add(item['object'].lower())
-            if not dialogue:
-                continue
-        if is_owner:
-            subject = owner_name or 'user'
-        topic, topic_source = resolve_topic(item.get('topic'))
-        fact = Fact(subject, predicate, item['object'], text=item['text'] if dialogue else '',
-                    display=item['text'], user_id=context.user_id, valid_at=fact_valid_at(item, origin['event_time']),
-                    category=item['category'], sensitive=item['sensitive'],
-                    created_at=now, last_access=now, provenance=item['source_ids'],
-                    source_roles=list(dict.fromkeys(views[key]['role'] for key in item['source_ids']
-                                                    if views[key]['role'])),
-                    topic=topic, topic_source=topic_source,
-                    cardinality=item['cardinality'], retention=item['retention'],
-                    id='ft_' + content_hash([data, item])[:24])
-        if policy._accepted(fact, content):
-            facts.append(fact)
-
-    new_settings = replace(settings, subject_name=owner_name, subject_aliases=tuple(aliases))
-    return facts, new_settings
 
 
 def embed_texts(embedder, texts):

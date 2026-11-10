@@ -103,8 +103,8 @@ def test_digest_fallback_respects_as_of():
     assert "new security console" not in ans
 
 
-# ---------------- derived procedural memory ----------------
-def test_search_prefers_source_backed_procedural_memory_for_runbook_queries():
+# ---------------- runbook evidence ----------------
+def test_search_prefers_source_backed_literal_facts_for_runbook_queries():
     from mnemotrace.types import Fact
 
     mem = MemoryEngine()
@@ -117,6 +117,7 @@ def test_search_prefers_source_backed_procedural_memory_for_runbook_queries():
         subject="PAT",
         predicate="procedure",
         object="open security settings and update CI secrets",
+        object_kind="literal",
         user_id="u1",
         provenance=[ep.id],
     )
@@ -130,34 +131,6 @@ def test_search_prefers_source_backed_procedural_memory_for_runbook_queries():
     assert "security settings" in res.answer()
 
 
-def test_procedural_extraction_can_be_disabled_for_ablation():
-    from mnemotrace.config import Config
-
-    mem = MemoryEngine(config=Config(procedural_extraction=False))
-    mem.add(
-        "PAT runbook source: rotate the PAT by opening security settings and updating CI secrets.",
-        user_id="u1",
-        session_id="pat-runbook",
-    )
-    mem.consolidate()
-
-    assert [f for f in mem.fact_store.values() if f.predicate == "procedure"] == []
-
-
-def test_explicit_preference_extraction_can_be_disabled_for_ablation():
-    from mnemotrace.config import Config
-
-    mem = MemoryEngine(config=Config(explicit_preference_extraction=False))
-    mem.add("I prefer aisle seats and avoid red-eye flights.", user_id="u1")
-    mem.consolidate()
-
-    assert [
-        f for f in mem.fact_store.values()
-        if f.predicate in {"prefers", "avoids"}
-    ] == []
-
-
-# ---------------- #7 档案权威性 ----------------
 def test_profile_build_prefers_authoritative_and_recent():
     from mnemotrace.consolidate.summarizer import ProfileBuilder
     pb = ProfileBuilder()

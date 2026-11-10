@@ -3,11 +3,6 @@ import json
 import re
 from ..extraction import ExtractionResponseError
 
-_NAME_PREDICATES = {"name", "name_is", "is_named", "called", "nickname", "call_me", "preferred_name",
-                    "name_preference", "称呼", "昵称"}
-
-_SELF_REFS = {"user", "i", "me", "myself", "用户", "我", "本人", "自己", "俺", "咱"}
-
 def _norm_predicate(p: str) -> str:
     p = p.strip().lower().replace("-", " ").replace("/", " ")
     p = re.sub(r"\s+", "_", p).strip("_")

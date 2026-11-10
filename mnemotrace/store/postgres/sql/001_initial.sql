@@ -105,12 +105,15 @@ CREATE TABLE mnemotrace.facts (
     salience double precision NOT NULL CHECK (salience > '-Infinity'::float8 AND salience < 'Infinity'::float8),
     confidence double precision NOT NULL CHECK (confidence > '-Infinity'::float8 AND confidence < 'Infinity'::float8),
     source text NOT NULL CHECK (source IN ('user','extracted')),
-    category text NOT NULL,
+    categories text[] NOT NULL CHECK (array_position(categories, NULL) IS NULL AND categories <@ ARRAY[
+        'personal_details','family','professional_details','sports','travel','food','music','health',
+        'technology','hobbies','fashion','entertainment','milestones','user_preferences','misc'
+    ]::text[]),
+    categories_source text NOT NULL CHECK (categories_source IN ('unset','llm','user')),
+    object_kind text NOT NULL CHECK (object_kind IN ('entity','literal','unknown')),
     sensitive boolean NOT NULL,
-    topic text NOT NULL CHECK (topic IN ('food','travel','music','film_tv','sports','reading','hobbies','environment','health','work','learning','technology','finance','relationships','unknown')),
     cardinality text NOT NULL CHECK (cardinality IN ('single','multi','unknown')),
     retention text NOT NULL CHECK (retention IN ('durable','normal','unknown')),
-    topic_source text NOT NULL CHECK (topic_source IN ('unset','llm','user')),
     source_roles text[] NOT NULL CHECK (source_roles <@ ARRAY['user','assistant']::text[]),
     valid_at timestamptz,
     invalid_at timestamptz,
@@ -123,7 +126,7 @@ CREATE TABLE mnemotrace.facts (
     record_version mnemotrace.positive_version NOT NULL,
     content_version mnemotrace.positive_version NOT NULL,
     PRIMARY KEY(user_id, space_id, id),
-    CHECK ((topic_source <> 'unset' OR topic = 'unknown') AND (topic_source <> 'llm' OR topic <> 'unknown')),
+    CHECK ((categories_source = 'unset') = (cardinality(categories) = 0)),
     CHECK (supersedes IS NULL OR supersedes <> id),
     FOREIGN KEY(user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, supersedes) REFERENCES mnemotrace.facts DEFERRABLE INITIALLY DEFERRED
@@ -178,25 +181,11 @@ CREATE TABLE mnemotrace.entities (
     name mnemotrace.identifier NOT NULL,
     type mnemotrace.identifier NOT NULL,
     normalized_name mnemotrace.identifier NOT NULL,
-    aliases text[] NOT NULL,
     record_version mnemotrace.positive_version NOT NULL,
     content_version mnemotrace.positive_version NOT NULL,
     PRIMARY KEY(user_id, space_id, id),
     UNIQUE(user_id, space_id, normalized_name),
     FOREIGN KEY(user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE
-);
-CREATE TABLE mnemotrace.entity_merges (
-    user_id mnemotrace.identifier NOT NULL,
-    space_id mnemotrace.identifier NOT NULL,
-    merged_id mnemotrace.identifier NOT NULL,
-    survivor_id mnemotrace.identifier NOT NULL,
-    decision_source text NOT NULL,
-    decided_at timestamptz NOT NULL,
-    record_version mnemotrace.positive_version NOT NULL,
-    PRIMARY KEY(user_id, space_id, merged_id),
-    CHECK (merged_id <> survivor_id),
-    FOREIGN KEY(user_id, space_id, merged_id) REFERENCES mnemotrace.entities ON DELETE CASCADE,
-    FOREIGN KEY(user_id, space_id, survivor_id) REFERENCES mnemotrace.entities ON DELETE CASCADE
 );
 CREATE TABLE mnemotrace.graph_relations (
     user_id mnemotrace.identifier NOT NULL,
@@ -216,7 +205,7 @@ CREATE TABLE mnemotrace.graph_relations (
 );
 CREATE INDEX graph_forward ON mnemotrace.graph_relations(user_id, space_id, subject_id, predicate);
 CREATE INDEX graph_reverse ON mnemotrace.graph_relations(user_id, space_id, object_id, predicate);
-CREATE INDEX graph_fact ON mnemotrace.graph_relations(user_id, space_id, fact_id);
+CREATE UNIQUE INDEX graph_fact ON mnemotrace.graph_relations(user_id, space_id, fact_id);
 
 CREATE TABLE mnemotrace.embeddings (
     user_id mnemotrace.identifier NOT NULL,
@@ -348,7 +337,7 @@ CREATE TABLE mnemotrace.operation_products (
     operation_id mnemotrace.identifier NOT NULL,
     input jsonb NOT NULL CHECK (jsonb_typeof(input) = 'object'),
     result jsonb NOT NULL CHECK (jsonb_typeof(result) = 'object'),
-    format_version integer NOT NULL CHECK (format_version = 3),
+    format_version integer NOT NULL CHECK (format_version = 5),
     extraction_config text NOT NULL,
     context_revision mnemotrace.counter,
     source_versions jsonb NOT NULL CHECK (jsonb_typeof(source_versions) = 'array'),

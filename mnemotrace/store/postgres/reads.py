@@ -87,14 +87,12 @@ class ReadView:
                 args.extend((valid.timestamp(), known.timestamp(), known.timestamp()))
             clauses.append(f'NOT {ended}' if query.state == FactState.CURRENT else ended)
             args.extend((valid, known))
-        for name in ('category', 'subject', 'predicate'):
+        if query.categories:
+            clauses.append('r.categories && %s::text[]')
+            args.append(list(query.categories))
+        for name in ('subject', 'predicate'):
             value = getattr(query, name)
-            if value is None:
-                continue
-            if name == 'category':
-                clauses.append('r.category = %s')
-                args.append(value)
-            else:
+            if value is not None:
                 clauses.append(f'coalesce(r.{name}_key, lower(r.{name})) = %s')
                 args.append(value.lower())
         if query.source_ids:
@@ -123,12 +121,11 @@ class ReadView:
         page(clauses, args, after_id, 1000)
         return self._sql.select(FACT, clauses, args, limit=1000)
 
-    def profile_facts(self, aliases, *, page_size=100):
+    def profile_facts(self, *, page_size=100):
         after_id = None
         while True:
             clauses, args = self._fact_conditions(FactQuery(exclude_sensitive=True))
-            clauses.append('lower(r.subject) = ANY(%s)')
-            args.append(sorted(aliases))
+            clauses.append("r.subject = 'user'")
             page(clauses, args, after_id, page_size)
             records = self._sql.select(FACT, clauses, args, limit=page_size)
             yield from records
@@ -302,7 +299,7 @@ class ReadView:
             raw = self._settings.copy()
             if set(raw) != {field.name for field in fields(SpaceSettings)}:
                 raise ValueError('Missing or unknown setting')
-            for key in ('track', 'mute', 'subject_aliases'):
+            for key in ('track', 'mute'):
                 if not isinstance(raw[key], list):
                     raise ValueError('Expected an array')
                 raw[key] = tuple(raw[key])
@@ -332,17 +329,11 @@ class ReadView:
         page(clauses, args, after_id, limit)
         return self._sql.select(kind, clauses, args, limit=limit)
 
-    def browse_facts(self, query, *, text='', topic=None, category='', offset=0, session_id=None, outcomes=None,
+    def browse_facts(self, query, *, text='', offset=0, session_id=None, outcomes=None,
                      count_only=False):
         clauses, args = self._fact_conditions(query)
-        if topic is not None:
-            clauses.append('r.topic = %s')
-            args.append(topic)
-        if category:
-            clauses.append("coalesce(nullif(btrim(r.category), ''), '其他') = %s")
-            args.append(category)
         if text:
-            clauses.append("strpos(lower(concat_ws(' ', r.text,r.display,r.subject,r.predicate,r.object,r.category)), %s) > 0")
+            clauses.append("strpos(lower(concat_ws(' ', r.text,r.display,r.subject,r.predicate,r.object,array_to_string(r.categories, ' '))), %s) > 0")
             args.append(text.lower())
         if session_id is not None:
             clauses.append("""EXISTS (SELECT 1 FROM mnemotrace.fact_sources p
@@ -368,9 +359,9 @@ class ReadView:
             clauses.append('lower(r.predicate) = ANY(%s)' if outcomes else 'NOT (lower(r.predicate) = ANY(%s))')
             args.append(sorted(OUTCOME_PREDICATES))
         where = ' AND '.join(clauses)
-        return [category for category, in self._sql.run(
-            f"SELECT DISTINCT coalesce(nullif(btrim(r.category), ''), '其他') AS category "
-            f'FROM mnemotrace.facts r WHERE {where} ORDER BY category', args)]
+        return [label for label, in self._sql.run(
+            f'SELECT DISTINCT label FROM mnemotrace.facts r '
+            f'CROSS JOIN LATERAL unnest(r.categories) AS categories(label) WHERE {where} ORDER BY label', args)]
 
     def browse_sources(self, *, text='', offset=0, limit=100):
         clauses, args = [], []
@@ -435,38 +426,23 @@ class ReadView:
                     pending_conflicts=conflicts, entities=counts[ENTITY],
                     relations=counts[RELATION])
 
-    def overflowing_slots(self, predicates):
-        clauses, args = self._fact_conditions(FactQuery())
-        where = ' AND '.join((ROW_SCOPE, *clauses, "r.source <> 'user'",
-                              'btrim(coalesce(r.predicate_key, lower(r.predicate))) = ANY(%s)'))
-        return self._sql.rows(f"""SELECT r.subject,
-            btrim(coalesce(r.predicate_key, lower(r.predicate))) AS predicate,
-            count(*) AS count
-            FROM mnemotrace.facts r WHERE {where} GROUP BY 1,2 HAVING count(*) >= 3
-            ORDER BY count(*) DESC, r.subject, predicate""",
-            (*self._sql.scope, *args, predicates))
-
-    def slot_samples(self, subject, predicate):
-        clauses, args = self._fact_conditions(FactQuery())
-        where = ' AND '.join((ROW_SCOPE, *clauses, "r.source <> 'user'", 'r.subject = %s',
-                              'btrim(coalesce(r.predicate_key, lower(r.predicate))) = %s'))
-        return self._sql.rows(f"""SELECT r.id AS fact_id, r.text FROM mnemotrace.facts r
-            WHERE {where} ORDER BY r.id LIMIT 5""", (*self._sql.scope, *args, subject, predicate))
-
-    def recent_source_texts(self):
-        for offset in range(0, 2000, 100):
-            rows = self._sql.run(f"""SELECT r.content FROM mnemotrace.sources r WHERE {ROW_SCOPE}
-                ORDER BY r.ingested_at DESC, r.id LIMIT 100 OFFSET %s""", (*self._sql.scope, offset)).fetchall()
-            yield from (row[0] for row in rows)
-            if len(rows) < 100:
-                break
+    def audit_edges(self, fact_ids):
+        rows = self._sql.rows(f"""SELECT r.id, r.fact_id, r.predicate, r.valid_at, r.invalid_at,
+            left_node.normalized_name AS subject, right_node.normalized_name AS object
+            FROM mnemotrace.graph_relations r
+            LEFT JOIN mnemotrace.entities left_node ON
+                (left_node.user_id,left_node.space_id,left_node.id) = (r.user_id,r.space_id,r.subject_id)
+            LEFT JOIN mnemotrace.entities right_node ON
+                (right_node.user_id,right_node.space_id,right_node.id) = (r.user_id,r.space_id,r.object_id)
+            WHERE {ROW_SCOPE} AND r.fact_id = ANY(%s)""", (*self._sql.scope, fact_ids))
+        return {row['fact_id']: row for row in rows}
 
     def orphan_entities(self, limit):
         where = f"""{ROW_SCOPE} AND NOT EXISTS (
             SELECT 1 FROM mnemotrace.graph_relations g
             WHERE (g.user_id,g.space_id) = (r.user_id,r.space_id)
             AND r.id IN (g.subject_id,g.object_id))"""
-        rows = self._sql.rows(f"""SELECT r.name, count(*) OVER () AS total FROM mnemotrace.entities r
+        rows = self._sql.rows(f"""SELECT r.id, count(*) OVER () AS total FROM mnemotrace.entities r
             WHERE {where} ORDER BY r.id LIMIT %s""", (*self._sql.scope, limit))
         return rows, rows[0]['total'] if rows else 0
 

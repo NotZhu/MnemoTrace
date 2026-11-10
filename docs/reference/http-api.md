@@ -94,7 +94,7 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 | status | live/current、superseded/old/history、all；未知值按实现忽略 |
 | kind | outcomes 或 attributes |
 | outcome_kind | decision、finding、lesson、open_question |
-| category | 精确分类过滤；空分类归为“其他” |
+| categories | 可重复传入，匹配任一标签 |
 | include_sensitive | 默认 false；true 是所有者的完整检查视图 |
 | expected_revision、evaluated_at | 后续页成对沿用首屏返回值，固定提交集合与状态评估时刻 |
 
@@ -106,13 +106,14 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 
 | 端点 | 输入与语义 |
 | --- | --- |
-| `POST /v1/facts` | predicate、object 必填；subject=user，sensitive/category/topic 可选；添加用户断言 |
-| `PATCH /v1/facts/{fact_id}` | 三元组字段或 statement，及 sensitive/category/topic/reset_topic；statement 非空且不能与三元组字段混用 |
+| `POST /v1/facts` | predicate、object 必填；subject=user，sensitive、categories、object_kind 可选；添加用户断言 |
+| `PATCH /v1/facts/{fact_id}` | 三元组字段或 statement，及 sensitive、categories、object_kind；statement 非空且不能与三元组字段混用 |
 | `DELETE /v1/facts/{fact_id}` | 删除单事实；检查响应中的 ok |
 | `POST /v1/facts/clear-slot` | subject、predicate、expect_count 必填；受当前数量、来源和历史链保护 |
 | `GET /v1/profile` | 派生画像与关键事实 |
 | `GET /v1/profile/structured` | 结构化画像的确认与待确认视图 |
 | `GET /v1/graph` | as_of、include_sensitive=false、q、live_only=false、limit |
+| `GET /v1/audit` | limit=40，检查图谱投影 |
 | `GET /v1/focus` / `PUT /v1/focus` | track/mute 列表，省略保持，[] 清空 |
 | `GET /v1/policy` / `PUT /v1/policy` | extract_instruction、extract_system、digest_system、persona_system；空字符串恢复默认 |
 | `GET /v1/conflicts` | 待确认冲突，需要相应检测配置 |
@@ -122,13 +123,15 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 
 结构化画像的证据字段与 Python API 共用[证据契约](python-api.md#profile-evidence)。
 
+`GET /v1/audit` 返回 `checked`、`total_findings`、`by_kind`、`findings` 和 `truncated`。检查项为 `missing_edge`、`edge_mismatch` 和 `orphan_entity`，以记录 ID 定位。事实检查排除敏感事实，节点只返回 ID。统计按空间汇总后再截断。
+
 `GET /v1/graph` 返回 `{nodes, edges, has_more}`，筛选顺序与完整性含义遵循 [Python 图谱契约](python-api.md)。`limit` 按筛选后的关系数计，显式正数上限最多为 500；省略时不限量。`has_more=true` 表示该查询结果被截断，不代表查询失败，也不包含全局总数。
 
-内容编辑使事实变为用户来源；只改敏感标记、分类或主题保留原来源。槽位清理可能通过 JSON 结果表达拒绝，不能只检查 HTTP 状态。服务端权限不会被客户端筛选或隐私开关替代。
+内容编辑使事实变为用户来源；只改敏感标记、标签或对象类型保留原来源。槽位清理可能通过 JSON 结果表达拒绝，不能只检查 HTTP 状态。服务端权限不会被客户端筛选或隐私开关替代。
 
-手动事实可显式设置 `topic`，省略或清除时为 `unknown/unset`。仅编辑主题保留来源和历史。`reset_topic` 与显式主题互斥。新增或修改事实时可指定 `cardinality` 与 `retention`，默认分别为 `unknown`。
+字段及编辑规则见[分类与对象类型](../architecture/memory.md#分类与对象类型)。新增或修改事实时也可指定 `cardinality` 与 `retention`。
 
-`GET /v1/memories?topic=food` 按已存主题精确筛选；省略表示全部，`topic=unknown` 包含人工未知和未赋值未知，空字符串及非法枚举返回 422。与 category、status、kind、outcome_kind、q 取交集并在分页前执行，facts_page.total 为筛选后总数；原始 episode 和既有全局计数不随主题筛选改变。fact_categories 的候选范围不随主题、搜索、状态或分页收缩。后续页继续成对携带 expected_revision/evaluated_at。
+`GET /v1/memories?categories=food&categories=music` 匹配任一标签，非法枚举返回 422。与其他事实筛选取交集，在分页前执行。原始事件、全局计数和分类候选不随标签筛选改变。后续页继续成对携带 `expected_revision` 和 `evaluated_at`。
 
 ## 导入与导出
 

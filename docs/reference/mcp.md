@@ -29,7 +29,7 @@
 | `mnemotrace_list_facts` | limit=20（1–100）、offset=0、include_superseded=false、response_format | 分页事实，用于检查或定位 id |
 | `mnemotrace_profile` | response_format | 派生画像与关键事实 |
 | `mnemotrace_stats` | response_format | 不含内容的命名空间统计 |
-| `mnemotrace_audit` | limit=40、response_format | 启发式体检与建议，不执行修复 |
+| `mnemotrace_audit` | limit=40、response_format | 只读检查图边缺失、投影不一致和无引用节点 |
 | `mnemotrace_get_focus` | response_format | track/mute 配置 |
 
 `max_chunks` 是 MCP 参数，HTTP 对应字段为 `n_chunks`，两者上限不同。`as_of` 使用 epoch 秒；默认读取不保证自动脱敏，私有上下文需要调用方按场景设置 redact_sensitive。
@@ -42,8 +42,8 @@
 | `mnemotrace_remember` | content 必填；session_id=default、scope=auto/long/raw | 保存并通过服务层处理整合 |
 | `mnemotrace_flush_processing` | session_id、timeout、include_digests | 整理会话并等待核心处理 |
 | `mnemotrace_retry_operation` | operation_id | 重试同一操作 |
-| `mnemotrace_add_fact` | predicate、object 必填；subject=user、sensitive、category、topic | 添加用户明确断言 |
-| `mnemotrace_update_fact` | fact_id 必填；subject、predicate、object、sensitive、category、topic、reset_topic、response_format | 编辑事实，找不到时检查错误结果 |
+| `mnemotrace_add_fact` | predicate、object 必填；subject=user、sensitive、categories、object_kind | 添加用户明确断言 |
+| `mnemotrace_update_fact` | fact_id 必填；subject、predicate、object、sensitive、categories、object_kind、response_format | 编辑事实，找不到时检查错误结果 |
 | `mnemotrace_set_focus` | track、mute 可选；response_format | None 不变，[] 清空 |
 | `mnemotrace_import` | content 必填；format=auto | 导入原始导出内容，content 不是服务器文件路径 |
 | `mnemotrace_export` | include_sensitive=false、response_format | 默认安全导出，显式选择才返回私有原文 |
@@ -52,9 +52,9 @@
 
 格式名称以工具 schema 为准。写入可能产生模型调用、持久化与派生状态变化；原始写入、异步排队和整合降级的状态应分别解释。
 
-手动事实可显式设置 `topic`，省略或清除时为 `unknown/unset`。仅编辑主题保留来源和历史。`reset_topic` 与显式主题互斥。新增或修改事实时可指定 `cardinality` 与 `retention`，默认分别为 `unknown`。
+字段及编辑规则见[分类与对象类型](../architecture/memory.md#分类与对象类型)。
 
-`mnemotrace_list_facts` 增加可选 topic，省略表示全部，unknown 同时匹配人工未知与未赋值未知。主题过滤由本地服务或远端 HTTP 服务先执行，再应用工具的历史过滤和分页，total 为这些筛选后的总数。非法枚举由工具 schema 拒绝；默认敏感过滤及命名空间权限保持生效。
+`mnemotrace_list_facts` 接受可选 `categories` 数组，任一标签匹配。筛选在分页前执行，默认敏感过滤及空间权限继续生效。
 
 ## 权限与能力边界
 

@@ -7,6 +7,7 @@ import re
 from typing import Optional
 
 from ..config import Config
+from ..consolidate.graph_builder import projects_fact
 from ..embed import Embedder
 from ..store import GraphStore, VectorStore
 from ..types import Fact
@@ -31,10 +32,6 @@ def date_terms(epoch: float) -> str:
     except Exception:  # noqa: BLE001
         return ""
 
-_SELF_ANCHOR_RE = re.compile(
-    r"\b(i|me|my|mine|myself|we|our|ours|user's|the user's|their|his|her)\b|我|我的|用户|用户的",
-    re.IGNORECASE,
-)
 def order_positive(scores: dict[str, float]) -> list[str]:
     """只对真实证据命中排序。
 
@@ -45,16 +42,6 @@ def order_positive(scores: dict[str, float]) -> list[str]:
     return [doc_id for doc_id, score in sorted(scores.items(), key=lambda x: x[1], reverse=True) if score > 0.0]
 
 
-def fact_type_weight(fact: Fact, config: Config) -> float:
-    """按 fact 类型的检索乘子:preference > identity > 偶发提及。当两者都匹配查询时,持久的
-    "他们是谁 / 喜欢什么"类 fact 应排在一次性提及之前。"""
-    if fact.category == "偏好":
-        return config.w_type_preference
-    if fact.category == "身份":
-        return config.w_type_identity
-    return 1.0
-
-
 def graph_relation_relevance(query: str, fact: Fact) -> float:
     if set(lexical_terms(query, query=True)) & set(lexical_terms(fact.predicate)):
         return 1.0
@@ -62,7 +49,7 @@ def graph_relation_relevance(query: str, fact: Fact) -> float:
 
 
 def _entity_name_mentions(text: str, name: str) -> list[re.Match]:
-    if not name.strip() or len(name) > 96:
+    if not name.strip():
         return []
     name = normalize(name)
     escaped = re.escape(name)
@@ -73,17 +60,12 @@ def _entity_name_mentions(text: str, name: str) -> list[re.Match]:
     return list(pattern.finditer(text))
 
 
-def mentioned_entities(query, entities, resolve_alias=None):
+def mentioned_entities(query, entities):
     query = normalize(query)
     mentions = {}
-    for entity in tuple(entities):
-        for name in (entity.name, *entity.aliases):
-            matches = _entity_name_mentions(query, name)
-            if not matches:
-                continue
-            target = resolve_alias(name) if resolve_alias is not None and name != entity.name else entity
-            for match in matches:
-                mentions.setdefault(match.span(), {})[target.id if target is not None else None] = target
+    for entity in entities:
+        for match in _entity_name_mentions(query, entity.name):
+            mentions.setdefault(match.span(), {})[entity.id] = entity
     selected = []
     occupied = set()
     for (start, end), matches in sorted(mentions.items(), key=lambda item: (
@@ -93,7 +75,7 @@ def mentioned_entities(query, entities, resolve_alias=None):
         if positions & occupied:
             continue
         occupied.update(positions)
-        if len(matches) == 1 and None not in matches:
+        if len(matches) == 1:
             entity_id, entity = next(iter(matches.items()))
             selected.append((start, entity_id, entity))
     return {entity_id: entity for _, entity_id, entity in sorted(selected, key=lambda item: item[0])}
@@ -114,18 +96,11 @@ class HybridRetriever:
         self.graph = graph
         self.embedder = embedder
         self.config = config
-        self._semantic = embedder is not None
 
     def query_entity_ids(self, query: str, user_id: str) -> set[str]:
         """全名出现在查询中的实体节点(即查询的锚点实体)。"""
         entities = [ent for ent in self.graph.entities.values() if ent.user_id == user_id]
-        ids = set(mentioned_entities(query, entities, getattr(self.graph, 'resolve_mention_alias', None)))
-        if self.config.graph_self_anchor and _SELF_ANCHOR_RE.search(query):
-            for name in (user_id, "user"):
-                ent = self.graph.get_entity(user_id, name)
-                if ent is not None:
-                    ids.add(ent.id)
-        return ids
+        return set(mentioned_entities(query, entities))
 
     def _graph_scores(
         self, query: str, user_id: str, live: list[Fact], as_of: Optional[float]
@@ -168,6 +143,9 @@ class HybridRetriever:
             query_terms.intersection(lexical_terms(fact.predicate)) for fact in live
         )
         for f in live:
+            if not projects_fact(f) or not node_scores:
+                scores[f.id] = 0.0
+                continue
             subj = self.graph.get_entity(f.user_id, f.subject)
             obj = self.graph.get_entity(f.user_id, f.object)
             sid = subj.id if subj else None
@@ -226,13 +204,6 @@ class HybridRetriever:
             return [], {"sem": {}, "lex": {}, "qids": set()}
 
         sem = {f.id: cosine(qvec, f.embedding or []) for f in live} if qvec is not None else {}
-        # 按类型加权的检索:用 fact 类型缩放 SEMANTIC 分数。因为离题 fact 的 sem≈0,乘子只在真正
-        # 相关的候选间重排(preference fact 胜过同等相关的偶发 fact),绝不会把不相关 fact 抬上来。
-        if self._semantic:
-            for f in live:
-                tw = fact_type_weight(f, self.config)
-                if tw != 1.0:
-                    sem[f.id] *= tw
         # 把每个 fact 的日期变成可检索 token,使提到时间的查询('May 2023')能按日期命中
         lex = bm25_scores(query, [(f.id, f"{f.text} {date_terms(f.valid_at)}") for f in live])
         gph, qids = self._graph_scores(query, user_id, live, as_of)

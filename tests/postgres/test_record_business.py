@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-import json
 
 import pytest
 
@@ -43,8 +42,9 @@ def commit(memory, operation_id, records=(), **changes):
 
 def test_record_business_roundtrip_and_selective_updates(memory, cluster):
     accepted = memory.store_messages('chat', (message('m', agent_id='agent-1'),))
-    first = memory.add_fact('Synthetic person', 'lives_in', 'Beijing', valid_at=1)
-    current = memory.add_fact('Synthetic person', 'lives_in', 'Shanghai', valid_at=2, cardinality='single')
+    first = memory.add_fact('Synthetic person', 'lives_in', 'Beijing', valid_at=1, object_kind='entity')
+    current = memory.add_fact('Synthetic person', 'lives_in', 'Shanghai', valid_at=2,
+                              cardinality='single', object_kind='entity')
     unrelated = memory.add_fact('Someone else', 'likes', 'tea')
     memory.dao._database.close()
 
@@ -209,22 +209,6 @@ def test_stale_vector_rejected_and_previous_embedding_removed(memory):
                             (fact.id,)).fetchall() == [(2,)]
 
 
-def test_entity_alias_and_merge_survive_incremental_projection(memory):
-    first = memory.add_fact('Synthetic person', 'likes', 'tea')
-    alternate = memory.add_fact('Synthetic alias', 'likes', 'coffee')
-    alias = memory.set_entity_aliases('Synthetic alias', ['A. Example'])
-    survivor = memory.entity('Synthetic person')
-    memory.merge_entities(survivor.id, alias.id)
-    later = memory.add_fact('Synthetic alias', 'likes', 'juice')
-    with memory.dao.read_snapshot() as view:
-        for fact in (first, alternate, later):
-            assert json.loads(view.relations(fact.id)[0].payload_json)['subject_id'] == survivor.id
-    assert memory.delete_fact(alternate.id)
-    assert memory.entity('Synthetic alias').aliases == ['A. Example']
-    with pytest.raises(DatabaseConstraintError):
-        memory.merge_entities(alias.id, survivor.id)
-
-
 def test_pending_conflict_resolution_and_default_export(memory):
     a = memory.add_fact('Synthetic person', 'likes', 'tea', sensitive=False)
     b = memory.add_fact('Synthetic person', 'likes', 'coffee', sensitive=True)
@@ -259,9 +243,11 @@ def test_stale_conflict_cannot_invalidate_current_fact(memory):
     ('Synthetic person', 'x' * 513, 'tea'),
     ('Synthetic person', 'likes', 'x' * 513),
     ('Synthetic person', 'likes', '\u0130' * 257),
+    ('Synthetic person', 'likes', 'multi\nline'),
+    ('Synthetic person', 'likes', 'tab\tvalue'),
 ])
-def test_long_fact_persists_without_an_unrepresentable_graph_edge(memory, claim):
-    fact = memory.add_fact(*claim)
+def test_fact_persists_without_an_unrepresentable_graph_edge(memory, claim):
+    fact = memory.add_fact(*claim, object_kind="entity")
     stored = memory.get_fact(fact.id)
     assert (stored.subject, stored.predicate, stored.object) == claim
     with memory.dao.read_snapshot() as view:
@@ -269,13 +255,13 @@ def test_long_fact_persists_without_an_unrepresentable_graph_edge(memory, claim)
 
 
 def test_fact_edit_reconciles_graph_when_projection_becomes_possible(memory):
-    fact = memory.add_fact('Synthetic person', 'likes', 'x' * 512)
+    fact = memory.add_fact('Synthetic person', 'likes', 'x' * 512, object_kind="entity")
     with memory.dao.read_snapshot() as view:
         assert len(view.relations(fact.id)) == 1
-    memory.update_fact(fact.id, object='x' * 513)
+    memory.update_fact(fact.id, object='x' * 513, object_kind="entity")
     with memory.dao.read_snapshot() as view:
         assert view.relations(fact.id) == ()
-    memory.update_fact(fact.id, object='tea')
+    memory.update_fact(fact.id, object='tea', object_kind="entity")
     with memory.dao.read_snapshot() as view:
         assert len(view.relations(fact.id)) == 1
 

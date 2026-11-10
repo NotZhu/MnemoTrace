@@ -4,9 +4,6 @@
 # 检索也能按 kind 过滤而无需改 schema。
 OUTCOME_PREDICATES = ("decision", "finding", "lesson", "open_question")
 
-# 标记这条产出来自会话蒸馏。
-# category，会把被编辑过的结论丢进通用桶里，在所有按 category 分组的界面上悄悄变回普通 fact。
-OUTCOME_CATEGORY = "会话结论"
 
 def split_outcome_text(text: str) -> tuple[str, str]:
     """从 outcome fact 的 `text` 中还原 (statement, why)。

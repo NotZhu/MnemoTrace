@@ -44,14 +44,14 @@ def replay_window(prompt, system, invoke):
             for item in value.get(key, []):
                 if 'rules' in data:
                     fields = ('subject', 'predicate', 'object', 'text')
-                    item = {k: item[k] for k in (*fields, 'topic', 'category', 'sensitive', 'time_kind', 'effective_date', 'cardinality', 'retention') if k in item}
+                    item = {k: item[k] for k in (*fields, 'categories', 'object_kind', 'sensitive', 'time_kind', 'effective_date', 'cardinality', 'retention') if k in item}
                     if key == 'facts':
-                        category = '工作' if item['predicate'] == 'works_at' else '其他'
+                        categories = ['professional_details'] if item['predicate'] == 'works_at' else []
                         single = item['predicate'] in {'works_at', 'lives_in', 'current_city', 'occupation',
                                                         'works_remotely', 'favorite_food', 'favorite_color',
                                                         'favorite_drink', 'studying', 'job_title', 'does_yoga'}
                         durable = single or item['predicate'] in {'likes', 'dislikes', 'loves', 'prefers'}
-                        item = dict(category=category, sensitive=False, time_kind='current', effective_date=None, cardinality='single' if single else 'multi',
+                        item = dict(categories=categories, object_kind='unknown', sensitive=False, time_kind='current', effective_date=None, cardinality='single' if single else 'multi',
                                     retention='durable' if durable else 'normal') | item
                         item.setdefault('text', f"{item['subject']} {item['predicate']} {item['object']}")
                 result[key].append({**item, 'source_ids': [span['id']]})
@@ -137,13 +137,11 @@ def seed_digests(memory, episodes):
 
 def saved_outcome(mem, *, user_id, session_id, kind, statement, why='', provenance=()):
     """Seed the stored representation of a historical conclusion."""
-    from mnemotrace.consolidate.outcomes import OUTCOME_CATEGORY
     from mnemotrace.types import Fact
 
     fact = Fact(subject=session_id, predicate=kind, object=statement, display=statement,
                 text=statement + (f' （依据：{why}）' if why else ''), user_id=user_id,
                 provenance=list(provenance))
-    fact.category = OUTCOME_CATEGORY
     fact.sensitive = bool(why)
     fact.embedding = mem.embedder.embed(fact.text)
     mem._upsert_fact(fact)
