@@ -37,7 +37,7 @@ INSTRUCTIONS = (
     "`mnemotrace_list_facts` / `mnemotrace_profile` browse what's stored; `mnemotrace_add_fact` records an "
     "authoritative fact; `mnemotrace_update_fact` corrects a specific fact; `mnemotrace_delete_fact` deletes "
     "one specific fact; `mnemotrace_get_focus` / `mnemotrace_set_focus` inspect and update the user's tracked "
-    "or muted memory topics; `mnemotrace_import` bulk-loads an exported history; `mnemotrace_export` gives the "
+    "or muted memory topics; `mnemotrace_export` gives the "
     "user a portable memory export; `mnemotrace_forget` erases everything (irreversible)."
 )
 
@@ -47,6 +47,8 @@ class MemoryMCP(FastMCP):
             # FastMCP drops unknown arguments and can parse JSON strings before validation.
             if "scope" in arguments:
                 raise ToolError("Use the boolean extract argument")
+            if "mode" in arguments:
+                raise ToolError("mode is no longer supported")
             if "extract" in arguments and type(arguments["extract"]) is not bool:
                 raise ToolError("extract must be a boolean")
         return await super().call_tool(name, arguments)
@@ -133,7 +135,7 @@ def _err(e: Exception) -> str:
 def _format_feed(feed: dict) -> str:
     """记忆上次由本机 agent session 投喂的时间——这一行能区分空记忆和健康记忆。"""
     if not feed.get("last_fed_at_h"):
-        return "- Last fed: never — run mnemotrace-watch --install"
+        return "- Last fed: no agent-session feed recorded."
     return (f"- Last fed: {feed.get('last_fed_at_h')} · {feed.get('sessions', 0)} session(s) · "
             f"{feed.get('conclusions', 0)} conclusion(s)")
 
@@ -310,16 +312,15 @@ async def mnemotrace_search(
 
 @mcp.tool(name='mnemotrace_remember_messages', annotations=ToolAnnotations(title='Remember dialogue messages', **_WRITE))
 async def mnemotrace_remember_messages(messages: list[dict], session_id: str,
-        mode: Literal['live', 'historical'] = 'live',
         processing: Literal['immediate', 'buffered'] = 'buffered',
         extract: StrictBool = True, agent_id: str | None = None) -> str:
     """Store complete user/assistant messages with required stable message_id, role and content.
 
-    event_time may be unknown. Reuse IDs on retransmission; historical never activates old tasks.
+    event_time may be unknown. Reuse IDs on retransmission; replays reuse their existing processing operations.
     Acceptance persists raw sources and tasks; inspect processing status or flush for completion.
     """
     try:
-        return _json(await backend().remember_messages(messages, session_id, mode, processing, extract, agent_id=agent_id))
+        return _json(await backend().remember_messages(messages, session_id, processing, extract, agent_id=agent_id))
     except Exception as exc:
         return _err(exc)
 
@@ -811,39 +812,6 @@ async def mnemotrace_delete_fact(
     if response_format == ResponseFormat.JSON:
         return _json(data)
     return f"Deleted fact `{fact_id}`." if data.get("ok") else f"Fact `{fact_id}` was not found."
-
-
-@mcp.tool(name="mnemotrace_import", annotations=ToolAnnotations(title="Bulk-import a history", **_WRITE))
-async def mnemotrace_import(
-    content: Annotated[str | list | dict,
-                       Field(description="The raw export to import: a ChatGPT conversations.json, an "
-                             "OpenAI messages array, JSON-Lines, or a transcript with explicit user/assistant roles or verbatim text. "
-                             "Paste the file contents (JSON text, an array, or transcript text).")],
-    format: Annotated[str, Field(description="chatgpt | messages | records | jsonl | transcript | auto "
-                                 "(default, sniffs the shape).")] = "auto",
-    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
-) -> str:
-    """单次批量把导出的聊天历史导入记忆（抽取 fact + 摘要）。
-
-    用于从既有历史（如用户的 ChatGPT 导出）播种记忆，而不是逐条消息重放。`format='auto'`
-    会自动识别格式。
-    """
-    try:
-        data = await backend().import_(content, format=format)
-    except Exception as e:  # noqa: BLE001
-        return _err(e)
-    if response_format == ResponseFormat.JSON:
-        return _json(data)
-    text = f"Accepted {data.get('episodes', 0)} new source(s) in {data.get('sessions', 0)} session(s)."
-    if data.get('queued'):
-        text += '\nCore processing queued.'
-    if data.get('failures'):
-        text += '\nSession failures: ' + _json(data['failures'])
-    operations = list(dict.fromkeys(operation for session in data.get('results', [])
-                                    for operation in session.get('operation_ids', [])))
-    if operations:
-        text += '\nOperations: ' + _json(operations)
-    return text
 
 
 @mcp.tool(name="mnemotrace_export", annotations=ToolAnnotations(title="Export memory data", **_READ))

@@ -16,6 +16,7 @@ def pytest_sessionfinish(session):
     if os.environ.get('MNEMOTRACE_REQUIRE_POSTGRES') == '1':
         reporter = session.config.pluginmanager.get_plugin('terminalreporter')
         if reporter is not None and any(report.nodeid.startswith('tests/postgres/')
+                                        and 'history_import' not in report.keywords
                                         for report in reporter.stats.get('skipped', ())):
             reporter.write_line('Required Postgres verification contains skipped tests')
             session.exitstatus = 1

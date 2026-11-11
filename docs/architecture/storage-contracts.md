@@ -30,14 +30,14 @@ Python/CLI/本地 MCP 属于受信任数据库访问，显式携带身份和空�
 agent_id 可为 null；非空为 1—128 个 ASCII 字符 `[A-Za-z0-9_.:@/-]`，空串不表示空值。
 message_id/session_id 为 1—512 字符非空标识，原样保存，不 trim 或折叠大小写。
 消息仅允许 user/assistant，正文至多 1000000 codepoint 且不能全空白，event_time 为有限数值或 null。
-role、正文、规范化为浮点的事件时间、agent_id、mode、extract 共同形成消息指纹；摄入时间不参与。
+role、正文、规范化为浮点的事件时间、agent_id、extract 共同形成消息指纹；摄入时间不参与。
 唯一键为 `(user_id,space_id,session_id,message_id)`，space_id 本身全局唯一。
 同键同指纹复用来源和任务，同键异指纹返回 message_conflict；原文修正通过新消息提交。
 
 messages 请求示例：
 
 ```json
-{"space_id":"space-A","session_id":"thread-A","agent_id":"writer-A","mode":"live","extract":true,"processing":"buffered","messages":[{"message_id":"m1","role":"user","content":"Synthetic input","event_time":1700000000}]}
+{"space_id":"space-A","session_id":"thread-A","agent_id":"writer-A","extract":true,"processing":"buffered","messages":[{"message_id":"m1","role":"user","content":"Synthetic input","event_time":1700000000}]}
 ```
 
 操作对象采用 OperationResult.to_dict 的字段。每个摄入响应包含相关 operation 或 operations，
@@ -73,7 +73,7 @@ Python 底层保存原文、consolidate 检查模型的分工保留。
 `DELETE /v1/spaces/{space_id}?confirm=true` 删除空间。
 `POST /v1/forget` 用 `{"space_id":"…","confirm":true}` 清空空间并保留其 ID 与配置。
 
-直连 Python 从 `mnemotrace` 导入 `Memory`。直连 CLI、导入和 MCP stdio 使用
+直连 Python 从 `mnemotrace` 导入 `Memory`。直连 CLI 和 MCP stdio 使用
 `MNEMOTRACE_DATABASE_URL`，并显式传入 `--user-id`、`--space-id`。
 MCP stdio 代理使用 `--api-url`、`--api-key-file`、`--space-id`。
 Streamable HTTP MCP 每次调用携带 Bearer 凭据和 `X-MnemoTrace-Space-Id`。
@@ -83,7 +83,6 @@ OpenAI 兼容请求通过 `memory.space_id` 选择空间，受理的操作 ID �
 ```text
 mnemotrace --user-id <USER_ID> --space-id <SPACE_ID> operation <OPERATION_ID>
 mnemotrace --user-id <USER_ID> --space-id <SPACE_ID> retry <OPERATION_ID>
-mnemotrace-import --api-url http://localhost:8000 --key-file <KEY_FILE> --space-id <SPACE_ID> --file history.json
 ```
 
 TypeScript SDK 的单空间方法接受 `{ spaceId }`，多空间 recall 接受 `{ spaceIds }`。
@@ -173,8 +172,7 @@ with Database(DatabaseConfig.from_env()) as database:
 事实照常保存，图中省略该边。
 
 自动处理通过 `Memory(database, context, llm=llm)` 启用。使用 `remember_messages(session_id, messages)`
-受理对话，或使用 `remember(content, session_id, source_kind="raw")` 受理原文。已解码文档可传
-`source_kind="document"`。返回值包含 `source_ids`、`operation_ids` 和 `OperationResult` 对象。
+受理对话，或使用 `remember(content, session_id)` 受理笔记。来源类型分别为 `dialogue` 和 `note`。返回值包含 `source_ids`、`operation_ids` 和 `OperationResult` 对象。
 `buffered` 在 T1 后返回，`immediate` 等待核心提交，超时仍返回已接受的操作标识。
 `operation(operation_id)` 查询当前进度，`retry_operation(operation_id)` 重新排队，
 `flush_processing(session_id, include_digests=True)` 同时等待本批摘要。长原文和文档的分段进度
@@ -210,7 +208,7 @@ with Database(DatabaseConfig.from_env()) as database:
 | 数据组 | 结构与所有权 |
 | --- | --- |
 | 账号与空间 | users、api_keys、memory_spaces、sessions；账号不依附某把 key，空间显式创建 |
-| 权威业务数据 | sources/source_digests、facts/fact_sources、conflicts、import_receipts |
+| 权威业务数据 | sources/source_digests、facts/fact_sources、conflicts |
 | 实体与检索派生数据 | entities、graph_relations、embeddings、lexical_documents/lexical_terms |
 | 操作与恢复 | operations、operation_sources/targets/products/receipts；唯一任务账本，不新增 outbox |
 
@@ -302,7 +300,6 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 | _namespace_lock/_flock；persist: discover_processing_namespaces；_pipeline_worker | 本地协调、目录扫描与空间恢复 | DB 发现、租约领取/续租/重领 | 2、4、8 | identity、processing、process_recovery |
 | memory: _all_facts/_upsert_fact/_sync_episode/_rewire；store.memory_store | 可变对象及完整内存索引 | 记录工作集、显式提交；内存实现留作算法对照 | 3、5 | core_default、retrieval_candidates |
 | ingest.pipeline: add；memory: add/remember/remember_messages；service: remember/remember_messages | embedding 后写原文，默认用户、路由/任务随快照保存 | T1 原文/任务、消息去重、来源 agent；原文不依赖向量 | 3—4、6 | extraction_contract、message_pipeline/interfaces、pipeline_sources |
-| memory: import_messages/_document_inputs/_import_documents/import_data/import_snapshot；service: import_/import_document | 来源扫描、内存 import_seen、快照导入、全量统计 | 正常导入走新协议/import_receipts；不增加旧快照迁移 | 3、6、8 | import_dedupe/snapshot/cli、connectors、documents |
 | consolidate.pipeline: inspect/accept/register/rows/trigger/retry/snapshot/response/invalidate/validate_state | 空间 ledger、序号、窗口/覆盖、单 generation，stats 恢复校验不足 | 操作/来源/产物/回执，必需字段严格校验 | 4、7 | message_pipeline/windows/recovery、storage_contracts |
 | _pipeline: new_window/trigger_ready/enqueue_operation/_commit/_advance/_fail/run_one/execute_sources/execute_memory/flush | 修改事实、来源摘要/覆盖、窗口统计 | T2/T3、租约/版本守卫、统一执行器，摘要片段可靠保存 | 4 | processing、original_product、process_recovery |
 | consolidate.planning: plan/digest_plan/supplied；fact_rules 主体归一化 | 来源上下文、身份/别名、窗口预算和主体推断 | 必要会话/主体上下文，记录实际业务版本；用户/assistant 自称分开 | 3—4 | message_windows、pipeline_sources、profile_cache |

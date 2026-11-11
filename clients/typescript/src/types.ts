@@ -30,7 +30,6 @@ export interface ExtractionFailure {
 export interface OriginalEpisode {
   message_id: string | null
   sequence: number | null
-  mode: 'live' | 'historical' | null
   coverage: {unit: 'unicode_code_points'; ranges: [number, number][]; partial: boolean;
     policy: string; original_length: number; input_hash: string; source: string; strategy_completed: boolean} | null
   id: string
@@ -219,7 +218,6 @@ export interface EpisodeView {
   date: string
   session: string
   role: string
-  mode: 'live' | 'historical' | null
   coverage: { partial: boolean } | null
   content: string
   digest: string
@@ -449,33 +447,7 @@ export interface ImportSessionInput {
 }
 
 /** 批量导入：传入已解析的 `sessions`，或传入原始 `data` + `format` 由服务器解析。 */
-export interface ImportParams {
-  agent_id?: string
-  dedupe?: boolean
-  sessions?: ImportSessionInput[]
-  data?: unknown
-  /** chatgpt | messages | records | jsonl | transcript | auto（默认） */
-  format?: string
-  consolidate?: boolean
-  generateDigests?: boolean
-}
 
-export interface ImportResult {
-  ok: boolean
-  sessions: number
-  episodes: number
-  skipped: number
-  queued: boolean
-  failed: number
-  failures: Array<{
-    session_id: string | null
-    session_index?: number
-    code: string
-    stored_raw: boolean
-    operation_ids: string[]
-  }>
-  results: Array<RememberResult & {session_id: string; accepted: number; messages?: MessageReceipt[]}>
-}
 
 export interface MemoryExportFact extends FactMetadata {
   cardinality: Fact["cardinality"]

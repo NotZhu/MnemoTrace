@@ -30,8 +30,6 @@ import type {
   Focus,
   GraphResponse,
   Health,
-  ImportParams,
-  ImportResult,
   MemoryExport,
   MemoryDump,
   MemoryListOptions,
@@ -182,11 +180,11 @@ export class MnemoTraceClient {
   }
 
   rememberMessages(messages: import('./types.js').DialogueMessage[], options: SpaceOptions & {
-    sessionId: string; mode?: 'live' | 'historical'; processing?: 'immediate' | 'buffered';
+    sessionId: string; processing?: 'immediate' | 'buffered';
     extract?: boolean; agentId?: string; timeout?: number
   }): Promise<import('./types.js').MessagesResult> {
     return this.post('/v1/messages', { messages, session_id: options.sessionId,
-      mode: options.mode, processing: options.processing, extract: options.extract,
+      processing: options.processing, extract: options.extract,
       agent_id: options.agentId, timeout: options.timeout }, options.spaceId)
   }
 
@@ -376,12 +374,7 @@ export class MnemoTraceClient {
     return this.request<GraphResponse>(`/v1/graph${qs ? `?${qs}` : ''}`, {}, options.spaceId)
   }
 
-  // --- 批量导入 / 导出 / 遗忘 -------------------------------------------------
-  /** 一次性批量导入历史记录（ChatGPT 导出、OpenAI messages、JSONL、transcript）。 */
-  import(params: ImportParams, options: SpaceOptions): Promise<ImportResult> {
-    const { generateDigests, ...payload } = params
-    return this.post<ImportResult>('/v1/import', { ...payload, generate_digests: generateDigests }, options.spaceId)
-  }
+  // --- 导出 / 遗忘 ----------------------------------------------------------
 
   /** 数据导出。默认返回可安全分享的结构化导出；传入 includeSensitive=true 获取完整私有导出。 */
   export<T = MemoryExport>(options: SpaceOptions & { includeSensitive?: boolean }): Promise<T> {

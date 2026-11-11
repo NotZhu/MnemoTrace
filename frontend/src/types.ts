@@ -48,7 +48,6 @@ export interface MemoryEpisode {
   date: string
   session: string
   role: string
-  mode: 'live' | 'historical' | null
   coverage: { partial: boolean } | null
   content: string
   digest: string
@@ -83,8 +82,7 @@ export interface MemoryStatsCounts {
   pending_conflicts: number
 }
 
-/** 由服务器根据 agent 会话 episode 推导；告诉控制台记忆是否在被 `mnemotrace-watch`
- *  持续喂养（无人喂养的记忆会一直为空）。 */
+/** 由服务器根据带来源标记的会话记录推导的摄入统计。 */
 export interface FeedStatus {
   last_fed_at: number | null
   last_fed_at_h: string | null

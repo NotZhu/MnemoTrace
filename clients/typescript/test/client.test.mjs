@@ -25,20 +25,8 @@ test('profile reads cached sections and refresh creates a space-scoped operation
   assert.deepEqual(calls[1].body, {space_id: 'space-test'})
 })
 
-test('import maps generateDigests to the HTTP field and preserves the server default', async () => {
-  const calls = []
-  const client = new MnemoTraceClient({ fetch: async (url, init) => {
-    assert.equal(new URL(url).pathname, '/v1/import')
-    calls.push(JSON.parse(init.body))
-    return new Response(JSON.stringify({ ok: true }))
-  } })
-  const data = [{ role: 'user', content: 'Synthetic history' }]
-  await client.import({ data, generateDigests: false }, space)
-  await client.import({ data }, space)
-  assert.deepEqual(calls, [
-    { data, generate_digests: false, space_id: 'space-test' },
-    { data, space_id: 'space-test' },
-  ])
+test('history import is absent from the public client', () => {
+  assert.equal(MnemoTraceClient.prototype.import, undefined)
 })
 
 test('dialogue messages preserve identities, roles, unknown time and batch policy', async () => {
@@ -49,9 +37,9 @@ test('dialogue messages preserve identities, roles, unknown time and batch polic
   }})
   const messages = [{message_id: 'u1', role: 'user', content: 'Synthetic dialogue'},
     {message_id: 'a1', role: 'assistant', content: 'Synthetic suggestion', event_time: null}]
-  await client.rememberMessages(messages, {...space, sessionId: 's', mode: 'historical'})
+  await client.rememberMessages(messages, {...space, sessionId: 's'})
   assert.equal(new URL(calls[0].url).pathname, '/v1/messages')
-  assert.deepEqual(calls[0].body, {messages, session_id: 's', mode: 'historical', space_id: 'space-test'})
+  assert.deepEqual(calls[0].body, {messages, session_id: 's', space_id: 'space-test'})
   await client.rememberMessages(messages, {...space, sessionId: 's', extract: false})
   await client.remember('Synthetic note', {...space, extract: false})
   assert.deepEqual(calls[1].body, {messages, session_id: 's', extract: false, space_id: 'space-test'})

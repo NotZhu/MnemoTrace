@@ -30,7 +30,7 @@ def decisions(prompt, decision='replaces'):
     {'time_kind': 'dated', 'effective_date': '20240101'}, {'time_kind': 'inferred'},
 ])
 def test_invalid_fact_metadata_is_rejected(fields):
-    data = dict(operation='extract', source_kind='raw', pending=[dict(id='source', needs_digest=False)], context=[])
+    data = dict(operation='extract', source_kind='note', pending=[dict(id='source', needs_digest=False)], context=[])
     raw = json.dumps(dict(facts=[claim('source', **fields)], digests=[]))
     with pytest.raises(ExtractionResponseError):
         validate_response(raw, data, Config())

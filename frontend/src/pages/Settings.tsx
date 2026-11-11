@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  CheckCircle2,
   ChevronDown,
   Clipboard,
   ExternalLink,
@@ -238,7 +237,6 @@ function CodexSetupCard({ session, status }: {
   const sessions = useSessions({ q: 'codex', limit: 5 })
   const codexSessions = sessions.data?.sessions ?? []
   const spaceId = useAuth(state => state.spaceId)
-  const feedCommand = `mnemotrace-watch --install --space-id '${(spaceId ?? '<SPACE_ID>').replace(/'/g, "''")}'`
 
   const command = codexSetupCommand(shell, apiUrl, spaceId ?? undefined)
 
@@ -424,32 +422,7 @@ function CodexSetupCard({ session, status }: {
           </details>
         </div>
       </div>
-      <details className="mt-4 rounded-xl border border-line bg-ink-700/60 p-4">
-        <summary className="cursor-pointer text-sm font-semibold text-slate-100">
-          {t.settings.connectFeedTitle}
-        </summary>
-        {/* 只有 24 小时内导入过才显示绿色，避免把陈旧记录显示为健康状态。 */}
-        <div className="mt-3">
-          <StatusTile
-            label={t.settings.connectFeedLabel}
-            value={
-              status.isError || !status.data ? '—' : status.data?.feed?.last_fed_at_h
-                ? t.settings.connectFedAt(status.data.feed.last_fed_at_h, status.data.feed.sessions)
-                : t.settings.connectNeverFed
-            }
-            ok={!status.isError && !!status.data?.feed?.last_fed_at && Date.now() / 1000 - status.data.feed.last_fed_at < 86400}
-          />
-        </div>
-        <div className="mt-3">
-          <p className="mb-1.5 text-sm leading-relaxed text-ghost">{t.settings.connectFeedCommandLabel}</p>
-          <div className="settings-copy-surface group/copy relative rounded-lg bg-ink-900/70">
-            <pre className="overflow-auto p-3 font-sans text-xs not-italic leading-relaxed text-slate-200">
-              <code className="font-sans not-italic">{feedCommand}</code>
-            </pre>
-            <FloatingCopyButton text={feedCommand} label={t.settings.connectCopyCommand} />
-          </div>
-        </div>
-      </details>
+
     </Card>
   )
 }
@@ -473,18 +446,6 @@ function FloatingCopyButton({ text, label, disabled = false, bottomInset = 8, ri
     >
       <Clipboard className="h-3.5 w-3.5" /> {t.common.copy}
     </button>
-  )
-}
-
-function StatusTile({ label, value, ok }: { label: string; value: string; ok: boolean }) {
-  return (
-    <div className="rounded-xl border border-line bg-ink-700/60 p-3">
-      <div className="text-xs text-ghost">{label}</div>
-      <div className={cx('mt-1 flex items-center gap-2 text-sm font-semibold', ok ? 'text-brand-mint' : 'text-slate-200')}>
-        {ok && <CheckCircle2 className="h-4 w-4" />}
-        {value}
-      </div>
-    </div>
   )
 }
 

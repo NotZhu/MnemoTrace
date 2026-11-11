@@ -35,7 +35,6 @@ def test_package_metadata_links_to_real_repository():
     for module in (
         "mnemotrace.agent_doctor",
         "mnemotrace.agent_setup",
-        "mnemotrace.connectors",
         "mnemotrace.mcp",
     ):
         assert module in zero_setup
@@ -61,6 +60,7 @@ def test_python_console_scripts_resolve_to_callables():
     scripts = pyproject["project"]["scripts"]
 
     assert scripts
+    assert "mnemotrace-import" not in scripts and "mnemotrace-watch" not in scripts
     for name, target in scripts.items():
         module_name, _, attr = target.partition(":")
         assert module_name and attr, f"{name} target must be module:callable"

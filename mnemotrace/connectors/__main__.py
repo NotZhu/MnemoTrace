@@ -40,8 +40,10 @@ def _post_remote(api_url: str, key: str, space_id: str, sessions: list,
 def _import_local(args, sessions) -> dict:
     from ..cli import local_space
 
+    from .dialogue import import_history
+
     with local_space(args) as (service, context):
-        return service.import_(context, sessions=sessions, consolidate=not args.no_consolidate,
+        return import_history(service, context, sessions=sessions, consolidate=not args.no_consolidate,
                                generate_digests=not args.no_generate_digests, agent_id=args.agent_id)
 
 

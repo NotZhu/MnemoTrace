@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from ..connectors.base import extract_text  # 复用：展平 str | 多模态 parts | dict 内容
+from ..util import extract_text
 from ..util import gen_id, now
 
 

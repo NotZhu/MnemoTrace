@@ -62,7 +62,7 @@ MCP 的 `--http` 传输默认绑定 127.0.0.1:8765，路径为 `/mcp`。每次�
 
 1. 用 `mnemotrace_agent_status(session_id=...)` 检查接线和计数。
 2. 需要既往信息时调用 `mnemotrace_recall`，携带当前 session id，把返回内容作为有来源的上下文使用。
-3. 对话调用 `mnemotrace_remember_messages`，携带稳定 session_id、逐条 message_id 与 user/assistant 角色；默认 buffered。历史使用 historical。非对话笔记仍可调用 `mnemotrace_remember`。
+3. 对话调用 `mnemotrace_remember_messages`，携带稳定 session_id、逐条 message_id 与 user/assistant 角色，默认 buffered。笔记调用 `mnemotrace_remember`。
 4. 任务结束时调用 `mnemotrace_flush_processing(session_id=...)` 等待核心处理，再用 `mnemotrace_session_report` 核对结果。来源摘要和其他辅助任务按操作 ID 查询。任务状态由 agent 的任务工具或文件管理。
 
 为每个独立线程使用稳定、可区分的 session id，例如 `agent:my-app:thread-123`。不要每轮换 id，也不要让所有线程共用 `default`。安装 MCP 只提供工具，何时调用仍由 Agent 的任务逻辑或客户端策略决定。

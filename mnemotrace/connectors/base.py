@@ -2,7 +2,7 @@
 
 `mnemotrace.connectors` 里的所有东西都是**纯标准库**（无第三方依赖），因此在零配置安装下也能导入历史
 （AGENTS.md 「代码导航」）。*解析器*把原始导出 —— ChatGPT 的 `conversations.json`、OpenAI `messages` 数组、
-JSONL 日志、纯 transcript —— 转换成 `ImportSession` 列表，再由 `MemoryEngine.import_messages()`
+JSONL 日志、纯 transcript —— 转换成 `ImportSession` 列表，再由 `connectors.dialogue.import_messages()`
 按原始顺序逐条保存消息，并通过统一窗口执行历史抽取。
 
 这个接缝填补的空白：此前唯一的批量加载器是仅供 eval 使用的 `seed_console.py`。这是 「代码导航」 采纳层需要的、
@@ -15,8 +15,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
+from ..util import extract_text as extract_text
+
 # ---------------------------------------------------------------------------
-# 规范化模型 —— 所有解析器都输出这些类型，MemoryEngine.import_messages() 因此只需
+# 规范化模型 —— 所有解析器都输出这些类型，connectors.dialogue.import_messages() 因此只需
 # 面对一种形状，与来源格式无关。
 # ---------------------------------------------------------------------------
 
@@ -111,35 +113,6 @@ def record_time(record: dict, *keys: str) -> Optional[float]:
     return None
 
 
-def extract_text(content: Any) -> str:
-    """把 'content' 字段的多种形状压平成纯文本：
-      * 纯字符串                                    -> 原样返回
-      * parts 列表（OpenAI 多模态/视觉）             -> 拼接文本部分
-      * {'parts': [...]} / {'text': ...}（ChatGPT）  -> 取其中的文本
-    非文本部分（图片、工具数据）被丢弃。"""
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, dict):
-        if "parts" in content:
-            return extract_text(content["parts"])
-        for key in ("text", "content", "value"):
-            if key in content:
-                return extract_text(content[key])
-        return ""
-    if isinstance(content, (list, tuple)):
-        out = []
-        for part in content:
-            if isinstance(part, str):
-                out.append(part)
-            elif isinstance(part, dict):
-                # OpenAI 的 content part：{'type': 'text', 'text': '...'}
-                if part.get("type") in (None, "text", "input_text", "output_text"):
-                    out.append(extract_text(part.get("text") or part.get("content") or ""))
-                # 其余：image_url / file / tool 部分 —— 跳过
-        return "\n".join(p for p in out if p)
-    return str(content)
 
 
 def load_json(data: Any) -> Any:

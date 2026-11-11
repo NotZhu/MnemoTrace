@@ -4,6 +4,7 @@ owner 值得记忆的材料正是他的 agent 会话（磁盘上放着 1600+ 份
 Codex transcript），但一直没有入口：通用 JSONL 读取器保留了工具调用却丢掉了对话内容，实际效果是
 几乎什么都没存下来。这些测试钉死了哪些内容会被保留，以及——同样重要的是——哪些会被丢弃。"""
 from __future__ import annotations
+from mnemotrace.connectors.dialogue import import_messages
 
 import pytest
 
@@ -200,6 +201,7 @@ class TestWatcher:
         assert watch.pending_sessions(state, now=later, quiet_seconds=900) == [str(f)]
 
 
+@pytest.mark.history_import
 def test_watcher_claims_only_durable_session_inputs(monkeypatch):
     from mnemotrace.connectors import watch
     from mnemotrace.connectors.base import ImportMessage, ImportSession
@@ -253,6 +255,7 @@ def _agent_sessions(prefix: str = "claude-code") -> list[dict]:
     ]
 
 
+@pytest.mark.history_import
 def test_agent_session_import_with_llm_and_consolidate_true_extracts():
     """有 LLM 时同样的 12 个轮次产出了 10 条干净的 fact（`EKOS | deployed_on | Ubuntu server`），
     所以显式选择加入时仍必须执行逐轮抽取。"""
@@ -263,21 +266,23 @@ def test_agent_session_import_with_llm_and_consolidate_true_extracts():
             return '[{"subject": "EKOS", "predicate": "deployed_on", "object": "Ubuntu server"}]'
 
     mem = MemoryEngine(llm=StubLLM())
-    stats = mem.import_messages(_agent_sessions(), user_id="u", consolidate=True)
+    stats = import_messages(mem, _agent_sessions(), user_id="u", consolidate=True)
     assert stats["facts_added"] >= 1, stats
     assert stats["facts_deferred"] == 0 and stats["deferred_reason"] is None, stats
     assert all("extraction" not in ep.metadata for ep in mem.episodes_doc.values())
 
 
+@pytest.mark.history_import
 def test_agent_session_consolidate_true_without_llm_is_rejected():
     from mnemotrace import MemoryEngine
     from mnemotrace.extraction import LLMNotConfiguredError
     mem = MemoryEngine()
     with pytest.raises(LLMNotConfiguredError):
-        mem.import_messages(_agent_sessions(), user_id="u", consolidate=True)
+        import_messages(mem, _agent_sessions(), user_id="u", consolidate=True)
     assert not mem.episodes_doc.values()
 
 
+@pytest.mark.history_import
 def test_records_import_requests_model_extraction():
     """records 适配器保留逐条角色和正文，默认提交给统一自动处理入口。"""
     from mnemotrace.connectors import parse
@@ -288,7 +293,7 @@ def test_records_import_requests_model_extraction():
     records.append({"content": "I moved to Shenzhen last year and I work at Moonshot AI.",
                     "role": "user", "session_id": "r1"})
     mem = MemoryEngine()
-    stats = mem.import_messages(parse(records, format="records"), user_id="u")
+    stats = import_messages(mem, parse(records, format="records"), user_id="u")
     assert stats["facts_added"] >= 1, stats
     assert stats["facts_deferred"] == 0 and stats["deferred_reason"] is None
 
@@ -321,6 +326,7 @@ def _quiet_file(tmp_path, name: str = "s.jsonl", age: int = 3600) -> str:
     return str(f)
 
 
+@pytest.mark.history_import
 def test_watcher_payload_carries_source_and_session_time(monkeypatch):
     """服务端靠 `metadata.source` 把 transcript 从逐轮抽取中分流出去；`event_time` 维持双时间轴；
     不带 `consolidate` 键意味着由服务端决定（只产出 outcomes）。每条消息的时间戳和文件路径绝不

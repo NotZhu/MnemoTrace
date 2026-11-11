@@ -36,7 +36,7 @@ def erase(sql, graph, refs):
 
 def clear_space(sql):
     # Sources cascade from sessions; facts and entities are space-owned.
-    for table in ('profile_states', 'record_commit_receipts', 'operations', 'facts', 'sessions', 'entities', 'import_receipts'):
+    for table in ('profile_states', 'record_commit_receipts', 'operations', 'facts', 'sessions', 'entities'):
         sql.delete(table)
     sql.run(f'UPDATE mnemotrace.memory_spaces SET space_generation = space_generation + 1 WHERE {SCOPE}',
             sql.scope)

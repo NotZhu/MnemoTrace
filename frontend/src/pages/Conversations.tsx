@@ -35,7 +35,6 @@ export default function Conversations() {
   const [sessionRequest, setSessionRequest] = useState(() => new AbortController())
   const remember = useRememberMessages(sessionRequest.signal)
   const [role, setRole] = useState<'user' | 'assistant'>('user')
-  const [mode, setMode] = useState<'live' | 'historical'>('live')
   const [pendingInput, setPendingInput] = useState<{identity: string; id: string} | null>(null)
   const status = useAgentStatus(currentSession)
   const organizeSession = useOrganizeSession(sessionRequest.signal)
@@ -69,11 +68,11 @@ export default function Conversations() {
   const submit = () => {
     const content = text.trim()
     if (!content) return
-    const identity = JSON.stringify([currentSession, content, role, mode])
+    const identity = JSON.stringify([currentSession, content, role])
     const messageId = pendingInput?.identity === identity ? pendingInput.id : crypto.randomUUID()
     setPendingInput({identity, id: messageId})
     const epoch = sessionEpoch.current
-    remember.mutate({messages: [{message_id: messageId, role, content}], sessionId: currentSession, mode}, {
+    remember.mutate({messages: [{message_id: messageId, role, content}], sessionId: currentSession}, {
       onSuccess: (r) => {
         if (epoch !== sessionEpoch.current) return
         setText('')
@@ -141,10 +140,6 @@ export default function Conversations() {
               <select aria-label="消息角色" className="input" value={role}
                 onChange={(e) => setRole(e.target.value as 'user' | 'assistant')}>
                 <option value="user">用户消息</option><option value="assistant">AI 完整回复</option>
-              </select>
-              <select aria-label="消息模式" className="input" value={mode}
-                onChange={(e) => setMode(e.target.value as 'live' | 'historical')}>
-                <option value="live">实时</option><option value="historical">历史</option>
               </select>
             </div>
           </div>
@@ -237,7 +232,6 @@ export default function Conversations() {
                   <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px] text-ghost">
                     <span className="tabular-nums text-brand-cyan">{e.date}</span>
                     <span>{e.role === 'assistant' ? 'AI 回复' : e.role === 'user' ? '用户消息' : e.role}</span>
-                    {e.mode === 'historical' && <span>历史</span>}
                     <span className="inline-flex min-w-0 max-w-full whitespace-normal break-all rounded bg-ink-700/60 px-1.5 py-px">{e.session}</span>
                   </div>
                   <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-200">

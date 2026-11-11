@@ -40,7 +40,8 @@ async def test_tools_are_registered_with_flat_schema():
             "mnemotrace_list_sessions", "mnemotrace_search",
             "mnemotrace_list_facts", "mnemotrace_profile", "mnemotrace_refresh_profile", "mnemotrace_agent_status", "mnemotrace_stats",
             "mnemotrace_add_fact", "mnemotrace_update_fact", "mnemotrace_delete_fact", "mnemotrace_get_focus",
-            "mnemotrace_set_focus", "mnemotrace_import", "mnemotrace_export", "mnemotrace_forget"} <= set(tools)
+            "mnemotrace_set_focus", "mnemotrace_export", "mnemotrace_forget"} <= set(tools)
+    assert "mnemotrace_import" not in tools
     # 顶层平铺的参数（不嵌套在 "params" 之下）
     props = tools["mnemotrace_recall"].inputSchema.get("properties", {})
     assert {"query", "max_chunks", "as_of"} <= set(props)
@@ -51,6 +52,7 @@ async def test_tools_are_registered_with_flat_schema():
     assert "scope" not in remember_props
     messages_props = tools["mnemotrace_remember_messages"].inputSchema["properties"]
     assert messages_props["extract"]["type"] == "boolean" and "scope" not in messages_props
+    assert "mode" not in messages_props
     add_props = tools["mnemotrace_add_fact"].inputSchema.get("properties", {})
     assert {"subject", "predicate", "object", "text", "sensitive", "categories", "object_kind"} <= set(add_props)
     assert 'text' in tools['mnemotrace_add_fact'].inputSchema['required']
@@ -307,6 +309,7 @@ async def test_list_sessions_tool_is_content_free(local_backend):
     assert "diabetes" not in raw.lower()
 
 
+@pytest.mark.history_import
 @pytest.mark.asyncio
 async def test_import_tool(local_backend):
     arr = '[{"role":"user","content":"I have a cat named Pixel."}]'
@@ -319,12 +322,12 @@ async def test_import_tool(local_backend):
 
 @pytest.mark.asyncio
 async def test_recall_and_search_support_as_of(local_backend):
-    records = json.dumps([
-        {"session_id": "old", "content": "Wei works at Tencent.", "event_time": 1_700_000_000.0},
-        {"session_id": "new", "content": "Wei works at Moonshot AI.", "event_time": 1_702_592_000.0},
-    ])
-    await call("mnemotrace_import", content=records, format="records")
-    await call("mnemotrace_flush_processing")
+    for session, text, stamp in (
+        ("old", "Wei works at Tencent.", 1_700_000_000.0),
+        ("new", "Wei works at Moonshot AI.", 1_702_592_000.0),
+    ):
+        await call("mnemotrace_remember_messages", session_id=session, processing="immediate",
+                   messages=[{"message_id": "m1", "role": "user", "content": text, "event_time": stamp}])
 
     ctx = await call(
         "mnemotrace_recall",
@@ -414,11 +417,14 @@ async def test_remote_backend_forwards_as_of():
         {"message_id": "m1", "role": "user", "content": "Synthetic dialogue"},
     ]}),
 ])
-@pytest.mark.parametrize("invalid", [{"scope": "raw"}, {"extract": "false"}, {"extract": 0}])
-async def test_mcp_write_rejects_old_and_non_boolean_extraction_arguments(name, arguments, invalid):
+@pytest.mark.parametrize("invalid, message", [
+    ({"scope": "raw"}, "extract"), ({"extract": "false"}, "extract"),
+    ({"extract": 0}, "extract"), ({"mode": "live"}, "mode"),
+])
+async def test_mcp_write_rejects_old_and_non_boolean_extraction_arguments(name, arguments, invalid, message):
     from mcp.server.fastmcp.exceptions import ToolError
 
-    with pytest.raises(ToolError, match="extract"):
+    with pytest.raises(ToolError, match=message):
         await S.mcp.call_tool(name, {**arguments, **invalid})
 
 

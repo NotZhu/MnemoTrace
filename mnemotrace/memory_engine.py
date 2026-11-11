@@ -7,7 +7,6 @@ from typing import Callable, Optional
 
 from .config import Config
 from .focus import matches, selectors
-from .connectors.documents import document_inputs
 from .consolidate import reinforce
 from .consolidate.facts import FactWriter
 from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual, validate_fact_patch
@@ -32,7 +31,7 @@ from .store import (
     VectorStore,
 )
 from .categories import Category, ObjectKind
-from .extraction import ExtractionError, require_llm
+from .extraction import require_llm
 from .types import Cardinality, Conflict, Episode, Fact, Retention
 from .util import fmt_date, now, time_key
 
@@ -83,7 +82,6 @@ class MemoryEngine:
         # 记忆策略：抽取指令及抽取、摘要、画像提示词；空提示词使用内置默认值。
         self.policy: dict[str, str] = {"extract_instruction": "", "extract_system": "",
                                        "digest_system": "", "profile_system": ""}
-        self._import_seen: set[str] = set()  # 已导入事件的指纹，用于重复导入去重
         self.conflicts: dict[str, Conflict] = {}  # 疑似冲突及其处理状态，按冲突 ID 保存
         self.cold_pages_out: dict[str, int] = {}  # 每个用户从热层换出到冷层的事实数
         self.cold_pages_in: dict[str, int] = {}  # 每个用户从冷层调回热层的事实数
@@ -309,7 +307,7 @@ class MemoryEngine:
             return {"extract": extract, "episode_id": ep.id}
 
     def remember_messages(self, messages: list[dict], session_id: str, user_id: str = 'default',
-                          mode: str = 'live', extract: bool = True) -> dict:
+                          extract: bool = True) -> dict:
         """Offline-capable dialogue source/task recording; service owns background execution.
 
         Product callers use Memory for durable processing.
@@ -317,12 +315,12 @@ class MemoryEngine:
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
         from .consolidate.pipeline import PipelineTasks, normalized
-        rows = normalized(messages, session_id, mode, extract)
+        rows = normalized(messages, session_id, extract)
         with self._pipeline_lock:
             if self._pipeline_closed:
                 raise RuntimeError('Memory is closed')
             tasks = PipelineTasks(self, user_id)
-            rows, unseen = tasks.inspect(rows, session_id, mode, extract)
+            rows, unseen = tasks.inspect(rows, session_id, extract)
         batch = self._encode_batch(list(unseen.values()))
         if len(batch) != len(unseen):
             raise ValueError('Embedding batch length mismatch')
@@ -331,9 +329,9 @@ class MemoryEngine:
             if self._pipeline_closed:
                 raise RuntimeError('Memory is closed')
             tasks = PipelineTasks(self, user_id)
-            tasks.inspect(rows, session_id, mode, extract)
+            tasks.inspect(rows, session_id, extract)
             try:
-                ids, fresh = tasks.accept(rows, session_id, mode, extract, now(), vectors)
+                ids, fresh = tasks.accept(rows, session_id, extract, now(), vectors)
             except BaseException:
                 self._recover_pipeline_checkpoint()
                 raise
@@ -394,7 +392,7 @@ class MemoryEngine:
         stats["reflected"] = 0
         return stats
 
-    # --- 批量导入（AGENTS.md 「代码导航」 采用层）：批量接入用户自己的历史 ---
+    # --- 对话任务等待与结构化快照恢复 ---
     def flush_messages(self, user_id: str = 'default', session_id: Optional[str] = None,
                        timeout: float = 30, retry_failed: bool = False) -> dict:
         if self._pipeline_broken:
@@ -419,115 +417,6 @@ class MemoryEngine:
                     result.update(ok=False, status="failed")
         return result
 
-    def import_messages(self, sessions, user_id: str = 'default', consolidate: Optional[bool] = None,
-                        generate_digests: bool = True, roles: bool = True, batch_size: int = 256,
-                        base_time: Optional[float] = None, dedupe: bool = True) -> dict:
-        """Adapt history to individual historical messages; documents retain their own input path.
-
-        Undated messages remain unknown. Positional import IDs are stable within an ordered
-        source export; changing an existing position requires an explicit source message ID.
-        """
-        if self._pipeline_broken:
-            raise RuntimeError('Memory checkpoint failed; create a new instance')
-        from .connectors.dialogue import batches
-        from .consolidate.pipeline import PipelineTasks
-        plans = batches(list(sessions), consolidate)
-        tasks = PipelineTasks(self, user_id)
-        if any(messages is not None and extract and tasks.inspect(messages, sid, 'historical')[1]
-               for sid, messages, _, extract in plans):
-            require_llm(self.llm)
-        stats = dict(sessions=0, episodes=0, skipped=0, facts_added=0, digests=0,
-                     facts_deferred=0, deferred_reason=None)
-        before = len(self.fact_store.values())
-        prior_digests = {e.id for e in self.episodes_doc.values() if e.digest}
-        for sid, messages, record, extract in plans:
-            if messages is None:
-                verbatim = record.get('metadata', {}).get('verbatim') is True
-                result = self._import_documents([record], user_id, False if verbatim else consolidate,
-                                                generate_digests and not verbatim, roles, batch_size, base_time, dedupe)
-                for key in ('sessions', 'episodes', 'skipped', 'facts_added', 'digests'):
-                    stats[key] += result.get(key, 0)
-                continue
-            result = self.remember_messages(messages, sid, user_id, 'historical', extract)
-            fresh = result['accepted']
-            if not extract:
-                stats['facts_deferred'] += fresh
-                stats['deferred_reason'] = 'not_requested'
-            for row in result['messages']:
-                ep = self.episodes_doc.get(row['episode_id'])
-                for key in ('source',):
-                    if key in record.get('metadata', {}):
-                        ep.metadata.setdefault(key, record['metadata'][key])
-                self._sync_episode(ep)
-            stats['sessions'] += bool(fresh)
-            stats['episodes'] += fresh
-            stats['skipped'] += len(messages) - fresh
-            if extract and fresh:
-                result = self.flush_messages(user_id, sid)
-                if not result['ok']:
-                    raise ExtractionError(stored_raw=True, episode_ids=[r['episode_id'] for r in result['jobs']])
-        stats['facts_added'] = len(self.fact_store.values()) - before
-        stats['digests'] = sum(bool(e.digest) and e.id not in prior_digests for e in self.episodes_doc.values()
-                                 if e.user_id == user_id and e.message_id is not None)
-        return stats
-
-    def _import_documents(self, sessions, user_id='default', consolidate=None, generate_digests=True, roles=True,
-                          batch_size=256, base_time=None, dedupe=True, prepared_vectors=None):
-        import hashlib
-        if type(batch_size) is not int or batch_size <= 0:
-            raise ValueError('batch_size must be a positive integer')
-        records = document_inputs(sessions, roles, base_time)
-        def fingerprint(record):
-            return hashlib.sha1(f"{user_id}|{record['session_id']}|{record['content']}".encode()).hexdigest()
-        with self._pipeline_lock:
-            candidates = [r for r in records if not dedupe or fingerprint(r) not in self._import_seen]
-        if consolidate is not False and candidates:
-            require_llm(self.llm)
-        if prepared_vectors is None:
-            texts = list(dict.fromkeys(r['content'] for r in candidates))
-            vectors = []
-            for start in range(0, len(texts), batch_size):
-                batch = texts[start:start + batch_size]
-                encoded = self._encode_batch(batch)
-                if len(encoded) != len(batch):
-                    raise ValueError('Embedding batch length mismatch')
-                vectors.extend(encoded)
-            prepared_vectors = dict(zip(texts, vectors))
-        added, skipped = [], 0
-        from ._pipeline import memory_adapter
-        with memory_adapter(self, user_id).write_lock(user_id):
-            for record in records:
-                key = fingerprint(record)
-                if dedupe and key in self._import_seen:
-                    skipped += 1
-                    continue
-                ep = self.add(record['content'], user_id, record['session_id'], role='document',
-                              event_time=record['event_time'], embedding=prepared_vectors[record['content']])
-                ep.source_kind, ep.extract = 'document', consolidate is not False
-                ep.consolidated = consolidate is False
-                ep.metadata.update(record['metadata'])
-                if record['title']:
-                    ep.metadata['title'] = record['title']
-                self._sync_episode(ep)
-                self._import_seen.add(key)
-                added.append(ep)
-        stats = dict(sessions=len({ep.session_id for ep in added}), episodes=len(added), skipped=skipped,
-                     facts_added=0, digests=0, facts_deferred=0, deferred_reason=None, episode_ids=[ep.id for ep in added])
-        if consolidate is not False and added:
-            from ._pipeline import execute_memory
-            stats.update(execute_memory(self, user_id, added, 'extract', digests=generate_digests))
-        elif generate_digests and added:
-            stats['digests'] = self.generate_digests(added)
-        return stats
-
-
-    def import_data(self, data, format: str = "auto", user_id: str = "default",
-                    session_id: str = "imported", **kwargs) -> dict[str, int]:
-        """便捷方法：解析原始导出（ChatGPT/OpenAI/JSONL/transcript——自动嗅探）并一次调用导入。
-        格式见 `mnemotrace.connectors.parse`。"""
-        from .connectors import parse
-        return self.import_messages(parse(data, format=format, session_id=session_id),
-                                    user_id=user_id, **kwargs)
 
     def import_snapshot(self, snapshot: dict, user_id: str = "default", dedupe: bool = True) -> dict:
         """恢复 忆痕 导出快照（`/v1/export` / `MemoryService.export`）——可移植性往返。快照是
@@ -1659,7 +1548,7 @@ class MemoryEngine:
             return None
         return dict(id=ep.id, space=ep.user_id, session_id=ep.session_id, role=ep.role,
                     event_time=ep.event_time, ingested_at=ep.ingested_at, content=ep.content,
-                    message_id=ep.message_id, sequence=ep.sequence, mode=ep.mode, coverage=deepcopy(ep.coverage))
+                    message_id=ep.message_id, sequence=ep.sequence, coverage=deepcopy(ep.coverage))
 
     def retrieve_episodes(
         self,

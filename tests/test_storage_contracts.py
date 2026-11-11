@@ -31,7 +31,7 @@ def fact_record(**kwargs):
 
 def product():
     text = 'I work at Orbit.'
-    data = dict(operation='extract', source_kind='dialogue', mode='live', extract=True, context=[], parts=[], candidates=[],
+    data = dict(operation='extract', source_kind='dialogue', extract=True, context=[], parts=[], candidates=[],
                 pending=[dict(id='source-1', role='user', content=text, needs_digest=False,
                               message_id='message-1', sequence=1, event_time=100, representation='raw',
                               representation_source=None, source='a' * 64, source_length=len(text),
@@ -119,7 +119,7 @@ def test_message_fingerprint_normalizes_only_event_time():
     assert message.fingerprint == replace(message, event_time=1.0).fingerprint
     assert message.fingerprint == replace(message, message_id='another-id').fingerprint
     for kwargs in (dict(role='assistant'), dict(content='Orbit'), dict(agent_id='agent-B'),
-                   dict(event_time=None), dict(mode='historical'), dict(extract=False)):
+                   dict(event_time=None), dict(extract=False)):
         assert message.fingerprint != replace(message, **kwargs).fingerprint
     with pytest.raises(TypeError):
         MessageInput('message', 'user', 'text', ingested_at=10)
@@ -249,7 +249,7 @@ def test_generation_reuse_depends_on_actual_context_and_not_embedder():
     assert EmbeddingWrite(ref(), 1, 'embedder-A', (1.0,)).model != EmbeddingWrite(ref(), 1, 'embedder-B', (1.0,)).model
 
 
-@pytest.mark.parametrize('field', ['operation', 'source_kind', 'mode', 'extract', 'pending', 'parts', 'candidates'])
+@pytest.mark.parametrize('field', ['operation', 'source_kind', 'extract', 'pending', 'parts', 'candidates'])
 def test_empty_model_result_cannot_hide_missing_prepared_input_fields(field):
     saved = product()
     data = json.loads(saved.input_json)

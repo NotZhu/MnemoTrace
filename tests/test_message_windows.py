@@ -1,4 +1,5 @@
 """Dialogue planning uses continuous, committed representations and explicit output reserves."""
+from mnemotrace.connectors.dialogue import import_messages
 import json
 
 import pytest
@@ -82,12 +83,13 @@ def test_crop_reserves_actual_policy_and_compensation_protocol():
     assert len(actual.encode('utf-8')) <= mem.config.extraction_max_input_bytes
 
 
+@pytest.mark.history_import
 def test_import_has_individual_roles_and_unknown_times():
     mem = MemoryEngine(llm=FakeLLM(handler=reply))
     source = [dict(session_id='s', messages=[message('u', role='user', event_time=None),
                                             message('a', role='assistant', event_time=None)])]
-    result = mem.import_messages(source)
+    result = import_messages(mem, source)
     assert result['episodes'] == 2
     assert [e.role for e in mem.episodes_doc.values()] == ['user', 'assistant']
-    assert all(e.event_time is None and e.mode == 'historical' for e in mem.episodes_doc.values())
-    assert mem.import_messages(json.loads(json.dumps(source)))['skipped'] == 2
+    assert all(e.event_time is None for e in mem.episodes_doc.values())
+    assert import_messages(mem, json.loads(json.dumps(source)))['skipped'] == 2

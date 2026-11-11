@@ -38,7 +38,6 @@ def test_working_route_has_been_removed(client, method):
     ('/v1/remember', dict(content='Synthetic task', extract=0)),
     ('/v1/recall', dict(query='Synthetic query', session_id='s')),
     ('/v1/processing/flush', dict(include_summaries=True)),
-    ('/v1/import', dict(data=[], summarize=False)),
 ])
 def test_retired_parameters_are_rejected_before_writing(client, path, payload):
     h = hdr('retired-parameters')
@@ -58,6 +57,7 @@ def test_digest_policy_uses_only_current_field_names(client):
     assert client.put('/v1/policy', json=dict(summary_system='Retired policy'), headers=h).status_code == 422
 
 
+@pytest.mark.history_import
 @pytest.mark.parametrize("payload", [{"facts": []}, {"episodes": []}, {"facts": "bad", "episodes": []}])
 def test_incomplete_snapshot_is_rejected_instead_of_message_ingestion(client, payload):
     response = client.post("/v1/import", json={"data": payload}, headers=hdr("synthetic-invalid-import"))
@@ -275,6 +275,7 @@ def test_agent_status_endpoint_is_content_free_and_session_aware(client):
     assert "private launch note" not in rendered
 
 
+@pytest.mark.history_import
 @pytest.mark.parametrize("malformed", [None, {"role": "user", "content": "invalid\x00text"}])
 def test_import_reports_invalid_sessions_without_losing_durable_receipts(client, malformed):
     headers = hdr("synthetic-partial-import")
@@ -298,6 +299,7 @@ def test_import_reports_invalid_sessions_without_losing_durable_receipts(client,
     assert replay["skipped"] == 2 and replay["episodes"] == 0
 
 
+@pytest.mark.history_import
 def test_import_with_null_session_and_no_other_input_returns_validation_result(client):
     response = client.post("/v1/import", json={"sessions": [None]}, headers=hdr("invalid-only"))
     assert response.status_code == 200
@@ -307,6 +309,7 @@ def test_import_with_null_session_and_no_other_input_returns_validation_result(c
     ]
 
 
+@pytest.mark.history_import
 def test_import_sessions_and_raw_data(client):
     h = hdr("importer")
     sessions = [{"session_id": "s1", "title": "Pets",
@@ -324,6 +327,7 @@ def test_import_sessions_and_raw_data(client):
     assert client.post("/v1/import", json={}, headers=h).status_code == 400
 
 
+@pytest.mark.history_import
 def test_import_sessions_accept_iso_timestamps(client):
     h = hdr("import_iso")
     out = client.post("/v1/import", json={"consolidate": True,
@@ -403,13 +407,16 @@ def test_complete_fact_text_edit_is_persisted_and_statement_is_rejected(client):
 
 def test_graph_endpoint_supports_as_of_and_edge_audit_fields(client):
     h = hdr("graph_asof")
-    client.post("/v1/import", json={"consolidate": True,
-        "format": "records",
-        "data": [
-            {"session_id": "old", "content": "Wei works at Tencent.", "event_time": 1_700_000_000.0},
-            {"session_id": "new", "content": "Wei works at Moonshot AI.", "event_time": 1_702_592_000.0},
-        ],
-    }, headers=h)
+    for session, text, stamp in (
+        ("old", "Wei works at Tencent.", 1_700_000_000.0),
+        ("new", "Wei works at Moonshot AI.", 1_702_592_000.0),
+    ):
+        response = client.post("/v1/messages", json={
+            "session_id": session, "processing": "immediate",
+            "messages": [{"message_id": "m1", "role": "user", "content": text, "event_time": stamp}],
+        }, headers=h)
+        assert response.is_success
+
 
     past = client.get("/v1/graph?as_of=1700864000", headers=h).json()
     assert "Tencent" in {n["name"] for n in past["nodes"]}
@@ -753,13 +760,16 @@ def test_graph_limit_and_completeness_follow_space_filters(client, product_servi
 
 def test_recall_endpoint_supports_as_of_for_search_and_lean_context(client):
     h = hdr("recall_asof")
-    client.post("/v1/import", json={"consolidate": True,
-        "format": "records",
-        "data": [
-            {"session_id": "old", "content": "Wei works at Tencent.", "event_time": 1_700_000_000.0},
-            {"session_id": "new", "content": "Wei works at Moonshot AI.", "event_time": 1_702_592_000.0},
-        ],
-    }, headers=h)
+    for session, text, stamp in (
+        ("old", "Wei works at Tencent.", 1_700_000_000.0),
+        ("new", "Wei works at Moonshot AI.", 1_702_592_000.0),
+    ):
+        response = client.post("/v1/messages", json={
+            "session_id": session, "processing": "immediate",
+            "messages": [{"message_id": "m1", "role": "user", "content": text, "event_time": stamp}],
+        }, headers=h)
+        assert response.is_success
+
 
     past = client.post("/v1/recall", json={
         "query": "Where does Wei work?",
@@ -925,6 +935,7 @@ def test_request_limit_rejects_before_memory_write(client, product_scope, monkey
     assert client.get("/v1/stats", headers=hdr("synthetic-size")).json()["counts"]["episodes"] == 0
 
 
+@pytest.mark.history_import
 def test_import_agent_sessions_defaults_to_buffered_messages_and_feed_stats(client):
     """watcher 历史会话默认按消息 buffered 接收，并保留来源与摄入统计。"""
     h = hdr("feed-ns")
@@ -1026,7 +1037,7 @@ def test_memories_http_echoes_context_and_freezes_time(client, product_service, 
 
 
 @pytest.mark.parametrize('clock_skew', [0, -60, 60])
-@pytest.mark.parametrize('source_entry', ['raw', 'note', 'document'])
+@pytest.mark.parametrize('source_entry', ['raw', 'note'])
 def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, product_service, product_scope,
                                                                   monkeypatch, clock_skew, source_entry):
     from mnemotrace.types import Episode
@@ -1044,8 +1055,6 @@ def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, pro
     def remember_source(content, session_id, *, event_time):
         if source_entry == 'raw':
             return memory.remember_raw(content, session_id, event_time=event_time)
-        if source_entry == 'document':
-            return memory.import_document(content, session_id, event_time=event_time, extract=False, generate_digests=False)
         return memory.remember(content, session_id, event_time=event_time, processing='buffered',
                                extract=True)
 

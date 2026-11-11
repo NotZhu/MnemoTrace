@@ -43,13 +43,13 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 
 ## 离线写入与导入
 
-对话使用 `MemoryEngine.remember_messages(messages, session_id, user_id="default", mode="live", extract=True)`。
+对话使用 `MemoryEngine.remember_messages(messages, session_id, user_id="default", extract=True)`。
 每条消息包含 message_id、role、content 和可选 event_time，角色限定为 user/assistant。返回每条事件 ID、持久化顺序和处理状态；相同 ID 的冲突输入报 MessageConflictError。
 内存算法入口可记录原文，并通过 `MemoryEngine.flush_messages` 驱动固定模型或配置的 LLM。持久写入及恢复由 Postgres 入口提供。
 
 通用 transcript 仅在明确标出 `user` 或 `assistant` 时作为对话导入，其他文本保留原文。时间接受 epoch 秒、明确标注单位的数值或带时区的时间。
 
-历史导入适配后逐条提交 historical 消息，超过入口批量上限时顺序分批。来源没有消息 ID 时，适配器采用稳定源位置 ID；修订原位置应使用明确的新消息 ID，不能以正文哈希删除合法重复。来源时间缺失保持未知，不再生成今天的合成时间。
+来源时间缺失保持未知，消息重试复用相同 ID。
 文档、手工事实和下述原文 API 保留独立契约；`consolidate()` 不会绕过联合任务处理对话消息。
 
 | 方法 | 主要参数 | 返回与语义 |
@@ -58,8 +58,6 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 | `remember` | content；user_id、session_id、extract=True | dict；保存原文并记录抽取意图，事实仍需显式整合 |
 | `consolidate` | episodes=None | 计数字典；None 处理 pending 事件 |
 | `consolidate_full` | fact_episodes=None、digest_episodes=None | 计数字典；整合与条件摘要，可分别指定两组事件；reflected 固定为 0 |
-| `import_messages` | sessions、user_id；consolidate=None、generate_digests=True、dedupe=True 等 | 计数字典；导入已解析会话 |
-| `import_data` | data、format="auto"、user_id、session_id；其余导入选项 | 计数字典；先解析再导入 |
 | `import_snapshot` | snapshot、user_id、dedupe=True | dict；导入结构化导出，不等同于打开存储目录 |
 
 结构化快照要求 `format_version=3`。导入先整批校验，遇到无效数据时抛出 `ValueError`。导入保留目标用户的运行设置；字段、来源编号和替代链语义见[结构化快照导入](../architecture/memory.md#结构化快照导入)。
@@ -126,7 +124,7 @@ memory.update_fact(fact.id, categories=[])  # 清除标签，来源为 unset
 
 离线 `MemoryEngine.consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实和工作条目。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，已完成的窗口范围保留，未完成范围继续待处理；重试跳过完成范围并消解重复事实和工作条目。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
 
-对话历史导入使用消息身份和联合任务；同 ID 的重传不重新生成。文档和可移植快照保留各自导入契约。显式摘要与 include_digests 仍通过同一任务内核，并保留既有摘要。
+对话写入使用消息身份和联合任务，同 ID 的重传复用处理结果。结构化快照使用独立的恢复契约。显式摘要与 include_digests 仍通过同一任务内核，并保留既有摘要。
 
 离线抽取异常包括 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError、ExtractionConflictError。未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated；同一命名空间的并发写作废在途抽取时抛 ExtractionConflictError（code 为 extraction_conflict），内核会先基于新快照自动重试一次。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。Postgres 已接收任务的进度和错误从操作回执读取。
 

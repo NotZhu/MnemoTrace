@@ -29,17 +29,17 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 
 ### POST /v1/messages
 
-对话消息的统一入口，一次请求属于一个会话。实时与历史使用相同的消息数组：
+对话消息的统一入口，一次请求属于一个会话。
 
 ```json
-{"space_id":"space-example","session_id":"chat-001","mode":"live","messages":[
+{"space_id":"space-example","session_id":"chat-001","messages":[
   {"message_id":"m1","role":"user","content":"请制定迁移计划。","event_time":1793500000},
   {"message_id":"m2","role":"assistant","content":"建议先备份，再迁移。","event_time":1793500010}
 ]}
 ```
 
 `message_id`、`role`、`content` 必填；role 仅支持 user/assistant，不接收流式碎片。每条独立保存，数组顺序成为会话持久化序号。`event_time` 可省略或为 null，表示来源时间未知。
-`mode` 默认为 live；historical 标记为历史摄入。`processing` 默认为 buffered，可显式 immediate；`extract` 默认为 `true`，设为 `false` 时只保存对话原文。可选 `agent_id` 记录摄入来源。
+`processing` 默认为 buffered，可显式 immediate；`extract` 默认为 `true`，设为 `false` 时只保存对话原文。可选 `agent_id` 记录摄入来源。
 
 消息 ID 在空间和会话内唯一；同 ID 同输入返回原事件及当前状态，不重置空闲计时，不重复生成。不同输入返回 409/message_conflict；批内冲突在任何写入前拒绝。不同 ID 的相同正文允许存在。
 自动处理先验证模型配置，再提交原文与任务。immediate 等待核心提交，buffered 返回当前操作状态。
@@ -143,21 +143,14 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 
 `GET /v1/memories?categories=food&categories=music` 匹配任一标签，非法枚举返回 422。与其他事实筛选取交集，在分页前执行。原始事件、全局计数和分类候选不随标签筛选改变。后续页继续成对携带 `expected_revision` 和 `evaluated_at`。
 
-## 导入与导出
+## 导出与遗忘
 
 | 端点 | 输入与语义 |
 | --- | --- |
-| `POST /v1/import` | sessions 或 data + format；consolidate=null、generate_digests=true、dedupe=true |
-| `POST /v1/documents` | text 或 data_base64；filename、content_type 可选，session_id=document |
 
-图片导入额外返回 `caption_status` 和 `degraded`。描述结果区分 `described`、`empty`、`model_not_configured` 与 `model_failed`。缺少描述时保留图片占位原文。
 | `GET /v1/export` | include_sensitive=false；返回结构化导出 |
 | `POST /v1/forget` | JSON `{"space_id":"…","confirm":true}`，清空指定空间并保留 ID 和设置 |
 
-同时传 sessions 和 data 时使用 sessions。默认在持久化原文后排队抽取，
-`consolidate=true` 等待核心提交，`consolidate=false` 保存原文。PDF/DOCX 依赖 documents extra，
-图片描述依赖视觉模型。批量导入的 `results` 包含已接受的数据及持久化回执，`failures` 标记失败会话。
-批次部分失败时 HTTP 返回 200，响应中的 `ok` 为 false。无法解析出会话 ID 时，使用从 0 开始的 `session_index` 指明输入位置。
 默认导出省略敏感事实及原文，显式设置 `include_sensitive=true` 获取私有导出，其中 `conflicts` 引用同一快照内的事实编号。
 
 ## OpenAI 兼容聊天

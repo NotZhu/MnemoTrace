@@ -396,8 +396,15 @@ def _pending_write(memory, kind):
         source = memory.remember_raw('Synthetic input for a source vector', 'chat')
         return memory.source_vector_operation(source.id).operation_id
     if kind == 'digest':
-        result = memory.import_document('Synthetic digest input. ' * 100, 'chat', extract=False)
-        operation_id, = result['operation_ids']
+        from mnemotrace.store.contracts import ChangeSet, CommitConditions, OperationKind, OperationSpec, SourceVersion
+        from mnemotrace.store.postgres.dao import new_operation_id
+
+        source = memory.remember_raw('Synthetic digest input. ' * 100, 'chat')
+        operation_id = new_operation_id()
+        with memory.dao.read_snapshot() as view:
+            conditions = CommitConditions(view.snapshot)
+        task = OperationSpec(operation_id, OperationKind.DIGEST, 'chat', (SourceVersion(source.id, 1),))
+        memory.dao.commit(ChangeSet(conditions, new_operation_id(), operations=(task,)))
     else:
         operation_id = _accept(memory)
     if kind != 'extract':
@@ -413,7 +420,7 @@ def _scope_counts(runtime, scope):
 
               'entities', 'graph_relations', 'embeddings', 'lexical_documents', 'lexical_terms',
               'operations', 'operation_sources', 'operation_targets', 'operation_products', 'operation_digest_parts',
-              'operation_receipts', 'import_receipts')
+              'operation_receipts')
     with runtime._transaction() as conn:
         conn.execute("SELECT set_config('mnemotrace.user_id', %s, true)", (scope.user_id,))
         return {table: conn.execute(sql.SQL('SELECT count(*) FROM mnemotrace.{} WHERE user_id = %s AND space_id = %s')

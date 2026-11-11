@@ -1,4 +1,5 @@
 """Cross-stage invalidation, standalone concurrency, explicit retry and crash checkpoints."""
+from mnemotrace.connectors.dialogue import import_messages
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import json
@@ -100,10 +101,11 @@ def test_manual_fact_keeps_authority_over_dialogue_fact():
     assert not mem.fact_store.get(old.id).is_live() and new.source == 'user'
 
 
+@pytest.mark.history_import
 def test_long_history_adapter_keeps_global_positional_ids():
     mem = MemoryEngine()
     rows = [dict(role='user', content='Synthetic repeated content') for _ in range(1001)]
-    result = mem.import_messages([dict(session_id='s', messages=rows)], consolidate=False)
+    result = import_messages(mem, [dict(session_id='s', messages=rows)], consolidate=False)
     assert result['episodes'] == 1001
     assert len({e.message_id for e in mem.episodes_doc.values()}) == 1001
     validate_state(deepcopy(mem._pipeline_state), mem.episodes_doc.values())
@@ -137,8 +139,8 @@ def test_late_unknown_and_older_history_cannot_replace_newer_source():
             fact['object_kind'] = 'entity'
         return json.dumps(result)
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
-    for mid, stamp, mode in [('new', 200, 'live'), ('unknown', None, 'historical'), ('old', 100, 'historical')]:
-        mem.remember_messages([message(mid, mid, event_time=stamp)], 's', 'u', mode=mode)
+    for mid, stamp in [('new', 200), ('unknown', None), ('old', 100)]:
+        mem.remember_messages([message(mid, mid, event_time=stamp)], 's', 'u')
         assert mem.flush_messages('u')['ok']
     latest = [f.object for f in mem.fact_store.values() if f.is_live()]
     assert set(latest) == {'new', 'unknown'}
@@ -159,7 +161,7 @@ def test_out_of_order_history_has_disjoint_intervals_and_a_complete_chain(arriva
         return json.dumps(result)
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
     for index, (value, stamp) in enumerate(arrivals):
-        mem.remember_messages([message(str(index), value, event_time=stamp)], 's', 'u', mode='historical')
+        mem.remember_messages([message(str(index), value, event_time=stamp)], 's', 'u')
         assert mem.flush_messages('u')['ok']
     facts = sorted(mem.fact_store.values(), key=lambda f: f.valid_at)
     assert [(f.object, f.valid_at, f.invalid_at) for f in facts] == expected

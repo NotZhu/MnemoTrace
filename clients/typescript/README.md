@@ -62,7 +62,7 @@ All methods return promises. Pass `{ spaceId }` to single-space methods. For mul
 | --- | --- |
 | `health()` | Health; readiness is a separate HTTP endpoint |
 | `remember(content, options)` | sessionId, extract, processing, agentId; RememberResult |
-| `rememberMessages(messages, options)` | required sessionId; mode, processing, extract, agentId; MessagesResult |
+| `rememberMessages(messages, options)` | required sessionId; processing, extract, agentId; MessagesResult |
 | `recall(query, options)` | nChunks=6, sessionId, asOf, redactSensitive=false, spaceIds; RecallResult |
 | `search(query, options)` | asOf, redactSensitive, subject, predicate; candidate facts and sources, or a unique explicit slot value |
 | `listSpaces(options?)` / `createSpace(name)` | list or create spaces owned by the authenticated account |
@@ -81,7 +81,6 @@ All methods return promises. Pass `{ spaceId }` to single-space methods. For mul
 | `getFocus(options)` / `setFocus(partial, options)` | track/mute lists |
 | `getPolicy(options)` / `setPolicy(partial, options)` | extraction, digest and profile overrides |
 | `graph(options)` | asOf, includeSensitive=false; GraphResponse（nodes、edges、has_more） |
-| `import(params, options)` | ImportParams sent as the HTTP import payload; ImportResult |
 | `export(options)` | includeSensitive=false; MemoryExport by default |
 | `forget({ spaceId, confirm: true })` | irreversible space clearing; missing confirmation fails before sending |
 | `chat.completions.create(params)` | ChatCompletion, or AsyncIterable when stream=true |
@@ -96,7 +95,7 @@ Use the HTTP API directly for document uploads, conflict resolution, and slot cl
 
 ## Types and errors
 
-Public types are exported from [types.ts](https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/src/types.ts). Core results include RememberResult, RecallResult, SearchResult, Fact, MemoryDump, SessionIndex, SessionReport, ImportResult, MemoryExport, and chat completion types.
+Public types are exported from [types.ts](https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/src/types.ts). Core results include RememberResult, RecallResult, SearchResult, Fact, MemoryDump, SessionIndex, SessionReport, MemoryExport, and chat completion types.
 
 `Category` defines the fixed label catalog. Fact results return `categories`, server-assigned `categories_source`, and `object_kind`. Use `{ categories: [] }` to clear the labels. Metadata-only edits preserve provenance and history. Redacted session report rows omit these fields. Structured exports carry `format_version: 3`. See the [classification contract](https://github.com/NotZhu/MnemoTrace/blob/main/docs/architecture/memory.md#分类与对象类型) for edit semantics.
 

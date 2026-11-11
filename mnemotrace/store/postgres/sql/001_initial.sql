@@ -60,11 +60,10 @@ CREATE TABLE mnemotrace.sources (
     role text,
     event_time timestamptz,
     ingested_at timestamptz NOT NULL,
-    source_kind text NOT NULL CHECK (source_kind IN ('raw','dialogue','document')),
+    source_kind text NOT NULL CHECK (source_kind IN ('note','dialogue')),
     extract boolean NOT NULL,
     message_id mnemotrace.identifier,
     sequence mnemotrace.counter,
-    mode text CHECK (mode IN ('live','historical')),
     agent_id text CHECK (agent_id ~ '^[A-Za-z0-9_.:@/\-]{1,128}$'),
     message_fingerprint text CHECK (message_fingerprint ~ '^[0-9a-f]{64}$'),
     metadata jsonb NOT NULL CHECK (jsonb_typeof(metadata) = 'object'),
@@ -74,7 +73,7 @@ CREATE TABLE mnemotrace.sources (
     UNIQUE(user_id, space_id, session_id, message_id),
     UNIQUE(user_id, space_id, session_id, sequence),
     CHECK (message_id IS NULL OR (message_fingerprint IS NOT NULL AND role IN ('user','assistant')
-           AND role IS NOT NULL AND sequence IS NOT NULL AND mode IS NOT NULL
+           AND role IS NOT NULL AND sequence IS NOT NULL
            AND length(content) BETWEEN 1 AND 1000000 AND content ~ '[^[:space:]]')),
     FOREIGN KEY(user_id, space_id, session_id) REFERENCES mnemotrace.sessions ON DELETE CASCADE
 );
@@ -161,17 +160,6 @@ CREATE TABLE mnemotrace.conflicts (
 );
 CREATE UNIQUE INDEX conflicts_pair ON mnemotrace.conflicts(user_id, space_id, least(older,newer), greatest(older,newer));
 CREATE INDEX conflicts_status ON mnemotrace.conflicts(user_id, space_id, status, id);
-CREATE TABLE mnemotrace.import_receipts (
-    user_id mnemotrace.identifier NOT NULL,
-    space_id mnemotrace.identifier NOT NULL,
-    source_kind text NOT NULL,
-    content_hash text NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
-    source_id mnemotrace.identifier,
-    receipt jsonb NOT NULL CHECK (jsonb_typeof(receipt) = 'object'),
-    PRIMARY KEY(user_id, space_id, source_kind, content_hash),
-    FOREIGN KEY(user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE,
-    FOREIGN KEY(user_id, space_id, source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE
-);
 
 CREATE TABLE mnemotrace.entities (
     user_id mnemotrace.identifier NOT NULL,

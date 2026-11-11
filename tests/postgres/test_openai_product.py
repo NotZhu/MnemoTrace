@@ -12,7 +12,7 @@ def client_with_llm(product_client, product_service):
 
     class Model:
         def complete(self, prompt, system=None, **kwargs):
-            if "MNEMOTRACE_WINDOW" in prompt:
+            if "MNEMOTRACE_WINDOW" in prompt or "pair id" in (system or ""):
                 return extraction.complete(prompt, system=system or "", **kwargs)
             return model.complete(prompt, system=system, **kwargs)
 
@@ -39,13 +39,16 @@ def test_chat_completions_endpoint(client_with_llm):
 def test_chat_completions_endpoint_supports_memory_as_of(client_with_llm):
     c, service, model = client_with_llm
     h = hdr("chat_asof")
-    c.post("/v1/import", json={
-        "format": "records", "consolidate": True,
-        "data": [
-            {"session_id": "old", "content": "Wei works at Tencent.", "event_time": 1_700_000_000.0},
-            {"session_id": "new", "content": "Wei works at Moonshot AI.", "event_time": 1_702_592_000.0},
-        ],
-    }, headers=h)
+    for session, text, stamp in (
+        ("old", "Wei works at Tencent.", 1_700_000_000.0),
+        ("new", "Wei works at Moonshot AI.", 1_702_592_000.0),
+    ):
+        response = c.post("/v1/messages", json={
+            "session_id": session, "processing": "immediate",
+            "messages": [{"message_id": "m1", "role": "user", "content": text, "event_time": stamp}],
+        }, headers=h)
+        assert response.is_success
+
 
     r = c.post("/v1/chat/completions", json={
         "model": "mnemotrace",
