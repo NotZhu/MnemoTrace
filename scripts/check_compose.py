@@ -7,7 +7,6 @@ import secrets
 import socket
 import subprocess
 from tempfile import TemporaryDirectory
-import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -102,24 +101,19 @@ def main():
             raw = http('/v1/messages', {**message, 'extract': False}, key=key, expected=202)
             source_id, = raw['source_ids']
             assert raw['accepted'] == 1
+            assert raw['operation_ids'] == []
+            archived = http('/v1/recall', {'space_id': space, 'query': 'Synthetic archive note',
+                                          'lean': False}, key=key)
+            assert archived['status'] == 'no_evidence'
             http('/v1/facts', {'space_id': space, 'predicate': 'lives_in', 'object': 'Synthetic City',
                                'text': 'user lives in Synthetic City'},
                  key=key)
-            processing = http('/v1/processing' + query, key=key)
-            assert processing['operations']
-            vector = next(item['operation_id'] for item in processing['operations']
-                          if item['kind'] == 'reembed')
-            assert http('/v1/operations/' + vector + query, key=key)['state'] == 'pending'
+            assert http('/v1/processing' + query, key=key)['operations'] == []
             compose('stop', 'mnemotrace', 'worker')
             compose('restart', 'db')
             compose('up', '-d', '--wait', 'mnemotrace', 'worker')
-            for _ in range(30):
-                operation = http('/v1/operations/' + vector + query, key=key)
-                if operation['state'] == 'completed':
-                    break
-                time.sleep(1)
-            assert operation['state'] == 'completed'
-            assert 'Synthetic archive note' in json.dumps(http('/v1/episodes/' + source_id + query, key=key))
+            assert http('/v1/processing' + query, key=key)['operations'] == []
+            assert http('/v1/episodes/' + source_id + query, key=key)['content'] == 'Synthetic archive note'
             recalled = http('/v1/recall', {'space_id': space, 'query': 'Where do I live?'}, key=key)
             assert 'Synthetic City' in json.dumps(recalled)
             assert http(f'/v1/spaces/{space}?confirm=true', key=key, method='DELETE')['ok']
