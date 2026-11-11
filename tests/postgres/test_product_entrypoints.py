@@ -108,8 +108,27 @@ def test_http_allows_raw_and_manual_writes_without_a_model(product):
     assert automatic.status_code == 503
     assert automatic.json()['detail']['stored_raw'] is False
     assert not service.memory(context).list_sources()
-    raw = client.post('/v1/remember', json={**scope, 'content': 'Synthetic raw note', 'scope': 'raw'})
-    assert raw.json()['status'] == 'stored' and raw.json()['source_ids']
+    raw = client.post('/v1/remember', json={**scope, 'content': 'Synthetic raw note', 'extract': False})
+    assert raw.status_code == 200
+    note = raw.json()
+    source_id, = note['source_ids']
+    assert note['status'] == 'stored' and note['stored_raw'] is True
+    assert note['operation_ids'] == note['operations'] == []
+    assert service.memory(context).list_sources()[0].content == 'Synthetic raw note'
+
+    batch = {**scope, 'session_id': 'dialogue', 'extract': False,
+             'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic raw dialogue'}]}
+    dialogue = client.post('/v1/messages', json=batch)
+    assert dialogue.status_code == 202 and dialogue.json()['operation_ids'] == []
+    dialogue_id, = dialogue.json()['source_ids']
+    assert dialogue_id != source_id
+    assert client.post('/v1/messages', json=batch).json()['source_ids'] == [dialogue_id]
+    assert client.post('/v1/messages', json={**batch, 'extract': True}).status_code == 409
+    for invalid in ({**batch, 'scope': 'raw'}, {**batch, 'extract': 'false'}):
+        assert client.post('/v1/messages', json=invalid).status_code == 422
+    assert {episode.content for episode in service.memory(context).list_sources()} == {
+        'Synthetic raw note', 'Synthetic raw dialogue',
+    }
     manual = client.post('/v1/facts', json={"text": 'user likes Synthetic tea', **scope, 'predicate': 'likes', 'object': 'Synthetic tea'})
     assert manual.status_code == 200 and manual.json()['id']
 
@@ -201,7 +220,7 @@ def test_direct_and_proxy_mcp_and_cli_share_records(product, monkeypatch, capsys
     cli_scope = ['--user-id', context.user_id, '--space-id', context.space_id]
     assert cli.main([*cli_scope, 'operation', operation_id]) == 0
     assert json.loads(capsys.readouterr().out)['core_committed']
-    assert cli.main([*cli_scope, 'remember', 'Synthetic CLI source', '--session-id', 'cli', '--scope', 'raw']) == 0
+    assert cli.main([*cli_scope, 'remember', 'Synthetic CLI source', '--session-id', 'cli', '--no-extract']) == 0
     source_id, = json.loads(capsys.readouterr().out)['source_ids']
     assert service.memory(context).get_episode(source_id).content == 'Synthetic CLI source'
     fact = service.memory(context).add_fact('Synthetic CLI archive', 'access_code', 'Amethyst', text='Synthetic CLI archive access code Amethyst')

@@ -11,7 +11,7 @@ from tests.test_pipeline_sources import LONG, DIGEST, respond
 def test_explicit_original_http_enforces_scope_and_omits_internal_state(product_service, product_client, product_scope):
     context, key = product_scope("owner")
     other_context, other_key = product_scope("other")
-    source, = product_service.remember(context, LONG, "synthetic", scope="raw")["source_ids"]
+    source, = product_service.remember(context, LONG, "synthetic", extract=False)["source_ids"]
     path = f"/v1/episodes/{source}"
     response = product_client.get(path, params={"space_id": context.space_id},
                                   headers={"Authorization": f"Bearer {key}"})
@@ -28,7 +28,7 @@ async def test_local_and_remote_mcp_explicit_original_contract(product_service, 
     from mnemotrace.mcp.backends import LocalBackend, RemoteBackend
 
     context, key = product_scope()
-    source, = product_service.remember(context, "synthetic original", "original", scope="raw")["source_ids"]
+    source, = product_service.remember(context, "synthetic original", "original", extract=False)["source_ids"]
     local = LocalBackend(context.user_id, context.space_id, service=product_service)
     assert (await local.get_episode(source))["content"] == "synthetic original"
     with pytest.raises(SpaceNotFound):

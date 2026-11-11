@@ -54,6 +54,17 @@ function setup(options = {}) {
   }
 }
 
+test('notes and dialogue send a boolean extract flag', async () => {
+  const s = setup()
+  s.login('synthetic-A')
+  s.respond(async () => new Response(JSON.stringify({ ok: true })))
+  const messages = [{ message_id: 'm1', role: 'user', content: 'Synthetic dialogue' }]
+  await s.api.remember('Synthetic note')
+  await s.api.remember('Synthetic raw note', { extract: false })
+  await s.api.rememberMessages(messages, 's', 'live', false)
+  assert.deepEqual(s.calls.requests.map(({ init }) => JSON.parse(init.body).extract), [true, false, false])
+})
+
 const transitions = {
   logout: s => s.logout(),
   'A to B': s => s.login('synthetic-B'),

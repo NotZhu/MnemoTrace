@@ -61,8 +61,8 @@ All methods return promises. Pass `{ spaceId }` to single-space methods. For mul
 | Method | Parameters and result |
 | --- | --- |
 | `health()` | Health; readiness is a separate HTTP endpoint |
-| `remember(content, options)` | sessionId, scope, agentId; RememberResult |
-| `rememberMessages(messages, options)` | required sessionId; mode, processing, scope, agentId; MessagesResult |
+| `remember(content, options)` | sessionId, extract, processing, agentId; RememberResult |
+| `rememberMessages(messages, options)` | required sessionId; mode, processing, extract, agentId; MessagesResult |
 | `recall(query, options)` | nChunks=6, sessionId, asOf, redactSensitive=false, spaceIds; RecallResult |
 | `search(query, options)` | asOf, redactSensitive, subject, predicate; candidate facts and sources, or a unique explicit slot value |
 | `listSpaces(options?)` / `createSpace(name)` | list or create spaces owned by the authenticated account |
@@ -117,7 +117,7 @@ try {
 
 ## Chat and privacy
 
-Chat uses the configured server LLM. The memory object requires space_id and supports recall, remember, session_id, scope, n_chunks, as_of, and redact_sensitive. Its model field does not select an arbitrary backend. stream=true exposes SSE chunks; the current server splits a completed response rather than forwarding live model tokens.
+Chat uses the configured server LLM. To save the conversation without fact extraction, set `memory.extract` to `false`. The memory object requires space_id and supports recall, remember, session_id, extract, n_chunks, as_of, and redact_sensitive. Its model field does not select an arbitrary backend. stream=true exposes SSE chunks; the current server splits a completed response rather than forwarding live model tokens.
 
 Export defaults to a restricted structured view. Set `includeSensitive: true` to include private text. Fact deletion preserves its original sources, which can be erased by clearing or deleting the space.
 

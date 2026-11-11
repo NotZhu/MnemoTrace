@@ -201,7 +201,8 @@ export function useRememberMessages(signal?: AbortSignal) {
   const invalidate = useInvalidateMemory()
   return useMutation({
     mutationFn: (req: {messages: Parameters<typeof api.rememberMessages>[0]; sessionId: string;
-      mode?: 'live' | 'historical'}) => api.rememberMessages(req.messages, req.sessionId, req.mode, signal),
+      mode?: 'live' | 'historical'; extract?: boolean}) =>
+      api.rememberMessages(req.messages, req.sessionId, req.mode, req.extract, signal),
     onSuccess: invalidate,
   })
 }

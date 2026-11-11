@@ -98,7 +98,7 @@ def output_size(data, config):
 
 
 def empty_input(session, operation='extract'):
-    return dict(context=[], pending=[], mode=session['mode'], scope=session['scope'],
+    return dict(context=[], pending=[], mode=session['mode'], extract=session['extract'],
                 source_kind=session['source_kind'], operation=operation, parts=[], candidates=[])
 
 
@@ -152,7 +152,7 @@ def context_for(memory, tasks, first):
                          if r['sequence'] < first['sequence']), key=lambda item: item[1]['sequence'], reverse=True)
     result, remaining = [], memory.config.extraction_context_bytes
     for key, row in candidates:
-        if (row['mode'], row['scope'], row['source_kind']) != (first['mode'], first['scope'], first['source_kind']):
+        if (row['mode'], row['extract'], row['source_kind']) != (first['mode'], first['extract'], first['source_kind']):
             break
         if row['cancelled'] or row['core'] != 'completed':
             break
@@ -176,7 +176,7 @@ def busy(tasks, row):
 def plan(memory, tasks, session, cutoff, after=0):
     validate_config(memory.config)
     pending = sorted(((k, r) for k, r in tasks.rows(session['session_id']).items()
-        if (r['mode'], r['scope'], r['source_kind']) == (session['mode'], session['scope'], session['source_kind'])
+        if (r['mode'], r['extract'], r['source_kind']) == (session['mode'], session['extract'], session['source_kind'])
         and after < r['sequence'] <= cutoff and not r['cancelled'] and r['core'] == 'pending' and not busy(tasks, r)),
         key=lambda item: item[1]['sequence'])
     if not pending:
@@ -235,7 +235,7 @@ def fit_window(data, pending, config, policy):
 
 def digest_plan(memory, tasks, session, cutoff):
     for key, row in sorted(tasks.rows(session['session_id']).items(), key=lambda item: item[1]['sequence']):
-        if (row['mode'], row['scope'], row['source_kind']) != (session['mode'], session['scope'], session['source_kind']):
+        if (row['mode'], row['extract'], row['source_kind']) != (session['mode'], session['extract'], session['source_kind']):
             continue
         if row['cancelled'] or row['sequence'] > cutoff or row['digest'] != 'pending' or busy(tasks, row):
             continue

@@ -82,24 +82,45 @@ def test_chat_completions_endpoint_supports_sensitive_redaction(client_with_llm)
     assert "diabetes" not in system.lower()
 
 
-def test_chat_completions_endpoint_remembers_with_session_and_scope(client_with_llm):
+def test_chat_completions_endpoint_remembers_with_session_and_extract(client_with_llm):
     c, _, _ = client_with_llm
     h = hdr("chat_session")
 
     r = c.post("/v1/chat/completions", json={
         "model": "mnemotrace",
         "messages": [{"role": "user", "content": "I work at Acme."}],
-        "memory": {"session_id": "codex:repo:thread-1", "scope": "long"},
+        "memory": {"session_id": "codex:repo:thread-1", "extract": True},
     }, headers=h)
 
     assert r.status_code == 200
     data = r.json()
     assert data["mnemotrace"]["session_id"] == "codex:repo:thread-1"
     assert data["mnemotrace"]["remember_queued"] is True
-    assert data["mnemotrace"]["remember_scope"] == "long"
+    assert data["mnemotrace"]["remember_extract"] is True
 
     memories = c.get("/v1/memories?include_sensitive=true", headers=h).json()
     assert any(e["session"] == "codex:repo:thread-1" for e in memories["episodes"])
+
+
+@pytest.mark.parametrize("remember", [False, True])
+def test_chat_completions_can_save_raw_dialogue_or_skip_writing(client_with_llm, remember):
+    c, _, _ = client_with_llm
+    h = hdr("chat_raw")
+    payload = {
+        "messages": [{"role": "user", "content": "Synthetic raw dialogue"}],
+        "memory": {"session_id": "raw-chat", "remember": remember, "extract": False},
+    }
+    r = c.post("/v1/chat/completions", json=payload, headers=h)
+    assert r.status_code == 200
+    memory = r.json()["mnemotrace"]
+    assert memory["remembered"] is remember
+    if remember:
+        assert memory["remember_extract"] is False
+        assert memory["remember_queued"] is False and memory["operation_ids"] == []
+    else:
+        assert "remember_extract" not in memory
+    episodes = c.get("/v1/memories?include_sensitive=true", headers=h).json()["episodes"]
+    assert sum(e["session"] == "raw-chat" for e in episodes) == (2 if remember else 0)
 
 
 def test_chat_completions_streaming(client_with_llm):

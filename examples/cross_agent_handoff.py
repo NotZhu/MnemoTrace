@@ -92,7 +92,7 @@ def exercise_handoff(
     remembered = call("/v1/remember", {
         "content": MEMORY,
         "session_id": source_session,
-        "scope": "long",
+        "extract": True,
     }, "POST")
     output(json.dumps(remembered, ensure_ascii=False, indent=2))
 

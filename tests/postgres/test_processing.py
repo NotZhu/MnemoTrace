@@ -23,8 +23,8 @@ from mnemotrace.worker import run_worker
 from tests.test_message_pipeline import PROPOSAL, REPORT, dialogue_evidence
 
 
-def dialogue(key, content='Synthetic person prefers tea', *, scope='auto'):
-    return MessageInput(key, 'user', content, scope=scope, event_time=100)
+def dialogue(key, content='Synthetic person prefers tea', *, extract=True):
+    return MessageInput(key, 'user', content, extract=extract, event_time=100)
 
 
 @pytest.fixture
@@ -131,7 +131,7 @@ def test_duplicate_concurrency_and_atomic_rejection(processing, cluster, runtime
     memory, _ = processing()
     offline = Memory(runtime, memory.context)
     with pytest.raises(LLMNotConfiguredError):
-        offline.remember_messages('chat', (dialogue('raw', scope='raw'), dialogue('auto')))
+        offline.remember_messages('chat', (dialogue('raw', extract=False), dialogue('auto')))
     assert offline.list_sources() == ()
     with Database(cluster.runtime) as pool, ThreadPoolExecutor(2) as executor:
         other, _ = processing(database=pool)
@@ -144,7 +144,7 @@ def test_duplicate_concurrency_and_atomic_rejection(processing, cluster, runtime
     assert first['operation_ids'] == second['operation_ids']
     assert sorted([first['accepted'], second['accepted']]) == [0, 1]
     with pytest.raises(MessageConflict):
-        memory.remember_messages('chat', (dialogue('new'), dialogue('same', 'different content')))
+        memory.remember_messages('chat', (dialogue('new'), dialogue('same', extract=False)))
     assert len(memory.list_sources()) == 1
 
 

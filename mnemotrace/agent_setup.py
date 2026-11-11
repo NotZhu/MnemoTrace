@@ -682,7 +682,7 @@ def _policy(agent: str, session_id: str) -> str:
     return f"""Use MnemoTrace as the user's cross-agent long-term memory.
 At session start or when debugging memory wiring, call mnemotrace_agent_status with session_id `{session_id}`.
 Before tasks that may depend on prior user/project context, call mnemotrace_recall with session_id `{session_id}`.
-When the user states a durable preference, project rule, decision, or reusable fact, call mnemotrace_remember with the same session_id and scope `long` or `auto`.
+When the user states a durable preference, project rule, decision, or reusable fact, call mnemotrace_remember with the same session_id and extraction enabled.
 Keep task progress and temporary execution state in the agent’s task tools or files.
 When the user asks to correct or delete a memory, call mnemotrace_list_facts to find the fact id, then call mnemotrace_update_fact or mnemotrace_delete_fact with confirm=true.
 When the user asks to export their memory, call mnemotrace_export(response_format="json"); set include_sensitive=true only for an explicit private export.
@@ -697,7 +697,7 @@ def _bootstrap_policy(session_id: str) -> str:
     return f"""Use MnemoTrace as the user's cross-agent long-term memory.
 At session start or when debugging memory wiring, call mnemotrace_agent_status with a session_id like `{session_id}`.
 Before tasks that may depend on prior user/project context, call mnemotrace_recall with a session_id like `{session_id}`.
-When the user states a durable preference, project rule, decision, or reusable fact, call mnemotrace_remember with the same session_id and scope `long` or `auto`.
+When the user states a durable preference, project rule, decision, or reusable fact, call mnemotrace_remember with the same session_id and extraction enabled.
 Keep task progress and temporary execution state in the agent’s task tools or files.
 When the user asks to correct or delete a memory, call mnemotrace_list_facts to find the fact id, then call mnemotrace_update_fact or mnemotrace_delete_fact with confirm=true.
 When the user asks to export their memory, call mnemotrace_export(response_format="json"); set include_sensitive=true only for an explicit private export.
@@ -904,7 +904,7 @@ def render_markdown(
             "        'session_id': session_id,",
             "        'recall': True,",
             "        'remember': True,",
-            "        'scope': 'auto',",
+            "        'extract': True,",
             "    }},",
             ")",
             "```",

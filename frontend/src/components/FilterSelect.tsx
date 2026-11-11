@@ -8,12 +8,6 @@ const appearances = {
     list: 'absolute left-0 top-full z-30 mt-2 max-h-64 w-44 max-w-[calc(100vw-3rem)] overflow-auto rounded-[13px] border border-field-line bg-ink-800 p-1.5 text-sm shadow-card',
     option: 'gap-3 px-2.5 py-2.5', label: 'min-w-0 truncate', icon: 'h-4 w-4',
   },
-  scope: {
-    root: 'relative min-w-0',
-    trigger: 'flex min-h-8 items-center gap-2 rounded-md border-0 bg-transparent p-0 text-left text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand-cyan',
-    list: 'absolute left-0 top-full z-30 mt-2 w-32 rounded-[13px] border border-field-line bg-ink-800 p-1.5 text-sm shadow-card',
-    option: 'gap-2 px-2 py-2.5', label: undefined, icon: 'h-4 w-4',
-  },
   export: {
     root: 'relative w-fit max-w-full',
     trigger: 'inline-flex min-h-8 items-center gap-1 rounded-md border-0 bg-transparent p-0 text-left text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand-cyan disabled:cursor-not-allowed disabled:opacity-50',
@@ -41,7 +35,6 @@ export function FilterSelect<T extends string>({ label, value, options, onChange
   const [active, setActive] = useState(selected)
   const activeIndex = Math.min(active, options.length - 1)
   const expanded = open && !disabled
-  const labelledBy = appearance === 'scope' ? `${id}-label` : undefined
 
   useEffect(() => {
     if (disabled) setOpen(false)
@@ -88,9 +81,7 @@ export function FilterSelect<T extends string>({ label, value, options, onChange
     <div ref={root} className={styles.root} onBlur={(event) => {
       if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false)
     }}>
-      {labelledBy && <span id={labelledBy} className="sr-only">{label}</span>}
-      <button type="button" role="combobox" aria-label={labelledBy ? undefined : label}
-        aria-labelledby={labelledBy} aria-describedby={describedBy}
+      <button type="button" role="combobox" aria-label={label} aria-describedby={describedBy}
         aria-haspopup="listbox" aria-expanded={expanded}
         aria-controls={expanded ? `${id}-list` : undefined}
         aria-activedescendant={expanded ? `${id}-option-${activeIndex}` : undefined}
@@ -101,8 +92,7 @@ export function FilterSelect<T extends string>({ label, value, options, onChange
         <ChevronDown aria-hidden="true" className={`${styles.icon} shrink-0 text-ghost transition-transform motion-reduce:transition-none ${expanded ? 'rotate-180' : ''}`} />
       </button>
       {expanded && (
-        <ul ref={list} id={`${id}-list`} role="listbox" aria-label={labelledBy ? undefined : label}
-          aria-labelledby={labelledBy} className={styles.list}>
+        <ul ref={list} id={`${id}-list`} role="listbox" aria-label={label} className={styles.list}>
           {options.map((option, index) => (
             <li key={option.value} id={`${id}-option-${index}`} role="option"
               aria-selected={option.value === value} data-active={activeIndex === index}

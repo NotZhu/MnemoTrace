@@ -9,8 +9,9 @@ from typing import Annotated, Literal, Optional
 
 try:
     from mcp.server.fastmcp import FastMCP
+    from mcp.server.fastmcp.exceptions import ToolError
     from mcp.types import ToolAnnotations
-    from pydantic import Field
+    from pydantic import Field, StrictBool
 except Exception as exc:  # noqa: BLE001
     raise SystemExit('the MCP server needs the MCP SDK — `pip install "mnemotrace-memory[mcp]"`') from exc
 
@@ -24,7 +25,7 @@ INSTRUCTIONS = (
     "depend on what you've learned about the user in past sessions (their preferences, projects, "
     "people, decisions) — it returns a small, dated, relevant context to ground your answer. Use "
     "`mnemotrace_remember` whenever the user states a durable fact, preference, or decision worth keeping "
-    "(use scope='long' or the default scope='auto'). "
+    "with extraction enabled by default. "
     "Keep temporary execution state in the agent's task tools or files. "
     "Use `mnemotrace_flush_processing` with the session ID to finish core processing; "
     "use `mnemotrace_session_report` when the user asks what that session "
@@ -40,7 +41,18 @@ INSTRUCTIONS = (
     "user a portable memory export; `mnemotrace_forget` erases everything (irreversible)."
 )
 
-mcp = FastMCP("mnemotrace_mcp", instructions=INSTRUCTIONS)
+class MemoryMCP(FastMCP):
+    async def call_tool(self, name: str, arguments: dict):
+        if name in {"mnemotrace_remember", "mnemotrace_remember_messages"}:
+            # FastMCP drops unknown arguments and can parse JSON strings before validation.
+            if "scope" in arguments:
+                raise ToolError("Use the boolean extract argument")
+            if "extract" in arguments and type(arguments["extract"]) is not bool:
+                raise ToolError("extract must be a boolean")
+        return await super().call_tool(name, arguments)
+
+
+mcp = MemoryMCP("mnemotrace_mcp", instructions=INSTRUCTIONS)
 
 # --- backend 单例（测试/嵌入场景可覆盖） ------------------
 _backend: Optional[Backend] = None
@@ -69,12 +81,6 @@ def set_backend(b: Optional[Backend]) -> None:
 class ResponseFormat(str, Enum):
     MARKDOWN = "markdown"
     JSON = "json"
-
-
-class RememberScope(str, Enum):
-    AUTO = "auto"
-    RAW = "raw"
-    LONG = "long"
 
 
 def _json(obj) -> str:
@@ -306,14 +312,14 @@ async def mnemotrace_search(
 async def mnemotrace_remember_messages(messages: list[dict], session_id: str,
         mode: Literal['live', 'historical'] = 'live',
         processing: Literal['immediate', 'buffered'] = 'buffered',
-        scope: Literal['auto', 'long', 'raw'] = 'auto', agent_id: str | None = None) -> str:
+        extract: StrictBool = True, agent_id: str | None = None) -> str:
     """Store complete user/assistant messages with required stable message_id, role and content.
 
     event_time may be unknown. Reuse IDs on retransmission; historical never activates old tasks.
     Acceptance persists raw sources and tasks; inspect processing status or flush for completion.
     """
     try:
-        return _json(await backend().remember_messages(messages, session_id, mode, processing, scope, agent_id=agent_id))
+        return _json(await backend().remember_messages(messages, session_id, mode, processing, extract, agent_id=agent_id))
     except Exception as exc:
         return _err(exc)
 
@@ -324,8 +330,7 @@ async def mnemotrace_remember(
                                   "language. e.g. 'I just moved to Berlin and started a new job at Acme.'",
                                   min_length=1)],
     session_id: Annotated[str, Field(description="Optional conversation id to group related turns.")] = "default",
-    scope: Annotated[RememberScope, Field(description="auto/long = extract reusable facts; raw = save "
-                                           "the original source without extraction.")] = RememberScope.AUTO,
+    extract: Annotated[StrictBool, Field(description="Extract reusable facts from the saved source.")] = True,
     processing: Literal['immediate', 'buffered'] = 'immediate',
     agent_id: str | None = None,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
@@ -334,15 +339,15 @@ async def mnemotrace_remember(
 
     当用户说出值得跨 session 记住的持久 fact、偏好、计划或决定时调用。临时性的当前 session
     状态由 agent 的任务工具管理。存储与旧值矛盾的值不会删除历史——旧 fact 被失效化并保留
-    （as-of 查询依然可用）。auto/long 需要配置 LLM；抽取失败会返回可识别错误并保留原文供重试。
+    （as-of 查询依然可用）。extract=True 需要配置 LLM；抽取失败会返回可识别错误并保留原文供重试。
     """
     try:
-        data = await backend().remember(content, session_id=session_id, scope=scope.value, processing=processing, agent_id=agent_id)
+        data = await backend().remember(content, session_id=session_id, extract=extract, processing=processing, agent_id=agent_id)
     except Exception as e:  # noqa: BLE001
         return _err(e)
     if response_format == ResponseFormat.JSON:
         return _json(data)
-    if scope == RememberScope.RAW:
+    if not extract:
         return 'Saved raw history.'
     operation_ids = data.get('operation_ids', ())
     progress = 'Accepted for processing.' if data.get('status') == 'accepted' else 'Remembered.'

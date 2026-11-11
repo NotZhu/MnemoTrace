@@ -550,7 +550,7 @@ export interface MemoryControls {
   /** 用于检索和后台写入的会话/线程 id */
   session_id?: string
   /** auto | long；控制后台写入的路由方式 */
-  scope?: 'auto' | 'long'
+  extract?: boolean
   /** 为补充细节而包含的完整历史对话数量（默认 6） */
   n_chunks?: number
   /** 用于按时间点查看记忆的 epoch 秒数 */
@@ -591,7 +591,7 @@ export interface MnemoTraceChatMeta {
   redacted_sensitive: boolean
   remembered: boolean
   remember_queued?: boolean
-  remember_scope?: string
+  remember_extract?: boolean
 }
 
 export interface ChatCompletion {

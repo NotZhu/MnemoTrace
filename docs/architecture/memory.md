@@ -29,7 +29,7 @@
 
 首次刷新提供全部合格事实，后续提供有效旧画像、变化事实和旧条目的支持事实。同一事实在每次模型请求中只提供一次，旧条目的支持事实与当前批次按事实 ID 去重。读取只使用缓存和依赖状态，不调用模型。事实、隐私、审核或有效状态变化会移除关联条目并清理在途输入；检索访问和重嵌入不影响画像版本。未来生效与到期按读取时的有效状态检查。历史查询及带主体、谓词、分类或来源限制的查询跳过空间级画像缓存，直接使用相应的事实证据。
 
-返回包含 profile、cache_version、updated_at、pending_fact_count、needs_refresh、operation_id、refresh_state 和 refresh_error。失败保留仍有效的旧缓存；查询操作状态或显式重试可继续处理。profile_system 是附加画像指导，固定 Schema 与引用校验由代码维护。通过 `MemoryEngine.import_snapshot` 导入 v2 事实 JSON 后进入待刷新状态，数据库备份同时保存缓存、依赖和任务检查点。
+返回包含 profile、cache_version、updated_at、pending_fact_count、needs_refresh、operation_id、refresh_state 和 refresh_error。失败保留仍有效的旧缓存；查询操作状态或显式重试可继续处理。profile_system 是附加画像指导，固定 Schema 与引用校验由代码维护。[导入结构化快照](#结构化快照导入)后，画像进入待刷新状态。数据库备份同时保存缓存、依赖和任务检查点。
 
 ## 分类与对象类型
 

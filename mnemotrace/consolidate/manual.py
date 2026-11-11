@@ -71,7 +71,7 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
     return True
 
 
-def reconcile_manual(new, history, at):
+def reconcile_manual(new, history, at, *, explicit_valid_at):
     """Place a manually asserted value in the slot's valid-time history."""
     from ..util import time_key
 
@@ -79,7 +79,15 @@ def reconcile_manual(new, history, at):
                  and (old.expired_at is None or old.expired_at > at or old.invalid_at is not None)]
     effective = new.valid_at if new.valid_at is not None else at
     covering = [old for old in same_slot if old.is_valid_at(effective)]
-    duplicate = next((old for old in covering if same_assertion(old, new)), None)
+
+    def repeats(old):
+        if explicit_valid_at or old.source != 'user':
+            return same_assertion(old, new)
+        # An implicit start changes on every request. Reuse an already effective manual assertion.
+        return (same_assertion(old, new, match_time=False)
+                and (old.cardinality, old.retention) == (new.cardinality, new.retention))
+
+    duplicate = next((old for old in covering if repeats(old)), None)
     if duplicate is not None:
         if new.categories_source == 'user' and duplicate.categories_source != 'user':
             duplicate.categories, duplicate.categories_source = new.categories, 'user'

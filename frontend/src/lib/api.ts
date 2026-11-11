@@ -20,7 +20,6 @@ import type { AuditReport,
   PolicyResponse,
   ProcessingStatus,
   RecallResult,
-  RememberScope,
   RememberResult,
   SessionReport,
   SessionsIndex,
@@ -199,7 +198,7 @@ export interface SessionsQuery {
 export interface RememberOptions {
   processing?: 'immediate' | 'buffered'
   session_id?: string
-  scope?: RememberScope
+  extract?: boolean
 }
 
 export const api = {
@@ -218,9 +217,10 @@ export const api = {
     method: 'POST', body: json({ name }),
   }),
   rememberMessages: (messages: {message_id: string; role: 'user' | 'assistant'; content: string;
-      event_time?: number | null}[], sessionId: string, mode: 'live' | 'historical' = 'live', signal?: AbortSignal) =>
+      event_time?: number | null}[], sessionId: string, mode: 'live' | 'historical' = 'live',
+      extract = true, signal?: AbortSignal) =>
     request<RememberResult & {accepted: number; messages: {episode_id: string; operation_ids: string[]}[]}>(
-      '/v1/messages', { method: 'POST', body: json({messages, session_id: sessionId, mode, processing: 'buffered'}), signal }),
+      '/v1/messages', { method: 'POST', body: json({messages, session_id: sessionId, mode, extract, processing: 'buffered'}), signal }),
   processingStatus: (sessionId?: string, signal?: AbortSignal, afterId?: string) =>
     request<ProcessingStatus>(`/v1/processing${qs({session_id: sessionId, after_id: afterId})}`, { signal }),
   retryOperation: (id: string, signal?: AbortSignal) => request<OperationResult>(`/v1/operations/${encodeURIComponent(id)}/retry`, {
@@ -245,7 +245,7 @@ export const api = {
       body: json({
         content,
         session_id: options.session_id ?? 'default',
-        scope: options.scope ?? 'auto',
+        extract: options.extract ?? true,
         processing: options.processing ?? 'immediate',
       }),
     }),

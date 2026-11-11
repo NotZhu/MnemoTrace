@@ -290,26 +290,26 @@ class MemoryEngine:
         return ep
 
     def remember(self, content: str, user_id: str = "default", session_id: str = "default",
-                 scope: str = "auto", *, _embedding=None) -> dict:
+                 extract: bool = True, *, _embedding=None) -> dict:
         """Save raw input and its requested lifecycle policy.
 
-        Auto/long remain pending until consolidate() validates model output.
+        Requested extraction remains pending until consolidate() validates model output.
         Reusable facts retain their source attribution and time qualifiers.
         """
         if self._pipeline_broken or self._pipeline_closed:
             raise RuntimeError('Memory checkpoint failed or closed; create a new instance')
-        if scope not in {"auto", "long"}:
-            raise ValueError("scope must be auto or long")
+        if type(extract) is not bool:
+            raise ValueError("extract must be a boolean")
         vector = self._encode(content, _embedding)
         from ._pipeline import memory_adapter
         with memory_adapter(self, user_id).write_lock(user_id):
             ep = self.add(content, user_id=user_id, session_id=session_id, embedding=vector)
-            ep.scope = scope
+            ep.extract = extract
             self._sync_episode(ep)
-            return {"scope": scope, "episode_id": ep.id}
+            return {"extract": extract, "episode_id": ep.id}
 
     def remember_messages(self, messages: list[dict], session_id: str, user_id: str = 'default',
-                          mode: str = 'live', scope: str = 'auto') -> dict:
+                          mode: str = 'live', extract: bool = True) -> dict:
         """Offline-capable dialogue source/task recording; service owns background execution.
 
         Product callers use Memory for durable processing.
@@ -317,12 +317,12 @@ class MemoryEngine:
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
         from .consolidate.pipeline import PipelineTasks, normalized
-        rows = normalized(messages, session_id, mode, scope)
+        rows = normalized(messages, session_id, mode, extract)
         with self._pipeline_lock:
             if self._pipeline_closed:
                 raise RuntimeError('Memory is closed')
             tasks = PipelineTasks(self, user_id)
-            rows, unseen = tasks.inspect(rows, session_id, mode, scope)
+            rows, unseen = tasks.inspect(rows, session_id, mode, extract)
         batch = self._encode_batch(list(unseen.values()))
         if len(batch) != len(unseen):
             raise ValueError('Embedding batch length mismatch')
@@ -331,9 +331,9 @@ class MemoryEngine:
             if self._pipeline_closed:
                 raise RuntimeError('Memory is closed')
             tasks = PipelineTasks(self, user_id)
-            tasks.inspect(rows, session_id, mode, scope)
+            tasks.inspect(rows, session_id, mode, extract)
             try:
-                ids, fresh = tasks.accept(rows, session_id, mode, scope, now(), vectors)
+                ids, fresh = tasks.accept(rows, session_id, mode, extract, now(), vectors)
             except BaseException:
                 self._recover_pipeline_checkpoint()
                 raise
@@ -360,7 +360,7 @@ class MemoryEngine:
                 if ep.embedding is None and self.embedder is not None:
                     ep.embedding = self._encode(ep.content)
                 self._sync_episode(ep)
-            if not ep.consolidated and ep.content.strip():
+            if ep.extract and not ep.consolidated and ep.content.strip():
                 sources.append(ep)
         if sources:
             require_llm(self.llm)
@@ -448,7 +448,7 @@ class MemoryEngine:
                 for key in ('sessions', 'episodes', 'skipped', 'facts_added', 'digests'):
                     stats[key] += result.get(key, 0)
                 continue
-            result = self.remember_messages(messages, sid, user_id, 'historical', 'auto' if extract else 'raw')
+            result = self.remember_messages(messages, sid, user_id, 'historical', extract)
             fresh = result['accepted']
             if not extract:
                 stats['facts_deferred'] += fresh
@@ -503,7 +503,7 @@ class MemoryEngine:
                     continue
                 ep = self.add(record['content'], user_id, record['session_id'], role='document',
                               event_time=record['event_time'], embedding=prepared_vectors[record['content']])
-                ep.source_kind, ep.scope = 'document', 'raw' if consolidate is False else 'long'
+                ep.source_kind, ep.extract = 'document', consolidate is not False
                 ep.consolidated = consolidate is False
                 ep.metadata.update(record['metadata'])
                 if record['title']:
@@ -650,7 +650,7 @@ class MemoryEngine:
             from .consolidate.pipeline import PipelineTasks
             PipelineTasks(self, f.user_id).invalidate()
             history = [x for x in self._all_facts() if x.slot == f.slot]
-            action, changed = reconcile_manual(f, history, now())
+            action, changed = reconcile_manual(f, history, now(), explicit_valid_at=valid_at is not None)
             for old in changed:
                 self._upsert_fact(old, tier="hot")
                 self.writer.graph_builder.add_fact(old)

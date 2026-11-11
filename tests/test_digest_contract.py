@@ -58,10 +58,12 @@ def test_snapshot_does_not_silently_drop_old_source_fields(field):
         validate_snapshot(snapshot)
 
 
-def test_removed_python_scope_and_recall_parameters_are_errors():
+def test_remember_and_recall_reject_retired_parameters():
     memory = MemoryEngine()
-    with pytest.raises(ValueError, match='scope'):
-        memory.remember('Synthetic task', scope='working')
+    with pytest.raises(TypeError, match='scope'):
+        memory.remember('Synthetic task', scope='raw')
+    with pytest.raises(ValueError, match='extract must be a boolean'):
+        memory.remember('Synthetic task', extract='false')
     assert not memory.episodes_doc.values()
     with pytest.raises(TypeError, match='session_id'):
         memory.lean_context('Synthetic query', session_id='s')

@@ -128,7 +128,7 @@ def exercise_lifecycle(
         out = call("/v1/remember", {
             "content": text,
             "session_id": session_id,
-            "scope": "long",
+            "extract": True,
         }, "POST")
         remembered.append(out)
         output(f"- long ({out.get('extracted', 0)} extracted): {text}")

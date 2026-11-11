@@ -32,7 +32,7 @@ class RetrievalGraph:
 
     def find_entities(self, name):
         records = self.sql.select(ENTITY, ('r.normalized_name = %s',),
-                                  (name.strip().lower(),), limit=1)
+                                  (name.lower(),), limit=1)
         self._remember(records)
         return tuple(self.entities[record.ref.record_id] for record in records)
 

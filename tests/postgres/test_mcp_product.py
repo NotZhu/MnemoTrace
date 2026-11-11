@@ -47,7 +47,10 @@ async def test_tools_are_registered_with_flat_schema():
     assert "session_id" not in props
     assert "redact_sensitive" in props
     remember_props = tools["mnemotrace_remember"].inputSchema.get("properties", {})
-    assert "content" in remember_props and "session_id" in remember_props and "scope" in remember_props
+    assert "content" in remember_props and "session_id" in remember_props and remember_props["extract"]["type"] == "boolean"
+    assert "scope" not in remember_props
+    messages_props = tools["mnemotrace_remember_messages"].inputSchema["properties"]
+    assert messages_props["extract"]["type"] == "boolean" and "scope" not in messages_props
     add_props = tools["mnemotrace_add_fact"].inputSchema.get("properties", {})
     assert {"subject", "predicate", "object", "text", "sensitive", "categories", "object_kind"} <= set(add_props)
     assert 'text' in tools['mnemotrace_add_fact'].inputSchema['required']
@@ -405,13 +408,28 @@ async def test_remote_backend_forwards_as_of():
 
 
 @pytest.mark.asyncio
-async def test_remote_backend_forwards_remember_scope():
+@pytest.mark.parametrize("name, arguments", [
+    ("mnemotrace_remember", {"content": "Synthetic note"}),
+    ("mnemotrace_remember_messages", {"session_id": "s1", "messages": [
+        {"message_id": "m1", "role": "user", "content": "Synthetic dialogue"},
+    ]}),
+])
+@pytest.mark.parametrize("invalid", [{"scope": "raw"}, {"extract": "false"}, {"extract": 0}])
+async def test_mcp_write_rejects_old_and_non_boolean_extraction_arguments(name, arguments, invalid):
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    with pytest.raises(ToolError, match="extract"):
+        await S.mcp.call_tool(name, {**arguments, **invalid})
+
+
+@pytest.mark.asyncio
+async def test_remote_backend_forwards_remember_extract():
     class FakeResponse:
         def raise_for_status(self):
             pass
 
         def json(self):
-            return {"ok": True, "scope": "long"}
+            return {"ok": True, "extract": False}
 
     class FakeClient:
         def __init__(self):
@@ -423,14 +441,14 @@ async def test_remote_backend_forwards_remember_scope():
 
     client = FakeClient()
     backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
-    data = await backend.remember("Synthetic reusable decision", session_id="s1", scope="long")
+    data = await backend.remember("Synthetic reusable decision", session_id="s1", extract=False)
 
     url, body, headers = client.posts[-1]
     assert url == "http://mnemotrace.test/v1/remember"
     assert body == {"space_id": "synthetic-space", "content": "Synthetic reusable decision", "session_id": "s1",
-                    "scope": "long", "processing": "immediate", "agent_id": None}
+                    "extract": False, "processing": "immediate", "agent_id": None}
     assert headers["Authorization"] == "Bearer sk-test"
-    assert data["scope"] == "long"
+    assert data["extract"] is False
 
 
 @pytest.mark.asyncio
@@ -599,6 +617,22 @@ async def test_remote_backend_fetches_sessions_index():
     assert url == "http://mnemotrace.test/v1/sessions?limit=2&offset=4&q=claude-code&space_id=synthetic-space"
     assert headers["Authorization"] == "Bearer sk-test"
     assert data["sessions"][0]["id"] == "claude-code:repo/thread 2"
+
+
+@pytest.mark.asyncio
+async def test_remote_backend_keeps_all_fact_categories():
+    import httpx
+
+    def respond(request):
+        assert request.url.path == "/v1/memories"
+        assert request.url.params.get_list("categories") == ["food", "music"]
+        assert request.url.params.get_list("space_id") == ["synthetic-space"]
+        return httpx.Response(200, json={"facts": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
+        assert await backend.memories(categories=["food", "music"], limit=10, offset=0,
+                                      include_superseded=False) == {"facts": []}
 
 
 @pytest.mark.asyncio

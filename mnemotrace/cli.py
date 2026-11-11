@@ -27,7 +27,8 @@ def main(argv=None):
     remember.add_argument('content')
     remember.add_argument('--session-id', required=True)
     remember.add_argument('--agent-id')
-    remember.add_argument('--scope', choices=('auto', 'long', 'raw'), default='auto')
+    remember.add_argument('--no-extract', dest='extract', action='store_false',
+                          help='Save the original without extracting facts')
     remember.add_argument('--processing', choices=('buffered', 'immediate'), default='buffered')
     for command in ('operation', 'retry'):
         commands.add_parser(command).add_argument('operation_id')
@@ -41,7 +42,7 @@ def main(argv=None):
     try:
         with local_space(args) as (service, context):
             if args.command == 'remember':
-                result = service.remember(context, args.content, args.session_id, args.scope,
+                result = service.remember(context, args.content, args.session_id, args.extract,
                                           args.processing, agent_id=args.agent_id)
             elif args.command in ('operation', 'retry'):
                 result = service.operation(context, args.operation_id, retry=args.command == 'retry')

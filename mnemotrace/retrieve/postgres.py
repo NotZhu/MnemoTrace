@@ -198,7 +198,7 @@ def follow_path(view, scope, anchor, predicates):
     from .structured import PathMatch, PathResult, traverse
 
     graph = RetrievalGraph(view, RetrievalQuery(scope, ''))
-    anchors = graph.find_entities(anchor)
+    anchors = graph.find_entities(anchor.strip())
     if not anchors:
         return PathResult(())
     graph.truncated = False  # Only the explicit traversal contributes to path coverage.

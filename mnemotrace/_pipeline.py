@@ -21,7 +21,7 @@ _CONFLICT_CODES = frozenset({'manual_change', 'source_changed'})
 
 def _pending(tasks, session, after=0):
     return [r for r in tasks.rows(session['session_id']).values() if not r['cancelled']
-            and (r['mode'], r['scope'], r['source_kind']) == (session['mode'], session['scope'], session['source_kind'])
+            and (r['mode'], r['extract'], r['source_kind']) == (session['mode'], session['extract'], session['source_kind'])
             and r['sequence'] > after and not busy(tasks, r) and (r['core'] == 'pending' or r['digest'] == 'pending')]
 
 
@@ -46,7 +46,7 @@ def trigger_ready(mem, tasks, now):
 
 def _advance(tasks, session):
     rows = [r for r in tasks.rows(session['session_id']).values()
-            if (r['mode'], r['scope'], r['source_kind']) == (session['mode'], session['scope'], session['source_kind'])
+            if (r['mode'], r['extract'], r['source_kind']) == (session['mode'], session['extract'], session['source_kind'])
             and r['sequence'] <= session['cutoff'] and not r['cancelled']]
     if any(busy(tasks, r) or r['core'] == 'pending' or r['digest'] == 'pending' for r in rows):
         return

@@ -82,7 +82,7 @@ def test_adjudication_is_ledgered_before_core_commit():
 def test_explicit_dialogue_digest_has_its_own_cropped_proof():
     from mnemotrace.retrieve.events import event_evidence
     mem = MemoryEngine(llm=FakeLLM(handler=respond), config=Config(digest_max_input_bytes=6500))
-    source = mem.remember_messages([dict(message_id='a', role='user', content='长原文' * 4000)], 's', scope='raw')
+    source = mem.remember_messages([dict(message_id='a', role='user', content='长原文' * 4000)], 's', extract=False)
     ep = mem.episodes_doc.get(source['messages'][0]['episode_id'])
     assert mem.generate_digests([ep]) == 1
     assert ep.coverage is None and ep.digest_coverage['partial']
@@ -98,6 +98,54 @@ def test_numeric_timestamp_representation_does_not_change_message_identity():
     repeated = mem.remember_messages([{**msg, 'event_time': 100.0}], 's')
     assert repeated['accepted'] == 0
     assert repeated['messages'] == original['messages']
+
+
+def test_remember_without_extraction_is_skipped_by_offline_consolidation():
+    mem = MemoryEngine()
+    note = mem.remember('Synthetic raw note', extract=False)
+    assert note['extract'] is False
+    source = mem.episodes_doc.get(note['episode_id'])
+    assert source.content == 'Synthetic raw note'
+    assert not mem.ingestor.pending()
+    assert mem.consolidate([source])['facts_added'] == 0
+    assert mem.consolidate()['facts_added'] == 0
+    assert source.coverage is None
+
+
+def test_consecutive_extracted_messages_share_context_within_their_route():
+    from mnemotrace.consolidate.pipeline import MessageConflictError
+
+    model = FakeLLM(handler=respond)
+    mem = MemoryEngine(llm=model)
+
+    def accept(key, session='chat', **options):
+        msg = dict(message_id=key, role='user', content=f'Synthetic message {key}')
+        response = mem.remember_messages([msg], session, **options)
+        return response['messages'][0]['episode_id']
+
+    def context(session):
+        assert mem.flush_messages(session_id=session)['ok']
+        prompt = model.calls[-1]['prompt']
+        data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX)[1])[0]
+        return [entry['id'] for entry in data['context']]
+
+    first = accept('first')
+    assert context('chat') == []
+    second = accept('second', extract=True)
+    assert context('chat') == [first]
+    assert accept('second') == second
+    with pytest.raises(MessageConflictError):
+        accept('second', extract=False)
+    accept('elsewhere', session='other')
+    assert context('other') == []
+    raw = accept('raw', extract=False)
+    accept('following')
+    assert context('chat') == []
+    assert mem.episodes_doc.get(raw).coverage is None
+    note = mem.remember('Synthetic note in the same session', session_id='chat')
+    assert mem.consolidate([mem.episodes_doc.get(note['episode_id'])])['facts_added'] == 0
+    accept('after-note')
+    assert context('chat') == []
 
 
 def test_native_close_rejects_raw_acceptance():

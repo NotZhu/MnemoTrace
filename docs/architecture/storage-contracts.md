@@ -30,14 +30,14 @@ Python/CLI/本地 MCP 属于受信任数据库访问，显式携带身份和空�
 agent_id 可为 null；非空为 1—128 个 ASCII 字符 `[A-Za-z0-9_.:@/-]`，空串不表示空值。
 message_id/session_id 为 1—512 字符非空标识，原样保存，不 trim 或折叠大小写。
 消息仅允许 user/assistant，正文至多 1000000 codepoint 且不能全空白，event_time 为有限数值或 null。
-role、正文、规范化为浮点的事件时间、agent_id、mode、scope 共同形成消息指纹；摄入时间不参与。
+role、正文、规范化为浮点的事件时间、agent_id、mode、extract 共同形成消息指纹；摄入时间不参与。
 唯一键为 `(user_id,space_id,session_id,message_id)`，space_id 本身全局唯一。
 同键同指纹复用来源和任务，同键异指纹返回 message_conflict；原文修正通过新消息提交。
 
 messages 请求示例：
 
 ```json
-{"space_id":"space-A","session_id":"thread-A","agent_id":"writer-A","mode":"live","scope":"auto","processing":"buffered","messages":[{"message_id":"m1","role":"user","content":"Synthetic input","event_time":1700000000}]}
+{"space_id":"space-A","session_id":"thread-A","agent_id":"writer-A","mode":"live","extract":true,"processing":"buffered","messages":[{"message_id":"m1","role":"user","content":"Synthetic input","event_time":1700000000}]}
 ```
 
 操作对象采用 OperationResult.to_dict 的字段。每个摄入响应包含相关 operation 或 operations，
@@ -152,7 +152,7 @@ with Database(DatabaseConfig.from_env()) as database:
     context = Spaces(database).authorize(user_id, space_id)
     memory = Memory(database, context)
     receipt = memory.store_messages("thread-A", (
-        MessageInput("m1", "user", "Synthetic input", scope="raw", agent_id="writer-A"),
+        MessageInput("m1", "user", "Synthetic input", extract=False, agent_id="writer-A"),
     ))
     episode = memory.get_episode(receipt.source_ids[0])
     memory.add_fact("Synthetic person", "likes", "tea", text="Synthetic person likes tea.")
@@ -161,7 +161,7 @@ with Database(DatabaseConfig.from_env()) as database:
     print(result.status, [fact.text for fact in result.facts], context_result.limitations)
 ```
 
-`store_messages` 只接受 `scope="raw"`，返回按输入顺序排列的来源 ID，重复项复用原来源。
+`store_messages` 只接受 `extract=False`，返回按输入顺序排列的来源 ID，重复项复用原来源。
 直接提交回执与数据同事务提交；连接中断且无法查证时抛出带操作 ID 的
 `CommitOutcomeUnknown`，可在同空间用 `memory.dao.receipt(operation_id)` 查证。
 `erase` 和 `ChangeSet.erasures` 接受 `FACT`。
@@ -329,7 +329,7 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 | service: forget/export；persist: save_memory/load_memory/_memory_state | 全空间擦除/导出、manifest 携带策略/身份/去重/任务，缺失可当空库 | 删除事务/作废；新格式流式导出恢复；不迁旧目录 | 3、7—8 | process_recovery、snapshot_validation、postgres_backup |
 | server.app 全业务路由/openai_compat | 部分支持 space/home，部分直接使用认证命名空间 | 全部显式 space_id，代理携带操作标识 | 6 | server、openai_compat、message/topic_interfaces |
 | mcp.server/backends/__main__ | 本地固定 namespace，远程旧参数 | 配置身份/空间，共享新进度 | 6 | mcp、mcp_credentials、message/digest_interfaces |
-| TypeScript client/types；frontend api/auth/queries/ScopeSelect | 可选 space/home、旧任务类型和凭据缓存 | 同步参数/结果，空间列表/创建，隔离切换状态 | 6 | SDK typecheck/test，前端 query-isolation/test/build |
+| TypeScript client/types；frontend api/auth/queries | 可选 space/home、旧任务类型和凭据缓存 | 同步参数/结果，空间列表/创建，隔离切换状态 | 6 | SDK typecheck/test，前端 query-isolation/test/build |
 | connectors.__main__/watch/session_hook；agent_config/setup/doctor | namespace/文件参数、导入去重/采集游标、配置与诊断 | 显式空间/新进度；watcher 游标保留但不是权威记忆 | 6、8 | import_cli、watch_install、session_hook、agent_setup/doctor |
 | eval harness/bench/facility/ingest/seed_console；examples/quickstart | 内存/文件 Memory、用 user 分数据 | 算法离线对照保留；产品显式数据库空间；真实模型评测另授权 | 5、8 | eval_harness、facility、stage8_entrypoints、core/release |
 

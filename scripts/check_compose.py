@@ -99,7 +99,7 @@ def main():
             assert rejection['detail']['code'] == 'llm_not_configured'
             assert not http('/v1/memories' + query, key=key)['episodes']
             compose('stop', 'worker')
-            raw = http('/v1/messages', {**message, 'scope': 'raw'}, key=key, expected=202)
+            raw = http('/v1/messages', {**message, 'extract': False}, key=key, expected=202)
             source_id, = raw['source_ids']
             assert raw['accepted'] == 1
             http('/v1/facts', {'space_id': space, 'predicate': 'lives_in', 'object': 'Synthetic City'},

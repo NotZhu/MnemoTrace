@@ -6,8 +6,10 @@ import pytest
 from mnemotrace.memory import Memory
 from mnemotrace.llm import FakeLLM
 from mnemotrace.profile import empty
-from mnemotrace.store.contracts import FactQuery, FactState
+from mnemotrace.store.contracts import FactQuery, FactState, RecordKind, RecordRef
 from mnemotrace.store.postgres.profile import load
+from mnemotrace.types import Fact
+from tests.postgres.test_record_business import commit
 from tests.test_profile_cache import model
 
 
@@ -94,6 +96,30 @@ def test_profile_invalidates_and_scrubs_stored_product(memory, action):
         assert "Synthetic tea" not in json.dumps(state)
     finish(memory)
     assert not memory.profile()["needs_refresh"]
+
+
+def test_rejected_source_erasure_preserves_profile_cache_and_checkpoint(memory):
+    removed = memory.remember_raw("Synthetic source to erase", "chat")
+    remaining = memory.remember_raw("Synthetic source to retain", "chat")
+    fact = Fact("user", "likes", "Synthetic tea", user_id=memory.context.user_id, sensitive=False,
+                text="User likes synthetic tea.", provenance=[removed.id, remaining.id])
+    commit(memory, "synthetic-fact", (fact,))
+    memory.refresh_profile()
+    assert finish(memory)["profile"]["basic"][0]["fact_ids"] == [fact.id]
+    operation = memory.refresh_profile()
+    assert memory._processing.run_one(operation.operation_id)
+    with memory.dao.read_snapshot() as view:
+        before = load(view._sql)
+        assert removed.id in json.dumps(before["job"])
+
+    with pytest.raises(ValueError, match="only supports facts"):
+        memory.erase(RecordRef(memory.context, RecordKind.SOURCE, removed.id))
+
+    assert memory.get_fact(fact.id).provenance == [removed.id, remaining.id]
+    assert memory.get_episode(removed.id) is not None
+    with memory.dao.read_snapshot() as view:
+        assert load(view._sql) == before
+    assert finish(memory)["profile"]["basic"][0]["fact_ids"] == [fact.id]
 
 
 def test_profile_checkpoint_resume_without_regenerating(memory):

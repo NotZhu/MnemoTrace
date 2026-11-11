@@ -245,7 +245,7 @@ def store_messages(sql, session_id, messages, *, check_model=None, generation=No
                        f'WHERE {SCOPE} AND session_id = %s AND message_id = ANY(%s)',
                        (*sql.scope, session_id, [msg.message_id for msg in messages])).fetchall()
     known = {key: (record_id, content_hash) for key, record_id, content_hash in existing}
-    if check_model is not None and any(item.scope != 'raw' and item.message_id not in known for item in messages):
+    if check_model is not None and any(item.extract and item.message_id not in known for item in messages):
         check_model()
     sql.ensure_session(session_id)
     saved, inserted = [], []
@@ -261,7 +261,7 @@ def store_messages(sql, session_id, messages, *, check_model=None, generation=No
                 id=record_id, session_id=session_id, message_id=item.message_id,
                 content=item.content, role=item.role, event_time=timestamp(item.event_time),
                 ingested_at=sql.run('SELECT clock_timestamp()').fetchone()[0],
-                source_kind='dialogue', scope=item.scope, mode=item.mode,
+                source_kind='dialogue', extract=item.extract, mode=item.mode,
                 agent_id=item.agent_id, message_fingerprint=content_hash, metadata=source_metadata or {},
                 sequence=allocate_sequence(sql, session_id), record_version=1, content_version=1,
             ))

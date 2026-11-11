@@ -88,3 +88,12 @@ def test_new_database_has_required_sentence_and_no_display_column(text_memory):
     assert ('text', 'NO') in columns and not any(name == 'display' for name, _ in columns)
     fact = text_memory.add_fact('user', 'likes', '茶', text='用户喜欢茶。')
     assert 'display' not in asdict(fact)
+
+
+def test_http_manual_assertion_retry_reuses_fact(product_client):
+    headers = hdr('synthetic-manual-retry')
+    body = {'predicate': 'likes', 'object': 'Synthetic tea', 'text': 'User likes synthetic tea.'}
+    created = product_client.post('/v1/facts', headers=headers, json=body)
+    replayed = product_client.post('/v1/facts', headers=headers, json=body)
+    assert created.is_success and replayed.is_success
+    assert replayed.json()['id'] == created.json()['id']

@@ -105,19 +105,23 @@ class Memory:
                                      for item, source_id in zip(items, receipt.source_ids)))
         return result
 
-    def remember(self, content: str, session_id: str, *, scope='auto', source_kind='raw',
+    def remember(self, content: str, session_id: str, *, extract: bool = True, source_kind='raw',
                  event_time=None, agent_id=None, processing='immediate', timeout=30):
-        """Accept a note or already-decoded document for automatic processing."""
+        """Save a note or decoded document and optionally request fact extraction."""
         identifier(session_id)
         self._validate_processing(processing, timeout)
         if (not isinstance(content, str) or not content.strip() or '\x00' in content
-                or scope not in ('auto', 'long') or source_kind not in ('raw', 'document')):
+                or source_kind not in ('raw', 'document')):
             raise ValueError('Invalid source content or routing')
         source = Episode(content, self.context.user_id, session_id, source_kind=source_kind,
-                         scope=scope, event_time=event_time)
+                         extract=extract, event_time=event_time)
         record = replace(StoredRecord.from_record(self.context, source), agent_id=agent_id)
         receipt, operation_id = self._processing.tasks.accept_source(
-            record, self._processing.require_model, embedding=self._embedding_space)
+            record, self._processing.require_model, embedding=self._embedding_space,
+            kind=OperationKind.EXTRACT if extract else None)
+        if not extract:
+            return dict(ok=True, status='stored', stored_raw=True, source_ids=list(receipt.source_ids),
+                        operation_ids=[], operations=[])
         result = self._accepted((operation_id,), processing, timeout)
         result['source_ids'] = receipt.source_ids
         return result
@@ -131,13 +135,13 @@ class Memory:
             raise ValueError('Expected a finite nonnegative timeout')
 
     def import_document(self, content, session_id, *, event_time=None, metadata=None, agent_id=None,
-                        extract=True, generate_digests=True, dedupe=True, processing='buffered', timeout=30):
+                        extract: bool = True, generate_digests=True, dedupe=True, processing='buffered', timeout=30):
         identifier(session_id)
         self._validate_processing(processing, timeout)
         if not isinstance(content, str) or not content.strip() or '\x00' in content:
             raise ValueError('Expected non-empty document content')
         episode = Episode(content, self.context.user_id, session_id, source_kind='document',
-                          scope='long' if extract else 'raw', event_time=event_time,
+                          extract=extract, event_time=event_time,
                           metadata={**(metadata or {}), 'digest_requested': generate_digests})
         record = replace(StoredRecord.from_record(self.context, episode), agent_id=agent_id)
         kind = (OperationKind.EXTRACT if extract else OperationKind.DIGEST
@@ -183,7 +187,7 @@ class Memory:
         if not isinstance(content, str) or not content.strip() or '\x00' in content:
             raise ValueError('Expected non-empty raw content')
         source = Episode(content=content, user_id=self.context.user_id, session_id=session_id,
-                         role=role, event_time=event_time, scope='raw')
+                         role=role, event_time=event_time, extract=False)
         with self.dao.read_snapshot(session_id) as view:
             snapshot = view.snapshot
             # Match the database clock used by known_at cutoffs and message ingestion.
@@ -405,7 +409,7 @@ class Memory:
         # Creation and interval revisions must use the same database clock for known_at reads.
         fact.created_at = fact.last_access = at
         candidates = [domain(item) for item in history]
-        action, changed = reconcile_manual(fact, candidates, at)
+        action, changed = reconcile_manual(fact, candidates, at, explicit_valid_at=valid_at is not None)
         versions = {item.ref.record_id: item for item in history}
         if action == 'duplicate':
             duplicate, = changed

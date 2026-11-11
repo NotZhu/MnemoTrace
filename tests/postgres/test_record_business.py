@@ -27,7 +27,7 @@ def memory(runtime, spaces, user):
 
 
 def message(key, content='Synthetic content', **fields):
-    return MessageInput(key, 'user', content, scope='raw', **fields)
+    return MessageInput(key, 'user', content, extract=False, **fields)
 
 
 def commit(memory, operation_id, records=(), **changes):

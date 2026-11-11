@@ -6,11 +6,11 @@
 
 ## 读取与会话
 
-对话使用 `mnemotrace_remember_messages(messages, session_id, mode="live", processing="buffered", scope="auto")`。
+对话使用 `mnemotrace_remember_messages(messages, session_id, mode="live", processing="buffered", extract=True)`。
 每条要求 message_id、role（user/assistant）和完整 content；event_time 可省略，表示来源时间未知。
 一次请求属于同一会话与模式；历史使用 historical，标记历史来源。缓冲对话由独立 worker 在窗口空闲 60 秒或达到预算后处理，也可显式刷新。
 同空间、会话和消息 ID 的重传返回现有事件状态；内容或不可变处理意图改变时冲突。
-原文笔记保留 `mnemotrace_remember`，其 `processing=immediate|buffered` 默认 immediate。
+笔记使用 `mnemotrace_remember`，其 `processing=immediate|buffered` 默认 immediate。两个工具默认抽取事实，传 `extract=false` 时只保存原文。
 `mnemotrace_processing_status(session_id=null)` 查询无原文的任务状态；
 `mnemotrace_flush_processing(session_id=null, timeout=30, retry_failed=false, include_digests=false)` 推进并等待当前会话的核心处理。
 使用 `mnemotrace_get_operation(operation_id)` 查询操作，`mnemotrace_retry_operation(operation_id)` 重试原操作。
@@ -39,8 +39,8 @@
 
 | 工具 | 主要参数 | 用途 |
 | --- | --- | --- |
-| `mnemotrace_remember_messages` | messages、session_id 必填；mode=live/historical、processing=buffered/immediate、scope=auto/long/raw | 逐条接收对话，返回幂等身份与处理状态 |
-| `mnemotrace_remember` | content 必填；session_id=default、scope=auto/long/raw | 保存并通过服务层处理整合 |
+| `mnemotrace_remember_messages` | messages、session_id 必填；mode=live/historical、processing=buffered/immediate、extract=true/false | 逐条接收对话，返回幂等身份与处理状态 |
+| `mnemotrace_remember` | content 必填；session_id=default、extract=true/false | 保存并通过服务层处理整合 |
 | `mnemotrace_flush_processing` | session_id、timeout、include_digests | 整理会话并等待核心处理 |
 | `mnemotrace_retry_operation` | operation_id | 重试同一操作 |
 | `mnemotrace_add_fact` | text、predicate、object 必填；subject=user、sensitive、categories、object_kind | 添加用户明确断言 |
