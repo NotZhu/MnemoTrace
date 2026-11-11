@@ -114,8 +114,8 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 
 | 端点 | 输入与语义 |
 | --- | --- |
-| `POST /v1/facts` | predicate、object 必填；subject=user，sensitive、categories、object_kind 可选；添加用户断言 |
-| `PATCH /v1/facts/{fact_id}` | 三元组字段或 statement，及 sensitive、categories、object_kind；statement 非空且不能与三元组字段混用 |
+| `POST /v1/facts` | text、predicate、object 必填；subject=user，sensitive、categories、object_kind 可选；添加用户断言 |
+| `PATCH /v1/facts/{fact_id}` | 内容修改同时提交非空 subject、predicate、object、text；sensitive、categories、object_kind 等元数据可单独提交；非法输入返回 422 |
 | `DELETE /v1/facts/{fact_id}` | 删除单事实；检查响应中的 ok |
 | `POST /v1/facts/clear-slot` | subject、predicate、expect_count 必填；受当前数量、来源和历史链保护 |
 | `GET /v1/profile` | 七栏画像缓存、更新时间、待更新事实数与刷新状态 |

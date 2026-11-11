@@ -329,7 +329,7 @@ class ReadView:
                      count_only=False):
         clauses, args = self._fact_conditions(query)
         if text:
-            clauses.append("strpos(lower(concat_ws(' ', r.text,r.display,r.subject,r.predicate,r.object,array_to_string(r.categories, ' '))), %s) > 0")
+            clauses.append("strpos(lower(concat_ws(' ', r.text,r.subject,r.predicate,r.object,array_to_string(r.categories, ' '))), %s) > 0")
             args.append(text.lower())
         if session_id is not None:
             clauses.append("""EXISTS (SELECT 1 FROM mnemotrace.fact_sources p

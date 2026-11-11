@@ -1,7 +1,7 @@
 
 
-import { Fragment, useId, useLayoutEffect, useRef, useState } from 'react'
-import { Check, ChevronRight, HelpCircle, Loader2, NotebookText, Pencil, Search, Trash2, X } from 'lucide-react'
+import { Fragment, useLayoutEffect, useRef, useState } from 'react'
+import { Check, HelpCircle, Loader2, NotebookText, Pencil, Search, Trash2, X } from 'lucide-react'
 
 import { Button, Card, CardTitle, ErrorState, PageHeader, Spinner } from '../components/ui'
 import { PageEmptyState } from '../components/PageEmptyState'
@@ -13,7 +13,7 @@ import { useDebouncedSearch } from '../hooks/useDebouncedSearch'
 import { useSpacePreference } from '../store/preferences'
 import { copy as t } from '../lib/copy'
 import { splitStamp } from '../lib/format'
-import type { Category, MemoryFact } from '../types'
+import type { Category, FactEdit, MemoryFact } from '../types'
 
 /** 会话结论的档案。
  *
@@ -266,7 +266,7 @@ function OpenQuestionsCard({ items }: { items: MemoryFact[] }) {
           return (
             <li key={f.id} className="flex items-baseline gap-2.5 text-sm">
               <time className="shrink-0 text-[11px] tabular-nums text-ghost">{date}</time>
-              <span className="min-w-0 break-words leading-relaxed text-slate-100">{f.display || f.text}</span>
+              <span className="min-w-0 break-words leading-relaxed text-slate-100">{f.text}</span>
             </li>
           )
         })}
@@ -316,15 +316,13 @@ function OutcomeRow({
   const deleteFact = useDeleteFact()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
+  const [draftObject, setDraftObject] = useState('')
   const [categories, setCategories] = useState<Category[]>()
   const [confirming, setConfirming] = useState(false)
   const [mine, setMine] = useState(false)
-  const [evidenceOpen, setEvidenceOpen] = useState(false)
-  const evidenceId = useId()
   const saveInFlight = useRef(false)
 
   const kind = fact.predicate.toLowerCase()
-  const statement = fact.display || fact.text
   const isMine = mine || fact.source === 'user'
   const manualMarker = isMine ? (
     <span className="text-xs leading-relaxed text-ghost" title={t.journal.mineHint}>
@@ -334,16 +332,20 @@ function OutcomeRow({
 
   const start = () => {
     if (!editable) return
-    setDraft(statement)
+    setDraft(fact.text)
+    setDraftObject(fact.object)
     setCategories(undefined)
     setEditing(true)
   }
 
   const save = () => {
     if (saveInFlight.current || editFact.isPending) return
-    const next = draft.trim()
-    if (!next) return
-    const patch = { ...(next === statement ? {} : { statement: next }), ...(categories === undefined ? {} : { categories }) }
+    if (!draft.trim() || !draftObject.trim()) return
+    const contentChanged = draft !== fact.text || draftObject !== fact.object
+    const patch: FactEdit = contentChanged
+      ? { subject: fact.subject, predicate: fact.predicate, object: draftObject, text: draft }
+      : {}
+    if (categories !== undefined) patch.categories = categories
     if (!Object.keys(patch).length) {
       setEditing(false)
       return
@@ -355,7 +357,7 @@ function OutcomeRow({
         onSuccess: (r) => {
           // 正文变化才会成为用户来源；仅改标签时以服务返回的原来源为准。
           setMine(r.source === 'user')
-          toast.success(next === statement ? t.journal.categoriesSaved : t.journal.saved)
+          toast.success(contentChanged ? t.journal.saved : t.journal.categoriesSaved)
           setEditing(false)
         },
         onError: (e) => toast.error(String((e as Error).message)),
@@ -373,11 +375,13 @@ function OutcomeRow({
       </span>
       <div className="min-w-0 flex-1">
         {editing ? (
-          <AutoTextarea
-            originalValue={statement}
-            value={draft}
-            onChange={setDraft}
-          />
+          <div className="space-y-2">
+            <AutoTextarea originalValue={fact.text} value={draft} onChange={setDraft} />
+            <label className="block text-xs text-ghost">
+              {t.journal.claimLabel}
+              <input className="input mt-1" value={draftObject} onChange={e => setDraftObject(e.target.value)} />
+            </label>
+          </div>
         ) : (
           <div
             className={
@@ -386,34 +390,14 @@ function OutcomeRow({
                 : `${OUTCOME_TEXT_CLASS} text-ghost line-through`
             }
           >
-            {statement}
+            {fact.text}
           </div>
         )}
         <div className="mt-2">
           {editing ? <CategoryEditor current={fact} value={categories} onChange={setCategories} disabled={editFact.isPending} />
             : <CategoryBadges categories={fact.categories} categories_source={fact.categories_source} />}
         </div>
-        {fact.why && (
-          <div className="mt-2">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <button
-                type="button"
-                aria-expanded={evidenceOpen}
-                aria-controls={evidenceId}
-                onClick={() => setEvidenceOpen((open) => !open)}
-                className="inline-flex items-center gap-1 bg-transparent p-0 text-xs leading-relaxed text-[rgb(var(--memory-edit-marker))] hover:text-foreground"
-              >
-                <ChevronRight className={`h-3 w-3 transition-transform motion-reduce:transition-none ${evidenceOpen ? 'rotate-90' : ''}`} aria-hidden="true" />
-                {t.journal.viewEvidence}
-              </button>
-              {manualMarker}
-            </div>
-            <div id={evidenceId} hidden={!evidenceOpen} className="mt-2 border-l-2 border-line/70 py-1 pl-3 text-xs leading-relaxed text-ghost break-words">
-              {fact.why}
-            </div>
-          </div>
-        )}
-        {!fact.why && manualMarker && <div className="mt-2">{manualMarker}</div>}
+        {manualMarker && <div className="mt-2">{manualMarker}</div>}
       </div>
       {editable && (
         <div
@@ -424,7 +408,7 @@ function OutcomeRow({
               <button
                 type="button"
                 onClick={save}
-                disabled={!draft.trim() || editFact.isPending}
+                disabled={!draft.trim() || !draftObject.trim() || editFact.isPending}
                 className="rounded-lg border border-line p-1.5 text-brand-mint transition hover:border-brand-mint/50 disabled:opacity-50"
                 aria-label={t.common.save}
                 title={t.common.save}
@@ -477,7 +461,7 @@ function OutcomeRow({
           <div className="space-y-3">
             <p>{t.journal.deleteBody}</p>
             <p className="rounded-lg border border-brand-rose/25 bg-brand-rose/10 px-3 py-2 text-brand-rose">
-              {statement}
+              {fact.text}
             </p>
           </div>
         }

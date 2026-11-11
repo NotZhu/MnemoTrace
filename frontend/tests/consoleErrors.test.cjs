@@ -13,7 +13,7 @@ function setup(pageName) {
     bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
     external: ['react', 'react/jsx-runtime', 'lucide-react', 'react-router-dom', '../components/*', '../hooks/queries', '../store/preferences', '../store/auth', '../lib/api'],
   }).outputFiles[0].text
-  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', display: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', categories: ['food'], categories_source: 'llm', object_kind: 'literal' }
+  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', categories: ['food'], categories_source: 'llm', object_kind: 'literal' }
   const results = {
     usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', digest_system: 'synthetic', profile_system: 'synthetic' } } },
     useFocus: { data: { track: ['synthetic'], mute: [] } },
@@ -113,6 +113,48 @@ test('Facts 请求失败使用共享错误条的重新加载按钮，只重试�
   assert.equal(error.props.isRetrying, true)
   error.props.onRetry()
   assert.deepEqual(s.retries, ['useMemoryPages'])
+})
+
+test('Facts 修改事实句时提交完整主谓宾和 text', () => {
+  const s = setup('Facts')
+  s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
+  const sentence = '用户在工作日上午偏好茶。'
+  s.find(n => n.type === 'input' && n.props.value === 'synthetic original').props.onChange({ target: { value: sentence } })
+  s.find(n => n.type === 'Button' && n.props.loading !== undefined).props.onClick()
+  const patch = JSON.parse(JSON.stringify(s.mutations.find(m => m.name === 'useEditFact').args[0].patch))
+  assert.deepEqual(patch, { subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: sentence })
+})
+
+test('Facts 新增要求填写事实句，并在保存时保留原文', () => {
+  const s = setup('Facts')
+  s.find(n => n.type === 'Button' && Array.isArray(n.props.children) && n.props.children.flat(Infinity).includes('添加事实')).props.onClick()
+  const inputs = () => s.nodes().filter(n => n.type === 'input' && !n.props['aria-label'])
+  assert.equal(inputs().length, 4)
+  inputs()[2].props.onChange({ target: { value: 'prefers' } })
+  inputs()[3].props.onChange({ target: { value: '茶' } })
+  const save = () => s.find(n => n.type === 'Button' && n.props.loading !== undefined)
+  assert.equal(save().props.disabled, true)
+  inputs()[0].props.onChange({ target: { value: '用户在下午偏好茶。' } })
+  assert.equal(save().props.disabled, false)
+  save().props.onClick()
+  const fact = JSON.parse(JSON.stringify(s.mutations.find(m => m.name === 'useAddFact').args[0]))
+  assert.deepEqual(fact, { subject: 'user', predicate: 'prefers', object: '茶', text: '用户在下午偏好茶。' })
+})
+
+test('Journal 展示完整事实句并独立提交结论与正文', () => {
+  const s = setup('Journal')
+  const fact = s.results.useMemoryPages.data.facts[0]
+  fact.text = 'For offline runs, use a local cache after an upstream outage.'
+  assert.ok(s.find(n => n.props.children === fact.text))
+  s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
+  const editor = s.find(n => n.type === 'textarea')
+  assert.equal(editor.props.value, fact.text)
+  const next = 'For offline runs, use a local cache after an upstream outage and verify its age.'
+  editor.props.onChange({ target: { value: next } })
+  s.find(n => n.type === 'input' && n.props.value === fact.object).props.onChange({ target: { value: 'Use local cache' } })
+  s.find(n => n.type === 'button' && n.props['aria-label'] === '保存').props.onClick()
+  const patch = JSON.parse(JSON.stringify(s.mutations.find(m => m.name === 'useEditFact').args[0].patch))
+  assert.deepEqual(patch, { subject: fact.subject, predicate: fact.predicate, object: 'Use local cache', text: next })
 })
 
 test('Conversations 会话状态提示在卡片上方，其他各条读取错误和独立重试保留', () => {

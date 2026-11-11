@@ -75,8 +75,8 @@ All methods return promises. Pass `{ spaceId }` to single-space methods. For mul
 | `agentStatus(options)` | optional sessionId; AgentStatus |
 | `profile(options)` | Cached ProfileResult with seven sections, fact references, counts and refresh status |
 | `refreshProfile(options)` | OperationResult; explicit model refresh, inspect or retry its operation ID |
-| `addFact(fact, options)` | predicate/object plus optional subject, sensitivity, categories and object kind; returns id, text and fact metadata |
-| `updateFact(id, patch, options)` | FactPatch, including categories and object kind; returns id, text and fact metadata |
+| `addFact(fact, options)` | required text/predicate/object plus optional subject, sensitivity, categories and object kind; returns id, text and fact metadata |
+| `updateFact(id, patch, options)` | complete subject/predicate/object/text for content edits, or metadata-only FactPatch; returns id, text and fact metadata |
 | `deleteFact(id, options)` | deletion result; inspect ok |
 | `getFocus(options)` / `setFocus(partial, options)` | track/mute lists |
 | `getPolicy(options)` / `setPolicy(partial, options)` | extraction, digest and profile overrides |
@@ -98,7 +98,7 @@ Use the HTTP API directly for document uploads, conflict resolution, and slot cl
 
 Public types are exported from [types.ts](https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/src/types.ts). Core results include RememberResult, RecallResult, SearchResult, Fact, MemoryDump, SessionIndex, SessionReport, ImportResult, MemoryExport, and chat completion types.
 
-`Category` defines the fixed label catalog. Fact results return `categories`, server-assigned `categories_source`, and `object_kind`. Use `{ categories: [] }` to clear the labels. Metadata-only edits preserve provenance and history. Redacted session report rows omit these fields. Structured exports carry `format_version: 2`. See the [classification contract](https://github.com/NotZhu/MnemoTrace/blob/main/docs/architecture/memory.md#分类与对象类型) for edit semantics.
+`Category` defines the fixed label catalog. Fact results return `categories`, server-assigned `categories_source`, and `object_kind`. Use `{ categories: [] }` to clear the labels. Metadata-only edits preserve provenance and history. Redacted session report rows omit these fields. Structured exports carry `format_version: 3`. See the [classification contract](https://github.com/NotZhu/MnemoTrace/blob/main/docs/architecture/memory.md#分类与对象类型) for edit semantics.
 
 `CATEGORIES` and `PROFILE_SECTIONS` export the ordered catalogs as readonly tuples. Their `Category` and `ProfileSection` types are generated from the Python definitions.
 

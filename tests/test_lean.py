@@ -112,7 +112,7 @@ def test_evidence_budgeting_keeps_provenance_under_tight_budget():
             object="A17",
             user_id="u1",
             valid_at=BASE,
-            provenance=[ep.id],
+            provenance=[ep.id], text='Apollo launch code A17',
         )
         fact.embedding = mem.embedder.embed(fact.text)
         mem.fact_store.upsert(fact.id, fact.embedding, fact)
@@ -122,7 +122,7 @@ def test_evidence_budgeting_keeps_provenance_under_tight_budget():
                 "project_note",
                 f"background filler note {i} with operational chatter that is not the checklist location",
                 user_id="u1",
-                valid_at=BASE + (i + 1) * DAY,
+                valid_at=BASE + (i + 1) * DAY, text=' '.join(('Apollo', 'project note', f'background filler note {i} with operational chatter that is not the checklist location')),
             )
         return mem.lean_context(
             "What is Apollo's launch code and where is the printed checklist?",
@@ -171,11 +171,11 @@ def test_memory_crud_add_edit_delete():
     """管理界面的操作：add_fact（用户撰写）、update_fact（编辑并重新署名）、delete_fact
     （被遗忘权，硬删除）。"""
     mem = MemoryEngine()
-    f = mem.add_fact("user", "works_at", "ByteDance", user_id="u1")
+    f = mem.add_fact("user", "works_at", "ByteDance", user_id="u1", text='user works at ByteDance')
     assert f.source == "user" and f.text == "user works at ByteDance"
     assert mem.fact_store.get(f.id) is not None
 
-    edited = mem.update_fact(f.id, object="Moonshot AI")
+    edited = mem.update_fact(f.id, object="Moonshot AI", subject=f.subject, predicate=f.predicate, text=' '.join((f.subject, f.predicate.replace('_', ' '), 'Moonshot AI')))
     assert edited.object == "Moonshot AI" and edited.source == "user"
     assert mem.fact_store.get(f.id).text == "user works at Moonshot AI"
 
@@ -186,9 +186,9 @@ def test_memory_crud_add_edit_delete():
 
 def test_update_fact_rebuilds_graph_relation():
     mem = MemoryEngine()
-    f = mem.add_fact("user", "works_at", "ByteDance", user_id="u1", object_kind="entity")
+    f = mem.add_fact("user", "works_at", "ByteDance", user_id="u1", object_kind="entity", text='user works at ByteDance')
 
-    mem.update_fact(f.id, object="Moonshot AI", object_kind="entity")
+    mem.update_fact(f.id, object="Moonshot AI", object_kind="entity", subject=f.subject, predicate=f.predicate, text=' '.join((f.subject, f.predicate.replace('_', ' '), 'Moonshot AI')))
 
     graph = mem.graph_data("u1")
     edge_text = str(graph)
@@ -199,7 +199,7 @@ def test_update_fact_rebuilds_graph_relation():
 
 def test_delete_fact_removes_graph_export_edge():
     mem = MemoryEngine()
-    f = mem.add_fact("user", "has_disease", "diabetes", user_id="u1", object_kind="entity")
+    f = mem.add_fact("user", "has_disease", "diabetes", user_id="u1", object_kind="entity", text='user has disease diabetes')
     assert f.id in {edge["fact_id"] for edge in mem.graph_data("u1")["edges"]}
 
     assert mem.delete_fact(f.id) is True
@@ -271,9 +271,9 @@ def test_search_answers_previous_value_with_explicit_history_state():
     from mnemotrace.store.contracts import FactQuery, FactState
 
     mem = MemoryEngine()
-    previous = mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
+    previous = mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE, text='Wei works at Tencent')
     current = mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY,
-                           cardinality="single")
+                           cardinality="single", text='Wei works at Moonshot AI')
     result = mem.search("Where did Wei work?", user_id="u1", facts=FactQuery(state=FactState.HISTORY))
     assert result.top().id == previous.id
     assert mem.search("Where does Wei work?", user_id="u1").top().id == current.id
@@ -281,8 +281,8 @@ def test_search_answers_previous_value_with_explicit_history_state():
 
 def test_lean_context_adds_evolution_chain_for_current_lookup():
     mem = MemoryEngine()
-    old = mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
-    new = mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single")
+    old = mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE, text='Wei works at Tencent')
+    new = mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single", text='Wei works at Moonshot AI')
 
     ctx = mem.lean_context(
         "Where does Wei work?",
@@ -302,8 +302,8 @@ def test_lean_context_adds_evolution_chain_for_current_lookup():
 
 def test_lean_context_evolution_chain_respects_as_of_boundary():
     mem = MemoryEngine()
-    mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single")
+    mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE, text='Wei works at Tencent')
+    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single", text='Wei works at Moonshot AI')
 
     ctx = mem.lean_context(
         "Where does Wei work?",
@@ -321,8 +321,8 @@ def test_lean_context_evolution_chain_respects_as_of_boundary():
 
 def test_context_for_adds_fact_evolution_chain():
     mem = MemoryEngine()
-    mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single")
+    mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE, text='Wei works at Tencent')
+    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single", text='Wei works at Moonshot AI')
 
     ctx = mem.context_for("Where does Wei work?", user_id="u1", k_chunks=0)
 
@@ -335,8 +335,8 @@ def test_chain_evidence_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
     mem = MemoryEngine(config=Config(chain_evidence=False))
-    mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single")
+    mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE, text='Wei works at Tencent')
+    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single", text='Wei works at Moonshot AI')
 
     ctx = mem.lean_context(
         "Where does Wei work?",
@@ -367,7 +367,7 @@ def test_lean_context_adds_provenance_raw_evidence_for_retrieved_fact():
         object="A17",
         user_id="u1",
         valid_at=BASE,
-        provenance=[ep.id],
+        provenance=[ep.id], text='Apollo launch code A17',
     )
     fact.embedding = mem.embedder.embed(fact.text)
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
@@ -403,7 +403,7 @@ def test_provenance_evidence_can_be_disabled_for_ablation():
         object="A17",
         user_id="u1",
         valid_at=BASE,
-        provenance=[ep.id],
+        provenance=[ep.id], text='Apollo launch code A17',
     )
     fact.embedding = mem.embedder.embed(fact.text)
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
@@ -437,7 +437,7 @@ def test_provenance_raw_evidence_dedups_full_detail_chunk():
         object="A17",
         user_id="u1",
         valid_at=BASE,
-        provenance=[ep.id],
+        provenance=[ep.id], text='Apollo launch code A17',
     )
     fact.embedding = mem.embedder.embed(fact.text)
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
@@ -485,7 +485,7 @@ def test_provenance_source_episode_is_promoted_into_detail_chunks():
             object="A17",
             user_id="u1",
             valid_at=BASE,
-            provenance=[source.id],
+            provenance=[source.id], text='Apollo launch code A17',
         )
         fact.embedding = mem.embedder.embed(fact.text)
         mem.fact_store.upsert(fact.id, fact.embedding, fact)
@@ -527,7 +527,7 @@ def test_provenance_raw_evidence_is_hidden_in_redacted_context():
         user_id="u1",
         valid_at=BASE,
         provenance=[ep.id],
-        sensitive=True,
+        sensitive=True, text='Apollo launch code A17',
     )
     fact.embedding = mem.embedder.embed(fact.text)
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
@@ -561,7 +561,7 @@ def test_context_for_adds_provenance_raw_evidence_for_fact_sources():
         object="A17",
         user_id="u1",
         valid_at=BASE,
-        provenance=[ep.id],
+        provenance=[ep.id], text='Apollo launch code A17',
     )
     fact.embedding = mem.embedder.embed(fact.text)
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
@@ -608,9 +608,9 @@ def test_deleted_relation_fact_does_not_drive_multihop_planner():
 
 def test_graph_scores_expand_beyond_one_hop_for_bridge_facts():
     mem = MemoryEngine()
-    direct = mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
-    bridge = mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
-    second_hop = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
+    direct = mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
+    bridge = mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
+    second_hop = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
 
     scores, qids = mem.retriever._graph_scores(
         "Tell me about Wei",
@@ -626,9 +626,9 @@ def test_graph_scores_expand_beyond_one_hop_for_bridge_facts():
 
 def test_graph_scores_respect_as_of_during_expansion():
     mem = MemoryEngine()
-    direct = mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
-    future_bridge = mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
-    older_target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE, object_kind="entity")
+    direct = mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
+    future_bridge = mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
+    older_target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE, object_kind="entity", text='Moonshot AI based in Beijing')
     live = [direct, future_bridge, older_target]
 
     before, _ = mem.retriever._graph_scores(
@@ -652,9 +652,9 @@ def test_graph_proximity_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
     mem = MemoryEngine(config=Config(graph_proximity=False))
-    direct = mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
-    bridge = mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
-    second_hop = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
+    direct = mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
+    bridge = mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
+    second_hop = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
 
     scores, qids = mem.retriever._graph_scores(
         "Tell me about Wei",
@@ -675,10 +675,10 @@ def test_graph_relation_awareness_prioritizes_query_relevant_edges():
     from mnemotrace.config import Config
 
     mem = MemoryEngine(config=Config(graph_relation_awareness=True))
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
-    distractor = mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
-    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity")
+    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
+    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
+    distractor = mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Lin likes jazz')
+    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
     live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
 
     scores, _ = mem.retriever._graph_scores(
@@ -695,10 +695,10 @@ def test_graph_relation_awareness_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
     mem = MemoryEngine(config=Config(graph_relation_awareness=False))
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
-    distractor = mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
-    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity")
+    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
+    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
+    distractor = mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Lin likes jazz')
+    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
     live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
 
     scores, _ = mem.retriever._graph_scores(
@@ -716,13 +716,13 @@ def test_graph_path_reinforcement_boosts_multi_path_targets():
 
     def build_mem(enabled: bool):
         mem = MemoryEngine(config=Config(graph_path_reinforcement=enabled))
-        mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
-        mem.add_fact("Wei", "mentor", "Maya", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
-        mem.add_fact("Lin", "works_on", "Atlas", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
-        mem.add_fact("Maya", "works_on", "Atlas", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity")
-        mem.add_fact("Lin", "works_on", "Zephyr", user_id="u1", valid_at=BASE + 4 * DAY, object_kind="entity")
-        target = mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 5 * DAY, object_kind="entity")
-        distractor = mem.add_fact("Zephyr", "based_in", "Lisbon", user_id="u1", valid_at=BASE + 6 * DAY, object_kind="entity")
+        mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
+        mem.add_fact("Wei", "mentor", "Maya", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Wei mentor Maya')
+        mem.add_fact("Lin", "works_on", "Atlas", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Lin works on Atlas')
+        mem.add_fact("Maya", "works_on", "Atlas", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity", text='Maya works on Atlas')
+        mem.add_fact("Lin", "works_on", "Zephyr", user_id="u1", valid_at=BASE + 4 * DAY, object_kind="entity", text='Lin works on Zephyr')
+        target = mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 5 * DAY, object_kind="entity", text='Atlas based in Reykjavik')
+        distractor = mem.add_fact("Zephyr", "based_in", "Lisbon", user_id="u1", valid_at=BASE + 6 * DAY, object_kind="entity", text='Zephyr based in Lisbon')
         return mem, target, distractor
 
     enabled_mem, enabled_target, enabled_distractor = build_mem(True)
@@ -749,9 +749,9 @@ def test_graph_path_reinforcement_boosts_multi_path_targets():
 
 def test_multihop_planner_reaches_company_location_chain():
     mem = MemoryEngine()
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
-    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
+    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
+    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
+    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
 
     path, = mem.follow_path("Wei", ["colleague", "works_at", "based_in"], user_id="u1").paths
     assert path.endpoint == "Beijing"
@@ -760,8 +760,8 @@ def test_multihop_planner_reaches_company_location_chain():
 
 def test_multihop_planner_reaches_project_location_chain():
     mem = MemoryEngine()
-    mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE, object_kind="entity")
-    mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
+    mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei works on Atlas')
+    mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Atlas based in Reykjavik')
 
     path, = mem.follow_path("Wei", ["works_on", "based_in"], user_id="u1").paths
     assert path.endpoint == "Reykjavik"
@@ -785,9 +785,9 @@ def test_heat_tiered_eviction_pages_cold_preserves_durable():
     u = "u1"
     for i in range(5):  # 偶发 fact，显著度递增
         f = Fact(subject="u1", predicate="parked_at", object=f"lot{i}", user_id=u,
-                 salience=float(i), last_access=BASE + i)
+                 salience=float(i), last_access=BASE + i, text=' '.join(('u1', 'parked at', f'lot{i}')))
         mem.fact_store.upsert(f.id, [0.0], f)
-    durable = Fact(subject="u1", predicate="likes", object="jazz", user_id=u, salience=0.0, last_access=BASE, retention="durable")
+    durable = Fact(subject="u1", predicate="likes", object="jazz", user_id=u, salience=0.0, last_access=BASE, retention="durable", text='u1 likes jazz')
     mem.fact_store.upsert(durable.id, [0.0], durable)
 
     n = mem.evict_cold(max_hot=3)
@@ -799,8 +799,8 @@ def test_heat_tiered_eviction_pages_cold_preserves_durable():
 
 def test_history_includes_cold_tier_facts():
     mem = MemoryEngine()
-    cold = mem.add_fact("project", "project_note", "cold audit trail", user_id="u1")
-    hot = mem.add_fact("project", "project_note", "hot audit trail", user_id="u1")
+    cold = mem.add_fact("project", "project_note", "cold audit trail", user_id="u1", text='project project note cold audit trail')
+    hot = mem.add_fact("project", "project_note", "hot audit trail", user_id="u1", text='project project note hot audit trail')
     cold.salience = 0.0
     hot.salience = 1.0
     assert mem.evict_cold(max_hot=1) == 1
@@ -812,14 +812,14 @@ def test_history_includes_cold_tier_facts():
 
 def test_add_fact_supersedes_live_cold_tier_fact():
     mem = MemoryEngine()
-    old = mem.add_fact("user", "project_status", "alpha", user_id="u1")
-    filler = mem.add_fact("user", "project_note", "hot filler", user_id="u1")
+    old = mem.add_fact("user", "project_status", "alpha", user_id="u1", text='user project status alpha')
+    filler = mem.add_fact("user", "project_note", "hot filler", user_id="u1", text='user project note hot filler')
     old.salience = 0.0
     filler.salience = 1.0
     assert mem.evict_cold(max_hot=1) == 1
     assert mem.cold_store.get(old.id) is not None
 
-    new = mem.add_fact("user", "project_status", "beta", user_id="u1", cardinality="single")
+    new = mem.add_fact("user", "project_status", "beta", user_id="u1", cardinality="single", text='user project status beta')
     assert new.supersedes == old.id
     assert old.invalid_at == new.valid_at
     chain = mem.history("user", "project_status", user_id="u1")
@@ -828,7 +828,7 @@ def test_add_fact_supersedes_live_cold_tier_fact():
 
 def test_search_pages_relevant_cold_fact_back_to_hot():
     mem = MemoryEngine()
-    fact = mem.add_fact("project", "project_status", "alpha", user_id="u1")
+    fact = mem.add_fact("project", "project_status", "alpha", user_id="u1", text='project project status alpha')
     assert mem.evict_cold(max_hot=0) == 1
     assert mem.fact_store.get(fact.id) is None
     assert mem.cold_store.get(fact.id) is not None
@@ -844,8 +844,8 @@ def test_cold_page_in_preserves_hot_limit():
     from mnemotrace.config import Config
 
     mem = MemoryEngine(config=Config(max_hot_facts=0, abstain_threshold=2.0))
-    target = mem.add_fact("apollo", "launch_code", "alpha", user_id="u1")
-    filler = mem.add_fact("zephyr", "project_note", "background filler", user_id="u1")
+    target = mem.add_fact("apollo", "launch_code", "alpha", user_id="u1", text='apollo launch code alpha')
+    filler = mem.add_fact("zephyr", "project_note", "background filler", user_id="u1", text='zephyr project note background filler')
     target.salience = 0.0
     filler.salience = 0.1
     assert mem.evict_cold(max_hot=1) == 1
@@ -865,8 +865,8 @@ def test_max_hot_facts_auto_pages_on_add_fact():
     from mnemotrace.config import Config
 
     mem = MemoryEngine(config=Config(max_hot_facts=1))
-    a = mem.add_fact("project", "project_status", "alpha", user_id="u1")
-    b = mem.add_fact("project", "project_note", "beta", user_id="u1")
+    a = mem.add_fact("project", "project_status", "alpha", user_id="u1", text='project project status alpha')
+    b = mem.add_fact("project", "project_note", "beta", user_id="u1", text='project project note beta')
     a.salience = 0.0
     b.salience = 1.0
     mem._enforce_hot_limit()
@@ -878,7 +878,7 @@ def test_max_hot_facts_auto_pages_on_add_fact():
 
 def test_lean_context_pages_cold_fact_when_hot_misses():
     mem = MemoryEngine()
-    fact = mem.add_fact("project", "project_status", "alpha", user_id="u1")
+    fact = mem.add_fact("project", "project_status", "alpha", user_id="u1", text='project project status alpha')
     assert mem.evict_cold(max_hot=0) == 1
 
     ctx = mem.lean_context("project status", user_id="u1", n_chunks=0)
@@ -889,8 +889,8 @@ def test_lean_context_pages_cold_fact_when_hot_misses():
 
 def test_graph_related_facts_include_cold_tier_facts():
     mem = MemoryEngine()
-    cold = mem.add_fact("project", "project_note", "cold graph evidence", user_id="u1", object_kind="entity")
-    hot = mem.add_fact("project", "project_status", "hot graph evidence", user_id="u1", object_kind="entity")
+    cold = mem.add_fact("project", "project_note", "cold graph evidence", user_id="u1", object_kind="entity", text='project project note cold graph evidence')
+    hot = mem.add_fact("project", "project_status", "hot graph evidence", user_id="u1", object_kind="entity", text='project project status hot graph evidence')
     cold.salience = 0.0
     hot.salience = 1.0
     assert mem.evict_cold(max_hot=1) == 1
@@ -902,9 +902,9 @@ def test_graph_related_facts_include_cold_tier_facts():
 
 def test_graph_related_facts_expand_beyond_one_hop():
     mem = MemoryEngine()
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
-    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
+    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
+    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
+    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
 
     related = mem._graph_related_facts("Tell me about Wei", "u1", None)
 
@@ -913,9 +913,9 @@ def test_graph_related_facts_expand_beyond_one_hop():
 
 def test_graph_related_facts_respect_as_of_during_expansion():
     mem = MemoryEngine()
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
-    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE, object_kind="entity")
+    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
+    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
+    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE, object_kind="entity", text='Moonshot AI based in Beijing')
 
     before = mem._graph_related_facts("Tell me about Wei", "u1", BASE + 0.5 * DAY)
     after = mem._graph_related_facts("Tell me about Wei", "u1", BASE + 2 * DAY)
@@ -926,9 +926,9 @@ def test_graph_related_facts_respect_as_of_during_expansion():
 
 def test_context_for_graph_includes_multihop_related_facts():
     mem = MemoryEngine()
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
-    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
+    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
+    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
+    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
 
     ctx = mem.context_for("Tell me about Wei", user_id="u1", k_chunks=0, graph=True)
 
@@ -940,8 +940,8 @@ def test_pending_conflict_and_resolution_include_cold_tier_facts():
     from mnemotrace.types import Conflict
 
     mem = MemoryEngine()
-    old = mem.add_fact("project", "status", "alpha", user_id="u1")
-    new = mem.add_fact("project", "status", "beta", user_id="u1")
+    old = mem.add_fact("project", "status", "alpha", user_id="u1", text='project status alpha')
+    new = mem.add_fact("project", "status", "beta", user_id="u1", text='project status beta')
     old.invalid_at = None
     old.expired_at = None
     new.supersedes = None
@@ -960,14 +960,14 @@ def test_pending_conflict_and_resolution_include_cold_tier_facts():
 
 def test_update_cold_fact_promotes_without_duplicate():
     mem = MemoryEngine()
-    cold = mem.add_fact("project", "project_note", "old value", user_id="u1")
-    hot = mem.add_fact("project", "project_status", "hot value", user_id="u1")
+    cold = mem.add_fact("project", "project_note", "old value", user_id="u1", text='project project note old value')
+    hot = mem.add_fact("project", "project_status", "hot value", user_id="u1", text='project project status hot value')
     cold.salience = 0.0
     hot.salience = 1.0
     assert mem.evict_cold(max_hot=1) == 1
     assert mem.cold_store.get(cold.id) is not None
 
-    updated = mem.update_fact(cold.id, object="new value")
+    updated = mem.update_fact(cold.id, object="new value", subject=cold.subject, predicate=cold.predicate, text=' '.join((cold.subject, cold.predicate.replace('_', ' '), 'new value')))
 
     assert updated is not None and updated.object == "new value"
     assert mem.fact_store.get(cold.id) is not None
@@ -995,8 +995,8 @@ def test_resolve_conflict_writes_back_to_copying_vector_store():
             return [deepcopy(payload) for payload in super().values()]
 
     mem = MemoryEngine()
-    older = mem.add_fact("user", "likes", "tea", user_id="u1")
-    newer = mem.add_fact("user", "likes", "coffee", user_id="u1")
+    older = mem.add_fact("user", "likes", "tea", user_id="u1", text='user likes tea')
+    newer = mem.add_fact("user", "likes", "coffee", user_id="u1", text='user likes coffee')
     copy_hot = CopyingVectorStore()
     for fact in mem.fact_store.values():
         copy_hot.upsert(fact.id, fact.embedding or [], fact)
@@ -1076,8 +1076,8 @@ def test_durable_facts_exempt_from_decay():
     from mnemotrace.consolidate.decay import decay
     from mnemotrace.types import Fact
 
-    incidental = Fact(subject="u", predicate="parked_at", object="lot B", salience=1.0, last_access=BASE)
-    preference = Fact(subject="u", predicate="likes", object="jazz", salience=1.0, last_access=BASE, retention="durable")
+    incidental = Fact(subject="u", predicate="parked_at", object="lot B", salience=1.0, last_access=BASE, text='u parked at lot B')
+    preference = Fact(subject="u", predicate="likes", object="jazz", salience=1.0, last_access=BASE, retention="durable", text='u likes jazz')
     later = BASE + 100 * DAY
     decay(incidental, per_day=0.02, t=later)
     decay(preference, per_day=0.02, t=later)
@@ -1089,7 +1089,7 @@ def test_reinforce_boosts_and_resets_clock():
     from mnemotrace.consolidate.decay import reinforce
     from mnemotrace.types import Fact
 
-    f = Fact(subject="u", predicate="parked_at", object="lot B", salience=1.0, last_access=BASE)
+    f = Fact(subject="u", predicate="parked_at", object="lot B", salience=1.0, last_access=BASE, text='u parked at lot B')
     reinforce(f, boost=0.5, t=BASE + 5 * DAY)
     assert f.salience == 1.5 and f.access_count == 1 and f.last_access == BASE + 5 * DAY
 
@@ -1103,9 +1103,9 @@ def test_digest_remains_faithful_after_supersession():
     # 一条旧 fact（来源于 ep），随后被新 fact 取代
     old = Fact(subject="u1", predicate="yoga_frequency", object="twice a week",
                user_id="u1", valid_at=BASE, provenance=[ep.id],
-               invalid_at=BASE + 5 * DAY, expired_at=BASE + 5 * DAY)
+               invalid_at=BASE + 5 * DAY, expired_at=BASE + 5 * DAY, text='u1 yoga frequency twice a week')
     new = Fact(subject="u1", predicate="yoga_frequency", object="three times a week",
-               user_id="u1", valid_at=BASE + 5 * DAY, supersedes=old.id)
+               user_id="u1", valid_at=BASE + 5 * DAY, supersedes=old.id, text='u1 yoga frequency three times a week')
     mem.fact_store.upsert(old.id, [0.0], old)
     mem.fact_store.upsert(new.id, [0.0], new)
     mem.generate_digests([ep])  # 冻结 "twice a week" 的摘要
@@ -1124,10 +1124,10 @@ def test_digest_remains_faithful_with_cold_tier_history():
     ep = mem.add("I do yoga twice a week.", user_id="u1", session_id="s1", event_time=BASE)
     old = Fact(subject="u1", predicate="yoga_frequency", object="twice a week",
                user_id="u1", valid_at=BASE, provenance=[ep.id],
-               invalid_at=BASE + 5 * DAY, expired_at=BASE + 5 * DAY, salience=0.0)
+               invalid_at=BASE + 5 * DAY, expired_at=BASE + 5 * DAY, salience=0.0, text='u1 yoga frequency twice a week')
     new = Fact(subject="u1", predicate="yoga_frequency", object="three times a week",
                user_id="u1", valid_at=BASE + 5 * DAY, supersedes=old.id,
-               salience=1.0)
+               salience=1.0, text='u1 yoga frequency three times a week')
     mem.fact_store.upsert(old.id, [0.0], old)
     mem.fact_store.upsert(new.id, [0.0], new)
     mem.generate_digests([ep])
@@ -1148,8 +1148,8 @@ def test_relevance_wins_without_category_weighting():
 def test_focus_track_boosts_salience_and_mute_hides():
     """跟踪主题提升显著度，静音主题退出读取上下文。"""
     mem = MemoryEngine()
-    mem.add_fact("user", "uses", "Python", user_id="u1")
-    mem.add_fact("user", "plays", "guitar", user_id="u1")
+    mem.add_fact("user", "uses", "Python", user_id="u1", text='user uses Python')
+    mem.add_fact("user", "plays", "guitar", user_id="u1", text='user plays guitar')
     py = next(f for f in mem.fact_store.values() if "python" in f.text.lower())
     before = py.salience
 
@@ -1197,8 +1197,8 @@ def test_graph_data_as_of_excludes_future_relations():
 
 def test_graph_data_can_exclude_sensitive_fact_edges():
     mem = MemoryEngine()
-    mem.add_fact("user", "has_disease", "diabetes", user_id="u1", object_kind="entity")
-    mem.add_fact("user", "works_at", "Acme", user_id="u1", sensitive=False, object_kind="entity")
+    mem.add_fact("user", "has_disease", "diabetes", user_id="u1", object_kind="entity", text='user has disease diabetes')
+    mem.add_fact("user", "works_at", "Acme", user_id="u1", sensitive=False, object_kind="entity", text='user works at Acme')
 
     full = mem.graph_data("u1")
     assert "diabetes" in str(full).lower()
@@ -1213,8 +1213,8 @@ def test_graph_data_can_exclude_sensitive_fact_edges():
 
 def test_graph_data_can_exclude_sensitive_cold_fact_edges():
     mem = MemoryEngine()
-    disease = mem.add_fact("user", "has_disease", "diabetes", user_id="u1", object_kind="entity")
-    work = mem.add_fact("user", "project_note", "Acme", user_id="u1", object_kind="entity")
+    disease = mem.add_fact("user", "has_disease", "diabetes", user_id="u1", object_kind="entity", text='user has disease diabetes')
+    work = mem.add_fact("user", "project_note", "Acme", user_id="u1", object_kind="entity", text='user project note Acme')
     disease.salience = 0.0
     work.salience = 1.0
     assert mem.evict_cold(max_hot=1) == 1
@@ -1264,8 +1264,8 @@ def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content
     ep = m.add("My private diagnosis is diabetes. I work at Acme.", user_id="u", session_id="s1")
     ep.digest = "Private diagnosis: diabetes. Job: Acme."
     m.digest_vec.upsert(ep.id, m.embedder.embed(ep.digest), ep)
-    m.add_fact("user", "has_disease", "diabetes", user_id="u")
-    m.add_fact("user", "works_at", "Acme", user_id="u", sensitive=False)
+    m.add_fact("user", "has_disease", "diabetes", user_id="u", text='user has disease diabetes')
+    m.add_fact("user", "works_at", "Acme", user_id="u", sensitive=False, text='user works at Acme')
 
     redacted = m.lean_context(
         "what do you know about my diagnosis and work?",
@@ -1284,17 +1284,10 @@ def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content
     assert "WORKING MEMORY" not in redacted
 
 
-def test_display_localization_keeps_canonical_predicate():
-    """Display uses the stored assertion regardless of the language."""
-    from mnemotrace.localize import render_display
-    assert render_display("user", "works_at", "字节跳动", "user works at 字节跳动") == "user works at 字节跳动"
-    assert render_display("user", "favorite_music", "周杰伦", "x") == "x"
-    assert render_display("user", "allergic_to", "花粉", "x") == "x"
-    # 英文数据不被强制翻译
-    assert render_display("user", "works_at", "Acme", "user works at Acme") == "user works at Acme"
-    # 规范 predicate/slot 不因展示而改变（引擎仍据此去重）
+def test_original_sentence_keeps_canonical_predicate():
     m = MemoryEngine()
-    f = m.add_fact("user", "works_at", "字节跳动", user_id="u")
+    f = m.add_fact("user", "works_at", "字节跳动", user_id="u", text='用户在字节跳动工作。')
+    assert f.text == '用户在字节跳动工作。'
     assert f.predicate == "works_at" and f.slot[2] == "works_at"
 
 
@@ -1303,8 +1296,8 @@ def test_conflict_resolve_and_dismiss_are_user_driven():
     dismiss 则两者都保留。"""
     from mnemotrace.types import Conflict
     m = MemoryEngine()
-    fa = m.add_fact("user", "likes", "北京", user_id="u")   # 多值 -> 两者并存（不自动合并）
-    fb = m.add_fact("user", "likes", "上海", user_id="u")
+    fa = m.add_fact("user", "likes", "北京", user_id="u", text='user likes 北京')   # 多值 -> 两者并存（不自动合并）
+    fb = m.add_fact("user", "likes", "上海", user_id="u", text='user likes 上海')
     cf = Conflict(older=fa.id, newer=fb.id, user_id="u")
     m.conflicts[cf.id] = cf
     assert m.pending_conflicts("u"), "both live -> pending"
@@ -1314,8 +1307,8 @@ def test_conflict_resolve_and_dismiss_are_user_driven():
     assert cf.status == "resolved" and m.pending_conflicts("u") == []
 
     # dismiss 两者都保留
-    g1 = m.add_fact("user", "likes", "茶", user_id="u")
-    g2 = m.add_fact("user", "likes", "奶茶", user_id="u")
+    g1 = m.add_fact("user", "likes", "茶", user_id="u", text='user likes 茶')
+    g2 = m.add_fact("user", "likes", "奶茶", user_id="u", text='user likes 奶茶')
     cf2 = Conflict(older=g1.id, newer=g2.id, user_id="u")
     m.conflicts[cf2.id] = cf2
     assert m.dismiss_conflict(cf2.id) and g1.is_live() and g2.is_live()
@@ -1343,7 +1336,7 @@ def test_promotion_never_evicts_every_semantic_chunk():
     # 排名靠前的 facts 全部指向离题内容 -> 此前它们的 provenance chunk 会占满预算
     for i, src in enumerate(sources):
         f = Fact(subject="u1", predicate=f"reviewed_{i}", object=f"quarterly numbers {i}",
-                 user_id="u1", provenance=[src.id])
+                 user_id="u1", provenance=[src.id], text=' '.join(('u1', f'reviewed_{i}'.replace('_', ' '), f'quarterly numbers {i}')))
         f.embedding = mem.embedder.embed(f.text)
         mem.fact_store.upsert(f.id, f.embedding, f)
     ctx = mem.lean_context("what is the screening room access code?", user_id="u1", n_chunks=2)

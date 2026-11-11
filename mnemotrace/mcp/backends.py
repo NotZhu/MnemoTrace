@@ -83,6 +83,7 @@ class Backend(Protocol):
         subject: str,
         predicate: str,
         object: str,
+        text: str,
         sensitive: bool | None = None,
         categories: list[Category] | None = None,
         object_kind: ObjectKind = "unknown",
@@ -95,6 +96,7 @@ class Backend(Protocol):
         subject: str | None = None,
         predicate: str | None = None,
         object: str | None = None,
+        text: str | None = None,
         sensitive: bool | None = None,
         categories: list[Category] | None = None,
         object_kind: ObjectKind | None = None,
@@ -238,6 +240,7 @@ class LocalBackend:
         subject: str,
         predicate: str,
         object: str,
+        text: str,
         sensitive: bool | None = None,
         categories: list[Category] | None = None,
         object_kind: ObjectKind = "unknown",
@@ -250,6 +253,7 @@ class LocalBackend:
             subject,
             predicate,
             object,
+            text=text,
             sensitive=sensitive,
             categories=categories,
             object_kind=object_kind,
@@ -263,6 +267,7 @@ class LocalBackend:
         subject: str | None = None,
         predicate: str | None = None,
         object: str | None = None,
+        text: str | None = None,
         sensitive: bool | None = None,
         categories: list[Category] | None = None,
         object_kind: ObjectKind | None = None,
@@ -276,6 +281,7 @@ class LocalBackend:
             subject=subject,
             predicate=predicate,
             object=object,
+            text=text,
             sensitive=sensitive,
             categories=categories,
             object_kind=object_kind,
@@ -486,13 +492,14 @@ class RemoteBackend:
         subject: str,
         predicate: str,
         object: str,
+        text: str,
         sensitive: bool | None = None,
         categories: list[Category] | None = None,
         object_kind: ObjectKind = "unknown",
         cardinality: Cardinality = "unknown",
         retention: Retention = "unknown",
     ) -> dict:
-        body = {"subject": subject, "predicate": predicate, "object": object,
+        body = {"subject": subject, "predicate": predicate, "object": object, "text": text,
                 "cardinality": cardinality, "retention": retention}
         if sensitive is not None:
             body["sensitive"] = sensitive
@@ -508,6 +515,7 @@ class RemoteBackend:
         subject: str | None = None,
         predicate: str | None = None,
         object: str | None = None,
+        text: str | None = None,
         sensitive: bool | None = None,
         categories: list[Category] | None = None,
         object_kind: ObjectKind | None = None,
@@ -521,6 +529,8 @@ class RemoteBackend:
             body["predicate"] = predicate
         if object is not None:
             body["object"] = object
+        if text is not None:
+            body["text"] = text
         if sensitive is not None:
             body["sensitive"] = sensitive
         if categories is not None:

@@ -13,7 +13,7 @@ def test_protected_evidence_is_committed_and_only_published_by_explicit_resoluti
     space = spaces.create(user, 'Protected adjudication')
     context = spaces.authorize(user, space.space_id)
     mem = Memory(runtime, context, llm=FakeLLM(handler=model_response))
-    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False)
+    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False, text='Ana lives in Paris')
     result = mem.remember('Oslo', 'review', event_time=20)
     assert result['status'] == 'completed'
     conflict, = mem.conflicts()
@@ -35,7 +35,7 @@ def test_adjudication_reloads_history_after_a_concurrent_write(runtime, spaces, 
     space = spaces.create(user, 'Adjudication version fence')
     context = spaces.authorize(user, space.space_id)
     other = Memory(runtime, context)
-    manual = other.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False)
+    manual = other.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False, text='Ana lives in Paris')
     verdict_calls = 0
 
     def respond(prompt, system):
@@ -43,7 +43,7 @@ def test_adjudication_reloads_history_after_a_concurrent_write(runtime, spaces, 
         if 'pair id' in system:
             verdict_calls += 1
             if verdict_calls == 1:
-                other.update_fact(manual.id, object='Berlin', sensitive=False)
+                other.update_fact(manual.id, object='Berlin', sensitive=False, subject=manual.subject, predicate=manual.predicate, text=' '.join((manual.subject, manual.predicate.replace('_', ' '), 'Berlin')))
         return model_response(prompt, system)
 
     model = FakeLLM(handler=respond)
@@ -65,7 +65,7 @@ def test_invalid_adjudication_does_not_publish_any_part_of_window(runtime, space
         return model_response(prompt, system)
 
     mem = Memory(runtime, context, llm=FakeLLM(handler=respond))
-    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False)
+    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False, text='Ana lives in Paris')
     accepted = mem.remember('Oslo', 'review', event_time=20, processing='buffered')
     operation, = accepted['operation_ids']
     assert mem._processing.run_one(operation, force=True)
@@ -82,12 +82,13 @@ def test_duplicate_manual_fact_gets_provenance_without_model_overrides(runtime, 
     context = spaces.authorize(user, space.space_id)
     model = FakeLLM(handler=model_response)
     mem = Memory(runtime, context, llm=model)
-    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, categories=['personal_details'], sensitive=True)
+    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, categories=['personal_details'], sensitive=True, text='Ana lives in Paris')
     result = mem.remember('Paris', 'review', event_time=10)
     assert result['status'] == 'completed'
     kept, = mem.facts()
     assert kept.id == manual.id and tuple(kept.provenance) == result['source_ids']
     assert (kept.categories, kept.categories_source, kept.sensitive) == (['personal_details'], 'user', True)
+    assert kept.object_kind == 'unknown'
     assert len(model.calls) == 1 and mem.conflicts() == ()
 
 
@@ -109,8 +110,8 @@ def test_historical_review_round_trips_through_private_export(runtime, spaces, u
     context = spaces.authorize(user, space.space_id)
     service = MemoryService(runtime, llm=FakeLLM(handler=respond))
     mem = service.memory(context)
-    first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False)
-    last = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=30, sensitive=False, cardinality='single')
+    first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False, text='Ana lives in Paris')
+    last = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=30, sensitive=False, cardinality='single', text='Ana lives in Berlin')
     assert mem.remember('Oslo', 'review', event_time=20)['status'] == 'completed'
     conflict, = mem.conflicts()
     assert conflict.older == first.id
@@ -136,7 +137,7 @@ def test_private_export_remains_importable_after_erasing_a_conflict_endpoint(run
     context = spaces.authorize(user, space.space_id)
     service = MemoryService(runtime, llm=FakeLLM(handler=model_response))
     mem = service.memory(context)
-    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10)
+    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, text='Ana lives in Paris')
     assert mem.remember('Oslo', 'review', event_time=20)['status'] == 'completed'
     assert mem.conflicts()
     assert mem.delete_fact(manual.id)
@@ -149,7 +150,7 @@ def test_approving_a_future_fact_preserves_current_value_until_effective_date(ru
     space = spaces.create(user, 'Future review')
     context = spaces.authorize(user, space.space_id)
     mem = Memory(runtime, context, llm=FakeLLM(handler=model_response))
-    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10)
+    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, text='Ana lives in Paris')
     effective_at = 4_102_444_800
     assert mem.remember('Oslo', 'review', event_time=effective_at)['status'] == 'completed'
     conflict, = mem.conflicts()
@@ -161,7 +162,7 @@ def test_approving_a_future_fact_preserves_current_value_until_effective_date(ru
 def test_future_manual_blocker_can_be_reviewed_before_it_is_effective(runtime, spaces, user):
     space = spaces.create(user, 'Scheduled manual review')
     mem = Memory(runtime, spaces.authorize(user, space.space_id), llm=FakeLLM(handler=model_response))
-    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=FUTURE)
+    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=FUTURE, text='Ana lives in Paris')
     assert mem.remember('Oslo', 'review', event_time=FUTURE + 10)['status'] == 'completed'
     conflict, = mem.conflicts()
     assert conflict.older == manual.id and mem.get_fact(conflict.newer) is None
@@ -173,10 +174,10 @@ def test_future_manual_blocker_can_be_reviewed_before_it_is_effective(runtime, s
 def test_manual_add_links_scheduled_predecessor_and_successor(runtime, spaces, user):
     space = spaces.create(user, 'Scheduled manual values')
     mem = Memory(runtime, spaces.authorize(user, space.space_id))
-    first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10)
-    last = mem.add_fact('Ana', 'lives_in', 'Oslo', valid_at=FUTURE + 20, cardinality='single')
-    middle = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=FUTURE + 10, cardinality='single')
-    following = mem.add_fact('Ana', 'lives_in', 'Rome', valid_at=FUTURE + 30, cardinality='single')
+    first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, text='Ana lives in Paris')
+    last = mem.add_fact('Ana', 'lives_in', 'Oslo', valid_at=FUTURE + 20, cardinality='single', text='Ana lives in Oslo')
+    middle = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=FUTURE + 10, cardinality='single', text='Ana lives in Berlin')
+    following = mem.add_fact('Ana', 'lives_in', 'Rome', valid_at=FUTURE + 30, cardinality='single', text='Ana lives in Rome')
     records = [mem.get_fact(fact.id) for fact in (first, middle, last, following)]
     assert [(f.invalid_at, f.supersedes) for f in records] == [
         (FUTURE + 10, None), (FUTURE + 20, first.id), (FUTURE + 30, middle.id), (None, last.id),
@@ -188,8 +189,8 @@ def test_manual_add_links_scheduled_predecessor_and_successor(runtime, spaces, u
 def test_approval_respects_other_manual_conflict_decisions(runtime, spaces, user, keep):
     space = spaces.create(user, 'Multiple manual blockers')
     mem = Memory(runtime, spaces.authorize(user, space.space_id), llm=FakeLLM(handler=weekday_response))
-    tuesday = mem.add_fact('Ana', 'works_on_days', 'Tuesday', valid_at=10)
-    thursday = mem.add_fact('Ana', 'works_on_days', 'Thursday', valid_at=10)
+    tuesday = mem.add_fact('Ana', 'works_on_days', 'Tuesday', valid_at=10, text='Ana works on days Tuesday')
+    thursday = mem.add_fact('Ana', 'works_on_days', 'Thursday', valid_at=10, text='Ana works on days Thursday')
     assert mem.remember('Wednesday only', 'review', event_time=20)['status'] == 'completed'
     conflicts = {c.older: c for c in mem.conflicts()}
     with pytest.raises(VersionConflict, match='Other conflicts'):

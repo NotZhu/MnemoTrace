@@ -54,7 +54,7 @@ class Broken:
 def test_raw_storage_and_manual_facts_do_not_need_model():
     m = MemoryEngine()
     m.add('Synthetic raw record')
-    m.add_fact('user', 'lives_in', 'Beijing')
+    m.add_fact('user', 'lives_in', 'Beijing', text='user lives in Beijing')
     assert m.search('Where do I live?').top().object == 'Beijing'
     with pytest.raises(LLMNotConfiguredError):
         m.consolidate()

@@ -139,7 +139,7 @@ def saved_outcome(mem, *, user_id, session_id, kind, statement, why='', provenan
     """Seed the stored representation of a historical conclusion."""
     from mnemotrace.types import Fact
 
-    fact = Fact(subject=session_id, predicate=kind, object=statement, display=statement,
+    fact = Fact(subject=session_id, predicate=kind, object=statement,
                 text=statement + (f' （依据：{why}）' if why else ''), user_id=user_id,
                 provenance=list(provenance))
     fact.sensitive = bool(why)

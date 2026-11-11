@@ -155,7 +155,7 @@ with Database(DatabaseConfig.from_env()) as database:
         MessageInput("m1", "user", "Synthetic input", scope="raw", agent_id="writer-A"),
     ))
     episode = memory.get_episode(receipt.source_ids[0])
-    memory.add_fact("Synthetic person", "likes", "tea")
+    memory.add_fact("Synthetic person", "likes", "tea", text="Synthetic person likes tea.")
     result = memory.search("What does Synthetic person like?")
     context_result = memory.lean_context("What does Synthetic person like?")
     print(result.status, [fact.text for fact in result.facts], context_result.limitations)
@@ -310,7 +310,7 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 | consolidate.conflict: _supersede/insert_dialogue_history/reconcile；conflict_candidates | 双时间轴/链路重连、重复来源、语义候选 | 必要历史读取，同事务更新；归并向量先就绪 | 3—4 | conflict、search_answering |
 | consolidate.decay: reinforce；memory: _reinforce_fact/apply_focus/_classify | 查询中改 access_count/last_access/salience，分类/focus 改字段 | 显式业务提交或维护事务，不隐藏持久化副作用 | 3、5 | transactions、retrieval、classification |
 | memory: reembed/evict_cold/_enforce_hot_limit/_page_hot/_retrieve_cold | 全量重嵌入/冷热搬运和内存索引 | 版本化批处理；正常读取不依赖完整冷热内存 | 3、5、8 | reembed、retrieval_candidates |
-| memory: add_fact/update_fact/delete_fact；service: 对应方法/clear_slot | 修改 SPO/text/display、人工权威、分类/topic/时间，删除来源/关系 | 人工记录提交、精确擦除，保留历史/来源/修正 | 3、6 | fact_metadata_updates、fact_statement_updates、record_business |
+| memory: add_fact/update_fact/delete_fact；service: 对应方法/clear_slot | 修改 SPO/text、人工权威、分类/topic/时间，删除来源/关系 | 人工记录提交、精确擦除，保留历史/来源/修正 | 3、6 | fact_metadata_updates、fact_statement_updates、record_business |
 | memory: pending_conflicts/resolve_conflict/dismiss_conflict；service: conflicts/resolve_conflict | 状态修改、双方失效和 supersedes | 冲突、双方事实、必要图同事务 | 3 | conflict、record_business |
 | memory: set_focus/set_policy/_apply_policy/profile/refresh_profile | 修改配置、缓存读取和显式画像任务 | settings 权威、版本化事实依赖与可恢复刷新 | 3、5 | profile_cache、profile_display、configuration_isolation |
 | memory: generate_digests/retrieve_digests；consolidate.summarizer | 来源/摘要扫描及内存向量 | 版本化摘要、digest 向量、辅助任务 | 4—5 | digest_interfaces、pipeline_sources |

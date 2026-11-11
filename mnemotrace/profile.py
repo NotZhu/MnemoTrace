@@ -23,7 +23,7 @@ Use the source language. Preserve conditions, negation, time and precise values.
 Every statement must be supported by its cited facts. Merge duplicates, omit unsupported claims.
 An empty section is []. Return the complete updated profile, including supported previous entries.
 Do not return counts, scores, confirmation tiers or additional fields."""
-INPUT_FIELDS = ("subject", "predicate", "object", "text", "display", "categories", "categories_source", "source",
+INPUT_FIELDS = ("subject", "predicate", "object", "text", "categories", "categories_source", "source",
                 "provenance", "source_roles", "valid_at", "invalid_at", "expired_at",
                 "review_pending", "approved_at", "sensitive")
 
@@ -44,7 +44,7 @@ def fingerprint(settings, config, model):
 def validate_stored(state):
     if (not isinstance(state, dict) or set(new_state()) - set(state)
             or set(state) - (set(new_state()) | {"operations"})
-            or type(state["format_version"]) is not int or state["format_version"] != 1):
+            or type(state["format_version"]) is not int or state["format_version"] != 2):
         raise ValueError("Invalid profile state format")
     for key in ("revision", "cache_version"):
         if type(state[key]) is not int or state[key] < 0:
@@ -162,7 +162,7 @@ def empty():
 
 
 def new_state():
-    return dict(format_version=1, revision=0, cache_version=0, updated_at=None,
+    return dict(format_version=2, revision=0, cache_version=0, updated_at=None,
                 generated_config=None, generated_model=None, generated_prompt=None,
                 settings=None, facts={}, cache=empty(), job=None)
 

@@ -122,7 +122,7 @@ def run_case(case, args):
     try:
         svc = MemoryService(data_dir=str(case_dir / 'store'), embedder_name='hashing', llm_name=args.extractor)
         for manual in case.get('manual', []):
-            svc.add_fact(manual['user'], manual['subject'], manual['predicate'], manual['object'])
+            svc.add_fact(manual['user'], manual['subject'], manual['predicate'], manual['object'], text=manual['text'])
         for index, event in enumerate(case['events'], 1):
             current[0] = event
             t0 = time.perf_counter()

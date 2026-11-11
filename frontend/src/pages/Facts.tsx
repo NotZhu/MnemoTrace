@@ -141,7 +141,7 @@ export default function Facts() {
               <li key={f.id} className="group flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:gap-5 sm:px-5">
                 <div className="min-w-0 flex-1 break-words">
                   <div className={f.status === 'live' ? 'text-sm leading-relaxed text-slate-100' : 'text-sm leading-relaxed text-ghost line-through'}>
-                    {f.display || f.text}
+                    {f.text}
                   </div>
                   <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-ghost">
                     <span className={`inline-flex items-center gap-1.5 ${f.status === 'live' ? 'font-medium text-brand-mint' : 'text-ghost'}`}>
@@ -282,6 +282,7 @@ export default function Facts() {
               subject: vals.subject || 'user',
               predicate: vals.predicate!,
               object: vals.object!,
+              text: vals.text!,
               sensitive: vals.sensitive,
               categories: vals.categories,
               object_kind: vals.object_kind,
@@ -309,7 +310,7 @@ export default function Facts() {
             <p>{t.facts.deleteBody}</p>
             {confirmFact && (
               <p className="rounded-lg border border-brand-rose/25 bg-brand-rose/10 px-3 py-2 text-brand-rose">
-                {t.facts.deleteTarget(confirmFact.display || confirmFact.text)}
+                {t.facts.deleteTarget(confirmFact.text)}
               </p>
             )}
           </div>
@@ -396,11 +397,19 @@ function FactModal({
   const [subject, setSubject] = useState('')
   const [predicate, setPredicate] = useState('')
   const [object, setObject] = useState('')
+  const [text, setText] = useState('')
   const [sensitiveOverride, setSensitiveOverride] = useState<boolean>()
-  const claimChanged = initial && (initial.subject !== subject || initial.predicate !== predicate || initial.object !== object)
+  const claimChanged = initial && (initial.subject !== subject || initial.predicate !== predicate || initial.object !== object || initial.text !== text)
   const sensitive = sensitiveOverride ?? (!initial || claimChanged || initial.sensitive)
   const [categories, setCategories] = useState<Category[]>()
   const [objectKind, setObjectKind] = useState<ObjectKind>()
+
+  const submit = () => {
+    const patch: FactEdit = !initial || claimChanged
+      ? { subject: subject || 'user', predicate, object, text }
+      : {}
+    onSubmit({ ...patch, sensitive: sensitiveOverride, categories, object_kind: objectKind })
+  }
 
   // 每次弹窗带着（可能是新的）事实打开时，同步一次表单值。
   const [seen, setSeen] = useState<string | null>(null)
@@ -410,6 +419,7 @@ function FactModal({
     setSubject(initial?.subject ?? '')
     setPredicate(initial?.predicate ?? '')
     setObject(initial?.object ?? '')
+    setText(initial?.text ?? '')
     setSensitiveOverride(undefined)
     setCategories(undefined)
     setObjectKind(undefined)
@@ -442,7 +452,7 @@ function FactModal({
           <Button variant="ghost" disabled={loading} onClick={onClose} className="h-9 px-4 py-2 text-sm">
             {t.common.cancel}
           </Button>
-          <Button loading={loading} disabled={loading || !predicate.trim() || !object.trim()} onClick={() => onSubmit({ subject, predicate, object, sensitive: sensitiveOverride, categories, object_kind: objectKind })} className="h-9 px-4 py-2 text-sm">
+          <Button loading={loading} disabled={loading || (!!initial && !subject.trim()) || !predicate.trim() || !object.trim() || !text.trim()} onClick={submit} className="h-9 px-4 py-2 text-sm">
             {t.common.save}
           </Button>
           </div>
@@ -450,6 +460,9 @@ function FactModal({
       }
     >
       <div className="space-y-4">
+        <Field label={t.facts.textLabel}>
+          <FactTextInput originalValue={initial?.text} value={text} onChange={setText} />
+        </Field>
         <Field label={t.facts.subjectLabel}>
           <FactTextInput originalValue={initial?.subject} value={subject} onChange={setSubject} />
         </Field>

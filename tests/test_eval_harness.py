@@ -4,9 +4,11 @@ import json
 import sys
 from types import ModuleType
 
-from eval.harness import evaluate, run_mnemotrace, write_jsonl
+from eval.harness import evaluate, run_mnemotrace, score_search, write_jsonl
 from eval.report import format_synthetic_report, load
 from eval.synthetic import ITEMS
+from mnemotrace.retrieve.answers import SearchResult
+from mnemotrace.types import Fact
 from tests.model_fixtures import RecordedLLM
 
 
@@ -38,6 +40,16 @@ def test_synthetic_harness_in_memory_smoke():
     assert latency >= 0.0
 
 
+def test_evidence_scoring_requires_the_correct_value_at_rank_one():
+    correct = Fact('Ana', 'favorite_color', 'blue', text='Ana prefers blue.')
+    wrong = Fact('Ana', 'favorite_color', 'blueberry', text='Ana prefers blueberry.')
+    result = SearchResult('What color?', [wrong, correct])
+    assert result.status == 'evidence_only' and result.answer() == ''
+    assert not score_search('blue', result)
+    assert not score_search(None, result)
+    assert score_search('blue', SearchResult('What color?', [correct, wrong]))
+
+
 def test_synthetic_harness_jsonl_raw_log_contains_items_and_summary(tmp_path):
     rows, summary = evaluate(storage="memory", llm=RecordedLLM())
     path = tmp_path / "harness.jsonl"
@@ -50,6 +62,7 @@ def test_synthetic_harness_jsonl_raw_log_contains_items_and_summary(tmp_path):
     assert records[-1]["storage"] == "memory"
     first = records[0]
     assert {"id", "category", "question", "gold", "ok", "tokens", "latency_ms", "naive_ok"} <= first.keys()
+    assert (first['status'], first['answer'], first['top_fact_object']) == ('evidence_only', '', 'Spotify')
 
 
 def test_report_reads_synthetic_harness_jsonl(tmp_path):

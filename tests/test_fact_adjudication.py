@@ -44,7 +44,7 @@ def test_dated_and_unknown_facts_use_their_own_time_basis():
 
 
 def fact(key, obj, at, **fields):
-    return Fact('Ana', 'lives_in', obj, id=key, valid_at=at, created_at=100,
+    return Fact('Ana', 'lives_in', obj, text=fields.pop('text', f'Ana lives in {obj}'), id=key, valid_at=at, created_at=100,
                 provenance=[key + '-source'], **fields)
 
 
@@ -111,7 +111,7 @@ def model_response(prompt, system):
 
 def test_offline_manual_conflict_is_hidden_until_approval():
     mem = MemoryEngine(llm=FakeLLM(handler=model_response))
-    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False)
+    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False, text='Ana lives in Paris')
     mem.add('Oslo', event_time=20, consolidate=True)
     conflict, = mem.pending_conflicts()
     pending = mem.fact_store.get(conflict.newer)
@@ -219,8 +219,8 @@ def test_historical_manual_conflict_is_reviewable_and_revises_only_its_interval(
             for pair in json.loads(prompt)]})
 
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
-    first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10)
-    last = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=30, cardinality='single')
+    first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, text='Ana lives in Paris')
+    last = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=30, cardinality='single', text='Ana lives in Berlin')
     mem.add('Oslo', event_time=20, consolidate=True)
     conflict, = mem.pending_conflicts()
     assert mem.resolve_conflict(conflict.id, 'newer')
@@ -236,7 +236,7 @@ def test_snapshot_restores_pending_conflict_with_remapped_fact_ids():
 
     old, held = fact('old', 'Paris', 10, source='user'), fact('held', 'Oslo', 20, review_pending=True)
     conflict = Conflict(old.id, held.id, old.text, held.text)
-    payload = dict(format_version=2, facts=[asdict(old), asdict(held)], episodes=[], conflicts=[asdict(conflict)])
+    payload = dict(format_version=3, facts=[asdict(old), asdict(held)], episodes=[], conflicts=[asdict(conflict)])
     restored = MemoryEngine()
     restored.import_snapshot(payload, user_id='target')
     restored.import_snapshot(payload, user_id='target')
@@ -254,7 +254,7 @@ def test_snapshot_rejects_an_unlinked_held_fact_before_restoring():
     held = fact('held', 'Oslo', 20, review_pending=True)
     restored = MemoryEngine()
     with pytest.raises(ValueError, match='pending fact has no conflict'):
-        restored.import_snapshot(dict(format_version=2, facts=[asdict(held)], episodes=[]))
+        restored.import_snapshot(dict(format_version=3, facts=[asdict(held)], episodes=[]))
     assert restored._all_facts(include_unpublished=True) == []
 
 
@@ -263,7 +263,7 @@ def test_snapshot_rejects_legacy_assertion_before_writing_sources_or_facts():
 
     restored = MemoryEngine()
     snapshot = dict(
-        format_version=2,
+        format_version=3,
         facts=[asdict(fact('current', 'Paris', 10)),
                dict(asdict(fact('legacy', 'Oslo', 20)), assertion_kind='assistant_suggestion')],
         episodes=[dict(id='ep-1', content='Synthetic source', session_id='s', role='user', event_time=10)],
@@ -279,7 +279,7 @@ FUTURE = 4_102_444_800
 
 def test_future_manual_interval_holds_a_conflicting_extraction():
     mem = MemoryEngine(llm=FakeLLM(handler=model_response))
-    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=FUTURE)
+    manual = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=FUTURE, text='Ana lives in Paris')
     mem.add('Oslo', event_time=FUTURE + 10, consolidate=True)
     conflict, = mem.pending_conflicts()
     assert conflict.older == manual.id
@@ -291,10 +291,10 @@ def test_future_manual_interval_holds_a_conflicting_extraction():
 
 def test_manual_add_splices_scheduled_facts_in_valid_time_order():
     mem = MemoryEngine()
-    first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10)
-    last = mem.add_fact('Ana', 'lives_in', 'Oslo', valid_at=FUTURE + 20, cardinality='single')
-    middle = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=FUTURE + 10, cardinality='single')
-    following = mem.add_fact('Ana', 'lives_in', 'Rome', valid_at=FUTURE + 30, cardinality='single')
+    first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, text='Ana lives in Paris')
+    last = mem.add_fact('Ana', 'lives_in', 'Oslo', valid_at=FUTURE + 20, cardinality='single', text='Ana lives in Oslo')
+    middle = mem.add_fact('Ana', 'lives_in', 'Berlin', valid_at=FUTURE + 10, cardinality='single', text='Ana lives in Berlin')
+    following = mem.add_fact('Ana', 'lives_in', 'Rome', valid_at=FUTURE + 30, cardinality='single', text='Ana lives in Rome')
     assert [(f.invalid_at, f.supersedes) for f in (first, middle, last, following)] == [
         (FUTURE + 10, None), (FUTURE + 20, first.id), (FUTURE + 30, middle.id), (None, last.id),
     ]
@@ -324,8 +324,8 @@ def weekday_response(prompt, system):
 @pytest.mark.parametrize('other_decision', [None, 'older', 'dismiss'])
 def test_approval_respects_other_manual_conflict_decisions(other_decision):
     mem = MemoryEngine(llm=FakeLLM(handler=weekday_response))
-    tuesday = mem.add_fact('Ana', 'works_on_days', 'Tuesday', valid_at=10)
-    thursday = mem.add_fact('Ana', 'works_on_days', 'Thursday', valid_at=10)
+    tuesday = mem.add_fact('Ana', 'works_on_days', 'Tuesday', valid_at=10, text='Ana works on days Tuesday')
+    thursday = mem.add_fact('Ana', 'works_on_days', 'Thursday', valid_at=10, text='Ana works on days Thursday')
     mem.add('Wednesday only', event_time=20, consolidate=True)
     conflicts = {c.older: c for c in mem.pending_conflicts()}
     if other_decision is not None:
@@ -349,3 +349,12 @@ def test_literal_case_conditions_and_subsecond_validity_survive_adjudication():
         changed, _, stats = merge([new], [first], judge='coexists')
         assert new.id in changed and stats['model_calls'] == 1
     assert first.categories == ['misc']
+
+
+def test_manual_entity_does_not_reuse_the_id_of_a_literal():
+    mem = MemoryEngine()
+    claim = dict(subject='Ana', predicate='visits', object='Orbit', text='Ana visits Orbit.', valid_at=10)
+    literal = mem.add_fact(**claim, object_kind='literal')
+    entity = mem.add_fact(**claim, object_kind='entity')
+    assert entity.id != literal.id
+    assert [edge.fact_id for edge in mem.graph.relations()] == [entity.id]

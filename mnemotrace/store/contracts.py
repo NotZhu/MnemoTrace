@@ -532,7 +532,7 @@ class ExtractionProduct:
     stats: OperationStats
     digest_max_chars: int
     context_revision: int | None
-    format_version: int = 5
+    format_version: int = 6
 
     def __post_init__(self):
         if not isinstance(self.conditions, CommitConditions) or self.conditions.lease is None:
@@ -540,7 +540,7 @@ class ExtractionProduct:
         if not isinstance(self.stats, OperationStats):
             raise ValueError('Validated operation statistics are required')
         _count(self.digest_max_chars, 1)
-        if type(self.format_version) is not int or self.format_version != 5:
+        if type(self.format_version) is not int or self.format_version != 6:
             raise ValueError('Unsupported model product format')
         if self.context_revision is not None:
             _count(self.context_revision)
@@ -556,7 +556,7 @@ class ExtractionProduct:
             if not data['pending'] or len(set(ids)) != len(ids) or set(ids) != {s.source_id for s in self.conditions.sources}:
                 raise ValueError('Product source references differ from input versions')
             from ..consolidate.planning import validate_result
-            validate_result(result, data, SimpleNamespace(digest_max_chars=self.digest_max_chars), normalized=True)
+            validate_result(result, data, SimpleNamespace(digest_max_chars=self.digest_max_chars))
         except (KeyError, TypeError, ValueError, ExtractionResponseError) as exc:
             raise ValueError('Invalid model product or source references') from exc
         object.__setattr__(self, 'input_json', _json(data))

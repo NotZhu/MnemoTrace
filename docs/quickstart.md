@@ -34,7 +34,7 @@ with Database(DatabaseConfig.from_env()) as database:
     )
     memory = Memory(database, scope)
     memory.remember_raw("Synthetic project note", "demo")
-    memory.add_fact("user", "lives_in", "Paris")
+    memory.add_fact("user", "lives_in", "Paris", text="用户住在巴黎。")
     print([fact.text for fact in memory.search("Where do I live?").facts])
 ```
 

@@ -43,8 +43,8 @@
 | `mnemotrace_remember` | content 必填；session_id=default、scope=auto/long/raw | 保存并通过服务层处理整合 |
 | `mnemotrace_flush_processing` | session_id、timeout、include_digests | 整理会话并等待核心处理 |
 | `mnemotrace_retry_operation` | operation_id | 重试同一操作 |
-| `mnemotrace_add_fact` | predicate、object 必填；subject=user、sensitive、categories、object_kind | 添加用户明确断言 |
-| `mnemotrace_update_fact` | fact_id 必填；subject、predicate、object、sensitive、categories、object_kind、response_format | 编辑事实，找不到时检查错误结果 |
+| `mnemotrace_add_fact` | text、predicate、object 必填；subject=user、sensitive、categories、object_kind | 添加用户明确断言 |
+| `mnemotrace_update_fact` | fact_id 必填；内容修改同时提供 subject、predicate、object、text；sensitive、categories、object_kind、response_format | 编辑事实，找不到时检查错误结果 |
 | `mnemotrace_set_focus` | track、mute 可选；response_format | None 不变，[] 清空 |
 | `mnemotrace_import` | content 必填；format=auto | 导入原始导出内容，content 不是服务器文件路径 |
 | `mnemotrace_export` | include_sensitive=false、response_format | 默认安全导出，显式选择才返回私有原文 |

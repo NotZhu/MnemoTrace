@@ -13,7 +13,6 @@ from .extraction import LLMNotConfiguredError, require_llm
 from .llm import providers
 from .memory import Memory
 from .metrics import Metrics, timed
-from .localize import display_of
 from .store.contracts import FactQuery, FactState, MessageInput
 from .store.postgres import Database, DatabaseConfig, Spaces
 from .store.postgres.errors import MessageConflict
@@ -102,7 +101,7 @@ def _fact_view(fact, at, *, known_at=None):
     known = at if known_at is None else known_at
     live = (fact.is_published(known) and fact.is_valid_at(at)
             and (fact.expired_at is None or fact.expired_at > known))
-    row.update(display=display_of(fact), valid_at=fmt_datetime(fact.valid_at),
+    row.update(valid_at=fmt_datetime(fact.valid_at),
                invalid_at=fmt_datetime(fact.invalid_at) if fact.invalid_at is not None else None,
                status='live' if live else 'superseded',
                why=split_outcome_text(fact.text)[1] if fact.predicate.lower() in OUTCOME_PREDICATES else '')
@@ -356,7 +355,7 @@ class MemoryService:
         fact = self.memory(context).update_fact(fact_id, **fields)
         if fact is None:
             return None
-        return dict(ok=True, id=fact.id, text=fact.text, display=fact.display, source=fact.source,
+        return dict(ok=True, id=fact.id, text=fact.text, source=fact.source,
                     source_roles=fact.source_roles,
                     categories=fact.categories, categories_source=fact.categories_source,
                     object_kind=fact.object_kind,
@@ -426,7 +425,7 @@ class MemoryService:
             if row['redacted']:
                 for key in ('subject', 'predicate', 'object', 'why', 'categories', 'categories_source', 'object_kind'):
                     row.pop(key, None)
-                row['text'] = row['display'] = '[redacted sensitive fact]'
+                row['text'] = '[redacted sensitive fact]'
         report = rows[0] if rows else dict(episodes=0, episodes_consolidated=0, episodes_pending=0,
                                           extraction_failures=0, )
         redacted = 0 if include_sensitive else report.get('facts_sensitive', 0)

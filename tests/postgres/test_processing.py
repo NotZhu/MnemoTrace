@@ -326,7 +326,7 @@ def test_semantic_reconciliation_and_manual_authority(processing):
     assert memory.get_fact(historical.id).invalid_at == 200
     assert memory.facts(FactQuery(valid_at=150, known_at=historical.created_at))[0].id == historical.id
 
-    pinned = memory.add_fact('Synthetic person', 'based_in', 'Nanjing', valid_at=300, cardinality='single')
+    pinned = memory.add_fact('Synthetic person', 'based_in', 'Nanjing', valid_at=300, cardinality='single', text='Synthetic person based in Nanjing')
     attempt = MessageInput('pinned', 'user', 'based_in Shenzhen', event_time=400)
     assert memory.remember_messages('chat', (attempt,), processing='immediate')['ok']
     assert tuple(fact.id for fact in memory.facts()) == (pinned.id,)

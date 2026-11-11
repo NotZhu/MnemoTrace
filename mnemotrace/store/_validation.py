@@ -158,7 +158,7 @@ _EPISODE = {
 }
 _FACT = {
     "id": _identifier, "subject": _identifier, "predicate": _identifier, "object": _identifier,
-    "text": _string, "display": _string, "user_id": _identifier, "embedding": _VECTOR,
+    "text": _identifier, "user_id": _identifier, "embedding": _VECTOR,
     "salience": _number, "confidence": _number, "source": _SOURCE,
     "sensitive": _boolean, "valid_at": _TIME_OR_NULL,
     "sensitive_override": _boolean, "review_pending": _boolean, "approved_at": _TIME_OR_NULL,
@@ -188,7 +188,7 @@ def _fields(value: Any, spec: dict[str, Validator], path: str,
             optional: tuple[str, ...] = ()) -> dict[str, Any]:
     _object(value, path)
     retired = {'summary', 'summary_embedding', 'summary_coverage', 'summary_version',
-               'working', 'working_ids', 'working_added', 'working_live', 'session_generation'}
+               'display', 'working', 'working_ids', 'working_added', 'working_live', 'session_generation'}
     for key in retired.intersection(value):
         _fail(f"{path}.{key}", "unsupported field")
     for key, check in spec.items():
@@ -240,7 +240,7 @@ def _validate_fact_categories(record: dict, path: str) -> None:
 
 # A migration carries source identities/history, not the target user's runtime state.
 _IMPORT_FACT = {key: _FACT[key] for key in (
-    "id", "subject", "predicate", "object", "text", "display", "source", "sensitive",
+    "id", "subject", "predicate", "object", "text", "source", "sensitive",
     "categories", "categories_source", "object_kind", "cardinality", "retention",
     "salience", "confidence", "valid_at", "invalid_at", "created_at", "expired_at", "validity_revisions",
     "supersedes", "provenance", "source_roles", "sensitive_override", "review_pending", "approved_at",
@@ -255,7 +255,7 @@ _IMPORT_EPISODE = {key: _EPISODE[key] for key in (
 _IMPORT_CONFLICT = {key: value for key, value in _RECORDS["Conflict"].items() if key != "user_id"}
 
 
-SNAPSHOT_FORMAT_VERSION = 2
+SNAPSHOT_FORMAT_VERSION = 3
 
 
 def is_snapshot_candidate(value: Any) -> bool:
@@ -273,7 +273,7 @@ def validate_snapshot(snapshot: Any) -> dict:
         if key not in snapshot:
             _fail(f"snapshot.{key}", "missing required field")
     result = {}
-    for name, spec, optional in (("facts", _IMPORT_FACT, ("text", "display", "status", "valid_at_h", "invalid_at_h", "source_roles", "sensitive_override", "review_pending", "approved_at")),
+    for name, spec, optional in (("facts", _IMPORT_FACT, ("status", "valid_at_h", "invalid_at_h", "source_roles", "sensitive_override", "review_pending", "approved_at")),
                                  ("episodes", _IMPORT_EPISODE, ("digest", "coverage", "digest_coverage", "ingested_at")),
                                  ("conflicts", _IMPORT_CONFLICT, ())):
         rows = snapshot.get(name, [])

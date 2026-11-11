@@ -58,8 +58,8 @@ def _timed(fn):
 
 def _chain_context(enabled: bool) -> str:
     mem = _memory(config=Config(chain_evidence=enabled))
-    mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE)
-    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY)
+    mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE, text='Wei works at Tencent')
+    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, text='Wei works at Moonshot AI')
     return mem.lean_context(
         "Where does Wei work?",
         user_id="u1",
@@ -97,7 +97,7 @@ def _raw_context(enabled: bool) -> str:
         object="A17",
         user_id="u1",
         valid_at=BASE,
-        provenance=[ep.id],
+        provenance=[ep.id], text='Apollo launch code A17',
     )
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
     return mem.lean_context(
@@ -135,7 +135,7 @@ def _provenance_chunk_context(enabled: bool) -> str:
         object="A17",
         user_id="u1",
         valid_at=BASE,
-        provenance=[source.id],
+        provenance=[source.id], text='Apollo launch code A17',
     )
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
     return mem.lean_context(
@@ -193,7 +193,7 @@ def _evidence_budget_context(enabled: bool) -> str:
         object="A17",
         user_id="u1",
         valid_at=BASE,
-        provenance=[ep.id],
+        provenance=[ep.id], text='Apollo launch code A17',
     )
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
     for i in range(12):
@@ -202,7 +202,7 @@ def _evidence_budget_context(enabled: bool) -> str:
             "project_note",
             f"background filler note {i} with operational chatter that is not the checklist location",
             user_id="u1",
-            valid_at=BASE + (i + 1) * DAY,
+            valid_at=BASE + (i + 1) * DAY, text=' '.join(('Apollo', 'project note', f'background filler note {i} with operational chatter that is not the checklist location')),
         )
     return mem.lean_context(
         "What is Apollo's launch code and where is the printed checklist?",
@@ -216,30 +216,30 @@ def _evidence_budget_context(enabled: bool) -> str:
 
 def _graph_context(enabled: bool) -> str:
     mem = _memory(config=Config(graph_proximity=enabled))
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
-    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
+    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
+    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
+    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
     return mem.context_for("Tell me about Wei", user_id="u1", k_chunks=0, graph=True)
 
 
 def _graph_relation_context(enabled: bool) -> str:
     mem = _memory(config=Config(graph_relation_awareness=enabled))
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
-    mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
-    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity")
+    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
+    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
+    mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Lin likes jazz')
+    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
     return mem.context_for("Where is Wei's colleague's company based?", user_id="u1", k_chunks=0, graph=True)
 
 
 def _graph_reinforcement_context(enabled: bool) -> str:
     mem = _memory(config=Config(graph_path_reinforcement=enabled))
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity")
-    mem.add_fact("Wei", "mentor", "Maya", user_id="u1", valid_at=BASE + DAY, object_kind="entity")
-    mem.add_fact("Lin", "works_on", "Atlas", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity")
-    mem.add_fact("Maya", "works_on", "Atlas", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity")
-    mem.add_fact("Lin", "works_on", "Zephyr", user_id="u1", valid_at=BASE + 4 * DAY, object_kind="entity")
-    mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 5 * DAY, object_kind="entity")
-    mem.add_fact("Zephyr", "based_in", "Lisbon", user_id="u1", valid_at=BASE + 6 * DAY, object_kind="entity")
+    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
+    mem.add_fact("Wei", "mentor", "Maya", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Wei mentor Maya')
+    mem.add_fact("Lin", "works_on", "Atlas", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Lin works on Atlas')
+    mem.add_fact("Maya", "works_on", "Atlas", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity", text='Maya works on Atlas')
+    mem.add_fact("Lin", "works_on", "Zephyr", user_id="u1", valid_at=BASE + 4 * DAY, object_kind="entity", text='Lin works on Zephyr')
+    mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 5 * DAY, object_kind="entity", text='Atlas based in Reykjavik')
+    mem.add_fact("Zephyr", "based_in", "Lisbon", user_id="u1", valid_at=BASE + 6 * DAY, object_kind="entity", text='Zephyr based in Lisbon')
     return mem.context_for("Where is Wei's project based?", user_id="u1", k_chunks=0, graph=True)
 
 

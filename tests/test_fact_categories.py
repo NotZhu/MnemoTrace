@@ -65,22 +65,22 @@ def test_invalid_model_metadata_is_rejected(patch):
 def test_manual_metadata_edit_and_claim_change_without_a_model():
     memory = MemoryEngine()
     fact = memory.add_fact("user", "prefers", "tea", categories=["food", "food"],
-                           object_kind="entity", sensitive=False)
+                           object_kind="entity", sensitive=False, text='user prefers tea')
     assert (fact.categories, fact.categories_source) == (["food"], "user")
-    memory.update_fact(fact.id, categories=[], object="tea")
+    memory.update_fact(fact.id, categories=[], object="tea", subject=fact.subject, predicate=fact.predicate, text=' '.join((fact.subject, fact.predicate.replace('_', ' '), 'tea')))
     fact = memory.fact_store.get(fact.id)
     assert (fact.categories, fact.categories_source, fact.object_kind) == ([], "unset", "entity")
     memory.update_fact(fact.id, categories=["misc"])
     memory.update_fact(fact.id, sensitive=False)
     fact = memory.fact_store.get(fact.id)
     assert (fact.categories, fact.categories_source) == (["misc"], "user")
-    memory.update_fact(fact.id, object="coffee")
+    memory.update_fact(fact.id, object="coffee", subject=fact.subject, predicate=fact.predicate, text=' '.join((fact.subject, fact.predicate.replace('_', ' '), 'coffee')))
     fact = memory.fact_store.get(fact.id)
     assert (fact.categories, fact.categories_source, fact.object_kind) == ([], "unset", "unknown")
 
 
 def test_snapshot_preserves_metadata_and_checks_version():
-    fact = Fact("user", "prefers", "tea", categories=["food"], categories_source="user", object_kind="entity")
+    fact = Fact("user", "prefers", "tea", categories=["food"], categories_source="user", object_kind="entity", text='user prefers tea')
     snapshot = dict(format_version=SNAPSHOT_FORMAT_VERSION, facts=[asdict(fact)], episodes=[])
     memory = MemoryEngine()
     memory.import_snapshot(snapshot)

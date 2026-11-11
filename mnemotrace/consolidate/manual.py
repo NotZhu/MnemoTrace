@@ -3,7 +3,6 @@ from .fact_rules import same_assertion
 from ..categories import normalize_categories, validate_object_kind
 from ..types import Fact, validate_lifecycle
 from ..util import now
-from .outcomes import OUTCOME_PREDICATES, split_outcome_text
 
 
 class InvalidFactEditError(ValueError):
@@ -14,10 +13,11 @@ def _manual_subject(subject):
     return 'user' if subject.strip().casefold() == 'user' else subject
 
 
-def build_manual_fact(subject, predicate, object_, user_id, valid_at, sensitive, categories, object_kind,
+def build_manual_fact(subject, predicate, object_, text, user_id, valid_at, sensitive, categories, object_kind,
                       cardinality="unknown", retention="unknown"):
+    validate_fact_patch(subject, predicate, object_, text, required=True)
     labels = normalize_categories(categories) if categories is not None else []
-    fact = Fact(subject=_manual_subject(subject), predicate=predicate, object=object_, user_id=user_id, source='user',
+    fact = Fact(subject=_manual_subject(subject), predicate=predicate, object=object_, text=text, user_id=user_id, source='user',
                 valid_at=valid_at if valid_at is not None else now(),
                 sensitive=True if sensitive is None else sensitive,
                 sensitive_override=sensitive is not None,
@@ -26,30 +26,26 @@ def build_manual_fact(subject, predicate, object_, user_id, valid_at, sensitive,
     return fact
 
 
+def validate_fact_patch(subject, predicate, object, text, *, required=False):
+    """Content edits replace both representations; metadata-only patches need neither."""
+    values = (subject, predicate, object, text)
+    if (required or any(value is not None for value in values)) and any(
+            not isinstance(value, str) or not value.strip() for value in values):
+        raise InvalidFactEditError('Content edits require non-empty subject, predicate, object and text')
+
+
 def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=None, categories=None,
-                      statement=None, object_kind=None, cardinality=None, retention=None, *, at=None):
+                      text=None, object_kind=None, cardinality=None, retention=None, *, at=None):
     """Apply a correction to one domain record and report whether its claim changed."""
     subject = _manual_subject(subject) if subject is not None else None
     labels = normalize_categories(categories) if categories is not None else None
     if object_kind is not None:
         validate_object_kind(object_kind)
-    if statement is not None:
-        if any(value is not None for value in (subject, predicate, object)):
-            raise InvalidFactEditError("statement cannot be combined with subject, predicate or object")
-        statement = statement.strip()
-        if not statement:
-            raise InvalidFactEditError("statement must not be blank")
-        # 属性的 object 是关系的取值，整句写入会把画像和图边变成错误的三元组。
-        if f.predicate.lower() not in OUTCOME_PREDICATES:
-            raise InvalidFactEditError(
-                "statement edits are only supported for session outcome facts; "
-                "edit subject, predicate and object for attribute facts"
-            )
     claim_changed = any(
         value is not None and value != getattr(f, field)
-        for field, value in (("subject", subject), ("predicate", predicate), ("object", object))
-    ) or (statement is not None and statement not in (f.display, f.text))
-    object_changed = (object is not None and object != f.object) or (statement is not None and claim_changed)
+        for field, value in (("subject", subject), ("predicate", predicate), ("object", object), ('text', text))
+    )
+    object_changed = object is not None and object != f.object
     if object_kind is not None:
         f.object_kind = object_kind
     elif object_changed:
@@ -67,29 +63,7 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
             f.sensitive = sensitive
             f.sensitive_override = True
         return False
-    if subject is not None:
-        f.subject = subject
-    if predicate is not None:
-        f.predicate = predicate
-    if object is not None:
-        f.object = object
-    # outcome 不是三元组：它的 subject 是 session id，object 是整句话，因此按通用的
-    # "subject predicate object" 重建会嵌入 `s-2026-08-31 lesson ...` 并丢掉作为检索依据的
-    # 依据子句（人们按教训的成因搜索教训）。
-    if statement is not None:
-        f.object = statement
-        _, why = split_outcome_text(f.text)
-        f.text = f"{statement} （依据：{why}）" if why else statement
-        f.display = statement
-    elif f.predicate.lower() in OUTCOME_PREDICATES:
-        _, why = split_outcome_text(f.text)
-        f.text = f"{f.object} （依据：{why}）" if why else f.object
-    else:
-        f.text = f"{f.subject} {f.predicate.replace('_', ' ')} {f.object}".strip()
-    # A changed assertion must not retain its old display text.
-    if statement is None and (subject is not None or predicate is not None or object is not None) \
-            and (getattr(f, "display", "") or "").strip():
-        f.display = f.object if f.predicate.lower() in OUTCOME_PREDICATES else ""
+    f.subject, f.predicate, f.object, f.text = subject, predicate, object, text
     f.source = "user"
     f.revise_end_times(None, None, changed_at=now() if at is None else at)
     f.sensitive = True if sensitive is None else sensitive

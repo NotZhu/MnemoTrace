@@ -23,7 +23,7 @@ from mnemotrace.store.contracts import FactQuery, MessageInput, OperationResult
 | `list_operations(*, session_id=None, after_id=None, limit=100)` | 分页返回操作对象；下一页用最后一个操作的 `operation_id` 作游标 |
 | `flush_processing(session_id=None, timeout=30, *, retry_failed=False, include_digests=False)` | 推进并等待本次捕获范围内的任务 |
 | `search(query, *, as_of=None, top_k=None, facts=None)`、`get_episode(episode_id)` | 检索候选事实及来源，或显式读取原文 |
-| `add_fact(subject, predicate, object, ...)` | 写入人工事实 |
+| `add_fact(subject, predicate, object, text=..., ...)` | 写入人工事实 |
 | `profile()` | 读取七栏画像缓存、待更新数量和刷新状态，不调用模型 |
 | `refresh_profile()` | 创建或复用空间级画像操作，返回 `OperationResult`；通过 worker 或 `flush_processing()` 推进 |
 
@@ -62,7 +62,7 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 | `import_data` | data、format="auto"、user_id、session_id；其余导入选项 | 计数字典；先解析再导入 |
 | `import_snapshot` | snapshot、user_id、dedupe=True | dict；导入结构化导出，不等同于打开存储目录 |
 
-结构化快照要求 `format_version=2`。导入先整批校验，遇到无效数据时抛出 `ValueError`。导入保留目标用户的运行设置；字段、来源编号和替代链语义见[结构化快照导入](../architecture/memory.md#结构化快照导入)。
+结构化快照要求 `format_version=3`。导入先整批校验，遇到无效数据时抛出 `ValueError`。导入保留目标用户的运行设置；字段、来源编号和替代链语义见[结构化快照导入](../architecture/memory.md#结构化快照导入)。
 
 `scope="auto"` 和 `long` 均请求事实抽取。仅执行请求不生成任务记忆；明确陈述的决定、计划和时间化事实保留其条件与时间。底层 remember 保存原文，随后通过 consolidate 推进抽取。
 
@@ -90,8 +90,8 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 
 | 方法 | 用途 |
 | --- | --- |
-| `add_fact(subject, predicate, object, user_id=..., valid_at=None, sensitive=None, categories=None, object_kind="unknown")` | 返回用户来源 Fact |
-| `update_fact(fact_id, ..., categories=None, object_kind=None)` | 修改内容或元数据，返回 Fact 或 None；statement 不与三元组字段混用 |
+| `add_fact(subject, predicate, object, user_id=..., text=..., ...)` | 返回用户来源 Fact，`text` 为必填关键字参数 |
+| `update_fact(fact_id, ..., categories=None, object_kind=None)` | 修改内容或元数据，返回 Fact 或 None；内容修改必须同时提交 subject、predicate、object、text，元数据可单独修改 |
 | `delete_fact(fact_id)` | 删除指定事实，返回 bool |
 | `get_focus()`、`set_focus(track=None, mute=None)` | 查询或更新关注点，None 保持不变，[] 清空对应列表 |
 | `get_policy()`、`set_policy(**fields)` | 查询或覆盖抽取、摘要与画像策略 |
@@ -103,7 +103,7 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 字段及编辑规则见[分类与对象类型](../architecture/memory.md#分类与对象类型)。
 
 ```python
-fact = memory.add_fact("user", "prefers", "茶", categories=["food"], object_kind="entity")
+fact = memory.add_fact("user", "prefers", "茶", text="用户偏好茶。", categories=["food"], object_kind="entity")
 memory.update_fact(fact.id, categories=["misc"])
 memory.update_fact(fact.id, categories=[])  # 清除标签，来源为 unset
 ```

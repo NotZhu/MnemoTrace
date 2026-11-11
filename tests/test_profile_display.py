@@ -1,4 +1,4 @@
-"""习惯画像复用原语言展示句，同时保持规范事实和已有回退。"""
+"""事实的原语言表述用于嵌入、上下文和画像，不生成额外展示文本。"""
 from __future__ import annotations
 
 import json
@@ -13,7 +13,7 @@ from tests.model_fixtures import MemoryEngine
     "每周阅读示例书",
     "Reads an example book every week.",
 ])
-def test_llm_display_reaches_memory_profile_without_another_model_call(sentence):
+def test_original_sentence_reaches_embedding_context_and_profile_without_another_model_call(sentence):
     class FakeLLM:
         def __init__(self):
             self.calls = 0
@@ -30,8 +30,10 @@ def test_llm_display_reaches_memory_profile_without_another_model_call(sentence)
     episode = memory.add(sentence, user_id="synthetic-profile-user")
     assert memory.consolidate()["facts_added"] == 1
     fact, = memory.fact_store.values()
-    assert fact.display == sentence
+    assert not hasattr(fact, "display")
     assert fact.text == sentence
+    assert fact.embedding == memory.embedder.embed(sentence)
+    assert sentence in memory.context_for(sentence, user_id='synthetic-profile-user')
     assert fact.provenance == [episode.id]
     before = asdict(fact)
     assert llm.calls == 1

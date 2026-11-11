@@ -12,16 +12,16 @@ from mnemotrace.types import Episode, Fact
 
 def snapshot():
     return {
-        "format_version": 2,
+        "format_version": 3,
         "facts": [asdict(Fact(id="ft_source", subject="Synthetic", predicate="works_at",
-                              object="SyntheticCo", valid_at=0, created_at=-1, source="user"))],
+                              object="SyntheticCo", valid_at=0, created_at=-1, source="user", text='Synthetic works at SyntheticCo'))],
         "episodes": [asdict(Episode(id="ep_source", content="Synthetic source", event_time=0))],
     }
 
 
 def target():
     mem = MemoryEngine()
-    mem.add_fact("Existing", "likes", "tea", user_id="target")
+    mem.add_fact("Existing", "likes", "tea", user_id="target", text='Existing likes tea')
     mem.set_focus(track=["existing"], mute=["muted"])
     mem.set_policy(extract_instruction="existing policy")
     mem._aliases = {"target": {"Existing"}}
@@ -31,7 +31,7 @@ def target():
 
 def contents(mem):
     return copy.deepcopy({
-        "format_version": 2,
+        "format_version": 3,
         "facts": [asdict(f) for f in mem._all_facts()],
         "episodes": [asdict(ep) for ep in mem.episodes_doc.values()],
         "entities": [asdict(e) for e in mem.graph.entities.values()],
@@ -53,7 +53,7 @@ def test_missing_envelope_rejects_entire_batch(key):
 
 
 @pytest.mark.parametrize("key", [
-    "id", "subject", "predicate", "object", "source", "valid_at", "invalid_at",
+    "id", "subject", "predicate", "object", "text", "source", "valid_at", "invalid_at",
     "created_at", "expired_at", "supersedes", "provenance", "categories", "sensitive",
     "salience", "confidence", "categories_source", "object_kind", "validity_revisions",
 ])
@@ -65,6 +65,22 @@ def test_missing_fact_history_rejects_before_any_episode_is_added(key):
     with pytest.raises(ValueError, match=key):
         mem.import_snapshot(payload)
     assert contents(mem) == before
+
+
+@pytest.mark.parametrize('change', ['old_version', 'display', 'blank_text'])
+def test_retired_fact_format_is_rejected_without_mutating_target(change):
+    payload = snapshot()
+    if change == 'old_version':
+        payload['format_version'] = 2
+    elif change == 'display':
+        payload['facts'][0]['display'] = payload['facts'][0]['text']
+    else:
+        payload['facts'][0]['text'] = ' \n\t'
+    memory = target()
+    before = contents(memory)
+    with pytest.raises(ValueError):
+        memory.import_snapshot(payload)
+    assert contents(memory) == before
 
 
 @pytest.mark.parametrize("key", ["id", "session_id", "role", "content", "event_time"])
@@ -108,7 +124,6 @@ def test_migration_preserves_source_history_and_target_settings():
     payload = snapshot()
     payload["focus"] = {"track": ["source setting"], "mute": []}
     payload["facts"][0]["provenance"] = ["ep_source"]
-    payload["facts"][0].pop("text")
     payload["episodes"][0].pop("digest")
     stats = mem.import_snapshot(payload, user_id="target")
     assert stats["facts_restored"] == stats["episodes_restored"] == 1

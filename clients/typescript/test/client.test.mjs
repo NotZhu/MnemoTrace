@@ -123,7 +123,7 @@ test('fact category edits preserve explicit clear and carry object kind', async 
       categories: body.categories, categories_source: body.categories.length ? 'user' : 'unset',
       object_kind: body.object_kind ?? 'entity' }), { status: 200 })
   } })
-  const added = await client.addFact({ predicate: 'prefers', object: 'tea', categories: ['food'], object_kind: 'entity' }, space)
+  const added = await client.addFact({ predicate: 'prefers', object: 'tea', text: '用户偏好茶。', categories: ['food'], object_kind: 'entity' }, space)
   assert.deepEqual(added.categories, ['food'])
   assert.equal(added.categories_source, 'user')
   assert.equal(added.object_kind, 'entity')
@@ -131,7 +131,7 @@ test('fact category edits preserve explicit clear and carry object kind', async 
   assert.deepEqual(cleared.categories, [])
   assert.equal(cleared.categories_source, 'unset')
   assert.deepEqual(calls, [
-    { subject: 'user', predicate: 'prefers', object: 'tea', categories: ['food'], object_kind: 'entity', space_id: 'space-test' },
+    { subject: 'user', predicate: 'prefers', object: 'tea', text: '用户偏好茶。', categories: ['food'], object_kind: 'entity', space_id: 'space-test' },
     { categories: [], space_id: 'space-test' },
   ])
 })
@@ -398,7 +398,6 @@ test('memories supports paging search and share-safe filtering for owner UIs', a
         {
           id: 'fact-1',
           text: 'user works at Moonshot AI',
-          display: 'user works at Moonshot AI',
           subject: 'user',
           predicate: 'employer',
           object: 'Moonshot AI',

@@ -54,9 +54,6 @@ def quality(factory, out, *, processing='immediate'):
                     raise RuntimeError(f'{item.id}: fixed-response ingestion failed')
                 source_id, = accepted['source_ids']
                 origins[source_id] = f'source-{index}'
-                if processing == 'immediate':
-                    task = memory.source_vector_operation(source_id)
-                    memory._processing.run_one(task.operation_id, force=True)
             if processing == 'buffered':
                 if not memory.flush_processing('eval')['ok']:
                     raise RuntimeError(f'{item.id}: fixed-response buffered processing failed')
@@ -65,9 +62,6 @@ def quality(factory, out, *, processing='immediate'):
                     restored = Memory(reopened, scope)
                     if not all(restored.get_episode(source_id).consolidated for source_id in origins):
                         raise RuntimeError(f'{item.id}: completed sources missing after reopening')
-            for source_id in origins if processing == 'buffered' else ():
-                task = memory.source_vector_operation(source_id)
-                memory._processing.run_one(task.operation_id, force=True)
             when = None if item.as_of_day is None else harness.BASE + item.as_of_day * DAY
             # The phase-one fixture shifts event time while recording all inputs
             # together. Compare on valid time here; known-at is covered separately.
@@ -86,11 +80,11 @@ def quality(factory, out, *, processing='immediate'):
                            provenance=[origins[key] for key in f.provenance]) for f in result.facts]
             candidates = [dict(subject=f.subject, predicate=f.predicate, object=f.object)
                           for f in (domain(item.record) for item in batch.candidates)]
-            answer = result.answer()
             return dict(id=item.id, category=item.category, question=item.question, gold=item.answer,
-                        storage=storage, ok=result.abstained if item.answer is None else (
-                            not result.abstained and harness._contains(answer, item.answer)),
-                        answer=answer, abstained=result.abstained, latency_ms=elapsed,
+                        storage=storage, ok=harness.score_search(item.answer, result),
+                        answer=result.answer(), status=result.status,
+                        top_fact_object=result.top().object if result.top() is not None else None,
+                        abstained=result.abstained, latency_ms=elapsed,
                         tokens=len(lexical_terms(' '.join(fact.text for fact in result.facts))), via=result.via,
                         fact_ids=[fact.id for fact in result.facts], ranked=ranked, candidates=candidates,
                         limitations=result.limitations)
@@ -141,10 +135,10 @@ def _load_workload(bundle, manifest, case):
                                 row['object'], row['text'], timestamp(row['valid_at']), timestamp(row['invalid_at']),
                                 row['filter_bucket'], vector))
         conn.execute('INSERT INTO workload.filters SELECT user_id,space_id,id,bucket FROM input')
-        conn.execute("""INSERT INTO mnemotrace.facts (user_id,space_id,id,subject,predicate,object,text,display,
+        conn.execute("""INSERT INTO mnemotrace.facts (user_id,space_id,id,subject,predicate,object,text,
             salience,confidence,source,categories,sensitive,object_kind,categories_source,cardinality,retention,source_roles,
             valid_at,invalid_at,created_at,last_access,access_count,record_version,content_version)
-            SELECT user_id,space_id,id,subject,predicate,object,body,body,1,1,'user','{}',false,
+            SELECT user_id,space_id,id,subject,predicate,object,body,1,1,'user','{}',false,
                    'unknown','unset','unknown','unknown','{}',valid_at,invalid_at,valid_at,valid_at,0,1,1 FROM input""")
         conn.execute("""INSERT INTO mnemotrace.embeddings(user_id,space_id,fact_id,target_kind,field,
             content_version,model,dimension,vector)

@@ -715,6 +715,7 @@ async def mnemotrace_add_fact(
                                     "'prefers', 'allergic_to'.", min_length=1)],
     object: Annotated[str, Field(description="The value, e.g. 'Acme Corp', 'Berlin', 'dark mode'.",
                                  min_length=1)],
+    text: Annotated[str, Field(description="Complete, self-contained fact sentence in the source language.", min_length=1)],
     subject: Annotated[str, Field(description="Who/what the fact is about. Default 'user'.")] = "user",
     sensitive: Annotated[Optional[bool], Field(description="Optional user override for sensitivity.")] = None,
     categories: Annotated[list[Category] | None, Field(description="Set fact labels; use [] to clear.")] = None,
@@ -726,11 +727,11 @@ async def mnemotrace_add_fact(
     Use multi when values can coexist and durable to exempt it from decay.
     """
     try:
-        data = await backend().add_fact(subject, predicate, object, sensitive=sensitive, categories=categories,
+        data = await backend().add_fact(subject, predicate, object, text=text, sensitive=sensitive, categories=categories,
                                         object_kind=object_kind, cardinality=cardinality, retention=retention)
     except Exception as e:  # noqa: BLE001
         return _err(e)
-    return (f"Stored authoritative fact: {data.get('text', f'{subject} {predicate} {object}')}\n"
+    return (f"Stored authoritative fact: {data['text']}\n"
             f"Categories: {', '.join(data.get('categories', [])) or '—'} ({data.get('categories_source', 'unset')})")
 
 
@@ -739,7 +740,8 @@ async def mnemotrace_update_fact(
     fact_id: Annotated[str, Field(description="Fact id from mnemotrace_list_facts.", min_length=1)],
     subject: Annotated[Optional[str], Field(description="Optional replacement subject.")] = None,
     predicate: Annotated[Optional[str], Field(description="Optional replacement predicate.")] = None,
-    object: Annotated[Optional[str], Field(description="Optional replacement object/value.")] = None,
+    object: Annotated[Optional[str], Field(description="Replacement value; content edits require subject, predicate, object and text together.")] = None,
+    text: Annotated[Optional[str], Field(description="Complete replacement fact sentence; required with all three structured fields for content edits.")] = None,
     sensitive: Annotated[Optional[bool], Field(description="Optional sensitivity override.")] = None,
     categories: Annotated[list[Category] | None, Field(description="Set fact labels; use [] to clear.")] = None,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
@@ -754,7 +756,7 @@ async def mnemotrace_update_fact(
 
     返回（json）：{"ok": true, "id": str, "text": str}，找不到时返回错误字符串。
     """
-    if all(v is None for v in (subject, predicate, object, sensitive, categories, object_kind, cardinality, retention)):
+    if all(v is None for v in (subject, predicate, object, text, sensitive, categories, object_kind, cardinality, retention)):
         return "Error: provide at least one field to update."
     try:
         data = await backend().update_fact(
@@ -762,6 +764,7 @@ async def mnemotrace_update_fact(
             subject=subject,
             predicate=predicate,
             object=object,
+            text=text,
             sensitive=sensitive,
             categories=categories,
             object_kind=object_kind,

@@ -23,7 +23,7 @@ def materialize_facts(user_id, data, result, now):
         labels = item['categories']
         facts.append(Fact(
             subject=item['subject'], predicate=item['predicate'], object=item['object'],
-            text=item['text'], display=item['display'], user_id=user_id,
+            text=item['text'], user_id=user_id,
             valid_at=fact_valid_at(item, anchor(item)['event_time']), created_at=now, last_access=now,
             categories=list(labels), categories_source='llm' if labels else 'unset',
             object_kind=item['object_kind'], sensitive=item['sensitive'],

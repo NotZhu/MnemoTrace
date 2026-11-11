@@ -6,21 +6,21 @@ from mnemotrace.types import Fact
 
 def _fact(subject, predicate, obj, t, emb=None, source="extracted"):
     return Fact(subject=subject, predicate=predicate, object=obj, user_id="u", source=source,
-                valid_at=float(t), created_at=float(t), embedding=emb, cardinality="single")
+                valid_at=float(t), created_at=float(t), embedding=emb, cardinality="single", text=' '.join((subject, predicate.replace('_', ' '), obj)))
 
 
 # ---------------- #1 固定事实保护 ----------------
 def test_manual_fact_does_not_supersede_unrelated_slot():
     mem = MemoryEngine()
-    old = mem.add_fact("Ana", "works_at", "Orbit", user_id="u", valid_at=1)
-    mem.add_fact("Ana", "knowledge_base", "Library", user_id="u", valid_at=2, cardinality="single")
+    old = mem.add_fact("Ana", "works_at", "Orbit", user_id="u", valid_at=1, text='Ana works at Orbit')
+    mem.add_fact("Ana", "knowledge_base", "Library", user_id="u", valid_at=2, cardinality="single", text='Ana knowledge base Library')
     assert old.is_live()
 
 
 def test_explicit_single_manual_fact_updates_its_slot():
     mem = MemoryEngine()
-    old = mem.add_fact("Ana", "works_at", "Orbit", user_id="u", valid_at=1)
-    new = mem.add_fact("Ana", "works_at", "Nadir", user_id="u", valid_at=2, cardinality="single")
+    old = mem.add_fact("Ana", "works_at", "Orbit", user_id="u", valid_at=1, text='Ana works at Orbit')
+    new = mem.add_fact("Ana", "works_at", "Nadir", user_id="u", valid_at=2, cardinality="single", text='Ana works at Nadir')
     assert not old.is_live()
     assert new.supersedes == old.id
 
@@ -30,8 +30,8 @@ def test_explicit_single_manual_fact_updates_its_slot():
 
 def test_search_prefers_type_matching_fact():
     mem = MemoryEngine()
-    mem.add_fact("project alpha", "owner", "Alice Wang", user_id="u1")
-    mem.add_fact("project alpha", "id", "PROJ-1024", user_id="u1")
+    mem.add_fact("project alpha", "owner", "Alice Wang", user_id="u1", text='project alpha owner Alice Wang')
+    mem.add_fact("project alpha", "id", "PROJ-1024", user_id="u1", text='project alpha id PROJ-1024')
     result = mem.search("What is the project alpha ID?", user_id="u1")
     assert result.status == "evidence_only" and not result.answer()
     assert result.top().object == "PROJ-1024"
@@ -120,7 +120,7 @@ def test_search_prefers_source_backed_literal_facts_for_runbook_queries():
         object="open security settings and update CI secrets",
         object_kind="literal",
         user_id="u1",
-        provenance=[ep.id],
+        provenance=[ep.id], text='PAT procedure open security settings and update CI secrets',
     )
     fact.embedding = mem.embedder.embed(fact.text)
     mem.fact_store.upsert(fact.id, fact.embedding, fact)
@@ -137,14 +137,14 @@ def test_free_text_is_candidate_evidence_and_slot_answer_uses_full_view():
     from mnemotrace.store.contracts import FactQuery
 
     mem = MemoryEngine()
-    bob = mem.add_fact("Bob", "favorite_language", "Ab1", object_kind="literal")
+    bob = mem.add_fact("Bob", "favorite_language", "Ab1", object_kind="literal", text='Bob favorite language Ab1')
     result = mem.search("What is Alice's favorite language?")
     assert result.status == "evidence_only" and result.top().id == bob.id and result.answer() == ""
     missing = mem.search("", facts=FactQuery(subject="Alice", predicate="favorite_language"))
     assert missing.status == "no_evidence"
     bob_slot = FactQuery(subject="Bob", predicate="favorite_language")
     assert mem.search("", facts=bob_slot).answer() == "Ab1"
-    mem.add_fact("Bob", "favorite_language", "ab1", object_kind="literal")
+    mem.add_fact("Bob", "favorite_language", "ab1", object_kind="literal", text='Bob favorite language ab1')
     result = mem.search("", facts=bob_slot, top_k=1)
     assert len(result.facts) == 1 and result.status == "evidence_only"
 

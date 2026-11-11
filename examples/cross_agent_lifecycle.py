@@ -168,10 +168,10 @@ def exercise_lifecycle(
         f"redacted={report.get('redacted', 0)}"
     )
     for fact in facts[:8]:
-        output(f"- {fact.get('display') or fact.get('text')}")
+        output(f"- {fact['text']}")
 
     found = VERIFY_PHRASE in context_after or any(
-        VERIFY_PHRASE in ((fact.get("text") or "") + " " + (fact.get("display") or ""))
+        VERIFY_PHRASE in fact["text"]
         for fact in facts
     )
     if found:

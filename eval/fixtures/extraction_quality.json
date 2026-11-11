@@ -1959,7 +1959,8 @@
           "user": "u",
           "subject": "u",
           "predicate": "lives_in",
-          "object": "新城镇"
+          "object": "新城镇",
+          "text": "用户住在新城镇。"
         }
       ],
       "raw_facts": [

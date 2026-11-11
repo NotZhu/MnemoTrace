@@ -7,7 +7,7 @@ from mnemotrace.types import Fact
 
 
 def test_chain_terms_contains_only_stored_fields():
-    fact = Fact("Ana", "works_at", "Orbit")
+    fact = Fact("Ana", "works_at", "Orbit", text='Ana works at Orbit')
     assert chain_terms(fact).split() == f"{fact.subject} works at {fact.object} {fact.text}".split()
 
 
@@ -17,12 +17,12 @@ def test_chain_terms_contains_only_stored_fields():
     ("primary_transport", "What is my primary email?"),
 ])
 def test_partial_compound_attribute_is_insufficient(predicate, query):
-    fact = Fact("user", predicate, "Synthetic value")
+    fact = Fact("user", predicate, "Synthetic value", text=' '.join(('user', predicate.replace('_', ' '), 'Synthetic value')))
     assert should_abstain(query, [fact], [], 0.3)
 
 
 def test_lexical_and_semantic_evidence_support_arbitrary_predicates():
-    fact = Fact("user", "primary_transport", "Synthetic tram")
+    fact = Fact("user", "primary_transport", "Synthetic tram", text='user primary transport Synthetic tram')
     assert not should_abstain("What is my primary transport?", [fact], [], 0.3)
     assert not should_abstain("Tell me about the tram", [fact], [], 0.3)
     assert not should_abstain("How do I commute?", [fact], [0.8], 0.3)
@@ -30,7 +30,7 @@ def test_lexical_and_semantic_evidence_support_arbitrary_predicates():
 
 def test_subject_only_and_grammar_only_matches_do_not_answer():
     memory = MemoryEngine(config=Config(digest_fallback=False))
-    memory.add_fact("Ana", "works_at", "Orbit")
+    memory.add_fact("Ana", "works_at", "Orbit", text='Ana works at Orbit')
     assert memory.search("What is Ana's preferred language?").abstained
     assert memory.search("What is it?").abstained
 
