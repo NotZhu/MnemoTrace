@@ -80,7 +80,11 @@ def _digest_fallback_context(enabled: bool) -> str:
     ep.digest = ep.content
     mem._sync_episode(ep)
     res = mem.search("How do I rotate the PAT?", user_id="u1")
-    return f"{res.via}\n{res.answer()}"
+    return "\n".join([
+        res.via,
+        *(f"{source.representation} session={source.session_id}\n{source.text}"
+          for source in res.sources),
+    ])
 
 
 def _raw_context(enabled: bool) -> str:
@@ -266,8 +270,8 @@ def _run_ablation() -> tuple[list[AblationResult], dict]:
         (
             "digest_fallback",
             _digest_fallback_context,
-            lambda answer: "digest" in answer and "security settings" in answer and "pat-runbook" in answer,
-            "derived session digest answers fact-miss how-to query",
+            lambda evidence: evidence.startswith("digest\n") and "security settings" in evidence and "pat-runbook" in evidence,
+            "derived session digest provides evidence for fact-miss how-to query",
         ),
         (
             "provenance_evidence",
