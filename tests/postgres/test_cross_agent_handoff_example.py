@@ -38,7 +38,9 @@ def test_cross_agent_handoff_example_http(example_http):
     assert result["flushed_source"]["ok"] is True
     assert result["flushed_target"]["ok"] is True
     assert "committed eval logs" in result["context"]
-    assert result["source_session"] in result["context"]
+    source_id, = result["remembered"]["source_ids"]
+    source = example_http(f"/v1/episodes/{source_id}", method="GET")
+    assert source["session_id"] == result["source_session"]
     assert any("PASS: target agent recalled" in line for line in lines)
 
 

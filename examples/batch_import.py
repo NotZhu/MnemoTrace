@@ -62,7 +62,7 @@ def main() -> None:
 
     print("\n== Recall from the imported memory ==")
     for q in ["Where am I moving and why?", "What are my dietary restrictions?"]:
-        ctx = mem.lean_context(q, user_id="me", n_chunks=2)
+        ctx = mem.lean_context(q, user_id="me", n_digests=2)
         snippet = " ".join(ctx.split())[:160]
         print(f"   Q: {q}\n      -> {snippet}…\n")
 

@@ -286,7 +286,7 @@ class RecallReq(BaseModel):
     subject: str | None = Field(default=None, min_length=1, max_length=512)
     predicate: str | None = Field(default=None, min_length=1, max_length=512)
     lean: bool = True
-    n_chunks: int = Field(default=6, ge=0, le=50)
+    n_digests: int = Field(default=20, ge=0, le=50)
     state: FactState = FactState.CURRENT
     valid_at: float | None = None
     known_at: float | None = None
@@ -448,7 +448,7 @@ def recall(req: RecallReq, owner: str = Depends(auth)):
     if len(set(ids)) != len(ids):
         raise ValueError('Duplicate space IDs')
     contexts = [svc().spaces.authorize(owner, space_id) for space_id in ids]
-    options = dict(n_chunks=req.n_chunks, as_of=req.as_of,
+    options = dict(n_digests=req.n_digests, as_of=req.as_of,
                    redact_sensitive=req.redact_sensitive, state=req.state,
                    valid_at=req.valid_at, known_at=req.known_at)
     if len(contexts) > 1:
@@ -633,7 +633,7 @@ class ChatMemoryRequest(SpaceRequest):
     remember: bool = True
     session_id: str = Field(default='default', min_length=1, max_length=512)
     extract: StrictBool = True
-    n_chunks: int = Field(default=6, ge=0, le=50)
+    n_digests: int = Field(default=20, ge=0, le=50)
     as_of: float | None = None
     redact_sensitive: bool = False
     message_id: str | None = Field(default=None, min_length=1, max_length=512)
@@ -645,7 +645,7 @@ class ChatCompletionReq(BaseModel):
     model: str = "mnemotrace"
     messages: list[dict] = []
     stream: bool = False
-    # 忆痕 扩展：recall/remember/session_id/extract/n_chunks/as_of/redact_sensitive。
+    # 忆痕 扩展：recall/remember/session_id/extract/n_digests/as_of/redact_sensitive。
     memory: ChatMemoryRequest
 
 
@@ -660,7 +660,7 @@ def chat_completions(req: ChatCompletionReq, owner: str = Depends(auth)):
     session_id = opts.session_id
     body = req.model_dump()
     try:
-        response = oc.chat_completion(svc(), context, body, n_chunks=opts.n_chunks,
+        response = oc.chat_completion(svc(), context, body, n_digests=opts.n_digests,
                                       do_recall=opts.recall, as_of=opts.as_of,
                                       redact_sensitive=opts.redact_sensitive,
                                       session_id=session_id)

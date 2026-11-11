@@ -51,7 +51,7 @@ def test_reads_and_context_never_generate():
     memory.profile()
     memory.lean_context("tea")
     assert "USER PROFILE" not in memory.lean_context("tea", redact_sensitive=True)
-    assert "USER PROFILE" in memory.lean_context("tea", facts=FactQuery())
+    assert "USER PROFILE" not in memory.lean_context("tea", facts=FactQuery())
     assert len(llm.calls) == count
 
 
@@ -72,13 +72,13 @@ def test_postgres_context_does_not_read_profile_outside_unrestricted_current_vie
     view = SimpleNamespace(snapshot=SimpleNamespace(context=SimpleNamespace(space_id="synthetic-space")),
                            candidates=lambda *_args, **_kwargs: SimpleNamespace(candidates=(), limitations=()))
     result = postgres.context(view, RetrievalQuery(scope, ""), Config(), n_facts=10,
-                              n_chunks=0, n_digests=0, char_budget=48_000)
+                              n_digests=0, char_budget=48_000)
     assert "Synthetic food profile" not in result.context
     assert not reads
 
 
 @pytest.mark.parametrize("scope", [FactQuery(), FactQuery(limit=1)])
-def test_postgres_context_keeps_profile_for_unrestricted_current_view(monkeypatch, scope):
+def test_postgres_context_omits_profile_for_unrestricted_current_view(monkeypatch, scope):
     from mnemotrace.retrieve import postgres
     from mnemotrace.store.postgres import profile
 
@@ -88,8 +88,8 @@ def test_postgres_context_keeps_profile_for_unrestricted_current_view(monkeypatc
     view = SimpleNamespace(snapshot=SimpleNamespace(context=SimpleNamespace(space_id="synthetic-space")),
                            candidates=lambda *_args, **_kwargs: SimpleNamespace(candidates=(), limitations=()))
     result = postgres.context(view, RetrievalQuery(scope, ""), Config(), n_facts=10,
-                              n_chunks=0, n_digests=0, char_budget=48_000)
-    assert "USER PROFILE" in result.context and "Synthetic food profile" in result.context
+                              n_digests=0, char_budget=48_000)
+    assert "USER PROFILE" not in result.context and "Synthetic food profile" not in result.context
 
 
 def test_unchanged_large_fact_can_refresh_again_without_duplicate_input():
@@ -379,8 +379,8 @@ def test_refresh_uses_cold_facts_and_historical_context_skips_current_cache():
     assert memory.evict_cold(max_hot=1) == 1
     memory.refresh_profile()
     assert any(cold.id in entry["fact_ids"] for entry in finish(memory)["profile"]["basic"])
-    assert memory._profile_context("default", None)
-    assert memory._profile_context("default", 100) == ""
+    assert "USER PROFILE" not in memory.lean_context("tea")
+    assert "USER PROFILE" not in memory.lean_context("tea", as_of=100)
 
 
 def test_profile_entry_counts_distinct_facts_and_review_changes_hide_it():

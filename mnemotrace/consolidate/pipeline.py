@@ -445,16 +445,8 @@ class PipelineTasks:
         self.group(row, timestamp)['last_activity'] = timestamp
         return row
 
-    def accept(self, messages, session_id, extract=True, timestamp=0, embeddings=None):
-        rows, unseen = self.inspect(messages, session_id, extract)
-        from ..store._validation import validate_embedding
-        if not isinstance(embeddings, dict) or any(k not in embeddings for k in unseen):
-            raise ValueError('Missing prepared message embeddings')
-        for key in unseen:
-            if self.memory.embedder is not None:
-                validate_embedding(embeddings[key], 'message embedding', self.memory.embedder.dim)
-            elif embeddings[key] is not None:
-                raise ValueError('Unexpected vector in lexical mode')
+    def accept(self, messages, session_id, extract=True, timestamp=0):
+        rows, _ = self.inspect(messages, session_id, extract)
         existing = {(r['session_id'], r['message_id']): key for key, r in self.rows().items() if r['source_kind'] == 'dialogue'}
         output, fresh = [], []
         for row in rows:
@@ -466,7 +458,6 @@ class PipelineTasks:
             ep = Episode(content=row['content'], role=row['role'], event_time=row['event_time'], ingested_at=timestamp,
                 user_id=self.namespace, session_id=session_id, message_id=row['message_id'], sequence=sequence,
                 source_kind='dialogue', extract=extract, consolidated=not extract)
-            ep.embedding = embeddings[identity(row, extract)]
             self.memory._sync_episode(ep)
             self._record(ep, fingerprint=identity(row, extract), sequence=sequence, timestamp=timestamp, requested=extract)
             existing[key] = ep.id

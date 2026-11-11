@@ -24,7 +24,7 @@ from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm  # noq
 from eval.longmemeval import ingest, load_data  # noqa: E402
 
 
-def build_dev(items, embedder, extractor, extract_k=20):
+def build_dev(items, embedder, extractor):
     """为每个 dev 问题构建 fact store，并标注哪些 fact 是 relevant（provenance 落在证据
     session 中）。返回 [(mem, user_id, query, relevant_fact_ids)]。"""
     dev = []
@@ -37,8 +37,7 @@ def build_dev(items, embedder, extractor, extract_k=20):
         ingest(mem, it, qid)
         # episode.id -> session_id，从而可以按 provenance 所在 session 标注 fact
         ep_session = {ep.id: ep.session_id for ep in mem.episodes_doc.values()}
-        retrieved = mem.retrieve_episodes(it["question"], qid, extract_k)
-        mem.consolidate(retrieved)
+        mem.consolidate()
         relevant = {
             f.id for f in mem.fact_store.values()
             if any(ep_session.get(pid) in evidence for pid in f.provenance)

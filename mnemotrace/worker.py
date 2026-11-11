@@ -19,8 +19,6 @@ logger = logging.getLogger(__name__)
 
 def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=2, once=False,
                should_stop=lambda: False):
-    embedding = (model, embedder.dim) if embedder is not None else None
-
     def run(candidate):
         context, operation_id = candidate
         try:
@@ -37,9 +35,7 @@ def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=
                         del running[candidate]
                         future.result()
                 if len(running) < concurrency:
-                    for candidate in discovery.discover_processing(
-                        100, embedding=embedding, include_extraction=llm is not None,
-                    ):
+                    for candidate in (discovery.discover_processing(100) if llm is not None else ()):
                         if should_stop():
                             break
                         if candidate not in running:

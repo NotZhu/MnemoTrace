@@ -14,24 +14,24 @@ export default function Ask() {
   const recall = useRecall()
   const [query, setQuery] = useState('')
   const queryInput = useRef<HTMLInputElement>(null)
-  const [chunks, setChunks] = useSpacePreference('ask', 'chunks')
-  const chunksControl = useRef<HTMLDivElement>(null)
+  const [digests, setDigests] = useSpacePreference('ask', 'digests')
+  const digestsControl = useRef<HTMLDivElement>(null)
   const [asOf, setAsOf] = useState('')
   const [redactSensitive, setRedactSensitive] = useSpacePreference('ask', 'redactSensitive')
   const [showEvidence, setShowEvidence] = useState(false)
 
   useEffect(() => {
-    const control = chunksControl.current
+    const control = digestsControl.current
     if (!control) return
-    const adjustChunks = (event: WheelEvent) => {
+    const adjustDigests = (event: WheelEvent) => {
       if (event.ctrlKey || event.deltaY === 0) return
       event.preventDefault()
-      setChunks((value) => Math.max(2, Math.min(12, value + (event.deltaY < 0 ? 1 : -1))))
+      setDigests((value) => Math.max(0, Math.min(50, value + (event.deltaY < 0 ? 1 : -1))))
     }
     // React 的 wheel 监听默认 passive；使用原生监听才能阻止页面跟着滚动。
-    control.addEventListener('wheel', adjustChunks, { passive: false })
-    return () => control.removeEventListener('wheel', adjustChunks)
-  }, [setChunks])
+    control.addEventListener('wheel', adjustDigests, { passive: false })
+    return () => control.removeEventListener('wheel', adjustDigests)
+  }, [setDigests])
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
@@ -40,7 +40,7 @@ export default function Ask() {
       recall.mutate({
         query: q,
         answer: true,
-        n_chunks: chunks,
+        n_digests: digests,
         as_of: asOf ? new Date(`${asOf}T23:59:59`).getTime() / 1000 : undefined,
         redact_sensitive: redactSensitive,
       })
@@ -118,28 +118,28 @@ export default function Ask() {
               </div>
             </div>
             <div className="inline-flex h-9 items-center gap-1 text-sm">
-              <span className="whitespace-nowrap">{t.ask.chunksControlLabel}</span>
-              <div ref={chunksControl} title={t.ask.chunksHint} className="inline-flex cursor-ns-resize items-center">
+              <span className="whitespace-nowrap">{t.ask.digestsControlLabel}</span>
+              <div ref={digestsControl} title={t.ask.digestsHint} className="inline-flex cursor-ns-resize items-center">
               <output
-                id="ask-chunks"
-                aria-label={t.ask.chunksLabel}
+                id="ask-digests"
+                aria-label={t.ask.digestsLabel}
                 className="inline-flex h-7 w-6 items-center justify-center text-sm tabular-nums text-slate-100"
               >
-                {chunks}
+                {digests}
               </output>
                 <div className="flex flex-col">
                   <button
                     type="button"
-                    aria-label={t.ask.increaseChunks}
-                    onClick={() => setChunks((value) => Math.min(12, value + 1))}
+                    aria-label={t.ask.increaseDigests}
+                    onClick={() => setDigests((value) => Math.min(50, value + 1))}
                     className="grid h-3.5 w-4 cursor-pointer place-items-center text-ghost hover:text-brand-cyan focus-visible:!outline-none focus-visible:text-foreground"
                   >
                     <ChevronUp aria-hidden="true" className="h-4 w-4" />
                   </button>
                   <button
                     type="button"
-                    aria-label={t.ask.decreaseChunks}
-                    onClick={() => setChunks((value) => Math.max(2, value - 1))}
+                    aria-label={t.ask.decreaseDigests}
+                    onClick={() => setDigests((value) => Math.max(0, value - 1))}
                     className="grid h-3.5 w-4 cursor-pointer place-items-center text-ghost hover:text-brand-cyan focus-visible:!outline-none focus-visible:text-foreground"
                   >
                     <ChevronDown aria-hidden="true" className="h-4 w-4" />

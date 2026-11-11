@@ -172,11 +172,11 @@ def test_digest_vector_uses_digest_version_not_immutable_raw_version():
 
 
 def test_maintenance_can_target_source_free_manual_fact_and_cannot_cross_space():
-    operation = OperationSpec('reembed-1', OperationKind.REEMBED, targets=(RecordVersion(ref(), 1),))
+    operation = OperationSpec('graph-1', OperationKind.GRAPH, targets=(RecordVersion(ref(), 1),))
     changes = ChangeSet(CommitConditions(SNAPSHOT), 'schedule-1', operations=(operation,))
     assert changes.operations[0].sources == ()
-    guarded = CommitConditions(SNAPSHOT, lease=Lease('reembed-1', 'lease'), targets=operation.targets)
-    assert ChangeSet(guarded, 'reembed-1').conditions.targets
+    guarded = CommitConditions(SNAPSHOT, lease=Lease('graph-1', 'lease'), targets=operation.targets)
+    assert ChangeSet(guarded, 'graph-1').conditions.targets
     other = RecordVersion(ref(context=SpaceContext('owner', 'other-space')), 1)
     with pytest.raises(ValueError):
         replace(changes, operations=(replace(operation, targets=(other,)),))

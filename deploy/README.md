@@ -134,11 +134,9 @@ restore_dc up -d --wait mnemotrace
 
 ### Schema 升级
 
-首次部署使用 `extract` 字段的版本时，使用空数据库执行初始化。使用 `scope` 字段的旧库和归档由匹配的应用版本读取。
-
-停用 API 和 worker，备份数据库后再升级。schema 6 及后续版本使用上节定义的函数，执行 `dc stop mnemotrace worker && dump_archive`，在整个迁移期间保持应用停机。从 schema 5 首次升级时，使用数据库运维侧的物理备份或停库后的存储快照。旧版逻辑归档中的两条约束在恢复时会改变目录表示，无法通过原指纹检查。
-
-更新应用镜像后显式执行 `dc run --rm db-init`，再启动服务并验证 `/ready`。外部数据库使用迁移凭据运行 `python -m mnemotrace.admin init-db`。需要回退时，使用与备份匹配的应用和 schema。
+当前版本使用空数据库初始化。Compose 部署使用新数据库卷并运行 `dc run --rm db-init`。
+外部数据库使用迁移凭据运行 `python -m mnemotrace.admin init-db`。启动后检查 `/ready`。
+旧数据库及其备份由匹配的应用版本读取。
 
 ## 故障定位
 

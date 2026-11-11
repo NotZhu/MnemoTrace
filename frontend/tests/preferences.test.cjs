@@ -75,14 +75,14 @@ test('所有长期筛选立即保存，页面重建/刷新可恢复，账号和�
   s.state().setSpace('facts','categories',['food','music'])
   s.state().setSpace('journal','categories',['misc'])
   s.state().setSpace('journal','showSuperseded',true)
-  s.state().setSpace('ask','chunks',9)
+  s.state().setSpace('ask','digests',9)
   s.state().setSpace('ask','redactSensitive',true)
   const raw=s.values.get(KEY)
   assert.ok(!raw.includes(credential))
   assert.ok(!raw.includes('activeScope'))
   const reload=load(raw)
   assert.equal(await reload.login(credential),a)
-  assert.equal(reload.state().spaces[a].ask.chunks,9)
+  assert.equal(reload.state().spaces[a].ask.digests,9)
   assert.equal(reload.state().spaces[a].journal.showSuperseded,true)
   assert.equal(reload.state().spaces[a].facts.hideSensitive,true)
   assert.deepEqual(Array.from(reload.state().spaces[a].facts.categories),['food','music'])
@@ -94,9 +94,9 @@ test('所有长期筛选立即保存，页面重建/刷新可恢复，账号和�
   const b=await reload.login('synthetic-credential-b')
   assert.notEqual(a,b)
   assert.equal(reload.state().spaces[b],undefined)
-  reload.state().setSpace('ask','chunks',3)
+  reload.state().setSpace('ask','digests',3)
   await reload.login(credential)
-  assert.equal(reload.state().spaces[a].ask.chunks,9)
+  assert.equal(reload.state().spaces[a].ask.digests,9)
   assert.notEqual(await reload.exports.preferenceScopeFor(credential,'https://other.invalid'),a)
 })
 
@@ -114,7 +114,7 @@ test('指纹未完成时的修改不会丢失，快速换账号不会使用旧�
   await s.exports.preferenceScopeFor('synthetic-race-b')
   assert.equal(s.state().activeScope,current)
   await s.login(null)
-  s.state().setSpace('ask','chunks',8)
+  s.state().setSpace('ask','digests',8)
   assert.equal(s.state().activeScope,null)
 })
 
@@ -122,14 +122,14 @@ test('仅允许声明的偏好，缓存类型/范围异常或损坏时使用默�
   const base=load(),scope=await base.login('synthetic-validation')
   const s=load({version:2,state:{
     graph:{nodeScale:999,lineWidth:0.7,showRelations:'true',enableRadial:true},
-    spaces:{[scope]:{ask:{chunks:99,redactSensitive:true},facts:{status:'invalid',topic:'Music',undeclared:'x'},journal:{topic:['food']},query:'不应保存的搜索'},'raw-credential':{ask:{chunks:4}}},
+    spaces:{[scope]:{ask:{digests:99,redactSensitive:true},facts:{status:'invalid',topic:'Music',undeclared:'x'},journal:{topic:['food']},query:'不应保存的搜索'},'raw-credential':{ask:{digests:4}}},
     apiKey:'must-not-restore',query:'must-not-restore',
   }})
   assert.equal(s.state().graph.nodeScale,1.4)
   assert.equal(s.state().graph.lineWidth,0.7)
   assert.equal(s.state().graph.showRelations,false)
   assert.equal(s.state().graph.enableRadial,undefined)
-  assert.equal(s.state().spaces[scope].ask.chunks,6)
+  assert.equal(s.state().spaces[scope].ask.digests,20)
   assert.equal(s.state().spaces[scope].ask.redactSensitive,true)
   assert.equal(s.state().spaces[scope].facts.status,'live')
   assert.deepEqual(Array.from(s.state().spaces[scope].facts.categories),[])
@@ -145,7 +145,7 @@ test('仅允许声明的偏好，缓存类型/范围异常或损坏时使用默�
 test('旧版本缓存整份重置为默认值并回写当前版本',async()=>{
   const legacyScope=`space-${'a'.repeat(64)}`
   for(const version of [0,1]) {
-    const legacy={graph:{nodeScale:1.6,showRelations:true},spaces:{[legacyScope]:{facts:{status:'all',hideSensitive:true},ask:{chunks:9}}}}
+    const legacy={graph:{nodeScale:1.6,showRelations:true},spaces:{[legacyScope]:{facts:{status:'all',hideSensitive:true},ask:{digests:9}}}}
     const s=load({version,state:legacy})
     assert.equal(s.state().graph.nodeScale,1.4,'旧版本不保留图谱参数')
     assert.equal(s.state().graph.showRelations,false)
@@ -153,7 +153,7 @@ test('旧版本缓存整份重置为默认值并回写当前版本',async()=>{
     s.flush()
     assert.equal(savedVersion(s),2,'重置后回写当前版本')
     assert.ok(!s.values.get(KEY).includes('"nodeScale":1.6'))
-    assert.ok(!s.values.get(KEY).includes('"chunks":9'))
+    assert.ok(!s.values.get(KEY).includes('"digests":9'))
   }
   assert.equal(load({version:50,state:{graph:{nodeScale:1.6}}}).state().graph.nodeScale,1.4)
 })
@@ -178,34 +178,34 @@ test('旧版包含历史开关不再转换成三态筛选',async()=>{
 
 test('旧版本重置后仍可写入并在刷新后恢复',async()=>{
   const base=load(),credential='synthetic-reset-writable',scope=await base.login(credential)
-  const s=load({version:1,state:{spaces:{[scope]:{ask:{chunks:9},facts:{status:'all'}}}}})
+  const s=load({version:1,state:{spaces:{[scope]:{ask:{digests:9},facts:{status:'all'}}}}})
   await s.login(credential)
   assert.equal(s.state().spaces[scope],undefined)
-  s.state().setSpace('ask','chunks',8)
+  s.state().setSpace('ask','digests',8)
   s.state().setSpace('facts','status','superseded')
   const reloaded=load(s.values.get(KEY))
   await reloaded.login(credential)
-  assert.equal(reloaded.state().spaces[scope].ask.chunks,8)
+  assert.equal(reloaded.state().spaces[scope].ask.digests,8)
   assert.equal(reloaded.state().spaces[scope].facts.status,'superseded')
   await reloaded.login('synthetic-reset-other')
   assert.equal(reloaded.state().spaces[reloaded.state().activeScope],undefined,'重置不破坏账号隔离')
 })
 
-test('问答片段非法输入使用当前默认值并保持其他设置，有效输入正常保存',async()=>{
+test('问答摘要非法输入使用当前默认值并保持其他设置，有效输入正常保存',async()=>{
   const base=load(),credential='synthetic-chunk-minimum',scope=await base.login(credential)
-  const s=load({version:2,state:{spaces:{[scope]:{ask:{chunks:1,redactSensitive:true},facts:{hideSensitive:true}}}}})
+  const s=load({version:2,state:{spaces:{[scope]:{ask:{digests:-1,redactSensitive:true},facts:{hideSensitive:true}}}}})
   await s.login(credential)
-  assert.equal(s.state().spaces[scope].ask.chunks,6)
+  assert.equal(s.state().spaces[scope].ask.digests,20)
   assert.equal(s.state().spaces[scope].ask.redactSensitive,true)
   assert.equal(s.state().spaces[scope].facts.hideSensitive,true)
-  s.state().setSpace('ask','chunks',1)
-  assert.equal(savedState(s).spaces[scope].ask.chunks,6)
-  s.state().setSpace('ask','chunks',previous=>previous-1)
-  assert.equal(s.state().spaces[scope].ask.chunks,5)
-  s.state().setSpace('ask','chunks',12)
+  s.state().setSpace('ask','digests',51)
+  assert.equal(savedState(s).spaces[scope].ask.digests,20)
+  s.state().setSpace('ask','digests',previous=>previous-1)
+  assert.equal(s.state().spaces[scope].ask.digests,19)
+  s.state().setSpace('ask','digests',50)
   const reloaded=load(s.values.get(KEY))
   await reloaded.login(credential)
-  assert.equal(reloaded.state().spaces[scope].ask.chunks,12)
+  assert.equal(reloaded.state().spaces[scope].ask.digests,50)
 })
 
 test('事实分类与三态筛选按空间持久化',async()=>{
@@ -233,9 +233,9 @@ test('事实分类与三态筛选按空间持久化',async()=>{
 test('存储不可用时仍能修改内存中的偏好',async()=>{
   const s=load(undefined,{unavailable:true})
   const scope=await s.login('synthetic-unavailable')
-  s.state().setSpace('ask','chunks',10)
+  s.state().setSpace('ask','digests',10)
   s.state().setGraph({showRelations:true})
-  assert.equal(s.state().spaces[scope].ask.chunks,10)
+  assert.equal(s.state().spaces[scope].ask.digests,10)
   assert.equal(s.state().graph.showRelations,true)
 })
 
@@ -252,7 +252,7 @@ for(const [label,options] of cryptoFallbacks) {
     assert.equal(scope,expected)
     original.state().setSpace('facts','status','all')
     original.state().setSpace('facts','hideSensitive',true)
-    original.state().setSpace('ask','chunks',9)
+    original.state().setSpace('ask','digests',9)
     const raw=original.values.get(KEY)
     assert.ok(!raw.includes(credential))
     assert.ok(!raw.includes(server))
@@ -261,21 +261,21 @@ for(const [label,options] of cryptoFallbacks) {
     assert.equal(await reload.login(credential),scope)
     assert.equal(reload.state().spaces[scope].facts.status,'all')
     assert.equal(reload.state().spaces[scope].facts.hideSensitive,true)
-    assert.equal(reload.state().spaces[scope].ask.chunks,9)
+    assert.equal(reload.state().spaces[scope].ask.digests,9)
     const other=await reload.login('synthetic-http-credential-b')
     assert.notEqual(other,scope)
     assert.equal(reload.state().spaces[other],undefined)
     assert.notEqual(await reload.exports.preferenceScopeFor(credential,'http://other.invalid'),scope)
     assert.equal(await reload.login(credential),scope)
-    assert.equal(reload.state().spaces[scope].ask.chunks,9)
+    assert.equal(reload.state().spaces[scope].ask.digests,9)
     // 原生与回退实现可相互读取已有缓存；同版本下存储键与字段格式一致。
     const native=load(raw)
     assert.equal(await native.login(credential),scope)
     assert.equal(native.state().spaces[scope].facts.status,'all')
-    native.state().setSpace('ask','chunks',4)
+    native.state().setSpace('ask','digests',4)
     const fallback=load(native.values.get(KEY),options)
     assert.equal(await fallback.login(credential),scope)
-    assert.equal(fallback.state().spaces[scope].ask.chunks,4)
+    assert.equal(fallback.state().spaces[scope].ask.digests,4)
   })
 }
 
@@ -298,8 +298,8 @@ test('快速连续切换用最新状态计算；问答数值校验，不持久�
   s.state().setSpace('graph','liveOnly',previous=>!previous)
   s.state().setSpace('graph','liveOnly',previous=>!previous)
   assert.equal(s.state().spaces[scope].graph.liveOnly,true)
-  s.state().setSpace('ask','chunks',1.5)
-  assert.equal(s.state().spaces[scope].ask.chunks,6)
+  s.state().setSpace('ask','digests',1.5)
+  assert.equal(s.state().spaces[scope].ask.digests,20)
   assert.deepEqual(Object.keys(savedState(s)).sort(),['graph','spaces'])
   assert.deepEqual(Object.keys(savedState(s).spaces[scope]).sort(),['ask','facts','graph','journal'])
 })
@@ -310,7 +310,7 @@ for (const relogin of ['logout-login', 'same-key-login']) {
     const s=load(undefined,{cryptoImpl:{subtle:{digest:()=>new Promise(resolve=>{finish=resolve})}}})
     const credential='synthetic-pending-preferences'
     s.startLogin(credential)
-    s.state().setSpace('ask','chunks',9)
+    s.state().setSpace('ask','digests',9)
     if(relogin==='logout-login') s.startLogin(null)
     s.startLogin(credential)
     assert.equal(s.state().activeScope,null)
@@ -319,7 +319,7 @@ for (const relogin of ['logout-login', 'same-key-login']) {
     await s.exports.preferenceScopeFor(credential)
     await Promise.resolve()
     const state=s.state(),preferences=state.spaces[state.activeScope]
-    assert.equal(preferences.ask.chunks,6,'旧周期的修改必须丢弃')
+    assert.equal(preferences.ask.digests,20,'旧周期的修改必须丢弃')
     assert.equal(preferences.graph.hideSensitive,true,'当前周期的修改仍应保存')
   })
 }

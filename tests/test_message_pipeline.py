@@ -78,7 +78,7 @@ def test_assistant_evidence_is_retrievable_and_confirmation_has_user_time():
     send(message('before', 'My default package manager is npm.'))
     send(message('proposal', PROPOSAL, 'assistant', 200))
     send(message('report', REPORT, 'assistant', 250))
-    proposal = next(ep for ep in mem.retrieve_episodes(PROPOSAL) if ep.text == PROPOSAL)
+    proposal = next(ep for ep in mem.episodes_doc.values() if ep.content == PROPOSAL)
     assert proposal.role == 'assistant'
     assert [f.object for f in mem._all_facts() if f.is_live()] == ['npm']
     assert 'pnpm' not in json.dumps(mem.profile())

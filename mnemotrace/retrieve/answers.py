@@ -36,6 +36,7 @@ class SearchResult:
     _answer: Optional[str] = None
     limitations: tuple[str, ...] = ()
     sources: tuple[EventEvidence, ...] = ()
+    source_ids: tuple[str, ...] = ()
 
     @property
     def status(self):

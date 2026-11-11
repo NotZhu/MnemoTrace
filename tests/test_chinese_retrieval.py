@@ -5,7 +5,6 @@ from mnemotrace import MemoryEngine
 from mnemotrace.retrieve.hybrid import mentioned_entities
 from mnemotrace.retrieve.lexical import bm25_scores, lexical_terms
 from mnemotrace.types import Entity
-from tests.embedder_fixtures import MockEmbedder
 
 
 def test_lexical_analysis_handles_han_latin_and_single_character_queries():
@@ -15,20 +14,6 @@ def test_lexical_analysis_handles_han_latin_and_single_character_queries():
     for query in ('绿茶', '茶'):
         scores = bm25_scores(query, docs)
         assert scores['match'] > scores['other'] == 0
-
-
-def test_tail_keyword_is_recalled_outside_vector_pool_without_exposing_raw():
-    embedder = MockEmbedder(2, vectors={'绿茶': [1.0, 0.0], '无关关键词': [0.0, 0.0]}, default=[0.0, 1.0])
-    memory = MemoryEngine(embedder=embedder)
-    target = memory.add('A long original. ' * 100 + '最后提到绿茶')
-    target.digest = 'A short digest.'
-    target.digest_embedding = embedder.embed(target.digest)
-    memory._sync_episode(target)
-    memory.add('Coffee', embedding=[1.0, 0.0])
-    hits = memory.retrieve_episodes('绿茶', k=2, pool=1)
-    assert any(hit.id == target.id and hit.text == target.digest for hit in hits)
-    assert [hit.id for hit in memory.retrieve_digests('绿茶')] == [target.id]
-    assert not memory.retrieve_episodes('无关关键词', k=2)
 
 
 def test_entity_mentions_prefer_long_names():
@@ -66,13 +51,15 @@ def test_chinese_two_hop_does_not_infer_employment_from_company(query):
     assert memory.search(query).via != 'multi-hop'
 
 
-def test_lexical_episode_recall_requires_more_than_english_stop_words():
+def test_digest_lexical_recall_handles_chinese_without_an_embedder():
     memory = MemoryEngine()
-    memory.add('A17 is written on a blue folder.')
-    for index in range(5):
-        memory.add(f'Apollo launch code rehearsal note {index}.')
-    assert 'Apollo launch code' in memory.retrieve_episodes("What is Apollo's launch code?", k=1)[0].text
-    assert not memory.retrieve_episodes('What is Kryptonite?')
+    source = memory.add('原文独有码甲。')
+    source.digest = '我喜欢喝绿茶。'
+    memory._sync_episode(source)
+    hit, = memory.retrieve_digests('绿茶')
+    assert hit.id == source.id
+    assert not memory.retrieve_digests('独有码甲')
+    assert not memory.retrieve_digests('What is Kryptonite?')
 
 
 def test_search_prefers_a_literal_identifier_over_identical_lexical_terms():

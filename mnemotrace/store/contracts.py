@@ -82,7 +82,6 @@ class OperationKind(str, Enum):
     EXTRACT = 'extract'
     DIGEST = 'digest'
     CONFLICTS = 'conflicts'
-    REEMBED = 'reembed'
     GRAPH = 'graph'
     PROFILE = 'profile'
 
@@ -422,7 +421,7 @@ class EmbeddingWrite:
         if not isinstance(self.record, RecordRef):
             raise ValueError('A scoped embedding target is required')
         _count(self.content_version, 1)
-        allowed = {RecordKind.SOURCE: {'text', 'digest'}, RecordKind.FACT: {'text'},
+        allowed = {RecordKind.SOURCE: {'digest'}, RecordKind.FACT: {'text'},
                    RecordKind.ENTITY: {'text'}}
         if self.field not in allowed.get(self.record.kind, set()):
             raise ValueError('Invalid embedding field for this record kind')
@@ -481,7 +480,7 @@ class OperationSpec:
         if self.kind is OperationKind.PROFILE:
             if self.session_id is not None or self.sources or self.targets:
                 raise ValueError('Profile tasks are space-scoped fact snapshots')
-        elif self.kind in {OperationKind.REEMBED, OperationKind.GRAPH}:
+        elif self.kind == OperationKind.GRAPH:
             if not self.targets or self.sources:
                 raise ValueError('Maintenance requires record targets, not fabricated sources')
         elif not self.sources or self.session_id is None or self.targets:

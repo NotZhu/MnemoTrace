@@ -50,6 +50,7 @@ from eval.longmemeval import (  # noqa: E402
     judge_correct,
     load_data,
     looks_like_abstention,
+    rank_raw_sessions,
     needs_self_consistency,
     needs_two_stage_pref,
     sessions_of,
@@ -85,15 +86,12 @@ class Rig:
     reranker: object = None
     topk: int = 10
     chunks: int = 5
-    extract_k: int = 8
     reasoning: bool = False
     strategies: bool = False
     sc_on: bool = True
     sc_k: int = 5
     persona: bool = False
     session_map: bool = False
-    cascade: bool = False  # engram_lean: 粗到细的钻取（_M/10M 规模下必需）
-    summ_k: int = 25      # engram_lean: 摘要多少个会话（高召回覆盖）
     n_digests: int = 12  # engram_lean: 取多少条会话摘要进入 lean context
     agentic: bool = False
     timeline: bool = False
@@ -108,11 +106,8 @@ class Rig:
 
 
 _ABLATION_FLAGS = {
-    "evidence_budgeting": ("evidence_budget", "evidence_budgeting"),
     "digest_fallback": ("digest_fallback", "digest", "derived_digest"),
     "chain_evidence": ("chain",),
-    "provenance_evidence": ("raw", "provenance"),
-    "provenance_chunk_promotion": ("raw", "provenance", "provenance_chunks", "chunk_promotion", "provenance_chunk_promotion"),
     "graph_proximity": ("graph", "graph_proximity"),
     "graph_relation_awareness": ("graph_relation", "relation_graph", "graph_relation_awareness"),
     "graph_path_reinforcement": ("graph_reinforcement", "path_reinforcement", "graph_path_reinforcement"),
@@ -150,11 +145,8 @@ class MnemoTraceSystem:
             reranker=rig.reranker,
         )
         ingest(mem, item, qid)
-        if rig.extract_k > 0:
-            mem.consolidate(mem.retrieve_episodes(q, qid, rig.extract_k))
-        else:
-            mem.consolidate()
-        return mem.context_for(q, user_id=qid, top_k=rig.topk, k_chunks=rig.chunks,
+        mem.consolidate_full()
+        return mem.context_for(q, user_id=qid, top_k=rig.topk, k_digests=rig.n_digests,
                                agentic=rig.agentic, timeline=rig.timeline, hyde=rig.hyde,
                                graph=rig.graph, wiki=rig.wiki,
                                summary=rig.summary, verify=rig.verify, intent=rig.intent)
@@ -180,11 +172,10 @@ class RAGSystem:
         self.rig = rig
 
     def context(self, item: dict) -> str:
-        rig, qid, q = self.rig, item["question_id"], item["question"]
-        mem = MemoryEngine(embedder=rig.embedder, reranker=rig.reranker)  # 不传 llm -> 不做抽取
-        ingest(mem, item, qid)
-        eps = mem.retrieve_episodes(q, qid, rig.chunks)
-        return "\n\n".join(f"[{e.metadata.get('date', '?')}]\n{e.text}" for e in eps)
+        rig = self.rig
+        documents = rank_raw_sessions(item, rig.embedder, rig.chunks, reranker=rig.reranker, hybrid=True)
+        return "\n\n".join(f"[{date}]\n{text}" for _, _, date, text in documents)
+
 
 
 class Mem0System:
@@ -322,12 +313,10 @@ class MnemoTraceFullSystem:
         self.rig = rig
 
     def context(self, item: dict) -> str:
-        rig, qid, q = self.rig, item["question_id"], item["question"]
+        rig, qid = self.rig, item["question_id"]
         mem = MemoryEngine(embedder=rig.embedder, llm=rig.extractor_llm, reranker=rig.reranker)
         ingest(mem, item, qid)
-        # 从 top-k 检索到的会话中抽取（与 MnemoTraceSystem 相同）
-        if rig.extract_k > 0:
-            mem.consolidate(mem.retrieve_episodes(q, qid, rig.extract_k))
+        mem.consolidate_full()
         # 组装：抽取出的 fact（最新在前）作为索引，完整历史附在下面
         from mnemotrace.util import fmt_date
         facts = [f for f in mem.fact_store.values() if f.user_id == qid and f.is_live()]
@@ -364,7 +353,7 @@ class MnemoTraceLeanSystem:
         self._tl = threading.local()  # 每线程缓存 1 个 item 的 mem，让 verify 重试复用已构建的 mem
 
     def _mem_for(self, item: dict):
-        rig, qid, q = self.rig, item["question_id"], item["question"]
+        rig, qid = self.rig, item["question_id"]
         if getattr(self._tl, "qid", None) == qid and getattr(self._tl, "mem", None) is not None:
             return self._tl.mem  # verify 重试时复用（不再重新摄取/重新摘要）
         mem = MemoryEngine(
@@ -376,13 +365,7 @@ class MnemoTraceLeanSystem:
             reranker=rig.reranker,
         )
         ingest(mem, item, qid)
-        # L1 facts 取自 top-k 检索会话；L2 摘要基于高召回集合（_S 上 recall@25≈98%，所以对 top-summ_k
-        # 个检索会话做摘要既能覆盖证据，又保持精简）。
-        retrieved = mem.retrieve_episodes(q, qid, max(rig.extract_k, rig.summ_k))
-        mem.consolidate_full(
-            fact_episodes=retrieved[: rig.extract_k] if rig.extract_k > 0 else retrieved,
-            digest_episodes=retrieved[: rig.summ_k],
-        )
+        mem.consolidate_full()
         self._tl.mem, self._tl.qid = mem, qid
         return mem
 
@@ -392,9 +375,8 @@ class MnemoTraceLeanSystem:
         # expand>0（验证重试）：加宽切片 —— 更多完整细节会话、时间线、多跳分解 —— 把第一轮 lean 切片
         # 漏掉的证据找出来（针对 "I don't know" 的修复）。
         return mem.lean_context(
-            q, user_id=qid, n_digests=rig.n_digests, n_facts=rig.topk,
-            n_chunks=rig.chunks + expand * 5, persona=rig.persona,
-            agentic=rig.agentic or expand > 0, cascade=rig.cascade,
+            q, user_id=qid, n_digests=rig.n_digests + expand * 5, n_facts=rig.topk,
+            agentic=rig.agentic or expand > 0,
             timeline=rig.timeline or expand > 0,
         )
 
@@ -404,27 +386,6 @@ class MnemoTraceLeanNoChainSystem(MnemoTraceLeanSystem):
 
     name = "engram_lean_no_chain"
     ablations = ("chain",)
-
-
-class MnemoTraceLeanNoRawSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但不含有出处（provenance）支撑的原始来源证据。"""
-
-    name = "engram_lean_no_raw"
-    ablations = ("raw",)
-
-
-class MnemoTraceLeanNoProvenanceChunksSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但关闭由出处引导的完整细节 chunk 晋升。"""
-
-    name = "engram_lean_no_provenance_chunks"
-    ablations = ("provenance_chunks",)
-
-
-class MnemoTraceLeanNoEvidenceBudgetSystem(MnemoTraceLeanSystem):
-    """A/B 基线：lean 系统，但关闭意图感知的证据预算分配。"""
-
-    name = "engram_lean_no_evidence_budget"
-    ablations = ("evidence_budget",)
 
 
 class MnemoTraceLeanNoDigestFallbackSystem(MnemoTraceLeanSystem):
@@ -459,16 +420,13 @@ class MnemoTraceLeanCoreSystem(MnemoTraceLeanSystem):
     """A/B 基线：lean 系统，同时关闭最新的证据增强项。"""
 
     name = "engram_lean_core"
-    ablations = ("chain", "raw", "graph")
+    ablations = ("chain", "graph")
 
 
 SYSTEMS = {"engram": MnemoTraceSystem, "full_context": FullContextSystem, "rag": RAGSystem,
            "mem0": Mem0System, "zep": ZepSystem, "hipporag": HippoRAGSystem,
            "engram_full": MnemoTraceFullSystem, "engram_lean": MnemoTraceLeanSystem,
            "engram_lean_no_chain": MnemoTraceLeanNoChainSystem,
-           "engram_lean_no_raw": MnemoTraceLeanNoRawSystem,
-           "engram_lean_no_provenance_chunks": MnemoTraceLeanNoProvenanceChunksSystem,
-           "engram_lean_no_evidence_budget": MnemoTraceLeanNoEvidenceBudgetSystem,
            "engram_lean_no_digest_fallback": MnemoTraceLeanNoDigestFallbackSystem,
            "engram_lean_no_graph": MnemoTraceLeanNoGraphSystem,
            "engram_lean_no_graph_relation": MnemoTraceLeanNoGraphRelationSystem,
@@ -583,8 +541,7 @@ def main():
     ap.add_argument("--reranker", default="none",
                     help="none | bge-reranker | bge-reranker-large | bge-reranker-v2 (cross-encoder over chunk pool)")
     ap.add_argument("--topk", type=int, default=10)
-    ap.add_argument("--chunks", type=int, default=5)
-    ap.add_argument("--extract-k", type=int, default=8, dest="extract_k")
+    ap.add_argument("--chunks", type=int, default=5, help="Raw session count for the RAG baseline")
     ap.add_argument("--reasoning", action="store_true",
                     help="answer with explicit EVIDENCE+REASON+ANSWER chain-of-thought (Phase 1: lifts "
                          "multi-evidence categories — temporal, multi-session, knowledge-update — which "
@@ -596,15 +553,11 @@ def main():
     ap.add_argument("--no-self-consistency", action="store_false", dest="sc_on",
                     help="with --strategies: keep two-stage preference but DISABLE self-consistency voting")
     ap.add_argument("--persona", action="store_true",
-                    help="L3 user-profile (preferences/habits) — prepended in engram_full / engram_lean")
+                    help="L3 user-profile (preferences/habits) — prepended in engram_full")
     ap.add_argument("--session-map", action="store_true", dest="session_map",
                     help="engram_full: insert an L2 complete session-by-session digest (multi-session aggregation)")
-    ap.add_argument("--summ-k", type=int, default=25, dest="summ_k",
-                    help="engram_lean: number of sessions to generate_digests for the L2 index (default 25)")
     ap.add_argument("--n-digests", type=int, default=12, dest="n_digests",
                     help="engram_lean: number of session digests to pull into the lean context (default 12)")
-    ap.add_argument("--cascade", action="store_true",
-                    help="engram_lean: coarse-to-fine drill (detail from top digests) — needed at _M/10M scale")
     ap.add_argument("--agentic", action="store_true", help="engram: LLM-decomposed iterative retrieval (M2a)")
     ap.add_argument("--timeline", action="store_true", help="engram: prepend a chronological timeline (M2b)")
     ap.add_argument("--hyde", action="store_true", help="engram: HyDE query expansion for recall (M2c)")
@@ -617,7 +570,7 @@ def main():
     ap.add_argument("--intent", action="store_true", help="engram: L6 intent hint (benchmark-neutral)")
     ap.add_argument("--ablate", default="",
                     help="comma-separated MnemoTrace algorithm switches to disable for all MnemoTrace systems in this run: "
-                         "evidence_budget, digest_fallback, chain, raw/provenance, provenance_chunks, "
+                         "digest_fallback, chain, "
                          "graph/graph_proximity, graph_relation, "
                          "graph_reinforcement")
     ap.add_argument("--full", action="store_true",
@@ -691,10 +644,10 @@ def main():
         answerer_llm=make_llm(args.answerer, max_tokens=ans_max_tok, num_retries=3, timeout=args.answerer_timeout),
         judge_llm=make_llm(args.judge, max_tokens=8, num_retries=3, timeout=60),
         reranker=make_reranker(args.reranker),
-        topk=args.topk, chunks=args.chunks, extract_k=args.extract_k,
+        topk=args.topk, chunks=args.chunks,
         reasoning=args.reasoning, strategies=args.strategies, sc_on=args.sc_on, sc_k=args.sc_k,
-        persona=args.persona, session_map=args.session_map, cascade=args.cascade,
-        summ_k=args.summ_k, n_digests=args.n_digests,
+        persona=args.persona, session_map=args.session_map,
+        n_digests=args.n_digests,
         agentic=args.agentic, timeline=args.timeline, hyde=args.hyde, graph=args.graph, wiki=args.wiki,
         summary=args.summary, verify=args.verify, verify_retry=args.verify_retry, intent=args.intent,
         ablations=ablations,
@@ -713,7 +666,7 @@ def main():
 
     print(f"UNIFIED RIG | {len(items)} items from _{args.data} | systems={sys_names}")
     print(f"  answerer={args.answerer}  judge={args.judge}  extractor={args.extractor}  embedder={args.embedder}")
-    print(f"  topk={args.topk} chunks={args.chunks} extract_k={args.extract_k} workers={args.workers}\n")
+    print(f"  topk={args.topk} chunks={args.chunks} n_digests={args.n_digests} workers={args.workers}\n")
     if rig.ablations:
         print(f"  global ablations={list(rig.ablations)}\n")
 

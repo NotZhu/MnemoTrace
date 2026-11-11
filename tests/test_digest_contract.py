@@ -28,7 +28,8 @@ def test_agent_task_remains_source_evidence_without_a_task_record():
     memory.remember_messages([dict(message_id='task', role='user', content=task)], 'release')
     assert memory.flush_messages(session_id='release')['ok']
     assert not memory._all_facts()
-    assert memory.retrieve_episodes(task)[0].text == task
+    assert memory.retrieve_digests(task) == []
+    assert next(iter(memory.episodes_doc.values())).content == task
     assert 'WORKING MEMORY' not in memory.lean_context(task)
     assert not hasattr(memory, 'working_mem')
 

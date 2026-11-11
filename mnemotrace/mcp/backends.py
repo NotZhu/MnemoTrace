@@ -40,7 +40,7 @@ class Backend(Protocol):
     async def recall(
         self,
         query: str,
-        n_chunks: int = 6,
+        n_digests: int = 20,
         lean: bool = True,
         as_of: float | None = None,
         redact_sensitive: bool = False,
@@ -162,7 +162,7 @@ class LocalBackend:
     async def recall(
         self,
         query: str,
-        n_chunks: int = 6,
+        n_digests: int = 20,
         lean: bool = True,
         as_of: float | None = None,
         redact_sensitive: bool = False,
@@ -178,7 +178,7 @@ class LocalBackend:
             self.context,
             query,
             lean=lean,
-            n_chunks=n_chunks,
+            n_digests=n_digests,
             as_of=as_of,
             redact_sensitive=redact_sensitive, state=state, valid_at=valid_at, known_at=known_at,
             subject=subject, predicate=predicate, answer=answer,
@@ -399,7 +399,7 @@ class RemoteBackend:
     async def recall(
         self,
         query: str,
-        n_chunks: int = 6,
+        n_digests: int = 20,
         lean: bool = True,
         as_of: float | None = None,
         redact_sensitive: bool = False,
@@ -410,7 +410,7 @@ class RemoteBackend:
         predicate: str | None = None,
         answer: bool = False,
     ) -> dict:
-        body = {"query": query, "lean": lean, "n_chunks": n_chunks, "state": state,
+        body = {"query": query, "lean": lean, "n_digests": n_digests, "state": state,
                 "valid_at": valid_at, "known_at": known_at}
         if answer:
             body["answer"] = True

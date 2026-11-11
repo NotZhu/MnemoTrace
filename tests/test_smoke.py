@@ -218,7 +218,7 @@ def test_runbook_source_extracts_literal_fact_with_full_steps():
     assert "regenerating the token" in fact.object
     assert "updating CI secrets" in fact.object
     assert all("security settings" not in ent.name for ent in mem.graph.entities.values())
-    assert mem.retrieve_episodes("PAT runbook", user_id="u1")[0].id == fact.provenance[0]
+    assert mem.get_episode(fact.provenance[0], "u1") is not None
 
 
 def test_to_colon_howto_extracts_literal_fact():
@@ -237,7 +237,7 @@ def test_to_colon_howto_extracts_literal_fact():
     assert fact.provenance
 
 
-def test_short_project_rule_context_preserves_key_constraint():
+def test_short_project_rule_context_uses_extracted_facts():
     mem = MemoryEngine()
     user = "codex-e2e"
     session = "codex:repo:thread"
@@ -246,7 +246,7 @@ def test_short_project_rule_context_preserves_key_constraint():
         user_id=user,
         session_id=session,
     )
-    mem.add(
+    source = mem.add(
         "Project preference: Codex should use MnemoTrace as cross-agent memory and call mnemotrace_close_session when a task ends.",
         user_id=user,
         session_id=session,
@@ -256,11 +256,10 @@ def test_short_project_rule_context_preserves_key_constraint():
     ctx = mem.lean_context(
         "What should Codex remember about benchmark claims and session closing?",
         user_id=user,
-
-        n_chunks=4,
     )
     assert "raw logs" in ctx
-    assert "mnemotrace_close_session" in ctx
+    assert "mnemotrace_close_session" not in ctx
+    assert "mnemotrace_close_session" in mem.get_episode(source.id, user)["content"]
 
 
 def test_no_hard_delete_history_preserved():

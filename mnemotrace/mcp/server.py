@@ -162,8 +162,8 @@ async def mnemotrace_recall(
     query: Annotated[str, Field(description="What you want to remember about the user / past sessions, "
                                 "e.g. 'the user's dietary restrictions' or 'what we decided about the API'.",
                                 min_length=1)],
-    max_chunks: Annotated[int, Field(description="How many event evidence records to include "
-                                     "(0 = facts/digests only). Default 6.", ge=0, le=20)] = 6,
+    max_digests: Annotated[int, Field(description="How many source digests to include "
+                                      "(0 = facts only). Default 20.", ge=0, le=50)] = 20,
     as_of: Annotated[Optional[float], Field(description="Optional epoch seconds for a point-in-time memory "
                                            "view, e.g. what was believed before a later update.")] = None,
     redact_sensitive: Annotated[bool, Field(description="When true, omit facts tagged sensitive from the "
@@ -186,7 +186,7 @@ async def mnemotrace_recall(
     try:
         data = await backend().recall(
             query,
-            n_chunks=max_chunks,
+            n_digests=max_digests,
             lean=True,
             answer=answer,
             as_of=as_of,
@@ -307,6 +307,7 @@ async def mnemotrace_search(
     if facts:
         lines += ["", "Candidate facts:"] + [f"- {t}" for t in facts]
     lines.extend(f"- [source {ep['id']}] {ep['text']}" for ep in data.get("sources", ()))
+    lines.extend(f"- [source {source_id}]" for source_id in data.get("source_ids", ()))
     return "\n".join(lines)
 
 

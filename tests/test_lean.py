@@ -39,7 +39,6 @@ def build(generate_digests=True) -> MemoryEngine:
 
 def test_existing_digests_are_indexed_exclusively():
     mem = build()
-    assert not mem.episodes_vec.values()
     assert len(mem.digest_vec.values()) == len(SESSIONS)
     for ep in mem.episodes_doc.values():
         assert ep.digest, "each episode should carry a digest after generate_digests"
@@ -63,29 +62,13 @@ def test_retrieve_digests_is_relevant():
     assert any(city in joined for city in ("kyoto", "lisbon", "oslo"))
 
 
-def test_lean_context_assembles_all_layers():
+def test_lean_context_assembles_facts_and_digests():
     mem = build()
     ctx = mem.lean_context("trip Kyoto Lisbon Oslo", user_id="u1",
-                           n_digests=10, n_facts=10, n_chunks=1)
+                           n_digests=10, n_facts=10)
     assert "USER PROFILE:" not in ctx
     assert "SESSION DIGESTS" in ctx
-    assert "RELEVANT CONVERSATIONS (full detail):" in ctx
-
-
-def test_lean_context_dedup_no_session_twice():
-    """以完整形式展示的 session（detail chunk）绝不能再出现在摘要块里 —— 否则就是重复烧 token。
-    这是 leanness 的核心不变量。"""
-    from tests.embedder_fixtures import product_embedder
-
-    mem = build()
-    mem.reembed(product_embedder())
-    detail = mem.retrieve_episodes("Kyoto temples", "u1", 2)
-    detail_dates = {e.metadata.get("date") for e in detail}
-    ctx = mem.lean_context("Kyoto temples", user_id="u1", n_digests=10, n_chunks=2)
-    summ_block = ctx.split("SESSION DIGESTS")[1].split("RELEVANT CONVERSATIONS")[0]
-    for d in detail_dates:
-        # detail session 的日期不应再作为某条摘要行的开头
-        assert f"- [{d}]" not in summ_block, "detail session leaked into the digest block (dup)"
+    assert "FACTS" in ctx
 
 
 def test_lean_context_respects_char_budget():
@@ -94,57 +77,10 @@ def test_lean_context_respects_char_budget():
     assert len(ctx) <= 200, "lean_context must hard-cap at char_budget"
 
 
-def test_evidence_budgeting_keeps_provenance_under_tight_budget():
-    from mnemotrace.config import Config
-    from mnemotrace.types import Fact
-
-    def make(enabled: bool) -> str:
-        mem = MemoryEngine(config=Config(evidence_budgeting=enabled))
-        ep = mem.add(
-            "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
-            user_id="u1",
-            session_id="apollo",
-            event_time=BASE,
-        )
-        fact = Fact(
-            subject="Apollo",
-            predicate="launch_code",
-            object="A17",
-            user_id="u1",
-            valid_at=BASE,
-            provenance=[ep.id], text='Apollo launch code A17',
-        )
-        fact.embedding = mem.embedder.embed(fact.text)
-        mem.fact_store.upsert(fact.id, fact.embedding, fact)
-        for i in range(12):
-            mem.add_fact(
-                "Apollo",
-                "project_note",
-                f"background filler note {i} with operational chatter that is not the checklist location",
-                user_id="u1",
-                valid_at=BASE + (i + 1) * DAY, text=' '.join(('Apollo', 'project note', f'background filler note {i} with operational chatter that is not the checklist location')),
-            )
-        return mem.lean_context(
-            "What is Apollo's launch code and where is the printed checklist?",
-            user_id="u1",
-            persona=False,
-            n_digests=0,
-            n_chunks=0,
-            char_budget=360,
-        )
-
-    enabled = make(True)
-    disabled = make(False)
-
-    assert len(enabled) <= 360
-    assert "PROVENANCE EVENT EVIDENCE" in enabled
-    assert "PROVENANCE EVENT EVIDENCE" not in disabled
-
-
 def test_lean_context_is_leaner_than_full_history():
     mem = build()
     full = "\n".join(ep.content for ep in mem.episodes_doc.values())
-    lean = mem.lean_context("trips", user_id="u1", n_chunks=1)
+    lean = mem.lean_context("trips", user_id="u1")
     # 只带少量完整 chunk + 小摘要时，lean 必须远小于全量倾倒所有 session
     # （这里历史很小；benchmark 规模下差距会急剧拉大）
     assert len(lean) <= max(2048, len(full) * 3)  # sanity：不能大得离谱
@@ -160,11 +96,11 @@ def test_consolidate_full_builds_facts_and_digests():
 
 
 def test_lean_path_works_with_no_digests():
-    """优雅降级：即使从未构建摘要，lean_context 仍能返回 facts + chunks。"""
+    """优雅降级：即使从未构建摘要，lean_context 仍能返回 facts。"""
     mem = build(generate_digests=False)
-    ctx = mem.lean_context("Where do I work?", user_id="u1", n_chunks=1)
+    ctx = mem.lean_context("Where do I work?", user_id="u1")
     assert "SESSION DIGESTS" not in ctx  # 未构建任何摘要
-    assert ctx.strip(), "still produces a usable context from facts + chunks"
+    assert ctx.strip(), "still produces a usable context from facts"
 
 
 def test_memory_crud_add_edit_delete():
@@ -241,7 +177,7 @@ def test_timeline_block_is_chronological():
     """时间辅助：timeline=True 时 fact 按旧->新带日期排列，顺序和时长直接从排列中读出，
     而不必在脑中推算。"""
     mem = build()
-    ctx = mem.lean_context("When did I travel?", user_id="u1", timeline=True, n_chunks=1)
+    ctx = mem.lean_context("When did I travel?", user_id="u1", timeline=True)
     assert "TIMELINE" in ctx
     tl = ctx.split("TIMELINE")[1]
     import re
@@ -259,7 +195,6 @@ def test_lean_context_as_of_profile_does_not_leak_current_facts():
         "Where do I work?",
         user_id="u1",
         as_of=BASE + 10 * DAY,
-        n_chunks=0,
         char_budget=10_000,
     )
     assert "USER PROFILE (as of" not in ctx
@@ -287,8 +222,6 @@ def test_lean_context_adds_evolution_chain_for_current_lookup():
     ctx = mem.lean_context(
         "Where does Wei work?",
         user_id="u1",
-        persona=False,
-        n_chunks=0,
         char_budget=10_000,
     )
 
@@ -309,8 +242,6 @@ def test_lean_context_evolution_chain_respects_as_of_boundary():
         "Where does Wei work?",
         user_id="u1",
         as_of=BASE + 10 * DAY,
-        persona=False,
-        n_chunks=0,
         char_budget=10_000,
     )
 
@@ -324,7 +255,7 @@ def test_context_for_adds_fact_evolution_chain():
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE, text='Wei works at Tencent')
     mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single", text='Wei works at Moonshot AI')
 
-    ctx = mem.context_for("Where does Wei work?", user_id="u1", k_chunks=0)
+    ctx = mem.context_for("Where does Wei work?", user_id="u1", k_digests=0)
 
     assert "FACT EVOLUTION" in ctx
     assert "Tencent" in ctx
@@ -341,235 +272,11 @@ def test_chain_evidence_can_be_disabled_for_ablation():
     ctx = mem.lean_context(
         "Where does Wei work?",
         user_id="u1",
-        persona=False,
-        n_chunks=0,
         char_budget=10_000,
     )
 
     assert "Moonshot AI" in ctx
     assert "FACT EVOLUTION" not in ctx
-
-
-def test_lean_context_adds_provenance_raw_evidence_for_retrieved_fact():
-    from mnemotrace.config import Config
-    from mnemotrace.types import Fact
-
-    mem = MemoryEngine(config=Config())
-    ep = mem.add(
-        "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
-        user_id="u1",
-        session_id="apollo",
-        event_time=BASE,
-    )
-    fact = Fact(
-        subject="Apollo",
-        predicate="launch_code",
-        object="A17",
-        user_id="u1",
-        valid_at=BASE,
-        provenance=[ep.id], text='Apollo launch code A17',
-    )
-    fact.embedding = mem.embedder.embed(fact.text)
-    mem.fact_store.upsert(fact.id, fact.embedding, fact)
-
-    ctx = mem.lean_context(
-        "What is Apollo's launch code?",
-        user_id="u1",
-        persona=False,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-
-    assert "FACTS (current, dated):" in ctx
-    assert "PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):" in ctx
-    assert "A17" in ctx
-    assert "blue binder" in ctx
-
-
-def test_provenance_evidence_can_be_disabled_for_ablation():
-    from mnemotrace.config import Config
-    from mnemotrace.types import Fact
-
-    mem = MemoryEngine(config=Config(provenance_evidence=False))
-    ep = mem.add(
-        "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
-        user_id="u1",
-        session_id="apollo",
-        event_time=BASE,
-    )
-    fact = Fact(
-        subject="Apollo",
-        predicate="launch_code",
-        object="A17",
-        user_id="u1",
-        valid_at=BASE,
-        provenance=[ep.id], text='Apollo launch code A17',
-    )
-    fact.embedding = mem.embedder.embed(fact.text)
-    mem.fact_store.upsert(fact.id, fact.embedding, fact)
-
-    ctx = mem.lean_context(
-        "What is Apollo's launch code?",
-        user_id="u1",
-        persona=False,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-
-    assert "A17" in ctx
-    assert "PROVENANCE EVENT EVIDENCE" not in ctx
-    assert "blue binder" not in ctx
-
-
-def test_provenance_raw_evidence_dedups_full_detail_chunk():
-    from mnemotrace.types import Fact
-
-    mem = MemoryEngine()
-    ep = mem.add(
-        "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
-        user_id="u1",
-        session_id="apollo",
-        event_time=BASE,
-    )
-    fact = Fact(
-        subject="Apollo",
-        predicate="launch_code",
-        object="A17",
-        user_id="u1",
-        valid_at=BASE,
-        provenance=[ep.id], text='Apollo launch code A17',
-    )
-    fact.embedding = mem.embedder.embed(fact.text)
-    mem.fact_store.upsert(fact.id, fact.embedding, fact)
-
-    ctx = mem.lean_context(
-        "What is Apollo's launch code?",
-        user_id="u1",
-        persona=False,
-        n_chunks=1,
-        char_budget=10_000,
-    )
-
-    assert "RELEVANT CONVERSATIONS (full detail):" in ctx
-    assert "blue binder" in ctx
-    assert "PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):" not in ctx
-
-
-def test_provenance_source_episode_is_promoted_into_detail_chunks():
-    from mnemotrace.config import Config
-    from mnemotrace.types import Fact
-
-    def make(enabled: bool) -> str:
-        mem = MemoryEngine(
-            config=Config(
-                provenance_evidence=False,
-                provenance_chunk_promotion=enabled,
-            )
-        )
-        source = mem.add(
-            "A17 is written on the tag tucked inside the blue binder.",
-            user_id="u1",
-            session_id="apollo-source",
-            event_time=BASE,
-        )
-        for i in range(5):
-            mem.add(
-                f"Apollo launch code rehearsal note {i}: the team reviewed old checklist formats.",
-                user_id="u1",
-                session_id=f"apollo-distractor-{i}",
-                event_time=BASE + (i + 1) * DAY,
-            )
-        fact = Fact(
-            subject="Apollo",
-            predicate="launch_code",
-            object="A17",
-            user_id="u1",
-            valid_at=BASE,
-            provenance=[source.id], text='Apollo launch code A17',
-        )
-        fact.embedding = mem.embedder.embed(fact.text)
-        mem.fact_store.upsert(fact.id, fact.embedding, fact)
-        return mem.lean_context(
-            "What is Apollo's launch code?",
-            user_id="u1",
-            persona=False,
-            n_digests=0,
-            n_chunks=1,
-            char_budget=10_000,
-        )
-
-    enabled = make(True)
-    disabled = make(False)
-    enabled_detail = enabled.split("RELEVANT CONVERSATIONS (full detail):", 1)[1]
-    disabled_detail = disabled.split("RELEVANT CONVERSATIONS (full detail):", 1)[1]
-
-    assert "blue binder" in enabled_detail
-    assert "apollo-source" in enabled_detail
-    assert "blue binder" not in disabled_detail
-    assert "apollo-distractor" in disabled_detail
-
-
-def test_provenance_raw_evidence_is_hidden_in_redacted_context():
-    from mnemotrace.config import Config
-    from mnemotrace.types import Fact
-
-    mem = MemoryEngine(config=Config())
-    ep = mem.add(
-        "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
-        user_id="u1",
-        session_id="apollo",
-        event_time=BASE,
-    )
-    fact = Fact(
-        subject="Apollo",
-        predicate="launch_code",
-        object="A17",
-        user_id="u1",
-        valid_at=BASE,
-        provenance=[ep.id],
-        sensitive=True, text='Apollo launch code A17',
-    )
-    fact.embedding = mem.embedder.embed(fact.text)
-    mem.fact_store.upsert(fact.id, fact.embedding, fact)
-
-    ctx = mem.lean_context(
-        "What is Apollo's launch code?",
-        user_id="u1",
-        persona=False,
-        n_chunks=0,
-        redact_sensitive=True,
-        char_budget=10_000,
-    )
-
-    assert "PROVENANCE EVENT EVIDENCE" not in ctx
-    assert "blue binder" not in ctx
-
-
-def test_context_for_adds_provenance_raw_evidence_for_fact_sources():
-    from mnemotrace.types import Fact
-
-    mem = MemoryEngine()
-    ep = mem.add(
-        "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
-        user_id="u1",
-        session_id="apollo",
-        event_time=BASE,
-    )
-    fact = Fact(
-        subject="Apollo",
-        predicate="launch_code",
-        object="A17",
-        user_id="u1",
-        valid_at=BASE,
-        provenance=[ep.id], text='Apollo launch code A17',
-    )
-    fact.embedding = mem.embedder.embed(fact.text)
-    mem.fact_store.upsert(fact.id, fact.embedding, fact)
-
-    ctx = mem.context_for("What is Apollo's launch code?", user_id="u1", k_chunks=0)
-
-    assert "PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):" in ctx
-    assert "blue binder" in ctx
 
 
 def test_multihop_planner_includes_cold_tier_relation_facts():
@@ -768,14 +475,6 @@ def test_multihop_planner_reaches_project_location_chain():
     assert [f.predicate for f in path.facts] == ["works_on", "based_in"]
 
 
-def test_cascade_coarse_to_fine_assembles():
-    """由粗到细的 cascade：detail 从排名靠前的摘要中钻取；两种模式都能正常组装。"""
-    mem = build()
-    casc = mem.lean_context("Which cities did I visit?", user_id="u1", cascade=True, n_chunks=2)
-    flat = mem.lean_context("Which cities did I visit?", user_id="u1", cascade=False, n_chunks=2)
-    assert casc.strip() and flat.strip()
-
-
 def test_heat_tiered_eviction_pages_cold_preserves_durable():
     """MemoryOS 热度分层：超容量时最冷的偶发 fact 换出到 cold tier（非破坏性）；
     持久的偏好/身份 fact 永不被驱逐。"""
@@ -881,7 +580,7 @@ def test_lean_context_pages_cold_fact_when_hot_misses():
     fact = mem.add_fact("project", "project_status", "alpha", user_id="u1", text='project project status alpha')
     assert mem.evict_cold(max_hot=0) == 1
 
-    ctx = mem.lean_context("project status", user_id="u1", n_chunks=0)
+    ctx = mem.lean_context("project status", user_id="u1")
     assert "alpha" in ctx.lower()
     assert mem.fact_store.get(fact.id) is not None
     assert mem.cold_store.get(fact.id) is None
@@ -930,7 +629,7 @@ def test_context_for_graph_includes_multihop_related_facts():
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
 
-    ctx = mem.context_for("Tell me about Wei", user_id="u1", k_chunks=0, graph=True)
+    ctx = mem.context_for("Tell me about Wei", user_id="u1", k_digests=0, graph=True)
 
     assert "RELATED FACTS (graph traversal):" in ctx
     assert "Moonshot AI based in Beijing" in ctx
@@ -1018,7 +717,7 @@ def test_agentic_multihop_decomposition():
     mem = build()  # 离线提取 facts
 
     # 优雅降级：agentic=True 但没有 llm -> 仍返回可用 context
-    ctx0 = mem.lean_context("Which cities did I visit?", user_id="u1", agentic=True, n_chunks=1)
+    ctx0 = mem.lean_context("Which cities did I visit?", user_id="u1", agentic=True)
     assert ctx0.strip()
 
     # 配备能分解问题的 llm 后，该路径正常运行并产出 context
@@ -1028,7 +727,7 @@ def test_agentic_multihop_decomposition():
 
     mem.llm = FakeLLM()
     ctx1 = mem.lean_context("Which cities did I visit and how many trips?", user_id="u1",
-                            agentic=True, n_chunks=1)
+                            agentic=True)
     assert ctx1.strip() and "SESSION DIGESTS" in ctx1
 
 
@@ -1044,12 +743,12 @@ def test_agentic_episode_gather_respects_as_of():
         def __init__(self):
             self.calls = []
 
-        def retrieve_episodes(self, query, user_id, k, as_of=None):
+        def retrieve_digests(self, query, user_id, k, as_of=None):
             self.calls.append(as_of)
             return []
 
     fake = FakeMemory()
-    AgenticRetriever(fake, FakeLLM()).gather_episodes("Which cities did I visit?", "u1", 1, as_of=BASE)
+    AgenticRetriever(fake, FakeLLM()).gather_digests("Which cities did I visit?", "u1", 1, as_of=BASE)
     assert fake.calls == [BASE]
 
 
@@ -1057,7 +756,7 @@ def test_working_memory_holds_active_query_set():
     """工作记忆：lean_context 为当前查询填充一个临时的、可检查的活跃集。"""
     mem = build()
     assert mem.working_set == []  # 尚未关注任何内容
-    mem.lean_context("Where do I work?", user_id="u1", n_chunks=1)
+    mem.lean_context("Where do I work?", user_id="u1")
     assert isinstance(mem.working_set, list)  # 已填充该查询的活跃 facts（可能为空）
 
 
@@ -1156,7 +855,7 @@ def test_focus_track_boosts_salience_and_mute_hides():
     mem.set_focus(track=["python"], mute=["guitar"])
     assert py.salience == before
 
-    ctx = mem.lean_context("what do I do", user_id="u1", n_chunks=0).lower()
+    ctx = mem.lean_context("what do I do", user_id="u1").lower()
     assert "python" in ctx, "tracked fact should remain in the read context"
     assert "guitar" not in ctx, "muted topic must be hidden from the read context"
 
@@ -1272,7 +971,6 @@ def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content
         user_id="u",
 
         n_digests=5,
-        n_chunks=5,
         redact_sensitive=True,
         char_budget=10_000,
     )
@@ -1313,34 +1011,6 @@ def test_conflict_resolve_and_dismiss_are_user_driven():
     m.conflicts[cf2.id] = cf2
     assert m.dismiss_conflict(cf2.id) and g1.is_live() and g2.is_live()
     assert m.pending_conflicts("u") == []
-
-
-def test_promotion_never_evicts_every_semantic_chunk():
-    """2026-08-27 回归：被提升的 provenance chunk 占满了整个 k_chunks 预算，导致 fact 检索
-    未命中时，承载答案的语义检索 episode 被驱逐，单 session 召回塌缩为拒答。提升最多只能占用
-    一半预算（k>=2）；即使提升候选很多，语义保底槽位也必须存活。"""
-    from mnemotrace.config import Config
-    from mnemotrace.types import Fact
-
-    mem = MemoryEngine(config=Config(provenance_evidence=False,
-                               provenance_chunk_promotion=True))
-    # 答案所在的 session 只有语义检索才会给它高排名
-    mem.add("The screening room access code is painted behind the velvet poster.",
-            user_id="u1", session_id="answer-session", event_time=BASE)
-    # 被提升 facts 将指向的离题 session
-    sources = []
-    for i in range(3):
-        sources.append(mem.add(f"Budget sync {i}: the quarterly numbers were reviewed in depth.",
-                               user_id="u1", session_id=f"budget-{i}", event_time=BASE + (i + 1) * DAY))
-    mem.consolidate()
-    # 排名靠前的 facts 全部指向离题内容 -> 此前它们的 provenance chunk 会占满预算
-    for i, src in enumerate(sources):
-        f = Fact(subject="u1", predicate=f"reviewed_{i}", object=f"quarterly numbers {i}",
-                 user_id="u1", provenance=[src.id], text=' '.join(('u1', f'reviewed_{i}'.replace('_', ' '), f'quarterly numbers {i}')))
-        f.embedding = mem.embedder.embed(f.text)
-        mem.fact_store.upsert(f.id, f.embedding, f)
-    ctx = mem.lean_context("what is the screening room access code?", user_id="u1", n_chunks=2)
-    assert "velvet poster" in ctx  # 语义槽位在提升压力下幸存
 
 
 def test_evolution_block_leads_with_the_current_value():

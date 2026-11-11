@@ -105,7 +105,8 @@ export interface SearchResult {
   answer: string
   status: "answered" | "evidence_only" | "no_evidence"
   fact_ids: string[]
-  sources: { id: string; session_id: string; text: string; representation: string }[]
+  source_ids: string[]
+  sources: { id: string; session_id: string; text: string; representation: "digest" }[]
   facts: string[]
   as_of: number | null
   redacted_sensitive: boolean
@@ -524,7 +525,7 @@ export interface MemoryControls {
   /** auto | long；控制后台写入的路由方式 */
   extract?: boolean
   /** 为补充细节而包含的完整历史对话数量（默认 6） */
-  n_chunks?: number
+  n_digests?: number
   /** 用于按时间点查看记忆的 epoch 秒数 */
   as_of?: number
   /** 从注入的记忆中省略标记为敏感的事实 */

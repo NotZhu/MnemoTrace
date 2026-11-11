@@ -70,9 +70,9 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 | --- | --- | --- |
 | `search` | query、user_id、as_of=None、top_k=None | SearchResult |
 | `as_of` | query、when、user_id、top_k=None | SearchResult；时间查询便捷入口 |
-| `lean_context` | query、user_id；as_of、redact_sensitive；n_digests、n_facts、n_chunks、char_budget 等 | 按预算组合的上下文字符串 |
-| `context_for` | query、user_id；as_of、top_k、k_chunks 及按需增强选项 | 上下文字符串 |
-| `retrieve_episodes` | query、user_id、k=5、pool=None、as_of=None | 不可变 EventEvidence；text 为该事件当前的原文或摘要，不含原文副本 |
+| `lean_context` | query、user_id；as_of、redact_sensitive；n_digests、n_facts、char_budget 等 | 按预算组合的上下文字符串 |
+| `context_for` | query、user_id；as_of、top_k、k_digests 及按需增强选项 | 上下文字符串 |
+| `retrieve_digests` | query、user_id、k=8、as_of=None | 不可变的摘要证据列表 |
 | `get_episode` | episode_id、user_id=default | 原文记录字典或 None；仅含身份、来源时间和完整 content |
 | `history` | subject、predicate、user_id | 同一槽位的 Fact 列表 |
 | `profile` | user_id | 结构化画像缓存与刷新状态 |
@@ -135,7 +135,8 @@ memory.update_fact(fact.id, categories=[])  # 清除标签，来源为 unset
 
 Postgres 核心操作通过 `auxiliary_operation_ids` 关联独立的摘要任务。调用 `flush_processing(include_digests=True)` 可把符合条件的摘要纳入本次处理范围，`retry_failed=True` 重试范围内的失败操作。摘要失败时保留已提交的事实和原文。
 
-摘要成功后，所有 agent 事件检索、来源证据、聚合和上下文只使用摘要。检索文本带事件 ID；通过 get_episode 显式读取原文。
-Fact 仍从原文抽取且独立检索；历史事件摘要不追加后续事实。owner 管理浏览、全文搜索及导出保留。
+来源检索和聚合回退只使用摘要，自动上下文只包含事实和摘要。通过 get_episode 显式读取来源 ID 对应的原文。
+私有快照导出保留摘要的 `digest_written_at`，导入后仍按原时间判断摘要在历史查询中是否可见。写入时间未知的摘要只参与当前查询。
+Fact 仍从原文抽取且独立检索；历史事件摘要不追加后续事实。空间所有者可浏览和导出原文。
 
 使用 `memory.aggregate_facts("visited", operation="count_distinct")` 统计不同对象，使用 `memory.follow_path("user", ["sister", "works_at"])` 获取路径和支持事实。两者可通过 `FactQuery` 设置有效时间、认知时间、事实状态和脱敏条件。

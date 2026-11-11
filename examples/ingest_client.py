@@ -90,7 +90,7 @@ def main() -> None:
           f"{c['facts_live']} live facts / {c['episodes']} episodes / {c['digests']} digests")
 
     for q in args.probe:
-        r = call("/v1/recall", {"query": q, "n_chunks": 4, "answer": True})
+        r = call("/v1/recall", {"query": q, "n_digests": 4, "answer": True})
         save = (r.get("full_tokens", 0) / max(1, r.get("tokens_est", 1)))
         print(f"\nQ: {q}\nA: {r.get('answer', '')}\n   (精炼 {r.get('tokens_est')} / 全量 {r.get('full_tokens')} tokens"
               f" · 省 {save:.1f}×)")

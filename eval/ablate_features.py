@@ -20,7 +20,6 @@ from contextvars import ContextVar
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mnemotrace import Config, MemoryEngine  # noqa: E402
-from mnemotrace.types import Fact  # noqa: E402
 from mnemotrace.util import DAY  # noqa: E402
 
 _MODEL = ContextVar("ablation_model", default=None)
@@ -63,8 +62,6 @@ def _chain_context(enabled: bool) -> str:
     return mem.lean_context(
         "Where does Wei work?",
         user_id="u1",
-        persona=False,
-        n_chunks=0,
         char_budget=10_000,
     )
 
@@ -87,143 +84,12 @@ def _digest_fallback_context(enabled: bool) -> str:
     ])
 
 
-def _raw_context(enabled: bool) -> str:
-    mem = _memory(config=Config(provenance_evidence=enabled))
-    ep = mem.add(
-        "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
-        user_id="u1",
-        session_id="apollo",
-        event_time=BASE,
-    )
-    fact = Fact(
-        subject="Apollo",
-        predicate="launch_code",
-        object="A17",
-        user_id="u1",
-        valid_at=BASE,
-        provenance=[ep.id], text='Apollo launch code A17',
-    )
-    mem.fact_store.upsert(fact.id, fact.embedding, fact)
-    return mem.lean_context(
-        "What is Apollo's launch code?",
-        user_id="u1",
-        persona=False,
-        n_chunks=0,
-        char_budget=10_000,
-    )
-
-
-def _provenance_chunk_context(enabled: bool) -> str:
-    mem = _memory(
-        config=Config(
-            provenance_evidence=False,
-            provenance_chunk_promotion=enabled,
-        )
-    )
-    source = mem.add(
-        "A17 is written on the tag tucked inside the blue binder.",
-        user_id="u1",
-        session_id="apollo-source",
-        event_time=BASE,
-    )
-    for i in range(5):
-        mem.add(
-            f"Apollo launch code rehearsal note {i}: the team reviewed old checklist formats.",
-            user_id="u1",
-            session_id=f"apollo-distractor-{i}",
-            event_time=BASE + (i + 1) * DAY,
-        )
-    fact = Fact(
-        subject="Apollo",
-        predicate="launch_code",
-        object="A17",
-        user_id="u1",
-        valid_at=BASE,
-        provenance=[source.id], text='Apollo launch code A17',
-    )
-    mem.fact_store.upsert(fact.id, fact.embedding, fact)
-    return mem.lean_context(
-        "What is Apollo's launch code?",
-        user_id="u1",
-        persona=False,
-        n_digests=0,
-        n_chunks=1,
-        char_budget=10_000,
-    )
-
-
-def _chain_provenance_context(enabled: bool) -> str:
-    mem = _memory(
-        config=Config(
-            chain_evidence=enabled,
-            provenance_evidence=False,
-            provenance_chunk_promotion=True,
-        )
-    )
-    mem.add(
-        "Wei works at Tencent and keeps a blue employee badge.",
-        user_id="u1",
-        session_id="old-source",
-        event_time=BASE,
-    )
-    mem.add(
-        "Wei works at Moonshot AI on agent memory.",
-        user_id="u1",
-        session_id="new-source",
-        event_time=BASE + 30 * DAY,
-    )
-    mem.consolidate()
-    return mem.lean_context(
-        "Where did Wei work before Moonshot AI?",
-        user_id="u1",
-        persona=False,
-        n_digests=0,
-        n_chunks=1,
-        char_budget=10_000,
-    )
-
-
-def _evidence_budget_context(enabled: bool) -> str:
-    mem = _memory(config=Config(evidence_budgeting=enabled))
-    ep = mem.add(
-        "The Apollo launch code is A17. Keep the printed checklist near the blue binder.",
-        user_id="u1",
-        session_id="apollo",
-        event_time=BASE,
-    )
-    fact = Fact(
-        subject="Apollo",
-        predicate="launch_code",
-        object="A17",
-        user_id="u1",
-        valid_at=BASE,
-        provenance=[ep.id], text='Apollo launch code A17',
-    )
-    mem.fact_store.upsert(fact.id, fact.embedding, fact)
-    for i in range(12):
-        mem.add_fact(
-            "Apollo",
-            "project_note",
-            f"background filler note {i} with operational chatter that is not the checklist location",
-            user_id="u1",
-            valid_at=BASE + (i + 1) * DAY, text=' '.join(('Apollo', 'project note', f'background filler note {i} with operational chatter that is not the checklist location')),
-        )
-    return mem.lean_context(
-        "What is Apollo's launch code and where is the printed checklist?",
-        user_id="u1",
-        persona=False,
-        n_digests=0,
-        n_chunks=0,
-        char_budget=360,
-    )
-
-
 def _graph_context(enabled: bool) -> str:
     mem = _memory(config=Config(graph_proximity=enabled))
     mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
-    return mem.context_for("Tell me about Wei", user_id="u1", k_chunks=0, graph=True)
+    return mem.context_for("Tell me about Wei", user_id="u1", k_digests=0, graph=True)
 
 
 def _graph_relation_context(enabled: bool) -> str:
@@ -232,7 +98,7 @@ def _graph_relation_context(enabled: bool) -> str:
     mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
     mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Lin likes jazz')
     mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
-    return mem.context_for("Where is Wei's colleague's company based?", user_id="u1", k_chunks=0, graph=True)
+    return mem.context_for("Where is Wei's colleague's company based?", user_id="u1", k_digests=0, graph=True)
 
 
 def _graph_reinforcement_context(enabled: bool) -> str:
@@ -244,7 +110,7 @@ def _graph_reinforcement_context(enabled: bool) -> str:
     mem.add_fact("Lin", "works_on", "Zephyr", user_id="u1", valid_at=BASE + 4 * DAY, object_kind="entity", text='Lin works on Zephyr')
     mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 5 * DAY, object_kind="entity", text='Atlas based in Reykjavik')
     mem.add_fact("Zephyr", "based_in", "Lisbon", user_id="u1", valid_at=BASE + 6 * DAY, object_kind="entity", text='Zephyr based in Lisbon')
-    return mem.context_for("Where is Wei's project based?", user_id="u1", k_chunks=0, graph=True)
+    return mem.context_for("Where is Wei's project based?", user_id="u1", k_digests=0, graph=True)
 
 
 def _contains(marker: str, target: str):
@@ -272,30 +138,6 @@ def _run_ablation() -> tuple[list[AblationResult], dict]:
             _digest_fallback_context,
             lambda evidence: evidence.startswith("digest\n") and "security settings" in evidence and "pat-runbook" in evidence,
             "derived session digest provides evidence for fact-miss how-to query",
-        ),
-        (
-            "provenance_evidence",
-            _raw_context,
-            _contains("PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):", "blue binder"),
-            "blue binder",
-        ),
-        (
-            "provenance_chunk_promotion",
-            _provenance_chunk_context,
-            _contains("RELEVANT CONVERSATIONS (full detail):", "blue binder"),
-            "source episode promoted into full-detail raw chunk",
-        ),
-        (
-            "chain_provenance_promotion",
-            _chain_provenance_context,
-            _contains("RELEVANT CONVERSATIONS (full detail):", "blue employee badge"),
-            "superseded fact source promoted for previous-value questions",
-        ),
-        (
-            "evidence_budgeting",
-            _evidence_budget_context,
-            lambda ctx: "blue binder" in ctx,
-            "tight budget keeps exact raw evidence",
         ),
         (
             "graph_proximity",

@@ -4,7 +4,7 @@ from collections import Counter
 from ...retrieve.hybrid import date_terms
 from ...retrieve.lexical import lexical_terms
 from .projection import projection_id
-from .records import FACT, SOURCE, SCOPE, TARGET_COLUMNS
+from .records import FACT, SCOPE, TARGET_COLUMNS
 
 ANALYZER = 'unicode-v2'
 
@@ -31,9 +31,7 @@ def project_document(sql, kind, record_id, version, text, *, field='text', missi
 
 
 def project_text(sql, kind, record_id, version, values, *, missing_only=False):
-    if kind == SOURCE:
-        text = values['content']
-    elif kind == FACT:
+    if kind == FACT:
         text = f"{values['text']} {date_terms(values['valid_at'])}"
     else:
         return

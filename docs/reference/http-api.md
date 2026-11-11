@@ -65,9 +65,9 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 单空间请求传 `space_id`。组合读取传非空且无重复的 `space_ids`，所有空间均通过授权后才执行。
 `lean=true` 返回 `context`、估算 token 和检索覆盖状态。`context_sections` 中每段包含
 `kind`、`text` 和 `space_id`。预算不足时跳过放不下的完整条目，并在 `limitations` 中返回
-`context_budget`。组合结果按空间标记证据，历史和脱敏视图省略当前画像。
+`context_budget`。组合结果按空间标记事实和摘要。画像通过独立入口读取。
 
-单空间传 `lean=false` 搜索事实及来源候选。返回 `status`、`facts`、`fact_ids`、`sources` 和
+单空间传 `lean=false` 搜索事实与摘要候选。返回 `status`、`facts`、`fact_ids`、`source_ids`、`sources` 和
 `answer`。自由文本查询返回 `evidence_only` 或 `no_evidence`。同时传 `subject` 和 `predicate`
 且在完整筛选视图中只有一个不同的值时，返回 `answered` 和该值。其他情况下 `answer` 为空。
 
@@ -80,7 +80,7 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 
 | 路径 | 请求与返回 |
 | --- | --- |
-| `POST /v1/aggregate` | 必填 `space_id` 和 `predicate`，`operation` 为 `count` 或 `count_distinct`。可传 `subject`、有效时间区间 `[start,end)`、事实状态与时间、`redact_sensitive`、`limit`。返回 `count`、证据 `facts`、来源 `candidates` 及 `limitations`。空匹配时可传 `query` 检索来源候选。 |
+| `POST /v1/aggregate` | 必填 `space_id` 和 `predicate`，`operation` 为 `count` 或 `count_distinct`。可传 `subject`、有效时间区间 `[start,end)`、事实状态与时间、`redact_sensitive`、`limit`。返回 `count`、证据 `facts`、摘要 `candidates` 及 `limitations`。空匹配时可传 `query` 检索摘要候选。 |
 | `POST /v1/follow-path` | 必填 `space_id`、`anchor` 和 2–4 个有序 `predicates`，可传同样的事实状态、时间、脱敏与证据预算。返回 `paths`，每项含 `endpoint` 和支持路径的 `facts`，以及结果的 `limitations`。 |
 
 ## 会话与检查
@@ -161,7 +161,7 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 {
   "model": "mnemotrace",
   "messages": [{"role": "user", "content": "Where do I live?"}],
-  "memory": {"space_id": "space-example", "session_id": "demo", "recall": true, "remember": true, "n_chunks": 6}
+  "memory": {"space_id": "space-example", "session_id": "demo", "recall": true, "remember": true, "n_digests": 20}
 }
 ```
 
@@ -179,7 +179,7 @@ stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切�
 
 自动抽取的 buffered 请求返回 `202`，表示原文和任务已持久化。immediate 核心结果已提交时返回 `200`。
 `operations` 的每项含 `operation_id`、`kind`、`state`、`phase`、`stored_raw`、`extraction_saved`、`core_committed`、
-`error_code` 及 `auxiliary_operation_ids`。摘要或向量辅助任务有独立进度。
+`error_code` 及 `auxiliary_operation_ids`。摘要辅助任务有独立进度。
 等待超时以 `processing_incomplete` 和 `timed_out` 返回当前操作与持久化标志，已接受的任务继续处理。
 缺少抽取模型返回 `503 llm_not_configured`，原文未写入。
 
@@ -190,4 +190,4 @@ stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切�
 
 摘要进度通过核心操作的 `auxiliary_operation_ids` 查询。摘要失败不撤销已接受的原文和抽取。显式等待摘要时调用 `/v1/processing/flush` 并设置 `include_digests=true`，将摘要纳入本次等待范围；`retry_failed=true` 重试范围内的失败操作。
 
-成功摘要是事件的唯一 agent 检索文本；原文不参与向量、词法、重排、来源补充或自动上下文展开。owner 的管理搜索与导出仍可访问原文。
+召回上下文只包含事实和摘要。默认最多返回 20 条摘要，`n_digests=0` 只使用事实。只保存原文的内容可按来源 ID、会话或导出读取。

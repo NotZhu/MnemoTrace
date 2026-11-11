@@ -14,7 +14,7 @@ from .errors import (
 from .projection import GraphProjection
 from .reads import ReadView
 from .records import CONFLICT, ENTITY, FACT, RELATION, SOURCE, SCOPE, ScopedSQL, domain
-from .writes import check_lease, check_version, commit_task, enqueue, invalidate, queue_source_vector
+from .writes import check_lease, check_version, commit_task, enqueue, invalidate
 from .writes import save_embedding, store_messages, write
 
 
@@ -190,29 +190,23 @@ class PostgresDAO:
                 raise CommitOutcomeUnknown(operation_id) from exc
             return receipt
 
-    def commit(self, changes, *, source_embedding=None):
+    def commit(self, changes):
         if changes.conditions.snapshot.context != self.context:
             raise ValueError('Change set belongs to a different space')
 
         def apply(sql, revision, generation, settings):
-            result = _apply_changes(sql, changes, revision, generation, settings)
-            if source_embedding is not None:
-                for item in changes.writes:
-                    if item.ref.kind == SOURCE and item.expected_version is None:
-                        queue_source_vector(sql, item.ref.record_id, domain(item.record).session_id,
-                                            item.record.content_version, generation, source_embedding)
-            return result
+            return _apply_changes(sql, changes, revision, generation, settings)
 
         return self._mutate(changes.operation_id, apply)
 
-    def accept_raw_messages(self, session_id, messages, *, embedding=None):
+    def accept_raw_messages(self, session_id, messages):
         identifier(session_id)
         items = tuple(messages)
         if not items or any(not isinstance(item, MessageInput) or item.extract for item in items):
             raise ValueError('Expected a non-empty batch of raw MessageInput records')
 
         def apply(sql, revision, generation, settings):
-            ids, fresh = store_messages(sql, session_id, items, generation=generation, embedding=embedding)
+            ids, fresh = store_messages(sql, session_id, items)
             return Applied(bool(fresh), source_ids=ids, count=len(fresh))
 
         return self._mutate(new_operation_id(), apply)

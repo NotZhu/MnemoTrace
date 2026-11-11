@@ -87,7 +87,9 @@ def test_idle_worker_exits_on_sigterm():
             signal.raise_signal(signal.SIGTERM)
 
         previous = signal.getsignal(signal.SIGTERM)
-        with (patch.object(worker, 'load_dotenv'),
+        with (patch.dict(worker.os.environ, {'MNEMOTRACE_LLM': 'synthetic'}),
+              patch.object(worker, 'make_llm'),
+              patch.object(worker, 'load_dotenv'),
               patch.object(worker.DatabaseConfig, 'from_env'),
               patch.object(worker, 'Database', database),
               patch.object(worker, 'sleep', idle_wait, create=True)):

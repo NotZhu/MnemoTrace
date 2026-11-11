@@ -7,15 +7,14 @@ from tests.embedder_fixtures import MockEmbedder, product_embedder
 from mnemotrace.memory import Memory
 from mnemotrace.retrieve.hybrid import date_terms
 from mnemotrace.retrieve.lexical import bm25_scores
-from mnemotrace.store.contracts import ChangeSet, CommitConditions, FactQuery, FactState, RecordKind, RecordWrite
+from mnemotrace.store.contracts import ChangeSet, CommitConditions, EmbeddingWrite, FactQuery, FactState, RecordKind, RecordWrite
 from mnemotrace.store.contracts import RetrievalQuery, StoredRecord
 from mnemotrace.store.postgres import Database
-from mnemotrace.store.postgres.errors import DatabaseUnavailable, SpaceNotFound, VersionConflict
+from mnemotrace.store.postgres.errors import DatabaseUnavailable, SpaceNotFound
 from mnemotrace.store.postgres.records import SOURCE, domain
 from mnemotrace.store.postgres.retrieval import Corpus
 from mnemotrace.types import Fact
 from mnemotrace.util import cosine
-from mnemotrace.worker import run_worker
 
 
 @pytest.fixture
@@ -46,7 +45,6 @@ def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, s
     memory.add_fact('王小明', 'works_at', '月亮公司', object_kind="entity", text='王小明 works at 月亮公司')
     memory.add_fact('user', 'likes', '绿茶', object_kind="entity", text='user likes 绿茶')
     memory.remember('I live in Shenzhen.', 'chat')
-    assert memory.source_vector_operation(original.id) is None
     with memory.dao.read_snapshot() as view:
         sql = view._sql
         assert not sql.run('SELECT 1 FROM mnemotrace.embeddings WHERE user_id=%s AND space_id=%s',
@@ -58,7 +56,8 @@ def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, s
     result = fresh.follow_path('user', ['sister', 'works_at'])
     assert result.paths[0].endpoint == '月亮公司'
     assert [fact.predicate for fact in result.paths[0].facts] == ['sister', 'works_at']
-    assert fresh.retrieve_episodes('绿茶').episodes[0].id == original.id
+    assert fresh.get_episode(original.id).content == original.content
+    assert not fresh.retrieve_digests('绿茶').digests
     assert fresh.search('Where do I live?').top().object == 'Shenzhen'
     with fresh.dao.read_snapshot() as view:
         previous = view.get(SOURCE, original.id)
@@ -68,17 +67,22 @@ def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, s
                                       record_version=previous.record_version + 1)
     fresh.dao.commit(ChangeSet(CommitConditions(snapshot), 'lexical-digest',
                                writes=(RecordWrite(record, previous.record_version),)))
-    result = fresh.lean_context('末尾记录', n_facts=0, n_chunks=0, n_digests=1)
-    assert 'A short digest.' in result.context and '末尾记录绿茶' not in result.context
+    assert not fresh.lean_context('末尾记录', n_facts=0, n_digests=1).context
+    hit, = fresh.retrieve_digests('short digest').digests
+    assert (hit.id, hit.text) == (original.id, 'A short digest.')
 
 
-def test_source_bm25_rejects_english_stop_word_only_matches(memory):
-    memory.remember_raw('A17 is written on a blue folder.', 'chat')
-    sources = [memory.remember_raw(f'Apollo launch code rehearsal note {i}.', 'chat') for i in range(5)]
-    assert memory.retrieve_episodes("What is Apollo's launch code?", k=1).episodes[0].id in {
-        source.id for source in sources
-    }
-    assert not memory.retrieve_episodes('What is Kryptonite?').episodes
+def _seed_digest(memory, source, text, *, vector=None):
+    with memory.dao.read_snapshot() as view:
+        previous = view.get(SOURCE, source.id)
+        snapshot = view.snapshot
+    record = StoredRecord.from_record(memory.context, replace(domain(previous), digest=text),
+                                      record_version=previous.record_version + 1,
+                                      digest_version=(previous.digest_version or 0) + 1)
+    embeddings = () if vector is None else (EmbeddingWrite(
+        record.ref, record.digest_version, memory._model, tuple(vector), 'digest'),)
+    memory.dao.commit(ChangeSet(CommitConditions(snapshot), f'digest-{source.id}-{record.digest_version}',
+                               writes=(RecordWrite(record, previous.record_version),), embeddings=embeddings))
 
 
 def test_exact_vector_and_bm25_use_full_scoped_corpus(memory, runtime, spaces, user, accounts):
@@ -206,10 +210,11 @@ def test_explicit_candidate_limit_is_independent_of_output_count(memory):
 
 
 def test_redacted_aggregation_does_not_include_original_source_evidence(memory):
-    memory.remember_raw('I recently finished a Tamiya 1/48 scale Spitfire Mk.V model kit.', 'chat', event_time=100)
+    source = memory.remember_raw('I recently finished a Tamiya 1/48 scale Spitfire Mk.V model kit.', 'chat', event_time=100)
+    _seed_digest(memory, source, 'Finished a Spitfire model kit.')
     result = memory.aggregate_facts('bought', query='Spitfire model kit')
     assert result.count == 0 and result.candidates
-    assert 'source_candidates_only' in result.limitations
+    assert 'digest_candidates_only' in result.limitations
     hidden = memory.aggregate_facts('bought', query='Spitfire model kit',
                                     facts=FactQuery(exclude_sensitive=True))
     assert not hidden.candidates
@@ -271,37 +276,6 @@ def test_vector_queries_plan_for_each_scope_even_after_connection_reuse(memory):
         assert prepared == []
 
 
-def test_source_vector_coverage_worker_and_erase_fencing(memory, runtime, cluster):
-    source = memory.remember_raw('The synthetic archive code is Bluebird', 'chat')
-    operation = memory.source_vector_operation(source.id)
-    assert operation.kind.value == 'reembed'
-    before = memory.retrieve_episodes('Bluebird')
-    assert before.episodes[0].id == source.id
-    assert before.limitations == ('source_vectors_processing',)
-    with memory.dao.read_snapshot() as view:
-        revision = view.snapshot.core_revision
-    with Database(cluster.discovery, purpose='discovery') as discovery:
-        assert discovery.discover_processing(embedding=('other', 256), include_extraction=False) == ()
-        run_worker(discovery, runtime, Config(), None, product_embedder(), 'test-vectors-v1', once=True)
-    after = memory.retrieve_episodes('Bluebird')
-    assert after.complete and after.episodes[0].id == source.id
-    assert memory.operation(operation.operation_id).state.value == 'completed'
-    with memory.dao.read_snapshot() as view:
-        assert view.snapshot.core_revision == revision
-
-    another = memory.remember_raw('Another synthetic archive', 'chat')
-    operation = memory.source_vector_operation(another.id)
-    tasks = memory._processing.tasks
-    lease = tasks.claim(operation.operation_id, embedding=memory._embedding_space)
-    with memory.dao.read_snapshot() as view:
-        record = view.get(SOURCE, another.id)
-    memory.clear_space()
-    with pytest.raises(VersionConflict):
-        tasks.commit_source_vector(lease, record, 'test-vectors-v1',
-                                   tuple(memory._embedder.embed(domain(record).content)))
-    assert memory.get_episode(another.id) is None
-
-
 def test_digest_lexical_projection_follows_text_version(memory):
     source = memory.remember_raw('Synthetic material', 'chat')
     for version, text in enumerate(('Clover', 'Snowdrop'), 1):
@@ -313,12 +287,17 @@ def test_digest_lexical_projection_follows_text_version(memory):
                                           record_version=previous.record_version + 1)
         memory.dao.commit(ChangeSet(CommitConditions(snapshot), f'digest-test-{version}',
                                     writes=(RecordWrite(record, previous.record_version),)))
-        result = memory.retrieve_episodes(text)
-        assert [(ep.id, ep.text, ep.derived) for ep in result.episodes] == [(source.id, text, True)]
-    assert memory.retrieve_episodes('Clover').episodes == ()
+        result = memory.retrieve_digests(text)
+        assert [(ep.id, ep.text, ep.derived) for ep in result.digests] == [(source.id, text, True)]
+    assert memory.retrieve_digests('Clover').digests == ()
 
 
-def test_historical_retrieval_uses_raw_text_until_the_current_digest_is_known(memory):
+def test_historical_retrieval_waits_until_current_digest_is_known(memory, runtime):
+    import json
+
+    from mnemotrace import MemoryEngine
+    from mnemotrace.service import MemoryService
+
     source = memory.remember_raw('Project Orchid original wording', 'chat', event_time=100)
     cutoffs = []
     for version, text in enumerate(('Project Orchid first digest', 'Project Orchid later detail'), 1):
@@ -332,81 +311,67 @@ def test_historical_retrieval_uses_raw_text_until_the_current_digest_is_known(me
                                     writes=(RecordWrite(record, previous.record_version),)))
 
     for cutoff in cutoffs:
-        historical, = memory.retrieve_episodes('Orchid', as_of=cutoff).episodes
-        assert historical.text == source.content and not historical.derived
-        context = memory.lean_context('Orchid', as_of=cutoff).context
-        assert source.content in context and 'later detail' not in context
-    current, = memory.retrieve_episodes('Orchid').episodes
+        assert not memory.retrieve_digests('Orchid', as_of=cutoff).digests
+        assert not memory.lean_context('Orchid', as_of=cutoff).context
+    current, = memory.retrieve_digests('Orchid').digests
     assert current.text == 'Project Orchid later detail' and current.derived
     with memory.dao.read_snapshot() as view:
         after_digest = view.at.timestamp()
-    historical, = memory.retrieve_episodes('Orchid', as_of=after_digest).episodes
+    historical, = memory.retrieve_digests('Orchid', as_of=after_digest).digests
     assert historical == current
+
+    snapshot = json.loads(''.join(MemoryService(runtime).iter_export(memory.context, include_sensitive=True)))
+    written_at = snapshot['episodes'][0]['digest_written_at']
+    assert cutoffs[-1] <= written_at <= after_digest
+    restored = MemoryEngine()
+    restored.import_snapshot(snapshot)
+    assert not restored.retrieve_digests('Orchid', as_of=cutoffs[-1])
+    assert restored.retrieve_digests('Orchid', as_of=after_digest)[0].text == current.text
 
     with memory.dao._transaction() as sql:
         sql.update('source_digests', {'digest_written_at': None}, 'source_id = %s', (source.id,))
-    historical, = memory.retrieve_episodes('Orchid', as_of=after_digest).episodes
-    assert historical.text == source.content and not historical.derived
-    assert memory.retrieve_episodes('Orchid').episodes == (current,)
+    assert not memory.retrieve_digests('Orchid', as_of=after_digest).digests
+    assert memory.retrieve_digests('Orchid').digests == (current,)
 
 
-def test_retrieval_backfill_is_paged_and_deduplicated(memory):
-    source = memory.remember_raw('The imported record is snowdrop', 'chat')
-    operation = memory.source_vector_operation(source.id)
-    with memory.dao._transaction() as sql:
-        sql.delete('operations', 'operation_id = %s', (operation.operation_id,))
-        sql.delete('lexical_documents', 'source_id = %s', (source.id,))
-    assert set(memory.retrieve_episodes('snowdrop').limitations) == {
-        'lexical_backfill_pending', 'source_vectors_pending_backfill',
-    }
-    assert memory.backfill_retrieval(RecordKind.SOURCE, limit=1) == source.id
-    assert memory.backfill_retrieval(RecordKind.SOURCE, after_id=source.id, limit=1) is None
-    assert memory.backfill_retrieval(RecordKind.SOURCE, limit=1) == source.id
-    assert memory.source_vector_operation(source.id).operation_id == operation.operation_id
-    result = memory.retrieve_episodes('snowdrop')
-    assert result.episodes[0].id == source.id
-    assert result.limitations == ('source_vectors_processing',)
+def test_raw_writes_do_not_project_and_digest_vectors_can_recall(memory, runtime):
+    from mnemotrace.store.contracts import MessageInput
 
-
-def test_source_failure_is_visible_and_retry_keeps_the_original(memory, runtime):
-    class InvalidEmbedder(MockEmbedder):
-        def embed_batch(self, texts):
-            return []
-
-    source = memory.remember_raw('The synthetic archive code is Clover', 'chat')
-    task = memory.source_vector_operation(source.id)
-    broken = Memory(runtime, memory.context, embedder=InvalidEmbedder(), embedding_model='test-vectors-v1')
-    assert broken._processing.run_one(task.operation_id)
-    assert memory.operation(task.operation_id).error_code == 'embedding_invalid'
-    assert memory.retrieve_episodes('Clover').limitations == ('source_vectors_failed',)
-    assert memory.get_episode(source.id).content == source.content
-    assert memory.retry_operation(task.operation_id).state.value == 'pending'
-    assert memory._processing.run_one(task.operation_id)
-    assert memory.retrieve_episodes('Clover').complete
-
-
-def test_source_vector_retrieves_without_lexical_overlap(memory, runtime):
     class SynonymEmbedder(MockEmbedder):
         def embed(self, text):
+            assert text not in {'Celestial star', 'Unprocessed dialogue', 'Unprocessed note'}
             return [1.0, 0.0]
 
     memory = Memory(runtime, memory.context, embedder=SynonymEmbedder(2), embedding_model='synthetic')
     source = memory.remember_raw('Celestial star', 'chat')
-    assert memory.retrieve_episodes('Daybreak').episodes == ()
-    operation = memory.source_vector_operation(source.id)
-    assert memory._processing.run_one(operation.operation_id)
-    assert [ep.id for ep in memory.retrieve_episodes('Daybreak').episodes] == [source.id]
+    memory.remember('Unprocessed note', 'chat', extract=False)
+    memory.store_messages('chat', (MessageInput('raw-message', 'user', 'Unprocessed dialogue', extract=False),))
     with memory.dao.read_snapshot() as view:
-        previous = view.get(SOURCE, source.id)
-        snapshot = view.snapshot
-    digest = replace(domain(previous), digest='Condensed evidence')
-    record = StoredRecord.from_record(memory.context, digest, digest_version=1,
-                                      record_version=previous.record_version + 1)
-    memory.dao.commit(ChangeSet(CommitConditions(snapshot), 'source-digest',
-                                writes=(RecordWrite(record, previous.record_version),)))
-    context = memory.lean_context('Daybreak', n_facts=0, n_chunks=0, n_digests=1)
-    assert 'Condensed evidence' in context.context
+        for table in ('embeddings', 'lexical_documents', 'operations'):
+            assert not view._sql.run(f'SELECT 1 FROM mnemotrace.{table} WHERE user_id=%s AND space_id=%s',
+                                     view._sql.scope).fetchall()
+    assert not memory.retrieve_digests('Daybreak').digests
+    assert not memory.lean_context('Daybreak').context
+    assert memory.get_episode(source.id).content == source.content
 
+    _seed_digest(memory, source, 'Condensed evidence', vector=(1.0, 0.0))
+    result = memory.retrieve_digests('Daybreak')
+    assert result.complete
+    assert [(item.id, item.text) for item in result.digests] == [(source.id, 'Condensed evidence')]
+    context = memory.lean_context('Daybreak', n_facts=0, n_digests=1)
+    assert 'Condensed evidence' in context.context and source.content not in context.context
+
+
+def test_backfill_rebuilds_digest_lexical_projection_only(memory):
+    source = memory.remember_raw('An archival source', 'chat')
+    _seed_digest(memory, source, 'Snowdrop')
+    with memory.dao._transaction() as sql:
+        sql.delete('lexical_documents', 'source_id = %s', (source.id,))
+    assert 'lexical_backfill_pending' in memory.retrieve_digests('Snowdrop').limitations
+    assert memory.backfill_retrieval(RecordKind.SOURCE, limit=1) == source.id
+    assert memory.backfill_retrieval(RecordKind.SOURCE, after_id=source.id, limit=1) is None
+    assert memory.backfill_retrieval(RecordKind.SOURCE, limit=1) == source.id
+    assert memory.retrieve_digests('Snowdrop').digests[0].id == source.id
 
 def test_snapshot_keeps_all_signals_at_one_version_and_failure_stays_visible(memory, cluster):
     memory.add_fact('Ana', 'likes', 'Clover', text='Ana likes Clover')

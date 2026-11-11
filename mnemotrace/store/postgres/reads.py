@@ -6,7 +6,7 @@ import json
 from ..contracts import FactQuery, FactState, RetrievalQuery, SpaceSettings
 from .errors import DataCorruption
 from .records import (
-    CONFLICT, ENTITY, FACT, RELATION, SOURCE, ROW_SCOPE, SCOPE, TABLES, timestamp, unpack,
+    CONFLICT, ENTITY, FACT, RELATION, SOURCE, ROW_SCOPE, SCOPE, TABLES, source_digest_join, timestamp, unpack,
 )
 
 
@@ -57,6 +57,40 @@ class ReadView:
         clauses, args = ['r.id = ANY(%s)'], [list(source_ids)]
         self.exclude_muted(clauses, args, 'r.content', "coalesce(s.digest, '')")
         return self._sql.select(SOURCE, clauses, args, digest_known_at=known_at)
+
+    def digests(self, source_ids, *, known_at=None):
+        from ...retrieve.events import digest_evidence
+
+        if not source_ids:
+            return {}
+        joins, join_params = source_digest_join(known_at)
+        rows = self._sql.run(f"""SELECT r.id,r.user_id,r.session_id,r.role,r.event_time,r.ingested_at,
+            s.digest,r.metadata->>'date',s.digest_coverage
+            FROM mnemotrace.sources r{joins}
+            WHERE {ROW_SCOPE} AND r.id = ANY(%s) AND s.digest <> ''
+                AND s.content_version = r.content_version""",
+            (*join_params, *self._sql.scope, list(source_ids))).fetchall()
+        return {key: digest_evidence(id=key, user_id=user, session_id=session, role=role,
+                                     event_time=event_time.timestamp() if event_time else None,
+                                     ingested_at=ingested_at.timestamp(), digest=text, date=date or '',
+                                     coverage=coverage)
+                for key, user, session, role, event_time, ingested_at, text, date, coverage in rows}
+
+    def visible_source_ids(self, ids, *, valid_at=None, known_at=None):
+        if not ids:
+            return ()
+        clauses, args = ['r.id = ANY(%s)'], [list(ids)]
+        for column, cutoff in (('event_time', valid_at), ('ingested_at', known_at)):
+            if cutoff is not None:
+                clauses.append(f'r.{column} <= %s')
+                args.append(timestamp(cutoff))
+        joins, join_params = source_digest_join(known_at)
+        self.exclude_muted(clauses, args, 'r.content', "coalesce(s.digest, '')")
+        where = ' AND '.join((ROW_SCOPE, *clauses))
+        found = {key for key, in self._sql.run(
+            f'SELECT r.id FROM mnemotrace.sources r{joins} WHERE {where}',
+            (*join_params, *self._sql.scope, *args)).fetchall()}
+        return tuple(key for key in ids if key in found)
 
     def digest_version(self, source_id):
         row = self._sql.run(f'SELECT digest_version FROM mnemotrace.source_digests WHERE {SCOPE} '
@@ -359,13 +393,8 @@ class ReadView:
             f'SELECT DISTINCT label FROM mnemotrace.facts r '
             f'CROSS JOIN LATERAL unnest(r.categories) AS categories(label) WHERE {where} ORDER BY label', args)]
 
-    def browse_sources(self, *, text='', offset=0, limit=100):
+    def browse_sources(self, *, offset=0, limit=100):
         clauses, args = [], []
-        if text:
-            clauses.append("""strpos(lower(concat_ws(' ', r.content,r.session_id,
-                (SELECT s.digest FROM mnemotrace.source_digests s
-                 WHERE (s.user_id,s.space_id,s.source_id) = (r.user_id,r.space_id,r.id)))), %s) > 0""")
-            args.append(text.lower())
         return self._sql.select(SOURCE, clauses, args, limit=limit, offset=offset), self._count('sources r', clauses, args)
 
     def _count(self, table, clauses, args):

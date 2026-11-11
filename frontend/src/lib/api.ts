@@ -177,7 +177,7 @@ export interface MemoriesQuery {
 
 export interface RecallOptions {
   answer?: boolean
-  n_chunks?: number
+  n_digests?: number
   as_of?: number
   redact_sensitive?: boolean
 }
@@ -261,7 +261,8 @@ export const api = {
       body: json({
         query,
         lean: true,
-        n_chunks: options.n_chunks ?? 6,
+        answer: options.answer,
+        n_digests: options.n_digests ?? 20,
         as_of: options.as_of,
         redact_sensitive: options.redact_sensitive ?? false,
       }),

@@ -185,7 +185,7 @@ class MemoryService:
 
 
     @timed('recall')
-    def recall(self, context, query, lean=True, n_chunks=6, as_of=None,
+    def recall(self, context, query, lean=True, n_digests=20, as_of=None,
                redact_sensitive=False, answer=False, state=FactState.CURRENT, valid_at=None, known_at=None,
                subject=None, predicate=None):
         memory = self.memory(context)
@@ -199,11 +199,11 @@ class MemoryService:
             result = memory.search(query, facts=facts)
             return dict(**output, answer=result.answer() if result.status == 'answered' else '',
                         status=result.status, facts=[fact.text for fact in result.facts],
-                        fact_ids=[fact.id for fact in result.facts],
+                        fact_ids=[fact.id for fact in result.facts], source_ids=result.source_ids,
                         sources=[dict(id=ep.id, session_id=ep.session_id, text=ep.text,
                                       representation=ep.representation) for ep in result.sources],
                         limitations=result.limitations)
-        result = memory.lean_context(query, n_chunks=n_chunks,
+        result = memory.lean_context(query, n_digests=n_digests,
                                      facts=facts, reinforce_hits=True, include_full_tokens=answer)
         tokens = _est_tokens(result.context)
         output.update(context=result.context, context_sections=[asdict(section) for section in result.sections],
@@ -219,10 +219,10 @@ class MemoryService:
         self.metrics.tokens(tokens, output.get('full_tokens'))
         return output
 
-    def recall_multi(self, contexts, query, *, n_chunks=6, as_of=None, redact_sensitive=False,
+    def recall_multi(self, contexts, query, *, n_digests=20, as_of=None, redact_sensitive=False,
                      state=FactState.CURRENT, valid_at=None, known_at=None):
         ids = [context.space_id for context in contexts]
-        result = self.memory(contexts[0]).recall_multi(ids, query, n_chunks=n_chunks,
+        result = self.memory(contexts[0]).recall_multi(ids, query, n_digests=n_digests,
                                                        facts=_recall_conditions(as_of, state, valid_at, known_at, redact_sensitive))
         return dict(context=result.context, context_sections=[asdict(section) for section in result.sections],
                     status="evidence_only" if result.sections else "no_evidence",
@@ -376,7 +376,7 @@ class MemoryService:
             facts = [_fact_view(domain(row), at) for row in rows]
             episodes, episode_total = [], 0
             if include_sensitive:
-                sources, episode_total = view.browse_sources(text=q.strip(), limit=episodes_limit, offset=episodes_offset)
+                sources, episode_total = view.browse_sources(limit=episodes_limit, offset=episodes_offset)
                 episodes = [_source_view(row) for row in sources]
             counts = view.overview(at)
         fact_page = _page(facts, fact_total, facts_offset, facts_limit)
@@ -479,8 +479,9 @@ class MemoryService:
                                            valid_at_h=fmt_date(item.valid_at),
                                            invalid_at_h=fmt_date(item.invalid_at) if item.invalid_at is not None else None)
                         else:
+                            item = domain(record)
                             payload = _source_view(record)
-                            payload["digest_coverage"] = domain(record).digest_coverage
+                            payload.update(digest_coverage=item.digest_coverage, digest_written_at=item.digest_written_at)
                         yield ('' if first else ',') + json.dumps(payload, ensure_ascii=False)
                         first = False
                     cursor = batch[-1].ref.record_id

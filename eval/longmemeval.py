@@ -356,30 +356,48 @@ def parse_date(s):
         return None
 
 
-def ingest(mem: MemoryEngine, item: dict, user_id: str) -> None:
-    # 每个会话一个 episode（拼接各 turn）：抽取调用比按 turn 少约 10 倍，且 episode->session 映射
-    # 一一对应，便于 recall。会话是一个连贯的记忆单元。
+def session_documents(item):
+    """Return the same ordered session text to ingestion and the independent RAG baseline."""
     dates = item.get("haystack_dates") or []
-    texts: list[str] = []
-    meta: list[tuple] = []
+    documents = []
     for idx, (sid, turns) in enumerate(sessions_of(item)):
         parsed = parse_date(dates[idx] if idx < len(dates) else None)
-        event_time, dstr = parsed if parsed else (BASE + idx * DAY, None)
-        text = "\n".join(
-            f"{t.get('role', 'user')}: {t.get('content', '')}" for t in turns if t.get("content")
-        )
+        event_time, date = parsed if parsed else (BASE + idx * DAY, None)
+        text = "\n".join(f"{turn.get('role', 'user')}: {turn['content']}"
+                         for turn in turns if turn.get("content"))
         if text.strip():
-            texts.append(text)
-            meta.append((sid, event_time, dstr))
-    if not texts:
-        return
-    # 用一次 model.encode 批量嵌入整个 haystack（否则逐会话循环会在 GPU 锁上串行化约 50 次嵌入，
-    # 在 _S 规模下主导墙钟时间）。
-    vecs = mem.embedder.embed_batch(texts)
-    for (sid, event_time, dstr), text, vec in zip(meta, texts, vecs):
-        ep = mem.add(text, user_id=user_id, session_id=sid, role="session",
-                     event_time=event_time, embedding=vec)
-        ep.metadata["date"] = dstr or fmt_date(event_time)
+            documents.append((sid, event_time, date or fmt_date(event_time), text))
+    return documents
+
+
+def ingest(mem: MemoryEngine, item: dict, user_id: str) -> None:
+    for sid, event_time, date, text in session_documents(item):
+        mem.add(text, user_id=user_id, session_id=sid, role="session", event_time=event_time).metadata["date"] = date
+
+
+def rank_raw_sessions(item, embedder, k, *, reranker=None, hybrid=False):
+    """Rank raw sessions for the evaluation baseline."""
+    from mnemotrace.retrieve import bm25_scores
+    from mnemotrace.retrieve.fusion import weighted_rrf
+    from mnemotrace.retrieve.hybrid import order_positive
+    from mnemotrace.util import cosine
+
+    docs = session_documents(item)
+    if not docs or not k:
+        return []
+    query = item["question"]
+    vector = embedder.embed(query)
+    semantic = dict(enumerate(cosine(vector, v) for v in embedder.embed_batch([doc[3] for doc in docs])))
+    pool = max(k * 5, 25)
+    ranked = order_positive(semantic)[:pool]
+    if hybrid:
+        lexical = bm25_scores(query, [(i, f"{doc[3]} {doc[2]}") for i, doc in enumerate(docs)])
+        scores = weighted_rrf({"sem": ranked, "lex": order_positive(lexical)[:pool]}, {})
+        ranked = sorted(scores, key=lambda i: (-scores[i], i))
+    if reranker is not None and len(ranked) > k:
+        reranked = reranker.rerank(query, [(str(i), docs[i][3]) for i in ranked], k)
+        return [docs[int(i)] for i, _ in reranked]
+    return [docs[i] for i in ranked[:k]]
 
 
 def all_text(item: dict, reverse: bool = False) -> str:
@@ -419,11 +437,7 @@ def run_recall(items, embedder, top_k):
         evidence = set(item.get("answer_session_ids") or [])
         if not evidence:
             continue
-        mem = MemoryEngine(embedder=embedder)  # 不传 llm：纯检索
-        ingest(mem, item, item["question_id"])
-        qvec = embedder.embed(item["question"])
-        results = mem.episodes_vec.search(qvec, top_k)
-        retrieved_sessions = {ep.session_id for _, ep in results}
+        retrieved_sessions = {sid for sid, *_ in rank_raw_sessions(item, embedder, top_k)}
         got = retrieved_sessions & evidence
         hit += 1 if got else 0
         recall += len(got) / len(evidence)
@@ -431,26 +445,18 @@ def run_recall(items, embedder, top_k):
     return {"hit@k": hit / n if n else 0.0, "recall@k": recall / n if n else 0.0, "n": n}
 
 
-def eval_one(item, embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_chunks, extract_k=0, reranker=None):
+def eval_one(item, embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_digests, reranker=None):
     """评测单个问题。返回结果 dict；绝不抛异常（错误会被捕获）。"""
     qid, cat, q = item["question_id"], item.get("question_type", "?"), item["question"]
     try:
         mem = MemoryEngine(embedder=embedder, llm=extractor_llm, reranker=reranker)
         ingest(mem, item, qid)
-        if extract_k and extract_k > 0:
-            # _S 规模：先检索再抽取。对全部约 500 个会话抽取 fact 不可行，所以针对当前问题检索
-            # （bi-encoder + reranker）top extract_k 个会话，只整合这些。无论 haystack 多大，都能
-            # 封顶 LLM 抽取成本。
-            top_eps = mem.retrieve_episodes(q, qid, extract_k)
-            mem.consolidate(top_eps)
-        else:
-            mem.consolidate()
+        mem.consolidate_full()
 
         qdate = item.get("question_date", "")
         t0 = time.perf_counter()
-        # 通过核心 API 拿到混合的、带日期戳的 context：存活 fact（已消解冲突/当前有效）+ top-k
-        # 原始 chunk（细节）。日期让 answerer 能解出时序与知识更新类问题。
-        context = mem.context_for(q, user_id=qid, top_k=top_k, k_chunks=k_chunks)
+        # 日期帮助 answerer 理解事实和摘要中的时序。
+        context = mem.context_for(q, user_id=qid, top_k=top_k, k_digests=k_digests)
         pred = answerer_llm.complete(ANSWER_TEMPLATE.format(qdate=qdate, context=context, question=q), system=ANSWER_SYSTEM)
         latency = (time.perf_counter() - t0) * 1000.0
         eng_ok = judge_correct(item, pred, judge_llm)
@@ -471,7 +477,7 @@ def eval_one(item, embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_ch
         return {"qid": qid, "cat": cat, "eng": None, "fc": None, "err": f"{type(e).__name__}: {str(e)[:90]}"}
 
 
-def run_qa(items, embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_chunks, workers=1, out=None, extract_k=0, reranker=None):
+def run_qa(items, embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_digests, workers=1, out=None, reranker=None):
     eng_hits, fc_hits = defaultdict(list), defaultdict(list)
     eng_tokens, fc_tokens, latencies = [], [], []
     errors = 0
@@ -505,7 +511,7 @@ def run_qa(items, embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_chu
                 outfh.write(json.dumps(r, ensure_ascii=False) + "\n")
                 outfh.flush()
 
-    args = (embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_chunks, extract_k, reranker)
+    args = (embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_digests, reranker)
     if workers > 1:
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futures = [ex.submit(eval_one, it, *args) for it in items]
@@ -542,11 +548,10 @@ def main():
     ap.add_argument("--answerer", default="deepseek")
     ap.add_argument("--judge", default="qwen-plus")
     ap.add_argument("--topk", type=int, default=10, help="facts retrieved into context")
-    ap.add_argument("--chunks", type=int, default=3, help="raw session chunks retrieved into context (0=facts only)")
+    ap.add_argument("--n-digests", type=int, default=3, help="source digests retrieved into context (0=facts only)")
     ap.add_argument("--workers", type=int, default=1, help="parallel questions (use 6-8 for the full set)")
     ap.add_argument("--out", default=None, help="write per-question results JSONL here (checkpoint)")
-    ap.add_argument("--extract-k", type=int, default=0, dest="extract_k",
-                    help="_S scale: extract facts only from the top-N retrieved sessions (0=consolidate all)")
+
     ap.add_argument("--reranker", default="none", help="none | bge-reranker | bge-reranker-large | bge-reranker-v2")
     args = ap.parse_args()
 
@@ -567,14 +572,14 @@ def main():
 
     if args.mode in ("qa", "both"):
         print(f"\n== QA (extractor={args.extractor}, answerer={args.answerer}, judge={args.judge}, "
-              f"reranker={args.reranker}, extract_k={args.extract_k}, workers={args.workers}) ==")
+              f"reranker={args.reranker}, workers={args.workers}) ==")
         ex_llm = make_llm(args.extractor, max_tokens=512, num_retries=3, timeout=60)
         ans_llm = make_llm(args.answerer, max_tokens=128, num_retries=3, timeout=60)
         jdg_llm = make_llm(args.judge, max_tokens=8, num_retries=3, timeout=60)
         reranker = make_reranker(args.reranker)
         eng_hits, fc_hits, eng_tok, fc_tok, lat, errors = run_qa(
-            items, embedder, ex_llm, ans_llm, jdg_llm, args.topk, args.chunks, args.workers, args.out,
-            args.extract_k, reranker
+            items, embedder, ex_llm, ans_llm, jdg_llm, args.topk, args.n_digests, args.workers, args.out,
+            reranker
         )
         if errors:
             print(f"\n   (note: {errors} item(s) errored and were excluded)")
