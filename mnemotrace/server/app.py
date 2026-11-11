@@ -11,7 +11,7 @@ try:
     from fastapi.exceptions import RequestValidationError
     from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel, ConfigDict, Field, model_validator
+    from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
     from starlette.exceptions import HTTPException as StarletteHTTPException
 except Exception as exc:  # noqa: BLE001
     raise SystemExit("the server needs FastAPI — `pip install \"mnemotrace-memory[server]\"`") from exc
@@ -246,7 +246,7 @@ class SpaceName(BaseModel):
 class RememberReq(SpaceRequest):
     content: str = Field(min_length=1, max_length=1_000_000)
     session_id: str = Field(default="default", min_length=1, max_length=512)
-    scope: Literal["auto", "long", "raw"] = "auto"
+    extract: StrictBool = True
     processing: Literal['immediate', 'buffered'] = 'immediate'
     agent_id: str | None = None
     timeout: float = Field(default=30, ge=0, le=300)
@@ -266,7 +266,7 @@ class MessagesReq(SpaceRequest):
     messages: list[DialogueMessage] = Field(min_length=1, max_length=1000)
     mode: Literal['live', 'historical'] = 'live'
     processing: Literal['immediate', 'buffered'] = 'buffered'
-    scope: Literal['auto', 'long', 'raw'] = 'auto'
+    extract: StrictBool = True
     agent_id: str | None = None
     timeout: float = Field(default=30, ge=0, le=300)
 
@@ -391,7 +391,7 @@ def delete_space(space_id: str, confirm: bool = False, owner: str = Depends(auth
 def remember_messages(req: MessagesReq, owner: str = Depends(auth)):
     context = svc().spaces.authorize(owner, req.space_id)
     data = svc().remember_messages(context, [message.model_dump() for message in req.messages],
-                                   req.session_id, req.mode, req.processing, req.scope,
+                                   req.session_id, req.mode, req.processing, req.extract,
                                    agent_id=req.agent_id, timeout=req.timeout)
     return JSONResponse(data, status_code=202) if req.processing == 'buffered' else data
 
@@ -399,7 +399,7 @@ def remember_messages(req: MessagesReq, owner: str = Depends(auth)):
 @app.post('/v1/remember')
 def remember(req: RememberReq, owner: str = Depends(auth)):
     context = svc().spaces.authorize(owner, req.space_id)
-    data = svc().remember(context, req.content, req.session_id, req.scope, req.processing,
+    data = svc().remember(context, req.content, req.session_id, req.extract, req.processing,
                           agent_id=req.agent_id, timeout=req.timeout)
     return JSONResponse(data, status_code=202) if req.processing == 'buffered' else data
 
@@ -692,7 +692,7 @@ class ChatMemoryRequest(SpaceRequest):
     recall: bool = True
     remember: bool = True
     session_id: str = Field(default='default', min_length=1, max_length=512)
-    scope: Literal['auto', 'long'] = 'auto'
+    extract: StrictBool = True
     n_chunks: int = Field(default=6, ge=0, le=50)
     as_of: float | None = None
     redact_sensitive: bool = False
@@ -705,7 +705,7 @@ class ChatCompletionReq(BaseModel):
     model: str = "mnemotrace"
     messages: list[dict] = []
     stream: bool = False
-    # 忆痕 扩展：recall/remember/session_id/scope/n_chunks/as_of/redact_sensitive。
+    # 忆痕 扩展：recall/remember/session_id/extract/n_chunks/as_of/redact_sensitive。
     memory: ChatMemoryRequest
 
 
@@ -717,7 +717,7 @@ def chat_completions(req: ChatCompletionReq, owner: str = Depends(auth)):
     context = svc().spaces.authorize(owner, opts.space_id)
     if not req.messages:
         raise HTTPException(400, 'messages must be a non-empty list')
-    session_id, scope = opts.session_id, opts.scope
+    session_id = opts.session_id
     body = req.model_dump()
     try:
         response = oc.chat_completion(svc(), context, body, n_chunks=opts.n_chunks,
@@ -735,8 +735,8 @@ def chat_completions(req: ChatCompletionReq, owner: str = Depends(auth)):
                 dict(message_id=opts.message_id or response['id'] + ':user', role='user', content=content),
                 dict(message_id=response['id'], role='assistant', event_time=response['created'],
                      content=response['choices'][0]['message']['content']),
-            ], session_id, scope=scope, agent_id=agent_id)
-            response['mnemotrace'].update(remembered=True, remember_queued=bool(result['operation_ids']), remember_scope=scope,
+            ], session_id, extract=opts.extract, agent_id=agent_id)
+            response['mnemotrace'].update(remembered=True, remember_queued=bool(result['operation_ids']), remember_extract=opts.extract,
                                           operation_ids=result['operation_ids'])
     response['mnemotrace']['space_id'] = context.space_id
     if req.stream:

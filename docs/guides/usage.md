@@ -15,7 +15,7 @@
 
 ## 写入与检索
 
-持久事实、偏好和可复用决定使用 `remember(..., scope="long")`；不确定时使用 `scope="auto"`。当前任务的进度和临时执行状态放在 agent 的任务工具、checkpoint 或文件中。
+持久事实、偏好和可复用决定使用 `remember(...)`。只需保存原文时传 `extract=False`。当前任务的进度和临时执行状态放在 agent 的任务工具、checkpoint 或文件中。
 
 摄入确认返回原文和操作 ID。`buffered` 在原文与任务落库后返回，`immediate` 等待核心处理提交。根据操作 ID 查询结果，必要时用原 ID 重试。保存原文和手工添加事实可离线使用，自动抽取需要 LLM。
 

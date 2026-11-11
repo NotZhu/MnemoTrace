@@ -61,7 +61,7 @@ CREATE TABLE mnemotrace.sources (
     event_time timestamptz,
     ingested_at timestamptz NOT NULL,
     source_kind text NOT NULL CHECK (source_kind IN ('raw','dialogue','document')),
-    scope text NOT NULL CHECK (scope IN ('auto','long','raw')),
+    extract boolean NOT NULL,
     message_id mnemotrace.identifier,
     sequence mnemotrace.counter,
     mode text CHECK (mode IN ('live','historical')),

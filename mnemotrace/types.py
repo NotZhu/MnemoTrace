@@ -35,12 +35,16 @@ class Episode:
     id: str = field(default_factory=lambda: gen_id("ep"))
     metadata: dict = field(default_factory=dict)
     source_kind: str = "raw"
-    scope: str = "long"
+    extract: bool = True
     message_id: Optional[str] = None
     sequence: Optional[int] = None
     mode: Optional[str] = None
     coverage: Optional[dict] = None
     digest_coverage: Optional[dict] = None
+
+    def __post_init__(self):
+        if type(self.extract) is not bool:
+            raise ValueError("extract must be a boolean")
 
 
 Cardinality = Literal["single", "multi", "unknown"]

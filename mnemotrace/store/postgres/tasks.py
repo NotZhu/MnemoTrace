@@ -139,7 +139,7 @@ class Tasks:
             ids, fresh = store_messages(sql, session_id, messages, check_model=check_model,
                                         generation=generation, embedding=embedding, source_metadata=source_metadata)
             records = (sql.get(SOURCE, source_id) for source_id in fresh)
-            new_records = [record for record in records if domain(record).scope != 'raw']
+            new_records = [record for record in records if domain(record).extract]
             if new_records:
                 self._queue_messages(sql, session_id, generation, settings, new_records, fit)
             if immediate:

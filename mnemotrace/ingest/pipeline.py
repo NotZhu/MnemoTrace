@@ -69,5 +69,5 @@ class Ingestor:
         return ep
 
     def pending(self) -> list[Episode]:
-        """返回尚未整合的 episode 列表。"""
-        return [ep for ep in self.episodes_doc.values() if not ep.consolidated]
+        """返回等待事实抽取的 episode。"""
+        return [ep for ep in self.episodes_doc.values() if ep.extract and not ep.consolidated]

@@ -126,7 +126,7 @@ def test_upgrade_makes_existing_queued_extract_discoverable(database_factory, mo
                 space = spaces.create(user, 'Upgrade test')
                 context = spaces.authorize(user, space.space_id)
                 with PostgresDAO(runtime, context)._transaction() as sql:
-                    source = Episode('Synthetic queued source', user, 'chat', scope='raw')
+                    source = Episode('Synthetic queued source', user, 'chat', extract=False)
                     sql.ensure_session('chat')
                     sql.write_record(StoredRecord.from_record(context, source), insert=True)
                     sequence = allocate_sequence(sql, 'chat')

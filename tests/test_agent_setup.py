@@ -335,7 +335,7 @@ def test_render_openai_setup_contains_memory_extension_and_flush_call():
 
     assert "OpenAI(base_url='http://mnemotrace.test/v1'" in out
     assert "'session_id': session_id" in out
-    assert "'scope': 'auto'" in out
+    assert "'extract': True" in out
     assert "/v1/processing/flush" in out
     assert "Authorization: Bearer <API_KEY>" in out
     assert "sk-test" not in out

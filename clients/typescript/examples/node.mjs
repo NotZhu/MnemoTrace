@@ -29,11 +29,11 @@ console.log({
   facts: status.counts.facts_live,
 })
 
-const memoryScope = status.llm_configured ? 'long' : 'raw'
+const extract = status.llm_configured
 const accepted = await mnemotrace.rememberMessages([
-  { message_id: `node-demo:${memoryScope}:1`, role: 'user', content: 'I live in Shenzhen.' },
-  { message_id: `node-demo:${memoryScope}:2`, role: 'user', content: 'I work at Acme.' },
-], { ...session, scope: memoryScope, processing: 'buffered' })
+  { message_id: `node-demo:${extract}:1`, role: 'user', content: 'I live in Shenzhen.' },
+  { message_id: `node-demo:${extract}:2`, role: 'user', content: 'I work at Acme.' },
+], { ...session, extract, processing: 'buffered' })
 console.log('\naccepted:', accepted.operation_ids)
 if (accepted.operation_ids.length) {
   const flushed = await mnemotrace.flushProcessing(session)
@@ -54,7 +54,7 @@ if (status.llm_configured) {
   const completion = await mnemotrace.chat.completions.create({
     model: 'mnemotrace',
     messages: [{ role: 'user', content: 'Remind me where I work.' }],
-    memory: { space_id: spaceId, session_id: sessionId, scope: 'auto' },
+    memory: { space_id: spaceId, session_id: sessionId },
   })
   console.log('\nchat answer:', completion.choices[0].message.content)
   console.log('memory used:', completion.mnemotrace)

@@ -25,9 +25,9 @@ from ..types import Cardinality, Retention
 class Backend(Protocol):
     mode: str
     async def remember_messages(self, messages: list[dict], session_id: str, mode: str = 'live',
-                                processing: str = 'buffered', scope: str = 'auto', *, agent_id: str | None = None) -> dict: ...
+                                processing: str = 'buffered', extract: bool = True, *, agent_id: str | None = None) -> dict: ...
 
-    async def remember(self, content: str, session_id: str = "default", scope: str = "auto",
+    async def remember(self, content: str, session_id: str = "default", extract: bool = True,
                        processing: str = "immediate", *, agent_id: str | None = None) -> dict: ...
     async def operation(self, operation_id: str, *, retry: bool = False) -> dict | None: ...
     async def processing_status(self, session_id: str | None = None) -> dict: ...
@@ -132,12 +132,12 @@ class LocalBackend:
             self.svc.close()
 
     async def remember_messages(self, messages: list[dict], session_id: str, mode: str = 'live',
-                                processing: str = 'buffered', scope: str = 'auto', *, agent_id: str | None = None) -> dict:
-        return await asyncio.to_thread(self.svc.remember_messages, self.context, messages, session_id, mode, processing, scope, agent_id=agent_id)
+                                processing: str = 'buffered', extract: bool = True, *, agent_id: str | None = None) -> dict:
+        return await asyncio.to_thread(self.svc.remember_messages, self.context, messages, session_id, mode, processing, extract, agent_id=agent_id)
 
-    async def remember(self, content: str, session_id: str = "default", scope: str = "auto",
+    async def remember(self, content: str, session_id: str = "default", extract: bool = True,
                        processing: str = "immediate", *, agent_id: str | None = None) -> dict:
-        return await asyncio.to_thread(self.svc.remember, self.context, content, session_id, scope, processing, agent_id=agent_id)
+        return await asyncio.to_thread(self.svc.remember, self.context, content, session_id, extract, processing, agent_id=agent_id)
 
     async def operation(self, operation_id: str, *, retry: bool = False) -> dict | None:
         return await asyncio.to_thread(self.svc.operation, self.context, operation_id, retry=retry)
@@ -345,8 +345,9 @@ class RemoteBackend:
         from urllib.parse import parse_qsl
 
         route, _, query = path.partition('?')
-        params = dict(parse_qsl(query, keep_blank_values=True))
-        params.setdefault('space_id', self.space_id)
+        params = parse_qsl(query, keep_blank_values=True)
+        if not any(key == 'space_id' for key, _ in params):
+            params.append(('space_id', self.space_id))
         return route + '?' + urlencode(params)
 
     async def _delete(self, path: str) -> dict:
@@ -360,16 +361,16 @@ class RemoteBackend:
         return r.json()
 
     async def remember_messages(self, messages: list[dict], session_id: str, mode: str = 'live',
-                                processing: str = 'buffered', scope: str = 'auto', *, agent_id: str | None = None) -> dict:
+                                processing: str = 'buffered', extract: bool = True, *, agent_id: str | None = None) -> dict:
         return await self._post('/v1/messages', dict(messages=messages, session_id=session_id,
-            mode=mode, processing=processing, scope=scope, agent_id=agent_id))
+            mode=mode, processing=processing, extract=extract, agent_id=agent_id))
 
-    async def remember(self, content: str, session_id: str = "default", scope: str = "auto",
+    async def remember(self, content: str, session_id: str = "default", extract: bool = True,
                        processing: str = "immediate", *, agent_id: str | None = None) -> dict:
         return await self._post("/v1/remember", {
             "content": content,
             "session_id": session_id,
-            "scope": scope,
+            "extract": extract,
             "processing": processing,
             "agent_id": agent_id,
         })

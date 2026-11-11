@@ -208,7 +208,7 @@ class PostgresDAO:
     def accept_raw_messages(self, session_id, messages, *, embedding=None):
         identifier(session_id)
         items = tuple(messages)
-        if not items or any(not isinstance(item, MessageInput) or item.scope != 'raw' for item in items):
+        if not items or any(not isinstance(item, MessageInput) or item.extract for item in items):
             raise ValueError('Expected a non-empty batch of raw MessageInput records')
 
         def apply(sql, revision, generation, settings):

@@ -289,6 +289,19 @@ def test_future_manual_interval_holds_a_conflicting_extraction():
     assert [f.object for f in mem._all_facts() if f.is_live(FUTURE + 10)] == ['Oslo']
 
 
+def test_manual_retry_with_implicit_time_keeps_the_original_assertion(monkeypatch):
+    from mnemotrace.consolidate import manual
+
+    timestamps = iter((100, 200))
+    monkeypatch.setattr(manual, 'now', lambda: next(timestamps))
+    memory = MemoryEngine()
+    first = memory.add_fact('user', 'likes', 'tea', text='User likes tea.')
+    retry = memory.add_fact('user', 'likes', 'tea', text='User likes tea.')
+    backfill = memory.add_fact('user', 'likes', 'tea', valid_at=50, text='User likes tea.')
+    assert (retry.id, retry.valid_at) == (first.id, 100)
+    assert backfill.id != first.id and backfill.valid_at == 50
+
+
 def test_manual_add_splices_scheduled_facts_in_valid_time_order():
     mem = MemoryEngine()
     first = mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, text='Ana lives in Paris')

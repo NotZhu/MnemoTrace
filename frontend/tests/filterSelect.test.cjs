@@ -6,7 +6,7 @@ const esbuild = require('esbuild')
 const React = require('react')
 
 const source = esbuild.buildSync({ stdin: {
-  contents: "export {FilterSelect} from './FilterSelect'; export {ScopeSelect} from './ScopeSelect'; export {ExportRangeSelect} from './ExportRangeSelect'",
+  contents: "export {FilterSelect} from './FilterSelect'; export {ExportRangeSelect} from './ExportRangeSelect'",
   resolveDir: path.resolve(__dirname, '../src/components'), loader: 'tsx',
 },
   bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic', external: ['react', 'react/jsx-runtime'],
@@ -88,22 +88,6 @@ test('鼠标与键盘选择更新筛选，取消、失焦和悬停不意外切�
   s.render().props.onBlur({ currentTarget: { contains: () => false }, relatedTarget: null })
   assert.equal(s.list(), undefined)
   assert.equal(s.changes.length, 3)
-})
-
-test('记忆范围复用选择行为并保留选项值、标签关联和样式', () => {
-  const s = setup('ScopeSelect', 'auto'), trigger = s.trigger()
-  const label = nodes(s.render()).find(node => node.props?.id === trigger.props['aria-labelledby'])
-  assert.equal(label.props.children, '保存方式')
-  assert(trigger.props.className.includes('min-h-8'))
-  s.key('ArrowDown'); s.key('End'); s.key('Enter')
-  assert.deepEqual(s.changes, ['long'])
-  s.key('ArrowDown'); s.key('Home'); s.key('Enter')
-  assert.deepEqual(s.changes, ['long', 'auto'])
-  s.trigger().props.onClick()
-  assert.equal(s.list().props['aria-labelledby'], s.trigger().props['aria-labelledby'])
-  assert(s.list().props.className.includes('w-32'))
-  s.outside()
-  assert.equal(s.list(), undefined)
 })
 
 test('导出范围保留说明关联，禁用时关闭菜单并阻止选择，再启用可正常使用', () => {

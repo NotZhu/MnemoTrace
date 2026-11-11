@@ -236,8 +236,6 @@ export interface Focus {
   mute: string[]
 }
 
-export type RememberScope = 'auto' | 'long'
-
 export interface ExtractionFailure {
   code: 'llm_not_configured' | 'processing_incomplete' | 'extraction_failed' | 'extraction_invalid_response' | 'extraction_truncated'
   message: string

@@ -155,8 +155,8 @@ class MemoryService:
 
     @timed('remember_messages')
     def remember_messages(self, context, messages, session_id, mode='live', processing='buffered',
-                          scope='auto', *, agent_id=None, timeout=30, source_metadata=None):
-        items = tuple(MessageInput(**message, agent_id=agent_id, mode=mode, scope=scope) for message in messages)
+                          extract: bool = True, *, agent_id=None, timeout=30, source_metadata=None):
+        items = tuple(MessageInput(**message, agent_id=agent_id, mode=mode, extract=extract) for message in messages)
         result = operation_payload(self.memory(context).remember_messages(
             session_id, items, processing=processing, timeout=timeout, source_metadata=source_metadata))
         if processing == 'immediate' and not result['ok']:
@@ -164,14 +164,10 @@ class MemoryService:
         return result
 
     @timed('remember')
-    def remember(self, context, content, session_id, scope='auto', processing='immediate', *,
+    def remember(self, context, content, session_id, extract: bool = True, processing='immediate', *,
                  agent_id=None, timeout=30):
         memory = self.memory(context)
-        if scope == 'raw':
-            episode = memory.remember_raw(content, session_id, agent_id=agent_id)
-            return dict(ok=True, status='stored', stored_raw=True, source_ids=[episode.id],
-                        operation_ids=[], operations=[])
-        result = operation_payload(memory.remember(content, session_id, scope=scope, processing=processing,
+        result = operation_payload(memory.remember(content, session_id, extract=extract, processing=processing,
                                                    agent_id=agent_id, timeout=timeout))
         if processing == 'immediate' and not result['ok']:
             raise ProcessingFailure(result)
@@ -228,7 +224,7 @@ class MemoryService:
                     result = self.remember_messages(
                         context, messages, session_id, mode='historical', agent_id=agent_id,
                         processing='immediate' if consolidate is True else 'buffered',
-                        scope='auto' if extract else 'raw', source_metadata=source_metadata)
+                        extract=extract, source_metadata=source_metadata)
             except ProcessingFailure as exc:
                 result = exc.result
             except (MessageConflict, LLMNotConfiguredError, ValueError) as exc:

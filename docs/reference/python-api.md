@@ -17,8 +17,8 @@ from mnemotrace.store.contracts import FactQuery, MessageInput, OperationResult
 | 方法 | 用途 |
 | --- | --- |
 | `remember_raw(content, session_id)` | 保存原文并返回 Episode，无需抽取模型 |
-| `remember(content, session_id, *, scope="auto", processing="immediate")` | 接收笔记；`auto` 和 `long` 请求抽取；原文可通过 `remember_raw` 独立保存 |
-| `remember_messages(session_id, messages, *, processing="buffered")` | 接收 `MessageInput` 序列，在确认接收前提交原文与任务 |
+| `remember(content, session_id, *, extract=True, processing="immediate")` | 接收笔记；`extract=False` 只保存原文，也可直接调用 `remember_raw` 获取 Episode |
+| `remember_messages(session_id, messages, *, processing="buffered")` | 接收 `MessageInput` 序列，按各条消息的 `extract` 值创建任务 |
 | `operation(operation_id)`、`retry_operation(operation_id)` | 查询或重试原操作，返回 `OperationResult` 或 `None` |
 | `list_operations(*, session_id=None, after_id=None, limit=100)` | 分页返回操作对象；下一页用最后一个操作的 `operation_id` 作游标 |
 | `flush_processing(session_id=None, timeout=30, *, retry_failed=False, include_digests=False)` | 推进并等待本次捕获范围内的任务 |
@@ -43,7 +43,7 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 
 ## 离线写入与导入
 
-对话使用 `MemoryEngine.remember_messages(messages, session_id, user_id="default", mode="live", scope="auto")`。
+对话使用 `MemoryEngine.remember_messages(messages, session_id, user_id="default", mode="live", extract=True)`。
 每条消息包含 message_id、role、content 和可选 event_time，角色限定为 user/assistant。返回每条事件 ID、持久化顺序和处理状态；相同 ID 的冲突输入报 MessageConflictError。
 内存算法入口可记录原文，并通过 `MemoryEngine.flush_messages` 驱动固定模型或配置的 LLM。持久写入及恢复由 Postgres 入口提供。
 
@@ -55,7 +55,7 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 | 方法 | 主要参数 | 返回与语义 |
 | --- | --- | --- |
 | `add` | content；user_id、session_id、role、event_time；consolidate=False | Episode；保存事件，可选择立即整合 |
-| `remember` | content；user_id、session_id、scope="auto" | dict；保存原文并记录抽取范围，事实仍需显式整合 |
+| `remember` | content；user_id、session_id、extract=True | dict；保存原文并记录抽取意图，事实仍需显式整合 |
 | `consolidate` | episodes=None | 计数字典；None 处理 pending 事件 |
 | `consolidate_full` | fact_episodes=None、digest_episodes=None | 计数字典；整合与条件摘要，可分别指定两组事件；reflected 固定为 0 |
 | `import_messages` | sessions、user_id；consolidate=None、generate_digests=True、dedupe=True 等 | 计数字典；导入已解析会话 |
@@ -64,7 +64,7 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 
 结构化快照要求 `format_version=3`。导入先整批校验，遇到无效数据时抛出 `ValueError`。导入保留目标用户的运行设置；字段、来源编号和替代链语义见[结构化快照导入](../architecture/memory.md#结构化快照导入)。
 
-`scope="auto"` 和 `long` 均请求事实抽取。仅执行请求不生成任务记忆；明确陈述的决定、计划和时间化事实保留其条件与时间。底层 remember 保存原文，随后通过 consolidate 推进抽取。
+`extract=True` 请求事实抽取，`extract=False` 只保存原文。仅执行请求不生成任务记忆；明确陈述的决定、计划和时间化事实保留其条件与时间。底层 remember 保存原文，随后通过 consolidate 推进抽取。
 
 ## 离线检索与上下文
 

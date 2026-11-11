@@ -183,19 +183,19 @@ export class MnemoTraceClient {
 
   rememberMessages(messages: import('./types.js').DialogueMessage[], options: SpaceOptions & {
     sessionId: string; mode?: 'live' | 'historical'; processing?: 'immediate' | 'buffered';
-    scope?: 'auto' | 'long' | 'raw'; agentId?: string; timeout?: number
+    extract?: boolean; agentId?: string; timeout?: number
   }): Promise<import('./types.js').MessagesResult> {
     return this.post('/v1/messages', { messages, session_id: options.sessionId,
-      mode: options.mode, processing: options.processing, scope: options.scope,
+      mode: options.mode, processing: options.processing, extract: options.extract,
       agent_id: options.agentId, timeout: options.timeout }, options.spaceId)
   }
 
   remember(content: string, options: SpaceOptions & {
-    sessionId?: string; scope?: 'auto' | 'long' | 'raw';
+    sessionId?: string; extract?: boolean;
     processing?: 'immediate' | 'buffered'; agentId?: string; timeout?: number
   }): Promise<RememberResult> {
     return this.post('/v1/remember', {
-      content, session_id: options.sessionId, scope: options.scope, processing: options.processing,
+      content, session_id: options.sessionId, extract: options.extract, processing: options.processing,
       agent_id: options.agentId, timeout: options.timeout,
     }, options.spaceId)
   }

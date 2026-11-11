@@ -195,14 +195,14 @@ class ReadView:
             SELECT r.id, r.sequence, sum(octet_length(coalesce(nullif(s.digest, ''), r.content)))
                 OVER (ORDER BY r.sequence DESC) AS bytes,
                 bool_and(coalesce(s.processing_state = 'completed', false)
-                    AND (r.mode,r.scope,r.source_kind) IS NOT DISTINCT FROM (%s,%s,%s))
+                    AND (r.mode,r.extract,r.source_kind) IS NOT DISTINCT FROM (%s,%s,%s))
                 OVER (ORDER BY r.sequence DESC) AS contiguous
             FROM mnemotrace.sources r LEFT JOIN mnemotrace.source_digests s
             ON (r.user_id,r.space_id,r.id) = (s.user_id,s.space_id,s.source_id)
             WHERE r.user_id = %s AND r.space_id = %s AND r.session_id = %s AND r.sequence < %s
             ORDER BY r.sequence DESC LIMIT %s)
             SELECT id FROM preceding WHERE contiguous AND bytes <= %s ORDER BY sequence""",
-            (episode.mode, episode.scope, episode.source_kind, *self._sql.scope,
+            (episode.mode, episode.extract, episode.source_kind, *self._sql.scope,
              episode.session_id, episode.sequence, budget, budget)).fetchall()
         ids = tuple(row[0] for row in rows)
         records = {record.ref.record_id: record for record in self.sources(ids)}

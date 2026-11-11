@@ -25,6 +25,17 @@ def memory(runtime, spaces, user):
                   embedder=product_embedder(), embedding_model='test-vectors-v1')
 
 
+def test_exact_graph_query_distinguishes_names_with_surrounding_spaces(memory):
+    padded, plain = ' Synthetic Alice ', 'Synthetic Alice'
+    for subject in (padded, plain):
+        memory.add_fact(subject, 'works_at', 'Synthetic Lab', object_kind='entity', text=f'{subject} works at Synthetic Lab.')
+
+    padded_entity, = memory.graph_entities(padded.upper())
+    plain_entity, = memory.graph_entities(plain)
+    assert (padded_entity.name, plain_entity.name) == (padded, plain)
+    assert padded_entity.id != plain_entity.id
+
+
 def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, spaces, user):
     from tests.model_fixtures import RecordedLLM
 

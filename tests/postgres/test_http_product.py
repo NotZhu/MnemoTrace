@@ -33,7 +33,9 @@ def test_working_route_has_been_removed(client, method):
 
 
 @pytest.mark.parametrize('path,payload', [
-    ('/v1/remember', dict(content='Synthetic task', scope='working')),
+    ('/v1/remember', dict(content='Synthetic task', scope='raw')),
+    ('/v1/remember', dict(content='Synthetic task', extract='false')),
+    ('/v1/remember', dict(content='Synthetic task', extract=0)),
     ('/v1/recall', dict(query='Synthetic query', session_id='s')),
     ('/v1/processing/flush', dict(include_summaries=True)),
     ('/v1/import', dict(data=[], summarize=False)),
@@ -95,7 +97,7 @@ def test_recall_answers_with_extraction_model_unless_answerer_overrides(client, 
 
     h = hdr("synthetic-answer-fallback")
     assert client.post("/v1/facts", json={"text": 'user lives in Shenzhen', "predicate": "lives_in", "object": "Shenzhen"}, headers=h).is_success
-    assert client.post("/v1/remember", json={"content": "I live in Shenzhen.", "scope": "raw"}, headers=h).is_success
+    assert client.post("/v1/remember", json={"content": "I live in Shenzhen.", "extract": False}, headers=h).is_success
     llm = FakeLLM(responses=["Shenzhen"])
 
     for answerer, expected in ((None, "Shenzhen"), (FakeLLM(responses=["Explicit answerer"]), "Explicit answerer")):
@@ -147,7 +149,7 @@ def test_http_handoff_across_agent_sessions_in_same_namespace(client):
     written = client.post("/v1/remember", json={
         "content": "Project decision: the launch checklist must include committed eval logs.",
         "session_id": codex_session,
-        "scope": "long",
+        "extract": True,
     }, headers=h).json()
     assert written["ok"] is True
     assert written["operations"][0]["core_committed"]
@@ -169,7 +171,7 @@ def test_session_report_endpoint_audits_saved_facts(client):
     client.post("/v1/remember", json={
         "content": "Project decision: the launch checklist must include committed eval logs.",
         "session_id": session,
-        "scope": "long",
+        "extract": True,
     }, headers=h)
     client.post("/v1/processing/flush", json={"session_id": session}, headers=h)
 
@@ -190,12 +192,12 @@ def test_sessions_endpoint_lists_cross_agent_sessions_without_content(client):
     client.post("/v1/remember", json={
         "content": "Project decision: release notes require committed raw logs.",
         "session_id": codex_session,
-        "scope": "long",
+        "extract": True,
     }, headers=h)
     client.post("/v1/remember", json={
         "content": "My private diagnosis is diabetes.",
         "session_id": claude_session,
-        "scope": "long",
+        "extract": True,
     }, headers=h)
 
     data = client.get("/v1/sessions?limit=10", headers=h).json()
@@ -221,7 +223,7 @@ def test_stats_endpoint_is_content_free_namespace_observability(client):
     h = hdr("stats")
     client.post("/v1/remember", json={
         "content": "My private diagnosis is diabetes. I work at Acme.",
-        "scope": "long",
+        "extract": True,
     }, headers=h)
     client.post("/v1/facts", json={"text": 'user has disease diabetes', "predicate": "has_disease", "object": "diabetes", "object_kind": "literal"}, headers=h)
     client.post("/v1/facts", json={"text": 'user works at Acme', "predicate": "works_at", "object": "Acme", "sensitive": False, "object_kind": "entity"}, headers=h)
@@ -251,7 +253,7 @@ def test_agent_status_endpoint_is_content_free_and_session_aware(client):
     client.post("/v1/remember", json={
         "content": "My private diagnosis is diabetes. I work at Acme.",
         "session_id": session,
-        "scope": "long",
+        "extract": True,
     }, headers=h)
     client.put("/v1/focus", json={
         "track": ["project decisions"],
@@ -541,7 +543,7 @@ def test_focus_filters_retrieval_and_tracks_without_rewriting_facts(client, prod
     context, _ = product_scope(label)
     response = client.post("/v1/facts", json={"text": 'user likes violet cactus', "predicate": "likes", "object": "violet cactus", "sensitive": False}, headers=h)
     fact_id = response.json()["id"]
-    assert client.post("/v1/remember", json={"content": "violet cactus raw evidence", "scope": "raw"}, headers=h).is_success
+    assert client.post("/v1/remember", json={"content": "violet cactus raw evidence", "extract": False}, headers=h).is_success
     memory = product_service.memory(context)
     query = "violet cactus"
     request = memory._query(query, top_k=5)
@@ -568,7 +570,7 @@ def test_session_report_pages_all_facts_and_keeps_redaction_total(client, produc
     label = "synthetic-report-pages"
     session_id = "paged-report"
     context, _ = product_scope(label)
-    source, = product_service.remember(context, "Synthetic report source", session_id, scope="raw")["source_ids"]
+    source, = product_service.remember(context, "Synthetic report source", session_id, extract=False)["source_ids"]
     rows = [Fact("synthetic", "note", f"report value {i}", user_id=context.user_id,
                  valid_at=100 + i, sensitive=i == 0, provenance=[source], text=' '.join(('synthetic', 'note', f'report value {i}')))
             for i in range(102)]
@@ -604,7 +606,7 @@ def _seed_category_filter_facts(service, context):
         Fact(subject="synthetic", predicate="note", object="private alpha", categories=["health"], categories_source="user", sensitive=True, valid_at=100, user_id=user, text='synthetic note private alpha'),
     ]
     seed_facts(service, context, rows)
-    service.remember(context, "synthetic source record", "synthetic-session", scope="raw")
+    service.remember(context, "synthetic source record", "synthetic-session", extract=False)
     return rows
 
 
@@ -1045,7 +1047,7 @@ def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, pro
         if source_entry == 'document':
             return memory.import_document(content, session_id, event_time=event_time, extract=False, generate_digests=False)
         return memory.remember(content, session_id, event_time=event_time, processing='buffered',
-                               scope='long')
+                               extract=True)
 
     fact = memory.add_fact("Ana", "works_at", "Orbit", valid_at=100, text='Ana works at Orbit')
     remember_source("Ana works at Orbit.", "earlier", event_time=100)

@@ -39,7 +39,7 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 ```
 
 `message_id`、`role`、`content` 必填；role 仅支持 user/assistant，不接收流式碎片。每条独立保存，数组顺序成为会话持久化序号。`event_time` 可省略或为 null，表示来源时间未知。
-`mode` 默认为 live；historical 标记为历史摄入。`processing` 默认为 buffered，可显式 immediate；`scope` 支持 auto、long 和 raw。可选 `agent_id` 记录摄入来源。
+`mode` 默认为 live；historical 标记为历史摄入。`processing` 默认为 buffered，可显式 immediate；`extract` 默认为 `true`，设为 `false` 时只保存对话原文。可选 `agent_id` 记录摄入来源。
 
 消息 ID 在空间和会话内唯一；同 ID 同输入返回原事件及当前状态，不重置空闲计时，不重复生成。不同输入返回 409/message_conflict；批内冲突在任何写入前拒绝。不同 ID 的相同正文允许存在。
 自动处理先验证模型配置，再提交原文与任务。immediate 等待核心提交，buffered 返回当前操作状态。
@@ -47,9 +47,9 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 
 ### POST /v1/remember
 
-传 `space_id`、`content`，可选 `session_id`、`agent_id`、`scope` 和 `processing`。
-`scope=raw` 只保存原文，返回 `status="stored"`、`source_ids` 和空的 `operation_ids`、`operations`，无需模型。
-`scope=auto` 和 `scope=long` 请求自动抽取，默认 immediate；选择 buffered 时在原文和任务提交后返回 `status="accepted"` 及操作回执。没有配置 LLM 时仍可手工添加事实。
+传 `space_id`、`content`，可选 `session_id`、`agent_id`、`extract` 和 `processing`。
+`extract=false` 只保存原文，返回 `status="stored"`、`source_ids` 和空的 `operation_ids`、`operations`，无需模型。
+`extract=true`（默认）请求自动抽取，`processing` 默认 immediate；选择 buffered 时在原文和任务提交后返回 `status="accepted"` 及操作回执。没有配置 LLM 时仍可手工添加事实。
 
 ### 缓冲处理状态与刷新
 
@@ -172,7 +172,7 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 }
 ```
 
-memory 还支持 scope、as_of 和 redact_sensitive。需要配置作答 LLM，否则返回 503；model 字段不负责动态选择服务器的实际后端。部分兼容参数会被接受但不参与生成，不能把此端点视为其他服务的全部接口实现。
+`memory` 还支持 `extract`、`as_of` 和 `redact_sensitive`。`remember` 控制是否保存对话，保存时 `extract` 控制是否抽取事实，默认 `true`。写入后响应通过 `mnemotrace.remember_extract` 返回该值。需要配置作答 LLM，否则返回 503；model 字段不负责动态选择服务器的实际后端。部分兼容参数会被接受但不参与生成，不能把此端点视为其他服务的全部接口实现。
 
 stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切分返回，不承诺模型 token 实时透传。原文和任务提交后才标记 remembered。普通响应和 SSE 结束帧中的 mnemotrace.operation_ids 用于查询实际处理结果。
 

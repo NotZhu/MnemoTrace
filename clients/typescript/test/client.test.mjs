@@ -52,6 +52,10 @@ test('dialogue messages preserve identities, roles, unknown time and batch polic
   await client.rememberMessages(messages, {...space, sessionId: 's', mode: 'historical'})
   assert.equal(new URL(calls[0].url).pathname, '/v1/messages')
   assert.deepEqual(calls[0].body, {messages, session_id: 's', mode: 'historical', space_id: 'space-test'})
+  await client.rememberMessages(messages, {...space, sessionId: 's', extract: false})
+  await client.remember('Synthetic note', {...space, extract: false})
+  assert.deepEqual(calls[1].body, {messages, session_id: 's', extract: false, space_id: 'space-test'})
+  assert.deepEqual(calls[2].body, {content: 'Synthetic note', extract: false, space_id: 'space-test'})
 })
 
 test('buffered writes accept 202 and expose status and explicit retry controls', async () => {

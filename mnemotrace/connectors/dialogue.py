@@ -32,6 +32,6 @@ def batches(sessions, consolidate=None):
         if messages:
             for start in range(0, len(messages), 1000):
                 batch = messages[start:start + 1000]
-                normalized(batch, sid, 'historical', 'auto' if extract else 'raw')
+                normalized(batch, sid, 'historical', extract)
                 output.append((sid, batch, record, extract))
     return output
