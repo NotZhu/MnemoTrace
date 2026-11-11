@@ -164,6 +164,7 @@ async def mnemotrace_recall(
     state: FactState = FactState.CURRENT,
     valid_at: float | None = None,
     known_at: float | None = None,
+    answer: bool = False,
 ) -> str:
     """检索一小段相关、带日期的用户长期记忆，用于锚定你的回答。
 
@@ -179,7 +180,7 @@ async def mnemotrace_recall(
             query,
             n_chunks=max_chunks,
             lean=True,
-
+            answer=answer,
             as_of=as_of,
             redact_sensitive=redact_sensitive, state=state, valid_at=valid_at, known_at=known_at,
         )
@@ -187,10 +188,15 @@ async def mnemotrace_recall(
         return _err(e)
     if response_format == ResponseFormat.JSON:
         return _json(data)
+    outcome = ""
+    if answer:
+        outcome = f"**Answer status:** {data['answer_status']}\n\n"
+        if data.get("answer"):
+            outcome += f"**Answer:** {data['answer']}\n\n"
     ctx = (data.get("context") or "").strip()
     if not ctx:
-        return "No relevant memory found for that query."
-    return f"Relevant memory (~{data.get('tokens_est', '?')} tokens):\n\n{ctx}"
+        return outcome + "No relevant memory found for that query."
+    return outcome + f"Relevant memory (~{data.get('tokens_est', '?')} tokens):\n\n{ctx}"
 
 
 @mcp.tool(name="mnemotrace_aggregate", annotations=ToolAnnotations(title="Count structured facts", **_READ))
@@ -260,7 +266,7 @@ async def mnemotrace_get_episode(
             f"event_time: {data['event_time']}; ingested_at: {data['ingested_at']})\n\n{data['content']}")
 
 
-@mcp.tool(name="mnemotrace_search", annotations=ToolAnnotations(title="Answer from memory", **_READ))
+@mcp.tool(name="mnemotrace_search", annotations=ToolAnnotations(title="Search memory evidence", **_READ))
 async def mnemotrace_search(
     query: Annotated[str, Field(description="A direct factual question, e.g. 'Where does the user work?'",
                                 min_length=1)],
@@ -272,26 +278,27 @@ async def mnemotrace_search(
     state: FactState = FactState.CURRENT,
     valid_at: float | None = None,
     known_at: float | None = None,
+    subject: str | None = None,
+    predicate: str | None = None,
 ) -> str:
-    """直接从记忆回答单个事实性问题（附支撑的 fact）。
-
-    当你想要一个具体答案而非上下文块时使用（更宽的锚定用 `mnemotrace_recall`）。当该属性未存储时，
-    它会拒答（"I don't have that in memory."）而不是猜测。
-
-    返回（markdown）：答案及其依据的 fact。
-    返回（json）：{"answer": str, "facts": [str, ...], "as_of": float|null, "redacted_sensitive": bool}。
+    """Retrieve candidate facts and sources. An explicit subject and predicate
+    can return a unique value from the selected time view.
     """
     try:
         data = await backend().recall(query, lean=False, as_of=as_of, redact_sensitive=redact_sensitive,
-                                      state=state, valid_at=valid_at, known_at=known_at)
+                                      state=state, valid_at=valid_at, known_at=known_at,
+                                      subject=subject, predicate=predicate)
     except Exception as e:  # noqa: BLE001
         return _err(e)
     if response_format == ResponseFormat.JSON:
         return _json(data)
-    lines = [f"**Answer:** {data.get('answer') or '(no answer)'}"]
+    lines = [f"**Status:** {data['status']}"]
+    if data.get("answer"):
+        lines.append(f"**Answer:** {data['answer']}")
     facts = data.get("facts") or []
     if facts:
-        lines += ["", "Supporting facts:"] + [f"- {t}" for t in facts]
+        lines += ["", "Candidate facts:"] + [f"- {t}" for t in facts]
+    lines.extend(f"- [source {ep['id']}] {ep['text']}" for ep in data.get("sources", ()))
     return "\n".join(lines)
 
 
@@ -518,25 +525,34 @@ async def mnemotrace_list_facts(
     return "\n".join(lines)
 
 
-@mcp.tool(name="mnemotrace_profile", annotations=ToolAnnotations(title="Get the user profile", **_READ))
+@mcp.tool(name="mnemotrace_profile", annotations=ToolAnnotations(title="Read cached user profile", **_READ))
 async def mnemotrace_profile(response_format: ResponseFormat = ResponseFormat.MARKDOWN) -> str:
-    """获取用户的合成画像（对其持久偏好、习惯和关键 fact 的紧凑叙述）——session 开始时适合
-    先调用它来建立上下文。
-
-    返回（json）：{"profile": str, "facts": [str, ...]}。
-    """
+    """Read the cached fact-backed profile without calling a model."""
     try:
         data = await backend().profile()
-    except Exception as e:  # noqa: BLE001
-        return _err(e)
-    if response_format == ResponseFormat.JSON:
-        return _json(data)
-    profile = (data.get("profile") or "").strip()
-    out = ["# User profile", "", profile or "(no profile synthesized yet — memory may be empty)"]
-    facts = data.get("facts") or []
-    if facts:
-        out += ["", "Key facts:"] + [f"- {t}" for t in facts[:20]]
-    return "\n".join(out)
+        if response_format == ResponseFormat.JSON:
+            return _json(data)
+        from ..profile import render
+        status = (f"Cache version: {data['cache_version']}\n"
+                  f"Updated at: {data['updated_at']}\n"
+                  f"Pending fact changes: {data['pending_fact_count']}\n"
+                  f"Needs refresh: {data['needs_refresh']}")
+        if data['operation_id']:
+            status += f"\nRefresh operation: {data['operation_id']} ({data['refresh_state']})"
+        if data['refresh_error']:
+            status += f"\nRefresh error: {data['refresh_error']}"
+        return "# User profile\n\n" + status + "\n\n" + (render(data) or "(Profile has no visible entries)")
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@mcp.tool(name="mnemotrace_refresh_profile", annotations=ToolAnnotations(title="Refresh user profile", **_WRITE))
+async def mnemotrace_refresh_profile() -> str:
+    """Explicitly request a model-generated profile refresh; inspect its operation ID for progress."""
+    try:
+        return _json(await backend().refresh_profile())
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
 
 
 @mcp.tool(name="mnemotrace_get_focus", annotations=ToolAnnotations(title="Get memory focus", **_READ))
@@ -793,7 +809,7 @@ async def mnemotrace_delete_fact(
 async def mnemotrace_import(
     content: Annotated[str | list | dict,
                        Field(description="The raw export to import: a ChatGPT conversations.json, an "
-                             "OpenAI messages array, JSON-Lines, or a plain 'Speaker: text' transcript. "
+                             "OpenAI messages array, JSON-Lines, or a transcript with explicit user/assistant roles or verbatim text. "
                              "Paste the file contents (JSON text, an array, or transcript text).")],
     format: Annotated[str, Field(description="chatgpt | messages | records | jsonl | transcript | auto "
                                  "(default, sniffs the shape).")] = "auto",

@@ -20,8 +20,8 @@ def test_explicit_path_returns_all_endpoints_and_supporting_facts():
 
 def test_statistics_respect_window_and_do_not_limit_count_to_evidence():
     memory = MemoryEngine()
-    memory.add_fact('Ana', 'visited', 'OrBit', valid_at=1, sensitive=False)
-    memory.add_fact('Bea', 'visited', 'orbit', valid_at=2, sensitive=False)
+    memory.add_fact('Ana', 'visited', 'OrBit', valid_at=1, sensitive=False, object_kind='entity')
+    memory.add_fact('Bea', 'visited', 'orbit', valid_at=2, sensitive=False, object_kind='entity')
     memory.add_fact('Bea', 'visited', 'Nadir', valid_at=3, sensitive=True)
     memory.add_fact('Other', 'visited', 'Elsewhere', valid_at=2, user_id='other')
     scope = FactQuery(limit=1, exclude_sensitive=True)

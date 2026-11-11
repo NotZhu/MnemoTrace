@@ -8,6 +8,7 @@ import uuid
 from .consolidate.pipeline import PipelineTasks, TERMINAL, config_identity, content_hash, reset_attempts, source
 from .consolidate.planning import input_size, output_size, plan, digest_plan, busy, fits_input
 from .consolidate.operations import prepare, decode
+from .llm.failures import ATTEMPT_LIMIT, RETRY_DELAYS, retryable as model_retryable
 from .extraction import ExtractionError, ExtractionTruncatedError, LLMNotConfiguredError, require_llm
 from .llm.base import complete_result
 from .store._validation import validate_embedding
@@ -93,9 +94,9 @@ def _select(mem, tasks, now):
 
 def _fail(tasks, win, code, now, *, retryable=True, embedding=False):
     attempts = win['embed_attempts'] if embedding else win['attempts']
-    retry = retryable and attempts < 3
+    retry = retryable and attempts < ATTEMPT_LIMIT
     win.update(state='retry_wait' if retry else 'failed', error_code=code,
-               next_attempt_at=now + (30 if attempts == 1 else 120) if retry else 0)
+               next_attempt_at=now + RETRY_DELAYS[attempts - 1] if retry else 0)
     if not retry:
         for item in win['input']['pending']:
             row = tasks.state['sources'][item['id']]
@@ -103,12 +104,6 @@ def _fail(tasks, win, code, now, *, retryable=True, embedding=False):
                 row['core'] = 'failed'
             if row['digest'] == 'pending' and win['operation'] in {'extract', 'digest'}:
                 row['digest'] = 'failed'
-
-
-def _retryable(exc):
-    cause = exc.__cause__ or exc
-    return not (isinstance(cause, (ImportError, TypeError, LLMNotConfiguredError)) or any(
-        name in type(cause).__name__.lower() for name in ('authentication', 'permission', 'badrequest', 'notfound')))
 
 
 def texts_for(win):
@@ -203,8 +198,7 @@ def _commit(mem, tasks, win, now, merge=None):
                 mem._sync_episode(ep)
         if win['operation'] == 'extract':
             mem.writer._decay_sweep()
-        mem._persona_cache.clear()
-        mem._enforce_hot_limit()
+            mem._enforce_hot_limit()
     for item in data['pending']:
         source_id = item['id']
         if source_id not in result['digests'] or source_id in win['digest_saved']:
@@ -287,7 +281,7 @@ def run_one(service, user):
                     return True
             embedding = win['phase'] == 'embed'
             counter = 'embed_attempts' if embedding or adjudicate else 'attempts'
-            if win[counter] >= 3:
+            if win[counter] >= ATTEMPT_LIMIT:
                 _fail(tasks, win, 'adjudication_failed' if adjudicate else 'embedding_failed' if embedding else 'extraction_failed',
                       time.time(), retryable=False, embedding=embedding or adjudicate)
                 _advance(tasks, tasks.state['sessions'][win['route']])
@@ -354,7 +348,7 @@ def run_one(service, user):
             elif failure is not None:
                 code = 'adjudication_failed' if adjudicate else 'embedding_failed' if embedding else (
                     failure.code if isinstance(failure, ExtractionError) else 'extraction_failed')
-                _fail(tasks, win, code, time.time(), retryable=_retryable(failure), embedding=embedding or adjudicate)
+                _fail(tasks, win, code, time.time(), retryable=model_retryable(failure), embedding=embedding or adjudicate)
                 win['history'][-1]['error_code'] = code
             elif adjudicate:
                 if previous != _merge_snapshot(mem, user, facts):

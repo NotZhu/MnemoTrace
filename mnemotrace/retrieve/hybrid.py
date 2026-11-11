@@ -7,6 +7,7 @@ import re
 from typing import Optional
 
 from ..config import Config
+from ..focus import TRACK_BOOST, matches as focus_matches
 from ..consolidate.graph_builder import projects_fact
 from ..embed import Embedder
 from ..store import GraphStore, VectorStore
@@ -92,6 +93,7 @@ class HybridRetriever:
             embedder: 嵌入器。
             config: 配置。
         """
+        self.track = ()
         self.fact_store = fact_store
         self.graph = graph
         self.embedder = embedder
@@ -209,7 +211,8 @@ class HybridRetriever:
         gph, qids = self._graph_scores(query, user_id, live, as_of)
         t = now() if as_of is None else as_of
         rec = {f.id: recency(max(0.0, t - time_key(f.valid_at)), self.config.recency_tau_days) for f in live}
-        sal = {f.id: f.salience for f in live}
+        sal = {f.id: f.salience + (TRACK_BOOST if focus_matches(f.text, self.track, f.categories) else 0)
+               for f in live}
 
         rankings = {
             "sem": order_positive(sem),

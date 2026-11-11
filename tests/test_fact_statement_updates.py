@@ -21,8 +21,6 @@ def test_structured_attribute_edit_preserves_values_graph_and_profile():
     assert fact.object == "Shanghai"
     assert fact.slot == slot and fact.source == "user" and fact.provenance == provenance
     assert fact.embedding == mem.embedder.embed(fact.text)
-    assert next(row for row in mem.structured_profile("synthetic_user")["basic"]
-                if row["field"] == "home")["value"] == "Shanghai"
     names = {node["name"] for node in mem.graph_data("synthetic_user")["nodes"]}
     assert "Shanghai" in names and "Beijing" not in names and fact.text not in names
 

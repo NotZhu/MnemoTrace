@@ -9,7 +9,6 @@ from mnemotrace.consolidate.operations import decode
 from mnemotrace.extraction import ExtractionResponseError
 from mnemotrace.config import Config
 from mnemotrace.consolidate.facts import materialize_facts
-from mnemotrace.consolidate.summarizer import ProfileBuilder
 from mnemotrace.store._validation import SNAPSHOT_FORMAT_VERSION
 
 
@@ -90,7 +89,3 @@ def test_snapshot_preserves_metadata_and_checks_version():
         ["food"], "user", "entity")
     with pytest.raises(ValueError, match="unsupported snapshot version"):
         memory.import_snapshot({**snapshot, "format_version": 1})
-
-
-def test_narrative_does_not_fall_back_to_third_party_facts():
-    assert ProfileBuilder().narrative("user", [Fact("Jules", "prefers", "tea")]) == ""

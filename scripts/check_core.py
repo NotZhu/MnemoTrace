@@ -23,7 +23,7 @@ def main():
         [{'role': 'user', 'content': 'Synthetic imported record'}], format='messages'),
         consolidate=False, generate_digests=False)
     assert imported['episodes'] == 1 and not raw_import.fact_store.values()
-    assert mem.search('Where do I live?').answer() == 'Paris'
+    assert mem.search('Where do I live?').top().object == 'Paris'
     try:
         mem.consolidate()
     except LLMNotConfiguredError:

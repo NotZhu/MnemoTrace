@@ -41,7 +41,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
     JOIN mnemotrace.users u ON u.user_id = o.user_id AND u.status = 'active'
     JOIN mnemotrace.memory_spaces s ON (s.user_id,s.space_id) = (o.user_id,o.space_id)
         AND s.status = 'active'
-    WHERE ((include_extraction AND o.kind IN ('extract', 'digest'))
+    WHERE ((include_extraction AND o.kind IN ('extract', 'digest', 'profile'))
         OR (o.kind = 'reembed' AND o.embedding_model = model AND o.embedding_dimension = dimension)) AND (
         (o.state = 'pending' AND (o.phase <> 'queued' OR o.ready_at <= statement_timestamp()))
         OR (o.state = 'retry_wait' AND o.next_attempt_at <= statement_timestamp())

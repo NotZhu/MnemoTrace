@@ -64,7 +64,7 @@ All methods return promises. Pass `{ spaceId }` to single-space methods. For mul
 | `remember(content, options)` | sessionId, scope, agentId; RememberResult |
 | `rememberMessages(messages, options)` | required sessionId; mode, processing, scope, agentId; MessagesResult |
 | `recall(query, options)` | nChunks=6, sessionId, asOf, redactSensitive=false, spaceIds; RecallResult |
-| `search(query, options)` | asOf, redactSensitive; SearchResult via lean=false |
+| `search(query, options)` | asOf, redactSensitive, subject, predicate; candidate facts and sources, or a unique explicit slot value |
 | `listSpaces(options?)` / `createSpace(name)` | list or create spaces owned by the authenticated account |
 | `getOperation(id, options)` / `retryOperation(id, options)` | query or retry a stable operation ID |
 | `flushProcessing(options)` | wait for core processing, with optional sessionId and includeDigests |
@@ -73,12 +73,13 @@ All methods return promises. Pass `{ spaceId }` to single-space methods. For mul
 | `memories(options)` | pagination and filters described below; MemoryDump |
 | `stats(options)` | MemoryStats without memory text |
 | `agentStatus(options)` | optional sessionId; AgentStatus |
-| `profile(options)` | ProfileResult |
+| `profile(options)` | Cached ProfileResult with seven sections, fact references, counts and refresh status |
+| `refreshProfile(options)` | OperationResult; explicit model refresh, inspect or retry its operation ID |
 | `addFact(fact, options)` | predicate/object plus optional subject, sensitivity, categories and object kind; returns id, text and fact metadata |
 | `updateFact(id, patch, options)` | FactPatch, including categories and object kind; returns id, text and fact metadata |
 | `deleteFact(id, options)` | deletion result; inspect ok |
 | `getFocus(options)` / `setFocus(partial, options)` | track/mute lists |
-| `getPolicy(options)` / `setPolicy(partial, options)` | extraction, digest and persona overrides |
+| `getPolicy(options)` / `setPolicy(partial, options)` | extraction, digest and profile overrides |
 | `graph(options)` | asOf, includeSensitive=false; GraphResponse（nodes、edges、has_more） |
 | `import(params, options)` | ImportParams sent as the HTTP import payload; ImportResult |
 | `export(options)` | includeSensitive=false; MemoryExport by default |
@@ -91,13 +92,15 @@ The optional `categories` array matches any of the supplied labels before pagina
 
 For consistent pagination, carry the response's data_revision and evaluated_at into expectedRevision/evaluatedAt on the next request. On a 409 revision change, start again from the first page.
 
-Use the HTTP API directly for document uploads, structured profiles, conflict resolution, and slot clearing.
+Use the HTTP API directly for document uploads, conflict resolution, and slot clearing.
 
 ## Types and errors
 
 Public types are exported from [types.ts](https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/src/types.ts). Core results include RememberResult, RecallResult, SearchResult, Fact, MemoryDump, SessionIndex, SessionReport, ImportResult, MemoryExport, and chat completion types.
 
 `Category` defines the fixed label catalog. Fact results return `categories`, server-assigned `categories_source`, and `object_kind`. Use `{ categories: [] }` to clear the labels. Metadata-only edits preserve provenance and history. Redacted session report rows omit these fields. Structured exports carry `format_version: 2`. See the [classification contract](https://github.com/NotZhu/MnemoTrace/blob/main/docs/architecture/memory.md#分类与对象类型) for edit semantics.
+
+`CATEGORIES` and `PROFILE_SECTIONS` export the ordered catalogs as readonly tuples. Their `Category` and `ProfileSection` types are generated from the Python definitions.
 
 Non-2xx responses throw `MnemoTraceError` with status and the parsed error body in detail. Network failures can remain native fetch errors. A successful HTTP response can contain a queued acknowledgement or a rejected business result; inspect the operation's payload. Extraction failures return HTTP 502/503 with a stable error code, `stored_raw`, and `episode_ids`; they are not successful degraded results.
 

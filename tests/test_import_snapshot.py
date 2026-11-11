@@ -60,3 +60,20 @@ class TestSnifferAndMemoryLevel:
                 "episodes": [{"no_content": True}, "junk"],
             })
         assert dst.fact_store.values() == dst.episodes_doc.values() == []
+
+
+
+def test_reimport_preserves_target_edit_and_explicit_copy_restores_source():
+    source = _mk_memory()
+    fact = source.add_fact("user", "project_code", "Ab1", valid_at=10.01)
+    fact.display = "The synthetic code is Ab1."
+    snapshot = {"format_version": 2, "facts": [asdict(fact)], "episodes": []}
+    target = _mk_memory()
+    assert target.import_snapshot(snapshot)["facts_restored"] == 1
+    restored, = target._all_facts()
+    assert restored.display == fact.display and restored.valid_at == 10.01
+    target.update_fact(restored.id, object="Ab2")
+    assert target.import_snapshot(snapshot)["facts_skipped"] == 1
+    assert target.fact_store.get(restored.id).object == "Ab2"
+    assert target.import_snapshot(snapshot, dedupe=False)["facts_restored"] == 1
+    assert {fact.object for fact in target._all_facts()} == {"Ab1", "Ab2"}

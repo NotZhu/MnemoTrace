@@ -1,4 +1,5 @@
 // 登录页与管理控制台的中文文案；技术名称和用户记忆正文保留原文。
+import type { ProfileSection } from '../types'
 export const copy = {
   meta: {
     brand: 'MnemoTrace',
@@ -89,7 +90,7 @@ export const copy = {
     rememberPlaceholder: '例如：我喜欢简洁的回答，先给结论。',
     personaTitle: '你的画像',
     personaEmptyTitle: '暂无画像信息',
-    personaEmptyHint: '补充一些基本信息、偏好或习惯，画像会随记忆逐步完善。',
+    personaEmptyHint: '补充事实后，到画像页面点击刷新画像。',
     conclusionsTitle: '最近的会话结论',
     conclusionsAll: '查看全部',
     conclusionsEmptyTitle: '暂无会话结论',
@@ -139,6 +140,9 @@ export const copy = {
     sectionTimeline: '时间线',
     sectionDigests: '来源摘要',
     sectionConversations: '原文片段',
+    answerUnconfigured: '未配置问答模型。',
+    answerFailed: '问答模型调用失败，已保留检索证据。',
+    answerEmpty: '问答模型返回空结果，已保留检索证据。',
     placeholder: '想查找什么记忆？',
     clearQuery: '清空查询内容',
     searchBtn: '检索',
@@ -303,43 +307,15 @@ export const copy = {
   },
 
   profile: {
-    loading: '构建结构化画像…',
     title: '用户画像',
-    evidenceUser: '手动设定',
-    evidenceTitle: '来源记录数',
-    evidenceHint: (manual: boolean, reinforcementCount: number, sourceCount: number) =>
-      `${manual ? '手动设定 · ' : ''}强化 ${reinforcementCount} 次 · 来源 ${sourceCount} 条`,
-    confirmed: (item: string) => `已确认：${item}（标记为手动设定）`,
-    dismissed: '已删除该候选',
-    emptyTitle: '画像还在形成中',
-    emptyHint: '多聊几句或补几条事实，画像会自动归纳。',
-    basicTitle: '基本信息',
-    historicalValues: '历史值',
-    noHistory: '这个槽位没有被替代的历史值',
-    prefsTitle: '偏好',
-    habitsTitle: '习惯',
-    tentativeHint: '单次提及，未进画像、不影响回忆',
-    tentativeTitle: (n: number) => `待确认候选 · ${n}`,
-    tentativeDescPre: '这些是只提到一次的推断，',
-    tentativeDescEmph: '还没进结构化画像',
-    tentativeDescPost: '（但仍存在记忆里、回忆时照常能用）。确认后标记为「手动设定」。',
-    iconLegendLabel: '画像图标说明',
-    iconHints: {
-      like: '喜欢或倾向采用',
-      dislike: '不喜欢或希望避免',
-      user: '经你添加、修改或确认',
-      pending: '尚未确认的信息',
-      confirm: '确认并设为手动设定',
-      delete: '删除候选记忆',
-      habit: '经常或固定做的事',
-    },
-    iconPending: '待确认',
-    like: '喜欢',
-    dislike: '不喜欢',
-    deleteCandidate: '删除候选',
+    sections: {
+      basic: '基本信息', relationships: '重要关系', interests: '兴趣与偏好', habits: '习惯',
+      restrictions: '限制与需求', goals: '目标与计划', communication_preferences: '回答与协作偏好',
+    } satisfies Record<ProfileSection, string>,
   },
-
   facts: {
+    manualLabel: '手动设定',
+    manualHint: '经你添加、修改或确认',
     viewSource: '查看来源',
     sourceTitle: '记忆来源',
     sourceUser: '这是你自己确认的 —— 自动抽取不会覆盖它。',

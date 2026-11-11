@@ -231,11 +231,11 @@ export class MnemoTraceClient {
   }
 
   recall(query: string, options: ({ spaceId: string; spaceIds?: never } | { spaceIds: string[]; spaceId?: never }) & {
-    nChunks?: number; asOf?: number; redactSensitive?: boolean
+    nChunks?: number; asOf?: number; redactSensitive?: boolean; answer?: boolean
     state?: StructuredReadOptions["state"]; validAt?: number; knownAt?: number
   }): Promise<RecallResult> {
     return this.post('/v1/recall', {
-      query, lean: true, n_chunks: options.nChunks,
+      query, lean: true, n_chunks: options.nChunks, answer: options.answer,
       as_of: options.asOf, state: options.state, valid_at: options.validAt, known_at: options.knownAt, redact_sensitive: options.redactSensitive, space_ids: options.spaceIds,
     }, options.spaceId)
   }
@@ -275,12 +275,13 @@ export class MnemoTraceClient {
     return this.post('/v1/follow-path', { anchor, predicates, ...filters }, spaceId)
   }
 
-  /** 直接回答单个事实性问题（记忆中没有答案时选择拒答）。 */
+  /** Retrieve candidates or the unique value of an explicit subject and predicate. */
   search(query: string, options: SpaceOptions & { asOf?: number; redactSensitive?: boolean;
-    state?: StructuredReadOptions["state"]; validAt?: number; knownAt?: number }): Promise<SearchResult> {
+    state?: StructuredReadOptions["state"]; validAt?: number; knownAt?: number; subject?: string; predicate?: string }): Promise<SearchResult> {
     return this.post<SearchResult>('/v1/recall', {
       query,
       lean: false,
+      subject: options.subject, predicate: options.predicate,
       as_of: options.asOf ?? null,
       state: options.state, valid_at: options.validAt, known_at: options.knownAt,
       redact_sensitive: options.redactSensitive ?? false,
@@ -320,7 +321,12 @@ export class MnemoTraceClient {
     return this.request<AgentStatus>(`/v1/agent/status${qs}`, {}, options.spaceId)
   }
 
-  /** 合成后的用户画像 + 关键事实。 */
+  /** 显式创建空间级画像刷新任务。 */
+  refreshProfile(options: SpaceOptions): Promise<OperationResult> {
+    return this.request<OperationResult>('/v1/profile/refresh', { method: 'POST', body: '{}' }, options.spaceId)
+  }
+
+  /** 读取结构化画像缓存及待更新状态。 */
   profile(options: SpaceOptions): Promise<ProfileResult> {
     return this.request<ProfileResult>('/v1/profile', {}, options.spaceId)
   }

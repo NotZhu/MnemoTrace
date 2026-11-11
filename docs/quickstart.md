@@ -35,7 +35,7 @@ with Database(DatabaseConfig.from_env()) as database:
     memory = Memory(database, scope)
     memory.remember_raw("Synthetic project note", "demo")
     memory.add_fact("user", "lives_in", "Paris")
-    print(memory.search("Where do I live?").answer())
+    print([fact.text for fact in memory.search("Where do I live?").facts])
 ```
 
 [HTTP API](reference/http-api.md)提供会话写入、任务查询和检索入口。[使用指南](guides/usage.md)说明空间、会话和删除的操作范围。

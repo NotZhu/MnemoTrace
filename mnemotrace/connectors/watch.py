@@ -159,6 +159,17 @@ def _oversized_key(path: str, max_bytes: int) -> str:
         return ""
 
 
+def _file_version(st):
+    return f"{st.st_size}:{st.st_mtime_ns}"
+
+
+def _path_version(path):
+    try:
+        return _file_version(os.stat(path))
+    except OSError:
+        return None
+
+
 def pending_sessions(state: dict, since: Optional[float] = None,
                      quiet_seconds: int = QUIET_SECONDS,
                      now: Optional[float] = None,
@@ -168,6 +179,7 @@ def pending_sessions(state: dict, since: Optional[float] = None,
     now = now if now is not None else time.time()
     seen = state.get("seen") or {}
     claimed = claims or {}
+    empty = state.get("empty") or {}
     out = []
     for path in find_sessions(since=since):
         try:
@@ -182,7 +194,8 @@ def pending_sessions(state: dict, since: Optional[float] = None,
         # 因此文件变大或调高服务器上限后会被重新排队。
         if (state.get("oversized") or {}).get(path) == f"{st.st_size}:{max_bytes}":
             continue
-        out.append(path)
+        if empty.get(path) != _file_version(st):
+            out.append(path)
     return out
 
 
@@ -233,14 +246,20 @@ def ingest(base_url: str, api_key: str, paths: list[str], timeout: int = 900,
     """Accept historical input and return paths confirmed durable by the server."""
     by_path: dict[str, list[str]] = {}
     sessions = []
-    for p in paths:
-        by_path[p] = []
-        for s in load_sessions([p]):
-            by_path[p].append(s.session_id)
-            sessions.append(s)
+    empty_by_path = {}
+    for path in paths:
+        before = _path_version(path)
+        try:
+            loaded = load_sessions([path], skip_unreadable=False)
+        except OSError:
+            continue
+        if not loaded and before is not None and before == _path_version(path):
+            empty_by_path[path] = before
+        by_path[path] = [session.session_id for session in loaded]
+        sessions.extend(loaded)
     if not sessions:
         return {"ok": True, "sessions": 0, "episodes": 0, "note": "nothing conversational in those files",
-                "sessions_by_path": {}}
+                "sessions_by_path": {}, "empty_by_path": empty_by_path}
 
     # Preserve source times and stable positions; local file paths are not source identities.
     rows = []
@@ -301,6 +320,7 @@ def ingest(base_url: str, api_key: str, paths: list[str], timeout: int = 900,
     result["sessions_by_path"] = {
         path: ids for path, ids in by_path.items() if ids and set(ids) <= sent_ids - rejected
     }
+    result["empty_by_path"] = empty_by_path
     result["oversized_by_path"] = {
         path: ids for path, ids in by_path.items() if ids and set(ids) & set(oversized)
     }
@@ -442,6 +462,9 @@ def run_once(args) -> dict:
         # `skipped` 是服务器告诉我们它已经有多少轮次：重发变大过的会话是正常且廉价的，
         # 因为 /v1/import 对内容做指纹，不信任调用方。
         seen = state.get("seen") or {}
+        empty = dict(state.get("empty") or {})
+        empty_by_path = result.get("empty_by_path", {})
+        empty.update(empty_by_path)
         by_path = result.get("sessions_by_path", {})
         # 单个请求装不下的 transcript：记录 (大小, 上限)，让它们不再每个 tick 占一个名额，
         # 并带着能放行它们的旋钮提示说一次。
@@ -456,6 +479,7 @@ def run_once(args) -> dict:
         for path, sessions in by_path.items():
             if sessions and path not in over_by_path and path in sizes:
                 seen[path] = sizes[path]
+                empty.pop(path, None)
         # 给台账设上限，避免在有数千份 transcript 的机器上无限增长。
         if len(seen) > 5000:
             seen = dict(sorted(seen.items())[-5000:])
@@ -463,16 +487,18 @@ def run_once(args) -> dict:
         processing_failures = result.get("processing_failures") or []
         operation_ids = list(dict.fromkeys(operation_id for failure in processing_failures
                                            for operation_id in failure["operation_ids"]))
+        fresh -= sum(path not in seen_before for path in empty_by_path)
+        grown -= sum(path in seen_before for path in empty_by_path)
         summary = {
-            "at": started, "sessions": len(paths), "new": fresh, "grown": grown,
+            "at": started, "sessions": fresh + grown, "new": fresh, "grown": grown,
             "episodes": int(result.get("episodes") or 0),
             "import_failed": int(result.get("import_failed") or 0), "error": None, "seconds": seconds,
             "processing_failed": len(processing_failures), "operation_ids": operation_ids,
         }
-        state.update({"seen": seen, "last_run": started,
+        state.update({"seen": seen, "empty": dict(list(empty.items())[-5000:]), "last_run": started,
                       "target": target, "last_result": summary})
         _save_state(args.state, state)
-        _log(f"fed {len(paths)} session(s) ({fresh} new) · {summary['episodes']} episode(s) · "
+        _log(f"fed {summary['sessions']} session(s) ({fresh} new) · {summary['episodes']} episode(s) · "
              f"{summary['import_failed']} import failure(s) · "
              f"{summary['processing_failed']} core processing failure(s) · "
              f"{seconds}s")

@@ -22,12 +22,13 @@
 | 工具 | 主要参数 | 用途 |
 | --- | --- | --- |
 | `mnemotrace_agent_status` | session_id 可选、response_format | 不含正文的接线与状态 |
-| `mnemotrace_recall` | query 必填；max_chunks=6（0–20）、session_id、as_of、redact_sensitive=false、response_format | 返回相关上下文，JSON 含 context、tokens_est 等 |
-| `mnemotrace_search` | query 必填；as_of、redact_sensitive=false、response_format | 直接事实答案与依据 |
+| `mnemotrace_recall` | query 必填；max_chunks=6（0–20）、answer=false、as_of、redact_sensitive=false、response_format | 返回相关上下文，JSON 含 context、context_sections、tokens_est 等 |
+| `mnemotrace_search` | query 必填；subject、predicate、as_of、redact_sensitive=false、response_format | 返回候选证据或显式槽位的唯一值 |
 | `mnemotrace_list_sessions` | limit=20（1–100）、offset=0、q=""、response_format | 不含正文的会话索引 |
 | `mnemotrace_session_report` | session_id 必填，include_sensitive=false、limit=100、offset=0、response_format | 按页查看会话事实，使用 facts_page.next_offset 读取后续结果 |
 | `mnemotrace_list_facts` | limit=20（1–100）、offset=0、include_superseded=false、response_format | 分页事实，用于检查或定位 id |
-| `mnemotrace_profile` | response_format | 派生画像与关键事实 |
+| `mnemotrace_profile` | response_format | 读取七栏画像缓存，不调用模型 |
+| `mnemotrace_refresh_profile` | 无 | 显式请求模型刷新，返回操作 ID |
 | `mnemotrace_stats` | response_format | 不含内容的命名空间统计 |
 | `mnemotrace_audit` | limit=40、response_format | 只读检查图边缺失、投影不一致和无引用节点 |
 | `mnemotrace_get_focus` | response_format | track/mute 配置 |
@@ -60,7 +61,7 @@
 
 - 本地 stdio 使用 `--user-id` 和 `--space-id`。远程 stdio 代理使用 `--api-url`、`--api-key-file` 和 `--space-id`。
   Streamable HTTP 在每次请求中使用 Bearer key 和 `X-MnemoTrace-Space-Id`。
-- MCP 不提供 HTTP 的所有管理端点，例如结构化画像、记忆策略、冲突裁决和槽位清理。需要这些能力时选择 HTTP。
+- MCP 不提供 HTTP 的所有管理端点，例如记忆策略、冲突裁决和槽位清理。需要这些能力时选择 HTTP。
 - delete_fact 与 forget 必须 confirm=true；读取工具的只读注解只是客户端提示，实际副作用由工具实现决定。
 - 工具错误可能表现为错误文本，而非标准 HTTP 状态。调用方应检查结果并在失败时报告，不能因为工具调用已返回就宣布完成。
 - 默认敏感标记过滤不是完整隐私保证。清空范围与原始事件保留见[记忆生命周期](../architecture/memory.md)。
@@ -87,3 +88,6 @@ agent_status(session_id)
 核心任务和摘要状态各自可见，`auxiliary_operation_ids` 指向辅助任务。
 
 按事实谓词统计使用 `mnemotrace_aggregate`，指定 `count` 或 `count_distinct`。仅有原文时可给 `query` 返回候选证据。多跳使用 `mnemotrace_follow_path`，传入实体名称和 2–4 个有序的出边谓词。普通召回、统计和多跳都支持显式历史条件。
+
+自由文本搜索返回候选事实及来源，状态为 `evidence_only` 或 `no_evidence`。显式提供主体和谓词且只有一个不同值时，搜索返回 `answered`。
+`mnemotrace_recall` 的 JSON 包含 `context_sections`。传 `answer=true` 可请求模型回答，并通过 `answer_status` 读取调用结果。

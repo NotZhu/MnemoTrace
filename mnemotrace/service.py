@@ -1,5 +1,5 @@
 """Product adapters for one authorized PostgreSQL memory space."""
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 import math
 import os
@@ -9,11 +9,11 @@ from .config import Config
 from .connectors.documents import document_inputs
 from .consolidate.outcomes import OUTCOME_PREDICATES, split_outcome_text
 from .consolidate.policy import POLICY_DEFAULTS
-from .consolidate.structured import build_structured_profile
 from .extraction import LLMNotConfiguredError, require_llm
 from .llm import providers
 from .memory import Memory
 from .metrics import Metrics, timed
+from .localize import display_of
 from .store.contracts import FactQuery, FactState, MessageInput
 from .store.postgres import Database, DatabaseConfig, Spaces
 from .store.postgres.errors import MessageConflict
@@ -37,15 +37,21 @@ _ANSWER_SYSTEM = (
 )
 
 
-def _answer_from_memory(answerer, query: str, ctx: str) -> str:
-    """基于拼装好的精简上下文生成回答——即使用这套记忆的 agent 会说的话。
-    尽力而为：缺少 answerer 或模型瞬时出错都不会打断 recall（返回 ""）。"""
-    if answerer is None or not ctx.strip():
-        return ""
+def _answer_from_memory(answerer, query: str, ctx: str) -> tuple[str, str]:
+    if answerer is None:
+        return "", "model_not_configured"
+    if not ctx.strip():
+        return "", "no_evidence"
+    from .llm.base import complete_result
     try:
-        return answerer.complete(f"【记忆】\n{ctx}\n\n【问题】{query}", system=_ANSWER_SYSTEM).strip()
-    except Exception:  # noqa: BLE001 -- 绝不让回答打断 recall
-        return ""
+        result = complete_result(answerer, f"【记忆】\n{ctx}\n\n【问题】{query}", system=_ANSWER_SYSTEM)
+        if result.finish_reason not in {None, "stop", "end_turn"}:
+            return "", "model_failed"
+        answer = result.text.strip()
+    except Exception:  # noqa: BLE001
+        return "", "model_failed"
+    return answer, "answered" if answer else "empty"
+
 
 
 def _est_tokens(text: str) -> int:
@@ -96,7 +102,7 @@ def _fact_view(fact, at, *, known_at=None):
     known = at if known_at is None else known_at
     live = (fact.is_published(known) and fact.is_valid_at(at)
             and (fact.expired_at is None or fact.expired_at > known))
-    row.update(display=fact.display or fact.text, valid_at=fmt_datetime(fact.valid_at),
+    row.update(display=display_of(fact), valid_at=fmt_datetime(fact.valid_at),
                invalid_at=fmt_datetime(fact.invalid_at) if fact.invalid_at is not None else None,
                status='live' if live else 'superseded',
                why=split_outcome_text(fact.text)[1] if fact.predicate.lower() in OUTCOME_PREDICATES else '')
@@ -209,10 +215,11 @@ class MemoryService:
             try:
                 if messages is None:
                     document, = document_inputs([source])
+                    verbatim = document['metadata'].get('verbatim') is True
                     result = operation_payload(memory.import_document(
                         document['content'], session_id, event_time=document['event_time'],
-                        metadata=document['metadata'], agent_id=agent_id, extract=consolidate is not False,
-                        generate_digests=generate_digests, dedupe=dedupe,
+                        metadata=document['metadata'], agent_id=agent_id, extract=consolidate is not False and not verbatim,
+                        generate_digests=generate_digests and not verbatim, dedupe=dedupe,
                         processing='immediate' if consolidate is True else 'buffered'))
                 else:
                     source_metadata = {'digest_requested': generate_digests}
@@ -247,38 +254,54 @@ class MemoryService:
     def import_document(self, context, data, *, filename=None, content_type=None, session_id='document',
                         agent_id=None):
         from .connectors.documents import detect_kind, document_text, to_data_url, to_session
-        from .llm.vision import caption_image
+        from .llm.vision import describe_image
 
-        require_llm(self.llm)
         kind = detect_kind(data, filename, content_type)
+        result = dict(kind=kind)
         if kind == 'image':
-            caption = caption_image(self.captioner, to_data_url(data, content_type))
-            text = f'[image] {caption}' if caption else '[image] (no caption configured)'
+            caption, caption_status = describe_image(self.captioner, to_data_url(data, content_type))
+            text = f'[image] {caption}' if caption else '[image]'
+            result.update(caption_status=caption_status, degraded=not caption)
         else:
+            require_llm(self.llm)
             text = document_text(data, kind)
         if not text:
             raise ValueError('Document has no extractable text')
+        verbatim = kind == 'image' and (self.llm is None or result['degraded'])
         source = to_session(text, filename=filename, session_id=session_id,
-                            metadata={'kind': kind, 'media_type': content_type or ''})
-        return dict(kind=kind, **self.import_(context, sessions=[source], agent_id=agent_id))
+                            metadata={'kind': kind, 'media_type': content_type or '', 'verbatim': verbatim})
+        return dict(**result, **self.import_(context, sessions=[source], agent_id=agent_id))
 
     @timed('recall')
     def recall(self, context, query, lean=True, n_chunks=6, as_of=None,
-               redact_sensitive=False, answer=False, state=FactState.CURRENT, valid_at=None, known_at=None):
+               redact_sensitive=False, answer=False, state=FactState.CURRENT, valid_at=None, known_at=None,
+               subject=None, predicate=None):
         memory = self.memory(context)
         output = dict(space_id=context.space_id, as_of=as_of, redacted_sensitive=redact_sensitive)
         facts = _recall_conditions(as_of, state, valid_at, known_at, redact_sensitive)
+        if subject is not None or predicate is not None:
+            facts = replace(facts, subject=subject, predicate=predicate)
+        if answer and not lean:
+            raise ValueError("Explicit model answers require lean context")
         if not lean:
             result = memory.search(query, facts=facts)
-            return dict(**output, answer=result.answer(), facts=[fact.text for fact in result.facts],
+            return dict(**output, answer=result.answer() if result.status == 'answered' else '',
+                        status=result.status, facts=[fact.text for fact in result.facts],
+                        fact_ids=[fact.id for fact in result.facts],
+                        sources=[dict(id=ep.id, session_id=ep.session_id, text=ep.text,
+                                      representation=ep.representation) for ep in result.sources],
                         limitations=result.limitations)
         result = memory.lean_context(query, n_chunks=n_chunks,
                                      facts=facts, reinforce_hits=True, include_full_tokens=answer)
         tokens = _est_tokens(result.context)
-        output.update(context=result.context, tokens_est=tokens, limitations=result.limitations,
+        output.update(context=result.context, context_sections=[asdict(section) for section in result.sections],
+                      status="evidence_only" if result.sections else "no_evidence",
+                      tokens_est=tokens, limitations=result.limitations,
                       coverage_by_space=result.coverage_by_space)
         if answer:
-            output['answer'] = _answer_from_memory(self.answerer, query, result.context)
+            output['answer'], output['answer_status'] = _answer_from_memory(self.answerer, query, result.context)
+            if output['answer_status'] == 'answered':
+                output['status'] = 'answered'
             if result.full_tokens is not None:
                 output['full_tokens'] = result.full_tokens
         self.metrics.tokens(tokens, output.get('full_tokens'))
@@ -289,7 +312,9 @@ class MemoryService:
         ids = [context.space_id for context in contexts]
         result = self.memory(contexts[0]).recall_multi(ids, query, n_chunks=n_chunks,
                                                        facts=_recall_conditions(as_of, state, valid_at, known_at, redact_sensitive))
-        return dict(context=result.context, tokens_est=_est_tokens(result.context), space_ids=ids,
+        return dict(context=result.context, context_sections=[asdict(section) for section in result.sections],
+                    status="evidence_only" if result.sections else "no_evidence",
+                    tokens_est=_est_tokens(result.context), space_ids=ids,
                     as_of=as_of, redacted_sensitive=redact_sensitive, limitations=result.limitations,
                     coverage_by_space=result.coverage_by_space)
 
@@ -371,15 +396,11 @@ class MemoryService:
     def resolve_conflict(self, context, conflict_id, keep):
         return dict(ok=self.memory(context).resolve_conflict(conflict_id, keep=keep))
 
-    def structured_profile(self, context):
-        memory = self.memory(context)
-        with memory.dao.read_snapshot() as view:
-            return build_structured_profile(map(domain, view.focused().profile_facts()))
-
     def profile(self, context):
-        with self.memory(context).dao.read_snapshot() as view:
-            facts = [domain(record).text for record in view.focused().facts(FactQuery(subject="user", limit=50, exclude_sensitive=True))]
-        return dict(profile='\n'.join(facts), facts=facts)
+        return self.memory(context).profile()
+
+    def refresh_profile(self, context):
+        return self.memory(context).refresh_profile().to_dict()
 
     def sessions(self, context, limit=None, offset=0, q=''):
         limit, offset = _bounds(limit, offset)
@@ -448,7 +469,7 @@ class MemoryService:
             counts = view.overview(at)
         fact_page = _page(facts, fact_total, facts_offset, facts_limit)
         source_page = _page(episodes, episode_total, episodes_offset, episodes_limit)
-        return dict(space_id=context.space_id, data_revision=revision, evaluated_at=at, profile='',
+        return dict(space_id=context.space_id, data_revision=revision, evaluated_at=at,
                     counts=counts,
                     facts=facts, fact_categories=categories,
                     episodes=episodes, facts_page=fact_page, episodes_page=source_page,
@@ -547,6 +568,7 @@ class MemoryService:
                                            invalid_at_h=fmt_date(item.invalid_at) if item.invalid_at is not None else None)
                         else:
                             payload = _source_view(record)
+                            payload["digest_coverage"] = domain(record).digest_coverage
                         yield ('' if first else ',') + json.dumps(payload, ensure_ascii=False)
                         first = False
                     cursor = batch[-1].ref.record_id

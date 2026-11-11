@@ -283,6 +283,9 @@ class RecallReq(BaseModel):
     space_id: str | None = Field(default=None, min_length=1, max_length=512)
     space_ids: list[str] | None = Field(default=None, min_length=1, max_length=16)
     query: str = Field(min_length=1, max_length=32_768)
+    answer: bool = False
+    subject: str | None = Field(default=None, min_length=1, max_length=512)
+    predicate: str | None = Field(default=None, min_length=1, max_length=512)
     lean: bool = True
     n_chunks: int = Field(default=6, ge=0, le=50)
     state: FactState = FactState.CURRENT
@@ -450,10 +453,11 @@ def recall(req: RecallReq, owner: str = Depends(auth)):
                    redact_sensitive=req.redact_sensitive, state=req.state,
                    valid_at=req.valid_at, known_at=req.known_at)
     if len(contexts) > 1:
-        if not req.lean:
-            raise ValueError('Multi-space recall requires lean context')
+        if not req.lean or req.answer or req.subject is not None or req.predicate is not None:
+            raise ValueError('Multi-space recall requires unfiltered lean context without an answer')
         return svc().recall_multi(contexts, req.query, **options)
-    return svc().recall(contexts[0], req.query, lean=req.lean, answer=True, **options)
+    return svc().recall(contexts[0], req.query, lean=req.lean, answer=req.answer,
+                        subject=req.subject, predicate=req.predicate, **options)
 
 
 class StructuredRead(SpaceRequest):
@@ -524,16 +528,14 @@ def session_report(
     return svc().session_report(user, session_id, include_sensitive=include_sensitive, limit=limit, offset=offset)
 
 
+@app.post("/v1/profile/refresh", status_code=202)
+def refresh_profile(req: SpaceRequest, owner: str = Depends(auth)):
+    return svc().refresh_profile(svc().spaces.authorize(owner, req.space_id))
+
+
 @app.get("/v1/profile")
 def profile(user: SpaceContext = Depends(authorized_space)):
     return svc().profile(user)
-
-
-@app.get("/v1/profile/structured")
-def structured_profile(user: SpaceContext = Depends(authorized_space)):
-    """L2 结构化画像：基本信息 + 偏好（按类别）+ 习惯，分为 confirmed 与 待确认 (tentative) 两层。
-    仅用于展示的分层——不影响 recall/search 能看到的内容。"""
-    return svc().structured_profile(user)
 
 
 @app.get("/v1/memories")
@@ -850,7 +852,7 @@ class PolicyReq(SpaceRequest):
     extract_instruction: Optional[str] = None  # None = 不变；"" = 重置为默认
     extract_system: Optional[str] = None
     digest_system: Optional[str] = None
-    persona_system: Optional[str] = None
+    profile_system: Optional[str] = None
 
 
 @app.get("/v1/policy")

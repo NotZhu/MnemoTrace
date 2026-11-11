@@ -43,12 +43,12 @@ def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, s
         assert not sql.run("SELECT 1 FROM mnemotrace.operations WHERE user_id=%s AND space_id=%s AND kind='reembed'",
                            sql.scope).fetchall()
     fresh = Memory(runtime, context)
-    assert fresh.search('绿茶').answer() == '绿茶'
+    assert fresh.search('绿茶').top().object == '绿茶'
     result = fresh.follow_path('user', ['sister', 'works_at'])
     assert result.paths[0].endpoint == '月亮公司'
     assert [fact.predicate for fact in result.paths[0].facts] == ['sister', 'works_at']
     assert fresh.retrieve_episodes('绿茶').episodes[0].id == original.id
-    assert fresh.search('Where do I live?').answer() == 'Shenzhen'
+    assert fresh.search('Where do I live?').top().object == 'Shenzhen'
     with fresh.dao.read_snapshot() as view:
         previous = view.get(SOURCE, original.id)
         snapshot = view.snapshot
@@ -93,8 +93,8 @@ def test_exact_vector_and_bm25_use_full_scoped_corpus(memory, runtime, spaces, u
                 assert corpus.vector_scores() == pytest.approx(dict(sorted(semantic.items(), key=lambda row: (-row[1], row[0]))[:1]))
                 assert Corpus(view, replace(query, embedding_model='other'), RecordKind.FACT).vector_scores() == {}
             assert Corpus(view, replace(query, vector=(0.0,) * len(vector)), RecordKind.FACT).vector_scores() == {}
-        assert memory.search('Where does Ana work?').answer() == 'Orbit'
-        assert memory.search('Where did Ana work?', facts=FactQuery(state=FactState.HISTORY)).answer() == 'Acme'
+        assert memory.search('Where does Ana work?').top().object == 'Orbit'
+        assert memory.search('Where did Ana work?', facts=FactQuery(state=FactState.HISTORY)).top().object == 'Acme'
         assert 'Other space' not in memory.lean_context('Where does Ana work?').context
         with pytest.raises(SpaceNotFound):
             memory.recall_multi((sibling.space_id, unrelated.space_id), 'Orbit')
@@ -147,8 +147,8 @@ def test_answer_evidence_matches_offline_without_domain_vocabulary(runtime, spac
     for engine in (offline, persistent):
         engine.add_fact('Ana', 'preferred_format', 'Synthetic blocks')
         assert engine.search("What is Ana's preferred language?").abstained
-        assert engine.search("What is Ana's preferred format?").answer() == 'Synthetic blocks'
-        assert engine.search("Tell me about blocks").answer() == 'Synthetic blocks'
+        assert engine.search("What is Ana's preferred format?").top().object == 'Synthetic blocks'
+        assert engine.search("Tell me about blocks").top().object == 'Synthetic blocks'
         assert engine.search("What is it?").abstained
 
 
@@ -165,7 +165,7 @@ def test_digest_answer_requires_full_query_coverage(runtime, spaces, user):
     memory._commit(snapshot, writes=(RecordWrite(record, previous.record_version),))
     assert memory.search("What is Ana's favorite food?").abstained
     result = memory.search("What is Ana's favorite programming language?")
-    assert result.via == 'digest' and 'Python' in result.answer()
+    assert result.via == 'digest' and 'Python' in result.sources[0].text
 
 
 def test_limited_candidates_can_rank_both_published_facts_in_a_slot(memory):
@@ -205,8 +205,8 @@ def test_redacted_aggregation_does_not_include_original_source_evidence(memory):
 
 
 def test_aggregate_counts_full_snapshot_and_respects_time_and_redaction(memory):
-    memory.add_fact('Ana', 'visited', 'Orbit', valid_at=10, sensitive=False)
-    memory.add_fact('Bea', 'visited', 'ORBIT', valid_at=20, sensitive=False)
+    memory.add_fact('Ana', 'visited', 'Orbit', valid_at=10, sensitive=False, object_kind='entity')
+    memory.add_fact('Bea', 'visited', 'ORBIT', valid_at=20, sensitive=False, object_kind='entity')
     memory.add_fact('Bea', 'visited', 'Elsewhere', valid_at=30, sensitive=True)
     scope = FactQuery(limit=1, exclude_sensitive=True)
     matches = memory.aggregate_facts('visited', start=10, end=30, facts=scope)
@@ -223,11 +223,11 @@ def test_search_returns_snapshot_result_when_access_reinforcement_conflicts(memo
         concurrent = Memory(second, memory.context)
 
         def interleaved_commit(*args, **kwargs):
-            assert concurrent.search('What does Ana like?').answer() == 'Clover'
+            assert concurrent.search('What does Ana like?').top().object == 'Clover'
             return commit(*args, **kwargs)
 
         monkeypatch.setattr(memory, '_commit', interleaved_commit)
-        assert memory.search('What does Ana like?').answer() == 'Clover'
+        assert memory.search('What does Ana like?').top().object == 'Clover'
     assert memory.get_fact(fact.id).access_count == 1
 
 
@@ -488,3 +488,41 @@ def test_backfilled_validity_is_read_at_the_selected_knowledge_time(memory, clus
             assert fresh.search('Where does Ana work?', facts=scope).top().id == fact.id
         history = FactQuery(state=FactState.HISTORY, valid_at=base + 600, known_at=last_known)
         assert fresh.aggregate_facts('works_at', facts=history).count == 0
+
+
+
+def test_explicit_slot_checks_full_view_and_preserves_literal_case(memory):
+    bob = memory.add_fact("Bob", "favorite_language", "Ab1", object_kind="literal", sensitive=False)
+    assert memory.search("Alice favorite language").status == "evidence_only"
+    slot = FactQuery(subject="Bob", predicate="favorite_language", exclude_sensitive=True)
+    assert memory.search("language", facts=slot).answer() == "Ab1"
+    memory.add_fact("Bob", "favorite_language", "ab1", object_kind="literal", sensitive=False)
+    result = memory.search("language", facts=slot, top_k=1)
+    assert result.status == "evidence_only" and len(result.facts) == 1
+    assert memory.aggregate_facts("favorite_language", operation="count_distinct", facts=slot).count == 2
+    assert bob.id in {fact.id for fact in memory.facts(slot)}
+
+
+def test_focus_boundaries_match_offline_and_persistent_reads(memory):
+    from mnemotrace.memory_engine import MemoryEngine
+
+    offline = MemoryEngine()
+    for backend in (offline, memory):
+        backend.add_fact("user", "uses", "Java", categories=["technology"], sensitive=False)
+        backend.add_fact("user", "uses", "JavaScript", sensitive=False)
+    for terms in (["java"], ["category:technology"]):
+        offline.set_focus(mute=terms)
+        memory.set_settings(mute=tuple(terms))
+        for backend in (offline, memory):
+            result = backend.search("uses JavaScript")
+            assert [fact.object for fact in result.facts] == ["JavaScript"]
+    offline.set_focus(mute=[])
+    memory.set_settings(mute=())
+    for backend in (offline, memory):
+        assert {fact.object for fact in backend.search("uses JavaScript").facts} == {"Java", "JavaScript"}
+
+
+def test_explicit_slot_preserves_accepted_subject_whitespace(memory):
+    fact = memory.add_fact(" Alice ", "works_at", "Synthetic Lab")
+    result = memory.search("work", facts=FactQuery(subject=" Alice ", predicate="works_at"))
+    assert result.status == "answered" and result.top().id == fact.id

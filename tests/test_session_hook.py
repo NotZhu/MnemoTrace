@@ -81,7 +81,7 @@ SETTINGS_FIXTURES = {
 
 
 def _transcript(tmp_path, turns: int = 3, secret: str = "") -> str:
-    """一份合成的 Claude Code transcript，大小超过 find_sessions 的 2048 字节下限。"""
+    """一份合成的 Claude Code transcript。"""
     project = tmp_path / "roots" / "claude" / "-Users-demo-Projects-widget"
     project.mkdir(parents=True, exist_ok=True)
     path = project / "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0.jsonl"
@@ -95,7 +95,6 @@ def _transcript(tmp_path, turns: int = 3, secret: str = "") -> str:
                      "message": {"role": "assistant", "content": [
                          {"type": "text", "text": f"Answer {i}: {filler}"}]}})
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
-    assert path.stat().st_size >= session_hook.MIN_BYTES
     return str(path)
 
 
@@ -687,3 +686,21 @@ def test_a_failed_write_leaves_no_temp_file_behind(tmp_path, monkeypatch):
         hi.write(str(settings), "{}\n")
     assert settings.read_bytes() == original
     assert not list(tmp_path.glob("*.mnemotrace-tmp"))
+
+
+
+def test_watcher_queues_short_dialogue_and_detects_machinery_at_ingest(tmp_path, monkeypatch):
+    from pathlib import Path
+    from mnemotrace.connectors import watch
+
+    path = Path(_transcript(tmp_path))
+    path.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "ok"}}))
+    quiet = path.stat().st_mtime + 3600
+    monkeypatch.setattr(watch, "find_sessions", lambda **kwargs: [str(path)])
+    assert path.stat().st_size < 2048
+    assert watch.pending_sessions({}, now=quiet) == [str(path)]
+    path.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "content": "synthetic echo"},
+    ]}}))
+    result = watch.ingest("http://synthetic.invalid", "synthetic", [str(path)], space_id="synthetic")
+    assert result["episodes"] == 0 and str(path) in result["empty_by_path"]

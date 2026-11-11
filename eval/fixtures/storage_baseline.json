@@ -14,6 +14,8 @@
     "recency_tau_days": 45.0,
     "rrf_k": 60,
     "abstain_threshold": 0.45,
+    "profile_max_input_chars": 48000,
+    "profile_max_output_tokens": 4096,
     "extraction_max_input_bytes": 16384,
     "extraction_context_bytes": 2048,
     "joint_max_output_tokens": 8192,

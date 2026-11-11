@@ -81,7 +81,7 @@ def test_assistant_evidence_is_retrievable_and_confirmation_has_user_time():
     proposal = next(ep for ep in mem.retrieve_episodes(PROPOSAL) if ep.text == PROPOSAL)
     assert proposal.role == 'assistant'
     assert [f.object for f in mem._all_facts() if f.is_live()] == ['npm']
-    assert 'pnpm' not in json.dumps(mem.structured_profile())
+    assert 'pnpm' not in json.dumps(mem.profile())
 
     send(message('confirmation', 'Yes, use that by default.', event_time=300))
     old = next(f for f in mem._all_facts() if f.object == 'npm')

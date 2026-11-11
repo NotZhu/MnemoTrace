@@ -72,15 +72,20 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
         check_version(sql, target.record, target.content_version)
 
     graph = GraphProjection(sql)
+    fact_ids = {item.record_id for item in changes.erasures if item.kind == FACT}
     erased = erase(sql, graph, changes.erasures)
     changed = bool(erased)
     if {link.fact for link in changes.source_links} - {item.ref for item in changes.writes}:
         raise DatabaseConstraintError('Source links require an explicit fact write')
     rank = {kind: index for index, kind in enumerate((SOURCE, ENTITY, FACT, CONFLICT, RELATION))}
     for item in sorted(changes.writes, key=lambda item: (rank[item.ref.kind], item.ref.record_id)):
-        changed |= write(sql, item, graph)
+        written, profile_changed = write(sql, item, graph)
+        changed |= written
+        if profile_changed:
+            fact_ids.add(item.ref.record_id)
     for item in changes.invalidations:
         invalidate(sql, item, graph)
+        fact_ids.add(item.ref.record_id)
         changed = True
     graph.prune()
     for item in changes.embeddings:
@@ -102,6 +107,8 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
             commit_task(sql, conditions.lease, changes.receipt)
         else:
             checkpoint(sql)
+    from .profile import synchronize
+    synchronize(sql, fact_ids, settings_changed=changes.settings is not None)
     refs = [item.ref for item in changes.writes]
     supplied = changes.receipt
     if supplied is not None and supplied.core_revision != revision + int(changed):

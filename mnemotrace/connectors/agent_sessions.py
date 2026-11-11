@@ -21,20 +21,10 @@ import re
 import os
 from typing import Any, Iterator, Optional
 
-from .base import ImportMessage, ImportSession, to_epoch
+from .base import ImportMessage, ImportSession, record_time
 
-# 属于 agent 内部机制（而非其发言）的内容块。`thinking` 被刻意排除：那是进行中的推理，常与最终答案矛盾，
-# 记住它会教给记忆一些 agent 最终否决的想法。
-_SKIP_BLOCKS = {"thinking", "redacted_thinking", "tool_use", "tool_result", "image"}
-
-# 完全不含对话内容的记录类型。
-_SKIP_TYPES = {
-    "queue-operation", "ai-title", "custom-title", "last-prompt", "attachment",
-    "summary", "file-history-snapshot", "system",
-}
-
-# 以 user 轮次回显的工具结果是 harness 在自言自语，不是真人发言。
-_TOOL_ECHO_PREFIXES = ("<tool_use_result", "<local-command", "Caveat: The messages below")
+# Only documented dialogue text blocks enter memory.
+_TEXT_BLOCKS = {"text", "input_text", "output_text"}
 
 # Agent 会话里经常出现仍有效的凭据：用户粘贴一个 key，或某条命令回显了 .env。长期记忆是它们最不该去的
 # 地方 —— 它持久、可被每个 agent 检索、还可导出。脱敏发生在导入时、任何内容入库之前，因为秘密一旦进入
@@ -71,7 +61,7 @@ def _text_of(content: Any) -> str:
     for block in content:
         if not isinstance(block, dict):
             continue
-        if block.get("type") in _SKIP_BLOCKS:
+        if block.get("type") not in _TEXT_BLOCKS:
             continue
         # Codex 把文本包装成 {"type": "input_text"|"output_text", "text": ...}；Claude Code 用
         # {"type": "text", "text": ...}。两种都会走到这里。
@@ -104,29 +94,27 @@ def parse_agent_session(text: str, session_id: str = "agent-session",
     messages: list[ImportMessage] = []
     first_ts: Optional[float] = None
     for row in _rows(text):
-        if row.get("type") in _SKIP_TYPES:
-            continue
         if row.get("isSidechain") and not include_sidechains:
             continue
-        # 整体都是工具机制的轮次会被压平成 ""，再被下面的 min_chars 丢弃；这是有意为之（真实会话的 162 轮
-        # 中有 94 轮是 tool_use/tool_result/thinking）。Claude Code 把轮次放在 `message` 里；Codex 包装成
-        # {"type": "response_item", "payload": {"type": "message", "role": ..., "content": [...]}}。
-        message = row.get("message")
-        if not isinstance(message, dict):
-            payload = row.get("payload")
-            if isinstance(payload, dict) and payload.get("type") == "message":
-                message = payload
-            else:
+        kind = row.get("type")
+        if kind in ("user", "assistant"):
+            message = row.get("message")
+            if not isinstance(message, dict) or message.get("role", kind) != kind:
                 continue
-        role = str(message.get("role") or row.get("type") or "").strip()
-        if role not in ("user", "assistant"):
-            continue  # Codex 还会发出 "developer"/"system" 轮次：harness 指令，不是记忆
+            role = kind
+        elif kind == "response_item":
+            message = row.get("payload")
+            if not isinstance(message, dict) or message.get("type") != "message":
+                continue
+            role = message.get("role")
+            if role not in ("user", "assistant"):
+                continue
+        else:
+            continue
         body = _text_of(message.get("content"))
         if len(body) < min_chars:
             continue
-        if body.startswith(_TOOL_ECHO_PREFIXES):
-            continue
-        ts = to_epoch(row.get("timestamp"))
+        ts = record_time(row, "timestamp")
         if first_ts is None:
             first_ts = ts
         message_id = message.get('id') or row.get('uuid')
@@ -151,11 +139,8 @@ def _session_label(path: str) -> str:
 
 
 def find_sessions(root: Optional[str] = None, limit: Optional[int] = None,
-                  min_bytes: int = 2048, since: Optional[float] = None) -> list[str]:
-    """本机上的会话 transcript，最新优先。
-
-    `min_bytes` 跳过短到不含任何持久内容的会话（只有一问的运行）。
-    """
+                  since: Optional[float] = None) -> list[str]:
+    """List candidate transcripts by modification time, newest first."""
     roots = [root] if root else [
         os.path.expanduser("~/.claude/projects"),
         os.path.expanduser("~/.codex/sessions"),
@@ -173,11 +158,11 @@ def find_sessions(root: Optional[str] = None, limit: Optional[int] = None,
                 if name.startswith("agent-"):
                     continue
                 path = os.path.join(dirpath, name)
+                if os.path.islink(path):
+                    continue
                 try:
                     st = os.stat(path)
                 except OSError:
-                    continue
-                if st.st_size < min_bytes:
                     continue
                 if since is not None and st.st_mtime < since:
                     continue
@@ -187,7 +172,8 @@ def find_sessions(root: Optional[str] = None, limit: Optional[int] = None,
     return paths[:limit] if limit else paths
 
 
-def load_sessions(paths: list[str], include_sidechains: bool = False) -> list[ImportSession]:
+def load_sessions(paths: list[str], include_sidechains: bool = False, *,
+                  skip_unreadable: bool = True) -> list[ImportSession]:
     """把多份 transcript 解析成会话，跳过没有对话内容的那些。"""
     out: list[ImportSession] = []
     for path in paths:
@@ -195,6 +181,8 @@ def load_sessions(paths: list[str], include_sidechains: bool = False) -> list[Im
             with open(path, encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
         except OSError:
+            if not skip_unreadable:
+                raise
             continue
         out.extend(parse_agent_session(text, session_id=_session_label(path),
                                        include_sidechains=include_sidechains))

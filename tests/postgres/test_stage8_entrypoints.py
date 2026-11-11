@@ -51,7 +51,7 @@ def test_console_seed_creates_separate_spaces_and_maps_case_ids(
     for row, city in zip(rows, ('Beijing', 'Shenzhen'), strict=True):
         context = product_service.spaces.authorize(scope.user_id, row['space_id'])
         memory = product_service.memory(context)
-        assert memory.search('Where do I live?').answer() == city
+        assert memory.search('Where do I live?').top().object == city
     with pytest.raises(FileExistsError):
         seed_console.main(args)
 
@@ -68,7 +68,9 @@ def test_image_import_persists_caption_or_placeholder(product_service, product_s
         scope, b'\x89PNG\r\n\x1a\n', filename='synthetic.png', content_type='image/png')
     assert response['ok'] and response['kind'] == 'image'
     source, = product_service.memory(scope).list_sources()
-    assert source.content.endswith('[image] ' + (caption or '(no caption configured)'))
+    assert response['caption_status'] == ('described' if caption else 'model_not_configured')
+    assert response['degraded'] is (not caption)
+    assert source.content.endswith('[image]' + (' ' + caption if caption else ''))
 
 
 def test_pdf_missing_optional_dependency(product_service, product_scope, monkeypatch):
@@ -97,4 +99,4 @@ def test_import_continues_after_one_session_extraction_fails(product_service, pr
     assert failed['session_id'] == 'invalid' and failed['stored_raw']
     memory = product_service.memory(scope)
     assert len(memory.list_sources()) == 2
-    assert memory.search('Where do I live?').answer() == 'Shenzhen'
+    assert memory.search('Where do I live?').top().object == 'Shenzhen'

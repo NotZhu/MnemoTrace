@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from .base import ImportMessage, ImportSession, extract_text, iter_jsonl, to_epoch
+from .base import ImportMessage, ImportSession, extract_text, iter_jsonl, record_time
 
 # 消息字典的角色可能放在下面任意一个键里；内容键同理
 _ROLE_KEYS = ("role", "author", "from", "sender")
@@ -31,7 +31,7 @@ def _msg_from_dict(d: dict, default_role: str = "user") -> Optional[ImportMessag
     if not text or not str(text).strip():
         return None
     return ImportMessage(content=str(text).strip(), role=str(role),
-                         event_time=to_epoch(_first(d, _TIME_KEYS)),
+                         event_time=record_time(d, *_TIME_KEYS),
                          message_id=_first(d, ('message_id', 'id')))
 
 
@@ -84,32 +84,26 @@ def parse_jsonl(text: str, session_id: str = "imported") -> list[ImportSession]:
     return parse_records(records, session_id=session_id)
 
 
-# 形如 "Alice: hello" 的 transcript 行 —— 捕获说话者与文本。名字保持较短，避免吞掉只是恰好含冒号的
-# 真实句子文本。
-_SPEAKER_RE = re.compile(r"^\s*([A-Za-z][\w .'-]{0,30}?)\s*[:：]\s+(.*\S.*)$")
+_ROLE_HEADER = re.compile(r"^(user|assistant)[ 	]*[:：][ 	]*(.*)$", re.IGNORECASE)
+_OTHER_HEADER = re.compile(r"^[^\W\d_][\w .'-]{0,30}[:：](?:[ 	]|$)")
 
 
 def parse_transcript(text: str, session_id: str = "imported") -> list[ImportSession]:
-    """纯文本/markdown transcript。若各行形如 'Speaker: text'，每行成为一轮（续行追加到当前轮）。
-    否则整体作为一条 user 消息。"""
-    messages: list[ImportMessage] = []
-    current: Optional[ImportMessage] = None
-    saw_role = False
-    for raw in text.splitlines():
-        m = _SPEAKER_RE.match(raw)
-        if m:
-            saw_role = True
-            current = ImportMessage(content=m.group(2).strip(), role=m.group(1).strip())
-            messages.append(current)
-        elif current is not None and raw.strip():
-            current.content += "\n" + raw.strip()
-        elif raw.strip() and not saw_role:
-            # 还没有说话者结构 —— 累积进同一条持续追加的消息
-            if current is None:
-                current = ImportMessage(content=raw.strip(), role="user")
-                messages.append(current)
-            else:
-                current.content += "\n" + raw.strip()
-    messages = [m for m in messages if m.content.strip()]
-    sess = ImportSession(session_id=session_id, messages=messages, metadata={"source": "transcript"})
-    return [sess] if messages else []
+    """Import explicitly tagged dialogue, or keep the entire transcript as raw text."""
+    if not text.strip():
+        return []
+    turns: list[ImportMessage] = []
+    for line in text.splitlines():
+        header = _ROLE_HEADER.match(line)
+        if header:
+            turns.append(ImportMessage(content=header[2], role=header[1].lower()))
+        elif line.strip() and (not turns or _OTHER_HEADER.match(line)):
+            turns = []
+            break
+        elif turns:
+            turns[-1].content += "\n" + line
+    metadata = {"source": "transcript"}
+    if not turns:
+        turns = [ImportMessage(content=text, role="document")]
+        metadata["verbatim"] = True
+    return [ImportSession(session_id=session_id, messages=turns, metadata=metadata)]

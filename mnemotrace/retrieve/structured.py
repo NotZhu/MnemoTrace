@@ -1,5 +1,6 @@
 """Validation and execution shared by explicit memory queries."""
 from dataclasses import dataclass
+from ..consolidate.fact_rules import object_key
 
 from ..store.contracts import FactQuery, _id, _time
 from ..types import Fact
@@ -53,7 +54,7 @@ def summarize_matches(rows, operation, limit):
     for fact in rows:
         count += 1
         if operation == 'count_distinct':
-            values.add(fact.object.strip().casefold())
+            values.add(object_key(fact))
         if len(evidence) < limit:
             evidence.append(fact)
     return AggregateResult(count if operation == 'count' else len(values), tuple(evidence))

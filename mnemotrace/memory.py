@@ -249,7 +249,7 @@ class Memory:
 
     def search(self, query: str, *, as_of: float | None = None, top_k: int | None = None,
                facts: FactQuery | None = None) -> retrieval.SearchResult:
-        """Retrieve and answer from a consistent database snapshot."""
+        """Retrieve candidate evidence or a unique explicitly selected value."""
         count = self._config.top_k if top_k is None else top_k
         request = self._query(query, top_k=count, as_of=as_of, facts=facts)
         with self.dao.read_snapshot() as view:
@@ -345,7 +345,7 @@ class Memory:
             raise ValueError('Expected a nonempty collection of distinct space IDs')
         spaces = Spaces(self._database)
         contexts = tuple(spaces.authorize(self.context.user_id, space_id) for space_id in ids)
-        blocks, coverage = [], {}
+        blocks, coverage, sections = [], {}, []
         for context in contexts:
             memory = Memory(self._database, context, embedder=self._embedder, embedding_model=self._model,
                                     config=self._config)
@@ -353,7 +353,8 @@ class Memory:
             if result.context:
                 blocks.append(f'## Space: {context.space_id}\n{result.context}')
             coverage.update(result.coverage_by_space)
-        return retrieval.ContextResult('\n\n'.join(blocks), coverage)
+            sections.extend(result.sections)
+        return retrieval.ContextResult('\n\n'.join(blocks), coverage, sections=tuple(sections))
 
     def graph_entities(self, name, *, limit=100):
         identifier(name)
@@ -403,12 +404,12 @@ class Memory:
         fact.created_at = fact.last_access = at
         candidates = [domain(item) for item in history]
         action, changed = reconcile_manual(fact, candidates, at)
-        if action == 'duplicate':
-            if not return_existing:
-                return None
-            return next(candidate for candidate in candidates
-                        if reconcile_manual(replace(fact), [replace(candidate)], at)[0] == 'duplicate')
         versions = {item.ref.record_id: item for item in history}
+        if action == 'duplicate':
+            duplicate, = changed
+            if duplicate != domain(versions[duplicate.id]):
+                self._commit(snapshot, writes=(self._write(duplicate, versions[duplicate.id]),))
+            return duplicate if return_existing else None
         updates = tuple(self._write(old, versions[old.id]) for old in changed)
         write = self._write(fact)
         self._commit(snapshot, writes=(write, *updates),
@@ -477,6 +478,15 @@ class Memory:
 
     def delete_space(self):
         return self.dao.delete_space()
+
+    def profile(self):
+        from .store.postgres.profile import read
+        with self.dao.read_snapshot() as view:
+            return read(view)
+
+    def refresh_profile(self):
+        from .store.postgres.profile import enqueue_refresh
+        return enqueue_refresh(self)
 
     def get_settings(self):
         with self.dao.read_snapshot() as view:

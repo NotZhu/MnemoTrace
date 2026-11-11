@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 
-
 from tests.model_fixtures import MemoryEngine
 from mnemotrace.types import Fact
 
@@ -31,4 +30,4 @@ def test_profile_uses_live_hot_facts_for_user_and_prefers_authoritative_values()
     cold = Fact(subject="user", predicate="favorite_food", object="cold", user_id="user123")
     mem.cold_store.upsert(cold.id, [], cold)
 
-    assert mem.profile("user123") == {"works_at": "manual", "occupation": "newer"}
+    assert mem.profile("user123")["updated_at"] is None

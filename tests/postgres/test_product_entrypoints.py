@@ -182,7 +182,7 @@ def test_direct_and_proxy_mcp_and_cli_share_records(product, monkeypatch, capsys
             assert (await remote.operation(operation_id))['stored_raw']
             assert (await remote.flush_processing('mcp-thread'))['ok']
             recalled = await local.recall('What is the synthetic archive access code?', lean=False)
-            assert 'Emerald' in recalled['answer']
+            assert recalled['status'] == 'evidence_only' and any('Emerald' in fact for fact in recalled['facts'])
             first = await remote.memories(categories=None, limit=1, offset=0, include_superseded=False)
             second = await local.memories(categories=None, limit=1, offset=1, include_superseded=False)
             assert first['facts_page']['next_offset'] == 1

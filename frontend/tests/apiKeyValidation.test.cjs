@@ -19,6 +19,7 @@ function client(key) {
   let requests = 0
   let loggedOut = false
   let authorization
+  let lastRequest
   const moduleData = { exports: {} }
   vm.runInNewContext(apiSource, {
     module: moduleData, exports: moduleData.exports, Headers, URLSearchParams, AbortController, AbortSignal,
@@ -28,7 +29,8 @@ function client(key) {
         isCurrentSession: session => session.key === key && session.epoch === 1,
         useAuth: { subscribe() {}, getState: () => ({ logout: () => { loggedOut = true } }) } }
     },
-    fetch: async (_, init) => {
+    fetch: async (url, init) => {
+      lastRequest = { url, init }
       // Native Headers validates the export path too, just as browser fetch does.
       authorization = new Headers(init.headers).get('Authorization')
       requests++
@@ -36,8 +38,18 @@ function client(key) {
     },
   })
   return { api: moduleData.exports.api, requests: () => requests,
-    loggedOut: () => loggedOut, authorization: () => authorization }
+    loggedOut: () => loggedOut, authorization: () => authorization, lastRequest: () => lastRequest }
 }
+
+test('画像刷新发送空间请求体，读取画像使用缓存接口', async () => {
+  const c = client('synthetic-key')
+  await c.api.refreshProfile()
+  assert.equal(c.lastRequest().url, '/v1/profile/refresh')
+  assert.equal(c.lastRequest().init.method, 'POST')
+  assert.deepEqual(JSON.parse(c.lastRequest().init.body), {space_id: 'space-test'})
+  await c.api.profile()
+  assert.equal(c.lastRequest().url, '/v1/profile?space_id=space-test')
+})
 
 function hydrate(key, version = 1) {
   let saved = JSON.stringify({ state: { apiKey: key }, version })

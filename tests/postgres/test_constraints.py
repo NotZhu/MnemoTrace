@@ -1,10 +1,21 @@
 from dataclasses import asdict
 from datetime import datetime, timezone
+import re
 
 import pytest
 
+from mnemotrace.categories import CATEGORIES
 from mnemotrace.types import Fact
 from mnemotrace.store.postgres.errors import DatabaseConstraintError
+
+
+def test_database_category_constraint_matches_python(runtime):
+    with runtime._transaction() as conn:
+        definition, = conn.execute("SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                                   "WHERE conrelid = 'mnemotrace.facts'::regclass "
+                                   "AND conname = 'facts_categories_check'").fetchone()
+    allowed = {value.replace("''", "'") for value in re.findall(r"'((?:''|[^'])*)'", definition)}
+    assert allowed == set(CATEGORIES)
 
 
 def fact(conn, user, space, record_id='fact-1', **changes):

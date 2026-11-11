@@ -1,5 +1,6 @@
 """Scoped PostgreSQL queries for retrieval signals and coverage."""
 from ...config import Config
+from ...focus import TRACK_BOOST, matches
 from ...retrieve.hybrid import HybridRetriever
 from ...retrieve.lexical import BM25_B, BM25_K1, bm25_query_terms
 from ...util import recency, time_key
@@ -7,9 +8,6 @@ from ..contracts import Candidate, CandidateBatch
 from .graph_reads import RetrievalGraph
 from .lexical import ANALYZER
 from .records import FACT, ROW_SCOPE, SOURCE, TARGET_COLUMNS, domain, source_digest_join, timestamp
-
-_TRACK_BOOST = 0.5
-
 
 class Corpus:
     def __init__(self, view, query, kind, *, source_field=None, start=None, end=None):
@@ -25,8 +23,9 @@ class Corpus:
             conditions, params = view._fact_conditions(facts)
             salience = 'r.salience'
             if view.track_terms:
-                salience += f' + CASE WHEN {view.focus_matches("r.text")} THEN %s ELSE 0 END'
-                join_params = (list(view.track_terms), _TRACK_BOOST)
+                match, match_args = view.focus_condition("r.text", view.track_terms, categories="r.categories")
+                salience += f" + CASE WHEN {match} THEN %s ELSE 0 END"
+                join_params = (*match_args, TRACK_BOOST)
             select = f"""SELECT r.user_id,r.space_id,r.id,r.content_version,
                 'text' AS field,r.content_version AS text_version,r.valid_at,{salience} AS salience
                 FROM mnemotrace.facts r"""
@@ -239,7 +238,7 @@ def fact_candidates(view, query, config=None, graph=None):
     candidates = tuple(Candidate(
         records[fact.id], semantic.get(fact.id, 0), lexical.get(fact.id, 0), graph_scores.get(fact.id, 0),
         recency(max(0, as_of - time_key(fact.valid_at)), config.recency_tau_days),
-        fact.salience + (_TRACK_BOOST if any(term in fact.text.lower() for term in view.track_terms) else 0),
+        fact.salience + (TRACK_BOOST if matches(fact.text, view.track_terms, fact.categories) else 0),
     ) for fact in sorted(facts, key=lambda fact: fact.id))
     flags = (*corpus.limitations(), *graph.limitations())
     return CandidateBatch(view.snapshot, candidates, not flags, flags)

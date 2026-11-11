@@ -10,18 +10,22 @@ from __future__ import annotations
 from typing import Any, Optional
 
 
-def caption_image(captioner: Any, image_ref: str, prompt: Optional[str] = None) -> str:
-    """为一张图片（data: URL 或 http(s) URL）生成 caption。当没有具备视觉能力的 captioner 或
-    调用失败时返回 "" —— 调用方会替换成占位符，因此坏掉/缺失的模型绝不会中断写入。"""
-    if captioner is None or not image_ref:
-        return ""
+def describe_image(captioner: Any, image_ref: str, prompt: Optional[str] = None) -> tuple[str, str]:
+    """Return caption text and the outcome of the explicit model call."""
     fn = getattr(captioner, "caption", None)
-    if not callable(fn):  # 没有视觉路径的纯文本 LLM
-        return ""
+    if not callable(fn):
+        return "", "model_not_configured"
+    if not image_ref:
+        return "", "empty"
     try:
-        return (fn(image_ref, prompt) or "").strip()
-    except Exception:  # noqa: BLE001 -- 非视觉模型 / 瞬时错误 -> 占位符，绝不崩溃
-        return ""
+        text = (fn(image_ref, prompt) or "").strip()
+    except Exception:  # noqa: BLE001
+        return "", "model_failed"
+    return text, "described" if text else "empty"
+
+
+def caption_image(captioner: Any, image_ref: str, prompt: Optional[str] = None) -> str:
+    return describe_image(captioner, image_ref, prompt)[0]
 
 
 def image_refs(content: Any) -> list[str]:
