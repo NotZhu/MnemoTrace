@@ -4,7 +4,8 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from mnemotrace import MemoryEngine
-from mnemotrace.retrieve.events import event_evidence
+from mnemotrace.store.contracts import FactQuery
+from mnemotrace.util import now
 from tests.embedder_fixtures import MockEmbedder
 from mnemotrace.types import Fact
 
@@ -20,9 +21,8 @@ def summarized(memory, content="RAW_ONLY_8844 was disclosed. " * 100):
 def test_digest_replaces_raw_index_and_retrieval_payload():
     mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
-    assert mem.episodes_vec.get(ep.id) is None
     assert mem.digest_vec.get(ep.id) is not None
-    hit, = mem.retrieve_episodes("connection issue", "u")
+    hit, = mem.retrieve_digests("connection issue", "u")
     assert hit.text == ep.digest and hit.representation == "digest"
     assert not hasattr(hit, "content")
     with pytest.raises(FrozenInstanceError):
@@ -33,41 +33,58 @@ def test_digest_replaces_raw_index_and_retrieval_payload():
     assert mem.get_episode(ep.id, "other") is None
 
 
-@pytest.mark.parametrize("cascade", [False, True])
-def test_contexts_do_not_expand_digest_even_for_provenance(cascade):
-    mem = MemoryEngine(embedder=MockEmbedder())
-    ep = summarized(mem)
-    fact = mem.add_fact("user", "finding", "connection issue resolved", user_id="u", sensitive=False, text='user finding connection issue resolved')
+def test_automatic_recall_returns_source_ids_without_original_text():
+    mem = MemoryEngine()
+    ep = mem.add("ARCHIVE_ONLY_8844", user_id="u", session_id="s")
+    fact = mem.add_fact("user", "finding", "connection issue", user_id="u", sensitive=False,
+                        text="user finding connection issue")
     fact.provenance = [ep.id]
     mem._upsert_fact(fact)
-    for text in (
-        mem.lean_context("connection issue", "u", persona=False, cascade=cascade),
-        mem.context_for("connection issue", "u"),
-        mem._provenance_raw_block(mem._all_facts(), "connection issue", "u", None, set()),
-    ):
-        assert "RAW_ONLY_8844" not in text
-        assert ep.id in text
+    result = mem.search("connection issue", "u")
+    assert result.source_ids == (ep.id,) and not result.sources
+    assert mem.search("connection issue", "u", facts=FactQuery(exclude_sensitive=True)).source_ids == ()
+    assert not mem.search("ARCHIVE_ONLY_8844", "u").facts
+    assert not mem.retrieve_digests("ARCHIVE_ONLY_8844", "u")
+    assert "ARCHIVE_ONLY_8844" not in mem.lean_context("connection issue", "u")
+    assert "ARCHIVE_ONLY_8844" not in mem.context_for("connection issue", "u")
+    assert mem.get_episode(result.source_ids[0], "u")["content"] == ep.content
 
 
 def test_digest_survives_reembedding_without_raw_index():
     mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
-    assert mem.episodes_vec.get(ep.id) is None
     assert mem.digest_vec.get(ep.id) is not None
     mem.reembed()
-    assert mem.episodes_vec.get(ep.id) is None
     assert mem.get_episode(ep.id, "u")["content"] == ep.content
 
 
-def test_raw_keyword_match_returns_only_the_digest():
-    outputs = []
-    for marker in ("RAW_ONLY_8844", "OTHER_PRIVATE_MARKER"):
-        mem = MemoryEngine(embedder=MockEmbedder())
-        ep = summarized(mem, marker * 100)
-        hits = mem.retrieve_episodes("RAW_ONLY_8844", "u")
-        outputs.append([(h.text, h.representation) for h in hits])
-        assert event_evidence(ep).text == ep.digest
-    assert outputs == [[(ep.digest, 'digest')], []]
+@pytest.mark.parametrize("written_at", [3, None])
+def test_snapshot_import_preserves_digest_knowledge_time(written_at):
+    mem = MemoryEngine(embedder=MockEmbedder())
+    mem.import_snapshot({"format_version": 3, "facts": [], "episodes": [{
+        "id": "synthetic", "content": "Synthetic original", "session_id": "test", "role": "user",
+        "event_time": 1, "ingested_at": 2, "digest": "An orchid was planted.",
+        "digest_written_at": written_at,
+    }]})
+    mem.reembed()
+    assert not mem.retrieve_digests("orchid", as_of=2.5)
+    assert bool(mem.retrieve_digests("orchid", as_of=4)) == (written_at is not None)
+    assert mem.retrieve_digests("orchid")[0].text == "An orchid was planted."
+    restored, = mem.episodes_doc.values()
+    assert restored.digest_written_at == written_at
+
+
+def test_digest_keyword_matching_excludes_original_text():
+    mem = MemoryEngine()
+    ep = mem.add("RAW_ONLY_8844", user_id="u")
+    before = now()
+    ep.digest = "A connection issue was resolved."
+    ep.digest_written_at = before + 1
+    mem._sync_episode(ep)
+    assert not mem.retrieve_digests("RAW_ONLY_8844", "u")
+    assert not mem.retrieve_digests("connection issue", "u", as_of=before)
+    hit, = mem.retrieve_digests("connection issue", "u")
+    assert (hit.id, hit.text) == (ep.id, ep.digest)
 
 
 def test_supersession_does_not_rewrite_event_digest():
@@ -106,7 +123,7 @@ def test_default_context_budget_does_not_inspect_summarized_original_length():
     mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
     ep.content = UnreadableOriginal(ep.content)
-    context = mem.lean_context('connection issue', 'u', persona=False)
+    context = mem.lean_context('connection issue', 'u')
     assert ep.digest in context and ep.id in context
 
 
@@ -116,4 +133,4 @@ def test_reembed_discards_orphaned_digest_vector_without_embedding_an_excerpt():
     ep.digest_embedding = [1.0] * mem.embedder.dim
     mem.reembed(MockEmbedder(dim=16))
     assert ep.digest_embedding is None
-    assert mem.digest_vec.get(ep.id) is None and mem.episodes_vec.get(ep.id) is not None
+    assert mem.digest_vec.get(ep.id) is None

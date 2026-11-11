@@ -10,7 +10,7 @@ from .lexical import ANALYZER
 from .records import FACT, ROW_SCOPE, SOURCE, TARGET_COLUMNS, domain, source_digest_join, timestamp
 
 class Corpus:
-    def __init__(self, view, query, kind, *, source_field=None, start=None, end=None):
+    def __init__(self, view, query, kind, *, start=None, end=None):
         self.sql = view._sql
         self.query = query
         self.kind = kind
@@ -43,15 +43,10 @@ class Corpus:
                 params.append(timestamp(end))
             joins, join_params = source_digest_join(facts.known_at)
             select = """SELECT r.user_id,r.space_id,r.id,r.content_version,r.session_id,
-                CASE WHEN s.digest <> '' THEN 'digest' ELSE 'text' END AS field,
-                CASE WHEN s.digest <> '' THEN s.digest_version ELSE r.content_version END AS text_version
+                'digest' AS field, s.digest_version AS text_version
                 FROM mnemotrace.sources r""" + joins + ' AND s.content_version = r.content_version'
-            if source_field == 'digest':
-                conditions.append("s.digest <> ''")
-            elif source_field == 'text':
-                conditions.append("(s.digest IS NULL OR s.digest = '')")
+            conditions.append("s.digest <> ''")
             view.exclude_muted(conditions, params, 'r.content', "coalesce(s.digest, '')")
-        self.source_field = source_field
         scoped = select + ' WHERE ' + ' AND '.join((ROW_SCOPE, *conditions))
         self.eligible = f'WITH eligible AS ({scoped})'
         self.params = (*join_params, *self.sql.scope, *params)
@@ -75,9 +70,6 @@ class Corpus:
         extra = '' if ids is None else 'AND x.id = ANY(%s)'
         limit = query.facts.limit if ids is None else len(ids)
         text_match = '(e.field,e.content_version) = (x.field,x.text_version)'
-        include_original = self.kind == SOURCE and self.source_field != 'text'
-        if include_original:
-            text_match = f"({text_match} OR (e.field = 'text' AND e.content_version = x.content_version))"
         filters = f"""FROM mnemotrace.embeddings e JOIN eligible x
             ON (e.user_id,e.space_id,e.{self.column}) = (x.user_id,x.space_id,x.id) AND {text_match}
             WHERE e.target_kind = %s AND e.model = %s AND e.dimension = %s
@@ -90,11 +82,8 @@ class Corpus:
             # Materialize the scoped vectors before distance ranking, even when a
             # test database has an approximate index over this embedding space.
             score = '1 - (vector OPERATOR(public.<=>) %s::public.vector)'
-            if include_original:
-                score = f'max({score})'
-            group = 'GROUP BY id' if include_original else ''
             return (self.eligible + f""", scoped AS MATERIALIZED (SELECT x.id,e.vector {filters})
-                SELECT id,{score} AS score FROM scoped {group} ORDER BY score DESC,id LIMIT %s""",
+                SELECT id,{score} AS score FROM scoped ORDER BY score DESC,id LIMIT %s""",
                 (*self.params, *params, literal, limit))
         # The dimension is derived from a validated vector length.
         filters += ' AND e.user_id = %s AND e.space_id = %s'
@@ -131,15 +120,12 @@ class Corpus:
         return dict(rows)
 
     def _lexical(self):
-        representations = 'SELECT x.field AS field, x.text_version AS version'
-        if self.kind == SOURCE and self.source_field != 'text':
-            representations += " UNION ALL SELECT 'text', x.content_version WHERE x.field = 'digest'"
         statement = self.eligible + f""", documents AS MATERIALIZED (
             SELECT x.user_id,x.space_id,x.id,d.id AS document_id,d.document_length
-            FROM eligible x CROSS JOIN LATERAL ({representations}) p
+            FROM eligible x
             LEFT JOIN mnemotrace.lexical_documents d
             ON (d.user_id,d.space_id,d.{self.column}) = (x.user_id,x.space_id,x.id)
-            AND (d.field,d.content_version) = (p.field,p.version)
+            AND (d.field,d.content_version) = (x.field,x.text_version)
             AND d.analyzer_version = %s
         )"""
         return statement, (*self.params, ANALYZER)
@@ -152,44 +138,16 @@ class Corpus:
             flags.append('lexical_backfill_pending')
         if self.query.vector is None:
             return tuple(flags)
-        if self.kind == SOURCE:
-            flags.extend(self._source_vector_limitations())
-        elif self.sql.run(self.eligible + """ SELECT EXISTS (SELECT 1 FROM eligible x WHERE NOT EXISTS (
+        if self.sql.run(self.eligible + f""" SELECT EXISTS (SELECT 1 FROM eligible x WHERE NOT EXISTS (
             SELECT 1 FROM mnemotrace.embeddings e
-            WHERE (e.user_id,e.space_id,e.fact_id,e.field,e.content_version) =
+            WHERE (e.user_id,e.space_id,e.{self.column},e.field,e.content_version) =
                 (x.user_id,x.space_id,x.id,x.field,x.text_version)
             AND e.model = %s AND e.dimension = %s))""",
             (*self.params, self.query.embedding_model, len(self.query.vector))).fetchone()[0]:
-            flags.append('fact_vectors_incomplete')
+            flags.append('digest_vectors_incomplete' if self.kind == SOURCE else 'fact_vectors_incomplete')
         if not self.query.exact:
             flags.append('approximate_vector_search')
         return tuple(flags)
-
-    def _source_vector_limitations(self):
-        # Coverage is about original text even when the preferred evidence is a digest.
-        rows = self.sql.run(self.eligible + """ SELECT DISTINCT
-            CASE WHEN o.state = 'failed' THEN 'source_vectors_failed'
-                 WHEN o.state IN ('pending','running','retry_wait') THEN 'source_vectors_processing'
-                 ELSE 'source_vectors_pending_backfill' END
-            FROM eligible x
-            JOIN mnemotrace.memory_spaces s USING (user_id,space_id)
-            JOIN mnemotrace.sessions session USING (user_id,space_id,session_id)
-            LEFT JOIN LATERAL (
-                SELECT task.state FROM mnemotrace.operation_targets t
-                JOIN mnemotrace.operations task USING (user_id,space_id,operation_id)
-                WHERE (t.user_id,t.space_id,t.source_id,t.content_version) =
-                    (x.user_id,x.space_id,x.id,x.content_version)
-                AND task.kind = 'reembed' AND task.embedding_model = %s AND task.embedding_dimension = %s
-                AND task.space_generation = s.space_generation
-                ORDER BY task.operation_id LIMIT 1
-            ) o ON true
-            WHERE NOT EXISTS (SELECT 1 FROM mnemotrace.embeddings e
-                WHERE (e.user_id,e.space_id,e.source_id,e.content_version) =
-                    (x.user_id,x.space_id,x.id,x.content_version)
-                AND e.field = 'text' AND e.model = %s AND e.dimension = %s)
-            ORDER BY 1""",
-            (*self.params, *((self.query.embedding_model, len(self.query.vector)) * 2))).fetchall()
-        return tuple(flag for flag, in rows)
 
     def scalar_candidates(self):
         limit = self.query.facts.limit

@@ -123,10 +123,8 @@ def ingest_history(mem: MemoryEngine, messages: list[dict], pid: str, chunk: int
         text = "\n".join(f"{m.get('role','user')}: {m.get('content','')}" for m in seg if m.get("content"))
         if text.strip():
             eps.append((text, BASE_T + (i + 1) * 3600.0))
-    texts = [t for t, _ in eps]
-    vecs = mem.embedder.embed_batch(texts)
-    for (text, et), vec in zip(eps, vecs):
-        mem.add(text, user_id=pid, session_id=f"seg{int(et)}", role="session", event_time=et, embedding=vec)
+    for text, et in eps:
+        mem.add(text, user_id=pid, session_id=f"seg{int(et)}", role="session", event_time=et)
 
 
 def full_history_text(messages: list[dict], budget: int = 120_000) -> str:
@@ -155,16 +153,13 @@ _MEM_LOCK = threading.Lock()
 _MEM_CACHE: dict[str, MemoryEngine] = {}
 
 
-def mnemotrace_mem(pid: str, messages: list[dict], embedder, extractor, rig) -> MemoryEngine:
+def mnemotrace_mem(pid: str, messages: list[dict], embedder, extractor) -> MemoryEngine:
     with _MEM_LOCK:
         if pid in _MEM_CACHE:
             return _MEM_CACHE[pid]
     mem = MemoryEngine(embedder=embedder, llm=extractor)
     ingest_history(mem, messages, pid)
-    # 在高召回检索集合上做整合依赖具体查询；对 persona 存储我们一次性整合全部（规模不大的）历史，
-    # 让 facts + persona 覆盖查询可能探查的每个偏好。
-    eps = list(mem.episodes_doc.values())
-    mem.consolidate_full(fact_episodes=eps[: rig["extract_k"]] if rig["extract_k"] else eps, digest_episodes=eps)
+    mem.consolidate_full()
     with _MEM_LOCK:
         _MEM_CACHE[pid] = mem
     return mem
@@ -179,10 +174,8 @@ def run():
     ap.add_argument("--extractor", default="volcano:doubao-seed-1-6-flash-250615")
     ap.add_argument("--embedder", default="bge-small")
     ap.add_argument("--workers", type=int, default=6)
-    ap.add_argument("--extract-k", type=int, default=10, dest="extract_k")
     ap.add_argument("--topk", type=int, default=12)
     ap.add_argument("--n-digests", type=int, default=15, dest="n_digests")
-    ap.add_argument("--chunks", type=int, default=3)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
@@ -192,7 +185,7 @@ def run():
     embedder = make_embedder(args.embedder)
     answerer = make_llm(args.answerer, max_tokens=8, num_retries=3, timeout=60)
     extractor = make_llm(args.extractor, max_tokens=512, num_retries=3, timeout=60)
-    rig = {"extract_k": args.extract_k, "topk": args.topk, "n_digests": args.n_digests, "chunks": args.chunks}
+    rig = {"topk": args.topk, "n_digests": args.n_digests}
 
     items = load_items(args.n_personas, args.per_persona, args.seed)
     print(f"PersonaMem-v2 | {len(items)} questions / {args.n_personas} personas | systems={systems}", flush=True)
@@ -228,9 +221,9 @@ def run():
                 if sysname == "full_context":
                     ctx = full_history_text(msgs)
                 else:
-                    mem = mnemotrace_mem(pid, msgs, embedder, extractor, rig)
+                    mem = mnemotrace_mem(pid, msgs, embedder, extractor)
                     ctx = mem.lean_context(it["query"], user_id=pid, n_facts=rig["topk"],
-                                           n_digests=rig["n_digests"], n_chunks=rig["chunks"], persona=True)
+                                           n_digests=rig["n_digests"])
                 pick = ask_mc(answerer, ctx, it["query"], option_texts)
                 res[sysname] = {"ok": pick == correct_idx, "pick": pick, "tok": len(ctx.split()),
                                 "lat": (time.perf_counter() - t0) * 1000.0}

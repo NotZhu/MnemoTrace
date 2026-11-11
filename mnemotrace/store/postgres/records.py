@@ -16,7 +16,7 @@ TABLES = dict(zip(RecordKind, (
 ), strict=True))
 TARGET_COLUMNS = {SOURCE: 'source_id', FACT: 'fact_id', ENTITY: 'entity_id'}
 TIMES = frozenset(('event_time', 'ingested_at', 'created_at', 'valid_at', 'invalid_at',
-                   'expired_at', 'approved_at', 'last_access', 'expires_at', 'detected_at'))
+                   'expired_at', 'approved_at', 'last_access', 'expires_at', 'detected_at', 'digest_written_at'))
 SCOPE = 'user_id = %s AND space_id = %s'
 ROW_SCOPE = 'r.user_id = %s AND r.space_id = %s'
 JSON_COLUMNS = {'profile_data', 'metadata', 'coverage', 'digest_coverage', 'settings', 'stats',
@@ -72,7 +72,7 @@ def columns(record, values):
     kind = record.ref.kind
     excluded = {'id', 'user_id', 'embedding'}
     if kind == SOURCE:
-        excluded.update(('digest', 'digest_embedding', 'coverage', 'digest_coverage', 'consolidated'))
+        excluded.update(('digest', 'digest_embedding', 'coverage', 'digest_coverage', 'consolidated', 'digest_written_at'))
     if kind == FACT:
         excluded.add('provenance')
     data = {key: timestamp(value) if key in TIMES else value
@@ -124,7 +124,7 @@ class ScopedSQL:
                order_by='r.id'):
         extra, joins = '', ''
         join_params = ()
-        if kind in TARGET_COLUMNS:
+        if kind in (FACT, ENTITY):
             extra += ', NULL AS embedding'
         if kind == FACT:
             extra += """, ARRAY(SELECT p.source_id::text FROM mnemotrace.fact_sources p
@@ -134,7 +134,7 @@ class ScopedSQL:
             extra += """, coalesce(s.digest, '') AS digest, s.coverage, s.digest_coverage,
                 CASE WHEN s.digest <> '' THEN s.digest_version END AS digest_version,
                 coalesce(s.processing_state = 'completed', false) AS consolidated,
-                s.content_version AS digest_content_version, NULL AS digest_embedding"""
+                s.content_version AS digest_content_version, s.digest_written_at, NULL AS digest_embedding"""
             joins, join_params = source_digest_join(digest_known_at)
         where = ' AND '.join((ROW_SCOPE, *conditions))
         query = f'SELECT r.*{extra} FROM mnemotrace.{TABLES[kind]} r{joins} WHERE {where} ORDER BY {order_by}'

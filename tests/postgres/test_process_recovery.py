@@ -392,9 +392,6 @@ def test_model_call_respects_concurrent_business_change(memory, cluster, change)
 
 
 def _pending_write(memory, kind):
-    if kind == 'vector':
-        source = memory.remember_raw('Synthetic input for a source vector', 'chat')
-        return memory.source_vector_operation(source.id).operation_id
     if kind == 'digest':
         from mnemotrace.store.contracts import ChangeSet, CommitConditions, OperationKind, OperationSpec, SourceVersion
         from mnemotrace.store.postgres.dao import new_operation_id
@@ -473,7 +470,7 @@ def _blocked_deletion(cluster, context, scope):
 
 
 @pytest.mark.parametrize('scope', ['clear', 'space', 'account'])
-@pytest.mark.parametrize('kind', ['extract', 'core', 'digest', 'vector'])
+@pytest.mark.parametrize('kind', ['extract', 'core', 'digest'])
 def test_delete_prevents_late_processing_writes(memory, cluster, runtime, spaces, accounts, scope, kind):
     user_id = memory.context.user_id
     key = accounts.issue_key(user_id)

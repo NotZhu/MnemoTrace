@@ -9,9 +9,9 @@ def test_reembed_migrates_every_vector():
     seed_digests(memory, list(memory.episodes_doc.values()))
     raw = memory.add("Synthetic raw event", user_id="u")
     counts = memory.reembed(MockEmbedder(128))
-    assert counts["facts"] >= 1 and counts["episodes"] >= 1 and counts["digests"] >= 1
+    assert counts["facts"] >= 1 and counts["digests"] >= 1
     assert all(len(fact.embedding) == 128 for fact in memory.fact_store.values())
-    raw_result, = memory.episodes_vec.values()
-    assert raw_result.id == raw.id and len(raw_result.embedding) == 128
+    assert memory.get_episode(raw.id, "u")["content"] == raw.content
+    assert not memory.retrieve_digests(raw.content, "u")
     assert all(len(episode.digest_embedding) == 128 for episode in memory.digest_vec.values())
     assert memory.search("where do I live", user_id="u").facts

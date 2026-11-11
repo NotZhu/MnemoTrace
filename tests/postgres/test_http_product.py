@@ -157,12 +157,18 @@ def test_http_handoff_across_agent_sessions_in_same_namespace(client):
 
     recalled = client.post("/v1/recall", json={
         "query": "What launch checklist decision did Codex record?",
-
-        "n_chunks": 3,
+        "n_digests": 3,
     }, headers=h).json()
 
     assert "committed eval logs" in recalled["context"]
-    assert codex_session in recalled["context"]
+    evidence = client.post("/v1/recall", json={
+        "query": "What launch checklist decision did Codex record?",
+        "lean": False,
+    }, headers=h).json()
+    assert evidence["source_ids"] == written["source_ids"]
+    assert evidence["sources"] == []
+    original = client.get(f"/v1/episodes/{evidence['source_ids'][0]}", headers=h).json()
+    assert original["session_id"] == codex_session
 
 
 def test_session_report_endpoint_audits_saved_facts(client):
@@ -567,7 +573,7 @@ def test_focus_filters_retrieval_and_tracks_without_rewriting_facts(client, prod
     assert lean.is_success and "violet cactus" not in lean.json()["context"]
     direct = client.post("/v1/recall", json={"query": query, "lean": False}, headers=h)
     assert direct.is_success and direct.json()["facts"] == []
-    assert not memory.retrieve_episodes(query).episodes
+    assert not memory.retrieve_digests(query).digests
     assert fact_id in {row["id"] for row in client.get("/v1/memories", headers=h).json()["facts"]}
 
 
@@ -791,7 +797,7 @@ def test_recall_endpoint_supports_as_of_for_search_and_lean_context(client):
         "query": "Where does Wei work?",
         "lean": True,
         "answer": True,
-        "n_chunks": 0,
+        "n_digests": 0,
         "as_of": 1_700_864_000.0,
     }, headers=h).json()
     assert ctx["as_of"] == 1_700_864_000.0
@@ -802,7 +808,7 @@ def test_recall_endpoint_supports_as_of_for_search_and_lean_context(client):
         "query": "Where does Wei work?",
         "lean": True,
         "answer": True,
-        "n_chunks": 0,
+        "n_digests": 0,
     }, headers=h).json()
     assert current_ctx["as_of"] is None
     assert current_ctx["full_tokens"] > ctx["full_tokens"]
@@ -816,7 +822,7 @@ def test_recall_endpoint_can_redact_sensitive_facts(client):
     ctx = client.post("/v1/recall", json={
         "query": "what do you know about me?",
         "lean": True,
-        "n_chunks": 0,
+        "n_digests": 0,
         "redact_sensitive": True,
     }, headers=h).json()
     assert ctx["redacted_sensitive"] is True

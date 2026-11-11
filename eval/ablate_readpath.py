@@ -40,7 +40,7 @@ from eval.longmemeval import ingest, load_data  # noqa: E402
 # 而不是 25 个不分青红皂白的布尔值。
 FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
     "graph": ("graph_proximity", "graph_relation_awareness", "graph_path_reinforcement"),
-    "evidence": ("evidence_budgeting", "chain_evidence", "provenance_chunk_promotion", "provenance_evidence"),
+    "evidence": ("chain_evidence",),
     "preference extraction": (
     ),
     "derived layers": ("digest_fallback",),
@@ -73,15 +73,12 @@ def answer_in_context(context: str, gold: str) -> bool:
 
 
 def context_for_item(item: dict, embedder, extractor, ablations: tuple[str, ...],
-                     topk: int, chunks: int, extract_k: int) -> tuple[str, int]:
+                     topk: int, n_digests: int) -> tuple[str, int]:
     qid, q = item["question_id"], item["question"]
     mem = MemoryEngine(config=mnemotrace_config(ablations=ablations), embedder=embedder, llm=extractor)
     ingest(mem, item, qid)
-    if extract_k > 0:
-        mem.consolidate(mem.retrieve_episodes(q, qid, extract_k))
-    else:
-        mem.consolidate()
-    ctx = mem.context_for(q, user_id=qid, top_k=topk, k_chunks=chunks)
+    mem.consolidate_full()
+    ctx = mem.context_for(q, user_id=qid, top_k=topk, k_digests=n_digests)
     return ctx, len(ctx) // 4  # 粗略的 token 估算，只用于相对成本一列
 
 
@@ -94,7 +91,7 @@ def run_variant(items, embedder, extractor, ablations, args, label) -> dict:
     def one(item):
         try:
             ctx, tok = context_for_item(item, embedder, extractor, ablations,
-                                        args.topk, args.chunks, args.extract_k)
+                                        args.topk, args.n_digests)
             return answer_in_context(ctx, item.get("answer", "")), tok, None
         except Exception as exc:  # noqa: BLE001 — 一个坏条目不能毁掉整轮扫描
             return False, 0, f"{type(exc).__name__}: {exc}"
@@ -119,8 +116,7 @@ def main() -> int:
     ap.add_argument("--extractor", default="volcano:doubao-seed-1-6-flash-250615")
     ap.add_argument("--embedder", default="bge-small")
     ap.add_argument("--topk", type=int, default=15)
-    ap.add_argument("--chunks", type=int, default=2)
-    ap.add_argument("--extract-k", type=int, default=8)
+    ap.add_argument("--n-digests", type=int, default=2)
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--features", default="", help="comma-separated subset (default: all)")
     ap.add_argument("--repeat-baseline", type=int, default=2,
@@ -165,8 +161,7 @@ def main() -> int:
             fh.write(json.dumps({"kind": "readpath_ablation_meta", "items": len(items),
                                  "baseline_rate": base_rate, "noise_band_pp": noise * 100,
                                  "extractor": args.extractor, "embedder": args.embedder,
-                                 "topk": args.topk, "chunks": args.chunks,
-                                 "extract_k": args.extract_k}) + "\n")
+                                 "topk": args.topk, "n_digests": args.n_digests}) + "\n")
             for r in rows:
                 fh.write(json.dumps(r) + "\n")
         print(f"\nwrote {args.out}")

@@ -44,13 +44,13 @@ class AgenticRetriever:
         raw = self.llm.complete(DECOMP_TEMPLATE.format(query=query, hint=hint_block), system=DECOMP_SYSTEM)
         return _parse_query_list(raw, query)[: self.max_subqueries]
 
-    def gather_episodes(self, query: str, user_id: str, k: int, as_of: float | None = None):
+    def gather_digests(self, query: str, user_id: str, k: int, as_of: float | None = None):
         """跨分解出的子查询 + 一轮后续检索,返回最多 k 条 episode。"""
         seen: dict = {}
 
         def pull(qs: list[str]):
             for sq in qs:
-                for ep in self.mem.retrieve_episodes(sq, user_id, self.per_query_k, as_of=as_of):
+                for ep in self.mem.retrieve_digests(sq, user_id, self.per_query_k, as_of=as_of):
                     seen.setdefault(ep.id, ep)
 
         pull(self._subqueries(query))

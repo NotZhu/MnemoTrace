@@ -5,14 +5,13 @@ import json
 from uuid import uuid4
 
 from ...consolidate.pipeline import content_hash, source
-from ..contracts import CommitConditions, CommitReceipt, EmbeddingWrite, ExtractionProduct, Lease
-from ..contracts import OperationKind, OperationResult, RecordRef
+from ..contracts import CommitConditions, ExtractionProduct, Lease
+from ..contracts import OperationKind, OperationResult
 from ..contracts import OperationSpec, OperationStats, ProcessingPhase, ProcessingState, SourceVersion, StoredRecord
 from .dao import Applied, _apply_changes, _space_row, new_operation_id
 from .errors import DataCorruption, VersionConflict
-from .lexical import project_text
 from .records import SCOPE, SOURCE, domain
-from .writes import allocate_sequence, append_input, commit_task, enqueue, queue_source_vector, save_embedding, store_messages
+from .writes import allocate_sequence, append_input, enqueue, store_messages
 
 IDLE_SECONDS = 60
 from ...llm.failures import ATTEMPT_LIMIT, RETRY_DELAYS
@@ -21,7 +20,7 @@ LEASE_SECONDS = 60
 RENEW_SECONDS = 20
 ACTIVE = ('pending', 'retry_wait', 'running')
 MODEL_OPERATIONS = ('extract', 'digest', 'profile')
-RUNNABLE = (*MODEL_OPERATIONS, 'reembed')
+RUNNABLE = MODEL_OPERATIONS
 
 
 def _attempt_counter(row):
@@ -86,21 +85,6 @@ class Tasks:
                             (*sql.scope, session_id, session_id, after_id, after_id, limit))
             return self._results(sql, rows)
 
-    def source_vector_operation(self, source_id, embedding):
-        with self.dao._transaction(read_only=True) as sql:
-            rows = sql.rows("""SELECT o.* FROM mnemotrace.operation_targets t
-                JOIN mnemotrace.operations o USING (user_id,space_id,operation_id)
-                JOIN mnemotrace.sources source ON (source.user_id,source.space_id,source.id,source.content_version) =
-                    (t.user_id,t.space_id,t.source_id,t.content_version)
-                JOIN mnemotrace.memory_spaces s ON (s.user_id,s.space_id) = (o.user_id,o.space_id)
-                JOIN mnemotrace.sessions session ON (session.user_id,session.space_id,session.session_id) =
-                    (o.user_id,o.space_id,o.session_id)
-                WHERE t.user_id = %s AND t.space_id = %s AND t.source_id = %s
-                AND o.embedding_model = %s AND o.embedding_dimension = %s
-                AND o.space_generation = s.space_generation
-                ORDER BY o.operation_id LIMIT 1""", (*sql.scope, source_id, *embedding))
-            return _result(rows[0]) if rows else None
-
     def freeze(self, operation_ids, session_id, include_digests):
         with self.dao._transaction() as sql:
             if operation_ids is None:
@@ -134,10 +118,10 @@ class Tasks:
                 (*sql.scope, list(operation_ids), list(ACTIVE))).fetchall()
             return tuple(row[0] for row in rows)
 
-    def accept(self, session_id, messages, check_model, fit, *, immediate=False, embedding=None, source_metadata=None):
+    def accept(self, session_id, messages, check_model, fit, *, immediate=False, source_metadata=None):
         def apply(sql, revision, generation, settings):
             ids, fresh = store_messages(sql, session_id, messages, check_model=check_model,
-                                        generation=generation, embedding=embedding, source_metadata=source_metadata)
+                                        source_metadata=source_metadata)
             records = (sql.get(SOURCE, source_id) for source_id in fresh)
             new_records = [record for record in records if domain(record).extract]
             if new_records:
@@ -150,8 +134,7 @@ class Tasks:
         with self.dao._transaction(read_only=True) as sql:
             return receipt, self._associated(sql, receipt.source_ids)
 
-    def accept_source(self, record, check_model, *, embedding=None,
-                      kind=OperationKind.EXTRACT):
+    def accept_source(self, record, check_model, *, kind=OperationKind.EXTRACT):
         episode = domain(record)
         operation_id = new_operation_id() if kind is not None else None
         acceptance_id = 'accept_' + operation_id if operation_id is not None else new_operation_id()
@@ -164,9 +147,6 @@ class Tasks:
             episode.sequence = allocate_sequence(sql, episode.session_id)
             stored = replace(StoredRecord.from_record(sql.context, episode), agent_id=record.agent_id)
             sql.write_record(stored, insert=True)
-            project_text(sql, SOURCE, episode.id, stored.content_version, {'content': episode.content})
-            if embedding is not None:
-                queue_source_vector(sql, episode.id, episode.session_id, stored.content_version, generation, embedding)
             if kind is not None:
                 enqueue(sql, _spec(operation_id, kind, episode.session_id, (stored,)), generation,
                         ready_at=sql.run('SELECT clock_timestamp()').fetchone()[0])
@@ -210,12 +190,10 @@ class Tasks:
             if ready:
                 open_id, current = None, []
 
-    def claim(self, operation_id, *, force=False, embedding=None):
+    def claim(self, operation_id, *, force=False):
         with self.dao._transaction() as sql:
             row = _operation(sql, operation_id)
             if not row or row['kind'] not in RUNNABLE or row['state'] not in ACTIVE:
-                return None
-            if row['kind'] == 'reembed' and (row['embedding_model'], row['embedding_dimension']) != embedding:
                 return None
             session = row['session_id']
             sql.run(f'SELECT session_id FROM mnemotrace.sessions WHERE {SCOPE} AND session_id = %s FOR UPDATE',
@@ -234,7 +212,7 @@ class Tasks:
                     "AND kind = 'extract' AND sequence < %s AND state = ANY(%s) LIMIT 1",
                     (*sql.scope, session, row['sequence'], list(ACTIVE))).fetchone():
                 return None
-            phase = 'embed' if row['kind'] == 'reembed' else 'generate' if row['phase'] == 'queued' else row['phase']
+            phase = 'generate' if row['phase'] == 'queued' else row['phase']
             counter = _attempt_counter({**row, 'phase': phase})
             if row[counter] >= ATTEMPT_LIMIT:
                 self._release(sql, row, 'failed', 'attempts_exhausted')
@@ -309,8 +287,6 @@ class Tasks:
         if row['space_generation'] != view.snapshot.space_generation:
             raise VersionConflict('Task generation changed')
         snapshot = replace(view.snapshot, session_id=row['session_id'])
-        if row['kind'] == 'reembed':
-            return snapshot, row, (self.source_vector_input(view, lease.operation_id),)
         refs = _sources(sql, lease.operation_id)
         if row['kind'] == 'digest' and len(refs) != 1:
             raise DataCorruption('Digest operation requires exactly one source')
@@ -319,31 +295,6 @@ class Tasks:
                            for s in refs):
             raise DataCorruption('Invalid operation source references')
         return snapshot, row, tuple(records[s.source_id] for s in refs)
-
-    def source_vector_input(self, view, operation_id):
-        rows = view._sql.run(f'SELECT source_id,content_version FROM mnemotrace.operation_targets '
-                             f'WHERE {SCOPE} AND operation_id = %s',
-                             (*view._sql.scope, operation_id)).fetchall()
-        if len(rows) != 1 or rows[0][0] is None:
-            raise DataCorruption('Source embedding requires exactly one source target')
-        source_id, version = rows[0]
-        record = view.get(SOURCE, source_id)
-        if record is None or record.content_version != version:
-            raise VersionConflict('Embedding source changed')
-        return record
-
-    def commit_source_vector(self, lease, record, model, vector):
-        with self.dao._transaction() as sql:
-            row, _ = self._leased(sql, lease)
-            if (row['kind'], row['embedding_model'], row['embedding_dimension']) != ('reembed', model, len(vector)):
-                raise DataCorruption('Embedding task model or dimension differs from its output')
-            target = sql.run(f'SELECT source_id,content_version FROM mnemotrace.operation_targets '
-                             f'WHERE {SCOPE} AND operation_id = %s', (*sql.scope, lease.operation_id)).fetchall()
-            if target != [(record.ref.record_id, record.content_version)]:
-                raise VersionConflict('Embedding task target changed')
-            ref = RecordRef(sql.context, SOURCE, record.ref.record_id)
-            save_embedding(sql, EmbeddingWrite(ref, record.content_version, model, vector))
-            commit_task(sql, lease, CommitReceipt(lease.operation_id, _space_row(sql)[0]))
 
     def product(self, view, snapshot, lease, row):
         sql = view._sql

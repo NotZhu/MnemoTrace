@@ -14,7 +14,7 @@ export const DEFAULT_SPACE_PREFERENCES = {
   graph: { liveOnly: true, hideSensitive: false },
   facts: { status: 'live' as 'live' | 'superseded' | 'all', categories: [] as Category[], hideSensitive: false },
   journal: { showSuperseded: false, categories: [] as Category[] },
-  ask: { chunks: 6, redactSensitive: false },
+  ask: { digests: 20, redactSensitive: false },
 }
 type SpacePreferences = typeof DEFAULT_SPACE_PREFERENCES
 type Page = keyof SpacePreferences
@@ -55,7 +55,7 @@ function validateSpace(value: unknown): SpacePreferences {
       hideSensitive: boolean(facts.hideSensitive, false),
     },
     journal: { showSuperseded: boolean(journal.showSuperseded, false), categories: savedCategories(journal.categories) },
-    ask: { chunks: Number.isInteger(ask.chunks) ? number(ask.chunks, 2, 12, 6) : 6,
+    ask: { digests: Number.isInteger(ask.digests) ? number(ask.digests, 0, 50, 20) : 20,
       redactSensitive: boolean(ask.redactSensitive, false) },
   }
 }

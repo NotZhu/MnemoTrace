@@ -149,12 +149,13 @@ def validate_coverage(value: Any, path: str) -> None:
 _EPISODE = {
     "id": _identifier, "content": _string, "user_id": _identifier,
     "session_id": _identifier, "role": _nullable(_identifier), "event_time": _TIME_OR_NULL,
-    "ingested_at": _number, "embedding": _VECTOR, "consolidated": _boolean,
+    "ingested_at": _number, "consolidated": _boolean,
     "digest": _string, "digest_embedding": _VECTOR, "metadata": _metadata,
     "source_kind": _choice("dialogue", "note"), "extract": _boolean,
     "message_id": _ID_OR_NULL, "sequence": _nullable(_count),
     "coverage": _nullable(validate_coverage),
     "digest_coverage": _nullable(validate_coverage),
+    "digest_written_at": _TIME_OR_NULL,
 }
 _FACT = {
     "id": _identifier, "subject": _identifier, "predicate": _identifier, "object": _identifier,
@@ -249,6 +250,7 @@ _IMPORT_FACT.update(status=_choice("live", "superseded"), valid_at_h=_string,
                     invalid_at_h=_nullable(_string))
 _IMPORT_EPISODE = {key: _EPISODE[key] for key in (
     "id", "content", "session_id", "role", "event_time", "ingested_at", "digest", "coverage", "digest_coverage",
+    "digest_written_at",
 )}
 
 
@@ -274,7 +276,8 @@ def validate_snapshot(snapshot: Any) -> dict:
             _fail(f"snapshot.{key}", "missing required field")
     result = {}
     for name, spec, optional in (("facts", _IMPORT_FACT, ("status", "valid_at_h", "invalid_at_h", "source_roles", "sensitive_override", "review_pending", "approved_at")),
-                                 ("episodes", _IMPORT_EPISODE, ("digest", "coverage", "digest_coverage", "ingested_at")),
+                                 ("episodes", _IMPORT_EPISODE, ("digest", "coverage", "digest_coverage", "ingested_at",
+                                                                "digest_written_at")),
                                  ("conflicts", _IMPORT_CONFLICT, ())):
         rows = snapshot.get(name, [])
         if not isinstance(rows, list):

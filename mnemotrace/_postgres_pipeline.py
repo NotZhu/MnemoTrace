@@ -220,7 +220,7 @@ class PostgresPipeline:
             from .store.postgres.profile import run
             return run(self, operation_id)
         space = (self.model, self.embedder.dim) if self.embedder is not None else None
-        lease = self.tasks.claim(operation_id, force=force, embedding=space)
+        lease = self.tasks.claim(operation_id, force=force)
         if lease is None:
             return False
         phase = 'generate'
@@ -229,34 +229,28 @@ class PostgresPipeline:
                 with self.dao.read_snapshot() as view:
                     snapshot, row, records = self.tasks.load(view, lease)
                     phase = row['phase']
-                    if row['kind'] != 'reembed':
-                        self.require_model()
-                        settings = view.settings()
-                        fingerprint = self._fingerprint(settings)
-                        product = self.tasks.product(view, snapshot, lease, row)
-                        if product is None:
-                            prepared = self._prepare(view, row, records, settings, fingerprint)
-                        else:
-                            source_records = view.sources(tuple(ref.source_id for ref in product.conditions.sources))
-                            versions = tuple(SourceVersion(record.ref.record_id, record.content_version)
-                                             for record in source_records)
-                            reuse = product.reusable(snapshot, versions, fingerprint)
-                            if reuse:
-                                data, result = json.loads(product.input_json), json.loads(product.result_json)
-                                if row['kind'] == 'extract':
-                                    now = view.at.timestamp()
-                                    facts = materialize_facts(snapshot.context.user_id, data, result, now)
-                                    history = view.merge_history({fact.subject.strip().lower() for fact in facts})
-                                    vectors = view.fact_vectors(history, *space) if space is not None else {}
-                                    merged = facts, history, vectors, now, view.conflict_pairs(history)
-                                else:
-                                    digest_base = view.digest_version(records[0].ref.record_id)
-                if row['kind'] == 'reembed':
-                    record, = records
-                    text = domain(record).content
-                    vector = embed_texts(self.embedder, [text])[text]
-                    self.tasks.commit_source_vector(lease, record, self.model, tuple(vector))
-                elif product is None:
+                    self.require_model()
+                    settings = view.settings()
+                    fingerprint = self._fingerprint(settings)
+                    product = self.tasks.product(view, snapshot, lease, row)
+                    if product is None:
+                        prepared = self._prepare(view, row, records, settings, fingerprint)
+                    else:
+                        source_records = view.sources(tuple(ref.source_id for ref in product.conditions.sources))
+                        versions = tuple(SourceVersion(record.ref.record_id, record.content_version)
+                                         for record in source_records)
+                        reuse = product.reusable(snapshot, versions, fingerprint)
+                        if reuse:
+                            data, result = json.loads(product.input_json), json.loads(product.result_json)
+                            if row['kind'] == 'extract':
+                                now = view.at.timestamp()
+                                facts = materialize_facts(snapshot.context.user_id, data, result, now)
+                                history = view.merge_history({fact.subject.strip().lower() for fact in facts})
+                                vectors = view.fact_vectors(history, *space) if space is not None else {}
+                                merged = facts, history, vectors, now, view.conflict_pairs(history)
+                            else:
+                                digest_base = view.digest_version(records[0].ref.record_id)
+                if product is None:
                     self._generate(lease, snapshot, settings, fingerprint, prepared)
                 elif not reuse:
                     self.tasks.regenerate(lease)

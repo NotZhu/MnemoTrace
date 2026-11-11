@@ -74,7 +74,7 @@ def test_chat_completions_endpoint_supports_sensitive_redaction(client_with_llm)
     r = c.post("/v1/chat/completions", json={
         "model": "mnemotrace",
         "messages": [{"role": "user", "content": "what do you know about me?"}],
-        "memory": {"redact_sensitive": True, "n_chunks": 0, "remember": False},
+        "memory": {"redact_sensitive": True, "n_digests": 0, "remember": False},
     }, headers=h)
 
     assert r.status_code == 200

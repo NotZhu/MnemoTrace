@@ -91,7 +91,7 @@ def chat_completion(
     svc: Any,
     user: str,
     body: dict,
-    n_chunks: int = 6,
+    n_digests: int = 20,
     do_recall: bool = True,
     as_of: Optional[float] = None,
     redact_sensitive: bool = False,
@@ -111,7 +111,7 @@ def chat_completion(
                 user,
                 query,
                 lean=True,
-                n_chunks=n_chunks,
+                n_digests=n_digests,
 
                 as_of=as_of,
                 redact_sensitive=redact_sensitive,

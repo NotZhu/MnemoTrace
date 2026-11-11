@@ -77,9 +77,9 @@ def test_assistant_evidence_stays_in_session_until_user_confirmation(processing)
     send('report', 'assistant', REPORT, 250)
     old, = memory.facts()
     assert old.object == 'npm'
-    assert any(ep.id == proposal and ep.role == 'assistant' for ep in memory.retrieve_episodes(PROPOSAL).episodes)
+    assert memory.get_episode(proposal).role == 'assistant'
     context = memory.context_for(PROPOSAL, top_k=0).context
-    assert 'role=assistant' in context and PROPOSAL in context
+    assert PROPOSAL not in context
     assert memory.profile()["updated_at"] is None
 
     confirmation = send('confirmation', 'user', 'Yes, use that by default.', 300)
@@ -360,12 +360,12 @@ def test_rejected_source_erasure_preserves_digest_and_its_context(processing):
                 JOIN mnemotrace.lexical_terms t ON (t.user_id,t.space_id,t.document_id) = (d.user_id,d.space_id,d.id)
                 WHERE d.user_id = %s AND d.space_id = %s AND d.source_id = %s""", (*sql.scope, target))}
 
-    assert lexical_fields() == {'text', 'digest'}
+    assert lexical_fields() == {'digest'}
     with pytest.raises(ValueError, match='only supports'):
         memory.erase(RecordRef(memory.context, RecordKind.SOURCE, prior))
     assert memory.get_episode(prior) is not None
     assert memory.get_episode(target).digest == 'Recorded detail'
-    assert lexical_fields() == {'text', 'digest'}
+    assert lexical_fields() == {'digest'}
     replay = memory.remember_messages('chat', (dialogue('target', 'A long synthetic record with details'),))
     assert replay['operation_ids'] == second['operation_ids']
 

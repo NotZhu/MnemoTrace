@@ -210,7 +210,7 @@ CREATE TABLE mnemotrace.embeddings (
     CHECK (num_nonnulls(source_id, fact_id, entity_id) = 1),
     CHECK ((target_kind = 'Episode' AND source_id IS NOT NULL) OR (target_kind = 'Fact' AND fact_id IS NOT NULL)
         OR (target_kind = 'Entity' AND entity_id IS NOT NULL)),
-    CHECK (field <> 'digest' OR source_id IS NOT NULL),
+    CHECK ((field = 'digest') = (source_id IS NOT NULL)),
     UNIQUE NULLS NOT DISTINCT(user_id, space_id, source_id, fact_id, entity_id, field, model, dimension, content_version),
     FOREIGN KEY(user_id, space_id, source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, fact_id) REFERENCES mnemotrace.facts ON DELETE CASCADE,
@@ -251,7 +251,7 @@ CREATE TABLE mnemotrace.operations (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
     operation_id mnemotrace.identifier NOT NULL,
-    kind text NOT NULL CHECK (kind IN ('extract','digest','outcomes','conflicts','reembed','graph','profile')),
+    kind text NOT NULL CHECK (kind IN ('extract','digest','outcomes','conflicts','graph','profile')),
     session_id mnemotrace.identifier,
     sequence mnemotrace.counter,
     state text NOT NULL CHECK (state IN ('pending','running','retry_wait','failed','completed','cancelled')),

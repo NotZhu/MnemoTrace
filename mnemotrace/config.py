@@ -56,13 +56,10 @@ class Config:
     digest_max_output_tokens: int = 1024
 
     # --- 上下文与证据 ---
-    evidence_budgeting: bool = True  # 按证据块优先级分配上下文预算
     digest_fallback: bool = True  # 事实无法回答时尝试从会话摘要中作答
     digest_fallback_k: int = 6  # 摘要回退最多检查的候选数量
     chain_evidence: bool = True  # 为检索事实附带有限长度的替代与演化链
     chain_current_first: bool = True  # 演化链先展示每个槽位的当前值，再展示历史
-    provenance_chunk_promotion: bool = True  # 将事实的来源事件提升为原始文本片段
-    provenance_evidence: bool = True  # 为检索事实附带简洁的来源事件
 
     # --- 图检索 ---
     max_hops: int = 2  # 混合召回中图信号的最大跳数

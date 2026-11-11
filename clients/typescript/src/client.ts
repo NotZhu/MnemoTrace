@@ -229,11 +229,11 @@ export class MnemoTraceClient {
   }
 
   recall(query: string, options: ({ spaceId: string; spaceIds?: never } | { spaceIds: string[]; spaceId?: never }) & {
-    nChunks?: number; asOf?: number; redactSensitive?: boolean; answer?: boolean
+    nDigests?: number; asOf?: number; redactSensitive?: boolean; answer?: boolean
     state?: StructuredReadOptions["state"]; validAt?: number; knownAt?: number
   }): Promise<RecallResult> {
     return this.post('/v1/recall', {
-      query, lean: true, n_chunks: options.nChunks, answer: options.answer,
+      query, lean: true, n_digests: options.nDigests, answer: options.answer,
       as_of: options.asOf, state: options.state, valid_at: options.validAt, known_at: options.knownAt, redact_sensitive: options.redactSensitive, space_ids: options.spaceIds,
     }, options.spaceId)
   }

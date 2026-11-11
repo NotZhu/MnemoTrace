@@ -205,15 +205,13 @@ class Database:
                 raise SpaceNotFound('Space unavailable')
             yield conn, SpaceContext(user_id, space_id)
 
-    def discover_processing(self, limit=32, *, embedding=None, include_extraction=True):
+    def discover_processing(self, limit=32):
         if self.purpose != 'discovery':
             raise DatabaseConfigurationError('Task discovery requires worker discovery credentials')
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError('Expected discovery batch size from 1 to 100')
-        model, dimension = embedding if embedding is not None else (None, None)
         with self._transaction(read_only=True) as conn:
-            rows = conn.execute('SELECT * FROM mnemotrace.discover_processing(%s,%s,%s,%s)',
-                                (limit, model, dimension, include_extraction)).fetchall()
+            rows = conn.execute('SELECT * FROM mnemotrace.discover_processing(%s)', (limit,)).fetchall()
             return tuple((SpaceContext(user_id, space_id), operation_id) for user_id, space_id, operation_id in rows)
 
     @contextmanager

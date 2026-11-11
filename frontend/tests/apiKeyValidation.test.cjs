@@ -41,6 +41,15 @@ function client(key) {
     loggedOut: () => loggedOut, authorization: () => authorization, lastRequest: () => lastRequest }
 }
 
+test('召回请求保留调用方的问答开关', async () => {
+  const c = client('synthetic-key')
+  for (const answer of [true, false]) {
+    await c.api.recall('Synthetic question', { answer })
+    assert.equal(c.lastRequest().url, '/v1/recall')
+    assert.equal(JSON.parse(c.lastRequest().init.body).answer, answer)
+  }
+})
+
 test('画像刷新发送空间请求体，读取画像使用缓存接口', async () => {
   const c = client('synthetic-key')
   await c.api.refreshProfile()

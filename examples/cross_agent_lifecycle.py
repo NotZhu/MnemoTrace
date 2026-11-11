@@ -117,7 +117,7 @@ def exercise_lifecycle(
     output("\n== 2. Recall before work ==")
     recalled_before = call("/v1/recall", {
         "query": f"Current rules and preferences for project {project}",
-        "n_chunks": 3,
+        "n_digests": 3,
     }, "POST")
     context_before = (recalled_before.get("context") or "").strip()
     output(context_before[:600] if context_before else "(no relevant memory yet)")
@@ -137,7 +137,7 @@ def exercise_lifecycle(
     output("\n== 4. Recall the saved durable memory ==")
     recalled_after = call("/v1/recall", {
         "query": VERIFY_QUERY,
-        "n_chunks": 3,
+        "n_digests": 3,
     }, "POST")
     context_after = (recalled_after.get("context") or "").strip()
     output(recalled_after.get("answer") or context_after[:1000] or "(no relevant memory found)")

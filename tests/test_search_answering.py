@@ -97,7 +97,10 @@ def test_digest_fallback_respects_as_of():
                   user_id="u1", session_id="new", event_time=1_702_592_000.0)
     seed_digests(mem, [old, new])
 
-    res = mem._digest_fallback("How do I reset the PAT?", "u1", as_of=1_700_864_000.0)
+    old.digest_written_at = old.ingested_at = old.event_time
+    new.digest_written_at = new.ingested_at = new.event_time
+    cutoff = 1_700_864_000.0
+    res = mem._digest_fallback("How do I reset the PAT?", "u1", as_of=cutoff, known_at=cutoff)
     assert res is not None
     ans = res.sources[0].text.lower()
     assert "legacy token page" in ans
@@ -129,7 +132,8 @@ def test_search_prefers_source_backed_literal_facts_for_runbook_queries():
 
     assert res.via == "hybrid"
     assert res.facts[0].provenance == [ep.id]
-    assert res.status == "evidence_only" and "security settings" in res.sources[0].text
+    assert res.status == "evidence_only" and res.source_ids == (ep.id,)
+    assert not res.sources
 
 
 
@@ -149,13 +153,16 @@ def test_free_text_is_candidate_evidence_and_slot_answer_uses_full_view():
     assert len(result.facts) == 1 and result.status == "evidence_only"
 
 
-def test_raw_source_is_evidence_and_redaction_omits_it():
+def test_raw_source_is_explicit_only_and_digest_respects_redaction():
     from mnemotrace.store.contracts import FactQuery
 
     mem = MemoryEngine()
     source = mem.add("Synthetic violet passphrase")
     result = mem.search("violet passphrase")
-    assert result.status == "evidence_only" and result.sources[0].id == source.id
+    assert result.status == "no_evidence"
+    assert mem.get_episode(source.id)["content"] == source.content
+    seed_digests(mem, [source])
+    assert mem.search("violet passphrase").sources[0].id == source.id
     assert mem.search("violet passphrase", facts=FactQuery(exclude_sensitive=True)).status == "no_evidence"
 
 

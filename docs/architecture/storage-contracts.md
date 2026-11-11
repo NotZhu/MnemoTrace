@@ -181,29 +181,24 @@ with Database(DatabaseConfig.from_env()) as database:
 
 #### 数据库检索与补建
 
-`search` 返回带排序事实和覆盖限制的 `SearchResult`。`retrieve_episodes` 返回带覆盖限制的来源证据，
-优先呈现已有摘要，完整原文由 `get_episode` 读取。`context_for` 和 `lean_context` 返回 `ContextResult`，
+`search` 返回带排序事实和覆盖限制的 `SearchResult`。`retrieve_digests` 只返回摘要证据和覆盖限制，完整原文由 `get_episode` 读取。`context_for` 和 `lean_context` 返回 `ContextResult`，
 其中 `context` 是组装文本，`coverage_by_space` 给出各空间的限制。`recall_multi` 先校验所有空间的归属，
 再分别读取并标记空间。`as_of` 同时设置有效时间和已知时间。`search(facts=FactQuery(...))` 可独立指定两条时间轴。
 历史检索仅在当前摘要版本的写入时间不晚于已知时间时使用该摘要。摘要生成时间未知或当前版本尚未写入时，
-使用符合时间条件的原文。被替换的摘要版本不保留。
+该来源不进入候选。被替换的摘要版本不保留。
 `FactQuery.limit` 在候选阶段限制各信号的返回数，融合后的结果数由入口参数决定。
 向量、词法、新近度与显著度共用筛选后的事实范围，再应用各自的候选上限。
 搜索结果基于读取快照。若并发写入使访问强化的前置版本失效，本次跳过强化，仍返回快照结果。
 
 向量查询默认精确，并根据本次空间和过滤值规划。词法使用相同作用域的 BM25 语料统计。
 `complete` 表示没有已知的索引或候选覆盖限制。
-`limitations` 区分 `lexical_backfill_pending`、`fact_vectors_incomplete`、`graph_backfill_pending`、
-`graph_candidate_budget` 和原文向量的 `source_vectors_pending_backfill`、`source_vectors_processing`、
-`source_vectors_failed`。数据库连接与查询错误继续通过数据库异常传递。查找实体可用 `graph_entities(name)`，
+`limitations` 区分词法补建、事实或摘要向量不完整、图候选覆盖等限制。数据库连接与查询错误通过数据库异常传递。查找实体可用 `graph_entities(name)`，
 邻接和事实边可用 `graph_neighbors`、`graph_relations`，两者接受 `FactQuery` 时间条件。
 检索内部优先解析实体的确切名称，别名仅在合并后指向唯一实体时解析。
 
-从阶段四 schema 升级后，对每个授权空间分别以 `RecordKind.FACT`、`RecordKind.SOURCE` 和 `RecordKind.ENTITY`
-调用 `backfill_retrieval(kind, after_id=cursor, limit=100)`。每种类型从 `None` 开始，传回上一页返回的游标，
-直到返回 `None`。重跑会跳过已投影记录并复用原文向量任务。`source_vector_operation(source_id)` 返回当前模型与维度
-的辅助任务，可通过已有的 `retry_operation` 重试。需要重建边时，`rebuild_graph(after_id=cursor, limit=100)`
-按相同方式分页，根据事实和现有权威实体决定重建。
+按授权空间分别对 `RecordKind.FACT`、`RecordKind.SOURCE` 和 `RecordKind.ENTITY` 调用
+`backfill_retrieval(kind, after_id=cursor, limit=100)`，从 `None` 开始，逐页处理直到返回 `None`。
+来源补建只投影已有摘要。需要重建边时，使用 `rebuild_graph` 按相同方式分页。
 
 | 数据组 | 结构与所有权 |
 | --- | --- |
@@ -319,7 +314,7 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 | hybrid: query_entity_ids/graph_excluded_entity_ids；planner: _anchor_entity/_user_predicates/_user_entities/_bridge_paths | 实体/谓词/桥接路径完整扫描 | 实体名称和主体查询、局部邻接与谓词聚合 | 5 | planner、graph_query、lean |
 | memory.reembed 内部 _clear；classify: classify_fact；memory_store: upsert_entity/invalidate_relations_for_fact/delete_relations_for_fact/prune_orphan_entities | 清索引、修改分类和关系有效时间、删除邻接/孤立实体 | 版本化重嵌入、显式分类与图投影事务 | 3—5 | reembed、classification、record_business |
 | memory: _current_state_block/_should_abstain；agentic: gather_episodes；aggregate: dedupe_aggregation_candidates；conflict_candidates: candidate_pairs；lexical: bm25_scores | 遍历局部 latest/diag/basic/prefs/seen/best/by_subj/doc_tokens 字典 | 保留局部算法；输入来自授权必要工作集，BM25 统计从同作用域数据库语料提供 | 5 | smoke、profile_display、lean、storage_baseline |
-| memory: lean_context/search/context_for/retrieve_episodes/get_episode；service: recall/recall_multi/get_episode | 内存候选/working_set、完整 token 估算与可选 answerer | DB 候选/必要工作集，逐空间鉴权融合；保留入口差异 | 5—6 | lean、search_answering、spaces |
+| memory: lean_context/search/context_for/retrieve_digests/get_episode；service: recall/recall_multi/get_episode | 内存候选/working_set、完整 token 估算与可选 answerer | DB 候选/必要工作集，逐空间鉴权融合；保留入口差异 | 5—6 | lean、search_answering、spaces |
 | service: processing_status/_processing_status/flush/close | 扫空间来源/任务、按 namespace 等待 | 操作/会话查询、DB 租约恢复 | 4、6 | processing、process_recovery |
 | service: close_session/session_report/agent_status/sessions | 查询原文和 facts 汇总，close 捕获边界清理 | 会话查询和聚合。整理会话复用 flush_processing，移除旧关闭入口、自动清理和会话结论 | 3、6 | agent_sessions、message_recovery、outcomes |
 | service: graph/memories/audit/stats | 全量分页、实体/关系统计、敏感过滤与审计 | DB 分页/聚合，审计走显式维护接口 | 3、5—6 | http_product、graph_query、http_metrics |

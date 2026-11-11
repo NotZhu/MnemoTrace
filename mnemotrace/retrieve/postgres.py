@@ -8,15 +8,15 @@ from ..store.postgres.retrieval import Corpus
 from ..util import fmt_date
 from .answers import SearchResult, digest_match, should_abstain, slot_result
 from .context import ContextSection, pack_sections, render_sections
-from .events import EventEvidence, event_evidence
+from .events import EventEvidence
 from .fusion import order_by_score, weighted_rrf
 from .hybrid import order_positive
 from .lexical import literal_value_match
 
 
 @dataclass(frozen=True)
-class SourceSearchResult:
-    episodes: tuple[EventEvidence, ...]
+class DigestSearchResult:
+    digests: tuple[EventEvidence, ...]
     limitations: tuple[str, ...]
 
     @property
@@ -77,25 +77,22 @@ def _score(candidates, config, query):
     return [(facts[key], scores[key]) for key in ids], sem
 
 
-def source_search(view, query, k, *, field=None, start=None, end=None):
-    corpus = Corpus(view, query, SOURCE, source_field=field, start=start, end=end)
+def digest_search(view, query, k, *, start=None, end=None):
+    corpus = Corpus(view, query, SOURCE, start=start, end=end)
     vectors, lexical = corpus.vector_scores(), corpus.lexical_scores()
     ranked = weighted_rrf({'sem': order_positive(vectors), 'lex': order_positive(lexical)}, {})
     ordered = sorted(ranked, key=lambda key: (-ranked[key], key))
-    sources = {item.ref.record_id: domain(item) for item in view.sources(tuple(ordered), known_at=query.facts.known_at)}
-    evidence = tuple(event_evidence(sources[key]) for key in ordered if key in sources)[:k]
-    return SourceSearchResult(evidence, corpus.limitations())
+    sources = view.digests(ordered[:k], known_at=query.facts.known_at)
+    evidence = tuple(sources[key] for key in ordered[:k] if key in sources)
+    return DigestSearchResult(evidence, corpus.limitations())
 
 
-def _supporting_sources(view, scope, facts):
+def _source_references(view, scope, facts):
     if scope.exclude_sensitive:
         return ()
     ids = tuple(dict.fromkeys(key for fact in facts for key in fact.provenance
                               if not scope.source_ids or key in scope.source_ids))
-    return tuple(event_evidence(ep) for record in view.sources(ids, known_at=scope.known_at)
-                 if ((ep := domain(record)) is not None
-                     and (scope.valid_at is None or ep.event_time is not None and ep.event_time <= scope.valid_at)
-                     and (scope.known_at is None or ep.ingested_at <= scope.known_at)))
+    return view.visible_source_ids(ids, valid_at=scope.valid_at, known_at=scope.known_at)
 
 
 def search(view, query, config, top_k):
@@ -104,7 +101,7 @@ def search(view, query, config, top_k):
         records = view.slot_facts({(scope.subject.lower(), scope.predicate.lower())}, scope)
         result = slot_result(query.text, [domain(record).as_known_at(scope.known_at) for record in records])
         facts = result.facts[:top_k]
-        return replace(result, facts=facts, sources=_supporting_sources(view, scope, facts))
+        return replace(result, facts=facts, source_ids=_source_references(view, scope, facts))
     graph = RetrievalGraph(view, query)
     batch = view.candidates(query, config=config, graph=graph)
     ranked, sem = _score(batch.candidates, config, query)
@@ -113,20 +110,18 @@ def search(view, query, config, top_k):
     flags = batch.limitations
     if facts and not should_abstain(query.text, facts, sem.values(), config.abstain_threshold):
         return SearchResult(query.text, facts, [score for _, score in chosen],
-                            limitations=flags, sources=_supporting_sources(view, scope, facts))
-    if not scope.exclude_sensitive and not (scope.subject or scope.predicate or scope.categories or scope.source_ids):
-        fields = ('digest', 'text') if config.digest_fallback else ('text',)
-        for field in fields:
-            sources = source_search(view, query, config.digest_fallback_k, field=field)
-            flags = tuple(dict.fromkeys((*flags, *sources.limitations)))
-            matches = [ep for ep in sources.episodes if digest_match(query.text, ep.text)
-                       and (field == 'digest') == ep.derived]
-            if matches:
-                return SearchResult(query.text, via=field, sources=tuple(matches[:top_k]), limitations=flags)
+                            limitations=flags, source_ids=_source_references(view, scope, facts))
+    if config.digest_fallback and not (scope.exclude_sensitive or scope.subject or scope.predicate
+                                       or scope.categories or scope.source_ids):
+        digests = digest_search(view, query, config.digest_fallback_k)
+        flags = tuple(dict.fromkeys((*flags, *digests.limitations)))
+        matches = tuple(ep for ep in digests.digests if digest_match(query.text, ep.text))
+        if matches:
+            return SearchResult(query.text, via='digest', sources=matches[:top_k], limitations=flags)
     return SearchResult(query.text, via='abstain', abstained=True, limitations=flags)
 
 
-def context(view, query, config, *, n_facts, n_chunks, n_digests, char_budget):
+def context(view, query, config, *, n_facts, n_digests, char_budget):
     graph = RetrievalGraph(view, query)
     batch = view.candidates(query, config=config, graph=graph)
     ranked, _ = _score(batch.candidates, config, query)
@@ -135,28 +130,14 @@ def context(view, query, config, *, n_facts, n_chunks, n_digests, char_budget):
     fact_lines = [f'- [{fmt_date(fact.valid_at)}] {fact.text}' for fact in facts]
     groups = [('facts', 'FACTS', fact_lines)]
     flags = [*batch.limitations, *graph.limitations()]
-    evidence = {}
-    include_sources = not query.facts.exclude_sensitive and bool(n_chunks or n_digests)
-    if include_sources:
-        if not (scope.subject or scope.predicate or scope.categories or scope.source_ids):
-            for field, count in (('text', n_chunks), ('digest', n_digests)):
-                if count:
-                    sources = source_search(view, query, count, field=field)
-                    flags.extend(sources.limitations)
-                    evidence.update((ep.id, ep) for ep in sources.episodes)
-        for ep in _supporting_sources(view, scope, facts):
-            evidence.setdefault(ep.id, ep)
-        shown = ([ep for ep in evidence.values() if not ep.derived][:n_chunks]
-                 + [ep for ep in evidence.values() if ep.derived][:n_digests])
-        if shown:
-            groups.append(('sources', 'SOURCE EVIDENCE', [
+    if n_digests and not (scope.exclude_sensitive or scope.subject or scope.predicate
+                          or scope.categories or scope.source_ids):
+        digests = digest_search(view, query, n_digests)
+        flags.extend(digests.limitations)
+        if digests.digests:
+            groups.append(('digests', 'SOURCE DIGESTS', [
                 f'- [{fmt_date(ep.event_time)}] (episode: {ep.id}; session: {ep.session_id}; role={ep.role}) {ep.text}'
-                for ep in shown]))
-    if (scope.is_current_view and not scope.exclude_sensitive and scope.subject is None and scope.predicate is None
-            and not scope.categories and not scope.source_ids and scope.after_id is None):
-        from ..store.postgres.profile import read
-        for section, entries in read(view)['profile'].items():
-            groups.append(('profile', f'USER PROFILE · {section}', ['- ' + entry['text'] for entry in entries]))
+                for ep in digests.digests]))
     space_id = view.snapshot.context.space_id
     sections, limited = pack_sections(groups, char_budget, space_id)
     if limited:
@@ -188,9 +169,9 @@ def aggregate_facts(view, scope, operation, start, end, evidence_query):
 
     result = summarize_matches(rows(), operation, scope.limit)
     if not result.count and evidence_query is not None and not scope.exclude_sensitive:
-        sources = source_search(view, evidence_query, scope.limit, start=start, end=end)
-        flags = tuple(dict.fromkeys(('source_candidates_only', *sources.limitations)))
-        return replace(result, candidates=sources.episodes, limitations=flags)
+        sources = digest_search(view, evidence_query, scope.limit, start=start, end=end)
+        flags = ('digest_candidates_only', *sources.limitations) if sources.digests else sources.limitations
+        return replace(result, candidates=sources.digests, limitations=flags)
     return result
 
 

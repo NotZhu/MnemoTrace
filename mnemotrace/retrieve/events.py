@@ -1,4 +1,4 @@
-"""Read-only event evidence. Original documents never cross the retrieval interface."""
+"""Read-only source digest evidence."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,18 +24,20 @@ class EventEvidence:
     coverage: Mapping | None = None
 
 
-def event_evidence(episode: Episode | EventEvidence) -> EventEvidence:
-    if isinstance(episode, EventEvidence):
-        return episode
-    coverage = episode.digest_coverage if episode.digest else None
+def digest_evidence(*, id, user_id, session_id, role, event_time, ingested_at, digest, date, coverage):
+    if not digest:
+        raise ValueError("Expected a non-empty source digest")
     return EventEvidence(
-        episode.id, episode.user_id, episode.session_id, episode.role,
-        episode.event_time, episode.ingested_at,
-        episode.digest if episode.digest else episode.content,
-        "digest" if episode.digest else "raw",
-        MappingProxyType({"date": episode.metadata.get("date", "")}),
-        bool(episode.digest), (bool(coverage['partial']) if coverage is not None
-                                else None if episode.digest else False),
+        id, user_id, session_id, role, event_time, ingested_at, digest, "digest",
+        MappingProxyType({"date": date}), True,
+        bool(coverage['partial']) if coverage is not None else None,
         MappingProxyType({**coverage, 'ranges': tuple(tuple(r) for r in coverage['ranges'])})
         if coverage is not None else None,
     )
+
+
+def event_evidence(episode: Episode) -> EventEvidence:
+    return digest_evidence(id=episode.id, user_id=episode.user_id, session_id=episode.session_id,
+                           role=episode.role, event_time=episode.event_time, ingested_at=episode.ingested_at,
+                           digest=episode.digest, date=episode.metadata.get("date", ""),
+                           coverage=episode.digest_coverage)

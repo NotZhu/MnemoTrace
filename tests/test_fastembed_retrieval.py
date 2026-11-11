@@ -42,20 +42,27 @@ def test_real_fastembed_with_preloaded_model(tmp_path):
     observations = {}
     for name, backend in (('lexical', None), ('hybrid', embedder)):
         memory = MemoryEngine(embedder=backend)
-        ids = [memory.add(text).id for text in corpus]
-        tail = memory.add('无关填充。' * 400 + '末尾关键字玄鹤')
+        def add_digest(text):
+            source = memory.add('Synthetic archived session')
+            source.digest = text
+            source.digest_embedding = backend.embed(text) if backend else None
+            memory._sync_episode(source)
+            return source
+
+        ids = [add_digest(text).id for text in corpus]
+        tail = add_digest('末尾关键字玄鹤')
         timings = []
         matches = []
         for query, index in queries:
             started = perf_counter()
-            hits = memory.retrieve_episodes(query, k=5)
+            hits = memory.retrieve_digests(query, k=5)
             timings.append((perf_counter() - started) * 1000)
             matches.append(ids[index] in {item.id for item in hits})
-        assert tail.id in {item.id for item in memory.retrieve_episodes('玄鹤', k=5)}
+        assert tail.id in {item.id for item in memory.retrieve_digests('玄鹤', k=5)}
         for _ in range(9):
             for query, _ in queries:
                 started = perf_counter()
-                memory.retrieve_episodes(query, k=5)
+                memory.retrieve_digests(query, k=5)
                 timings.append((perf_counter() - started) * 1000)
         timings.sort()
         observations[name] = (matches, round(timings[14], 2), round(timings[28], 2))

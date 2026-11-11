@@ -22,7 +22,7 @@
 | 工具 | 主要参数 | 用途 |
 | --- | --- | --- |
 | `mnemotrace_agent_status` | session_id 可选、response_format | 不含正文的接线与状态 |
-| `mnemotrace_recall` | query 必填；max_chunks=6（0–20）、answer=false、as_of、redact_sensitive=false、response_format | 返回相关上下文，JSON 含 context、context_sections、tokens_est 等 |
+| `mnemotrace_recall` | query 必填；max_digests=20（0–50）、answer=false、as_of、redact_sensitive=false、response_format | 返回相关上下文，JSON 含 context、context_sections、tokens_est 等 |
 | `mnemotrace_search` | query 必填；subject、predicate、as_of、redact_sensitive=false、response_format | 返回候选证据或显式槽位的唯一值 |
 | `mnemotrace_list_sessions` | limit=20（1–100）、offset=0、q=""、response_format | 不含正文的会话索引 |
 | `mnemotrace_session_report` | session_id 必填，include_sensitive=false、limit=100、offset=0、response_format | 按页查看会话事实，使用 facts_page.next_offset 读取后续结果 |
@@ -33,7 +33,7 @@
 | `mnemotrace_audit` | limit=40、response_format | 只读检查图边缺失、投影不一致和无引用节点 |
 | `mnemotrace_get_focus` | response_format | track/mute 配置 |
 
-`max_chunks` 是 MCP 参数，HTTP 对应字段为 `n_chunks`，两者上限不同。`as_of` 使用 epoch 秒；默认读取不保证自动脱敏，私有上下文需要调用方按场景设置 redact_sensitive。
+`max_digests` 是 MCP 参数，HTTP 对应字段为 `n_digests`，范围均为 0–50。`as_of` 使用 epoch 秒；默认读取不保证自动脱敏，私有上下文需要调用方按场景设置 redact_sensitive。
 
 ## 写入与管理
 
@@ -86,7 +86,7 @@ agent_status(session_id)
 默认在绑定空间读取，指定其他空间时验证同一账号对该空间的归属。
 核心任务和摘要状态各自可见，`auxiliary_operation_ids` 指向辅助任务。
 
-按事实谓词统计使用 `mnemotrace_aggregate`，指定 `count` 或 `count_distinct`。仅有原文时可给 `query` 返回候选证据。多跳使用 `mnemotrace_follow_path`，传入实体名称和 2–4 个有序的出边谓词。普通召回、统计和多跳都支持显式历史条件。
+按事实谓词统计使用 `mnemotrace_aggregate`，指定 `count` 或 `count_distinct`。事实零匹配时可给查询返回摘要候选。多跳使用 `mnemotrace_follow_path`，传入实体名称和 2–4 个有序的出边谓词。普通召回、统计和多跳都支持显式历史条件。
 
 自由文本搜索返回候选事实及来源，状态为 `evidence_only` 或 `no_evidence`。显式提供主体和谓词且只有一个不同值时，搜索返回 `answered`。
 `mnemotrace_recall` 的 JSON 包含 `context_sections`。传 `answer=true` 可请求模型回答，并通过 `answer_status` 读取调用结果。

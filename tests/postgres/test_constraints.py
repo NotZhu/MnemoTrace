@@ -73,6 +73,7 @@ def test_duplicate_message_identifier_is_rejected(runtime, spaces, user):
     ('missing', None, 3, '[1,2,3]', 'Fact'),
     ('fact-1', None, 3, '[1,2,3]', 'Episode'),
     (None, None, 3, '[1,2,3]', 'Fact'),
+    (None, 'source-1', 3, '[1,2,3]', 'Episode'),
 ])
 def test_embedding_target_and_dimension_constraints(runtime, spaces, user, values):
     a = spaces.create(user, 'A')

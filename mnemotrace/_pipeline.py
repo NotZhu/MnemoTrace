@@ -225,6 +225,7 @@ def _commit(mem, tasks, win, now, merge=None):
                 else:
                     row['digest'] = 'pending'
         if row['digest'] == 'completed':
+            ep.digest_written_at = time.time()
             row['digest_receipt'] = dict(key=key, digest_hash=content_hash(ep.digest),
                                           coverage=deepcopy(ep.digest_coverage), erased_sources=[])
         mem._sync_episode(ep)

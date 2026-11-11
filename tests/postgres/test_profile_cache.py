@@ -50,8 +50,8 @@ def test_context_profile_does_not_bypass_fact_conditions(memory, scope):
     memory.refresh_profile()
     finish(memory)
     count = len(memory._processing.llm.calls)
-    assert "USER PROFILE" in memory.lean_context("tea", n_chunks=0, n_digests=0).context
-    restricted = memory.lean_context("tea", facts=scope, n_chunks=0, n_digests=0)
+    assert "USER PROFILE" not in memory.lean_context("tea", n_digests=0).context
+    restricted = memory.lean_context("tea", facts=scope, n_digests=0)
     assert "USER PROFILE" not in restricted.context
     assert len(memory._processing.llm.calls) == count
 
@@ -149,11 +149,11 @@ def test_profile_api_and_acl(product_client, product_service, product_scope):
     memory = product_service.memory(context)
     assert memory.flush_processing(timeout=3)["ok"]
     assert product_client.get("/v1/profile", headers=headers, params=params).json()["profile"]["basic"]
-    current = product_client.post("/v1/recall", headers=headers, json=dict(params, query="tea", n_chunks=0))
-    assert current.is_success and "USER PROFILE" in current.json()["context"]
+    current = product_client.post("/v1/recall", headers=headers, json=dict(params, query="tea", n_digests=0))
+    assert current.is_success and "USER PROFILE" not in current.json()["context"]
     for state in ("history", "all"):
         historical = product_client.post("/v1/recall", headers=headers,
-                                         json=dict(params, query="tea", n_chunks=0, state=state))
+                                         json=dict(params, query="tea", n_digests=0, state=state))
         assert historical.is_success and "USER PROFILE" not in historical.json()["context"]
     other, _ = product_scope("profile-outsider")
     assert product_client.get("/v1/operations/" + operation_id,

@@ -30,13 +30,10 @@
     "digest_max_chars": 800,
     "digest_max_input_bytes": 16384,
     "digest_max_output_tokens": 1024,
-    "evidence_budgeting": true,
     "digest_fallback": true,
     "digest_fallback_k": 6,
     "chain_evidence": true,
     "chain_current_first": true,
-    "provenance_chunk_promotion": true,
-    "provenance_evidence": true,
     "max_hops": 2,
     "graph_proximity": true,
     "graph_relation_awareness": true,
@@ -287,9 +284,9 @@
         "fact-2"
       ],
       "scores": [
-        0.01869633099141296,
+        0.018773135906927554,
         0.008950290851401376,
-        0.008806963645673321
+        0.00873015873015873
       ],
       "via": "hybrid"
     },

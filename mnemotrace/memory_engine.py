@@ -63,7 +63,6 @@ class MemoryEngine:
         # 初始化文档存储
         self.episodes_doc = InMemoryDocStore()
         # 初始化向量存储
-        self.episodes_vec = vector_store_factory()  # 原始事件的向量索引，用于检索相关片段
         self.fact_store = vector_store_factory()  # 热层事实的向量存储，用于主要检索
         self.cold_store = vector_store_factory()  # 冷层事实的向量存储，保留从热层换出的事实
         self.digest_vec = vector_store_factory()  # 会话摘要的向量索引，用于检索相关摘要
@@ -124,21 +123,10 @@ class MemoryEngine:
         validate_embedding(vector, 'memory embedding', self.embedder.dim)
         return vector
 
-    def _encode_batch(self, texts):
-        if self.embedder is None:
-            return [None] * len(texts)
-        if not texts:
-            return []
-        from .store._validation import validate_embedding
-
-        vectors = self.embedder.embed_batch(texts)
-        if len(vectors) != len(texts):
-            raise ValueError('Embedding batch length mismatch')
-        for vector in vectors:
-            validate_embedding(vector, 'memory embedding', self.embedder.dim)
-        return vectors
-
     def _sync_episode(self, ep: Episode) -> None:
+        if not ep.digest:
+            ep.digest_written_at = None
+            ep.digest_embedding = None
         if self.embedder is not None and ep.digest and ep.digest_embedding is None:
             raise ValueError("A searchable digest requires its embedding")
         self.episodes_doc.put(ep.id, ep)
@@ -146,9 +134,7 @@ class MemoryEngine:
             return
         if ep.digest:
             self.digest_vec.upsert(ep.id, ep.digest_embedding, ep)
-            self.episodes_vec.delete(ep.id)
         else:
-            self.episodes_vec.upsert(ep.id, ep.embedding, ep)
             self.digest_vec.delete(ep.id)
 
     def _all_facts(self, *, include_unpublished=False) -> list[Fact]:
@@ -180,7 +166,7 @@ class MemoryEngine:
         初始化和重嵌入后调用；嵌入器和 LLM 由运行时提供。
         """
         # 初始化事件写入器
-        self.ingestor = Ingestor(self.episodes_doc, self.episodes_vec, self.embedder)
+        self.ingestor = Ingestor(self.episodes_doc)
         self.writer = FactWriter(self.fact_store, self.graph, self.embedder, self.config)
         self.retriever = HybridRetriever(self.fact_store, self.graph, self.embedder, self.config)
         self.cold_retriever = HybridRetriever(self.cold_store, self.graph, self.embedder, self.config)
@@ -209,26 +195,16 @@ class MemoryEngine:
             counts[name] = len(facts)
 
         episodes = list(self.episodes_doc.values())  # doc 日志是 episode 文本的权威来源
-        _clear(self.episodes_vec)
-        raw_episodes = [ep for ep in episodes if not ep.digest]
-        vecs = self.embedder.embed_batch([ep.content for ep in raw_episodes]) if raw_episodes else []
-        for ep in episodes:
-            ep.embedding = None
-        for ep, v in zip(raw_episodes, vecs):
-            ep.embedding = v
-        counts["episodes"] = len(episodes)
-
         digested = [ep for ep in episodes if ep.digest]
+        for ep in episodes:
+            if not ep.digest and ep.digest_embedding is not None:
+                self._sync_episode(ep)
         _clear(self.digest_vec)
-        for ep in raw_episodes:
-            ep.digest_embedding = None
         vecs = (self.embedder.embed_batch([ep.digest for ep in digested])
                 if digested else [])
         for ep, v in zip(digested, vecs):
             ep.digest_embedding = v
-        # Copying backends must receive the complete episode only after both
-        # selected embeddings have entered the new space.
-        for ep in episodes:
+        for ep in digested:
             self._sync_episode(ep)
         counts["digests"] = len(digested)
 
@@ -260,7 +236,6 @@ class MemoryEngine:
         role: str = "user",
         event_time: Optional[float] = None,
         consolidate: bool = False,
-        embedding: Optional[list] = None,
     ) -> Episode:
         """写入一条带时间戳的 episode。
 
@@ -271,7 +246,6 @@ class MemoryEngine:
             role: 说话者。
             event_time: 事件时间戳。
             consolidate: 是否立即执行整合。
-            embedding: 事件内容的嵌入向量。
         Returns:
             Episode: 写入的 episode 对象。
         """
@@ -279,16 +253,15 @@ class MemoryEngine:
             raise RuntimeError('Memory checkpoint failed or closed; create a new instance')
         if consolidate:
             require_llm(self.llm)
-        vector = self._encode(content, embedding)
         from ._pipeline import memory_adapter
         with memory_adapter(self, user_id).write_lock(user_id):
-            ep = self.ingestor.ingest(content, user_id, session_id, role, event_time, embedding=vector)
+            ep = self.ingestor.ingest(content, user_id, session_id, role, event_time)
         if consolidate:
             self.consolidate()
         return ep
 
     def remember(self, content: str, user_id: str = "default", session_id: str = "default",
-                 extract: bool = True, *, _embedding=None) -> dict:
+                 extract: bool = True) -> dict:
         """Save raw input and its requested lifecycle policy.
 
         Requested extraction remains pending until consolidate() validates model output.
@@ -298,10 +271,9 @@ class MemoryEngine:
             raise RuntimeError('Memory checkpoint failed or closed; create a new instance')
         if type(extract) is not bool:
             raise ValueError("extract must be a boolean")
-        vector = self._encode(content, _embedding)
         from ._pipeline import memory_adapter
         with memory_adapter(self, user_id).write_lock(user_id):
-            ep = self.add(content, user_id=user_id, session_id=session_id, embedding=vector)
+            ep = self.add(content, user_id=user_id, session_id=session_id)
             ep.extract = extract
             self._sync_episode(ep)
             return {"extract": extract, "episode_id": ep.id}
@@ -314,24 +286,16 @@ class MemoryEngine:
         """
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
-        from .consolidate.pipeline import PipelineTasks, normalized
+        from .consolidate.pipeline import MessageConflictError, PipelineTasks, normalized
         rows = normalized(messages, session_id, extract)
         with self._pipeline_lock:
             if self._pipeline_closed:
                 raise RuntimeError('Memory is closed')
             tasks = PipelineTasks(self, user_id)
-            rows, unseen = tasks.inspect(rows, session_id, extract)
-        batch = self._encode_batch(list(unseen.values()))
-        if len(batch) != len(unseen):
-            raise ValueError('Embedding batch length mismatch')
-        vectors = dict(zip(unseen, batch))
-        with self._pipeline_lock:
-            if self._pipeline_closed:
-                raise RuntimeError('Memory is closed')
-            tasks = PipelineTasks(self, user_id)
-            tasks.inspect(rows, session_id, extract)
             try:
-                ids, fresh = tasks.accept(rows, session_id, extract, now(), vectors)
+                ids, fresh = tasks.accept(rows, session_id, extract, now())
+            except MessageConflictError:
+                raise
             except BaseException:
                 self._recover_pipeline_checkpoint()
                 raise
@@ -355,8 +319,6 @@ class MemoryEngine:
                 if not isinstance(value, Episode):
                     raise ValueError('Cannot extract an absent original source')
                 ep = value
-                if ep.embedding is None and self.embedder is not None:
-                    ep.embedding = self._encode(ep.content)
                 self._sync_episode(ep)
             if ep.extract and not ep.consolidated and ep.content.strip():
                 sources.append(ep)
@@ -379,16 +341,13 @@ class MemoryEngine:
         fact_episodes: Optional[list[Episode | EventEvidence]] = None,
         digest_episodes: Optional[list[Episode | EventEvidence]] = None,
     ) -> dict[str, int]:
-        """一次连贯的 System-2 处理，构建所有读取期层：
-          L1 facts     来自 `fact_episodes`     （对最相关 session 做深度抽取），
-          L2 digests 来自 `digest_episodes`  （广泛、廉价的覆盖，用于聚合），
-          L3 persona   从产出的 facts 刷新（惰性，首次读取时）。
-        两个 episode 集合刻意不同：facts 需要在少数 session 上做深，digests 需要广。
-        未指定时两者都默认取 pending 队列。"""
-        stats = self.consolidate(fact_episodes)
-        stats["digests"] = self.generate_digests(
-            digest_episodes if digest_episodes is not None else self.ingestor.pending()
-        )
+        """Extract facts and generate eligible digests from the selected sources.
+
+        Both inputs default to the sources pending when this call starts.
+        """
+        pending = self.ingestor.pending() if fact_episodes is None or digest_episodes is None else []
+        stats = self.consolidate(pending if fact_episodes is None else fact_episodes)
+        stats["digests"] = self.generate_digests(pending if digest_episodes is None else digest_episodes)
         stats["reflected"] = 0
         return stats
 
@@ -454,13 +413,13 @@ class MemoryEngine:
                          role=row["role"], event_time=row["event_time"],
                          consolidated=True,  # 它的 fact 在下方恢复；绝不重新抽取
                          digest=row.get("digest", ""), coverage=row.get('coverage'), digest_coverage=row.get('digest_coverage'),
+                         digest_written_at=row.get('digest_written_at'),
                          metadata={'snapshot_source_id': row['id']})
             if "ingested_at" in row:
                 ep.ingested_at = row["ingested_at"]
             if dedupe:
                 ep.id = target_id
             episode_ids[row['id']] = ep.id
-            ep.embedding = self._encode(content)
             if ep.digest:
                 ep.digest_embedding = self._encode(ep.digest)
             prepared_episodes.append(ep)
@@ -796,23 +755,33 @@ class MemoryEngine:
         as_of: Optional[float] = None,
         *, known_at: float | None = None,
     ) -> list[EventEvidence]:
-        """为查询取 top-k 条 session 摘要，使用与 fact/episode 检索相同的 hybrid（dense + BM25,
-        RRF）信号。词法匹配在这里很重要：聚合类问题（"how many trips"）依赖摘要里提到的精确词，
-        纯嵌入查找可能把它们排在模糊相似项之后。返回只包含选定文本的只读事件证据。"""
-        return self._event_candidates(query, user_id, as_of, k, max(k * 3, 30),
-                                      digests_only=True, known_at=known_at)[:k]
+        """Rank available source digests using lexical and semantic evidence."""
+        if self._pipeline_broken:
+            raise RuntimeError('Memory checkpoint failed; create a new instance')
+        cutoff = as_of if known_at is None else known_at
+        return self._rank_digests(query, user_id, k, as_of, cutoff)
+
+    def _rank_digests(self, query, user_id, k, as_of, known_at):
+        if not k:
+            return []
+        candidates = self._digest_candidates(query, user_id, as_of, max(k * 3, 30), known_at=known_at)
+        if self.reranker is not None and len(candidates) > k:
+            ranked = self.reranker.rerank(query, [(str(i), ep.text) for i, ep in enumerate(candidates)], k)
+            return [candidates[int(i)] for i, _ in ranked]
+        return candidates[:k]
 
     def _source_muted(self, episode):
         terms = self.focus["mute"]
         return matches(episode.content, terms) or matches(episode.digest, terms)
 
-    def _event_candidates(self, query, user_id, as_of, k, pool, *, digests_only=False,
+    def _digest_candidates(self, query, user_id, as_of, pool, *,
                           known_at=None, start=None, end=None):
         from .retrieve.fusion import weighted_rrf
         from .retrieve.hybrid import date_terms, order_positive
 
         def visible(ep):
             return (ep.user_id == user_id
+                    and (known_at is None or ep.digest_written_at is not None and ep.digest_written_at <= known_at)
                     and not self._source_muted(ep)
                     and (known_at is None or ep.ingested_at <= known_at)
                     and (as_of is None or (ep.event_time is not None and ep.event_time <= as_of))
@@ -820,29 +789,20 @@ class MemoryEngine:
                     and (end is None or (ep.event_time is not None and ep.event_time < end)))
 
         episodes = {ep.id: ep for ep in self.episodes_doc.values()
-                    if visible(ep) and (not digests_only or ep.digest)}
-        documents = {}
-        for ep in episodes.values():
-            date = date_terms(ep.event_time)
-            documents[(ep.id, 'text')] = f'{ep.content} {date}'
-            if ep.digest:
-                documents[(ep.id, 'digest')] = f'{ep.digest} {date}'
-        lexical = {}
-        for (episode_id, _), score in bm25_scores(query, list(documents.items())).items():
-            lexical[episode_id] = max(score, lexical.get(episode_id, 0.0))
+                    if ep.digest and visible(ep)}
+        lexical = bm25_scores(query, [(ep.id, f'{ep.digest} {date_terms(ep.event_time)}')
+                                      for ep in episodes.values()])
         semantic = {}
         if self.embedder is not None:
             vector = self.embedder.embed(query)
             hits = self.digest_vec.search(vector, pool, where=visible)
-            if not digests_only:
-                hits += self.episodes_vec.search(vector, pool, where=visible)
             for score, ep in hits:
                 if ep.id in episodes:
                     semantic[ep.id] = max(score, semantic.get(ep.id, 0.0))
         scores = weighted_rrf({'sem': order_positive(semantic)[:pool],
                                'lex': order_positive(lexical)[:pool]}, {})
         ranked = sorted(scores, key=lambda key: (-scores[key], key))
-        return [event_evidence(episodes[key]) for key in ranked[:max(k, pool)]]
+        return [event_evidence(episodes[key]) for key in ranked[:pool]]
 
     def evict_cold(self, max_hot: int) -> int:
         """冷热分层分页（MemoryOS，AGENTS.md 「架构概览与代码导航」 / Bet E）。当热层 fact 集超过容量时，把最冷的
@@ -914,10 +874,6 @@ class MemoryEngine:
         from ._profile import state, result
         operation = state(self, user_id).get("operations", {}).get(operation_id)
         return result(operation) if operation else None
-
-    def _profile_context(self, user, as_of):
-        from .profile import render
-        return render(self.profile(user)) if as_of is None else ""
 
     def _chain_facts_for_seeds(
         self,
@@ -1048,132 +1004,6 @@ class MemoryEngine:
             )
         return "FACT EVOLUTION (retrieved supersession chain):\n" + "\n".join(lines)
 
-    def _provenance_entries(
-        self,
-        facts: list[Fact],
-        query: str,
-        user: str,
-        as_of: Optional[float],
-        exclude_episode_ids: set[str],
-        limit: int = 4,
-        redact_sensitive: bool = False,
-    ) -> list[str]:
-        """为检索到的 fact 提供完整的来源表示。
-
-        只使用被检索 fact 明确引用的事件表示，排除已渲染的事件，遵守 `as_of`。
-        脱敏时省略来源，因为事件文本可能含有敏感内容。
-        """
-        if redact_sensitive or not facts:
-            return []
-        rows: list[str] = []
-        seen_eps: set[str] = set(exclude_episode_ids)
-        view_time = now() if as_of is None else as_of
-
-        for fact in sorted(facts, key=lambda fact: time_key(fact.valid_at), reverse=True):
-            if getattr(fact, "sensitive", False):
-                continue
-            if query and not overlap_terms(query, chain_terms(fact)):
-                continue
-            for ep_id in fact.provenance:
-                if ep_id in seen_eps:
-                    continue
-                ep = self.episodes_doc.get(ep_id)
-                if ep is None or ep.user_id != user or (ep.event_time is not None and ep.event_time > view_time):
-                    continue
-                if self._source_muted(ep):
-                    continue
-                ep = event_evidence(ep)
-                seen_eps.add(ep_id)
-                date = ep.metadata.get("date") or fmt_date(ep.event_time)
-                rows.append(
-                    f"- [{date}] (episode: {ep.id}; space: {ep.user_id}; session: {ep.session_id}; supports: "
-                    f"{fact.subject} {fact.predicate.replace('_', ' ')} {fact.object}) {ep.text}"
-                )
-                if len(rows) >= limit:
-                    return rows
-        return rows
-
-
-    _PROVENANCE_HEADING = "PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):"
-
-    def _provenance_raw_block(self, facts, query, user, as_of, exclude_episode_ids):
-        rows = self._provenance_entries(facts, query, user, as_of, exclude_episode_ids)
-        return "\n".join([self._PROVENANCE_HEADING, *rows]) if rows else ""
-
-    @staticmethod
-    def _merge_promoted_chunks(promoted: list, retrieved: list, k: int) -> list:
-        """把经来源提升的 episode 与语义检索到的 episode 合并，并设语义下限：提升最多占用
-        chunk 预算的一半。
-
-        提升的 chunk 以排序后的 FACT 为键，因此当 fact 检索未命中时，语义 episode 是唯一仍能
-        携带答案的路径。若放任提升占满整个预算，恰好会把这些 episode 挤出去，在单 session 召回
-        上造成正确->拒答的回归（2026-08-27，相对 headline 日志的 50 项 A/B）；设上限保住了
-        旧值/时间类收益，又不在此处付出代价。未用完的提升预算回流给检索 chunk，反之亦然。
-        k=1 时唯一槽位保持提升优先（修复前的行为；k=2 采集的回归数据对它没有结论，且现有测试
-        钉死了该行为）。
-        """
-        cap = max(1, k // 2)
-        merged: list = []
-        seen: set[str] = set()
-        for ep in promoted[:cap]:
-            if ep.id not in seen:
-                seen.add(ep.id)
-                merged.append(ep)
-        for ep in retrieved:
-            if len(merged) >= k:
-                break
-            if ep.id not in seen:
-                seen.add(ep.id)
-                merged.append(ep)
-        for ep in promoted[cap:]:  # 仅当检索填不满预算时回填
-            if len(merged) >= k:
-                break
-            if ep.id not in seen:
-                seen.add(ep.id)
-                merged.append(ep)
-        return merged
-
-    def _provenance_detail_chunks(
-        self,
-        facts: list[Fact],
-        query: str,
-        user: str,
-        as_of: Optional[float],
-        limit: int,
-        redact_sensitive: bool = False,
-    ) -> list[EventEvidence]:
-        """按 fact 来源提升选定的事件表示，仍遵守同一 `n_chunks` 预算。
-
-        摘要事件的匹配和返回值都只使用摘要。
-        """
-        if limit <= 0 or redact_sensitive or not facts:
-            return []
-        view_time = now() if as_of is None else as_of
-        scored: dict[str, tuple[int, int, float, EventEvidence]] = {}
-        for fact_rank, fact in enumerate(facts):
-            if getattr(fact, "sensitive", False):
-                continue
-            fact_terms = chain_terms(fact)
-            fact_overlap = len(overlap_terms(query, fact_terms)) if query else 0
-            if query and fact_overlap == 0:
-                continue
-            for ep_id in fact.provenance:
-                ep = self.episodes_doc.get(ep_id)
-                if ep is None or ep.user_id != user or (ep.event_time is not None and ep.event_time > view_time):
-                    continue
-                if self._source_muted(ep):
-                    continue
-                ep = event_evidence(ep)
-                ep_overlap = len(overlap_terms(query, ep.text)) if query else 0
-                support_overlap = len(overlap_terms(fact.text, ep.text))
-                score = fact_overlap * 8 + support_overlap * 3 + ep_overlap * 2
-                prev = scored.get(ep.id)
-                item = (score, fact_rank, time_key(ep.event_time), ep)
-                if prev is None or (score, -fact_rank, time_key(ep.event_time)) > (prev[0], -prev[1], prev[2]):
-                    scored[ep.id] = item
-        ranked = sorted(scored.values(), key=lambda item: (-item[0], item[1], -item[2], item[3].id))
-        return [ep for _, _, _, ep in ranked[:limit]]
-
     def lean_context(
         self,
         query: str,
@@ -1182,35 +1012,21 @@ class MemoryEngine:
         top_k: Optional[int] = None,
         n_digests: int = 20,
         n_facts: int = 15,
-        n_chunks: int = 2,
-        persona: bool = True,
         agentic: bool = False,
-        cascade: bool = False,  # _S 最优为关；它是 _M/10M 的扩展原语（由粗到细的下钻）
         timeline: bool = False,  # 追加按时间排序的事件时间线（有助于时序/时长问题）
         char_budget: int = 60_000,
         redact_sensitive: bool = False,  # 安全/共享视图：只显示非敏感的结构化 fact
         *, facts=None,
     ) -> str:
-        """可扩展的读路径（AGENTS.md Bet A/E）：从检索到的抽象层组装一个小而组织良好的上下文，
-        而不是整段历史——
-            L3 persona  +  L1 带日期 fact  +  L2 session 摘要  +  少量完整 chunk 提供细节。
-
-        历史增长时 token 保持大致恒定（检索的是固定大小的切片），这是 full-context 做不到的。
-        两个让它既精简又准确的设计点：
-          * top-`n_chunks` 个 session 完整展示（细节），并从摘要块中排除，因此没有 session 出现
-            两次——每个 token 都买到新信息。
-          * 摘要块提供宽时间覆盖（默认 20），这正是聚合类问题（"how many trips"、"list
-            everything"）所需的；摘要很小，覆盖因此仍然廉价。
-        `char_budget` 对组装出的上下文硬性封顶，使其永远不可能接近全文历史的规模。"""
+        """Build bounded context from ranked facts and source digests."""
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
         user = user_id
         from .retrieve.context import pack_sections, render_sections
 
         groups = []
-        profile_groups = []
         visible = None
-        known_at = None
+        known_at = as_of
         if facts is not None:
             from dataclasses import replace
             from .store.contracts import FactQuery
@@ -1224,32 +1040,25 @@ class MemoryEngine:
         if redact_sensitive or restricted:
             # Redacted or explicitly scoped reads exclude unconstrained source search.
             n_digests = 0
-            n_chunks = 0
-            cascade = False
 
         queries = [query]
         if agentic and not redact_sensitive and self.llm is not None:
             from .retrieve.agentic import AgenticRetriever
             queries += AgenticRetriever(self, self.llm)._subqueries(query)
 
-        # 画像缓存仅由非敏感本人事实生成；历史及结构化条件读取使用对应事实证据。
-        if (persona and as_of is None and not redact_sensitive and not restricted
-                and (facts is None or facts.is_current_view)):
-            for section, entries in self.profile(user)["profile"].items():
-                profile_groups.append(("profile", f"USER PROFILE: {section}", ["- " + item["text"] for item in entries]))
-
-
         # L1 fact：对每个（子）查询做 hybrid 检索后取并集；再从查询实体做 n-hop 图扩展。
         fact_map: dict[str, Fact] = {}
-        for q in queries:
-            ranked = self.retriever.retrieve(q, user, as_of, top_k or n_facts, candidates=visible)[0]
-            if not ranked and visible is None:
-                ranked = self._retrieve_cold(q, user, as_of, top_k or n_facts)[0]
-            for f, _ in ranked:
-                fact_map.setdefault(f.id, f)
-        if visible is None:
-            for f in self._graph_related_facts(query, user, as_of, limit=n_facts):
-                fact_map.setdefault(f.id, f)
+        fact_limit = n_facts if top_k is None else top_k
+        if fact_limit:
+            for q in queries:
+                ranked = self.retriever.retrieve(q, user, as_of, fact_limit, candidates=visible)[0]
+                if not ranked and visible is None:
+                    ranked = self._retrieve_cold(q, user, as_of, fact_limit)[0]
+                for f, _ in ranked:
+                    fact_map.setdefault(f.id, f)
+            if visible is None:
+                for f in self._graph_related_facts(query, user, as_of, limit=fact_limit):
+                    fact_map.setdefault(f.id, f)
         all_facts = list(fact_map.values())
         # 关注项 "mute"：丢弃用户要求在读上下文中抑制的主题相关 fact。
         mute = self.focus.get("mute", [])
@@ -1293,107 +1102,23 @@ class MemoryEngine:
                     heading, _, body = evo.partition("\n")
                     groups.append(("evolution", heading, [body]))
 
-        provenance_facts = list(all_facts)
-        if self.config.chain_evidence and all_facts and facts is None:
-            seen_chain_facts = {f.id for f in provenance_facts}
-            for f in self._chain_facts_for_seeds(
-                all_facts,
-                user,
-                as_of,
-                limit=max(8, min(18, n_facts + 3)),
-                redact_sensitive=redact_sensitive,
-            ):
-                if f.id not in seen_chain_facts:
-                    seen_chain_facts.add(f.id)
-                    provenance_facts.append(f)
-
-        # L2 粗层：对每个（子）查询检索 session 摘要并排序。这是由粗到细级联的粗层
-        # （AGENTS.md Bet E / OpenViking）：摘要很小，可以廉价地索引并排序大量 session——这是
-        # 突破模型窗口（_M / 10M 前沿）的关键。
         summ_ranked: list[EventEvidence] = []
         seen_s: set[str] = set()
         if n_digests:
             for q in queries:
-                for e in self.retrieve_digests(q, user, n_digests, as_of=as_of, known_at=known_at):
+                for e in self._rank_digests(q, user, n_digests, as_of, known_at):
                     if e.id not in seen_s:
                         seen_s.add(e.id)
                         summ_ranked.append(e)
 
-        # 细层下钻：级联模式下，细节 chunk 就是排序最高的摘要各自的 session（分数由粗层传播到
-        # 细层），因此绝不会对无关 session 的原始轮次做嵌入扫描。非级联时，细节是直接的
-        # episode 查找（对小型历史足够）。
-        if cascade and summ_ranked:
-            detail_eps = summ_ranked[:n_chunks] if n_chunks else []
-        else:
-            detail_eps = []
-            if n_chunks:
-                seen_detail: set[str] = set()
-                per_query = [
-                    self.retrieve_episodes(q, user, max(n_chunks, 1), as_of=as_of, known_at=known_at)
-                    for q in queries
-                ]
-                max_hits = max((len(eps) for eps in per_query), default=0)
-                for rank in range(max_hits):
-                    for eps in per_query:
-                        if rank >= len(eps):
-                            continue
-                        ep = eps[rank]
-                        if ep.id in seen_detail:
-                            continue
-                        seen_detail.add(ep.id)
-                        detail_eps.append(ep)
-                        if len(detail_eps) >= n_chunks:
-                            break
-                    if len(detail_eps) >= n_chunks:
-                        break
-        detail_ids = {e.id for e in detail_eps}
-        if self.config.provenance_chunk_promotion and n_chunks and not redact_sensitive and facts is None:
-            promoted = self._provenance_detail_chunks(
-                provenance_facts,
-                " ".join(queries),
-                user,
-                as_of,
-                limit=n_chunks,
-                redact_sensitive=redact_sensitive,
-            )
-            if promoted:
-                detail_eps = self._merge_promoted_chunks(promoted, detail_eps, n_chunks)
-                detail_ids = {e.id for e in detail_eps}
-        digests = [e for e in summ_ranked if e.id not in detail_ids]
-
-        if digests:
-            chrono = sorted(digests, key=lambda e: time_key(e.event_time))
+        if summ_ranked:
+            chrono = sorted(summ_ranked[:n_digests], key=lambda e: time_key(e.event_time))
             sm = list(
                 f"- [{e.metadata.get('date') or fmt_date(e.event_time)}] (episode: {e.id}; space: {e.user_id}) {e.text}" for e in chrono
             )
             groups.append(("digests", "SESSION DIGESTS (relevant, chronological):", sm))
 
-        if detail_eps:
-            chunks = list(
-                f"原始记录时间：{e.metadata.get('date') or fmt_date(e.event_time)}\n"
-                f"会话：{e.session_id}\n"
-                f"事件：{e.id}\n空间：{e.user_id}\n表示：{e.representation}; partial={e.partial}; role={e.role}\n记录内容：{e.text}" for e in detail_eps
-            )
-            groups.append(("sources", "RELEVANT CONVERSATIONS (full detail):", chunks))
-
-        if self.config.provenance_evidence and facts is None:
-            provenance_entries = self._provenance_entries(
-                provenance_facts,
-                query,
-                user,
-                as_of,
-                exclude_episode_ids=detail_ids,
-                redact_sensitive=redact_sensitive,
-            )
-            if provenance_entries:
-                provenance = ("provenance", self._PROVENANCE_HEADING, provenance_entries)
-                # Reserve room for source evidence before lower-priority facts.
-                if self.config.evidence_budgeting and groups and groups[0][0] == "facts":
-                    groups.insert(0, provenance)
-                else:
-                    groups.append(provenance)
-
-        sections, _ = pack_sections(groups + profile_groups, char_budget, user)
+        sections, _ = pack_sections(groups, char_budget, user)
         return render_sections(sections)
 
     # --- 读路径 ---
@@ -1442,10 +1167,11 @@ class MemoryEngine:
                 and (end is None or (fact.valid_at is not None and fact.valid_at < end)))
         result = summarize_matches(rows, operation, scope.limit)
         if not result.count and query is not None and not scope.exclude_sensitive:
-            candidates = tuple(self._event_candidates(
-                query, user_id, scope.valid_at, scope.limit, max(scope.limit * 5, 25),
+            candidates = tuple(self._digest_candidates(
+                query, user_id, scope.valid_at, max(scope.limit * 5, 25),
                 known_at=scope.known_at, start=start, end=end)[:scope.limit])
-            return replace(result, candidates=candidates, limitations=('source_candidates_only',))
+            if candidates:
+                return replace(result, candidates=candidates, limitations=('digest_candidates_only',))
         return result
 
     def follow_path(self, anchor, predicates, *, facts=None, user_id='default'):
@@ -1485,12 +1211,12 @@ class MemoryEngine:
         scope = facts if facts is not None else FactQuery(valid_at=as_of, known_at=as_of)
         if not isinstance(scope, FactQuery) or scope.after_id is not None or (facts is not None and as_of is not None):
             raise ValueError('Expected structured fact conditions or as_of')
-        def supporting_sources(rows):
+        def source_references(rows):
             if scope.exclude_sensitive:
                 return ()
             ids = dict.fromkeys(key for fact in rows for key in fact.provenance
                                 if not scope.source_ids or key in scope.source_ids)
-            return tuple(event_evidence(ep) for key in ids if (ep := self.episodes_doc.get(key)) is not None
+            return tuple(ep.id for key in ids if (ep := self.episodes_doc.get(key)) is not None
                          and ep.user_id == user and not self._source_muted(ep)
                          and (scope.valid_at is None or ep.event_time is not None and ep.event_time <= scope.valid_at)
                          and (scope.known_at is None or ep.ingested_at <= scope.known_at))
@@ -1499,7 +1225,7 @@ class MemoryEngine:
             from .retrieve.answers import slot_result
             result = slot_result(query, list(self._structured_facts(user, scope)))
             result.facts = result.facts[:top_k or self.config.top_k]
-            result.sources = supporting_sources(result.facts)
+            result.source_ids = source_references(result.facts)
             return result
         if facts is not None or self.focus.get("mute"):
             candidates = self._structured_facts(user, scope)
@@ -1518,22 +1244,17 @@ class MemoryEngine:
                 cold_facts = [fact for fact, _ in cold]
                 if cold_facts and not self._should_abstain(query, cold_facts, cold_diag):
                     return SearchResult(query, cold_facts, [score for _, score in cold], via="cold",
-                                        sources=supporting_sources(cold_facts))
+                                        source_ids=source_references(cold_facts))
             if not (scope.exclude_sensitive or scope.subject or scope.predicate or scope.categories or scope.source_ids):
                 fallback = self._digest_fallback(query, user, as_of=scope.valid_at, known_at=scope.known_at)
                 if fallback:
                     return fallback
-                sources = tuple(ep for ep in self.retrieve_episodes(
-                    query, user, k=top_k or self.config.top_k, as_of=scope.valid_at, known_at=scope.known_at
-                ) if not ep.derived and digest_match(query, ep.text))
-                if sources:
-                    return SearchResult(query, via="text", sources=sources)
             return SearchResult(query, via="abstain", abstained=True)
 
         scores = [score for _, score in ranked]
         if via != "cold" and scope.is_current_view:
             self._reinforce_fact(matched[0])
-        return SearchResult(query=query, facts=matched, scores=scores, via=via, sources=supporting_sources(matched))
+        return SearchResult(query=query, facts=matched, scores=scores, via=via, source_ids=source_references(matched))
 
     def as_of(self, query: str, when: float, user_id: str = "default", top_k: Optional[int] = None) -> SearchResult:
         """回答"在 `when` 时刻我们认为什么是真的？"——双时间轴时间点查询。"""
@@ -1550,40 +1271,13 @@ class MemoryEngine:
                     event_time=ep.event_time, ingested_at=ep.ingested_at, content=ep.content,
                     message_id=ep.message_id, sequence=ep.sequence, coverage=deepcopy(ep.coverage))
 
-    def retrieve_episodes(
-        self,
-        query: str,
-        user_id: str = "default",
-        k: int = 5,
-        pool: Optional[int] = None,
-        as_of: Optional[float] = None,
-        *, known_at: float | None = None,
-    ):
-        """为查询检索 top-k 条原始 episode（session）：bi-encoder 候选池 → BM25 词法重排（RRF）
-        → 可选 cross-encoder 重排。
-
-        BM25 层：当 pool >= episode 总数时（LongMemEval_S：约 54 个 session，pool 至多 100），
-        所有 episode 都在候选里，仅凭嵌入排序会漏掉精确词匹配（名字、地点、日期）。BM25 的 RRF
-        融合把这些提上来而不取代语义信号。改善偏好类和精确实体类问题——原始文本词项优于嵌入
-        相似度的场景。
-        """
-        if self._pipeline_broken:
-            raise RuntimeError('Memory checkpoint failed; create a new instance')
-        pool = pool or max(k * 5, 25)
-        eps = self._event_candidates(query, user_id, as_of, k, pool, known_at=known_at)
-
-        if self.reranker is not None and len(eps) > k:
-            ranked = self.reranker.rerank(query, [(i, ep.text) for i, ep in enumerate(eps)], k)
-            return [eps[i] for i, _ in ranked]
-        return eps[:k]
-
     def context_for(
         self,
         query: str,
         user_id: str = "default",
         as_of: Optional[float] = None,
         top_k: Optional[int] = None,
-        k_chunks: int = 3,
+        k_digests: int = 3,
         agentic: bool = False,
         timeline: bool = False,
         hyde: bool = False,
@@ -1593,11 +1287,6 @@ class MemoryEngine:
         verify: bool = False,
         intent: bool = False,
     ) -> str:
-        """组装供 LLM 作答的 hybrid 读上下文（AGENTS.md 「架构概览与代码导航」）：live 且带日期戳的 fact（经冲突
-        解决的当前状态）+ top-k 原始 session chunk（细节抽取会丢掉的部分）。每一行都带日期戳，
-        正是时间类与知识更新类问题可被回答的关键。
-
-        agentic=True 把单次 chunk 检索换成 LLM 分解的迭代检索（Bet B）。"""
         user = user_id
 
         # HyDE：用 LLM 写的假想答案扩展查询，以提升检索召回（M2c）。
@@ -1625,17 +1314,13 @@ class MemoryEngine:
 
         chunk_block = ""
         episodes: list[EventEvidence] = []
-        if k_chunks:
+        if k_digests:
             if agentic and self.llm is not None:
                 from .retrieve.agentic import AgenticRetriever
 
-                episodes = AgenticRetriever(self, self.llm).gather_episodes(query, user, k_chunks, as_of=as_of)
+                episodes = AgenticRetriever(self, self.llm).gather_digests(query, user, k_digests, as_of=as_of)
             else:
-                episodes = self.retrieve_episodes(search_query, user, k_chunks, as_of=as_of)
-            if self.config.provenance_chunk_promotion:
-                promoted = self._provenance_detail_chunks(ranked_facts, search_query, user, as_of, k_chunks)
-                if promoted:
-                    episodes = self._merge_promoted_chunks(promoted, episodes, k_chunks)
+                episodes = self.retrieve_digests(search_query, user, k_digests, as_of=as_of)
             parts = []
             for ep in episodes:
                 date = ep.metadata.get("date") or fmt_date(ep.event_time)
@@ -1644,22 +1329,12 @@ class MemoryEngine:
 
         result = (
             f"FACTS (current, with dates):\n{facts_block}\n\n"
-            f"RELEVANT CONVERSATIONS (with dates):\n{chunk_block}"
+            f"SOURCE DIGESTS (with dates):\n{chunk_block}"
         ).strip()
         if self.config.chain_evidence:
             evo = self._fact_evolution_block(ranked_facts, user, as_of, query=search_query)
             if evo:
                 result += f"\n\n{evo}"
-        if self.config.provenance_evidence:
-            raw_prov = self._provenance_raw_block(
-                ranked_facts,
-                search_query,
-                user,
-                as_of,
-                exclude_episode_ids={ep.id for ep in episodes},
-            )
-            if raw_prov:
-                result += f"\n\n{raw_prov}"
         if timeline:
             # 相关 fact 的显式时间顺序——有助于 "first/after/how long"（M2b）
             ordered = sorted((f for f, _ in ranked), key=lambda f: time_key(f.valid_at))
@@ -1714,7 +1389,7 @@ class MemoryEngine:
         g = gap.strip().strip(".").lower()
         if not g or g == "none":
             return ""
-        more = self.retrieve_episodes(gap.strip(), user, 2, as_of=as_of)
+        more = self.retrieve_digests(gap.strip(), user, 2, as_of=as_of)
         return "\n\n".join(f"[{ep.metadata.get('date', '?')}] (episode: {ep.id}; space: {ep.user_id}; {ep.representation}; partial={ep.partial}; role={ep.role})\n{ep.text}" for ep in more)
 
     def _graph_related_facts(self, query: str, user: str, as_of: Optional[float], limit: int = 8) -> list[Fact]:
@@ -1779,7 +1454,7 @@ class MemoryEngine:
             return None
         candidates: list[tuple[int, int, float, EventEvidence, str]] = []
         k = max(1, int(getattr(self.config, "digest_fallback_k", 6) or 6))
-        for ep in self.retrieve_digests(query, user_id, k=k, as_of=as_of, known_at=known_at):
+        for ep in self._rank_digests(query, user_id, k, as_of, known_at):
             text = ep.text.strip()
             if not text:
                 continue

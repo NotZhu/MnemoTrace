@@ -33,9 +33,11 @@ def test_statistics_respect_window_and_do_not_limit_count_to_evidence():
 
 def test_statistics_return_source_evidence_for_an_unmodeled_event():
     memory = MemoryEngine()
-    source = memory.add('I bought a synthetic model kit')
+    source = memory.add('Synthetic archived session')
+    source.digest = 'I bought a synthetic model kit'
+    memory._sync_episode(source)
     result = memory.aggregate_facts('bought', query='model kit')
-    assert result.count == 0 and result.limitations == ('source_candidates_only',)
+    assert result.count == 0 and result.limitations == ('digest_candidates_only',)
     assert [candidate.id for candidate in result.candidates] == [source.id]
     redacted = memory.aggregate_facts('bought', query='model kit', facts=FactQuery(exclude_sensitive=True))
     assert not redacted.candidates
@@ -50,7 +52,7 @@ def test_plain_query_does_not_plan_or_execute_an_aggregate():
     fact = memory.add_fact('Ana', 'visited', 'Orbit', text='Ana visited Orbit')
     query = 'How many times did Ana visit Orbit?'
     assert memory.search(query).top().id == fact.id
-    assert 'AGGREGATION' not in memory.lean_context(query, persona=False)
+    assert 'AGGREGATION' not in memory.lean_context(query)
 
 
 def test_historical_context_filters_sources_before_top_k():
@@ -63,17 +65,14 @@ def test_historical_context_filters_sources_before_top_k():
         new = memory.add('violet cipher', event_time=20)
     scope = FactQuery(valid_at=30, known_at=150)
     query = 'violet cipher'
-    assert memory.retrieve_episodes(query, k=1)[0].id == new.id
-    options = dict(facts=scope, persona=False, n_facts=0)
-    context = memory.lean_context(query, n_chunks=1, n_digests=0, **options)
-    assert old.id in context and new.id not in context
-
+    assert not memory.retrieve_digests(query)
     for source in (old, new):
         source.digest = source.content
+        source.digest_written_at = source.ingested_at
         memory._sync_episode(source)
-    for chunks, cascade in ((0, False), (1, True)):
-        context = memory.lean_context(query, n_chunks=chunks, n_digests=1, cascade=cascade, **options)
-        assert old.id in context and new.id not in context
+    assert memory.retrieve_digests(query, k=1)[0].id == new.id
+    context = memory.lean_context(query, n_digests=1, facts=scope, n_facts=0)
+    assert old.id in context and new.id not in context
 
 
 def test_backfilled_replacements_keep_previous_validity_boundaries():

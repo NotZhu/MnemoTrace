@@ -108,8 +108,7 @@ def exercise_handoff(
     output("\n== 3. Target agent recalls from the same memory space ==")
     recalled = call("/v1/recall", {
         "query": QUERY,
-
-        "n_chunks": 3,
+        "n_digests": 3,
     }, "POST")
     context = (recalled.get("context") or "").strip()
     output(context[:1000] if context else "(no relevant memory found)")

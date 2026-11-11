@@ -44,7 +44,7 @@ async def test_tools_are_registered_with_flat_schema():
     assert "mnemotrace_import" not in tools
     # 顶层平铺的参数（不嵌套在 "params" 之下）
     props = tools["mnemotrace_recall"].inputSchema.get("properties", {})
-    assert {"query", "max_chunks", "as_of"} <= set(props)
+    assert {"query", "max_digests", "as_of"} <= set(props)
     assert "session_id" not in props
     assert "redact_sensitive" in props
     remember_props = tools["mnemotrace_remember"].inputSchema.get("properties", {})
@@ -332,7 +332,7 @@ async def test_recall_and_search_support_as_of(local_backend):
     ctx = await call(
         "mnemotrace_recall",
         query="Where does Wei work?",
-        max_chunks=0,
+        max_digests=0,
         as_of=1_700_864_000.0,
     )
     assert "Tencent" in ctx
@@ -358,7 +358,7 @@ async def test_recall_and_search_support_sensitive_redaction(local_backend):
     ctx = await call(
         "mnemotrace_recall",
         query="what do you know about me?",
-        max_chunks=0,
+        max_digests=0,
         redact_sensitive=True,
     )
     assert "Acme" in ctx

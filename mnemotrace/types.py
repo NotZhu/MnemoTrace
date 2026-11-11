@@ -26,7 +26,6 @@ class Episode:
     role: str = "user"
     event_time: Optional[float] = field(default_factory=now)  # None 明确表示来源时间未知
     ingested_at: float = field(default_factory=now)  # 我们记录它的时间
-    embedding: Optional[list[float]] = None
     consolidated: bool = False
     # L2 抽象：该 episode/session 的紧凑摘要，整合时计算一次，读取时用它（而非完整原文）
     # 构建精简上下文——这是让一小片检索结果就能廉价覆盖大量 session 的扩展性基石（AGENTS.md Bet A/E）。
@@ -40,6 +39,7 @@ class Episode:
     sequence: Optional[int] = None
     coverage: Optional[dict] = None
     digest_coverage: Optional[dict] = None
+    digest_written_at: Optional[float] = None
 
     def __post_init__(self):
         if self.source_kind not in {"note", "dialogue"}:

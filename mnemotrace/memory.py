@@ -12,7 +12,7 @@ from .store.contracts import (
     ChangeSet, CommitConditions, EmbeddingWrite, FactQuery, MessageInput, OperationKind,
     RecordKind, RecordRef, RecordWrite, RetrievalQuery, SourceLink, StoredRecord, validate_erasures,
 )
-from .store.postgres.dao import PostgresDAO, _space_row, new_operation_id
+from .store.postgres.dao import PostgresDAO, new_operation_id
 from .store.postgres.database import identifier
 from .store.postgres.errors import VersionConflict
 from .store.postgres.graph_reads import RetrievalGraph
@@ -20,7 +20,6 @@ from .store.postgres.identity import Spaces
 from .store.postgres.lexical import project_document, project_text
 from .store.postgres.projection import GraphProjection
 from .store.postgres.records import CONFLICT, ENTITY, FACT, SOURCE, MODELS, anchor_terms, domain
-from .store.postgres.writes import queue_source_vector
 from .types import Episode
 from .util import time_key
 
@@ -61,12 +60,12 @@ class Memory:
             record_version=old.record_version + 1 if old is not None else 1,
         ), old.record_version if old is not None else None)
 
-    def _commit(self, snapshot, *, writes=(), source_embedding=None, **kwargs):
+    def _commit(self, snapshot, *, writes=(), **kwargs):
         links = tuple(SourceLink(write.ref, self._ref(SOURCE, source_id))
                       for write in writes if write.ref.kind == FACT
                       for source_id in domain(write.record).provenance)
         return self.dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=writes,
-                                         source_links=links, **kwargs), source_embedding=source_embedding)
+                                         source_links=links, **kwargs))
 
     def _embeddings(self, write, text):
         if self._embedder is None:
@@ -78,11 +77,7 @@ class Memory:
 
     def store_messages(self, session_id: str, messages: 'tuple[MessageInput, ...]'):
         """Store raw dialogue and return source IDs in input order, including duplicates."""
-        return self.dao.accept_raw_messages(session_id, messages, embedding=self._embedding_space)
-
-    @property
-    def _embedding_space(self):
-        return (self._model, self._embedder.dim) if self._embedder is not None else None
+        return self.dao.accept_raw_messages(session_id, messages)
 
     def remember_messages(self, session_id: str, messages: tuple[MessageInput, ...], *,
                           processing='buffered', timeout=30, source_metadata=None):
@@ -95,7 +90,7 @@ class Memory:
         pipeline = self._processing
         receipt, associations = pipeline.tasks.accept(
             session_id, items, pipeline.require_model, pipeline.fit_message, immediate=processing == 'immediate',
-            embedding=self._embedding_space, source_metadata=source_metadata)
+            source_metadata=source_metadata)
         operation_ids = tuple(dict.fromkeys(operation for _, operation in associations))
         result = self._accepted(operation_ids, processing, timeout)
         result.update(source_ids=receipt.source_ids, accepted=receipt.affected_count,
@@ -115,7 +110,7 @@ class Memory:
                          extract=extract, event_time=event_time)
         record = replace(StoredRecord.from_record(self.context, source), agent_id=agent_id)
         receipt, operation_id = self._processing.tasks.accept_source(
-            record, self._processing.require_model, embedding=self._embedding_space,
+            record, self._processing.require_model,
             kind=OperationKind.EXTRACT if extract else None)
         if not extract:
             return dict(ok=True, status='stored', stored_raw=True, source_ids=list(receipt.source_ids),
@@ -173,15 +168,8 @@ class Memory:
             source.ingested_at = view.at.timestamp()
         write = self._write(source)
         write = RecordWrite(replace(write.record, agent_id=agent_id))
-        self._commit(snapshot, writes=(write,), source_embedding=self._embedding_space)
+        self._commit(snapshot, writes=(write,))
         return source
-
-    def source_vector_operation(self, source_id):
-        """Report the current original-text vector task for the configured embedding space."""
-        identifier(source_id)
-        if self._embedding_space is None:
-            return None
-        return self._processing.tasks.source_vector_operation(source_id, self._embedding_space)
 
     def backfill_retrieval(self, kind, *, after_id=None, limit=100):
         """Project one page of existing records and return a cursor, or None when exhausted."""
@@ -192,7 +180,6 @@ class Memory:
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError('Expected page size from 1 to 1000')
         with self.dao._transaction() as sql:
-            _, generation, _, _ = _space_row(sql)
             conditions = ('r.id > %s',) if after_id is not None else ()
             records = sql.select(kind, conditions, (after_id,) if conditions else (), limit=limit)
             for record in records:
@@ -201,14 +188,11 @@ class Memory:
                     sql.update('entities', {'anchor_terms': anchor_terms(item.name)},
                                'id = %s AND anchor_terms IS NULL', (item.id,))
                     continue
-                project_text(sql, kind, item.id, record.content_version, asdict(item), missing_only=True)
-                if kind == SOURCE:
-                    if item.digest:
-                        project_document(sql, SOURCE, item.id, record.digest_version, item.digest,
-                                         field='digest', missing_only=True)
-                    if self._embedding_space is not None:
-                        queue_source_vector(sql, item.id, item.session_id, record.content_version,
-                                            generation, self._embedding_space)
+                if kind == FACT:
+                    project_text(sql, kind, item.id, record.content_version, asdict(item), missing_only=True)
+                elif item.digest:
+                    project_document(sql, SOURCE, item.id, record.digest_version, item.digest,
+                                     field='digest', missing_only=True)
         return records[-1].ref.record_id if len(records) == limit else None
 
     def rebuild_graph(self, *, after_id=None, limit=100):
@@ -284,19 +268,19 @@ class Memory:
             # Reinforcement is optional once the snapshot answer is ready.
             pass
 
-    def retrieve_episodes(self, query: str, *, k: int = 5, as_of: float | None = None) -> retrieval.SourceSearchResult:
+    def retrieve_digests(self, query: str, *, k: int = 5, as_of: float | None = None) -> retrieval.DigestSearchResult:
         request = self._query(query, top_k=k, as_of=as_of)
         with self.dao.read_snapshot() as view:
-            return retrieval.source_search(view.focused(), request, k)
+            return retrieval.digest_search(view.focused(), request, k)
 
-    def lean_context(self, query: str, *, as_of: float | None = None, n_facts: int = 15, n_chunks: int = 2,
+    def lean_context(self, query: str, *, as_of: float | None = None, n_facts: int = 15,
                      n_digests: int = 20, char_budget: int = 60_000,
                      redact_sensitive: bool = False, facts: FactQuery | None = None,
                      reinforce_hits: bool = False, include_full_tokens: bool = False) -> retrieval.ContextResult:
-        if (any(type(value) is not int or not 0 <= value <= 1000 for value in (n_facts, n_chunks, n_digests))
+        if (any(type(value) is not int or not 0 <= value <= 1000 for value in (n_facts, n_digests))
                 or type(char_budget) is not int or char_budget < 0):
             raise ValueError('Invalid context budget')
-        count = max(n_facts, n_chunks, n_digests, 1)
+        count = max(n_facts, n_digests, 1)
         if facts is not None and as_of is not None:
             raise ValueError('Use either as_of or explicit fact conditions')
         facts = replace(facts, exclude_sensitive=facts.exclude_sensitive or redact_sensitive,
@@ -306,7 +290,7 @@ class Memory:
         request = self._query(query, top_k=count, facts=facts)
         with self.dao.read_snapshot() as view:
             result = retrieval.context(view.focused(), request, self._config,
-                                       n_facts=n_facts, n_chunks=n_chunks, n_digests=n_digests,
+                                       n_facts=n_facts, n_digests=n_digests,
                                        char_budget=char_budget)
             snapshot = view.snapshot
             records = ()
@@ -317,10 +301,10 @@ class Memory:
         self._reinforce(snapshot, records)
         return result
 
-    def context_for(self, query: str, *, as_of: float | None = None, top_k: int | None = None, k_chunks: int = 3,
+    def context_for(self, query: str, *, as_of: float | None = None, top_k: int | None = None, k_digests: int = 3,
                     char_budget: int = 60_000) -> retrieval.ContextResult:
         return self.lean_context(query, as_of=as_of, n_facts=self._config.top_k if top_k is None else top_k,
-                                 n_chunks=k_chunks, n_digests=0, char_budget=char_budget)
+                                 n_digests=k_digests, char_budget=char_budget)
 
     def recall_multi(self, space_ids, query: str, **options) -> retrieval.ContextResult:
         if isinstance(space_ids, str):

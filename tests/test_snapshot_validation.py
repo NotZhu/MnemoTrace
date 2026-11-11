@@ -157,6 +157,8 @@ def test_new_successor_links_to_previously_imported_duplicate():
 def test_embedding_failure_does_not_apply_prepared_records(monkeypatch):
     mem = target()
     before = contents(mem)
+    payload = snapshot()
+    payload["episodes"][0]["digest"] = "Source digest"
     calls = 0
     embed = mem.embedder.embed
     def fail_on_fact(text):
@@ -167,13 +169,15 @@ def test_embedding_failure_does_not_apply_prepared_records(monkeypatch):
         return embed(text)
     monkeypatch.setattr(mem.embedder, "embed", fail_on_fact)
     with pytest.raises(RuntimeError, match="synthetic embedding failure"):
-        mem.import_snapshot(snapshot())
+        mem.import_snapshot(payload)
     assert contents(mem) == before
 
 
 def test_invalid_recomputed_vector_does_not_apply_prepared_episodes(monkeypatch):
     mem = target()
     before = contents(mem)
+    payload = snapshot()
+    payload["episodes"][0]["digest"] = "Source digest"
     embed = mem.embedder.embed
     calls = 0
     def malformed_fact_vector(text):
@@ -182,7 +186,7 @@ def test_invalid_recomputed_vector_does_not_apply_prepared_episodes(monkeypatch)
         return [float("nan")] if calls == 2 else embed(text)
     monkeypatch.setattr(mem.embedder, "embed", malformed_fact_vector)
     with pytest.raises(ValueError, match="embedding"):
-        mem.import_snapshot(snapshot())
+        mem.import_snapshot(payload)
     assert contents(mem) == before
 
 
