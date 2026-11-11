@@ -196,7 +196,6 @@ HTTP、直连 MCP 和普通 CLI 使用[数据库运行连接](#postgres-数据�
 | MCP | HTTP 代理用 `.[mcp]`，可信直连用 `.[mcp,postgres]` |
 | 本地语义嵌入 | `.[fastembed]` 提供固定的多语 MiniLM；`.[embeddings]` 提供 SentenceTransformer 模型 |
 | LLM / API 嵌入 | `.[llm]`；模型名和凭据规则由 [providers.py](../../mnemotrace/llm/providers.py) 解析 |
-| PDF/DOCX 解析 | `.[documents]` |
 | Postgres 数据库基础 | `.[postgres]`；包含数据库初始化、身份和业务接口 |
 | 完整服务常用组合 | `.[serve]`；具体包含项以 pyproject 为准 |
 
@@ -211,14 +210,14 @@ FastEmbed 每条原文保留一份向量，超过模型输入窗口的内容仍�
 | mnemotrace-quickstart | 使用已配置 LLM 的示例 |
 | mnemotrace-mcp / python -m mnemotrace.mcp | 本地工具服务或远程 HTTP 代理 |
 | mnemotrace | 授权空间内摄入、操作查询、重试、检索和事实擦除 |
-| mnemotrace-import / python -m mnemotrace.connectors | 解析与导入，先使用 --dry-run |
 | mnemotrace-agent-setup | 输出或安装客户端配置与受管接入说明 |
 | mnemotrace-agent-bootstrap | 组合安装入口，有实际配置写入副作用 |
 | mnemotrace-agent-doctor | 检查所选运行环境与接线 |
-| mnemotrace-watch | 发现并导入客户端会话，另有调度器及 hook 安装选项 |
 | python -m mnemotrace.admin | 数据库初始化和受限账号/key 管理，使用独立凭据 |
 
 完整参数见各命令的 `--help`。MCP stdio 代理使用 `--api-url`、`--api-key-file` 和 `--space-id`，
 本地直连使用 `--user-id` 与 `--space-id`。watcher 使用 `--url`、`--key-file` 和 `--space-id`，
 默认受理历史后交给 worker，`--immediate` 等待核心处理。
 若原文已保存而核心处理失败或等待超时，watcher 保留已确认的原文游标，报告非零退出状态及可查询、重试的操作 ID。
+
+历史导入与 watch 的保留源码及显式验证方式见[连接器说明](../../mnemotrace/connectors/README.md)。

@@ -49,7 +49,7 @@ def ingest(memory, item):
         event_time = parsed[0] if parsed else BASE + index * DAY
         messages = tuple(
             MessageInput(message_id=str(position), role=turn.get("role", "user"),
-                         content=turn["content"], event_time=event_time, mode="historical")
+                         content=turn["content"], event_time=event_time)
             for position, turn in enumerate(turns) if turn.get("content", "").strip()
         )
         if messages:

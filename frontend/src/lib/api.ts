@@ -217,10 +217,10 @@ export const api = {
     method: 'POST', body: json({ name }),
   }),
   rememberMessages: (messages: {message_id: string; role: 'user' | 'assistant'; content: string;
-      event_time?: number | null}[], sessionId: string, mode: 'live' | 'historical' = 'live',
+      event_time?: number | null}[], sessionId: string,
       extract = true, signal?: AbortSignal) =>
     request<RememberResult & {accepted: number; messages: {episode_id: string; operation_ids: string[]}[]}>(
-      '/v1/messages', { method: 'POST', body: json({messages, session_id: sessionId, mode, extract, processing: 'buffered'}), signal }),
+      '/v1/messages', { method: 'POST', body: json({messages, session_id: sessionId, extract, processing: 'buffered'}), signal }),
   processingStatus: (sessionId?: string, signal?: AbortSignal, afterId?: string) =>
     request<ProcessingStatus>(`/v1/processing${qs({session_id: sessionId, after_id: afterId})}`, { signal }),
   retryOperation: (id: string, signal?: AbortSignal) => request<OperationResult>(`/v1/operations/${encodeURIComponent(id)}/retry`, {

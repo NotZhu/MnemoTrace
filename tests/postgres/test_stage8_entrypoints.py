@@ -1,6 +1,6 @@
 """Postgres consumers that previously exercised a filesystem-backed service."""
+from mnemotrace.connectors.dialogue import import_history
 import json
-import sys
 
 import pytest
 
@@ -56,31 +56,11 @@ def test_console_seed_creates_separate_spaces_and_maps_case_ids(
         seed_console.main(args)
 
 
-@pytest.mark.parametrize('caption', ['a synthetic bicycle', None])
-def test_image_import_persists_caption_or_placeholder(product_service, product_scope, caption):
-    class Captioner:
-        def caption(self, *_args, **_kwargs):
-            return caption
-
-    scope, _ = product_scope()
-    product_service.captioner = Captioner() if caption else None
-    response = product_service.import_document(
-        scope, b'\x89PNG\r\n\x1a\n', filename='synthetic.png', content_type='image/png')
-    assert response['ok'] and response['kind'] == 'image'
-    source, = product_service.memory(scope).list_sources()
-    assert response['caption_status'] == ('described' if caption else 'model_not_configured')
-    assert response['degraded'] is (not caption)
-    assert source.content.endswith('[image]' + (' ' + caption if caption else ''))
 
 
-def test_pdf_missing_optional_dependency(product_service, product_scope, monkeypatch):
-    scope, _ = product_scope()
-    monkeypatch.setitem(sys.modules, 'pypdf', None)
-    with pytest.raises(ImportError, match=r'mnemotrace-memory\[documents\]'):
-        product_service.import_document(scope, b'%PDF-1.4', filename='synthetic.pdf')
-    assert not product_service.memory(scope).list_sources()
 
 
+@pytest.mark.history_import
 def test_import_continues_after_one_session_extraction_fails(product_service, product_scope):
     scope, _ = product_scope()
     recorded = RecordedLLM()
@@ -93,7 +73,7 @@ def test_import_continues_after_one_session_extraction_fails(product_service, pr
     product_service.llm = FakeLLM(handler=respond)
     sessions = [{'session_id': session, 'messages': [{'role': 'user', 'content': text}]}
                 for session, text in (('invalid', 'Synthetic invalid output'), ('valid', 'I live in Shenzhen.'))]
-    result = product_service.import_(scope, sessions=sessions, consolidate=True)
+    result = import_history(product_service, scope, sessions=sessions, consolidate=True)
     assert result['failed'] == 1
     failed, = result['failures']
     assert failed['session_id'] == 'invalid' and failed['stored_raw']

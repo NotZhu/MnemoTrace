@@ -25,7 +25,6 @@ def target():
     mem.set_focus(track=["existing"], mute=["muted"])
     mem.set_policy(extract_instruction="existing policy")
     mem._aliases = {"target": {"Existing"}}
-    mem._import_seen = {"existing-fingerprint"}
     return mem
 
 
@@ -37,7 +36,7 @@ def contents(mem):
         "entities": [asdict(e) for e in mem.graph.entities.values()],
         "relations": [asdict(r) for r in mem.graph.relations()],
         "focus": mem.focus, "policy": mem.policy,
-        "aliases": mem._aliases, "import_seen": mem._import_seen,
+        "aliases": mem._aliases,
     })
 
 
@@ -135,7 +134,7 @@ def test_migration_preserves_source_history_and_target_settings():
     assert fact.source == "user" and fact.provenance == [ep.id]
     assert ep.id != "ep_source" and ep.event_time == 0 and ep.consolidated
     after = contents(mem)
-    for key in ("focus", "policy", "aliases", "import_seen"):
+    for key in ("focus", "policy", "aliases"):
         assert after[key] == before[key]
 
 

@@ -89,3 +89,34 @@ def minmax_normalize(scores: dict[str, float]) -> dict[str, float]:
     if hi - lo < 1e-12:
         return {k: 1.0 for k in scores}
     return {k: (v - lo) / (hi - lo) for k, v in scores.items()}
+
+
+def extract_text(content: object) -> str:
+    """把 'content' 字段的多种形状压平成纯文本：
+      * 纯字符串                                    -> 原样返回
+      * parts 列表（OpenAI 多模态/视觉）             -> 拼接文本部分
+      * {'parts': [...]} / {'text': ...}（ChatGPT）  -> 取其中的文本
+    非文本部分（图片、工具数据）被丢弃。"""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        if "parts" in content:
+            return extract_text(content["parts"])
+        for key in ("text", "content", "value"):
+            if key in content:
+                return extract_text(content[key])
+        return ""
+    if isinstance(content, (list, tuple)):
+        out = []
+        for part in content:
+            if isinstance(part, str):
+                out.append(part)
+            elif isinstance(part, dict):
+                # OpenAI 的 content part：{'type': 'text', 'text': '...'}
+                if part.get("type") in (None, "text", "input_text", "output_text"):
+                    out.append(extract_text(part.get("text") or part.get("content") or ""))
+                # 其余：image_url / file / tool 部分 —— 跳过
+        return "\n".join(p for p in out if p)
+    return str(content)

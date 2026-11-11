@@ -6,16 +6,13 @@ import os
 
 from .audit import graph_audit
 from .config import Config
-from .connectors.documents import document_inputs
 from .consolidate.outcomes import OUTCOME_PREDICATES, split_outcome_text
 from .consolidate.policy import POLICY_DEFAULTS
-from .extraction import LLMNotConfiguredError, require_llm
 from .llm import providers
 from .memory import Memory
 from .metrics import Metrics, timed
 from .store.contracts import FactQuery, FactState, MessageInput
 from .store.postgres import Database, DatabaseConfig, Spaces
-from .store.postgres.errors import MessageConflict
 from .store.postgres.records import CONFLICT, ENTITY, FACT, RELATION, SOURCE, domain
 from .util import fmt_date, fmt_datetime, now
 
@@ -50,7 +47,6 @@ def _answer_from_memory(answerer, query: str, ctx: str) -> tuple[str, str]:
     except Exception:  # noqa: BLE001
         return "", "model_failed"
     return answer, "answered" if answer else "empty"
-
 
 
 def _est_tokens(text: str) -> int:
@@ -112,7 +108,7 @@ def _source_view(record):
     source = domain(record)
     return dict(id=source.id, content=source.content, chars=len(source.content), digest=source.digest,
                 date=source.metadata.get('date') or fmt_date(source.event_time),
-                session=source.session_id, session_id=source.session_id, role=source.role, mode=source.mode,
+                session=source.session_id, session_id=source.session_id, role=source.role,
                 message_id=source.message_id, sequence=source.sequence, event_time=source.event_time,
                 ingested_at=source.ingested_at, coverage=source.coverage, agent_id=record.agent_id,
                 space_id=record.ref.context.space_id)
@@ -154,9 +150,9 @@ class MemoryService:
                               embedder=self.embedder, embedding_model=self.embedding_model)
 
     @timed('remember_messages')
-    def remember_messages(self, context, messages, session_id, mode='live', processing='buffered',
+    def remember_messages(self, context, messages, session_id, processing='buffered',
                           extract: bool = True, *, agent_id=None, timeout=30, source_metadata=None):
-        items = tuple(MessageInput(**message, agent_id=agent_id, mode=mode, extract=extract) for message in messages)
+        items = tuple(MessageInput(**message, agent_id=agent_id, extract=extract) for message in messages)
         result = operation_payload(self.memory(context).remember_messages(
             session_id, items, processing=processing, timeout=timeout, source_metadata=source_metadata))
         if processing == 'immediate' and not result['ok']:
@@ -187,85 +183,6 @@ class MemoryService:
         return operation_payload(self.memory(context).flush_processing(
             session_id, timeout, retry_failed=retry_failed, include_digests=include_digests))
 
-    def import_(self, context, *, sessions=None, data=None, format='auto', consolidate=None,
-                generate_digests=True, dedupe=True, agent_id=None):
-        from .connectors import parse
-        from .connectors.dialogue import batches
-        from .consolidate.pipeline import MessageConflictError
-
-        sessions = sessions if sessions is not None else parse(data, format=format)
-        memory = self.memory(context)
-        results, failures, accepted_sessions = [], [], set()
-        episodes = skipped = 0
-        plans = []
-        for index, session in enumerate(sessions):
-            try:
-                plans.extend(batches((session,), consolidate))
-            except (ValueError, MessageConflictError) as exc:
-                session_id = session.get('session_id') if isinstance(session, dict) else getattr(session, 'session_id', None)
-                failures.append(dict(session_id=session_id if isinstance(session_id, str) else None,
-                                     session_index=index, code=getattr(exc, 'code', 'invalid_parameter'),
-                                     stored_raw=False, operation_ids=[]))
-        for session_id, messages, source, extract in plans:
-            try:
-                if messages is None:
-                    document, = document_inputs([source])
-                    verbatim = document['metadata'].get('verbatim') is True
-                    result = operation_payload(memory.import_document(
-                        document['content'], session_id, event_time=document['event_time'],
-                        metadata=document['metadata'], agent_id=agent_id, extract=consolidate is not False and not verbatim,
-                        generate_digests=generate_digests and not verbatim, dedupe=dedupe,
-                        processing='immediate' if consolidate is True else 'buffered'))
-                else:
-                    source_metadata = {'digest_requested': generate_digests}
-                    metadata = source.get('metadata')
-                    if isinstance(metadata, dict) and metadata.get('source') == 'agent_session':
-                        source_metadata['source'] = 'agent_session'
-                    result = self.remember_messages(
-                        context, messages, session_id, mode='historical', agent_id=agent_id,
-                        processing='immediate' if consolidate is True else 'buffered',
-                        extract=extract, source_metadata=source_metadata)
-            except ProcessingFailure as exc:
-                result = exc.result
-            except (MessageConflict, LLMNotConfiguredError, ValueError) as exc:
-                if isinstance(exc, LLMNotConfiguredError) and not results:
-                    raise
-                failures.append(dict(session_id=session_id, code=getattr(exc, 'code', 'invalid_parameter'),
-                                     stored_raw=False, operation_ids=[]))
-                continue
-            results.append(dict(session_id=session_id, **result))
-            added = result['accepted']
-            episodes += added
-            skipped += len(result['source_ids']) - added
-            if added:
-                accepted_sessions.add(session_id)
-            if not result['ok']:
-                failures.append(dict(session_id=session_id, code=result['status'], stored_raw=bool(result['source_ids']),
-                                     operation_ids=result['operation_ids'], operations=result['operations']))
-        return dict(ok=not failures, sessions=len(accepted_sessions), episodes=episodes, skipped=skipped,
-                    failed=len(failures), failures=failures, results=results,
-                    queued=any(result['operations'] and result['status'] == 'accepted' for result in results))
-
-    def import_document(self, context, data, *, filename=None, content_type=None, session_id='document',
-                        agent_id=None):
-        from .connectors.documents import detect_kind, document_text, to_data_url, to_session
-        from .llm.vision import describe_image
-
-        kind = detect_kind(data, filename, content_type)
-        result = dict(kind=kind)
-        if kind == 'image':
-            caption, caption_status = describe_image(self.captioner, to_data_url(data, content_type))
-            text = f'[image] {caption}' if caption else '[image]'
-            result.update(caption_status=caption_status, degraded=not caption)
-        else:
-            require_llm(self.llm)
-            text = document_text(data, kind)
-        if not text:
-            raise ValueError('Document has no extractable text')
-        verbatim = kind == 'image' and (self.llm is None or result['degraded'])
-        source = to_session(text, filename=filename, session_id=session_id,
-                            metadata={'kind': kind, 'media_type': content_type or '', 'verbatim': verbatim})
-        return dict(**result, **self.import_(context, sessions=[source], agent_id=agent_id))
 
     @timed('recall')
     def recall(self, context, query, lean=True, n_chunks=6, as_of=None,

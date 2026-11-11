@@ -241,13 +241,12 @@ class MessageInput:
     content: str
     event_time: float | None = None
     agent_id: str | None = None
-    mode: str = 'live'
     extract: bool = True
 
     def __post_init__(self):
         _id(self.message_id)
-        if self.role not in {'user', 'assistant'} or self.mode not in {'live', 'historical'}:
-            raise ValueError('Invalid message role or mode')
+        if self.role not in {'user', 'assistant'}:
+            raise ValueError('Invalid message role')
         if type(self.extract) is not bool:
             raise ValueError('extract must be a boolean')
         if (not isinstance(self.content, str) or not self.content.strip()
@@ -261,7 +260,7 @@ class MessageInput:
     def fingerprint(self) -> str:
         # 1 and 1.0 are the same event time; content/IDs are never trimmed or case-folded.
         stamp = float(self.event_time) if self.event_time is not None else None
-        value = [self.role, self.content, stamp, self.agent_id, self.mode, self.extract]
+        value = [self.role, self.content, stamp, self.agent_id, self.extract]
         return hashlib.sha256(_json(value).encode('utf-8')).hexdigest()
 
 
@@ -578,16 +577,14 @@ class ExtractionProduct:
 def _validate_product_input(data: dict) -> None:
     """Validate prepared input even when an empty model result touches no fields."""
     from ..consolidate.planning import validate_view
-    required = {'operation', 'source_kind', 'mode', 'extract', 'pending', 'context', 'parts', 'candidates'}
+    required = {'operation', 'source_kind', 'extract', 'pending', 'context', 'parts', 'candidates'}
     if not isinstance(data, dict) or set(data) != required:
         raise ValueError('Missing prepared input fields')
     if data['operation'] not in {'extract', 'digest', 'conflicts'}:
         raise ValueError('Invalid model operation')
-    if data['source_kind'] not in {'dialogue', 'raw', 'document'} or type(data['extract']) is not bool:
+    if data['source_kind'] not in {'dialogue', 'note'} or type(data['extract']) is not bool:
         raise ValueError('Invalid source routing')
     dialogue = data['source_kind'] == 'dialogue'
-    if data['mode'] not in ({'live', 'historical'} if dialogue else {None}):
-        raise ValueError('Invalid source mode')
     if any(not isinstance(data[key], list) for key in ('pending', 'context', 'parts', 'candidates')) or not data['pending']:
         raise ValueError('Invalid input lists')
     views = [*data['context'], *data['pending']]

@@ -2,6 +2,8 @@
 通过非破坏性取代（supersession）实现知识更新、双时间轴 as-of 查询、multi-hop 图推理、拒答、
 用户归属隔离——全部在零依赖的离线环境运行。"""
 from __future__ import annotations
+from mnemotrace.connectors.dialogue import import_data
+import pytest
 
 from mnemotrace.config import Config
 from tests.model_fixtures import MemoryEngine
@@ -55,9 +57,10 @@ def test_multi_sentence_episode_extracts_every_fact():
     assert all(f.is_live() for f in chain)
 
 
+@pytest.mark.history_import
 def test_records_import_same_session_extracts_multiple_messages():
     mem = MemoryEngine()
-    stats = mem.import_data([
+    stats = import_data(mem, [
         {"session_id": "career", "content": "Wei works at Tencent.", "event_time": BASE},
         {"session_id": "career", "content": "Wei works at Moonshot AI.", "event_time": BASE + DAY},
     ], format="records", user_id="u1", generate_digests=False)

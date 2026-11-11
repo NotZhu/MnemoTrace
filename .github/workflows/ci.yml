@@ -59,17 +59,6 @@ jobs:
           "$RUNNER_TEMP/mnemotrace-wheel/bin/python" -m pip install --no-deps dist/*.whl
           "$RUNNER_TEMP/mnemotrace-wheel/bin/python" -I -c 'from mnemotrace import Memory, MemoryEngine; from mnemotrace.service import MemoryService; assert Memory.__module__ == "mnemotrace.memory"; assert MemoryEngine().search("empty").abstained'
 
-  documents:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: python -m pip install -e ".[dev,server,mcp,documents]"
-      - run: python -m pytest tests/test_documents.py
-
   postgres-linux:
     runs-on: ubuntu-latest
     strategy:

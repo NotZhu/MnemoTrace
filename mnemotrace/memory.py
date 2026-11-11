@@ -7,7 +7,6 @@ from ._postgres_pipeline import PostgresPipeline
 from .config import Config
 from .consolidate.decay import reinforce
 from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual, validate_fact_patch
-from .consolidate.pipeline import content_hash
 from .retrieve import postgres as retrieval
 from .store.contracts import (
     ChangeSet, CommitConditions, EmbeddingWrite, FactQuery, MessageInput, OperationKind,
@@ -105,15 +104,14 @@ class Memory:
                                      for item, source_id in zip(items, receipt.source_ids)))
         return result
 
-    def remember(self, content: str, session_id: str, *, extract: bool = True, source_kind='raw',
+    def remember(self, content: str, session_id: str, *, extract: bool = True,
                  event_time=None, agent_id=None, processing='immediate', timeout=30):
-        """Save a note or decoded document and optionally request fact extraction."""
+        """Save a note and optionally request fact extraction."""
         identifier(session_id)
         self._validate_processing(processing, timeout)
-        if (not isinstance(content, str) or not content.strip() or '\x00' in content
-                or source_kind not in ('raw', 'document')):
+        if not isinstance(content, str) or not content.strip() or '\x00' in content:
             raise ValueError('Invalid source content or routing')
-        source = Episode(content, self.context.user_id, session_id, source_kind=source_kind,
+        source = Episode(content, self.context.user_id, session_id, source_kind='note',
                          extract=extract, event_time=event_time)
         record = replace(StoredRecord.from_record(self.context, source), agent_id=agent_id)
         receipt, operation_id = self._processing.tasks.accept_source(
@@ -134,25 +132,6 @@ class Memory:
         if type(timeout) not in (int, float) or not isfinite(timeout) or timeout < 0:
             raise ValueError('Expected a finite nonnegative timeout')
 
-    def import_document(self, content, session_id, *, event_time=None, metadata=None, agent_id=None,
-                        extract: bool = True, generate_digests=True, dedupe=True, processing='buffered', timeout=30):
-        identifier(session_id)
-        self._validate_processing(processing, timeout)
-        if not isinstance(content, str) or not content.strip() or '\x00' in content:
-            raise ValueError('Expected non-empty document content')
-        episode = Episode(content, self.context.user_id, session_id, source_kind='document',
-                          extract=extract, event_time=event_time,
-                          metadata={**(metadata or {}), 'digest_requested': generate_digests})
-        record = replace(StoredRecord.from_record(self.context, episode), agent_id=agent_id)
-        kind = (OperationKind.EXTRACT if extract else OperationKind.DIGEST
-                if generate_digests and len(content) >= self._config.digest_min_chars else None)
-        import_hash = content_hash([session_id, content, agent_id, extract, generate_digests]) if dedupe else None
-        receipt, operation_id = self._processing.tasks.accept_source(
-            record, self._processing.require_model, embedding=self._embedding_space, import_hash=import_hash,
-            kind=kind)
-        ids = (operation_id,) if operation_id else ()
-        return dict(self._accepted(ids, processing, timeout), source_ids=receipt.source_ids,
-                    accepted=receipt.affected_count)
 
     def _accepted(self, operation_ids, processing, timeout):
         if processing == 'immediate':

@@ -261,7 +261,7 @@ def store_messages(sql, session_id, messages, *, check_model=None, generation=No
                 id=record_id, session_id=session_id, message_id=item.message_id,
                 content=item.content, role=item.role, event_time=timestamp(item.event_time),
                 ingested_at=sql.run('SELECT clock_timestamp()').fetchone()[0],
-                source_kind='dialogue', extract=item.extract, mode=item.mode,
+                source_kind='dialogue', extract=item.extract,
                 agent_id=item.agent_id, message_fingerprint=content_hash, metadata=source_metadata or {},
                 sequence=allocate_sequence(sql, session_id), record_version=1, content_version=1,
             ))

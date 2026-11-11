@@ -36,6 +36,21 @@ def product(runtime, user, accounts, spaces, monkeypatch):
     client.close()
 
 
+def test_retired_ingestion_routes_and_mode_are_absent(product):
+    service, context, _, client = product
+    schema = client.get('/openapi.json').json()
+    assert '/v1/import' not in schema['paths'] and '/v1/documents' not in schema['paths']
+    props = schema['components']['schemas']['MessagesReq']['properties']
+    assert 'mode' not in props
+    for path in ('/v1/import', '/v1/documents'):
+        assert client.post(path, json={'space_id': context.space_id}).status_code == 404
+    body = {'space_id': context.space_id, 'session_id': 's', 'mode': 'live',
+            'messages': [{'message_id': 'm', 'role': 'user', 'content': 'Synthetic dialogue'}]}
+    assert client.post('/v1/messages', json=body).status_code == 422
+    assert not service.memory(context).list_sources()
+    assert not hasattr(service, 'import_') and not hasattr(service, 'import_document')
+
+
 def test_http_space_and_operation_lifecycle(product, user, accounts, spaces):
     service, context, key, client = product
     scope = {'space_id': context.space_id}

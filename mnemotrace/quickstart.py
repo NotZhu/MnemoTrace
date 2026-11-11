@@ -58,7 +58,7 @@ def run_demo(memory: Memory) -> None:
     print("== 写入原始事件（System-1，快速写入） ==")
     messages = tuple(
         MessageInput(message_id=f'demo:{index}', role='user', content=text,
-                     event_time=BASE + day * DAY, mode='historical')
+                     event_time=BASE + day * DAY)
         for index, (text, day) in enumerate(history)
     )
     result = memory.remember_messages('mnemotrace-quickstart', messages, processing='buffered')

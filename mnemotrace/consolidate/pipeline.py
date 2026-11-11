@@ -1,4 +1,4 @@
-"""One persisted ledger for dialogue, raw sources and document operations."""
+"""One persisted ledger for dialogue and note operations."""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -27,18 +27,18 @@ def content_hash(value):
                                     separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
 
 
-def route(session_id, mode, extract, source_kind='dialogue'):
-    return json.dumps([session_id, mode, extract, source_kind], ensure_ascii=False)
+def route(session_id, extract, source_kind='dialogue'):
+    return json.dumps([session_id, extract, source_kind], ensure_ascii=False)
 
 
-def identity(message, mode, extract):
-    return content_hash([message['role'], message['content'], message['event_time'], mode, extract])
+def identity(message, extract):
+    return content_hash([message['role'], message['content'], message['event_time'], extract])
 
 
-def normalized(messages, session_id, mode, extract):
+def normalized(messages, session_id, extract):
     if (not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 512
-            or mode not in {'live', 'historical'} or type(extract) is not bool):
-        raise ValueError('Invalid session, mode or extract flag')
+            or type(extract) is not bool):
+        raise ValueError('Invalid session or extract flag')
     if not isinstance(messages, list) or not 1 <= len(messages) <= 1000:
         raise ValueError('messages must contain 1 to 1000 complete messages')
     rows, seen = [], {}
@@ -56,7 +56,7 @@ def normalized(messages, session_id, mode, extract):
         if stamp is not None and (type(stamp) not in (int, float) or not math.isfinite(stamp)):
             raise ValueError('event_time must be finite or unknown')
         row['event_time'] = float(stamp) if stamp is not None else None
-        fingerprint = identity(row, mode, extract)
+        fingerprint = identity(row, extract)
         if row['message_id'] in seen and seen[row['message_id']] != fingerprint:
             raise MessageConflictError()
         seen[row['message_id']] = fingerprint
@@ -66,7 +66,7 @@ def normalized(messages, session_id, mode, extract):
 
 def source(ep):
     return content_hash([ep.user_id, ep.session_id, ep.message_id, ep.sequence, ep.role,
-                   ep.event_time, ep.ingested_at, ep.mode, ep.content, ep.source_kind, ep.extract])
+                   ep.event_time, ep.ingested_at, ep.content, ep.source_kind, ep.extract])
 
 
 def config_identity(mem, *, include_embedding=True):
@@ -113,9 +113,9 @@ def reset_attempts(window, field, reason, now):
 
 
 STATES = {'pending', 'running', 'retry_wait', 'completed', 'failed', 'cancelled'}
-SOURCE_FIELDS = {'session_id', 'message_id', 'fingerprint', 'source', 'length', 'sequence', 'mode',
+SOURCE_FIELDS = {'session_id', 'message_id', 'fingerprint', 'source', 'length', 'sequence',
                  'extract', 'source_kind', 'core', 'digest', 'window_ids', 'cancelled', 'position', 'parts', 'digest_requested', 'commits', 'digest_receipt'}
-SESSION_FIELDS = {'session_id', 'mode', 'extract', 'source_kind', 'last_activity', 'cutoff', 'following', 'batch_id', 'last_turn'}
+SESSION_FIELDS = {'session_id', 'extract', 'source_kind', 'last_activity', 'cutoff', 'following', 'batch_id', 'last_turn'}
 WINDOW_FIELDS = {'route', 'batch_id', 'input', 'input_hash', 'config', 'generation_config', 'state', 'phase', 'attempts',
                  'embed_attempts', 'next_attempt_at', 'result', 'vectors', 'core_saved', 'digest_saved',
                  'error_code', 'history', 'guard', 'limits', 'result_hash', 'operation', 'stats'}
@@ -149,10 +149,9 @@ def validate_state(value, episodes=None, embedding_dim=None):
             identities, order = set(), set()
             for key, row in state['sources'].items():
                 require(isinstance(key, str) and isinstance(row, dict) and set(row) == SOURCE_FIELDS)
-                require(row['source_kind'] in {'dialogue', 'raw', 'document'})
+                require(row['source_kind'] in {'dialogue', 'note'})
                 dialogue = row['source_kind'] == 'dialogue'
                 require(isinstance(row['session_id'], str) and bool(row['session_id']))
-                require(row['mode'] in {'live', 'historical'} if dialogue else row['mode'] is None)
                 require(isinstance(row['message_id'], str) and bool(row['message_id']) if dialogue else row['message_id'] is None)
                 require(type(row['extract']) is bool)
                 require(row['core'] in {'not_requested', 'pending', 'completed', 'failed'})
@@ -243,7 +242,7 @@ def validate_state(value, episodes=None, embedding_dim=None):
                 if dialogue:
                     require(pair not in identities)
                     identities.add(pair)
-                require(route(row['session_id'], row['mode'], row['extract'], row['source_kind']) in state['sessions'])
+                require(route(row['session_id'], row['extract'], row['source_kind']) in state['sessions'])
                 if docs is not None and row['cancelled']:
                     require(key not in docs or source(docs[key]) != row['source'])
                 if docs is not None and not row['cancelled']:
@@ -254,8 +253,8 @@ def validate_state(value, episodes=None, embedding_dim=None):
                     require(row['core'] != 'completed' or ep.consolidated and ep.coverage is not None)
                     require(row['digest'] != 'completed' or bool(ep.digest))
                     if dialogue:
-                        require((ep.message_id, ep.sequence, ep.mode) == (row['message_id'], row['sequence'], row['mode']))
-                        require(identity({'role': ep.role, 'content': ep.content, 'event_time': ep.event_time}, row['mode'], row['extract']) == row['fingerprint'])
+                        require((ep.message_id, ep.sequence) == (row['message_id'], row['sequence']))
+                        require(identity({'role': ep.role, 'content': ep.content, 'event_time': ep.event_time}, row['extract']) == row['fingerprint'])
                     receipt = row['digest_receipt']
                     if row['digest'] == 'completed' and any(key in state['windows'][wid]['digest_saved'] for wid in row['window_ids']):
                         require(receipt is not None)
@@ -284,7 +283,7 @@ def validate_state(value, episodes=None, embedding_dim=None):
             for key, session in state['sessions'].items():
                 require(isinstance(session, dict) and set(session) == SESSION_FIELDS)
                 require(type(session['extract']) is bool)
-                require(key == route(session['session_id'], session['mode'], session['extract'], session['source_kind']))
+                require(key == route(session['session_id'], session['extract'], session['source_kind']))
                 require(_number(session['last_activity']) and _number(session['last_turn']))
                 require(all(type(session[k]) is int and 0 <= session[k] <= state['sequences'].get(session['session_id'], 0) for k in ('cutoff', 'following')))
                 require(session['following'] == 0 or session['following'] > session['cutoff'])
@@ -321,11 +320,11 @@ def validate_state(value, episodes=None, embedding_dim=None):
                 require(win['phase'] not in {'embed', 'commit', 'compensate', 'done'} or isinstance(win['result'], dict))
                 require(win['state'] != 'completed' or win['phase'] == 'done' and win['core_saved'])
                 data = win['input']
-                require(isinstance(data, dict) and set(data) == {'context', 'pending', 'mode', 'extract', 'source_kind', 'operation', 'parts', 'candidates'})
+                require(isinstance(data, dict) and set(data) == {'context', 'pending', 'extract', 'source_kind', 'operation', 'parts', 'candidates'})
                 require(type(data['extract']) is bool)
                 session = state['sessions'][win['route']]
-                require(all(data.get(k) == session[k] for k in ('mode', 'extract', 'source_kind')))
-                require(data['operation'] == win['operation'] and data['source_kind'] in {'dialogue', 'raw', 'document'})
+                require(all(data.get(k) == session[k] for k in ('extract', 'source_kind')))
+                require(data['operation'] == win['operation'] and data['source_kind'] in {'dialogue', 'note'})
                 require(isinstance(data['context'], list) and isinstance(data['pending'], list) and bool(data['pending']))
                 require(isinstance(data['parts'], list) and all(isinstance(k, str) for k in data['parts']))
                 require(len(set(data['parts'])) == len(data['parts']) and key not in data['parts'])
@@ -363,7 +362,6 @@ def validate_state(value, episodes=None, embedding_dim=None):
                     require(item['id'] in state['sources'] and item['source'] == state['sources'][item['id']]['source'])
                     row = state['sources'][item['id']]
                     require(row['session_id'] == session['session_id'] and row['source_kind'] == data['source_kind'])
-                    require(row['mode'] == data['mode'])
                     require(win['operation'] == 'conflicts' or row['extract'] == data['extract'])
                     require(item['message_id'] == row['message_id'] and item['sequence'] == row['sequence'] and item['source_length'] == row['length'])
                     require((item['role'] in {'user', 'assistant'}) == (data['source_kind'] == 'dialogue'))
@@ -418,17 +416,17 @@ class PipelineTasks:
                 if (session_id is None or r['session_id'] == session_id) and (ids is None or k in ids)}
 
     def group(self, row, timestamp=0):
-        key = route(row['session_id'], row['mode'], row['extract'], row['source_kind'])
-        return self.ensure()['sessions'].setdefault(key, dict(session_id=row['session_id'], mode=row['mode'], extract=row['extract'],
+        key = route(row['session_id'], row['extract'], row['source_kind'])
+        return self.ensure()['sessions'].setdefault(key, dict(session_id=row['session_id'], extract=row['extract'],
             source_kind=row['source_kind'], last_activity=timestamp, cutoff=0, following=0, batch_id='', last_turn=0))
 
-    def inspect(self, messages, session_id, mode='live', extract=True):
-        rows = normalized(messages, session_id, mode, extract)
+    def inspect(self, messages, session_id, extract=True):
+        rows = normalized(messages, session_id, extract)
         existing = {(r['session_id'], r['message_id']): r for r in self.rows().values() if r['source_kind'] == 'dialogue'}
         unseen = {}
         for row in rows:
             old = existing.get((session_id, row['message_id']))
-            fingerprint = identity(row, mode, extract)
+            fingerprint = identity(row, extract)
             if old and old['fingerprint'] != fingerprint:
                 raise MessageConflictError()
             if old is None:
@@ -437,7 +435,7 @@ class PipelineTasks:
 
     def _record(self, ep, *, fingerprint, sequence, timestamp, requested):
         row = dict(session_id=ep.session_id, message_id=ep.message_id, fingerprint=fingerprint, source=source(ep),
-            length=len(ep.content), sequence=sequence, mode=ep.mode, extract=ep.extract, source_kind=ep.source_kind,
+            length=len(ep.content), sequence=sequence, extract=ep.extract, source_kind=ep.source_kind,
             core='pending' if requested else 'not_requested', digest='completed' if ep.digest else
                 'pending' if requested and len(ep.content) >= self.memory.config.digest_min_chars else 'not_needed',
             window_ids=[], cancelled=False, position=0, parts=[], digest_requested=False, commits=[], digest_receipt=None)
@@ -447,8 +445,8 @@ class PipelineTasks:
         self.group(row, timestamp)['last_activity'] = timestamp
         return row
 
-    def accept(self, messages, session_id, mode='live', extract=True, timestamp=0, embeddings=None):
-        rows, unseen = self.inspect(messages, session_id, mode, extract)
+    def accept(self, messages, session_id, extract=True, timestamp=0, embeddings=None):
+        rows, unseen = self.inspect(messages, session_id, extract)
         from ..store._validation import validate_embedding
         if not isinstance(embeddings, dict) or any(k not in embeddings for k in unseen):
             raise ValueError('Missing prepared message embeddings')
@@ -467,10 +465,10 @@ class PipelineTasks:
             sequence = self.ensure()['sequences'].get(session_id, 0) + 1
             ep = Episode(content=row['content'], role=row['role'], event_time=row['event_time'], ingested_at=timestamp,
                 user_id=self.namespace, session_id=session_id, message_id=row['message_id'], sequence=sequence,
-                mode=mode, source_kind='dialogue', extract=extract, consolidated=not extract)
-            ep.embedding = embeddings[identity(row, mode, extract)]
+                source_kind='dialogue', extract=extract, consolidated=not extract)
+            ep.embedding = embeddings[identity(row, extract)]
             self.memory._sync_episode(ep)
-            self._record(ep, fingerprint=identity(row, mode, extract), sequence=sequence, timestamp=timestamp, requested=extract)
+            self._record(ep, fingerprint=identity(row, extract), sequence=sequence, timestamp=timestamp, requested=extract)
             existing[key] = ep.id
             output.append(ep.id)
             fresh.append(ep.id)
@@ -522,7 +520,7 @@ class PipelineTasks:
         cutoffs = {}
         for row in selected.values():
             if not row['cancelled'] and (row['core'] != 'not_requested' or row['digest'] == 'pending'):
-                key = route(row['session_id'], row['mode'], row['extract'], row['source_kind'])
+                key = route(row['session_id'], row['extract'], row['source_kind'])
                 cutoffs[key] = max(cutoffs.get(key, 0), row['sequence'])
         for key, cutoff in cutoffs.items():
             self.trigger(self.state['sessions'][key], cutoff)

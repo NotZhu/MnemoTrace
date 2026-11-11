@@ -24,7 +24,7 @@ from ..types import Cardinality, Retention
 @runtime_checkable
 class Backend(Protocol):
     mode: str
-    async def remember_messages(self, messages: list[dict], session_id: str, mode: str = 'live',
+    async def remember_messages(self, messages: list[dict], session_id: str,
                                 processing: str = 'buffered', extract: bool = True, *, agent_id: str | None = None) -> dict: ...
 
     async def remember(self, content: str, session_id: str = "default", extract: bool = True,
@@ -104,7 +104,6 @@ class Backend(Protocol):
         retention: Retention | None = None,
     ) -> dict | None: ...
     async def delete_fact(self, fact_id: str) -> dict: ...
-    async def import_(self, data: Any, format: str = "auto") -> dict: ...
     async def export(self, include_sensitive: bool = False) -> dict: ...
     async def forget(self) -> dict: ...
     def describe(self) -> str: ...
@@ -131,9 +130,9 @@ class LocalBackend:
         if self._owns_service:
             self.svc.close()
 
-    async def remember_messages(self, messages: list[dict], session_id: str, mode: str = 'live',
+    async def remember_messages(self, messages: list[dict], session_id: str,
                                 processing: str = 'buffered', extract: bool = True, *, agent_id: str | None = None) -> dict:
-        return await asyncio.to_thread(self.svc.remember_messages, self.context, messages, session_id, mode, processing, extract, agent_id=agent_id)
+        return await asyncio.to_thread(self.svc.remember_messages, self.context, messages, session_id, processing, extract, agent_id=agent_id)
 
     async def remember(self, content: str, session_id: str = "default", extract: bool = True,
                        processing: str = "immediate", *, agent_id: str | None = None) -> dict:
@@ -292,8 +291,6 @@ class LocalBackend:
     async def delete_fact(self, fact_id: str) -> dict:
         return await asyncio.to_thread(self.svc.delete_fact, self.context, fact_id)
 
-    async def import_(self, data: Any, format: str = "auto") -> dict:
-        return await asyncio.to_thread(self.svc.import_, self.context, format=format, data=data)
 
     async def export(self, include_sensitive: bool = False) -> dict:
         return await asyncio.to_thread(self.svc.export, self.context, include_sensitive)
@@ -360,10 +357,10 @@ class RemoteBackend:
         r.raise_for_status()
         return r.json()
 
-    async def remember_messages(self, messages: list[dict], session_id: str, mode: str = 'live',
+    async def remember_messages(self, messages: list[dict], session_id: str,
                                 processing: str = 'buffered', extract: bool = True, *, agent_id: str | None = None) -> dict:
         return await self._post('/v1/messages', dict(messages=messages, session_id=session_id,
-            mode=mode, processing=processing, extract=extract, agent_id=agent_id))
+            processing=processing, extract=extract, agent_id=agent_id))
 
     async def remember(self, content: str, session_id: str = "default", extract: bool = True,
                        processing: str = "immediate", *, agent_id: str | None = None) -> dict:
@@ -547,8 +544,6 @@ class RemoteBackend:
     async def delete_fact(self, fact_id: str) -> dict:
         return await self._delete(f"/v1/facts/{quote(fact_id, safe='')}")
 
-    async def import_(self, data: Any, format: str = "auto") -> dict:
-        return await self._post("/v1/import", {"data": data, "format": format})
 
     async def export(self, include_sensitive: bool = False) -> dict:
         qs = urlencode({"include_sensitive": "true" if include_sensitive else "false"})

@@ -188,11 +188,11 @@ def test_discovery_credentials_only_and_worker_runs_both_stages(processing, clus
     assert memory.operation(operation_id).core_committed
 
 
-def test_segmented_document_keeps_operation_id_and_digest_is_independent(processing):
+def test_segmented_note_keeps_operation_id_and_digest_is_independent(processing):
     config = Config(extraction_max_input_bytes=7000, digest_min_chars=300, digest_max_chars=100)
     memory, calls = processing(config=config)
-    text = 'Synthetic document with preference details. ' * 300
-    accepted = memory.remember(text, 'docs', source_kind='document', processing='buffered')
+    text = 'Synthetic note with preference details. ' * 300
+    accepted = memory.remember(text, 'docs', processing='buffered')
     operation_id, = accepted['operation_ids']
     source_id, = accepted['source_ids']
     assert memory._processing.run_one(operation_id)
@@ -539,7 +539,7 @@ def test_final_receipt_includes_surviving_outputs_from_earlier_segments(processi
 
 
 
-@pytest.mark.parametrize("source_kind", ["dialogue", "raw", "document"])
+@pytest.mark.parametrize("source_kind", ["dialogue", "note"])
 def test_assertion_and_profile_input_are_identical_offline_and_in_postgres(processing, source_kind):
     from mnemotrace.memory_engine import MemoryEngine
     from mnemotrace.profile import input_fact
@@ -564,7 +564,7 @@ def test_assertion_and_profile_input_are_identical_offline_and_in_postgres(proce
                                     "event_time": 100}], "synthetic")
         assert offline.flush_messages()["ok"]
     else:
-        memory.remember(statement, "synthetic", source_kind=source_kind, event_time=100)
+        memory.remember(statement, "synthetic", event_time=100)
         episode = offline.add(statement, session_id="synthetic", event_time=100)
         episode.source_kind = source_kind
         offline.consolidate()

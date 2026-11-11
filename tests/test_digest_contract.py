@@ -62,9 +62,17 @@ def test_remember_and_recall_reject_retired_parameters():
     memory = MemoryEngine()
     with pytest.raises(TypeError, match='scope'):
         memory.remember('Synthetic task', scope='raw')
+    with pytest.raises(TypeError, match='mode'):
+        memory.remember_messages([dict(message_id='m', role='user', content='Synthetic dialogue')], 's', mode='live')
+    from mnemotrace.types import Episode
+    for kind in ('raw', 'document'):
+        with pytest.raises(ValueError, match='source_kind'):
+            Episode('Synthetic source', source_kind=kind)
+    assert not hasattr(memory, 'import_messages') and not hasattr(memory, 'import_data')
     with pytest.raises(ValueError, match='extract must be a boolean'):
         memory.remember('Synthetic task', extract='false')
     assert not memory.episodes_doc.values()
+    assert memory.add('Synthetic note').source_kind == 'note'
     with pytest.raises(TypeError, match='session_id'):
         memory.lean_context('Synthetic query', session_id='s')
     with pytest.raises(TypeError, match='n_summaries'):

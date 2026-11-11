@@ -1,5 +1,7 @@
 """Connectors + 批量导入：使用 测试嵌入器和固定合成模型响应离线验证。"""
 from __future__ import annotations
+from mnemotrace.connectors.dialogue import import_messages, import_data
+import pytest
 
 import json
 
@@ -106,23 +108,25 @@ def test_to_epoch_forms():
     assert to_epoch(None) is None and to_epoch("") is None
 
 
+@pytest.mark.history_import
 def test_import_messages_end_to_end_offline():
     mem = MemoryEngine()
     sessions = parse(CHATGPT, format="chatgpt")
-    stats = mem.import_messages(sessions, user_id="me")
+    stats = import_messages(mem, sessions, user_id="me")
     assert stats["sessions"] == 1 and stats["episodes"] == 3
     # 原始细节应可经 lean 读取路径检索到（确定性，无需 LLM）
     ctx = mem.lean_context("Where is the trip?", user_id="me")
     assert "Tokyo" in ctx
 
 
+@pytest.mark.history_import
 def test_timestamped_records_preserve_message_times_on_import():
     mem = MemoryEngine()
     records = [
         {"session_id": "career", "content": "Wei works at Tencent.", "event_time": 1_700_000_000.0},
         {"session_id": "career", "content": "Wei works at Moonshot AI.", "event_time": 1_700_086_400.0},
     ]
-    stats = mem.import_data(records, format="records", user_id="u", generate_digests=False)
+    stats = import_data(mem, records, format="records", user_id="u", generate_digests=False)
 
     assert stats["sessions"] == 1 and stats["episodes"] == 2
     chain = mem.history("Wei", "works_at", user_id="u")
@@ -131,9 +135,10 @@ def test_timestamped_records_preserve_message_times_on_import():
     assert "Moonshot AI" in mem.search("Where does Wei work?", user_id="u").top().object
 
 
+@pytest.mark.history_import
 def test_import_messages_dict_sessions_coerce_iso_timestamps():
     mem = MemoryEngine()
-    stats = mem.import_messages([{
+    stats = import_messages(mem, [{
         "session_id": "career",
         "messages": [{
             "role": "user",
@@ -149,9 +154,10 @@ def test_import_messages_dict_sessions_coerce_iso_timestamps():
     assert "Tencent" in mem.search("Where does Wei work?", user_id="u").top().object
 
 
+@pytest.mark.history_import
 def test_import_messages_dict_sessions_preserve_message_times():
     mem = MemoryEngine()
-    stats = mem.import_messages([{
+    stats = import_messages(mem, [{
         "session_id": "career",
         "messages": [
             {"role": "user", "content": "Wei works at Tencent.", "event_time": 1_700_000_000.0},
@@ -166,25 +172,29 @@ def test_import_messages_dict_sessions_preserve_message_times():
     assert "Moonshot AI" in mem.search("Where does Wei work?", user_id="u").top().object
 
 
+@pytest.mark.history_import
 def test_import_data_autosniff_preserves_unknown_time():
     mem = MemoryEngine()
     arr = [{"role": "user", "content": "I work at Tencent."}]
-    stats = mem.import_data(arr, user_id="u2", base_time=1_700_000_000.0)
+    stats = import_data(mem, arr, user_id="u2")
     assert stats["episodes"] == 1
     ep = list(mem.episodes_doc.values())[0]
     assert ep.event_time is None and not ep.metadata.get("date")
 
 
 
-def test_transcript_without_explicit_roles_is_saved_verbatim_without_model():
+@pytest.mark.history_import
+def test_transcript_without_explicit_roles_requires_an_explicit_note_write():
     from mnemotrace.memory_engine import MemoryEngine
 
     memory = MemoryEngine()
     original = "张三： 讨论季度计划\n  续行\n备注: 这是一份原始记录\n"
-    result = memory.import_data(original, format="transcript")
-    assert result["episodes"] == 1 and result["facts_added"] == 0
-    source, = memory.episodes_doc.values()
-    assert source.content == original and source.role == "document"
+    with pytest.raises(ValueError, match="role"):
+        import_data(memory, original, format="transcript")
+    assert not memory.episodes_doc.values()
+    result = memory.remember(original, extract=False)
+    source = memory.episodes_doc.get(result["episode_id"])
+    assert source.content == original and source.source_kind == "note"
 
 
 def test_import_reads_explicit_millisecond_field_without_magnitude_guessing():

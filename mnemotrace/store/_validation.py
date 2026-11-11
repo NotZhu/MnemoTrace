@@ -151,9 +151,9 @@ _EPISODE = {
     "session_id": _identifier, "role": _nullable(_identifier), "event_time": _TIME_OR_NULL,
     "ingested_at": _number, "embedding": _VECTOR, "consolidated": _boolean,
     "digest": _string, "digest_embedding": _VECTOR, "metadata": _metadata,
-    "source_kind": _choice("dialogue", "raw", "document"), "extract": _boolean,
+    "source_kind": _choice("dialogue", "note"), "extract": _boolean,
     "message_id": _ID_OR_NULL, "sequence": _nullable(_count),
-    "mode": _nullable(_choice("live", "historical")), "coverage": _nullable(validate_coverage),
+    "coverage": _nullable(validate_coverage),
     "digest_coverage": _nullable(validate_coverage),
 }
 _FACT = {

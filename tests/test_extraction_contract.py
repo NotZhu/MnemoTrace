@@ -1,4 +1,5 @@
 """Native production contracts; these tests deliberately bypass fixture adapters."""
+from mnemotrace.connectors.dialogue import import_messages
 import json
 
 import pytest
@@ -102,18 +103,19 @@ def test_preference_embedding_uses_preserved_text():
     assert stored.embedding == m.embedder.embed(stored.text)
 
 
+@pytest.mark.history_import
 def test_duplicate_import_requires_explicit_retry_without_extra_episodes():
     from tests.test_message_pipeline import reply
     def denied(*args):
         raise PermissionError('synthetic authentication failure')
     m = MemoryEngine(llm=FakeLLM(handler=denied))
     sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic record'}]}]
-    m.remember_messages(sessions[0]['messages'], 's', mode='historical')
+    m.remember_messages(sessions[0]['messages'], 's')
     # A deliberately failed checkpoint is retried only by an explicit flush request.
     from mnemotrace._pipeline import flush_memory
     assert not flush_memory(m, 'default', timeout=.01)['ok']
     m.llm = FakeLLM(handler=reply)
-    stats = m.import_messages(sessions)
+    stats = import_messages(m, sessions)
     assert stats['skipped'] == 1 and stats['facts_added'] == 0
     assert m.flush_messages(retry_failed=True)['ok']
     assert len(m.episodes_doc.values()) == 1 and len(m.fact_store.values()) == 1
@@ -130,6 +132,7 @@ def test_remote_mcp_preserves_safe_extraction_error_details():
     assert 'extraction_failed' in rendered and 'synthetic-episode' in rendered
 
 
+@pytest.mark.history_import
 @pytest.mark.parametrize('consolidate', [None, True])
 @pytest.mark.parametrize('generate_digests', [False, True])
 def test_completed_duplicate_import_does_not_require_model(consolidate, generate_digests):
@@ -137,13 +140,14 @@ def test_completed_duplicate_import_does_not_require_model(consolidate, generate
     sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic completed record'}]}]
     model = FakeLLM(handler=reply)
     mem = MemoryEngine(llm=model)
-    mem.import_messages(sessions, user_id='u')
+    import_messages(mem, sessions, user_id='u')
     mem.llm = None
-    result = mem.import_messages(sessions, user_id='u', consolidate=consolidate, generate_digests=generate_digests)
+    result = import_messages(mem, sessions, user_id='u', consolidate=consolidate, generate_digests=generate_digests)
     assert result['skipped'] == 1 and result['episodes'] == 0 and result['facts_added'] == 0
     assert result['digests'] == 0 and len(mem.fact_store.values()) == 1
 
 
+@pytest.mark.history_import
 @pytest.mark.parametrize('consolidate', [None, True])
 @pytest.mark.parametrize('pending', [False, True])
 @pytest.mark.parametrize('new_input', [False, True])
@@ -151,12 +155,12 @@ def test_import_preflight_checks_only_new_automatic_input(consolidate, pending, 
     from tests.test_message_pipeline import reply
     sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic existing record'}]}]
     mem = MemoryEngine(llm=FakeLLM(handler=reply))
-    mem.remember_messages(sessions[0]['messages'], 's', 'u', mode='historical')
+    mem.remember_messages(sessions[0]['messages'], 's', 'u')
     if not pending:
         assert mem.flush_messages('u')['ok']
     mem.llm = None
     def invoke():
-        return mem.import_messages(sessions, user_id='u', consolidate=consolidate)
+        return import_messages(mem, sessions, user_id='u', consolidate=consolidate)
     if new_input:
         sessions.append({'session_id': 'new', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic new record'}]})
         with pytest.raises(LLMNotConfiguredError):
@@ -166,11 +170,12 @@ def test_import_preflight_checks_only_new_automatic_input(consolidate, pending, 
     assert len(mem.episodes_doc.values()) == 1
 
 
+@pytest.mark.history_import
 @pytest.mark.parametrize('consolidate', [None, True])
 @pytest.mark.parametrize('sessions', [[], [{'session_id': 's', 'messages': [{'content': '  '}]}]])
 def test_empty_import_does_not_require_model(consolidate, sessions):
     mem = MemoryEngine()
-    assert mem.import_messages(sessions, consolidate=consolidate)['episodes'] == 0
+    assert import_messages(mem, sessions, consolidate=consolidate)['episodes'] == 0
     assert not mem.episodes_doc.values()
 
 

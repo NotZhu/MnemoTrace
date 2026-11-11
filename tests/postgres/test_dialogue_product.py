@@ -44,11 +44,11 @@ async def test_mcp_local_and_remote_use_same_messages(product_service, product_s
 
     context, key = product_scope()
     local = LocalBackend(context.user_id, context.space_id, service=product_service)
-    original = await local.remember_messages([message("a")], "s", mode="historical")
+    original = await local.remember_messages([message("a")], "s")
     assert original["status"] == "accepted" and original["messages"][0]["message_id"] == "a"
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
         remote = RemoteBackend("https://synthetic.invalid", key, context.space_id, client)
-        replay = await remote.remember_messages([message("a")], "s", "historical")
+        replay = await remote.remember_messages([message("a")], "s")
     assert replay["accepted"] == 0
     assert replay["source_ids"] == list(original["source_ids"])
     assert replay["operation_ids"] == list(original["operation_ids"])

@@ -30,7 +30,7 @@ from .store.postgres.tasks import ACTIVE, RENEW_SECONDS, Tasks
 
 
 def _route(ep):
-    return dict(mode=ep.mode, extract=ep.extract, source_kind=ep.source_kind)
+    return dict(extract=ep.extract, source_kind=ep.source_kind)
 
 
 def _row(ep, minimum):

@@ -13,16 +13,27 @@ sys.path.insert(0, str(ROOT))
 
 def main():
     from mnemotrace import MemoryEngine, LLMNotConfiguredError
+    from mnemotrace.service import MemoryService
+    from mnemotrace.server.openai_compat import latest_user_text
+
+    assert not hasattr(MemoryService, 'import_')
+    assert latest_user_text([{'role': 'user', 'content': 'Synthetic text'}]) == 'Synthetic text'
+    subprocess.run([sys.executable, '-c', """
+import sys
+from mnemotrace.service import MemoryService
+from mnemotrace.server.openai_compat import latest_user_text
+assert not any(name.startswith('mnemotrace.connectors') for name in sys.modules)
+"""], cwd=ROOT, check=True)
 
     mem = MemoryEngine()
     mem.add_fact('user', 'lives_in', 'Paris', text='The user lives in Paris.')
     mem.add('Synthetic pending record')
-    from mnemotrace.connectors import parse
-    raw_import = MemoryEngine()
-    imported = raw_import.import_messages(parse(
-        [{'role': 'user', 'content': 'Synthetic imported record'}], format='messages'),
-        consolidate=False, generate_digests=False)
-    assert imported['episodes'] == 1 and not raw_import.fact_store.values()
+    raw = MemoryEngine()
+    saved = raw.remember("Synthetic note", extract=False)
+    assert raw.episodes_doc.get(saved["episode_id"]).source_kind == "note"
+    accepted = raw.remember_messages(
+        [{"message_id": "m1", "role": "user", "content": "Synthetic dialogue"}], "chat", extract=False)
+    assert accepted["accepted"] == 1 and not raw.fact_store.values()
     assert mem.search('Where do I live?').top().object == 'Paris'
     try:
         mem.consolidate()
@@ -31,7 +42,7 @@ def main():
     else:
         raise AssertionError('Extraction must require an LLM')
     for module in ('mnemotrace.admin', 'mnemotrace.agent_doctor', 'mnemotrace.agent_setup',
-                   'mnemotrace.connectors', 'mnemotrace.mcp', 'mnemotrace.worker'):
+                   'mnemotrace.mcp', 'mnemotrace.worker'):
         subprocess.run([sys.executable, '-m', module, '--help'], cwd=ROOT,
                        check=True, stdout=subprocess.DEVNULL)
     subprocess.run([sys.executable, '-c',

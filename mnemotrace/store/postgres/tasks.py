@@ -150,25 +150,13 @@ class Tasks:
         with self.dao._transaction(read_only=True) as sql:
             return receipt, self._associated(sql, receipt.source_ids)
 
-    def accept_source(self, record, check_model, *, embedding=None, import_hash=None,
+    def accept_source(self, record, check_model, *, embedding=None,
                       kind=OperationKind.EXTRACT):
         episode = domain(record)
         operation_id = new_operation_id() if kind is not None else None
         acceptance_id = 'accept_' + operation_id if operation_id is not None else new_operation_id()
 
         def apply(sql, revision, generation, settings):
-            nonlocal operation_id
-            if import_hash is not None:
-                previous = sql.run(f'SELECT source_id,receipt FROM mnemotrace.import_receipts WHERE {SCOPE} '
-                                   'AND source_kind = %s AND content_hash = %s',
-                                   (*sql.scope, episode.source_kind, import_hash)).fetchone()
-                if previous is not None:
-                    source_id, payload = previous
-                    if (not source_id or not isinstance(payload, dict) or set(payload) != {'operation_id'}
-                            or payload['operation_id'] is not None and not isinstance(payload['operation_id'], str)):
-                        raise DataCorruption('Invalid import receipt')
-                    operation_id = payload['operation_id']
-                    return Applied(False, source_ids=(source_id,))
             if kind is not None:
                 check_model()
             sql.ensure_session(episode.session_id)
@@ -182,11 +170,6 @@ class Tasks:
             if kind is not None:
                 enqueue(sql, _spec(operation_id, kind, episode.session_id, (stored,)), generation,
                         ready_at=sql.run('SELECT clock_timestamp()').fetchone()[0])
-            if import_hash is not None:
-                from psycopg.types.json import Jsonb
-                sql.run("""INSERT INTO mnemotrace.import_receipts
-                    (user_id,space_id,source_kind,content_hash,source_id,receipt) VALUES (%s,%s,%s,%s,%s,%s)""",
-                    (*sql.scope, episode.source_kind, import_hash, episode.id, Jsonb(dict(operation_id=operation_id))))
             return Applied(True, source_ids=(episode.id,), count=1)
 
         return self.dao._mutate(acceptance_id, apply), operation_id

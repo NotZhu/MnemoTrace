@@ -264,7 +264,6 @@ class MessagesReq(SpaceRequest):
     model_config = {'extra': 'forbid'}
     session_id: str = Field(min_length=1, max_length=512)
     messages: list[DialogueMessage] = Field(min_length=1, max_length=1000)
-    mode: Literal['live', 'historical'] = 'live'
     processing: Literal['immediate', 'buffered'] = 'buffered'
     extract: StrictBool = True
     agent_id: str | None = None
@@ -391,7 +390,7 @@ def delete_space(space_id: str, confirm: bool = False, owner: str = Depends(auth
 def remember_messages(req: MessagesReq, owner: str = Depends(auth)):
     context = svc().spaces.authorize(owner, req.space_id)
     data = svc().remember_messages(context, [message.model_dump() for message in req.messages],
-                                   req.session_id, req.mode, req.processing, req.extract,
+                                   req.session_id, req.processing, req.extract,
                                    agent_id=req.agent_id, timeout=req.timeout)
     return JSONResponse(data, status_code=202) if req.processing == 'buffered' else data
 
@@ -626,65 +625,6 @@ def forget(req: ForgetReq, owner: str = Depends(auth)):
     if not req.confirm:
         raise HTTPException(400, 'Space clearing requires confirm=true')
     return svc().forget(context)
-
-
-# --- 批量导入：自带历史（ChatGPT 导出 / OpenAI messages / JSONL / 对话记录）---
-class ImportReq(SpaceRequest):
-    # 传入已解析的 `sessions`（来自 mnemotrace.connectors.parse / 导入 CLI），或原始 `data` + 一个
-    # `format` 由服务端解析。两者同时给出时以 `sessions` 为准。
-    sessions: Optional[list] = None
-    data: Optional[object] = None
-    format: str = "auto"
-    # None submits buffered extraction; False keeps original sources only.
-    consolidate: Optional[bool] = None
-    generate_digests: bool = True
-    agent_id: str | None = None
-    dedupe: bool = True  # 幂等的重复导入：跳过已入库的 episode（按内容指纹）
-
-
-@app.post("/v1/import")
-def import_history(req: ImportReq, owner: str = Depends(auth)):
-    """单次批量摄入外部历史。解析常见导出并 POST 到这里的 CLI 见 `python -m mnemotrace.connectors`。"""
-    user = svc().spaces.authorize(owner, req.space_id)
-    if req.sessions is None and req.data is None:
-        raise HTTPException(400, "provide either 'sessions' (pre-parsed) or 'data' (+ 'format') to import")
-    try:
-        return svc().import_(user, sessions=req.sessions, data=req.data, format=req.format,
-                             consolidate=req.consolidate, generate_digests=req.generate_digests, dedupe=req.dedupe,
-                             agent_id=req.agent_id)
-    except ValueError as exc:
-        # 未知/不匹配的 format 是调用者的 payload 问题，不是服务端故障 -> 400，绝不能 500
-        raise HTTPException(400, "Could not parse import data") from exc
-
-
-class DocumentReq(SpaceRequest):
-    """上传单个文档/图片作为记忆。可在 `data_base64` 中发送 base64 编码的原始字节
-    （PDF/DOCX/图片），或传已抽取的 `text`。图片由视觉模型（MNEMOTRACE_VISION_LLM）生成
-    可检索的文字描述。"""
-    agent_id: str | None = None
-    filename: Optional[str] = Field(default=None, max_length=512)
-    content_type: Optional[str] = Field(default=None, max_length=256)
-    data_base64: Optional[str] = None  # 原始文件字节，base64 编码（受请求大小上限约束）
-    text: Optional[str] = Field(default=None, max_length=1_000_000)  # 或已抽取的纯文本
-    session_id: str = Field(default="document", min_length=1, max_length=512)
-
-
-@app.post("/v1/documents")
-def import_document(req: DocumentReq, owner: str = Depends(auth)):
-    """把 PDF/DOCX/text 文档或图片作为长期记忆摄入（多模态，AGENTS.md 「代码导航」）。"""
-    user = svc().spaces.authorize(owner, req.space_id)
-    if req.text is not None:
-        data: object = req.text
-    elif req.data_base64:
-        import base64
-        try:
-            data = base64.b64decode(req.data_base64, validate=True)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(400, "data_base64 is not valid base64") from exc
-    else:
-        raise HTTPException(400, "provide 'data_base64' (raw file bytes) or 'text'")
-    return svc().import_document(user, data, filename=req.filename, content_type=req.content_type,
-                                 session_id=req.session_id, agent_id=req.agent_id)
 
 
 # --- OpenAI 兼容 chat，透明叠加记忆（即插即用：把 OpenAI 客户端的 base_url 指到这里）--
