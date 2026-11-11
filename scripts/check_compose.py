@@ -102,7 +102,8 @@ def main():
             raw = http('/v1/messages', {**message, 'extract': False}, key=key, expected=202)
             source_id, = raw['source_ids']
             assert raw['accepted'] == 1
-            http('/v1/facts', {'space_id': space, 'predicate': 'lives_in', 'object': 'Synthetic City'},
+            http('/v1/facts', {'space_id': space, 'predicate': 'lives_in', 'object': 'Synthetic City',
+                               'text': 'user lives in Synthetic City'},
                  key=key)
             processing = http('/v1/processing' + query, key=key)
             assert processing['operations']
