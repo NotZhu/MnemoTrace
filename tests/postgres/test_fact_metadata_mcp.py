@@ -34,7 +34,7 @@ async def test_mcp_local_and_proxy_preserve_fact_metadata_contract(product_servi
     async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as transport:
         remote = RemoteBackend("http://synthetic.test", key=key, space_id=context.space_id, client=transport)
         for backend, obj in [(local, "茶"), (remote, "咖啡")]:
-            added = await backend.add_fact("user", "prefers", obj, categories=["food"], object_kind="entity")
+            added = await backend.add_fact("user", "prefers", obj, categories=["food"], object_kind="entity", text=' '.join(('user', 'prefers', obj)))
             assert (added["categories"], added["categories_source"], added["object_kind"]) == (["food"], "user", "entity")
             updated = await backend.update_fact(added["id"], categories=[])
             assert (updated["categories"], updated["categories_source"]) == ([], "unset")
@@ -42,7 +42,7 @@ async def test_mcp_local_and_proxy_preserve_fact_metadata_contract(product_servi
 
         server.set_backend(local)
         try:
-            await server.mcp.call_tool("mnemotrace_add_fact", {
+            await server.mcp.call_tool("mnemotrace_add_fact", {"text": 'Synthetic fact: jazz',
                 "predicate": "prefers", "object": "jazz", "categories": ["music"],
             })
             fact = next(f for f in service.memory(context).facts() if f.object == "jazz")
@@ -65,7 +65,7 @@ async def test_categories_filter_is_forwarded_by_both_backends_and_applied_befor
     service = product_service
     context, key = product_scope()
     for obj, category in [("合成茶", "food"), ("合成作品", "music"), ("合成咖啡", "food")]:
-        service.add_fact(context, "user", "prefers", obj, categories=[category], sensitive=False)
+        service.add_fact(context, "user", "prefers", obj, text=f'用户偏好{obj}。', categories=[category], sensitive=False)
     local = LocalBackend(context.user_id, context.space_id, service=service)
     requests = []
 

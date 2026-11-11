@@ -15,7 +15,7 @@ def main():
     from mnemotrace import MemoryEngine, LLMNotConfiguredError
 
     mem = MemoryEngine()
-    mem.add_fact('user', 'lives_in', 'Paris')
+    mem.add_fact('user', 'lives_in', 'Paris', text='The user lives in Paris.')
     mem.add('Synthetic pending record')
     from mnemotrace.connectors import parse
     raw_import = MemoryEngine()

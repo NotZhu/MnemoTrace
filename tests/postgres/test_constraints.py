@@ -22,7 +22,7 @@ def fact(conn, user, space, record_id='fact-1', **changes):
     from psycopg import sql
     from psycopg.types.json import Jsonb
 
-    fields = asdict(Fact('Synthetic user', 'likes', 'tea', id=record_id))
+    fields = asdict(Fact('Synthetic user', 'likes', 'tea', id=record_id, text='Synthetic user likes tea'))
     for key in ('embedding', 'provenance', 'user_id'):
         fields.pop(key)
     fields.update(user_id=user, space_id=space, content_version=1, record_version=1, **changes)

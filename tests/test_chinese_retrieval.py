@@ -40,15 +40,15 @@ def test_entity_mentions_prefer_long_names():
 
 def test_graph_does_not_stem_identifiers_into_entity_matches():
     memory = MemoryEngine()
-    memory.add_fact('Redis', 'based_in', 'Synthetic Location', user_id='u', object_kind="entity")
+    memory.add_fact('Redis', 'based_in', 'Synthetic Location', user_id='u', object_kind="entity", text='Redis based in Synthetic Location')
     assert not memory.retriever.query_entity_ids('redi', 'u')
     assert memory.retriever.query_entity_ids('redis', 'u')
 
 
 def test_lexical_memory_resolves_chinese_two_hop_fact_chain():
     memory = MemoryEngine()
-    relationship = memory.add_fact('user', 'sister', '王小明', object_kind="entity")
-    employer = memory.add_fact('王小明', 'works_at', '月亮公司', object_kind="entity")
+    relationship = memory.add_fact('user', 'sister', '王小明', object_kind="entity", text='user sister 王小明')
+    employer = memory.add_fact('王小明', 'works_at', '月亮公司', object_kind="entity", text='王小明 works at 月亮公司')
     result = memory.follow_path('user', ['sister', 'works_at'])
     match, = result.paths
     assert [fact.id for fact in match.facts] == [relationship.id, employer.id]
@@ -59,10 +59,10 @@ def test_lexical_memory_resolves_chinese_two_hop_fact_chain():
                                    '我 的 姐姐喜欢哪家公司？'])
 def test_chinese_two_hop_does_not_infer_employment_from_company(query):
     memory = MemoryEngine()
-    memory.add_fact('user', 'sister', 'Ana')
-    memory.add_fact('Ana', 'works_at', 'Orbit')
-    memory.add_fact('Ana', 'likes', 'Nadir')
-    memory.add_fact('Orbit', 'based_in', 'Taipei')
+    memory.add_fact('user', 'sister', 'Ana', text='user sister Ana')
+    memory.add_fact('Ana', 'works_at', 'Orbit', text='Ana works at Orbit')
+    memory.add_fact('Ana', 'likes', 'Nadir', text='Ana likes Nadir')
+    memory.add_fact('Orbit', 'based_in', 'Taipei', text='Orbit based in Taipei')
     assert memory.search(query).via != 'multi-hop'
 
 
@@ -77,7 +77,7 @@ def test_lexical_episode_recall_requires_more_than_english_stop_words():
 
 def test_search_prefers_a_literal_identifier_over_identical_lexical_terms():
     memory = MemoryEngine()
-    exact = memory.add_fact('Project', 'reference', 'AB-104', valid_at=1)
-    memory.add_fact('Project', 'reference', 'AB/104', valid_at=2)
-    memory.add_fact('Project', 'reference', 'AB-104-B', valid_at=3)
+    exact = memory.add_fact('Project', 'reference', 'AB-104', valid_at=1, text='Project reference AB-104')
+    memory.add_fact('Project', 'reference', 'AB/104', valid_at=2, text='Project reference AB/104')
+    memory.add_fact('Project', 'reference', 'AB-104-B', valid_at=3, text='Project reference AB-104-B')
     assert memory.search('Find AB-104').top().id == exact.id

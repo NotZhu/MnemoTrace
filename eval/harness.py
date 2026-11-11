@@ -62,8 +62,18 @@ def path_answer(item, result):
     matches = result.paths
     facts = list({fact.id: fact for match in matches for fact in match.facts}.values())
     return SearchResult(item.question, facts, via="multi-hop", abstained=not matches,
-                        _answer=", ".join(dict.fromkeys(match.endpoint for match in matches)),
+                        _answer=", ".join(dict.fromkeys(match.endpoint for match in matches)) if matches else None,
                         limitations=result.limitations)
+
+
+def score_search(gold: str | None, result: SearchResult) -> bool:
+    """Grade the top fact for free-text retrieval and the endpoint for explicit paths."""
+    if gold is None:
+        return result.status == 'no_evidence'
+    if result.status == 'answered':
+        return _contains(result.answer(), gold)
+    top = result.top()
+    return top is not None and _norm(top.object) == _norm(gold)
 
 
 def run_mnemotrace_detail(item: EvalItem, storage: str = "memory", *, llm, capture=None) -> dict:
@@ -83,10 +93,6 @@ def run_mnemotrace_detail(item: EvalItem, storage: str = "memory", *, llm, captu
 
     if capture is not None:
         capture(item.id, mem, res)
-    if item.answer is None:
-        correct = res.abstained
-    else:
-        correct = (not res.abstained) and _contains(res.answer(), item.answer)
     context_tokens = len(lexical_terms(" ".join(f.text for f in res.facts)))
     return {
         "id": item.id,
@@ -94,8 +100,10 @@ def run_mnemotrace_detail(item: EvalItem, storage: str = "memory", *, llm, captu
         "question": item.question,
         "gold": item.answer,
         "storage": storage,
-        "ok": correct,
+        "ok": score_search(item.answer, res),
         "answer": res.answer(),
+        "status": res.status,
+        "top_fact_object": res.top().object if res.top() is not None else None,
         "abstained": res.abstained,
         "tokens": context_tokens,
         "latency_ms": latency_ms,

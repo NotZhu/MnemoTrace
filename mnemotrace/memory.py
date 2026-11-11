@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from ._postgres_pipeline import PostgresPipeline
 from .config import Config
 from .consolidate.decay import reinforce
-from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual
+from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual, validate_fact_patch
 from .consolidate.pipeline import content_hash
 from .retrieve import postgres as retrieval
 from .store.contracts import (
@@ -243,15 +243,17 @@ class Memory:
             graph.prune(all_nodes=len(records) < limit)
         return records[-1].ref.record_id if len(records) == limit else None
 
-    def _query(self, text, *, top_k, as_of=None, facts=None):
-        return retrieval.retrieval_query(text, self._embedder, self._model, self._config,
+    def _query(self, text, *, top_k, as_of=None, facts=None, use_vectors=True):
+        embedder = self._embedder if use_vectors else None
+        return retrieval.retrieval_query(text, embedder, self._model, self._config,
                                          top_k=top_k, as_of=as_of, facts=facts)
 
     def search(self, query: str, *, as_of: float | None = None, top_k: int | None = None,
                facts: FactQuery | None = None) -> retrieval.SearchResult:
         """Retrieve candidate evidence or a unique explicitly selected value."""
         count = self._config.top_k if top_k is None else top_k
-        request = self._query(query, top_k=count, as_of=as_of, facts=facts)
+        explicit_slot = isinstance(facts, FactQuery) and facts.subject is not None and facts.predicate is not None
+        request = self._query(query, top_k=count, as_of=as_of, facts=facts, use_vectors=not explicit_slot)
         with self.dao.read_snapshot() as view:
             result = retrieval.search(view.focused(), request, self._config, count)
             snapshot = view.snapshot
@@ -391,10 +393,10 @@ class Memory:
         with self.dao.read_snapshot() as view:
             return tuple(map(domain, view.list_sources(**filters)))
 
-    def add_fact(self, subject, predicate, object, *, valid_at=None, sensitive=None,
+    def add_fact(self, subject, predicate, object, *, text, valid_at=None, sensitive=None,
                  categories=None, object_kind="unknown", cardinality="unknown", retention="unknown", return_existing=False):
         """Return the new fact. For a covered assertion, optionally return the stored fact."""
-        fact = build_manual_fact(subject, predicate, object, self.context.user_id,
+        fact = build_manual_fact(subject, predicate, object, text, self.context.user_id,
                                  valid_at, sensitive, categories, object_kind, cardinality, retention)
         with self.dao.read_snapshot() as view:
             snapshot = view.snapshot
@@ -432,7 +434,8 @@ class Memory:
         return tuple(sorted(map(domain, records), key=lambda fact: (time_key(fact.valid_at), fact.id)))
 
     def update_fact(self, fact_id, *, subject=None, predicate=None, object=None,
-                    sensitive=None, categories=None, statement=None, object_kind=None, cardinality=None, retention=None):
+                    sensitive=None, categories=None, text=None, object_kind=None, cardinality=None, retention=None):
+        validate_fact_patch(subject, predicate, object, text)
         with self.dao.read_snapshot() as view:
             snapshot, old = view.snapshot, view.get(FACT, fact_id)
             at = view.at.timestamp()
@@ -443,7 +446,7 @@ class Memory:
             return None
         before = asdict(fact)
         apply_manual_edit(fact, subject, predicate, object, sensitive, categories,
-                          statement, object_kind, cardinality, retention, at=at)
+                          text, object_kind, cardinality, retention, at=at)
         if asdict(fact) == before:
             return fact
         text_changed = fact.text != before['text']

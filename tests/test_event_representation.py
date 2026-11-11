@@ -37,7 +37,7 @@ def test_digest_replaces_raw_index_and_retrieval_payload():
 def test_contexts_do_not_expand_digest_even_for_provenance(cascade):
     mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
-    fact = mem.add_fact("user", "finding", "connection issue resolved", user_id="u", sensitive=False)
+    fact = mem.add_fact("user", "finding", "connection issue resolved", user_id="u", sensitive=False, text='user finding connection issue resolved')
     fact.provenance = [ep.id]
     mem._upsert_fact(fact)
     for text in (
@@ -74,8 +74,8 @@ def test_supersession_does_not_rewrite_event_digest():
     mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
     previous = ep.digest
-    old = Fact(subject="user", predicate="works_at", object="A", user_id="u", provenance=[ep.id])
-    new = Fact(subject="user", predicate="works_at", object="B", user_id="u", supersedes=old.id)
+    old = Fact(subject="user", predicate="works_at", object="A", user_id="u", provenance=[ep.id], text='user works at A')
+    new = Fact(subject="user", predicate="works_at", object="B", user_id="u", supersedes=old.id, text='user works at B')
     old.invalid_at = old.expired_at = new.valid_at
     for fact in (old, new):
         mem.fact_store.upsert(fact.id, mem.embedder.embed(fact.text), fact)

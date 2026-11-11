@@ -58,7 +58,7 @@ from mnemotrace.store.postgres.errors import DatabaseDependencyError
 assert not any(name.startswith('psycopg') for name in sys.modules)
 assert Memory.__module__ == 'mnemotrace.memory'
 memory = MemoryEngine()
-memory.add_fact('Synthetic user', 'likes', 'tea')
+memory.add_fact('Synthetic user', 'likes', 'tea', text='Synthetic user likes tea.')
 try:
     Database(DatabaseConfig('dbname=unused')).open()
 except DatabaseDependencyError as error:

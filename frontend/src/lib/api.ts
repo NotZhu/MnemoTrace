@@ -275,7 +275,7 @@ export const api = {
 
   // 实际修改内容后 `source` 为 'user'；只改敏感标记或分类时保留原来源。
   editFact: (id: string, patch: FactEdit) =>
-    request<{ ok: boolean; id: string; text: string; display?: string; source: FactSource } & FactMetadata>(`/v1/facts/${id}`, {
+    request<{ ok: boolean; id: string; text: string; source: FactSource } & FactMetadata>(`/v1/facts/${id}`, {
       method: 'PATCH',
       body: json(patch),
     }),

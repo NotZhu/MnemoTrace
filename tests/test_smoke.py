@@ -78,7 +78,7 @@ def test_same_slot_identity_facts_remain_eligible_when_both_are_current():
         user_id="u1",
         valid_at=BASE,
         salience=100.0,
-        embedding=mem.embedder.embed("Wei works at Tencent"),
+        embedding=mem.embedder.embed("Wei works at Tencent"), text='Wei works at Tencent',
     )
     new = Fact(
         "Wei",
@@ -88,7 +88,7 @@ def test_same_slot_identity_facts_remain_eligible_when_both_are_current():
         valid_at=BASE + DAY,
         salience=1.0,
         supersedes=old.id,
-        embedding=mem.embedder.embed("Wei works at Moonshot AI"),
+        embedding=mem.embedder.embed("Wei works at Moonshot AI"), text='Wei works at Moonshot AI',
     )
     mem.fact_store.upsert(old.id, old.embedding or [], old)
     mem.fact_store.upsert(new.id, new.embedding or [], new)
@@ -106,7 +106,7 @@ def test_same_slot_non_identity_facts_remain_eligible_when_both_are_current():
         user_id="u1",
         valid_at=BASE,
         salience=100.0,
-        embedding=mem.embedder.embed("Wei major physics"),
+        embedding=mem.embedder.embed("Wei major physics"), text='Wei major physics',
     )
     new = Fact(
         "Wei",
@@ -116,7 +116,7 @@ def test_same_slot_non_identity_facts_remain_eligible_when_both_are_current():
         valid_at=BASE + DAY,
         salience=1.0,
         supersedes=old.id,
-        embedding=mem.embedder.embed("Wei major computer science"),
+        embedding=mem.embedder.embed("Wei major computer science"), text='Wei major computer science',
     )
     mem.fact_store.upsert(old.id, old.embedding or [], old)
     mem.fact_store.upsert(new.id, new.embedding or [], new)
@@ -131,8 +131,8 @@ def test_same_slot_non_identity_facts_remain_eligible_when_both_are_current():
 
 def test_multi_valued_identity_facts_are_not_slot_deduped():
     mem = MemoryEngine()
-    mem.add_fact("Wei", "owns", "a bike", user_id="u1")
-    mem.add_fact("Wei", "owns", "a camera", user_id="u1")
+    mem.add_fact("Wei", "owns", "a bike", user_id="u1", text='Wei owns a bike')
+    mem.add_fact("Wei", "owns", "a camera", user_id="u1", text='Wei owns a camera')
 
     ranked, _ = mem.retriever.retrieve("What does Wei own?", "u1", top_k=5)
     assert {f.object for f, _ in ranked} >= {"a bike", "a camera"}
@@ -152,7 +152,7 @@ def test_zero_score_evidence_signals_do_not_boost_irrelevant_salient_facts():
         "alpha-42",
         user_id="u1",
         salience=0.1,
-        embedding=mem.embedder.embed("Wei ticket code alpha 42"),
+        embedding=mem.embedder.embed("Wei ticket code alpha 42"), text='Wei ticket code alpha-42',
     )
     distractor = Fact(
         "Wei",
@@ -160,7 +160,7 @@ def test_zero_score_evidence_signals_do_not_boost_irrelevant_salient_facts():
         "jazz",
         user_id="u1",
         salience=100.0,
-        embedding=mem.embedder.embed("Wei likes jazz"),
+        embedding=mem.embedder.embed("Wei likes jazz"), text='Wei likes jazz',
     )
     mem.fact_store.upsert(target.id, target.embedding or [], target)
     mem.fact_store.upsert(distractor.id, distractor.embedding or [], distractor)

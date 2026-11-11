@@ -298,7 +298,7 @@ export default function Conversations() {
               <ul className="max-h-[360px] space-y-2 overflow-auto pr-1">
                 {report.data.facts.map((f) => (
                   <li key={f.id} className="rounded-lg border border-line bg-ink-700/50 p-3">
-                    <div className="break-words text-slate-100">{f.display || f.text}</div>
+                    <div className="break-words text-slate-100">{f.text}</div>
                     <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-ghost">
                       <Badge tone={f.status === 'live' ? 'live' : 'old'}>{f.status}</Badge>
                       {f.categories && f.categories_source && <CategoryBadges categories={f.categories} categories_source={f.categories_source} />}

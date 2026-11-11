@@ -69,7 +69,7 @@ def test_adjudication_is_ledgered_before_core_commit():
 
     llm = FakeLLM(handler=model_response)
     mem = MemoryEngine(llm=llm)
-    mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False)
+    mem.add_fact('Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False, text='Ana lives in Paris')
     mem.add('Oslo', event_time=20, consolidate=True)
     win, = PipelineTasks(mem, 'default').state['windows'].values()
     assert len(llm.calls) == win['stats']['model_calls'] == 2

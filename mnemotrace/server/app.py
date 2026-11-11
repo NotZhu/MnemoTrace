@@ -11,13 +11,13 @@ try:
     from fastapi.exceptions import RequestValidationError
     from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel, ConfigDict, Field
+    from pydantic import BaseModel, ConfigDict, Field, model_validator
     from starlette.exceptions import HTTPException as StarletteHTTPException
 except Exception as exc:  # noqa: BLE001
     raise SystemExit("the server needs FastAPI — `pip install \"mnemotrace-memory[server]\"`") from exc
 
 from .. import __version__
-from ..consolidate.manual import InvalidFactEditError
+from ..consolidate.manual import InvalidFactEditError, validate_fact_patch
 from ..embed import EmbeddingUnavailable
 from ..service import MemoryRevisionChanged, MemoryService, ProcessingFailure
 from ..extraction import ExtractionError
@@ -749,11 +749,17 @@ class FactReq(SpaceRequest):
     subject: str = "user"
     predicate: str
     object: str
+    text: str
     sensitive: Optional[bool] = None
     categories: list[Category] | None = None
     object_kind: ObjectKind = "unknown"
     cardinality: Cardinality | None = None
     retention: Retention | None = None
+
+    @model_validator(mode='after')
+    def complete_content(self):
+        validate_fact_patch(self.subject, self.predicate, self.object, self.text, required=True)
+        return self
 
 
 class FactEdit(SpaceRequest):
@@ -762,10 +768,16 @@ class FactEdit(SpaceRequest):
     object: Optional[str] = None
     sensitive: Optional[bool] = None  # 用户对自动敏感标记的覆盖（⑤）
     categories: list[Category] | None = None
-    statement: Optional[str] = Field(default=None, min_length=1)
+    text: Optional[str] = None
     object_kind: ObjectKind | None = None
     cardinality: Cardinality | None = None
     retention: Retention | None = None
+
+    @model_validator(mode='after')
+    def complete_content(self):
+        required = bool({'subject', 'predicate', 'object', 'text'} & self.model_fields_set)
+        validate_fact_patch(self.subject, self.predicate, self.object, self.text, required=required)
+        return self
 
 
 @app.post("/v1/facts")
@@ -777,6 +789,7 @@ def add_fact(req: FactReq, owner: str = Depends(auth)):
         req.subject,
         req.predicate,
         req.object,
+        text=req.text,
         sensitive=req.sensitive,
         categories=req.categories,
         object_kind=req.object_kind,
@@ -788,13 +801,10 @@ def add_fact(req: FactReq, owner: str = Depends(auth)):
 def edit_fact(fact_id: str, req: FactEdit, owner: str = Depends(auth)):
     """修改 fact 内容后变为用户撰写；仅修改敏感标记或分类时保留原来源。"""
     user = svc().spaces.authorize(owner, req.space_id)
-    if req.statement is not None and (not req.statement.strip() or
-            any(value is not None for value in (req.subject, req.predicate, req.object))):
-        raise HTTPException(422, "statement must not be blank or combined with subject, predicate or object")
     try:
         result = svc().update_fact(user, fact_id, subject=req.subject, predicate=req.predicate,
                                    object=req.object, sensitive=req.sensitive, categories=req.categories,
-                                    statement=req.statement, object_kind=req.object_kind,
+                                    text=req.text, object_kind=req.object_kind,
                                     cardinality=req.cardinality, retention=req.retention)
     except InvalidFactEditError as exc:
         raise HTTPException(422, str(exc)) from exc

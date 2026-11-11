@@ -68,7 +68,7 @@ def test_http_space_and_operation_lifecycle(product, user, accounts, spaces):
     assert client.get(operation_path, params=scope).json()['core_committed']
     retrieved = client.post('/v1/recall', json={**scope, 'query': 'What does Synthetic person like?', 'lean': False})
     assert retrieved.status_code == 200 and 'Bluebird' in retrieved.text
-    client.post('/v1/facts', json={'space_id': sibling, 'subject': 'Synthetic person',
+    client.post('/v1/facts', json={"text": 'Synthetic person likes Bluebird coffee', 'space_id': sibling, 'subject': 'Synthetic person',
                                   'predicate': 'likes', 'object': 'Bluebird coffee'})
     recall = {'query': 'What Bluebird drinks does Synthetic person like?'}
     isolated = client.post('/v1/recall', json={**scope, **recall}).json()
@@ -110,7 +110,7 @@ def test_http_allows_raw_and_manual_writes_without_a_model(product):
     assert not service.memory(context).list_sources()
     raw = client.post('/v1/remember', json={**scope, 'content': 'Synthetic raw note', 'scope': 'raw'})
     assert raw.json()['status'] == 'stored' and raw.json()['source_ids']
-    manual = client.post('/v1/facts', json={**scope, 'predicate': 'likes', 'object': 'Synthetic tea'})
+    manual = client.post('/v1/facts', json={"text": 'user likes Synthetic tea', **scope, 'predicate': 'likes', 'object': 'Synthetic tea'})
     assert manual.status_code == 200 and manual.json()['id']
 
 
@@ -118,12 +118,12 @@ def test_graph_audit_reports_scoped_structural_issues_before_limiting(product, s
     service, context, _, client = product
     scope = {'space_id': context.space_id}
     memory = service.memory(context)
-    missing = memory.add_fact('user', 'works_at', 'Missing Ltd.', object_kind='entity', sensitive=False)
-    mismatch = memory.add_fact('user', 'based_in', 'Mismatch City', object_kind='entity', sensitive=False)
-    private = memory.add_fact('user', 'knows', 'Synthetic private person', object_kind='entity', sensitive=True)
-    memory.add_fact('this', 'path', 'fixture/demo.json', object_kind='literal', sensitive=False)
+    missing = memory.add_fact('user', 'works_at', 'Missing Ltd.', object_kind='entity', sensitive=False, text='user works at Missing Ltd.')
+    mismatch = memory.add_fact('user', 'based_in', 'Mismatch City', object_kind='entity', sensitive=False, text='user based in Mismatch City')
+    private = memory.add_fact('user', 'knows', 'Synthetic private person', object_kind='entity', sensitive=True, text='user knows Synthetic private person')
+    memory.add_fact('this', 'path', 'fixture/demo.json', object_kind='literal', sensitive=False, text='this path fixture/demo.json')
     sibling = service.memory(spaces.authorize(context.user_id, spaces.create(context.user_id, 'Sibling').space_id))
-    outside = sibling.add_fact('user', 'works_at', 'Outside Ltd.', object_kind='entity', sensitive=False)
+    outside = sibling.add_fact('user', 'works_at', 'Outside Ltd.', object_kind='entity', sensitive=False, text='user works at Outside Ltd.')
     with sibling.dao._transaction() as sql:
         sql.delete('graph_relations', 'fact_id = %s', (outside.id,))
     with memory.dao._transaction() as sql:
@@ -169,8 +169,8 @@ def test_direct_and_proxy_mcp_and_cli_share_records(product, monkeypatch, capsys
     from mnemotrace.mcp.backends import LocalBackend, RemoteBackend
 
     service, context, key, client = product
-    source = service.memory(context).add_fact('Synthetic archive', 'access_code', 'Emerald', sensitive=False)
-    service.memory(context).add_fact('Synthetic garden', 'favorite_flower', 'Iris', sensitive=False)
+    source = service.memory(context).add_fact('Synthetic archive', 'access_code', 'Emerald', sensitive=False, text='Synthetic archive access code Emerald')
+    service.memory(context).add_fact('Synthetic garden', 'favorite_flower', 'Iris', sensitive=False, text='Synthetic garden favorite flower Iris')
 
     async def mcp_lifecycle():
         local = LocalBackend(context.user_id, context.space_id, service)
@@ -204,7 +204,7 @@ def test_direct_and_proxy_mcp_and_cli_share_records(product, monkeypatch, capsys
     assert cli.main([*cli_scope, 'remember', 'Synthetic CLI source', '--session-id', 'cli', '--scope', 'raw']) == 0
     source_id, = json.loads(capsys.readouterr().out)['source_ids']
     assert service.memory(context).get_episode(source_id).content == 'Synthetic CLI source'
-    fact = service.memory(context).add_fact('Synthetic CLI archive', 'access_code', 'Amethyst')
+    fact = service.memory(context).add_fact('Synthetic CLI archive', 'access_code', 'Amethyst', text='Synthetic CLI archive access code Amethyst')
     assert cli.main([*cli_scope, 'recall', 'What is the synthetic CLI archive access code?']) == 0
     assert 'Amethyst' in json.loads(capsys.readouterr().out)['context']
     assert cli.main([*cli_scope, 'delete-fact', fact.id, '--confirm']) == 0

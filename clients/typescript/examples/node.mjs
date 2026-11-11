@@ -91,7 +91,7 @@ console.log({
   nextFactOffset: memoryPage.next_offsets.facts,
   facts: memoryPage.facts.map((f) => ({
     id: f.id,
-    text: f.display ?? f.text,
+    text: f.text,
     sensitive: f.sensitive ?? false,
   })),
 })

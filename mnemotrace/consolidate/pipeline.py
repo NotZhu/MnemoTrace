@@ -12,7 +12,7 @@ import uuid
 from ..types import Episode
 from ..extraction import ExtractionError
 
-VERSION = 6
+VERSION = 7
 TERMINAL = {'completed', 'failed', 'cancelled'}
 
 
@@ -377,7 +377,7 @@ def validate_state(value, episodes=None, embedding_dim=None):
                 if win['result'] is not None:
                     from types import SimpleNamespace
                     from .planning import validate_result
-                    validate_result(win['result'], data, SimpleNamespace(**win['limits']), normalized=True)
+                    validate_result(win['result'], data, SimpleNamespace(**win['limits']))
                     require(set(win['digest_saved']).issubset(win['result']['digests']))
                 for vector in win['vectors'].values():
                     from ..store._validation import validate_embedding

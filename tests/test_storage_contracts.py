@@ -26,7 +26,7 @@ def ref(kind=RecordKind.FACT, key='fact-1', context=SPACE):
 def fact_record(**kwargs):
     return StoredRecord.from_record(SPACE, Fact('Ana', 'works_at', 'Orbit', user_id='owner',
                                               id='fact-1', created_at=100, valid_at=90,
-                                              last_access=100), **kwargs)
+                                              last_access=100, text='Ana works at Orbit'), **kwargs)
 
 
 def product():
@@ -37,7 +37,6 @@ def product():
                               representation_source=None, source='a' * 64, source_length=len(text),
                               ranges=[[0, len(text)]], partial=False)])
     result = dict(facts=[dict(categories=[], object_kind='unknown', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='Ana', predicate='works_at', object='Orbit', text='Ana works at Orbit',
-                             display='Ana works at Orbit',
                              source_ids=['source-1'])], digests={})
     return ExtractionProduct(CONDITIONS, json.dumps(data), json.dumps(result),
                              OperationStats(0, 0, 0, 1, 0), 800, 7)
@@ -134,7 +133,7 @@ def test_messages_reject_invalid_source_fields(kwargs):
 
 
 def test_domain_record_is_detached_and_rejects_wrong_owner_or_unknown_columns():
-    value = Fact('Ana', 'works_at', 'Orbit', user_id='owner')
+    value = Fact('Ana', 'works_at', 'Orbit', user_id='owner', text='Ana works at Orbit')
     record = StoredRecord.from_record(SPACE, value)
     value.object = 'Changed'
     assert json.loads(record.payload_json)['object'] == 'Orbit'
@@ -224,7 +223,7 @@ def test_invalidation_entities_and_settings_are_narrow_types():
 def test_extraction_product_checks_sources_schema_stats_and_format():
     saved = product()
     assert saved.reusable(SNAPSHOT, SOURCES, 'config-1')
-    for kwargs in (dict(format_version=True), dict(format_version=2), dict(format_version=4), dict(context_revision=6),
+    for kwargs in (dict(format_version=True), dict(format_version=3), dict(format_version=4), dict(context_revision=6),
                    dict(result_json='{}'), dict(input_json='{}'), dict(stats={})):
         with pytest.raises(ValueError):
             replace(saved, **kwargs)

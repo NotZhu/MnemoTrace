@@ -80,10 +80,7 @@ class Fact:
     subject: str
     predicate: str
     object: str
-    text: str = ""  # 规范的英文 predicate 渲染，如 "Wei works_at Moonshot AI"（用于嵌入/检索）
-    # 抽取时产出的原语言一行表述（如"李雷在字节跳动工作"），在 UI 中展示。旧 fact / 离线抽取
-    # 为空 => 由展示层基于 predicate 本地化。
-    display: str = ""
+    text: str  # 自包含的事实表述；抽取保留原语言，展示与检索共用。
     user_id: str = "default"
     embedding: Optional[list[float]] = None
 
@@ -129,11 +126,10 @@ class Fact:
         validate_object_kind(self.object_kind)
         validate_lifecycle(self.cardinality, self.retention)
         validate_validity_revisions(self.validity_revisions)
-        if not self.text:
-            # 把 predicate 渲染成自然语言（"works_at" -> "works at"），让嵌入和词汇匹配
-            # 看到的是真实文本，而不是 snake_case token。
-            readable = self.predicate.replace("_", " ")
-            self.text = f"{self.subject} {readable} {self.object}".strip()
+        for name in ('subject', 'predicate', 'object', 'text'):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f'{name} must be a non-empty string')
 
     @property
     def slot(self) -> tuple[str, str, str]:

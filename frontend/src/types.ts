@@ -17,7 +17,6 @@ export interface MemoryFact extends FactMetadata {
   source_roles?: ('user' | 'assistant')[]
   id: string
   text: string
-  display: string // 本地化渲染结果（中文记录的事实显示为中文）；无则回退为 text
   subject: string
   predicate: string
   object: string
@@ -165,7 +164,6 @@ export interface MemoryDump {
 export interface SessionReportFact {
   id: string
   text: string
-  display: string
   valid_at: string
   invalid_at: string | null
   status: FactStatus
@@ -276,6 +274,7 @@ export interface RecallResult {
 }
 
 export interface FactWrite {
+  text: string
   subject?: string
   predicate: string
   object: string
@@ -284,17 +283,14 @@ export interface FactWrite {
   object_kind?: ObjectKind
 }
 
-export interface FactEdit {
+export type FactEdit = {
   cardinality?: 'single' | 'multi' | 'unknown'
   retention?: 'durable' | 'normal' | 'unknown'
-  statement?: string
-  subject?: string
-  predicate?: string
-  object?: string
   sensitive?: boolean
   categories?: Category[]
   object_kind?: ObjectKind
-}
+} & ({ subject: string; predicate: string; object: string; text: string }
+  | { subject?: never; predicate?: never; object?: never; text?: never })
 
 export interface Health {
   ok: boolean

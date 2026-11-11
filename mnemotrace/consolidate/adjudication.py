@@ -147,7 +147,7 @@ def plan_merge(incoming, previous, llm, config, embedder, now, existing_pairs=()
     for new in sorted(deepcopy(incoming), key=_order):
         old = facts.get(new.id)
         if old is None:
-            old = next((fact for fact in subjects[_subject(new)] if same_assertion(new, fact)), None)
+            old = next((fact for fact in subjects[_subject(new)] if same_assertion(fact, new)), None)
         if old is not None:
             duplicates += 1
             if new.id != old.id:

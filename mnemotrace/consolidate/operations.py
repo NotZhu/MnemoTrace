@@ -36,8 +36,7 @@ def decode(raw, data, config, compensation=False):
             predicate = _norm_predicate(item['predicate'])
             if not predicate:
                 raise ExtractionResponseError()
-            display = item['text']
-            facts.append({**item, 'subject': subject, 'predicate': predicate, 'display': display})
+            facts.append({**item, 'subject': subject, 'predicate': predicate})
         result['facts'] = facts
         return result
     try:

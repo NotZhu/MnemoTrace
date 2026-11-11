@@ -40,7 +40,7 @@ graph.then(result => {
   return hasMore
 })
 
-client.addFact({ predicate: 'prefers', object: 'tea', categories: ['food'], object_kind: 'entity' }, space).then(result => {
+client.addFact({ predicate: 'prefers', object: 'tea', text: '用户偏好茶。', categories: ['food'], object_kind: 'entity' }, space).then(result => {
   const categories: Category[] = result.categories
   const source: CategoriesSource = result.categories_source
   const kind: ObjectKind = result.object_kind
@@ -50,7 +50,15 @@ client.updateFact('synthetic-fact', { categories: [] }, space)
 // @ts-expect-error unsupported label
 client.updateFact('synthetic-fact', { categories: ['音乐'] }, space)
 // @ts-expect-error callers cannot choose classification source
-client.addFact({ predicate: 'prefers', object: 'tea', categories_source: 'llm' }, space)
+client.addFact({ predicate: 'prefers', object: 'tea', text: '用户偏好茶。', categories_source: 'llm' }, space)
+
+// @ts-expect-error manual writes require a complete sentence
+client.addFact({ predicate: 'prefers', object: 'tea' }, space)
+// @ts-expect-error content edits require the whole assertion
+client.updateFact('synthetic-fact', { object: 'coffee' }, space)
+// @ts-expect-error a sentence cannot be edited without structured fields
+client.updateFact('synthetic-fact', { text: '用户偏好咖啡。' }, space)
+client.updateFact('synthetic-fact', { subject: 'user', predicate: 'prefers', object: 'coffee', text: '用户偏好咖啡。' }, space)
 
 // @ts-expect-error space must be explicit
 client.remember('Synthetic input', {sessionId: 's'})

@@ -7,7 +7,7 @@ from tests.model_fixtures import MemoryEngine
 def add_relation(mem, index, *, historical=False, sensitive=False):
     fact = mem.add_fact(
         "synthetic_user", f"synthetic_link_{index}", f"synthetic_object_{index}",
-        valid_at=1_700_000_000.0, sensitive=sensitive, object_kind="entity",
+        valid_at=1_700_000_000.0, sensitive=sensitive, object_kind="entity", text=' '.join(('synthetic_user', f'synthetic_link_{index}'.replace('_', ' '), f'synthetic_object_{index}')),
     )
     if historical:
         fact.invalid_at = 1_700_000_100.0
@@ -50,7 +50,7 @@ def test_graph_lookahead_obeys_search_privacy_time_and_namespace():
     for i in range(121):
         add_relation(mem, f"sensitive_{i}", sensitive=True)
         add_relation(mem, f"old_{i}", historical=True)
-    mem.add_fact("other_user", "synthetic_link", "other_object", user_id="other", object_kind="entity")
+    mem.add_fact("other_user", "synthetic_link", "other_object", user_id="other", object_kind="entity", text='other_user synthetic link other_object')
     for params in [
         {"q": "synthetic_object_match"},
         {"live_only": True, "include_sensitive": False},
@@ -66,7 +66,7 @@ def test_graph_lookahead_obeys_search_privacy_time_and_namespace():
 
 def test_object_kind_edit_updates_projection_without_changing_fact():
     mem = MemoryEngine()
-    fact = mem.add_fact("user", "works_at", "M. & Co. (Lab)", categories=["professional_details"])
+    fact = mem.add_fact("user", "works_at", "M. & Co. (Lab)", categories=["professional_details"], text='user works at M. & Co. (Lab)')
     assert fact.object_kind == "unknown" and not mem.graph_data()["edges"]
     text, created_at = fact.text, fact.created_at
 
@@ -83,14 +83,14 @@ def test_object_kind_edit_updates_projection_without_changing_fact():
 @pytest.mark.parametrize("value", ["multi\nline", "tab\tvalue", "vertical\u2028separator", "x" * 513])
 def test_invalid_graph_name_keeps_fact(value):
     mem = MemoryEngine()
-    fact = mem.add_fact("user", "works_at", value, object_kind="entity")
+    fact = mem.add_fact("user", "works_at", value, object_kind="entity", text=' '.join(('user', 'works at', value)))
     assert mem.fact_store.get(fact.id).object == value
     assert not mem.graph_data()["edges"]
 
 
 def test_graph_recall_uses_explicit_names_instead_of_pronouns():
     mem = MemoryEngine()
-    fact = mem.add_fact("user", "lives_in", "Synthetic City", object_kind="entity")
+    fact = mem.add_fact("user", "lives_in", "Synthetic City", object_kind="entity", text='user lives in Synthetic City')
     for query in ("Where do I live?", "Where does his sister live?", "我的住址在哪里"):
         assert not mem.retriever.query_entity_ids(query, "default")
     assert mem.search("Where do I live?").top().id == fact.id
@@ -99,7 +99,7 @@ def test_graph_recall_uses_explicit_names_instead_of_pronouns():
 
 def test_repeated_projection_does_not_duplicate_edges():
     mem = MemoryEngine()
-    fact = mem.add_fact("user", "works_at", "Synthetic Lab", object_kind="entity")
+    fact = mem.add_fact("user", "works_at", "Synthetic Lab", object_kind="entity", text='user works at Synthetic Lab')
     mem.writer.graph_builder.add_fact(fact)
     mem.writer.graph_builder.add_fact(fact)
     assert [edge.fact_id for edge in mem.graph.relations()] == [fact.id]

@@ -40,7 +40,7 @@ export function Timeline({ facts }: { facts: MemoryFact[] }) {
                   className={cx('break-all text-sm', !live && 'text-ghost line-through')}
                   title={!live ? `${t.common.superseded}${f.invalid_at ? ` · ${f.invalid_at}` : ''}` : undefined}
                 >
-                  {f.display || f.text}
+                  {f.text}
                 </span>
                 <span className="ml-2 inline-flex flex-wrap items-center gap-1.5 align-middle">
                   {f.source === 'user' && (

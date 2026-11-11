@@ -50,7 +50,9 @@
       "gold": "Spotify",
       "storage": "memory",
       "ok": true,
-      "answer": "Spotify",
+      "answer": "",
+      "status": "evidence_only",
+      "top_fact_object": "Spotify",
       "abstained": false,
       "tokens": 12,
       "fact_ids": [
@@ -68,7 +70,9 @@
       "gold": "blue",
       "storage": "memory",
       "ok": true,
-      "answer": "blue",
+      "answer": "",
+      "status": "evidence_only",
+      "top_fact_object": "blue",
       "abstained": false,
       "tokens": 7,
       "fact_ids": [
@@ -85,7 +89,9 @@
       "gold": "Denver",
       "storage": "memory",
       "ok": true,
-      "answer": "Denver",
+      "answer": "",
+      "status": "evidence_only",
+      "top_fact_object": "Denver",
       "abstained": false,
       "tokens": 7,
       "fact_ids": [
@@ -102,7 +108,9 @@
       "gold": "green",
       "storage": "memory",
       "ok": true,
-      "answer": "green",
+      "answer": "",
+      "status": "evidence_only",
+      "top_fact_object": "green",
       "abstained": false,
       "tokens": 7,
       "fact_ids": [
@@ -120,6 +128,8 @@
       "storage": "memory",
       "ok": true,
       "answer": "Netflix",
+      "status": "answered",
+      "top_fact_object": "Evan",
       "abstained": false,
       "tokens": 7,
       "fact_ids": [
@@ -137,6 +147,8 @@
       "storage": "memory",
       "ok": true,
       "answer": "pediatrician",
+      "status": "answered",
+      "top_fact_object": "Maya",
       "abstained": false,
       "tokens": 6,
       "fact_ids": [
@@ -153,7 +165,9 @@
       "gold": "IBM",
       "storage": "memory",
       "ok": true,
-      "answer": "IBM",
+      "answer": "",
+      "status": "evidence_only",
+      "top_fact_object": "IBM",
       "abstained": false,
       "tokens": 7,
       "fact_ids": [
@@ -170,7 +184,9 @@
       "gold": "Oracle",
       "storage": "memory",
       "ok": true,
-      "answer": "Oracle",
+      "answer": "",
+      "status": "evidence_only",
+      "top_fact_object": "Oracle",
       "abstained": false,
       "tokens": 7,
       "fact_ids": [
@@ -188,6 +204,8 @@
       "storage": "memory",
       "ok": true,
       "answer": "I don't have that in memory.",
+      "status": "no_evidence",
+      "top_fact_object": null,
       "abstained": true,
       "tokens": 0,
       "fact_ids": [],
@@ -202,6 +220,8 @@
       "storage": "memory",
       "ok": true,
       "answer": "I don't have that in memory.",
+      "status": "no_evidence",
+      "top_fact_object": null,
       "abstained": true,
       "tokens": 0,
       "fact_ids": [],
@@ -267,9 +287,9 @@
         "fact-2"
       ],
       "scores": [
-        0.018773135906927554,
+        0.01869633099141296,
         0.008950290851401376,
-        0.00873015873015873
+        0.008806963645673321
       ],
       "via": "hybrid"
     },

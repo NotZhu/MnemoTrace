@@ -373,12 +373,12 @@ def test_same_space_stale_merge_retries_without_reextracting(memory, cluster):
 
 @pytest.mark.parametrize('change', ['manual', 'policy'])
 def test_model_call_respects_concurrent_business_change(memory, cluster, change):
-    pinned = memory.add_fact('Synthetic person', 'works_at', 'Old lab', valid_at=50)
+    pinned = memory.add_fact('Synthetic person', 'works_at', 'Old lab', valid_at=50, text='Synthetic person works at Old lab')
     operation_id = _accept(memory)
     with _process(_run_stage, cluster.runtime, memory.context, operation_id, 'model') as child:
         assert child.ready.wait(WAIT)
         if change == 'manual':
-            memory.update_fact(pinned.id, object='Pinned lab')
+            memory.update_fact(pinned.id, object='Pinned lab', subject=pinned.subject, predicate=pinned.predicate, text=' '.join((pinned.subject, pinned.predicate.replace('_', ' '), 'Pinned lab')))
         else:
             memory.set_settings(extract_instruction='Updated synthetic extraction policy')
         child.resume.set()
@@ -474,7 +474,7 @@ def test_delete_prevents_late_processing_writes(memory, cluster, runtime, spaces
     sibling_memory = Memory(runtime, spaces.authorize(user_id, sibling.space_id))
     sibling_source = sibling_memory.remember_raw('Sibling synthetic source', 'chat')
     settings = memory.set_settings(extract_instruction='Keep this setting on clear')
-    seed = memory.add_fact('Synthetic maintainer', 'works_at', 'Seed lab', object_kind="entity")
+    seed = memory.add_fact('Synthetic maintainer', 'works_at', 'Seed lab', object_kind="entity", text='Synthetic maintainer works at Seed lab')
     assert memory.graph_relations(seed.id)
     operation_id = _pending_write(memory, kind)
     gate = 'model' if kind == 'extract' else 'embedding'
@@ -528,7 +528,7 @@ def _rebuild_in_process(config, context, *, ready, resume):
 
 
 def test_clear_waits_for_graph_rebuild_and_removes_rebuilt_edges(memory, cluster, runtime):
-    fact = memory.add_fact('Synthetic person', 'works_at', 'Synthetic lab', object_kind="entity")
+    fact = memory.add_fact('Synthetic person', 'works_at', 'Synthetic lab', object_kind="entity", text='Synthetic person works at Synthetic lab')
     assert memory.graph_relations(fact.id)
     with memory.dao._transaction() as sql:
         sql.delete('graph_relations', 'fact_id = %s', (fact.id,))

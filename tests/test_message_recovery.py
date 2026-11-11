@@ -92,10 +92,11 @@ def test_prior_processing_checkpoint_version_is_rejected():
 
 def test_manual_fact_keeps_authority_over_dialogue_fact():
     mem = MemoryEngine(llm=FakeLLM(handler=reply))
-    old = mem.add_fact('user', 'lives_in', 'A', 'u')
+    old = mem.add_fact('user', 'lives_in', 'A', 'u', text='The user lives in A.')
     old.source, old.valid_at = 'extracted', 100
     mem.fact_store.upsert(old.id, old.embedding, old)
-    new = mem.add_fact('user', 'lives_in', 'B', 'u', valid_at=200, cardinality='single')
+    new = mem.add_fact('user', 'lives_in', 'B', 'u', valid_at=200, cardinality='single',
+                       text='The user lives in B.')
     assert not mem.fact_store.get(old.id).is_live() and new.source == 'user'
 
 

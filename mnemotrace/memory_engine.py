@@ -10,7 +10,7 @@ from .focus import matches, selectors
 from .connectors.documents import document_inputs
 from .consolidate import reinforce
 from .consolidate.facts import FactWriter
-from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual
+from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual, validate_fact_patch
 from .consolidate.policy import POLICY_DEFAULTS
 from .embed import Embedder
 from .ingest import Ingestor
@@ -589,7 +589,7 @@ class MemoryEngine:
                 facts_skipped += 1
                 continue
             f = Fact(subject=s, predicate=p, object=o, user_id=user,
-                     text=row.get("text", ""), display=row.get("display", ""), source=row["source"],
+                     text=row["text"], source=row["source"],
                      source_roles=row.get("source_roles", []),
                      sensitive=row["sensitive"],
                      sensitive_override=row.get("sensitive_override", False),
@@ -638,14 +638,14 @@ class MemoryEngine:
     def add_fact(self, subject: str, predicate: str, object: str, user_id: str = "default",
                  valid_at: Optional[float] = None, sensitive: Optional[bool] = None,
                  categories: list[Category] | None = None, object_kind: ObjectKind = "unknown",
-                 cardinality: Cardinality = "unknown", retention: Retention = "unknown") -> Fact:
+                 cardinality: Cardinality = "unknown", retention: Retention = "unknown", *, text: str) -> Fact:
         """手动断言一条 fact。它被标记为 source='user'（权威）：冲突解决允许它取代同一槽位上
         任何抽取出的值，并且此后受到保护，不会被未来的自动覆盖改写。"""
         with self._pipeline_lock:
             if self._pipeline_broken:
                 raise RuntimeError('Memory checkpoint failed; create a new instance')
             user = user_id
-            f = build_manual_fact(subject, predicate, object, user, valid_at, sensitive, categories, object_kind, cardinality, retention)
+            f = build_manual_fact(subject, predicate, object, text, user, valid_at, sensitive, categories, object_kind, cardinality, retention)
             f.embedding = self._encode(f.text)
             from .consolidate.pipeline import PipelineTasks
             PipelineTasks(self, f.user_id).invalidate()
@@ -664,12 +664,13 @@ class MemoryEngine:
 
     def update_fact(self, fact_id: str, subject: Optional[str] = None, predicate: Optional[str] = None,
                     object: Optional[str] = None, sensitive: Optional[bool] = None,
-                    categories: list[Category] | None = None, statement: Optional[str] = None,
+                    categories: list[Category] | None = None, text: Optional[str] = None,
                     object_kind: ObjectKind | None = None,
                     cardinality: Cardinality | None = None, retention: Retention | None = None) -> Optional[Fact]:
         """实际修改 fact 内容时标记为用户手写（因此自动抽取不会把它改回去）。
         修改正文时默认标记敏感并清空分类；显式参数优先
         （用户的选择永远优先）。只修改元数据或回传未变的内容时，保留来源、有效状态与历史。"""
+        validate_fact_patch(subject, predicate, object, text)
         with self._pipeline_lock:
             if self._pipeline_broken:
                 raise RuntimeError('Memory checkpoint failed; create a new instance')
@@ -678,10 +679,13 @@ class MemoryEngine:
                 return None
             edited = copy(f)
             claim_changed = apply_manual_edit(edited, subject, predicate, object, sensitive, categories,
-                                              statement, object_kind, cardinality, retention)
+                                              text, object_kind, cardinality, retention)
+            if edited == f:
+                return f
             projection_changed = claim_changed or edited.object_kind != f.object_kind
-            if claim_changed:
+            if edited.text != f.text:
                 edited.embedding = self._encode(edited.text)
+            if claim_changed:
                 from .consolidate.pipeline import PipelineTasks
                 PipelineTasks(self, f.user_id).invalidate()
             vars(f).update(vars(edited))

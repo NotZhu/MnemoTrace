@@ -14,6 +14,12 @@ artifacts; storage schema compatibility is documented separately when it changes
 
 ### Changed
 
+- **Breaking:** Facts now require one explicit, nonblank `text` sentence for both display and retrieval.
+  Removed the `display` field, automatic triple rendering and `statement` edits. Manual creation requires
+  `text`; content patches require `subject`, `predicate`, `object` and `text` together, while metadata-only
+  patches remain partial. Python, HTTP, MCP, the TypeScript SDK and console use the same contract.
+  This requires a new database and new snapshot/checkpoint formats; existing data is not migrated.
+
 - Removed independent working-memory storage and task-state APIs. Source summaries now use
   `digest` / `digests` throughout Python, HTTP, MCP, SDK, configuration and storage. Recall no
   longer accepts a session ID. This format requires a new database; old schemas and checkpoints

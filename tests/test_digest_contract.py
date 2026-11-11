@@ -52,7 +52,7 @@ def test_digest_is_selected_while_explicit_source_keeps_original():
 
 @pytest.mark.parametrize('field', ['summary', 'summary_coverage'])
 def test_snapshot_does_not_silently_drop_old_source_fields(field):
-    snapshot = dict(format_version=2, facts=[], episodes=[dict(id='source', content='Synthetic source',
+    snapshot = dict(format_version=3, facts=[], episodes=[dict(id='source', content='Synthetic source',
                     session_id='s', role='user', event_time=1, **{field: 'obsolete'})])
     with pytest.raises(ValueError, match=field):
         validate_snapshot(snapshot)
@@ -71,4 +71,4 @@ def test_removed_python_scope_and_recall_parameters_are_errors():
 
 def test_snapshot_rejects_retired_working_collection():
     with pytest.raises(ValueError, match='snapshot.working'):
-        validate_snapshot(dict(format_version=2, facts=[], episodes=[], working=[]))
+        validate_snapshot(dict(format_version=3, facts=[], episodes=[], working=[]))

@@ -14,7 +14,7 @@ def metadata_client(product_client, product_service):
 def test_http_categories_write_read_reset_export_and_namespace_isolation(metadata_client):
     client, _ = metadata_client
     headers = hdr("synthetic-alpha")
-    added = client.post("/v1/facts", headers=headers, json={
+    added = client.post("/v1/facts", headers=headers, json={"text": 'user prefers 茶',
         "predicate": "prefers", "object": "茶", "categories": ["food"], "object_kind": "entity", "sensitive": False,
     })
     assert added.status_code == 200
@@ -29,7 +29,7 @@ def test_http_categories_write_read_reset_export_and_namespace_isolation(metadat
     reset = client.patch(endpoint, headers=headers, json={"categories": []}).json()
     assert (reset["categories"], reset["categories_source"]) == ([], "unset")
     snapshot = client.get("/v1/export", headers=headers).json()
-    assert snapshot["format_version"] == 2
+    assert snapshot["format_version"] == 3
     assert snapshot["facts"][0]["categories_source"] == "unset"
     denied = client.patch(endpoint, headers=hdr("synthetic-beta"),
                           json={"categories": ["technology"]})
@@ -41,7 +41,7 @@ def test_http_categories_filters_before_paging_and_rejects_invalid_values(metada
     client, _ = metadata_client
     headers = hdr("synthetic-topic")
     for obj, labels in [("合成茶", ["food"]), ("合成作品", ["music"]), ("合成咖啡", ["food", "music"]), ("未分类", [])]:
-        assert client.post("/v1/facts", headers=headers, json={
+        assert client.post("/v1/facts", headers=headers, json={"text": ' '.join(('user', 'prefers', obj)),
             "predicate": "prefers", "object": obj, "categories": labels, "sensitive": False,
         }).status_code == 200
     page = client.get("/v1/memories", headers=headers,
@@ -55,7 +55,7 @@ def test_http_categories_filters_before_paging_and_rejects_invalid_values(metada
 def test_http_object_kind_edit_reprojects_without_changing_fact(metadata_client):
     client, _ = metadata_client
     headers = hdr("synthetic-alpha")
-    fact = client.post("/v1/facts", headers=headers, json={
+    fact = client.post("/v1/facts", headers=headers, json={"text": 'user works at M. & Co. (Lab)',
         "predicate": "works_at", "object": "M. & Co. (Lab)", "categories": ["professional_details"],
         "sensitive": False,
     }).json()
@@ -83,9 +83,9 @@ def test_http_invalid_metadata_does_not_mutate_fact(metadata_client, patch):
     client, _ = metadata_client
     headers = hdr("synthetic-alpha")
     fact = client.post("/v1/facts", headers=headers,
-                       json={"predicate": "prefers", "object": "茶", "categories": ["food"], "object_kind": "entity", "sensitive": False}).json()
+                       json={"text": 'user prefers 茶', "predicate": "prefers", "object": "茶", "categories": ["food"], "object_kind": "entity", "sensitive": False}).json()
     before = client.get("/v1/memories", headers=headers).json()["facts"]
-    result = client.patch(f"/v1/facts/{fact['id']}", headers=headers, json={"object": "咖啡", **patch})
+    result = client.patch(f"/v1/facts/{fact['id']}", headers=headers, json={"subject": "user", "predicate": "prefers", "object": "咖啡", "text": "用户偏好咖啡。", **patch})
     assert result.status_code == 422
     assert client.get("/v1/memories", headers=headers).json()["facts"] == before
 
@@ -98,7 +98,7 @@ def test_redacted_session_report_omits_fact_metadata(metadata_client, product_sc
     context, _ = product_scope(user)
     source_id, = service.remember(context, "Synthetic session statement", "synthetic-session", scope="raw")["source_ids"]
     seed_facts(service, context, [Fact("user", "note", "Synthetic private value", user_id=context.user_id,
-                                       provenance=[source_id], categories=["health"], categories_source="user", object_kind="literal", sensitive=True)])
+                                       provenance=[source_id], categories=["health"], categories_source="user", object_kind="literal", sensitive=True, text='user note Synthetic private value')])
     headers = hdr(user)
     endpoint = "/v1/sessions/report?session_id=synthetic-session"
     hidden, = client.get(endpoint, headers=headers).json()["facts"]

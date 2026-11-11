@@ -115,7 +115,6 @@ export interface SearchResult {
 export interface SessionReportFact {
   id: string
   text: string
-  display: string
   valid_at: string
   invalid_at: string | null
   status: FactStatus
@@ -196,7 +195,6 @@ export interface Fact extends FactMetadata {
   source_roles?: ('user' | 'assistant')[]
   id: string
   text: string
-  display?: string
   subject: string
   predicate: string
   object: string
@@ -410,6 +408,7 @@ export interface GraphResponse extends GraphData {
 }
 
 export interface FactInput {
+  text: string
   cardinality?: 'single' | 'multi' | 'unknown'
   retention?: 'durable' | 'normal' | 'unknown'
   subject?: string
@@ -420,16 +419,20 @@ export interface FactInput {
   object_kind?: ObjectKind
 }
 
-export interface FactPatch {
+export interface FactContent {
+  subject: string
+  predicate: string
+  object: string
+  text: string
+}
+
+export type FactPatch = {
   cardinality?: 'single' | 'multi' | 'unknown'
   retention?: 'durable' | 'normal' | 'unknown'
-  subject?: string
-  predicate?: string
-  object?: string
   sensitive?: boolean
   categories?: Category[]
   object_kind?: ObjectKind
-}
+} & (FactContent | { subject?: never; predicate?: never; object?: never; text?: never })
 
 export interface ImportMessageInput {
   role?: string
@@ -509,7 +512,7 @@ export interface MemoryExportEpisode {
 }
 
 export interface MemoryExport {
-  format_version: 2
+  format_version: 3
   space_id: string
   include_sensitive: boolean
   redacted_sensitive: boolean
