@@ -70,5 +70,9 @@ def test_bench_rejects_unknown_ablation_before_setup(monkeypatch, capsys, flag):
     assert f'Unknown ablation option(s): {flag}' in capsys.readouterr().err
 
 
-def test_offline_feature_ablation_proves_each_enabled_feature_changes_target_evidence():
-    rows, digest = run_ablation()
+def test_digest_fallback_ablation_distinguishes_enabled_and_disabled_evidence():
+    rows, _ = run_ablation()
+    result = next(row for row in rows if row.feature == "digest_fallback")
+    assert result.enabled_hit
+    assert not result.disabled_hit
+    assert result.improved
