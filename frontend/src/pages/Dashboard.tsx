@@ -2,12 +2,13 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Database, ExternalLink, History, Lightbulb, MessagesSquare, Send, Sparkles } from 'lucide-react'
 
-import { Button, Card, CardTitle, EmptyState, ErrorState, PageHeader, Spinner, StatCard, cx } from '../components/ui'
+import { Button, Card, CardTitle, EmptyState, ErrorState, PageHeader, Spinner, StatCard } from '../components/ui'
 import { toast } from '../components/Toast'
-import { useMemories, useRemember, useStructuredProfile } from '../hooks/queries'
+import { useMemories, useRemember, useProfile } from '../hooks/queries'
 import { copy as t } from '../lib/copy'
 import { groupOutcomes, SessionOutcomes } from './Journal'
-import type { StructuredProfile } from '../types'
+import { ProfileTag } from './Profile'
+import type { ProfileResult } from '../types'
 
 export default function Dashboard() {
   const memories = useMemories({ facts_limit: 6, episodes_limit: 0, status: 'live' })
@@ -23,7 +24,7 @@ export default function Dashboard() {
     status: 'live',
     include_sensitive: true,
   })
-  const profile = useStructuredProfile()
+  const profile = useProfile()
   const remember = useRemember()
   const [text, setText] = useState('')
   const failed = [memories, outcomes, profile].filter(query => query.isError)
@@ -115,48 +116,10 @@ export default function Dashboard() {
   )
 }
 
-function StructuredProfileMini({ data }: { data: StructuredProfile }) {
-  const prefItems = Object.entries(data.preferences).flatMap(([cat, items]) =>
-    items.slice(0, 4).map((item) => ({ ...item, cat })),
-  )
-  const empty = data.counts.basic + data.counts.preferences + data.counts.habits === 0
-  if (empty) return <EmptyState title={t.dashboard.personaEmptyTitle} hint={t.dashboard.personaEmptyHint} />
-  return (
-    <div className="space-y-4">
-      {data.basic.length > 0 && (
-        <div className="grid gap-3 sm:grid-cols-2">
-          {data.basic.slice(0, 4).map((b) => (
-            <div key={b.field} className="rounded-xl border border-line bg-ink-700/50 p-3">
-              <div className="text-[11px] uppercase tracking-wide text-ghost">{b.label}</div>
-              <div className="mt-1 break-words text-sm font-medium text-slate-100">{b.value}</div>
-            </div>
-          ))}
-        </div>
-      )}
-      {prefItems.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {prefItems.slice(0, 12).map((it) => (
-            <span
-              key={it.fact_id}
-              className={cx(
-                'inline-flex min-w-0 max-w-full whitespace-normal break-all rounded-lg px-2.5 py-1 text-sm',
-                it.polarity === 'dislike' ? 'bg-brand-rose/10 text-brand-rose' : 'bg-brand-mint/10 text-brand-mint',
-              )}
-            >
-              {it.item}
-            </span>
-          ))}
-        </div>
-      )}
-      {data.habits.length > 0 && (
-        <ul className="flex flex-wrap gap-2">
-          {data.habits.slice(0, 4).map((h) => (
-            <li key={h.fact_id} className="inline-flex min-w-0 max-w-full whitespace-normal break-all rounded-lg bg-ghost/10 px-2.5 py-1 text-sm text-ghost">
-              {h.text}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  )
+function StructuredProfileMini({ data }: { data: ProfileResult }) {
+  const entries = Object.values(data.profile).flat()
+  if (!entries.length) return <EmptyState title={t.dashboard.personaEmptyTitle} hint="到画像页面点击刷新画像。" />
+  return <ul className="space-y-3">{entries.slice(0, 12).map((entry, index) => (
+    <li key={index}><ProfileTag entry={entry} /></li>
+  ))}</ul>
 }

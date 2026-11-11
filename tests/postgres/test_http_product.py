@@ -100,48 +100,10 @@ def test_recall_answers_with_extraction_model_unless_answerer_overrides(client, 
 
     for answerer, expected in ((None, "Shenzhen"), (FakeLLM(responses=["Explicit answerer"]), "Explicit answerer")):
         monkeypatch.setattr(app, "_svc", MemoryService(runtime, llm=llm, answerer=answerer))
-        response = client.post("/v1/recall", json={"query": "Where do I live?"}, headers=h)
+        response = client.post("/v1/recall", json={"query": "Where do I live?", "answer": True}, headers=h)
         assert response.is_success
         assert response.json()["answer"] == expected
         assert response.json()["full_tokens"] == 5
-
-
-def test_structured_profile_source_count_survives_edit_and_reload(client):
-    h = hdr("synthetic-profile-evidence")
-    remembered = client.post("/v1/remember", json={
-        "content": "I like jazz.", "scope": "long",
-    }, headers=h)
-    assert remembered.status_code == 200
-
-    def preferences():
-        response = client.get("/v1/profile/structured", headers=h)
-        assert response.status_code == 200
-        return [item for items in response.json()["preferences"].values() for item in items]
-
-    item = next(item for item in preferences() if item["item"] == "jazz")
-    assert item["evidence"] == {"kind": "mentions", "source_count": 1, "reinforcement_count": 0}
-    recalled = client.post("/v1/recall", json={"query": "What music do I like?"}, headers=h)
-    assert recalled.status_code == 200
-    reinforced = next(row for row in preferences() if row["fact_id"] == item["fact_id"])
-    reinforcement_count = reinforced["evidence"]["reinforcement_count"]
-    assert reinforcement_count > 0
-    assert reinforced["evidence"] == {
-        "kind": "reinforced", "source_count": 1, "reinforcement_count": reinforcement_count,
-    }
-    changed = client.patch(f"/v1/facts/{item['fact_id']}", json={"object": "classical music", "sensitive": False}, headers=h)
-    assert changed.status_code == 200
-
-    edited = next(row for row in preferences() if row["fact_id"] == item["fact_id"])
-    assert edited["evidence"] == {
-        "kind": "user", "source_count": 1, "reinforcement_count": reinforcement_count,
-    }
-
-    manual = client.post("/v1/facts", json={
-        "subject": "user", "predicate": "likes", "object": "synthetic-manual-option", "sensitive": False,
-    }, headers=h)
-    assert manual.status_code == 200
-    added = next(row for row in preferences() if row["item"] == "synthetic-manual-option")
-    assert added["evidence"] == {"kind": "user", "source_count": 0, "reinforcement_count": 0}
 
 
 def test_tenant_data_rights_operations_remain_isolated(client):
@@ -390,7 +352,7 @@ def test_import_sessions_accept_iso_timestamps(client):
         "lean": False,
         "as_of": 1_700_864_000.0,
     }, headers=h).json()
-    assert "Tencent" in past["answer"]
+    assert past["status"] == "evidence_only" and any("Tencent" in fact for fact in past["facts"])
 
 
 def test_fact_crud_and_focus_policy_graph_export(client):
@@ -507,7 +469,7 @@ def test_memories_endpoint_supports_pagination_filtering_and_sensitive_create(cl
     }, headers=h)
 
     safe_default = client.get("/v1/memories?facts_limit=10&episodes_limit=1", headers=h).json()
-    assert safe_default["profile"] == ""
+    assert "profile" not in safe_default
     assert safe_default["episodes"] == []
     assert all(not f["sensitive"] for f in safe_default["facts"])
 
@@ -571,29 +533,6 @@ def seed_facts(service, context, facts):
     links = tuple(SourceLink(write.ref, RecordRef(context, RecordKind.SOURCE, source_id))
                   for write, fact in zip(writes, facts) for source_id in fact.provenance)
     dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=writes, source_links=links))
-
-
-def test_structured_profile_pages_canonical_owner_and_excludes_other_assertions(client, product_service, product_scope):
-    from mnemotrace.types import Fact
-
-    label = "synthetic-large-profile"
-    context, _ = product_scope(label)
-    facts = [
-        Fact(id=f"fact-{i:03}", user_id=context.user_id, subject="user", predicate="likes", object=f"fixture-{i}")
-        for i in range(110)
-    ]
-    facts.extend((
-        Fact(id="fact-zz-owner", user_id=context.user_id, subject="Synthetic Owner",
-             predicate="likes", object="owner-visible"),
-        Fact(id="fact-zz-alias", user_id=context.user_id, subject="我", predicate="likes", object="alias-visible"),
-        Fact(id="fact-zz-other", user_id=context.user_id, subject="Synthetic Friend",
-             predicate="likes", object="other-hidden"),
-    ))
-    seed_facts(product_service, context, facts)
-    response = client.get("/v1/profile/structured", headers=hdr(label))
-    assert response.is_success
-    preferences = {row["item"] for group in response.json()["preferences"].values() for row in group}
-    assert preferences == {f"fixture-{i}" for i in range(110)}
 
 
 def test_focus_filters_retrieval_and_tracks_without_rewriting_facts(client, product_service, product_scope):
@@ -826,7 +765,7 @@ def test_recall_endpoint_supports_as_of_for_search_and_lean_context(client):
         "as_of": 1_700_864_000.0,
     }, headers=h).json()
     assert past["as_of"] == 1_700_864_000.0
-    assert "Tencent" in past["answer"]
+    assert past["status"] == "evidence_only" and any("Tencent" in fact for fact in past["facts"])
     assert all("Moonshot" not in f for f in past["facts"])
 
     current = client.post("/v1/recall", json={
@@ -834,11 +773,12 @@ def test_recall_endpoint_supports_as_of_for_search_and_lean_context(client):
         "lean": False,
     }, headers=h).json()
     assert current["as_of"] is None
-    assert "Moonshot AI" in current["answer"]
+    assert current["status"] == "evidence_only" and any("Moonshot AI" in fact for fact in current["facts"])
 
     ctx = client.post("/v1/recall", json={
         "query": "Where does Wei work?",
         "lean": True,
+        "answer": True,
         "n_chunks": 0,
         "as_of": 1_700_864_000.0,
     }, headers=h).json()
@@ -849,6 +789,7 @@ def test_recall_endpoint_supports_as_of_for_search_and_lean_context(client):
     current_ctx = client.post("/v1/recall", json={
         "query": "Where does Wei work?",
         "lean": True,
+        "answer": True,
         "n_chunks": 0,
     }, headers=h).json()
     assert current_ctx["as_of"] is None
@@ -1122,7 +1063,7 @@ def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, pro
         for cutoff in ({"as_of": 200}, {"valid_at": 200}, {"known_at": known_at}):
             recall(lean=lean, **cutoff)
     assert memory.get_fact(fact.id).access_count == 0
-    assert recall(as_of=200)["full_tokens"] == recall(valid_at=200)["full_tokens"]
-    assert recall(valid_at=200, known_at=known_at)["full_tokens"] == 5
-    assert recall()["full_tokens"] > recall(valid_at=200)["full_tokens"]
+    assert recall(as_of=200, answer=True)["full_tokens"] == recall(valid_at=200, answer=True)["full_tokens"]
+    assert recall(valid_at=200, known_at=known_at, answer=True)["full_tokens"] == 5
+    assert recall(answer=True)["full_tokens"] > recall(valid_at=200, answer=True)["full_tokens"]
     assert memory.get_fact(fact.id).access_count > 0

@@ -88,6 +88,14 @@ def test_full_logical_backup_and_worker_resume(tmp_path, backup_environment):
             assert len(calls) >= 2
             prior_fact, = memory.history('Ada works', 'works_at')
             prior_edge, = memory.graph_relations(prior_fact.id)
+            from tests.test_profile_cache import model as profile_model
+            memory._processing.llm = profile_model()
+            memory.add_fact('user', 'likes', 'Synthetic restored tea', sensitive=False)
+            generated = memory.refresh_profile()
+            assert memory._processing.flush(operation_ids=(generated.operation_id,), timeout=3)['ok']
+            prior_profile = memory.profile()
+            unfinished_profile = memory.refresh_profile()
+            assert memory._processing.run_one(unfinished_profile.operation_id)
             with memory.dao.read_snapshot() as view:
                 revision = view.snapshot.core_revision
 
@@ -113,6 +121,11 @@ def test_full_logical_backup_and_worker_resume(tmp_path, backup_environment):
                 assert memory.graph_relations(prior_fact.id) == (prior_edge,)
                 assert memory.operation(complete).core_committed
                 assert memory.operation(pending).phase == 'embed'
+                assert memory.profile()['profile'] == prior_profile['profile']
+                resumed_profile = Memory(runtime, scope, llm=profile_model())
+                assert resumed_profile._processing.run_one(unfinished_profile.operation_id)
+                assert not resumed_profile._processing.llm.calls
+                assert memory.operation(unfinished_profile.operation_id).core_committed
                 with memory.dao.read_snapshot() as view:
                     assert view.snapshot.core_revision == revision
                 assert prior_fact.id in {fact.id for fact in memory.search('Ada works Synthetic Lab').facts}

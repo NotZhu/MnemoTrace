@@ -1,4 +1,5 @@
 import type { CategoriesSource, Category, ObjectKind } from '../types'
+import { CATEGORIES } from '../generated/memory-contract'
 
 export const CATEGORY_LABELS: Record<Category, string> = {
   personal_details: '个人信息', family: '家庭', professional_details: '职业',
@@ -7,7 +8,7 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   milestones: '里程碑', user_preferences: '偏好', misc: '其他',
 }
 
-export const CATEGORY_OPTIONS = Object.entries(CATEGORY_LABELS) as [Category, string][]
+export const CATEGORY_OPTIONS: [Category, string][] = CATEGORIES.map(category => [category, CATEGORY_LABELS[category]])
 export const CATEGORY_SOURCE_LABELS: Record<CategoriesSource, string> = {
   unset: '未设置', llm: '模型判断', user: '人工设置',
 }

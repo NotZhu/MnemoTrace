@@ -46,11 +46,12 @@ def test_keeps_the_conversation_and_drops_the_machinery():
 def test_short_confirmations_are_kept_and_tool_echoes_are_dropped():
     log = _cc([
         {"type": "user", "message": {"role": "user", "content": "ok"}},
-        {"type": "user", "message": {"role": "user", "content": "<tool_use_result>done</tool_use_result>"}},
+        {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "tool echo"}]}},
+        {"type": "user", "message": {"role": "user", "content": "<tool_use_result>quoted by a user"}},
         {"type": "user", "message": {"role": "user", "content": "My daughter started at Tsinghua this year."}},
     ])
     bodies = [m.content for m in parse_agent_session(log)[0].messages]
-    assert bodies == ["ok", "My daughter started at Tsinghua this year."]
+    assert bodies == ["ok", "<tool_use_result>quoted by a user", "My daughter started at Tsinghua this year."]
 
 
 def test_agent_message_identity_time_and_short_confirmation_reach_watcher(monkeypatch):
@@ -163,7 +164,7 @@ class TestWatcher:
         from mnemotrace.connectors import watch
 
         live = tmp_path / "live.jsonl"
-        live.write_text("x" * 4096)
+        live.write_text(_cc([{"type": "user", "message": {"content": "ok"}}]))
         monkeypatch.setattr(watch, "find_sessions", lambda **kw: [str(live)])
 
         now = os.path.getmtime(live) + 60           # 一分钟前写入
@@ -175,13 +176,13 @@ class TestWatcher:
         from mnemotrace.connectors import watch
 
         f = tmp_path / "done.jsonl"
-        f.write_text("y" * 4096)
+        f.write_text(_cc([{"type": "user", "message": {"content": "ok"}}]))
         monkeypatch.setattr(watch, "find_sessions", lambda **kw: [str(f)])
         later = os.path.getmtime(f) + 3600
 
         state = {"seen": {str(f): f.stat().st_size}}
         assert watch.pending_sessions(state, now=later, quiet_seconds=900) == []
-        f.write_text("y" * 8192)  # 会话又继续了
+        f.write_text(_cc([{"type": "user", "message": {"content": "A new synthetic turn"}}]))  # 会话又继续了
         assert watch.pending_sessions(state, now=later, quiet_seconds=900) == [str(f)]
 
 
@@ -189,7 +190,7 @@ def test_watcher_claims_only_durable_session_inputs(monkeypatch):
     from mnemotrace.connectors import watch
     from mnemotrace.connectors.base import ImportMessage, ImportSession
 
-    monkeypatch.setattr(watch, "load_sessions", lambda paths: [
+    monkeypatch.setattr(watch, "load_sessions", lambda paths, **kwargs: [
         ImportSession(session_id=paths[0], messages=[ImportMessage(content="Synthetic history")]),
     ])
     calls = []
@@ -497,3 +498,33 @@ def test_a_session_too_large_to_send_is_named_not_retried_forever():
 
     assert [r["session_id"] for r in oversized] == ["huge"]
     assert [r["session_id"] for b in batches for r in b] == ["small"]
+
+
+def test_watcher_parses_only_the_batch_and_remembers_empty_versions(tmp_path, monkeypatch):
+    from pathlib import Path
+    from mnemotrace.connectors import watch
+
+    empty_path, dialogue_path = [_quiet_file(tmp_path, f"{index}.jsonl") for index in range(2)]
+    dialogue = _cc([{"type": "user", "message": {"content": "ok"}}])
+    Path(dialogue_path).write_text(dialogue, encoding="utf-8")
+    monkeypatch.setattr(watch, "find_sessions", lambda **kwargs: [empty_path, dialogue_path])
+    load = watch.load_sessions
+    reads = []
+
+    def observe(paths, **kwargs):
+        reads.extend(paths)
+        return load(paths, **kwargs)
+
+    monkeypatch.setattr(watch, "load_sessions", observe)
+    monkeypatch.setattr(watch, "_post", lambda *args: {
+        "sessions": 1, "episodes": 1,
+        "results": [{"session_id": args[3]["sessions"][0]["session_id"], "source_ids": ["synthetic"]}],
+    })
+    args = _args(tmp_path, limit=1, claims=str(tmp_path / "claims.jsonl"))
+    assert watch.run_once(args)["episodes"] == 0
+    assert reads == [empty_path]
+    assert watch.run_once(args)["episodes"] == 1
+    assert reads == [empty_path, dialogue_path]
+    Path(empty_path).write_text(dialogue, encoding="utf-8")
+    assert watch.run_once(args)["episodes"] == 1
+    assert reads == [empty_path, dialogue_path, empty_path]

@@ -1,210 +1,75 @@
+import { RefreshCw } from 'lucide-react'
 
-
-import { CircleCheck, HelpCircle, Trash2, UserRound } from 'lucide-react'
-
-import { Card, CardTitle, ErrorState, PageHeader, Spinner, cx } from '../components/ui'
+import { Button, Card, CardTitle, ErrorState, PageHeader, Spinner } from '../components/ui'
 import { PageEmptyState } from '../components/PageEmptyState'
-import { toast } from '../components/Toast'
-import { useAddFact, useDeleteFact, useMemories, useStructuredProfile } from '../hooks/queries'
+import { useProfile, useRefreshProfile, useRetryOperation } from '../hooks/queries'
 import { copy as t } from '../lib/copy'
-import type { Evidence, ProfileItem } from '../types'
+import type { ProfileEntry, ProfileSection } from '../types'
+import { PROFILE_SECTIONS } from '../generated/memory-contract'
 
-const ICON_COLOR = 'text-brand-cyan'
-const REINFORCEMENT_THRESHOLDS = [0, 2, 5, 10, Infinity]
+const LABELS: Record<ProfileSection, string> = t.profile.sections
 
-export function ProfileTag({ text, e, tone = 'neutral' }: {
-  text: string
-  e: Evidence
-  tone?: 'positive' | 'negative' | 'neutral'
-}) {
-  const manual = e.kind === 'user'
-  const level = REINFORCEMENT_THRESHOLDS.findIndex(limit => e.reinforcement_count <= limit)
-  const polarity = tone === 'positive' ? t.profile.like : tone === 'negative' ? t.profile.dislike : ''
-  const hint = [polarity, t.profile.evidenceHint(manual, e.reinforcement_count, e.source_count)].filter(Boolean).join(' · ')
-
+export function ProfileTag({ entry }: { entry: ProfileEntry }) {
   return (
-    <span className="profile-tag-group" role="group" tabIndex={0} title={hint} aria-label={`${text}，${hint}`}>
-      <span className="profile-tag" data-manual={manual} data-tone={tone} data-reinforcement-level={level}>
-        {text}
-      </span>
-      {e.source_count > 0 && (
-        <span className="shrink-0 text-sm font-normal tabular-nums text-ghost" aria-label={`${t.profile.evidenceTitle}：${e.source_count}`}>
-          x{e.source_count}
+    <span className="inline-flex items-baseline gap-2">
+      <span className="text-sm leading-relaxed text-slate-100 whitespace-pre-wrap break-words">{entry.text}</span>
+      {entry.fact_count >= 2 && (
+        <span className="shrink-0 text-sm tabular-nums text-ghost"
+          title={`关联 ${entry.fact_count} 条事实`} aria-label={`关联 ${entry.fact_count} 条事实`}>
+          ×{entry.fact_count}
         </span>
       )}
     </span>
   )
 }
 
-function PrefChip({ it }: { it: ProfileItem }) {
-  return <ProfileTag text={it.item} e={it.evidence} tone={it.polarity === 'dislike' ? 'negative' : 'positive'} />
-}
-
 export default function Profile() {
-  const profile = useStructuredProfile()
-  const { data, isLoading } = profile
-  const memories = useMemories({ facts_limit: 240, episodes_limit: 0 })
-  const addFact = useAddFact()
-  const deleteFact = useDeleteFact()
-  const failed = [profile, memories].filter(query => query.isError)
-  const errorState = failed.length > 0 ? <ErrorState
-    message={[...new Set(failed.map(query => (query.error as Error).message))].join('；')}
-    onRetry={() => { failed.forEach(query => { void query.refetch() }) }}
-  /> : null
-
-  if (isLoading) return <Spinner label={t.profile.loading} />
-  if (!data) return errorState
-
-  const confirm = (it: ProfileItem) =>
-    addFact.mutate(
-      { subject: it.subject, predicate: it.predicate, object: it.object },
-      {
-        onSuccess: () => toast.success(t.profile.confirmed(it.item)),
-        onError: (e) => toast.error(String((e as Error).message)),
-      },
-    )
-
-  const dismiss = (it: ProfileItem) =>
-    deleteFact.mutate(it.fact_id, {
-      onSuccess: () => toast.success(t.profile.dismissed),
-      onError: (e) => toast.error(String((e as Error).message)),
-    })
-
-  const prefCats = Object.entries(data.preferences)
-  const empty = data.counts.basic + data.counts.preferences + data.counts.tentative + data.counts.habits === 0
+  const profile = useProfile()
+  const refresh = useRefreshProfile()
+  const retry = useRetryOperation()
+  const data = profile.data
+  const operationId = data?.operation_id
+  const state = data?.refresh_state
+  const running = ['pending', 'running', 'retry_wait'].includes(state ?? '') || refresh.isPending
+  const failed = state === 'failed'
+  const sections: [ProfileSection, ProfileEntry[]][] = data
+    ? PROFILE_SECTIONS.map(section => [section, data.profile[section] ?? []]) : []
+  const empty = sections.every(([, entries]) => entries.length === 0)
+  if (profile.isLoading) return <Spinner label="正在读取画像…" />
+  if (!data) return <ErrorState message={String(profile.error)} onRetry={() => { void profile.refetch() }} />
 
   return (
-    <div className={empty ? 'flex min-h-0 flex-1 flex-col' : 'space-y-6'}>
-      <PageHeader title={t.profile.title} />
-      {errorState}
-
-      {empty && (
-        <PageEmptyState title={t.profile.emptyTitle} hint={t.profile.emptyHint} icon={<UserRound className="h-6 w-6" />} />
-      )}
-
-      {/* 基本信息 */}
-      {data.basic.length > 0 && (
-        <Card>
-          <CardTitle>{t.profile.basicTitle}</CardTitle>
-          <div className="flex flex-wrap gap-x-6 gap-y-4">
-            {data.basic.map((b) => (
-              <div key={b.field} className="min-w-0 max-w-full">
-                <div className="text-xs text-ghost">{b.label}</div>
-                <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-2">
-                  <ProfileTag text={b.value} e={b.evidence} />
-                </div>
-                <HistoricalSlot factId={b.fact_id} facts={memories.data?.facts ?? []} />
-              </div>
-            ))}
+    <div className="space-y-6">
+      <PageHeader title="用户画像" />
+      {profile.isError && <ErrorState message={String(profile.error)} onRetry={() => { void profile.refetch() }} />}
+      {refresh.isError && <ErrorState message={String(refresh.error)} onRetry={() => refresh.mutate()} />}
+      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-1 text-sm text-ghost">
+            <p>{data.pending_fact_count} 条事实待更新</p>
+            <p>{data.updated_at === null ? '尚未生成画像' : `上次生成于 ${new Date(data.updated_at * 1000).toLocaleString()}`}</p>
+            {running && <p role="status">正在刷新画像…</p>}
+            {data.needs_refresh && !running && <p>画像有待更新</p>}
           </div>
-        </Card>
-      )}
-
-      {/* 按类别分组的偏好 */}
-      {prefCats.length > 0 && (
-        <Card>
-          <CardTitle>{t.profile.prefsTitle}</CardTitle>
-          <div className="space-y-4">
-            {prefCats.map(([cat, items]) => (
-              <div key={cat} className="min-w-0 rounded-2xl border border-line bg-ink-700/40 p-4">
-                <h3 className="mb-2 text-xs font-medium tracking-wider text-brand-cyan">{cat}</h3>
-                <div className="flex flex-wrap gap-2">
-                  {items.map((it) => (
-                    <PrefChip key={it.fact_id} it={it} />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
-
-      {/* 习惯 */}
-      {data.habits.length > 0 && (
-        <Card>
-          <CardTitle>{t.profile.habitsTitle}</CardTitle>
-          <ul className="flex flex-wrap gap-2">
-            {data.habits.map((h) => (
-              <li key={h.fact_id} className="inline-flex min-w-0 max-w-full items-center gap-1.5">
-                <ProfileTag text={h.text} e={h.evidence} />
-              </li>
-            ))}
+          <Button disabled={running} loading={refresh.isPending} onClick={() => refresh.mutate()}>
+            <RefreshCw className="h-4 w-4" />刷新画像
+          </Button>
+        </div>
+        {failed && <div className="mt-3 space-y-2">
+          <p role="alert" className="text-sm text-brand-rose">画像刷新失败（{data.refresh_error}），现有可用内容继续显示。</p>
+          <Button disabled={retry.isPending} onClick={() => operationId && retry.mutate(operationId)}>重试刷新</Button>
+        </div>}
+      </Card>
+      {empty && <PageEmptyState title={data.updated_at === null ? '尚未生成画像' : '当前没有可展示的画像条目'}
+        hint={data.updated_at === null ? '添加事实后，点击刷新画像生成。' : '可以补充事实后再次刷新画像。'} />}
+      {sections.filter(([, entries]) => entries.length > 0).map(([section, entries]) => (
+        <Card key={section}>
+          <CardTitle>{LABELS[section]}</CardTitle>
+          <ul className="space-y-3">
+            {entries.map((entry, index) => <li key={index}><ProfileTag entry={entry} /></li>)}
           </ul>
         </Card>
-      )}
-
-      {/* 待定项 —— L1→L2 的晋升门槛，仅展示 */}
-      {data.tentative.length > 0 && (
-        <Card>
-          <CardTitle hint={t.profile.tentativeHint}>
-            <span className="inline-flex items-center gap-2">
-              <span role="img" aria-label={t.profile.iconPending} title={t.profile.iconHints.pending} className="inline-flex shrink-0">
-                <HelpCircle aria-hidden="true" className={`h-[18px] w-[18px] ${ICON_COLOR}`} />
-              </span>
-              {t.profile.tentativeTitle(data.tentative.length)}
-            </span>
-          </CardTitle>
-          <p className="mb-3 text-sm text-ghost">
-            {t.profile.tentativeDescPre}
-            <span className="text-slate-200">{t.profile.tentativeDescEmph}</span>
-            {t.profile.tentativeDescPost}
-          </p>
-          <ul className="divide-y divide-line">
-            {data.tentative.map((it) => (
-              <li key={it.fact_id} className="flex flex-col gap-2 py-2.5 sm:flex-row sm:items-center sm:gap-3">
-                <span className={cx('inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium', it.polarity === 'like' ? 'text-brand-mint' : 'text-ghost line-through')}>
-                  {it.polarity === 'like' ? t.profile.like : t.profile.dislike}
-                </span>
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                  <PrefChip it={it} />
-                  <span className="text-xs text-ghost">· {it.category}</span>
-                </div>
-                <button
-                  onClick={() => confirm(it)}
-                  title={t.profile.iconHints.confirm}
-                  className={`inline-flex items-center gap-1 rounded-lg border border-brand-cyan/30 bg-transparent px-2.5 py-1 text-xs ${ICON_COLOR} transition hover:border-brand-cyan/50`}
-                >
-                  <CircleCheck aria-hidden="true" className="h-[18px] w-[18px]" /> {t.common.confirm}
-                </button>
-                <button
-                  onClick={() => dismiss(it)}
-                  className={`rounded-lg border border-line bg-transparent p-1.5 ${ICON_COLOR} transition hover:border-brand-cyan/50`}
-                  title={t.profile.iconHints.delete}
-                  aria-label={t.profile.deleteCandidate}
-                >
-                  <Trash2 className="h-[18px] w-[18px]" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
+      ))}
     </div>
-  )
-}
-
-function HistoricalSlot({ factId, facts }: { factId: string; facts: Array<{ id: string; subject: string; predicate: string; object: string; status: string; invalid_at: string | null }> }) {
-  const current = facts.find((f) => f.id === factId)
-  if (!current) return null
-  const old = facts.filter(
-    (f) =>
-      f.id !== current.id &&
-      f.status !== 'live' &&
-      f.subject === current.subject &&
-      f.predicate === current.predicate,
-  )
-  if (!old.length) return null
-  return (
-    <details className="mt-2">
-      <summary className="cursor-pointer text-[11px] text-brand-cyan">{t.profile.historicalValues}</summary>
-      <ul className="mt-1 space-y-1">
-        {old.slice(0, 4).map((f) => (
-          <li key={f.id} className="break-words text-[11px] text-ghost">
-            {f.object}
-            {f.invalid_at ? ` · ${f.invalid_at}` : ''}
-          </li>
-        ))}
-      </ul>
-    </details>
   )
 }

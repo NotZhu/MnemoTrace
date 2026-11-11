@@ -86,9 +86,9 @@ def test_parse_jsonl():
 
 
 def test_parse_transcript_role_lines_and_freeform():
-    tagged = "Alice: Hey there\nBob: Hi Alice\nhow are you?"
+    tagged = "User: Hey there\nAssistant: Hi Alice\nhow are you?"
     s = parse(tagged, format="transcript")[0]
-    assert [m.role for m in s.messages] == ["Alice", "Bob"]
+    assert [m.role for m in s.messages] == ["user", "assistant"]
     assert s.messages[1].content == "Hi Alice\nhow are you?"  # 续行被追加到上一条发言
 
     free = "Just some freeform notes.\nNo roles here."
@@ -99,8 +99,10 @@ def test_parse_transcript_role_lines_and_freeform():
 
 def test_to_epoch_forms():
     assert to_epoch(1700000000) == 1700000000.0
-    assert to_epoch(1700000000000) == 1700000000.0  # 毫秒被换算
-    assert to_epoch("2024-01-15") == to_epoch("2024-01-15T00:00:00Z")
+    assert to_epoch(1700000000000) is None
+    assert to_epoch(86_400_000, unit="ms") == 86_400.0
+    assert to_epoch("2024-01-15") is None
+    assert to_epoch("2024-01-15T08:00:00+08:00") == to_epoch("2024-01-15T00:00:00Z")
     assert to_epoch(None) is None and to_epoch("") is None
 
 
@@ -125,8 +127,8 @@ def test_timestamped_records_preserve_message_times_on_import():
     assert stats["sessions"] == 1 and stats["episodes"] == 2
     chain = mem.history("Wei", "works_at", user_id="u")
     assert sorted(f.valid_at for f in chain) == [1_700_000_000.0, 1_700_086_400.0]
-    assert "Tencent" in mem.as_of("Where does Wei work?", 1_700_000_001.0, user_id="u").answer()
-    assert "Moonshot AI" in mem.search("Where does Wei work?", user_id="u").answer()
+    assert "Tencent" in mem.as_of("Where does Wei work?", 1_700_000_001.0, user_id="u").top().object
+    assert "Moonshot AI" in mem.search("Where does Wei work?", user_id="u").top().object
 
 
 def test_import_messages_dict_sessions_coerce_iso_timestamps():
@@ -144,7 +146,7 @@ def test_import_messages_dict_sessions_coerce_iso_timestamps():
     fact = next(iter(mem.fact_store.values()))
     assert isinstance(fact.valid_at, float)
     assert fact.valid_at == to_epoch("2023-11-14T00:00:00Z")
-    assert "Tencent" in mem.search("Where does Wei work?", user_id="u").answer()
+    assert "Tencent" in mem.search("Where does Wei work?", user_id="u").top().object
 
 
 def test_import_messages_dict_sessions_preserve_message_times():
@@ -160,8 +162,8 @@ def test_import_messages_dict_sessions_preserve_message_times():
     assert stats["sessions"] == 1 and stats["episodes"] == 2
     chain = mem.history("Wei", "works_at", user_id="u")
     assert sorted(f.valid_at for f in chain) == [1_700_000_000.0, 1_702_592_000.0]
-    assert "Tencent" in mem.as_of("Where does Wei work?", 1_700_864_000.0, user_id="u").answer()
-    assert "Moonshot AI" in mem.search("Where does Wei work?", user_id="u").answer()
+    assert "Tencent" in mem.as_of("Where does Wei work?", 1_700_864_000.0, user_id="u").top().object
+    assert "Moonshot AI" in mem.search("Where does Wei work?", user_id="u").top().object
 
 
 def test_import_data_autosniff_preserves_unknown_time():
@@ -171,3 +173,20 @@ def test_import_data_autosniff_preserves_unknown_time():
     assert stats["episodes"] == 1
     ep = list(mem.episodes_doc.values())[0]
     assert ep.event_time is None and not ep.metadata.get("date")
+
+
+
+def test_transcript_without_explicit_roles_is_saved_verbatim_without_model():
+    from mnemotrace.memory_engine import MemoryEngine
+
+    memory = MemoryEngine()
+    original = "张三： 讨论季度计划\n  续行\n备注: 这是一份原始记录\n"
+    result = memory.import_data(original, format="transcript")
+    assert result["episodes"] == 1 and result["facts_added"] == 0
+    source, = memory.episodes_doc.values()
+    assert source.content == original and source.role == "document"
+
+
+def test_import_reads_explicit_millisecond_field_without_magnitude_guessing():
+    session, = parse([{"content": "synthetic", "timestamp_ms": 86_400_000}], format="records")
+    assert session.messages[0].event_time == 86_400

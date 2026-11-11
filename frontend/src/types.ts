@@ -1,11 +1,10 @@
 // 类型与 MnemoTrace 记忆服务器（mnemotrace/server/app.py）保持镜像。需与 API 同步更新。
+import type { Category, ProfileSection } from './generated/memory-contract'
+export type { Category, ProfileSection } from './generated/memory-contract'
 
 export type FactStatus = 'live' | 'superseded'
 export type FactSource = 'extracted' | 'user'
 
-export type Category = 'personal_details' | 'family' | 'professional_details' | 'sports' | 'travel'
-  | 'food' | 'music' | 'health' | 'technology' | 'hobbies' | 'fashion' | 'entertainment'
-  | 'milestones' | 'user_preferences' | 'misc'
 export type CategoriesSource = 'unset' | 'llm' | 'user'
 export type ObjectKind = 'entity' | 'literal' | 'unknown'
 export interface FactMetadata {
@@ -151,7 +150,6 @@ export interface MemoryDump {
   data_revision: string
   evaluated_at: number
   space_id: string
-  profile: string
   counts: MemoryCounts
   facts: MemoryFact[]
   fact_categories?: Category[]
@@ -269,6 +267,9 @@ export interface RememberResult extends Omit<ProcessingResult, 'status'> {
 
 export interface RecallResult {
   context: string
+  context_sections: { kind: string; text: string; space_id: string }[]
+  status: "answered" | "evidence_only" | "no_evidence"
+  answer_status?: "answered" | "model_not_configured" | "model_failed" | "no_evidence" | "empty"
   tokens_est: number // 精简检索上下文
   full_tokens?: number // 完整历史（full-context 基线）
   answer?: string // agent 基于这份记忆给出的答案（LLM 读取精简上下文）
@@ -312,7 +313,7 @@ export interface Policy {
   extract_instruction: string
   extract_system: string
   digest_system: string
-  persona_system: string
+  profile_system: string
 }
 
 export interface PolicyResponse {
@@ -321,45 +322,22 @@ export interface PolicyResponse {
 }
 
 // --- L2 结构化画像（feature ③）---
-export interface Evidence {
-  kind: 'user' | 'mentions' | 'reinforced'
-  source_count: number // 不同来源 Episode ID 的数量，与手动设定和访问强化状态无关。
-  reinforcement_count: number // 事实的 access_count；包括手动设定和多来源事实。
-}
 
-export interface ProfileBasic {
-  field: string
-  label: string
-  value: string
-  evidence: Evidence
-  source: FactSource
-  fact_id: string
-}
-
-export interface ProfileItem extends Pick<FactMetadata, 'categories' | 'categories_source'> {
-  item: string
-  polarity: 'like' | 'dislike'
-  category: string
-  evidence: Evidence
-  source: FactSource
-  fact_id: string
-  subject: string
-  predicate: string
-  object: string
-}
-
-export interface ProfileHabit {
+export interface ProfileEntry {
   text: string
-  evidence: Evidence
-  fact_id: string
+  fact_ids: string[]
+  fact_count: number
 }
 
-export interface StructuredProfile {
-  basic: ProfileBasic[]
-  preferences: Record<string, ProfileItem[]>
-  habits: ProfileHabit[]
-  tentative: ProfileItem[]
-  counts: { basic: number; preferences: number; tentative: number; habits: number }
+export interface ProfileResult {
+  profile: Record<ProfileSection, ProfileEntry[]>
+  cache_version: number
+  updated_at: number | null
+  pending_fact_count: number
+  needs_refresh: boolean
+  operation_id: string | null
+  refresh_state: string | null
+  refresh_error: string | null
 }
 
 export interface AuditFinding {
@@ -382,7 +360,7 @@ export interface AuditReport {
 
 export interface OperationResult {
   operation_id: string
-  kind: 'extract' | 'digest' | 'reembed' | 'graph' | 'conflicts' | 'outcomes'
+  kind: 'extract' | 'digest' | 'reembed' | 'graph' | 'profile' | 'conflicts' | 'outcomes'
   state: 'pending' | 'running' | 'retry_wait' | 'failed' | 'completed' | 'cancelled'
   phase: 'queued' | 'generate' | 'embed' | 'commit' | 'compensate' | 'done'
   stored_raw: boolean

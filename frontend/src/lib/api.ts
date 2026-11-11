@@ -24,7 +24,7 @@ import type { AuditReport,
   RememberResult,
   SessionReport,
   SessionsIndex,
-  StructuredProfile,
+  ProfileResult,
 } from '../types'
 
 // 默认同源（FastAPI 同时托管 SPA 与 API）。当 API 部署在其他位置时，用
@@ -177,6 +177,7 @@ export interface MemoriesQuery {
 }
 
 export interface RecallOptions {
+  answer?: boolean
   n_chunks?: number
   as_of?: number
   redact_sensitive?: boolean
@@ -285,7 +286,8 @@ export const api = {
   setFocus: (focus: Partial<Focus>) =>
     request<{ ok: boolean; focus: Focus }>('/v1/focus', { method: 'PUT', body: json(focus) }),
 
-  structuredProfile: () => request<StructuredProfile>('/v1/profile/structured'),
+  profile: () => request<ProfileResult>('/v1/profile'),
+  refreshProfile: () => request<OperationResult>('/v1/profile/refresh', { method: 'POST', body: '{}' }),
 
   policy: () => request<PolicyResponse>('/v1/policy'),
 

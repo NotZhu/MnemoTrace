@@ -1,8 +1,22 @@
-import type { GraphResponse, MemoryDump, MemoryListOptions, OutcomeKind, Category, CategoriesSource, ObjectKind } from '../src/types'
+import type { GraphResponse, MemoryDump, MemoryListOptions, OutcomeKind, Category, CategoriesSource, ObjectKind, ProfileSection } from '../src/types'
+import { CATEGORIES, PROFILE_SECTIONS } from '../src'
 import type { MnemoTraceClient } from '../src/client'
 
 declare const client: MnemoTraceClient
 const space = {spaceId: 'synthetic-space'}
+const category: Category = CATEGORIES[0]
+const profileSection: ProfileSection = PROFILE_SECTIONS[0]
+// @ts-expect-error generated profile names exclude unsupported sections
+const invalidProfileSection: ProfileSection = 'unsupported'
+client.profile(space).then(result => {
+  const count: number = result.pending_fact_count
+  const text: string | undefined = result.profile.communication_preferences[0]?.text
+  return [count, text]
+})
+client.refreshProfile(space).then(result => {
+  const operationId: string = result.operation_id
+  return operationId
+})
 client.rememberMessages([{message_id: 'm1', role: 'assistant', content: 'Synthetic', event_time: null}], {...space, sessionId: 's'})
 // @ts-expect-error dialogue requires a stable identity
 client.rememberMessages([{role: 'user', content: 'Synthetic'}], {...space, sessionId: 's'})

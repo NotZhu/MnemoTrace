@@ -10,7 +10,7 @@ class Config:
 
     # --- 检索数量与候选范围 ---
     top_k: int = 5  # 未单独指定数量时，混合检索默认返回的事实数上限
-    candidate_k: int = 24  # 当前未被检索流程使用，修改此值不会改变候选池
+    candidate_k: int = 24  # Deprecated. Retained for existing benchmark configuration snapshots.
     # 默认扫描用户的全部有效事实。开启后使用向量候选和查询实体的图邻居，可能漏掉
     # 词汇匹配强但向量相似度低的事实；速度取决于向量后端，调整前应评测召回和排序。
     ann_candidates: bool = False  # 启用有界向量候选路径
@@ -30,6 +30,10 @@ class Config:
     recency_tau_days: float = 45.0  # 新近度指数衰减的时间常数（天）；<= 0 时不衰减
     rrf_k: int = 60  # RRF 排名融合常数，控制不同排名之间的贡献差距
     abstain_threshold: float = 0.45  # 无属性匹配时，最佳语义相似度低于此值则拒答
+
+    # --- 显式画像刷新预算 ---
+    profile_max_input_chars: int = 48_000
+    profile_max_output_tokens: int = 4096
 
     # --- 事实抽取与整合 ---
     extraction_max_input_bytes: int = 16_384  # 系统与用户提示词 UTF-8 字节预算；不是模型精确 token 数
@@ -68,5 +72,5 @@ class Config:
 
     @classmethod
     def from_env(cls) -> Config:
-        """Apply the same deployment overrides at each task-processing entry point."""
+        """Return the shared application defaults. Deployment adapters load their own environment settings."""
         return cls()

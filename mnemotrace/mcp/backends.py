@@ -42,12 +42,14 @@ class Backend(Protocol):
         query: str,
         n_chunks: int = 6,
         lean: bool = True,
-
         as_of: float | None = None,
         redact_sensitive: bool = False,
         state: FactState = FactState.CURRENT,
         valid_at: float | None = None,
         known_at: float | None = None,
+        subject: str | None = None,
+        predicate: str | None = None,
+        answer: bool = False,
     ) -> dict: ...
     async def session_report(
         self,
@@ -69,6 +71,7 @@ class Backend(Protocol):
     async def audit(self, limit: int = 40) -> dict: ...
     async def agent_status(self, session_id: str | None = None) -> dict: ...
     async def profile(self) -> dict: ...
+    async def refresh_profile(self) -> dict: ...
     async def get_focus(self) -> dict: ...
     async def set_focus(
         self,
@@ -160,12 +163,14 @@ class LocalBackend:
         query: str,
         n_chunks: int = 6,
         lean: bool = True,
-
         as_of: float | None = None,
         redact_sensitive: bool = False,
         state: FactState = FactState.CURRENT,
         valid_at: float | None = None,
         known_at: float | None = None,
+        subject: str | None = None,
+        predicate: str | None = None,
+        answer: bool = False,
     ) -> dict:
         return await asyncio.to_thread(
             self.svc.recall,
@@ -175,6 +180,7 @@ class LocalBackend:
             n_chunks=n_chunks,
             as_of=as_of,
             redact_sensitive=redact_sensitive, state=state, valid_at=valid_at, known_at=known_at,
+            subject=subject, predicate=predicate, answer=answer,
         )
 
     async def session_report(
@@ -213,6 +219,9 @@ class LocalBackend:
 
     async def profile(self) -> dict:
         return await asyncio.to_thread(self.svc.profile, self.context)
+
+    async def refresh_profile(self) -> dict:
+        return await asyncio.to_thread(self.svc.refresh_profile, self.context)
 
     async def get_focus(self) -> dict:
         return await asyncio.to_thread(self.svc.get_focus, self.context)
@@ -388,15 +397,23 @@ class RemoteBackend:
         query: str,
         n_chunks: int = 6,
         lean: bool = True,
-
         as_of: float | None = None,
         redact_sensitive: bool = False,
         state: FactState = FactState.CURRENT,
         valid_at: float | None = None,
         known_at: float | None = None,
+        subject: str | None = None,
+        predicate: str | None = None,
+        answer: bool = False,
     ) -> dict:
         body = {"query": query, "lean": lean, "n_chunks": n_chunks, "state": state,
                 "valid_at": valid_at, "known_at": known_at}
+        if answer:
+            body["answer"] = True
+        if subject is not None:
+            body["subject"] = subject
+        if predicate is not None:
+            body["predicate"] = predicate
         if as_of is not None:
             body["as_of"] = as_of
         if redact_sensitive:
@@ -445,6 +462,9 @@ class RemoteBackend:
 
     async def profile(self) -> dict:
         return await self._get("/v1/profile")
+
+    async def refresh_profile(self) -> dict:
+        return await self._post("/v1/profile/refresh", {})
 
     async def get_focus(self) -> dict:
         return await self._get("/v1/focus")

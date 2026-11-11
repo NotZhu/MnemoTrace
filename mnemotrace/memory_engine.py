@@ -1,17 +1,17 @@
 """Offline algorithm engine for ingestion, consolidation, and retrieval."""
 from __future__ import annotations
 
-import re
 from copy import copy, deepcopy
+import time
 from typing import Callable, Optional
 
 from .config import Config
+from .focus import matches, selectors
 from .connectors.documents import document_inputs
 from .consolidate import reinforce
 from .consolidate.facts import FactWriter
 from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual
 from .consolidate.policy import POLICY_DEFAULTS
-from .consolidate.summarizer import ProfileBuilder
 from .embed import Embedder
 from .ingest import Ingestor
 from .llm import LLM
@@ -74,10 +74,6 @@ class MemoryEngine:
         except BaseException:
             self.close()
             raise
-        # 初始化用户画像构建器
-        self.profiles = ProfileBuilder()
-        # 初始化用户画像缓存
-        self._persona_cache: dict[str, str] = {}
         # 查询工作集：记录 lean_context 最近一次执行到事实组装时选出的事实，供检查。
         # 后续 lean_context 执行到此阶段时会覆盖它；该列表不写入快照。
         self.working_set: list[Fact] = []
@@ -86,7 +82,7 @@ class MemoryEngine:
         self.focus: dict[str, list[str]] = {"track": [], "mute": []}
         # 记忆策略：抽取指令及抽取、摘要、画像提示词；空提示词使用内置默认值。
         self.policy: dict[str, str] = {"extract_instruction": "", "extract_system": "",
-                                       "digest_system": "", "persona_system": ""}
+                                       "digest_system": "", "profile_system": ""}
         self._import_seen: set[str] = set()  # 已导入事件的指纹，用于重复导入去重
         self.conflicts: dict[str, Conflict] = {}  # 疑似冲突及其处理状态，按冲突 ID 保存
         self.cold_pages_out: dict[str, int] = {}  # 每个用户从热层换出到冷层的事实数
@@ -167,15 +163,18 @@ class MemoryEngine:
         内存 store 持有对象引用，但真实的向量后端在 upsert/get 时常会拷贝 payload。因此仅修改
         返回的 Fact 不够；每次语义编辑/失效化都必须显式把 payload 写回唯一一个层。
         """
-        in_cold = self.cold_store.get(fact.id) is not None
-        in_hot = self.fact_store.get(fact.id) is not None
-        if tier == "hot" or (tier == "existing" and not in_cold):
-            self.cold_store.delete(fact.id)
-            self.fact_store.upsert(fact.id, fact.embedding, fact)
-            return
-        if in_hot:
-            self.fact_store.delete(fact.id)
-        self.cold_store.upsert(fact.id, fact.embedding, fact)
+        with self._pipeline_lock:
+            from ._profile import sync
+            sync(self, {fact.id: fact})
+            in_cold = self.cold_store.get(fact.id) is not None
+            in_hot = self.fact_store.get(fact.id) is not None
+            if tier == "hot" or (tier == "existing" and not in_cold):
+                self.cold_store.delete(fact.id)
+                self.fact_store.upsert(fact.id, fact.embedding, fact)
+                return
+            if in_hot:
+                self.fact_store.delete(fact.id)
+            self.cold_store.upsert(fact.id, fact.embedding, fact)
 
     def _rewire(self) -> None:
         """重建处理组件，使其引用当前存储、嵌入器和配置。
@@ -187,6 +186,7 @@ class MemoryEngine:
         self.writer = FactWriter(self.fact_store, self.graph, self.embedder, self.config)
         self.retriever = HybridRetriever(self.fact_store, self.graph, self.embedder, self.config)
         self.cold_retriever = HybridRetriever(self.cold_store, self.graph, self.embedder, self.config)
+        self.retriever.track = self.cold_retriever.track = tuple(self.focus["track"])
     def reembed(self, embedder: Optional[Embedder] = None) -> dict[str, int]:
         """Regenerate the vectors in this in-memory instance."""
         if embedder is not None:
@@ -250,7 +250,6 @@ class MemoryEngine:
                             window['config'] = config_identity(self)
                         reset_attempts(window, 'embed_attempts', 'reembed', now())
 
-        self._persona_cache.clear()
         self._rewire()  # 检索器和事实提交器持有 embedder 引用，需要重新绑定。
         return counts
 
@@ -403,7 +402,22 @@ class MemoryEngine:
         if self._pipeline_closed:
             raise RuntimeError('Memory is closed; create a new instance')
         from ._pipeline import flush_memory
-        return flush_memory(self, user_id, session_id, timeout, retry_failed)
+        started = time.monotonic()
+        result = flush_memory(self, user_id, session_id, timeout, retry_failed)
+        if session_id is None:
+            from ._profile import flush
+            operation = flush(self, user_id, started + timeout, retry_failed)
+            if operation is not None:
+                state = operation.state.value
+                result["jobs"].append(dict(operation_id=operation.operation_id, operation=operation.kind.value,
+                                           state=state, phase=operation.phase.value, attempts=operation.attempts,
+                                           error_code=operation.error_code, next_attempt_at=operation.next_attempt_at))
+                result["counts"][state] += 1
+                if state not in {"completed", "failed"}:
+                    result.update(ok=False, status="timed_out")
+                elif state == "failed" and result["status"] != "timed_out":
+                    result.update(ok=False, status="failed")
+        return result
 
     def import_messages(self, sessions, user_id: str = 'default', consolidate: Optional[bool] = None,
                         generate_digests: bool = True, roles: bool = True, batch_size: int = 256,
@@ -428,8 +442,9 @@ class MemoryEngine:
         prior_digests = {e.id for e in self.episodes_doc.values() if e.digest}
         for sid, messages, record, extract in plans:
             if messages is None:
-                result = self._import_documents([record], user_id, consolidate, generate_digests, roles,
-                                                batch_size, base_time, dedupe)
+                verbatim = record.get('metadata', {}).get('verbatim') is True
+                result = self._import_documents([record], user_id, False if verbatim else consolidate,
+                                                generate_digests and not verbatim, roles, batch_size, base_time, dedupe)
                 for key in ('sessions', 'episodes', 'skipped', 'facts_added', 'digests'):
                     stats[key] += result.get(key, 0)
                 continue
@@ -525,17 +540,25 @@ class MemoryEngine:
         from .store._validation import validate_snapshot
 
         snapshot = validate_snapshot(snapshot)
-        user = user_id
+        with self._pipeline_lock:
+            return self._restore_snapshot(snapshot, user_id, dedupe)
 
+    def _restore_snapshot(self, snapshot, user, dedupe):
         # --- episodes：恢复无损带日期日志（仅 include_sensitive 导出中存在） ---
-        ep_seen = {ep.metadata.get('snapshot_source_id') for ep in self.episodes_doc.values()
-                   if ep.user_id == user and ep.metadata.get('snapshot_source_id')}
+        from .consolidate.pipeline import content_hash
+
+        def restored_id(kind, source_id):
+            return kind + '_import_' + content_hash([user, source_id])[:32]
+
+        episode_ids = {}
         eps_skipped = 0
         prepared_episodes: list[Episode] = []
         for row in snapshot["episodes"]:
             content = row["content"]
             session_id = row["session_id"]
-            if dedupe and row['id'] in ep_seen:
+            target_id = restored_id('ep', row['id'])
+            if dedupe and self.episodes_doc.get(target_id) is not None:
+                episode_ids[row['id']] = target_id
                 eps_skipped += 1
                 continue
             ep = Episode(content=content, user_id=user, session_id=session_id,
@@ -543,33 +566,30 @@ class MemoryEngine:
                          consolidated=True,  # 它的 fact 在下方恢复；绝不重新抽取
                          digest=row.get("digest", ""), coverage=row.get('coverage'), digest_coverage=row.get('digest_coverage'),
                          metadata={'snapshot_source_id': row['id']})
+            if "ingested_at" in row:
+                ep.ingested_at = row["ingested_at"]
+            if dedupe:
+                ep.id = target_id
+            episode_ids[row['id']] = ep.id
             ep.embedding = self._encode(content)
             if ep.digest:
                 ep.digest_embedding = self._encode(ep.digest)
             prepared_episodes.append(ep)
-            ep_seen.add(row['id'])
 
         # --- facts：同时恢复 live 与被取代的行，保留 valid/transaction 时间 ---
-        def fact_key(subject, predicate, obj, valid_at, was_held):
-            return (subject, predicate, obj, round(valid_at, 1) if valid_at is not None else None, was_held)
-
-        fact_seen = {fact_key(f.subject, f.predicate, f.object, f.valid_at,
-                              f.review_pending or f.approved_at is not None): f.id
-                     for f in self._all_facts(include_unpublished=True) if f.user_id == user}
         id_map: dict[str, str] = {}  # 旧快照 id -> 新 id，用于重连取代链
         staged: list[tuple[Fact, str | None]] = []
         facts_skipped = 0
         for row in snapshot["facts"]:
             s, p, o = row["subject"], row["predicate"], row["object"]
             valid_at = row["valid_at"]
-            key = fact_key(s, p, o, valid_at,
-                           row.get('review_pending', False) or row.get('approved_at') is not None)
-            if dedupe and key in fact_seen:
-                id_map[row["id"]] = fact_seen[key]
+            target_id = restored_id('ft', row['id'])
+            if dedupe and (self.fact_store.get(target_id) is not None or self.cold_store.get(target_id) is not None):
+                id_map[row['id']] = target_id
                 facts_skipped += 1
                 continue
             f = Fact(subject=s, predicate=p, object=o, user_id=user,
-                     text=row.get("text", ""), source=row["source"],
+                     text=row.get("text", ""), display=row.get("display", ""), source=row["source"],
                      source_roles=row.get("source_roles", []),
                      sensitive=row["sensitive"],
                      sensitive_override=row.get("sensitive_override", False),
@@ -580,13 +600,12 @@ class MemoryEngine:
                      valid_at=valid_at,
                      invalid_at=row["invalid_at"], created_at=row["created_at"],
                      expired_at=row["expired_at"], validity_revisions=row["validity_revisions"],
-                     # 来源 episode id：原样保留以保审计诚实——被引用的 episode 在这里拿到了新 id，
-                     # 这些字段记录的是该 fact 当初来自哪里。
-                     provenance=row["provenance"])
+                     provenance=[episode_ids.get(key, key) for key in row["provenance"]])
+            if dedupe:
+                f.id = target_id
             f.embedding = self._encode(f.text)
             id_map[row["id"]] = f.id
             staged.append((f, row["supersedes"]))
-            fact_seen[key] = f.id
         known_pairs = {item.pair_key for item in self.conflicts.values() if item.user_id == user}
         restored_conflicts = []
         for row in snapshot['conflicts']:
@@ -599,15 +618,18 @@ class MemoryEngine:
         for ep in prepared_episodes:
             self._sync_episode(ep)
         for f, old_sup in staged:
-            f.supersedes = id_map.get(old_sup) if old_sup else None
-            self.fact_store.upsert(f.id, f.embedding, f)
+            f.supersedes = id_map.get(old_sup)
+            if f.supersedes is None and dedupe and old_sup is not None:
+                prior_id = restored_id('ft', old_sup)
+                if self.fact_store.get(prior_id) is not None or self.cold_store.get(prior_id) is not None:
+                    f.supersedes = prior_id
+            self._upsert_fact(f, tier="hot")
             # add_fact 会把 fact.invalid_at 带到关系上，因此被取代的历史落库时就是已失效化的边
             # ——图的时间线在往返中得以保留。
             self.writer.graph_builder.add_fact(f)
 
         self.conflicts.update((conflict.id, conflict) for conflict in restored_conflicts)
         self._enforce_hot_limit()
-        self._persona_cache.clear()
         return {"format": "mnemotrace", "facts_restored": len(staged), "facts_skipped": facts_skipped,
                 "episodes_restored": len(prepared_episodes), "episodes_skipped": eps_skipped,
                 "malformed": 0}
@@ -619,26 +641,26 @@ class MemoryEngine:
                  cardinality: Cardinality = "unknown", retention: Retention = "unknown") -> Fact:
         """手动断言一条 fact。它被标记为 source='user'（权威）：冲突解决允许它取代同一槽位上
         任何抽取出的值，并且此后受到保护，不会被未来的自动覆盖改写。"""
-        if self._pipeline_broken:
-            raise RuntimeError('Memory checkpoint failed; create a new instance')
-        user = user_id
-        f = build_manual_fact(subject, predicate, object, user, valid_at, sensitive, categories, object_kind, cardinality, retention)
-        f.embedding = self._encode(f.text)
-        from .consolidate.pipeline import PipelineTasks
-        PipelineTasks(self, f.user_id).invalidate()
-        history = [x for x in self._all_facts() if x.slot == f.slot]
-        action, changed = reconcile_manual(f, history, now())
-        for old in changed:
-            self._upsert_fact(old, tier="hot")
-            self.writer.graph_builder.add_fact(old)
-        if changed:
-            self.graph.prune_orphan_entities()
-        if action != "duplicate":
-            self.fact_store.upsert(f.id, f.embedding, f)
-            self.writer.graph_builder.add_fact(f)
-        self._enforce_hot_limit()
-        self._persona_cache.clear()
-        return f
+        with self._pipeline_lock:
+            if self._pipeline_broken:
+                raise RuntimeError('Memory checkpoint failed; create a new instance')
+            user = user_id
+            f = build_manual_fact(subject, predicate, object, user, valid_at, sensitive, categories, object_kind, cardinality, retention)
+            f.embedding = self._encode(f.text)
+            from .consolidate.pipeline import PipelineTasks
+            PipelineTasks(self, f.user_id).invalidate()
+            history = [x for x in self._all_facts() if x.slot == f.slot]
+            action, changed = reconcile_manual(f, history, now())
+            for old in changed:
+                self._upsert_fact(old, tier="hot")
+                self.writer.graph_builder.add_fact(old)
+            if changed:
+                self.graph.prune_orphan_entities()
+            if action != "duplicate":
+                self._upsert_fact(f, tier="hot")
+                self.writer.graph_builder.add_fact(f)
+            self._enforce_hot_limit()
+            return changed[0] if action == "duplicate" else f
 
     def update_fact(self, fact_id: str, subject: Optional[str] = None, predicate: Optional[str] = None,
                     object: Optional[str] = None, sensitive: Optional[bool] = None,
@@ -648,80 +670,67 @@ class MemoryEngine:
         """实际修改 fact 内容时标记为用户手写（因此自动抽取不会把它改回去）。
         修改正文时默认标记敏感并清空分类；显式参数优先
         （用户的选择永远优先）。只修改元数据或回传未变的内容时，保留来源、有效状态与历史。"""
-        if self._pipeline_broken:
-            raise RuntimeError('Memory checkpoint failed; create a new instance')
-        f = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
-        if f is None or not f.is_published():
-            return None
-        edited = copy(f)
-        claim_changed = apply_manual_edit(edited, subject, predicate, object, sensitive, categories,
-                                          statement, object_kind, cardinality, retention)
-        projection_changed = claim_changed or edited.object_kind != f.object_kind
-        if claim_changed:
-            edited.embedding = self._encode(edited.text)
-            from .consolidate.pipeline import PipelineTasks
-            PipelineTasks(self, f.user_id).invalidate()
-        vars(f).update(vars(edited))
-        self._upsert_fact(f, tier="hot")
-        if projection_changed:
-            self.writer.graph_builder.add_fact(f)
-            self.graph.prune_orphan_entities()
-        self._persona_cache.clear()
-        return f
+        with self._pipeline_lock:
+            if self._pipeline_broken:
+                raise RuntimeError('Memory checkpoint failed; create a new instance')
+            f = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
+            if f is None or not f.is_published():
+                return None
+            edited = copy(f)
+            claim_changed = apply_manual_edit(edited, subject, predicate, object, sensitive, categories,
+                                              statement, object_kind, cardinality, retention)
+            projection_changed = claim_changed or edited.object_kind != f.object_kind
+            if claim_changed:
+                edited.embedding = self._encode(edited.text)
+                from .consolidate.pipeline import PipelineTasks
+                PipelineTasks(self, f.user_id).invalidate()
+            vars(f).update(vars(edited))
+            self._upsert_fact(f, tier="hot")
+            if projection_changed:
+                self.writer.graph_builder.add_fact(f)
+                self.graph.prune_orphan_entities()
+            return f
 
     def delete_fact(self, fact_id: str) -> bool:
         """被遗忘权：硬删除一条 fact（区别于保留历史的自动失效化）。这是用户主动发起的擦除，
         数据真的被移除——热层和冷层都删。"""
-        existed = self.fact_store.get(fact_id) is not None or self.cold_store.get(fact_id) is not None
-        if existed and self._pipeline_state:
-            from .consolidate.pipeline import PipelineTasks
+        with self._pipeline_lock:
+            existed = self.fact_store.get(fact_id) is not None or self.cold_store.get(fact_id) is not None
+            if existed and self._pipeline_state:
+                from .consolidate.pipeline import PipelineTasks
+                record = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
+                PipelineTasks(self, record.user_id).invalidate()
+            from ._profile import state, settings
+            from .profile import synchronize
             record = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
-            PipelineTasks(self, record.user_id).invalidate()
-        self.graph.delete_relations_for_fact(fact_id)
-        self.graph.prune_orphan_entities()
-        self.fact_store.delete(fact_id)
-        self.cold_store.delete(fact_id)
-        self._persona_cache.clear()
-        return existed
+            if record is not None:
+                synchronize(state(self, record.user_id, create=True), {fact_id: None}, settings(self))
+            self.graph.delete_relations_for_fact(fact_id)
+            self.graph.prune_orphan_entities()
+            self.fact_store.delete(fact_id)
+            self.cold_store.delete(fact_id)
+            return existed
 
     # --- 关注领域："关注点"定制（记忆应强调/抑制什么） ---
     def set_focus(self, track: Optional[list[str]] = None, mute: Optional[list[str]] = None) -> dict:
-        """定制记忆的优先级。真实生效，不只是个标签：
-          * `track` 主题获得显著度提升——显著度是一等检索评分信号 (AGENTS.md 「检索与模块」 w_sal)，
-            且豁免衰减/驱逐，因此被 track 的主题确实排名更高并留在热层。
-          * `mute` 主题从组装的读上下文（lean_context）和 persona 中被抑制。
-        传入 None 表示该列表不变；传入 [] 表示清空。"""
-        if track is not None:
-            self.focus["track"] = [t.strip() for t in track if t.strip()]
-        if mute is not None:
-            self.focus["mute"] = [m.strip() for m in mute if m.strip()]
-        self.apply_focus()
-        self._persona_cache.clear()
-        return self.get_focus()
+        """Update read-time tracking and muting selectors."""
+        with self._pipeline_lock:
+            updates = {key: [term.strip() for term in terms if term.strip()]
+                       for key, terms in (("track", track), ("mute", mute)) if terms is not None}
+            for terms in updates.values():
+                selectors(terms)
+            self.focus.update(updates)
+            self.retriever.track = self.cold_retriever.track = tuple(self.focus["track"])
+            from ._profile import sync_settings
+            sync_settings(self)
+            return self.get_focus()
 
     def get_focus(self) -> dict:
-        return {"track": list(self.focus.get("track", [])), "mute": list(self.focus.get("mute", []))}
+        return {key: list(self.focus[key]) for key in ("track", "mute")}
 
     @staticmethod
     def _matches(f: Fact, terms: list[str]) -> bool:
-        if not terms:
-            return False
-        hay = f.text.lower()
-        return any(t.lower() in hay for t in terms)
-
-    def apply_focus(self, boost: float = 0.5, cap: float = 5.0) -> int:
-        """给所有命中 track 主题的已存 fact 提升显著度，让用户声明的优先级确实排名更高并抵抗
-        衰减/驱逐。设上限，使反复编辑趋于饱和而非无限膨胀。返回被提升的 fact 数量。"""
-        track = self.focus.get("track", [])
-        if not track:
-            return 0
-        n = 0
-        for f in list(self.fact_store.values()) + list(self.cold_store.values()):
-            if self._matches(f, track):
-                f.salience = min(cap, f.salience + boost)
-                self._upsert_fact(f)
-                n += 1
-        return n
+        return matches(f.text, terms, f.categories)
 
     def graph_data(
         self,
@@ -797,14 +806,16 @@ class MemoryEngine:
         return {"policy": dict(self.policy), "defaults": dict(POLICY_DEFAULTS)}
 
     def set_policy(self, **fields: str) -> dict:
-        """更新策略字段（extract_instruction / extract_system / digest_system / persona_system）。
+        """更新策略字段（extract_instruction / extract_system / digest_system / profile_system）。
         空字符串清除覆盖项（回退到默认值）。后续流水线按新策略准备并校验输入。"""
-        for k, v in fields.items():
-            if k in self.policy and v is not None:
-                self.policy[k] = v
-        self._apply_policy()
-        self._persona_cache.clear()
-        return self.get_policy()
+        with self._pipeline_lock:
+            for k, v in fields.items():
+                if k in self.policy and v is not None:
+                    self.policy[k] = v
+            self._apply_policy()
+            from ._profile import sync_settings
+            sync_settings(self)
+            return self.get_policy()
 
     def _effective(self, key: str) -> str:
         """返回实际生效的策略字段值（用户覆盖或默认值）。"""
@@ -865,7 +876,6 @@ class MemoryEngine:
             self._upsert_fact(fact)
             self.writer.graph_builder.add_fact(fact)
         self.graph.prune_orphan_entities()
-        self._persona_cache.clear()
         c.status = 'dismissed' if keep == 'dismiss' else 'resolved'
         return True
 
@@ -899,6 +909,10 @@ class MemoryEngine:
         return self._event_candidates(query, user_id, as_of, k, max(k * 3, 30),
                                       digests_only=True, known_at=known_at)[:k]
 
+    def _source_muted(self, episode):
+        terms = self.focus["mute"]
+        return matches(episode.content, terms) or matches(episode.digest, terms)
+
     def _event_candidates(self, query, user_id, as_of, k, pool, *, digests_only=False,
                           known_at=None, start=None, end=None):
         from .retrieve.fusion import weighted_rrf
@@ -906,6 +920,7 @@ class MemoryEngine:
 
         def visible(ep):
             return (ep.user_id == user_id
+                    and not self._source_muted(ep)
                     and (known_at is None or ep.ingested_at <= known_at)
                     and (as_of is None or (ep.event_time is not None and ep.event_time <= as_of))
                     and (start is None or (ep.event_time is not None and ep.event_time >= start))
@@ -986,50 +1001,30 @@ class MemoryEngine:
             self._page_hot([f for f, _ in ranked])
         return ranked, diag
 
-    def structured_profile(self, user_id: str = "default") -> dict:
-        """L2 结构化 profile：把用户的 live fact 按 基本信息/偏好/习惯 分组，并为展示区分
-        "已确认"与"待确认"。这是只读的派生视图——从不过滤 fact store 或检索路径，因此召回
-        不受影响（search/lean_context 仍看到全部 fact）。"""
-        from .consolidate.structured import build_structured_profile
-        user = user_id
-        live = [f for f in self._all_facts() if f.user_id == user and f.is_live()]
-        return build_structured_profile(live)
+    def profile(self, user_id="default"):
+        from ._profile import state
+        from .profile import read
+        with self._pipeline_lock:
+            result = read(state(self, user_id), now())
+            operations = state(self, user_id).get("operations", {})
+            if operations:
+                operation = max(operations.values(), key=lambda op: op["sequence"])
+                result.update(operation_id=operation["operation_id"], refresh_state=operation["state"],
+                              refresh_error=operation["error_code"])
+            return result
 
-    def build_persona(self, user_id: str = "default") -> str:
-        """L3：由 live fact 合成的紧凑叙事式 profile（偏好/习惯/所有物）。"""
-        user = user_id
-        if user in self._persona_cache:
-            return self._persona_cache[user]
-        subject = "user"
-        mute = self.focus.get("mute", [])
-        live = [f for f in self._all_facts()
-                if f.user_id == user and f.is_live() and not self._matches(f, mute)]
-        persona = (self.profiles.narrative(subject, live, llm=self.llm,
-                                           system=self._effective("persona_system")) if live else "")
-        track = self.focus.get("track", [])
-        if track:  # 把用户声明的优先级呈现在 profile 中
-            line = "FOCUS AREAS (user asked to prioritize): " + ", ".join(track)
-            persona = (persona + "\n" + line).strip() if persona else line
-        self._persona_cache[user] = persona
-        return persona
+    def refresh_profile(self, user_id="default"):
+        from ._profile import enqueue
+        return enqueue(self, user_id)
 
-    def _persona_at(self, user: str, as_of: Optional[float]) -> str:
-        """供读上下文使用的叙事式 profile。当前 profile 会被缓存；as-of profile 不缓存，因为
-        时间戳是视图的一部分，不能把当前 fact 泄漏进过去上下文。"""
-        if as_of is None:
-            return self.build_persona(user)
-        subject = "user"
-        mute = self.focus.get("mute", [])
-        live = [
-            f for f in self._all_facts()
-            if f.user_id == user and f.is_live(as_of) and not self._matches(f, mute)
-        ]
-        return self.profiles.narrative(
-            subject,
-            live,
-            llm=self.llm,
-            system=self._effective("persona_system"),
-        ) if live else ""
+    def operation(self, operation_id, user_id="default"):
+        from ._profile import state, result
+        operation = state(self, user_id).get("operations", {}).get(operation_id)
+        return result(operation) if operation else None
+
+    def _profile_context(self, user, as_of):
+        from .profile import render
+        return render(self.profile(user)) if as_of is None else ""
 
     def _chain_facts_for_seeds(
         self,
@@ -1048,7 +1043,7 @@ class MemoryEngine:
         if not seeds:
             return []
         view_time = now() if as_of is None else as_of
-        facts = [f for f in self._all_facts() if f.user_id == user]
+        facts = [f for f in self._all_facts() if f.user_id == user and not self._matches(f, self.focus["mute"])]
         if redact_sensitive:
             facts = [f for f in facts if not getattr(f, "sensitive", False)]
         by_id = {f.id: f for f in facts}
@@ -1160,29 +1155,7 @@ class MemoryEngine:
             )
         return "FACT EVOLUTION (retrieved supersession chain):\n" + "\n".join(lines)
 
-    @staticmethod
-    def _snippet_for_evidence(content: str, needle: str, max_chars: int = 360) -> str:
-        """从已选定的事件表示中截取与查询/fact 匹配的行或句子。
-
-        输入已经执行摘要优先规则，此处不读取原文来补充被压缩的信息。
-        """
-        text = " ".join(content.split())
-        if len(text) <= max_chars:
-            return text
-        parts = [p.strip() for p in re.split(r"(?<=[.!?。！？])\s+|\n+", content) if p.strip()]
-        best = ""
-        best_score = -1
-        for part in parts:
-            score = len(overlap_terms(needle, part))
-            if score > best_score:
-                best = part
-                best_score = score
-        snippet = " ".join((best or text).split())
-        if len(snippet) <= max_chars:
-            return snippet
-        return snippet[: max_chars - 1].rstrip() + "…"
-
-    def _provenance_raw_block(
+    def _provenance_entries(
         self,
         facts: list[Fact],
         query: str,
@@ -1190,16 +1163,15 @@ class MemoryEngine:
         as_of: Optional[float],
         exclude_episode_ids: set[str],
         limit: int = 4,
-        snippet_chars: int = 360,
         redact_sensitive: bool = False,
-    ) -> str:
-        """为检索到的 fact 提供紧凑的来源 episode。
+    ) -> list[str]:
+        """为检索到的 fact 提供完整的来源表示。
 
         只使用被检索 fact 明确引用的事件表示，排除已渲染的事件，遵守 `as_of`。
-        有摘要时只截取摘要；在脱敏上下文中禁用该块，因为事件文本可能包含未被 fact 分类器识别的敏感内容。
+        脱敏时省略来源，因为事件文本可能含有敏感内容。
         """
         if redact_sensitive or not facts:
-            return ""
+            return []
         rows: list[str] = []
         seen_eps: set[str] = set(exclude_episode_ids)
         view_time = now() if as_of is None else as_of
@@ -1215,19 +1187,25 @@ class MemoryEngine:
                 ep = self.episodes_doc.get(ep_id)
                 if ep is None or ep.user_id != user or (ep.event_time is not None and ep.event_time > view_time):
                     continue
+                if self._source_muted(ep):
+                    continue
                 ep = event_evidence(ep)
                 seen_eps.add(ep_id)
-                needle = f"{query} {fact.text} {fact.subject} {fact.predicate} {fact.object}"
-                snippet = self._snippet_for_evidence(ep.text, needle, max_chars=snippet_chars)
                 date = ep.metadata.get("date") or fmt_date(ep.event_time)
                 rows.append(
                     f"- [{date}] (episode: {ep.id}; space: {ep.user_id}; session: {ep.session_id}; supports: "
-                    f"{fact.subject} {fact.predicate.replace('_', ' ')} {fact.object}) {snippet}"
+                    f"{fact.subject} {fact.predicate.replace('_', ' ')} {fact.object}) {ep.text}"
                 )
                 if len(rows) >= limit:
-                    return "PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):\n" + "\n".join(rows)
-        return "PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):\n" + "\n".join(rows) if rows else ""
+                    return rows
+        return rows
 
+
+    _PROVENANCE_HEADING = "PROVENANCE EVENT EVIDENCE (selected sources for retrieved facts):"
+
+    def _provenance_raw_block(self, facts, query, user, as_of, exclude_episode_ids):
+        rows = self._provenance_entries(facts, query, user, as_of, exclude_episode_ids)
+        return "\n".join([self._PROVENANCE_HEADING, *rows]) if rows else ""
 
     @staticmethod
     def _merge_promoted_chunks(promoted: list, retrieved: list, k: int) -> list:
@@ -1290,6 +1268,8 @@ class MemoryEngine:
                 ep = self.episodes_doc.get(ep_id)
                 if ep is None or ep.user_id != user or (ep.event_time is not None and ep.event_time > view_time):
                     continue
+                if self._source_muted(ep):
+                    continue
                 ep = event_evidence(ep)
                 ep_overlap = len(overlap_terms(query, ep.text)) if query else 0
                 support_overlap = len(overlap_terms(fact.text, ep.text))
@@ -1300,144 +1280,6 @@ class MemoryEngine:
                     scored[ep.id] = item
         ranked = sorted(scored.values(), key=lambda item: (-item[0], item[1], -item[2], item[3].id))
         return [ep for _, _, _, ep in ranked[:limit]]
-
-    @staticmethod
-    def _evidence_block_title(block: str) -> str:
-        return block.split("\n", 1)[0].rstrip(":：")
-
-    @classmethod
-    def _evidence_block_kind(cls, block: str) -> str:
-        title = cls._evidence_block_title(block)
-        if title.startswith("PROVENANCE EVENT"):
-            return "provenance"
-        if title.startswith("RELEVANT CONVERSATIONS"):
-            return "raw"
-        if title.startswith("GRAPH PATHS"):
-            return "graph"
-        if title.startswith("AGGREGATION"):
-            return "aggregation"
-        if title.startswith("DURATION"):
-            return "duration"
-        if title.startswith("FACT HISTORY"):
-            return "history"
-        if title.startswith("FACT EVOLUTION"):
-            return "evolution"
-        if title.startswith("CURRENT STATE"):
-            return "current_state"
-        if title.startswith("当前偏好记录（结构化）"):
-            return "preference"
-        if title.startswith("FACTS"):
-            return "facts"
-        if title.startswith("SESSION DIGESTS"):
-            return "digests"
-        if title.startswith("TIMELINE"):
-            return "timeline"
-        if title.startswith("USER PROFILE"):
-            return "profile"
-        return "other"
-
-    @staticmethod
-    def _fit_evidence_block(block: str, cap: int) -> str:
-        if cap <= 0:
-            return ""
-        if len(block) <= cap:
-            return block
-        title, _, body = block.partition("\n")
-        if cap <= len(title):
-            return title[:cap]
-        return (title + "\n" + body[: cap - len(title) - 1]).rstrip()
-
-    def _evidence_priority(self, kind: str) -> int:
-        score = {
-            "facts": 90,
-            "current_state": 88,
-            "provenance": 82,
-            "raw": 78,
-            "graph": 76,
-            "history": 75,
-            "evolution": 72,
-            "timeline": 68,
-            "aggregation": 66,
-            "duration": 66,
-            "preference": 66,
-            "digests": 58,
-            "profile": 38,
-            "other": 40,
-        }.get(kind, 40)
-        return score
-
-    def _evidence_block_cap(self, kind: str, budget: int) -> int:
-        ratio = {
-            "aggregation": 0.60,
-            "duration": 0.55,
-            "provenance": 0.55,
-            "raw": 0.55,
-            "graph": 0.45,
-            "history": 0.45,
-            "evolution": 0.42,
-            "facts": 0.42,
-            "timeline": 0.35,
-            "digests": 0.35,
-            "current_state": 0.35,
-            "preference": 0.35,
-            "profile": 0.18,
-            "other": 0.25,
-        }.get(kind, 0.25)
-        cap = int(max(96, budget * ratio))
-        return min(cap, budget)
-
-    def _fit_blocks_even(self, selected: list[str], budget: int) -> str:
-        if not selected or budget <= 0:
-            return ""
-        sep = "\n\n"
-        sep_chars = len(sep) * (len(selected) - 1)
-        if budget <= sep_chars:
-            return sep.join(block.split("\n", 1)[0] for block in selected)[:budget]
-        available = budget - sep_chars
-        quota, extra = divmod(available, len(selected))
-        fitted: list[str] = []
-        for i, block in enumerate(selected):
-            cap = quota + (1 if i < extra else 0)
-            fitted.append(self._fit_evidence_block(block, cap))
-        return sep.join(fitted)[:budget]
-
-    def _fit_blocks_by_evidence_budget(self, blocks: list[str], budget: int) -> str:
-        """面向精简读取路径的意图感知证据打包器。
-
-        旧回退逻辑把紧张的预算在块间均分，或从顶部直接截断，可能把宝贵的 token 花在 profile
-        文本上，却丢掉问题真正需要的 raw/provenance/graph 证据。这里按查询意图对证据类别排序，
-        给每类设上限，再按原有的可读顺序输出被选中的证据。
-        """
-        if not blocks or budget <= 0:
-            return ""
-        sep = "\n\n"
-        ranked = sorted(
-            enumerate(blocks),
-            key=lambda item: (-self._evidence_priority(self._evidence_block_kind(item[1])), item[0]),
-        )
-        selected: list[tuple[int, str]] = []
-        used = 0
-        for idx, block in ranked:
-            kind = self._evidence_block_kind(block)
-            priority = self._evidence_priority(kind)
-            sep_cost = len(sep) if selected else 0
-            remaining = budget - used - sep_cost
-            if remaining <= 0:
-                break
-            if selected and remaining < 120 and priority < 100:
-                continue
-            cap = min(len(block), self._evidence_block_cap(kind, budget), remaining)
-            fitted = self._fit_evidence_block(block, cap)
-            if not fitted:
-                continue
-            min_title = self._evidence_block_title(block)
-            if selected and len(fitted) < min(len(min_title), max(24, remaining)):
-                continue
-            selected.append((idx, fitted))
-            used += sep_cost + len(fitted)
-        if not selected:
-            return self._fit_evidence_block(blocks[0], budget)
-        return sep.join(block for _, block in sorted(selected, key=lambda item: item[0]))[:budget]
 
     def lean_context(
         self,
@@ -1470,7 +1312,10 @@ class MemoryEngine:
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
         user = user_id
-        blocks: list[str] = []
+        from .retrieve.context import pack_sections, render_sections
+
+        groups = []
+        profile_groups = []
         visible = None
         known_at = None
         if facts is not None:
@@ -1482,10 +1327,9 @@ class MemoryEngine:
             as_of, known_at = facts.valid_at, facts.known_at
             redact_sensitive = redact_sensitive or facts.exclude_sensitive
             visible = tuple(self._structured_facts(user, replace(facts, exclude_sensitive=redact_sensitive)))
-        if redact_sensitive:
-            # 自由文本层（persona、来源摘要、原始 chunk）可能把敏感内容揉进散文。因此
-            # 脱敏上下文刻意只含 fact，且在 fact 级敏感性分类之后，使共享/第三方注入有清晰的
-            # 隐私边界。
+        restricted = facts is not None and bool(facts.subject or facts.predicate or facts.categories or facts.source_ids)
+        if redact_sensitive or restricted:
+            # Redacted or explicitly scoped reads exclude unconstrained source search.
             n_digests = 0
             n_chunks = 0
             cascade = False
@@ -1495,13 +1339,11 @@ class MemoryEngine:
             from .retrieve.agentic import AgenticRetriever
             queries += AgenticRetriever(self, self.llm)._subqueries(query)
 
-        # L3 persona 是自由文本合成，可能揉入敏感 fact；脱敏上下文只允许结构化 fact，因此整个
-        # 丢弃。
-        if persona and not redact_sensitive and facts is None:
-            p = self._persona_at(user, as_of)
-            if p:
-                label = "USER PROFILE" if as_of is None else f"USER PROFILE (as of {fmt_date(as_of)})"
-                blocks.append(f"{label}:\n{p}")
+        # 画像缓存仅由非敏感本人事实生成；历史及结构化条件读取使用对应事实证据。
+        if (persona and as_of is None and not redact_sensitive and not restricted
+                and (facts is None or facts.is_current_view)):
+            for section, entries in self.profile(user)["profile"].items():
+                profile_groups.append(("profile", f"USER PROFILE: {section}", ["- " + item["text"] for item in entries]))
 
 
         # L1 fact：对每个（子）查询做 hybrid 检索后取并集；再从查询实体做 n-hop 图扩展。
@@ -1536,15 +1378,15 @@ class MemoryEngine:
                 for fact in all_facts:
                     self._reinforce_fact(fact)
             by_date = sorted(all_facts, key=lambda f: time_key(f.valid_at), reverse=True)  # 最新在前（更新优先）
-            fl = "\n".join(f"- [{fmt_date(f.valid_at)}] {f.text}" for f in by_date)
+            fl = [f"- [{fmt_date(f.valid_at)}] {f.text}" for f in by_date]
             state = "current" if facts is None else facts.state.value
-            blocks.append(f"FACTS ({state}, dated):\n{fl}")
+            groups.append(("facts", f"FACTS ({state}, dated):", fl))
             # TIMELINE：同样的 fact 按旧->新排列并显式留出间隔，使"最早/最近/间隔多久"能直接
             # 从顺序读出，日期算术为模型铺好而不是留给心算（时间类问题的主要失败模式）。
             if timeline:
                 chrono = sorted(all_facts, key=lambda f: time_key(f.valid_at))
-                tl = "\n".join(f"- {fmt_date(f.valid_at)}: {f.text}" for f in chrono)
-                blocks.append(f"TIMELINE (oldest to newest — use for ordering and durations):\n{tl}")
+                tl = [f"- {fmt_date(f.valid_at)}: {f.text}" for f in chrono]
+                groups.append(("timeline", "TIMELINE (oldest to newest — use for ordering and durations):", tl))
             if self.config.chain_evidence and facts is None:
                 evo = self._fact_evolution_block(
                     all_facts,
@@ -1555,7 +1397,8 @@ class MemoryEngine:
                     redact_sensitive=redact_sensitive,
                 )
                 if evo:
-                    blocks.append(evo)
+                    heading, _, body = evo.partition("\n")
+                    groups.append(("evolution", heading, [body]))
 
         provenance_facts = list(all_facts)
         if self.config.chain_evidence and all_facts and facts is None:
@@ -1627,21 +1470,21 @@ class MemoryEngine:
 
         if digests:
             chrono = sorted(digests, key=lambda e: time_key(e.event_time))
-            sm = "\n".join(
+            sm = list(
                 f"- [{e.metadata.get('date') or fmt_date(e.event_time)}] (episode: {e.id}; space: {e.user_id}) {e.text}" for e in chrono
             )
-            blocks.append(f"SESSION DIGESTS (relevant, chronological):\n{sm}")
+            groups.append(("digests", "SESSION DIGESTS (relevant, chronological):", sm))
 
         if detail_eps:
-            chunks = "\n\n".join(
+            chunks = list(
                 f"原始记录时间：{e.metadata.get('date') or fmt_date(e.event_time)}\n"
                 f"会话：{e.session_id}\n"
                 f"事件：{e.id}\n空间：{e.user_id}\n表示：{e.representation}; partial={e.partial}; role={e.role}\n记录内容：{e.text}" for e in detail_eps
             )
-            blocks.append(f"RELEVANT CONVERSATIONS (full detail):\n{chunks}")
+            groups.append(("sources", "RELEVANT CONVERSATIONS (full detail):", chunks))
 
         if self.config.provenance_evidence and facts is None:
-            raw_prov = self._provenance_raw_block(
+            provenance_entries = self._provenance_entries(
                 provenance_facts,
                 query,
                 user,
@@ -1649,23 +1492,16 @@ class MemoryEngine:
                 exclude_episode_ids=detail_ids,
                 redact_sensitive=redact_sensitive,
             )
-            if raw_prov:
-                blocks.append(raw_prov)
+            if provenance_entries:
+                provenance = ("provenance", self._PROVENANCE_HEADING, provenance_entries)
+                # Reserve room for source evidence before lower-priority facts.
+                if self.config.evidence_budgeting and groups and groups[0][0] == "facts":
+                    groups.insert(0, provenance)
+                else:
+                    groups.append(provenance)
 
-        assembled = "\n\n".join(blocks)
-        if char_budget == 60_000:
-            full_chars = sum(len(event_evidence(ep).text) for ep in self.episodes_doc.values() if ep.user_id == user)
-            if full_chars:
-                # 极小的历史仍需要足够空间容纳 profile + fact + 一个 chunk；否则均分块适配器
-                # 可能恰好在约束所在处截断持久的项目规则。
-                char_budget = min(char_budget, max(2048, full_chars * 3 - 1))
-            if len(assembled) > char_budget:
-                if self.config.evidence_budgeting:
-                    return self._fit_blocks_by_evidence_budget(blocks, char_budget)
-                return self._fit_blocks_even(blocks, char_budget)
-        elif len(assembled) > char_budget and self.config.evidence_budgeting:
-            return self._fit_blocks_by_evidence_budget(blocks, char_budget)
-        return assembled[:char_budget]
+        sections, _ = pack_sections(groups + profile_groups, char_budget, user)
+        return render_sections(sections)
 
     # --- 读路径 ---
     def _structured_facts(self, user_id, scope):
@@ -1756,6 +1592,22 @@ class MemoryEngine:
         scope = facts if facts is not None else FactQuery(valid_at=as_of, known_at=as_of)
         if not isinstance(scope, FactQuery) or scope.after_id is not None or (facts is not None and as_of is not None):
             raise ValueError('Expected structured fact conditions or as_of')
+        def supporting_sources(rows):
+            if scope.exclude_sensitive:
+                return ()
+            ids = dict.fromkeys(key for fact in rows for key in fact.provenance
+                                if not scope.source_ids or key in scope.source_ids)
+            return tuple(event_evidence(ep) for key in ids if (ep := self.episodes_doc.get(key)) is not None
+                         and ep.user_id == user and not self._source_muted(ep)
+                         and (scope.valid_at is None or ep.event_time is not None and ep.event_time <= scope.valid_at)
+                         and (scope.known_at is None or ep.ingested_at <= scope.known_at))
+
+        if scope.subject is not None and scope.predicate is not None:
+            from .retrieve.answers import slot_result
+            result = slot_result(query, list(self._structured_facts(user, scope)))
+            result.facts = result.facts[:top_k or self.config.top_k]
+            result.sources = supporting_sources(result.facts)
+            return result
         if facts is not None or self.focus.get("mute"):
             candidates = self._structured_facts(user, scope)
             ranked, diag = self.retriever.retrieve(query, user, scope.valid_at, top_k, candidates=candidates)
@@ -1772,14 +1624,23 @@ class MemoryEngine:
                 cold, cold_diag = self._retrieve_cold(query, user, as_of, top_k)
                 cold_facts = [fact for fact, _ in cold]
                 if cold_facts and not self._should_abstain(query, cold_facts, cold_diag):
-                    return SearchResult(query, cold_facts, [score for _, score in cold], via="cold")
-            fallback = self._digest_fallback(query, user, as_of=as_of) if facts is None else None
-            return fallback or SearchResult(query, via="abstain", abstained=True)
+                    return SearchResult(query, cold_facts, [score for _, score in cold], via="cold",
+                                        sources=supporting_sources(cold_facts))
+            if not (scope.exclude_sensitive or scope.subject or scope.predicate or scope.categories or scope.source_ids):
+                fallback = self._digest_fallback(query, user, as_of=scope.valid_at, known_at=scope.known_at)
+                if fallback:
+                    return fallback
+                sources = tuple(ep for ep in self.retrieve_episodes(
+                    query, user, k=top_k or self.config.top_k, as_of=scope.valid_at, known_at=scope.known_at
+                ) if not ep.derived and digest_match(query, ep.text))
+                if sources:
+                    return SearchResult(query, via="text", sources=sources)
+            return SearchResult(query, via="abstain", abstained=True)
 
         scores = [score for _, score in ranked]
         if via != "cold" and scope.is_current_view:
             self._reinforce_fact(matched[0])
-        return SearchResult(query=query, facts=matched, scores=scores, via=via)
+        return SearchResult(query=query, facts=matched, scores=scores, via=via, sources=supporting_sources(matched))
 
     def as_of(self, query: str, when: float, user_id: str = "default", top_k: Optional[int] = None) -> SearchResult:
         """回答"在 `when` 时刻我们认为什么是真的？"——双时间轴时间点查询。"""
@@ -1857,7 +1718,11 @@ class MemoryEngine:
             if hypo.strip():
                 search_query = f"{query}\n{hypo.strip()}"
 
-        ranked, _ = self.retriever.retrieve(search_query, user, as_of, top_k)
+        candidates = None
+        if self.focus["mute"]:
+            from .store.contracts import FactQuery
+            candidates = self._structured_facts(user, FactQuery(valid_at=as_of, known_at=as_of))
+        ranked, _ = self.retriever.retrieve(search_query, user, as_of, top_k, candidates=candidates)
         # 最新在前：对知识更新类问题，LLM 应在顶部看到最新 fact（如新工作、新城市）——并信任
         # 它甚于列表下方更旧的 fact。
         ranked_by_date = sorted(ranked, key=lambda x: time_key(x[0].valid_at), reverse=True)
@@ -1962,7 +1827,8 @@ class MemoryEngine:
     def _graph_related_facts(self, query: str, user: str, as_of: Optional[float], limit: int = 8) -> list[Fact]:
         if not self.config.graph_proximity:
             return []
-        live = [f for f in self._all_facts() if f.user_id == user and f.is_live(as_of)]
+        live = [f for f in self._all_facts() if f.user_id == user and f.is_live(as_of)
+                and not self._matches(f, self.focus["mute"])]
         if not live:
             return []
         graph_scores, _ = self.retriever._graph_scores(query, user, live, as_of)
@@ -1981,6 +1847,7 @@ class MemoryEngine:
             facts = [
                 f for f in self._all_facts()
                 if f.user_id == user and f.subject.lower() == ent.name.lower()
+                and not self._matches(f, self.focus["mute"])
             ]
             if not facts:
                 continue
@@ -2001,13 +1868,6 @@ class MemoryEngine:
         user = user_id
         return history(self._all_facts(), user, subject, predicate)
 
-    def profile(self, user_id: str = "default") -> dict[str, str]:
-        if self._pipeline_broken:
-            raise RuntimeError('Memory checkpoint failed; create a new instance')
-        subject = "user"
-        live = [f for f in self.fact_store.values() if f.user_id == user_id and f.is_live()]
-        return self.profiles.build(subject, live)
-
     # --- 内部实现 ---
     def _should_abstain(self, query: str, facts: list[Fact], diag: dict) -> bool:
         """Require a complete attribute match, object evidence or sufficient semantic similarity."""
@@ -2019,13 +1879,14 @@ class MemoryEngine:
         query: str,
         user_id: str,
         as_of: Optional[float] = None,
+        known_at: Optional[float] = None,
     ) -> Optional[SearchResult]:
         """Surface a source-backed digest covering all informative query terms."""
         if not self.config.digest_fallback:
             return None
         candidates: list[tuple[int, int, float, EventEvidence, str]] = []
         k = max(1, int(getattr(self.config, "digest_fallback_k", 6) or 6))
-        for ep in self.retrieve_digests(query, user_id, k=k, as_of=as_of):
+        for ep in self.retrieve_digests(query, user_id, k=k, as_of=as_of, known_at=known_at):
             text = ep.text.strip()
             if not text:
                 continue
@@ -2034,6 +1895,5 @@ class MemoryEngine:
                 candidates.append((exact, len(overlap_terms(query, text)), time_key(ep.event_time), ep, text))
         if candidates:
             _, _, _, ep, text = max(candidates, key=lambda row: (row[0], row[1], row[2]))
-            dated = f"[{ep.metadata.get('date') or fmt_date(ep.event_time)}] (episode: {ep.id}; space: {ep.user_id}; session: {ep.session_id}) {text}"
-            return SearchResult(query=query, via="digest", _answer=dated)
+            return SearchResult(query=query, via="digest", sources=(ep,))
         return None

@@ -79,7 +79,7 @@ def run_demo(memory: Memory) -> None:
         "What is the capital of France?",  # 记忆中没有 -> 拒答
     ]:
         r = memory.search(q)
-        print(f"   [{r.via:9}] {q}\n              -> {r.answer()!r}")
+        print(f"   [{r.via:9}] {q}\n              -> {[fact.text for fact in r.facts]!r}")
 
     print("\n== 记忆更新：Wei 的工作单位历史 ==")
     for f in memory.history("user", "works_at"):

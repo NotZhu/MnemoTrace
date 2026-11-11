@@ -46,9 +46,9 @@ export function Timeline({ facts }: { facts: MemoryFact[] }) {
                   {f.source === 'user' && (
                     <span
                       className="fact-blue-tag shrink-0 text-xs"
-                      title={t.profile.iconHints.user}
+                      title={t.facts.manualHint}
                     >
-                      {t.profile.evidenceUser}
+                      {t.facts.manualLabel}
                     </span>
                   )}
                   {f.supersedes && (

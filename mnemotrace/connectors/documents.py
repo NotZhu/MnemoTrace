@@ -97,7 +97,8 @@ def document_inputs(sessions, roles=True, base_time=None):
             session = ImportSession(session_id=value['session_id'], title=value.get('title', ''),
                 event_time=to_epoch(value.get('event_time')), metadata=dict(value.get('metadata', {})),
                 messages=[ImportMessage(content=m['content'], role=m.get('role', 'document'), event_time=to_epoch(m.get('event_time'))) for m in value['messages']])
-        content = session.to_text(roles=roles)
+        content = ("\n".join(m.content for m in session.messages) if session.metadata.get("verbatim") is True
+                   else session.to_text(roles=roles))
         if not content.strip():
             continue
         stamp = session.start_time()

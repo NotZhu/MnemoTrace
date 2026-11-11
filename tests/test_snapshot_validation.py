@@ -116,8 +116,8 @@ def test_migration_preserves_source_history_and_target_settings():
     fact = next(f for f in mem._all_facts() if f.object == "SyntheticCo")
     assert fact.id != "ft_source" and fact.user_id == "target"
     assert fact.valid_at == 0 and fact.created_at == -1
-    assert fact.source == "user" and fact.provenance == ["ep_source"]
     ep = mem.episodes_doc.values()[0]
+    assert fact.source == "user" and fact.provenance == [ep.id]
     assert ep.id != "ep_source" and ep.event_time == 0 and ep.consolidated
     after = contents(mem)
     for key in ("focus", "policy", "aliases", "import_seen"):

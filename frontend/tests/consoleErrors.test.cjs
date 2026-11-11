@@ -15,10 +15,10 @@ function setup(pageName) {
   }).outputFiles[0].text
   const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', display: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', categories: ['food'], categories_source: 'llm', object_kind: 'literal' }
   const results = {
-    usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', digest_system: 'synthetic', persona_system: 'synthetic' } } },
+    usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', digest_system: 'synthetic', profile_system: 'synthetic' } } },
     useFocus: { data: { track: ['synthetic'], mute: [] } },
     useMemoryPages: { data: { facts: [fact], episodes: [], facts_page: { total: 1 }, fact_categories: [] } },
-    useMemories: {}, useStructuredProfile: {},
+    useMemories: {}, useProfile: {}, useRecall: {},
     useAudit: { data: { checked: { facts: 1, entities: 0 }, total_findings: 1, by_kind: { missing_edge: 1 }, findings: [{ kind: 'missing_edge', fact_id: 'synthetic-fact' }] } },
     useSessions: { data: { sessions: [] } }, useHealth: { data: { ready: true } },
     useAgentStatus: { data: { user: 'synthetic', counts: { facts_live: 1 }, session: { episodes: 1, episodes_pending: 0 } } },
@@ -221,12 +221,12 @@ test('Dashboard 首次全部失败只显示一条错误，一次重试三个失�
   const s = setup('Dashboard')
   s.results.useMemories = params => ({ isError: true, error: new Error('请求失败 (500)'),
     refetch: () => s.retries.push(params.kind === 'outcomes' ? 'outcomes' : 'memories') })
-  s.results.useStructuredProfile = { isError: true, error: new Error('请求失败 (500)') }
+  s.results.useProfile = { isError: true, error: new Error('请求失败 (500)') }
   const errors = s.nodes().filter(n => n.type === 'ErrorState')
   assert.equal(errors.length, 1)
   assert.equal(errors[0].props.message, '请求失败 (500)')
   errors[0].props.onRetry()
-  assert.deepEqual(s.retries, ['memories', 'outcomes', 'useStructuredProfile'])
+  assert.deepEqual(s.retries, ['memories', 'outcomes', 'useProfile'])
 })
 
 test('Dashboard 辅助请求失败可重试，后台主请求失败不销毁输入草稿', () => {
@@ -234,36 +234,68 @@ test('Dashboard 辅助请求失败可重试，后台主请求失败不销毁输�
   s.results.useMemories = params => params.kind === 'outcomes'
     ? { isError: true, error: new Error('synthetic outcomes failure'), refetch: () => s.retries.push('outcomes') }
     : { data: { counts: { facts_live: 1, facts_outcomes: 0, facts_superseded: 0, episodes: 0 } } }
-  s.results.useStructuredProfile = { isError: true, error: new Error('synthetic profile failure') }
+  s.results.useProfile = { isError: true, error: new Error('synthetic profile failure') }
   s.find(n => n.type === 'textarea').props.onChange({ target: { value: 'synthetic dashboard draft' } })
   const errors = s.nodes().filter(n => n.type === 'ErrorState')
   assert.equal(errors.length, 1)
   assert.match(errors[0].props.message, /synthetic outcomes failure/)
   assert.match(errors[0].props.message, /synthetic profile failure/)
   errors[0].props.onRetry()
-  assert.deepEqual(s.retries, ['outcomes', 'useStructuredProfile'])
+  assert.deepEqual(s.retries, ['outcomes', 'useProfile'])
   const previous = s.results.useMemories
   s.results.useMemories = params => ({ ...previous(params), isError: true, error: new Error('synthetic refresh failure') })
   assert.ok(s.find(n => n.type === 'textarea' && n.props.value === 'synthetic dashboard draft'))
   assert.equal(s.nodes().filter(n => n.type === 'ErrorState').length, 1)
 })
 
-test('Profile 主请求或辅助请求失败均可见，并只重试失败请求', () => {
+test('Profile 缓存读取失败提供独立重试', () => {
   const s = setup('Profile')
-  const profile = { basic: [], preferences: {}, habits: [], tentative: [], counts: { basic: 0, preferences: 0, habits: 0, tentative: 0 } }
-  s.results.useStructuredProfile = { data: profile }
-  s.results.useMemories = { isError: true, error: new Error('synthetic memories failure') }
-  let errors = s.nodes().filter(n => n.type === 'ErrorState')
-  assert.equal(errors.length, 1)
-  errors[0].props.onRetry()
-  assert.deepEqual(s.retries, ['useMemories'])
-  s.results.useStructuredProfile = { isError: true, error: new Error('请求失败 (500)') }
-  s.results.useMemories = { isError: true, error: new Error('请求失败 (500)') }
-  errors = s.nodes().filter(n => n.type === 'ErrorState')
-  assert.equal(errors.length, 1)
-  assert.equal(errors[0].props.message, '请求失败 (500)')
-  errors[0].props.onRetry()
-  assert.deepEqual(s.retries.slice(1), ['useStructuredProfile', 'useMemories'])
+  s.results.useProfile = { isError: true, error: new Error('synthetic profile failure') }
+  const error = s.nodes().find(n => n.type === 'ErrorState')
+  assert.ok(error)
+  error.props.onRetry()
+  assert.deepEqual(s.retries, ['useProfile'])
+})
+
+function profileData(overrides = {}) {
+  return {profile: {basic: [{text: 'Synthetic profile text', fact_ids: ['a'], fact_count: 1}],
+    relationships: [], interests: [], habits: [], restrictions: [], goals: [], communication_preferences: []},
+    updated_at: 100, pending_fact_count: 1, needs_refresh: true, refresh_state: null,
+    operation_id: null, ...overrides}
+}
+
+test('Profile 只在点击时刷新，进行中禁用重复提交，失败保留缓存并重试原操作', () => {
+  const s = setup('Profile')
+  s.results.useProfile = {data: profileData()}
+  s.render()
+  assert.equal(s.mutations.length, 0)
+  const refresh = s.find(n => n.type === 'Button' && [].concat(n.props.children ?? []).flat(Infinity).includes('刷新画像'))
+  assert.ok(refresh)
+  refresh.props.onClick()
+  assert.equal(s.mutations[0].name, 'useRefreshProfile')
+  s.results.useProfile = {data: profileData({operation_id: 'synthetic-op', refresh_state: 'running'})}
+  assert.ok(s.find(n => n.type === 'Button' && n.props.disabled))
+  s.results.useProfile = {data: profileData({operation_id: 'synthetic-op', refresh_state: 'failed', refresh_error: 'synthetic_failure'})}
+  assert.ok(s.find(n => n.type === 'span' && n.props.children === 'Synthetic profile text'))
+  const retry = s.find(n => n.type === 'Button' && [].concat(n.props.children ?? []).flat(Infinity).includes('重试刷新'))
+  retry.props.onClick()
+  assert.deepEqual(s.mutations.at(-1), {name: 'useRetryOperation', args: ['synthetic-op']})
+})
+
+test('Profile 区分尚未生成和成功生成空画像', () => {
+  const s = setup('Profile')
+  s.results.useProfile = {data: profileData({profile: {}, updated_at: null})}
+  assert.equal(s.find(n => n.type === 'PageEmptyState').props.title, '尚未生成画像')
+  s.results.useProfile = {data: profileData({profile: {}})}
+  assert.equal(s.find(n => n.type === 'PageEmptyState').props.title, '当前没有可展示的画像条目')
+})
+
+test('Profile 按协议栏目顺序展示，不依赖响应对象的键顺序', () => {
+  const s = setup('Profile')
+  const entry = { text: 'Synthetic entry', fact_ids: ['a'], fact_count: 1 }
+  s.results.useProfile = { data: profileData({ profile: { goals: [entry], basic: [entry] } }) }
+  assert.deepEqual(s.nodes().filter(node => node.type === 'CardTitle').flatMap(node => node.props.children).filter(Boolean),
+    ['基本信息', '目标与计划'])
 })
 
 for (const [action, fields] of [[undefined, {}], [['food', 'music'], { categories: ['food', 'music'] }], [[], { categories: [] }]]) {
@@ -480,4 +512,21 @@ test('接入状态失败不把未知会话数显示为零', () => {
   assert.ok(s.find(n => n.type === 'ErrorState' && n.props.message.includes('接入状态读取失败')))
   // No numeric zero is rendered for an unavailable status (other cards have no counts).
   assert.equal(s.nodes().some(n => n.type === 'span' && n.props.children === 0), false)
+})
+
+
+
+test('Ask 按服务返回的证据段落渲染，保留否定和条件', () => {
+  const s = setup('Ask')
+  const statement = 'Do not use the synthetic credential unless approved.'
+  s.results.useRecall.data = {
+    context: 'UNUSED COMBINED CONTEXT',
+    context_sections: [{ kind: 'facts', space_id: 'synthetic', text: statement }],
+    status: 'evidence_only', answer_status: 'model_failed', tokens_est: 12, limitations: [],
+  }
+  const button = s.nodes().find(node => node.type === 'Button' && [node.props.children].flat().includes('显示证据'))
+  assert.ok(button)
+  button.props.onClick()
+  assert.ok(s.find(node => node.type === 'pre' && node.props.children === statement))
+  assert.ok(s.find(node => node.props?.role === 'status' && node.props.children.includes('调用失败')))
 })

@@ -55,7 +55,7 @@ def test_raw_storage_and_manual_facts_do_not_need_model():
     m = MemoryEngine()
     m.add('Synthetic raw record')
     m.add_fact('user', 'lives_in', 'Beijing')
-    assert m.search('Where do I live?').answer() == 'Beijing'
+    assert m.search('Where do I live?').top().object == 'Beijing'
     with pytest.raises(LLMNotConfiguredError):
         m.consolidate()
     assert m.consolidate([])['facts_added'] == 0
@@ -172,3 +172,20 @@ def test_empty_import_does_not_require_model(consolidate, sessions):
     mem = MemoryEngine()
     assert mem.import_messages(sessions, consolidate=consolidate)['episodes'] == 0
     assert not mem.episodes_doc.values()
+
+
+
+def test_model_retry_classification_uses_status_and_structured_codes():
+    from mnemotrace.llm.failures import retryable
+
+    class ProviderError(RuntimeError):
+        def __init__(self, status, code=None):
+            super().__init__("synthetic provider error")
+            self.status_code = status
+            self.code = code
+
+    assert not retryable(ProviderError(401))
+    assert not retryable(ProviderError(429, "insufficient_quota"))
+    assert retryable(ProviderError(429))
+    assert retryable(ProviderError(503))
+    assert retryable(TimeoutError())

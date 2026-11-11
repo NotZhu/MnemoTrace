@@ -7,7 +7,6 @@ import { Button, Card, EmptyState, ErrorState, PageHeader, Spinner } from '../co
 import { useRecall } from '../hooks/queries'
 import { copy as t } from '../lib/copy'
 import { copyText } from '../lib/clipboard'
-import { splitContextSections } from '../lib/contextSections'
 import { toast } from '../components/Toast'
 import { useSpacePreference } from '../store/preferences'
 
@@ -40,6 +39,7 @@ export default function Ask() {
     if (q) {
       recall.mutate({
         query: q,
+        answer: true,
         n_chunks: chunks,
         as_of: asOf ? new Date(`${asOf}T23:59:59`).getTime() / 1000 : undefined,
         redact_sensitive: redactSensitive,
@@ -49,7 +49,7 @@ export default function Ask() {
   }
 
   const result = recall.data
-  const blocks = result ? splitContextSections(result.context) : []
+  const blocks = result?.context_sections ?? []
 
   return (
     <div className="space-y-8">
@@ -170,6 +170,9 @@ export default function Ask() {
 
       {result && (
         <>
+          {result.answer_status === "model_not_configured" && <p role="status">{t.ask.answerUnconfigured}</p>}
+          {result.answer_status === "model_failed" && <p role="status">{t.ask.answerFailed}</p>}
+          {result.answer_status === "empty" && <p role="status">{t.ask.answerEmpty}</p>}
           {result.answer && (
             <Card className="!border-brand-mint/30 !bg-brand-mint/[0.06]">
               <div className="mb-1.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-brand-mint">
@@ -239,9 +242,9 @@ export default function Ask() {
               {blocks.map((b, i) => (
                 <section key={i} className="mb-6 break-inside-avoid rounded-xl border border-line bg-ink-700/50 p-4">
                   <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-brand-cyan">
-                    {b.key ? t.ask[b.key] : b.rawLabel}
+                    {b.kind === 'facts' ? t.ask.sectionFacts : b.kind === 'profile' ? t.ask.sectionUserProfile : t.ask.sectionConversations}
                   </div>
-                  <pre className="whitespace-pre-wrap break-words font-sans text-sm not-italic leading-relaxed text-slate-200">{b.body}</pre>
+                  <pre className="whitespace-pre-wrap break-words font-sans text-sm not-italic leading-relaxed text-slate-200">{b.text}</pre>
                 </section>
               ))}
               </div>

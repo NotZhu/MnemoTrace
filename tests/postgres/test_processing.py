@@ -80,8 +80,7 @@ def test_assistant_evidence_stays_in_session_until_user_confirmation(processing)
     assert any(ep.id == proposal and ep.role == 'assistant' for ep in memory.retrieve_episodes(PROPOSAL).episodes)
     context = memory.context_for(PROPOSAL, top_k=0).context
     assert 'role=assistant' in context and PROPOSAL in context
-    with memory.dao.read_snapshot() as view:
-        assert [record.ref.record_id for record in view.profile_facts()] == [old.id]
+    assert memory.profile()["updated_at"] is None
 
     confirmation = send('confirmation', 'user', 'Yes, use that by default.', 300)
     new, = memory.facts()
@@ -537,3 +536,39 @@ def test_final_receipt_includes_surviving_outputs_from_earlier_segments(processi
     assert memory.flush_processing('notes', timeout=5)['ok']
     receipt = memory.dao.receipt(operation_id)
     assert set(receipt.fact_ids) == early_facts
+
+
+
+@pytest.mark.parametrize("source_kind", ["dialogue", "raw", "document"])
+def test_assertion_and_profile_input_are_identical_offline_and_in_postgres(processing, source_kind):
+    from mnemotrace.memory_engine import MemoryEngine
+    from mnemotrace.profile import input_fact
+
+    statement = "When travelling in winter, the user avoids tea unless it is decaffeinated."
+
+    def handle(data):
+        return {"facts": [{
+            "subject": "user", "predicate": "avoids", "object": "tea", "text": statement,
+            "categories": ["food"], "object_kind": "literal", "sensitive": False,
+            "source_ids": [data["pending"][0]["id"]], "time_kind": "current",
+            "effective_date": None, "cardinality": "unknown", "retention": "unknown",
+        }], "digests": []}
+
+    memory, _ = processing(handle=handle)
+    offline = MemoryEngine(llm=FakeLLM(handler=lambda prompt, _: json.dumps(
+        handle(json.loads(prompt.removeprefix(WINDOW_PREFIX))))))
+    if source_kind == "dialogue":
+        message = dialogue("synthetic", statement)
+        memory.remember_messages("synthetic", (message,), processing="immediate")
+        offline.remember_messages([{"message_id": "synthetic", "role": "user", "content": statement,
+                                    "event_time": 100}], "synthetic")
+        assert offline.flush_messages()["ok"]
+    else:
+        memory.remember(statement, "synthetic", source_kind=source_kind, event_time=100)
+        episode = offline.add(statement, session_id="synthetic", event_time=100)
+        episode.source_kind = source_kind
+        offline.consolidate()
+    persistent_fact, = memory.facts()
+    offline_fact, = offline._all_facts()
+    assert persistent_fact.text == offline_fact.text == statement
+    assert input_fact(persistent_fact)["text"] == input_fact(offline_fact)["text"] == statement

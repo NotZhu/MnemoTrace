@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ..types import Fact
+from ..consolidate.fact_rules import object_key
+from .events import EventEvidence
 from .lexical import bm25_query_terms, lexical_terms
 
 def should_abstain(query, facts, semantic_scores, threshold):
@@ -33,23 +35,31 @@ class SearchResult:
     abstained: bool = False
     _answer: Optional[str] = None
     limitations: tuple[str, ...] = ()
+    sources: tuple[EventEvidence, ...] = ()
+
+    @property
+    def status(self):
+        if self._answer is not None:
+            return 'answered'
+        return 'evidence_only' if self.facts or self.sources else 'no_evidence'
 
     @property
     def complete(self) -> bool:
         return not self.limitations
 
     def answer(self) -> str:
-        if self.abstained:
-            return "I don't have that in memory."
         if self._answer is not None:
             return self._answer
-        if not self.facts:
-            return "I don't have that in memory."
-        top = self.facts[0]
-        return top.object or top.text
+        return "" if self.status == "evidence_only" else "I don't have that in memory."
 
     def top(self) -> Optional[Fact]:
         return self.facts[0] if self.facts else None
+
+
+def slot_result(query, facts):
+    values = {object_key(fact) for fact in facts}
+    return SearchResult(query, facts, via='slot', abstained=not facts,
+                        _answer=facts[0].object if len(values) == 1 else None)
 
 
 def chain_terms(f: Fact) -> str:

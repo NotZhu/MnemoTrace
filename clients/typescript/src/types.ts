@@ -3,6 +3,10 @@
  * 这些就是服务器实际返回的响应结构，因此 SDK 调用具备完整类型。
  */
 
+import type { Category, ProfileSection } from './generated/memory-contract'
+export type { Category, ProfileSection } from './generated/memory-contract'
+export { CATEGORIES, PROFILE_SECTIONS } from './generated/memory-contract'
+
 export interface Health {
   ok: boolean
   ready: boolean
@@ -49,7 +53,7 @@ export type ProcessingState = 'pending' | 'running' | 'retry_wait' | 'failed' | 
 
 export interface OperationResult {
   operation_id: string
-  kind: 'extract' | 'digest' | 'reembed' | 'graph' | 'conflicts' | 'outcomes'
+  kind: 'extract' | 'digest' | 'reembed' | 'graph' | 'profile' | 'conflicts' | 'outcomes'
   state: ProcessingState
   phase: 'queued' | 'generate' | 'embed' | 'commit' | 'compensate' | 'done'
   stored_raw: boolean
@@ -85,6 +89,9 @@ export interface RecallResult {
   coverage_by_space: Record<string, string[]>
   limitations: string[]
   context: string
+  context_sections: { kind: string; text: string; space_id: string }[]
+  status: "answered" | "evidence_only" | "no_evidence"
+  answer_status?: "answered" | "model_not_configured" | "model_failed" | "no_evidence" | "empty"
   tokens_est: number
   as_of: number | null
   redacted_sensitive: boolean
@@ -97,6 +104,9 @@ export interface SearchResult {
   space_id: string
   limitations: string[]
   answer: string
+  status: "answered" | "evidence_only" | "no_evidence"
+  fact_ids: string[]
+  sources: { id: string; session_id: string; text: string; representation: string }[]
   facts: string[]
   as_of: number | null
   redacted_sensitive: boolean
@@ -172,9 +182,6 @@ export interface SessionListOptions {
 export type FactStatus = 'live' | 'superseded'
 export type FactSource = 'extracted' | 'user'
 
-export type Category = 'personal_details' | 'family' | 'professional_details' | 'sports' | 'travel'
-  | 'food' | 'music' | 'health' | 'technology' | 'hobbies' | 'fashion' | 'entertainment'
-  | 'milestones' | 'user_preferences' | 'misc'
 export type CategoriesSource = 'unset' | 'llm' | 'user'
 export type ObjectKind = 'entity' | 'literal' | 'unknown'
 export interface FactMetadata {
@@ -273,7 +280,6 @@ export interface MemoryDump {
   space_id: string
   data_revision: string
   evaluated_at: number
-  profile: string
   counts: MemoryCounts
   facts: Fact[]
   fact_categories: Category[]
@@ -339,9 +345,22 @@ export interface AgentStatus {
   }
 }
 
+
+export interface ProfileEntry {
+  text: string
+  fact_ids: string[]
+  fact_count: number
+}
+
 export interface ProfileResult {
-  profile: string
-  facts: string[]
+  profile: Record<ProfileSection, ProfileEntry[]>
+  cache_version: number
+  updated_at: number | null
+  pending_fact_count: number
+  needs_refresh: boolean
+  operation_id: string | null
+  refresh_state: string | null
+  refresh_error: string | null
 }
 
 export interface Focus {
@@ -353,7 +372,7 @@ export interface Policy {
   extract_instruction: string
   extract_system: string
   digest_system: string
-  persona_system: string
+  profile_system: string
 }
 
 export interface PolicyResponse {

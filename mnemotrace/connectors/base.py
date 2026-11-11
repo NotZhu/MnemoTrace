@@ -11,9 +11,8 @@ JSONL 日志、纯 transcript —— 转换成 `ImportSession` 列表，再由 `
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
@@ -72,49 +71,43 @@ class ImportSession:
 # 共享辅助函数（时间 + 内容规范化），被所有解析器复用。
 # ---------------------------------------------------------------------------
 
-_DATE_RE = re.compile(r"(\d{4})[/-](\d{1,2})[/-](\d{1,2})")
+_TIME_UNITS = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
 
 
-def to_epoch(value: Any) -> Optional[float]:
-    """尽力把时间戳转成 epoch 秒。接受 epoch 整数/浮点数（自动识别毫秒/微秒/纳秒量级）、ISO-8601
-    字符串（'2024-01-15T10:30:00Z'）和 'YYYY-MM-DD'。找不到可解析的内容时返回 None
-    （保留来源时间未知，不以接收时间替代）。"""
-    if value is None or value == "":
+def to_epoch(value: Any, *, unit: str = "s") -> Optional[float]:
+    """Read epoch values in the declared unit or ISO timestamps with a timezone."""
+    if isinstance(value, bool):
         return None
-    if isinstance(value, bool):  # 防御：Python 中 bool 是 int 的子类
-        return None
-    if isinstance(value, (int, float)):
-        v = float(value)
-        # 启发式换算：把明显过大的数值当作 epoch 起的 ms / µs / ns。
-        while v > 1e12:
-            v /= 1000.0
-        return v
     if isinstance(value, str):
-        s = value.strip()
-        if not s:
-            return None
-        # 数字字符串 → epoch 秒
         try:
-            return to_epoch(float(s))
+            value = float(value)
         except ValueError:
-            pass
-        # ISO-8601（容忍结尾的 'Z'）
-        iso = s.replace("Z", "+00:00")
-        try:
-            dt = datetime.fromisoformat(iso)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.timestamp()
-        except ValueError:
-            pass
-        # 在字符串中宽松匹配 'YYYY-MM-DD'
-        m = _DATE_RE.search(s)
-        if m:
-            y, mo, d = (int(x) for x in m.groups())
             try:
-                return datetime(y, mo, d, tzinfo=timezone.utc).timestamp()
-            except ValueError:
+                value = value.strip()
+                stamp = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+                return stamp.timestamp() if stamp.utcoffset() is not None else None
+            except (ValueError, OverflowError, OSError):
                 return None
+    if isinstance(value, (int, float)):
+        try:
+            seconds = value / _TIME_UNITS[unit]
+            if -62135596800 <= seconds < 253402300800:
+                return seconds
+        except OverflowError:
+            pass
+    return None
+
+
+def record_time(record: dict, *keys: str) -> Optional[float]:
+    """Resolve protocol fields, including explicit unit suffixes."""
+    for key in keys:
+        for unit in _TIME_UNITS:
+            value = record.get(f"{key}_{unit}")
+            if value is not None:
+                return to_epoch(value, unit=unit)
+        value = record.get(key)
+        if value is not None and value != "":
+            return to_epoch(value)
     return None
 
 

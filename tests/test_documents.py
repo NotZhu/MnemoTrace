@@ -79,3 +79,16 @@ def test_remembered_text_appends_image_caption():
 def test_remembered_text_image_only_without_captioner():
     msgs = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "http://x/i.png"}}]}]
     assert oc.remembered_text(None, msgs) == "[image]"
+
+
+
+def test_explicit_image_description_distinguishes_empty_failure_and_configuration():
+    class Captioner:
+        def caption(self, image_ref, prompt):
+            if image_ref == "failed":
+                raise TimeoutError()
+            return ""
+
+    assert vision.describe_image(None, "test") == ("", "model_not_configured")
+    assert vision.describe_image(Captioner(), "failed") == ("", "model_failed")
+    assert vision.describe_image(Captioner(), "empty") == ("", "empty")

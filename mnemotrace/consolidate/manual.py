@@ -1,5 +1,5 @@
 """Shared rules for user-authored facts and explicit fact corrections."""
-from ..localize import display_of
+from .fact_rules import same_assertion
 from ..categories import normalize_categories, validate_object_kind
 from ..types import Fact, validate_lifecycle
 from ..util import now
@@ -48,7 +48,7 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
     claim_changed = any(
         value is not None and value != getattr(f, field)
         for field, value in (("subject", subject), ("predicate", predicate), ("object", object))
-    ) or (statement is not None and statement != display_of(f) and statement != f.text)
+    ) or (statement is not None and statement not in (f.display, f.text))
     object_changed = (object is not None and object != f.object) or (statement is not None and claim_changed)
     if object_kind is not None:
         f.object_kind = object_kind
@@ -86,15 +86,7 @@ def apply_manual_edit(f, subject=None, predicate=None, object=None, sensitive=No
         f.text = f"{f.object} （依据：{why}）" if why else f.object
     else:
         f.text = f"{f.subject} {f.predicate.replace('_', ' ')} {f.object}".strip()
-    # display_of() 优先用 `display` 而非 `text`，因此过期的 display 会让所有界面在用户被告知
-    # 保存成功后仍渲染编辑前的措辞。这不只影响 outcome。outcome 的 display 就是它的 object
-    # （历史结论记录保存 `display=statement`），可以直接重新赋值。其他所有 fact 的 display 都是
-    # extractor 生成的完整句子（"Wei works at Tencent"），若把裸 object 赋给 display 就会渲染成
-    # "Moonshot AI"——本功能要修复的碎片化问题又从属性侧回来了。正确做法是清空 display，让
-    # display_of() 回退到 render_display(subject, predicate, object)——没有原语言展示文本的 fact
-    # （display=""）本来就是这么渲染的。
-    # 以"text 是否被重建"为门控条件，而非"object 是否变化"：重命名 predicate（finding ->
-    # lesson）或 subject 同样会重写 text，留下旧 display 是同一种过期渲染 bug。
+    # A changed assertion must not retain its old display text.
     if statement is None and (subject is not None or predicate is not None or object is not None) \
             and (getattr(f, "display", "") or "").strip():
         f.display = f.object if f.predicate.lower() in OUTCOME_PREDICATES else ""
@@ -113,8 +105,13 @@ def reconcile_manual(new, history, at):
                  and (old.expired_at is None or old.expired_at > at or old.invalid_at is not None)]
     effective = new.valid_at if new.valid_at is not None else at
     covering = [old for old in same_slot if old.is_valid_at(effective)]
-    if any(old.object.strip().casefold() == new.object.strip().casefold() for old in covering):
-        return 'duplicate', []
+    duplicate = next((old for old in covering if same_assertion(old, new)), None)
+    if duplicate is not None:
+        if new.categories_source == 'user' and duplicate.categories_source != 'user':
+            duplicate.categories, duplicate.categories_source = new.categories, 'user'
+        if new.sensitive_override and not duplicate.sensitive_override:
+            duplicate.sensitive, duplicate.sensitive_override = new.sensitive, True
+        return 'duplicate', [duplicate]
     if new.valid_at is None or new.cardinality != "single":
         return 'add', []
 

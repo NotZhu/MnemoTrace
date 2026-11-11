@@ -8,7 +8,7 @@ from threading import Event, Thread
 import time
 from types import SimpleNamespace
 
-from ._pipeline import _retryable
+from .llm.failures import retryable
 from .consolidate.operations import decode, prepare
 from .consolidate.facts import materialize_facts
 from .consolidate.pipeline import config_identity, content_hash
@@ -215,6 +215,10 @@ class PostgresPipeline:
         self.tasks.commit(self._changes(conditions, (write,), embeddings))
 
     def run_one(self, operation_id, *, force=False):
+        existing = self.tasks.operation(operation_id)
+        if existing is not None and existing.kind.value == "profile":
+            from .store.postgres.profile import run
+            return run(self, operation_id)
         space = (self.model, self.embedder.dim) if self.embedder is not None else None
         lease = self.tasks.claim(operation_id, force=force, embedding=space)
         if lease is None:
@@ -321,7 +325,7 @@ class PostgresPipeline:
 
 def _failure(exc, phase):
     if isinstance(exc, EmbeddingUnavailable):
-        return 'embedding_unavailable', _retryable(exc)
+        return 'embedding_unavailable', retryable(exc)
     if isinstance(exc, DataCorruption):
         return 'data_corruption', False
     if isinstance(exc, VersionConflict):
@@ -329,9 +333,9 @@ def _failure(exc, phase):
     if isinstance(exc, DatabaseUnavailable):
         return 'database_unavailable', True
     if isinstance(exc, ExtractionError):
-        return exc.code, _retryable(exc)
+        return exc.code, retryable(exc)
     if isinstance(exc, (TypeError, ValueError)):
         return ('embedding_invalid' if phase == 'embed' else 'configuration_invalid'), False
     if phase == 'embed':
-        return 'embedding_or_commit_failed', _retryable(exc)
-    return 'extraction_failed', _retryable(exc)
+        return 'embedding_or_commit_failed', retryable(exc)
+    return 'extraction_failed', retryable(exc)

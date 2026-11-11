@@ -38,10 +38,9 @@ from .. import _flock
 DEFAULT_DEADLINE_S = 180
 MAX_STDIN_BYTES = 1 << 20  # 钩子载荷只有几百字节；更大的就不是钩子载荷了
 
-# 与 find_sessions() 的根目录及其 `agent-*.jsonl` / min_bytes 规则保持一致。若钩子喂了监视器永远不会碰
+# 与 find_sessions() 的根目录及其 `agent-*.jsonl` 规则保持一致。若钩子喂了监视器永远不会碰
 # 的文件，就会把覆盖率分母看不见的 transcript 塞进记忆。
 HOOK_ROOTS = ("~/.claude/projects", "~/.codex/sessions")
-MIN_BYTES = 2048
 
 # 可注入：真调用 os.setsid() 的测试会把整个 pytest 进程挪进新会话。本模块其余部分都已参数化，这是唯一
 # 的全局量。os.setsid 仅限 Unix；Windows 没有可脱离的控制终端，回退为 no-op —— 模块在那里仍可导入，
@@ -207,9 +206,6 @@ def run(argv: Optional[list[str]] = None, *, stdin: Optional[str] = None,
     if not name.endswith(".jsonl") or name.startswith("agent-") or not _under_roots(path, roots):
         # `agent-*.jsonl` 是子 agent transcript；两个既有层都丢弃它，这里同样。
         _say(f"hook {key12} skipped (not a watched transcript)")
-        return 0
-    if st.st_size < MIN_BYTES:
-        _say(f"hook {key12} skipped (under {MIN_BYTES} bytes)")
         return 0
     if (state.get("seen") or {}).get(path) == st.st_size:
         _say(f"hook {key12} skipped (seen)")

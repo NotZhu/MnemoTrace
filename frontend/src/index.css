@@ -25,8 +25,6 @@
     --memory-violet: 170 168 196;
     --memory-mint: 141 181 172;
     --memory-rose: 217 154 167;
-    --memory-profile-mint-text: 205 235 225;
-    --memory-profile-rose-text: 255 217 227;
     --memory-amber: 201 177 138;
     --memory-edit-marker: 139 180 224;
     --memory-icon-surface: 36 46 60;
@@ -65,8 +63,6 @@
     --memory-violet: 101 84 123;
     --memory-mint: 43 104 89;
     --memory-rose: 156 68 94;
-    --memory-profile-mint-text: 23 75 61;
-    --memory-profile-rose-text: 105 33 55;
     --memory-amber: 128 96 24;
     --memory-edit-marker: 64 109 163;
     --memory-icon-surface: 228 235 246;
@@ -126,59 +122,6 @@
 }
 
 @layer components {
-  .profile-tag-group {
-    @apply inline-flex min-w-0 max-w-full items-center gap-2 rounded-lg;
-    cursor: default;
-  }
-
-  .profile-tag-group:focus-visible {
-    outline: 2px solid rgb(var(--memory-focus));
-    outline-offset: 3px;
-  }
-
-  .profile-tag {
-    --profile-tag-color: var(--memory-accent);
-    --profile-tag-text: var(--memory-text);
-    --profile-tag-strength: 7%;
-    @apply relative min-w-0 max-w-full break-words rounded-lg px-3 py-1.5 text-base;
-    background-color: color-mix(in srgb, rgb(var(--profile-tag-color)) var(--profile-tag-strength), rgb(var(--memory-surface)));
-    color: rgb(var(--profile-tag-text));
-  }
-
-  .profile-tag[data-tone='positive'] {
-    --profile-tag-color: var(--memory-mint);
-    --profile-tag-text: var(--memory-profile-mint-text);
-  }
-
-  .profile-tag[data-tone='negative'] {
-    --profile-tag-color: var(--memory-rose);
-    --profile-tag-text: var(--memory-profile-rose-text);
-  }
-
-  .profile-tag[data-reinforcement-level='0'] { --profile-tag-strength: 7%; }
-  .profile-tag[data-reinforcement-level='1'] { --profile-tag-strength: 14%; }
-  .profile-tag[data-reinforcement-level='2'] { --profile-tag-strength: 23%; }
-  .profile-tag[data-reinforcement-level='3'] { --profile-tag-strength: 34%; }
-  .profile-tag[data-reinforcement-level='4'] { --profile-tag-strength: 45%; }
-
-  .profile-tag[data-manual='true'] {
-    padding-inline: 1.125rem;
-    text-align: center;
-    border-top-right-radius: 0;
-    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
-  }
-
-  .profile-tag[data-manual='true']::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    right: 0;
-    width: 10px;
-    height: 10px;
-    background-color: rgb(var(--memory-edit-marker));
-    clip-path: polygon(0 0, 0 100%, 100% 100%);
-  }
-
   [data-theme='light'] .settings-copy-surface {
     background-color: rgb(var(--memory-secondary));
   }

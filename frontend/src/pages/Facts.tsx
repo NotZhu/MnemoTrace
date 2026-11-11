@@ -155,8 +155,8 @@ export default function Facts() {
                       </span>
                     )}
                     {f.source === 'user' && (
-                      <span className="fact-blue-tag" title={t.profile.iconHints.user}>
-                        {t.profile.evidenceUser}
+                      <span className="fact-blue-tag" title={t.facts.manualHint}>
+                        {t.facts.manualLabel}
                       </span>
                     )}
                     <CategoryBadges categories={f.categories} categories_source={f.categories_source} />

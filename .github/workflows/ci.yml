@@ -33,6 +33,7 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev,server,mcp]" build twine
       - run: python -m ruff check .
+      - run: python scripts/build_memory_contract.py --check
       - name: Python regressions
         run: python -m pytest
         timeout-minutes: 20

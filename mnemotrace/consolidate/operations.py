@@ -37,9 +37,7 @@ def decode(raw, data, config, compensation=False):
             if not predicate:
                 raise ExtractionResponseError()
             display = item['text']
-            text = (display if data['source_kind'] == 'dialogue'
-                    else f"{subject} {predicate.replace('_', ' ')} {item['object']}".strip())
-            facts.append({**item, 'subject': subject, 'predicate': predicate, 'display': display, 'text': text})
+            facts.append({**item, 'subject': subject, 'predicate': predicate, 'display': display})
         result['facts'] = facts
         return result
     try:

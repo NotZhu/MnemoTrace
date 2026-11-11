@@ -63,27 +63,11 @@ def test_retrieve_digests_is_relevant():
     assert any(city in joined for city in ("kyoto", "lisbon", "oslo"))
 
 
-def test_persona_built_from_facts():
-    mem = build()
-    persona = mem.build_persona("u1")
-    assert persona, "a persona is synthesized from the live facts"
-    assert "persona is cached" or "u1" in mem._persona_cache
-
-
-def test_consolidate_invalidates_persona_cache():
-    mem = build()
-    mem.build_persona("u1")  # 填充缓存
-    assert mem._persona_cache
-    mem.add("I now work at Moonshot AI.", user_id="u1", session_id="s9", event_time=BASE + 9 * DAY)
-    mem.consolidate(mem.ingestor.pending())
-    assert not mem._persona_cache, "consolidate() must invalidate the stale persona cache"
-
-
 def test_lean_context_assembles_all_layers():
     mem = build()
     ctx = mem.lean_context("trip Kyoto Lisbon Oslo", user_id="u1",
                            n_digests=10, n_facts=10, n_chunks=1)
-    assert "USER PROFILE:" in ctx
+    assert "USER PROFILE:" not in ctx
     assert "SESSION DIGESTS" in ctx
     assert "RELEVANT CONVERSATIONS (full detail):" in ctx
 
@@ -278,7 +262,7 @@ def test_lean_context_as_of_profile_does_not_leak_current_facts():
         n_chunks=0,
         char_budget=10_000,
     )
-    assert "USER PROFILE (as of" in ctx
+    assert "USER PROFILE (as of" not in ctx
     assert "Tencent" in ctx
     assert "Moonshot AI" not in ctx
 
@@ -851,7 +835,7 @@ def test_search_pages_relevant_cold_fact_back_to_hot():
 
     res = mem.search("What is the project status?", user_id="u1")
     assert res.via == "cold"
-    assert "alpha" in res.answer().lower()
+    assert "alpha" in res.top().object.lower()
     assert mem.fact_store.get(fact.id) is not None
     assert mem.cold_store.get(fact.id) is None
 
@@ -871,7 +855,7 @@ def test_cold_page_in_preserves_hot_limit():
     res = mem.search("What is Apollo's launch code?", user_id="u1")
 
     assert res.via == "cold"
-    assert "alpha" in res.answer().lower()
+    assert "alpha" in res.top().object.lower()
     assert len(mem.fact_store.values()) <= 1
     assert mem.fact_store.get(target.id) is not None
     assert mem.cold_store.get(filler.id) is not None
@@ -1157,14 +1141,12 @@ def test_digest_remains_faithful_with_cold_tier_history():
 
 def test_relevance_wins_without_category_weighting():
     mem = build()
-    ans = mem.search("Where do I work?", user_id="u1").answer().lower()
+    ans = mem.search("Where do I work?", user_id="u1").top().object.lower()
     assert "tencent" in ans
 
 
 def test_focus_track_boosts_salience_and_mute_hides():
-    """关注点面板是真实接线而非摆设（AGENTS.md 「检索与模块」）：被跟踪的话题会提升 fact 的显著度
-    （作为检索打分 + 豁免衰减的信号），被静音的话题则同时从组装的读取 context 和合成的
-    persona 中剔除。"""
+    """跟踪主题提升显著度，静音主题退出读取上下文。"""
     mem = MemoryEngine()
     mem.add_fact("user", "uses", "Python", user_id="u1")
     mem.add_fact("user", "plays", "guitar", user_id="u1")
@@ -1172,26 +1154,11 @@ def test_focus_track_boosts_salience_and_mute_hides():
     before = py.salience
 
     mem.set_focus(track=["python"], mute=["guitar"])
-    assert py.salience > before, "tracked topic must boost salience"
+    assert py.salience == before
 
     ctx = mem.lean_context("what do I do", user_id="u1", n_chunks=0).lower()
     assert "python" in ctx, "tracked fact should remain in the read context"
     assert "guitar" not in ctx, "muted topic must be hidden from the read context"
-
-    persona = mem.build_persona("u1")
-    assert "FOCUS AREAS" in persona, "tracked topics should surface in the profile"
-    assert "guitar" not in persona.lower(), "muted topic must not appear in the persona"
-
-
-def test_persona_includes_cold_tier_facts():
-    mem = MemoryEngine()
-    cold = mem.add_fact("user", "favorite_language", "Python", user_id="u1")
-    hot = mem.add_fact("user", "project_note", "hot note", user_id="u1")
-    cold.salience = 0.0
-    hot.salience = 1.0
-    assert mem.evict_cold(max_hot=1) == 1
-
-    assert "Python" in mem.build_persona("u1")
 
 
 def test_graph_data_has_no_dangling_edges():
@@ -1290,48 +1257,6 @@ def test_memory_policy_edits_extraction():
     assert set(gp) == {"policy", "defaults"} and len(gp["defaults"]) == 4
 
 
-def test_structured_profile_tiers_display_only_and_preserves_recall():
-    """L2 结构化画像（特性③，合理版）：basic/preferences/habits 分组展示，confirmed↔tentative
-    划分仅用于展示，证据保持诚实（不编造权重）。关键不变量：tentative 划分只是呈现层面 ——
-    tentative fact 仍必须留在 fact store 中且可检索（召回绝不被画像视图限制）。"""
-    from mnemotrace.types import Fact
-    m = MemoryEngine()
-    m.add_fact("user", "favorite_music", "周杰伦", user_id="u")     # 显式 favorite -> confirmed
-    casual = Fact(subject="user", predicate="likes", object="jazz", user_id="u",
-                  source="extracted", provenance=["ep1"])          # 单次随意提及 -> tentative
-    casual.embedding = m.embedder.embed(casual.text)
-    m.fact_store.upsert(casual.id, casual.embedding, casual)
-
-    p = m.structured_profile("u")
-    conf_items = [it["item"] for items in p["preferences"].values() for it in items]
-    # 用户明确说出的偏好即 confirmed（用户亲口说的，不是牵强的推断）；显式 favorite 和
-    # 明确说出的 likes 都进入正式画像，而不是作为待确认候选。
-    assert "周杰伦" in conf_items and "jazz" in conf_items, "stated preferences are confirmed"
-    assert [t["item"] for t in p["tentative"]] == [], "stated preferences are not held as 待确认"
-
-    # 证据诚实，绝不编造数值权重
-    for items in p["preferences"].values():
-        for it in items:
-            assert "weight" not in it and it["evidence"]["kind"] in {"user", "mentions", "reinforced"}
-
-    # 召回不变量：tentative fact 只是分了展示层，并未移除 —— 仍在 store 中且 live
-    assert m.fact_store.get(casual.id) is not None and casual.is_live()
-    assert any(f.object == "jazz" for f in m.fact_store.values() if f.is_live())
-
-
-def test_structured_profile_includes_cold_tier_facts():
-    m = MemoryEngine()
-    cold = m.add_fact("user", "favorite_music", "周杰伦", user_id="u")
-    hot = m.add_fact("user", "project_note", "hot note", user_id="u")
-    cold.salience = 0.0
-    hot.salience = 1.0
-    assert m.evict_cold(max_hot=1) == 1
-
-    p = m.structured_profile("u")
-    items = [it["item"] for values in p["preferences"].values() for it in values]
-    assert "周杰伦" in items
-
-
 def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content():
     """脱敏/共享 context 不得通过摘要、chunk 或工作记忆文本泄漏敏感内容。
     它只能依赖已分类、非敏感的结构化 facts。"""
@@ -1360,13 +1285,11 @@ def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content
 
 
 def test_display_localization_keeps_canonical_predicate():
-    """展示本地化（i18n）：把中文记录的 fact 自然地渲染出来，但不改动规范英文 predicate
-    （即 slot key）。英文记录的 fact 原样保留。"""
+    """Display uses the stored assertion regardless of the language."""
     from mnemotrace.localize import render_display
-    # 中文 object -> 本地化的中文展示
-    assert render_display("user", "works_at", "字节跳动", "user works at 字节跳动") == "在 字节跳动 工作"
-    assert render_display("user", "favorite_music", "周杰伦", "x") == "最喜欢的音乐是 周杰伦"
-    assert render_display("user", "allergic_to", "花粉", "x") == "对 花粉 过敏"
+    assert render_display("user", "works_at", "字节跳动", "user works at 字节跳动") == "user works at 字节跳动"
+    assert render_display("user", "favorite_music", "周杰伦", "x") == "x"
+    assert render_display("user", "allergic_to", "花粉", "x") == "x"
     # 英文数据不被强制翻译
     assert render_display("user", "works_at", "Acme", "user works at Acme") == "user works at Acme"
     # 规范 predicate/slot 不因展示而改变（引擎仍据此去重）

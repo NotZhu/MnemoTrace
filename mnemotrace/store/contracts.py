@@ -84,6 +84,7 @@ class OperationKind(str, Enum):
     CONFLICTS = 'conflicts'
     REEMBED = 'reembed'
     GRAPH = 'graph'
+    PROFILE = 'profile'
 
 
 class RecordKind(str, Enum):
@@ -436,13 +437,15 @@ class SpaceSettings:
     extract_instruction: str = ''
     extract_system: str = ''
     digest_system: str = ''
-    persona_system: str = ''
+    profile_system: str = ''
 
     def __post_init__(self):
         _tuple(self.track, str)
         _tuple(self.mute, str)
+        from ..focus import selectors
+        selectors((*self.track, *self.mute))
         if any(not isinstance(value, str) for value in (
-                self.extract_instruction, self.extract_system, self.digest_system, self.persona_system)):
+                self.extract_instruction, self.extract_system, self.digest_system, self.profile_system)):
             raise ValueError('Policy fields must be strings')
 
 
@@ -476,7 +479,10 @@ class OperationSpec:
             raise ValueError('Duplicate operation sources')
         if len({t.record for t in self.targets}) != len(self.targets):
             raise ValueError('Duplicate maintenance targets')
-        if self.kind in {OperationKind.REEMBED, OperationKind.GRAPH}:
+        if self.kind is OperationKind.PROFILE:
+            if self.session_id is not None or self.sources or self.targets:
+                raise ValueError('Profile tasks are space-scoped fact snapshots')
+        elif self.kind in {OperationKind.REEMBED, OperationKind.GRAPH}:
             if not self.targets or self.sources:
                 raise ValueError('Maintenance requires record targets, not fabricated sources')
         elif not self.sources or self.session_id is None or self.targets:

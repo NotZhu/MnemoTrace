@@ -15,12 +15,12 @@ from .records import SCOPE, SOURCE, domain
 from .writes import allocate_sequence, append_input, commit_task, enqueue, queue_source_vector, save_embedding, store_messages
 
 IDLE_SECONDS = 60
+from ...llm.failures import ATTEMPT_LIMIT, RETRY_DELAYS
+
 LEASE_SECONDS = 60
 RENEW_SECONDS = 20
-ATTEMPT_LIMIT = 3
-RETRY_DELAYS = (30, 120)
 ACTIVE = ('pending', 'retry_wait', 'running')
-MODEL_OPERATIONS = ('extract', 'digest')
+MODEL_OPERATIONS = ('extract', 'digest', 'profile')
 RUNNABLE = (*MODEL_OPERATIONS, 'reembed')
 
 
@@ -106,9 +106,13 @@ class Tasks:
             if operation_ids is None:
                 rows = sql.run(f'SELECT operation_id FROM mnemotrace.operations WHERE {SCOPE} '
                                "AND state <> 'cancelled' "
-                               'AND kind = ANY(%s) AND (session_id = %s OR %s) ORDER BY sequence,operation_id',
-                               (*sql.scope, list(MODEL_OPERATIONS if include_digests else ('extract',)),
-                                session_id, session_id is None)).fetchall()
+                               'AND kind = ANY(%s) AND (session_id = %s OR %s) '
+                               "AND (kind <> 'profile' OR operation_id = ("
+                               f"SELECT operation_id FROM mnemotrace.operations WHERE {SCOPE} AND kind = 'profile' "
+                               "ORDER BY (state IN ('pending','running','retry_wait')) DESC,ready_at DESC,operation_id DESC LIMIT 1)) "
+                               'ORDER BY sequence,operation_id',
+                               (*sql.scope, list(MODEL_OPERATIONS if include_digests else ('extract', 'profile')),
+                                session_id, session_id is None, *sql.scope)).fetchall()
                 operation_ids = [row[0] for row in rows]
             self._freeze(sql, operation_ids)
             return operation_ids
@@ -303,7 +307,15 @@ class Tasks:
         with self.dao._transaction() as sql:
             row = _operation(sql, operation_id)
             if row and row['state'] in ('failed', 'retry_wait') and self._current(sql, row):
-                self._release(sql, row, 'pending', generation_attempts=0, embed_attempts=0)
+                if row['kind'] == 'profile' and sql.run(
+                    f"SELECT 1 FROM mnemotrace.operations WHERE {SCOPE} AND kind = 'profile' "
+                    "AND state = ANY(%s) AND operation_id <> %s",
+                    (*sql.scope, list(ACTIVE), operation_id),
+                ).fetchone():
+                    raise VersionConflict('Another profile refresh is active')
+                values = ({'ready_at': sql.run('SELECT clock_timestamp()').fetchone()[0]}
+                          if row['kind'] == 'profile' else {})
+                self._release(sql, row, 'pending', generation_attempts=0, embed_attempts=0, **values)
         return self.operation(operation_id)
 
     def load(self, view, lease):

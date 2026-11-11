@@ -35,14 +35,14 @@ def test_zero_dependency_defaults():
 
 def test_single_hop_qa():
     mem = build()
-    assert "shenzhen" in mem.search("Which city do I live in?", user_id="u1").answer().lower()
-    assert "python" in mem.search("What is my favorite programming language?", user_id="u1").answer().lower()
+    assert "shenzhen" in mem.search("Which city do I live in?", user_id="u1").top().object.lower()
+    assert "python" in mem.search("What is my favorite programming language?", user_id="u1").top().object.lower()
 
 
 def test_knowledge_update_supersedes_current_answer():
     mem = build()
     # 当前答案必须反映换工作这件事，而不是过期的旧 fact
-    assert "moonshot" in mem.search("Where do I work?", user_id="u1").answer().lower()
+    assert "moonshot" in mem.search("Where do I work?", user_id="u1").top().object.lower()
 
 
 def test_multi_sentence_episode_extracts_every_fact():
@@ -65,8 +65,8 @@ def test_records_import_same_session_extracts_multiple_messages():
     assert stats["sessions"] == 1
     assert stats["episodes"] == 2
     assert stats["facts_added"] == 2
-    assert "tencent" in mem.as_of("Where do I work?", BASE + 1, user_id="u1").answer().lower()
-    assert "moonshot" in mem.search("Where do I work?", user_id="u1").answer().lower()
+    assert "tencent" in mem.as_of("Where do I work?", BASE + 1, user_id="u1").top().object.lower()
+    assert "moonshot" in mem.search("Where do I work?", user_id="u1").top().object.lower()
 
 
 def test_same_slot_identity_facts_remain_eligible_when_both_are_current():
@@ -276,9 +276,9 @@ def test_no_hard_delete_history_preserved():
 def test_bitemporal_as_of_query():
     mem = build()
     before = mem.as_of("Where do I work?", BASE + 10 * DAY, user_id="u1")
-    assert "tencent" in before.answer().lower()
+    assert "tencent" in before.top().object.lower()
     after = mem.search("Where do I work?", user_id="u1")
-    assert "moonshot" in after.answer().lower()
+    assert "moonshot" in after.top().object.lower()
 
 
 def test_multi_hop_reasoning():
@@ -329,13 +329,6 @@ def test_abstention_unknown_attribute():
     assert mem.search("What is the capital of France?", user_id="u1").abstained
 
 
-def test_profile_reflects_current_state():
-    mem = build()
-    prof = mem.profile("u1")
-    assert prof.get("works_at") == "Moonshot AI"
-    assert prof.get("lives_in") == "Shenzhen"
-
-
 def test_first_person_occupation_reaches_profile():
     mem = MemoryEngine()
     mem.add("I am a pediatrician.", user_id="u1", event_time=BASE)
@@ -344,7 +337,7 @@ def test_first_person_occupation_reaches_profile():
     assert ("user", "occupation", "pediatrician") in {
         (f.subject, f.predicate, f.object) for f in mem.fact_store.values()
     }
-    assert mem.profile("u1").get("occupation") == "pediatrician"
+    assert mem.profile("u1")["pending_fact_count"] == 1
 
 
 def test_first_person_works_as_role_is_atomic():
@@ -421,10 +414,7 @@ def test_import_style_moving_and_dietary_restrictions_extract_cleanly():
     assert ("user", "diet", "vegetarian") in facts
     assert ("user", "allergic_to", "peanuts") in facts
 
-    profile = mem.structured_profile("u1")
-    dietary_items = [it for items in profile["preferences"].values() for it in items]
-    assert any(it["predicate"] == "diet" and it["item"] == "vegetarian" for it in dietary_items)
-    assert any(it["predicate"] == "allergic_to" and it["item"] == "peanuts" for it in dietary_items)
+    assert mem.profile("u1")["needs_refresh"]
 
 
 def test_assistant_small_talk_is_not_profile_occupation():

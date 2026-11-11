@@ -1,6 +1,7 @@
 """Apply explicit record changes inside the space write transaction."""
 from dataclasses import asdict
 
+from ...profile import INPUT_FIELDS
 from ...util import gen_id
 from ..contracts import OperationKind, OperationSpec, OperationStats, RecordRef, RecordVersion
 from .errors import DatabaseConstraintError, MessageConflict, VersionConflict
@@ -111,9 +112,9 @@ def write(sql, change, graph):
         if previous:
             if digest_changed:
                 sql.update('sources', {'record_version': record.record_version}, 'id = %s', (record_id,))
-            return digest_changed
+            return digest_changed, False
     elif current == old:
-        return False
+        return False, False
     if text_changed:
         column = TARGET_COLUMNS[kind]
         sql.delete('embeddings', f'{column} = %s', (record_id,))
@@ -129,7 +130,8 @@ def write(sql, change, graph):
         graph_fields = ('subject', 'predicate', 'object', 'object_kind', 'valid_at', 'invalid_at', 'expired_at', 'review_pending', 'approved_at')
         if old is None or any(old[k] != current[k] for k in graph_fields):
             graph.project(record_id)
-    return True
+    profile_changed = kind == FACT and (old is None or any(old[key] != current[key] for key in INPUT_FIELDS))
+    return True, profile_changed
 
 
 def invalidate(sql, item, graph):

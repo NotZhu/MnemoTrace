@@ -38,7 +38,7 @@ async def test_tools_are_registered_with_flat_schema():
     assert all(name.startswith("mnemotrace_") for name in tools)
     assert {"mnemotrace_remember", "mnemotrace_recall", "mnemotrace_flush_processing", "mnemotrace_session_report",
             "mnemotrace_list_sessions", "mnemotrace_search",
-            "mnemotrace_list_facts", "mnemotrace_profile", "mnemotrace_agent_status", "mnemotrace_stats",
+            "mnemotrace_list_facts", "mnemotrace_profile", "mnemotrace_refresh_profile", "mnemotrace_agent_status", "mnemotrace_stats",
             "mnemotrace_add_fact", "mnemotrace_update_fact", "mnemotrace_delete_fact", "mnemotrace_get_focus",
             "mnemotrace_set_focus", "mnemotrace_import", "mnemotrace_export", "mnemotrace_forget"} <= set(tools)
     # 顶层平铺的参数（不嵌套在 "params" 之下）
@@ -71,6 +71,8 @@ async def test_tools_are_registered_with_flat_schema():
     assert tools["mnemotrace_list_sessions"].annotations.readOnlyHint is True
     assert tools["mnemotrace_export"].annotations.readOnlyHint is True
     assert tools["mnemotrace_flush_processing"].annotations.readOnlyHint is False
+    assert tools["mnemotrace_profile"].annotations.readOnlyHint is True
+    assert tools["mnemotrace_refresh_profile"].annotations.readOnlyHint is False
     assert tools["mnemotrace_forget"].annotations.destructiveHint is True
 
 
@@ -83,7 +85,7 @@ async def test_remember_then_recall_and_search(local_backend):
     js = await call("mnemotrace_recall", query="Where does the user live?", response_format="json")
     assert '"context"' in js
     ans = await call("mnemotrace_search", query="Where does the user live?")
-    assert "Answer" in ans
+    assert "Shenzhen" in ans and "Answer" not in ans
 
 
 @pytest.mark.asyncio
@@ -128,6 +130,25 @@ async def test_add_fact_list_and_profile(local_backend):
     assert re.search(r"`ft_[^`]+`", facts)
     prof = await call("mnemotrace_profile")
     assert "User profile" in prof
+
+
+@pytest.mark.asyncio
+async def test_explicit_profile_refresh_and_cached_read(local_backend):
+    from tests.test_profile_cache import model
+
+    llm = model()
+    local_backend.svc.llm = llm
+    await call("mnemotrace_add_fact", predicate="likes", object="Synthetic tea", sensitive=False)
+    initial = json.loads(await call("mnemotrace_profile", response_format="json"))
+    assert initial["updated_at"] is None and not llm.calls
+    operation = json.loads(await call("mnemotrace_refresh_profile"))
+    assert operation["kind"] == "profile" and operation["operation_id"]
+    assert json.loads(await call("mnemotrace_flush_processing"))["ok"]
+    completed = json.loads(await call("mnemotrace_profile", response_format="json"))
+    assert completed["profile"]["basic"][0]["fact_count"] == 1
+    count = len(llm.calls)
+    await call("mnemotrace_profile")
+    assert len(llm.calls) == count
 
 
 @pytest.mark.asyncio
@@ -316,7 +337,7 @@ async def test_recall_and_search_support_as_of(local_backend):
     )
     data = json.loads(raw)
     assert data["as_of"] == 1_700_864_000.0
-    assert "Tencent" in data["answer"]
+    assert data["status"] == "evidence_only" and any("Tencent" in fact for fact in data["facts"])
     assert all("Moonshot" not in fact for fact in data["facts"])
 
 

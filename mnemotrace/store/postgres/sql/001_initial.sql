@@ -264,7 +264,7 @@ CREATE TABLE mnemotrace.operations (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
     operation_id mnemotrace.identifier NOT NULL,
-    kind text NOT NULL CHECK (kind IN ('extract','digest','outcomes','conflicts','reembed','graph')),
+    kind text NOT NULL CHECK (kind IN ('extract','digest','outcomes','conflicts','reembed','graph','profile')),
     session_id mnemotrace.identifier,
     sequence mnemotrace.counter,
     state text NOT NULL CHECK (state IN ('pending','running','retry_wait','failed','completed','cancelled')),
@@ -394,3 +394,13 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON mnemotrace.users, mnemotrace.api_keys TO
 GRANT SELECT, DELETE ON ALL TABLES IN SCHEMA mnemotrace TO {admin};
 REVOKE DELETE ON mnemotrace.schema_migrations FROM {admin};
 -- Runtime business grants and per-table policies are generated below by the migration runner.
+
+CREATE TABLE mnemotrace.profile_states (
+    user_id mnemotrace.identifier NOT NULL,
+    space_id mnemotrace.identifier NOT NULL,
+    profile_data jsonb NOT NULL CHECK (jsonb_typeof(profile_data) = 'object'),
+    PRIMARY KEY (user_id, space_id),
+    FOREIGN KEY (user_id,space_id) REFERENCES mnemotrace.memory_spaces(user_id,space_id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX one_active_profile_refresh ON mnemotrace.operations(user_id,space_id)
+    WHERE kind = 'profile' AND state IN ('pending','retry_wait','running');

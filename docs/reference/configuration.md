@@ -6,6 +6,8 @@
 
 `from mnemotrace import Config`，再传给 `MemoryEngine(config=...)`。完整字段和精确默认值在 [config.py](../../mnemotrace/config.py) 维护。
 
+`Config.from_env()` 返回应用默认值。数据库、模型和服务的环境变量由各自部署入口读取。
+
 创建 `Config` 时请使用关键字参数，例如 `Config(top_k=5)`；字段顺序可能随配置分组调整。
 
 ## Postgres 数据库基础
@@ -139,12 +141,16 @@ DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读
 超长事件按实际输入预算分段并保存中间进度，之后合并成一份事件摘要；中间结果不参与检索。
 摘要失败、空输出、输出超限或截断不产生摘录替代品。已有摘要不自动重新生成。
 
+## 画像刷新预算
+
+profile_max_input_chars 和 profile_max_output_tokens 仅影响显式画像刷新，默认值分别为 48,000 和 4,096。输入预算包含固定协议、附加指导、旧画像和事实。必要输入无法容纳时明确失败。画像读取和上下文组装不调用模型。
+
 ## 其他配置参数
 
 | 参数组 | 主要字段与默认行为 | 影响 |
 | --- | --- | --- |
 | 融合 | w_sem=1.0、w_lex=0.6、w_graph=0.8、w_rec=0.3、w_sal=0.25 | 不同检索信号的配置权重 |
-| 候选与输出 | top_k=5、rrf_k=60；candidate_k=24 当前未使用 | 检索返回规模与排序融合 |
+| 候选与输出 | top_k=5、rrf_k=60；candidate_k=24 已弃用，仅供旧评测配置 | 检索返回规模与排序融合 |
 | 扩展候选 | ann_candidates=False、ann_pool=200 | 内存引擎可选的有界向量候选路径。BM25 仅重排向量与图候选 |
 | 时间与图 | recency_tau_days=45、max_hops=2 | 时近性先验和图遍历 |
 | 热层与拒答 | max_hot_facts=10000、abstain_threshold=0.45 | 工作集容量和低证据回退 |

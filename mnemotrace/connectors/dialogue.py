@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from .base import ImportSession, to_epoch
+from .base import ImportSession, record_time
 from ..consolidate.pipeline import normalized
 
 
@@ -26,10 +26,9 @@ def batches(sessions, consolidate=None):
         for index, item in enumerate(record['messages']):
             if isinstance(item.get('content'), str) and not item['content'].strip():
                 continue
-            stamp = next((item[k] for k in ('event_time', 'timestamp', 'time', 'created_at', 'date')
-                          if item.get(k) is not None), None)
+            stamp = record_time(item, 'event_time', 'timestamp', 'time', 'created_at', 'date')
             messages.append(dict(message_id=item.get('message_id') or f'import:{index}',
-                role=item.get('role'), content=item.get('content'), event_time=to_epoch(stamp)))
+                role=item.get('role'), content=item.get('content'), event_time=stamp))
         if messages:
             for start in range(0, len(messages), 1000):
                 batch = messages[start:start + 1000]

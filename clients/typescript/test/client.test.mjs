@@ -6,6 +6,25 @@ import { createRequire } from 'node:module'
 
 const space = {spaceId: 'space-test'}
 
+test('profile reads cached sections and refresh creates a space-scoped operation', async () => {
+  const calls = []
+  const cache = {profile: {basic: [], relationships: [], interests: [], habits: [], restrictions: [],
+    goals: [], communication_preferences: []}, updated_at: null, cache_version: 0,
+    pending_fact_count: 1, needs_refresh: true, operation_id: null, refresh_state: null, refresh_error: null}
+  const operation = {operation_id: 'profile-op', kind: 'profile', state: 'pending'}
+  const client = new MnemoTraceClient({fetch: async (url, init) => {
+    calls.push({url: new URL(url), method: init.method, body: init.body && JSON.parse(init.body)})
+    return new Response(JSON.stringify(init.method === 'POST' ? operation : cache),
+      {status: init.method === 'POST' ? 202 : 200})
+  }})
+  assert.deepEqual(await client.profile(space), cache)
+  assert.deepEqual(await client.refreshProfile(space), operation)
+  assert.equal(calls[0].url.pathname, '/v1/profile')
+  assert.equal(calls[0].url.searchParams.get('space_id'), 'space-test')
+  assert.equal(calls[1].url.pathname, '/v1/profile/refresh')
+  assert.deepEqual(calls[1].body, {space_id: 'space-test'})
+})
+
 test('import maps generateDigests to the HTTP field and preserves the server default', async () => {
   const calls = []
   const client = new MnemoTraceClient({ fetch: async (url, init) => {
@@ -156,6 +175,8 @@ test('ESM and CommonJS expose only the new runtime API', async () => {
   for (const sdk of [esm, cjs]) {
     assert.equal(typeof sdk.MnemoTraceClient, 'function')
     assert.equal(typeof sdk.MnemoTraceError, 'function')
+    assert.ok(sdk.CATEGORIES.includes('food'))
+    assert.ok(sdk.PROFILE_SECTIONS.includes('communication_preferences'))
     assert.equal(Object.hasOwn(sdk, 'EngramClient'), false)
     assert.equal(Object.hasOwn(sdk, 'EngramError'), false)
   }

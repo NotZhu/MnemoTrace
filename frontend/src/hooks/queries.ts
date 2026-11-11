@@ -156,11 +156,22 @@ export function useAudit(limit = 60) {
   })
 }
 
-export function useStructuredProfile() {
+export function useProfile() {
   const enabled = !!useAuth((s) => s.spaceId)
-  return useQuery({ queryKey: qk.profile(), queryFn: api.structuredProfile, enabled, retry: false })
+  return useQuery({ queryKey: qk.profile(), queryFn: api.profile, enabled, retry: false,
+    refetchInterval: query => ['pending', 'running', 'retry_wait'].includes(query.state.data?.refresh_state ?? '') ? 1000 : false })
 }
 
+
+export function useRetryOperation() {
+  const invalidate = useInvalidateMemory()
+  return useMutation({ mutationFn: (id: string) => api.retryOperation(id), onSuccess: invalidate })
+}
+
+export function useRefreshProfile() {
+  const invalidate = useInvalidateMemory()
+  return useMutation({ mutationFn: () => api.refreshProfile(), onSuccess: invalidate })
+}
 
 export function useConflicts() {
   const enabled = !!useAuth((s) => s.spaceId)

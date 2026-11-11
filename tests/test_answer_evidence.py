@@ -43,3 +43,18 @@ def test_digest_fallback_requires_query_evidence():
     seed_digests(memory, [source])
     assert memory._digest_fallback("What is Ana's favorite food?", "default") is None
     assert memory._digest_fallback("What is Ana's favorite programming language?", "default") is not None
+
+
+
+def test_explicit_answer_distinguishes_empty_configuration_and_failure():
+    from mnemotrace.llm.base import Completion
+    from mnemotrace.llm.fake import FakeLLM
+    from mnemotrace.service import _answer_from_memory
+
+    assert _answer_from_memory(None, "Synthetic question", "Synthetic evidence") == ("", "model_not_configured")
+    model = FakeLLM(responses=["", Completion("truncated", "length"), "Synthetic answer"])
+    assert _answer_from_memory(model, "Synthetic question", "") == ("", "no_evidence")
+    assert model.calls == []
+    assert _answer_from_memory(model, "Synthetic question", "Synthetic evidence") == ("", "empty")
+    assert _answer_from_memory(model, "Synthetic question", "Synthetic evidence") == ("", "model_failed")
+    assert _answer_from_memory(model, "Synthetic question", "Synthetic evidence") == ("Synthetic answer", "answered")

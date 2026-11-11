@@ -12,7 +12,7 @@
     messages    OpenAI 对话数组 — [{role, content}, ...]（或 {messages:[...]}）
     records     扁平的 {content, [session_id], [role], [timestamp]} 列表
     jsonl       JSON-Lines，每行一条记录
-    transcript  纯文本 / markdown（"Speaker: text" 行，或自由文本）
+    transcript  纯文本 / markdown（明确 user/assistant 角色，或原文）
 """
 from __future__ import annotations
 

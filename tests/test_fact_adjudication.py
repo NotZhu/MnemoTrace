@@ -56,7 +56,7 @@ def merge(incoming, previous=(), *, judge='replaces', now=100, model=None):
 
 def test_exact_duplicates_merge_provenance_and_keep_sensitive():
     first = fact('first', 'Paris', 1, source_roles=['user'])
-    duplicate = fact('duplicate', 'PARIS', 1, sensitive=True, source_roles=['assistant', 'user'])
+    duplicate = fact('duplicate', 'Paris', 1, sensitive=True, source_roles=['assistant', 'user'])
     changed, conflicts, stats = merge([duplicate], [first])
     assert not conflicts and stats['model_calls'] == 0
     assert changed['first'].provenance == ['first-source', 'duplicate-source']
@@ -336,3 +336,16 @@ def test_approval_respects_other_manual_conflict_decisions(other_decision):
         {'Wednesday only', 'Thursday'} if approved else {'Tuesday', 'Thursday'}
     )
     assert conflicts[tuesday.id].status == ('resolved' if approved else 'pending')
+
+
+
+def test_literal_case_conditions_and_subsecond_validity_survive_adjudication():
+    first = fact('first', 'Ab1', 10.01, object_kind='literal', categories=['misc'], categories_source='user')
+    for new in (
+        fact('case', 'ab1', 10.01, object_kind='literal'),
+        fact('time', 'Ab1', 10.02, object_kind='literal'),
+        fact('condition', 'Ab1', 10.01, object_kind='literal', text='Ana lives in Ab1 during the winter'),
+    ):
+        changed, _, stats = merge([new], [first], judge='coexists')
+        assert new.id in changed and stats['model_calls'] == 1
+    assert first.categories == ['misc']

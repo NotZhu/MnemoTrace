@@ -63,8 +63,16 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 ### POST /v1/recall
 
 单空间请求传 `space_id`。组合读取传非空且无重复的 `space_ids`，所有空间均通过授权后才执行。
-`lean=true` 返回上下文、估算 token 和检索覆盖状态，组合结果按空间标记证据。
-单空间的 `lean=false` 返回事实性答案及支撑事实。支持 `as_of` 和 `redact_sensitive`。
+`lean=true` 返回 `context`、估算 token 和检索覆盖状态。`context_sections` 中每段包含
+`kind`、`text` 和 `space_id`。预算不足时跳过放不下的完整条目，并在 `limitations` 中返回
+`context_budget`。组合结果按空间标记证据，历史和脱敏视图省略当前画像。
+
+单空间传 `lean=false` 搜索事实及来源候选。返回 `status`、`facts`、`fact_ids`、`sources` 和
+`answer`。自由文本查询返回 `evidence_only` 或 `no_evidence`。同时传 `subject` 和 `predicate`
+且在完整筛选视图中只有一个不同的值时，返回 `answered` 和该值。其他情况下 `answer` 为空。
+
+单空间传 `lean=true, answer=true` 可显式调用问答模型，`answer_status` 区分 `answered`、
+`no_evidence`、`model_not_configured`、`model_failed` 和 `empty`。回答失败时证据仍可读取。
 HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据。Python 直连可用 `FactQuery` 单独指定已知时间。
 
 
@@ -110,18 +118,20 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 | `PATCH /v1/facts/{fact_id}` | 三元组字段或 statement，及 sensitive、categories、object_kind；statement 非空且不能与三元组字段混用 |
 | `DELETE /v1/facts/{fact_id}` | 删除单事实；检查响应中的 ok |
 | `POST /v1/facts/clear-slot` | subject、predicate、expect_count 必填；受当前数量、来源和历史链保护 |
-| `GET /v1/profile` | 派生画像与关键事实 |
-| `GET /v1/profile/structured` | 结构化画像的确认与待确认视图 |
+| `GET /v1/profile` | 七栏画像缓存、更新时间、待更新事实数与刷新状态 |
+| `POST /v1/profile/refresh` | 请求体 space_id，返回 202 和画像刷新操作；后续查询或重试操作 |
 | `GET /v1/graph` | as_of、include_sensitive=false、q、live_only=false、limit |
 | `GET /v1/audit` | limit=40，检查图谱投影 |
 | `GET /v1/focus` / `PUT /v1/focus` | track/mute 列表，省略保持，[] 清空 |
-| `GET /v1/policy` / `PUT /v1/policy` | extract_instruction、extract_system、digest_system、persona_system；空字符串恢复默认 |
+| `GET /v1/policy` / `PUT /v1/policy` | extract_instruction、extract_system、digest_system、profile_system；空字符串恢复默认 |
 | `GET /v1/conflicts` | 待确认冲突，需要相应检测配置 |
 | `POST /v1/conflicts/{conflict_id}/resolve` | keep=newer、older 或 both |
 
-`track` 按事实正文匹配，在本空间检索时提高命中的显著度。`mute` 从召回上下文和派生画像排除匹配内容，原记录仍可在管理界面查看。
+`track` 在检索时给匹配的事实加分，清空即可撤销。`mute` 即时从召回和画像中排除匹配内容，管理界面仍可查看原记录。
+普通项按不区分大小写的词或短语匹配，拉丁词使用边界。例如 `Java` 不会命中 `JavaScript`。
+使用 `category:<id>` 可显式匹配事实的分类。
 
-结构化画像的证据字段与 Python API 共用[证据契约](python-api.md#profile-evidence)。
+画像条目的事实引用和计数与 Python API 共用[证据契约](python-api.md#profile-evidence)。
 
 `GET /v1/audit` 返回 `checked`、`total_findings`、`by_kind`、`findings` 和 `truncated`。检查项为 `missing_edge`、`edge_mismatch` 和 `orphan_entity`，以记录 ID 定位。事实检查排除敏感事实，节点只返回 ID。统计按空间汇总后再截断。
 
@@ -139,6 +149,8 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 | --- | --- |
 | `POST /v1/import` | sessions 或 data + format；consolidate=null、generate_digests=true、dedupe=true |
 | `POST /v1/documents` | text 或 data_base64；filename、content_type 可选，session_id=document |
+
+图片导入额外返回 `caption_status` 和 `degraded`。描述结果区分 `described`、`empty`、`model_not_configured` 与 `model_failed`。缺少描述时保留图片占位原文。
 | `GET /v1/export` | include_sensitive=false；返回结构化导出 |
 | `POST /v1/forget` | JSON `{"space_id":"…","confirm":true}`，清空指定空间并保留 ID 和设置 |
 

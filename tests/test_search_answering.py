@@ -32,8 +32,9 @@ def test_search_prefers_type_matching_fact():
     mem = MemoryEngine()
     mem.add_fact("project alpha", "owner", "Alice Wang", user_id="u1")
     mem.add_fact("project alpha", "id", "PROJ-1024", user_id="u1")
-    ans = mem.search("What is the project alpha ID?", user_id="u1").answer()
-    assert "PROJ-1024" in ans, f"ID question must return the ID, got: {ans!r}"
+    result = mem.search("What is the project alpha ID?", user_id="u1")
+    assert result.status == "evidence_only" and not result.answer()
+    assert result.top().object == "PROJ-1024"
 
 
 # ---------------- #3b 摘要回退 ----------------
@@ -44,7 +45,7 @@ def test_digest_fallback_answers_from_digest():
     seed_digests(mem, [ep])
     res = mem._digest_fallback("How do I reset the PAT?", "u1")
     assert res is not None, "a relevant digest should be surfaced when no fact answers"
-    assert "pat" in res.answer().lower() or "token" in res.answer().lower()
+    assert res.status == "evidence_only" and "token" in res.sources[0].text.lower()
 
 
 def test_search_uses_digest_fallback_when_no_fact_ranked():
@@ -55,8 +56,8 @@ def test_search_uses_digest_fallback_when_no_fact_ranked():
 
     res = mem.search("How do I reset the PAT?", user_id="u1")
     assert res.via == "digest"
-    assert "token" in res.answer().lower()
-    assert f"(episode: {ep.id}; space: u1; session: s1)" in res.answer()
+    assert "token" in res.sources[0].text.lower()
+    assert (res.sources[0].id, res.sources[0].session_id) == (ep.id, "s1")
 
 
 def test_digest_fallback_can_be_disabled_for_ablation():
@@ -84,8 +85,8 @@ def test_digest_fallback_selects_best_source_backed_digest():
     res = mem._digest_fallback("How do I reset the PAT?", "u1")
 
     assert res is not None
-    assert f"(episode: {strong.id}; space: u1; session: strong)" in res.answer()
-    assert "regenerate the token" in res.answer().lower()
+    assert res.sources[0].id == strong.id
+    assert "regenerate the token" in res.sources[0].text.lower()
 
 
 def test_digest_fallback_respects_as_of():
@@ -98,7 +99,7 @@ def test_digest_fallback_respects_as_of():
 
     res = mem._digest_fallback("How do I reset the PAT?", "u1", as_of=1_700_864_000.0)
     assert res is not None
-    ans = res.answer().lower()
+    ans = res.sources[0].text.lower()
     assert "legacy token page" in ans
     assert "new security console" not in ans
 
@@ -128,13 +129,44 @@ def test_search_prefers_source_backed_literal_facts_for_runbook_queries():
 
     assert res.via == "hybrid"
     assert res.facts[0].provenance == [ep.id]
-    assert "security settings" in res.answer()
+    assert res.status == "evidence_only" and "security settings" in res.sources[0].text
 
 
-def test_profile_build_prefers_authoritative_and_recent():
-    from mnemotrace.consolidate.summarizer import ProfileBuilder
-    pb = ProfileBuilder()
-    extracted = _fact("Wei", "works_at", "a tech company", 1)               # 模糊的，抽取的
-    pinned = _fact("Wei", "works_at", "Moonshot AI", 2, source="user")      # 精确的，固定的，更新
-    assert pb.build("Wei", [extracted, pinned])["works_at"] == "Moonshot AI"
-    assert pb.build("Wei", [pinned, extracted])["works_at"] == "Moonshot AI", "must be order-independent"
+
+def test_free_text_is_candidate_evidence_and_slot_answer_uses_full_view():
+    from mnemotrace.store.contracts import FactQuery
+
+    mem = MemoryEngine()
+    bob = mem.add_fact("Bob", "favorite_language", "Ab1", object_kind="literal")
+    result = mem.search("What is Alice's favorite language?")
+    assert result.status == "evidence_only" and result.top().id == bob.id and result.answer() == ""
+    missing = mem.search("", facts=FactQuery(subject="Alice", predicate="favorite_language"))
+    assert missing.status == "no_evidence"
+    bob_slot = FactQuery(subject="Bob", predicate="favorite_language")
+    assert mem.search("", facts=bob_slot).answer() == "Ab1"
+    mem.add_fact("Bob", "favorite_language", "ab1", object_kind="literal")
+    result = mem.search("", facts=bob_slot, top_k=1)
+    assert len(result.facts) == 1 and result.status == "evidence_only"
+
+
+def test_raw_source_is_evidence_and_redaction_omits_it():
+    from mnemotrace.store.contracts import FactQuery
+
+    mem = MemoryEngine()
+    source = mem.add("Synthetic violet passphrase")
+    result = mem.search("violet passphrase")
+    assert result.status == "evidence_only" and result.sources[0].id == source.id
+    assert mem.search("violet passphrase", facts=FactQuery(exclude_sensitive=True)).status == "no_evidence"
+
+
+def test_context_budget_preserves_whole_assertions_and_prefers_evidence():
+    from mnemotrace.retrieve.context import pack_sections, render_sections
+
+    fact = "- User does not use Java unless approved."
+    sections, limited = pack_sections([
+        ("facts", "FACTS", ["- " + "oversize " * 20, fact]),
+        ("profile", "PROFILE", ["- Unrelated profile"]),
+    ], len("FACTS\n" + fact), "synthetic")
+    assert limited and [section.kind for section in sections] == ["facts"]
+    assert render_sections(sections) == "FACTS\n" + fact
+    assert sections[0].space_id == "synthetic"

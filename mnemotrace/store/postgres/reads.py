@@ -1,5 +1,6 @@
 """Structured reads on one authorized, repeatable database snapshot."""
 from dataclasses import fields
+from ...focus import selectors
 import json
 
 from ..contracts import FactQuery, FactState, RetrievalQuery, SpaceSettings
@@ -33,14 +34,21 @@ class ReadView:
         return ReadView(self._sql, self.snapshot, self.at, self._settings, apply_focus=True)
 
     @staticmethod
-    def focus_matches(column):
-        return f'EXISTS (SELECT 1 FROM unnest(%s::text[]) term WHERE strpos(lower({column}), term) > 0)'
+    def focus_condition(column, terms, *, categories=None):
+        patterns, labels = selectors(terms)
+        sql = f'lower({column}) ~ ANY(%s::text[])'
+        args = [patterns]
+        if categories is not None:
+            sql = f'({sql} OR {categories} && %s::text[])'
+            args.append(labels)
+        return sql, args
 
-    def exclude_muted(self, clauses, args, *columns):
+    def exclude_muted(self, clauses, args, *columns, categories=None):
         if self.mute_terms:
             for column in columns:
-                clauses.append('NOT ' + self.focus_matches(column))
-                args.append(list(self.mute_terms))
+                condition, params = self.focus_condition(column, self.mute_terms, categories=categories)
+                clauses.append('NOT (' + condition + ')')
+                args.extend(params)
 
     def get(self, kind, record_id):
         return self._sql.get(kind, record_id)
@@ -102,7 +110,7 @@ class ReadView:
             args.append(list(query.source_ids))
         if query.exclude_sensitive:
             clauses.append('NOT r.sensitive')
-        self.exclude_muted(clauses, args, 'r.text')
+        self.exclude_muted(clauses, args, 'r.text', categories='r.categories')
         return clauses, args
 
     def facts(self, query: FactQuery = FactQuery()):
@@ -120,18 +128,6 @@ class ReadView:
             args.append(timestamp(end))
         page(clauses, args, after_id, 1000)
         return self._sql.select(FACT, clauses, args, limit=1000)
-
-    def profile_facts(self, *, page_size=100):
-        after_id = None
-        while True:
-            clauses, args = self._fact_conditions(FactQuery(exclude_sensitive=True))
-            clauses.append("r.subject = 'user'")
-            page(clauses, args, after_id, page_size)
-            records = self._sql.select(FACT, clauses, args, limit=page_size)
-            yield from records
-            if len(records) < page_size:
-                return
-            after_id = records[-1].ref.record_id
 
     def facts_by_ids(self, ids, query):
         clauses, args = self._fact_conditions(query)

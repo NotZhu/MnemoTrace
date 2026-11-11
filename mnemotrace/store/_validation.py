@@ -240,7 +240,7 @@ def _validate_fact_categories(record: dict, path: str) -> None:
 
 # A migration carries source identities/history, not the target user's runtime state.
 _IMPORT_FACT = {key: _FACT[key] for key in (
-    "id", "subject", "predicate", "object", "text", "source", "sensitive",
+    "id", "subject", "predicate", "object", "text", "display", "source", "sensitive",
     "categories", "categories_source", "object_kind", "cardinality", "retention",
     "salience", "confidence", "valid_at", "invalid_at", "created_at", "expired_at", "validity_revisions",
     "supersedes", "provenance", "source_roles", "sensitive_override", "review_pending", "approved_at",
@@ -248,7 +248,7 @@ _IMPORT_FACT = {key: _FACT[key] for key in (
 _IMPORT_FACT.update(status=_choice("live", "superseded"), valid_at_h=_string,
                     invalid_at_h=_nullable(_string))
 _IMPORT_EPISODE = {key: _EPISODE[key] for key in (
-    "id", "content", "session_id", "role", "event_time", "digest", "coverage", "digest_coverage",
+    "id", "content", "session_id", "role", "event_time", "ingested_at", "digest", "coverage", "digest_coverage",
 )}
 
 
@@ -273,8 +273,8 @@ def validate_snapshot(snapshot: Any) -> dict:
         if key not in snapshot:
             _fail(f"snapshot.{key}", "missing required field")
     result = {}
-    for name, spec, optional in (("facts", _IMPORT_FACT, ("text", "status", "valid_at_h", "invalid_at_h", "source_roles", "sensitive_override", "review_pending", "approved_at")),
-                                 ("episodes", _IMPORT_EPISODE, ("digest", "coverage", "digest_coverage")),
+    for name, spec, optional in (("facts", _IMPORT_FACT, ("text", "display", "status", "valid_at_h", "invalid_at_h", "source_roles", "sensitive_override", "review_pending", "approved_at")),
+                                 ("episodes", _IMPORT_EPISODE, ("digest", "coverage", "digest_coverage", "ingested_at")),
                                  ("conflicts", _IMPORT_CONFLICT, ())):
         rows = snapshot.get(name, [])
         if not isinstance(rows, list):

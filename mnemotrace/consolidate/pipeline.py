@@ -12,7 +12,7 @@ import uuid
 from ..types import Episode
 from ..extraction import ExtractionError
 
-VERSION = 5
+VERSION = 6
 TERMINAL = {'completed', 'failed', 'cancelled'}
 
 
@@ -133,8 +133,12 @@ def validate_state(value, episodes=None, embedding_dim=None):
             return None
         if isinstance(value, dict) and value.get('version') != VERSION:
             raise ValueError('Unsupported offline processing checkpoint version')
-        require(isinstance(value, dict) and set(value) == {'version', 'namespaces'} and value['version'] == VERSION)
+        require(isinstance(value, dict) and set(value) == {'version', 'namespaces', 'profiles'} and value['version'] == VERSION)
         require(isinstance(value['namespaces'], dict))
+        require(isinstance(value['profiles'], dict))
+        from ..profile import validate_stored
+        for stored_profile in value['profiles'].values():
+            validate_stored(stored_profile)
         for namespace, state in value['namespaces'].items():
             require(isinstance(namespace, str) and bool(namespace))
             require(isinstance(state, dict) and set(state) == {'version', 'namespace', 'generation', 'sequences', 'sources', 'sessions', 'windows'})
@@ -400,7 +404,7 @@ class PipelineTasks:
 
     def ensure(self):
         if self.memory._pipeline_state is None:
-            self.memory._pipeline_state = dict(version=VERSION, namespaces={})
+            self.memory._pipeline_state = dict(version=VERSION, namespaces={}, profiles={})
         if self.state is None:
             self.memory._pipeline_state['namespaces'][self.namespace] = dict(version=VERSION, namespace=self.namespace,
                 generation=uuid.uuid4().hex, sequences={}, sources={}, sessions={}, windows={})
