@@ -170,6 +170,12 @@ def product_client(product_service, product_scope):
     from mnemotrace.server import app
 
     class ScopedClient(TestClient):
+        def seed_fact(self, headers, *, predicate, object, text, subject='user', **fields):
+            from tests.postgres.fact_fixtures import seed_fact
+
+            context, _ = product_scope(headers['X-Synthetic-Scope'])
+            return seed_fact(product_service.memory(context), subject, predicate, object, text=text, **fields)
+
         def request(self, method, url, *, headers=None, **kwargs):
             headers = dict(headers or {})
             label = headers.pop('X-Synthetic-Scope', None)

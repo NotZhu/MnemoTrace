@@ -31,7 +31,7 @@ class Corpus:
                 FROM mnemotrace.facts r"""
         else:
             conditions, params = [], []
-            for column, value in (('event_time', facts.valid_at), ('ingested_at', facts.known_at)):
+            for column, value in (('event_time', facts.valid_at),):
                 if value is not None:
                     conditions.append(f'r.{column} <= %s')
                     params.append(timestamp(value))
@@ -41,7 +41,7 @@ class Corpus:
             if end is not None:
                 conditions.append('r.event_time < %s')
                 params.append(timestamp(end))
-            joins, join_params = source_digest_join(facts.known_at)
+            joins, join_params = source_digest_join()
             select = """SELECT r.user_id,r.space_id,r.id,r.content_version,r.session_id,
                 'digest' AS field, s.digest_version AS text_version
                 FROM mnemotrace.sources r""" + joins + ' AND s.content_version = r.content_version'

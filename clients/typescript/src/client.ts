@@ -19,13 +19,10 @@ import type {
   MemorySpace,
   AgentStatus,
   Fact,
-  FactInput,
   AggregateFactsOptions,
   AggregateFactsResult,
   FollowPathResult,
   StructuredReadOptions,
-  FactPatch,
-  FactMetadata,
   ForgetOptions,
   Focus,
   GraphResponse,
@@ -230,11 +227,11 @@ export class MnemoTraceClient {
 
   recall(query: string, options: ({ spaceId: string; spaceIds?: never } | { spaceIds: string[]; spaceId?: never }) & {
     nDigests?: number; asOf?: number; redactSensitive?: boolean; answer?: boolean
-    state?: StructuredReadOptions["state"]; validAt?: number; knownAt?: number
+    state?: StructuredReadOptions["state"]; validAt?: number
   }): Promise<RecallResult> {
     return this.post('/v1/recall', {
       query, lean: true, n_digests: options.nDigests, answer: options.answer,
-      as_of: options.asOf, state: options.state, valid_at: options.validAt, known_at: options.knownAt, redact_sensitive: options.redactSensitive, space_ids: options.spaceIds,
+      as_of: options.asOf, state: options.state, valid_at: options.validAt, redact_sensitive: options.redactSensitive, space_ids: options.spaceIds,
     }, options.spaceId)
   }
 
@@ -275,13 +272,13 @@ export class MnemoTraceClient {
 
   /** Retrieve candidates or the unique value of an explicit subject and predicate. */
   search(query: string, options: SpaceOptions & { asOf?: number; redactSensitive?: boolean;
-    state?: StructuredReadOptions["state"]; validAt?: number; knownAt?: number; subject?: string; predicate?: string }): Promise<SearchResult> {
+    state?: StructuredReadOptions["state"]; validAt?: number; subject?: string; predicate?: string }): Promise<SearchResult> {
     return this.post<SearchResult>('/v1/recall', {
       query,
       lean: false,
       subject: options.subject, predicate: options.predicate,
       as_of: options.asOf ?? null,
-      state: options.state, valid_at: options.validAt, known_at: options.knownAt,
+      state: options.state, valid_at: options.validAt,
       redact_sensitive: options.redactSensitive ?? false,
     }, options.spaceId)
   }
@@ -329,17 +326,10 @@ export class MnemoTraceClient {
     return this.request<ProfileResult>('/v1/profile', {}, options.spaceId)
   }
 
-  // --- 可编辑的事实 ----------------------------------------------------------
-  /** 断言一条权威事实（用户来源；绝不会被静默覆盖）。 */
-  addFact(fact: FactInput, options: SpaceOptions): Promise<{ ok: boolean; id: string; text: string } & FactMetadata & Pick<Fact, "cardinality" | "retention">> {
-    return this.post('/v1/facts', { subject: 'user', ...fact }, options.spaceId)
-  }
-
-  updateFact(id: string, patch: FactPatch, options: SpaceOptions): Promise<{ ok: boolean; id: string; text: string } & FactMetadata & Pick<Fact, "cardinality" | "retention">> {
-    return this.request(`/v1/facts/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(patch),
-    }, options.spaceId)
+  // --- 事实操作 ----------------------------------------------------------
+  /** 更改事实的共享可见性。 */
+  setFactSensitive(id: string, sensitive: boolean, options: SpaceOptions): Promise<{ ok: boolean; id: string; sensitive: boolean }> {
+    return this.request(`/v1/facts/${encodeURIComponent(id)}/sensitivity`, { method: 'PATCH', body: JSON.stringify({ sensitive }) }, options.spaceId)
   }
 
   deleteFact(id: string, options: SpaceOptions): Promise<{ ok: boolean }> {

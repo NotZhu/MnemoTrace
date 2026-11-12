@@ -4,13 +4,13 @@ __version__ = "0.1.0"
 
 from .config import Config
 from .types import Entity, Episode, Fact, Relation
-from .types import Cardinality, Retention
-from .categories import Category, CategoriesSource, ObjectKind
+from .types import Retention
+from .categories import Category, CategoriesSource
 from .memory import Memory
 from .memory_engine import MemoryEngine
 
-__all__ = ["__version__", "Config", "Episode", "Fact", "Entity", "Relation", "Category", "CategoriesSource", "ObjectKind",
-           "Memory", "MemoryEngine", "Cardinality", "Retention"]
+__all__ = ["__version__", "Config", "Episode", "Fact", "Entity", "Relation", "Category", "CategoriesSource",
+           "Memory", "MemoryEngine", "Retention"]
 
 from .extraction import (ExtractionConflictError, ExtractionError,
                          ExtractionResponseError, ExtractionTruncatedError, LLMNotConfiguredError,

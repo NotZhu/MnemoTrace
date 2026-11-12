@@ -26,7 +26,7 @@ function setup({ empty = false, hideSensitive = false } = {}) {
       useEffect(callback, deps) { const index = effectCursor++; if (!effects[index] || deps.some((value, i) => !Object.is(value, effects[index][i]))) { effects[index] = deps; pending.push(callback) } },
     }
     if (name === '../store/preferences') return { useSpacePreference: (_, field) => [preferences[field], value => { preferences[field] = typeof value === 'function' ? value(preferences[field]) : value }] }
-    if (name === '../hooks/queries') return { useAddFact: mutation, useEditFact: mutation, useDeleteFact: mutation, useSourceEpisodes: () => ({}),
+    if (name === '../hooks/queries') return { useSetFactSensitive: mutation, useDeleteFact: mutation, useSourceEpisodes: () => ({}),
       useMemoryPages(params) { queries.push(params); return { isSuccess: true, loadMore: () => {}, refetch: () => { retries++ }, data: { facts: empty ? [] : [{ id: 'synthetic-fact', text: 'Synthetic fact', status: 'live', valid_at: '', provenance: [] }], fact_categories: ['工作', '其他', '历史分类'], facts_page: { total: empty ? 0 : 81, has_more: !empty } }, ...queryResult } },
     }
     if (name === '../components/ui') return new Proxy({}, { get: () => () => null })

@@ -12,7 +12,7 @@ from mnemotrace.types import Episode, Fact
 
 def snapshot():
     return {
-        "format_version": 3,
+        "format_version": 4,
         "facts": [asdict(Fact(id="ft_source", subject="Synthetic", predicate="works_at",
                               object="SyntheticCo", valid_at=0, created_at=-1, source="user", text='Synthetic works at SyntheticCo'))],
         "episodes": [asdict(Episode(id="ep_source", content="Synthetic source", event_time=0))],
@@ -30,7 +30,7 @@ def target():
 
 def contents(mem):
     return copy.deepcopy({
-        "format_version": 3,
+        "format_version": 4,
         "facts": [asdict(f) for f in mem._all_facts()],
         "episodes": [asdict(ep) for ep in mem.episodes_doc.values()],
         "entities": [asdict(e) for e in mem.graph.entities.values()],
@@ -54,7 +54,7 @@ def test_missing_envelope_rejects_entire_batch(key):
 @pytest.mark.parametrize("key", [
     "id", "subject", "predicate", "object", "text", "source", "valid_at", "invalid_at",
     "created_at", "expired_at", "supersedes", "provenance", "categories", "sensitive",
-    "salience", "confidence", "categories_source", "object_kind", "validity_revisions",
+    "salience", "confidence", "categories_source", "relation_id", "subject_id", "object_id", "withdrawn_at",
 ])
 def test_missing_fact_history_rejects_before_any_episode_is_added(key):
     payload = snapshot()
@@ -70,7 +70,7 @@ def test_missing_fact_history_rejects_before_any_episode_is_added(key):
 def test_retired_fact_format_is_rejected_without_mutating_target(change):
     payload = snapshot()
     if change == 'old_version':
-        payload['format_version'] = 2
+        payload['format_version'] = 3
     elif change == 'display':
         payload['facts'][0]['display'] = payload['facts'][0]['text']
     else:
@@ -146,12 +146,12 @@ def test_new_successor_links_to_previously_imported_duplicate():
     predecessor = mem._all_facts()[0]
     second = copy.deepcopy(first)
     newer = copy.deepcopy(first["facts"][0])
-    newer.update(id="ft_successor", object="NewSyntheticCo", valid_at=1, supersedes="ft_source")
+    newer.update(id="ft_successor", object="NewSyntheticCo", valid_at=1, supersedes=["ft_source"])
     second["facts"].append(newer)
     stats = mem.import_snapshot(second)
     successor = next(f for f in mem._all_facts() if f.object == "NewSyntheticCo")
     assert stats["facts_skipped"] == 1
-    assert successor.supersedes == predecessor.id
+    assert successor.supersedes == [predecessor.id]
 
 
 def test_embedding_failure_does_not_apply_prepared_records(monkeypatch):

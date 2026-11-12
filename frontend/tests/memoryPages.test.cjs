@@ -65,7 +65,7 @@ function setup({ episodes = false, count = 601, holdInitial = false } = {}) {
     rows.unshift({ id, predicate: 'decision', categories: ['food', 'music'] })
     return { id }
   }
-  Object.assign(api, { addFact: commit, editFact: commit, deleteFact: commit,
+  Object.assign(api, { setFactSensitive: commit, deleteFact: commit,
     remember: commit, organizeSession: commit, forget: commit, setFocus: commit, resolveConflict: commit, setPolicy: commit })
   const h = mod.exports
   let params = episodes ? { facts_limit: 0, episodes_limit: 20 } : { facts_limit: 60, episodes_limit: 0, kind: 'outcomes' }
@@ -73,8 +73,8 @@ function setup({ episodes = false, count = 601, holdInitial = false } = {}) {
   const off = observer.subscribe(() => {})
   const actions = () => h.useMemoryPages(params)
   return { h, client, observer, calls, errors, rows, api, actions, releaseInitial,
-    write: (entry = 'useAddFact') => h[entry]().mutateAsync(entry === 'useRemember' ? 'Synthetic write' :
-      { id: 'synthetic-existing', patch: { object: 'Synthetic edit' }, subject: 'synthetic', predicate: 'marker', object: 'Synthetic write' }),
+    write: (entry = 'useSetFactSensitive') => h[entry]().mutateAsync(entry === 'useRemember' ? 'Synthetic write' :
+      { id: 'synthetic-existing', sensitive: true }),
     async ready() { await observer.refetch() },
     current: () => observer.getCurrentResult(),
     change(patch, key = namespace) { params = { ...params, ...patch }; namespace = key; observer.setOptions(h.memoryPagesOptions(namespace, params)); return observer.getCurrentResult() },
@@ -378,7 +378,7 @@ test('a login cycle change during the cancellation barrier leaves the new cache 
   } finally { release?.(); s.close() }
 })
 
-for (const entry of ['useRemember', 'useOrganizeSession', 'useEditFact', 'useDeleteFact',
+for (const entry of ['useRemember', 'useOrganizeSession', 'useSetFactSensitive', 'useDeleteFact',
   'useForget', 'useSetFocus', 'useResolveConflict', 'useSetPolicy']) {
   test(`${entry} refreshes an uncached first page through the shared barrier`, async () => {
     const s = setup({ holdInitial: true })

@@ -135,11 +135,16 @@ def _load_workload(bundle, manifest, case):
                                 row['object'], row['text'], timestamp(row['valid_at']), timestamp(row['invalid_at']),
                                 row['filter_bucket'], vector))
         conn.execute('INSERT INTO workload.filters SELECT user_id,space_id,id,bucket FROM input')
+        conn.execute("""INSERT INTO mnemotrace.relation_types
+            (user_id,space_id,id,predicate,meaning,direction,endpoint_types,record_version,content_version)
+            SELECT DISTINCT user_id,space_id,'pred_' || encode(sha256(convert_to(predicate, 'UTF8')), 'hex'),
+                predicate,predicate,'forward','[]',1,1 FROM input""")
         conn.execute("""INSERT INTO mnemotrace.facts (user_id,space_id,id,subject,predicate,object,text,
-            salience,confidence,source,categories,sensitive,object_kind,categories_source,cardinality,retention,source_roles,
+            salience,confidence,source,categories,sensitive,relation_id,categories_source,retention,source_roles,
             valid_at,invalid_at,created_at,last_access,access_count,record_version,content_version)
             SELECT user_id,space_id,id,subject,predicate,object,body,1,1,'user','{}',false,
-                   'unknown','unset','unknown','unknown','{}',valid_at,invalid_at,valid_at,valid_at,0,1,1 FROM input""")
+                   'pred_' || encode(sha256(convert_to(predicate, 'UTF8')), 'hex'),
+                   'unset','unknown','{}',valid_at,invalid_at,valid_at,valid_at,0,1,1 FROM input""")
         conn.execute("""INSERT INTO mnemotrace.embeddings(user_id,space_id,fact_id,target_kind,field,
             content_version,model,dimension,vector)
             SELECT user_id,space_id,id,'Fact','text',1,%s,%s,vector FROM input""",

@@ -1,4 +1,5 @@
 
+from tests.model_fixtures import seed_linked
 import pytest
 
 from mnemotrace import MemoryEngine
@@ -25,15 +26,15 @@ def test_entity_mentions_prefer_long_names():
 
 def test_graph_does_not_stem_identifiers_into_entity_matches():
     memory = MemoryEngine()
-    memory.add_fact('Redis', 'based_in', 'Synthetic Location', user_id='u', object_kind="entity", text='Redis based in Synthetic Location')
+    seed_linked(memory, 'Redis', 'based_in', 'Synthetic Location', user_id='u', text='Redis based in Synthetic Location')
     assert not memory.retriever.query_entity_ids('redi', 'u')
     assert memory.retriever.query_entity_ids('redis', 'u')
 
 
 def test_lexical_memory_resolves_chinese_two_hop_fact_chain():
     memory = MemoryEngine()
-    relationship = memory.add_fact('user', 'sister', '王小明', object_kind="entity", text='user sister 王小明')
-    employer = memory.add_fact('王小明', 'works_at', '月亮公司', object_kind="entity", text='王小明 works at 月亮公司')
+    relationship = seed_linked(memory, 'user', 'sister', '王小明', text='user sister 王小明')
+    employer = seed_linked(memory, '王小明', 'works_at', '月亮公司', text='王小明 works at 月亮公司')
     result = memory.follow_path('user', ['sister', 'works_at'])
     match, = result.paths
     assert [fact.id for fact in match.facts] == [relationship.id, employer.id]

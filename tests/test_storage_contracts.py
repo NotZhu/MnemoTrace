@@ -36,7 +36,7 @@ def product():
                               message_id='message-1', sequence=1, event_time=100, representation='raw',
                               representation_source=None, source='a' * 64, source_length=len(text),
                               ranges=[[0, len(text)]], partial=False)])
-    result = dict(facts=[dict(categories=[], object_kind='unknown', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='Ana', predicate='works_at', object='Orbit', text='Ana works at Orbit',
+    result = dict(facts=[dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='Ana', predicate='works_at', object='Orbit', text='Ana works at Orbit',
                              source_ids=['source-1'])], digests={})
     return ExtractionProduct(CONDITIONS, json.dumps(data), json.dumps(result),
                              OperationStats(0, 0, 0, 1, 0), 800, 7)
@@ -94,7 +94,7 @@ def test_task_commit_requires_versions_config_and_lease_identity():
 
 
 @pytest.mark.parametrize('kwargs', [dict(state='current'), dict(limit=0), dict(limit=True),
-    dict(limit=1001), dict(valid_at=float('nan')), dict(known_at=float('inf')), dict(source_ids=['s'])])
+    dict(limit=1001), dict(valid_at=float('nan')), dict(source_ids=['s'])])
 def test_structured_queries_reject_callbacks_invalid_time_and_unbounded_pages(kwargs):
     with pytest.raises(ValueError):
         FactQuery(**kwargs)
@@ -102,9 +102,11 @@ def test_structured_queries_reject_callbacks_invalid_time_and_unbounded_pages(kw
         FactQuery(where=lambda f: True)
 
 
-def test_query_time_axes_and_history_are_explicit():
-    query = FactQuery(FactState.HISTORY, valid_at=10, known_at=20, subject='Ana', predicate='works_at')
-    assert query.valid_at != query.known_at
+def test_query_uses_effective_time_and_history():
+    query = FactQuery(FactState.HISTORY, valid_at=10, subject='Ana', predicate='works_at')
+    assert query.valid_at == 10
+    with pytest.raises(TypeError):
+        FactQuery(known_at=20)
     assert 'space_id' not in asdict(query)  # Bound by the DAO, never overridden per query.
 
 

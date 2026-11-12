@@ -73,10 +73,10 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 
 单空间传 `lean=true, answer=true` 可显式调用问答模型，`answer_status` 区分 `answered`、
 `no_evidence`、`model_not_configured`、`model_failed` 和 `empty`。回答失败时证据仍可读取。
-HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据。Python 直连可用 `FactQuery` 单独指定已知时间。
+HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据。
 
 
-`POST /v1/recall` 使用混合召回，可传 `state`、`valid_at` 和 `known_at` 选择历史视图。显式时间与 `as_of` 互斥。
+`POST /v1/recall` 使用混合召回，可传 `state` 和 `valid_at` 选择历史视图。显式时间与 `as_of` 互斥。
 
 | 路径 | 请求与返回 |
 | --- | --- |
@@ -114,8 +114,7 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 
 | 端点 | 输入与语义 |
 | --- | --- |
-| `POST /v1/facts` | text、predicate、object 必填；subject=user，sensitive、categories、object_kind 可选；添加用户断言 |
-| `PATCH /v1/facts/{fact_id}` | 内容修改同时提交非空 subject、predicate、object、text；sensitive、categories、object_kind 等元数据可单独提交；非法输入返回 422 |
+| `PATCH /v1/facts/{fact_id}/sensitivity` | 仅修改 `sensitive` 布尔标记，保留事实和来源 |
 | `DELETE /v1/facts/{fact_id}` | 删除单事实；检查响应中的 ok |
 | `POST /v1/facts/clear-slot` | subject、predicate、expect_count 必填；受当前数量、来源和历史链保护 |
 | `GET /v1/profile` | 七栏画像缓存、更新时间、待更新事实数与刷新状态 |
@@ -137,9 +136,9 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 
 `GET /v1/graph` 返回 `{nodes, edges, has_more}`，筛选顺序与完整性含义遵循 [Python 图谱契约](python-api.md)。`limit` 按筛选后的关系数计，显式正数上限最多为 500；省略时不限量。`has_more=true` 表示该查询结果被截断，不代表查询失败，也不包含全局总数。
 
-内容编辑使事实变为用户来源；只改敏感标记、标签或对象类型保留原来源。槽位清理可能通过 JSON 结果表达拒绝，不能只检查 HTTP 状态。服务端权限不会被客户端筛选或隐私开关替代。
+纠正事实时通过摄入提交新证据。槽位清理可能通过 JSON 结果表达拒绝，不能只检查 HTTP 状态。服务端权限不会被客户端筛选或隐私开关替代。
 
-字段及编辑规则见[分类与对象类型](../architecture/memory.md#分类与对象类型)。新增或修改事实时也可指定 `cardinality` 与 `retention`。
+事实字段见[分类与对象类型](../architecture/memory.md#分类与对象类型)。
 
 `GET /v1/memories?categories=food&categories=music` 匹配任一标签，非法枚举返回 422。与其他事实筛选取交集，在分页前执行。原始事件、全局计数和分类候选不随标签筛选改变。后续页继续成对携带 `expected_revision` 和 `evaluated_at`。
 

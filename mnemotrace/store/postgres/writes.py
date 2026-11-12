@@ -3,11 +3,12 @@ from dataclasses import asdict
 
 from ...profile import INPUT_FIELDS
 from ...util import gen_id
+from ...types import relation_identifier
 from ..contracts import OperationKind, OperationStats
 from .errors import DatabaseConstraintError, MessageConflict, VersionConflict
 from .lexical import project_document, project_text
 from .records import (
-    ENTITY, FACT, SOURCE, SCOPE, TARGET_COLUMNS,
+    CONFLICT, ENTITY, FACT, RELATION_TYPE, SOURCE, SCOPE, TARGET_COLUMNS,
     domain, timestamp,
 )
 
@@ -118,30 +119,65 @@ def write(sql, change, graph):
         column = TARGET_COLUMNS[kind]
         sql.delete('embeddings', f'{column} = %s', (record_id,))
         sql.delete('lexical_documents', f'{column} = %s', (record_id,))
+    if kind == FACT and current['relation_id'] == relation_identifier(current['predicate']):
+        sql.insert('relation_types', {
+            'id': current['relation_id'], 'predicate': current['predicate'],
+            'meaning': current['predicate'].replace('_', ' ').strip() or current['predicate'], 'direction': 'forward',
+            'endpoint_types': [], 'record_version': 1, 'content_version': 1,
+        }, suffix='ON CONFLICT DO NOTHING')
+    if kind == CONFLICT:
+        for side in ('older', 'newer'):
+            fact = sql.get(FACT, current[side])
+            if fact is None or fact.record_version != current[side + '_version']:
+                raise VersionConflict('Fact changed before the conflict was queued')
     sql.write_record(record, insert=previous is None)
     if kind == FACT and (old is None or text_changed or current['valid_at'] != old['valid_at']):
         project_text(sql, kind, record_id, record.content_version, current)
     if kind == SOURCE:
         _source_digest(sql, record, current, old)
     elif kind == FACT:
+        if current['withdrawn_at'] is not None:
+            sql.delete('conflicts', '(older = %s OR newer = %s)', (record_id, record_id))
         _replace_links(sql, 'fact_sources', 'fact_id', record_id,
                        list(dict.fromkeys(current['provenance'])), ordered=True)
-        graph_fields = ('subject', 'predicate', 'object', 'object_kind', 'valid_at', 'invalid_at', 'expired_at', 'review_pending', 'approved_at')
+        sql.delete('fact_supersedes', 'fact_id = %s AND NOT (predecessor_id = ANY(%s))',
+                   (record_id, current['supersedes']))
+        for predecessor_id in current['supersedes']:
+            sql.insert('fact_supersedes', {'fact_id': record_id, 'predecessor_id': predecessor_id},
+                       suffix='ON CONFLICT DO NOTHING')
+        graph_fields = ('subject_id', 'object_id', 'relation_id',
+                        'valid_at', 'invalid_at', 'withdrawn_at', 'review_pending')
         if old is None or any(old[k] != current[k] for k in graph_fields):
             graph.project(record_id)
+    elif kind in (ENTITY, RELATION_TYPE) and previous is not None:
+        column = 'relation_id' if kind == RELATION_TYPE else 'subject_id'
+        condition = f'{column} = %s'
+        args = (record_id,)
+        if kind == ENTITY:
+            condition += ' OR object_id = %s'
+            args = (record_id, record_id)
+        for (fact_id,) in sql.run(f'SELECT id FROM mnemotrace.facts WHERE {SCOPE} AND ({condition})',
+                                  (*sql.scope, *args)).fetchall():
+            graph.project(fact_id)
     profile_changed = kind == FACT and (old is None or any(old[key] != current[key] for key in INPUT_FIELDS))
     return True, profile_changed
 
 
 def invalidate(sql, item, graph):
     record_id = item.ref.record_id
-    row = sql.update('facts', {
-        'record_version': item.expected_version + 1,
-        'invalid_at': timestamp(item.invalid_at), 'expired_at': timestamp(item.expired_at),
-    }, 'id = %s AND record_version = %s', (record_id, item.expected_version))
-    if row.rowcount != 1:
+    previous = sql.get(FACT, record_id)
+    if previous is None or previous.record_version != item.expected_version:
         raise VersionConflict('Fact version changed')
+    fact = domain(previous)
+    if fact.invalid_at is not None and fact.invalid_at <= item.invalid_at:
+        return False
+    fact.end_at(item.invalid_at, item.expired_at)
+    sql.update('facts', {
+        'record_version': item.expected_version + 1,
+        'invalid_at': timestamp(fact.invalid_at), 'expired_at': timestamp(fact.expired_at),
+    }, 'id = %s', (record_id,))
     graph.project(record_id)
+    return True
 
 
 def enqueue(sql, spec, space_generation, *, ready_at=None, parent_id=None):

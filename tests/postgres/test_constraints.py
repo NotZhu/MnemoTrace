@@ -20,19 +20,25 @@ def test_database_category_constraint_matches_python(runtime):
 
 def fact(conn, user, space, record_id='fact-1', **changes):
     from psycopg import sql
-    from psycopg.types.json import Jsonb
 
     fields = asdict(Fact('Synthetic user', 'likes', 'tea', id=record_id, text='Synthetic user likes tea'))
-    for key in ('embedding', 'provenance', 'user_id'):
+    for key in ('embedding', 'provenance', 'user_id', 'subject_type', 'object_type', 'supersedes'):
         fields.pop(key)
+    predecessors = changes.pop("supersedes", ())
     fields.update(user_id=user, space_id=space, content_version=1, record_version=1, **changes)
     for key in ('valid_at', 'invalid_at', 'created_at', 'expired_at', 'last_access'):
         if fields[key] is not None:
             fields[key] = datetime.fromtimestamp(fields[key], timezone.utc)
-    fields["validity_revisions"] = Jsonb(fields["validity_revisions"])
+    conn.execute("INSERT INTO mnemotrace.relation_types "
+                 "(user_id,space_id,id,predicate,meaning,direction,endpoint_types,record_version,content_version) "
+                 "VALUES (%s,%s,%s,%s,'Synthetic relation','forward','[]',1,1) ON CONFLICT DO NOTHING",
+                 (user, space, fields['relation_id'], fields['predicate']))
     conn.execute(sql.SQL('INSERT INTO mnemotrace.facts ({}) VALUES ({})').format(
         sql.SQL(',').join(map(sql.Identifier, fields)),
         sql.SQL(',').join(sql.Placeholder() for _ in fields)), tuple(fields.values()))
+    for predecessor in predecessors:
+        conn.execute('INSERT INTO mnemotrace.fact_supersedes VALUES (%s,%s,%s,%s)',
+                     (user, space, record_id, predecessor))
 
 
 def source(conn, user, space, record_id='source-1', message_id=None):
@@ -56,7 +62,7 @@ def test_foreign_keys_reject_cross_space_and_orphan_history(runtime, spaces, use
         conn.execute('INSERT INTO mnemotrace.fact_sources VALUES (%s,%s,%s,%s)',
                      (user, b.space_id, 'fact-1', 'source-1'))
     with pytest.raises(DatabaseConstraintError), runtime.space_transaction(user, b.space_id) as (conn, _):
-        fact(conn, user, b.space_id, 'orphan', supersedes='missing')
+        fact(conn, user, b.space_id, 'orphan', supersedes=['missing'])
 
 
 def test_duplicate_message_identifier_is_rejected(runtime, spaces, user):
@@ -102,7 +108,7 @@ def test_account_deletion_cleans_sources_facts_derived_data(accounts, runtime, s
     a = spaces.create(user, 'A')
     with runtime.space_transaction(user, a.space_id) as (conn, _):
         fact(conn, user, a.space_id)
-        fact(conn, user, a.space_id, 'fact-2', supersedes='fact-1')
+        fact(conn, user, a.space_id, 'fact-2', supersedes=['fact-1'])
         source(conn, user, a.space_id)
         conn.execute('INSERT INTO mnemotrace.fact_sources VALUES (%s,%s,%s,%s)',
                      (user, a.space_id, 'fact-1', 'source-1'))
@@ -112,7 +118,7 @@ def test_account_deletion_cleans_sources_facts_derived_data(accounts, runtime, s
     assert accounts.delete_user(user)
     with runtime._transaction() as conn:
         conn.execute("SELECT set_config('mnemotrace.user_id',%s,true)", (user,))
-        for table in ('sources', 'facts', 'embeddings', 'fact_sources'):
+        for table in ('sources', 'facts', 'embeddings', 'fact_sources', 'fact_supersedes', 'relation_types'):
             from psycopg import sql
             assert conn.execute(sql.SQL('SELECT count(*) FROM mnemotrace.{}').format(
                 sql.Identifier(table))).fetchone() == (0,)

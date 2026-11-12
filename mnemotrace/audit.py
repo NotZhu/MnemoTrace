@@ -2,7 +2,7 @@
 from collections import Counter
 
 from .consolidate.graph_builder import projects_fact
-from .store.postgres.records import ENTITY, FACT, domain, timestamp
+from .store.postgres.records import ENTITY, FACT, RELATION_TYPE, domain, timestamp
 
 
 _FINDINGS = {
@@ -18,6 +18,7 @@ def graph_audit(view, limit):
     counts = Counter()
     buckets = {kind: [] for kind in _FINDINGS}
     cursor, checked = None, 0
+    definitions = {}
 
     def add(kind, **refs):
         counts[kind] += 1
@@ -34,14 +35,16 @@ def graph_audit(view, limit):
         edges = view.audit_edges([fact.id for fact in facts])
         for fact in facts:
             edge = edges.get(fact.id)
-            eligible = projects_fact(fact)
+            if fact.relation_id not in definitions:
+                definitions[fact.relation_id] = domain(view.get(RELATION_TYPE, fact.relation_id))
+            eligible = projects_fact(fact, definitions[fact.relation_id])
             if edge is None:
                 if eligible:
                     add('missing_edge', fact_id=fact.id)
             elif not eligible or (
-                edge['subject'], edge['predicate'], edge['object'], edge['valid_at'], edge['invalid_at']
+                edge['subject_id'], edge['predicate'], edge['object_id'], edge['valid_at'], edge['invalid_at']
             ) != (
-                fact.subject.lower(), fact.predicate, fact.object.lower(),
+                fact.subject_id, fact.predicate, fact.object_id,
                 timestamp(fact.valid_at), timestamp(fact.invalid_at),
             ):
                 add('edge_mismatch', fact_id=fact.id, edge_id=edge['id'])

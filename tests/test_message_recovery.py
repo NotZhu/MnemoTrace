@@ -1,4 +1,5 @@
 """Cross-stage invalidation, standalone concurrency, explicit retry and crash checkpoints."""
+from tests.model_fixtures import seed_timeline
 from mnemotrace.connectors.dialogue import import_messages
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -46,7 +47,7 @@ def test_native_model_allows_append_and_close_prevents_late_commit():
 def test_source_time_comes_from_matching_role():
     def respond(prompt, system):
         data = json.loads(prompt.split('MNEMOTRACE_WINDOW\n', 1)[1])
-        return json.dumps(dict(facts=[dict(categories=[], object_kind='unknown', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='user', predicate='lives_in', object='Synthetic city',
+        return json.dumps(dict(facts=[dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='user', predicate='lives_in', object='Synthetic city',
             text='Synthetic city', source_ids=[s['id'] for s in data['pending']])],
             digests=[]))
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
@@ -91,14 +92,13 @@ def test_prior_processing_checkpoint_version_is_rejected():
         validate_state(state, mem.episodes_doc.values())
 
 
-def test_manual_fact_keeps_authority_over_dialogue_fact():
+def test_fixed_contradiction_closes_previous_dialogue_fact():
     mem = MemoryEngine(llm=FakeLLM(handler=reply))
     old = mem.add_fact('user', 'lives_in', 'A', 'u', text='The user lives in A.')
     old.source, old.valid_at = 'extracted', 100
     mem.fact_store.upsert(old.id, old.embedding, old)
-    new = mem.add_fact('user', 'lives_in', 'B', 'u', valid_at=200, cardinality='single',
-                       text='The user lives in B.')
-    assert not mem.fact_store.get(old.id).is_live() and new.source == 'user'
+    new = seed_timeline(mem, 'user', 'lives_in', 'B', user_id='u', valid_at=200, text='The user lives in B.')
+    assert mem.fact_store.get(old.id).invalid_at == 200 and new.supersedes == [old.id]
 
 
 @pytest.mark.history_import
@@ -136,14 +136,14 @@ def test_late_unknown_and_older_history_cannot_replace_newer_source():
         result = json.loads(reply(prompt, system))
         for fact in result['facts']:
             fact['predicate'] = 'lives_in'
-            fact['object_kind'] = 'entity'
         return json.dumps(result)
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
     for mid, stamp in [('new', 200), ('unknown', None), ('old', 100)]:
         mem.remember_messages([message(mid, mid, event_time=stamp)], 's', 'u')
         assert mem.flush_messages('u')['ok']
     latest = [f.object for f in mem.fact_store.values() if f.is_live()]
-    assert set(latest) == {'new', 'unknown'}
+    assert set(latest) == {'new'}
+    assert any(f.object == 'unknown' and f.review_pending for f in mem.fact_store.values())
 
 
 @pytest.mark.parametrize('arrivals,expected', [
@@ -157,7 +157,6 @@ def test_out_of_order_history_has_disjoint_intervals_and_a_complete_chain(arriva
         result = json.loads(reply(prompt, system))
         for fact in result['facts']:
             fact['predicate'] = 'lives_in'
-            fact['object_kind'] = 'entity'
         return json.dumps(result)
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
     for index, (value, stamp) in enumerate(arrivals):
@@ -165,8 +164,10 @@ def test_out_of_order_history_has_disjoint_intervals_and_a_complete_chain(arriva
         assert mem.flush_messages('u')['ok']
     facts = sorted(mem.fact_store.values(), key=lambda f: f.valid_at)
     assert [(f.object, f.valid_at, f.invalid_at) for f in facts] == expected
-    assert [f.supersedes for f in facts] == [None, *[f.id for f in facts[:-1]]]
+    assert [f.supersedes for f in facts] == [[], *[[f.id] for f in facts[:-1]]]
     assert [f.object for f in facts if f.is_live(250)] == ['B']
+    from tests.model_fixtures import link_synthetic_facts
+    link_synthetic_facts(mem, {'lives_in'})
     relations = {r.fact_id: r for r in mem.graph.relations()}
     assert all((relations[f.id].valid_at, relations[f.id].invalid_at) == (f.valid_at, f.invalid_at) for f in facts)
 
@@ -178,13 +179,13 @@ def test_equal_time_facts_do_not_retire_each_other_in_model_order():
         result = json.loads(reply(prompt, system))
         for fact in result['facts']:
             fact['predicate'] = 'lives_in'
-            fact['object_kind'] = 'entity'
         result['facts'].reverse()
         return json.dumps(result)
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
     mem.remember_messages([message('a', 'old', event_time=100), message('b', 'new', event_time=100)], 's', 'u')
     assert mem.flush_messages('u')['ok']
-    assert {f.object for f in mem.fact_store.values() if f.is_live()} == {'new', 'old'}
+    assert {f.object for f in mem.fact_store.values() if f.review_pending} == {'new', 'old'}
+    assert not any(f.is_live() for f in mem.fact_store.values())
     assert len(mem.pending_conflicts('u')) == 1
 
 

@@ -61,7 +61,7 @@ def test_digest_survives_reembedding_without_raw_index():
 @pytest.mark.parametrize("written_at", [3, None])
 def test_snapshot_import_preserves_digest_knowledge_time(written_at):
     mem = MemoryEngine(embedder=MockEmbedder())
-    mem.import_snapshot({"format_version": 3, "facts": [], "episodes": [{
+    mem.import_snapshot({"format_version": 4, "facts": [], "episodes": [{
         "id": "synthetic", "content": "Synthetic original", "session_id": "test", "role": "user",
         "event_time": 1, "ingested_at": 2, "digest": "An orchid was planted.",
         "digest_written_at": written_at,
@@ -92,7 +92,7 @@ def test_supersession_does_not_rewrite_event_digest():
     ep = summarized(mem)
     previous = ep.digest
     old = Fact(subject="user", predicate="works_at", object="A", user_id="u", provenance=[ep.id], text='user works at A')
-    new = Fact(subject="user", predicate="works_at", object="B", user_id="u", supersedes=old.id, text='user works at B')
+    new = Fact(subject="user", predicate="works_at", object="B", user_id="u", supersedes=[old.id], text='user works at B')
     old.invalid_at = old.expired_at = new.valid_at
     for fact in (old, new):
         mem.fact_store.upsert(fact.id, mem.embedder.embed(fact.text), fact)

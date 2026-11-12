@@ -56,7 +56,7 @@ processing/flush 继续提供聚合和等待能力，内部引用这些操作 ID
 | embedding 失败 | failed/retry_wait、phase=embed、extraction_saved=true、core_committed=false、error_code 可见 |
 | 核心完成、摘要失败 | 主操作仍 completed；auxiliary_operation_ids 指向失败 digest，不要求重发原文 |
 
-原文/人工事实不强制有抽取任务；自动抽取缺少 LLM 在本次输入写入前拒绝。
+仅保存原文不创建抽取任务；自动抽取缺少 LLM 在本次输入写入前拒绝。
 Python 底层保存原文、consolidate 检查模型的分工保留。
 阶段六以「整理会话」替换 `close_session`，复用 `flush_processing` 推进并等待本批核心处理。
 摘要沿用现有流程并单独报告进度。任务进度由 agent 管理，来源摘要单独跟踪。
@@ -94,7 +94,7 @@ buffered 请求由独立 Postgres worker 推进，也可以通过 `/v1/processin
 ReadView 在同一连接的 REPEATABLE READ 只读事务内读取版本与多表数据，返回脱离连接的记录。
 分页默认 100、最多 1000、稳定 ID 游标；必要主体/槽位历史走专用 history 读取，不受候选 top_k 截断。
 StoredRecord 的 JSON 是不可变的单条 domain 交接表示，不是任意 SQL 列补丁或空间快照。
-复用现有六种 domain 记录的字段校验不代表旧文件格式兼容；阶段一不新增旧格式读写入口。
+初始化接受空库或完整的新基线。旧基线及旧检查点不会自动转换。
 agent_id、归属在 envelope 明确给出。内联向量不作为权威列；存在内联向量时必须有版本/角色/坐标一致的 EmbeddingWrite。
 CandidateBatch 返回读取快照、候选信号和覆盖限制，空结果成功与索引未就绪/降级分别表达。
 SpaceDAO 的 claim/renew/save_product/product 是空间内任务路径；跨空间发现与账号管理不进入普通 DAO。
@@ -108,13 +108,9 @@ SpaceDAO 的 claim/renew/save_product/product 是空间内任务路径；跨空�
 | space_generation | 清空/删除等空间级作废推进；普通业务更新使用 core_revision |
 | lease token | 每次领取生成新值；续租/保存/提交校验 token 和数据库时间下的有效期 |
 
-FactQuery 两条时间轴独立。valid_at=null 取快照时间；known_at=null 沿用有效时间检查 expired_at，
-不额外加 created_at 截止，以保持当前 Fact.is_live(as_of) 对晚摄入历史来源的可观察结果。
-产品新写入事实的认知时间与原文摄入时间统一使用数据库时钟；有效时间和导入快照中的显式历史时间保留输入值。
-显式 known_at 要求 created_at ≤ known_at。事实的结束时间被修改时，同一提交记录修改前的有效与认知结束时间。显式 known_at 先还原当时可见的结束时间，再判断有效与认知区间。
-CURRENT 要求有效时间和适用的认知时间均未结束；HISTORY 返回已失效/撤回版本，ALL 合并二者。
-三者均排除所选视图之后才生效的事实，显式 known_at 的创建时间截止也适用于 HISTORY/ALL；未知事件时间不补造。
-旧 as_of 的适配必须通过现有历史回归，不能在存储切换中暗改为另一套时间模型。
+FactQuery 按有效时间筛选。未指定日期时取快照时间并允许起点未知的事实；指定日期时要求已知的有效起点。`CURRENT` 使用 `[valid_at, invalid_at)` 并排除撤回；`HISTORY` 返回已结束或已撤回的事实；`ALL` 合并两者。这些视图不返回待审候选。
+
+产品使用数据库时钟记录收录及首次获知失效的时间。以后补录的事实可以改变过去有效日期的查询结果；查询不按收录时刻回放旧认知。每条事实保留一行，替代关系和来源各存于空间内关联表。撤回独立记录，保留可查询的历史行。
 
 ChangeSet 显式包含记录写入、事实失效、擦除、来源关联、向量、实体合并、空间设置、后续任务及回执。
 一个记录只有一次主修改；失效仅用于 Fact，擦除遵守用户范围。settings 替换整个小型空间配置，主体名不提供账号身份。
@@ -154,7 +150,7 @@ with Database(DatabaseConfig.from_env()) as database:
         MessageInput("m1", "user", "Synthetic input", extract=False, agent_id="writer-A"),
     ))
     episode = memory.get_episode(receipt.source_ids[0])
-    memory.add_fact("Synthetic person", "likes", "tea", text="Synthetic person likes tea.")
+    # 自动事实由配置模型的 Memory.remember / remember_messages 入口摄入。
     result = memory.search("What does Synthetic person like?")
     context_result = memory.lean_context("What does Synthetic person like?")
     print(result.status, [fact.text for fact in result.facts], context_result.limitations)

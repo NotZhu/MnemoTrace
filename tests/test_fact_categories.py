@@ -1,4 +1,5 @@
 """Fact metadata contracts, independent of the extraction model provider."""
+from tests.model_fixtures import seed_linked
 import json
 from dataclasses import asdict
 
@@ -20,9 +21,7 @@ def window():
 def item(**patch):
     return dict(subject="user", predicate="prefers", object="decaf when working late",
                 text="I prefer decaf when working late", source_ids=["s1"],
-                categories=["food", "user_preferences", "food"], object_kind="literal",
-                sensitive=False, time_kind="current", effective_date=None, cardinality="unknown",
-                retention="unknown") | patch
+                categories=["food", "user_preferences", "food"], sensitive=False, time_kind="current", effective_date=None, retention="unknown") | patch
 
 
 def extract(rows):
@@ -33,8 +32,7 @@ def extract(rows):
 
 def test_model_facts_preserve_subject_name_and_qualified_preferences():
     name, friend, preference = extract([
-        item(predicate="name", object="Jules", text="My name is Jules", object_kind="literal",
-             categories=["personal_details"]),
+        item(predicate="name", object="Jules", text="My name is Jules", categories=["personal_details"]),
         item(subject="Jules", object="jazz", text="My friend Jules prefers jazz"),
         item(),
     ])
@@ -42,8 +40,8 @@ def test_model_facts_preserve_subject_name_and_qualified_preferences():
     assert friend.subject == "Jules"
     assert (preference.subject, preference.object, preference.text) == (
         "user", "decaf when working late", "I prefer decaf when working late")
-    assert (preference.categories, preference.categories_source, preference.object_kind) == (
-        ["food", "user_preferences"], "llm", "literal")
+    assert (preference.categories, preference.categories_source, preference.object_id) == (
+        ["food", "user_preferences"], "llm", None)
 
 
 @pytest.mark.parametrize(("labels", "source"), [([], "unset"), (["misc"], "llm")])
@@ -62,30 +60,22 @@ def test_invalid_model_metadata_is_rejected(patch):
         extract([item(**patch)])
 
 
-def test_manual_metadata_edit_and_claim_change_without_a_model():
+def test_sensitivity_changes_without_reclassifying_facts():
     memory = MemoryEngine()
     fact = memory.add_fact("user", "prefers", "tea", categories=["food", "food"],
-                           object_kind="entity", sensitive=False, text='user prefers tea')
-    assert (fact.categories, fact.categories_source) == (["food"], "user")
-    memory.update_fact(fact.id, categories=[], object="tea", subject=fact.subject, predicate=fact.predicate, text=' '.join((fact.subject, fact.predicate.replace('_', ' '), 'tea')))
-    fact = memory.fact_store.get(fact.id)
-    assert (fact.categories, fact.categories_source, fact.object_kind) == ([], "unset", "entity")
-    memory.update_fact(fact.id, categories=["misc"])
-    memory.update_fact(fact.id, sensitive=False)
-    fact = memory.fact_store.get(fact.id)
-    assert (fact.categories, fact.categories_source) == (["misc"], "user")
-    memory.update_fact(fact.id, object="coffee", subject=fact.subject, predicate=fact.predicate, text=' '.join((fact.subject, fact.predicate.replace('_', ' '), 'coffee')))
-    fact = memory.fact_store.get(fact.id)
-    assert (fact.categories, fact.categories_source, fact.object_kind) == ([], "unset", "unknown")
+                           sensitive=False, text="user prefers tea")
+    memory.set_fact_sensitive(fact.id, True)
+    updated = memory.fact_store.get(fact.id)
+    assert (updated.categories, updated.categories_source, updated.sensitive) == (["food"], "user", True)
 
 
 def test_snapshot_preserves_metadata_and_checks_version():
-    fact = Fact("user", "prefers", "tea", categories=["food"], categories_source="user", object_kind="entity", text='user prefers tea')
+    fact = Fact("user", "prefers", "tea", categories=["food"], categories_source="user", text='user prefers tea')
     snapshot = dict(format_version=SNAPSHOT_FORMAT_VERSION, facts=[asdict(fact)], episodes=[])
     memory = MemoryEngine()
     memory.import_snapshot(snapshot)
     restored, = memory.fact_store.values()
-    assert (restored.categories, restored.categories_source, restored.object_kind) == (
-        ["food"], "user", "entity")
+    assert (restored.categories, restored.categories_source, restored.object_id) == (
+        ["food"], "user", None)
     with pytest.raises(ValueError, match="unsupported snapshot version"):
         memory.import_snapshot({**snapshot, "format_version": 1})

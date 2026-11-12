@@ -138,7 +138,7 @@ def test_render_codex_setup_contains_lifecycle_and_config():
     assert "mnemotrace_recall" in out
     assert "mnemotrace_remember" in out
     assert "mnemotrace_flush_processing" in out
-    assert "mnemotrace_update_fact" in out
+    assert "mnemotrace_remember" in out and "mnemotrace_update_fact" not in out
     assert "mnemotrace_delete_fact" in out
     assert "mnemotrace_export" in out
     assert "mnemotrace_set_focus" in out

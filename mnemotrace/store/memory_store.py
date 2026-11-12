@@ -68,8 +68,8 @@ class InMemoryGraphStore(GraphStore):
         """初始化图存储。"""
         # 节点主表，key = entity.id，value = Entity 实例
         self.entities: dict[str, Entity] = {}
-        # 名字到 id 的反查索引，key = (user_id, name.lower())，value = entity.id
-        self._by_name: dict[tuple[str, str], str] = {}
+        # 名字用于查找，实体身份由 ID 区分。
+        self._by_name: dict[tuple[str, str], set[str]] = defaultdict(set)
         # 边表，key = relation.id，value = Relation 实例
         self.rels: dict[str, Relation] = {}
         # 出边邻接表，key = subject_id，value = list[relation.id]
@@ -79,16 +79,18 @@ class InMemoryGraphStore(GraphStore):
 
     def upsert_entity(self, entity: Entity) -> Entity:
         key = (entity.user_id, entity.name.lower())
-        existing_id = self._by_name.get(key)
-        if existing_id is not None:
-            return self.entities[existing_id]
+        existing = self.entities.get(entity.id)
+        if existing is not None:
+            if existing.user_id != entity.user_id:
+                raise ValueError("Entity ID is already used by another user")
+            return existing
         self.entities[entity.id] = entity
-        self._by_name[key] = entity.id
+        self._by_name[key].add(entity.id)
         return entity
 
     def get_entity(self, user_id: str, name: str) -> Entity | None:
-        eid = self._by_name.get((user_id, name.lower()))
-        return self.entities.get(eid) if eid else None
+        ids = self._by_name.get((user_id, name.lower()), ())
+        return self.entities[next(iter(ids))] if len(ids) == 1 else None
 
     def add_relation(self, relation: Relation) -> None:
         self.rels[relation.id] = relation
@@ -131,7 +133,10 @@ class InMemoryGraphStore(GraphStore):
             if eid in referenced:
                 continue
             self.entities.pop(eid, None)
-            self._by_name.pop((ent.user_id, ent.name.lower()), None)
+            key = (ent.user_id, ent.name.lower())
+            self._by_name[key].discard(eid)
+            if not self._by_name[key]:
+                del self._by_name[key]
             self._out.pop(eid, None)
             self._in.pop(eid, None)
             removed += 1

@@ -13,7 +13,7 @@ function setup(pageName) {
     bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
     external: ['react', 'react/jsx-runtime', 'lucide-react', 'react-router-dom', '../components/*', '../hooks/queries', '../store/preferences', '../store/auth', '../lib/api'],
   }).outputFiles[0].text
-  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', categories: ['food'], categories_source: 'llm', object_kind: 'literal' }
+  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', categories: ['food'], categories_source: 'llm', supersedes: [] }
   const results = {
     usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', digest_system: 'synthetic', profile_system: 'synthetic' } } },
     useFocus: { data: { track: ['synthetic'], mute: [] } },
@@ -115,46 +115,24 @@ test('Facts 请求失败使用共享错误条的重新加载按钮，只重试�
   assert.deepEqual(s.retries, ['useMemoryPages'])
 })
 
-test('Facts 修改事实句时提交完整主谓宾和 text', () => {
+test('Facts 只修改敏感标记，保留事实正文', () => {
   const s = setup('Facts')
-  s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
-  const sentence = '用户在工作日上午偏好茶。'
-  s.find(n => n.type === 'input' && n.props.value === 'synthetic original').props.onChange({ target: { value: sentence } })
-  s.find(n => n.type === 'Button' && n.props.loading !== undefined).props.onClick()
-  const patch = JSON.parse(JSON.stringify(s.mutations.find(m => m.name === 'useEditFact').args[0].patch))
-  assert.deepEqual(patch, { subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: sentence })
+  assert.ok(s.find(n => n.props.children === 'synthetic original'))
+  assert.equal(s.find(n => n.props['aria-label'] === '编辑'), undefined)
+  s.find(n => n.props['aria-label'] === '标为敏感').props.onClick()
+  const write = s.mutations.find(m => m.name === 'useSetFactSensitive')
+  assert.deepEqual(JSON.parse(JSON.stringify(write.args[0])), { id: 'synthetic-fact', sensitive: true })
 })
 
-test('Facts 新增要求填写事实句，并在保存时保留原文', () => {
-  const s = setup('Facts')
-  s.find(n => n.type === 'Button' && Array.isArray(n.props.children) && n.props.children.flat(Infinity).includes('添加事实')).props.onClick()
-  const inputs = () => s.nodes().filter(n => n.type === 'input' && !n.props['aria-label'])
-  assert.equal(inputs().length, 4)
-  inputs()[2].props.onChange({ target: { value: 'prefers' } })
-  inputs()[3].props.onChange({ target: { value: '茶' } })
-  const save = () => s.find(n => n.type === 'Button' && n.props.loading !== undefined)
-  assert.equal(save().props.disabled, true)
-  inputs()[0].props.onChange({ target: { value: '用户在下午偏好茶。' } })
-  assert.equal(save().props.disabled, false)
-  save().props.onClick()
-  const fact = JSON.parse(JSON.stringify(s.mutations.find(m => m.name === 'useAddFact').args[0]))
-  assert.deepEqual(fact, { subject: 'user', predicate: 'prefers', object: '茶', text: '用户在下午偏好茶。' })
-})
-
-test('Journal 展示完整事实句并独立提交结论与正文', () => {
+test('Journal 保留完整事实句并允许调整敏感标记', () => {
   const s = setup('Journal')
   const fact = s.results.useMemoryPages.data.facts[0]
   fact.text = 'For offline runs, use a local cache after an upstream outage.'
   assert.ok(s.find(n => n.props.children === fact.text))
-  s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
-  const editor = s.find(n => n.type === 'textarea')
-  assert.equal(editor.props.value, fact.text)
-  const next = 'For offline runs, use a local cache after an upstream outage and verify its age.'
-  editor.props.onChange({ target: { value: next } })
-  s.find(n => n.type === 'input' && n.props.value === fact.object).props.onChange({ target: { value: 'Use local cache' } })
-  s.find(n => n.type === 'button' && n.props['aria-label'] === '保存').props.onClick()
-  const patch = JSON.parse(JSON.stringify(s.mutations.find(m => m.name === 'useEditFact').args[0].patch))
-  assert.deepEqual(patch, { subject: fact.subject, predicate: fact.predicate, object: 'Use local cache', text: next })
+  assert.equal(s.find(n => n.props['aria-label'] === '编辑'), undefined)
+  s.find(n => n.props['aria-label'] === '标为敏感').props.onClick()
+  const write = s.mutations.find(m => m.name === 'useSetFactSensitive')
+  assert.deepEqual(JSON.parse(JSON.stringify(write.args[0])), { id: fact.id, sensitive: true })
 })
 
 test('Conversations 会话状态提示在卡片上方，其他各条读取错误和独立重试保留', () => {
@@ -189,15 +167,13 @@ test('Settings 接入状态错误放在页面最上方，策略和会话索引�
 for (const failed of [['useMemoryPages', 'useMemories'], ['useMemoryPages'], ['useMemories']]) {
   test(`Journal ${failed.join(' + ')} 失败时只有一条错误，重试所有失败请求`, () => {
     const s = setup('Journal')
-    s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
-    s.find(n => n.type === 'textarea').props.onChange({ target: { value: 'synthetic retained draft' } })
     for (const query of failed) Object.assign(s.results[query], { isError: true, error: new Error('请求失败 (500)') })
     const errors = s.nodes().filter(n => n.type === 'ErrorState')
     assert.equal(errors.length, 1)
     assert.equal(errors[0].props.message.split('请求失败 (500)').length, 2, '同一错误消息只出现一次')
     errors[0].props.onRetry()
     assert.deepEqual(s.retries, failed)
-    assert.ok(s.find(n => n.type === 'textarea' && n.props.value === 'synthetic retained draft'))
+    assert.ok(s.find(n => n.props.children === 'synthetic original'))
   })
 }
 
@@ -340,55 +316,6 @@ test('Profile 按协议栏目顺序展示，不依赖响应对象的键顺序', 
     ['基本信息', '目标与计划'])
 })
 
-for (const [action, fields] of [[undefined, {}], [['food', 'music'], { categories: ['food', 'music'] }], [[], { categories: [] }]]) {
-  test(`Facts 标签操作 ${action} 仅发送用户明确操作的标签字段，失败保留选择`, () => {
-    const s = setup('Facts')
-    s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
-    const editor = () => s.find(n => n.type === 'CategoryEditor')
-    assert.equal(editor().props.current.categories_source, 'llm')
-    editor().props.onChange(action)
-    s.find(n => n.type === 'Button' && n.props.loading !== undefined).props.onClick()
-    const mutation = s.mutations.find(m => m.name === 'useEditFact')
-    const patch = JSON.parse(JSON.stringify(mutation.args[0].patch))
-    assert.deepEqual(Object.fromEntries(Object.entries(patch).filter(([key]) => key === 'categories')), fields)
-    assert.equal(Object.hasOwn(patch, 'sensitive'), false)
-    mutation.args[1].onError(new Error('synthetic write failure'))
-    assert.equal(editor().props.value, action)
-    mutation.args[1].onSuccess({ source: 'extracted' })
-    assert.equal(s.toasts.at(-1), '已更新')
-  })
-}
-
-test('Facts 显式切换敏感开关才发送敏感标记', () => {
-  const s = setup('Facts')
-  s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
-  const toggle = s.find(n => n.type === 'button' && n.props['aria-label'] === '设为敏感内容')
-  const previous = toggle.props['aria-checked']
-  toggle.props.onClick()
-  s.find(n => n.type === 'Button' && n.props.loading !== undefined).props.onClick()
-  const mutation = s.mutations.find(m => m.name === 'useEditFact')
-  assert.equal(mutation.args[0].patch.sensitive, !previous)
-})
-
-for (const [action, fields] of [[['misc'], { categories: ['misc'] }], [[], { categories: [] }]]) {
-  test(`Journal 仅修改标签 ${action} 时不发送正文，失败后保留草稿`, () => {
-    const s = setup('Journal')
-    s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
-    const editor = () => s.find(n => n.type === 'CategoryEditor')
-    editor().props.onChange(action)
-    s.find(n => n.type === 'button' && n.props['aria-label'] === '保存').props.onClick()
-    const mutation = s.mutations.find(m => m.name === 'useEditFact')
-    assert.deepEqual(JSON.parse(JSON.stringify(mutation.args[0].patch)), fields)
-    mutation.args[1].onError(new Error('synthetic write failure'))
-    mutation.args[1].onSettled()
-    assert.equal(editor().props.value, action)
-    assert.ok(s.find(n => n.type === 'textarea' && n.props.value === 'synthetic original'))
-    s.find(n => n.type === 'button' && n.props['aria-label'] === '保存').props.onClick()
-    s.mutations.at(-1).args[1].onSuccess({ source: 'extracted' })
-    assert.equal(s.toasts.at(-1), '标签已保存')
-  })
-}
-
 test('设置草稿在已有策略刷新失败和恢复后保持，独立接入卡片不消失', () => {
   const s = setup('Settings'), input = () => s.find(n => n.type === 'textarea' && n.props.placeholder)
   input().props.onChange({ target: { value: 'synthetic unsaved draft' } })
@@ -424,50 +351,6 @@ test('会话输入不依赖历史查询成功，失败及重试保留正文和�
   assert.equal(s.find(n => n.type === 'SessionPicker').props.value, 'synthetic-selected')
   s.results.useMemoryPages = { isLoading: true }
   assert.equal(input()?.props.value, 'synthetic conversation draft')
-})
-
-for (const [page, query, editor] of [['Journal', 'useMemoryPages', 'OutcomeRow']]) {
-  test(`${page} 后台刷新失败保留正在编辑的行和草稿`, () => {
-    const s = setup(page)
-    const button = s.find(n => n.type === 'button' && ['编辑', '编辑这条记忆'].includes(n.props['aria-label']))
-    assert.ok(button, 'edit action exists')
-    button.props.onClick()
-    const input = () => s.find(n => n.type === 'textarea' || (n.type === 'input' && n.props.value === 'synthetic original'))
-    assert.ok(input(), 'editor exists')
-    input().props.onChange({ target: { value: 'synthetic row draft' } })
-    s.render(); const identity = s.instance(editor)
-    s.results[query].isError = true; s.results[query].error = new Error('synthetic refresh failure')
-    assert.ok(s.find(n => (n.type === 'textarea' || n.type === 'input') && n.props.value === 'synthetic row draft'))
-    assert.equal(s.instance(editor), identity)
-    s.results[query].isError = false
-    assert.ok(s.find(n => (n.type === 'textarea' || n.type === 'input') && n.props.value === 'synthetic row draft'))
-  })
-}
-
-test('结论重试恢复后新增、拆分或合并分组不重建已有编辑行', () => {
-  const s = setup('Journal')
-  const original = s.results.useMemoryPages.data.facts[0]
-  s.find(n => n.type === 'button' && n.props['aria-label'] === '编辑').props.onClick()
-  s.find(n => n.type === 'textarea').props.onChange({ target: { value: 'synthetic reordered draft' } })
-  s.render()
-  const identity = s.instance('OutcomeRow')
-  const retained = () => {
-    assert.ok(s.find(n => n.type === 'textarea' && n.props.value === 'synthetic reordered draft'), 'unsaved editor stays visible')
-    assert.ok(s.instance('OutcomeRow').split(',').includes(identity), 'original editing component remains mounted')
-  }
-  s.results.useMemoryPages.isError = true
-  s.results.useMemoryPages.error = new Error('synthetic refresh failure')
-  retained()
-  s.results.useMemoryPages.isError = false
-  s.results.useMemoryPages.isFetching = true
-  retained()
-  const newer = { ...original, id: 'synthetic-newer', subject: 'synthetic-other-session' }
-  const sameSession = { ...original, id: 'synthetic-same-session' }
-  s.results.useMemoryPages.isFetching = false
-  for (const facts of [[newer, original], [sameSession, original], [sameSession, newer, original], [sameSession, original]]) {
-    s.results.useMemoryPages.data = { ...s.results.useMemoryPages.data, facts }
-    retained()
-  }
 })
 
 test('关注点草稿在后台刷新失败后保留', () => {

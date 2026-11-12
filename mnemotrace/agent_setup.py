@@ -684,7 +684,7 @@ At session start or when debugging memory wiring, call mnemotrace_agent_status w
 Before tasks that may depend on prior user/project context, call mnemotrace_recall with session_id `{session_id}`.
 When the user states a durable preference, project rule, decision, or reusable fact, call mnemotrace_remember with the same session_id and extraction enabled.
 Keep task progress and temporary execution state in the agent’s task tools or files.
-When the user asks to correct or delete a memory, call mnemotrace_list_facts to find the fact id, then call mnemotrace_update_fact or mnemotrace_delete_fact with confirm=true.
+To correct a memory, record the new evidence with mnemotrace_remember. For explicit erasure, find the fact ID with mnemotrace_list_facts and call mnemotrace_delete_fact with confirm=true.
 When the user asks to export their memory, call mnemotrace_export(response_format="json"); set include_sensitive=true only for an explicit private export.
 When the user asks you to pay more attention to or suppress a class of memories, call mnemotrace_set_focus; use mnemotrace_get_focus to inspect the current policy.
 When the user asks what was saved from a thread, call mnemotrace_session_report for that session.
@@ -699,7 +699,7 @@ At session start or when debugging memory wiring, call mnemotrace_agent_status w
 Before tasks that may depend on prior user/project context, call mnemotrace_recall with a session_id like `{session_id}`.
 When the user states a durable preference, project rule, decision, or reusable fact, call mnemotrace_remember with the same session_id and extraction enabled.
 Keep task progress and temporary execution state in the agent’s task tools or files.
-When the user asks to correct or delete a memory, call mnemotrace_list_facts to find the fact id, then call mnemotrace_update_fact or mnemotrace_delete_fact with confirm=true.
+To correct a memory, record the new evidence with mnemotrace_remember. For explicit erasure, find the fact ID with mnemotrace_list_facts and call mnemotrace_delete_fact with confirm=true.
 When the user asks to export their memory, call mnemotrace_export(response_format="json"); set include_sensitive=true only for an explicit private export.
 When the user asks you to pay more attention to or suppress a class of memories, call mnemotrace_set_focus; use mnemotrace_get_focus to inspect the current policy.
 When the user asks what was saved from a thread, call mnemotrace_session_report for that session.

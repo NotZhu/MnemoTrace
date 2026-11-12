@@ -122,7 +122,6 @@ export interface SessionReportFact {
   /** Omitted for redacted rows. */
   categories?: Category[]
   categories_source?: CategoriesSource
-  object_kind?: ObjectKind
   sensitive: boolean
   redacted: boolean
   provenance: string[]
@@ -182,15 +181,18 @@ export type FactStatus = 'live' | 'superseded'
 export type FactSource = 'extracted' | 'user'
 
 export type CategoriesSource = 'unset' | 'llm' | 'user'
-export type ObjectKind = 'entity' | 'literal' | 'unknown'
 export interface FactMetadata {
   categories: Category[]
   categories_source: CategoriesSource
-  object_kind: ObjectKind
 }
 
 export interface Fact extends FactMetadata {
-  cardinality: 'single' | 'multi' | 'unknown'
+  relation_id: string
+  subject_id: string | null
+  object_id: string | null
+  subject_type: string | null
+  object_type: string | null
+  withdrawn_at: number | null
   retention: 'durable' | 'normal' | 'unknown'
   source_roles?: ('user' | 'assistant')[]
   id: string
@@ -204,7 +206,7 @@ export interface Fact extends FactMetadata {
   invalid_at: string | null
   status: FactStatus
   source: FactSource
-  supersedes: string | null
+  supersedes: string[]
   sensitive?: boolean
   redacted?: boolean
   salience: number
@@ -336,7 +338,7 @@ export interface AgentStatus {
     write_memory: string
     flush_processing: string
     inspect_facts: string
-    correct_fact: string
+    set_fact_sensitive: string
     delete_fact: string
     focus: string
   }
@@ -380,7 +382,7 @@ export interface PolicyResponse {
 export interface GraphNode {
   id: string
   name: string
-  type: string
+  type: string | null
 }
 
 export interface GraphEdge {
@@ -406,33 +408,6 @@ export interface GraphResponse extends GraphData {
   has_more: boolean
 }
 
-export interface FactInput {
-  text: string
-  cardinality?: 'single' | 'multi' | 'unknown'
-  retention?: 'durable' | 'normal' | 'unknown'
-  subject?: string
-  predicate: string
-  object: string
-  sensitive?: boolean
-  categories?: Category[]
-  object_kind?: ObjectKind
-}
-
-export interface FactContent {
-  subject: string
-  predicate: string
-  object: string
-  text: string
-}
-
-export type FactPatch = {
-  cardinality?: 'single' | 'multi' | 'unknown'
-  retention?: 'durable' | 'normal' | 'unknown'
-  sensitive?: boolean
-  categories?: Category[]
-  object_kind?: ObjectKind
-} & (FactContent | { subject?: never; predicate?: never; object?: never; text?: never })
-
 export interface ImportMessageInput {
   role?: string
   message_id?: string
@@ -451,9 +426,13 @@ export interface ImportSessionInput {
 
 
 export interface MemoryExportFact extends FactMetadata {
-  cardinality: Fact["cardinality"]
+  relation_id: string
+  subject_id: string | null
+  object_id: string | null
+  subject_type: string | null
+  object_type: string | null
+  withdrawn_at: number | null
   retention: Fact["retention"]
-  validity_revisions: { changed_at: number; invalid_at: number | null; expired_at: number | null }[]
   id: string
   subject: string
   predicate: string
@@ -470,7 +449,7 @@ export interface MemoryExportFact extends FactMetadata {
   invalid_at_h: string | null
   created_at: number
   expired_at: number | null
-  supersedes: string | null
+  supersedes: string[]
   provenance: string[]
 }
 
@@ -485,7 +464,7 @@ export interface MemoryExportEpisode {
 }
 
 export interface MemoryExport {
-  format_version: 3
+  format_version: 4
   space_id: string
   include_sensitive: boolean
   redacted_sensitive: boolean
@@ -618,7 +597,6 @@ export interface MessagesResult extends RememberResult {
 export interface StructuredReadOptions {
   state?: 'current' | 'history' | 'all'
   valid_at?: number
-  known_at?: number
   redact_sensitive?: boolean
   limit?: number
 }

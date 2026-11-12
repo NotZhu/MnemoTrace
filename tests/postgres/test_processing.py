@@ -47,7 +47,7 @@ def processing(runtime, spaces, user):
                 return json.dumps(handle(data))
             if data['operation'] == 'digest':
                 return json.dumps({'digests': [{'source_id': data['pending'][0]['id'], 'text': 'Recorded preference'}]})
-            facts = [dict(categories=['food'], object_kind='entity', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='Synthetic person', predicate='likes', object='tea', text='Synthetic person likes tea',
+            facts = [dict(categories=['food'], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='Synthetic person', predicate='likes', object='tea', text='Synthetic person likes tea',
                           source_ids=[item['id']]) for item in data['pending'] if item['role'] != 'assistant']
             return json.dumps(dict(facts=facts, digests=[]))
 
@@ -60,7 +60,7 @@ def processing(runtime, spaces, user):
 
 def test_assistant_evidence_stays_in_session_until_user_confirmation(processing):
     def adjudicate(prompt):
-        return json.dumps(dict(decisions=[dict(id=pair['id'], decision='replaces')
+        return json.dumps(dict(decisions=[dict(id=pair['id'], decision='conflict')
                                           for pair in json.loads(prompt)]))
 
     memory, _ = processing(handle=dialogue_evidence, adjudicate=adjudicate)
@@ -84,7 +84,7 @@ def test_assistant_evidence_stays_in_session_until_user_confirmation(processing)
 
     confirmation = send('confirmation', 'user', 'Yes, use that by default.', 300)
     new, = memory.facts()
-    assert (new.object, new.valid_at, new.supersedes) == ('pnpm', 300, old.id)
+    assert (new.object, new.valid_at, new.supersedes) == ('pnpm', 300, [old.id])
     assert set(new.provenance) == {proposal, confirmation}
     assert new.source_roles == ['assistant', 'user']
 
@@ -292,11 +292,11 @@ def test_interrupted_transaction_resumes_from_actual_checkpoint(processing, monk
                         'WHERE user_id = %s AND space_id = %s AND operation_id = %s', (*sql.scope, operation_id))
     assert memory.flush_processing('chat')['ok']
     fact, = memory.facts()
-    assert (fact.categories, fact.categories_source, fact.object_kind) == (['food'], 'llm', 'entity')
+    assert (fact.categories, fact.categories_source) == (['food'], 'llm')
     assert len(calls) == (2 if stage == 'product' and not committed else 1)
 
 
-def test_semantic_reconciliation_and_manual_authority(processing):
+def test_semantic_reconciliation_and_unordered_candidate(processing):
     class SemanticEmbedder:
         dim = 2
 
@@ -309,7 +309,7 @@ def test_semantic_reconciliation_and_manual_authority(processing):
     def extract(data):
         item = data['pending'][0]
         predicate, value = item['content'].split()
-        fact = dict(categories=[], object_kind='unknown', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='Synthetic person', predicate=predicate, object=value,
+        fact = dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='Synthetic person', predicate=predicate, object=value,
                     text=f'Synthetic person {predicate} {value}',
                     source_ids=[item['id']])
         return dict(facts=[fact], digests=[])
@@ -322,16 +322,17 @@ def test_semantic_reconciliation_and_manual_authority(processing):
     historical, = memory.facts()
     assert memory.remember_messages('chat', (new,), processing='immediate')['ok']
     current, = memory.facts()
-    assert current.supersedes == historical.id
+    assert current.supersedes == [historical.id]
     assert memory.get_fact(historical.id).invalid_at == 200
-    assert memory.facts(FactQuery(valid_at=150, known_at=historical.created_at))[0].id == historical.id
+    assert memory.facts(FactQuery(valid_at=150))[0].id == historical.id
 
-    pinned = memory.add_fact('Synthetic person', 'based_in', 'Nanjing', valid_at=300, cardinality='single', text='Synthetic person based in Nanjing')
-    attempt = MessageInput('pinned', 'user', 'based_in Shenzhen', event_time=400)
+    attempt = MessageInput('unordered', 'user', 'based_in Shenzhen', event_time=200)
     assert memory.remember_messages('chat', (attempt,), processing='immediate')['ok']
-    assert tuple(fact.id for fact in memory.facts()) == (pinned.id,)
+    assert tuple(fact.id for fact in memory.facts()) == (current.id,)
     conflict, = memory.conflicts()
-    assert conflict.older == pinned.id and conflict.text_newer.endswith('Shenzhen')
+    assert {conflict.text_older, conflict.text_newer} == {
+        'Synthetic person based_in Shanghai', 'Synthetic person based_in Shenzhen',
+    }
 
 
 def test_rejected_source_erasure_preserves_digest_and_its_context(processing):
@@ -516,7 +517,7 @@ def test_final_receipt_includes_surviving_outputs_from_earlier_segments(processi
         item, = data['pending']
         if item['ranges'][0][0]:
             return dict(facts=[], digests=[])
-        facts = [dict(categories=[], object_kind='unknown', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='Synthetic person', predicate='likes', object=value,
+        facts = [dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='Synthetic person', predicate='likes', object=value,
                       text=f'Synthetic person likes {value}', source_ids=[item['id']])
                  for value in ('tea', 'coffee')]
         return dict(facts=facts, digests=[])
@@ -549,9 +550,9 @@ def test_assertion_and_profile_input_are_identical_offline_and_in_postgres(proce
     def handle(data):
         return {"facts": [{
             "subject": "user", "predicate": "avoids", "object": "tea", "text": statement,
-            "categories": ["food"], "object_kind": "literal", "sensitive": False,
+            "categories": ["food"], "sensitive": False,
             "source_ids": [data["pending"][0]["id"]], "time_kind": "current",
-            "effective_date": None, "cardinality": "unknown", "retention": "unknown",
+            "effective_date": None, "retention": "unknown",
         }], "digests": []}
 
     memory, _ = processing(handle=handle)

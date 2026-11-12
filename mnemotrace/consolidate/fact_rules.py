@@ -3,18 +3,13 @@ import re
 
 
 def object_key(fact):
-    value = fact.object
-    return value.strip().lower() if fact.object_kind == 'entity' else value
+    return (fact.object_id, None) if fact.object_id else (None, fact.object)
 
 
 def same_assertion(existing, incoming, *, match_time=True):
-    if existing.object_kind == incoming.object_kind:
-        same_object = object_key(existing) == object_key(incoming)
-    else:
-        # Extraction may corroborate an unclassified manual fact without classifying it.
-        same_object = (existing.source == 'user' and existing.object_kind == 'unknown'
-                       and incoming.source == 'extracted' and existing.object == incoming.object)
-    if not (same_object and existing.slot == incoming.slot and existing.text == incoming.text):
+    if (existing.withdrawn_at is not None or existing.slot != incoming.slot
+            or object_key(existing) != object_key(incoming)
+            or existing.text != incoming.text):
         return False
     return not match_time or (existing.valid_at == incoming.valid_at
                               and (existing.valid_at is not None

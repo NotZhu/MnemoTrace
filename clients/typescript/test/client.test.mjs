@@ -106,26 +106,19 @@ test('memories sends multiple category filters alongside paging and search', asy
   assert.equal(calls[1].searchParams.has('categories'), false)
 })
 
-test('fact category edits preserve explicit clear and carry object kind', async () => {
+test('sensitivity changes send only the flag and scope', async () => {
   const calls = []
-  const client = new MnemoTraceClient({ fetch: async (_url, init) => {
-    const body = JSON.parse(init.body)
-    calls.push(body)
-    return new Response(JSON.stringify({ ok: true, id: 'synthetic-fact', text: 'user prefers tea',
-      categories: body.categories, categories_source: body.categories.length ? 'user' : 'unset',
-      object_kind: body.object_kind ?? 'entity' }), { status: 200 })
+  const client = new MnemoTraceClient({ fetch: async (url, init) => {
+    calls.push([url, init.method, JSON.parse(init.body)])
+    return new Response(JSON.stringify({ ok: true, id: 'fact/a', sensitive: false }), { status: 200 })
   } })
-  const added = await client.addFact({ predicate: 'prefers', object: 'tea', text: '用户偏好茶。', categories: ['food'], object_kind: 'entity' }, space)
-  assert.deepEqual(added.categories, ['food'])
-  assert.equal(added.categories_source, 'user')
-  assert.equal(added.object_kind, 'entity')
-  const cleared = await client.updateFact(added.id, { categories: [] }, space)
-  assert.deepEqual(cleared.categories, [])
-  assert.equal(cleared.categories_source, 'unset')
-  assert.deepEqual(calls, [
-    { subject: 'user', predicate: 'prefers', object: 'tea', text: '用户偏好茶。', categories: ['food'], object_kind: 'entity', space_id: 'space-test' },
-    { categories: [], space_id: 'space-test' },
-  ])
+  assert.deepEqual(await client.setFactSensitive('fact/a', false, space),
+    { ok: true, id: 'fact/a', sensitive: false })
+  assert.deepEqual(calls, [[
+    'http://localhost:8000/v1/facts/fact%2Fa/sensitivity', 'PATCH', { sensitive: false, space_id: 'space-test' },
+  ]])
+  assert.equal(client.addFact, undefined)
+  assert.equal(client.updateFact, undefined)
 })
 
 test('graph exposes completeness metadata and preserves safe default query options',async()=>{
@@ -251,7 +244,7 @@ test('agentStatus calls the content-free agent status endpoint', async () => {
         write_memory: 'mnemotrace_remember',
         close_session: 'mnemotrace_close_session',
         inspect_facts: 'mnemotrace_list_facts',
-        correct_fact: 'mnemotrace_update_fact',
+        set_fact_sensitive: 'mnemotrace_set_fact_sensitive',
         delete_fact: 'mnemotrace_delete_fact',
         focus: 'mnemotrace_get_focus / mnemotrace_set_focus',
       },
@@ -400,7 +393,6 @@ test('memories supports paging search and share-safe filtering for owner UIs', a
           supersedes: null,
           categories: ['professional_details'],
           categories_source: 'user',
-          object_kind: 'entity',
           sensitive: false,
           salience: 1,
           provenance: [],
@@ -596,9 +588,9 @@ test('structured reads use explicit scoped tools and forward time conditions', a
     return new Response('{}', {status: 200})
   }})
   await client.aggregateFacts('visited', {...space, operation: 'count_distinct', start: 1, limit: 2})
-  await client.followPath('user', ['sister', 'works_at'], {...space, known_at: 20, redact_sensitive: true})
+  await client.followPath('user', ['sister', 'works_at'], {...space, valid_at: 20, redact_sensitive: true})
   assert.deepEqual(calls, [
     ['/v1/aggregate', {space_id: 'space-test', predicate: 'visited', operation: 'count_distinct', start: 1, limit: 2}],
-    ['/v1/follow-path', {space_id: 'space-test', anchor: 'user', predicates: ['sister', 'works_at'], known_at: 20, redact_sensitive: true}],
+    ['/v1/follow-path', {space_id: 'space-test', anchor: 'user', predicates: ['sister', 'works_at'], valid_at: 20, redact_sensitive: true}],
   ])
 })

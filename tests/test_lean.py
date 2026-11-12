@@ -5,6 +5,7 @@ lean_context 能正确组装它们，并做去重 + 硬性大小上限。"""
 from __future__ import annotations
 
 from tests.embedder_fixtures import MockEmbedder
+from tests.model_fixtures import link_synthetic_facts, seed_linked, seed_timeline
 from tests.model_fixtures import MemoryEngine
 from mnemotrace.util import DAY
 
@@ -103,39 +104,18 @@ def test_lean_path_works_with_no_digests():
     assert ctx.strip(), "still produces a usable context from facts"
 
 
-def test_memory_crud_add_edit_delete():
-    """管理界面的操作：add_fact（用户撰写）、update_fact（编辑并重新署名）、delete_fact
-    （被遗忘权，硬删除）。"""
+def test_synthetic_fact_sensitivity_and_erasure():
     mem = MemoryEngine()
-    f = mem.add_fact("user", "works_at", "ByteDance", user_id="u1", text='user works at ByteDance')
-    assert f.source == "user" and f.text == "user works at ByteDance"
-    assert mem.fact_store.get(f.id) is not None
-
-    edited = mem.update_fact(f.id, object="Moonshot AI", subject=f.subject, predicate=f.predicate, text=' '.join((f.subject, f.predicate.replace('_', ' '), 'Moonshot AI')))
-    assert edited.object == "Moonshot AI" and edited.source == "user"
-    assert mem.fact_store.get(f.id).text == "user works at Moonshot AI"
-
-    assert mem.delete_fact(f.id) is True
-    assert mem.fact_store.get(f.id) is None
-    assert mem.delete_fact("nonexistent") is False
-
-
-def test_update_fact_rebuilds_graph_relation():
-    mem = MemoryEngine()
-    f = mem.add_fact("user", "works_at", "ByteDance", user_id="u1", object_kind="entity", text='user works at ByteDance')
-
-    mem.update_fact(f.id, object="Moonshot AI", object_kind="entity", subject=f.subject, predicate=f.predicate, text=' '.join((f.subject, f.predicate.replace('_', ' '), 'Moonshot AI')))
-
-    graph = mem.graph_data("u1")
-    edge_text = str(graph)
-    assert "Moonshot AI" in edge_text
-    assert "ByteDance" not in edge_text
-    assert len([edge for edge in graph["edges"] if edge["fact_id"] == f.id]) == 1
+    fact = mem.add_fact("user", "works_at", "ByteDance", user_id="u1", text="user works at ByteDance")
+    assert mem.set_fact_sensitive(fact.id, False).text == fact.text
+    assert mem.delete_fact(fact.id)
+    assert mem.fact_store.get(fact.id) is None
+    assert not mem.delete_fact("nonexistent")
 
 
 def test_delete_fact_removes_graph_export_edge():
     mem = MemoryEngine()
-    f = mem.add_fact("user", "has_disease", "diabetes", user_id="u1", object_kind="entity", text='user has disease diabetes')
+    f = seed_linked(mem, "user", "has_disease", "diabetes", user_id="u1", text='user has disease diabetes')
     assert f.id in {edge["fact_id"] for edge in mem.graph_data("u1")["edges"]}
 
     assert mem.delete_fact(f.id) is True
@@ -207,8 +187,8 @@ def test_search_answers_previous_value_with_explicit_history_state():
 
     mem = MemoryEngine()
     previous = mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE, text='Wei works at Tencent')
-    current = mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY,
-                           cardinality="single", text='Wei works at Moonshot AI')
+    current = seed_timeline(mem, "Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY,
+                           text='Wei works at Moonshot AI')
     result = mem.search("Where did Wei work?", user_id="u1", facts=FactQuery(state=FactState.HISTORY))
     assert result.top().id == previous.id
     assert mem.search("Where does Wei work?", user_id="u1").top().id == current.id
@@ -217,7 +197,7 @@ def test_search_answers_previous_value_with_explicit_history_state():
 def test_lean_context_adds_evolution_chain_for_current_lookup():
     mem = MemoryEngine()
     old = mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE, text='Wei works at Tencent')
-    new = mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single", text='Wei works at Moonshot AI')
+    new = seed_timeline(mem, "Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, text='Wei works at Moonshot AI')
 
     ctx = mem.lean_context(
         "Where does Wei work?",
@@ -225,7 +205,7 @@ def test_lean_context_adds_evolution_chain_for_current_lookup():
         char_budget=10_000,
     )
 
-    assert new.supersedes == old.id
+    assert new.supersedes == [old.id]
     assert "FACTS (current, dated):" in ctx
     assert "FACT EVOLUTION" in ctx
     assert "Tencent" in ctx
@@ -236,7 +216,7 @@ def test_lean_context_adds_evolution_chain_for_current_lookup():
 def test_lean_context_evolution_chain_respects_as_of_boundary():
     mem = MemoryEngine()
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE, text='Wei works at Tencent')
-    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single", text='Wei works at Moonshot AI')
+    seed_timeline(mem, "Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, text='Wei works at Moonshot AI')
 
     ctx = mem.lean_context(
         "Where does Wei work?",
@@ -253,7 +233,7 @@ def test_lean_context_evolution_chain_respects_as_of_boundary():
 def test_context_for_adds_fact_evolution_chain():
     mem = MemoryEngine()
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE, text='Wei works at Tencent')
-    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single", text='Wei works at Moonshot AI')
+    seed_timeline(mem, "Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, text='Wei works at Moonshot AI')
 
     ctx = mem.context_for("Where does Wei work?", user_id="u1", k_digests=0)
 
@@ -267,7 +247,7 @@ def test_chain_evidence_can_be_disabled_for_ablation():
 
     mem = MemoryEngine(config=Config(chain_evidence=False))
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE, text='Wei works at Tencent')
-    mem.add_fact("Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, cardinality="single", text='Wei works at Moonshot AI')
+    seed_timeline(mem, "Wei", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + 30 * DAY, text='Wei works at Moonshot AI')
 
     ctx = mem.lean_context(
         "Where does Wei work?",
@@ -287,6 +267,7 @@ def test_multihop_planner_includes_cold_tier_relation_facts():
     ]
     mem.consolidate(eps)
 
+    link_synthetic_facts(mem, {"sister", "occupation", "lives_in"})
     sister = next(f for f in mem.fact_store.values() if f.predicate == "sister")
     sister.salience = 0.0
     assert mem.evict_cold(max_hot=len(mem.fact_store.values()) - 1) == 1
@@ -304,6 +285,7 @@ def test_deleted_relation_fact_does_not_drive_multihop_planner():
         mem.add("Maya just moved to Seattle.", user_id="u1", session_id="s2", event_time=BASE + DAY),
     ]
     mem.consolidate(eps)
+    link_synthetic_facts(mem, {"sister", "occupation", "lives_in"})
     sister = next(f for f in mem.fact_store.values() if f.predicate == "sister")
 
     assert mem.delete_fact(sister.id) is True
@@ -315,9 +297,9 @@ def test_deleted_relation_fact_does_not_drive_multihop_planner():
 
 def test_graph_scores_expand_beyond_one_hop_for_bridge_facts():
     mem = MemoryEngine()
-    direct = mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
-    bridge = mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
-    second_hop = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
+    direct = seed_linked(mem, "Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, text='Wei colleague Lin')
+    bridge = seed_linked(mem, "Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, text='Lin works at Moonshot AI')
+    second_hop = seed_linked(mem, "Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, text='Moonshot AI based in Beijing')
 
     scores, qids = mem.retriever._graph_scores(
         "Tell me about Wei",
@@ -333,9 +315,9 @@ def test_graph_scores_expand_beyond_one_hop_for_bridge_facts():
 
 def test_graph_scores_respect_as_of_during_expansion():
     mem = MemoryEngine()
-    direct = mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
-    future_bridge = mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
-    older_target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE, object_kind="entity", text='Moonshot AI based in Beijing')
+    direct = seed_linked(mem, "Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, text='Wei colleague Lin')
+    future_bridge = seed_linked(mem, "Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, text='Lin works at Moonshot AI')
+    older_target = seed_linked(mem, "Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE, text='Moonshot AI based in Beijing')
     live = [direct, future_bridge, older_target]
 
     before, _ = mem.retriever._graph_scores(
@@ -359,9 +341,9 @@ def test_graph_proximity_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
     mem = MemoryEngine(config=Config(graph_proximity=False))
-    direct = mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
-    bridge = mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
-    second_hop = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
+    direct = seed_linked(mem, "Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, text='Wei colleague Lin')
+    bridge = seed_linked(mem, "Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, text='Lin works at Moonshot AI')
+    second_hop = seed_linked(mem, "Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, text='Moonshot AI based in Beijing')
 
     scores, qids = mem.retriever._graph_scores(
         "Tell me about Wei",
@@ -382,10 +364,10 @@ def test_graph_relation_awareness_prioritizes_query_relevant_edges():
     from mnemotrace.config import Config
 
     mem = MemoryEngine(config=Config(graph_relation_awareness=True))
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
-    distractor = mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Lin likes jazz')
-    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
+    seed_linked(mem, "Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, text='Wei colleague Lin')
+    seed_linked(mem, "Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, text='Lin works at Moonshot AI')
+    distractor = seed_linked(mem, "Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY, text='Lin likes jazz')
+    target = seed_linked(mem, "Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY, text='Moonshot AI based in Beijing')
     live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
 
     scores, _ = mem.retriever._graph_scores(
@@ -402,10 +384,10 @@ def test_graph_relation_awareness_can_be_disabled_for_ablation():
     from mnemotrace.config import Config
 
     mem = MemoryEngine(config=Config(graph_relation_awareness=False))
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
-    distractor = mem.add_fact("Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Lin likes jazz')
-    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
+    seed_linked(mem, "Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, text='Wei colleague Lin')
+    seed_linked(mem, "Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, text='Lin works at Moonshot AI')
+    distractor = seed_linked(mem, "Lin", "likes", "jazz", user_id="u1", valid_at=BASE + 2 * DAY, text='Lin likes jazz')
+    target = seed_linked(mem, "Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 3 * DAY, text='Moonshot AI based in Beijing')
     live = [f for f in mem.fact_store.values() if f.user_id == "u1"]
 
     scores, _ = mem.retriever._graph_scores(
@@ -423,13 +405,13 @@ def test_graph_path_reinforcement_boosts_multi_path_targets():
 
     def build_mem(enabled: bool):
         mem = MemoryEngine(config=Config(graph_path_reinforcement=enabled))
-        mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
-        mem.add_fact("Wei", "mentor", "Maya", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Wei mentor Maya')
-        mem.add_fact("Lin", "works_on", "Atlas", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Lin works on Atlas')
-        mem.add_fact("Maya", "works_on", "Atlas", user_id="u1", valid_at=BASE + 3 * DAY, object_kind="entity", text='Maya works on Atlas')
-        mem.add_fact("Lin", "works_on", "Zephyr", user_id="u1", valid_at=BASE + 4 * DAY, object_kind="entity", text='Lin works on Zephyr')
-        target = mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 5 * DAY, object_kind="entity", text='Atlas based in Reykjavik')
-        distractor = mem.add_fact("Zephyr", "based_in", "Lisbon", user_id="u1", valid_at=BASE + 6 * DAY, object_kind="entity", text='Zephyr based in Lisbon')
+        seed_linked(mem, "Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, text='Wei colleague Lin')
+        seed_linked(mem, "Wei", "mentor", "Maya", user_id="u1", valid_at=BASE + DAY, text='Wei mentor Maya')
+        seed_linked(mem, "Lin", "works_on", "Atlas", user_id="u1", valid_at=BASE + 2 * DAY, text='Lin works on Atlas')
+        seed_linked(mem, "Maya", "works_on", "Atlas", user_id="u1", valid_at=BASE + 3 * DAY, text='Maya works on Atlas')
+        seed_linked(mem, "Lin", "works_on", "Zephyr", user_id="u1", valid_at=BASE + 4 * DAY, text='Lin works on Zephyr')
+        target = seed_linked(mem, "Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + 5 * DAY, text='Atlas based in Reykjavik')
+        distractor = seed_linked(mem, "Zephyr", "based_in", "Lisbon", user_id="u1", valid_at=BASE + 6 * DAY, text='Zephyr based in Lisbon')
         return mem, target, distractor
 
     enabled_mem, enabled_target, enabled_distractor = build_mem(True)
@@ -456,9 +438,9 @@ def test_graph_path_reinforcement_boosts_multi_path_targets():
 
 def test_multihop_planner_reaches_company_location_chain():
     mem = MemoryEngine()
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
-    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
+    seed_linked(mem, "Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, text='Wei colleague Lin')
+    seed_linked(mem, "Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, text='Lin works at Moonshot AI')
+    seed_linked(mem, "Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, text='Moonshot AI based in Beijing')
 
     path, = mem.follow_path("Wei", ["colleague", "works_at", "based_in"], user_id="u1").paths
     assert path.endpoint == "Beijing"
@@ -467,8 +449,8 @@ def test_multihop_planner_reaches_company_location_chain():
 
 def test_multihop_planner_reaches_project_location_chain():
     mem = MemoryEngine()
-    mem.add_fact("Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei works on Atlas')
-    mem.add_fact("Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Atlas based in Reykjavik')
+    seed_linked(mem, "Wei", "works_on", "Atlas", user_id="u1", valid_at=BASE, text='Wei works on Atlas')
+    seed_linked(mem, "Atlas", "based_in", "Reykjavik", user_id="u1", valid_at=BASE + DAY, text='Atlas based in Reykjavik')
 
     path, = mem.follow_path("Wei", ["works_on", "based_in"], user_id="u1").paths
     assert path.endpoint == "Reykjavik"
@@ -518,8 +500,8 @@ def test_add_fact_supersedes_live_cold_tier_fact():
     assert mem.evict_cold(max_hot=1) == 1
     assert mem.cold_store.get(old.id) is not None
 
-    new = mem.add_fact("user", "project_status", "beta", user_id="u1", cardinality="single", text='user project status beta')
-    assert new.supersedes == old.id
+    new = seed_timeline(mem, "user", "project_status", "beta", user_id="u1", valid_at=old.valid_at + 1, text='user project status beta')
+    assert new.supersedes == [old.id]
     assert old.invalid_at == new.valid_at
     chain = mem.history("user", "project_status", user_id="u1")
     assert [f.object for f in chain] == ["alpha", "beta"]
@@ -588,8 +570,8 @@ def test_lean_context_pages_cold_fact_when_hot_misses():
 
 def test_graph_related_facts_include_cold_tier_facts():
     mem = MemoryEngine()
-    cold = mem.add_fact("project", "project_note", "cold graph evidence", user_id="u1", object_kind="entity", text='project project note cold graph evidence')
-    hot = mem.add_fact("project", "project_status", "hot graph evidence", user_id="u1", object_kind="entity", text='project project status hot graph evidence')
+    cold = seed_linked(mem, "project", "project_note", "cold graph evidence", user_id="u1", text='project project note cold graph evidence')
+    hot = seed_linked(mem, "project", "project_status", "hot graph evidence", user_id="u1", text='project project status hot graph evidence')
     cold.salience = 0.0
     hot.salience = 1.0
     assert mem.evict_cold(max_hot=1) == 1
@@ -601,9 +583,9 @@ def test_graph_related_facts_include_cold_tier_facts():
 
 def test_graph_related_facts_expand_beyond_one_hop():
     mem = MemoryEngine()
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
-    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
+    seed_linked(mem, "Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, text='Wei colleague Lin')
+    seed_linked(mem, "Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, text='Lin works at Moonshot AI')
+    target = seed_linked(mem, "Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, text='Moonshot AI based in Beijing')
 
     related = mem._graph_related_facts("Tell me about Wei", "u1", None)
 
@@ -612,9 +594,9 @@ def test_graph_related_facts_expand_beyond_one_hop():
 
 def test_graph_related_facts_respect_as_of_during_expansion():
     mem = MemoryEngine()
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
-    target = mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE, object_kind="entity", text='Moonshot AI based in Beijing')
+    seed_linked(mem, "Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, text='Wei colleague Lin')
+    seed_linked(mem, "Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, text='Lin works at Moonshot AI')
+    target = seed_linked(mem, "Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE, text='Moonshot AI based in Beijing')
 
     before = mem._graph_related_facts("Tell me about Wei", "u1", BASE + 0.5 * DAY)
     after = mem._graph_related_facts("Tell me about Wei", "u1", BASE + 2 * DAY)
@@ -625,9 +607,9 @@ def test_graph_related_facts_respect_as_of_during_expansion():
 
 def test_context_for_graph_includes_multihop_related_facts():
     mem = MemoryEngine()
-    mem.add_fact("Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, object_kind="entity", text='Wei colleague Lin')
-    mem.add_fact("Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, object_kind="entity", text='Lin works at Moonshot AI')
-    mem.add_fact("Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, object_kind="entity", text='Moonshot AI based in Beijing')
+    seed_linked(mem, "Wei", "colleague", "Lin", user_id="u1", valid_at=BASE, text='Wei colleague Lin')
+    seed_linked(mem, "Lin", "works_at", "Moonshot AI", user_id="u1", valid_at=BASE + DAY, text='Lin works at Moonshot AI')
+    seed_linked(mem, "Moonshot AI", "based_in", "Beijing", user_id="u1", valid_at=BASE + 2 * DAY, text='Moonshot AI based in Beijing')
 
     ctx = mem.context_for("Tell me about Wei", user_id="u1", k_digests=0, graph=True)
 
@@ -643,7 +625,7 @@ def test_pending_conflict_and_resolution_include_cold_tier_facts():
     new = mem.add_fact("project", "status", "beta", user_id="u1", text='project status beta')
     old.invalid_at = None
     old.expired_at = None
-    new.supersedes = None
+    new.supersedes = []
     old.salience = 0.0
     new.salience = 1.0
     assert mem.evict_cold(max_hot=1) == 1
@@ -653,11 +635,11 @@ def test_pending_conflict_and_resolution_include_cold_tier_facts():
 
     assert mem.pending_conflicts("u1") == [cf]
     assert mem.resolve_conflict(cf.id, keep="newer") is True
-    assert old.invalid_at is not None
-    assert cf.status == "resolved"
+    assert old.withdrawn_at is not None and old.invalid_at is None
+    assert mem.pending_conflicts("u1") == []
 
 
-def test_update_cold_fact_promotes_without_duplicate():
+def test_sensitivity_preserves_cold_tier_without_duplicate():
     mem = MemoryEngine()
     cold = mem.add_fact("project", "project_note", "old value", user_id="u1", text='project project note old value')
     hot = mem.add_fact("project", "project_status", "hot value", user_id="u1", text='project project status hot value')
@@ -666,11 +648,11 @@ def test_update_cold_fact_promotes_without_duplicate():
     assert mem.evict_cold(max_hot=1) == 1
     assert mem.cold_store.get(cold.id) is not None
 
-    updated = mem.update_fact(cold.id, object="new value", subject=cold.subject, predicate=cold.predicate, text=' '.join((cold.subject, cold.predicate.replace('_', ' '), 'new value')))
+    updated = mem.set_fact_sensitive(cold.id, False)
 
-    assert updated is not None and updated.object == "new value"
-    assert mem.fact_store.get(cold.id) is not None
-    assert mem.cold_store.get(cold.id) is None
+    assert updated is not None and updated.object == "old value" and not updated.sensitive
+    assert mem.fact_store.get(cold.id) is None
+    assert mem.cold_store.get(cold.id) is not None
     assert len([f for f in mem._all_facts() if f.id == cold.id]) == 1
 
 
@@ -708,7 +690,8 @@ def test_resolve_conflict_writes_back_to_copying_vector_store():
 
     assert mem.resolve_conflict(cf.id, keep="newer") is True
     assert not mem.fact_store.get(older.id).is_live()
-    assert mem.fact_store.get(newer.id).supersedes == older.id
+    assert mem.fact_store.get(newer.id).supersedes == []
+    assert mem.fact_store.get(older.id).withdrawn_at is not None
 
 
 def test_agentic_multihop_decomposition():
@@ -804,7 +787,7 @@ def test_digest_remains_faithful_after_supersession():
                user_id="u1", valid_at=BASE, provenance=[ep.id],
                invalid_at=BASE + 5 * DAY, expired_at=BASE + 5 * DAY, text='u1 yoga frequency twice a week')
     new = Fact(subject="u1", predicate="yoga_frequency", object="three times a week",
-               user_id="u1", valid_at=BASE + 5 * DAY, supersedes=old.id, text='u1 yoga frequency three times a week')
+               user_id="u1", valid_at=BASE + 5 * DAY, supersedes=[old.id], text='u1 yoga frequency three times a week')
     mem.fact_store.upsert(old.id, [0.0], old)
     mem.fact_store.upsert(new.id, [0.0], new)
     mem.generate_digests([ep])  # 冻结 "twice a week" 的摘要
@@ -825,7 +808,7 @@ def test_digest_remains_faithful_with_cold_tier_history():
                user_id="u1", valid_at=BASE, provenance=[ep.id],
                invalid_at=BASE + 5 * DAY, expired_at=BASE + 5 * DAY, salience=0.0, text='u1 yoga frequency twice a week')
     new = Fact(subject="u1", predicate="yoga_frequency", object="three times a week",
-               user_id="u1", valid_at=BASE + 5 * DAY, supersedes=old.id,
+               user_id="u1", valid_at=BASE + 5 * DAY, supersedes=[old.id],
                salience=1.0, text='u1 yoga frequency three times a week')
     mem.fact_store.upsert(old.id, [0.0], old)
     mem.fact_store.upsert(new.id, [0.0], new)
@@ -864,6 +847,7 @@ def test_graph_data_has_no_dangling_edges():
     """graph_data() 供关系图谱视图使用：每条边的端点都必须是返回的节点，孤儿实体
     （没有存留边）会被丢弃，使画面聚焦于关系本身。"""
     mem = build()
+    link_synthetic_facts(mem, {"works_at", "lives_in", "colleague"})
     g = mem.graph_data("u1")
     assert g["nodes"] and g["edges"], "a consolidated history should yield a non-empty graph"
     ids = {n["id"] for n in g["nodes"]}
@@ -884,6 +868,7 @@ def test_graph_data_as_of_excludes_future_relations():
     mem.add("Wei works at Moonshot AI.", user_id="u1", event_time=BASE + 30 * DAY)
     mem.consolidate()
 
+    link_synthetic_facts(mem, {"works_at"})
     past = mem.graph_data("u1", as_of=BASE + 10 * DAY)
     past_names = {n["name"] for n in past["nodes"]}
     assert "Tencent" in past_names
@@ -896,8 +881,8 @@ def test_graph_data_as_of_excludes_future_relations():
 
 def test_graph_data_can_exclude_sensitive_fact_edges():
     mem = MemoryEngine()
-    mem.add_fact("user", "has_disease", "diabetes", user_id="u1", object_kind="entity", text='user has disease diabetes')
-    mem.add_fact("user", "works_at", "Acme", user_id="u1", sensitive=False, object_kind="entity", text='user works at Acme')
+    seed_linked(mem, "user", "has_disease", "diabetes", user_id="u1", text='user has disease diabetes')
+    seed_linked(mem, "user", "works_at", "Acme", user_id="u1", sensitive=False, text='user works at Acme')
 
     full = mem.graph_data("u1")
     assert "diabetes" in str(full).lower()
@@ -912,8 +897,8 @@ def test_graph_data_can_exclude_sensitive_fact_edges():
 
 def test_graph_data_can_exclude_sensitive_cold_fact_edges():
     mem = MemoryEngine()
-    disease = mem.add_fact("user", "has_disease", "diabetes", user_id="u1", object_kind="entity", text='user has disease diabetes')
-    work = mem.add_fact("user", "project_note", "Acme", user_id="u1", object_kind="entity", text='user project note Acme')
+    disease = seed_linked(mem, "user", "has_disease", "diabetes", user_id="u1", text='user has disease diabetes')
+    work = seed_linked(mem, "user", "project_note", "Acme", user_id="u1", text='user project note Acme')
     disease.salience = 0.0
     work.salience = 1.0
     assert mem.evict_cold(max_hot=1) == 1
@@ -986,7 +971,7 @@ def test_original_sentence_keeps_canonical_predicate():
     m = MemoryEngine()
     f = m.add_fact("user", "works_at", "字节跳动", user_id="u", text='用户在字节跳动工作。')
     assert f.text == '用户在字节跳动工作。'
-    assert f.predicate == "works_at" and f.slot[2] == "works_at"
+    assert f.predicate == "works_at" and f.slot[2] == f.relation_id
 
 
 def test_conflict_resolve_and_dismiss_are_user_driven():
@@ -1002,7 +987,7 @@ def test_conflict_resolve_and_dismiss_are_user_driven():
 
     assert m.resolve_conflict(cf.id, keep="newer")
     assert not fa.is_live() and fb.is_live(), "keep=newer supersedes the older"
-    assert cf.status == "resolved" and m.pending_conflicts("u") == []
+    assert fa.withdrawn_at is not None and m.pending_conflicts("u") == []
 
     # dismiss 两者都保留
     g1 = m.add_fact("user", "likes", "茶", user_id="u", text='user likes 茶')

@@ -4,6 +4,7 @@ import pytest
 
 from mnemotrace import Config
 from tests.embedder_fixtures import MockEmbedder, product_embedder
+from tests.postgres.fact_fixtures import seed_fact
 from mnemotrace.memory import Memory
 from mnemotrace.retrieve.hybrid import date_terms
 from mnemotrace.retrieve.lexical import bm25_scores
@@ -27,7 +28,7 @@ def memory(runtime, spaces, user):
 def test_exact_graph_query_distinguishes_names_with_surrounding_spaces(memory):
     padded, plain = ' Synthetic Alice ', 'Synthetic Alice'
     for subject in (padded, plain):
-        memory.add_fact(subject, 'works_at', 'Synthetic Lab', object_kind='entity', text=f'{subject} works at Synthetic Lab.')
+        seed_fact(memory, subject, 'works_at', 'Synthetic Lab', linked=True, text=f'{subject} works at Synthetic Lab.')
 
     padded_entity, = memory.graph_entities(padded.upper())
     plain_entity, = memory.graph_entities(plain)
@@ -41,9 +42,9 @@ def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, s
     context = spaces.authorize(user, spaces.create(user, 'Lexical mode').space_id)
     memory = Memory(runtime, context, llm=RecordedLLM())
     original = memory.remember_raw('无关内容。' * 120 + '末尾记录绿茶', 'chat')
-    memory.add_fact('user', 'sister', '王小明', object_kind="entity", text='user sister 王小明')
-    memory.add_fact('王小明', 'works_at', '月亮公司', object_kind="entity", text='王小明 works at 月亮公司')
-    memory.add_fact('user', 'likes', '绿茶', object_kind="entity", text='user likes 绿茶')
+    seed_fact(memory, 'user', 'sister', '王小明', linked=True, text='user sister 王小明')
+    seed_fact(memory, '王小明', 'works_at', '月亮公司', linked=True, text='王小明 works at 月亮公司')
+    seed_fact(memory, 'user', 'likes', '绿茶', linked=True, text='user likes 绿茶')
     memory.remember('I live in Shenzhen.', 'chat')
     with memory.dao.read_snapshot() as view:
         sql = view._sql
@@ -86,16 +87,16 @@ def _seed_digest(memory, source, text, *, vector=None):
 
 
 def test_exact_vector_and_bm25_use_full_scoped_corpus(memory, runtime, spaces, user, accounts):
-    old = memory.add_fact('Ana', 'works_at', 'Acme', valid_at=100, text='Ana works at Acme')
-    current = memory.add_fact('Ana', 'works_at', 'Orbit', valid_at=200, cardinality='single', text='Ana works at Orbit')
-    repeat = memory.add_fact('Bo', 'likes', 'Orbit Orbit', valid_at=150, text='Bo likes Orbit Orbit')
+    old = seed_fact(memory, 'Ana', 'works_at', 'Acme', valid_at=100, invalid_at=200, text='Ana works at Acme')
+    current = seed_fact(memory, 'Ana', 'works_at', 'Orbit', valid_at=200, supersedes=[old.id], text='Ana works at Orbit')
+    repeat = seed_fact(memory, 'Bo', 'likes', 'Orbit Orbit', valid_at=150, text='Bo likes Orbit Orbit')
     sibling = spaces.authorize(user, spaces.create(user, 'Other space').space_id)
     sibling_memory = Memory(runtime, sibling)
-    sibling_memory.add_fact('Ana', 'works_at', 'Orbit Orbit Orbit', valid_at=200, text='Ana works at Orbit Orbit Orbit')
+    seed_fact(sibling_memory, 'Ana', 'works_at', 'Orbit Orbit Orbit', valid_at=200, text='Ana works at Orbit Orbit Orbit')
     other = accounts.create_user()
     try:
         unrelated = spaces.authorize(other, spaces.create(other, 'Other user').space_id)
-        Memory(runtime, unrelated).add_fact('Ana', 'works_at', 'Orbit', valid_at=200, text='Ana works at Orbit')
+        seed_fact(Memory(runtime, unrelated), 'Ana', 'works_at', 'Orbit', valid_at=200, text='Ana works at Orbit')
         vector = tuple(memory._embedder.embed('works Orbit'))
         with memory.dao.read_snapshot() as view:
             for state, facts in ((FactState.CURRENT, (current, repeat)), (FactState.ALL, (old, current, repeat))):
@@ -117,15 +118,15 @@ def test_exact_vector_and_bm25_use_full_scoped_corpus(memory, runtime, spaces, u
         accounts.delete_user(other)
 
 
-def test_graph_name_path_and_known_at(memory):
-    memory.add_fact('Wei', 'colleague', 'Lin', valid_at=100, object_kind="entity", text='Wei colleague Lin')
-    job = memory.add_fact('Lin', 'works_at', 'Orbit', valid_at=100, object_kind="entity", text='Lin works at Orbit')
-    memory.add_fact('Orbit', 'based_in', 'Lisbon', valid_at=100, object_kind="entity", text='Orbit based in Lisbon')
+def test_graph_name_path_and_effective_date(memory):
+    seed_fact(memory, 'Wei', 'colleague', 'Lin', valid_at=100, linked=True, text='Wei colleague Lin')
+    job = seed_fact(memory, 'Lin', 'works_at', 'Orbit', valid_at=100, linked=True, text='Lin works at Orbit')
+    seed_fact(memory, 'Orbit', 'based_in', 'Lisbon', valid_at=100, linked=True, text='Orbit based in Lisbon')
     orbit, = memory.graph_entities('orbit')
     assert {edge.fact_id for edge in memory.graph_neighbors(orbit.id, direction='in')} == {job.id}
     assert memory.follow_path('Wei', ['colleague', 'works_at']).paths[0].endpoint == 'Orbit'
     assert memory.follow_path('Orbital Lab', ['based_in', 'unknown']).paths == ()
-    assert memory.graph_relations(job.id, facts=FactQuery(valid_at=150, known_at=150)) == ()
+    assert memory.graph_relations(job.id, facts=FactQuery(valid_at=99)) == ()
     assert memory.graph_relations(job.id, facts=FactQuery(valid_at=150))
     original, = memory.graph_relations(job.id)
     with memory.dao._transaction() as sql:
@@ -144,8 +145,8 @@ def test_graph_name_path_and_known_at(memory):
 def test_graph_retrieval_uses_query_names_and_explicit_subject_scope(memory):
     from mnemotrace.store.postgres.graph_reads import RetrievalGraph
 
-    fact = memory.add_fact('user', 'lives_in', 'Synthetic City', object_kind='entity', text='user lives in Synthetic City')
-    memory.add_fact('Other Person', 'lives_in', 'Synthetic Harbor', object_kind='entity', text='Other Person lives in Synthetic Harbor')
+    fact = seed_fact(memory, 'user', 'lives_in', 'Synthetic City', linked=True, text='user lives in Synthetic City')
+    seed_fact(memory, 'Other Person', 'lives_in', 'Synthetic Harbor', linked=True, text='Other Person lives in Synthetic Harbor')
     with memory.dao.read_snapshot() as view:
         for text in ('Where do I live?', 'Where does his sister live?'):
             assert not RetrievalGraph(view, memory._query(text, top_k=1)).entities
@@ -159,8 +160,9 @@ def test_answer_evidence_matches_offline_without_domain_vocabulary(runtime, spac
 
     context = spaces.authorize(user, spaces.create(user, 'Answer evidence').space_id)
     offline, persistent = MemoryEngine(), Memory(runtime, context)
+    offline.add_fact('Ana', 'preferred_format', 'Synthetic blocks', text='Ana preferred format Synthetic blocks')
+    seed_fact(persistent, 'Ana', 'preferred_format', 'Synthetic blocks', text='Ana preferred format Synthetic blocks')
     for engine in (offline, persistent):
-        engine.add_fact('Ana', 'preferred_format', 'Synthetic blocks', text='Ana preferred format Synthetic blocks')
         assert engine.search("What is Ana's preferred language?").abstained
         assert engine.search("What is Ana's preferred format?").top().object == 'Synthetic blocks'
         assert engine.search("Tell me about blocks").top().object == 'Synthetic blocks'
@@ -185,7 +187,7 @@ def test_digest_answer_requires_full_query_coverage(runtime, spaces, user):
 
 def test_limited_candidates_can_rank_both_published_facts_in_a_slot(memory):
     # The salience shortlist should find Orbit while the other shortlists find Orion.
-    manual = memory.add_fact('Ana', 'works_at', 'Orbit', valid_at=100, text='Ana works at Orbit')
+    manual = seed_fact(memory, 'Ana', 'works_at', 'Orbit', valid_at=100, text='Ana works at Orbit')
     shadow = Fact('Ana', 'works_at', 'Orion', user_id=memory.context.user_id, valid_at=200,
                   source='extracted', salience=0.5, id='fixture-retrieval-orion', text='Ana works at Orion')
     write = memory._write(shadow)
@@ -221,9 +223,9 @@ def test_redacted_aggregation_does_not_include_original_source_evidence(memory):
 
 
 def test_aggregate_counts_full_snapshot_and_respects_time_and_redaction(memory):
-    memory.add_fact('Ana', 'visited', 'Orbit', valid_at=10, sensitive=False, object_kind='entity', text='Ana visited Orbit')
-    memory.add_fact('Bea', 'visited', 'ORBIT', valid_at=20, sensitive=False, object_kind='entity', text='Bea visited ORBIT')
-    memory.add_fact('Bea', 'visited', 'Elsewhere', valid_at=30, sensitive=True, text='Bea visited Elsewhere')
+    seed_fact(memory, 'Ana', 'visited', 'Orbit', valid_at=10, sensitive=False, linked=True, text='Ana visited Orbit')
+    seed_fact(memory, 'Bea', 'visited', 'ORBIT', valid_at=20, sensitive=False, linked=True, text='Bea visited ORBIT')
+    seed_fact(memory, 'Bea', 'visited', 'Elsewhere', valid_at=30, sensitive=True, text='Bea visited Elsewhere')
     scope = FactQuery(limit=1, exclude_sensitive=True)
     matches = memory.aggregate_facts('visited', start=10, end=30, facts=scope)
     assert matches.count == 2 and len(matches.facts) == 1
@@ -232,7 +234,7 @@ def test_aggregate_counts_full_snapshot_and_respects_time_and_redaction(memory):
 
 
 def test_search_returns_snapshot_result_when_access_reinforcement_conflicts(memory, cluster, monkeypatch):
-    fact = memory.add_fact('Ana', 'likes', 'Clover', text='Ana likes Clover')
+    fact = seed_fact(memory, 'Ana', 'likes', 'Clover', text='Ana likes Clover')
     memory._config.access_boost = 0.5
     commit = memory._commit
     with Database(cluster.runtime) as second:
@@ -248,8 +250,12 @@ def test_search_returns_snapshot_result_when_access_reinforcement_conflicts(memo
 
 
 def test_retrieval_ignores_old_text_vectors_after_edit(memory):
-    old = memory.add_fact('Ana', 'likes', 'Clover', text='Ana likes Clover')
-    edited = memory.update_fact(old.id, object='Orion', subject=old.subject, predicate=old.predicate, text=' '.join((old.subject, old.predicate.replace('_', ' '), 'Orion')))
+    old = seed_fact(memory, 'Ana', 'likes', 'Clover', text='Ana likes Clover')
+    with memory.dao.read_snapshot() as view:
+        snapshot, stored = view.snapshot, view.get(RecordKind.FACT, old.id)
+    edited = replace(old, object='Orion', text='Ana likes Orion')
+    write = memory._write(edited, stored, text_changed=True)
+    memory._commit(snapshot, writes=(write,), embeddings=memory._embeddings(write, edited.text))
     request = memory._query('Clover', top_k=5)
     with memory.dao._transaction() as sql:
         sql.insert('embeddings', {
@@ -265,7 +271,7 @@ def test_retrieval_ignores_old_text_vectors_after_edit(memory):
 
 
 def test_vector_queries_plan_for_each_scope_even_after_connection_reuse(memory):
-    fact = memory.add_fact('Ana', 'likes', 'Clover', text='Ana likes Clover')
+    fact = seed_fact(memory, 'Ana', 'likes', 'Clover', text='Ana likes Clover')
     request = memory._query('Clover', top_k=5)
     with memory.dao.read_snapshot() as view:
         corpus = Corpus(view, request, RecordKind.FACT)
@@ -292,7 +298,7 @@ def test_digest_lexical_projection_follows_text_version(memory):
     assert memory.retrieve_digests('Clover').digests == ()
 
 
-def test_historical_retrieval_waits_until_current_digest_is_known(memory, runtime):
+def test_historical_retrieval_uses_latest_digest_for_eligible_event(memory, runtime):
     import json
 
     from mnemotrace import MemoryEngine
@@ -310,14 +316,12 @@ def test_historical_retrieval_waits_until_current_digest_is_known(memory, runtim
         memory.dao.commit(ChangeSet(CommitConditions(snapshot), f'historical-digest-{version}',
                                     writes=(RecordWrite(record, previous.record_version),)))
 
-    for cutoff in cutoffs:
-        assert not memory.retrieve_digests('Orchid', as_of=cutoff).digests
-        assert not memory.lean_context('Orchid', as_of=cutoff).context
+    assert not memory.retrieve_digests('Orchid', as_of=99).digests
     current, = memory.retrieve_digests('Orchid').digests
     assert current.text == 'Project Orchid later detail' and current.derived
     with memory.dao.read_snapshot() as view:
         after_digest = view.at.timestamp()
-    historical, = memory.retrieve_digests('Orchid', as_of=after_digest).digests
+    historical, = memory.retrieve_digests('Orchid', as_of=100).digests
     assert historical == current
 
     snapshot = json.loads(''.join(MemoryService(runtime).iter_export(memory.context, include_sensitive=True)))
@@ -325,12 +329,12 @@ def test_historical_retrieval_waits_until_current_digest_is_known(memory, runtim
     assert cutoffs[-1] <= written_at <= after_digest
     restored = MemoryEngine()
     restored.import_snapshot(snapshot)
-    assert not restored.retrieve_digests('Orchid', as_of=cutoffs[-1])
-    assert restored.retrieve_digests('Orchid', as_of=after_digest)[0].text == current.text
+    assert not restored.retrieve_digests('Orchid', as_of=99)
+    assert restored.retrieve_digests('Orchid', as_of=100)[0].text == current.text
 
     with memory.dao._transaction() as sql:
         sql.update('source_digests', {'digest_written_at': None}, 'source_id = %s', (source.id,))
-    assert not memory.retrieve_digests('Orchid', as_of=after_digest).digests
+    assert memory.retrieve_digests('Orchid', as_of=100).digests == (current,)
     assert memory.retrieve_digests('Orchid').digests == (current,)
 
 
@@ -374,13 +378,13 @@ def test_backfill_rebuilds_digest_lexical_projection_only(memory):
     assert memory.retrieve_digests('Snowdrop').digests[0].id == source.id
 
 def test_snapshot_keeps_all_signals_at_one_version_and_failure_stays_visible(memory, cluster):
-    memory.add_fact('Ana', 'likes', 'Clover', text='Ana likes Clover')
+    seed_fact(memory, 'Ana', 'likes', 'Clover', text='Ana likes Clover')
     request = memory._query('Clover', top_k=5)
     with Database(cluster.runtime) as second:
         writer = Memory(second, memory.context)
         with memory.dao.read_snapshot() as view:
             before = view.candidates(request)
-            writer.add_fact('Bo', 'likes', 'Clover', text='Bo likes Clover')
+            seed_fact(writer, 'Bo', 'likes', 'Clover', text='Bo likes Clover')
             assert view.candidates(request) == before
         assert len(memory.search('Clover').facts) == 2
         second.close()
@@ -388,7 +392,7 @@ def test_snapshot_keeps_all_signals_at_one_version_and_failure_stays_visible(mem
             writer.search('Clover')
 
 
-def test_http_structured_queries_use_authorized_space_and_redaction(product_client, product_scope):
+def test_http_structured_queries_use_authorized_space_and_redaction(product_client, product_scope, product_service):
     context, key = product_scope()
     space_id = context.space_id
     headers = {'Authorization': f'Bearer {key}'}
@@ -401,8 +405,8 @@ def test_http_structured_queries_use_authorized_space_and_redaction(product_clie
         ('Ana', 'works_at', 'Orbit', False),
         ('Ana', 'works_at', 'Secret', True),
     ):
-        assert post('/v1/facts', subject=subject, predicate=predicate,
-                    object=object_, text=f'{subject} {predicate} {object_}', sensitive=sensitive, object_kind="entity").status_code == 200
+        seed_fact(product_service.memory(context), subject, predicate, object_,
+                  text=f'{subject} {predicate} {object_}', sensitive=sensitive, linked=True)
     result = post('/v1/aggregate', predicate='works_at', redact_sensitive=True, limit=1)
     assert result.status_code == 200
     assert result.json()['count'] == 1
@@ -417,9 +421,9 @@ def test_http_structured_queries_use_authorized_space_and_redaction(product_clie
 
 
 def test_explicit_path_respects_visible_facts(memory):
-    memory.add_fact('Ana', 'sister', 'Cora', sensitive=False, object_kind="entity", text='Ana sister Cora')
-    memory.add_fact('Bea', 'sister', 'Cora', sensitive=True, object_kind="entity", text='Bea sister Cora')
-    memory.add_fact('Cora', 'works_at', 'Orbit', sensitive=False, object_kind="entity", text='Cora works at Orbit')
+    seed_fact(memory, 'Ana', 'sister', 'Cora', sensitive=False, linked=True, text='Ana sister Cora')
+    seed_fact(memory, 'Bea', 'sister', 'Cora', sensitive=True, linked=True, text='Bea sister Cora')
+    seed_fact(memory, 'Cora', 'works_at', 'Orbit', sensitive=False, linked=True, text='Cora works at Orbit')
     scope = FactQuery(exclude_sensitive=True)
     assert not memory.follow_path('Bea', ['sister', 'works_at'], facts=scope).paths
     result = memory.follow_path('ANA', ['sister', 'works_at'], facts=scope)
@@ -427,52 +431,23 @@ def test_explicit_path_respects_visible_facts(memory):
     assert result.paths[0].facts[0].subject == 'Ana'
 
 
-@pytest.mark.parametrize('clock_skew', [0, -60, 60])
-def test_backfilled_validity_is_read_at_the_selected_knowledge_time(memory, cluster, monkeypatch, clock_skew):
-    from time import time
-    from mnemotrace.consolidate.manual import build_manual_fact
-
-    def client_clock_fact(*args, **kwargs):
-        fact = build_manual_fact(*args, **kwargs)
-        fact.created_at += clock_skew
-        return fact
-
-    monkeypatch.setattr('mnemotrace.memory.build_manual_fact', client_clock_fact)
-
-    base = time()
-    memory.add_fact('Ana', 'works_at', 'First', valid_at=base - 100, cardinality='single', text='Ana works at First')
-    with memory.dao.read_snapshot() as view:
-        first_known = view.at.timestamp()
-    memory.add_fact('Ana', 'works_at', 'Last', valid_at=base + 800, cardinality='single', text='Ana works at Last')
-    with memory.dao.read_snapshot() as view:
-        last_known = view.at.timestamp()
-    memory.add_fact('Ana', 'works_at', 'Middle', valid_at=base + 400, cardinality='single', text='Ana works at Middle')
-    with memory.dao.read_snapshot() as view:
-        middle_known = view.at.timestamp()
-
+def test_valid_time_applies_to_aggregate_and_search_after_restart(memory, cluster):
+    first = seed_fact(memory, 'Ana', 'works_at', 'First', valid_at=100, invalid_at=200, text='Ana works at First')
+    second = seed_fact(memory, 'Ana', 'works_at', 'Second', valid_at=200, supersedes=[first.id], text='Ana works at Second')
     with Database(cluster.runtime) as reopened:
         fresh = Memory(reopened, memory.context)
-        for known, expected, end in ((first_known, 'First', None), (last_known, 'First', base + 800),
-                                     (middle_known, 'Middle', base + 800)):
-            scope = FactQuery(valid_at=base + 600, known_at=known)
-            fact, = fresh.aggregate_facts('works_at', facts=scope).facts
-            assert fact.object == expected
-            if end is None:
-                assert fact.invalid_at is None
-            else:
-                assert fact.invalid_at == pytest.approx(end, abs=1e-6, rel=0)
+        for at, fact in [(199, first), (200, second)]:
+            scope = FactQuery(valid_at=at, subject='Ana', predicate='works_at')
+            assert fresh.aggregate_facts('works_at', facts=scope).facts[0].id == fact.id
             assert fresh.search('Where does Ana work?', facts=scope).top().id == fact.id
-        history = FactQuery(state=FactState.HISTORY, valid_at=base + 600, known_at=last_known)
-        assert fresh.aggregate_facts('works_at', facts=history).count == 0
-
 
 
 def test_explicit_slot_checks_full_view_and_preserves_literal_case(memory):
-    bob = memory.add_fact("Bob", "favorite_language", "Ab1", object_kind="literal", sensitive=False, text='Bob favorite language Ab1')
+    bob = seed_fact(memory, "Bob", "favorite_language", "Ab1", sensitive=False, text='Bob favorite language Ab1')
     assert memory.search("Alice favorite language").status == "evidence_only"
     slot = FactQuery(subject="Bob", predicate="favorite_language", exclude_sensitive=True)
     assert memory.search("language", facts=slot).answer() == "Ab1"
-    memory.add_fact("Bob", "favorite_language", "ab1", object_kind="literal", sensitive=False, text='Bob favorite language ab1')
+    seed_fact(memory, "Bob", "favorite_language", "ab1", sensitive=False, text='Bob favorite language ab1')
     result = memory.search("language", facts=slot, top_k=1)
     assert result.status == "evidence_only" and len(result.facts) == 1
     assert memory.aggregate_facts("favorite_language", operation="count_distinct", facts=slot).count == 2
@@ -483,9 +458,10 @@ def test_focus_boundaries_match_offline_and_persistent_reads(memory):
     from mnemotrace.memory_engine import MemoryEngine
 
     offline = MemoryEngine()
-    for backend in (offline, memory):
-        backend.add_fact("user", "uses", "Java", categories=["technology"], sensitive=False, text='user uses Java')
-        backend.add_fact("user", "uses", "JavaScript", sensitive=False, text='user uses JavaScript')
+    for language, labels in [("Java", ["technology"]), ("JavaScript", [])]:
+        text = f"user uses {language}"
+        offline.add_fact("user", "uses", language, categories=labels, sensitive=False, text=text)
+        seed_fact(memory, "user", "uses", language, categories=labels, sensitive=False, text=text)
     for terms in (["java"], ["category:technology"]):
         offline.set_focus(mute=terms)
         memory.set_settings(mute=tuple(terms))
@@ -499,13 +475,13 @@ def test_focus_boundaries_match_offline_and_persistent_reads(memory):
 
 
 def test_explicit_slot_preserves_accepted_subject_whitespace(memory):
-    fact = memory.add_fact(" Alice ", "works_at", "Synthetic Lab", text=' Alice  works at Synthetic Lab')
+    fact = seed_fact(memory, " Alice ", "works_at", "Synthetic Lab", text=' Alice  works at Synthetic Lab')
     result = memory.search("work", facts=FactQuery(subject=" Alice ", predicate="works_at"))
     assert result.status == "answered" and result.top().id == fact.id
 
 
 def test_explicit_slot_reads_existing_facts_during_embedding_failure(memory, monkeypatch):
-    memory.add_fact('Ana', 'works_at', 'Orbit', text='Ana works at Orbit.')
+    seed_fact(memory, 'Ana', 'works_at', 'Orbit', text='Ana works at Orbit.')
 
     def unavailable(_):
         raise RuntimeError('Synthetic embedding outage')

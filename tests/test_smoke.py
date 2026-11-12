@@ -6,7 +6,7 @@ from mnemotrace.connectors.dialogue import import_data
 import pytest
 
 from mnemotrace.config import Config
-from tests.model_fixtures import MemoryEngine
+from tests.model_fixtures import MemoryEngine, link_synthetic_facts
 from mnemotrace.types import Fact
 from mnemotrace.util import DAY
 
@@ -52,9 +52,10 @@ def test_multi_sentence_episode_extracts_every_fact():
     mem.add("Wei works at Tencent.\nWei works at Moonshot AI.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
-    chain = mem.history("Wei", "works_at", user_id="u1")
-    assert {f.object for f in chain} == {"Tencent", "Moonshot AI"}
-    assert all(f.is_live() for f in chain)
+    candidates = mem.fact_store.values()
+    assert {f.object for f in candidates} == {"Tencent", "Moonshot AI"}
+    assert all(f.review_pending for f in candidates)
+    assert len(mem.pending_conflicts("u1")) == 1
 
 
 @pytest.mark.history_import
@@ -90,7 +91,7 @@ def test_same_slot_identity_facts_remain_eligible_when_both_are_current():
         user_id="u1",
         valid_at=BASE + DAY,
         salience=1.0,
-        supersedes=old.id,
+        supersedes=[old.id],
         embedding=mem.embedder.embed("Wei works at Moonshot AI"), text='Wei works at Moonshot AI',
     )
     mem.fact_store.upsert(old.id, old.embedding or [], old)
@@ -118,7 +119,7 @@ def test_same_slot_non_identity_facts_remain_eligible_when_both_are_current():
         user_id="u1",
         valid_at=BASE + DAY,
         salience=1.0,
-        supersedes=old.id,
+        supersedes=[old.id],
         embedding=mem.embedder.embed("Wei major computer science"), text='Wei major computer science',
     )
     mem.fact_store.upsert(old.id, old.embedding or [], old)
@@ -213,7 +214,7 @@ def test_runbook_source_extracts_literal_fact_with_full_steps():
     assert len(facts) == 1
     fact = facts[0]
     assert fact.subject == "PAT"
-    assert fact.object_kind == "literal"
+    assert fact.object_id is None
     assert "security settings" in fact.object
     assert "regenerating the token" in fact.object
     assert "updating CI secrets" in fact.object
@@ -232,7 +233,7 @@ def test_to_colon_howto_extracts_literal_fact():
     mem.consolidate()
 
     fact, = mem.fact_store.values()
-    assert fact.object_kind == "literal"
+    assert fact.object_id is None
     assert "security settings" in fact.object
     assert fact.provenance
 
@@ -272,7 +273,7 @@ def test_no_hard_delete_history_preserved():
     superseded = [f for f in chain if not f.is_live()]
     assert len(superseded) == 1 and superseded[0].object == "Tencent"
     # 新 fact 指回它取代的旧 fact（演化链）
-    assert live[0].supersedes == superseded[0].id
+    assert live[0].supersedes == [superseded[0].id]
 
 
 def test_bitemporal_as_of_query():
@@ -285,6 +286,7 @@ def test_bitemporal_as_of_query():
 
 def test_multi_hop_reasoning():
     mem = build()
+    link_synthetic_facts(mem, {"colleague", "works_at"})
     path, = mem.follow_path("user", ["colleague", "works_at"], user_id="u1").paths
     assert "moonshot" in path.endpoint.lower()
 
@@ -302,6 +304,7 @@ def test_family_profession_multi_session_reasoning():
     assert ("Maya", "occupation", "pediatrician") in facts
     assert ("Maya", "lives_in", "Seattle") in facts
 
+    link_synthetic_facts(mem, {"sister", "occupation"})
     path, = mem.follow_path("user", ["sister", "occupation"], user_id="u1").paths
     assert path.endpoint == "pediatrician"
 
@@ -316,6 +319,7 @@ def test_multiple_family_relations_accumulate_and_disambiguate():
     sisters = [f for f in mem.history("user", "sister", user_id="u1") if f.is_live()]
     assert {f.object for f in sisters} == {"Anna", "Maya"}
 
+    link_synthetic_facts(mem, {"sister", "occupation"})
     paths = mem.follow_path("user", ["sister", "occupation"], user_id="u1").paths
     assert {path.endpoint: path.facts[0].object for path in paths} == {
         "lawyer": "Anna", "pediatrician": "Maya",

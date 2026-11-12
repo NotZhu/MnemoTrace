@@ -6,8 +6,8 @@ import math
 from copy import deepcopy
 from typing import Any, Callable
 
-from ..types import CARDINALITIES, RETENTIONS, validate_validity_revisions
-from ..categories import CATEGORIES, CATEGORY_SOURCES, OBJECT_KINDS, validate_categories
+from ..types import RETENTIONS
+from ..categories import CATEGORIES, CATEGORY_SOURCES, validate_categories
 
 Validator = Callable[[Any, str], None]
 
@@ -105,11 +105,6 @@ _ID_OR_NULL = _nullable(_identifier)
 _SOURCE = _choice("user", "extracted")
 
 
-def _validity_revisions(value: Any, path: str) -> None:
-    try:
-        validate_validity_revisions(value)
-    except ValueError as exc:
-        _fail(path, str(exc))
 
 
 def validate_coverage(value: Any, path: str) -> None:
@@ -162,34 +157,44 @@ _FACT = {
     "text": _identifier, "user_id": _identifier, "embedding": _VECTOR,
     "salience": _number, "confidence": _number, "source": _SOURCE,
     "sensitive": _boolean, "valid_at": _TIME_OR_NULL,
-    "sensitive_override": _boolean, "review_pending": _boolean, "approved_at": _TIME_OR_NULL,
+    "sensitive_override": _boolean, "review_pending": _boolean, "withdrawn_at": _TIME_OR_NULL,
     "source_roles": _list(_choice("user", "assistant")),
     "categories": _list(_choice(*CATEGORIES)), "categories_source": _choice(*CATEGORY_SOURCES),
-    "object_kind": _choice(*OBJECT_KINDS),
-    "cardinality": _choice(*CARDINALITIES), "retention": _choice(*RETENTIONS),
+    "subject_id": _ID_OR_NULL, "object_id": _ID_OR_NULL,
+    "subject_type": _ID_OR_NULL, "object_type": _ID_OR_NULL,
+    "relation_id": _identifier,
+    "retention": _choice(*RETENTIONS),
     "invalid_at": _TIME_OR_NULL, "created_at": _number, "expired_at": _TIME_OR_NULL,
-    "validity_revisions": _validity_revisions,
-    "supersedes": _ID_OR_NULL, "provenance": _STRINGS, "last_access": _number,
+    "supersedes": _list(_identifier), "provenance": _STRINGS, "last_access": _number,
     "access_count": _count,
 }
+def _endpoint_pair(value, path):
+    _list(_identifier)(value, path)
+    if len(value) != 2:
+        _fail(path, "expected two endpoint types")
+
+
 _RECORDS = {
     "Episode": _EPISODE,
     "Fact": _FACT,
-    "Entity": {"id": _identifier, "name": _identifier, "type": _identifier,
+    "Entity": {"id": _identifier, "name": _identifier, "type": _ID_OR_NULL,
                "user_id": _identifier, "embedding": _VECTOR},
     "Relation": {"id": _identifier, "subject_id": _identifier, "predicate": _identifier,
                  "object_id": _identifier, "fact_id": _identifier,
                  "valid_at": _TIME_OR_NULL, "invalid_at": _TIME_OR_NULL},
+    "RelationType": {"id": _identifier, "user_id": _identifier, "predicate": _identifier,
+                     "meaning": _identifier, "direction": _choice("forward", "symmetric"),
+                     "endpoint_types": _list(_endpoint_pair)},
     "Conflict": {"id": _identifier, "older": _identifier, "newer": _identifier,
                  "text_older": _string, "text_newer": _string, "user_id": _identifier,
-                 "reason": _string, "status": _choice("pending", "resolved", "dismissed"),
+                 "reason": _string, "older_version": _count, "newer_version": _count,
                  "detected_at": _number},
 }
 def _fields(value: Any, spec: dict[str, Validator], path: str,
             optional: tuple[str, ...] = ()) -> dict[str, Any]:
     _object(value, path)
     retired = {'summary', 'summary_embedding', 'summary_coverage', 'summary_version',
-               'display', 'working', 'working_ids', 'working_added', 'working_live', 'session_generation'}
+               'display', 'object_kind', 'cardinality', 'validity_revisions', 'working', 'working_ids', 'working_added', 'working_live', 'session_generation'}
     for key in retired.intersection(value):
         _fail(f"{path}.{key}", "unsupported field")
     for key, check in spec.items():
@@ -223,8 +228,8 @@ def validate_record(kind: str, record: Any, path: str, *,
             _fail(path, 'legacy processing metadata is unsupported; task migration is not provided')
     if kind == "Fact":
         _validate_fact_categories(result, path)
-        if result["review_pending"] and result["approved_at"] is not None:
-            _fail(path, "pending fact cannot have an approval time")
+        if result["review_pending"] and result["withdrawn_at"] is not None:
+            _fail(path, "pending fact cannot be withdrawn")
     if embedding_dim is not None:
         for key in ("embedding", "digest_embedding"):
             if result.get(key) is not None:
@@ -242,9 +247,10 @@ def _validate_fact_categories(record: dict, path: str) -> None:
 # A migration carries source identities/history, not the target user's runtime state.
 _IMPORT_FACT = {key: _FACT[key] for key in (
     "id", "subject", "predicate", "object", "text", "source", "sensitive",
-    "categories", "categories_source", "object_kind", "cardinality", "retention",
-    "salience", "confidence", "valid_at", "invalid_at", "created_at", "expired_at", "validity_revisions",
-    "supersedes", "provenance", "source_roles", "sensitive_override", "review_pending", "approved_at",
+    "categories", "categories_source", "retention", "relation_id", "subject_id", "object_id",
+    "subject_type", "object_type",
+    "salience", "confidence", "valid_at", "invalid_at", "created_at", "expired_at",
+    "supersedes", "provenance", "source_roles", "sensitive_override", "review_pending", "withdrawn_at",
 )}
 _IMPORT_FACT.update(status=_choice("live", "superseded"), valid_at_h=_string,
                     invalid_at_h=_nullable(_string))
@@ -257,7 +263,7 @@ _IMPORT_EPISODE = {key: _EPISODE[key] for key in (
 _IMPORT_CONFLICT = {key: value for key, value in _RECORDS["Conflict"].items() if key != "user_id"}
 
 
-SNAPSHOT_FORMAT_VERSION = 3
+SNAPSHOT_FORMAT_VERSION = 4
 
 
 def is_snapshot_candidate(value: Any) -> bool:
@@ -275,7 +281,7 @@ def validate_snapshot(snapshot: Any) -> dict:
         if key not in snapshot:
             _fail(f"snapshot.{key}", "missing required field")
     result = {}
-    for name, spec, optional in (("facts", _IMPORT_FACT, ("status", "valid_at_h", "invalid_at_h", "source_roles", "sensitive_override", "review_pending", "approved_at")),
+    for name, spec, optional in (("facts", _IMPORT_FACT, ("status", "valid_at_h", "invalid_at_h", "source_roles", "sensitive_override", "review_pending")),
                                  ("episodes", _IMPORT_EPISODE, ("digest", "coverage", "digest_coverage", "ingested_at",
                                                                 "digest_written_at")),
                                  ("conflicts", _IMPORT_CONFLICT, ())):
@@ -291,8 +297,8 @@ def validate_snapshot(snapshot: Any) -> dict:
         if name == "facts":
             for i, row in enumerate(result[name]):
                 _validate_fact_categories(row, f"snapshot.facts[{i}]")
-                if row.get("review_pending") and row.get("approved_at") is not None:
-                    _fail(f"snapshot.facts[{i}]", "pending fact cannot have an approval time")
+                if row.get("review_pending") and row.get("withdrawn_at") is not None:
+                    _fail(f"snapshot.facts[{i}]", "pending fact cannot be withdrawn")
         seen = set()
         for i, row in enumerate(result[name]):
             if row["id"] in seen:

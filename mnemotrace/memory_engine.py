@@ -9,7 +9,7 @@ from .config import Config
 from .focus import matches, selectors
 from .consolidate import reinforce
 from .consolidate.facts import FactWriter
-from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual, validate_fact_patch
+from .consolidate.manual import build_manual_fact, reconcile_manual
 from .consolidate.policy import POLICY_DEFAULTS
 from .embed import Embedder
 from .ingest import Ingestor
@@ -30,9 +30,9 @@ from .store import (
     InMemoryVectorStore,
     VectorStore,
 )
-from .categories import Category, ObjectKind
+from .categories import Category
 from .extraction import require_llm
-from .types import Cardinality, Conflict, Episode, Fact, Retention
+from .types import Conflict, Episode, Fact, Retention
 from .util import fmt_date, now, time_key
 
 
@@ -426,7 +426,7 @@ class MemoryEngine:
 
         # --- facts：同时恢复 live 与被取代的行，保留 valid/transaction 时间 ---
         id_map: dict[str, str] = {}  # 旧快照 id -> 新 id，用于重连取代链
-        staged: list[tuple[Fact, str | None]] = []
+        staged: list[tuple[Fact, list[str]]] = []
         facts_skipped = 0
         for row in snapshot["facts"]:
             s, p, o = row["subject"], row["predicate"], row["object"]
@@ -441,13 +441,15 @@ class MemoryEngine:
                      source_roles=row.get("source_roles", []),
                      sensitive=row["sensitive"],
                      sensitive_override=row.get("sensitive_override", False),
-                     review_pending=row.get("review_pending", False), approved_at=row.get("approved_at"),
-                      categories=row["categories"], categories_source=row["categories_source"], object_kind=row["object_kind"],
-                      cardinality=row["cardinality"], retention=row["retention"],
+                     review_pending=row.get("review_pending", False), withdrawn_at=row["withdrawn_at"],
+                     categories=row["categories"], categories_source=row["categories_source"], relation_id=row["relation_id"],
+                     subject_id=restored_id('en', row["subject_id"]) if row["subject_id"] else None,
+                     object_id=restored_id('en', row["object_id"]) if row["object_id"] else None,
+                     subject_type=row["subject_type"], object_type=row["object_type"], retention=row["retention"],
                      salience=row["salience"], confidence=row["confidence"],
                      valid_at=valid_at,
                      invalid_at=row["invalid_at"], created_at=row["created_at"],
-                     expired_at=row["expired_at"], validity_revisions=row["validity_revisions"],
+                     expired_at=row["expired_at"],
                      provenance=[episode_ids.get(key, key) for key in row["provenance"]])
             if dedupe:
                 f.id = target_id
@@ -456,21 +458,20 @@ class MemoryEngine:
             staged.append((f, row["supersedes"]))
         known_pairs = {item.pair_key for item in self.conflicts.values() if item.user_id == user}
         restored_conflicts = []
+        held = {f.id for f, _ in staged if f.review_pending}
+        held.update(f.id for f in self._all_facts(include_unpublished=True) if f.user_id == user and f.review_pending)
         for row in snapshot['conflicts']:
             fields = {key: value for key, value in row.items() if key not in {'id', 'older', 'newer'}}
             conflict = Conflict(id_map[row['older']], id_map[row['newer']], user_id=user, **fields)
-            if conflict.older != conflict.newer and conflict.pair_key not in known_pairs:
+            if (conflict.older != conflict.newer and conflict.pair_key not in known_pairs
+                    and (conflict.older in held or conflict.newer in held)):
                 restored_conflicts.append(conflict)
                 known_pairs.add(conflict.pair_key)
         # 校验和向量准备全部成功后才写入；取代链也链接到去重命中的已有事实。
         for ep in prepared_episodes:
             self._sync_episode(ep)
         for f, old_sup in staged:
-            f.supersedes = id_map.get(old_sup)
-            if f.supersedes is None and dedupe and old_sup is not None:
-                prior_id = restored_id('ft', old_sup)
-                if self.fact_store.get(prior_id) is not None or self.cold_store.get(prior_id) is not None:
-                    f.supersedes = prior_id
+            f.supersedes = [id_map[key] for key in old_sup if key in id_map]
             self._upsert_fact(f, tier="hot")
             # add_fact 会把 fact.invalid_at 带到关系上，因此被取代的历史落库时就是已失效化的边
             # ——图的时间线在往返中得以保留。
@@ -482,18 +483,19 @@ class MemoryEngine:
                 "episodes_restored": len(prepared_episodes), "episodes_skipped": eps_skipped,
                 "malformed": 0}
 
-    # --- 用户手写的记忆管理（管理界面驱动的可编辑层） ---
+    # --- 离线工作集 ---
     def add_fact(self, subject: str, predicate: str, object: str, user_id: str = "default",
                  valid_at: Optional[float] = None, sensitive: Optional[bool] = None,
-                 categories: list[Category] | None = None, object_kind: ObjectKind = "unknown",
-                 cardinality: Cardinality = "unknown", retention: Retention = "unknown", *, text: str) -> Fact:
-        """手动断言一条 fact。它被标记为 source='user'（权威）：冲突解决允许它取代同一槽位上
-        任何抽取出的值，并且此后受到保护，不会被未来的自动覆盖改写。"""
+                 categories: list[Category] | None = None, retention: Retention = "unknown", *, text: str,
+                 subject_id=None, object_id=None, subject_type=None, object_type=None) -> Fact:
+        """Seed a synthetic fact for offline experiments."""
         with self._pipeline_lock:
             if self._pipeline_broken:
                 raise RuntimeError('Memory checkpoint failed; create a new instance')
             user = user_id
-            f = build_manual_fact(subject, predicate, object, text, user, valid_at, sensitive, categories, object_kind, cardinality, retention)
+            f = build_manual_fact(subject, predicate, object, text, user, valid_at, sensitive, categories, retention,
+                                  subject_id=subject_id, object_id=object_id, subject_type=subject_type,
+                                  object_type=object_type)
             f.embedding = self._encode(f.text)
             from .consolidate.pipeline import PipelineTasks
             PipelineTasks(self, f.user_id).invalidate()
@@ -509,39 +511,6 @@ class MemoryEngine:
                 self.writer.graph_builder.add_fact(f)
             self._enforce_hot_limit()
             return changed[0] if action == "duplicate" else f
-
-    def update_fact(self, fact_id: str, subject: Optional[str] = None, predicate: Optional[str] = None,
-                    object: Optional[str] = None, sensitive: Optional[bool] = None,
-                    categories: list[Category] | None = None, text: Optional[str] = None,
-                    object_kind: ObjectKind | None = None,
-                    cardinality: Cardinality | None = None, retention: Retention | None = None) -> Optional[Fact]:
-        """实际修改 fact 内容时标记为用户手写（因此自动抽取不会把它改回去）。
-        修改正文时默认标记敏感并清空分类；显式参数优先
-        （用户的选择永远优先）。只修改元数据或回传未变的内容时，保留来源、有效状态与历史。"""
-        validate_fact_patch(subject, predicate, object, text)
-        with self._pipeline_lock:
-            if self._pipeline_broken:
-                raise RuntimeError('Memory checkpoint failed; create a new instance')
-            f = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
-            if f is None or not f.is_published():
-                return None
-            edited = copy(f)
-            claim_changed = apply_manual_edit(edited, subject, predicate, object, sensitive, categories,
-                                              text, object_kind, cardinality, retention)
-            if edited == f:
-                return f
-            projection_changed = claim_changed or edited.object_kind != f.object_kind
-            if edited.text != f.text:
-                edited.embedding = self._encode(edited.text)
-            if claim_changed:
-                from .consolidate.pipeline import PipelineTasks
-                PipelineTasks(self, f.user_id).invalidate()
-            vars(f).update(vars(edited))
-            self._upsert_fact(f, tier="hot")
-            if projection_changed:
-                self.writer.graph_builder.add_fact(f)
-                self.graph.prune_orphan_entities()
-            return f
 
     def delete_fact(self, fact_id: str) -> bool:
         """被遗忘权：硬删除一条 fact（区别于保留历史的自动失效化）。这是用户主动发起的擦除，
@@ -562,6 +531,35 @@ class MemoryEngine:
             self.fact_store.delete(fact_id)
             self.cold_store.delete(fact_id)
             return existed
+
+    def set_fact_sensitive(self, fact_id: str, sensitive: bool) -> Fact | None:
+        if type(sensitive) is not bool:
+            raise ValueError('Expected a boolean sensitivity flag')
+        with self._pipeline_lock:
+            fact = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
+            if fact is not None and (fact.sensitive, fact.sensitive_override) != (sensitive, True):
+                from .consolidate.pipeline import PipelineTasks
+                PipelineTasks(self, fact.user_id).invalidate()
+                fact.sensitive, fact.sensitive_override = sensitive, True
+                self._upsert_fact(fact)
+            return fact
+
+    def withdraw_fact(self, fact_id: str) -> bool:
+        with self._pipeline_lock:
+            fact = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
+            if fact is None:
+                return False
+            if fact.withdrawn_at is None:
+                from .consolidate.pipeline import PipelineTasks
+                PipelineTasks(self, fact.user_id).invalidate()
+                fact.withdrawn_at, fact.review_pending = now(), False
+                self._upsert_fact(fact)
+                self.graph.delete_relations_for_fact(fact.id)
+                self.graph.prune_orphan_entities()
+                for pair in list(self.conflicts.values()):
+                    if fact.id in (pair.older, pair.newer):
+                        del self.conflicts[pair.id]
+            return True
 
     # --- 关注领域："关注点"定制（记忆应强调/抑制什么） ---
     def set_focus(self, track: Optional[list[str]] = None, mute: Optional[list[str]] = None) -> dict:
@@ -610,9 +608,9 @@ class MemoryEngine:
             if r.subject_id not in ents or r.object_id not in ents:
                 continue
             fact = self.fact_store.get(r.fact_id) or self.cold_store.get(r.fact_id)
-            if fact is None or not fact.is_published(at):
+            if fact is None or not fact.is_published():
                 continue
-            live = fact.is_live(at)
+            live = fact.is_valid_at(at) and (as_of is None or fact.valid_at is not None)
             if (live_only or as_of is not None) and not live:
                 continue
             if not include_sensitive and getattr(fact, "sensitive", False):
@@ -679,17 +677,17 @@ class MemoryEngine:
 
     # --- 冲突检测 -> pending（LLM 检测出含糊的部分；由用户确认） ---
     def pending_conflicts(self, user_id: str = "default") -> list[Conflict]:
-        """等待用户裁决的当前冲突及有效区间内的手动历史冲突。"""
+        """Return conflicts awaiting a decision in this workspace."""
         from .consolidate.adjudication import conflict_is_reviewable
 
-        user, at = user_id, now()
+        user = user_id
         out = []
         for c in self.conflicts.values():
-            if c.user_id != user or c.status != "pending":
+            if c.user_id != user:
                 continue
             a = self.fact_store.get(c.older) or self.cold_store.get(c.older)
             b = self.fact_store.get(c.newer) or self.cold_store.get(c.newer)
-            if conflict_is_reviewable(a, b, at):
+            if conflict_is_reviewable(a, b):
                 out.append(c)
         return out
 
@@ -698,37 +696,29 @@ class MemoryEngine:
         if keep not in {'older', 'newer', 'both', 'dismiss'}:
             raise ValueError('Invalid conflict resolution')
         c = self.conflicts.get(conflict_id)
-        if c is None or c.status != 'pending':
+        if c is None:
             return False
-        from .consolidate.adjudication import (
-            approval_candidate, conflict_is_reviewable, has_other_manual_blocker, resolve_facts,
-        )
+        from .consolidate.adjudication import conflict_is_reviewable, resolve_facts
         from .consolidate.pipeline import PipelineTasks
 
-        def get_fact(fact_id):
-            return self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
-
-        facts = {key: get_fact(getattr(c, key)) for key in ('older', 'newer')}
-        at = now()
-        if keep != 'dismiss':
-            if not conflict_is_reviewable(facts['older'], facts['newer'], at):
-                return False
-            candidate = approval_candidate(facts, keep)
-            if candidate is not None:
-                related = ((pair, get_fact(pair.newer if pair.older == candidate.id else pair.older))
-                           for pair in self.conflicts.values()
-                           if pair.user_id == c.user_id and candidate.id in (pair.older, pair.newer))
-                if has_other_manual_blocker(candidate, conflict_id, related, at):
-                    return False
+        facts = {key: self.fact_store.get(getattr(c, key)) or self.cold_store.get(getattr(c, key))
+                 for key in ('older', 'newer')}
+        if keep != 'dismiss' and not conflict_is_reviewable(facts['older'], facts['newer']):
+            return False
         PipelineTasks(self, c.user_id).invalidate()
-        history = ()
-        if keep in facts and facts[keep].review_pending:
-            history = (f for f in self._all_facts() if f.user_id == c.user_id)
-        for fact in resolve_facts(facts, keep, at, history):
+        held = {fact.id for fact in facts.values() if fact is not None and fact.review_pending}
+        for fact in resolve_facts(facts, keep, now()):
+            if fact.withdrawn_at is not None:
+                for pair in list(self.conflicts.values()):
+                    if pair.id != conflict_id and fact.id in (pair.older, pair.newer):
+                        del self.conflicts[pair.id]
+            elif fact.id in held and any(pair.id != conflict_id and fact.id in (pair.older, pair.newer)
+                     for pair in self.conflicts.values()):
+                fact.review_pending = True
             self._upsert_fact(fact)
             self.writer.graph_builder.add_fact(fact)
         self.graph.prune_orphan_entities()
-        c.status = 'dismissed' if keep == 'dismiss' else 'resolved'
+        del self.conflicts[conflict_id]
         return True
 
     def dismiss_conflict(self, conflict_id: str) -> bool:
@@ -753,18 +743,16 @@ class MemoryEngine:
         user_id: str = "default",
         k: int = 8,
         as_of: Optional[float] = None,
-        *, known_at: float | None = None,
     ) -> list[EventEvidence]:
         """Rank available source digests using lexical and semantic evidence."""
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
-        cutoff = as_of if known_at is None else known_at
-        return self._rank_digests(query, user_id, k, as_of, cutoff)
+        return self._rank_digests(query, user_id, k, as_of)
 
-    def _rank_digests(self, query, user_id, k, as_of, known_at):
+    def _rank_digests(self, query, user_id, k, as_of):
         if not k:
             return []
-        candidates = self._digest_candidates(query, user_id, as_of, max(k * 3, 30), known_at=known_at)
+        candidates = self._digest_candidates(query, user_id, as_of, max(k * 3, 30))
         if self.reranker is not None and len(candidates) > k:
             ranked = self.reranker.rerank(query, [(str(i), ep.text) for i, ep in enumerate(candidates)], k)
             return [candidates[int(i)] for i, _ in ranked]
@@ -775,15 +763,13 @@ class MemoryEngine:
         return matches(episode.content, terms) or matches(episode.digest, terms)
 
     def _digest_candidates(self, query, user_id, as_of, pool, *,
-                          known_at=None, start=None, end=None):
+                          start=None, end=None):
         from .retrieve.fusion import weighted_rrf
         from .retrieve.hybrid import date_terms, order_positive
 
         def visible(ep):
             return (ep.user_id == user_id
-                    and (known_at is None or ep.digest_written_at is not None and ep.digest_written_at <= known_at)
                     and not self._source_muted(ep)
-                    and (known_at is None or ep.ingested_at <= known_at)
                     and (as_of is None or (ep.event_time is not None and ep.event_time <= as_of))
                     and (start is None or (ep.event_time is not None and ep.event_time >= start))
                     and (end is None or (ep.event_time is not None and ep.event_time < end)))
@@ -899,7 +885,8 @@ class MemoryEngine:
         replaces: dict[str, list[Fact]] = {}
         for f in facts:
             if f.supersedes:
-                replaces.setdefault(f.supersedes, []).append(f)
+                for predecessor in f.supersedes:
+                    replaces.setdefault(predecessor, []).append(f)
 
         def visible(f: Fact) -> bool:
             return (f.valid_at is not None and f.valid_at <= view_time)
@@ -914,8 +901,8 @@ class MemoryEngine:
             add_visible(seed)
             cur = seed
             seen: set[str] = {seed.id}
-            while cur.supersedes and cur.supersedes in by_id and cur.supersedes not in seen:
-                cur = by_id[cur.supersedes]
+            while predecessor := next((key for key in cur.supersedes if key in by_id and key not in seen), None):
+                cur = by_id[predecessor]
                 seen.add(cur.id)
                 add_visible(cur)
             queue = [seed]
@@ -957,7 +944,7 @@ class MemoryEngine:
         )
         if not rows:
             return ""
-        replaced_ids = {f.supersedes for f in self._all_facts() if f.supersedes}
+        replaced_ids = {key for f in self._all_facts() for key in f.supersedes}
 
         def _role(f: Fact) -> str:
             if f.is_live(as_of):
@@ -1026,14 +1013,13 @@ class MemoryEngine:
 
         groups = []
         visible = None
-        known_at = as_of
         if facts is not None:
             from dataclasses import replace
             from .store.contracts import FactQuery
 
             if not isinstance(facts, FactQuery) or facts.after_id is not None or as_of is not None:
                 raise ValueError('Expected structured fact conditions or as_of')
-            as_of, known_at = facts.valid_at, facts.known_at
+            as_of = facts.valid_at
             redact_sensitive = redact_sensitive or facts.exclude_sensitive
             visible = tuple(self._structured_facts(user, replace(facts, exclude_sensitive=redact_sensitive)))
         restricted = facts is not None and bool(facts.subject or facts.predicate or facts.categories or facts.source_ids)
@@ -1106,7 +1092,7 @@ class MemoryEngine:
         seen_s: set[str] = set()
         if n_digests:
             for q in queries:
-                for e in self._rank_digests(q, user, n_digests, as_of, known_at):
+                for e in self._rank_digests(q, user, n_digests, as_of):
                     if e.id not in seen_s:
                         seen_s.add(e.id)
                         summ_ranked.append(e)
@@ -1126,16 +1112,15 @@ class MemoryEngine:
         from .store.contracts import FactState
 
         valid = now() if scope.valid_at is None else scope.valid_at
-        known = valid if scope.known_at is None else scope.known_at
-        for fact in self._all_facts():
-            if fact.user_id != user_id or not fact.is_published(known) or (
-                    scope.known_at is not None and fact.created_at > known):
+        for fact in self._all_facts(include_unpublished=True):
+            if fact.user_id != user_id or fact.review_pending:
+                continue
+            if fact.valid_at is None and scope.valid_at is not None:
                 continue
             if fact.valid_at is not None and fact.valid_at > valid:
                 continue
-            fact = fact.as_known_at(scope.known_at)
-            historical = ((fact.invalid_at is not None and fact.invalid_at <= valid)
-                          or (fact.expired_at is not None and fact.expired_at <= known))
+            historical = (fact.withdrawn_at is not None
+                          or fact.invalid_at is not None and fact.invalid_at <= valid)
             if (scope.state == FactState.CURRENT and historical
                     or scope.state == FactState.HISTORY and not historical):
                 continue
@@ -1169,7 +1154,7 @@ class MemoryEngine:
         if not result.count and query is not None and not scope.exclude_sensitive:
             candidates = tuple(self._digest_candidates(
                 query, user_id, scope.valid_at, max(scope.limit * 5, 25),
-                known_at=scope.known_at, start=start, end=end)[:scope.limit])
+                start=start, end=end)[:scope.limit])
             if candidates:
                 return replace(result, candidates=candidates, limitations=('digest_candidates_only',))
         return result
@@ -1208,7 +1193,7 @@ class MemoryEngine:
 
         from .store.contracts import FactQuery
 
-        scope = facts if facts is not None else FactQuery(valid_at=as_of, known_at=as_of)
+        scope = facts if facts is not None else FactQuery(valid_at=as_of)
         if not isinstance(scope, FactQuery) or scope.after_id is not None or (facts is not None and as_of is not None):
             raise ValueError('Expected structured fact conditions or as_of')
         def source_references(rows):
@@ -1219,7 +1204,7 @@ class MemoryEngine:
             return tuple(ep.id for key in ids if (ep := self.episodes_doc.get(key)) is not None
                          and ep.user_id == user and not self._source_muted(ep)
                          and (scope.valid_at is None or ep.event_time is not None and ep.event_time <= scope.valid_at)
-                         and (scope.known_at is None or ep.ingested_at <= scope.known_at))
+)
 
         if scope.subject is not None and scope.predicate is not None:
             from .retrieve.answers import slot_result
@@ -1246,7 +1231,7 @@ class MemoryEngine:
                     return SearchResult(query, cold_facts, [score for _, score in cold], via="cold",
                                         source_ids=source_references(cold_facts))
             if not (scope.exclude_sensitive or scope.subject or scope.predicate or scope.categories or scope.source_ids):
-                fallback = self._digest_fallback(query, user, as_of=scope.valid_at, known_at=scope.known_at)
+                fallback = self._digest_fallback(query, user, as_of=scope.valid_at)
                 if fallback:
                     return fallback
             return SearchResult(query, via="abstain", abstained=True)
@@ -1303,7 +1288,7 @@ class MemoryEngine:
         candidates = None
         if self.focus["mute"]:
             from .store.contracts import FactQuery
-            candidates = self._structured_facts(user, FactQuery(valid_at=as_of, known_at=as_of))
+            candidates = self._structured_facts(user, FactQuery(valid_at=as_of))
         ranked, _ = self.retriever.retrieve(search_query, user, as_of, top_k, candidates=candidates)
         # 最新在前：对知识更新类问题，LLM 应在顶部看到最新 fact（如新工作、新城市）——并信任
         # 它甚于列表下方更旧的 fact。
@@ -1434,7 +1419,8 @@ class MemoryEngine:
 
     def history(self, subject: str, predicate: str, user_id: str = "default") -> list[Fact]:
         user = user_id
-        return history(self._all_facts(), user, subject, predicate)
+        return history((fact for fact in self._all_facts(include_unpublished=True) if not fact.review_pending),
+                       user, subject, predicate)
 
     # --- 内部实现 ---
     def _should_abstain(self, query: str, facts: list[Fact], diag: dict) -> bool:
@@ -1447,14 +1433,13 @@ class MemoryEngine:
         query: str,
         user_id: str,
         as_of: Optional[float] = None,
-        known_at: Optional[float] = None,
     ) -> Optional[SearchResult]:
         """Surface a source-backed digest covering all informative query terms."""
         if not self.config.digest_fallback:
             return None
         candidates: list[tuple[int, int, float, EventEvidence, str]] = []
         k = max(1, int(getattr(self.config, "digest_fallback_k", 6) or 6))
-        for ep in self._rank_digests(query, user_id, k, as_of, known_at):
+        for ep in self._rank_digests(query, user_id, k, as_of):
             text = ep.text.strip()
             if not text:
                 continue

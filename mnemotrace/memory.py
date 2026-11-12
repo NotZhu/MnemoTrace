@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 from ._postgres_pipeline import PostgresPipeline
 from .config import Config
 from .consolidate.decay import reinforce
-from .consolidate.manual import apply_manual_edit, build_manual_fact, reconcile_manual, validate_fact_patch
 from .retrieve import postgres as retrieval
 from .store.contracts import (
     ChangeSet, CommitConditions, EmbeddingWrite, FactQuery, MessageInput, OperationKind,
@@ -164,7 +163,7 @@ class Memory:
                          role=role, event_time=event_time, extract=False)
         with self.dao.read_snapshot(session_id) as view:
             snapshot = view.snapshot
-            # Match the database clock used by known_at cutoffs and message ingestion.
+            # Match the database clock used by message ingestion.
             source.ingested_at = view.at.timestamp()
         write = self._write(source)
         write = RecordWrite(replace(write.record, agent_id=agent_id))
@@ -285,7 +284,7 @@ class Memory:
             raise ValueError('Use either as_of or explicit fact conditions')
         facts = replace(facts, exclude_sensitive=facts.exclude_sensitive or redact_sensitive,
                         limit=max(count, self._config.ann_pool)) if facts is not None else FactQuery(
-                            valid_at=as_of, known_at=as_of, exclude_sensitive=redact_sensitive,
+                            valid_at=as_of, exclude_sensitive=redact_sensitive,
                             limit=max(count, self._config.ann_pool))
         request = self._query(query, top_k=count, facts=facts)
         with self.dao.read_snapshot() as view:
@@ -295,7 +294,8 @@ class Memory:
             snapshot = view.snapshot
             records = ()
             if reinforce_hits and facts.is_current_view and result.fact_ids:
-                records = view.facts_by_ids(result.fact_ids, facts)
+                # Only these visible IDs are touched. Writes need their full predecessor lists.
+                records = view.facts_by_ids(result.fact_ids, replace(facts, exclude_sensitive=False))
             if include_full_tokens and not facts.exclude_sensitive:
                 result = replace(result, full_tokens=view.full_context_tokens(facts))
         self._reinforce(snapshot, records)
@@ -335,7 +335,7 @@ class Memory:
         identifier(entity_id)
         with self.dao.read_snapshot() as view:
             edges = tuple(map(domain, view.graph_edges((entity_id,), facts, direction=direction)))
-            visible = {row.ref.record_id: domain(row).as_known_at(facts.known_at)
+            visible = {row.ref.record_id: domain(row)
                        for row in view.facts_by_ids(tuple(edge.fact_id for edge in edges), facts)}
             return tuple(replace(edge, invalid_at=visible[edge.fact_id].invalid_at) for edge in edges)
 
@@ -345,7 +345,7 @@ class Memory:
             records = view.facts_by_ids((fact_id,), facts)
             if not records:
                 return ()
-            fact = domain(records[0]).as_known_at(facts.known_at)
+            fact = domain(records[0])
             return tuple(replace(domain(row), invalid_at=fact.invalid_at) for row in view.relations(fact_id))
 
     def get_episode(self, episode_id):
@@ -360,31 +360,6 @@ class Memory:
         with self.dao.read_snapshot() as view:
             return tuple(map(domain, view.list_sources(**filters)))
 
-    def add_fact(self, subject, predicate, object, *, text, valid_at=None, sensitive=None,
-                 categories=None, object_kind="unknown", cardinality="unknown", retention="unknown", return_existing=False):
-        """Return the new fact. For a covered assertion, optionally return the stored fact."""
-        fact = build_manual_fact(subject, predicate, object, text, self.context.user_id,
-                                 valid_at, sensitive, categories, object_kind, cardinality, retention)
-        with self.dao.read_snapshot() as view:
-            snapshot = view.snapshot
-            at = view.at.timestamp()
-            history = view.facts_for_manual_add(fact.subject, predicate)
-        # Creation and interval revisions must use the same database clock for known_at reads.
-        fact.created_at = fact.last_access = at
-        candidates = [domain(item) for item in history]
-        action, changed = reconcile_manual(fact, candidates, at, explicit_valid_at=valid_at is not None)
-        versions = {item.ref.record_id: item for item in history}
-        if action == 'duplicate':
-            duplicate, = changed
-            if duplicate != domain(versions[duplicate.id]):
-                self._commit(snapshot, writes=(self._write(duplicate, versions[duplicate.id]),))
-            return duplicate if return_existing else None
-        updates = tuple(self._write(old, versions[old.id]) for old in changed)
-        write = self._write(fact)
-        self._commit(snapshot, writes=(write, *updates),
-                     embeddings=self._embeddings(write, fact.text))
-        return fact
-
     def get_fact(self, fact_id):
         fact = self._get(FACT, fact_id)
         return fact if fact is not None and fact.is_published() else None
@@ -392,35 +367,38 @@ class Memory:
     def facts(self, query=None):
         with self.dao.read_snapshot() as view:
             records = view.facts() if query is None else view.facts(query)
-            known_at = None if query is None else query.known_at
-            return tuple(domain(record).as_known_at(known_at) for record in records)
+            return tuple(domain(record) for record in records)
 
     def history(self, subject, predicate=None, *, source_ids=()):
         with self.dao.read_snapshot() as view:
             records = view.history(subject, predicate, source_ids=source_ids)
         return tuple(sorted(map(domain, records), key=lambda fact: (time_key(fact.valid_at), fact.id)))
 
-    def update_fact(self, fact_id, *, subject=None, predicate=None, object=None,
-                    sensitive=None, categories=None, text=None, object_kind=None, cardinality=None, retention=None):
-        validate_fact_patch(subject, predicate, object, text)
+    def set_fact_sensitive(self, fact_id, sensitive: bool):
+        if type(sensitive) is not bool:
+            raise ValueError("Expected a boolean sensitivity flag")
+        with self.dao.read_snapshot() as view:
+            snapshot, old = view.snapshot, view.get(FACT, fact_id)
+        if old is None:
+            return None
+        fact = domain(old)
+        if (fact.sensitive, fact.sensitive_override) != (sensitive, True):
+            fact.sensitive, fact.sensitive_override = sensitive, True
+            self._commit(snapshot, writes=(self._write(fact, old),))
+        return fact
+
+    def withdraw_fact(self, fact_id):
         with self.dao.read_snapshot() as view:
             snapshot, old = view.snapshot, view.get(FACT, fact_id)
             at = view.at.timestamp()
         if old is None:
-            return None
+            return False
         fact = domain(old)
-        if not fact.is_published():
-            return None
-        before = asdict(fact)
-        apply_manual_edit(fact, subject, predicate, object, sensitive, categories,
-                          text, object_kind, cardinality, retention, at=at)
-        if asdict(fact) == before:
-            return fact
-        text_changed = fact.text != before['text']
-        write = self._write(fact, old, text_changed=text_changed)
-        embeddings = self._embeddings(write, fact.text) if text_changed else ()
-        self._commit(snapshot, writes=(write,), embeddings=embeddings)
-        return fact
+        if fact.withdrawn_at is None:
+            fact.withdrawn_at = at
+            fact.review_pending = False
+            self._commit(snapshot, writes=(self._write(fact, old),))
+        return True
 
     def delete_fact(self, fact_id):
         return bool(self.erase(self._ref(FACT, fact_id)).affected_count)
@@ -432,6 +410,8 @@ class Memory:
         with self.dao.read_snapshot() as view:
             snapshot = view.snapshot
             records = view.clearable_slot(subject, predicate)
+        if len({domain(record).slot for record in records}) > 1:
+            raise VersionConflict('Ambiguous slot; erase facts by ID')
         if len(records) != expect_count:
             raise VersionConflict('Slot changed since it was counted')
         return self._commit(snapshot, erasures=tuple(record.ref for record in records))
@@ -475,44 +455,23 @@ class Memory:
     def resolve_conflict(self, conflict_id, keep='newer'):
         if keep not in {'older', 'newer', 'both', 'dismiss'}:
             raise ValueError('Invalid conflict resolution')
+        from .consolidate.adjudication import resolve_facts
         with self.dao.read_snapshot() as view:
             snapshot, record = view.snapshot, view.get(CONFLICT, conflict_id)
             if record is None:
                 return False
             conflict = domain(record)
-            if conflict.status != 'pending':
-                return False
-            at = view.at.timestamp()
-            writes = []
-            if keep != 'dismiss':
-                from .consolidate.adjudication import (
-                    approval_candidate, conflict_is_reviewable, has_other_manual_blocker, resolve_facts,
-                )
-
-                facts = {key: view.get(FACT, getattr(conflict, key)) for key in ('older', 'newer')}
-                if any(value is None for value in facts.values()):
-                    raise VersionConflict('Conflict facts no longer exist')
-                domain_facts = {key: domain(value) for key, value in facts.items()}
-                if not conflict_is_reviewable(domain_facts['older'], domain_facts['newer'], at):
-                    raise VersionConflict('Conflict facts are no longer current')
-                candidate = approval_candidate(domain_facts, keep)
-                if candidate is not None and has_other_manual_blocker(
-                    candidate, conflict_id, view.related_conflicts(candidate.id, excluding=conflict_id), at,
-                ):
-                    raise VersionConflict('Other conflicts still protect manual facts from this candidate')
-                previous = {value.ref.record_id: value for value in facts.values()}
-                history = []
-                if keep in domain_facts and domain_facts[keep].review_pending:
-                    other = domain_facts['newer' if keep == 'older' else 'older']
-                    if other.invalid_at is not None:
-                        records = view.merge_history({other.subject.strip().lower()})
-                        previous.update((value.ref.record_id, value) for value in records)
-                        history = list(map(domain, records))
-                writes.extend(self._write(fact, previous[fact.id])
-                              for fact in resolve_facts(domain_facts, keep, at, history))
-        conflict.status = 'dismissed' if keep == 'dismiss' else 'resolved'
-        writes.append(self._write(conflict, record))
-        self._commit(snapshot, writes=tuple(writes))
+            records = {side: view.get(FACT, getattr(conflict, side)) for side in ('older', 'newer')}
+            if any(value is None or value.record_version != getattr(conflict, side + '_version')
+                   for side, value in records.items()):
+                raise VersionConflict('Conflict facts have changed')
+            facts = {side: domain(value) for side, value in records.items()}
+            changed = resolve_facts(facts, keep, view.at.timestamp())
+            changed = [fact for fact in changed if fact.withdrawn_at is not None
+                       or not view.related_conflicts(fact.id, conflict_id)]
+            previous = {value.ref.record_id: value for value in records.values()}
+        self._commit(snapshot, writes=tuple(self._write(fact, previous[fact.id]) for fact in changed),
+                     resolved_conflicts=(record.ref,))
         return True
 
     def entity(self, name):
@@ -531,7 +490,8 @@ class Memory:
             def records():
                 for kind in (MODELS if include_sensitive else (FACT,)):
                     cursor = None
-                    while batch := view.records(kind, after_id=cursor):
+                    while batch := view.records(kind, after_id=cursor,
+                                                hide_sensitive_predecessors=not include_sensitive):
                         for record in batch:
                             if kind == FACT and not include_sensitive:
                                 fact = domain(record)

@@ -19,7 +19,7 @@ def predicted(case):
     return {'facts': [dict(id=g['id'], subject=g['variants'][0][0], predicate=g['variants'][0][1],
                           object=g['variants'][0][2], user='u', sources=g['sources'][0],
                           valid_at=next(e['at'] for e in case['events'] if e['id'] == g['at']),
-                          invalid_at=None, supersedes=None) for g in case['facts']], }
+                          invalid_at=None, supersedes=[]) for g in case['facts']], }
 
 
 def test_frozen_suite_has_all_categories_and_disjoint_splits():

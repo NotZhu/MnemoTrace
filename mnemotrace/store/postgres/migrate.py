@@ -1,4 +1,4 @@
-"""Ordered transactional migrations and catalog verification, without auto-repair."""
+"""Transactional empty-database initialization and catalog verification."""
 from __future__ import annotations
 
 import hashlib
@@ -10,8 +10,7 @@ from .database import DatabaseConfig, database_errors, driver
 from .errors import DatabaseConfigurationError, SchemaMismatch
 
 MIGRATIONS = ('001_initial.sql', '002_security.sql', '003_record_commits.sql',
-              '004_processing.sql', '005_retrieval.sql', '006_backup_constraints.sql',
-              '007_fact_review.sql')
+              '004_processing.sql', '005_retrieval.sql', '006_backup_constraints.sql')
 
 
 def _roles(prefix):
@@ -230,19 +229,17 @@ def check_role(conn, prefix, purpose):
         raise DatabaseConfigurationError('Database credentials can assume an elevated role')
 
 
-def check_schema(conn, prefix, *, require_current=True):
+def check_schema(conn, prefix):
     scripts = _scripts(prefix)
     try:
         rows = conn.execute(
             'SELECT version,checksum,role_prefix,structure_hash FROM '
             'mnemotrace.schema_migrations ORDER BY version').fetchall()
         extension = conn.execute("SELECT extversion FROM pg_extension WHERE extname='vector'").fetchone()
-        if (conn.info.server_version // 10000 != 18 or extension != ('0.8.7',)
-                or not 1 <= len(rows) <= len(scripts)
-                or require_current and len(rows) != len(scripts)):
-            raise SchemaMismatch('Unsupported database, extension or schema version')
-        if any(row[:3] != (i, checksum, prefix)
-               for i, (row, (_, checksum)) in enumerate(zip(rows, scripts), 1)):
+        if conn.info.server_version // 10000 != 18 or extension != ('0.8.7',):
+            raise SchemaMismatch('Unsupported PostgreSQL or vector extension version')
+        if len(rows) != len(scripts) or any(row[:3] != (i, checksum, prefix)
+                                           for i, (row, (_, checksum)) in enumerate(zip(rows, scripts), 1)):
             raise SchemaMismatch('Schema migration history is incompatible')
         if rows[-1][3] != structure_hash(conn):
             raise SchemaMismatch('Database structure differs from the applied migrations')
@@ -265,10 +262,10 @@ def migrate(config: DatabaseConfig) -> None:
         conn.execute(sql.SQL('SET LOCAL ROLE {}').format(
             sql.Identifier(_roles(config.role_prefix)['migration'])))
         existing = conn.execute("SELECT to_regnamespace('mnemotrace')").fetchone()[0]
-        applied = check_schema(conn, config.role_prefix, require_current=False) if existing is not None else 0
+        if existing is not None:
+            check_schema(conn, config.role_prefix)
+            return
         for version, (text, checksum) in enumerate(_scripts(config.role_prefix), 1):
-            if version <= applied:
-                continue
             conn.execute(text, prepare=False)
             conn.execute(
                 'INSERT INTO mnemotrace.schema_migrations(version,checksum,role_prefix,structure_hash) '

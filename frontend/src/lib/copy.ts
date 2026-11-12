@@ -343,6 +343,7 @@ export const copy = {
     actions: '操作',
     statusLive: '有效',
     statusOld: '已失效',
+    statusWithdrawn: '已撤回',
     relationLabel: '关系类型',
     sessionLabel: '会话标识',
     sensitive: '敏感',

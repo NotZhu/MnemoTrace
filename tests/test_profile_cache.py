@@ -1,4 +1,5 @@
 """Explicit cached profiles share evidence, invalidation and recovery semantics."""
+from tests.model_fixtures import seed_timeline
 from copy import deepcopy
 from dataclasses import asdict
 import json
@@ -57,7 +58,7 @@ def test_reads_and_context_never_generate():
 
 @pytest.mark.parametrize("scope", [
     FactQuery(state=FactState.HISTORY), FactQuery(state=FactState.ALL),
-    FactQuery(valid_at=100), FactQuery(known_at=100), FactQuery(exclude_sensitive=True),
+    FactQuery(valid_at=100), FactQuery(exclude_sensitive=True),
     FactQuery(categories=("technology",)), FactQuery(subject="Other person"),
     FactQuery(subject="user"), FactQuery(predicate="uses"), FactQuery(source_ids=("source-a",)),
 ])
@@ -152,7 +153,7 @@ def test_old_support_is_not_repeated_when_batched_refresh_resumes():
         assert ids.count(old.id) == 1 and len(ids) == len(set(ids))
 
 
-@pytest.mark.parametrize("change", ["edit", "delete", "sensitive", "mute"])
+@pytest.mark.parametrize("change", ["withdraw", "delete", "sensitive", "mute"])
 def test_changes_scrub_cache_and_saved_input(change):
     memory = MemoryEngine(llm=model())
     fact = memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
@@ -162,12 +163,12 @@ def test_changes_scrub_cache_and_saved_input(change):
     from mnemotrace._profile import run_one, state
     assert run_one(memory, "default")
     assert state(memory, "default")["job"]
-    if change == "edit":
-        memory.update_fact(fact.id, object="Synthetic coffee", subject=fact.subject, predicate=fact.predicate, text=' '.join((fact.subject, fact.predicate.replace('_', ' '), 'Synthetic coffee')))
+    if change == "withdraw":
+        memory.withdraw_fact(fact.id)
     elif change == "delete":
         memory.delete_fact(fact.id)
     elif change == "sensitive":
-        memory.update_fact(fact.id, sensitive=True)
+        memory.set_fact_sensitive(fact.id, True)
     else:
         memory.set_focus(mute=["tea"])
     assert memory.profile()["profile"]["basic"] == []
@@ -239,7 +240,7 @@ def test_v2_fact_import_without_model_starts_with_pending_profile():
     source = MemoryEngine()
     fact = source.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     memory = MemoryEngine()
-    result = memory.import_snapshot({"format_version": 3, "facts": [asdict(fact)], "episodes": []})
+    result = memory.import_snapshot({"format_version": 4, "facts": [asdict(fact)], "episodes": []})
     assert result["facts_restored"] == 1
     assert memory.profile()["updated_at"] is None
     assert memory.profile()["pending_fact_count"] == 1
@@ -249,7 +250,7 @@ def test_v2_fact_import_without_model_starts_with_pending_profile():
     assert finish(memory)["profile"]["basic"]
 
 
-def test_generation_concurrent_edit_cannot_publish_obsolete_text():
+def test_generation_concurrent_withdrawal_cannot_publish_obsolete_text():
     memory = MemoryEngine()
     fact = memory.add_fact("user", "likes", "Synthetic old tea", sensitive=False, text='user likes Synthetic old tea')
     changed = False
@@ -258,7 +259,7 @@ def test_generation_concurrent_edit_cannot_publish_obsolete_text():
         nonlocal changed
         if not changed:
             changed = True
-            memory.update_fact(fact.id, object="Synthetic new coffee", sensitive=False, subject=fact.subject, predicate=fact.predicate, text=' '.join((fact.subject, fact.predicate.replace('_', ' '), 'Synthetic new coffee')))
+            memory.withdraw_fact(fact.id)
 
     memory.llm = model(intervene)
     memory.refresh_profile()
@@ -267,7 +268,6 @@ def test_generation_concurrent_edit_cannot_publish_obsolete_text():
     assert memory.profile()["profile"] == empty()
     assert "Synthetic old tea" not in json.dumps(state(memory, "default"))
     assert memory.flush_messages(timeout=1, retry_failed=True)["ok"]
-    assert "Synthetic new coffee" in json.dumps(memory.profile())
     assert "Synthetic old tea" not in json.dumps(memory.profile())
 
 
@@ -277,7 +277,7 @@ def test_time_transitions_hide_cache_and_preserve_pending_changes(monkeypatch):
     monkeypatch.setattr("mnemotrace._profile.time.time", lambda: clock[0])
     memory = MemoryEngine(llm=model())
     old = memory.add_fact("user", "lives_in", "Synthetic Paris", valid_at=10, sensitive=False, text='user lives in Synthetic Paris')
-    memory.add_fact("user", "lives_in", "Synthetic Oslo", valid_at=200, sensitive=False, cardinality="single", text='user lives in Synthetic Oslo')
+    seed_timeline(memory, "user", "lives_in", "Synthetic Oslo", valid_at=200, sensitive=False, text='user lives in Synthetic Oslo')
     memory.refresh_profile()
     cached = finish(memory)
     assert cached["profile"]["basic"][0]["fact_ids"] == [old.id]
@@ -484,7 +484,7 @@ def test_profile_flush_times_out_while_model_is_still_running():
         assert len(memory.llm.calls) == 1
 
 
-@pytest.mark.parametrize("change", ["edit", "delete", "close"])
+@pytest.mark.parametrize("change", ["withdraw", "delete", "close"])
 def test_profile_result_after_timeout_obeys_invalidation(change):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
@@ -502,8 +502,8 @@ def test_profile_result_after_timeout_obeys_invalidation(change):
         try:
             assert entered.wait(2)
             assert pending.result(timeout=0.5)["status"] == "timed_out"
-            if change == "edit":
-                memory.update_fact(fact.id, object="Synthetic new coffee", sensitive=False, subject=fact.subject, predicate=fact.predicate, text=' '.join((fact.subject, fact.predicate.replace('_', ' '), 'Synthetic new coffee')))
+            if change == "withdraw":
+                memory.withdraw_fact(fact.id)
             elif change == "delete":
                 memory.delete_fact(fact.id)
             else:
@@ -519,8 +519,6 @@ def test_profile_result_after_timeout_obeys_invalidation(change):
             assert memory.flush_messages(timeout=2, retry_failed=True)["ok"]
             cached = json.dumps(memory.profile())
             assert "Synthetic old tea" not in cached
-            if change == "edit":
-                assert "Synthetic new coffee" in cached
 
 
 def test_profile_flush_propagates_background_step_errors(monkeypatch):

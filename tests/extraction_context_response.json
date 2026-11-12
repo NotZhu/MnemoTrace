@@ -42,7 +42,7 @@
         "object": "绿茶",
         "text": "用户长期喜欢绿茶。",
         "categories": ["food"],
-        "object_kind": "entity",
+
         "source_ids": [
           "c2"
         ]
@@ -53,7 +53,7 @@
         "object": "蓝色自行车",
         "text": "用户拥有一辆蓝色自行车。",
         "categories": ["hobbies"],
-        "object_kind": "literal",
+
         "source_ids": [
           "c3"
         ]
@@ -64,7 +64,7 @@
         "object": "林岚",
         "text": "用户的蓝色自行车是林岚送给用户的。",
         "categories": ["family"],
-        "object_kind": "entity",
+
         "source_ids": [
           "c3",
           "c4"
@@ -76,7 +76,7 @@
         "object": "苏州",
         "text": "用户从这条消息开始搬到苏州居住，之前的住处已经失效。",
         "categories": ["user_preferences"],
-        "object_kind": "literal",
+
         "source_ids": [
           "c6"
         ]
