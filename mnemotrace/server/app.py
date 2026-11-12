@@ -11,18 +11,16 @@ try:
     from fastapi.exceptions import RequestValidationError
     from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+    from pydantic import ConfigDict, StrictBool, BaseModel, ConfigDict, Field, StrictBool, model_validator
     from starlette.exceptions import HTTPException as StarletteHTTPException
 except Exception as exc:  # noqa: BLE001
     raise SystemExit("the server needs FastAPI — `pip install \"mnemotrace-memory[server]\"`") from exc
 
 from .. import __version__
-from ..consolidate.manual import InvalidFactEditError, validate_fact_patch
 from ..embed import EmbeddingUnavailable
 from ..service import MemoryRevisionChanged, MemoryService, ProcessingFailure
 from ..extraction import ExtractionError
-from ..categories import Category, ObjectKind
-from ..types import Cardinality, Retention
+from ..categories import Category
 from ..store.contracts import FactState, SpaceContext
 from ..store.postgres.errors import (
     AccountNotFound, AuthenticationError, CommitOutcomeUnknown, DatabaseConfigurationError,
@@ -289,7 +287,6 @@ class RecallReq(BaseModel):
     n_digests: int = Field(default=20, ge=0, le=50)
     state: FactState = FactState.CURRENT
     valid_at: float | None = None
-    known_at: float | None = None
     as_of: Optional[float] = None  # epoch 秒：某时间点的记忆视图（as-of）
     redact_sensitive: bool = False  # 在返回的上下文/fact 列表中隐藏被标记为敏感的 fact
 
@@ -450,7 +447,7 @@ def recall(req: RecallReq, owner: str = Depends(auth)):
     contexts = [svc().spaces.authorize(owner, space_id) for space_id in ids]
     options = dict(n_digests=req.n_digests, as_of=req.as_of,
                    redact_sensitive=req.redact_sensitive, state=req.state,
-                   valid_at=req.valid_at, known_at=req.known_at)
+                   valid_at=req.valid_at)
     if len(contexts) > 1:
         if not req.lean or req.answer or req.subject is not None or req.predicate is not None:
             raise ValueError('Multi-space recall requires unfiltered lean context without an answer')
@@ -462,7 +459,6 @@ def recall(req: RecallReq, owner: str = Depends(auth)):
 class StructuredRead(SpaceRequest):
     state: FactState = FactState.CURRENT
     valid_at: float | None = None
-    known_at: float | None = None
     redact_sensitive: bool = False
 
 
@@ -684,70 +680,15 @@ def chat_completions(req: ChatCompletionReq, owner: str = Depends(auth)):
     return response
 
 
-# --- 用户自写的记忆管理（可编辑层；用户断言具有最高优先级）---
-class FactReq(SpaceRequest):
-    subject: str = "user"
-    predicate: str
-    object: str
-    text: str
-    sensitive: Optional[bool] = None
-    categories: list[Category] | None = None
-    object_kind: ObjectKind = "unknown"
-    cardinality: Cardinality | None = None
-    retention: Retention | None = None
-
-    @model_validator(mode='after')
-    def complete_content(self):
-        validate_fact_patch(self.subject, self.predicate, self.object, self.text, required=True)
-        return self
+class FactSensitivity(SpaceRequest):
+    model_config = ConfigDict(extra='forbid')
+    sensitive: StrictBool
 
 
-class FactEdit(SpaceRequest):
-    subject: Optional[str] = None
-    predicate: Optional[str] = None
-    object: Optional[str] = None
-    sensitive: Optional[bool] = None  # 用户对自动敏感标记的覆盖（⑤）
-    categories: list[Category] | None = None
-    text: Optional[str] = None
-    object_kind: ObjectKind | None = None
-    cardinality: Cardinality | None = None
-    retention: Retention | None = None
-
-    @model_validator(mode='after')
-    def complete_content(self):
-        required = bool({'subject', 'predicate', 'object', 'text'} & self.model_fields_set)
-        validate_fact_patch(self.subject, self.predicate, self.object, self.text, required=required)
-        return self
-
-
-@app.post("/v1/facts")
-def add_fact(req: FactReq, owner: str = Depends(auth)):
-    """手动添加一条你断言的 fact——它是权威的，不会被自动覆盖。"""
-    user = svc().spaces.authorize(owner, req.space_id)
-    return svc().add_fact(
-        user,
-        req.subject,
-        req.predicate,
-        req.object,
-        text=req.text,
-        sensitive=req.sensitive,
-        categories=req.categories,
-        object_kind=req.object_kind,
-        cardinality=req.cardinality or "unknown", retention=req.retention or "unknown",
-    )
-
-
-@app.patch("/v1/facts/{fact_id}")
-def edit_fact(fact_id: str, req: FactEdit, owner: str = Depends(auth)):
-    """修改 fact 内容后变为用户撰写；仅修改敏感标记或分类时保留原来源。"""
-    user = svc().spaces.authorize(owner, req.space_id)
-    try:
-        result = svc().update_fact(user, fact_id, subject=req.subject, predicate=req.predicate,
-                                   object=req.object, sensitive=req.sensitive, categories=req.categories,
-                                    text=req.text, object_kind=req.object_kind,
-                                    cardinality=req.cardinality, retention=req.retention)
-    except InvalidFactEditError as exc:
-        raise HTTPException(422, str(exc)) from exc
+@app.patch("/v1/facts/{fact_id}/sensitivity")
+def set_fact_sensitive(fact_id: str, req: FactSensitivity, owner: str = Depends(auth)):
+    context = svc().spaces.authorize(owner, req.space_id)
+    result = svc().set_fact_sensitive(context, fact_id, req.sensitive)
     if result is None:
         raise HTTPException(404, "fact not found")
     return result
@@ -819,21 +760,20 @@ def put_policy(req: PolicyReq, owner: str = Depends(auth)):
     return svc().set_policy(user, **req.model_dump(exclude={'space_id'}))
 
 
-# --- 疑似冲突（System-2 中由 LLM 检出，需用户确认；绝不自动解决）---
+# --- 需要人工判断的冲突 ---
 class ResolveReq(SpaceRequest):
-    keep: str = "newer"  # newer | older | both(=撤销)
+    keep: Literal["newer", "older", "both"] = "newer"
 
 
 @app.get("/v1/conflicts")
 def conflicts(user: SpaceContext = Depends(authorized_space)):
-    """等待用户裁决的疑似冲突（绝不自动解决）。需要启用 System-2 LLM 检测器
-    （MNEMOTRACE_CONFLICT_DETECTION=1）。"""
+    """列出有效先后无法判断的待审冲突。"""
     return svc().conflicts(user)
 
 
 @app.post("/v1/conflicts/{conflict_id}/resolve")
 def resolve_conflict(conflict_id: str, req: ResolveReq, owner: str = Depends(auth)):
-    """执行用户的裁决：保留较新/较旧（失效化另一方）或 both（撤销）。"""
+    """采纳一方并撤回另一方，或保留双方。"""
     user = svc().spaces.authorize(owner, req.space_id)
     return svc().resolve_conflict(user, conflict_id, keep=req.keep)
 

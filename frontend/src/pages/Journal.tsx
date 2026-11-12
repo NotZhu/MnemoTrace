@@ -1,19 +1,17 @@
-
-
-import { Fragment, useLayoutEffect, useRef, useState } from 'react'
-import { Check, HelpCircle, Loader2, NotebookText, Pencil, Search, Trash2, X } from 'lucide-react'
+import { Fragment, useRef, useState } from 'react'
+import { HelpCircle, Loader2, NotebookText, Search, ShieldAlert, Trash2, X } from 'lucide-react'
 
 import { Button, Card, CardTitle, ErrorState, PageHeader, Spinner } from '../components/ui'
 import { PageEmptyState } from '../components/PageEmptyState'
 import { ConfirmDialog } from '../components/Modal'
-import { CategoryBadges, CategoryEditor, CategoryFilter } from '../components/CategoryEditor'
+import { CategoryBadges, CategoryFilter } from '../components/CategoryEditor'
 import { toast } from '../components/Toast'
-import { useOrganizeSession, useDeleteFact, useEditFact, useMemories, useMemoryPages, useSessions } from '../hooks/queries'
+import { useOrganizeSession, useDeleteFact, useMemories, useMemoryPages, useSessions, useSetFactSensitive } from '../hooks/queries'
 import { useDebouncedSearch } from '../hooks/useDebouncedSearch'
 import { useSpacePreference } from '../store/preferences'
 import { copy as t } from '../lib/copy'
 import { splitStamp } from '../lib/format'
-import type { Category, FactEdit, MemoryFact } from '../types'
+import type { MemoryFact } from '../types'
 
 /** 会话结论的档案。
  *
@@ -312,59 +310,11 @@ function OutcomeRow({
   fact: MemoryFact
   editable: boolean
 }) {
-  const editFact = useEditFact()
   const deleteFact = useDeleteFact()
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState('')
-  const [draftObject, setDraftObject] = useState('')
-  const [categories, setCategories] = useState<Category[]>()
+  const sensitivity = useSetFactSensitive()
   const [confirming, setConfirming] = useState(false)
-  const [mine, setMine] = useState(false)
-  const saveInFlight = useRef(false)
-
   const kind = fact.predicate.toLowerCase()
-  const isMine = mine || fact.source === 'user'
-  const manualMarker = isMine ? (
-    <span className="text-xs leading-relaxed text-ghost" title={t.journal.mineHint}>
-      {t.journal.mine}
-    </span>
-  ) : null
-
-  const start = () => {
-    if (!editable) return
-    setDraft(fact.text)
-    setDraftObject(fact.object)
-    setCategories(undefined)
-    setEditing(true)
-  }
-
-  const save = () => {
-    if (saveInFlight.current || editFact.isPending) return
-    if (!draft.trim() || !draftObject.trim()) return
-    const contentChanged = draft !== fact.text || draftObject !== fact.object
-    const patch: FactEdit = contentChanged
-      ? { subject: fact.subject, predicate: fact.predicate, object: draftObject, text: draft }
-      : {}
-    if (categories !== undefined) patch.categories = categories
-    if (!Object.keys(patch).length) {
-      setEditing(false)
-      return
-    }
-    saveInFlight.current = true
-    editFact.mutate(
-      { id: fact.id, patch },
-      {
-        onSuccess: (r) => {
-          // 正文变化才会成为用户来源；仅改标签时以服务返回的原来源为准。
-          setMine(r.source === 'user')
-          toast.success(contentChanged ? t.journal.saved : t.journal.categoriesSaved)
-          setEditing(false)
-        },
-        onError: (e) => toast.error(String((e as Error).message)),
-        onSettled: () => { saveInFlight.current = false },
-      },
-    )
-  }
+  const sensitivityLabel = fact.sensitive ? '取消敏感标记' : '标为敏感'
 
   return (
     <li className="group flex items-start gap-3 py-3 first:pt-0 last:pb-0">
@@ -374,81 +324,29 @@ function OutcomeRow({
         </span>
       </span>
       <div className="min-w-0 flex-1">
-        {editing ? (
-          <div className="space-y-2">
-            <AutoTextarea originalValue={fact.text} value={draft} onChange={setDraft} />
-            <label className="block text-xs text-ghost">
-              {t.journal.claimLabel}
-              <input className="input mt-1" value={draftObject} onChange={e => setDraftObject(e.target.value)} />
-            </label>
-          </div>
-        ) : (
-          <div
-            className={
-              fact.status === 'live'
-                ? `${OUTCOME_TEXT_CLASS} text-slate-100`
-                : `${OUTCOME_TEXT_CLASS} text-ghost line-through`
-            }
-          >
-            {fact.text}
-          </div>
-        )}
-        <div className="mt-2">
-          {editing ? <CategoryEditor current={fact} value={categories} onChange={setCategories} disabled={editFact.isPending} />
-            : <CategoryBadges categories={fact.categories} categories_source={fact.categories_source} />}
+        <div className={`${OUTCOME_TEXT_CLASS} ${fact.status === 'live' ? 'text-slate-100' : 'text-ghost line-through'}`}>
+          {fact.text}
         </div>
-        {manualMarker && <div className="mt-2">{manualMarker}</div>}
+        <div className="mt-2">
+          <CategoryBadges categories={fact.categories} categories_source={fact.categories_source} />
+        </div>
       </div>
       {editable && (
-        <div
-          className={`flex shrink-0 items-start gap-1.5 ${editing ? '' : 'opacity-0 transition group-hover:opacity-100 focus-within:opacity-100 [@media(pointer:coarse)]:opacity-100'}`}
-        >
-          {editing ? (
-            <>
-              <button
-                type="button"
-                onClick={save}
-                disabled={!draft.trim() || !draftObject.trim() || editFact.isPending}
-                className="rounded-lg border border-line p-1.5 text-brand-mint transition hover:border-brand-mint/50 disabled:opacity-50"
-                aria-label={t.common.save}
-                title={t.common.save}
-                aria-busy={editFact.isPending}
-              >
-                {editFact.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-              </button>
-              <button
-                type="button"
-                onClick={() => setEditing(false)}
-                disabled={editFact.isPending}
-                className="rounded-lg border border-line p-1.5 text-ghost transition hover:text-foreground disabled:opacity-50"
-                aria-label={t.common.cancel}
-                title={t.common.cancel}
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={start}
-                className="rounded-lg border border-line p-1.5 text-ghost transition hover:border-brand-cyan/50 hover:text-brand-cyan"
-                aria-label={t.common.edit}
-                title={t.common.edit}
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirming(true)}
-                className="rounded-lg border border-line p-1.5 text-ghost transition hover:border-brand-rose/50 hover:text-brand-rose"
-                aria-label={t.common.delete}
-                title={t.common.delete}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </>
-          )}
+        <div className="flex shrink-0 gap-2">
+          <button type="button"
+            onClick={() => sensitivity.mutate({ id: fact.id, sensitive: !fact.sensitive }, {
+              onError: (e) => toast.error(e.message),
+            })}
+            disabled={sensitivity.isPending}
+            className="rounded-lg border border-line p-1.5 text-ghost transition hover:text-foreground"
+            aria-label={sensitivityLabel} title={sensitivityLabel}>
+            <ShieldAlert className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" onClick={() => setConfirming(true)}
+            className="rounded-lg border border-line p-1.5 text-ghost transition hover:border-brand-rose/50 hover:text-brand-rose"
+            aria-label={t.common.delete} title={t.common.delete}>
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
         </div>
       )}
       <ConfirmDialog
@@ -478,43 +376,6 @@ function OutcomeRow({
 }
 
 /** 原句作为淡底影保留；两层文字共同占位，避免删短草稿时裁掉原句。 */
-function AutoTextarea({
-  originalValue,
-  value,
-  onChange,
-}: {
-  originalValue: string
-  value: string
-  onChange: (v: string) => void
-}) {
-  const ref = useRef<HTMLTextAreaElement>(null)
-  const original = useRef(originalValue).current
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    el.focus()
-    el.setSelectionRange(el.value.length, el.value.length)
-  }, [])
-
-  return (
-    <div className={`relative grid rounded-md bg-ink-700/70 ${OUTCOME_TEXT_CLASS}`}>
-      <div aria-hidden="true" className="pointer-events-none min-w-0 select-none text-ghost opacity-50 [grid-area:1/1]">
-        {original + '\u200b'}
-      </div>
-      <div aria-hidden="true" className="invisible min-w-0 [grid-area:1/1]">{value + '\u200b'}</div>
-      <textarea
-        ref={ref}
-        rows={1}
-        aria-label={t.journal.editConclusion}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="absolute inset-0 m-0 block h-full min-h-0 w-full resize-none overflow-hidden rounded-md border-0 bg-transparent p-0 text-slate-100 [font:inherit] whitespace-pre-wrap break-words outline-none ring-1 ring-brand-cyan/40 focus:ring-brand-cyan/60"
-      />
-    </div>
-  )
-}
-
-/** 即使暂无结论，也保留从已有会话生成总结的入口。 */
 function JournalEmpty() {
   return (
     <div>

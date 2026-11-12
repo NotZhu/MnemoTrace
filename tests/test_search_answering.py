@@ -1,28 +1,29 @@
 from __future__ import annotations
 
+from tests.model_fixtures import seed_timeline
 from tests.model_fixtures import MemoryEngine, seed_digests
 from mnemotrace.types import Fact
 
 
 def _fact(subject, predicate, obj, t, emb=None, source="extracted"):
     return Fact(subject=subject, predicate=predicate, object=obj, user_id="u", source=source,
-                valid_at=float(t), created_at=float(t), embedding=emb, cardinality="single", text=' '.join((subject, predicate.replace('_', ' '), obj)))
+                valid_at=float(t), created_at=float(t), embedding=emb, text=' '.join((subject, predicate.replace('_', ' '), obj)))
 
 
 # ---------------- #1 固定事实保护 ----------------
 def test_manual_fact_does_not_supersede_unrelated_slot():
     mem = MemoryEngine()
     old = mem.add_fact("Ana", "works_at", "Orbit", user_id="u", valid_at=1, text='Ana works at Orbit')
-    mem.add_fact("Ana", "knowledge_base", "Library", user_id="u", valid_at=2, cardinality="single", text='Ana knowledge base Library')
+    seed_timeline(mem, "Ana", "knowledge_base", "Library", user_id="u", valid_at=2, text='Ana knowledge base Library')
     assert old.is_live()
 
 
 def test_explicit_single_manual_fact_updates_its_slot():
     mem = MemoryEngine()
     old = mem.add_fact("Ana", "works_at", "Orbit", user_id="u", valid_at=1, text='Ana works at Orbit')
-    new = mem.add_fact("Ana", "works_at", "Nadir", user_id="u", valid_at=2, cardinality="single", text='Ana works at Nadir')
+    new = seed_timeline(mem, "Ana", "works_at", "Nadir", user_id="u", valid_at=2, text='Ana works at Nadir')
     assert not old.is_live()
-    assert new.supersedes == old.id
+    assert new.supersedes == [old.id]
 
 
 # ---------------- #2/#3 答案类型对齐 ----------------
@@ -100,7 +101,7 @@ def test_digest_fallback_respects_as_of():
     old.digest_written_at = old.ingested_at = old.event_time
     new.digest_written_at = new.ingested_at = new.event_time
     cutoff = 1_700_864_000.0
-    res = mem._digest_fallback("How do I reset the PAT?", "u1", as_of=cutoff, known_at=cutoff)
+    res = mem._digest_fallback("How do I reset the PAT?", "u1", as_of=cutoff)
     assert res is not None
     ans = res.sources[0].text.lower()
     assert "legacy token page" in ans
@@ -121,7 +122,6 @@ def test_search_prefers_source_backed_literal_facts_for_runbook_queries():
         subject="PAT",
         predicate="procedure",
         object="open security settings and update CI secrets",
-        object_kind="literal",
         user_id="u1",
         provenance=[ep.id], text='PAT procedure open security settings and update CI secrets',
     )
@@ -141,14 +141,14 @@ def test_free_text_is_candidate_evidence_and_slot_answer_uses_full_view():
     from mnemotrace.store.contracts import FactQuery
 
     mem = MemoryEngine()
-    bob = mem.add_fact("Bob", "favorite_language", "Ab1", object_kind="literal", text='Bob favorite language Ab1')
+    bob = mem.add_fact("Bob", "favorite_language", "Ab1", text='Bob favorite language Ab1')
     result = mem.search("What is Alice's favorite language?")
     assert result.status == "evidence_only" and result.top().id == bob.id and result.answer() == ""
     missing = mem.search("", facts=FactQuery(subject="Alice", predicate="favorite_language"))
     assert missing.status == "no_evidence"
     bob_slot = FactQuery(subject="Bob", predicate="favorite_language")
     assert mem.search("", facts=bob_slot).answer() == "Ab1"
-    mem.add_fact("Bob", "favorite_language", "ab1", object_kind="literal", text='Bob favorite language ab1')
+    mem.add_fact("Bob", "favorite_language", "ab1", text='Bob favorite language ab1')
     result = mem.search("", facts=bob_slot, top_k=1)
     assert len(result.facts) == 1 and result.status == "evidence_only"
 

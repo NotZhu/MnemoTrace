@@ -1,12 +1,10 @@
 """把一份记忆数据集批量灌入 忆痕 服务，然后抽样验证召回。仅依赖标准库 ——
 把这个脚本加一个 JSON 数据文件交给任何人，他们就能灌入自己（已脱敏的）数据并测试。
 
-数据文件 = JSON 数组（或 {"records": [...]}）。每条记录是以下二者之一：
+数据文件 = JSON 数组（或 {"records": [...]}）。每条记录保存一段原文：
   • 一段原始对话  -> POST /v1/remember（服务端自动抽取 fact）
       {"content": "用户：我在字节做后端，最爱周杰伦。\n助手：好的", "session_id": "s1", "extract": true}
       extract: true（默认，抽取事实）或 false（仅保存原文）
-  • 一条结构化 fact -> POST /v1/facts（权威写入，不会被自动覆盖）
-      {"subject": "user", "predicate": "works_at", "object": "字节跳动"}
 
 用法：
   python examples/ingest_client.py --base http://127.0.0.1:8000 --key demo-test \
@@ -58,7 +56,7 @@ def main() -> None:
         call("/v1/forget", {"confirm": True})
         print(f"reset space {args.space_id!r}")
 
-    convos = facts = 0
+    convos = 0
     for i, rec in enumerate(records, 1):
         try:
             if "content" in rec:
@@ -69,13 +67,8 @@ def main() -> None:
                 r = call("/v1/remember", body)
                 convos += 1
                 tag = r["status"]
-            elif "predicate" in rec:
-                call("/v1/facts", {"subject": rec.get("subject", "user"),
-                                   "predicate": rec["predicate"], "object": rec["object"]})
-                facts += 1
-                tag = "fact"
             else:
-                print(f"  [{i}] skipped (no 'content' or 'predicate')")
+                print(f"  [{i}] skipped (no 'content')")
                 continue
         except Exception as exc:  # noqa: BLE001
             print(f"  [{i}] ERROR: {type(exc).__name__}: {exc}")
@@ -86,7 +79,7 @@ def main() -> None:
 
     mem = call("/v1/memories", method="GET")
     c = mem["counts"]
-    print(f"\nloaded: {convos} conversations + {facts} facts -> "
+    print(f"\nloaded: {convos} source records -> "
           f"{c['facts_live']} live facts / {c['episodes']} episodes / {c['digests']} digests")
 
     for q in args.probe:

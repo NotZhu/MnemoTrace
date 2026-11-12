@@ -33,12 +33,12 @@ def embed_texts(embedder, texts):
 
 
 def merge_records(context, config, embedder, model, data, now,
-                  facts, previous, vectors, llm, existing_pairs):
+                  facts, previous, vectors, llm, existing_pairs, *, verdicts=None):
     old_records = {record.ref.record_id: record for record in previous}
     old_facts = [domain(record) for record in previous]
-    semantic_subjects = {fact.subject.strip().lower() for fact in facts}
+    semantic_subjects = {fact.subject_key for fact in facts}
     missing = [fact for fact in old_facts if embedder is not None
-               and fact.subject.strip().lower() in semantic_subjects
+               and fact.subject_key in semantic_subjects
                and not fact.review_pending and fact.id not in vectors]
     fresh = embed_texts(embedder, chain((fact.text for fact in facts),
                                        (fact.text for fact in missing)))
@@ -52,7 +52,7 @@ def merge_records(context, config, embedder, model, data, now,
 
     for fact in facts:
         fact.embedding = fresh.get(fact.text)
-    changed, conflicts, _ = plan_merge(facts, old_facts, llm, config, embedder, now, existing_pairs)
+    changed, conflicts, _ = plan_merge(facts, old_facts, llm, config, embedder, now, existing_pairs, verdicts=verdicts)
     writes, embeddings, links = [], extra_vectors, []
     for value in changed:
         previous = old_records.get(value.id)
@@ -67,5 +67,10 @@ def merge_records(context, config, embedder, model, data, now,
         if write.ref.kind == FACT:
             links.extend(SourceLink(write.ref, RecordRef(context, SOURCE, source_id))
                          for source_id in value.provenance)
-    writes.extend(write_record(context, conflict) for conflict in conflicts)
+    versions = {record.ref.record_id: record.record_version for record in old_records.values()}
+    versions.update((item.ref.record_id, item.record.record_version) for item in writes)
+    for conflict in conflicts:
+        conflict.older_version = versions[conflict.older]
+        conflict.newer_version = versions[conflict.newer]
+        writes.append(write_record(context, conflict))
     return writes, embeddings, links

@@ -14,6 +14,7 @@ from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from tests.embedder_fixtures import MockEmbedder, product_embedder
 from mnemotrace.llm import FakeLLM
 from mnemotrace.memory import Memory
+from tests.postgres.fact_fixtures import seed_fact
 from mnemotrace.store.postgres import Accounts, Database
 from mnemotrace.store.postgres.dao import PostgresDAO
 from mnemotrace.store.postgres.errors import (
@@ -90,7 +91,7 @@ def _model(calls, pause=None):
         for item in request['pending']:
             subject, _, employer = item['content'].rpartition(' at ')
             subject = subject or 'Synthetic person'
-            facts.append(dict(categories=[], object_kind='entity', sensitive=False, time_kind='current', effective_date=None, cardinality='single', retention='unknown', subject=subject, predicate='works_at', object=employer,
+            facts.append(dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject=subject, predicate='works_at', object=employer,
                               text=f'{subject} works at {employer}',
                               source_ids=[item['id']]))
         return json.dumps(dict(facts=facts, digests=[]))
@@ -212,7 +213,7 @@ def test_process_death_at_each_durable_checkpoint(memory, cluster, stage, commit
     source, = memory.list_sources()
     fact, = memory.facts()
     assert fact.provenance == [source.id]
-    assert memory.graph_relations(fact.id)
+    assert memory.graph_relations(fact.id) == ()
     assert memory.dao.receipt(recovered).fact_ids == (fact.id,)
     assert _accept(memory) == recovered
 
@@ -371,24 +372,23 @@ def test_same_space_stale_merge_retries_without_reextracting(memory, cluster):
     assert {fact.object for fact in memory.facts()} == {'Synthetic lab', 'Another lab'}
 
 
-@pytest.mark.parametrize('change', ['manual', 'policy'])
+@pytest.mark.parametrize('change', ['sensitivity', 'policy'])
 def test_model_call_respects_concurrent_business_change(memory, cluster, change):
-    pinned = memory.add_fact('Synthetic person', 'works_at', 'Old lab', valid_at=50, text='Synthetic person works at Old lab')
+    pinned = seed_fact(memory, 'Synthetic person', 'works_at', 'Old lab', valid_at=50, text='Synthetic person works at Old lab')
     operation_id = _accept(memory)
     with _process(_run_stage, cluster.runtime, memory.context, operation_id, 'model') as child:
         assert child.ready.wait(WAIT)
-        if change == 'manual':
-            memory.update_fact(pinned.id, object='Pinned lab', subject=pinned.subject, predicate=pinned.predicate, text=' '.join((pinned.subject, pinned.predicate.replace('_', ' '), 'Pinned lab')))
+        if change == 'sensitivity':
+            memory.set_fact_sensitive(pinned.id, True)
         else:
             memory.set_settings(extract_instruction='Updated synthetic extraction policy')
         child.resume.set()
         assert _result(child) == ['extract']
-    assert memory.operation(operation_id).extraction_saved is (change == 'manual')
+    assert memory.operation(operation_id).extraction_saved is (change == 'sensitivity')
     with _process(_recover, cluster.runtime, cluster.discovery, memory.context, operation_id) as retry:
         assert _result(retry) == (operation_id, ['extract'] if change == 'policy' else [])
-    current, = memory.facts()
-    assert current.id == pinned.id
-    assert current.object == ('Pinned lab' if change == 'manual' else 'Old lab')
+    assert memory.get_fact(pinned.id).sensitive is (change == 'sensitivity')
+    assert any(fact.object == 'Synthetic lab' for fact in memory.facts())
 
 
 def _pending_write(memory, kind):
@@ -478,7 +478,7 @@ def test_delete_prevents_late_processing_writes(memory, cluster, runtime, spaces
     sibling_memory = Memory(runtime, spaces.authorize(user_id, sibling.space_id))
     sibling_source = sibling_memory.remember_raw('Sibling synthetic source', 'chat')
     settings = memory.set_settings(extract_instruction='Keep this setting on clear')
-    seed = memory.add_fact('Synthetic maintainer', 'works_at', 'Seed lab', object_kind="entity", text='Synthetic maintainer works at Seed lab')
+    seed = seed_fact(memory, 'Synthetic maintainer', 'works_at', 'Seed lab', linked=True, text='Synthetic maintainer works at Seed lab')
     assert memory.graph_relations(seed.id)
     operation_id = _pending_write(memory, kind)
     gate = 'model' if kind == 'extract' else 'embedding'
@@ -532,7 +532,7 @@ def _rebuild_in_process(config, context, *, ready, resume):
 
 
 def test_clear_waits_for_graph_rebuild_and_removes_rebuilt_edges(memory, cluster, runtime):
-    fact = memory.add_fact('Synthetic person', 'works_at', 'Synthetic lab', object_kind="entity", text='Synthetic person works at Synthetic lab')
+    fact = seed_fact(memory, 'Synthetic person', 'works_at', 'Synthetic lab', linked=True, text='Synthetic person works at Synthetic lab')
     assert memory.graph_relations(fact.id)
     with memory.dao._transaction() as sql:
         sql.delete('graph_relations', 'fact_id = %s', (fact.id,))
@@ -589,4 +589,4 @@ def test_wrong_embedding_dimension_keeps_the_saved_product_for_retry(memory, run
     assert memory.dao.receipt(operation_id) is None
     assert memory.flush_processing('chat', retry_failed=True)['ok']
     fact, = memory.facts()
-    assert memory.graph_relations(fact.id)
+    assert memory.graph_relations(fact.id) == ()

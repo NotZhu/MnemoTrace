@@ -2,7 +2,7 @@
 import hashlib
 
 from ...consolidate.graph_builder import projects_fact
-from .records import FACT, SCOPE, anchor_terms, domain, timestamp
+from .records import FACT, RELATION_TYPE, SCOPE, domain, timestamp
 
 
 def projection_id(prefix, value):
@@ -13,20 +13,6 @@ class GraphProjection:
     def __init__(self, sql):
         self.sql = sql
         self.orphans = set()
-
-    def entity_id(self, name):
-        key = name.lower()
-        row = self.sql.run(f'SELECT id FROM mnemotrace.entities WHERE {SCOPE}'
-                           ' AND normalized_name = %s', (*self.sql.scope, key)).fetchone()
-        if row is None:
-            entity_id = projection_id('en_', key)
-            self.sql.insert('entities', dict(
-                id=entity_id, name=name, normalized_name=key, type='entity',
-                anchor_terms=anchor_terms(name), record_version=1, content_version=1,
-            ))
-        else:
-            entity_id = row[0]
-        return entity_id
 
     def remove_fact_edges(self, fact_ids):
         for left, right in self.sql.run(f'DELETE FROM mnemotrace.graph_relations WHERE {SCOPE}'
@@ -40,11 +26,12 @@ class GraphProjection:
         old = self.sql.run(f'SELECT id,subject_id,object_id,predicate,valid_at,invalid_at,projection_version '
                            f'FROM mnemotrace.graph_relations WHERE {SCOPE} AND fact_id = %s',
                            (*self.sql.scope, fact_id)).fetchone()
-        if not projects_fact(fact):
+        definition = domain(self.sql.get(RELATION_TYPE, fact.relation_id))
+        if not projects_fact(fact, definition):
             if old is not None:
                 self.remove_fact_edges((fact_id,))
             return
-        left, right = self.entity_id(fact.subject), self.entity_id(fact.object)
+        left, right = fact.subject_id, fact.object_id
         data = dict(subject_id=left, object_id=right, predicate=fact.predicate, fact_id=fact_id,
                     valid_at=timestamp(fact.valid_at), invalid_at=timestamp(fact.invalid_at))
         if old is not None:
@@ -69,4 +56,7 @@ class GraphProjection:
         self.sql.delete('entities AS e', f"""{candidates}
             AND NOT EXISTS (SELECT 1 FROM mnemotrace.graph_relations r
                 WHERE (r.user_id,r.space_id) = (e.user_id,e.space_id)
-                AND (r.subject_id = e.id OR r.object_id = e.id))""", args)
+                AND (r.subject_id = e.id OR r.object_id = e.id))
+            AND NOT EXISTS (SELECT 1 FROM mnemotrace.facts f
+                WHERE (f.user_id,f.space_id) = (e.user_id,e.space_id)
+                AND (f.subject_id = e.id OR f.object_id = e.id))""", args)

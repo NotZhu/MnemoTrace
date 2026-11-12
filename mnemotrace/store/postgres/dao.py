@@ -13,7 +13,7 @@ from .errors import (
 )
 from .projection import GraphProjection
 from .reads import ReadView
-from .records import CONFLICT, ENTITY, FACT, RELATION, SOURCE, SCOPE, ScopedSQL, domain
+from .records import CONFLICT, ENTITY, FACT, RELATION, RELATION_TYPE, SOURCE, SCOPE, ScopedSQL, domain
 from .writes import check_lease, check_version, commit_task, enqueue, invalidate
 from .writes import save_embedding, store_messages, write
 
@@ -77,16 +77,21 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
     changed = bool(erased)
     if {link.fact for link in changes.source_links} - {item.ref for item in changes.writes}:
         raise DatabaseConstraintError('Source links require an explicit fact write')
-    rank = {kind: index for index, kind in enumerate((SOURCE, ENTITY, FACT, CONFLICT, RELATION))}
+    for conflict in changes.resolved_conflicts:
+        removed = sql.delete('conflicts', 'id = %s', (conflict.record_id,))
+        if removed.rowcount != 1:
+            raise VersionConflict('Pending conflict changed')
+        changed = True
+    rank = {kind: index for index, kind in enumerate((SOURCE, RELATION_TYPE, ENTITY, FACT, CONFLICT, RELATION))}
     for item in sorted(changes.writes, key=lambda item: (rank[item.ref.kind], item.ref.record_id)):
         written, profile_changed = write(sql, item, graph)
         changed |= written
         if profile_changed:
             fact_ids.add(item.ref.record_id)
     for item in changes.invalidations:
-        invalidate(sql, item, graph)
-        fact_ids.add(item.ref.record_id)
-        changed = True
+        if invalidate(sql, item, graph):
+            fact_ids.add(item.ref.record_id)
+            changed = True
     graph.prune()
     for item in changes.embeddings:
         save_embedding(sql, item)

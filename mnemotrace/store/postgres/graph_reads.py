@@ -23,16 +23,15 @@ class RetrievalGraph:
         for record in records:
             entity = domain(record)
             self.entities[entity.id] = entity
-            self._by_name[entity.name.lower()] = entity
 
     def _load_ids(self, ids):
         missing = set(ids) - self.entities.keys()
         if missing:
             self._remember(self.sql.select(ENTITY, ('r.id = ANY(%s)',), (sorted(missing),)))
 
-    def find_entities(self, name):
+    def find_entities(self, name, *, limit=None):
         records = self.sql.select(ENTITY, ('r.normalized_name = %s',),
-                                  (name.lower(),), limit=1)
+                                  (name.lower(),), limit=self.query.facts.limit if limit is None else limit)
         self._remember(records)
         return tuple(self.entities[record.ref.record_id] for record in records)
 
@@ -41,8 +40,8 @@ class RetrievalGraph:
             return None
         key = name.lower()
         if key not in self._by_name:
-            records = self.find_entities(key)
-            self._by_name[key] = records[0] if records else None
+            records = self.find_entities(key, limit=2)
+            self._by_name[key] = records[0] if len(records) == 1 else None
         return self._by_name[key]
 
     def _edges(self, ids, direction, limit, predicates=()):

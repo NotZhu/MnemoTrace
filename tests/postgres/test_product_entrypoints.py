@@ -10,6 +10,7 @@ from mnemotrace import cli
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from mnemotrace.llm import FakeLLM
 from mnemotrace.service import MemoryService
+from tests.postgres.fact_fixtures import seed_fact
 
 
 @pytest.fixture
@@ -23,7 +24,7 @@ def product(runtime, user, accounts, spaces, monkeypatch):
     def extract(prompt, system=''):
         data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
         return json.dumps(dict(facts=[
-            dict(categories=[], object_kind='entity', sensitive=False, time_kind='current', effective_date=None, cardinality='unknown', retention='unknown', subject='Synthetic person', predicate='likes', object='Bluebird tea',
+            dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='Synthetic person', predicate='likes', object='Bluebird tea',
                  text='Synthetic person likes Bluebird tea',
                  source_ids=[source['id']])
             for source in data['pending']
@@ -83,8 +84,8 @@ def test_http_space_and_operation_lifecycle(product, user, accounts, spaces):
     assert client.get(operation_path, params=scope).json()['core_committed']
     retrieved = client.post('/v1/recall', json={**scope, 'query': 'What does Synthetic person like?', 'lean': False})
     assert retrieved.status_code == 200 and 'Bluebird' in retrieved.text
-    client.post('/v1/facts', json={"text": 'Synthetic person likes Bluebird coffee', 'space_id': sibling, 'subject': 'Synthetic person',
-                                  'predicate': 'likes', 'object': 'Bluebird coffee'})
+    seed_fact(service.memory(spaces.authorize(user, sibling)), 'Synthetic person', 'likes', 'Bluebird coffee',
+              text='Synthetic person likes Bluebird coffee')
     recall = {'query': 'What Bluebird drinks does Synthetic person like?'}
     isolated = client.post('/v1/recall', json={**scope, **recall}).json()
     assert 'Bluebird tea' in isolated['context'] and 'Bluebird coffee' not in isolated['context']
@@ -99,7 +100,7 @@ def test_http_space_and_operation_lifecycle(product, user, accounts, spaces):
     facts = client.get('/v1/memories', params=scope).json()['facts']
     assert source_id in facts[0]['provenance']
     exported = client.get('/v1/export', params={**scope, 'include_sensitive': True}).json()
-    assert exported['episodes'][0]['id'] == source_id and exported['graph']['edges']
+    assert exported['episodes'][0]['id'] == source_id and exported['facts']
     assert client.delete(f"/v1/facts/{facts[0]['id']}", params=scope).json()['ok']
     assert client.get(f'/v1/episodes/{source_id}', params=scope).status_code == 200
 
@@ -115,7 +116,7 @@ def test_http_space_and_operation_lifecycle(product, user, accounts, spaces):
     assert client.get('/v1/spaces').status_code == 401
 
 
-def test_http_allows_raw_and_manual_writes_without_a_model(product):
+def test_http_allows_raw_writes_without_a_model(product):
     service, context, _, client = product
     service.llm = None
     scope = {'space_id': context.space_id}
@@ -145,19 +146,19 @@ def test_http_allows_raw_and_manual_writes_without_a_model(product):
         'Synthetic raw note', 'Synthetic raw dialogue',
     }
     manual = client.post('/v1/facts', json={"text": 'user likes Synthetic tea', **scope, 'predicate': 'likes', 'object': 'Synthetic tea'})
-    assert manual.status_code == 200 and manual.json()['id']
+    assert manual.status_code == 404
 
 
 def test_graph_audit_reports_scoped_structural_issues_before_limiting(product, spaces):
     service, context, _, client = product
     scope = {'space_id': context.space_id}
     memory = service.memory(context)
-    missing = memory.add_fact('user', 'works_at', 'Missing Ltd.', object_kind='entity', sensitive=False, text='user works at Missing Ltd.')
-    mismatch = memory.add_fact('user', 'based_in', 'Mismatch City', object_kind='entity', sensitive=False, text='user based in Mismatch City')
-    private = memory.add_fact('user', 'knows', 'Synthetic private person', object_kind='entity', sensitive=True, text='user knows Synthetic private person')
-    memory.add_fact('this', 'path', 'fixture/demo.json', object_kind='literal', sensitive=False, text='this path fixture/demo.json')
+    missing = seed_fact(memory, 'user', 'works_at', 'Missing Ltd.', linked=True, sensitive=False, text='user works at Missing Ltd.')
+    mismatch = seed_fact(memory, 'user', 'based_in', 'Mismatch City', linked=True, sensitive=False, text='user based in Mismatch City')
+    private = seed_fact(memory, 'user', 'knows', 'Synthetic private person', linked=True, sensitive=True, text='user knows Synthetic private person')
+    seed_fact(memory, 'this', 'path', 'fixture/demo.json', sensitive=False, text='this path fixture/demo.json')
     sibling = service.memory(spaces.authorize(context.user_id, spaces.create(context.user_id, 'Sibling').space_id))
-    outside = sibling.add_fact('user', 'works_at', 'Outside Ltd.', object_kind='entity', sensitive=False, text='user works at Outside Ltd.')
+    outside = seed_fact(sibling, 'user', 'works_at', 'Outside Ltd.', linked=True, sensitive=False, text='user works at Outside Ltd.')
     with sibling.dao._transaction() as sql:
         sql.delete('graph_relations', 'fact_id = %s', (outside.id,))
     with memory.dao._transaction() as sql:
@@ -165,13 +166,13 @@ def test_graph_audit_reports_scoped_structural_issues_before_limiting(product, s
         sql.update('graph_relations', {'predicate': 'wrong'}, 'fact_id = %s', (mismatch.id,))
 
     report = client.get('/v1/audit', params=scope).json()
-    limited = client.get('/v1/audit', params={**scope, 'limit': 2}).json()
+    limited = client.get('/v1/audit', params={**scope, 'limit': 1}).json()
     assert report['checked']['facts'] == 3
-    assert report['by_kind'] == {'missing_edge': 1, 'edge_mismatch': 1, 'orphan_entity': 2}
+    assert report['by_kind'] == {'missing_edge': 1, 'edge_mismatch': 1}
     assert limited['by_kind'] == report['by_kind']
-    assert limited['total_findings'] == 4 and limited['truncated']
-    assert [row['kind'] for row in limited['findings']] == ['missing_edge', 'edge_mismatch']
-    assert [row['fact_id'] for row in limited['findings']] == [missing.id, mismatch.id]
+    assert limited['total_findings'] == 2 and limited['truncated']
+    assert [row['kind'] for row in limited['findings']] == ['missing_edge']
+    assert [row['fact_id'] for row in limited['findings']] == [missing.id]
     assert 'Synthetic private person' not in str(report) and private.id not in str(report)
     assert memory.rebuild_graph() is None
     assert client.get('/v1/audit', params=scope).json()['findings'] == []
@@ -203,8 +204,8 @@ def test_direct_and_proxy_mcp_and_cli_share_records(product, monkeypatch, capsys
     from mnemotrace.mcp.backends import LocalBackend, RemoteBackend
 
     service, context, key, client = product
-    source = service.memory(context).add_fact('Synthetic archive', 'access_code', 'Emerald', sensitive=False, text='Synthetic archive access code Emerald')
-    service.memory(context).add_fact('Synthetic garden', 'favorite_flower', 'Iris', sensitive=False, text='Synthetic garden favorite flower Iris')
+    source = seed_fact(service.memory(context), 'Synthetic archive', 'access_code', 'Emerald', sensitive=False, text='Synthetic archive access code Emerald')
+    seed_fact(service.memory(context), 'Synthetic garden', 'favorite_flower', 'Iris', sensitive=False, text='Synthetic garden favorite flower Iris')
 
     async def mcp_lifecycle():
         local = LocalBackend(context.user_id, context.space_id, service)
@@ -238,7 +239,7 @@ def test_direct_and_proxy_mcp_and_cli_share_records(product, monkeypatch, capsys
     assert cli.main([*cli_scope, 'remember', 'Synthetic CLI source', '--session-id', 'cli', '--no-extract']) == 0
     source_id, = json.loads(capsys.readouterr().out)['source_ids']
     assert service.memory(context).get_episode(source_id).content == 'Synthetic CLI source'
-    fact = service.memory(context).add_fact('Synthetic CLI archive', 'access_code', 'Amethyst', text='Synthetic CLI archive access code Amethyst')
+    fact = seed_fact(service.memory(context), 'Synthetic CLI archive', 'access_code', 'Amethyst', text='Synthetic CLI archive access code Amethyst')
     assert cli.main([*cli_scope, 'recall', 'What is the synthetic CLI archive access code?']) == 0
     assert 'Amethyst' in json.loads(capsys.readouterr().out)['context']
     assert cli.main([*cli_scope, 'delete-fact', fact.id, '--confirm']) == 0

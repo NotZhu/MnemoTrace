@@ -6,14 +6,18 @@ export type FactStatus = 'live' | 'superseded'
 export type FactSource = 'extracted' | 'user'
 
 export type CategoriesSource = 'unset' | 'llm' | 'user'
-export type ObjectKind = 'entity' | 'literal' | 'unknown'
 export interface FactMetadata {
   categories: Category[]
   categories_source: CategoriesSource
-  object_kind: ObjectKind
 }
 
 export interface MemoryFact extends FactMetadata {
+  relation_id: string
+  subject_id: string | null
+  object_id: string | null
+  subject_type: string | null
+  object_type: string | null
+  withdrawn_at: number | null
   source_roles?: ('user' | 'assistant')[]
   id: string
   text: string
@@ -24,7 +28,7 @@ export interface MemoryFact extends FactMetadata {
   invalid_at: string | null
   status: FactStatus
   source: FactSource
-  supersedes: string | null
+  supersedes: string[]
   sensitive: boolean
   salience: number
   provenance: string[]
@@ -39,6 +43,8 @@ export interface Conflict {
   newer: string
   text_older: string
   text_newer: string
+  older_version: number
+  newer_version: number
   reason: string
 }
 
@@ -114,7 +120,7 @@ export interface AgentStatus {
     write_memory: string
     flush_processing: string
     inspect_facts: string
-    correct_fact: string
+    set_fact_sensitive: string
     delete_fact: string
     focus: string
   }
@@ -169,7 +175,6 @@ export interface SessionReportFact {
   // 脱敏占位条目不返回分类和对象类型。
   categories?: Category[]
   categories_source?: CategoriesSource
-  object_kind?: ObjectKind
   sensitive: boolean
   redacted: boolean
   provenance: string[]
@@ -205,7 +210,7 @@ export interface Page<T> {
 export interface GraphNode {
   id: string
   name: string
-  type: string
+  type: string | null
 }
 
 export interface GraphEdge {
@@ -268,25 +273,6 @@ export interface RecallResult {
   full_tokens?: number // 完整历史（full-context 基线）
   answer?: string // agent 基于这份记忆给出的答案（LLM 读取精简上下文）
 }
-
-export interface FactWrite {
-  text: string
-  subject?: string
-  predicate: string
-  object: string
-  sensitive?: boolean
-  categories?: Category[]
-  object_kind?: ObjectKind
-}
-
-export type FactEdit = {
-  cardinality?: 'single' | 'multi' | 'unknown'
-  retention?: 'durable' | 'normal' | 'unknown'
-  sensitive?: boolean
-  categories?: Category[]
-  object_kind?: ObjectKind
-} & ({ subject: string; predicate: string; object: string; text: string }
-  | { subject?: never; predicate?: never; object?: never; text?: never })
 
 export interface Health {
   ok: boolean

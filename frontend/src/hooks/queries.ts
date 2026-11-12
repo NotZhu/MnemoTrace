@@ -10,7 +10,7 @@ import {
   type SessionsQuery,
 } from '../lib/api'
 import { currentSession, isCurrentSession, useAuth } from '../store/auth'
-import type { FactEdit, FactWrite, Focus, Policy } from '../types'
+import type { Focus, Policy } from '../types'
 
 // 查询 key 按登录 key 做命名空间隔离，切换账号时缓存不会串味。
 const ns = () => useAuth.getState().spaceId ?? 'unselected'
@@ -224,15 +224,10 @@ export function useRecall() {
   })
 }
 
-export function useAddFact() {
-  const invalidate = useInvalidateMemory()
-  return useMutation({ mutationFn: (fact: FactWrite) => api.addFact(fact), onSuccess: invalidate })
-}
-
-export function useEditFact() {
+export function useSetFactSensitive() {
   const invalidate = useInvalidateMemory()
   return useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: FactEdit }) => api.editFact(id, patch),
+    mutationFn: ({ id, sensitive }: { id: string; sensitive: boolean }) => api.setFactSensitive(id, sensitive),
     onSuccess: invalidate,
   })
 }

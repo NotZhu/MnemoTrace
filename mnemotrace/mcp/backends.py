@@ -17,8 +17,7 @@ from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote, urlencode
 
 from ..store.contracts import FactState
-from ..categories import Category, ObjectKind
-from ..types import Cardinality, Retention
+from ..categories import Category
 
 
 @runtime_checkable
@@ -46,7 +45,6 @@ class Backend(Protocol):
         redact_sensitive: bool = False,
         state: FactState = FactState.CURRENT,
         valid_at: float | None = None,
-        known_at: float | None = None,
         subject: str | None = None,
         predicate: str | None = None,
         answer: bool = False,
@@ -78,31 +76,7 @@ class Backend(Protocol):
         track: list[str] | None = None,
         mute: list[str] | None = None,
     ) -> dict: ...
-    async def add_fact(
-        self,
-        subject: str,
-        predicate: str,
-        object: str,
-        text: str,
-        sensitive: bool | None = None,
-        categories: list[Category] | None = None,
-        object_kind: ObjectKind = "unknown",
-        cardinality: Cardinality = "unknown",
-        retention: Retention = "unknown",
-    ) -> dict: ...
-    async def update_fact(
-        self,
-        fact_id: str,
-        subject: str | None = None,
-        predicate: str | None = None,
-        object: str | None = None,
-        text: str | None = None,
-        sensitive: bool | None = None,
-        categories: list[Category] | None = None,
-        object_kind: ObjectKind | None = None,
-        cardinality: Cardinality | None = None,
-        retention: Retention | None = None,
-    ) -> dict | None: ...
+    async def set_fact_sensitive(self, fact_id: str, sensitive: bool) -> dict | None: ...
     async def delete_fact(self, fact_id: str) -> dict: ...
     async def export(self, include_sensitive: bool = False) -> dict: ...
     async def forget(self) -> dict: ...
@@ -168,7 +142,6 @@ class LocalBackend:
         redact_sensitive: bool = False,
         state: FactState = FactState.CURRENT,
         valid_at: float | None = None,
-        known_at: float | None = None,
         subject: str | None = None,
         predicate: str | None = None,
         answer: bool = False,
@@ -180,7 +153,7 @@ class LocalBackend:
             lean=lean,
             n_digests=n_digests,
             as_of=as_of,
-            redact_sensitive=redact_sensitive, state=state, valid_at=valid_at, known_at=known_at,
+            redact_sensitive=redact_sensitive, state=state, valid_at=valid_at,
             subject=subject, predicate=predicate, answer=answer,
         )
 
@@ -234,59 +207,8 @@ class LocalBackend:
     ) -> dict:
         return await asyncio.to_thread(self.svc.set_focus, self.context, track=track, mute=mute)
 
-    async def add_fact(
-        self,
-        subject: str,
-        predicate: str,
-        object: str,
-        text: str,
-        sensitive: bool | None = None,
-        categories: list[Category] | None = None,
-        object_kind: ObjectKind = "unknown",
-        cardinality: Cardinality = "unknown",
-        retention: Retention = "unknown",
-    ) -> dict:
-        return await asyncio.to_thread(
-            self.svc.add_fact,
-            self.context,
-            subject,
-            predicate,
-            object,
-            text=text,
-            sensitive=sensitive,
-            categories=categories,
-            object_kind=object_kind,
-            cardinality=cardinality,
-            retention=retention,
-        )
-
-    async def update_fact(
-        self,
-        fact_id: str,
-        subject: str | None = None,
-        predicate: str | None = None,
-        object: str | None = None,
-        text: str | None = None,
-        sensitive: bool | None = None,
-        categories: list[Category] | None = None,
-        object_kind: ObjectKind | None = None,
-        cardinality: Cardinality | None = None,
-        retention: Retention | None = None,
-    ) -> dict | None:
-        return await asyncio.to_thread(
-            self.svc.update_fact,
-            self.context,
-            fact_id,
-            subject=subject,
-            predicate=predicate,
-            object=object,
-            text=text,
-            sensitive=sensitive,
-            categories=categories,
-            object_kind=object_kind,
-            cardinality=cardinality,
-            retention=retention,
-        )
+    async def set_fact_sensitive(self, fact_id: str, sensitive: bool) -> dict | None:
+        return await asyncio.to_thread(self.svc.set_fact_sensitive, self.context, fact_id, sensitive)
 
     async def delete_fact(self, fact_id: str) -> dict:
         return await asyncio.to_thread(self.svc.delete_fact, self.context, fact_id)
@@ -405,13 +327,12 @@ class RemoteBackend:
         redact_sensitive: bool = False,
         state: FactState = FactState.CURRENT,
         valid_at: float | None = None,
-        known_at: float | None = None,
         subject: str | None = None,
         predicate: str | None = None,
         answer: bool = False,
     ) -> dict:
         body = {"query": query, "lean": lean, "n_digests": n_digests, "state": state,
-                "valid_at": valid_at, "known_at": known_at}
+                "valid_at": valid_at}
         if answer:
             body["answer"] = True
         if subject is not None:
@@ -485,61 +406,8 @@ class RemoteBackend:
             body["mute"] = mute
         return await self._put("/v1/focus", body)
 
-    async def add_fact(
-        self,
-        subject: str,
-        predicate: str,
-        object: str,
-        text: str,
-        sensitive: bool | None = None,
-        categories: list[Category] | None = None,
-        object_kind: ObjectKind = "unknown",
-        cardinality: Cardinality = "unknown",
-        retention: Retention = "unknown",
-    ) -> dict:
-        body = {"subject": subject, "predicate": predicate, "object": object, "text": text,
-                "cardinality": cardinality, "retention": retention}
-        if sensitive is not None:
-            body["sensitive"] = sensitive
-        if categories is not None:
-            body["categories"] = categories
-        if object_kind is not None:
-            body["object_kind"] = object_kind
-        return await self._post("/v1/facts", body)
-
-    async def update_fact(
-        self,
-        fact_id: str,
-        subject: str | None = None,
-        predicate: str | None = None,
-        object: str | None = None,
-        text: str | None = None,
-        sensitive: bool | None = None,
-        categories: list[Category] | None = None,
-        object_kind: ObjectKind | None = None,
-        cardinality: Cardinality | None = None,
-        retention: Retention | None = None,
-    ) -> dict | None:
-        body: dict[str, Any] = {}
-        if subject is not None:
-            body["subject"] = subject
-        if predicate is not None:
-            body["predicate"] = predicate
-        if object is not None:
-            body["object"] = object
-        if text is not None:
-            body["text"] = text
-        if sensitive is not None:
-            body["sensitive"] = sensitive
-        if categories is not None:
-            body["categories"] = categories
-        if object_kind is not None:
-            body["object_kind"] = object_kind
-        if cardinality is not None:
-            body["cardinality"] = cardinality
-        if retention is not None:
-            body["retention"] = retention
-        return await self._patch(f"/v1/facts/{quote(fact_id, safe='')}", body)
+    async def set_fact_sensitive(self, fact_id: str, sensitive: bool) -> dict | None:
+        return await self._patch(f"/v1/facts/{quote(fact_id, safe='')}/sensitivity", {"sensitive": sensitive})
 
     async def delete_fact(self, fact_id: str) -> dict:
         return await self._delete(f"/v1/facts/{quote(fact_id, safe='')}")

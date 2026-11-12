@@ -12,9 +12,15 @@ _MAX_GRAPH_FIELD_LENGTH = 512
 _NON_SINGLE_LINE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
-def projects_fact(fact: Fact) -> bool:
-    if fact.review_pending or fact.object_kind != "entity":
+def projects_fact(fact: Fact, definition=None) -> bool:
+    if not (fact.is_published() and fact.subject_id and fact.object_id):
         return False
+    if definition and definition.endpoint_types:
+        endpoints = [fact.subject_type, fact.object_type]
+        if endpoints not in definition.endpoint_types and (
+            definition.direction != 'symmetric' or endpoints[::-1] not in definition.endpoint_types
+        ):
+            return False
     fields = (fact.subject, fact.predicate, fact.object, fact.subject.lower(), fact.object.lower())
     return all(
         value.strip() and len(value) <= _MAX_GRAPH_FIELD_LENGTH and not _NON_SINGLE_LINE.search(value)
@@ -37,8 +43,8 @@ class GraphBuilder:
         self.graph.delete_relations_for_fact(fact.id)
         if not projects_fact(fact):
             return
-        subj = self.graph.upsert_entity(Entity(name=fact.subject, user_id=fact.user_id))
-        obj = self.graph.upsert_entity(Entity(name=fact.object, user_id=fact.user_id))
+        subj = self.graph.upsert_entity(Entity(id=fact.subject_id, name=fact.subject, user_id=fact.user_id, type=fact.subject_type))
+        obj = self.graph.upsert_entity(Entity(id=fact.object_id, name=fact.object, user_id=fact.user_id, type=fact.object_type))
         self.graph.add_relation(
             Relation(
                 subject_id=subj.id,

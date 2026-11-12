@@ -8,10 +8,6 @@ import type { AuditReport,
   ProcessingResult,
   Conflict,
   Focus,
-  FactEdit,
-  FactSource,
-  FactWrite,
-  FactMetadata,
   Category,
   GraphResponse,
   Health,
@@ -268,19 +264,11 @@ export const api = {
       }),
     }),
 
-  addFact: (fact: FactWrite) =>
-    request<{ ok: boolean; id: string; text: string } & FactMetadata>('/v1/facts', {
-      method: 'POST',
-      body: json({ subject: 'user', ...fact }),
-    }),
-
-  // 实际修改内容后 `source` 为 'user'；只改敏感标记或分类时保留原来源。
-  editFact: (id: string, patch: FactEdit) =>
-    request<{ ok: boolean; id: string; text: string; source: FactSource } & FactMetadata>(`/v1/facts/${id}`, {
+  setFactSensitive: (id: string, sensitive: boolean) =>
+    request<{ ok: boolean; id: string; sensitive: boolean }>(`/v1/facts/${encodeURIComponent(id)}/sensitivity`, {
       method: 'PATCH',
-      body: json(patch),
+      body: JSON.stringify({ sensitive }),
     }),
-
   deleteFact: (id: string) =>
     request<{ ok: boolean }>(`/v1/facts/${id}`, { method: 'DELETE' }),
 

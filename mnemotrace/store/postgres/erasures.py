@@ -8,12 +8,12 @@ def erase(sql, graph, refs):
     groups = defaultdict(set)
     for ref in refs:
         groups[ref.kind].add(ref.record_id)
-    # Removing a version does not remove its surviving successors. Drop the erased link.
     fact_ids = sorted(groups[FACT])
     if fact_ids:
-        sql.run(f'UPDATE mnemotrace.facts SET supersedes = NULL, record_version = record_version + 1 '
-                f'WHERE {SCOPE} AND supersedes = ANY(%s) AND NOT (id = ANY(%s))',
-                (*sql.scope, fact_ids, fact_ids))
+        sql.run(f"""UPDATE mnemotrace.facts SET record_version = record_version + 1
+            WHERE {SCOPE} AND id IN (SELECT fact_id FROM mnemotrace.fact_supersedes WHERE {SCOPE}
+            AND predecessor_id = ANY(%s)) AND NOT (id = ANY(%s))""",
+            (*sql.scope, *sql.scope, fact_ids, fact_ids))
         graph.remove_fact_edges(fact_ids)
     for kind, column in TARGET_COLUMNS.items():
         if groups[kind]:
@@ -36,7 +36,7 @@ def erase(sql, graph, refs):
 
 def clear_space(sql):
     # Sources cascade from sessions; facts and entities are space-owned.
-    for table in ('profile_states', 'record_commit_receipts', 'operations', 'facts', 'sessions', 'entities'):
+    for table in ('profile_states', 'record_commit_receipts', 'operations', 'facts', 'sessions', 'entities', 'relation_types'):
         sql.delete(table)
     sql.run(f'UPDATE mnemotrace.memory_spaces SET space_generation = space_generation + 1 WHERE {SCOPE}',
             sql.scope)

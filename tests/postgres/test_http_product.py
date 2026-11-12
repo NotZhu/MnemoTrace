@@ -96,7 +96,7 @@ def test_recall_answers_with_extraction_model_unless_answerer_overrides(client, 
     from mnemotrace.server import app
 
     h = hdr("synthetic-answer-fallback")
-    assert client.post("/v1/facts", json={"text": 'user lives in Shenzhen', "predicate": "lives_in", "object": "Shenzhen"}, headers=h).is_success
+    client.seed_fact(h, text='user lives in Shenzhen', predicate='lives_in', object='Shenzhen')
     assert client.post("/v1/remember", json={"content": "I live in Shenzhen.", "extract": False}, headers=h).is_success
     llm = FakeLLM(responses=["Shenzhen"])
 
@@ -111,16 +111,10 @@ def test_recall_answers_with_extraction_model_unless_answerer_overrides(client, 
 def test_tenant_data_rights_operations_remain_isolated(client):
     tenant_a = hdr("isolation-tenant-a")
     tenant_b = hdr("isolation-tenant-b")
-    fact_a = client.post(
-        "/v1/facts",
-        json={"text": 'user release marker alpha-private-marker', "predicate": "release_marker", "object": "alpha-private-marker", "sensitive": False},
-        headers=tenant_a,
-    ).json()
-    fact_b = client.post(
-        "/v1/facts",
-        json={"text": 'user release marker beta-private-marker', "predicate": "release_marker", "object": "beta-private-marker", "sensitive": False},
-        headers=tenant_b,
-    ).json()
+    fact_a = client.seed_fact(tenant_a, predicate="release_marker", object="alpha-private-marker",
+                              text="user release marker alpha-private-marker")
+    fact_b = client.seed_fact(tenant_b, predicate="release_marker", object="beta-private-marker",
+                              text="user release marker beta-private-marker")
 
     export_a = client.get("/v1/export", headers=tenant_a).json()
     export_b = client.get("/v1/export", headers=tenant_b).json()
@@ -130,16 +124,16 @@ def test_tenant_data_rights_operations_remain_isolated(client):
     assert "alpha-private-marker" not in str(export_b)
 
     assert client.patch(
-        f"/v1/facts/{fact_b['id']}", json={"subject": "user", "predicate": "release_marker", "object": "cross-tenant-edit", "text": "Cross-tenant edit."}, headers=tenant_a
+        f"/v1/facts/{fact_b.id}/sensitivity", json={"sensitive": True}, headers=tenant_a
     ).status_code == 404
-    assert client.delete(f"/v1/facts/{fact_b['id']}", headers=tenant_a).json()["ok"] is False
+    assert client.delete(f"/v1/facts/{fact_b.id}", headers=tenant_a).json()["ok"] is False
     assert client.get("/v1/export", headers=tenant_b).json() == export_b
 
     erased = client.post("/v1/forget", json={"confirm": True}, headers=tenant_a)
     assert erased.status_code == 200 and erased.json()["ok"] is True
     assert "alpha-private-marker" not in str(client.get("/v1/export", headers=tenant_a).json())
     assert "beta-private-marker" in str(client.get("/v1/export", headers=tenant_b).json())
-    assert fact_a["id"] != fact_b["id"]
+    assert fact_a.id != fact_b.id
 
 
 def test_http_handoff_across_agent_sessions_in_same_namespace(client):
@@ -231,8 +225,8 @@ def test_stats_endpoint_is_content_free_namespace_observability(client):
         "content": "My private diagnosis is diabetes. I work at Acme.",
         "extract": True,
     }, headers=h)
-    client.post("/v1/facts", json={"text": 'user has disease diabetes', "predicate": "has_disease", "object": "diabetes", "object_kind": "literal"}, headers=h)
-    client.post("/v1/facts", json={"text": 'user works at Acme', "predicate": "works_at", "object": "Acme", "sensitive": False, "object_kind": "entity"}, headers=h)
+    client.seed_fact(h, text='user has disease diabetes', predicate='has_disease', object='diabetes', sensitive=True)
+    client.seed_fact(h, text='user works at Acme', predicate='works_at', object='Acme', sensitive=False, linked=True)
 
     stats = client.get("/v1/stats", headers=h).json()
     assert stats["space_id"]
@@ -369,9 +363,9 @@ def test_import_sessions_accept_iso_timestamps(client):
 
 def test_fact_crud_and_focus_policy_graph_export(client):
     h = hdr("editor")
-    fid = client.post("/v1/facts", json={"text": 'user works at Tencent', "predicate": "works_at", "object": "Tencent"}, headers=h).json()["id"]
-    assert client.patch(f"/v1/facts/{fid}", json={"subject": "user", "predicate": "works_at", "object": "Moonshot AI", "text": "用户在 Moonshot AI 工作。", "sensitive": False}, headers=h).json()["ok"]
-    assert client.patch("/v1/facts/nope", json={"subject": "user", "predicate": "likes", "object": "x", "text": "用户喜欢 x。"}, headers=h).status_code == 404
+    fid = client.seed_fact(h, predicate="works_at", object="Moonshot AI", text="用户在 Moonshot AI 工作。", linked=True).id
+    assert client.patch(f"/v1/facts/{fid}/sensitivity", json={"sensitive": False}, headers=h).json()["ok"]
+    assert client.patch("/v1/facts/nope/sensitivity", json={"sensitive": True}, headers=h).status_code == 404
     # focus + policy 经 service 层的往返测试
     assert client.put("/v1/focus", json={"track": ["career"], "mute": []}, headers=h).json()["focus"]["track"] == ["career"]
     assert client.get("/v1/focus", headers=h).json()["track"] == ["career"]
@@ -379,50 +373,16 @@ def test_fact_crud_and_focus_policy_graph_export(client):
     assert pol["ok"] and pol["policy"]["extract_instruction"] == "Record job changes."
     assert "nodes" in client.get("/v1/graph", headers=h).json()
     exp = client.get("/v1/export", headers=h).json()
-    assert exp["format_version"] == 3 and any(f["object"] == "Moonshot AI" for f in exp["facts"])
+    assert exp["format_version"] == 4 and any(f["object"] == "Moonshot AI" for f in exp["facts"])
     assert client.delete(f"/v1/facts/{fid}", headers=h).json()["ok"] is True
-
-
-def test_complete_fact_text_edit_is_persisted_and_statement_is_rejected(client):
-    h = hdr("synthetic_statement_editor")
-    fid = client.post("/v1/facts", json={"text": 'user likes USER_PREFERENCE_TOKEN', "predicate": "likes", "object": "USER_PREFERENCE_TOKEN", "sensitive": False}, headers=h).json()["id"]
-    statement = "演示用户喜欢简洁的回答。"
-    for patch in ({"statement": " "}, {"statement": ""}, {"statement": statement, "object": "回答"}):
-        assert client.patch(f"/v1/facts/{fid}", json=patch, headers=h).status_code == 422
-    assert client.patch(f"/v1/facts/{fid}", json={"statement": statement}, headers=h).status_code == 422
-    dump = client.get("/v1/memories", headers=h).json()
-    unchanged = next(row for row in dump["facts"] if row["id"] == fid)
-    assert unchanged["object"] == "USER_PREFERENCE_TOKEN"
-    assert client.patch(f"/v1/facts/{fid}", json={
-        "subject": "user", "predicate": "likes", "object": "简洁的回答", "text": statement, "sensitive": False,
-    }, headers=h).status_code == 200
-    outcome_id = client.post("/v1/facts", json={"text": 'synthetic-session decision 原来的结论',
-        "subject": "synthetic-session", "predicate": "decision", "object": "原来的结论",
-    }, headers=h).json()["id"]
-    result = client.patch(f"/v1/facts/{outcome_id}", json={"subject": "synthetic-session", "predicate": "decision", "object": statement, "text": statement, "sensitive": False}, headers=h)
-    assert result.status_code == 200
-    assert result.json()["text"] == statement and 'display' not in result.json()
-    dump = client.get("/v1/memories", headers=h).json()
-    edited = next(row for row in dump["facts"] if row["id"] == outcome_id)
-    assert edited["object"] == edited["text"] == statement and 'display' not in edited
-    assert edited["source"] == "user"
-    reloaded = client.get("/v1/memories", headers=h).json()["facts"]
-    assert next(row for row in reloaded if row["id"] == fid)["object"] == "简洁的回答"
-    assert next(row for row in reloaded if row["id"] == outcome_id)["object"] == statement
 
 
 def test_graph_endpoint_supports_as_of_and_edge_audit_fields(client):
     h = hdr("graph_asof")
-    for session, text, stamp in (
-        ("old", "Wei works at Tencent.", 1_700_000_000.0),
-        ("new", "Wei works at Moonshot AI.", 1_702_592_000.0),
-    ):
-        response = client.post("/v1/messages", json={
-            "session_id": session, "processing": "immediate",
-            "messages": [{"message_id": "m1", "role": "user", "content": text, "event_time": stamp}],
-        }, headers=h)
-        assert response.is_success
-
+    old = client.seed_fact(h, subject='Wei', predicate='works_at', object='Tencent', text='Wei works at Tencent.',
+                           valid_at=1_700_000_000, invalid_at=1_702_592_000, linked=True)
+    client.seed_fact(h, subject='Wei', predicate='works_at', object='Moonshot AI', text='Wei works at Moonshot AI.',
+                     valid_at=1_702_592_000, supersedes=[old.id], linked=True)
 
     past = client.get("/v1/graph?as_of=1700864000", headers=h).json()
     assert "Tencent" in {n["name"] for n in past["nodes"]}
@@ -439,9 +399,8 @@ def test_graph_endpoint_supports_as_of_and_edge_audit_fields(client):
 
 def test_graph_endpoint_can_exclude_sensitive_edges(client):
     h = hdr("graph_redact")
-    client.post("/v1/facts", json={"text": 'user visited Synthetic Clinic', "predicate": "visited", "object": "Synthetic Clinic",
-                                  "object_kind": "entity", "sensitive": True}, headers=h)
-    client.post("/v1/facts", json={"text": 'user works at Acme', "predicate": "works_at", "object": "Acme", "sensitive": False, "object_kind": "entity"}, headers=h)
+    client.seed_fact(h, text='user visited Synthetic Clinic', predicate='visited', object='Synthetic Clinic', sensitive=True, linked=True)
+    client.seed_fact(h, text='user works at Acme', predicate='works_at', object='Acme', sensitive=False, linked=True)
 
     default_safe = client.get("/v1/graph", headers=h).json()
     assert "Synthetic Clinic" not in str(default_safe)
@@ -461,27 +420,10 @@ def test_memories_endpoint_supports_pagination_filtering_and_sensitive_create(cl
     h = hdr("memories_page")
     client.post("/v1/remember", json={"content": "First durable episode."}, headers=h)
     client.post("/v1/remember", json={"content": "Second durable episode."}, headers=h)
-    client.post("/v1/facts", json={"text": 'user works at Acme',
-        "predicate": "works_at",
-        "object": "Acme",
-        "categories": ["professional_details"], "sensitive": False,
-    }, headers=h)
-    client.post("/v1/facts", json={"text": 'user favorite city Hangzhou',
-        "predicate": "favorite_city",
-        "object": "Hangzhou",
-        "categories": ["user_preferences"], "sensitive": False,
-    }, headers=h)
-    client.post("/v1/facts", json={"text": 'user project note memory console',
-        "predicate": "project_note",
-        "object": "memory console",
-        "categories": ["technology"], "sensitive": False,
-    }, headers=h)
-    client.post("/v1/facts", json={"text": 'user security phrase blue-lotus',
-        "predicate": "security_phrase",
-        "object": "blue-lotus",
-        "categories": ["health"],
-        "sensitive": True,
-    }, headers=h)
+    client.seed_fact(h, text='user works at Acme', predicate='works_at', object='Acme', categories=['professional_details'], sensitive=False)
+    client.seed_fact(h, text='user favorite city Hangzhou', predicate='favorite_city', object='Hangzhou', categories=['user_preferences'], sensitive=False)
+    client.seed_fact(h, text='user project note memory console', predicate='project_note', object='memory console', categories=['technology'], sensitive=False)
+    client.seed_fact(h, text='user security phrase blue-lotus', predicate='security_phrase', object='blue-lotus', categories=['health'], sensitive=True)
 
     safe_default = client.get("/v1/memories?facts_limit=10&episodes_limit=1", headers=h).json()
     assert "profile" not in safe_default
@@ -554,8 +496,8 @@ def test_focus_filters_retrieval_and_tracks_without_rewriting_facts(client, prod
     label = "synthetic-retrieval-focus"
     h = hdr(label)
     context, _ = product_scope(label)
-    response = client.post("/v1/facts", json={"text": 'user likes violet cactus', "predicate": "likes", "object": "violet cactus", "sensitive": False}, headers=h)
-    fact_id = response.json()["id"]
+    response = client.seed_fact(h, text='user likes violet cactus', predicate='likes', object='violet cactus', sensitive=False)
+    fact_id = response.id
     assert client.post("/v1/remember", json={"content": "violet cactus raw evidence", "extract": False}, headers=h).is_success
     memory = product_service.memory(context)
     query = "violet cactus"
@@ -663,19 +605,16 @@ def test_memories_category_facets_respect_visibility_kind_and_space(client, prod
 
 def test_sensitive_edit_preserves_history_across_reload(client):
     h = hdr("metadata_history")
-    claim = {"subject": "demo_user", "predicate": "lives_in", "object": "北京", "text": "演示用户住在北京。"}
-    old_response = client.post("/v1/facts", json=claim, headers=h)
-    assert old_response.status_code == 200
-    old_id = old_response.json()["id"]
-    current_response = client.post("/v1/facts", json={**claim, "object": "上海", "text": "演示用户住在上海。", "cardinality": "single"}, headers=h)
-    assert current_response.status_code == 200
-    current_id = current_response.json()["id"]
+    old_id = client.seed_fact(h, subject="demo_user", predicate="lives_in", object="北京",
+                              text="演示用户住在北京。", valid_at=10, invalid_at=20, linked=True).id
+    current_id = client.seed_fact(h, subject="demo_user", predicate="lives_in", object="上海",
+                                  text="演示用户住在上海。", valid_at=20, supersedes=[old_id], linked=True).id
     url = "/v1/memories?include_sensitive=true&episodes_limit=0"
     original = {f["id"]: f for f in client.get(url, headers=h).json()["facts"]}
     assert original[old_id]["status"] == "superseded"
 
     for sensitive in (True, False):
-        response = client.patch(f"/v1/facts/{old_id}", json={**claim, "sensitive": sensitive}, headers=h)
+        response = client.patch(f"/v1/facts/{old_id}/sensitivity", json={"sensitive": sensitive}, headers=h)
         assert response.status_code == 200
         # 重新加载持久化状态，不能只在热缓存中保留历史。
         rows = {f["id"]: f for f in client.get(url, headers=h).json()["facts"]}
@@ -683,7 +622,7 @@ def test_sensitive_edit_preserves_history_across_reload(client):
         assert rows[old_id]["status"] == "superseded"
         assert rows[old_id]["invalid_at"] == original[old_id]["invalid_at"]
         assert rows[current_id]["status"] == "live"
-        assert rows[current_id]["supersedes"] == old_id
+        assert rows[current_id]["supersedes"] == [old_id]
         live = client.get("/v1/memories?status=live&include_sensitive=true", headers=h).json()["facts"]
         assert {f["id"] for f in live} == {current_id}
         graph = client.get("/v1/graph?live_only=true&include_sensitive=true", headers=h).json()
@@ -700,32 +639,22 @@ def test_metadata_edit_preserves_extracted_source_across_reload(client):
     url = "/v1/memories?include_sensitive=true&episodes_limit=0"
     original = client.get(url, headers=h).json()["facts"][0]
     assert original["source"] == "extracted" and original["provenance"]
-    claim = {field: original[field] for field in ("subject", "predicate", "object", "text")}
     fact_id = original["id"]
-
-    for patch in ({"sensitive": True}, {"sensitive": False}, {"categories": ["hobbies"]}, {}):
-        response = client.patch(f"/v1/facts/{fact_id}", json={**claim, **patch}, headers=h)
+    for sensitive in (True, False):
+        response = client.patch(f"/v1/facts/{fact_id}/sensitivity", json={"sensitive": sensitive}, headers=h)
         assert response.status_code == 200
-        assert response.json()["source"] == "extracted"
         restored = next(f for f in client.get(url, headers=h).json()["facts"] if f["id"] == fact_id)
         assert restored["source"] == "extracted"
         assert restored["provenance"] == original["provenance"]
-        assert restored["status"] == original["status"]
-        for field, value in patch.items():
-            assert restored[field] == value
-
-    response = client.patch(f"/v1/facts/{fact_id}", json={**claim, "object": "Shanghai", "text": "用户住在上海。"}, headers=h)
-    assert response.status_code == 200 and response.json()["source"] == "user"
-    restored = next(f for f in client.get(url, headers=h).json()["facts"] if f["id"] == fact_id)
-    assert restored["source"] == "user" and restored["object"] == "Shanghai"
-    assert restored["provenance"] == original["provenance"]
+        assert restored["text"] == original["text"]
+        assert restored["sensitive"] is sensitive
 
 
 def test_graph_endpoint_supports_query_live_only_and_limit(client):
     h = hdr("graph_query")
-    client.post("/v1/facts", json={"text": 'user works at Acme', "predicate": "works_at", "object": "Acme", "sensitive": False, "object_kind": "entity"}, headers=h)
-    client.post("/v1/facts", json={"text": 'user works at Moonshot AI', "predicate": "works_at", "object": "Moonshot AI", "sensitive": False, "cardinality": "single", "object_kind": "entity"}, headers=h)
-    client.post("/v1/facts", json={"text": 'user likes food ramen', "predicate": "likes_food", "object": "ramen"}, headers=h)
+    client.seed_fact(h, text='user works at Acme', predicate='works_at', object='Acme', sensitive=False, linked=True, valid_at=10, invalid_at=20)
+    client.seed_fact(h, text='user works at Moonshot AI', predicate='works_at', object='Moonshot AI', sensitive=False, linked=True, valid_at=20)
+    client.seed_fact(h, text='user likes food ramen', predicate='likes_food', object='ramen')
 
     old_company = client.get("/v1/graph?q=Acme&live_only=true", headers=h).json()
     assert "Acme" not in str(old_company)
@@ -737,16 +666,15 @@ def test_graph_endpoint_supports_query_live_only_and_limit(client):
 
 
 def test_graph_limit_and_completeness_follow_space_filters(client, product_service, product_scope):
-    from mnemotrace.types import Fact
-
     user = "synthetic_graph_limit"
-    context, _ = product_scope(user)
-    older = [Fact("synthetic_user", f"link_{i}", f"old_{i}", user_id=context.user_id,
-                  valid_at=100, invalid_at=200, object_kind="entity", text=' '.join(('synthetic_user', f'link_{i}'.replace('_', ' '), f'old_{i}'))) for i in range(121)]
-    current = Fact("synthetic_user", "uses", "current_target", user_id=context.user_id, valid_at=100, object_kind="entity", text='synthetic_user uses current_target')
-    private = Fact("synthetic_user", "private_link", "private_target", user_id=context.user_id,
-                   valid_at=100, sensitive=True, object_kind="entity", text='synthetic_user private link private_target')
-    seed_facts(product_service, context, [*older, current, private])
+    h = hdr(user)
+    for i in range(121):
+        client.seed_fact(h, subject="synthetic_user", predicate=f"link_{i}", object=f"old_{i}",
+                         text=f"Synthetic user link {i}: old_{i}", valid_at=100, invalid_at=200, linked=True)
+    current = client.seed_fact(h, subject="synthetic_user", predicate="uses", object="current_target",
+                               text="Synthetic user uses current_target", valid_at=100, linked=True)
+    client.seed_fact(h, subject="synthetic_user", predicate="private_link", object="private_target",
+                     text="Synthetic user links private_target", valid_at=100, linked=True, sensitive=True)
 
     broad = client.get("/v1/graph?limit=120", headers=hdr(user)).json()
     assert len(broad["edges"]) == 120 and broad["has_more"] is True
@@ -816,8 +744,8 @@ def test_recall_endpoint_supports_as_of_for_search_and_lean_context(client):
 
 def test_recall_endpoint_can_redact_sensitive_facts(client):
     h = hdr("recall_redact")
-    client.post("/v1/facts", json={"text": 'user has disease diabetes', "predicate": "has_disease", "object": "diabetes", "object_kind": "literal"}, headers=h)
-    client.post("/v1/facts", json={"text": 'user works at Acme', "predicate": "works_at", "object": "Acme", "sensitive": False, "object_kind": "entity"}, headers=h)
+    client.seed_fact(h, text='user has disease diabetes', predicate='has_disease', object='diabetes', sensitive=True)
+    client.seed_fact(h, text='user works at Acme', predicate='works_at', object='Acme', sensitive=False, linked=True)
 
     ctx = client.post("/v1/recall", json={
         "query": "what do you know about me?",
@@ -844,8 +772,8 @@ def test_export_without_sensitive_omits_free_text_layers_and_sensitive_graph(cli
     client.post("/v1/remember", json={
         "content": "My private diagnosis is diabetes. I work at Acme.",
     }, headers=h)
-    client.post("/v1/facts", json={"text": 'user has disease diabetes', "predicate": "has_disease", "object": "diabetes", "object_kind": "literal"}, headers=h)
-    client.post("/v1/facts", json={"text": 'user works at Acme', "predicate": "works_at", "object": "Acme", "sensitive": False, "object_kind": "entity"}, headers=h)
+    client.seed_fact(h, text='user has disease diabetes', predicate='has_disease', object='diabetes', sensitive=True)
+    client.seed_fact(h, text='user works at Acme', predicate='works_at', object='Acme', sensitive=False, linked=True)
 
     default_safe = client.get("/v1/export", headers=h).json()
     assert default_safe["include_sensitive"] is False
@@ -999,7 +927,7 @@ def test_memories_outcome_kind_and_revision_contract(client, product_service, pr
     assert first["facts_page"]["total"] == 1
     assert first["facts"][0]["predicate"] == "lesson"
     assert client.get("/v1/memories", params={"outcome_kind": "invalid"}, headers=hdr(user)).status_code == 422
-    product_service.add_fact(context, "synthetic-session", "finding", "Synthetic new finding", text="Synthetic new finding")
+    client.seed_fact(hdr(user), subject="synthetic-session", predicate="finding", object="Synthetic new finding", text="Synthetic new finding")
     conflict = client.get("/v1/memories", params={**params, "expected_revision": first["data_revision"], "evaluated_at": first["evaluated_at"]}, headers=hdr(user))
     assert conflict.status_code == 409
     assert conflict.json()["detail"]["code"] == "memory_revision_changed"
@@ -1064,10 +992,8 @@ def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, pro
         return memory.remember(content, session_id, event_time=event_time, processing='buffered',
                                extract=True)
 
-    fact = memory.add_fact("Ana", "works_at", "Orbit", valid_at=100, text='Ana works at Orbit')
+    fact = client.seed_fact(hdr(label), subject="Ana", predicate="works_at", object="Orbit", valid_at=100, text='Ana works at Orbit')
     remember_source("Ana works at Orbit.", "earlier", event_time=100)
-    with memory.dao.read_snapshot() as view:
-        known_at = view.at.timestamp()
     remember_source("Ana used to work on a different synthetic project.", "late-arrival", event_time=100)
     remember_source("Ana plans a synthetic project.", "future", event_time=400)
 
@@ -1077,10 +1003,10 @@ def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, pro
         return response.json()
 
     for lean in (True, False):
-        for cutoff in ({"as_of": 200}, {"valid_at": 200}, {"known_at": known_at}):
+        for cutoff in ({"as_of": 200}, {"valid_at": 200}):
             recall(lean=lean, **cutoff)
     assert memory.get_fact(fact.id).access_count == 0
     assert recall(as_of=200, answer=True)["full_tokens"] == recall(valid_at=200, answer=True)["full_tokens"]
-    assert recall(valid_at=200, known_at=known_at, answer=True)["full_tokens"] == 5
+    assert recall(valid_at=200, answer=True)["full_tokens"] > 5
     assert recall(answer=True)["full_tokens"] > recall(valid_at=200, answer=True)["full_tokens"]
     assert memory.get_fact(fact.id).access_count > 0

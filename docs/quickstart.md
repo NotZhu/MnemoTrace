@@ -1,6 +1,6 @@
 # 快速开始
 
-按[部署说明](../deploy/README.md)启动服务、签发 key 并创建演示空间。记下账号 ID 和空间 ID。控制台可在同一个空间写入原文、录入人工事实和检索。自动抽取需要配置模型。
+按[部署说明](../deploy/README.md)启动服务、签发 key 并创建演示空间。记下账号 ID 和空间 ID。控制台可在同一个空间写入原文和检索事实。自动抽取需要配置模型。
 
 ## Python 直连
 
@@ -18,9 +18,9 @@ mnemotrace-quickstart
 
 源码入口为 `python examples/quickstart.py`。示例将合成会话提交到指定空间，输出操作 ID，等待抽取归并，再运行检索和历史查询。持久记录会保留在该空间，重跑使用相同的消息标识。
 
-## 原文与人工事实
+## 离线保存原文
 
-用运行角色连接，显式授权后可直接保存原文和人工事实。下面的操作无需配置 LLM。
+用运行角色连接，显式授权后可直接保存和读取原文。下面的操作无需配置 LLM。
 
 ```python
 import os
@@ -34,8 +34,7 @@ with Database(DatabaseConfig.from_env()) as database:
     )
     memory = Memory(database, scope)
     memory.remember_raw("Synthetic project note", "demo")
-    memory.add_fact("user", "lives_in", "Paris", text="用户住在巴黎。")
-    print([fact.text for fact in memory.search("Where do I live?").facts])
+    print([source.content for source in memory.list_sources()])
 ```
 
 [HTTP API](reference/http-api.md)提供会话写入、任务查询和检索入口。[使用指南](guides/usage.md)说明空间、会话和删除的操作范围。

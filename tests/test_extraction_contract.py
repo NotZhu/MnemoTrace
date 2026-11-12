@@ -28,11 +28,11 @@ class FakeLLM(NativeFakeLLM):
                 row.setdefault('source_ids', [data['pending'][0]['id']])
                 if group == 'facts' and all(k in row for k in ('subject', 'predicate', 'object')):
                     row.setdefault('categories', [])
-                    row.setdefault('object_kind', 'unknown')
+
                     row.setdefault('sensitive', False)
                     row.setdefault('time_kind', 'current')
                     row.setdefault('effective_date', None)
-                    row.setdefault('cardinality', 'unknown')
+
                     row.setdefault('retention', 'unknown')
                     row.setdefault('text', f"{row['subject']} {row['predicate']} {row['object']}")
         out['digests'] = []

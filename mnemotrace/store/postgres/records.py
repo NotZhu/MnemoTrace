@@ -3,24 +3,24 @@ from dataclasses import fields
 from datetime import datetime, timezone
 import json
 
-from ...types import Conflict, Entity, Episode, Fact, Relation
+from ...types import Conflict, Entity, Episode, Fact, Relation, RelationType
 from ...retrieve.lexical import lexical_terms
 from ..contracts import RecordKind, RecordRef, StoredRecord
 from .database import identifier
 from .errors import DataCorruption
 
-SOURCE, FACT, ENTITY, RELATION, CONFLICT = RecordKind
-MODELS = dict(zip(RecordKind, (Episode, Fact, Entity, Relation, Conflict), strict=True))
+SOURCE, FACT, ENTITY, RELATION, CONFLICT, RELATION_TYPE = RecordKind
+MODELS = dict(zip(RecordKind, (Episode, Fact, Entity, Relation, Conflict, RelationType), strict=True))
 TABLES = dict(zip(RecordKind, (
-    'sources', 'facts', 'entities', 'graph_relations', 'conflicts',
+    'sources', 'facts', 'entities', 'graph_relations', 'conflicts', 'relation_types',
 ), strict=True))
 TARGET_COLUMNS = {SOURCE: 'source_id', FACT: 'fact_id', ENTITY: 'entity_id'}
 TIMES = frozenset(('event_time', 'ingested_at', 'created_at', 'valid_at', 'invalid_at',
-                   'expired_at', 'approved_at', 'last_access', 'expires_at', 'detected_at', 'digest_written_at'))
+                   'expired_at', 'withdrawn_at', 'last_access', 'expires_at', 'detected_at', 'digest_written_at'))
 SCOPE = 'user_id = %s AND space_id = %s'
 ROW_SCOPE = 'r.user_id = %s AND r.space_id = %s'
 JSON_COLUMNS = {'profile_data', 'metadata', 'coverage', 'digest_coverage', 'settings', 'stats',
-                'input', 'result', 'source_versions', 'validity_revisions'}
+                'input', 'result', 'source_versions', 'endpoint_types'}
 
 
 def anchor_terms(name):
@@ -34,12 +34,9 @@ def timestamp(value):
         raise ValueError('Timestamp is outside the supported range') from exc
 
 
-def source_digest_join(known_at=None):
-    join = """ LEFT JOIN mnemotrace.source_digests s
-        ON (s.user_id,s.space_id,s.source_id) = (r.user_id,r.space_id,r.id)"""
-    if known_at is None:
-        return join, ()
-    return join + ' AND s.digest_written_at <= %s', (timestamp(known_at),)
+def source_digest_join():
+    return """ LEFT JOIN mnemotrace.source_digests s
+        ON (s.user_id,s.space_id,s.source_id) = (r.user_id,r.space_id,r.id)""", ()
 
 
 def domain(record: StoredRecord):
@@ -74,7 +71,7 @@ def columns(record, values):
     if kind == SOURCE:
         excluded.update(('digest', 'digest_embedding', 'coverage', 'digest_coverage', 'consolidated', 'digest_written_at'))
     if kind == FACT:
-        excluded.add('provenance')
+        excluded.update(('provenance', 'supersedes', 'subject_type', 'object_type'))
     data = {key: timestamp(value) if key in TIMES else value
             for key, value in values.items() if key not in excluded}
     if kind == RELATION:
@@ -91,7 +88,7 @@ def columns(record, values):
     if kind == FACT:
         data['subject_key'] = values['subject'].lower()
         data['predicate_key'] = values['predicate'].lower()
-        data['subject_match_key'] = values['subject'].strip().lower()
+        data['subject_match_key'] = values['subject'].strip().casefold()
     return data
 
 
@@ -120,22 +117,35 @@ class ScopedSQL:
     def run(self, query, params=(), *, prepare=None):
         return self.conn.execute(query, params, prepare=prepare)
 
-    def select(self, kind, conditions=(), params=(), *, limit=None, offset=0, digest_known_at=None,
-               order_by='r.id'):
+    def select(self, kind, conditions=(), params=(), *, limit=None, offset=0,
+               order_by='r.id', hide_sensitive_predecessors=False):
         extra, joins = '', ''
         join_params = ()
         if kind in (FACT, ENTITY):
             extra += ', NULL AS embedding'
         if kind == FACT:
-            extra += """, ARRAY(SELECT p.source_id::text FROM mnemotrace.fact_sources p
+            predecessor_filter = """AND EXISTS (
+                SELECT 1 FROM mnemotrace.facts predecessor
+                WHERE (predecessor.user_id,predecessor.space_id,predecessor.id) =
+                      (l.user_id,l.space_id,l.predecessor_id) AND NOT predecessor.sensitive
+            )""" if hide_sensitive_predecessors else ''
+            extra += f""", ARRAY(SELECT p.source_id::text FROM mnemotrace.fact_sources p
                 WHERE (p.user_id,p.space_id,p.fact_id) = (r.user_id,r.space_id,r.id)
-                ORDER BY p.source_order NULLS LAST, p.source_id) AS provenance"""
+                ORDER BY p.source_order NULLS LAST, p.source_id) AS provenance,
+                ARRAY(SELECT l.predecessor_id::text FROM mnemotrace.fact_supersedes l
+                    WHERE (l.user_id,l.space_id,l.fact_id) = (r.user_id,r.space_id,r.id) {predecessor_filter}
+                    ORDER BY l.predecessor_id) AS supersedes,
+                left_entity.type AS subject_type, right_entity.type AS object_type"""
+            joins = """ LEFT JOIN mnemotrace.entities left_entity
+                ON (left_entity.user_id,left_entity.space_id,left_entity.id) = (r.user_id,r.space_id,r.subject_id)
+                LEFT JOIN mnemotrace.entities right_entity
+                ON (right_entity.user_id,right_entity.space_id,right_entity.id) = (r.user_id,r.space_id,r.object_id)"""
         elif kind == SOURCE:
             extra += """, coalesce(s.digest, '') AS digest, s.coverage, s.digest_coverage,
                 CASE WHEN s.digest <> '' THEN s.digest_version END AS digest_version,
                 coalesce(s.processing_state = 'completed', false) AS consolidated,
                 s.content_version AS digest_content_version, s.digest_written_at, NULL AS digest_embedding"""
-            joins, join_params = source_digest_join(digest_known_at)
+            joins, join_params = source_digest_join()
         where = ' AND '.join((ROW_SCOPE, *conditions))
         query = f'SELECT r.*{extra} FROM mnemotrace.{TABLES[kind]} r{joins} WHERE {where} ORDER BY {order_by}'
         if limit is not None:

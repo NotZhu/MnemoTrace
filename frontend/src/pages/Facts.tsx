@@ -1,19 +1,18 @@
 
 
 import { useRef, useState } from 'react'
-import { FileSearch, GitMerge, Loader2, Pencil, Plus, Search, ShieldAlert, Trash2, X } from 'lucide-react'
+import { FileSearch, GitMerge, Loader2, Search, ShieldAlert, Trash2, X } from 'lucide-react'
 
-import { Button, Card, CardTitle, ErrorState, Field, PageHeader, Spinner } from '../components/ui'
+import { Button, Card, CardTitle, ErrorState, PageHeader, Spinner } from '../components/ui'
 import { PageEmptyState } from '../components/PageEmptyState'
 import { FilterSelect } from '../components/FilterSelect'
-import { CategoryBadges, CategoryEditor, CategoryFilter } from '../components/CategoryEditor'
+import { CategoryBadges, CategoryFilter } from '../components/CategoryEditor'
 import { ConfirmDialog, Modal } from '../components/Modal'
 import { toast } from '../components/Toast'
 import {
-  useAddFact,
   useConflicts,
   useDeleteFact,
-  useEditFact,
+  useSetFactSensitive,
   useMemoryPages,
   useSourceEpisodes,
   useResolveConflict,
@@ -21,12 +20,10 @@ import {
 import { copy as t } from '../lib/copy'
 import { splitStamp } from '../lib/format'
 import { useSpacePreference } from '../store/preferences'
-import type { Category, FactEdit, MemoryEpisode, MemoryFact, ObjectKind } from '../types'
-import { OBJECT_KIND_LABELS } from '../lib/categories'
+import type { MemoryEpisode, MemoryFact } from '../types'
 
 export default function Facts() {
-  const addFact = useAddFact()
-  const editFact = useEditFact()
+  const sensitivity = useSetFactSensitive()
   const deleteFact = useDeleteFact()
 
   const [q, setQ] = useState('')
@@ -34,9 +31,7 @@ export default function Facts() {
   const [status, setStatus] = useSpacePreference('facts', 'status')
   const [categories, setCategories] = useSpacePreference('facts', 'categories')
   const [hideSensitive, setHideSensitive] = useSpacePreference('facts', 'hideSensitive')
-  const [editing, setEditing] = useState<MemoryFact | null>(null)
   const [sourceOf, setSourceOf] = useState<MemoryFact | null>(null)
-  const [adding, setAdding] = useState(false)
   const [confirmFact, setConfirmFact] = useState<MemoryFact | null>(null)
 
   const { data, isFetching, isError, isSuccess, isPlaceholderData, error, refetch, loadMore } = useMemoryPages({
@@ -101,9 +96,6 @@ export default function Facts() {
               </button>
             )}
           </div>
-          <Button type="button" variant="ghost" onClick={() => setAdding(true)} className="justify-self-end">
-            <Plus aria-hidden="true" className="h-4 w-4" /> {t.facts.addManual}
-          </Button>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 pt-1">
           <p className="text-xs text-ghost" aria-live="polite">{!data || isPlaceholderData || isError ? t.facts.countPending : t.facts.factCount(factsPage?.total ?? facts.length)}</p>
@@ -146,7 +138,7 @@ export default function Facts() {
                   <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-ghost">
                     <span className={`inline-flex items-center gap-1.5 ${f.status === 'live' ? 'font-medium text-brand-mint' : 'text-ghost'}`}>
                       <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
-                      {f.status === 'live' ? t.facts.statusLive : t.facts.statusOld}
+                      {f.withdrawn_at != null ? t.facts.statusWithdrawn : f.status === 'live' ? t.facts.statusLive : t.facts.statusOld}
                     </span>
                     <time className="tabular-nums">{date}{time && ` · ${time}`}</time>
                     {f.sensitive && (
@@ -175,12 +167,15 @@ export default function Facts() {
                     </button>
                   )}
                   <button
-                    onClick={() => setEditing(f)}
+                    onClick={() => sensitivity.mutate({ id: f.id, sensitive: !f.sensitive }, {
+                      onError: (e) => toast.error(e.message),
+                    })}
+                    disabled={sensitivity.isPending}
                     className="grid h-8 w-8 place-items-center rounded-lg text-ghost transition hover:bg-selected hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan"
-                    aria-label={t.common.edit}
-                    title={t.common.edit}
+                    aria-label={f.sensitive ? "取消敏感标记" : "标为敏感"}
+                    title={f.sensitive ? "取消敏感标记" : "标为敏感"}
                   >
-                    <Pencil className="h-4 w-4" />
+                    <ShieldAlert className="h-4 w-4" />
                   </button>
                   <button
                     onClick={() => setConfirmFact(f)}
@@ -247,56 +242,6 @@ export default function Facts() {
           </div>
         )}
       </Modal>
-
-      {/* 编辑 */}
-      <FactModal
-        open={!!editing}
-        title={t.facts.editTitle}
-        initial={editing ?? undefined}
-        loading={editFact.isPending}
-        onClose={() => setEditing(null)}
-        onSubmit={(vals) => {
-          if (!editing) return
-          editFact.mutate(
-            { id: editing.id, patch: vals },
-            {
-              onSuccess: () => {
-                toast.success(t.facts.updated)
-                setEditing(null)
-              },
-              onError: (e) => toast.error(String((e as Error).message)),
-            },
-          )
-        }}
-      />
-
-      {/* 新增 */}
-      <FactModal
-        open={adding}
-        title={t.facts.addTitle}
-        loading={addFact.isPending}
-        onClose={() => setAdding(false)}
-        onSubmit={(vals) => {
-          addFact.mutate(
-            {
-              subject: vals.subject || 'user',
-              predicate: vals.predicate!,
-              object: vals.object!,
-              text: vals.text!,
-              sensitive: vals.sensitive,
-              categories: vals.categories,
-              object_kind: vals.object_kind,
-            },
-            {
-              onSuccess: () => {
-                toast.success(t.facts.added)
-                setAdding(false)
-              },
-              onError: (e) => toast.error(String((e as Error).message)),
-            },
-          )
-        }}
-      />
 
       {/* 删除 */}
       <ConfirmDialog
@@ -376,148 +321,5 @@ function ConflictsCard() {
         ))}
       </ul>
     </Card>
-  )
-}
-
-function FactModal({
-  open,
-  title,
-  initial,
-  loading,
-  onClose,
-  onSubmit,
-}: {
-  open: boolean
-  title: string
-  initial?: MemoryFact
-  loading: boolean
-  onClose: () => void
-  onSubmit: (vals: FactEdit) => void
-}) {
-  const [subject, setSubject] = useState('')
-  const [predicate, setPredicate] = useState('')
-  const [object, setObject] = useState('')
-  const [text, setText] = useState('')
-  const [sensitiveOverride, setSensitiveOverride] = useState<boolean>()
-  const claimChanged = initial && (initial.subject !== subject || initial.predicate !== predicate || initial.object !== object || initial.text !== text)
-  const sensitive = sensitiveOverride ?? (!initial || claimChanged || initial.sensitive)
-  const [categories, setCategories] = useState<Category[]>()
-  const [objectKind, setObjectKind] = useState<ObjectKind>()
-
-  const submit = () => {
-    const patch: FactEdit = !initial || claimChanged
-      ? { subject: subject || 'user', predicate, object, text }
-      : {}
-    onSubmit({ ...patch, sensitive: sensitiveOverride, categories, object_kind: objectKind })
-  }
-
-  // 每次弹窗带着（可能是新的）事实打开时，同步一次表单值。
-  const [seen, setSeen] = useState<string | null>(null)
-  const sig = open ? (initial?.id ?? 'new') : null
-  if (sig !== seen) {
-    setSeen(sig)
-    setSubject(initial?.subject ?? '')
-    setPredicate(initial?.predicate ?? '')
-    setObject(initial?.object ?? '')
-    setText(initial?.text ?? '')
-    setSensitiveOverride(undefined)
-    setCategories(undefined)
-    setObjectKind(undefined)
-  }
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={title}
-      footer={
-        <div className="grid w-full gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-          <div className="space-y-1">
-            <button
-              type="button"
-              role="switch"
-              aria-checked={sensitive}
-              aria-label={t.facts.markSensitive}
-              onClick={() => setSensitiveOverride(!sensitive)}
-              className="inline-flex min-h-[38px] select-none items-center gap-2.5 rounded-full text-sm text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-cyan"
-            >
-              <span aria-hidden="true" className="switch-track">
-                <span className="switch-thumb" />
-              </span>
-              {t.facts.markSensitive}
-            </button>
-            <p className="text-xs text-ghost">{t.facts.modalNote}</p>
-          </div>
-          <div className="flex justify-end gap-2">
-          <Button variant="ghost" disabled={loading} onClick={onClose} className="h-9 px-4 py-2 text-sm">
-            {t.common.cancel}
-          </Button>
-          <Button loading={loading} disabled={loading || (!!initial && !subject.trim()) || !predicate.trim() || !object.trim() || !text.trim()} onClick={submit} className="h-9 px-4 py-2 text-sm">
-            {t.common.save}
-          </Button>
-          </div>
-        </div>
-      }
-    >
-      <div className="space-y-4">
-        <Field label={t.facts.textLabel}>
-          <FactTextInput originalValue={initial?.text} value={text} onChange={setText} />
-        </Field>
-        <Field label={t.facts.subjectLabel}>
-          <FactTextInput originalValue={initial?.subject} value={subject} onChange={setSubject} />
-        </Field>
-        <Field label={t.facts.predicateLabel}>
-          <FactTextInput originalValue={initial?.predicate} value={predicate} onChange={setPredicate} mono />
-        </Field>
-        <Field label={t.facts.objectLabel}>
-          <FactTextInput originalValue={initial?.object} value={object} onChange={setObject} />
-        </Field>
-        <Field label="对象类型">
-          <select className="input w-full" value={objectKind ?? ''}
-            onChange={event => setObjectKind((event.target.value || undefined) as ObjectKind | undefined)}>
-            <option value="">{initial && initial.object === object
-              ? `保持当前类型（${OBJECT_KIND_LABELS[initial.object_kind]}）` : '默认未知'}</option>
-            {Object.entries(OBJECT_KIND_LABELS).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
-          </select>
-        </Field>
-        <CategoryEditor current={initial} value={categories} onChange={setCategories} disabled={loading} />
-      </div>
-    </Modal>
-  )
-}
-
-function FactTextInput({
-  originalValue,
-  value,
-  onChange,
-  mono = false,
-}: {
-  originalValue?: string
-  value: string
-  onChange: (value: string) => void
-  mono?: boolean
-}) {
-  const ghost = useRef<HTMLDivElement>(null)
-
-  return (
-    <div className={`relative rounded-[13px] bg-ink-700 ${mono ? 'font-mono' : ''}`}>
-      {originalValue !== undefined && (
-        <div
-          ref={ghost}
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 select-none overflow-hidden whitespace-pre rounded-[13px] border border-transparent px-3.5 py-2.5 text-sm text-ghost opacity-50"
-        >
-          {originalValue}
-        </div>
-      )}
-      <input
-        className="input relative bg-transparent"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        onScroll={(event) => {
-          if (ghost.current) ghost.current.scrollLeft = event.currentTarget.scrollLeft
-        }}
-      />
-    </div>
   )
 }

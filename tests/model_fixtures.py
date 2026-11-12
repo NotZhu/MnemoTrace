@@ -44,14 +44,14 @@ def replay_window(prompt, system, invoke):
             for item in value.get(key, []):
                 if 'rules' in data:
                     fields = ('subject', 'predicate', 'object', 'text')
-                    item = {k: item[k] for k in (*fields, 'categories', 'object_kind', 'sensitive', 'time_kind', 'effective_date', 'cardinality', 'retention') if k in item}
+                    item = {k: item[k] for k in (*fields, 'categories', 'sensitive', 'time_kind', 'effective_date', 'retention') if k in item}
                     if key == 'facts':
                         categories = ['professional_details'] if item['predicate'] == 'works_at' else []
                         single = item['predicate'] in {'works_at', 'lives_in', 'current_city', 'occupation',
                                                         'works_remotely', 'favorite_food', 'favorite_color',
                                                         'favorite_drink', 'studying', 'job_title', 'does_yoga'}
                         durable = single or item['predicate'] in {'likes', 'dislikes', 'loves', 'prefers'}
-                        item = dict(categories=categories, object_kind='unknown', sensitive=False, time_kind='current', effective_date=None, cardinality='single' if single else 'multi',
+                        item = dict(categories=categories, sensitive=False, time_kind='current', effective_date=None,
                                     retention='durable' if durable else 'normal') | item
                         item.setdefault('text', f"{item['subject']} {item['predicate']} {item['object']}")
                 result[key].append({**item, 'source_ids': [span['id']]})
@@ -68,10 +68,10 @@ def adjudication_reply(prompt):
     decisions = []
     for pair in json.loads(prompt):
         first, second = pair['first'], pair['second']
-        replaces = first['predicate'] == second['predicate'] and second['cardinality'] == 'single'
+        replaces = first['predicate'] == second['predicate'] and second['predicate'] in {'works_at', 'lives_in', 'current_city', 'occupation', 'works_remotely', 'favorite_food', 'favorite_color', 'favorite_drink', 'studying', 'job_title', 'does_yoga'}
         reverses = ({first['predicate'], second['predicate']} in ({'likes', 'dislikes'}, {'loves', 'dislikes'})
                     and first['object'] == second['object'])
-        decisions.append(dict(id=pair['id'], decision='replaces' if replaces or reverses else 'coexists'))
+        decisions.append(dict(id=pair['id'], decision='conflict' if replaces or reverses else 'coexists'))
     return json.dumps(dict(decisions=decisions))
 
 
@@ -133,6 +133,50 @@ def seed_digests(memory, episodes):
         ep.digest = ep.content
         ep.digest_embedding = memory.embedder.embed(ep.digest)
         memory._sync_episode(ep)
+
+
+def _fixture_entity_id(user_id, name):
+    from hashlib import sha256
+
+    return 'synthetic_' + sha256(f'{user_id}\0{name.lower()}'.encode()).hexdigest()
+
+
+def seed_linked(memory, subject, predicate, object_, *, user_id='default', **fields):
+    """Assign explicit entity IDs to the nodes of a synthetic test graph."""
+
+    return memory.add_fact(subject, predicate, object_, user_id=user_id,
+                           subject_id=_fixture_entity_id(user_id, subject),
+                           object_id=_fixture_entity_id(user_id, object_), **fields)
+
+
+def link_synthetic_facts(memory, predicates):
+    """Attach fixed endpoints before testing graph consumers of recorded model outputs."""
+    for fact in memory._all_facts():
+        if fact.predicate in predicates:
+            fact.subject_id = _fixture_entity_id(fact.user_id, fact.subject)
+            fact.object_id = _fixture_entity_id(fact.user_id, fact.object)
+            memory._upsert_fact(fact)
+            memory.writer.graph_builder.add_fact(fact)
+
+
+def seed_timeline(memory, subject, predicate, object_, **fields):
+    """Apply fixed contradictions against previous values in this synthetic slot."""
+    from mnemotrace.consolidate.adjudication import plan_merge
+    from mnemotrace.util import now
+
+    prior = {fact.id: fact for fact in memory._all_facts()}
+    incoming = memory.add_fact(subject, predicate, object_, **fields)
+    verdicts = {tuple(sorted((fact.id, incoming.id))): 'conflict'
+                for fact in prior.values() if fact.id != incoming.id and fact.slot == incoming.slot}
+    changed, conflicts, _ = plan_merge([incoming], prior.values(), None, memory.config, None, now(),
+                                       verdicts=verdicts)
+    assert not conflicts
+    for fact in changed:
+        original = incoming if fact.id == incoming.id else prior[fact.id]
+        original.invalid_at, original.expired_at, original.supersedes = fact.invalid_at, fact.expired_at, fact.supersedes
+        memory._upsert_fact(original)
+        memory.writer.graph_builder.add_fact(original)
+    return incoming
 
 
 def saved_outcome(mem, *, user_id, session_id, kind, statement, why='', provenance=()):

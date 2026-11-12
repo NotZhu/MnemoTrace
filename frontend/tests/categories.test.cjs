@@ -16,7 +16,7 @@ function load(entry) {
 }
 const { CATEGORY_OPTIONS, savedCategories } = load('../src/lib/categories.ts')
 const { CATEGORIES } = load('../src/generated/memory-contract.ts')
-const { CategoryBadges, CategoryEditor } = load('../src/components/CategoryEditor.tsx')
+const { CategoryBadges } = load('../src/components/CategoryEditor.tsx')
 
 test('category catalog contains 15 distinct labels and validates saved filters', () => {
   assert.equal(CATEGORY_OPTIONS.length, 15)
@@ -33,14 +33,4 @@ test('category badges show every label and its source', () => {
   assert.match(html, /饮食/)
   assert.match(html, /音乐/)
   assert.match(html, /模型判断/)
-})
-
-test('editor shows current selections and explains an explicit clear', () => {
-  const current = { categories: ['food', 'music'], categories_source: 'llm' }
-  const unchanged = renderToStaticMarkup(React.createElement(CategoryEditor, { current, onChange() {} }))
-  assert.equal((unchanged.match(/checked=""/g) || []).length, 2)
-  assert.match(unchanged, /仅编辑其他元数据会保留标签/)
-  const cleared = renderToStaticMarkup(React.createElement(CategoryEditor, { current, value: [], onChange() {} }))
-  assert.doesNotMatch(cleared, /checked=""/)
-  assert.match(cleared, /保存后清除标签/)
 })

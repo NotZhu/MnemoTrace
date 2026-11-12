@@ -245,7 +245,7 @@ class PostgresPipeline:
                             if row['kind'] == 'extract':
                                 now = view.at.timestamp()
                                 facts = materialize_facts(snapshot.context.user_id, data, result, now)
-                                history = view.merge_history({fact.subject.strip().lower() for fact in facts})
+                                history = view.merge_history(facts)
                                 vectors = view.fact_vectors(history, *space) if space is not None else {}
                                 merged = facts, history, vectors, now, view.conflict_pairs(history)
                             else:

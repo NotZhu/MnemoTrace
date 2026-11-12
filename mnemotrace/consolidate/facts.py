@@ -26,10 +26,10 @@ def materialize_facts(user_id, data, result, now):
             text=item['text'], user_id=user_id,
             valid_at=fact_valid_at(item, anchor(item)['event_time']), created_at=now, last_access=now,
             categories=list(labels), categories_source='llm' if labels else 'unset',
-            object_kind=item['object_kind'], sensitive=item['sensitive'],
+            sensitive=item['sensitive'],
             provenance=list(source_ids),
             source_roles=list(dict.fromkeys(views[key]['role'] for key in source_ids if views[key]['role'])),
-            cardinality=item['cardinality'], retention=item['retention'],
+            retention=item['retention'],
             id='ft_' + content_hash([input_hash, item])[:24],
         ))
     return facts

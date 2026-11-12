@@ -51,7 +51,7 @@ def retrieval_query(text, embedder, model, config, *, top_k, as_of=None, facts=N
     if facts is not None and as_of is not None:
         raise ValueError('Use either as_of or explicit fact conditions')
     scope = facts if facts is not None else FactQuery(
-        valid_at=as_of, known_at=as_of, limit=max(top_k, config.ann_pool),
+        valid_at=as_of, limit=max(top_k, config.ann_pool),
     )
     if scope.after_id is not None:
         raise ValueError('Retrieval does not accept a browsing cursor')
@@ -66,7 +66,7 @@ def retrieval_query(text, embedder, model, config, *, top_k, as_of=None, facts=N
 def _score(candidates, config, query):
     sem = {item.record.ref.record_id: item.semantic for item in candidates}
     records = {item.record.ref.record_id: item.record for item in candidates}
-    facts = {key: domain(record).as_known_at(query.facts.known_at) for key, record in records.items()}
+    facts = {key: domain(record) for key, record in records.items()}
     rankings = {'sem': order_positive(sem)}
     for name, key, order in (('lex', 'lexical', order_positive), ('graph', 'graph', order_positive),
                              ('rec', 'recency', order_by_score), ('sal', 'salience', order_by_score)):
@@ -82,7 +82,7 @@ def digest_search(view, query, k, *, start=None, end=None):
     vectors, lexical = corpus.vector_scores(), corpus.lexical_scores()
     ranked = weighted_rrf({'sem': order_positive(vectors), 'lex': order_positive(lexical)}, {})
     ordered = sorted(ranked, key=lambda key: (-ranked[key], key))
-    sources = view.digests(ordered[:k], known_at=query.facts.known_at)
+    sources = view.digests(ordered[:k])
     evidence = tuple(sources[key] for key in ordered[:k] if key in sources)
     return DigestSearchResult(evidence, corpus.limitations())
 
@@ -92,14 +92,14 @@ def _source_references(view, scope, facts):
         return ()
     ids = tuple(dict.fromkeys(key for fact in facts for key in fact.provenance
                               if not scope.source_ids or key in scope.source_ids))
-    return view.visible_source_ids(ids, valid_at=scope.valid_at, known_at=scope.known_at)
+    return view.visible_source_ids(ids)
 
 
 def search(view, query, config, top_k):
     scope = query.facts
     if scope.subject is not None and scope.predicate is not None:
         records = view.slot_facts({(scope.subject.lower(), scope.predicate.lower())}, scope)
-        result = slot_result(query.text, [domain(record).as_known_at(scope.known_at) for record in records])
+        result = slot_result(query.text, [domain(record) for record in records])
         facts = result.facts[:top_k]
         return replace(result, facts=facts, source_ids=_source_references(view, scope, facts))
     graph = RetrievalGraph(view, query)
@@ -162,7 +162,7 @@ def aggregate_facts(view, scope, operation, start, end, evidence_query):
         cursor = None
         while True:
             batch = view.aggregation_facts(scope, start, end, after_id=cursor)
-            yield from (domain(record).as_known_at(scope.known_at) for record in batch)
+            yield from (domain(record) for record in batch)
             if len(batch) < 1000:
                 return
             cursor = batch[-1].ref.record_id
@@ -179,14 +179,16 @@ def follow_path(view, scope, anchor, predicates):
     from .structured import PathMatch, PathResult, traverse
 
     graph = RetrievalGraph(view, RetrievalQuery(scope, ''))
-    anchors = graph.find_entities(anchor.strip())
+    anchors = graph.find_entities(anchor.strip(), limit=2)
     if not anchors:
         return PathResult(())
+    if len(anchors) > 1:
+        return PathResult((), ("ambiguous_anchor",))
     graph.truncated = False  # Only the explicit traversal contributes to path coverage.
 
     def neighbors(entity, predicate):
         edges = graph._edges((entity,), 'out', scope.limit + 1, (predicate,))
-        facts = {record.ref.record_id: domain(record).as_known_at(scope.known_at)
+        facts = {record.ref.record_id: domain(record)
                  for record in view.facts_by_ids(tuple(edge.fact_id for edge in edges), scope)}
         for edge in edges:
             if edge.fact_id in facts:

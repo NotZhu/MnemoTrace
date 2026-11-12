@@ -45,27 +45,3 @@ export function CategoryFilter({ value, onChange }: { value: Category[]; onChang
     </details>
   )
 }
-
-export function CategoryEditor({ current, value, onChange, disabled = false }: {
-  current?: CategorySelection
-  value: Category[] | undefined
-  onChange: (value: Category[] | undefined) => void
-  disabled?: boolean
-}) {
-  return (
-    <fieldset disabled={disabled} className="min-w-0 space-y-2">
-      <legend className="mb-2 text-sm text-ghost">分类标签</legend>
-      <CategoryChoices value={value ?? current?.categories ?? []} onChange={onChange} />
-      {current && (
-        <div className="flex flex-wrap gap-3 text-xs text-brand-cyan">
-          <button type="button" onClick={() => onChange([])}>清除标签</button>
-          {value !== undefined && <button type="button" onClick={() => onChange(undefined)}>撤销标签修改</button>}
-        </div>
-      )}
-      <p className="text-xs text-ghost">
-        {value !== undefined ? (value.length ? '保存为人工标签。' : '保存后清除标签。')
-          : current ? '仅编辑其他元数据会保留标签，修改事实正文会清除标签。' : '留空时不设置标签。'}
-      </p>
-    </fieldset>
-  )
-}

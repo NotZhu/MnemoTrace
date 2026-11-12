@@ -7,6 +7,7 @@ from mnemotrace import Memory
 from mnemotrace.store.contracts import RecordKind
 from tests.embedder_fixtures import product_embedder
 from tests.postgres.test_http_product import hdr
+from tests.postgres.fact_fixtures import seed_fact
 
 
 @pytest.fixture
@@ -25,30 +26,23 @@ def stored(memory, fact_id):
     return record, vector
 
 
-def test_text_versions_graph_and_metadata_use_the_same_assertion(text_memory, monkeypatch):
+def test_sensitivity_does_not_reembed_or_change_graph_projection(text_memory, monkeypatch):
     memory = text_memory
-    fact = memory.add_fact('user', 'likes', '茶', text='用户喜欢茶。', object_kind='entity', sensitive=False)
+    fact = seed_fact(memory, 'user', 'likes', '茶', text='用户喜欢茶。', linked=True)
     before, vectors = stored(memory, fact.id)
-    sentence = fact.text
-    original_embed = memory._embedder.embed
+    graph = memory.graph_relations(fact.id)
     monkeypatch.setattr(memory._embedder, 'embed', lambda text: pytest.fail('Unchanged sentence was embedded'))
-    memory.update_fact(fact.id, categories=['food'])
-    memory.update_fact(fact.id, subject='user', predicate='likes', object='茶', text=sentence)
-    memory.update_fact(fact.id, subject='user', predicate='prefers', object='茶', text=sentence)
+    memory.set_fact_sensitive(fact.id, True)
     after, current_vectors = stored(memory, fact.id)
-    assert before.content_version == after.content_version and vectors == current_vectors
-    assert memory.graph_relations(fact.id)[0].predicate == 'prefers'
-    monkeypatch.setattr(memory._embedder, 'embed', original_embed)
-    memory.update_fact(fact.id, subject='user', predicate='prefers', object='茶', text='用户在下午偏好茶。')
-    updated, updated_vectors = stored(memory, fact.id)
-    assert updated.content_version == after.content_version + 1
-    assert updated_vectors != vectors
-    assert memory.get_fact(fact.id).text == '用户在下午偏好茶。'
+    assert after.content_version == before.content_version and vectors == current_vectors
+    assert after.record_version == before.record_version + 1
+    assert memory.graph_relations(fact.id) == graph
+    assert memory.get_fact(fact.id).text == fact.text
 
 
-def test_embedding_failure_does_not_commit_any_part_of_content_edit(text_memory, monkeypatch):
+def test_embedding_failure_does_not_commit_an_incomplete_new_fact(text_memory, monkeypatch):
     memory = text_memory
-    fact = memory.add_fact('user', 'likes', '茶', text='用户喜欢茶。', object_kind='entity')
+    fact = seed_fact(memory, 'user', 'likes', '茶', text='用户喜欢茶。', linked=True)
     before, vectors = stored(memory, fact.id)
     graph = memory.graph_relations(fact.id)
 
@@ -57,27 +51,23 @@ def test_embedding_failure_does_not_commit_any_part_of_content_edit(text_memory,
 
     monkeypatch.setattr(memory._embedder, 'embed', fail)
     with pytest.raises(RuntimeError, match='Synthetic embedding failure'):
-        memory.update_fact(fact.id, subject='user', predicate='likes', object='咖啡', text='用户喜欢咖啡。')
+        seed_fact(memory, 'user', 'likes', '咖啡', text='用户喜欢咖啡。', linked=True)
     assert stored(memory, fact.id) == (before, vectors)
     assert memory.graph_relations(fact.id) == graph
+    assert len(memory.facts()) == 1
 
 
 def test_http_sentence_is_returned_without_display_and_invalid_patch_leaves_it_unchanged(product_client):
     client = product_client
     headers = hdr('synthetic-text-contract')
     sentence = '用户在工作日上午偏好茶，而不是咖啡。'
-    created = client.post('/v1/facts', headers=headers, json={
-        'predicate': 'prefers', 'object': '茶', 'text': sentence, 'sensitive': False,
-    })
-    assert created.status_code == 200
-    assert created.json()['text'] == sentence and 'display' not in created.json()
-    fact_id = created.json()['id']
+    fact_id = client.seed_fact(headers, predicate='prefers', object='茶', text=sentence).id
     before = client.get('/v1/memories', headers=headers).json()['facts']
     for patch in ({'object': '咖啡'}, {'text': '新句子'}, {'text': None}, {'display': sentence}, {'statement': sentence}):
-        assert client.patch(f'/v1/facts/{fact_id}', headers=headers, json=patch).status_code == 422
+        assert client.patch(f'/v1/facts/{fact_id}/sensitivity', headers=headers, json={'sensitive': True, **patch}).status_code == 422
     assert client.get('/v1/memories', headers=headers).json()['facts'] == before
     exported = client.get('/v1/export', headers=headers).json()
-    assert exported['format_version'] == 3
+    assert exported['format_version'] == 4
     assert exported['facts'][0]['text'] == sentence and 'display' not in exported['facts'][0]
 
 
@@ -86,14 +76,5 @@ def test_new_database_has_required_sentence_and_no_display_column(text_memory):
         columns = view._sql.run("SELECT column_name,is_nullable FROM information_schema.columns "
                                 "WHERE table_schema='mnemotrace' AND table_name='facts'").fetchall()
     assert ('text', 'NO') in columns and not any(name == 'display' for name, _ in columns)
-    fact = text_memory.add_fact('user', 'likes', '茶', text='用户喜欢茶。')
+    fact = seed_fact(text_memory, 'user', 'likes', '茶', text='用户喜欢茶。')
     assert 'display' not in asdict(fact)
-
-
-def test_http_manual_assertion_retry_reuses_fact(product_client):
-    headers = hdr('synthetic-manual-retry')
-    body = {'predicate': 'likes', 'object': 'Synthetic tea', 'text': 'User likes synthetic tea.'}
-    created = product_client.post('/v1/facts', headers=headers, json=body)
-    replayed = product_client.post('/v1/facts', headers=headers, json=body)
-    assert created.is_success and replayed.is_success
-    assert replayed.json()['id'] == created.json()['id']

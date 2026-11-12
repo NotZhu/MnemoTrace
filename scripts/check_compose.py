@@ -105,17 +105,12 @@ def main():
             archived = http('/v1/recall', {'space_id': space, 'query': 'Synthetic archive note',
                                           'lean': False}, key=key)
             assert archived['status'] == 'no_evidence'
-            http('/v1/facts', {'space_id': space, 'predicate': 'lives_in', 'object': 'Synthetic City',
-                               'text': 'user lives in Synthetic City'},
-                 key=key)
             assert http('/v1/processing' + query, key=key)['operations'] == []
             compose('stop', 'mnemotrace', 'worker')
             compose('restart', 'db')
             compose('up', '-d', '--wait', 'mnemotrace', 'worker')
             assert http('/v1/processing' + query, key=key)['operations'] == []
             assert http('/v1/episodes/' + source_id + query, key=key)['content'] == 'Synthetic archive note'
-            recalled = http('/v1/recall', {'space_id': space, 'query': 'Where do I live?'}, key=key)
-            assert 'Synthetic City' in json.dumps(recalled)
             assert http(f'/v1/spaces/{space}?confirm=true', key=key, method='DELETE')['ok']
             assert not http('/v1/spaces', key=key)['spaces']
             compose('stop', 'db')

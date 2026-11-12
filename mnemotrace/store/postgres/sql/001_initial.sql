@@ -92,6 +92,35 @@ CREATE TABLE mnemotrace.source_digests (
     PRIMARY KEY(user_id, space_id, source_id),
     FOREIGN KEY(user_id, space_id, source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE
 );
+CREATE TABLE mnemotrace.entities (
+    user_id mnemotrace.identifier NOT NULL,
+    space_id mnemotrace.identifier NOT NULL,
+    id mnemotrace.identifier NOT NULL,
+    name mnemotrace.identifier NOT NULL,
+    type mnemotrace.identifier,
+    normalized_name mnemotrace.identifier NOT NULL,
+    record_version mnemotrace.positive_version NOT NULL,
+    content_version mnemotrace.positive_version NOT NULL,
+    PRIMARY KEY(user_id, space_id, id),
+    FOREIGN KEY(user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE
+);
+CREATE INDEX entities_name ON mnemotrace.entities(user_id, space_id, normalized_name);
+
+CREATE TABLE mnemotrace.relation_types (
+    user_id mnemotrace.identifier NOT NULL,
+    space_id mnemotrace.identifier NOT NULL,
+    id mnemotrace.identifier NOT NULL,
+    predicate mnemotrace.identifier NOT NULL,
+    meaning text NOT NULL CHECK (meaning ~ '[^[:space:]]'),
+    direction text NOT NULL CHECK (direction IN ('forward', 'symmetric')),
+    endpoint_types jsonb NOT NULL CHECK (jsonb_typeof(endpoint_types) = 'array'),
+    record_version mnemotrace.positive_version NOT NULL,
+    content_version mnemotrace.positive_version NOT NULL,
+    PRIMARY KEY(user_id, space_id, id),
+    UNIQUE(user_id, space_id, id, predicate),
+    FOREIGN KEY(user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE
+);
+
 CREATE TABLE mnemotrace.facts (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
@@ -108,29 +137,35 @@ CREATE TABLE mnemotrace.facts (
         'technology','hobbies','fashion','entertainment','milestones','user_preferences','misc'
     ]::text[]),
     categories_source text NOT NULL CHECK (categories_source IN ('unset','llm','user')),
-    object_kind text NOT NULL CHECK (object_kind IN ('entity','literal','unknown')),
+    relation_id mnemotrace.identifier NOT NULL,
+    subject_id mnemotrace.identifier,
+    object_id mnemotrace.identifier,
+    withdrawn_at timestamptz,
+    sensitive_override boolean NOT NULL DEFAULT false,
+    review_pending boolean NOT NULL DEFAULT false,
     sensitive boolean NOT NULL,
-    cardinality text NOT NULL CHECK (cardinality IN ('single','multi','unknown')),
     retention text NOT NULL CHECK (retention IN ('durable','normal','unknown')),
     source_roles text[] NOT NULL CHECK (source_roles <@ ARRAY['user','assistant']::text[]),
     valid_at timestamptz,
     invalid_at timestamptz,
     created_at timestamptz NOT NULL,
     expired_at timestamptz,
-    validity_revisions jsonb NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(validity_revisions) = 'array'),
-    supersedes mnemotrace.identifier,
     last_access timestamptz NOT NULL,
     access_count mnemotrace.counter NOT NULL,
     record_version mnemotrace.positive_version NOT NULL,
     content_version mnemotrace.positive_version NOT NULL,
     PRIMARY KEY(user_id, space_id, id),
     CHECK ((categories_source = 'unset') = (cardinality(categories) = 0)),
-    CHECK (supersedes IS NULL OR supersedes <> id),
+    CHECK (NOT review_pending OR withdrawn_at IS NULL),
+    CHECK (valid_at IS NULL OR invalid_at IS NULL OR valid_at < invalid_at),
     FOREIGN KEY(user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE,
-    FOREIGN KEY(user_id, space_id, supersedes) REFERENCES mnemotrace.facts DEFERRABLE INITIALLY DEFERRED
+    FOREIGN KEY(user_id, space_id, relation_id, predicate)
+        REFERENCES mnemotrace.relation_types(user_id, space_id, id, predicate),
+    FOREIGN KEY(user_id, space_id, subject_id) REFERENCES mnemotrace.entities,
+    FOREIGN KEY(user_id, space_id, object_id) REFERENCES mnemotrace.entities
 );
-CREATE INDEX facts_slot ON mnemotrace.facts(user_id, space_id, lower(subject), lower(predicate), valid_at, id);
-CREATE INDEX facts_time ON mnemotrace.facts(user_id, space_id, valid_at, invalid_at, expired_at);
+CREATE INDEX facts_slot ON mnemotrace.facts(user_id, space_id, subject_id, relation_id, valid_at, id);
+CREATE INDEX facts_time ON mnemotrace.facts(user_id, space_id, valid_at, invalid_at);
 CREATE TABLE mnemotrace.fact_sources (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
@@ -150,7 +185,8 @@ CREATE TABLE mnemotrace.conflicts (
     text_older text NOT NULL,
     text_newer text NOT NULL,
     reason text NOT NULL,
-    status text NOT NULL CHECK (status IN ('pending','resolved','dismissed')),
+    older_version mnemotrace.positive_version NOT NULL,
+    newer_version mnemotrace.positive_version NOT NULL,
     detected_at timestamptz NOT NULL,
     record_version mnemotrace.positive_version NOT NULL,
     PRIMARY KEY(user_id, space_id, id),
@@ -159,21 +195,20 @@ CREATE TABLE mnemotrace.conflicts (
     FOREIGN KEY(user_id, space_id, newer) REFERENCES mnemotrace.facts ON DELETE CASCADE
 );
 CREATE UNIQUE INDEX conflicts_pair ON mnemotrace.conflicts(user_id, space_id, least(older,newer), greatest(older,newer));
-CREATE INDEX conflicts_status ON mnemotrace.conflicts(user_id, space_id, status, id);
-
-CREATE TABLE mnemotrace.entities (
+CREATE TABLE mnemotrace.fact_supersedes (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
-    id mnemotrace.identifier NOT NULL,
-    name mnemotrace.identifier NOT NULL,
-    type mnemotrace.identifier NOT NULL,
-    normalized_name mnemotrace.identifier NOT NULL,
-    record_version mnemotrace.positive_version NOT NULL,
-    content_version mnemotrace.positive_version NOT NULL,
-    PRIMARY KEY(user_id, space_id, id),
-    UNIQUE(user_id, space_id, normalized_name),
-    FOREIGN KEY(user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE
+    fact_id mnemotrace.identifier NOT NULL,
+    predecessor_id mnemotrace.identifier NOT NULL,
+    PRIMARY KEY(user_id, space_id, fact_id, predecessor_id),
+    CHECK (fact_id <> predecessor_id),
+    FOREIGN KEY(user_id, space_id, fact_id) REFERENCES mnemotrace.facts ON DELETE CASCADE,
+    FOREIGN KEY(user_id, space_id, predecessor_id) REFERENCES mnemotrace.facts
+        ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 );
+CREATE INDEX fact_supersedes_predecessor
+    ON mnemotrace.fact_supersedes(user_id, space_id, predecessor_id);
+
 CREATE TABLE mnemotrace.graph_relations (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,

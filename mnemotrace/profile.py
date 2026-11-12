@@ -25,7 +25,7 @@ An empty section is []. Return the complete updated profile, including supported
 Do not return counts, scores, confirmation tiers or additional fields."""
 INPUT_FIELDS = ("subject", "predicate", "object", "text", "categories", "categories_source", "source",
                 "provenance", "source_roles", "valid_at", "invalid_at", "expired_at",
-                "review_pending", "approved_at", "sensitive")
+                "review_pending", "withdrawn_at", "sensitive")
 
 
 class ProfileInputTooLarge(ValueError):
@@ -74,14 +74,14 @@ def validate_stored(state):
     for fact_id, meta in state["facts"].items():
         required = {"fingerprint", "version", "processed_version", "processed_eligible",
                     "deleted", "self", "sensitive", "muted", "review_pending",
-                    "approved_at", "valid_at", "invalid_at", "expired_at"}
+                    "withdrawn_at", "valid_at", "invalid_at", "expired_at"}
         if not isinstance(fact_id, str) or not fact_id or not isinstance(meta, dict) or set(meta) != required:
             raise ValueError("Invalid profile fact dependency")
         if any(type(meta[key]) is not int or meta[key] < 0 for key in ("version", "processed_version")):
             raise ValueError("Invalid profile input version")
         if (meta["version"] < 1 or meta["processed_version"] > meta["version"]
                 or any(type(meta[key]) is not bool for key in ("processed_eligible", "deleted", "self", "sensitive", "muted", "review_pending"))
-                or any(not timestamp(meta[key]) for key in ("approved_at", "valid_at", "invalid_at", "expired_at"))
+                or any(not timestamp(meta[key]) for key in ("withdrawn_at", "valid_at", "invalid_at", "expired_at"))
                 or (meta["fingerprint"] is None) != meta["deleted"]
                 or not meta["deleted"] and not isinstance(meta["fingerprint"], str)):
             raise ValueError("Invalid profile input metadata")
@@ -170,9 +170,9 @@ def new_state():
 def eligible(meta, at):
     return (not meta["deleted"] and meta["self"] and not meta["sensitive"] and not meta["muted"]
             and not meta["review_pending"]
-            and (meta["approved_at"] is None or meta["approved_at"] <= at)
+            and meta["withdrawn_at"] is None
             and (meta["valid_at"] is None or meta["valid_at"] <= at)
-            and all(meta[key] is None or meta[key] > at for key in ("invalid_at", "expired_at")))
+            and (meta["invalid_at"] is None or meta["invalid_at"] > at))
 
 
 def input_fact(fact):
@@ -198,7 +198,7 @@ def synchronize(state, facts, settings):
                     sensitive=bool(fact and fact.sensitive), muted=muted,
                     review_pending=bool(fact and fact.review_pending),
                     **{field: getattr(fact, field) if fact else None
-                       for field in ("valid_at", "invalid_at", "expired_at", "approved_at")})
+                       for field in ("valid_at", "invalid_at", "expired_at", "withdrawn_at")})
         state["facts"][key] = meta
         changed.add(key)
     policy_changed = state["settings"] != settings
@@ -267,7 +267,7 @@ def create_job(state, facts, settings, fingerprint, at):
         or state["facts"][key]["processed_version"] != versions[key]
         or not state["facts"][key]["processed_eligible"]))
     boundaries = [meta[field] for meta in state["facts"].values()
-                  for field in ("valid_at", "invalid_at", "expired_at", "approved_at")
+                  for field in ("valid_at", "invalid_at", "expired_at", "withdrawn_at")
                   if meta[field] is not None and meta[field] > at]
     return dict(revision=state["revision"], cache_version=state["cache_version"],
                 settings=deepcopy(settings), fingerprint=fingerprint, versions=versions,

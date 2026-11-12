@@ -23,7 +23,7 @@ from mnemotrace.store.contracts import FactQuery, MessageInput, OperationResult
 | `list_operations(*, session_id=None, after_id=None, limit=100)` | 分页返回操作对象；下一页用最后一个操作的 `operation_id` 作游标 |
 | `flush_processing(session_id=None, timeout=30, *, retry_failed=False, include_digests=False)` | 推进并等待本次捕获范围内的任务 |
 | `search(query, *, as_of=None, top_k=None, facts=None)`、`get_episode(episode_id)` | 检索候选事实及来源，或显式读取原文 |
-| `add_fact(subject, predicate, object, text=..., ...)` | 写入人工事实 |
+| `set_fact_sensitive(fact_id, sensitive)` | 修改共享敏感标记 |
 | `profile()` | 读取七栏画像缓存、待更新数量和刷新状态，不调用模型 |
 | `refresh_profile()` | 创建或复用空间级画像操作，返回 `OperationResult`；通过 worker 或 `flush_processing()` 推进 |
 
@@ -50,7 +50,7 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 通用 transcript 仅在明确标出 `user` 或 `assistant` 时作为对话导入，其他文本保留原文。时间接受 epoch 秒、明确标注单位的数值或带时区的时间。
 
 来源时间缺失保持未知，消息重试复用相同 ID。
-文档、手工事实和下述原文 API 保留独立契约；`consolidate()` 不会绕过联合任务处理对话消息。
+文档和下述原文 API 保留独立契约；`consolidate()` 不会绕过联合任务处理对话消息。
 
 | 方法 | 主要参数 | 返回与语义 |
 | --- | --- | --- |
@@ -82,14 +82,14 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 
 SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answer()` 返回已生成答案或最高事实的 object/text；拒答时返回固定提示。`top()` 返回首条 Fact 或 None。它不是对任何问题都调用外部模型的通用聊天接口。
 
-`as_of`、时间字段使用 epoch 秒。查询需要沿用正确的 user_id；recall 和上下文组装不接收 session_id；会话标识用于写入、浏览和处理刷新。Python `graph_data()` 默认包含敏感事实支持的关系，与 HTTP 的安全视图默认值不同。图谱由已通过审核且 `object_kind="entity"` 的事实生成。主体、谓词和对象须为长度符合图标识约束的单行文本。手工新增默认 `unknown`，编辑类型即可补入或移出图谱。名称按大小写无关的规范化文本查找。
+`as_of`、时间字段使用 epoch 秒。查询需要沿用正确的 user_id；recall 和上下文组装不接收 session_id；会话标识用于写入、浏览和处理刷新。Python `graph_data()` 默认包含敏感事实支持的关系，与 HTTP 的安全视图默认值不同。图谱由通过审核、引用两个实体且符合端点类型约束的事实投影。名称用于查找，实体身份由 ID 区分。
 
 ## 离线事实、工作状态与策略
 
 | 方法 | 用途 |
 | --- | --- |
 | `add_fact(subject, predicate, object, user_id=..., text=..., ...)` | 返回用户来源 Fact，`text` 为必填关键字参数 |
-| `update_fact(fact_id, ..., categories=None, object_kind=None)` | 修改内容或元数据，返回 Fact 或 None；内容修改必须同时提交 subject、predicate、object、text，元数据可单独修改 |
+| `Memory.set_fact_sensitive(fact_id, sensitive)` | 修改事实的共享敏感标记，返回 Fact 或 None |
 | `delete_fact(fact_id)` | 删除指定事实，返回 bool |
 | `get_focus()`、`set_focus(track=None, mute=None)` | 查询或更新关注点，None 保持不变，[] 清空对应列表 |
 | `get_policy()`、`set_policy(**fields)` | 查询或覆盖抽取、摘要与画像策略 |
@@ -100,11 +100,7 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 
 字段及编辑规则见[分类与对象类型](../architecture/memory.md#分类与对象类型)。
 
-```python
-fact = memory.add_fact("user", "prefers", "茶", text="用户偏好茶。", categories=["food"], object_kind="entity")
-memory.update_fact(fact.id, categories=["misc"])
-memory.update_fact(fact.id, categories=[])  # 清除标签，来源为 unset
-```
+产品摄入使用 `Memory.remember` 或 `Memory.remember_messages`。上表的 `add_fact` 仅为离线工作集构造事实。
 
 ## 离线扩展与研究入口
 
@@ -128,7 +124,7 @@ memory.update_fact(fact.id, categories=[])  # 清除标签，来源为 unset
 
 离线抽取异常包括 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError、ExtractionConflictError。未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated；同一命名空间的并发写作废在途抽取时抛 ExtractionConflictError（code 为 extraction_conflict），内核会先基于新快照自动重试一次。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。Postgres 已接收任务的进度和错误从操作回执读取。
 
-替代裁决仅接受 REPLACES/COEXISTS，冲突检测仅接受 CONFLICT/COEXIST（忽略首尾空白与大小写）；其他响应记录安全警告并不执行对应替代或冲突标记。
+归并模型只区分 `conflict` 与 `coexists`。有效区间、先后和待审状态由程序决定。
 
 
 ## 摘要与显式原文读取
@@ -136,7 +132,7 @@ memory.update_fact(fact.id, categories=[])  # 清除标签，来源为 unset
 Postgres 核心操作通过 `auxiliary_operation_ids` 关联独立的摘要任务。调用 `flush_processing(include_digests=True)` 可把符合条件的摘要纳入本次处理范围，`retry_failed=True` 重试范围内的失败操作。摘要失败时保留已提交的事实和原文。
 
 来源检索和聚合回退只使用摘要，自动上下文只包含事实和摘要。通过 get_episode 显式读取来源 ID 对应的原文。
-私有快照导出保留摘要的 `digest_written_at`，导入后仍按原时间判断摘要在历史查询中是否可见。写入时间未知的摘要只参与当前查询。
+私有快照导出保留摘要的 `digest_written_at` 供追溯。历史摘要检索按原始来源的事件时间筛选，使用当前保存的摘要。
 Fact 仍从原文抽取且独立检索；历史事件摘要不追加后续事实。空间所有者可浏览和导出原文。
 
 使用 `memory.aggregate_facts("visited", operation="count_distinct")` 统计不同对象，使用 `memory.follow_path("user", ["sister", "works_at"])` 获取路径和支持事实。两者可通过 `FactQuery` 设置有效时间、认知时间、事实状态和脱敏条件。

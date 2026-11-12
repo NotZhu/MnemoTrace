@@ -51,7 +51,7 @@ export function Timeline({ facts }: { facts: MemoryFact[] }) {
                       {t.facts.manualLabel}
                     </span>
                   )}
-                  {f.supersedes && (
+                  {f.supersedes.length > 0 && (
                     <span
                       className="fact-blue-tag shrink-0 text-xs"
                       title={t.timeline.legendUpdateNote}

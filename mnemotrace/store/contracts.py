@@ -92,6 +92,7 @@ class RecordKind(str, Enum):
     ENTITY = 'Entity'
     RELATION = 'Relation'
     CONFLICT = 'Conflict'
+    RELATION_TYPE = 'RelationType'
 
 
 class FactState(str, Enum):
@@ -175,11 +176,10 @@ class CommitConditions:
 
 @dataclass(frozen=True)
 class FactQuery:
-    """Times are independent. CURRENT filters both axes; HISTORY includes withdrawn facts."""
+    """Filter facts by effective time using current evidence."""
 
     state: FactState = FactState.CURRENT
     valid_at: float | None = None
-    known_at: float | None = None
     categories: tuple[Category, ...] = ()
     subject: str | None = None
     predicate: str | None = None
@@ -190,12 +190,11 @@ class FactQuery:
 
     @property
     def is_current_view(self) -> bool:
-        return self.state == FactState.CURRENT and self.valid_at is None and self.known_at is None
+        return self.state == FactState.CURRENT and self.valid_at is None
 
     def __post_init__(self):
         _enum(self.state, FactState)
         _time(self.valid_at)
-        _time(self.known_at)
         _count(self.limit, 1)
         if self.limit > 1000:
             raise ValueError('Page/candidate limit exceeds 1000')
@@ -316,7 +315,7 @@ class StoredRecord:
 
     @classmethod
     def from_record(cls, context: SpaceContext,
-                    record: Episode | Fact | Entity | Relation | Conflict,
+                    record: Episode | Fact | Entity | Relation | Conflict | RelationType,
                     *, content_version: int = 1, record_version: int = 1,
                     digest_version: int | None = None) -> StoredRecord:
         kind = RecordKind(type(record).__name__)
@@ -384,7 +383,7 @@ class CandidateBatch:
 class FactInvalidation:
     ref: RecordRef
     expected_version: int
-    invalid_at: float | None
+    invalid_at: float
     expired_at: float
 
     def __post_init__(self):
@@ -393,8 +392,8 @@ class FactInvalidation:
         _count(self.expected_version, 1)
         _time(self.invalid_at)
         _time(self.expired_at)
-        if self.expired_at is None:
-            raise ValueError('Transaction withdrawal time is required')
+        if self.invalid_at is None or self.expired_at is None:
+            raise ValueError('Effective and recorded end times are required')
 
 
 @dataclass(frozen=True)
@@ -650,6 +649,7 @@ class ChangeSet:
     writes: tuple[RecordWrite, ...] = ()
     invalidations: tuple[FactInvalidation, ...] = ()
     erasures: tuple[RecordRef, ...] = ()
+    resolved_conflicts: tuple[RecordRef, ...] = ()
     source_links: tuple[SourceLink, ...] = ()
     embeddings: tuple[EmbeddingWrite, ...] = ()
     operations: tuple[OperationSpec, ...] = ()
@@ -668,7 +668,10 @@ class ChangeSet:
                              (self.operations, OperationSpec)):
             _tuple(values, kind)
         validate_erasures(self.erasures)
-        mutations = [w.ref for w in self.writes] + [i.ref for i in self.invalidations] + list(self.erasures)
+        _tuple(self.resolved_conflicts, RecordRef)
+        if any(ref.kind != RecordKind.CONFLICT for ref in self.resolved_conflicts):
+            raise ValueError('Only pending conflicts can be removed here')
+        mutations = [w.ref for w in self.writes] + [i.ref for i in self.invalidations] + list(self.erasures) + list(self.resolved_conflicts)
         if len(set(mutations)) != len(mutations):
             raise ValueError('Multiple mutations of one record in a commit')
         refs.extend(mutations)
@@ -691,7 +694,7 @@ class ChangeSet:
         if len(keys) != len(set(keys)):
             raise ValueError('Duplicate embedding writes')
         for write in self.writes:
-            if write.ref.kind in (RecordKind.ENTITY, RecordKind.RELATION):
+            if write.ref.kind == RecordKind.RELATION:
                 raise ValueError('Graph records are derived from facts')
             fields = json.loads(write.record.payload_json)
             if write.ref.kind == RecordKind.FACT and set(fields['provenance']) != {
@@ -771,7 +774,7 @@ class ReadView(Protocol):
 
     snapshot: ReadSnapshot
 
-    def sources(self, source_ids: tuple[str, ...], *, known_at: float | None = None) -> tuple[StoredRecord, ...]: ...
+    def sources(self, source_ids: tuple[str, ...]) -> tuple[StoredRecord, ...]: ...
     def facts(self, query: FactQuery) -> tuple[StoredRecord, ...]: ...
     def history(self, subject: str, predicate: str | None = None) -> tuple[StoredRecord, ...]: ...
     def candidates(self, query: RetrievalQuery) -> CandidateBatch: ...

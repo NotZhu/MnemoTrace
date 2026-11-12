@@ -68,8 +68,8 @@ def test_chat_completions_endpoint_supports_memory_as_of(client_with_llm):
 def test_chat_completions_endpoint_supports_sensitive_redaction(client_with_llm):
     c, service, model = client_with_llm
     h = hdr("chat_redact")
-    c.post("/v1/facts", json={"text": 'user has disease diabetes', "predicate": "has_disease", "object": "diabetes"}, headers=h)
-    c.post("/v1/facts", json={"text": 'user works at Acme', "predicate": "works_at", "object": "Acme", "sensitive": False}, headers=h)
+    c.seed_fact(h, text='user has disease diabetes', predicate='has_disease', object='diabetes', sensitive=True)
+    c.seed_fact(h, text='user works at Acme', predicate='works_at', object='Acme', sensitive=False)
 
     r = c.post("/v1/chat/completions", json={
         "model": "mnemotrace",

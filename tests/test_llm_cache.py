@@ -110,7 +110,7 @@ def test_owner_subject_does_not_depend_on_extraction_order():
         if content == "I like coffee":
             time.sleep(0.01)
         return json.dumps({"facts": [{**item, 'text': f"{item['subject']} {item['predicate']} {item['object']}",
-            'categories': [], 'object_kind': 'literal', 'sensitive': False, 'time_kind': 'current', 'effective_date': None, 'cardinality': 'unknown', 'retention': 'unknown',
+            'categories': [], 'sensitive': False, 'time_kind': 'current', 'effective_date': None, 'retention': 'unknown',
             'source_ids': [data['pending'][0]['id']]}
             for item in outputs[content]], "digests": []})
     seen = []

@@ -8,19 +8,10 @@ import pytest
 from tests.model_fixtures import MemoryEngine
 
 
-def test_manual_writes_default_to_sensitive_without_inferred_category():
+def test_synthetic_facts_default_to_sensitive_without_inferred_category():
     mem = MemoryEngine()
-    fact = mem.add_fact("user", "works_at", "Storage Labs", text='user works at Storage Labs')
+    fact = mem.add_fact("user", "works_at", "Storage Labs", text="user works at Storage Labs")
     assert (fact.categories, fact.sensitive) == ([], True)
-    mem.update_fact(fact.id, predicate="uses", object="storage engine", subject=fact.subject, text=' '.join((fact.subject, 'uses', 'storage engine')))
-    assert fact.categories == []
-    mem.update_fact(fact.id, predicate="prefers", object="team collaboration", subject=fact.subject, text=' '.join((fact.subject, 'prefers', 'team collaboration')))
-    assert fact.categories == []
-
-    manual = mem.add_fact("user", "uses", "storage engine", categories=["technology"], sensitive=True, text='user uses storage engine')
-    assert (manual.categories, manual.sensitive) == (["technology"], True)
-    mem.update_fact(manual.id, categories=["misc"], sensitive=False)
-    assert (manual.categories, manual.sensitive) == (["misc"], False)
 
 
 def test_offline_extraction_stores_model_category():
@@ -33,30 +24,14 @@ def test_offline_extraction_stores_model_category():
 
 
 @pytest.mark.parametrize("subject", ["user", "Bank of China", "Health Center", "Age Lab"])
-def test_subject_does_not_change_category_on_add_or_edit(subject):
+def test_subject_does_not_change_category(subject):
     mem = MemoryEngine()
-    fact = mem.add_fact(subject, "uses", "Vim", text=' '.join((subject, 'uses', 'Vim')))
-    assert fact.categories == []
-    mem.update_fact(fact.id, object="Neovim", subject=fact.subject, predicate=fact.predicate, text=' '.join((fact.subject, fact.predicate.replace('_', ' '), 'Neovim')))
+    fact = mem.add_fact(subject, "uses", "Vim", text=f"{subject} uses Vim")
     assert fact.categories == []
 
 
-def test_existing_category_and_metadata_edits_do_not_reclassify():
-    mem = MemoryEngine()
-    fact = mem.add_fact("user", "works_at", "Storage Labs", categories=["personal_details"], text='user works at Storage Labs')
-    mem.update_fact(fact.id, sensitive=False)
-    assert fact.categories == ["personal_details"]
-    mem.update_fact(fact.id, object="Other Storage Labs", subject=fact.subject, predicate=fact.predicate, text=' '.join((fact.subject, fact.predicate.replace('_', ' '), 'Other Storage Labs')))
-    assert (fact.categories, fact.sensitive) == ([], True)
-
-
-def test_outcome_reason_stays_sensitive_after_content_edit():
+def test_outcome_reason_stays_sensitive():
     mem = MemoryEngine()
     fact = saved_outcome(mem, user_id="default", session_id="synthetic-session", kind="lesson",
                          statement="Choose the synthetic deployment option", why="The password was SYNTHETIC_VALUE")
-    assert (fact.categories, fact.sensitive) == ([], True)
-    mem.update_fact(fact.id, subject=fact.subject, predicate=fact.predicate,
-                    object="Choose the revised synthetic deployment option",
-                    text="Choose the revised synthetic deployment option （依据：The password was SYNTHETIC_VALUE）")
-    assert "SYNTHETIC_VALUE" in fact.text
     assert (fact.categories, fact.sensitive) == ([], True)
