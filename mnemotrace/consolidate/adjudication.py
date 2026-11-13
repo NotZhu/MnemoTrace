@@ -119,7 +119,7 @@ def _duplicate_candidates(new, candidates, symmetric):
         same_pair = old.slot == new.slot and object_key(old) == object_key(new)
         reversed_pair = (new.relation_id in symmetric and old.relation_id == new.relation_id and new.object_id
                          and old.subject_id == new.object_id and old.object_id == new.subject_id)
-        if ((same_pair or reversed_pair) and old.withdrawn_at is None and old.valid_at == new.valid_at
+        if ((same_pair or reversed_pair) and old.is_published() and old.valid_at == new.valid_at
                 and old.text != new.text and len(old.text) <= 1000 and sorted(_NUMBERS.findall(old.text)) == numbers):
             eligible.append(old)
     return sorted(eligible, key=lambda fact: (fact.created_at, fact.id))[:8]
@@ -159,7 +159,7 @@ def _duplicate_groups(facts, decisions, previous_ids):
 
 
 def plan_merge(incoming, previous, llm, config, embedder, now, existing_pairs=(), *, verdicts=None,
-               semantic=False, symmetric=(), duplicate_ids=None):
+               semantic=False, symmetric=(), duplicate_ids=None, discard_uncertain=False):
     """Return changed facts, new conflicts, and call counts for the caller's commit."""
     facts = {fact.id: deepcopy(fact) for fact in previous}
     previous_ids = set(facts)
@@ -167,17 +167,23 @@ def plan_merge(incoming, previous, llm, config, embedder, now, existing_pairs=()
     for fact in facts.values():
         subjects[_subject(fact)].append(fact)
     changed, incoming_unique = {}, []
+    exact = []
     duplicates = calls = 0
     aliases = {} if duplicate_ids is None else duplicate_ids
     for new in sorted(deepcopy(incoming), key=_order):
         old = facts.get(new.id)
         if old is None:
-            old = next((fact for fact in subjects[_subject(new)] if same_assertion(fact, new)), None)
+            old = next((fact for fact in subjects[_subject(new)] if same_assertion(
+                fact, new, bound_relation=discard_uncertain and new.relation_id is not None)
+                and (not discard_uncertain or fact.is_published())), None)
         if old is not None:
-            duplicates += 1
-            aliases[new.id] = old.id
-            if new.id != old.id:
-                _corroborate(old, new, changed)
+            if discard_uncertain:
+                exact.append((old.id, new))
+            else:
+                duplicates += 1
+                aliases[new.id] = old.id
+                if new.id != old.id:
+                    _corroborate(old, new, changed)
             continue
         facts[new.id] = changed[new.id] = new
         subjects[_subject(new)].append(new)
@@ -233,13 +239,22 @@ def plan_merge(incoming, previous, llm, config, embedder, now, existing_pairs=()
 
     held_roots = {roots[key] for pair in review for key in pair}
     held = {key for root in held_roots for key in groups[root] if key in incoming_ids}
-    # Hold all affected new assertions and give each a review record, including
-    # duplicate siblings whose own answer was not the inconsistent one.
-    for key, (decision, _) in decisions.items():
-        if decision == 'duplicate' and (set(key) & held):
-            review.setdefault(key, 'Related duplicate comparison requires review')
-    for key in held:
-        facts[key].review_pending = True
+    if discard_uncertain:
+        for key in held:
+            changed.pop(key)
+        for target, new in exact:
+            if target not in held:
+                duplicates += 1
+                aliases[new.id] = target
+                if new.id != target:
+                    _corroborate(facts[target], new, changed)
+    else:
+        # Record review for all affected new assertions, including duplicate siblings.
+        for key, (decision, _) in decisions.items():
+            if decision == 'duplicate' and (set(key) & held):
+                review.setdefault(key, 'Related duplicate comparison requires review')
+        for key in held:
+            facts[key].review_pending = True
 
     merged = {}
     for root, members in groups.items():
@@ -255,7 +270,7 @@ def plan_merge(incoming, previous, llm, config, embedder, now, existing_pairs=()
         aliases[key] = merged.get(target, target)
 
     conflicts, known_pairs = [], set(existing_pairs)
-    for key, reason in sorted(review.items()):
+    for key, reason in (() if discard_uncertain else sorted(review.items())):
         if not set(key) & held:
             continue
         first, second = pairs[key]
@@ -274,7 +289,8 @@ def plan_merge(incoming, previous, llm, config, embedder, now, existing_pairs=()
             continue
         pair = tuple(sorted((facts[left], facts[right]), key=_order))
         ordered[tuple(sorted((left, right)))] = pair
-    for key in merged:
+    dropped = held if discard_uncertain else set()
+    for key in merged.keys() | dropped:
         facts.pop(key)
     invalidated = set()
     for first, second in sorted(ordered.values(), key=lambda pair: (_order(pair[1]), _order(pair[0]))):
@@ -289,7 +305,7 @@ def plan_merge(incoming, previous, llm, config, embedder, now, existing_pairs=()
         invalidated.add(first.id)
         changed[first.id] = first
         changed[second.id] = second
-    return list(changed.values()), conflicts, dict(facts_added=len(incoming_unique) - len(merged), duplicates=duplicates,
+    return list(changed.values()), conflicts, dict(facts_added=len(incoming_unique) - len(merged) - len(dropped), duplicates=duplicates,
                                                   invalidated=len(invalidated), model_calls=calls)
 
 

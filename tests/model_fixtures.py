@@ -60,6 +60,9 @@ def replay_window(prompt, system, invoke):
                                for span in data['pending'] if span['id'] in data['rules']['digest_required']]
     if data['operation'] == 'digest' or '本次仅补缺失摘要' in system:
         result = {'digests': result['digests']}
+    if 'entity_types' in data:
+        from tests.postgres.ontology_fixtures import typed_result
+        result = typed_result(result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -84,6 +87,9 @@ def adjudication_reply(prompt):
 
 class RecordedLLM:
     def complete(self, prompt, system='', **kwargs):
+        if system.startswith('MNEMOTRACE_RELATION_RESOLUTION'):
+            from tests.postgres.ontology_fixtures import ontology_reply
+            return ontology_reply(prompt, system)
         if system.startswith('MNEMOTRACE_FACT_COMPARISON'):
             return adjudication_reply(prompt)
         if window_input(prompt) is not None:

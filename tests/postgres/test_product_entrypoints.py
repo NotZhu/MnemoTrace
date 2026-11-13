@@ -11,6 +11,7 @@ from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from mnemotrace.llm import FakeLLM
 from mnemotrace.service import MemoryService
 from tests.postgres.fact_fixtures import seed_fact
+from tests.postgres.ontology_fixtures import ontology_reply, typed_result
 
 
 @pytest.fixture
@@ -22,13 +23,15 @@ def product(runtime, user, accounts, spaces, monkeypatch):
     key = accounts.issue_key(user)
 
     def extract(prompt, system=''):
+        if system.startswith('MNEMOTRACE_RELATION_RESOLUTION'):
+            return ontology_reply(prompt, system)
         data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
-        return json.dumps(dict(facts=[
+        return json.dumps(typed_result(dict(facts=[
             dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='Synthetic person', predicate='likes', object='Bluebird tea',
                  text='Synthetic person likes Bluebird tea',
                  source_ids=[source['id']])
             for source in data['pending']
-        ], digests=[]))
+        ], digests=[])))
 
     service = MemoryService(runtime, llm=FakeLLM(handler=extract))
     monkeypatch.setattr(app, '_svc', service)

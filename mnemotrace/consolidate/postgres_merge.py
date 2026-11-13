@@ -3,11 +3,9 @@ from dataclasses import replace
 from itertools import chain
 
 from .adjudication import plan_merge
-from .pipeline import content_hash
 from ..store._validation import validate_embedding
 from ..store.contracts import EmbeddingWrite, RecordRef, RecordWrite, SourceLink, StoredRecord
 from ..store.postgres.records import FACT, SOURCE, domain
-from ..types import EntityAlias
 
 
 def write_record(context, value, previous=None, *, digest_base=1):
@@ -57,8 +55,12 @@ def merge_records(context, config, embedder, model, data, now,
     duplicate_ids = {}
     changed, conflicts, _ = plan_merge(facts, old_facts, llm, config, embedder, now, existing_pairs,
                                        verdicts=verdicts, semantic=ontology is not None,
-                                       symmetric=ontology.symmetric if ontology else (), duplicate_ids=duplicate_ids)
-    writes = [write_record(context, item) for item in ontology.records] if ontology else []
+                                       symmetric=ontology.symmetric if ontology else (), duplicate_ids=duplicate_ids,
+                                       discard_uncertain=ontology is not None)
+    writes = []
+    if ontology is not None:
+        accepted = duplicate_ids.keys() | {value.id for value in changed if value.id not in old_records}
+        writes.extend(write_record(context, value, previous) for value, previous in ontology.records(accepted))
     embeddings, links = extra_vectors, []
     for value in changed:
         previous = old_records.get(value.id)
@@ -79,14 +81,4 @@ def merge_records(context, config, embedder, model, data, now,
         conflict.older_version = versions[conflict.older]
         conflict.newer_version = versions[conflict.newer]
         writes.append(write_record(context, conflict))
-    if ontology:
-        aliases = {}
-        for incoming_id, names in ontology.aliases.items():
-            fact_id = duplicate_ids.get(incoming_id, incoming_id)
-            for entity_id, source_id, name, sensitive in sorted(names):
-                key = 'alias_' + content_hash([entity_id, fact_id, source_id, name])[:32]
-                # The fact controls its own aliases. Later sensitive corroboration cannot expose a new alias.
-                restricted = fact_id != incoming_id and sensitive
-                aliases[key] = EntityAlias(key, entity_id, fact_id, source_id, name, restricted, context.user_id)
-        writes.extend(write_record(context, value) for value in aliases.values())
     return writes, embeddings, links

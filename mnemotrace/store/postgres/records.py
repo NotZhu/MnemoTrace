@@ -3,6 +3,7 @@ from dataclasses import fields
 from datetime import datetime, timezone
 import json
 
+from ...consolidate.fact_rules import entity_name_key
 from ...types import Conflict, Entity, EntityAlias, EntityType, Episode, Fact, Relation, RelationType
 from ...retrieve.lexical import lexical_terms
 from ..contracts import RecordKind, RecordRef, StoredRecord
@@ -83,7 +84,7 @@ def columns(record, values):
     if kind == SOURCE:
         data['agent_id'] = record.agent_id
     if kind == ENTITY:
-        data['normalized_name'] = values['name'].lower()
+        data['normalized_name'] = entity_name_key(values['name'])
         data['anchor_terms'] = anchor_terms(values['name'])
     if kind == ENTITY_ALIAS:
         data['normalized_name'] = values['name'].strip().lower()

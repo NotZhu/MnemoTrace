@@ -1,7 +1,6 @@
 """Ontology behavior through the normal PostgreSQL ingestion and read interfaces."""
 import json
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from threading import Barrier, Lock
 
 import pytest
@@ -37,40 +36,39 @@ def records(memory, kind):
         return tuple(map(domain, view.records(kind)))
 
 
-def test_alias_synonym_reverse_and_dedup_preserve_provenance(make_memory):
+def test_explicit_names_reverse_and_dedup_preserve_provenance(make_memory):
     inputs = {
-        'Alice Chen (also Ace) works for Orbit Labs.': assertion('Alice Chen', 'works_for', 'Orbit Labs', aliases=['Ace']),
-        'Ace is employed by Orbit Labs.': assertion('Ace', 'employed_by', 'Orbit Labs'),
-        'Orbit Labs employs Ace.': assertion('Orbit Labs', 'employs', 'Ace',
-                                             subject_type='organization', object_type='person'),
+        'Alice Chen works for Orbit Labs.': assertion('Alice Chen', 'works_for', 'Orbit Labs'),
+        'ALICE CHEN is employed by Orbit Labs.': assertion('ALICE CHEN', 'employed_by', 'Orbit Labs'),
+        'Orbit Labs employs Alice Chen.': assertion('Orbit Labs', 'employs', 'Alice Chen',
+                                                  subject_type='organization', object_type='person'),
     }
     memory, _ = make_memory(Answers(inputs, {'works_for': ('works_at', False), 'employed_by': ('works_at', False),
                                              'employs': ('works_at', True)}))
     sources = [ingest(memory, statement) for statement in inputs]
     fact, = memory.facts()
     assert fact.predicate == 'works_at' and fact.provenance == sources
-    assert memory.entity('Alice Chen').id == memory.entity('Ace').id == fact.subject_id
+    assert memory.entity('  ALICE CHEN  ').id == fact.subject_id
     assert memory.entity('Orbit Labs').id == fact.object_id
     assert memory.graph_relations(fact.id)
     assert len(records(memory, RecordKind.RELATION_TYPE)) == 1
+    assert not records(memory, RecordKind.ENTITY_ALIAS)
 
 
-def test_ambiguity_retains_text_and_never_changes_the_timeline(make_memory):
+def test_ambiguous_assertions_keep_only_the_source(make_memory):
     inputs = {
-        'Full-time: user works for Orbit Labs.': assertion('user', 'works_for', 'Orbit Labs'),
-        'Full-time: user has an unclear role at Nova Labs.': assertion('user', 'works_at', 'Nova Labs'),
+        'Someone has something to do with Nova Labs.': None,
+        'user has a temporary assignment with Nova Labs.': assertion('user', 'unknown_relation', 'Nova Labs'),
     }
-    memory, service = make_memory(Answers(inputs, {'works_for': ('works_at', False), 'works_at': (None, False)}))
-    first_id, second_id = [ingest(memory, statement, when) for statement, when in zip(inputs, (10, 20))]
-    first = next(f for f in memory.facts() if first_id in f.provenance)
-    second = next(f for f in memory.facts() if second_id in f.provenance)
-    assert first.invalid_at is None and second.relation_id is None
-    assert second.id in {f.id for f in memory.search('unclear role at Nova Labs').facts}
-    assert second_id in memory.get_fact(second.id).provenance
-    assert memory.aggregate_facts('works_at').count == 1
-    assert memory.graph_relations(second.id) == () and memory.conflicts() == ()
-    assert service.export(memory.context)['facts']
-    assert memory.entity('Nova Labs') is None
+    memory, service = make_memory(Answers(inputs, {'unknown_relation': (None, False)}))
+    for expected_calls, statement in enumerate(inputs, 1):
+        before = len(service.llm.calls)
+        source_id = ingest(memory, statement)
+        assert memory.get_episode(source_id).content == statement
+        assert len(service.llm.calls) - before == expected_calls
+    assert not memory.facts() and not memory.conflicts()
+    for kind in (RecordKind.ENTITY, RecordKind.ENTITY_TYPE, RecordKind.RELATION_TYPE):
+        assert not records(memory, kind)
 
 
 def test_symmetric_relation_deduplicates_both_orientations_and_traverses_either_way(make_memory):
@@ -140,7 +138,7 @@ def test_bounded_relation_candidates_do_not_close_the_catalog(make_memory):
     assert len(records(memory, RecordKind.RELATION_TYPE)) == 26
 
 
-def test_normalized_replacement_rethreads_history_and_unknown_goes_to_review(make_memory):
+def test_normalized_replacement_rethreads_history_and_discards_unknown_time(make_memory):
     inputs = {
         f'Full-time: user works at {company}.': assertion('user', predicate, company,
                                                           time_kind='unknown' if company == 'Delta' else 'current')
@@ -154,65 +152,95 @@ def test_normalized_replacement_rethreads_history_and_unknown_goes_to_review(mak
     assert rows['Aster'].invalid_at == 30 and rows['Cedar'].invalid_at == 40
     assert rows['Cedar'].supersedes == [rows['Aster'].id] and rows['Birch'].supersedes == [rows['Cedar'].id]
     assert rows['Birch'].invalid_at is None and 'Delta' not in rows
-    assert any(c.reason == 'Fixed synthetic comparison' for c in memory.conflicts())
+    assert not memory.conflicts()
+    assert memory.entity('Delta') is None
 
 
-def test_homonym_and_private_alias_do_not_leak(make_memory):
-    inputs = {
-        'Alice Secret (also Ace) works at Orbit Labs.': assertion('Alice Secret', 'works_at', 'Orbit Labs',
-                                                                 aliases=['Ace'], sensitive=True),
-        'Ace consults at Nova Labs.': assertion('Ace', 'works_for', 'Nova Labs'),
-        'Ace is a separate person on the Transit team.': assertion('Ace', 'works_for', 'Transit'),
-    }
-
-    def distinguish(data):
-        if 'separate person' in data['source'] and data['mention'] == 'Ace':
-            return dict(decision='new', id=None, evidence='separate person')
-
-    memory, service = make_memory(Answers(inputs, {'works_at': ('works_at', False), 'works_for': ('works_at', False)},
-                                           entity_decision=distinguish))
-    for when, statement in enumerate(inputs, 10):
-        ingest(memory, statement, when)
-    facts = {item.object: item for item in memory.facts()}
-    assert facts['Orbit Labs'].subject_id == facts['Nova Labs'].subject_id != facts['Transit'].subject_id
-    assert memory.entity('Ace') is None
-    assert 'Alice Secret' not in json.dumps(service.graph(memory.context))
-    assert 'Alice Secret' not in json.dumps(service.export(memory.context))
-    assert service.graph(memory.context, q='Alice Secret')['edges'] == []
-
-
-def test_alias_visibility_and_erasure_follow_its_own_evidence(make_memory):
+def test_entity_type_mismatch_keeps_the_original_entity(make_memory):
     inputs = {
         'Alice Chen works at Orbit Labs.': assertion('Alice Chen', 'works_at', 'Orbit Labs'),
-        'Alice Chen (Alias Open) works at Orbit Labs.': assertion('Alice Chen', 'works_at', 'Orbit Labs',
-                                                                  aliases=['Alias Open']),
-        'Alice Chen (Alias Private) works at Orbit Labs.': assertion('Alice Chen', 'works_at', 'Orbit Labs',
-                                                                     aliases=['Alias Private'], sensitive=True),
+        'Alice Chen has an office in Oslo.': assertion('Alice Chen', 'based_in', 'Oslo',
+                                                     subject_type='organization', object_type='location'),
     }
-    memory, service = make_memory(Answers(inputs, {'works_at': ('works_at', False)}))
-    first, public, private = inputs
-    original = ingest(memory, first)
-    fact, = memory.facts()
-    memory.set_fact_sensitive(fact.id, False)
-    alias_source = ingest(memory, public)
-    private_source = ingest(memory, private)
-    assert memory.get_fact(fact.id).provenance == [original, alias_source, private_source]
-    with memory.dao.read_snapshot() as view:
-        assert view.named_entities('Alias Open', limit=2, share_safe=True)
-        assert view.named_entities('Alias Private', limit=2)
-        assert not view.named_entities('Alias Private', limit=2, share_safe=True)
-    assert service.graph(memory.context, q='Alias Open')['edges']
-    assert not service.graph(memory.context, q='Alias Private')['edges']
-    with memory.dao.read_snapshot() as view:
-        snapshot, stored = view.snapshot, view.get(RecordKind.FACT, fact.id)
-    retained = replace(domain(stored), provenance=[original, private_source])
-    memory._commit(snapshot, writes=(memory._write(retained, stored),))
-    assert memory.entity('Alias Open') is None
-    assert not service.graph(memory.context, q='Alias Open')['edges']
-    assert memory.entity('Alias Private') is not None
-    assert memory.get_fact(fact.id).provenance == [original, private_source]
-    assert memory.delete_fact(fact.id)
-    assert records(memory, RecordKind.ENTITY_ALIAS) == ()
+    memory, service = make_memory(Answers(inputs, {}))
+    first, second = inputs
+    ingest(memory, first)
+    entity = memory.entity('Alice Chen')
+    before = len(service.llm.calls)
+    source = ingest(memory, second, 200)
+    assert len(service.llm.calls) == before + 1
+    assert memory.get_episode(source).content == second
+    assert memory.entity('Alice Chen') == entity
+    assert memory.entity('Oslo') is None
+    assert len(memory.facts()) == 1
+
+
+def test_learned_type_is_sent_in_next_extraction(make_memory):
+    first, second = ('user calibrates the Aurora scope.', 'user calibrates the Boreal scope.')
+    definition = 'A device used to make a measurement'
+    fixed = Answers({
+        first: assertion('user', 'calibrates', 'Aurora scope', object_type='instrument', type_meaning=definition),
+        second: assertion('user', 'calibrates', 'Boreal scope', object_type='instrument'),
+    }, {})
+    seen = []
+
+    def respond(prompt, system):
+        if prompt.startswith('MNEMOTRACE_WINDOW\n'):
+            seen.append(json.loads(prompt.split('\n', 1)[1])['entity_types'].get('instrument'))
+        return fixed(prompt, system)
+
+    memory, _ = make_memory(respond)
+    ingest(memory, first)
+    ingest(memory, second, 200)
+    assert seen == [None, definition]
+    assert {fact.object_type for fact in memory.facts()} == {'instrument'}
+
+
+def test_stale_type_catalog_regenerates_saved_extraction(make_memory):
+    waiting, learning = ('user repairs the Aurora scope.', 'user calibrates the Boreal scope.')
+    definition = 'A device used to make a measurement'
+    fixed = Answers({
+        waiting: assertion('user', 'repairs', 'Aurora scope', object_type='instrument', type_meaning=definition),
+        learning: assertion('user', 'calibrates', 'Boreal scope', object_type='instrument', type_meaning=definition),
+    }, {})
+    memory, service = make_memory(fixed)
+    operation, = memory.remember(waiting, 'waiting', event_time=100, processing='buffered')['operation_ids']
+    assert memory._processing.run_one(operation, force=True)
+    assert memory.operation(operation).extraction_saved
+    ingest(memory, learning, 200, session='learning')
+    assert memory.flush_processing('waiting')['ok']
+    requests = [json.loads(call['prompt'].split('\n', 1)[1]) for call in service.llm.calls
+                if call['prompt'].startswith('MNEMOTRACE_WINDOW\n')]
+    catalogs = [request['entity_types'] for request in requests if request['pending'][0]['content'] == waiting]
+    assert [catalog.get('instrument') for catalog in catalogs] == [None, definition]
+    assert {fact.object for fact in memory.facts()} == {'Aurora scope', 'Boreal scope'}
+
+
+@pytest.mark.parametrize('accept', [True, False])
+def test_relation_endpoint_extension_commits_only_for_accepted_facts(make_memory, accept):
+    first = 'Full-time: user works at Orbit Labs.'
+    second = 'Full-time: user works at Nova Foundation.'
+    inputs = {
+        first: assertion('user', 'works_at', 'Orbit Labs', meaning='Person works for an organization'),
+        second: assertion('user', 'works_at', 'Nova Foundation', object_type='foundation',
+                          type_meaning='A nonprofit foundation', meaning='Person works for a foundation',
+                          time_kind='current' if accept else 'unknown'),
+    }
+    fixed = Answers(inputs, {'works_at': ('works_at', False)})
+    memory, service = make_memory(fixed)
+    ingest(memory, first)
+    original, = records(memory, RecordKind.RELATION_TYPE)
+    before = len(service.llm.calls)
+    ingest(memory, second, 200)
+    assert len(service.llm.calls) - before == 3
+    relation, = records(memory, RecordKind.RELATION_TYPE)
+    assert relation.id == original.id and relation.predicate == original.predicate
+    assert (['person', 'foundation'] in relation.endpoint_types) is accept
+    assert ('foundation' in {value.id for value in records(memory, RecordKind.ENTITY_TYPE)}) is accept
+    assert (memory.entity('Nova Foundation') is not None) is accept
+    assert not memory.conflicts()
+    old, = memory.history('user', 'works_at')[:1]
+    assert old.invalid_at == (200 if accept else None)
 
 
 def test_invalid_model_selection_writes_no_catalog_or_fact(make_memory):
@@ -249,17 +277,17 @@ def test_window_calls_and_meter_cover_every_stage(make_memory):
         assert result['ok'], result
         if round_ == 2:
             calls = service.llm.calls[start:]
-            assert len(calls) == 4
+            assert len(calls) == 3
             assert [call['system'].splitlines()[0] for call in calls[1:]] == [
-                'MNEMOTRACE_ENTITY_RESOLUTION', 'MNEMOTRACE_RELATION_RESOLUTION', 'MNEMOTRACE_FACT_COMPARISON']
-            assert len(json.loads(calls[1]['prompt'])['items']) == 8
+                'MNEMOTRACE_RELATION_RESOLUTION', 'MNEMOTRACE_FACT_COMPARISON']
+            assert len(json.loads(calls[1]['prompt'])['items']) == 4
     assert len(memory.facts()) == 8
     metrics = service.metrics.snapshot()
     assert metrics['ops']['pipeline_model_call']['n'] == len(service.llm.calls)
     assert metrics['counts']['pipeline_usage_unreported'] == len(service.llm.calls)
 
 
-def test_unknown_comparison_remains_private_until_adjudicated(make_memory):
+def test_unknown_comparison_discards_only_new_candidate(make_memory):
     inputs = {f'user works at {company}.': assertion('user', 'works_at', company) for company in ('Orbit', 'Nova')}
     fixed = Answers(inputs, {'works_at': ('works_at', False)})
 
@@ -269,18 +297,15 @@ def test_unknown_comparison_remains_private_until_adjudicated(make_memory):
                                              for item in json.loads(prompt)['items']]))
         return fixed(prompt, system)
 
-    memory, service = make_memory(respond)
+    memory, _ = make_memory(respond)
     for when, text in enumerate(inputs, 10):
-        ingest(memory, text, when)
+        source = ingest(memory, text, when)
     old, = memory.facts()
     assert old.object == 'Orbit' and old.invalid_at is None
-    conflict, = memory.conflicts()
-    assert conflict.reason == 'Insufficient context'
-    assert memory.graph_entities('Nova') == ()
-    assert all(fact.object != 'Nova' for fact in memory.search('Nova').facts)
-    assert all(fact['object'] != 'Nova' for fact in service.export(memory.context)['facts'])
-    assert memory.resolve_conflict(conflict.id, 'both')
-    assert {fact.object for fact in memory.facts()} == {'Orbit', 'Nova'}
+    assert not memory.conflicts()
+    assert memory.entity('Nova') is None
+    assert memory.get_episode(source).content == text
+    assert len(records(memory, RecordKind.FACT)) == 1
 
 
 def test_failed_later_comparison_batch_publishes_no_partial_window(make_memory):

@@ -13,7 +13,7 @@ def prepare(data, config, policy, compensation=False):
                   '"decision":"conflict|replaces|coexists","reason":"brief reason"}]}. '
                   'Do not infer missing facts. Prefer coexists when unsure.')
         return json.dumps(data, ensure_ascii=False), system, config.joint_max_output_tokens
-    system = system_prompt(policy, compensation=compensation, operation=operation)
+    system = system_prompt(policy, compensation=compensation, operation=operation, typed='entity_types' in data)
     return request(data, config), system, config.digest_max_output_tokens if operation == 'digest' else config.joint_max_output_tokens
 
 
@@ -33,6 +33,9 @@ def decode(raw, data, config, compensation=False):
             subject = item['subject'].strip()
             if subject.casefold() == 'user':
                 subject = 'user'
+            if 'entity_types' in data:
+                facts.append({**item, 'subject': subject, 'object': item['object'].strip()})
+                continue
             predicate = _norm_predicate(item['predicate'])
             if not predicate:
                 raise ExtractionResponseError()

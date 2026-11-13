@@ -1,5 +1,6 @@
 """Structured reads on one authorized, repeatable database snapshot."""
 from dataclasses import fields
+from ...consolidate.fact_rules import entity_name_key
 from ...focus import selectors
 import json
 
@@ -263,7 +264,7 @@ class ReadView:
         return matches[0] if len(matches) == 1 else None
 
     def named_entities(self, name, *, limit, share_safe=False):
-        key = name.lower()
+        key = entity_name_key(name)
         # Shared lookup accepts only names supported by visible assertions.
         visible = 'AND NOT f.sensitive AND NOT a.sensitive' if share_safe else ''
         aliases = f'''EXISTS (SELECT 1 FROM mnemotrace.entity_aliases a JOIN mnemotrace.facts f
@@ -276,13 +277,13 @@ class ReadView:
                     AND NOT f.sensitive AND NOT f.review_pending AND f.withdrawn_at IS NULL
                     AND ((f.subject_id = r.id AND lower(btrim(f.subject)) = %s)
                       OR (f.object_id = r.id AND lower(btrim(f.object)) = %s)))'''
-            args = (key.strip(), key.strip(), key.strip())
+            args = (key, key, key)
         else:
             direct = '''r.normalized_name = %s AND EXISTS (SELECT 1 FROM mnemotrace.facts f
                 WHERE (f.user_id,f.space_id) = (r.user_id,r.space_id)
                     AND NOT f.review_pending AND f.withdrawn_at IS NULL
                     AND r.id IN (f.subject_id, f.object_id))'''
-            args = (key, key.strip())
+            args = (key, key)
         return self._sql.select(ENTITY, (f'({direct} OR {aliases})',), args, limit=limit)
 
     def public_entity_names(self, ids):

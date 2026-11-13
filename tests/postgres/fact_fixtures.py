@@ -9,7 +9,8 @@ def seed_fact(memory, subject, predicate, object_, *, text, categories=(), linke
             if name not in entities:
                 old = memory.entity(name)
                 if old is None:
-                    entities[name] = Entity(name, user_id=memory.context.user_id)
+                    entities[name] = Entity(name, 'person' if name == 'user' else None,
+                                            user_id=memory.context.user_id)
                 fields['subject_id' if name == subject else 'object_id'] = (old or entities[name]).id
         if subject == object_:
             fields['object_id'] = fields['subject_id']
