@@ -34,6 +34,8 @@ SOURCE_FILES = (
     'mnemotrace/store/postgres/graph_reads.py', 'mnemotrace/store/postgres/lexical.py',
     'mnemotrace/store/postgres/retrieval.py', 'mnemotrace/store/postgres/sql/005_retrieval.sql',
     'mnemotrace/store/postgres/sql/006_backup_constraints.sql',
+    'mnemotrace/consolidate/ontology.py', 'mnemotrace/store/postgres/ontology.py',
+    'tests/postgres/ontology_fixtures.py',
 )
 EVALUATION_PATHS = ('mnemotrace', 'eval', 'tests/model_fixtures.py',
                     'tests/extraction_responses.json', *SOURCE_FILES)
@@ -84,7 +86,7 @@ def observe() -> tuple[list[dict], dict, dict]:
                                object=f.object, source=f.source,
                                source_roles=f.source_roles, valid_at=f.valid_at, invalid_at=f.invalid_at,
                                created_at=f.created_at, expired_at=f.expired_at,
-                               supersedes=identities.get(f.supersedes),
+                               supersedes=[identities[key] for key in f.supersedes],
                                provenance=[sources[s] for s in f.provenance]) for f in facts],
                 'ranked': [identities[f.id] for f in result.facts],
                 'scores': result.scores, 'via': result.via,
@@ -93,7 +95,7 @@ def observe() -> tuple[list[dict], dict, dict]:
     for row in rows:
         row['fact_ids'] = observations[row['id']]['ranked']
     stable = {
-        'format_version': 1,
+        'format_version': 2,
         'clock': CLOCK,
         'config': asdict(Config()),
         'rows': [{k: v for k, v in row.items() if k != 'latency_ms'} for row in rows],

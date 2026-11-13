@@ -32,7 +32,30 @@ INDEX = 'phase5_experiment_hnsw'
 
 
 def quality(factory, out, *, processing='immediate'):
-    from tests.model_fixtures import RecordedLLM
+    from tests.model_fixtures import RecordedLLM, window_input
+    from tests.postgres.ontology_fixtures import mention, ontology_reply
+
+    entity_objects = {
+        'colleague': 'person', 'sister': 'person', 'works_at': 'organization', 'lives_in': 'location',
+    }
+    predicates = {**dict.fromkeys(entity_objects), **dict.fromkeys(('name', 'occupation', 'favorite_color', 'enjoys'))}
+    relations = {predicate: (predicate, False) for predicate in predicates}
+
+    class RecordedOntologyLLM(RecordedLLM):
+        def complete(self, prompt, system='', **kwargs):
+            if system.startswith(('MNEMOTRACE_ENTITY_RESOLUTION', 'MNEMOTRACE_RELATION_RESOLUTION')):
+                return ontology_reply(prompt, system, relations)
+            response = super().complete(prompt, system, **kwargs)
+            if window_input(prompt) is None:
+                return response
+            data = json.loads(response)
+            for fact in data.get('facts', []):
+                predicate = fact['predicate']
+                if predicate in relations:
+                    fact['ontology'] = dict(subject=mention('person'), object=mention(entity_objects.get(predicate)),
+                                            meaning=predicate.replace('_', ' '),
+                                            direction='symmetric' if predicate == 'colleague' else 'forward')
+            return json.dumps(data)
 
     ref_rows, ref_summary, reference = observe()
     harness.write_jsonl(str(out / 'reference.jsonl'), ref_rows, ref_summary)
@@ -63,8 +86,6 @@ def quality(factory, out, *, processing='immediate'):
                     if not all(restored.get_episode(source_id).consolidated for source_id in origins):
                         raise RuntimeError(f'{item.id}: completed sources missing after reopening')
             when = None if item.as_of_day is None else harness.BASE + item.as_of_day * DAY
-            # The phase-one fixture shifts event time while recording all inputs
-            # together. Compare on valid time here; known-at is covered separately.
             conditions = FactQuery(valid_at=when)
             start = time.perf_counter()
             if item.path:
@@ -89,7 +110,7 @@ def quality(factory, out, *, processing='immediate'):
                         fact_ids=[fact.id for fact in result.facts], ranked=ranked, candidates=candidates,
                         limitations=result.limitations)
 
-        rows, summary = harness.evaluate(storage='postgres', llm=RecordedLLM(), run_item=run_item)
+        rows, summary = harness.evaluate(storage='postgres', llm=RecordedOntologyLLM(), run_item=run_item)
         harness.write_jsonl(str(out / 'postgres.jsonl'), rows, summary)
         print(f"Quality: {summary['accuracy']:.1f}% Postgres, {ref_summary['accuracy']:.1f}% reference", flush=True)
 

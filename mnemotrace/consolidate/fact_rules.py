@@ -8,6 +8,7 @@ def object_key(fact):
 
 def same_assertion(existing, incoming, *, match_time=True):
     if (existing.withdrawn_at is not None or existing.slot != incoming.slot
+            or existing.predicate != incoming.predicate
             or object_key(existing) != object_key(incoming)
             or existing.text != incoming.text):
         return False

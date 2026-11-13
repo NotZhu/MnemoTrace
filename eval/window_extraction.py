@@ -30,8 +30,8 @@ class RecordedExtraction(LLM):
     def complete(self, prompt: str, **kwargs) -> str:
         if WINDOW_PREFIX not in prompt:
             # The synthetic assets are independent and can all coexist.
-            return json.dumps({'decisions': [dict(id=pair['id'], decision='coexists')
-                                             for pair in json.loads(prompt)]})
+            return json.dumps({'decisions': [dict(id=pair['id'], decision='coexists', reason='Synthetic comparison')
+                                             for pair in json.loads(prompt)['items']]})
         data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
         return json.dumps({"facts": [
             {"categories": [], "sensitive": False, "time_kind": "current", "effective_date": None,

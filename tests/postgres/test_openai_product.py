@@ -12,7 +12,7 @@ def client_with_llm(product_client, product_service):
 
     class Model:
         def complete(self, prompt, system=None, **kwargs):
-            if "MNEMOTRACE_WINDOW" in prompt or "pair id" in (system or ""):
+            if "MNEMOTRACE_WINDOW" in prompt or "MNEMOTRACE_FACT_COMPARISON" in (system or ""):
                 return extraction.complete(prompt, system=system or "", **kwargs)
             return model.complete(prompt, system=system, **kwargs)
 

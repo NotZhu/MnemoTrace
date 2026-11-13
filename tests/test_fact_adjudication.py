@@ -20,8 +20,8 @@ def claim(source_id, value='Paris', **fields):
 
 
 def decisions(prompt, decision='conflict'):
-    return json.dumps({'decisions': [{'id': pair['id'], 'decision': decision}
-                                    for pair in reversed(json.loads(prompt))]})
+    return json.dumps({'decisions': [{'id': pair['id'], 'decision': decision, 'reason': 'Synthetic comparison'}
+                                    for pair in reversed(json.loads(prompt)['items'])]})
 
 
 @pytest.mark.parametrize('fields', [
@@ -131,7 +131,7 @@ def test_manual_sensitive_override_survives_duplicate_evidence():
 def test_semantic_recall_crosses_categories_with_a_real_vector_signal():
     previous = fact('first', 'Paris', 1, categories=['travel'], categories_source='llm', embedding=[1.0, 0.0])
     incoming = fact('second', 'Oslo', 2, categories=['milestones'], categories_source='llm', embedding=[1.0, 0.0])
-    incoming = replace(incoming, predicate='based_in', relation_id=None)
+    incoming = replace(incoming, predicate='based_in', relation_id='')
     model = FakeLLM(handler=lambda prompt, system: decisions(prompt))
     changed, conflicts, stats = plan_merge([incoming], [previous], model, Config(), object(), 100)
     assert not conflicts and stats['model_calls'] == 1
@@ -149,8 +149,8 @@ def test_complete_adjudication_across_batch_boundaries():
 def test_partial_semantic_workset_cannot_drop_a_confirmed_predecessor():
     previous = fact('previous', 'Paris', 20, embedding=[0.0, 1.0])
     latest = fact('latest', 'Oslo', 30, supersedes=[previous.id], embedding=[1.0, 0.0])
-    previous = replace(previous, predicate='based_in', relation_id=None)
-    latest = replace(latest, predicate='home_base', relation_id=None)
+    previous = replace(previous, predicate='based_in', relation_id='')
+    latest = replace(latest, predicate='home_base', relation_id='')
     previous.invalid_at = latest.valid_at
     incoming = fact('incoming', 'Berlin', 10, embedding=[1.0, 0.0])
     model = FakeLLM(handler=lambda prompt, system: decisions(prompt))
@@ -173,8 +173,8 @@ def test_manual_duplicate_links_support_without_changing_user_labels():
 
 def test_lexical_recall_includes_explicit_preference_reversal():
     old, new = fact('old', 'jazz', 10), fact('new', 'jazz', 20)
-    old = replace(old, predicate='likes', relation_id=None)
-    new = replace(new, predicate='dislikes', relation_id=None)
+    old = replace(old, predicate='likes', relation_id='')
+    new = replace(new, predicate='dislikes', relation_id='')
     changed, _, stats = merge([new], [old])
     assert stats['model_calls'] == 1
     assert changed[old.id].invalid_at == 20
@@ -187,7 +187,7 @@ def test_two_coexisting_predecessors_expire_at_the_adjudicated_successor():
     assert changed[latest.id].supersedes == [first.id, second.id]
 
 
-def test_long_history_candidate_fits_the_prompt_budget():
+def test_oversized_history_candidate_goes_to_review_without_truncating_evidence():
     config = Config()
     previous = fact('long', '会议' * 5000, 10)
     incoming = fact('short', 'Oslo', 20)
@@ -197,9 +197,10 @@ def test_long_history_candidate_fits_the_prompt_budget():
         return decisions(prompt)
 
     changed, conflicts, stats = merge([incoming], [previous], model=FakeLLM(handler=respond))
-    assert stats['model_calls'] == 1
+    assert stats['model_calls'] == 0
     assert {item.id for item in changed.values()} == {incoming.id}
     assert len(conflicts) == 1
+    assert changed[incoming.id].review_pending
 
 
 def test_court_decision_withdraws_without_changing_effective_dates():

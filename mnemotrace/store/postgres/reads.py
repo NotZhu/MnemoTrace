@@ -122,6 +122,8 @@ class ReadView:
             if value is not None:
                 clauses.append(f'coalesce(r.{name}_key, lower(r.{name})) = %s')
                 args.append(value.lower())
+                if name == 'predicate':
+                    clauses.append('r.relation_id IS NOT NULL')
         if query.source_ids:
             clauses.append("""EXISTS (SELECT 1 FROM mnemotrace.fact_sources p
                 WHERE (p.user_id,p.space_id,p.fact_id) = (r.user_id,r.space_id,r.id)
@@ -158,7 +160,7 @@ class ReadView:
     def slot_facts(self, slots, query):
         subjects, predicates = zip(*sorted(slots)) if slots else ((), ())
         clauses, args = self._fact_conditions(query)
-        clauses.append("""EXISTS (SELECT 1 FROM unnest(%s::text[],%s::text[]) s(subject,predicate)
+        clauses.append("""r.relation_id IS NOT NULL AND EXISTS (SELECT 1 FROM unnest(%s::text[],%s::text[]) s(subject,predicate)
             WHERE (s.subject,s.predicate) = (coalesce(r.subject_key,lower(r.subject)),
                                             coalesce(r.predicate_key,lower(r.predicate))))""")
         return self._sql.select(FACT, clauses, (*args, list(subjects), list(predicates)),
@@ -191,12 +193,14 @@ class ReadView:
         # The full slot timeline includes scheduled facts.
         return self._sql.select(FACT, clauses[1:], args[1:])
 
-    def merge_history(self, incoming):
+    def merge_history(self, incoming, *, symmetric=()):
         ids = sorted({fact.subject_id for fact in incoming if fact.subject_id})
         names = sorted({fact.subject_key[1] for fact in incoming if not fact.subject_id})
+        peers = sorted({fact.object_id for fact in incoming if fact.relation_id in symmetric and fact.object_id})
         return self._sql.select(FACT, ("""(r.subject_id = ANY(%s) OR
-            (r.subject_id IS NULL AND coalesce(r.subject_match_key, lower(btrim(r.subject))) = ANY(%s)))""",),
-            (ids, names))
+            (r.subject_id IS NULL AND coalesce(r.subject_match_key, lower(btrim(r.subject))) = ANY(%s)) OR
+            (r.subject_id = ANY(%s) AND r.relation_id = ANY(%s)))""",),
+            (ids, names, peers, list(symmetric)))
 
     def fact_vectors(self, records, model, dimension):
         ids = [record.ref.record_id for record in records]
@@ -230,7 +234,7 @@ class ReadView:
 
     def clearable_slot(self, subject, predicate):
         clauses, args = self._fact_conditions(FactQuery())
-        clauses.extend(("r.source <> 'user'", 'r.subject = %s',
+        clauses.extend(("r.source <> 'user'", 'r.relation_id IS NOT NULL', 'r.subject = %s',
                         'btrim(coalesce(r.predicate_key, lower(r.predicate))) = %s'))
         args.extend((subject, predicate.strip().lower()))
         return self._sql.select(FACT, clauses, args)
@@ -255,14 +259,51 @@ class ReadView:
         return self._sql.select(CONFLICT, clauses, args, limit=limit)
 
     def entity(self, name):
-        matches = self._sql.select(ENTITY, ('r.normalized_name = %s',), (name.lower(),), limit=2)
+        matches = self.named_entities(name, limit=2)
         return matches[0] if len(matches) == 1 else None
+
+    def named_entities(self, name, *, limit, share_safe=False):
+        key = name.lower()
+        # Shared lookup accepts only names supported by visible assertions.
+        visible = 'AND NOT f.sensitive AND NOT a.sensitive' if share_safe else ''
+        aliases = f'''EXISTS (SELECT 1 FROM mnemotrace.entity_aliases a JOIN mnemotrace.facts f
+            ON (f.user_id,f.space_id,f.id) = (a.user_id,a.space_id,a.fact_id)
+            WHERE (a.user_id,a.space_id,a.entity_id) = (r.user_id,r.space_id,r.id)
+                AND a.normalized_name = %s AND NOT f.review_pending AND f.withdrawn_at IS NULL {visible})'''
+        if share_safe:
+            direct = '''EXISTS (SELECT 1 FROM mnemotrace.facts f
+                WHERE (f.user_id,f.space_id) = (r.user_id,r.space_id)
+                    AND NOT f.sensitive AND NOT f.review_pending AND f.withdrawn_at IS NULL
+                    AND ((f.subject_id = r.id AND lower(btrim(f.subject)) = %s)
+                      OR (f.object_id = r.id AND lower(btrim(f.object)) = %s)))'''
+            args = (key.strip(), key.strip(), key.strip())
+        else:
+            direct = '''r.normalized_name = %s AND EXISTS (SELECT 1 FROM mnemotrace.facts f
+                WHERE (f.user_id,f.space_id) = (r.user_id,r.space_id)
+                    AND NOT f.review_pending AND f.withdrawn_at IS NULL
+                    AND r.id IN (f.subject_id, f.object_id))'''
+            args = (key, key.strip())
+        return self._sql.select(ENTITY, (f'({direct} OR {aliases})',), args, limit=limit)
+
+    def public_entity_names(self, ids):
+        if not ids:
+            return {}
+        rows = self._sql.run('''SELECT requested.id, evidence.name
+            FROM unnest(%s::text[]) AS requested(id)
+            CROSS JOIN LATERAL (SELECT CASE WHEN f.subject_id = requested.id THEN f.subject ELSE f.object END AS name
+                FROM mnemotrace.facts f WHERE f.user_id = %s AND f.space_id = %s
+                  AND (f.subject_id = requested.id OR f.object_id = requested.id)
+                  AND NOT f.sensitive AND NOT f.review_pending AND f.withdrawn_at IS NULL
+                ORDER BY f.created_at DESC, f.id LIMIT 1) AS evidence''',
+            (list(ids), *self._sql.scope)).fetchall()
+        return dict(rows)
 
     def relations(self, fact_id):
         return self._sql.select(RELATION, ('r.fact_id = %s',), (fact_id,))
 
     def graph_edges(self, entity_ids, query, *, direction='both', predicates=(), limit=None):
-        endpoints = {'out': 'g.subject_id = ANY(%s)', 'in': 'g.object_id = ANY(%s)',
+        endpoints = {'out': "(g.subject_id = ANY(%s) OR (t.direction = 'symmetric' AND g.object_id = ANY(%s)))",
+                     'in': "(g.object_id = ANY(%s) OR (t.direction = 'symmetric' AND g.subject_id = ANY(%s)))",
                      'both': '(g.subject_id = ANY(%s) OR g.object_id = ANY(%s))'}
         if direction not in endpoints:
             raise ValueError('Expected graph direction in, out, or both')
@@ -273,9 +314,10 @@ class ReadView:
             clauses.append('lower(g.predicate) = ANY(%s)')
             args.append(list(predicates))
         where = ' AND '.join((ROW_SCOPE, endpoints[direction], *clauses))
-        params = (*self._sql.scope, *((list(entity_ids),) * (2 if direction == 'both' else 1)), *args)
+        params = (*self._sql.scope, list(entity_ids), list(entity_ids), *args)
         rows = self._sql.rows(f"""SELECT g.* FROM mnemotrace.graph_relations g JOIN mnemotrace.facts r
             ON (r.user_id,r.space_id,r.id) = (g.user_id,g.space_id,g.fact_id)
+            JOIN mnemotrace.relation_types t ON (t.user_id,t.space_id,t.id) = (r.user_id,r.space_id,r.relation_id)
             WHERE {where} ORDER BY g.id LIMIT %s""", (*params, query.limit if limit is None else limit))
         return tuple(unpack(self.snapshot.context, RELATION, row) for row in rows)
 
@@ -480,10 +522,23 @@ class ReadView:
     def graph_page(self, query, *, text=''):
         clauses, args = self._fact_conditions(query)
         if text:
-            clauses.append("""EXISTS (SELECT 1 FROM mnemotrace.entities e
-                WHERE (e.user_id,e.space_id) = (g.user_id,g.space_id)
-                AND e.id IN (g.subject_id,g.object_id) AND strpos(lower(e.name), %s) > 0)""")
-            args.append(text.lower())
+            key = text.lower()
+            if query.exclude_sensitive:
+                names = "(strpos(lower(r.subject), %s) > 0 OR strpos(lower(r.object), %s) > 0)"
+                args.extend((key, key))
+            else:
+                names = """EXISTS (SELECT 1 FROM mnemotrace.entities e
+                    WHERE (e.user_id,e.space_id) = (g.user_id,g.space_id)
+                    AND e.id IN (g.subject_id,g.object_id) AND strpos(lower(e.name), %s) > 0)"""
+                args.append(key)
+            visible = 'AND NOT a.sensitive AND NOT f.sensitive' if query.exclude_sensitive else ''
+            aliases = f"""EXISTS (SELECT 1 FROM mnemotrace.entity_aliases a JOIN mnemotrace.facts f
+                ON (f.user_id,f.space_id,f.id) = (a.user_id,a.space_id,a.fact_id)
+                WHERE (a.user_id,a.space_id) = (g.user_id,g.space_id)
+                    AND a.entity_id IN (g.subject_id,g.object_id) AND strpos(a.normalized_name, %s) > 0
+                    AND NOT f.review_pending AND f.withdrawn_at IS NULL {visible})"""
+            clauses.append(f'({names} OR {aliases})')
+            args.append(key)
         where = ' AND '.join((ROW_SCOPE, *clauses))
         rows = self._sql.rows(f"""SELECT g.* FROM mnemotrace.graph_relations g JOIN mnemotrace.facts r
             ON (r.user_id,r.space_id,r.id) = (g.user_id,g.space_id,g.fact_id)

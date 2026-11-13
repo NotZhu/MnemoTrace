@@ -16,7 +16,7 @@ from typing import Protocol
 from types import SimpleNamespace
 
 from ..categories import Category, normalize_categories
-from ..types import Conflict, Entity, Episode, Fact, Relation
+from ..types import Conflict, Entity, EntityAlias, EntityType, Episode, Fact, Relation, RelationType
 from ..extraction import ExtractionResponseError
 from ._validation import validate_record
 
@@ -93,6 +93,8 @@ class RecordKind(str, Enum):
     RELATION = 'Relation'
     CONFLICT = 'Conflict'
     RELATION_TYPE = 'RelationType'
+    ENTITY_TYPE = 'EntityType'
+    ENTITY_ALIAS = 'EntityAlias'
 
 
 class FactState(str, Enum):
@@ -315,7 +317,7 @@ class StoredRecord:
 
     @classmethod
     def from_record(cls, context: SpaceContext,
-                    record: Episode | Fact | Entity | Relation | Conflict | RelationType,
+                    record: Episode | Fact | Entity | Relation | Conflict | RelationType | EntityType | EntityAlias,
                     *, content_version: int = 1, record_version: int = 1,
                     digest_version: int | None = None) -> StoredRecord:
         kind = RecordKind(type(record).__name__)

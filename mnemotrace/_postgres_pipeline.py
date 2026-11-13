@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from .llm.failures import retryable
 from .consolidate.operations import decode, prepare
 from .consolidate.facts import materialize_facts
+from .consolidate.ontology import VERSION as ONTOLOGY_VERSION, resolve
 from .consolidate.pipeline import config_identity, content_hash
 from .consolidate.planning import (
     OMITTED, empty_input, fit_digest, fit_window, input_size, output_size, supplied, user_start, validate_config,
@@ -25,6 +26,7 @@ from .store.contracts import (
 )
 from .store.postgres.errors import AccountNotFound, CommitOutcomeUnknown, DataCorruption, DatabaseError, DatabaseUnavailable
 from .store.postgres.errors import SpaceNotFound, VersionConflict
+from .store.postgres.ontology import OntologyWorkset
 from .store.postgres.records import FACT, domain
 from .store.postgres.tasks import ACTIVE, RENEW_SECONDS, Tasks
 
@@ -97,8 +99,9 @@ class PostgresPipeline:
     def _fingerprint(self, settings):
         policy = dict(extract_system=settings.extract_system, extract_instruction=settings.extract_instruction,
                       digest_system=settings.digest_system)
-        return config_identity(SimpleNamespace(config=self.config, policy=policy, llm=self.llm,
-                                               embedder=self.embedder), include_embedding=False)
+        identity = config_identity(SimpleNamespace(config=self.config, policy=policy, llm=self.llm,
+                                                   embedder=self.embedder), include_embedding=False)
+        return content_hash([ONTOLOGY_VERSION, identity])
 
     def _prepare(self, view, row, records, settings, fingerprint):
         episodes = [domain(record) for record in records]
@@ -158,11 +161,30 @@ class PostgresPipeline:
         return ChangeSet(conditions, operation_id, tuple(writes), source_links=tuple(links),
                          embeddings=tuple(embeddings), receipt=receipt)
 
-    def _commit_core(self, conditions, data, result, records, merged):
+    def _commit_core(self, conditions, data, result, records, now, space):
         context = conditions.snapshot.context
-        facts, previous, vectors, now, existing_pairs = merged
+        facts = materialize_facts(context.user_id, data, result, now)
+        input_hash = content_hash(data)
+        inputs = {'ft_' + content_hash([input_hash, item])[:24]: item for item in result['facts']}
+        sources = {item['id']: item for item in (*data['context'], *data['pending'])}
+        entries = []
+        for fact in facts:
+            item = inputs[fact.id]
+            evidence = {key: sources[key]['content'] for key in fact.provenance
+                        if sources[key]['representation'] == 'raw'}
+            entries.append((fact, item.get('ontology'), evidence))
+        ontology = resolve(OntologyWorkset(self.dao, conditions.snapshot), entries,
+                           context.user_id, context.space_id, self.llm, self.config)
+        with self.dao.read_snapshot() as view:
+            if (view.snapshot.core_revision != conditions.snapshot.core_revision
+                    or view.snapshot.space_generation != conditions.snapshot.space_generation):
+                raise VersionConflict('Fact workset changed during ontology resolution')
+            previous = view.merge_history(ontology.facts, symmetric=ontology.symmetric)
+            vectors = view.fact_vectors(previous, *space) if space is not None else {}
+            existing_pairs = view.conflict_pairs(previous)
         writes, embeddings, links = merge_records(context, self.config, self.embedder, self.model, data,
-                                                  now, facts, previous, vectors, self.llm, existing_pairs)
+                                                  now, ontology.facts, previous, vectors, self.llm,
+                                                  existing_pairs, ontology=ontology)
         by_id = {record.ref.record_id: record for record in records}
         completed = {record.ref.record_id for record in records if domain(record).consolidated}
         newly_completed = set()
@@ -244,10 +266,6 @@ class PostgresPipeline:
                             data, result = json.loads(product.input_json), json.loads(product.result_json)
                             if row['kind'] == 'extract':
                                 now = view.at.timestamp()
-                                facts = materialize_facts(snapshot.context.user_id, data, result, now)
-                                history = view.merge_history(facts)
-                                vectors = view.fact_vectors(history, *space) if space is not None else {}
-                                merged = facts, history, vectors, now, view.conflict_pairs(history)
                             else:
                                 digest_base = view.digest_version(records[0].ref.record_id)
                 if product is None:
@@ -259,7 +277,7 @@ class PostgresPipeline:
                     if row['kind'] == 'digest':
                         self._commit_digest(conditions, data, result, records[0], digest_base)
                     else:
-                        self._commit_core(conditions, data, result, records, merged)
+                        self._commit_core(conditions, data, result, records, now, space)
             except (AccountNotFound, SpaceNotFound, CommitOutcomeUnknown):
                 return True  # Deletion or the next claim resolves the durable outcome.
             except Exception as exc:

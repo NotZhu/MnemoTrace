@@ -162,15 +162,15 @@ _FACT = {
     "categories": _list(_choice(*CATEGORIES)), "categories_source": _choice(*CATEGORY_SOURCES),
     "subject_id": _ID_OR_NULL, "object_id": _ID_OR_NULL,
     "subject_type": _ID_OR_NULL, "object_type": _ID_OR_NULL,
-    "relation_id": _identifier,
+    "relation_id": _ID_OR_NULL,
     "retention": _choice(*RETENTIONS),
     "invalid_at": _TIME_OR_NULL, "created_at": _number, "expired_at": _TIME_OR_NULL,
     "supersedes": _list(_identifier), "provenance": _STRINGS, "last_access": _number,
     "access_count": _count,
 }
 def _endpoint_pair(value, path):
-    _list(_identifier)(value, path)
-    if len(value) != 2:
+    _list(_ID_OR_NULL)(value, path)
+    if len(value) != 2 or value[0] is None:
         _fail(path, "expected two endpoint types")
 
 
@@ -182,6 +182,9 @@ _RECORDS = {
     "Relation": {"id": _identifier, "subject_id": _identifier, "predicate": _identifier,
                  "object_id": _identifier, "fact_id": _identifier,
                  "valid_at": _TIME_OR_NULL, "invalid_at": _TIME_OR_NULL},
+    "EntityType": {"id": _identifier, "meaning": _identifier, "user_id": _identifier},
+    "EntityAlias": {"id": _identifier, "entity_id": _identifier, "fact_id": _identifier,
+                    "source_id": _identifier, "name": _identifier, "sensitive": _boolean, "user_id": _identifier},
     "RelationType": {"id": _identifier, "user_id": _identifier, "predicate": _identifier,
                      "meaning": _identifier, "direction": _choice("forward", "symmetric"),
                      "endpoint_types": _list(_endpoint_pair)},

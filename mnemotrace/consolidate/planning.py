@@ -10,6 +10,7 @@ from ..categories import CATEGORIES, normalize_categories
 from ..extraction import ExtractionResponseError
 from ..types import validate_retention
 from .pipeline import content_hash, source
+from .ontology import validate_hints
 WINDOW_PREFIX = 'MNEMOTRACE_WINDOW\n'
 
 OMITTED = '\n[中间原文已省略；仅根据可见首尾处理]\n'
@@ -45,7 +46,9 @@ COMPENSATION = '\n本次仅补缺失摘要；只返回 {"digests":[{"source_id":
 
 
 def system_prompt(policy='', compensation=False, operation='extract'):
-    return SYSTEM + "\n允许的 categories 标识：" + ", ".join(CATEGORIES) + '\n' + policy + (COMPENSATION if compensation or operation == 'digest' else '')
+    from .ontology import EXTRACTION_INSTRUCTIONS
+    ontology = EXTRACTION_INSTRUCTIONS if operation == 'extract' and not compensation else ''
+    return SYSTEM + ontology + "\n允许的 categories 标识：" + ", ".join(CATEGORIES) + '\n' + policy + (COMPENSATION if compensation or operation == 'digest' else '')
 
 
 def request(data, config):
@@ -62,8 +65,10 @@ def input_size(data, config, policy=''):
         return len((prompt + system).encode('utf-8'))
     # Reserve the compensation protocol too, so a persisted cropped window can
     # be retried with exactly the same visible text under the same input limit.
-    return len((system_prompt(policy, compensation=True)
-                + request(data, config)).encode('utf-8'))
+    overhead = max(len(system_prompt(policy, compensation=compensation,
+                                    operation=data['operation']).encode('utf-8'))
+                   for compensation in (False, True))
+    return overhead + len(request(data, config).encode('utf-8'))
 
 
 def validate_config(config):
@@ -350,7 +355,7 @@ def validate_response(raw, data, config, *, compensation=False):
         for item in result['facts']:
             fields = {'subject', 'predicate', 'object', 'text', 'source_ids'}
             metadata = {'categories', 'sensitive', 'time_kind', 'effective_date', 'retention'}
-            if (not isinstance(item, dict) or set(item) != fields | metadata):
+            if (not isinstance(item, dict) or set(item) not in (fields | metadata, fields | metadata | {'ontology'})):
                 raise ValueError()
             if any(not isinstance(item[k], str) or not item[k].strip() for k in fields - {'source_ids'}):
                 raise ValueError()
@@ -367,6 +372,8 @@ def validate_response(raw, data, config, *, compensation=False):
                 raise ValueError()
             if source_anchor(refs, pending, data['source_kind']) is None:
                 raise ValueError('Missing eligible pending source')
+            if 'ontology' in item:
+                validate_hints(item['ontology'])
         wanted = {s['id']: s for s in data['pending'] if data['operation'] == 'digest' or s['needs_digest']}
         duplicates = set()
         seen = set()

@@ -6,7 +6,7 @@ from .base import LLM, complete_result
 def one_attempt(llm):
     from .litellm_llm import LiteLLMClient
     from .cache import CachedLLM
-    if isinstance(llm, CachedLLM):
+    if isinstance(llm, (CachedLLM, ModelMeter)):
         llm = copy(llm)
         llm.inner = one_attempt(llm.inner)
     if isinstance(llm, LiteLLMClient):

@@ -78,7 +78,7 @@ def _kill_at_checkpoint(child):
 
 def _model(calls, pause=None):
     def respond(prompt, system=None):
-        if 'pair id' in (system or ''):
+        if 'MNEMOTRACE_FACT_COMPARISON' in (system or ''):
             from tests.model_fixtures import adjudication_reply
             return adjudication_reply(prompt)
         request = json.loads(prompt.removeprefix(WINDOW_PREFIX))

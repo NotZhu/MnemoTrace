@@ -3,7 +3,7 @@ from __future__ import annotations
 from tests.model_fixtures import saved_outcome
 
 
-from mnemotrace.consolidate.outcomes import OUTCOME_PREDICATES, split_outcome_text
+from mnemotrace.consolidate.outcomes import split_outcome_text
 from tests.model_fixtures import MemoryEngine
 from mnemotrace.types import Fact
 

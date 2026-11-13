@@ -20,6 +20,7 @@ from mnemotrace.store.postgres.errors import (
     CommitOutcomeUnknown, DatabaseConfigurationError, DatabaseUnavailable, MessageConflict, VersionConflict,
 )
 from mnemotrace.worker import run_worker
+from tests.postgres.ontology_fixtures import mention, ontology_reply
 from tests.test_message_pipeline import PROPOSAL, REPORT, dialogue_evidence
 
 
@@ -36,11 +37,14 @@ def processing(runtime, spaces, user):
         calls = []
 
         def respond(prompt, system=''):
-            if 'pair id' in system:
+            if 'MNEMOTRACE_FACT_COMPARISON' in system:
                 if adjudicate is not None:
                     return adjudicate(prompt)
                 from tests.model_fixtures import adjudication_reply
                 return adjudication_reply(prompt)
+            if 'MNEMOTRACE_' in system:
+                return ontology_reply(prompt, system, {'prefers': ('prefers', False), 'lives_in': ('lives_in', False),
+                                                        'based_in': ('lives_in', False)})
             data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
             calls.append(data)
             if handle:
@@ -60,10 +64,17 @@ def processing(runtime, spaces, user):
 
 def test_assistant_evidence_stays_in_session_until_user_confirmation(processing):
     def adjudicate(prompt):
-        return json.dumps(dict(decisions=[dict(id=pair['id'], decision='conflict')
-                                          for pair in json.loads(prompt)]))
+        return json.dumps(dict(decisions=[dict(id=pair['id'], decision='conflict', reason='Synthetic comparison')
+                                          for pair in json.loads(prompt)['items']]))
 
-    memory, _ = processing(handle=dialogue_evidence, adjudicate=adjudicate)
+    def extract(data):
+        result = dialogue_evidence(data)
+        for fact in result['facts']:
+            fact['ontology'] = dict(subject=mention('person'), object=mention(),
+                                    meaning='Preferred default package manager', direction='forward')
+        return result
+
+    memory, _ = processing(handle=extract, adjudicate=adjudicate)
 
     def send(key, role, content, event_time):
         result = memory.remember_messages('chat', (MessageInput(key, role, content, event_time),))
@@ -308,16 +319,17 @@ def test_semantic_reconciliation_and_unordered_candidate(processing):
 
     def extract(data):
         item = data['pending'][0]
-        predicate, value = item['content'].split()
+        predicate, value = item['content'].split()[-2:]
         fact = dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='Synthetic person', predicate=predicate, object=value,
                     text=f'Synthetic person {predicate} {value}',
-                    source_ids=[item['id']])
+                    source_ids=[item['id']], ontology=dict(subject=mention('person'), object=mention('location'),
+                                                          meaning='Primary residence', direction='forward'))
         return dict(facts=[fact], digests=[])
 
     from tests.test_fact_adjudication import decisions
     memory, _ = processing(embedder=SemanticEmbedder(), handle=extract, adjudicate=decisions)
-    old = MessageInput('old', 'user', 'lives_in Beijing', event_time=100)
-    new = MessageInput('new', 'user', 'based_in Shanghai', event_time=200)
+    old = MessageInput('old', 'user', 'Synthetic person lives_in Beijing', event_time=100)
+    new = MessageInput('new', 'user', 'Synthetic person based_in Shanghai', event_time=200)
     assert memory.remember_messages('chat', (old,), processing='immediate')['ok']
     historical, = memory.facts()
     assert memory.remember_messages('chat', (new,), processing='immediate')['ok']
@@ -326,7 +338,7 @@ def test_semantic_reconciliation_and_unordered_candidate(processing):
     assert memory.get_fact(historical.id).invalid_at == 200
     assert memory.facts(FactQuery(valid_at=150))[0].id == historical.id
 
-    attempt = MessageInput('unordered', 'user', 'based_in Shenzhen', event_time=200)
+    attempt = MessageInput('unordered', 'user', 'Synthetic person based_in Shenzhen', event_time=200)
     assert memory.remember_messages('chat', (attempt,), processing='immediate')['ok']
     assert tuple(fact.id for fact in memory.facts()) == (current.id,)
     conflict, = memory.conflicts()

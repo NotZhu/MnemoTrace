@@ -9,6 +9,7 @@ from .config import Config
 from .consolidate.outcomes import OUTCOME_PREDICATES, split_outcome_text
 from .consolidate.policy import POLICY_DEFAULTS
 from .llm import providers
+from .llm.execution import ModelMeter
 from .memory import Memory
 from .metrics import Metrics, timed
 from .store.contracts import FactQuery, FactState, MessageInput
@@ -144,7 +145,8 @@ class MemoryService:
         self.database.close()
 
     def memory(self, context):
-        return Memory(self.database, context, config=self.config, llm=self.llm,
+        model = ModelMeter(self.llm, self.metrics) if self.llm is not None else None
+        return Memory(self.database, context, config=self.config, llm=model,
                               embedder=self.embedder, embedding_model=self.embedding_model)
 
     @timed('remember_messages')
@@ -387,7 +389,14 @@ class MemoryService:
             facts = {row.ref.record_id: domain(row) for row in view.facts_by_ids(
                 [relation.fact_id for relation in relations], query)}
         ids = {value for relation in relations for value in (relation.subject_id, relation.object_id)}
-        return dict(nodes=[dict(id=e.id, name=e.name, type=e.type) for e in map(domain, nodes) if e.id in ids],
+        names = {}
+        if not include_sensitive:
+            for relation in relations:
+                fact = facts[relation.fact_id]
+                names.setdefault(relation.subject_id, fact.subject)
+                names.setdefault(relation.object_id, fact.object)
+        return dict(nodes=[dict(id=e.id, name=names.get(e.id, e.name), type=e.type)
+                           for e in map(domain, nodes) if e.id in ids],
                     edges=[dict(source=r.subject_id, target=r.object_id, predicate=r.predicate, fact_id=r.fact_id,
                                 live=facts[r.fact_id].is_valid_at(at), fact_text=facts[r.fact_id].text,
                                 provenance=facts[r.fact_id].provenance, valid_at=r.valid_at, invalid_at=r.invalid_at,
@@ -492,9 +501,12 @@ class MemoryService:
                 yield ('"' if kind == ENTITY else ',"') + name + '":['
                 cursor, first = None, True
                 while batch := view.export_graph(kind, include_sensitive=include_sensitive, after_id=cursor):
+                    public_names = (view.public_entity_names([row.ref.record_id for row in batch])
+                                    if kind == ENTITY and not include_sensitive else {})
                     for item in map(domain, batch):
                         if kind == ENTITY:
-                            payload = dict(id=item.id, name=item.name, type=item.type)
+                            name = item.name if include_sensitive else public_names.get(item.id, '')
+                            payload = dict(id=item.id, name=name, type=item.type)
                         else:
                             payload = dict(source=item.subject_id, target=item.object_id, predicate=item.predicate,
                                            fact_id=item.fact_id, valid_at_h=fmt_date(item.valid_at),

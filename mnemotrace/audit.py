@@ -35,9 +35,9 @@ def graph_audit(view, limit):
         edges = view.audit_edges([fact.id for fact in facts])
         for fact in facts:
             edge = edges.get(fact.id)
-            if fact.relation_id not in definitions:
+            if fact.relation_id and fact.relation_id not in definitions:
                 definitions[fact.relation_id] = domain(view.get(RELATION_TYPE, fact.relation_id))
-            eligible = projects_fact(fact, definitions[fact.relation_id])
+            eligible = projects_fact(fact, definitions.get(fact.relation_id))
             if edge is None:
                 if eligible:
                     add('missing_edge', fact_id=fact.id)

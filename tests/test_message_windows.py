@@ -78,9 +78,10 @@ def test_crop_reserves_actual_policy_and_compensation_protocol():
     data = plan(mem, tasks, next(iter(tasks.state['sessions'].values())), 1)
     assert data['pending'][0]['partial']
     policy = mem.policy.get('extract_system', '') + mem.policy.get('extract_instruction', '')
-    actual = system_prompt(policy, compensation=True) + request(data, mem.config)
-    assert len(actual.encode('utf-8')) == input_size(data, mem.config, policy)
-    assert len(actual.encode('utf-8')) <= mem.config.extraction_max_input_bytes
+    sizes = [len((system_prompt(policy, compensation=compensation) + request(data, mem.config)).encode('utf-8'))
+             for compensation in (False, True)]
+    assert max(sizes) == input_size(data, mem.config, policy)
+    assert all(size <= mem.config.extraction_max_input_bytes for size in sizes)
 
 
 @pytest.mark.history_import

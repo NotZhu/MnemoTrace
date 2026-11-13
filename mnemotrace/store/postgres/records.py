@@ -3,16 +3,16 @@ from dataclasses import fields
 from datetime import datetime, timezone
 import json
 
-from ...types import Conflict, Entity, Episode, Fact, Relation, RelationType
+from ...types import Conflict, Entity, EntityAlias, EntityType, Episode, Fact, Relation, RelationType
 from ...retrieve.lexical import lexical_terms
 from ..contracts import RecordKind, RecordRef, StoredRecord
 from .database import identifier
 from .errors import DataCorruption
 
-SOURCE, FACT, ENTITY, RELATION, CONFLICT, RELATION_TYPE = RecordKind
-MODELS = dict(zip(RecordKind, (Episode, Fact, Entity, Relation, Conflict, RelationType), strict=True))
+SOURCE, FACT, ENTITY, RELATION, CONFLICT, RELATION_TYPE, ENTITY_TYPE, ENTITY_ALIAS = RecordKind
+MODELS = dict(zip(RecordKind, (Episode, Fact, Entity, Relation, Conflict, RelationType, EntityType, EntityAlias), strict=True))
 TABLES = dict(zip(RecordKind, (
-    'sources', 'facts', 'entities', 'graph_relations', 'conflicts', 'relation_types',
+    'sources', 'facts', 'entities', 'graph_relations', 'conflicts', 'relation_types', 'entity_types', 'entity_aliases',
 ), strict=True))
 TARGET_COLUMNS = {SOURCE: 'source_id', FACT: 'fact_id', ENTITY: 'entity_id'}
 TIMES = frozenset(('event_time', 'ingested_at', 'created_at', 'valid_at', 'invalid_at',
@@ -85,6 +85,8 @@ def columns(record, values):
     if kind == ENTITY:
         data['normalized_name'] = values['name'].lower()
         data['anchor_terms'] = anchor_terms(values['name'])
+    if kind == ENTITY_ALIAS:
+        data['normalized_name'] = values['name'].strip().lower()
     if kind == FACT:
         data['subject_key'] = values['subject'].lower()
         data['predicate_key'] = values['predicate'].lower()
