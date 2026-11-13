@@ -52,7 +52,7 @@ def claim(memory, obj, at, *, subject=None, relation=None, **fields):
                 user_id=memory.context.user_id, valid_at=at,
                 subject_id=subject.id if subject else None,
                 object_id=obj.id if isinstance(obj, Entity) else None,
-                relation_id=relation.id if relation else None, **fields)
+                relation_id=relation.id if relation else '', **fields)
 
 
 def source(memory, message_id, *, at=None):

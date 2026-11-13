@@ -78,6 +78,8 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 
 `POST /v1/recall` 使用混合召回，可传 `state` 和 `valid_at` 选择历史视图。显式时间与 `as_of` 互斥。
 
+事实的 `relation_id` 为 null 时，普通检索仍可返回事实和来源。谓词筛选、聚合及图路径使用已归一的关系。
+
 | 路径 | 请求与返回 |
 | --- | --- |
 | `POST /v1/aggregate` | 必填 `space_id` 和 `predicate`，`operation` 为 `count` 或 `count_distinct`。可传 `subject`、有效时间区间 `[start,end)`、事实状态与时间、`redact_sensitive`、`limit`。返回 `count`、证据 `facts`、摘要 `candidates` 及 `limitations`。空匹配时可传 `query` 检索摘要候选。 |

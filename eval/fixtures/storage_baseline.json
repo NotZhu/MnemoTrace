@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "clock": 1710368000.0,
   "config": {
     "top_k": 5,
@@ -139,18 +139,18 @@
     {
       "id": "mh2",
       "category": "multi_hop",
-      "question": "What is my sister's profession?",
-      "gold": "pediatrician",
+      "question": "Where does my sister live?",
+      "gold": "Seattle",
       "storage": "memory",
       "ok": true,
-      "answer": "pediatrician",
+      "answer": "Seattle",
       "status": "answered",
       "top_fact_object": "Maya",
       "abstained": false,
-      "tokens": 6,
+      "tokens": 7,
       "fact_ids": [
         "fact-3",
-        "fact-2"
+        "fact-1"
       ],
       "naive_ok": true,
       "naive_tokens": 29
@@ -240,7 +240,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-2"
           ]
@@ -256,7 +256,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -272,7 +272,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -303,7 +303,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -319,7 +319,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -348,7 +348,7 @@
           "invalid_at": 1705184000.0,
           "created_at": 1710368000.0,
           "expired_at": 1710368000.0,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -364,7 +364,9 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": "fact-1",
+          "supersedes": [
+            "fact-1"
+          ],
           "provenance": [
             "source-2"
           ]
@@ -380,7 +382,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -409,7 +411,7 @@
           "invalid_at": 1703456000.0,
           "created_at": 1710368000.0,
           "expired_at": 1710368000.0,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -425,7 +427,9 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": "fact-1",
+          "supersedes": [
+            "fact-1"
+          ],
           "provenance": [
             "source-2"
           ]
@@ -441,7 +445,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -470,7 +474,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-2"
           ]
@@ -486,7 +490,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-2"
           ]
@@ -502,7 +506,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -528,7 +532,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-2"
           ]
@@ -544,7 +548,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -560,7 +564,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -568,7 +572,7 @@
       ],
       "ranked": [
         "fact-3",
-        "fact-2"
+        "fact-1"
       ],
       "scores": [],
       "via": "multi-hop"
@@ -586,7 +590,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -602,7 +606,7 @@
           "invalid_at": 1704320000.0,
           "created_at": 1710368000.0,
           "expired_at": 1710368000.0,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -618,7 +622,9 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": "fact-2",
+          "supersedes": [
+            "fact-2"
+          ],
           "provenance": [
             "source-2"
           ]
@@ -647,7 +653,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -663,7 +669,7 @@
           "invalid_at": 1704320000.0,
           "created_at": 1710368000.0,
           "expired_at": 1710368000.0,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -679,7 +685,9 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": "fact-2",
+          "supersedes": [
+            "fact-2"
+          ],
           "provenance": [
             "source-2"
           ]
@@ -708,7 +716,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -724,7 +732,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -747,7 +755,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]
@@ -763,7 +771,7 @@
           "invalid_at": null,
           "created_at": 1710368000.0,
           "expired_at": null,
-          "supersedes": null,
+          "supersedes": [],
           "provenance": [
             "source-1"
           ]

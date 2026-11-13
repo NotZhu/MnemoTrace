@@ -86,6 +86,9 @@ def config_identity(mem, *, include_embedding=True):
     def provider_identity(model, seen=()):
         if id(model) in seen:
             raise ValueError('Cyclic model wrapper configuration')
+        from ..llm.execution import ModelMeter
+        if isinstance(model, ModelMeter):
+            return provider_identity(model.inner, (*seen, id(model)))
         identity = [type(model).__module__, type(model).__qualname__,
                     *[setting(getattr(model, k, None)) for k in ('model', 'temperature', 'max_tokens', 'kwargs', 'model_tag')]]
         from ..llm.cache import CachedLLM

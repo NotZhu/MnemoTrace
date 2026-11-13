@@ -187,7 +187,7 @@ export interface FactMetadata {
 }
 
 export interface Fact extends FactMetadata {
-  relation_id: string
+  relation_id: string | null
   subject_id: string | null
   object_id: string | null
   subject_type: string | null
@@ -426,7 +426,7 @@ export interface ImportSessionInput {
 
 
 export interface MemoryExportFact extends FactMetadata {
-  relation_id: string
+  relation_id: string | null
   subject_id: string | null
   object_id: string | null
   subject_type: string | null

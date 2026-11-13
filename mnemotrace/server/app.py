@@ -11,7 +11,7 @@ try:
     from fastapi.exceptions import RequestValidationError
     from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
-    from pydantic import ConfigDict, StrictBool, BaseModel, ConfigDict, Field, StrictBool, model_validator
+    from pydantic import BaseModel, ConfigDict, Field, StrictBool
     from starlette.exceptions import HTTPException as StarletteHTTPException
 except Exception as exc:  # noqa: BLE001
     raise SystemExit("the server needs FastAPI — `pip install \"mnemotrace-memory[server]\"`") from exc

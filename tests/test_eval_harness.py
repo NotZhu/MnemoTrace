@@ -63,6 +63,9 @@ def test_synthetic_harness_jsonl_raw_log_contains_items_and_summary(tmp_path):
     first = records[0]
     assert {"id", "category", "question", "gold", "ok", "tokens", "latency_ms", "naive_ok"} <= first.keys()
     assert (first['status'], first['answer'], first['top_fact_object']) == ('evidence_only', '', 'Spotify')
+    paths = {row['id']: (row['answer'], len(row['fact_ids'])) for row in records[:-1]
+             if row['category'] == 'multi_hop'}
+    assert paths == {'mh1': ('Netflix', 2), 'mh2': ('Seattle', 2)}
 
 
 def test_report_reads_synthetic_harness_jsonl(tmp_path):

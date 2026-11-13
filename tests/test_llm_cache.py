@@ -101,7 +101,7 @@ def test_owner_subject_does_not_depend_on_extraction_order():
         "you can call me Evan": [{"subject":"user","predicate":"name","object":"Evan"}],
     }
     def complete(prompt, system):
-        if 'pair id' in system:
+        if 'MNEMOTRACE_FACT_COMPARISON' in system:
             from tests.model_fixtures import adjudication_reply
             return adjudication_reply(prompt)
         from mnemotrace.consolidate.planning import WINDOW_PREFIX

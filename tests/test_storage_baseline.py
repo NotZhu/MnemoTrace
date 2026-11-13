@@ -13,6 +13,10 @@ def test_reference_is_deterministic_and_preserves_fact_history_and_rankings():
     rows, summary, actual = observe()
     assert len(rows) == 10 and summary['accuracy'] == 100
     assert summary['latency_p95_ms'] >= summary['latency_p50_ms'] >= 0
+    facts = actual['observations']['tmp2']['facts']
+    employers = {fact['object']: fact for fact in facts if fact['predicate'] == 'works_at'}
+    assert employers['IBM']['supersedes'] == []
+    assert employers['Oracle']['supersedes'] == [employers['IBM']['id']]
     expected = json.loads((Path(__file__).parents[1] / 'eval/fixtures/storage_baseline.json').read_text(encoding='utf-8'))
     assert actual == expected
     assert observe()[2] == actual

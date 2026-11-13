@@ -1,7 +1,7 @@
 """Offline algorithm engine for ingestion, consolidation, and retrieval."""
 from __future__ import annotations
 
-from copy import copy, deepcopy
+from copy import deepcopy
 import time
 from typing import Callable, Optional
 
@@ -1128,7 +1128,7 @@ class MemoryEngine:
                 continue
             if scope.subject is not None and fact.subject.lower() != scope.subject.lower():
                 continue
-            if scope.predicate is not None and fact.predicate.lower() != scope.predicate.lower():
+            if scope.predicate is not None and (fact.relation_id is None or fact.predicate.lower() != scope.predicate.lower()):
                 continue
             if scope.categories and not set(scope.categories).intersection(fact.categories):
                 continue

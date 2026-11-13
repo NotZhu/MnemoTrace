@@ -13,7 +13,7 @@ _NON_SINGLE_LINE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def projects_fact(fact: Fact, definition=None) -> bool:
-    if not (fact.is_published() and fact.subject_id and fact.object_id):
+    if not (fact.is_published() and fact.relation_id and fact.subject_id and fact.object_id):
         return False
     if definition and definition.endpoint_types:
         endpoints = [fact.subject_type, fact.object_type]

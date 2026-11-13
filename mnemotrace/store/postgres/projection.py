@@ -26,7 +26,7 @@ class GraphProjection:
         old = self.sql.run(f'SELECT id,subject_id,object_id,predicate,valid_at,invalid_at,projection_version '
                            f'FROM mnemotrace.graph_relations WHERE {SCOPE} AND fact_id = %s',
                            (*self.sql.scope, fact_id)).fetchone()
-        definition = domain(self.sql.get(RELATION_TYPE, fact.relation_id))
+        definition = domain(self.sql.get(RELATION_TYPE, fact.relation_id)) if fact.relation_id else None
         if not projects_fact(fact, definition):
             if old is not None:
                 self.remove_fact_edges((fact_id,))

@@ -131,7 +131,7 @@ def test_native_missing_model_fails_without_waiting_for_retry():
 
 def test_late_unknown_and_older_history_cannot_replace_newer_source():
     def respond(prompt, system):
-        if 'pair id' in system:
+        if 'MNEMOTRACE_FACT_COMPARISON' in system:
             return decisions(prompt)
         result = json.loads(reply(prompt, system))
         for fact in result['facts']:
@@ -152,7 +152,7 @@ def test_late_unknown_and_older_history_cannot_replace_newer_source():
 ])
 def test_out_of_order_history_has_disjoint_intervals_and_a_complete_chain(arrivals, expected):
     def respond(prompt, system):
-        if 'pair id' in system:
+        if 'MNEMOTRACE_FACT_COMPARISON' in system:
             return decisions(prompt)
         result = json.loads(reply(prompt, system))
         for fact in result['facts']:
@@ -174,7 +174,7 @@ def test_out_of_order_history_has_disjoint_intervals_and_a_complete_chain(arriva
 
 def test_equal_time_facts_do_not_retire_each_other_in_model_order():
     def respond(prompt, system):
-        if 'pair id' in system:
+        if 'MNEMOTRACE_FACT_COMPARISON' in system:
             return decisions(prompt)
         result = json.loads(reply(prompt, system))
         for fact in result['facts']:

@@ -94,7 +94,7 @@ class Fact:
     # 与事实来源、管理分类及敏感标记独立；自动赋值由写入路径接入。
     categories: list[Category] = field(default_factory=list)
     categories_source: CategoriesSource = "unset"
-    relation_id: str | None = None
+    relation_id: str | None = ""
     subject_id: str | None = None
     object_id: str | None = None
     subject_type: str | None = None
@@ -105,7 +105,7 @@ class Fact:
     def __post_init__(self) -> None:
         validate_categories(self.categories, self.categories_source)
         validate_retention(self.retention)
-        if self.relation_id is None:
+        if self.relation_id == "":
             self.relation_id = relation_identifier(self.predicate)
         if self.id in self.supersedes or len(set(self.supersedes)) != len(self.supersedes):
             raise ValueError("Invalid direct predecessors")
@@ -155,12 +155,30 @@ class Entity:
 
 
 @dataclass
+class EntityType:
+    id: str
+    meaning: str
+    user_id: str = "default"
+
+
+@dataclass
+class EntityAlias:
+    id: str
+    entity_id: str
+    fact_id: str
+    source_id: str
+    name: str
+    sensitive: bool
+    user_id: str = "default"
+
+
+@dataclass
 class RelationType:
     predicate: str
     meaning: str
     user_id: str = "default"
     direction: Literal["forward", "symmetric"] = "forward"
-    endpoint_types: list[list[str]] = field(default_factory=list)
+    endpoint_types: list[list[str | None]] = field(default_factory=list)
     id: str | None = None
 
     def __post_init__(self):

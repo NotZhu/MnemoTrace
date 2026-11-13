@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -19,6 +19,7 @@ class EvalItem:
     answer: Optional[str]  # None => 期望拒答
     as_of_day: Optional[int] = None
     path: tuple[str, ...] = ()  # Explicit caller input: anchor followed by outbound predicates.
+    entity_types: dict[str, str] = field(default_factory=dict)
 
 
 ITEMS: list[EvalItem] = [
@@ -46,6 +47,7 @@ ITEMS: list[EvalItem] = [
         "mh1", "multi_hop",
         [("My name is Dora.", 0), ("My colleague Evan works at Netflix.", 1)],
         "Where does my colleague work?", "Netflix", path=("user", "colleague", "works_at"),
+        entity_types={"user": "person", "Evan": "person", "Netflix": "organization"},
     ),
     EvalItem(
         "mh2", "multi_hop",
@@ -54,7 +56,8 @@ ITEMS: list[EvalItem] = [
             ("Maya just moved to Seattle for a fellowship.", 1),
             ("I bought a new espresso machine and it's wonderful.", 2),
         ],
-        "What is my sister\x27s profession?", "pediatrician", path=("user", "sister", "occupation"),
+        "Where does my sister live?", "Seattle", path=("user", "sister", "lives_in"),
+        entity_types={"user": "person", "Maya": "person", "Seattle": "location"},
     ),
     EvalItem(
         "tmp1", "temporal",

@@ -12,7 +12,7 @@ export interface FactMetadata {
 }
 
 export interface MemoryFact extends FactMetadata {
-  relation_id: string
+  relation_id: string | null
   subject_id: string | null
   object_id: string | null
   subject_type: string | null

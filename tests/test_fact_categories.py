@@ -1,5 +1,4 @@
 """Fact metadata contracts, independent of the extraction model provider."""
-from tests.model_fixtures import seed_linked
 import json
 from dataclasses import asdict
 

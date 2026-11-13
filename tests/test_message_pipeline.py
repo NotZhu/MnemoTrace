@@ -12,7 +12,7 @@ def message(mid, content='Synthetic item', role='user', event_time=100):
 
 
 def reply(prompt, system):
-    if 'pair id' in system:
+    if 'MNEMOTRACE_FACT_COMPARISON' in system:
         from tests.model_fixtures import adjudication_reply
         return adjudication_reply(prompt)
     data = json.JSONDecoder().raw_decode(prompt.split(WINDOW_PREFIX, 1)[1])[0]
@@ -63,9 +63,9 @@ def dialogue_evidence(data):
 
 def test_assistant_evidence_is_retrievable_and_confirmation_has_user_time():
     def respond(prompt, system):
-        if 'pair id' in system:
-            return json.dumps(dict(decisions=[dict(id=pair['id'], decision='conflict')
-                                              for pair in json.loads(prompt)]))
+        if 'MNEMOTRACE_FACT_COMPARISON' in system:
+            return json.dumps(dict(decisions=[dict(id=pair['id'], decision='conflict', reason='Synthetic comparison')
+                                              for pair in json.loads(prompt)['items']]))
         return json.dumps(dialogue_evidence(json.loads(prompt.removeprefix(WINDOW_PREFIX))))
 
     mem = MemoryEngine(llm=FakeLLM(handler=respond))

@@ -13,7 +13,7 @@ from .errors import (
 )
 from .projection import GraphProjection
 from .reads import ReadView
-from .records import CONFLICT, ENTITY, FACT, RELATION, RELATION_TYPE, SOURCE, SCOPE, ScopedSQL, domain
+from .records import CONFLICT, ENTITY, ENTITY_ALIAS, ENTITY_TYPE, FACT, RELATION, RELATION_TYPE, SOURCE, SCOPE, ScopedSQL, domain
 from .writes import check_lease, check_version, commit_task, enqueue, invalidate
 from .writes import save_embedding, store_messages, write
 
@@ -82,7 +82,7 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
         if removed.rowcount != 1:
             raise VersionConflict('Pending conflict changed')
         changed = True
-    rank = {kind: index for index, kind in enumerate((SOURCE, RELATION_TYPE, ENTITY, FACT, CONFLICT, RELATION))}
+    rank = {kind: index for index, kind in enumerate((SOURCE, ENTITY_TYPE, RELATION_TYPE, ENTITY, FACT, ENTITY_ALIAS, CONFLICT, RELATION))}
     for item in sorted(changes.writes, key=lambda item: (rank[item.ref.kind], item.ref.record_id)):
         written, profile_changed = write(sql, item, graph)
         changed |= written

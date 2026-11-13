@@ -8,7 +8,7 @@ from ..contracts import OperationKind, OperationStats
 from .errors import DatabaseConstraintError, MessageConflict, VersionConflict
 from .lexical import project_document, project_text
 from .records import (
-    CONFLICT, ENTITY, FACT, RELATION_TYPE, SOURCE, SCOPE, TARGET_COLUMNS,
+    CONFLICT, ENTITY, ENTITY_ALIAS, FACT, RELATION_TYPE, SOURCE, SCOPE, TARGET_COLUMNS,
     domain, timestamp,
 )
 
@@ -86,6 +86,8 @@ def write(sql, change, graph):
     record = change.record
     kind, record_id = record.ref.kind, record.ref.record_id
     previous = sql.get(kind, record_id)
+    if kind == ENTITY_ALIAS and previous is not None and domain(previous) == domain(record):
+        return False, False
     if (previous.record_version if previous else None) != change.expected_version:
         raise VersionConflict('Record version changed')
     old = asdict(domain(previous)) if previous else None
@@ -130,6 +132,13 @@ def write(sql, change, graph):
             fact = sql.get(FACT, current[side])
             if fact is None or fact.record_version != current[side + '_version']:
                 raise VersionConflict('Fact changed before the conflict was queued')
+    if kind == ENTITY_ALIAS:
+        parent = sql.get(FACT, current['fact_id'])
+        if parent is None:
+            raise DatabaseConstraintError('Alias evidence must reference a stored fact')
+        fact = domain(parent)
+        if current['entity_id'] not in (fact.subject_id, fact.object_id):
+            raise DatabaseConstraintError('Alias evidence must link the same entity')
     sql.write_record(record, insert=previous is None)
     if kind == FACT and (old is None or text_changed or current['valid_at'] != old['valid_at']):
         project_text(sql, kind, record_id, record.content_version, current)

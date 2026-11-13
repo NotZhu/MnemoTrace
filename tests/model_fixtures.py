@@ -63,21 +63,28 @@ def replay_window(prompt, system, invoke):
     return json.dumps(result, ensure_ascii=False)
 
 
+def comparison_items(prompt):
+    data = json.loads(prompt)
+    return [dict(item, first=data['facts'][item['first']], second=data['facts'][item['second']])
+            for item in data['items']]
+
+
 def adjudication_reply(prompt):
     """Fixed decisions for the legacy consumer fixtures; native tests specify verdicts."""
     decisions = []
-    for pair in json.loads(prompt):
+    for pair in comparison_items(prompt):
         first, second = pair['first'], pair['second']
         replaces = first['predicate'] == second['predicate'] and second['predicate'] in {'works_at', 'lives_in', 'current_city', 'occupation', 'works_remotely', 'favorite_food', 'favorite_color', 'favorite_drink', 'studying', 'job_title', 'does_yoga'}
         reverses = ({first['predicate'], second['predicate']} in ({'likes', 'dislikes'}, {'loves', 'dislikes'})
                     and first['object'] == second['object'])
-        decisions.append(dict(id=pair['id'], decision='conflict' if replaces or reverses else 'coexists'))
+        decisions.append(dict(id=pair['id'], decision='conflict' if replaces or reverses else 'coexists',
+                              reason='Synthetic comparison'))
     return json.dumps(dict(decisions=decisions))
 
 
 class RecordedLLM:
     def complete(self, prompt, system='', **kwargs):
-        if prompt.startswith('[') and system and 'pair id' in system:
+        if system.startswith('MNEMOTRACE_FACT_COMPARISON'):
             return adjudication_reply(prompt)
         if window_input(prompt) is not None:
             return replay_window(prompt, system, self.complete)
@@ -99,7 +106,7 @@ class FixtureProtocol:
         self.model = model
 
     def complete(self, prompt, **kwargs):
-        if prompt.startswith('[') and 'pair id' in (kwargs.get('system') or ''):
+        if (kwargs.get('system') or '').startswith('MNEMOTRACE_FACT_COMPARISON'):
             return adjudication_reply(prompt)
         if window_input(prompt) is not None:
             return replay_window(prompt, kwargs.get('system', ''), self.complete)
