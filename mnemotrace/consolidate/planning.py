@@ -45,10 +45,16 @@ digest_required 和 digest_max_chars 位于请求规则中；不得给短消息�
 COMPENSATION = '\n本次仅补缺失摘要；只返回 {"digests":[{"source_id":"...","text":"..."}]}。'
 
 
-def system_prompt(policy='', compensation=False, operation='extract'):
-    from .ontology import EXTRACTION_INSTRUCTIONS
-    ontology = EXTRACTION_INSTRUCTIONS if operation == 'extract' and not compensation else ''
-    return SYSTEM + ontology + "\n允许的 categories 标识：" + ", ".join(CATEGORIES) + '\n' + policy + (COMPENSATION if compensation or operation == 'digest' else '')
+def system_prompt(policy='', compensation=False, operation='extract', *, typed=False):
+    from .ontology import EXTRACTION_INSTRUCTIONS, TYPED_EXTRACTION_INSTRUCTIONS
+    system = SYSTEM
+    if operation == 'extract' and not compensation:
+        if typed:
+            system = system.replace('subject、predicate（英文 snake_case）、object', 'subject、object')
+            system += TYPED_EXTRACTION_INSTRUCTIONS
+        else:
+            system += EXTRACTION_INSTRUCTIONS
+    return system + "\n允许的 categories 标识：" + ", ".join(CATEGORIES) + '\n' + policy + (COMPENSATION if compensation or operation == 'digest' else '')
 
 
 def request(data, config):
@@ -66,7 +72,7 @@ def input_size(data, config, policy=''):
     # Reserve the compensation protocol too, so a persisted cropped window can
     # be retried with exactly the same visible text under the same input limit.
     overhead = max(len(system_prompt(policy, compensation=compensation,
-                                    operation=data['operation']).encode('utf-8'))
+                                    operation=data['operation'], typed='entity_types' in data).encode('utf-8'))
                    for compensation in (False, True))
     return overhead + len(request(data, config).encode('utf-8'))
 
@@ -352,14 +358,19 @@ def validate_response(raw, data, config, *, compensation=False):
         result = dict(facts=obj.get('facts', []), digests={})
         sources = {s['id']: s for s in (*data['context'], *data['pending'])}
         pending = {s['id']: s for s in data['pending']}
+        typed = 'entity_types' in data
         for item in result['facts']:
-            fields = {'subject', 'predicate', 'object', 'text', 'source_ids'}
+            fields = {'subject', 'object', 'text', 'source_ids'}
+            if not typed:
+                fields.add('predicate')
             metadata = {'categories', 'sensitive', 'time_kind', 'effective_date', 'retention'}
-            if (not isinstance(item, dict) or set(item) not in (fields | metadata, fields | metadata | {'ontology'})):
+            shapes = (fields | metadata | {'ontology'},) if typed else (fields | metadata, fields | metadata | {'ontology'})
+            if not isinstance(item, dict) or set(item) not in shapes:
                 raise ValueError()
-            if any(not isinstance(item[k], str) or not item[k].strip() for k in fields - {'source_ids'}):
+            if any(not isinstance(item[k], str) or not item[k].strip()
+                   or (typed and '\x00' in item[k]) for k in fields - {'source_ids'}):
                 raise ValueError()
-            if len(item['predicate']) > 512:
+            if not typed and len(item['predicate']) > 512:
                 raise ValueError('Relation predicate exceeds the identifier limit')
             if not isinstance(item['categories'], list) or type(item['sensitive']) is not bool:
                 raise ValueError('Invalid fact labels')
@@ -372,7 +383,10 @@ def validate_response(raw, data, config, *, compensation=False):
                 raise ValueError()
             if source_anchor(refs, pending, data['source_kind']) is None:
                 raise ValueError('Missing eligible pending source')
-            if 'ontology' in item:
+            if typed:
+                from .ontology import validate_candidate
+                validate_candidate(item['ontology'], data['entity_types'])
+            elif 'ontology' in item:
                 validate_hints(item['ontology'])
         wanted = {s['id']: s for s in data['pending'] if data['operation'] == 'digest' or s['needs_digest']}
         duplicates = set()

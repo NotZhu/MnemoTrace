@@ -2,13 +2,17 @@
 import re
 
 
+def entity_name_key(name):
+    return name.strip().lower()
+
+
 def object_key(fact):
     return (fact.object_id, None) if fact.object_id else (None, fact.object)
 
 
-def same_assertion(existing, incoming, *, match_time=True):
+def same_assertion(existing, incoming, *, match_time=True, bound_relation=False):
     if (existing.withdrawn_at is not None or existing.slot != incoming.slot
-            or existing.predicate != incoming.predicate
+            or (not bound_relation and existing.predicate != incoming.predicate)
             or object_key(existing) != object_key(incoming)
             or existing.text != incoming.text):
         return False

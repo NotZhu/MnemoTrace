@@ -10,17 +10,18 @@ from types import SimpleNamespace
 
 from .llm.failures import retryable
 from .consolidate.operations import decode, prepare
-from .consolidate.facts import materialize_facts
-from .consolidate.ontology import VERSION as ONTOLOGY_VERSION, resolve
+from .consolidate.facts import extraction_entries, materialize_facts
+from .consolidate.ontology import ENTITY_TYPES, VERSION as ONTOLOGY_VERSION, resolve
 from .consolidate.pipeline import config_identity, content_hash
 from .consolidate.planning import (
-    OMITTED, empty_input, fit_digest, fit_window, input_size, output_size, supplied, user_start, validate_config,
+    OMITTED, empty_input, fit_digest, fit_window, fits_input, input_size, output_size, supplied, user_start, validate_config,
 )
 from .consolidate.postgres_merge import embed_texts, merge_records, write_record
 from .embed import EmbeddingUnavailable
 from .extraction import ExtractionError, ExtractionResponseError, ExtractionTruncatedError, require_llm
 from .llm.base import complete_result
 from .llm.execution import one_attempt
+from .retrieve.lexical import bm25_query_terms
 from .store.contracts import (
     ChangeSet, CommitConditions, CommitReceipt, EmbeddingWrite, ExtractionProduct, OperationStats, SourceVersion,
 )
@@ -43,6 +44,25 @@ def _row(ep, minimum):
     return dict(sequence=sequence, source_kind=ep.source_kind, position=position,
                 digest='pending' if digest_requested and len(ep.content) >= minimum and not ep.digest else 'not_needed',
                 core='completed' if ep.consolidated else 'pending', digest_requested=digest_requested)
+
+
+def _extract_input(episode):
+    return dict(empty_input(_route(episode)), entity_types=dict(ENTITY_TYPES))
+
+
+def _with_catalog(data, types, config, policy):
+    query = set().union(*(bm25_query_terms(source['content']) for source in (*data['pending'], *data['context'])))
+    ranked = []
+    for code, entity_type in types.items():
+        if code not in ENTITY_TYPES:
+            terms = bm25_query_terms(code + ' ' + entity_type.meaning)
+            ranked.append((len(query & terms), code, entity_type.meaning))
+    result = {**data, 'entity_types': dict(ENTITY_TYPES)}
+    for _, code, meaning in sorted(ranked, key=lambda row: (-row[0], row[1])):
+        result['entity_types'][code] = meaning
+        if not fits_input(result, config, policy):
+            del result['entity_types'][code]
+    return result
 
 
 def _coverage(item, data, ranges, policy, complete):
@@ -88,7 +108,7 @@ class PostgresPipeline:
             return False, False
         episodes.append(episode)
         policy = settings['extract_system'] + settings['extract_instruction']
-        data = fit_window(empty_input(_route(episode)),
+        data = fit_window(_extract_input(episode),
                           ((ep, _row(ep, self.config.digest_min_chars)) for ep in episodes), self.config, policy)
         fits = len(data['pending']) == len(episodes)
         return fits, (any(item['partial'] for item in data['pending'])
@@ -122,12 +142,14 @@ class PostgresPipeline:
         pending = [episode for episode in episodes if not episode.consolidated]
         first = pending[0]
         previous = view.preceding_sources(first, self.config.extraction_context_bytes)
-        data = empty_input(_route(first))
+        data = _extract_input(first)
         context = [supplied(ep, _row(ep, self.config.digest_min_chars), context=True)
                    for ep in map(domain, previous)]
         data['context'] = user_start(context) if first.source_kind == 'dialogue' else context
-        return fit_window(data, ((ep, _row(ep, self.config.digest_min_chars)) for ep in pending),
-                          self.config, settings.extract_system + settings.extract_instruction), (*records, *previous), None
+        policy = settings.extract_system + settings.extract_instruction
+        data = fit_window(data, ((ep, _row(ep, self.config.digest_min_chars)) for ep in pending), self.config, policy)
+        types = OntologyWorkset(self.dao, view.snapshot).types(view)
+        return _with_catalog(data, types, self.config, policy), (*records, *previous), None
 
     def _generate(self, lease, snapshot, settings, fingerprint, prepared):
         data, records, cached_digest = prepared
@@ -163,28 +185,22 @@ class PostgresPipeline:
 
     def _commit_core(self, conditions, data, result, records, now, space):
         context = conditions.snapshot.context
-        facts = materialize_facts(context.user_id, data, result, now)
-        input_hash = content_hash(data)
-        inputs = {'ft_' + content_hash([input_hash, item])[:24]: item for item in result['facts']}
         sources = {item['id']: item for item in (*data['context'], *data['pending'])}
-        entries = []
-        for fact in facts:
-            item = inputs[fact.id]
-            evidence = {key: sources[key]['content'] for key in fact.provenance
-                        if sources[key]['representation'] == 'raw'}
-            entries.append((fact, item.get('ontology'), evidence))
-        ontology = resolve(OntologyWorkset(self.dao, conditions.snapshot), entries,
+        candidates = extraction_entries(data, result)
+        entries = [(candidate_id, item, {key: sources[key] for key in item['source_ids']})
+                   for candidate_id, item in candidates]
+        ontology = resolve(OntologyWorkset(self.dao, conditions.snapshot), entries, data['entity_types'],
                            context.user_id, context.space_id, self.llm, self.config)
+        facts = materialize_facts(context.user_id, data, result, now, bindings=ontology.bindings, entries=candidates)
         with self.dao.read_snapshot() as view:
             if (view.snapshot.core_revision != conditions.snapshot.core_revision
                     or view.snapshot.space_generation != conditions.snapshot.space_generation):
                 raise VersionConflict('Fact workset changed during ontology resolution')
-            previous = view.merge_history(ontology.facts, symmetric=ontology.symmetric)
+            previous = view.merge_history(facts, symmetric=ontology.symmetric)
             vectors = view.fact_vectors(previous, *space) if space is not None else {}
-            existing_pairs = view.conflict_pairs(previous)
         writes, embeddings, links = merge_records(context, self.config, self.embedder, self.model, data,
-                                                  now, ontology.facts, previous, vectors, self.llm,
-                                                  existing_pairs, ontology=ontology)
+                                                  now, facts, previous, vectors, self.llm, (),
+                                                  ontology=ontology)
         by_id = {record.ref.record_id: record for record in records}
         completed = {record.ref.record_id for record in records if domain(record).consolidated}
         newly_completed = set()
@@ -265,6 +281,9 @@ class PostgresPipeline:
                         if reuse:
                             data, result = json.loads(product.input_json), json.loads(product.result_json)
                             if row['kind'] == 'extract':
+                                types = OntologyWorkset(self.dao, view.snapshot).types(view)
+                                policy = settings.extract_system + settings.extract_instruction
+                                reuse = data == _with_catalog(data, types, self.config, policy)
                                 now = view.at.timestamp()
                             else:
                                 digest_base = view.digest_version(records[0].ref.record_id)

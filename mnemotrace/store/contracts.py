@@ -578,8 +578,13 @@ def _validate_product_input(data: dict) -> None:
     """Validate prepared input even when an empty model result touches no fields."""
     from ..consolidate.planning import validate_view
     required = {'operation', 'source_kind', 'extract', 'pending', 'context', 'parts', 'candidates'}
-    if not isinstance(data, dict) or set(data) != required:
+    if not isinstance(data, dict) or set(data) not in (required, required | {'entity_types'}):
         raise ValueError('Missing prepared input fields')
+    if 'entity_types' in data:
+        from ..consolidate.ontology import validate_type_catalog
+        if data['operation'] != 'extract':
+            raise ValueError('Only extraction uses an entity type catalog')
+        validate_type_catalog(data['entity_types'])
     if data['operation'] not in {'extract', 'digest', 'conflicts'}:
         raise ValueError('Invalid model operation')
     if data['source_kind'] not in {'dialogue', 'note'} or type(data['extract']) is not bool:

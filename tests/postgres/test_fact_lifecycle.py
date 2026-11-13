@@ -179,27 +179,19 @@ def test_sensitivity_versions_and_erasure(memory):
         assert domain(view.get(RecordKind.FACT, right.id)).provenance == right.provenance
 
 
-def test_entity_ids_distinguish_same_names(memory):
+def test_entity_names_are_unique_after_normalization(memory):
+    from mnemotrace.store.postgres.errors import DatabaseConstraintError
+
     owner = memory.context.user_id
     first = Entity('Synthetic Twin', 'person', owner)
-    second = Entity('Synthetic Twin', 'person', owner)
+    second = Entity('  synthetic TWIN  ', 'person', owner)
     with memory.dao.read_snapshot() as view:
         snapshot = view.snapshot
-    memory._commit(snapshot, writes=tuple(memory._write(item) for item in (first, second)))
-    one = claim(memory, 'Left', 10, subject=first)
-    two = claim(memory, 'Right', 20, subject=second)
-    ingest(memory, one, two)
-    assert one.slot != two.slot
-    assert {item.subject_id for item in memory.facts()} == {first.id, second.id}
-    assert memory.entity(first.name) is None
-    with pytest.raises(VersionConflict, match="Ambiguous slot"):
-        memory.clear_slot(first.name, one.predicate, expect_count=2)
-    assert {entity.id for entity in memory.graph_entities(first.name)} == {first.id, second.id}
-    assert memory.follow_path(first.name, ['lives_in', 'located_in']).limitations == ('ambiguous_anchor',)
-    renamed = replace(claim(memory, 'Third', 30, subject=first), subject='A different mention')
-    ingest(memory, renamed, contradicts=[(one, renamed)])
-    assert memory.get_fact(one.id).invalid_at == 30
-    assert {item.id for item in memory.facts()} == {two.id, renamed.id}
+    with pytest.raises(DatabaseConstraintError):
+        memory._commit(snapshot, writes=tuple(memory._write(item) for item in (first, second)))
+    with memory.dao.read_snapshot() as view:
+        assert view.get(RecordKind.ENTITY, first.id) is None
+        assert view.get(RecordKind.ENTITY, second.id) is None
 
 
 def test_endpoint_signature_filters_projection_without_discarding_fact(memory):

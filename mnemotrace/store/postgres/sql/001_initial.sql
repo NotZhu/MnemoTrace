@@ -104,7 +104,7 @@ CREATE TABLE mnemotrace.entities (
     PRIMARY KEY(user_id, space_id, id),
     FOREIGN KEY(user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE
 );
-CREATE INDEX entities_name ON mnemotrace.entities(user_id, space_id, normalized_name);
+CREATE UNIQUE INDEX entities_name ON mnemotrace.entities(user_id, space_id, normalized_name);
 
 CREATE TABLE mnemotrace.entity_types (
     user_id mnemotrace.identifier NOT NULL,
@@ -129,6 +129,7 @@ CREATE TABLE mnemotrace.relation_types (
     content_version mnemotrace.positive_version NOT NULL,
     PRIMARY KEY(user_id, space_id, id),
     UNIQUE(user_id, space_id, id, predicate),
+    UNIQUE(user_id, space_id, predicate),
     FOREIGN KEY(user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE
 );
 

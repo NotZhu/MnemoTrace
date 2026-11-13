@@ -20,7 +20,7 @@ from mnemotrace.store.postgres.errors import (
     CommitOutcomeUnknown, DatabaseConfigurationError, DatabaseUnavailable, MessageConflict, VersionConflict,
 )
 from mnemotrace.worker import run_worker
-from tests.postgres.ontology_fixtures import mention, ontology_reply
+from tests.postgres.ontology_fixtures import mention, ontology_reply, typed_result
 from tests.test_message_pipeline import PROPOSAL, REPORT, dialogue_evidence
 
 
@@ -48,12 +48,12 @@ def processing(runtime, spaces, user):
             data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
             calls.append(data)
             if handle:
-                return json.dumps(handle(data))
+                return json.dumps(typed_result(handle(data)))
             if data['operation'] == 'digest':
                 return json.dumps({'digests': [{'source_id': data['pending'][0]['id'], 'text': 'Recorded preference'}]})
-            facts = [dict(categories=['food'], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='Synthetic person', predicate='likes', object='tea', text='Synthetic person likes tea',
+            facts = [dict(categories=['food'], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='user', predicate='likes', object='tea', text='Synthetic person likes tea',
                           source_ids=[item['id']]) for item in data['pending'] if item['role'] != 'assistant']
-            return json.dumps(dict(facts=facts, digests=[]))
+            return json.dumps(typed_result(dict(facts=facts, digests=[])))
 
         memory = Memory(database, context, llm=FakeLLM(handler=respond), config=config,
                                 embedder=embedder, embedding_model='fixture' if embedder else None)
@@ -341,10 +341,8 @@ def test_semantic_reconciliation_and_unordered_candidate(processing):
     attempt = MessageInput('unordered', 'user', 'Synthetic person based_in Shenzhen', event_time=200)
     assert memory.remember_messages('chat', (attempt,), processing='immediate')['ok']
     assert tuple(fact.id for fact in memory.facts()) == (current.id,)
-    conflict, = memory.conflicts()
-    assert {conflict.text_older, conflict.text_newer} == {
-        'Synthetic person based_in Shanghai', 'Synthetic person based_in Shenzhen',
-    }
+    assert not memory.conflicts()
+    assert memory.entity('Shenzhen') is None
 
 
 def test_rejected_source_erasure_preserves_digest_and_its_context(processing):
@@ -529,7 +527,7 @@ def test_final_receipt_includes_surviving_outputs_from_earlier_segments(processi
         item, = data['pending']
         if item['ranges'][0][0]:
             return dict(facts=[], digests=[])
-        facts = [dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='Synthetic person', predicate='likes', object=value,
+        facts = [dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='user', predicate='likes', object=value,
                       text=f'Synthetic person likes {value}', source_ids=[item['id']])
                  for value in ('tea', 'coffee')]
         return dict(facts=facts, digests=[])

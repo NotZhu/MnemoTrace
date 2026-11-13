@@ -25,15 +25,14 @@ def memory(runtime, spaces, user):
                   embedder=product_embedder(), embedding_model='test-vectors-v1')
 
 
-def test_exact_graph_query_distinguishes_names_with_surrounding_spaces(memory):
+def test_exact_graph_query_normalizes_names_with_surrounding_spaces(memory):
     padded, plain = ' Synthetic Alice ', 'Synthetic Alice'
     for subject in (padded, plain):
         seed_fact(memory, subject, 'works_at', 'Synthetic Lab', linked=True, text=f'{subject} works at Synthetic Lab.')
 
     padded_entity, = memory.graph_entities(padded.upper())
     plain_entity, = memory.graph_entities(plain)
-    assert (padded_entity.name, plain_entity.name) == (padded, plain)
-    assert padded_entity.id != plain_entity.id
+    assert padded_entity.id == plain_entity.id
 
 
 def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, spaces, user):
@@ -45,7 +44,7 @@ def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, s
     seed_fact(memory, 'user', 'sister', '王小明', linked=True, text='user sister 王小明')
     seed_fact(memory, '王小明', 'works_at', '月亮公司', linked=True, text='王小明 works at 月亮公司')
     seed_fact(memory, 'user', 'likes', '绿茶', linked=True, text='user likes 绿茶')
-    memory.remember('I live in Shenzhen.', 'chat')
+    assert memory.remember('I live in Shenzhen.', 'chat')['ok']
     with memory.dao.read_snapshot() as view:
         sql = view._sql
         assert not sql.run('SELECT 1 FROM mnemotrace.embeddings WHERE user_id=%s AND space_id=%s',

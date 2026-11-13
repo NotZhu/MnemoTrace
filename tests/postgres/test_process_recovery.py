@@ -77,7 +77,11 @@ def _kill_at_checkpoint(child):
 
 
 def _model(calls, pause=None):
+    from tests.postgres.ontology_fixtures import ontology_reply, typed_result
+
     def respond(prompt, system=None):
+        if 'MNEMOTRACE_RELATION_RESOLUTION' in (system or ''):
+            return ontology_reply(prompt, system)
         if 'MNEMOTRACE_FACT_COMPARISON' in (system or ''):
             from tests.model_fixtures import adjudication_reply
             return adjudication_reply(prompt)
@@ -90,11 +94,11 @@ def _model(calls, pause=None):
         facts = []
         for item in request['pending']:
             subject, _, employer = item['content'].rpartition(' at ')
-            subject = subject or 'Synthetic person'
+            subject = subject or 'user'
             facts.append(dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject=subject, predicate='works_at', object=employer,
                               text=f'{subject} works at {employer}',
                               source_ids=[item['id']]))
-        return json.dumps(dict(facts=facts, digests=[]))
+        return json.dumps(typed_result(dict(facts=facts, digests=[])))
 
     return FakeLLM(handler=respond)
 
@@ -213,7 +217,8 @@ def test_process_death_at_each_durable_checkpoint(memory, cluster, stage, commit
     source, = memory.list_sources()
     fact, = memory.facts()
     assert fact.provenance == [source.id]
-    assert memory.graph_relations(fact.id) == ()
+    edge, = memory.graph_relations(fact.id)
+    assert (edge.subject_id, edge.object_id) == (fact.subject_id, fact.object_id)
     assert memory.dao.receipt(recovered).fact_ids == (fact.id,)
     assert _accept(memory) == recovered
 
@@ -589,4 +594,4 @@ def test_wrong_embedding_dimension_keeps_the_saved_product_for_retry(memory, run
     assert memory.dao.receipt(operation_id) is None
     assert memory.flush_processing('chat', retry_failed=True)['ok']
     fact, = memory.facts()
-    assert memory.graph_relations(fact.id) == ()
+    assert len(memory.graph_relations(fact.id)) == 1

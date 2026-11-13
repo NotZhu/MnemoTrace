@@ -6,7 +6,7 @@ import pytest
 
 from mnemotrace import Config
 from mnemotrace.consolidate.adjudication import plan_merge
-from mnemotrace.consolidate.ontology import builtin, fits, resolve
+from mnemotrace.consolidate.ontology import ENTITY_TYPES, builtin, resolve
 from mnemotrace.extraction import ExtractionResponseError, ExtractionTruncatedError
 from mnemotrace.llm import Completion, FakeLLM
 from mnemotrace.types import Entity, Fact, RelationType
@@ -18,24 +18,17 @@ class Workset:
         self.nodes = {item.id: item for item in entities}
         self.edges = {item.id: item for item in relations}
 
-    def entities(self, names, limit):
-        found = [(item, [f'Identity evidence for {item.name}'], [item.name])
-                 for item in self.nodes.values() if item.name in names]
-        return found[:limit], len(found) <= limit
+    def entities(self, names):
+        return {item.name.lower(): item for item in self.nodes.values() if item.name.lower() in names}
 
-    def relations(self, predicate, meaning, left, right, limit):
-        return ([item for item in self.edges.values() if fits(item, left, right)
-                 or right and fits(item, right, left)][:limit],
-                any(item.predicate == predicate for item in self.edges.values()))
+    def relations(self, meaning, left, right, limit):
+        return {item.id: (item, None) for item in self.edges.values()}
 
-    def entity_type(self, code):
-        return None
+    def types(self):
+        return {}
 
-    def has_entity(self, key):
-        return key in self.nodes
-
-    def has_relation(self, key):
-        return key in self.edges
+    def relation_named(self, predicate):
+        return next(((item, None) for item in self.edges.values() if item.predicate == predicate), None)
 
 
 class BudgetLLM(FakeLLM):
@@ -48,10 +41,15 @@ class BudgetLLM(FakeLLM):
 def entry(index, name='Orbit', *, subject='user', predicate='works_at', subject_type='person',
           object_type='organization', text=None, sources=None):
     text = text or f'{subject} {predicate} {name}'
-    fact = Fact(subject, predicate, name, text=text, id=f'f{index}', valid_at=10, created_at=100,
-                provenance=[f's{index}'])
-    hints = assertion(subject, predicate, name, subject_type=subject_type, object_type=object_type)['ontology']
-    return fact, hints, sources or {f's{index}': text}
+    item = assertion(subject, predicate, name, subject_type=subject_type, object_type=object_type)
+    item.pop('predicate')
+    sources = sources or {f's{index}': text}
+    item.update(text=text, source_ids=list(sources))
+    return index, item, {key: dict(content=value, representation='raw') for key, value in sources.items()}
+
+
+def bind(work, entries, model, config=None):
+    return resolve(work, entries, ENTITY_TYPES, 'default', 'space', model, config or Config())
 
 
 def ontology_model(relations=None):
@@ -79,92 +77,72 @@ def merge(new, old=(), *, model=None, config=None, **kwargs):
 
 def test_empty_window_never_calls_model():
     model = ontology_model()
-    assert not resolve(Workset(), [], 'default', 'space', model, Config()).facts
+    assert not bind(Workset(), [], model).bindings
     assert merge([], model=model)[2]['model_calls'] == 0
     assert model.calls == []
 
 
-def test_more_than_eight_entities_and_relations_use_one_call_per_stage():
+def test_exact_names_and_more_than_eight_relations_fit_one_request():
     nodes = [Entity(f'Org {i}', 'organization', id=f'existing{i}') for i in range(10)]
-    entries = [entry(i, node.name) for i, node in enumerate(nodes)]
+    entries = [entry(i, node.name.upper()) for i, node in enumerate(nodes)]
     model = ontology_model()
-    result = resolve(Workset(nodes), entries, 'default', 'space', model, Config(joint_max_output_tokens=20000))
-    assert len(model.calls) == 2
-    assert [fact.object_id for fact in result.facts] == [node.id for node in nodes]
-    assert all(fact.relation_id == builtin('default', 'works_at').id for fact in result.facts)
-    assert all(len(json.loads(call['prompt'])['items']) == 10 for call in model.calls)
+    result = bind(Workset(nodes), entries, model)
+    assert len(model.calls) == 1
+    assert [fact['object_id'] for fact in result.bindings.values()] == [node.id for node in nodes]
+    assert all(fact['relation_id'] == builtin('default', 'works_at').id for fact in result.bindings.values())
 
 
-def test_window_shares_source_assertions_and_candidate_definitions():
-    node = Entity('Orbit', 'organization', id='existing')
-    text = 'user works_at Orbit and user likes Orbit'
+def test_window_shares_source_and_candidate_definitions():
+    text = 'user works at Orbit and user volunteers at Orbit'
     entries = [entry(i, predicate=predicate, sources={'source': text})
-               for i, predicate in enumerate(('works_at', 'likes'))]
-    model = ontology_model({'works_at': ('works_at', False), 'likes': ('likes', False)})
-    resolve(Workset([node]), entries, 'default', 'space', model, Config())
+               for i, predicate in enumerate(('works_at', 'volunteers_at'))]
+    model = ontology_model()
+    bind(Workset(), entries, model)
     data = json.loads(model.calls[0]['prompt'])
-    assert data['sources'] == {'source': text}
+    assert data['sources'] == {'source': dict(content=text, representation='raw')}
     assert len(data['assertions']) == 2
-    assert sum(item.get('name') == 'Orbit' and 'proposal' not in item
-               for item in data['candidates'].values()) == 1
+    assert sum(item.get('predicate') == 'works_at' for item in data['candidates'].values()) == 1
 
 
-@pytest.mark.parametrize('max_output,expected_calls', [(8192, 2), (1000, 3)])
+@pytest.mark.parametrize('max_output,expected_calls', [(8192, 1), (350, 3)])
 def test_same_window_proposals_are_reused_across_budget_splits(max_output, expected_calls):
     entries = [entry(i, predicate='volunteers_at') for i in range(3)]
-    model = ontology_model({'volunteers_at': ('volunteers_at', False)})
-    output = resolve(Workset(), entries, 'default', 'space', model, Config(joint_max_output_tokens=max_output))
-    assert len({fact.object_id for fact in output.facts}) == 1
-    assert None not in {fact.relation_id for fact in output.facts}
-    assert len({fact.relation_id for fact in output.facts}) == 1
-    assert len([item for item in output.records if isinstance(item, RelationType)]) == 1
+    model = ontology_model()
+    output = bind(Workset(), entries, model, Config(joint_max_output_tokens=max_output))
+    assert len({fact['object_id'] for fact in output.bindings.values()}) == 1
+    assert len({fact['relation_id'] for fact in output.bindings.values()}) == 1
+    assert len([value for value, _ in output.records(range(3)) if isinstance(value, RelationType)]) == 1
     assert len(model.calls) == expected_calls
 
 
-def test_homonyms_remain_distinct_when_model_selects_new():
-    node = Entity('Alex', 'organization', id='existing')
-    def respond(prompt, system):
-        data = json.loads(prompt)
-        if 'ENTITY' in system:
-            return json.dumps({'decisions': [dict(id=item['id'], decision='new', target=None, evidence='Alex')
-                                             for item in data['items']]})
-        return ontology_reply(prompt, system, {'works_at': ('works_at', False)})
-    output = resolve(Workset([node]), [entry(0, 'Alex'), entry(1, 'Alex')], 'default', 'space',
-                     FakeLLM(handler=respond), Config())
-    assert len({fact.object_id for fact in output.facts}) == 2
-    assert all(fact.object_id != node.id for fact in output.facts)
-
-
 def test_reversed_proposal_reuse_composes_orientation():
-    entries = [entry(0, 'user', subject='Orbit', predicate='employs', subject_type='organization', object_type='person'),
-               entry(1, 'Orbit', predicate='works_for')]
+    entries = [entry(0, 'Alice', subject='Orbit', predicate='employs', subject_type='organization', object_type='person'),
+               entry(1, 'Orbit', subject='Alice', predicate='works_for')]
     def respond(prompt, system):
         data = json.loads(prompt)
-        if 'ENTITY' in system:
-            return ontology_reply(prompt, system, {})
         rows = []
         for item in data['items']:
             target = next((key for key in item['candidates'] if key.startswith('r')), None)
             if target is None:
                 target = next(key for key in item['candidates'] if data['candidates'][key]['predicate'] == 'works_at')
-            rows.append(dict(id=item['id'], decision='reuse', target=target, reverse=True))
+            rows.append(dict(id=item['id'], decision='reuse', target=target, reverse=True, predicate=None))
         return json.dumps(dict(decisions=rows))
-    output = resolve(Workset(), entries, 'default', 'space', FakeLLM(handler=respond), Config())
-    assert all(fact.subject == 'user' and fact.object == 'Orbit' and fact.predicate == 'works_at'
-               for fact in output.facts)
+    output = bind(Workset(), entries, FakeLLM(handler=respond))
+    assert len(output.bindings) == 2
+    assert all((f['subject'], f['object'], f['predicate']) == ('Alice', 'Orbit', 'works_at')
+               for f in output.bindings.values())
 
 
 @pytest.mark.parametrize('response', ['{}', '{"decisions":[]}', '{"decisions":[{"id":"foreign"}]}',
                                     '{"decisions":[{"id":"r0"},{"id":"r0"}]}', 'not json'])
 def test_bad_batch_envelope_is_rejected(response):
     with pytest.raises(ExtractionResponseError):
-        resolve(Workset(), [entry(0)], 'default', 'space', FakeLLM(responses=[response]), Config())
+        bind(Workset(), [entry(0)], FakeLLM(responses=[response]))
 
 
 def test_truncated_output_is_failure_not_unknown():
     with pytest.raises(ExtractionTruncatedError):
-        resolve(Workset(), [entry(0)], 'default', 'space',
-                FakeLLM(responses=[Completion('{"decisions":[]}', 'length')]), Config())
+        bind(Workset(), [entry(0)], FakeLLM(responses=[Completion('{"decisions":[]}', 'length')]))
 
 
 @pytest.mark.parametrize('reason', [None, '', ' ' * 4, 'x' * 129])
@@ -179,20 +157,16 @@ def test_comparison_requires_a_short_reason(reason):
 def test_forward_proposal_reference_is_rejected():
     def respond(prompt, system):
         data = json.loads(prompt)
-        return json.dumps(dict(decisions=[dict(id=item['id'], decision='reuse', target='r1', reverse=False)
-                                         for item in data['items']]))
+        return json.dumps(dict(decisions=[dict(id=item['id'], decision='reuse', target='r1',
+                                              reverse=False, predicate=None) for item in data['items']]))
     with pytest.raises(ExtractionResponseError):
-        resolve(Workset(), [entry(0, 'Orbit'), entry(1, 'Nova')], 'default', 'space', FakeLLM(handler=respond), Config())
+        bind(Workset(), [entry(0, 'Orbit'), entry(1, 'Nova')], FakeLLM(handler=respond))
 
 
-def test_oversized_ontology_evidence_preserves_text_without_publishing_graph():
-    node = Entity('Orbit', 'organization', id='existing')
-    fact, hints, _ = entry(0)
+def test_oversized_ontology_evidence_never_produces_a_fact():
     model = ontology_model()
-    result = resolve(Workset([node]), [(fact, hints, {'source': 'Orbit' + 'x' * 20000})],
-                     'default', 'space', model, Config())
-    assert result.facts[0].text == fact.text and result.facts[0].relation_id is None
-    assert not result.records and not model.calls
+    result = bind(Workset(), [entry(0, sources={'source': 'Orbit' + 'x' * 20000})], model)
+    assert not result.bindings and not result.records([]) and not model.calls
 
 
 def test_more_than_sixteen_pairs_fit_one_request_and_share_facts():
@@ -247,6 +221,25 @@ def test_inconsistent_duplicate_comparisons_hold_candidates_and_preserve_old():
     assert {fact.id for fact in changed} == {'new', 'third'}
     assert all(fact.review_pending for fact in changed) and len(conflicts) == 3
     assert old.invalid_at is None and old.provenance == ['old-source']
+    discarded, pending, stats = merge([new, third], [old], model=compare_model(decide), discard_uncertain=True)
+    assert not discarded and not pending and stats['facts_added'] == 0
+
+
+def test_discarded_exact_duplicates_never_corroborate_or_invalidate():
+    old = claim('old', at=5, obj='Old')
+    new = claim('new', 'Current employer', at=10)
+    repeated = replace(new, id='repeated', provenance=['repeated-source'], sensitive=True)
+    unclear = claim('unclear', at=20, obj='Unclear')
+
+    def decide(item, _):
+        return 'unknown' if 'unclear' in (item['first'], item['second']) else 'conflict'
+
+    duplicates = {}
+    changed, conflicts, stats = merge([new, repeated, unclear], [old], model=compare_model(decide),
+                                     duplicate_ids=duplicates, discard_uncertain=True)
+    assert not changed and not conflicts and not duplicates
+    assert stats['facts_added'] == stats['invalidated'] == 0
+    assert old.invalid_at is None and old.provenance == ['old-source']
 
 
 def test_duplicate_chains_do_not_imply_transitive_equivalence():
@@ -294,47 +287,21 @@ def test_later_batch_failure_never_mutates_supplied_timeline():
     assert calls == 2 and all(fact.invalid_at is None for fact in old)
 
 
-def test_literal_and_symmetric_relations_keep_their_existing_semantics():
+def test_literal_relations_keep_their_existing_semantics():
     item = entry(0, 'engineer', predicate='occupation', object_type=None)
-    result = resolve(Workset(), [item], 'default', 'space',
-                     ontology_model({'occupation': ('occupation', False)}), Config())
-    assert result.facts[0].object_id is None and result.facts[0].relation_id == builtin('default', 'occupation').id
-    assert builtin('default', 'colleague').direction == 'symmetric'
-
-
-def test_stored_ids_cannot_shadow_local_proposals():
-    entity = Entity('Orbit', 'organization', id='e1')
-    relation = RelationType('volunteers_at', 'Volunteers for an organization', id='r0',
-                            endpoint_types=[['person', 'organization']])
-    model = ontology_model({'volunteers_at': ('volunteers_at', False)})
-    result = resolve(Workset([entity], [relation]), [entry(i, predicate='volunteers_at') for i in range(2)],
-                     'default', 'space', model, Config())
-    assert all(fact.object_id == 'e1' and fact.relation_id == 'r0' for fact in result.facts)
-
-
-def test_relation_proposals_are_reused_after_output_budget_split():
-    entries = [entry(i, f'Org {i}', predicate='volunteers_at') for i in range(4)]
-    model = ontology_model({'volunteers_at': ('volunteers_at', False)})
-    result = resolve(Workset(), entries, 'default', 'space', model, Config(joint_max_output_tokens=350))
-    assert len(model.calls) > 1
-    assert all(call['system'].startswith('MNEMOTRACE_RELATION_RESOLUTION') for call in model.calls)
-    assert len({fact.relation_id for fact in result.facts}) == 1 and result.facts[0].relation_id
-    assert any(candidate.get('resolved') for call in model.calls[1:]
-               for candidate in json.loads(call['prompt'])['candidates'].values())
+    result = bind(Workset(), [item], ontology_model())
+    assert result.bindings[0]['object_id'] is None
+    assert result.bindings[0]['relation_id'] == builtin('default', 'occupation').id
 
 
 def test_reuse_cannot_resolve_an_unknown_earlier_proposal():
     def respond(prompt, system):
-        if system.startswith('MNEMOTRACE_ENTITY_RESOLUTION'):
-            first, second = json.loads(prompt)['items']
-            return json.dumps(dict(decisions=[
-                dict(id=first['id'], decision='unknown', target=None, evidence=None),
-                dict(id=second['id'], decision='reuse', target=first['id'], evidence='Orbit')]))
-        return ontology_reply(prompt, system, {'works_at': ('works_at', False)})
-
-    result = resolve(Workset(), [entry(i) for i in range(3)], 'default', 'space', FakeLLM(handler=respond), Config())
-    assert result.facts[0].relation_id is not None
-    assert all(fact.relation_id is None for fact in result.facts[1:])
+        first, second = json.loads(prompt)['items']
+        return json.dumps(dict(decisions=[
+            dict(id=first['id'], decision='unknown', target=None, reverse=False, predicate=None),
+            dict(id=second['id'], decision='reuse', target=first['id'], reverse=False, predicate=None)]))
+    with pytest.raises(ExtractionResponseError):
+        bind(Workset(), [entry(i) for i in range(2)], FakeLLM(handler=respond))
 
 
 def test_meter_preserves_provider_identity_and_counts_failed_attempts(monkeypatch):
@@ -361,6 +328,6 @@ def test_meter_preserves_provider_identity_and_counts_failed_attempts(monkeypatc
 
     model = ModelMeter(FakeLLM(handler=fail), metrics)
     with pytest.raises(RuntimeError):
-        resolve(Workset(), [entry(0)], 'default', 'space', model, Config())
+        bind(Workset(), [entry(0)], model)
     assert metrics.snapshot()['ops']['pipeline_model_call']['n'] == 1
     assert metrics.snapshot()['counts']['pipeline_usage_unreported'] == 1

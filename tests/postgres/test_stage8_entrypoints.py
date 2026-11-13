@@ -7,23 +7,7 @@ import pytest
 from eval import seed_console
 from mnemotrace import quickstart
 from mnemotrace.llm import FakeLLM, providers
-from tests.model_fixtures import RecordedLLM, window_input
-from tests.postgres.ontology_fixtures import mention, ontology_reply
-
-
-class QuickstartLLM(RecordedLLM):
-    def complete(self, prompt, system='', **kwargs):
-        if system.startswith(('MNEMOTRACE_ENTITY_RESOLUTION', 'MNEMOTRACE_RELATION_RESOLUTION')):
-            return ontology_reply(prompt, system, {'works_at': ('works_at', False)})
-        reply = super().complete(prompt, system, **kwargs)
-        if window_input(prompt) is None:
-            return reply
-        data = json.loads(reply)
-        for fact in data.get('facts', []):
-            if fact['predicate'] == 'works_at':
-                fact['ontology'] = dict(subject=mention('person'), object=mention('organization'),
-                                        meaning='Current employer', direction='forward')
-        return json.dumps(data)
+from tests.model_fixtures import RecordedLLM
 
 
 def configure(monkeypatch, cluster, context):
@@ -33,7 +17,7 @@ def configure(monkeypatch, cluster, context):
     monkeypatch.setenv('MNEMOTRACE_SPACE_ID', context.space_id)
     monkeypatch.setenv('MNEMOTRACE_LLM', 'synthetic')
     monkeypatch.setenv('MNEMOTRACE_EMBEDDER', 'lexical')
-    monkeypatch.setattr(providers, 'make_llm', lambda *_: QuickstartLLM())
+    monkeypatch.setattr(providers, 'make_llm', lambda *_: RecordedLLM())
 
 
 def test_quickstart_targets_existing_space_and_reuses_messages(
