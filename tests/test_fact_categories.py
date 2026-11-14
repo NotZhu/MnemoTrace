@@ -8,7 +8,8 @@ from mnemotrace import Fact, MemoryEngine
 from mnemotrace.consolidate.operations import decode
 from mnemotrace.extraction import ExtractionResponseError
 from mnemotrace.config import Config
-from mnemotrace.consolidate.facts import materialize_facts
+from mnemotrace.consolidate.facts import extraction_entries, materialize_facts
+from mnemotrace.consolidate.pipeline import content_hash
 from mnemotrace.store._validation import SNAPSHOT_FORMAT_VERSION
 
 
@@ -26,7 +27,7 @@ def item(**patch):
 def extract(rows):
     data = window()
     product = decode(json.dumps(dict(facts=rows, digests=[])), data, Config())
-    return materialize_facts("account", data, product, 101)
+    return materialize_facts("account", data, 101, extraction_entries(data, product, content_hash(data)))
 
 
 def test_model_facts_preserve_subject_name_and_qualified_preferences():

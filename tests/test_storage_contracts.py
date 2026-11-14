@@ -9,7 +9,7 @@ from mnemotrace.store.contracts import (
     ExtractionProduct, FactQuery, FactState, Lease, MessageInput,
     OperationKind, OperationResult, OperationSpec, ProcessingPhase,
     ProcessingState, ReadSnapshot, RecordKind, RecordRef, RecordWrite, RetrievalQuery,
-    SourceLink, SourceVersion, SpaceContext, StoredRecord,
+    SourceVersion, SpaceContext, StoredRecord,
 )
 from mnemotrace.types import Fact, Episode
 
@@ -191,9 +191,8 @@ def test_changeset_checks_scope_provenance_duplicate_mutations_and_receipt():
     record = fact_record()
     payload = {**json.loads(record.payload_json), 'provenance': ['source-1']}
     write = RecordWrite(replace(record, payload_json=json.dumps(payload)))
-    source = ref(RecordKind.SOURCE, 'source-1')
     changes = ChangeSet(CONDITIONS, 'operation-1', writes=(write,),
-        source_links=(SourceLink(write.ref, source),), embeddings=(EmbeddingWrite(write.ref, 1, 'model', (1.0, 0.0)),),
+        embeddings=(EmbeddingWrite(write.ref, 1, 'model', (1.0, 0.0)),),
         operations=(OperationSpec('digest-1', OperationKind.DIGEST, 'thread', SOURCES),),
         receipt=CommitReceipt('operation-1', 8, ('fact-1',)))
     assert changes.receipt.core_revision == 8
@@ -202,10 +201,10 @@ def test_changeset_checks_scope_provenance_duplicate_mutations_and_receipt():
                    dict(receipt=CommitReceipt('operation-1', 9)), dict(settings={})):
         with pytest.raises(ValueError):
             replace(changes, **kwargs)
-    with pytest.raises(ValueError, match='provenance'):
-        replace(changes, source_links=())
-    with pytest.raises(ValueError):
-        SourceLink(write.ref, replace(source, context=SpaceContext('other', 'space-1')))
+    for invalid_source_id in (' ', 'x' * 513):
+        invalid_record = replace(record, payload_json=json.dumps(dict(payload, provenance=[invalid_source_id])))
+        with pytest.raises(ValueError, match='identifier'):
+            replace(changes, writes=(RecordWrite(invalid_record),))
 
 
 def test_extraction_product_checks_sources_schema_and_format():
@@ -215,6 +214,27 @@ def test_extraction_product_checks_sources_schema_and_format():
                    dict(result_json='{}'), dict(input_json='{}')):
         with pytest.raises(ValueError):
             replace(saved, **kwargs)
+
+
+def test_saved_extraction_requires_canonical_labels_and_digests():
+    from mnemotrace import Config
+    from mnemotrace.consolidate.planning import validate_response, validate_result
+
+    saved = product()
+    data = json.loads(saved.input_json)
+    data['pending'][0]['needs_digest'] = True
+    facts = json.loads(saved.result_json)['facts']
+    facts[0]['categories'] = ['professional_details', 'professional_details']
+    raw = json.dumps(dict(facts=facts, digests=[dict(source_id='source-1', text='  At Orbit.  ')]))
+    config = Config()
+    result = validate_response(raw, data, config)
+    assert result['facts'][0]['categories'] == ['professional_details']
+    assert result['digests'] == {'source-1': 'At Orbit.'}
+    assert validate_result(result, data, config) is result
+    for invalid in (dict(result, facts=facts), dict(result, digests={'source-1': '  At Orbit.  '}),
+                    dict(result, digests={'other': 'At Orbit.'})):
+        with pytest.raises(ValueError):
+            validate_result(invalid, data, config)
 
 
 def test_generation_reuse_depends_on_actual_context_and_not_embedder():

@@ -731,7 +731,7 @@ def test_reinforce_boosts_and_resets_clock():
 
 
 def test_digest_remains_faithful_after_supersession():
-    """在知识更新前定稿的摘要，应由 reflector 把当前值追加进去。"""
+    """已生成的摘要保留其原文语义。"""
     from mnemotrace.types import Fact
 
     mem = MemoryEngine()
@@ -747,8 +747,7 @@ def test_digest_remains_faithful_after_supersession():
     mem.generate_digests([ep])  # 冻结 "twice a week" 的摘要
     assert "[updated:" not in ep.digest
     before = ep.digest
-    stats = mem.consolidate_full(fact_episodes=[], digest_episodes=[ep])
-    assert stats["reflected"] == 0
+    assert mem.consolidate_full(fact_episodes=[], digest_episodes=[ep])["digests"] == 0
     assert ep.digest == before
     assert "[updated:" not in ep.digest and "three times a week" not in ep.digest
 
@@ -770,7 +769,7 @@ def test_digest_remains_faithful_with_cold_tier_history():
     assert mem.evict_cold(max_hot=1) == 1
 
     before = ep.digest
-    assert mem.consolidate_full(fact_episodes=[], digest_episodes=[ep])["reflected"] == 0
+    assert mem.consolidate_full(fact_episodes=[], digest_episodes=[ep])["digests"] == 0
     assert ep.digest == before
     assert "three times a week" not in ep.digest
 

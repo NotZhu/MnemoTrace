@@ -25,7 +25,7 @@
 | 环境变量 | 用途 |
 | --- | --- |
 | MNEMOTRACE_DATABASE_URL | 普通运行连接，不含账号管理或 DDL 权限 |
-| MNEMOTRACE_MIGRATION_DATABASE_URL | 显式初始化/升级；运行时不自动迁移 |
+| MNEMOTRACE_MIGRATION_DATABASE_URL | 初始化空库和校验现有数据库基线 |
 | MNEMOTRACE_DISCOVERY_DATABASE_URL | 独立 worker 发现连接，领取后的业务处理仍使用运行连接 |
 | MNEMOTRACE_ADMIN_DATABASE_URL | 账号与 key 管理，不能作为普通数据连接 |
 | MNEMOTRACE_BOOTSTRAP_DATABASE_URL | 仅首次角色/扩展配置使用的 DBA 连接 |
@@ -66,8 +66,8 @@ python -m mnemotrace.admin revoke-key --user-id USER_ID --key-id KEY_ID
 ```
 
 `init-db --bootstrap` 可在已配置 DBA 与迁移凭据时依次重复验证角色/扩展并初始化。
-重复初始化不重建表；升级只执行待应用迁移。结构损坏、脚本校验和不一致和未知版本会拒绝运行，
-不能通过重新初始化静默修复。数据库表、约束与策略以[迁移资源](../../mnemotrace/store/postgres/sql/)为准。
+重复初始化会校验现有数据库。切换数据库基线时，在空库运行 `init-db`，再将各连接指向新库。
+旧基线、结构损坏和脚本校验和不一致都会被拒绝。数据库表、约束与策略以[迁移资源](../../mnemotrace/store/postgres/sql/)为准。
 
 签发和轮换成功时 JSON 输出包含一次性的原始 key；列表只返回标识和时间。
 不要把这两个命令的输出写入日志。撤销后下一次认证失效；轮换撤销旧 key 与签发新 key 同事务完成。

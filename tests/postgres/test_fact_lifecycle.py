@@ -6,7 +6,7 @@ import pytest
 from mnemotrace import MemoryEngine
 from mnemotrace.config import Config
 from mnemotrace.consolidate.adjudication import plan_merge
-from mnemotrace.consolidate.postgres_merge import write_record
+from mnemotrace.consolidate.postgres_merge import build_record_write
 from mnemotrace.memory import Memory
 from mnemotrace.service import MemoryService
 from mnemotrace.store.contracts import FactQuery, FactState, MessageInput, RecordKind
@@ -32,7 +32,7 @@ def prepare(memory, *facts, contradicts=()):
     changed, _ = plan_merge(facts, list(map(domain, previous)), None, Config(), None, at, verdicts=verdicts)
     accepted_relations = {fact.relation_id for fact in changed}
     writes = [write for write in relations if write.ref.record_id in accepted_relations]
-    writes.extend(write_record(memory.context, fact, originals.get(fact.id)) for fact in changed)
+    writes.extend(build_record_write(memory.context, fact, originals.get(fact.id)) for fact in changed)
     return snapshot, tuple(writes)
 
 

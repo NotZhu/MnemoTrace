@@ -3,11 +3,11 @@ from dataclasses import replace
 
 from .adjudication import plan_merge
 from ..store._validation import validate_embedding
-from ..store.contracts import EmbeddingWrite, RecordRef, RecordWrite, SourceLink, StoredRecord
-from ..store.postgres.records import SOURCE, domain
+from ..store.contracts import EmbeddingWrite, RecordWrite, StoredRecord
+from ..store.postgres.records import domain
 
 
-def write_record(context, value, previous=None, *, digest_base=1):
+def build_record_write(context, value, previous=None, *, digest_base=1):
     if previous is None:
         return RecordWrite(StoredRecord.from_record(context, value), None)
     old = domain(previous)
@@ -44,18 +44,16 @@ def merge_records(context, config, embedder, model, now,
     changed, _ = plan_merge(facts, old_facts, llm, config, embedder, now,
                             semantic=True, symmetric=ontology.symmetric, duplicate_ids=duplicate_ids)
     accepted = duplicate_ids.keys() | {value.id for value in changed if value.id not in old_records}
-    writes = [write_record(context, value, previous) for value, previous in ontology.records(accepted)]
-    embeddings, links = [], []
+    writes = [build_record_write(context, value, previous) for value, previous in ontology.records(accepted)]
+    embeddings = []
     for value in changed:
         previous = old_records.get(value.id)
         vector = value.embedding
         value.embedding = None
         if previous is not None and value == domain(previous):
             continue
-        write = write_record(context, value, previous)
+        write = build_record_write(context, value, previous)
         writes.append(write)
         if previous is None and vector is not None:
             embeddings.append(EmbeddingWrite(write.ref, write.record.content_version, model, tuple(vector)))
-        links.extend(SourceLink(write.ref, RecordRef(context, SOURCE, source_id))
-                     for source_id in value.provenance)
-    return writes, embeddings, links
+    return writes, embeddings

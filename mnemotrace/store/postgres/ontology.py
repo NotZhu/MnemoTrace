@@ -1,4 +1,4 @@
-"""Read exact names and relation definitions at the ingestion revision."""
+"""本体工作集。用于从数据库中读取本体数据。"""
 from contextlib import contextmanager
 
 from .errors import VersionConflict

@@ -100,6 +100,21 @@ def test_numeric_timestamp_representation_does_not_change_message_identity():
     assert repeated['messages'] == original['messages']
 
 
+@pytest.mark.parametrize('extract', [True, False])
+def test_remember_writes_original_once_with_final_extraction_policy(monkeypatch, extract):
+    mem = MemoryEngine()
+    writes = []
+    put = mem.episodes_doc.put
+
+    def record(key, episode):
+        writes.append((key, episode.extract))
+        put(key, episode)
+
+    monkeypatch.setattr(mem.episodes_doc, 'put', record)
+    note = mem.remember('Synthetic note', extract=extract)
+    assert writes == [(note['episode_id'], extract)]
+
+
 def test_remember_without_extraction_is_skipped_by_offline_consolidation():
     mem = MemoryEngine()
     note = mem.remember('Synthetic raw note', extract=False)

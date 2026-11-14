@@ -1,4 +1,4 @@
-"""Request-local graph access for the existing graph retrieval algorithms."""
+"""图读取器，用于从数据库中检索图数据。"""
 from dataclasses import replace
 
 from ...retrieve.lexical import lexical_terms

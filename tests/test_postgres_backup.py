@@ -83,8 +83,8 @@ def test_full_logical_backup_and_worker_resume(tmp_path, backup_environment):
             complete = _accept(memory, 'first', 'Ada works at Synthetic Lab')
             assert memory.flush_processing('chat')['ok']
             assert memory.operation(complete).core_committed
-            pending = _accept(memory, 'next', 'Grace works at Synthetic Studio', session='next')
-            assert memory._processing.run_one(pending, force=True)
+            pending = _accept(memory, 'next', 'Grace works at Synthetic Studio')
+            assert memory._processing.run_next_stage(pending, force=True)
             assert memory.operation(pending).phase == 'embed'
             assert len(calls) >= 2
             prior_fact, = memory.history('Ada works', 'works_at')
@@ -96,7 +96,7 @@ def test_full_logical_backup_and_worker_resume(tmp_path, backup_environment):
             assert memory._processing.flush(operation_ids=(generated.operation_id,), timeout=3)['ok']
             prior_profile = memory.profile()
             unfinished_profile = memory.refresh_profile()
-            assert memory._processing.run_one(unfinished_profile.operation_id)
+            assert memory._processing.run_next_stage(unfinished_profile.operation_id)
             with memory.dao.read_snapshot() as view:
                 revision = view.snapshot.core_revision
 
@@ -122,9 +122,14 @@ def test_full_logical_backup_and_worker_resume(tmp_path, backup_environment):
                 assert memory.graph_relations(prior_fact.id) == (prior_edge,)
                 assert memory.operation(complete).core_committed
                 assert memory.operation(pending).phase == 'embed'
+                with memory.dao._transaction(read_only=True) as sql:
+                    context_sources = sql.run("""SELECT source_id FROM mnemotrace.operation_sources
+                        WHERE user_id = %s AND space_id = %s AND operation_id = %s AND is_context""",
+                        (*sql.scope, pending)).fetchall()
+                assert context_sources == [(prior_fact.provenance[0],)]
                 assert memory.profile()['profile'] == prior_profile['profile']
                 resumed_profile = Memory(runtime, scope, llm=profile_model())
-                assert resumed_profile._processing.run_one(unfinished_profile.operation_id)
+                assert resumed_profile._processing.run_next_stage(unfinished_profile.operation_id)
                 assert not resumed_profile._processing.llm.calls
                 assert memory.operation(unfinished_profile.operation_id).core_committed
                 with memory.dao.read_snapshot() as view:

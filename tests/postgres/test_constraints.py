@@ -127,7 +127,7 @@ def test_account_deletion_cleans_sources_facts_derived_data(accounts, runtime, s
                 sql.Identifier(table))).fetchone() == (0,)
 
 
-def test_task_sources_cannot_cross_spaces(runtime, spaces, user):
+def test_task_sources_are_unique_and_cannot_cross_spaces(runtime, spaces, user):
     a, b = spaces.create(user, 'A'), spaces.create(user, 'B')
     with runtime.space_transaction(user, a.space_id) as (conn, _):
         source(conn, user, a.space_id)
@@ -136,7 +136,12 @@ def test_task_sources_cannot_cross_spaces(runtime, spaces, user):
                      'embed_attempts,space_generation,stored_raw,extraction_saved,core_committed) '
                      "VALUES (%s,%s,'operation-1','extract','pending','queued',0,0,0,true,false,false)",
                      (user, b.space_id))
+    insert_link = ('INSERT INTO mnemotrace.operation_sources(user_id,space_id,operation_id,source_id,'
+                   "content_version,input_order,is_context) VALUES (%s,%s,'operation-1','source-1',1,%s,%s)")
     with pytest.raises(DatabaseConstraintError), runtime.space_transaction(user, b.space_id) as (conn, _):
-        conn.execute('INSERT INTO mnemotrace.operation_sources(user_id,space_id,operation_id,source_id,'
-                     "content_version,input_start,input_end,input_order) VALUES (%s,%s,'operation-1','source-1',1,0,1,0)",
-                     (user, b.space_id))
+        conn.execute(insert_link, (user, b.space_id, 0, False))
+    with runtime.space_transaction(user, b.space_id) as (conn, _):
+        source(conn, user, b.space_id)
+        conn.execute(insert_link, (user, b.space_id, 0, False))
+    with pytest.raises(DatabaseConstraintError), runtime.space_transaction(user, b.space_id) as (conn, _):
+        conn.execute(insert_link, (user, b.space_id, 1, True))

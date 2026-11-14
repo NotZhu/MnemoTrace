@@ -155,7 +155,7 @@ def _interrupt_transaction(config, scope, stage, committed, operation_id, *, rea
     with Database(config) as runtime, patch.object(PostgresDAO, '_transaction', interrupt):
         memory = Memory(runtime, scope, llm=_model([]), embedder=product_embedder(), embedding_model='test-vectors-v1')
         result = (_accept(memory) if stage == 'accept'
-                  else memory._processing.run_one(operation_id, force=True))
+                  else memory._processing.run_next_stage(operation_id, force=True))
         assert checkpoint_committed
         return result
 
@@ -184,7 +184,7 @@ def test_process_death_at_each_durable_checkpoint(memory, cluster, stage, commit
     if stage != 'accept':
         operation_id = _accept(memory)
     if stage == 'core':
-        assert memory._processing.run_one(operation_id, force=True)
+        assert memory._processing.run_next_stage(operation_id, force=True)
 
     with _process(_interrupt_transaction, cluster.runtime, memory.context, stage, committed, operation_id) as child:
         _kill_at_checkpoint(child)
@@ -252,9 +252,9 @@ def _run_stage(config, scope, operation_id, pause_at, *, ready, resume):
         if pause_at == 'heartbeat':
             with (patch.object(Tasks, 'renew', fail_renewal),
                   patch('mnemotrace._postgres_pipeline.RENEW_SECONDS', 0.01)):
-                memory._processing.run_one(operation_id, force=True)
+                memory._processing.run_next_stage(operation_id, force=True)
         else:
-            memory._processing.run_one(operation_id, force=True)
+            memory._processing.run_next_stage(operation_id, force=True)
     return calls
 
 
@@ -364,7 +364,7 @@ def test_same_space_stale_merge_retries_without_reextracting(memory, cluster):
     first = _accept(memory)
     second = _accept(memory, key='two', content='Another person at Another lab', session='other')
     for operation_id in (first, second):
-        assert memory._processing.run_one(operation_id, force=True)
+        assert memory._processing.run_next_stage(operation_id, force=True)
     with _process(_run_stage, cluster.runtime, memory.context, first, 'embedding') as old:
         assert old.ready.wait(WAIT)
         with _process(_run_stage, cluster.runtime, memory.context, second, None) as concurrent:
@@ -411,7 +411,7 @@ def _pending_write(memory, kind):
     else:
         operation_id = _accept(memory)
     if kind != 'extract':
-        assert memory._processing.run_one(operation_id, force=True)
+        assert memory._processing.run_next_stage(operation_id, force=True)
         assert memory.operation(operation_id).extraction_saved
     return operation_id
 

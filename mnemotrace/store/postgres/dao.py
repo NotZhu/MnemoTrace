@@ -1,10 +1,9 @@
-"""Space-scoped PostgreSQL record transactions and durable commit results."""
+"""空间作用域 PostgreSQL 记录事务和持久化提交结果。"""
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from uuid import uuid4
 
-from ..contracts import CommitReceipt, OperationKind, OperationResult, ProcessingPhase
-from ..contracts import ProcessingState, ReadSnapshot, RecordRef, SpaceContext
+from ..contracts import CommitReceipt, ReadSnapshot, RecordRef, SpaceContext
 from .database import identifier
 from .erasures import clear_space, erase
 from .errors import (
@@ -27,21 +26,31 @@ class Applied:
 
 
 def new_operation_id():
+    """生成一个新的操作 ID。"""
     return 'op_' + uuid4().hex
 
 
 def _space_row(sql):
+    """获取当前空间的核心修订号、空间生成号、设置和事务时间戳。"""
     return sql.run(f'SELECT core_revision,space_generation,settings,transaction_timestamp() '
                    f'FROM mnemotrace.memory_spaces WHERE {SCOPE}', sql.scope).fetchone()
 
 
 def _receipt(sql, operation_id):
+    """获取指定操作 ID 的提交收据。
+
+    Args:
+        sql: ScopedSQL 对象，用于执行数据库操作。
+        operation_id: 操作 ID。
+    """
+    # 查询 record_commit_receipts 表，获取指定操作 ID 的提交收据。
     row = sql.run(f'SELECT core_revision,fact_ids,source_ids,affected_count '
                   f'FROM mnemotrace.record_commit_receipts WHERE {SCOPE} AND operation_id = %s',
                   (*sql.scope, operation_id)).fetchone()
     if row is not None:
         revision, facts, sources, count = row
         return CommitReceipt(operation_id, revision, tuple(facts), tuple(sources), count)
+    # 如果在 record_commit_receipts 表中未找到指定操作 ID 的提交收据，则查询 operation_receipts 表。
     row = sql.run(f'SELECT core_revision,fact_ids FROM mnemotrace.operation_receipts '
                   f'WHERE {SCOPE} AND operation_id = %s', (*sql.scope, operation_id)).fetchone()
     if row is not None:
@@ -73,8 +82,6 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
     fact_ids = {item.record_id for item in changes.erasures if item.kind == FACT}
     erased = erase(sql, graph, changes.erasures)
     changed = bool(erased)
-    if {link.fact for link in changes.source_links} - {item.ref for item in changes.writes}:
-        raise DatabaseConstraintError('Source links require an explicit fact write')
     rank = {kind: index for index, kind in enumerate((SOURCE, ENTITY_TYPE, RELATION_TYPE, ENTITY, FACT, RELATION))}
     for item in sorted(changes.writes, key=lambda item: (rank[item.ref.kind], item.ref.record_id)):
         written, profile_changed = write(sql, item, graph)
@@ -113,9 +120,15 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
 
 
 class PostgresDAO:
-    """Record access through the runtime role, with authorization on every transaction."""
+    """PostgreSQL 数据库访问对象。用于执行数据库操作。"""
 
     def __init__(self, database, context: SpaceContext):
+        """初始化 PostgresDAO。
+
+        Args:
+            database: 数据库连接。
+            context: 空间上下文。
+        """
         if not isinstance(context, SpaceContext):
             raise ValueError('Expected a trusted SpaceContext')
         self._database = database
@@ -127,6 +140,11 @@ class PostgresDAO:
 
     @contextmanager
     def _transaction(self, *, read_only=False):
+        """获取数据库事务上下文管理器。
+
+        Args:
+            read_only: 是否为只读事务。
+        """
         with self._database.space_transaction(
             self.context.user_id, self.context.space_id, read_only=read_only,
         ) as (conn, scope):
@@ -151,12 +169,20 @@ class PostgresDAO:
             return _receipt(sql, operation_id)
 
     def _mutate(self, operation_id, apply, *, segment_of=None):
+        """执行变更操作并返回提交收据。
+
+        Args:
+            operation_id: 操作 ID。
+            apply: 应用变更的函数。
+            segment_of: 可选的分段操作 ID。
+        """
         identifier(operation_id)
         entered = False
         try:
             with self._transaction() as sql:
                 entered = True
                 existing = _receipt(sql, operation_id)
+                # 如果已经存在提交收据，则直接返回该收据，避免重复提交。
                 if existing is not None:
                     return existing
                 revision, generation, settings, _ = _space_row(sql)
@@ -216,14 +242,7 @@ class PostgresDAO:
             raise
 
     def operation(self, operation_id):
+        from .tasks import Tasks
+
         identifier(operation_id)
-        with self._transaction(read_only=True) as sql:
-            row = sql.run(f'SELECT kind,state,phase,stored_raw,extraction_saved,core_committed,attempts,'
-                          f'next_attempt_at,error_code FROM mnemotrace.operations WHERE {SCOPE}'
-                          ' AND operation_id = %s', (*sql.scope, operation_id)).fetchone()
-            if row is None:
-                return None
-            kind, state, phase, raw, extracted, committed, attempts, next_at, error = row
-            return OperationResult(operation_id, OperationKind(kind), ProcessingState(state),
-                                   ProcessingPhase(phase), raw, extracted, committed, attempts,
-                                   next_at.timestamp() if next_at is not None else None, error)
+        return Tasks(self).operation(operation_id)

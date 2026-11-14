@@ -8,17 +8,16 @@ from .planning import fact_valid_at, source_anchor
 from .graph_builder import GraphBuilder
 
 
-def extraction_entries(data, result):
+def extraction_entries(data, result, input_hash):
     """Assign stable IDs and source ordering before any relationship decision."""
     pending = {item['id']: item for item in data['pending']}
-    input_hash = content_hash(data)
     items = sorted(result['facts'], key=lambda item: source_anchor(
         item['source_ids'], pending, data['source_kind'])['sequence'])
     entries = [('ft_' + content_hash([input_hash, item])[:24], item) for item in items]
     return list(dict(entries).items()) if 'entity_types' in data else entries
 
 
-def materialize_facts(user_id, data, result, now, *, bindings=None, entries=None):
+def materialize_facts(user_id, data, now, entries, *, bindings=None):
     """Build the same facts from a saved extraction in either storage adapter."""
     pending = {item['id']: item for item in data['pending']}
 
@@ -26,8 +25,6 @@ def materialize_facts(user_id, data, result, now, *, bindings=None, entries=None
         return source_anchor(item['source_ids'], pending, data['source_kind'])
 
     facts = []
-    if entries is None:
-        entries = extraction_entries(data, result)
     for key, item in entries:
         if bindings is not None and key not in bindings:
             continue

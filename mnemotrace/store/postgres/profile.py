@@ -1,4 +1,4 @@
-"""Space-scoped profile state and durable explicit refresh tasks."""
+"""用户配置管理。"""
 
 from ... import profile
 from ...extraction import require_llm
@@ -75,12 +75,9 @@ def enqueue_refresh(memory):
     return memory.operation(operation_id)
 
 
-def run(pipeline, operation_id):
+def run(pipeline, lease):
     from ..._postgres_pipeline import _heartbeat, _failure
     tasks, dao = pipeline.tasks, pipeline.dao
-    lease = tasks.claim(operation_id)
-    if lease is None:
-        return False
     phase = "generate"
     with _heartbeat(tasks, lease):
         try:
@@ -106,7 +103,7 @@ def run(pipeline, operation_id):
                     save(sql, state)
                     tasks._release(sql, row, "completed", phase="done", core_committed=True,
                                    extraction_saved=True)
-                    sql.insert("operation_receipts", dict(operation_id=operation_id,
+                    sql.insert("operation_receipts", dict(operation_id=lease.operation_id,
                                core_revision=_space_row(sql)[0], fact_ids=[], completed_at=now),
                                suffix="ON CONFLICT DO NOTHING")
                     return True

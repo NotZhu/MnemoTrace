@@ -429,7 +429,7 @@ def test_profile_flush_uses_remaining_message_timeout(monkeypatch):
         elapsed = 1
         return {"ok": True, "status": "completed", "jobs": [], "counts": {"pending": 0}}
 
-    monkeypatch.setattr(_pipeline, "flush_memory", finish_messages)
+    monkeypatch.setattr(_pipeline, "flush", finish_messages)
     monkeypatch.setattr("time.monotonic", lambda: elapsed)
     result = memory.flush_messages(timeout=1)
     assert result["status"] == "timed_out" and not result["ok"]

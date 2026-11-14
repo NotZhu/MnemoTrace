@@ -515,9 +515,7 @@ def test_memories_endpoint_supports_pagination_filtering_and_sensitive_create(cl
 
 
 def seed_facts(service, context, facts):
-    from mnemotrace.store.contracts import (
-        ChangeSet, CommitConditions, RecordKind, RecordRef, RecordWrite, SourceLink, StoredRecord,
-    )
+    from mnemotrace.store.contracts import ChangeSet, CommitConditions, RecordWrite, StoredRecord
     from mnemotrace.store.postgres.dao import new_operation_id
     from tests.postgres.fact_fixtures import relation_writes
 
@@ -526,9 +524,7 @@ def seed_facts(service, context, facts):
         snapshot = view.snapshot
         relations = relation_writes(view, facts)
     writes = tuple(RecordWrite(StoredRecord.from_record(context, fact)) for fact in facts)
-    links = tuple(SourceLink(write.ref, RecordRef(context, RecordKind.SOURCE, source_id))
-                  for write, fact in zip(writes, facts) for source_id in fact.provenance)
-    dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=(*relations, *writes), source_links=links))
+    dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=(*relations, *writes)))
 
 
 def test_focus_filters_retrieval_and_tracks_without_rewriting_facts(client, product_service, product_scope):

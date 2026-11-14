@@ -1,4 +1,4 @@
-"""Scope explicit erasure and clean up database references in the same commit."""
+"""空间作用域显式擦除和清理数据库引用。"""
 from .records import SCOPE
 
 

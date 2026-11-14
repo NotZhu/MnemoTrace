@@ -47,5 +47,6 @@ class ExtractionTruncatedError(ExtractionResponseError):
 
 
 def require_llm(llm) -> None:
+    """验证语言模型是否存在配置。"""
     if llm is None:
         raise LLMNotConfiguredError()

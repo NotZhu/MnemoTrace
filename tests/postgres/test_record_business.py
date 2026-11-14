@@ -8,7 +8,7 @@ from mnemotrace.memory import Memory
 from tests.postgres.fact_fixtures import relation_writes, seed_fact, seed_note
 from mnemotrace.store.contracts import (
     ChangeSet, CommitConditions, CommitReceipt, EmbeddingWrite, FactQuery, FactState, Lease, MessageInput,
-    OperationKind, OperationSpec, ProcessingState, RecordKind, RecordRef, RecordWrite, SourceLink, SourceVersion,
+    OperationKind, OperationSpec, ProcessingState, RecordKind, RecordRef, RecordWrite, SourceVersion,
     SpaceContext, StoredRecord,
 )
 from mnemotrace.store.postgres import Database
@@ -38,10 +38,7 @@ def commit(memory, operation_id, records=(), **changes):
         conditions = CommitConditions(view.snapshot)
         relations = relation_writes(view, records)
     writes = tuple(RecordWrite(StoredRecord.from_record(memory.context, item)) for item in records)
-    links = tuple(SourceLink(write.ref, RecordRef(memory.context, RecordKind.SOURCE, source_id))
-                  for item, write in zip(records, writes, strict=True) if isinstance(item, Fact)
-                  for source_id in item.provenance)
-    return memory.dao.commit(ChangeSet(conditions, operation_id, writes=(*relations, *writes), source_links=links, **changes))
+    return memory.dao.commit(ChangeSet(conditions, operation_id, writes=(*relations, *writes), **changes))
 
 
 def test_record_business_roundtrip_and_selective_updates(memory, cluster):
@@ -199,12 +196,24 @@ def test_mixed_erasure_is_atomic_and_supported_erasure_preserves_sources(memory)
     assert memory.dao.receipt('unsupported') is None
     assert memory.dao.receipt('derived') is not None
     assert memory.get_episode(a.id) is not None
-    assert memory.get_fact(fact.id) is not None
+    assert memory.get_fact(fact.id).provenance == [a.id, b.id]
     assert memory.erase(fact_ref).affected_count == 1
     assert memory.dao.operation(task.operation_id).stored_raw
     assert memory.get_episode(a.id) is not None
     assert memory.get_episode(b.id) is not None
     assert memory.facts() == ()
+
+
+def test_fact_provenance_cannot_reference_a_source_from_another_space(memory, spaces):
+    sibling_space = spaces.create(memory.context.user_id, 'Sibling')
+    sibling = Memory(memory.dao._database, SpaceContext(memory.context.user_id, sibling_space.space_id))
+    source = seed_note(sibling, 'Synthetic source in another space', 'chat')
+    fact = Fact('Synthetic person', 'likes', 'tea', user_id=memory.context.user_id,
+                provenance=[source.id], text='Synthetic person likes tea')
+
+    with pytest.raises(DatabaseConstraintError):
+        commit(memory, 'cross-space-provenance', (fact,))
+    assert memory.get_fact(fact.id) is None
 
 
 def test_stale_vector_rejected_and_previous_embedding_removed(memory):
@@ -242,7 +251,9 @@ def test_fact_persists_without_an_unrepresentable_graph_edge(memory, claim):
         assert view.relations(fact.id) == ()
 
 
-def test_raw_ingest_never_calls_embedder(memory, runtime):
+def test_raw_ingest_never_calls_embedder_or_rereads_new_messages(memory, runtime, monkeypatch):
+    from mnemotrace.store.postgres.records import ScopedSQL
+
     class UnavailableEmbedder:
         dim = 2
 
@@ -250,7 +261,15 @@ def test_raw_ingest_never_calls_embedder(memory, runtime):
             raise RuntimeError('Synthetic embedder unavailable')
 
     offline = Memory(runtime, memory.context, embedder=UnavailableEmbedder(), embedding_model='fake')
-    batch = offline.remember_messages('chat', (message('m'),))
+    original = ScopedSQL.select
+
+    def select(sql, kind, *args, **kwargs):
+        assert kind != RecordKind.SOURCE
+        return original(sql, kind, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ScopedSQL, 'select', select)
+        batch = offline.remember_messages('chat', (message('m'),))
     note = offline.remember('Synthetic raw input', 'chat', extract=False, agent_id='test-writer')
     assert batch['ok'] and note['ok'] and not batch['operation_ids'] and not note['operation_ids']
     assert not offline.list_operations(session_id='chat')
@@ -260,6 +279,34 @@ def test_raw_ingest_never_calls_embedder(memory, runtime):
         stored = domain(record)
         assert (dialogue.source_kind, dialogue.sequence) == ('dialogue', 0)
         assert (stored.source_kind, stored.sequence, record.agent_id) == ('note', 1, 'test-writer')
+
+
+def test_sensitivity_edit_skips_unchanged_fact_links(memory, monkeypatch):
+    from mnemotrace.store.postgres.records import ScopedSQL
+
+    original = seed_note(memory, 'Synthetic evidence', 'chat')
+    predecessor = seed_fact(memory, 'Synthetic person', 'likes', 'tea',
+                            text='Synthetic person likes tea', valid_at=1, invalid_at=2, expired_at=2)
+    fact = seed_fact(memory, 'Synthetic person', 'likes', 'coffee',
+                     text='Synthetic person likes coffee', valid_at=2,
+                     provenance=[original.id], supersedes=[predecessor.id])
+    delete = ScopedSQL.delete
+    insert = ScopedSQL.insert
+
+    def skip_link_deletes(sql, table, *args, **kwargs):
+        assert table not in {'fact_sources', 'fact_supersedes'}
+        return delete(sql, table, *args, **kwargs)
+
+    def skip_link_inserts(sql, table, *args, **kwargs):
+        assert table not in {'fact_sources', 'fact_supersedes'}
+        return insert(sql, table, *args, **kwargs)
+
+    monkeypatch.setattr(ScopedSQL, 'delete', skip_link_deletes)
+    monkeypatch.setattr(ScopedSQL, 'insert', skip_link_inserts)
+    memory.set_fact_sensitive(fact.id, True)
+    stored = memory.get_fact(fact.id)
+    assert stored.sensitive
+    assert stored.provenance == [original.id] and stored.supersedes == [predecessor.id]
 
 
 def test_clear_slot_checks_count_and_erases_live_facts_of_any_source(memory):

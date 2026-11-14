@@ -11,6 +11,64 @@ _SECRET_NS = "alice-secret-ns"
 _SECRET_TEXT = "I live in Shenzhen"
 
 
+def test_worker_rate_limits_repeated_database_warnings(monkeypatch, caplog):
+    from types import SimpleNamespace
+
+    from mnemotrace import worker
+    from mnemotrace.store.postgres.errors import DatabaseUnavailable
+
+    attempts = []
+    ticks = iter((0, 1, 60, 62))
+
+    def unavailable(limit):
+        attempts.append(limit)
+        if len(attempts) == 4:
+            return ()
+        raise DatabaseUnavailable('Synthetic outage')
+
+    monkeypatch.setattr(worker, 'monotonic', lambda: next(ticks))
+    monkeypatch.setattr(worker, 'sleep', lambda _: None)
+    worker.run_worker(SimpleNamespace(discover_processing=unavailable), None, None, object(), None, None,
+                      should_stop=lambda: len(attempts) == 5)
+    assert len(attempts) == 5
+    assert [record.message for record in caplog.records if record.name == worker.__name__] == [
+        'Postgres processing is temporarily unavailable',
+        'Postgres processing is temporarily unavailable',
+    ]
+
+
+def test_successful_worker_tasks_do_not_reset_database_warning_interval(monkeypatch, caplog):
+    from concurrent.futures import wait
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from mnemotrace import worker
+    from mnemotrace.store.contracts import SpaceContext
+    from mnemotrace.store.postgres.errors import DatabaseUnavailable
+
+    def run_stage(operation_id):
+        if operation_id == 'unavailable':
+            raise DatabaseUnavailable('Synthetic outage')
+        return True
+
+    def record_warning_count(_):
+        warning_counts.append(sum(record.name == worker.__name__ for record in caplog.records))
+
+    context = SpaceContext('user', 'space')
+    candidates = ((context, 'healthy'), (context, 'unavailable'))
+    discovery = SimpleNamespace(discover_processing=Mock(side_effect=[candidates] * 3))
+    ticks = iter((0, 1, 60))
+    warning_counts = []
+    monkeypatch.setattr(worker, 'PostgresPipeline', Mock(return_value=SimpleNamespace(run_next_stage=run_stage)))
+    monkeypatch.setattr(worker, 'wait', lambda futures, **_: wait(futures, timeout=5))
+    monkeypatch.setattr(worker, 'monotonic', lambda: next(ticks))
+    monkeypatch.setattr(worker, 'sleep', record_warning_count)
+    worker.run_worker(discovery, None, None, object(), None, None,
+                      should_stop=lambda: len(warning_counts) == 3)
+
+    assert warning_counts == [1, 1, 2]
+
+
 # --- Metrics 原语 -------------------------------------------------------------
 
 

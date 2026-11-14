@@ -22,6 +22,8 @@ class Ingestor:
         session_id: str = "default",
         role: str = "user",
         event_time: Optional[float] = None,
+        *,
+        extract: bool = True,
     ) -> Episode:
         """写入一条事件（episode）。
 
@@ -31,6 +33,7 @@ class Ingestor:
             session_id: 会话 ID。
             role: 说话者。
             event_time: 事件发生时间（世界时间）。
+            extract: 是否请求后续事实抽取。
         Returns:
             写入的 Episode 对象。
         """
@@ -40,9 +43,9 @@ class Ingestor:
             session_id=session_id,
             role=role,
             event_time=event_time,
+            extract=extract,
         )
-        # 新事件默认为待整合，后续由调用方触发 System-2 处理。
-        self.episodes_doc.put(ep.id, ep)  # 保存原始事件
+        self.episodes_doc.put(ep.id, ep)
         return ep
 
     def pending(self) -> list[Episode]:

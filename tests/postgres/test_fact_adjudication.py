@@ -85,8 +85,8 @@ def test_invalid_adjudication_does_not_publish_any_part_of_window(runtime, space
     manual = seed_fact(mem, 'Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False, text='Ana lives in Paris')
     accepted = mem.remember('Ana lives in Oslo', 'review', event_time=10, processing='buffered')
     operation, = accepted['operation_ids']
-    assert mem._processing.run_one(operation, force=True)
-    assert mem._processing.run_one(operation, force=True)
+    assert mem._processing.run_next_stage(operation, force=True)
+    assert mem._processing.run_next_stage(operation, force=True)
     status = mem._processing.tasks.operation(operation)
     assert status.state.value == 'retry_wait'
     assert status.extraction_saved and not status.core_committed

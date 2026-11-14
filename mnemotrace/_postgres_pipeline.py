@@ -16,14 +16,15 @@ from .consolidate.pipeline import config_identity, content_hash
 from .consolidate.planning import (
     OMITTED, empty_input, fit_digest, fit_window, fits_input, input_size, output_size, supplied, user_start, validate_config,
 )
-from .consolidate.postgres_merge import embed_texts, merge_records, write_record
+from .consolidate.postgres_merge import build_record_write, embed_texts, merge_records
 from .embed import EmbeddingUnavailable
 from .extraction import ExtractionError, ExtractionResponseError, ExtractionTruncatedError, require_llm
 from .llm.base import complete_result
 from .llm.execution import one_attempt
 from .retrieve.lexical import bm25_query_terms
 from .store.contracts import (
-    ChangeSet, CommitConditions, CommitReceipt, EmbeddingWrite, ExtractionProduct, SourceVersion,
+    EXTRACTION_POLICY_FIELDS, ChangeSet, CommitConditions, CommitReceipt, EmbeddingWrite, ExtractionProduct,
+    OperationKind, SourceVersion,
 )
 from .store.postgres.errors import AccountNotFound, CommitOutcomeUnknown, DataCorruption, DatabaseError, DatabaseUnavailable
 from .store.postgres.errors import SpaceNotFound, VersionConflict
@@ -65,10 +66,10 @@ def _with_catalog(data, types, config, policy):
     return result
 
 
-def _coverage(item, data, ranges, policy, complete):
+def _coverage(item, input_hash, ranges, policy, complete):
     return dict(unit='unicode_code_points', ranges=ranges, partial=ranges != [[0, item['source_length']]],
                 policy=policy, source=item['source'], original_length=item['source_length'],
-                input_hash=content_hash(data), strategy_completed=complete)
+                input_hash=input_hash, strategy_completed=complete)
 
 
 @contextmanager
@@ -92,12 +93,24 @@ def _heartbeat(tasks, lease):
 
 
 class PostgresPipeline:
+    """PostgreSQL 数据库管道。用于处理记录和执行数据库操作。"""
+
     def __init__(self, dao, config, llm, embedder, model):
+        """初始化 PostgresPipeline。
+
+        Args:
+            dao: 数据库访问对象。
+            config: 配置参数。
+            llm: 语言模型。
+            embedder: 嵌入器。
+            model: 模型。
+        """
         self.dao = dao
         self.tasks = Tasks(dao)
         self.config, self.llm, self.embedder, self.model = config, llm, embedder, model
 
-    def require_model(self):
+    def require_ready(self):
+        """验证系统就绪：模型存在且配置合法。"""
         require_llm(self.llm)
         validate_config(self.config)
 
@@ -117,8 +130,7 @@ class PostgresPipeline:
                       > self.config.joint_max_output_tokens)
 
     def _fingerprint(self, settings):
-        policy = dict(extract_system=settings.extract_system, extract_instruction=settings.extract_instruction,
-                      digest_system=settings.digest_system)
+        policy = {field: getattr(settings, field) for field in EXTRACTION_POLICY_FIELDS}
         identity = config_identity(SimpleNamespace(config=self.config, policy=policy, llm=self.llm,
                                                    embedder=self.embedder), include_embedding=False)
         return content_hash([ONTOLOGY_VERSION, identity])
@@ -175,32 +187,32 @@ class PostgresPipeline:
                                     self.config.digest_max_chars, context_revision)
         self.tasks.save_product(product, settings)
 
-    def _changes(self, conditions, writes=(), embeddings=(), links=()):
+    def _changes(self, conditions, writes=(), embeddings=()):
         operation_id = conditions.lease.operation_id
         revision = conditions.snapshot.core_revision + int(bool(writes))
         receipt = CommitReceipt(operation_id, revision,
                                 fact_ids=tuple(w.ref.record_id for w in writes if w.ref.kind == FACT))
-        return ChangeSet(conditions, operation_id, tuple(writes), source_links=tuple(links),
+        return ChangeSet(conditions, operation_id, tuple(writes),
                          embeddings=tuple(embeddings), receipt=receipt)
 
     def _commit_core(self, conditions, data, result, records, now, space):
         context = conditions.snapshot.context
         sources = {item['id']: item for item in (*data['context'], *data['pending'])}
-        candidates = extraction_entries(data, result)
+        input_hash = content_hash(data)
+        candidates = extraction_entries(data, result, input_hash)
         entries = [(candidate_id, item, {key: sources[key] for key in item['source_ids']})
                    for candidate_id, item in candidates]
         ontology = resolve(OntologyWorkset(self.dao, conditions.snapshot), entries, data['entity_types'],
                            context.user_id, context.space_id, self.llm, self.config)
-        facts = materialize_facts(context.user_id, data, result, now, bindings=ontology.bindings, entries=candidates)
+        facts = materialize_facts(context.user_id, data, now, candidates, bindings=ontology.bindings)
         with self.dao.read_snapshot() as view:
             if (view.snapshot.core_revision != conditions.snapshot.core_revision
                     or view.snapshot.space_generation != conditions.snapshot.space_generation):
                 raise VersionConflict('Fact workset changed during ontology resolution')
             previous = view.merge_history(facts, symmetric=ontology.symmetric)
             vectors = view.fact_vectors(previous, *space) if space is not None else {}
-        writes, embeddings, links = merge_records(context, self.config, self.embedder, self.model,
-                                                  now, facts, previous, vectors, self.llm,
-                                                  ontology=ontology)
+        writes, embeddings = merge_records(context, self.config, self.embedder, self.model,
+                                           now, facts, previous, vectors, self.llm, ontology=ontology)
         by_id = {record.ref.record_id: record for record in records}
         completed = {record.ref.record_id for record in records if domain(record).consolidated}
         newly_completed = set()
@@ -214,17 +226,18 @@ class PostgresPipeline:
                 newly_completed.add(episode.id)
             ranges = item['ranges'] if dialogue else [[0, end]]
             policy = ('head_tail_v1' if item['partial'] else 'full_message_v1') if dialogue else 'full_source_v1'
-            episode.coverage = _coverage(item, data, ranges, policy, episode.consolidated)
-            writes.append(write_record(context, episode, previous))
+            episode.coverage = _coverage(item, input_hash, ranges, policy, episode.consolidated)
+            writes.append(build_record_write(context, episode, previous))
         operation_id = conditions.lease.operation_id
         continuation = ('seg_' + content_hash([operation_id, data])[:48]
                         if completed | newly_completed != set(by_id) else None)
-        changes = self._changes(conditions, writes, embeddings, links)
+        changes = self._changes(conditions, writes, embeddings)
 
         def digests(sql, generation):
-            self.tasks.save_digests(sql, operation_id, generation,
-                                      conditions.snapshot.session_id, data['pending'], result['digests'],
-                                      newly_completed, self.config.digest_min_chars, conditions.extraction_config)
+            self.tasks.stage_digest_followups(sql, operation_id, generation,
+                                              conditions.snapshot.session_id, data['pending'], result['digests'],
+                                              newly_completed, self.config.digest_min_chars,
+                                              conditions.extraction_config)
 
         self.tasks.commit(changes, continuation=continuation, after=digests)
 
@@ -243,8 +256,8 @@ class PostgresPipeline:
                               after=save_part)
             return
         episode.digest = text
-        episode.digest_coverage = _coverage(item, data, item['ranges'], 'digest_source_v1', True)
-        write = write_record(conditions.snapshot.context, episode, record, digest_base=digest_base)
+        episode.digest_coverage = _coverage(item, content_hash(data), item['ranges'], 'digest_source_v1', True)
+        write = build_record_write(conditions.snapshot.context, episode, record, digest_base=digest_base)
         embeddings = ()
         if self.embedder is not None:
             vector = embed_texts(self.embedder, [text])[text]
@@ -252,22 +265,22 @@ class PostgresPipeline:
                                          tuple(vector), field='digest'),)
         self.tasks.commit(self._changes(conditions, (write,), embeddings))
 
-    def run_one(self, operation_id, *, force=False):
-        existing = self.tasks.operation(operation_id)
-        if existing is not None and existing.kind.value == "profile":
-            from .store.postgres.profile import run
-            return run(self, operation_id)
-        space = (self.model, self.embedder.dim) if self.embedder is not None else None
-        lease = self.tasks.claim(operation_id, force=force)
-        if lease is None:
+    def run_next_stage(self, operation_id, *, force=False):
+        claimed = self.tasks.claim(operation_id, force=force)
+        if claimed is None:
             return False
+        lease, kind = claimed
+        if kind is OperationKind.PROFILE:
+            from .store.postgres.profile import run
+            return run(self, lease)
+        space = (self.model, self.embedder.dim) if self.embedder is not None else None
         phase = 'generate'
         with _heartbeat(self.tasks, lease):
             try:
                 with self.dao.read_snapshot() as view:
                     snapshot, row, records = self.tasks.load(view, lease)
                     phase = row['phase']
-                    self.require_model()
+                    self.require_ready()
                     settings = view.settings()
                     fingerprint = self._fingerprint(settings)
                     product = self.tasks.product(view, snapshot, lease, row)
@@ -318,7 +331,7 @@ class PostgresPipeline:
         future = None
         try:
             while True:
-                results = [self.tasks.operation(operation_id) for operation_id in selected]
+                results = list(self.tasks.operations(selected))
                 if include_digests:
                     children = [child for result in results if result for child in result.auxiliary_operation_ids
                                 if child not in selected]
@@ -350,7 +363,7 @@ class PostgresPipeline:
 
     def _drive(self, active):
         for operation_id in self.tasks.execution_order(active):
-            if self.run_one(operation_id, force=True):
+            if self.run_next_stage(operation_id, force=True):
                 break
 
 

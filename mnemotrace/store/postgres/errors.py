@@ -1,4 +1,4 @@
-"""Credential-free errors at the PostgreSQL boundary."""
+"""数据库错误。"""
 
 
 class DatabaseError(RuntimeError):

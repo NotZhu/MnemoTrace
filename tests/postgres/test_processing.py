@@ -115,13 +115,13 @@ def test_three_checkpoints_and_durable_retry(processing, cluster):
     with memory.dao.read_snapshot() as view:
         revision = view.snapshot.core_revision
 
-    assert memory._processing.run_one(operation_id, force=True)
+    assert memory._processing.run_next_stage(operation_id, force=True)
     checkpoint = memory.operation(operation_id)
     assert checkpoint.extraction_saved and not checkpoint.core_committed
     assert memory.facts() == ()
     with memory.dao.read_snapshot() as view:
         assert view.snapshot.core_revision == revision
-    assert memory._processing.run_one(operation_id)
+    assert memory._processing.run_next_stage(operation_id)
     assert memory.operation(operation_id).state.value == 'retry_wait'
     assert len(calls) == 1
 
@@ -134,7 +134,7 @@ def test_three_checkpoints_and_durable_retry(processing, cluster):
         assert fact.provenance == [source_id]
         assert restored.operation(operation_id).core_committed
         assert restored.dao.receipt(operation_id).fact_ids == (fact.id,)
-        assert not restored._processing.run_one(operation_id)
+        assert not restored._processing.run_next_stage(operation_id)
         replay = restored.remember_messages('chat', (dialogue('one'),))
         assert replay['accepted'] == 0 and replay['operation_ids'] == (operation_id,)
 
@@ -160,13 +160,29 @@ def test_duplicate_concurrency_and_atomic_rejection(processing, cluster, runtime
     assert len(memory.list_sources()) == 1
 
 
+def test_mixed_dialogue_batch_queues_only_new_extraction_inputs_in_message_order(processing):
+    memory, calls = processing()
+    first = dialogue('first')
+    raw = dialogue('raw', extract=False)
+    last = dialogue('last')
+    result = memory.remember_messages('chat', (first, raw, last, first), processing='immediate')
+
+    assert result['ok'] and result['accepted'] == 3
+    first_row, raw_row, last_row, repeated_row = result['messages']
+    assert first_row == repeated_row
+    assert raw_row['operation_ids'] == ()
+    assert first_row['operation_ids'] == last_row['operation_ids'] == result['operation_ids']
+    assert [item['id'] for item in calls[0]['pending']] == [first_row['episode_id'], last_row['episode_id']]
+
+
 def test_leases_order_sessions_and_fence_old_executors(processing, cluster):
     memory, _ = processing()
     first, = memory.remember_messages('chat', (dialogue('first'),))['operation_ids']
     assert memory.flush_processing('chat', timeout=0)['status'] == 'timed_out'
     second, = memory.remember_messages('chat', (dialogue('second'),))['operation_ids']
     parallel, = memory.remember_messages('other', (dialogue('other'),))['operation_ids']
-    lease = memory._processing.tasks.claim(first)
+    lease, kind = memory._processing.tasks.claim(first)
+    assert kind is OperationKind.EXTRACT
     with Database(cluster.runtime) as pool:
         other, _ = processing(database=pool)
         assert other._processing.tasks.claim(second, force=True) is None
@@ -174,7 +190,7 @@ def test_leases_order_sessions_and_fence_old_executors(processing, cluster):
         with memory.dao._transaction() as sql:
             sql.run('UPDATE mnemotrace.operations SET lease_until = clock_timestamp() '
                     'WHERE user_id = %s AND space_id = %s AND operation_id = %s', (*sql.scope, first))
-        replacement = other._processing.tasks.claim(first)
+        replacement, _ = other._processing.tasks.claim(first)
         assert replacement.token != lease.token
         with pytest.raises(VersionConflict):
             memory._processing.tasks.renew(lease)
@@ -207,8 +223,8 @@ def test_segmented_note_keeps_operation_id_and_digest_is_independent(processing)
     accepted = memory.remember(text, 'docs', processing='buffered')
     operation_id, = accepted['operation_ids']
     source_id, = accepted['source_ids']
-    assert memory._processing.run_one(operation_id)
-    assert memory._processing.run_one(operation_id)
+    assert memory._processing.run_next_stage(operation_id)
+    assert memory._processing.run_next_stage(operation_id)
     assert not memory.operation(operation_id).core_committed
     assert memory.get_episode(source_id).coverage['partial']
     result = memory.flush_processing('docs', include_digests=True, timeout=15)
@@ -256,7 +272,7 @@ def test_interrupted_transaction_resumes_from_actual_checkpoint(processing, monk
     if stage != 'accept':
         operation_id, = memory.remember_messages('chat', (message,))['operation_ids']
         if stage == 'core':
-            assert memory._processing.run_one(operation_id, force=True)
+            assert memory._processing.run_next_stage(operation_id, force=True)
 
     @contextmanager
     def interrupt(**kwargs):
@@ -284,7 +300,7 @@ def test_interrupted_transaction_resumes_from_actual_checkpoint(processing, monk
                 with pytest.raises(CommitOutcomeUnknown):
                     memory.remember_messages('chat', (message,))
         else:
-            assert memory._processing.run_one(operation_id, force=True)
+            assert memory._processing.run_next_stage(operation_id, force=True)
     assert interrupted
     if stage == 'accept':
         replay = memory.remember_messages('chat', (message,))
@@ -361,6 +377,13 @@ def test_rejected_source_erasure_preserves_digest_and_its_context(processing):
     prior, = first['source_ids']
     target, = second['source_ids']
     assert calls[-1]['context'][0]['id'] == prior
+    operation_id, = second['operation_ids']
+    digest_id, = memory.operation(operation_id).auxiliary_operation_ids
+    with memory.dao._transaction(read_only=True) as sql:
+        links = sql.run("""SELECT source_id, content_version, is_context FROM mnemotrace.operation_sources
+            WHERE user_id = %s AND space_id = %s AND operation_id = %s ORDER BY is_context""",
+            (*sql.scope, digest_id)).fetchall()
+    assert links == [(target, 1, False), (prior, 1, True)]
     assert memory.flush_processing('chat', include_digests=True)['ok']
     assert len(calls) == 2
     assert memory.get_episode(target).digest == 'Recorded detail'
@@ -394,12 +417,58 @@ def test_digest_requires_one_source_and_rejects_old_multi_source_tasks(processin
     memory.dao.commit(ChangeSet(conditions, 'enqueue-old-digest', operations=(digest,)))
     with memory.dao._transaction() as sql:
         sql.insert('operation_sources', dict(operation_id=digest.operation_id, source_id=second.id,
-                   content_version=1, input_start=0, input_end=len(second.content), input_order=1))
-    assert memory._processing.run_one(digest.operation_id)
+                   content_version=1, input_order=1))
+    assert memory._processing.run_next_stage(digest.operation_id)
     status = memory.operation(digest.operation_id)
     assert status.state.value == 'failed'
     assert status.error_code == 'data_corruption'
     assert calls == []
+
+
+@pytest.mark.parametrize('settings, saves_first_result', [
+    ({'track': ('Synthetic topic',)}, True),
+    ({'mute': ('Synthetic topic',)}, True),
+    ({'profile_system': 'Synthetic profile policy'}, True),
+    ({'extract_instruction': 'Synthetic extraction policy'}, False),
+])
+def test_saving_inflight_extraction_checks_only_extraction_policy(processing, settings, saves_first_result):
+    def generate(_):
+        if len(calls) == 1:
+            memory.set_settings(**settings)
+        return dict(facts=[], digests=[])
+
+    memory, calls = processing(handle=generate)
+    operation_id, = memory.remember_messages('chat', (dialogue('one'),))['operation_ids']
+    assert memory._processing.run_next_stage(operation_id, force=True)
+    status = memory.operation(operation_id)
+    assert status.extraction_saved is saves_first_result
+    assert status.error_code == (None if saves_first_result else 'version_conflict')
+    assert memory.flush_processing('chat')['ok']
+    assert len(calls) == (1 if saves_first_result else 2)
+
+
+def test_saving_inflight_extraction_with_digest_context_checks_core_revision(processing):
+    def generate(data):
+        if len(calls) == 2:
+            assert [item['representation'] for item in data['context']] == ['digest']
+            memory.set_settings(profile_system='Synthetic profile policy')
+        return dict(facts=[], digests=[
+            dict(source_id=item['id'], text='Recorded detail')
+            for item in data['pending'] if item['needs_digest']
+        ])
+
+    memory, calls = processing(config=Config(digest_min_chars=35, digest_max_chars=20), handle=generate)
+    memory.remember_messages('chat', (dialogue('prior', 'A long synthetic record with details'),))
+    assert memory.flush_processing('chat', include_digests=True)['ok']
+    assert len(calls) == 1
+
+    operation_id, = memory.remember_messages('chat', (dialogue('target', 'Short follow-up'),))['operation_ids']
+    assert memory._processing.run_next_stage(operation_id, force=True)
+    status = memory.operation(operation_id)
+    assert not status.extraction_saved
+    assert status.error_code == 'version_conflict'
+    assert memory.flush_processing('chat')['ok']
+    assert len(calls) == 3
 
 
 def test_policy_change_reextracts_and_digest_failure_preserves_core(processing):
@@ -411,12 +480,12 @@ def test_policy_change_reextracts_and_digest_failure_preserves_core(processing):
     memory, calls = processing(config=Config(digest_min_chars=35, digest_max_chars=20), handle=extract)
     accepted = memory.remember_messages('chat', (dialogue('one', 'A long synthetic record with details'),))
     operation_id, = accepted['operation_ids']
-    assert memory._processing.run_one(operation_id, force=True)
+    assert memory._processing.run_next_stage(operation_id, force=True)
     memory.set_settings(extract_instruction='Changed synthetic extraction rule')
     assert memory.flush_processing('chat')['ok']
     assert len(calls) == 2
     digest_id, = memory.operation(operation_id).auxiliary_operation_ids
-    assert memory._processing.run_one(digest_id)
+    assert memory._processing.run_next_stage(digest_id)
     assert memory.operation(digest_id).error_code == 'extraction_invalid_response'
     assert memory.operation(operation_id).core_committed
 
@@ -447,16 +516,26 @@ def test_operation_page_batches_auxiliary_lookups(processing, monkeypatch):
             for operation in operations if operation.operation_id in expected} == expected
     assert len(queries) == 1
 
+    queries.clear()
+    operation_ids = (*reversed(expected), 'missing')
+    result = memory._processing.flush(operation_ids=operation_ids, timeout=0)
+    assert result['status'] == 'failed' and result['operation_ids'] == operation_ids
+    assert [operation.operation_id for operation in result['operations']] == list(reversed(expected))
+    assert [operation.auxiliary_operation_ids for operation in result['operations']] == [
+        expected[key] for key in reversed(expected)
+    ]
+    assert len(queries) == 1
+
 
 def test_repeated_config_changes_exhaust_generation_budget(processing):
     memory, calls = processing()
     operation_id, = memory.remember_messages('chat', (dialogue('one'),))['operation_ids']
     for index in range(3):
-        assert memory._processing.run_one(operation_id, force=True)
+        assert memory._processing.run_next_stage(operation_id, force=True)
         assert memory.operation(operation_id).extraction_saved
         memory.set_settings(extract_instruction=f'Synthetic version {index}')
-        assert memory._processing.run_one(operation_id)
-    assert not memory._processing.run_one(operation_id)
+        assert memory._processing.run_next_stage(operation_id)
+    assert not memory._processing.run_next_stage(operation_id)
     assert memory.operation(operation_id).error_code == 'attempts_exhausted'
     assert len(calls) == 3 and not memory.facts()
 
@@ -473,8 +552,8 @@ def test_dao_enqueued_extract_is_discoverable_before_later_session_work(processi
     with Database(cluster.discovery, purpose='discovery') as discovery:
         # Making later work ready must neither trigger nor bypass the DAO operation.
         assert discovery.discover_processing() == ((memory.context, queued.operation_id),)
-        assert memory._processing.run_one(queued.operation_id)
-        assert memory._processing.run_one(queued.operation_id)
+        assert memory._processing.run_next_stage(queued.operation_id)
+        assert memory._processing.run_next_stage(queued.operation_id)
         assert memory.operation(queued.operation_id).core_committed
         assert discovery.discover_processing() == ((memory.context, later),)
 
@@ -509,8 +588,8 @@ def test_digest_policy_change_can_recommit_the_same_fragment_range(processing):
     assert result['ok']
     operation_id, = result['operation_ids']
     digest_id, = memory.operation(operation_id).auxiliary_operation_ids
-    assert memory._processing.run_one(digest_id)
-    assert memory._processing.run_one(digest_id)
+    assert memory._processing.run_next_stage(digest_id)
+    assert memory._processing.run_next_stage(digest_id)
     assert not memory.operation(digest_id).core_committed
     old_range = old_calls[-1]['pending'][0]['ranges']
 
@@ -536,8 +615,8 @@ def test_final_receipt_includes_surviving_outputs_from_earlier_segments(processi
     memory, _ = processing(config=config, handle=extract)
     accepted = memory.remember('Synthetic source material. ' * 450, 'notes', processing='buffered')
     operation_id, = accepted['operation_ids']
-    assert memory._processing.run_one(operation_id)
-    assert memory._processing.run_one(operation_id)
+    assert memory._processing.run_next_stage(operation_id)
+    assert memory._processing.run_next_stage(operation_id)
     assert not memory.operation(operation_id).core_committed
     assert memory.dao.receipt(operation_id) is None
     early_facts = {fact.id for fact in memory.facts()}

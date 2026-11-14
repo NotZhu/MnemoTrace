@@ -309,13 +309,8 @@ CREATE TABLE mnemotrace.operation_sources (
     operation_id mnemotrace.identifier NOT NULL,
     source_id mnemotrace.identifier NOT NULL,
     content_version mnemotrace.positive_version NOT NULL,
-    input_start mnemotrace.counter NOT NULL,
-    input_end mnemotrace.counter NOT NULL,
     input_order mnemotrace.counter NOT NULL,
-    role text,
-    representation_source text,
-    PRIMARY KEY(user_id, space_id, operation_id, source_id, input_start),
-    CHECK (input_end > input_start),
+    PRIMARY KEY(user_id, space_id, operation_id, source_id),
     FOREIGN KEY(user_id, space_id, operation_id) REFERENCES mnemotrace.operations ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE
 );

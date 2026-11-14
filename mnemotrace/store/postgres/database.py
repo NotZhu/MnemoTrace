@@ -1,4 +1,4 @@
-"""Connection ownership and authorized transactions for the Postgres DAO."""
+"""数据库连接和授权事务管理。"""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -63,6 +63,7 @@ class DatabaseConfig:
 
 
 def driver():
+    """加载 psycopg 驱动程序和连接池类型。"""
     try:
         import psycopg
         from psycopg_pool import ConnectionPool
@@ -74,6 +75,7 @@ def driver():
 
 @contextmanager
 def database_errors():
+    """捕获数据库异常并将其转换为更具体的异常类型。"""
     psycopg, _ = driver()
     try:
         yield
@@ -93,20 +95,29 @@ MAX_IDENTIFIER_LENGTH = 512
 
 
 def identifier(value: str) -> None:
+    """验证标识符是否有效。标识符必须是非空字符串，长度不超过 512 个字符，并且不能包含空字符（\x00）。"""
     if not isinstance(value, str) or not value.strip() or len(value) > MAX_IDENTIFIER_LENGTH or '\x00' in value:
         raise ValueError('Expected a non-empty identifier of at most 512 characters')
     value.encode('utf-8')
 
 
 class Database:
-    """One process owns one explicitly opened pool for a single credential purpose."""
+    """数据库连接池。"""
 
     def __init__(self, config: DatabaseConfig, *, purpose: str = 'runtime'):
+        """初始化数据库连接池。
+
+        Args:
+            config: 数据库配置。
+            purpose: 数据库连接的目的。
+        """
         if purpose not in {'runtime', 'admin', 'discovery'}:
             raise DatabaseConfigurationError('Unexpected database connection purpose')
         self.config = config
         self.purpose = purpose
+        # 数据库连接池
         self._pool = None
+        # 生命周期锁，确保线程安全的打开和关闭操作
         self._lifecycle_lock = RLock()
 
     def open(self) -> Database:
@@ -160,6 +171,11 @@ class Database:
 
     @contextmanager
     def _transaction(self, *, read_only: bool = False):
+        """获取数据库事务上下文管理器。
+
+        Args:
+            read_only: 是否为只读事务。
+        """
         pool = self._pool
         if pool is None:
             raise DatabaseUnavailable('Database pool is not open')
@@ -168,6 +184,7 @@ class Database:
         try:
             with database_errors(), pool.connection() as conn, conn.transaction():
                 if read_only:
+                    # 设置事务隔离级别为可重复读，并将事务标记为只读，以确保在只读事务中不会发生写入操作。
                     conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
                 yield conn
         except (PoolTimeout, PoolClosed) as exc:
@@ -175,14 +192,22 @@ class Database:
 
     @contextmanager
     def user_transaction(self, user_id: str, *, read_only: bool = False):
+        """获取用户事务上下文管理器。
+
+        Args:
+            user_id: 用户 ID。
+            read_only: 是否为只读事务。
+        """
         if self.purpose != 'runtime':
             raise DatabaseConfigurationError('User transactions require runtime credentials')
         if not user_id:
             raise IdentityRequired('A trusted user identity is required')
         identifier(user_id)
         with self._transaction(read_only=read_only) as conn:
+            # 设置当前会话的用户 ID，以便在数据库中进行操作时可以识别和授权该用户。
             conn.execute("SELECT set_config('mnemotrace.user_id', %s, true)", (user_id,))
             suffix = '' if read_only else ' FOR SHARE'
+            # 检查用户是否存在且状态为 active。
             row = conn.execute(
                 "SELECT status FROM mnemotrace.users WHERE user_id = %s" + suffix,
                 (user_id,),
@@ -193,9 +218,16 @@ class Database:
 
     @contextmanager
     def space_transaction(self, user_id: str, space_id: str, *, read_only: bool = False):
+        """获取空间事务上下文管理器。
+
+        Args:
+            user_id: 用户 ID。
+            space_id: 空间 ID。
+            read_only: 是否为只读事务。
+        """
         identifier(space_id)
         with self.user_transaction(user_id, read_only=read_only) as conn:
-            # User first, space second: account deletion cannot race a new write.
+            # 检查空间是否存在且状态为 active。
             suffix = '' if read_only else ' FOR UPDATE'
             row = conn.execute(
                 'SELECT status FROM mnemotrace.memory_spaces '

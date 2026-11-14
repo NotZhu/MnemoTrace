@@ -102,3 +102,38 @@ def test_connection_loss_with_a_missing_receipt_reports_unknown_outcome(monkeypa
         database.commit(changes)
     assert error.value.operation_id == 'operation'
     assert attempts == ['operation']
+
+
+def test_flush_batches_status_lookups_and_keeps_missing_operation_ids(monkeypatch):
+    from contextlib import contextmanager
+    from unittest.mock import Mock
+
+    from mnemotrace import Config
+    from mnemotrace._postgres_pipeline import PostgresPipeline
+
+    sql = Mock()
+    sql.scope = ('user', 'space')
+    sql.rows.return_value = [
+        dict(operation_id=key, kind='extract', state='completed', phase='done', stored_raw=True,
+             extraction_saved=True, core_committed=True, attempts=2, next_attempt_at=None, error_code=None)
+        for key in ('first', 'last')
+    ]
+    sql.run.return_value.fetchall.return_value = [('first', 'digest-first')]
+    transactions = []
+
+    @contextmanager
+    def transaction(*, read_only):
+        transactions.append(read_only)
+        yield sql
+
+    pipeline = PostgresPipeline(Mock(_transaction=transaction), Config(), None, None, None)
+    operation_ids = ('last', 'missing', 'first')
+    monkeypatch.setattr(pipeline.tasks, 'freeze', lambda ids, *_: ids)
+    result = pipeline.flush(operation_ids=operation_ids, timeout=0)
+
+    assert result['status'] == 'failed'
+    assert result['operation_ids'] == operation_ids
+    assert [item.operation_id for item in result['operations']] == ['last', 'first']
+    assert result['operations'][1].auxiliary_operation_ids == ('digest-first',)
+    assert transactions == [True]
+    assert sql.rows.call_count == sql.run.call_count == 1

@@ -1,4 +1,4 @@
-"""Structured reads on one authorized, repeatable database snapshot."""
+"""数据库读取管理。"""
 from dataclasses import fields
 import json
 

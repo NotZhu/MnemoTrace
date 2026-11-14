@@ -9,7 +9,7 @@ import threading
 import pytest
 
 from mnemotrace import MemoryEngine
-from mnemotrace._pipeline import run_one
+from mnemotrace._pipeline import run_next_stage
 from mnemotrace.consolidate.pipeline import PipelineTasks, validate_state
 from mnemotrace.llm import FakeLLM
 from tests.test_message_pipeline import message, reply
@@ -57,18 +57,16 @@ def test_source_time_comes_from_matching_role():
 
 
 def test_reembedding_does_not_authorize_generation_from_an_obsolete_policy():
-    from mnemotrace._pipeline import memory_adapter
     from tests.embedder_fixtures import MockEmbedder
     mem = MemoryEngine(llm=FakeLLM(handler=reply))
     mem.remember_messages([message('a')], 's', 'u')
-    host = memory_adapter(mem, 'u')
     PipelineTasks(mem, 'u').force()
-    assert run_one(host, 'u')
+    assert run_next_stage(mem, 'u')
     window, = PipelineTasks(mem, 'u').state['windows'].values()
     assert window['phase'] == 'embed'
     mem.policy['extract_instruction'] = 'Synthetic changed extraction policy'
     mem.reembed(MockEmbedder(32))
-    assert run_one(host, 'u')
+    assert run_next_stage(mem, 'u')
     assert not mem.fact_store.values() and len(mem.llm.calls) == 1
     assert window['state'] == 'failed' and window['error_code'] == 'configuration_changed'
 
@@ -87,7 +85,7 @@ def test_prior_processing_checkpoint_version_is_rejected():
     mem = MemoryEngine()
     mem.remember_messages([message('a')], 's', 'u')
     state = deepcopy(mem._pipeline_state)
-    state['version'] = 4
+    state['version'] = 9
     with pytest.raises(ValueError, match='Unsupported.*version'):
         validate_state(state, mem.episodes_doc.values())
 
@@ -230,7 +228,7 @@ def test_extraction_conflict_importable_and_carries_ids():
                             'stored_raw': True, 'episode_ids': ['e1', 'e2']}
 
 def test_raise_for_failed_result_tolerates_core_success_aux_failure():
-    """核心事实已落库、仅摘要等辅助步骤失败时，不应抛错（与 execute_sources 一致），
+    """核心事实已落库、仅摘要等辅助步骤失败时，不应抛错（与 execute_memory 一致），
     否则 immediate 客户端会误以为整批失败而重试，可能重复写入。"""
     from mnemotrace._pipeline import raise_for_failed_result, extract_partial_success
     # core 完成、摘要失败
