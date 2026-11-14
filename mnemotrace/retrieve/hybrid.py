@@ -65,6 +65,8 @@ def mentioned_entities(query, entities):
     query = normalize(query)
     mentions = {}
     for entity in entities:
+        if entity.name == "我" and query != "我":
+            continue
         for match in _entity_name_mentions(query, entity.name):
             mentions.setdefault(match.span(), {})[entity.id] = entity
     selected = []

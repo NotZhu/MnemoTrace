@@ -3,12 +3,11 @@ from dataclasses import asdict
 
 from ...profile import INPUT_FIELDS
 from ...util import gen_id
-from ...types import relation_identifier
-from ..contracts import OperationKind, OperationStats
+from ..contracts import OperationKind
 from .errors import DatabaseConstraintError, MessageConflict, VersionConflict
 from .lexical import project_document, project_text
 from .records import (
-    CONFLICT, ENTITY, ENTITY_ALIAS, FACT, RELATION_TYPE, SOURCE, SCOPE, TARGET_COLUMNS,
+    ENTITY, FACT, RELATION_TYPE, SOURCE, SCOPE, TARGET_COLUMNS,
     domain, timestamp,
 )
 
@@ -86,8 +85,6 @@ def write(sql, change, graph):
     record = change.record
     kind, record_id = record.ref.kind, record.ref.record_id
     previous = sql.get(kind, record_id)
-    if kind == ENTITY_ALIAS and previous is not None and domain(previous) == domain(record):
-        return False, False
     if (previous.record_version if previous else None) != change.expected_version:
         raise VersionConflict('Record version changed')
     old = asdict(domain(previous)) if previous else None
@@ -121,32 +118,12 @@ def write(sql, change, graph):
         column = TARGET_COLUMNS[kind]
         sql.delete('embeddings', f'{column} = %s', (record_id,))
         sql.delete('lexical_documents', f'{column} = %s', (record_id,))
-    if kind == FACT and current['relation_id'] == relation_identifier(current['predicate']):
-        sql.insert('relation_types', {
-            'id': current['relation_id'], 'predicate': current['predicate'],
-            'meaning': current['predicate'].replace('_', ' ').strip() or current['predicate'], 'direction': 'forward',
-            'endpoint_types': [], 'record_version': 1, 'content_version': 1,
-        }, suffix='ON CONFLICT DO NOTHING')
-    if kind == CONFLICT:
-        for side in ('older', 'newer'):
-            fact = sql.get(FACT, current[side])
-            if fact is None or fact.record_version != current[side + '_version']:
-                raise VersionConflict('Fact changed before the conflict was queued')
-    if kind == ENTITY_ALIAS:
-        parent = sql.get(FACT, current['fact_id'])
-        if parent is None:
-            raise DatabaseConstraintError('Alias evidence must reference a stored fact')
-        fact = domain(parent)
-        if current['entity_id'] not in (fact.subject_id, fact.object_id):
-            raise DatabaseConstraintError('Alias evidence must link the same entity')
     sql.write_record(record, insert=previous is None)
     if kind == FACT and (old is None or text_changed or current['valid_at'] != old['valid_at']):
         project_text(sql, kind, record_id, record.content_version, current)
     if kind == SOURCE:
         _source_digest(sql, record, current, old)
     elif kind == FACT:
-        if current['withdrawn_at'] is not None:
-            sql.delete('conflicts', '(older = %s OR newer = %s)', (record_id, record_id))
         _replace_links(sql, 'fact_sources', 'fact_id', record_id,
                        list(dict.fromkeys(current['provenance'])), ordered=True)
         sql.delete('fact_supersedes', 'fact_id = %s AND NOT (predecessor_id = ANY(%s))',
@@ -155,7 +132,7 @@ def write(sql, change, graph):
             sql.insert('fact_supersedes', {'fact_id': record_id, 'predecessor_id': predecessor_id},
                        suffix='ON CONFLICT DO NOTHING')
         graph_fields = ('subject_id', 'object_id', 'relation_id',
-                        'valid_at', 'invalid_at', 'withdrawn_at', 'review_pending')
+                        'valid_at', 'invalid_at')
         if old is None or any(old[k] != current[k] for k in graph_fields):
             graph.project(record_id)
     elif kind in (ENTITY, RELATION_TYPE) and previous is not None:
@@ -172,23 +149,6 @@ def write(sql, change, graph):
     return True, profile_changed
 
 
-def invalidate(sql, item, graph):
-    record_id = item.ref.record_id
-    previous = sql.get(FACT, record_id)
-    if previous is None or previous.record_version != item.expected_version:
-        raise VersionConflict('Fact version changed')
-    fact = domain(previous)
-    if fact.invalid_at is not None and fact.invalid_at <= item.invalid_at:
-        return False
-    fact.end_at(item.invalid_at, item.expired_at)
-    sql.update('facts', {
-        'record_version': item.expected_version + 1,
-        'invalid_at': timestamp(fact.invalid_at), 'expired_at': timestamp(fact.expired_at),
-    }, 'id = %s', (record_id,))
-    graph.project(record_id)
-    return True
-
-
 def enqueue(sql, spec, space_generation, *, ready_at=None, parent_id=None):
     sequence = None if spec.session_id is None else allocate_sequence(sql, spec.session_id)
     if ready_at is None and spec.kind in (OperationKind.EXTRACT, OperationKind.DIGEST):
@@ -197,23 +157,12 @@ def enqueue(sql, spec, space_generation, *, ready_at=None, parent_id=None):
         operation_id=spec.operation_id, kind=spec.kind.value, session_id=spec.session_id,
         sequence=sequence, state='pending', phase='queued', attempts=0, embed_attempts=0,
         space_generation=space_generation,
-        stats=asdict(OperationStats(0, 0, 0, 0, 0)), stored_raw=True,
+        stored_raw=True,
         extraction_saved=False, core_committed=False,
         ready_at=ready_at, parent_id=parent_id,
     ))
     for order, source in enumerate(spec.sources):
         append_input(sql, spec.operation_id, spec.session_id, source, order)
-    for target in spec.targets:
-        check_version(sql, target.record, target.content_version)
-        if spec.session_id is not None and target.record.kind in (SOURCE):
-            record = sql.get(target.record.kind, target.record.record_id)
-            if domain(record).session_id != spec.session_id:
-                raise DatabaseConstraintError('Operation target must belong to its session')
-        sql.insert('operation_targets', {
-            'operation_id': spec.operation_id,
-            TARGET_COLUMNS[target.record.kind]: target.record.record_id,
-            'target_kind': target.record.kind.value, 'content_version': target.content_version,
-        })
 
 
 def append_input(sql, operation_id, session_id, source, order):
@@ -246,12 +195,8 @@ def check_lease(sql, conditions):
     sources = [(item['source_id'], item['content_version']) for item in product[0]] if product else sql.run(
         f'SELECT DISTINCT source_id, content_version FROM mnemotrace.operation_sources '
         f'WHERE {SCOPE} AND operation_id = %s', (*sql.scope, lease.operation_id)).fetchall()
-    targets = sql.run(f'SELECT target_kind, coalesce(source_id, fact_id, entity_id), '
-                      f'content_version FROM mnemotrace.operation_targets WHERE {SCOPE} AND operation_id = %s',
-                      (*sql.scope, lease.operation_id)).fetchall()
-    if (set(sources) != {(item.source_id, item.content_version) for item in conditions.sources}
-            or set(targets) != {(item.record.kind.value, item.record.record_id, item.content_version)
-                                for item in conditions.targets}):
+
+    if set(sources) != {(item.source_id, item.content_version) for item in conditions.sources}:
         raise VersionConflict('Task input references changed')
 
 
@@ -266,13 +211,12 @@ def commit_task(sql, lease, receipt):
     ))
 
 
-def store_messages(sql, session_id, messages, *, check_model=None,
-                   source_metadata=None):
+def store_messages(sql, session_id, messages, *, check_model, source_metadata=None):
     existing = sql.run(f'SELECT message_id,id,message_fingerprint FROM mnemotrace.sources '
                        f'WHERE {SCOPE} AND session_id = %s AND message_id = ANY(%s)',
                        (*sql.scope, session_id, [msg.message_id for msg in messages])).fetchall()
     known = {key: (record_id, content_hash) for key, record_id, content_hash in existing}
-    if check_model is not None and any(item.extract and item.message_id not in known for item in messages):
+    if any(item.extract and item.message_id not in known for item in messages):
         check_model()
     sql.ensure_session(session_id)
     saved, inserted = [], []

@@ -10,7 +10,7 @@
 每条要求 message_id、role（user/assistant）和完整 content；event_time 可省略，表示来源时间未知。
 一次请求属于同一会话。缓冲对话由独立 worker 在窗口空闲 60 秒或达到预算后处理，也可显式刷新。
 同空间、会话和消息 ID 的重传返回现有事件状态；内容或不可变处理意图改变时冲突。
-笔记使用 `mnemotrace_remember`，其 `processing=immediate|buffered` 默认 immediate。两个工具默认抽取事实，传 `extract=false` 时只保存原文。
+笔记使用 `mnemotrace_remember`，其 `processing=immediate|buffered` 默认 immediate。已知笔记来源时间时传 Unix 秒 `event_time`，可用于当前状态的纠正。即时处理若未改变事实，结果会说明原文已保存、事实未变更。两个工具默认抽取事实，传 `extract=false` 时只保存原文。
 `mnemotrace_processing_status(session_id=null)` 查询无原文的任务状态；
 `mnemotrace_flush_processing(session_id=null, timeout=30, retry_failed=false, include_digests=false)` 推进并等待当前会话的核心处理。
 使用 `mnemotrace_get_operation(operation_id)` 查询操作，`mnemotrace_retry_operation(operation_id)` 重试原操作。
@@ -40,7 +40,7 @@
 | 工具 | 主要参数 | 用途 |
 | --- | --- | --- |
 | `mnemotrace_remember_messages` | messages、session_id 必填；processing=buffered/immediate、extract=true/false | 逐条接收对话，返回幂等身份与处理状态 |
-| `mnemotrace_remember` | content 必填；session_id=default、extract=true/false | 保存并通过服务层处理整合 |
+| `mnemotrace_remember` | content 必填；session_id=default、event_time 可选、extract=true/false | 保存并通过服务层处理整合 |
 | `mnemotrace_flush_processing` | session_id、timeout、include_digests | 整理会话并等待核心处理 |
 | `mnemotrace_retry_operation` | operation_id | 重试同一操作 |
 | `mnemotrace_set_fact_sensitive` | fact_id、sensitive、空间 | 修改事实的共享敏感标记 |
@@ -59,7 +59,7 @@
 
 - 本地 stdio 使用 `--user-id` 和 `--space-id`。远程 stdio 代理使用 `--api-url`、`--api-key-file` 和 `--space-id`。
   Streamable HTTP 在每次请求中使用 Bearer key 和 `X-MnemoTrace-Space-Id`。
-- MCP 不提供 HTTP 的所有管理端点，例如记忆策略、冲突裁决和槽位清理。需要这些能力时选择 HTTP。
+- MCP 不提供 HTTP 的所有管理端点，例如记忆策略和槽位清理。需要这些能力时选择 HTTP。
 - delete_fact 与 forget 必须 confirm=true；读取工具的只读注解只是客户端提示，实际副作用由工具实现决定。
 - 工具错误可能表现为错误文本，而非标准 HTTP 状态。调用方应检查结果并在失败时报告，不能因为工具调用已返回就宣布完成。
 - 默认敏感标记过滤不是完整隐私保证。清空范围与原始事件保留见[记忆生命周期](../architecture/memory.md)。

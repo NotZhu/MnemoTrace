@@ -4,7 +4,7 @@ import pytest
 
 from mnemotrace import Config
 from tests.embedder_fixtures import MockEmbedder, product_embedder
-from tests.postgres.fact_fixtures import seed_fact
+from tests.postgres.fact_fixtures import seed_fact, seed_note
 from mnemotrace.memory import Memory
 from mnemotrace.retrieve.hybrid import date_terms
 from mnemotrace.retrieve.lexical import bm25_scores
@@ -12,6 +12,7 @@ from mnemotrace.store.contracts import ChangeSet, CommitConditions, EmbeddingWri
 from mnemotrace.store.contracts import RetrievalQuery, StoredRecord
 from mnemotrace.store.postgres import Database
 from mnemotrace.store.postgres.errors import DatabaseUnavailable, SpaceNotFound
+from mnemotrace.store.postgres.maintenance import rebuild_graph, rebuild_lexical_index
 from mnemotrace.store.postgres.records import SOURCE, domain
 from mnemotrace.store.postgres.retrieval import Corpus
 from mnemotrace.types import Fact
@@ -26,13 +27,28 @@ def memory(runtime, spaces, user):
 
 
 def test_exact_graph_query_normalizes_names_with_surrounding_spaces(memory):
-    padded, plain = ' Synthetic Alice ', 'Synthetic Alice'
+    padded, plain = '\u2003Synthetic Alice\u2003', 'Synthetic Alice'
     for subject in (padded, plain):
         seed_fact(memory, subject, 'works_at', 'Synthetic Lab', linked=True, text=f'{subject} works at Synthetic Lab.')
 
     padded_entity, = memory.graph_entities(padded.upper())
     plain_entity, = memory.graph_entities(plain)
     assert padded_entity.id == plain_entity.id
+    with memory.dao.read_snapshot() as view:
+        assert view.entity(padded.upper(), share_safe=True).ref.record_id == plain_entity.id
+    assert len(memory.facts(FactQuery(subject=padded.upper(), predicate=' WORKS_AT '))) == 2
+    assert len(memory.history(plain, ' WORKS_AT ')) == 2
+
+
+def test_shared_entity_name_evidence_uses_the_same_normalization(memory):
+    padded = '\u2003İstanbul\u2003'
+    fact = seed_fact(memory, 'Synthetic traveler', 'visited', padded, linked=True,
+                     text='Synthetic traveler visited İstanbul.')
+    with memory.dao.read_snapshot() as view:
+        assert view.entity('İSTANBUL', share_safe=True).ref.record_id == fact.object_id
+    memory.set_fact_sensitive(fact.id, True)
+    with memory.dao.read_snapshot() as view:
+        assert view.entity('İSTANBUL', share_safe=True) is None
 
 
 def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, spaces, user):
@@ -40,10 +56,10 @@ def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, s
 
     context = spaces.authorize(user, spaces.create(user, 'Lexical mode').space_id)
     memory = Memory(runtime, context, llm=RecordedLLM())
-    original = memory.remember_raw('无关内容。' * 120 + '末尾记录绿茶', 'chat')
-    seed_fact(memory, 'user', 'sister', '王小明', linked=True, text='user sister 王小明')
+    original = seed_note(memory, '无关内容。' * 120 + '末尾记录绿茶', 'chat')
+    seed_fact(memory, '我', 'sister', '王小明', linked=True, text='user sister 王小明')
     seed_fact(memory, '王小明', 'works_at', '月亮公司', linked=True, text='王小明 works at 月亮公司')
-    seed_fact(memory, 'user', 'likes', '绿茶', linked=True, text='user likes 绿茶')
+    seed_fact(memory, '我', 'likes', '绿茶', linked=True, text='user likes 绿茶')
     assert memory.remember('I live in Shenzhen.', 'chat')['ok']
     with memory.dao.read_snapshot() as view:
         sql = view._sql
@@ -53,7 +69,7 @@ def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, s
                            sql.scope).fetchall()
     fresh = Memory(runtime, context)
     assert fresh.search('绿茶').top().object == '绿茶'
-    result = fresh.follow_path('user', ['sister', 'works_at'])
+    result = fresh.follow_path('我', ['sister', 'works_at'])
     assert result.paths[0].endpoint == '月亮公司'
     assert [fact.predicate for fact in result.paths[0].facts] == ['sister', 'works_at']
     assert fresh.get_episode(original.id).content == original.content
@@ -130,13 +146,13 @@ def test_graph_name_path_and_effective_date(memory):
     original, = memory.graph_relations(job.id)
     with memory.dao._transaction() as sql:
         sql.delete('graph_relations', 'fact_id = %s', (job.id,))
-    memory.rebuild_graph()
+    rebuild_graph(memory.dao)
     rebuilt, = memory.graph_relations(job.id)
     assert rebuilt.id == original.id
     assert memory.graph_entities('Orbit') == (orbit,)
     with memory.dao.read_snapshot() as view:
         first_projection, = view.relations(job.id)
-    memory.rebuild_graph()
+    rebuild_graph(memory.dao)
     with memory.dao.read_snapshot() as view:
         assert view.relations(job.id) == (first_projection,)
 
@@ -144,14 +160,14 @@ def test_graph_name_path_and_effective_date(memory):
 def test_graph_retrieval_uses_query_names_and_explicit_subject_scope(memory):
     from mnemotrace.store.postgres.graph_reads import RetrievalGraph
 
-    fact = seed_fact(memory, 'user', 'lives_in', 'Synthetic City', linked=True, text='user lives in Synthetic City')
+    fact = seed_fact(memory, '我', 'lives_in', 'Synthetic City', linked=True, text='user lives in Synthetic City')
     seed_fact(memory, 'Other Person', 'lives_in', 'Synthetic Harbor', linked=True, text='Other Person lives in Synthetic Harbor')
     with memory.dao.read_snapshot() as view:
         for text in ('Where do I live?', 'Where does his sister live?'):
             assert not RetrievalGraph(view, memory._query(text, top_k=1)).entities
         graph = RetrievalGraph(view, memory._query('Synthetic City', top_k=1))
         assert {entity.name for entity in graph.entities.values()} == {'Synthetic City', 'Synthetic Harbor'}
-    assert memory.search('Where do I live?', facts=FactQuery(subject='user')).top().id == fact.id
+    assert memory.search('Where do I live?', facts=FactQuery(subject='我')).top().id == fact.id
 
 
 def test_answer_evidence_matches_offline_without_domain_vocabulary(runtime, spaces, user):
@@ -171,7 +187,7 @@ def test_answer_evidence_matches_offline_without_domain_vocabulary(runtime, spac
 def test_digest_answer_requires_full_query_coverage(runtime, spaces, user):
     context = spaces.authorize(user, spaces.create(user, 'Digest evidence').space_id)
     memory = Memory(runtime, context)
-    original = memory.remember_raw("Ana's favorite programming language is Python.", 'chat')
+    original = seed_note(memory, "Ana's favorite programming language is Python.", 'chat')
     with memory.dao.read_snapshot() as view:
         previous = view.get(SOURCE, original.id)
         snapshot = view.snapshot
@@ -211,7 +227,7 @@ def test_explicit_candidate_limit_is_independent_of_output_count(memory):
 
 
 def test_redacted_aggregation_does_not_include_original_source_evidence(memory):
-    source = memory.remember_raw('I recently finished a Tamiya 1/48 scale Spitfire Mk.V model kit.', 'chat', event_time=100)
+    source = seed_note(memory, 'I recently finished a Tamiya 1/48 scale Spitfire Mk.V model kit.', 'chat', event_time=100)
     _seed_digest(memory, source, 'Finished a Spitfire model kit.')
     result = memory.aggregate_facts('bought', query='Spitfire model kit')
     assert result.count == 0 and result.candidates
@@ -282,7 +298,7 @@ def test_vector_queries_plan_for_each_scope_even_after_connection_reuse(memory):
 
 
 def test_digest_lexical_projection_follows_text_version(memory):
-    source = memory.remember_raw('Synthetic material', 'chat')
+    source = seed_note(memory, 'Synthetic material', 'chat')
     for version, text in enumerate(('Clover', 'Snowdrop'), 1):
         with memory.dao.read_snapshot() as view:
             previous = view.get(SOURCE, source.id)
@@ -303,7 +319,7 @@ def test_historical_retrieval_uses_latest_digest_for_eligible_event(memory, runt
     from mnemotrace import MemoryEngine
     from mnemotrace.service import MemoryService
 
-    source = memory.remember_raw('Project Orchid original wording', 'chat', event_time=100)
+    source = seed_note(memory, 'Project Orchid original wording', 'chat', event_time=100)
     cutoffs = []
     for version, text in enumerate(('Project Orchid first digest', 'Project Orchid later detail'), 1):
         with memory.dao.read_snapshot() as view:
@@ -346,9 +362,9 @@ def test_raw_writes_do_not_project_and_digest_vectors_can_recall(memory, runtime
             return [1.0, 0.0]
 
     memory = Memory(runtime, memory.context, embedder=SynonymEmbedder(2), embedding_model='synthetic')
-    source = memory.remember_raw('Celestial star', 'chat')
+    source = seed_note(memory, 'Celestial star', 'chat')
     memory.remember('Unprocessed note', 'chat', extract=False)
-    memory.store_messages('chat', (MessageInput('raw-message', 'user', 'Unprocessed dialogue', extract=False),))
+    memory.remember_messages('chat', (MessageInput('raw-message', 'user', 'Unprocessed dialogue', extract=False),))
     with memory.dao.read_snapshot() as view:
         for table in ('embeddings', 'lexical_documents', 'operations'):
             assert not view._sql.run(f'SELECT 1 FROM mnemotrace.{table} WHERE user_id=%s AND space_id=%s',
@@ -365,16 +381,33 @@ def test_raw_writes_do_not_project_and_digest_vectors_can_recall(memory, runtime
     assert 'Condensed evidence' in context.context and source.content not in context.context
 
 
-def test_backfill_rebuilds_digest_lexical_projection_only(memory):
-    source = memory.remember_raw('An archival source', 'chat')
+def test_rebuild_lexical_index_restores_missing_digest(memory):
+    source = seed_note(memory, 'An archival source', 'chat')
     _seed_digest(memory, source, 'Snowdrop')
     with memory.dao._transaction() as sql:
         sql.delete('lexical_documents', 'source_id = %s', (source.id,))
     assert 'lexical_backfill_pending' in memory.retrieve_digests('Snowdrop').limitations
-    assert memory.backfill_retrieval(RecordKind.SOURCE, limit=1) == source.id
-    assert memory.backfill_retrieval(RecordKind.SOURCE, after_id=source.id, limit=1) is None
-    assert memory.backfill_retrieval(RecordKind.SOURCE, limit=1) == source.id
+    assert rebuild_lexical_index(memory.dao, RecordKind.SOURCE, limit=1) == source.id
+    assert rebuild_lexical_index(memory.dao, RecordKind.SOURCE, after_id=source.id, limit=1) is None
+    assert rebuild_lexical_index(memory.dao, RecordKind.SOURCE, limit=1) == source.id
     assert memory.retrieve_digests('Snowdrop').digests[0].id == source.id
+
+
+def test_rebuild_lexical_index_refreshes_fact_with_stale_analyzer(memory):
+    fact = seed_fact(memory, 'Synthetic gardener', 'grows', 'Snowdrop',
+                     text='Synthetic gardener grows Snowdrop.')
+    with memory.dao._transaction() as sql:
+        sql.update('lexical_documents', {'analyzer_version': 'obsolete'}, 'fact_id = %s', (fact.id,))
+    query = memory._query('Snowdrop', top_k=1, use_vectors=False)
+    with memory.dao.read_snapshot() as view:
+        assert 'lexical_backfill_pending' in view.candidates(query).limitations
+    assert rebuild_lexical_index(memory.dao, RecordKind.FACT) is None
+    with memory.dao.read_snapshot() as view:
+        batch = view.candidates(query)
+        assert 'lexical_backfill_pending' not in batch.limitations
+        assert batch.candidates[0].record.ref.record_id == fact.id
+        assert batch.candidates[0].lexical > 0
+
 
 def test_snapshot_keeps_all_signals_at_one_version_and_failure_stays_visible(memory, cluster):
     seed_fact(memory, 'Ana', 'likes', 'Clover', text='Ana likes Clover')
@@ -459,8 +492,8 @@ def test_focus_boundaries_match_offline_and_persistent_reads(memory):
     offline = MemoryEngine()
     for language, labels in [("Java", ["technology"]), ("JavaScript", [])]:
         text = f"user uses {language}"
-        offline.add_fact("user", "uses", language, categories=labels, sensitive=False, text=text)
-        seed_fact(memory, "user", "uses", language, categories=labels, sensitive=False, text=text)
+        offline.add_fact("我", "uses", language, categories=labels, sensitive=False, text=text)
+        seed_fact(memory, "我", "uses", language, categories=labels, sensitive=False, text=text)
     for terms in (["java"], ["category:technology"]):
         offline.set_focus(mute=terms)
         memory.set_settings(mute=tuple(terms))

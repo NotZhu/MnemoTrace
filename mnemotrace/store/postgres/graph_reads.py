@@ -2,7 +2,9 @@
 from dataclasses import replace
 
 from ...retrieve.lexical import lexical_terms
-from .records import ENTITY, SCOPE, domain
+from ...util import name_key
+from .reads import PUBLIC_NAME_EVIDENCE
+from .records import ENTITY, domain
 
 
 class RetrievalGraph:
@@ -17,12 +19,10 @@ class RetrievalGraph:
         self.truncated = False
         terms = sorted(set(lexical_terms(query.text, query=True, exact=True)))
         conditions = ['r.anchor_terms && %s']
+        if query.text.strip() != '我':
+            conditions.append("r.normalized_name <> '我'")
         if query.facts.exclude_sensitive:
-            conditions.append('''EXISTS (SELECT 1 FROM mnemotrace.facts f
-                WHERE (f.user_id,f.space_id) = (r.user_id,r.space_id)
-                AND NOT f.sensitive AND NOT f.review_pending AND f.withdrawn_at IS NULL
-                AND ((f.subject_id = r.id AND lower(f.subject) = r.normalized_name)
-                  OR (f.object_id = r.id AND lower(f.object) = r.normalized_name)))''')
+            conditions.append(PUBLIC_NAME_EVIDENCE)
         records = self.sql.select(ENTITY, conditions, (terms,), limit=query.facts.limit + 1) if terms else ()
         self.truncated = len(records) > query.facts.limit
         self._remember(records[:query.facts.limit])
@@ -41,19 +41,15 @@ class RetrievalGraph:
         if missing:
             self._remember(self.sql.select(ENTITY, ('r.id = ANY(%s)',), (sorted(missing),)))
 
-    def find_entities(self, name, *, limit=None):
-        records = self.view.named_entities(name, limit=self.query.facts.limit if limit is None else limit,
-                                           share_safe=self.query.facts.exclude_sensitive)
-        self._remember(records)
-        return tuple(self.entities[record.ref.record_id] for record in records)
-
     def get_entity(self, user_id, name):
         if user_id != self.view.snapshot.context.user_id:
             return None
-        key = name.lower()
+        key = name_key(name)
         if key not in self._by_name:
-            records = self.find_entities(key, limit=2)
-            self._by_name[key] = records[0] if len(records) == 1 else None
+            record = self.view.entity(key, share_safe=self.query.facts.exclude_sensitive)
+            if record is not None:
+                self._remember((record,))
+            self._by_name[key] = self.entities[record.ref.record_id] if record else None
         return self._by_name[key]
 
     def _edges(self, ids, direction, limit, predicates=()):
@@ -80,8 +76,4 @@ class RetrievalGraph:
         return self._adjacent[key]
 
     def limitations(self):
-        flags = ['graph_candidate_budget'] if self.truncated else []
-        if self.sql.run(f'SELECT EXISTS(SELECT 1 FROM mnemotrace.entities WHERE {SCOPE} AND anchor_terms IS NULL)',
-                        self.sql.scope).fetchone()[0]:
-            flags.append('graph_backfill_pending')
-        return tuple(flags)
+        return ('graph_candidate_budget',) if self.truncated else ()

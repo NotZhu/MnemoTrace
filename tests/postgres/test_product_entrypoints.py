@@ -10,6 +10,7 @@ from mnemotrace import cli
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from mnemotrace.llm import FakeLLM
 from mnemotrace.service import MemoryService
+from mnemotrace.store.postgres.maintenance import rebuild_graph
 from tests.postgres.fact_fixtures import seed_fact
 from tests.postgres.ontology_fixtures import ontology_reply, typed_result
 
@@ -156,12 +157,12 @@ def test_graph_audit_reports_scoped_structural_issues_before_limiting(product, s
     service, context, _, client = product
     scope = {'space_id': context.space_id}
     memory = service.memory(context)
-    missing = seed_fact(memory, 'user', 'works_at', 'Missing Ltd.', linked=True, sensitive=False, text='user works at Missing Ltd.')
-    mismatch = seed_fact(memory, 'user', 'based_in', 'Mismatch City', linked=True, sensitive=False, text='user based in Mismatch City')
-    private = seed_fact(memory, 'user', 'knows', 'Synthetic private person', linked=True, sensitive=True, text='user knows Synthetic private person')
+    missing = seed_fact(memory, '我', 'works_at', 'Missing Ltd.', linked=True, sensitive=False, text='user works at Missing Ltd.')
+    mismatch = seed_fact(memory, '我', 'based_in', 'Mismatch City', linked=True, sensitive=False, text='user based in Mismatch City')
+    private = seed_fact(memory, '我', 'knows', 'Synthetic private person', linked=True, sensitive=True, text='user knows Synthetic private person')
     seed_fact(memory, 'this', 'path', 'fixture/demo.json', sensitive=False, text='this path fixture/demo.json')
     sibling = service.memory(spaces.authorize(context.user_id, spaces.create(context.user_id, 'Sibling').space_id))
-    outside = seed_fact(sibling, 'user', 'works_at', 'Outside Ltd.', linked=True, sensitive=False, text='user works at Outside Ltd.')
+    outside = seed_fact(sibling, '我', 'works_at', 'Outside Ltd.', linked=True, sensitive=False, text='user works at Outside Ltd.')
     with sibling.dao._transaction() as sql:
         sql.delete('graph_relations', 'fact_id = %s', (outside.id,))
     with memory.dao._transaction() as sql:
@@ -177,7 +178,12 @@ def test_graph_audit_reports_scoped_structural_issues_before_limiting(product, s
     assert [row['kind'] for row in limited['findings']] == ['missing_edge']
     assert [row['fact_id'] for row in limited['findings']] == [missing.id]
     assert 'Synthetic private person' not in str(report) and private.id not in str(report)
-    assert memory.rebuild_graph() is None
+    cursor = None
+    for _ in range(len(memory.facts())):
+        next_cursor = rebuild_graph(memory.dao, after_id=cursor, limit=1)
+        assert next_cursor is not None and (cursor is None or next_cursor > cursor)
+        cursor = next_cursor
+    assert rebuild_graph(memory.dao, after_id=cursor, limit=1) is None
     assert client.get('/v1/audit', params=scope).json()['findings'] == []
 
 

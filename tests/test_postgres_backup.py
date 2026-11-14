@@ -19,6 +19,7 @@ from mnemotrace.store.postgres import migrate as migrations
 from mnemotrace.store.postgres.migrate import bootstrap_roles, check_restore_target
 from mnemotrace.worker import run_worker
 from tests.postgres.conftest import disposable_database_factory
+from tests.postgres.fact_fixtures import seed_fact
 from tests.postgres.test_process_recovery import _accept, _model
 
 
@@ -90,7 +91,7 @@ def test_full_logical_backup_and_worker_resume(tmp_path, backup_environment):
             prior_edge, = memory.graph_relations(prior_fact.id)
             from tests.test_profile_cache import model as profile_model
             memory._processing.llm = profile_model()
-            memory.add_fact('user', 'likes', 'Synthetic restored tea', sensitive=False, text='user likes Synthetic restored tea')
+            seed_fact(memory, '我', 'likes', 'Synthetic restored tea', sensitive=False, text='I like Synthetic restored tea')
             generated = memory.refresh_profile()
             assert memory._processing.flush(operation_ids=(generated.operation_id,), timeout=3)['ok']
             prior_profile = memory.profile()
@@ -146,7 +147,7 @@ def test_restored_prior_graph_schema_is_rejected(tmp_path, backup_environment, m
         initial = scripts[0][0].replace(
             '    normalized_name mnemotrace.identifier NOT NULL,',
             '    normalized_name mnemotrace.identifier NOT NULL,\n    aliases text[] NOT NULL,',
-        ).replace('CHECK (format_version = 6)', 'CHECK (format_version = 4)')
+        ).replace('CHECK (format_version = 8)', 'CHECK (format_version = 6)')
         return [(initial, sha256(initial.encode()).hexdigest()), *scripts[1:]]
 
     with disposable_database_factory(dsn)(initialize=False) as source:

@@ -14,12 +14,13 @@ from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from tests.embedder_fixtures import MockEmbedder, product_embedder
 from mnemotrace.llm import FakeLLM
 from mnemotrace.memory import Memory
-from tests.postgres.fact_fixtures import seed_fact
+from tests.postgres.fact_fixtures import seed_fact, seed_note
 from mnemotrace.store.postgres import Accounts, Database
 from mnemotrace.store.postgres.dao import PostgresDAO
 from mnemotrace.store.postgres.errors import (
     AccountNotFound, AuthenticationError, DatabaseUnavailable, MessageConflict, SpaceNotFound,
 )
+from mnemotrace.store.postgres.maintenance import rebuild_graph
 from mnemotrace.store.postgres.tasks import ATTEMPT_LIMIT, Tasks
 from mnemotrace.worker import run_worker
 from tests.postgres.test_processing import dialogue
@@ -94,7 +95,7 @@ def _model(calls, pause=None):
         facts = []
         for item in request['pending']:
             subject, _, employer = item['content'].rpartition(' at ')
-            subject = subject or 'user'
+            subject = subject or '我'
             facts.append(dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject=subject, predicate='works_at', object=employer,
                               text=f'{subject} works at {employer}',
                               source_ids=[item['id']]))
@@ -401,7 +402,7 @@ def _pending_write(memory, kind):
         from mnemotrace.store.contracts import ChangeSet, CommitConditions, OperationKind, OperationSpec, SourceVersion
         from mnemotrace.store.postgres.dao import new_operation_id
 
-        source = memory.remember_raw('Synthetic digest input. ' * 100, 'chat')
+        source = seed_note(memory, 'Synthetic digest input. ' * 100, 'chat')
         operation_id = new_operation_id()
         with memory.dao.read_snapshot() as view:
             conditions = CommitConditions(view.snapshot)
@@ -418,10 +419,10 @@ def _pending_write(memory, kind):
 def _scope_counts(runtime, scope):
     from psycopg import sql
 
-    tables = ('sessions', 'sources', 'source_digests', 'facts', 'fact_sources', 'conflicts',
-
-              'entities', 'graph_relations', 'embeddings', 'lexical_documents', 'lexical_terms',
-              'operations', 'operation_sources', 'operation_targets', 'operation_products', 'operation_digest_parts',
+    tables = ('sessions', 'sources', 'source_digests', 'facts', 'fact_sources', 'fact_supersedes',
+              'entity_types', 'entities', 'relation_types', 'graph_relations',
+              'embeddings', 'lexical_documents', 'lexical_terms',
+              'operations', 'operation_sources', 'operation_products', 'operation_digest_parts',
               'operation_receipts')
     with runtime._transaction() as conn:
         conn.execute("SELECT set_config('mnemotrace.user_id', %s, true)", (scope.user_id,))
@@ -481,7 +482,7 @@ def test_delete_prevents_late_processing_writes(memory, cluster, runtime, spaces
     key = accounts.issue_key(user_id)
     sibling = spaces.create(user_id, 'Sibling')
     sibling_memory = Memory(runtime, spaces.authorize(user_id, sibling.space_id))
-    sibling_source = sibling_memory.remember_raw('Sibling synthetic source', 'chat')
+    sibling_source = seed_note(sibling_memory, 'Sibling synthetic source', 'chat')
     settings = memory.set_settings(extract_instruction='Keep this setting on clear')
     seed = seed_fact(memory, 'Synthetic maintainer', 'works_at', 'Seed lab', linked=True, text='Synthetic maintainer works at Seed lab')
     assert memory.graph_relations(seed.id)
@@ -499,11 +500,11 @@ def test_delete_prevents_late_processing_writes(memory, cluster, runtime, spaces
         assert memory.get_settings() == settings
         assert memory.operation(operation_id) is None
         assert memory.dao.receipt(operation_id) is None
-        assert memory.rebuild_graph() is None
+        assert rebuild_graph(memory.dao) is None
         assert memory.graph_relations(seed.id) == ()
     else:
         with pytest.raises(SpaceNotFound if scope == 'space' else AccountNotFound):
-            memory.rebuild_graph()
+            rebuild_graph(memory.dao)
     if scope == 'account':
         with pytest.raises(AuthenticationError):
             spaces.authenticate(key.value)
@@ -533,7 +534,7 @@ def _rebuild_in_process(config, context, *, ready, resume):
         _pause(ready, resume)
 
     with Database(config) as runtime, patch.object(GraphProjection, 'prune', pause_after_rebuild):
-        return Memory(runtime, context).rebuild_graph()
+        return rebuild_graph(PostgresDAO(runtime, context))
 
 
 def test_clear_waits_for_graph_rebuild_and_removes_rebuilt_edges(memory, cluster, runtime):

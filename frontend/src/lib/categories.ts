@@ -1,4 +1,4 @@
-import type { CategoriesSource, Category } from '../types'
+import type { Category } from '../types'
 import { CATEGORIES } from '../generated/memory-contract'
 
 export const CATEGORY_LABELS: Record<Category, string> = {
@@ -9,9 +9,6 @@ export const CATEGORY_LABELS: Record<Category, string> = {
 }
 
 export const CATEGORY_OPTIONS: [Category, string][] = CATEGORIES.map(category => [category, CATEGORY_LABELS[category]])
-export const CATEGORY_SOURCE_LABELS: Record<CategoriesSource, string> = {
-  unset: '未设置', llm: '模型判断', user: '人工设置',
-}
 export function savedCategories(value: unknown): Category[] {
   if (!Array.isArray(value)) return []
   return [...new Set(value.filter((item): item is Category =>

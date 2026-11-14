@@ -82,15 +82,15 @@ def run_demo(memory: Memory) -> None:
         print(f"   [{r.via:9}] {q}\n              -> {[fact.text for fact in r.facts]!r}")
 
     print("\n== 记忆更新：Wei 的工作单位历史 ==")
-    for f in memory.history("user", "works_at"):
+    for f in memory.history("我", "works_at"):
         state = "当前" if f.is_live() else "已被取代"
         print(f"   {f.object:12} [{state}]  取代的事实 ID={f.supersedes}")
 
     print("\n== 时间查询：第 10 天（换工作前）记录的工作单位 ==")
     question = "Where do I work?"
     historical = memory.search(question, facts=FactQuery(
-        subject="user", predicate="works_at", valid_at=BASE + 10 * DAY))
-    current = memory.search(question, facts=FactQuery(subject="user", predicate="works_at"))
+        subject="我", predicate="works_at", valid_at=BASE + 10 * DAY))
+    current = memory.search(question, facts=FactQuery(subject="我", predicate="works_at"))
     print(f"   第 10 天 -> {historical.answer()!r}   （当前 -> {current.answer()!r}）")
 
 if __name__ == "__main__":

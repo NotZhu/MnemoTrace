@@ -23,7 +23,7 @@ from .llm.base import complete_result
 from .llm.execution import one_attempt
 from .retrieve.lexical import bm25_query_terms
 from .store.contracts import (
-    ChangeSet, CommitConditions, CommitReceipt, EmbeddingWrite, ExtractionProduct, OperationStats, SourceVersion,
+    ChangeSet, CommitConditions, CommitReceipt, EmbeddingWrite, ExtractionProduct, SourceVersion,
 )
 from .store.postgres.errors import AccountNotFound, CommitOutcomeUnknown, DataCorruption, DatabaseError, DatabaseUnavailable
 from .store.postgres.errors import SpaceNotFound, VersionConflict
@@ -171,7 +171,7 @@ class PostgresPipeline:
         context_revision = snapshot.core_revision if any(item['representation'] == 'digest'
                                                         for item in (*data['context'], *data['pending'])) else None
         product = ExtractionProduct(CommitConditions(snapshot, sources, lease, fingerprint), json.dumps(data),
-                                    json.dumps(result), OperationStats(0, 0, 0, int(cached_digest is None), 0),
+                                    json.dumps(result),
                                     self.config.digest_max_chars, context_revision)
         self.tasks.save_product(product, settings)
 
@@ -198,8 +198,8 @@ class PostgresPipeline:
                 raise VersionConflict('Fact workset changed during ontology resolution')
             previous = view.merge_history(facts, symmetric=ontology.symmetric)
             vectors = view.fact_vectors(previous, *space) if space is not None else {}
-        writes, embeddings, links = merge_records(context, self.config, self.embedder, self.model, data,
-                                                  now, facts, previous, vectors, self.llm, (),
+        writes, embeddings, links = merge_records(context, self.config, self.embedder, self.model,
+                                                  now, facts, previous, vectors, self.llm,
                                                   ontology=ontology)
         by_id = {record.ref.record_id: record for record in records}
         completed = {record.ref.record_id for record in records if domain(record).consolidated}

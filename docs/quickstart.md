@@ -33,8 +33,8 @@ with Database(DatabaseConfig.from_env()) as database:
         os.environ["MNEMOTRACE_USER_ID"], os.environ["MNEMOTRACE_SPACE_ID"],
     )
     memory = Memory(database, scope)
-    memory.remember_raw("Synthetic project note", "demo")
-    print([source.content for source in memory.list_sources()])
+    saved = memory.remember("Synthetic project note", "demo", extract=False)
+    print(memory.get_episode(saved["source_ids"][0]).content)
 ```
 
 [HTTP API](reference/http-api.md)提供会话写入、任务查询和检索入口。[使用指南](guides/usage.md)说明空间、会话和删除的操作范围。

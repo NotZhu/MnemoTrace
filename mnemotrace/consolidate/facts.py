@@ -20,7 +20,6 @@ def extraction_entries(data, result):
 
 def materialize_facts(user_id, data, result, now, *, bindings=None, entries=None):
     """Build the same facts from a saved extraction in either storage adapter."""
-    views = {item['id']: item for item in (*data['context'], *data['pending'])}
     pending = {item['id']: item for item in data['pending']}
 
     def anchor(item):
@@ -40,10 +39,9 @@ def materialize_facts(user_id, data, result, now, *, bindings=None, entries=None
             **fields,
             text=item['text'], user_id=user_id,
             valid_at=fact_valid_at(item, anchor(item)['event_time']), created_at=now, last_access=now,
-            categories=list(labels), categories_source='llm' if labels else 'unset',
+            categories=list(labels),
             sensitive=item['sensitive'],
             provenance=list(source_ids),
-            source_roles=list(dict.fromkeys(views[key]['role'] for key in source_ids if views[key]['role'])),
             retention=item['retention'],
             id=key,
         ))
@@ -51,9 +49,9 @@ def materialize_facts(user_id, data, result, now, *, bindings=None, entries=None
 
 
 class FactWriter:
-    def __init__(self, fact_store, graph, embedder, config):
+    def __init__(self, fact_store, graph, config):
         self.fact_store, self.config = fact_store, config
-        self.graph_builder = GraphBuilder(graph, embedder)
+        self.graph_builder = GraphBuilder(graph)
 
     @staticmethod
     def empty_stats():

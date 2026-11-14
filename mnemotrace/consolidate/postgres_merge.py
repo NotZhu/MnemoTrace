@@ -1,11 +1,10 @@
 """Build an explicit commit from a validated product and a scoped fact workset."""
 from dataclasses import replace
-from itertools import chain
 
 from .adjudication import plan_merge
 from ..store._validation import validate_embedding
 from ..store.contracts import EmbeddingWrite, RecordRef, RecordWrite, SourceLink, StoredRecord
-from ..store.postgres.records import FACT, SOURCE, domain
+from ..store.postgres.records import SOURCE, domain
 
 
 def write_record(context, value, previous=None, *, digest_base=1):
@@ -32,36 +31,21 @@ def embed_texts(embedder, texts):
     return dict(zip(texts, vectors, strict=True))
 
 
-def merge_records(context, config, embedder, model, data, now,
-                  facts, previous, vectors, llm, existing_pairs, *, verdicts=None, ontology=None):
+def merge_records(context, config, embedder, model, now,
+                  facts, previous, vectors, llm, *, ontology):
     old_records = {record.ref.record_id: record for record in previous}
     old_facts = [domain(record) for record in previous]
-    semantic_subjects = {fact.subject_key for fact in facts}
-    missing = [fact for fact in old_facts if ontology is None and embedder is not None
-               and fact.subject_key in semantic_subjects
-               and not fact.review_pending and fact.id not in vectors]
-    fresh = embed_texts(embedder, chain((fact.text for fact in facts),
-                                       (fact.text for fact in missing)))
+    fresh = embed_texts(embedder, (fact.text for fact in facts))
     for fact in old_facts:
         fact.embedding = vectors.get(fact.id)
-    extra_vectors = []
-    for fact in missing:
-        fact.embedding = fresh.get(fact.text)
-        record = old_records[fact.id]
-        extra_vectors.append(EmbeddingWrite(record.ref, record.content_version, model, tuple(fact.embedding)))
-
     for fact in facts:
         fact.embedding = fresh.get(fact.text)
     duplicate_ids = {}
-    changed, conflicts, _ = plan_merge(facts, old_facts, llm, config, embedder, now, existing_pairs,
-                                       verdicts=verdicts, semantic=ontology is not None,
-                                       symmetric=ontology.symmetric if ontology else (), duplicate_ids=duplicate_ids,
-                                       discard_uncertain=ontology is not None)
-    writes = []
-    if ontology is not None:
-        accepted = duplicate_ids.keys() | {value.id for value in changed if value.id not in old_records}
-        writes.extend(write_record(context, value, previous) for value, previous in ontology.records(accepted))
-    embeddings, links = extra_vectors, []
+    changed, _ = plan_merge(facts, old_facts, llm, config, embedder, now,
+                            semantic=True, symmetric=ontology.symmetric, duplicate_ids=duplicate_ids)
+    accepted = duplicate_ids.keys() | {value.id for value in changed if value.id not in old_records}
+    writes = [write_record(context, value, previous) for value, previous in ontology.records(accepted)]
+    embeddings, links = [], []
     for value in changed:
         previous = old_records.get(value.id)
         vector = value.embedding
@@ -72,13 +56,6 @@ def merge_records(context, config, embedder, model, data, now,
         writes.append(write)
         if previous is None and vector is not None:
             embeddings.append(EmbeddingWrite(write.ref, write.record.content_version, model, tuple(vector)))
-        if write.ref.kind == FACT:
-            links.extend(SourceLink(write.ref, RecordRef(context, SOURCE, source_id))
-                         for source_id in value.provenance)
-    versions = {record.ref.record_id: record.record_version for record in old_records.values()}
-    versions.update((item.ref.record_id, item.record.record_version) for item in writes)
-    for conflict in conflicts:
-        conflict.older_version = versions[conflict.older]
-        conflict.newer_version = versions[conflict.newer]
-        writes.append(write_record(context, conflict))
+        links.extend(SourceLink(write.ref, RecordRef(context, SOURCE, source_id))
+                     for source_id in value.provenance)
     return writes, embeddings, links

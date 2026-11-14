@@ -90,13 +90,13 @@ The optional `categories` array matches any of the supplied labels before pagina
 
 For consistent pagination, carry the response's data_revision and evaluated_at into expectedRevision/evaluatedAt on the next request. On a 409 revision change, start again from the first page.
 
-Use the HTTP API directly for document uploads, conflict resolution, and slot clearing.
+Use the HTTP API directly for document uploads and slot clearing. For a dated note or correction, pass Unix seconds as `eventTime` to `remember`. Immediate completion returns the affected fact IDs in `fact_ids`.
 
 ## Types and errors
 
 Public types are exported from [types.ts](https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/src/types.ts). Core results include RememberResult, RecallResult, SearchResult, Fact, MemoryDump, SessionIndex, SessionReport, MemoryExport, and chat completion types.
 
-`Category` defines the fixed label catalog. Fact results return `categories`, `categories_source`, and any linked entity IDs and types. Use `setFactSensitive(id, sensitive, { spaceId })` to change sharing. Structured exports carry `format_version: 4`.
+`Category` defines the fixed label catalog. Fact results return `categories` and any linked entity IDs and types. Use `setFactSensitive(id, sensitive, { spaceId })` to change sharing. Structured exports carry `format_version: 6`.
 
 `CATEGORIES` and `PROFILE_SECTIONS` export the ordered catalogs as readonly tuples. Their `Category` and `ProfileSection` types are generated from the Python definitions.
 

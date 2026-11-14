@@ -5,18 +5,18 @@ from mnemotrace.store.contracts import FactQuery
 
 def test_explicit_path_returns_all_endpoints_and_supporting_facts():
     memory = MemoryEngine()
-    one = seed_linked(memory, 'user', 'sister', 'Ana', text='user sister Ana')
-    two = seed_linked(memory, 'user', 'sister', 'Bea', text='user sister Bea')
+    one = seed_linked(memory, '我', 'sister', 'Ana', text='user sister Ana')
+    two = seed_linked(memory, '我', 'sister', 'Bea', text='user sister Bea')
     three = seed_linked(memory, 'Ana', 'works_at', 'Orbit', text='Ana works at Orbit')
     four = seed_linked(memory, 'Bea', 'works_at', 'Nadir', text='Bea works at Nadir')
-    result = memory.follow_path('user', ['sister', 'works_at'])
+    result = memory.follow_path('我', ['sister', 'works_at'])
     assert {path.endpoint: path.facts for path in result.paths} == {
         'Orbit': (one, three), 'Nadir': (two, four),
     }
     assert not result.limitations
-    assert memory.follow_path('user', ['sister', 'lives_in']).paths == ()
-    assert memory.follow_path('user', ['sister', 'works_at'], facts=FactQuery(limit=1)).limitations
-    assert not memory.follow_path('user', ['sister', 'works_at'], facts=FactQuery(exclude_sensitive=True)).paths
+    assert memory.follow_path('我', ['sister', 'lives_in']).paths == ()
+    assert memory.follow_path('我', ['sister', 'works_at'], facts=FactQuery(limit=1)).limitations
+    assert not memory.follow_path('我', ['sister', 'works_at'], facts=FactQuery(exclude_sensitive=True)).paths
 
 
 def test_statistics_respect_window_and_do_not_limit_count_to_evidence():
@@ -87,7 +87,7 @@ def test_backfilled_replacements_keep_previous_validity_boundaries():
     from dataclasses import asdict
 
     restored = MemoryEngine()
-    restored.import_snapshot(dict(format_version=4, facts=[asdict(fact) for fact in memory.fact_store.values()], episodes=[]))
+    restored.import_snapshot(dict(format_version=6, facts=[asdict(fact) for fact in memory.fact_store.values()], episodes=[]))
     result = restored.aggregate_facts('works_at', facts=FactQuery(valid_at=600))
     assert [(fact.object, fact.invalid_at) for fact in result.facts] == [('Middle', 800)]
 

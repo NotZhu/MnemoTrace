@@ -231,11 +231,10 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "user",
+          "subject": "我",
           "predicate": "enjoys",
           "object": "hiking on weekends",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700086400.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -247,11 +246,10 @@
         },
         {
           "id": "fact-2",
-          "subject": "user",
+          "subject": "我",
           "predicate": "name",
           "object": "Ana",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -263,11 +261,10 @@
         },
         {
           "id": "fact-3",
-          "subject": "user",
+          "subject": "我",
           "predicate": "works_at",
           "object": "Spotify",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -284,9 +281,9 @@
         "fact-2"
       ],
       "scores": [
-        0.018773135906927554,
+        0.01869633099141296,
         0.008950290851401376,
-        0.00873015873015873
+        0.008806963645673321
       ],
       "via": "hybrid"
     },
@@ -294,11 +291,10 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "user",
+          "subject": "我",
           "predicate": "favorite_color",
           "object": "blue",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -310,11 +306,10 @@
         },
         {
           "id": "fact-2",
-          "subject": "user",
+          "subject": "我",
           "predicate": "name",
           "object": "Cara",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -339,11 +334,10 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "user",
+          "subject": "我",
           "predicate": "lives_in",
           "object": "Boston",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": 1705184000.0,
           "created_at": 1710368000.0,
@@ -355,11 +349,10 @@
         },
         {
           "id": "fact-2",
-          "subject": "user",
+          "subject": "我",
           "predicate": "lives_in",
           "object": "Denver",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1705184000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -373,11 +366,10 @@
         },
         {
           "id": "fact-3",
-          "subject": "user",
+          "subject": "我",
           "predicate": "name",
           "object": "Ben",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -402,11 +394,10 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "user",
+          "subject": "我",
           "predicate": "favorite_color",
           "object": "blue",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": 1703456000.0,
           "created_at": 1710368000.0,
@@ -418,11 +409,10 @@
         },
         {
           "id": "fact-2",
-          "subject": "user",
+          "subject": "我",
           "predicate": "favorite_color",
           "object": "green",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1703456000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -436,11 +426,10 @@
         },
         {
           "id": "fact-3",
-          "subject": "user",
+          "subject": "我",
           "predicate": "name",
           "object": "Cara",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -469,7 +458,6 @@
           "predicate": "works_at",
           "object": "Netflix",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700086400.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -481,11 +469,10 @@
         },
         {
           "id": "fact-2",
-          "subject": "user",
+          "subject": "我",
           "predicate": "colleague",
           "object": "Evan",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700086400.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -497,11 +484,10 @@
         },
         {
           "id": "fact-3",
-          "subject": "user",
+          "subject": "我",
           "predicate": "name",
           "object": "Dora",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -527,7 +513,6 @@
           "predicate": "lives_in",
           "object": "Seattle",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700086400.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -543,7 +528,6 @@
           "predicate": "occupation",
           "object": "pediatrician",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -555,11 +539,10 @@
         },
         {
           "id": "fact-3",
-          "subject": "user",
+          "subject": "我",
           "predicate": "sister",
           "object": "Maya",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -581,11 +564,10 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "user",
+          "subject": "我",
           "predicate": "name",
           "object": "Finn",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -597,11 +579,10 @@
         },
         {
           "id": "fact-2",
-          "subject": "user",
+          "subject": "我",
           "predicate": "works_at",
           "object": "IBM",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": 1704320000.0,
           "created_at": 1710368000.0,
@@ -613,11 +594,10 @@
         },
         {
           "id": "fact-3",
-          "subject": "user",
+          "subject": "我",
           "predicate": "works_at",
           "object": "Oracle",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1704320000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -635,8 +615,8 @@
         "fact-1"
       ],
       "scores": [
-        0.018852459016393444,
-        0.008870967741935482
+        0.018773135906927554,
+        0.008950290851401376
       ],
       "via": "hybrid"
     },
@@ -644,11 +624,10 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "user",
+          "subject": "我",
           "predicate": "name",
           "object": "Finn",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -660,11 +639,10 @@
         },
         {
           "id": "fact-2",
-          "subject": "user",
+          "subject": "我",
           "predicate": "works_at",
           "object": "IBM",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": 1704320000.0,
           "created_at": 1710368000.0,
@@ -676,11 +654,10 @@
         },
         {
           "id": "fact-3",
-          "subject": "user",
+          "subject": "我",
           "predicate": "works_at",
           "object": "Oracle",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1704320000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -707,11 +684,10 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "user",
+          "subject": "我",
           "predicate": "name",
           "object": "Gina",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -723,11 +699,10 @@
         },
         {
           "id": "fact-2",
-          "subject": "user",
+          "subject": "我",
           "predicate": "works_at",
           "object": "Adobe",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -746,11 +721,10 @@
       "facts": [
         {
           "id": "fact-1",
-          "subject": "user",
+          "subject": "我",
           "predicate": "lives_in",
           "object": "Lisbon",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,
@@ -762,11 +736,10 @@
         },
         {
           "id": "fact-2",
-          "subject": "user",
+          "subject": "我",
           "predicate": "name",
           "object": "Hugo",
           "source": "extracted",
-          "source_roles": [],
           "valid_at": 1700000000.0,
           "invalid_at": null,
           "created_at": 1710368000.0,

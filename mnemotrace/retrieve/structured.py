@@ -1,9 +1,10 @@
 """Validation and execution shared by explicit memory queries."""
 from dataclasses import dataclass
-from ..consolidate.fact_rules import object_key
 
+from ..consolidate.fact_rules import object_key
 from ..store.contracts import FactQuery, _id, _time
 from ..types import Fact
+from ..util import name_key
 from .events import EventEvidence
 
 
@@ -68,7 +69,7 @@ def validate_path(anchor, predicates, scope):
         raise ValueError('Path traversal requires fact conditions and accepts no cursor')
     for predicate in predicates:
         _query_value(predicate)
-    return tuple(predicate.lower() for predicate in predicates)
+    return tuple(name_key(predicate) for predicate in predicates)
 
 
 def traverse(anchor, predicates, neighbors, limit):

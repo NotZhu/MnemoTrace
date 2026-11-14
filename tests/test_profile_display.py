@@ -21,7 +21,7 @@ def test_original_sentence_reaches_embedding_context_and_profile_without_another
         def complete(self, prompt, system=""):
             self.calls += 1
             return json.dumps([{
-                "subject": "user", "predicate": "weekly", "object": "reads example-book",
+                "subject": "我", "predicate": "weekly", "object": "reads example-book",
                 "text": sentence,
             }], ensure_ascii=False)
 

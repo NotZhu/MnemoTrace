@@ -10,7 +10,7 @@ from tests.model_fixtures import MemoryEngine
 
 def test_synthetic_facts_default_to_sensitive_without_inferred_category():
     mem = MemoryEngine()
-    fact = mem.add_fact("user", "works_at", "Storage Labs", text="user works at Storage Labs")
+    fact = mem.add_fact("我", "works_at", "Storage Labs", text="user works at Storage Labs")
     assert (fact.categories, fact.sensitive) == ([], True)
 
 

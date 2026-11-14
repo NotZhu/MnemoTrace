@@ -11,92 +11,92 @@
       "object": "FastAPI"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Shenzhen"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Moonshot AI"
     }
   ],
   "I live in Shenzhen.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Shenzhen"
     }
   ],
   "My name is Wei and I live in Shenzhen.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "name",
       "object": "Wei"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Shenzhen"
     }
   ],
   "My name is Wei.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "name",
       "object": "Wei"
     }
   ],
   "I work at Moonshot AI.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Moonshot AI"
     }
   ],
   "I like tea.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "likes",
       "object": "tea"
     }
   ],
   "I work at Storage Labs.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Storage Labs"
     }
   ],
   "# Trip planning\nuser: I am planning a trip to Tokyo in March.\nassistant: Tokyo is lovely in spring.\nuser: My budget is 3000 dollars.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "occupation",
       "object": "lovely"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "occupation",
       "object": "3000 dollars"
     }
   ],
   "user: Wei works at Tencent.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Tencent"
     }
   ],
   "user: Wei works at Moonshot AI.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Moonshot AI"
     }
   ],
   "user: I work at Tencent.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Tencent"
     }
@@ -134,43 +134,43 @@
   ],
   "I prefer aisle seats and avoid red-eye flights.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "prefers",
       "object": "aisle seats"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "avoids",
       "object": "red-eye flights"
     }
   ],
   "I love it. I love retro-style diners.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "loves",
       "object": "it"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "loves",
       "object": "retro-style diners"
     }
   ],
   "I like the sound of the avocado sauce. I like the idea of fruit kebabs.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "likes",
       "object": "sound of the avocado sauce"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "likes",
       "object": "idea of fruit kebabs"
     }
   ],
   "I like jazz.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "likes",
       "object": "jazz"
     }
@@ -192,90 +192,90 @@
   ],
   "My name is Finn and I work at IBM.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "name",
       "object": "Finn"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "IBM"
     }
   ],
   "I now work at Oracle.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Oracle"
     }
   ],
   "My name is Ana and I work at Spotify.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "name",
       "object": "Ana"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Spotify"
     }
   ],
   "I really enjoy hiking on weekends.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "enjoys",
       "object": "hiking on weekends"
     }
   ],
   "My name is Cara and my favorite color is blue.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "name",
       "object": "Cara"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "favorite_color",
       "object": "blue"
     }
   ],
   "My name is Ben and I live in Boston.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "name",
       "object": "Ben"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Boston"
     }
   ],
   "I moved — I now live in Denver.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Denver"
     }
   ],
   "My favorite color is green now.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "favorite_color",
       "object": "green"
     }
   ],
   "My name is Dora.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "name",
       "object": "Dora"
     }
   ],
   "My colleague Evan works at Netflix.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "colleague",
       "object": "Evan"
     },
@@ -287,7 +287,7 @@
   ],
   "My sister Maya is a pediatrician at a children's hospital.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "sister",
       "object": "Maya"
     },
@@ -307,38 +307,38 @@
   "I bought a new espresso machine and it's wonderful.": [],
   "My name is Gina and I work at Adobe.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "name",
       "object": "Gina"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Adobe"
     }
   ],
   "My name is Hugo and I live in Lisbon.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "name",
       "object": "Hugo"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Lisbon"
     }
   ],
   "I live in Beijing.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Beijing"
     }
   ],
   "user: I live in SyntheticCity.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "SyntheticCity"
     }
@@ -349,47 +349,47 @@
   "user: I started judo.": [],
   "I moved, I now live in Shanghai.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Shanghai"
     }
   ],
   "My favorite drink is oolong tea.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "favorite_drink",
       "object": "oolong tea"
     }
   ],
   "I work at Acme Corp.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Acme Corp"
     }
   ],
   "I love hiking in the Alps.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "loves",
       "object": "hiking in the Alps"
     }
   ],
   "My cat is named Miso.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "occupation",
       "object": "named Miso"
     }
   ],
   "I work at Tencent and my favorite language is Python.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Tencent"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "favorite_language",
       "object": "Python"
     }
@@ -401,19 +401,19 @@
   "I took a trip to Oslo to see the fjords.": [],
   "I now work at Moonshot AI.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Moonshot AI"
     }
   ],
   "I'm vegetarian and allergic to peanuts.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "diet",
       "object": "vegetarian"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "allergic_to",
       "object": "peanuts"
     }
@@ -434,7 +434,7 @@
   ],
   "My sister Anna is a lawyer.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "sister",
       "object": "Anna"
     },
@@ -446,7 +446,7 @@
   ],
   "My sister Maya is a pediatrician.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "sister",
       "object": "Maya"
     },
@@ -465,7 +465,7 @@
   ],
   "I work at Acme": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Acme"
     }
@@ -482,26 +482,26 @@
   "Budget sync 2: the quarterly numbers were reviewed in depth.": [],
   "I live in Hawaii.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Hawaii"
     }
   ],
   "I moved. I live in Paris now.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Paris"
     }
   ],
   "I live in Shenzhen and work at Tencent.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Shenzhen"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Tencent"
     }
@@ -510,19 +510,19 @@
   "重新配对会覆盖唯一的全局配置文件": [],
   "My name is Wei and I work at Tencent.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "name",
       "object": "Wei"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Tencent"
     }
   ],
   "Actually I switched jobs and now work at Moonshot AI.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Moonshot AI"
     }
@@ -536,7 +536,7 @@
   ],
   "user: I work at Acme.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Acme"
     }
@@ -550,7 +550,7 @@
   ],
   "My private diagnosis is diabetes.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "medical_condition",
       "object": "diabetes",
       "categories": ["health"],
@@ -559,21 +559,21 @@
   ],
   "My private diagnosis is diabetes. I work at Acme.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "occupation",
       "object": "diabetes",
       "categories": ["health"],
       "sensitive": true
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Acme"
     }
   ],
   "# Pets\nuser: I have a dog named Mochi.\nassistant: Mochi is a cute name!": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "occupation",
       "object": "cute name"
     }
@@ -583,19 +583,19 @@
   "Temporary note.": [],
   "user: I live in Shenzhen and work at Moonshot AI.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Shenzhen"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Moonshot AI"
     }
   ],
   "I work at Acme.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Acme"
     }
@@ -609,14 +609,14 @@
   ],
   "My private diagnosis is diabetes and I work at Acme.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "occupation",
       "object": "diabetes",
       "categories": ["health"],
       "sensitive": true
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Acme"
     }
@@ -624,28 +624,28 @@
   "Just saying hello.": [],
   "I live in Syntheticville.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Syntheticville"
     }
   ],
   "My favorite programming language is Python.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "favorite_programming_language",
       "object": "Python"
     }
   ],
   "Actually I just switched jobs — I now work at Moonshot AI.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Moonshot AI"
     }
   ],
   "My colleague Lin works at Moonshot AI too.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "colleague",
       "object": "Lin"
     },
@@ -697,63 +697,63 @@
   ],
   "I am a pediatrician.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "occupation",
       "object": "pediatrician"
     }
   ],
   "I work as a data engineer at Spotify.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "occupation",
       "object": "data engineer"
     }
   ],
   "I'm a fan of jazz.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "likes",
       "object": "jazz"
     }
   ],
   "I'm into synthwave.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "likes",
       "object": "synthwave"
     }
   ],
   "I don't like crowded lounges.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "dislikes",
       "object": "crowded lounges"
     }
   ],
   "I'm pretty sure I love retro-style diners.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "loves",
       "object": "retro-style diners"
     }
   ],
   "I love it. I love retro-style diners. I like these ideas.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "loves",
       "object": "retro-style diners"
     }
   ],
   "I like the sound of the avocado sauce.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "likes",
       "object": "sound of the avocado sauce"
     }
   ],
   "I love crowded lounges.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "loves",
       "object": "crowded lounges"
     }
@@ -761,24 +761,24 @@
   "I stopped enjoying crowded lounges.": [],
   "I'm moving to Berlin next month for a job at Acme.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Berlin"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Acme"
     }
   ],
   "By the way, I'm vegetarian and allergic to peanuts.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "diet",
       "object": "vegetarian"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "allergic_to",
       "object": "peanuts"
     }
@@ -803,52 +803,52 @@
   ],
   "My name is Aster. I live in Paris.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "name",
       "object": "Aster"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Paris"
     }
   ],
   "My name is Beryl. I live in Berlin.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "name",
       "object": "Beryl"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Berlin"
     }
   ],
   "user: I live in Paris.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Paris"
     }
   ],
   "user: I live in London.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "London"
     }
   ],
   "user: I live in Tokyo.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Tokyo"
     }
   ],
   "user: I live in Berlin.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Berlin"
     }
@@ -865,7 +865,7 @@
   ],
   "user: I have a cat named Pixel.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "has_pet",
       "object": "cat named Pixel"
     }
@@ -881,7 +881,7 @@
   ],
   "I like Python.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "likes",
       "object": "Python",
       "text": "I like Python."
@@ -889,7 +889,7 @@
   ],
   "I like apples.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "likes",
       "object": "apples",
       "text": "I like apples."
@@ -897,7 +897,7 @@
   ],
   "I like bananas.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "likes",
       "object": "bananas",
       "text": "I like bananas."
@@ -905,7 +905,7 @@
   ],
   "I am planning a trip to Tokyo in March.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "plans",
       "object": "a trip to Tokyo in March"
     }
@@ -913,14 +913,14 @@
   "Tokyo is lovely in spring.": [],
   "My budget is 3000 dollars.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "budget",
       "object": "3000 dollars"
     }
   ],
   "I work at Tencent.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Tencent"
     }
@@ -931,12 +931,12 @@
   "It looks like the retry loop is the problem here.": [],
   "I moved to Shenzhen last year and I work at Moonshot AI.": [
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "lives_in",
       "object": "Shenzhen"
     },
     {
-      "subject": "user",
+      "subject": "我",
       "predicate": "works_at",
       "object": "Moonshot AI"
     }

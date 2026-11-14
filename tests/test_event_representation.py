@@ -36,7 +36,7 @@ def test_digest_replaces_raw_index_and_retrieval_payload():
 def test_automatic_recall_returns_source_ids_without_original_text():
     mem = MemoryEngine()
     ep = mem.add("ARCHIVE_ONLY_8844", user_id="u", session_id="s")
-    fact = mem.add_fact("user", "finding", "connection issue", user_id="u", sensitive=False,
+    fact = mem.add_fact("我", "finding", "connection issue", user_id="u", sensitive=False,
                         text="user finding connection issue")
     fact.provenance = [ep.id]
     mem._upsert_fact(fact)
@@ -61,7 +61,7 @@ def test_digest_survives_reembedding_without_raw_index():
 @pytest.mark.parametrize("written_at", [3, None])
 def test_snapshot_import_preserves_digest_write_time_and_queries_by_event_time(written_at):
     mem = MemoryEngine(embedder=MockEmbedder())
-    mem.import_snapshot({"format_version": 4, "facts": [], "episodes": [{
+    mem.import_snapshot({"format_version": 6, "facts": [], "episodes": [{
         "id": "synthetic", "content": "Synthetic original", "session_id": "test", "role": "user",
         "event_time": 1, "ingested_at": 2, "digest": "An orchid was planted.",
         "digest_written_at": written_at,
@@ -92,8 +92,8 @@ def test_supersession_does_not_rewrite_event_digest():
     mem = MemoryEngine(embedder=MockEmbedder())
     ep = summarized(mem)
     previous = ep.digest
-    old = Fact(subject="user", predicate="works_at", object="A", user_id="u", provenance=[ep.id], text='user works at A')
-    new = Fact(subject="user", predicate="works_at", object="B", user_id="u", supersedes=[old.id], text='user works at B')
+    old = Fact(subject="我", predicate="works_at", object="A", user_id="u", provenance=[ep.id], text='user works at A')
+    new = Fact(subject="我", predicate="works_at", object="B", user_id="u", supersedes=[old.id], text='user works at B')
     old.invalid_at = old.expired_at = new.valid_at
     for fact in (old, new):
         mem.fact_store.upsert(fact.id, mem.embedder.embed(fact.text), fact)

@@ -21,7 +21,7 @@ async def test_mcp_local_and_proxy_set_only_sensitivity(product_service, product
 
     context, key = product_scope()
     memory = product_service.memory(context)
-    fact = seed_fact(memory, "user", "prefers", "茶", text="用户偏好茶。", categories=["food"])
+    fact = seed_fact(memory, "我", "prefers", "茶", text="用户偏好茶。", categories=["food"])
     local = LocalBackend(context.user_id, context.space_id, service=product_service)
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as transport:
@@ -46,7 +46,7 @@ async def test_categories_filter_is_forwarded_by_both_backends_and_applied_befor
     service = product_service
     context, key = product_scope()
     for obj, category in [("合成茶", "food"), ("合成作品", "music"), ("合成咖啡", "food")]:
-        seed_fact(service.memory(context), "user", "prefers", obj, text=f'用户偏好{obj}。', categories=[category], sensitive=False)
+        seed_fact(service.memory(context), "我", "prefers", obj, text=f'用户偏好{obj}。', categories=[category], sensitive=False)
     local = LocalBackend(context.user_id, context.space_id, service=service)
     requests = []
 

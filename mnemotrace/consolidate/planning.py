@@ -10,7 +10,6 @@ from ..categories import CATEGORIES, normalize_categories
 from ..extraction import ExtractionResponseError
 from ..types import validate_retention
 from .pipeline import content_hash, source
-from .ontology import validate_hints
 WINDOW_PREFIX = 'MNEMOTRACE_WINDOW\n'
 
 OMITTED = '\n[中间原文已省略；仅根据可见首尾处理]\n'
@@ -31,7 +30,7 @@ AI 单方面的建议和完成报告只保留在原文和摘要中。泛泛讲�
 每项事实必须引用真实的输入 id，至少一个属于 pending。对话中该 pending 来源必须是用户发言。
 对话的 pending 若没有用户发言，facts 返回空数组，digests 照常处理。
 依赖前文时同时引用对应来源。用户确认 AI 方案时同时引用建议和确认消息；无法确定用户在确认什么时不抽取。
-有充分证据说明主体是当前记忆用户时，subject 必须写为 user。user 为保留值，不用于第三方。
+证据确认主语或宾语指向当前记忆用户时，该端点写为「我」。这个保留值只用于本人。
 结合说话者和上下文理解第一人称、引用与转述。其他主体使用来源中的明确称呼。主体或决定事实含义的指代无法解析时，跳过该条。
 姓名、昵称可以作为普通事实。姓名可使用 name；不要用姓名重写本人的 subject。
 偏好的 object 和 text 必须保留理解断言所需的条件、比较对象、否定范围和时间限定。只有明确提出的新断言才写入。
@@ -46,14 +45,11 @@ COMPENSATION = '\n本次仅补缺失摘要；只返回 {"digests":[{"source_id":
 
 
 def system_prompt(policy='', compensation=False, operation='extract', *, typed=False):
-    from .ontology import EXTRACTION_INSTRUCTIONS, TYPED_EXTRACTION_INSTRUCTIONS
     system = SYSTEM
-    if operation == 'extract' and not compensation:
-        if typed:
-            system = system.replace('subject、predicate（英文 snake_case）、object', 'subject、object')
-            system += TYPED_EXTRACTION_INSTRUCTIONS
-        else:
-            system += EXTRACTION_INSTRUCTIONS
+    if typed and operation == 'extract' and not compensation:
+        from .ontology import TYPED_EXTRACTION_INSTRUCTIONS
+        system = system.replace('subject、predicate（英文 snake_case）、object', 'subject、object')
+        system += TYPED_EXTRACTION_INSTRUCTIONS
     return system + "\n允许的 categories 标识：" + ", ".join(CATEGORIES) + '\n' + policy + (COMPENSATION if compensation or operation == 'digest' else '')
 
 
@@ -65,10 +61,6 @@ def request(data, config):
 
 
 def input_size(data, config, policy=''):
-    if data['operation'] == 'conflicts':
-        from .operations import prepare
-        prompt, system, _ = prepare(data, config, policy)
-        return len((prompt + system).encode('utf-8'))
     # Reserve the compensation protocol too, so a persisted cropped window can
     # be retried with exactly the same visible text under the same input limit.
     overhead = max(len(system_prompt(policy, compensation=compensation,
@@ -109,7 +101,7 @@ def output_size(data, config):
 
 def empty_input(session, operation='extract'):
     return dict(context=[], pending=[], extract=session['extract'],
-                source_kind=session['source_kind'], operation=operation, parts=[], candidates=[])
+                source_kind=session['source_kind'], operation=operation, parts=[])
 
 
 def supplied(ep, row, *, context=False, start=0, end=None):
@@ -364,8 +356,8 @@ def validate_response(raw, data, config, *, compensation=False):
             if not typed:
                 fields.add('predicate')
             metadata = {'categories', 'sensitive', 'time_kind', 'effective_date', 'retention'}
-            shapes = (fields | metadata | {'ontology'},) if typed else (fields | metadata, fields | metadata | {'ontology'})
-            if not isinstance(item, dict) or set(item) not in shapes:
+            expected = fields | metadata | ({'ontology'} if typed else set())
+            if not isinstance(item, dict) or set(item) != expected:
                 raise ValueError()
             if any(not isinstance(item[k], str) or not item[k].strip()
                    or (typed and '\x00' in item[k]) for k in fields - {'source_ids'}):
@@ -386,8 +378,6 @@ def validate_response(raw, data, config, *, compensation=False):
             if typed:
                 from .ontology import validate_candidate
                 validate_candidate(item['ontology'], data['entity_types'])
-            elif 'ontology' in item:
-                validate_hints(item['ontology'])
         wanted = {s['id']: s for s in data['pending'] if data['operation'] == 'digest' or s['needs_digest']}
         duplicates = set()
         seen = set()
@@ -411,21 +401,6 @@ def validate_response(raw, data, config, *, compensation=False):
 
 
 def validate_result(result, data, config):
-    if data['operation'] == 'conflicts':
-        if not isinstance(result, dict) or set(result) != {'facts', 'digests', 'decisions'}:
-            raise ValueError('Invalid saved auxiliary result')
-        pairs = {(p['older']['id'], p['newer']['id']) for p in data['candidates']}
-        seen = set()
-        if result['facts'] or result['digests'] or not isinstance(result['decisions'], list):
-            raise ValueError('Invalid saved conflict result')
-        for decision in result['decisions']:
-            if (not isinstance(decision, dict) or set(decision) != {'older', 'newer', 'decision', 'reason'}
-                    or (decision['older'], decision['newer']) not in pairs or (decision['older'], decision['newer']) in seen
-                    or decision['older'] == decision['newer'] or decision['decision'] not in {'replaces', 'coexists', 'conflict'}
-                    or not isinstance(decision['reason'], str)):
-                raise ValueError('Invalid conflict decision')
-            seen.add((decision['older'], decision['newer']))
-        return result
     if not isinstance(result, dict) or set(result) != {'facts', 'digests'} or not isinstance(result['digests'], dict):
         raise ValueError('Invalid pipeline result')
     wire = {**result, 'digests': [dict(source_id=k, text=v) for k, v in result['digests'].items()]}

@@ -41,9 +41,9 @@ test('dialogue messages preserve identities, roles, unknown time and batch polic
   assert.equal(new URL(calls[0].url).pathname, '/v1/messages')
   assert.deepEqual(calls[0].body, {messages, session_id: 's', space_id: 'space-test'})
   await client.rememberMessages(messages, {...space, sessionId: 's', extract: false})
-  await client.remember('Synthetic note', {...space, extract: false})
+  await client.remember('Synthetic note', {...space, extract: false, eventTime: 0})
   assert.deepEqual(calls[1].body, {messages, session_id: 's', extract: false, space_id: 'space-test'})
-  assert.deepEqual(calls[2].body, {content: 'Synthetic note', extract: false, space_id: 'space-test'})
+  assert.deepEqual(calls[2].body, {content: 'Synthetic note', extract: false, event_time: 0, space_id: 'space-test'})
 })
 
 test('buffered writes accept 202 and expose status and explicit retry controls', async () => {
@@ -151,7 +151,6 @@ const counts = {
   relations: 0,
   graph_orphan_entities: 0,
   graph_stale_relations: 0,
-  pending_conflicts: 0,
 }
 
 test('ESM and CommonJS expose only the new runtime API', async () => {
@@ -392,7 +391,6 @@ test('memories supports paging search and share-safe filtering for owner UIs', a
           source: 'user',
           supersedes: null,
           categories: ['professional_details'],
-          categories_source: 'user',
           sensitive: false,
           salience: 1,
           provenance: [],

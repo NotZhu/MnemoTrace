@@ -163,7 +163,7 @@ def test_third_party_name_never_becomes_the_owner_identity(kind):
         source_id = data['pending'][0]['id']
         return json.dumps(dict(facts=[dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='friend', predicate='name', object='Alice',
             text='The friend is Alice', source_ids=[source_id]),
-            dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='user', predicate='owns', object='bicycle', text='I own a bicycle',
+            dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='我', predicate='owns', object='bicycle', text='I own a bicycle',
                  source_ids=[source_id])], digests=[]))
     mem = MemoryEngine(llm=FakeLLM(handler=names))
     if kind == 'raw':
@@ -173,7 +173,7 @@ def test_third_party_name_never_becomes_the_owner_identity(kind):
         mem.remember_messages([dict(message_id='a', role='user', content='Synthetic owner and friend')], 's')
         assert mem.flush_messages()['ok']
     facts = mem.fact_store.values()
-    assert next(f for f in facts if f.predicate == 'owns').subject == 'user'
+    assert next(f for f in facts if f.predicate == 'owns').subject == '我'
     assert next(f for f in facts if f.predicate == 'name').subject == 'friend'
 
 

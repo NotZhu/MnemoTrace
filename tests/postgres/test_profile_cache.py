@@ -4,7 +4,7 @@ import json
 import pytest
 
 from mnemotrace.memory import Memory
-from tests.postgres.fact_fixtures import seed_fact
+from tests.postgres.fact_fixtures import seed_fact, seed_note
 from mnemotrace.llm import FakeLLM
 from mnemotrace.profile import empty
 from mnemotrace.store.contracts import FactQuery, FactState, RecordKind, RecordRef
@@ -26,7 +26,7 @@ def finish(memory):
 
 
 def test_profile_task_roundtrip_and_read_only_cache(memory):
-    fact = seed_fact(memory, "user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    fact = seed_fact(memory, "我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     assert memory.profile()["pending_fact_count"] == 1
     assert memory.profile()["updated_at"] is None
     operation = memory.refresh_profile()
@@ -44,10 +44,10 @@ def test_profile_task_roundtrip_and_read_only_cache(memory):
     FactQuery(state=FactState.HISTORY), FactQuery(state=FactState.ALL),
     FactQuery(valid_at=100),
     FactQuery(categories=("technology",)), FactQuery(subject="Other person"),
-    FactQuery(subject="user"), FactQuery(predicate="uses"), FactQuery(source_ids=("source-a",)),
+    FactQuery(subject="我"), FactQuery(predicate="uses"), FactQuery(source_ids=("source-a",)),
 ])
 def test_context_profile_does_not_bypass_fact_conditions(memory, scope):
-    seed_fact(memory, "user", "likes", "Synthetic tea", categories=["food"], sensitive=False, text='user likes Synthetic tea')
+    seed_fact(memory, "我", "likes", "Synthetic tea", categories=["food"], sensitive=False, text='user likes Synthetic tea')
     memory.refresh_profile()
     finish(memory)
     count = len(memory._processing.llm.calls)
@@ -58,7 +58,7 @@ def test_context_profile_does_not_bypass_fact_conditions(memory, scope):
 
 
 def test_unchanged_large_fact_can_refresh_again(memory):
-    fact = seed_fact(memory, "user", "note", "x" * 14_000, sensitive=False, text=' '.join(('user', 'note', 'x' * 14000)))
+    fact = seed_fact(memory, "我", "note", "x" * 14_000, sensitive=False, text=' '.join(('user', 'note', 'x' * 14000)))
     output = json.dumps(dict(empty(), basic=[dict(text="Synthetic short profile", fact_ids=[fact.id])]))
     llm = FakeLLM(responses=[output, output])
     memory._processing.llm = llm
@@ -75,9 +75,9 @@ def test_unchanged_large_fact_can_refresh_again(memory):
         assert ids == [fact.id]
 
 
-@pytest.mark.parametrize("action", ["delete", "sensitive", "withdraw", "mute"])
+@pytest.mark.parametrize("action", ["delete", "sensitive", "mute"])
 def test_profile_invalidates_and_scrubs_stored_product(memory, action):
-    fact = seed_fact(memory, "user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    fact = seed_fact(memory, "我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     memory.refresh_profile()
     finish(memory)
     operation = memory.refresh_profile()
@@ -86,8 +86,6 @@ def test_profile_invalidates_and_scrubs_stored_product(memory, action):
         memory.delete_fact(fact.id)
     elif action == "sensitive":
         memory.set_fact_sensitive(fact.id, True)
-    elif action == "withdraw":
-        memory.withdraw_fact(fact.id)
     else:
         memory.set_settings(mute=("tea",))
     assert memory.profile()["profile"]["basic"] == []
@@ -100,9 +98,9 @@ def test_profile_invalidates_and_scrubs_stored_product(memory, action):
 
 
 def test_rejected_source_erasure_preserves_profile_cache_and_checkpoint(memory):
-    removed = memory.remember_raw("Synthetic source to erase", "chat")
-    remaining = memory.remember_raw("Synthetic source to retain", "chat")
-    fact = Fact("user", "likes", "Synthetic tea", user_id=memory.context.user_id, sensitive=False,
+    removed = seed_note(memory, "Synthetic source to erase", "chat")
+    remaining = seed_note(memory, "Synthetic source to retain", "chat")
+    fact = Fact("我", "likes", "Synthetic tea", user_id=memory.context.user_id, sensitive=False,
                 text="User likes synthetic tea.", provenance=[removed.id, remaining.id])
     commit(memory, "synthetic-fact", (fact,))
     memory.refresh_profile()
@@ -124,7 +122,7 @@ def test_rejected_source_erasure_preserves_profile_cache_and_checkpoint(memory):
 
 
 def test_profile_checkpoint_resume_without_regenerating(memory):
-    seed_fact(memory, "user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    seed_fact(memory, "我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     operation = memory.refresh_profile()
     assert memory._processing.run_one(operation.operation_id)
     count = len(memory._processing.llm.calls)
@@ -140,7 +138,7 @@ def test_profile_api_and_acl(product_client, product_service, product_scope):
     headers = {"Authorization": "Bearer " + key}
     params = {"space_id": context.space_id}
     product_service.llm = model()
-    seed_fact(product_service.memory(context), "user", "likes", "Synthetic tea", text="User likes synthetic tea.")
+    seed_fact(product_service.memory(context), "我", "likes", "Synthetic tea", text="User likes synthetic tea.")
     result = product_client.get("/v1/profile", headers=headers, params=params)
     assert result.json()["updated_at"] is None
     refreshed = product_client.post("/v1/profile/refresh", headers=headers, json=params)
@@ -160,19 +158,15 @@ def test_profile_api_and_acl(product_client, product_service, product_scope):
                               headers=headers, params={"space_id": other.space_id}).status_code == 404
 
 
-@pytest.mark.parametrize("action", ["withdraw", "delete"])
-def test_inflight_generation_is_fenced_by_fact_changes(memory, action):
-    fact = seed_fact(memory, "user", "likes", "Synthetic old tea", sensitive=False, text='user likes Synthetic old tea')
+def test_inflight_generation_is_fenced_by_fact_deletion(memory):
+    fact = seed_fact(memory, "我", "likes", "Synthetic old tea", sensitive=False, text='user likes Synthetic old tea')
     changed = False
 
     def intervene():
         nonlocal changed
         if not changed:
             changed = True
-            if action == "delete":
-                memory.delete_fact(fact.id)
-            else:
-                memory.withdraw_fact(fact.id)
+            memory.delete_fact(fact.id)
 
     memory._processing.llm = model(intervene)
     operation = memory.refresh_profile()
@@ -190,7 +184,7 @@ def test_worker_discovers_space_profile_without_session(memory, cluster):
     from mnemotrace.store.postgres import Database
     from mnemotrace.worker import run_worker
 
-    seed_fact(memory, "user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    seed_fact(memory, "我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     operation = memory.refresh_profile()
     with Database(cluster.discovery, purpose="discovery") as discovery:
         assert (memory.context, operation.operation_id) in discovery.discover_processing()
@@ -228,7 +222,7 @@ def test_retry_old_refresh_is_reported_as_the_current_operation(memory):
 
 
 def test_clear_space_removes_profile_and_tasks(memory):
-    seed_fact(memory, "user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    seed_fact(memory, "我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     operation = memory.refresh_profile()
     finish(memory)
     memory.clear_space()
@@ -241,7 +235,7 @@ def test_profile_without_model_reads_cache_and_refresh_has_configuration_error(p
     target, key = product_scope("profile-no-model")
     headers = {"Authorization": "Bearer " + key}
     product_service.llm = None
-    seed_fact(product_service.memory(target), "user", "likes", "Synthetic tea", text="User likes synthetic tea.")
+    seed_fact(product_service.memory(target), "我", "likes", "Synthetic tea", text="User likes synthetic tea.")
     result = product_client.get("/v1/profile", headers=headers, params={"space_id": target.space_id}).json()
     assert result["updated_at"] is None and result["pending_fact_count"] == 1
     refreshed = product_client.post("/v1/profile/refresh", headers=headers, json={"space_id": target.space_id})
@@ -252,7 +246,7 @@ def test_profile_without_model_reads_cache_and_refresh_has_configuration_error(p
 def test_access_reinforcement_does_not_load_profile_state(memory, monkeypatch):
     from mnemotrace.store.postgres import profile as storage
 
-    fact = seed_fact(memory, "user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    fact = seed_fact(memory, "我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     reads = []
     monkeypatch.setattr(storage, "load", lambda sql: reads.append(sql) or load(sql))
     assert memory.search("Synthetic tea").top().id == fact.id

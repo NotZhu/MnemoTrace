@@ -4,6 +4,8 @@ from tests.postgres.fact_fixtures import seed_fact as store_fact
 
 from mnemotrace.llm import FakeLLM
 from mnemotrace.memory import Memory
+from mnemotrace.store.contracts import FactQuery, RetrievalQuery
+from mnemotrace.store.postgres.graph_reads import RetrievalGraph
 from mnemotrace.store.postgres.records import FACT, domain
 from mnemotrace.consolidate.ontology import builtin
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
@@ -40,7 +42,6 @@ def test_equal_time_candidate_keeps_only_original_evidence(runtime, spaces, user
     manual = seed_fact(mem, 'Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False, text='Ana lives in Paris')
     result = mem.remember('Ana lives in Oslo', 'input', event_time=10)
     assert result['status'] == 'completed'
-    assert not mem.conflicts()
     assert [fact.id for fact in mem.facts()] == [manual.id]
     assert mem.graph_entities('Oslo') == ()
     assert mem.get_episode(result['source_ids'][0]).content == 'Ana lives in Oslo'
@@ -67,7 +68,6 @@ def test_adjudication_reloads_history_after_a_concurrent_write(runtime, spaces, 
     mem = Memory(runtime, context, llm=model)
     assert mem.remember('Ana lives in Oslo', 'review', event_time=10)['status'] == 'completed'
     assert verdict_calls == 2 and len(model.calls) == 5
-    assert not mem.conflicts()
     assert mem.get_fact(manual.id).sensitive
     assert [fact.object for fact in mem.facts()] == ['Paris']
 
@@ -91,21 +91,32 @@ def test_invalid_adjudication_does_not_publish_any_part_of_window(runtime, space
     assert status.state.value == 'retry_wait'
     assert status.extraction_saved and not status.core_committed
     assert [fact.id for fact in mem.facts()] == [manual.id]
-    assert mem.conflicts() == ()
 
 
 def test_duplicate_evidence_keeps_labels_and_adds_provenance(runtime, spaces, user):
     space = spaces.create(user, 'Manual duplicate evidence')
     context = spaces.authorize(user, space.space_id)
-    model = FakeLLM(handler=model_response)
+    def sensitive_response(prompt, system):
+        result = model_response(prompt, system)
+        if not prompt.startswith(WINDOW_PREFIX):
+            return result
+        data = json.loads(result)
+        data['facts'][0]['sensitive'] = True
+        return json.dumps(data)
+
+    model = FakeLLM(handler=sensitive_response)
     mem = Memory(runtime, context, llm=model)
     manual = seed_fact(mem, 'Ana', 'lives_in', 'Paris', valid_at=10, categories=['personal_details'], sensitive=True, text='Ana lives in Paris')
+    assert not mem.set_fact_sensitive(manual.id, False).sensitive
     result = mem.remember('Ana lives in Paris', 'review', event_time=10)
     assert result['status'] == 'completed'
     kept, = mem.facts()
     assert kept.id == manual.id and tuple(kept.provenance) == result['source_ids']
-    assert (kept.categories, kept.categories_source, kept.sensitive) == (['personal_details'], 'llm', True)
-    assert len(model.calls) == 2 and mem.conflicts() == ()
+    assert (kept.categories, kept.sensitive) == (['personal_details'], True)
+    with mem.dao.read_snapshot() as view:
+        shared = RetrievalGraph(view, RetrievalQuery(FactQuery(exclude_sensitive=True), ''))
+        assert shared.get_entity(mem.context.user_id, 'Ana') is None
+    assert len(model.calls) == 2
 
 
 def test_discarded_candidate_is_absent_from_private_export(runtime, spaces, user):
@@ -118,6 +129,7 @@ def test_discarded_candidate_is_absent_from_private_export(runtime, spaces, user
     manual = seed_fact(mem, 'Ana', 'lives_in', 'Paris', valid_at=10, text='Ana lives in Paris')
     assert mem.remember('Ana lives in Oslo', 'input', event_time=10)['status'] == 'completed'
     snapshot = service.export(context, include_sensitive=True)
-    assert snapshot['conflicts'] == []
+    assert snapshot['format_version'] == 6
+    assert 'conflicts' not in snapshot
     assert [row['id'] for row in snapshot['facts']] == [manual.id]
     assert MemoryEngine().import_snapshot(snapshot)['facts_restored'] == 1

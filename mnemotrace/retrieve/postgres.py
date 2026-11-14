@@ -98,7 +98,7 @@ def _source_references(view, scope, facts):
 def search(view, query, config, top_k):
     scope = query.facts
     if scope.subject is not None and scope.predicate is not None:
-        records = view.slot_facts({(scope.subject.lower(), scope.predicate.lower())}, scope)
+        records = view.slot_facts(scope)
         result = slot_result(query.text, [domain(record) for record in records])
         facts = result.facts[:top_k]
         return replace(result, facts=facts, source_ids=_source_references(view, scope, facts))
@@ -179,11 +179,9 @@ def follow_path(view, scope, anchor, predicates):
     from .structured import PathMatch, PathResult, traverse
 
     graph = RetrievalGraph(view, RetrievalQuery(scope, ''))
-    anchors = graph.find_entities(anchor.strip(), limit=2)
-    if not anchors:
+    entity = graph.get_entity(view.snapshot.context.user_id, anchor)
+    if entity is None:
         return PathResult(())
-    if len(anchors) > 1:
-        return PathResult((), ("ambiguous_anchor",))
     graph.truncated = False  # Only the explicit traversal contributes to path coverage.
 
     def neighbors(entity, predicate):
@@ -194,6 +192,6 @@ def follow_path(view, scope, anchor, predicates):
             if edge.fact_id in facts:
                 yield edge.object_id, facts[edge.fact_id]
 
-    paths, flags = traverse(anchors[0].id, predicates, neighbors, scope.limit)
+    paths, flags = traverse(entity.id, predicates, neighbors, scope.limit)
     return PathResult(tuple(PathMatch(graph.entities[key].name, facts) for key, facts in paths),
                       tuple(dict.fromkeys((*flags, *graph.limitations()))))

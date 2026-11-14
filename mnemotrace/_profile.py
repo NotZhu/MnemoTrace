@@ -38,7 +38,7 @@ def sync(memory, facts):
 def sync_settings(memory):
     with memory._pipeline_lock:
         for user in (memory._pipeline_state or {}).get("profiles", {}):
-            profile.synchronize(state(memory, user), {fact.id: fact for fact in memory._all_facts(include_unpublished=True)
+            profile.synchronize(state(memory, user), {fact.id: fact for fact in memory._all_facts()
                                                      if fact.user_id == user}, settings(memory))
 
 
@@ -90,7 +90,7 @@ def run_one(memory, user):
             job = stored["job"]
             at = time.time()
             if not profile.current(stored, job, fingerprint, at):
-                facts = {fact.id: fact for fact in memory._all_facts(include_unpublished=True)
+                facts = {fact.id: fact for fact in memory._all_facts()
                          if fact.user_id == user}
                 profile.synchronize(stored, facts, options)
                 job = profile.create_job(stored, facts, options, fingerprint, at)

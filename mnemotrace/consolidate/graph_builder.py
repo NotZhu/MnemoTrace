@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import re
 
-from ..embed import Embedder
 from ..store import GraphStore
 from ..types import Entity, Fact, Relation
+from ..util import name_key
 
 # Graph identifiers have the same capacity in both stores as the Postgres identifier domain.
 _MAX_GRAPH_FIELD_LENGTH = 512
@@ -13,7 +13,7 @@ _NON_SINGLE_LINE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def projects_fact(fact: Fact, definition=None) -> bool:
-    if not (fact.is_published() and fact.relation_id and fact.subject_id and fact.object_id):
+    if not (fact.subject_id and fact.object_id):
         return False
     if definition and definition.endpoint_types:
         endpoints = [fact.subject_type, fact.object_type]
@@ -21,7 +21,7 @@ def projects_fact(fact: Fact, definition=None) -> bool:
             definition.direction != 'symmetric' or endpoints[::-1] not in definition.endpoint_types
         ):
             return False
-    fields = (fact.subject, fact.predicate, fact.object, fact.subject.lower(), fact.object.lower())
+    fields = (fact.subject, fact.predicate, fact.object, name_key(fact.subject), name_key(fact.object))
     return all(
         value.strip() and len(value) <= _MAX_GRAPH_FIELD_LENGTH and not _NON_SINGLE_LINE.search(value)
         for value in fields
@@ -29,15 +29,8 @@ def projects_fact(fact: Fact, definition=None) -> bool:
 
 
 class GraphBuilder:
-    def __init__(self, graph: GraphStore, embedder: Embedder) -> None:
-        """初始化图构建器。
-
-        Args:
-            graph: 图存储。
-            embedder: 文本嵌入器。
-        """
+    def __init__(self, graph: GraphStore) -> None:
         self.graph = graph
-        self.embedder = embedder
 
     def add_fact(self, fact: Fact) -> None:
         self.graph.delete_relations_for_fact(fact.id)
@@ -55,6 +48,3 @@ class GraphBuilder:
                 invalid_at=fact.invalid_at,
             )
         )
-
-    def invalidate(self, fact_id: str, t: float) -> None:
-        self.graph.invalidate_relations_for_fact(fact_id, t)

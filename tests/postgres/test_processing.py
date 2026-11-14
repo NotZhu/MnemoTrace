@@ -20,6 +20,7 @@ from mnemotrace.store.postgres.errors import (
     CommitOutcomeUnknown, DatabaseConfigurationError, DatabaseUnavailable, MessageConflict, VersionConflict,
 )
 from mnemotrace.worker import run_worker
+from tests.postgres.fact_fixtures import seed_note
 from tests.postgres.ontology_fixtures import mention, ontology_reply, typed_result
 from tests.test_message_pipeline import PROPOSAL, REPORT, dialogue_evidence
 
@@ -51,7 +52,7 @@ def processing(runtime, spaces, user):
                 return json.dumps(typed_result(handle(data)))
             if data['operation'] == 'digest':
                 return json.dumps({'digests': [{'source_id': data['pending'][0]['id'], 'text': 'Recorded preference'}]})
-            facts = [dict(categories=['food'], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='user', predicate='likes', object='tea', text='Synthetic person likes tea',
+            facts = [dict(categories=['food'], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='我', predicate='likes', object='tea', text='Synthetic person likes tea',
                           source_ids=[item['id']]) for item in data['pending'] if item['role'] != 'assistant']
             return json.dumps(typed_result(dict(facts=facts, digests=[])))
 
@@ -64,7 +65,7 @@ def processing(runtime, spaces, user):
 
 def test_assistant_evidence_stays_in_session_until_user_confirmation(processing):
     def adjudicate(prompt):
-        return json.dumps(dict(decisions=[dict(id=pair['id'], decision='conflict', reason='Synthetic comparison')
+        return json.dumps(dict(decisions=[dict(id=pair['id'], decision='conflict')
                                           for pair in json.loads(prompt)['items']]))
 
     def extract(data):
@@ -97,7 +98,7 @@ def test_assistant_evidence_stays_in_session_until_user_confirmation(processing)
     new, = memory.facts()
     assert (new.object, new.valid_at, new.supersedes) == ('pnpm', 300, [old.id])
     assert set(new.provenance) == {proposal, confirmation}
-    assert new.source_roles == ['assistant', 'user']
+    assert [memory.get_episode(key).role for key in new.provenance] == ['assistant', 'user']
 
 
 def test_three_checkpoints_and_durable_retry(processing, cluster):
@@ -303,7 +304,7 @@ def test_interrupted_transaction_resumes_from_actual_checkpoint(processing, monk
                         'WHERE user_id = %s AND space_id = %s AND operation_id = %s', (*sql.scope, operation_id))
     assert memory.flush_processing('chat')['ok']
     fact, = memory.facts()
-    assert (fact.categories, fact.categories_source) == (['food'], 'llm')
+    assert fact.categories == ['food']
     assert len(calls) == (2 if stage == 'product' and not committed else 1)
 
 
@@ -341,7 +342,6 @@ def test_semantic_reconciliation_and_unordered_candidate(processing):
     attempt = MessageInput('unordered', 'user', 'Synthetic person based_in Shenzhen', event_time=200)
     assert memory.remember_messages('chat', (attempt,), processing='immediate')['ok']
     assert tuple(fact.id for fact in memory.facts()) == (current.id,)
-    assert not memory.conflicts()
     assert memory.entity('Shenzhen') is None
 
 
@@ -383,8 +383,8 @@ def test_rejected_source_erasure_preserves_digest_and_its_context(processing):
 
 def test_digest_requires_one_source_and_rejects_old_multi_source_tasks(processing):
     memory, calls = processing()
-    first = memory.remember_raw('First synthetic source', 'chat')
-    second = memory.remember_raw('Second synthetic source', 'chat')
+    first = seed_note(memory, 'First synthetic source', 'chat')
+    second = seed_note(memory, 'Second synthetic source', 'chat')
     sources = (SourceVersion(first.id, 1), SourceVersion(second.id, 1))
     with pytest.raises(ValueError, match='exactly one source'):
         OperationSpec('multi-digest', OperationKind.DIGEST, 'chat', sources)
@@ -463,7 +463,7 @@ def test_repeated_config_changes_exhaust_generation_budget(processing):
 
 def test_dao_enqueued_extract_is_discoverable_before_later_session_work(processing, cluster):
     memory, _ = processing()
-    source = memory.remember_raw('Synthetic explicit extraction input', 'chat')
+    source = seed_note(memory, 'Synthetic explicit extraction input', 'chat')
     with memory.dao.read_snapshot('chat') as view:
         conditions = CommitConditions(view.snapshot)
     queued = OperationSpec('queued-by-dao', OperationKind.EXTRACT, 'chat', (SourceVersion(source.id, 1),))
@@ -527,7 +527,7 @@ def test_final_receipt_includes_surviving_outputs_from_earlier_segments(processi
         item, = data['pending']
         if item['ranges'][0][0]:
             return dict(facts=[], digests=[])
-        facts = [dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='user', predicate='likes', object=value,
+        facts = [dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='我', predicate='likes', object=value,
                       text=f'Synthetic person likes {value}', source_ids=[item['id']])
                  for value in ('tea', 'coffee')]
         return dict(facts=facts, digests=[])
@@ -559,7 +559,7 @@ def test_assertion_and_profile_input_are_identical_offline_and_in_postgres(proce
 
     def handle(data):
         return {"facts": [{
-            "subject": "user", "predicate": "avoids", "object": "tea", "text": statement,
+            "subject": "我", "predicate": "avoids", "object": "tea", "text": statement,
             "categories": ["food"], "sensitive": False,
             "source_ids": [data["pending"][0]["id"]], "time_kind": "current",
             "effective_date": None, "retention": "unknown",

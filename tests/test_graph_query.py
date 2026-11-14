@@ -12,7 +12,7 @@ def add_relation(mem, index, *, historical=False, sensitive=False):
     )
     if historical:
         fact.invalid_at = 1_700_000_100.0
-        mem.graph.invalidate_relations_for_fact(fact.id, fact.invalid_at)
+        mem.writer.graph_builder.add_fact(fact)
     return fact.id
 
 
@@ -68,9 +68,9 @@ def test_graph_lookahead_obeys_search_privacy_time_and_namespace():
 def test_projection_depends_on_explicit_entity_links():
     mem = MemoryEngine()
     text = "user works at M. & Co. (Lab)"
-    fact = mem.add_fact("user", "works_at", "M. & Co. (Lab)", text=text)
+    fact = mem.add_fact("我", "works_at", "M. & Co. (Lab)", text=text)
     assert fact.object_id is None and not mem.graph_data()["edges"]
-    linked = seed_linked(mem, "user", "works_at", "M. & Co. (Lab)", text=text)
+    linked = seed_linked(mem, "我", "works_at", "M. & Co. (Lab)", text=text)
     assert [edge["fact_id"] for edge in mem.graph_data()["edges"]] == [linked.id]
     assert mem.graph.get_entity("default", "m. & co. (lab)") is not None
 
@@ -78,14 +78,14 @@ def test_projection_depends_on_explicit_entity_links():
 @pytest.mark.parametrize("value", ["multi\nline", "tab\tvalue", "vertical\u2028separator", "x" * 513])
 def test_invalid_graph_name_keeps_fact(value):
     mem = MemoryEngine()
-    fact = seed_linked(mem, "user", "works_at", value, text=' '.join(('user', 'works at', value)))
+    fact = seed_linked(mem, "我", "works_at", value, text=' '.join(('user', 'works at', value)))
     assert mem.fact_store.get(fact.id).object == value
     assert not mem.graph_data()["edges"]
 
 
 def test_graph_recall_uses_explicit_names_instead_of_pronouns():
     mem = MemoryEngine()
-    fact = seed_linked(mem, "user", "lives_in", "Synthetic City", text='user lives in Synthetic City')
+    fact = seed_linked(mem, "我", "lives_in", "Synthetic City", text='user lives in Synthetic City')
     for query in ("Where do I live?", "Where does his sister live?", "我的住址在哪里"):
         assert not mem.retriever.query_entity_ids(query, "default")
     assert mem.search("Where do I live?").top().id == fact.id
@@ -94,9 +94,20 @@ def test_graph_recall_uses_explicit_names_instead_of_pronouns():
 
 def test_repeated_projection_does_not_duplicate_edges():
     mem = MemoryEngine()
-    fact = seed_linked(mem, "user", "works_at", "Synthetic Lab", text='user works at Synthetic Lab')
+    fact = seed_linked(mem, "我", "works_at", "Synthetic Lab", text='user works at Synthetic Lab')
     mem.writer.graph_builder.add_fact(fact)
     mem.writer.graph_builder.add_fact(fact)
     assert [edge.fact_id for edge in mem.graph.relations()] == [fact.id]
-    owner = mem.graph.get_entity("default", "user")
+    owner = mem.graph.get_entity("default", "我")
     assert [edge.fact_id for edge in mem.graph.neighbors(owner.id)] == [fact.id]
+
+
+def test_shared_graph_name_comes_from_a_visible_fact():
+    mem = MemoryEngine()
+    mem.add_fact('Private name', 'works_at', 'Orbit Lab', text='Private name works at Orbit Lab',
+                 subject_id='person', object_id='lab', sensitive=True)
+    mem.add_fact('Public name', 'works_at', 'Nova Lab', text='Public name works at Nova Lab',
+                 subject_id='person', object_id='nova', sensitive=False)
+    graph = mem.graph_data(include_sensitive=False)
+    assert {node['name'] for node in graph['nodes']} == {'Public name', 'Nova Lab'}
+    assert not mem.graph_data(include_sensitive=False, q='Private name')['nodes']

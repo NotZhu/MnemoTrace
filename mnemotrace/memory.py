@@ -1,6 +1,6 @@
 """Explicit Python entry point for record-backed memory in one PostgreSQL space."""
 from contextlib import contextmanager
-from dataclasses import asdict, replace
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ._postgres_pipeline import PostgresPipeline
@@ -9,16 +9,13 @@ from .consolidate.decay import reinforce
 from .retrieve import postgres as retrieval
 from .store.contracts import (
     ChangeSet, CommitConditions, EmbeddingWrite, FactQuery, MessageInput, OperationKind,
-    RecordKind, RecordRef, RecordWrite, RetrievalQuery, SourceLink, StoredRecord, validate_erasures,
+    RecordRef, RecordWrite, SourceLink, StoredRecord, validate_erasures,
 )
 from .store.postgres.dao import PostgresDAO, new_operation_id
 from .store.postgres.database import identifier
 from .store.postgres.errors import VersionConflict
-from .store.postgres.graph_reads import RetrievalGraph
 from .store.postgres.identity import Spaces
-from .store.postgres.lexical import project_document, project_text
-from .store.postgres.projection import GraphProjection
-from .store.postgres.records import CONFLICT, ENTITY, FACT, SOURCE, MODELS, anchor_terms, domain
+from .store.postgres.records import FACT, SOURCE, MODELS, domain
 from .types import Episode
 from .util import time_key
 
@@ -74,10 +71,6 @@ class Memory:
             raise ValueError('Embedding dimensions differ from the configured model')
         return (EmbeddingWrite(write.ref, write.record.content_version, self._model, vector),)
 
-    def store_messages(self, session_id: str, messages: 'tuple[MessageInput, ...]'):
-        """Store raw dialogue and return source IDs in input order, including duplicates."""
-        return self.dao.accept_raw_messages(session_id, messages)
-
     def remember_messages(self, session_id: str, messages: tuple[MessageInput, ...], *,
                           processing='buffered', timeout=30, source_metadata=None):
         """Accept dialogue and return source IDs and durable operation progress."""
@@ -116,6 +109,9 @@ class Memory:
                         operation_ids=[], operations=[])
         result = self._accepted((operation_id,), processing, timeout)
         result['source_ids'] = receipt.source_ids
+        if result['status'] == 'completed':
+            committed = self.dao.receipt(operation_id)
+            result['fact_ids'] = committed.fact_ids if committed is not None else ()
         return result
 
     @staticmethod
@@ -154,60 +150,6 @@ class Memory:
             identifier(session_id)
         return self._processing.flush(session_id=session_id, timeout=timeout, retry_failed=retry_failed,
                                       include_digests=include_digests)
-
-    def remember_raw(self, content: str, session_id: str, *, role='user',
-                     event_time=None, agent_id=None):
-        if not isinstance(content, str) or not content.strip() or '\x00' in content:
-            raise ValueError('Expected non-empty raw content')
-        source = Episode(content=content, user_id=self.context.user_id, session_id=session_id,
-                         role=role, event_time=event_time, extract=False)
-        with self.dao.read_snapshot(session_id) as view:
-            snapshot = view.snapshot
-            # Match the database clock used by message ingestion.
-            source.ingested_at = view.at.timestamp()
-        write = self._write(source)
-        write = RecordWrite(replace(write.record, agent_id=agent_id))
-        self._commit(snapshot, writes=(write,))
-        return source
-
-    def backfill_retrieval(self, kind, *, after_id=None, limit=100):
-        """Project one page of existing records and return a cursor, or None when exhausted."""
-        if not isinstance(kind, RecordKind) or kind not in (FACT, SOURCE, ENTITY):
-            raise ValueError('Expected a Fact, Episode, or Entity RecordKind')
-        if after_id is not None:
-            identifier(after_id)
-        if type(limit) is not int or not 1 <= limit <= 1000:
-            raise ValueError('Expected page size from 1 to 1000')
-        with self.dao._transaction() as sql:
-            conditions = ('r.id > %s',) if after_id is not None else ()
-            records = sql.select(kind, conditions, (after_id,) if conditions else (), limit=limit)
-            for record in records:
-                item = domain(record)
-                if kind == ENTITY:
-                    sql.update('entities', {'anchor_terms': anchor_terms(item.name)},
-                               'id = %s AND anchor_terms IS NULL', (item.id,))
-                    continue
-                if kind == FACT:
-                    project_text(sql, kind, item.id, record.content_version, asdict(item), missing_only=True)
-                elif item.digest:
-                    project_document(sql, SOURCE, item.id, record.digest_version, item.digest,
-                                     field='digest', missing_only=True)
-        return records[-1].ref.record_id if len(records) == limit else None
-
-    def rebuild_graph(self, *, after_id=None, limit=100):
-        """Rebuild one page of graph edges from stored facts."""
-        if after_id is not None:
-            identifier(after_id)
-        if type(limit) is not int or not 1 <= limit <= 1000:
-            raise ValueError('Expected page size from 1 to 1000')
-        with self.dao._transaction() as sql:
-            conditions = ('r.id > %s',) if after_id is not None else ()
-            records = sql.select(FACT, conditions, (after_id,) if conditions else (), limit=limit)
-            graph = GraphProjection(sql)
-            for record in records:
-                graph.project(record.ref.record_id)
-            graph.prune(all_nodes=len(records) < limit)
-        return records[-1].ref.record_id if len(records) == limit else None
 
     def _query(self, text, *, top_k, as_of=None, facts=None, use_vectors=True):
         embedder = self._embedder if use_vectors else None
@@ -325,11 +267,10 @@ class Memory:
             sections.extend(result.sections)
         return retrieval.ContextResult('\n\n'.join(blocks), coverage, sections=tuple(sections))
 
-    def graph_entities(self, name, *, limit=100):
+    def graph_entities(self, name):
         identifier(name)
-        request = RetrievalQuery(FactQuery(limit=limit), '')
-        with self.dao.read_snapshot() as view:
-            return RetrievalGraph(view, request).find_entities(name)
+        entity = self.entity(name)
+        return (entity,) if entity is not None else ()
 
     def graph_neighbors(self, entity_id, *, direction='both', facts=FactQuery()):
         identifier(entity_id)
@@ -361,8 +302,7 @@ class Memory:
             return tuple(map(domain, view.list_sources(**filters)))
 
     def get_fact(self, fact_id):
-        fact = self._get(FACT, fact_id)
-        return fact if fact is not None and fact.is_published() else None
+        return self._get(FACT, fact_id)
 
     def facts(self, query=None):
         with self.dao.read_snapshot() as view:
@@ -382,29 +322,16 @@ class Memory:
         if old is None:
             return None
         fact = domain(old)
-        if (fact.sensitive, fact.sensitive_override) != (sensitive, True):
-            fact.sensitive, fact.sensitive_override = sensitive, True
+        if fact.sensitive != sensitive:
+            fact.sensitive = sensitive
             self._commit(snapshot, writes=(self._write(fact, old),))
         return fact
-
-    def withdraw_fact(self, fact_id):
-        with self.dao.read_snapshot() as view:
-            snapshot, old = view.snapshot, view.get(FACT, fact_id)
-            at = view.at.timestamp()
-        if old is None:
-            return False
-        fact = domain(old)
-        if fact.withdrawn_at is None:
-            fact.withdrawn_at = at
-            fact.review_pending = False
-            self._commit(snapshot, writes=(self._write(fact, old),))
-        return True
 
     def delete_fact(self, fact_id):
         return bool(self.erase(self._ref(FACT, fact_id)).affected_count)
 
     def clear_slot(self, subject, predicate, *, expect_count):
-        """Erase the confirmed number of live extracted facts in one slot."""
+        """Erase the confirmed number of live facts in one slot."""
         if type(expect_count) is not int or expect_count < 0:
             raise ValueError('Expected a non-negative fact count')
         with self.dao.read_snapshot() as view:
@@ -448,32 +375,6 @@ class Memory:
         self._commit(snapshot, settings=settings)
         return settings
 
-    def conflicts(self, **filters):
-        with self.dao.read_snapshot() as view:
-            return tuple(map(domain, view.conflicts(**filters)))
-
-    def resolve_conflict(self, conflict_id, keep='newer'):
-        if keep not in {'older', 'newer', 'both', 'dismiss'}:
-            raise ValueError('Invalid conflict resolution')
-        from .consolidate.adjudication import resolve_facts
-        with self.dao.read_snapshot() as view:
-            snapshot, record = view.snapshot, view.get(CONFLICT, conflict_id)
-            if record is None:
-                return False
-            conflict = domain(record)
-            records = {side: view.get(FACT, getattr(conflict, side)) for side in ('older', 'newer')}
-            if any(value is None or value.record_version != getattr(conflict, side + '_version')
-                   for side, value in records.items()):
-                raise VersionConflict('Conflict facts have changed')
-            facts = {side: domain(value) for side, value in records.items()}
-            changed = resolve_facts(facts, keep, view.at.timestamp())
-            changed = [fact for fact in changed if fact.withdrawn_at is not None
-                       or not view.related_conflicts(fact.id, conflict_id)]
-            previous = {value.ref.record_id: value for value in records.values()}
-        self._commit(snapshot, writes=tuple(self._write(fact, previous[fact.id]) for fact in changed),
-                     resolved_conflicts=(record.ref,))
-        return True
-
     def entity(self, name):
         with self.dao.read_snapshot() as view:
             record = view.entity(name)
@@ -495,7 +396,7 @@ class Memory:
                         for record in batch:
                             if kind == FACT and not include_sensitive:
                                 fact = domain(record)
-                                if fact.sensitive or not fact.is_published():
+                                if fact.sensitive:
                                     continue
                             yield record
                         cursor = batch[-1].ref.record_id

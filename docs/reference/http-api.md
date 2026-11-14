@@ -47,9 +47,10 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 
 ### POST /v1/remember
 
-传 `space_id`、`content`，可选 `session_id`、`agent_id`、`extract` 和 `processing`。
+传 `space_id`、`content`，可选 `session_id`、`agent_id`、`event_time`、`extract` 和 `processing`。
+`event_time` 使用 Unix 秒，省略或传 null 表示来源时间未知。纠正当前状态时可传已知来源时间。正文中有明确生效日期时，按抽取到的日期计算有效起点。
 `extract=false` 只保存原文，返回 `status="stored"`、`source_ids` 和空的 `operation_ids`、`operations`，无需模型。
-`extract=true`（默认）请求自动抽取，`processing` 默认 immediate；选择 buffered 时在原文和任务提交后返回 `status="accepted"` 及操作回执。没有配置 LLM 时仍可手工添加事实。
+`extract=true`（默认）请求自动抽取，`processing` 默认 immediate。处理完成时，`fact_ids` 列出本次写入或更新的事实，空数组表示原文已保存、事实未变更。选择 buffered 时在原文和任务提交后返回 `status="accepted"` 及操作回执。
 
 ### 缓冲处理状态与刷新
 
@@ -118,15 +119,13 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 | --- | --- |
 | `PATCH /v1/facts/{fact_id}/sensitivity` | 仅修改 `sensitive` 布尔标记，保留事实和来源 |
 | `DELETE /v1/facts/{fact_id}` | 删除单事实；检查响应中的 ok |
-| `POST /v1/facts/clear-slot` | subject、predicate、expect_count 必填；受当前数量、来源和历史链保护 |
+| `POST /v1/facts/clear-slot` | subject、predicate、expect_count 必填；校验当前槽位是否唯一、数量是否匹配 |
 | `GET /v1/profile` | 七栏画像缓存、更新时间、待更新事实数与刷新状态 |
 | `POST /v1/profile/refresh` | 请求体 space_id，返回 202 和画像刷新操作；后续查询或重试操作 |
 | `GET /v1/graph` | as_of、include_sensitive=false、q、live_only=false、limit |
 | `GET /v1/audit` | limit=40，检查图谱投影 |
 | `GET /v1/focus` / `PUT /v1/focus` | track/mute 列表，省略保持，[] 清空 |
 | `GET /v1/policy` / `PUT /v1/policy` | extract_instruction、extract_system、digest_system、profile_system；空字符串恢复默认 |
-| `GET /v1/conflicts` | 待确认冲突，需要相应检测配置 |
-| `POST /v1/conflicts/{conflict_id}/resolve` | keep=newer、older 或 both |
 
 `track` 在检索时给匹配的事实加分，清空即可撤销。`mute` 即时从召回和画像中排除匹配内容，管理界面仍可查看原记录。
 普通项按不区分大小写的词或短语匹配，拉丁词使用边界。例如 `Java` 不会命中 `JavaScript`。
@@ -152,7 +151,7 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 | `GET /v1/export` | include_sensitive=false；返回结构化导出 |
 | `POST /v1/forget` | JSON `{"space_id":"…","confirm":true}`，清空指定空间并保留 ID 和设置 |
 
-默认导出省略敏感事实及原文，显式设置 `include_sensitive=true` 获取私有导出，其中 `conflicts` 引用同一快照内的事实编号。
+结构化导出使用 `format_version: 6`。未来生效的事实在导出中标为 `scheduled`，并在生效时点进入当前查询。默认省略敏感事实及原文，显式设置 `include_sensitive=true` 获取私有导出。
 
 ## OpenAI 兼容聊天
 

@@ -38,7 +38,7 @@ class BudgetLLM(FakeLLM):
         return result
 
 
-def entry(index, name='Orbit', *, subject='user', predicate='works_at', subject_type='person',
+def entry(index, name='Orbit', *, subject='我', predicate='works_at', subject_type='person',
           object_type='organization', text=None, sources=None):
     text = text or f'{subject} {predicate} {name}'
     item = assertion(subject, predicate, name, subject_type=subject_type, object_type=object_type)
@@ -60,13 +60,13 @@ def ontology_model(relations=None):
 def compare_model(decide=lambda item, facts: 'coexists'):
     def respond(prompt, system):
         data = json.loads(prompt)
-        return json.dumps({'decisions': [dict(id=item['id'], decision=decide(item, data['facts']), reason='fixture')
+        return json.dumps({'decisions': [dict(id=item['id'], decision=decide(item, data['facts']))
                                          for item in reversed(data['items'])]})
     return BudgetLLM(handler=respond)
 
 
 def claim(key, text=None, *, at=10, obj='Orbit'):
-    return Fact('user', 'works_at', obj, text=text or key, id=key, valid_at=at, created_at=100,
+    return Fact('我', 'works_at', obj, text=text or key, id=key, valid_at=at, created_at=100,
                 subject_id='owner', object_id=obj, relation_id='works_at', provenance=[key + '-source'])
 
 
@@ -78,7 +78,7 @@ def merge(new, old=(), *, model=None, config=None, **kwargs):
 def test_empty_window_never_calls_model():
     model = ontology_model()
     assert not bind(Workset(), [], model).bindings
-    assert merge([], model=model)[2]['model_calls'] == 0
+    assert merge([], model=model)[1]['model_calls'] == 0
     assert model.calls == []
 
 
@@ -92,16 +92,37 @@ def test_exact_names_and_more_than_eight_relations_fit_one_request():
     assert all(fact['relation_id'] == builtin('default', 'works_at').id for fact in result.bindings.values())
 
 
-def test_window_shares_source_and_candidate_definitions():
+def test_relation_request_shares_definitions_and_keeps_only_fact_text():
     text = 'user works at Orbit and user volunteers at Orbit'
     entries = [entry(i, predicate=predicate, sources={'source': text})
                for i, predicate in enumerate(('works_at', 'volunteers_at'))]
     model = ontology_model()
     bind(Workset(), entries, model)
     data = json.loads(model.calls[0]['prompt'])
-    assert data['sources'] == {'source': dict(content=text, representation='raw')}
-    assert len(data['assertions']) == 2
+    assert set(data) == {'items', 'candidates'}
+    assert text not in model.calls[0]['prompt']
+    assert [item['text'] for item in data['items']] == [candidate['text'] for _, candidate, _ in entries]
     assert sum(item.get('predicate') == 'works_at' for item in data['candidates'].values()) == 1
+
+
+def test_large_relation_window_reuses_one_definition_without_carrying_previous_evidence():
+    names = [f'Company {i:02}' for i in range(50)]
+    source = ' '.join(names) + ' Background detail.' * 30
+    entries = [entry(i, name, sources={'shared': source}) for i, name in enumerate(names)]
+    config = Config()
+    model = ontology_model()
+    output = bind(Workset(), entries, model, config)
+    assert len(model.calls) > 1
+    assert set(output.bindings) == set(range(len(entries)))
+    for call in model.calls:
+        assert len((call['prompt'] + call['system']).encode('utf-8')) <= config.extraction_max_input_bytes
+        data = json.loads(call['prompt'])
+        assert sum(candidate['predicate'] == 'works_at' for candidate in data['candidates'].values()) == 1
+        assert source not in call['prompt']
+        available = set(data['candidates'])
+        for item in data['items']:
+            assert set(item['candidates']) <= available
+            available.add(item['id'])
 
 
 @pytest.mark.parametrize('max_output,expected_calls', [(8192, 1), (350, 3)])
@@ -113,21 +134,27 @@ def test_same_window_proposals_are_reused_across_budget_splits(max_output, expec
     assert len({fact['relation_id'] for fact in output.bindings.values()}) == 1
     assert len([value for value, _ in output.records(range(3)) if isinstance(value, RelationType)]) == 1
     assert len(model.calls) == expected_calls
+    if expected_calls > 1:
+        for call in model.calls[1:]:
+            data = json.loads(call['prompt'])
+            assert sum(row['predicate'] == 'volunteers_at' for row in data['candidates'].values()) == 1
 
 
-def test_reversed_proposal_reuse_composes_orientation():
+@pytest.mark.parametrize('max_output', [8192, 350])
+def test_reversed_proposal_reuse_composes_orientation(max_output):
     entries = [entry(0, 'Alice', subject='Orbit', predicate='employs', subject_type='organization', object_type='person'),
                entry(1, 'Orbit', subject='Alice', predicate='works_for')]
     def respond(prompt, system):
         data = json.loads(prompt)
         rows = []
         for item in data['items']:
-            target = next((key for key in item['candidates'] if key.startswith('r')), None)
+            target = next((key for key in item['candidates'] if key == 'r0'), None)
             if target is None:
                 target = next(key for key in item['candidates'] if data['candidates'][key]['predicate'] == 'works_at')
-            rows.append(dict(id=item['id'], decision='reuse', target=target, reverse=True, predicate=None))
+            rows.append(dict(id=item['id'], decision='reuse', target=target,
+                             reverse=target == 'r0' or item['id'] == 'r0', predicate=None))
         return json.dumps(dict(decisions=rows))
-    output = bind(Workset(), entries, FakeLLM(handler=respond))
+    output = bind(Workset(), entries, FakeLLM(handler=respond), Config(joint_max_output_tokens=max_output))
     assert len(output.bindings) == 2
     assert all((f['subject'], f['object'], f['predicate']) == ('Alice', 'Orbit', 'works_at')
                for f in output.bindings.values())
@@ -145,11 +172,10 @@ def test_truncated_output_is_failure_not_unknown():
         bind(Workset(), [entry(0)], FakeLLM(responses=[Completion('{"decisions":[]}', 'length')]))
 
 
-@pytest.mark.parametrize('reason', [None, '', ' ' * 4, 'x' * 129])
-def test_comparison_requires_a_short_reason(reason):
-    row = dict(id='0', decision='coexists')
-    if reason is not None:
-        row['reason'] = reason
+@pytest.mark.parametrize('fields', [{'decision': 'coexists', 'reason': 'extra'}, {},
+                                    {'decision': ['coexists']}, {'decision': 'invalid'}])
+def test_comparison_accepts_only_allowed_decisions(fields):
+    row = dict(id='0', **fields)
     with pytest.raises(ExtractionResponseError):
         merge([claim('new')], [claim('old')], model=FakeLLM(responses=[json.dumps(dict(decisions=[row]))]))
 
@@ -163,30 +189,36 @@ def test_forward_proposal_reference_is_rejected():
         bind(Workset(), [entry(0, 'Orbit'), entry(1, 'Nova')], FakeLLM(handler=respond))
 
 
-def test_oversized_ontology_evidence_never_produces_a_fact():
+def test_oversized_fact_sentence_never_produces_a_fact():
     model = ontology_model()
-    result = bind(Workset(), [entry(0, sources={'source': 'Orbit' + 'x' * 20000})], model)
+    result = bind(Workset(), [entry(0, text='Orbit ' + 'x' * 20000)], model)
     assert not result.bindings and not result.records([]) and not model.calls
+
+
+def test_large_raw_evidence_is_only_used_for_entity_binding():
+    model = ontology_model()
+    result = bind(Workset(), [entry(0, sources={'source': 'Orbit. ' + 'x' * 20000})], model)
+    assert len(result.bindings) == len(model.calls) == 1
 
 
 def test_more_than_sixteen_pairs_fit_one_request_and_share_facts():
     old = [claim(f'old{i}', obj=f'Org{i}') for i in range(20)]
     model = compare_model()
-    changed, conflicts, stats = merge([claim('new', at=20)], old, model=model,
+    changed, stats = merge([claim('new', at=20)], old, model=model,
                                      config=Config(joint_max_output_tokens=20000))
-    assert stats['model_calls'] == 1 and not conflicts and len(changed) == 1
+    assert stats['model_calls'] == 1 and len(changed) == 1
     request = json.loads(model.calls[0]['prompt'])
     assert len(request['items']) == 20 and len(request['facts']) == 21
 
 
-@pytest.mark.parametrize('config', [Config(joint_max_output_tokens=1400),
-                                   Config(extraction_max_input_bytes=1800),
-                                   Config(joint_context_tokens=2500)])
+@pytest.mark.parametrize('config', [Config(joint_max_output_tokens=120),
+                                   Config(extraction_max_input_bytes=1350),
+                                   Config(joint_context_tokens=1450)])
 def test_only_budgets_split_requests_without_dropping_comparisons(config):
     model = compare_model()
-    _, conflicts, _ = merge([claim('new', at=20)], [claim(f'old{i}', obj=f'Org{i}') for i in range(5)],
+    _, _ = merge([claim('new', at=20)], [claim(f'old{i}', obj=f'Org{i}') for i in range(5)],
                             model=model, config=config)
-    assert not conflicts and len(model.calls) > 1
+    assert len(model.calls) > 1
     items = [item['id'] for call in model.calls for item in json.loads(call['prompt'])['items']]
     assert len(items) == len(set(items)) == 5
     for call in model.calls:
@@ -201,9 +233,9 @@ def test_duplicate_and_third_fact_conflict_are_compared_once_together():
     old, new, third = claim('old'), claim('new'), claim('third', at=20, obj='Other')
     model = compare_model(lambda item, facts: 'duplicate' if 'duplicate' in item['allowed'] else 'conflict')
     aliases = {}
-    changed, conflicts, stats = merge([new, third], [old], model=model, duplicate_ids=aliases)
+    changed, stats = merge([new, third], [old], model=model, duplicate_ids=aliases)
     by_id = {fact.id: fact for fact in changed}
-    assert stats['model_calls'] == 1 and stats['duplicates'] == 1 and not conflicts
+    assert stats['model_calls'] == 1 and stats['duplicates'] == 1
     assert aliases == {'new': 'old'} and 'new' not in by_id
     assert by_id['old'].provenance == ['old-source', 'new-source'] and by_id['old'].invalid_at == 20
     assert by_id['third'].supersedes == ['old']
@@ -211,34 +243,14 @@ def test_duplicate_and_third_fact_conflict_are_compared_once_together():
     assert len(request['items']) == 3
 
 
-def test_inconsistent_duplicate_comparisons_hold_candidates_and_preserve_old():
+def test_inconsistent_duplicate_comparisons_discard_candidates_and_preserve_old():
     old, new, third = claim('old'), claim('new'), claim('third', at=20, obj='Other')
     def decide(item, facts):
         ids = {item['first'], item['second']}
         return 'duplicate' if ids == {'old', 'new'} else 'conflict' if 'old' in ids else 'coexists'
-    changed, conflicts, stats = merge([new, third], [old], model=compare_model(decide))
+    changed, stats = merge([new, third], [old], model=compare_model(decide))
     assert stats['duplicates'] == stats['invalidated'] == 0
-    assert {fact.id for fact in changed} == {'new', 'third'}
-    assert all(fact.review_pending for fact in changed) and len(conflicts) == 3
-    assert old.invalid_at is None and old.provenance == ['old-source']
-    discarded, pending, stats = merge([new, third], [old], model=compare_model(decide), discard_uncertain=True)
-    assert not discarded and not pending and stats['facts_added'] == 0
-
-
-def test_discarded_exact_duplicates_never_corroborate_or_invalidate():
-    old = claim('old', at=5, obj='Old')
-    new = claim('new', 'Current employer', at=10)
-    repeated = replace(new, id='repeated', provenance=['repeated-source'], sensitive=True)
-    unclear = claim('unclear', at=20, obj='Unclear')
-
-    def decide(item, _):
-        return 'unknown' if 'unclear' in (item['first'], item['second']) else 'conflict'
-
-    duplicates = {}
-    changed, conflicts, stats = merge([new, repeated, unclear], [old], model=compare_model(decide),
-                                     duplicate_ids=duplicates, discard_uncertain=True)
-    assert not changed and not conflicts and not duplicates
-    assert stats['facts_added'] == stats['invalidated'] == 0
+    assert not changed
     assert old.invalid_at is None and old.provenance == ['old-source']
 
 
@@ -246,19 +258,17 @@ def test_duplicate_chains_do_not_imply_transitive_equivalence():
     facts = [claim(key) for key in ('a', 'b', 'c')]
     def decide(item, _):
         return 'coexists' if {item['first'], item['second']} == {'a', 'c'} else 'duplicate'
-    changed, conflicts, stats = merge(facts[1:], facts[:1], model=compare_model(decide))
-    assert stats['duplicates'] == 0 and len(conflicts) == 3
-    assert all(fact.review_pending for fact in changed)
+    changed, stats = merge(facts[1:], facts[:1], model=compare_model(decide))
+    assert stats['duplicates'] == 0 and not changed
 
 
 @pytest.mark.parametrize('prior', [True, False])
-def test_unknown_uses_pending_review_without_changing_published_facts(prior):
+def test_unknown_discards_candidate_without_changing_published_facts(prior):
     first, second = claim('a'), claim('b', at=20)
-    changed, conflicts, stats = merge([second] if prior else [first, second], [first] if prior else [],
+    changed, stats = merge([second] if prior else [first, second], [first] if prior else [],
                                      model=compare_model(lambda *_: 'unknown'))
-    assert len(conflicts) == 1 and stats['invalidated'] == 0
-    assert all(fact.review_pending for fact in changed)
-    assert first.invalid_at is None and not first.review_pending
+    assert not changed and stats['invalidated'] == 0
+    assert first.invalid_at is None
 
 
 @pytest.mark.parametrize('field', ['valid_at', 'object', 'text'])
@@ -279,11 +289,11 @@ def test_later_batch_failure_never_mutates_supplied_timeline():
         calls += 1
         if calls == 2:
             return '{"decisions":[]}'
-        return json.dumps({'decisions': [dict(id=item['id'], decision='conflict', reason='Synthetic comparison')
+        return json.dumps({'decisions': [dict(id=item['id'], decision='conflict')
                                          for item in json.loads(prompt)['items']]})
     with pytest.raises(ExtractionResponseError):
         merge([claim('new', at=20)], old, model=FakeLLM(handler=respond),
-              config=Config(joint_max_output_tokens=1400))
+              config=Config(joint_max_output_tokens=120))
     assert calls == 2 and all(fact.invalid_at is None for fact in old)
 
 

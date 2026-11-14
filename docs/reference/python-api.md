@@ -16,13 +16,13 @@ from mnemotrace.store.contracts import FactQuery, MessageInput, OperationResult
 
 | 方法 | 用途 |
 | --- | --- |
-| `remember_raw(content, session_id)` | 保存原文并返回 Episode，无需抽取模型 |
-| `remember(content, session_id, *, extract=True, processing="immediate")` | 接收笔记；`extract=False` 只保存原文，也可直接调用 `remember_raw` 获取 Episode |
-| `remember_messages(session_id, messages, *, processing="buffered")` | 接收 `MessageInput` 序列，按各条消息的 `extract` 值创建任务 |
+| `remember(content, session_id, *, event_time=None, extract=True, processing="immediate")` | 接收笔记，来源时间使用 Unix 秒。即时处理完成时返回变更的 `fact_ids`。`extract=False` 只保存原文，可用 `get_episode` 读取 |
+| `remember_messages(session_id, messages, *, processing="buffered")` | 接收 `MessageInput` 序列。`extract=False` 的消息只保存原文。重试时按会话和消息 ID 去重 |
 | `operation(operation_id)`、`retry_operation(operation_id)` | 查询或重试原操作，返回 `OperationResult` 或 `None` |
 | `list_operations(*, session_id=None, after_id=None, limit=100)` | 分页返回操作对象；下一页用最后一个操作的 `operation_id` 作游标 |
 | `flush_processing(session_id=None, timeout=30, *, retry_failed=False, include_digests=False)` | 推进并等待本次捕获范围内的任务 |
 | `search(query, *, as_of=None, top_k=None, facts=None)`、`get_episode(episode_id)` | 检索候选事实及来源，或显式读取原文 |
+| `get_fact(fact_id)` | 在授权空间按 ID 读取单条事实，包含历史和未来生效的事实。未找到时返回 `None` |
 | `set_fact_sensitive(fact_id, sensitive)` | 修改共享敏感标记 |
 | `profile()` | 读取七栏画像缓存、待更新数量和刷新状态，不调用模型 |
 | `refresh_profile()` | 创建或复用空间级画像操作，返回 `OperationResult`；通过 worker 或 `flush_processing()` 推进 |
@@ -60,7 +60,7 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 | `consolidate_full` | fact_episodes=None、digest_episodes=None | 计数字典；整合与条件摘要，可分别指定两组事件；reflected 固定为 0 |
 | `import_snapshot` | snapshot、user_id、dedupe=True | dict；导入结构化导出，不等同于打开存储目录 |
 
-结构化快照要求 `format_version=3`。导入先整批校验，遇到无效数据时抛出 `ValueError`。导入保留目标用户的运行设置；字段、来源编号和替代链语义见[结构化快照导入](../architecture/memory.md#结构化快照导入)。
+结构化快照要求 `format_version=6`。导入先整批校验，遇到无效数据时抛出 `ValueError`。导入保留目标用户的运行设置；字段、来源编号和替代链语义见[结构化快照导入](../architecture/memory.md#结构化快照导入)。
 
 `extract=True` 请求事实抽取，`extract=False` 只保存原文。仅执行请求不生成任务记忆；明确陈述的决定、计划和时间化事实保留其条件与时间。底层 remember 保存原文，随后通过 consolidate 推进抽取。
 
@@ -88,19 +88,18 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 
 | 方法 | 用途 |
 | --- | --- |
-| `add_fact(subject, predicate, object, user_id=..., text=..., ...)` | 返回用户来源 Fact，`text` 为必填关键字参数 |
+| `add_fact(subject, predicate, object, user_id=..., text=..., ...)` | 构造或复用 Fact，`text` 为必填关键字参数 |
 | `Memory.set_fact_sensitive(fact_id, sensitive)` | 修改事实的共享敏感标记，返回 Fact 或 None |
 | `delete_fact(fact_id)` | 删除指定事实，返回 bool |
 | `get_focus()`、`set_focus(track=None, mute=None)` | 查询或更新关注点，None 保持不变，[] 清空对应列表 |
 | `get_policy()`、`set_policy(**fields)` | 查询或覆盖抽取、摘要与画像策略 |
 | `graph_data(user_id=..., as_of=None, include_sensitive=True, q="", live_only=False, limit=None)` | 返回 nodes、edges、has_more；见下述图谱完整性契约 |
-| `pending_conflicts(user_id=...)`、`resolve_conflict(conflict_id, keep="newer")`、`dismiss_conflict(conflict_id)` | 查询和裁决待确认冲突 |
 
 图谱的状态、搜索、敏感内容与时间筛选均在 `limit` 前执行；正数 `limit` 限制返回关系数，节点仅包含这些关系的端点。`has_more=true` 表示当前查询条件下仍有未返回的匹配关系；恰好达到上限不表示截断。不限量查询返回全部匹配关系，`has_more=false`。该字段不提供命名空间总数，展示数量仅描述已返回的图。
 
 字段及编辑规则见[分类与对象类型](../architecture/memory.md#分类与对象类型)。
 
-产品摄入使用 `Memory.remember` 或 `Memory.remember_messages`。上表的 `add_fact` 仅为离线工作集构造事实。
+产品摄入使用 `Memory.remember` 或 `Memory.remember_messages`。`add_fact` 用于离线工作集。省略生效时间时，同槽位、同宾语、同正文且当前有效的断言会复用原事实，保留已有分类和留存策略，敏感标记取逻辑或。显式指定生效时间时，复用还要求起点相同。
 
 ## 离线扩展与研究入口
 
@@ -124,7 +123,7 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 
 离线抽取异常包括 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError、ExtractionConflictError。未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated；同一命名空间的并发写作废在途抽取时抛 ExtractionConflictError（code 为 extraction_conflict），内核会先基于新快照自动重试一次。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。Postgres 已接收任务的进度和错误从操作回执读取。
 
-归并模型只区分 `conflict` 与 `coexists`。有效区间、先后和待审状态由程序决定。
+模型比较候选断言并返回 `conflict`、`coexists` 或 `unknown`。PostgreSQL 对符合语义去重条件的候选也允许 `duplicate`。程序计算有效区间，遇到不确定、互相矛盾的判定或无法排序的时间重叠时，保留原文并放弃受影响的新候选。
 
 
 ## 摘要与显式原文读取

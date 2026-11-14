@@ -16,7 +16,7 @@ from typing import Protocol
 from types import SimpleNamespace
 
 from ..categories import Category, normalize_categories
-from ..types import Conflict, Entity, EntityAlias, EntityType, Episode, Fact, Relation, RelationType
+from ..types import Entity, EntityType, Episode, Fact, Relation, RelationType
 from ..extraction import ExtractionResponseError
 from ._validation import validate_record
 
@@ -81,8 +81,6 @@ class ProcessingPhase(str, Enum):
 class OperationKind(str, Enum):
     EXTRACT = 'extract'
     DIGEST = 'digest'
-    CONFLICTS = 'conflicts'
-    GRAPH = 'graph'
     PROFILE = 'profile'
 
 
@@ -91,10 +89,8 @@ class RecordKind(str, Enum):
     FACT = 'Fact'
     ENTITY = 'Entity'
     RELATION = 'Relation'
-    CONFLICT = 'Conflict'
     RELATION_TYPE = 'RelationType'
     ENTITY_TYPE = 'EntityType'
-    ENTITY_ALIAS = 'EntityAlias'
 
 
 class FactState(str, Enum):
@@ -157,21 +153,16 @@ class CommitConditions:
     sources: tuple[SourceVersion, ...] = ()
     lease: Lease | None = None
     extraction_config: str | None = None
-    targets: tuple[RecordVersion, ...] = ()
 
     def __post_init__(self):
         if not isinstance(self.snapshot, ReadSnapshot):
             raise ValueError('A read snapshot is required')
         _tuple(self.sources, SourceVersion)
-        _tuple(self.targets, RecordVersion)
-        if any(target.record.context != self.snapshot.context for target in self.targets):
-            raise ValueError('Maintenance conditions cannot cross the read scope')
         if len({s.source_id for s in self.sources}) != len(self.sources):
             raise ValueError('Duplicate source preconditions')
-        if self.lease is not None:
-            if (not isinstance(self.lease, Lease) or not (self.sources or self.targets)
-                    or self.sources and self.extraction_config is None):
-                raise ValueError('Task commits require versioned inputs and model configuration when applicable')
+        if self.lease is not None and (
+                not isinstance(self.lease, Lease) or not self.sources or self.extraction_config is None):
+            raise ValueError('Task commits require versioned inputs and model configuration')
         if self.extraction_config is not None:
             _id(self.extraction_config)
 
@@ -317,7 +308,7 @@ class StoredRecord:
 
     @classmethod
     def from_record(cls, context: SpaceContext,
-                    record: Episode | Fact | Entity | Relation | Conflict | RelationType | EntityType | EntityAlias,
+                    record: Episode | Fact | Entity | Relation | RelationType | EntityType,
                     *, content_version: int = 1, record_version: int = 1,
                     digest_version: int | None = None) -> StoredRecord:
         kind = RecordKind(type(record).__name__)
@@ -382,23 +373,6 @@ class CandidateBatch:
 
 
 @dataclass(frozen=True)
-class FactInvalidation:
-    ref: RecordRef
-    expected_version: int
-    invalid_at: float
-    expired_at: float
-
-    def __post_init__(self):
-        if not isinstance(self.ref, RecordRef) or self.ref.kind != RecordKind.FACT:
-            raise ValueError('Only a fact can be invalidated')
-        _count(self.expected_version, 1)
-        _time(self.invalid_at)
-        _time(self.expired_at)
-        if self.invalid_at is None or self.expired_at is None:
-            raise ValueError('Effective and recorded end times are required')
-
-
-@dataclass(frozen=True)
 class SourceLink:
     fact: RecordRef
     source: RecordRef
@@ -449,23 +423,11 @@ class SpaceSettings:
 
 
 @dataclass(frozen=True)
-class RecordVersion:
-    record: RecordRef
-    content_version: int
-
-    def __post_init__(self):
-        if not isinstance(self.record, RecordRef):
-            raise ValueError('A scoped target is required')
-        _count(self.content_version, 1)
-
-
-@dataclass(frozen=True)
 class OperationSpec:
     operation_id: str
     kind: OperationKind
     session_id: str | None = None
     sources: tuple[SourceVersion, ...] = ()
-    targets: tuple[RecordVersion, ...] = ()
 
     def __post_init__(self):
         _id(self.operation_id)
@@ -473,18 +435,12 @@ class OperationSpec:
         if self.session_id is not None:
             _id(self.session_id)
         _tuple(self.sources, SourceVersion)
-        _tuple(self.targets, RecordVersion)
         if len({s.source_id for s in self.sources}) != len(self.sources):
             raise ValueError('Duplicate operation sources')
-        if len({t.record for t in self.targets}) != len(self.targets):
-            raise ValueError('Duplicate maintenance targets')
         if self.kind is OperationKind.PROFILE:
-            if self.session_id is not None or self.sources or self.targets:
+            if self.session_id is not None or self.sources:
                 raise ValueError('Profile tasks are space-scoped fact snapshots')
-        elif self.kind == OperationKind.GRAPH:
-            if not self.targets or self.sources:
-                raise ValueError('Maintenance requires record targets, not fabricated sources')
-        elif not self.sources or self.session_id is None or self.targets:
+        elif not self.sources or self.session_id is None:
             raise ValueError('Model operations require a session and unique source versions')
         if self.kind is OperationKind.DIGEST and len(self.sources) != 1:
             raise ValueError('Digest operations require exactly one source')
@@ -509,37 +465,19 @@ class CommitReceipt:
 
 
 @dataclass(frozen=True)
-class OperationStats:
-    """All fields are required when restoring JSONB; defaults must not repair corruption."""
-
-    facts_added: int
-    duplicates: int
-    invalidated: int
-    model_calls: int
-    windows_completed: int
-
-    def __post_init__(self):
-        for value in asdict(self).values():
-            _count(value)
-
-
-@dataclass(frozen=True)
 class ExtractionProduct:
     conditions: CommitConditions
     input_json: str
     result_json: str
-    stats: OperationStats
     digest_max_chars: int
     context_revision: int | None
-    format_version: int = 6
+    format_version: int = 8
 
     def __post_init__(self):
         if not isinstance(self.conditions, CommitConditions) or self.conditions.lease is None:
             raise ValueError('Saving a model product requires task commit conditions')
-        if not isinstance(self.stats, OperationStats):
-            raise ValueError('Validated operation statistics are required')
         _count(self.digest_max_chars, 1)
-        if type(self.format_version) is not int or self.format_version != 6:
+        if type(self.format_version) is not int or self.format_version != 8:
             raise ValueError('Unsupported model product format')
         if self.context_revision is not None:
             _count(self.context_revision)
@@ -548,8 +486,8 @@ class ExtractionProduct:
         data, result = json.loads(self.input_json), json.loads(self.result_json)
         try:
             _validate_product_input(data)
-            if self.context_revision is None and (data['operation'] == 'conflicts'
-                    or any(view['representation'] == 'digest' for view in (*data['context'], *data['pending']))):
+            if self.context_revision is None and any(
+                    view['representation'] == 'digest' for view in (*data['context'], *data['pending'])):
                 raise ValueError('Digest/fact inputs require a business context revision')
             ids = [s['id'] for s in (*data['pending'], *data['context'])]
             if not data['pending'] or len(set(ids)) != len(ids) or set(ids) != {s.source_id for s in self.conditions.sources}:
@@ -577,20 +515,20 @@ class ExtractionProduct:
 def _validate_product_input(data: dict) -> None:
     """Validate prepared input even when an empty model result touches no fields."""
     from ..consolidate.planning import validate_view
-    required = {'operation', 'source_kind', 'extract', 'pending', 'context', 'parts', 'candidates'}
-    if not isinstance(data, dict) or set(data) not in (required, required | {'entity_types'}):
-        raise ValueError('Missing prepared input fields')
-    if 'entity_types' in data:
-        from ..consolidate.ontology import validate_type_catalog
-        if data['operation'] != 'extract':
-            raise ValueError('Only extraction uses an entity type catalog')
-        validate_type_catalog(data['entity_types'])
-    if data['operation'] not in {'extract', 'digest', 'conflicts'}:
+    required = {'operation', 'source_kind', 'extract', 'pending', 'context', 'parts'}
+    if not isinstance(data, dict) or data.get('operation') not in ('extract', 'digest'):
         raise ValueError('Invalid model operation')
+    if data['operation'] == 'extract':
+        required.add('entity_types')
+    if data.keys() != required:
+        raise ValueError('Invalid prepared input fields')
+    if data['operation'] == 'extract':
+        from ..consolidate.ontology import validate_type_catalog
+        validate_type_catalog(data['entity_types'])
     if data['source_kind'] not in {'dialogue', 'note'} or type(data['extract']) is not bool:
         raise ValueError('Invalid source routing')
     dialogue = data['source_kind'] == 'dialogue'
-    if any(not isinstance(data[key], list) for key in ('pending', 'context', 'parts', 'candidates')) or not data['pending']:
+    if any(not isinstance(data[key], list) for key in ('pending', 'context', 'parts')) or not data['pending']:
         raise ValueError('Invalid input lists')
     views = [*data['context'], *data['pending']]
     for view in views:
@@ -609,7 +547,7 @@ def _validate_product_input(data: dict) -> None:
     if any(a['sequence'] >= b['sequence'] for a, b in zip(views, views[1:])):
         raise ValueError('Input views must follow source sequence')
     if data['operation'] == 'digest':
-        if len(data['pending']) != 1 or data['context'] or data['candidates']:
+        if len(data['pending']) != 1 or data['context']:
             raise ValueError('Invalid digest input')
         if data['parts'] and len(data['parts']) < 2:
             raise ValueError('Digest composition requires at least two parts')
@@ -619,28 +557,6 @@ def _validate_product_input(data: dict) -> None:
         _id(part)
     if len(set(data['parts'])) != len(data['parts']):
         raise ValueError('Duplicate digest parts')
-    if data['operation'] == 'conflicts':
-        if data['context'] or not data['candidates']:
-            raise ValueError('Invalid conflict candidates')
-        for pair in data['candidates']:
-            if not isinstance(pair, dict) or set(pair) != {'older', 'newer'}:
-                raise ValueError('Invalid conflict pair')
-            for candidate in pair.values():
-                fields = {'id', 'subject', 'predicate', 'object', 'text', 'valid_at', 'source', 'source_roles'}
-                if not isinstance(candidate, dict) or set(candidate) != fields:
-                    raise ValueError('Invalid conflict fact view')
-                for key in ('id', 'subject', 'predicate', 'object'):
-                    _id(candidate[key])
-                if not isinstance(candidate['text'], str) or candidate['source'] not in {'user', 'extracted'}:
-                    raise ValueError('Invalid conflict fact content')
-                _time(candidate['valid_at'])
-                if not isinstance(candidate['source_roles'], list) or any(r not in {'user', 'assistant'} for r in candidate['source_roles']):
-                    raise ValueError('Invalid conflict source roles')
-            if (pair['older']['id'] == pair['newer']['id']
-                    or pair['older']['subject'].lower() != pair['newer']['subject'].lower()):
-                raise ValueError('Inconsistent conflict pair')
-    elif data['candidates']:
-        raise ValueError('Unexpected candidates')
 
 
 def validate_erasures(records: tuple[RecordRef, ...]) -> None:
@@ -654,9 +570,7 @@ class ChangeSet:
     conditions: CommitConditions
     operation_id: str
     writes: tuple[RecordWrite, ...] = ()
-    invalidations: tuple[FactInvalidation, ...] = ()
     erasures: tuple[RecordRef, ...] = ()
-    resolved_conflicts: tuple[RecordRef, ...] = ()
     source_links: tuple[SourceLink, ...] = ()
     embeddings: tuple[EmbeddingWrite, ...] = ()
     operations: tuple[OperationSpec, ...] = ()
@@ -669,25 +583,19 @@ class ChangeSet:
         _id(self.operation_id)
         context = self.conditions.snapshot.context
         refs = []
-        for values, kind in ((self.writes, RecordWrite), (self.invalidations, FactInvalidation),
+        for values, kind in ((self.writes, RecordWrite),
                              (self.source_links, SourceLink),
                              (self.embeddings, EmbeddingWrite),
                              (self.operations, OperationSpec)):
             _tuple(values, kind)
         validate_erasures(self.erasures)
-        _tuple(self.resolved_conflicts, RecordRef)
-        if any(ref.kind != RecordKind.CONFLICT for ref in self.resolved_conflicts):
-            raise ValueError('Only pending conflicts can be removed here')
-        mutations = [w.ref for w in self.writes] + [i.ref for i in self.invalidations] + list(self.erasures) + list(self.resolved_conflicts)
+        mutations = [w.ref for w in self.writes] + list(self.erasures)
         if len(set(mutations)) != len(mutations):
             raise ValueError('Multiple mutations of one record in a commit')
         refs.extend(mutations)
         refs.extend(e.record for e in self.embeddings)
-        refs.extend(target.record for target in self.conditions.targets)
         for link in self.source_links:
             refs.extend((link.fact, link.source))
-        for operation in self.operations:
-            refs.extend(target.record for target in operation.targets)
         if len({operation.operation_id for operation in self.operations}) != len(self.operations):
             raise ValueError('Duplicate follow-up operations')
         if any(ref.context != context for ref in refs):

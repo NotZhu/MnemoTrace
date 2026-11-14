@@ -53,9 +53,9 @@ def test_digest_is_selected_while_explicit_source_keeps_original():
 
 @pytest.mark.parametrize('field', ['summary', 'summary_coverage'])
 def test_snapshot_does_not_silently_drop_old_source_fields(field):
-    snapshot = dict(format_version=4, facts=[], episodes=[dict(id='source', content='Synthetic source',
+    snapshot = dict(format_version=6, facts=[], episodes=[dict(id='source', content='Synthetic source',
                     session_id='s', role='user', event_time=1, **{field: 'obsolete'})])
-    with pytest.raises(ValueError, match=field):
+    with pytest.raises(ValueError, match=r"episodes\[0\]: unsupported field"):
         validate_snapshot(snapshot)
 
 
@@ -81,5 +81,5 @@ def test_remember_and_recall_reject_retired_parameters():
 
 
 def test_snapshot_rejects_retired_working_collection():
-    with pytest.raises(ValueError, match='snapshot.working'):
-        validate_snapshot(dict(format_version=4, facts=[], episodes=[], working=[]))
+    with pytest.raises(ValueError, match='snapshot: unsupported field'):
+        validate_snapshot(dict(format_version=6, facts=[], episodes=[], working=[]))

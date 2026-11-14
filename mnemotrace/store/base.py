@@ -66,7 +66,6 @@ class GraphStore(ABC):
         """与 `entity_id` 相连的存活 relation（过滤出在 `as_of` 时刻仍有效的那些）。"""
 
     @abstractmethod
-    def invalidate_relations_for_fact(self, fact_id: str, t: float) -> None: ...
 
     @abstractmethod
     def delete_relations_for_fact(self, fact_id: str) -> None:

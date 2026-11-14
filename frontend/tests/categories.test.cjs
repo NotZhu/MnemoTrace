@@ -26,11 +26,11 @@ test('category catalog contains 15 distinct labels and validates saved filters',
   assert.equal(savedCategories('music').length, 0)
 })
 
-test('category badges show every label and its source', () => {
+test('category badges show every label without a source badge', () => {
   const html = renderToStaticMarkup(React.createElement(CategoryBadges, {
-    categories: ['food', 'music'], categories_source: 'llm',
+    categories: ['food', 'music'],
   }))
   assert.match(html, /饮食/)
   assert.match(html, /音乐/)
-  assert.match(html, /模型判断/)
+  assert.doesNotMatch(html, /模型判断/)
 })

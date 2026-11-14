@@ -6,10 +6,10 @@ import pytest
 
 from mnemotrace.store.contracts import (
     Candidate, CandidateBatch, ChangeSet, CommitConditions, CommitReceipt, EmbeddingWrite,
-    ExtractionProduct, FactInvalidation, FactQuery, FactState, Lease, MessageInput,
-    OperationKind, OperationResult, OperationSpec, OperationStats, ProcessingPhase,
+    ExtractionProduct, FactQuery, FactState, Lease, MessageInput,
+    OperationKind, OperationResult, OperationSpec, ProcessingPhase,
     ProcessingState, ReadSnapshot, RecordKind, RecordRef, RecordWrite, RetrievalQuery,
-    SourceLink, SourceVersion, SpaceContext, SpaceSettings, StoredRecord, RecordVersion,
+    SourceLink, SourceVersion, SpaceContext, StoredRecord,
 )
 from mnemotrace.types import Fact, Episode
 
@@ -30,16 +30,20 @@ def fact_record(**kwargs):
 
 
 def product():
+    from mnemotrace.consolidate.ontology import ENTITY_TYPES
+
     text = 'I work at Orbit.'
-    data = dict(operation='extract', source_kind='dialogue', extract=True, context=[], parts=[], candidates=[],
+    data = dict(operation='extract', source_kind='dialogue', extract=True, context=[], parts=[], entity_types=dict(ENTITY_TYPES),
                 pending=[dict(id='source-1', role='user', content=text, needs_digest=False,
                               message_id='message-1', sequence=1, event_time=100, representation='raw',
                               representation_source=None, source='a' * 64, source_length=len(text),
                               ranges=[[0, len(text)]], partial=False)])
-    result = dict(facts=[dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='Ana', predicate='works_at', object='Orbit', text='Ana works at Orbit',
+    result = dict(facts=[dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='我', object='Orbit', text='I work at Orbit.',
+                             ontology=dict(subject=dict(type='person', type_meaning=None), object=None,
+                                           meaning='place of employment', direction='forward'),
                              source_ids=['source-1'])], digests={})
     return ExtractionProduct(CONDITIONS, json.dumps(data), json.dumps(result),
-                             OperationStats(0, 0, 0, 1, 0), 800, 7)
+                             800, 7)
 
 
 def test_context_is_immutable_and_preserves_identity():
@@ -173,17 +177,6 @@ def test_digest_vector_uses_digest_version_not_immutable_raw_version():
         replace(changes, embeddings=(EmbeddingWrite(stored.ref, 1, 'model', (1.0,), 'digest'),))
 
 
-def test_maintenance_can_target_source_free_manual_fact_and_cannot_cross_space():
-    operation = OperationSpec('graph-1', OperationKind.GRAPH, targets=(RecordVersion(ref(), 1),))
-    changes = ChangeSet(CommitConditions(SNAPSHOT), 'schedule-1', operations=(operation,))
-    assert changes.operations[0].sources == ()
-    guarded = CommitConditions(SNAPSHOT, lease=Lease('graph-1', 'lease'), targets=operation.targets)
-    assert ChangeSet(guarded, 'graph-1').conditions.targets
-    other = RecordVersion(ref(context=SpaceContext('owner', 'other-space')), 1)
-    with pytest.raises(ValueError):
-        replace(changes, operations=(replace(operation, targets=(other,)),))
-
-
 def test_stale_vectors_and_new_references_to_erased_records_are_rejected():
     write = RecordWrite(fact_record())
     with pytest.raises(ValueError, match='text version'):
@@ -215,24 +208,13 @@ def test_changeset_checks_scope_provenance_duplicate_mutations_and_receipt():
         SourceLink(write.ref, replace(source, context=SpaceContext('other', 'space-1')))
 
 
-def test_invalidation_entities_and_settings_are_narrow_types():
-    FactInvalidation(ref(), 1, 10, 20)
-    with pytest.raises(ValueError):
-        FactInvalidation(ref(RecordKind.SOURCE), 1, 10, 20)
-    assert SpaceSettings(track=('work',)).track == ('work',)
-
-
-def test_extraction_product_checks_sources_schema_stats_and_format():
+def test_extraction_product_checks_sources_schema_and_format():
     saved = product()
     assert saved.reusable(SNAPSHOT, SOURCES, 'config-1')
-    for kwargs in (dict(format_version=True), dict(format_version=3), dict(format_version=4), dict(context_revision=6),
-                   dict(result_json='{}'), dict(input_json='{}'), dict(stats={})):
+    for kwargs in (dict(format_version=True), dict(format_version=3), dict(format_version=7), dict(context_revision=6),
+                   dict(result_json='{}'), dict(input_json='{}')):
         with pytest.raises(ValueError):
             replace(saved, **kwargs)
-    with pytest.raises(TypeError):
-        OperationStats(**{'facts_added': 0})
-    with pytest.raises(ValueError):
-        OperationStats(0, 0, 0, True, 0)
 
 
 def test_generation_reuse_depends_on_actual_context_and_not_embedder():
@@ -251,7 +233,7 @@ def test_generation_reuse_depends_on_actual_context_and_not_embedder():
     assert EmbeddingWrite(ref(), 1, 'embedder-A', (1.0,)).model != EmbeddingWrite(ref(), 1, 'embedder-B', (1.0,)).model
 
 
-@pytest.mark.parametrize('field', ['operation', 'source_kind', 'extract', 'pending', 'parts', 'candidates'])
+@pytest.mark.parametrize('field', ['operation', 'source_kind', 'extract', 'pending', 'parts', 'entity_types'])
 def test_empty_model_result_cannot_hide_missing_prepared_input_fields(field):
     saved = product()
     data = json.loads(saved.input_json)

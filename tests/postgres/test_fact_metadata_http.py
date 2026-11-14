@@ -16,12 +16,12 @@ def test_http_fact_categories_survive_export_and_sensitivity_is_scoped(metadata_
     client, service = metadata_client
     headers = hdr("synthetic-alpha")
     context, _ = product_scope("synthetic-alpha")
-    fact = seed_fact(service.memory(context), "user", "prefers", "茶", text="用户偏好茶。", categories=["food"])
+    fact = seed_fact(service.memory(context), "我", "prefers", "茶", text="用户偏好茶。", categories=["food"])
     dump = client.get("/v1/memories", headers=headers).json()
     assert dump["facts"][0]["categories"] == ["food"]
-    assert dump["facts_page"]["items"][0]["categories_source"] == "llm"
+    assert "categories_source" not in dump["facts_page"]["items"][0]
     snapshot = client.get("/v1/export", headers=headers).json()
-    assert snapshot["format_version"] == 4
+    assert snapshot["format_version"] == 6
     assert snapshot["facts"][0]["categories"] == ["food"]
     endpoint = f"/v1/facts/{fact.id}/sensitivity"
     denied = client.patch(endpoint, headers=hdr("synthetic-beta"), json={"sensitive": True})
@@ -35,7 +35,7 @@ def test_http_categories_filters_before_paging_and_rejects_invalid_values(metada
     context, _ = product_scope("synthetic-topic")
     headers = hdr("synthetic-topic")
     for obj, labels in [("合成茶", ["food"]), ("合成作品", ["music"]), ("合成咖啡", ["food", "music"]), ("未分类", [])]:
-        seed_fact(service.memory(context), "user", "prefers", obj, text=f"用户偏好{obj}。", categories=labels)
+        seed_fact(service.memory(context), "我", "prefers", obj, text=f"用户偏好{obj}。", categories=labels)
     page = client.get("/v1/memories", headers=headers,
                       params={"categories": ["food", "music"], "facts_limit": 1}).json()
     assert page["facts_page"]["total"] == 3
@@ -71,12 +71,12 @@ def test_redacted_session_report_omits_fact_metadata(metadata_client, product_sc
 
     context, _ = product_scope(user)
     source_id, = service.remember(context, "Synthetic session statement", "synthetic-session", extract=False)["source_ids"]
-    seed_facts(service, context, [Fact("user", "note", "Synthetic private value", user_id=context.user_id,
-                                       provenance=[source_id], categories=["health"], categories_source="user", sensitive=True, text='user note Synthetic private value')])
+    seed_facts(service, context, [Fact("我", "note", "Synthetic private value", user_id=context.user_id,
+                                       provenance=[source_id], categories=["health"], sensitive=True, text='user note Synthetic private value')])
     headers = hdr(user)
     endpoint = "/v1/sessions/report?session_id=synthetic-session"
     hidden, = client.get(endpoint, headers=headers).json()["facts"]
     assert hidden["redacted"] and not {"categories", "categories_source", "relation_id", "object_id", "object_type"} & hidden.keys()
     visible, = client.get(endpoint + "&include_sensitive=true", headers=headers).json()["facts"]
-    assert (visible["categories"], visible["categories_source"]) == (["health"], "user")
+    assert visible["categories"] == ["health"]
     assert client.get("/v1/export", headers=headers).json()["facts"] == []

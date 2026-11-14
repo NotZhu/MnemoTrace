@@ -14,7 +14,7 @@ from .memory import Memory
 from .metrics import Metrics, timed
 from .store.contracts import FactQuery, FactState, MessageInput
 from .store.postgres import Database, DatabaseConfig, Spaces
-from .store.postgres.records import CONFLICT, ENTITY, FACT, RELATION, SOURCE, domain
+from .store.postgres.records import ENTITY, FACT, RELATION, SOURCE, domain
 from .util import fmt_date, fmt_datetime, now
 
 
@@ -95,7 +95,7 @@ def _fact_view(fact, at):
     row = asdict(fact)
     for key in ('embedding', 'user_id'):
         row.pop(key, None)
-    live = fact.is_published() and fact.is_valid_at(at)
+    live = fact.is_valid_at(at)
     row.update(valid_at=fmt_datetime(fact.valid_at),
                invalid_at=fmt_datetime(fact.invalid_at) if fact.invalid_at is not None else None,
                status='live' if live else 'superseded',
@@ -161,10 +161,10 @@ class MemoryService:
 
     @timed('remember')
     def remember(self, context, content, session_id, extract: bool = True, processing='immediate', *,
-                 agent_id=None, timeout=30):
+                 agent_id=None, event_time=None, timeout=30):
         memory = self.memory(context)
         result = operation_payload(memory.remember(content, session_id, extract=extract, processing=processing,
-                                                   agent_id=agent_id, timeout=timeout))
+                                                   agent_id=agent_id, event_time=event_time, timeout=timeout))
         if processing == 'immediate' and not result['ok']:
             raise ProcessingFailure(result)
         return result
@@ -290,12 +290,6 @@ class MemoryService:
         return dict(ok=True, **self.get_policy(context))
 
 
-    def conflicts(self, context):
-        return dict(conflicts=[asdict(c) for c in self.memory(context).conflicts()])
-
-    def resolve_conflict(self, context, conflict_id, keep):
-        return dict(ok=self.memory(context).resolve_conflict(conflict_id, keep=keep))
-
     def profile(self, context):
         return self.memory(context).profile()
 
@@ -325,7 +319,7 @@ class MemoryService:
             row['provenance'] = [source for source in row['provenance'] if source in sources]
             row['redacted'] = row['sensitive'] and not include_sensitive
             if row['redacted']:
-                for key in ('subject', 'predicate', 'object', 'why', 'categories', 'categories_source',
+                for key in ('subject', 'predicate', 'object', 'why', 'categories',
                             'subject_id', 'object_id', 'subject_type', 'object_type', 'relation_id',
                             'supersedes'):
                     row.pop(key, None)
@@ -461,37 +455,26 @@ class MemoryService:
                 yield f',"{name}":['
                 cursor, first = None, True
                 while kind != SOURCE or include_sensitive:
-                    batch = (view.portable_facts(after_id=cursor) if kind == FACT and include_sensitive
-                             else view.records(kind, after_id=cursor,
-                                               hide_sensitive_predecessors=not include_sensitive))
+                    batch = view.records(kind, after_id=cursor, hide_sensitive_predecessors=not include_sensitive)
                     if not batch:
                         break
                     for record in batch:
                         if kind == FACT:
                             item = domain(record)
-                            if not include_sensitive and (item.sensitive or not item.is_published()):
+                            if not include_sensitive and item.sensitive:
                                 continue
                             payload = asdict(item)
                             payload.pop('embedding', None)
                             payload.pop('user_id', None)
-                            payload.update(status='live' if item.is_published() and item.is_valid_at(at) else 'superseded',
+                            status = ('scheduled' if item.valid_at is not None and item.valid_at > at else
+                                      'live' if item.is_valid_at(at) else 'superseded')
+                            payload.update(status=status,
                                            valid_at_h=fmt_date(item.valid_at),
                                            invalid_at_h=fmt_date(item.invalid_at) if item.invalid_at is not None else None)
                         else:
                             item = domain(record)
                             payload = _source_view(record)
                             payload.update(digest_coverage=item.digest_coverage, digest_written_at=item.digest_written_at)
-                        yield ('' if first else ',') + json.dumps(payload, ensure_ascii=False)
-                        first = False
-                    cursor = batch[-1].ref.record_id
-                yield ']'
-            if include_sensitive:
-                yield ',"conflicts":['
-                cursor, first = None, True
-                while batch := view.records(CONFLICT, after_id=cursor):
-                    for record in batch:
-                        payload = asdict(domain(record))
-                        payload.pop('user_id')
                         yield ('' if first else ',') + json.dumps(payload, ensure_ascii=False)
                         first = False
                     cursor = batch[-1].ref.record_id

@@ -27,7 +27,6 @@ export const qk = {
   policy: () => ['policy', ns()] as const,
   profile: () => ['profile', ns()] as const,
   sourceEpisodes: () => ['source-episodes', ns()] as const,
-  conflicts: () => ['conflicts', ns()] as const,
   health: () => ['health'] as const,
   // 与其他 key 一样按命名空间隔离（见上面的 ns()）— 审计是按记忆空间进行的，
   // 不加命名空间的 key 在切换后会显示上一个空间的检查结果，连同它的一键批量删除。
@@ -171,20 +170,6 @@ export function useRetryOperation() {
 export function useRefreshProfile() {
   const invalidate = useInvalidateMemory()
   return useMutation({ mutationFn: () => api.refreshProfile(), onSuccess: invalidate })
-}
-
-export function useConflicts() {
-  const enabled = !!useAuth((s) => s.spaceId)
-  return useQuery({ queryKey: qk.conflicts(), queryFn: api.conflicts, enabled, retry: false })
-}
-
-export function useResolveConflict() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ id, keep }: { id: string; keep: 'newer' | 'older' | 'both' }) =>
-      api.resolveConflict(id, keep),
-    onSuccess: () => refreshAfterWrite(qc, [qk.conflicts(), qk.memoriesRoot(), qk.profile(), qk.graphRoot()]),
-  })
 }
 
 
