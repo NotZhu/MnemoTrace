@@ -112,8 +112,8 @@ def test_duplicate_import_requires_explicit_retry_without_extra_episodes():
     sessions = [{'session_id': 's', 'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic record'}]}]
     m.remember_messages(sessions[0]['messages'], 's')
     # A deliberately failed checkpoint is retried only by an explicit flush request.
-    from mnemotrace._pipeline import flush_memory
-    assert not flush_memory(m, 'default', timeout=.01)['ok']
+    from mnemotrace._pipeline import flush
+    assert not flush(m, 'default', timeout=.01)['ok']
     m.llm = FakeLLM(handler=reply)
     stats = import_messages(m, sessions)
     assert stats['skipped'] == 1 and stats['facts_added'] == 0

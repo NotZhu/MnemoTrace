@@ -1,4 +1,5 @@
 """Explicit Python entry point for record-backed memory in one PostgreSQL space."""
+from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -9,7 +10,7 @@ from .consolidate.decay import reinforce
 from .retrieve import postgres as retrieval
 from .store.contracts import (
     ChangeSet, CommitConditions, EmbeddingWrite, FactQuery, MessageInput, OperationKind,
-    RecordRef, RecordWrite, SourceLink, StoredRecord, validate_erasures,
+    RecordRef, RecordWrite, StoredRecord, validate_erasures,
 )
 from .store.postgres.dao import PostgresDAO, new_operation_id
 from .store.postgres.database import identifier
@@ -26,11 +27,21 @@ if TYPE_CHECKING:
 
 
 class Memory:
-    """Use an open runtime database and an explicit, trusted space. The caller owns the pool."""
+    """记忆存储。用于存储和检索记录。"""
 
     def __init__(self, database: 'Database', context: 'SpaceContext', *,
                  embedder: 'Embedder | None' = None, embedding_model: str | None = None,
                  llm=None, config: Config | None = None):
+        """初始化记忆存储。
+
+        Args:
+            database: 数据库连接。
+            context: 空间上下文。
+            embedder: 嵌入器，用于将文本转换为向量。
+            embedding_model: 嵌入模型的标识符。
+            llm: 语言模型，用于生成回复。
+            config: 配置参数。
+        """
         if (embedder is None) != (embedding_model is None):
             raise ValueError('Pair an embedder with its stable embedding_model identifier')
         self.dao = PostgresDAO(database, context)
@@ -57,11 +68,7 @@ class Memory:
         ), old.record_version if old is not None else None)
 
     def _commit(self, snapshot, *, writes=(), **kwargs):
-        links = tuple(SourceLink(write.ref, self._ref(SOURCE, source_id))
-                      for write in writes if write.ref.kind == FACT
-                      for source_id in domain(write.record).provenance)
-        return self.dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=writes,
-                                         source_links=links, **kwargs))
+        return self.dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=writes, **kwargs))
 
     def _embeddings(self, write, text):
         if self._embedder is None:
@@ -73,7 +80,15 @@ class Memory:
 
     def remember_messages(self, session_id: str, messages: tuple[MessageInput, ...], *,
                           processing='buffered', timeout=30, source_metadata=None):
-        """Accept dialogue and return source IDs and durable operation progress."""
+        """接收一段对话，并返回对应的来源 ID 和持久化操作的进度信息。
+
+        Args:
+            session_id: 会话的唯一标识符。
+            messages: 要记忆的消息输入记录。
+            processing: 处理模式，可以是 'buffered' 或 'immediate'。默认为 'buffered'。
+            timeout: 等待处理完成的超时时间（秒）。默认为 30 秒。
+            source_metadata: 可选的元数据字典，将与每条消息关联。默认为 None。
+        """
         identifier(session_id)
         self._validate_processing(processing, timeout)
         items = tuple(messages)
@@ -81,13 +96,16 @@ class Memory:
             raise ValueError('Expected a non-empty batch of MessageInput records')
         pipeline = self._processing
         receipt, associations = pipeline.tasks.accept(
-            session_id, items, pipeline.require_model, pipeline.fit_message, immediate=processing == 'immediate',
+            session_id, items, pipeline.require_ready, pipeline.fit_message, immediate=processing == 'immediate',
             source_metadata=source_metadata)
         operation_ids = tuple(dict.fromkeys(operation for _, operation in associations))
+        by_source = defaultdict(list)
+        for source_id, operation_id in associations:
+            by_source[source_id].append(operation_id)
         result = self._accepted(operation_ids, processing, timeout)
         result.update(source_ids=receipt.source_ids, accepted=receipt.affected_count,
-                      messages=tuple(dict(message_id=item.message_id, episode_id=source_id, operation_ids=tuple(
-                          operation for source, operation in associations if source == source_id))
+                      messages=tuple(dict(message_id=item.message_id, episode_id=source_id,
+                                          operation_ids=tuple(by_source.get(source_id, ())))
                                      for item, source_id in zip(items, receipt.source_ids)))
         return result
 
@@ -102,7 +120,7 @@ class Memory:
                          extract=extract, event_time=event_time)
         record = replace(StoredRecord.from_record(self.context, source), agent_id=agent_id)
         receipt, operation_id = self._processing.tasks.accept_source(
-            record, self._processing.require_model,
+            record, self._processing.require_ready,
             kind=OperationKind.EXTRACT if extract else None)
         if not extract:
             return dict(ok=True, status='stored', stored_raw=True, source_ids=list(receipt.source_ids),
@@ -116,6 +134,7 @@ class Memory:
 
     @staticmethod
     def _validate_processing(processing, timeout):
+        """验证处理模式和超时时间是否有效。"""
         from math import isfinite
         if processing not in ('buffered', 'immediate'):
             raise ValueError('Expected buffered or immediate processing')
@@ -127,7 +146,7 @@ class Memory:
         if processing == 'immediate':
             return self._processing.flush(operation_ids=operation_ids, timeout=timeout)
         return dict(ok=True, status='accepted', operation_ids=operation_ids,
-                    operations=tuple(self.operation(operation_id) for operation_id in operation_ids))
+                    operations=self._processing.tasks.operations(operation_ids))
 
     def operation(self, operation_id):
         identifier(operation_id)

@@ -12,7 +12,7 @@ import uuid
 from ..types import Episode
 from ..extraction import ExtractionError
 
-VERSION = 9
+VERSION = 10
 TERMINAL = {'completed', 'failed', 'cancelled'}
 
 
@@ -31,7 +31,7 @@ def route(session_id, extract, source_kind='dialogue'):
     return json.dumps([session_id, extract, source_kind], ensure_ascii=False)
 
 
-def identity(message, extract):
+def message_fingerprint(message, extract):
     return content_hash([message['role'], message['content'], message['event_time'], extract])
 
 
@@ -56,7 +56,7 @@ def normalized(messages, session_id, extract):
         if stamp is not None and (type(stamp) not in (int, float) or not math.isfinite(stamp)):
             raise ValueError('event_time must be finite or unknown')
         row['event_time'] = float(stamp) if stamp is not None else None
-        fingerprint = identity(row, extract)
+        fingerprint = message_fingerprint(row, extract)
         if row['message_id'] in seen and seen[row['message_id']] != fingerprint:
             raise MessageConflictError()
         seen[row['message_id']] = fingerprint
@@ -64,7 +64,7 @@ def normalized(messages, session_id, extract):
     return rows
 
 
-def source(ep):
+def source_fingerprint(ep):
     return content_hash([ep.user_id, ep.session_id, ep.message_id, ep.sequence, ep.role,
                    ep.event_time, ep.ingested_at, ep.content, ep.source_kind, ep.extract])
 
@@ -118,8 +118,8 @@ def reset_attempts(window, field, reason, now):
 STATES = {'pending', 'running', 'retry_wait', 'completed', 'failed', 'cancelled'}
 SOURCE_FIELDS = {'session_id', 'message_id', 'fingerprint', 'source', 'length', 'sequence',
                  'extract', 'source_kind', 'core', 'digest', 'window_ids', 'cancelled', 'position', 'parts', 'digest_requested', 'commits', 'digest_receipt'}
-SESSION_FIELDS = {'session_id', 'extract', 'source_kind', 'last_activity', 'cutoff', 'following', 'batch_id', 'last_turn'}
-WINDOW_FIELDS = {'route', 'batch_id', 'input', 'input_hash', 'config', 'generation_config', 'state', 'phase', 'attempts',
+SESSION_FIELDS = {'session_id', 'extract', 'source_kind', 'last_activity', 'cutoff', 'following', 'last_turn'}
+WINDOW_FIELDS = {'route', 'input', 'input_hash', 'config', 'generation_config', 'state', 'phase', 'attempts',
                  'embed_attempts', 'next_attempt_at', 'result', 'vectors', 'core_saved', 'digest_saved',
                  'error_code', 'history', 'guard', 'limits', 'result_hash', 'operation', 'stats'}
 
@@ -247,17 +247,17 @@ def validate_state(value, episodes=None, embedding_dim=None):
                     identities.add(pair)
                 require(route(row['session_id'], row['extract'], row['source_kind']) in state['sessions'])
                 if docs is not None and row['cancelled']:
-                    require(key not in docs or source(docs[key]) != row['source'])
+                    require(key not in docs or source_fingerprint(docs[key]) != row['source'])
                 if docs is not None and not row['cancelled']:
                     ep = docs.get(key)
-                    require(ep is not None and ep.user_id == namespace and source(ep) == row['source'])
+                    require(ep is not None and ep.user_id == namespace and source_fingerprint(ep) == row['source'])
                     require(ep.extract is row['extract'])
                     require(len(ep.content) == row['length'] and ep.source_kind == row['source_kind'])
                     require(row['core'] != 'completed' or ep.consolidated and ep.coverage is not None)
                     require(row['digest'] != 'completed' or bool(ep.digest))
                     if dialogue:
                         require((ep.message_id, ep.sequence) == (row['message_id'], row['sequence']))
-                        require(identity({'role': ep.role, 'content': ep.content, 'event_time': ep.event_time}, row['extract']) == row['fingerprint'])
+                        require(message_fingerprint({'role': ep.role, 'content': ep.content, 'event_time': ep.event_time}, row['extract']) == row['fingerprint'])
                     receipt = row['digest_receipt']
                     if row['digest'] == 'completed' and any(key in state['windows'][wid]['digest_saved'] for wid in row['window_ids']):
                         require(receipt is not None)
@@ -290,7 +290,6 @@ def validate_state(value, episodes=None, embedding_dim=None):
                 require(_number(session['last_activity']) and _number(session['last_turn']))
                 require(all(type(session[k]) is int and 0 <= session[k] <= state['sequences'].get(session['session_id'], 0) for k in ('cutoff', 'following')))
                 require(session['following'] == 0 or session['following'] > session['cutoff'])
-                require(isinstance(session['batch_id'], str))
             for key, win in state['windows'].items():
                 require(isinstance(key, str) and len(key) == 24 and isinstance(win, dict) and set(win) == WINDOW_FIELDS)
                 require(win['route'] in state['sessions'] and win['operation'] in {'extract', 'digest'})
@@ -354,7 +353,7 @@ def validate_state(value, episodes=None, embedding_dim=None):
                     require((item['role'] in {'user', 'assistant'}) == (data['source_kind'] == 'dialogue'))
                     if docs is not None and not state['sources'][item['id']]['cancelled']:
                         ep = docs[item['id']]
-                        require(source(ep) == item['source'] and ep.event_time == item['event_time'])
+                        require(source_fingerprint(ep) == item['source'] and ep.event_time == item['event_time'])
                         require(item['role'] == (ep.role if ep.source_kind == 'dialogue' else None))
                         if item['representation'] == 'raw':
                             from .planning import OMITTED
@@ -405,7 +404,7 @@ class PipelineTasks:
     def group(self, row, timestamp=0):
         key = route(row['session_id'], row['extract'], row['source_kind'])
         return self.ensure()['sessions'].setdefault(key, dict(session_id=row['session_id'], extract=row['extract'],
-            source_kind=row['source_kind'], last_activity=timestamp, cutoff=0, following=0, batch_id='', last_turn=0))
+            source_kind=row['source_kind'], last_activity=timestamp, cutoff=0, following=0, last_turn=0))
 
     def inspect(self, messages, session_id, extract=True):
         rows = normalized(messages, session_id, extract)
@@ -413,7 +412,7 @@ class PipelineTasks:
         unseen = {}
         for row in rows:
             old = existing.get((session_id, row['message_id']))
-            fingerprint = identity(row, extract)
+            fingerprint = message_fingerprint(row, extract)
             if old and old['fingerprint'] != fingerprint:
                 raise MessageConflictError()
             if old is None:
@@ -421,7 +420,7 @@ class PipelineTasks:
         return rows, unseen
 
     def _record(self, ep, *, fingerprint, sequence, timestamp, requested):
-        row = dict(session_id=ep.session_id, message_id=ep.message_id, fingerprint=fingerprint, source=source(ep),
+        row = dict(session_id=ep.session_id, message_id=ep.message_id, fingerprint=fingerprint, source=source_fingerprint(ep),
             length=len(ep.content), sequence=sequence, extract=ep.extract, source_kind=ep.source_kind,
             core='pending' if requested else 'not_requested', digest='completed' if ep.digest else
                 'pending' if requested and len(ep.content) >= self.memory.config.digest_min_chars else 'not_needed',
@@ -446,29 +445,28 @@ class PipelineTasks:
                 user_id=self.namespace, session_id=session_id, message_id=row['message_id'], sequence=sequence,
                 source_kind='dialogue', extract=extract, consolidated=not extract)
             self.memory._sync_episode(ep)
-            self._record(ep, fingerprint=identity(row, extract), sequence=sequence, timestamp=timestamp, requested=extract)
+            self._record(ep, fingerprint=message_fingerprint(row, extract), sequence=sequence, timestamp=timestamp, requested=extract)
             existing[key] = ep.id
             output.append(ep.id)
             fresh.append(ep.id)
         return output, fresh
 
-    def register(self, episodes, timestamp, operation='extract', *, digests=False):
+    def register(self, episodes, timestamp, operation='extract'):
         ids = []
         for ep in episodes:
             if ep.user_id != self.namespace:
                 raise ValueError('Source ownership mismatch')
             if operation == 'extract' and not ep.extract:
                 continue
-            row = self.rows().get(ep.id)
+            state = self.ensure()
+            row = state['sources'].get(ep.id)
             if row is None:
-                seq = self.ensure()['sequences'].get(ep.session_id, 0) + 1
-                row = self._record(ep, fingerprint=source(ep), sequence=seq, timestamp=timestamp, requested=False)
-            if row['cancelled'] or source(ep) != row['source']:
+                seq = state['sequences'].get(ep.session_id, 0) + 1
+                row = self._record(ep, fingerprint=source_fingerprint(ep), sequence=seq, timestamp=timestamp, requested=False)
+            if row['cancelled'] or source_fingerprint(ep) != row['source']:
                 raise ValueError('Source changed; register a new event identity')
             if operation == 'extract' and row['core'] == 'not_requested' and not ep.consolidated:
                 row['core'] = 'pending'
-                if digests and len(ep.content) >= self.memory.config.digest_min_chars and not ep.digest:
-                    row['digest'] = 'pending'
             if operation == 'digest' and len(ep.content) >= self.memory.config.digest_min_chars and not ep.digest:
                 if row['digest'] == 'not_needed':
                     row['digest'] = 'pending'
@@ -480,7 +478,7 @@ class PipelineTasks:
         if cutoff <= 0:
             return
         if not session['cutoff']:
-            session.update(cutoff=cutoff, batch_id=uuid.uuid4().hex)
+            session['cutoff'] = cutoff
         elif cutoff > session['cutoff']:
             session['following'] = max(session['following'], cutoff)
 
@@ -536,7 +534,7 @@ class PipelineTasks:
             return
         for key, row in self.rows().items():
             ep = self.memory.episodes_doc.get(key)
-            if ep is None or source(ep) != row['source']:
+            if ep is None or source_fingerprint(ep) != row['source']:
                 row['cancelled'] = True
         erased_windows = {}
         changed = True
@@ -569,8 +567,9 @@ class PipelineTasks:
             if attempt['outcome'] == 'in_flight':
                 attempt.update(outcome='discarded', finished_at=time.time(), error_code=code)
         win.update(state='cancelled', error_code=code)
+        rows = self.state['sources']
         for item in win['input']['pending']:
-            row = self.rows()[item['id']]
+            row = rows[item['id']]
             if win['operation'] == 'extract' and not win['core_saved']:
                 row['core'] = 'failed'
             if row['digest'] == 'pending':
@@ -607,16 +606,3 @@ class PipelineTasks:
     def response(self, ids):
         jobs = {j['episode_id']: j for j in self.snapshot(ids=set(ids))['jobs'] if 'core' in j}
         return dict(ok=True, messages=[deepcopy(jobs[k]) for k in ids])
-
-    def digest_result(self, episode_id):
-        row = self.rows().get(episode_id)
-        ep = self.memory.episodes_doc.get(episode_id)
-        if ep is None:
-            return dict(status='cancelled', error_code='source_changed')
-        if ep.digest:
-            return dict(status='completed', error_code=None)
-        if row is None:
-            return dict(status='not_needed' if len(ep.content) < self.memory.config.digest_min_chars else 'pending', error_code=None)
-        wins = [self.state['windows'][k] for k in row['window_ids']]
-        return dict(status=row['digest'], error_code=next((w['error_code'] for w in reversed(wins)
-            if w['operation'] in {'extract', 'digest'} and w['error_code']), None) if row['digest'] in {'pending', 'failed'} else None)

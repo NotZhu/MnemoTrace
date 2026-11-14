@@ -9,7 +9,7 @@ import math
 from ..categories import CATEGORIES, normalize_categories
 from ..extraction import ExtractionResponseError
 from ..types import validate_retention
-from .pipeline import content_hash, source
+from .pipeline import content_hash, source_fingerprint
 WINDOW_PREFIX = 'MNEMOTRACE_WINDOW\n'
 
 OMITTED = '\n[中间原文已省略；仅根据可见首尾处理]\n'
@@ -54,7 +54,7 @@ def system_prompt(policy='', compensation=False, operation='extract', *, typed=F
 
 
 def request(data, config):
-    payload = deepcopy(data)
+    payload = dict(data)
     payload['rules'] = dict(digest_max_chars=config.digest_max_chars,
         digest_required=[s['id'] for s in data['pending'] if s['needs_digest'] or data['operation'] == 'digest'])
     return WINDOW_PREFIX + json.dumps(payload, ensure_ascii=False)
@@ -70,6 +70,7 @@ def input_size(data, config, policy=''):
 
 
 def validate_config(config):
+    """验证配置参数的有效性。"""
     for name in ('joint_max_output_tokens', 'joint_core_output_tokens', 'joint_digest_output_tokens',
                  'extraction_max_input_bytes', 'digest_max_input_bytes', 'digest_max_output_tokens', 'digest_min_chars', 'digest_max_chars'):
         if type(getattr(config, name)) is not int or getattr(config, name) <= 0:
@@ -112,7 +113,7 @@ def supplied(ep, row, *, context=False, start=0, end=None):
         representation='digest' if digest else 'raw', content=ep.digest if digest else ep.content[start:end],
         representation_source=content_hash(ep.digest) if digest else None,
         needs_digest=not context and row['digest'] in {'pending', 'failed'},
-        source=source(ep), source_length=len(ep.content),
+        source=source_fingerprint(ep), source_length=len(ep.content),
         ranges=deepcopy((ep.digest_coverage or {}).get('ranges', [[0, len(ep.content)]])) if digest else [[start, end]],
         partial=bool((ep.digest_coverage or {}).get('partial')) if digest else start != 0 or end != len(ep.content))
 
@@ -295,25 +296,20 @@ def fit_digest(session, ep, row, config, policy):
         if best is None:
             raise ValueError('Digest input budget cannot fit a source fragment')
         return best
-    selected = []
-    for part in parts:
-        candidate = [*selected, part]
+    best = data
+    for count in range(1, len(parts) + 1):
+        candidate = parts[:count]
         view = supplied(ep, row)
         view.update(content='\n\n'.join(p['text'] for p in candidate), representation='digest',
                     representation_source=None,
                     ranges=[[candidate[0]['start'], candidate[-1]['end']]], partial=True)
-        data.update(pending=[view], parts=[p['key'] for p in candidate])
-        if not fits_input(data, config, policy):
+        planned = {**data, 'pending': [view], 'parts': [p['key'] for p in candidate]}
+        if not fits_input(planned, config, policy):
             break
-        selected = candidate
-    if len(selected) < 2:
+        best = planned
+    if len(best['parts']) < 2:
         raise ValueError('Digest budget cannot combine two fragments')
-    view = supplied(ep, row)
-    view.update(content='\n\n'.join(p['text'] for p in selected), representation='digest',
-                representation_source=None,
-                ranges=[[selected[0]['start'], selected[-1]['end']]], partial=True)
-    data.update(pending=[view], parts=[p['key'] for p in selected])
-    return data
+    return best
 
 
 
@@ -339,46 +335,66 @@ def source_anchor(source_ids, pending, source_kind):
                key=lambda item: item['sequence'], default=None)
 
 
+def _validated_facts(facts, data):
+    if not isinstance(facts, list):
+        raise ValueError('Expected a fact list')
+    sources = {s['id'] for s in (*data['context'], *data['pending'])}
+    pending = {s['id']: s for s in data['pending']}
+    typed = 'entity_types' in data
+    text_fields = {'subject', 'object', 'text'} if typed else {'subject', 'object', 'text', 'predicate'}
+    expected = text_fields | {'source_ids', 'categories', 'sensitive', 'time_kind', 'effective_date', 'retention'}
+    if typed:
+        from .ontology import validate_candidate
+        expected.add('ontology')
+    validated = []
+    for item in facts:
+        if not isinstance(item, dict) or set(item) != expected:
+            raise ValueError()
+        if any(not isinstance(item[k], str) or not item[k].strip()
+               or (typed and '\x00' in item[k]) for k in text_fields):
+            raise ValueError()
+        if not typed and len(item['predicate']) > 512:
+            raise ValueError('Relation predicate exceeds the identifier limit')
+        if not isinstance(item['categories'], list) or type(item['sensitive']) is not bool:
+            raise ValueError('Invalid fact labels')
+        categories = normalize_categories(item['categories'])
+        fact_valid_at(item, None)
+        validate_retention(item['retention'])
+        refs = item['source_ids']
+        if (not isinstance(refs, list) or not refs or len(set(refs)) != len(refs)
+                or any(k not in sources for k in refs)):
+            raise ValueError()
+        if source_anchor(refs, pending, data['source_kind']) is None:
+            raise ValueError('Missing eligible pending source')
+        if typed:
+            validate_candidate(item['ontology'], data['entity_types'])
+        validated.append({**item, 'categories': categories})
+    return validated
+
+
+def _digest_sources(data):
+    return {s['id']: s for s in data['pending'] if data['operation'] == 'digest' or s['needs_digest']}
+
+
+def _digest_text(text, source, maximum):
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+    visible = (len(source['content']) if source['representation'] == 'digest'
+               else sum(end - start for start, end in source['ranges']))
+    return text if 0 < len(text) <= maximum and len(text) < visible else None
+
+
 def validate_response(raw, data, config, *, compensation=False):
     def invalid_constant(value):
         raise ValueError('Non-finite JSON number')
     try:
         obj = json.loads(raw, parse_constant=invalid_constant)
         required = {'digests'} if compensation or data['operation'] == 'digest' else {'facts', 'digests'}
-        if not isinstance(obj, dict) or set(obj) != required or any(not isinstance(obj[k], list) for k in required):
+        if not isinstance(obj, dict) or set(obj) != required or not isinstance(obj['digests'], list):
             raise ValueError()
-        result = dict(facts=obj.get('facts', []), digests={})
-        sources = {s['id']: s for s in (*data['context'], *data['pending'])}
-        pending = {s['id']: s for s in data['pending']}
-        typed = 'entity_types' in data
-        for item in result['facts']:
-            fields = {'subject', 'object', 'text', 'source_ids'}
-            if not typed:
-                fields.add('predicate')
-            metadata = {'categories', 'sensitive', 'time_kind', 'effective_date', 'retention'}
-            expected = fields | metadata | ({'ontology'} if typed else set())
-            if not isinstance(item, dict) or set(item) != expected:
-                raise ValueError()
-            if any(not isinstance(item[k], str) or not item[k].strip()
-                   or (typed and '\x00' in item[k]) for k in fields - {'source_ids'}):
-                raise ValueError()
-            if not typed and len(item['predicate']) > 512:
-                raise ValueError('Relation predicate exceeds the identifier limit')
-            if not isinstance(item['categories'], list) or type(item['sensitive']) is not bool:
-                raise ValueError('Invalid fact labels')
-            item['categories'] = normalize_categories(item['categories'])
-            fact_valid_at(item, None)
-            validate_retention(item['retention'])
-            refs = item['source_ids']
-            if (not isinstance(refs, list) or not refs or len(set(refs)) != len(refs)
-                    or any(k not in sources for k in refs)):
-                raise ValueError()
-            if source_anchor(refs, pending, data['source_kind']) is None:
-                raise ValueError('Missing eligible pending source')
-            if typed:
-                from .ontology import validate_candidate
-                validate_candidate(item['ontology'], data['entity_types'])
-        wanted = {s['id']: s for s in data['pending'] if data['operation'] == 'digest' or s['needs_digest']}
+        result = dict(facts=_validated_facts(obj.get('facts', []), data), digests={})
+        wanted = _digest_sources(data)
         duplicates = set()
         seen = set()
         for item in obj['digests']:
@@ -390,9 +406,9 @@ def validate_response(raw, data, config, *, compensation=False):
             if key in seen:
                 duplicates.add(key)
             seen.add(key)
-            visible = len(wanted[key]['content']) if wanted[key]['representation'] == 'digest' else sum(b-a for a, b in wanted[key]['ranges'])
-            if isinstance(text, str) and text.strip() and len(text.strip()) <= config.digest_max_chars and len(text.strip()) < visible:
-                result['digests'][key] = text.strip()
+            text = _digest_text(text, wanted[key], config.digest_max_chars)
+            if text is not None:
+                result['digests'][key] = text
         for key in duplicates:
             result['digests'].pop(key, None)
         return result
@@ -403,9 +419,12 @@ def validate_response(raw, data, config, *, compensation=False):
 def validate_result(result, data, config):
     if not isinstance(result, dict) or set(result) != {'facts', 'digests'} or not isinstance(result['digests'], dict):
         raise ValueError('Invalid pipeline result')
-    wire = {**result, 'digests': [dict(source_id=k, text=v) for k, v in result['digests'].items()]}
-    if data['operation'] == 'digest':
-        wire = {'digests': wire['digests']}
-    if validate_response(json.dumps(wire), data, config) != result:
+    facts = result['facts']
+    if (data['operation'] == 'digest' and facts != []) or _validated_facts(facts, data) != facts:
         raise ValueError('Invalid saved generation')
+    wanted = _digest_sources(data)
+    for key, text in result['digests'].items():
+        if (key not in wanted or not isinstance(text, str)
+                or _digest_text(text, wanted[key], config.digest_max_chars) != text):
+            raise ValueError('Invalid saved digest')
     return result

@@ -66,18 +66,32 @@ def test_unversioned_existing_schema_is_rejected(database_factory):
             migrations.migrate(bundle.migration)
 
 
-def test_pre_removal_database_is_rejected_without_modifying_it(database_factory, monkeypatch):
+@pytest.mark.parametrize(('table', 'column'), [('facts', 'assertion_kind'), ('operation_sources', 'input_start')])
+def test_pre_removal_database_is_rejected_without_modifying_it(database_factory, monkeypatch, table, column):
     psycopg, _ = driver()
     current_scripts = migrations._scripts
 
     def old_scripts(prefix):
         scripts = current_scripts(prefix)
         initial, _ = scripts[0]
-        initial = initial.replace('    valid_at timestamptz,', (
-            "    assertion_kind text NOT NULL CHECK (assertion_kind IN "
-            "('unspecified','user_statement','assistant_suggestion','user_confirmation','assistant_report')),\n"
-            '    valid_at timestamptz,'
-        )).replace('CHECK (format_version = 8)', 'CHECK (format_version = 4)')
+        if table == 'facts':
+            initial = initial.replace('    valid_at timestamptz,', (
+                "    assertion_kind text NOT NULL CHECK (assertion_kind IN "
+                "('unspecified','user_statement','assistant_suggestion','user_confirmation','assistant_report')),\n"
+                '    valid_at timestamptz,'
+            )).replace('CHECK (format_version = 8)', 'CHECK (format_version = 4)')
+        else:
+            initial = initial.replace(
+                '    input_order mnemotrace.counter NOT NULL,\n'
+                '    PRIMARY KEY(user_id, space_id, operation_id, source_id),',
+                '    input_start mnemotrace.counter NOT NULL,\n'
+                '    input_end mnemotrace.counter NOT NULL,\n'
+                '    input_order mnemotrace.counter NOT NULL,\n'
+                '    role text,\n'
+                '    representation_source text,\n'
+                '    PRIMARY KEY(user_id, space_id, operation_id, source_id, input_start),\n'
+                '    CHECK (input_end > input_start),',
+            )
         return [(initial, sha256(initial.encode()).hexdigest()), *scripts[1:]]
 
     with database_factory(initialize=False) as bundle:
@@ -93,5 +107,5 @@ def test_pre_removal_database_is_rejected_without_modifying_it(database_factory,
         with psycopg.connect(bundle.bootstrap.dsn) as conn:
             assert conn.execute('SELECT user_id FROM mnemotrace.users').fetchall() == [(user,)]
             assert conn.execute("""SELECT column_name FROM information_schema.columns
-                WHERE table_schema = 'mnemotrace' AND table_name = 'facts' AND column_name = 'assertion_kind'
-                """).fetchone() == ('assertion_kind',)
+                WHERE table_schema = 'mnemotrace' AND table_name = %s AND column_name = %s
+                """, (table, column)).fetchone() == (column,)

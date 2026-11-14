@@ -5,19 +5,16 @@ storage design for transaction boundaries and operation acceptance and completio
 """
 from __future__ import annotations
 
-from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass
 from enum import Enum
 import hashlib
 import json
 import math
 import re
-from typing import Protocol
 from types import SimpleNamespace
 
 from ..categories import Category, normalize_categories
 from ..types import Entity, EntityType, Episode, Fact, Relation, RelationType
-from ..extraction import ExtractionResponseError
 from ._validation import validate_record
 
 
@@ -373,18 +370,6 @@ class CandidateBatch:
 
 
 @dataclass(frozen=True)
-class SourceLink:
-    fact: RecordRef
-    source: RecordRef
-
-    def __post_init__(self):
-        if (not isinstance(self.fact, RecordRef) or not isinstance(self.source, RecordRef)
-                or self.fact.kind != RecordKind.FACT or self.source.kind != RecordKind.SOURCE
-                or self.fact.context != self.source.context):
-            raise ValueError('Fact provenance must reference a source in the same space')
-
-
-@dataclass(frozen=True)
 class EmbeddingWrite:
     record: RecordRef
     content_version: int
@@ -401,6 +386,9 @@ class EmbeddingWrite:
         if self.field not in allowed.get(self.record.kind, set()):
             raise ValueError('Invalid embedding field for this record kind')
         RetrievalQuery(FactQuery(), '', self.vector, self.model)
+
+
+EXTRACTION_POLICY_FIELDS = ('extract_system', 'extract_instruction', 'digest_system')
 
 
 @dataclass(frozen=True)
@@ -448,6 +436,15 @@ class OperationSpec:
 
 @dataclass(frozen=True)
 class CommitReceipt:
+    """提交收据，记录操作的执行结果。
+
+    Args:
+        operation_id: 操作 ID。
+        core_revision: 核心修订号。
+        fact_ids: 受影响的事实 ID 列表。
+        source_ids: 受影响的源 ID 列表。
+        affected_count: 受影响的记录总数。
+    """
     operation_id: str
     core_revision: int
     fact_ids: tuple[str, ...] = ()
@@ -494,7 +491,7 @@ class ExtractionProduct:
                 raise ValueError('Product source references differ from input versions')
             from ..consolidate.planning import validate_result
             validate_result(result, data, SimpleNamespace(digest_max_chars=self.digest_max_chars))
-        except (KeyError, TypeError, ValueError, ExtractionResponseError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise ValueError('Invalid model product or source references') from exc
         object.__setattr__(self, 'input_json', _json(data))
         object.__setattr__(self, 'result_json', _json(result))
@@ -571,7 +568,6 @@ class ChangeSet:
     operation_id: str
     writes: tuple[RecordWrite, ...] = ()
     erasures: tuple[RecordRef, ...] = ()
-    source_links: tuple[SourceLink, ...] = ()
     embeddings: tuple[EmbeddingWrite, ...] = ()
     operations: tuple[OperationSpec, ...] = ()
     settings: SpaceSettings | None = None
@@ -582,9 +578,7 @@ class ChangeSet:
             raise ValueError('Commit conditions are required')
         _id(self.operation_id)
         context = self.conditions.snapshot.context
-        refs = []
         for values, kind in ((self.writes, RecordWrite),
-                             (self.source_links, SourceLink),
                              (self.embeddings, EmbeddingWrite),
                              (self.operations, OperationSpec)):
             _tuple(values, kind)
@@ -592,18 +586,12 @@ class ChangeSet:
         mutations = [w.ref for w in self.writes] + list(self.erasures)
         if len(set(mutations)) != len(mutations):
             raise ValueError('Multiple mutations of one record in a commit')
-        refs.extend(mutations)
-        refs.extend(e.record for e in self.embeddings)
-        for link in self.source_links:
-            refs.extend((link.fact, link.source))
+        embedding_refs = [e.record for e in self.embeddings]
         if len({operation.operation_id for operation in self.operations}) != len(self.operations):
             raise ValueError('Duplicate follow-up operations')
-        if any(ref.context != context for ref in refs):
+        if any(ref.context != context for ref in (*mutations, *embedding_refs)):
             raise ValueError('A change set cannot cross authorized spaces')
-        derived_refs = [e.record for e in self.embeddings]
-        derived_refs.extend(link.source for link in self.source_links)
-        derived_refs.extend(link.fact for link in self.source_links)
-        if any(ref in self.erasures for ref in derived_refs):
+        if any(ref in self.erasures for ref in embedding_refs):
             raise ValueError('Cannot add derived data for records erased by this commit')
         keys = [(e.record, e.field, e.model, e.content_version) for e in self.embeddings]
         if len(keys) != len(set(keys)):
@@ -612,9 +600,9 @@ class ChangeSet:
             if write.ref.kind == RecordKind.RELATION:
                 raise ValueError('Graph records are derived from facts')
             fields = json.loads(write.record.payload_json)
-            if write.ref.kind == RecordKind.FACT and set(fields['provenance']) != {
-                    link.source.record_id for link in self.source_links if link.fact == write.ref}:
-                raise ValueError('Fact provenance requires matching explicit source links')
+            if write.ref.kind == RecordKind.FACT:
+                for source_id in fields['provenance']:
+                    _id(source_id)
             for key, field in (('embedding', 'text'), ('digest_embedding', 'digest')):
                 version = write.record.digest_version if field == 'digest' else write.record.content_version
                 if any(e.record == write.ref and e.field == field and e.content_version != version
@@ -682,28 +670,3 @@ class OperationResult:
 
     def to_dict(self) -> dict:
         return json.loads(_json(asdict(self)))
-
-
-class ReadView(Protocol):
-    """Only valid inside one REPEATABLE READ transaction on a scoped connection."""
-
-    snapshot: ReadSnapshot
-
-    def sources(self, source_ids: tuple[str, ...]) -> tuple[StoredRecord, ...]: ...
-    def facts(self, query: FactQuery) -> tuple[StoredRecord, ...]: ...
-    def history(self, subject: str, predicate: str | None = None) -> tuple[StoredRecord, ...]: ...
-    def candidates(self, query: RetrievalQuery) -> CandidateBatch: ...
-
-
-class SpaceDAO(Protocol):
-    """Ordinary business access. Administration/discovery use separate restricted paths."""
-
-    context: SpaceContext
-
-    def read_snapshot(self, session_id: str | None = None) -> AbstractContextManager[ReadView]: ...
-    def commit(self, changes: ChangeSet) -> CommitReceipt: ...
-    def operation(self, operation_id: str) -> OperationResult: ...
-    def claim(self, operation_id: str) -> Lease | None: ...
-    def renew(self, lease: Lease) -> bool: ...
-    def save_product(self, product: ExtractionProduct) -> None: ...
-    def product(self, operation_id: str) -> ExtractionProduct | None: ...

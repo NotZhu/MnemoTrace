@@ -1,4 +1,4 @@
-"""Account/key administration and user-scoped spaces, separate from HTTP routing."""
+"""用户身份管理。"""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field

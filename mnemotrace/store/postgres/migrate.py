@@ -1,4 +1,4 @@
-"""Transactional empty-database initialization and catalog verification."""
+"""数据库迁移工具。"""
 from __future__ import annotations
 
 import hashlib

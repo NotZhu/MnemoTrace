@@ -1,5 +1,5 @@
 """Persist synthetic notes and assertions for PostgreSQL tests."""
-from mnemotrace.consolidate.postgres_merge import write_record
+from mnemotrace.consolidate.postgres_merge import build_record_write
 from mnemotrace.store.contracts import RecordKind
 from mnemotrace.types import Entity, Fact, RelationType, relation_identifier
 
@@ -16,7 +16,7 @@ def relation_writes(view, records):
         if isinstance(fact, Fact) and fact.relation_id == relation_identifier(fact.predicate):
             definitions[fact.relation_id] = fact.predicate
     return tuple(
-        write_record(context, RelationType(predicate, predicate, context.user_id, id=key))
+        build_record_write(context, RelationType(predicate, predicate, context.user_id, id=key))
         for key, predicate in definitions.items()
         if view.get(RecordKind.RELATION_TYPE, key) is None
     )

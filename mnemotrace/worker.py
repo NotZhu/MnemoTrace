@@ -4,7 +4,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import logging
 import os
 import signal
-from time import sleep
+from time import monotonic, sleep
 
 from ._postgres_pipeline import PostgresPipeline
 from .config import Config
@@ -15,6 +15,7 @@ from .store.postgres.database import Database, DatabaseConfig
 from .store.postgres.errors import AccountNotFound, DatabaseError, DatabaseUnavailable, SpaceNotFound
 
 logger = logging.getLogger(__name__)
+DATABASE_WARNING_INTERVAL = 60
 
 
 def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=2, once=False,
@@ -22,12 +23,13 @@ def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=
     def run(candidate):
         context, operation_id = candidate
         try:
-            return PostgresPipeline(PostgresDAO(runtime, context), config, llm, embedder, model).run_one(operation_id)
+            return PostgresPipeline(PostgresDAO(runtime, context), config, llm, embedder, model).run_next_stage(operation_id)
         except (AccountNotFound, SpaceNotFound):
             return False
 
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         running = {}
+        next_database_warning = float('-inf')
         while not should_stop():
             try:
                 for candidate, future in tuple(running.items()):
@@ -52,7 +54,10 @@ def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=
             except DatabaseUnavailable:
                 if once:
                     raise
-                logger.warning('Postgres processing is temporarily unavailable')
+                now = monotonic()
+                if now >= next_database_warning:
+                    logger.warning('Postgres processing is temporarily unavailable')
+                    next_database_warning = now + DATABASE_WARNING_INTERVAL
             if not should_stop():
                 sleep(1)
 

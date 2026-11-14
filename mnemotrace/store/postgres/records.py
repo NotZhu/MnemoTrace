@@ -1,4 +1,4 @@
-"""Mapping between scoped domain records and the PostgreSQL schema."""
+"""记录管理。"""
 from dataclasses import fields
 from datetime import datetime, timezone
 import json
@@ -88,9 +88,15 @@ def columns(record, values):
 
 
 class ScopedSQL:
-    """Owns one connection for the duration of the caller's transaction."""
+    """用于执行作用域 SQL 查询的上下文管理器。"""
 
     def __init__(self, conn, context):
+        """初始化作用域 SQL 查询上下文管理器。
+
+        Args:
+            conn: 数据库连接对象。
+            context: 空间上下文对象。
+        """
         self._conn = conn
         self.context = context
         self.scope = (context.user_id, context.space_id)

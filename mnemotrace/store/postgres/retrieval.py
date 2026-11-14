@@ -1,4 +1,4 @@
-"""Scoped PostgreSQL queries for retrieval signals and coverage."""
+"""检索管理。"""
 from ...config import Config
 from ...focus import TRACK_BOOST, matches
 from ...retrieve.hybrid import HybridRetriever

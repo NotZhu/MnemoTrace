@@ -81,7 +81,7 @@ def test_profile_invalidates_and_scrubs_stored_product(memory, action):
     memory.refresh_profile()
     finish(memory)
     operation = memory.refresh_profile()
-    assert memory._processing.run_one(operation.operation_id)
+    assert memory._processing.run_next_stage(operation.operation_id)
     if action == "delete":
         memory.delete_fact(fact.id)
     elif action == "sensitive":
@@ -106,7 +106,7 @@ def test_rejected_source_erasure_preserves_profile_cache_and_checkpoint(memory):
     memory.refresh_profile()
     assert finish(memory)["profile"]["basic"][0]["fact_ids"] == [fact.id]
     operation = memory.refresh_profile()
-    assert memory._processing.run_one(operation.operation_id)
+    assert memory._processing.run_next_stage(operation.operation_id)
     with memory.dao.read_snapshot() as view:
         before = load(view._sql)
         assert removed.id in json.dumps(before["job"])
@@ -124,10 +124,10 @@ def test_rejected_source_erasure_preserves_profile_cache_and_checkpoint(memory):
 def test_profile_checkpoint_resume_without_regenerating(memory):
     seed_fact(memory, "我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     operation = memory.refresh_profile()
-    assert memory._processing.run_one(operation.operation_id)
+    assert memory._processing.run_next_stage(operation.operation_id)
     count = len(memory._processing.llm.calls)
     fresh = Memory(memory._database, memory.context, llm=memory._processing.llm)
-    assert fresh._processing.run_one(operation.operation_id)
+    assert fresh._processing.run_next_stage(operation.operation_id)
     assert fresh.operation(operation.operation_id).core_committed
     assert len(memory._processing.llm.calls) == count
     assert fresh.profile()["profile"]["basic"]
@@ -170,7 +170,7 @@ def test_inflight_generation_is_fenced_by_fact_deletion(memory):
 
     memory._processing.llm = model(intervene)
     operation = memory.refresh_profile()
-    assert memory._processing.run_one(operation.operation_id)
+    assert memory._processing.run_next_stage(operation.operation_id)
     assert not memory.operation(operation.operation_id).core_committed
     with memory.dao.read_snapshot() as view:
         assert "Synthetic old tea" not in json.dumps(load(view._sql))
@@ -199,7 +199,7 @@ def test_retry_old_failed_refresh_while_another_is_active(memory):
 
     failed = memory.refresh_profile()
     tasks = memory._processing.tasks
-    lease = tasks.claim(failed.operation_id)
+    lease, _ = tasks.claim(failed.operation_id)
     tasks.fail(lease, "synthetic_failure", False)
     active = memory.refresh_profile()
     with pytest.raises(VersionConflict, match="Another profile"):
@@ -207,10 +207,26 @@ def test_retry_old_failed_refresh_while_another_is_active(memory):
     assert memory.refresh_profile().operation_id == active.operation_id
 
 
+def test_forced_stage_still_respects_profile_ready_time(memory, monkeypatch):
+    operation_id = memory.refresh_profile().operation_id
+    with memory.dao._transaction() as sql:
+        sql.run("UPDATE mnemotrace.operations SET ready_at = clock_timestamp() + interval '1 hour' "
+                "WHERE user_id = %s AND space_id = %s AND operation_id = %s", (*sql.scope, operation_id))
+
+    pipeline = memory._processing
+    with monkeypatch.context() as patch:
+        def unexpected_status_read(_operation_id):
+            pytest.fail("Task execution must dispatch from the claim")
+
+        patch.setattr(pipeline.tasks, 'operation', unexpected_status_read)
+        assert not pipeline.run_next_stage(operation_id, force=True)
+    assert memory.operation(operation_id).attempts == 0
+
+
 def test_retry_old_refresh_is_reported_as_the_current_operation(memory):
     failed = memory.refresh_profile()
     tasks = memory._processing.tasks
-    lease = tasks.claim(failed.operation_id)
+    lease, _ = tasks.claim(failed.operation_id)
     tasks.fail(lease, "synthetic_failure", False)
     memory.refresh_profile()
     finish(memory)

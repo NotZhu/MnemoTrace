@@ -97,7 +97,7 @@ StoredRecord 的 JSON 是不可变的单条 domain 交接表示，不是任意 S
 初始化接受空库或完整的新基线。旧基线及旧检查点不会自动转换。
 agent_id、归属在 envelope 明确给出。内联向量不作为权威列；存在内联向量时必须有版本/角色/坐标一致的 EmbeddingWrite。
 CandidateBatch 返回读取快照、候选信号和覆盖限制，空结果成功与索引未就绪/降级分别表达。
-SpaceDAO 的 claim/renew/save_product/product 是空间内任务路径；跨空间发现与账号管理不进入普通 DAO。
+`PostgresDAO` 提供空间内快照和业务提交，`Tasks` 负责领取、续租和检查点。跨空间发现与账号管理使用独立连接。
 
 | 版本/标记 | 推进条件 |
 | --- | --- |
@@ -114,7 +114,7 @@ FactQuery 按有效时间筛选。未指定日期时取快照时间并允许起�
 
 ChangeSet 显式包含记录写入、事实失效、擦除、来源关联、向量、实体合并、空间设置、后续任务及回执。
 一个记录只有一次主修改；失效仅用于 Fact，擦除遵守用户范围。settings 替换整个小型空间配置，主体名不提供账号身份。
-每次完整事实写入携带的 source_links 必须等于其 provenance；新向量版本必须匹配对应文本，不能为本次擦除目标新增派生数据。
+完整事实写入通过有序的 provenance 提供来源 ID。提交校验 ID 格式，数据库外键校验来源存在且属于同一空间。新向量版本必须匹配对应文本，不能为本次擦除目标新增派生数据。
 源、supersedes、冲突双方、关系端点和任务引用的实际存在性/归属由 DAO 与复合外键共同验证。
 Python 结构校验不能证明数据库记录存在。显著度强化、访问计数、衰减、focus/policy 都需显式业务提交，
 不能把可持久化副作用留在只读事务。失败可识别，不吞掉后返回成功。
@@ -173,6 +173,8 @@ with Database(DatabaseConfig.from_env()) as database:
 `flush_processing(session_id, include_digests=True)` 同时等待本批摘要。长原文和文档的分段进度
 保存在来源覆盖记录中，所有连续分段提交后才标记核心完成。公开操作 ID 的最终回执汇总各段仍保留的
 事实和来源。每个摘要任务处理一个来源，摘要片段仅在生成配置指纹匹配时复用。
+抽取产物的写入和复用都核对 `extract_system`、`extract_instruction`、`digest_system`。
+输入使用摘要表示时还会核对空间核心版本。
 
 #### 数据库检索与补建
 
@@ -203,6 +205,8 @@ with Database(DatabaseConfig.from_env()) as database:
 | 权威业务数据 | sources/source_digests、facts/fact_sources、entity_types/entities/relation_types |
 | 检索派生数据 | graph_relations、embeddings、lexical_documents/lexical_terms |
 | 操作与恢复 | operations、operation_sources、operation_products、operation_receipts；唯一任务账本，不新增 outbox |
+
+`operation_sources` 每个任务和来源只保留一条空间内关联，记录来源版本、输入顺序及是否为上下文。实际模型输入范围和表示指纹见 `operation_products.input`，摘要片段范围见 `operation_digest_parts`。
 
 每张空间业务表有 user_id、space_id，关联使用包含归属的复合外键。
 多态目标使用互斥的可空复合外键；向量绑定文本版本、模型及维度，不作为领域记录内联权威字段。
@@ -264,13 +268,13 @@ with Database(DatabaseConfig.from_env()) as database:
 | 角色/受限路径 | 权限 |
 | --- | --- |
 | runtime | 普通业务和用户空间能力；无 SUPERUSER/BYPASSRLS、账号/key 管理或 DDL 权限 |
-| migration | 扩展/schema/约束/RLS/授权初始化升级，不用于运行请求 |
+| migration | 初始化数据库结构、RLS 和授权，并校验现有基线 |
 | account_admin | 受限 CLI 创建/删除账号、签发/撤销 key，不向普通用户 key 开放 |
 | auth lookup | 受限函数/权限，仅由摘要查询有效身份/账号状态，不返回业务内容 |
 | worker discovery | 受限函数/权限，仅返回候选操作 ID 与归属，处理时回到 runtime 作用域 |
 
-部署 worker 时，先由 DBA 执行数据库角色初始化，再运行迁移。阶段三数据库升级时也要先执行这一步，
-以建立 worker 的两个 NOLOGIN 角色。向独立登录账号授予 `<prefix>_worker_discovery`，
+在空库部署 worker 时，先由 DBA 配置扩展和角色，再初始化数据库结构。角色初始化会建立
+worker 的两个 NOLOGIN 角色。向独立登录账号授予 `<prefix>_worker_discovery`，
 通过 `MNEMOTRACE_DISCOVERY_DATABASE_URL` 配置它。函数所有者 `<prefix>_worker_discovery_owner`
 由初始化和迁移维护。使用现有的 `MNEMOTRACE_DATABASE_URL`、`MNEMOTRACE_LLM` 和
 `MNEMOTRACE_EMBEDDER` 运行 `python -m mnemotrace.worker`。请求内执行与 worker 使用相同的模型和空间策略配置。
@@ -295,7 +299,7 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 | memory: _all_facts/_upsert_fact/_sync_episode/_rewire；store.memory_store | 可变对象及完整内存索引 | 记录工作集、显式提交；内存实现留作算法对照 | 3、5 | core_default、retrieval_candidates |
 | ingest.pipeline: add；memory: add/remember/remember_messages；service: remember/remember_messages | embedding 后写原文，默认用户、路由/任务随快照保存 | T1 原文/任务、消息去重、来源 agent；原文不依赖向量 | 3—4、6 | extraction_contract、message_pipeline/interfaces、pipeline_sources |
 | consolidate.pipeline: inspect/accept/register/rows/trigger/retry/snapshot/response/invalidate/validate_state | 空间 ledger、序号、窗口/覆盖、单 generation，stats 恢复校验不足 | 操作/来源/产物/回执，必需字段严格校验 | 4、7 | message_pipeline/windows/recovery、storage_contracts |
-| _pipeline: new_window/trigger_ready/enqueue_operation/_commit/_advance/_fail/run_one/execute_sources/execute_memory/flush | 修改事实、来源摘要/覆盖、窗口统计 | T2/T3、租约/版本守卫、统一执行器，摘要片段可靠保存 | 4 | processing、original_product、process_recovery |
+| _pipeline: new_window/trigger_ready/_commit/_advance/_fail/run_next_stage/execute_memory/flush | 修改事实、来源摘要/覆盖、窗口统计 | T2/T3、租约/版本守卫、统一执行器，摘要片段可靠保存 | 4 | processing、original_product、process_recovery |
 | consolidate.planning: plan/digest_plan/supplied；fact_rules 主体归一化 | 来源上下文、本人身份、窗口预算和主体推断 | 必要会话/主体上下文，记录实际业务版本；用户/assistant 自称分开 | 3—4 | message_windows、pipeline_sources、profile_cache |
 | consolidate.facts: _accepted/_write_fact/_ensure_projection/_decay_sweep | 全事实归并、规范化对象/文本、去重 provenance、失效链路、显著度 | 完整必要主体/槽位/语义历史；显式修改，衰减为维护操作 | 3—4 | fact_statement_updates、conflict、message_recovery |
 | consolidate.conflict: _supersede/insert_dialogue_history/reconcile；conflict_candidates | 双时间轴/链路重连、重复来源、语义候选 | 必要历史读取，同事务更新；归并向量先就绪 | 3—4 | conflict、search_answering |

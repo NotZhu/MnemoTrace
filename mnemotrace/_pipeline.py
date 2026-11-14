@@ -5,14 +5,15 @@ from copy import deepcopy
 import time
 import uuid
 
-from .consolidate.pipeline import PipelineTasks, TERMINAL, config_identity, content_hash, reset_attempts, source
+from .consolidate.pipeline import PipelineTasks, TERMINAL, config_identity, content_hash, reset_attempts, source_fingerprint
 from .consolidate.planning import input_size, output_size, plan, digest_plan, busy, fits_input
 from .consolidate.operations import prepare, decode
 from .llm.failures import ATTEMPT_LIMIT, RETRY_DELAYS, retryable as model_retryable
 from .extraction import ExtractionError, ExtractionTruncatedError, LLMNotConfiguredError, require_llm
 from .llm.base import complete_result
+from .llm.execution import one_attempt
 from .store._validation import validate_embedding
-from .consolidate.facts import materialize_facts
+from .consolidate.facts import extraction_entries, materialize_facts
 
 # invalidate() 作废在途窗口（manual_change）与检测到快照更替的窗口取消（source_changed）
 # 都表示并发写到达，而非模型或配置失败。
@@ -50,12 +51,11 @@ def _advance(tasks, session):
             and r['sequence'] <= session['cutoff'] and not r['cancelled']]
     if any(busy(tasks, r) or r['core'] == 'pending' or r['digest'] == 'pending' for r in rows):
         return
-    session.update(cutoff=session['following'], following=0,
-                   batch_id=uuid.uuid4().hex if session['following'] else '')
+    session.update(cutoff=session['following'], following=0)
 
 
 def new_window(mem, tasks, route_key, data):
-    return dict(route=route_key, batch_id=tasks.state['sessions'][route_key]['batch_id'], input=data,
+    return dict(route=route_key, input=data,
         input_hash=content_hash(data), config=config_identity(mem), generation_config=config_identity(mem, include_embedding=False),
         state='pending', phase='generate', attempts=0,
         embed_attempts=0, next_attempt_at=0, result=None, vectors={}, core_saved=False, digest_saved=[],
@@ -119,17 +119,18 @@ def _current(mem, tasks, win, token, model):
     if (tasks.state['generation'] != token or config_identity(mem) != win['config']
             or mem.llm is not model):
         return False
+    rows = tasks.state['sources']
     for item in (*win['input']['pending'], *win['input']['context']):
         ep = mem.episodes_doc.get(item['id'])
-        if (ep is None or source(ep) != item['source'] or ep.event_time != item['event_time']
+        if (ep is None or source_fingerprint(ep) != item['source'] or ep.event_time != item['event_time']
                 or len(ep.content) != item['source_length'] or ep.message_id != item['message_id']
                 or (ep.role if ep.source_kind == 'dialogue' else None) != item['role']
-                or tasks.rows()[ep.id]['sequence'] != item['sequence']):
+                or rows[ep.id]['sequence'] != item['sequence']):
             return False
         if item['representation_source'] is not None and content_hash(ep.digest) != item['representation_source']:
             return False
     if win['operation'] == 'digest' and win['input']['parts']:
-        row = tasks.rows()[win['input']['pending'][0]['id']]
+        row = rows[win['input']['pending'][0]['id']]
         if not set(win['input']['parts']).issubset(p['key'] for p in row['parts']):
             return False
     return True
@@ -145,7 +146,9 @@ def _parts_complete(row):
 
 
 def _merge_input(mem, namespace, win, now):
-    facts = materialize_facts(namespace, win['input'], win['result'], now)
+    data = win['input']
+    entries = extraction_entries(data, win['result'], win['input_hash'])
+    facts = materialize_facts(namespace, data, now, entries)
     if mem.embedder is not None:
         for fact in facts:
             fact.embedding = win['vectors'][content_hash(fact.text)]
@@ -159,9 +162,9 @@ def _merge_snapshot(mem, namespace, facts):
                   key=lambda fact: fact.id)
 
 
-def _commit(mem, tasks, win, now, merge=None):
+def _commit(mem, tasks, key, win, now, merge=None):
     data, result = win['input'], win['result']
-    key = next(key for key, candidate in tasks.state['windows'].items() if candidate is win)
+    rows = tasks.state['sources']
     def vector(text):
         return win['vectors'][content_hash(text)] if mem.embedder is not None else None
     if not win['core_saved']:
@@ -177,7 +180,7 @@ def _commit(mem, tasks, win, now, merge=None):
         win['core_saved'] = True
         if win['operation'] == 'extract':
             for item in data['pending']:
-                row, ep = tasks.rows()[item['id']], mem.episodes_doc.get(item['id'])
+                row, ep = rows[item['id']], mem.episodes_doc.get(item['id'])
                 if row['source_kind'] == 'dialogue':
                     row['position'], row['core'] = len(ep.content), 'completed'
                     ranges, partial, policy, completed = item['ranges'], item['partial'], 'head_tail_v1' if item['partial'] else 'full_message_v1', True
@@ -201,7 +204,7 @@ def _commit(mem, tasks, win, now, merge=None):
         source_id = item['id']
         if source_id not in result['digests'] or source_id in win['digest_saved']:
             continue
-        row, ep = tasks.rows()[source_id], mem.episodes_doc.get(source_id)
+        row, ep = rows[source_id], mem.episodes_doc.get(source_id)
         text = result['digests'][source_id]
         if data['source_kind'] == 'dialogue':
             ep.digest, ep.digest_embedding = text, vector(text)
@@ -241,12 +244,11 @@ def _commit(mem, tasks, win, now, merge=None):
     _advance(tasks, tasks.state['sessions'][win['route']])
 
 
-def run_one(service, user):
-    with service.processing_lease() as acquired:
-        if not acquired or service._closed:
+def run_next_stage(mem, user):
+    with mem._pipeline_step_lock:
+        if mem._pipeline_closed:
             return False
-        with service.write_lock(user):
-            mem = service.get(user)
+        with mem._pipeline_write():
             tasks = PipelineTasks(mem, user)
             if tasks.state is None:
                 return False
@@ -265,7 +267,7 @@ def run_one(service, user):
                 return True
             adjudicate = win['phase'] == 'commit' and win['operation'] == 'extract' and not win['core_saved']
             if win['phase'] == 'commit' and not adjudicate:
-                _commit(mem, tasks, win, time.time())
+                _commit(mem, tasks, key, win, time.time())
                 return True
             if adjudicate:
                 merge_at = time.time()
@@ -297,14 +299,11 @@ def run_one(service, user):
             texts = texts_for(win) if embedding else []
             saved_digests = list(win['digest_saved'])
             token = tasks.state['generation']
-            mem = tasks = win = None
         failure, output, completion = None, None, None
         try:
             if adjudicate:
                 from .consolidate.adjudication import plan_merge
-                from .llm.execution import ModelMeter, one_attempt
-                output = plan_merge(facts, previous, ModelMeter(one_attempt(model), service.metrics, 'pipeline'),
-                                    config, embedder, merge_at)
+                output = plan_merge(facts, previous, one_attempt(model), config, embedder, merge_at)
             elif embedding and embedder is None:
                 output = {}
             elif embedding:
@@ -315,12 +314,11 @@ def run_one(service, user):
                     validate_embedding(v, 'message embedding', embedder.dim)
                 output = {content_hash(text): vector for text, vector in zip(texts, vectors)}
             else:
-                from .llm.execution import ModelMeter, one_attempt
                 require_llm(model)
                 if phase == 'compensate':
                     data['pending'] = [item for item in data['pending'] if item['id'] not in saved_digests]
                 prompt, system, max_tokens = prepare(data, config, policy, phase == 'compensate')
-                completion = complete_result(ModelMeter(one_attempt(model), service.metrics, 'pipeline'), prompt,
+                completion = complete_result(one_attempt(model), prompt,
                     system=system, max_tokens=max_tokens)
                 if completion.finish_reason not in {None, 'stop', 'end_turn'}:
                     raise ExtractionTruncatedError()
@@ -328,11 +326,9 @@ def run_one(service, user):
 
         except Exception as exc:
             failure = exc
-        if service._closed:
+        if mem._pipeline_closed:
             return False
-        with service.write_lock(user):
-            mem = service.get(user)
-            tasks = PipelineTasks(mem, user)
+        with mem._pipeline_write():
             win = tasks.state['windows'].get(key) if tasks.state else None
             if win is None or win['state'] != 'running':
                 return False
@@ -353,7 +349,7 @@ def run_one(service, user):
                     win['history'][-1].update(outcome='discarded', error_code='version_conflict')
                     _fail(tasks, win, 'version_conflict', time.time(), embedding=True)
                 else:
-                    _commit(mem, tasks, win, merge_at, output)
+                    _commit(mem, tasks, key, win, merge_at, output)
                 return True
             elif embedding:
                 win['vectors'] = output
@@ -377,7 +373,7 @@ def extract_partial_success(result, ids, operation='extract'):
     """抽取窗口的“部分成功”：核心事实已全部落库，仅摘要等辅助步骤失败。
 
     这种情形 facts 已持久化，调用方不应把它当成整批失败去重试。返回 True 表示
-    “虽然 result['ok'] 为 False，但不需要抛错”。execute_sources 与 /v1/messages 的
+    “虽然 result['ok'] 为 False，但不需要抛错”。execute_memory 与 /v1/messages 的
     immediate 分支共用同一判定，避免两处语义漂移。
     """
     if result.get('ok'):
@@ -399,7 +395,7 @@ def raise_for_failed_result(result, ids, operation='extract'):
 
     immediate 语义要求同步返回结果，失败必须能被调用方识别，而不是悄悄返回 200。
     冲突取消与模型失败分别映射为 ExtractionConflictError 与其他 ExtractionError 子类，
-    携带 stored_raw 与 episode_ids，和 execute_sources 的错误语义保持一致。
+    携带 stored_raw 与 episode_ids，和 execute_memory 的错误语义保持一致。
     “核心成功、仅辅助失败”的部分成功不在此抛错（见 extract_partial_success）。
     """
     from .extraction import ExtractionConflictError, ExtractionResponseError, ProcessingIncompleteError
@@ -419,19 +415,17 @@ def raise_for_failed_result(result, ids, operation='extract'):
     raise error_type(stored_raw=bool(ids), episode_ids=sorted(ids))
 
 
-def flush(service, user, session_id=None, timeout=30, retry_failed=False, boundary=None, *, fail_fast=False, operation=None):
+def flush(mem, user, session_id=None, timeout=30, retry_failed=False, boundary=None, *, fail_fast=False, operation=None):
     if type(timeout) not in (int, float) or not 0 <= timeout <= 300:
         raise ValueError('timeout must be between 0 and 300 seconds')
-    with service.write_lock(user):
-        mem = service.get(user)
-        tasks = PipelineTasks(mem, user)
+    tasks = PipelineTasks(mem, user)
+    with mem._pipeline_write():
         ids = set(tasks.rows(session_id, boundary))
         generation = tasks.state['generation'] if tasks.state else None
         tasks.force(session_id, ids, retry_failed, operation)
     deadline = time.monotonic() + timeout
     while True:
-        with service._read_scope(user) as mem:
-            tasks = PipelineTasks(mem, user)
+        with mem._pipeline_lock:
             result = tasks.snapshot(session_id, ids)
         present = {job['episode_id'] for job in result['jobs'] if 'core' in job}
         invalidated = result['generation'] != generation or present != ids
@@ -449,54 +443,9 @@ def flush(service, user, session_id=None, timeout=30, retry_failed=False, bounda
         status = 'timed_out' if active else 'failed' if failed else 'completed'
         if not active or time.monotonic() >= deadline or fail_fast and counts['retry_wait']:
             return dict(ok=status == 'completed', status=status, **result)
-        if run_one(service, user):
+        if run_next_stage(mem, user):
             continue
         time.sleep(min(.02, max(0, deadline - time.monotonic())))
-
-
-def memory_adapter(memory, namespace):
-    """Drive the same checkpoint machine for the standalone Python facade."""
-    from contextlib import contextmanager
-    from .metrics import Metrics
-
-    class LocalExecution:
-        metrics = Metrics()
-
-        @property
-        def _closed(self):
-            return memory._pipeline_closed
-
-        @contextmanager
-        def processing_lease(self):
-            with memory._pipeline_step_lock:
-                yield True
-
-        def get(self, user):
-            return memory
-
-        @contextmanager
-        def write_lock(self, user):
-            with memory._pipeline_lock:
-                if memory._pipeline_closed:
-                    raise RuntimeError('Memory is closed; create a new instance')
-                try:
-                    yield
-                except BaseException:
-                    # A backend can fail inside commit before save is reached.
-                    # The same dirty-state rule covers both kinds of failure.
-                    memory._recover_pipeline_checkpoint()
-                    raise
-
-        @contextmanager
-        def _read_scope(self, user):
-            with memory._pipeline_lock:
-                yield memory
-
-    return LocalExecution()
-
-
-def flush_memory(memory, namespace, session_id=None, timeout=30, retry_failed=False):
-    return flush(memory_adapter(memory, namespace), namespace, session_id, timeout, retry_failed)
 
 
 def _conflict_cancelled(result):
@@ -510,25 +459,23 @@ def _conflict_cancelled(result):
     return bool(marked) and all(job.get('error_code') in _CONFLICT_CODES for job in marked)
 
 
-def execute_sources(host, user, episodes, operation='extract', retry_failed=False, *, digests=False):
+def execute_memory(mem, user, episodes, operation='extract'):
     # 冲突取消只重试一次：force 的 explicit_reprepare 路径会基于当前快照重整被取消的
     # 窗口；仍冲突说明写入方持续竞争，抛出专门的冲突异常交由调用方决定重试节奏。
+    tasks = PipelineTasks(mem, user)
     for attempt in range(2):
-        with host.write_lock(user):
-            mem = host.get(user)
-            tasks = PipelineTasks(mem, user)
+        with mem._pipeline_write():
             before_facts = {f.id for f in mem._all_facts()}
             before_digests = {ep.id for ep in episodes if ep.digest}
             before = {key: dict(win['stats']) for key, win in (tasks.state or {}).get('windows', {}).items()}
-            ids = set(tasks.register(episodes, time.time(), operation, digests=digests))
-        result = flush(host, user, timeout=30, retry_failed=retry_failed or attempt > 0, boundary=ids,
+            ids = set(tasks.register(episodes, time.time(), operation))
+        result = flush(mem, user, timeout=30, retry_failed=operation == 'digest' or attempt > 0, boundary=ids,
                        fail_fast=True, operation=operation)
         if result['ok'] or not _conflict_cancelled(result):
             break
     if not result['ok']:
         raise_for_failed_result(result, ids, operation)
-    with host._read_scope(user) as mem:
-        tasks = PipelineTasks(mem, user)
+    with mem._pipeline_lock:
         stats = mem.writer.empty_stats()
         for key, win in (tasks.state or {}).get('windows', {}).items():
             if not any(s['id'] in ids for s in win['input']['pending']):
@@ -538,8 +485,3 @@ def execute_sources(host, user, episodes, operation='extract', retry_failed=Fals
         stats['facts_added'] = sum(f.id not in before_facts and bool(ids.intersection(f.provenance)) for f in mem._all_facts())
         stats['digests'] = sum(ep.id in ids and ep.id not in before_digests and bool(ep.digest) for ep in mem.episodes_doc.values())
         return stats
-
-
-def execute_memory(memory, user, episodes, operation='extract', *, digests=False):
-    return execute_sources(memory_adapter(memory, user), user, episodes, operation,
-                           retry_failed=operation == 'digest', digests=digests)

@@ -1,11 +1,11 @@
-"""Durable operation scheduling and model checkpoints within a runtime space."""
+"""任务管理。"""
 from dataclasses import asdict, replace
 from datetime import timedelta
 import json
 from uuid import uuid4
 
-from ...consolidate.pipeline import content_hash, source
-from ..contracts import CommitConditions, ExtractionProduct, Lease
+from ...consolidate.pipeline import content_hash, source_fingerprint
+from ..contracts import EXTRACTION_POLICY_FIELDS, CommitConditions, ExtractionProduct, Lease
 from ..contracts import OperationKind, OperationResult
 from ..contracts import OperationSpec, ProcessingPhase, ProcessingState, SourceVersion, StoredRecord
 from .dao import Applied, _apply_changes, _space_row, new_operation_id
@@ -44,11 +44,11 @@ def _operation(sql, operation_id, *, lock=False):
 
 
 def _sources(sql, operation_id, *, context=False):
-    rows = sql.run(f'SELECT DISTINCT source_id,content_version,input_order '
+    rows = sql.run(f'SELECT source_id,content_version '
                    f'FROM mnemotrace.operation_sources WHERE {SCOPE} AND operation_id = %s '
                    'AND (NOT is_context OR %s) ORDER BY input_order,source_id',
                    (*sql.scope, operation_id, context)).fetchall()
-    return tuple(dict.fromkeys(SourceVersion(source_id, version) for source_id, version, _ in rows))
+    return tuple(SourceVersion(source_id, version) for source_id, version in rows)
 
 
 def _spec(operation_id, kind, session_id, records):
@@ -57,7 +57,14 @@ def _spec(operation_id, kind, session_id, records):
 
 
 class Tasks:
+    """PostgreSQL 数据库任务类。用于执行数据库操作。"""
+
     def __init__(self, dao):
+        """初始化 Tasks 类。
+
+        Args:
+            dao: 数据库访问对象。
+        """
         self.dao = dao
 
     def _results(self, sql, rows):
@@ -72,9 +79,16 @@ class Tasks:
         return tuple(_result(row, tuple(children[row['operation_id']])) for row in rows)
 
     def operation(self, operation_id):
+        return self.operations((operation_id,))[0]
+
+    def operations(self, operation_ids):
+        if not operation_ids:
+            return ()
         with self.dao._transaction(read_only=True) as sql:
-            row = _operation(sql, operation_id)
-            return self._results(sql, [row])[0] if row else None
+            rows = sql.rows(f'SELECT * FROM mnemotrace.operations WHERE {SCOPE} '
+                            'AND operation_id = ANY(%s)', (*sql.scope, list(operation_ids)))
+            by_id = {result.operation_id: result for result in self._results(sql, rows)}
+            return tuple(by_id.get(operation_id) for operation_id in operation_ids)
 
     def list_operations(self, session_id, after_id, limit):
         with self.dao._transaction(read_only=True) as sql:
@@ -118,30 +132,49 @@ class Tasks:
                 (*sql.scope, list(operation_ids), list(ACTIVE))).fetchall()
             return tuple(row[0] for row in rows)
 
-    def accept(self, session_id, messages, check_model, fit, *, immediate=False, source_metadata=None):
+    def accept(self, session_id, messages, check_ready, fit, *, immediate=False, source_metadata=None):
+        """接受消息并将其存储为操作。
+
+        Args:
+            session_id: 会话 ID。
+            messages: 消息列表。
+            check_ready: 检查系统是否就绪的回调函数。
+            fit: 拟合消息的回调函数。
+            immediate: 是否立即冻结操作。
+            source_metadata: 源元数据列表。
+        """
         def apply(sql, revision, generation, settings):
-            ids, fresh = store_messages(sql, session_id, messages, check_model=check_model,
-                                        source_metadata=source_metadata)
-            records = (sql.get(SOURCE, source_id) for source_id in fresh)
-            new_records = [record for record in records if domain(record).extract]
-            if new_records:
-                self._queue_messages(sql, session_id, generation, settings, new_records, fit)
+            """应用消息并将其存储为操作。
+
+            Args:
+                sql: 数据库连接。
+                revision: 当前修订版本。
+                generation: 当前生成版本。
+                settings: 当前设置。
+            """
+            ids, inserted, extraction_ids = store_messages(sql, session_id, messages, check_ready=check_ready,
+                                                             source_metadata=source_metadata)
+            if extraction_ids:
+                by_id = {record.ref.record_id: record for record in
+                         sql.select(SOURCE, ('r.id = ANY(%s)',), (extraction_ids,))}
+                self._queue_messages(sql, session_id, generation, settings,
+                                     (by_id[source_id] for source_id in extraction_ids), fit)
             if immediate:
                 self._freeze(sql, [operation for _, operation in self._associated(sql, ids)])
-            return Applied(bool(fresh), source_ids=ids, count=len(fresh))
+            return Applied(bool(inserted), source_ids=ids, count=inserted)
 
         receipt = self.dao._mutate(new_operation_id(), apply)
         with self.dao._transaction(read_only=True) as sql:
             return receipt, self._associated(sql, receipt.source_ids)
 
-    def accept_source(self, record, check_model, *, kind=OperationKind.EXTRACT):
+    def accept_source(self, record, check_ready, *, kind=OperationKind.EXTRACT):
         episode = domain(record)
         operation_id = new_operation_id() if kind is not None else None
         acceptance_id = 'accept_' + operation_id if operation_id is not None else new_operation_id()
 
         def apply(sql, revision, generation, settings):
             if kind is not None:
-                check_model()
+                check_ready()
             sql.ensure_session(episode.session_id)
             episode.ingested_at = sql.run('SELECT clock_timestamp()').fetchone()[0].timestamp()
             episode.sequence = allocate_sequence(sql, episode.session_id)
@@ -155,7 +188,7 @@ class Tasks:
         return self.dao._mutate(acceptance_id, apply), operation_id
 
     def _associated(self, sql, source_ids):
-        return sql.run("""SELECT DISTINCT source_id, operation_id
+        return sql.run("""SELECT source_id, operation_id
             FROM mnemotrace.operation_sources r JOIN mnemotrace.operations o
             USING (user_id,space_id,operation_id)
             WHERE r.user_id = %s AND r.space_id = %s AND NOT r.is_context
@@ -190,7 +223,7 @@ class Tasks:
             if ready:
                 open_id, current = None, []
 
-    def claim(self, operation_id, *, force=False):
+    def claim(self, operation_id, *, force=False) -> tuple[Lease, OperationKind] | None:
         with self.dao._transaction() as sql:
             row = _operation(sql, operation_id)
             if not row or row['kind'] not in RUNNABLE or row['state'] not in ACTIVE:
@@ -201,10 +234,12 @@ class Tasks:
             row = _operation(sql, operation_id, lock=True)
             if not row or not self._current(sql, row):
                 return None
+            kind = OperationKind(row['kind'])
             now = sql.run('SELECT clock_timestamp()').fetchone()[0]
             state = row['state']
+            respect_ready_at = kind is OperationKind.PROFILE or not force
             due = (row['lease_until'] if state == 'running' else row['next_attempt_at']
-                   if state == 'retry_wait' else row['ready_at'] if row['phase'] == 'queued' and not force else now)
+                   if state == 'retry_wait' else row['ready_at'] if row['phase'] == 'queued' and respect_ready_at else now)
             if due is None or due > now:
                 return None
             if row['kind'] == 'extract' and sql.run(
@@ -223,7 +258,7 @@ class Tasks:
                        phase=phase,
                        attempts=row['attempts'] + 1, **{counter: row[counter] + 1}),
                        'operation_id = %s', (operation_id,))
-            return Lease(operation_id, token)
+            return Lease(operation_id, token), kind
 
     def _current(self, sql, row):
         return row['space_generation'] == _space_row(sql)[1]
@@ -332,29 +367,28 @@ class Tasks:
         with self.dao._transaction() as sql:
             row, now = self._leased(sql, lease)
             revision, _, current_settings, _ = _space_row(sql)
-            if (row['phase'] != 'generate' or current_settings != json.loads(json.dumps(asdict(settings)))
+            if (row['phase'] != 'generate'
+                    or any(current_settings.get(field) != getattr(settings, field) for field in EXTRACTION_POLICY_FIELDS)
                     or product.context_revision is not None and revision != snapshot.core_revision):
                 raise VersionConflict('Extraction context changed')
             data, result = json.loads(product.input_json), json.loads(product.result_json)
-            members = _sources(sql, lease.operation_id)
+            members = {ref.source_id for ref in _sources(sql, lease.operation_id)}
             versions = {ref.source_id: ref for ref in conditions.sources}
-            if not {item['id'] for item in data['pending']} <= {ref.source_id for ref in members}:
+            if not {item['id'] for item in data['pending']} <= members:
                 raise DataCorruption('Product does not belong to the frozen window')
             for item in (*data['context'], *data['pending']):
                 record = sql.get(SOURCE, item['id'])
                 if record is None or record.content_version != versions[item['id']].content_version:
                     raise VersionConflict('Source changed while extracting')
                 episode = domain(record)
-                if (episode.session_id != row['session_id'] or source(episode) != item['source']
+                if (episode.session_id != row['session_id'] or source_fingerprint(episode) != item['source']
                         or item['representation_source'] is not None
                         and content_hash(episode.digest) != item['representation_source']):
                     raise VersionConflict('Source representation changed while extracting')
             for index, item in enumerate(data['context'], start=len(members)):
-                if item['id'] not in {ref.source_id for ref in members}:
+                if item['id'] not in members:
                     sql.insert('operation_sources', dict(operation_id=lease.operation_id, source_id=item['id'],
-                               content_version=versions[item['id']].content_version, input_start=0,
-                               input_end=item['source_length'], input_order=index, role=item['role'],
-                               is_context=True, representation_source=item['representation_source']),
+                               content_version=versions[item['id']].content_version, input_order=index, is_context=True),
                                suffix='ON CONFLICT DO NOTHING')
             sql.insert('operation_products', dict(
                 operation_id=lease.operation_id, input=data, result=result, format_version=product.format_version,
@@ -376,8 +410,8 @@ class Tasks:
                               'AND operation_id = %s AND source_id = %s AND extraction_config = %s ORDER BY input_start',
                               (*view._sql.scope, operation_id, source_id, fingerprint))
 
-    def save_digests(self, sql, operation_id, generation, session_id,
-                       inputs, drafts, completed, minimum, fingerprint):
+    def stage_digest_followups(self, sql, operation_id, generation, session_id,
+                               inputs, drafts, completed, minimum, fingerprint):
         for item in inputs:
             source_id = item['id']
             if source_id in drafts:
@@ -396,10 +430,9 @@ class Tasks:
             if moved:
                 # A cached draft saw the joint input even when it summarizes one source.
                 sql.run(f"""INSERT INTO mnemotrace.operation_sources (
-                    user_id,space_id,operation_id,source_id,content_version,input_start,input_end,
-                    input_order,role,representation_source,is_context)
-                    SELECT user_id,space_id,%s,source_id,content_version,input_start,input_end,
-                    input_order,role,representation_source,true FROM mnemotrace.operation_sources
+                    user_id,space_id,operation_id,source_id,content_version,input_order,is_context)
+                    SELECT user_id,space_id,%s,source_id,content_version,input_order,true
+                    FROM mnemotrace.operation_sources
                     WHERE {SCOPE} AND operation_id = %s AND source_id <> %s""",
                     (child_id, *sql.scope, operation_id, source_id))
 

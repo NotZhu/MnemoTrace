@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import deque
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
 import time
@@ -254,8 +255,7 @@ class MemoryEngine:
             raise RuntimeError('Memory checkpoint failed or closed; create a new instance')
         if consolidate:
             require_llm(self.llm)
-        from ._pipeline import memory_adapter
-        with memory_adapter(self, user_id).write_lock(user_id):
+        with self._pipeline_write():
             ep = self.ingestor.ingest(content, user_id, session_id, role, event_time)
         if consolidate:
             self.consolidate()
@@ -272,12 +272,9 @@ class MemoryEngine:
             raise RuntimeError('Memory checkpoint failed or closed; create a new instance')
         if type(extract) is not bool:
             raise ValueError("extract must be a boolean")
-        from ._pipeline import memory_adapter
-        with memory_adapter(self, user_id).write_lock(user_id):
-            ep = self.add(content, user_id=user_id, session_id=session_id)
-            ep.extract = extract
-            self._sync_episode(ep)
-            return {"extract": extract, "episode_id": ep.id}
+        with self._pipeline_write():
+            ep = self.ingestor.ingest(content, user_id, session_id, extract=extract)
+        return {"extract": extract, "episode_id": ep.id}
 
     def remember_messages(self, messages: list[dict], session_id: str, user_id: str = 'default',
                           extract: bool = True) -> dict:
@@ -306,6 +303,17 @@ class MemoryEngine:
         """Fence an in-memory instance after a partial write."""
         self._pipeline_broken = True
         self.close()
+
+    @contextmanager
+    def _pipeline_write(self):
+        with self._pipeline_lock:
+            if self._pipeline_closed:
+                raise RuntimeError('Memory is closed; create a new instance')
+            try:
+                yield
+            except BaseException:
+                self._recover_pipeline_checkpoint()
+                raise
 
     def consolidate(self, episodes=None):
         """Activate selected source extraction through the shared checkpoint engine."""
@@ -349,7 +357,6 @@ class MemoryEngine:
         pending = self.ingestor.pending() if fact_episodes is None or digest_episodes is None else []
         stats = self.consolidate(pending if fact_episodes is None else fact_episodes)
         stats["digests"] = self.generate_digests(pending if digest_episodes is None else digest_episodes)
-        stats["reflected"] = 0
         return stats
 
     # --- 对话任务等待与结构化快照恢复 ---
@@ -359,9 +366,9 @@ class MemoryEngine:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
         if self._pipeline_closed:
             raise RuntimeError('Memory is closed; create a new instance')
-        from ._pipeline import flush_memory
+        from ._pipeline import flush
         started = time.monotonic()
-        result = flush_memory(self, user_id, session_id, timeout, retry_failed)
+        result = flush(self, user_id, session_id, timeout, retry_failed)
         if session_id is None:
             from ._profile import flush
             operation = flush(self, user_id, started + timeout, retry_failed)

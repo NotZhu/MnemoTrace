@@ -1,4 +1,4 @@
-"""Maintain the graph rows affected by a business commit."""
+"""图投影管理。"""
 import hashlib
 
 from ...consolidate.graph_builder import projects_fact

@@ -1,4 +1,4 @@
-"""Repair derived PostgreSQL data in an authorized space, one page at a time."""
+"""数据库维护工具。"""
 from dataclasses import asdict
 
 from ..contracts import RecordKind

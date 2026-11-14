@@ -1,4 +1,4 @@
-"""Apply explicit record changes inside the space write transaction."""
+"""写入管理。"""
 from dataclasses import asdict
 
 from ...profile import INPUT_FIELDS
@@ -13,6 +13,12 @@ from .records import (
 
 
 def allocate_sequence(sql, session_id):
+    """为会话分配下一个序列号。
+
+    Args:
+        sql: 数据库连接。
+        session_id: 会话 ID。
+    """
     return sql.run(f'UPDATE mnemotrace.sessions SET next_sequence = next_sequence + 1 '
                    f'WHERE {SCOPE} AND session_id = %s RETURNING next_sequence - 1',
                    (*sql.scope, session_id)).fetchone()[0]
@@ -28,24 +34,21 @@ def save_embedding(sql, item):
         raise VersionConflict('Embedding refers to an obsolete text version')
     # Bind the pgvector text representation as data. The database enforces its dimension.
     column = TARGET_COLUMNS[item.record.kind]
-    return bool(sql.insert('embeddings', {
+    sql.insert('embeddings', {
         column: item.record.record_id, 'target_kind': item.record.kind.value,
         'field': item.field, 'content_version': item.content_version, 'model': item.model,
         'dimension': len(item.vector), 'vector': '[' + ','.join(map(str, item.vector)) + ']',
-    }, suffix='ON CONFLICT DO NOTHING').rowcount)
+    }, suffix='ON CONFLICT DO NOTHING')
 
 
-def _replace_links(sql, table, column, record_id, ids, *, ordered=False):
-    sql.delete(table, f'{column} = %s AND NOT (source_id = ANY(%s))', (record_id, ids))
-    for order, source_id in enumerate(ids):
-        values = {column: record_id, 'source_id': source_id}
-        suffix = 'ON CONFLICT DO NOTHING'
-        if ordered:
-            values['source_order'] = order
-            suffix = f"""ON CONFLICT (user_id, space_id, {column}, source_id) DO UPDATE
-                SET source_order = excluded.source_order
-                WHERE {table}.source_order IS DISTINCT FROM excluded.source_order"""
-        sql.insert(table, values, suffix=suffix)
+def _replace_fact_sources(sql, fact_id, provenance):
+    source_ids = list(dict.fromkeys(provenance))
+    sql.delete('fact_sources', 'fact_id = %s AND NOT (source_id = ANY(%s))', (fact_id, source_ids))
+    for order, source_id in enumerate(source_ids):
+        sql.insert('fact_sources', {'fact_id': fact_id, 'source_id': source_id, 'source_order': order},
+                   suffix="""ON CONFLICT (user_id, space_id, fact_id, source_id) DO UPDATE
+                       SET source_order = excluded.source_order
+                       WHERE fact_sources.source_order IS DISTINCT FROM excluded.source_order""")
 
 
 def _source_digest(sql, record, values, old):
@@ -124,13 +127,14 @@ def write(sql, change, graph):
     if kind == SOURCE:
         _source_digest(sql, record, current, old)
     elif kind == FACT:
-        _replace_links(sql, 'fact_sources', 'fact_id', record_id,
-                       list(dict.fromkeys(current['provenance'])), ordered=True)
-        sql.delete('fact_supersedes', 'fact_id = %s AND NOT (predecessor_id = ANY(%s))',
-                   (record_id, current['supersedes']))
-        for predecessor_id in current['supersedes']:
-            sql.insert('fact_supersedes', {'fact_id': record_id, 'predecessor_id': predecessor_id},
-                       suffix='ON CONFLICT DO NOTHING')
+        if old is None or current['provenance'] != old['provenance']:
+            _replace_fact_sources(sql, record_id, current['provenance'])
+        if old is None or current['supersedes'] != old['supersedes']:
+            sql.delete('fact_supersedes', 'fact_id = %s AND NOT (predecessor_id = ANY(%s))',
+                       (record_id, current['supersedes']))
+            for predecessor_id in current['supersedes']:
+                sql.insert('fact_supersedes', {'fact_id': record_id, 'predecessor_id': predecessor_id},
+                           suffix='ON CONFLICT DO NOTHING')
         graph_fields = ('subject_id', 'object_id', 'relation_id',
                         'valid_at', 'invalid_at')
         if old is None or any(old[k] != current[k] for k in graph_fields):
@@ -174,8 +178,7 @@ def append_input(sql, operation_id, session_id, source, order):
         raise DatabaseConstraintError('Operation input must belong to its session')
     sql.insert('operation_sources', dict(
         operation_id=operation_id, source_id=source.source_id,
-        content_version=source.content_version, input_start=0,
-        input_end=len(episode.content), input_order=order, role=episode.role,
+        content_version=source.content_version, input_order=order,
     ))
 
 
@@ -193,7 +196,7 @@ def check_lease(sql, conditions):
     product = sql.run(f'SELECT source_versions FROM mnemotrace.operation_products '
                       f'WHERE {SCOPE} AND operation_id = %s', (*sql.scope, lease.operation_id)).fetchone()
     sources = [(item['source_id'], item['content_version']) for item in product[0]] if product else sql.run(
-        f'SELECT DISTINCT source_id, content_version FROM mnemotrace.operation_sources '
+        f'SELECT source_id, content_version FROM mnemotrace.operation_sources '
         f'WHERE {SCOPE} AND operation_id = %s', (*sql.scope, lease.operation_id)).fetchall()
 
     if set(sources) != {(item.source_id, item.content_version) for item in conditions.sources}:
@@ -211,15 +214,24 @@ def commit_task(sql, lease, receipt):
     ))
 
 
-def store_messages(sql, session_id, messages, *, check_model, source_metadata=None):
+def store_messages(sql, session_id, messages, *, check_ready, source_metadata=None):
+    """存储消息。
+
+    Args:
+        session_id: 会话 ID。
+        messages: 要存储的消息列表。
+        check_ready: 是否检查就绪状态。
+        source_metadata: 源元数据。
+    """
     existing = sql.run(f'SELECT message_id,id,message_fingerprint FROM mnemotrace.sources '
                        f'WHERE {SCOPE} AND session_id = %s AND message_id = ANY(%s)',
                        (*sql.scope, session_id, [msg.message_id for msg in messages])).fetchall()
     known = {key: (record_id, content_hash) for key, record_id, content_hash in existing}
     if any(item.extract and item.message_id not in known for item in messages):
-        check_model()
+        check_ready()
     sql.ensure_session(session_id)
-    saved, inserted = [], []
+    saved, extraction_ids = [], []
+    inserted = 0
     for item in messages:
         content_hash = item.fingerprint
         if item.message_id in known:
@@ -237,6 +249,8 @@ def store_messages(sql, session_id, messages, *, check_model, source_metadata=No
                 sequence=allocate_sequence(sql, session_id), record_version=1, content_version=1,
             ))
             known[item.message_id] = (record_id, content_hash)
-            inserted.append(record_id)
+            inserted += 1
+            if item.extract:
+                extraction_ids.append(record_id)
         saved.append(record_id)
-    return tuple(saved), tuple(inserted)
+    return tuple(saved), inserted, extraction_ids

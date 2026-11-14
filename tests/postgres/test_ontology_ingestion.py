@@ -201,9 +201,9 @@ def test_learned_type_and_relation_are_reused_after_concurrent_registration(make
     ops = [memory.remember(statement, str(index), event_time=100 + index,
                           processing='buffered')['operation_ids'][0] for index, statement in enumerate(inputs)]
     for op in ops:
-        assert memory._processing.run_one(op, force=True)
+        assert memory._processing.run_next_stage(op, force=True)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        assert all(pool.map(lambda op: memory._processing.run_one(op, force=True), ops))
+        assert all(pool.map(lambda op: memory._processing.run_next_stage(op, force=True), ops))
     assert memory.flush_processing(retry_failed=True)['ok']
     assert {item.id for item in records(memory, RecordKind.ENTITY_TYPE)} == {'person', 'instrument'}
     relation, = records(memory, RecordKind.RELATION_TYPE)
@@ -294,7 +294,7 @@ def test_stale_type_catalog_regenerates_saved_extraction(make_memory):
     }, {})
     memory, service = make_memory(fixed)
     operation, = memory.remember(waiting, 'waiting', event_time=100, processing='buffered')['operation_ids']
-    assert memory._processing.run_one(operation, force=True)
+    assert memory._processing.run_next_stage(operation, force=True)
     assert memory.operation(operation).extraction_saved
     ingest(memory, learning, 200, session='learning')
     assert memory.flush_processing('waiting')['ok']
@@ -345,8 +345,8 @@ def test_invalid_model_selection_writes_no_catalog_or_fact(make_memory):
     memory, _ = make_memory(respond)
     accepted = memory.remember(statement, 'chat', event_time=100, processing='buffered')
     operation, = accepted['operation_ids']
-    assert memory._processing.run_one(operation, force=True)
-    assert memory._processing.run_one(operation, force=True)
+    assert memory._processing.run_next_stage(operation, force=True)
+    assert memory._processing.run_next_stage(operation, force=True)
     assert memory.operation(operation).error_code == 'extraction_invalid_response'
     assert memory.list_sources() and not memory.facts()
     for kind in (RecordKind.ENTITY, RecordKind.ENTITY_TYPE, RecordKind.RELATION_TYPE):
@@ -420,8 +420,8 @@ def test_failed_later_comparison_batch_publishes_no_partial_window(make_memory):
     fail = True
     result = memory.remember_messages('new', messages[3:], processing='buffered')
     operation, = result['operation_ids']
-    assert memory._processing.run_one(operation, force=True)
-    assert memory._processing.run_one(operation, force=True)
+    assert memory._processing.run_next_stage(operation, force=True)
+    assert memory._processing.run_next_stage(operation, force=True)
     assert comparisons == 2
     assert memory.operation(operation).error_code == 'extraction_invalid_response'
     assert {kind: records(memory, kind) for kind in kinds} == before

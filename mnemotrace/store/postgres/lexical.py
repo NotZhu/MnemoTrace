@@ -1,4 +1,4 @@
-"""Maintain versioned lexical projections with the existing tokenizer."""
+"""词法投影管理。"""
 from collections import Counter
 
 from ...retrieve.hybrid import date_terms

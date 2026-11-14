@@ -97,7 +97,7 @@ def test_supersession_does_not_rewrite_event_digest():
     old.invalid_at = old.expired_at = new.valid_at
     for fact in (old, new):
         mem.fact_store.upsert(fact.id, mem.embedder.embed(fact.text), fact)
-    assert mem.consolidate_full([], [ep])["reflected"] == 0
+    assert mem.consolidate_full([], [ep])["digests"] == 0
     assert ep.digest == previous
 
 

@@ -57,7 +57,7 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 | `add` | content；user_id、session_id、role、event_time；consolidate=False | Episode；保存事件，可选择立即整合 |
 | `remember` | content；user_id、session_id、extract=True | dict；保存原文并记录抽取意图，事实仍需显式整合 |
 | `consolidate` | episodes=None | 计数字典；None 处理 pending 事件 |
-| `consolidate_full` | fact_episodes=None、digest_episodes=None | 计数字典；整合与条件摘要，可分别指定两组事件；reflected 固定为 0 |
+| `consolidate_full` | fact_episodes=None、digest_episodes=None | 计数字典，含事实整合统计和新增摘要数，可分别指定两组事件 |
 | `import_snapshot` | snapshot、user_id、dedupe=True | dict；导入结构化导出，不等同于打开存储目录 |
 
 结构化快照要求 `format_version=6`。导入先整批校验，遇到无效数据时抛出 `ValueError`。导入保留目标用户的运行设置；字段、来源编号和替代链语义见[结构化快照导入](../architecture/memory.md#结构化快照导入)。
