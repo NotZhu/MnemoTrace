@@ -32,6 +32,7 @@ SOURCE_FILES = (
     'eval/storage_postgres.py', 'tests/postgres/conftest.py', 'tests/postgres/test_retrieval.py',
     'tests/postgres/test_migrations.py', 'mnemotrace/retrieve/postgres.py',
     'mnemotrace/store/postgres/graph_reads.py', 'mnemotrace/store/postgres/lexical.py',
+    'mnemotrace/store/postgres/maintenance.py',
     'mnemotrace/store/postgres/retrieval.py', 'mnemotrace/store/postgres/sql/005_retrieval.sql',
     'mnemotrace/store/postgres/sql/006_backup_constraints.sql',
     'mnemotrace/consolidate/ontology.py', 'mnemotrace/store/postgres/ontology.py',
@@ -84,7 +85,7 @@ def observe() -> tuple[list[dict], dict, dict]:
         observations[user_id] = {
                 'facts': [dict(id=identities[f.id], subject=f.subject, predicate=f.predicate,
                                object=f.object, source=f.source,
-                               source_roles=f.source_roles, valid_at=f.valid_at, invalid_at=f.invalid_at,
+                               valid_at=f.valid_at, invalid_at=f.invalid_at,
                                created_at=f.created_at, expired_at=f.expired_at,
                                supersedes=[identities[key] for key in f.supersedes],
                                provenance=[sources[s] for s in f.provenance]) for f in facts],

@@ -108,9 +108,9 @@ SpaceDAO 的 claim/renew/save_product/product 是空间内任务路径；跨空�
 | space_generation | 清空/删除等空间级作废推进；普通业务更新使用 core_revision |
 | lease token | 每次领取生成新值；续租/保存/提交校验 token 和数据库时间下的有效期 |
 
-FactQuery 按有效时间筛选。未指定日期时取快照时间并允许起点未知的事实；指定日期时要求已知的有效起点。`CURRENT` 使用 `[valid_at, invalid_at)` 并排除撤回；`HISTORY` 返回已结束或已撤回的事实；`ALL` 合并两者。这些视图不返回待审候选。
+FactQuery 按有效时间筛选。未指定日期时取快照时间并允许起点未知的事实；指定日期时要求已知的有效起点。`CURRENT` 返回有效区间 `[valid_at, invalid_at)` 覆盖查询时点的事实。`HISTORY` 返回截至查询时点已经结束的事实。`ALL` 合并当前与已结束的事实，完整槽位时间线也列出未来生效的事实。
 
-产品使用数据库时钟记录收录及首次获知失效的时间。以后补录的事实可以改变过去有效日期的查询结果；查询不按收录时刻回放旧认知。每条事实保留一行，替代关系和来源各存于空间内关联表。撤回独立记录，保留可查询的历史行。
+产品使用数据库时钟记录收录及首次获知失效的时间。以后补录的事实可以改变过去有效日期的查询结果；查询不按收录时刻回放旧认知。每条事实保留一行，替代关系和来源各存于空间内关联表。已失效事实仍可查询历史。
 
 ChangeSet 显式包含记录写入、事实失效、擦除、来源关联、向量、实体合并、空间设置、后续任务及回执。
 一个记录只有一次主修改；失效仅用于 Fact，擦除遵守用户范围。settings 替换整个小型空间配置，主体名不提供账号身份。
@@ -146,25 +146,24 @@ from mnemotrace.store.postgres import Database, DatabaseConfig, Spaces
 with Database(DatabaseConfig.from_env()) as database:
     context = Spaces(database).authorize(user_id, space_id)
     memory = Memory(database, context)
-    receipt = memory.store_messages("thread-A", (
+    saved = memory.remember_messages("thread-A", (
         MessageInput("m1", "user", "Synthetic input", extract=False, agent_id="writer-A"),
     ))
-    episode = memory.get_episode(receipt.source_ids[0])
-    # 自动事实由配置模型的 Memory.remember / remember_messages 入口摄入。
+    episode = memory.get_episode(saved["source_ids"][0])
     result = memory.search("What does Synthetic person like?")
     context_result = memory.lean_context("What does Synthetic person like?")
     print(result.status, [fact.text for fact in result.facts], context_result.limitations)
 ```
 
-`store_messages` 只接受 `extract=False`，返回按输入顺序排列的来源 ID，重复项复用原来源。
+`remember_messages` 接受 `extract=False` 的消息并原样保存。`source_ids` 按输入顺序排列，重复项复用原来源。
 直接提交回执与数据同事务提交；连接中断且无法查证时抛出带操作 ID 的
 `CommitOutcomeUnknown`，可在同空间用 `memory.dao.receipt(operation_id)` 查证。
 `erase` 和 `ChangeSet.erasures` 接受 `FACT`。
-批次包含其他类型时，在开始写事务前整批拒绝。单条来源、实体、关系及冲突记录没有显式擦除入口。
+批次包含其他类型时，在开始写事务前整批拒绝。单条来源、实体和关系通过上级范围擦除或关联清理。
 
 空间清空、空间删除和账号删除各自按授权范围清理数据与任务。
 默认 `export_records()` 仅流式导出非敏感事实。显式指定 `include_sensitive=True` 可读取全部领域记录。整库恢复使用[数据库归档](../../deploy/README.md#备份与恢复)。
-裁决冲突时按同一快照检查双方是否仍有效。事实文本超出图实体名或谓词的长度限制时，
+事实归并基于同一空间快照。事实文本超出图实体名或谓词的长度限制时，
 事实照常保存，图中省略该边。
 
 自动处理通过 `Memory(database, context, llm=llm)` 启用。使用 `remember_messages(session_id, messages)`
@@ -190,24 +189,26 @@ with Database(DatabaseConfig.from_env()) as database:
 `complete` 表示没有已知的索引或候选覆盖限制。
 `limitations` 区分词法补建、事实或摘要向量不完整、图候选覆盖等限制。数据库连接与查询错误通过数据库异常传递。查找实体可用 `graph_entities(name)`，
 邻接和事实边可用 `graph_neighbors`、`graph_relations`，两者接受 `FactQuery` 时间条件。
-检索内部优先解析实体的确切名称，别名仅在合并后指向唯一实体时解析。
+实体查询使用去除首尾空白并转小写后的名称。共享图的名称来自可共享的事实。
 
-按授权空间分别对 `RecordKind.FACT`、`RecordKind.SOURCE` 和 `RecordKind.ENTITY` 调用
-`backfill_retrieval(kind, after_id=cursor, limit=100)`，从 `None` 开始，逐页处理直到返回 `None`。
-来源补建只投影已有摘要。需要重建边时，使用 `rebuild_graph` 按相同方式分页。
+从 `mnemotrace.store.postgres.maintenance` 导入 `rebuild_lexical_index` 和 `rebuild_graph`。
+用授权空间的 `memory.dao` 调用 `rebuild_lexical_index(memory.dao, kind, after_id=cursor)`，分别处理
+`RecordKind.FACT` 和 `RecordKind.SOURCE`。来源补建只投影已有摘要。
+`rebuild_graph(memory.dao, after_id=cursor)` 修复图边，并在末页清理孤立实体。
+两者均从 `after_id=None` 开始，用返回的游标继续，直到返回 `None`。
 
 | 数据组 | 结构与所有权 |
 | --- | --- |
 | 账号与空间 | users、api_keys、memory_spaces、sessions；账号不依附某把 key，空间显式创建 |
-| 权威业务数据 | sources/source_digests、facts/fact_sources、conflicts |
-| 实体与检索派生数据 | entities、graph_relations、embeddings、lexical_documents/lexical_terms |
-| 操作与恢复 | operations、operation_sources/targets/products/receipts；唯一任务账本，不新增 outbox |
+| 权威业务数据 | sources/source_digests、facts/fact_sources、entity_types/entities/relation_types |
+| 检索派生数据 | graph_relations、embeddings、lexical_documents/lexical_terms |
+| 操作与恢复 | operations、operation_sources、operation_products、operation_receipts；唯一任务账本，不新增 outbox |
 
 每张空间业务表有 user_id、space_id，关联使用包含归属的复合外键。
 多态目标使用互斥的可空复合外键；向量绑定文本版本、模型及维度，不作为领域记录内联权威字段。
 时间列为 timestamptz，边界转换有限 epoch 值；必要业务字段使用显式列，JSONB 不代替领域建模。
-任务及产物的 stats 必需键、类型和非负整数由数据库约束验证；执行器在完整产物写入和恢复时校验结构与引用。
-实体合并的环检查、图构建规则和候选查询语义由业务层和数据库集成回归验证。
+执行器在产物写入和恢复时校验结构与来源引用。模型调用数由运行指标记录。
+实体名称唯一性、图构建规则和候选查询语义由业务层和数据库集成回归验证。
 
 迁移使用顺序版本、脚本校验和和事务级 advisory lock；已应用结构的目录指纹覆盖列、约束、索引、策略、函数及授权。
 普通连接只验证结构；缺失结构、未知版本或漂移明确报错，不自动修复。
@@ -220,7 +221,7 @@ with Database(DatabaseConfig.from_env()) as database:
 参与语义召回的原文在受理事务提交后异步生成向量，已保存的合格来源通过分页任务补建。
 原文向量绑定 `content_version`、模型及维度，提交时复核来源和作废状态。
 待就绪或失败的向量不参与该信号，查询通过候选覆盖限制报告缺失。原文读取和已就绪的检索信号继续可用。
-图边认知时间回查支撑事实，沿用实体归一化与谓词建边规则；权威别名/合并不能只靠事实重建。
+图边的有效时间从支撑事实读取，建边时使用已绑定的实体与关系。
 
 
 ## 三阶段提交、恢复与权限
@@ -237,7 +238,7 @@ with Database(DatabaseConfig.from_env()) as database:
 尝试上限和退避定义维护在[任务实现](../../mnemotrace/store/postgres/tasks.py)，进程中断后的重新领取同样消耗预算。
 模型与 embedding 在事务外执行，API 与 worker 共用执行器；同会话依赖有序，跨会话可并行。
 
-本体解析和事实归并使用同一空间业务版本。并发登记使旧版本计算失效，重试会读取已提交的目录和历史。别名用空间、事实和原文关联键引用对应的来源证据，随来源关联擦除。
+本体解析和事实归并使用同一空间业务版本。并发登记使旧版本计算失效，重试会读取已提交的目录和历史。
 
 | 变化 | 抽取产物有效性 | 归并/向量 |
 | --- | --- | --- |
@@ -295,13 +296,12 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 | ingest.pipeline: add；memory: add/remember/remember_messages；service: remember/remember_messages | embedding 后写原文，默认用户、路由/任务随快照保存 | T1 原文/任务、消息去重、来源 agent；原文不依赖向量 | 3—4、6 | extraction_contract、message_pipeline/interfaces、pipeline_sources |
 | consolidate.pipeline: inspect/accept/register/rows/trigger/retry/snapshot/response/invalidate/validate_state | 空间 ledger、序号、窗口/覆盖、单 generation，stats 恢复校验不足 | 操作/来源/产物/回执，必需字段严格校验 | 4、7 | message_pipeline/windows/recovery、storage_contracts |
 | _pipeline: new_window/trigger_ready/enqueue_operation/_commit/_advance/_fail/run_one/execute_sources/execute_memory/flush | 修改事实、来源摘要/覆盖、窗口统计 | T2/T3、租约/版本守卫、统一执行器，摘要片段可靠保存 | 4 | processing、original_product、process_recovery |
-| consolidate.planning: plan/digest_plan/supplied；fact_rules 主体归一化 | 来源上下文、身份/别名、窗口预算和主体推断 | 必要会话/主体上下文，记录实际业务版本；用户/assistant 自称分开 | 3—4 | message_windows、pipeline_sources、profile_cache |
+| consolidate.planning: plan/digest_plan/supplied；fact_rules 主体归一化 | 来源上下文、本人身份、窗口预算和主体推断 | 必要会话/主体上下文，记录实际业务版本；用户/assistant 自称分开 | 3—4 | message_windows、pipeline_sources、profile_cache |
 | consolidate.facts: _accepted/_write_fact/_ensure_projection/_decay_sweep | 全事实归并、规范化对象/文本、去重 provenance、失效链路、显著度 | 完整必要主体/槽位/语义历史；显式修改，衰减为维护操作 | 3—4 | fact_statement_updates、conflict、message_recovery |
 | consolidate.conflict: _supersede/insert_dialogue_history/reconcile；conflict_candidates | 双时间轴/链路重连、重复来源、语义候选 | 必要历史读取，同事务更新；归并向量先就绪 | 3—4 | conflict、search_answering |
 | consolidate.decay: reinforce；memory: _reinforce_fact/apply_focus/_classify | 查询中改 access_count/last_access/salience，分类/focus 改字段 | 显式业务提交或维护事务，不隐藏持久化副作用 | 3、5 | transactions、retrieval、classification |
 | memory: reembed/evict_cold/_enforce_hot_limit/_page_hot/_retrieve_cold | 全量重嵌入/冷热搬运和内存索引 | 版本化批处理；正常读取不依赖完整冷热内存 | 3、5、8 | reembed、retrieval_candidates |
 | memory: add_fact/update_fact/delete_fact；service: 对应方法/clear_slot | 修改 SPO/text、人工权威、分类/topic/时间，删除来源/关系 | 人工记录提交、精确擦除，保留历史/来源/修正 | 3、6 | fact_metadata_updates、fact_statement_updates、record_business |
-| memory: pending_conflicts/resolve_conflict/dismiss_conflict；service: conflicts/resolve_conflict | 状态修改、双方失效和 supersedes | 冲突、双方事实、必要图同事务 | 3 | conflict、record_business |
 | memory: set_focus/set_policy/_apply_policy/profile/refresh_profile | 修改配置、缓存读取和显式画像任务 | settings 权威、版本化事实依赖与可恢复刷新 | 3、5 | profile_cache、profile_display、configuration_isolation |
 | memory: generate_digests/retrieve_digests；consolidate.summarizer | 来源/摘要扫描及内存向量 | 版本化摘要、digest 向量、辅助任务 | 4—5 | digest_interfaces、pipeline_sources |
 | retrieve.hybrid: retrieve/_ann_candidates/_graph_scores/_graph_neighbor_facts/graph_exclusion_zone | 全 live 或 ANN+图池、内存 BM25/五信号 | DB 候选/作用域统计/局部图，Python 槽位头/排除/融合 | 5 | retrieval_candidates、storage_baseline、search_answering |
@@ -310,7 +310,7 @@ runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在�
 | memory: _provenance_raw_block/_provenance_detail_chunks/_aggregation_block/_duration_block | 扫来源/事实补证据、计数和时长 | 来源 ID 回查、聚合和条件读取，保留证据/排除规则 | 5 | lean、profile_cache、event_representation |
 | pipeline: cancel_missing/identity_saved；_pipeline: _pending/_select/_current | 来源/窗口集合扫描，检查取消、身份完成和会话队头 | 按来源/会话查询操作关联和回执；只遍历已读取候选/冲突对 | 3—4 | pipeline_sources、message_recovery |
 | hybrid: query_entity_ids/graph_excluded_entity_ids；planner: _anchor_entity/_user_predicates/_user_entities/_bridge_paths | 实体/谓词/桥接路径完整扫描 | 实体名称和主体查询、局部邻接与谓词聚合 | 5 | planner、graph_query、lean |
-| memory.reembed 内部 _clear；classify: classify_fact；memory_store: upsert_entity/invalidate_relations_for_fact/delete_relations_for_fact/prune_orphan_entities | 清索引、修改分类和关系有效时间、删除邻接/孤立实体 | 版本化重嵌入、显式分类与图投影事务 | 3—5 | reembed、classification、record_business |
+| memory.reembed 内部 _clear；classify: classify_fact；memory_store: upsert_entity/delete_relations_for_fact/prune_orphan_entities | 清索引、修改分类和关系有效时间、删除邻接/孤立实体 | 版本化重嵌入、显式分类与图投影事务 | 3—5 | reembed、classification、record_business |
 | memory: _current_state_block/_should_abstain；agentic: gather_episodes；aggregate: dedupe_aggregation_candidates；conflict_candidates: candidate_pairs；lexical: bm25_scores | 遍历局部 latest/diag/basic/prefs/seen/best/by_subj/doc_tokens 字典 | 保留局部算法；输入来自授权必要工作集，BM25 统计从同作用域数据库语料提供 | 5 | smoke、profile_display、lean、storage_baseline |
 | memory: lean_context/search/context_for/retrieve_digests/get_episode；service: recall/recall_multi/get_episode | 内存候选/working_set、完整 token 估算与可选 answerer | DB 候选/必要工作集，逐空间鉴权融合；保留入口差异 | 5—6 | lean、search_answering、spaces |
 | service: processing_status/_processing_status/flush/close | 扫空间来源/任务、按 namespace 等待 | 操作/会话查询、DB 租约恢复 | 4、6 | processing、process_recovery |

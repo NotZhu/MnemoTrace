@@ -36,7 +36,7 @@ def finish(memory):
 def test_reads_and_context_never_generate():
     llm = model()
     memory = MemoryEngine(llm=llm)
-    fact = memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    fact = memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     assert memory.profile()["pending_fact_count"] == 1
     assert memory.profile()["updated_at"] is None
     memory.lean_context("tea")
@@ -60,7 +60,7 @@ def test_reads_and_context_never_generate():
     FactQuery(state=FactState.HISTORY), FactQuery(state=FactState.ALL),
     FactQuery(valid_at=100), FactQuery(exclude_sensitive=True),
     FactQuery(categories=("technology",)), FactQuery(subject="Other person"),
-    FactQuery(subject="user"), FactQuery(predicate="uses"), FactQuery(source_ids=("source-a",)),
+    FactQuery(subject="我"), FactQuery(predicate="uses"), FactQuery(source_ids=("source-a",)),
 ])
 def test_postgres_context_does_not_read_profile_outside_unrestricted_current_view(monkeypatch, scope):
     from mnemotrace.retrieve import postgres
@@ -102,7 +102,7 @@ def test_unchanged_large_fact_can_refresh_again_without_duplicate_input():
 
     llm = FakeLLM(handler=summarize)
     memory = MemoryEngine(llm=llm)
-    fact = memory.add_fact("user", "note", "x" * 14_000, sensitive=False, text=' '.join(('user', 'note', 'x' * 14000)))
+    fact = memory.add_fact("我", "note", "x" * 14_000, sensitive=False, text=' '.join(('user', 'note', 'x' * 14000)))
     memory.refresh_profile()
     first = finish(memory)
     assert first["profile"]["basic"][0]["fact_ids"] == [fact.id]
@@ -130,11 +130,11 @@ def test_old_support_is_not_repeated_when_batched_refresh_resumes():
                           dict(empty(), basic=[dict(text="Synthetic summary", fact_ids=[data["facts"][0]["id"]])]))
 
     memory = MemoryEngine(llm=FakeLLM(handler=summarize))
-    old = memory.add_fact("user", "note", "x" * 14_000, sensitive=False, text=' '.join(('user', 'note', 'x' * 14000)))
+    old = memory.add_fact("我", "note", "x" * 14_000, sensitive=False, text=' '.join(('user', 'note', 'x' * 14000)))
     memory.refresh_profile()
     finish(memory)
     for key in ("zz-1", "zz-2"):
-        memory._upsert_fact(Fact("user", "note", "z" * 5_500, id=key, sensitive=False, text=' '.join(('user', 'note', 'z' * 5500))))
+        memory._upsert_fact(Fact("我", "note", "z" * 5_500, id=key, sensitive=False, text=' '.join(('user', 'note', 'z' * 5500))))
     memory.refresh_profile()
     assert run_one(memory, "default")
     assert state(memory, "default")["job"]["phase"] == "generate"
@@ -153,19 +153,17 @@ def test_old_support_is_not_repeated_when_batched_refresh_resumes():
         assert ids.count(old.id) == 1 and len(ids) == len(set(ids))
 
 
-@pytest.mark.parametrize("change", ["withdraw", "delete", "sensitive", "mute"])
+@pytest.mark.parametrize("change", ["delete", "sensitive", "mute"])
 def test_changes_scrub_cache_and_saved_input(change):
     memory = MemoryEngine(llm=model())
-    fact = memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    fact = memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     memory.refresh_profile()
     finish(memory)
     memory.refresh_profile()
     from mnemotrace._profile import run_one, state
     assert run_one(memory, "default")
     assert state(memory, "default")["job"]
-    if change == "withdraw":
-        memory.withdraw_fact(fact.id)
-    elif change == "delete":
+    if change == "delete":
         memory.delete_fact(fact.id)
     elif change == "sensitive":
         memory.set_fact_sensitive(fact.id, True)
@@ -180,7 +178,7 @@ def test_changes_scrub_cache_and_saved_input(change):
 
 def test_retrieval_usage_does_not_invalidate_profile():
     memory = MemoryEngine(llm=model())
-    fact = memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    fact = memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     memory.refresh_profile()
     before = finish(memory)
     memory.search("tea")
@@ -214,7 +212,7 @@ def test_batch_checkpoint_resumes_after_restart():
         return json.dumps(output)
     memory = MemoryEngine(config=Config(profile_max_input_chars=2600), llm=FakeLLM(handler=compact))
     for index in range(8):
-        memory.add_fact("user", "note", "Synthetic evidence " * 8 + str(index), sensitive=False, text=' '.join(('user', 'note', 'Synthetic evidence ' * 8 + str(index))))
+        memory.add_fact("我", "note", "Synthetic evidence " * 8 + str(index), sensitive=False, text=' '.join(('user', 'note', 'Synthetic evidence ' * 8 + str(index))))
     memory.refresh_profile()
     from mnemotrace._profile import run_one
     assert run_one(memory, "default")
@@ -238,9 +236,9 @@ def test_missing_model_refresh_fails_before_creating_task():
 
 def test_v2_fact_import_without_model_starts_with_pending_profile():
     source = MemoryEngine()
-    fact = source.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    fact = source.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     memory = MemoryEngine()
-    result = memory.import_snapshot({"format_version": 4, "facts": [asdict(fact)], "episodes": []})
+    result = memory.import_snapshot({"format_version": 6, "facts": [asdict(fact)], "episodes": []})
     assert result["facts_restored"] == 1
     assert memory.profile()["updated_at"] is None
     assert memory.profile()["pending_fact_count"] == 1
@@ -250,16 +248,16 @@ def test_v2_fact_import_without_model_starts_with_pending_profile():
     assert finish(memory)["profile"]["basic"]
 
 
-def test_generation_concurrent_withdrawal_cannot_publish_obsolete_text():
+def test_generation_concurrent_deletion_cannot_publish_obsolete_text():
     memory = MemoryEngine()
-    fact = memory.add_fact("user", "likes", "Synthetic old tea", sensitive=False, text='user likes Synthetic old tea')
+    fact = memory.add_fact("我", "likes", "Synthetic old tea", sensitive=False, text='user likes Synthetic old tea')
     changed = False
 
     def intervene():
         nonlocal changed
         if not changed:
             changed = True
-            memory.withdraw_fact(fact.id)
+            memory.delete_fact(fact.id)
 
     memory.llm = model(intervene)
     memory.refresh_profile()
@@ -276,8 +274,8 @@ def test_time_transitions_hide_cache_and_preserve_pending_changes(monkeypatch):
     monkeypatch.setattr("mnemotrace.memory_engine.now", lambda: clock[0])
     monkeypatch.setattr("mnemotrace._profile.time.time", lambda: clock[0])
     memory = MemoryEngine(llm=model())
-    old = memory.add_fact("user", "lives_in", "Synthetic Paris", valid_at=10, sensitive=False, text='user lives in Synthetic Paris')
-    seed_timeline(memory, "user", "lives_in", "Synthetic Oslo", valid_at=200, sensitive=False, text='user lives in Synthetic Oslo')
+    old = memory.add_fact("我", "lives_in", "Synthetic Paris", valid_at=10, sensitive=False, text='user lives in Synthetic Paris')
+    seed_timeline(memory, "我", "lives_in", "Synthetic Oslo", valid_at=200, sensitive=False, text='user lives in Synthetic Oslo')
     memory.refresh_profile()
     cached = finish(memory)
     assert cached["profile"]["basic"][0]["fact_ids"] == [old.id]
@@ -291,7 +289,7 @@ def test_time_transitions_hide_cache_and_preserve_pending_changes(monkeypatch):
 
 def test_failed_generation_keeps_cache_and_can_be_retried():
     memory = MemoryEngine(llm=model())
-    memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     memory.refresh_profile()
     before = finish(memory)
     memory.llm = FakeLLM(responses=["{}"] * 3)
@@ -311,7 +309,7 @@ def test_failed_generation_keeps_cache_and_can_be_retried():
 
 def test_input_too_large_is_explicit_and_preserves_existing_cache():
     memory = MemoryEngine(llm=model())
-    memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     memory.refresh_profile()
     before = finish(memory)
     memory.config.profile_max_input_chars = 10
@@ -327,11 +325,11 @@ def test_input_too_large_is_explicit_and_preserves_existing_cache():
 
 def test_profile_filters_non_owner_and_sensitive_facts_and_counts_ids():
     memory = MemoryEngine(llm=model())
-    fact = memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    fact = memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     fact.provenance = ["message-a", "message-b"]
     memory._upsert_fact(fact)
     memory.add_fact("Other person", "likes", "Synthetic foreign", sensitive=False, text='Other person likes Synthetic foreign')
-    memory.add_fact("user", "likes", "Synthetic private", sensitive=True, text='user likes Synthetic private')
+    memory.add_fact("我", "likes", "Synthetic private", sensitive=True, text='user likes Synthetic private')
     memory.refresh_profile()
     entry, = finish(memory)["profile"]["basic"]
     assert entry["fact_ids"] == [fact.id] and entry["fact_count"] == 1
@@ -339,7 +337,7 @@ def test_profile_filters_non_owner_and_sensitive_facts_and_counts_ids():
 
 def test_corrupted_profile_checkpoint_is_rejected():
     memory = MemoryEngine(llm=model())
-    memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     memory.refresh_profile()
     from mnemotrace._profile import run_one
     assert run_one(memory, "default")
@@ -351,7 +349,7 @@ def test_corrupted_profile_checkpoint_is_rejected():
 
 def test_new_profile_policy_reconsiders_previously_omitted_facts():
     memory = MemoryEngine(llm=FakeLLM(responses=[json.dumps(empty())]))
-    fact = memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    fact = memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     memory.refresh_profile()
     assert finish(memory)["profile"] == empty()
     assert not memory.profile()["needs_refresh"]
@@ -373,8 +371,8 @@ def test_prompt_update_is_visible_without_calling_model(monkeypatch):
 
 def test_refresh_uses_cold_facts_and_historical_context_skips_current_cache():
     memory = MemoryEngine(llm=model())
-    cold = memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
-    memory.add_fact("user", "likes", "Synthetic coffee", sensitive=False, text='user likes Synthetic coffee')
+    cold = memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    memory.add_fact("我", "likes", "Synthetic coffee", sensitive=False, text='user likes Synthetic coffee')
     cold.salience = 0
     assert memory.evict_cold(max_hot=1) == 1
     memory.refresh_profile()
@@ -383,34 +381,21 @@ def test_refresh_uses_cold_facts_and_historical_context_skips_current_cache():
     assert "USER PROFILE" not in memory.lean_context("tea", as_of=100)
 
 
-def test_profile_entry_counts_distinct_facts_and_review_changes_hide_it():
+def test_profile_entry_counts_distinct_facts():
     memory = MemoryEngine()
-    first = memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
-    second = memory.add_fact("user", "likes", "Synthetic coffee", sensitive=False, text='user likes Synthetic coffee')
+    first = memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    second = memory.add_fact("我", "likes", "Synthetic coffee", sensitive=False, text='user likes Synthetic coffee')
     output = dict(empty(), interests=[dict(text="Synthetic interests", fact_ids=[first.id, second.id, first.id])])
     memory.llm = FakeLLM(responses=[json.dumps(output)])
     memory.refresh_profile()
     entry, = finish(memory)["profile"]["interests"]
     assert entry["fact_count"] == 2
-    first.review_pending = True
-    first.approved_at = None
-    memory._upsert_fact(first)
-    assert memory.profile()["profile"] == empty()
-    assert memory.profile()["pending_fact_count"] == 1
-    memory.llm = model()
-    memory.refresh_profile()
-    assert all(first.id not in entry["fact_ids"] for entry in finish(memory)["profile"]["basic"])
-    first.review_pending = False
-    memory._upsert_fact(first)
-    assert memory.profile()["pending_fact_count"] == 1
-    memory.refresh_profile()
-    assert any(first.id in entry["fact_ids"] for entry in finish(memory)["profile"]["basic"])
 
 
 @pytest.mark.parametrize("corruption", ["availability", "fact_input", "entry_version", "operation"])
 def test_corrupted_profile_dependencies_and_operations_are_rejected(corruption):
     memory = MemoryEngine(llm=model())
-    memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     memory.refresh_profile()
     finish(memory)
     memory.refresh_profile()
@@ -435,7 +420,7 @@ def test_profile_flush_uses_remaining_message_timeout(monkeypatch):
     from mnemotrace import _pipeline
 
     memory = MemoryEngine(llm=model())
-    memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+    memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
     memory.refresh_profile()
     elapsed = 0
 
@@ -463,7 +448,7 @@ def test_profile_flush_times_out_while_model_is_still_running():
         assert release.wait(3), "The blocked model was not released"
 
     with MemoryEngine(llm=model(block)) as memory, ThreadPoolExecutor(max_workers=1) as caller:
-        fact = memory.add_fact("user", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
+        fact = memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
         operation = memory.refresh_profile()
         pending = caller.submit(memory.flush_messages, timeout=0.05)
         try:
@@ -484,7 +469,7 @@ def test_profile_flush_times_out_while_model_is_still_running():
         assert len(memory.llm.calls) == 1
 
 
-@pytest.mark.parametrize("change", ["withdraw", "delete", "close"])
+@pytest.mark.parametrize("change", ["delete", "close"])
 def test_profile_result_after_timeout_obeys_invalidation(change):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
@@ -496,15 +481,13 @@ def test_profile_result_after_timeout_obeys_invalidation(change):
         assert release.wait(3)
 
     with MemoryEngine(llm=model(block)) as memory, ThreadPoolExecutor(max_workers=1) as caller:
-        fact = memory.add_fact("user", "likes", "Synthetic old tea", sensitive=False, text='user likes Synthetic old tea')
+        fact = memory.add_fact("我", "likes", "Synthetic old tea", sensitive=False, text='user likes Synthetic old tea')
         operation = memory.refresh_profile()
         pending = caller.submit(memory.flush_messages, timeout=0.05)
         try:
             assert entered.wait(2)
             assert pending.result(timeout=0.5)["status"] == "timed_out"
-            if change == "withdraw":
-                memory.withdraw_fact(fact.id)
-            elif change == "delete":
+            if change == "delete":
                 memory.delete_fact(fact.id)
             else:
                 memory.close()

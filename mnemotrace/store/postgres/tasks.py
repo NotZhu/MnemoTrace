@@ -7,7 +7,7 @@ from uuid import uuid4
 from ...consolidate.pipeline import content_hash, source
 from ..contracts import CommitConditions, ExtractionProduct, Lease
 from ..contracts import OperationKind, OperationResult
-from ..contracts import OperationSpec, OperationStats, ProcessingPhase, ProcessingState, SourceVersion, StoredRecord
+from ..contracts import OperationSpec, ProcessingPhase, ProcessingState, SourceVersion, StoredRecord
 from .dao import Applied, _apply_changes, _space_row, new_operation_id
 from .errors import DataCorruption, VersionConflict
 from .records import SCOPE, SOURCE, domain
@@ -319,7 +319,7 @@ class Tasks:
                 raise ValueError('Checkpoint references differ from operation')
             return ExtractionProduct(CommitConditions(snapshot, versions, lease, data['extraction_config']),
                                      json.dumps(data['input']), json.dumps(data['result']),
-                                     OperationStats(**data['stats']), data['digest_max_chars'],
+                                     data['digest_max_chars'],
                                      data['context_revision'], data['format_version'])
         except (TypeError, ValueError, KeyError) as exc:
             raise DataCorruption('Invalid extraction checkpoint') from exc
@@ -359,7 +359,7 @@ class Tasks:
             sql.insert('operation_products', dict(
                 operation_id=lease.operation_id, input=data, result=result, format_version=product.format_version,
                 extraction_config=conditions.extraction_config, context_revision=product.context_revision,
-                source_versions=[asdict(ref) for ref in conditions.sources], stats=asdict(product.stats),
+                source_versions=[asdict(ref) for ref in conditions.sources],
                 digest_max_chars=product.digest_max_chars, result_hash=content_hash(result), input_hash=content_hash(data)))
             self._release(sql, row, 'pending', phase='embed', embed_attempts=0, ready_at=now,
                           extraction_saved=True, extraction_config=conditions.extraction_config,

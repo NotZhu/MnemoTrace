@@ -1,21 +1,19 @@
 
 
 import { useRef, useState } from 'react'
-import { FileSearch, GitMerge, Loader2, Search, ShieldAlert, Trash2, X } from 'lucide-react'
+import { FileSearch, Loader2, Search, ShieldAlert, Trash2, X } from 'lucide-react'
 
-import { Button, Card, CardTitle, ErrorState, PageHeader, Spinner } from '../components/ui'
+import { Button, ErrorState, PageHeader, Spinner } from '../components/ui'
 import { PageEmptyState } from '../components/PageEmptyState'
 import { FilterSelect } from '../components/FilterSelect'
 import { CategoryBadges, CategoryFilter } from '../components/CategoryEditor'
 import { ConfirmDialog, Modal } from '../components/Modal'
 import { toast } from '../components/Toast'
 import {
-  useConflicts,
   useDeleteFact,
   useSetFactSensitive,
   useMemoryPages,
   useSourceEpisodes,
-  useResolveConflict,
 } from '../hooks/queries'
 import { copy as t } from '../lib/copy'
 import { splitStamp } from '../lib/format'
@@ -68,7 +66,6 @@ export default function Facts() {
       <PageHeader title={t.facts.title} />
       {isError && <ErrorState message={(error as Error).message} isRetrying={isFetching} onRetry={() => { void refetch() }} />}
 
-      <ConflictsCard />
 
       <div className="flex min-h-0 flex-1 flex-col gap-3">
         <div className="grid items-center gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
@@ -138,7 +135,7 @@ export default function Facts() {
                   <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-ghost">
                     <span className={`inline-flex items-center gap-1.5 ${f.status === 'live' ? 'font-medium text-brand-mint' : 'text-ghost'}`}>
                       <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
-                      {f.withdrawn_at != null ? t.facts.statusWithdrawn : f.status === 'live' ? t.facts.statusLive : t.facts.statusOld}
+                      {f.status === 'live' ? t.facts.statusLive : t.facts.statusOld}
                     </span>
                     <time className="tabular-nums">{date}{time && ` · ${time}`}</time>
                     {f.sensitive && (
@@ -151,7 +148,7 @@ export default function Facts() {
                         {t.facts.manualLabel}
                       </span>
                     )}
-                    <CategoryBadges categories={f.categories} categories_source={f.categories_source} />
+                    <CategoryBadges categories={f.categories} />
                     {f.invalid_at && <span>{t.facts.invalidAt(f.invalid_at)}</span>}
                   </div>
                 </div>
@@ -273,53 +270,5 @@ export default function Facts() {
         }}
       />
     </div>
-  )
-}
-
-function ConflictsCard() {
-  const { data } = useConflicts()
-  const resolve = useResolveConflict()
-  const items = data?.conflicts ?? []
-  if (!items.length) return null
-
-  const act = (id: string, keep: 'newer' | 'older' | 'both', label: string) =>
-    resolve.mutate(
-      { id, keep },
-      { onSuccess: () => toast.success(label), onError: (e) => toast.error(String((e as Error).message)) },
-    )
-
-  return (
-    <Card className="!border-brand-amber/30 !bg-brand-amber/[0.06]">
-      <CardTitle hint={t.facts.conflictsHint}>
-        <span className="inline-flex items-center gap-2 text-brand-amber">
-          <GitMerge className="h-4 w-4" /> {t.facts.conflictsTitle(items.length)}
-        </span>
-      </CardTitle>
-      <ul className="space-y-3">
-        {items.map((c) => (
-          <li key={c.id} className="rounded-xl border border-line bg-ink-700/40 p-3">
-            <div className="grid gap-1.5 sm:grid-cols-2">
-              <div className="rounded-lg bg-brand-mint/10 px-2.5 py-1.5 text-sm">
-                <span className="text-[10px] text-brand-mint">{t.facts.conflictNew}</span>
-                <div className="text-slate-100">{c.text_newer}</div>
-              </div>
-              <div className="rounded-lg bg-ink-700/60 px-2.5 py-1.5 text-sm">
-                <span className="text-[10px] text-ghost">{t.facts.conflictOld}</span>
-                <div className="text-ghost line-through">{c.text_older}</div>
-              </div>
-            </div>
-            <div className="mt-2.5 flex flex-wrap gap-2">
-              <Button onClick={() => act(c.id, 'newer', t.facts.keepNewerToast)}>{t.facts.keepNewer}</Button>
-              <Button variant="ghost" onClick={() => act(c.id, 'older', t.facts.keepOlderToast)}>
-                {t.facts.keepOlder}
-              </Button>
-              <Button variant="ghost" onClick={() => act(c.id, 'both', t.facts.keepBothToast)}>
-                {t.facts.keepBoth}
-              </Button>
-            </div>
-          </li>
-        ))}
-      </ul>
-    </Card>
   )
 }

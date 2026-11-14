@@ -1,19 +1,17 @@
-import { CATEGORY_LABELS, CATEGORY_OPTIONS, CATEGORY_SOURCE_LABELS } from '../lib/categories'
+import { CATEGORY_LABELS, CATEGORY_OPTIONS } from '../lib/categories'
 import type { Category, FactMetadata } from '../types'
 
-type CategorySelection = Pick<FactMetadata, 'categories' | 'categories_source'>
+type CategorySelection = Pick<FactMetadata, 'categories'>
 
-export function CategoryBadges({ categories, categories_source }: CategorySelection) {
+export function CategoryBadges({ categories }: CategorySelection) {
   if (!categories.length) return null
   return (
-    <span className="inline-flex flex-wrap items-center gap-1 text-xs text-ghost"
-      title={CATEGORY_SOURCE_LABELS[categories_source]}>
+    <span className="inline-flex flex-wrap items-center gap-1 text-xs text-ghost">
       {categories.map(category => (
         <span key={category} className="rounded-md bg-selected px-1.5 py-0.5 text-brand-cyan">
           {CATEGORY_LABELS[category]}
         </span>
       ))}
-      <span>{CATEGORY_SOURCE_LABELS[categories_source]}</span>
     </span>
   )
 }

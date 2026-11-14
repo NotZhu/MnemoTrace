@@ -6,6 +6,7 @@ import pytest
 
 from mnemotrace.categories import CATEGORIES
 from mnemotrace.types import Fact
+from mnemotrace.util import name_key
 from mnemotrace.store.postgres.errors import DatabaseConstraintError
 
 
@@ -26,6 +27,8 @@ def fact(conn, user, space, record_id='fact-1', **changes):
         fields.pop(key)
     predecessors = changes.pop("supersedes", ())
     fields.update(user_id=user, space_id=space, content_version=1, record_version=1, **changes)
+    for key in ('subject', 'predicate', 'object'):
+        fields[f'{key}_key'] = name_key(fields[key])
     for key in ('valid_at', 'invalid_at', 'created_at', 'expired_at', 'last_access'):
         if fields[key] is not None:
             fields[key] = datetime.fromtimestamp(fields[key], timezone.utc)
@@ -124,24 +127,15 @@ def test_account_deletion_cleans_sources_facts_derived_data(accounts, runtime, s
                 sql.Identifier(table))).fetchone() == (0,)
 
 
-def test_task_references_and_required_stats(runtime, spaces, user):
-    from psycopg.types.json import Jsonb
-    stats = dict.fromkeys(('facts_added','duplicates','invalidated','model_calls','windows_completed'), 0)
+def test_task_sources_cannot_cross_spaces(runtime, spaces, user):
     a, b = spaces.create(user, 'A'), spaces.create(user, 'B')
-    def operation(conn, space, counters):
-        conn.execute('INSERT INTO mnemotrace.operations(user_id,space_id,operation_id,kind,state,phase,attempts,'
-                     'embed_attempts,space_generation,stats,stored_raw,extraction_saved,core_committed) '
-                     "VALUES (%s,%s,'operation-1','extract','pending','queued',0,0,0,%s,true,false,false)",
-                     (user, space, Jsonb(counters)))
     with runtime.space_transaction(user, a.space_id) as (conn, _):
         source(conn, user, a.space_id)
-        operation(conn, a.space_id, stats)
     with runtime.space_transaction(user, b.space_id) as (conn, _):
-        operation(conn, b.space_id, stats)
-    for invalid in ({}, {**stats, 'model_calls': -1}, {**stats, 'model_calls': True},
-                    {**stats, 'model_calls': None}, {**stats, 'model_calls': 1.5}):
-        with pytest.raises(DatabaseConstraintError), runtime.space_transaction(user, a.space_id) as (conn, _):
-            conn.execute('UPDATE mnemotrace.operations SET stats=%s WHERE space_id=%s', (Jsonb(invalid), a.space_id))
+        conn.execute('INSERT INTO mnemotrace.operations(user_id,space_id,operation_id,kind,state,phase,attempts,'
+                     'embed_attempts,space_generation,stored_raw,extraction_saved,core_committed) '
+                     "VALUES (%s,%s,'operation-1','extract','pending','queued',0,0,0,true,false,false)",
+                     (user, b.space_id))
     with pytest.raises(DatabaseConstraintError), runtime.space_transaction(user, b.space_id) as (conn, _):
         conn.execute('INSERT INTO mnemotrace.operation_sources(user_id,space_id,operation_id,source_id,'
                      "content_version,input_start,input_end,input_order) VALUES (%s,%s,'operation-1','source-1',1,0,1,0)",

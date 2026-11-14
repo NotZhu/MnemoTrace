@@ -154,7 +154,7 @@ def _merge_input(mem, namespace, win, now):
 
 def _merge_snapshot(mem, namespace, facts):
     subjects = {fact.subject.strip().lower() for fact in facts}
-    return sorted((fact for fact in mem._all_facts(include_unpublished=True)
+    return sorted((fact for fact in mem._all_facts()
                    if fact.user_id == namespace and fact.subject.strip().lower() in subjects),
                   key=lambda fact: fact.id)
 
@@ -166,14 +166,12 @@ def _commit(mem, tasks, win, now, merge=None):
         return win['vectors'][content_hash(text)] if mem.embedder is not None else None
     if not win['core_saved']:
         if merge is not None:
-            changed, conflicts, stats = merge
+            changed, stats = merge
             for fact in changed:
                 mem._upsert_fact(fact)
                 mem.writer.graph_builder.add_fact(fact)
             if changed:
                 mem.graph.prune_orphan_entities()
-            for conflict in conflicts:
-                mem.conflicts.setdefault(conflict.id, conflict)
             for field, count in stats.items():
                 win['stats'][field] += count
         win['core_saved'] = True
@@ -273,7 +271,6 @@ def run_one(service, user):
                 merge_at = time.time()
                 facts = _merge_input(mem, user, win, merge_at)
                 previous = deepcopy(_merge_snapshot(mem, user, facts))
-                existing_pairs = tuple(c.pair_key for c in mem.conflicts.values() if c.user_id == user)
             if win['phase'] in {'generate', 'compensate'}:
                 budget_policy = mem._effective('digest_system') if win['operation'] == 'digest' else (
                     mem.policy.get('extract_system', '') + mem.policy.get('extract_instruction', ''))
@@ -307,7 +304,7 @@ def run_one(service, user):
                 from .consolidate.adjudication import plan_merge
                 from .llm.execution import ModelMeter, one_attempt
                 output = plan_merge(facts, previous, ModelMeter(one_attempt(model), service.metrics, 'pipeline'),
-                                    config, embedder, merge_at, existing_pairs)
+                                    config, embedder, merge_at)
             elif embedding and embedder is None:
                 output = {}
             elif embedding:

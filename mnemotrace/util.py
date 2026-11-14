@@ -120,3 +120,7 @@ def extract_text(content: object) -> str:
                 # 其余：image_url / file / tool 部分 —— 跳过
         return "\n".join(p for p in out if p)
     return str(content)
+
+
+def name_key(name: str) -> str:
+    return name.strip().lower()

@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 
 from .errors import VersionConflict
-from ...consolidate.fact_rules import entity_name_key
+from ...util import name_key
 from ...retrieve.lexical import bm25_query_terms
 from .records import ENTITY, ENTITY_TYPE, RELATION_TYPE, domain
 
@@ -32,7 +32,7 @@ class OntologyWorkset:
         if not names:
             return {}
         with self._read() as sql:
-            return {entity_name_key(entity.name): entity for entity in map(domain, sql.select(
+            return {name_key(entity.name): entity for entity in map(domain, sql.select(
                 ENTITY, ('r.normalized_name = ANY(%s)',), (sorted(names),)))}
 
     def relation_named(self, predicate):

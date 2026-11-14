@@ -3,29 +3,25 @@ from dataclasses import fields
 from datetime import datetime, timezone
 import json
 
-from ...consolidate.fact_rules import entity_name_key
-from ...types import Conflict, Entity, EntityAlias, EntityType, Episode, Fact, Relation, RelationType
+from ...util import name_key
+from ...types import Entity, EntityType, Episode, Fact, Relation, RelationType
 from ...retrieve.lexical import lexical_terms
 from ..contracts import RecordKind, RecordRef, StoredRecord
 from .database import identifier
 from .errors import DataCorruption
 
-SOURCE, FACT, ENTITY, RELATION, CONFLICT, RELATION_TYPE, ENTITY_TYPE, ENTITY_ALIAS = RecordKind
-MODELS = dict(zip(RecordKind, (Episode, Fact, Entity, Relation, Conflict, RelationType, EntityType, EntityAlias), strict=True))
+SOURCE, FACT, ENTITY, RELATION, RELATION_TYPE, ENTITY_TYPE = RecordKind
+MODELS = dict(zip(RecordKind, (Episode, Fact, Entity, Relation, RelationType, EntityType), strict=True))
 TABLES = dict(zip(RecordKind, (
-    'sources', 'facts', 'entities', 'graph_relations', 'conflicts', 'relation_types', 'entity_types', 'entity_aliases',
+    'sources', 'facts', 'entities', 'graph_relations', 'relation_types', 'entity_types',
 ), strict=True))
 TARGET_COLUMNS = {SOURCE: 'source_id', FACT: 'fact_id', ENTITY: 'entity_id'}
 TIMES = frozenset(('event_time', 'ingested_at', 'created_at', 'valid_at', 'invalid_at',
-                   'expired_at', 'withdrawn_at', 'last_access', 'expires_at', 'detected_at', 'digest_written_at'))
+                   'expired_at', 'last_access', 'expires_at', 'digest_written_at'))
 SCOPE = 'user_id = %s AND space_id = %s'
 ROW_SCOPE = 'r.user_id = %s AND r.space_id = %s'
-JSON_COLUMNS = {'profile_data', 'metadata', 'coverage', 'digest_coverage', 'settings', 'stats',
+JSON_COLUMNS = {'profile_data', 'metadata', 'coverage', 'digest_coverage', 'settings',
                 'input', 'result', 'source_versions', 'endpoint_types'}
-
-
-def anchor_terms(name):
-    return sorted(set(lexical_terms(name, exact=True)))
 
 
 def timestamp(value):
@@ -79,19 +75,15 @@ def columns(record, values):
         data['projection_version'] = record.record_version
     else:
         data['record_version'] = record.record_version
-        if kind != CONFLICT:
-            data['content_version'] = record.content_version
+        data['content_version'] = record.content_version
     if kind == SOURCE:
         data['agent_id'] = record.agent_id
     if kind == ENTITY:
-        data['normalized_name'] = entity_name_key(values['name'])
-        data['anchor_terms'] = anchor_terms(values['name'])
-    if kind == ENTITY_ALIAS:
-        data['normalized_name'] = values['name'].strip().lower()
+        data['normalized_name'] = name_key(values['name'])
+        data['anchor_terms'] = sorted(set(lexical_terms(values['name'], exact=True)))
     if kind == FACT:
-        data['subject_key'] = values['subject'].lower()
-        data['predicate_key'] = values['predicate'].lower()
-        data['subject_match_key'] = values['subject'].strip().casefold()
+        for key in ('subject', 'predicate', 'object'):
+            data[f'{key}_key'] = name_key(values[key])
     return data
 
 

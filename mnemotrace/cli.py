@@ -27,6 +27,7 @@ def main(argv=None):
     remember.add_argument('content')
     remember.add_argument('--session-id', required=True)
     remember.add_argument('--agent-id')
+    remember.add_argument('--event-time', type=float, help='Source time as Unix seconds')
     remember.add_argument('--no-extract', dest='extract', action='store_false',
                           help='Save the original without extracting facts')
     remember.add_argument('--processing', choices=('buffered', 'immediate'), default='buffered')
@@ -43,7 +44,7 @@ def main(argv=None):
         with local_space(args) as (service, context):
             if args.command == 'remember':
                 result = service.remember(context, args.content, args.session_id, args.extract,
-                                          args.processing, agent_id=args.agent_id)
+                                          args.processing, agent_id=args.agent_id, event_time=args.event_time)
             elif args.command in ('operation', 'retry'):
                 result = service.operation(context, args.operation_id, retry=args.command == 'retry')
                 if result is None:

@@ -27,7 +27,8 @@ class Backend(Protocol):
                                 processing: str = 'buffered', extract: bool = True, *, agent_id: str | None = None) -> dict: ...
 
     async def remember(self, content: str, session_id: str = "default", extract: bool = True,
-                       processing: str = "immediate", *, agent_id: str | None = None) -> dict: ...
+                       processing: str = "immediate", *, agent_id: str | None = None,
+                       event_time: float | None = None) -> dict: ...
     async def operation(self, operation_id: str, *, retry: bool = False) -> dict | None: ...
     async def processing_status(self, session_id: str | None = None) -> dict: ...
     async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
@@ -109,8 +110,10 @@ class LocalBackend:
         return await asyncio.to_thread(self.svc.remember_messages, self.context, messages, session_id, processing, extract, agent_id=agent_id)
 
     async def remember(self, content: str, session_id: str = "default", extract: bool = True,
-                       processing: str = "immediate", *, agent_id: str | None = None) -> dict:
-        return await asyncio.to_thread(self.svc.remember, self.context, content, session_id, extract, processing, agent_id=agent_id)
+                       processing: str = "immediate", *, agent_id: str | None = None,
+                       event_time: float | None = None) -> dict:
+        return await asyncio.to_thread(self.svc.remember, self.context, content, session_id, extract, processing,
+                                       agent_id=agent_id, event_time=event_time)
 
     async def operation(self, operation_id: str, *, retry: bool = False) -> dict | None:
         return await asyncio.to_thread(self.svc.operation, self.context, operation_id, retry=retry)
@@ -285,13 +288,15 @@ class RemoteBackend:
             processing=processing, extract=extract, agent_id=agent_id))
 
     async def remember(self, content: str, session_id: str = "default", extract: bool = True,
-                       processing: str = "immediate", *, agent_id: str | None = None) -> dict:
+                       processing: str = "immediate", *, agent_id: str | None = None,
+                       event_time: float | None = None) -> dict:
         return await self._post("/v1/remember", {
             "content": content,
             "session_id": session_id,
             "extract": extract,
             "processing": processing,
             "agent_id": agent_id,
+            "event_time": event_time,
         })
 
     async def operation(self, operation_id: str, *, retry: bool = False) -> dict:

@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Literal, Optional, get_args
 
-from .categories import Category, CategoriesSource, validate_categories
-from .util import gen_id, now
+from .categories import Category, validate_categories
+from .util import gen_id, name_key, now
 
 
 @dataclass
@@ -66,15 +66,11 @@ class Fact:
     embedding: Optional[list[float]] = None
 
     salience: float = 1.0  # 重要程度；被访问时提升，随时间衰减
-    confidence: float = 1.0
     # 来源类别：自动抽取，或离线构造的用户断言。
     source: str = "extracted"
     # 分类（feature ⑤）：粗粒度的领域/类别标签和敏感标记（PII/健康/财务等）。
     # 默认值供离线构造与写入后的分类使用；敏感 fact 可在共享/导出场景中脱敏。
     sensitive: bool = False
-    sensitive_override: bool = False
-    review_pending: bool = False
-    withdrawn_at: float | None = None
 
     # --- 有效时间（世界）---
     valid_at: Optional[float] = field(default_factory=now)
@@ -93,37 +89,34 @@ class Fact:
 
     # 与事实来源、管理分类及敏感标记独立；自动赋值由写入路径接入。
     categories: list[Category] = field(default_factory=list)
-    categories_source: CategoriesSource = "unset"
-    relation_id: str | None = ""
+    relation_id: str = ""
     subject_id: str | None = None
     object_id: str | None = None
     subject_type: str | None = None
     object_type: str | None = None
     retention: Retention = "unknown"
-    source_roles: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        validate_categories(self.categories, self.categories_source)
+        validate_categories(self.categories)
         validate_retention(self.retention)
-        if self.relation_id == "":
-            self.relation_id = relation_identifier(self.predicate)
-        if self.id in self.supersedes or len(set(self.supersedes)) != len(self.supersedes):
-            raise ValueError("Invalid direct predecessors")
         for name in ('subject', 'predicate', 'object', 'text'):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f'{name} must be a non-empty string')
+        if self.relation_id == "":
+            self.relation_id = relation_identifier(self.predicate)
+        if not isinstance(self.relation_id, str) or not self.relation_id.strip():
+            raise ValueError("relation_id must be a non-empty string")
+        if self.id in self.supersedes or len(set(self.supersedes)) != len(self.supersedes):
+            raise ValueError("Invalid direct predecessors")
 
     @property
     def subject_key(self) -> tuple[str | None, str | None]:
-        return (self.subject_id, None) if self.subject_id else (None, self.subject.strip().casefold())
+        return (self.subject_id, None) if self.subject_id else (None, name_key(self.subject))
 
     @property
-    def slot(self) -> tuple[str, tuple[str | None, str | None], str | None]:
+    def slot(self) -> tuple[str, tuple[str | None, str | None], str]:
         return self.user_id, self.subject_key, self.relation_id
-
-    def is_published(self) -> bool:
-        return not self.review_pending and self.withdrawn_at is None
 
     def end_at(self, effective: float, recorded: float) -> None:
         if self.invalid_at is None or effective < self.invalid_at:
@@ -135,7 +128,7 @@ class Fact:
         return (self.valid_at is None or self.valid_at <= at) and (self.invalid_at is None or at < self.invalid_at)
 
     def is_live(self, as_of: float | None = None) -> bool:
-        return (self.is_published() and (as_of is None or self.valid_at is not None)
+        return ((as_of is None or self.valid_at is not None)
                 and self.is_valid_at(now() if as_of is None else as_of))
 
 
@@ -158,17 +151,6 @@ class Entity:
 class EntityType:
     id: str
     meaning: str
-    user_id: str = "default"
-
-
-@dataclass
-class EntityAlias:
-    id: str
-    entity_id: str
-    fact_id: str
-    source_id: str
-    name: str
-    sensitive: bool
     user_id: str = "default"
 
 
@@ -203,26 +185,3 @@ class Relation:
     invalid_at: Optional[float] = None
     # 边 id
     id: str = field(default_factory=lambda: gen_id("rel"))
-
-
-@dataclass
-class Conflict:
-    """两条事实之间的疑似冲突，按有效时间区分较早和较晚的事实。
-
-    LLM 检测出的冲突由用户处理：可保留一方、保留两方或排除该冲突。
-    """
-
-    older: str  # 已存的事实 ID
-    newer: str  # 待比较的候选事实 ID
-    text_older: str = ""  # 检测时旧事实的文本快照
-    text_newer: str = ""  # 检测时新事实的文本快照
-    user_id: str = "default"  # 所属用户 ID
-    reason: str = ""  # 疑似冲突的原因
-    older_version: int = 1
-    newer_version: int = 1
-    detected_at: float = field(default_factory=now)  # 检测时间，默认为创建时刻
-    id: str = field(default_factory=lambda: gen_id("cf"))  # 冲突记录 ID
-
-    @property
-    def pair_key(self) -> tuple:
-        return tuple(sorted((self.older, self.newer)))

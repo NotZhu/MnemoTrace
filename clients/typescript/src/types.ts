@@ -52,7 +52,7 @@ export type ProcessingState = 'pending' | 'running' | 'retry_wait' | 'failed' | 
 
 export interface OperationResult {
   operation_id: string
-  kind: 'extract' | 'digest' | 'reembed' | 'graph' | 'profile' | 'conflicts' | 'outcomes'
+  kind: 'extract' | 'digest' | 'profile'
   state: ProcessingState
   phase: 'queued' | 'generate' | 'embed' | 'commit' | 'compensate' | 'done'
   stored_raw: boolean
@@ -79,6 +79,8 @@ export interface ProcessingFlushResult {
 export interface RememberResult extends Omit<ProcessingFlushResult, 'status'> {
   status: ProcessingFlushResult['status'] | 'accepted' | 'stored'
   source_ids: string[]
+  /** IDs of facts written by completed note processing. */
+  fact_ids?: string[]
 }
 
 /** 检索到的精简上下文 — 用于作答的一小段带日期切片（recall）。 */
@@ -121,7 +123,6 @@ export interface SessionReportFact {
   source: FactSource
   /** Omitted for redacted rows. */
   categories?: Category[]
-  categories_source?: CategoriesSource
   sensitive: boolean
   redacted: boolean
   provenance: string[]
@@ -180,21 +181,17 @@ export interface SessionListOptions {
 export type FactStatus = 'live' | 'superseded'
 export type FactSource = 'extracted' | 'user'
 
-export type CategoriesSource = 'unset' | 'llm' | 'user'
 export interface FactMetadata {
   categories: Category[]
-  categories_source: CategoriesSource
 }
 
 export interface Fact extends FactMetadata {
-  relation_id: string | null
+  relation_id: string
   subject_id: string | null
   object_id: string | null
   subject_type: string | null
   object_type: string | null
-  withdrawn_at: number | null
   retention: 'durable' | 'normal' | 'unknown'
-  source_roles?: ('user' | 'assistant')[]
   id: string
   text: string
   subject: string
@@ -306,7 +303,6 @@ export interface MemoryStats {
     digests: number
     entities: number
     relations: number
-    pending_conflicts: number
   }
   storage: 'postgres'
   embedder: string
@@ -426,12 +422,11 @@ export interface ImportSessionInput {
 
 
 export interface MemoryExportFact extends FactMetadata {
-  relation_id: string | null
+  relation_id: string
   subject_id: string | null
   object_id: string | null
   subject_type: string | null
   object_type: string | null
-  withdrawn_at: number | null
   retention: Fact["retention"]
   id: string
   subject: string
@@ -439,11 +434,10 @@ export interface MemoryExportFact extends FactMetadata {
   object: string
   text: string
   source: FactSource
-  status: FactStatus
+  status: FactStatus | 'scheduled'
   sensitive: boolean
   salience: number
-  confidence: number
-  valid_at: number
+  valid_at: number | null
   valid_at_h: string
   invalid_at: number | null
   invalid_at_h: string | null
@@ -464,7 +458,7 @@ export interface MemoryExportEpisode {
 }
 
 export interface MemoryExport {
-  format_version: 4
+  format_version: 6
   space_id: string
   include_sensitive: boolean
   redacted_sensitive: boolean

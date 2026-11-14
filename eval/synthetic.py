@@ -46,8 +46,8 @@ ITEMS: list[EvalItem] = [
     EvalItem(
         "mh1", "multi_hop",
         [("My name is Dora.", 0), ("My colleague Evan works at Netflix.", 1)],
-        "Where does my colleague work?", "Netflix", path=("user", "colleague", "works_at"),
-        entity_types={"user": "person", "Evan": "person", "Netflix": "organization"},
+        "Where does my colleague work?", "Netflix", path=("我", "colleague", "works_at"),
+        entity_types={"我": "person", "Evan": "person", "Netflix": "organization"},
     ),
     EvalItem(
         "mh2", "multi_hop",
@@ -56,8 +56,8 @@ ITEMS: list[EvalItem] = [
             ("Maya just moved to Seattle for a fellowship.", 1),
             ("I bought a new espresso machine and it's wonderful.", 2),
         ],
-        "Where does my sister live?", "Seattle", path=("user", "sister", "lives_in"),
-        entity_types={"user": "person", "Maya": "person", "Seattle": "location"},
+        "Where does my sister live?", "Seattle", path=("我", "sister", "lives_in"),
+        entity_types={"我": "person", "Maya": "person", "Seattle": "location"},
     ),
     EvalItem(
         "tmp1", "temporal",

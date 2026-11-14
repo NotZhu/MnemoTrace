@@ -5,20 +5,16 @@ export type { Category, ProfileSection } from './generated/memory-contract'
 export type FactStatus = 'live' | 'superseded'
 export type FactSource = 'extracted' | 'user'
 
-export type CategoriesSource = 'unset' | 'llm' | 'user'
 export interface FactMetadata {
   categories: Category[]
-  categories_source: CategoriesSource
 }
 
 export interface MemoryFact extends FactMetadata {
-  relation_id: string | null
+  relation_id: string
   subject_id: string | null
   object_id: string | null
   subject_type: string | null
   object_type: string | null
-  withdrawn_at: number | null
-  source_roles?: ('user' | 'assistant')[]
   id: string
   text: string
   subject: string
@@ -35,17 +31,6 @@ export interface MemoryFact extends FactMetadata {
   // 结论事实把推理依据内嵌在 `text` 中（"statement （依据：why）"）；服务器会把它
   // 拆分到这里，让 journal 行能把主张和依据分行展示。其余情况为 ''。
   why: string
-}
-
-export interface Conflict {
-  id: string
-  older: string
-  newer: string
-  text_older: string
-  text_newer: string
-  older_version: number
-  newer_version: number
-  reason: string
 }
 
 
@@ -85,7 +70,6 @@ export interface MemoryStatsCounts {
   relations: number
   graph_orphan_entities: number
   graph_stale_relations: number
-  pending_conflicts: number
 }
 
 /** 由服务器根据带来源标记的会话记录推导的摄入统计。 */
@@ -174,7 +158,6 @@ export interface SessionReportFact {
   source: FactSource
   // 脱敏占位条目不返回分类和对象类型。
   categories?: Category[]
-  categories_source?: CategoriesSource
   sensitive: boolean
   redacted: boolean
   provenance: string[]
@@ -262,6 +245,7 @@ export interface ProcessingResult {
 export interface RememberResult extends Omit<ProcessingResult, 'status'> {
   status: ProcessingResult['status'] | 'accepted' | 'stored'
   source_ids: string[]
+  fact_ids?: string[]
 }
 
 export interface RecallResult {
@@ -338,7 +322,7 @@ export interface AuditReport {
 
 export interface OperationResult {
   operation_id: string
-  kind: 'extract' | 'digest' | 'reembed' | 'graph' | 'profile' | 'conflicts' | 'outcomes'
+  kind: 'extract' | 'digest' | 'profile'
   state: 'pending' | 'running' | 'retry_wait' | 'failed' | 'completed' | 'cancelled'
   phase: 'queued' | 'generate' | 'embed' | 'commit' | 'compensate' | 'done'
   stored_raw: boolean

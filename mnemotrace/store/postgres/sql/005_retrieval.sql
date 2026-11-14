@@ -18,7 +18,7 @@ CREATE INDEX lexical_fact_version
 CREATE INDEX lexical_source_version
     ON mnemotrace.lexical_documents(user_id, space_id, source_id, field, content_version) WHERE source_id IS NOT NULL;
 
-ALTER TABLE mnemotrace.entities ADD COLUMN anchor_terms text[];
+ALTER TABLE mnemotrace.entities ADD COLUMN anchor_terms text[] NOT NULL;
 CREATE INDEX entity_anchor_terms ON mnemotrace.entities USING gin(anchor_terms);
 
 ALTER TABLE mnemotrace.source_digests ADD COLUMN digest_written_at timestamptz;

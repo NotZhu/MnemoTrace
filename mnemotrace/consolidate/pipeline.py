@@ -12,7 +12,7 @@ import uuid
 from ..types import Episode
 from ..extraction import ExtractionError
 
-VERSION = 7
+VERSION = 9
 TERMINAL = {'completed', 'failed', 'cancelled'}
 
 
@@ -293,7 +293,7 @@ def validate_state(value, episodes=None, embedding_dim=None):
                 require(isinstance(session['batch_id'], str))
             for key, win in state['windows'].items():
                 require(isinstance(key, str) and len(key) == 24 and isinstance(win, dict) and set(win) == WINDOW_FIELDS)
-                require(win['route'] in state['sessions'] and win['operation'] in {'extract', 'digest', 'conflicts'})
+                require(win['route'] in state['sessions'] and win['operation'] in {'extract', 'digest'})
                 require(win['state'] in STATES and win['phase'] in {'generate', 'embed', 'commit', 'compensate', 'done'})
                 require(win['input_hash'] == content_hash(win['input']) and isinstance(win['config'], str) and len(win['config']) == 64)
                 require(isinstance(win['generation_config'], str) and len(win['generation_config']) == 64
@@ -323,7 +323,7 @@ def validate_state(value, episodes=None, embedding_dim=None):
                 require(win['phase'] not in {'embed', 'commit', 'compensate', 'done'} or isinstance(win['result'], dict))
                 require(win['state'] != 'completed' or win['phase'] == 'done' and win['core_saved'])
                 data = win['input']
-                require(isinstance(data, dict) and set(data) == {'context', 'pending', 'extract', 'source_kind', 'operation', 'parts', 'candidates'})
+                require(isinstance(data, dict) and set(data) == {'context', 'pending', 'extract', 'source_kind', 'operation', 'parts'})
                 require(type(data['extract']) is bool)
                 session = state['sessions'][win['route']]
                 require(all(data.get(k) == session[k] for k in ('extract', 'source_kind')))
@@ -331,30 +331,14 @@ def validate_state(value, episodes=None, embedding_dim=None):
                 require(isinstance(data['context'], list) and isinstance(data['pending'], list) and bool(data['pending']))
                 require(isinstance(data['parts'], list) and all(isinstance(k, str) for k in data['parts']))
                 require(len(set(data['parts'])) == len(data['parts']) and key not in data['parts'])
-                require(isinstance(data['candidates'], list))
                 if win['operation'] == 'digest':
-                    require(len(data['pending']) == 1 and not data['context'] and not data['candidates'])
+                    require(len(data['pending']) == 1 and not data['context'])
                     require(not data['parts'] or len(data['parts']) >= 2)
                     if win['state'] not in TERMINAL:
                         row = state['sources'][data['pending'][0]['id']]
                         require(set(data['parts']).issubset(p['key'] for p in row['parts']))
                 else:
                     require(not data['parts'])
-                if win['operation'] == 'conflicts':
-                    require(bool(data['candidates']) and not data['context'])
-                    for pair in data['candidates']:
-                        require(isinstance(pair, dict) and set(pair) == {'older', 'newer'})
-                        for fact in pair.values():
-                            require(isinstance(fact, dict) and set(fact) == {'id', 'subject', 'predicate', 'object',
-                                'text', 'valid_at', 'source', 'source_roles'})
-                            require(all(isinstance(fact[k], str) and fact[k] for k in ('id', 'subject', 'predicate', 'object')))
-                            require(isinstance(fact['text'], str) and fact['source'] in {'user', 'extracted'})
-                            require(isinstance(fact['source_roles'], list) and all(r in {'user', 'assistant'} for r in fact['source_roles']))
-                            require(fact['valid_at'] is None or type(fact['valid_at']) in (int, float) and math.isfinite(fact['valid_at']))
-                        require(pair['older']['id'] != pair['newer']['id'])
-                        require(pair['older']['subject'].lower() == pair['newer']['subject'].lower())
-                else:
-                    require(not data['candidates'])
 
                 views = [*data['context'], *data['pending']]
                 require(len({v['id'] for v in views}) == len(views))
@@ -365,7 +349,7 @@ def validate_state(value, episodes=None, embedding_dim=None):
                     require(item['id'] in state['sources'] and item['source'] == state['sources'][item['id']]['source'])
                     row = state['sources'][item['id']]
                     require(row['session_id'] == session['session_id'] and row['source_kind'] == data['source_kind'])
-                    require(win['operation'] == 'conflicts' or row['extract'] == data['extract'])
+                    require(row['extract'] == data['extract'])
                     require(item['message_id'] == row['message_id'] and item['sequence'] == row['sequence'] and item['source_length'] == row['length'])
                     require((item['role'] in {'user', 'assistant'}) == (data['source_kind'] == 'dialogue'))
                     if docs is not None and not state['sources'][item['id']]['cancelled']:
@@ -617,15 +601,6 @@ class PipelineTasks:
                 summarization=row['digest'], coverage=deepcopy(self.memory.episodes_doc.get(key).coverage) if self.memory.episodes_doc.get(key) else None,
                 error_code=win['error_code'] if win else 'source_changed' if state == 'failed' else None, attempts=win['attempts'] if win else 0,
                 embed_attempts=win['embed_attempts'] if win else 0))
-        for key, win in (self.state or {}).get('windows', {}).items():
-            if win['operation'] != 'conflicts':
-                continue
-            keys = {s['id'] for s in win['input']['pending']}
-            if ids is not None and not keys.intersection(ids) or session_id is not None and not any(r['session_id'] == session_id for k, r in self.rows().items() if k in keys):
-                continue
-            jobs.append(dict(job_id=key, episode_id=next(iter(keys)), source_ids=sorted(keys), source_kind=win['input']['source_kind'],
-                operation=win['operation'], state=win['state'], phase=win['phase'], error_code=win['error_code'],
-                attempts=win['attempts'], embed_attempts=win['embed_attempts']))
         return dict(session_id=session_id, generation=self.state['generation'] if self.state else None,
                     counts={s: sum(j['state'] == s for j in jobs) for s in STATES}, jobs=jobs)
 

@@ -247,6 +247,7 @@ class RememberReq(SpaceRequest):
     extract: StrictBool = True
     processing: Literal['immediate', 'buffered'] = 'immediate'
     agent_id: str | None = None
+    event_time: float | None = Field(default=None, strict=True, allow_inf_nan=False)
     timeout: float = Field(default=30, ge=0, le=300)
 
 
@@ -396,7 +397,7 @@ def remember_messages(req: MessagesReq, owner: str = Depends(auth)):
 def remember(req: RememberReq, owner: str = Depends(auth)):
     context = svc().spaces.authorize(owner, req.space_id)
     data = svc().remember(context, req.content, req.session_id, req.extract, req.processing,
-                          agent_id=req.agent_id, timeout=req.timeout)
+                          agent_id=req.agent_id, event_time=req.event_time, timeout=req.timeout)
     return JSONResponse(data, status_code=202) if req.processing == 'buffered' else data
 
 
@@ -761,24 +762,6 @@ def put_policy(req: PolicyReq, owner: str = Depends(auth)):
 
 
 # --- 需要人工判断的冲突 ---
-class ResolveReq(SpaceRequest):
-    keep: Literal["newer", "older", "both"] = "newer"
-
-
-@app.get("/v1/conflicts")
-def conflicts(user: SpaceContext = Depends(authorized_space)):
-    """列出有效先后无法判断的待审冲突。"""
-    return svc().conflicts(user)
-
-
-@app.post("/v1/conflicts/{conflict_id}/resolve")
-def resolve_conflict(conflict_id: str, req: ResolveReq, owner: str = Depends(auth)):
-    """采纳一方并撤回另一方，或保留双方。"""
-    user = svc().spaces.authorize(owner, req.space_id)
-    return svc().resolve_conflict(user, conflict_id, keep=req.keep)
-
-
-# --- ② 语义图，供 关系图谱 可视化使用 ---
 @app.get("/v1/graph")
 def graph(
     as_of: float | None = None,

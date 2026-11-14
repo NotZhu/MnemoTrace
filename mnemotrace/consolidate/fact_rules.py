@@ -2,18 +2,19 @@
 import re
 
 
-def entity_name_key(name):
-    return name.strip().lower()
-
-
 def object_key(fact):
     return (fact.object_id, None) if fact.object_id else (None, fact.object)
 
 
-def same_assertion(existing, incoming, *, match_time=True, bound_relation=False):
-    if (existing.withdrawn_at is not None or existing.slot != incoming.slot
+def assertion_key(fact, *, symmetric=False):
+    if symmetric and fact.subject_id and fact.object_id:
+        return fact.user_id, fact.relation_id, tuple(sorted((fact.subject_id, fact.object_id)))
+    return fact.slot, object_key(fact)
+
+
+def same_assertion(existing, incoming, *, match_time=True, bound_relation=False, symmetric=False):
+    if (assertion_key(existing, symmetric=symmetric) != assertion_key(incoming, symmetric=symmetric)
             or (not bound_relation and existing.predicate != incoming.predicate)
-            or object_key(existing) != object_key(incoming)
             or existing.text != incoming.text):
         return False
     return not match_time or (existing.valid_at == incoming.valid_at

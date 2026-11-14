@@ -186,12 +186,12 @@ export class MnemoTraceClient {
   }
 
   remember(content: string, options: SpaceOptions & {
-    sessionId?: string; extract?: boolean;
+    sessionId?: string; extract?: boolean; eventTime?: number | null;
     processing?: 'immediate' | 'buffered'; agentId?: string; timeout?: number
   }): Promise<RememberResult> {
     return this.post('/v1/remember', {
       content, session_id: options.sessionId, extract: options.extract, processing: options.processing,
-      agent_id: options.agentId, timeout: options.timeout,
+      agent_id: options.agentId, event_time: options.eventTime, timeout: options.timeout,
     }, options.spaceId)
   }
 

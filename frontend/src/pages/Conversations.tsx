@@ -295,7 +295,7 @@ export default function Conversations() {
                     <div className="break-words text-slate-100">{f.text}</div>
                     <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-ghost">
                       <Badge tone={f.status === 'live' ? 'live' : 'old'}>{f.status}</Badge>
-                      {f.categories && f.categories_source && <CategoryBadges categories={f.categories} categories_source={f.categories_source} />}
+                      {f.categories && <CategoryBadges categories={f.categories} />}
                       {f.sensitive && (
                         <span className="inline-flex items-center gap-1 rounded bg-brand-rose/15 px-1.5 py-px text-brand-rose">
                           <ShieldAlert className="h-3 w-3" /> {t.conversations.auditSensitive}

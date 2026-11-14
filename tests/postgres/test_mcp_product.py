@@ -50,6 +50,7 @@ async def test_tools_are_registered_with_flat_schema():
     assert "redact_sensitive" in props
     remember_props = tools["mnemotrace_remember"].inputSchema.get("properties", {})
     assert "content" in remember_props and "session_id" in remember_props and remember_props["extract"]["type"] == "boolean"
+    assert "event_time" in remember_props
     assert "scope" not in remember_props
     messages_props = tools["mnemotrace_remember_messages"].inputSchema["properties"]
     assert messages_props["extract"]["type"] == "boolean" and "scope" not in messages_props
@@ -95,6 +96,24 @@ async def test_remember_then_recall_and_search(local_backend):
 
 
 @pytest.mark.asyncio
+async def test_remember_reports_no_fact_change_until_correction_can_be_ordered(local_backend, monkeypatch):
+    from mnemotrace.llm import FakeLLM
+    from tests.postgres.ontology_fixtures import Answers, assertion
+
+    first = 'Full-time: Ana works at Orbit Labs.'
+    correction = 'Full-time: Ana works at Nova Labs.'
+    monkeypatch.setattr(local_backend.svc, 'llm', FakeLLM(handler=Answers({
+        first: assertion('Ana', 'works_at', 'Orbit Labs'),
+        correction: assertion('Ana', 'works_at', 'Nova Labs'),
+    }, {})))
+    assert 'Remembered.' in await call('mnemotrace_remember', content=first, event_time=0)
+    assert 'No facts changed.' in await call('mnemotrace_remember', content=correction)
+    assert 'Remembered.' in await call('mnemotrace_remember', content=correction, event_time=20)
+    current, = local_backend.svc.memory(local_backend.context).facts()
+    assert current.object == 'Nova Labs' and current.valid_at == 20
+
+
+@pytest.mark.asyncio
 async def test_flush_processing_tool(local_backend):
     accepted = await call("mnemotrace_remember", content="I work at Acme.", session_id="s1",
                           processing="buffered", response_format="json")
@@ -130,7 +149,7 @@ async def test_session_report_tool_audits_saved_facts(local_backend):
 
 @pytest.mark.asyncio
 async def test_add_fact_list_and_profile(local_backend):
-    seed_fact(local_backend.svc.memory(local_backend.context), "user", 'works_at', 'Moonshot AI', sensitive=False, text='Synthetic fact: Moonshot AI')
+    seed_fact(local_backend.svc.memory(local_backend.context), "我", 'works_at', 'Moonshot AI', sensitive=False, text='Synthetic fact: Moonshot AI')
     facts = await call("mnemotrace_list_facts")
     assert "Moonshot AI" in facts
     assert re.search(r"`ft_[^`]+`", facts)
@@ -144,7 +163,7 @@ async def test_explicit_profile_refresh_and_cached_read(local_backend):
 
     llm = model()
     local_backend.svc.llm = llm
-    seed_fact(local_backend.svc.memory(local_backend.context), "user", 'likes', 'Synthetic tea', sensitive=False, text='Synthetic fact: Synthetic tea')
+    seed_fact(local_backend.svc.memory(local_backend.context), "我", 'likes', 'Synthetic tea', sensitive=False, text='Synthetic fact: Synthetic tea')
     initial = json.loads(await call("mnemotrace_profile", response_format="json"))
     assert initial["updated_at"] is None and not llm.calls
     operation = json.loads(await call("mnemotrace_refresh_profile"))
@@ -159,7 +178,7 @@ async def test_explicit_profile_refresh_and_cached_read(local_backend):
 
 @pytest.mark.asyncio
 async def test_update_and_delete_fact_tools(local_backend):
-    seed_fact(local_backend.svc.memory(local_backend.context), "user", 'works_at', 'ByteDance', sensitive=False, text='Synthetic fact: ByteDance')
+    seed_fact(local_backend.svc.memory(local_backend.context), "我", 'works_at', 'ByteDance', sensitive=False, text='Synthetic fact: ByteDance')
     raw = await call("mnemotrace_list_facts", response_format="json")
     fid = json.loads(raw)["facts"][0]["id"]
 
@@ -202,7 +221,7 @@ async def test_focus_tools(local_backend):
 @pytest.mark.asyncio
 async def test_stats_tool_is_content_free(local_backend):
     await call("mnemotrace_remember", content="My private diagnosis is diabetes and I work at Acme.")
-    seed_fact(local_backend.svc.memory(local_backend.context), "user", 'has_disease', 'diabetes', sensitive=True, text='Synthetic fact: diabetes')
+    seed_fact(local_backend.svc.memory(local_backend.context), "我", 'has_disease', 'diabetes', sensitive=True, text='Synthetic fact: diabetes')
 
     stats = await call("mnemotrace_stats")
     assert "MnemoTrace stats" in stats
@@ -222,8 +241,8 @@ async def test_stats_tool_is_content_free(local_backend):
 
 @pytest.mark.asyncio
 async def test_export_tool_defaults_to_share_safe_payload(local_backend):
-    seed_fact(local_backend.svc.memory(local_backend.context), "user", 'works_at', 'Moonshot AI', sensitive=False, text='Synthetic fact: Moonshot AI')
-    seed_fact(local_backend.svc.memory(local_backend.context), "user", 'has_disease', 'diabetes', sensitive=True, text='Synthetic fact: diabetes')
+    seed_fact(local_backend.svc.memory(local_backend.context), "我", 'works_at', 'Moonshot AI', sensitive=False, text='Synthetic fact: Moonshot AI')
+    seed_fact(local_backend.svc.memory(local_backend.context), "我", 'has_disease', 'diabetes', sensitive=True, text='Synthetic fact: diabetes')
 
     digest = await call("mnemotrace_export")
     assert "MnemoTrace export" in digest
@@ -349,8 +368,8 @@ async def test_recall_and_search_support_as_of(local_backend):
 
 @pytest.mark.asyncio
 async def test_recall_and_search_support_sensitive_redaction(local_backend):
-    seed_fact(local_backend.svc.memory(local_backend.context), "user", 'has_disease', 'diabetes', sensitive=True, text='Synthetic fact: diabetes')
-    seed_fact(local_backend.svc.memory(local_backend.context), "user", 'works_at', 'Acme', sensitive=False, text='Synthetic fact: Acme')
+    seed_fact(local_backend.svc.memory(local_backend.context), "我", 'has_disease', 'diabetes', sensitive=True, text='Synthetic fact: diabetes')
+    seed_fact(local_backend.svc.memory(local_backend.context), "我", 'works_at', 'Acme', sensitive=False, text='Synthetic fact: Acme')
 
     ctx = await call(
         "mnemotrace_recall",
@@ -426,7 +445,25 @@ async def test_mcp_write_rejects_old_and_non_boolean_extraction_arguments(name, 
 
 
 @pytest.mark.asyncio
-async def test_remote_backend_forwards_remember_extract():
+@pytest.mark.parametrize('tool, arguments', [
+    ('search', {'query': 'Synthetic evidence'}),
+    ('recall', {'query': 'Synthetic evidence'}),
+    ('aggregate', {'predicate': 'works_at'}),
+    ('follow_path', {'anchor': 'Alice', 'predicates': ['works_at', 'located_in']}),
+])
+async def test_mcp_queries_reject_known_at_before_dispatch(tool, arguments, monkeypatch):
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    def unexpected_backend():
+        pytest.fail('A request with known_at reached the backend')
+
+    monkeypatch.setattr(S, 'backend', unexpected_backend)
+    with pytest.raises(ToolError, match='effective time'):
+        await S.mcp.call_tool('mnemotrace_' + tool, {**arguments, 'known_at': 10})
+
+
+@pytest.mark.asyncio
+async def test_remote_backend_forwards_remember_extract_and_event_time():
     class FakeResponse:
         def raise_for_status(self):
             pass
@@ -444,12 +481,12 @@ async def test_remote_backend_forwards_remember_extract():
 
     client = FakeClient()
     backend = RemoteBackend("http://mnemotrace.test", key="sk-test", space_id="synthetic-space", client=client)
-    data = await backend.remember("Synthetic reusable decision", session_id="s1", extract=False)
+    data = await backend.remember("Synthetic reusable decision", session_id="s1", extract=False, event_time=0)
 
     url, body, headers = client.posts[-1]
     assert url == "http://mnemotrace.test/v1/remember"
     assert body == {"space_id": "synthetic-space", "content": "Synthetic reusable decision", "session_id": "s1",
-                    "extract": False, "processing": "immediate", "agent_id": None}
+                    "extract": False, "processing": "immediate", "agent_id": None, "event_time": 0}
     assert headers["Authorization"] == "Bearer sk-test"
     assert data["extract"] is False
 
@@ -645,7 +682,7 @@ async def test_remote_backend_exports_memory():
             pass
 
         def json(self):
-            return {"format_version": 4, "include_sensitive": False, "facts": [], "episodes": []}
+            return {"format_version": 6, "include_sensitive": False, "facts": [], "episodes": []}
 
     class FakeClient:
         def __init__(self):
@@ -663,8 +700,8 @@ async def test_remote_backend_exports_memory():
     assert client.gets[0][0] == "http://mnemotrace.test/v1/export?include_sensitive=false&space_id=synthetic-space"
     assert client.gets[0][1]["Authorization"] == "Bearer sk-test"
     assert client.gets[1][0] == "http://mnemotrace.test/v1/export?include_sensitive=true&space_id=synthetic-space"
-    assert safe["format_version"] == 4
-    assert full["format_version"] == 4
+    assert safe["format_version"] == 6
+    assert full["format_version"] == 6
 
 
 @pytest.mark.asyncio
@@ -763,7 +800,7 @@ async def test_forget_requires_confirm(local_backend):
 @pytest.mark.asyncio
 async def test_audit_markdown_identifies_the_missing_edge(local_backend):
     memory = local_backend.svc.memory(local_backend.context)
-    fact = seed_fact(memory, 'user', 'works_at', 'Private statement', linked=True, sensitive=False, text='user works at Private statement')
+    fact = seed_fact(memory, '我', 'works_at', 'Private statement', linked=True, sensitive=False, text='user works at Private statement')
     with memory.dao._transaction() as sql:
         sql.delete('graph_relations', 'fact_id = %s', (fact.id,))
     report = await call('mnemotrace_audit')

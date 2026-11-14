@@ -6,7 +6,6 @@ import type { AuditReport,
   MemorySpace,
   OperationResult,
   ProcessingResult,
-  Conflict,
   Focus,
   Category,
   GraphResponse,
@@ -195,6 +194,7 @@ export interface RememberOptions {
   processing?: 'immediate' | 'buffered'
   session_id?: string
   extract?: boolean
+  event_time?: number | null
 }
 
 export const api = {
@@ -243,6 +243,7 @@ export const api = {
         session_id: options.session_id ?? 'default',
         extract: options.extract ?? true,
         processing: options.processing ?? 'immediate',
+        event_time: options.event_time,
       }),
     }),
 
@@ -286,10 +287,7 @@ export const api = {
   forget: () =>
     request<{ ok: boolean; message: string }>('/v1/forget', { method: 'POST', body: json({ confirm: true }) }),
 
-  conflicts: () => request<{ conflicts: Conflict[] }>('/v1/conflicts'),
 
-  resolveConflict: (id: string, keep: 'newer' | 'older' | 'both') =>
-    request<{ ok: boolean }>(`/v1/conflicts/${id}/resolve`, { method: 'POST', body: json({ keep }) }),
 
   /** 触发浏览器下载记忆导出（默认安全；保留 Bearer 请求头）。 */
   async exportDownload(filenameHint = 'me', includeSensitive = false): Promise<void> {

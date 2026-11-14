@@ -96,9 +96,9 @@ def test_owner_subject_does_not_depend_on_extraction_order():
     import time
     from mnemotrace.llm import FakeLLM
     outputs = {
-        "I like coffee": [{"subject":"user","predicate":"likes","object":"coffee"}],
-        "I like hiking": [{"subject":"user","predicate":"likes","object":"hiking"}],
-        "you can call me Evan": [{"subject":"user","predicate":"name","object":"Evan"}],
+        "I like coffee": [{"subject":"我","predicate":"likes","object":"coffee"}],
+        "I like hiking": [{"subject":"我","predicate":"likes","object":"hiking"}],
+        "you can call me Evan": [{"subject":"我","predicate":"name","object":"Evan"}],
     }
     def complete(prompt, system):
         if 'MNEMOTRACE_FACT_COMPARISON' in system:
@@ -121,7 +121,7 @@ def test_owner_subject_does_not_depend_on_extraction_order():
         mem.consolidate()
         seen.append(sorted(f.text for f in mem._all_facts()))
         assert {(f.subject, f.predicate, f.object) for f in mem._all_facts()} == {
-            ("user", "name", "Evan"), ("user", "likes", "coffee"), ("user", "likes", "hiking"),
+            ("我", "name", "Evan"), ("我", "likes", "coffee"), ("我", "likes", "hiking"),
         }
     assert seen[0] == seen[1] == seen[2]
     assert all("coffee" in " ".join(rows) for rows in seen)

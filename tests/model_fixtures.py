@@ -80,8 +80,7 @@ def adjudication_reply(prompt):
         replaces = first['predicate'] == second['predicate'] and second['predicate'] in {'works_at', 'lives_in', 'current_city', 'occupation', 'works_remotely', 'favorite_food', 'favorite_color', 'favorite_drink', 'studying', 'job_title', 'does_yoga'}
         reverses = ({first['predicate'], second['predicate']} in ({'likes', 'dislikes'}, {'loves', 'dislikes'})
                     and first['object'] == second['object'])
-        decisions.append(dict(id=pair['id'], decision='conflict' if replaces or reverses else 'coexists',
-                              reason='Synthetic comparison'))
+        decisions.append(dict(id=pair['id'], decision='conflict' if replaces or reverses else 'coexists'))
     return json.dumps(dict(decisions=decisions))
 
 
@@ -174,16 +173,16 @@ def link_synthetic_facts(memory, predicates):
 
 def seed_timeline(memory, subject, predicate, object_, **fields):
     """Apply fixed contradictions against previous values in this synthetic slot."""
-    from mnemotrace.consolidate.adjudication import plan_merge
+    from mnemotrace.consolidate.adjudication import _overlap, plan_merge
     from mnemotrace.util import now
 
     prior = {fact.id: fact for fact in memory._all_facts()}
     incoming = memory.add_fact(subject, predicate, object_, **fields)
     verdicts = {tuple(sorted((fact.id, incoming.id))): 'conflict'
-                for fact in prior.values() if fact.id != incoming.id and fact.slot == incoming.slot}
-    changed, conflicts, _ = plan_merge([incoming], prior.values(), None, memory.config, None, now(),
+                for fact in prior.values() if fact.id != incoming.id and fact.slot == incoming.slot
+                and _overlap(fact, incoming)}
+    changed, _ = plan_merge([incoming], prior.values(), None, memory.config, None, now(),
                                        verdicts=verdicts)
-    assert not conflicts
     for fact in changed:
         original = incoming if fact.id == incoming.id else prior[fact.id]
         original.invalid_at, original.expired_at, original.supersedes = fact.invalid_at, fact.expired_at, fact.supersedes

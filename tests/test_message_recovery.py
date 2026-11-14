@@ -47,7 +47,7 @@ def test_native_model_allows_append_and_close_prevents_late_commit():
 def test_source_time_comes_from_matching_role():
     def respond(prompt, system):
         data = json.loads(prompt.split('MNEMOTRACE_WINDOW\n', 1)[1])
-        return json.dumps(dict(facts=[dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='user', predicate='lives_in', object='Synthetic city',
+        return json.dumps(dict(facts=[dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='我', predicate='lives_in', object='Synthetic city',
             text='Synthetic city', source_ids=[s['id'] for s in data['pending']])],
             digests=[]))
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
@@ -94,10 +94,10 @@ def test_prior_processing_checkpoint_version_is_rejected():
 
 def test_fixed_contradiction_closes_previous_dialogue_fact():
     mem = MemoryEngine(llm=FakeLLM(handler=reply))
-    old = mem.add_fact('user', 'lives_in', 'A', 'u', text='The user lives in A.')
+    old = mem.add_fact('我', 'lives_in', 'A', 'u', text='The user lives in A.')
     old.source, old.valid_at = 'extracted', 100
     mem.fact_store.upsert(old.id, old.embedding, old)
-    new = seed_timeline(mem, 'user', 'lives_in', 'B', user_id='u', valid_at=200, text='The user lives in B.')
+    new = seed_timeline(mem, '我', 'lives_in', 'B', user_id='u', valid_at=200, text='The user lives in B.')
     assert mem.fact_store.get(old.id).invalid_at == 200 and new.supersedes == [old.id]
 
 
@@ -143,7 +143,7 @@ def test_late_unknown_and_older_history_cannot_replace_newer_source():
         assert mem.flush_messages('u')['ok']
     latest = [f.object for f in mem.fact_store.values() if f.is_live()]
     assert set(latest) == {'new'}
-    assert any(f.object == 'unknown' and f.review_pending for f in mem.fact_store.values())
+    assert all(f.object != 'unknown' for f in mem.fact_store.values())
 
 
 @pytest.mark.parametrize('arrivals,expected', [
@@ -184,9 +184,8 @@ def test_equal_time_facts_do_not_retire_each_other_in_model_order():
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
     mem.remember_messages([message('a', 'old', event_time=100), message('b', 'new', event_time=100)], 's', 'u')
     assert mem.flush_messages('u')['ok']
-    assert {f.object for f in mem.fact_store.values() if f.review_pending} == {'new', 'old'}
-    assert not any(f.is_live() for f in mem.fact_store.values())
-    assert len(mem.pending_conflicts('u')) == 1
+    assert not mem.fact_store.values()
+    assert {ep.content for ep in mem.episodes_doc.values()} == {'new', 'old'}
 
 
 def test_cached_model_configuration_identity_tracks_the_inner_provider(tmp_path):

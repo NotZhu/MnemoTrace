@@ -142,22 +142,16 @@ CREATE TABLE mnemotrace.facts (
     object text NOT NULL CHECK (object ~ '[^[:space:]]'),
     text text NOT NULL CHECK (text ~ '[^[:space:]]'),
     salience double precision NOT NULL CHECK (salience > '-Infinity'::float8 AND salience < 'Infinity'::float8),
-    confidence double precision NOT NULL CHECK (confidence > '-Infinity'::float8 AND confidence < 'Infinity'::float8),
     source text NOT NULL CHECK (source IN ('user','extracted')),
     categories text[] NOT NULL CHECK (array_position(categories, NULL) IS NULL AND categories <@ ARRAY[
         'personal_details','family','professional_details','sports','travel','food','music','health',
         'technology','hobbies','fashion','entertainment','milestones','user_preferences','misc'
     ]::text[]),
-    categories_source text NOT NULL CHECK (categories_source IN ('unset','llm','user')),
-    relation_id mnemotrace.identifier,
+    relation_id mnemotrace.identifier NOT NULL,
     subject_id mnemotrace.identifier,
     object_id mnemotrace.identifier,
-    withdrawn_at timestamptz,
-    sensitive_override boolean NOT NULL DEFAULT false,
-    review_pending boolean NOT NULL DEFAULT false,
     sensitive boolean NOT NULL,
     retention text NOT NULL CHECK (retention IN ('durable','normal','unknown')),
-    source_roles text[] NOT NULL CHECK (source_roles <@ ARRAY['user','assistant']::text[]),
     valid_at timestamptz,
     invalid_at timestamptz,
     created_at timestamptz NOT NULL,
@@ -167,8 +161,6 @@ CREATE TABLE mnemotrace.facts (
     record_version mnemotrace.positive_version NOT NULL,
     content_version mnemotrace.positive_version NOT NULL,
     PRIMARY KEY(user_id, space_id, id),
-    CHECK ((categories_source = 'unset') = (cardinality(categories) = 0)),
-    CHECK (NOT review_pending OR withdrawn_at IS NULL),
     CHECK (valid_at IS NULL OR invalid_at IS NULL OR valid_at < invalid_at),
     FOREIGN KEY(user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, relation_id, predicate)
@@ -178,24 +170,6 @@ CREATE TABLE mnemotrace.facts (
 );
 CREATE INDEX facts_slot ON mnemotrace.facts(user_id, space_id, subject_id, relation_id, valid_at, id);
 CREATE INDEX facts_time ON mnemotrace.facts(user_id, space_id, valid_at, invalid_at);
-CREATE TABLE mnemotrace.entity_aliases (
-    user_id mnemotrace.identifier NOT NULL,
-    space_id mnemotrace.identifier NOT NULL,
-    id mnemotrace.identifier NOT NULL,
-    entity_id mnemotrace.identifier NOT NULL,
-    fact_id mnemotrace.identifier NOT NULL,
-    source_id mnemotrace.identifier NOT NULL,
-    sensitive boolean NOT NULL,
-    name mnemotrace.identifier NOT NULL,
-    normalized_name mnemotrace.identifier NOT NULL,
-    record_version mnemotrace.positive_version NOT NULL,
-    content_version mnemotrace.positive_version NOT NULL,
-    PRIMARY KEY(user_id, space_id, id),
-    FOREIGN KEY(user_id, space_id, entity_id) REFERENCES mnemotrace.entities ON DELETE CASCADE,
-    FOREIGN KEY(user_id, space_id, fact_id) REFERENCES mnemotrace.facts ON DELETE CASCADE
-);
-CREATE INDEX entity_aliases_name ON mnemotrace.entity_aliases(user_id, space_id, normalized_name, entity_id);
-CREATE INDEX entity_aliases_fact ON mnemotrace.entity_aliases(user_id, space_id, fact_id);
 CREATE TABLE mnemotrace.fact_sources (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
@@ -206,27 +180,6 @@ CREATE TABLE mnemotrace.fact_sources (
     FOREIGN KEY(user_id, space_id, source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE
 );
 CREATE INDEX fact_sources_source ON mnemotrace.fact_sources(user_id, space_id, source_id);
-CREATE TABLE mnemotrace.conflicts (
-    user_id mnemotrace.identifier NOT NULL,
-    space_id mnemotrace.identifier NOT NULL,
-    id mnemotrace.identifier NOT NULL,
-    older mnemotrace.identifier NOT NULL,
-    newer mnemotrace.identifier NOT NULL,
-    text_older text NOT NULL,
-    text_newer text NOT NULL,
-    reason text NOT NULL,
-    older_version mnemotrace.positive_version NOT NULL,
-    newer_version mnemotrace.positive_version NOT NULL,
-    detected_at timestamptz NOT NULL,
-    record_version mnemotrace.positive_version NOT NULL,
-    PRIMARY KEY(user_id, space_id, id),
-    CHECK (older <> newer),
-    FOREIGN KEY(user_id, space_id, older) REFERENCES mnemotrace.facts ON DELETE CASCADE,
-    FOREIGN KEY(user_id, space_id, newer) REFERENCES mnemotrace.facts ON DELETE CASCADE
-);
-CREATE UNIQUE INDEX conflicts_pair ON mnemotrace.conflicts(user_id, space_id, least(older,newer), greatest(older,newer));
-ALTER TABLE mnemotrace.entity_aliases ADD FOREIGN KEY (user_id, space_id, fact_id, source_id)
-    REFERENCES mnemotrace.fact_sources ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 CREATE TABLE mnemotrace.fact_supersedes (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
@@ -318,7 +271,7 @@ CREATE TABLE mnemotrace.operations (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
     operation_id mnemotrace.identifier NOT NULL,
-    kind text NOT NULL CHECK (kind IN ('extract','digest','outcomes','conflicts','graph','profile')),
+    kind text NOT NULL CHECK (kind IN ('extract','digest','profile')),
     session_id mnemotrace.identifier,
     sequence mnemotrace.counter,
     state text NOT NULL CHECK (state IN ('pending','running','retry_wait','failed','completed','cancelled')),
@@ -332,7 +285,6 @@ CREATE TABLE mnemotrace.operations (
     space_generation mnemotrace.counter NOT NULL,
     extraction_config text,
     context_revision mnemotrace.counter,
-    stats jsonb NOT NULL CHECK (jsonb_typeof(stats) = 'object'),
     stored_raw boolean NOT NULL,
     extraction_saved boolean NOT NULL,
     core_committed boolean NOT NULL,
@@ -367,35 +319,16 @@ CREATE TABLE mnemotrace.operation_sources (
     FOREIGN KEY(user_id, space_id, operation_id) REFERENCES mnemotrace.operations ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE
 );
-CREATE TABLE mnemotrace.operation_targets (
-    user_id mnemotrace.identifier NOT NULL,
-    space_id mnemotrace.identifier NOT NULL,
-    operation_id mnemotrace.identifier NOT NULL,
-    source_id mnemotrace.identifier,
-    fact_id mnemotrace.identifier,
-    entity_id mnemotrace.identifier,
-    target_kind text NOT NULL,
-    content_version mnemotrace.positive_version NOT NULL,
-    CHECK (num_nonnulls(source_id, fact_id, entity_id) = 1),
-    CHECK ((target_kind = 'Episode' AND source_id IS NOT NULL) OR (target_kind = 'Fact' AND fact_id IS NOT NULL)
-        OR (target_kind = 'Entity' AND entity_id IS NOT NULL)),
-    UNIQUE NULLS NOT DISTINCT(user_id, space_id, operation_id, source_id, fact_id, entity_id),
-    FOREIGN KEY(user_id, space_id, operation_id) REFERENCES mnemotrace.operations ON DELETE CASCADE,
-    FOREIGN KEY(user_id, space_id, source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE,
-    FOREIGN KEY(user_id, space_id, fact_id) REFERENCES mnemotrace.facts ON DELETE CASCADE,
-    FOREIGN KEY(user_id, space_id, entity_id) REFERENCES mnemotrace.entities ON DELETE CASCADE
-);
 CREATE TABLE mnemotrace.operation_products (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
     operation_id mnemotrace.identifier NOT NULL,
     input jsonb NOT NULL CHECK (jsonb_typeof(input) = 'object'),
     result jsonb NOT NULL CHECK (jsonb_typeof(result) = 'object'),
-    format_version integer NOT NULL CHECK (format_version = 6),
+    format_version integer NOT NULL CHECK (format_version = 8),
     extraction_config text NOT NULL,
     context_revision mnemotrace.counter,
     source_versions jsonb NOT NULL CHECK (jsonb_typeof(source_versions) = 'array'),
-    stats jsonb NOT NULL CHECK (jsonb_typeof(stats) = 'object'),
     digest_max_chars integer NOT NULL CHECK (digest_max_chars >= 0),
     result_hash text NOT NULL CHECK (result_hash ~ '^[0-9a-f]{64}$'),
     PRIMARY KEY(user_id, space_id, operation_id),
@@ -412,18 +345,6 @@ CREATE TABLE mnemotrace.operation_receipts (
     FOREIGN KEY(user_id, space_id, operation_id) REFERENCES mnemotrace.operations ON DELETE CASCADE
 );
 
--- Required stats are never silently reconstructed from defaults when restoring JSONB.
-CREATE FUNCTION mnemotrace.valid_stats(value jsonb) RETURNS boolean
-LANGUAGE sql IMMUTABLE SET search_path = pg_catalog AS $$
-    SELECT jsonb_typeof(value) = 'object'
-       AND value ?& ARRAY['facts_added','duplicates','invalidated','model_calls','windows_completed']
-       AND NOT EXISTS (
-          SELECT 1 FROM unnest(ARRAY['facts_added','duplicates','invalidated','model_calls','windows_completed']) AS key
-          WHERE jsonb_typeof(value -> key) <> 'number' OR (value ->> key) !~ '^[0-9]+$')
-$$;
-ALTER TABLE mnemotrace.operations ADD CHECK (mnemotrace.valid_stats(stats));
-ALTER TABLE mnemotrace.operation_products ADD CHECK (mnemotrace.valid_stats(stats));
-
 -- Authorization helpers have no caller-controlled search path or table names.
 CREATE FUNCTION mnemotrace.authenticate(content_hash text)
 RETURNS TABLE(user_id text, key_id text)
@@ -437,8 +358,6 @@ ALTER FUNCTION mnemotrace.authenticate(text) OWNER TO {auth};
 REVOKE CREATE ON SCHEMA mnemotrace FROM {auth};
 REVOKE ALL ON FUNCTION mnemotrace.authenticate(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mnemotrace.authenticate(text) TO {runtime};
-REVOKE ALL ON FUNCTION mnemotrace.valid_stats(jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mnemotrace.valid_stats(jsonb) TO {runtime}, {admin};
 
 GRANT SELECT ON mnemotrace.users TO {runtime}, {auth};
 -- SELECT FOR SHARE needs UPDATE privilege; the RLS lock policy rejects changes.

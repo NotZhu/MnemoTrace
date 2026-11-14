@@ -33,9 +33,9 @@ def test_graph_does_not_stem_identifiers_into_entity_matches():
 
 def test_lexical_memory_resolves_chinese_two_hop_fact_chain():
     memory = MemoryEngine()
-    relationship = seed_linked(memory, 'user', 'sister', '王小明', text='user sister 王小明')
+    relationship = seed_linked(memory, '我', 'sister', '王小明', text='user sister 王小明')
     employer = seed_linked(memory, '王小明', 'works_at', '月亮公司', text='王小明 works at 月亮公司')
-    result = memory.follow_path('user', ['sister', 'works_at'])
+    result = memory.follow_path('我', ['sister', 'works_at'])
     match, = result.paths
     assert [fact.id for fact in match.facts] == [relationship.id, employer.id]
     assert match.endpoint == '月亮公司'
@@ -45,7 +45,7 @@ def test_lexical_memory_resolves_chinese_two_hop_fact_chain():
                                    '我 的 姐姐喜欢哪家公司？'])
 def test_chinese_two_hop_does_not_infer_employment_from_company(query):
     memory = MemoryEngine()
-    memory.add_fact('user', 'sister', 'Ana', text='user sister Ana')
+    memory.add_fact('我', 'sister', 'Ana', text='user sister Ana')
     memory.add_fact('Ana', 'works_at', 'Orbit', text='Ana works at Orbit')
     memory.add_fact('Ana', 'likes', 'Nadir', text='Ana likes Nadir')
     memory.add_fact('Orbit', 'based_in', 'Taipei', text='Orbit based in Taipei')

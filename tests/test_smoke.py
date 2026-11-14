@@ -47,15 +47,13 @@ def test_knowledge_update_supersedes_current_answer():
     assert "moonshot" in mem.search("Where do I work?", user_id="u1").top().object.lower()
 
 
-def test_multi_sentence_episode_extracts_every_fact():
+def test_same_time_contradictions_preserve_only_original_episode():
     mem = MemoryEngine()
     mem.add("Wei works at Tencent.\nWei works at Moonshot AI.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
-    candidates = mem.fact_store.values()
-    assert {f.object for f in candidates} == {"Tencent", "Moonshot AI"}
-    assert all(f.review_pending for f in candidates)
-    assert len(mem.pending_conflicts("u1")) == 1
+    assert not mem.fact_store.values()
+    assert len(mem.episodes_doc.values()) == 1
 
 
 @pytest.mark.history_import
@@ -265,7 +263,7 @@ def test_short_project_rule_context_uses_extracted_facts():
 
 def test_no_hard_delete_history_preserved():
     mem = build()
-    chain = mem.history("user", "works_at", user_id="u1")
+    chain = mem.history("我", "works_at", user_id="u1")
     objects = {f.object for f in chain}
     assert objects == {"Tencent", "Moonshot AI"}
     live = [f for f in chain if f.is_live()]
@@ -287,7 +285,7 @@ def test_bitemporal_as_of_query():
 def test_multi_hop_reasoning():
     mem = build()
     link_synthetic_facts(mem, {"colleague", "works_at"})
-    path, = mem.follow_path("user", ["colleague", "works_at"], user_id="u1").paths
+    path, = mem.follow_path("我", ["colleague", "works_at"], user_id="u1").paths
     assert "moonshot" in path.endpoint.lower()
 
 
@@ -300,12 +298,12 @@ def test_family_profession_multi_session_reasoning():
     mem.consolidate()
 
     facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("user", "sister", "Maya") in facts
+    assert ("我", "sister", "Maya") in facts
     assert ("Maya", "occupation", "pediatrician") in facts
     assert ("Maya", "lives_in", "Seattle") in facts
 
     link_synthetic_facts(mem, {"sister", "occupation"})
-    path, = mem.follow_path("user", ["sister", "occupation"], user_id="u1").paths
+    path, = mem.follow_path("我", ["sister", "occupation"], user_id="u1").paths
     assert path.endpoint == "pediatrician"
 
 
@@ -316,11 +314,11 @@ def test_multiple_family_relations_accumulate_and_disambiguate():
     mem.add("Maya just moved to Seattle.", user_id="u1", session_id="s3", event_time=BASE + 2 * DAY)
     mem.consolidate()
 
-    sisters = [f for f in mem.history("user", "sister", user_id="u1") if f.is_live()]
+    sisters = [f for f in mem.history("我", "sister", user_id="u1") if f.is_live()]
     assert {f.object for f in sisters} == {"Anna", "Maya"}
 
     link_synthetic_facts(mem, {"sister", "occupation"})
-    paths = mem.follow_path("user", ["sister", "occupation"], user_id="u1").paths
+    paths = mem.follow_path("我", ["sister", "occupation"], user_id="u1").paths
     assert {path.endpoint: path.facts[0].object for path in paths} == {
         "lawyer": "Anna", "pediatrician": "Maya",
     }
@@ -340,7 +338,7 @@ def test_first_person_occupation_reaches_profile():
     mem.add("I am a pediatrician.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
-    assert ("user", "occupation", "pediatrician") in {
+    assert ("我", "occupation", "pediatrician") in {
         (f.subject, f.predicate, f.object) for f in mem.fact_store.values()
     }
     assert mem.profile("u1")["pending_fact_count"] == 1
@@ -351,7 +349,7 @@ def test_first_person_works_as_role_is_atomic():
     mem.add("I work as a data engineer at Spotify.", user_id="u1", event_time=BASE)
     mem.consolidate()
 
-    assert ("user", "occupation", "data engineer") in {
+    assert ("我", "occupation", "data engineer") in {
         (f.subject, f.predicate, f.object) for f in mem.fact_store.values()
     }
 
@@ -363,8 +361,8 @@ def test_first_person_fan_of_is_preference_not_occupation():
     mem.consolidate()
 
     facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("user", "likes", "jazz") in facts
-    assert ("user", "likes", "synthwave") in facts
+    assert ("我", "likes", "jazz") in facts
+    assert ("我", "likes", "synthwave") in facts
     assert "occupation" not in {p for _, p, _ in facts}
 
 
@@ -375,9 +373,9 @@ def test_explicit_preference_verbs_extract_profile_facts():
     mem.consolidate()
 
     facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("user", "prefers", "aisle seats") in facts
-    assert ("user", "avoids", "red-eye flights") in facts
-    assert ("user", "dislikes", "crowded lounges") in facts
+    assert ("我", "prefers", "aisle seats") in facts
+    assert ("我", "avoids", "red-eye flights") in facts
+    assert ("我", "dislikes", "crowded lounges") in facts
 
 
 def test_names_are_facts_and_do_not_rewrite_the_owner_subject():
@@ -386,8 +384,8 @@ def test_names_are_facts_and_do_not_rewrite_the_owner_subject():
     mem.add("I like jazz.", user_id="u1", event_time=BASE + DAY)
     mem.consolidate()
     facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("user", "name", "Wei") in facts
-    assert ("user", "likes", "jazz") in facts
+    assert ("我", "name", "Wei") in facts
+    assert ("我", "likes", "jazz") in facts
 
 
 def test_preference_objects_are_preserved_as_returned_by_the_model():
@@ -395,7 +393,7 @@ def test_preference_objects_are_preserved_as_returned_by_the_model():
     mem.add("I like the sound of the avocado sauce.", user_id="u1", event_time=BASE)
     mem.consolidate()
     assert [(f.subject, f.object) for f in mem.fact_store.values()] == [
-        ("user", "sound of the avocado sauce")]
+        ("我", "sound of the avocado sauce")]
 
 
 def test_pure_withdrawal_is_saved_as_source_without_a_negative_fact():
@@ -405,7 +403,7 @@ def test_pure_withdrawal_is_saved_as_source_without_a_negative_fact():
     mem.consolidate()
     assert mem.episodes_doc.get(source.id).content == "I no longer like jazz."
     fact, = mem.fact_store.values()
-    assert (fact.subject, fact.predicate, fact.object, fact.is_live()) == ("user", "likes", "jazz", True)
+    assert (fact.subject, fact.predicate, fact.object, fact.is_live()) == ("我", "likes", "jazz", True)
 
 
 def test_import_style_moving_and_dietary_restrictions_extract_cleanly():
@@ -415,10 +413,10 @@ def test_import_style_moving_and_dietary_restrictions_extract_cleanly():
     mem.consolidate()
 
     facts = {(f.subject, f.predicate, f.object) for f in mem.fact_store.values()}
-    assert ("user", "lives_in", "Berlin") in facts
-    assert ("user", "works_at", "Acme") in facts
-    assert ("user", "diet", "vegetarian") in facts
-    assert ("user", "allergic_to", "peanuts") in facts
+    assert ("我", "lives_in", "Berlin") in facts
+    assert ("我", "works_at", "Acme") in facts
+    assert ("我", "diet", "vegetarian") in facts
+    assert ("我", "allergic_to", "peanuts") in facts
 
     assert mem.profile("u1")["needs_refresh"]
 

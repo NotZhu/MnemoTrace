@@ -3,13 +3,17 @@ from dataclasses import replace
 
 import pytest
 
+from mnemotrace import MemoryEngine
 from mnemotrace.config import Config
-from mnemotrace.consolidate.postgres_merge import merge_records
+from mnemotrace.consolidate.adjudication import plan_merge
+from mnemotrace.consolidate.postgres_merge import write_record
 from mnemotrace.memory import Memory
+from mnemotrace.service import MemoryService
 from mnemotrace.store.contracts import FactQuery, FactState, MessageInput, RecordKind
 from mnemotrace.store.postgres.errors import DatabaseConstraintError, VersionConflict
 from mnemotrace.store.postgres.records import domain
 from mnemotrace.types import Entity, Fact, RelationType
+from tests.postgres.fact_fixtures import relation_writes
 
 
 @pytest.fixture
@@ -22,15 +26,19 @@ def prepare(memory, *facts, contradicts=()):
         snapshot = view.snapshot
         previous = view.merge_history(facts)
         at = view.at.timestamp()
+        relations = relation_writes(view, facts)
     verdicts = {tuple(sorted((left.id, right.id))): 'conflict' for left, right in contradicts}
-    writes, embeddings, _ = merge_records(memory.context, Config(), None, None, None, at,
-                                           facts, previous, {}, None, (), verdicts=verdicts)
-    return snapshot, tuple(writes), tuple(embeddings)
+    originals = {record.ref.record_id: record for record in previous}
+    changed, _ = plan_merge(facts, list(map(domain, previous)), None, Config(), None, at, verdicts=verdicts)
+    accepted_relations = {fact.relation_id for fact in changed}
+    writes = [write for write in relations if write.ref.record_id in accepted_relations]
+    writes.extend(write_record(memory.context, fact, originals.get(fact.id)) for fact in changed)
+    return snapshot, tuple(writes)
 
 
 def ingest(memory, *facts, contradicts=()):
-    snapshot, writes, embeddings = prepare(memory, *facts, contradicts=contradicts)
-    return memory._commit(snapshot, writes=writes, embeddings=embeddings)
+    snapshot, writes = prepare(memory, *facts, contradicts=contradicts)
+    return memory._commit(snapshot, writes=writes)
 
 
 def setup_graph(memory, names=('First', 'Middle', 'Last')):
@@ -56,8 +64,8 @@ def claim(memory, obj, at, *, subject=None, relation=None, **fields):
 
 
 def source(memory, message_id, *, at=None):
-    return memory.store_messages('evidence', (MessageInput(message_id, 'user', 'Synthetic evidence',
-                                                            event_time=at, extract=False),)).source_ids[0]
+    return memory.remember_messages('evidence', (MessageInput(message_id, 'user', 'Synthetic evidence',
+                                                            event_time=at, extract=False),))['source_ids'][0]
 
 
 def test_late_fact_rethreads_timeline_graph_and_provenance(memory):
@@ -93,17 +101,25 @@ def test_late_fact_rethreads_timeline_graph_and_provenance(memory):
         }
 
 
-def test_future_disjoint_unknown_and_duplicate(memory):
+def test_future_disjoint_unknown_and_duplicate(memory, runtime):
     current = claim(memory, 'Current', 10)
     future = claim(memory, 'Future', 4_000_000_000)
     past = claim(memory, 'Earlier', 1, invalid_at=5)
     ingest(memory, current)
     ingest(memory, future, contradicts=[(current, future)])
-    ingest(memory, past, contradicts=[(past, current)])
+    ingest(memory, past)
     assert [item.id for item in memory.facts()] == [current.id]
     assert memory.get_fact(current.id).expired_at is not None
     assert memory.get_fact(past.id).invalid_at == 5
     assert memory.get_fact(current.id).supersedes == []
+    service = MemoryService(runtime)
+    counts = service.stats(memory.context)['counts']
+    assert (counts['facts_live'], counts['facts_superseded']) == (1, 1)
+    snapshot = service.export(memory.context, include_sensitive=True)
+    assert {row['id']: row['status'] for row in snapshot['facts']} == {
+        current.id: 'live', past.id: 'superseded', future.id: 'scheduled',
+    }
+    assert MemoryEngine().import_snapshot(snapshot)['facts_restored'] == 3
 
     duplicate = replace(current, id='duplicate', provenance=[source(memory, 'corroboration')])
     ingest(memory, duplicate)
@@ -112,27 +128,6 @@ def test_future_disjoint_unknown_and_duplicate(memory):
     ingest(memory, unknown)
     assert unknown.id in {item.id for item in memory.facts()}
     assert unknown.id not in {item.id for item in memory.facts(FactQuery(valid_at=50))}
-
-
-@pytest.mark.parametrize('challenger_start', [10, None])
-def test_pending_stays_out_of_queries_and_withdrawal_retains_history(memory, challenger_start):
-    first = claim(memory, 'First', 10)
-    challenger = claim(memory, 'Challenger', challenger_start)
-    ingest(memory, first)
-    ingest(memory, challenger, contradicts=[(first, challenger)])
-    conflict, = memory.conflicts()
-    assert {conflict.older, conflict.newer} == {first.id, challenger.id}
-    assert (conflict.older_version, conflict.newer_version) == (1, 1)
-    assert [item.id for item in memory.facts()] == [first.id]
-    winner = 'newer' if conflict.newer == challenger.id else 'older'
-    assert memory.resolve_conflict(conflict.id, keep=winner)
-    assert memory.conflicts() == ()
-    assert [item.id for item in memory.facts()] == [challenger.id]
-    withdrawn, = memory.facts(FactQuery(state=FactState.HISTORY))
-    assert withdrawn.id == first.id and withdrawn.withdrawn_at is not None
-    assert withdrawn.invalid_at is None and withdrawn.expired_at is None
-    assert memory.withdraw_fact(challenger.id)
-    assert memory.facts() == ()
 
 
 def test_scope_constraints_and_atomic_projection(memory, runtime, spaces):
@@ -161,7 +156,7 @@ def test_sensitivity_versions_and_erasure(memory):
     left = claim(memory, 'Left', 10, provenance=[source(memory, 'left')])
     right = claim(memory, 'Right', 20, provenance=[source(memory, 'right')])
     ingest(memory, left)
-    snapshot, writes, _ = prepare(memory, right, contradicts=[(left, right)])
+    snapshot, writes = prepare(memory, right, contradicts=[(left, right)])
     memory.set_fact_sensitive(left.id, True)
     assert not memory.facts(FactQuery(exclude_sensitive=True))
     with pytest.raises(VersionConflict):
@@ -179,9 +174,16 @@ def test_sensitivity_versions_and_erasure(memory):
         assert domain(view.get(RecordKind.FACT, right.id)).provenance == right.provenance
 
 
-def test_entity_names_are_unique_after_normalization(memory):
-    from mnemotrace.store.postgres.errors import DatabaseConstraintError
+def test_fact_write_requires_registered_relation(memory):
+    candidate = claim(memory, 'City', 10)
+    with memory.dao.read_snapshot() as view:
+        snapshot = view.snapshot
+    with pytest.raises(DatabaseConstraintError):
+        memory._commit(snapshot, writes=(memory._write(candidate),))
+    assert memory.get_fact(candidate.id) is None
 
+
+def test_entity_names_are_unique_after_normalization(memory):
     owner = memory.context.user_id
     first = Entity('Synthetic Twin', 'person', owner)
     second = Entity('  synthetic TWIN  ', 'person', owner)

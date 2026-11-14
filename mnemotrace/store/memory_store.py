@@ -6,7 +6,7 @@ from collections import defaultdict
 from typing import Any, Optional
 
 from ..types import Entity, Relation
-from ..util import cosine
+from ..util import cosine, name_key
 from .base import DocStore, GraphStore, Predicate, VectorStore
 
 
@@ -78,7 +78,7 @@ class InMemoryGraphStore(GraphStore):
         self._in: dict[str, list[str]] = defaultdict(list)
 
     def upsert_entity(self, entity: Entity) -> Entity:
-        key = (entity.user_id, entity.name.lower())
+        key = (entity.user_id, name_key(entity.name))
         existing = self.entities.get(entity.id)
         if existing is not None:
             if existing.user_id != entity.user_id:
@@ -89,7 +89,7 @@ class InMemoryGraphStore(GraphStore):
         return entity
 
     def get_entity(self, user_id: str, name: str) -> Entity | None:
-        ids = self._by_name.get((user_id, name.lower()), ())
+        ids = self._by_name.get((user_id, name_key(name)), ())
         return self.entities[next(iter(ids))] if len(ids) == 1 else None
 
     def add_relation(self, relation: Relation) -> None:
@@ -111,11 +111,6 @@ class InMemoryGraphStore(GraphStore):
                 out.append(r)
         return out
 
-    def invalidate_relations_for_fact(self, fact_id: str, t: float) -> None:
-        for r in self.rels.values():
-            if r.fact_id == fact_id and r.invalid_at is None:
-                r.invalid_at = t
-
     def delete_relations_for_fact(self, fact_id: str) -> None:
         for rid, rel in list(self.rels.items()):
             if rel.fact_id != fact_id:
@@ -133,7 +128,7 @@ class InMemoryGraphStore(GraphStore):
             if eid in referenced:
                 continue
             self.entities.pop(eid, None)
-            key = (ent.user_id, ent.name.lower())
+            key = (ent.user_id, name_key(ent.name))
             self._by_name[key].discard(eid)
             if not self._by_name[key]:
                 del self._by_name[key]

@@ -25,7 +25,7 @@ def reply(prompt, system):
     for item in data['pending']:
         if item['role'] == 'assistant':
             continue
-        result['facts'].append(dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='user', predicate='owns', object=item['content'][:30],
+        result['facts'].append(dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='我', predicate='owns', object=item['content'][:30],
             text=item['content'][:30], source_ids=[item['id']]))
     return json.dumps(result)
 
@@ -54,7 +54,7 @@ def dialogue_evidence(data):
                                 if source['content'] == PROPOSAL)
                 refs.insert(0, proposal['id'])
                 value = 'pnpm'
-            facts.append(dict(subject='user', predicate='prefers', object=value,
+            facts.append(dict(subject='我', predicate='prefers', object=value,
                               text=f'I prefer {value} as my default package manager.',
                               categories=['user_preferences'], sensitive=False, time_kind='current', effective_date=None, retention='unknown',
                               source_ids=refs))
@@ -64,7 +64,7 @@ def dialogue_evidence(data):
 def test_assistant_evidence_is_retrievable_and_confirmation_has_user_time():
     def respond(prompt, system):
         if 'MNEMOTRACE_FACT_COMPARISON' in system:
-            return json.dumps(dict(decisions=[dict(id=pair['id'], decision='conflict', reason='Synthetic comparison')
+            return json.dumps(dict(decisions=[dict(id=pair['id'], decision='conflict')
                                               for pair in json.loads(prompt)['items']]))
         return json.dumps(dialogue_evidence(json.loads(prompt.removeprefix(WINDOW_PREFIX))))
 
@@ -89,4 +89,4 @@ def test_assistant_evidence_is_retrievable_and_confirmation_has_user_time():
     assert (new.object, new.valid_at, new.supersedes, old.invalid_at) == ('pnpm', 300, [old.id], 300)
     assert new.provenance[0] == proposal.id
     assert mem.get_episode(new.provenance[1])['content'] == 'Yes, use that by default.'
-    assert new.source_roles == ['assistant', 'user']
+    assert [mem.episodes_doc.get(key).role for key in new.provenance] == ['assistant', 'user']

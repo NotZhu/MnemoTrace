@@ -328,7 +328,7 @@ function OutcomeRow({
           {fact.text}
         </div>
         <div className="mt-2">
-          <CategoryBadges categories={fact.categories} categories_source={fact.categories_source} />
+          <CategoryBadges categories={fact.categories} />
         </div>
       </div>
       {editable && (

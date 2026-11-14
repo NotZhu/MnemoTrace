@@ -17,12 +17,12 @@ def test_chain_terms_contains_only_stored_fields():
     ("primary_transport", "What is my primary email?"),
 ])
 def test_partial_compound_attribute_is_insufficient(predicate, query):
-    fact = Fact("user", predicate, "Synthetic value", text=' '.join(('user', predicate.replace('_', ' '), 'Synthetic value')))
+    fact = Fact("我", predicate, "Synthetic value", text=' '.join(('user', predicate.replace('_', ' '), 'Synthetic value')))
     assert should_abstain(query, [fact], [], 0.3)
 
 
 def test_lexical_and_semantic_evidence_support_arbitrary_predicates():
-    fact = Fact("user", "primary_transport", "Synthetic tram", text='user primary transport Synthetic tram')
+    fact = Fact("我", "primary_transport", "Synthetic tram", text='user primary transport Synthetic tram')
     assert not should_abstain("What is my primary transport?", [fact], [], 0.3)
     assert not should_abstain("Tell me about the tram", [fact], [], 0.3)
     assert not should_abstain("How do I commute?", [fact], [0.8], 0.3)

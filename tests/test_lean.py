@@ -106,7 +106,7 @@ def test_lean_path_works_with_no_digests():
 
 def test_synthetic_fact_sensitivity_and_erasure():
     mem = MemoryEngine()
-    fact = mem.add_fact("user", "works_at", "ByteDance", user_id="u1", text="user works at ByteDance")
+    fact = mem.add_fact("我", "works_at", "ByteDance", user_id="u1", text="user works at ByteDance")
     assert mem.set_fact_sensitive(fact.id, False).text == fact.text
     assert mem.delete_fact(fact.id)
     assert mem.fact_store.get(fact.id) is None
@@ -115,7 +115,7 @@ def test_synthetic_fact_sensitivity_and_erasure():
 
 def test_delete_fact_removes_graph_export_edge():
     mem = MemoryEngine()
-    f = seed_linked(mem, "user", "has_disease", "diabetes", user_id="u1", text='user has disease diabetes')
+    f = seed_linked(mem, "我", "has_disease", "diabetes", user_id="u1", text='user has disease diabetes')
     assert f.id in {edge["fact_id"] for edge in mem.graph_data("u1")["edges"]}
 
     assert mem.delete_fact(f.id) is True
@@ -230,6 +230,20 @@ def test_lean_context_evolution_chain_respects_as_of_boundary():
     assert "FACT EVOLUTION" not in ctx
 
 
+def test_lean_context_includes_each_visible_predecessor():
+    mem = MemoryEngine()
+    first = mem.add_fact("Wei", "works_at", "Orbit", valid_at=BASE, sensitive=False, text="Wei works at Orbit")
+    second = mem.add_fact("Wei", "works_at", "Nova", valid_at=BASE + DAY, sensitive=False, text="Wei works at Nova")
+    third = mem.add_fact("Wei", "works_at", "Private Lab", valid_at=BASE + DAY, sensitive=True,
+                         text="Wei works at Private Lab")
+    current = seed_timeline(mem, "Wei", "works_at", "Aurora", valid_at=BASE + 2 * DAY, sensitive=False,
+                            text="Wei works at Aurora")
+    assert set(current.supersedes) == {first.id, second.id, third.id}
+    ctx = mem.lean_context("Where does Wei work?", redact_sensitive=True)
+    assert all(name in ctx for name in ("Orbit", "Nova", "Aurora"))
+    assert "Private Lab" not in ctx
+
+
 def test_context_for_adds_fact_evolution_chain():
     mem = MemoryEngine()
     mem.add_fact("Wei", "works_at", "Tencent", user_id="u1", valid_at=BASE, text='Wei works at Tencent')
@@ -273,7 +287,7 @@ def test_multihop_planner_includes_cold_tier_relation_facts():
     assert mem.evict_cold(max_hot=len(mem.fact_store.values()) - 1) == 1
     assert mem.cold_store.get(sister.id) is not None
 
-    path, = mem.follow_path("user", ["sister", "occupation"], user_id="u1").paths
+    path, = mem.follow_path("我", ["sister", "occupation"], user_id="u1").paths
     assert path.endpoint == "pediatrician"
     assert path.facts[0].id == sister.id
 
@@ -493,17 +507,17 @@ def test_history_includes_cold_tier_facts():
 
 def test_add_fact_supersedes_live_cold_tier_fact():
     mem = MemoryEngine()
-    old = mem.add_fact("user", "project_status", "alpha", user_id="u1", text='user project status alpha')
-    filler = mem.add_fact("user", "project_note", "hot filler", user_id="u1", text='user project note hot filler')
+    old = mem.add_fact("我", "project_status", "alpha", user_id="u1", text='user project status alpha')
+    filler = mem.add_fact("我", "project_note", "hot filler", user_id="u1", text='user project note hot filler')
     old.salience = 0.0
     filler.salience = 1.0
     assert mem.evict_cold(max_hot=1) == 1
     assert mem.cold_store.get(old.id) is not None
 
-    new = seed_timeline(mem, "user", "project_status", "beta", user_id="u1", valid_at=old.valid_at + 1, text='user project status beta')
+    new = seed_timeline(mem, "我", "project_status", "beta", user_id="u1", valid_at=old.valid_at + 1, text='user project status beta')
     assert new.supersedes == [old.id]
     assert old.invalid_at == new.valid_at
-    chain = mem.history("user", "project_status", user_id="u1")
+    chain = mem.history("我", "project_status", user_id="u1")
     assert [f.object for f in chain] == ["alpha", "beta"]
 
 
@@ -617,28 +631,6 @@ def test_context_for_graph_includes_multihop_related_facts():
     assert "Moonshot AI based in Beijing" in ctx
 
 
-def test_pending_conflict_and_resolution_include_cold_tier_facts():
-    from mnemotrace.types import Conflict
-
-    mem = MemoryEngine()
-    old = mem.add_fact("project", "status", "alpha", user_id="u1", text='project status alpha')
-    new = mem.add_fact("project", "status", "beta", user_id="u1", text='project status beta')
-    old.invalid_at = None
-    old.expired_at = None
-    new.supersedes = []
-    old.salience = 0.0
-    new.salience = 1.0
-    assert mem.evict_cold(max_hot=1) == 1
-    assert mem.cold_store.get(old.id) is not None
-    cf = Conflict(older=old.id, newer=new.id, user_id="u1", text_older=old.text, text_newer=new.text)
-    mem.conflicts[cf.id] = cf
-
-    assert mem.pending_conflicts("u1") == [cf]
-    assert mem.resolve_conflict(cf.id, keep="newer") is True
-    assert old.withdrawn_at is not None and old.invalid_at is None
-    assert mem.pending_conflicts("u1") == []
-
-
 def test_sensitivity_preserves_cold_tier_without_duplicate():
     mem = MemoryEngine()
     cold = mem.add_fact("project", "project_note", "old value", user_id="u1", text='project project note old value')
@@ -654,44 +646,6 @@ def test_sensitivity_preserves_cold_tier_without_duplicate():
     assert mem.fact_store.get(cold.id) is None
     assert mem.cold_store.get(cold.id) is not None
     assert len([f for f in mem._all_facts() if f.id == cold.id]) == 1
-
-
-def test_resolve_conflict_writes_back_to_copying_vector_store():
-    """外部向量后端可能返回 payload 的副本，因此冲突解决必须显式 upsert 被修改的 fact，
-    而不能依赖内存中的对象同一性。"""
-    from copy import deepcopy
-
-    from mnemotrace.store import InMemoryVectorStore
-    from mnemotrace.types import Conflict
-
-    class CopyingVectorStore(InMemoryVectorStore):
-        def upsert(self, key, vector, payload):
-            super().upsert(key, list(vector), deepcopy(payload))
-
-        def get(self, key):
-            payload = super().get(key)
-            return deepcopy(payload) if payload is not None else None
-
-        def values(self):
-            return [deepcopy(payload) for payload in super().values()]
-
-    mem = MemoryEngine()
-    older = mem.add_fact("user", "likes", "tea", user_id="u1", text='user likes tea')
-    newer = mem.add_fact("user", "likes", "coffee", user_id="u1", text='user likes coffee')
-    copy_hot = CopyingVectorStore()
-    for fact in mem.fact_store.values():
-        copy_hot.upsert(fact.id, fact.embedding or [], fact)
-    mem.fact_store = copy_hot
-    mem.cold_store = CopyingVectorStore()
-    mem._rewire()
-
-    cf = Conflict(older=older.id, newer=newer.id, user_id="u1")
-    mem.conflicts[cf.id] = cf
-
-    assert mem.resolve_conflict(cf.id, keep="newer") is True
-    assert not mem.fact_store.get(older.id).is_live()
-    assert mem.fact_store.get(newer.id).supersedes == []
-    assert mem.fact_store.get(older.id).withdrawn_at is not None
 
 
 def test_agentic_multihop_decomposition():
@@ -830,8 +784,8 @@ def test_relevance_wins_without_category_weighting():
 def test_focus_track_boosts_salience_and_mute_hides():
     """跟踪主题提升显著度，静音主题退出读取上下文。"""
     mem = MemoryEngine()
-    mem.add_fact("user", "uses", "Python", user_id="u1", text='user uses Python')
-    mem.add_fact("user", "plays", "guitar", user_id="u1", text='user plays guitar')
+    mem.add_fact("我", "uses", "Python", user_id="u1", text='user uses Python')
+    mem.add_fact("我", "plays", "guitar", user_id="u1", text='user plays guitar')
     py = next(f for f in mem.fact_store.values() if "python" in f.text.lower())
     before = py.salience
 
@@ -881,8 +835,8 @@ def test_graph_data_as_of_excludes_future_relations():
 
 def test_graph_data_can_exclude_sensitive_fact_edges():
     mem = MemoryEngine()
-    seed_linked(mem, "user", "has_disease", "diabetes", user_id="u1", text='user has disease diabetes')
-    seed_linked(mem, "user", "works_at", "Acme", user_id="u1", sensitive=False, text='user works at Acme')
+    seed_linked(mem, "我", "has_disease", "diabetes", user_id="u1", text='user has disease diabetes')
+    seed_linked(mem, "我", "works_at", "Acme", user_id="u1", sensitive=False, text='user works at Acme')
 
     full = mem.graph_data("u1")
     assert "diabetes" in str(full).lower()
@@ -897,8 +851,8 @@ def test_graph_data_can_exclude_sensitive_fact_edges():
 
 def test_graph_data_can_exclude_sensitive_cold_fact_edges():
     mem = MemoryEngine()
-    disease = seed_linked(mem, "user", "has_disease", "diabetes", user_id="u1", text='user has disease diabetes')
-    work = seed_linked(mem, "user", "project_note", "Acme", user_id="u1", text='user project note Acme')
+    disease = seed_linked(mem, "我", "has_disease", "diabetes", user_id="u1", text='user has disease diabetes')
+    work = seed_linked(mem, "我", "project_note", "Acme", user_id="u1", text='user project note Acme')
     disease.salience = 0.0
     work.salience = 1.0
     assert mem.evict_cold(max_hot=1) == 1
@@ -948,8 +902,8 @@ def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content
     ep = m.add("My private diagnosis is diabetes. I work at Acme.", user_id="u", session_id="s1")
     ep.digest = "Private diagnosis: diabetes. Job: Acme."
     m.digest_vec.upsert(ep.id, m.embedder.embed(ep.digest), ep)
-    m.add_fact("user", "has_disease", "diabetes", user_id="u", text='user has disease diabetes')
-    m.add_fact("user", "works_at", "Acme", user_id="u", sensitive=False, text='user works at Acme')
+    m.add_fact("我", "has_disease", "diabetes", user_id="u", text='user has disease diabetes')
+    m.add_fact("我", "works_at", "Acme", user_id="u", sensitive=False, text='user works at Acme')
 
     redacted = m.lean_context(
         "what do you know about my diagnosis and work?",
@@ -969,33 +923,9 @@ def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content
 
 def test_original_sentence_keeps_canonical_predicate():
     m = MemoryEngine()
-    f = m.add_fact("user", "works_at", "字节跳动", user_id="u", text='用户在字节跳动工作。')
+    f = m.add_fact("我", "works_at", "字节跳动", user_id="u", text='用户在字节跳动工作。')
     assert f.text == '用户在字节跳动工作。'
     assert f.predicate == "works_at" and f.slot[2] == f.relation_id
-
-
-def test_conflict_resolve_and_dismiss_are_user_driven():
-    """检测绝不自动解决 —— 只有用户的 resolve()/dismiss() 会生效；resolve 使选定的败方被取代，
-    dismiss 则两者都保留。"""
-    from mnemotrace.types import Conflict
-    m = MemoryEngine()
-    fa = m.add_fact("user", "likes", "北京", user_id="u", text='user likes 北京')   # 多值 -> 两者并存（不自动合并）
-    fb = m.add_fact("user", "likes", "上海", user_id="u", text='user likes 上海')
-    cf = Conflict(older=fa.id, newer=fb.id, user_id="u")
-    m.conflicts[cf.id] = cf
-    assert m.pending_conflicts("u"), "both live -> pending"
-
-    assert m.resolve_conflict(cf.id, keep="newer")
-    assert not fa.is_live() and fb.is_live(), "keep=newer supersedes the older"
-    assert fa.withdrawn_at is not None and m.pending_conflicts("u") == []
-
-    # dismiss 两者都保留
-    g1 = m.add_fact("user", "likes", "茶", user_id="u", text='user likes 茶')
-    g2 = m.add_fact("user", "likes", "奶茶", user_id="u", text='user likes 奶茶')
-    cf2 = Conflict(older=g1.id, newer=g2.id, user_id="u")
-    m.conflicts[cf2.id] = cf2
-    assert m.dismiss_conflict(cf2.id) and g1.is_live() and g2.is_live()
-    assert m.pending_conflicts("u") == []
 
 
 def test_evolution_block_leads_with_the_current_value():

@@ -21,12 +21,9 @@ CREATE POLICY user_scope ON mnemotrace.record_commit_receipts TO {runtime}
     USING (user_id::text = nullif(current_setting('mnemotrace.user_id', true), ''))
     WITH CHECK (user_id::text = nullif(current_setting('mnemotrace.user_id', true), ''));
 
-ALTER TABLE mnemotrace.facts ADD COLUMN subject_key text;
-ALTER TABLE mnemotrace.facts ADD COLUMN predicate_key text;
-ALTER TABLE mnemotrace.facts ADD COLUMN subject_match_key text;
-CREATE INDEX facts_subject_normalized ON mnemotrace.facts
-    (user_id, space_id, coalesce(subject_match_key, lower(btrim(subject))), id);
-CREATE INDEX facts_slot_normalized ON mnemotrace.facts
-    (user_id, space_id, coalesce(subject_key, lower(subject)), coalesce(predicate_key, lower(predicate)), id);
+ALTER TABLE mnemotrace.facts ADD COLUMN subject_key text NOT NULL;
+ALTER TABLE mnemotrace.facts ADD COLUMN predicate_key text NOT NULL;
+ALTER TABLE mnemotrace.facts ADD COLUMN object_key text NOT NULL;
+CREATE INDEX facts_slot_normalized ON mnemotrace.facts(user_id, space_id, subject_key, predicate_key, id);
 ALTER TABLE mnemotrace.fact_sources ADD COLUMN source_order mnemotrace.counter;
 CREATE INDEX operation_sources_source ON mnemotrace.operation_sources(user_id, space_id, source_id);

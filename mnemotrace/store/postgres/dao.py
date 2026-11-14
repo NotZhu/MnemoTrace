@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from uuid import uuid4
 
-from ..contracts import CommitReceipt, MessageInput, OperationKind, OperationResult, ProcessingPhase
+from ..contracts import CommitReceipt, OperationKind, OperationResult, ProcessingPhase
 from ..contracts import ProcessingState, ReadSnapshot, RecordRef, SpaceContext
 from .database import identifier
 from .erasures import clear_space, erase
@@ -13,9 +13,9 @@ from .errors import (
 )
 from .projection import GraphProjection
 from .reads import ReadView
-from .records import CONFLICT, ENTITY, ENTITY_ALIAS, ENTITY_TYPE, FACT, RELATION, RELATION_TYPE, SOURCE, SCOPE, ScopedSQL, domain
-from .writes import check_lease, check_version, commit_task, enqueue, invalidate
-from .writes import save_embedding, store_messages, write
+from .records import ENTITY, ENTITY_TYPE, FACT, RELATION, RELATION_TYPE, SOURCE, SCOPE, ScopedSQL, domain
+from .writes import check_lease, check_version, commit_task, enqueue
+from .writes import save_embedding, write
 
 
 @dataclass(frozen=True)
@@ -68,8 +68,6 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
         check_lease(sql, conditions)
     for source in conditions.sources:
         check_version(sql, RecordRef(sql.context, SOURCE, source.source_id), source.content_version)
-    for target in conditions.targets:
-        check_version(sql, target.record, target.content_version)
 
     graph = GraphProjection(sql)
     fact_ids = {item.record_id for item in changes.erasures if item.kind == FACT}
@@ -77,21 +75,12 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
     changed = bool(erased)
     if {link.fact for link in changes.source_links} - {item.ref for item in changes.writes}:
         raise DatabaseConstraintError('Source links require an explicit fact write')
-    for conflict in changes.resolved_conflicts:
-        removed = sql.delete('conflicts', 'id = %s', (conflict.record_id,))
-        if removed.rowcount != 1:
-            raise VersionConflict('Pending conflict changed')
-        changed = True
-    rank = {kind: index for index, kind in enumerate((SOURCE, ENTITY_TYPE, RELATION_TYPE, ENTITY, FACT, ENTITY_ALIAS, CONFLICT, RELATION))}
+    rank = {kind: index for index, kind in enumerate((SOURCE, ENTITY_TYPE, RELATION_TYPE, ENTITY, FACT, RELATION))}
     for item in sorted(changes.writes, key=lambda item: (rank[item.ref.kind], item.ref.record_id)):
         written, profile_changed = write(sql, item, graph)
         changed |= written
         if profile_changed:
             fact_ids.add(item.ref.record_id)
-    for item in changes.invalidations:
-        if invalidate(sql, item, graph):
-            fact_ids.add(item.ref.record_id)
-            changed = True
     graph.prune()
     for item in changes.embeddings:
         save_embedding(sql, item)
@@ -203,19 +192,6 @@ class PostgresDAO:
             return _apply_changes(sql, changes, revision, generation, settings)
 
         return self._mutate(changes.operation_id, apply)
-
-    def accept_raw_messages(self, session_id, messages):
-        identifier(session_id)
-        items = tuple(messages)
-        if not items or any(not isinstance(item, MessageInput) or item.extract for item in items):
-            raise ValueError('Expected a non-empty batch of raw MessageInput records')
-
-        def apply(sql, revision, generation, settings):
-            ids, fresh = store_messages(sql, session_id, items)
-            return Applied(bool(fresh), source_ids=ids, count=len(fresh))
-
-        return self._mutate(new_operation_id(), apply)
-
 
     def clear_space(self):
         def apply(sql, *_):

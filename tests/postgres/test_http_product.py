@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+
 pytest.importorskip("fastapi")
 
 
@@ -88,6 +89,37 @@ def test_remember_recall_roundtrip(client):
     assert dump["counts"]["episodes"] >= 1
     rec = client.post("/v1/recall", json={"query": "Where does the user live?"}, headers=h).json()
     assert "Shenzhen" in rec["context"] and rec["tokens_est"] > 0
+
+
+def test_remember_with_event_time_replaces_earlier_fact(client, product_service, monkeypatch):
+    from mnemotrace.llm import FakeLLM
+    from tests.postgres.ontology_fixtures import Answers, assertion
+
+    first = 'Full-time: Ana works at Orbit Labs.'
+    correction = 'Full-time: Ana works at Nova Labs.'
+    answers = Answers({first: assertion('Ana', 'works_at', 'Orbit Labs'),
+                       correction: assertion('Ana', 'works_at', 'Nova Labs')}, {})
+    monkeypatch.setattr(product_service, 'llm', FakeLLM(handler=answers))
+    h = hdr('note-event-time')
+
+    assert client.post('/v1/remember', json=dict(content=first, event_time=0), headers=h).json()['fact_ids']
+    ignored = client.post('/v1/remember', json=dict(content=correction), headers=h).json()
+    assert ignored['status'] == 'completed' and ignored['fact_ids'] == []
+    saved = client.post('/v1/remember', json=dict(content=correction, event_time=20), headers=h).json()
+    dump = client.get('/v1/memories', params={'status': 'all'}, headers=h).json()
+    old, new = sorted(dump['facts'], key=lambda fact: fact['valid_at'])
+    assert (old['object'], new['object']) == ('Orbit Labs', 'Nova Labs')
+    assert old['invalid_at'] == new['valid_at'] and new['supersedes'] == [old['id']]
+    assert set(saved['fact_ids']) == {old['id'], new['id']}
+    assert tuple(new['provenance']) == tuple(saved['source_ids'])
+
+
+@pytest.mark.parametrize('event_time', [True, '20'])
+def test_remember_rejects_non_numeric_event_time(client, event_time):
+    h = hdr('invalid-note-time')
+    assert client.post('/v1/remember', json=dict(content='Synthetic note', event_time=event_time),
+                       headers=h).status_code == 422
+    assert client.get('/v1/memories', headers=h).json()['counts']['episodes'] == 0
 
 
 def test_recall_answers_with_extraction_model_unless_answerer_overrides(client, runtime, monkeypatch):
@@ -373,7 +405,12 @@ def test_fact_crud_and_focus_policy_graph_export(client):
     assert pol["ok"] and pol["policy"]["extract_instruction"] == "Record job changes."
     assert "nodes" in client.get("/v1/graph", headers=h).json()
     exp = client.get("/v1/export", headers=h).json()
-    assert exp["format_version"] == 4 and any(f["object"] == "Moonshot AI" for f in exp["facts"])
+    fact, = exp["facts"]
+    assert exp["format_version"] == 6 and fact["object"] == "Moonshot AI" and fact["subject"] == "我"
+    assert not {"review_pending", "withdrawn_at", "categories_source", "sensitive_override", "source_roles"} & fact.keys()
+    assert "conflicts" not in exp
+    assert client.get("/v1/conflicts", headers=h).status_code == 404
+    assert client.post("/v1/conflicts/old-id/resolve", json={"keep": "newer"}, headers=h).status_code == 404
     assert client.delete(f"/v1/facts/{fid}", headers=h).json()["ok"] is True
 
 
@@ -482,14 +519,16 @@ def seed_facts(service, context, facts):
         ChangeSet, CommitConditions, RecordKind, RecordRef, RecordWrite, SourceLink, StoredRecord,
     )
     from mnemotrace.store.postgres.dao import new_operation_id
+    from tests.postgres.fact_fixtures import relation_writes
 
     dao = service.memory(context).dao
     with dao.read_snapshot() as view:
         snapshot = view.snapshot
+        relations = relation_writes(view, facts)
     writes = tuple(RecordWrite(StoredRecord.from_record(context, fact)) for fact in facts)
     links = tuple(SourceLink(write.ref, RecordRef(context, RecordKind.SOURCE, source_id))
                   for write, fact in zip(writes, facts) for source_id in fact.provenance)
-    dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=writes, source_links=links))
+    dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=(*relations, *writes), source_links=links))
 
 
 def test_focus_filters_retrieval_and_tracks_without_rewriting_facts(client, product_service, product_scope):
@@ -552,13 +591,13 @@ def _seed_category_filter_facts(service, context):
 
     user = context.user_id
     rows = [
-        Fact(subject="synthetic", predicate="note", object="alpha first", categories=["professional_details"], categories_source="user", valid_at=10, user_id=user, text='synthetic note alpha first'),
-        Fact(subject="synthetic", predicate="note", object="alpha second", categories=["professional_details"], categories_source="user", valid_at=20, user_id=user, text='synthetic note alpha second'),
-        Fact(subject="synthetic", predicate="note", object="beta latest", categories=["personal_details"], categories_source="user", valid_at=90, user_id=user, text='synthetic note beta latest'),
+        Fact(subject="synthetic", predicate="note", object="alpha first", categories=["professional_details"], valid_at=10, user_id=user, text='synthetic note alpha first'),
+        Fact(subject="synthetic", predicate="note", object="alpha second", categories=["professional_details"], valid_at=20, user_id=user, text='synthetic note alpha second'),
+        Fact(subject="synthetic", predicate="note", object="beta latest", categories=["personal_details"], valid_at=90, user_id=user, text='synthetic note beta latest'),
         Fact(subject="synthetic", predicate="note", object="uncategorized", valid_at=80, user_id=user, text='synthetic note uncategorized'),
-        Fact(subject="synthetic", predicate="note", object="past alpha", categories=["milestones"], categories_source="user", valid_at=5, invalid_at=6, user_id=user, text='synthetic note past alpha'),
-        Fact(subject="synthetic-session", predicate="decision", object="synthetic decision", categories=["technology"], categories_source="user", valid_at=95, user_id=user, text='synthetic-session decision synthetic decision'),
-        Fact(subject="synthetic", predicate="note", object="private alpha", categories=["health"], categories_source="user", sensitive=True, valid_at=100, user_id=user, text='synthetic note private alpha'),
+        Fact(subject="synthetic", predicate="note", object="past alpha", categories=["milestones"], valid_at=5, invalid_at=6, user_id=user, text='synthetic note past alpha'),
+        Fact(subject="synthetic-session", predicate="decision", object="synthetic decision", categories=["technology"], valid_at=95, user_id=user, text='synthetic-session decision synthetic decision'),
+        Fact(subject="synthetic", predicate="note", object="private alpha", categories=["health"], sensitive=True, valid_at=100, user_id=user, text='synthetic note private alpha'),
     ]
     seed_facts(service, context, rows)
     service.remember(context, "synthetic source record", "synthetic-session", extract=False)
@@ -987,10 +1026,8 @@ def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, pro
     memory = product_service.memory(context)
 
     def remember_source(content, session_id, *, event_time):
-        if source_entry == 'raw':
-            return memory.remember_raw(content, session_id, event_time=event_time)
         return memory.remember(content, session_id, event_time=event_time, processing='buffered',
-                               extract=True)
+                               extract=source_entry != 'raw')
 
     fact = client.seed_fact(hdr(label), subject="Ana", predicate="works_at", object="Orbit", valid_at=100, text='Ana works at Orbit')
     remember_source("Ana works at Orbit.", "earlier", event_time=100)

@@ -28,7 +28,7 @@ def stored(memory, fact_id):
 
 def test_sensitivity_does_not_reembed_or_change_graph_projection(text_memory, monkeypatch):
     memory = text_memory
-    fact = seed_fact(memory, 'user', 'likes', '茶', text='用户喜欢茶。', linked=True)
+    fact = seed_fact(memory, '我', 'likes', '茶', text='用户喜欢茶。', linked=True)
     before, vectors = stored(memory, fact.id)
     graph = memory.graph_relations(fact.id)
     monkeypatch.setattr(memory._embedder, 'embed', lambda text: pytest.fail('Unchanged sentence was embedded'))
@@ -42,7 +42,7 @@ def test_sensitivity_does_not_reembed_or_change_graph_projection(text_memory, mo
 
 def test_embedding_failure_does_not_commit_an_incomplete_new_fact(text_memory, monkeypatch):
     memory = text_memory
-    fact = seed_fact(memory, 'user', 'likes', '茶', text='用户喜欢茶。', linked=True)
+    fact = seed_fact(memory, '我', 'likes', '茶', text='用户喜欢茶。', linked=True)
     before, vectors = stored(memory, fact.id)
     graph = memory.graph_relations(fact.id)
 
@@ -51,7 +51,7 @@ def test_embedding_failure_does_not_commit_an_incomplete_new_fact(text_memory, m
 
     monkeypatch.setattr(memory._embedder, 'embed', fail)
     with pytest.raises(RuntimeError, match='Synthetic embedding failure'):
-        seed_fact(memory, 'user', 'likes', '咖啡', text='用户喜欢咖啡。', linked=True)
+        seed_fact(memory, '我', 'likes', '咖啡', text='用户喜欢咖啡。', linked=True)
     assert stored(memory, fact.id) == (before, vectors)
     assert memory.graph_relations(fact.id) == graph
     assert len(memory.facts()) == 1
@@ -67,7 +67,7 @@ def test_http_sentence_is_returned_without_display_and_invalid_patch_leaves_it_u
         assert client.patch(f'/v1/facts/{fact_id}/sensitivity', headers=headers, json={'sensitive': True, **patch}).status_code == 422
     assert client.get('/v1/memories', headers=headers).json()['facts'] == before
     exported = client.get('/v1/export', headers=headers).json()
-    assert exported['format_version'] == 4
+    assert exported['format_version'] == 6
     assert exported['facts'][0]['text'] == sentence and 'display' not in exported['facts'][0]
 
 
@@ -76,5 +76,5 @@ def test_new_database_has_required_sentence_and_no_display_column(text_memory):
         columns = view._sql.run("SELECT column_name,is_nullable FROM information_schema.columns "
                                 "WHERE table_schema='mnemotrace' AND table_name='facts'").fetchall()
     assert ('text', 'NO') in columns and not any(name == 'display' for name, _ in columns)
-    fact = seed_fact(text_memory, 'user', 'likes', '茶', text='用户喜欢茶。')
+    fact = seed_fact(text_memory, '我', 'likes', '茶', text='用户喜欢茶。')
     assert 'display' not in asdict(fact)

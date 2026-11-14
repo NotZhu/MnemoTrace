@@ -73,11 +73,11 @@ def test_pre_removal_database_is_rejected_without_modifying_it(database_factory,
     def old_scripts(prefix):
         scripts = current_scripts(prefix)
         initial, _ = scripts[0]
-        initial = initial.replace('    source_roles text[]', (
+        initial = initial.replace('    valid_at timestamptz,', (
             "    assertion_kind text NOT NULL CHECK (assertion_kind IN "
             "('unspecified','user_statement','assistant_suggestion','user_confirmation','assistant_report')),\n"
-            '    source_roles text[]'
-        )).replace('CHECK (format_version = 6)', 'CHECK (format_version = 4)')
+            '    valid_at timestamptz,'
+        )).replace('CHECK (format_version = 8)', 'CHECK (format_version = 4)')
         return [(initial, sha256(initial.encode()).hexdigest()), *scripts[1:]]
 
     with database_factory(initialize=False) as bundle:

@@ -65,15 +65,22 @@ def ontology_reply(prompt, system, relations=None, on_relation=None, duplicate=F
             first, second = data['facts'][item['first']], data['facts'][item['second']]
             decision = ('duplicate' if duplicate and 'duplicate' in item['allowed'] else
                         'conflict' if all('Full-time' in row['text'] for row in (first, second)) else 'coexists')
-            answers.append(dict(id=item['id'], decision=decision, reason='Fixed synthetic comparison'))
+            answers.append(dict(id=item['id'], decision=decision))
         return json.dumps(dict(decisions=answers))
     names = {}
     relations = relations or {}
+    items = {item['id']: item for item in data['items']}
     for item in data['items']:
-        candidates = [data['candidates'][key] for key in item['candidates']]
-        statement = data['assertions'][item['assertion']]['text']
+        candidates = []
+        for key in item['candidates']:
+            if key in data['candidates']:
+                candidates.append(data['candidates'][key])
+            else:
+                prior = items[key]
+                candidates.append(dict(id=key, predicate=None, meaning=prior['meaning'], direction=prior['direction'],
+                                       endpoint_types=[[prior['subject_type'], prior['object_type']]]))
         if on_relation:
-            on_relation(dict(item, candidates=candidates, statement=statement))
+            on_relation(dict(item, candidates=candidates, statement=item['text']))
         code = item['meaning'].strip().lower().replace(' ', '_')
         choice, reverse = relations.get(item['meaning'], relations.get(code, (code, False)))
         candidate = next((row for row in candidates if (row['predicate'] or names.get(row['id'])) == choice), None)

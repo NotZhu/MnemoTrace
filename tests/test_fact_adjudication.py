@@ -10,6 +10,7 @@ from mnemotrace.consolidate.planning import WINDOW_PREFIX, fact_valid_at, valida
 from tests.embedder_fixtures import MockEmbedder
 from mnemotrace.extraction import ExtractionResponseError
 from mnemotrace.llm import FakeLLM
+from mnemotrace.store.contracts import FactQuery
 from mnemotrace.types import Fact
 
 
@@ -20,7 +21,7 @@ def claim(source_id, value='Paris', **fields):
 
 
 def decisions(prompt, decision='conflict'):
-    return json.dumps({'decisions': [{'id': pair['id'], 'decision': decision, 'reason': 'Synthetic comparison'}
+    return json.dumps({'decisions': [{'id': pair['id'], 'decision': decision}
                                     for pair in reversed(json.loads(prompt)['items'])]})
 
 
@@ -49,19 +50,18 @@ def fact(key, obj, at, **fields):
                 provenance=[key + '-source'], **fields)
 
 
-def merge(incoming, previous=(), *, judge='conflict', now=100, model=None):
+def merge(incoming, previous=(), *, judge='conflict', now=100, model=None, config=None):
     model = model or FakeLLM(handler=lambda prompt, system: decisions(prompt, judge))
-    changed, conflicts, stats = plan_merge(incoming, previous, model, Config(), MockEmbedder(), now)
-    return {item.id: item for item in changed}, conflicts, stats
+    changed, stats = plan_merge(incoming, previous, model, config or Config(), MockEmbedder(), now)
+    return {item.id: item for item in changed}, stats
 
 
 def test_exact_duplicates_merge_provenance_and_keep_sensitive():
-    first = fact('first', 'Paris', 1, source_roles=['user'])
-    duplicate = fact('duplicate', 'Paris', 1, sensitive=True, source_roles=['assistant', 'user'])
-    changed, conflicts, stats = merge([duplicate], [first])
-    assert not conflicts and stats['model_calls'] == 0
+    first = fact('first', 'Paris', 1)
+    duplicate = fact('duplicate', 'Paris', 1, sensitive=True)
+    changed, stats = merge([duplicate], [first])
+    assert stats['model_calls'] == 0
     assert changed['first'].provenance == ['first-source', 'duplicate-source']
-    assert changed['first'].source_roles == ['user', 'assistant']
     assert changed['first'].sensitive
     assert not first.sensitive
 
@@ -69,8 +69,8 @@ def test_exact_duplicates_merge_provenance_and_keep_sensitive():
 def test_late_a_b_a_reconnects_chain_independent_of_model_order():
     first, late, last = fact('first', 'Paris', 10), fact('late', 'Oslo', 20), fact('last', 'Paris', 30)
     first.invalid_at, first.expired_at, last.supersedes = 30, 80, [first.id]
-    changed, conflicts, stats = merge([late], [first, last])
-    assert not conflicts and stats['model_calls'] == 1
+    changed, stats = merge([late], [first, last])
+    assert stats['model_calls'] == 1
     assert changed['first'].invalid_at == 20
     assert (changed['late'].supersedes, changed['late'].invalid_at, changed['late'].expired_at) == (['first'], 30, 100)
     assert changed['last'].supersedes == ['late']
@@ -78,19 +78,29 @@ def test_late_a_b_a_reconnects_chain_independent_of_model_order():
 
 def test_future_transition_preserves_old_value_until_effective_date():
     first, future = fact('first', 'Paris', 10), fact('future', 'Oslo', 200)
-    changed, _, _ = merge([future], [first])
+    changed, _ = merge([future], [first])
     assert changed['first'].is_live(199)
     assert not changed['future'].is_live(199)
     assert not changed['first'].is_live(200)
     assert changed['future'].is_live(200)
 
 
+@pytest.mark.parametrize('semantic', [False, True])
+def test_disjoint_history_is_not_sent_for_conflict_comparison(semantic):
+    old = [fact(f'old-{index}', f'Old city {index}', index, invalid_at=index + 1) for index in range(1000)]
+    current = fact('new', 'Current city', 1000)
+    model = FakeLLM(handler=lambda prompt, system: pytest.fail('Disjoint history reached the model'))
+    changed, stats = plan_merge([current], old, model, Config(), None, 1000, semantic=semantic)
+    assert [item.id for item in changed] == [current.id]
+    assert stats['model_calls'] == 0
+
+
 def test_explicit_dates_from_one_source_can_replace_an_earlier_value():
     first = fact('first', 'Paris', 10)
     second = fact('second', 'Oslo', 20)
     second.provenance = first.provenance
-    changed, conflicts, stats = merge([second], [first])
-    assert not conflicts and stats['model_calls'] == 1
+    changed, stats = merge([second], [first])
+    assert stats['model_calls'] == 1
     assert changed[first.id].invalid_at == 20
     assert changed[second.id].supersedes == [first.id]
 
@@ -110,39 +120,89 @@ def model_response(prompt, system):
     return decisions(prompt, 'conflict')
 
 
-def test_offline_equal_starts_hold_candidate_until_approval():
+def test_offline_equal_starts_discard_candidate_and_preserve_source():
     mem = MemoryEngine(llm=FakeLLM(handler=model_response))
     mem.add('Paris', event_time=10, consolidate=True)
     mem.add('Oslo', event_time=10, consolidate=True)
-    conflict, = mem.pending_conflicts()
     assert [item.object for item in mem._all_facts()] == ['Paris']
-    assert mem.resolve_conflict(conflict.id, 'both')
-    assert {item.object for item in mem._all_facts()} == {'Paris', 'Oslo'}
-    assert mem.pending_conflicts() == []
+    assert {source.content for source in mem.episodes_doc.values()} == {'Paris', 'Oslo'}
 
 
-def test_manual_sensitive_override_survives_duplicate_evidence():
-    old = fact('first', 'Paris', 1, sensitive_override=True)
-    changed, _, _ = merge([fact('duplicate', 'Paris', 1, sensitive=True)], [old])
-    assert not changed['first'].sensitive
-    assert changed['first'].provenance == ['first-source', 'duplicate-source']
+def test_add_fact_without_effective_time_reuses_durable_extracted_assertion():
+    def response(prompt, system):
+        source, = json.loads(prompt.removeprefix(WINDOW_PREFIX))['pending']
+        return json.dumps(dict(facts=[claim(source['id'], 'Paris', retention='durable', categories=['travel'])],
+                               digests=[]))
+
+    mem = MemoryEngine(llm=FakeLLM(handler=response))
+    episode = mem.add('Ana lives in Paris', event_time=10, consolidate=True)
+    original, = mem.history('Ana', 'lives_in')
+    duplicate = mem.add_fact('Ana', 'lives_in', 'Paris', text=original.text, categories=['misc'], sensitive=True)
+    kept, = mem.history('Ana', 'lives_in')
+    assert duplicate.id == kept.id == original.id
+    assert (kept.valid_at, kept.retention, kept.categories) == (10, 'durable', ['travel'])
+    assert kept.provenance == [episode.id] and kept.source == 'extracted' and kept.sensitive
+
+    later = mem.add_fact('Ana', 'lives_in', 'Paris', text=original.text, valid_at=20)
+    assert [(fact.id, fact.valid_at) for fact in mem.history('Ana', 'lives_in')] == [(original.id, 10), (later.id, 20)]
+
+
+def test_sensitive_duplicate_reapplies_redaction_after_explicit_unmask():
+    def sensitive_model(prompt, system):
+        result = json.loads(model_response(prompt, system))
+        result['facts'][0]['sensitive'] = True
+        return json.dumps(result)
+
+    mem = MemoryEngine(llm=FakeLLM(handler=sensitive_model))
+    first = mem.add('Paris', event_time=10, consolidate=True)
+    old, = mem.history('Ana', 'lives_in')
+    assert not mem.set_fact_sensitive(old.id, False).sensitive
+    second = mem.add('Paris', event_time=10, consolidate=True)
+    kept, = mem.history('Ana', 'lives_in')
+    assert kept.id == old.id and kept.sensitive
+    assert kept.provenance == [first.id, second.id]
+
+
+def test_late_evidence_and_sensitive_predecessor_respect_query_and_erase():
+    def response(prompt, system):
+        if not prompt.startswith(WINDOW_PREFIX):
+            return decisions(prompt)
+        origin, = json.loads(prompt.removeprefix(WINDOW_PREFIX))['pending']
+        fields = (dict(sensitive=True) if origin['content'] == 'Paris' else
+                  dict(time_kind='dated', effective_date='2025-02-01'))
+        return json.dumps(dict(facts=[claim(origin['id'], origin['content'], **fields)], digests=[]))
+
+    mem = MemoryEngine(llm=FakeLLM(handler=response))
+    mem.add('Paris', event_time=10, consolidate=True)
+    source = mem.add('Oslo', event_time=datetime(2025, 3, 1, tzinfo=timezone.utc).timestamp(), consolidate=True)
+    old, replacement = mem.history('Ana', 'lives_in')
+    assert replacement.supersedes == [old.id]
+    scope = FactQuery(subject='Ana', predicate='lives_in', valid_at=replacement.valid_at)
+    result = mem.search('Where does Ana live?', facts=scope)
+    assert result.source_ids == (source.id,)
+    shared = mem.search('Where does Ana live?', facts=replace(scope, exclude_sensitive=True))
+    assert shared.top().supersedes == []
+    assert replacement.supersedes == [old.id]
+    assert mem.delete_fact(old.id)
+    kept, = mem.history('Ana', 'lives_in')
+    assert kept.supersedes == [] and kept.provenance == [source.id]
 
 
 def test_semantic_recall_crosses_categories_with_a_real_vector_signal():
-    previous = fact('first', 'Paris', 1, categories=['travel'], categories_source='llm', embedding=[1.0, 0.0])
-    incoming = fact('second', 'Oslo', 2, categories=['milestones'], categories_source='llm', embedding=[1.0, 0.0])
+    previous = fact('first', 'Paris', 1, categories=['travel'], embedding=[1.0, 0.0])
+    incoming = fact('second', 'Oslo', 2, categories=['milestones'], embedding=[1.0, 0.0])
     incoming = replace(incoming, predicate='based_in', relation_id='')
     model = FakeLLM(handler=lambda prompt, system: decisions(prompt))
-    changed, conflicts, stats = plan_merge([incoming], [previous], model, Config(), object(), 100)
-    assert not conflicts and stats['model_calls'] == 1
+    changed, stats = plan_merge([incoming], [previous], model, Config(), object(), 100)
+    assert stats['model_calls'] == 1
     assert next(item for item in changed if item.id == previous.id).invalid_at == 2
 
 
 def test_complete_adjudication_across_batch_boundaries():
     previous = [fact(str(index), f'city {index}', 1) for index in range(17)]
     incoming = fact('incoming', 'Oslo', 2)
-    changed, conflicts, stats = merge([incoming], previous, judge='coexists')
-    assert not conflicts and stats['model_calls'] == 2
+    changed, stats = merge([incoming], previous, judge='coexists', config=Config(joint_max_output_tokens=440))
+    assert stats['model_calls'] == 2
     assert list(changed) == ['incoming']
 
 
@@ -154,8 +214,8 @@ def test_partial_semantic_workset_cannot_drop_a_confirmed_predecessor():
     previous.invalid_at = latest.valid_at
     incoming = fact('incoming', 'Berlin', 10, embedding=[1.0, 0.0])
     model = FakeLLM(handler=lambda prompt, system: decisions(prompt))
-    changed, conflicts, stats = plan_merge([incoming], [previous, latest], model, Config(), object(), 100)
-    assert not conflicts and stats['model_calls'] == 1
+    changed, stats = plan_merge([incoming], [previous, latest], model, Config(), object(), 100)
+    assert stats['model_calls'] == 1
     by_id = {item.id: item for item in changed}
     assert previous.id not in by_id
     assert by_id[incoming.id].invalid_at == 30
@@ -163,31 +223,31 @@ def test_partial_semantic_workset_cannot_drop_a_confirmed_predecessor():
 
 
 def test_manual_duplicate_links_support_without_changing_user_labels():
-    old = fact('manual', 'Paris', 1, source='user', categories=['personal_details'], categories_source='user')
-    changed, conflicts, stats = merge([fact('duplicate', 'Paris', 1, sensitive=True)], [old])
-    assert not conflicts and stats['model_calls'] == 0
+    old = fact('manual', 'Paris', 1, source='user', categories=['personal_details'])
+    changed, stats = merge([fact('duplicate', 'Paris', 1, sensitive=True)], [old])
+    assert stats['model_calls'] == 0
     kept = changed[old.id]
     assert kept.provenance == ['manual-source', 'duplicate-source']
-    assert (kept.source, kept.categories, kept.sensitive) == ('user', ['personal_details'], False)
+    assert (kept.source, kept.categories, kept.sensitive) == ('user', ['personal_details'], True)
 
 
 def test_lexical_recall_includes_explicit_preference_reversal():
     old, new = fact('old', 'jazz', 10), fact('new', 'jazz', 20)
     old = replace(old, predicate='likes', relation_id='')
     new = replace(new, predicate='dislikes', relation_id='')
-    changed, _, stats = merge([new], [old])
+    changed, stats = merge([new], [old])
     assert stats['model_calls'] == 1
     assert changed[old.id].invalid_at == 20
 
 
 def test_two_coexisting_predecessors_expire_at_the_adjudicated_successor():
     first, second, latest = fact('a', 'Alpha', 10), fact('b', 'Beta', 20), fact('c', 'Gamma', 30)
-    changed, _, _ = merge([latest], [first, second])
+    changed, _ = merge([latest], [first, second])
     assert changed[first.id].invalid_at == changed[second.id].invalid_at == 30
     assert changed[latest.id].supersedes == [first.id, second.id]
 
 
-def test_oversized_history_candidate_goes_to_review_without_truncating_evidence():
+def test_oversized_history_comparison_discards_candidate_without_truncating_evidence():
     config = Config()
     previous = fact('long', '会议' * 5000, 10)
     incoming = fact('short', 'Oslo', 20)
@@ -196,48 +256,10 @@ def test_oversized_history_candidate_goes_to_review_without_truncating_evidence(
         assert len((system + prompt).encode()) <= config.extraction_max_input_bytes
         return decisions(prompt)
 
-    changed, conflicts, stats = merge([incoming], [previous], model=FakeLLM(handler=respond))
+    changed, stats = merge([incoming], [previous], model=FakeLLM(handler=respond))
     assert stats['model_calls'] == 0
-    assert {item.id for item in changed.values()} == {incoming.id}
-    assert len(conflicts) == 1
-    assert changed[incoming.id].review_pending
-
-
-def test_court_decision_withdraws_without_changing_effective_dates():
-    from mnemotrace.consolidate.adjudication import resolve_facts
-
-    old, challenger = fact('old', 'Paris', 10), fact('new', 'Oslo', 10, review_pending=True)
-    resolve_facts({'older': old, 'newer': challenger}, 'newer', 100)
-    assert (old.withdrawn_at, old.invalid_at, old.expired_at) == (100, None, None)
-    assert challenger.is_live(10)
-
-
-def test_snapshot_restores_pending_conflict_with_remapped_fact_ids():
-    from dataclasses import asdict
-    from mnemotrace.types import Conflict
-
-    old, held = fact('old', 'Paris', 10, source='user'), fact('held', 'Oslo', 20, review_pending=True)
-    conflict = Conflict(old.id, held.id, old.text, held.text)
-    payload = dict(format_version=4, facts=[asdict(old), asdict(held)], episodes=[], conflicts=[asdict(conflict)])
-    restored = MemoryEngine()
-    restored.import_snapshot(payload, user_id='target')
-    restored.import_snapshot(payload, user_id='target')
-    pending, = restored.pending_conflicts('target')
-    assert pending.pair_key != conflict.pair_key
-    assert restored.resolve_conflict(pending.id, 'both')
-    restored.import_snapshot(payload, user_id='target')
-    assert restored.pending_conflicts('target') == []
-    assert {f.object for f in restored._all_facts()} == {'Paris', 'Oslo'}
-
-
-def test_snapshot_rejects_an_unlinked_held_fact_before_restoring():
-    from dataclasses import asdict
-
-    held = fact('held', 'Oslo', 20, review_pending=True)
-    restored = MemoryEngine()
-    with pytest.raises(ValueError, match='pending fact has no conflict'):
-        restored.import_snapshot(dict(format_version=4, facts=[asdict(held)], episodes=[]))
-    assert restored._all_facts(include_unpublished=True) == []
+    assert not changed
+    assert previous.invalid_at is None
 
 
 def test_snapshot_rejects_legacy_assertion_before_writing_sources_or_facts():
@@ -245,24 +267,24 @@ def test_snapshot_rejects_legacy_assertion_before_writing_sources_or_facts():
 
     restored = MemoryEngine()
     snapshot = dict(
-        format_version=4,
+        format_version=6,
         facts=[asdict(fact('current', 'Paris', 10)),
                dict(asdict(fact('legacy', 'Oslo', 20)), assertion_kind='assistant_suggestion')],
         episodes=[dict(id='ep-1', content='Synthetic source', session_id='s', role='user', event_time=10)],
     )
-    with pytest.raises(ValueError, match='legacy fact format'):
+    with pytest.raises(ValueError, match=r'facts\[1\]: unsupported field'):
         restored.import_snapshot(snapshot)
-    assert restored._all_facts(include_unpublished=True) == []
+    assert restored._all_facts() == []
     assert not restored.episodes_doc.values()
 
 
 def test_literal_case_conditions_and_subsecond_validity_survive_adjudication():
-    first = fact('first', 'Ab1', 10.01, categories=['misc'], categories_source='user')
+    first = fact('first', 'Ab1', 10.01, categories=['misc'])
     for new in (
         fact('case', 'ab1', 10.01),
         fact('time', 'Ab1', 10.02),
         fact('condition', 'Ab1', 10.01, text='Ana lives in Ab1 during the winter'),
     ):
-        changed, _, stats = merge([new], [first], judge='coexists')
+        changed, stats = merge([new], [first], judge='coexists')
         assert new.id in changed and stats['model_calls'] == 1
     assert first.categories == ['misc']

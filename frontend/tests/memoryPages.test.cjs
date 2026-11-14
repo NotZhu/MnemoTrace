@@ -379,7 +379,7 @@ test('a login cycle change during the cancellation barrier leaves the new cache 
 })
 
 for (const entry of ['useRemember', 'useOrganizeSession', 'useSetFactSensitive', 'useDeleteFact',
-  'useForget', 'useSetFocus', 'useResolveConflict', 'useSetPolicy']) {
+  'useForget', 'useSetFocus', 'useSetPolicy']) {
   test(`${entry} refreshes an uncached first page through the shared barrier`, async () => {
     const s = setup({ holdInitial: true })
     try {

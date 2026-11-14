@@ -50,7 +50,9 @@ class MemoryMCP(FastMCP):
                 raise ToolError("mode is no longer supported")
             if "extract" in arguments and type(arguments["extract"]) is not bool:
                 raise ToolError("extract must be a boolean")
-        if name in {"mnemotrace_recall", "mnemotrace_aggregate", "mnemotrace_follow_path"} and "known_at" in arguments:
+        if "known_at" in arguments and name in {
+            "mnemotrace_search", "mnemotrace_recall", "mnemotrace_aggregate", "mnemotrace_follow_path",
+        }:
             raise ToolError("Query by effective time with valid_at or as_of")
         if name == "mnemotrace_set_fact_sensitive" and type(arguments.get("sensitive")) is not bool:
             raise ToolError("sensitive must be a boolean")
@@ -334,6 +336,8 @@ async def mnemotrace_remember(
     extract: Annotated[StrictBool, Field(description="Extract reusable facts from the saved source.")] = True,
     processing: Literal['immediate', 'buffered'] = 'immediate',
     agent_id: str | None = None,
+    event_time: Annotated[float | None, Field(strict=True, allow_inf_nan=False,
+                                             description="Source time as Unix seconds, when known.")] = None,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
 ) -> str:
     """把内容存入用户长期记忆并整合（抽取原子双时间轴 fact、与已有认知解决矛盾、更新知识图）。
@@ -343,7 +347,8 @@ async def mnemotrace_remember(
     （as-of 查询依然可用）。extract=True 需要配置 LLM；抽取失败会返回可识别错误并保留原文供重试。
     """
     try:
-        data = await backend().remember(content, session_id=session_id, extract=extract, processing=processing, agent_id=agent_id)
+        data = await backend().remember(content, session_id=session_id, extract=extract, processing=processing,
+                                        agent_id=agent_id, event_time=event_time)
     except Exception as e:  # noqa: BLE001
         return _err(e)
     if response_format == ResponseFormat.JSON:
@@ -351,7 +356,12 @@ async def mnemotrace_remember(
     if not extract:
         return 'Saved raw history.'
     operation_ids = data.get('operation_ids', ())
-    progress = 'Accepted for processing.' if data.get('status') == 'accepted' else 'Remembered.'
+    if data.get('status') == 'accepted':
+        progress = 'Accepted for processing.'
+    elif data.get('fact_ids'):
+        progress = 'Remembered.'
+    else:
+        progress = 'Saved original and completed processing. No facts changed.'
     return progress + (f" Operations: {', '.join(operation_ids)}" if operation_ids else '')
 
 
@@ -637,7 +647,7 @@ async def mnemotrace_agent_status(
         f"- Session extraction failures: {s.get('extraction_failures', 0)} episode(s)",
         f"- Overall extraction failures: {c.get('extraction_failures', 0)} episode(s)",
         f"- Long-term memory: {c.get('facts_live', 0)} live fact(s), "
-        f"{c.get('digests', 0)} digest(ies), {c.get('pending_conflicts', 0)} pending conflict(s)",
+        f"{c.get('digests', 0)} digest(ies)",
         f"- Consolidation backlog: {'yes' if data.get('consolidation_backlog') else 'no'}",
         _format_feed(data.get("feed") or {}),
         "- Focus:",
@@ -705,7 +715,6 @@ async def mnemotrace_stats(response_format: ResponseFormat = ResponseFormat.MARK
         f"- Graph: {c.get('entities', 0)} entities, {c.get('relations', 0)} relations",
         f"- Graph hygiene: {c.get('graph_orphan_entities', 0)} orphan entities, "
         f"{c.get('graph_stale_relations', 0)} stale relations",
-        f"- Pending conflicts: {c.get('pending_conflicts', 0)}",
         f"- Consolidation backlog: {'yes' if data.get('consolidation_backlog') else 'no'}",
         f"- Backend: storage={data.get('storage', '?')}, embedder={data.get('embedder', '?')}, "
         f"llm_configured={bool(data.get('llm_configured'))}",

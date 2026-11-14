@@ -5,7 +5,7 @@ from contextlib import contextmanager
 import pytest
 
 from mnemotrace.memory import Memory
-from tests.postgres.fact_fixtures import seed_fact
+from tests.postgres.fact_fixtures import relation_writes, seed_fact, seed_note
 from mnemotrace.store.contracts import (
     ChangeSet, CommitConditions, CommitReceipt, EmbeddingWrite, FactQuery, FactState, Lease, MessageInput,
     OperationKind, OperationSpec, ProcessingState, RecordKind, RecordRef, RecordWrite, SourceLink, SourceVersion,
@@ -16,7 +16,8 @@ from mnemotrace.store.postgres.errors import (
     DatabaseConstraintError, DatabaseUnavailable, MessageConflict, SpaceNotFound,
     VersionConflict,
 )
-from mnemotrace.types import Conflict, Fact
+from mnemotrace.store.postgres.records import domain
+from mnemotrace.types import Entity, Fact
 
 
 @pytest.fixture
@@ -35,15 +36,16 @@ def message(key, content='Synthetic content', **fields):
 def commit(memory, operation_id, records=(), **changes):
     with memory.dao.read_snapshot() as view:
         conditions = CommitConditions(view.snapshot)
+        relations = relation_writes(view, records)
     writes = tuple(RecordWrite(StoredRecord.from_record(memory.context, item)) for item in records)
     links = tuple(SourceLink(write.ref, RecordRef(memory.context, RecordKind.SOURCE, source_id))
                   for item, write in zip(records, writes, strict=True) if isinstance(item, Fact)
                   for source_id in item.provenance)
-    return memory.dao.commit(ChangeSet(conditions, operation_id, writes=writes, source_links=links, **changes))
+    return memory.dao.commit(ChangeSet(conditions, operation_id, writes=(*relations, *writes), source_links=links, **changes))
 
 
 def test_record_business_roundtrip_and_selective_updates(memory, cluster):
-    accepted = memory.store_messages('chat', (message('m', agent_id='agent-1'),))
+    accepted = memory.remember_messages('chat', (message('m', agent_id='agent-1'),))
     first = seed_fact(memory, 'Synthetic person', 'lives_in', 'Beijing', valid_at=1, invalid_at=2, expired_at=100, linked=True, text='Synthetic person lives in Beijing')
     current = seed_fact(memory, 'Synthetic person', 'lives_in', 'Shanghai', valid_at=2,
                               supersedes=[first.id], linked=True, text='Synthetic person lives in Shanghai')
@@ -52,12 +54,12 @@ def test_record_business_roundtrip_and_selective_updates(memory, cluster):
 
     with Database(cluster.runtime) as reopened:
         fresh = Memory(reopened, memory.context)
-        assert fresh.get_episode(accepted.source_ids[0]).content == 'Synthetic content'
+        assert fresh.get_episode(accepted['source_ids'][0]).content == 'Synthetic content'
         assert [fact.id for fact in fresh.history('Synthetic person', 'lives_in')] == [first.id, current.id]
         assert fresh.get_fact(current.id).supersedes == [first.id]
         with fresh.dao.read_snapshot() as view:
             edge = view.relations(first.id)[0]
-            assert view.get(RecordKind.SOURCE, accepted.source_ids[0]).agent_id == 'agent-1'
+            assert view.get(RecordKind.SOURCE, accepted['source_ids'][0]).agent_id == 'agent-1'
             untouched = view.get(RecordKind.FACT, unrelated.id)
         assert fresh.facts(FactQuery(subject='Synthetic person', valid_at=1))[0].id == first.id
         edited = fresh.set_fact_sensitive(first.id, True)
@@ -79,17 +81,20 @@ def test_concurrent_message_reuse_conflict_and_batch_rollback(memory, cluster):
     with Database(cluster.runtime) as second_db, ThreadPoolExecutor(max_workers=2) as workers:
         second = Memory(second_db, memory.context)
         batch = (message('exact', event_time=1),)
-        first = workers.submit(memory.store_messages, 'chat', batch)
-        other = workers.submit(second.store_messages, 'chat', batch)
+        first = workers.submit(memory.remember_messages, 'chat', batch)
+        other = workers.submit(second.remember_messages, 'chat', batch)
         left, right = first.result(), other.result()
-    assert left.source_ids == right.source_ids
-    assert left.core_revision == right.core_revision == 1
-    assert sorted([left.affected_count, right.affected_count]) == [0, 1]
+    assert left['source_ids'] == right['source_ids']
+    assert sorted([left['accepted'], right['accepted']]) == [0, 1]
+    with memory.dao.read_snapshot() as view:
+        assert view.snapshot.core_revision == 1
     with pytest.raises(MessageConflict):
-        memory.store_messages('chat', (message('new'), message('exact', 'Different content')))
+        memory.remember_messages('chat', (message('new'), message('exact', 'Different content')))
     assert [source.message_id for source in memory.list_sources(session_id='chat')] == ['exact']
-    assert memory.store_messages('other', (message('exact'),)).core_revision == 2
-    assert memory.store_messages('chat', (message('another'),)).core_revision == 3
+    memory.remember_messages('other', (message('exact'),))
+    memory.remember_messages('chat', (message('another'),))
+    with memory.dao.read_snapshot() as view:
+        assert view.snapshot.core_revision == 3
     assert sorted(ep.sequence for ep in memory.list_sources(session_id='chat')) == [0, 1]
 
 
@@ -97,7 +102,7 @@ def test_read_view_is_consistent_and_stale_commit_rejected(memory, cluster):
     with memory.dao.read_snapshot('chat') as view:
         assert view.facts() == ()
         with Database(cluster.runtime) as writer:
-            Memory(writer, memory.context).remember_raw('New input', 'chat')
+            Memory(writer, memory.context).remember('New input', 'chat', extract=False)
         assert view.list_sources() == ()
         assert view.counts()[RecordKind.SOURCE] == 0
         snapshot = view.snapshot
@@ -117,10 +122,12 @@ def test_commit_failure_rolls_back_records_and_projection(memory):
     assert memory.facts() == ()
     assert memory.entity('Synthetic person') is None
     assert memory.dao.receipt('broken') is None
-    assert memory.store_messages('chat', (message('m'),)).core_revision == 1
+    memory.remember_messages('chat', (message('m'),))
+    with memory.dao.read_snapshot() as view:
+        assert view.snapshot.core_revision == 1
 
 
-@pytest.mark.parametrize('kind', ['message', 'manual'])
+@pytest.mark.parametrize('kind', ['message', 'note', 'manual'])
 def test_response_lost_after_commit_is_recovered_by_receipt(memory, monkeypatch, kind):
     original = memory.dao._transaction
     dropped = False
@@ -136,36 +143,44 @@ def test_response_lost_after_commit_is_recovered_by_receipt(memory, monkeypatch,
 
     monkeypatch.setattr(memory.dao, '_transaction', interrupt_after_commit)
     if kind == 'message':
-        receipt = memory.store_messages('chat', (message('m'),))
-        assert receipt.source_ids == (memory.list_sources()[0].id,)
+        result = memory.remember_messages('chat', (message('m'),))
+    elif kind == 'note':
+        result = memory.remember('Synthetic note', 'chat', extract=False)
     else:
         fact = Fact('Synthetic person', 'likes', 'tea', user_id=memory.context.user_id, source='user', text='Synthetic person likes tea')
         receipt = commit(memory, 'manual-op', (fact,))
         assert receipt.fact_ids == (memory.facts()[0].id,)
-    assert dropped and receipt.core_revision == 1
-    assert memory.dao.receipt(receipt.operation_id) == receipt
+        assert memory.dao.receipt(receipt.operation_id) == receipt
+    if kind != 'manual':
+        source, = memory.list_sources()
+        assert tuple(result['source_ids']) == (source.id,)
+        assert not result['operation_ids']
+    assert dropped
+    with memory.dao.read_snapshot() as view:
+        assert view.snapshot.core_revision == 1
 
 
 def test_space_isolation_and_unauthorized_context(memory, runtime, accounts, spaces):
-    receipt = memory.store_messages('chat', (message('m'),))
+    accepted = memory.remember_messages('chat', (message('m'),))
     sibling = Memory(runtime, SpaceContext(
         memory.context.user_id, spaces.create(memory.context.user_id, 'Sibling').space_id))
-    assert sibling.get_episode(receipt.source_ids[0]) is None
-    assert sibling.dao.receipt(receipt.operation_id) is None
+    assert sibling.get_episode(accepted['source_ids'][0]) is None
+    stored = commit(memory, 'private-receipt')
+    assert sibling.dao.receipt(stored.operation_id) is None
     outsider = accounts.create_user()
     try:
         other = Memory(runtime, SpaceContext(outsider, memory.context.space_id))
         with pytest.raises(SpaceNotFound):
-            other.store_messages('chat', (message('m'),))
+            other.remember_messages('chat', (message('m'),))
         with pytest.raises(SpaceNotFound):
-            other.dao.receipt(receipt.operation_id)
+            other.dao.receipt(stored.operation_id)
     finally:
         accounts.delete_user(outsider)
 
 
 def test_mixed_erasure_is_atomic_and_supported_erasure_preserves_sources(memory):
-    a = memory.remember_raw('Synthetic source A', 'chat')
-    b = memory.remember_raw('Synthetic source B', 'chat')
+    a = seed_note(memory, 'Synthetic source A', 'chat')
+    b = seed_note(memory, 'Synthetic source B', 'chat')
     who = memory.context.user_id
     fact = Fact('Synthetic person', 'likes', 'tea', user_id=who, provenance=[a.id, b.id], text='Synthetic person likes tea')
     task = OperationSpec('digest-a', OperationKind.DIGEST, 'chat', (SourceVersion(a.id, 1),))
@@ -212,36 +227,6 @@ def test_stale_vector_rejected_and_previous_embedding_removed(memory):
                             (fact.id,)).fetchall() == [(2,)]
 
 
-def test_pending_conflict_resolution_and_default_export(memory):
-    a = seed_fact(memory, 'Synthetic person', 'likes', 'tea', sensitive=False, text='Synthetic person likes tea')
-    b = seed_fact(memory, 'Synthetic person', 'likes', 'coffee', sensitive=True, text='Synthetic person likes coffee')
-    memory.remember_raw('Synthetic private source', 'chat')
-    conflict = Conflict(a.id, b.id, user_id=memory.context.user_id)
-    commit(memory, 'conflict', (conflict,))
-    assert [item.id for item in memory.conflicts()] == [conflict.id]
-    assert memory.resolve_conflict(conflict.id, keep='newer')
-    assert memory.facts()[0].supersedes == []
-    assert memory.facts(FactQuery(state=FactState.HISTORY))[0].withdrawn_at is not None
-    assert memory.conflicts() == ()
-    with memory.export_records() as records:
-        assert tuple(records) == ()
-    with memory.export_records(include_sensitive=True) as records:
-        assert {record.ref.kind for record in records} >= {RecordKind.FACT, RecordKind.SOURCE}
-
-
-def test_stale_conflict_cannot_invalidate_current_fact(memory):
-    current = seed_fact(memory, 'Synthetic person', 'likes', 'tea', text='Synthetic person likes tea')
-    old = seed_fact(memory, 'Synthetic person', 'lives_in', 'Beijing', valid_at=1, text='Synthetic person lives in Beijing')
-    conflict = Conflict(current.id, old.id, user_id=memory.context.user_id)
-    commit(memory, 'stale-conflict', (conflict,))
-    assert [item.id for item in memory.conflicts()] == [conflict.id]
-    memory.set_fact_sensitive(current.id, True)
-    with pytest.raises(VersionConflict):
-        memory.resolve_conflict(conflict.id, keep='newer')
-    assert {fact.id for fact in memory.facts()} == {current.id, old.id}
-    assert all(fact.withdrawn_at is None for fact in memory.facts())
-
-
 @pytest.mark.parametrize('claim', [
     ('x' * 513, 'likes', 'tea'),
     ('Synthetic person', 'likes', 'x' * 513),
@@ -265,24 +250,50 @@ def test_raw_ingest_never_calls_embedder(memory, runtime):
             raise RuntimeError('Synthetic embedder unavailable')
 
     offline = Memory(runtime, memory.context, embedder=UnavailableEmbedder(), embedding_model='fake')
-    assert offline.store_messages('chat', (message('m'),)).source_ids
-    assert offline.remember_raw('Synthetic raw input', 'chat').id
+    batch = offline.remember_messages('chat', (message('m'),))
+    note = offline.remember('Synthetic raw input', 'chat', extract=False, agent_id='test-writer')
+    assert batch['ok'] and note['ok'] and not batch['operation_ids'] and not note['operation_ids']
+    assert not offline.list_operations(session_id='chat')
+    with offline.dao.read_snapshot() as view:
+        dialogue = domain(view.get(RecordKind.SOURCE, batch['source_ids'][0]))
+        record = view.get(RecordKind.SOURCE, note['source_ids'][0])
+        stored = domain(record)
+        assert (dialogue.source_kind, dialogue.sequence) == ('dialogue', 0)
+        assert (stored.source_kind, stored.sequence, record.agent_id) == ('note', 1, 'test-writer')
 
 
-def test_clear_slot_checks_count_and_preserves_manual_assertions(memory):
+def test_clear_slot_checks_count_and_erases_live_facts_of_any_source(memory):
     extracted = Fact('Synthetic person', 'likes', 'tea', user_id=memory.context.user_id, text='Synthetic person likes tea')
     commit(memory, 'seed-extracted', (extracted,))
     manual = seed_fact(memory, 'Synthetic person', 'likes', 'coffee', source='user', text='Synthetic person likes coffee')
+    ended = seed_fact(memory, 'Synthetic person', 'likes', 'cocoa', source='user', text='Synthetic person liked cocoa',
+                      valid_at=10, invalid_at=20, expired_at=20)
     with pytest.raises(VersionConflict):
-        memory.clear_slot('Synthetic person', 'likes', expect_count=2)
-    assert memory.clear_slot('Synthetic person', 'likes', expect_count=1).affected_count == 1
-    assert tuple(fact.id for fact in memory.facts()) == (manual.id,)
+        memory.clear_slot('Synthetic person', 'likes', expect_count=1)
+    assert {fact.id for fact in memory.facts()} == {extracted.id, manual.id}
+    assert memory.clear_slot(' synthetic person ', 'likes', expect_count=2).affected_count == 2
+    assert not memory.facts()
+    assert memory.get_fact(ended.id).id == ended.id
+
+
+def test_erasing_literal_facts_removes_only_unreferenced_entity(memory):
+    subject = Entity('Synthetic person', 'person', memory.context.user_id)
+    commit(memory, 'literal-entity', (subject,))
+    facts = [seed_fact(memory, subject.name, 'likes', drink, subject_id=subject.id,
+                       text=f'{subject.name} likes {drink}') for drink in ('tea', 'coffee')]
+    assert all(memory.graph_relations(fact.id) == () for fact in facts)
+    assert memory.delete_fact(facts[0].id)
+    with memory.dao.read_snapshot() as view:
+        assert view.get(RecordKind.ENTITY, subject.id) is not None
+    assert memory.delete_fact(facts[1].id)
+    with memory.dao.read_snapshot() as view:
+        assert view.get(RecordKind.ENTITY, subject.id) is None
 
 
 @pytest.mark.parametrize('business_change', [True, False])
 def test_task_commit_checks_lease_and_its_persisted_source_references(memory, runtime, business_change):
-    source = memory.remember_raw('Synthetic task input', 'chat')
-    other = memory.remember_raw('Another source in the same session', 'chat')
+    source = seed_note(memory, 'Synthetic task input', 'chat')
+    other = seed_note(memory, 'Another source in the same session', 'chat')
     queued = OperationSpec('task', OperationKind.DIGEST, 'chat', (SourceVersion(source.id, 1),))
     commit(memory, 'queue', operations=(queued,))
     with runtime.space_transaction(memory.context.user_id, memory.context.space_id) as (conn, _):
@@ -290,11 +301,10 @@ def test_task_commit_checks_lease_and_its_persisted_source_references(memory, ru
             extraction_config='test-model', lease_token='lease', lease_until=now() + interval '1 minute'
             WHERE user_id=%s AND space_id=%s AND operation_id='task'""",
                      (memory.context.user_id, memory.context.space_id))
+    fact = Fact('Synthetic person', 'likes', 'tea', user_id=memory.context.user_id, text='Synthetic person likes tea')
     with memory.dao.read_snapshot('chat') as view:
         snapshot = view.snapshot
-    fact = Fact('Synthetic person', 'likes', 'tea', user_id=memory.context.user_id, text='Synthetic person likes tea')
-    write = RecordWrite(StoredRecord.from_record(memory.context, fact))
-    writes = (write,) if business_change else ()
+        writes = (*relation_writes(view, (fact,)), memory._write(fact)) if business_change else ()
     receipt = CommitReceipt('task', snapshot.core_revision + int(business_change),
                             (fact.id,) if business_change else ())
 

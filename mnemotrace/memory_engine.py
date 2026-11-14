@@ -1,7 +1,9 @@
 """Offline algorithm engine for ingestion, consolidation, and retrieval."""
 from __future__ import annotations
 
+from collections import deque
 from copy import deepcopy
+from dataclasses import replace
 import time
 from typing import Callable, Optional
 
@@ -9,7 +11,7 @@ from .config import Config
 from .focus import matches, selectors
 from .consolidate import reinforce
 from .consolidate.facts import FactWriter
-from .consolidate.manual import build_manual_fact, reconcile_manual
+from .consolidate.manual import build_manual_fact, manual_duplicate
 from .consolidate.policy import POLICY_DEFAULTS
 from .embed import Embedder
 from .ingest import Ingestor
@@ -32,8 +34,8 @@ from .store import (
 )
 from .categories import Category
 from .extraction import require_llm
-from .types import Conflict, Episode, Fact, Retention
-from .util import fmt_date, now, time_key
+from .types import Episode, Fact, Retention
+from .util import fmt_date, name_key, now, time_key
 
 
 class MemoryEngine:
@@ -81,7 +83,6 @@ class MemoryEngine:
         # 记忆策略：抽取指令及抽取、摘要、画像提示词；空提示词使用内置默认值。
         self.policy: dict[str, str] = {"extract_instruction": "", "extract_system": "",
                                        "digest_system": "", "profile_system": ""}
-        self.conflicts: dict[str, Conflict] = {}  # 疑似冲突及其处理状态，按冲突 ID 保存
         self.cold_pages_out: dict[str, int] = {}  # 每个用户从热层换出到冷层的事实数
         self.cold_pages_in: dict[str, int] = {}  # 每个用户从冷层调回热层的事实数
         self._pipeline_state = None
@@ -137,9 +138,9 @@ class MemoryEngine:
         else:
             self.digest_vec.delete(ep.id)
 
-    def _all_facts(self, *, include_unpublished=False) -> list[Fact]:
+    def _all_facts(self) -> list[Fact]:
         facts = self.fact_store.values() + self.cold_store.values()
-        return facts if include_unpublished else [fact for fact in facts if fact.is_published()]
+        return facts
 
     def _upsert_fact(self, fact: Fact, *, tier: str = "existing") -> None:
         """把被修改的 fact 写回所属层，或强制提升到热层。
@@ -167,7 +168,7 @@ class MemoryEngine:
         """
         # 初始化事件写入器
         self.ingestor = Ingestor(self.episodes_doc)
-        self.writer = FactWriter(self.fact_store, self.graph, self.embedder, self.config)
+        self.writer = FactWriter(self.fact_store, self.graph, self.config)
         self.retriever = HybridRetriever(self.fact_store, self.graph, self.embedder, self.config)
         self.cold_retriever = HybridRetriever(self.cold_store, self.graph, self.embedder, self.config)
         self.retriever.track = self.cold_retriever.track = tuple(self.focus["track"])
@@ -438,15 +439,12 @@ class MemoryEngine:
                 continue
             f = Fact(subject=s, predicate=p, object=o, user_id=user,
                      text=row["text"], source=row["source"],
-                     source_roles=row.get("source_roles", []),
                      sensitive=row["sensitive"],
-                     sensitive_override=row.get("sensitive_override", False),
-                     review_pending=row.get("review_pending", False), withdrawn_at=row["withdrawn_at"],
-                     categories=row["categories"], categories_source=row["categories_source"], relation_id=row["relation_id"],
+                     categories=row["categories"], relation_id=row["relation_id"],
                      subject_id=restored_id('en', row["subject_id"]) if row["subject_id"] else None,
                      object_id=restored_id('en', row["object_id"]) if row["object_id"] else None,
                      subject_type=row["subject_type"], object_type=row["object_type"], retention=row["retention"],
-                     salience=row["salience"], confidence=row["confidence"],
+                     salience=row["salience"],
                      valid_at=valid_at,
                      invalid_at=row["invalid_at"], created_at=row["created_at"],
                      expired_at=row["expired_at"],
@@ -456,17 +454,6 @@ class MemoryEngine:
             f.embedding = self._encode(f.text)
             id_map[row["id"]] = f.id
             staged.append((f, row["supersedes"]))
-        known_pairs = {item.pair_key for item in self.conflicts.values() if item.user_id == user}
-        restored_conflicts = []
-        held = {f.id for f, _ in staged if f.review_pending}
-        held.update(f.id for f in self._all_facts(include_unpublished=True) if f.user_id == user and f.review_pending)
-        for row in snapshot['conflicts']:
-            fields = {key: value for key, value in row.items() if key not in {'id', 'older', 'newer'}}
-            conflict = Conflict(id_map[row['older']], id_map[row['newer']], user_id=user, **fields)
-            if (conflict.older != conflict.newer and conflict.pair_key not in known_pairs
-                    and (conflict.older in held or conflict.newer in held)):
-                restored_conflicts.append(conflict)
-                known_pairs.add(conflict.pair_key)
         # 校验和向量准备全部成功后才写入；取代链也链接到去重命中的已有事实。
         for ep in prepared_episodes:
             self._sync_episode(ep)
@@ -477,11 +464,9 @@ class MemoryEngine:
             # ——图的时间线在往返中得以保留。
             self.writer.graph_builder.add_fact(f)
 
-        self.conflicts.update((conflict.id, conflict) for conflict in restored_conflicts)
         self._enforce_hot_limit()
         return {"format": "mnemotrace", "facts_restored": len(staged), "facts_skipped": facts_skipped,
-                "episodes_restored": len(prepared_episodes), "episodes_skipped": eps_skipped,
-                "malformed": 0}
+                "episodes_restored": len(prepared_episodes), "episodes_skipped": eps_skipped}
 
     # --- 离线工作集 ---
     def add_fact(self, subject: str, predicate: str, object: str, user_id: str = "default",
@@ -496,21 +481,18 @@ class MemoryEngine:
             f = build_manual_fact(subject, predicate, object, text, user, valid_at, sensitive, categories, retention,
                                   subject_id=subject_id, object_id=object_id, subject_type=subject_type,
                                   object_type=object_type)
-            f.embedding = self._encode(f.text)
+            duplicate = manual_duplicate(f, self._all_facts(), explicit_valid_at=valid_at is not None)
+            if duplicate is None:
+                f.embedding = self._encode(f.text)
             from .consolidate.pipeline import PipelineTasks
             PipelineTasks(self, f.user_id).invalidate()
-            history = [x for x in self._all_facts() if x.slot == f.slot]
-            action, changed = reconcile_manual(f, history, now(), explicit_valid_at=valid_at is not None)
-            for old in changed:
-                self._upsert_fact(old, tier="hot")
-                self.writer.graph_builder.add_fact(old)
-            if changed:
-                self.graph.prune_orphan_entities()
-            if action != "duplicate":
-                self._upsert_fact(f, tier="hot")
-                self.writer.graph_builder.add_fact(f)
+            if duplicate is not None:
+                duplicate.sensitive |= f.sensitive
+                f = duplicate
+            self._upsert_fact(f, tier="hot")
+            self.writer.graph_builder.add_fact(f)
             self._enforce_hot_limit()
-            return changed[0] if action == "duplicate" else f
+            return f
 
     def delete_fact(self, fact_id: str) -> bool:
         """被遗忘权：硬删除一条 fact（区别于保留历史的自动失效化）。这是用户主动发起的擦除，
@@ -530,6 +512,10 @@ class MemoryEngine:
             self.graph.prune_orphan_entities()
             self.fact_store.delete(fact_id)
             self.cold_store.delete(fact_id)
+            if record is not None:
+                for fact in self._all_facts():
+                    if fact.user_id == record.user_id and fact_id in fact.supersedes:
+                        self._upsert_fact(replace(fact, supersedes=[key for key in fact.supersedes if key != fact_id]))
             return existed
 
     def set_fact_sensitive(self, fact_id: str, sensitive: bool) -> Fact | None:
@@ -537,31 +523,13 @@ class MemoryEngine:
             raise ValueError('Expected a boolean sensitivity flag')
         with self._pipeline_lock:
             fact = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
-            if fact is not None and (fact.sensitive, fact.sensitive_override) != (sensitive, True):
+            if fact is not None and fact.sensitive != sensitive:
                 from .consolidate.pipeline import PipelineTasks
                 PipelineTasks(self, fact.user_id).invalidate()
-                fact.sensitive, fact.sensitive_override = sensitive, True
+                fact.sensitive = sensitive
                 self._upsert_fact(fact)
             return fact
 
-    def withdraw_fact(self, fact_id: str) -> bool:
-        with self._pipeline_lock:
-            fact = self.fact_store.get(fact_id) or self.cold_store.get(fact_id)
-            if fact is None:
-                return False
-            if fact.withdrawn_at is None:
-                from .consolidate.pipeline import PipelineTasks
-                PipelineTasks(self, fact.user_id).invalidate()
-                fact.withdrawn_at, fact.review_pending = now(), False
-                self._upsert_fact(fact)
-                self.graph.delete_relations_for_fact(fact.id)
-                self.graph.prune_orphan_entities()
-                for pair in list(self.conflicts.values()):
-                    if fact.id in (pair.older, pair.newer):
-                        del self.conflicts[pair.id]
-            return True
-
-    # --- 关注领域："关注点"定制（记忆应强调/抑制什么） ---
     def set_focus(self, track: Optional[list[str]] = None, mute: Optional[list[str]] = None) -> dict:
         """Update read-time tracking and muting selectors."""
         with self._pipeline_lock:
@@ -602,21 +570,21 @@ class MemoryEngine:
         relations = self.graph.relations()
         at = now() if as_of is None else as_of
         needle = q.strip().lower()
-        edges, touched = [], set()
+        edges, names = [], {}
         has_more = False
         for r in relations:
             if r.subject_id not in ents or r.object_id not in ents:
                 continue
             fact = self.fact_store.get(r.fact_id) or self.cold_store.get(r.fact_id)
-            if fact is None or not fact.is_published():
+            if fact is None:
                 continue
             live = fact.is_valid_at(at) and (as_of is None or fact.valid_at is not None)
             if (live_only or as_of is not None) and not live:
                 continue
             if not include_sensitive and getattr(fact, "sensitive", False):
                 continue
-            subject_name = ents[r.subject_id].name
-            object_name = ents[r.object_id].name
+            subject_name = ents[r.subject_id].name if include_sensitive else fact.subject
+            object_name = ents[r.object_id].name if include_sensitive else fact.object
             haystack = " ".join([
                 subject_name,
                 object_name,
@@ -644,9 +612,9 @@ class MemoryEngine:
                 "invalid_at_h": fmt_date(r.invalid_at) if r.invalid_at is not None else None,
                 "provenance": list(fact.provenance) if fact is not None else [],
             })
-            touched.add(r.subject_id)
-            touched.add(r.object_id)
-        nodes = [{"id": eid, "name": ents[eid].name, "type": ents[eid].type} for eid in touched]
+            names.setdefault(r.subject_id, subject_name)
+            names.setdefault(r.object_id, object_name)
+        nodes = [{"id": eid, "name": name, "type": ents[eid].type} for eid, name in names.items()]
         return {"nodes": nodes, "edges": edges, "has_more": has_more}
 
     # --- 记忆策略：可编辑 prompt + "要记录什么"指令（记忆策略页面） ---
@@ -662,7 +630,6 @@ class MemoryEngine:
             for k, v in fields.items():
                 if k in self.policy and v is not None:
                     self.policy[k] = v
-            self._apply_policy()
             from ._profile import sync_settings
             sync_settings(self)
             return self.get_policy()
@@ -670,59 +637,6 @@ class MemoryEngine:
     def _effective(self, key: str) -> str:
         """返回实际生效的策略字段值（用户覆盖或默认值）。"""
         return self.policy.get(key) or POLICY_DEFAULTS[key]
-
-    def _apply_policy(self):
-        self.writer.config = self.config
-
-
-    # --- 冲突检测 -> pending（LLM 检测出含糊的部分；由用户确认） ---
-    def pending_conflicts(self, user_id: str = "default") -> list[Conflict]:
-        """Return conflicts awaiting a decision in this workspace."""
-        from .consolidate.adjudication import conflict_is_reviewable
-
-        user = user_id
-        out = []
-        for c in self.conflicts.values():
-            if c.user_id != user:
-                continue
-            a = self.fact_store.get(c.older) or self.cold_store.get(c.older)
-            b = self.fact_store.get(c.newer) or self.cold_store.get(c.newer)
-            if conflict_is_reviewable(a, b):
-                out.append(c)
-        return out
-
-    def resolve_conflict(self, conflict_id: str, keep: str = "newer") -> bool:
-        """Apply an explicit user decision to a pending conflict."""
-        if keep not in {'older', 'newer', 'both', 'dismiss'}:
-            raise ValueError('Invalid conflict resolution')
-        c = self.conflicts.get(conflict_id)
-        if c is None:
-            return False
-        from .consolidate.adjudication import conflict_is_reviewable, resolve_facts
-        from .consolidate.pipeline import PipelineTasks
-
-        facts = {key: self.fact_store.get(getattr(c, key)) or self.cold_store.get(getattr(c, key))
-                 for key in ('older', 'newer')}
-        if keep != 'dismiss' and not conflict_is_reviewable(facts['older'], facts['newer']):
-            return False
-        PipelineTasks(self, c.user_id).invalidate()
-        held = {fact.id for fact in facts.values() if fact is not None and fact.review_pending}
-        for fact in resolve_facts(facts, keep, now()):
-            if fact.withdrawn_at is not None:
-                for pair in list(self.conflicts.values()):
-                    if pair.id != conflict_id and fact.id in (pair.older, pair.newer):
-                        del self.conflicts[pair.id]
-            elif fact.id in held and any(pair.id != conflict_id and fact.id in (pair.older, pair.newer)
-                     for pair in self.conflicts.values()):
-                fact.review_pending = True
-            self._upsert_fact(fact)
-            self.writer.graph_builder.add_fact(fact)
-        self.graph.prune_orphan_entities()
-        del self.conflicts[conflict_id]
-        return True
-
-    def dismiss_conflict(self, conflict_id: str) -> bool:
-        return self.resolve_conflict(conflict_id, 'dismiss')
 
     def generate_digests(self, episodes):
         """Explicit digest operation using the shared ledger and bounded runner."""
@@ -878,45 +792,22 @@ class MemoryEngine:
         if not seeds:
             return []
         view_time = now() if as_of is None else as_of
-        facts = [f for f in self._all_facts() if f.user_id == user and not self._matches(f, self.focus["mute"])]
-        if redact_sensitive:
-            facts = [f for f in facts if not getattr(f, "sensitive", False)]
-        by_id = {f.id: f for f in facts}
-        replaces: dict[str, list[Fact]] = {}
-        for f in facts:
-            if f.supersedes:
-                for predecessor in f.supersedes:
-                    replaces.setdefault(predecessor, []).append(f)
-
-        def visible(f: Fact) -> bool:
-            return (f.valid_at is not None and f.valid_at <= view_time)
-
+        by_id = {f.id: f for f in self._all_facts()
+                 if f.user_id == user and f.valid_at is not None and f.valid_at <= view_time
+                 and (not redact_sensitive or not f.sensitive) and not self._matches(f, self.focus["mute"])}
+        successors: dict[str, list[str]] = {}
+        for fact in by_id.values():
+            for predecessor in fact.supersedes:
+                successors.setdefault(predecessor, []).append(fact.id)
         selected: dict[str, Fact] = {}
-
-        def add_visible(f: Fact) -> None:
-            if visible(f):
-                selected.setdefault(f.id, f)
-
-        def add_chain(seed: Fact) -> None:
-            add_visible(seed)
-            cur = seed
-            seen: set[str] = {seed.id}
-            while predecessor := next((key for key in cur.supersedes if key in by_id and key not in seen), None):
-                cur = by_id[predecessor]
-                seen.add(cur.id)
-                add_visible(cur)
-            queue = [seed]
-            while queue:
-                cur = queue.pop(0)
-                for newer in sorted(replaces.get(cur.id, []), key=lambda f: time_key(f.valid_at)):
-                    if newer.id in seen:
-                        continue
-                    seen.add(newer.id)
-                    add_visible(newer)
-                    queue.append(newer)
-
-        for seed in seeds:
-            add_chain(seed)
+        queue = deque(seed.id for seed in seeds)
+        while queue:
+            key = queue.popleft()
+            if key in selected or key not in by_id:
+                continue
+            fact = selected[key] = by_id[key]
+            queue.extend(fact.supersedes)
+            queue.extend(successors.get(key, ()))
 
         # 单条可见 fact 已在 FACTS 中展示；只有当链补充了解释性证据（如被取代的值或可见的
         # 替代值）时才渲染。
@@ -1112,28 +1003,32 @@ class MemoryEngine:
         from .store.contracts import FactState
 
         valid = now() if scope.valid_at is None else scope.valid_at
-        for fact in self._all_facts(include_unpublished=True):
-            if fact.user_id != user_id or fact.review_pending:
+        facts = self._all_facts()
+        sensitive_predecessors = ({fact.id for fact in facts if fact.user_id == user_id and fact.sensitive}
+                                  if scope.exclude_sensitive else set())
+        for fact in facts:
+            if fact.user_id != user_id:
                 continue
             if fact.valid_at is None and scope.valid_at is not None:
                 continue
             if fact.valid_at is not None and fact.valid_at > valid:
                 continue
-            historical = (fact.withdrawn_at is not None
-                          or fact.invalid_at is not None and fact.invalid_at <= valid)
+            historical = fact.invalid_at is not None and fact.invalid_at <= valid
             if (scope.state == FactState.CURRENT and historical
                     or scope.state == FactState.HISTORY and not historical):
                 continue
             if (scope.exclude_sensitive and fact.sensitive) or self._matches(fact, self.focus.get("mute", [])):
                 continue
-            if scope.subject is not None and fact.subject.lower() != scope.subject.lower():
+            if scope.subject is not None and name_key(fact.subject) != name_key(scope.subject):
                 continue
-            if scope.predicate is not None and (fact.relation_id is None or fact.predicate.lower() != scope.predicate.lower()):
+            if scope.predicate is not None and name_key(fact.predicate) != name_key(scope.predicate):
                 continue
             if scope.categories and not set(scope.categories).intersection(fact.categories):
                 continue
             if scope.source_ids and not set(scope.source_ids).intersection(fact.provenance):
                 continue
+            if sensitive_predecessors.intersection(fact.supersedes):
+                fact = replace(fact, supersedes=[key for key in fact.supersedes if key not in sensitive_predecessors])
             yield fact
 
     def aggregate_facts(self, predicate, *, operation='count', subject=None, start=None, end=None,
@@ -1170,14 +1065,29 @@ class MemoryEngine:
 
         def neighbors(key, predicate):
             for edge in self.graph.neighbors(key, direction='out'):
-                if edge.predicate.lower() == predicate and edge.fact_id in visible:
+                if name_key(edge.predicate) == predicate and edge.fact_id in visible:
                     yield edge.object_id, visible[edge.fact_id]
 
-        entity = self.graph.get_entity(user_id, anchor)
-        if entity is None:
-            return PathResult(())
-        paths, flags = traverse(entity.id, predicates, neighbors, scope.limit)
-        return PathResult(tuple(PathMatch(self.graph.entities[key].name, row) for key, row in paths), flags)
+        names = {}
+        if scope.exclude_sensitive:
+            anchors = set()
+            for fact in visible.values():
+                for key, name in ((fact.subject_id, fact.subject), (fact.object_id, fact.object)):
+                    if key is not None:
+                        names.setdefault(key, name)
+                        if name.strip().lower() == anchor:
+                            anchors.add(key)
+            if len(anchors) != 1:
+                return PathResult(())
+            entity_id, = anchors
+        else:
+            entity = self.graph.get_entity(user_id, anchor)
+            if entity is None:
+                return PathResult(())
+            entity_id = entity.id
+        paths, flags = traverse(entity_id, predicates, neighbors, scope.limit)
+        return PathResult(tuple(PathMatch(names[key] if scope.exclude_sensitive else self.graph.entities[key].name,
+                                          row) for key, row in paths), flags)
 
     def search(
         self,
@@ -1202,9 +1112,7 @@ class MemoryEngine:
             ids = dict.fromkeys(key for fact in rows for key in fact.provenance
                                 if not scope.source_ids or key in scope.source_ids)
             return tuple(ep.id for key in ids if (ep := self.episodes_doc.get(key)) is not None
-                         and ep.user_id == user and not self._source_muted(ep)
-                         and (scope.valid_at is None or ep.event_time is not None and ep.event_time <= scope.valid_at)
-)
+                         and ep.user_id == user and not self._source_muted(ep))
 
         if scope.subject is not None and scope.predicate is not None:
             from .retrieve.answers import slot_result
@@ -1237,7 +1145,7 @@ class MemoryEngine:
             return SearchResult(query, via="abstain", abstained=True)
 
         scores = [score for _, score in ranked]
-        if via != "cold" and scope.is_current_view:
+        if via != "cold" and scope.is_current_view and not scope.exclude_sensitive:
             self._reinforce_fact(matched[0])
         return SearchResult(query=query, facts=matched, scores=scores, via=via, source_ids=source_references(matched))
 
@@ -1419,7 +1327,7 @@ class MemoryEngine:
 
     def history(self, subject: str, predicate: str, user_id: str = "default") -> list[Fact]:
         user = user_id
-        return history((fact for fact in self._all_facts(include_unpublished=True) if not fact.review_pending),
+        return history(self._all_facts(),
                        user, subject, predicate)
 
     # --- 内部实现 ---

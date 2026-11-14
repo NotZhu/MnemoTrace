@@ -4,10 +4,11 @@ from __future__ import annotations
 import json
 import math
 from copy import deepcopy
+from graphlib import CycleError, TopologicalSorter
 from typing import Any, Callable
 
 from ..types import RETENTIONS
-from ..categories import CATEGORIES, CATEGORY_SOURCES, validate_categories
+from ..categories import CATEGORIES, validate_categories
 
 Validator = Callable[[Any, str], None]
 
@@ -155,14 +156,12 @@ _EPISODE = {
 _FACT = {
     "id": _identifier, "subject": _identifier, "predicate": _identifier, "object": _identifier,
     "text": _identifier, "user_id": _identifier, "embedding": _VECTOR,
-    "salience": _number, "confidence": _number, "source": _SOURCE,
+    "salience": _number, "source": _SOURCE,
     "sensitive": _boolean, "valid_at": _TIME_OR_NULL,
-    "sensitive_override": _boolean, "review_pending": _boolean, "withdrawn_at": _TIME_OR_NULL,
-    "source_roles": _list(_choice("user", "assistant")),
-    "categories": _list(_choice(*CATEGORIES)), "categories_source": _choice(*CATEGORY_SOURCES),
+    "categories": _list(_choice(*CATEGORIES)),
     "subject_id": _ID_OR_NULL, "object_id": _ID_OR_NULL,
     "subject_type": _ID_OR_NULL, "object_type": _ID_OR_NULL,
-    "relation_id": _ID_OR_NULL,
+    "relation_id": _identifier,
     "retention": _choice(*RETENTIONS),
     "invalid_at": _TIME_OR_NULL, "created_at": _number, "expired_at": _TIME_OR_NULL,
     "supersedes": _list(_identifier), "provenance": _STRINGS, "last_access": _number,
@@ -183,23 +182,15 @@ _RECORDS = {
                  "object_id": _identifier, "fact_id": _identifier,
                  "valid_at": _TIME_OR_NULL, "invalid_at": _TIME_OR_NULL},
     "EntityType": {"id": _identifier, "meaning": _identifier, "user_id": _identifier},
-    "EntityAlias": {"id": _identifier, "entity_id": _identifier, "fact_id": _identifier,
-                    "source_id": _identifier, "name": _identifier, "sensitive": _boolean, "user_id": _identifier},
     "RelationType": {"id": _identifier, "user_id": _identifier, "predicate": _identifier,
                      "meaning": _identifier, "direction": _choice("forward", "symmetric"),
                      "endpoint_types": _list(_endpoint_pair)},
-    "Conflict": {"id": _identifier, "older": _identifier, "newer": _identifier,
-                 "text_older": _string, "text_newer": _string, "user_id": _identifier,
-                 "reason": _string, "older_version": _count, "newer_version": _count,
-                 "detected_at": _number},
 }
 def _fields(value: Any, spec: dict[str, Validator], path: str,
-            optional: tuple[str, ...] = ()) -> dict[str, Any]:
+            optional: tuple[str, ...] = (), *, ignored=frozenset()) -> dict[str, Any]:
     _object(value, path)
-    retired = {'summary', 'summary_embedding', 'summary_coverage', 'summary_version',
-               'display', 'object_kind', 'cardinality', 'validity_revisions', 'working', 'working_ids', 'working_added', 'working_live', 'session_generation'}
-    for key in retired.intersection(value):
-        _fail(f"{path}.{key}", "unsupported field")
+    if value.keys() - spec.keys() - ignored:
+        _fail(path, "unsupported field")
     for key, check in spec.items():
         if key not in value:
             if key in optional:
@@ -226,13 +217,8 @@ def validate_record(kind: str, record: Any, path: str, *,
                 _fail(path, 'coverage length does not match original content')
         if embedding_dim is not None and result["digest"] and result["digest_embedding"] is None and not detached:
             _fail(path, "non-empty digest requires digest_embedding")
-        forbidden = {'extraction_progress', 'extraction_counts', 'extraction_error', 'memory_result', 'memory_scope', 'outcome_error', 'extraction'}
-        if forbidden.intersection(result['metadata']):
-            _fail(path, 'legacy processing metadata is unsupported; task migration is not provided')
     if kind == "Fact":
         _validate_fact_categories(result, path)
-        if result["review_pending"] and result["withdrawn_at"] is not None:
-            _fail(path, "pending fact cannot be withdrawn")
     if embedding_dim is not None:
         for key in ("embedding", "digest_embedding"):
             if result.get(key) is not None:
@@ -242,7 +228,7 @@ def validate_record(kind: str, record: Any, path: str, *,
 
 def _validate_fact_categories(record: dict, path: str) -> None:
     try:
-        validate_categories(record["categories"], record["categories_source"])
+        validate_categories(record["categories"])
     except ValueError as exc:
         _fail(path, str(exc))
 
@@ -250,12 +236,12 @@ def _validate_fact_categories(record: dict, path: str) -> None:
 # A migration carries source identities/history, not the target user's runtime state.
 _IMPORT_FACT = {key: _FACT[key] for key in (
     "id", "subject", "predicate", "object", "text", "source", "sensitive",
-    "categories", "categories_source", "retention", "relation_id", "subject_id", "object_id",
+    "categories", "retention", "relation_id", "subject_id", "object_id",
     "subject_type", "object_type",
-    "salience", "confidence", "valid_at", "invalid_at", "created_at", "expired_at",
-    "supersedes", "provenance", "source_roles", "sensitive_override", "review_pending", "withdrawn_at",
+    "salience", "valid_at", "invalid_at", "created_at", "expired_at",
+    "supersedes", "provenance",
 )}
-_IMPORT_FACT.update(status=_choice("live", "superseded"), valid_at_h=_string,
+_IMPORT_FACT.update(status=_choice("live", "superseded", "scheduled"), valid_at_h=_string,
                     invalid_at_h=_nullable(_string))
 _IMPORT_EPISODE = {key: _EPISODE[key] for key in (
     "id", "content", "session_id", "role", "event_time", "ingested_at", "digest", "coverage", "digest_coverage",
@@ -263,10 +249,33 @@ _IMPORT_EPISODE = {key: _EPISODE[key] for key in (
 )}
 
 
-_IMPORT_CONFLICT = {key: value for key, value in _RECORDS["Conflict"].items() if key != "user_id"}
+# The two serializers attach presentation fields and local runtime state.
+# Import restores only the portable fields described above.
+_SNAPSHOT_METADATA = {"space_id", "include_sensitive", "redacted_sensitive", "focus", "graph"}
+_FACT_METADATA = _FACT.keys() - _IMPORT_FACT.keys()
+_EPISODE_METADATA = (_EPISODE.keys() - _IMPORT_EPISODE.keys()) | {
+    "chars", "date", "session", "agent_id", "space_id",
+}
+SNAPSHOT_FORMAT_VERSION = 6
 
 
-SNAPSHOT_FORMAT_VERSION = 4
+def _validate_snapshot_timeline(facts: list[dict]) -> None:
+    positions = {row["id"]: index for index, row in enumerate(facts)}
+    timeline = TopologicalSorter()
+    for index, row in enumerate(facts):
+        path = f"snapshot.facts[{index}]"
+        start, end = row["valid_at"], row["invalid_at"]
+        if start is not None and end is not None and start >= end:
+            _fail(f"{path}.invalid_at", "must be later than valid_at")
+        predecessors = row["supersedes"]
+        if row["id"] in predecessors or len(predecessors) != len(set(predecessors)):
+            _fail(f"{path}.supersedes", "self-references and duplicate predecessors are unsupported")
+        timeline.add(row["id"], *(key for key in predecessors if key in positions))
+    try:
+        timeline.prepare()
+    except CycleError as exc:
+        index = positions[exc.args[1][0]]
+        raise ValueError(f"snapshot.facts[{index}].supersedes: replacement cycle") from None
 
 
 def is_snapshot_candidate(value: Any) -> bool:
@@ -278,45 +287,29 @@ def validate_snapshot(snapshot: Any) -> dict:
     _object(snapshot, "snapshot")
     if type(snapshot.get("format_version")) is not int or snapshot["format_version"] != SNAPSHOT_FORMAT_VERSION:
         _fail("snapshot.format_version", "unsupported snapshot version")
-    if 'working' in snapshot:
-        _fail('snapshot.working', 'unsupported field')
+    if snapshot.keys() - _SNAPSHOT_METADATA - {"format_version", "facts", "episodes"}:
+        _fail("snapshot", "unsupported field")
     for key in ("facts", "episodes"):
         if key not in snapshot:
             _fail(f"snapshot.{key}", "missing required field")
     result = {}
-    for name, spec, optional in (("facts", _IMPORT_FACT, ("status", "valid_at_h", "invalid_at_h", "source_roles", "sensitive_override", "review_pending")),
-                                 ("episodes", _IMPORT_EPISODE, ("digest", "coverage", "digest_coverage", "ingested_at",
-                                                                "digest_written_at")),
-                                 ("conflicts", _IMPORT_CONFLICT, ())):
+    for name, spec, optional, ignored in (
+        ("facts", _IMPORT_FACT, ("status", "valid_at_h", "invalid_at_h"), _FACT_METADATA),
+        ("episodes", _IMPORT_EPISODE, ("digest", "coverage", "digest_coverage", "ingested_at",
+                                      "digest_written_at"), _EPISODE_METADATA),
+    ):
         rows = snapshot.get(name, [])
         if not isinstance(rows, list):
             _fail(f"snapshot.{name}", "must be a list")
-        if name == "facts":
-            for i, row in enumerate(rows):
-                if isinstance(row, dict) and "assertion_kind" in row:
-                    _fail(f"snapshot.facts[{i}].assertion_kind", "legacy fact format is unsupported")
-        result[name] = [_fields(row, spec, f"snapshot.{name}[{i}]", optional)
+        result[name] = [_fields(row, spec, f"snapshot.{name}[{i}]", optional, ignored=ignored)
                         for i, row in enumerate(rows)]
         if name == "facts":
             for i, row in enumerate(result[name]):
                 _validate_fact_categories(row, f"snapshot.facts[{i}]")
-                if row.get("review_pending") and row.get("withdrawn_at") is not None:
-                    _fail(f"snapshot.facts[{i}]", "pending fact cannot be withdrawn")
         seen = set()
         for i, row in enumerate(result[name]):
             if row["id"] in seen:
                 _fail(f"snapshot.{name}[{i}].id", "duplicate source identifier")
             seen.add(row["id"])
-    fact_ids = {row["id"] for row in result["facts"]}
-    paired = set()
-    pairs = set()
-    for i, row in enumerate(result["conflicts"]):
-        pair = frozenset((row["older"], row["newer"]))
-        if len(pair) != 2 or not pair <= fact_ids or pair in pairs:
-            _fail(f"snapshot.conflicts[{i}]", "invalid or duplicate fact pair")
-        pairs.add(pair)
-        paired.update(pair)
-    for i, row in enumerate(result["facts"]):
-        if row.get("review_pending") and row["id"] not in paired:
-            _fail(f"snapshot.facts[{i}]", "pending fact has no conflict")
+    _validate_snapshot_timeline(result["facts"])
     return result

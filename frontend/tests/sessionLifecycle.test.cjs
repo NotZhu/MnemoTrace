@@ -60,9 +60,10 @@ test('notes and dialogue send a boolean extract flag', async () => {
   s.respond(async () => new Response(JSON.stringify({ ok: true })))
   const messages = [{ message_id: 'm1', role: 'user', content: 'Synthetic dialogue' }]
   await s.api.remember('Synthetic note')
-  await s.api.remember('Synthetic raw note', { extract: false })
+  await s.api.remember('Synthetic raw note', { extract: false, event_time: 0 })
   await s.api.rememberMessages(messages, 's', false)
   assert.deepEqual(s.calls.requests.map(({ init }) => JSON.parse(init.body).extract), [true, false, false])
+  assert.deepEqual(s.calls.requests.map(({ init }) => JSON.parse(init.body).event_time), [undefined, 0, undefined])
 })
 
 const transitions = {

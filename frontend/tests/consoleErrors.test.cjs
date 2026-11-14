@@ -13,7 +13,7 @@ function setup(pageName) {
     bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
     external: ['react', 'react/jsx-runtime', 'lucide-react', 'react-router-dom', '../components/*', '../hooks/queries', '../store/preferences', '../store/auth', '../lib/api'],
   }).outputFiles[0].text
-  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', categories: ['food'], categories_source: 'llm', supersedes: [] }
+  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', categories: ['food'], supersedes: [] }
   const results = {
     usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', digest_system: 'synthetic', profile_system: 'synthetic' } } },
     useFocus: { data: { track: ['synthetic'], mute: [] } },

@@ -40,6 +40,7 @@ export default function Dashboard() {
       onSuccess: (r) => {
         setText('')
         if (r.status === 'accepted' && r.operation_ids.length) toast.info('原文已保存，等待处理')
+        else if (r.status === 'completed' && r.fact_ids?.length === 0) toast.info('原文已保存，事实未变更')
         else toast.success(r.status === 'completed' ? '核心处理完成' : '原文已保存')
       },
       onError: (e) => toast.error(String((e as Error).message)),

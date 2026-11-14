@@ -12,7 +12,7 @@ from mnemotrace.types import Episode, Fact
 
 def snapshot():
     return {
-        "format_version": 4,
+        "format_version": 6,
         "facts": [asdict(Fact(id="ft_source", subject="Synthetic", predicate="works_at",
                               object="SyntheticCo", valid_at=0, created_at=-1, source="user", text='Synthetic works at SyntheticCo'))],
         "episodes": [asdict(Episode(id="ep_source", content="Synthetic source", event_time=0))],
@@ -30,7 +30,7 @@ def target():
 
 def contents(mem):
     return copy.deepcopy({
-        "format_version": 4,
+        "format_version": 6,
         "facts": [asdict(f) for f in mem._all_facts()],
         "episodes": [asdict(ep) for ep in mem.episodes_doc.values()],
         "entities": [asdict(e) for e in mem.graph.entities.values()],
@@ -54,7 +54,7 @@ def test_missing_envelope_rejects_entire_batch(key):
 @pytest.mark.parametrize("key", [
     "id", "subject", "predicate", "object", "text", "source", "valid_at", "invalid_at",
     "created_at", "expired_at", "supersedes", "provenance", "categories", "sensitive",
-    "salience", "confidence", "categories_source", "relation_id", "subject_id", "object_id", "withdrawn_at",
+    "salience", "relation_id", "subject_id", "object_id",
 ])
 def test_missing_fact_history_rejects_before_any_episode_is_added(key):
     payload = snapshot()
@@ -66,15 +66,19 @@ def test_missing_fact_history_rejects_before_any_episode_is_added(key):
     assert contents(mem) == before
 
 
-@pytest.mark.parametrize('change', ['old_version', 'display', 'blank_text'])
+@pytest.mark.parametrize('change', ['old_version', 'display', 'blank_text', 'conflicts', 'withdrawn_at'])
 def test_retired_fact_format_is_rejected_without_mutating_target(change):
     payload = snapshot()
     if change == 'old_version':
-        payload['format_version'] = 3
+        payload['format_version'] = 5
     elif change == 'display':
         payload['facts'][0]['display'] = payload['facts'][0]['text']
-    else:
+    elif change == 'blank_text':
         payload['facts'][0]['text'] = ' \n\t'
+    elif change == 'conflicts':
+        payload['conflicts'] = []
+    else:
+        payload['facts'][0]['withdrawn_at'] = None
     memory = target()
     before = contents(memory)
     with pytest.raises(ValueError):
@@ -109,12 +113,52 @@ def test_invalid_last_record_does_not_partially_import_or_echo_values(key, value
     assert contents(mem) == before
 
 
-@pytest.mark.parametrize("value", [True, 1.9, "1", 0, 1, 999])
-def test_additional_snapshot_fields_are_not_format_selectors(value):
+@pytest.mark.parametrize("changes, field", [
+    ({"invalid_at": 1}, "invalid_at"),
+    ({"invalid_at": 2}, "invalid_at"),
+    ({"supersedes": ["ft_bad"]}, "supersedes"),
+    ({"supersedes": ["ft_source", "ft_source"]}, "supersedes"),
+])
+def test_invalid_fact_timeline_rejects_whole_snapshot(changes, field):
     payload = snapshot()
-    payload["mnemotrace_export_version"] = value
-    stats = MemoryEngine().import_snapshot(payload)
-    assert stats["facts_restored"] == 1
+    payload["facts"].append(dict(payload["facts"][0], id="ft_bad", valid_at=2) | changes)
+    mem = target()
+    before = contents(mem)
+    with pytest.raises(ValueError, match=rf"snapshot\.facts\[1\]\.{field}:"):
+        mem.import_snapshot(payload)
+    assert contents(mem) == before
+
+
+def test_replacement_cycle_rejects_whole_snapshot():
+    payload = snapshot()
+    first = payload["facts"][0]
+    first["supersedes"] = ["ft_third"]
+    payload["facts"].extend([
+        dict(first, id="ft_second", supersedes=["ft_source"]),
+        dict(first, id="ft_third", supersedes=["ft_second"]),
+    ])
+    mem = target()
+    before = contents(mem)
+    with pytest.raises(ValueError, match=r"snapshot\.facts\[\d+\]\.supersedes:.*cycle"):
+        mem.import_snapshot(payload)
+    assert contents(mem) == before
+
+
+def test_snapshot_allows_unknown_start_and_omitted_predecessor():
+    payload = snapshot()
+    payload["facts"][0].update(valid_at=None, invalid_at=2, supersedes=["ft_outside"])
+    mem = MemoryEngine()
+    assert mem.import_snapshot(payload)["facts_restored"] == 1
+    restored, = mem.history("Synthetic", "works_at")
+    assert restored.valid_at is None and restored.invalid_at == 2
+    assert restored.supersedes == []
+
+
+def test_unknown_snapshot_fields_are_rejected():
+    payload = snapshot()
+    payload["mnemotrace_export_version"] = 1
+    with pytest.raises(ValueError, match="snapshot: unsupported field"):
+        MemoryEngine().import_snapshot(payload)
 
 
 def test_migration_preserves_source_history_and_target_settings():
@@ -126,7 +170,6 @@ def test_migration_preserves_source_history_and_target_settings():
     payload["episodes"][0].pop("digest")
     stats = mem.import_snapshot(payload, user_id="target")
     assert stats["facts_restored"] == stats["episodes_restored"] == 1
-    assert stats["malformed"] == 0
     fact = next(f for f in mem._all_facts() if f.object == "SyntheticCo")
     assert fact.id != "ft_source" and fact.user_id == "target"
     assert fact.valid_at == 0 and fact.created_at == -1
