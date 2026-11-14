@@ -290,19 +290,53 @@ def test_digest_context_requires_business_version_and_representation_fingerprint
 
 def test_completion_serialization_and_independent_auxiliary_operations():
     result = OperationResult('operation-1', OperationKind.EXTRACT, ProcessingState.COMPLETED,
-                             ProcessingPhase.DONE, True, True, True, auxiliary_operation_ids=('digest-1',))
+                             ProcessingPhase.DONE, True, True, auxiliary_operation_ids=('digest-1',))
     wire = json.loads(json.dumps(result.to_dict(), allow_nan=False))
+    assert 'stored_raw' not in wire
     assert wire['state'] == 'completed' and wire['auxiliary_operation_ids'] == ['digest-1']
     child = OperationResult('digest-1', OperationKind.DIGEST, ProcessingState.FAILED,
-                           ProcessingPhase.GENERATE, True, False, False, error_code='model_unavailable')
+                           ProcessingPhase.GENERATE, False, False, error_code='model_unavailable')
     assert child.to_dict()['state'] == 'failed' and result.core_committed
 
 
 @pytest.mark.parametrize('kwargs', [dict(state='completed'), dict(core_committed=False),
-    dict(extraction_saved=False), dict(stored_raw=False), dict(phase=ProcessingPhase.EMBED),
+    dict(extraction_saved=False), dict(phase=ProcessingPhase.EMBED),
     dict(attempts=True), dict(state=ProcessingState.RETRY_WAIT), dict(state=ProcessingState.FAILED)])
 def test_impossible_or_malformed_operation_results_are_rejected(kwargs):
     result = OperationResult('operation-1', OperationKind.EXTRACT, ProcessingState.COMPLETED,
-                             ProcessingPhase.DONE, True, True, True)
+                             ProcessingPhase.DONE, True, True)
     with pytest.raises(ValueError):
         replace(result, **kwargs)
+
+
+def test_postgres_fact_mapping_requires_versions_and_defaults_offline_fields():
+    from datetime import datetime, timezone
+    from mnemotrace.store.postgres.errors import DataCorruption
+    from mnemotrace.store.postgres.records import FACT, domain, unpack
+
+    fact = domain(fact_record())
+    row = asdict(fact)
+    for field in ('source', 'last_access', 'access_count'):
+        row.pop(field)
+    for field in ('created_at', 'valid_at'):
+        row[field] = datetime.fromtimestamp(row[field], timezone.utc)
+    row.update(content_version=1, record_version=2)
+    result = unpack(SPACE, FACT, row)
+    restored = domain(result)
+    assert restored.source == 'extracted'
+    assert (restored.last_access, restored.access_count) == (fact.created_at, 0)
+    assert result.record_version == 2
+    for field in ('content_version', 'record_version'):
+        with pytest.raises(DataCorruption):
+            unpack(SPACE, FACT, {key: value for key, value in row.items() if key != field})
+
+
+def test_postgres_default_candidate_limit_is_independent_of_offline_ann():
+    from mnemotrace.config import Config
+    from mnemotrace.retrieve.postgres import retrieval_query
+
+    config = Config(ann_pool=5, postgres_candidate_limit=25)
+    assert retrieval_query('tea', None, None, config, top_k=2).facts.limit == 25
+    assert retrieval_query('tea', None, None, config, top_k=26).facts.limit == 26
+    explicit = FactQuery(limit=3)
+    assert retrieval_query('tea', None, None, config, top_k=2, facts=explicit).facts == explicit

@@ -2,8 +2,7 @@
 
 同一套工具有两种后端实现，启动时选择：
 
-  * LocalBackend  — 在进程内嵌入 `MemoryService`。每个服务器一个固定命名空间（agent 自己的
-    记忆）。零外部服务：`python -m mnemotrace.mcp` 直接可用（持久化到 ~/.mnemotrace/data）。
+  * LocalBackend  — 在进程内嵌入 `MemoryService`。使用运行角色连接 PostgreSQL，并绑定一个已授权的账号与空间。
   * RemoteBackend — 代理一个运行中的 忆痕 HTTP 服务器（MNEMOTRACE_API_URL + MNEMOTRACE_API_KEY），
     用同一套 MCP 工具驱动你的托管/多租户部署；api-key 在服务端选择命名空间。
 

@@ -10,11 +10,11 @@ class Config:
 
     # --- 检索数量与候选范围 ---
     top_k: int = 5  # 未单独指定数量时，混合检索默认返回的事实数上限
-    candidate_k: int = 24  # Deprecated. Retained for existing benchmark configuration snapshots.
     # 默认扫描用户的全部有效事实。开启后使用向量候选和查询实体的图邻居，可能漏掉
     # 词汇匹配强但向量相似度低的事实；速度取决于向量后端，调整前应评测召回和排序。
     ann_candidates: bool = False  # 启用有界向量候选路径
-    ann_pool: int = 200  # 向量候选数量，实际请求数至少为 config.top_k
+    ann_pool: int = 200  # 离线 ANN 候选数量
+    postgres_candidate_limit: int = 200  # PostgreSQL 默认候选池，至少覆盖请求数量
 
     # --- 检索排序融合权重：各信号先独立排序，再用加权 RRF 融合；权重不是百分比 ---
     w_sem: float = 1.0  # 查询与记忆向量的语义相似度
@@ -66,8 +66,3 @@ class Config:
     graph_proximity: bool = True  # 使用图邻近关系打分并遍历图
     graph_relation_awareness: bool = True  # 根据查询条件调整图关系类型的权重
     graph_path_reinforcement: bool = True  # 多条路径指向同一节点时提高其图得分
-
-    @classmethod
-    def from_env(cls) -> Config:
-        """Return the shared application defaults. Deployment adapters load their own environment settings."""
-        return cls()

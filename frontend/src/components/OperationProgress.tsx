@@ -5,7 +5,7 @@ import { useAuth } from '../store/auth'
 import type { OperationResult } from '../types'
 
 const phase: Record<OperationResult['phase'], string> = {
-  queued: '排队', generate: '生成产物', embed: '生成向量', commit: '提交结果', compensate: '恢复处理', done: '完成',
+  queued: '排队', generate: '生成产物', embed: '生成向量', commit: '提交结果', done: '完成',
 }
 
 function label(operation: OperationResult) {

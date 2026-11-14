@@ -266,5 +266,5 @@ def test_access_reinforcement_does_not_load_profile_state(memory, monkeypatch):
     reads = []
     monkeypatch.setattr(storage, "load", lambda sql: reads.append(sql) or load(sql))
     assert memory.search("Synthetic tea").top().id == fact.id
-    assert memory.get_fact(fact.id).access_count == 1
+    assert memory.get_fact(fact.id).salience == 1.5
     assert not reads

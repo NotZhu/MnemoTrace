@@ -43,9 +43,9 @@ def test_cross_agent_lifecycle_example_http(example_http):
 
     assert result["found"] is True
     assert result["status_before"]["ok"] is True
-    assert result["status_before"]["session"]["episodes"] == 0
+    assert result["status_before"]["session_counts"]["episodes"] == 0
     assert VERIFY_PHRASE in result["context_after"]
-    assert result["status_after_write"]["session"]["episodes"] == 2
+    assert result["status_after_write"]["session_counts"]["episodes"] == 2
     assert result["flushed"]["ok"] is True
     assert result["report"]["episodes"] == 2
     assert len(result["report"]["facts"]) == 2

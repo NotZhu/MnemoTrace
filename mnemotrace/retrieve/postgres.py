@@ -51,7 +51,7 @@ def retrieval_query(text, embedder, model, config, *, top_k, as_of=None, facts=N
     if facts is not None and as_of is not None:
         raise ValueError('Use either as_of or explicit fact conditions')
     scope = facts if facts is not None else FactQuery(
-        valid_at=as_of, limit=max(top_k, config.ann_pool),
+        valid_at=as_of, limit=max(top_k, config.postgres_candidate_limit),
     )
     if scope.after_id is not None:
         raise ValueError('Retrieval does not accept a browsing cursor')
@@ -152,7 +152,6 @@ def context(view, query, config, *, n_facts, n_digests, char_budget):
             included.append(fact.id)
     return ContextResult(render_sections(sections), {space_id: tuple(dict.fromkeys(flags))},
                          tuple(included), sections=sections)
-
 
 
 def aggregate_facts(view, scope, operation, start, end, evidence_query):

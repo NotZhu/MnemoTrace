@@ -24,7 +24,7 @@ const status = await mnemotrace.agentStatus(session)
 console.log('--- agent memory status ---')
 console.log({
   space: status.space_id,
-  session: status.session,
+  sessionCounts: status.session_counts,
   focus: status.focus,
   facts: status.counts.facts_live,
 })
@@ -88,7 +88,7 @@ const memoryPage = await mnemotrace.memories({
 console.log('\n--- user-owned memory page ---')
 console.log({
   totalFacts: memoryPage.facts_page.total,
-  nextFactOffset: memoryPage.next_offsets.facts,
+  nextFactOffset: memoryPage.facts_page.next_offset,
   facts: memoryPage.facts.map((f) => ({
     id: f.id,
     text: f.text,

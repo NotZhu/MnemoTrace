@@ -1,16 +1,14 @@
 """Fact metadata contracts, independent of the extraction model provider."""
 import json
-from dataclasses import asdict
 
 import pytest
 
-from mnemotrace import Fact, MemoryEngine
+from mnemotrace import MemoryEngine
 from mnemotrace.consolidate.operations import decode
 from mnemotrace.extraction import ExtractionResponseError
 from mnemotrace.config import Config
 from mnemotrace.consolidate.facts import extraction_entries, materialize_facts
 from mnemotrace.consolidate.pipeline import content_hash
-from mnemotrace.store._validation import SNAPSHOT_FORMAT_VERSION
 
 
 def window():
@@ -67,15 +65,3 @@ def test_sensitivity_changes_without_reclassifying_facts():
     memory.set_fact_sensitive(fact.id, True)
     updated = memory.fact_store.get(fact.id)
     assert (updated.categories, updated.sensitive) == (["food"], True)
-
-
-def test_snapshot_preserves_metadata_and_checks_version():
-    fact = Fact("我", "prefers", "tea", categories=["food"], text='user prefers tea')
-    snapshot = dict(format_version=SNAPSHOT_FORMAT_VERSION, facts=[asdict(fact)], episodes=[])
-    memory = MemoryEngine()
-    memory.import_snapshot(snapshot)
-    restored, = memory.fact_store.values()
-    assert (restored.categories, restored.object_id) == (
-        ["food"], None)
-    with pytest.raises(ValueError, match="unsupported snapshot version"):
-        memory.import_snapshot({**snapshot, "format_version": 1})

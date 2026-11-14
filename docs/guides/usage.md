@@ -21,22 +21,6 @@
 
 需要把依据交给自己的模型时，读取上下文；需要单个事实答案时，使用 search 或 HTTP 的 `lean=false`。答案、画像和图谱均为派生视图，应结合来源核对。事实抽取由 LLM 完成；哈希嵌入仅提供词汇信号，质量需要以实际评测为准。
 
-## 导入已有历史
-
-先只解析并检查格式，命令在仓库根目录或已安装环境中执行：
-
-```sh
-python -m mnemotrace.connectors --file /path/to/export.json --format auto --dry-run
-```
-
-支持格式及名称以 `--help` 为准，常见入口包括 ChatGPT 导出、OpenAI messages、JSONL、对话文本和 Agent 会话记录。需要真正导入时，去掉 `--dry-run` 并明确 Postgres 空间及直连身份，或提供 HTTP 服务和 Bearer 凭据：
-
-```sh
-python -m mnemotrace.connectors --file /path/to/export.json --user-id "<USER_ID>" --space-id "<SPACE_ID>"
-```
-
-对话消息按同一空间和会话内的稳定消息 ID 去重。缺少消息 ID 时由导入器使用稳定位置 ID。导入返回逐会话结果，watcher 只记录确认落库的会话。完整导出可包含敏感原文，验证使用合成样本。
-
 ## 浏览事实与会话
 
 控制台提供事实、会话、时间线、图谱、画像、关注点、记忆策略和体检入口。事实列表可按状态、类型和文本筛选；会话报告用于查看某一 session 对长期记忆的贡献，不能替代原始对话全文。

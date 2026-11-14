@@ -107,7 +107,7 @@ def exercise_lifecycle(
 
     output("\n== 1. Agent status before work ==")
     status_before = call(_status_path(session_id), None, "GET")
-    session_before = status_before.get("session") or {}
+    session_before = status_before.get("session_counts") or {}
     output(
         "agent_status: "
         f"user={status_before.get('user')} "
@@ -143,7 +143,7 @@ def exercise_lifecycle(
     output(recalled_after.get("answer") or context_after[:1000] or "(no relevant memory found)")
 
     status_after_write = call(_status_path(session_id), None, "GET")
-    session_after_write = status_after_write.get("session") or {}
+    session_after_write = status_after_write.get("session_counts") or {}
     output(
         "agent_status_after_write: "
         f"episodes={session_after_write.get('episodes', 0)}"

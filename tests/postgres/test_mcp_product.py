@@ -180,7 +180,7 @@ async def test_explicit_profile_refresh_and_cached_read(local_backend):
 async def test_update_and_delete_fact_tools(local_backend):
     seed_fact(local_backend.svc.memory(local_backend.context), "我", 'works_at', 'ByteDance', sensitive=False, text='Synthetic fact: ByteDance')
     raw = await call("mnemotrace_list_facts", response_format="json")
-    fid = json.loads(raw)["facts"][0]["id"]
+    fid = json.loads(raw)["facts_page"]["items"][0]["id"]
 
     updated = await call("mnemotrace_set_fact_sensitive", fact_id=fid, sensitive=True)
     assert json.loads(updated)["sensitive"] is True
@@ -320,20 +320,9 @@ async def test_list_sessions_tool_is_content_free(local_backend):
 
     raw = await call("mnemotrace_list_sessions", q="claude-code", response_format="json")
     data = json.loads(raw)
-    assert data["sessions"][0]["id"] == claude_session
+    assert data["sessions"][0]["session_id"] == claude_session
     assert data["sessions"][0]["facts_sensitive"] >= 1
     assert "diabetes" not in raw.lower()
-
-
-@pytest.mark.history_import
-@pytest.mark.asyncio
-async def test_import_tool(local_backend):
-    arr = '[{"role":"user","content":"I have a cat named Pixel."}]'
-    out = await call("mnemotrace_import", content=arr, format="messages")
-    assert "Accepted" in out and "source" in out
-    await call("mnemotrace_flush_processing")
-    ctx = await call("mnemotrace_recall", query="What pet do I have?")
-    assert "Pixel" in ctx
 
 
 @pytest.mark.asyncio
@@ -639,7 +628,7 @@ async def test_remote_backend_fetches_sessions_index():
             pass
 
         def json(self):
-            return {"ok": True, "sessions": [{"id": "claude-code:repo/thread 2"}], "page": {}}
+            return {"ok": True, "sessions": [{"session_id": "claude-code:repo/thread 2"}], "sessions_page": {}}
 
     class FakeClient:
         def __init__(self):
@@ -656,7 +645,7 @@ async def test_remote_backend_fetches_sessions_index():
     url, headers = client.gets[-1]
     assert url == "http://mnemotrace.test/v1/sessions?limit=2&offset=4&q=claude-code&space_id=synthetic-space"
     assert headers["Authorization"] == "Bearer sk-test"
-    assert data["sessions"][0]["id"] == "claude-code:repo/thread 2"
+    assert data["sessions"][0]["session_id"] == "claude-code:repo/thread 2"
 
 
 @pytest.mark.asyncio
@@ -682,7 +671,7 @@ async def test_remote_backend_exports_memory():
             pass
 
         def json(self):
-            return {"format_version": 6, "include_sensitive": False, "facts": [], "episodes": []}
+            return {"format_version": 7, "include_sensitive": False, "facts": [], "episodes": []}
 
     class FakeClient:
         def __init__(self):
@@ -700,8 +689,8 @@ async def test_remote_backend_exports_memory():
     assert client.gets[0][0] == "http://mnemotrace.test/v1/export?include_sensitive=false&space_id=synthetic-space"
     assert client.gets[0][1]["Authorization"] == "Bearer sk-test"
     assert client.gets[1][0] == "http://mnemotrace.test/v1/export?include_sensitive=true&space_id=synthetic-space"
-    assert safe["format_version"] == 6
-    assert full["format_version"] == 6
+    assert safe["format_version"] == 7
+    assert full["format_version"] == 7
 
 
 @pytest.mark.asyncio

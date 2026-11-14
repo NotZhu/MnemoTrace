@@ -104,7 +104,7 @@ def test_chat_completions_endpoint_remembers_with_session_and_extract(client_wit
     assert data["mnemotrace"]["remember_extract"] is True
 
     memories = c.get("/v1/memories?include_sensitive=true", headers=h).json()
-    assert any(e["session"] == "codex:repo:thread-1" for e in memories["episodes"])
+    assert any(e["session_id"] == "codex:repo:thread-1" for e in memories["episodes"])
 
 
 @pytest.mark.parametrize("remember", [False, True])
@@ -125,7 +125,7 @@ def test_chat_completions_can_save_raw_dialogue_or_skip_writing(client_with_llm,
     else:
         assert "remember_extract" not in memory
     episodes = c.get("/v1/memories?include_sensitive=true", headers=h).json()["episodes"]
-    assert sum(e["session"] == "raw-chat" for e in episodes) == (2 if remember else 0)
+    assert sum(e["session_id"] == "raw-chat" for e in episodes) == (2 if remember else 0)
 
 
 def test_chat_completions_streaming(client_with_llm):

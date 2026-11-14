@@ -681,7 +681,7 @@ def render_agents_policy_result(result: dict) -> str:
 def _policy(agent: str, session_id: str) -> str:
     return f"""Use MnemoTrace as the user's cross-agent long-term memory.
 At session start or when debugging memory wiring, call mnemotrace_agent_status with session_id `{session_id}`.
-Before tasks that may depend on prior user/project context, call mnemotrace_recall with session_id `{session_id}`.
+Before tasks that may depend on prior user/project context, call mnemotrace_recall with a relevant query.
 When the user states a durable preference, project rule, decision, or reusable fact, call mnemotrace_remember with the same session_id and extraction enabled.
 Keep task progress and temporary execution state in the agent’s task tools or files.
 To correct a memory, record the new evidence with mnemotrace_remember and include event_time (Unix seconds) when the source time is known. Check whether facts changed before treating the correction as applied. For explicit erasure, find the fact ID with mnemotrace_list_facts and call mnemotrace_delete_fact with confirm=true.
@@ -696,7 +696,7 @@ For this client, use session IDs shaped like `{agent}:<project>:<thread>`."""
 def _bootstrap_policy(session_id: str) -> str:
     return f"""Use MnemoTrace as the user's cross-agent long-term memory.
 At session start or when debugging memory wiring, call mnemotrace_agent_status with a session_id like `{session_id}`.
-Before tasks that may depend on prior user/project context, call mnemotrace_recall with a session_id like `{session_id}`.
+Before tasks that may depend on prior user/project context, call mnemotrace_recall with a relevant query.
 When the user states a durable preference, project rule, decision, or reusable fact, call mnemotrace_remember with the same session_id and extraction enabled.
 Keep task progress and temporary execution state in the agent’s task tools or files.
 To correct a memory, record the new evidence with mnemotrace_remember and include event_time (Unix seconds) when the source time is known. Check whether facts changed before treating the correction as applied. For explicit erasure, find the fact ID with mnemotrace_list_facts and call mnemotrace_delete_fact with confirm=true.

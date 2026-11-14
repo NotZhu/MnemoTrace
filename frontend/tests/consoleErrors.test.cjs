@@ -13,7 +13,7 @@ function setup(pageName) {
     bundle: true, platform: 'node', format: 'cjs', write: false, jsx: 'automatic',
     external: ['react', 'react/jsx-runtime', 'lucide-react', 'react-router-dom', '../components/*', '../hooks/queries', '../store/preferences', '../store/auth', '../lib/api'],
   }).outputFiles[0].text
-  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], source: 'extracted', categories: ['food'], supersedes: [] }
+  const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], categories: ['food'], supersedes: [] }
   const results = {
     usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', digest_system: 'synthetic', profile_system: 'synthetic' } } },
     useFocus: { data: { track: ['synthetic'], mute: [] } },
@@ -21,7 +21,7 @@ function setup(pageName) {
     useMemories: {}, useProfile: {}, useRecall: {},
     useAudit: { data: { checked: { facts: 1, entities: 0 }, total_findings: 1, by_kind: { missing_edge: 1 }, findings: [{ kind: 'missing_edge', fact_id: 'synthetic-fact' }] } },
     useSessions: { data: { sessions: [] } }, useHealth: { data: { ready: true } },
-    useAgentStatus: { data: { user: 'synthetic', counts: { facts_live: 1 }, session: { episodes: 1, episodes_pending: 0 } } },
+    useAgentStatus: { data: { user: 'synthetic', counts: { facts_live: 1 }, session_counts: { episodes: 1, episodes_pending: 0 } } },
     useSessionReport: {}, useSourceEpisodes: {}, useConflicts: { data: { conflicts: [] } },
   }
   let active, hookIndex, nextId = 0, tree
@@ -184,7 +184,7 @@ for (const empty of [false, true]) {
       if (empty) s.results.useMemoryPages.data.facts = []
       s.results.useSessions = {
         isError: true, isFetching: true, error: new Error('synthetic sessions failure'),
-        data: cached ? { sessions: [{ id: 'synthetic-history' }] } : undefined,
+        data: cached ? { sessions: [{ session_id: 'synthetic-history' }] } : undefined,
       }
       const errors = s.nodes().filter(n => n.type === 'ErrorState')
       assert.equal(errors.length, 1)
@@ -427,7 +427,7 @@ test('来源加载、成功空结果和成功原文分别呈现', () => {
   s.results.useSourceEpisodes = { data: { episodes: [] } }
   assert.equal(s.find(n => n.type === 'Spinner'), undefined)
   assert.ok(s.find(n => n.type === 'p' && n.props.children === '来源对话已不在库中(可能被删除了)。'))
-  s.results.useSourceEpisodes = { data: { episodes: [{ id: 'synthetic-episode', content: 'synthetic provenance original', date: '2026-10-22', session: 'synthetic' }] } }
+  s.results.useSourceEpisodes = { data: { episodes: [{ id: 'synthetic-episode', content: 'synthetic provenance original', date: '2026-10-22', session_id: 'synthetic' }] } }
   assert.ok(s.find(n => n.type === 'p' && n.props.children === 'synthetic provenance original'))
 })
 

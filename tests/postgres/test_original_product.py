@@ -8,6 +8,27 @@ from mnemotrace.store.postgres.errors import SpaceNotFound
 from tests.test_pipeline_sources import LONG, DIGEST, respond
 
 
+def test_private_export_preserves_dialogue_identity_and_unknown_time(product_service, product_client, product_scope):
+    context, key = product_scope()
+    receipt = product_service.remember_messages(
+        context, [dict(message_id='message-1', role='user', content='Synthetic original')],
+        'thread', extract=False, agent_id='synthetic-agent',
+    )
+    assert receipt['stored_raw']
+    response = product_client.get(
+        '/v1/export', params={'space_id': context.space_id, 'include_sensitive': True},
+        headers={'Authorization': f'Bearer {key}'},
+    )
+    snapshot = response.json()
+    assert snapshot['format_version'] == 7
+    source, = snapshot['episodes']
+    assert source['id'] == receipt['source_ids'][0]
+    assert source['message_id'] == 'message-1' and source['agent_id'] == 'synthetic-agent'
+    assert source['session_id'] == 'thread' and 'session' not in source
+    assert source['sequence'] == 0 and source['event_time'] is None
+    assert source['coverage'] is None and source['digest_coverage'] is None
+
+
 def test_explicit_original_http_enforces_scope_and_omits_internal_state(product_service, product_client, product_scope):
     context, key = product_scope("owner")
     other_context, other_key = product_scope("other")

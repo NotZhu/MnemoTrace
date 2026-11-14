@@ -6,7 +6,7 @@
 
 `from mnemotrace import Config`，再传给 `MemoryEngine(config=...)`。完整字段和精确默认值在 [config.py](../../mnemotrace/config.py) 维护。
 
-`Config.from_env()` 返回应用默认值。数据库、模型和服务的环境变量由各自部署入口读取。
+`Config()` 提供应用默认值。数据库、模型和服务的环境变量由各自部署入口读取。
 
 创建 `Config` 时请使用关键字参数，例如 `Config(top_k=5)`；字段顺序可能随配置分组调整。
 
@@ -112,16 +112,16 @@ DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读
 
 ## 窗口抽取预算
 
-对话联合输出使用 `joint_max_output_tokens`、`joint_core_output_tokens`、`joint_digest_output_tokens`，分别对应 `MNEMOTRACE_JOINT_MAX_OUTPUT_TOKENS`、`MNEMOTRACE_JOINT_CORE_OUTPUT_TOKENS`、`MNEMOTRACE_JOINT_DIGEST_OUTPUT_TOKENS`。
+对话联合输出使用 `joint_max_output_tokens`、`joint_core_output_tokens`、`joint_digest_output_tokens`。
 默认值维护在 [Config](../../mnemotrace/config.py)，只是工程起点。规划同时预留核心结果、逐条长消息摘要及格式开销，输出不足时缩小窗口，不复用独立摘要的输出上限。
-可用 `joint_context_tokens` / `MNEMOTRACE_JOINT_CONTEXT_TOKENS` 声明提供方总上下文限制；规划使用输入 UTF-8 字节作为保守 token 上界，同时预留完整联合输出上限。未声明时不声称已验证提供方上下文容量。截断响应整体失败。
+可用 `joint_context_tokens` 声明提供方总上下文限制；规划使用输入 UTF-8 字节作为保守 token 上界，同时预留完整联合输出上限。未声明时不声称已验证提供方上下文容量。截断响应整体失败。
 
-缓冲请求将原文和任务提交到 Postgres。后台处理由独立 worker 执行，部署方式见[部署指南](../../deploy/README.md)。对话窗口在最后活动后空闲 60 秒、达到预算或显式刷新时可处理，原文和文档的抽取任务提交后即可领取。显式刷新也可主动推进本次等待范围内的任务。各来源共用以下输入配置。
+缓冲请求将原文和任务提交到 Postgres。后台处理由独立 worker 执行，部署方式见[部署指南](../../deploy/README.md)。对话窗口在最后活动后空闲 60 秒、达到预算或显式刷新时可处理，笔记的抽取任务提交后即可领取。显式刷新也可主动推进本次等待范围内的任务。各来源共用以下输入配置。
 
-| Config 字段 | 服务环境变量 | 含义 |
-| --- | --- | --- |
-| extraction_max_input_bytes | MNEMOTRACE_EXTRACTION_MAX_INPUT_BYTES | 系统与用户提示词的 UTF-8 字节总预算，包含来源元数据 |
-| extraction_context_bytes | MNEMOTRACE_EXTRACTION_CONTEXT_BYTES | 每窗前文正文最多占用的 UTF-8 字节数；空间不足时优先减少前文 |
+| Config 字段 | 含义 |
+| --- | --- |
+| extraction_max_input_bytes | 系统与用户提示词的 UTF-8 字节总预算，包含来源元数据 |
+| extraction_context_bytes | 每窗前文正文最多占用的 UTF-8 字节数；空间不足时优先减少前文 |
 
 默认值以 [Config 定义](../../mnemotrace/config.py) 为准。输入使用可离线计算、对中英文都明确的字节预算，
 并非 provider 的精确 token 计数。输入和输出预算必须是正整数，前文预算可以为零。
@@ -130,12 +130,12 @@ DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读
 
 ## 条件来源摘要
 
-| Config 字段 | 服务环境变量 | 含义 |
-| --- | --- | --- |
-| digest_min_chars | MNEMOTRACE_DIGEST_MIN_CHARS | 原文达到此 Python 字符数才请求摘要 |
-| digest_max_chars | MNEMOTRACE_DIGEST_MAX_CHARS | 成功摘要的字符上限，必须小于生成阈值 |
-| digest_max_input_bytes | MNEMOTRACE_DIGEST_MAX_INPUT_BYTES | 系统和用户提示词合计 UTF-8 字节预算 |
-| digest_max_output_tokens | MNEMOTRACE_DIGEST_MAX_OUTPUT_TOKENS | 每次摘要调用的输出 token 上限 |
+| Config 字段 | 含义 |
+| --- | --- |
+| digest_min_chars | 原文达到此 Python 字符数才请求摘要 |
+| digest_max_chars | 成功摘要的字符上限，必须小于生成阈值 |
+| digest_max_input_bytes | 系统和用户提示词合计 UTF-8 字节预算 |
+| digest_max_output_tokens | 每次摘要调用的输出 token 上限 |
 
 四项均为正整数，精确默认值在 [Config](../../mnemotrace/config.py) 中维护。这些是工程初值，未完成真实模型质量或成本验收。
 超长事件按实际输入预算分段并保存中间进度，之后合并成一份事件摘要；中间结果不参与检索。
@@ -150,18 +150,20 @@ profile_max_input_chars 和 profile_max_output_tokens 仅影响显式画像刷�
 | 参数组 | 主要字段与默认行为 | 影响 |
 | --- | --- | --- |
 | 融合 | w_sem=1.0、w_lex=0.6、w_graph=0.8、w_rec=0.3、w_sal=0.25 | 不同检索信号的配置权重 |
-| 候选与输出 | top_k=5、rrf_k=60；candidate_k=24 已弃用，仅供旧评测配置 | 检索返回规模与排序融合 |
-| 扩展候选 | ann_candidates=False、ann_pool=200 | 内存引擎可选的有界向量候选路径。BM25 仅重排向量与图候选 |
+| 候选与输出 | top_k=5、rrf_k=60 | 检索返回规模与排序融合 |
+| PostgreSQL 候选 | postgres_candidate_limit=200 | PostgreSQL 检索使用的默认候选池 |
+| 离线 ANN | ann_candidates=False、ann_pool=200 | 内存引擎可选的有界向量候选路径。BM25 仅重排向量与图候选 |
 | 时间与图 | recency_tau_days=45、max_hops=2 | 时近性先验和图遍历 |
-| 热层与拒答 | max_hot_facts=10000、abstain_threshold=0.45 | 工作集容量和低证据回退 |
-| 整合 | salience_decay_per_day=0.02、access_boost=0.5 | 显著度更新 |
+| 离线热层 | max_hot_facts=10000 | 离线工作集容量 |
+| 拒答 | abstain_threshold=0.45 | 低证据回退 |
+| 整合 | salience_decay_per_day=0.02、access_boost=0.5 | 离线衰减与访问强化，PostgreSQL 仅强化显著度 |
 | 冲突 | conflict_sim_threshold=0.80 | 使用语义向量召回同主体的跨槽位候选 |
 
 
 ## 服务环境变量
 
 HTTP、直连 MCP 和普通 CLI 使用[数据库运行连接](#postgres-数据库基础)。
-远程 MCP stdio、SDK 和导入器使用 HTTP 地址、账号 key 和显式空间。
+远程 MCP stdio 和 SDK使用 HTTP 地址、账号 key 和显式空间。
 
 | 变量 | 未设置时的行为或默认值 |
 | --- | --- |
@@ -219,5 +221,3 @@ FastEmbed 每条原文保留一份向量，超过模型输入窗口的内容仍�
 本地直连使用 `--user-id` 与 `--space-id`。watcher 使用 `--url`、`--key-file` 和 `--space-id`，
 默认受理历史后交给 worker，`--immediate` 等待核心处理。
 若原文已保存而核心处理失败或等待超时，watcher 保留已确认的原文游标，报告非零退出状态及可查询、重试的操作 ID。
-
-历史导入与 watch 的保留源码及显式验证方式见[连接器说明](../../mnemotrace/connectors/README.md)。

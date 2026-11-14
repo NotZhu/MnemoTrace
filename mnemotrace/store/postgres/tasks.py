@@ -30,7 +30,7 @@ def _attempt_counter(row):
 def _result(row, auxiliary=()):
     return OperationResult(
         row['operation_id'], OperationKind(row['kind']), ProcessingState(row['state']),
-        ProcessingPhase(row['phase']), row['stored_raw'], row['extraction_saved'],
+        ProcessingPhase(row['phase']), row['extraction_saved'],
         row['core_committed'], row['attempts'],
         row['next_attempt_at'].timestamp() if row['next_attempt_at'] else None,
         row['error_code'], auxiliary,
@@ -132,7 +132,7 @@ class Tasks:
                 (*sql.scope, list(operation_ids), list(ACTIVE))).fetchall()
             return tuple(row[0] for row in rows)
 
-    def accept(self, session_id, messages, check_ready, fit, *, immediate=False, source_metadata=None):
+    def accept(self, session_id, messages, check_ready, fit, *, immediate=False):
         """接受消息并将其存储为操作。
 
         Args:
@@ -141,7 +141,6 @@ class Tasks:
             check_ready: 检查系统是否就绪的回调函数。
             fit: 拟合消息的回调函数。
             immediate: 是否立即冻结操作。
-            source_metadata: 源元数据列表。
         """
         def apply(sql, revision, generation, settings):
             """应用消息并将其存储为操作。
@@ -152,8 +151,7 @@ class Tasks:
                 generation: 当前生成版本。
                 settings: 当前设置。
             """
-            ids, inserted, extraction_ids = store_messages(sql, session_id, messages, check_ready=check_ready,
-                                                             source_metadata=source_metadata)
+            ids, inserted, extraction_ids = store_messages(sql, session_id, messages, check_ready=check_ready)
             if extraction_ids:
                 by_id = {record.ref.record_id: record for record in
                          sql.select(SOURCE, ('r.id = ANY(%s)',), (extraction_ids,))}
@@ -466,7 +464,7 @@ class Tasks:
 
             commit = changes
             if not continuation:
-                earlier = sql.run(f'SELECT fact_ids,source_ids FROM mnemotrace.record_commit_receipts '
+                earlier = sql.run(f'SELECT fact_ids,source_ids FROM mnemotrace.commit_receipts '
                                   f'WHERE {SCOPE} AND segment_of = %s ORDER BY core_revision,operation_id',
                                   (*sql.scope, operation_id)).fetchall()
                 receipt = changes.receipt

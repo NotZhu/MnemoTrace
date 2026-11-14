@@ -154,7 +154,7 @@ test('会话列表不查询中文组词中的拼音，清空后立即恢复全�
 })
 
 test('整理会话只处理所点卡片的 ID，报告打开相同会话，上方输入保持不变', () => {
-  const s=setup([{id:'synthetic-a',episodes:2,facts_added:1},{id:'synthetic-b',episodes:3,facts_added:2}])
+  const s=setup([{session_id:'synthetic-a',episodes:2,facts_added:1},{session_id:'synthetic-b',episodes:3,facts_added:2}])
   const card=findNode(s.render(),node=>node.type==='li' && node.key==='synthetic-b')
   const finish=findNode(card,node=>node.type==='button' && node.props.children==='整理会话')
   assert.ok(finish)
@@ -172,7 +172,7 @@ test('空会话列表不在添加记忆区域提供整理会话入口', () => {
 })
 
 test('切换会话会取消旧整理请求，迟到的成功响应不再打开旧报告', () => {
-  const s = setup([{id:'synthetic-a',episodes:1,facts_added:1}], [], {deferOrganize: true})
+  const s = setup([{session_id:'synthetic-a',episodes:1,facts_added:1}], [], {deferOrganize: true})
   const card = findNode(s.render(), node => node.type==='li' && node.key==='synthetic-a')
   findNode(card, node => node.type==='button' && node.props.children==='整理会话').props.onClick()
   const { signal, callbacks } = s.organizing[0]
@@ -185,7 +185,7 @@ test('切换会话会取消旧整理请求，迟到的成功响应不再打开�
 })
 
 test('会话报告使用服务端的下一页偏移，新会话报告从第一页开始', () => {
-  const s = setup([{id:'synthetic-a',episodes:1,facts_added:101}], [], {reportPage: offset => ({
+  const s = setup([{session_id:'synthetic-a',episodes:1,facts_added:101}], [], {reportPage: offset => ({
     facts: [], facts_page: {has_more: offset === 0, next_offset: offset === 0 ? 100 : null},
   })})
   const open = () => findNode(s.render(), node => node.type==='button' && node.props.children==='查看详情')
@@ -199,7 +199,7 @@ test('会话报告使用服务端的下一页偏移，新会话报告从第一�
 })
 
 test('默认使用 default 会话，列表中的使用此会话会同步顶部选择', () => {
-  const s=setup([{id:'synthetic-session',episodes:1,facts_added:1}])
+  const s=setup([{session_id:'synthetic-session',episodes:1,facts_added:1}])
   assert.equal(findNode(s.render(),node=>node.type?.name==='SessionPicker').props.value,'default')
   const card=findNode(s.render(),node=>node.type==='li' && node.key==='synthetic-session')
   findNode(card,node=>node.type==='button' && node.props.children==='使用此会话').props.onClick()
@@ -209,10 +209,12 @@ test('默认使用 default 会话，列表中的使用此会话会同步顶部�
 
 test('列表显示已有摘要与原文，没有摘要时仍可浏览原文', () => {
   const s = setup([], [
-    {id:'one', content:'完整原文仍在', date:'2026-10-31', session:'s', digest:''},
-    {id:'two', content:'另一条完整原文', date:'2026-10-31', session:'s', digest:'已保存摘要'},
+    {id:'one', content:'完整原文仍在', date:'2026-10-31', session_id:'s', digest:''},
+    {id:'two', content:'另一条完整原文', date:'2026-10-31', session_id:'s', digest:'已保存摘要',
+      coverage:{partial:false}, digest_coverage:{partial:true}},
   ])
   const tree = s.render()
   assert.ok(findNode(tree, node => node.type === 'p' && node.props.children === '完整原文仍在'))
-  assert.ok(findNode(tree, node => node.type === 'p' && node.props.children.includes('已保存摘要')))
+  const digest = findNode(tree, node => node.type === 'p' && node.props.children.includes('已保存摘要'))
+  assert.ok(findNode(digest, node => node.type === 'span' && node.props.children === '（仅覆盖部分原文）'))
 })

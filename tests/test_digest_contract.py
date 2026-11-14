@@ -7,7 +7,6 @@ from mnemotrace import MemoryEngine
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from mnemotrace.extraction import ExtractionResponseError
 from mnemotrace.llm import FakeLLM
-from mnemotrace.store._validation import validate_snapshot
 
 
 @pytest.mark.parametrize('retired', ['working', 'summaries'])
@@ -51,14 +50,6 @@ def test_digest_is_selected_while_explicit_source_keeps_original():
     assert memory.get_episode(source.id)['content'] == original
 
 
-@pytest.mark.parametrize('field', ['summary', 'summary_coverage'])
-def test_snapshot_does_not_silently_drop_old_source_fields(field):
-    snapshot = dict(format_version=6, facts=[], episodes=[dict(id='source', content='Synthetic source',
-                    session_id='s', role='user', event_time=1, **{field: 'obsolete'})])
-    with pytest.raises(ValueError, match=r"episodes\[0\]: unsupported field"):
-        validate_snapshot(snapshot)
-
-
 def test_remember_and_recall_reject_retired_parameters():
     memory = MemoryEngine()
     with pytest.raises(TypeError, match='scope'):
@@ -78,8 +69,3 @@ def test_remember_and_recall_reject_retired_parameters():
         memory.lean_context('Synthetic query', session_id='s')
     with pytest.raises(TypeError, match='n_summaries'):
         memory.lean_context('Synthetic query', n_summaries=1)
-
-
-def test_snapshot_rejects_retired_working_collection():
-    with pytest.raises(ValueError, match='snapshot: unsupported field'):
-        validate_snapshot(dict(format_version=6, facts=[], episodes=[], working=[]))

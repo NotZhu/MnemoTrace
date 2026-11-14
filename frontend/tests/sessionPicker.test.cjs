@@ -16,7 +16,7 @@ function nodes(tree) {
   return [tree,...(Array.isArray(tree)?tree:[].concat(tree.props?.children??[])).flatMap(nodes)]
 }
 
-function setup(result={data:{sessions:[{id:'default'},{id:'synthetic-a'},{id:'synthetic-b'}]}}) {
+function setup(result={data:{sessions:[{session_id:'default'},{session_id:'synthetic-a'},{session_id:'synthetic-b'}]}}) {
   const states=[],changes=[]
   let cursor=0,value='default'
   const moduleData={exports:{}}

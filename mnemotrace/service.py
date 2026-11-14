@@ -93,7 +93,7 @@ def _recall_conditions(as_of, state, valid_at, redact_sensitive):
 
 def _fact_view(fact, at):
     row = asdict(fact)
-    for key in ('embedding', 'user_id'):
+    for key in ('embedding', 'user_id', 'source', 'last_access', 'access_count'):
         row.pop(key, None)
     live = fact.is_valid_at(at)
     row.update(valid_at=fmt_datetime(fact.valid_at),
@@ -106,10 +106,11 @@ def _fact_view(fact, at):
 def _source_view(record):
     source = domain(record)
     return dict(id=source.id, content=source.content, chars=len(source.content), digest=source.digest,
-                date=source.metadata.get('date') or fmt_date(source.event_time),
-                session=source.session_id, session_id=source.session_id, role=source.role,
+                date=fmt_date(source.event_time),
+                session_id=source.session_id, role=source.role,
                 message_id=source.message_id, sequence=source.sequence, event_time=source.event_time,
-                ingested_at=source.ingested_at, coverage=source.coverage, agent_id=record.agent_id,
+                ingested_at=source.ingested_at, coverage=source.coverage, digest_coverage=source.digest_coverage,
+                agent_id=record.agent_id,
                 space_id=record.ref.context.space_id)
 
 
@@ -134,7 +135,7 @@ class MemoryService:
             if name := (llm_name if field == 'llm' and llm_name is not None
                         else os.environ.get(f'MNEMOTRACE_{variable}', '')).strip():
                 models[field] = providers.make_llm(name)
-        config = Config.from_env()
+        config = Config()
         embedder, model = providers.configured_embedder(embedder_name)
         service = cls(Database(DatabaseConfig.from_env()), embedder=embedder,
                       embedding_model=model, config=config, **models)
@@ -151,10 +152,10 @@ class MemoryService:
 
     @timed('remember_messages')
     def remember_messages(self, context, messages, session_id, processing='buffered',
-                          extract: bool = True, *, agent_id=None, timeout=30, source_metadata=None):
+                          extract: bool = True, *, agent_id=None, timeout=30):
         items = tuple(MessageInput(**message, agent_id=agent_id, extract=extract) for message in messages)
         result = operation_payload(self.memory(context).remember_messages(
-            session_id, items, processing=processing, timeout=timeout, source_metadata=source_metadata))
+            session_id, items, processing=processing, timeout=timeout))
         if processing == 'immediate' and not result['ok']:
             raise ProcessingFailure(result)
         return result
@@ -304,7 +305,7 @@ class MemoryService:
                 row.update(first_event_at_h=fmt_datetime(row['first_event_at']),
                            last_event_at_h=fmt_datetime(row['last_event_at']))
         page = _page(rows, total, offset, limit)
-        return dict(ok=True, space_id=context.space_id, sessions=rows, page=page, next_offset=page['next_offset'])
+        return dict(ok=True, space_id=context.space_id, sessions=rows, sessions_page=page)
 
     def session_report(self, context, session_id, include_sensitive=False, *, limit=100, offset=0):
         limit, offset = _bounds(limit, offset)
@@ -325,7 +326,7 @@ class MemoryService:
                     row.pop(key, None)
                 row['text'] = '[redacted sensitive fact]'
         report = rows[0] if rows else dict(episodes=0, episodes_consolidated=0, episodes_pending=0,
-                                          extraction_failures=0, )
+                                          extraction_failures=0)
         redacted = 0 if include_sensitive else report.get('facts_sensitive', 0)
         page = _page(facts, total, offset, limit)
         return {**report, 'ok': True, 'space_id': context.space_id, 'session_id': session_id,
@@ -369,8 +370,7 @@ class MemoryService:
         return dict(space_id=context.space_id, data_revision=revision, evaluated_at=at,
                     counts=counts,
                     facts=facts, fact_categories=categories,
-                    episodes=episodes, facts_page=fact_page, episodes_page=source_page,
-                    next_offsets=dict(facts=fact_page['next_offset'], episodes=source_page['next_offset']))
+                    episodes=episodes, facts_page=fact_page, episodes_page=source_page)
 
     def graph(self, context, as_of=None, include_sensitive=False, q='', live_only=False, limit=None):
         limit, _ = _bounds(limit)
@@ -401,25 +401,22 @@ class MemoryService:
     def stats(self, context):
         with self.memory(context).dao.read_snapshot() as view:
             counts = view.overview(view.at.timestamp())
-            fed_at, sessions = view.agent_feed()
             times = view.time_range()
-        feed = dict(last_fed_at=fed_at, last_fed_at_h=fmt_datetime(fed_at) if fed_at is not None else None,
-                    sessions=sessions, conclusions=0)
         return dict(space_id=context.space_id, counts=counts, storage='postgres', embedder=self.embedding_model or 'lexical',
-                    feed=feed, time_range={**times, **{key + '_h': fmt_datetime(value) if value is not None else None
+                    time_range={**times, **{key + '_h': fmt_datetime(value) if value is not None else None
                                                        for key, value in times.items()}},
                     consolidation_backlog=counts['episodes_pending'] > 0,
                     llm_configured=self.llm is not None, answerer_configured=self.answerer is not None)
 
     def agent_status(self, context, session_id=None):
-        session = dict(id=session_id, episodes=0, episodes_pending=0, extraction_failures=0, )
+        session_counts = dict(episodes=0, episodes_pending=0, extraction_failures=0)
         if session_id is not None:
             with self.memory(context).dao.read_snapshot(session_id) as view:
                 rows, _ = view.session_index(session_id=session_id, limit=1)
                 if rows:
-                    session.update(rows[0])
+                    session_counts.update({key: rows[0][key] for key in session_counts})
         return dict(ok=True, **self.stats(context), session_id=session_id, focus=self.get_focus(context),
-                    session=session, mode='content_free_agent_status',
+                    session_counts=session_counts, mode='content_free_agent_status',
                     processing=self.processing_status(context, session_id),
                     recommended_next_actions=[
                         'Call mnemotrace_recall before relying on past memory.',
@@ -442,13 +439,11 @@ class MemoryService:
             conn.execute('SELECT 1')
 
     def iter_export(self, context, include_sensitive=False):
-        from .store._validation import SNAPSHOT_FORMAT_VERSION
-
         memory = self.memory(context)
         with memory.dao.read_snapshot() as view:
             at = view.at.timestamp()
             settings = view.settings()
-            head = dict(format_version=SNAPSHOT_FORMAT_VERSION, space_id=context.space_id, include_sensitive=include_sensitive,
+            head = dict(format_version=7, space_id=context.space_id, include_sensitive=include_sensitive,
                         redacted_sensitive=not include_sensitive, focus=dict(track=settings.track, mute=settings.mute))
             yield json.dumps(head, ensure_ascii=False)[:-1]
             for name, kind in (('facts', FACT), ('episodes', SOURCE)):
@@ -463,9 +458,14 @@ class MemoryService:
                             item = domain(record)
                             if not include_sensitive and item.sensitive:
                                 continue
-                            payload = asdict(item)
-                            payload.pop('embedding', None)
-                            payload.pop('user_id', None)
+                            payload = dict(id=item.id, subject=item.subject, predicate=item.predicate,
+                                           object=item.object, text=item.text, relation_id=item.relation_id,
+                                           subject_id=item.subject_id, object_id=item.object_id,
+                                           subject_type=item.subject_type, object_type=item.object_type,
+                                           categories=item.categories, sensitive=item.sensitive, retention=item.retention,
+                                           salience=item.salience, valid_at=item.valid_at, invalid_at=item.invalid_at,
+                                           created_at=item.created_at, expired_at=item.expired_at,
+                                           supersedes=item.supersedes, provenance=item.provenance)
                             status = ('scheduled' if item.valid_at is not None and item.valid_at > at else
                                       'live' if item.is_valid_at(at) else 'superseded')
                             payload.update(status=status,
@@ -474,7 +474,8 @@ class MemoryService:
                         else:
                             item = domain(record)
                             payload = _source_view(record)
-                            payload.update(digest_coverage=item.digest_coverage, digest_written_at=item.digest_written_at)
+                            payload.update(digest_written_at=item.digest_written_at, source_kind=item.source_kind,
+                                           extract=item.extract)
                         yield ('' if first else ',') + json.dumps(payload, ensure_ascii=False)
                         first = False
                     cursor = batch[-1].ref.record_id

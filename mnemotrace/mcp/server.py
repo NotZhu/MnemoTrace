@@ -137,14 +137,6 @@ def _err(e: Exception) -> str:
     return "Error: Memory tool request failed."
 
 
-def _format_feed(feed: dict) -> str:
-    """记忆上次由本机 agent session 投喂的时间——这一行能区分空记忆和健康记忆。"""
-    if not feed.get("last_fed_at_h"):
-        return "- Last fed: no agent-session feed recorded."
-    return (f"- Last fed: {feed.get('last_fed_at_h')} · {feed.get('sessions', 0)} session(s) · "
-            f"{feed.get('conclusions', 0)} conclusion(s)")
-
-
 def _format_focus(focus: dict) -> str:
     track = focus.get("track") or []
     mute = focus.get("mute") or []
@@ -181,8 +173,7 @@ async def mnemotrace_recall(
     """检索一小段相关、带日期的用户长期记忆，用于锚定你的回答。
 
     这是主要的读取工具——在回答任何可能依赖既往 session 的问题前先调用它。返回用户的
-    profile + 最相关的带日期 fact + session 摘要 + 少量完整对话，已做 token 预算控制
-    （不是整个历史）。读取返回的上下文并据此回答；如果为空，说明记忆中没有该主题的内容。
+    最相关的带日期事实和来源摘要，按预算组织。可用来源 ID 显式读取原文。
 
     返回（markdown）：可读取的上下文块，附近似 token 数。
     返回（json）：{"context": str, "tokens_est": int, "as_of": float|null, "redacted_sensitive": bool}。
@@ -468,7 +459,7 @@ async def mnemotrace_list_sessions(
     时间戳和计数——不含原始 episode 文本、摘要、profile 文字或 fact 文本。审计某个 session 的
     持久 fact 用 `mnemotrace_session_report(session_id)`。
 
-    返回（json）：{"ok","sessions":[...],"page":...}。
+    返回（json）：{"ok","sessions":[...],"sessions_page":...}。
     """
     try:
         data = await backend().sessions(limit=limit, offset=offset, q=q)
@@ -477,14 +468,14 @@ async def mnemotrace_list_sessions(
     if response_format == ResponseFormat.JSON:
         return _json(data)
     sessions = data.get("sessions") or []
-    page = data.get("page") or {}
+    page = data["sessions_page"]
     total = page.get("total", len(sessions))
     if not sessions:
         return "No memory sessions found." if not q else f"No memory sessions found matching `{q}`."
     start = offset + 1
     lines = [f"# Memory sessions ({start}–{offset + len(sessions)} of {total})", ""]
     for row in sessions:
-        sid = row.get("id", "?")
+        sid = row['session_id']
         parts = [
             f"{row.get('episodes', 0)} episode(s)",
             f"{row.get('facts_added', 0)} fact(s)",
@@ -513,10 +504,10 @@ async def mnemotrace_list_facts(
 ) -> str:
     """浏览 忆痕 存储的关于用户的原子 fact（分页）。
 
-    每个 fact 带日期（生效时间）并标记为 live 或 superseded；用户断言的 fact 带 🔒。
+    每个 fact 带日期（生效时间）并标记为 live 或 superseded。
     可用于审计已知内容，或在修正前找到 fact id。
 
-    返回（json）：{"total","count","offset","has_more","next_offset","facts":[...]}。
+    返回（json）：{"facts_page":...}。
     """
     try:
         dump = await backend().memories(categories=categories, limit=limit, offset=offset,
@@ -526,15 +517,13 @@ async def mnemotrace_list_facts(
     result = dump['facts_page']
     page, total, nxt = result['items'], result['total'], result['next_offset']
     if response_format == ResponseFormat.JSON:
-        return _json({"total": total, "count": len(page), "offset": offset,
-                      "has_more": nxt is not None, "next_offset": nxt, "facts": page})
+        return _json({"facts_page": result})
     if not page:
         return "No facts stored yet." if total == 0 else "No facts on this page."
     lines = [f"# Stored facts ({offset + 1}–{offset + len(page)} of {total})", ""]
     for f in page:
         tag = "" if f.get("status") == "live" else " _(superseded)_"
-        lock = " 🔒" if f.get("source") == "user" else ""
-        lines.append(f"- `{f.get('id', '?')}` [{f.get('valid_at', '?')}] {f.get('text', '')}{tag}{lock}"
+        lines.append(f"- `{f.get('id', '?')}` [{f.get('valid_at', '?')}] {f.get('text', '')}{tag}"
                      f" · categories: {', '.join(f.get('categories', [])) or '—'}")
     if nxt is not None:
         lines += ["", f"…{total - nxt} more — call again with offset={nxt}."]
@@ -626,7 +615,7 @@ async def mnemotrace_agent_status(
     启动时或排查 忆痕 是否正确接入时使用。它不返回 profile 文本、fact 文本、摘要或原始
     episode；只返回命名空间/session 计数、focus 策略和推荐的下一步工具调用。
 
-    返回（json）：{"ok","user","session_id","focus","session","counts","recommended_next_actions",...}。
+    返回（json）：{"ok","space_id","session_id","focus","session_counts","counts","recommended_next_actions",...}。
     """
     try:
         data = await backend().agent_status(session_id=session_id)
@@ -635,13 +624,13 @@ async def mnemotrace_agent_status(
     if response_format == ResponseFormat.JSON:
         return _json(data)
     c = data.get("counts") or {}
-    s = data.get("session") or {}
+    s = data["session_counts"]
     focus = data.get("focus") or {}
     lines = [
         "# MnemoTrace agent status",
         "",
         f"- Space: `{data.get('space_id', '?')}`",
-        f"- Session: `{s.get('id') or '(none supplied)'}`",
+        f"- Session: `{data['session_id'] or '(none supplied)'}`",
         f"- Session episodes: {s.get('episodes', 0)} "
         f"({s.get('episodes_pending', 0)} pending consolidation)",
         f"- Session extraction failures: {s.get('extraction_failures', 0)} episode(s)",
@@ -649,7 +638,6 @@ async def mnemotrace_agent_status(
         f"- Long-term memory: {c.get('facts_live', 0)} live fact(s), "
         f"{c.get('digests', 0)} digest(ies)",
         f"- Consolidation backlog: {'yes' if data.get('consolidation_backlog') else 'no'}",
-        _format_feed(data.get("feed") or {}),
         "- Focus:",
         _format_focus(focus),
         "",
@@ -796,8 +784,6 @@ async def mnemotrace_export(
         f"- Facts: {len(facts)}",
         f"- Graph: {len(nodes)} node(s), {len(edges)} edge(s)",
     ]
-    if data.get("redaction_note"):
-        lines += ["", data["redaction_note"]]
     lines += [
         "",
         "Call again with `response_format=\"json\"` to get the portable JSON payload.",

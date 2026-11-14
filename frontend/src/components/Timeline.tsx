@@ -43,14 +43,6 @@ export function Timeline({ facts }: { facts: MemoryFact[] }) {
                   {f.text}
                 </span>
                 <span className="ml-2 inline-flex flex-wrap items-center gap-1.5 align-middle">
-                  {f.source === 'user' && (
-                    <span
-                      className="fact-blue-tag shrink-0 text-xs"
-                      title={t.facts.manualHint}
-                    >
-                      {t.facts.manualLabel}
-                    </span>
-                  )}
                   {f.supersedes.length > 0 && (
                     <span
                       className="fact-blue-tag shrink-0 text-xs"

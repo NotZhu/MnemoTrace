@@ -58,14 +58,6 @@ def test_digest_policy_uses_only_current_field_names(client):
     assert client.put('/v1/policy', json=dict(summary_system='Retired policy'), headers=h).status_code == 422
 
 
-@pytest.mark.history_import
-@pytest.mark.parametrize("payload", [{"facts": []}, {"episodes": []}, {"facts": "bad", "episodes": []}])
-def test_incomplete_snapshot_is_rejected_instead_of_message_ingestion(client, payload):
-    response = client.post("/v1/import", json={"data": payload}, headers=hdr("synthetic-invalid-import"))
-    assert response.status_code == 400
-    assert client.get("/v1/memories", headers=hdr("synthetic-invalid-import")).json()["facts"] == []
-
-
 def test_private_api_responses_are_not_cacheable(client):
     h = hdr("cache_headers")
 
@@ -235,20 +227,20 @@ def test_sessions_endpoint_lists_cross_agent_sessions_without_content(client):
     data = client.get("/v1/sessions?limit=10", headers=h).json()
 
     assert data["ok"] is True
-    rows = {row["id"]: row for row in data["sessions"]}
+    rows = {row["session_id"]: row for row in data["sessions"]}
     assert {codex_session, claude_session} <= set(rows)
     assert rows[codex_session]["episodes"] == 1
     assert rows[codex_session]["facts_added"] >= 1
     assert rows[claude_session]["facts_sensitive"] >= 1
-    assert data["page"]["total"] >= 2
+    assert data["sessions_page"]["total"] >= 2
     rendered = str(data).lower()
     assert "release notes" not in rendered
     assert "diabetes" not in rendered
     assert "temporary launch" not in rendered
 
     filtered = client.get("/v1/sessions?q=claude-code&limit=1", headers=h).json()
-    assert filtered["page"]["total"] == 1
-    assert filtered["sessions"][0]["id"] == claude_session
+    assert filtered["sessions_page"]["total"] == 1
+    assert filtered["sessions"][0]["session_id"] == claude_session
 
 
 def test_stats_endpoint_is_content_free_namespace_observability(client):
@@ -297,7 +289,7 @@ def test_agent_status_endpoint_is_content_free_and_session_aware(client):
     assert status["ok"] is True
     assert status["space_id"]
     assert status["session_id"] == session
-    assert status["session"]["episodes"] == 1
+    assert status["session_counts"]["episodes"] == 1
     assert status["focus"] == {"track": ["project decisions"], "mute": ["health details"]}
     assert status["counts"]["facts_live"] >= 1
     assert "mnemotrace_recall" in status["tools"]["read_context"]
@@ -305,92 +297,6 @@ def test_agent_status_endpoint_is_content_free_and_session_aware(client):
     assert "diabetes" not in rendered
     assert "acme" not in rendered
     assert "private launch note" not in rendered
-
-
-@pytest.mark.history_import
-@pytest.mark.parametrize("malformed", [None, {"role": "user", "content": "invalid\x00text"}])
-def test_import_reports_invalid_sessions_without_losing_durable_receipts(client, malformed):
-    headers = hdr("synthetic-partial-import")
-    payload = {"consolidate": False, "sessions": [
-        {"session_id": "valid-first", "messages": [{"role": "user", "content": "First synthetic source"}]},
-        {"session_id": "invalid-middle", "messages": [malformed]},
-        {"session_id": "valid-last", "messages": [{"role": "user", "content": "Last synthetic source"}]},
-    ]}
-    response = client.post("/v1/import", json=payload, headers=headers)
-    assert response.status_code == 200
-    report = response.json()
-    assert not report["ok"] and report["failed"] == 1 and report["episodes"] == 2
-    failure, = report["failures"]
-    assert failure["session_id"] == "invalid-middle" and failure["code"] == "invalid_parameter"
-    assert not failure["stored_raw"]
-    assert [item["session_id"] for item in report["results"]] == ["valid-first", "valid-last"]
-    for result in report["results"]:
-        source_id, = result["source_ids"]
-        assert client.get(f"/v1/episodes/{source_id}", headers=headers).status_code == 200
-    replay = client.post("/v1/import", json=payload, headers=headers).json()
-    assert replay["skipped"] == 2 and replay["episodes"] == 0
-
-
-@pytest.mark.history_import
-def test_import_with_null_session_and_no_other_input_returns_validation_result(client):
-    response = client.post("/v1/import", json={"sessions": [None]}, headers=hdr("invalid-only"))
-    assert response.status_code == 200
-    assert response.json()["failures"] == [
-        {"session_id": None, "session_index": 0, "code": "invalid_parameter",
-         "stored_raw": False, "operation_ids": []},
-    ]
-
-
-@pytest.mark.history_import
-def test_import_sessions_and_raw_data(client):
-    h = hdr("importer")
-    sessions = [{"session_id": "s1", "title": "Pets",
-                 "messages": [{"role": "user", "content": "I have a dog named Mochi."},
-                              {"role": "assistant", "content": "Mochi is a cute name!"}]}]
-    out = client.post("/v1/import", json={"consolidate": True, "sessions": sessions}, headers=h).json()
-    assert out["ok"] and out["episodes"] == 2
-    # 原始数据 + format 路径
-    out2 = client.post("/v1/import", json={"consolidate": True,
-        "data": [{"role": "user", "content": "I drive a Tesla Model 3."}], "format": "messages"}, headers=h).json()
-    assert out2["episodes"] == 1
-    ctx = client.post("/v1/recall", json={"query": "What pet do I have?"}, headers=h).json()["context"]
-    assert "Mochi" in ctx
-    # 空的 import 请求应返回清晰的 400
-    assert client.post("/v1/import", json={}, headers=h).status_code == 400
-
-
-@pytest.mark.history_import
-def test_import_sessions_accept_iso_timestamps(client):
-    h = hdr("import_iso")
-    out = client.post("/v1/import", json={"consolidate": True,
-        "sessions": [{
-            "session_id": "career",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "Wei works at Tencent.",
-                    "event_time": "2023-11-14T00:00:00Z",
-                },
-                {
-                    "role": "user",
-                    "content": "Wei works at Moonshot AI.",
-                    "event_time": "2023-12-14T00:00:00Z",
-                },
-            ],
-        }],
-        "generate_digests": False,
-    }, headers=h).json()
-
-    assert out["ok"] and out["sessions"] == 1 and out["episodes"] == 2
-    memories = client.get("/v1/memories", headers=h).json()
-    facts = memories["facts"]
-    assert {f["object"] for f in facts} >= {"Tencent", "Moonshot AI"}
-    past = client.post("/v1/recall", json={
-        "query": "Where does Wei work?",
-        "lean": False,
-        "as_of": 1_700_864_000.0,
-    }, headers=h).json()
-    assert past["status"] == "evidence_only" and any("Tencent" in fact for fact in past["facts"])
 
 
 def test_fact_crud_and_focus_policy_graph_export(client):
@@ -406,7 +312,7 @@ def test_fact_crud_and_focus_policy_graph_export(client):
     assert "nodes" in client.get("/v1/graph", headers=h).json()
     exp = client.get("/v1/export", headers=h).json()
     fact, = exp["facts"]
-    assert exp["format_version"] == 6 and fact["object"] == "Moonshot AI" and fact["subject"] == "我"
+    assert exp["format_version"] == 7 and fact["object"] == "Moonshot AI" and fact["subject"] == "我"
     assert not {"review_pending", "withdrawn_at", "categories_source", "sensitive_override", "source_roles"} & fact.keys()
     assert "conflicts" not in exp
     assert client.get("/v1/conflicts", headers=h).status_code == 404
@@ -474,7 +380,6 @@ def test_memories_endpoint_supports_pagination_filtering_and_sensitive_create(cl
     assert len(episode_page["episodes"]) == 1
     assert episode_page["episodes_page"]["total"] == 2
     assert episode_page["episodes_page"]["has_more"] is True
-    assert episode_page["next_offsets"]["episodes"] == episode_page["episodes_page"]["next_offset"]
 
     page = client.get(
         "/v1/memories?facts_limit=2&facts_offset=0&episodes_limit=1&include_sensitive=false",
@@ -487,10 +392,6 @@ def test_memories_endpoint_supports_pagination_filtering_and_sensitive_create(cl
     assert page["episodes"] == []
     assert page["episodes_page"]["total"] == 0
     assert page["episodes_page"]["has_more"] is False
-    assert page["next_offsets"] == {
-        "facts": page["facts_page"]["next_offset"],
-        "episodes": page["episodes_page"]["next_offset"],
-    }
     assert "blue-lotus" not in str(page).lower()
 
     second = client.get(
@@ -667,19 +568,19 @@ def test_sensitive_edit_preserves_history_across_reload(client):
             assert all(f["id"] != old_id for f in safe)
 
 
-def test_metadata_edit_preserves_extracted_source_across_reload(client):
+def test_sensitivity_edit_preserves_provenance_across_reload(client):
     h = hdr("metadata_source")
     response = client.post("/v1/remember", json={"content": "I live in Beijing."}, headers=h)
     assert response.status_code == 200
     url = "/v1/memories?include_sensitive=true&episodes_limit=0"
     original = client.get(url, headers=h).json()["facts"][0]
-    assert original["source"] == "extracted" and original["provenance"]
+    assert "source" not in original and original["provenance"]
     fact_id = original["id"]
     for sensitive in (True, False):
         response = client.patch(f"/v1/facts/{fact_id}/sensitivity", json={"sensitive": sensitive}, headers=h)
         assert response.status_code == 200
         restored = next(f for f in client.get(url, headers=h).json()["facts"] if f["id"] == fact_id)
-        assert restored["source"] == "extracted"
+        assert "source" not in restored
         assert restored["provenance"] == original["provenance"]
         assert restored["text"] == original["text"]
         assert restored["sensitive"] is sensitive
@@ -904,50 +805,6 @@ def test_request_limit_rejects_before_memory_write(client, product_scope, monkey
     assert client.get("/v1/stats", headers=hdr("synthetic-size")).json()["counts"]["episodes"] == 0
 
 
-@pytest.mark.history_import
-def test_import_agent_sessions_defaults_to_buffered_messages_and_feed_stats(client):
-    """watcher 历史会话默认按消息 buffered 接收，并保留来源与摄入统计。"""
-    h = hdr("feed-ns")
-    transcript = [{"role": "user", "content": "The config file is nearly empty. This is now clear: EKOS "
-                                              "is deployed on an Ubuntu server."},
-                  {"role": "assistant", "content": "This confirms the deployment; next is nginx."}]
-    body = {"sessions": [
-        {"session_id": "claude-code:a", "event_time": 1_756_000_000.0,
-         "metadata": {"source": "agent_session"}, "messages": transcript},
-        {"session_id": "codex:b", "event_time": 1_756_000_100.0,
-         "metadata": {"source": "agent_session"}, "messages": transcript},
-        {"session_id": "plain", "messages": [{"role": "user", "content": "I live in Shenzhen and work "
-                                                                         "at Moonshot AI."}]},
-    ]}
-    r = client.post("/v1/import", json=body, headers=h)
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert data["episodes"] == 5
-    assert data["queued"] and all(not op["core_committed"] for row in data["results"] for op in row["operations"])
-    assert client.post("/v1/processing/flush", headers=h, json={}).json()["ok"]
-    result = client.post("/v1/processing/flush", json={"session_id": "claude-code:a"}, headers=h).json()
-    assert result["ok"] and all(op["core_committed"] for op in result["operations"])
-
-    feed = client.get("/v1/stats", headers=h).json()["feed"]
-    assert feed["sessions"] == 2 and feed["conclusions"] == 0
-    assert feed["last_fed_at"] is not None and feed["last_fed_at_h"], feed
-
-    status = client.get("/v1/agent/status", headers=h).json()
-    assert status["feed"]["last_fed_at"] is not None and status["feed"]["sessions"] == 2
-
-    from mnemotrace.server import app as appmod
-    appmod.svc().llm = None
-    # 未挂 LLM 时请求提取：在写入前拒绝。
-    r = client.post("/v1/import", json={"consolidate": True, "sessions": [
-        {"session_id": "codex:c", "metadata": {"source": "agent_session"}, "messages": transcript}]},
-        headers=h).json()
-    assert r["detail"]["code"] == "llm_not_configured", r
-
-    # 从未被喂入的命名空间会如实上报
-    empty = client.get("/v1/stats", headers=hdr("never-fed")).json()["feed"]
-    assert empty == {"last_fed_at": None, "last_fed_at_h": None, "sessions": 0, "conclusions": 0}
-
-
 def test_memories_outcome_kind_and_revision_contract(client, product_service, product_scope):
     from mnemotrace.types import Fact
 
@@ -1038,8 +895,8 @@ def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, pro
     for lean in (True, False):
         for cutoff in ({"as_of": 200}, {"valid_at": 200}):
             recall(lean=lean, **cutoff)
-    assert memory.get_fact(fact.id).access_count == 0
+    assert memory.get_fact(fact.id).salience == 1.0
     assert recall(as_of=200, answer=True)["full_tokens"] == recall(valid_at=200, answer=True)["full_tokens"]
     assert recall(valid_at=200, answer=True)["full_tokens"] > 5
     assert recall(answer=True)["full_tokens"] > recall(valid_at=200, answer=True)["full_tokens"]
-    assert memory.get_fact(fact.id).access_count > 0
+    assert memory.get_fact(fact.id).salience > 1.0

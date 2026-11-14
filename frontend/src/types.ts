@@ -3,8 +3,6 @@ import type { Category, ProfileSection } from './generated/memory-contract'
 export type { Category, ProfileSection } from './generated/memory-contract'
 
 export type FactStatus = 'live' | 'superseded'
-export type FactSource = 'extracted' | 'user'
-
 export interface FactMetadata {
   categories: Category[]
 }
@@ -23,7 +21,6 @@ export interface MemoryFact extends FactMetadata {
   valid_at: string // 服务器生成的人类可读时间戳："YYYY-MM-DD HH:MM:SS"（北京时间，UTC+8）
   invalid_at: string | null
   status: FactStatus
-  source: FactSource
   supersedes: string[]
   sensitive: boolean
   salience: number
@@ -37,9 +34,10 @@ export interface MemoryFact extends FactMetadata {
 export interface MemoryEpisode {
   id: string
   date: string
-  session: string
+  session_id: string
   role: string
   coverage: { partial: boolean } | null
+  digest_coverage: { partial: boolean } | null
   content: string
   digest: string
 }
@@ -73,21 +71,13 @@ export interface MemoryStatsCounts {
 }
 
 /** 由服务器根据带来源标记的会话记录推导的摄入统计。 */
-export interface FeedStatus {
-  last_fed_at: number | null
-  last_fed_at_h: string | null
-  sessions: number
-  conclusions: number
-}
-
 export interface AgentStatus {
   ok: boolean
   space_id: string
   session_id: string | null
   mode: 'content_free_agent_status'
   focus: Focus
-  session: {
-    id: string | null
+  session_counts: {
     episodes: number
     extraction_failures?: number
     episodes_pending: number
@@ -97,7 +87,6 @@ export interface AgentStatus {
   storage: string
   embedder: string
   llm_configured: boolean
-  feed?: FeedStatus
   recommended_next_actions: string[]
   tools: {
     read_context: string
@@ -111,7 +100,7 @@ export interface AgentStatus {
 }
 
 export interface SessionIndexItem {
-  id: string
+  session_id: string
   episodes: number
   episodes_consolidated: number
   extraction_failures?: number
@@ -129,8 +118,7 @@ export interface SessionsIndex {
   ok: boolean
   space_id: string
   sessions: SessionIndexItem[]
-  page: Page<SessionIndexItem>
-  next_offset: number | null
+  sessions_page: Page<SessionIndexItem>
 }
 
 export interface MemoryDump {
@@ -143,10 +131,6 @@ export interface MemoryDump {
   episodes: MemoryEpisode[]
   facts_page?: Page<MemoryFact>
   episodes_page?: Page<MemoryEpisode>
-  next_offsets?: {
-    facts: number | null
-    episodes: number | null
-  }
 }
 
 export interface SessionReportFact {
@@ -155,7 +139,6 @@ export interface SessionReportFact {
   valid_at: string
   invalid_at: string | null
   status: FactStatus
-  source: FactSource
   // 脱敏占位条目不返回分类和对象类型。
   categories?: Category[]
   sensitive: boolean
@@ -324,8 +307,7 @@ export interface OperationResult {
   operation_id: string
   kind: 'extract' | 'digest' | 'profile'
   state: 'pending' | 'running' | 'retry_wait' | 'failed' | 'completed' | 'cancelled'
-  phase: 'queued' | 'generate' | 'embed' | 'commit' | 'compensate' | 'done'
-  stored_raw: boolean
+  phase: 'queued' | 'generate' | 'embed' | 'commit' | 'done'
   extraction_saved: boolean
   core_committed: boolean
   attempts: number

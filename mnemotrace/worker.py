@@ -82,7 +82,7 @@ def main(argv=None):
     try:
         llm = make_llm(name) if name else None
         embedder, model = configured_embedder()
-        config = Config.from_env()
+        config = Config()
         with (Database(DatabaseConfig.from_env()) as runtime,
               Database(DatabaseConfig.from_env('discovery'), purpose='discovery') as discovery):
             run_worker(discovery, runtime, config, llm, embedder, model,

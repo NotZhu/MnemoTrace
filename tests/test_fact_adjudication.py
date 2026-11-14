@@ -262,22 +262,6 @@ def test_oversized_history_comparison_discards_candidate_without_truncating_evid
     assert previous.invalid_at is None
 
 
-def test_snapshot_rejects_legacy_assertion_before_writing_sources_or_facts():
-    from dataclasses import asdict
-
-    restored = MemoryEngine()
-    snapshot = dict(
-        format_version=6,
-        facts=[asdict(fact('current', 'Paris', 10)),
-               dict(asdict(fact('legacy', 'Oslo', 20)), assertion_kind='assistant_suggestion')],
-        episodes=[dict(id='ep-1', content='Synthetic source', session_id='s', role='user', event_time=10)],
-    )
-    with pytest.raises(ValueError, match=r'facts\[1\]: unsupported field'):
-        restored.import_snapshot(snapshot)
-    assert restored._all_facts() == []
-    assert not restored.episodes_doc.values()
-
-
 def test_literal_case_conditions_and_subsecond_validity_survive_adjudication():
     first = fact('first', 'Ab1', 10.01, categories=['misc'])
     for new in (

@@ -3,9 +3,9 @@
   "clock": 1710368000.0,
   "config": {
     "top_k": 5,
-    "candidate_k": 24,
     "ann_candidates": false,
     "ann_pool": 200,
+    "postgres_candidate_limit": 200,
     "w_sem": 1.0,
     "w_lex": 0.6,
     "w_graph": 0.8,

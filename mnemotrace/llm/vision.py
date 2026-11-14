@@ -29,8 +29,7 @@ def caption_image(captioner: Any, image_ref: str, prompt: Optional[str] = None) 
 
 
 def image_refs(content: Any) -> list[str]:
-    """从 OpenAI 多模态 `content` 数组中抽取图片引用 —— 是只取文本的 `connectors.extract_text`
-    （会丢掉图片）的逆操作。每个引用都是可直接传给 caption_image 的 data:/http(s) URL。"""
+    """从 OpenAI 多模态 `content` 数组中抽取供 caption_image 使用的图片引用。"""
     refs: list[str] = []
     if isinstance(content, (list, tuple)):
         for part in content:

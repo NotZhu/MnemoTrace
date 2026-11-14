@@ -21,7 +21,7 @@ def test_http_fact_categories_survive_export_and_sensitivity_is_scoped(metadata_
     assert dump["facts"][0]["categories"] == ["food"]
     assert "categories_source" not in dump["facts_page"]["items"][0]
     snapshot = client.get("/v1/export", headers=headers).json()
-    assert snapshot["format_version"] == 6
+    assert snapshot["format_version"] == 7
     assert snapshot["facts"][0]["categories"] == ["food"]
     endpoint = f"/v1/facts/{fact.id}/sensitivity"
     denied = client.patch(endpoint, headers=hdr("synthetic-beta"), json={"sensitive": True})

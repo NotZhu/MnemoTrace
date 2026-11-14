@@ -33,8 +33,7 @@ SOURCE_FILES = (
     'tests/postgres/test_migrations.py', 'mnemotrace/retrieve/postgres.py',
     'mnemotrace/store/postgres/graph_reads.py', 'mnemotrace/store/postgres/lexical.py',
     'mnemotrace/store/postgres/maintenance.py',
-    'mnemotrace/store/postgres/retrieval.py', 'mnemotrace/store/postgres/sql/005_retrieval.sql',
-    'mnemotrace/store/postgres/sql/006_backup_constraints.sql',
+    'mnemotrace/store/postgres/retrieval.py', 'mnemotrace/store/postgres/sql/baseline.sql',
     'mnemotrace/consolidate/ontology.py', 'mnemotrace/store/postgres/ontology.py',
     'tests/postgres/ontology_fixtures.py',
 )

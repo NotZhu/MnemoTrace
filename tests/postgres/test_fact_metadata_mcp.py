@@ -64,9 +64,9 @@ async def test_categories_filter_is_forwarded_by_both_backends_and_applied_befor
                     "categories": ["food"], "limit": 1, "response_format": "json",
                 })
                 blocks = response[0] if isinstance(response, tuple) else response
-                page = json.loads(blocks[0].text)
-                assert page["total"] == 2 and page["count"] == 1 and page["has_more"]
-                assert "food" in page["facts"][0]["categories"]
+                page = json.loads(blocks[0].text)["facts_page"]
+                assert page["total"] == 2 and len(page["items"]) == 1 and page["has_more"]
+                assert "food" in page["items"][0]["categories"]
             finally:
                 server.set_backend(None)
         assert len(requests) == 2

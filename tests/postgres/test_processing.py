@@ -266,8 +266,8 @@ def test_interrupted_transaction_resumes_from_actual_checkpoint(processing, monk
     message = dialogue('interrupted')
     original = memory.dao._transaction
     interrupted = False
-    checkpoint = {'accept': 'record_commit_receipts', 'product': 'operation_products',
-                  'core': 'operation_receipts'}[stage]
+    checkpoint = {'accept': 'commit_receipts', 'product': 'operation_products',
+                  'core': 'commit_receipts'}[stage]
     operation_id = None
     if stage != 'accept':
         operation_id, = memory.remember_messages('chat', (message,))['operation_ids']
@@ -626,7 +626,6 @@ def test_final_receipt_includes_surviving_outputs_from_earlier_segments(processi
     assert memory.flush_processing('notes', timeout=5)['ok']
     receipt = memory.dao.receipt(operation_id)
     assert set(receipt.fact_ids) == early_facts
-
 
 
 @pytest.mark.parametrize("source_kind", ["dialogue", "note"])

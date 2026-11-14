@@ -67,11 +67,11 @@ def test_http_immediate_failure_retains_progress(product_service, product_client
     assert result.status_code == 503, result.text
     detail = result.json()["detail"]
     assert detail["code"] == "processing_incomplete" and detail["status"] == "timed_out"
-    assert detail["stored_raw"] and detail["episode_ids"] and "synthetic model failure" not in result.text
+    assert detail["episode_ids"] and "synthetic model failure" not in result.text
     operation_id, = detail["operation_ids"]
     saved = product_client.get(f"/v1/operations/{operation_id}", headers=headers,
                                params={"space_id": context.space_id}).json()
-    assert saved["stored_raw"] and not saved["core_committed"]
+    assert "stored_raw" not in saved and not saved["core_committed"]
 
 
 @pytest.mark.parametrize("path", ["/v1/remember", "/v1/chat/completions"])

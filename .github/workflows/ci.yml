@@ -21,11 +21,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.12", "3.15"]
     steps:
-      # test_buffered_replay_report resolves a historical runtime commit; a shallow
-      # clone cannot see it, so fetch full history for the Python regression job.
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -69,7 +65,7 @@ jobs:
       postgres:
         image: pgvector/pgvector:0.8.7-pg18-trixie@sha256:5895949dfcdf308eb0cd31c950c93c14895c77f33fbedfecf1fa511ab1d4bcd2
         env:
-          POSTGRES_PASSWORD: phase2-ci-only
+          POSTGRES_PASSWORD: postgres-ci-only
         ports:
           - 5432/tcp
         options: >-
@@ -84,15 +80,15 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: python -m pip install -e ".[dev,postgres,server,mcp]"
-      - run: python -m pytest tests/postgres tests/test_postgres_configuration.py --junitxml=.artifacts/storage-phase2/postgres.xml
+      - run: python -m pytest tests/postgres tests/test_postgres_configuration.py --junitxml=.artifacts/postgres/postgres.xml
         env:
-          MNEMOTRACE_TEST_POSTGRES_DSN: host=127.0.0.1 port=${{ job.services.postgres.ports['5432'] }} dbname=postgres user=postgres password=phase2-ci-only connect_timeout=5
+          MNEMOTRACE_TEST_POSTGRES_DSN: host=127.0.0.1 port=${{ job.services.postgres.ports['5432'] }} dbname=postgres user=postgres password=postgres-ci-only connect_timeout=5
         timeout-minutes: 10
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: postgres-linux-${{ matrix.python-version }}
-          path: .artifacts/storage-phase2/*.xml
+          path: .artifacts/postgres/*.xml
 
   postgres-windows:
     # Hosted jobs cannot share a Linux service's private network. A native PG18
@@ -122,11 +118,11 @@ jobs:
         with:
           repository: pgvector/pgvector
           ref: v0.8.7
-          path: .artifacts/storage-phase2/pgvector
+          path: .artifacts/postgres/pgvector
       - uses: ilammy/msvc-dev-cmd@v1
       - name: Build pgvector 0.8.7
         shell: pwsh
-        working-directory: .artifacts/storage-phase2/pgvector
+        working-directory: .artifacts/postgres/pgvector
         run: |
           nmake /F Makefile.win
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -135,28 +131,28 @@ jobs:
       - name: Start disposable native database
         shell: pwsh
         run: |
-          $dbData = Join-Path $env:RUNNER_TEMP 'mnemotrace-phase2-data'
-          $passwordFile = Join-Path $env:RUNNER_TEMP 'mnemotrace-phase2-password'
-          [System.IO.File]::WriteAllText($passwordFile, 'phase2-ci-only')
+          $dbData = Join-Path $env:RUNNER_TEMP 'mnemotrace-ci-postgres-data'
+          $passwordFile = Join-Path $env:RUNNER_TEMP 'mnemotrace-ci-postgres-password'
+          [System.IO.File]::WriteAllText($passwordFile, 'postgres-ci-only')
           & "$env:PGROOT\bin\initdb.exe" -D $dbData -U postgres -A scram-sha-256 --pwfile=$passwordFile --encoding=UTF8 --locale=C
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           & "$env:PGROOT\bin\pg_ctl.exe" -D $dbData -l "$dbData\server.log" -o '-h 127.0.0.1 -p 55432' -w start
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          "MNEMOTRACE_TEST_POSTGRES_DSN=host=127.0.0.1 port=55432 dbname=postgres user=postgres password=phase2-ci-only connect_timeout=5" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "MNEMOTRACE_TEST_POSTGRES_DSN=host=127.0.0.1 port=55432 dbname=postgres user=postgres password=postgres-ci-only connect_timeout=5" | Out-File -FilePath $env:GITHUB_ENV -Append
       - run: python -m pip install -e ".[dev,postgres,server,mcp]"
-      - run: python -m pytest tests/postgres tests/test_postgres_configuration.py --junitxml=.artifacts/storage-phase2/postgres.xml
+      - run: python -m pytest tests/postgres tests/test_postgres_configuration.py --junitxml=.artifacts/postgres/postgres.xml
         timeout-minutes: 10
       - name: Verify logical backup and restore with PostgreSQL 18 utilities
         if: matrix.python-version == '3.12'
         shell: pwsh
         run: |
           $env:MNEMOTRACE_TEST_POSTGRES_BIN = Join-Path $env:PGROOT 'bin'
-          python -m pytest tests/test_postgres_backup.py --junitxml=.artifacts/storage-phase2/backup.xml
+          python -m pytest tests/test_postgres_backup.py --junitxml=.artifacts/postgres/backup.xml
       - name: Stop disposable native database
         if: always()
         shell: pwsh
         run: |
-          $dbData = Join-Path $env:RUNNER_TEMP 'mnemotrace-phase2-data'
+          $dbData = Join-Path $env:RUNNER_TEMP 'mnemotrace-ci-postgres-data'
           if (Test-Path -LiteralPath "$dbData\postmaster.pid") {
             & "$env:PGROOT\bin\pg_ctl.exe" -D $dbData -m fast -w stop
           }
@@ -164,7 +160,7 @@ jobs:
         if: always()
         with:
           name: postgres-windows-${{ matrix.python-version }}
-          path: .artifacts/storage-phase2/*.xml
+          path: .artifacts/postgres/*.xml
 
   web:
     runs-on: ubuntu-latest

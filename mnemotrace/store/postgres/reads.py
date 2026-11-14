@@ -3,7 +3,7 @@ from dataclasses import fields
 import json
 
 from ...focus import selectors
-from ...util import name_key
+from ...util import fmt_date, name_key
 
 from ..contracts import FactQuery, FactState, RetrievalQuery, SpaceSettings
 from .errors import DataCorruption
@@ -73,16 +73,17 @@ class ReadView:
             return {}
         joins, join_params = source_digest_join()
         rows = self._sql.run(f"""SELECT r.id,r.user_id,r.session_id,r.role,r.event_time,r.ingested_at,
-            s.digest,r.metadata->>'date',s.digest_coverage
+            s.digest,s.digest_coverage
             FROM mnemotrace.sources r{joins}
             WHERE {ROW_SCOPE} AND r.id = ANY(%s) AND s.digest <> ''
                 AND s.content_version = r.content_version""",
             (*join_params, *self._sql.scope, list(source_ids))).fetchall()
         return {key: digest_evidence(id=key, user_id=user, session_id=session, role=role,
                                      event_time=event_time.timestamp() if event_time else None,
-                                     ingested_at=ingested_at.timestamp(), digest=text, date=date or '',
+                                     ingested_at=ingested_at.timestamp(), digest=text,
+                                     date=fmt_date(event_time.timestamp()) if event_time else '?',
                                      coverage=coverage)
-                for key, user, session, role, event_time, ingested_at, text, date, coverage in rows}
+                for key, user, session, role, event_time, ingested_at, text, coverage in rows}
 
     def visible_source_ids(self, ids):
         if not ids:
@@ -224,7 +225,7 @@ class ReadView:
         rows = self._sql.run("""WITH preceding AS (
             SELECT r.id, r.sequence, sum(octet_length(coalesce(nullif(s.digest, ''), r.content)))
                 OVER (ORDER BY r.sequence DESC) AS bytes,
-                bool_and(coalesce(s.processing_state = 'completed', false)
+                bool_and(r.consolidated
                     AND (r.extract,r.source_kind) IS NOT DISTINCT FROM (%s,%s))
                 OVER (ORDER BY r.sequence DESC) AS contiguous
             FROM mnemotrace.sources r LEFT JOIN mnemotrace.source_digests s
@@ -371,11 +372,6 @@ class ReadView:
             FROM mnemotrace.sources WHERE {' AND '.join(clauses)}""", args).fetchone()
         return row[0]
 
-    def agent_feed(self):
-        return self._sql.run(f"""SELECT extract(epoch FROM max(ingested_at))::float8, count(DISTINCT session_id)
-            FROM mnemotrace.sources WHERE {SCOPE} AND metadata->>'source' = 'agent_session'""",
-            self._sql.scope).fetchone()
-
     def time_range(self):
         sources = self._sql.run(f"""SELECT extract(epoch FROM min(event_time))::float8,
             extract(epoch FROM max(event_time))::float8 FROM mnemotrace.sources WHERE {SCOPE}""",
@@ -395,9 +391,8 @@ class ReadView:
         ended = self._count('facts r', ended_sql, ended_args)
         sensitive = self._count('facts r', ('r.sensitive',), ())
         _, outcomes = self.browse_facts(FactQuery(limit=1), outcomes=True, count_only=True, evaluation_at=at)
-        digest, consolidated = sql.run(f"""SELECT count(*) FILTER (WHERE digest <> ''),
-            count(*) FILTER (WHERE processing_state = 'completed')
-            FROM mnemotrace.source_digests WHERE {SCOPE}""", sql.scope).fetchone()
+        digest = self._count('source_digests r', ("r.digest <> ''",), ())
+        consolidated = self._count('sources r', ('r.consolidated',), ())
         pending, failures = sql.run("""SELECT
             count(DISTINCT p.source_id) FILTER (WHERE o.state IN ('pending','running','retry_wait')),
             count(DISTINCT p.source_id) FILTER (WHERE o.state = 'failed')
@@ -432,7 +427,7 @@ class ReadView:
     def session_index(self, *, text='', limit=100, offset=0, session_id=None):
         args = (*self._sql.scope, text.lower(), session_id, session_id)
         where = f'{ROW_SCOPE} AND strpos(lower(r.session_id), %s) > 0 AND (%s::text IS NULL OR r.session_id = %s)'
-        rows = self._sql.rows(f"""SELECT r.session_id AS id,
+        rows = self._sql.rows(f"""SELECT r.session_id,
             e.episodes, e.episodes_consolidated, e.episodes_pending, e.extraction_failures, e.digests,
             extract(epoch FROM e.first_event_at)::float8 AS first_event_at,
             extract(epoch FROM e.last_event_at)::float8 AS last_event_at,
@@ -440,7 +435,7 @@ class ReadView:
             FROM mnemotrace.sessions r
             CROSS JOIN LATERAL (
                 SELECT count(*) AS episodes,
-                    count(*) FILTER (WHERE ss.processing_state = 'completed') AS episodes_consolidated,
+                    count(*) FILTER (WHERE s.consolidated) AS episodes_consolidated,
                     count(*) FILTER (WHERE core.pending) AS episodes_pending,
                     count(*) FILTER (WHERE core.failed) AS extraction_failures,
                     count(*) FILTER (WHERE ss.digest <> '') AS digests,

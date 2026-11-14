@@ -9,7 +9,7 @@ from .config import Config
 from .consolidate.decay import reinforce
 from .retrieve import postgres as retrieval
 from .store.contracts import (
-    ChangeSet, CommitConditions, EmbeddingWrite, FactQuery, MessageInput, OperationKind,
+    ChangeSet, CommitConditions, FactQuery, MessageInput, OperationKind,
     RecordRef, RecordWrite, StoredRecord, validate_erasures,
 )
 from .store.postgres.dao import PostgresDAO, new_operation_id
@@ -70,16 +70,8 @@ class Memory:
     def _commit(self, snapshot, *, writes=(), **kwargs):
         return self.dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=writes, **kwargs))
 
-    def _embeddings(self, write, text):
-        if self._embedder is None:
-            return ()
-        vector = tuple(self._embedder.embed(text))
-        if len(vector) != self._embedder.dim:
-            raise ValueError('Embedding dimensions differ from the configured model')
-        return (EmbeddingWrite(write.ref, write.record.content_version, self._model, vector),)
-
     def remember_messages(self, session_id: str, messages: tuple[MessageInput, ...], *,
-                          processing='buffered', timeout=30, source_metadata=None):
+                          processing='buffered', timeout=30):
         """接收一段对话，并返回对应的来源 ID 和持久化操作的进度信息。
 
         Args:
@@ -87,7 +79,6 @@ class Memory:
             messages: 要记忆的消息输入记录。
             processing: 处理模式，可以是 'buffered' 或 'immediate'。默认为 'buffered'。
             timeout: 等待处理完成的超时时间（秒）。默认为 30 秒。
-            source_metadata: 可选的元数据字典，将与每条消息关联。默认为 None。
         """
         identifier(session_id)
         self._validate_processing(processing, timeout)
@@ -96,14 +87,13 @@ class Memory:
             raise ValueError('Expected a non-empty batch of MessageInput records')
         pipeline = self._processing
         receipt, associations = pipeline.tasks.accept(
-            session_id, items, pipeline.require_ready, pipeline.fit_message, immediate=processing == 'immediate',
-            source_metadata=source_metadata)
+            session_id, items, pipeline.require_ready, pipeline.fit_message, immediate=processing == 'immediate')
         operation_ids = tuple(dict.fromkeys(operation for _, operation in associations))
         by_source = defaultdict(list)
         for source_id, operation_id in associations:
             by_source[source_id].append(operation_id)
         result = self._accepted(operation_ids, processing, timeout)
-        result.update(source_ids=receipt.source_ids, accepted=receipt.affected_count,
+        result.update(source_ids=receipt.source_ids, stored_raw=True, accepted=receipt.affected_count,
                       messages=tuple(dict(message_id=item.message_id, episode_id=source_id,
                                           operation_ids=tuple(by_source.get(source_id, ())))
                                      for item, source_id in zip(items, receipt.source_ids)))
@@ -126,7 +116,7 @@ class Memory:
             return dict(ok=True, status='stored', stored_raw=True, source_ids=list(receipt.source_ids),
                         operation_ids=[], operations=[])
         result = self._accepted((operation_id,), processing, timeout)
-        result['source_ids'] = receipt.source_ids
+        result.update(source_ids=receipt.source_ids, stored_raw=True)
         if result['status'] == 'completed':
             committed = self.dao.receipt(operation_id)
             result['fact_ids'] = committed.fact_ids if committed is not None else ()
@@ -220,7 +210,7 @@ class Memory:
         writes = []
         for record in records:
             fact = domain(record)
-            reinforce(fact, self._config.access_boost)
+            reinforce(fact, self._config.access_boost, track_access=False)
             writes.append(self._write(fact, record))
         try:
             self._commit(snapshot, writes=tuple(writes))
@@ -244,9 +234,9 @@ class Memory:
         if facts is not None and as_of is not None:
             raise ValueError('Use either as_of or explicit fact conditions')
         facts = replace(facts, exclude_sensitive=facts.exclude_sensitive or redact_sensitive,
-                        limit=max(count, self._config.ann_pool)) if facts is not None else FactQuery(
+                        limit=max(count, self._config.postgres_candidate_limit)) if facts is not None else FactQuery(
                             valid_at=as_of, exclude_sensitive=redact_sensitive,
-                            limit=max(count, self._config.ann_pool))
+                            limit=max(count, self._config.postgres_candidate_limit))
         request = self._query(query, top_k=count, facts=facts)
         with self.dao.read_snapshot() as view:
             result = retrieval.context(view.focused(), request, self._config,

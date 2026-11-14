@@ -2,8 +2,6 @@
 通过非破坏性取代（supersession）实现知识更新、双时间轴 as-of 查询、multi-hop 图推理、拒答、
 用户归属隔离——全部在零依赖的离线环境运行。"""
 from __future__ import annotations
-from mnemotrace.connectors.dialogue import import_data
-import pytest
 
 from mnemotrace.config import Config
 from tests.model_fixtures import MemoryEngine, link_synthetic_facts
@@ -54,21 +52,6 @@ def test_same_time_contradictions_preserve_only_original_episode():
 
     assert not mem.fact_store.values()
     assert len(mem.episodes_doc.values()) == 1
-
-
-@pytest.mark.history_import
-def test_records_import_same_session_extracts_multiple_messages():
-    mem = MemoryEngine()
-    stats = import_data(mem, [
-        {"session_id": "career", "content": "Wei works at Tencent.", "event_time": BASE},
-        {"session_id": "career", "content": "Wei works at Moonshot AI.", "event_time": BASE + DAY},
-    ], format="records", user_id="u1", generate_digests=False)
-
-    assert stats["sessions"] == 1
-    assert stats["episodes"] == 2
-    assert stats["facts_added"] == 2
-    assert "tencent" in mem.as_of("Where do I work?", BASE + 1, user_id="u1").top().object.lower()
-    assert "moonshot" in mem.search("Where do I work?", user_id="u1").top().object.lower()
 
 
 def test_same_slot_identity_facts_remain_eligible_when_both_are_current():

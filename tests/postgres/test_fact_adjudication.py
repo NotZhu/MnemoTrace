@@ -120,7 +120,6 @@ def test_duplicate_evidence_keeps_labels_and_adds_provenance(runtime, spaces, us
 
 
 def test_discarded_candidate_is_absent_from_private_export(runtime, spaces, user):
-    from mnemotrace import MemoryEngine
     from mnemotrace.service import MemoryService
 
     context = spaces.authorize(user, spaces.create(user, 'Discarded candidate').space_id)
@@ -129,7 +128,6 @@ def test_discarded_candidate_is_absent_from_private_export(runtime, spaces, user
     manual = seed_fact(mem, 'Ana', 'lives_in', 'Paris', valid_at=10, text='Ana lives in Paris')
     assert mem.remember('Ana lives in Oslo', 'input', event_time=10)['status'] == 'completed'
     snapshot = service.export(context, include_sensitive=True)
-    assert snapshot['format_version'] == 6
+    assert snapshot['format_version'] == 7
     assert 'conflicts' not in snapshot
     assert [row['id'] for row in snapshot['facts']] == [manual.id]
-    assert MemoryEngine().import_snapshot(snapshot)['facts_restored'] == 1

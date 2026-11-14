@@ -23,13 +23,13 @@ def fact(conn, user, space, record_id='fact-1', **changes):
     from psycopg import sql
 
     fields = asdict(Fact('Synthetic user', 'likes', 'tea', id=record_id, text='Synthetic user likes tea'))
-    for key in ('embedding', 'provenance', 'user_id', 'subject_type', 'object_type', 'supersedes'):
+    for key in ('embedding', 'provenance', 'user_id', 'subject_type', 'object_type', 'supersedes', 'source', 'last_access', 'access_count'):
         fields.pop(key)
     predecessors = changes.pop("supersedes", ())
     fields.update(user_id=user, space_id=space, content_version=1, record_version=1, **changes)
     for key in ('subject', 'predicate', 'object'):
         fields[f'{key}_key'] = name_key(fields[key])
-    for key in ('valid_at', 'invalid_at', 'created_at', 'expired_at', 'last_access'):
+    for key in ('valid_at', 'invalid_at', 'created_at', 'expired_at'):
         if fields[key] is not None:
             fields[key] = datetime.fromtimestamp(fields[key], timezone.utc)
     conn.execute("INSERT INTO mnemotrace.relation_types "
@@ -49,8 +49,8 @@ def source(conn, user, space, record_id='source-1', message_id=None):
                  'ON CONFLICT DO NOTHING', (user, space, 'thread'))
     conn.execute(
         'INSERT INTO mnemotrace.sources(user_id,space_id,id,content,session_id,role,ingested_at,'
-        'source_kind,extract,message_id,sequence,message_fingerprint,metadata,record_version,content_version) '
-        "VALUES (%s,%s,%s,'Synthetic input','thread','user',now(),'dialogue',true,%s,0,%s,'{}',1,1)",
+        'source_kind,extract,message_id,sequence,message_fingerprint,record_version,content_version) '
+        "VALUES (%s,%s,%s,'Synthetic input','thread','user',now(),'dialogue',true,%s,0,%s,1,1)",
         (user, space, record_id, message_id, 'a' * 64 if message_id else None))
 
 
@@ -133,8 +133,8 @@ def test_task_sources_are_unique_and_cannot_cross_spaces(runtime, spaces, user):
         source(conn, user, a.space_id)
     with runtime.space_transaction(user, b.space_id) as (conn, _):
         conn.execute('INSERT INTO mnemotrace.operations(user_id,space_id,operation_id,kind,state,phase,attempts,'
-                     'embed_attempts,space_generation,stored_raw,extraction_saved,core_committed) '
-                     "VALUES (%s,%s,'operation-1','extract','pending','queued',0,0,0,true,false,false)",
+                     'embed_attempts,space_generation,extraction_saved,core_committed) '
+                     "VALUES (%s,%s,'operation-1','extract','pending','queued',0,0,0,false,false)",
                      (user, b.space_id))
     insert_link = ('INSERT INTO mnemotrace.operation_sources(user_id,space_id,operation_id,source_id,'
                    "content_version,input_order,is_context) VALUES (%s,%s,'operation-1','source-1',1,%s,%s)")

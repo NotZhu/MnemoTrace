@@ -11,12 +11,12 @@ from typing import Optional
 from ..types import Fact
 from ..util import DAY, now
 
-def reinforce(fact: Fact, boost: float, t: Optional[float] = None) -> None:
+def reinforce(fact: Fact, boost: float, t: Optional[float] = None, *, track_access: bool = True) -> None:
     """间隔重复式强化：访问记忆会提升其显著度并重置衰减时钟（MemoryBank 的间隔效应）。
     在 fact 被检索进答案上下文时调用。"""
-    t = now() if t is None else t
-    fact.access_count += 1
-    fact.last_access = t
+    if track_access:
+        fact.access_count += 1
+        fact.last_access = now() if t is None else t
     fact.salience += boost
 
 

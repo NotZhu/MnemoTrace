@@ -103,8 +103,8 @@ def run(pipeline, lease):
                     save(sql, state)
                     tasks._release(sql, row, "completed", phase="done", core_committed=True,
                                    extraction_saved=True)
-                    sql.insert("operation_receipts", dict(operation_id=lease.operation_id,
-                               core_revision=_space_row(sql)[0], fact_ids=[], completed_at=now),
+                    sql.insert("commit_receipts", dict(operation_id=lease.operation_id,
+                               core_revision=_space_row(sql)[0], fact_ids=[], source_ids=[], affected_count=0),
                                suffix="ON CONFLICT DO NOTHING")
                     return True
             updated = profile.generate(job, pipeline.config, pipeline.llm)

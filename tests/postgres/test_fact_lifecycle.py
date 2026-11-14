@@ -3,7 +3,6 @@ from dataclasses import replace
 
 import pytest
 
-from mnemotrace import MemoryEngine
 from mnemotrace.config import Config
 from mnemotrace.consolidate.adjudication import plan_merge
 from mnemotrace.consolidate.postgres_merge import build_record_write
@@ -119,7 +118,6 @@ def test_future_disjoint_unknown_and_duplicate(memory, runtime):
     assert {row['id']: row['status'] for row in snapshot['facts']} == {
         current.id: 'live', past.id: 'superseded', future.id: 'scheduled',
     }
-    assert MemoryEngine().import_snapshot(snapshot)['facts_restored'] == 3
 
     duplicate = replace(current, id='duplicate', provenance=[source(memory, 'corroboration')])
     ingest(memory, duplicate)

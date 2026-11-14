@@ -12,7 +12,7 @@ MnemoTrace（忆痕）为 LLM 智能体提供长期记忆，关注记忆正确�
 | 记忆模型与生命周期      | [types.py](mnemotrace/types.py)、[memory_engine.py](mnemotrace/memory_engine.py)、[consolidate/](mnemotrace/consolidate/)                  |
 | 检索、排序与上下文      | [retrieve/](mnemotrace/retrieve/)、[config.py](mnemotrace/config.py)                                                         |
 | 持久化、空间与服务      | [store/postgres/](mnemotrace/store/postgres/)、[memory.py](mnemotrace/memory.py)、[service.py](mnemotrace/service.py) |
-| HTTP、MCP 与数据导入    | [server/](mnemotrace/server/)、[mcp/](mnemotrace/mcp/)、[connectors/](mnemotrace/connectors/)、[ingest/](mnemotrace/ingest/) |
+| HTTP、MCP 与数据摄入    | [server/](mnemotrace/server/)、[mcp/](mnemotrace/mcp/)、[ingest/](mnemotrace/ingest/) |
 | 控制台与 TypeScript SDK | [frontend/](frontend/)、[clients/typescript/](clients/typescript/)                                                           |
 | 算法评测与结果检查      | [bench.py](eval/bench.py)、[report.py](eval/report.py)、[validate_results.py](eval/validate_results.py)                      |
 

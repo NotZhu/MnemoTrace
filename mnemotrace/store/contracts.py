@@ -71,7 +71,6 @@ class ProcessingPhase(str, Enum):
     GENERATE = 'generate'
     EMBED = 'embed'
     COMMIT = 'commit'
-    COMPENSATE = 'compensate'
     DONE = 'done'
 
 
@@ -381,8 +380,7 @@ class EmbeddingWrite:
         if not isinstance(self.record, RecordRef):
             raise ValueError('A scoped embedding target is required')
         _count(self.content_version, 1)
-        allowed = {RecordKind.SOURCE: {'digest'}, RecordKind.FACT: {'text'},
-                   RecordKind.ENTITY: {'text'}}
+        allowed = {RecordKind.SOURCE: {'digest'}, RecordKind.FACT: {'text'}}
         if self.field not in allowed.get(self.record.kind, set()):
             raise ValueError('Invalid embedding field for this record kind')
         RetrievalQuery(FactQuery(), '', self.vector, self.model)
@@ -629,7 +627,6 @@ class OperationResult:
     kind: OperationKind
     state: ProcessingState
     phase: ProcessingPhase
-    stored_raw: bool
     extraction_saved: bool
     core_committed: bool
     attempts: int = 0
@@ -645,10 +642,8 @@ class OperationResult:
         _count(self.attempts)
         _time(self.next_attempt_at)
         if any(type(value) is not bool for value in (
-                self.stored_raw, self.extraction_saved, self.core_committed)):
+                self.extraction_saved, self.core_committed)):
             raise ValueError('Persistence progress must use booleans')
-        if self.extraction_saved and not self.stored_raw or self.core_committed and not self.stored_raw:
-            raise ValueError('A result cannot precede its durable input')
         if self.kind == OperationKind.EXTRACT and self.core_committed and not self.extraction_saved:
             raise ValueError('Extraction completion requires a saved model product')
         if self.state == ProcessingState.COMPLETED and (not self.core_committed or self.phase != ProcessingPhase.DONE):

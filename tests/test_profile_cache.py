@@ -1,7 +1,6 @@
 """Explicit cached profiles share evidence, invalidation and recovery semantics."""
 from tests.model_fixtures import seed_timeline
 from copy import deepcopy
-from dataclasses import asdict
 import json
 from types import SimpleNamespace
 
@@ -10,7 +9,6 @@ import pytest
 from mnemotrace import MemoryEngine, Config
 from mnemotrace.llm import FakeLLM
 from mnemotrace.profile import empty, validate_output
-from mnemotrace.consolidate.pipeline import validate_state
 from mnemotrace.store.contracts import FactQuery, FactState, RetrievalQuery
 
 
@@ -138,7 +136,6 @@ def test_old_support_is_not_repeated_when_batched_refresh_resumes():
     memory.refresh_profile()
     assert run_one(memory, "default")
     assert state(memory, "default")["job"]["phase"] == "generate"
-    validate_state(memory._pipeline_state, memory.episodes_doc.values())
     restored = MemoryEngine(llm=FakeLLM(handler=summarize))
     for fact in memory._all_facts():
         restored.fact_store.upsert(fact.id, fact.embedding, deepcopy(fact))
@@ -216,7 +213,6 @@ def test_batch_checkpoint_resumes_after_restart():
     memory.refresh_profile()
     from mnemotrace._profile import run_one
     assert run_one(memory, "default")
-    validate_state(memory._pipeline_state, memory.episodes_doc.values())
     restored = MemoryEngine(config=memory.config, llm=FakeLLM(handler=compact))
     for fact in memory._all_facts():
         restored.fact_store.upsert(fact.id, fact.embedding, deepcopy(fact))
@@ -232,20 +228,6 @@ def test_missing_model_refresh_fails_before_creating_task():
     with pytest.raises(Exception, match="Configure an LLM"):
         memory.refresh_profile()
     assert memory._pipeline_state is None
-
-
-def test_v2_fact_import_without_model_starts_with_pending_profile():
-    source = MemoryEngine()
-    fact = source.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
-    memory = MemoryEngine()
-    result = memory.import_snapshot({"format_version": 6, "facts": [asdict(fact)], "episodes": []})
-    assert result["facts_restored"] == 1
-    assert memory.profile()["updated_at"] is None
-    assert memory.profile()["pending_fact_count"] == 1
-    assert memory.profile()["needs_refresh"]
-    memory.llm = model()
-    memory.refresh_profile()
-    assert finish(memory)["profile"]["basic"]
 
 
 def test_generation_concurrent_deletion_cannot_publish_obsolete_text():
@@ -335,18 +317,6 @@ def test_profile_filters_non_owner_and_sensitive_facts_and_counts_ids():
     assert entry["fact_ids"] == [fact.id] and entry["fact_count"] == 1
 
 
-def test_corrupted_profile_checkpoint_is_rejected():
-    memory = MemoryEngine(llm=model())
-    memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
-    memory.refresh_profile()
-    from mnemotrace._profile import run_one
-    assert run_one(memory, "default")
-    saved = deepcopy(memory._pipeline_state)
-    saved["profiles"]["default"]["job"]["offset"] = 9999
-    with pytest.raises(ValueError):
-        validate_state(saved, memory.episodes_doc.values())
-
-
 def test_new_profile_policy_reconsiders_previously_omitted_facts():
     memory = MemoryEngine(llm=FakeLLM(responses=[json.dumps(empty())]))
     fact = memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
@@ -390,30 +360,6 @@ def test_profile_entry_counts_distinct_facts():
     memory.refresh_profile()
     entry, = finish(memory)["profile"]["interests"]
     assert entry["fact_count"] == 2
-
-
-@pytest.mark.parametrize("corruption", ["availability", "fact_input", "entry_version", "operation"])
-def test_corrupted_profile_dependencies_and_operations_are_rejected(corruption):
-    memory = MemoryEngine(llm=model())
-    memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
-    memory.refresh_profile()
-    finish(memory)
-    memory.refresh_profile()
-    from mnemotrace._profile import run_one
-    assert run_one(memory, "default")
-    saved = deepcopy(memory._pipeline_state)
-    state = saved["profiles"]["default"]
-    key = next(iter(state["facts"]))
-    if corruption == "availability":
-        state["job"]["availability"][key] = "false"
-    elif corruption == "fact_input":
-        state["job"]["facts"][0]["text"] = "Changed without a revision"
-    elif corruption == "entry_version":
-        state["cache"]["basic"][0]["versions"][key] = "1"
-    else:
-        next(iter(state["operations"].values()))["sequence"] = False
-    with pytest.raises(ValueError):
-        validate_state(saved, memory.episodes_doc.values())
 
 
 def test_profile_flush_uses_remaining_message_timeout(monkeypatch):

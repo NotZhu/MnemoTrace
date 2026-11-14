@@ -14,8 +14,7 @@ def state(memory, user, *, create=False):
     if memory._pipeline_state is None:
         if not create:
             return profile.new_state()
-        from .consolidate.pipeline import VERSION
-        memory._pipeline_state = dict(version=VERSION, namespaces={}, profiles={})
+        memory._pipeline_state = dict(namespaces={}, profiles={})
     profiles = memory._pipeline_state["profiles"]
     if create:
         return profiles.setdefault(user, dict(profile.new_state(), operations={}))
@@ -45,7 +44,7 @@ def sync_settings(memory):
 def result(operation):
     return OperationResult(operation["operation_id"], OperationKind.PROFILE,
                            ProcessingState(operation["state"]), ProcessingPhase(operation["phase"]),
-                           True, operation["saved"], operation["state"] == "completed",
+                           operation["saved"], operation["state"] == "completed",
                            operation["attempts"], operation["next_attempt_at"], operation["error_code"])
 
 

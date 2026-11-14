@@ -1,12 +1,11 @@
 """Postgres consumers that previously exercised a filesystem-backed service."""
-from mnemotrace.connectors.dialogue import import_history
 import json
 
 import pytest
 
 from eval import seed_console
 from mnemotrace import quickstart
-from mnemotrace.llm import FakeLLM, providers
+from mnemotrace.llm import providers
 from tests.model_fixtures import RecordedLLM
 
 
@@ -54,29 +53,3 @@ def test_console_seed_creates_separate_spaces_and_maps_case_ids(
         assert memory.search('Where do I live?').top().object == city
     with pytest.raises(FileExistsError):
         seed_console.main(args)
-
-
-
-
-
-
-@pytest.mark.history_import
-def test_import_continues_after_one_session_extraction_fails(product_service, product_scope):
-    scope, _ = product_scope()
-    recorded = RecordedLLM()
-
-    def respond(prompt, system):
-        if 'Synthetic invalid output' in prompt:
-            return 'invalid'
-        return recorded.complete(prompt, system)
-
-    product_service.llm = FakeLLM(handler=respond)
-    sessions = [{'session_id': session, 'messages': [{'role': 'user', 'content': text}]}
-                for session, text in (('invalid', 'Synthetic invalid output'), ('valid', 'I live in Shenzhen.'))]
-    result = import_history(product_service, scope, sessions=sessions, consolidate=True)
-    assert result['failed'] == 1
-    failed, = result['failures']
-    assert failed['session_id'] == 'invalid' and failed['stored_raw']
-    memory = product_service.memory(scope)
-    assert len(memory.list_sources()) == 2
-    assert memory.search('Where do I live?').top().object == 'Shenzhen'

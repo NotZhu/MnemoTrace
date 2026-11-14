@@ -35,7 +35,7 @@ def main() -> None:
         embedder, embedding_model = configured_embedder(default='fastembed')
         with Database(DatabaseConfig.from_env()) as database:
             scope = Spaces(database).authorize(user_id, space_id)
-            memory = Memory(database, scope, config=Config.from_env(), llm=llm, embedder=embedder,
+            memory = Memory(database, scope, config=Config(), llm=llm, embedder=embedder,
                                     embedding_model=embedding_model)
             run_demo(memory)
     except EmbeddingUnavailable as exc:

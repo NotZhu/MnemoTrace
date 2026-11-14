@@ -144,10 +144,10 @@ export default function Conversations() {
             </div>
           </div>
           <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-3">
-            {status.data && !status.isError && (status.data.session.episodes_pending > 0 || status.data.consolidation_backlog) && (
+            {status.data && !status.isError && (status.data.session_counts.episodes_pending > 0 || status.data.consolidation_backlog) && (
               <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-ghost">
-                {status.data.session.episodes_pending > 0 && (
-                  <span className="text-brand-amber">{t.conversations.statusPending(status.data.session.episodes_pending)}</span>
+                {status.data.session_counts.episodes_pending > 0 && (
+                  <span className="text-brand-amber">{t.conversations.statusPending(status.data.session_counts.episodes_pending)}</span>
                 )}
                 {status.data.consolidation_backlog && (
                   <span className="inline-flex items-center gap-1 text-brand-amber">
@@ -181,9 +181,9 @@ export default function Conversations() {
           sessions.data.sessions.length ? (
             <ul className="grid gap-2 md:grid-cols-2">
               {sessions.data.sessions.map((s) => (
-                <li key={s.id} className="rounded-xl border border-line bg-ink-700/40 p-3">
-                  <div className="max-w-full truncate text-xs text-slate-200" title={s.id}>
-                    {t.conversations.sessionCardTitle(s.id)}
+                <li key={s.session_id} className="rounded-xl border border-line bg-ink-700/40 p-3">
+                  <div className="max-w-full truncate text-xs text-slate-200" title={s.session_id}>
+                    {t.conversations.sessionCardTitle(s.session_id)}
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-ghost">
                     <span>{t.conversations.sessionCardEpisodes(s.episodes)} · {t.conversations.sessionCardFacts(s.facts_added)}</span>
@@ -193,18 +193,18 @@ export default function Conversations() {
                   <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-[11px] text-ghost">
                     {s.last_event_at_h && <span className="whitespace-nowrap">{t.conversations.sessionCardLast(s.last_event_at_h)}</span>}
                     <div className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
-                      <button type="button" className={SESSION_ACTION_CLASS} title={t.conversations.auditSessionHint} onClick={() => showReport(s.id)}>
+                      <button type="button" className={SESSION_ACTION_CLASS} title={t.conversations.auditSessionHint} onClick={() => showReport(s.session_id)}>
                         {t.conversations.auditSession}
                       </button>
-                      <button type="button" className={SESSION_ACTION_CLASS} title={t.conversations.useSessionHint} onClick={() => chooseSession(s.id)}>
+                      <button type="button" className={SESSION_ACTION_CLASS} title={t.conversations.useSessionHint} onClick={() => chooseSession(s.session_id)}>
                         {t.conversations.useSession}
                       </button>
                       <button type="button" className={SESSION_ACTION_CLASS}
                         title={t.conversations.organizeSessionHint}
                         disabled={organizeSession.isPending}
-                        aria-busy={organizeSession.isPending && organizeSession.variables === s.id}
-                        onClick={() => finishSession(s.id)}>
-                        {organizeSession.isPending && organizeSession.variables === s.id ? t.conversations.closingSession : t.conversations.organizeSession}
+                        aria-busy={organizeSession.isPending && organizeSession.variables === s.session_id}
+                        onClick={() => finishSession(s.session_id)}>
+                        {organizeSession.isPending && organizeSession.variables === s.session_id ? t.conversations.closingSession : t.conversations.organizeSession}
                       </button>
                     </div>
                   </div>
@@ -232,7 +232,7 @@ export default function Conversations() {
                   <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px] text-ghost">
                     <span className="tabular-nums text-brand-cyan">{e.date}</span>
                     <span>{e.role === 'assistant' ? 'AI 回复' : e.role === 'user' ? '用户消息' : e.role}</span>
-                    <span className="inline-flex min-w-0 max-w-full whitespace-normal break-all rounded bg-ink-700/60 px-1.5 py-px">{e.session}</span>
+                    <span className="inline-flex min-w-0 max-w-full whitespace-normal break-all rounded bg-ink-700/60 px-1.5 py-px">{e.session_id}</span>
                   </div>
                   <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-200">
                     {isOpen || !long ? e.content : truncate(e.content, 320)}
@@ -248,7 +248,7 @@ export default function Conversations() {
                   {e.digest && (
                     <p className="mt-2 border-l-2 border-brand-violet/40 pl-3 text-xs leading-relaxed text-ghost">
                       {t.conversations.digestPrefix}
-                      {e.coverage?.partial && <span>（仅覆盖可见首尾）</span>}
+                      {e.digest_coverage?.partial && <span>（仅覆盖部分原文）</span>}
                       {e.digest}
                     </p>
                   )}

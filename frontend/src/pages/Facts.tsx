@@ -143,11 +143,6 @@ export default function Facts() {
                         <ShieldAlert className="h-3 w-3" /> {t.facts.sensitive}
                       </span>
                     )}
-                    {f.source === 'user' && (
-                      <span className="fact-blue-tag" title={t.facts.manualHint}>
-                        {t.facts.manualLabel}
-                      </span>
-                    )}
                     <CategoryBadges categories={f.categories} />
                     {f.invalid_at && <span>{t.facts.invalidAt(f.invalid_at)}</span>}
                   </div>
@@ -223,7 +218,7 @@ export default function Facts() {
                         <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-ghost">
                           <span className="shrink-0 text-brand-cyan">{e.date}</span>
                           <div className="ml-auto flex min-w-0 flex-wrap justify-end gap-2">
-                          <span aria-label={`${t.facts.sessionLabel}：${e.session}`} className="rounded-md bg-ink-700/60 px-2 py-0.5 font-mono text-xs">{e.session}</span>
+                          <span aria-label={`${t.facts.sessionLabel}：${e.session_id}`} className="rounded-md bg-ink-700/60 px-2 py-0.5 font-mono text-xs">{e.session_id}</span>
                           <span title={`${t.facts.relationLabel}：${sourceOf.predicate}`} aria-label={`${t.facts.relationLabel}：${sourceOf.predicate}`} className="rounded-md bg-ink-700/60 px-2 py-0.5 font-mono text-xs">{sourceOf.predicate}</span>
                           </div>
                         </div>

@@ -4,7 +4,7 @@ import pytest
 
 from mnemotrace import Config
 from tests.embedder_fixtures import MockEmbedder, product_embedder
-from tests.postgres.fact_fixtures import seed_fact, seed_note
+from tests.postgres.fact_fixtures import fact_embeddings, seed_fact, seed_note
 from mnemotrace.memory import Memory
 from mnemotrace.retrieve.hybrid import date_terms
 from mnemotrace.retrieve.lexical import bm25_scores
@@ -209,7 +209,7 @@ def test_limited_candidates_can_rank_both_published_facts_in_a_slot(memory):
     with memory.dao.read_snapshot() as view:
         snapshot = view.snapshot
     memory.dao.commit(ChangeSet(CommitConditions(snapshot), 'synthetic-competing-record', writes=(write,),
-                                embeddings=memory._embeddings(write, shadow.text)))
+                                embeddings=fact_embeddings(memory, write, shadow.text)))
     query = memory._query(shadow.text, top_k=1, facts=FactQuery(limit=1))
     with memory.dao.read_snapshot() as view:
         batch = view.candidates(query)
@@ -261,7 +261,7 @@ def test_search_returns_snapshot_result_when_access_reinforcement_conflicts(memo
 
         monkeypatch.setattr(memory, '_commit', interleaved_commit)
         assert memory.search('What does Ana like?').top().object == 'Clover'
-    assert memory.get_fact(fact.id).access_count == 1
+    assert memory.get_fact(fact.id).salience == 1.5
 
 
 def test_retrieval_ignores_old_text_vectors_after_edit(memory):
@@ -270,7 +270,7 @@ def test_retrieval_ignores_old_text_vectors_after_edit(memory):
         snapshot, stored = view.snapshot, view.get(RecordKind.FACT, old.id)
     edited = replace(old, object='Orion', text='Ana likes Orion')
     write = memory._write(edited, stored, text_changed=True)
-    memory._commit(snapshot, writes=(write,), embeddings=memory._embeddings(write, edited.text))
+    memory._commit(snapshot, writes=(write,), embeddings=fact_embeddings(memory, write, edited.text))
     request = memory._query('Clover', top_k=5)
     with memory.dao._transaction() as sql:
         sql.insert('embeddings', {
@@ -316,7 +316,6 @@ def test_digest_lexical_projection_follows_text_version(memory):
 def test_historical_retrieval_uses_latest_digest_for_eligible_event(memory, runtime):
     import json
 
-    from mnemotrace import MemoryEngine
     from mnemotrace.service import MemoryService
 
     source = seed_note(memory, 'Project Orchid original wording', 'chat', event_time=100)
@@ -342,17 +341,6 @@ def test_historical_retrieval_uses_latest_digest_for_eligible_event(memory, runt
     snapshot = json.loads(''.join(MemoryService(runtime).iter_export(memory.context, include_sensitive=True)))
     written_at = snapshot['episodes'][0]['digest_written_at']
     assert cutoffs[-1] <= written_at <= after_digest
-    restored = MemoryEngine()
-    restored.import_snapshot(snapshot)
-    assert not restored.retrieve_digests('Orchid', as_of=99)
-    assert restored.retrieve_digests('Orchid', as_of=100)[0].text == current.text
-
-    with memory.dao._transaction() as sql:
-        sql.update('source_digests', {'digest_written_at': None}, 'source_id = %s', (source.id,))
-    assert memory.retrieve_digests('Orchid', as_of=100).digests == (current,)
-    assert memory.retrieve_digests('Orchid').digests == (current,)
-
-
 def test_raw_writes_do_not_project_and_digest_vectors_can_recall(memory, runtime):
     from mnemotrace.store.contracts import MessageInput
 

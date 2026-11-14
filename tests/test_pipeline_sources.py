@@ -1,11 +1,10 @@
 """Public source processing invariants, using synthetic responses and a controlled worker."""
 import json
-from copy import deepcopy
 
 import pytest
 
 from mnemotrace import Config, MemoryEngine
-from mnemotrace.consolidate.pipeline import PipelineTasks, validate_state
+from mnemotrace.consolidate.pipeline import PipelineTasks
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from mnemotrace.llm import FakeLLM
 
@@ -36,34 +35,6 @@ def test_explicit_digest_preserves_unrequested_extraction_and_is_idempotent():
     assert PipelineTasks(mem, 'default').snapshot()['jobs'][0]['core'] == 'not_requested'
 
 
-@pytest.mark.parametrize('mutation', ['position', 'role', 'time', 'length', 'part_text', 'part_range', 'receipt_type', 'digest_receipt'])
-def test_restore_binds_coverage_and_digest_parts_to_the_committed_source(mutation):
-    mem = MemoryEngine(llm=FakeLLM(handler=respond))
-    ep = mem.add(LONG)
-    mem.consolidate([ep])
-    mem.generate_digests([ep])
-    state = deepcopy(mem._pipeline_state)
-    data = state['namespaces']['default']
-    row = data['sources'][ep.id]
-    win = next(iter(data['windows'].values()))
-    if mutation == 'digest_receipt':
-        row['digest_receipt'] = None
-    elif mutation == 'receipt_type':
-        row['commits'][0]['erased_sources'] = None
-    elif mutation == 'position':
-        row['position'] = 0
-    elif mutation.startswith('part_'):
-        part = row['parts'][0]
-        part['text' if mutation == 'part_text' else 'start'] = 'forged' if mutation == 'part_text' else 1
-    else:
-        from mnemotrace.consolidate.pipeline import content_hash
-        view = win['input']['pending'][0]
-        view[{'role': 'role', 'time': 'event_time', 'length': 'source_length'}[mutation]] = 'user' if mutation == 'role' else 42
-        win['input_hash'] = content_hash(win['input'])
-    with pytest.raises(ValueError):
-        validate_state(state, mem.episodes_doc.values())
-
-
 def test_adjudication_is_ledgered_before_core_commit():
     from tests.test_fact_adjudication import model_response
 
@@ -76,7 +47,6 @@ def test_adjudication_is_ledgered_before_core_commit():
     assert [entry['stage'] for entry in win['history'] if not entry['stage'].startswith('reset')] == [
         'generate', 'embed', 'adjudicate']
     assert win['state'] == 'completed' and win['core_saved']
-    validate_state(mem._pipeline_state, mem.episodes_doc.values())
 
 
 def test_explicit_dialogue_digest_has_its_own_cropped_proof():
@@ -190,20 +160,3 @@ def test_third_party_name_never_becomes_the_owner_identity(kind):
     facts = mem.fact_store.values()
     assert next(f for f in facts if f.predicate == 'owns').subject == '我'
     assert next(f for f in facts if f.predicate == 'name').subject == 'friend'
-
-
-@pytest.mark.parametrize('mutation', ['ranges', 'input_hash', 'policy'])
-def test_cropped_dialogue_coverage_must_match_its_commit_receipt(mutation):
-    mem = MemoryEngine(llm=FakeLLM(handler=respond), config=Config(extraction_max_input_bytes=6500))
-    accepted = mem.remember_messages([dict(message_id='a', role='user', content=LONG * 3)], 's')
-    assert mem.flush_messages()['ok']
-    ep = mem.episodes_doc.get(accepted['messages'][0]['episode_id'])
-    assert ep.coverage['partial']
-    if mutation == 'ranges':
-        ep.coverage.update(ranges=[[0, len(ep.content)]], partial=False, policy='full_message_v1')
-    elif mutation == 'input_hash':
-        ep.coverage['input_hash'] = '0' * 64
-    else:
-        ep.coverage['policy'] = 'full_source_v1'
-    with pytest.raises(ValueError):
-        validate_state(mem._pipeline_state, mem.episodes_doc.values())

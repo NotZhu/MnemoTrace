@@ -78,7 +78,7 @@ def test_http_space_and_operation_lifecycle(product, user, accounts, spaces):
     assert client.post('/v1/messages', json=payload).json()['operation_ids'] == [operation_id]
     operation_path = f'/v1/operations/{operation_id}'
     status = client.get(operation_path, params=scope).json()
-    assert status['stored_raw'] and not status['core_committed']
+    assert 'stored_raw' not in status and not status['core_committed']
     assert client.get(operation_path, params={'space_id': sibling}).status_code == 404
     assert client.get(f'/v1/episodes/{source_id}', params=scope).json()['agent_id'] == 'synthetic-agent'
     assert client.post(operation_path + '/retry', json=scope).json()['operation_id'] == operation_id
@@ -205,7 +205,7 @@ def test_chat_returns_operation_identity_after_acceptance(product, stream):
     assert metadata['remembered'] and metadata['operation_ids']
     for operation_id in metadata['operation_ids']:
         operation = service.memory(context).operation(operation_id)
-        assert operation.stored_raw and not operation.core_committed
+        assert not operation.core_committed
 
 
 def test_direct_and_proxy_mcp_and_cli_share_records(product, monkeypatch, capsys):
@@ -223,7 +223,8 @@ def test_direct_and_proxy_mcp_and_cli_share_records(product, monkeypatch, capsys
             result = await local.remember_messages(
                 [{'message_id': 'mcp-1', 'role': 'user', 'content': 'Synthetic preference'}], 'mcp-thread')
             operation_id, = result['operation_ids']
-            assert (await remote.operation(operation_id))['stored_raw']
+            status = await remote.operation(operation_id)
+            assert status['operation_id'] == operation_id and 'stored_raw' not in status
             assert (await remote.flush_processing('mcp-thread'))['ok']
             recalled = await local.recall('What is the synthetic archive access code?', lean=False)
             assert recalled['status'] == 'evidence_only' and any('Emerald' in fact for fact in recalled['facts'])

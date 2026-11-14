@@ -38,13 +38,12 @@ def _route(ep):
 
 
 def _row(ep, minimum):
-    digest_requested = ep.metadata.get('digest_requested', True)
     position = ep.coverage['ranges'][-1][1] if ep.coverage and ep.source_kind != 'dialogue' else 0
     # A raw source saved outside the pipeline can be queued later as a single-source window.
     sequence = 1 if ep.sequence is None else ep.sequence + 1
     return dict(sequence=sequence, source_kind=ep.source_kind, position=position,
-                digest='pending' if digest_requested and len(ep.content) >= minimum and not ep.digest else 'not_needed',
-                core='completed' if ep.consolidated else 'pending', digest_requested=digest_requested)
+                digest='pending' if len(ep.content) >= minimum and not ep.digest else 'not_needed',
+                core='completed' if ep.consolidated else 'pending', digest_requested=True)
 
 
 def _extract_input(episode):

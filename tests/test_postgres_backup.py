@@ -121,6 +121,7 @@ def test_full_logical_backup_and_worker_resume(tmp_path, backup_environment):
                 assert memory.get_episode(prior_fact.provenance[0]).content == 'Ada works at Synthetic Lab'
                 assert memory.graph_relations(prior_fact.id) == (prior_edge,)
                 assert memory.operation(complete).core_committed
+                assert memory.dao.receipt(complete).fact_ids == (prior_fact.id,)
                 assert memory.operation(pending).phase == 'embed'
                 with memory.dao._transaction(read_only=True) as sql:
                     context_sources = sql.run("""SELECT source_id FROM mnemotrace.operation_sources
@@ -132,6 +133,7 @@ def test_full_logical_backup_and_worker_resume(tmp_path, backup_environment):
                 assert resumed_profile._processing.run_next_stage(unfinished_profile.operation_id)
                 assert not resumed_profile._processing.llm.calls
                 assert memory.operation(unfinished_profile.operation_id).core_committed
+                assert memory.dao.receipt(unfinished_profile.operation_id) is not None
                 with memory.dao.read_snapshot() as view:
                     assert view.snapshot.core_revision == revision
                 assert prior_fact.id in {fact.id for fact in memory.search('Ada works Synthetic Lab').facts}
@@ -145,24 +147,22 @@ def test_full_logical_backup_and_worker_resume(tmp_path, backup_environment):
 def test_restored_prior_graph_schema_is_rejected(tmp_path, backup_environment, monkeypatch):
     dsn, bin_dir = backup_environment
     archive = tmp_path / 'previous-graph.dump'
-    current_scripts = migrations._scripts
+    current_scripts = migrations._baseline
 
     def prior_scripts(prefix):
-        scripts = current_scripts(prefix)
-        initial = scripts[0][0].replace(
-            '    normalized_name mnemotrace.identifier NOT NULL,',
-            '    normalized_name mnemotrace.identifier NOT NULL,\n    aliases text[] NOT NULL,',
-        ).replace('CHECK (format_version = 8)', 'CHECK (format_version = 6)')
-        return [(initial, sha256(initial.encode()).hexdigest()), *scripts[1:]]
+        text, _ = current_scripts(prefix)
+        text = text.replace('    normalized_name mnemotrace.identifier NOT NULL,',
+                            '    normalized_name mnemotrace.identifier NOT NULL,\n    aliases text[] NOT NULL,')
+        return text, sha256(text.encode()).hexdigest()
 
     with disposable_database_factory(dsn)(initialize=False) as source:
         with monkeypatch.context() as previous:
-            previous.setattr(migrations, '_scripts', prior_scripts)
+            previous.setattr(migrations, '_baseline', prior_scripts)
             migrations.migrate(source.migration)
         pg(bin_dir, 'pg_dump', source.bootstrap, '-Fc', '--file', archive)
         with restore_target(source) as target:
             check_restore_target(target.bootstrap)
             bootstrap_roles(target.bootstrap)
             pg(bin_dir, 'pg_restore', target.bootstrap, '--single-transaction', '--exit-on-error', archive)
-            with pytest.raises(SchemaMismatch, match='migration history is incompatible'):
+            with pytest.raises(SchemaMismatch, match='baseline is incompatible'):
                 Database(target.runtime).open()

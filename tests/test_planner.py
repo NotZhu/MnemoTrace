@@ -82,13 +82,9 @@ def test_backfilled_replacements_keep_previous_validity_boundaries():
     memory = MemoryEngine()
     for known, valid, value in ((100, 1, 'First'), (200, 800, 'Last'), (300, 400, 'Middle')):
         with patch('time.time', return_value=known):
-            seed_timeline(memory, 'Ana', 'works_at', value, valid_at=valid, text=' '.join(('Ana', 'works at', value)))
+            seed_timeline(memory, 'Ana', 'works_at', value, valid_at=valid, text=f'Ana works at {value}')
 
-    from dataclasses import asdict
-
-    restored = MemoryEngine()
-    restored.import_snapshot(dict(format_version=6, facts=[asdict(fact) for fact in memory.fact_store.values()], episodes=[]))
-    result = restored.aggregate_facts('works_at', facts=FactQuery(valid_at=600))
+    result = memory.aggregate_facts('works_at', facts=FactQuery(valid_at=600))
     assert [(fact.object, fact.invalid_at) for fact in result.facts] == [('Middle', 800)]
 
 

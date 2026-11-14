@@ -254,7 +254,7 @@ export class MnemoTraceClient {
     const params = new URLSearchParams()
     if (options.limit !== undefined) params.set('limit', String(options.limit))
     if (options.offset !== undefined) params.set('offset', String(options.offset))
-    const query = options.query ?? options.q
+    const query = options.query
     if (query !== undefined) params.set('q', query)
     const qs = params.toString()
     return this.request<SessionIndex>(`/v1/sessions${qs ? `?${qs}` : ''}`, {}, options.spaceId)
@@ -296,7 +296,7 @@ export class MnemoTraceClient {
     if (options.outcomeKind !== undefined) params.set('outcome_kind', options.outcomeKind)
     if (options.expectedRevision !== undefined) params.set('expected_revision', options.expectedRevision)
     if (options.evaluatedAt !== undefined) params.set('evaluated_at', String(options.evaluatedAt))
-    const query = options.query ?? options.q
+    const query = options.query
     if (query !== undefined) params.set('q', query)
     if (options.includeSensitive !== undefined) {
       params.set('include_sensitive', options.includeSensitive ? 'true' : 'false')

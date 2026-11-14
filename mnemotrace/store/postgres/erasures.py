@@ -14,19 +14,18 @@ def erase(sql, graph, refs):
         AND predecessor_id = ANY(%s)) AND NOT (id = ANY(%s))""",
         (*sql.scope, *sql.scope, fact_ids, fact_ids))
     graph.remove_fact_edges(fact_ids)
-    sql.delete('record_commit_receipts', 'segment_of IS NULL AND fact_ids && %s', (fact_ids,))
+    sql.delete('commit_receipts', 'segment_of IS NULL AND fact_ids && %s', (fact_ids,))
     # Preserve surviving segment outputs for the final receipt.
-    sql.run(f"""UPDATE mnemotrace.record_commit_receipts
+    sql.run(f"""UPDATE mnemotrace.commit_receipts
         SET fact_ids = ARRAY(SELECT id FROM unnest(fact_ids) AS ids(id) WHERE NOT (id = ANY(%s)))
         WHERE {SCOPE} AND segment_of IS NOT NULL AND fact_ids && %s""",
         (fact_ids, *sql.scope, fact_ids))
-    sql.delete('operation_receipts', 'fact_ids && %s', (fact_ids,))
     return sql.delete('facts', 'id = ANY(%s)', (fact_ids,)).rowcount
 
 
 def clear_space(sql):
     # Sources cascade from sessions; facts and entities are space-owned.
-    for table in ('profile_states', 'record_commit_receipts', 'operations', 'facts', 'sessions', 'entities', 'relation_types', 'entity_types'):
+    for table in ('profile_states', 'commit_receipts', 'operations', 'facts', 'sessions', 'entities', 'relation_types', 'entity_types'):
         sql.delete(table)
     sql.run(f'UPDATE mnemotrace.memory_spaces SET space_generation = space_generation + 1 WHERE {SCOPE}',
             sql.scope)

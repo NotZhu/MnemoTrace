@@ -96,7 +96,7 @@ Use the HTTP API directly for document uploads and slot clearing. For a dated no
 
 Public types are exported from [types.ts](https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/src/types.ts). Core results include RememberResult, RecallResult, SearchResult, Fact, MemoryDump, SessionIndex, SessionReport, MemoryExport, and chat completion types.
 
-`Category` defines the fixed label catalog. Fact results return `categories` and any linked entity IDs and types. Use `setFactSensitive(id, sensitive, { spaceId })` to change sharing. Structured exports carry `format_version: 6`.
+`Category` defines the fixed label catalog. Fact results return `categories` and any linked entity IDs and types. Use `setFactSensitive(id, sensitive, { spaceId })` to change sharing. Structured exports carry `format_version: 7`.
 
 `CATEGORIES` and `PROFILE_SECTIONS` export the ordered catalogs as readonly tuples. Their `Category` and `ProfileSection` types are generated from the Python definitions.
 

@@ -225,8 +225,8 @@ test('agentStatus calls the content-free agent status endpoint', async () => {
       session_id: 'codex:repo/thread 1',
       mode: 'content_free_agent_status',
       focus: { track: [], mute: [] },
-      session: {
-        id: 'codex:repo/thread 1',
+      session_counts: {
+        extraction_failures: 0,
         episodes: 0,
         episodes_pending: 0,
       },
@@ -241,7 +241,6 @@ test('agentStatus calls the content-free agent status endpoint', async () => {
       tools: {
         read_context: 'mnemotrace_recall',
         write_memory: 'mnemotrace_remember',
-        close_session: 'mnemotrace_close_session',
         inspect_facts: 'mnemotrace_list_facts',
         set_fact_sensitive: 'mnemotrace_set_fact_sensitive',
         delete_fact: 'mnemotrace_delete_fact',
@@ -321,7 +320,7 @@ test('sessions calls the content-free cross-agent session index endpoint', async
       user: 'sdk-user',
       sessions: [
         {
-          id: 'claude-code:repo/thread 2',
+          session_id: 'claude-code:repo/thread 2',
           episodes: 2,
           episodes_consolidated: 2,
           episodes_pending: 0,
@@ -334,7 +333,7 @@ test('sessions calls the content-free cross-agent session index endpoint', async
           last_event_at_h: '2026-06-27 11:00:00',
         },
       ],
-      page: {
+      sessions_page: {
         offset: 4,
         limit: 2,
         total: 7,
@@ -342,7 +341,6 @@ test('sessions calls the content-free cross-agent session index endpoint', async
         has_more: true,
         items: [],
       },
-      next_offset: 6,
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -361,8 +359,8 @@ test('sessions calls the content-free cross-agent session index endpoint', async
   assert.equal(calls[0].init.method, undefined)
   assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test')
   assert.equal(calls[0].init.headers['Content-Type'], undefined)
-  assert.equal(index.sessions[0].id, 'claude-code:repo/thread 2')
-  assert.equal(index.page.next_offset, 6)
+  assert.equal(index.sessions[0].session_id, 'claude-code:repo/thread 2')
+  assert.equal(index.sessions_page.next_offset, 6)
 })
 
 test('memories supports paging search and share-safe filtering for owner UIs', async () => {
@@ -388,7 +386,6 @@ test('memories supports paging search and share-safe filtering for owner UIs', a
           valid_at: '2026-06-27',
           invalid_at: null,
           status: 'live',
-          source: 'user',
           supersedes: null,
           categories: ['professional_details'],
           sensitive: false,
@@ -413,7 +410,6 @@ test('memories supports paging search and share-safe filtering for owner UIs', a
         has_more: false,
         items: [],
       },
-      next_offsets: { facts: 6, episodes: null },
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -569,9 +565,9 @@ test('queries and retries the same scoped operation ID', async () => {
   const requests = []
   const client = new MnemoTraceClient({ fetch: async (url, init) => {
     requests.push({ url: new URL(url), body: init.body && JSON.parse(init.body) })
-    return Response.json({ operation_id: 'synthetic-op', core_committed: false, stored_raw: true })
+    return Response.json({ operation_id: 'synthetic-op', core_committed: false })
   } })
-  assert.equal((await client.getOperation('synthetic-op', space)).stored_raw, true)
+  assert.equal((await client.getOperation('synthetic-op', space)).core_committed, false)
   assert.equal((await client.retryOperation('synthetic-op', space)).operation_id, 'synthetic-op')
   assert.equal(requests[0].url.searchParams.get('space_id'), space.spaceId)
   assert.equal(requests[1].url.pathname, '/v1/operations/synthetic-op/retry')

@@ -82,7 +82,7 @@ def main(argv=None):
     end = args.offset + args.limit if args.limit else None
     output = args.out.expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
-    config = Config.from_env()
+    config = Config()
     with output.open("x", encoding="utf-8") as manifest:
         with Database(DatabaseConfig.from_env()) as database:
             spaces = Spaces(database)

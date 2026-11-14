@@ -24,7 +24,7 @@ function setup(resource = 'memories', options = {keepPreviousData:true}) {
   }})
   const hooks = moduleData.exports
   const client = new reactQuery.QueryClient({defaultOptions:{queries:{staleTime:Infinity,retry:false,gcTime:0}}})
-  const data=resource==='sessions'?{sessions:[{id:'synthetic-session'}]}:{facts:[{id:'synthetic-fact'}],episodes:[]}
+  const data=resource==='sessions'?{sessions:[{session_id:'synthetic-session'}]}:{facts:[{id:'synthetic-fact'}],episodes:[]}
   const initial=resource==='sessions'?{limit:12,q:'before'}:{kind:'outcomes',q:'before'}
   client.setQueryData(hooks.qk[resource](initial),data)
   const hook=resource==='sessions'?hooks.useSessions:hooks.useMemories
@@ -71,7 +71,7 @@ test('会话搜索请求期间保留列表，结果到达后替换列表',()=>{
     assert.equal(s.observer.getCurrentResult().data,s.data)
     assert.equal(s.observer.getCurrentResult().isLoading,false)
     assert.equal(s.observer.getCurrentResult().isFetching,true)
-    const updated={sessions:[{id:'synthetic-match'}]}
+    const updated={sessions:[{session_id:'synthetic-match'}]}
     s.client.setQueryData(s.hooks.qk.sessions(next),updated)
     assert.equal(s.observer.getCurrentResult().data,updated)
     assert.equal(s.observer.getCurrentResult().isPlaceholderData,false)

@@ -41,13 +41,12 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 
 直接使用 MemoryEngine 只在进程内维护算法状态。产品调用使用 Memory 或 HTTP。
 
-## 离线写入与导入
+## 离线写入
 
 对话使用 `MemoryEngine.remember_messages(messages, session_id, user_id="default", extract=True)`。
 每条消息包含 message_id、role、content 和可选 event_time，角色限定为 user/assistant。返回每条事件 ID、持久化顺序和处理状态；相同 ID 的冲突输入报 MessageConflictError。
 内存算法入口可记录原文，并通过 `MemoryEngine.flush_messages` 驱动固定模型或配置的 LLM。持久写入及恢复由 Postgres 入口提供。
 
-通用 transcript 仅在明确标出 `user` 或 `assistant` 时作为对话导入，其他文本保留原文。时间接受 epoch 秒、明确标注单位的数值或带时区的时间。
 
 来源时间缺失保持未知，消息重试复用相同 ID。
 文档和下述原文 API 保留独立契约；`consolidate()` 不会绕过联合任务处理对话消息。
@@ -58,9 +57,7 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 | `remember` | content；user_id、session_id、extract=True | dict；保存原文并记录抽取意图，事实仍需显式整合 |
 | `consolidate` | episodes=None | 计数字典；None 处理 pending 事件 |
 | `consolidate_full` | fact_episodes=None、digest_episodes=None | 计数字典，含事实整合统计和新增摘要数，可分别指定两组事件 |
-| `import_snapshot` | snapshot、user_id、dedupe=True | dict；导入结构化导出，不等同于打开存储目录 |
 
-结构化快照要求 `format_version=6`。导入先整批校验，遇到无效数据时抛出 `ValueError`。导入保留目标用户的运行设置；字段、来源编号和替代链语义见[结构化快照导入](../architecture/memory.md#结构化快照导入)。
 
 `extract=True` 请求事实抽取，`extract=False` 只保存原文。仅执行请求不生成任务记忆；明确陈述的决定、计划和时间化事实保留其条件与时间。底层 remember 保存原文，随后通过 consolidate 推进抽取。
 
@@ -82,9 +79,9 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 
 SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answer()` 返回已生成答案或最高事实的 object/text；拒答时返回固定提示。`top()` 返回首条 Fact 或 None。它不是对任何问题都调用外部模型的通用聊天接口。
 
-`as_of`、时间字段使用 epoch 秒。查询需要沿用正确的 user_id；recall 和上下文组装不接收 session_id；会话标识用于写入、浏览和处理刷新。Python `graph_data()` 默认包含敏感事实支持的关系，与 HTTP 的安全视图默认值不同。图谱由通过审核、引用两个实体且符合端点类型约束的事实投影。名称用于查找，实体身份由 ID 区分。
+`as_of`、时间字段使用 epoch 秒。查询需要沿用正确的 user_id；recall 和上下文组装不接收 session_id；会话标识用于写入、浏览和处理刷新。Python `graph_data()` 默认包含敏感事实支持的关系，与 HTTP 的安全视图默认值不同。图谱由引用两个实体且符合端点类型约束的事实投影。名称用于查找，实体身份由 ID 区分。
 
-## 离线事实、工作状态与策略
+## 离线事实与策略
 
 | 方法 | 用途 |
 | --- | --- |
@@ -103,7 +100,7 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 
 ## 离线扩展与研究入口
 
-摘要和派生层操作还包括 `generate_digests`、`retrieve_digests`；热层管理包括 `evict_cold`、`apply_focus`。这些方法改变派生状态或工作集，调用方负责后续保存及必要验证。
+摘要和派生层操作还包括 `generate_digests`、`retrieve_digests`；热层管理包括 `evict_cold`、`apply_focus`。这些方法改变派生状态或工作集。
 
 精确签名、类型和行为以 [MemoryEngine](../../mnemotrace/memory_engine.py)、[记录类型](../../mnemotrace/types.py) 和对应[测试](../../tests/)为核对来源。HTTP/MCP 的方法、默认值及能力不与嵌入式 API 一一对应。
 
@@ -117,9 +114,9 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 
 抽取模型输出 `{"facts": [...], "digests": [...]}`。facts 包含主体、关系、取值、正文、来源及时间/类别/敏感性/生命周期标签；digests 每项包含 source_id 和 text，按请求中的 digest_required 为来源生成摘要。两个数组均为必需。具体字段和严格校验见 [planning.py](../../mnemotrace/consolidate/planning.py)。自定义 extract_system 必须遵循该协议。
 
-离线 `MemoryEngine.consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实和工作条目。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，已完成的窗口范围保留，未完成范围继续待处理；重试跳过完成范围并消解重复事实和工作条目。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
+离线 `MemoryEngine.consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，已完成的窗口范围保留，未完成范围继续待处理；重试跳过完成范围并消解重复事实。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
 
-对话写入使用消息身份和联合任务，同 ID 的重传复用处理结果。结构化快照使用独立的恢复契约。显式摘要与 include_digests 仍通过同一任务内核，并保留既有摘要。
+对话写入使用消息身份和联合任务，同 ID 的重传复用处理结果。显式摘要与 include_digests 仍通过同一任务内核，并保留既有摘要。
 
 离线抽取异常包括 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError、ExtractionConflictError。未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated；同一命名空间的并发写作废在途抽取时抛 ExtractionConflictError（code 为 extraction_conflict），内核会先基于新快照自动重试一次。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。Postgres 已接收任务的进度和错误从操作回执读取。
 
@@ -131,7 +128,7 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 Postgres 核心操作通过 `auxiliary_operation_ids` 关联独立的摘要任务。调用 `flush_processing(include_digests=True)` 可把符合条件的摘要纳入本次处理范围，`retry_failed=True` 重试范围内的失败操作。摘要失败时保留已提交的事实和原文。
 
 来源检索和聚合回退只使用摘要，自动上下文只包含事实和摘要。通过 get_episode 显式读取来源 ID 对应的原文。
-私有快照导出保留摘要的 `digest_written_at` 供追溯。历史摘要检索按原始来源的事件时间筛选，使用当前保存的摘要。
+私有 JSON 导出保留摘要的 `digest_written_at` 供追溯。历史摘要检索按原始来源的事件时间筛选，使用当前保存的摘要。
 Fact 仍从原文抽取且独立检索；历史事件摘要不追加后续事实。空间所有者可浏览和导出原文。
 
 使用 `memory.aggregate_facts("visited", operation="count_distinct")` 统计不同对象，使用 `memory.follow_path("user", ["sister", "works_at"])` 获取路径和支持事实。两者可通过 `FactQuery` 设置有效时间、认知时间、事实状态和脱敏条件。

@@ -135,7 +135,8 @@ def test_render_codex_setup_contains_lifecycle_and_config():
     assert "[mcp_servers.mnemotrace]" in out
     assert 'command = "/opt/mnemotrace/bin/python"' in out
     assert "--api-url" in out and "--api-key" in out
-    assert "mnemotrace_recall" in out
+    assert "mnemotrace_recall with a relevant query" in out
+    assert "mnemotrace_recall with session_id" not in out
     assert "mnemotrace_remember" in out
     assert "mnemotrace_flush_processing" in out
     assert "mnemotrace_remember" in out and "mnemotrace_update_fact" not in out

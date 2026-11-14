@@ -9,8 +9,8 @@ import math
 from .database import DatabaseConfig, database_errors, driver
 from .errors import DatabaseConfigurationError, SchemaMismatch
 
-MIGRATIONS = ('001_initial.sql', '002_security.sql', '003_record_commits.sql',
-              '004_processing.sql', '005_retrieval.sql', '006_backup_constraints.sql')
+BASELINE = 'postgres-v1'
+BASELINE_SQL = 'baseline.sql'
 
 
 def _roles(prefix):
@@ -145,18 +145,15 @@ def check_restore_target(config: DatabaseConfig) -> None:
             raise DatabaseConfigurationError('Restore target must be a new empty database')
 
 
-def _scripts(prefix):
+def _baseline(prefix):
     psycopg, _ = driver()
-    scripts = []
-    for name in MIGRATIONS:
-        try:
-            text = files(__package__).joinpath('sql', name).read_text(encoding='utf-8')
-        except (OSError, UnicodeError) as exc:
-            raise SchemaMismatch('Installed database migration resources are unreadable') from exc
-        for marker, role in _roles(prefix).items():
-            text = text.replace('{' + marker + '}', psycopg.sql.Identifier(role).as_string())
-        scripts.append((text, hashlib.sha256(text.encode()).hexdigest()))
-    return scripts
+    try:
+        text = files(__package__).joinpath('sql', BASELINE_SQL).read_text(encoding='utf-8')
+    except (OSError, UnicodeError) as exc:
+        raise SchemaMismatch('Installed database baseline is unreadable') from exc
+    for marker, role in _roles(prefix).items():
+        text = text.replace('{' + marker + '}', psycopg.sql.Identifier(role).as_string())
+    return text, hashlib.sha256(text.encode()).hexdigest()
 
 
 def structure_hash(conn) -> str:
@@ -230,20 +227,18 @@ def check_role(conn, prefix, purpose):
 
 
 def check_schema(conn, prefix):
-    scripts = _scripts(prefix)
+    _, checksum = _baseline(prefix)
     try:
         rows = conn.execute(
-            'SELECT version,checksum,role_prefix,structure_hash FROM '
-            'mnemotrace.schema_migrations ORDER BY version').fetchall()
+            'SELECT baseline,checksum,role_prefix,structure_hash FROM mnemotrace.schema_baseline').fetchall()
         extension = conn.execute("SELECT extversion FROM pg_extension WHERE extname='vector'").fetchone()
         if conn.info.server_version // 10000 != 18 or extension != ('0.8.7',):
             raise SchemaMismatch('Unsupported PostgreSQL or vector extension version')
-        if len(rows) != len(scripts) or any(row[:3] != (i, checksum, prefix)
-                                           for i, (row, (_, checksum)) in enumerate(zip(rows, scripts), 1)):
-            raise SchemaMismatch('Schema migration history is incompatible')
-        if rows[-1][3] != structure_hash(conn):
-            raise SchemaMismatch('Database structure differs from the applied migrations')
-        return len(rows)
+        if len(rows) != 1 or rows[0][:3] != (BASELINE, checksum, prefix):
+            raise SchemaMismatch('Database baseline is incompatible')
+        if rows[0][3] != structure_hash(conn):
+            raise SchemaMismatch('Database structure differs from the baseline')
+        return BASELINE
     except (driver()[0].OperationalError, driver()[0].InterfaceError):
         raise
     except driver()[0].Error as exc:
@@ -265,9 +260,9 @@ def migrate(config: DatabaseConfig) -> None:
         if existing is not None:
             check_schema(conn, config.role_prefix)
             return
-        for version, (text, checksum) in enumerate(_scripts(config.role_prefix), 1):
-            conn.execute(text, prepare=False)
-            conn.execute(
-                'INSERT INTO mnemotrace.schema_migrations(version,checksum,role_prefix,structure_hash) '
-                'VALUES (%s,%s,%s,%s)', (version, checksum, config.role_prefix, structure_hash(conn)))
+        text, checksum = _baseline(config.role_prefix)
+        conn.execute(text, prepare=False)
+        conn.execute(
+            'INSERT INTO mnemotrace.schema_baseline(baseline,checksum,role_prefix,structure_hash) '
+            'VALUES (%s,%s,%s,%s)', (BASELINE, checksum, config.role_prefix, structure_hash(conn)))
         check_schema(conn, config.role_prefix)

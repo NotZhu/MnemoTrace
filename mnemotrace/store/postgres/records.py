@@ -15,12 +15,12 @@ MODELS = dict(zip(RecordKind, (Episode, Fact, Entity, Relation, RelationType, En
 TABLES = dict(zip(RecordKind, (
     'sources', 'facts', 'entities', 'graph_relations', 'relation_types', 'entity_types',
 ), strict=True))
-TARGET_COLUMNS = {SOURCE: 'source_id', FACT: 'fact_id', ENTITY: 'entity_id'}
+TARGET_COLUMNS = {SOURCE: 'source_id', FACT: 'fact_id'}
 TIMES = frozenset(('event_time', 'ingested_at', 'created_at', 'valid_at', 'invalid_at',
-                   'expired_at', 'last_access', 'expires_at', 'digest_written_at'))
+                   'expired_at', 'last_access', 'digest_written_at'))
 SCOPE = 'user_id = %s AND space_id = %s'
 ROW_SCOPE = 'r.user_id = %s AND r.space_id = %s'
-JSON_COLUMNS = {'profile_data', 'metadata', 'coverage', 'digest_coverage', 'settings',
+JSON_COLUMNS = {'profile_data', 'coverage', 'digest_coverage', 'settings',
                 'input', 'result', 'source_versions', 'endpoint_types'}
 
 
@@ -46,17 +46,23 @@ def unpack(context, kind, row):
         if (kind == SOURCE and row['digest_content_version'] is not None
                 and row['digest_content_version'] != row['content_version']):
             raise ValueError('Source digest refers to an obsolete content version')
+        defaults = {}
+        if kind == FACT:
+            defaults = {'source': 'extracted', 'last_access': row['created_at'], 'access_count': 0}
+        elif kind == SOURCE:
+            defaults = {'metadata': {}}
         for field in fields(MODELS[kind]):
             key = field.name
-            value = row[key]
+            value = defaults[key] if key in defaults else row[key]
             if key in TIMES and value is not None:
                 value = value.timestamp()
             values[key] = value
         return StoredRecord(
-            RecordRef(context, kind, row['id']), row.get('content_version', 1),
+            RecordRef(context, kind, row['id']), 1 if kind == RELATION else row['content_version'],
             json.dumps(values, ensure_ascii=False, allow_nan=False),
-            row.get('agent_id'), row.get('record_version', row.get('projection_version', 1)),
-            row.get('digest_version'),
+            row['agent_id'] if kind == SOURCE else None,
+            row['projection_version' if kind == RELATION else 'record_version'],
+            row['digest_version'] if kind == SOURCE else None,
         )
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         raise DataCorruption('Invalid stored domain record') from exc
@@ -66,9 +72,10 @@ def columns(record, values):
     kind = record.ref.kind
     excluded = {'id', 'user_id', 'embedding'}
     if kind == SOURCE:
-        excluded.update(('digest', 'digest_embedding', 'coverage', 'digest_coverage', 'consolidated', 'digest_written_at'))
+        excluded.update(('digest', 'digest_embedding', 'digest_coverage', 'digest_written_at', 'metadata'))
     if kind == FACT:
-        excluded.update(('provenance', 'supersedes', 'subject_type', 'object_type'))
+        excluded.update(('provenance', 'supersedes', 'subject_type', 'object_type',
+                         'source', 'last_access', 'access_count'))
     data = {key: timestamp(value) if key in TIMES else value
             for key, value in values.items() if key not in excluded}
     if kind == RELATION:
@@ -142,9 +149,8 @@ class ScopedSQL:
                 LEFT JOIN mnemotrace.entities right_entity
                 ON (right_entity.user_id,right_entity.space_id,right_entity.id) = (r.user_id,r.space_id,r.object_id)"""
         elif kind == SOURCE:
-            extra += """, coalesce(s.digest, '') AS digest, s.coverage, s.digest_coverage,
+            extra += """, coalesce(s.digest, '') AS digest, s.digest_coverage,
                 CASE WHEN s.digest <> '' THEN s.digest_version END AS digest_version,
-                coalesce(s.processing_state = 'completed', false) AS consolidated,
                 s.content_version AS digest_content_version, s.digest_written_at, NULL AS digest_embedding"""
             joins, join_params = source_digest_join()
         where = ' AND '.join((ROW_SCOPE, *conditions))

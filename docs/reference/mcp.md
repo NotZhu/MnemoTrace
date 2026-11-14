@@ -24,9 +24,9 @@
 | `mnemotrace_agent_status` | session_id 可选、response_format | 不含正文的接线与状态 |
 | `mnemotrace_recall` | query 必填；max_digests=20（0–50）、answer=false、as_of、redact_sensitive=false、response_format | 返回相关上下文，JSON 含 context、context_sections、tokens_est 等 |
 | `mnemotrace_search` | query 必填；subject、predicate、as_of、redact_sensitive=false、response_format | 返回候选证据或显式槽位的唯一值 |
-| `mnemotrace_list_sessions` | limit=20（1–100）、offset=0、q=""、response_format | 不含正文的会话索引 |
+| `mnemotrace_list_sessions` | limit=20（1–100）、offset=0、q=""、response_format | 不含正文的会话索引。JSON 后续页使用 sessions_page.next_offset |
 | `mnemotrace_session_report` | session_id 必填，include_sensitive=false、limit=100、offset=0、response_format | 按页查看会话事实，使用 facts_page.next_offset 读取后续结果 |
-| `mnemotrace_list_facts` | limit=20（1–100）、offset=0、include_superseded=false、response_format | 分页事实，用于检查或定位 id |
+| `mnemotrace_list_facts` | limit=20（1–100）、offset=0、include_superseded=false、response_format | 分页事实，用于检查或定位 id。JSON 后续页使用 facts_page.next_offset |
 | `mnemotrace_profile` | response_format | 读取七栏画像缓存，不调用模型 |
 | `mnemotrace_refresh_profile` | 无 | 显式请求模型刷新，返回操作 ID |
 | `mnemotrace_stats` | response_format | 不含内容的命名空间统计 |

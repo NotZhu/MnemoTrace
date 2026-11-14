@@ -43,18 +43,12 @@ def _receipt(sql, operation_id):
         sql: ScopedSQL 对象，用于执行数据库操作。
         operation_id: 操作 ID。
     """
-    # 查询 record_commit_receipts 表，获取指定操作 ID 的提交收据。
     row = sql.run(f'SELECT core_revision,fact_ids,source_ids,affected_count '
-                  f'FROM mnemotrace.record_commit_receipts WHERE {SCOPE} AND operation_id = %s',
+                  f'FROM mnemotrace.commit_receipts WHERE {SCOPE} AND operation_id = %s',
                   (*sql.scope, operation_id)).fetchone()
     if row is not None:
         revision, facts, sources, count = row
         return CommitReceipt(operation_id, revision, tuple(facts), tuple(sources), count)
-    # 如果在 record_commit_receipts 表中未找到指定操作 ID 的提交收据，则查询 operation_receipts 表。
-    row = sql.run(f'SELECT core_revision,fact_ids FROM mnemotrace.operation_receipts '
-                  f'WHERE {SCOPE} AND operation_id = %s', (*sql.scope, operation_id)).fetchone()
-    if row is not None:
-        return CommitReceipt(operation_id, row[0], tuple(row[1]))
     return None
 
 
@@ -105,7 +99,7 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
         if changes.receipt is None:
             raise DatabaseConstraintError('Task completion requires a receipt')
         if checkpoint is None:
-            commit_task(sql, conditions.lease, changes.receipt)
+            commit_task(sql, conditions.lease)
         else:
             checkpoint(sql)
     from .profile import synchronize
@@ -190,7 +184,7 @@ class PostgresDAO:
                 revision += int(result.changed)
                 if result.changed:
                     sql.update('memory_spaces', {'core_revision': revision}, 'true')
-                sql.insert('record_commit_receipts', dict(
+                sql.insert('commit_receipts', dict(
                     operation_id=operation_id, core_revision=revision, fact_ids=list(result.fact_ids),
                     source_ids=list(result.source_ids),
                     affected_count=result.count, **({'segment_of': segment_of} if segment_of else {}),

@@ -14,7 +14,7 @@ export function SessionPicker({ value, onChange }: { value: string; onChange: (v
   const [composing, setComposing] = useState(false)
   // 独立获取完整会话索引，不能随下方列表的搜索词缩减候选范围。
   const sessions = useSessions({})
-  const options = [...new Set(['default', value, ...(sessions.data?.sessions.map((session) => session.id) ?? [])])]
+  const options = [...new Set(['default', value, ...(sessions.data?.sessions.map((session) => session.session_id) ?? [])])]
   const selected = options.indexOf(value)
 
   useEffect(() => {

@@ -67,7 +67,7 @@ def test_http_sentence_is_returned_without_display_and_invalid_patch_leaves_it_u
         assert client.patch(f'/v1/facts/{fact_id}/sensitivity', headers=headers, json={'sensitive': True, **patch}).status_code == 422
     assert client.get('/v1/memories', headers=headers).json()['facts'] == before
     exported = client.get('/v1/export', headers=headers).json()
-    assert exported['format_version'] == 6
+    assert exported['format_version'] == 7
     assert exported['facts'][0]['text'] == sentence and 'display' not in exported['facts'][0]
 
 

@@ -1,4 +1,4 @@
-"""One persisted ledger for dialogue and note operations."""
+"""In-process ledger for dialogue and note operations."""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -12,7 +12,7 @@ import uuid
 from ..types import Episode
 from ..extraction import ExtractionError
 
-VERSION = 10
+STATES = ('pending', 'running', 'retry_wait', 'completed', 'failed', 'cancelled')
 TERMINAL = {'completed', 'failed', 'cancelled'}
 
 
@@ -104,281 +104,11 @@ def config_identity(mem, *, include_embedding=True):
     return content_hash([options, mem.policy, provider, embedding] if include_embedding else [options, mem.policy, provider])
 
 
-def _number(value):
-    return type(value) in (int, float) and math.isfinite(value) and value >= 0
-
-
 def reset_attempts(window, field, reason, now):
     stage = 'reset_model' if field == 'attempts' else 'reset_embed'
     window['history'].append(dict(stage=stage, attempt=0, started_at=now, finished_at=now,
         outcome='reset', finish_reason=None, usage=None, error_code=reason))
     window[field] = 0
-
-
-STATES = {'pending', 'running', 'retry_wait', 'completed', 'failed', 'cancelled'}
-SOURCE_FIELDS = {'session_id', 'message_id', 'fingerprint', 'source', 'length', 'sequence',
-                 'extract', 'source_kind', 'core', 'digest', 'window_ids', 'cancelled', 'position', 'parts', 'digest_requested', 'commits', 'digest_receipt'}
-SESSION_FIELDS = {'session_id', 'extract', 'source_kind', 'last_activity', 'cutoff', 'following', 'last_turn'}
-WINDOW_FIELDS = {'route', 'input', 'input_hash', 'config', 'generation_config', 'state', 'phase', 'attempts',
-                 'embed_attempts', 'next_attempt_at', 'result', 'vectors', 'core_saved', 'digest_saved',
-                 'error_code', 'history', 'guard', 'limits', 'result_hash', 'operation', 'stats'}
-
-
-def validate_state(value, episodes=None, embedding_dim=None):
-    """Validate an offline processing checkpoint and its references."""
-    def require(condition):
-        if not condition:
-            raise ValueError('Invalid offline processing checkpoint')
-    try:
-        docs = {ep.id: ep for ep in episodes} if episodes is not None else None
-        if value is None:
-            require(docs is None or not any(ep.message_id is not None for ep in docs.values()))
-            return None
-        if isinstance(value, dict) and value.get('version') != VERSION:
-            raise ValueError('Unsupported offline processing checkpoint version')
-        require(isinstance(value, dict) and set(value) == {'version', 'namespaces', 'profiles'} and value['version'] == VERSION)
-        require(isinstance(value['namespaces'], dict))
-        require(isinstance(value['profiles'], dict))
-        from ..profile import validate_stored
-        for stored_profile in value['profiles'].values():
-            validate_stored(stored_profile)
-        for namespace, state in value['namespaces'].items():
-            require(isinstance(namespace, str) and bool(namespace))
-            require(isinstance(state, dict) and set(state) == {'version', 'namespace', 'generation', 'sequences', 'sources', 'sessions', 'windows'})
-            require(state['namespace'] == namespace and state['version'] == VERSION)
-            require(isinstance(state['generation'], str) and bool(state['generation']))
-            require(all(isinstance(state[k], dict) for k in ('sequences', 'sources', 'sessions', 'windows')))
-            require(all(isinstance(k, str) and k and type(v) is int and v > 0 for k, v in state['sequences'].items()))
-            identities, order = set(), set()
-            for key, row in state['sources'].items():
-                require(isinstance(key, str) and isinstance(row, dict) and set(row) == SOURCE_FIELDS)
-                require(row['source_kind'] in {'dialogue', 'note'})
-                dialogue = row['source_kind'] == 'dialogue'
-                require(isinstance(row['session_id'], str) and bool(row['session_id']))
-                require(isinstance(row['message_id'], str) and bool(row['message_id']) if dialogue else row['message_id'] is None)
-                require(type(row['extract']) is bool)
-                require(row['core'] in {'not_requested', 'pending', 'completed', 'failed'})
-                require(row['digest'] in {'not_needed', 'pending', 'completed', 'failed'})
-                require(type(row['cancelled']) is bool and type(row['digest_requested']) is bool and type(row['sequence']) is int and row['sequence'] > 0)
-                require(type(row['length']) is int and type(row['position']) is int and 0 <= row['position'] <= row['length'])
-                require(all(isinstance(row[k], str) and len(row[k]) == 64 for k in ('source', 'fingerprint')))
-                require(isinstance(row['window_ids'], list) and len(set(row['window_ids'])) == len(row['window_ids']))
-                require(all(k in state['windows'] for k in row['window_ids']))
-                require(isinstance(row['parts'], list))
-                for part in row['parts']:
-                    require(isinstance(part, dict) and set(part) == {'key', 'text', 'start', 'end'})
-                    require(part['key'] in state['windows'] and isinstance(part['text'], str) and bool(part['text']))
-                    require(type(part['start']) is int and type(part['end']) is int and 0 <= part['start'] < part['end'] <= row['length'])
-                if row['core'] == 'completed':
-                    require(row['position'] == row['length'] and row['length'] > 0)
-                committed = []
-                require(isinstance(row['commits'], list))
-                seen_commits = set()
-                for commit in row['commits']:
-                    require(isinstance(commit, dict) and set(commit) == {'key', 'input_hash', 'ranges', 'erased_sources'})
-                    require(isinstance(commit['key'], str) and len(commit['key']) == 24)
-                    require(isinstance(commit['erased_sources'], list) and
-                            all(isinstance(k, str) and k for k in commit['erased_sources']) and
-                            len(set(commit['erased_sources'])) == len(commit['erased_sources']))
-                    require(commit['key'] not in seen_commits)
-                    seen_commits.add(commit['key'])
-                    require(isinstance(commit['input_hash'], str) and len(commit['input_hash']) == 64 and
-                            all(c in '0123456789abcdef' for c in commit['input_hash']))
-                    require(isinstance(commit['ranges'], list) and bool(commit['ranges']))
-                    for span in commit['ranges']:
-                        require(isinstance(span, list) and len(span) == 2 and all(type(n) is int for n in span))
-                        require(0 <= span[0] < span[1] <= row['length'])
-                    window = state['windows'].get(commit['key'])
-                    if window is None:
-                        # A selected erasure removes cached input/results, not another
-                        # event's already committed proof. Keep only its opaque receipt.
-                        require(bool(commit['erased_sources']) and all(
-                            source_id in state['sources'] and state['sources'][source_id]['cancelled']
-                            for source_id in commit['erased_sources']))
-                    else:
-                        require(not commit['erased_sources'] and window['operation'] == 'extract' and window['core_saved'])
-                        require(commit['input_hash'] == window['input_hash'])
-                        view = next(v for v in window['input']['pending'] if v['id'] == key)
-                        require(commit['ranges'] == view['ranges'])
-                    committed.extend(commit['ranges'])
-                for window_id in row['window_ids']:
-                    window = state['windows'][window_id]
-                    require(any(v['id'] == key for v in window['input']['pending']))
-                    if window['operation'] == 'extract' and window['core_saved']:
-                        require(window_id in seen_commits)
-                if not dialogue:
-                    position = 0
-                    for start, end in sorted(committed):
-                        require(start == position and start < end <= row['length'])
-                        position = end
-                    require(position == row['position'])
-                elif row['position']:
-                    require(bool(committed))
-                last = 0
-                for part in sorted(row['parts'], key=lambda part: part['start']):
-                    require(last <= part['start'])
-                    last = part['end']
-                    window = state['windows'][part['key']]
-                    require(window['result'] is not None and window['result']['digests'].get(key) == part['text'])
-                    require(key in window['digest_saved'])
-                    view = next(v for v in window['input']['pending'] if v['id'] == key)
-                    require((part['start'], part['end']) == (view['ranges'][0][0], view['ranges'][-1][1]))
-                receipt = row['digest_receipt']
-                if receipt is not None:
-                    require(isinstance(receipt, dict) and set(receipt) == {'key', 'digest_hash', 'coverage', 'erased_sources'})
-                    require(isinstance(receipt['key'], str) and len(receipt['key']) == 24)
-                    require(isinstance(receipt['digest_hash'], str) and len(receipt['digest_hash']) == 64 and
-                            all(c in '0123456789abcdef' for c in receipt['digest_hash']))
-                    from ..store._validation import validate_coverage
-                    validate_coverage(receipt['coverage'], 'pipeline.digest_receipt.coverage')
-                    require(isinstance(receipt['erased_sources'], list) and all(isinstance(k, str) and k for k in receipt['erased_sources']))
-                    require(len(set(receipt['erased_sources'])) == len(receipt['erased_sources']))
-                    require(receipt['coverage']['source'] == row['source'] and receipt['coverage']['original_length'] == row['length'])
-                    if receipt['key'] not in state['windows']:
-                        require(bool(receipt['erased_sources']) and all(k in state['sources'] and state['sources'][k]['cancelled'] for k in receipt['erased_sources']))
-                    else:
-                        require(not receipt['erased_sources'])
-                pair = (row['session_id'], row['message_id'])
-                seq = (row['session_id'], row['sequence'])
-                require(seq not in order and row['sequence'] <= state['sequences'].get(row['session_id'], 0))
-                order.add(seq)
-                if dialogue:
-                    require(pair not in identities)
-                    identities.add(pair)
-                require(route(row['session_id'], row['extract'], row['source_kind']) in state['sessions'])
-                if docs is not None and row['cancelled']:
-                    require(key not in docs or source_fingerprint(docs[key]) != row['source'])
-                if docs is not None and not row['cancelled']:
-                    ep = docs.get(key)
-                    require(ep is not None and ep.user_id == namespace and source_fingerprint(ep) == row['source'])
-                    require(ep.extract is row['extract'])
-                    require(len(ep.content) == row['length'] and ep.source_kind == row['source_kind'])
-                    require(row['core'] != 'completed' or ep.consolidated and ep.coverage is not None)
-                    require(row['digest'] != 'completed' or bool(ep.digest))
-                    if dialogue:
-                        require((ep.message_id, ep.sequence) == (row['message_id'], row['sequence']))
-                        require(message_fingerprint({'role': ep.role, 'content': ep.content, 'event_time': ep.event_time}, row['extract']) == row['fingerprint'])
-                    receipt = row['digest_receipt']
-                    if row['digest'] == 'completed' and any(key in state['windows'][wid]['digest_saved'] for wid in row['window_ids']):
-                        require(receipt is not None)
-                    if receipt is not None:
-                        require(ep.digest and row['digest'] == 'completed')
-                        require(receipt['digest_hash'] == content_hash(ep.digest) and receipt['coverage'] == ep.digest_coverage)
-                        require(receipt['coverage']['source'] == row['source'])
-                        window = state['windows'].get(receipt['key'])
-                        if window is not None:
-                            require(key in window['digest_saved'] and receipt['digest_hash'] == content_hash(window['result']['digests'][key]))
-                            require(receipt['coverage']['input_hash'] == window['input_hash'])
-                            if dialogue:
-                                view = next(v for v in window['input']['pending'] if v['id'] == key)
-                                require(receipt['coverage']['ranges'] == view['ranges'])
-                            else:
-                                require(len(row['parts']) == 1 and row['parts'][0]['text'] == ep.digest)
-                                require(row['parts'][0]['start'] == 0 and row['parts'][0]['end'] == row['length'])
-                    if row['position']:
-                        last_commit = row['commits'][-1]
-                        ranges = last_commit['ranges'] if dialogue else [[0, row['position']]]
-                        partial = ranges != [[0, row['length']]]
-                        policy = ('head_tail_v1' if partial else 'full_message_v1') if dialogue else 'full_source_v1'
-                        require(ep.coverage == dict(unit='unicode_code_points', ranges=ranges, partial=partial,
-                            policy=policy, source=row['source'], original_length=row['length'],
-                            input_hash=last_commit['input_hash'], strategy_completed=row['core'] == 'completed'))
-            for key, session in state['sessions'].items():
-                require(isinstance(session, dict) and set(session) == SESSION_FIELDS)
-                require(type(session['extract']) is bool)
-                require(key == route(session['session_id'], session['extract'], session['source_kind']))
-                require(_number(session['last_activity']) and _number(session['last_turn']))
-                require(all(type(session[k]) is int and 0 <= session[k] <= state['sequences'].get(session['session_id'], 0) for k in ('cutoff', 'following')))
-                require(session['following'] == 0 or session['following'] > session['cutoff'])
-            for key, win in state['windows'].items():
-                require(isinstance(key, str) and len(key) == 24 and isinstance(win, dict) and set(win) == WINDOW_FIELDS)
-                require(win['route'] in state['sessions'] and win['operation'] in {'extract', 'digest'})
-                require(win['state'] in STATES and win['phase'] in {'generate', 'embed', 'commit', 'compensate', 'done'})
-                require(win['input_hash'] == content_hash(win['input']) and isinstance(win['config'], str) and len(win['config']) == 64)
-                require(isinstance(win['generation_config'], str) and len(win['generation_config']) == 64
-                        and all(c in '0123456789abcdef' for c in win['generation_config']))
-                require(isinstance(win['guard'], str) and bool(win['guard']) and _number(win['next_attempt_at']))
-                require(type(win['core_saved']) is bool and isinstance(win['digest_saved'], list) and isinstance(win['vectors'], dict))
-                require(win['error_code'] is None or isinstance(win['error_code'], str))
-                require(isinstance(win['stats'], dict) and all(type(n) is int and n >= 0 for n in win['stats'].values()))
-                require(isinstance(win['limits'], dict) and set(win['limits']) == {'digest_min_chars', 'digest_max_chars'})
-                require(all(type(n) is int and n > 0 for n in win['limits'].values()) and win['limits']['digest_max_chars'] < win['limits']['digest_min_chars'])
-                counts = dict(attempts=0, embed_attempts=0)
-                require(isinstance(win['history'], list))
-                for attempt in win['history']:
-                    require(isinstance(attempt, dict) and set(attempt) == {'stage', 'attempt', 'started_at', 'finished_at', 'outcome', 'finish_reason', 'usage', 'error_code'})
-                    reset = attempt['stage'] in {'reset_model', 'reset_embed'}
-                    require(attempt['stage'] in {'generate', 'embed', 'adjudicate', 'compensate', 'reset_model', 'reset_embed'})
-                    field = 'embed_attempts' if attempt['stage'] in {'embed', 'adjudicate', 'reset_embed'} else 'attempts'
-                    counts[field] = 0 if reset else counts[field] + 1
-                    require(type(attempt['attempt']) is int and attempt['attempt'] == counts[field])
-                    require(_number(attempt['started_at']) and (attempt['finished_at'] is None or _number(attempt['finished_at'])))
-                    require(attempt['outcome'] in {'in_flight', 'saved', 'failed', 'discarded', 'interrupted', 'reset'} and (attempt['outcome'] == 'reset') == reset)
-                    from ..llm.base import Completion
-                    Completion('', attempt['finish_reason'], attempt['usage'])
-                    require(attempt['error_code'] is None or isinstance(attempt['error_code'], str))
-                require(all(type(win[k]) is int and 0 <= win[k] <= 3 and win[k] == n for k, n in counts.items()))
-                require(win['result_hash'] == (content_hash(win['result']) if win['result'] is not None else None))
-                require(win['phase'] not in {'embed', 'commit', 'compensate', 'done'} or isinstance(win['result'], dict))
-                require(win['state'] != 'completed' or win['phase'] == 'done' and win['core_saved'])
-                data = win['input']
-                require(isinstance(data, dict) and set(data) == {'context', 'pending', 'extract', 'source_kind', 'operation', 'parts'})
-                require(type(data['extract']) is bool)
-                session = state['sessions'][win['route']]
-                require(all(data.get(k) == session[k] for k in ('extract', 'source_kind')))
-                require(data['operation'] == win['operation'] and data['source_kind'] in {'dialogue', 'note'})
-                require(isinstance(data['context'], list) and isinstance(data['pending'], list) and bool(data['pending']))
-                require(isinstance(data['parts'], list) and all(isinstance(k, str) for k in data['parts']))
-                require(len(set(data['parts'])) == len(data['parts']) and key not in data['parts'])
-                if win['operation'] == 'digest':
-                    require(len(data['pending']) == 1 and not data['context'])
-                    require(not data['parts'] or len(data['parts']) >= 2)
-                    if win['state'] not in TERMINAL:
-                        row = state['sources'][data['pending'][0]['id']]
-                        require(set(data['parts']).issubset(p['key'] for p in row['parts']))
-                else:
-                    require(not data['parts'])
-
-                views = [*data['context'], *data['pending']]
-                require(len({v['id'] for v in views}) == len(views))
-                require(all(a['sequence'] < b['sequence'] for a, b in zip(views, views[1:])))
-                for item in (*data['context'], *data['pending']):
-                    from .planning import validate_view
-                    validate_view(item)
-                    require(item['id'] in state['sources'] and item['source'] == state['sources'][item['id']]['source'])
-                    row = state['sources'][item['id']]
-                    require(row['session_id'] == session['session_id'] and row['source_kind'] == data['source_kind'])
-                    require(row['extract'] == data['extract'])
-                    require(item['message_id'] == row['message_id'] and item['sequence'] == row['sequence'] and item['source_length'] == row['length'])
-                    require((item['role'] in {'user', 'assistant'}) == (data['source_kind'] == 'dialogue'))
-                    if docs is not None and not state['sources'][item['id']]['cancelled']:
-                        ep = docs[item['id']]
-                        require(source_fingerprint(ep) == item['source'] and ep.event_time == item['event_time'])
-                        require(item['role'] == (ep.role if ep.source_kind == 'dialogue' else None))
-                        if item['representation'] == 'raw':
-                            from .planning import OMITTED
-                            require(item['content'] == OMITTED.join(ep.content[a:b] for a, b in item['ranges']))
-                    if item in data['pending'] and win['operation'] == 'extract':
-                        archived = win['state'] == 'cancelled'
-                        require(archived or key in state['sources'][item['id']]['window_ids'])
-                if win['result'] is not None:
-                    from types import SimpleNamespace
-                    from .planning import validate_result
-                    validate_result(win['result'], data, SimpleNamespace(**win['limits']))
-                    require(set(win['digest_saved']).issubset(win['result']['digests']))
-                for vector in win['vectors'].values():
-                    from ..store._validation import validate_embedding
-                    validate_embedding(vector, 'pipeline vector', embedding_dim or len(vector))
-                if win['phase'] == 'commit':
-                    from .._pipeline import texts_for
-                    vectors_expected = embedding_dim is not None or bool(win['vectors'])
-                    expected = {content_hash(text) for text in texts_for(win)} if vectors_expected else set()
-                    require(set(win['vectors']) == expected)
-        if docs is not None:
-            require(all(ep.message_id is None or ep.user_id in value['namespaces'] and ep.id in value['namespaces'][ep.user_id]['sources'] for ep in docs.values()))
-        return value
-    except (KeyError, TypeError, AttributeError, IndexError, RecursionError, StopIteration, OverflowError) as exc:
-        raise ValueError('Malformed offline processing checkpoint') from exc
 
 
 class PipelineTasks:
@@ -391,9 +121,9 @@ class PipelineTasks:
 
     def ensure(self):
         if self.memory._pipeline_state is None:
-            self.memory._pipeline_state = dict(version=VERSION, namespaces={}, profiles={})
+            self.memory._pipeline_state = dict(namespaces={}, profiles={})
         if self.state is None:
-            self.memory._pipeline_state['namespaces'][self.namespace] = dict(version=VERSION, namespace=self.namespace,
+            self.memory._pipeline_state['namespaces'][self.namespace] = dict(namespace=self.namespace,
                 generation=uuid.uuid4().hex, sequences={}, sources={}, sessions={}, windows={})
         return self.state
 

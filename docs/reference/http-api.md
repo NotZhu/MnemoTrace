@@ -79,7 +79,7 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 
 `POST /v1/recall` 使用混合召回，可传 `state` 和 `valid_at` 选择历史视图。显式时间与 `as_of` 互斥。
 
-事实的 `relation_id` 为 null 时，普通检索仍可返回事实和来源。谓词筛选、聚合及图路径使用已归一的关系。
+事实保存归一化的 `relation_id`，供谓词筛选、聚合及图路径查询使用。
 
 | 路径 | 请求与返回 |
 | --- | --- |
@@ -88,10 +88,11 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 
 ## 会话与检查
 
-`GET /v1/sessions` 返回无正文的会话索引。用 `GET /v1/sessions/report` 按会话审计来源和事实。
+`GET /v1/sessions` 返回无正文的会话索引。会话以 `session_id` 标识，后续页使用 `sessions_page.next_offset`。
+用 `GET /v1/sessions/report` 按会话审计来源和事实。
 报告通过 `limit` 和 `offset` 分页，默认返回前 100 条事实，每页最多 500 条。继续读取时使用
 `facts_page.next_offset`。每页的 `facts_added` 和 `facts_redacted` 都是对应会话的总数。
-`GET /v1/stats` 和 `GET /v1/agent/status` 返回无正文的空间与会话统计。
+`GET /v1/stats` 和 `GET /v1/agent/status` 返回无正文的空间与会话统计。Agent 状态中的会话统计位于 `session_counts`。
 
 ## 记忆列表的筛选与一致分页
 
@@ -151,7 +152,7 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 | `GET /v1/export` | include_sensitive=false；返回结构化导出 |
 | `POST /v1/forget` | JSON `{"space_id":"…","confirm":true}`，清空指定空间并保留 ID 和设置 |
 
-结构化导出使用 `format_version: 6`。未来生效的事实在导出中标为 `scheduled`，并在生效时点进入当前查询。默认省略敏感事实及原文，显式设置 `include_sensitive=true` 获取私有导出。
+供审阅和分享的 JSON 导出使用 `format_version: 7`。未来生效的事实在导出中标为 `scheduled`，并在生效时点进入当前查询。默认省略敏感事实及原文，显式设置 `include_sensitive=true` 获取私有导出。
 
 ## OpenAI 兼容聊天
 
@@ -178,7 +179,7 @@ stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切�
 ## 模型抽取状态与错误
 
 自动抽取的 buffered 请求返回 `202`，表示原文和任务已持久化。immediate 核心结果已提交时返回 `200`。
-`operations` 的每项含 `operation_id`、`kind`、`state`、`phase`、`stored_raw`、`extraction_saved`、`core_committed`、
+`operations` 的每项含 `operation_id`、`kind`、`state`、`phase`、`extraction_saved`、`core_committed`、
 `error_code` 及 `auxiliary_operation_ids`。摘要辅助任务有独立进度。
 等待超时以 `processing_incomplete` 和 `timed_out` 返回当前操作与持久化标志，已接受的任务继续处理。
 缺少抽取模型返回 `503 llm_not_configured`，原文未写入。
@@ -186,7 +187,7 @@ stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切�
 ## 条件摘要与原文读取
 
 `GET /v1/episodes/{episode_id}?space_id=<SPACE_ID>` 显式读取完整原文。未知空间、他人空间和不存在的事件返回 404。
-响应包含 `id`、`space_id`、`session_id`、`role`、`agent_id`、`event_time`、`ingested_at` 和 `content`。
+响应包含 `id`、`space_id`、`session_id`、`role`、`agent_id`、`event_time`、`ingested_at` 和 `content`。响应分别用 `coverage` 与 `digest_coverage` 表达事实抽取和摘要覆盖范围。
 
 摘要进度通过核心操作的 `auxiliary_operation_ids` 查询。摘要失败不撤销已接受的原文和抽取。显式等待摘要时调用 `/v1/processing/flush` 并设置 `include_digests=true`，将摘要纳入本次等待范围；`retry_failed=true` 重试范围内的失败操作。
 

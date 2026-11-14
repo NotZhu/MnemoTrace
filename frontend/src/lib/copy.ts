@@ -311,8 +311,6 @@ export const copy = {
     } satisfies Record<ProfileSection, string>,
   },
   facts: {
-    manualLabel: '手动设定',
-    manualHint: '经你添加、修改或确认',
     viewSource: '查看来源',
     sourceTitle: '记忆来源',
     sourceUser: '这是你自己确认的 —— 自动抽取不会覆盖它。',

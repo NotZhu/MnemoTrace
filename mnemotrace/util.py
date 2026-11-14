@@ -80,17 +80,6 @@ def recency(delta_seconds: float, tau_days: float) -> float:
     return math.exp(-max(delta_seconds, 0.0) / (tau_days * DAY))
 
 
-def minmax_normalize(scores: dict[str, float]) -> dict[str, float]:
-    """把一组分数缩放到 [0, 1]。无差异输入 -> 全部 1.0。"""
-    if not scores:
-        return {}
-    lo = min(scores.values())
-    hi = max(scores.values())
-    if hi - lo < 1e-12:
-        return {k: 1.0 for k in scores}
-    return {k: (v - lo) / (hi - lo) for k, v in scores.items()}
-
-
 def extract_text(content: object) -> str:
     """把 'content' 字段的多种形状压平成纯文本：
       * 纯字符串                                    -> 原样返回

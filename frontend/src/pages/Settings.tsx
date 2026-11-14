@@ -373,7 +373,7 @@ function CodexSetupCard({ session, status }: {
                 </div>
                 <div className="flex justify-between gap-3">
                   <span>{t.settings.connectSessionEpisodes}</span>
-                  <span className="text-slate-200">{!status.isError ? status.data?.session?.episodes ?? '—' : '—'}</span>
+                  <span className="text-slate-200">{!status.isError ? status.data?.session_counts.episodes ?? '—' : '—'}</span>
                 </div>
               </div>
             </details>
@@ -402,8 +402,8 @@ function CodexSetupCard({ session, status }: {
                 <p className="text-xs leading-relaxed text-ghost">{t.settings.connectSessionsEmpty}</p>
               ) : (
                 codexSessions.map((row) => (
-                  <div key={row.id} className="rounded-lg bg-ink-700/70 px-3 py-2 text-xs text-ghost">
-                    <div className="truncate font-medium text-slate-200">{row.id}</div>
+                  <div key={row.session_id} className="rounded-lg bg-ink-700/70 px-3 py-2 text-xs text-ghost">
+                    <div className="truncate font-medium text-slate-200">{row.session_id}</div>
                     <div className="mt-1 flex flex-wrap gap-2">
                       <span>{t.conversations.sessionCardEpisodes(row.episodes)}</span>
                       <span>{t.conversations.sessionCardFacts(row.facts_added)}</span>

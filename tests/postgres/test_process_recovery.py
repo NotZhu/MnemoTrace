@@ -15,10 +15,11 @@ from tests.embedder_fixtures import MockEmbedder, product_embedder
 from mnemotrace.llm import FakeLLM
 from mnemotrace.memory import Memory
 from tests.postgres.fact_fixtures import seed_fact, seed_note
+from mnemotrace.store.contracts import ChangeSet, CommitReceipt
 from mnemotrace.store.postgres import Accounts, Database
 from mnemotrace.store.postgres.dao import PostgresDAO
 from mnemotrace.store.postgres.errors import (
-    AccountNotFound, AuthenticationError, DatabaseUnavailable, MessageConflict, SpaceNotFound,
+    AccountNotFound, AuthenticationError, DataCorruption, DatabaseUnavailable, MessageConflict, SpaceNotFound,
 )
 from mnemotrace.store.postgres.maintenance import rebuild_graph
 from mnemotrace.store.postgres.tasks import ATTEMPT_LIMIT, Tasks
@@ -124,9 +125,9 @@ def _expire(memory, operation_id):
 
 
 CHECKPOINTS = {
-    'accept': 'record_commit_receipts',
+    'accept': 'commit_receipts',
     'product': 'operation_products',
-    'core': 'operation_receipts',
+    'core': 'commit_receipts',
 }
 
 
@@ -294,7 +295,7 @@ def test_repeated_process_death_exhausts_attempt_budget(memory, cluster):
         assert _result(child) == []
     status = memory.operation(operation_id)
     assert (status.state.value, status.error_code, status.attempts) == ('failed', 'attempts_exhausted', ATTEMPT_LIMIT)
-    assert status.stored_raw and not status.core_committed
+    assert not status.core_committed
     assert len(memory.list_sources()) == 1
     assert memory.facts() == ()
 
@@ -416,19 +417,27 @@ def _pending_write(memory, kind):
     return operation_id
 
 
-def _scope_counts(runtime, scope):
+def _scope_counts(runtime, scope, *, cleared=False):
     from psycopg import sql
 
     tables = ('sessions', 'sources', 'source_digests', 'facts', 'fact_sources', 'fact_supersedes',
               'entity_types', 'entities', 'relation_types', 'graph_relations',
               'embeddings', 'lexical_documents', 'lexical_terms',
               'operations', 'operation_sources', 'operation_products', 'operation_digest_parts',
-              'operation_receipts')
+              'commit_receipts')
     with runtime._transaction() as conn:
         conn.execute("SELECT set_config('mnemotrace.user_id', %s, true)", (scope.user_id,))
-        return {table: conn.execute(sql.SQL('SELECT count(*) FROM mnemotrace.{} WHERE user_id = %s AND space_id = %s')
+        counts = {table: conn.execute(sql.SQL('SELECT count(*) FROM mnemotrace.{} WHERE user_id = %s AND space_id = %s')
                                     .format(sql.Identifier(table)), (scope.user_id, scope.space_id)).fetchone()[0]
-                for table in tables}
+                  for table in tables}
+        if cleared:
+            receipts = conn.execute(
+                "SELECT fact_ids,source_ids,segment_of FROM mnemotrace.commit_receipts "
+                "WHERE user_id = %s AND space_id = %s", (scope.user_id, scope.space_id),
+            ).fetchall()
+            assert receipts == [([], [], None)]  # The clear transaction has its own empty receipt.
+            counts.pop('commit_receipts')
+        return counts
 
 
 def _delete_scope(memory, accounts, scope):
@@ -495,7 +504,7 @@ def test_delete_prevents_late_processing_writes(memory, cluster, runtime, spaces
         active.resume.set()
         assert _result(active) == (['extract'] if kind == 'extract' else [])
 
-    assert not any(_scope_counts(runtime, memory.context).values())
+    assert not any(_scope_counts(runtime, memory.context, cleared=scope == 'clear').values())
     if scope == 'clear':
         assert memory.get_settings() == settings
         assert memory.operation(operation_id) is None
@@ -521,7 +530,7 @@ def test_delete_waits_for_core_commit_and_removes_its_projection(memory, cluster
         with _blocked_deletion(cluster, memory.context, scope):
             active.resume.set()
             assert _result(active) is True
-    assert not any(_scope_counts(runtime, memory.context).values())
+    assert not any(_scope_counts(runtime, memory.context, cleared=scope == 'clear').values())
 
 
 def _rebuild_in_process(config, context, *, ready, resume):
@@ -547,7 +556,7 @@ def test_clear_waits_for_graph_rebuild_and_removes_rebuilt_edges(memory, cluster
         with _blocked_deletion(cluster, memory.context, 'clear'):
             active.resume.set()
             assert _result(active) is None
-    assert not any(_scope_counts(runtime, memory.context).values())
+    assert not any(_scope_counts(runtime, memory.context, cleared=True).values())
 
 
 @pytest.mark.parametrize('damage', ['missing', 'invalid-result', 'invalid-reference'])
@@ -573,9 +582,26 @@ def test_worker_rejects_corrupt_extraction_checkpoint(memory, cluster, damage):
         assert _result(child) == []
     status = memory.operation(operation_id)
     assert (status.state.value, status.error_code) == ('failed', 'data_corruption')
-    assert status.stored_raw and not status.core_committed
+    assert not status.core_committed
     assert len(memory.list_sources()) == 1
     assert memory.facts() == ()
+    assert memory.dao.receipt(operation_id) is None
+
+
+def test_commit_rejects_extraction_checkpoint_removed_after_worker_read(memory):
+    operation_id = _pending_write(memory, 'core')
+    tasks = Tasks(memory.dao)
+    lease, _ = tasks.claim(operation_id, force=True)
+    with memory.dao.read_snapshot() as view:
+        snapshot, row, _ = tasks.load(view, lease)
+        product = tasks.product(view, snapshot, lease, row)
+    with memory.dao._transaction() as sql:
+        sql.delete('operation_products', 'operation_id = %s', (operation_id,))
+    changes = ChangeSet(product.conditions, operation_id,
+                        receipt=CommitReceipt(operation_id, snapshot.core_revision))
+    with pytest.raises(DataCorruption, match='Missing extraction checkpoint'):
+        tasks.commit(changes)
+    assert not memory.operation(operation_id).core_committed
     assert memory.dao.receipt(operation_id) is None
 
 
@@ -590,7 +616,7 @@ def test_wrong_embedding_dimension_keeps_the_saved_product_for_retry(memory, run
     assert not invalid.flush_processing('chat')['ok']
     status = memory.operation(operation_id)
     assert (status.state.value, status.error_code) == ('failed', 'embedding_invalid')
-    assert status.stored_raw and status.extraction_saved and not status.core_committed
+    assert status.extraction_saved and not status.core_committed
     assert memory.facts() == ()
     assert memory.dao.receipt(operation_id) is None
     assert memory.flush_processing('chat', retry_failed=True)['ok']

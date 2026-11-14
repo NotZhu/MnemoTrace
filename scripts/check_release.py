@@ -96,7 +96,7 @@ def main(*, wheel=None) -> int:
     )), 'Compose defines database, initialization, worker and persistent storage', errors)
     if wheel is not None:
         sys.path.insert(0, str(ROOT))
-        from mnemotrace.store.postgres.migrate import MIGRATIONS
+        from mnemotrace.store.postgres.migrate import BASELINE_SQL
 
         with ZipFile(wheel) as archive:
             files = set(archive.namelist())
@@ -104,7 +104,7 @@ def main(*, wheel=None) -> int:
             'mnemotrace/py.typed', 'mnemotrace/admin.py', 'mnemotrace/worker.py',
             'mnemotrace/quickstart.py', 'mnemotrace/memory.py',
             'mnemotrace/memory_engine.py', 'mnemotrace/service.py',
-            *(f'mnemotrace/store/postgres/sql/{script}' for script in MIGRATIONS),
+            f'mnemotrace/store/postgres/sql/{BASELINE_SQL}',
         }
         for path in sorted(required_wheel):
             _check(path in files, f'wheel contains {path}', errors)

@@ -5,7 +5,7 @@ from contextlib import contextmanager
 import pytest
 
 from mnemotrace.memory import Memory
-from tests.postgres.fact_fixtures import relation_writes, seed_fact, seed_note
+from tests.postgres.fact_fixtures import fact_embeddings, relation_writes, seed_fact, seed_note
 from mnemotrace.store.contracts import (
     ChangeSet, CommitConditions, CommitReceipt, EmbeddingWrite, FactQuery, FactState, Lease, MessageInput,
     OperationKind, OperationSpec, ProcessingState, RecordKind, RecordRef, RecordWrite, SourceVersion,
@@ -39,6 +39,15 @@ def commit(memory, operation_id, records=(), **changes):
         relations = relation_writes(view, records)
     writes = tuple(RecordWrite(StoredRecord.from_record(memory.context, item)) for item in records)
     return memory.dao.commit(ChangeSet(conditions, operation_id, writes=(*relations, *writes), **changes))
+
+
+def test_product_record_commit_rejects_user_fact_atomically(memory):
+    fact = Fact('Synthetic person', 'likes', 'tea', text='Synthetic person likes tea',
+                user_id=memory.context.user_id, source='user')
+    with pytest.raises(DatabaseConstraintError, match='require an extracted source'):
+        commit(memory, 'user-fact', (fact,))
+    assert memory.facts() == ()
+    assert memory.dao.receipt('user-fact') is None
 
 
 def test_record_business_roundtrip_and_selective_updates(memory, cluster):
@@ -144,7 +153,7 @@ def test_response_lost_after_commit_is_recovered_by_receipt(memory, monkeypatch,
     elif kind == 'note':
         result = memory.remember('Synthetic note', 'chat', extract=False)
     else:
-        fact = Fact('Synthetic person', 'likes', 'tea', user_id=memory.context.user_id, source='user', text='Synthetic person likes tea')
+        fact = Fact('Synthetic person', 'likes', 'tea', user_id=memory.context.user_id, text='Synthetic person likes tea')
         receipt = commit(memory, 'manual-op', (fact,))
         assert receipt.fact_ids == (memory.facts()[0].id,)
         assert memory.dao.receipt(receipt.operation_id) == receipt
@@ -182,7 +191,7 @@ def test_mixed_erasure_is_atomic_and_supported_erasure_preserves_sources(memory)
     fact = Fact('Synthetic person', 'likes', 'tea', user_id=who, provenance=[a.id, b.id], text='Synthetic person likes tea')
     task = OperationSpec('digest-a', OperationKind.DIGEST, 'chat', (SourceVersion(a.id, 1),))
     commit(memory, 'derived', (fact,), operations=(task,))
-    assert memory.dao.operation(task.operation_id).stored_raw
+    assert memory.dao.operation(task.operation_id).state is ProcessingState.PENDING
     source = RecordRef(memory.context, RecordKind.SOURCE, a.id)
     fact_ref = RecordRef(memory.context, RecordKind.FACT, fact.id)
     with memory.dao.read_snapshot() as view:
@@ -198,7 +207,7 @@ def test_mixed_erasure_is_atomic_and_supported_erasure_preserves_sources(memory)
     assert memory.get_episode(a.id) is not None
     assert memory.get_fact(fact.id).provenance == [a.id, b.id]
     assert memory.erase(fact_ref).affected_count == 1
-    assert memory.dao.operation(task.operation_id).stored_raw
+    assert memory.dao.operation(task.operation_id).state is ProcessingState.PENDING
     assert memory.get_episode(a.id) is not None
     assert memory.get_episode(b.id) is not None
     assert memory.facts() == ()
@@ -222,7 +231,7 @@ def test_stale_vector_rejected_and_previous_embedding_removed(memory):
         snapshot, previous = view.snapshot, view.get(RecordKind.FACT, fact.id)
     updated = replace(fact, object='Shanghai', text='Synthetic person lives in Shanghai')
     write = memory._write(updated, previous, text_changed=True)
-    memory._commit(snapshot, writes=(write,), embeddings=memory._embeddings(write, updated.text))
+    memory._commit(snapshot, writes=(write,), embeddings=fact_embeddings(memory, write, updated.text))
     with memory.dao.read_snapshot() as view:
         snapshot = view.snapshot
         record = view.get(RecordKind.FACT, fact.id)
@@ -309,15 +318,15 @@ def test_sensitivity_edit_skips_unchanged_fact_links(memory, monkeypatch):
     assert stored.provenance == [original.id] and stored.supersedes == [predecessor.id]
 
 
-def test_clear_slot_checks_count_and_erases_live_facts_of_any_source(memory):
+def test_clear_slot_checks_count_and_erases_live_facts(memory):
     extracted = Fact('Synthetic person', 'likes', 'tea', user_id=memory.context.user_id, text='Synthetic person likes tea')
     commit(memory, 'seed-extracted', (extracted,))
-    manual = seed_fact(memory, 'Synthetic person', 'likes', 'coffee', source='user', text='Synthetic person likes coffee')
-    ended = seed_fact(memory, 'Synthetic person', 'likes', 'cocoa', source='user', text='Synthetic person liked cocoa',
+    second = seed_fact(memory, 'Synthetic person', 'likes', 'coffee', text='Synthetic person likes coffee')
+    ended = seed_fact(memory, 'Synthetic person', 'likes', 'cocoa', text='Synthetic person liked cocoa',
                       valid_at=10, invalid_at=20, expired_at=20)
     with pytest.raises(VersionConflict):
         memory.clear_slot('Synthetic person', 'likes', expect_count=1)
-    assert {fact.id for fact in memory.facts()} == {extracted.id, manual.id}
+    assert {fact.id for fact in memory.facts()} == {extracted.id, second.id}
     assert memory.clear_slot(' synthetic person ', 'likes', expect_count=2).affected_count == 2
     assert not memory.facts()
     assert memory.get_fact(ended.id).id == ended.id

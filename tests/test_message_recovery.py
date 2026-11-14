@@ -1,8 +1,6 @@
 """Cross-stage invalidation, standalone concurrency, explicit retry and crash checkpoints."""
 from tests.model_fixtures import seed_timeline
-from mnemotrace.connectors.dialogue import import_messages
 from concurrent.futures import ThreadPoolExecutor
-from copy import deepcopy
 import json
 import threading
 
@@ -10,7 +8,7 @@ import pytest
 
 from mnemotrace import MemoryEngine
 from mnemotrace._pipeline import run_next_stage
-from mnemotrace.consolidate.pipeline import PipelineTasks, validate_state
+from mnemotrace.consolidate.pipeline import PipelineTasks
 from mnemotrace.llm import FakeLLM
 from tests.test_message_pipeline import message, reply
 from tests.test_fact_adjudication import decisions
@@ -22,7 +20,6 @@ def test_native_concurrent_receive_is_ordered_and_isolated():
         results = list(pool.map(lambda n: mem.remember_messages([message(str(n))], 's', 'u'), range(12)))
     assert sorted(r['messages'][0]['sequence'] for r in results) == list(range(1, 13))
     assert mem.remember_messages([message('0')], 's', 'other')['messages'][0]['sequence'] == 1
-    validate_state(mem._pipeline_state, mem.episodes_doc.values())
 
 
 def test_native_model_allows_append_and_close_prevents_late_commit():
@@ -71,25 +68,6 @@ def test_reembedding_does_not_authorize_generation_from_an_obsolete_policy():
     assert window['state'] == 'failed' and window['error_code'] == 'configuration_changed'
 
 
-def test_core_and_digest_evidence_are_strict_on_restore():
-    mem = MemoryEngine(llm=FakeLLM(handler=reply))
-    mem.remember_messages([message('a')], 's', 'u')
-    assert mem.flush_messages('u')['ok']
-    ep = mem.episodes_doc.values()[0]
-    del ep.coverage['unit']
-    with pytest.raises(ValueError):
-        validate_state(mem._pipeline_state, mem.episodes_doc.values())
-
-
-def test_prior_processing_checkpoint_version_is_rejected():
-    mem = MemoryEngine()
-    mem.remember_messages([message('a')], 's', 'u')
-    state = deepcopy(mem._pipeline_state)
-    state['version'] = 9
-    with pytest.raises(ValueError, match='Unsupported.*version'):
-        validate_state(state, mem.episodes_doc.values())
-
-
 def test_fixed_contradiction_closes_previous_dialogue_fact():
     mem = MemoryEngine(llm=FakeLLM(handler=reply))
     old = mem.add_fact('我', 'lives_in', 'A', 'u', text='The user lives in A.')
@@ -97,25 +75,6 @@ def test_fixed_contradiction_closes_previous_dialogue_fact():
     mem.fact_store.upsert(old.id, old.embedding, old)
     new = seed_timeline(mem, '我', 'lives_in', 'B', user_id='u', valid_at=200, text='The user lives in B.')
     assert mem.fact_store.get(old.id).invalid_at == 200 and new.supersedes == [old.id]
-
-
-@pytest.mark.history_import
-def test_long_history_adapter_keeps_global_positional_ids():
-    mem = MemoryEngine()
-    rows = [dict(role='user', content='Synthetic repeated content') for _ in range(1001)]
-    result = import_messages(mem, [dict(session_id='s', messages=rows)], consolidate=False)
-    assert result['episodes'] == 1001
-    assert len({e.message_id for e in mem.episodes_doc.values()}) == 1001
-    validate_state(deepcopy(mem._pipeline_state), mem.episodes_doc.values())
-
-
-def test_missing_identity_record_cannot_restore_as_a_new_message():
-    mem = MemoryEngine()
-    accepted = mem.remember_messages([message('a')], 's', 'u')
-    state = deepcopy(mem._pipeline_state)
-    del state['namespaces']['u']['sources'][accepted['messages'][0]['episode_id']]
-    with pytest.raises(ValueError):
-        validate_state(state, mem.episodes_doc.values())
 
 
 def test_native_missing_model_fails_without_waiting_for_retry():

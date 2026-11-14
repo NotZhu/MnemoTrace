@@ -4,7 +4,7 @@ from dataclasses import asdict
 from ...profile import INPUT_FIELDS
 from ...util import gen_id
 from ..contracts import OperationKind
-from .errors import DatabaseConstraintError, MessageConflict, VersionConflict
+from .errors import DataCorruption, DatabaseConstraintError, MessageConflict, VersionConflict
 from .lexical import project_document, project_text
 from .records import (
     ENTITY, FACT, RELATION_TYPE, SOURCE, SCOPE, TARGET_COLUMNS,
@@ -52,35 +52,29 @@ def _replace_fact_sources(sql, fact_id, provenance):
 
 
 def _source_digest(sql, record, values, old):
-    keys = ('digest', 'coverage', 'digest_coverage', 'consolidated')
-    if old is None and not any(values[key] for key in keys):
+    digest = values['digest']
+    previous = old['digest'] if old is not None else ''
+    if digest == previous and (old is None or values['digest_coverage'] == old['digest_coverage']):
         return False
-    if old is not None and all(values[key] == old[key] for key in keys):
-        return False
-    digest_changed = old is None or old['digest'] != values['digest']
     source_id = record.ref.record_id
-    if digest_changed:
-        sql.delete('embeddings', "source_id = %s AND field = 'digest'", (source_id,))
-    row = sql.run(f'SELECT digest_version,record_version FROM mnemotrace.source_digests '
+    row = sql.run(f'SELECT digest_version FROM mnemotrace.source_digests '
                   f'WHERE {SCOPE} AND source_id = %s', (*sql.scope, source_id)).fetchone()
-    # Coverage can create the row before the first digest text exists.
-    version = row[0] + int(digest_changed and bool(old['digest'])) if row else 1
-    if record.digest_version != (version if values['digest'] else None):
+    changed = digest != previous
+    # A cleared digest reserves the next version and invalidates old vectors.
+    version = row[0] + int(changed and bool(previous)) if row else 1
+    if record.digest_version != (version if digest else None):
         raise VersionConflict('Source digest version changed')
-    data = {key: values[key] for key in keys[:3]}
-    data.update(digest_version=version, content_version=record.content_version,
-                record_version=row[1] + 1 if row else 1,
-                processing_state='completed' if values['consolidated'] else 'pending')
-    if digest_changed:
-        data['digest_written_at'] = (
-            sql.run('SELECT clock_timestamp()').fetchone()[0] if values['digest'] else None
-        )
+    data = dict(digest=digest, digest_coverage=values['digest_coverage'],
+                digest_version=version, content_version=record.content_version)
+    if changed:
+        sql.delete('embeddings', "source_id = %s AND field = 'digest'", (source_id,))
+        data['digest_written_at'] = sql.run('SELECT clock_timestamp()').fetchone()[0] if digest else None
     if row:
         sql.update('source_digests', data, 'source_id = %s', (source_id,))
     else:
         sql.insert('source_digests', {'source_id': source_id, **data})
-    if digest_changed:
-        project_document(sql, SOURCE, source_id, version, values['digest'] or None, field='digest')
+    if changed:
+        project_document(sql, SOURCE, source_id, version, digest or None, field='digest')
     return True
 
 
@@ -102,7 +96,12 @@ def write(sql, change, graph):
     for key in ('embedding', 'digest_embedding'):
         if key in current:
             current[key] = None
+    if kind == FACT:
+        if current['source'] != 'extracted':
+            raise DatabaseConstraintError('Product facts require an extracted source')
+        current.update(last_access=current['created_at'], access_count=0)
     if kind == SOURCE:
+        current['metadata'] = {}
         digest_fields = {'digest', 'coverage', 'digest_coverage', 'consolidated', 'digest_written_at'}
         if old is None:
             if current['message_id'] is not None:
@@ -112,15 +111,19 @@ def write(sql, change, graph):
             raise DatabaseConstraintError('Source text and ingestion fields are immutable')
         digest_changed = _source_digest(sql, record, current, old) if previous else False
         if previous:
-            if digest_changed:
-                sql.update('sources', {'record_version': record.record_version}, 'id = %s', (record_id,))
-            return digest_changed, False
+            progress_changed = any(current[key] != old[key] for key in ('coverage', 'consolidated'))
+            if digest_changed or progress_changed:
+                sql.update('sources', {'record_version': record.record_version,
+                                       'coverage': current['coverage'],
+                                       'consolidated': current['consolidated']}, 'id = %s', (record_id,))
+            return digest_changed or progress_changed, False
     elif current == old:
         return False, False
     if text_changed:
-        column = TARGET_COLUMNS[kind]
-        sql.delete('embeddings', f'{column} = %s', (record_id,))
-        sql.delete('lexical_documents', f'{column} = %s', (record_id,))
+        column = TARGET_COLUMNS.get(kind)
+        if column is not None:
+            sql.delete('embeddings', f'{column} = %s', (record_id,))
+            sql.delete('lexical_documents', f'{column} = %s', (record_id,))
     sql.write_record(record, insert=previous is None)
     if kind == FACT and (old is None or text_changed or current['valid_at'] != old['valid_at']):
         project_text(sql, kind, record_id, record.content_version, current)
@@ -161,7 +164,6 @@ def enqueue(sql, spec, space_generation, *, ready_at=None, parent_id=None):
         operation_id=spec.operation_id, kind=spec.kind.value, session_id=spec.session_id,
         sequence=sequence, state='pending', phase='queued', attempts=0, embed_attempts=0,
         space_generation=space_generation,
-        stored_raw=True,
         extraction_saved=False, core_committed=False,
         ready_at=ready_at, parent_id=parent_id,
     ))
@@ -195,6 +197,8 @@ def check_lease(sql, conditions):
         raise VersionConflict('Task lease or prerequisites changed')
     product = sql.run(f'SELECT source_versions FROM mnemotrace.operation_products '
                       f'WHERE {SCOPE} AND operation_id = %s', (*sql.scope, lease.operation_id)).fetchone()
+    if product is None and row[0] == OperationKind.EXTRACT.value:
+        raise DataCorruption('Missing extraction checkpoint')
     sources = [(item['source_id'], item['content_version']) for item in product[0]] if product else sql.run(
         f'SELECT source_id, content_version FROM mnemotrace.operation_sources '
         f'WHERE {SCOPE} AND operation_id = %s', (*sql.scope, lease.operation_id)).fetchall()
@@ -203,25 +207,19 @@ def check_lease(sql, conditions):
         raise VersionConflict('Task input references changed')
 
 
-def commit_task(sql, lease, receipt):
+def commit_task(sql, lease):
     sql.update('operations', dict(state='completed', phase='done', core_committed=True,
                lease_token=None, lease_until=None, next_attempt_at=None, error_code=None),
                'operation_id = %s', (lease.operation_id,))
-    sql.insert('operation_receipts', dict(
-        operation_id=receipt.operation_id, core_revision=receipt.core_revision,
-        fact_ids=list(receipt.fact_ids),
-        completed_at=sql.run('SELECT clock_timestamp()').fetchone()[0],
-    ))
 
 
-def store_messages(sql, session_id, messages, *, check_ready, source_metadata=None):
+def store_messages(sql, session_id, messages, *, check_ready):
     """存储消息。
 
     Args:
         session_id: 会话 ID。
         messages: 要存储的消息列表。
         check_ready: 是否检查就绪状态。
-        source_metadata: 源元数据。
     """
     existing = sql.run(f'SELECT message_id,id,message_fingerprint FROM mnemotrace.sources '
                        f'WHERE {SCOPE} AND session_id = %s AND message_id = ANY(%s)',
@@ -245,7 +243,7 @@ def store_messages(sql, session_id, messages, *, check_ready, source_metadata=No
                 content=item.content, role=item.role, event_time=timestamp(item.event_time),
                 ingested_at=sql.run('SELECT clock_timestamp()').fetchone()[0],
                 source_kind='dialogue', extract=item.extract,
-                agent_id=item.agent_id, message_fingerprint=content_hash, metadata=source_metadata or {},
+                agent_id=item.agent_id, message_fingerprint=content_hash,
                 sequence=allocate_sequence(sql, session_id), record_version=1, content_version=1,
             ))
             known[item.message_id] = (record_id, content_hash)

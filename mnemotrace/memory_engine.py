@@ -78,7 +78,6 @@ class MemoryEngine:
         # 查询工作集：记录 lean_context 最近一次执行到事实组装时选出的事实，供检查。
         # 后续 lean_context 执行到此阶段时会覆盖它；该列表不写入快照。
         self.working_set: list[Fact] = []
-        # 条目可随快照保存并恢复；短期指其生命周期，不会因此成为长期事实。
         # 关注主题：track 提升相关事实的显著度；mute 在上下文和画像中抑制相关事实。
         self.focus: dict[str, list[str]] = {"track": [], "mute": []}
         # 记忆策略：抽取指令及抽取、摘要、画像提示词；空提示词使用内置默认值。
@@ -295,11 +294,11 @@ class MemoryEngine:
             except MessageConflictError:
                 raise
             except BaseException:
-                self._recover_pipeline_checkpoint()
+                self._fence_pipeline()
                 raise
             return {**tasks.response(ids), 'accepted': len(fresh)}
 
-    def _recover_pipeline_checkpoint(self):
+    def _fence_pipeline(self):
         """Fence an in-memory instance after a partial write."""
         self._pipeline_broken = True
         self.close()
@@ -312,7 +311,7 @@ class MemoryEngine:
             try:
                 yield
             except BaseException:
-                self._recover_pipeline_checkpoint()
+                self._fence_pipeline()
                 raise
 
     def consolidate(self, episodes=None):
@@ -385,97 +384,6 @@ class MemoryEngine:
         return result
 
 
-    def import_snapshot(self, snapshot: dict, user_id: str = "default", dedupe: bool = True) -> dict:
-        """恢复 忆痕 导出快照（`/v1/export` / `MemoryService.export`）——可移植性往返。快照是
-        已经整合过的记忆，所以这是恢复而非写入：fact 携带完整的双时间轴时间戳和取代链直接落库
-        （重跑抽取会使其重复并抹平历史），episode 则重新进入带日期的原始日志并标记为已整合，
-        System-2 永远不会重新消化它们。share-safe 导出不含 episode——只恢复 fact 是那里的预期
-        结果。在 `dedupe`（默认）下幂等。"""
-        if self._pipeline_broken:
-            raise RuntimeError('Memory checkpoint failed; create a new instance')
-        from .store._validation import validate_snapshot
-
-        snapshot = validate_snapshot(snapshot)
-        with self._pipeline_lock:
-            return self._restore_snapshot(snapshot, user_id, dedupe)
-
-    def _restore_snapshot(self, snapshot, user, dedupe):
-        # --- episodes：恢复无损带日期日志（仅 include_sensitive 导出中存在） ---
-        from .consolidate.pipeline import content_hash
-
-        def restored_id(kind, source_id):
-            return kind + '_import_' + content_hash([user, source_id])[:32]
-
-        episode_ids = {}
-        eps_skipped = 0
-        prepared_episodes: list[Episode] = []
-        for row in snapshot["episodes"]:
-            content = row["content"]
-            session_id = row["session_id"]
-            target_id = restored_id('ep', row['id'])
-            if dedupe and self.episodes_doc.get(target_id) is not None:
-                episode_ids[row['id']] = target_id
-                eps_skipped += 1
-                continue
-            ep = Episode(content=content, user_id=user, session_id=session_id,
-                         role=row["role"], event_time=row["event_time"],
-                         consolidated=True,  # 它的 fact 在下方恢复；绝不重新抽取
-                         digest=row.get("digest", ""), coverage=row.get('coverage'), digest_coverage=row.get('digest_coverage'),
-                         digest_written_at=row.get('digest_written_at'),
-                         metadata={'snapshot_source_id': row['id']})
-            if "ingested_at" in row:
-                ep.ingested_at = row["ingested_at"]
-            if dedupe:
-                ep.id = target_id
-            episode_ids[row['id']] = ep.id
-            if ep.digest:
-                ep.digest_embedding = self._encode(ep.digest)
-            prepared_episodes.append(ep)
-
-        # --- facts：同时恢复 live 与被取代的行，保留 valid/transaction 时间 ---
-        id_map: dict[str, str] = {}  # 旧快照 id -> 新 id，用于重连取代链
-        staged: list[tuple[Fact, list[str]]] = []
-        facts_skipped = 0
-        for row in snapshot["facts"]:
-            s, p, o = row["subject"], row["predicate"], row["object"]
-            valid_at = row["valid_at"]
-            target_id = restored_id('ft', row['id'])
-            if dedupe and (self.fact_store.get(target_id) is not None or self.cold_store.get(target_id) is not None):
-                id_map[row['id']] = target_id
-                facts_skipped += 1
-                continue
-            f = Fact(subject=s, predicate=p, object=o, user_id=user,
-                     text=row["text"], source=row["source"],
-                     sensitive=row["sensitive"],
-                     categories=row["categories"], relation_id=row["relation_id"],
-                     subject_id=restored_id('en', row["subject_id"]) if row["subject_id"] else None,
-                     object_id=restored_id('en', row["object_id"]) if row["object_id"] else None,
-                     subject_type=row["subject_type"], object_type=row["object_type"], retention=row["retention"],
-                     salience=row["salience"],
-                     valid_at=valid_at,
-                     invalid_at=row["invalid_at"], created_at=row["created_at"],
-                     expired_at=row["expired_at"],
-                     provenance=[episode_ids.get(key, key) for key in row["provenance"]])
-            if dedupe:
-                f.id = target_id
-            f.embedding = self._encode(f.text)
-            id_map[row["id"]] = f.id
-            staged.append((f, row["supersedes"]))
-        # 校验和向量准备全部成功后才写入；取代链也链接到去重命中的已有事实。
-        for ep in prepared_episodes:
-            self._sync_episode(ep)
-        for f, old_sup in staged:
-            f.supersedes = [id_map[key] for key in old_sup if key in id_map]
-            self._upsert_fact(f, tier="hot")
-            # add_fact 会把 fact.invalid_at 带到关系上，因此被取代的历史落库时就是已失效化的边
-            # ——图的时间线在往返中得以保留。
-            self.writer.graph_builder.add_fact(f)
-
-        self._enforce_hot_limit()
-        return {"format": "mnemotrace", "facts_restored": len(staged), "facts_skipped": facts_skipped,
-                "episodes_restored": len(prepared_episodes), "episodes_skipped": eps_skipped}
-
-    # --- 离线工作集 ---
     def add_fact(self, subject: str, predicate: str, object: str, user_id: str = "default",
                  valid_at: Optional[float] = None, sensitive: Optional[bool] = None,
                  categories: list[Category] | None = None, retention: Retention = "unknown", *, text: str,

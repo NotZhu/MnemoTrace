@@ -138,11 +138,11 @@ def _load_workload(bundle, manifest, case):
             SELECT DISTINCT user_id,space_id,'pred_' || encode(sha256(convert_to(predicate, 'UTF8')), 'hex'),
                 predicate,predicate,'forward','[]'::jsonb,1,1 FROM input""")
         conn.execute("""INSERT INTO mnemotrace.facts (user_id,space_id,id,subject,predicate,object,text,
-            subject_key,predicate_key,object_key,salience,source,categories,sensitive,relation_id,retention,
-            valid_at,invalid_at,created_at,last_access,access_count,record_version,content_version)
-            SELECT user_id,space_id,id,subject,predicate,object,body,lower(btrim(subject)),lower(btrim(predicate)),lower(btrim(object)),1,'user','{}'::text[],false,
+            subject_key,predicate_key,object_key,salience,categories,sensitive,relation_id,retention,
+            valid_at,invalid_at,created_at,record_version,content_version)
+            SELECT user_id,space_id,id,subject,predicate,object,body,lower(btrim(subject)),lower(btrim(predicate)),lower(btrim(object)),1,'{}'::text[],false,
                    'pred_' || encode(sha256(convert_to(predicate, 'UTF8')), 'hex'),
-                   'unknown',valid_at,invalid_at,valid_at,valid_at,0,1,1 FROM input""")
+                   'unknown',valid_at,invalid_at,valid_at,1,1 FROM input""")
         conn.execute("""INSERT INTO mnemotrace.embeddings(user_id,space_id,fact_id,target_kind,field,
             content_version,model,dimension,vector)
             SELECT user_id,space_id,id,'Fact','text',1,%s,%s,vector FROM input""",

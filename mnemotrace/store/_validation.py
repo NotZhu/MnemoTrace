@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import math
 from copy import deepcopy
-from graphlib import CycleError, TopologicalSorter
 from typing import Any, Callable
 
 from ..types import RETENTIONS
@@ -106,8 +105,6 @@ _ID_OR_NULL = _nullable(_identifier)
 _SOURCE = _choice("user", "extracted")
 
 
-
-
 def validate_coverage(value: Any, path: str) -> None:
     _object(value, path)
     if set(value) != {'unit', 'ranges', 'partial', 'policy', 'source', 'original_length', 'input_hash', 'strategy_completed'}:
@@ -186,18 +183,15 @@ _RECORDS = {
                      "meaning": _identifier, "direction": _choice("forward", "symmetric"),
                      "endpoint_types": _list(_endpoint_pair)},
 }
-def _fields(value: Any, spec: dict[str, Validator], path: str,
-            optional: tuple[str, ...] = (), *, ignored=frozenset()) -> dict[str, Any]:
+def _fields(value: Any, spec: dict[str, Validator], path: str) -> dict[str, Any]:
     _object(value, path)
-    if value.keys() - spec.keys() - ignored:
+    if value.keys() - spec.keys():
         _fail(path, "unsupported field")
     for key, check in spec.items():
         if key not in value:
-            if key in optional:
-                continue
             _fail(f"{path}.{key}", "missing required field")
         check(value[key], f"{path}.{key}")
-    return {key: deepcopy(value[key]) for key in spec if key in value}
+    return deepcopy(value)
 
 
 def validate_embedding(vector: Any, path: str, dimension: int) -> None:
@@ -231,85 +225,3 @@ def _validate_fact_categories(record: dict, path: str) -> None:
         validate_categories(record["categories"])
     except ValueError as exc:
         _fail(path, str(exc))
-
-
-# A migration carries source identities/history, not the target user's runtime state.
-_IMPORT_FACT = {key: _FACT[key] for key in (
-    "id", "subject", "predicate", "object", "text", "source", "sensitive",
-    "categories", "retention", "relation_id", "subject_id", "object_id",
-    "subject_type", "object_type",
-    "salience", "valid_at", "invalid_at", "created_at", "expired_at",
-    "supersedes", "provenance",
-)}
-_IMPORT_FACT.update(status=_choice("live", "superseded", "scheduled"), valid_at_h=_string,
-                    invalid_at_h=_nullable(_string))
-_IMPORT_EPISODE = {key: _EPISODE[key] for key in (
-    "id", "content", "session_id", "role", "event_time", "ingested_at", "digest", "coverage", "digest_coverage",
-    "digest_written_at",
-)}
-
-
-# The two serializers attach presentation fields and local runtime state.
-# Import restores only the portable fields described above.
-_SNAPSHOT_METADATA = {"space_id", "include_sensitive", "redacted_sensitive", "focus", "graph"}
-_FACT_METADATA = _FACT.keys() - _IMPORT_FACT.keys()
-_EPISODE_METADATA = (_EPISODE.keys() - _IMPORT_EPISODE.keys()) | {
-    "chars", "date", "session", "agent_id", "space_id",
-}
-SNAPSHOT_FORMAT_VERSION = 6
-
-
-def _validate_snapshot_timeline(facts: list[dict]) -> None:
-    positions = {row["id"]: index for index, row in enumerate(facts)}
-    timeline = TopologicalSorter()
-    for index, row in enumerate(facts):
-        path = f"snapshot.facts[{index}]"
-        start, end = row["valid_at"], row["invalid_at"]
-        if start is not None and end is not None and start >= end:
-            _fail(f"{path}.invalid_at", "must be later than valid_at")
-        predecessors = row["supersedes"]
-        if row["id"] in predecessors or len(predecessors) != len(set(predecessors)):
-            _fail(f"{path}.supersedes", "self-references and duplicate predecessors are unsupported")
-        timeline.add(row["id"], *(key for key in predecessors if key in positions))
-    try:
-        timeline.prepare()
-    except CycleError as exc:
-        index = positions[exc.args[1][0]]
-        raise ValueError(f"snapshot.facts[{index}].supersedes: replacement cycle") from None
-
-
-def is_snapshot_candidate(value: Any) -> bool:
-    """Route snapshot-shaped objects to strict validation, including incomplete envelopes."""
-    return isinstance(value, dict) and ("facts" in value or "episodes" in value)
-
-
-def validate_snapshot(snapshot: Any) -> dict:
-    _object(snapshot, "snapshot")
-    if type(snapshot.get("format_version")) is not int or snapshot["format_version"] != SNAPSHOT_FORMAT_VERSION:
-        _fail("snapshot.format_version", "unsupported snapshot version")
-    if snapshot.keys() - _SNAPSHOT_METADATA - {"format_version", "facts", "episodes"}:
-        _fail("snapshot", "unsupported field")
-    for key in ("facts", "episodes"):
-        if key not in snapshot:
-            _fail(f"snapshot.{key}", "missing required field")
-    result = {}
-    for name, spec, optional, ignored in (
-        ("facts", _IMPORT_FACT, ("status", "valid_at_h", "invalid_at_h"), _FACT_METADATA),
-        ("episodes", _IMPORT_EPISODE, ("digest", "coverage", "digest_coverage", "ingested_at",
-                                      "digest_written_at"), _EPISODE_METADATA),
-    ):
-        rows = snapshot.get(name, [])
-        if not isinstance(rows, list):
-            _fail(f"snapshot.{name}", "must be a list")
-        result[name] = [_fields(row, spec, f"snapshot.{name}[{i}]", optional, ignored=ignored)
-                        for i, row in enumerate(rows)]
-        if name == "facts":
-            for i, row in enumerate(result[name]):
-                _validate_fact_categories(row, f"snapshot.facts[{i}]")
-        seen = set()
-        for i, row in enumerate(result[name]):
-            if row["id"] in seen:
-                _fail(f"snapshot.{name}[{i}].id", "duplicate source identifier")
-            seen.add(row["id"])
-    _validate_snapshot_timeline(result["facts"])
-    return result

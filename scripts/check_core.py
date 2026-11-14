@@ -22,7 +22,6 @@ def main():
 import sys
 from mnemotrace.service import MemoryService
 from mnemotrace.server.openai_compat import latest_user_text
-assert not any(name.startswith('mnemotrace.connectors') for name in sys.modules)
 """], cwd=ROOT, check=True)
 
     mem = MemoryEngine()

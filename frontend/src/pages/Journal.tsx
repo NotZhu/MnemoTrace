@@ -423,21 +423,21 @@ function BackfillSessions({ className }: { className?: string }) {
       {sessionRows.length > 0 && <ul className="space-y-4">
         {sessionRows.slice(0, 5).map((s) => (
           <li
-            key={s.id}
+            key={s.session_id}
             className="flex flex-wrap items-center justify-between gap-x-6 gap-y-4 rounded-xl border border-line bg-ink-700/40 p-5 sm:px-6"
           >
             <div className="min-w-0">
               <div className="max-w-full truncate text-sm text-brand-cyan">
-                {t.journal.sessionLabel} {s.id}
+                {t.journal.sessionLabel} {s.session_id}
               </div>
               {s.last_event_at_h && <div className="mt-2 text-xs text-ghost">{s.last_event_at_h}</div>}
             </div>
             <Button
               variant="ghost"
               className="rounded-md px-4 py-2 text-sm"
-              loading={pending === s.id}
+              loading={pending === s.session_id}
               disabled={!!pending}
-              onClick={() => distil(s.id)}
+              onClick={() => distil(s.session_id)}
             >
               {t.journal.backfillButton}
             </Button>

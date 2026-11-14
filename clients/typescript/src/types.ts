@@ -27,11 +27,22 @@ export interface ExtractionFailure {
   episode_ids: string[]
 }
 
+export interface SourceCoverage {
+  unit: 'unicode_code_points'
+  ranges: [number, number][]
+  partial: boolean
+  policy: string
+  original_length: number
+  input_hash: string
+  source: string
+  strategy_completed: boolean
+}
+
 export interface OriginalEpisode {
   message_id: string | null
   sequence: number | null
-  coverage: {unit: 'unicode_code_points'; ranges: [number, number][]; partial: boolean;
-    policy: string; original_length: number; input_hash: string; source: string; strategy_completed: boolean} | null
+  coverage: SourceCoverage | null
+  digest_coverage: SourceCoverage | null
   id: string
   space_id: string
   agent_id: string | null
@@ -54,8 +65,7 @@ export interface OperationResult {
   operation_id: string
   kind: 'extract' | 'digest' | 'profile'
   state: ProcessingState
-  phase: 'queued' | 'generate' | 'embed' | 'commit' | 'compensate' | 'done'
-  stored_raw: boolean
+  phase: 'queued' | 'generate' | 'embed' | 'commit' | 'done'
   extraction_saved: boolean
   core_committed: boolean
   attempts: number
@@ -78,6 +88,7 @@ export interface ProcessingFlushResult {
 
 export interface RememberResult extends Omit<ProcessingFlushResult, 'status'> {
   status: ProcessingFlushResult['status'] | 'accepted' | 'stored'
+  stored_raw: boolean
   source_ids: string[]
   /** IDs of facts written by completed note processing. */
   fact_ids?: string[]
@@ -120,7 +131,6 @@ export interface SessionReportFact {
   valid_at: string
   invalid_at: string | null
   status: FactStatus
-  source: FactSource
   /** Omitted for redacted rows. */
   categories?: Category[]
   sensitive: boolean
@@ -147,7 +157,7 @@ export interface SessionReport {
 }
 
 export interface SessionIndexItem {
-  id: string
+  session_id: string
   episodes: number
   episodes_consolidated: number
   extraction_failures?: number
@@ -165,8 +175,7 @@ export interface SessionIndex {
   ok: boolean
   space_id: string
   sessions: SessionIndexItem[]
-  page: MemoryPage<SessionIndexItem>
-  next_offset: number | null
+  sessions_page: MemoryPage<SessionIndexItem>
 }
 
 export interface SessionListOptions {
@@ -174,13 +183,9 @@ export interface SessionListOptions {
   offset?: number
   /** 对 session id 的文本搜索。 */
   query?: string
-  /** query 的别名，与 HTTP 参数名一致。 */
-  q?: string
 }
 
 export type FactStatus = 'live' | 'superseded'
-export type FactSource = 'extracted' | 'user'
-
 export interface FactMetadata {
   categories: Category[]
 }
@@ -202,7 +207,6 @@ export interface Fact extends FactMetadata {
   /** YYYY-MM-DD，仍有效时为 null */
   invalid_at: string | null
   status: FactStatus
-  source: FactSource
   supersedes: string[]
   sensitive?: boolean
   redacted?: boolean
@@ -216,9 +220,10 @@ export interface Fact extends FactMetadata {
 export interface EpisodeView {
   id: string
   date: string
-  session: string
+  session_id: string
   role: string
   coverage: { partial: boolean } | null
+  digest_coverage: { partial: boolean } | null
   content: string
   digest: string
 }
@@ -260,8 +265,6 @@ export interface MemoryListOptions {
   status?: MemoryStatusFilter
   /** 对事实的文本搜索；仅当 includeSensitive=true 时才搜索原始 episode。 */
   query?: string
-  /** query 的别名，与 HTTP 参数名一致。 */
-  q?: string
   /** 默认返回可安全分享的列表；仅在需要所有者可见的原始 episode/画像时传 true。 */
   includeSensitive?: boolean
   /** 拆分事实集合：'outcomes' = 仅会话结论，'attributes' = 其余全部。
@@ -282,10 +285,6 @@ export interface MemoryDump {
   episodes: EpisodeView[]
   facts_page: MemoryPage<Fact>
   episodes_page: MemoryPage<EpisodeView>
-  next_offsets: {
-    facts: number | null
-    episodes: number | null
-  }
 }
 
 export interface MemoryStats {
@@ -317,10 +316,9 @@ export interface AgentStatus {
   session_id: string | null
   mode: 'content_free_agent_status'
   focus: Focus
-  session: {
-    id: string | null
+  session_counts: {
     episodes: number
-    extraction_failures?: number
+    extraction_failures: number
     episodes_pending: number
   }
   counts: MemoryStats['counts']
@@ -404,23 +402,6 @@ export interface GraphResponse extends GraphData {
   has_more: boolean
 }
 
-export interface ImportMessageInput {
-  role?: string
-  message_id?: string
-  content: string
-  event_time?: number
-}
-
-export interface ImportSessionInput {
-  session_id: string
-  messages: ImportMessageInput[]
-  title?: string
-  event_time?: number
-}
-
-/** 批量导入：传入已解析的 `sessions`，或传入原始 `data` + `format` 由服务器解析。 */
-
-
 export interface MemoryExportFact extends FactMetadata {
   relation_id: string
   subject_id: string | null
@@ -433,7 +414,6 @@ export interface MemoryExportFact extends FactMetadata {
   predicate: string
   object: string
   text: string
-  source: FactSource
   status: FactStatus | 'scheduled'
   sensitive: boolean
   salience: number
@@ -447,26 +427,34 @@ export interface MemoryExportFact extends FactMetadata {
   provenance: string[]
 }
 
-export interface MemoryExportEpisode {
-  id: string
-  session_id: string
-  role: string
-  event_time: number
+export interface MemoryExportEpisode extends OriginalEpisode {
+  chars: number
   date: string
-  content: string
   digest: string
+  digest_written_at: number | null
+  source_kind: 'note' | 'dialogue'
+  extract: boolean
+}
+
+export interface MemoryExportEdge {
+  source: string
+  target: string
+  predicate: string
+  live: boolean
+  fact_id: string
+  valid_at_h: string
+  invalid_at_h: string | null
 }
 
 export interface MemoryExport {
-  format_version: 6
+  format_version: 7
   space_id: string
   include_sensitive: boolean
   redacted_sensitive: boolean
   focus: Focus
   facts: MemoryExportFact[]
   episodes: MemoryExportEpisode[]
-  graph: GraphData
-  redaction_note?: string
+  graph: { nodes: GraphNode[]; edges: MemoryExportEdge[] }
 }
 
 export interface ForgetOptions {

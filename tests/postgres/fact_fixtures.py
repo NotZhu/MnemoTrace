@@ -1,6 +1,6 @@
 """Persist synthetic notes and assertions for PostgreSQL tests."""
 from mnemotrace.consolidate.postgres_merge import build_record_write
-from mnemotrace.store.contracts import RecordKind
+from mnemotrace.store.contracts import EmbeddingWrite, RecordKind
 from mnemotrace.types import Entity, Fact, RelationType, relation_identifier
 
 
@@ -22,6 +22,13 @@ def relation_writes(view, records):
     )
 
 
+def fact_embeddings(memory, write, text):
+    if memory._embedder is None:
+        return ()
+    vector = tuple(memory._embedder.embed(text))
+    return (EmbeddingWrite(write.ref, write.record.content_version, memory._model, vector),)
+
+
 def seed_fact(memory, subject, predicate, object_, *, text, categories=(), linked=False, **fields):
     entities = {}
     if linked:
@@ -40,5 +47,5 @@ def seed_fact(memory, subject, predicate, object_, *, text, categories=(), linke
         snapshot = view.snapshot
         relations = relation_writes(view, (fact,))
     write = memory._write(fact)
-    memory._commit(snapshot, writes=(*relations, *map(memory._write, entities.values()), write), embeddings=memory._embeddings(write, text))
+    memory._commit(snapshot, writes=(*relations, *map(memory._write, entities.values()), write), embeddings=fact_embeddings(memory, write, text))
     return fact

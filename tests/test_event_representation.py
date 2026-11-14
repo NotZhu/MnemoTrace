@@ -58,23 +58,6 @@ def test_digest_survives_reembedding_without_raw_index():
     assert mem.get_episode(ep.id, "u")["content"] == ep.content
 
 
-@pytest.mark.parametrize("written_at", [3, None])
-def test_snapshot_import_preserves_digest_write_time_and_queries_by_event_time(written_at):
-    mem = MemoryEngine(embedder=MockEmbedder())
-    mem.import_snapshot({"format_version": 6, "facts": [], "episodes": [{
-        "id": "synthetic", "content": "Synthetic original", "session_id": "test", "role": "user",
-        "event_time": 1, "ingested_at": 2, "digest": "An orchid was planted.",
-        "digest_written_at": written_at,
-    }]})
-    mem.reembed()
-    assert not mem.retrieve_digests("orchid", as_of=0.5)
-    for at in (1, 2.5, 4, None):
-        hit, = mem.retrieve_digests("orchid", as_of=at)
-        assert hit.text == "An orchid was planted."
-    restored, = mem.episodes_doc.values()
-    assert restored.digest_written_at == written_at
-
-
 def test_digest_keyword_matching_excludes_original_text():
     mem = MemoryEngine()
     ep = mem.add("RAW_ONLY_8844", user_id="u")
