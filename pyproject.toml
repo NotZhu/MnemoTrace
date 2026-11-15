@@ -26,7 +26,7 @@ dependencies = []
 postgres = ["psycopg[binary]==3.3.8", "psycopg-pool==3.3.3"]
 # Real embedding/LLM/vector/graph backends slot in behind the same interfaces.
 embeddings = ["sentence-transformers>=2.2"]  # local BGE embeddings (MNEMOTRACE_EMBEDDER=bge-*; no API key)
-fastembed = ["fastembed==0.9.1", "huggingface-hub>=0.20,<2"]
+fastembed = ["fastembed==0.9.1", "huggingface-hub>=0.20,<3"]
 llm = ["litellm>=1.40"]
 # Serving / adoption layer; see docs/architecture/README.md.
 server = ["fastapi>=0.110", "uvicorn>=0.27", "pydantic>=2"]   # the multi-tenant HTTP API + console
