@@ -8,13 +8,14 @@
 
 用法：
   python examples/ingest_client.py --base http://127.0.0.1:8000 --key demo-test \
-      --space-id demo-space --data your_data.json [--reset] [--no-extract] [--probe "我喜欢哪个歌手"]
+      --space-id demo-space --data your_data.json [--reset] [--probe "我喜欢哪个歌手"]
 """
 from __future__ import annotations
 
 import argparse
 import json
 import time
+from uuid import uuid4
 import urllib.request
 from urllib.parse import urlencode
 
@@ -26,7 +27,6 @@ def main() -> None:
     ap.add_argument("--space-id", required=True, help="the target memory space ID")
     ap.add_argument("--data", required=True, help="path to the JSON dataset")
     ap.add_argument("--reset", action="store_true", help="clear the selected space before loading")
-    ap.add_argument("--no-extract", action="store_true", help="save all conversation inputs without extraction")
     ap.add_argument("--probe", action="append", default=[], help="a query to test recall after loading (repeatable)")
     ap.add_argument("--no-proxy", action="store_true", help="bypass any HTTP(S)_PROXY env for direct connect")
     args = ap.parse_args()
@@ -60,10 +60,10 @@ def main() -> None:
     for i, rec in enumerate(records, 1):
         try:
             if "content" in rec:
-                if "scope" in rec:
-                    raise ValueError("use the boolean extract field")
-                body = {"content": rec["content"], "session_id": rec.get("session_id", f"s{i}"),
-                        "extract": False if args.no_extract else rec.get("extract", True)}
+                message = dict(message_id=rec.get("message_id") or uuid4().hex,
+                               role=rec.get("role", "user"), content=rec["content"],
+                               event_time=rec.get("event_time"))
+                body = dict(messages=[message], session_id=rec.get("session_id", f"s{i}"), wait=True)
                 r = call("/v1/remember", body)
                 convos += 1
                 tag = r["status"]

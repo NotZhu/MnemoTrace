@@ -5,13 +5,14 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 import gzip
-from itertools import product
+from itertools import count, product
 import json
 import os
 from pathlib import Path
 import platform
 import random
 import time
+from unittest.mock import patch
 
 from eval import harness
 from eval.storage_baseline import _git, capture_sources, observe, workload_manifest, workload_records
@@ -37,8 +38,16 @@ def quality(factory, out, *, processing='immediate'):
     ref_rows, ref_summary, reference = observe()
     harness.write_jsonl(str(out / 'reference.jsonl'), ref_rows, ref_summary)
     (out / 'reference-observation.json').write_text(json.dumps(reference, ensure_ascii=False), encoding='utf-8')
+    # Keep content-derived fact IDs stable across equivalent synthetic replays.
+    ids = count(1)
+
+    def fixed_id(prefix):
+        return f'{prefix}_{next(ids):012x}'
+
     with (factory() as bundle, Database(bundle.admin, purpose='admin') as admin,
-          Database(bundle.runtime) as runtime):
+          Database(bundle.runtime) as runtime,
+          patch('mnemotrace.store.postgres.identity._id', side_effect=fixed_id),
+          patch('mnemotrace.store.postgres.writes.gen_id', side_effect=fixed_id)):
         user = Accounts(admin).create_user()
         spaces = Spaces(runtime)
 
@@ -46,17 +55,28 @@ def quality(factory, out, *, processing='immediate'):
             scope = spaces.authorize(user, spaces.create(user, item.id).space_id)
             memory = Memory(runtime, scope, llm=llm, config=Config(access_boost=0))
             origins = {}
-            for index, (text, day) in enumerate(item.sessions, 1):
-                accepted = memory.remember(text, 'eval', event_time=harness.BASE + day * DAY,
-                                           processing=processing)
-                expected = 'completed' if processing == 'immediate' else 'accepted'
-                if accepted['status'] != expected:
+            tasks = []
+
+            def publish(operation_id):
+                memory._processing.run_next_stage(operation_id)
+                if not memory.operation(operation_id).core_committed:
                     raise RuntimeError(f'{item.id}: fixed-response ingestion failed')
+
+            for index, (text, day) in enumerate(item.sessions, 1):
+                accepted = memory.remember(text, 'eval', message_id=f'source-{index}',
+                                           event_time=harness.BASE + day * DAY)
+                tasks.append(accepted['operation_id'])
                 source_id, = accepted['source_ids']
+                # Acceptance time affects fact IDs through the supplied source fingerprint.
+                with memory.dao._transaction() as sql:
+                    sql.update('sources', {'ingested_at': timestamp(harness.BASE + index)},
+                               'id = %s', (source_id,))
                 origins[source_id] = f'source-{index}'
+                if processing == 'immediate':
+                    publish(tasks[-1])
             if processing == 'buffered':
-                if not memory.flush_processing('eval')['ok']:
-                    raise RuntimeError(f'{item.id}: fixed-response buffered processing failed')
+                for operation_id in tasks:
+                    publish(operation_id)
                 # A new pool must observe the same accepted sources and completed receipts.
                 with Database(bundle.runtime) as reopened:
                     restored = Memory(reopened, scope)

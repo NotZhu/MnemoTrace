@@ -15,11 +15,11 @@ from tests.test_fact_adjudication import decisions
 
 
 def test_native_concurrent_receive_is_ordered_and_isolated():
-    mem = MemoryEngine()
+    mem = MemoryEngine(llm=FakeLLM(handler=lambda *_: '{"facts":[],"digests":[]}'))
     with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(lambda n: mem.remember_messages([message(str(n))], 's', 'u'), range(12)))
+        results = list(pool.map(lambda n: mem.remember([message(str(n))], 's', 'u'), range(12)))
     assert sorted(r['messages'][0]['sequence'] for r in results) == list(range(1, 13))
-    assert mem.remember_messages([message('0')], 's', 'other')['messages'][0]['sequence'] == 1
+    assert mem.remember([message('0')], 's', 'other')['messages'][0]['sequence'] == 1
 
 
 def test_native_model_allows_append_and_close_prevents_late_commit():
@@ -29,15 +29,18 @@ def test_native_model_allows_append_and_close_prevents_late_commit():
         assert release.wait(5)
         return reply(prompt, system)
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
-    mem.remember_messages([message('a')], 's', 'u')
     with ThreadPoolExecutor(max_workers=2) as pool:
-        work = pool.submit(mem.flush_messages, 'u', 's', .2)
-        assert entered.wait(5)
-        appended = pool.submit(mem.remember_messages, [message('b')], 's', 'u')
-        assert appended.result(5)['messages'][0]['sequence'] == 2
-        mem.close()
-        release.set()
-        assert not work.result(5)['ok']
+        work = pool.submit(mem.remember, [message('a')], 's', 'u')
+        try:
+            assert entered.wait(5)
+            appended = pool.submit(mem.add, 'another original', 'u', 's')
+            assert appended.result(5).content == 'another original'
+            mem.close()
+        finally:
+            release.set()
+        from mnemotrace.extraction import ExtractionError
+        with pytest.raises((ExtractionError, RuntimeError)):
+            work.result(5)
     assert not mem.fact_store.values()
 
 
@@ -48,16 +51,15 @@ def test_source_time_comes_from_matching_role():
             text='Synthetic city', source_ids=[s['id'] for s in data['pending']])],
             digests=[]))
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
-    mem.remember_messages([message('u', event_time=None), message('a', role='assistant', event_time=200)], 's', 'u')
-    assert mem.flush_messages('u')['ok']
+    mem.remember([message('u', event_time=None), message('a', role='assistant', event_time=200)], 's', 'u')
     assert mem.fact_store.values()[0].valid_at is None
 
 
 def test_reembedding_does_not_authorize_generation_from_an_obsolete_policy():
     from tests.embedder_fixtures import MockEmbedder
     mem = MemoryEngine(llm=FakeLLM(handler=reply))
-    mem.remember_messages([message('a')], 's', 'u')
-    PipelineTasks(mem, 'u').force()
+    from mnemotrace.store.contracts import message_inputs
+    PipelineTasks(mem, 'u').accept(message_inputs([message('a')]), 's', 100)
     assert run_next_stage(mem, 'u')
     window, = PipelineTasks(mem, 'u').state['windows'].values()
     assert window['phase'] == 'embed'
@@ -77,13 +79,13 @@ def test_fixed_contradiction_closes_previous_dialogue_fact():
     assert mem.fact_store.get(old.id).invalid_at == 200 and new.supersedes == [old.id]
 
 
-def test_native_missing_model_fails_without_waiting_for_retry():
+def test_native_missing_model_fails_before_writing_original():
+    from mnemotrace.extraction import LLMNotConfiguredError
+
     mem = MemoryEngine()
-    mem.remember_messages([message('a')], 's', 'u')
-    result = mem.flush_messages('u', timeout=.1)
-    assert result['status'] == 'failed'
-    assert result['jobs'][0]['attempts'] == 1
-    assert result['jobs'][0]['error_code'] == 'llm_not_configured'
+    with pytest.raises(LLMNotConfiguredError):
+        mem.remember([message('a')], 's', 'u')
+    assert not mem.episodes_doc.values()
 
 
 def test_late_unknown_and_older_history_cannot_replace_newer_source():
@@ -96,8 +98,7 @@ def test_late_unknown_and_older_history_cannot_replace_newer_source():
         return json.dumps(result)
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
     for mid, stamp in [('new', 200), ('unknown', None), ('old', 100)]:
-        mem.remember_messages([message(mid, mid, event_time=stamp)], 's', 'u')
-        assert mem.flush_messages('u')['ok']
+        mem.remember([message(mid, mid, event_time=stamp)], 's', 'u')
     latest = [f.object for f in mem.fact_store.values() if f.is_live()]
     assert set(latest) == {'new'}
     assert all(f.object != 'unknown' for f in mem.fact_store.values())
@@ -117,8 +118,7 @@ def test_out_of_order_history_has_disjoint_intervals_and_a_complete_chain(arriva
         return json.dumps(result)
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
     for index, (value, stamp) in enumerate(arrivals):
-        mem.remember_messages([message(str(index), value, event_time=stamp)], 's', 'u')
-        assert mem.flush_messages('u')['ok']
+        mem.remember([message(str(index), value, event_time=stamp)], 's', 'u')
     facts = sorted(mem.fact_store.values(), key=lambda f: f.valid_at)
     assert [(f.object, f.valid_at, f.invalid_at) for f in facts] == expected
     assert [f.supersedes for f in facts] == [[], *[[f.id] for f in facts[:-1]]]
@@ -139,8 +139,7 @@ def test_equal_time_facts_do_not_retire_each_other_in_model_order():
         result['facts'].reverse()
         return json.dumps(result)
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
-    mem.remember_messages([message('a', 'old', event_time=100), message('b', 'new', event_time=100)], 's', 'u')
-    assert mem.flush_messages('u')['ok']
+    mem.remember([message('a', 'old', event_time=100), message('b', 'new', event_time=100)], 's', 'u')
     assert not mem.fact_store.values()
     assert {ep.content for ep in mem.episodes_doc.values()} == {'new', 'old'}
 
@@ -185,28 +184,3 @@ def test_extraction_conflict_importable_and_carries_ids():
     assert exc.code == 'extraction_conflict' and exc.status_code == 409
     assert exc.detail() == {'code': 'extraction_conflict', 'message': exc.message,
                             'stored_raw': True, 'episode_ids': ['e1', 'e2']}
-
-def test_raise_for_failed_result_tolerates_core_success_aux_failure():
-    """核心事实已落库、仅摘要等辅助步骤失败时，不应抛错（与 execute_memory 一致），
-    否则 immediate 客户端会误以为整批失败而重试，可能重复写入。"""
-    from mnemotrace._pipeline import raise_for_failed_result, extract_partial_success
-    # core 完成、摘要失败
-    partial = dict(ok=False, status='failed', jobs=[
-        dict(episode_id='a', core='completed', summarization='failed', state='failed',
-             error_code='digest_invalid_response')])
-    assert extract_partial_success(partial, {'a'}) is True
-    raise_for_failed_result(partial, {'a'})  # 不抛
-    # 核心本身失败 -> 必须抛
-    core_failed = dict(ok=False, status='failed', jobs=[
-        dict(episode_id='a', core='failed', summarization='pending', state='failed',
-             error_code='extraction_failed')])
-    assert extract_partial_success(core_failed, {'a'}) is False
-    with pytest.raises(Exception):
-        raise_for_failed_result(core_failed, {'a'})
-    # 辅助失败但核心未全部完成（缺 id）-> 抛
-    incomplete = dict(ok=False, status='failed', jobs=[
-        dict(episode_id='a', core='completed', summarization='failed', state='failed',
-             error_code='digest_invalid_response')])
-    assert extract_partial_success(incomplete, {'a', 'b'}) is False
-    with pytest.raises(Exception):
-        raise_for_failed_result(incomplete, {'a', 'b'})

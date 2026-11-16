@@ -49,8 +49,8 @@ def source(conn, user, space, record_id='source-1', message_id=None):
                  'ON CONFLICT DO NOTHING', (user, space, 'thread'))
     conn.execute(
         'INSERT INTO mnemotrace.sources(user_id,space_id,id,content,session_id,role,ingested_at,'
-        'source_kind,extract,message_id,sequence,message_fingerprint,record_version,content_version) '
-        "VALUES (%s,%s,%s,'Synthetic input','thread','user',now(),'dialogue',true,%s,0,%s,1,1)",
+        'extract,message_id,sequence,message_fingerprint,record_version,content_version) '
+        "VALUES (%s,%s,%s,'Synthetic input','thread','user',now(),true,%s,0,%s,1,1)",
         (user, space, record_id, message_id, 'a' * 64 if message_id else None))
 
 

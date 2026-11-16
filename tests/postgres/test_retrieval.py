@@ -60,7 +60,8 @@ def test_lexical_mode_writes_and_recalls_chinese_without_vector_tasks(runtime, s
     seed_fact(memory, '我', 'sister', '王小明', linked=True, text='user sister 王小明')
     seed_fact(memory, '王小明', 'works_at', '月亮公司', linked=True, text='王小明 works at 月亮公司')
     seed_fact(memory, '我', 'likes', '绿茶', linked=True, text='user likes 绿茶')
-    assert memory.remember('I live in Shenzhen.', 'chat')['ok']
+    from tests.postgres.fact_fixtures import remember_and_publish
+    assert remember_and_publish(memory, 'I live in Shenzhen.', 'chat')['status'] == 'completed'
     with memory.dao.read_snapshot() as view:
         sql = view._sql
         assert not sql.run('SELECT 1 FROM mnemotrace.embeddings WHERE user_id=%s AND space_id=%s',
@@ -351,8 +352,8 @@ def test_raw_writes_do_not_project_and_digest_vectors_can_recall(memory, runtime
 
     memory = Memory(runtime, memory.context, embedder=SynonymEmbedder(2), embedding_model='synthetic')
     source = seed_note(memory, 'Celestial star', 'chat')
-    memory.remember('Unprocessed note', 'chat', extract=False)
-    memory.remember_messages('chat', (MessageInput('raw-message', 'user', 'Unprocessed dialogue', extract=False),))
+    memory._store_originals('Unprocessed note', 'chat')
+    memory._store_originals([MessageInput('raw-message', 'user', 'Unprocessed dialogue')], 'chat')
     with memory.dao.read_snapshot() as view:
         for table in ('embeddings', 'lexical_documents', 'operations'):
             assert not view._sql.run(f'SELECT 1 FROM mnemotrace.{table} WHERE user_id=%s AND space_id=%s',

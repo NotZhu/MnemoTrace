@@ -15,23 +15,18 @@ import os
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote, urlencode
 
-from ..store.contracts import FactState
+from ..store.contracts import message_inputs, FactState
 from ..categories import Category
 
 
 @runtime_checkable
 class Backend(Protocol):
     mode: str
-    async def remember_messages(self, messages: list[dict], session_id: str,
-                                processing: str = 'buffered', extract: bool = True, *, agent_id: str | None = None) -> dict: ...
-
-    async def remember(self, content: str, session_id: str = "default", extract: bool = True,
-                       processing: str = "immediate", *, agent_id: str | None = None,
-                       event_time: float | None = None) -> dict: ...
+    async def remember(self, value: str | list[dict], session_id: str = "default", *,
+                       wait: bool = False, timeout: float = 30, message_id: str | None = None,
+                       agent_id: str | None = None, event_time: float | None = None) -> dict: ...
     async def operation(self, operation_id: str, *, retry: bool = False) -> dict | None: ...
     async def processing_status(self, session_id: str | None = None) -> dict: ...
-    async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
-                               retry_failed: bool = False, include_digests: bool = False) -> dict: ...
     async def get_episode(self, episode_id: str, space_id: str | None = None) -> dict | None: ...
     async def aggregate_facts(self, predicate: str, **options) -> dict: ...
     async def follow_path(self, anchor: str, predicates: list[str], **options) -> dict: ...
@@ -104,14 +99,11 @@ class LocalBackend:
         if self._owns_service:
             self.svc.close()
 
-    async def remember_messages(self, messages: list[dict], session_id: str,
-                                processing: str = 'buffered', extract: bool = True, *, agent_id: str | None = None) -> dict:
-        return await asyncio.to_thread(self.svc.remember_messages, self.context, messages, session_id, processing, extract, agent_id=agent_id)
-
-    async def remember(self, content: str, session_id: str = "default", extract: bool = True,
-                       processing: str = "immediate", *, agent_id: str | None = None,
-                       event_time: float | None = None) -> dict:
-        return await asyncio.to_thread(self.svc.remember, self.context, content, session_id, extract, processing,
+    async def remember(self, value: str | list[dict], session_id: str = "default", *,
+                       wait: bool = False, timeout: float = 30, message_id: str | None = None,
+                       agent_id: str | None = None, event_time: float | None = None) -> dict:
+        return await asyncio.to_thread(self.svc.remember, self.context, value, session_id,
+                                       wait=wait, timeout=timeout, message_id=message_id,
                                        agent_id=agent_id, event_time=event_time)
 
     async def operation(self, operation_id: str, *, retry: bool = False) -> dict | None:
@@ -119,10 +111,6 @@ class LocalBackend:
 
     async def processing_status(self, session_id: str | None = None) -> dict:
         return await asyncio.to_thread(self.svc.processing_status, self.context, session_id)
-
-    async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
-                               retry_failed: bool = False, include_digests: bool = False) -> dict:
-        return await asyncio.to_thread(self.svc.flush, self.context, session_id, timeout, retry_failed, include_digests)
 
     async def get_episode(self, episode_id: str, space_id: str | None = None) -> dict | None:
         context = self.context if space_id is None else await asyncio.to_thread(
@@ -281,22 +269,15 @@ class RemoteBackend:
         r.raise_for_status()
         return r.json()
 
-    async def remember_messages(self, messages: list[dict], session_id: str,
-                                processing: str = 'buffered', extract: bool = True, *, agent_id: str | None = None) -> dict:
-        return await self._post('/v1/messages', dict(messages=messages, session_id=session_id,
-            processing=processing, extract=extract, agent_id=agent_id))
-
-    async def remember(self, content: str, session_id: str = "default", extract: bool = True,
-                       processing: str = "immediate", *, agent_id: str | None = None,
-                       event_time: float | None = None) -> dict:
-        return await self._post("/v1/remember", {
-            "content": content,
-            "session_id": session_id,
-            "extract": extract,
-            "processing": processing,
-            "agent_id": agent_id,
-            "event_time": event_time,
-        })
+    async def remember(self, value: str | list[dict], session_id: str = "default", *,
+                       wait: bool = False, timeout: float = 30, message_id: str | None = None,
+                       agent_id: str | None = None, event_time: float | None = None) -> dict:
+        items = message_inputs(value, message_id=message_id, event_time=event_time, agent_id=agent_id)
+        return await self._post('/v1/remember', dict(session_id=session_id, wait=wait,
+            timeout=timeout, agent_id=agent_id, messages=[
+                dict(message_id=item.message_id, role=item.role, content=item.content, event_time=item.event_time,
+                     **({'agent_id': item.agent_id} if item.agent_id is not None and agent_id is None else {}))
+                for item in items]), timeout=timeout + 10 if wait else None)
 
     async def operation(self, operation_id: str, *, retry: bool = False) -> dict:
         path = '/v1/operations/' + quote(operation_id, safe='')
@@ -305,12 +286,6 @@ class RemoteBackend:
     async def processing_status(self, session_id: str | None = None) -> dict:
         query = '?' + urlencode({'session_id': session_id}) if session_id is not None else ''
         return await self._get('/v1/processing' + query)
-
-    async def flush_processing(self, session_id: str | None = None, timeout: float = 30,
-                               retry_failed: bool = False, include_digests: bool = False) -> dict:
-        return await self._post('/v1/processing/flush', {
-            'session_id': session_id, 'timeout': timeout, 'retry_failed': retry_failed,
-            'include_digests': include_digests}, timeout=timeout + 10)
 
     async def get_episode(self, episode_id: str, space_id: str | None = None) -> dict:
         query = '?' + urlencode({'space_id': space_id}) if space_id is not None else ''

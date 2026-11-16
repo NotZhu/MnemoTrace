@@ -11,6 +11,8 @@ def client_with_llm(product_client, product_service):
     extraction = product_service.llm
 
     class Model:
+        count_tokens = staticmethod(FakeLLM.count_tokens)
+
         def complete(self, prompt, system=None, **kwargs):
             if "MNEMOTRACE_WINDOW" in prompt or (system or '').startswith((
                 'MNEMOTRACE_RELATION_RESOLUTION', 'MNEMOTRACE_FACT_COMPARISON',
@@ -25,7 +27,7 @@ def client_with_llm(product_client, product_service):
 def test_chat_completions_endpoint(client_with_llm):
     c, service, model = client_with_llm
     h = hdr("chatuser")
-    c.post("/v1/remember", json={"content": "I live in Shenzhen."}, headers=h)
+    c.publish_text("I live in Shenzhen.", headers=h)
     r = c.post("/v1/chat/completions",
                json={"model": "mnemotrace", "messages": [{"role": "user", "content": "where do I live?"}]},
                headers=h)
@@ -45,10 +47,7 @@ def test_chat_completions_endpoint_supports_memory_as_of(client_with_llm):
         ("old", "Wei works at Tencent.", 1_700_000_000.0),
         ("new", "Wei works at Moonshot AI.", 1_702_592_000.0),
     ):
-        response = c.post("/v1/messages", json={
-            "session_id": session, "processing": "immediate",
-            "messages": [{"message_id": "m1", "role": "user", "content": text, "event_time": stamp}],
-        }, headers=h)
+        response = c.publish_text(text, session_id=session, event_time=stamp, headers=h)
         assert response.is_success
 
 
@@ -121,7 +120,7 @@ def test_chat_completions_can_save_raw_dialogue_or_skip_writing(client_with_llm,
     assert memory["remembered"] is remember
     if remember:
         assert memory["remember_extract"] is False
-        assert memory["remember_queued"] is False and memory["operation_ids"] == []
+        assert memory["remember_queued"] is False and memory["task"] is None
     else:
         assert "remember_extract" not in memory
     episodes = c.get("/v1/memories?include_sensitive=true", headers=h).json()["episodes"]
@@ -138,9 +137,73 @@ def test_chat_completions_streaming(client_with_llm):
     assert "[DONE]" in r.text and "chat.completion.chunk" in r.text
 
 
+@pytest.mark.parametrize("extract", [True, False])
+def test_chat_message_id_replays_response_and_batch(client_with_llm, product_scope, extract):
+    client, service, model = client_with_llm
+    label = "chat_replay"
+    headers = hdr(label)
+    context, _ = product_scope(label)
+    request = {
+        "messages": [{"role": "user", "content": "I live in Shenzhen."}],
+        "memory": {"session_id": "chat", "message_id": "stable", "recall": False, "extract": extract},
+    }
+    path = "/v1/chat/completions"
+    initial = client.post(path, json=request, headers=headers)
+    assert initial.status_code == 200
+    result = initial.json()
+    assert client.post(path, json=request, headers=headers).json() == result
+    streamed = client.post(path, json=dict(request, stream=True), headers=headers)
+    assert streamed.status_code == 200 and result["id"] in streamed.text
+    changed = dict(request, messages=[{"role": "user", "content": "I live in Beijing."}])
+    assert client.post(path, json=changed, headers=headers).status_code == 409
+    memory = service.memory(context)
+    assert len(model.calls) == 1
+    assert len(memory.list_sources()) == 2
+    assert len(memory.list_operations()) == int(extract)
+    if extract:
+        task = result["mnemotrace"]["task"]["operation_id"]
+        assert memory._processing.run_next_stage(task)
+        assert memory.operation(task).core_committed
+    assert client.post("/v1/forget", json={"confirm": True}, headers=headers).status_code == 200
+    accepted_again = client.post(path, json=changed, headers=headers)
+    assert accepted_again.status_code == 200
+    assert accepted_again.json()["id"] != result["id"] and len(model.calls) == 2
+
+
 def test_chat_completions_503_without_llm(client_with_llm):
     c, service, model = client_with_llm
     service.llm = None
     r = c.post("/v1/chat/completions",
                json={"messages": [{"role": "user", "content": "hi"}]}, headers=hdr("x"))
     assert r.status_code == 503
+
+
+def test_concurrent_chat_retries_return_the_same_committed_response(client_with_llm, product_scope):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    client, service, _ = client_with_llm
+    label = "chat_concurrent_replay"
+    context, _ = product_scope(label)
+    both_generating = Barrier(2)
+
+    def complete(*args, **kwargs):
+        return f"Synthetic response {both_generating.wait(5)}"
+
+    service.llm = FakeLLM(handler=complete)
+    body = {
+        "messages": [{"role": "user", "content": "Synthetic conversational evidence"}],
+        "memory": {"session_id": "chat", "message_id": "concurrent", "recall": False},
+    }
+
+    def post():
+        return client.post("/v1/chat/completions", json=body, headers=hdr(label))
+
+    with ThreadPoolExecutor(2) as pool:
+        left = pool.submit(post)
+        right = pool.submit(post)
+        responses = [left.result(), right.result()]
+    assert [reply.status_code for reply in responses] == [200, 200]
+    assert responses[0].json() == responses[1].json()
+    memory = service.memory(context)
+    assert len(memory.list_sources()) == 2 and len(memory.list_operations()) == 1

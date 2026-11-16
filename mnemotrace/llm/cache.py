@@ -76,6 +76,18 @@ class CachedLLM(LLM):
             except OSError:
                 pass
 
+    @property
+    def context_window(self):
+        return getattr(self.inner, "context_window", None)
+
+    def require_token_counter(self):
+        from .tokens import require_counter
+
+        require_counter(self.inner)
+
+    def count_tokens(self, messages):
+        return self.inner.count_tokens(messages)
+
     def complete(self, prompt: str, **kwargs) -> str:
         key = self._key(prompt, kwargs)
         cached = self._read(key)
@@ -115,7 +127,17 @@ class CachedLLM(LLM):
             self._write(key, json.dumps(asdict(result), ensure_ascii=False))
         return result
 
+    def discard_completion(self, prompt, completion, **kwargs):
+        """Allow a retry to make a fresh call after rejecting model output."""
+        key = self._key(prompt, {**kwargs, "_completion_record": "text-finish-usage"})
+        with self._lock:
+            if self._read(key) == json.dumps(asdict(completion), ensure_ascii=False):
+                try:
+                    os.unlink(os.path.join(self.path, key))
+                except OSError:
+                    pass
+
     def __getattr__(self, name):
         # 代码里从模型对象上读取的其他属性（如 `.model`）透传给真实模型，
         # 这样被缓存包装的 LLM 仍然是即插即用的替代品。
-        return getattr(self.inner, name)
+        return getattr(object.__getattribute__(self, "inner"), name)

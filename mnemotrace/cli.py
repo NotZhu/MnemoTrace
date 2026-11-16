@@ -28,9 +28,9 @@ def main(argv=None):
     remember.add_argument('--session-id', required=True)
     remember.add_argument('--agent-id')
     remember.add_argument('--event-time', type=float, help='Source time as Unix seconds')
-    remember.add_argument('--no-extract', dest='extract', action='store_false',
-                          help='Save the original without extracting facts')
-    remember.add_argument('--processing', choices=('buffered', 'immediate'), default='buffered')
+    remember.add_argument('--message-id', help='Stable identity for retries')
+    remember.add_argument('--wait', action='store_true')
+    remember.add_argument('--timeout', type=float, default=30)
     for command in ('operation', 'retry'):
         commands.add_parser(command).add_argument('operation_id')
     commands.add_parser('recall').add_argument('query')
@@ -43,8 +43,9 @@ def main(argv=None):
     try:
         with local_space(args) as (service, context):
             if args.command == 'remember':
-                result = service.remember(context, args.content, args.session_id, args.extract,
-                                          args.processing, agent_id=args.agent_id, event_time=args.event_time)
+                result = service.remember(context, args.content, args.session_id, wait=args.wait,
+                                          timeout=args.timeout, message_id=args.message_id,
+                                          agent_id=args.agent_id, event_time=args.event_time)
             elif args.command in ('operation', 'retry'):
                 result = service.operation(context, args.operation_id, retry=args.command == 'retry')
                 if result is None:

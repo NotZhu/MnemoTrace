@@ -1,5 +1,4 @@
 """Explicit Python entry point for record-backed memory in one PostgreSQL space."""
-from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -9,7 +8,7 @@ from .config import Config
 from .consolidate.decay import reinforce
 from .retrieve import postgres as retrieval
 from .store.contracts import (
-    ChangeSet, CommitConditions, FactQuery, MessageInput, OperationKind,
+    ChangeSet, CommitConditions, FactQuery, message_inputs,
     RecordRef, RecordWrite, StoredRecord, validate_erasures,
 )
 from .store.postgres.dao import PostgresDAO, new_operation_id
@@ -17,7 +16,6 @@ from .store.postgres.database import identifier
 from .store.postgres.errors import VersionConflict
 from .store.postgres.identity import Spaces
 from .store.postgres.records import FACT, SOURCE, MODELS, domain
-from .types import Episode
 from .util import time_key
 
 if TYPE_CHECKING:
@@ -32,7 +30,8 @@ class Memory:
     def __init__(self, database: 'Database', context: 'SpaceContext', *,
                  embedder: 'Embedder | None' = None, embedding_model: str | None = None,
                  llm=None, config: Config | None = None):
-        """初始化记忆存储。
+        """
+        初始化记忆存储。
 
         Args:
             database: 数据库连接。
@@ -70,73 +69,38 @@ class Memory:
     def _commit(self, snapshot, *, writes=(), **kwargs):
         return self.dao.commit(ChangeSet(CommitConditions(snapshot), new_operation_id(), writes=writes, **kwargs))
 
-    def remember_messages(self, session_id: str, messages: tuple[MessageInput, ...], *,
-                          processing='buffered', timeout=30):
-        """接收一段对话，并返回对应的来源 ID 和持久化操作的进度信息。
-
-        Args:
-            session_id: 会话的唯一标识符。
-            messages: 要记忆的消息输入记录。
-            processing: 处理模式，可以是 'buffered' 或 'immediate'。默认为 'buffered'。
-            timeout: 等待处理完成的超时时间（秒）。默认为 30 秒。
-        """
-        identifier(session_id)
-        self._validate_processing(processing, timeout)
-        items = tuple(messages)
-        if not items or any(not isinstance(item, MessageInput) for item in items):
-            raise ValueError('Expected a non-empty batch of MessageInput records')
-        pipeline = self._processing
-        receipt, associations = pipeline.tasks.accept(
-            session_id, items, pipeline.require_ready, pipeline.fit_message, immediate=processing == 'immediate')
-        operation_ids = tuple(dict.fromkeys(operation for _, operation in associations))
-        by_source = defaultdict(list)
-        for source_id, operation_id in associations:
-            by_source[source_id].append(operation_id)
-        result = self._accepted(operation_ids, processing, timeout)
-        result.update(source_ids=receipt.source_ids, stored_raw=True, accepted=receipt.affected_count,
-                      messages=tuple(dict(message_id=item.message_id, episode_id=source_id,
-                                          operation_ids=tuple(by_source.get(source_id, ())))
-                                     for item, source_id in zip(items, receipt.source_ids)))
-        return result
-
-    def remember(self, content: str, session_id: str, *, extract: bool = True,
-                 event_time=None, agent_id=None, processing='immediate', timeout=30):
-        """Save a note and optionally request fact extraction."""
-        identifier(session_id)
-        self._validate_processing(processing, timeout)
-        if not isinstance(content, str) or not content.strip() or '\x00' in content:
-            raise ValueError('Invalid source content or routing')
-        source = Episode(content, self.context.user_id, session_id, source_kind='note',
-                         extract=extract, event_time=event_time)
-        record = replace(StoredRecord.from_record(self.context, source), agent_id=agent_id)
-        receipt, operation_id = self._processing.tasks.accept_source(
-            record, self._processing.require_ready,
-            kind=OperationKind.EXTRACT if extract else None)
-        if not extract:
-            return dict(ok=True, status='stored', stored_raw=True, source_ids=list(receipt.source_ids),
-                        operation_ids=[], operations=[])
-        result = self._accepted((operation_id,), processing, timeout)
-        result.update(source_ids=receipt.source_ids, stored_raw=True)
-        if result['status'] == 'completed':
-            committed = self.dao.receipt(operation_id)
-            result['fact_ids'] = committed.fact_ids if committed is not None else ()
-        return result
-
-    @staticmethod
-    def _validate_processing(processing, timeout):
-        """验证处理模式和超时时间是否有效。"""
+    def remember(self, value, session_id: str, *, wait=False, timeout=30,
+                 message_id=None, event_time=None, agent_id=None):
+        """Store a request and optionally wait for the worker to publish it."""
         from math import isfinite
-        if processing not in ('buffered', 'immediate'):
-            raise ValueError('Expected buffered or immediate processing')
-        if type(timeout) not in (int, float) or not isfinite(timeout) or timeout < 0:
-            raise ValueError('Expected a finite nonnegative timeout')
 
+        identifier(session_id)
+        if type(wait) is not bool or type(timeout) not in (int, float) or not isfinite(timeout) or not 0 <= timeout <= 300:
+            raise ValueError('Expected a boolean wait and a timeout between 0 and 300 seconds')
+        items = message_inputs(value, message_id=message_id, event_time=event_time, agent_id=agent_id)
+        pipeline = self._processing
+        source_ids, operation_id = pipeline.tasks.accept(session_id, items, pipeline.require_ready)
+        positions = pipeline.tasks.source_positions(source_ids)
+        if len(positions) != len(source_ids):
+            raise VersionConflict('Task sources were removed after acceptance')
+        task = pipeline.wait(operation_id, timeout) if wait else pipeline.tasks.operation(operation_id)
+        state = task.state.value if task is not None else 'cancelled'
+        status = ('completed' if state == 'completed' else 'failed' if state in ('failed', 'cancelled')
+                  else 'timed_out' if wait else 'accepted')
+        result = dict(ok=status != 'failed', status=status, stored_raw=True, source_ids=source_ids,
+                      messages=tuple(dict(message_id=item.message_id, episode_id=source_id,
+                                          sequence=positions[source_id])
+                                     for item, source_id in zip(items, source_ids)),
+                      task=task, operation_id=operation_id)
+        if status == 'completed':
+            receipt = self.dao.receipt(operation_id)
+            result['fact_ids'] = receipt.fact_ids if receipt is not None else ()
+        return result
 
-    def _accepted(self, operation_ids, processing, timeout):
-        if processing == 'immediate':
-            return self._processing.flush(operation_ids=operation_ids, timeout=timeout)
-        return dict(ok=True, status='accepted', operation_ids=operation_ids,
-                    operations=self._processing.tasks.operations(operation_ids))
+    def _store_originals(self, value, session_id, *, agent_id=None, event_time=None):
+        identifier(session_id)
+        items = message_inputs(value, agent_id=agent_id, event_time=event_time)
+        return self._processing.tasks.store_originals(session_id, items)
 
     def operation(self, operation_id):
         identifier(operation_id)
@@ -153,12 +117,6 @@ class Memory:
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError('Expected page size from 1 to 1000')
         return self._processing.tasks.list_operations(session_id, after_id, limit)
-
-    def flush_processing(self, session_id=None, timeout=30, *, retry_failed=False, include_digests=False):
-        if session_id is not None:
-            identifier(session_id)
-        return self._processing.flush(session_id=session_id, timeout=timeout, retry_failed=retry_failed,
-                                      include_digests=include_digests)
 
     def _query(self, text, *, top_k, as_of=None, facts=None, use_vectors=True):
         embedder = self._embedder if use_vectors else None

@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mnemotrace import MemoryEngine  # noqa: E402
 from mnemotrace.config import Config  # noqa: E402
-from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
+from mnemotrace.llm.providers import load_dotenv, make_embedder, make_extraction_llm  # noqa: E402
 from eval.longmemeval import ingest, load_data  # noqa: E402
 
 
@@ -92,7 +92,7 @@ def main():
     random.Random(999).shuffle(items)
     dev_items = items[: args.dev]
     print(f"building {len(dev_items)} dev questions (one-time fact extraction)...")
-    dev = build_dev(dev_items, make_embedder(args.embedder), make_llm(args.extractor, max_tokens=512))
+    dev = build_dev(dev_items, make_embedder(args.embedder), make_extraction_llm(args.extractor))
     print(f"  {len(dev)} usable (had relevant facts)")
     best, best_w, base_r = grid_search(dev, args.k)
     print(f"\n  default weights recall@{args.k}: {base_r:.3f}")

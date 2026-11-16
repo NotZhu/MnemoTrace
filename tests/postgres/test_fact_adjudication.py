@@ -1,6 +1,6 @@
 import json
 
-from tests.postgres.fact_fixtures import seed_fact as store_fact
+from tests.postgres.fact_fixtures import remember_and_publish, seed_fact as store_fact
 
 from mnemotrace.llm import FakeLLM
 from mnemotrace.memory import Memory
@@ -40,7 +40,7 @@ def test_equal_time_candidate_keeps_only_original_evidence(runtime, spaces, user
     context = spaces.authorize(user, spaces.create(user, 'Equal-time disagreement').space_id)
     mem = Memory(runtime, context, llm=FakeLLM(handler=model_response))
     manual = seed_fact(mem, 'Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False, text='Ana lives in Paris')
-    result = mem.remember('Ana lives in Oslo', 'input', event_time=10)
+    result = remember_and_publish(mem, 'Ana lives in Oslo', 'input', event_time=10)
     assert result['status'] == 'completed'
     assert [fact.id for fact in mem.facts()] == [manual.id]
     assert mem.graph_entities('Oslo') == ()
@@ -66,7 +66,7 @@ def test_adjudication_reloads_history_after_a_concurrent_write(runtime, spaces, 
 
     model = FakeLLM(handler=respond)
     mem = Memory(runtime, context, llm=model)
-    assert mem.remember('Ana lives in Oslo', 'review', event_time=10)['status'] == 'completed'
+    assert remember_and_publish(mem, 'Ana lives in Oslo', 'review', event_time=10)['status'] == 'completed'
     assert verdict_calls == 2 and len(model.calls) == 5
     assert mem.get_fact(manual.id).sensitive
     assert [fact.object for fact in mem.facts()] == ['Paris']
@@ -83,10 +83,8 @@ def test_invalid_adjudication_does_not_publish_any_part_of_window(runtime, space
 
     mem = Memory(runtime, context, llm=FakeLLM(handler=respond))
     manual = seed_fact(mem, 'Ana', 'lives_in', 'Paris', valid_at=10, sensitive=False, text='Ana lives in Paris')
-    accepted = mem.remember('Ana lives in Oslo', 'review', event_time=10, processing='buffered')
-    operation, = accepted['operation_ids']
-    assert mem._processing.run_next_stage(operation, force=True)
-    assert mem._processing.run_next_stage(operation, force=True)
+    operation = mem.remember('Ana lives in Oslo', 'review', event_time=10)['operation_id']
+    assert mem._processing.run_next_stage(operation)
     status = mem._processing.tasks.operation(operation)
     assert status.state.value == 'retry_wait'
     assert status.extraction_saved and not status.core_committed
@@ -108,7 +106,7 @@ def test_duplicate_evidence_keeps_labels_and_adds_provenance(runtime, spaces, us
     mem = Memory(runtime, context, llm=model)
     manual = seed_fact(mem, 'Ana', 'lives_in', 'Paris', valid_at=10, categories=['personal_details'], sensitive=True, text='Ana lives in Paris')
     assert not mem.set_fact_sensitive(manual.id, False).sensitive
-    result = mem.remember('Ana lives in Paris', 'review', event_time=10)
+    result = remember_and_publish(mem, 'Ana lives in Paris', 'review', event_time=10)
     assert result['status'] == 'completed'
     kept, = mem.facts()
     assert kept.id == manual.id and tuple(kept.provenance) == result['source_ids']
@@ -126,7 +124,7 @@ def test_discarded_candidate_is_absent_from_private_export(runtime, spaces, user
     service = MemoryService(runtime, llm=FakeLLM(handler=model_response))
     mem = service.memory(context)
     manual = seed_fact(mem, 'Ana', 'lives_in', 'Paris', valid_at=10, text='Ana lives in Paris')
-    assert mem.remember('Ana lives in Oslo', 'input', event_time=10)['status'] == 'completed'
+    assert remember_and_publish(mem, 'Ana lives in Oslo', 'input', event_time=10)['status'] == 'completed'
     snapshot = service.export(context, include_sensitive=True)
     assert snapshot['format_version'] == 7
     assert 'conflicts' not in snapshot

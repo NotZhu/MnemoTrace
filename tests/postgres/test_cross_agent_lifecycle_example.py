@@ -18,6 +18,9 @@ def example_http(product_client, product_scope):
 
     scope, key = product_scope()
     def call(path, body=None, method='POST'):
+        if method == 'POST' and path == '/v1/remember':
+            fields = {key: value for key, value in body.items() if key != 'wait'}
+            return product_client.publish_batch(headers={'X-Synthetic-Scope': 'synthetic'}, **fields).json()
         headers = {'Authorization': 'Bearer ' + key}
         if method == 'GET':
             separator = '&' if urlsplit(path).query else '?'
@@ -46,7 +49,6 @@ def test_cross_agent_lifecycle_example_http(example_http):
     assert result["status_before"]["session_counts"]["episodes"] == 0
     assert VERIFY_PHRASE in result["context_after"]
     assert result["status_after_write"]["session_counts"]["episodes"] == 2
-    assert result["flushed"]["ok"] is True
     assert result["report"]["episodes"] == 2
     assert len(result["report"]["facts"]) == 2
     assert any(VERIFY_PHRASE in fact["text"] for fact in result["report"]["facts"])

@@ -5,7 +5,7 @@ lean_context 能正确组装它们，并做去重 + 硬性大小上限。"""
 from __future__ import annotations
 
 from tests.embedder_fixtures import MockEmbedder
-from tests.model_fixtures import link_synthetic_facts, seed_linked, seed_timeline
+from tests.model_fixtures import link_synthetic_facts, seed_digests, seed_linked, seed_timeline
 from tests.model_fixtures import MemoryEngine
 from mnemotrace.util import DAY
 
@@ -42,13 +42,13 @@ def test_existing_digests_are_indexed_exclusively():
     mem = build()
     assert len(mem.digest_vec.values()) == len(SESSIONS)
     for ep in mem.episodes_doc.values():
-        assert ep.digest, "each episode should carry a digest after generate_digests"
+        assert ep.digest, "each episode should carry a digest for retrieval"
         assert ep.digest_embedding is not None
 
 
 def test_summarize_is_idempotent():
     mem = build()
-    n = mem.generate_digests(list(mem.episodes_doc.values()))  # 已经摘要过
+    n = mem.consolidate()['digests']
     assert n == 0, "re-summarizing already-summarized episodes is a no-op"
 
 
@@ -87,11 +87,11 @@ def test_lean_context_is_leaner_than_full_history():
     assert len(lean) <= max(2048, len(full) * 3)  # sanity：不能大得离谱
 
 
-def test_consolidate_full_builds_facts_and_digests():
+def test_consolidate_keeps_short_sources_without_digests():
     mem = MemoryEngine()
     eps = [mem.add(t, user_id="u1", session_id=f"s{i}", event_time=BASE + d * DAY)
            for i, (t, d) in enumerate(SESSIONS)]
-    stats = mem.consolidate_full(fact_episodes=eps, digest_episodes=eps)
+    stats = mem.consolidate(eps)
     assert stats["facts_added"] >= 0 and stats["digests"] == 0
     assert len(mem.digest_vec.values()) == 0
 
@@ -744,10 +744,10 @@ def test_digest_remains_faithful_after_supersession():
                user_id="u1", valid_at=BASE + 5 * DAY, supersedes=[old.id], text='u1 yoga frequency three times a week')
     mem.fact_store.upsert(old.id, [0.0], old)
     mem.fact_store.upsert(new.id, [0.0], new)
-    mem.generate_digests([ep])  # 冻结 "twice a week" 的摘要
+    seed_digests(mem, [ep])
     assert "[updated:" not in ep.digest
     before = ep.digest
-    assert mem.consolidate_full(fact_episodes=[], digest_episodes=[ep])["digests"] == 0
+    assert mem.consolidate([])["digests"] == 0
     assert ep.digest == before
     assert "[updated:" not in ep.digest and "three times a week" not in ep.digest
 
@@ -765,11 +765,11 @@ def test_digest_remains_faithful_with_cold_tier_history():
                salience=1.0, text='u1 yoga frequency three times a week')
     mem.fact_store.upsert(old.id, [0.0], old)
     mem.fact_store.upsert(new.id, [0.0], new)
-    mem.generate_digests([ep])
+    seed_digests(mem, [ep])
     assert mem.evict_cold(max_hot=1) == 1
 
     before = ep.digest
-    assert mem.consolidate_full(fact_episodes=[], digest_episodes=[ep])["digests"] == 0
+    assert mem.consolidate([])["digests"] == 0
     assert ep.digest == before
     assert "three times a week" not in ep.digest
 
@@ -891,7 +891,7 @@ def test_memory_policy_edits_extraction():
 
     # get_policy 暴露覆盖项和内置默认值。
     gp = m.get_policy()
-    assert set(gp) == {"policy", "defaults"} and len(gp["defaults"]) == 4
+    assert set(gp) == {"policy", "defaults"} and set(gp["defaults"]) == {"extract_instruction", "extract_system", "profile_system"}
 
 
 def test_redacted_context_omits_free_text_layers_that_can_leak_sensitive_content():

@@ -1,21 +1,21 @@
 """Budget and validate window requests shared by ontology and fact comparisons."""
 import json
 
-from ..extraction import ExtractionResponseError, ExtractionTruncatedError
+from ..extraction import ExtractionBudgetError, ExtractionResponseError, ExtractionTruncatedError
 from ..llm.base import complete_result
 from ..llm.execution import one_attempt
+from ..llm.tokens import count_tokens, input_limit
 
 
 def encode(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
 
 
-def requests(items, pack, system, config, *, tokens_per_item):
-    """Yield budget-sized requests, or None for an indivisible oversized item.
+def requests(items, pack, system, config, llm, *, tokens_per_item):
+    """Yield budget-sized requests and fail if one item cannot fit on its own.
 
     pack is evaluated after each completed request so later requests can use
     already resolved proposals. No decision count cap substitutes for a budget.
-    UTF-8 bytes are the existing conservative offline token upper bound.
     """
     pending = list(items)
     offset = 0
@@ -24,15 +24,15 @@ def requests(items, pack, system, config, *, tokens_per_item):
         for item in pending[offset:]:
             proposed = [*batch, item]
             output = 32 + sum(tokens_per_item(entry) for entry in proposed)
+            limit = input_limit(llm, config, output)
+            if output > config.memory_max_output_tokens or limit <= 0:
+                break
             candidate = encode(pack(proposed))
-            size = len((system + candidate).encode('utf-8'))
-            fits = (output <= config.joint_max_output_tokens and size <= config.extraction_max_input_bytes
-                    and (config.joint_context_tokens is None or size + output <= config.joint_context_tokens))
-            if not fits:
+            if count_tokens(llm, candidate, system) > limit:
                 break
             batch, prompt, tokens = proposed, candidate, output
         if not batch:
-            batch = [pending[offset]]
+            raise ExtractionBudgetError()
         yield batch, prompt, tokens
         offset += len(batch)
 

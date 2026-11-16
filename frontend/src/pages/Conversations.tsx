@@ -11,13 +11,13 @@ import { OperationProgress } from '../components/OperationProgress'
 import { toast } from '../components/Toast'
 import {
   useAgentStatus,
-  useOrganizeSession,
   useMemoryPages,
-  useRememberMessages,
+  useRemember,
   useSessionReport,
   useSessions,
 } from '../hooks/queries'
 import { useDebouncedSearch } from '../hooks/useDebouncedSearch'
+import { newMessageId } from '../lib/api'
 import { copy as t } from '../lib/copy'
 import { truncate } from '../lib/format'
 
@@ -33,11 +33,10 @@ export default function Conversations() {
   const currentSession = sessionId.trim() || 'default'
   const sessionEpoch = useRef(0)
   const [sessionRequest, setSessionRequest] = useState(() => new AbortController())
-  const remember = useRememberMessages(sessionRequest.signal)
+  const remember = useRemember()
   const [role, setRole] = useState<'user' | 'assistant'>('user')
   const [pendingInput, setPendingInput] = useState<{identity: string; id: string} | null>(null)
   const status = useAgentStatus(currentSession)
-  const organizeSession = useOrganizeSession(sessionRequest.signal)
   const [text, setText] = useState('')
   const [sessionSearch, setSessionSearch] = useState('')
   const [searchComposing, setSearchComposing] = useState(false)
@@ -69,15 +68,15 @@ export default function Conversations() {
     const content = text.trim()
     if (!content) return
     const identity = JSON.stringify([currentSession, content, role])
-    const messageId = pendingInput?.identity === identity ? pendingInput.id : crypto.randomUUID()
+    const messageId = pendingInput?.identity === identity ? pendingInput.id : newMessageId()
     setPendingInput({identity, id: messageId})
     const epoch = sessionEpoch.current
-    remember.mutate({messages: [{message_id: messageId, role, content}], sessionId: currentSession}, {
+    remember.mutate({value: [{message_id: messageId, role, content}], session_id: currentSession, signal: sessionRequest.signal}, {
       onSuccess: (r) => {
         if (epoch !== sessionEpoch.current) return
         setText('')
         setPendingInput(null)
-        if (r.status === 'accepted' && r.operation_ids.length) toast.info('原文已保存，正在等待模型抽取')
+        if (r.status === 'accepted') toast.info('原文已保存，正在等待模型抽取')
         else toast.success('消息已保存')
       },
       onError: (e) => {
@@ -85,22 +84,6 @@ export default function Conversations() {
       },
     })
   }
-
-  const finishSession = (id: string) => {
-    const epoch = sessionEpoch.current
-    organizeSession.mutate(id, {
-      onSuccess: (r) => {
-        if (epoch !== sessionEpoch.current) return
-        if (r.ok) toast.success('会话核心处理完成')
-        else toast.info(r.status === 'timed_out' ? '等待超时，任务继续处理' : '处理未完成，请查看操作进度')
-        showReport(id)
-      },
-      onError: (e) => {
-        if (epoch === sessionEpoch.current) toast.error(String((e as Error).message))
-      },
-    })
-  }
-
 
   const episodes = data?.episodes ?? []
   const reportNextOffset = report.data?.facts_page?.next_offset
@@ -200,11 +183,8 @@ export default function Conversations() {
                         {t.conversations.useSession}
                       </button>
                       <button type="button" className={SESSION_ACTION_CLASS}
-                        title={t.conversations.organizeSessionHint}
-                        disabled={organizeSession.isPending}
-                        aria-busy={organizeSession.isPending && organizeSession.variables === s.session_id}
-                        onClick={() => finishSession(s.session_id)}>
-                        {organizeSession.isPending && organizeSession.variables === s.session_id ? t.conversations.closingSession : t.conversations.organizeSession}
+                        onClick={() => showReport(s.session_id)}>
+                        查看报告
                       </button>
                     </div>
                   </div>

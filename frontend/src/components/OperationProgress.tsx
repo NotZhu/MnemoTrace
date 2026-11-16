@@ -37,7 +37,9 @@ export function OperationProgress({ sessionId, sessionSignal }: { sessionId: str
     <section aria-label="处理进度" className="space-y-2 rounded-xl border border-line p-4">
       <h3 className="text-sm font-medium">处理进度</h3>
       {progress.isError && <p role="alert" className="text-brand-rose">读取失败。<button onClick={() => void progress.refetch()}>重试</button></p>}
-      {!progress.isError && progress.data?.operations.length === 0 && <p className="text-sm text-ghost">暂无操作</p>}
+      {!progress.isError && progress.data?.operations.length === 0 && (
+        <p className="text-sm text-ghost">暂无操作</p>
+      )}
       <ul className="space-y-2">
         {progress.data?.operations.map(operation => (
           <li key={operation.operation_id} className="flex flex-wrap items-center gap-2 text-sm">

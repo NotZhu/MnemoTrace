@@ -17,12 +17,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mnemotrace import Config, ExtractionError, MemoryEngine  # noqa: E402
 from mnemotrace.consolidate.planning import WINDOW_PREFIX  # noqa: E402
-from mnemotrace.llm import Completion, LLM  # noqa: E402
+from mnemotrace.llm import Completion, FakeLLM, LLM  # noqa: E402
 from mnemotrace.llm.base import complete_result  # noqa: E402
+from mnemotrace.llm.tokens import count_tokens, require_counter  # noqa: E402
 
 
 class RecordedExtraction(LLM):
     """Exact synthetic input/output pairs; no natural-language extraction rules."""
+
+    count_tokens = staticmethod(FakeLLM.count_tokens)
 
     def __init__(self, responses: dict[str, str]):
         self.responses = responses
@@ -40,6 +43,16 @@ class RecordedExtraction(LLM):
 
 
 class MeteredLLM(LLM):
+    @property
+    def context_window(self):
+        return getattr(self.inner, 'context_window', None)
+
+    def require_token_counter(self):
+        require_counter(self.inner)
+
+    def count_tokens(self, messages):
+        return self.inner.count_tokens(messages)
+
     def __init__(self, inner):
         self.inner, self.calls = inner, []
 
@@ -50,7 +63,7 @@ class MeteredLLM(LLM):
         start = time.perf_counter()
         result = complete_result(self.inner, prompt, **kwargs)
         self.calls.append({"latency_ms": (time.perf_counter() - start) * 1000,
-                           "input_bytes": len((prompt + kwargs.get("system", "")).encode("utf-8")),
+                           "input_tokens": count_tokens(self.inner, prompt, kwargs.get("system")),
                            "finish_reason": result.finish_reason, "usage": result.usage})
         return result
 
@@ -61,22 +74,21 @@ def compare(events: int, runs: int, extractor: str | None = None) -> dict:
     for run in range(runs):
         for mode in ("immediate", "window"):
             if extractor:
-                from mnemotrace.llm.providers import make_llm
-                inner = make_llm(extractor)
+                from mnemotrace.llm.providers import make_extraction_llm
+                inner = make_extraction_llm(extractor)
             else:
                 inner = RecordedExtraction(expected)
             meter = MeteredLLM(inner)
             memory = MemoryEngine(llm=meter)
             sources = {}
             start = time.perf_counter()
-            for index, (text, obj) in enumerate(expected.items()):
-                accepted = memory.remember_messages([dict(message_id=str(index), role='user', content=text,
-                    event_time=1_700_000_000 + index)], 'synthetic-session')
-                sources[obj] = accepted['messages'][0]['episode_id']
-                if mode == 'immediate':
-                    assert memory.flush_messages()['ok']
-            if mode == 'window':
-                assert memory.flush_messages()['ok']
+            messages = [dict(message_id=str(index), role='user', content=text, event_time=1_700_000_000 + index)
+                        for index, text in enumerate(expected)]
+            batches = ([item] for item in messages) if mode == 'immediate' else (messages,)
+            for batch in batches:
+                result = memory.remember(batch, 'synthetic-session')
+                for item, source in zip(batch, result['source_ids']):
+                    sources[expected[item['content']]] = source
             elapsed = (time.perf_counter() - start) * 1000
             facts = memory.fact_store.values()
             found = {f.object for f in facts if f.object in sources}
@@ -105,7 +117,7 @@ def compare(events: int, runs: int, extractor: str | None = None) -> dict:
             "synthetic_replay": extractor is None,
             "extractor": extractor, "events": events, "runs": runs,
             "budgets": {k: getattr(Config(), k) for k in (
-                "extraction_max_input_bytes", "extraction_context_bytes", "joint_max_output_tokens")},
+                "memory_max_input_tokens", "memory_max_output_tokens")},
             "results": results}
 
 

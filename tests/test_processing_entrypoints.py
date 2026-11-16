@@ -21,7 +21,7 @@ def deployment(monkeypatch):
     monkeypatch.setenv('MNEMOTRACE_SPACE_ID', 'synthetic-space')
     monkeypatch.setenv('MNEMOTRACE_LLM', 'synthetic-model')
     monkeypatch.setenv('MNEMOTRACE_EMBEDDER', 'lexical')
-    monkeypatch.setattr(providers, 'make_llm', Mock())
+    monkeypatch.setattr(providers, 'make_extraction_llm', Mock())
 
 
 def test_quickstart_passes_deployment_config_to_memory(deployment, monkeypatch):
@@ -62,6 +62,36 @@ def test_seed_creates_new_output_directory_and_passes_deployment_config(deployme
     spaces.create.assert_called_once()
 
 
+def test_worker_reports_missing_model_counter_before_opening_database(monkeypatch, capsys):
+    from mnemotrace import worker
+
+    monkeypatch.setenv("MNEMOTRACE_LLM", "synthetic/unknown")
+    monkeypatch.setattr(worker, "load_dotenv", lambda: None)
+    monkeypatch.setattr(worker, "make_extraction_llm", lambda _, **kwargs: object())
+    monkeypatch.setattr(worker, "Database", Mock(side_effect=AssertionError("opened database")))
+    with pytest.raises(SystemExit) as error:
+        worker.main([])
+    assert error.value.code == 1
+    assert "MNEMOTRACE_TOKEN_COUNTER" in capsys.readouterr().err
+
+
+def test_production_factory_requires_and_passes_context_capacity(monkeypatch):
+    from mnemotrace.llm.tokens import ModelContextConfigurationError
+
+    variable = "MNEMOTRACE_EXTRACTION_CONTEXT_TOKENS"
+    adapter = Mock()
+    monkeypatch.setattr(providers, "make_llm", adapter)
+    for invalid in ("", "0", "-1", "not-a-number"):
+        monkeypatch.setenv(variable, invalid)
+        with pytest.raises(ModelContextConfigurationError, match=variable):
+            providers.make_extraction_llm("synthetic", require_context=True)
+    adapter.assert_not_called()
+
+    monkeypatch.setenv(variable, "8192")
+    assert providers.make_extraction_llm("synthetic", require_context=True) is adapter.return_value
+    assert adapter.call_args.kwargs["context_window"] == 8192
+
+
 def test_idle_worker_exits_on_sigterm():
     # Run in a subprocess so a shutdown regression cannot hang the test runner.
     script = dedent("""
@@ -88,7 +118,7 @@ def test_idle_worker_exits_on_sigterm():
 
         previous = signal.getsignal(signal.SIGTERM)
         with (patch.dict(worker.os.environ, {'MNEMOTRACE_LLM': 'synthetic'}),
-              patch.object(worker, 'make_llm'),
+              patch.object(worker, 'make_extraction_llm'),
               patch.object(worker, 'load_dotenv'),
               patch.object(worker.DatabaseConfig, 'from_env'),
               patch.object(worker, 'Database', database),

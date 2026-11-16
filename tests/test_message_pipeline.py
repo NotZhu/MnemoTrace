@@ -20,8 +20,6 @@ def reply(prompt, system):
         return json.dumps(dict(facts=[], ))
     result = dict(facts=[], digests=[dict(source_id=s['id'], text='Synthetic digest')
         for s in data['pending'] if s['id'] in data['rules']['digest_required']])
-    if '本次仅补' in system:
-        return json.dumps({'digests': result['digests']})
     for item in data['pending']:
         if item['role'] == 'assistant':
             continue
@@ -32,8 +30,7 @@ def reply(prompt, system):
 
 def test_standalone_python_uses_same_joint_processor():
     mem = MemoryEngine(llm=FakeLLM(handler=reply))
-    mem.remember_messages([message('a')], 's', user_id='u')
-    result = mem.flush_messages('u', 's')
+    result = mem.remember([message('a')], 's', user_id='u')
     assert result['ok'] and len(mem.fact_store.values()) == 1
 
 
@@ -71,8 +68,7 @@ def test_assistant_evidence_is_retrievable_and_confirmation_has_user_time():
     mem = MemoryEngine(llm=FakeLLM(handler=respond))
 
     def send(item):
-        mem.remember_messages([item], 's')
-        assert mem.flush_messages(session_id='s')['ok']
+        assert mem.remember([item], 's')['ok']
 
     send(message('task', 'Prepare my release checklist.'))
     send(message('before', 'My default package manager is npm.'))

@@ -23,10 +23,9 @@ INSTRUCTIONS = (
     "MnemoTrace is the user's long-term memory. Use `mnemotrace_recall` BEFORE answering anything that may "
     "depend on what you've learned about the user in past sessions (their preferences, projects, "
     "people, decisions) — it returns a small, dated, relevant context to ground your answer. Use "
-    "`mnemotrace_remember` whenever the user states a durable fact, preference, or decision worth keeping "
-    "with extraction enabled by default. "
+    "`mnemotrace_remember` whenever the user states a durable fact, preference, or decision worth keeping. "
     "Keep temporary execution state in the agent's task tools or files. "
-    "Use `mnemotrace_flush_processing` with the session ID to finish core processing; "
+    "Check the task returned by remember for processing results; "
     "use `mnemotrace_session_report` when the user asks what that session "
     "saved; use `mnemotrace_list_sessions` when the user asks which agent/app sessions touched memory. "
     "Use `mnemotrace_aggregate` for counts and `mnemotrace_follow_path` for ordered relations. "
@@ -42,14 +41,10 @@ INSTRUCTIONS = (
 
 class MemoryMCP(FastMCP):
     async def call_tool(self, name: str, arguments: dict):
-        if name in {"mnemotrace_remember", "mnemotrace_remember_messages"}:
-            # FastMCP drops unknown arguments and can parse JSON strings before validation.
-            if "scope" in arguments:
-                raise ToolError("Use the boolean extract argument")
-            if "mode" in arguments:
-                raise ToolError("mode is no longer supported")
-            if "extract" in arguments and type(arguments["extract"]) is not bool:
-                raise ToolError("extract must be a boolean")
+        if name == "mnemotrace_remember":
+            retired = {"scope", "mode", "extract", "processing"} & arguments.keys()
+            if retired:
+                raise ToolError(f"Unsupported remember arguments: {', '.join(sorted(retired))}")
         if "known_at" in arguments and name in {
             "mnemotrace_search", "mnemotrace_recall", "mnemotrace_aggregate", "mnemotrace_follow_path",
         }:
@@ -303,57 +298,26 @@ async def mnemotrace_search(
     return "\n".join(lines)
 
 
-@mcp.tool(name='mnemotrace_remember_messages', annotations=ToolAnnotations(title='Remember dialogue messages', **_WRITE))
-async def mnemotrace_remember_messages(messages: list[dict], session_id: str,
-        processing: Literal['immediate', 'buffered'] = 'buffered',
-        extract: StrictBool = True, agent_id: str | None = None) -> str:
-    """Store complete user/assistant messages with required stable message_id, role and content.
+@mcp.tool(name="mnemotrace_remember", annotations=ToolAnnotations(title="Remember", **_WRITE))
+async def mnemotrace_remember(
+    content: str | list[dict],
+    session_id: str = "default",
+    wait: StrictBool = False,
+    timeout: Annotated[float, Field(ge=0, le=300)] = 30,
+    message_id: str | None = None,
+    agent_id: str | None = None,
+    event_time: Annotated[float | None, Field(strict=True, allow_inf_nan=False)] = None,
+) -> str:
+    """Save a fact, preference or decision as text, or submit an ordered message list.
 
-    event_time may be unknown. Reuse IDs on retransmission; replays reuse their existing processing operations.
-    Acceptance persists raw sources and tasks; inspect processing status or flush for completion.
+    Text is a user message. The returned task tracks extraction. Set wait=true to wait for publication.
+    Reuse the same message IDs to retry an interrupted request.
     """
     try:
-        return _json(await backend().remember_messages(messages, session_id, processing, extract, agent_id=agent_id))
+        return _json(await backend().remember(content, session_id, wait=wait, timeout=timeout,
+                                              message_id=message_id, agent_id=agent_id, event_time=event_time))
     except Exception as exc:
         return _err(exc)
-
-
-@mcp.tool(name="mnemotrace_remember", annotations=ToolAnnotations(title="Remember a memory", **_WRITE))
-async def mnemotrace_remember(
-    content: Annotated[str, Field(description="The message / fact / preference to store, in natural "
-                                  "language. e.g. 'I just moved to Berlin and started a new job at Acme.'",
-                                  min_length=1)],
-    session_id: Annotated[str, Field(description="Optional conversation id to group related turns.")] = "default",
-    extract: Annotated[StrictBool, Field(description="Extract reusable facts from the saved source.")] = True,
-    processing: Literal['immediate', 'buffered'] = 'immediate',
-    agent_id: str | None = None,
-    event_time: Annotated[float | None, Field(strict=True, allow_inf_nan=False,
-                                             description="Source time as Unix seconds, when known.")] = None,
-    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
-) -> str:
-    """把内容存入用户长期记忆并整合（抽取原子双时间轴 fact、与已有认知解决矛盾、更新知识图）。
-
-    当用户说出值得跨 session 记住的持久 fact、偏好、计划或决定时调用。临时性的当前 session
-    状态由 agent 的任务工具管理。存储与旧值矛盾的值不会删除历史——旧 fact 被失效化并保留
-    （as-of 查询依然可用）。extract=True 需要配置 LLM；抽取失败会返回可识别错误并保留原文供重试。
-    """
-    try:
-        data = await backend().remember(content, session_id=session_id, extract=extract, processing=processing,
-                                        agent_id=agent_id, event_time=event_time)
-    except Exception as e:  # noqa: BLE001
-        return _err(e)
-    if response_format == ResponseFormat.JSON:
-        return _json(data)
-    if not extract:
-        return 'Saved raw history.'
-    operation_ids = data.get('operation_ids', ())
-    if data.get('status') == 'accepted':
-        progress = 'Accepted for processing.'
-    elif data.get('fact_ids'):
-        progress = 'Remembered.'
-    else:
-        progress = 'Saved original and completed processing. No facts changed.'
-    return progress + (f" Operations: {', '.join(operation_ids)}" if operation_ids else '')
 
 
 @mcp.tool(name='mnemotrace_processing_status', annotations=ToolAnnotations(title='Memory processing status', **_READ))
@@ -361,16 +325,6 @@ async def mnemotrace_processing_status(session_id: Optional[str] = None) -> str:
     """Inspect buffered processing without returning raw content or model credentials."""
     try:
         return _json(await backend().processing_status(session_id))
-    except Exception as exc:
-        return _err(exc)
-
-
-@mcp.tool(name='mnemotrace_flush_processing', annotations=ToolAnnotations(title='Flush memory processing', **_WRITE))
-async def mnemotrace_flush_processing(session_id: Optional[str] = None, timeout: float = 30,
-                                     retry_failed: bool = False, include_digests: bool = False) -> str:
-    """Process the currently accepted boundary; retry_failed explicitly retries failed/cancelled work."""
-    try:
-        return _json(await backend().flush_processing(session_id, timeout, retry_failed, include_digests))
     except Exception as exc:
         return _err(exc)
 

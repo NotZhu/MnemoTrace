@@ -12,6 +12,9 @@ def example_http(product_client, product_scope):
 
     scope, key = product_scope()
     def call(path, body=None, method='POST'):
+        if method == 'POST' and path == '/v1/remember':
+            fields = {key: value for key, value in body.items() if key != 'wait'}
+            return product_client.publish_batch(headers={'X-Synthetic-Scope': 'synthetic'}, **fields).json()
         headers = {'Authorization': 'Bearer ' + key}
         if method == 'GET':
             separator = '&' if urlsplit(path).query else '?'
@@ -35,8 +38,6 @@ def test_cross_agent_handoff_example_http(example_http):
 
     assert result["found"] is True
     assert result["remembered"]["ok"] is True
-    assert result["flushed_source"]["ok"] is True
-    assert result["flushed_target"]["ok"] is True
     assert "committed eval logs" in result["context"]
     source_id, = result["remembered"]["source_ids"]
     source = example_http(f"/v1/episodes/{source_id}", method="GET")

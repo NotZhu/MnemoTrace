@@ -6,16 +6,11 @@
 
 ## 读取与会话
 
-对话使用 `mnemotrace_remember_messages(messages, session_id, processing="buffered", extract=True)`。
-每条要求 message_id、role（user/assistant）和完整 content；event_time 可省略，表示来源时间未知。
-一次请求属于同一会话。缓冲对话由独立 worker 在窗口空闲 60 秒或达到预算后处理，也可显式刷新。
-同空间、会话和消息 ID 的重传返回现有事件状态；内容或不可变处理意图改变时冲突。
-笔记使用 `mnemotrace_remember`，其 `processing=immediate|buffered` 默认 immediate。已知笔记来源时间时传 Unix 秒 `event_time`，可用于当前状态的纠正。即时处理若未改变事实，结果会说明原文已保存、事实未变更。两个工具默认抽取事实，传 `extract=false` 时只保存原文。
-`mnemotrace_processing_status(session_id=null)` 查询无原文的任务状态；
-`mnemotrace_flush_processing(session_id=null, timeout=30, retry_failed=false, include_digests=false)` 推进并等待当前会话的核心处理。
-使用 `mnemotrace_get_operation(operation_id)` 查询操作，`mnemotrace_retry_operation(operation_id)` 重试原操作。
-刷新返回 completed、failed 或 timed_out，仅完成时 ok=true；retry_failed 显式重新处理可重试的失败任务。
-工具在本地与远程后端使用相同契约，缓冲接收不表示事实已可检索。
+`mnemotrace_remember(content, session_id, wait=false, timeout=30)` 接受字符串或同一会话的消息数组。
+消息包含 `message_id`、`role`、`content` 和可选的 Unix 秒 `event_time`。字符串会转为一条用户消息，可以显式传入 `message_id`。
+受理后返回来源和任务，`wait=true` 可等待发布，超时后任务继续执行。
+`mnemotrace_processing_status(session_id=null)` 列出任务，`mnemotrace_get_operation(operation_id)` 查询结果，
+`mnemotrace_retry_operation(operation_id)` 将原任务重新排队。
 
 多数读取工具支持 `response_format="markdown"`（默认）或 `"json"`。JSON 指格式化后的工具结果，不应假定其等同于原始 HTTP 响应的所有字段。
 
@@ -39,9 +34,7 @@
 
 | 工具 | 主要参数 | 用途 |
 | --- | --- | --- |
-| `mnemotrace_remember_messages` | messages、session_id 必填；processing=buffered/immediate、extract=true/false | 逐条接收对话，返回幂等身份与处理状态 |
-| `mnemotrace_remember` | content 必填；session_id=default、event_time 可选、extract=true/false | 保存并通过服务层处理整合 |
-| `mnemotrace_flush_processing` | session_id、timeout、include_digests | 整理会话并等待核心处理 |
+| `mnemotrace_remember` | 字符串或消息数组，可指定会话和等待选项 | 保存原文并创建抽取任务 |
 | `mnemotrace_retry_operation` | operation_id | 重试同一操作 |
 | `mnemotrace_set_fact_sensitive` | fact_id、sensitive、空间 | 修改事实的共享敏感标记 |
 | `mnemotrace_set_focus` | track、mute 可选；response_format | None 不变，[] 清空 |
@@ -69,8 +62,7 @@
 ```text
 agent_status(session_id)
 → recall(query)
-→ remember_messages(messages, session_id)
-→ flush_processing(session_id)
+→ remember(messages, session_id, wait=true)
 → session_report(session_id)
 ```
 
@@ -83,7 +75,7 @@ agent_status(session_id)
 
 用 `mnemotrace_get_episode(episode_id, space_id=null, response_format)` 读取召回结果的原文。
 默认在绑定空间读取，指定其他空间时验证同一账号对该空间的归属。
-核心任务和摘要状态各自可见，`auxiliary_operation_ids` 指向辅助任务。
+操作完成表示事实和符合条件的摘要已一起发布。
 
 按事实谓词统计使用 `mnemotrace_aggregate`，指定 `count` 或 `count_distinct`。事实零匹配时可给查询返回摘要候选。多跳使用 `mnemotrace_follow_path`，传入实体名称和 2–4 个有序的出边谓词。普通召回、统计和多跳都支持显式历史条件。
 

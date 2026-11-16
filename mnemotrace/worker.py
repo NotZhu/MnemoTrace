@@ -9,7 +9,8 @@ from time import monotonic, sleep
 from ._postgres_pipeline import PostgresPipeline
 from .config import Config
 from .embed import EmbeddingUnavailable
-from .llm.providers import configured_embedder, load_dotenv, make_llm
+from .llm.providers import configured_embedder, load_dotenv, make_extraction_llm
+from .llm.tokens import ModelContextConfigurationError, TokenCounterConfigurationError, require_counter
 from .store.postgres.dao import PostgresDAO
 from .store.postgres.database import Database, DatabaseConfig
 from .store.postgres.errors import AccountNotFound, DatabaseError, DatabaseUnavailable, SpaceNotFound
@@ -23,7 +24,8 @@ def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=
     def run(candidate):
         context, operation_id = candidate
         try:
-            return PostgresPipeline(PostgresDAO(runtime, context), config, llm, embedder, model).run_next_stage(operation_id)
+            pipeline = PostgresPipeline(PostgresDAO(runtime, context), config, llm, embedder, model)
+            return pipeline.run_next_stage(operation_id)
         except (AccountNotFound, SpaceNotFound):
             return False
 
@@ -65,7 +67,7 @@ def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=
 def main(argv=None):
     parser = ArgumentParser(description=__doc__)
     parser.add_argument('--concurrency', type=int, default=2)
-    parser.add_argument('--once', action='store_true', help='Execute at most one stage per available slot')
+    parser.add_argument('--once', action='store_true', help='Process one ready operation per available slot')
     args = parser.parse_args(argv)
     if not 1 <= args.concurrency <= 32:
         parser.error('concurrency must be between 1 and 32')
@@ -80,7 +82,9 @@ def main(argv=None):
 
     previous_handler = signal.signal(signal.SIGTERM, request_stop)
     try:
-        llm = make_llm(name) if name else None
+        llm = make_extraction_llm(name, require_context=True) if name else None
+        if llm is not None:
+            require_counter(llm)
         embedder, model = configured_embedder()
         config = Config()
         with (Database(DatabaseConfig.from_env()) as runtime,
@@ -90,6 +94,8 @@ def main(argv=None):
     except KeyboardInterrupt:
         return 0
     except EmbeddingUnavailable as exc:
+        parser.exit(1, f"{exc}\n")
+    except (ModelContextConfigurationError, TokenCounterConfigurationError) as exc:
         parser.exit(1, f"{exc}\n")
     except (DatabaseError, ImportError, ValueError):
         parser.exit(1, 'Worker configuration or database access failed. Check credentials, schema and model settings.\n')

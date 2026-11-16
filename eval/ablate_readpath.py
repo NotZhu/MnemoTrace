@@ -32,7 +32,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mnemotrace import MemoryEngine  # noqa: E402
-from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
+from mnemotrace.llm.providers import load_dotenv, make_embedder, make_extraction_llm  # noqa: E402
 from eval.bench import mnemotrace_config  # noqa: E402
 from eval.longmemeval import ingest, load_data  # noqa: E402
 
@@ -77,7 +77,7 @@ def context_for_item(item: dict, embedder, extractor, ablations: tuple[str, ...]
     qid, q = item["question_id"], item["question"]
     mem = MemoryEngine(config=mnemotrace_config(ablations=ablations), embedder=embedder, llm=extractor)
     ingest(mem, item, qid)
-    mem.consolidate_full()
+    mem.consolidate()
     ctx = mem.context_for(q, user_id=qid, top_k=topk, k_digests=n_digests)
     return ctx, len(ctx) // 4  # 粗略的 token 估算，只用于相对成本一列
 
@@ -128,7 +128,7 @@ def main() -> int:
     items = load_data(args.data)[:args.limit]
     items = [it for it in items if it.get("answer")]
     embedder = make_embedder(args.embedder)
-    extractor = make_llm(args.extractor)
+    extractor = make_extraction_llm(args.extractor)
     features = tuple(f.strip() for f in args.features.split(",") if f.strip()) or ALL_FEATURES
 
     print(f"READ-PATH ABLATION | {len(items)} items | {len(features)} features")

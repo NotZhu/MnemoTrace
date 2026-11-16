@@ -8,7 +8,7 @@ from mnemotrace import Config, MemoryEngine
 from mnemotrace.consolidate.adjudication import plan_merge
 from mnemotrace.consolidate.planning import WINDOW_PREFIX, fact_valid_at, validate_response
 from tests.embedder_fixtures import MockEmbedder
-from mnemotrace.extraction import ExtractionResponseError
+from mnemotrace.extraction import ExtractionBudgetError, ExtractionResponseError
 from mnemotrace.llm import FakeLLM
 from mnemotrace.store.contracts import FactQuery
 from mnemotrace.types import Fact
@@ -32,7 +32,7 @@ def decisions(prompt, decision='conflict'):
     {'time_kind': 'dated', 'effective_date': '20240101'}, {'time_kind': 'inferred'},
 ])
 def test_invalid_fact_metadata_is_rejected(fields):
-    data = dict(operation='extract', source_kind='note', pending=[dict(id='source', needs_digest=False)], context=[])
+    data = dict(operation='extract', pending=[dict(id='source', needs_digest=False)], context=[])
     raw = json.dumps(dict(facts=[claim('source', **fields)], digests=[]))
     with pytest.raises(ExtractionResponseError):
         validate_response(raw, data, Config())
@@ -201,7 +201,7 @@ def test_semantic_recall_crosses_categories_with_a_real_vector_signal():
 def test_complete_adjudication_across_batch_boundaries():
     previous = [fact(str(index), f'city {index}', 1) for index in range(17)]
     incoming = fact('incoming', 'Oslo', 2)
-    changed, stats = merge([incoming], previous, judge='coexists', config=Config(joint_max_output_tokens=440))
+    changed, stats = merge([incoming], previous, judge='coexists', config=Config(memory_max_output_tokens=440))
     assert stats['model_calls'] == 2
     assert list(changed) == ['incoming']
 
@@ -247,18 +247,14 @@ def test_two_coexisting_predecessors_expire_at_the_adjudicated_successor():
     assert changed[latest.id].supersedes == [first.id, second.id]
 
 
-def test_oversized_history_comparison_discards_candidate_without_truncating_evidence():
-    config = Config()
+def test_oversized_history_comparison_reports_budget_error():
     previous = fact('long', '会议' * 5000, 10)
     incoming = fact('short', 'Oslo', 20)
 
-    def respond(prompt, system):
-        assert len((system + prompt).encode()) <= config.extraction_max_input_bytes
-        return decisions(prompt)
-
-    changed, stats = merge([incoming], [previous], model=FakeLLM(handler=respond))
-    assert stats['model_calls'] == 0
-    assert not changed
+    model = FakeLLM()
+    with pytest.raises(ExtractionBudgetError):
+        merge([incoming], [previous], model=model)
+    assert not model.calls
     assert previous.invalid_at is None
 
 

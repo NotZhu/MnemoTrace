@@ -37,7 +37,7 @@ def test_quickstart_missing_optional_dependency_has_actionable_message(monkeypat
     from mnemotrace import quickstart
     from mnemotrace.llm import providers
 
-    def missing_dependency(*args):
+    def missing_dependency(*args, **kwargs):
         raise ImportError('Synthetic missing model library')
 
     monkeypatch.setattr(providers, 'make_llm', missing_dependency)

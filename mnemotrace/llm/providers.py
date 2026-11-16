@@ -75,6 +75,34 @@ def make_llm(name: str, **overrides):
     return LiteLLMClient(n, **overrides)
 
 
+def make_extraction_llm(name, *, require_context=False, **overrides):
+    from .tokens import ModelContextConfigurationError
+
+    configured = os.environ.get('MNEMOTRACE_EXTRACTION_MAX_TOKENS', '8192')
+    try:
+        maximum = int(configured)
+    except ValueError:
+        maximum = 0
+    if maximum <= 0:
+        raise ValueError('MNEMOTRACE_EXTRACTION_MAX_TOKENS must be a positive integer')
+    overrides.setdefault("max_tokens", maximum)
+    context = overrides.get('context_window')
+    variable = 'MNEMOTRACE_EXTRACTION_CONTEXT_TOKENS'
+    configured_context = os.environ.get(variable, '').strip()
+    if context is None and configured_context:
+        try:
+            context = int(configured_context)
+        except ValueError as exc:
+            raise ModelContextConfigurationError(f'{variable} must be a positive integer') from exc
+    if context is not None and (type(context) is not int or context <= 0):
+        raise ModelContextConfigurationError(f'{variable} must be a positive integer')
+    if require_context and context is None:
+        raise ModelContextConfigurationError(f'Set {variable} to the extraction model context capacity')
+    if context is not None:
+        overrides['context_window'] = context
+    return make_llm(name, **overrides)
+
+
 def make_embedder(name: str = "lexical", **overrides):
     """lexical | fastembed | bge-small | bge-m3 | bge-large | multilingual | bge-small-zh
     | st:<model>（sentence-transformers）| openai:<model>（LiteLLM）。

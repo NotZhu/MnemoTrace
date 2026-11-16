@@ -17,11 +17,11 @@ client.refreshProfile(space).then(result => {
   const operationId: string = result.operation_id
   return operationId
 })
-client.rememberMessages([{message_id: 'm1', role: 'assistant', content: 'Synthetic', event_time: null}], {...space, sessionId: 's'})
+client.remember([{message_id: 'm1', role: 'assistant', content: 'Synthetic', event_time: null}], {...space, sessionId: 's'})
 // @ts-expect-error dialogue requires a stable identity
-client.rememberMessages([{role: 'user', content: 'Synthetic'}], {...space, sessionId: 's'})
+client.remember([{role: 'user', content: 'Synthetic'}], {...space, sessionId: 's'})
 // @ts-expect-error tool output is not a complete user/assistant dialogue message
-client.rememberMessages([{message_id: 'm1', role: 'tool', content: 'Synthetic'}], {...space, sessionId: 's'})
+client.remember([{message_id: 'm1', role: 'tool', content: 'Synthetic'}], {...space, sessionId: 's'})
 const outcome: OutcomeKind = 'open_question'
 const options: MemoryListOptions = { outcomeKind: outcome, expectedRevision: 'synthetic-v1', evaluatedAt: 1000 }
 const response: Promise<MemoryDump> = client.memories({...space, ...options})

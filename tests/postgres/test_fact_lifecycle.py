@@ -63,8 +63,7 @@ def claim(memory, obj, at, *, subject=None, relation=None, **fields):
 
 
 def source(memory, message_id, *, at=None):
-    return memory.remember_messages('evidence', (MessageInput(message_id, 'user', 'Synthetic evidence',
-                                                            event_time=at, extract=False),))['source_ids'][0]
+    return memory._store_originals([MessageInput(message_id, 'user', 'Synthetic evidence', event_time=at)], 'evidence')[0]
 
 
 def test_late_fact_rethreads_timeline_graph_and_provenance(memory):

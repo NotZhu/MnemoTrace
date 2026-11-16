@@ -312,13 +312,12 @@ def resolve(work, entries, catalog, owner, space_id, llm, config):
         longest = max((len(encode(key).encode('utf-8')) for key in options(item)), default=0)
         return 128 + max(longest, 64)
 
-    for batch, prompt, tokens in requests(items, pack, _RELATION_PROMPT, config, tokens_per_item=reserve):
-        choices = ask(llm, prompt, _RELATION_PROMPT, tokens, {item['id'] for item in batch}) if prompt else {}
+    for batch, prompt, tokens in requests(items, pack, _RELATION_PROMPT, config, llm, tokens_per_item=reserve):
+        choices = ask(llm, prompt, _RELATION_PROMPT, tokens, {item['id'] for item in batch})
         offered = {item['id']: options(item) for item in batch}
         for item in batch:
             key = item['id']
-            choice = (_decision(choices[key], offered[key], item, selected, effective, definitions, work, owner)
-                      if key in choices else None)
+            choice = _decision(choices[key], offered[key], item, selected, effective, definitions, work, owner)
             selected[key] = choice
             if choice is None:
                 continue

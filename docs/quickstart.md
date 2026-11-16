@@ -16,25 +16,16 @@ python -m pip install "mnemotrace-memory[postgres,llm,fastembed]"
 mnemotrace-quickstart
 ```
 
-源码入口为 `python examples/quickstart.py`。示例将合成会话提交到指定空间，输出操作 ID，等待抽取归并，再运行检索和历史查询。持久记录会保留在该空间，重跑使用相同的消息标识。
+先按部署说明启动抽取 worker。源码入口为 `python examples/quickstart.py`。示例将合成会话提交到指定空间，输出操作 ID，等待抽取归并，再运行检索和历史查询。持久记录会保留在该空间，重跑使用相同的消息标识。
 
 ## 离线保存原文
 
-用运行角色连接，显式授权后可直接保存和读取原文。下面的操作无需配置 LLM。
-
 ```python
-import os
+from mnemotrace import MemoryEngine
 
-from mnemotrace import Memory
-from mnemotrace.store.postgres import Database, DatabaseConfig, Spaces
-
-with Database(DatabaseConfig.from_env()) as database:
-    scope = Spaces(database).authorize(
-        os.environ["MNEMOTRACE_USER_ID"], os.environ["MNEMOTRACE_SPACE_ID"],
-    )
-    memory = Memory(database, scope)
-    saved = memory.remember("Synthetic project note", "demo", extract=False)
-    print(memory.get_episode(saved["source_ids"][0]).content)
+memory = MemoryEngine()
+saved = memory.add("Synthetic project note", session_id="demo")
+print(memory.get_episode(saved.id)["content"])
 ```
 
 [HTTP API](reference/http-api.md)提供会话写入、任务查询和检索入口。[使用指南](guides/usage.md)说明空间、会话和删除的操作范围。

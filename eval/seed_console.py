@@ -53,14 +53,14 @@ def ingest(memory, item):
             for position, turn in enumerate(turns) if turn.get("content", "").strip()
         )
         if messages:
-            memory.remember_messages(session_id, messages)
-    result = memory.flush_processing(timeout=300)
-    if not result["ok"]:
-        raise RuntimeError("Seed processing is incomplete; inspect the space's operation status")
+            operation_id = memory.remember(messages, session_id)['operation_id']
+            memory._processing.run_next_stage(operation_id)
+            if not memory.operation(operation_id).core_committed:
+                raise RuntimeError(f'Seed task {operation_id} did not publish')
 
 
 def main(argv=None):
-    from mnemotrace.llm.providers import configured_embedder, load_dotenv, make_llm
+    from mnemotrace.llm.providers import configured_embedder, load_dotenv, make_extraction_llm
 
     load_dotenv()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -77,7 +77,7 @@ def main(argv=None):
     items = json.loads(args.data.expanduser().read_text(encoding="utf-8"))
     if not isinstance(items, list):
         parser.error("Expected a JSON list of cases")
-    llm = make_llm(args.llm)
+    llm = make_extraction_llm(args.llm)
     embedder, model = configured_embedder(args.embedder)
     end = args.offset + args.limit if args.limit else None
     output = args.out.expanduser()

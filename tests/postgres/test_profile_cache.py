@@ -21,7 +21,9 @@ def memory(runtime, spaces, user):
 
 
 def finish(memory):
-    assert memory.flush_processing(timeout=3)["ok"]
+    task = memory.profile()['operation_id']
+    while task and memory._processing.run_next_stage(task):
+        pass
     return memory.profile()
 
 
@@ -145,7 +147,7 @@ def test_profile_api_and_acl(product_client, product_service, product_scope):
     assert refreshed.status_code == 202
     operation_id = refreshed.json()["operation_id"]
     memory = product_service.memory(context)
-    assert memory.flush_processing(timeout=3)["ok"]
+    finish(memory)
     assert product_client.get("/v1/profile", headers=headers, params=params).json()["profile"]["basic"]
     current = product_client.post("/v1/recall", headers=headers, json=dict(params, query="tea", n_digests=0))
     assert current.is_success and "USER PROFILE" not in current.json()["context"]
@@ -219,7 +221,7 @@ def test_forced_stage_still_respects_profile_ready_time(memory, monkeypatch):
             pytest.fail("Task execution must dispatch from the claim")
 
         patch.setattr(pipeline.tasks, 'operation', unexpected_status_read)
-        assert not pipeline.run_next_stage(operation_id, force=True)
+        assert not pipeline.run_next_stage(operation_id)
     assert memory.operation(operation_id).attempts == 0
 
 

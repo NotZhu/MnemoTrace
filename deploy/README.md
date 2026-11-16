@@ -54,6 +54,7 @@ Bash 环境示例，请换成自己的运行角色连接串：
 export MNEMOTRACE_DATABASE_URL="postgresql://app_runtime:REPLACE_ME@localhost:5432/mnemotrace"
 export MNEMOTRACE_EMBEDDER="lexical"
 export MNEMOTRACE_LLM="deepseek"
+export MNEMOTRACE_EXTRACTION_CONTEXT_TOKENS="<模型总上下文 token 数>"
 python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
@@ -63,6 +64,7 @@ PowerShell 对应设置方式：
 $env:MNEMOTRACE_DATABASE_URL = "postgresql://app_runtime:REPLACE_ME@localhost:5432/mnemotrace"
 $env:MNEMOTRACE_EMBEDDER = "lexical"
 $env:MNEMOTRACE_LLM = "deepseek"
+$env:MNEMOTRACE_EXTRACTION_CONTEXT_TOKENS = "<模型总上下文 token 数>"
 python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
@@ -91,7 +93,7 @@ python -m uvicorn mnemotrace.server.app:app --host 127.0.0.1 --port 8000 --worke
 
 ## 备份与恢复
 
-当前部署以 `postgres-v1` 基线初始化空数据库。恢复归档时使用与其数据库基线匹配的构建。当前基线的归档可恢复到空数据库，再用当前构建启动。HTTP JSON 导出用于分享和审阅。
+当前部署以 `postgres-v4` 基线初始化空数据库。恢复归档时使用与其数据库基线匹配的构建。当前基线的归档可恢复到空数据库，再用当前构建启动。HTTP JSON 导出用于分享和审阅。
 
 使用 PostgreSQL 18 客户端的 `pg_dump -Fc` 备份完整数据库。归档含原文、事实、实体、版本、任务产物、回执和授权定义。数据库登录角色在目标环境重新配置。HTTP 导出用于交换数据，默认省略原文和敏感内容。
 

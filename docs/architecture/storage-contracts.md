@@ -30,40 +30,16 @@ Python/CLI/本地 MCP 属于受信任数据库访问，显式携带身份和空�
 agent_id 可为 null；非空为 1—128 个 ASCII 字符 `[A-Za-z0-9_.:@/-]`，空串不表示空值。
 message_id/session_id 为 1—512 字符非空标识，原样保存，不 trim 或折叠大小写。
 消息仅允许 user/assistant，正文至多 1000000 codepoint 且不能全空白，event_time 为有限数值或 null。
-role、正文、规范化为浮点的事件时间、agent_id、extract 共同形成消息指纹；摄入时间不参与。
+role、正文、规范化为浮点的事件时间及 agent_id 共同形成消息指纹。摄入时间独立记录。
 唯一键为 `(user_id,space_id,session_id,message_id)`，space_id 本身全局唯一。
 同键同指纹复用来源和任务，同键异指纹返回 message_conflict；原文修正通过新消息提交。
 
-messages 请求示例：
-
-```json
-{"space_id":"space-A","session_id":"thread-A","agent_id":"writer-A","extract":true,"processing":"buffered","messages":[{"message_id":"m1","role":"user","content":"Synthetic input","event_time":1700000000}]}
-```
-
-操作对象采用 OperationResult.to_dict 的字段。每个摄入响应包含相关 operation 或 operations，
-messages 项携带 episode_id、operation_ids，不假定一批消息永远只对应一个抽取窗口。
-首次接受生成稳定操作 ID，窗口合批通过来源关联表达，执行时不更换对外操作身份。
-查询为 `GET /v1/operations/{operation_id}?space_id=...`，重试为
-`POST /v1/operations/{operation_id}/retry`，体内必填 space_id，不重新提交原文。
-processing/flush 继续提供聚合和等待能力，内部引用这些操作 ID。
-
-| 场景 | 可观察结果 |
-| --- | --- |
-| buffered 接受 | HTTP 202；state=pending、phase=queued、extraction_saved=false、core_committed=false |
-| 产物已保存 | 查询 200；phase=embed，extraction_saved=true、core_committed=false |
-| immediate 完成 | 200；state=completed、phase=done，三个持久化标志均 true；辅助操作独立 |
-| 等待超时 | 沿用 processing_incomplete / timed_out 形式，带 operation_ids 和实际进度；任务不取消 |
-| embedding 失败 | failed/retry_wait、phase=embed、extraction_saved=true、core_committed=false、error_code 可见 |
-| 核心完成、摘要失败 | 主操作仍 completed；auxiliary_operation_ids 指向失败 digest，不要求重发原文 |
-
-仅保存原文不创建抽取任务；自动抽取缺少 LLM 在本次输入写入前拒绝。
-Python 底层保存原文、consolidate 检查模型的分工保留。
-「整理会话」复用 `flush_processing` 推进并等待本批核心处理。
-摘要沿用现有流程并单独报告进度。任务进度由 agent 管理，来源摘要单独跟踪。
-现有各入口的辅助等待差异由接口回归锁定。
-错误映射：无效 key=401；未知/他人空间统一 space_not_found=404；参数错误=422；消息/业务版本冲突=409；
-数据库不可用=503；损坏=500；模型错误沿用 ExtractionError 映射。不输出凭据、连接串、原文或内部路径。
-已保存请求的错误必须带操作标识与 stored_raw，不能让调用方猜测是否需要重发。
+`POST /v1/remember` 在同一事务保存本批原文、消息序号和操作 ID。
+本批按原顺序完整重传时复用原任务，已有 ID 与新 ID 混合或改序会导致冲突。
+默认返回 HTTP 202 和任务，`wait=true` 等待该任务发布，超时仍返回 202 并继续后台执行。
+查询为 `GET /v1/operations/{operation_id}?space_id=…`，重试原任务为
+`POST /v1/operations/{operation_id}/retry`，请求体含 `space_id`。
+错误映射与响应字段见 [HTTP API](../reference/http-api.md#post-v1remember)。
 
 ### 接入示例
 
@@ -77,7 +53,7 @@ Python 底层保存原文、consolidate 检查模型的分工保留。
 `MNEMOTRACE_DATABASE_URL`，并显式传入 `--user-id`、`--space-id`。
 MCP stdio 代理使用 `--api-url`、`--api-key-file`、`--space-id`。
 Streamable HTTP MCP 每次调用携带 Bearer 凭据和 `X-MnemoTrace-Space-Id`。
-OpenAI 兼容请求通过 `memory.space_id` 选择空间，受理的操作 ID 通过 `mnemotrace.operation_ids` 返回，
+OpenAI 兼容请求通过 `memory.space_id` 选择空间，受理的任务和来源通过 `mnemotrace.task` 和 `mnemotrace.source_ids` 返回，
 流式响应在结束帧返回同一字段。
 
 ```text
@@ -86,7 +62,7 @@ mnemotrace --user-id <USER_ID> --space-id <SPACE_ID> retry <OPERATION_ID>
 ```
 
 TypeScript SDK 的单空间方法接受 `{ spaceId }`，多空间 recall 接受 `{ spaceIds }`。
-buffered 请求由独立 Postgres worker 推进，也可以通过 `/v1/processing/flush` 等待指定会话的核心处理。
+独立 Postgres worker 执行抽取。调用方可以等待本次任务或按操作 ID 查询。
 
 ## 工作集、版本与变更集合
 
@@ -145,17 +121,15 @@ from mnemotrace.store.postgres import Database, DatabaseConfig, Spaces
 
 with Database(DatabaseConfig.from_env()) as database:
     context = Spaces(database).authorize(user_id, space_id)
-    memory = Memory(database, context)
-    saved = memory.remember_messages("thread-A", (
-        MessageInput("m1", "user", "Synthetic input", extract=False, agent_id="writer-A"),
-    ))
+    memory = Memory(database, context, llm=llm)
+    saved = memory.remember([MessageInput("m1", "user", "Synthetic input")], "thread-A", wait=True)
     episode = memory.get_episode(saved["source_ids"][0])
     result = memory.search("What does Synthetic person like?")
     context_result = memory.lean_context("What does Synthetic person like?")
     print(result.status, [fact.text for fact in result.facts], context_result.limitations)
 ```
 
-`remember_messages` 接受 `extract=False` 的消息并原样保存。`source_ids` 按输入顺序排列，重复项复用原来源。
+`source_ids` 按输入顺序排列，完全重传复用原来源和任务。
 直接提交回执与数据同事务提交；连接中断且无法查证时抛出带操作 ID 的
 `CommitOutcomeUnknown`，可在同空间用 `memory.dao.receipt(operation_id)` 查证。
 `erase` 和 `ChangeSet.erasures` 接受 `FACT`。
@@ -166,15 +140,9 @@ with Database(DatabaseConfig.from_env()) as database:
 事实归并基于同一空间快照。事实文本超出图实体名或谓词的长度限制时，
 事实照常保存，图中省略该边。
 
-自动处理通过 `Memory(database, context, llm=llm)` 启用。使用 `remember_messages(session_id, messages)`
-受理对话，或使用 `remember(content, session_id)` 受理笔记。来源类型分别为 `dialogue` 和 `note`。返回值包含 `source_ids`、`operation_ids` 和 `OperationResult` 对象。
-`buffered` 在 T1 后返回，`immediate` 等待核心提交，超时仍返回已接受的操作标识。
-`operation(operation_id)` 查询当前进度，`retry_operation(operation_id)` 重新排队，
-`flush_processing(session_id, include_digests=True)` 同时等待本批摘要。较长来源的分段进度
-保存在来源覆盖记录中，所有连续分段提交后才标记核心完成。公开操作 ID 的最终回执汇总各段仍保留的
-事实和来源。每个摘要任务处理一个来源，摘要片段仅在生成配置指纹匹配时复用。
-抽取产物的写入和复用都核对 `extract_system`、`extract_instruction`、`digest_system`。
-输入使用摘要表示时还会核对空间核心版本。
+`Memory(database, context, llm=llm)` 启用抽取。字符串和消息序列通过 `remember` 进入相同的处理链路。
+一个请求对应一个任务，前文来自同会话本批之前最多十条原文。失败的较早消息仍可作为前文，内部只存档的消息会排除。
+首次生成前保存实际请求。有效产物只有在配置、来源或实际前文失效时重新生成。事实、摘要、索引及回执同时提交。
 
 #### 数据库检索与补建
 
@@ -204,9 +172,9 @@ with Database(DatabaseConfig.from_env()) as database:
 | 账号与空间 | users、api_keys、memory_spaces、sessions；账号不依附某把 key，空间显式创建 |
 | 权威业务数据 | sources/source_digests、facts/fact_sources、entity_types/entities/relation_types |
 | 检索派生数据 | graph_relations、embeddings、lexical_documents/lexical_terms |
-| 操作与恢复 | operations、operation_sources、operation_products、commit_receipts、operation_digest_parts |
+| 操作与恢复 | operations、operation_sources、operation_products、commit_receipts |
 
-`operation_sources` 每个任务和来源只保留一条空间内关联，记录来源版本、输入顺序及是否为上下文。实际模型输入范围和表示指纹见 `operation_products.input`，摘要片段范围见 `operation_digest_parts`。
+`operation_sources` 每个任务和来源只保留一条空间内关联，记录来源版本、输入顺序及是否为上下文。实际模型输入范围和表示指纹见 `operation_products.input`。
 
 每张空间业务表有 user_id、space_id，关联使用包含归属的复合外键。
 多态目标使用互斥的可空复合外键；向量绑定文本版本、模型及维度，不作为领域记录内联权威字段。
@@ -239,9 +207,9 @@ with Database(DatabaseConfig.from_env()) as database:
 阶段沿用 queued/generate/embed/commit/done，持久化标志独立表达。T2 不是正式事实发布。
 领取原子增加执行尝试数，重领同样消耗预算；续租不增加次数、不推进业务版本。
 尝试上限和退避定义维护在[任务实现](../../mnemotrace/store/postgres/tasks.py)，进程中断后的重新领取同样消耗预算。
-模型与 embedding 在事务外执行，API 与 worker 共用执行器；同会话依赖有序，跨会话可并行。
+模型与 embedding 在事务外执行。待抽取任务按空间序号领取，同空间由一个可续期租约保护，跨空间可并行。30 秒和 120 秒的退避期间，后续就绪任务可以执行。
 
-本体解析和事实归并使用同一空间业务版本。并发登记使旧版本计算失效，重试会读取已提交的目录和历史。
+本体解析和事实归并使用同一空间业务版本。归并读取最新已提交的目录和历史。
 
 | 变化 | 抽取产物有效性 | 归并/向量 |
 | --- | --- | --- |
@@ -253,8 +221,7 @@ with Database(DatabaseConfig.from_env()) as database:
 | 仅 embedder 变化/embedding 失败 | 可复用 | 按 model/dimension/文本版本生成向量并重新归并 |
 | 仅心跳/错误/重试计数变化 | 可复用 | 不触发业务版本冲突或重新调用模型 |
 
-输入包含已存摘要、摘要片段组合或冲突事实候选时，context_revision 必填；源正文版本不能代替这些上下文版本。
-摘要上下文带 representation_source 指纹；只有有明确 parts 引用的摘要组合允许该字段为空，恢复时另验证片段引用/版本。
+联合抽取使用完整原文，保存的版本覆盖本批和实际采用的前文。归并单独校验业务快照。
 
 统一锁顺序为 users → memory_spaces → sessions → operations → sources/其他业务记录，同类按 ID 排序。
 普通提交在用户行取共享锁、空间行取排他锁，同账号不同空间仍可并行；账号删除取用户排他锁阻止新提交再按空间 ID 清理。
@@ -277,7 +244,7 @@ worker 的两个 NOLOGIN 角色。向独立登录账号授予 `<prefix>_worker_d
 通过 `MNEMOTRACE_DISCOVERY_DATABASE_URL` 配置它。函数所有者 `<prefix>_worker_discovery_owner`
 由初始化维护。使用现有的 `MNEMOTRACE_DATABASE_URL`、`MNEMOTRACE_LLM` 和
 `MNEMOTRACE_EMBEDDER` 运行 `python -m mnemotrace.worker`。请求内执行与 worker 使用相同的模型和空间策略配置。
-抽取、摘要和画像任务均使用配置的 LLM。原文归档可独立写入。
+联合抽取与摘要、画像任务均使用配置的 LLM。原文归档可独立写入。
 
 业务表默认用户级 RLS，USING/WITH CHECK 同时约束；DAO 额外约束空间。
 runtime 不作为表所有者，业务表强制 FORCE RLS。身份与查询在同一事务/连接，事务局部设置，缺失拒绝访问。

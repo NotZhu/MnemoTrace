@@ -38,7 +38,7 @@ import type {
   RecallResult,
   RememberResult,
   ProcessingStatus,
-  ProcessingFlushResult,
+  DialogueMessage,
   SearchResult,
   SessionIndex,
   SessionListOptions,
@@ -176,22 +176,18 @@ export class MnemoTraceClient {
     return this.request(`/v1/spaces/${encodeURIComponent(spaceId)}?confirm=true`, { method: 'DELETE' })
   }
 
-  rememberMessages(messages: import('./types.js').DialogueMessage[], options: SpaceOptions & {
-    sessionId: string; processing?: 'immediate' | 'buffered';
-    extract?: boolean; agentId?: string; timeout?: number
-  }): Promise<import('./types.js').MessagesResult> {
-    return this.post('/v1/messages', { messages, session_id: options.sessionId,
-      processing: options.processing, extract: options.extract,
-      agent_id: options.agentId, timeout: options.timeout }, options.spaceId)
-  }
-
-  remember(content: string, options: SpaceOptions & {
-    sessionId?: string; extract?: boolean; eventTime?: number | null;
-    processing?: 'immediate' | 'buffered'; agentId?: string; timeout?: number
+  remember(value: string | DialogueMessage[], options: SpaceOptions & {
+    sessionId?: string; messageId?: string; eventTime?: number | null;
+    wait?: boolean; agentId?: string; timeout?: number
   }): Promise<RememberResult> {
+    const messages: DialogueMessage[] = typeof value === 'string'
+      ? [{message_id: options.messageId ?? globalThis.crypto?.randomUUID?.()
+          ?? `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`, role: 'user',
+          content: value, event_time: options.eventTime}]
+      : value
     return this.post('/v1/remember', {
-      content, session_id: options.sessionId, extract: options.extract, processing: options.processing,
-      agent_id: options.agentId, event_time: options.eventTime, timeout: options.timeout,
+      messages, session_id: options.sessionId ?? 'default', wait: options.wait,
+      agent_id: options.agentId, timeout: options.timeout,
     }, options.spaceId)
   }
 
@@ -211,14 +207,6 @@ export class MnemoTraceClient {
     if (options.afterId !== undefined) query.set('after_id', options.afterId)
     if (options.limit !== undefined) query.set('limit', String(options.limit))
     return this.request(`/v1/processing${query.size ? `?${query}` : ''}`, {}, options.spaceId)
-  }
-
-  flushProcessing(options: SpaceOptions & { sessionId?: string; timeout?: number;
-    retryFailed?: boolean; includeDigests?: boolean }): Promise<ProcessingFlushResult> {
-    return this.post('/v1/processing/flush', {
-      session_id: options.sessionId, timeout: options.timeout,
-      retry_failed: options.retryFailed, include_digests: options.includeDigests,
-    }, options.spaceId)
   }
 
   getEpisode(episodeId: string, options: SpaceOptions): Promise<import('./types.js').OriginalEpisode> {

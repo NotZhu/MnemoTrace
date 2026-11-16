@@ -8,6 +8,11 @@ from .base import Completion, LLM
 
 
 class FakeLLM(LLM):
+    @staticmethod
+    def count_tokens(messages):
+        # Deliberately deterministic fixture, independent of provider tokenizers.
+        return 2 + sum(4 + (len(item['content']) + 2) // 3 for item in messages)
+
     def __init__(
         self,
         handler: Optional[Callable[[str, Optional[str]], str | Completion]] = None,

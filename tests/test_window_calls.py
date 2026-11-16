@@ -4,10 +4,12 @@ import json
 
 import pytest
 
+from mnemotrace.llm.tokens import count_tokens
+
 from mnemotrace import Config
 from mnemotrace.consolidate.adjudication import plan_merge
 from mnemotrace.consolidate.ontology import ENTITY_TYPES, builtin, resolve
-from mnemotrace.extraction import ExtractionResponseError, ExtractionTruncatedError
+from mnemotrace.extraction import ExtractionBudgetError, ExtractionResponseError, ExtractionTruncatedError
 from mnemotrace.llm import Completion, FakeLLM
 from mnemotrace.types import Entity, Fact, RelationType
 from tests.postgres.ontology_fixtures import assertion, ontology_reply
@@ -82,6 +84,54 @@ def test_empty_window_never_calls_model():
     assert model.calls == []
 
 
+def test_context_budget_reserves_the_actual_auxiliary_response():
+    from mnemotrace.consolidate.window_calls import requests
+
+    model = FakeLLM()
+    model.context_window = 8192
+    config = Config(memory_max_output_tokens=8192)
+    batch, prompt, output = next(requests(["example"], list, "Choose", config, model,
+                                          tokens_per_item=lambda _: 192))
+    assert batch == ["example"] and prompt == '["example"]' and output == 224
+    exact = output + count_tokens(model, prompt, "Choose")
+    model.context_window = exact
+    assert next(requests(["example"], list, "Choose", config, model,
+                         tokens_per_item=lambda _: 192)) == (batch, prompt, output)
+    for capacity in (exact - 1, output, output - 1):
+        model.context_window = capacity
+        with pytest.raises(ExtractionBudgetError):
+            list(requests(["example"], list, "Choose", config, model, tokens_per_item=lambda _: 192))
+
+
+def test_context_without_room_for_a_second_output_splits_the_request():
+    from mnemotrace.consolidate.window_calls import requests
+
+    model = FakeLLM()
+    model.context_window = 300
+    batches = list(requests(["one", "two"], list, "Choose", Config(), model,
+                            tokens_per_item=lambda _: 192))
+    assert [(batch, output) for batch, _, output in batches] == [(["one"], 224), (["two"], 224)]
+
+
+def test_deepseek_has_a_local_fallback_and_allows_a_configured_counter(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from mnemotrace.llm.providers import make_extraction_llm
+    from mnemotrace.llm.tokens import TokenCounterConfigurationError, require_counter
+
+    monkeypatch.delenv("MNEMOTRACE_TOKEN_COUNTER", raising=False)
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace())
+    model = make_extraction_llm("deepseek")
+    require_counter(model)
+    assert count_tokens(model, "合成消息", "Choose") >= len("合成消息".encode("utf-8"))
+    with pytest.raises(TokenCounterConfigurationError, match="MNEMOTRACE_TOKEN_COUNTER"):
+        require_counter(make_extraction_llm("synthetic/unknown"))
+    monkeypatch.setitem(sys.modules, "fixture_counter", SimpleNamespace(count=lambda _: 23))
+    monkeypatch.setenv("MNEMOTRACE_TOKEN_COUNTER", "fixture_counter:count")
+    assert count_tokens(make_extraction_llm("deepseek"), "合成消息", "Choose") == 23
+
+
 def test_exact_names_and_more_than_eight_relations_fit_one_request():
     nodes = [Entity(f'Org {i}', 'organization', id=f'existing{i}') for i in range(10)]
     entries = [entry(i, node.name.upper()) for i, node in enumerate(nodes)]
@@ -115,7 +165,7 @@ def test_large_relation_window_reuses_one_definition_without_carrying_previous_e
     assert len(model.calls) > 1
     assert set(output.bindings) == set(range(len(entries)))
     for call in model.calls:
-        assert len((call['prompt'] + call['system']).encode('utf-8')) <= config.extraction_max_input_bytes
+        assert count_tokens(model, call['prompt'], call['system']) <= config.memory_max_input_tokens
         data = json.loads(call['prompt'])
         assert sum(candidate['predicate'] == 'works_at' for candidate in data['candidates'].values()) == 1
         assert source not in call['prompt']
@@ -129,7 +179,7 @@ def test_large_relation_window_reuses_one_definition_without_carrying_previous_e
 def test_same_window_proposals_are_reused_across_budget_splits(max_output, expected_calls):
     entries = [entry(i, predicate='volunteers_at') for i in range(3)]
     model = ontology_model()
-    output = bind(Workset(), entries, model, Config(joint_max_output_tokens=max_output))
+    output = bind(Workset(), entries, model, Config(memory_max_output_tokens=max_output))
     assert len({fact['object_id'] for fact in output.bindings.values()}) == 1
     assert len({fact['relation_id'] for fact in output.bindings.values()}) == 1
     assert len([value for value, _ in output.records(range(3)) if isinstance(value, RelationType)]) == 1
@@ -154,7 +204,7 @@ def test_reversed_proposal_reuse_composes_orientation(max_output):
             rows.append(dict(id=item['id'], decision='reuse', target=target,
                              reverse=target == 'r0' or item['id'] == 'r0', predicate=None))
         return json.dumps(dict(decisions=rows))
-    output = bind(Workset(), entries, FakeLLM(handler=respond), Config(joint_max_output_tokens=max_output))
+    output = bind(Workset(), entries, FakeLLM(handler=respond), Config(memory_max_output_tokens=max_output))
     assert len(output.bindings) == 2
     assert all((f['subject'], f['object'], f['predicate']) == ('Alice', 'Orbit', 'works_at')
                for f in output.bindings.values())
@@ -189,10 +239,11 @@ def test_forward_proposal_reference_is_rejected():
         bind(Workset(), [entry(0, 'Orbit'), entry(1, 'Nova')], FakeLLM(handler=respond))
 
 
-def test_oversized_fact_sentence_never_produces_a_fact():
+def test_oversized_fact_sentence_fails_ontology_explicitly():
     model = ontology_model()
-    result = bind(Workset(), [entry(0, text='Orbit ' + 'x' * 20000)], model)
-    assert not result.bindings and not result.records([]) and not model.calls
+    with pytest.raises(ExtractionBudgetError):
+        bind(Workset(), [entry(0, text='Orbit ' + 'x' * 20000), entry(1)], model)
+    assert not model.calls
 
 
 def test_large_raw_evidence_is_only_used_for_entity_binding():
@@ -205,15 +256,14 @@ def test_more_than_sixteen_pairs_fit_one_request_and_share_facts():
     old = [claim(f'old{i}', obj=f'Org{i}') for i in range(20)]
     model = compare_model()
     changed, stats = merge([claim('new', at=20)], old, model=model,
-                                     config=Config(joint_max_output_tokens=20000))
+                                     config=Config(memory_max_output_tokens=20000))
     assert stats['model_calls'] == 1 and len(changed) == 1
     request = json.loads(model.calls[0]['prompt'])
     assert len(request['items']) == 20 and len(request['facts']) == 21
 
 
-@pytest.mark.parametrize('config', [Config(joint_max_output_tokens=120),
-                                   Config(extraction_max_input_bytes=1350),
-                                   Config(joint_context_tokens=1450)])
+@pytest.mark.parametrize('config', [Config(memory_max_output_tokens=120),
+                                   Config(memory_max_input_tokens=450)])
 def test_only_budgets_split_requests_without_dropping_comparisons(config):
     model = compare_model()
     _, _ = merge([claim('new', at=20)], [claim(f'old{i}', obj=f'Org{i}') for i in range(5)],
@@ -222,11 +272,9 @@ def test_only_budgets_split_requests_without_dropping_comparisons(config):
     items = [item['id'] for call in model.calls for item in json.loads(call['prompt'])['items']]
     assert len(items) == len(set(items)) == 5
     for call in model.calls:
-        size = len((call['prompt'] + call['system']).encode())
-        assert size <= config.extraction_max_input_bytes
-        assert call['max_tokens'] <= config.joint_max_output_tokens
-        if config.joint_context_tokens:
-            assert size + call['max_tokens'] <= config.joint_context_tokens
+        size = count_tokens(model, call['prompt'], call['system'])
+        assert size <= config.memory_max_input_tokens
+        assert call['max_tokens'] <= config.memory_max_output_tokens
 
 
 def test_duplicate_and_third_fact_conflict_are_compared_once_together():
@@ -293,7 +341,7 @@ def test_later_batch_failure_never_mutates_supplied_timeline():
                                          for item in json.loads(prompt)['items']]})
     with pytest.raises(ExtractionResponseError):
         merge([claim('new', at=20)], old, model=FakeLLM(handler=respond),
-              config=Config(joint_max_output_tokens=120))
+              config=Config(memory_max_output_tokens=120))
     assert calls == 2 and all(fact.invalid_at is None for fact in old)
 
 

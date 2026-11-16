@@ -32,7 +32,7 @@ warnings.filterwarnings("ignore")  # litellm/pydantic 对 doubao 回复会发出
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mnemotrace import MemoryEngine  # noqa: E402
-from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm  # noqa: E402
+from mnemotrace.llm.providers import load_dotenv, make_embedder, make_extraction_llm, make_llm  # noqa: E402
 
 HF = "https://huggingface.co/datasets/bowen-upenn/PersonaMem-v2/resolve/main"
 PM_DIR = "data/personamem"
@@ -110,21 +110,20 @@ def load_items(n_personas: int, per_persona: int, seed: int = 0) -> list[dict]:
 
 
 def ingest_history(mem: MemoryEngine, messages: list[dict], pid: str, chunk: int = 6) -> None:
-    """把对话按顺序摄取为 episode（system persona = episode 0；之后每段约 chunk 条消息）。
-    event_time 递增保持顺序，让 UPDATED 偏好以最近一次出现为准（双时间轴）。"""
-    eps: list[tuple[str, float]] = []
+    """Keep the benchmark's persona and timestamped turns with their original speakers."""
+    body = messages
     if messages and messages[0].get("role") == "system":
-        eps.append((f"USER PERSONA:\n{messages[0]['content']}", BASE_T))
+        # PersonaMem places the dataset's user profile in the leading system message.
+        if persona := messages[0].get("content"):
+            mem.add(f"USER PERSONA:\n{persona}", user_id=pid, session_id=f"seg{int(BASE_T)}", event_time=BASE_T)
         body = messages[1:]
-    else:
-        body = messages
     for i in range(0, len(body), chunk):
-        seg = body[i:i + chunk]
-        text = "\n".join(f"{m.get('role','user')}: {m.get('content','')}" for m in seg if m.get("content"))
-        if text.strip():
-            eps.append((text, BASE_T + (i + 1) * 3600.0))
-    for text, et in eps:
-        mem.add(text, user_id=pid, session_id=f"seg{int(et)}", role="session", event_time=et)
+        event_time = BASE_T + (i + 1) * 3600.0
+        session = f"seg{int(event_time)}"
+        for message in body[i:i + chunk]:
+            role, content = message.get("role", "user"), message.get("content")
+            if role in {"user", "assistant"} and content and content.strip():
+                mem.add(content, user_id=pid, session_id=session, role=role, event_time=event_time)
 
 
 def full_history_text(messages: list[dict], budget: int = 120_000) -> str:
@@ -159,7 +158,7 @@ def mnemotrace_mem(pid: str, messages: list[dict], embedder, extractor) -> Memor
             return _MEM_CACHE[pid]
     mem = MemoryEngine(embedder=embedder, llm=extractor)
     ingest_history(mem, messages, pid)
-    mem.consolidate_full()
+    mem.consolidate()
     with _MEM_LOCK:
         _MEM_CACHE[pid] = mem
     return mem
@@ -184,7 +183,7 @@ def run():
     systems = args.systems.split(",")
     embedder = make_embedder(args.embedder)
     answerer = make_llm(args.answerer, max_tokens=8, num_retries=3, timeout=60)
-    extractor = make_llm(args.extractor, max_tokens=512, num_retries=3, timeout=60)
+    extractor = make_extraction_llm(args.extractor, num_retries=3, timeout=60)
     rig = {"topk": args.topk, "n_digests": args.n_digests}
 
     items = load_items(args.n_personas, args.per_persona, args.seed)

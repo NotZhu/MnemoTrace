@@ -4,6 +4,7 @@ import json
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from mnemotrace.llm import FakeLLM
 from mnemotrace.memory import Memory
+from tests.postgres.fact_fixtures import remember_and_publish
 
 
 def test_resolves_relation_before_creating_fact(runtime, spaces, user):
@@ -32,7 +33,7 @@ def test_resolves_relation_before_creating_fact(runtime, spaces, user):
 
     model = FakeLLM(handler=reply)
     memory = Memory(runtime, context, llm=model)
-    result = memory.remember(statement, 'input', event_time=10)
+    result = remember_and_publish(memory, statement, 'input', event_time=10)
     assert result['ok'], result
     fact, = memory.facts()
     assert (fact.subject, fact.predicate, fact.object, fact.valid_at) == ('Alice Chen', 'works_at', 'Orbit Labs', 10)

@@ -27,39 +27,33 @@ HTTP 请求体默认上限为 2 MiB，可通过配置调整；实际接收字节
 
 ## 写入与读取
 
-### POST /v1/messages
-
-对话消息的统一入口，一次请求属于一个会话。
+### POST /v1/remember
 
 ```json
 {"space_id":"space-example","session_id":"chat-001","messages":[
-  {"message_id":"m1","role":"user","content":"请制定迁移计划。","event_time":1793500000},
-  {"message_id":"m2","role":"assistant","content":"建议先备份，再迁移。","event_time":1793500010}
+  {"message_id":"m1","role":"user","content":"我们约定迁移前先备份。","event_time":1793500000},
+  {"message_id":"m2","role":"assistant","content":"已了解。"}
 ]}
 ```
 
-`message_id`、`role`、`content` 必填；role 仅支持 user/assistant，不接收流式碎片。每条独立保存，数组顺序成为会话持久化序号。`event_time` 可省略或为 null，表示来源时间未知。
-`processing` 默认为 buffered，可显式 immediate；`extract` 默认为 `true`，设为 `false` 时只保存对话原文。可选 `agent_id` 记录摄入来源。
+每条消息提供 `message_id`、`role` 和完整 `content`，角色为 `user` 或 `assistant`。
+`event_time` 为 Unix 秒，省略或传 `null` 表示未知。请求可传 `agent_id` 标识摄入方。
 
-消息 ID 在空间和会话内唯一；同 ID 同输入返回原事件及当前状态，不重置空闲计时，不重复生成。不同输入返回 409/message_conflict；批内冲突在任何写入前拒绝。不同 ID 的相同正文允许存在。
-自动处理先验证模型配置，再提交原文与任务。immediate 等待核心提交，buffered 返回当前操作状态。
-单个会话的多个消息可能共享一个操作 ID，也可能关联不同操作。调用方通过返回的关联查询进度。
+一次请求创建一个任务。默认 `wait=false`，原文和任务落库后返回 `202`。
+`wait=true` 等待此任务，`timeout` 默认 30 秒。发布完成返回 `200` 和 `fact_ids`，
+仍在处理时返回 `202`、`status="timed_out"` 和当前 `task`，后台继续执行。
+响应包含 `source_ids`，以及逐条消息的 `message_id`、`episode_id` 和 `sequence`。
+终态失败时，等待请求返回错误、来源 ID 和任务状态。
 
-### POST /v1/remember
+消息 ID 以空间和会话为作用域，整批按相同顺序重传会复用原任务及结果。
+修改已知消息、改变原批顺序或混入新 ID 会使整批返回 `409 message_conflict`。
 
-传 `space_id`、`content`，可选 `session_id`、`agent_id`、`event_time`、`extract` 和 `processing`。
-`event_time` 使用 Unix 秒，省略或传 null 表示来源时间未知。纠正当前状态时可传已知来源时间。正文中有明确生效日期时，按抽取到的日期计算有效起点。
-`extract=false` 只保存原文，返回 `status="stored"`、`source_ids` 和空的 `operation_ids`、`operations`，无需模型。
-`extract=true`（默认）请求自动抽取，`processing` 默认 immediate。处理完成时，`fact_ids` 列出本次写入或更新的事实，空数组表示原文已保存、事实未变更。选择 buffered 时在原文和任务提交后返回 `status="accepted"` 及操作回执。
+### 查询和重试任务
 
-### 缓冲处理状态与刷新
-
-摄入返回 `source_ids`、`operation_ids` 和 `operations`。对话批次的 `messages` 项各自记录
-`episode_id` 和关联的 `operation_ids`。通过 `GET /v1/operations/{operation_id}?space_id=…` 查询阶段，
-通过 `POST /v1/operations/{operation_id}/retry` 携带 `space_id` 重试已有任务。
-`GET /v1/processing` 按空间和可选的 `session_id` 分页浏览操作，返回 `operations` 和 `next_after_id`。`limit` 默认 100，范围 1–1000。下一页将响应的 `next_after_id` 作为 `after_id` 传入；游标为 `null` 或返回空页时结束。
-`POST /v1/processing/flush` 可带 `session_id` 整理指定会话并等待本批核心处理。
-独立设置 `include_digests` 可同时等待摘要。
+通过 `GET /v1/operations/{operation_id}?space_id=…` 查询任务及来源 ID，完成后也可读取 `fact_ids`。
+通过 `POST /v1/operations/{operation_id}/retry` 携带 `space_id` 将失败的原任务重新入队。
+`GET /v1/processing` 按空间和可选的 `session_id` 分页浏览任务。返回 `operations` 和 `next_after_id`。
+`limit` 默认 100，范围 1–1000。下一页将 `next_after_id` 作为 `after_id` 传入。
 
 ### POST /v1/recall
 
@@ -126,7 +120,7 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 | `GET /v1/graph` | as_of、include_sensitive=false、q、live_only=false、limit |
 | `GET /v1/audit` | limit=40，检查图谱投影 |
 | `GET /v1/focus` / `PUT /v1/focus` | track/mute 列表，省略保持，[] 清空 |
-| `GET /v1/policy` / `PUT /v1/policy` | extract_instruction、extract_system、digest_system、profile_system；空字符串恢复默认 |
+| `GET /v1/policy` / `PUT /v1/policy` | extract_instruction、extract_system、profile_system；空字符串恢复默认 |
 
 `track` 在检索时给匹配的事实加分，清空即可撤销。`mute` 即时从召回和画像中排除匹配内容，管理界面仍可查看原记录。
 普通项按不区分大小写的词或短语匹配，拉丁词使用边界。例如 `Java` 不会命中 `JavaScript`。
@@ -168,7 +162,9 @@ HTTP 的 `as_of` 查询指定事件时间，仍考虑之后导入的历史证据
 
 `memory` 还支持 `extract`、`as_of` 和 `redact_sensitive`。`remember` 控制是否保存对话，保存时 `extract` 控制是否抽取事实，默认 `true`。写入后响应通过 `mnemotrace.remember_extract` 返回该值。需要配置作答 LLM，否则返回 503；model 字段不负责动态选择服务器的实际后端。部分兼容参数会被接受但不参与生成，不能把此端点视为其他服务的全部接口实现。
 
-stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切分返回，不承诺模型 token 实时透传。原文和任务提交后才标记 remembered。普通响应和 SSE 结束帧中的 mnemotrace.operation_ids 用于查询实际处理结果。
+stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切分返回，不承诺模型 token 实时透传。原文和任务提交后才标记 remembered。普通响应和 SSE 结束帧中的 `mnemotrace.task` 和 `mnemotrace.source_ids` 记录抽取任务和来源。
+
+保存对话时可传 `memory.message_id`。同一空间和会话内使用相同 ID 重传同一请求，会复用首次保存的响应和来源。改变请求内容返回 `409 message_conflict`。重传时可切换 `stream`，可按返回的操作 ID 查询最新任务状态。
 
 ## 错误处理
 
@@ -178,17 +174,13 @@ stream=true 返回 SSE；当前先获得完整生成结果，再通过事件切�
 
 ## 模型抽取状态与错误
 
-自动抽取的 buffered 请求返回 `202`，表示原文和任务已持久化。immediate 核心结果已提交时返回 `200`。
-`operations` 的每项含 `operation_id`、`kind`、`state`、`phase`、`extraction_saved`、`core_committed`、
-`error_code` 及 `auxiliary_operation_ids`。摘要辅助任务有独立进度。
-等待超时以 `processing_incomplete` 和 `timed_out` 返回当前操作与持久化标志，已接受的任务继续处理。
-缺少抽取模型返回 `503 llm_not_configured`，原文未写入。
+任务包含 `operation_id`、`kind`、`state`、`phase`、`extraction_saved`、`core_committed` 和 `error_code`。
+完成状态表示事实和符合条件的摘要均已发布。缺少抽取模型返回 `503 llm_not_configured`，本次原文未写入。
+提供方拒绝过长的输入时，任务记录 `model_budget_exceeded`，原文仍可读取。
 
 ## 条件摘要与原文读取
 
 `GET /v1/episodes/{episode_id}?space_id=<SPACE_ID>` 显式读取完整原文。未知空间、他人空间和不存在的事件返回 404。
 响应包含 `id`、`space_id`、`session_id`、`role`、`agent_id`、`event_time`、`ingested_at` 和 `content`。响应分别用 `coverage` 与 `digest_coverage` 表达事实抽取和摘要覆盖范围。
-
-摘要进度通过核心操作的 `auxiliary_operation_ids` 查询。摘要失败不撤销已接受的原文和抽取。显式等待摘要时调用 `/v1/processing/flush` 并设置 `include_digests=true`，将摘要纳入本次等待范围；`retry_failed=true` 重试范围内的失败操作。
 
 召回上下文只包含事实和摘要。默认最多返回 20 条摘要，`n_digests=0` 只使用事实。只保存原文的内容可按来源 ID、会话或导出读取。

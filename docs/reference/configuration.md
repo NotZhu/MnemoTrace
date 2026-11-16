@@ -112,34 +112,24 @@ DBA 连接用于临时库/角色初始化、清理及锁等待观察，业务读
 
 ## 窗口抽取预算
 
-对话联合输出使用 `joint_max_output_tokens`、`joint_core_output_tokens`、`joint_digest_output_tokens`。
-默认值维护在 [Config](../../mnemotrace/config.py)，只是工程起点。规划同时预留核心结果、逐条长消息摘要及格式开销，输出不足时缩小窗口，不复用独立摘要的输出上限。
-可用 `joint_context_tokens` 声明提供方总上下文限制；规划使用输入 UTF-8 字节作为保守 token 上界，同时预留完整联合输出上限。未声明时不声称已验证提供方上下文容量。截断响应整体失败。
+一次 `remember` 请求对应一个批次。固定模板发送本批完整消息，以及同会话之前最近的最多 10 条原文。
+联合模型的输出额度来自抽取模型的 `max_tokens`，服务和 worker 的部署默认值为
+`MNEMOTRACE_EXTRACTION_MAX_TOKENS=8192`。输入超出提供方限制时，任务记录 `model_budget_exceeded`。
 
-缓冲请求将原文和任务提交到 Postgres。后台处理由独立 worker 执行，部署方式见[部署指南](../../deploy/README.md)。对话窗口在最后活动后空闲 60 秒、达到预算或显式刷新时可处理，笔记的抽取任务提交后即可领取。显式刷新也可主动推进本次等待范围内的任务。各来源共用以下输入配置。
-
-| Config 字段 | 含义 |
-| --- | --- |
-| extraction_max_input_bytes | 系统与用户提示词的 UTF-8 字节总预算，包含来源元数据 |
-| extraction_context_bytes | 每窗前文正文最多占用的 UTF-8 字节数；空间不足时优先减少前文 |
-
-默认值以 [Config 定义](../../mnemotrace/config.py) 为准。输入使用可离线计算、对中英文都明确的字节预算，
-并非 provider 的精确 token 计数。输入和输出预算必须是正整数，前文预算可以为零。
-调小输入预算会拆成更多窗口；调大输出预算可能增加调用成本。更改配置会阻止旧结果回写；显式重试从已保存覆盖范围继续规划。
-原文需保持不变；修改原文后不能复用已有处理范围。
+`memory_max_input_tokens` 和 `memory_max_output_tokens` 仅用于本体解析和事实裁决分批。
+启用自动抽取的 API 和 worker 都需要设置 `MNEMOTRACE_EXTRACTION_CONTEXT_TOKENS`，值为提供方公布的模型总上下文容量。Compose 将此值传给两者。
+每批按完整输入加实际输出预留检查上下文容量。单项装不下时，任务以 `model_budget_exceeded` 失败，保留原文和已校验的抽取产物。调整辅助预算或上下文配置后，可重试原任务。
+DeepSeek 默认使用 UTF-8 请求大小做保守估算。
+可通过 `MNEMOTRACE_TOKEN_COUNTER=模块:函数` 配置这些调用的输入计数，覆盖默认估算。Compose 将该配置传入 worker，函数模块需能在容器内导入。默认值见 [Config](../../mnemotrace/config.py)。
 
 ## 条件来源摘要
 
 | Config 字段 | 含义 |
 | --- | --- |
-| digest_min_chars | 原文达到此 Python 字符数才请求摘要 |
-| digest_max_chars | 成功摘要的字符上限，必须小于生成阈值 |
-| digest_max_input_bytes | 系统和用户提示词合计 UTF-8 字节预算 |
-| digest_max_output_tokens | 每次摘要调用的输出 token 上限 |
+| `digest_min_chars` | 原文达到此 Unicode 码点数才生成摘要 |
+| `digest_max_chars` | 摘要字符上限，小于生成阈值 |
 
-四项均为正整数，精确默认值在 [Config](../../mnemotrace/config.py) 中维护。这些是工程初值，未完成真实模型质量或成本验收。
-超长事件按实际输入预算分段并保存中间进度，之后合并成一份事件摘要；中间结果不参与检索。
-摘要失败、空输出、输出超限或截断不产生摘录替代品。已有摘要不自动重新生成。
+摘要必须短于原文。响应截断、无效或缺少必需摘要时，重试同一任务的完整联合生成。用 `extract_instruction` 自定义联合任务中的摘要要求。
 
 ## 画像刷新预算
 
@@ -219,5 +209,5 @@ FastEmbed 每条原文保留一份向量，超过模型输入窗口的内容仍�
 
 完整参数见各命令的 `--help`。MCP stdio 代理使用 `--api-url`、`--api-key-file` 和 `--space-id`，
 本地直连使用 `--user-id` 与 `--space-id`。watcher 使用 `--url`、`--key-file` 和 `--space-id`，
-默认受理历史后交给 worker，`--immediate` 等待核心处理。
+默认落库后交给 worker，`--wait` 可等待这次写入的任务。
 若原文已保存而核心处理失败或等待超时，watcher 保留已确认的原文游标，报告非零退出状态及可查询、重试的操作 ID。

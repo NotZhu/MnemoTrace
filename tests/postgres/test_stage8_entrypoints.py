@@ -16,13 +16,22 @@ def configure(monkeypatch, cluster, context):
     monkeypatch.setenv('MNEMOTRACE_SPACE_ID', context.space_id)
     monkeypatch.setenv('MNEMOTRACE_LLM', 'synthetic')
     monkeypatch.setenv('MNEMOTRACE_EMBEDDER', 'lexical')
-    monkeypatch.setattr(providers, 'make_llm', lambda *_: RecordedLLM())
+    monkeypatch.setattr(providers, 'make_llm', lambda *_, **__: RecordedLLM())
 
 
 def test_quickstart_targets_existing_space_and_reuses_messages(
         cluster, product_service, product_scope, monkeypatch, capsys):
     scope, _ = product_scope()
     configure(monkeypatch, cluster, scope)
+    from mnemotrace._postgres_pipeline import PostgresPipeline
+
+    wait = PostgresPipeline.wait
+
+    def publish_while_waiting(pipeline, operation_id, timeout):
+        pipeline.run_next_stage(operation_id)
+        return wait(pipeline, operation_id, timeout)
+
+    monkeypatch.setattr(PostgresPipeline, 'wait', publish_while_waiting)
     quickstart.main()
     memory = product_service.memory(scope)
     sources = [record.id for record in memory.list_sources()]

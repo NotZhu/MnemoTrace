@@ -12,55 +12,25 @@ from mnemotrace.extraction import LLMNotConfiguredError
 from mnemotrace.llm import FakeLLM
 from mnemotrace.memory import Memory
 from mnemotrace.store.contracts import (
-    ChangeSet, CommitConditions, FactQuery, MessageInput, OperationKind, OperationSpec, RecordKind, RecordRef,
-    SourceVersion,
+    FactQuery, MessageInput, OperationKind, RecordKind, RecordRef,
 )
 from mnemotrace.store.postgres import Database
 from mnemotrace.store.postgres.errors import (
     CommitOutcomeUnknown, DatabaseConfigurationError, DatabaseUnavailable, MessageConflict, VersionConflict,
 )
 from mnemotrace.worker import run_worker
-from tests.postgres.fact_fixtures import seed_note
-from tests.postgres.ontology_fixtures import mention, ontology_reply, typed_result
+from tests.postgres.fact_fixtures import checkpoint_before_publication, remember_and_publish
+from tests.postgres.ontology_fixtures import mention
 from tests.test_message_pipeline import PROPOSAL, REPORT, dialogue_evidence
+from tests.test_pipeline_sources import boundary_facts
 
 
-def dialogue(key, content='Synthetic person prefers tea', *, extract=True):
-    return MessageInput(key, 'user', content, extract=extract, event_time=100)
+def dialogue(key, content='Synthetic person prefers tea', *, event_time=100):
+    return MessageInput(key, 'user', content, event_time=event_time)
 
 
-@pytest.fixture
-def processing(runtime, spaces, user):
-    space = spaces.create(user, 'Processing tests')
-    context = spaces.authorize(user, space.space_id)
-
-    def make(*, database=runtime, embedder=None, config=None, handle=None, adjudicate=None):
-        calls = []
-
-        def respond(prompt, system=''):
-            if 'MNEMOTRACE_FACT_COMPARISON' in system:
-                if adjudicate is not None:
-                    return adjudicate(prompt)
-                from tests.model_fixtures import adjudication_reply
-                return adjudication_reply(prompt)
-            if 'MNEMOTRACE_' in system:
-                return ontology_reply(prompt, system, {'prefers': ('prefers', False), 'lives_in': ('lives_in', False),
-                                                        'based_in': ('lives_in', False)})
-            data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
-            calls.append(data)
-            if handle:
-                return json.dumps(typed_result(handle(data)))
-            if data['operation'] == 'digest':
-                return json.dumps({'digests': [{'source_id': data['pending'][0]['id'], 'text': 'Recorded preference'}]})
-            facts = [dict(categories=['food'], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='我', predicate='likes', object='tea', text='Synthetic person likes tea',
-                          source_ids=[item['id']]) for item in data['pending'] if item['role'] != 'assistant']
-            return json.dumps(typed_result(dict(facts=facts, digests=[])))
-
-        memory = Memory(database, context, llm=FakeLLM(handler=respond), config=config,
-                                embedder=embedder, embedding_model='fixture' if embedder else None)
-        return memory, calls
-
-    return make
+def recorded_digests(data, text='Recorded preference'):
+    return [dict(source_id=item['id'], text=text) for item in data['pending'] if item['needs_digest']]
 
 
 def test_assistant_evidence_stays_in_session_until_user_confirmation(processing):
@@ -78,8 +48,8 @@ def test_assistant_evidence_stays_in_session_until_user_confirmation(processing)
     memory, _ = processing(handle=extract, adjudicate=adjudicate)
 
     def send(key, role, content, event_time):
-        result = memory.remember_messages('chat', (MessageInput(key, role, content, event_time),))
-        assert memory.flush_processing('chat')['ok']
+        result = remember_and_publish(memory, [MessageInput(key, role, content, event_time)], 'chat')
+        assert result['status'] == 'completed'
         source_id, = result['source_ids']
         return source_id
 
@@ -101,92 +71,91 @@ def test_assistant_evidence_stays_in_session_until_user_confirmation(processing)
     assert [memory.get_episode(key).role for key in new.provenance] == ['assistant', 'user']
 
 
+def first_task(memory, session_id='chat'):
+    operations = memory.list_operations(session_id=session_id)
+    assert len(operations) == 1
+    return operations[0].operation_id
+
+
 def test_three_checkpoints_and_durable_retry(processing, cluster):
     class InterruptedEmbedder(MockEmbedder):
         def embed_batch(self, texts):
             raise RuntimeError('synthetic embedding failure')
 
     memory, calls = processing(embedder=InterruptedEmbedder())
-    result = memory.remember_messages('chat', (dialogue('one'),))
-    operation_id, = result['operation_ids']
+    result = memory.remember([dialogue('one')], 'chat')
+    operation_id = result['operation_id']
     source_id, = result['source_ids']
     assert memory.get_episode(source_id).content == 'Synthetic person prefers tea'
     assert memory.operation(operation_id).phase.value == 'queued'
     with memory.dao.read_snapshot() as view:
         revision = view.snapshot.core_revision
 
-    assert memory._processing.run_next_stage(operation_id, force=True)
+    assert memory._processing.run_next_stage(operation_id)
     checkpoint = memory.operation(operation_id)
     assert checkpoint.extraction_saved and not checkpoint.core_committed
     assert memory.facts() == ()
     with memory.dao.read_snapshot() as view:
         assert view.snapshot.core_revision == revision
-    assert memory._processing.run_next_stage(operation_id)
     assert memory.operation(operation_id).state.value == 'retry_wait'
     assert len(calls) == 1
 
     with Database(cluster.runtime) as restarted:
         restored, restored_calls = processing(database=restarted)
         assert restored.retry_operation(operation_id).extraction_saved
-        assert restored.flush_processing('chat')['ok']
+        assert restored._processing.run_next_stage(operation_id)
         assert restored_calls == []
         fact, = restored.facts()
         assert fact.provenance == [source_id]
         assert restored.operation(operation_id).core_committed
         assert restored.dao.receipt(operation_id).fact_ids == (fact.id,)
         assert not restored._processing.run_next_stage(operation_id)
-        replay = restored.remember_messages('chat', (dialogue('one'),))
-        assert replay['accepted'] == 0 and replay['operation_ids'] == (operation_id,)
+        replay = restored.remember([dialogue('one')], 'chat')
+        assert replay['status'] == 'completed' and replay['messages'] == result['messages']
 
 
 def test_duplicate_concurrency_and_atomic_rejection(processing, cluster, runtime):
     memory, _ = processing()
     offline = Memory(runtime, memory.context)
     with pytest.raises(LLMNotConfiguredError):
-        offline.remember_messages('chat', (dialogue('raw', extract=False), dialogue('auto')))
+        offline.remember([dialogue('one'), dialogue('two')], 'chat')
     assert offline.list_sources() == ()
     with Database(cluster.runtime) as pool, ThreadPoolExecutor(2) as executor:
         other, _ = processing(database=pool)
         batch = (dialogue('same'),)
         first, second = [future.result() for future in (
-            executor.submit(memory.remember_messages, 'chat', batch),
-            executor.submit(other.remember_messages, 'chat', batch),
+            executor.submit(memory.remember, batch, 'chat'),
+            executor.submit(other.remember, batch, 'chat'),
         )]
     assert first['source_ids'] == second['source_ids']
-    assert first['operation_ids'] == second['operation_ids']
-    assert sorted([first['accepted'], second['accepted']]) == [0, 1]
+    assert first['operation_id'] == second['operation_id']
     with pytest.raises(MessageConflict):
-        memory.remember_messages('chat', (dialogue('new'), dialogue('same', extract=False)))
+        memory.remember([dialogue('new'), dialogue('same')], 'chat')
     assert len(memory.list_sources()) == 1
 
 
-def test_mixed_dialogue_batch_queues_only_new_extraction_inputs_in_message_order(processing):
+def test_batch_preserves_message_order_and_rejects_duplicate_ids(processing):
     memory, calls = processing()
-    first = dialogue('first')
-    raw = dialogue('raw', extract=False)
-    last = dialogue('last')
-    result = memory.remember_messages('chat', (first, raw, last, first), processing='immediate')
-
-    assert result['ok'] and result['accepted'] == 3
-    first_row, raw_row, last_row, repeated_row = result['messages']
-    assert first_row == repeated_row
-    assert raw_row['operation_ids'] == ()
-    assert first_row['operation_ids'] == last_row['operation_ids'] == result['operation_ids']
-    assert [item['id'] for item in calls[0]['pending']] == [first_row['episode_id'], last_row['episode_id']]
+    batch = [dialogue('first'), MessageInput('middle', 'assistant', 'Synthetic response'), dialogue('last')]
+    with pytest.raises(ValueError, match='unique'):
+        memory.remember([*batch, batch[0]], 'chat')
+    assert not memory.list_sources()
+    result = remember_and_publish(memory, batch, 'chat')
+    assert result['status'] == 'completed'
+    assert [item['sequence'] for item in result['messages']] == [0, 1, 2]
+    assert [item['id'] for item in calls[0]['pending']] == list(result['source_ids'])
 
 
-def test_leases_order_sessions_and_fence_old_executors(processing, cluster):
+def test_lease_survives_other_requests_in_same_space_and_fences_old_worker(processing, cluster):
     memory, _ = processing()
-    first, = memory.remember_messages('chat', (dialogue('first'),))['operation_ids']
-    assert memory.flush_processing('chat', timeout=0)['status'] == 'timed_out'
-    second, = memory.remember_messages('chat', (dialogue('second'),))['operation_ids']
-    parallel, = memory.remember_messages('other', (dialogue('other'),))['operation_ids']
+    first = memory.remember([dialogue('first')], 'chat')['operation_id']
+    parallel = memory.remember([dialogue('other')], 'other')['operation_id']
     lease, kind = memory._processing.tasks.claim(first)
     assert kind is OperationKind.EXTRACT
     with Database(cluster.runtime) as pool:
         other, _ = processing(database=pool)
-        assert other._processing.tasks.claim(second, force=True) is None
-        assert other._processing.tasks.claim(parallel, force=True) is not None
+        assert other._processing.tasks.claim(first) is None
+        assert other._processing.tasks.claim(parallel) is None
         with memory.dao._transaction() as sql:
             sql.run('UPDATE mnemotrace.operations SET lease_until = clock_timestamp() '
                     'WHERE user_id = %s AND space_id = %s AND operation_id = %s', (*sql.scope, first))
@@ -195,46 +164,57 @@ def test_leases_order_sessions_and_fence_old_executors(processing, cluster):
         with pytest.raises(VersionConflict):
             memory._processing.tasks.renew(lease)
         other._processing.tasks.renew(replacement)
-        assert other.operation(parallel).state.value == 'running'
+        assert other.operation(parallel).state.value == 'pending'
 
 
-def test_discovery_credentials_only_and_worker_runs_both_stages(processing, cluster, runtime):
+def test_discovery_credentials_only_and_worker_publishes_a_task(processing, cluster, runtime):
     memory, _ = processing()
-    operation_id, = memory.remember_messages('chat', (dialogue('worker'),))['operation_ids']
+    operation_id = memory.remember([dialogue('worker')], 'chat')['operation_id']
     with pytest.raises(DatabaseConfigurationError):
         runtime.discover_processing()
     with Database(cluster.discovery, purpose='discovery') as discovery:
-        assert discovery.discover_processing() == ()
-        memory.flush_processing('chat', timeout=0)
         assert discovery.discover_processing() == ((memory.context, operation_id),)
         with pytest.raises(DatabaseConfigurationError):
             with discovery.space_transaction(memory.context.user_id, memory.context.space_id):
                 pytest.fail('Discovery credentials can write business data')
         pipeline = memory._processing
-        for _ in range(2):
-            run_worker(discovery, runtime, pipeline.config, pipeline.llm, pipeline.embedder, pipeline.model, once=True)
+        run_worker(discovery, runtime, pipeline.config, pipeline.llm, pipeline.embedder, pipeline.model, once=True)
     assert memory.operation(operation_id).core_committed
 
 
-def test_segmented_note_keeps_operation_id_and_digest_is_independent(processing):
-    config = Config(extraction_max_input_bytes=7000, digest_min_chars=300, digest_max_chars=100)
-    memory, calls = processing(config=config)
-    text = 'Synthetic note with preference details. ' * 300
-    accepted = memory.remember(text, 'docs', processing='buffered')
-    operation_id, = accepted['operation_ids']
+@pytest.mark.parametrize('shorthand', [True, False])
+def test_full_source_publishes_fact_and_digest_together(processing, shorthand):
+    config = Config(memory_max_input_tokens=4_000, digest_min_chars=300, digest_max_chars=100)
+    def record_excerpt(data):
+        return dict(facts=boundary_facts(data), digests=recorded_digests(data, text='HEAD-41, MIDDLE-42 and TAIL-43'))
+
+    memory, calls = processing(config=config, handle=record_excerpt)
+    head, middle, tail = 'HEAD-41', 'MIDDLE-42', 'TAIL-43'
+    text = (f'{head} is in Synthetic opening. ' + '长原文' * 4000
+            + f' Synthetic middle contains {middle}. ' + '长原文' * 4000
+            + f' Synthetic closing contains {tail}')
+    value = text if shorthand else [dialogue('long', text)]
+    accepted = memory.remember(value, 'docs')
+    operation_id = accepted['operation_id']
     source_id, = accepted['source_ids']
+    checkpoint_before_publication(memory, operation_id)
+    assert not memory.facts() and not memory.get_episode(source_id).digest
+    memory.retry_operation(operation_id)
     assert memory._processing.run_next_stage(operation_id)
-    assert memory._processing.run_next_stage(operation_id)
-    assert not memory.operation(operation_id).core_committed
-    assert memory.get_episode(source_id).coverage['partial']
-    result = memory.flush_processing('docs', include_digests=True, timeout=15)
-    assert result['ok'], result
     assert memory.operation(operation_id).core_committed
+    call, = calls
+    view, = call['pending']
+    assert view['content'].startswith(head) and view['content'].endswith(tail)
+    assert middle in view['content']
     episode = memory.get_episode(source_id)
-    assert episode.coverage['ranges'] == [[0, len(text)]]
-    assert episode.digest_coverage['ranges'] == [[0, len(text)]]
-    extracts = [call['pending'][0]['ranges'][0] for call in calls if call['operation'] == 'extract']
-    assert len(extracts) > 1 and all(a[1] == b[0] for a, b in zip(extracts, extracts[1:]))
+    assert episode.content == text and episode.consolidated
+    assert episode.coverage == episode.digest_coverage
+    assert episode.coverage['ranges'] == view['ranges'] and not episode.coverage['partial']
+    assert episode.digest == 'HEAD-41, MIDDLE-42 and TAIL-43'
+    facts = memory.facts()
+    assert {fact.object for fact in facts} == {head, middle, tail}
+    assert all(fact.provenance == [source_id] for fact in facts)
+    assert set(memory.dao.receipt(operation_id).fact_ids) == {fact.id for fact in facts}
 
 
 def test_timeout_and_clear_space_while_model_runs(processing):
@@ -246,16 +226,22 @@ def test_timeout_and_clear_space_while_model_runs(processing):
         return dict(facts=[], digests=[])
 
     memory, _ = processing(handle=block)
-    try:
-        result = memory.remember_messages('chat', (dialogue('erase'),), processing='immediate', timeout=.5)
-        operation_id, = result['operation_ids']
-        source_id, = result['source_ids']
-        assert entered.is_set() and result['status'] == 'timed_out'
-        memory.clear_space()
-    finally:
-        release.set()
-    assert memory.operation(operation_id) is None
-    assert memory.get_episode(source_id) is None
+    messages = [dialogue('erase')]
+    accepted = memory.remember(messages, 'chat')
+    task_id = accepted['operation_id']
+    with ThreadPoolExecutor(1) as pool:
+        active = pool.submit(memory._processing.run_next_stage, task_id)
+        try:
+            assert entered.wait(5)
+            waited = memory.remember(messages, 'chat', wait=True, timeout=0)
+            assert waited['status'] == 'timed_out'
+            assert waited['task'].state.value == 'running'
+            memory.clear_space()
+        finally:
+            release.set()
+        assert active.result()
+    assert memory.operation(task_id) is None
+    assert memory.get_episode(accepted['source_ids'][0]) is None
     assert memory.facts() == ()
 
 
@@ -270,9 +256,11 @@ def test_interrupted_transaction_resumes_from_actual_checkpoint(processing, monk
                   'core': 'commit_receipts'}[stage]
     operation_id = None
     if stage != 'accept':
-        operation_id, = memory.remember_messages('chat', (message,))['operation_ids']
+        operation_id = memory.remember([message], 'chat')['operation_id']
         if stage == 'core':
-            assert memory._processing.run_next_stage(operation_id, force=True)
+            checkpoint_before_publication(memory, operation_id)
+            memory.retry_operation(operation_id)
+            calls.clear()
 
     @contextmanager
     def interrupt(**kwargs):
@@ -295,33 +283,34 @@ def test_interrupted_transaction_resumes_from_actual_checkpoint(processing, monk
         patch.setattr(memory.dao, '_transaction', interrupt)
         if stage == 'accept':
             if committed:
-                operation_id, = memory.remember_messages('chat', (message,))['operation_ids']
+                accepted = memory.remember([message], 'chat')
             else:
                 with pytest.raises(CommitOutcomeUnknown):
-                    memory.remember_messages('chat', (message,))
+                    memory.remember([message], 'chat')
         else:
-            assert memory._processing.run_next_stage(operation_id, force=True)
+            assert memory._processing.run_next_stage(operation_id)
     assert interrupted
     if stage == 'accept':
-        replay = memory.remember_messages('chat', (message,))
-        assert replay['accepted'] == int(not committed)
+        replay = memory.remember([message], 'chat')
+        operation_id = replay['operation_id']
         if committed:
-            assert replay['operation_ids'] == (operation_id,)
+            assert replay['messages'] == accepted['messages']
     elif stage == 'product':
         assert memory.operation(operation_id).extraction_saved is committed
         assert not memory.facts()
-        if not committed:
-            memory.retry_operation(operation_id)
+        memory.retry_operation(operation_id)
     else:
         assert bool(memory.facts()) is committed
         if not committed:
             with original() as sql:
                 sql.run('UPDATE mnemotrace.operations SET lease_until = clock_timestamp() '
                         'WHERE user_id = %s AND space_id = %s AND operation_id = %s', (*sql.scope, operation_id))
-    assert memory.flush_processing('chat')['ok']
+    while memory._processing.run_next_stage(operation_id):
+        pass
+    assert memory.operation(operation_id).core_committed
     fact, = memory.facts()
     assert fact.categories == ['food']
-    assert len(calls) == (2 if stage == 'product' and not committed else 1)
+    assert len(calls) == (0 if stage == 'core' else 2 if stage == 'product' and not committed else 1)
 
 
 def test_semantic_reconciliation_and_unordered_candidate(processing):
@@ -347,44 +336,40 @@ def test_semantic_reconciliation_and_unordered_candidate(processing):
     memory, _ = processing(embedder=SemanticEmbedder(), handle=extract, adjudicate=decisions)
     old = MessageInput('old', 'user', 'Synthetic person lives_in Beijing', event_time=100)
     new = MessageInput('new', 'user', 'Synthetic person based_in Shanghai', event_time=200)
-    assert memory.remember_messages('chat', (old,), processing='immediate')['ok']
+    assert remember_and_publish(memory, [old], 'chat')['ok']
     historical, = memory.facts()
-    assert memory.remember_messages('chat', (new,), processing='immediate')['ok']
+    assert remember_and_publish(memory, [new], 'chat')['ok']
     current, = memory.facts()
     assert current.supersedes == [historical.id]
     assert memory.get_fact(historical.id).invalid_at == 200
     assert memory.facts(FactQuery(valid_at=150))[0].id == historical.id
 
     attempt = MessageInput('unordered', 'user', 'Synthetic person based_in Shenzhen', event_time=200)
-    assert memory.remember_messages('chat', (attempt,), processing='immediate')['ok']
+    assert remember_and_publish(memory, [attempt], 'chat')['ok']
     assert tuple(fact.id for fact in memory.facts()) == (current.id,)
     assert memory.entity('Shenzhen') is None
 
 
 def test_rejected_source_erasure_preserves_digest_and_its_context(processing):
     def extract(data):
-        if data['operation'] == 'digest':
-            return dict(digests=[dict(source_id=data['pending'][0]['id'], text='Rebuilt detail')])
         return dict(facts=[], digests=[
             dict(source_id=item['id'], text='Recorded detail')
             for item in data['pending'] if item['needs_digest']
         ])
 
     memory, calls = processing(config=Config(digest_min_chars=35, digest_max_chars=20), handle=extract)
-    first = memory.remember_messages('chat', (dialogue('context', 'Short background'),), processing='immediate')
-    second = memory.remember_messages('chat', (dialogue('target', 'A long synthetic record with details'),),
-                                      processing='immediate')
+    first = remember_and_publish(memory, [dialogue('context', 'Short background')], 'chat')
+    second = remember_and_publish(memory, [dialogue('target', 'A long synthetic record with details')], 'chat')
     prior, = first['source_ids']
     target, = second['source_ids']
     assert calls[-1]['context'][0]['id'] == prior
-    operation_id, = second['operation_ids']
-    digest_id, = memory.operation(operation_id).auxiliary_operation_ids
+    operation_id = second['operation_id']
     with memory.dao._transaction(read_only=True) as sql:
         links = sql.run("""SELECT source_id, content_version, is_context FROM mnemotrace.operation_sources
             WHERE user_id = %s AND space_id = %s AND operation_id = %s ORDER BY is_context""",
-            (*sql.scope, digest_id)).fetchall()
+            (*sql.scope, operation_id)).fetchall()
     assert links == [(target, 1, False), (prior, 1, True)]
-    assert memory.flush_processing('chat', include_digests=True)['ok']
+    assert memory.operation(operation_id).core_committed
     assert len(calls) == 2
     assert memory.get_episode(target).digest == 'Recorded detail'
 
@@ -400,29 +385,16 @@ def test_rejected_source_erasure_preserves_digest_and_its_context(processing):
     assert memory.get_episode(prior) is not None
     assert memory.get_episode(target).digest == 'Recorded detail'
     assert lexical_fields() == {'digest'}
-    replay = memory.remember_messages('chat', (dialogue('target', 'A long synthetic record with details'),))
-    assert replay['operation_ids'] == second['operation_ids']
+    replay = memory.remember([dialogue('target', 'A long synthetic record with details')], 'chat')
+    assert replay['messages'] == second['messages']
 
 
-def test_digest_requires_one_source_and_rejects_old_multi_source_tasks(processing):
-    memory, calls = processing()
-    first = seed_note(memory, 'First synthetic source', 'chat')
-    second = seed_note(memory, 'Second synthetic source', 'chat')
-    sources = (SourceVersion(first.id, 1), SourceVersion(second.id, 1))
-    with pytest.raises(ValueError, match='exactly one source'):
-        OperationSpec('multi-digest', OperationKind.DIGEST, 'chat', sources)
-    with memory.dao.read_snapshot('chat') as view:
-        conditions = CommitConditions(view.snapshot)
-    digest = OperationSpec('old-digest', OperationKind.DIGEST, 'chat', sources[:1])
-    memory.dao.commit(ChangeSet(conditions, 'enqueue-old-digest', operations=(digest,)))
-    with memory.dao._transaction() as sql:
-        sql.insert('operation_sources', dict(operation_id=digest.operation_id, source_id=second.id,
-                   content_version=1, input_order=1))
-    assert memory._processing.run_next_stage(digest.operation_id)
-    status = memory.operation(digest.operation_id)
-    assert status.state.value == 'failed'
-    assert status.error_code == 'data_corruption'
-    assert calls == []
+def test_new_baseline_has_no_digest_operation_kind(processing):
+    memory, _ = processing()
+    with pytest.raises(ValueError):
+        OperationKind('digest')
+    with memory.dao._transaction(read_only=True) as sql:
+        assert sql.run("SELECT to_regclass('mnemotrace.operation_digest_parts')").fetchone() == (None,)
 
 
 @pytest.mark.parametrize('settings, saves_first_result', [
@@ -438,198 +410,88 @@ def test_saving_inflight_extraction_checks_only_extraction_policy(processing, se
         return dict(facts=[], digests=[])
 
     memory, calls = processing(handle=generate)
-    operation_id, = memory.remember_messages('chat', (dialogue('one'),))['operation_ids']
-    assert memory._processing.run_next_stage(operation_id, force=True)
+    operation_id = memory.remember([dialogue('one')], 'chat')['operation_id']
+    assert memory._processing.run_next_stage(operation_id)
     status = memory.operation(operation_id)
     assert status.extraction_saved is saves_first_result
     assert status.error_code == (None if saves_first_result else 'version_conflict')
-    assert memory.flush_processing('chat')['ok']
+    if not saves_first_result:
+        assert memory._processing.run_next_stage(operation_id)
+    assert memory.operation(operation_id).core_committed
     assert len(calls) == (1 if saves_first_result else 2)
 
 
-def test_saving_inflight_extraction_with_digest_context_checks_core_revision(processing):
+def test_profile_policy_change_does_not_invalidate_raw_context(processing):
     def generate(data):
         if len(calls) == 2:
-            assert [item['representation'] for item in data['context']] == ['digest']
+            assert [item['representation'] for item in data['context']] == ['raw']
             memory.set_settings(profile_system='Synthetic profile policy')
-        return dict(facts=[], digests=[
-            dict(source_id=item['id'], text='Recorded detail')
-            for item in data['pending'] if item['needs_digest']
-        ])
+        return dict(facts=[], digests=recorded_digests(data))
 
-    memory, calls = processing(config=Config(digest_min_chars=35, digest_max_chars=20), handle=generate)
-    memory.remember_messages('chat', (dialogue('prior', 'A long synthetic record with details'),))
-    assert memory.flush_processing('chat', include_digests=True)['ok']
-    assert len(calls) == 1
-
-    operation_id, = memory.remember_messages('chat', (dialogue('target', 'Short follow-up'),))['operation_ids']
-    assert memory._processing.run_next_stage(operation_id, force=True)
-    status = memory.operation(operation_id)
-    assert not status.extraction_saved
-    assert status.error_code == 'version_conflict'
-    assert memory.flush_processing('chat')['ok']
-    assert len(calls) == 3
-
-
-def test_policy_change_reextracts_and_digest_failure_preserves_core(processing):
-    def extract(data):
-        if data['operation'] == 'digest':
-            return dict(digests=[])
-        return dict(facts=[], digests=[])
-
-    memory, calls = processing(config=Config(digest_min_chars=35, digest_max_chars=20), handle=extract)
-    accepted = memory.remember_messages('chat', (dialogue('one', 'A long synthetic record with details'),))
-    operation_id, = accepted['operation_ids']
-    assert memory._processing.run_next_stage(operation_id, force=True)
-    memory.set_settings(extract_instruction='Changed synthetic extraction rule')
-    assert memory.flush_processing('chat')['ok']
+    memory, calls = processing(handle=generate)
+    assert remember_and_publish(memory, 'Synthetic background ' * 100, 'chat')['status'] == 'completed'
+    outcome = remember_and_publish(memory, 'Short follow-up', 'chat')
+    assert outcome['status'] == 'completed'
     assert len(calls) == 2
-    digest_id, = memory.operation(operation_id).auxiliary_operation_ids
-    assert memory._processing.run_next_stage(digest_id)
-    assert memory.operation(digest_id).error_code == 'extraction_invalid_response'
-    assert memory.operation(operation_id).core_committed
 
 
-def test_operation_page_batches_auxiliary_lookups(processing, monkeypatch):
-    from mnemotrace.store.postgres.records import ScopedSQL
-
-    memory, _ = processing(config=Config(digest_min_chars=35, digest_max_chars=20))
-    expected = {}
-    for session in ('first', 'second'):
-        result = memory.remember_messages(session, (dialogue('one', 'A long synthetic record with details'),))
-        operation_id, = result['operation_ids']
-        assert memory.flush_processing(session)['ok']
-        auxiliary, = memory.operation(operation_id).auxiliary_operation_ids
-        expected[operation_id] = (auxiliary,)
-
-    queries = []
-    original = ScopedSQL.run
-
-    def record(sql, query, params=(), *, prepare=None):
-        if 'AND parent_id' in query:
-            queries.append(query)
-        return original(sql, query, params, prepare=prepare)
-
-    monkeypatch.setattr(ScopedSQL, 'run', record)
-    operations = memory.list_operations()
-    assert {operation.operation_id: operation.auxiliary_operation_ids
-            for operation in operations if operation.operation_id in expected} == expected
-    assert len(queries) == 1
-
-    queries.clear()
-    operation_ids = (*reversed(expected), 'missing')
-    result = memory._processing.flush(operation_ids=operation_ids, timeout=0)
-    assert result['status'] == 'failed' and result['operation_ids'] == operation_ids
-    assert [operation.operation_id for operation in result['operations']] == list(reversed(expected))
-    assert [operation.auxiliary_operation_ids for operation in result['operations']] == [
-        expected[key] for key in reversed(expected)
-    ]
-    assert len(queries) == 1
-
-
-def test_repeated_config_changes_exhaust_generation_budget(processing):
-    memory, calls = processing()
-    operation_id, = memory.remember_messages('chat', (dialogue('one'),))['operation_ids']
-    for index in range(3):
-        assert memory._processing.run_next_stage(operation_id, force=True)
-        assert memory.operation(operation_id).extraction_saved
-        memory.set_settings(extract_instruction=f'Synthetic version {index}')
-        assert memory._processing.run_next_stage(operation_id)
-    assert not memory._processing.run_next_stage(operation_id)
-    assert memory.operation(operation_id).error_code == 'attempts_exhausted'
-    assert len(calls) == 3 and not memory.facts()
-
-
-def test_dao_enqueued_extract_is_discoverable_before_later_session_work(processing, cluster):
-    memory, _ = processing()
-    source = seed_note(memory, 'Synthetic explicit extraction input', 'chat')
-    with memory.dao.read_snapshot('chat') as view:
-        conditions = CommitConditions(view.snapshot)
-    queued = OperationSpec('queued-by-dao', OperationKind.EXTRACT, 'chat', (SourceVersion(source.id, 1),))
-    memory.dao.commit(ChangeSet(conditions, 'enqueue-extract', operations=(queued,)))
-    later, = memory.remember_messages('chat', (dialogue('later'),))['operation_ids']
-    memory._processing.tasks.freeze([later], 'chat', False)
-    with Database(cluster.discovery, purpose='discovery') as discovery:
-        # Making later work ready must neither trigger nor bypass the DAO operation.
-        assert discovery.discover_processing() == ((memory.context, queued.operation_id),)
-        assert memory._processing.run_next_stage(queued.operation_id)
-        assert memory._processing.run_next_stage(queued.operation_id)
-        assert memory.operation(queued.operation_id).core_committed
-        assert discovery.discover_processing() == ((memory.context, later),)
-
-
-@pytest.mark.parametrize('config_change', ['length', 'policy'])
-def test_digest_draft_regenerated_after_configuration_change(processing, config_change):
-    def draft(data):
-        return dict(facts=[], digests=[
-            dict(source_id=data['pending'][0]['id'], text='d' * 60)])
-
-    config = Config(digest_min_chars=90, digest_max_chars=80)
-    memory, _ = processing(config=config, handle=draft)
-    result = memory.remember_messages('chat', (dialogue('draft', 'Synthetic digest material. ' * 8),),
-                                      processing='immediate')
-    assert result['ok']
-    source_id, = result['source_ids']
-    if config_change == 'length':
-        config = Config(digest_min_chars=90, digest_max_chars=40)
-    else:
-        memory.set_settings(digest_system='Synthetic new digest policy')
-    restarted, calls = processing(config=config)
-    assert restarted.flush_processing('chat', include_digests=True, timeout=3)['ok']
-    assert [call['operation'] for call in calls] == ['digest']
-    assert restarted.get_episode(source_id).digest == 'Recorded preference'
-
-
-def test_digest_policy_change_can_recommit_the_same_fragment_range(processing):
-    config = Config(extraction_max_input_bytes=7000, digest_min_chars=300, digest_max_chars=100)
-    memory, old_calls = processing(config=config)
-    memory.set_settings(digest_system='Original policy')
-    result = memory.remember('Synthetic digest material. ' * 450, 'notes')
-    assert result['ok']
-    operation_id, = result['operation_ids']
-    digest_id, = memory.operation(operation_id).auxiliary_operation_ids
-    assert memory._processing.run_next_stage(digest_id)
-    assert memory._processing.run_next_stage(digest_id)
-    assert not memory.operation(digest_id).core_committed
-    old_range = old_calls[-1]['pending'][0]['ranges']
-
-    memory.set_settings(digest_system='Adjusted policy')
-    restarted, calls = processing(config=config)
-    assert restarted.flush_processing('notes', include_digests=True, timeout=5)['ok']
-    assert calls[0]['pending'][0]['ranges'] == old_range
-    assert restarted.operation(digest_id).core_committed
-
-
-@pytest.mark.parametrize('erase_early_fact', [False, True])
-def test_final_receipt_includes_surviving_outputs_from_earlier_segments(processing, erase_early_fact):
+def test_missing_digest_retries_entire_product_without_publishing_facts(processing):
     def extract(data):
         item, = data['pending']
-        if item['ranges'][0][0]:
-            return dict(facts=[], digests=[])
-        facts = [dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='我', predicate='likes', object=value,
-                      text=f'Synthetic person likes {value}', source_ids=[item['id']])
-                 for value in ('tea', 'coffee')]
-        return dict(facts=facts, digests=[])
+        facts = [dict(subject='我', predicate='likes', object='tea', text='Synthetic person likes tea',
+                      categories=['food'], sensitive=False, time_kind='current', effective_date=None,
+                      retention='unknown', source_ids=[item['id']])]
+        return dict(facts=facts, digests=recorded_digests(data) if len(calls) > 1 else [])
 
-    config = Config(extraction_max_input_bytes=7000, digest_min_chars=100000)
-    memory, _ = processing(config=config, handle=extract)
-    accepted = memory.remember('Synthetic source material. ' * 450, 'notes', processing='buffered')
-    operation_id, = accepted['operation_ids']
+    memory, calls = processing(config=Config(digest_min_chars=35, digest_max_chars=20), handle=extract)
+    accepted = memory.remember([dialogue('one', 'A long synthetic record with details')], 'chat')
+    operation_id = accepted['operation_id']
+    source_id, = accepted['source_ids']
+    assert memory._processing.run_next_stage(operation_id)
+    status = memory.operation(operation_id)
+    assert status.state.value == 'retry_wait' and status.error_code == 'extraction_invalid_response'
+    assert not status.extraction_saved and not status.core_committed
+    assert not memory.facts() and not memory.get_episode(source_id).digest
+    with memory.dao._transaction() as sql:
+        sql.update('operations', {'next_attempt_at': sql.run('SELECT clock_timestamp()').fetchone()[0]},
+                   'operation_id = %s', (operation_id,))
+    assert memory._processing.run_next_stage(operation_id)
+    assert calls[0] == calls[1] and len(calls) == 2
+    assert memory.operation(operation_id).core_committed
+    assert memory.get_episode(source_id).digest == 'Recorded preference'
+    assert len(memory.facts()) == 1
+
+
+def test_append_is_immediately_ready_and_never_changes_earlier_task_members(processing, cluster):
+    memory, calls = processing(handle=lambda _: dict(facts=[], digests=[]))
+    first = memory.remember([dialogue('first')], 'chat')['operation_id']
+    second = memory.remember([dialogue('second')], 'chat')['operation_id']
+    with Database(cluster.discovery, purpose='discovery') as discovery:
+        assert (memory.context, first) in discovery.discover_processing()
+        assert (memory.context, second) not in discovery.discover_processing()
+        assert memory._processing.run_next_stage(first)
+        assert (memory.context, second) in discovery.discover_processing()
+        assert memory._processing.run_next_stage(second)
+    assert [[item['message_id'] for item in call['pending']] for call in calls] == [['first'], ['second']]
+
+
+def test_policy_change_regenerates_the_complete_product(processing):
+    memory, calls = processing(config=Config(digest_min_chars=35, digest_max_chars=20))
+    accepted = memory.remember([dialogue('one', 'A long synthetic record with details')], 'chat')
+    operation_id = accepted['operation_id']
+    source_id, = accepted['source_ids']
+    checkpoint_before_publication(memory, operation_id)
+    memory.set_settings(extract_instruction='Changed synthetic extraction rule')
+    memory.retry_operation(operation_id)
     assert memory._processing.run_next_stage(operation_id)
     assert memory._processing.run_next_stage(operation_id)
-    assert not memory.operation(operation_id).core_committed
-    assert memory.dao.receipt(operation_id) is None
-    early_facts = {fact.id for fact in memory.facts()}
-    assert len(early_facts) == 2
-    if erase_early_fact:
-        memory.erase(RecordRef(memory.context, RecordKind.FACT, early_facts.pop()))
-    assert memory.flush_processing('notes', timeout=5)['ok']
-    receipt = memory.dao.receipt(operation_id)
-    assert set(receipt.fact_ids) == early_facts
+    assert memory.operation(operation_id).core_committed
+    assert len(calls) == 2
+    assert memory.get_episode(source_id).digest == 'Recorded preference'
 
 
-@pytest.mark.parametrize("source_kind", ["dialogue", "note"])
-def test_assertion_and_profile_input_are_identical_offline_and_in_postgres(processing, source_kind):
+@pytest.mark.parametrize("shorthand", [True, False])
+def test_assertion_and_profile_input_are_identical_offline_and_in_postgres(processing, shorthand):
     from mnemotrace.memory_engine import MemoryEngine
     from mnemotrace.profile import input_fact
 
@@ -646,17 +508,13 @@ def test_assertion_and_profile_input_are_identical_offline_and_in_postgres(proce
     memory, _ = processing(handle=handle)
     offline = MemoryEngine(llm=FakeLLM(handler=lambda prompt, _: json.dumps(
         handle(json.loads(prompt.removeprefix(WINDOW_PREFIX))))))
-    if source_kind == "dialogue":
-        message = dialogue("synthetic", statement)
-        memory.remember_messages("synthetic", (message,), processing="immediate")
-        offline.remember_messages([{"message_id": "synthetic", "role": "user", "content": statement,
-                                    "event_time": 100}], "synthetic")
-        assert offline.flush_messages()["ok"]
+    if shorthand:
+        remember_and_publish(memory, statement, "synthetic", event_time=100)
+        offline.remember(statement, "synthetic", event_time=100)
     else:
-        memory.remember(statement, "synthetic", event_time=100)
-        episode = offline.add(statement, session_id="synthetic", event_time=100)
-        episode.source_kind = source_kind
-        offline.consolidate()
+        batch = [dialogue("synthetic", statement)]
+        remember_and_publish(memory, batch, "synthetic")
+        offline.remember(batch, "synthetic")
     persistent_fact, = memory.facts()
     offline_fact, = offline._all_facts()
     assert persistent_fact.text == offline_fact.text == statement

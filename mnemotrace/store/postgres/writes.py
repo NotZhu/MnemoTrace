@@ -156,16 +156,19 @@ def write(sql, change, graph):
     return True, profile_changed
 
 
-def enqueue(sql, spec, space_generation, *, ready_at=None, parent_id=None):
-    sequence = None if spec.session_id is None else allocate_sequence(sql, spec.session_id)
-    if ready_at is None and spec.kind in (OperationKind.EXTRACT, OperationKind.DIGEST):
+def enqueue(sql, spec, space_generation, *, ready_at=None, planned_request=None, sequence=None):
+    if sequence is None and spec.kind is OperationKind.EXTRACT:
+        # All writes for this space hold its row lock.
+        sequence = sql.run(f"SELECT coalesce(max(sequence) + 1, 0) FROM mnemotrace.operations "
+                           f"WHERE {SCOPE} AND kind = 'extract'", sql.scope).fetchone()[0]
+    if ready_at is None and spec.kind is OperationKind.EXTRACT:
         ready_at = sql.run('SELECT clock_timestamp()').fetchone()[0]
     sql.insert('operations', dict(
         operation_id=spec.operation_id, kind=spec.kind.value, session_id=spec.session_id,
         sequence=sequence, state='pending', phase='queued', attempts=0, embed_attempts=0,
         space_generation=space_generation,
         extraction_saved=False, core_committed=False,
-        ready_at=ready_at, parent_id=parent_id,
+        ready_at=ready_at, planned_request=planned_request,
     ))
     for order, source in enumerate(spec.sources):
         append_input(sql, spec.operation_id, spec.session_id, source, order)
@@ -213,28 +216,24 @@ def commit_task(sql, lease):
                'operation_id = %s', (lease.operation_id,))
 
 
-def store_messages(sql, session_id, messages, *, check_ready):
-    """存储消息。
-
-    Args:
-        session_id: 会话 ID。
-        messages: 要存储的消息列表。
-        check_ready: 是否检查就绪状态。
-    """
-    existing = sql.run(f'SELECT message_id,id,message_fingerprint FROM mnemotrace.sources '
+def store_messages(sql, session_id, messages, *, extract, check_ready=None):
+    """Store a new extraction batch or append internally archived messages."""
+    existing = sql.run(f'SELECT message_id,id,message_fingerprint,extract FROM mnemotrace.sources '
                        f'WHERE {SCOPE} AND session_id = %s AND message_id = ANY(%s)',
                        (*sql.scope, session_id, [msg.message_id for msg in messages])).fetchall()
-    known = {key: (record_id, content_hash) for key, record_id, content_hash in existing}
-    if any(item.extract and item.message_id not in known for item in messages):
+    known = {key: (record_id, fingerprint, eligible) for key, record_id, fingerprint, eligible in existing}
+    if extract and known:
+        raise MessageConflict('Retry the original request without changing its members or order')
+    if check_ready is not None:
         check_ready()
     sql.ensure_session(session_id)
-    saved, extraction_ids = [], []
+    saved = []
     inserted = 0
     for item in messages:
         content_hash = item.fingerprint
         if item.message_id in known:
-            record_id, stored_hash = known[item.message_id]
-            if content_hash != stored_hash:
+            record_id, stored_hash, eligible = known[item.message_id]
+            if content_hash != stored_hash or extract != eligible:
                 raise MessageConflict('Message identity was already used for a different input')
         else:
             record_id = gen_id('ep')
@@ -242,13 +241,11 @@ def store_messages(sql, session_id, messages, *, check_ready):
                 id=record_id, session_id=session_id, message_id=item.message_id,
                 content=item.content, role=item.role, event_time=timestamp(item.event_time),
                 ingested_at=sql.run('SELECT clock_timestamp()').fetchone()[0],
-                source_kind='dialogue', extract=item.extract,
+                extract=extract,
                 agent_id=item.agent_id, message_fingerprint=content_hash,
                 sequence=allocate_sequence(sql, session_id), record_version=1, content_version=1,
             ))
-            known[item.message_id] = (record_id, content_hash)
+            known[item.message_id] = (record_id, content_hash, extract)
             inserted += 1
-            if item.extract:
-                extraction_ids.append(record_id)
         saved.append(record_id)
-    return tuple(saved), inserted, extraction_ids
+    return tuple(saved), inserted

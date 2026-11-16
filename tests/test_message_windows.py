@@ -1,82 +1,48 @@
-"""Dialogue planning uses continuous, committed representations and explicit output reserves."""
-
-import pytest
+import json
 
 from mnemotrace import Config, MemoryEngine
-from mnemotrace.consolidate.planning import context_for, input_size, output_size, plan
-from mnemotrace.consolidate.pipeline import PipelineTasks
+from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from mnemotrace.llm import FakeLLM
-from tests.test_message_pipeline import message, reply
+from tests.test_message_pipeline import message
 
 
-def prepared(rows):
-    mem = MemoryEngine(llm=FakeLLM(handler=reply))
-    mem.remember_messages(rows, 's', user_id='u')
-    assert mem.flush_messages('u')['ok']
-    mem.remember_messages([message('next')], 's', user_id='u')
-    tasks = PipelineTasks(mem, 'u')
-    first = next(r for r in tasks.rows().values() if r['message_id'] == 'next')
-    return mem, tasks, first
+def record_requests():
+    calls = []
+
+    def respond(prompt, system):
+        assert prompt.startswith(WINDOW_PREFIX)
+        data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
+        calls.append(data)
+        return json.dumps(dict(facts=[], digests=[
+            dict(source_id=source_id, text='Synthetic digest')
+            for source_id in data['rules']['digest_required']
+        ]))
+
+    return MemoryEngine(config=Config(memory_max_input_tokens=1), llm=FakeLLM(handler=respond)), calls
 
 
-def test_context_stops_at_over_budget_instead_of_skipping():
-    mem, tasks, first = prepared([message('old', 'a'), message('big', 'b' * 100), message('last', 'c')])
-    mem.config.extraction_context_bytes = 2
-    assert [s['message_id'] for s in context_for(mem, tasks, first)] == ['last']
+def test_uses_ten_original_messages_in_chronological_order():
+    memory, calls = record_requests()
+    previous = [message(str(i), f'Synthetic message {i}', role='assistant') for i in range(12)]
+    previous[-2]['content'] = '长消息' * 1000
+    memory.remember(previous, 's')
+    memory.remember('Synthetic input', 'other')
+    memory.remember([message('next')], 's')
+    assert [item['message_id'] for item in calls[-1]['context']] == [str(i) for i in range(2, 12)]
+    entry = calls[-1]['context'][-2]
+    assert entry['content'] == previous[-2]['content'] and entry['representation'] == 'raw'
 
 
-@pytest.mark.parametrize('roles,expected', [
-    (['assistant', 'user', 'assistant'], ['1', '2']),
-    (['assistant', 'assistant'], ['0', '1']),
-])
-def test_user_start_preference_and_all_assistant_retention(roles, expected):
-    mem, tasks, first = prepared([message(str(i), role=role) for i, role in enumerate(roles)])
-    assert [s['message_id'] for s in context_for(mem, tasks, first)] == expected
-
-
-def test_failed_core_gap_is_not_context():
-    mem, tasks, first = prepared([message('0'), message('1'), message('2')])
-    next(r for r in tasks.rows().values() if r['message_id'] == '1')['core'] = 'failed'
-    assert [s['message_id'] for s in context_for(mem, tasks, first)] == ['2']
-
-
-def test_digest_replaces_long_raw_as_context():
-    mem, tasks, first = prepared([message('long', 'x' * 2500)])
-    supplied = context_for(mem, tasks, first)
-    assert supplied[0]['representation'] == 'digest'
-    assert supplied[0]['content'] == 'Synthetic digest'
-    assert supplied[0]['source_length'] == 2500 and supplied[0]['ranges'] == [[0, 2500]]
-
-
-def test_output_budget_limits_number_of_long_messages():
-    mem = MemoryEngine(config=Config(), llm=FakeLLM(handler=reply))
-    mem.remember_messages([message(str(i), str(i) * 2500) for i in range(3)], 's', user_id='u')
-    tasks = PipelineTasks(mem, 'u')
-    session = next(iter(tasks.state['sessions'].values()))
-    data = plan(mem, tasks, session, 3)
-    assert len(data['pending']) == 2
-    assert output_size(data, mem.config) <= mem.config.joint_max_output_tokens
-    assert input_size(data, mem.config) <= mem.config.extraction_max_input_bytes
-
-
-def test_input_budget_too_small_is_explicit_configuration_error():
-    mem = MemoryEngine(config=Config(extraction_max_input_bytes=1), llm=FakeLLM(handler=reply))
-    mem.remember_messages([message('a')], 's', user_id='u')
-    tasks = PipelineTasks(mem, 'u')
-    with pytest.raises(ValueError, match='Input budget'):
-        plan(mem, tasks, next(iter(tasks.state['sessions'].values())), 1)
-
-
-def test_crop_reserves_actual_policy_and_compensation_protocol():
-    from mnemotrace.consolidate.planning import request, system_prompt
-    mem = MemoryEngine(llm=FakeLLM(handler=reply))
-    mem.policy['extract_instruction'] = 'Synthetic policy ' * 100
-    mem.remember_messages([message('a', '长消息' * 10000)], 's', 'u')
-    tasks = PipelineTasks(mem, 'u')
-    data = plan(mem, tasks, next(iter(tasks.state['sessions'].values())), 1)
-    assert data['pending'][0]['partial']
-    policy = mem.policy.get('extract_system', '') + mem.policy.get('extract_instruction', '')
-    sizes = [len((system_prompt(policy, compensation=compensation) + request(data, mem.config)).encode('utf-8'))
-             for compensation in (False, True)]
-    assert max(sizes) == input_size(data, mem.config, policy)
-    assert all(size <= mem.config.extraction_max_input_bytes for size in sizes)
+def test_joint_request_has_fixed_members_and_full_text():
+    memory, calls = record_requests()
+    messages = [message(str(i), str(i) * 2500) for i in range(3)]
+    result = memory.remember(messages, 's')
+    assert result['digests'] == 3 and len(calls) == 1
+    memory.llm = None
+    assert memory.remember(messages, 's') == result
+    assert [item['content'] for item in calls[0]['pending']] == [item['content'] for item in messages]
+    for key in result['source_ids']:
+        original = memory.episodes_doc.get(key)
+        assert original.coverage == original.digest_coverage
+        assert original.coverage['ranges'] == [[0, 2500]]
+        assert not original.coverage['partial']

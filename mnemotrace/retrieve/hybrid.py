@@ -13,8 +13,8 @@ from ..embed import Embedder
 from ..store import GraphStore, VectorStore
 from ..types import Fact
 from ..util import cosine, fmt_date, now, recency
-from .fusion import order_by_score, weighted_rrf
-from .lexical import bm25_scores, lexical_terms, literal_value_match, normalize, overlap_terms
+from .fusion import rank_facts
+from .lexical import bm25_scores, lexical_terms, normalize, overlap_terms
 
 _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august",
            "september", "october", "november", "december")
@@ -216,21 +216,7 @@ class HybridRetriever:
         sal = {f.id: f.salience + (TRACK_BOOST if focus_matches(f.text, self.track, f.categories) else 0)
                for f in live}
 
-        rankings = {
-            "sem": order_positive(sem),
-            "lex": order_positive(lex),
-            "graph": order_positive(gph),
-            "rec": order_by_score(rec),
-            "sal": order_by_score(sal),
-        }
-        weights = {
-            "sem": self.config.w_sem,
-            "lex": self.config.w_lex,
-            "graph": self.config.w_graph,
-            "rec": self.config.w_rec,
-            "sal": self.config.w_sal,
-        }
-        fused = weighted_rrf(rankings, weights, self.config.rrf_k)
-        ranked = sorted(live, key=lambda f: (literal_value_match(query, f.object), fused.get(f.id, 0.0)), reverse=True)[:top_k]
+        ranked, fused = rank_facts(query, live, self.config, semantic=sem, lexical=lex, graph=gph,
+                                  recency=rec, salience=sal)
         diag = {"sem": sem, "lex": lex, "fused": fused, "qids": qids}
-        return [(f, fused.get(f.id, 0.0)) for f in ranked], diag
+        return ranked[:top_k], diag

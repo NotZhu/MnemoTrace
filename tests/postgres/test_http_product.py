@@ -38,7 +38,6 @@ def test_working_route_has_been_removed(client, method):
     ('/v1/remember', dict(content='Synthetic task', extract='false')),
     ('/v1/remember', dict(content='Synthetic task', extract=0)),
     ('/v1/recall', dict(query='Synthetic query', session_id='s')),
-    ('/v1/processing/flush', dict(include_summaries=True)),
 ])
 def test_retired_parameters_are_rejected_before_writing(client, path, payload):
     h = hdr('retired-parameters')
@@ -48,12 +47,12 @@ def test_retired_parameters_are_rejected_before_writing(client, path, payload):
     assert 'working_live' not in counts
 
 
-def test_digest_policy_uses_only_current_field_names(client):
+def test_joint_policy_uses_only_current_field_names(client):
     h = hdr('digest-policy')
-    response = client.put('/v1/policy', json=dict(digest_system='Synthetic source digest policy'), headers=h)
+    response = client.put('/v1/policy', json=dict(extract_instruction='Synthetic source digest policy'), headers=h)
     assert response.is_success
     policy = client.get('/v1/policy', headers=h).json()
-    assert policy['policy']['digest_system'] == 'Synthetic source digest policy'
+    assert policy['policy']['extract_instruction'] == 'Synthetic source digest policy'
     assert 'summary_system' not in policy['defaults']
     assert client.put('/v1/policy', json=dict(summary_system='Retired policy'), headers=h).status_code == 422
 
@@ -75,8 +74,7 @@ def test_private_api_responses_are_not_cacheable(client):
 
 def test_remember_recall_roundtrip(client):
     h = hdr("alice")
-    assert client.post("/v1/remember", json={"content": "My name is Wei and I live in Shenzhen."},
-                       headers=h).json()["ok"] is True
+    assert client.publish_text('My name is Wei and I live in Shenzhen.', headers=h).json()["ok"] is True
     dump = client.get("/v1/memories", headers=h).json()
     assert dump["counts"]["episodes"] >= 1
     rec = client.post("/v1/recall", json={"query": "Where does the user live?"}, headers=h).json()
@@ -94,10 +92,10 @@ def test_remember_with_event_time_replaces_earlier_fact(client, product_service,
     monkeypatch.setattr(product_service, 'llm', FakeLLM(handler=answers))
     h = hdr('note-event-time')
 
-    assert client.post('/v1/remember', json=dict(content=first, event_time=0), headers=h).json()['fact_ids']
-    ignored = client.post('/v1/remember', json=dict(content=correction), headers=h).json()
+    assert client.publish_text(first, headers=h, event_time=0).json()['fact_ids']
+    ignored = client.publish_text(correction, headers=h).json()
     assert ignored['status'] == 'completed' and ignored['fact_ids'] == []
-    saved = client.post('/v1/remember', json=dict(content=correction, event_time=20), headers=h).json()
+    saved = client.publish_text(correction, headers=h, event_time=20).json()
     dump = client.get('/v1/memories', params={'status': 'all'}, headers=h).json()
     old, new = sorted(dump['facts'], key=lambda fact: fact['valid_at'])
     assert (old['object'], new['object']) == ('Orbit Labs', 'Nova Labs')
@@ -109,8 +107,7 @@ def test_remember_with_event_time_replaces_earlier_fact(client, product_service,
 @pytest.mark.parametrize('event_time', [True, '20'])
 def test_remember_rejects_non_numeric_event_time(client, event_time):
     h = hdr('invalid-note-time')
-    assert client.post('/v1/remember', json=dict(content='Synthetic note', event_time=event_time),
-                       headers=h).status_code == 422
+    assert client.publish_text('Synthetic note', headers=h, event_time=event_time).status_code == 422
     assert client.get('/v1/memories', headers=h).json()['counts']['episodes'] == 0
 
 
@@ -121,7 +118,7 @@ def test_recall_answers_with_extraction_model_unless_answerer_overrides(client, 
 
     h = hdr("synthetic-answer-fallback")
     client.seed_fact(h, text='user lives in Shenzhen', predicate='lives_in', object='Shenzhen')
-    assert client.post("/v1/remember", json={"content": "I live in Shenzhen.", "extract": False}, headers=h).is_success
+    client.seed_original(h, 'I live in Shenzhen.')
     llm = FakeLLM(responses=["Shenzhen"])
 
     for answerer, expected in ((None, "Shenzhen"), (FakeLLM(responses=["Explicit answerer"]), "Explicit answerer")):
@@ -164,14 +161,9 @@ def test_http_handoff_across_agent_sessions_in_same_namespace(client):
     h = hdr("agent_handoff")
     codex_session = "codex:super-memory:handoff-source"
 
-    written = client.post("/v1/remember", json={
-        "content": "Project decision: the launch checklist must include committed eval logs.",
-        "session_id": codex_session,
-        "extract": True,
-    }, headers=h).json()
+    written = client.publish_text('Project decision: the launch checklist must include committed eval logs.', headers=h, session_id=codex_session).json()
     assert written["ok"] is True
-    assert written["operations"][0]["core_committed"]
-    assert client.post("/v1/processing/flush", json={"session_id": codex_session}, headers=h).json()["ok"] is True
+    assert written["task"]["core_committed"]
 
     recalled = client.post("/v1/recall", json={
         "query": "What launch checklist decision did Codex record?",
@@ -192,12 +184,7 @@ def test_http_handoff_across_agent_sessions_in_same_namespace(client):
 def test_session_report_endpoint_audits_saved_facts(client):
     h = hdr("session_report")
     session = "codex:super-memory:thread"
-    client.post("/v1/remember", json={
-        "content": "Project decision: the launch checklist must include committed eval logs.",
-        "session_id": session,
-        "extract": True,
-    }, headers=h)
-    client.post("/v1/processing/flush", json={"session_id": session}, headers=h)
+    client.publish_text('Project decision: the launch checklist must include committed eval logs.', headers=h, session_id=session)
 
     report = client.get(f"/v1/sessions/report?session_id={session}", headers=h).json()
 
@@ -213,16 +200,8 @@ def test_sessions_endpoint_lists_cross_agent_sessions_without_content(client):
     h = hdr("sessions_index")
     codex_session = "codex:super-memory:thread-1"
     claude_session = "claude-code:super-memory:thread-2"
-    client.post("/v1/remember", json={
-        "content": "Project decision: release notes require committed raw logs.",
-        "session_id": codex_session,
-        "extract": True,
-    }, headers=h)
-    client.post("/v1/remember", json={
-        "content": "My private diagnosis is diabetes.",
-        "session_id": claude_session,
-        "extract": True,
-    }, headers=h)
+    client.publish_text('Project decision: release notes require committed raw logs.', headers=h, session_id=codex_session)
+    client.publish_text('My private diagnosis is diabetes.', headers=h, session_id=claude_session)
 
     data = client.get("/v1/sessions?limit=10", headers=h).json()
 
@@ -245,10 +224,7 @@ def test_sessions_endpoint_lists_cross_agent_sessions_without_content(client):
 
 def test_stats_endpoint_is_content_free_namespace_observability(client):
     h = hdr("stats")
-    client.post("/v1/remember", json={
-        "content": "My private diagnosis is diabetes. I work at Acme.",
-        "extract": True,
-    }, headers=h)
+    client.publish_text('My private diagnosis is diabetes. I work at Acme.', headers=h)
     client.seed_fact(h, text='user has disease diabetes', predicate='has_disease', object='diabetes', sensitive=True)
     client.seed_fact(h, text='user works at Acme', predicate='works_at', object='Acme', sensitive=False, linked=True)
 
@@ -274,11 +250,7 @@ def test_stats_endpoint_is_content_free_namespace_observability(client):
 def test_agent_status_endpoint_is_content_free_and_session_aware(client):
     h = hdr("agent_status")
     session = "codex:super-memory:thread"
-    client.post("/v1/remember", json={
-        "content": "My private diagnosis is diabetes. I work at Acme.",
-        "session_id": session,
-        "extract": True,
-    }, headers=h)
+    client.publish_text('My private diagnosis is diabetes. I work at Acme.', headers=h, session_id=session)
     client.put("/v1/focus", json={
         "track": ["project decisions"],
         "mute": ["health details"],
@@ -361,8 +333,8 @@ def test_graph_endpoint_can_exclude_sensitive_edges(client):
 
 def test_memories_endpoint_supports_pagination_filtering_and_sensitive_create(client):
     h = hdr("memories_page")
-    client.post("/v1/remember", json={"content": "First durable episode."}, headers=h)
-    client.post("/v1/remember", json={"content": "Second durable episode."}, headers=h)
+    client.publish_text('First durable episode.', headers=h)
+    client.publish_text('Second durable episode.', headers=h)
     client.seed_fact(h, text='user works at Acme', predicate='works_at', object='Acme', categories=['professional_details'], sensitive=False)
     client.seed_fact(h, text='user favorite city Hangzhou', predicate='favorite_city', object='Hangzhou', categories=['user_preferences'], sensitive=False)
     client.seed_fact(h, text='user project note memory console', predicate='project_note', object='memory console', categories=['technology'], sensitive=False)
@@ -434,7 +406,7 @@ def test_focus_filters_retrieval_and_tracks_without_rewriting_facts(client, prod
     context, _ = product_scope(label)
     response = client.seed_fact(h, text='user likes violet cactus', predicate='likes', object='violet cactus', sensitive=False)
     fact_id = response.id
-    assert client.post("/v1/remember", json={"content": "violet cactus raw evidence", "extract": False}, headers=h).is_success
+    client.seed_original(h, 'violet cactus raw evidence')
     memory = product_service.memory(context)
     query = "violet cactus"
     request = memory._query(query, top_k=5)
@@ -461,7 +433,7 @@ def test_session_report_pages_all_facts_and_keeps_redaction_total(client, produc
     label = "synthetic-report-pages"
     session_id = "paged-report"
     context, _ = product_scope(label)
-    source, = product_service.remember(context, "Synthetic report source", session_id, extract=False)["source_ids"]
+    source, = product_service._store_originals(context, "Synthetic report source", session_id)
     rows = [Fact("synthetic", "note", f"report value {i}", user_id=context.user_id,
                  valid_at=100 + i, sensitive=i == 0, provenance=[source], text=' '.join(('synthetic', 'note', f'report value {i}')))
             for i in range(102)]
@@ -497,7 +469,7 @@ def _seed_category_filter_facts(service, context):
         Fact(subject="synthetic", predicate="note", object="private alpha", categories=["health"], sensitive=True, valid_at=100, user_id=user, text='synthetic note private alpha'),
     ]
     seed_facts(service, context, rows)
-    service.remember(context, "synthetic source record", "synthetic-session", extract=False)
+    service._store_originals(context, "synthetic source record", "synthetic-session")
     return rows
 
 
@@ -570,7 +542,7 @@ def test_sensitive_edit_preserves_history_across_reload(client):
 
 def test_sensitivity_edit_preserves_provenance_across_reload(client):
     h = hdr("metadata_source")
-    response = client.post("/v1/remember", json={"content": "I live in Beijing."}, headers=h)
+    response = client.publish_text('I live in Beijing.', headers=h)
     assert response.status_code == 200
     url = "/v1/memories?include_sensitive=true&episodes_limit=0"
     original = client.get(url, headers=h).json()["facts"][0]
@@ -634,10 +606,7 @@ def test_recall_endpoint_supports_as_of_for_search_and_lean_context(client):
         ("old", "Wei works at Tencent.", 1_700_000_000.0),
         ("new", "Wei works at Moonshot AI.", 1_702_592_000.0),
     ):
-        response = client.post("/v1/messages", json={
-            "session_id": session, "processing": "immediate",
-            "messages": [{"message_id": "m1", "role": "user", "content": text, "event_time": stamp}],
-        }, headers=h)
+        response = client.publish_batch([{'message_id': 'm1', 'role': 'user', 'content': text, 'event_time': stamp}], headers=h, session_id=session)
         assert response.is_success
 
 
@@ -705,9 +674,7 @@ def test_recall_endpoint_can_redact_sensitive_facts(client):
 
 def test_export_without_sensitive_omits_free_text_layers_and_sensitive_graph(client):
     h = hdr("export_redact")
-    client.post("/v1/remember", json={
-        "content": "My private diagnosis is diabetes. I work at Acme.",
-    }, headers=h)
+    client.publish_text('My private diagnosis is diabetes. I work at Acme.', headers=h)
     client.seed_fact(h, text='user has disease diabetes', predicate='has_disease', object='diabetes', sensitive=True)
     client.seed_fact(h, text='user works at Acme', predicate='works_at', object='Acme', sensitive=False, linked=True)
 
@@ -737,7 +704,7 @@ def test_export_without_sensitive_omits_free_text_layers_and_sensitive_graph(cli
 @pytest.mark.parametrize("namespace", ["ephemeral", "test", "1"])
 def test_forget_clears_namespace(client, namespace):
     h = hdr(namespace)
-    client.post("/v1/remember", json={"content": "Temporary note."}, headers=h)
+    client.publish_text('Temporary note.', headers=h)
     guard = client.post("/v1/forget", headers=h)
     assert guard.status_code == 400
     assert "confirm=true" in guard.json()["detail"]
@@ -799,8 +766,9 @@ def test_built_console_redirect_and_deep_links(client, monkeypatch, tmp_path):
 def test_request_limit_rejects_before_memory_write(client, product_scope, monkeypatch):
     context, key = product_scope("synthetic-size")
     monkeypatch.setenv("MNEMOTRACE_MAX_REQUEST_BYTES", "1024")
-    oversized = client.post("/v1/remember", headers={"Authorization": f"Bearer {key}"},
-                            json={"space_id": context.space_id, "content": "x" * 2048})
+    oversized = client.post('/v1/remember', headers={'Authorization': f'Bearer {key}'},
+                            json=dict(space_id=context.space_id, session_id='s',
+                                      messages=[dict(message_id='large', role='user', content='x' * 2048)]))
     assert oversized.status_code == 413
     assert client.get("/v1/stats", headers=hdr("synthetic-size")).json()["counts"]["episodes"] == 0
 
@@ -863,24 +831,21 @@ def test_memories_http_echoes_context_and_freezes_time(client, product_service, 
 
 
 @pytest.mark.parametrize('clock_skew', [0, -60, 60])
-@pytest.mark.parametrize('source_entry', ['raw', 'note'])
+@pytest.mark.parametrize('source_entry', ['raw', 'extract'])
 def test_recall_temporal_options_share_baseline_and_do_not_reinforce(client, product_service, product_scope,
-                                                                  monkeypatch, clock_skew, source_entry):
-    from mnemotrace.types import Episode
-
-    def client_clock_source(*args, **kwargs):
-        source = Episode(*args, **kwargs)
-        source.ingested_at += clock_skew
-        return source
-
-    monkeypatch.setattr('mnemotrace.memory.Episode', client_clock_source)
+                                                                  clock_skew, source_entry):
     label = "recall_temporal_baseline"
     context, _ = product_scope(label)
     memory = product_service.memory(context)
 
     def remember_source(content, session_id, *, event_time):
-        return memory.remember(content, session_id, event_time=event_time, processing='buffered',
-                               extract=source_entry != 'raw')
+        if source_entry == 'raw':
+            ids = memory._store_originals(content, session_id, event_time=event_time)
+        else:
+            ids = memory.remember(content, session_id, event_time=event_time)['source_ids']
+        with memory.dao._transaction() as sql:
+            sql.run("UPDATE mnemotrace.sources SET ingested_at = ingested_at + %s * interval '1 second' "
+                    "WHERE user_id = %s AND space_id = %s AND id = %s", (clock_skew, *sql.scope, ids[0]))
 
     fact = client.seed_fact(hdr(label), subject="Ana", predicate="works_at", object="Orbit", valid_at=100, text='Ana works at Orbit')
     remember_source("Ana works at Orbit.", "earlier", event_time=100)

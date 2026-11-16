@@ -60,7 +60,6 @@ CREATE TABLE mnemotrace.sources (
     role text,
     event_time timestamptz,
     ingested_at timestamptz NOT NULL,
-    source_kind text NOT NULL CHECK (source_kind IN ('note','dialogue')),
     extract boolean NOT NULL,
     message_id mnemotrace.identifier,
     sequence mnemotrace.counter,
@@ -270,7 +269,7 @@ CREATE TABLE mnemotrace.operations (
     user_id mnemotrace.identifier NOT NULL,
     space_id mnemotrace.identifier NOT NULL,
     operation_id mnemotrace.identifier NOT NULL,
-    kind text NOT NULL CHECK (kind IN ('extract','digest','profile')),
+    kind text NOT NULL CHECK (kind IN ('extract','profile')),
     session_id mnemotrace.identifier,
     sequence mnemotrace.counter,
     state text NOT NULL CHECK (state IN ('pending','running','retry_wait','failed','completed','cancelled')),
@@ -285,9 +284,8 @@ CREATE TABLE mnemotrace.operations (
     extraction_config text,
     context_revision mnemotrace.counter,
     ready_at timestamptz DEFAULT statement_timestamp(),
-    frozen boolean NOT NULL DEFAULT false,
+    planned_request jsonb,
     generation_attempts mnemotrace.counter NOT NULL DEFAULT 0,
-    parent_id mnemotrace.identifier,
     extraction_saved boolean NOT NULL,
     core_committed boolean NOT NULL,
     PRIMARY KEY(user_id, space_id, operation_id),
@@ -298,12 +296,15 @@ CREATE TABLE mnemotrace.operations (
     CHECK (NOT core_committed OR kind <> 'extract' OR extraction_saved),
     CHECK ((state = 'completed') = (phase = 'done')),
     CHECK (state <> 'completed' OR core_committed),
-    CHECK (kind NOT IN ('extract', 'digest') OR phase <> 'queued' OR state <> 'pending' OR ready_at IS NOT NULL),
-    FOREIGN KEY (user_id, space_id, parent_id) REFERENCES mnemotrace.operations ON DELETE CASCADE,
+    CHECK (kind <> 'extract' OR phase <> 'queued' OR state <> 'pending' OR ready_at IS NOT NULL),
     CHECK (kind <> 'extract' OR phase NOT IN ('embed','commit') OR extraction_saved),
     FOREIGN KEY(user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE,
     FOREIGN KEY(user_id, space_id, session_id) REFERENCES mnemotrace.sessions ON DELETE CASCADE
 );
+CREATE UNIQUE INDEX operations_one_running_extract_per_space
+    ON mnemotrace.operations(user_id, space_id) WHERE kind = 'extract' AND state = 'running';
+CREATE UNIQUE INDEX operations_extract_order
+    ON mnemotrace.operations(user_id, space_id, sequence) WHERE kind = 'extract';
 CREATE INDEX operations_claim ON mnemotrace.operations(state, next_attempt_at, lease_until);
 CREATE INDEX operations_session ON mnemotrace.operations(user_id, space_id, session_id, sequence, operation_id);
 CREATE TABLE mnemotrace.operation_sources (
@@ -324,7 +325,7 @@ CREATE TABLE mnemotrace.operation_products (
     operation_id mnemotrace.identifier NOT NULL,
     input jsonb NOT NULL CHECK (jsonb_typeof(input) = 'object'),
     result jsonb NOT NULL CHECK (jsonb_typeof(result) = 'object'),
-    format_version integer NOT NULL CHECK (format_version = 8),
+    format_version integer NOT NULL CHECK (format_version = 11),
     extraction_config text NOT NULL,
     context_revision mnemotrace.counter,
     source_versions jsonb NOT NULL CHECK (jsonb_typeof(source_versions) = 'array'),
@@ -342,8 +343,7 @@ CREATE TABLE mnemotrace.commit_receipts (
     fact_ids text[] NOT NULL,
     source_ids text[] NOT NULL,
     affected_count mnemotrace.counter NOT NULL,
-    segment_of mnemotrace.identifier,
-    FOREIGN KEY (user_id, space_id, segment_of) REFERENCES mnemotrace.operations ON DELETE CASCADE,
+    chat_replay jsonb CHECK (jsonb_typeof(chat_replay) = 'object'),
     PRIMARY KEY (user_id, space_id, operation_id),
     FOREIGN KEY (user_id, space_id) REFERENCES mnemotrace.memory_spaces(user_id, space_id) ON DELETE CASCADE
 );
@@ -377,26 +377,9 @@ CREATE TABLE mnemotrace.profile_states (
 CREATE UNIQUE INDEX one_active_profile_refresh ON mnemotrace.operations(user_id,space_id)
     WHERE kind = 'profile' AND state IN ('pending','retry_wait','running');
 
-CREATE TABLE mnemotrace.operation_digest_parts (
-    user_id mnemotrace.identifier NOT NULL,
-    space_id mnemotrace.identifier NOT NULL,
-    operation_id mnemotrace.identifier NOT NULL,
-    part_id mnemotrace.identifier NOT NULL,
-    source_id mnemotrace.identifier NOT NULL,
-    input_start mnemotrace.counter NOT NULL,
-    input_end mnemotrace.counter NOT NULL CHECK (input_end > input_start),
-    text text NOT NULL CHECK (length(text) > 0),
-    extraction_config text NOT NULL CHECK (extraction_config ~ '^[0-9a-f]{64}$'),
-    PRIMARY KEY (user_id,space_id,operation_id,part_id),
-    FOREIGN KEY (user_id,space_id,operation_id) REFERENCES mnemotrace.operations ON DELETE CASCADE,
-    FOREIGN KEY (user_id,space_id,source_id) REFERENCES mnemotrace.sources ON DELETE CASCADE
-);
-CREATE INDEX operations_parent ON mnemotrace.operations(user_id, space_id, parent_id);
 CREATE INDEX operations_ready ON mnemotrace.operations(ready_at)
-    WHERE state = 'pending' AND kind IN ('extract', 'digest');
+    WHERE state = 'pending' AND kind = 'extract';
 
-CREATE INDEX commit_receipts_segment ON mnemotrace.commit_receipts(user_id, space_id, segment_of)
-    WHERE segment_of IS NOT NULL;
 CREATE INDEX operation_sources_source ON mnemotrace.operation_sources(user_id, space_id, source_id);
 CREATE INDEX embeddings_retrieval
     ON mnemotrace.embeddings(user_id, space_id, target_kind, field, model, dimension);
@@ -460,22 +443,30 @@ CREATE POLICY discovery_operations ON mnemotrace.operations FOR SELECT TO {disco
 CREATE FUNCTION mnemotrace.discover_processing(batch_size integer)
 RETURNS TABLE(user_id text, space_id text, operation_id text)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
-    SELECT o.user_id::text, o.space_id::text, o.operation_id::text
-    FROM mnemotrace.operations o
-    JOIN mnemotrace.users u ON u.user_id = o.user_id AND u.status = 'active'
-    JOIN mnemotrace.memory_spaces s ON (s.user_id,s.space_id) = (o.user_id,o.space_id)
-        AND s.status = 'active'
-    WHERE o.kind IN ('extract', 'digest', 'profile') AND (
-        (o.state = 'pending' AND (o.phase <> 'queued' OR o.ready_at <= statement_timestamp()))
-        OR (o.state = 'retry_wait' AND o.next_attempt_at <= statement_timestamp())
-        OR (o.state = 'running' AND o.lease_until <= statement_timestamp()))
-    AND (o.kind <> 'extract' OR NOT EXISTS (
-        SELECT 1 FROM mnemotrace.operations earlier
-        WHERE (earlier.user_id,earlier.space_id,earlier.session_id) =
-            (o.user_id,o.space_id,o.session_id)
-        AND earlier.kind = 'extract' AND earlier.sequence < o.sequence
-        AND earlier.state IN ('pending','retry_wait','running')))
-    ORDER BY coalesce(o.next_attempt_at,o.ready_at,o.lease_until), o.operation_id
+    WITH eligible AS (
+        SELECT o.user_id, o.space_id, o.operation_id, o.kind, o.sequence, o.state,
+            CASE o.state WHEN 'running' THEN o.lease_until
+                WHEN 'retry_wait' THEN o.next_attempt_at ELSE o.ready_at END AS due
+        FROM mnemotrace.operations o
+        JOIN mnemotrace.users u ON u.user_id = o.user_id AND u.status = 'active'
+        JOIN mnemotrace.memory_spaces s ON (s.user_id,s.space_id) = (o.user_id,o.space_id)
+            AND s.status = 'active'
+        WHERE o.state IN ('pending', 'retry_wait', 'running')
+          AND (o.kind = 'profile' OR NOT EXISTS (
+              SELECT 1 FROM mnemotrace.operations active
+              WHERE (active.user_id,active.space_id) = (o.user_id,o.space_id)
+              AND active.kind = 'extract' AND active.state = 'running'
+              AND active.lease_until > statement_timestamp()))
+    ), ready AS (
+        SELECT *, row_number() OVER (
+            PARTITION BY user_id, space_id, kind
+            ORDER BY sequence, due, operation_id
+        ) AS position
+        FROM eligible WHERE due <= statement_timestamp()
+    )
+    SELECT ready.user_id::text, ready.space_id::text, ready.operation_id::text
+    FROM ready WHERE position = 1
+    ORDER BY due, ready.user_id, ready.space_id, ready.operation_id
     LIMIT least(greatest(batch_size, 0), 100)
 $$;
 GRANT CREATE ON SCHEMA mnemotrace TO {discovery_owner};

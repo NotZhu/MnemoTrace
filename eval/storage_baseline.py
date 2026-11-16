@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CLOCK = harness.BASE + 120 * 86400
 WORKLOADS = Path(__file__).with_name('fixtures') / 'storage_workloads.json'
 SOURCE_FILES = (
-    'mnemotrace/categories.py', 'mnemotrace/store/contracts.py', 'mnemotrace/retrieve/structured.py', 'eval/storage_baseline.py',
+    'mnemotrace/categories.py', 'mnemotrace/llm/tokens.py', 'mnemotrace/store/contracts.py', 'mnemotrace/retrieve/structured.py', 'eval/storage_baseline.py',
     'eval/fixtures/storage_baseline.json', 'eval/fixtures/storage_workloads.json',
     'tests/test_storage_contracts.py', 'tests/test_storage_baseline.py',
     'docs/architecture/storage-contracts.md', 'docs/architecture/README.md', 'eval/README.md',

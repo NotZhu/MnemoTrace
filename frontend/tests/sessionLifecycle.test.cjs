@@ -54,16 +54,17 @@ function setup(options = {}) {
   }
 }
 
-test('notes and dialogue send a boolean extract flag', async () => {
+test('string and message array use the same remember endpoint', async () => {
   const s = setup()
   s.login('synthetic-A')
   s.respond(async () => new Response(JSON.stringify({ ok: true })))
-  const messages = [{ message_id: 'm1', role: 'user', content: 'Synthetic dialogue' }]
-  await s.api.remember('Synthetic note')
-  await s.api.remember('Synthetic raw note', { extract: false, event_time: 0 })
-  await s.api.rememberMessages(messages, 's', false)
-  assert.deepEqual(s.calls.requests.map(({ init }) => JSON.parse(init.body).extract), [true, false, false])
-  assert.deepEqual(s.calls.requests.map(({ init }) => JSON.parse(init.body).event_time), [undefined, 0, undefined])
+  const messages = [{ message_id: 'm1', role: 'user', content: 'Synthetic source', event_time: 0 }]
+  await s.api.remember('Synthetic source', { session_id: 's', message_id: 'm1', event_time: 0 })
+  await s.api.remember(messages, { session_id: 's' })
+  const [text, batch] = s.calls.requests.map(({ init }) => JSON.parse(init.body))
+  assert.deepEqual(text, batch)
+  assert.deepEqual(batch.messages, messages)
+  assert.equal(batch.session_id, 's')
 })
 
 const transitions = {

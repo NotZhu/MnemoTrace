@@ -91,11 +91,8 @@ def _judge(pairs, duplicate_pairs, llm, config):
         return dict(facts={key: facts[key] for key in sorted(ids)},
                     items=[{key: value for key, value in item.items() if key != 'key'} for item in batch])
 
-    for batch, prompt, tokens in requests(entries, pack, _SYSTEM, config, tokens_per_item=lambda item:
+    for batch, prompt, tokens in requests(entries, pack, _SYSTEM, config, llm, tokens_per_item=lambda item:
                                         len(encode(dict(id=item['id'], decision='duplicate')).encode('utf-8')) + 8):
-        if prompt is None:
-            yield {item['key']: 'unknown' for item in batch}, 0
-            continue
         decoded = ask(llm, prompt, _SYSTEM, tokens, {item['id'] for item in batch})
         results = {}
         for item in batch:

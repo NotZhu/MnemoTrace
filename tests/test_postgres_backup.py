@@ -81,10 +81,12 @@ def test_full_logical_backup_and_worker_resume(tmp_path, backup_environment):
             calls = []
             memory = Memory(runtime, scope, llm=_model(calls), embedder=product_embedder(), embedding_model='test-vectors-v1')
             complete = _accept(memory, 'first', 'Ada works at Synthetic Lab')
-            assert memory.flush_processing('chat')['ok']
+            assert memory._processing.run_next_stage(complete)
             assert memory.operation(complete).core_committed
             pending = _accept(memory, 'next', 'Grace works at Synthetic Studio')
-            assert memory._processing.run_next_stage(pending, force=True)
+            from tests.postgres.fact_fixtures import checkpoint_before_publication
+            checkpoint_before_publication(memory, pending)
+            memory.retry_operation(pending)
             assert memory.operation(pending).phase == 'embed'
             assert len(calls) >= 2
             prior_fact, = memory.history('Ada works', 'works_at')
@@ -93,7 +95,9 @@ def test_full_logical_backup_and_worker_resume(tmp_path, backup_environment):
             memory._processing.llm = profile_model()
             seed_fact(memory, '我', 'likes', 'Synthetic restored tea', sensitive=False, text='I like Synthetic restored tea')
             generated = memory.refresh_profile()
-            assert memory._processing.flush(operation_ids=(generated.operation_id,), timeout=3)['ok']
+            while memory._processing.run_next_stage(generated.operation_id):
+                pass
+            assert memory.operation(generated.operation_id).core_committed
             prior_profile = memory.profile()
             unfinished_profile = memory.refresh_profile()
             assert memory._processing.run_next_stage(unfinished_profile.operation_id)

@@ -89,3 +89,33 @@ def test_window_extraction_smoke_uses_current_fact_schema():
     assert [(row['mode'], row['facts_found'], row['wrong_sources']) for row in result['results']] == [
         ('immediate', 1, 0), ('window', 1, 0),
     ]
+
+
+def test_benchmark_ingestion_keeps_user_anchors_and_assistant_context():
+    import warnings
+
+    from eval.longmemeval import ingest
+    from mnemotrace import MemoryEngine
+    from mnemotrace.llm import FakeLLM
+    from tests.test_message_pipeline import reply
+
+    with warnings.catch_warnings():
+        from eval.personamem import ingest_history
+
+    turns = [
+        {"role": "user", "content": "I prefer synthetic tea."},
+        {"role": "assistant", "content": "I recommend synthetic coffee."},
+    ]
+    for ingest_fixture in (
+        lambda memory: ingest(memory, {"haystack_sessions": [turns]}, "fixture"),
+        lambda memory: ingest_history(memory, turns, "fixture"),
+    ):
+        with MemoryEngine(llm=FakeLLM(handler=reply)) as memory:
+            ingest_fixture(memory)
+            assert memory.consolidate()["facts_added"] == 1
+            fact, = memory.fact_store.values()
+            source = memory.episodes_doc.get(fact.provenance[0])
+            assert source.role == "user" and source.content == turns[0]["content"]
+            assert {ep.role: ep.content for ep in memory.episodes_doc.values()} == {
+                turn["role"]: turn["content"] for turn in turns
+            }

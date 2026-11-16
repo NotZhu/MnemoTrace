@@ -66,7 +66,7 @@ function setup({ episodes = false, count = 601, holdInitial = false } = {}) {
     return { id }
   }
   Object.assign(api, { setFactSensitive: commit, deleteFact: commit,
-    remember: commit, organizeSession: commit, forget: commit, setFocus: commit, resolveConflict: commit, setPolicy: commit })
+    remember: commit, forget: commit, setFocus: commit, resolveConflict: commit, setPolicy: commit })
   const h = mod.exports
   let params = episodes ? { facts_limit: 0, episodes_limit: 20 } : { facts_limit: 60, episodes_limit: 0, kind: 'outcomes' }
   observer = new rq.InfiniteQueryObserver(client, h.memoryPagesOptions(namespace, params))
@@ -378,7 +378,7 @@ test('a login cycle change during the cancellation barrier leaves the new cache 
   } finally { release?.(); s.close() }
 })
 
-for (const entry of ['useRemember', 'useOrganizeSession', 'useSetFactSensitive', 'useDeleteFact',
+for (const entry of ['useRemember', 'useSetFactSensitive', 'useDeleteFact',
   'useForget', 'useSetFocus', 'useSetPolicy']) {
   test(`${entry} refreshes an uncached first page through the shared barrier`, async () => {
     const s = setup({ holdInitial: true })

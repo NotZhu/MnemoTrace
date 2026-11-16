@@ -7,13 +7,14 @@ from mnemotrace import MemoryEngine
 from mnemotrace.consolidate.operations import decode
 from mnemotrace.extraction import ExtractionResponseError
 from mnemotrace.config import Config
+from mnemotrace.llm.base import Completion
 from mnemotrace.consolidate.facts import extraction_entries, materialize_facts
 from mnemotrace.consolidate.pipeline import content_hash
 
 
 def window():
     source = dict(id="s1", role="user", event_time=100, sequence=1, needs_digest=False)
-    return dict(operation="extract", source_kind="dialogue", context=[], pending=[source])
+    return dict(operation="extract", context=[], pending=[source])
 
 
 def item(**patch):
@@ -24,7 +25,7 @@ def item(**patch):
 
 def extract(rows):
     data = window()
-    product = decode(json.dumps(dict(facts=rows, digests=[])), data, Config())
+    product = decode(Completion(json.dumps(dict(facts=rows, digests=[]))), data, Config())
     return materialize_facts("account", data, 101, extraction_entries(data, product, content_hash(data)))
 
 

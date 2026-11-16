@@ -29,7 +29,7 @@ def replay_window(prompt, system, invoke):
     data = window_input(prompt)
     result = {'facts': [], }
     for span in data['pending']:
-        if data['source_kind'] == 'dialogue' and span['role'] != 'user':
+        if span['role'] != 'user':
             continue
         raw = invoke('对话：\n' + span['content'] + '\n\nJSON 事实：', system=system)
         try:
@@ -58,8 +58,6 @@ def replay_window(prompt, system, invoke):
     if 'rules' in data:
         result['digests'] = [dict(source_id=span['id'], text='Synthetic event digest')
                                for span in data['pending'] if span['id'] in data['rules']['digest_required']]
-    if data['operation'] == 'digest' or '本次仅补缺失摘要' in system:
-        result = {'digests': result['digests']}
     if 'entity_types' in data:
         from tests.postgres.ontology_fixtures import typed_result
         result = typed_result(result)
@@ -85,6 +83,11 @@ def adjudication_reply(prompt):
 
 
 class RecordedLLM:
+    @staticmethod
+    def count_tokens(messages):
+        # Deliberately deterministic fixture, independent of provider tokenizers.
+        return 2 + sum(4 + (len(item['content']) + 2) // 3 for item in messages)
+
     def complete(self, prompt, system='', **kwargs):
         if system.startswith('MNEMOTRACE_RELATION_RESOLUTION'):
             from tests.postgres.ontology_fixtures import ontology_reply
@@ -107,6 +110,8 @@ class RecordedLLM:
 
 class FixtureProtocol:
     """Give existing list-based test data the explicit new envelope, only in tests."""
+    count_tokens = staticmethod(RecordedLLM.count_tokens)
+
     def __init__(self, model):
         self.model = model
 

@@ -35,7 +35,7 @@ os.environ.setdefault("LITELLM_LOG", "CRITICAL")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mnemotrace import MemoryEngine  # noqa: E402
-from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm, make_reranker  # noqa: E402
+from mnemotrace.llm.providers import load_dotenv, make_embedder, make_extraction_llm, make_llm, make_reranker  # noqa: E402
 from mnemotrace.util import DAY, fmt_date  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -356,23 +356,32 @@ def parse_date(s):
         return None
 
 
-def session_documents(item):
-    """Return the same ordered session text to ingestion and the independent RAG baseline."""
+def dated_sessions(item):
     dates = item.get("haystack_dates") or []
-    documents = []
     for idx, (sid, turns) in enumerate(sessions_of(item)):
         parsed = parse_date(dates[idx] if idx < len(dates) else None)
-        event_time, date = parsed if parsed else (BASE + idx * DAY, None)
+        event_time, date = parsed or (BASE + idx * DAY, None)
+        yield sid, event_time, date or fmt_date(event_time), turns
+
+
+def session_documents(item):
+    """Return ordered transcripts for the independent RAG baseline."""
+    documents = []
+    for sid, event_time, date, turns in dated_sessions(item):
         text = "\n".join(f"{turn.get('role', 'user')}: {turn['content']}"
                          for turn in turns if turn.get("content"))
         if text.strip():
-            documents.append((sid, event_time, date or fmt_date(event_time), text))
+            documents.append((sid, event_time, date, text))
     return documents
 
 
 def ingest(mem: MemoryEngine, item: dict, user_id: str) -> None:
-    for sid, event_time, date, text in session_documents(item):
-        mem.add(text, user_id=user_id, session_id=sid, role="session", event_time=event_time).metadata["date"] = date
+    for sid, event_time, date, turns in dated_sessions(item):
+        for turn in turns:
+            role, content = turn.get("role", "user"), turn.get("content")
+            if role in {"user", "assistant"} and content and content.strip():
+                episode = mem.add(content, user_id=user_id, session_id=sid, role=role, event_time=event_time)
+                episode.metadata["date"] = date
 
 
 def rank_raw_sessions(item, embedder, k, *, reranker=None, hybrid=False):
@@ -451,7 +460,7 @@ def eval_one(item, embedder, extractor_llm, answerer_llm, judge_llm, top_k, k_di
     try:
         mem = MemoryEngine(embedder=embedder, llm=extractor_llm, reranker=reranker)
         ingest(mem, item, qid)
-        mem.consolidate_full()
+        mem.consolidate()
 
         qdate = item.get("question_date", "")
         t0 = time.perf_counter()
@@ -573,7 +582,7 @@ def main():
     if args.mode in ("qa", "both"):
         print(f"\n== QA (extractor={args.extractor}, answerer={args.answerer}, judge={args.judge}, "
               f"reranker={args.reranker}, workers={args.workers}) ==")
-        ex_llm = make_llm(args.extractor, max_tokens=512, num_retries=3, timeout=60)
+        ex_llm = make_extraction_llm(args.extractor, num_retries=3, timeout=60)
         ans_llm = make_llm(args.answerer, max_tokens=128, num_retries=3, timeout=60)
         jdg_llm = make_llm(args.judge, max_tokens=8, num_retries=3, timeout=60)
         reranker = make_reranker(args.reranker)

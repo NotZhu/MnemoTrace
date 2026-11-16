@@ -31,11 +31,9 @@ export interface SourceCoverage {
   unit: 'unicode_code_points'
   ranges: [number, number][]
   partial: boolean
-  policy: string
   original_length: number
   input_hash: string
   source: string
-  strategy_completed: boolean
 }
 
 export interface OriginalEpisode {
@@ -63,7 +61,7 @@ export type ProcessingState = 'pending' | 'running' | 'retry_wait' | 'failed' | 
 
 export interface OperationResult {
   operation_id: string
-  kind: 'extract' | 'digest' | 'profile'
+  kind: 'extract' | 'profile'
   state: ProcessingState
   phase: 'queued' | 'generate' | 'embed' | 'commit' | 'done'
   extraction_saved: boolean
@@ -71,7 +69,8 @@ export interface OperationResult {
   attempts: number
   next_attempt_at: number | null
   error_code: string | null
-  auxiliary_operation_ids: string[]
+  fact_ids?: string[]
+  source_ids?: string[]
 }
 
 export interface ProcessingStatus {
@@ -79,18 +78,14 @@ export interface ProcessingStatus {
   next_after_id: string | null
 }
 
-export interface ProcessingFlushResult {
+export interface RememberResult {
   ok: boolean
-  status: 'completed' | 'failed' | 'timed_out'
-  operation_ids: string[]
-  operations: OperationResult[]
-}
-
-export interface RememberResult extends Omit<ProcessingFlushResult, 'status'> {
-  status: ProcessingFlushResult['status'] | 'accepted' | 'stored'
+  status: 'accepted' | 'completed' | 'failed' | 'timed_out'
   stored_raw: boolean
   source_ids: string[]
-  /** IDs of facts written by completed note processing. */
+  messages: MessageReceipt[]
+  operation_id: string
+  task: OperationResult | null
   fact_ids?: string[]
 }
 
@@ -330,7 +325,7 @@ export interface AgentStatus {
   tools: {
     read_context: string
     write_memory: string
-    flush_processing: string
+    get_operation: string
     inspect_facts: string
     set_fact_sensitive: string
     delete_fact: string
@@ -364,7 +359,6 @@ export interface Focus {
 export interface Policy {
   extract_instruction: string
   extract_system: string
-  digest_system: string
   profile_system: string
 }
 
@@ -432,7 +426,6 @@ export interface MemoryExportEpisode extends OriginalEpisode {
   date: string
   digest: string
   digest_written_at: number | null
-  source_kind: 'note' | 'dialogue'
   extract: boolean
 }
 
@@ -517,7 +510,7 @@ export interface ChatUsage {
 
 export interface MnemoTraceChatMeta {
   space_id: string
-  operation_ids?: string[]
+  task?: OperationResult | null
   recalled: boolean
   memory_tokens_est: number
   session_id?: string | null
@@ -525,6 +518,7 @@ export interface MnemoTraceChatMeta {
   redacted_sensitive: boolean
   remembered: boolean
   remember_queued?: boolean
+  source_ids?: string[]
   remember_extract?: boolean
 }
 
@@ -567,14 +561,8 @@ export interface DialogueMessage {
 export interface MessageReceipt {
   message_id: string
   episode_id: string
-  operation_ids: string[]
+  sequence: number
 }
-
-export interface MessagesResult extends RememberResult {
-  accepted: number
-  messages: MessageReceipt[]
-}
-
 
 export interface StructuredReadOptions {
   state?: 'current' | 'history' | 'all'

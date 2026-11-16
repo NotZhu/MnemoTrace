@@ -21,7 +21,9 @@ from ..embed import EmbeddingUnavailable
 from ..service import MemoryRevisionChanged, MemoryService, ProcessingFailure
 from ..extraction import ExtractionError
 from ..categories import Category
-from ..store.contracts import FactState, SpaceContext
+from ..consolidate.pipeline import content_hash
+from ..store.contracts import FactState, SpaceContext, message_inputs
+from ..store.postgres.database import identifier
 from ..store.postgres.errors import (
     AccountNotFound, AuthenticationError, CommitOutcomeUnknown, DatabaseConfigurationError,
     DatabaseError, DatabaseUnavailable, MessageConflict, SchemaMismatch, SpaceNotFound, VersionConflict,
@@ -150,7 +152,7 @@ async def database_failure(_request: Request, error: DatabaseError):
 async def processing_failure(_request: Request, error: ProcessingFailure):
     detail = error.detail()
     status = {'processing_incomplete': 503, 'database_unavailable': 503, 'data_corruption': 500,
-              'version_conflict': 409, 'extraction_conflict': 409}.get(detail['code'], 502)
+              'version_conflict': 409, 'extraction_conflict': 409, 'model_budget_exceeded': 422}.get(detail['code'], 502)
     return JSONResponse(status_code=status, content={'detail': detail})
 
 
@@ -241,39 +243,22 @@ class SpaceName(BaseModel):
     name: str = Field(min_length=1, max_length=128)
 
 
-class RememberReq(SpaceRequest):
-    content: str = Field(min_length=1, max_length=1_000_000)
-    session_id: str = Field(default="default", min_length=1, max_length=512)
-    extract: StrictBool = True
-    processing: Literal['immediate', 'buffered'] = 'immediate'
-    agent_id: str | None = None
-    event_time: float | None = Field(default=None, strict=True, allow_inf_nan=False)
-    timeout: float = Field(default=30, ge=0, le=300)
-
-
 class DialogueMessage(BaseModel):
     model_config = {'extra': 'forbid', 'strict': True, 'allow_inf_nan': False}
     message_id: str = Field(min_length=1, max_length=512)
     role: Literal['user', 'assistant']
     content: str = Field(min_length=1, max_length=1_000_000)
     event_time: Optional[float] = None
+    agent_id: str | None = None
 
 
-class MessagesReq(SpaceRequest):
+class RememberReq(SpaceRequest):
     model_config = {'extra': 'forbid'}
     session_id: str = Field(min_length=1, max_length=512)
     messages: list[DialogueMessage] = Field(min_length=1, max_length=1000)
-    processing: Literal['immediate', 'buffered'] = 'buffered'
-    extract: StrictBool = True
+    wait: StrictBool = False
     agent_id: str | None = None
-    timeout: float = Field(default=30, ge=0, le=300)
-
-
-class ProcessingFlushReq(SpaceRequest):
-    session_id: Optional[str] = Field(default=None, min_length=1, max_length=512)
-    timeout: float = Field(default=30, ge=0, le=300)
-    retry_failed: bool = False
-    include_digests: bool = False
+    timeout: float = Field(default=30, ge=0, le=300, strict=True)
 
 
 class RecallReq(BaseModel):
@@ -384,21 +369,12 @@ def delete_space(space_id: str, confirm: bool = False, owner: str = Depends(auth
     return dict(ok=True, space_id=space_id)
 
 
-@app.post('/v1/messages')
-def remember_messages(req: MessagesReq, owner: str = Depends(auth)):
-    context = svc().spaces.authorize(owner, req.space_id)
-    data = svc().remember_messages(context, [message.model_dump() for message in req.messages],
-                                   req.session_id, req.processing, req.extract,
-                                   agent_id=req.agent_id, timeout=req.timeout)
-    return JSONResponse(data, status_code=202) if req.processing == 'buffered' else data
-
-
 @app.post('/v1/remember')
 def remember(req: RememberReq, owner: str = Depends(auth)):
     context = svc().spaces.authorize(owner, req.space_id)
-    data = svc().remember(context, req.content, req.session_id, req.extract, req.processing,
-                          agent_id=req.agent_id, event_time=req.event_time, timeout=req.timeout)
-    return JSONResponse(data, status_code=202) if req.processing == 'buffered' else data
+    data = svc().remember(context, [message.model_dump() for message in req.messages],
+                          req.session_id, wait=req.wait, agent_id=req.agent_id, timeout=req.timeout)
+    return data if req.wait and data['status'] == 'completed' else JSONResponse(data, status_code=202)
 
 
 @app.get('/v1/operations/{operation_id}')
@@ -422,12 +398,6 @@ def retry_operation(operation_id: str, req: SpaceRequest, owner: str = Depends(a
 def processing_status(session_id: str | None = None, after_id: str | None = None,
                       limit: int = Query(100, ge=1, le=1000), context: SpaceContext = Depends(authorized_space)):
     return svc().processing_status(context, session_id, after_id=after_id, limit=limit)
-
-
-@app.post('/v1/processing/flush')
-def processing_flush(req: ProcessingFlushReq, owner: str = Depends(auth)):
-    context = svc().spaces.authorize(owner, req.space_id)
-    return svc().flush(context, req.session_id, req.timeout, req.retry_failed, req.include_digests)
 
 
 @app.get('/v1/episodes/{episode_id}')
@@ -655,30 +625,64 @@ def chat_completions(req: ChatCompletionReq, owner: str = Depends(auth)):
     if not req.messages:
         raise HTTPException(400, 'messages must be a non-empty list')
     session_id = opts.session_id
+    identifier(session_id)
     body = req.model_dump()
+
+    response, replay_id = None, None
+    if opts.remember and opts.message_id is not None:
+        identifier(opts.message_id)
+        replay_id = 'chat_' + content_hash([session_id, opts.message_id])
+        fingerprint = content_hash({key: value for key, value in body.items() if key != 'stream'})
+        pipeline = svc().memory(context)._processing
+        response, generation = pipeline.tasks.chat_replay(replay_id, fingerprint)
+
+    if response is None:
+        response = _generate_chat(context, body, opts)
+        messages = _chat_messages(oc, opts, req.messages, response) if opts.remember else None
+        if messages:
+            if replay_id is not None:
+                response = pipeline.tasks.accept_chat(
+                    replay_id, fingerprint, generation, session_id,
+                    message_inputs(messages, agent_id=opts.agent_id), response,
+                    check_ready=pipeline.require_ready if opts.extract else None,
+                )
+            elif opts.extract:
+                result = svc().remember(context, messages, session_id, agent_id=opts.agent_id)
+                response['mnemotrace'].update(remembered=True, remember_queued=True, remember_extract=True,
+                                              source_ids=result['source_ids'], task=result['task'])
+            else:
+                source_ids = svc()._store_originals(context, messages, session_id, agent_id=opts.agent_id)
+                response['mnemotrace'].update(remembered=True, remember_queued=False, remember_extract=False,
+                                              source_ids=source_ids, task=None)
+
+    if req.stream:
+        return StreamingResponse(oc.iter_sse(response), media_type='text/event-stream')
+    return response
+
+
+def _generate_chat(context, body, opts):
+    from . import openai_compat as oc
+
     try:
         response = oc.chat_completion(svc(), context, body, n_digests=opts.n_digests,
                                       do_recall=opts.recall, as_of=opts.as_of,
                                       redact_sensitive=opts.redact_sensitive,
-                                      session_id=session_id)
+                                      session_id=opts.session_id)
     except oc.NoLLMConfigured as exc:
         raise HTTPException(503, str(exc)) from exc
-
-    if opts.remember:
-        content = oc.remembered_text(svc().captioner, req.messages)
-        if content:
-            agent_id = opts.agent_id
-            result = svc().remember_messages(context, [
-                dict(message_id=opts.message_id or response['id'] + ':user', role='user', content=content),
-                dict(message_id=response['id'], role='assistant', event_time=response['created'],
-                     content=response['choices'][0]['message']['content']),
-            ], session_id, extract=opts.extract, agent_id=agent_id)
-            response['mnemotrace'].update(remembered=True, remember_queued=bool(result['operation_ids']), remember_extract=opts.extract,
-                                          operation_ids=result['operation_ids'])
     response['mnemotrace']['space_id'] = context.space_id
-    if req.stream:
-        return StreamingResponse(oc.iter_sse(response), media_type='text/event-stream')
     return response
+
+
+def _chat_messages(oc, opts, original, response):
+    content = oc.remembered_text(svc().captioner, original)
+    if not content:
+        return None
+    return [
+        dict(message_id=opts.message_id or response['id'] + ':user', role='user', content=content),
+        dict(message_id=response['id'], role='assistant', event_time=response['created'],
+             content=response['choices'][0]['message']['content']),
+    ]
 
 
 class FactSensitivity(SpaceRequest):
@@ -743,7 +747,6 @@ def put_focus(req: FocusReq, owner: str = Depends(auth)):
 class PolicyReq(SpaceRequest):
     extract_instruction: Optional[str] = None  # None = 不变；"" = 重置为默认
     extract_system: Optional[str] = None
-    digest_system: Optional[str] = None
     profile_system: Optional[str] = None
 
 

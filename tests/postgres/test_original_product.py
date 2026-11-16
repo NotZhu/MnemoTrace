@@ -10,11 +10,10 @@ from tests.test_pipeline_sources import LONG, DIGEST, respond
 
 def test_private_export_preserves_dialogue_identity_and_unknown_time(product_service, product_client, product_scope):
     context, key = product_scope()
-    receipt = product_service.remember_messages(
+    source_id, = product_service._store_originals(
         context, [dict(message_id='message-1', role='user', content='Synthetic original')],
-        'thread', extract=False, agent_id='synthetic-agent',
+        'thread', agent_id='synthetic-agent',
     )
-    assert receipt['stored_raw']
     response = product_client.get(
         '/v1/export', params={'space_id': context.space_id, 'include_sensitive': True},
         headers={'Authorization': f'Bearer {key}'},
@@ -22,7 +21,7 @@ def test_private_export_preserves_dialogue_identity_and_unknown_time(product_ser
     snapshot = response.json()
     assert snapshot['format_version'] == 7
     source, = snapshot['episodes']
-    assert source['id'] == receipt['source_ids'][0]
+    assert source['id'] == source_id
     assert source['message_id'] == 'message-1' and source['agent_id'] == 'synthetic-agent'
     assert source['session_id'] == 'thread' and 'session' not in source
     assert source['sequence'] == 0 and source['event_time'] is None
@@ -32,7 +31,7 @@ def test_private_export_preserves_dialogue_identity_and_unknown_time(product_ser
 def test_explicit_original_http_enforces_scope_and_omits_internal_state(product_service, product_client, product_scope):
     context, key = product_scope("owner")
     other_context, other_key = product_scope("other")
-    source, = product_service.remember(context, LONG, "synthetic", extract=False)["source_ids"]
+    source, = product_service._store_originals(context, LONG, "synthetic")
     path = f"/v1/episodes/{source}"
     response = product_client.get(path, params={"space_id": context.space_id},
                                   headers={"Authorization": f"Bearer {key}"})
@@ -49,7 +48,7 @@ async def test_local_and_remote_mcp_explicit_original_contract(product_service, 
     from mnemotrace.mcp.backends import LocalBackend, RemoteBackend
 
     context, key = product_scope()
-    source, = product_service.remember(context, "synthetic original", "original", extract=False)["source_ids"]
+    source, = product_service._store_originals(context, "synthetic original", "original")
     local = LocalBackend(context.user_id, context.space_id, service=product_service)
     assert (await local.get_episode(source))["content"] == "synthetic original"
     with pytest.raises(SpaceNotFound):
@@ -63,10 +62,8 @@ async def test_local_and_remote_mcp_explicit_original_contract(product_service, 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         remote = RemoteBackend("https://synthetic.invalid", key, context.space_id, client)
         await remote.get_episode("event/id", "shared space")
-        await remote.flush_processing(include_digests=True)
     assert requests[0].url.params["space_id"] == "shared space"
     assert requests[0].url.raw_path.startswith(b"/v1/episodes/event%2Fid?")
-    assert json.loads(requests[1].content)["include_digests"] is True
 
 
 @pytest.mark.asyncio
@@ -79,9 +76,11 @@ async def test_mcp_reports_digest_and_original_source_times(product_service, pro
     context, _ = product_scope()
     server.set_backend(LocalBackend(context.user_id, context.space_id, service=product_service))
     try:
-        result = json.loads(await call("mnemotrace_remember", content=LONG, response_format="json"))
-        operation, = result["operations"]
-        assert operation["core_committed"]
+        result = json.loads(await call("mnemotrace_remember", content=LONG))
+        operation = result["task"]["operation_id"]
+        memory = product_service.memory(context)
+        assert memory._processing.run_next_stage(operation)
+        assert memory.operation(operation).core_committed
         source, = result["source_ids"]
         original = json.loads(await call("mnemotrace_get_episode", episode_id=source, response_format="json"))
         assert original["content"] == LONG and original["ingested_at"] > 0

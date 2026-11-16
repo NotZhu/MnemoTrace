@@ -91,7 +91,7 @@ export interface AgentStatus {
   tools: {
     read_context: string
     write_memory: string
-    flush_processing: string
+    get_operation: string
     inspect_facts: string
     set_fact_sensitive: string
     delete_fact: string
@@ -218,16 +218,21 @@ export interface MemorySpace {
   status: 'active'
 }
 
-export interface ProcessingResult {
-  ok: boolean
-  status: 'completed' | 'failed' | 'timed_out'
-  operation_ids: string[]
-  operations: OperationResult[]
+export interface DialogueMessage {
+  message_id: string
+  role: 'user' | 'assistant'
+  content: string
+  event_time?: number | null
 }
 
-export interface RememberResult extends Omit<ProcessingResult, 'status'> {
-  status: ProcessingResult['status'] | 'accepted' | 'stored'
+export interface RememberResult {
+  ok: boolean
+  status: 'accepted' | 'completed' | 'failed' | 'timed_out'
+  stored_raw: boolean
+  operation_id: string
+  task: OperationResult | null
   source_ids: string[]
+  messages: { message_id: string; episode_id: string; sequence: number }[]
   fact_ids?: string[]
 }
 
@@ -257,7 +262,6 @@ export interface Health {
 export interface Policy {
   extract_instruction: string
   extract_system: string
-  digest_system: string
   profile_system: string
 }
 
@@ -305,7 +309,7 @@ export interface AuditReport {
 
 export interface OperationResult {
   operation_id: string
-  kind: 'extract' | 'digest' | 'profile'
+  kind: 'extract' | 'profile'
   state: 'pending' | 'running' | 'retry_wait' | 'failed' | 'completed' | 'cancelled'
   phase: 'queued' | 'generate' | 'embed' | 'commit' | 'done'
   extraction_saved: boolean
@@ -313,7 +317,6 @@ export interface OperationResult {
   attempts: number
   next_attempt_at: number | null
   error_code: string | null
-  auxiliary_operation_ids: string[]
 }
 
 export interface ProcessingStatus {

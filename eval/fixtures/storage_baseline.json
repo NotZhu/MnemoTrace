@@ -16,20 +16,14 @@
     "abstain_threshold": 0.45,
     "profile_max_input_chars": 48000,
     "profile_max_output_tokens": 4096,
-    "extraction_max_input_bytes": 16384,
-    "extraction_context_bytes": 2048,
-    "joint_max_output_tokens": 8192,
-    "joint_core_output_tokens": 2048,
-    "joint_digest_output_tokens": 2048,
-    "joint_context_tokens": null,
+    "memory_max_input_tokens": 6144,
+    "memory_max_output_tokens": 8192,
     "max_hot_facts": 10000,
     "salience_decay_per_day": 0.02,
     "access_boost": 0.5,
     "conflict_sim_threshold": 0.8,
     "digest_min_chars": 2000,
     "digest_max_chars": 800,
-    "digest_max_input_bytes": 16384,
-    "digest_max_output_tokens": 1024,
     "digest_fallback": true,
     "digest_fallback_k": 6,
     "chain_evidence": true,
@@ -615,8 +609,8 @@
         "fact-1"
       ],
       "scores": [
-        0.018773135906927554,
-        0.008950290851401376
+        0.018852459016393444,
+        0.008870967741935482
       ],
       "via": "hybrid"
     },

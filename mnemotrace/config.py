@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -35,13 +34,9 @@ class Config:
     profile_max_input_chars: int = 48_000
     profile_max_output_tokens: int = 4096
 
-    # --- 事实抽取与整合 ---
-    extraction_max_input_bytes: int = 16_384  # 系统与用户提示词 UTF-8 字节预算；不是模型精确 token 数
-    extraction_context_bytes: int = 2_048  # 每个窗口最多携带的前文正文 UTF-8 字节数
-    joint_max_output_tokens: int = 8192
-    joint_core_output_tokens: int = 2048
-    joint_digest_output_tokens: int = 2048
-    joint_context_tokens: Optional[int] = None  # 提供方总上下文；未知时不冒充已验证
+    # --- 本体解析与事实裁决请求预算 ---
+    memory_max_input_tokens: int = 6_144  # Complete decision input, including system and framing
+    memory_max_output_tokens: int = 8192  # Maximum tokens for one decision response
     max_hot_facts: int = 10_000  # 热层事实数量上限；换出的事实保留在冷层
     salience_decay_per_day: float = 0.02  # 适用事实的显著度按有效时间指数衰减的日系数
     access_boost: float = 0.5  # 访问事实时增加的显著度
@@ -52,8 +47,6 @@ class Config:
     # --- 条件事件摘要 ---
     digest_min_chars: int = 2000
     digest_max_chars: int = 800
-    digest_max_input_bytes: int = 16_384
-    digest_max_output_tokens: int = 1024
 
     # --- 上下文与证据 ---
     digest_fallback: bool = True  # 事实无法回答时尝试从会话摘要中作答

@@ -29,6 +29,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from uuid import uuid4
 from collections.abc import Callable
 from pathlib import Path
 from typing import Optional
@@ -97,7 +98,6 @@ def exercise_lifecycle(
     agent: str = "codex",
     project: str = "super-memory",
     thread: str = "demo",
-    no_flush: bool = False,
     output: Callable[[str], None] = print,
 ) -> dict:
     session_id = f"{agent}:{project}:{thread}"
@@ -126,12 +126,14 @@ def exercise_lifecycle(
     remembered: list[dict] = []
     for text in DURABLE_MEMORIES:
         out = call("/v1/remember", {
-            "content": text,
+            "messages": [dict(message_id=uuid4().hex, role="user", content=text)],
             "session_id": session_id,
-            "extract": True,
+            "wait": True,
         }, "POST")
+        if out.get('status') != 'completed':
+            raise SystemExit(f"Task {out.get('operation_id')} is still processing.")
         remembered.append(out)
-        output(f"- long ({out.get('extracted', 0)} extracted): {text}")
+        output(f"- long ({len(out.get('fact_ids', ()))} extracted): {text}")
 
 
     output("\n== 4. Recall the saved durable memory ==")
@@ -149,16 +151,7 @@ def exercise_lifecycle(
         f"episodes={session_after_write.get('episodes', 0)}"
     )
 
-    flushed = None
-    if not no_flush:
-        output("\n== 5. Flush processing for the agent session ==")
-        flushed = call("/v1/processing/flush", {
-            "session_id": session_id,
-            "include_digests": True,
-        }, "POST")
-        output(json.dumps(flushed, ensure_ascii=False, indent=2))
-
-    output("\n== 6. Session report: what this session saved ==")
+    output("\n== 5. Session report: what this session saved ==")
     report = call(_report_path(session_id), None, "GET")
     facts = report.get("facts") or []
     output(
@@ -186,7 +179,6 @@ def exercise_lifecycle(
         "recalled_after": recalled_after,
         "context_after": context_after,
         "status_after_write": status_after_write,
-        "flushed": flushed,
         "report": report,
         "found": found,
     }
@@ -200,7 +192,6 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--agent", default="codex", help="agent name used in the session id")
     ap.add_argument("--project", default="super-memory", help="project/workspace name")
     ap.add_argument("--thread", default="demo", help="thread/conversation id")
-    ap.add_argument("--no-flush", action="store_true", help="skip /v1/processing/flush")
     ap.add_argument("--no-verify", action="store_true", help="do not fail if recall/report misses the test phrase")
     args = ap.parse_args(argv)
 
@@ -218,7 +209,6 @@ def main(argv: list[str] | None = None) -> None:
         agent=args.agent,
         project=args.project,
         thread=args.thread,
-        no_flush=args.no_flush,
     )
 
     if not result["found"] and not args.no_verify:

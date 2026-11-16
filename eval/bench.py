@@ -33,7 +33,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mnemotrace import Config, MemoryEngine  # noqa: E402
-from mnemotrace.llm.providers import load_dotenv, make_embedder, make_llm, make_reranker  # noqa: E402
+from mnemotrace.llm.providers import load_dotenv, make_embedder, make_extraction_llm, make_llm, make_reranker  # noqa: E402
 from eval.longmemeval import (  # noqa: E402
     ANSWER_SYSTEM,
     ANSWER_TEMPLATE,
@@ -145,7 +145,7 @@ class MnemoTraceSystem:
             reranker=rig.reranker,
         )
         ingest(mem, item, qid)
-        mem.consolidate_full()
+        mem.consolidate()
         return mem.context_for(q, user_id=qid, top_k=rig.topk, k_digests=rig.n_digests,
                                agentic=rig.agentic, timeline=rig.timeline, hyde=rig.hyde,
                                graph=rig.graph, wiki=rig.wiki,
@@ -316,7 +316,7 @@ class MnemoTraceFullSystem:
         rig, qid = self.rig, item["question_id"]
         mem = MemoryEngine(embedder=rig.embedder, llm=rig.extractor_llm, reranker=rig.reranker)
         ingest(mem, item, qid)
-        mem.consolidate_full()
+        mem.consolidate()
         # 组装：抽取出的 fact（最新在前）作为索引，完整历史附在下面
         from mnemotrace.util import fmt_date
         facts = [f for f in mem.fact_store.values() if f.user_id == qid and f.is_live()]
@@ -365,7 +365,7 @@ class MnemoTraceLeanSystem:
             reranker=rig.reranker,
         )
         ingest(mem, item, qid)
-        mem.consolidate_full()
+        mem.consolidate()
         self._tl.mem, self._tl.qid = mem, qid
         return mem
 
@@ -639,7 +639,7 @@ def main():
     rig = Rig(
         embedder=make_embedder(args.embedder),
         extractor_llm=_maybe_pinned(
-            make_llm(args.extractor, max_tokens=512, num_retries=3, timeout=60),
+            make_extraction_llm(args.extractor, num_retries=3, timeout=60),
             args.pin_extraction, args.extractor),
         answerer_llm=make_llm(args.answerer, max_tokens=ans_max_tok, num_retries=3, timeout=args.answerer_timeout),
         judge_llm=make_llm(args.judge, max_tokens=8, num_retries=3, timeout=60),

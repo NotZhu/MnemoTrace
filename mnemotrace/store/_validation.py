@@ -105,37 +105,31 @@ _ID_OR_NULL = _nullable(_identifier)
 _SOURCE = _choice("user", "extracted")
 
 
+def valid_source_ranges(ranges, length, partial):
+    if not isinstance(ranges, list) or len(ranges) != (2 if partial else 1):
+        return False
+    if any(not isinstance(span, list) or len(span) != 2 or any(type(n) is not int for n in span)
+           for span in ranges):
+        return False
+    if not partial:
+        return length > 0 and ranges == [[0, length]]
+    (start, head_end), (tail_start, end) = ranges
+    return start == 0 < head_end < tail_start < end == length
+
+
 def validate_coverage(value: Any, path: str) -> None:
     _object(value, path)
-    if set(value) != {'unit', 'ranges', 'partial', 'policy', 'source', 'original_length', 'input_hash', 'strategy_completed'}:
+    if set(value) != {'unit', 'ranges', 'partial', 'source', 'original_length', 'input_hash'}:
         _fail(path, 'invalid coverage fields')
     _choice('unicode_code_points')(value['unit'], path + '.unit')
     _boolean(value['partial'], path + '.partial')
     _count(value['original_length'], path + '.original_length')
-    _boolean(value['strategy_completed'], path + '.strategy_completed')
-    message_policy = value['policy'] in {'head_tail_v1', 'full_message_v1'}
-    if value['policy'] not in {'head_tail_v1', 'full_message_v1', 'full_source_v1', 'digest_source_v1'}:
-        _fail(path, 'invalid coverage policy')
-    if message_policy and (not value['strategy_completed'] or value['partial'] != (value['policy'] == 'head_tail_v1')):
-        _fail(path, 'message coverage does not match strategy')
     for field in ('source', 'input_hash'):
         text = value[field]
         if not isinstance(text, str) or len(text) != 64 or any(c not in '0123456789abcdef' for c in text):
             _fail(path + '.' + field, 'must be a SHA256 fingerprint')
-    ranges = value['ranges']
-    if not isinstance(ranges, list) or len(ranges) != (2 if value['policy'] == 'head_tail_v1' else 1):
-        _fail(path, 'invalid coverage ranges')
-    end = 0
-    for span in ranges:
-        if not isinstance(span, list) or len(span) != 2 or any(type(n) is not int for n in span):
-            _fail(path, 'invalid codepoint interval')
-        if not end <= span[0] < span[1] <= value['original_length']:
-            _fail(path, 'invalid codepoint bounds')
-        end = span[1]
-    if (ranges[0][0] != 0 or value['strategy_completed'] and end != value['original_length']
-            or value['policy'] == 'head_tail_v1' and ranges[0][1] >= ranges[1][0]
-            or not message_policy and value['partial'] != (end < value['original_length'])):
-        _fail(path, 'ranges do not match the declared strategy')
+    if not valid_source_ranges(value['ranges'], value['original_length'], value['partial']):
+        _fail(path, 'ranges do not match the declared coverage')
 
 
 # Explicit wire fields: adding a dataclass default must not silently change restoration.
@@ -144,7 +138,7 @@ _EPISODE = {
     "session_id": _identifier, "role": _nullable(_identifier), "event_time": _TIME_OR_NULL,
     "ingested_at": _number, "consolidated": _boolean,
     "digest": _string, "digest_embedding": _VECTOR, "metadata": _metadata,
-    "source_kind": _choice("dialogue", "note"), "extract": _boolean,
+    "extract": _boolean,
     "message_id": _ID_OR_NULL, "sequence": _nullable(_count),
     "coverage": _nullable(validate_coverage),
     "digest_coverage": _nullable(validate_coverage),

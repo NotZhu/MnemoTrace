@@ -16,18 +16,18 @@ from mnemotrace.store.contracts import FactQuery, MessageInput, OperationResult
 
 | 方法 | 用途 |
 | --- | --- |
-| `remember(content, session_id, *, event_time=None, extract=True, processing="immediate")` | 接收笔记，来源时间使用 Unix 秒。即时处理完成时返回变更的 `fact_ids`。`extract=False` 只保存原文，可用 `get_episode` 读取 |
-| `remember_messages(session_id, messages, *, processing="buffered")` | 接收 `MessageInput` 序列。`extract=False` 的消息只保存原文。重试时按会话和消息 ID 去重 |
-| `operation(operation_id)`、`retry_operation(operation_id)` | 查询或重试原操作，返回 `OperationResult` 或 `None` |
-| `list_operations(*, session_id=None, after_id=None, limit=100)` | 分页返回操作对象；下一页用最后一个操作的 `operation_id` 作游标 |
-| `flush_processing(session_id=None, timeout=30, *, retry_failed=False, include_digests=False)` | 推进并等待本次捕获范围内的任务 |
+| `remember(value, session_id, *, wait=False, timeout=30, message_id=None, event_time=None)` | 字符串转为一条用户消息，也可传 `MessageInput` 或消息字典的序列 |
+| `operation(operation_id)`、`retry_operation(operation_id)` | 查询或重新排队原任务，返回 `OperationResult` 或 `None` |
+| `list_operations(*, session_id=None, after_id=None, limit=100)` | 分页返回操作对象。下一页使用最后的 `operation_id` |
 | `search(query, *, as_of=None, top_k=None, facts=None)`、`get_episode(episode_id)` | 检索候选事实及来源，或显式读取原文 |
 | `get_fact(fact_id)` | 在授权空间按 ID 读取单条事实，包含历史和未来生效的事实。未找到时返回 `None` |
 | `set_fact_sensitive(fact_id, sensitive)` | 修改共享敏感标记 |
 | `profile()` | 读取七栏画像缓存、待更新数量和刷新状态，不调用模型 |
-| `refresh_profile()` | 创建或复用空间级画像操作，返回 `OperationResult`；通过 worker 或 `flush_processing()` 推进 |
+| `refresh_profile()` | 创建或复用空间级画像操作，返回 `OperationResult`；通过 worker 执行 |
 
-`remember` 和 `remember_messages` 返回 `source_ids`、`operation_ids` 和 `operations`。缓冲接收只确认持久化，任务由独立 worker 或显式 `flush_processing` 推进。刷新返回 `completed`、`failed` 或 `timed_out`，仅完成时 `ok=True`。等待超时后可继续查询原操作。自动抽取缺少模型时在写入前失败。
+`remember` 返回 `source_ids`、含会话顺序的 `messages` 和 `task`。
+`wait=True` 可等待 worker 发布，超时返回 `timed_out`，终态失败返回 `failed` 和任务错误。
+整批重传沿用原顺序与消息 ID，字符串可指定稳定的 `message_id`。
 
 `SearchResult.status` 为 `answered`、`evidence_only` 或 `no_evidence`。自由文本返回候选事实和来源。使用 `FactQuery` 同时指定 `subject` 和 `predicate`，且完整筛选结果只有一个不同值时，`answer()` 返回该值。
 
@@ -43,23 +43,11 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 
 ## 离线写入
 
-对话使用 `MemoryEngine.remember_messages(messages, session_id, user_id="default", extract=True)`。
-每条消息包含 message_id、role、content 和可选 event_time，角色限定为 user/assistant。返回每条事件 ID、持久化顺序和处理状态；相同 ID 的冲突输入报 MessageConflictError。
-内存算法入口可记录原文，并通过 `MemoryEngine.flush_messages` 驱动固定模型或配置的 LLM。持久写入及恢复由 Postgres 入口提供。
+`MemoryEngine.remember(value, session_id, user_id="default", *, message_id=None, event_time=None)`
+同步写入和抽取，返回来源 ID、消息状态及事实和摘要计数。字符串按用户消息处理，消息列表保留 user/assistant 角色。
+已保存的消息 ID 和原批内容或顺序冲突时，抛出 `MessageConflictError`。
 
-
-来源时间缺失保持未知，消息重试复用相同 ID。
-文档和下述原文 API 保留独立契约；`consolidate()` 不会绕过联合任务处理对话消息。
-
-| 方法 | 主要参数 | 返回与语义 |
-| --- | --- | --- |
-| `add` | content；user_id、session_id、role、event_time；consolidate=False | Episode；保存事件，可选择立即整合 |
-| `remember` | content；user_id、session_id、extract=True | dict；保存原文并记录抽取意图，事实仍需显式整合 |
-| `consolidate` | episodes=None | 计数字典；None 处理 pending 事件 |
-| `consolidate_full` | fact_episodes=None、digest_episodes=None | 计数字典，含事实整合统计和新增摘要数，可分别指定两组事件 |
-
-
-`extract=True` 请求事实抽取，`extract=False` 只保存原文。仅执行请求不生成任务记忆；明确陈述的决定、计划和时间化事实保留其条件与时间。底层 remember 保存原文，随后通过 consolidate 推进抽取。
+算法测试可用 `add(..., consolidate=False)` 登记原文，再用 `consolidate()` 处理待整合的事件。
 
 ## 离线检索与上下文
 
@@ -75,7 +63,9 @@ Memory 在授权空间内按记录提交。现有记录与向量按文本版本�
 | `profile` | user_id | 结构化画像缓存与刷新状态 |
 | `refresh_profile` | user_id | 创建或复用显式刷新任务，返回 OperationResult |
 
-<a id="profile-evidence"></a>画像条目包含 text、fact_ids 和由服务端计算的 fact_count。读取只返回缓存。首次需要显式调用 refresh_profile，再由离线 flush_messages 或 Postgres flush_processing 推进操作。离线全空间刷新共用一个超时预算，返回的 `jobs`、`counts` 和 `status` 同时反映消息处理与画像任务。画像模型步骤在工作线程执行，等待到期返回 `timed_out` 和当前任务状态，已启动的步骤可继续保存产物，后续调用可续跑。指定 `session_id` 时，返回该会话的处理状态。引用事实发生变化时，对应条目退出展示。模型输入、分批预算与恢复行为见[画像缓存](../architecture/memory.md#画像缓存与显式刷新)。
+<a id="profile-evidence"></a>画像条目包含 text、fact_ids 和服务端计算的 fact_count。
+首次生成需调用 `refresh_profile`。离线可用 `wait_profile` 等待，Postgres 可按操作 ID 查询 worker 进度。
+引用事实发生变化时，对应条目退出展示。分批预算和恢复行为见[画像缓存](../architecture/memory.md#画像缓存与显式刷新)。
 
 SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answer()` 返回已生成答案或最高事实的 object/text；拒答时返回固定提示。`top()` 返回首条 Fact 或 None。它不是对任何问题都调用外部模型的通用聊天接口。
 
@@ -96,11 +86,11 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 
 字段及编辑规则见[分类与对象类型](../architecture/memory.md#分类与对象类型)。
 
-产品摄入使用 `Memory.remember` 或 `Memory.remember_messages`。`add_fact` 用于离线工作集。省略生效时间时，同槽位、同宾语、同正文且当前有效的断言会复用原事实，保留已有分类和留存策略，敏感标记取逻辑或。显式指定生效时间时，复用还要求起点相同。
+产品摄入使用 `Memory.remember`。`add_fact` 用于离线工作集。省略生效时间时，同槽位、同宾语、同正文且当前有效的断言会复用原事实，保留已有分类和留存策略，敏感标记取逻辑或。显式指定生效时间时，复用还要求起点相同。
 
 ## 离线扩展与研究入口
 
-摘要和派生层操作还包括 `generate_digests`、`retrieve_digests`；热层管理包括 `evict_cold`、`apply_focus`。这些方法改变派生状态或工作集。
+`consolidate()` 联合生成事实及符合条件的来源摘要，计数包含新增摘要数。`retrieve_digests()` 读取摘要，`evict_cold()` 和 `apply_focus()` 管理检索工作集。
 
 精确签名、类型和行为以 [MemoryEngine](../../mnemotrace/memory_engine.py)、[记录类型](../../mnemotrace/types.py) 和对应[测试](../../tests/)为核对来源。HTTP/MCP 的方法、默认值及能力不与嵌入式 API 一一对应。
 
@@ -116,7 +106,7 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 
 离线 `MemoryEngine.consolidate()` 空任务返回零计数；非空任务要求 LLM。整批模型响应全部通过校验后才写入事实。模型调用或校验失败不改变身份或完成标记；存储写入失败可能留下部分事实，已完成的窗口范围保留，未完成范围继续待处理；重试跳过完成范围并消解重复事实。完整空结果与失败分别处理，截断 JSON 不做部分抢救。
 
-对话写入使用消息身份和联合任务，同 ID 的重传复用处理结果。显式摘要与 include_digests 仍通过同一任务内核，并保留既有摘要。
+对话写入使用消息身份和联合任务，同 ID 的重传复用处理结果。联合处理完成后可读取事实与符合条件的摘要。
 
 离线抽取异常包括 LLMNotConfiguredError、ExtractionError、ExtractionResponseError、ExtractionTruncatedError、ExtractionConflictError。未成功范围保留原文，可以重新 consolidate。截断错误 code 为 extraction_truncated；同一命名空间的并发写作废在途抽取时抛 ExtractionConflictError（code 为 extraction_conflict），内核会先基于新快照自动重试一次。窗口输入、来源与范围记录契约见[记忆架构](../architecture/memory.md#窗口抽取与处理范围)。异常携带 code、stored_raw、episode_ids，不包含模型原始响应。Postgres 已接收任务的进度和错误从操作回执读取。
 
@@ -125,7 +115,7 @@ SearchResult 包含 `query`、`facts`、`scores`、`via` 和 `abstained`。`answ
 
 ## 摘要与显式原文读取
 
-Postgres 核心操作通过 `auxiliary_operation_ids` 关联独立的摘要任务。调用 `flush_processing(include_digests=True)` 可把符合条件的摘要纳入本次处理范围，`retry_failed=True` 重试范围内的失败操作。摘要失败时保留已提交的事实和原文。
+Postgres 的 `remember(wait=True)` 等待事实和符合条件的摘要一起发布。失败时保留原文。`retry_operation(operation_id)` 将原任务重新排队。
 
 来源检索和聚合回退只使用摘要，自动上下文只包含事实和摘要。通过 get_episode 显式读取来源 ID 对应的原文。
 私有 JSON 导出保留摘要的 `digest_written_at` 供追溯。历史摘要检索按原始来源的事件时间筛选，使用当前保存的摘要。

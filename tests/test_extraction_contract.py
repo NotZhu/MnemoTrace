@@ -47,6 +47,7 @@ def fact(obj='Beijing', predicate='lives_in'):
 
 
 class Broken:
+    count_tokens = staticmethod(NativeFakeLLM.count_tokens)
     def complete(self, *args, **kwargs):
         raise RuntimeError('SYNTHETIC_SECRET_MUST_NOT_ESCAPE')
 
@@ -72,7 +73,8 @@ def test_failed_batch_has_no_commits_and_can_retry(count):
     assert all(not ep.consolidated for ep in episodes)
     assert not m.fact_store.values()
     m.llm = FakeLLM(responses=[response()] * count)
-    assert m.flush_messages(timeout=2, retry_failed=True)['ok']
+    from mnemotrace._pipeline import flush
+    assert flush(m, 'default', timeout=2, retry_failed=True)['ok']
     assert m.consolidate()['facts_added'] == 0
     assert all(ep.consolidated and 'extraction_error' not in ep.metadata for ep in episodes)
 
@@ -122,6 +124,7 @@ def test_model_retry_classification_uses_status_and_structured_codes():
             self.status_code = status
             self.code = code
 
+    assert not retryable(ProviderError(400, "context_length_exceeded"))
     assert not retryable(ProviderError(401))
     assert not retryable(ProviderError(429, "insufficient_quota"))
     assert retryable(ProviderError(429))

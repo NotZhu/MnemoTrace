@@ -27,7 +27,7 @@ def model(callback=None):
 
 
 def finish(memory):
-    assert memory.flush_messages(timeout=1)["ok"]
+    assert memory.wait_profile(timeout=1).core_committed
     return memory.profile()
 
 
@@ -247,7 +247,7 @@ def test_generation_concurrent_deletion_cannot_publish_obsolete_text():
     assert run_one(memory, "default")
     assert memory.profile()["profile"] == empty()
     assert "Synthetic old tea" not in json.dumps(state(memory, "default"))
-    assert memory.flush_messages(timeout=1, retry_failed=True)["ok"]
+    assert memory.wait_profile(timeout=1, retry_failed=True).core_committed
     assert "Synthetic old tea" not in json.dumps(memory.profile())
 
 
@@ -296,10 +296,9 @@ def test_input_too_large_is_explicit_and_preserves_existing_cache():
     before = finish(memory)
     memory.config.profile_max_input_chars = 10
     operation = memory.refresh_profile()
-    flushed = memory.flush_messages(timeout=1)
-    assert not flushed["ok"] and flushed["status"] == "failed"
-    assert flushed["counts"]["failed"] == 1
-    job, = flushed["jobs"]
+    flushed = memory.wait_profile(timeout=1)
+    assert not flushed.core_committed and flushed.state.value == "failed"
+    job = flushed.to_dict()
     assert job["operation_id"] == operation.operation_id
     assert job["error_code"] == "profile_input_too_large"
     assert memory.profile()["profile"] == before["profile"]
@@ -362,27 +361,6 @@ def test_profile_entry_counts_distinct_facts():
     assert entry["fact_count"] == 2
 
 
-def test_profile_flush_uses_remaining_message_timeout(monkeypatch):
-    from mnemotrace import _pipeline
-
-    memory = MemoryEngine(llm=model())
-    memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
-    memory.refresh_profile()
-    elapsed = 0
-
-    def finish_messages(*args):
-        nonlocal elapsed
-        elapsed = 1
-        return {"ok": True, "status": "completed", "jobs": [], "counts": {"pending": 0}}
-
-    monkeypatch.setattr(_pipeline, "flush", finish_messages)
-    monkeypatch.setattr("time.monotonic", lambda: elapsed)
-    result = memory.flush_messages(timeout=1)
-    assert result["status"] == "timed_out" and not result["ok"]
-    assert result["counts"]["pending"] == 1
-    assert not memory.llm.calls
-
-
 def test_profile_flush_times_out_while_model_is_still_running():
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
@@ -396,19 +374,19 @@ def test_profile_flush_times_out_while_model_is_still_running():
     with MemoryEngine(llm=model(block)) as memory, ThreadPoolExecutor(max_workers=1) as caller:
         fact = memory.add_fact("我", "likes", "Synthetic tea", sensitive=False, text='user likes Synthetic tea')
         operation = memory.refresh_profile()
-        pending = caller.submit(memory.flush_messages, timeout=0.05)
+        pending = caller.submit(memory.wait_profile, timeout=0.05)
         try:
             assert entered.wait(2)
             result = pending.result(timeout=0.5)
-            assert not result["ok"] and result["status"] == "timed_out"
+            assert not result.core_committed and result.state.value == "running"
             assert memory.operation(operation.operation_id).state.value == "running"
             assert memory.profile()["updated_at"] is None
-            again = memory.flush_messages(timeout=0.01)
-            assert again["status"] == "timed_out"
+            again = memory.wait_profile(timeout=0.01)
+            assert again.state.value == "running"
             assert len(memory.llm.calls) == 1
         finally:
             release.set()
-        assert memory.flush_messages(timeout=2)["ok"]
+        assert memory.wait_profile(timeout=2).core_committed
         cached = memory.profile()
         assert cached["profile"]["basic"][0]["fact_ids"] == [fact.id]
         assert cached["cache_version"] == 1
@@ -429,10 +407,10 @@ def test_profile_result_after_timeout_obeys_invalidation(change):
     with MemoryEngine(llm=model(block)) as memory, ThreadPoolExecutor(max_workers=1) as caller:
         fact = memory.add_fact("我", "likes", "Synthetic old tea", sensitive=False, text='user likes Synthetic old tea')
         operation = memory.refresh_profile()
-        pending = caller.submit(memory.flush_messages, timeout=0.05)
+        pending = caller.submit(memory.wait_profile, timeout=0.05)
         try:
             assert entered.wait(2)
-            assert pending.result(timeout=0.5)["status"] == "timed_out"
+            assert pending.result(timeout=0.5).state.value == "running"
             if change == "delete":
                 memory.delete_fact(fact.id)
             else:
@@ -445,7 +423,7 @@ def test_profile_result_after_timeout_obeys_invalidation(change):
         assert not memory.operation(operation.operation_id).core_committed
         assert memory.profile()["profile"] == empty()
         if change != "close":
-            assert memory.flush_messages(timeout=2, retry_failed=True)["ok"]
+            assert memory.wait_profile(timeout=2, retry_failed=True).core_committed
             cached = json.dumps(memory.profile())
             assert "Synthetic old tea" not in cached
 
@@ -460,4 +438,4 @@ def test_profile_flush_propagates_background_step_errors(monkeypatch):
         memory.refresh_profile()
         monkeypatch.setattr(_profile, "run_one", fail)
         with pytest.raises(RuntimeError, match="Synthetic runner failure"):
-            memory.flush_messages(timeout=1)
+            memory.wait_profile(timeout=1)

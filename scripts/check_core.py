@@ -28,11 +28,14 @@ from mnemotrace.server.openai_compat import latest_user_text
     mem.add_fact('user', 'lives_in', 'Paris', text='The user lives in Paris.')
     mem.add('Synthetic pending record')
     raw = MemoryEngine()
-    saved = raw.remember("Synthetic note", extract=False)
-    assert raw.episodes_doc.get(saved["episode_id"]).source_kind == "note"
-    accepted = raw.remember_messages(
-        [{"message_id": "m1", "role": "user", "content": "Synthetic dialogue"}], "chat", extract=False)
-    assert accepted["accepted"] == 1 and not raw.fact_store.values()
+    saved = raw.add("Synthetic source")
+    assert raw.get_episode(saved.id)["role"] == "user"
+    try:
+        raw.remember("Synthetic extraction input")
+    except LLMNotConfiguredError:
+        assert len(raw.episodes_doc.values()) == 1
+    else:
+        raise AssertionError("remember must require an LLM")
     assert mem.search('Where do I live?').top().object == 'Paris'
     try:
         mem.consolidate()

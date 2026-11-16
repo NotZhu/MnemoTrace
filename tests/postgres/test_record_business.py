@@ -5,7 +5,7 @@ from contextlib import contextmanager
 import pytest
 
 from mnemotrace.memory import Memory
-from tests.postgres.fact_fixtures import fact_embeddings, relation_writes, seed_fact, seed_note
+from tests.postgres.fact_fixtures import checkpoint_before_publication, fact_embeddings, relation_writes, seed_fact, seed_note
 from mnemotrace.store.contracts import (
     ChangeSet, CommitConditions, CommitReceipt, EmbeddingWrite, FactQuery, FactState, Lease, MessageInput,
     OperationKind, OperationSpec, ProcessingState, RecordKind, RecordRef, RecordWrite, SourceVersion,
@@ -30,7 +30,7 @@ def memory(runtime, spaces, user):
 
 
 def message(key, content='Synthetic content', **fields):
-    return MessageInput(key, 'user', content, extract=False, **fields)
+    return MessageInput(key, 'user', content, **fields)
 
 
 def commit(memory, operation_id, records=(), **changes):
@@ -51,7 +51,7 @@ def test_product_record_commit_rejects_user_fact_atomically(memory):
 
 
 def test_record_business_roundtrip_and_selective_updates(memory, cluster):
-    accepted = memory.remember_messages('chat', (message('m', agent_id='agent-1'),))
+    source_id, = memory._store_originals([message('m', agent_id='agent-1')], 'chat')
     first = seed_fact(memory, 'Synthetic person', 'lives_in', 'Beijing', valid_at=1, invalid_at=2, expired_at=100, linked=True, text='Synthetic person lives in Beijing')
     current = seed_fact(memory, 'Synthetic person', 'lives_in', 'Shanghai', valid_at=2,
                               supersedes=[first.id], linked=True, text='Synthetic person lives in Shanghai')
@@ -60,12 +60,12 @@ def test_record_business_roundtrip_and_selective_updates(memory, cluster):
 
     with Database(cluster.runtime) as reopened:
         fresh = Memory(reopened, memory.context)
-        assert fresh.get_episode(accepted['source_ids'][0]).content == 'Synthetic content'
+        assert fresh.get_episode(source_id).content == 'Synthetic content'
         assert [fact.id for fact in fresh.history('Synthetic person', 'lives_in')] == [first.id, current.id]
         assert fresh.get_fact(current.id).supersedes == [first.id]
         with fresh.dao.read_snapshot() as view:
             edge = view.relations(first.id)[0]
-            assert view.get(RecordKind.SOURCE, accepted['source_ids'][0]).agent_id == 'agent-1'
+            assert view.get(RecordKind.SOURCE, source_id).agent_id == 'agent-1'
             untouched = view.get(RecordKind.FACT, unrelated.id)
         assert fresh.facts(FactQuery(subject='Synthetic person', valid_at=1))[0].id == first.id
         edited = fresh.set_fact_sensitive(first.id, True)
@@ -87,18 +87,17 @@ def test_concurrent_message_reuse_conflict_and_batch_rollback(memory, cluster):
     with Database(cluster.runtime) as second_db, ThreadPoolExecutor(max_workers=2) as workers:
         second = Memory(second_db, memory.context)
         batch = (message('exact', event_time=1),)
-        first = workers.submit(memory.remember_messages, 'chat', batch)
-        other = workers.submit(second.remember_messages, 'chat', batch)
+        first = workers.submit(memory._store_originals, batch, 'chat')
+        other = workers.submit(second._store_originals, batch, 'chat')
         left, right = first.result(), other.result()
-    assert left['source_ids'] == right['source_ids']
-    assert sorted([left['accepted'], right['accepted']]) == [0, 1]
+    assert left == right
     with memory.dao.read_snapshot() as view:
         assert view.snapshot.core_revision == 1
     with pytest.raises(MessageConflict):
-        memory.remember_messages('chat', (message('new'), message('exact', 'Different content')))
+        memory._store_originals([message('new'), message('exact', 'Different content')], 'chat')
     assert [source.message_id for source in memory.list_sources(session_id='chat')] == ['exact']
-    memory.remember_messages('other', (message('exact'),))
-    memory.remember_messages('chat', (message('another'),))
+    memory._store_originals([message('exact')], 'other')
+    memory._store_originals([message('another')], 'chat')
     with memory.dao.read_snapshot() as view:
         assert view.snapshot.core_revision == 3
     assert sorted(ep.sequence for ep in memory.list_sources(session_id='chat')) == [0, 1]
@@ -108,7 +107,7 @@ def test_read_view_is_consistent_and_stale_commit_rejected(memory, cluster):
     with memory.dao.read_snapshot('chat') as view:
         assert view.facts() == ()
         with Database(cluster.runtime) as writer:
-            Memory(writer, memory.context).remember('New input', 'chat', extract=False)
+            Memory(writer, memory.context)._store_originals('New input', 'chat')
         assert view.list_sources() == ()
         assert view.counts()[RecordKind.SOURCE] == 0
         snapshot = view.snapshot
@@ -128,7 +127,7 @@ def test_commit_failure_rolls_back_records_and_projection(memory):
     assert memory.facts() == ()
     assert memory.entity('Synthetic person') is None
     assert memory.dao.receipt('broken') is None
-    memory.remember_messages('chat', (message('m'),))
+    memory._store_originals([message('m')], 'chat')
     with memory.dao.read_snapshot() as view:
         assert view.snapshot.core_revision == 1
 
@@ -149,9 +148,9 @@ def test_response_lost_after_commit_is_recovered_by_receipt(memory, monkeypatch,
 
     monkeypatch.setattr(memory.dao, '_transaction', interrupt_after_commit)
     if kind == 'message':
-        result = memory.remember_messages('chat', (message('m'),))
+        result = memory._store_originals([message('m')], 'chat')
     elif kind == 'note':
-        result = memory.remember('Synthetic note', 'chat', extract=False)
+        result = memory._store_originals('Synthetic source', 'chat')
     else:
         fact = Fact('Synthetic person', 'likes', 'tea', user_id=memory.context.user_id, text='Synthetic person likes tea')
         receipt = commit(memory, 'manual-op', (fact,))
@@ -159,25 +158,25 @@ def test_response_lost_after_commit_is_recovered_by_receipt(memory, monkeypatch,
         assert memory.dao.receipt(receipt.operation_id) == receipt
     if kind != 'manual':
         source, = memory.list_sources()
-        assert tuple(result['source_ids']) == (source.id,)
-        assert not result['operation_ids']
+        assert result == (source.id,)
+        assert not memory.list_operations()
     assert dropped
     with memory.dao.read_snapshot() as view:
         assert view.snapshot.core_revision == 1
 
 
 def test_space_isolation_and_unauthorized_context(memory, runtime, accounts, spaces):
-    accepted = memory.remember_messages('chat', (message('m'),))
+    accepted = memory._store_originals([message('m')], 'chat')
     sibling = Memory(runtime, SpaceContext(
         memory.context.user_id, spaces.create(memory.context.user_id, 'Sibling').space_id))
-    assert sibling.get_episode(accepted['source_ids'][0]) is None
+    assert sibling.get_episode(accepted[0]) is None
     stored = commit(memory, 'private-receipt')
     assert sibling.dao.receipt(stored.operation_id) is None
     outsider = accounts.create_user()
     try:
         other = Memory(runtime, SpaceContext(outsider, memory.context.space_id))
         with pytest.raises(SpaceNotFound):
-            other.remember_messages('chat', (message('m'),))
+            other._store_originals([message('m')], 'chat')
         with pytest.raises(SpaceNotFound):
             other.dao.receipt(stored.operation_id)
     finally:
@@ -189,7 +188,7 @@ def test_mixed_erasure_is_atomic_and_supported_erasure_preserves_sources(memory)
     b = seed_note(memory, 'Synthetic source B', 'chat')
     who = memory.context.user_id
     fact = Fact('Synthetic person', 'likes', 'tea', user_id=who, provenance=[a.id, b.id], text='Synthetic person likes tea')
-    task = OperationSpec('digest-a', OperationKind.DIGEST, 'chat', (SourceVersion(a.id, 1),))
+    task = OperationSpec('extract-a', OperationKind.EXTRACT, 'chat', (SourceVersion(a.id, 1),))
     commit(memory, 'derived', (fact,), operations=(task,))
     assert memory.dao.operation(task.operation_id).state is ProcessingState.PENDING
     source = RecordRef(memory.context, RecordKind.SOURCE, a.id)
@@ -278,16 +277,15 @@ def test_raw_ingest_never_calls_embedder_or_rereads_new_messages(memory, runtime
 
     with monkeypatch.context() as patch:
         patch.setattr(ScopedSQL, 'select', select)
-        batch = offline.remember_messages('chat', (message('m'),))
-    note = offline.remember('Synthetic raw input', 'chat', extract=False, agent_id='test-writer')
-    assert batch['ok'] and note['ok'] and not batch['operation_ids'] and not note['operation_ids']
+        batch = offline._store_originals([message('m')], 'chat')
+    note = offline._store_originals('Synthetic raw input', 'chat', agent_id='test-writer')
     assert not offline.list_operations(session_id='chat')
     with offline.dao.read_snapshot() as view:
-        dialogue = domain(view.get(RecordKind.SOURCE, batch['source_ids'][0]))
-        record = view.get(RecordKind.SOURCE, note['source_ids'][0])
+        dialogue = domain(view.get(RecordKind.SOURCE, batch[0]))
+        record = view.get(RecordKind.SOURCE, note[0])
         stored = domain(record)
-        assert (dialogue.source_kind, dialogue.sequence) == ('dialogue', 0)
-        assert (stored.source_kind, stored.sequence, record.agent_id) == ('note', 1, 'test-writer')
+        assert (dialogue.role, dialogue.sequence) == ('user', 0)
+        assert (stored.role, stored.sequence, record.agent_id) == ('user', 1, 'test-writer')
 
 
 def test_sensitivity_edit_skips_unchanged_fact_links(memory, monkeypatch):
@@ -348,39 +346,41 @@ def test_erasing_literal_facts_removes_only_unreferenced_entity(memory):
 
 @pytest.mark.parametrize('business_change', [True, False])
 def test_task_commit_checks_lease_and_its_persisted_source_references(memory, runtime, business_change):
-    source = seed_note(memory, 'Synthetic task input', 'chat')
+    from mnemotrace.llm import FakeLLM
+
+    memory = Memory(runtime, memory.context, llm=FakeLLM(responses=['{"facts":[],"digests":[]}']))
     other = seed_note(memory, 'Another source in the same session', 'chat')
-    queued = OperationSpec('task', OperationKind.DIGEST, 'chat', (SourceVersion(source.id, 1),))
-    commit(memory, 'queue', operations=(queued,))
-    with runtime.space_transaction(memory.context.user_id, memory.context.space_id) as (conn, _):
-        conn.execute("""UPDATE mnemotrace.operations SET state='running', phase='generate',
-            extraction_config='test-model', lease_token='lease', lease_until=now() + interval '1 minute'
-            WHERE user_id=%s AND space_id=%s AND operation_id='task'""",
-                     (memory.context.user_id, memory.context.space_id))
+    accepted = memory.remember('Synthetic task input', 'chat')
+    operation_id = accepted['operation_id']
+    source_id, = accepted['source_ids']
+    checkpoint_before_publication(memory, operation_id)
+    memory.retry_operation(operation_id)
+    lease, _ = memory._processing.tasks.claim(operation_id)
     fact = Fact('Synthetic person', 'likes', 'tea', user_id=memory.context.user_id, text='Synthetic person likes tea')
     with memory.dao.read_snapshot('chat') as view:
         snapshot = view.snapshot
+        fingerprint = memory._processing._fingerprint(view.settings())
         writes = (*relation_writes(view, (fact,)), memory._write(fact)) if business_change else ()
-    receipt = CommitReceipt('task', snapshot.core_revision + int(business_change),
+    receipt = CommitReceipt(operation_id, snapshot.core_revision + int(business_change),
                             (fact.id,) if business_change else ())
 
     def complete(source_id, token, result=receipt):
         conditions = CommitConditions(snapshot, (SourceVersion(source_id, 1),),
-                                      Lease('task', token), 'test-model')
-        return memory.dao.commit(ChangeSet(conditions, 'task', writes=writes, receipt=result))
+                                      Lease(operation_id, token), fingerprint)
+        return memory.dao.commit(ChangeSet(conditions, operation_id, writes=writes, receipt=result))
 
     with pytest.raises(VersionConflict):
-        complete(source.id, 'old-lease')
+        complete(source_id, 'old-lease')
     with pytest.raises(VersionConflict):
-        complete(other.id, 'lease')
+        complete(other.id, lease.token)
     wrong_revision = snapshot.core_revision + int(not business_change)
     with pytest.raises(VersionConflict):
-        complete(source.id, 'lease', CommitReceipt('task', wrong_revision))
-    assert memory.dao.operation('task').state is ProcessingState.RUNNING
-    assert memory.dao.receipt('task') is None
+        complete(source_id, lease.token, CommitReceipt(operation_id, wrong_revision))
+    assert memory.dao.operation(operation_id).state is ProcessingState.RUNNING
+    assert memory.dao.receipt(operation_id) is None
     assert memory.get_fact(fact.id) is None
-    assert complete(source.id, 'lease') == receipt
-    assert memory.dao.operation('task').state is ProcessingState.COMPLETED
-    assert memory.dao.receipt('task') == receipt
+    assert complete(source_id, lease.token) == receipt
+    assert memory.dao.operation(operation_id).state is ProcessingState.COMPLETED
+    assert memory.dao.receipt(operation_id) == receipt
     with memory.dao.read_snapshot() as view:
         assert view.snapshot.core_revision == receipt.core_revision

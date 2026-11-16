@@ -45,13 +45,13 @@ def test_retired_ingestion_routes_and_mode_are_absent(product):
     service, context, _, client = product
     schema = client.get('/openapi.json').json()
     assert '/v1/import' not in schema['paths'] and '/v1/documents' not in schema['paths']
-    props = schema['components']['schemas']['MessagesReq']['properties']
+    props = schema['components']['schemas']['RememberReq']['properties']
     assert 'mode' not in props
-    for path in ('/v1/import', '/v1/documents'):
+    for path in ('/v1/import', '/v1/documents', '/v1/messages', '/v1/processing/flush'):
         assert client.post(path, json={'space_id': context.space_id}).status_code == 404
     body = {'space_id': context.space_id, 'session_id': 's', 'mode': 'live',
             'messages': [{'message_id': 'm', 'role': 'user', 'content': 'Synthetic dialogue'}]}
-    assert client.post('/v1/messages', json=body).status_code == 422
+    assert client.post('/v1/remember', json=body).status_code == 422
     assert not service.memory(context).list_sources()
     assert not hasattr(service, 'import_') and not hasattr(service, 'import_document')
 
@@ -69,23 +69,27 @@ def test_http_space_and_operation_lifecycle(product, user, accounts, spaces):
 
     payload = dict(**scope, session_id='synthetic-thread', agent_id='synthetic-agent',
                    messages=[dict(message_id='msg-1', role='user', content='Synthetic person likes Bluebird tea')])
-    forged = client.post('/v1/messages', json={**payload, 'user_id': 'someone-else'})
+    forged = client.post('/v1/remember', json={**payload, 'user_id': 'someone-else'})
     assert forged.status_code == 422 and 'someone-else' not in forged.text
-    accepted = client.post('/v1/messages', json=payload)
+    accepted = client.post('/v1/remember', json=payload)
     assert accepted.status_code == 202
-    operation_id, = accepted.json()['messages'][0]['operation_ids']
+    assert accepted.json()['messages'][0]['sequence'] == 0
+    operation_id = accepted.json()['task']['operation_id']
     source_id, = accepted.json()['source_ids']
-    assert client.post('/v1/messages', json=payload).json()['operation_ids'] == [operation_id]
+    assert client.post('/v1/remember', json=payload).json()['source_ids'] == [source_id]
+    progress = client.get('/v1/processing', params={**scope, 'session_id': 'synthetic-thread'}).json()
+    assert progress['operations'] == [accepted.json()['task']]
+    assert client.get(f'/v1/episodes/{source_id}', params=scope).json()['agent_id'] == 'synthetic-agent'
+
+    assert service.memory(context)._processing.run_next_stage(operation_id)
+    completed = client.post('/v1/remember', json=dict(payload, wait=True))
+    assert completed.status_code == 200 and completed.json()['ok'], completed.text
+    assert completed.json()['task']['operation_id'] == operation_id
     operation_path = f'/v1/operations/{operation_id}'
     status = client.get(operation_path, params=scope).json()
-    assert 'stored_raw' not in status and not status['core_committed']
+    assert 'stored_raw' not in status and status['core_committed']
     assert client.get(operation_path, params={'space_id': sibling}).status_code == 404
-    assert client.get(f'/v1/episodes/{source_id}', params=scope).json()['agent_id'] == 'synthetic-agent'
     assert client.post(operation_path + '/retry', json=scope).json()['operation_id'] == operation_id
-
-    completed = client.post('/v1/processing/flush', json={**scope, 'session_id': 'synthetic-thread'})
-    assert completed.json()['ok'], completed.text
-    assert client.get(operation_path, params=scope).json()['core_committed']
     retrieved = client.post('/v1/recall', json={**scope, 'query': 'What does Synthetic person like?', 'lean': False})
     assert retrieved.status_code == 200 and 'Bluebird' in retrieved.text
     seed_fact(service.memory(spaces.authorize(user, sibling)), 'Synthetic person', 'likes', 'Bluebird coffee',
@@ -120,37 +124,18 @@ def test_http_space_and_operation_lifecycle(product, user, accounts, spaces):
     assert client.get('/v1/spaces').status_code == 401
 
 
-def test_http_allows_raw_writes_without_a_model(product):
+def test_http_remember_requires_a_model_and_rejects_raw_only_fields(product):
     service, context, _, client = product
     service.llm = None
     scope = {'space_id': context.space_id}
-    automatic = client.post('/v1/remember', json={**scope, 'content': 'Synthetic extraction'})
+    batch = dict(scope, session_id='chat', messages=[dict(message_id='m1', role='user', content='Synthetic extraction')])
+    automatic = client.post('/v1/remember', json=batch)
     assert automatic.status_code == 503
     assert automatic.json()['detail']['stored_raw'] is False
+    for invalid in ({**batch, 'scope': 'raw'}, {**batch, 'extract': False}, {**batch, 'processing': 'buffered'}):
+        assert client.post('/v1/remember', json=invalid).status_code == 422
     assert not service.memory(context).list_sources()
-    raw = client.post('/v1/remember', json={**scope, 'content': 'Synthetic raw note', 'extract': False})
-    assert raw.status_code == 200
-    note = raw.json()
-    source_id, = note['source_ids']
-    assert note['status'] == 'stored' and note['stored_raw'] is True
-    assert note['operation_ids'] == note['operations'] == []
-    assert service.memory(context).list_sources()[0].content == 'Synthetic raw note'
-
-    batch = {**scope, 'session_id': 'dialogue', 'extract': False,
-             'messages': [{'message_id': 'm1', 'role': 'user', 'content': 'Synthetic raw dialogue'}]}
-    dialogue = client.post('/v1/messages', json=batch)
-    assert dialogue.status_code == 202 and dialogue.json()['operation_ids'] == []
-    dialogue_id, = dialogue.json()['source_ids']
-    assert dialogue_id != source_id
-    assert client.post('/v1/messages', json=batch).json()['source_ids'] == [dialogue_id]
-    assert client.post('/v1/messages', json={**batch, 'extract': True}).status_code == 409
-    for invalid in ({**batch, 'scope': 'raw'}, {**batch, 'extract': 'false'}):
-        assert client.post('/v1/messages', json=invalid).status_code == 422
-    assert {episode.content for episode in service.memory(context).list_sources()} == {
-        'Synthetic raw note', 'Synthetic raw dialogue',
-    }
-    manual = client.post('/v1/facts', json={"text": 'user likes Synthetic tea', **scope, 'predicate': 'likes', 'object': 'Synthetic tea'})
-    assert manual.status_code == 404
+    assert not service.memory(context).list_operations()
 
 
 def test_graph_audit_reports_scoped_structural_issues_before_limiting(product, spaces):
@@ -202,10 +187,10 @@ def test_chat_returns_operation_identity_after_acceptance(product, stream):
     else:
         metadata = response.json()['mnemotrace']
     assert metadata['space_id'] == context.space_id
-    assert metadata['remembered'] and metadata['operation_ids']
-    for operation_id in metadata['operation_ids']:
-        operation = service.memory(context).operation(operation_id)
-        assert not operation.core_committed
+    assert metadata['remembered'] and metadata['remember_queued']
+    assert len(metadata['source_ids']) == 2
+    assert metadata['task']['state'] == 'pending'
+    assert service.memory(context).operation(metadata['task']['operation_id']) is not None
 
 
 def test_direct_and_proxy_mcp_and_cli_share_records(product, monkeypatch, capsys):
@@ -220,12 +205,12 @@ def test_direct_and_proxy_mcp_and_cli_share_records(product, monkeypatch, capsys
         local = LocalBackend(context.user_id, context.space_id, service)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app)) as http:
             remote = RemoteBackend('http://testserver', key.value, context.space_id, http)
-            result = await local.remember_messages(
+            result = await local.remember(
                 [{'message_id': 'mcp-1', 'role': 'user', 'content': 'Synthetic preference'}], 'mcp-thread')
-            operation_id, = result['operation_ids']
+            operation_id = result['task']['operation_id']
+            assert service.memory(context)._processing.run_next_stage(operation_id)
             status = await remote.operation(operation_id)
             assert status['operation_id'] == operation_id and 'stored_raw' not in status
-            assert (await remote.flush_processing('mcp-thread'))['ok']
             recalled = await local.recall('What is the synthetic archive access code?', lean=False)
             assert recalled['status'] == 'evidence_only' and any('Emerald' in fact for fact in recalled['facts'])
             first = await remote.memories(categories=None, limit=1, offset=0, include_superseded=False)
@@ -246,7 +231,7 @@ def test_direct_and_proxy_mcp_and_cli_share_records(product, monkeypatch, capsys
     cli_scope = ['--user-id', context.user_id, '--space-id', context.space_id]
     assert cli.main([*cli_scope, 'operation', operation_id]) == 0
     assert json.loads(capsys.readouterr().out)['core_committed']
-    assert cli.main([*cli_scope, 'remember', 'Synthetic CLI source', '--session-id', 'cli', '--no-extract']) == 0
+    assert cli.main([*cli_scope, 'remember', 'Synthetic CLI source', '--session-id', 'cli']) == 0
     source_id, = json.loads(capsys.readouterr().out)['source_ids']
     assert service.memory(context).get_episode(source_id).content == 'Synthetic CLI source'
     fact = seed_fact(service.memory(context), 'Synthetic CLI archive', 'access_code', 'Amethyst', text='Synthetic CLI archive access code Amethyst')

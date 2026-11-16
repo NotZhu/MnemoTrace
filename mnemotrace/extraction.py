@@ -23,6 +23,18 @@ class LLMNotConfiguredError(ExtractionError):
     message = "Configure an LLM: pass llm= to the Python entry point, or set MNEMOTRACE_LLM for the service."
 
 
+class ExtractionConfigurationError(ExtractionError):
+    code = "configuration_invalid"
+    status_code = 503
+    message = "Configure a tokenizer and token budgets for the extraction model."
+
+
+class ExtractionBudgetError(ExtractionError):
+    code = "model_budget_exceeded"
+    status_code = 422
+    message = "A required memory request exceeds the model token budget. Check the model capacity and token limits."
+
+
 class ProcessingIncompleteError(ExtractionError):
     code = 'processing_incomplete'
     status_code = 503
@@ -33,7 +45,7 @@ class ExtractionConflictError(ExtractionError):
     code = "extraction_conflict"
     status_code = 409
     message = ("A concurrent write to this namespace invalidated in-flight extraction; "
-               "the source is stored raw — retry consolidation or flush again later.")
+               "the source is stored raw — retry the operation or consolidation later.")
 
 
 class ExtractionResponseError(ExtractionError):

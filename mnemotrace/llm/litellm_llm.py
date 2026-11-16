@@ -8,6 +8,7 @@ from typing import Optional
 
 from .base import Completion, LLM
 from .failures import retryable
+from .tokens import TokenCounterConfigurationError, configured_counter, conservative_count, messages
 
 # caption() 的默认指令：一段密集的、利于检索的描述（图中可见的名字、文字、数字）——
 # 一张原本无法检索的图片由此变成可搜索的记忆。
@@ -27,6 +28,8 @@ class LiteLLMClient(LLM):
         max_attempts: int = 7,
         retry_base: float = 1.0,
         retry_cap: float = 30.0,
+        token_counter=None,
+        context_window: int | None = None,
         **kwargs,
     ) -> None:
         """初始化 LiteLLM 客户端。
@@ -44,6 +47,13 @@ class LiteLLMClient(LLM):
 
         self._litellm = litellm
         self.model = model
+        self._token_counter = token_counter if token_counter is not None else configured_counter()
+        if self._token_counter is None and model in {'deepseek/deepseek-chat', 'deepseek/deepseek-reasoner'}:
+            self._token_counter = conservative_count
+        self.context_window = context_window
+        self.token_counter_id = (None if self._token_counter is None else
+                                 f"{getattr(self._token_counter, '__module__', '')}:"
+                                 f"{getattr(self._token_counter, '__qualname__', type(self._token_counter).__qualname__)}")
         self.temperature = temperature
         self.max_tokens = max_tokens
         # 外层重试的韧性旋钮。与 litellm 自身的 `num_retries`（留在 kwargs 里，负责进程内快速重试）
@@ -52,6 +62,19 @@ class LiteLLMClient(LLM):
         self.retry_base = retry_base
         self.retry_cap = retry_cap
         self.kwargs = kwargs
+
+    def require_token_counter(self):
+        # A relay prefix describes transport, not the tokenizer. LiteLLM may fall back
+        # to an unrelated encoding for unknown model IDs.
+        name = self.model.removeprefix("openai/")
+        if self._token_counter is None and not name.startswith(("gpt-4", "gpt-5", "gpt-3.5", "o1", "o3", "o4")):
+            raise TokenCounterConfigurationError("Configure MNEMOTRACE_TOKEN_COUNTER for this extraction model")
+
+    def count_tokens(self, messages):
+        self.require_token_counter()
+        if self._token_counter is not None:
+            return self._token_counter(messages)
+        return self._litellm.token_counter(model=self.model.removeprefix("openai/"), messages=messages)
 
     def _run(self, messages: list, **kwargs) -> Completion:
         """在现成的 `messages` 列表上调用模型，带韧性退避循环。文本的 `complete()` 和多模态的
@@ -97,11 +120,7 @@ class LiteLLMClient(LLM):
         return self.complete_result(prompt, system=system, **kwargs).text
 
     def complete_result(self, prompt: str, system: Optional[str] = None, **kwargs) -> Completion:
-        messages = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-        return self._run(messages, **kwargs)
+        return self._run(messages(prompt, system), **kwargs)
 
     def caption(self, image_ref: str, prompt: Optional[str] = None) -> str:
         """把图片（data: URL 或 http(s) URL）描述成纯文本 —— 多模态路径。调用方只把图片字节/URL

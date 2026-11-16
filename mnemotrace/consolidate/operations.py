@@ -1,18 +1,35 @@
 """Pure request and response policies; execution and retries live in one runner."""
 
-from ..extraction import ExtractionResponseError
+from contextlib import contextmanager
+
+from ..extraction import ExtractionResponseError, ExtractionTruncatedError
+from ..llm.base import complete_result
+from ..llm.execution import discard_cached_completion, one_attempt
 from .fact_rules import _norm_predicate
 from .planning import request, system_prompt, validate_response
 
 
-def prepare(data, config, policy, compensation=False):
-    operation = data['operation']
-    system = system_prompt(policy, compensation=compensation, operation=operation, typed='entity_types' in data)
-    return request(data, config), system, config.digest_max_output_tokens if operation == 'digest' else config.joint_max_output_tokens
+def prepare(data, config, policy):
+    system = system_prompt(policy, typed='entity_types' in data)
+    return request(data, config), system
 
 
-def decode(raw, data, config, compensation=False):
-    result = validate_response(raw, data, config, compensation=compensation)
+@contextmanager
+def generate(llm, data, config, policy, *, prepared=None):
+    prompt, system = prepare(data, config, policy) if prepared is None else prepared
+    options = dict(system=system)
+    completion = complete_result(one_attempt(llm), prompt, **options)
+    try:
+        yield completion
+    except ExtractionResponseError:
+        discard_cached_completion(llm, prompt, completion, **options)
+        raise
+
+
+def decode(completion, data, config):
+    if completion.finish_reason not in {None, 'stop', 'end_turn'}:
+        raise ExtractionTruncatedError()
+    result = validate_response(completion.text, data, config)
     facts = []
     for item in result['facts']:
         subject = item['subject'].strip()

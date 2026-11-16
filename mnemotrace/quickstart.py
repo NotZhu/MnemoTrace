@@ -19,7 +19,7 @@ BASE = 1_700_000_000.0  # 固定纪元，保证 demo 可复现
 def main() -> None:
     import os
     from .embed import EmbeddingUnavailable
-    from .llm.providers import configured_embedder, load_dotenv, make_llm
+    from .llm.providers import configured_embedder, load_dotenv, make_extraction_llm
     from .extraction import LLMNotConfiguredError
 
     load_dotenv()
@@ -31,7 +31,7 @@ def main() -> None:
     if not user_id or not space_id:
         raise SystemExit('Set MNEMOTRACE_USER_ID and MNEMOTRACE_SPACE_ID to an existing demo space.')
     try:
-        llm = make_llm(model)
+        llm = make_extraction_llm(model)
         embedder, embedding_model = configured_embedder(default='fastembed')
         with Database(DatabaseConfig.from_env()) as database:
             scope = Spaces(database).authorize(user_id, space_id)
@@ -61,15 +61,16 @@ def run_demo(memory: Memory) -> None:
                      event_time=BASE + day * DAY)
         for index, (text, day) in enumerate(history)
     )
-    result = memory.remember_messages('mnemotrace-quickstart', messages, processing='buffered')
-    print('   operations:', ', '.join(result['operation_ids']))
+    result = memory.remember(messages, 'mnemotrace-quickstart', wait=True)
+    operation_id = result['operation_id']
+    print('   operation:', operation_id)
     for text, day in history:
         print(f"   第 {day:>2} 天：{text}")
 
     print("\n== 记忆整合（System-2：提取事实、构建图关系、处理冲突） ==")
-    processing = memory.flush_processing('mnemotrace-quickstart')
-    if not processing['ok']:
-        raise SystemExit('Dialogue processing incomplete; inspect the reported task errors.')
+    task = result['task']
+    if not task.core_committed:
+        raise SystemExit(f'Memory task {operation_id}: {task.state.value} ({task.error_code})')
 
     print("\n== 查询记忆 ==")
     for q in [

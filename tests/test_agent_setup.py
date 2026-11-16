@@ -138,7 +138,7 @@ def test_render_codex_setup_contains_lifecycle_and_config():
     assert "mnemotrace_recall with a relevant query" in out
     assert "mnemotrace_recall with session_id" not in out
     assert "mnemotrace_remember" in out
-    assert "mnemotrace_flush_processing" in out
+    assert "mnemotrace_get_operation" in out
     assert "mnemotrace_remember" in out and "mnemotrace_update_fact" not in out
     assert "mnemotrace_delete_fact" in out
     assert "mnemotrace_export" in out
@@ -326,7 +326,7 @@ def test_uninstall_mcp_json_config_removes_only_mnemotrace_server(tmp_path):
     assert data["mcpServers"]["other"] == {"command": "other", "args": []}
 
 
-def test_render_openai_setup_contains_memory_extension_and_flush_call():
+def test_render_openai_setup_contains_memory_extension_and_task_query():
     out = render_markdown(
         "openai",
         api_url="http://mnemotrace.test",
@@ -337,8 +337,7 @@ def test_render_openai_setup_contains_memory_extension_and_flush_call():
     assert "OpenAI(base_url='http://mnemotrace.test/v1'" in out
     assert "'session_id': session_id" in out
     assert "'extract': True" in out
-    assert "/v1/processing/flush" in out
-    assert "Authorization: Bearer <API_KEY>" in out
+    assert "/v1/operations/{operation_id}" in out and "Bearer key" in out
     assert "sk-test" not in out
 
 

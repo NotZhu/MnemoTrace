@@ -9,9 +9,8 @@ from ..util import fmt_date
 from .answers import SearchResult, digest_match, should_abstain, slot_result
 from .context import ContextSection, pack_sections, render_sections
 from .events import EventEvidence
-from .fusion import order_by_score, weighted_rrf
+from .fusion import rank_facts, weighted_rrf
 from .hybrid import order_positive
-from .lexical import literal_value_match
 
 
 @dataclass(frozen=True)
@@ -64,17 +63,17 @@ def retrieval_query(text, embedder, model, config, *, top_k, as_of=None, facts=N
 
 
 def _score(candidates, config, query):
-    sem = {item.record.ref.record_id: item.semantic for item in candidates}
-    records = {item.record.ref.record_id: item.record for item in candidates}
-    facts = {key: domain(record) for key, record in records.items()}
-    rankings = {'sem': order_positive(sem)}
-    for name, key, order in (('lex', 'lexical', order_positive), ('graph', 'graph', order_positive),
-                             ('rec', 'recency', order_by_score), ('sal', 'salience', order_by_score)):
-        rankings[name] = order({item.record.ref.record_id: getattr(item, key) for item in candidates})
-    weights = {name: getattr(config, f'w_{name}') for name in rankings}
-    scores = weighted_rrf(rankings, weights, config.rrf_k)
-    ids = sorted(scores, key=lambda key: (not literal_value_match(query.text, facts[key].object), -scores[key], key))
-    return [(facts[key], scores[key]) for key in ids], sem
+    by_id = {item.record.ref.record_id: item for item in candidates}
+    semantic = {key: item.semantic for key, item in by_id.items()}
+    ranked, _ = rank_facts(
+        query.text, (domain(item.record) for item in by_id.values()), config,
+        semantic=semantic,
+        lexical={key: item.lexical for key, item in by_id.items()},
+        graph={key: item.graph for key, item in by_id.items()},
+        recency={key: item.recency for key, item in by_id.items()},
+        salience={key: item.salience for key, item in by_id.items()},
+    )
+    return ranked, semantic
 
 
 def digest_search(view, query, k, *, start=None, end=None):

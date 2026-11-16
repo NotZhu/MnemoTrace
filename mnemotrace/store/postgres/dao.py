@@ -23,6 +23,7 @@ class Applied:
     fact_ids: tuple[str, ...] = ()
     source_ids: tuple[str, ...] = ()
     count: int = 0
+    chat_replay: dict | None = None
 
 
 def new_operation_id():
@@ -52,7 +53,7 @@ def _receipt(sql, operation_id):
     return None
 
 
-def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=None):
+def _apply_changes(sql, changes, revision, generation, settings):
     conditions = changes.conditions
     snapshot = conditions.snapshot
     if snapshot.core_revision != revision or snapshot.space_generation != generation:
@@ -98,10 +99,7 @@ def _apply_changes(sql, changes, revision, generation, settings, *, checkpoint=N
     if conditions.lease is not None:
         if changes.receipt is None:
             raise DatabaseConstraintError('Task completion requires a receipt')
-        if checkpoint is None:
-            commit_task(sql, conditions.lease)
-        else:
-            checkpoint(sql)
+        commit_task(sql, conditions.lease)
     from .profile import synchronize
     synchronize(sql, fact_ids, settings_changed=changes.settings is not None)
     refs = [item.ref for item in changes.writes]
@@ -162,13 +160,12 @@ class PostgresDAO:
         with self._transaction() as sql:
             return _receipt(sql, operation_id)
 
-    def _mutate(self, operation_id, apply, *, segment_of=None):
+    def _mutate(self, operation_id, apply):
         """执行变更操作并返回提交收据。
 
         Args:
             operation_id: 操作 ID。
             apply: 应用变更的函数。
-            segment_of: 可选的分段操作 ID。
         """
         identifier(operation_id)
         entered = False
@@ -187,7 +184,8 @@ class PostgresDAO:
                 sql.insert('commit_receipts', dict(
                     operation_id=operation_id, core_revision=revision, fact_ids=list(result.fact_ids),
                     source_ids=list(result.source_ids),
-                    affected_count=result.count, **({'segment_of': segment_of} if segment_of else {}),
+                    affected_count=result.count,
+                    chat_replay=result.chat_replay,
                 ))
                 return CommitReceipt(operation_id, revision, result.fact_ids,
                                      result.source_ids, result.count)

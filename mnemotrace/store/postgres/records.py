@@ -21,7 +21,7 @@ TIMES = frozenset(('event_time', 'ingested_at', 'created_at', 'valid_at', 'inval
 SCOPE = 'user_id = %s AND space_id = %s'
 ROW_SCOPE = 'r.user_id = %s AND r.space_id = %s'
 JSON_COLUMNS = {'profile_data', 'coverage', 'digest_coverage', 'settings',
-                'input', 'result', 'source_versions', 'endpoint_types'}
+                'input', 'result', 'source_versions', 'endpoint_types', 'planned_request', 'chat_replay'}
 
 
 def timestamp(value):

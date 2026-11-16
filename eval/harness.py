@@ -199,13 +199,13 @@ def main() -> None:
     ap.add_argument("--out", help="write per-item raw logs plus a final summary record as JSONL")
     ap.add_argument("--llm", help="model name, or set MNEMOTRACE_LLM")
     args = ap.parse_args()
-    from mnemotrace.llm.providers import make_llm, load_dotenv
+    from mnemotrace.llm.providers import make_extraction_llm, load_dotenv
     load_dotenv()
     model = args.llm or os.environ.get("MNEMOTRACE_LLM", "")
     if not model:
         ap.error("configure --llm or MNEMOTRACE_LLM")
 
-    rows, summary = evaluate(storage=args.storage, llm=make_llm(model))
+    rows, summary = evaluate(storage=args.storage, llm=make_extraction_llm(model))
     if args.out:
         write_jsonl(args.out, rows, summary)
 

@@ -5,7 +5,7 @@ from mnemotrace.types import Entity, Fact, RelationType, relation_identifier
 
 
 def seed_note(memory, content, session_id, *, event_time=None):
-    source_id, = memory.remember(content, session_id, extract=False, event_time=event_time)['source_ids']
+    source_id, = memory._store_originals(content, session_id, event_time=event_time)
     return memory.get_episode(source_id)
 
 
@@ -49,3 +49,27 @@ def seed_fact(memory, subject, predicate, object_, *, text, categories=(), linke
     write = memory._write(fact)
     memory._commit(snapshot, writes=(*relations, *map(memory._write, entities.values()), write), embeddings=fact_embeddings(memory, write, text))
     return fact
+
+
+def remember_and_publish(memory, value, session_id, **options):
+    accepted = memory.remember(value, session_id, **options)
+    task_id = accepted['operation_id']
+    while memory._processing.run_next_stage(task_id):
+        pass
+    # Reuse the accepted ID for the completion response of a string shorthand.
+    if isinstance(value, str):
+        options['message_id'] = accepted['messages'][0]['message_id']
+    return memory.remember(value, session_id, **options)
+
+
+def checkpoint_before_publication(memory, task_id):
+    """Simulate a transient commit failure after the validated bundle has been saved."""
+    from unittest.mock import patch
+
+    from mnemotrace.store.postgres.errors import DatabaseUnavailable
+
+    with patch.object(type(memory._processing), '_commit_core',
+                      side_effect=DatabaseUnavailable('Synthetic commit interruption')):
+        assert memory._processing.run_next_stage(task_id)
+    task = memory.operation(task_id)
+    assert task.extraction_saved and task.state.value == 'retry_wait'

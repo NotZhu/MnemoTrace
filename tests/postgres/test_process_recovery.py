@@ -9,6 +9,9 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.postgres.test_processing import first_task
+from tests.postgres.fact_fixtures import checkpoint_before_publication
+
 from mnemotrace import Config
 from mnemotrace.consolidate.planning import WINDOW_PREFIX
 from tests.embedder_fixtures import MockEmbedder, product_embedder
@@ -91,16 +94,18 @@ def _model(calls, pause=None):
         calls.append(request['operation'])
         if pause:
             pause()
-        if request['operation'] == 'digest':
-            return json.dumps({'digests': [{'source_id': request['pending'][0]['id'], 'text': 'Synthetic digest'}]})
         facts = []
         for item in request['pending']:
             subject, _, employer = item['content'].rpartition(' at ')
             subject = subject or '我'
+            if item['needs_digest']:
+                subject, employer = 'Synthetic owner', 'Synthetic lab'
             facts.append(dict(categories=[], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject=subject, predicate='works_at', object=employer,
                               text=f'{subject} works at {employer}',
                               source_ids=[item['id']]))
-        return json.dumps(typed_result(dict(facts=facts, digests=[])))
+        digests = [dict(source_id=item['id'], text='Synthetic digest')
+                   for item in request['pending'] if item['needs_digest']]
+        return json.dumps(typed_result(dict(facts=facts, digests=digests)))
 
     return FakeLLM(handler=respond)
 
@@ -112,9 +117,7 @@ def memory(runtime, spaces, user):
 
 
 def _accept(memory, key='one', content='Synthetic lab', session='chat'):
-    result = memory.remember_messages(session, (dialogue(key, content),))
-    operation_id, = result['operation_ids']
-    return operation_id
+    return memory.remember([dialogue(key, content)], session)['operation_id']
 
 
 def _expire(memory, operation_id):
@@ -156,7 +159,7 @@ def _interrupt_transaction(config, scope, stage, committed, operation_id, *, rea
     with Database(config) as runtime, patch.object(PostgresDAO, '_transaction', interrupt):
         memory = Memory(runtime, scope, llm=_model([]), embedder=product_embedder(), embedding_model='test-vectors-v1')
         result = (_accept(memory) if stage == 'accept'
-                  else memory._processing.run_next_stage(operation_id, force=True))
+                  else memory._processing.run_next_stage(operation_id))
         assert checkpoint_committed
         return result
 
@@ -169,7 +172,6 @@ def _recover(runtime_config, discovery_config, scope, operation_id, *, ready, re
         memory = Memory(runtime, scope, llm=llm)
         if operation_id is None:
             operation_id = _accept(memory)
-        memory.flush_processing('chat', timeout=0)
         for _ in range(3):
             if memory.operation(operation_id).core_committed:
                 break
@@ -184,21 +186,15 @@ def test_process_death_at_each_durable_checkpoint(memory, cluster, stage, commit
     operation_id = None
     if stage != 'accept':
         operation_id = _accept(memory)
-    if stage == 'core':
-        assert memory._processing.run_next_stage(operation_id, force=True)
-
     with _process(_interrupt_transaction, cluster.runtime, memory.context, stage, committed, operation_id) as child:
         _kill_at_checkpoint(child)
 
     sources = memory.list_sources()
     if stage == 'accept':
         assert len(sources) == int(committed)
-        operations = memory.list_operations()
-        assert sum(item.kind.value == 'extract' for item in operations) == int(committed)
-        if not committed:
-            assert operations == ()
+        assert len(memory.list_operations()) == int(committed)
         if committed:
-            operation_id, = memory.flush_processing('chat', timeout=0)['operation_ids']
+            operation_id = first_task(memory)
     else:
         assert len(sources) == 1
         status = memory.operation(operation_id)
@@ -253,9 +249,9 @@ def _run_stage(config, scope, operation_id, pause_at, *, ready, resume):
         if pause_at == 'heartbeat':
             with (patch.object(Tasks, 'renew', fail_renewal),
                   patch('mnemotrace._postgres_pipeline.RENEW_SECONDS', 0.01)):
-                memory._processing.run_next_stage(operation_id, force=True)
+                memory._processing.run_next_stage(operation_id)
         else:
-            memory._processing.run_next_stage(operation_id, force=True)
+            memory._processing.run_next_stage(operation_id)
     return calls
 
 
@@ -304,7 +300,7 @@ def _accept_in_process(config, scope, *, ready, resume):
     with Database(config) as runtime:
         memory = Memory(runtime, scope, llm=_model([]), embedder=product_embedder(), embedding_model='test-vectors-v1')
         _pause(ready, resume)
-        return memory.remember_messages('chat', (dialogue('one', 'Synthetic lab'),))
+        return memory.remember([dialogue('one', 'Synthetic lab')], 'chat')
 
 
 def test_parallel_acceptance_reuses_message_and_operation(memory, cluster):
@@ -315,13 +311,13 @@ def test_parallel_acceptance_reuses_message_and_operation(memory, cluster):
         for child in (first, second):
             child.resume.set()
         a, b = _result(first), _result(second)
-    assert sorted([a['accepted'], b['accepted']]) == [0, 1]
     assert a['source_ids'] == b['source_ids']
-    assert a['operation_ids'] == b['operation_ids']
+    assert a['operation_id'] == b['operation_id']
     with pytest.raises(MessageConflict):
         _accept(memory, content='Different synthetic lab')
-    with _process(_recover, cluster.runtime, cluster.discovery, memory.context, a['operation_ids'][0]) as child:
-        assert _result(child) == (a['operation_ids'][0], ['extract'])
+    operation_id = a['operation_id']
+    with _process(_recover, cluster.runtime, cluster.discovery, memory.context, operation_id) as child:
+        assert _result(child) == (operation_id, ['extract'])
     assert len(memory.list_sources()) == len(memory.facts()) == 1
 
 
@@ -334,11 +330,10 @@ def test_space_write_lock_does_not_block_sibling_space(memory, cluster, spaces):
             assert other.ready.wait(WAIT)
             other.resume.set()
             accepted = _result(other)
-        assert accepted['accepted'] == 1
         assert memory.get_episode(accepted['source_ids'][0]) is None
-        assert memory.operation(accepted['operation_ids'][0]) is None
+        assert accepted['task'].state.value == 'pending'
         blocked.resume.set()
-        assert _result(blocked) != accepted['operation_ids'][0]
+        assert _result(blocked)
 
 
 def test_discovered_tasks_commit_only_in_their_own_spaces(memory, cluster, runtime, product_scope):
@@ -346,8 +341,6 @@ def test_discovered_tasks_commit_only_in_their_own_spaces(memory, cluster, runti
     other = Memory(runtime, other_context, llm=_model([]), embedder=product_embedder(), embedding_model='test-vectors-v1')
     first = _accept(memory)
     second = _accept(other, content='Another person at Another lab')
-    for scoped in (memory, other):
-        scoped.flush_processing('chat', timeout=0)
     with _process(_recover, cluster.runtime, cluster.discovery, memory.context, first) as child:
         recovered, calls = _result(child)
     assert recovered == first
@@ -364,18 +357,18 @@ def test_discovered_tasks_commit_only_in_their_own_spaces(memory, cluster, runti
 def test_same_space_stale_merge_retries_without_reextracting(memory, cluster):
     first = _accept(memory)
     second = _accept(memory, key='two', content='Another person at Another lab', session='other')
-    for operation_id in (first, second):
-        assert memory._processing.run_next_stage(operation_id, force=True)
     with _process(_run_stage, cluster.runtime, memory.context, first, 'embedding') as old:
         assert old.ready.wait(WAIT)
         with _process(_run_stage, cluster.runtime, memory.context, second, None) as concurrent:
             assert _result(concurrent) == []
-        assert memory.operation(second).core_committed
+        assert not memory.operation(second).core_committed
+        memory._store_originals('Concurrent internal source', 'archive')
         old.resume.set()
-        assert _result(old) == []
+        assert _result(old) == ['extract']
     assert memory.operation(first).error_code == 'version_conflict'
     with _process(_recover, cluster.runtime, cluster.discovery, memory.context, first) as retry:
         assert _result(retry) == (first, [])
+    assert memory._processing.run_next_stage(second)
     assert {fact.object for fact in memory.facts()} == {'Synthetic lab', 'Another lab'}
 
 
@@ -399,21 +392,14 @@ def test_model_call_respects_concurrent_business_change(memory, cluster, change)
 
 
 def _pending_write(memory, kind):
-    if kind == 'digest':
-        from mnemotrace.store.contracts import ChangeSet, CommitConditions, OperationKind, OperationSpec, SourceVersion
-        from mnemotrace.store.postgres.dao import new_operation_id
-
-        source = seed_note(memory, 'Synthetic digest input. ' * 100, 'chat')
-        operation_id = new_operation_id()
-        with memory.dao.read_snapshot() as view:
-            conditions = CommitConditions(view.snapshot)
-        task = OperationSpec(operation_id, OperationKind.DIGEST, 'chat', (SourceVersion(source.id, 1),))
-        memory.dao.commit(ChangeSet(conditions, new_operation_id(), operations=(task,)))
+    if kind == 'joint':
+        text = 'Synthetic owner works at Synthetic lab. ' + 'Synthetic digest input. ' * 100
+        operation_id = memory.remember(text, 'chat')['operation_id']
     else:
         operation_id = _accept(memory)
     if kind != 'extract':
-        assert memory._processing.run_next_stage(operation_id, force=True)
-        assert memory.operation(operation_id).extraction_saved
+        checkpoint_before_publication(memory, operation_id)
+        memory.retry_operation(operation_id)
     return operation_id
 
 
@@ -423,7 +409,7 @@ def _scope_counts(runtime, scope, *, cleared=False):
     tables = ('sessions', 'sources', 'source_digests', 'facts', 'fact_sources', 'fact_supersedes',
               'entity_types', 'entities', 'relation_types', 'graph_relations',
               'embeddings', 'lexical_documents', 'lexical_terms',
-              'operations', 'operation_sources', 'operation_products', 'operation_digest_parts',
+              'operations', 'operation_sources', 'operation_products',
               'commit_receipts')
     with runtime._transaction() as conn:
         conn.execute("SELECT set_config('mnemotrace.user_id', %s, true)", (scope.user_id,))
@@ -432,10 +418,10 @@ def _scope_counts(runtime, scope, *, cleared=False):
                   for table in tables}
         if cleared:
             receipts = conn.execute(
-                "SELECT fact_ids,source_ids,segment_of FROM mnemotrace.commit_receipts "
+                "SELECT fact_ids,source_ids FROM mnemotrace.commit_receipts "
                 "WHERE user_id = %s AND space_id = %s", (scope.user_id, scope.space_id),
             ).fetchall()
-            assert receipts == [([], [], None)]  # The clear transaction has its own empty receipt.
+            assert receipts == [([], [])]  # The clear transaction has its own empty receipt.
             counts.pop('commit_receipts')
         return counts
 
@@ -485,7 +471,7 @@ def _blocked_deletion(cluster, context, scope):
 
 
 @pytest.mark.parametrize('scope', ['clear', 'space', 'account'])
-@pytest.mark.parametrize('kind', ['extract', 'core', 'digest'])
+@pytest.mark.parametrize('kind', ['extract', 'core', 'joint'])
 def test_delete_prevents_late_processing_writes(memory, cluster, runtime, spaces, accounts, scope, kind):
     user_id = memory.context.user_id
     key = accounts.issue_key(user_id)
@@ -591,7 +577,7 @@ def test_worker_rejects_corrupt_extraction_checkpoint(memory, cluster, damage):
 def test_commit_rejects_extraction_checkpoint_removed_after_worker_read(memory):
     operation_id = _pending_write(memory, 'core')
     tasks = Tasks(memory.dao)
-    lease, _ = tasks.claim(operation_id, force=True)
+    lease, _ = tasks.claim(operation_id)
     with memory.dao.read_snapshot() as view:
         snapshot, row, _ = tasks.load(view, lease)
         product = tasks.product(view, snapshot, lease, row)
@@ -605,20 +591,32 @@ def test_commit_rejects_extraction_checkpoint_removed_after_worker_read(memory):
     assert memory.dao.receipt(operation_id) is None
 
 
-def test_wrong_embedding_dimension_keeps_the_saved_product_for_retry(memory, runtime):
+@pytest.mark.parametrize('damaged_text', ['Synthetic owner works at Synthetic lab', 'Synthetic digest'])
+def test_wrong_embedding_dimension_keeps_the_saved_product_for_retry(memory, runtime, damaged_text):
     class InvalidDimension(MockEmbedder):
         def embed_batch(self, texts):
-            return [[1.0] for _ in texts]
+            return [[1.0] if text == damaged_text else self.embed(text) for text in texts]
 
-    operation_id = _pending_write(memory, 'core')
+    text = 'Synthetic owner works at Synthetic lab. ' + 'Synthetic digest input. ' * 100
+    accepted = memory.remember(text, 'chat')
+    operation_id = accepted['operation_id']
+    source_id, = accepted['source_ids']
+    checkpoint_before_publication(memory, operation_id)
+    memory.retry_operation(operation_id)
+    calls = []
     invalid = Memory(runtime, memory.context, embedder=InvalidDimension(), embedding_model='test-vectors-v1',
-                     llm=_model([]))
-    assert not invalid.flush_processing('chat')['ok']
+                     llm=_model(calls))
+    assert invalid._processing.run_next_stage(operation_id)
     status = memory.operation(operation_id)
     assert (status.state.value, status.error_code) == ('failed', 'embedding_invalid')
     assert status.extraction_saved and not status.core_committed
     assert memory.facts() == ()
+    assert not memory.get_episode(source_id).digest
     assert memory.dao.receipt(operation_id) is None
-    assert memory.flush_processing('chat', retry_failed=True)['ok']
+    memory.retry_operation(operation_id)
+    assert memory._processing.run_next_stage(operation_id)
+    assert memory.operation(operation_id).core_committed
     fact, = memory.facts()
+    assert memory.get_episode(source_id).digest == 'Synthetic digest'
+    assert not calls
     assert len(memory.graph_relations(fact.id)) == 1

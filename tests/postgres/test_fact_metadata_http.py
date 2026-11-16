@@ -70,7 +70,7 @@ def test_redacted_session_report_omits_fact_metadata(metadata_client, product_sc
     from mnemotrace.types import Fact
 
     context, _ = product_scope(user)
-    source_id, = service.remember(context, "Synthetic session statement", "synthetic-session", extract=False)["source_ids"]
+    source_id, = service._store_originals(context, "Synthetic session statement", "synthetic-session")
     seed_facts(service, context, [Fact("我", "note", "Synthetic private value", user_id=context.user_id,
                                        provenance=[source_id], categories=["health"], sensitive=True, text='user note Synthetic private value')])
     headers = hdr(user)

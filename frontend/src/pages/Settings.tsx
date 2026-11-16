@@ -53,7 +53,6 @@ export default function Settings() {
 
   const PROMPT_FIELDS: Array<{ key: keyof Policy; label: string; hint: string }> = [
     { key: 'extract_system', label: t.settings.promptExtractLabel, hint: t.settings.promptExtractHint },
-    { key: 'digest_system', label: t.settings.promptDigestLabel, hint: t.settings.promptDigestHint },
     { key: 'profile_system', label: t.settings.promptPersonaLabel, hint: t.settings.promptPersonaHint },
   ]
 
@@ -67,7 +66,6 @@ export default function Settings() {
       setInstruction(data.policy.extract_instruction || '')
       setPrompts({
         extract_system: data.policy.extract_system || data.defaults.extract_system,
-        digest_system: data.policy.digest_system || data.defaults.digest_system,
         profile_system: data.policy.profile_system || data.defaults.profile_system,
       })
     }
@@ -81,7 +79,6 @@ export default function Settings() {
     const patch: Partial<Policy> = {
       extract_instruction: instruction,
       extract_system: isDefault('extract_system') ? '' : prompts.extract_system,
-      digest_system: isDefault('digest_system') ? '' : prompts.digest_system,
       profile_system: isDefault('profile_system') ? '' : prompts.profile_system,
     }
     save.mutate(patch, {

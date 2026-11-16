@@ -6,7 +6,7 @@ import { PageEmptyState } from '../components/PageEmptyState'
 import { ConfirmDialog } from '../components/Modal'
 import { CategoryBadges, CategoryFilter } from '../components/CategoryEditor'
 import { toast } from '../components/Toast'
-import { useOrganizeSession, useDeleteFact, useMemories, useMemoryPages, useSessions, useSetFactSensitive } from '../hooks/queries'
+import { useDeleteFact, useMemories, useMemoryPages, useSetFactSensitive } from '../hooks/queries'
 import { useDebouncedSearch } from '../hooks/useDebouncedSearch'
 import { useSpacePreference } from '../store/preferences'
 import { copy as t } from '../lib/copy'
@@ -216,14 +216,6 @@ export default function Journal() {
         <JournalEmpty />
       )}
 
-      {/* 有意不在只有空状态时才显示：蒸馏过一个会话不代表积压已清完，而且一旦出现结论就
-          隐藏这个入口，其余的历史记录在这页就没有任何进入路径了。重复蒸馏已蒸馏过的
-          会话是无害的空操作。 */}
-      {rows.length > 0 && (
-        <Card>
-          <BackfillSessions />
-        </Card>
-      )}
       {hasFilters && !resetInEmptyState && <div className="mt-auto flex justify-center pt-6" data-filter-reset-footer>{resetControl}</div>}
     </div>
   )
@@ -384,66 +376,6 @@ function JournalEmpty() {
         hint={t.journal.emptyHint}
         icon={<NotebookText className="h-6 w-6" />}
       />
-      <BackfillSessions className="mt-7" />
-    </div>
-  )
-}
-
-/** 推进已保存会话的核心处理。 */
-function BackfillSessions({ className }: { className?: string }) {
-  const sessions = useSessions({ limit: 8 })
-  const organizeSession = useOrganizeSession()
-  const [pending, setPending] = useState<string | null>(null)
-
-  const distil = (id: string) => {
-    setPending(id)
-    organizeSession.mutate(id, {
-      onSuccess: (r) => {
-        setPending(null)
-        if (r.ok) toast.success('会话核心处理完成')
-        else toast.info(r.status === 'timed_out' ? '等待超时，任务继续处理' : '处理未完成，请查看操作进度')
-      },
-      onError: (e) => {
-        setPending(null)
-        toast.error(String((e as Error).message))
-      },
-    })
-  }
-
-  const sessionRows = sessions.data?.sessions ?? []
-  if (!sessions.isError && !sessionRows.length) return null
-
-  return (
-    <div className={`space-y-4 ${className ?? ''}`}>
-      {sessions.isError && <ErrorState
-        message={`历史会话读取失败：${(sessions.error as Error).message}`}
-        onRetry={() => { void sessions.refetch() }}
-        isRetrying={sessions.isFetching}
-      />}
-      {sessionRows.length > 0 && <ul className="space-y-4">
-        {sessionRows.slice(0, 5).map((s) => (
-          <li
-            key={s.session_id}
-            className="flex flex-wrap items-center justify-between gap-x-6 gap-y-4 rounded-xl border border-line bg-ink-700/40 p-5 sm:px-6"
-          >
-            <div className="min-w-0">
-              <div className="max-w-full truncate text-sm text-brand-cyan">
-                {t.journal.sessionLabel} {s.session_id}
-              </div>
-              {s.last_event_at_h && <div className="mt-2 text-xs text-ghost">{s.last_event_at_h}</div>}
-            </div>
-            <Button
-              variant="ghost"
-              className="rounded-md px-4 py-2 text-sm"
-              loading={pending === s.session_id}
-              disabled={!!pending}
-              onClick={() => distil(s.session_id)}
-            >
-              {t.journal.backfillButton}
-            </Button>
-          </li>
-        ))}
-      </ul>}
     </div>
   )
 }

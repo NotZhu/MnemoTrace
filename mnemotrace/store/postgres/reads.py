@@ -219,23 +219,12 @@ class ReadView:
             (*self._sql.scope, ids, model, dimension)).fetchall()
         return {fact_id: json.loads(vector) for fact_id, vector in rows}
 
-    def preceding_sources(self, episode, budget):
-        if not budget or episode.sequence is None:
-            return ()
-        rows = self._sql.run("""WITH preceding AS (
-            SELECT r.id, r.sequence, sum(octet_length(coalesce(nullif(s.digest, ''), r.content)))
-                OVER (ORDER BY r.sequence DESC) AS bytes,
-                bool_and(r.consolidated
-                    AND (r.extract,r.source_kind) IS NOT DISTINCT FROM (%s,%s))
-                OVER (ORDER BY r.sequence DESC) AS contiguous
-            FROM mnemotrace.sources r LEFT JOIN mnemotrace.source_digests s
-            ON (r.user_id,r.space_id,r.id) = (s.user_id,s.space_id,s.source_id)
-            WHERE r.user_id = %s AND r.space_id = %s AND r.session_id = %s AND r.sequence < %s
-            ORDER BY r.sequence DESC LIMIT %s)
-            SELECT id FROM preceding WHERE contiguous AND bytes <= %s ORDER BY sequence""",
-            (episode.extract, episode.source_kind, *self._sql.scope,
-             episode.session_id, episode.sequence, budget, budget)).fetchall()
-        ids = tuple(row[0] for row in rows)
+    def preceding_sources(self, episode, *, limit):
+        rows = self._sql.run(f"""SELECT id FROM mnemotrace.sources WHERE {SCOPE}
+            AND session_id = %s AND sequence < %s AND extract
+            ORDER BY sequence DESC LIMIT %s""",
+            (*self._sql.scope, episode.session_id, episode.sequence, limit)).fetchall()
+        ids = tuple(row[0] for row in reversed(rows))
         records = {record.ref.record_id: record for record in self.sources(ids)}
         return tuple(records[source_id] for source_id in ids)
 

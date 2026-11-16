@@ -12,7 +12,7 @@ def extraction_entries(data, result, input_hash):
     """Assign stable IDs and source ordering before any relationship decision."""
     pending = {item['id']: item for item in data['pending']}
     items = sorted(result['facts'], key=lambda item: source_anchor(
-        item['source_ids'], pending, data['source_kind'])['sequence'])
+        item['source_ids'], pending)['sequence'])
     entries = [('ft_' + content_hash([input_hash, item])[:24], item) for item in items]
     return list(dict(entries).items()) if 'entity_types' in data else entries
 
@@ -22,7 +22,7 @@ def materialize_facts(user_id, data, now, entries, *, bindings=None):
     pending = {item['id']: item for item in data['pending']}
 
     def anchor(item):
-        return source_anchor(item['source_ids'], pending, data['source_kind'])
+        return source_anchor(item['source_ids'], pending)
 
     facts = []
     for key, item in entries:

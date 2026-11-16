@@ -7,8 +7,11 @@ def one_attempt(llm):
     from .litellm_llm import LiteLLMClient
     from .cache import CachedLLM
     if isinstance(llm, (CachedLLM, ModelMeter)):
+        inner = one_attempt(llm.inner)
+        if inner is llm.inner:
+            return llm
         llm = copy(llm)
-        llm.inner = one_attempt(llm.inner)
+        llm.inner = inner
     if isinstance(llm, LiteLLMClient):
         llm = copy(llm)
         llm.max_attempts = 1
@@ -16,10 +19,31 @@ def one_attempt(llm):
     return llm
 
 
+def discard_cached_completion(llm, prompt, completion, **kwargs):
+    from .cache import CachedLLM
+
+    while isinstance(llm, (CachedLLM, ModelMeter)):
+        if isinstance(llm, CachedLLM):
+            llm.discard_completion(prompt, completion, **kwargs)
+        llm = llm.inner
+
+
 class ModelMeter(LLM):
     """Measure attempts at the call boundary, including rejected or discarded completions."""
     def __init__(self, inner, metrics, prefix='pipeline'):
         self.inner, self.metrics, self.prefix = inner, metrics, prefix
+
+    @property
+    def context_window(self):
+        return getattr(self.inner, "context_window", None)
+
+    def require_token_counter(self):
+        from .tokens import require_counter
+
+        require_counter(self.inner)
+
+    def count_tokens(self, messages):
+        return self.inner.count_tokens(messages)
 
     def complete(self, prompt, **kwargs):
         return self.complete_result(prompt, **kwargs).text

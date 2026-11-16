@@ -34,7 +34,7 @@ from .store import (
     VectorStore,
 )
 from .categories import Category
-from .extraction import require_llm
+from .extraction import LLMNotConfiguredError, require_llm
 from .types import Episode, Fact, Retention
 from .util import fmt_date, name_key, now, time_key
 
@@ -82,7 +82,7 @@ class MemoryEngine:
         self.focus: dict[str, list[str]] = {"track": [], "mute": []}
         # 记忆策略：抽取指令及抽取、摘要、画像提示词；空提示词使用内置默认值。
         self.policy: dict[str, str] = {"extract_instruction": "", "extract_system": "",
-                                       "digest_system": "", "profile_system": ""}
+                                       "profile_system": ""}
         self.cold_pages_out: dict[str, int] = {}  # 每个用户从热层换出到冷层的事实数
         self.cold_pages_in: dict[str, int] = {}  # 每个用户从冷层调回热层的事实数
         self._pipeline_state = None
@@ -260,43 +260,30 @@ class MemoryEngine:
             self.consolidate()
         return ep
 
-    def remember(self, content: str, user_id: str = "default", session_id: str = "default",
-                 extract: bool = True) -> dict:
-        """Save raw input and its requested lifecycle policy.
+    def remember(self, value, session_id: str = 'default', user_id: str = 'default', *,
+                 message_id=None, event_time=None, agent_id=None):
+        """Save and extract one batch synchronously in the offline engine."""
+        from .consolidate.pipeline import MessageConflictError, PipelineTasks
+        from .store.contracts import message_inputs
 
-        Requested extraction remains pending until consolidate() validates model output.
-        Reusable facts retain their source attribution and time qualifiers.
-        """
-        if self._pipeline_broken or self._pipeline_closed:
-            raise RuntimeError('Memory checkpoint failed or closed; create a new instance')
-        if type(extract) is not bool:
-            raise ValueError("extract must be a boolean")
-        with self._pipeline_write():
-            ep = self.ingestor.ingest(content, user_id, session_id, extract=extract)
-        return {"extract": extract, "episode_id": ep.id}
-
-    def remember_messages(self, messages: list[dict], session_id: str, user_id: str = 'default',
-                          extract: bool = True) -> dict:
-        """Offline-capable dialogue source/task recording; service owns background execution.
-
-        Product callers use Memory for durable processing.
-        """
-        if self._pipeline_broken:
-            raise RuntimeError('Memory checkpoint failed; create a new instance')
-        from .consolidate.pipeline import MessageConflictError, PipelineTasks, normalized
-        rows = normalized(messages, session_id, extract)
+        if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 512:
+            raise ValueError('Invalid session')
+        items = message_inputs(value, message_id=message_id, event_time=event_time, agent_id=agent_id)
         with self._pipeline_lock:
-            if self._pipeline_closed:
-                raise RuntimeError('Memory is closed')
+            if self._pipeline_closed or self._pipeline_broken:
+                raise RuntimeError('Memory checkpoint failed or closed; create a new instance')
             tasks = PipelineTasks(self, user_id)
             try:
-                ids, fresh = tasks.accept(rows, session_id, extract, now())
-            except MessageConflictError:
+                ids = tasks.accept(items, session_id, now(), check_ready=lambda: require_llm(self.llm))
+            except (LLMNotConfiguredError, MessageConflictError, ValueError):
                 raise
             except BaseException:
                 self._fence_pipeline()
                 raise
-            return {**tasks.response(ids), 'accepted': len(fresh)}
+            episodes = [self.episodes_doc.get(key) for key in ids]
+        self.consolidate(episodes)
+        with self._pipeline_lock:
+            return tasks.response(ids)
 
     def _fence_pipeline(self):
         """Fence an in-memory instance after a partial write."""
@@ -332,57 +319,28 @@ class MemoryEngine:
                 sources.append(ep)
         if sources:
             require_llm(self.llm)
-        totals = self.writer.empty_stats()
+        totals = dict(self.writer.empty_stats(), digests=0)
         for user in dict.fromkeys(ep.user_id for ep in sources):
-            result = execute_memory(self, user, [ep for ep in sources if ep.user_id == user], 'extract')
+            result = execute_memory(self, user, [ep for ep in sources if ep.user_id == user])
             for key in totals:
                 totals[key] += result.get(key, 0)
         for value in supplied:
             if isinstance(value, Episode) and self.episodes_doc.get(value.id):
                 current = self.episodes_doc.get(value.id)
                 value.consolidated, value.coverage = current.consolidated, current.coverage
+                value.digest = current.digest
+                value.digest_coverage = current.digest_coverage
+                value.digest_embedding = current.digest_embedding
+                value.digest_written_at = current.digest_written_at
         return totals
 
 
-    def consolidate_full(
-        self,
-        fact_episodes: Optional[list[Episode | EventEvidence]] = None,
-        digest_episodes: Optional[list[Episode | EventEvidence]] = None,
-    ) -> dict[str, int]:
-        """Extract facts and generate eligible digests from the selected sources.
-
-        Both inputs default to the sources pending when this call starts.
-        """
-        pending = self.ingestor.pending() if fact_episodes is None or digest_episodes is None else []
-        stats = self.consolidate(pending if fact_episodes is None else fact_episodes)
-        stats["digests"] = self.generate_digests(pending if digest_episodes is None else digest_episodes)
-        return stats
-
     # --- 对话任务等待与结构化快照恢复 ---
-    def flush_messages(self, user_id: str = 'default', session_id: Optional[str] = None,
-                       timeout: float = 30, retry_failed: bool = False) -> dict:
-        if self._pipeline_broken:
-            raise RuntimeError('Memory checkpoint failed; create a new instance')
-        if self._pipeline_closed:
-            raise RuntimeError('Memory is closed; create a new instance')
-        from ._pipeline import flush
-        started = time.monotonic()
-        result = flush(self, user_id, session_id, timeout, retry_failed)
-        if session_id is None:
-            from ._profile import flush
-            operation = flush(self, user_id, started + timeout, retry_failed)
-            if operation is not None:
-                state = operation.state.value
-                result["jobs"].append(dict(operation_id=operation.operation_id, operation=operation.kind.value,
-                                           state=state, phase=operation.phase.value, attempts=operation.attempts,
-                                           error_code=operation.error_code, next_attempt_at=operation.next_attempt_at))
-                result["counts"][state] += 1
-                if state not in {"completed", "failed"}:
-                    result.update(ok=False, status="timed_out")
-                elif state == "failed" and result["status"] != "timed_out":
-                    result.update(ok=False, status="failed")
-        return result
+    def wait_profile(self, user_id: str = 'default', timeout: float = 30, *, retry_failed=False):
+        """Wait for a requested offline profile refresh."""
+        from ._profile import flush
 
+        return flush(self, user_id, time.monotonic() + timeout, retry_failed)
 
     def add_fact(self, subject: str, predicate: str, object: str, user_id: str = "default",
                  valid_at: Optional[float] = None, sensitive: Optional[bool] = None,
@@ -539,7 +497,7 @@ class MemoryEngine:
         return {"policy": dict(self.policy), "defaults": dict(POLICY_DEFAULTS)}
 
     def set_policy(self, **fields: str) -> dict:
-        """更新策略字段（extract_instruction / extract_system / digest_system / profile_system）。
+        """更新策略字段（extract_instruction / extract_system / profile_system）。
         空字符串清除覆盖项（回退到默认值）。后续流水线按新策略准备并校验输入。"""
         with self._pipeline_lock:
             for k, v in fields.items():
@@ -552,19 +510,6 @@ class MemoryEngine:
     def _effective(self, key: str) -> str:
         """返回实际生效的策略字段值（用户覆盖或默认值）。"""
         return self.policy.get(key) or POLICY_DEFAULTS[key]
-
-    def generate_digests(self, episodes):
-        """Explicit digest operation using the shared ledger and bounded runner."""
-        from ._pipeline import execute_memory
-        originals = [self.episodes_doc.get(value.id) for value in episodes]
-        originals = [ep for ep in originals if ep is not None and not ep.digest and len(ep.content) >= self.config.digest_min_chars]
-        if originals:
-            require_llm(self.llm)
-        count = 0
-        for user in dict.fromkeys(ep.user_id for ep in originals):
-            count += execute_memory(self, user, [ep for ep in originals if ep.user_id == user], 'digest')['digests']
-        return count
-
 
     def retrieve_digests(
         self,

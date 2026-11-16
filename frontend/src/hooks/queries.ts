@@ -176,29 +176,9 @@ export function useRefreshProfile() {
 export function useRemember() {
   const invalidate = useInvalidateMemory()
   return useMutation({
-    mutationFn: (req: string | ({ content: string } & RememberOptions)) =>
-      typeof req === 'string' ? api.remember(req) : api.remember(req.content, req),
+    mutationFn: (req: string | ({ value: Parameters<typeof api.remember>[0] } & RememberOptions)) =>
+      typeof req === 'string' ? api.remember(req) : api.remember(req.value, req),
     onSuccess: invalidate,
-  })
-}
-
-export function useRememberMessages(signal?: AbortSignal) {
-  const invalidate = useInvalidateMemory()
-  return useMutation({
-    mutationFn: (req: {messages: Parameters<typeof api.rememberMessages>[0]; sessionId: string;
-      extract?: boolean}) =>
-      api.rememberMessages(req.messages, req.sessionId, req.extract, signal),
-    onSuccess: invalidate,
-  })
-}
-
-export function useOrganizeSession(signal?: AbortSignal) {
-  const invalidate = useInvalidateMemory()
-  return useMutation({
-    mutationFn: (session_id: string) => api.organizeSession(session_id, signal),
-    onSuccess: () => {
-      invalidate()
-    },
   })
 }
 

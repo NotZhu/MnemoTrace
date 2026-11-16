@@ -682,13 +682,13 @@ def _policy(agent: str, session_id: str) -> str:
     return f"""Use MnemoTrace as the user's cross-agent long-term memory.
 At session start or when debugging memory wiring, call mnemotrace_agent_status with session_id `{session_id}`.
 Before tasks that may depend on prior user/project context, call mnemotrace_recall with a relevant query.
-When the user states a durable preference, project rule, decision, or reusable fact, call mnemotrace_remember with the same session_id and extraction enabled.
+When the user states a durable preference, project rule, decision, or reusable fact, call mnemotrace_remember with the same session_id.
 Keep task progress and temporary execution state in the agent’s task tools or files.
 To correct a memory, record the new evidence with mnemotrace_remember and include event_time (Unix seconds) when the source time is known. Check whether facts changed before treating the correction as applied. For explicit erasure, find the fact ID with mnemotrace_list_facts and call mnemotrace_delete_fact with confirm=true.
 When the user asks to export their memory, call mnemotrace_export(response_format="json"); set include_sensitive=true only for an explicit private export.
 When the user asks you to pay more attention to or suppress a class of memories, call mnemotrace_set_focus; use mnemotrace_get_focus to inspect the current policy.
 When the user asks what was saved from a thread, call mnemotrace_session_report for that session.
-When the thread ends or you switch tasks, call mnemotrace_flush_processing with the same session_id.
+Set wait=true when the facts must be visible before continuing. If the call is still running, use mnemotrace_get_operation with its operation ID.
 Do not store secrets, credentials, large logs, or short-lived state as durable memory.
 For this client, use session IDs shaped like `{agent}:<project>:<thread>`."""
 
@@ -697,13 +697,13 @@ def _bootstrap_policy(session_id: str) -> str:
     return f"""Use MnemoTrace as the user's cross-agent long-term memory.
 At session start or when debugging memory wiring, call mnemotrace_agent_status with a session_id like `{session_id}`.
 Before tasks that may depend on prior user/project context, call mnemotrace_recall with a relevant query.
-When the user states a durable preference, project rule, decision, or reusable fact, call mnemotrace_remember with the same session_id and extraction enabled.
+When the user states a durable preference, project rule, decision, or reusable fact, call mnemotrace_remember with the same session_id.
 Keep task progress and temporary execution state in the agent’s task tools or files.
 To correct a memory, record the new evidence with mnemotrace_remember and include event_time (Unix seconds) when the source time is known. Check whether facts changed before treating the correction as applied. For explicit erasure, find the fact ID with mnemotrace_list_facts and call mnemotrace_delete_fact with confirm=true.
 When the user asks to export their memory, call mnemotrace_export(response_format="json"); set include_sensitive=true only for an explicit private export.
 When the user asks you to pay more attention to or suppress a class of memories, call mnemotrace_set_focus; use mnemotrace_get_focus to inspect the current policy.
 When the user asks what was saved from a thread, call mnemotrace_session_report for that session.
-When the thread ends or you switch tasks, call mnemotrace_flush_processing with the same session_id.
+Set wait=true when the facts must be visible before continuing. If the call is still running, use mnemotrace_get_operation with its operation ID.
 Do not store secrets, credentials, large logs, or short-lived state as durable memory.
 Use session IDs shaped like `<agent>:<project>:<thread>`, for example `codex:<repo>:<thread>` or `claude-code:<repo>:<thread>`."""
 
@@ -804,7 +804,7 @@ def render_markdown(
         "Shared lifecycle:",
         "",
         "```text",
-        "recall before work -> remember durable information -> flush session processing",
+        "recall before work -> remember durable information -> check the task when publication matters",
         "```",
         "",
     ]
@@ -909,17 +909,7 @@ def render_markdown(
             ")",
             "```",
             "",
-            "Finish core processing:",
-            "",
-            "```bash",
-            _shell([
-                "curl", "-s", "-X", "POST", (api_url or "http://localhost:8000").rstrip("/") + "/v1/processing/flush",
-                "-H", f"Authorization: Bearer {key}",
-                "-H", "Content-Type: application/json",
-                "-d", json.dumps({"session_id": session_id, "space_id": space_id or "<SPACE_ID>"}),
-            ]),
-            "```",
-            "",
+            "Check extraction status with GET /v1/operations/{operation_id}, including the space_id query parameter and the same Bearer key. The task ID is in the chat response metadata.",
         ]
     return "\n".join(out).rstrip() + "\n"
 

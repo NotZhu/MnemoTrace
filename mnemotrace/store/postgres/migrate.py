@@ -9,7 +9,7 @@ import math
 from .database import DatabaseConfig, database_errors, driver
 from .errors import DatabaseConfigurationError, SchemaMismatch
 
-BASELINE = 'postgres-v1'
+BASELINE = 'postgres-v4'
 BASELINE_SQL = 'baseline.sql'
 
 

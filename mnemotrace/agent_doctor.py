@@ -27,8 +27,8 @@ from mnemotrace.mcp.server import mcp
 
 async def main():
     tools = {tool.name for tool in await mcp.list_tools()}
-    required = {"mnemotrace_remember_messages", "mnemotrace_recall",
-                "mnemotrace_get_operation", "mnemotrace_retry_operation", "mnemotrace_flush_processing"}
+    required = {"mnemotrace_remember", "mnemotrace_recall",
+                "mnemotrace_get_operation", "mnemotrace_retry_operation"}
     print(json.dumps(dict(missing_tools=sorted(required - tools), memory_entry=Memory.__name__)))
 
 asyncio.run(main())

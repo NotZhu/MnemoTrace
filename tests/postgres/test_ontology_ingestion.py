@@ -1,11 +1,10 @@
 """Ontology behavior through the normal PostgreSQL ingestion and read interfaces."""
 import json
-from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier, Lock
 
 import pytest
 
-from mnemotrace.config import Config
+from tests.postgres.fact_fixtures import checkpoint_before_publication, remember_and_publish
+
 from mnemotrace.llm import FakeLLM
 from mnemotrace.service import MemoryService
 from mnemotrace.store.contracts import FactQuery, FactState, MessageInput, RecordKind
@@ -28,7 +27,7 @@ def make_memory(runtime, spaces, user):
 
 
 def ingest(memory, statement, when=100, session='chat'):
-    result = memory.remember(statement, session, event_time=when, processing='immediate')
+    result = remember_and_publish(memory, statement, session, event_time=when)
     assert result['ok'], result
     return result['source_ids'][0]
 
@@ -164,7 +163,7 @@ def test_symmetric_exact_restatements_merge_evidence_without_model_comparison(ma
     memory, _ = make_memory(respond)
     if same_window:
         messages = tuple(MessageInput(str(i), 'user', text, event_time=10) for i, text in enumerate(inputs))
-        result = memory.remember_messages('symmetric', messages, processing='immediate')
+        result = remember_and_publish(memory, messages, 'symmetric')
         assert result['ok']
         sources = list(result['source_ids'])
     else:
@@ -180,36 +179,25 @@ def test_symmetric_exact_restatements_merge_evidence_without_model_comparison(ma
         assert fact.id == old.id
 
 
-def test_learned_type_and_relation_are_reused_after_concurrent_registration(make_memory):
+def test_learned_type_and_relation_are_reused_in_space_order(make_memory):
     inputs = {
         'user calibrates the Aurora scope.': assertion('我', 'calibrates', 'Aurora scope', object_type='instrument',
                                                      type_meaning='A device used to make a measurement'),
         'user calibrates the Boreal scope.': assertion('我', 'calibrates', 'Boreal scope', object_type='instrument',
                                                      type_meaning='A device used to make a measurement'),
     }
-    barrier, lock = Barrier(2), Lock()
-    entered = set()
-
-    def pause(data):
-        with lock:
-            first = data['statement'] not in entered
-            entered.add(data['statement'])
-        if first:
-            barrier.wait(timeout=10)
-
-    memory, _ = make_memory(Answers(inputs, {'calibrates': ('calibrates', False)}, on_relation=pause))
-    ops = [memory.remember(statement, str(index), event_time=100 + index,
-                          processing='buffered')['operation_ids'][0] for index, statement in enumerate(inputs)]
-    for op in ops:
-        assert memory._processing.run_next_stage(op, force=True)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        assert all(pool.map(lambda op: memory._processing.run_next_stage(op, force=True), ops))
-    assert memory.flush_processing(retry_failed=True)['ok']
+    memory, _ = make_memory(Answers(inputs, {'calibrates': ('calibrates', False)}))
+    queued = [memory.remember(statement, str(index), event_time=100 + index)['operation_id']
+              for index, statement in enumerate(inputs)]
+    assert not memory._processing.run_next_stage(queued[1])
+    for task in queued:
+        assert memory._processing.run_next_stage(task)
+        assert memory.operation(task).core_committed
     assert {item.id for item in records(memory, RecordKind.ENTITY_TYPE)} == {'person', 'instrument'}
     relation, = records(memory, RecordKind.RELATION_TYPE)
     assert relation.predicate == 'calibrates' and relation.endpoint_types == [['person', 'instrument']]
-    assert {fact.relation_id for fact in memory.facts()} == {relation.id}
-    assert len(memory.facts()) == 2
+    facts = memory.facts()
+    assert len(facts) == 2 and {fact.relation_id for fact in facts} == {relation.id}
 
 
 def test_bounded_relation_candidates_do_not_close_the_catalog(make_memory):
@@ -293,11 +281,13 @@ def test_stale_type_catalog_regenerates_saved_extraction(make_memory):
         learning: assertion('我', 'calibrates', 'Boreal scope', object_type='instrument', type_meaning=definition),
     }, {})
     memory, service = make_memory(fixed)
-    operation, = memory.remember(waiting, 'waiting', event_time=100, processing='buffered')['operation_ids']
-    assert memory._processing.run_next_stage(operation, force=True)
-    assert memory.operation(operation).extraction_saved
+    operation = memory.remember(waiting, 'waiting', event_time=100)['operation_id']
+    checkpoint_before_publication(memory, operation)
     ingest(memory, learning, 200, session='learning')
-    assert memory.flush_processing('waiting')['ok']
+    memory.retry_operation(operation)
+    assert memory._processing.run_next_stage(operation)
+    assert memory._processing.run_next_stage(operation)
+    assert memory.operation(operation).core_committed
     requests = [json.loads(call['prompt'].split('\n', 1)[1]) for call in service.llm.calls
                 if call['prompt'].startswith('MNEMOTRACE_WINDOW\n')]
     catalogs = [request['entity_types'] for request in requests if request['pending'][0]['content'] == waiting]
@@ -343,10 +333,9 @@ def test_invalid_model_selection_writes_no_catalog_or_fact(make_memory):
         return good(prompt, system)
 
     memory, _ = make_memory(respond)
-    accepted = memory.remember(statement, 'chat', event_time=100, processing='buffered')
-    operation, = accepted['operation_ids']
-    assert memory._processing.run_next_stage(operation, force=True)
-    assert memory._processing.run_next_stage(operation, force=True)
+    accepted = memory.remember(statement, 'chat', event_time=100)
+    operation = accepted['operation_id']
+    assert memory._processing.run_next_stage(operation)
     assert memory.operation(operation).error_code == 'extraction_invalid_response'
     assert memory.list_sources() and not memory.facts()
     for kind in (RecordKind.ENTITY, RecordKind.ENTITY_TYPE, RecordKind.RELATION_TYPE):
@@ -361,7 +350,7 @@ def test_window_calls_and_meter_cover_every_stage(make_memory):
         start = len(service.llm.calls)
         messages = tuple(MessageInput(str(index), 'user', text, event_time=round_ * 100)
                          for index, text in enumerate(inputs) if f'round {round_}.' in text)
-        result = memory.remember_messages(f'round{round_}', messages, processing='immediate')
+        result = remember_and_publish(memory, messages, f'round{round_}')
         assert result['ok'], result
         if round_ == 2:
             calls = service.llm.calls[start:]
@@ -395,7 +384,16 @@ def test_unknown_comparison_discards_only_new_candidate(make_memory):
     assert len(records(memory, RecordKind.FACT)) == 1
 
 
-def test_failed_later_comparison_batch_publishes_no_partial_window(make_memory):
+def test_failed_later_comparison_batch_publishes_no_partial_window(make_memory, monkeypatch):
+    from dataclasses import replace
+    from mnemotrace.consolidate import adjudication
+
+    original_requests = adjudication.requests
+
+    def small_comparison_batches(items, pack, system, config, llm, **kwargs):
+        yield from original_requests(items, pack, system, replace(config, memory_max_output_tokens=720), llm, **kwargs)
+
+    monkeypatch.setattr(adjudication, 'requests', small_comparison_batches)
     inputs = {f'user works at Company {index}.': assertion('我', 'works_at', f'Company {index}')
               for index in range(7)}
     fixed = Answers(inputs, {'works_at': ('works_at', False)})
@@ -409,19 +407,17 @@ def test_failed_later_comparison_batch_publishes_no_partial_window(make_memory):
                 return '{"decisions":[]}'
         return fixed(prompt, system)
 
-    config = Config(joint_max_output_tokens=720, joint_core_output_tokens=320, joint_digest_output_tokens=128)
-    memory, service = make_memory(respond, config=config)
+    memory, service = make_memory(respond)
     messages = tuple(MessageInput(str(index), 'user', text, event_time=100)
                      for index, text in enumerate(inputs))
-    assert memory.remember_messages('seed', messages[:3], processing='immediate')['ok']
+    assert remember_and_publish(memory, messages[:3], 'seed')['ok']
     kinds = (RecordKind.FACT, RecordKind.ENTITY, RecordKind.ENTITY_TYPE, RecordKind.RELATION_TYPE,
              RecordKind.RELATION)
     before = {kind: records(memory, kind) for kind in kinds}
     fail = True
-    result = memory.remember_messages('new', messages[3:], processing='buffered')
-    operation, = result['operation_ids']
-    assert memory._processing.run_next_stage(operation, force=True)
-    assert memory._processing.run_next_stage(operation, force=True)
+    result = memory.remember(messages[3:], 'new')
+    operation = result['operation_id']
+    assert memory._processing.run_next_stage(operation)
     assert comparisons == 2
     assert memory.operation(operation).error_code == 'extraction_invalid_response'
     assert {kind: records(memory, kind) for kind in kinds} == before

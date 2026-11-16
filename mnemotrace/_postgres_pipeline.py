@@ -1,27 +1,23 @@
 """Shared execution and waiting for durable Postgres operations."""
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import replace
 import json
 import math
 from threading import Event, Thread
 import time
 from types import SimpleNamespace
 
-from .llm.failures import retryable
-from .consolidate.operations import decode, prepare
+from .llm.failures import exceeds_model_budget, retryable
+from .llm.tokens import ModelContextConfigurationError, TokenCounterConfigurationError
+from .consolidate.operations import decode, generate, prepare
 from .consolidate.facts import extraction_entries, materialize_facts
 from .consolidate.ontology import ENTITY_TYPES, VERSION as ONTOLOGY_VERSION, resolve
-from .consolidate.pipeline import config_identity, content_hash
+from .consolidate.pipeline import config_identity, content_hash, source_fingerprint
 from .consolidate.planning import (
-    OMITTED, empty_input, fit_digest, fit_window, fits_input, input_size, output_size, supplied, user_start, validate_config,
+    PREVIOUS_MESSAGES, build_batch, source_coverage, validate_config,
 )
 from .consolidate.postgres_merge import build_record_write, embed_texts, merge_records
 from .embed import EmbeddingUnavailable
-from .extraction import ExtractionError, ExtractionResponseError, ExtractionTruncatedError, require_llm
-from .llm.base import complete_result
-from .llm.execution import one_attempt
-from .retrieve.lexical import bm25_query_terms
+from .extraction import ExtractionError, require_llm
 from .store.contracts import (
     EXTRACTION_POLICY_FIELDS, ChangeSet, CommitConditions, CommitReceipt, EmbeddingWrite, ExtractionProduct,
     OperationKind, SourceVersion,
@@ -33,42 +29,11 @@ from .store.postgres.records import FACT, domain
 from .store.postgres.tasks import ACTIVE, RENEW_SECONDS, Tasks
 
 
-def _route(ep):
-    return dict(extract=ep.extract, source_kind=ep.source_kind)
-
-
-def _row(ep, minimum):
-    position = ep.coverage['ranges'][-1][1] if ep.coverage and ep.source_kind != 'dialogue' else 0
-    # A raw source saved outside the pipeline can be queued later as a single-source window.
-    sequence = 1 if ep.sequence is None else ep.sequence + 1
-    return dict(sequence=sequence, source_kind=ep.source_kind, position=position,
-                digest='pending' if len(ep.content) >= minimum and not ep.digest else 'not_needed',
-                core='completed' if ep.consolidated else 'pending', digest_requested=True)
-
-
-def _extract_input(episode):
-    return dict(empty_input(_route(episode)), entity_types=dict(ENTITY_TYPES))
-
-
-def _with_catalog(data, types, config, policy):
-    query = set().union(*(bm25_query_terms(source['content']) for source in (*data['pending'], *data['context'])))
-    ranked = []
-    for code, entity_type in types.items():
-        if code not in ENTITY_TYPES:
-            terms = bm25_query_terms(code + ' ' + entity_type.meaning)
-            ranked.append((len(query & terms), code, entity_type.meaning))
-    result = {**data, 'entity_types': dict(ENTITY_TYPES)}
-    for _, code, meaning in sorted(ranked, key=lambda row: (-row[0], row[1])):
-        result['entity_types'][code] = meaning
-        if not fits_input(result, config, policy):
-            del result['entity_types'][code]
-    return result
-
-
-def _coverage(item, input_hash, ranges, policy, complete):
-    return dict(unit='unicode_code_points', ranges=ranges, partial=ranges != [[0, item['source_length']]],
-                policy=policy, source=item['source'], original_length=item['source_length'],
-                input_hash=input_hash, strategy_completed=complete)
+def _episodes(records):
+    for record in records:
+        episode = domain(record)
+        # Database sequences start at zero. The payload uses positive positions.
+        yield episode, 1 if episode.sequence is None else episode.sequence + 1
 
 
 @contextmanager
@@ -113,78 +78,58 @@ class PostgresPipeline:
         require_llm(self.llm)
         validate_config(self.config)
 
-    def fit_message(self, current, record, settings):
-        episode = domain(record)
-        episodes = [domain(item) for item in current]
-        if episodes and _route(episodes[0]) != _route(episode):
-            return False, False
-        episodes.append(episode)
-        policy = settings['extract_system'] + settings['extract_instruction']
-        data = fit_window(_extract_input(episode),
-                          ((ep, _row(ep, self.config.digest_min_chars)) for ep in episodes), self.config, policy)
-        fits = len(data['pending']) == len(episodes)
-        return fits, (any(item['partial'] for item in data['pending'])
-                      or input_size(data, self.config, policy) >= self.config.extraction_max_input_bytes
-                      or output_size(data, self.config) + self.config.joint_digest_output_tokens
-                      > self.config.joint_max_output_tokens)
-
     def _fingerprint(self, settings):
         policy = {field: getattr(settings, field) for field in EXTRACTION_POLICY_FIELDS}
         identity = config_identity(SimpleNamespace(config=self.config, policy=policy, llm=self.llm,
-                                                   embedder=self.embedder), include_embedding=False)
+                                                   embedder=self.embedder), include_embedding=False,
+                                   generation_only=True)
         return content_hash([ONTOLOGY_VERSION, identity])
 
-    def _prepare(self, view, row, records, settings, fingerprint):
-        episodes = [domain(record) for record in records]
-        if row['kind'] == 'digest':
-            episode = episodes[0]
-            parts = self.tasks.digest_parts(view, row['operation_id'], episode.id, fingerprint)
-            status = dict(_row(episode, self.config.digest_min_chars), digest='pending', parts=parts)
-            if len(parts) == 1 and parts[0]['start'] == 0 and parts[0]['end'] == len(episode.content):
-                item = supplied(episode, status)
-                if episode.source_kind == 'dialogue' and episode.coverage:
-                    ranges = episode.coverage['ranges']
-                    item.update(ranges=ranges, partial=episode.coverage['partial'],
-                                content=OMITTED.join(episode.content[a:b] for a, b in ranges))
-                data = dict(empty_input(_route(episode), 'digest'), pending=[item])
-                return data, records, parts[0]['text']
-            return fit_digest(_route(episode), episode, status, self.config, settings.digest_system), records, None
+    def _entity_types(self, view):
+        learned = OntologyWorkset(self.dao, view.snapshot).types(view)
+        return {**ENTITY_TYPES, **{code: item.meaning for code, item in learned.items()}}
 
-        pending = [episode for episode in episodes if not episode.consolidated]
-        first = pending[0]
-        previous = view.preceding_sources(first, self.config.extraction_context_bytes)
-        data = _extract_input(first)
-        context = [supplied(ep, _row(ep, self.config.digest_min_chars), context=True)
-                   for ep in map(domain, previous)]
-        data['context'] = user_start(context) if first.source_kind == 'dialogue' else context
+    def _prepare(self, view, records, settings, fingerprint):
+        first = domain(records[0])
+        previous = view.preceding_sources(first, limit=PREVIOUS_MESSAGES)
+        types = self._entity_types(view)
+        data = build_batch(_episodes(records), _episodes(previous), self.config, entity_types=types)
         policy = settings.extract_system + settings.extract_instruction
-        data = fit_window(data, ((ep, _row(ep, self.config.digest_min_chars)) for ep in pending), self.config, policy)
-        types = OntologyWorkset(self.dao, view.snapshot).types(view)
-        return _with_catalog(data, types, self.config, policy), (*records, *previous), None
+        messages = prepare(data, self.config, policy)
+        planned = dict(input=data, messages=messages, request_hash=content_hash(messages), fingerprint=fingerprint,
+                       context_versions=[dict(source_id=r.ref.record_id, content_version=r.content_version)
+                                         for r in previous],
+                       pending_versions=[dict(source_id=r.ref.record_id, content_version=r.content_version)
+                                         for r in records])
+        return planned, (*records, *previous)
 
-    def _generate(self, lease, snapshot, settings, fingerprint, prepared):
-        data, records, cached_digest = prepared
-        if cached_digest is None:
-            policy = (settings.digest_system if data['operation'] == 'digest'
-                      else settings.extract_system + settings.extract_instruction)
-            prompt, system, tokens = prepare(data, self.config, policy)
-            completion = complete_result(one_attempt(self.llm), prompt, system=system, max_tokens=tokens)
-            if completion.finish_reason not in {None, 'stop', 'end_turn'}:
-                raise ExtractionTruncatedError()
-            result = decode(completion.text, data, self.config)
-        else:
-            result = dict(facts=[], digests={data['pending'][0]['id']: cached_digest})
-        if data['operation'] == 'digest' and not result['digests']:
-            raise ExtractionResponseError()
-        ids = {item['id'] for item in (*data['context'], *data['pending'])}
-        sources = tuple(dict.fromkeys(SourceVersion(record.ref.record_id, record.content_version)
-                                      for record in records if record.ref.record_id in ids))
-        context_revision = snapshot.core_revision if any(item['representation'] == 'digest'
-                                                        for item in (*data['context'], *data['pending'])) else None
-        product = ExtractionProduct(CommitConditions(snapshot, sources, lease, fingerprint), json.dumps(data),
-                                    json.dumps(result),
-                                    self.config.digest_max_chars, context_revision)
+    def _generate(self, lease, snapshot, settings, fingerprint, planned, records):
+        data = planned['input']
+        with generate(self.llm, data, self.config, '', prepared=planned['messages']) as completion:
+            result = decode(completion, data, self.config)
+        versions = tuple(SourceVersion(record.ref.record_id, record.content_version) for record in records)
+        product = ExtractionProduct(CommitConditions(snapshot, versions, lease, fingerprint), json.dumps(data),
+                                    json.dumps(result), self.config.digest_max_chars, None)
         self.tasks.save_product(product, settings)
+        return result, versions
+
+    def _planned_records(self, view, planned, records, fingerprint):
+        if planned.get('fingerprint') != fingerprint:
+            return None
+        if content_hash(planned.get('messages')) != planned.get('request_hash'):
+            raise DataCorruption('Invalid saved extraction request')
+        if planned['input']['entity_types'] != self._entity_types(view):
+            return None
+        expected = {item['source_id']: item['content_version']
+                    for item in planned['pending_versions'] + planned['context_versions']}
+        previous = view.sources(tuple(item['source_id'] for item in planned['context_versions']))
+        all_records = (*records, *previous)
+        if {r.ref.record_id: r.content_version for r in all_records} != expected:
+            return None
+        inputs = {item['id']: item for item in (*planned['input']['pending'], *planned['input']['context'])}
+        if any(source_fingerprint(domain(r)) != inputs[r.ref.record_id]['source'] for r in all_records):
+            return None
+        return all_records
 
     def _changes(self, conditions, writes=(), embeddings=()):
         operation_id = conditions.lease.operation_id
@@ -213,59 +158,26 @@ class PostgresPipeline:
         writes, embeddings = merge_records(context, self.config, self.embedder, self.model,
                                            now, facts, previous, vectors, self.llm, ontology=ontology)
         by_id = {record.ref.record_id: record for record in records}
-        completed = {record.ref.record_id for record in records if domain(record).consolidated}
-        newly_completed = set()
+        digests = result['digests']
+        digest_vectors = embed_texts(self.embedder, digests.values())
         for item in data['pending']:
             previous = by_id[item['id']]
             episode = domain(previous)
-            dialogue = episode.source_kind == 'dialogue'
-            end = item['ranges'][-1][1]
-            episode.consolidated = dialogue or end == len(episode.content)
-            if episode.consolidated:
-                newly_completed.add(episode.id)
-            ranges = item['ranges'] if dialogue else [[0, end]]
-            policy = ('head_tail_v1' if item['partial'] else 'full_message_v1') if dialogue else 'full_source_v1'
-            episode.coverage = _coverage(item, input_hash, ranges, policy, episode.consolidated)
-            writes.append(build_record_write(context, episode, previous))
-        operation_id = conditions.lease.operation_id
-        continuation = ('seg_' + content_hash([operation_id, data])[:48]
-                        if completed | newly_completed != set(by_id) else None)
-        changes = self._changes(conditions, writes, embeddings)
+            episode.consolidated = True
+            episode.coverage = source_coverage(item, input_hash)
+            if episode.id in digests:
+                episode.digest = digests[episode.id]
+                episode.digest_coverage = source_coverage(item, input_hash)
+            write = build_record_write(context, episode, previous)
+            writes.append(write)
+            if episode.id in digests and self.embedder is not None:
+                vector = tuple(digest_vectors[episode.digest])
+                embeddings.append(EmbeddingWrite(write.ref, write.record.digest_version, self.model,
+                                                 vector, field='digest'))
+        self.tasks.commit(self._changes(conditions, writes, embeddings))
 
-        def digests(sql, generation):
-            self.tasks.stage_digest_followups(sql, operation_id, generation,
-                                              conditions.snapshot.session_id, data['pending'], result['digests'],
-                                              newly_completed, self.config.digest_min_chars,
-                                              conditions.extraction_config)
-
-        self.tasks.commit(changes, continuation=continuation, after=digests)
-
-    def _commit_digest(self, conditions, data, result, record, digest_base):
-        episode = domain(record)
-        item = data['pending'][0]
-        text = result['digests'][episode.id]
-        operation_id = conditions.lease.operation_id
-        if episode.source_kind != 'dialogue' and item['ranges'] != [[0, len(episode.content)]]:
-            def save_part(sql, _generation):
-                self.tasks.save_part(sql, operation_id, item, text, conditions.extraction_config, data['parts'])
-
-            # A different digest configuration can regenerate the same source range.
-            segment_id = 'seg_' + content_hash([operation_id, conditions.extraction_config, data])[:48]
-            self.tasks.commit(self._changes(conditions), continuation=segment_id,
-                              after=save_part)
-            return
-        episode.digest = text
-        episode.digest_coverage = _coverage(item, content_hash(data), item['ranges'], 'digest_source_v1', True)
-        write = build_record_write(conditions.snapshot.context, episode, record, digest_base=digest_base)
-        embeddings = ()
-        if self.embedder is not None:
-            vector = embed_texts(self.embedder, [text])[text]
-            embeddings = (EmbeddingWrite(write.ref, write.record.digest_version, self.model,
-                                         tuple(vector), field='digest'),)
-        self.tasks.commit(self._changes(conditions, (write,), embeddings))
-
-    def run_next_stage(self, operation_id, *, force=False):
-        claimed = self.tasks.claim(operation_id, force=force)
+    def run_next_stage(self, operation_id):
+        claimed = self.tasks.claim(operation_id)
         if claimed is None:
             return False
         lease, kind = claimed
@@ -283,90 +195,70 @@ class PostgresPipeline:
                     settings = view.settings()
                     fingerprint = self._fingerprint(settings)
                     product = self.tasks.product(view, snapshot, lease, row)
-                    if product is None:
-                        prepared = self._prepare(view, row, records, settings, fingerprint)
+                    planned = row['planned_request']
+                    using = self._planned_records(view, planned, records, fingerprint) if planned else None
+                    if product is None and using is None:
+                        planned, using = self._prepare(view, records, settings, fingerprint)
+                        persist_plan = True
                     else:
-                        source_records = view.sources(tuple(ref.source_id for ref in product.conditions.sources))
-                        versions = tuple(SourceVersion(record.ref.record_id, record.content_version)
-                                         for record in source_records)
-                        reuse = product.reusable(snapshot, versions, fingerprint)
-                        if reuse:
-                            data, result = json.loads(product.input_json), json.loads(product.result_json)
-                            if row['kind'] == 'extract':
-                                types = OntologyWorkset(self.dao, view.snapshot).types(view)
-                                policy = settings.extract_system + settings.extract_instruction
-                                reuse = data == _with_catalog(data, types, self.config, policy)
-                                now = view.at.timestamp()
-                            else:
-                                digest_base = view.digest_version(records[0].ref.record_id)
+                        persist_plan = False
+
                 if product is None:
-                    self._generate(lease, snapshot, settings, fingerprint, prepared)
-                elif not reuse:
+                    if persist_plan:
+                        self.tasks.freeze_request(lease, planned)
+                    result, versions = self._generate(lease, snapshot, settings, fingerprint, planned, using)
+                    data = planned['input']
+                elif using is None or not product.reusable(snapshot, tuple(
+                        SourceVersion(record.ref.record_id, record.content_version) for record in using), fingerprint):
+                    self.tasks.regenerate(lease)
+                    return True
+                else:
+                    data, result = json.loads(product.input_json), json.loads(product.result_json)
+                    versions = product.conditions.sources
+
+                phase = 'embed'
+                # Acceptance may have advanced the space revision during generation.
+                # Resolve against a fresh business snapshot while keeping the lease.
+                with self.dao.read_snapshot(snapshot.session_id) as view:
+                    if self._fingerprint(view.settings()) != fingerprint or self._planned_records(
+                            view, planned, view.sources(tuple(item['id'] for item in data['pending'])),
+                            fingerprint) is None:
+                        changed = True
+                    else:
+                        changed = False
+                        conditions = CommitConditions(view.snapshot, versions, lease, fingerprint)
+                        now = view.at.timestamp()
+                if changed:
                     self.tasks.regenerate(lease)
                 else:
-                    conditions = replace(product.conditions, snapshot=snapshot)
-                    if row['kind'] == 'digest':
-                        self._commit_digest(conditions, data, result, records[0], digest_base)
-                    else:
-                        self._commit_core(conditions, data, result, records, now, space)
+                    self._commit_core(conditions, data, result, records, now, space)
             except (AccountNotFound, SpaceNotFound, CommitOutcomeUnknown):
-                return True  # Deletion or the next claim resolves the durable outcome.
+                return True
             except Exception as exc:
-                code, retryable = _failure(exc, phase)
+                code, can_retry = _failure(exc, phase)
                 try:
-                    self.tasks.fail(lease, code, retryable)
+                    self.tasks.fail(lease, code, can_retry)
                 except (AccountNotFound, SpaceNotFound, VersionConflict):
                     pass
         return True
 
-    def flush(self, *, session_id=None, operation_ids=None, timeout=30, retry_failed=False, include_digests=False):
+    def wait(self, operation_id, timeout):
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout < 0:
             raise ValueError('Expected a finite nonnegative timeout')
-        selected = self.tasks.freeze(list(dict.fromkeys(operation_ids)) if operation_ids is not None else None,
-                                     session_id, include_digests)
-        retried = set()
         deadline = time.monotonic() + timeout
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = None
-        try:
-            while True:
-                results = list(self.tasks.operations(selected))
-                if include_digests:
-                    children = [child for result in results if result for child in result.auxiliary_operation_ids
-                                if child not in selected]
-                    if children:
-                        selected.extend(dict.fromkeys(children))
-                        continue
-                if retry_failed:
-                    for index, result in enumerate(results):
-                        if result and result.state.value in ('failed', 'retry_wait') and result.operation_id not in retried:
-                            retried.add(result.operation_id)
-                            results[index] = self.tasks.retry(result.operation_id)
-                active = [result.operation_id for result in results if result and result.state.value in ACTIVE]
-                if not active:
-                    status = 'completed' if all(result and result.core_committed for result in results) else 'failed'
-                    break
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    status = 'timed_out'
-                    break
-                if future is None or future.done():
-                    if future is not None:
-                        future.result()
-                    future = executor.submit(self._drive, active)
-                time.sleep(min(remaining, .05))
-            return dict(ok=status == 'completed', status=status, operation_ids=tuple(selected),
-                        operations=tuple(result for result in results if result is not None))
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-
-    def _drive(self, active):
-        for operation_id in self.tasks.execution_order(active):
-            if self.run_next_stage(operation_id, force=True):
-                break
+        while True:
+            task = self.tasks.operation(operation_id)
+            remaining = deadline - time.monotonic()
+            if task is None or task.state.value not in ACTIVE or remaining <= 0:
+                return task
+            time.sleep(min(remaining, .05))
 
 
 def _failure(exc, phase):
+    if isinstance(exc, (ModelContextConfigurationError, TokenCounterConfigurationError)):
+        return 'configuration_invalid', False
+    if exceeds_model_budget(exc):
+        return 'model_budget_exceeded', False
     if isinstance(exc, EmbeddingUnavailable):
         return 'embedding_unavailable', retryable(exc)
     if isinstance(exc, DataCorruption):

@@ -5,7 +5,7 @@ import type { AuditReport,
   AgentStatus,
   MemorySpace,
   OperationResult,
-  ProcessingResult,
+  DialogueMessage,
   Focus,
   Category,
   GraphResponse,
@@ -35,7 +35,7 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
-    public detail?: { code?: string; stored_raw?: boolean; episode_ids?: string[]; operation_ids?: string[]; operations?: OperationResult[] },
+    public detail?: { code?: string; stored_raw?: boolean; episode_ids?: string[]; operation_id?: string; task?: OperationResult | null },
   ) {
     super(message)
     this.name = 'ApiError'
@@ -115,7 +115,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!res.ok) {
     let code: string | undefined
-    let failure: { code?: string; stored_raw?: boolean; episode_ids?: string[]; operation_ids?: string[]; operations?: OperationResult[] } | undefined
+    let failure: { code?: string; stored_raw?: boolean; episode_ids?: string[]; operation_id?: string; task?: OperationResult | null } | undefined
     let detail = t.errors.requestFailed(res.status)
     try {
       const body = await guard.wait(res.json())
@@ -191,10 +191,15 @@ export interface SessionsQuery {
 }
 
 export interface RememberOptions {
-  processing?: 'immediate' | 'buffered'
   session_id?: string
-  extract?: boolean
+  wait?: boolean
+  message_id?: string
   event_time?: number | null
+  signal?: AbortSignal
+}
+
+export function newMessageId() {
+  return globalThis.crypto?.randomUUID?.() ?? `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 }
 
 export const api = {
@@ -212,11 +217,6 @@ export const api = {
   createSpace: (name: string) => request<MemorySpace>('/v1/spaces', {
     method: 'POST', body: json({ name }),
   }),
-  rememberMessages: (messages: {message_id: string; role: 'user' | 'assistant'; content: string;
-      event_time?: number | null}[], sessionId: string,
-      extract = true, signal?: AbortSignal) =>
-    request<RememberResult & {accepted: number; messages: {episode_id: string; operation_ids: string[]}[]}>(
-      '/v1/messages', { method: 'POST', body: json({messages, session_id: sessionId, extract, processing: 'buffered'}), signal }),
   processingStatus: (sessionId?: string, signal?: AbortSignal, afterId?: string) =>
     request<ProcessingStatus>(`/v1/processing${qs({session_id: sessionId, after_id: afterId})}`, { signal }),
   retryOperation: (id: string, signal?: AbortSignal) => request<OperationResult>(`/v1/operations/${encodeURIComponent(id)}/retry`, {
@@ -235,21 +235,18 @@ export const api = {
   graph: (params: GraphQuery = {}) => request<GraphResponse>(`/v1/graph${qs(params)}`),
   focus: () => request<Focus>('/v1/focus'),
 
-  remember: (content: string, options: RememberOptions = {}) =>
+  remember: (value: string | DialogueMessage[], options: RememberOptions = {}) =>
     request<RememberResult>('/v1/remember', {
       method: 'POST',
       body: json({
-        content,
+        messages: typeof value === 'string' ? [{
+          message_id: options.message_id ?? newMessageId(),
+          role: 'user', content: value, event_time: options.event_time,
+        }] : value,
         session_id: options.session_id ?? 'default',
-        extract: options.extract ?? true,
-        processing: options.processing ?? 'immediate',
-        event_time: options.event_time,
+        wait: options.wait ?? false,
       }),
-    }),
-
-  organizeSession: (session_id: string, signal?: AbortSignal) =>
-    request<ProcessingResult>('/v1/processing/flush', {
-      method: 'POST', body: json({ session_id }), signal,
+      signal: options.signal,
     }),
 
   recall: (query: string, options: RecallOptions = {}) =>

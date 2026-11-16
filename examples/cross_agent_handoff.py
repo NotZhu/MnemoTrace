@@ -23,6 +23,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from uuid import uuid4
 from collections.abc import Callable
 from pathlib import Path
 from typing import Optional
@@ -78,7 +79,6 @@ def exercise_handoff(
     target_agent: str = "claude-code",
     source_thread: str = "handoff-source",
     target_thread: str = "handoff-target",
-    no_flush: bool = False,
     output: Callable[[str], None] = print,
 ) -> dict:
     source_session = f"{source_agent}:{project}:{source_thread}"
@@ -90,22 +90,16 @@ def exercise_handoff(
 
     output("\n== 1. Source agent remembers a durable decision ==")
     remembered = call("/v1/remember", {
-        "content": MEMORY,
+        "messages": [dict(message_id=uuid4().hex, role="user", content=MEMORY)],
         "session_id": source_session,
-        "extract": True,
+        "wait": True,
     }, "POST")
     output(json.dumps(remembered, ensure_ascii=False, indent=2))
 
-    flushed_source = None
-    if not no_flush:
-        output("\n== 2. Source agent flushes its session ==")
-        flushed_source = call("/v1/processing/flush", {
-            "session_id": source_session,
-            "include_digests": True,
-        }, "POST")
-        output(json.dumps(flushed_source, ensure_ascii=False, indent=2))
+    if remembered.get('status') != 'completed':
+        raise SystemExit(f"Task {remembered.get('operation_id')} is still processing.")
 
-    output("\n== 3. Target agent recalls from the same memory space ==")
+    output("\n== 2. Target agent recalls from the same memory space ==")
     recalled = call("/v1/recall", {
         "query": QUERY,
         "n_digests": 3,
@@ -117,24 +111,13 @@ def exercise_handoff(
     if found:
         output("\nPASS: target agent recalled the source agent's durable memory.")
 
-    flushed_target = None
-    if not no_flush:
-        output("\n== 4. Target agent flushes its session ==")
-        flushed_target = call("/v1/processing/flush", {
-            "session_id": target_session,
-            "include_digests": True,
-        }, "POST")
-        output(json.dumps(flushed_target, ensure_ascii=False, indent=2))
-
     return {
         "source_session": source_session,
         "target_session": target_session,
         "remembered": remembered,
-        "flushed_source": flushed_source,
         "recalled": recalled,
         "context": context,
         "found": found,
-        "flushed_target": flushed_target,
     }
 
 
@@ -148,7 +131,6 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--target-agent", default="claude-code", help="agent that recalls the memory")
     ap.add_argument("--source-thread", default="handoff-source", help="source thread id")
     ap.add_argument("--target-thread", default="handoff-target", help="target thread id")
-    ap.add_argument("--no-flush", action="store_true", help="skip session flush calls")
     ap.add_argument("--no-verify", action="store_true", help="do not fail if recall misses the test phrase")
     args = ap.parse_args(argv)
 
@@ -168,7 +150,6 @@ def main(argv: list[str] | None = None) -> None:
         target_agent=args.target_agent,
         source_thread=args.source_thread,
         target_thread=args.target_thread,
-        no_flush=args.no_flush,
     )
 
     if not result["found"] and not args.no_verify:

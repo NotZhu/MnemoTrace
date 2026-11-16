@@ -12,7 +12,7 @@ from .llm import providers
 from .llm.execution import ModelMeter
 from .memory import Memory
 from .metrics import Metrics, timed
-from .store.contracts import FactQuery, FactState, MessageInput
+from .store.contracts import FactQuery, FactState
 from .store.postgres import Database, DatabaseConfig, Spaces
 from .store.postgres.records import ENTITY, FACT, RELATION, SOURCE, domain
 from .util import fmt_date, fmt_datetime, now
@@ -61,16 +61,11 @@ class ProcessingFailure(RuntimeError):
         super().__init__('Core processing is incomplete')
 
     def detail(self):
-        operations = self.result['operations']
-        code = ('processing_incomplete' if self.result['status'] == 'timed_out' else
-                next((item['error_code'] for item in operations if item['error_code']), 'extraction_failed'))
-        sources = self.result.get('source_ids', ())
-        return dict(code=code, message=str(self), stored_raw=bool(sources), episode_ids=sources,
-                    status=self.result['status'], operation_ids=self.result['operation_ids'], operations=operations)
-
-
-def operation_payload(result):
-    return {**result, 'operations': [operation.to_dict() for operation in result['operations']]}
+        task = self.result['task']
+        return dict(code=(task and task['error_code']) or 'extraction_failed', message=str(self),
+                    stored_raw=self.result['stored_raw'], source_ids=self.result['source_ids'],
+                    episode_ids=self.result['source_ids'],
+                    status='failed', operation_id=self.result['operation_id'], task=task)
 
 
 def _page(items, total, offset, limit):
@@ -116,12 +111,13 @@ def _source_view(record):
 
 class MemoryService:
     def __init__(self, database, *, embedder=None, embedding_model=None, llm=None,
-                 answerer=None, captioner=None, config=None):
+                 answerer=None, captioner=None, extraction_llm=None, config=None):
         self.database = database
         self.spaces = Spaces(database)
         self.embedder = embedder
         self.embedding_model = embedding_model
         self.llm = llm
+        self.extraction_llm = extraction_llm
         self.answerer = answerer if answerer is not None else llm
         self.captioner = captioner or llm
         self.config = config or Config()
@@ -135,6 +131,8 @@ class MemoryService:
             if name := (llm_name if field == 'llm' and llm_name is not None
                         else os.environ.get(f'MNEMOTRACE_{variable}', '')).strip():
                 models[field] = providers.make_llm(name)
+                if field == 'llm':
+                    models['extraction_llm'] = providers.make_extraction_llm(name, require_context=True)
         config = Config()
         embedder, model = providers.configured_embedder(embedder_name)
         service = cls(Database(DatabaseConfig.from_env()), embedder=embedder,
@@ -146,43 +144,43 @@ class MemoryService:
         self.database.close()
 
     def memory(self, context):
-        model = ModelMeter(self.llm, self.metrics) if self.llm is not None else None
+        extraction = self.extraction_llm if self.extraction_llm is not None else self.llm
+        model = ModelMeter(extraction, self.metrics) if extraction is not None else None
         return Memory(self.database, context, config=self.config, llm=model,
                               embedder=self.embedder, embedding_model=self.embedding_model)
 
-    @timed('remember_messages')
-    def remember_messages(self, context, messages, session_id, processing='buffered',
-                          extract: bool = True, *, agent_id=None, timeout=30):
-        items = tuple(MessageInput(**message, agent_id=agent_id, extract=extract) for message in messages)
-        result = operation_payload(self.memory(context).remember_messages(
-            session_id, items, processing=processing, timeout=timeout))
-        if processing == 'immediate' and not result['ok']:
+    @timed('remember')
+    def remember(self, context, value, session_id, *, wait=False, timeout=30,
+                 message_id=None, agent_id=None, event_time=None):
+        result = self.memory(context).remember(value, session_id, wait=wait, timeout=timeout,
+                                               message_id=message_id, agent_id=agent_id, event_time=event_time)
+        task = result['task']
+        result['task'] = task.to_dict() if task is not None else None
+        if wait and not result['ok']:
             raise ProcessingFailure(result)
         return result
 
-    @timed('remember')
-    def remember(self, context, content, session_id, extract: bool = True, processing='immediate', *,
-                 agent_id=None, event_time=None, timeout=30):
-        memory = self.memory(context)
-        result = operation_payload(memory.remember(content, session_id, extract=extract, processing=processing,
-                                                   agent_id=agent_id, event_time=event_time, timeout=timeout))
-        if processing == 'immediate' and not result['ok']:
-            raise ProcessingFailure(result)
-        return result
+    def _store_originals(self, context, messages, session_id, *, agent_id=None):
+        return self.memory(context)._store_originals(messages, session_id, agent_id=agent_id)
 
     def operation(self, context, operation_id, *, retry=False):
         memory = self.memory(context)
         result = memory.retry_operation(operation_id) if retry else memory.operation(operation_id)
-        return result.to_dict() if result is not None else None
+        if result is None:
+            return None
+        payload = result.to_dict()
+        if result.kind.value == 'extract':
+            payload['source_ids'] = memory._processing.tasks.input_ids(operation_id)
+            if result.core_committed:
+                receipt = memory.dao.receipt(operation_id)
+                payload['fact_ids'] = receipt.fact_ids if receipt is not None else ()
+        return payload
 
     def processing_status(self, context, session_id=None, *, after_id=None, limit=100):
-        operations = self.memory(context).list_operations(session_id=session_id, after_id=after_id, limit=limit)
+        memory = self.memory(context)
+        operations = memory.list_operations(session_id=session_id, after_id=after_id, limit=limit)
         return dict(operations=[operation.to_dict() for operation in operations],
                     next_after_id=operations[-1].operation_id if len(operations) == limit else None)
-
-    def flush(self, context, session_id=None, timeout=30, retry_failed=False, include_digests=False):
-        return operation_payload(self.memory(context).flush_processing(
-            session_id, timeout, retry_failed=retry_failed, include_digests=include_digests))
 
 
     @timed('recall')
@@ -420,10 +418,10 @@ class MemoryService:
                     processing=self.processing_status(context, session_id),
                     recommended_next_actions=[
                         'Call mnemotrace_recall before relying on past memory.',
-                        'Call mnemotrace_flush_processing to finish core processing.',
+                        'Pass wait=true or check the returned task for processing results.',
                     ],
-                    tools=dict(read_context='mnemotrace_recall', write_memory='mnemotrace_remember_messages',
-                               flush_processing='mnemotrace_flush_processing', inspect_facts='mnemotrace_list_facts',
+                    tools=dict(read_context='mnemotrace_recall', write_memory='mnemotrace_remember',
+                               get_operation='mnemotrace_get_operation', inspect_facts='mnemotrace_list_facts',
                                set_fact_sensitive='mnemotrace_set_fact_sensitive', delete_fact='mnemotrace_delete_fact',
                                focus='mnemotrace_get_focus'))
 
@@ -474,7 +472,7 @@ class MemoryService:
                         else:
                             item = domain(record)
                             payload = _source_view(record)
-                            payload.update(digest_written_at=item.digest_written_at, source_kind=item.source_kind,
+                            payload.update(digest_written_at=item.digest_written_at,
                                            extract=item.extract)
                         yield ('' if first else ',') + json.dumps(payload, ensure_ascii=False)
                         first = False

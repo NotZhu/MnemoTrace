@@ -15,7 +15,7 @@ function setup(pageName) {
   }).outputFiles[0].text
   const fact = { id: 'synthetic-fact', subject: 'synthetic-session', predicate: 'decision', object: 'synthetic original', text: 'synthetic original', status: 'live', valid_at: '2026-10-22', provenance: ['synthetic-episode'], categories: ['food'], supersedes: [] }
   const results = {
-    usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', digest_system: 'synthetic', profile_system: 'synthetic' } } },
+    usePolicy: { data: { policy: { extract_instruction: '' }, defaults: { extract_system: 'synthetic', profile_system: 'synthetic' } } },
     useFocus: { data: { track: ['synthetic'], mute: [] } },
     useMemoryPages: { data: { facts: [fact], episodes: [], facts_page: { total: 1 }, fact_categories: [] } },
     useMemories: {}, useProfile: {}, useRecall: {},
@@ -175,30 +175,6 @@ for (const failed of [['useMemoryPages', 'useMemories'], ['useMemoryPages'], ['u
     assert.deepEqual(s.retries, failed)
     assert.ok(s.find(n => n.props.children === 'synthetic original'))
   })
-}
-
-for (const empty of [false, true]) {
-  for (const cached of [false, true]) {
-    test(`Journal 历史会话失败可独立重试并保留缓存，空结论=${empty}，缓存=${cached}`, () => {
-      const s = setup('Journal')
-      if (empty) s.results.useMemoryPages.data.facts = []
-      s.results.useSessions = {
-        isError: true, isFetching: true, error: new Error('synthetic sessions failure'),
-        data: cached ? { sessions: [{ session_id: 'synthetic-history' }] } : undefined,
-      }
-      const errors = s.nodes().filter(n => n.type === 'ErrorState')
-      assert.equal(errors.length, 1)
-      assert.equal(errors[0].props.message, '历史会话读取失败：synthetic sessions failure')
-      assert.equal(errors[0].props.isRetrying, true)
-      assert.equal(!!s.find(n => n.type === 'li' && n.key === 'synthetic-history'), cached)
-      errors[0].props.onRetry()
-      assert.deepEqual(s.retries, ['useSessions'])
-
-      s.results.useSessions = { data: { sessions: [] } }
-      assert.equal(s.nodes().filter(n => n.type === 'ErrorState').length, 0)
-      assert.ok(!s.find(n => n.type === 'li' && n.key === 'synthetic-history'))
-    })
-  }
 }
 
 test('测试结果收起时刷新操作仍在标题行，且独立刷新状态和会话', () => {

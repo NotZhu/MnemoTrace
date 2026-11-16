@@ -5,7 +5,7 @@ artifacts; storage schema compatibility is documented separately when it changes
 
 ## [Unreleased]
 
-- Install from an empty PostgreSQL database using the `postgres-v1` baseline. The API and worker verify the baseline and database structure. Use a build with the matching database schema for older databases and archives.
+- Install from an empty PostgreSQL database using the `postgres-v4` baseline. The API and worker verify the baseline and database structure. Use a build with the matching database schema for older databases and archives.
 - Unify commit receipts for record writes, task completion, and segmented processing. Keep original inputs, extraction products, digests, fact history, and the profile cache in database backups.
 - Retire conversation history import, watchers, session hooks, and the historical file-store benchmarks.
 - Export JSON v7 for review and sharing. Restore deployments with PostgreSQL archives.

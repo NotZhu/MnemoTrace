@@ -5,7 +5,8 @@ storage design for transaction boundaries and operation acceptance and completio
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from uuid import uuid4
 from enum import Enum
 import hashlib
 import json
@@ -76,7 +77,6 @@ class ProcessingPhase(str, Enum):
 
 class OperationKind(str, Enum):
     EXTRACT = 'extract'
-    DIGEST = 'digest'
     PROFILE = 'profile'
 
 
@@ -228,14 +228,11 @@ class MessageInput:
     content: str
     event_time: float | None = None
     agent_id: str | None = None
-    extract: bool = True
 
     def __post_init__(self):
         _id(self.message_id)
         if self.role not in {'user', 'assistant'}:
             raise ValueError('Invalid message role')
-        if type(self.extract) is not bool:
-            raise ValueError('extract must be a boolean')
         if (not isinstance(self.content, str) or not self.content.strip()
                 or '\x00' in self.content or len(self.content) > 1_000_000):
             raise ValueError('Expected non-empty message content, at most 1000000 codepoints')
@@ -247,8 +244,30 @@ class MessageInput:
     def fingerprint(self) -> str:
         # 1 and 1.0 are the same event time; content/IDs are never trimmed or case-folded.
         stamp = float(self.event_time) if self.event_time is not None else None
-        value = [self.role, self.content, stamp, self.agent_id, self.extract]
+        value = [self.role, self.content, stamp, self.agent_id]
         return hashlib.sha256(_json(value).encode('utf-8')).hexdigest()
+
+
+def message_inputs(value, *, message_id=None, event_time=None, agent_id=None):
+    if isinstance(value, str):
+        return (MessageInput(message_id if message_id is not None else uuid4().hex,
+                             'user', value, event_time, agent_id),)
+    if message_id is not None or event_time is not None:
+        raise ValueError('Set identity and time on each message in a list')
+    if not isinstance(value, (list, tuple)) or not 1 <= len(value) <= 1000:
+        raise ValueError('Expected text or a nonempty message list of at most 1000 items')
+    items = []
+    for entry in value:
+        if isinstance(entry, dict):
+            if set(entry) - {'message_id', 'role', 'content', 'event_time', 'agent_id'}:
+                raise ValueError('Unexpected message fields')
+            if not {'message_id', 'role', 'content'} <= entry.keys():
+                raise ValueError('Each message needs an ID, role and content')
+            entry = MessageInput(**entry)
+        if not isinstance(entry, MessageInput):
+            raise ValueError('Expected message records')
+        items.append(replace(entry, agent_id=agent_id) if agent_id is not None else entry)
+    return tuple(items)
 
 
 @dataclass(frozen=True)
@@ -386,7 +405,7 @@ class EmbeddingWrite:
         RetrievalQuery(FactQuery(), '', self.vector, self.model)
 
 
-EXTRACTION_POLICY_FIELDS = ('extract_system', 'extract_instruction', 'digest_system')
+EXTRACTION_POLICY_FIELDS = ('extract_system', 'extract_instruction')
 
 
 @dataclass(frozen=True)
@@ -395,7 +414,6 @@ class SpaceSettings:
     mute: tuple[str, ...] = ()
     extract_instruction: str = ''
     extract_system: str = ''
-    digest_system: str = ''
     profile_system: str = ''
 
     def __post_init__(self):
@@ -404,7 +422,7 @@ class SpaceSettings:
         from ..focus import selectors
         selectors((*self.track, *self.mute))
         if any(not isinstance(value, str) for value in (
-                self.extract_instruction, self.extract_system, self.digest_system, self.profile_system)):
+                self.extract_instruction, self.extract_system, self.profile_system)):
             raise ValueError('Policy fields must be strings')
 
 
@@ -428,8 +446,6 @@ class OperationSpec:
                 raise ValueError('Profile tasks are space-scoped fact snapshots')
         elif not self.sources or self.session_id is None:
             raise ValueError('Model operations require a session and unique source versions')
-        if self.kind is OperationKind.DIGEST and len(self.sources) != 1:
-            raise ValueError('Digest operations require exactly one source')
 
 
 @dataclass(frozen=True)
@@ -466,13 +482,13 @@ class ExtractionProduct:
     result_json: str
     digest_max_chars: int
     context_revision: int | None
-    format_version: int = 8
+    format_version: int = 11
 
     def __post_init__(self):
         if not isinstance(self.conditions, CommitConditions) or self.conditions.lease is None:
             raise ValueError('Saving a model product requires task commit conditions')
         _count(self.digest_max_chars, 1)
-        if type(self.format_version) is not int or self.format_version != 8:
+        if type(self.format_version) is not int or self.format_version != 11:
             raise ValueError('Unsupported model product format')
         if self.context_revision is not None:
             _count(self.context_revision)
@@ -510,48 +526,28 @@ class ExtractionProduct:
 def _validate_product_input(data: dict) -> None:
     """Validate prepared input even when an empty model result touches no fields."""
     from ..consolidate.planning import validate_view
-    required = {'operation', 'source_kind', 'extract', 'pending', 'context', 'parts'}
-    if not isinstance(data, dict) or data.get('operation') not in ('extract', 'digest'):
-        raise ValueError('Invalid model operation')
-    if data['operation'] == 'extract':
-        required.add('entity_types')
-    if data.keys() != required:
+    required = {'operation', 'pending', 'context', 'entity_types'}
+    if not isinstance(data, dict) or data.keys() != required or data['operation'] != 'extract':
         raise ValueError('Invalid prepared input fields')
-    if data['operation'] == 'extract':
-        from ..consolidate.ontology import validate_type_catalog
-        validate_type_catalog(data['entity_types'])
-    if data['source_kind'] not in {'dialogue', 'note'} or type(data['extract']) is not bool:
-        raise ValueError('Invalid source routing')
-    dialogue = data['source_kind'] == 'dialogue'
-    if any(not isinstance(data[key], list) for key in ('pending', 'context', 'parts')) or not data['pending']:
+    from ..consolidate.ontology import validate_type_catalog
+    validate_type_catalog(data['entity_types'])
+    if any(not isinstance(data[key], list) for key in ('pending', 'context')) or not data['pending']:
         raise ValueError('Invalid input lists')
     views = [*data['context'], *data['pending']]
     for view in views:
         validate_view(view)
         _id(view['id'])
-        if (dialogue and (view['role'] not in {'user', 'assistant'} or view['message_id'] is None)
-                or not dialogue and (view['role'] is not None or view['message_id'] is not None)):
-            raise ValueError('Source attribution does not match its kind')
+        if (view['role'] not in {'user', 'assistant'} or view['message_id'] is None
+                or view['representation'] != 'raw' or view['partial']):
+            raise ValueError('Expected a complete original message')
         for key in ('source', 'representation_source'):
             if view[key] is not None and re.fullmatch('[0-9a-f]{64}', view[key]) is None:
                 raise ValueError('Invalid source fingerprint')
-        composing = data['operation'] == 'digest' and data['parts'] and view in data['pending']
         if ((view['representation'] == 'raw' and view['representation_source'] is not None)
-                or view['representation'] == 'digest' and view['representation_source'] is None and not composing):
+                or view['representation'] == 'digest' and view['representation_source'] is None):
             raise ValueError('Representation and its source fingerprint disagree')
     if any(a['sequence'] >= b['sequence'] for a, b in zip(views, views[1:])):
         raise ValueError('Input views must follow source sequence')
-    if data['operation'] == 'digest':
-        if len(data['pending']) != 1 or data['context']:
-            raise ValueError('Invalid digest input')
-        if data['parts'] and len(data['parts']) < 2:
-            raise ValueError('Digest composition requires at least two parts')
-    elif data['parts']:
-        raise ValueError('Only digests compose parts')
-    for part in data['parts']:
-        _id(part)
-    if len(set(data['parts'])) != len(data['parts']):
-        raise ValueError('Duplicate digest parts')
 
 
 def validate_erasures(records: tuple[RecordRef, ...]) -> None:
@@ -632,7 +628,6 @@ class OperationResult:
     attempts: int = 0
     next_attempt_at: float | None = None
     error_code: str | None = None
-    auxiliary_operation_ids: tuple[str, ...] = ()
 
     def __post_init__(self):
         _id(self.operation_id)
@@ -659,9 +654,6 @@ class OperationResult:
             raise ValueError('Failure/cancellation requires an observable reason')
         if self.error_code is not None:
             _id(self.error_code)
-        _tuple(self.auxiliary_operation_ids, str)
-        for value in self.auxiliary_operation_ids:
-            _id(value)
 
     def to_dict(self) -> dict:
         return json.loads(_json(asdict(self)))

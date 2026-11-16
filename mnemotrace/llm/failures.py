@@ -1,5 +1,5 @@
 """Model failure classification and durable operation retry policy."""
-from ..extraction import LLMNotConfiguredError
+from ..extraction import ExtractionBudgetError, ExtractionConfigurationError, ExtractionResponseError, LLMNotConfiguredError
 
 RETRY_DELAYS = (30, 120)
 ATTEMPT_LIMIT = len(RETRY_DELAYS) + 1
@@ -17,21 +17,38 @@ _PERMANENT_TYPES = {
 }
 
 
-def retryable(exc: Exception) -> bool:
-    cause = exc.__cause__ or exc
-    if isinstance(cause, (ImportError, TypeError, LLMNotConfiguredError)):
-        return False
-    body = getattr(cause, "body", None)
+def _provider_code(error):
+    code = getattr(error, "code", None)
+    body = getattr(error, "body", None)
     if isinstance(body, dict):
         body = body.get("error", body)
-    code = getattr(cause, "code", None)
     if not isinstance(code, str) and isinstance(body, dict):
         code = body.get("code") or body.get("type")
-    if isinstance(code, str):
-        if code.lower() in _PERMANENT_CODES:
-            return False
-        if code.lower() in _TRANSIENT_CODES:
-            return True
+    return code.lower() if isinstance(code, str) else None
+
+
+def exceeds_model_budget(exc):
+    if isinstance(exc, ExtractionBudgetError):
+        return True
+    cause = exc.__cause__ or exc
+    return (_provider_code(cause) in {
+        "context_length_exceeded", "max_tokens_exceeded", "max_output_tokens_exceeded",
+    } or type(cause).__name__ == 'ContextWindowExceededError')
+
+
+def retryable(exc: Exception) -> bool:
+    if isinstance(exc, ExtractionResponseError):
+        return True
+    cause = exc.__cause__ or exc
+    if isinstance(exc, ExtractionConfigurationError) or isinstance(cause, (ImportError, TypeError, LLMNotConfiguredError)):
+        return False
+    if exceeds_model_budget(exc):
+        return False
+    code = _provider_code(cause)
+    if code in _PERMANENT_CODES:
+        return False
+    if code in _TRANSIENT_CODES:
+        return True
     status = getattr(cause, "status_code", None)
     if status is None:
         status = getattr(getattr(cause, "response", None), "status_code", None)

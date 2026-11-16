@@ -175,6 +175,27 @@ def product_client(product_service, product_scope):
             context, _ = product_scope(headers['X-Synthetic-Scope'])
             return seed_fact(product_service.memory(context), subject, predicate, object, text=text, **fields)
 
+        def publish_batch(self, messages, *, headers, session_id='default', **fields):
+            label = headers['X-Synthetic-Scope']
+            context, _ = product_scope(label)
+            body = dict(messages=messages, session_id=session_id, **fields)
+            accepted = self.post('/v1/remember', headers=headers, json=body)
+            if accepted.status_code != 202:
+                return accepted
+            task = accepted.json()['task']['operation_id']
+            memory = app.svc().memory(context)
+            while memory._processing.run_next_stage(task):
+                pass
+            return self.post('/v1/remember', headers=headers, json=dict(body, wait=True, timeout=0))
+
+        def publish_text(self, content, *, headers, event_time=None, **fields):
+            message = dict(message_id=uuid4().hex, role='user', content=content, event_time=event_time)
+            return self.publish_batch([message], headers=headers, **fields)
+
+        def seed_original(self, headers, content, session_id='default', *, event_time=None):
+            context, _ = product_scope(headers['X-Synthetic-Scope'])
+            return app.svc().memory(context)._store_originals(content, session_id, event_time=event_time)[0]
+
         def request(self, method, url, *, headers=None, **kwargs):
             headers = dict(headers or {})
             label = headers.pop('X-Synthetic-Scope', None)
@@ -193,3 +214,45 @@ def product_client(product_service, product_scope):
 
     with ScopedClient(app.app) as http:
         yield http
+
+
+@pytest.fixture
+def processing(runtime, spaces, user):
+    import json
+
+    from mnemotrace.consolidate.planning import WINDOW_PREFIX
+    from mnemotrace.llm import FakeLLM
+    from mnemotrace.memory import Memory
+    from tests.postgres.ontology_fixtures import ontology_reply, typed_result
+
+    space = spaces.create(user, 'Processing tests')
+    context = spaces.authorize(user, space.space_id)
+
+    def make(*, database=runtime, embedder=None, config=None, handle=None, adjudicate=None):
+        calls = []
+
+        def respond(prompt, system=''):
+            if 'MNEMOTRACE_FACT_COMPARISON' in system:
+                if adjudicate is not None:
+                    return adjudicate(prompt)
+                from tests.model_fixtures import adjudication_reply
+                return adjudication_reply(prompt)
+            if 'MNEMOTRACE_' in system:
+                return ontology_reply(prompt, system, {'prefers': ('prefers', False), 'lives_in': ('lives_in', False),
+                                                        'based_in': ('lives_in', False)})
+            data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
+            calls.append(data)
+            if handle:
+                return json.dumps(typed_result(handle(data)))
+            facts = [dict(categories=['food'], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='我', predicate='likes', object='tea', text='Synthetic person likes tea',
+                          source_ids=[item['id']]) for item in data['pending'] if item['role'] != 'assistant']
+            return json.dumps(typed_result(dict(facts=facts, digests=[
+                dict(source_id=item['id'], text='Recorded preference')
+                for item in data['pending'] if item['needs_digest']
+            ])))
+
+        memory = Memory(database, context, llm=FakeLLM(handler=respond), config=config,
+                                embedder=embedder, embedding_model='fixture' if embedder else None)
+        return memory, calls
+
+    return make

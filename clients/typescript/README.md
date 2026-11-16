@@ -31,14 +31,14 @@ const client = new MnemoTraceClient({
 
 const { space_id: spaceId } = await client.createSpace('Research')
 const scope = { spaceId }
-const accepted = await client.rememberMessages([
-  { message_id: 'm1', role: 'user', content: 'I live in Paris.' },
-], { ...scope, sessionId: 'demo' })
-await client.flushProcessing({ ...scope, sessionId: 'demo' })
-for (const operationId of accepted.operation_ids) {
-  console.log(await client.getOperation(operationId, scope))
+const accepted = await client.remember('I live in Paris.', {
+  ...scope, sessionId: 'demo', messageId: 'm1', wait: true,
+})
+console.log(accepted.messages[0].sequence, accepted.task)
+if (accepted.status === 'timed_out') {
+  console.log(await client.getOperation(accepted.task.operation_id, scope))
 }
-const result = await client.recall('Where do I live?', { ...scope, sessionId: 'demo' })
+const result = await client.recall('Where do I live?', scope)
 console.log(result.context)
 ```
 
@@ -61,13 +61,11 @@ All methods return promises. Pass `{ spaceId }` to single-space methods. For mul
 | Method | Parameters and result |
 | --- | --- |
 | `health()` | Health; readiness is a separate HTTP endpoint |
-| `remember(content, options)` | sessionId, extract, processing, agentId; RememberResult |
-| `rememberMessages(messages, options)` | required sessionId; processing, extract, agentId; MessagesResult |
+| `remember(value, options)` | String or message array. sessionId, messageId, eventTime, wait, timeout, agentId. Returns RememberResult |
 | `recall(query, options)` | nDigests=20, sessionId, asOf, redactSensitive=false, spaceIds; RecallResult |
 | `search(query, options)` | asOf, redactSensitive, subject, predicate; candidate facts and sources, or a unique explicit slot value |
 | `listSpaces(options?)` / `createSpace(name)` | list or create spaces owned by the authenticated account |
 | `getOperation(id, options)` / `retryOperation(id, options)` | query or retry a stable operation ID |
-| `flushProcessing(options)` | wait for core processing, with optional sessionId and includeDigests |
 | `sessionReport(sessionId, options)` | includeSensitive=false, limit=100, offset=0. Use facts_page.next_offset for subsequent pages |
 | `sessions(options)` | limit, offset, query; SessionIndex |
 | `memories(options)` | pagination and filters described below; MemoryDump |
@@ -127,4 +125,4 @@ Source: [NotZhu/MnemoTrace](https://github.com/NotZhu/MnemoTrace).
 License: [AGPL-3.0](https://github.com/NotZhu/MnemoTrace/blob/main/LICENSE); see [commercial terms](https://github.com/NotZhu/MnemoTrace/blob/main/COMMERCIAL-LICENSE.md).
 
 
-`getEpisode(episodeId, { spaceId })` reads the complete original event referenced by recall. Recall uses the event digest when available. `flushProcessing({ spaceId, includeDigests: true })` also waits for eligible digests. Inspect the core operation's `auxiliary_operation_ids` to look up individual digest results.
+`getEpisode(episodeId, { spaceId })` reads the complete original event referenced by recall. Recall uses the event digest when available. Set `wait: true` to wait for facts and eligible digests to be published together. A timed-out request returns the task for later polling.

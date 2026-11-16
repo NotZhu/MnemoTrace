@@ -33,7 +33,7 @@ def product():
     from mnemotrace.consolidate.ontology import ENTITY_TYPES
 
     text = 'I work at Orbit.'
-    data = dict(operation='extract', source_kind='dialogue', extract=True, context=[], parts=[], entity_types=dict(ENTITY_TYPES),
+    data = dict(operation='extract', context=[], entity_types=dict(ENTITY_TYPES),
                 pending=[dict(id='source-1', role='user', content=text, needs_digest=False,
                               message_id='message-1', sequence=1, event_time=100, representation='raw',
                               representation_source=None, source='a' * 64, source_length=len(text),
@@ -125,7 +125,7 @@ def test_message_fingerprint_normalizes_only_event_time():
     assert message.fingerprint == replace(message, event_time=1.0).fingerprint
     assert message.fingerprint == replace(message, message_id='another-id').fingerprint
     for kwargs in (dict(role='assistant'), dict(content='Orbit'), dict(agent_id='agent-B'),
-                   dict(event_time=None), dict(extract=False)):
+                   dict(event_time=None)):
         assert message.fingerprint != replace(message, **kwargs).fingerprint
     with pytest.raises(TypeError):
         MessageInput('message', 'user', 'text', ingested_at=10)
@@ -193,7 +193,7 @@ def test_changeset_checks_scope_provenance_duplicate_mutations_and_receipt():
     write = RecordWrite(replace(record, payload_json=json.dumps(payload)))
     changes = ChangeSet(CONDITIONS, 'operation-1', writes=(write,),
         embeddings=(EmbeddingWrite(write.ref, 1, 'model', (1.0, 0.0)),),
-        operations=(OperationSpec('digest-1', OperationKind.DIGEST, 'thread', SOURCES),),
+        operations=(OperationSpec('extract-1', OperationKind.EXTRACT, 'thread', SOURCES),),
         receipt=CommitReceipt('operation-1', 8, ('fact-1',)))
     assert changes.receipt.core_revision == 8
     for kwargs in (dict(erasures=(write.ref,)), dict(writes=(write, write)),
@@ -253,7 +253,7 @@ def test_generation_reuse_depends_on_actual_context_and_not_embedder():
     assert EmbeddingWrite(ref(), 1, 'embedder-A', (1.0,)).model != EmbeddingWrite(ref(), 1, 'embedder-B', (1.0,)).model
 
 
-@pytest.mark.parametrize('field', ['operation', 'source_kind', 'extract', 'pending', 'parts', 'entity_types'])
+@pytest.mark.parametrize('field', ['operation', 'pending', 'context', 'entity_types'])
 def test_empty_model_result_cannot_hide_missing_prepared_input_fields(field):
     saved = product()
     data = json.loads(saved.input_json)
@@ -271,32 +271,27 @@ def test_empty_model_result_cannot_hide_corrupt_source_views(field):
         replace(saved, input_json=json.dumps(data), result_json='{"facts":[],"digests":{}}')
 
 
-def test_digest_context_requires_business_version_and_representation_fingerprint():
+def test_checkpoint_reuse_requires_versions_for_the_supplied_context():
     saved = product()
     data = json.loads(saved.input_json)
     data['pending'][0]['sequence'] = 2
-    context = {**data['pending'][0], 'id': 'context-source', 'sequence': 1,
-               'representation': 'digest', 'representation_source': 'b' * 64}
+    context = dict(data['pending'][0], id='context-source', message_id='previous', sequence=1)
     data['context'] = [context]
-    conditions = replace(CONDITIONS, sources=(*SOURCES, SourceVersion('context-source', 1)))
-    guarded = replace(saved, conditions=conditions, input_json=json.dumps(data))
-    assert not guarded.reusable(replace(SNAPSHOT, core_revision=8), conditions.sources, 'config-1')
+    versions = (*SOURCES, SourceVersion('context-source', 1))
+    conditions = replace(CONDITIONS, sources=versions)
+    guarded = replace(saved, conditions=conditions, input_json=json.dumps(data), context_revision=None)
+    assert guarded.reusable(replace(SNAPSHOT, core_revision=8), versions, 'config-1')
+    assert not guarded.reusable(SNAPSHOT, (*SOURCES, SourceVersion('context-source', 2)), 'config-1')
     with pytest.raises(ValueError):
-        replace(guarded, context_revision=None)
-    data['context'][0]['representation_source'] = None
-    with pytest.raises(ValueError):
-        replace(guarded, input_json=json.dumps(data))
+        replace(guarded, conditions=CONDITIONS)
 
 
-def test_completion_serialization_and_independent_auxiliary_operations():
+def test_joint_completion_serialization():
     result = OperationResult('operation-1', OperationKind.EXTRACT, ProcessingState.COMPLETED,
-                             ProcessingPhase.DONE, True, True, auxiliary_operation_ids=('digest-1',))
+                             ProcessingPhase.DONE, True, True)
     wire = json.loads(json.dumps(result.to_dict(), allow_nan=False))
-    assert 'stored_raw' not in wire
-    assert wire['state'] == 'completed' and wire['auxiliary_operation_ids'] == ['digest-1']
-    child = OperationResult('digest-1', OperationKind.DIGEST, ProcessingState.FAILED,
-                           ProcessingPhase.GENERATE, False, False, error_code='model_unavailable')
-    assert child.to_dict()['state'] == 'failed' and result.core_committed
+    assert 'stored_raw' not in wire and 'auxiliary_operation_ids' not in wire
+    assert wire['state'] == 'completed' and wire['core_committed']
 
 
 @pytest.mark.parametrize('kwargs', [dict(state='completed'), dict(core_committed=False),

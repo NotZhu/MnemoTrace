@@ -29,35 +29,21 @@ test('history import is absent from the public client', () => {
   assert.equal(MnemoTraceClient.prototype.import, undefined)
 })
 
-test('dialogue messages preserve identities, roles, unknown time and batch policy', async () => {
+test('remember uses the same request for a string and a user message', async () => {
   const calls = []
   const client = new MnemoTraceClient({fetch: async (url, init) => {
-    calls.push({url, body: JSON.parse(init.body)})
-    return new Response(JSON.stringify({ok: true, queued: true, messages: []}), {status: 202})
+    calls.push({url: new URL(url), body: init.body && JSON.parse(init.body)})
+    return new Response(JSON.stringify({ok: true, status: 'accepted', task: {state: 'pending'}}), {status: 202})
   }})
-  const messages = [{message_id: 'u1', role: 'user', content: 'Synthetic dialogue'},
-    {message_id: 'a1', role: 'assistant', content: 'Synthetic suggestion', event_time: null}]
-  await client.rememberMessages(messages, {...space, sessionId: 's'})
-  assert.equal(new URL(calls[0].url).pathname, '/v1/messages')
-  assert.deepEqual(calls[0].body, {messages, session_id: 's', space_id: 'space-test'})
-  await client.rememberMessages(messages, {...space, sessionId: 's', extract: false})
-  await client.remember('Synthetic note', {...space, extract: false, eventTime: 0})
-  assert.deepEqual(calls[1].body, {messages, session_id: 's', extract: false, space_id: 'space-test'})
-  assert.deepEqual(calls[2].body, {content: 'Synthetic note', extract: false, event_time: 0, space_id: 'space-test'})
-})
-
-test('buffered writes accept 202 and expose status and explicit retry controls', async () => {
-  const calls = []
-  const client = new MnemoTraceClient({ fetch: async (url, init) => {
-    calls.push({url, body: init.body && JSON.parse(init.body)})
-    return new Response(JSON.stringify({ok: true, status: 'accepted'}), {status: calls.length === 1 ? 202 : 200})
-  } })
-  assert.equal((await client.remember('synthetic', {...space, processing: 'buffered'})).status, 'accepted')
+  const messages = [{message_id: 'u1', role: 'user', content: 'Synthetic dialogue', event_time: 0}]
+  await client.remember(messages, {...space, sessionId: 's', wait: true, timeout: 0})
+  await client.remember('Synthetic dialogue', {...space, sessionId: 's', wait: true, timeout: 0,
+    messageId: 'u1', eventTime: 0})
+  assert.equal(calls[0].url.pathname, '/v1/remember')
+  assert.deepEqual(calls[0].body, {messages, session_id: 's', wait: true, timeout: 0, space_id: 'space-test'})
+  assert.deepEqual(calls[1].body, calls[0].body)
   await client.processingStatus({sessionId: 'synthetic session', spaceId: 'team'})
-  await client.flushProcessing({...space, sessionId: 'synthetic session', retryFailed: true, timeout: 0})
-  assert.equal(calls[0].body.processing, 'buffered')
-  assert.equal(new URL(calls[1].url).searchParams.get('session_id'), 'synthetic session')
-  assert.deepEqual(calls[2].body, {session_id: 'synthetic session', timeout: 0, retry_failed: true, space_id: 'space-test'})
+  assert.equal(calls[2].url.searchParams.get('session_id'), 'synthetic session')
 })
 
 for (const [status, code, storedRaw] of [
@@ -557,8 +543,6 @@ test('original lookup encodes the event ID and preserves space selection', async
   assert.equal((await client.getEpisode('event/id', {spaceId: 'shared space'})).content, 'complete original')
   assert.equal(new URL(calls[0].url).pathname, '/v1/episodes/event%2Fid')
   assert.equal(new URL(calls[0].url).searchParams.get('space_id'), 'shared space')
-  await client.flushProcessing({...space, includeDigests: true})
-  assert.equal(calls[1].body.include_digests, true)
 })
 
 test('queries and retries the same scoped operation ID', async () => {

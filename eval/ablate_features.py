@@ -202,13 +202,13 @@ def main() -> None:
     ap.add_argument("--jsonl", help="write per-feature rows plus a summary as JSONL")
     ap.add_argument("--llm", help="model name, or set MNEMOTRACE_LLM")
     args = ap.parse_args()
-    from mnemotrace.llm.providers import make_llm, load_dotenv
+    from mnemotrace.llm.providers import make_extraction_llm, load_dotenv
     load_dotenv()
     model = args.llm or os.environ.get("MNEMOTRACE_LLM", "")
     if not model:
         ap.error("configure --llm or MNEMOTRACE_LLM")
 
-    rows, summary = run_ablation(llm=make_llm(model))
+    rows, summary = run_ablation(llm=make_extraction_llm(model))
     print("MnemoTrace feature ablation smoke -- explicit LLM; synthetic smoke only")
     print("feature                  enabled  disabled  improved  target")
     print("-" * 78)

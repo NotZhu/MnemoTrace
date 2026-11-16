@@ -93,7 +93,7 @@ def test_rendered_outputs_preserve_syntax_and_connection_values(tmp_path, monkey
     if entry == "mcp":
         assert f"Configured server `mnemotrace-{key}`" in output
     if entry in ("markdown", "bootstrap"):
-        assert "mnemotrace_recall" in output and "mnemotrace_flush_processing" in output
+        assert "mnemotrace_recall" in output and "mnemotrace_get_operation" in output
         assert session in output
     if entry == "markdown":
         for source in _blocks(output, "python"):
