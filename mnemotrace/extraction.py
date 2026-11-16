@@ -59,6 +59,13 @@ class ExtractionTruncatedError(ExtractionResponseError):
 
 
 def require_llm(llm) -> None:
-    """验证语言模型是否存在配置。"""
+    """检查是否已配置事实抽取模型。
+
+    Args:
+        llm: 当前配置的抽取模型。
+
+    Raises:
+        LLMNotConfiguredError: 未配置抽取模型。
+    """
     if llm is None:
         raise LLMNotConfiguredError()

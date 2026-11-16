@@ -10,7 +10,16 @@ from .lexical import literal_value_match
 
 
 def weighted_rrf(rankings: dict[str, list[str]], weights: dict[str, float], k: int = 60) -> dict[str, float]:
-    """rankings:{signal_name: [doc_id, ...]},最优在前。weights:{signal_name: 权重}。"""
+    """对各路候选排名执行加权倒数排名融合。
+
+    Args:
+        rankings: 各信号的候选 ID 排名，最优项在前。
+        weights: 各信号的权重，省略的信号权重为 1。
+        k: 控制名次影响的平滑常数。
+
+    Returns:
+        候选 ID 到融合分数的映射。
+    """
     fused: dict[str, float] = {}
     for name, ordered in rankings.items():
         w = weights.get(name, 1.0)
@@ -34,7 +43,21 @@ def rank_facts(
     recency: Mapping[str, float],
     salience: Mapping[str, float],
 ) -> tuple[list[tuple[Fact, float]], dict[str, float]]:
-    """Rank candidates using sparse evidence and a recency and salience score for each fact."""
+    """融合各路信号排序，优先保留匹配字面值的事实。
+
+    Args:
+        query: 用于检查字面值匹配的文本。
+        facts: 待排序的事实。
+        config: 融合权重及参数。
+        semantic: 各事实的语义分数。
+        lexical: 各事实的词法分数。
+        graph: 各事实的图分数。
+        recency: 各事实的新近度分数。
+        salience: 各事实的显著度分数。
+
+    Returns:
+        排序后的事实与融合分数，以及按事实 ID 索引的分数。
+    """
     def rank_signal(scores: Mapping[str, float], *, evidence: bool = False) -> list[str]:
         ids = (fact_id for fact_id in scores if not evidence or scores[fact_id] > 0.0)
         return sorted(ids, key=lambda fact_id: (-scores[fact_id], fact_id))

@@ -30,6 +30,14 @@ from .store.postgres.tasks import ACTIVE, RENEW_SECONDS, Tasks
 
 
 def _episodes(records):
+    """将数据库原文转换为抽取输入。
+
+    Args:
+        records: 已保存的原文记录。
+
+    Yields:
+        原文事件及从 1 开始的会话序号。
+    """
     for record in records:
         episode = domain(record)
         # Database sequences start at zero. The payload uses positive positions.
@@ -38,6 +46,15 @@ def _episodes(records):
 
 @contextmanager
 def _heartbeat(tasks, lease):
+    """在任务执行期间定期续租。
+
+    Args:
+        tasks: 任务存储。
+        lease: 当前执行租约。
+
+    Yields:
+        None，退出时停止续租。
+    """
     stop = Event()
 
     def renew():
@@ -57,28 +74,41 @@ def _heartbeat(tasks, lease):
 
 
 class PostgresPipeline:
-    """PostgreSQL 数据库管道。用于处理记录和执行数据库操作。"""
+    """执行 PostgreSQL 中可恢复的记忆处理任务。"""
 
     def __init__(self, dao, config, llm, embedder, model):
-        """初始化 PostgresPipeline。
+        """为指定记忆空间初始化任务执行器。
 
         Args:
-            dao: 数据库访问对象。
-            config: 配置参数。
-            llm: 语言模型。
-            embedder: 嵌入器。
-            model: 模型。
+            dao: 绑定到目标空间的数据访问对象。
+            config: 记忆处理配置。
+            llm: 事实抽取模型。
+            embedder: 可选的向量编码器。
+            model: 向量模型标识。
         """
         self.dao = dao
         self.tasks = Tasks(dao)
         self.config, self.llm, self.embedder, self.model = config, llm, embedder, model
 
     def require_ready(self):
-        """验证系统就绪：模型存在且配置合法。"""
+        """检查写入新抽取请求所需的模型和配置。
+
+        Raises:
+            LLMNotConfiguredError: 未配置抽取模型。
+            ValueError: 抽取配置无效。
+        """
         require_llm(self.llm)
         validate_config(self.config)
 
     def _fingerprint(self, settings):
+        """计算抽取配置指纹，用于判断检查点能否复用。
+
+        Args:
+            settings: 当前空间设置。
+
+        Returns:
+            包含抽取策略、模型配置和本体版本的哈希。
+        """
         policy = {field: getattr(settings, field) for field in EXTRACTION_POLICY_FIELDS}
         identity = config_identity(SimpleNamespace(config=self.config, policy=policy, llm=self.llm,
                                                    embedder=self.embedder), include_embedding=False,
@@ -86,10 +116,29 @@ class PostgresPipeline:
         return content_hash([ONTOLOGY_VERSION, identity])
 
     def _entity_types(self, view):
+        """合并内置实体类型与当前空间已学习的类型。
+
+        Args:
+            view: 当前空间的读取快照。
+
+        Returns:
+            实体类型代码到含义的映射。
+        """
         learned = OntologyWorkset(self.dao, view.snapshot).types(view)
         return {**ENTITY_TYPES, **{code: item.meaning for code, item in learned.items()}}
 
     def _prepare(self, view, records, settings, fingerprint):
+        """用待处理原文和会话历史准备抽取请求。
+
+        Args:
+            view: 当前空间的读取快照。
+            records: 本批次待抽取的原文记录。
+            settings: 当前空间设置。
+            fingerprint: 抽取配置指纹。
+
+        Returns:
+            请求计划及本批次引用的全部原文记录。
+        """
         first = domain(records[0])
         previous = view.preceding_sources(first, limit=PREVIOUS_MESSAGES)
         types = self._entity_types(view)
@@ -104,6 +153,19 @@ class PostgresPipeline:
         return planned, (*records, *previous)
 
     def _generate(self, lease, snapshot, settings, fingerprint, planned, records):
+        """调用抽取模型并保存验证后的结果。
+
+        Args:
+            lease: 当前任务租约。
+            snapshot: 抽取使用的空间快照标识。
+            settings: 抽取使用的空间设置。
+            fingerprint: 抽取配置指纹。
+            planned: 已准备好的抽取请求。
+            records: 请求引用的原文记录。
+
+        Returns:
+            验证后的抽取结果和原文版本。
+        """
         data = planned['input']
         with generate(self.llm, data, self.config, '', prepared=planned['messages']) as completion:
             result = decode(completion, data, self.config)
@@ -114,6 +176,20 @@ class PostgresPipeline:
         return result, versions
 
     def _planned_records(self, view, planned, records, fingerprint):
+        """检查已保存请求能否在当前快照中复用。
+
+        Args:
+            view: 当前空间的读取快照。
+            planned: 已保存的抽取请求。
+            records: 本批次待抽取的原文记录。
+            fingerprint: 当前抽取配置指纹。
+
+        Returns:
+            请求引用的原文记录。配置或原文变化时返回 None。
+
+        Raises:
+            DataCorruption: 已保存的模型请求与哈希不符。
+        """
         if planned.get('fingerprint') != fingerprint:
             return None
         if content_hash(planned.get('messages')) != planned.get('request_hash'):
@@ -132,6 +208,16 @@ class PostgresPipeline:
         return all_records
 
     def _changes(self, conditions, writes=(), embeddings=()):
+        """组装记忆写入变更和提交收据。
+
+        Args:
+            conditions: 提交依赖的快照、原文版本与租约。
+            writes: 待写入的记录。
+            embeddings: 待写入的向量。
+
+        Returns:
+            可交给任务存储提交的变更集。
+        """
         operation_id = conditions.lease.operation_id
         revision = conditions.snapshot.core_revision + int(bool(writes))
         receipt = CommitReceipt(operation_id, revision,
@@ -140,6 +226,19 @@ class PostgresPipeline:
                          embeddings=tuple(embeddings), receipt=receipt)
 
     def _commit_core(self, conditions, data, result, records, now, space):
+        """合并抽取出的事实，并提交事实、摘要和覆盖范围。
+
+        Args:
+            conditions: 提交依赖的快照、原文版本与租约。
+            data: 已保存的抽取输入。
+            result: 已验证的抽取结果。
+            records: 已载入的待处理原文记录。
+            now: 提交使用的时间戳。
+            space: 向量模型标识与维度，无向量编码器时为 None。
+
+        Raises:
+            VersionConflict: 提交所依赖的快照或租约已变化。
+        """
         context = conditions.snapshot.context
         sources = {item['id']: item for item in (*data['context'], *data['pending'])}
         input_hash = content_hash(data)
@@ -177,6 +276,14 @@ class PostgresPipeline:
         self.tasks.commit(self._changes(conditions, writes, embeddings))
 
     def run_next_stage(self, operation_id):
+        """领取任务并推进处理，必要时复用已保存的抽取结果。
+
+        Args:
+            operation_id: 待处理操作的 ID。
+
+        Returns:
+            领取到任务并尝试处理时返回 True。
+        """
         claimed = self.tasks.claim(operation_id)
         if claimed is None:
             return False
@@ -243,6 +350,18 @@ class PostgresPipeline:
         return True
 
     def wait(self, operation_id, timeout):
+        """轮询任务，直到任务结束、消失或等待超时。
+
+        Args:
+            operation_id: 任务操作 ID。
+            timeout: 最长等待时间，单位为秒。
+
+        Returns:
+            最后读到的任务快照。任务不存在时返回 None。
+
+        Raises:
+            ValueError: 等待时间为负数或非有限数值。
+        """
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout < 0:
             raise ValueError('Expected a finite nonnegative timeout')
         deadline = time.monotonic() + timeout
@@ -255,6 +374,15 @@ class PostgresPipeline:
 
 
 def _failure(exc, phase):
+    """将执行异常映射为可持久化的任务错误。
+
+    Args:
+        exc: 处理过程中抛出的异常。
+        phase: 失败发生的处理阶段。
+
+    Returns:
+        错误代码和是否可重试。
+    """
     if isinstance(exc, (ModelContextConfigurationError, TokenCounterConfigurationError)):
         return 'configuration_invalid', False
     if exceeds_model_budget(exc):

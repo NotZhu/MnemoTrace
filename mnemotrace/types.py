@@ -122,9 +122,25 @@ class Fact:
                 self.expired_at = recorded
 
     def is_valid_at(self, at: float) -> bool:
+        """判断时间戳是否落在事实的有效区间内。
+
+        Args:
+            at: 要判断的时间戳。
+
+        Returns:
+            已生效且尚未失效时返回 True。
+        """
         return (self.valid_at is None or self.valid_at <= at) and (self.invalid_at is None or at < self.invalid_at)
 
     def is_live(self, as_of: float | None = None) -> bool:
+        """判断事实在当前视图或指定历史时点是否有效。
+
+        Args:
+            as_of: 可选的历史时间戳。省略时以当前时间判断。
+
+        Returns:
+            事实有效时返回 True。历史查询要求已知生效时间。
+        """
         return ((as_of is None or self.valid_at is not None)
                 and self.is_valid_at(now() if as_of is None else as_of))
 

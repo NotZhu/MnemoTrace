@@ -39,10 +39,21 @@ class ReadView:
             self.track_terms = tuple(term.lower() for term in focus.track)
 
     def focused(self):
+        """在同一快照上启用追踪和屏蔽设置。"""
         return ReadView(self._sql, self.snapshot, self.at, self._settings, apply_focus=True)
 
     @staticmethod
     def focus_condition(column, terms, *, categories=None):
+        """构造文本和类别匹配关注项的条件。
+
+        Args:
+            column: 用于匹配文本的列。
+            terms: 要匹配的主题。
+            categories: 可选的类别列。
+
+        Returns:
+            SQL 条件和绑定参数。
+        """
         patterns, labels = selectors(terms)
         sql = f'lower({column}) ~ ANY(%s::text[])'
         args = [patterns]
@@ -52,6 +63,14 @@ class ReadView:
         return sql, args
 
     def exclude_muted(self, clauses, args, *columns, categories=None):
+        """向现有条件追加屏蔽主题的过滤条件。
+
+        Args:
+            clauses: 就地更新的条件列表。
+            args: 就地更新的绑定参数列表。
+            *columns: 要检查的文本列。
+            categories: 可选的类别列。
+        """
         if self.mute_terms:
             for column in columns:
                 condition, params = self.focus_condition(column, self.mute_terms, categories=categories)
@@ -59,14 +78,39 @@ class ReadView:
                 args.extend(params)
 
     def get(self, kind, record_id):
+        """按类型和 ID 读取当前空间的单条记录。
+
+        Args:
+            kind: 记录类型。
+            record_id: 记录 ID。
+
+        Returns:
+            存储记录。找不到时返回 None。
+        """
         return self._sql.get(kind, record_id)
 
     def sources(self, source_ids):
+        """按原文 ID 读取当前视图可见的来源记录。
+
+        Args:
+            source_ids: 要查找的原文记录 ID。
+
+        Returns:
+            找到的原文记录。
+        """
         clauses, args = ['r.id = ANY(%s)'], [list(source_ids)]
         self.exclude_muted(clauses, args, 'r.content', "coalesce(s.digest, '')")
         return self._sql.select(SOURCE, clauses, args)
 
     def digests(self, source_ids):
+        """读取指定原文记录的当前版本摘要。
+
+        Args:
+            source_ids: 已选中的原文记录 ID。
+
+        Returns:
+            原文记录 ID 到摘要证据的映射。
+        """
         from ...retrieve.events import digest_evidence
 
         if not source_ids:
@@ -86,6 +130,14 @@ class ReadView:
                 for key, user, session, role, event_time, ingested_at, text, coverage in rows}
 
     def visible_source_ids(self, ids):
+        """按输入顺序保留可见且未被屏蔽的来源 ID。
+
+        Args:
+            ids: 候选原文记录 ID。
+
+        Returns:
+            当前视图可见的原文记录 ID。
+        """
         if not ids:
             return ()
         clauses, args = ['r.id = ANY(%s)'], [list(ids)]
@@ -112,6 +164,15 @@ class ReadView:
         return self._sql.select(SOURCE, conditions, values, limit=limit)
 
     def _fact_conditions(self, query, *, evaluation_at=None):
+        """构造事实有效时间、状态和可见性筛选条件。
+
+        Args:
+            query: 事实筛选条件。
+            evaluation_at: 未显式指定有效时间时使用的参考时间戳。
+
+        Returns:
+            SQL 条件列表和绑定参数。
+        """
         at = self.at if evaluation_at is None else timestamp(evaluation_at)
         valid = at if query.valid_at is None else timestamp(query.valid_at)
         start = 'r.valid_at <= %s'
@@ -148,6 +209,17 @@ class ReadView:
                                 hide_sensitive_predecessors=query.exclude_sensitive)
 
     def aggregation_facts(self, query, start, end, *, after_id=None):
+        """分页读取指定有效时间区间内的聚合事实。
+
+        Args:
+            query: 事实筛选条件。
+            start: 可选的有效时间下界，包含。
+            end: 可选的有效时间上界，不包含。
+            after_id: 可选的上一页最后一条事实 ID。
+
+        Returns:
+            最多 1000 条匹配的事实记录。
+        """
         clauses, args = self._fact_conditions(query)
         if start is not None:
             clauses.append('r.valid_at >= %s')
@@ -160,11 +232,28 @@ class ReadView:
                                 hide_sensitive_predecessors=query.exclude_sensitive)
 
     def facts_by_ids(self, ids, query):
+        """从给定 ID 中读取当前查询可见的事实。
+
+        Args:
+            ids: 候选事实 ID。
+            query: 事实时间、状态及可见性条件。
+
+        Returns:
+            符合条件的事实记录。
+        """
         clauses, args = self._fact_conditions(query)
         return self._sql.select(FACT, (*clauses, 'r.id = ANY(%s)'), (*args, list(ids)),
                                 hide_sensitive_predecessors=query.exclude_sensitive)
 
     def slot_facts(self, query):
+        """读取符合主体、谓词等筛选条件的全部事实。
+
+        Args:
+            query: 指定槽位与可见性的事实筛选条件。
+
+        Returns:
+            符合条件的事实记录。
+        """
         clauses, args = self._fact_conditions(query)
         return self._sql.select(FACT, clauses, args,
                                 hide_sensitive_predecessors=query.exclude_sensitive)
@@ -186,10 +275,30 @@ class ReadView:
         return self.facts_by_ids([row[0] for row in rows], query)
 
     def candidates(self, query: RetrievalQuery, *, config=None, graph=None):
+        """从当前快照读取带排序分数的候选事实。
+
+        Args:
+            query: 检索请求。
+            config: 可选的候选检索配置。
+            graph: 可复用的请求级图读取器。
+
+        Returns:
+            候选事实批次及覆盖限制。
+        """
         from .retrieval import fact_candidates
         return fact_candidates(self, query, config, graph)
 
     def history(self, subject, predicate=None, *, source_ids=()):
+        """读取当前视图中指定主体的事实时间线。
+
+        Args:
+            subject: 事实主体。
+            predicate: 可选的事实谓词。
+            source_ids: 可选的来源记录 ID。
+
+        Returns:
+            可见事实记录，包含已失效和计划生效的记录。
+        """
         clauses, args = self._fact_conditions(FactQuery(
             subject=subject, predicate=predicate, source_ids=tuple(source_ids), state=FactState.ALL,
         ))
@@ -197,6 +306,15 @@ class ReadView:
         return self._sql.select(FACT, clauses[1:], args[1:])
 
     def merge_history(self, incoming, *, symmetric=()):
+        """读取可能与新事实合并的历史记录。
+
+        Args:
+            incoming: 待合并的新事实。
+            symmetric: 允许按任一端点匹配的对称关系 ID。
+
+        Returns:
+            主体或对称关系端点匹配的事实记录。
+        """
         ids = sorted({fact.subject_id for fact in incoming if fact.subject_id})
         names = sorted({fact.subject_key[1] for fact in incoming if not fact.subject_id})
         endpoints = sorted({(fact.relation_id, entity_id) for fact in incoming
@@ -210,6 +328,16 @@ class ReadView:
             (ids, names, list(relations), list(peers)))
 
     def fact_vectors(self, records, model, dimension):
+        """读取与事实内容版本匹配的向量。
+
+        Args:
+            records: 待查询的事实记录。
+            model: 向量模型标识。
+            dimension: 向量维度。
+
+        Returns:
+            事实 ID 到现有向量的映射。
+        """
         ids = [record.ref.record_id for record in records]
         rows = self._sql.run("""SELECT e.fact_id,e.vector::text FROM mnemotrace.embeddings e
             JOIN mnemotrace.facts f ON (f.user_id,f.space_id,f.id,f.content_version) =
@@ -220,6 +348,15 @@ class ReadView:
         return {fact_id: json.loads(vector) for fact_id, vector in rows}
 
     def preceding_sources(self, episode, *, limit):
+        """读取同一会话中先于目标原文的可抽取历史。
+
+        Args:
+            episode: 用会话和序号定位当前批次的原文。
+            limit: 返回历史消息的数量上限。
+
+        Returns:
+            按会话内序号从旧到新排列的原文记录。
+        """
         rows = self._sql.run(f"""SELECT id FROM mnemotrace.sources WHERE {SCOPE}
             AND session_id = %s AND sequence < %s AND extract
             ORDER BY sequence DESC LIMIT %s""",
@@ -235,6 +372,15 @@ class ReadView:
         return self._sql.select(FACT, clauses, args)
 
     def entity(self, name, *, share_safe=False):
+        """按规范化名称查找有事实支持的实体。
+
+        Args:
+            name: 实体名称。
+            share_safe: 是否要求非敏感事实支持该名称。
+
+        Returns:
+            实体记录。没有可见匹配时返回 None。
+        """
         key = name_key(name)
         clauses, args = ['r.normalized_name = %s'], [key]
         if share_safe:
@@ -245,6 +391,14 @@ class ReadView:
         return next(iter(self._sql.select(ENTITY, clauses, args)), None)
 
     def public_entity_names(self, ids):
+        """从非敏感事实中取出实体的可展示名称。
+
+        Args:
+            ids: 待查找的实体 ID。
+
+        Returns:
+            有非敏感证据支持的实体 ID 到名称的映射。
+        """
         if not ids:
             return {}
         rows = self._sql.run('''SELECT requested.id, evidence.name
@@ -261,6 +415,21 @@ class ReadView:
         return self._sql.select(RELATION, ('r.fact_id = %s',), (fact_id,))
 
     def graph_edges(self, entity_ids, query, *, direction='both', predicates=(), limit=None):
+        """读取关联事实满足查询条件的图边。
+
+        Args:
+            entity_ids: 起点或终点实体 ID。
+            query: 关联事实的筛选条件。
+            direction: 入边、出边或双向。
+            predicates: 可选的谓词过滤条件。
+            limit: 可选的图边数量上限。
+
+        Returns:
+            符合条件的关系记录。
+
+        Raises:
+            ValueError: 图遍历方向无效。
+        """
         endpoints = {'out': "(g.subject_id = ANY(%s) OR (t.direction = 'symmetric' AND g.object_id = ANY(%s)))",
                      'in': "(g.object_id = ANY(%s) OR (t.direction = 'symmetric' AND g.subject_id = ANY(%s)))",
                      'both': '(g.subject_id = ANY(%s) OR g.object_id = ANY(%s))'}
@@ -281,6 +450,14 @@ class ReadView:
         return tuple(unpack(self.snapshot.context, RELATION, row) for row in rows)
 
     def settings(self):
+        """读取并校验快照中的空间设置。
+
+        Returns:
+            现行的空间设置。
+
+        Raises:
+            DataCorruption: 存储的设置字段不完整或无效。
+        """
         try:
             raw = self._settings.copy()
             if set(raw) != {field.name for field in fields(SpaceSettings)}:
@@ -351,6 +528,14 @@ class ReadView:
                              (*self._sql.scope, *args)).fetchone()[0]
 
     def full_context_tokens(self, query: FactQuery):
+        """估算当前空间原文的完整上下文 token 数。
+
+        Args:
+            query: 提供可选事件时间上限的查询条件。
+
+        Returns:
+            对每条原文按 UTF-8 字节数估算后累加的 token 数。
+        """
         clauses = [SCOPE]
         args = list(self._sql.scope)
         for column, cutoff in (('event_time', query.valid_at),):

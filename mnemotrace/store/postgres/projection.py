@@ -11,16 +11,31 @@ def projection_id(prefix, value):
 
 class GraphProjection:
     def __init__(self, sql):
+        """在当前事务中维护事实图投影。
+
+        Args:
+            sql: 已限定空间的写事务。
+        """
         self.sql = sql
         self.orphans = set()
 
     def remove_fact_edges(self, fact_ids):
+        """移除指定事实的关系边，并记录待清理端点。
+
+        Args:
+            fact_ids: 要移除关系边的事实 ID。
+        """
         for left, right in self.sql.run(f'DELETE FROM mnemotrace.graph_relations WHERE {SCOPE}'
                 ' AND fact_id = ANY(%s) RETURNING subject_id,object_id',
                 (*self.sql.scope, list(fact_ids))).fetchall():
             self.orphans.update((left, right))
 
     def project(self, fact_id):
+        """按事实和关系类型同步图中的关系边。
+
+        Args:
+            fact_id: 已写入当前事务的事实 ID。
+        """
         record = self.sql.get(FACT, fact_id)
         fact = domain(record)
         old = self.sql.run(f'SELECT id,subject_id,object_id,predicate,valid_at,invalid_at,projection_version '
@@ -49,6 +64,11 @@ class GraphProjection:
             })
 
     def prune(self, *, all_nodes=False):
+        """清除没有被事实或关系引用的实体。
+
+        Args:
+            all_nodes: 是否检查整个空间，否则只检查受本次操作影响的实体。
+        """
         if not all_nodes and not self.orphans:
             return
         candidates = 'true' if all_nodes else 'id = ANY(%s)'

@@ -28,7 +28,19 @@ class Completion:
 
 
 def complete_result(llm, prompt: str, **kwargs) -> Completion:
-    """Plain text adapters remain usable, without inventing termination metadata."""
+    """执行模型生成并统一结果格式。
+
+    Args:
+        llm: 提供文本或结构化生成接口的模型。
+        prompt: 用户提示。
+        **kwargs: 传给模型的系统提示和其他选项。
+
+    Returns:
+        模型生成结果及适配器提供的元数据。
+
+    Raises:
+        ValueError: 结构化生成接口返回了错误的结果类型。
+    """
     method = getattr(llm, "complete_result", None)
     result = method(prompt, **kwargs) if method else Completion(llm.complete(prompt, **kwargs))
     if not isinstance(result, Completion):

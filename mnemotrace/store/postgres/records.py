@@ -32,11 +32,20 @@ def timestamp(value):
 
 
 def source_digest_join():
+    """构造按用户、空间及原文 ID 关联摘要的左连接。"""
     return """ LEFT JOIN mnemotrace.source_digests s
         ON (s.user_id,s.space_id,s.source_id) = (r.user_id,r.space_id,r.id)""", ()
 
 
 def domain(record: StoredRecord):
+    """将存储记录还原为对应的领域对象。
+
+    Args:
+        record: 包含记录类型和已验证字段的存储记录。
+
+    Returns:
+        还原后的领域对象。
+    """
     return MODELS[record.ref.kind](**json.loads(record.payload_json))
 
 

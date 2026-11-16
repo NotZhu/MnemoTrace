@@ -29,7 +29,14 @@ def _content(msg: dict) -> str:
 
 
 def latest_user_text(messages: list) -> str:
-    """最近一条 user 消息——我们对其做检索，并（可选）将其记住。"""
+    """查找最近一条带文本的用户消息。
+
+    Args:
+        messages: 聊天消息列表。
+
+    Returns:
+        最近的非空用户文本。无匹配时返回空字符串。
+    """
     for m in reversed(messages or []):
         if isinstance(m, dict) and m.get("role") == "user":
             text = _content(m).strip()
@@ -46,9 +53,15 @@ def _latest_user_message(messages: list) -> Optional[dict]:
 
 
 def remembered_text(captioner: Any, messages: list) -> str:
-    """为最新一条 user 消息持久化的文本：其文本加上任意图片部分的描述，让通过代理发送的图片
-    留下可检索的痕迹（AGENTS.md 「代码导航」 多模态）。没有图片或没有视觉描述器时精确退化为
-    `latest_user_text`——纯文本路径不变。"""
+    """提取最近一条用户消息中可保存的文本和图片描述。
+
+    Args:
+        captioner: 可选的图片描述器。
+        messages: 聊天消息列表。
+
+    Returns:
+        合并后的文本。没有用户消息时返回空字符串。
+    """
     from ..llm.vision import caption_content
 
     m = _latest_user_message(messages)
@@ -61,10 +74,15 @@ def remembered_text(captioner: Any, messages: list) -> str:
 
 
 def build_prompt(messages: list, memory_context: str) -> tuple[Optional[str], str]:
-    """把请求的 messages 渲染为 LLM.complete 接口的 (system, prompt) 对：
-      * system = 注入的记忆块 + 请求自带的 system 消息
-      * prompt = 单条 user 消息，或多轮对话的完整记录
-    刻意与具体后端无关：适配任何 LLM（包括测试用的离线 FakeLLM），不限于 litellm chat 模型。"""
+    """将记忆和聊天消息渲染为模型提示。
+
+    Args:
+        messages: 聊天消息列表。
+        memory_context: 要注入系统提示的记忆上下文。
+
+    Returns:
+        系统提示与对话提示。无系统内容时首项为 None。
+    """
     system_parts: list[str] = []
     if memory_context.strip():
         system_parts.append(_MEMORY_PREAMBLE + memory_context.strip())
@@ -97,9 +115,24 @@ def chat_completion(
     redact_sensitive: bool = False,
     session_id: Optional[str] = None,
 ) -> dict:
-    """检索 → 注入 → 生成 → 返回 OpenAI ChatCompletion 对象（带描述记忆使用情况的 `mnemotrace`
-    扩展字段）。不写记忆——由路由在关键路径之外调度。请求生成但没有 LLM 后端时抛出
-    NoLLMConfigured。"""
+    """按需检索并注入记忆，然后生成聊天回复。
+
+    Args:
+        svc: 记忆与模型服务。
+        user: 调用者已授权的空间上下文。
+        body: 聊天请求数据。
+        n_digests: 来源摘要数量上限。
+        do_recall: 是否在生成前检索记忆。
+        as_of: 查询事实有效性的时间戳。
+        redact_sensitive: 是否排除敏感事实。
+        session_id: 写入响应元数据的会话 ID。
+
+    Returns:
+        带记忆使用信息的 OpenAI 兼容聊天回复。
+
+    Raises:
+        NoLLMConfigured: 未配置聊天生成模型。
+    """
     messages = body.get("messages") or []
     model = body.get("model") or "mnemotrace"
     query = latest_user_text(messages) or (_content(messages[-1]) if messages else "")

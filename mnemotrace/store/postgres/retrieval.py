@@ -10,7 +10,20 @@ from .lexical import ANALYZER
 from .records import FACT, ROW_SCOPE, SOURCE, TARGET_COLUMNS, domain, source_digest_join, timestamp
 
 class Corpus:
+    """在空间快照中限定检索语料并读取各路排序信号。"""
     def __init__(self, view, query, kind, *, start=None, end=None):
+        """为事实或来源摘要构造可见语料范围。
+
+        Args:
+            view: 当前空间的读取快照。
+            query: 检索请求。
+            kind: 语料类型，事实或来源。
+            start: 摘要事件时间下界，包含。
+            end: 摘要事件时间上界，不包含。
+
+        Raises:
+            ValueError: 检索条件含浏览游标。
+        """
         self.sql = view._sql
         self.query = query
         self.kind = kind
@@ -52,6 +65,14 @@ class Corpus:
         self.params = (*join_params, *self.sql.scope, *params)
 
     def vector_scores(self, *, ids=None):
+        """在限定语料中读取向量相似度。
+
+        Args:
+            ids: 可选的候选记录 ID。提供时只对这些记录打分。
+
+        Returns:
+            候选 ID 到余弦相似度的映射。
+        """
         statement = self._vector_statement(ids)
         # Query selectivity varies sharply across scopes. A reused generic plan
         # can pick a large-space scan or join order for a small-space request.
@@ -62,6 +83,14 @@ class Corpus:
         return self.sql.run('EXPLAIN (FORMAT JSON) ' + query, params, prepare=False).fetchone()[0][0]
 
     def _vector_statement(self, ids):
+        """构造与查询模型、维度和文本版本匹配的向量查询。
+
+        Args:
+            ids: 可选的候选记录 ID。
+
+        Returns:
+            SQL 与绑定参数。查询无可用向量时返回 None。
+        """
         query = self.query
         if query.vector is None or not any(query.vector):
             return None
@@ -94,6 +123,14 @@ class Corpus:
             (*self.params, literal, *params, *self.sql.scope, limit))
 
     def lexical_scores(self, *, ids=None):
+        """使用匹配文本版本的词法索引计算 BM25。
+
+        Args:
+            ids: 可选的候选记录 ID。提供时只对这些记录返回分数。
+
+        Returns:
+            匹配记录 ID 到 BM25 分数的映射。
+        """
         terms = sorted(bm25_query_terms(self.query.text))
         if not terms:
             return {}
@@ -120,6 +157,11 @@ class Corpus:
         return dict(rows)
 
     def _lexical(self):
+        """构造连接当前文本及其词法索引的查询。
+
+        Returns:
+            SQL 与绑定参数。
+        """
         statement = self.eligible + f""", documents AS MATERIALIZED (
             SELECT x.user_id,x.space_id,x.id,d.id AS document_id,d.document_length
             FROM eligible x
@@ -131,6 +173,7 @@ class Corpus:
         return statement, (*self.params, ANALYZER)
 
     def limitations(self):
+        """报告当前语料的索引缺口和向量检索限制。"""
         flags = []
         statement, params = self._lexical()
         if self.sql.run(statement + ' SELECT EXISTS(SELECT 1 FROM documents WHERE document_id IS NULL)',
@@ -150,6 +193,7 @@ class Corpus:
         return tuple(flags)
 
     def scalar_candidates(self):
+        """选出有效时间最新或显著度最高的事实 ID。"""
         limit = self.query.facts.limit
         return tuple(row[0] for row in self.sql.run(self.eligible + """
             (SELECT id FROM eligible ORDER BY valid_at DESC NULLS LAST,id LIMIT %s)
@@ -159,6 +203,17 @@ class Corpus:
 
 
 def fact_candidates(view, query, config=None, graph=None):
+    """汇集向量、词法、图和标量候选并补齐分数。
+
+    Args:
+        view: 当前空间的读取快照。
+        query: 检索请求及事实筛选条件。
+        config: 可选的候选检索配置。
+        graph: 可复用的请求级图读取器。
+
+    Returns:
+        带快照、候选分数和覆盖限制的批次。
+    """
     config = config if config is not None else Config()
     graph = graph if graph is not None else RetrievalGraph(view, query)
     retriever = HybridRetriever(None, graph, None, config)

@@ -9,12 +9,28 @@ from typing import Optional
 class CrossEncoderReranker:
     def __init__(self, model_name: str = "BAAI/bge-reranker-base", device: Optional[str] = None,
                  max_length: int = 512) -> None:
+        """加载用于查询和候选文本联合打分的模型。
+
+        Args:
+            model_name: 重排模型名称。
+            device: 可选的推理设备。
+            max_length: 模型输入的最大序列长度。
+        """
         from sentence_transformers import CrossEncoder  # 重依赖,懒加载
 
         self.model = CrossEncoder(model_name, max_length=max_length, device=device)
 
     def rerank(self, query: str, candidates: list[tuple[str, str]], top_k: int) -> list[tuple[str, float]]:
-        """candidates:[(id, text), ...] -> [(id, 分数), ...] 最优在前,截断到 top_k。"""
+        """对查询和候选文本联合打分并重排。
+
+        Args:
+            query: 查询文本。
+            candidates: 候选 ID 和文本的二元组列表。
+            top_k: 返回候选数量上限。
+
+        Returns:
+            按分数降序排列的候选 ID 和分数。
+        """
         if not candidates:
             return []
         scores = self.model.predict([(query, text) for _, text in candidates], show_progress_bar=False)

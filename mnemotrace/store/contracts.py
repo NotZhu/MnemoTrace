@@ -165,7 +165,7 @@ class CommitConditions:
 
 @dataclass(frozen=True)
 class FactQuery:
-    """Filter facts by effective time using current evidence."""
+    """按有效时间、事实状态和可见性条件筛选事实。"""
 
     state: FactState = FactState.CURRENT
     valid_at: float | None = None
@@ -179,6 +179,7 @@ class FactQuery:
 
     @property
     def is_current_view(self) -> bool:
+        """判断是否查询当前状态且未指定历史时点。"""
         return self.state == FactState.CURRENT and self.valid_at is None
 
     def __post_init__(self):
@@ -199,6 +200,7 @@ class FactQuery:
 
 @dataclass(frozen=True)
 class RetrievalQuery:
+    """带事实范围、可选查询向量及向量模型的检索请求。"""
     facts: FactQuery
     text: str
     vector: tuple[float, ...] | None = None
@@ -243,12 +245,27 @@ class MessageInput:
     @property
     def fingerprint(self) -> str:
         # 1 and 1.0 are the same event time; content/IDs are never trimmed or case-folded.
+        """返回消息内容、角色、时间和来源智能体的稳定指纹。"""
         stamp = float(self.event_time) if self.event_time is not None else None
         value = [self.role, self.content, stamp, self.agent_id]
         return hashlib.sha256(_json(value).encode('utf-8')).hexdigest()
 
 
 def message_inputs(value, *, message_id=None, event_time=None, agent_id=None):
+    """将单条文本或批量消息转换为统一的输入记录。
+
+    Args:
+        value: 单条文本，或包含 1 至 1000 条消息的列表或元组。
+        message_id: 单条文本的消息 ID，省略时自动生成。
+        event_time: 单条文本的事件时间戳。
+        agent_id: 来源智能体 ID，指定时覆盖消息自带的值。
+
+    Returns:
+        按输入顺序排列的 MessageInput 元组。
+
+    Raises:
+        ValueError: 输入格式或消息字段无效。
+    """
     if isinstance(value, str):
         return (MessageInput(message_id if message_id is not None else uuid4().hex,
                              'user', value, event_time, agent_id),)
@@ -351,6 +368,7 @@ class RecordWrite:
 
 @dataclass(frozen=True)
 class Candidate:
+    """携带各路排序信号的事实候选。"""
     record: StoredRecord
     semantic: float
     lexical: float
@@ -369,6 +387,7 @@ class Candidate:
 
 @dataclass(frozen=True)
 class CandidateBatch:
+    """来自同一快照的候选批次及其覆盖限制。"""
     snapshot: ReadSnapshot
     candidates: tuple[Candidate, ...]
     complete: bool

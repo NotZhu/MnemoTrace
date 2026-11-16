@@ -8,6 +8,17 @@ from ..store.postgres.records import domain
 
 
 def build_record_write(context, value, previous=None, *, digest_base=1):
+    """构造带版本前置条件的记录写入项。
+
+    Args:
+        context: 目标记忆空间。
+        value: 要写入的领域记录。
+        previous: 对应的旧记录。新增时为 None。
+        digest_base: 首次生成摘要时使用的版本号。
+
+    Returns:
+        供 PostgreSQL 提交的记录写入项。
+    """
     if previous is None:
         return RecordWrite(StoredRecord.from_record(context, value), None)
     old = domain(previous)
@@ -20,6 +31,18 @@ def build_record_write(context, value, previous=None, *, digest_base=1):
 
 
 def embed_texts(embedder, texts):
+    """批量编码去重后的文本并校验向量。
+
+    Args:
+        embedder: 可选的向量编码器。
+        texts: 要编码的文本。
+
+    Returns:
+        文本到向量的映射。未配置编码器时返回空字典。
+
+    Raises:
+        ValueError: 编码器返回的向量数量或格式无效。
+    """
     texts = tuple(dict.fromkeys(texts))
     if embedder is None or not texts:
         return {}
@@ -33,6 +56,23 @@ def embed_texts(embedder, texts):
 
 def merge_records(context, config, embedder, model, now,
                   facts, previous, vectors, llm, *, ontology):
+    """合并新旧事实并生成记录与向量变更。
+
+    Args:
+        context: 目标记忆空间。
+        config: 事实处理配置。
+        embedder: 可选的向量编码器。
+        model: 向量模型标识。
+        now: 事实合并时间戳。
+        facts: 待合并的新事实。
+        previous: 相关旧事实记录。
+        vectors: 按旧事实 ID 索引的向量。
+        llm: 用于事实判定的模型。
+        ontology: 本体解析结果。
+
+    Returns:
+        记录写入项和向量写入项。
+    """
     old_records = {record.ref.record_id: record for record in previous}
     old_facts = [domain(record) for record in previous]
     fresh = embed_texts(embedder, (fact.text for fact in facts))

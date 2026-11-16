@@ -12,8 +12,14 @@ from ..types import Fact
 from ..util import DAY, now
 
 def reinforce(fact: Fact, boost: float, t: Optional[float] = None, *, track_access: bool = True) -> None:
-    """间隔重复式强化：访问记忆会提升其显著度并重置衰减时钟（MemoryBank 的间隔效应）。
-    在 fact 被检索进答案上下文时调用。"""
+    """就地提升事实显著度，并按需记录此次访问。
+
+    Args:
+        fact: 要增强的事实。
+        boost: 显著度增量。
+        t: 可选的访问时间戳。
+        track_access: 是否更新访问次数和最后访问时间。
+    """
     if track_access:
         fact.access_count += 1
         fact.last_access = now() if t is None else t

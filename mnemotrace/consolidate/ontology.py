@@ -83,6 +83,15 @@ def validate_type_catalog(catalog):
 
 
 def validate_candidate(ontology, catalog):
+    """验证抽取结果提出的关系和端点类型。
+
+    Args:
+        ontology: 候选事实的关系和端点描述。
+        catalog: 已知的实体类型和含义。
+
+    Raises:
+        ValueError: 关系方向、端点结构或类型描述无效。
+    """
     if (not isinstance(ontology, dict) or set(ontology) != {'subject', 'object', 'meaning', 'direction'}
             or not _text(ontology['meaning'], 512) or ontology['direction'] not in ('forward', 'symmetric')):
         raise ValueError('Invalid relationship proposal')
@@ -128,7 +137,14 @@ class Resolution:
     definitions: dict = field(default_factory=dict)
 
     def records(self, accepted):
-        """Return writes supported by final assertions, including versioned extensions."""
+        """为最终接受的事实生成所需的本体变更。
+
+        Args:
+            accepted: 最终保留或归并的候选事实 ID。
+
+        Returns:
+            要写入的领域记录及对应的可选旧版本。
+        """
         records, pairs = {}, {}
         for key in sorted(accepted):
             if key not in self.supporting:
@@ -149,7 +165,18 @@ class Resolution:
 
 
 def _bind(work, entries, catalog, owner, space_id):
-    """Resolve the names once for the window and collect provisional records."""
+    """依据原文证据解析实体名称并准备候选本体记录。
+
+    Args:
+        work: 当前空间的本体工作集。
+        entries: 带来源证据的候选事实。
+        catalog: 已知实体类型及含义。
+        owner: 事实所属的用户 ID。
+        space_id: 目标记忆空间 ID。
+
+    Returns:
+        已解析端点并附有候选本体记录的条目。
+    """
     types = work.types()
     names = {name_key(item[side]) for _, item, _ in entries for side in ('subject', 'object')
              if item['ontology'][side] is not None and _text(item[side], 256)}
@@ -257,7 +284,20 @@ def _decision(row, options, item, selected, effective, definitions, work, owner)
 
 
 def resolve(work, entries, catalog, owner, space_id, llm, config):
-    """Bind extracted candidates and return resolved fields plus provisional catalog writes."""
+    """将抽取候选绑定到当前空间的实体与关系。
+
+    Args:
+        work: 当前空间的本体工作集。
+        entries: 候选事实及其原文引用。
+        catalog: 可用实体类型及含义。
+        owner: 事实所属的用户 ID。
+        space_id: 目标记忆空间 ID。
+        llm: 用于选择关系类型的模型。
+        config: 本体判定配置。
+
+    Returns:
+        事实绑定与待写入的本体记录。
+    """
     output = Resolution()
     if not entries:
         return output

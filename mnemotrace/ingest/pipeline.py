@@ -13,6 +13,11 @@ from ..types import Episode
 class Ingestor:
     """事件写入器。"""
     def __init__(self, episodes_doc: DocStore) -> None:
+        """绑定保存原文事件的文档存储。
+
+        Args:
+            episodes_doc: 原文事件的存储后端。
+        """
         self.episodes_doc = episodes_doc
 
     def ingest(
@@ -25,17 +30,21 @@ class Ingestor:
         *,
         extract: bool = True,
     ) -> Episode:
-        """写入一条事件（episode）。
+        """保存一条原始事件。
 
         Args:
-            content: 事件内容。
+            content: 事件原文。
             user_id: 用户 ID。
             session_id: 会话 ID。
-            role: 说话者。
-            event_time: 事件发生时间（世界时间）。
-            extract: 是否请求后续事实抽取。
+            role: 消息发送者的角色。
+            event_time: 事件时间戳。省略时表示未知。
+            extract: 是否标记为待抽取。
+
         Returns:
-            写入的 Episode 对象。
+            已保存的 Episode。
+
+        Raises:
+            ValueError: extract 不是布尔值。
         """
         ep = Episode(
             content=content,
@@ -49,5 +58,5 @@ class Ingestor:
         return ep
 
     def pending(self) -> list[Episode]:
-        """返回等待事实抽取的 episode。"""
+        """列出请求抽取且尚未整合的原文事件。"""
         return [ep for ep in self.episodes_doc.values() if ep.extract and not ep.consolidated]

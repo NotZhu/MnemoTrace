@@ -21,6 +21,22 @@ DATABASE_WARNING_INTERVAL = 60
 
 def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=2, once=False,
                should_stop=lambda: False):
+    """轮询并执行已就绪的 PostgreSQL 后台任务。
+
+    Args:
+        discovery: 用于发现任务的数据库连接管理器。
+        runtime: 用于执行任务的数据库连接管理器。
+        config: 记忆处理配置。
+        llm: 抽取模型。为 None 时跳过任务发现。
+        embedder: 可选的向量编码器。
+        model: 向量模型标识。
+        concurrency: 同时执行的任务数上限。
+        once: 是否只执行一轮任务发现。
+        should_stop: 返回是否应停止调度的函数。
+
+    Raises:
+        DatabaseUnavailable: 单轮执行时数据库不可用。
+    """
     def run(candidate):
         context, operation_id = candidate
         try:
@@ -65,6 +81,14 @@ def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=
 
 
 def main(argv=None):
+    """读取配置并启动 PostgreSQL 记忆处理 worker。
+
+    Args:
+        argv: 命令行参数。省略时读取进程参数。
+
+    Returns:
+        正常完成或收到键盘中断时返回 0。
+    """
     parser = ArgumentParser(description=__doc__)
     parser.add_argument('--concurrency', type=int, default=2)
     parser.add_argument('--once', action='store_true', help='Process one ready operation per available slot')

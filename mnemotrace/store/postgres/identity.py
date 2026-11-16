@@ -176,6 +176,17 @@ class Spaces:
         self.database = database
 
     def authenticate(self, key: str) -> Identity:
+        """用 API 凭据解析用户和密钥标识。
+
+        Args:
+            key: 请求提供的 API 密钥。
+
+        Returns:
+            已鉴权的用户和密钥身份。
+
+        Raises:
+            AuthenticationError: 凭据格式无效或无法验证。
+        """
         if not isinstance(key, str) or not 1 <= len(key) <= 512 or any(
                 ord(c) < 33 or ord(c) > 126 for c in key):
             raise AuthenticationError('Invalid API key')
@@ -210,6 +221,15 @@ class Spaces:
             ).fetchall())
 
     def authorize(self, user_id: str, space_id: str) -> SpaceContext:
+        """验证调用者可访问目标记忆空间。
+
+        Args:
+            user_id: 调用者的用户 ID。
+            space_id: 目标空间 ID。
+
+        Returns:
+            已授权的空间上下文。
+        """
         with self.database.space_transaction(user_id, space_id, read_only=True) as (_, context):
             return context
 

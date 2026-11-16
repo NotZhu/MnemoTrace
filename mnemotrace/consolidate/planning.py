@@ -42,6 +42,15 @@ digests 每项包含 source_id（输入 id）、text。对 rules.digest_required
 digest_required 和 digest_max_chars 位于请求规则中；不得给短消息或 context 另造摘要。'''
 
 def system_prompt(policy='', *, typed=False):
+    """构造事实抽取使用的系统提示。
+
+    Args:
+        policy: 附加的抽取规则。
+        typed: 是否启用带实体类型的抽取契约。
+
+    Returns:
+        含类别约束和抽取规则的系统提示。
+    """
     system = SYSTEM
     if typed:
         from .ontology import TYPED_EXTRACTION_INSTRUCTIONS
@@ -51,6 +60,15 @@ def system_prompt(policy='', *, typed=False):
 
 
 def request(data, config):
+    """将批次输入和摘要要求序列化为模型请求。
+
+    Args:
+        data: 批次抽取输入。
+        config: 提供摘要长度上限的配置。
+
+    Returns:
+        用户提示文本。
+    """
     payload = dict(data)
     payload['rules'] = dict(digest_max_chars=config.digest_max_chars,
         digest_required=[s['id'] for s in data['pending'] if s['needs_digest']])
@@ -58,6 +76,14 @@ def request(data, config):
 
 
 def validate_config(config):
+    """检查抽取的 token 预算和摘要长度配置。
+
+    Args:
+        config: 待检查的记忆处理配置。
+
+    Raises:
+        ValueError: 预算或摘要长度无效。
+    """
     for name in ('memory_max_input_tokens', 'memory_max_output_tokens', 'digest_min_chars', 'digest_max_chars'):
         if type(getattr(config, name)) is not int or getattr(config, name) <= 0:
             raise ValueError(f'{name} must be a positive integer')
@@ -66,12 +92,31 @@ def validate_config(config):
 
 
 def source_coverage(item, input_hash):
+    """构造抽取结果对应的原文覆盖记录。
+
+    Args:
+        item: 抽取输入中的原文条目。
+        input_hash: 批次输入哈希。
+
+    Returns:
+        包含原文指纹、字符区间及输入哈希的字典。
+    """
     return dict(unit='unicode_code_points', ranges=deepcopy(item['ranges']), partial=item['partial'],
                 source=item['source'], original_length=item['source_length'], input_hash=input_hash)
 
 
 def build_batch(pending, previous, config, *, entity_types=None):
-    """Build one request from its full input and chronological prior messages."""
+    """用待处理消息和会话历史构造一批抽取输入。
+
+    Args:
+        pending: 待抽取的原文事件与会话序号。
+        previous: 提供上下文的历史事件与会话序号。
+        config: 记忆处理配置。
+        entity_types: 可选的实体类型代码到含义的映射。
+
+    Returns:
+        包含原文、上下文及摘要要求的输入字典。
+    """
     def supplied(ep, sequence, *, context=False):
         return dict(id=ep.id, message_id=ep.message_id, sequence=sequence, role=ep.role,
                     event_time=ep.event_time, representation='raw', content=ep.content,
@@ -87,6 +132,14 @@ def build_batch(pending, previous, config, *, entity_types=None):
 
 
 def validate_view(item):
+    """校验抽取输入中的原文视图及来源字段。
+
+    Args:
+        item: 输入中的单条原文或摘要视图。
+
+    Raises:
+        ValueError: 字段、来源标识或覆盖区间无效。
+    """
     required = {'id', 'message_id', 'sequence', 'role', 'event_time', 'representation', 'content',
                 'source', 'source_length', 'ranges', 'partial', 'needs_digest', 'representation_source'}
     if not isinstance(item, dict) or set(item) != required:
@@ -109,6 +162,18 @@ def validate_view(item):
 
 
 def fact_valid_at(item, event_time):
+    """根据抽取结果计算事实有效时间。
+
+    Args:
+        item: 含时间类型和可选日期的事实数据。
+        event_time: 作为当前类事实时间依据的来源时间。
+
+    Returns:
+        事实有效时间戳。时间未知时返回 None。
+
+    Raises:
+        ValueError: 时间类型或日期格式无效。
+    """
     kind, effective_date = item['time_kind'], item['effective_date']
     if kind == 'dated':
         if not isinstance(effective_date, str) or len(effective_date) != 10:
@@ -123,13 +188,33 @@ def fact_valid_at(item, event_time):
 
 
 def source_anchor(source_ids, pending):
-    """Choose the newest cited pending source eligible to anchor the extracted item."""
+    """选择最新的已引用待抽取用户消息作为事实锚点。
+
+    Args:
+        source_ids: 事实引用的原文 ID。
+        pending: 按原文 ID 索引的待抽取输入。
+
+    Returns:
+        序号最大的可用用户消息。无匹配时返回 None。
+    """
     return max((pending[key] for key in source_ids if key in pending
                 and pending[key]['role'] == 'user'),
                key=lambda item: item['sequence'], default=None)
 
 
 def _validated_facts(facts, data):
+    """验证模型返回的事实、标签和来源引用。
+
+    Args:
+        facts: 模型返回的候选事实列表。
+        data: 该批次使用的原文与抽取配置。
+
+    Returns:
+        类别已规范化的候选事实。
+
+    Raises:
+        ValueError: 事实字段、标签、本体或来源引用无效。
+    """
     if not isinstance(facts, list):
         raise ValueError('Expected a fact list')
     sources = {s['id'] for s in (*data['context'], *data['pending'])}
@@ -169,10 +254,28 @@ def _validated_facts(facts, data):
 
 
 def _digest_sources(data):
+    """找出本批次要求生成摘要的原文。
+
+    Args:
+        data: 批次抽取输入。
+
+    Returns:
+        原文 ID 到输入条目的映射。
+    """
     return {s['id']: s for s in data['pending'] if s['needs_digest']}
 
 
 def _digest_text(text, source, maximum):
+    """规范化摘要并检查其长度。
+
+    Args:
+        text: 候选摘要文本。
+        source: 包含可见字符区间的原文条目。
+        maximum: 摘要字符数上限。
+
+    Returns:
+        去除首尾空白后的有效摘要。类型或长度不符时返回 None。
+    """
     if not isinstance(text, str) or '\x00' in text:
         return None
     text = text.strip()
@@ -182,6 +285,19 @@ def _digest_text(text, source, maximum):
 
 
 def validate_response(raw, data, config):
+    """解析模型响应，并校验事实与原文摘要。
+
+    Args:
+        raw: 模型响应文本。
+        data: 模型使用的批次输入。
+        config: 记忆处理配置。
+
+    Returns:
+        事实列表和按原文 ID 索引的摘要。
+
+    Raises:
+        ExtractionResponseError: 响应格式、原文引用或摘要无效。
+    """
     def invalid_constant(value):
         raise ValueError('Non-finite JSON number')
 
@@ -210,6 +326,19 @@ def validate_response(raw, data, config):
 
 
 def validate_result(result, data, config):
+    """重新验证已保存的抽取结果。
+
+    Args:
+        result: 要恢复的事实与摘要结果。
+        data: 生成该结果时的批次输入。
+        config: 提供摘要长度上限的配置。
+
+    Returns:
+        通过校验的抽取结果。
+
+    Raises:
+        ValueError: 事实或摘要与原抽取契约不一致。
+    """
     if not isinstance(result, dict) or set(result) != {'facts', 'digests'} or not isinstance(result['digests'], dict):
         raise ValueError('Invalid pipeline result')
     if _validated_facts(result['facts'], data) != result['facts']:

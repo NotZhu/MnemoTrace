@@ -42,6 +42,20 @@ def _timeline_candidates(new, candidates, now):
 
 
 def _pairs(incoming, facts, config, embedder, now, *, lexical=False, symmetric=()):
+    """为新事实生成可能冲突或共存的候选事实对。
+
+    Args:
+        incoming: 待整合的新事实。
+        facts: 按 ID 索引的事实工作集。
+        config: 提供相似度阈值的配置。
+        embedder: 可选的向量编码器。
+        now: 时间比较使用的参考时间戳。
+        lexical: 是否用词法匹配扩充跨槽位候选。
+        symmetric: 对称关系 ID。
+
+    Returns:
+        候选事实对 ID 到事实对的映射。
+    """
     subjects = defaultdict(list)
     endpoints = defaultdict(list)
     for fact in facts.values():
@@ -77,6 +91,20 @@ def _pairs(incoming, facts, config, embedder, now, *, lexical=False, symmetric=(
 
 
 def _judge(pairs, duplicate_pairs, llm, config):
+    """按模型预算分批判定事实之间的关系。
+
+    Args:
+        pairs: 要判定的候选事实对。
+        duplicate_pairs: 可被判为重复的候选对。
+        llm: 判定事实关系的模型。
+        config: 模型输入输出预算配置。
+
+    Yields:
+        每批的判定结果及模型调用次数。
+
+    Raises:
+        ExtractionResponseError: 模型返回了不支持的判定。
+    """
     def view(fact):
         return dict(text=fact.text, subject=fact.subject, predicate=fact.predicate, object=fact.object,
                     valid_at=fact.valid_at, invalid_at=fact.invalid_at)
@@ -149,7 +177,26 @@ def _duplicate_groups(facts, decisions, previous_ids):
 
 def plan_merge(incoming, previous, llm, config, embedder, now, *, verdicts=None,
                semantic=False, symmetric=(), duplicate_ids=None):
-    """Return changed facts and call counts for the caller's commit."""
+    """计算新旧事实的去重与历史失效计划。
+
+    Args:
+        incoming: 本批新增的候选事实。
+        previous: 现有的相关事实。
+        llm: 用于判定事实关系的模型。
+        config: 事实合并策略。
+        embedder: 可选的向量编码器。
+        now: 合并使用的时间戳。
+        verdicts: 可选的预先计算的判定结果。
+        semantic: 是否启用语义去重。
+        symmetric: 对称关系的 ID 集合。
+        duplicate_ids: 可选的输出映射，记录重复事实的归并目标。
+
+    Returns:
+        变更后的事实列表与整合统计。
+
+    Raises:
+        ValueError: 判定结果包含无效的候选对或决定。
+    """
     facts = {fact.id: deepcopy(fact) for fact in previous}
     previous_ids = set(facts)
     assertions = defaultdict(list)

@@ -13,6 +13,15 @@ _NON_SINGLE_LINE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def projects_fact(fact: Fact, definition=None) -> bool:
+    """判断事实能否投影为图中的关系。
+
+    Args:
+        fact: 待检查的事实。
+        definition: 可选的关系类型及端点约束。
+
+    Returns:
+        两端实体及字段满足图投影约束时返回 True。
+    """
     if not (fact.subject_id and fact.object_id):
         return False
     if definition and definition.endpoint_types:
@@ -30,9 +39,19 @@ def projects_fact(fact: Fact, definition=None) -> bool:
 
 class GraphBuilder:
     def __init__(self, graph: GraphStore) -> None:
+        """绑定要维护的图存储。
+
+        Args:
+            graph: 接收事实投影的图存储。
+        """
         self.graph = graph
 
     def add_fact(self, fact: Fact) -> None:
+        """按事实当前内容替换其关系边。
+
+        Args:
+            fact: 提供关系端点及有效时间的事实。
+        """
         self.graph.delete_relations_for_fact(fact.id)
         if not projects_fact(fact):
             return

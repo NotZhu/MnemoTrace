@@ -12,7 +12,17 @@ def live_at(facts: list[Fact], as_of: Optional[float]) -> list[Fact]:
 
 
 def history(facts: list[Fact], user_id: str, subject: str, predicate: str) -> list[Fact]:
-    """一个槽位随时间的完整演化(live + 已被取代的),按时间从旧到新。"""
+    """读取指定用户、主体和谓词的全部事实历史。
+
+    Args:
+        facts: 可查询的事实集合。
+        user_id: 事实所属的用户 ID。
+        subject: 事实主体。
+        predicate: 事实谓词。
+
+    Returns:
+        按有效时间从旧到新排列的事实。
+    """
     subject, predicate = name_key(subject), name_key(predicate)
     chain = [
         f

@@ -4,6 +4,14 @@ import time
 from .base import LLM, complete_result
 
 def one_attempt(llm):
+    """将支持重试的 LiteLLM 调用限制为一次尝试。
+
+    Args:
+        llm: 生成任务使用的模型，可带缓存或计量包装器。
+
+    Returns:
+        可供任务执行器调用的模型。
+    """
     from .litellm_llm import LiteLLMClient
     from .cache import CachedLLM
     if isinstance(llm, (CachedLLM, ModelMeter)):
@@ -20,6 +28,14 @@ def one_attempt(llm):
 
 
 def discard_cached_completion(llm, prompt, completion, **kwargs):
+    """丢弃未通过校验的模型生成缓存。
+
+    Args:
+        llm: 生成所使用的模型，可带缓存或计量包装器。
+        prompt: 对应的用户提示。
+        completion: 要丢弃的生成结果。
+        **kwargs: 参与缓存键计算的生成选项。
+    """
     from .cache import CachedLLM
 
     while isinstance(llm, (CachedLLM, ModelMeter)):

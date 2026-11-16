@@ -10,6 +10,17 @@ ANALYZER = 'unicode-v2'
 
 
 def project_document(sql, kind, record_id, version, text, *, field='text', missing_only=False):
+    """同步指定字段版本的词法文档与词频索引。
+
+    Args:
+        sql: 已限定空间的写事务。
+        kind: 记录类型。
+        record_id: 记录 ID。
+        version: 文本字段的版本。
+        text: 要索引的文本。为 None 时移除现有索引。
+        field: 文本字段标识。
+        missing_only: 是否跳过已具备当前版本的索引。
+    """
     column = TARGET_COLUMNS[kind]
     document_id = projection_id('lex_', f'{kind.value}:{field}:{record_id}')
     if missing_only and sql.run(f'SELECT 1 FROM mnemotrace.lexical_documents WHERE {SCOPE} '
@@ -31,6 +42,16 @@ def project_document(sql, kind, record_id, version, text, *, field='text', missi
 
 
 def project_text(sql, kind, record_id, version, values, *, missing_only=False):
+    """将事实文本与其有效日期写入词法索引。
+
+    Args:
+        sql: 已限定空间的写事务。
+        kind: 记录类型。仅事实会生成索引。
+        record_id: 事实记录 ID。
+        version: 事实文本的内容版本。
+        values: 包含文本和有效时间的事实字段。
+        missing_only: 是否跳过已具备当前版本的索引。
+    """
     if kind == FACT:
         text = f"{values['text']} {date_terms(values['valid_at'])}"
     else:

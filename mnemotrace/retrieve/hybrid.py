@@ -22,10 +22,14 @@ _GRAPH_HOP_DECAY = 0.65
 
 
 def date_terms(epoch: float) -> str:
-    """把 fact 的日期渲染成可检索 token(年、数字月份、月份名),使提到时间的查询('May 2023'、'in 2024')
-    能通过 BM25 命中日期正确的 fact —— 否则日期只存在于 valid_at 中,对检索不可见。这是把查询期的
-    时间匹配当作词法信号来实现(精神上类似 MemoryScope 的 time_ratio),不引入可能压过相关性的
-    分数乘子。"""
+    """生成可参与词法匹配的日期词项。
+
+    Args:
+        epoch: 事实或事件的时间戳。
+
+    Returns:
+        日期、年份、数字月份和英文月份名。无法解析时返回空字符串。
+    """
     try:
         d = fmt_date(epoch)  # YYYY-MM-DD
         y, m, _ = d.split("-")
@@ -34,22 +38,42 @@ def date_terms(epoch: float) -> str:
         return ""
 
 def order_positive(scores: dict[str, float]) -> list[str]:
-    """只对真实证据命中排序。
+    """按分数降序保留有正向证据的候选。
 
-    RRF 会给每个上榜项正贡献。对证据类信号(semantic、lexical、graph)而言,分数为 0 表示"该信号
-    没找到证据",而不是"排在最后的证据"。过滤掉 0 分,可以防止 salience/recency 这类先验借助任意的
-    0 分排序冒领虚假支持。
+    Args:
+        scores: 候选 ID 到分数的映射。
+
+    Returns:
+        正分候选 ID，供排名融合使用。
     """
     return [doc_id for doc_id, score in sorted(scores.items(), key=lambda x: x[1], reverse=True) if score > 0.0]
 
 
 def graph_relation_relevance(query: str, fact: Fact) -> float:
+    """按查询与事实谓词或文本的词项重合程度打分。
+
+    Args:
+        query: 查询文本。
+        fact: 待打分的事实。
+
+    Returns:
+        谓词匹配为 1，只有文本匹配为 0.75，无匹配为 0。
+    """
     if set(lexical_terms(query, query=True)) & set(lexical_terms(fact.predicate)):
         return 1.0
     return 0.75 if overlap_terms(query, fact.text) else 0.0
 
 
 def _entity_name_mentions(text: str, name: str) -> list[re.Match]:
+    """查找规范化文本中的实体名称。
+
+    Args:
+        text: 已规范化的待匹配文本。
+        name: 实体名称。
+
+    Returns:
+        匹配的位置。ASCII 名称要求字母数字边界。
+    """
     if not name.strip():
         return []
     name = normalize(name)
@@ -62,6 +86,15 @@ def _entity_name_mentions(text: str, name: str) -> list[re.Match]:
 
 
 def mentioned_entities(query, entities):
+    """从查询中找出无歧义的实体名称，重叠时优先匹配长名称。
+
+    Args:
+        query: 查询文本。
+        entities: 可用于匹配的实体。
+
+    Returns:
+        按首次匹配位置排列的实体 ID 到实体的映射。
+    """
     query = normalize(query)
     mentions = {}
     for entity in entities:
@@ -85,15 +118,15 @@ def mentioned_entities(query, entities):
 
 
 class HybridRetriever:
-    """混合检索器:融合语义、词法、图关系、显著度和新近度的检索。"""
+    """使用语义、词法、图、新近度和显著度融合排序事实。"""
     def __init__(self, fact_store: VectorStore, graph: GraphStore, embedder: Embedder | None, config: Config) -> None:
-        """初始化混合检索器。
+        """绑定事实、图和排序依赖。
 
         Args:
             fact_store: 事实存储。
-            graph: 图存储。
-            embedder: 嵌入器。
-            config: 配置。
+            graph: 实体和关系存储。
+            embedder: 可选的向量编码器。
+            config: 候选召回、图遍历和排序配置。
         """
         self.track = ()
         self.fact_store = fact_store
@@ -102,13 +135,32 @@ class HybridRetriever:
         self.config = config
 
     def query_entity_ids(self, query: str, user_id: str) -> set[str]:
-        """全名出现在查询中的实体节点(即查询的锚点实体)。"""
+        """识别查询文本中的锚点实体。
+
+        Args:
+            query: 查询文本。
+            user_id: 实体所属的用户 ID。
+
+        Returns:
+            查询中无歧义的实体 ID 集合。
+        """
         entities = [ent for ent in self.graph.entities.values() if ent.user_id == user_id]
         return set(mentioned_entities(query, entities))
 
     def _graph_scores(
         self, query: str, user_id: str, live: list[Fact], as_of: Optional[float]
     ) -> tuple[dict[str, float], set[str]]:
+        """从锚点实体传播分数，计算候选事实的图相关性。
+
+        Args:
+            query: 查询文本。
+            user_id: 实体所属的用户 ID。
+            live: 可参与计分的事实。
+            as_of: 图遍历使用的有效时间。
+
+        Returns:
+            事实 ID 到图分数的映射，以及查询锚点 ID。
+        """
         qids = self.query_entity_ids(query, user_id)
         if not self.config.graph_proximity:
             return {f.id: 0.0 for f in live}, qids
@@ -164,7 +216,17 @@ class HybridRetriever:
     def _ann_candidates(
         self, query: str, user_id: str, as_of: Optional[float], qvec: list[float]
     ) -> list[Fact]:
-        """Collect vector and graph candidates without enumerating the fact store."""
+        """合并向量候选与查询锚点的一跳事实。
+
+        Args:
+            query: 查询文本。
+            user_id: 事实所属的用户 ID。
+            as_of: 可选的事实有效时间。
+            qvec: 查询向量。
+
+        Returns:
+            去重后的候选事实。
+        """
         pool = max(self.config.ann_pool, self.config.top_k)
         hits = self.fact_store.search(
             qvec, pool, where=lambda f: f.user_id == user_id and f.is_live(as_of)
@@ -178,8 +240,16 @@ class HybridRetriever:
         return live
 
     def _graph_neighbor_facts(self, query: str, user_id: str, as_of: Optional[float]) -> list[Fact]:
-        """查询锚点实体相关关系(1 跳、双向)所依据的 live fact,按 fact_id 取回——
-        因此即使关系命中在向量池之外也能存活。"""
+        """读取查询锚点双向一跳关系对应的有效事实。
+
+        Args:
+            query: 查询文本。
+            user_id: 锚点实体所属的用户 ID。
+            as_of: 可选的事实有效时间。
+
+        Returns:
+            从事实存储读取的邻接事实。
+        """
         out: list[Fact] = []
         for eid in self.query_entity_ids(query, user_id):
             for direction in ("out", "in"):
@@ -192,6 +262,18 @@ class HybridRetriever:
     def retrieve(
         self, query: str, user_id: str, as_of: Optional[float] = None, top_k: Optional[int] = None, *, candidates=None
     ) -> tuple[list[tuple[Fact, float]], dict]:
+        """生成候选并融合各路信号对事实排序。
+
+        Args:
+            query: 查询文本。
+            user_id: 事实所属的用户 ID。
+            as_of: 可选的事实有效时间。
+            top_k: 返回数量上限。
+            candidates: 可选的预筛选候选事实。
+
+        Returns:
+            排序后的事实与分数，以及各路信号诊断信息。
+        """
         top_k = top_k or self.config.top_k
         qvec = self.embedder.embed(query) if self.embedder is not None else None
         # 候选集。默认:扫描该用户全部 live fact(精确,几千条以内没问题)。可选(config.ann_candidates):

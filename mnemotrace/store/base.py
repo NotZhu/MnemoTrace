@@ -18,7 +18,18 @@ class VectorStore(ABC):
     @abstractmethod
     def search(
         self, vector: list[float], top_k: int, where: Optional[Predicate] = None
-    ) -> list[tuple[float, Any]]: ...
+    ) -> list[tuple[float, Any]]:
+        """按向量相似度检索有向量的记录。
+
+        Args:
+            vector: 查询向量。
+            top_k: 返回记录数量上限。
+            where: 可选的载荷筛选函数。
+
+        Returns:
+            相似度分数和载荷组成的列表。
+        """
+        ...
 
     @abstractmethod
     def get(self, key: str) -> Any | None: ...
@@ -54,7 +65,17 @@ class GraphStore(ABC):
         """按 (user_id, name) 解析；已存在则返回现有节点，否则插入。"""
 
     @abstractmethod
-    def get_entity(self, user_id: str, name: str) -> Entity | None: ...
+    def get_entity(self, user_id: str, name: str) -> Entity | None:
+        """按用户和名称查找实体。
+
+        Args:
+            user_id: 实体所属的用户 ID。
+            name: 实体名称。
+
+        Returns:
+            匹配的实体。无唯一匹配时返回 None。
+        """
+        ...
 
     @abstractmethod
     def add_relation(self, relation: Relation) -> None: ...
@@ -63,7 +84,16 @@ class GraphStore(ABC):
     def neighbors(
         self, entity_id: str, as_of: Optional[float] = None, direction: str = "out"
     ) -> list[Relation]:
-        """与 `entity_id` 相连的存活 relation（过滤出在 `as_of` 时刻仍有效的那些）。"""
+        """读取指定方向和时间范围内的邻接关系。
+
+        Args:
+            entity_id: 起始实体 ID。
+            as_of: 可选的有效时间戳。
+            direction: 关系的入边或出边方向。
+
+        Returns:
+            符合条件的邻接关系。
+        """
 
     @abstractmethod
 

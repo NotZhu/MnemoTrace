@@ -11,6 +11,14 @@ from .store.postgres.errors import DatabaseError
 
 @contextmanager
 def local_space(args):
+    """打开命令行指定的记忆空间，并在退出时关闭服务。
+
+    Args:
+        args: 包含用户、空间和可选模型配置的命令行参数。
+
+    Yields:
+        记忆服务和已授权的空间上下文。
+    """
     service = MemoryService.from_env(embedder_name=getattr(args, 'embedder', None), llm_name=getattr(args, 'llm', None))
     try:
         yield service, service.spaces.authorize(args.user_id, args.space_id)
@@ -19,6 +27,14 @@ def local_space(args):
 
 
 def main(argv=None):
+    """运行记忆命令行，可保存消息、查询处理状态或检索记忆。
+
+    Args:
+        argv: 要解析的命令行参数。省略时读取进程参数。
+
+    Returns:
+        命令的退出状态码。
+    """
     parser = ArgumentParser(description=__doc__)
     parser.add_argument('--user-id', default=os.environ.get('MNEMOTRACE_USER_ID'))
     parser.add_argument('--space-id', default=os.environ.get('MNEMOTRACE_SPACE_ID'))

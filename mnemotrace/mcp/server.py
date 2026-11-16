@@ -165,13 +165,20 @@ async def mnemotrace_recall(
     valid_at: float | None = None,
     answer: bool = False,
 ) -> str:
-    """检索一小段相关、带日期的用户长期记忆，用于锚定你的回答。
+    """回忆与当前问题相关的长期记忆，用事实和来源摘要支撑回答。
 
-    这是主要的读取工具——在回答任何可能依赖既往 session 的问题前先调用它。返回用户的
-    最相关的带日期事实和来源摘要，按预算组织。可用来源 ID 显式读取原文。
+    Args:
+        query: 想从以往会话中回忆的问题。
+        max_digests: 来源摘要数量上限，为 0 时只返回事实。
+        as_of: 查询事实有效性的时间戳。
+        redact_sensitive: 是否排除敏感事实。
+        response_format: Markdown 或 JSON。
+        state: 要查询的事实状态。
+        valid_at: 事实有效时间，与 as_of 互斥。
+        answer: 是否从上下文生成模型回答。
 
-    返回（markdown）：可读取的上下文块，附近似 token 数。
-    返回（json）：{"context": str, "tokens_est": int, "as_of": float|null, "redacted_sensitive": bool}。
+    Returns:
+        带日期的上下文和 token 估算、可选的回答，或错误信息。
     """
     try:
         data = await backend().recall(
@@ -210,9 +217,22 @@ async def mnemotrace_aggregate(
     redact_sensitive: bool = False,
     limit: Annotated[int, Field(ge=1, le=1000)] = 10,
 ) -> str:
-    """Count facts with an explicit predicate. Use count_distinct for distinct object values.
-    Provide optional valid-time bounds [start, end) in epoch seconds. If only original
-    text supports the question, pass a query and treat source candidates as incomplete evidence.
+    """按显式谓词计数，可对事实对象值去重。
+
+    Args:
+        predicate: 要统计的事实谓词。
+        operation: count 统计事实，count_distinct 统计不同对象值。
+        subject: 可选的事实主体。
+        start: 事实有效时间下界，包含。
+        end: 事实有效时间上界，不包含。
+        query: 没有结构化匹配时用于检索摘要的查询。
+        state: 要查询的事实状态。
+        valid_at: 事实须满足的有效时间。
+        redact_sensitive: 是否排除敏感事实。
+        limit: 返回证据的数量上限。
+
+    Returns:
+        计数及证据的 JSON，或错误信息。回退摘要只提供候选证据。
     """
     try:
         return _json(await backend().aggregate_facts(
@@ -231,8 +251,18 @@ async def mnemotrace_follow_path(
     redact_sensitive: bool = False,
     limit: Annotated[int, Field(ge=1, le=1000)] = 20,
 ) -> str:
-    """Follow two to four outbound predicates in order, for example sister then works_at.
-    Use an exact entity name. Each result includes supporting facts.
+    """按顺序沿两到四个出向谓词遍历关系。
+
+    Args:
+        anchor: 起始实体的准确名称。
+        predicates: 按遍历顺序排列的谓词。
+        state: 要查询的事实状态。
+        valid_at: 事实须满足的有效时间。
+        redact_sensitive: 是否排除敏感事实。
+        limit: 路径数量上限。
+
+    Returns:
+        路径、支撑事实和覆盖限制的 JSON，或错误信息。
     """
     try:
         return _json(await backend().follow_path(anchor, predicates, state=state, valid_at=valid_at,
@@ -249,7 +279,16 @@ async def mnemotrace_get_episode(
                                          max_length=512)] = None,
     response_format: ResponseFormat = ResponseFormat.MARKDOWN,
 ) -> str:
-    """Explicitly read a source event. Recall does not expand summarized events automatically."""
+    """根据检索结果中的来源记录 ID 读取完整原文。
+
+    Args:
+        episode_id: 原文记录 ID。
+        space_id: 可选的来源空间 ID。
+        response_format: Markdown 或 JSON。
+
+    Returns:
+        原文及会话、空间和时间信息，或错误信息。
+    """
     try:
         data = await backend().get_episode(episode_id, space_id)
     except Exception as exc:  # noqa: BLE001 -- shared sanitized adapter errors
@@ -276,8 +315,20 @@ async def mnemotrace_search(
     subject: str | None = None,
     predicate: str | None = None,
 ) -> str:
-    """Retrieve candidate facts and sources. An explicit subject and predicate
-    can return a unique value from the selected time view.
+    """查找候选事实和来源，指定主体与谓词时可返回唯一值。
+
+    Args:
+        query: 待查询的事实问题。
+        as_of: 查询事实有效性的时间戳。
+        redact_sensitive: 是否排除敏感事实。
+        response_format: Markdown 或 JSON。
+        state: 要查询的事实状态。
+        valid_at: 事实有效时间，与 as_of 互斥。
+        subject: 可选的事实主体。
+        predicate: 可选的事实谓词。
+
+    Returns:
+        检索状态、候选证据与可选的唯一值，或错误信息。
     """
     try:
         data = await backend().recall(query, lean=False, as_of=as_of, redact_sensitive=redact_sensitive,
@@ -308,10 +359,21 @@ async def mnemotrace_remember(
     agent_id: str | None = None,
     event_time: Annotated[float | None, Field(strict=True, allow_inf_nan=False)] = None,
 ) -> str:
-    """Save a fact, preference or decision as text, or submit an ordered message list.
+    """保存事实、偏好或决定，或提交按顺序排列的对话消息。
 
-    Text is a user message. The returned task tracks extraction. Set wait=true to wait for publication.
-    Reuse the same message IDs to retry an interrupted request.
+    重试中断的请求时，复用原有消息 ID。
+
+    Args:
+        content: 单条用户消息文本或一批消息记录。
+        session_id: 会话 ID。
+        wait: 是否等待抽取任务结束。
+        timeout: 最长等待时间，单位为秒。
+        message_id: 单条文本的消息 ID。
+        agent_id: 来源智能体 ID。
+        event_time: 单条文本的事件时间戳。
+
+    Returns:
+        写入结果的 JSON 字符串，或以 Error: 开头的错误信息。
     """
     try:
         return _json(await backend().remember(content, session_id, wait=wait, timeout=timeout,
@@ -322,7 +384,14 @@ async def mnemotrace_remember(
 
 @mcp.tool(name='mnemotrace_processing_status', annotations=ToolAnnotations(title='Memory processing status', **_READ))
 async def mnemotrace_processing_status(session_id: Optional[str] = None) -> str:
-    """Inspect buffered processing without returning raw content or model credentials."""
+    """读取记忆任务的处理状态。
+
+    Args:
+        session_id: 可选的会话 ID。
+
+    Returns:
+        任务状态的 JSON 或错误信息。
+    """
     try:
         return _json(await backend().processing_status(session_id))
     except Exception as exc:
@@ -331,6 +400,14 @@ async def mnemotrace_processing_status(session_id: Optional[str] = None) -> str:
 
 @mcp.tool(name='mnemotrace_get_operation', annotations=ToolAnnotations(title='Read memory operation', **_READ))
 async def mnemotrace_get_operation(operation_id: str) -> str:
+    """查询已提交的记忆任务及其处理进度。
+
+    Args:
+        operation_id: 写入结果中的操作 ID。
+
+    Returns:
+        任务状态的 JSON 或错误信息。
+    """
     try:
         result = await backend().operation(operation_id)
         return _json(result) if result is not None else 'Error: operation not found.'
@@ -340,6 +417,14 @@ async def mnemotrace_get_operation(operation_id: str) -> str:
 
 @mcp.tool(name='mnemotrace_retry_operation', annotations=ToolAnnotations(title='Retry memory operation', **_WRITE))
 async def mnemotrace_retry_operation(operation_id: str) -> str:
+    """请求重新处理失败或等待重试的记忆任务。
+
+    Args:
+        operation_id: 写入结果中的操作 ID。
+
+    Returns:
+        请求重试后的任务状态 JSON，或错误信息。
+    """
     try:
         result = await backend().operation(operation_id, retry=True)
         return _json(result) if result is not None else 'Error: operation not found.'

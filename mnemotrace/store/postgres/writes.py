@@ -13,11 +13,14 @@ from .records import (
 
 
 def allocate_sequence(sql, session_id):
-    """为会话分配下一个序列号。
+    """为已存在的会话分配下一个原文序号。
 
     Args:
-        sql: 数据库连接。
+        sql: 已限定记忆空间的事务。
         session_id: 会话 ID。
+
+    Returns:
+        从 0 开始的会话内原文序号。
     """
     return sql.run(f'UPDATE mnemotrace.sessions SET next_sequence = next_sequence + 1 '
                    f'WHERE {SCOPE} AND session_id = %s RETURNING next_sequence - 1',
@@ -25,11 +28,30 @@ def allocate_sequence(sql, session_id):
 
 
 def check_version(sql, ref, expected):
+    """验证提交引用的内容版本。
+
+    Args:
+        sql: 已限定空间的事务。
+        ref: 要检查的记录引用。
+        expected: 提交时要求的内容版本。
+
+    Raises:
+        VersionConflict: 记录类型不受支持，或当前内容版本不符。
+    """
     if ref.kind not in TARGET_COLUMNS or sql.version(ref) != expected:
         raise VersionConflict('Referenced content version changed')
 
 
 def save_embedding(sql, item):
+    """为对应的文本或摘要版本保存向量。
+
+    Args:
+        sql: 已限定记忆空间的事务。
+        item: 向量及其关联记录版本。
+
+    Raises:
+        VersionConflict: 对应的文本或摘要版本已变化。
+    """
     if sql.version(item.record, digest=item.field == 'digest') != item.content_version:
         raise VersionConflict('Embedding refers to an obsolete text version')
     # Bind the pgvector text representation as data. The database enforces its dimension.
@@ -52,6 +74,20 @@ def _replace_fact_sources(sql, fact_id, provenance):
 
 
 def _source_digest(sql, record, values, old):
+    """写入原文摘要及覆盖范围，并同步摘要索引。
+
+    Args:
+        sql: 已限定记忆空间的事务。
+        record: 待更新的原文记录。
+        values: 新的原文与摘要字段。
+        old: 旧的原文与摘要字段。
+
+    Returns:
+        摘要文本或覆盖范围发生变化时返回 True。
+
+    Raises:
+        VersionConflict: 摘要版本已变化。
+    """
     digest = values['digest']
     previous = old['digest'] if old is not None else ''
     if digest == previous and (old is None or values['digest_coverage'] == old['digest_coverage']):
@@ -79,6 +115,20 @@ def _source_digest(sql, record, values, old):
 
 
 def write(sql, change, graph):
+    """校验并写入单条记录，同步其图和文本索引。
+
+    Args:
+        sql: 已限定记忆空间的事务。
+        change: 待写记录及期望版本。
+        graph: 当前事务中的图投影。
+
+    Returns:
+        记录是否变化及是否影响用户画像的二元组。
+
+    Raises:
+        VersionConflict: 记录版本或内容版本不符。
+        DatabaseConstraintError: 写入违反记录约束。
+    """
     record = change.record
     kind, record_id = record.ref.kind, record.ref.record_id
     previous = sql.get(kind, record_id)
@@ -157,6 +207,16 @@ def write(sql, change, graph):
 
 
 def enqueue(sql, spec, space_generation, *, ready_at=None, planned_request=None, sequence=None):
+    """在当前事务中添加任务及其输入引用。
+
+    Args:
+        sql: 已限定记忆空间的事务。
+        spec: 任务定义及原文引用。
+        space_generation: 当前空间世代。
+        ready_at: 可领取任务的最早时间。
+        planned_request: 可选的预先生成的请求计划。
+        sequence: 可选的任务顺序号。
+    """
     if sequence is None and spec.kind is OperationKind.EXTRACT:
         # All writes for this space hold its row lock.
         sequence = sql.run(f"SELECT coalesce(max(sequence) + 1, 0) FROM mnemotrace.operations "
@@ -175,6 +235,19 @@ def enqueue(sql, spec, space_generation, *, ready_at=None, planned_request=None,
 
 
 def append_input(sql, operation_id, session_id, source, order):
+    """为任务写入指定的原文版本引用。
+
+    Args:
+        sql: 已限定记忆空间的事务。
+        operation_id: 任务操作 ID。
+        session_id: 任务所在的会话 ID。
+        source: 原文 ID 和内容版本。
+        order: 该原文在任务输入中的位置。
+
+    Raises:
+        VersionConflict: 原文缺失或内容版本变化。
+        DatabaseConstraintError: 原文不属于该会话，或内容为空。
+    """
     record = sql.get(SOURCE, source.source_id)
     if record is None or record.content_version != source.content_version:
         raise VersionConflict('Referenced content version changed')
@@ -188,6 +261,16 @@ def append_input(sql, operation_id, session_id, source, order):
 
 
 def check_lease(sql, conditions):
+    """验证提交所持租约及其冻结的输入。
+
+    Args:
+        sql: 已限定记忆空间的事务。
+        conditions: 提交依赖的租约、快照和原文版本。
+
+    Raises:
+        VersionConflict: 租约、任务前置状态或原文引用已变化。
+        DataCorruption: 抽取任务缺少已保存的检查点。
+    """
     lease = conditions.lease
     row = sql.run(f"""SELECT kind, state, extraction_saved FROM mnemotrace.operations WHERE {SCOPE}
         AND operation_id = %s AND lease_token = %s AND lease_until > clock_timestamp()
@@ -211,13 +294,33 @@ def check_lease(sql, conditions):
 
 
 def commit_task(sql, lease):
+    """将已提交记忆变更的任务标记为完成并释放租约。
+
+    Args:
+        sql: 已限定记忆空间的事务。
+        lease: 已验证的任务租约。
+    """
     sql.update('operations', dict(state='completed', phase='done', core_committed=True,
                lease_token=None, lease_until=None, next_attempt_at=None, error_code=None),
                'operation_id = %s', (lease.operation_id,))
 
 
 def store_messages(sql, session_id, messages, *, extract, check_ready=None):
-    """Store a new extraction batch or append internally archived messages."""
+    """在当前事务中写入原始消息。
+
+    Args:
+        sql: 已限定记忆空间的事务。
+        session_id: 会话 ID。
+        messages: 规范化的消息记录。
+        extract: 是否标记为待抽取。
+        check_ready: 写入前的可选就绪检查。
+
+    Returns:
+        按输入顺序排列的原文记录 ID 和新增记录数。
+
+    Raises:
+        MessageConflict: 请求引用了冲突的已有消息。
+    """
     existing = sql.run(f'SELECT message_id,id,message_fingerprint,extract FROM mnemotrace.sources '
                        f'WHERE {SCOPE} AND session_id = %s AND message_id = ANY(%s)',
                        (*sql.scope, session_id, [msg.message_id for msg in messages])).fetchall()

@@ -9,7 +9,16 @@ from .graph_builder import GraphBuilder
 
 
 def extraction_entries(data, result, input_hash):
-    """Assign stable IDs and source ordering before any relationship decision."""
+    """为抽取结果分配稳定的事实 ID，并按原文顺序排列。
+
+    Args:
+        data: 批次抽取输入。
+        result: 已验证的抽取结果。
+        input_hash: 批次输入哈希。
+
+    Returns:
+        事实 ID 与候选事实组成的列表。
+    """
     pending = {item['id']: item for item in data['pending']}
     items = sorted(result['facts'], key=lambda item: source_anchor(
         item['source_ids'], pending)['sequence'])
@@ -18,7 +27,18 @@ def extraction_entries(data, result, input_hash):
 
 
 def materialize_facts(user_id, data, now, entries, *, bindings=None):
-    """Build the same facts from a saved extraction in either storage adapter."""
+    """从抽取结果构造带来源和时间信息的事实记录。
+
+    Args:
+        user_id: 事实所属的用户 ID。
+        data: 批次抽取输入。
+        now: 事实记录时间戳。
+        entries: 候选事实及其稳定 ID。
+        bindings: 可选的本体绑定，提供时只构造已绑定记录。
+
+    Returns:
+        待合并的 Fact 列表。
+    """
     pending = {item['id']: item for item in data['pending']}
 
     def anchor(item):
@@ -52,10 +72,12 @@ class FactWriter:
 
     @staticmethod
     def empty_stats():
+        """创建计数均为零的事实整合统计。"""
         return {"facts_added": 0, "duplicates": 0, "invalidated": 0,
                 "model_calls": 0, "windows_completed": 0}
 
     def _decay_sweep(self) -> None:
+        """按最新有效时间更新未访问且非持久的热层事实显著度。"""
         live = [f for f in self.fact_store.values() if f.is_live() and f.valid_at is not None]
         if not live:
             return

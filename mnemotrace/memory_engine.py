@@ -110,6 +110,11 @@ class MemoryEngine:
         self.close()
 
     def _reinforce_fact(self, fact: Fact) -> None:
+        """增强当前命中事实的显著度并写回存储。
+
+        Args:
+            fact: 要增强的事实。
+        """
         reinforce(fact, self.config.access_boost)
         self._upsert_fact(fact)
 
@@ -125,6 +130,14 @@ class MemoryEngine:
         return vector
 
     def _sync_episode(self, ep: Episode) -> None:
+        """保存原文事件并同步其摘要向量索引。
+
+        Args:
+            ep: 待保存的原文事件及其摘要状态。
+
+        Raises:
+            ValueError: 已启用向量检索，但摘要缺少向量。
+        """
         if not ep.digest:
             ep.digest_written_at = None
             ep.digest_embedding = None
@@ -139,14 +152,18 @@ class MemoryEngine:
             self.digest_vec.delete(ep.id)
 
     def _all_facts(self) -> list[Fact]:
+        """读取热层和冷层中的全部事实。"""
         facts = self.fact_store.values() + self.cold_store.values()
         return facts
 
     def _upsert_fact(self, fact: Fact, *, tier: str = "existing") -> None:
-        """把被修改的 fact 写回所属层，或强制提升到热层。
+        """显式写回事实现有存储层，或将其移到指定层。
 
-        内存 store 持有对象引用，但真实的向量后端在 upsert/get 时常会拷贝 payload。因此仅修改
-        返回的 Fact 不够；每次语义编辑/失效化都必须显式把 payload 写回唯一一个层。
+        即使存储返回的是副本，修改也会写回唯一一个层。
+
+        Args:
+            fact: 要写回的事实。
+            tier: 目标存储层。existing 保留现有层，新事实默认进热层。
         """
         with self._pipeline_lock:
             from ._profile import sync
@@ -238,17 +255,22 @@ class MemoryEngine:
         event_time: Optional[float] = None,
         consolidate: bool = False,
     ) -> Episode:
-        """写入一条带时间戳的 episode。
+        """保存一条原始事件，并按需立即整合。
 
         Args:
-            content: 事件内容。
+            content: 事件原文。
             user_id: 用户 ID。
             session_id: 会话 ID。
-            role: 说话者。
-            event_time: 事件时间戳。
-            consolidate: 是否立即执行整合。
+            role: 消息发送者的角色。
+            event_time: 事件时间戳。省略时表示未知。
+            consolidate: 是否立即整合待处理事件。
+
         Returns:
-            Episode: 写入的 episode 对象。
+            已保存的 Episode。
+
+        Raises:
+            RuntimeError: 引擎已关闭或写入失败后不可继续使用。
+            LLMNotConfiguredError: 请求立即整合但未配置抽取模型。
         """
         if self._pipeline_broken or self._pipeline_closed:
             raise RuntimeError('Memory checkpoint failed or closed; create a new instance')
@@ -262,7 +284,25 @@ class MemoryEngine:
 
     def remember(self, value, session_id: str = 'default', user_id: str = 'default', *,
                  message_id=None, event_time=None, agent_id=None):
-        """Save and extract one batch synchronously in the offline engine."""
+        """保存一批消息并同步执行事实抽取。
+
+        Args:
+            value: 单条消息文本或一批消息记录。
+            session_id: 会话 ID。
+            user_id: 用户 ID。
+            message_id: 单条文本的消息 ID，省略时自动生成。
+            event_time: 单条文本的事件时间戳。
+            agent_id: 来源智能体 ID，指定时应用于整批消息。
+
+        Returns:
+            包含已完成状态、原文记录 ID 和整合统计的字典。
+
+        Raises:
+            ValueError: 会话或消息输入无效。
+            MessageConflictError: 请求与已保存的消息冲突。
+            ExtractionError: 模型未配置，或抽取无法完成。
+            RuntimeError: 引擎已关闭或写入失败后不可继续使用。
+        """
         from .consolidate.pipeline import MessageConflictError, PipelineTasks
         from .store.contracts import message_inputs
 
@@ -286,12 +326,20 @@ class MemoryEngine:
             return tasks.response(ids)
 
     def _fence_pipeline(self):
-        """Fence an in-memory instance after a partial write."""
+        """关闭写入途中失败的引擎，阻止后续处理。"""
         self._pipeline_broken = True
         self.close()
 
     @contextmanager
     def _pipeline_write(self):
+        """在写锁内执行处理变更，遇到异常时停用引擎。
+
+        Yields:
+            None，进入后持有写锁。
+
+        Raises:
+            RuntimeError: 引擎已关闭。
+        """
         with self._pipeline_lock:
             if self._pipeline_closed:
                 raise RuntimeError('Memory is closed; create a new instance')
@@ -302,7 +350,19 @@ class MemoryEngine:
                 raise
 
     def consolidate(self, episodes=None):
-        """Activate selected source extraction through the shared checkpoint engine."""
+        """同步抽取符合条件的原文，并汇总各用户的整合结果。
+
+        Args:
+            episodes: 要处理的原文事件。省略时处理待整合事件。
+
+        Returns:
+            事实新增、去重、失效、摘要等整合统计。
+
+        Raises:
+            ValueError: 指定的原文引用不存在。
+            ExtractionError: 模型未配置，或抽取无法完成。
+            RuntimeError: 引擎已关闭或写入失败后不可继续使用。
+        """
         if self._pipeline_broken or self._pipeline_closed:
             raise RuntimeError('Memory checkpoint failed or closed; create a new instance')
         from ._pipeline import execute_memory
@@ -421,6 +481,15 @@ class MemoryEngine:
 
     @staticmethod
     def _matches(f: Fact, terms: list[str]) -> bool:
+        """按文本和类别判断事实是否匹配关注项。
+
+        Args:
+            f: 待检查的事实。
+            terms: 追踪或屏蔽项。
+
+        Returns:
+            任一关注项匹配时返回 True。
+        """
         return matches(f.text, terms, f.categories)
 
     def graph_data(
@@ -518,12 +587,36 @@ class MemoryEngine:
         k: int = 8,
         as_of: Optional[float] = None,
     ) -> list[EventEvidence]:
-        """Rank available source digests using lexical and semantic evidence."""
+        """按语义和词法相关性检索来源摘要。
+
+        Args:
+            query: 查询文本。
+            user_id: 原文所属的用户 ID。
+            k: 返回摘要数量上限。
+            as_of: 来源事件时间上限。
+
+        Returns:
+            排序后的摘要证据。
+
+        Raises:
+            RuntimeError: 引擎写入失败后不可继续使用。
+        """
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
         return self._rank_digests(query, user_id, k, as_of)
 
     def _rank_digests(self, query, user_id, k, as_of):
+        """检索摘要候选，并在配置重排模型时对候选重排。
+
+        Args:
+            query: 查询文本。
+            user_id: 原文所属的用户 ID。
+            k: 返回摘要数量上限。
+            as_of: 来源事件时间上限。
+
+        Returns:
+            排序后的摘要证据。
+        """
         if not k:
             return []
         candidates = self._digest_candidates(query, user_id, as_of, max(k * 3, 30))
@@ -533,11 +626,32 @@ class MemoryEngine:
         return candidates[:k]
 
     def _source_muted(self, episode):
+        """检查原文或摘要是否命中屏蔽主题。
+
+        Args:
+            episode: 待检查的原文事件。
+
+        Returns:
+            任一文本命中屏蔽主题时返回 True。
+        """
         terms = self.focus["mute"]
         return matches(episode.content, terms) or matches(episode.digest, terms)
 
     def _digest_candidates(self, query, user_id, as_of, pool, *,
                           start=None, end=None):
+        """生成满足时间和屏蔽条件的摘要候选并融合排名。
+
+        Args:
+            query: 查询文本。
+            user_id: 原文所属的用户 ID。
+            as_of: 可选的事件时间上限，包含。
+            pool: 各路候选池及结果的数量上限。
+            start: 可选的事件时间下界，包含。
+            end: 可选的事件时间上界，不包含。
+
+        Returns:
+            排序后的摘要证据。
+        """
         from .retrieve.fusion import weighted_rrf
         from .retrieve.hybrid import date_terms, order_positive
 
@@ -590,7 +704,11 @@ class MemoryEngine:
         return self.evict_cold(max_hot)
 
     def _page_hot(self, facts: list[Fact]) -> None:
-        """把检索命中的冷层 fact 提升回热层索引。fact id 和图的边保持不变。"""
+        """将命中的冷层事实移回热层。
+
+        Args:
+            facts: 检索命中的候选事实。
+        """
         moved = False
         for f in facts:
             if self.cold_store.get(f.id) is not None:
@@ -609,6 +727,17 @@ class MemoryEngine:
         as_of: Optional[float],
         top_k: Optional[int],
     ) -> tuple[list[tuple[Fact, float]], dict]:
+        """检索冷层，并在当前视图下将命中事实移回热层。
+
+        Args:
+            query: 查询文本。
+            user: 事实所属的用户 ID。
+            as_of: 可选的事实有效时间。
+            top_k: 返回数量上限。
+
+        Returns:
+            排序后的事实与分数，以及检索诊断信息。
+        """
         ranked, diag = self.cold_retriever.retrieve(query, user, as_of, top_k)
         if ranked and as_of is None:
             self._page_hot([f for f, _ in ranked])
@@ -643,11 +772,17 @@ class MemoryEngine:
         limit: int = 12,
         redact_sensitive: bool = False,
     ) -> list[Fact]:
-        """把检索到的 fact 扩展为对其可见的取代链。
+        """从命中事实向前后扩展可见的取代链。
 
-        这是非破坏性失效化的读路径一侧：检索仍只对 live 的槽位头部排序，但上下文组装可以展示
-        有界的链，说明它取代了什么。`as_of` 守卫刻意基于 valid 时间，与现有时间点搜索语义一致，
-        因此过去的视图绝不会泄漏未来的取代值。
+        Args:
+            seeds: 检索命中的事实。
+            user: 事实所属的用户 ID。
+            as_of: 可选的事实有效时间上限。
+            limit: 返回链条事实的数量上限。
+            redact_sensitive: 是否排除敏感事实。
+
+        Returns:
+            按主体、谓词和有效时间排列的链条事实。
         """
         if not seeds:
             return []
@@ -684,6 +819,19 @@ class MemoryEngine:
         limit: int = 12,
         redact_sensitive: bool = False,
     ) -> str:
+        """将与查询相关的取代链渲染为上下文证据。
+
+        Args:
+            seeds: 检索命中的事实。
+            user: 事实所属的用户 ID。
+            as_of: 可选的事实有效时间上限。
+            query: 可选的相关性筛选文本。
+            limit: 纳入的链条事实数量上限。
+            redact_sensitive: 是否排除敏感事实。
+
+        Returns:
+            事实演化分段。无可展示的取代链时返回空字符串。
+        """
         if query:
             seeds = [f for f in seeds if overlap_terms(query, chain_terms(f))]
         rows = self._chain_facts_for_seeds(
@@ -756,7 +904,28 @@ class MemoryEngine:
         redact_sensitive: bool = False,  # 安全/共享视图：只显示非敏感的结构化 fact
         *, facts=None,
     ) -> str:
-        """Build bounded context from ranked facts and source digests."""
+        """用排序后的事实和来源摘要构建预算内的上下文。
+
+        Args:
+            query: 查询文本。
+            user_id: 记忆所属的用户 ID。
+            as_of: 查询事实有效性的时间戳。
+            top_k: 可选的每次事实召回数量，覆盖 n_facts。
+            n_digests: 来源摘要数量上限。
+            n_facts: 默认的每次事实召回数量。
+            agentic: 是否按需通过模型扩展子查询。
+            timeline: 是否附加时间线。
+            char_budget: 上下文字符预算。
+            redact_sensitive: 是否排除敏感事实及来源摘要。
+            facts: 可选的事实筛选条件，与 as_of 互斥。
+
+        Returns:
+            预算内的记忆上下文文本。
+
+        Raises:
+            ValueError: 事实筛选无效，或同时指定 as_of 和 facts。
+            RuntimeError: 引擎写入失败后不可继续使用。
+        """
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
         user = user_id
@@ -860,6 +1029,15 @@ class MemoryEngine:
 
     # --- 读路径 ---
     def _structured_facts(self, user_id, scope):
+        """按结构化条件筛选冷热层的事实。
+
+        Args:
+            user_id: 事实所属的用户 ID。
+            scope: 事实时间、状态和可见性条件。
+
+        Yields:
+            可见事实。脱敏时一并移除敏感历史引用。
+        """
         from .store.contracts import FactState
 
         valid = now() if scope.valid_at is None else scope.valid_at
@@ -893,6 +1071,24 @@ class MemoryEngine:
 
     def aggregate_facts(self, predicate, *, operation='count', subject=None, start=None, end=None,
                         query=None, facts=None, user_id='default'):
+        """统计离线事实，无匹配时可查找摘要候选。
+
+        Args:
+            predicate: 要统计的事实谓词。
+            operation: 统计事实条数或不同对象值的数量。
+            subject: 可选的事实主体。
+            start: 事实有效时间下界，包含。
+            end: 事实有效时间上界，不包含。
+            query: 没有结构化结果时用于检索摘要的可选文本。
+            facts: 可选的事实筛选条件。
+            user_id: 事实所属的用户 ID。
+
+        Returns:
+            计数、支撑事实和可选的摘要候选。
+
+        Raises:
+            ValueError: 聚合参数或筛选条件无效。
+        """
         from dataclasses import replace
         from .retrieve.structured import summarize_matches, validate_aggregate
         from .store.contracts import FactQuery
@@ -915,6 +1111,20 @@ class MemoryEngine:
         return result
 
     def follow_path(self, anchor, predicates, *, facts=None, user_id='default'):
+        """沿显式谓词序列遍历离线实体关系。
+
+        Args:
+            anchor: 起始实体名称。
+            predicates: 按顺序遍历的谓词。
+            facts: 可选的事实筛选条件。
+            user_id: 事实所属的用户 ID。
+
+        Returns:
+            匹配路径、支撑事实及覆盖限制。
+
+        Raises:
+            ValueError: 锚点、谓词序列或筛选条件无效。
+        """
         from .retrieve.structured import PathMatch, PathResult, traverse, validate_path
         from .store.contracts import FactQuery
 
@@ -957,6 +1167,22 @@ class MemoryEngine:
         top_k: Optional[int] = None,
         *, facts=None,
     ) -> SearchResult:
+        """检索事实证据，支持显式槽位、冷层及摘要回退。
+
+        Args:
+            query: 查询文本。
+            user_id: 记忆所属的用户 ID。
+            as_of: 查询事实有效性的时间戳。
+            top_k: 返回事实数量上限。
+            facts: 可选的事实筛选条件，与 as_of 互斥。
+
+        Returns:
+            候选证据、可选唯一值或无证据状态。
+
+        Raises:
+            ValueError: 事实筛选无效，或同时指定 as_of 和 facts。
+            RuntimeError: 引擎写入失败后不可继续使用。
+        """
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
         user = user_id
@@ -1010,11 +1236,32 @@ class MemoryEngine:
         return SearchResult(query=query, facts=matched, scores=scores, via=via, source_ids=source_references(matched))
 
     def as_of(self, query: str, when: float, user_id: str = "default", top_k: Optional[int] = None) -> SearchResult:
-        """回答"在 `when` 时刻我们认为什么是真的？"——双时间轴时间点查询。"""
+        """按指定有效时间检索记忆。
+
+        Args:
+            query: 查询文本。
+            when: 事实有效时间戳。
+            user_id: 记忆所属的用户 ID。
+            top_k: 返回事实数量上限。
+
+        Returns:
+            该时点的候选证据及检索状态。
+        """
         return self.search(query, user_id=user_id, as_of=when, top_k=top_k)
 
     def get_episode(self, episode_id: str, user_id: str = "default") -> dict | None:
-        """Explicit original lookup; no embeddings or internal processing state."""
+        """按原文记录 ID 读取指定用户的消息。
+
+        Args:
+            episode_id: 原文记录 ID。
+            user_id: 原文所属的用户 ID。
+
+        Returns:
+            原文和会话元数据。记录不可见时返回 None。
+
+        Raises:
+            RuntimeError: 引擎写入失败后不可继续使用。
+        """
         if self._pipeline_broken:
             raise RuntimeError('Memory checkpoint failed; create a new instance')
         ep = self.episodes_doc.get(episode_id)
@@ -1040,6 +1287,26 @@ class MemoryEngine:
         verify: bool = False,
         intent: bool = False,
     ) -> str:
+        """组装事实和摘要，并按需添加检索增强内容。
+
+        Args:
+            query: 查询文本。
+            user_id: 记忆所属的用户 ID。
+            as_of: 查询事实有效性的时间戳。
+            top_k: 事实召回数量上限。
+            k_digests: 来源摘要数量上限。
+            agentic: 是否用模型拆分摘要查询。
+            timeline: 是否附加时间线。
+            hyde: 是否用假想答案扩展查询。
+            graph: 是否附加图相关事实。
+            wiki: 是否附加模型生成的实体笔记。
+            summary: 是否附加模型生成的综合摘要。
+            verify: 是否根据答案草稿再检索证据。
+            intent: 是否附加模型推测的查询意图。
+
+        Returns:
+            组装后的记忆上下文文本。
+        """
         user = user_id
 
         # HyDE：用 LLM 写的假想答案扩展查询，以提升检索召回（M2c）。
@@ -1130,6 +1397,17 @@ class MemoryEngine:
         return result
 
     def _self_verify(self, query: str, context: str, user: str, as_of: Optional[float]) -> str:
+        """从答案草稿中找出证据缺口，并检索补充摘要。
+
+        Args:
+            query: 原始问题。
+            context: 已组装的上下文。
+            user: 记忆所属的用户 ID。
+            as_of: 来源事件时间上限。
+
+        Returns:
+            格式化的补充摘要。没有缺口或匹配时返回空字符串。
+        """
         draft = self.llm.complete(
             f"Using only this context, answer concisely. If something is missing, say what.\n\n{context}\n\nQ: {query}",
             system="Answer from context; note any missing piece.",
@@ -1146,6 +1424,17 @@ class MemoryEngine:
         return "\n\n".join(f"[{ep.metadata.get('date', '?')}] (episode: {ep.id}; space: {ep.user_id}; {ep.representation}; partial={ep.partial}; role={ep.role})\n{ep.text}" for ep in more)
 
     def _graph_related_facts(self, query: str, user: str, as_of: Optional[float], limit: int = 8) -> list[Fact]:
+        """按图相关性获取查询锚点关联的有效事实。
+
+        Args:
+            query: 查询文本。
+            user: 事实所属的用户 ID。
+            as_of: 可选的事实有效时间。
+            limit: 返回事实数量上限。
+
+        Returns:
+            按图相关性与时间排序的事实。
+        """
         if not self.config.graph_proximity:
             return []
         live = [f for f in self._all_facts() if f.user_id == user and f.is_live(as_of)
@@ -1158,6 +1447,17 @@ class MemoryEngine:
         return related[:limit]
 
     def _entity_notes(self, query: str, user: str, as_of: Optional[float], max_entities: int = 3) -> list[str]:
+        """用相关事实生成说明实体当前与历史状态的笔记。
+
+        Args:
+            query: 用于定位实体的查询文本。
+            user: 事实所属的用户 ID。
+            as_of: 用于标记事实当前或历史状态的时间。
+            max_entities: 最多处理的实体数量。
+
+        Returns:
+            模型生成的实体笔记。未配置模型时返回空列表。
+        """
         if self.llm is None:
             return []
         notes: list[str] = []
@@ -1186,13 +1486,32 @@ class MemoryEngine:
         return notes
 
     def history(self, subject: str, predicate: str, user_id: str = "default") -> list[Fact]:
+        """按有效时间返回同一主体与谓词的事实历史。
+
+        Args:
+            subject: 事实主体。
+            predicate: 事实谓词。
+            user_id: 事实所属的用户 ID。
+
+        Returns:
+            从旧到新排列的事实。
+        """
         user = user_id
         return history(self._all_facts(),
                        user, subject, predicate)
 
     # --- 内部实现 ---
     def _should_abstain(self, query: str, facts: list[Fact], diag: dict) -> bool:
-        """Require a complete attribute match, object evidence or sufficient semantic similarity."""
+        """根据事实和语义诊断判断是否应返回无证据。
+
+        Args:
+            query: 查询文本。
+            facts: 检索到的候选事实。
+            diag: 包含候选语义分数的诊断信息。
+
+        Returns:
+            证据不足时返回 True。
+        """
 
         return should_abstain(query, facts, diag.get("sem", {}).values(), self.config.abstain_threshold)
 
@@ -1202,7 +1521,16 @@ class MemoryEngine:
         user_id: str,
         as_of: Optional[float] = None,
     ) -> Optional[SearchResult]:
-        """Surface a source-backed digest covering all informative query terms."""
+        """使用覆盖全部查询词项的来源摘要作为回退证据。
+
+        Args:
+            query: 查询文本。
+            user_id: 原文所属的用户 ID。
+            as_of: 来源事件时间上限。
+
+        Returns:
+            最佳摘要证据构成的搜索结果。无匹配时返回 None。
+        """
         if not self.config.digest_fallback:
             return None
         candidates: list[tuple[int, int, float, EventEvidence, str]] = []

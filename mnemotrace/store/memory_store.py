@@ -24,6 +24,16 @@ class InMemoryVectorStore(VectorStore):
     def search(
         self, vector: list[float], top_k: int, where: Optional[Predicate] = None
     ) -> list[tuple[float, Any]]:
+        """扫描已存向量并按余弦相似度排序。
+
+        Args:
+            vector: 查询向量。
+            top_k: 返回记录数量上限。
+            where: 可选的载荷筛选函数。
+
+        Returns:
+            按相似度降序排列的分数与载荷。
+        """
         scored = [
             (cosine(vector, vec), payload)
             for vec, payload in self._d.values()
@@ -89,6 +99,15 @@ class InMemoryGraphStore(GraphStore):
         return entity
 
     def get_entity(self, user_id: str, name: str) -> Entity | None:
+        """按用户和规范化名称读取唯一实体。
+
+        Args:
+            user_id: 实体所属的用户 ID。
+            name: 实体名称。
+
+        Returns:
+            匹配的唯一实体。无匹配或有歧义时返回 None。
+        """
         ids = self._by_name.get((user_id, name_key(name)), ())
         return self.entities[next(iter(ids))] if len(ids) == 1 else None
 
@@ -100,6 +119,16 @@ class InMemoryGraphStore(GraphStore):
     def neighbors(
         self, entity_id: str, as_of: Optional[float] = None, direction: str = "out"
     ) -> list[Relation]:
+        """从内存邻接表读取关系，并按需筛选其有效时间。
+
+        Args:
+            entity_id: 起始实体 ID。
+            as_of: 可选的有效时间戳。
+            direction: 关系的入边或出边方向。
+
+        Returns:
+            符合条件的邻接关系。
+        """
         rel_ids = self._out[entity_id] if direction == "out" else self._in[entity_id]
         out: list[Relation] = []
         for rid in rel_ids:

@@ -35,6 +35,16 @@ _ANSWER_SYSTEM = (
 
 
 def _answer_from_memory(answerer, query: str, ctx: str) -> tuple[str, str]:
+    """用已检索的记忆上下文生成回答。
+
+    Args:
+        answerer: 可选的回答模型。
+        query: 待回答的问题。
+        ctx: 已选出的记忆上下文。
+
+    Returns:
+        回答文本与生成状态。
+    """
     if answerer is None:
         return "", "model_not_configured"
     if not ctx.strip():
@@ -51,7 +61,14 @@ def _answer_from_memory(answerer, query: str, ctx: str) -> tuple[str, str]:
 
 
 def _est_tokens(text: str) -> int:
-    """Display estimate, mirrored by Postgres for the full-context total."""
+    """按 UTF-8 字节数估算展示用的 token 数。
+
+    Args:
+        text: 要估算的文本。
+
+    Returns:
+        每四字节一个 token，向上取整。
+    """
     return (len(text.encode('utf-8')) + 3) // 4
 
 
@@ -61,6 +78,7 @@ class ProcessingFailure(RuntimeError):
         super().__init__('Core processing is incomplete')
 
     def detail(self):
+        """返回包含失败原因、任务状态和已保存原文 ID 的错误详情。"""
         task = self.result['task']
         return dict(code=(task and task['error_code']) or 'extraction_failed', message=str(self),
                     stored_raw=self.result['stored_raw'], source_ids=self.result['source_ids'],
@@ -79,6 +97,20 @@ def _bounds(limit, offset=0, *, minimum=1):
 
 
 def _recall_conditions(as_of, state, valid_at, redact_sensitive):
+    """将服务层的时间与敏感性选项转换成事实筛选条件。
+
+    Args:
+        as_of: 历史查询使用的有效时间。
+        state: 要查询的事实状态。
+        valid_at: 显式指定的事实有效时间。
+        redact_sensitive: 是否排除敏感事实。
+
+    Returns:
+        用于检索的 FactQuery。
+
+    Raises:
+        ValueError: 同时指定 as_of 和 valid_at，或筛选条件无效。
+    """
     if as_of is not None:
         if valid_at is not None:
             raise ValueError('Use either as_of or explicit time conditions')
@@ -87,6 +119,15 @@ def _recall_conditions(as_of, state, valid_at, redact_sensitive):
 
 
 def _fact_view(fact, at):
+    """将事实转换为含展示时间与有效状态的响应字段。
+
+    Args:
+        fact: 要序列化的事实。
+        at: 判断事实有效性的时间戳。
+
+    Returns:
+        对外展示的事实字典。
+    """
     row = asdict(fact)
     for key in ('embedding', 'user_id', 'source', 'last_access', 'access_count'):
         row.pop(key, None)
@@ -99,6 +140,14 @@ def _fact_view(fact, at):
 
 
 def _source_view(record):
+    """将来源记录转换为含原文和出处的响应字段。
+
+    Args:
+        record: 数据库存储的原文记录。
+
+    Returns:
+        原文、摘要和来源元数据。
+    """
     source = domain(record)
     return dict(id=source.id, content=source.content, chars=len(source.content), digest=source.digest,
                 date=fmt_date(source.event_time),
@@ -144,6 +193,14 @@ class MemoryService:
         self.database.close()
 
     def memory(self, context):
+        """为指定空间创建共用数据库连接的记忆接口。
+
+        Args:
+            context: 已授权的记忆空间。
+
+        Returns:
+            绑定到该空间的 Memory 实例。
+        """
         extraction = self.extraction_llm if self.extraction_llm is not None else self.llm
         model = ModelMeter(extraction, self.metrics) if extraction is not None else None
         return Memory(self.database, context, config=self.config, llm=model,
@@ -152,6 +209,24 @@ class MemoryService:
     @timed('remember')
     def remember(self, context, value, session_id, *, wait=False, timeout=30,
                  message_id=None, agent_id=None, event_time=None):
+        """在已授权的记忆空间写入消息并提交抽取任务。
+
+        Args:
+            context: 已授权的记忆空间。
+            value: 单条消息文本或一批消息记录。
+            session_id: 会话 ID。
+            wait: 是否等待抽取任务结束。
+            timeout: 最长等待时间，单位为秒。
+            message_id: 单条文本的消息 ID。
+            agent_id: 来源智能体 ID。
+            event_time: 单条文本的事件时间戳。
+
+        Returns:
+            写入结果，任务快照已转为字典。
+
+        Raises:
+            ProcessingFailure: 等待抽取时，任务失败或被取消。
+        """
         result = self.memory(context).remember(value, session_id, wait=wait, timeout=timeout,
                                                message_id=message_id, agent_id=agent_id, event_time=event_time)
         task = result['task']
@@ -161,9 +236,30 @@ class MemoryService:
         return result
 
     def _store_originals(self, context, messages, session_id, *, agent_id=None):
+        """在已授权的空间仅保存消息原文。
+
+        Args:
+            context: 已授权的记忆空间。
+            messages: 单条消息文本或一批消息记录。
+            session_id: 会话 ID。
+            agent_id: 来源智能体 ID。
+
+        Returns:
+            按输入顺序排列的原文记录 ID。
+        """
         return self.memory(context)._store_originals(messages, session_id, agent_id=agent_id)
 
     def operation(self, context, operation_id, *, retry=False):
+        """读取或重新安排任务，并关联抽取使用的原文与事实。
+
+        Args:
+            context: 已授权的记忆空间。
+            operation_id: 任务操作 ID。
+            retry: 是否将可重试的任务重新排队。
+
+        Returns:
+            任务状态及可用的证据 ID。任务不存在时返回 None。
+        """
         memory = self.memory(context)
         result = memory.retry_operation(operation_id) if retry else memory.operation(operation_id)
         if result is None:
@@ -177,6 +273,17 @@ class MemoryService:
         return payload
 
     def processing_status(self, context, session_id=None, *, after_id=None, limit=100):
+        """分页读取记忆空间中的任务快照。
+
+        Args:
+            context: 已授权的记忆空间。
+            session_id: 可选的会话 ID。
+            after_id: 可选的上一页最后一个操作 ID。
+            limit: 每页任务数量上限。
+
+        Returns:
+            已序列化的任务和下一页游标。
+        """
         memory = self.memory(context)
         operations = memory.list_operations(session_id=session_id, after_id=after_id, limit=limit)
         return dict(operations=[operation.to_dict() for operation in operations],
@@ -187,6 +294,27 @@ class MemoryService:
     def recall(self, context, query, lean=True, n_digests=20, as_of=None,
                redact_sensitive=False, answer=False, state=FactState.CURRENT, valid_at=None,
                subject=None, predicate=None):
+        """在单个空间检索相关记忆，按需生成模型回答。
+
+        Args:
+            context: 已授权的记忆空间。
+            query: 查询文本。
+            lean: 是否返回预算内的上下文。
+            n_digests: 来源摘要数量上限。
+            as_of: 查询事实有效性的时间戳。
+            redact_sensitive: 是否排除敏感事实。
+            answer: 是否从上下文生成模型回答。
+            state: 要查询的事实状态。
+            valid_at: 事实有效时间，与 as_of 互斥。
+            subject: 可选的事实主体。
+            predicate: 可选的事实谓词。
+
+        Returns:
+            检索状态和上下文或候选证据，以及可选的回答。
+
+        Raises:
+            ValueError: 筛选无效，或请求在搜索模式下生成模型回答。
+        """
         memory = self.memory(context)
         output = dict(space_id=context.space_id, as_of=as_of, redacted_sensitive=redact_sensitive)
         facts = _recall_conditions(as_of, state, valid_at, redact_sensitive)
@@ -220,6 +348,20 @@ class MemoryService:
 
     def recall_multi(self, contexts, query, *, n_digests=20, as_of=None, redact_sensitive=False,
                      state=FactState.CURRENT, valid_at=None):
+        """检索多个授权空间并合并上下文。
+
+        Args:
+            contexts: 非空的已授权空间序列。
+            query: 查询文本。
+            n_digests: 每个空间的来源摘要数量上限。
+            as_of: 查询事实有效性的时间戳。
+            redact_sensitive: 是否排除敏感事实。
+            state: 要查询的事实状态。
+            valid_at: 事实有效时间，与 as_of 互斥。
+
+        Returns:
+            合并的上下文、各空间的覆盖限制和 token 估算。
+        """
         ids = [context.space_id for context in contexts]
         result = self.memory(contexts[0]).recall_multi(ids, query, n_digests=n_digests,
                                                        facts=_recall_conditions(as_of, state, valid_at, redact_sensitive))
@@ -232,6 +374,24 @@ class MemoryService:
     def aggregate_facts(self, context, predicate, *, operation='count', subject=None, start=None,
                         end=None, query=None, state=FactState.CURRENT, valid_at=None,
                         redact_sensitive=False, limit=10):
+        """在单个空间聚合事实并格式化证据。
+
+        Args:
+            context: 已授权的记忆空间。
+            predicate: 要统计的事实谓词。
+            operation: 统计事实条数或不同对象值的数量。
+            subject: 可选的事实主体。
+            start: 事实有效时间下界，包含。
+            end: 事实有效时间上界，不包含。
+            query: 没有结构化匹配时用于检索摘要的查询。
+            state: 要查询的事实状态。
+            valid_at: 事实须满足的有效时间。
+            redact_sensitive: 是否排除敏感事实。
+            limit: 返回支撑证据的数量上限。
+
+        Returns:
+            包含计数、事实、候选摘要和覆盖限制的字典。
+        """
         scope = FactQuery(state=state, valid_at=valid_at,
                           exclude_sensitive=redact_sensitive, limit=limit)
         result = self.memory(context).aggregate_facts(
@@ -245,6 +405,20 @@ class MemoryService:
 
     def follow_path(self, context, anchor, predicates, *, state=FactState.CURRENT, valid_at=None,
                     redact_sensitive=False, limit=20):
+        """在单个空间遍历关系并格式化路径证据。
+
+        Args:
+            context: 已授权的记忆空间。
+            anchor: 起始实体名称。
+            predicates: 按顺序遍历的谓词。
+            state: 要查询的事实状态。
+            valid_at: 事实须满足的有效时间。
+            redact_sensitive: 是否排除敏感事实。
+            limit: 路径数量上限。
+
+        Returns:
+            匹配路径及覆盖限制。
+        """
         scope = FactQuery(state=state, valid_at=valid_at,
                           exclude_sensitive=redact_sensitive, limit=limit)
         result = self.memory(context).follow_path(anchor, predicates, facts=scope)
@@ -253,6 +427,15 @@ class MemoryService:
                            for path in result.paths], limitations=result.limitations)
 
     def get_episode(self, context, episode_id):
+        """读取指定空间内的原始消息。
+
+        Args:
+            context: 已授权的记忆空间。
+            episode_id: 原文记录 ID。
+
+        Returns:
+            原文及元数据。记录不存在时返回 None。
+        """
         with self.memory(context).dao.read_snapshot() as view:
             record = view.get(SOURCE, episode_id)
         return _source_view(record) if record is not None else None

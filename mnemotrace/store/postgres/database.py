@@ -95,7 +95,14 @@ MAX_IDENTIFIER_LENGTH = 512
 
 
 def identifier(value: str) -> None:
-    """验证标识符是否有效。标识符必须是非空字符串，长度不超过 512 个字符，并且不能包含空字符（\x00）。"""
+    """校验数据库边界使用的标识符。
+
+    Args:
+        value: 非空且最多 512 个字符的 UTF-8 字符串。
+
+    Raises:
+        ValueError: 标识符无效或含空字符。
+    """
     if not isinstance(value, str) or not value.strip() or len(value) > MAX_IDENTIFIER_LENGTH or '\x00' in value:
         raise ValueError('Expected a non-empty identifier of at most 512 characters')
     value.encode('utf-8')
@@ -218,12 +225,18 @@ class Database:
 
     @contextmanager
     def space_transaction(self, user_id: str, space_id: str, *, read_only: bool = False):
-        """获取空间事务上下文管理器。
+        """打开已授权的空间事务，写入时锁定空间记录。
 
         Args:
-            user_id: 用户 ID。
-            space_id: 空间 ID。
-            read_only: 是否为只读事务。
+            user_id: 调用者的用户 ID。
+            space_id: 目标空间 ID。
+            read_only: 是否打开只读事务。
+
+        Yields:
+            数据库连接和已授权的空间上下文。
+
+        Raises:
+            SpaceNotFound: 当前用户的目标空间不存在或未启用。
         """
         identifier(space_id)
         with self.user_transaction(user_id, read_only=read_only) as conn:
@@ -238,6 +251,18 @@ class Database:
             yield conn, SpaceContext(user_id, space_id)
 
     def discover_processing(self, limit=32):
+        """发现当前可运行的后台任务。
+
+        Args:
+            limit: 最多返回的任务数，范围为 1 到 100。
+
+        Returns:
+            由记忆空间和操作 ID 组成的二元组序列。
+
+        Raises:
+            DatabaseConfigurationError: 数据库连接缺少任务发现权限。
+            ValueError: 任务数量上限无效。
+        """
         if self.purpose != 'discovery':
             raise DatabaseConfigurationError('Task discovery requires worker discovery credentials')
         if type(limit) is not int or not 1 <= limit <= 100:

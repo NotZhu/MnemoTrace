@@ -18,11 +18,28 @@ _BM25_STOP_WORDS = frozenset({
 
 
 def normalize(text: str) -> str:
+    """规范化 Unicode 文本并折叠大小写。
+
+    Args:
+        text: 待分析的文本。
+
+    Returns:
+        使用 NFKC 和大小写折叠后的文本。
+    """
     return unicodedata.normalize('NFKC', text).casefold()
 
 
 def lexical_terms(text: str, *, query: bool = False, exact: bool = False) -> list[str]:
-    """Analyze a document or query without changing the stored text."""
+    """将文本切分为词项，汉字串按文档或查询模式处理。
+
+    Args:
+        text: 待分析的文本。
+        query: 是否使用查询分词模式。
+        exact: 是否保留 ASCII 字母词项的原形。
+
+    Returns:
+        按出现顺序排列的词项，保留重复项。
+    """
     terms = []
     word = []
     han = []
@@ -57,7 +74,15 @@ def lexical_terms(text: str, *, query: bool = False, exact: bool = False) -> lis
 
 
 def literal_value_match(query: str, value: str) -> bool:
-    """Check the literal value rather than inferring equality from shared tokens."""
+    """检查查询中是否完整出现字母与数字混合的字面值。
+
+    Args:
+        query: 查询文本。
+        value: 候选事实的对象值。
+
+    Returns:
+        值满足格式并完整匹配时返回 True。
+    """
     value = value.strip().casefold()
     if (not value.isascii() or any(char.isspace() for char in value)
             or not any(char.isalpha() for char in value) or not any(char.isdigit() for char in value)):
@@ -67,6 +92,15 @@ def literal_value_match(query: str, value: str) -> bool:
 
 
 def overlap_terms(query: str, text: str) -> set[str]:
+    """提取查询与文本共有的词项。
+
+    Args:
+        query: 查询文本。
+        text: 待比较的文本。
+
+    Returns:
+        共同的词项集合。
+    """
     return set(lexical_terms(query, query=True)) & set(lexical_terms(text))
 
 
@@ -75,11 +109,29 @@ def token_overlap(query: str, text: str) -> int:
 
 
 def bm25_query_terms(query: str) -> set[str]:
+    """提取 BM25 使用的查询词项。
+
+    Args:
+        query: 查询文本。
+
+    Returns:
+        去重并移除停用词后的查询词项。
+    """
     return set(lexical_terms(query, query=True)) - _BM25_STOP_WORDS
 
 
 def bm25_scores(query: str, docs: list[tuple[str, str]], k1: float = BM25_K1, b: float = BM25_B) -> dict[str, float]:
-    """docs:(id, text) 列表。返回 {id: bm25 分数}。"""
+    """在给定文档集合上计算 BM25 分数。
+
+    Args:
+        query: 查询文本。
+        docs: 文档 ID 与文本的二元组列表。
+        k1: 词频饱和参数。
+        b: 文档长度归一化参数。
+
+    Returns:
+        文档 ID 到 BM25 分数的映射。
+    """
     if not docs:
         return {}
     doc_tokens = {doc_id: lexical_terms(text) for doc_id, text in docs}

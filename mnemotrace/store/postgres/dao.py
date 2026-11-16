@@ -54,6 +54,21 @@ def _receipt(sql, operation_id):
 
 
 def _apply_changes(sql, changes, revision, generation, settings):
+    """校验提交条件并在当前事务中应用空间变更。
+
+    Args:
+        sql: 已限定记忆空间的事务。
+        changes: 待写入的记录、向量及任务变更。
+        revision: 当前核心数据版本。
+        generation: 当前空间世代。
+        settings: 当前空间设置。
+
+    Returns:
+        应用结果，供外层事务生成提交收据。
+
+    Raises:
+        VersionConflict: 快照、租约或记录版本已变化。
+    """
     conditions = changes.conditions
     snapshot = conditions.snapshot
     if snapshot.core_revision != revision or snapshot.space_generation != generation:
@@ -132,10 +147,13 @@ class PostgresDAO:
 
     @contextmanager
     def _transaction(self, *, read_only=False):
-        """获取数据库事务上下文管理器。
+        """打开当前空间的底层事务。
 
         Args:
-            read_only: 是否为只读事务。
+            read_only: 是否打开只读事务。
+
+        Yields:
+            在事务有效期间可用的空间 SQL 接口。
         """
         with self._database.space_transaction(
             self.context.user_id, self.context.space_id, read_only=read_only,
@@ -148,6 +166,14 @@ class PostgresDAO:
 
     @contextmanager
     def read_snapshot(self, session_id=None):
+        """打开当前空间的一致性只读快照。
+
+        Args:
+            session_id: 可选的会话 ID，记录在快照中。
+
+        Yields:
+            事务有效期间可用的空间读取视图。
+        """
         if session_id is not None:
             identifier(session_id)
         with self._transaction(read_only=True) as sql:
@@ -156,16 +182,30 @@ class PostgresDAO:
             yield ReadView(sql, snapshot, at, settings)
 
     def receipt(self, operation_id):
+        """查找指定操作的已保存提交收据。
+
+        Args:
+            operation_id: 写入操作 ID。
+
+        Returns:
+            提交收据。操作没有收据时返回 None。
+        """
         identifier(operation_id)
         with self._transaction() as sql:
             return _receipt(sql, operation_id)
 
     def _mutate(self, operation_id, apply):
-        """执行变更操作并返回提交收据。
+        """按操作 ID 幂等提交空间变更，断连时尝试找回收据。
 
         Args:
-            operation_id: 操作 ID。
-            apply: 应用变更的函数。
+            operation_id: 此次变更的唯一操作 ID。
+            apply: 接收事务、空间版本与设置的写入函数。
+
+        Returns:
+            已保存的提交收据。
+
+        Raises:
+            CommitOutcomeUnknown: 断连后无法确定提交结果。
         """
         identifier(operation_id)
         entered = False
@@ -203,6 +243,17 @@ class PostgresDAO:
             return receipt
 
     def commit(self, changes):
+        """提交当前空间的记录和任务变更。
+
+        Args:
+            changes: 变更集及提交前置条件。
+
+        Returns:
+            提交收据。
+
+        Raises:
+            ValueError: 变更集属于其他空间。
+        """
         if changes.conditions.snapshot.context != self.context:
             raise ValueError('Change set belongs to a different space')
 

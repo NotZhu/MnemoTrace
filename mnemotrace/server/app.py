@@ -214,6 +214,18 @@ async def request_limits_and_security_headers(request: Request, call_next):
 
 
 def auth(authorization: str = Header(default='')) -> str:
+    """验证请求凭据并解析调用者身份。
+
+    Args:
+        authorization: 携带 Bearer 凭据的请求头。
+
+    Returns:
+        凭据所属的用户 ID。
+
+    Raises:
+        HTTPException: 请求头格式错误。
+        AuthenticationError: 凭据缺失或无效。
+    """
     token = _bearer_token(authorization)
     if not token:
         raise AuthenticationError('Invalid API key')
@@ -222,6 +234,15 @@ def auth(authorization: str = Header(default='')) -> str:
 
 def authorized_space(space_id: str = Query(min_length=1, max_length=512),
                      owner: str = Depends(auth)) -> SpaceContext:
+    """将已鉴权的用户和请求中的空间 ID 解析为授权上下文。
+
+    Args:
+        space_id: 请求查询参数中的空间 ID。
+        owner: 鉴权得到的调用者 ID。
+
+    Returns:
+        已授权的空间上下文。
+    """
     return svc().spaces.authorize(owner, space_id)
 
 
@@ -244,6 +265,7 @@ class SpaceName(BaseModel):
 
 
 class DialogueMessage(BaseModel):
+    """可存入记忆的一条用户或助手消息。"""
     model_config = {'extra': 'forbid', 'strict': True, 'allow_inf_nan': False}
     message_id: str = Field(min_length=1, max_length=512)
     role: Literal['user', 'assistant']
@@ -253,6 +275,7 @@ class DialogueMessage(BaseModel):
 
 
 class RememberReq(SpaceRequest):
+    """向指定空间提交一个有序消息批次，可等待抽取。"""
     model_config = {'extra': 'forbid'}
     session_id: str = Field(min_length=1, max_length=512)
     messages: list[DialogueMessage] = Field(min_length=1, max_length=1000)
@@ -262,6 +285,7 @@ class RememberReq(SpaceRequest):
 
 
 class RecallReq(BaseModel):
+    """单空间或多空间的检索请求，包含证据范围和输出选项。"""
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     space_id: str | None = Field(default=None, min_length=1, max_length=512)
     space_ids: list[str] | None = Field(default=None, min_length=1, max_length=16)
@@ -371,6 +395,15 @@ def delete_space(space_id: str, confirm: bool = False, owner: str = Depends(auth
 
 @app.post('/v1/remember')
 def remember(req: RememberReq, owner: str = Depends(auth)):
+    """在调用者有权访问的空间内保存消息并提交抽取任务。
+
+    Args:
+        req: 消息批次、目标空间和等待选项。
+        owner: 鉴权得到的调用者 ID。
+
+    Returns:
+        等待到任务完成时返回结果，其余成功接收的请求返回 HTTP 202。
+    """
     context = svc().spaces.authorize(owner, req.space_id)
     data = svc().remember(context, [message.model_dump() for message in req.messages],
                           req.session_id, wait=req.wait, agent_id=req.agent_id, timeout=req.timeout)
@@ -379,6 +412,18 @@ def remember(req: RememberReq, owner: str = Depends(auth)):
 
 @app.get('/v1/operations/{operation_id}')
 def get_operation(operation_id: str, context: SpaceContext = Depends(authorized_space)):
+    """读取已授权空间的任务状态。
+
+    Args:
+        operation_id: 任务操作 ID。
+        context: 已授权的记忆空间。
+
+    Returns:
+        任务快照及可用的原文和事实 ID。
+
+    Raises:
+        HTTPException: 找不到指定任务。
+    """
     result = svc().operation(context, operation_id)
     if result is None:
         raise HTTPException(404, {'code': 'operation_not_found', 'message': 'Operation unavailable'})
@@ -387,6 +432,19 @@ def get_operation(operation_id: str, context: SpaceContext = Depends(authorized_
 
 @app.post('/v1/operations/{operation_id}/retry')
 def retry_operation(operation_id: str, req: SpaceRequest, owner: str = Depends(auth)):
+    """将可重试的任务重新排队。
+
+    Args:
+        operation_id: 任务操作 ID。
+        req: 指定目标记忆空间的请求。
+        owner: 鉴权得到的调用者 ID。
+
+    Returns:
+        请求重试后的任务快照。
+
+    Raises:
+        HTTPException: 找不到指定任务。
+    """
     context = svc().spaces.authorize(owner, req.space_id)
     result = svc().operation(context, operation_id, retry=True)
     if result is None:
@@ -397,11 +455,34 @@ def retry_operation(operation_id: str, req: SpaceRequest, owner: str = Depends(a
 @app.get('/v1/processing')
 def processing_status(session_id: str | None = None, after_id: str | None = None,
                       limit: int = Query(100, ge=1, le=1000), context: SpaceContext = Depends(authorized_space)):
+    """分页读取已授权空间的后台任务状态。
+
+    Args:
+        session_id: 可选的会话 ID。
+        after_id: 可选的上一页最后一个操作 ID。
+        limit: 每页任务数量上限。
+        context: 已授权的记忆空间。
+
+    Returns:
+        任务快照列表和下一页游标。
+    """
     return svc().processing_status(context, session_id, after_id=after_id, limit=limit)
 
 
 @app.get('/v1/episodes/{episode_id}')
 def get_episode(episode_id: str, context: SpaceContext = Depends(authorized_space)):
+    """按来源 ID 读取已授权空间中的原始消息。
+
+    Args:
+        episode_id: 原文记录 ID。
+        context: 已授权的记忆空间。
+
+    Returns:
+        原文及其会话、时间和处理信息。
+
+    Raises:
+        HTTPException: 找不到指定的原文记录。
+    """
     result = svc().get_episode(context, episode_id)
     if result is None:
         raise HTTPException(404, 'Episode not found')
@@ -410,6 +491,18 @@ def get_episode(episode_id: str, context: SpaceContext = Depends(authorized_spac
 
 @app.post('/v1/recall')
 def recall(req: RecallReq, owner: str = Depends(auth)):
+    """检索调用者有权访问的单个或多个记忆空间。
+
+    Args:
+        req: 查询、空间选择和检索选项。
+        owner: 鉴权得到的调用者 ID。
+
+    Returns:
+        记忆上下文或候选证据。单空间上下文查询可附模型回答。
+
+    Raises:
+        ValueError: 空间选择重复、冲突，或多空间查询使用了不支持的选项。
+    """
     if (req.space_id is None) == (req.space_ids is None):
         raise ValueError('Provide space_id or space_ids')
     ids = req.space_ids if req.space_ids is not None else [req.space_id]
@@ -451,6 +544,15 @@ class PathReq(StructuredRead):
 
 @app.post('/v1/aggregate')
 def aggregate(req: AggregateReq, owner: str = Depends(auth)):
+    """在已授权空间中按谓词聚合事实。
+
+    Args:
+        req: 聚合请求及目标空间。
+        owner: 鉴权得到的调用者 ID。
+
+    Returns:
+        计数和支撑证据。
+    """
     service = svc()
     context = service.spaces.authorize(owner, req.space_id)
     return service.aggregate_facts(context, **req.model_dump(exclude={'space_id'}))
@@ -458,6 +560,15 @@ def aggregate(req: AggregateReq, owner: str = Depends(auth)):
 
 @app.post('/v1/follow-path')
 def follow_path(req: PathReq, owner: str = Depends(auth)):
+    """在已授权空间中查询显式关系路径。
+
+    Args:
+        req: 锚点、谓词序列、事实条件和目标空间。
+        owner: 鉴权得到的调用者 ID。
+
+    Returns:
+        匹配路径及其支撑事实。
+    """
     service = svc()
     context = service.spaces.authorize(owner, req.space_id)
     return service.follow_path(context, **req.model_dump(exclude={'space_id'}))
@@ -596,6 +707,7 @@ def forget(req: ForgetReq, owner: str = Depends(auth)):
 
 # --- OpenAI 兼容 chat，透明叠加记忆（即插即用：把 OpenAI 客户端的 base_url 指到这里）--
 class ChatMemoryRequest(SpaceRequest):
+    """聊天请求的记忆检索和写入选项。"""
     recall: bool = True
     remember: bool = True
     session_id: str = Field(default='default', min_length=1, max_length=512)
@@ -608,6 +720,7 @@ class ChatMemoryRequest(SpaceRequest):
 
 
 class ChatCompletionReq(BaseModel):
+    """包含记忆选项的 OpenAI 兼容聊天请求。"""
     model_config = ConfigDict(extra="allow")  # 接受（并忽略）temperature/top_p 等参数。
     model: str = "mnemotrace"
     messages: list[dict] = []
@@ -618,6 +731,18 @@ class ChatCompletionReq(BaseModel):
 
 @app.post('/v1/chat/completions')
 def chat_completions(req: ChatCompletionReq, owner: str = Depends(auth)):
+    """生成聊天回复，并按请求选项保存本轮对话。
+
+    Args:
+        req: 聊天消息、流式选项和记忆设置。
+        owner: 鉴权得到的调用者 ID。
+
+    Returns:
+        聊天回复字典或 SSE 流式响应。
+
+    Raises:
+        HTTPException: 对话消息为空或生成回复失败。
+    """
     from . import openai_compat as oc
 
     opts = req.memory
@@ -661,6 +786,16 @@ def chat_completions(req: ChatCompletionReq, owner: str = Depends(auth)):
 
 
 def _generate_chat(context, body, opts):
+    """调用聊天兼容层，按选项注入相关记忆。
+
+    Args:
+        context: 已授权的记忆空间。
+        body: 聊天请求数据。
+        opts: 聊天请求的记忆选项。
+
+    Returns:
+        带记忆使用信息的聊天回复。
+    """
     from . import openai_compat as oc
 
     try:
@@ -675,6 +810,17 @@ def _generate_chat(context, body, opts):
 
 
 def _chat_messages(oc, opts, original, response):
+    """构造要保存的本轮用户和助手消息。
+
+    Args:
+        oc: 聊天兼容模块。
+        opts: 本轮记忆设置。
+        original: 原始聊天消息。
+        response: 生成的聊天回复。
+
+    Returns:
+        按用户、助手顺序排列的消息。用户内容为空时返回 None。
+    """
     content = oc.remembered_text(svc().captioner, original)
     if not content:
         return None
