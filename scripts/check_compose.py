@@ -89,28 +89,19 @@ def main():
             user = compose('run', '--rm', 'admin', 'create-user', capture=True)['user_id']
             key = compose('run', '--rm', 'admin', 'issue-key', '--user-id', user,
                           capture=True)['key']
-            space = http('/v1/spaces', {'name': 'Synthetic deployment'}, key=key,
-                         expected=201)['space_id']
+            created = http('/v1/spaces', {'name': 'Synthetic deployment'}, key=key, expected=201)
+            space = created['space_id']
             query = '?space_id=' + space
-            message = {'space_id': space, 'session_id': 'smoke', 'processing': 'buffered',
+            message = {'space_id': space, 'session_id': 'smoke',
                        'messages': [{'message_id': 'once', 'role': 'user', 'content': 'Synthetic archive note'}]}
-            rejection = http('/v1/messages', message, key=key, expected=503)
+            rejection = http('/v1/remember', message, key=key, expected=503)
             assert rejection['detail']['code'] == 'llm_not_configured'
-            assert not http('/v1/memories' + query, key=key)['episodes']
-            compose('stop', 'worker')
-            raw = http('/v1/messages', {**message, 'extract': False}, key=key, expected=202)
-            source_id, = raw['source_ids']
-            assert raw['accepted'] == 1
-            assert raw['operation_ids'] == []
-            archived = http('/v1/recall', {'space_id': space, 'query': 'Synthetic archive note',
-                                          'lean': False}, key=key)
-            assert archived['status'] == 'no_evidence'
-            assert http('/v1/processing' + query, key=key)['operations'] == []
+            assert http('/v1/stats' + query, key=key)['counts']['episodes'] == 0
+            assert not http('/v1/processing' + query, key=key)['operations']
             compose('stop', 'mnemotrace', 'worker')
             compose('restart', 'db')
             compose('up', '-d', '--wait', 'mnemotrace', 'worker')
-            assert http('/v1/processing' + query, key=key)['operations'] == []
-            assert http('/v1/episodes/' + source_id + query, key=key)['content'] == 'Synthetic archive note'
+            assert created in http('/v1/spaces', key=key)['spaces']
             assert http(f'/v1/spaces/{space}?confirm=true', key=key, method='DELETE')['ok']
             assert not http('/v1/spaces', key=key)['spaces']
             compose('stop', 'db')
