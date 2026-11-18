@@ -65,6 +65,9 @@ def content_hash(text: str) -> str:
 
     Returns:
         UTF-8 正文哈希的小写十六进制字符串。
+
+    Raises:
+        UnicodeEncodeError: 规范化后的正文无法编码为 UTF-8。
     """
     return sha256(normalize_text(text).encode("utf-8")).hexdigest()
 

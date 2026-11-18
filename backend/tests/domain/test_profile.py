@@ -12,7 +12,11 @@ from mnemotrace_next.domain.profile import Profile, ProfileEntry
 
 @pytest.fixture
 def profile() -> Profile:
-    """提供包含逐条来源的画像。"""
+    """为画像替换和校验测试提供初始快照。
+
+    Returns:
+        包含单条文字及其来源事实的画像。
+    """
     return Profile(
         SpaceId("space"), {"basic": (ProfileEntry("喝茶", (FactId("f1"),)),)}, 10
     )

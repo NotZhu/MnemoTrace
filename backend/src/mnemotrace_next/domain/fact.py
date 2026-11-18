@@ -86,7 +86,11 @@ class Fact:
 
     @property
     def is_edge(self) -> bool:
-        """返回断言的对象是否为实体引用。"""
+        """判断事实能否作为关系边使用。
+
+        Returns:
+            对象为实体引用时为 True。
+        """
         return isinstance(self.object, EntityRef)
 
     def close(self, valid_end: float, closed_at: float) -> Self:

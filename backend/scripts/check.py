@@ -6,7 +6,11 @@ from pathlib import Path
 
 
 def main() -> int:
-    """依次执行检查，返回首个失败命令的退出码。"""
+    """依次执行静态检查和后端测试。
+
+    Returns:
+        全部通过时为 0，否则为首个失败命令的退出码。
+    """
     backend = Path(__file__).resolve().parents[1]
     for args in (
         ("ruff", "check", "."),

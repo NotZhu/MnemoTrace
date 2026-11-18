@@ -20,7 +20,11 @@ from mnemotrace_next.domain.values import (
 
 @pytest.fixture
 def fact() -> Fact:
-    """提供有生效时间与来源的未截止事实。"""
+    """为事实生命周期测试提供起始快照。
+
+    Returns:
+        有生效时间及来源的未截止事实。
+    """
     return Fact(
         id=FactId("fact"),
         space_id=SpaceId("space"),

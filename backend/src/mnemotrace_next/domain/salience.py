@@ -62,6 +62,9 @@ class FactSalience:
 
         Returns:
             强化后的状态。时钟回退时保留已有的 last_access。
+
+        Raises:
+            DomainError: 强化时刻不是有限的 UTC epoch 秒。
         """
         at = timestamp(at, "at", DomainError)
         last_access = at if self.last_access is None else max(at, self.last_access)

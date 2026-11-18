@@ -12,7 +12,11 @@ from mnemotrace_next.domain.message import Message
 
 @pytest.fixture
 def message() -> Message:
-    """提供事件时刻未知的原文记录。"""
+    """构造用于原文测试的用户消息。
+
+    Returns:
+        含首尾空白且事件时刻未知的原文快照。
+    """
     return Message(
         MessageId("message"),
         SpaceId("space"),

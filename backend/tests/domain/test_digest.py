@@ -11,7 +11,11 @@ from mnemotrace_next.domain.ids import DigestId, MessageId, SessionId, SpaceId
 
 @pytest.fixture
 def digest() -> Digest:
-    """提供含重复来源的消息组摘要。"""
+    """为摘要测试提供固定消息组。
+
+    Returns:
+        由含重复来源的输入构造的摘要快照。
+    """
     return Digest(
         DigestId("digest"),
         SpaceId("space"),
