@@ -28,6 +28,10 @@ class InvalidStructuredOutput(RuntimeError):
     """模型输出无法解析为符合请求 schema 的对象。"""
 
 
+class InferenceError(RuntimeError):
+    """推理请求失败或上游响应协议异常。"""
+
+
 class LLM(Protocol):
     """提供单次文本或结构化补全。"""
 
@@ -41,11 +45,13 @@ class LLM(Protocol):
             prompt: 待补全的提示。
 
         Returns:
-            生成的完整文本及供诊断的结束原因。
+            可编码为 UTF-8 的完整文本及供诊断的结束原因。
 
         Raises:
             CompletionTruncated: 输出在完成之前被截断。
             CompletionRefused: 模型拒绝执行请求。
+            InferenceError: 请求失败或上游响应协议异常。
+            TimeoutError: 请求或整次补全超过时限。
         """
         ...
 
@@ -73,6 +79,8 @@ class LLM(Protocol):
             CompletionTruncated: 输出在完成之前被截断。
             CompletionRefused: 模型拒绝执行请求。
             InvalidStructuredOutput: 输出无法解析或不符合 schema。
+            InferenceError: 请求失败或上游响应协议异常。
+            TimeoutError: 请求或整次补全超过时限。
         """
         ...
 
@@ -82,12 +90,20 @@ class Embedder(Protocol):
 
     @property
     def embedding_space(self) -> str:
-        """返回与索引使用的嵌入空间一致的稳定模型及版本标识。"""
+        """标识生成向量所用的嵌入空间。
+
+        Returns:
+            可供索引写入和查询共用的稳定模型及版本标识。
+        """
         ...
 
     @property
     def dim(self) -> int:
-        """返回稳定的正整数向量维度。"""
+        """读取此端口生成的向量维度。
+
+        Returns:
+            每条向量的固定分量数，为正整数。
+        """
         ...
 
     async def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
@@ -100,5 +116,9 @@ class Embedder(Protocol):
 
         Returns:
             向量序列，每条向量长度为 dim。空输入对应空序列。
+
+        Raises:
+            InferenceError: 请求失败或上游返回无效向量。
+            TimeoutError: 请求或整批嵌入超过时限。
         """
         ...

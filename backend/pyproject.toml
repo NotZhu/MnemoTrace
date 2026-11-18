@@ -10,10 +10,13 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE", "COMMERCIAL-LICENSE.md"]
-dependencies = []
+dependencies = ["psycopg[binary]==3.3.8", "psycopg-pool==3.3.3"]
+
+[project.optional-dependencies]
+inference = ["httpx>=0.28,<1", "jsonschema>=4.26,<5"]
 
 [dependency-groups]
-dev = ["mypy", "pytest", "ruff"]
+dev = ["mnemotrace-next[inference]", "mypy", "pytest", "ruff", "types-jsonschema>=4.26,<5"]
 
 [tool.ruff.lint]
 extend-select = ["I", "UP"]
@@ -26,3 +29,4 @@ strict = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["--import-mode=importlib"]
+markers = ["postgres: 使用独立 PostgreSQL 实例的集成测试"]
