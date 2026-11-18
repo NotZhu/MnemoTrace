@@ -28,6 +28,9 @@ class FactFilter:
         labels: 匹配任意一项即可的标签，空元组不限。
         provenance: 匹配任意一项即可的原文标识，空元组不限。
         exclude_sensitive: 是否排除敏感事实。受限读取由服务端设为真。
+
+    Raises:
+        ValueError: 读取完整时间线时同时指定了有效时点。
     """
 
     state: Literal["current", "history", "all"] = "current"
@@ -37,6 +40,10 @@ class FactFilter:
     labels: tuple[Label, ...] = ()
     provenance: tuple[MessageId, ...] = ()
     exclude_sensitive: bool = False
+
+    def __post_init__(self) -> None:
+        if self.state == "all" and self.valid_at is not None:
+            raise ValueError("state 为 all 时须省略 valid_at")
 
 
 @dataclass(frozen=True)

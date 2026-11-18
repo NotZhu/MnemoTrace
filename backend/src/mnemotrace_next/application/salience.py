@@ -14,13 +14,13 @@ async def reinforce_context_facts(
     fact_ids: Sequence[FactId],
     *,
     reference_time: float,
-    expected_purge_token: str,
+    expected_erasure_token: str,
     exclude_sensitive: bool = False,
 ) -> None:
     """为实际进入当前上下文且在请求时点有效的事实写回显著度。
 
     调用方仅在显式开启强化，且查询使用 state="current"、valid_at=None 时调用。
-    写会话按请求时点复核最新事实的有效区间。每个事实只强化一次，发生空间清空时
+    写会话按请求时点复核最新事实的有效区间。每个事实只强化一次，擦除标记变化时
     放弃本次写回。
 
     Args:
@@ -29,14 +29,14 @@ async def reinforce_context_facts(
         space_id: 上下文所属空间。
         fact_ids: 最终进入上下文的事实标识。
         reference_time: 组装上下文时选取当前事实所用的 UTC epoch 秒。
-        expected_purge_token: 读取上下文时在同一快照中取得的清空标记。
+        expected_erasure_token: 读取上下文时在同一快照中取得的擦除标记。
         exclude_sensitive: 是否排除敏感事实，应与读取上下文的权限一致。
     """
     if not fact_ids:
         return
 
     async with storage.session(space_id, write=True) as session:
-        if await session.get_purge_token() != expected_purge_token:
+        if await session.get_erasure_token() != expected_erasure_token:
             return
 
         facts = await session.get_facts(fact_ids, exclude_sensitive=exclude_sensitive)

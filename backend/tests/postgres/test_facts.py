@@ -1,0 +1,280 @@
+"""验证事实生命周期、强引用、筛选、分页和一跳边。"""
+
+from dataclasses import replace
+
+import pytest
+
+from mnemotrace_next.adapters.postgres import PostgresStorage
+from mnemotrace_next.domain.entity import Entity
+from mnemotrace_next.domain.enums import Source
+from mnemotrace_next.domain.ids import FactId, MessageId
+from mnemotrace_next.domain.values import EntityRef, Label
+from mnemotrace_next.ports.queries import FactCursor, FactFilter, FactQuery
+
+from .conftest import PgDatabase
+from .sample import fact, message, pool, run, space
+
+pytestmark = pytest.mark.postgres
+
+
+def test_fact_updates_keep_fixed_fields_and_first_expiration(
+    database: PgDatabase,
+) -> None:
+    """修改游标按写入顺序分页，幂等重放保留原索引和历史。"""
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id="owner")
+            scope = space()
+            await storage.create_space(scope)
+            subject = Entity(scope.id, "小夏")
+            original = message(scope, "a")
+            correction = message(scope, "b")
+            old = replace(
+                fact(subject, "old"), valid_at=10.0, provenance=(original.id,)
+            )
+            closed = old.close(30.0, 35.0)
+            shortened = replace(
+                closed.shorten_validity(25.0),
+                labels=(Label("food"),),
+                sensitive=True,
+                provenance=(correction.id, original.id),
+            )
+            newer = replace(fact(subject, "new"), valid_at=25.0, supersedes=(old.id,))
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.upsert_entity(subject)
+                await writer.append_messages((original, correction))
+                await writer.save_facts((old,), changed_at=11.0)
+                await writer.save_facts((closed,), changed_at=35.0)
+                await writer.save_facts((shortened, newer), changed_at=45.0)
+                await writer.save_facts((shortened, newer), changed_at=46.0)
+                for invalid in (
+                    replace(shortened, text="改写正文"),
+                    replace(shortened, invalid_at=26.0),
+                    replace(shortened, expired_at=39.0),
+                    replace(shortened, invalid_at=None, expired_at=None),
+                    replace(shortened, supersedes=(newer.id,)),
+                ):
+                    with pytest.raises(ValueError):
+                        await writer.save_facts(
+                            (fact(subject, "reject"), invalid), changed_at=47.0
+                        )
+                with pytest.raises(ValueError):
+                    await writer.save_facts((newer, newer), changed_at=47.0)
+            async with storage.session(scope.id) as reader:
+                assert await reader.get_facts((old.id, FactId("reject"))) == {
+                    old.id: shortened
+                }
+                assert await reader.get_fact(old.id, exclude_sensitive=True) is None
+                (latest,) = await reader.list_fact_changes(old.id, limit=1)
+                remaining = await reader.list_fact_changes(old.id, after=latest.cursor)
+                assert [
+                    (c.before, c.after, c.changed_at) for c in (latest, *remaining)
+                ] == [
+                    (closed, shortened, 45.0),
+                    (old, closed, 35.0),
+                    (None, old, 11.0),
+                ]
+                assert (
+                    await reader.list_fact_changes(old.id, after=remaining[-1].cursor)
+                    == ()
+                )
+                assert await reader.get_fact(newer.id) == newer
+                hits = await reader.search_lexical(
+                    "乌龙",
+                    5,
+                    filters=FactFilter(valid_at=24.0),
+                    reference_time=45.0,
+                )
+                assert [item for item, _ in hits] == [old.id]
+                assert await reader.facts_in_slot(
+                    old.subject, old.predicate, valid_at=25.0, limit=10
+                ) == (newer,)
+
+    run(exercise())
+
+
+def test_strong_references_and_failed_batches_do_not_publish(
+    database: PgDatabase,
+) -> None:
+    """实体、原文和前驱只在绑定空间解析，外键错误回滚整个保存批次。"""
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id="owner")
+            scope, sibling = space(), space()
+            await storage.create_space(scope)
+            await storage.create_space(sibling)
+            foreign_entity = Entity(sibling.id, "外空间")
+            local_entity = Entity(scope.id, "本空间")
+            source = message(sibling, "foreign")
+            foreign_fact = fact(foreign_entity, "foreign")
+            async with storage.session(sibling.id, write=True) as writer:
+                await writer.upsert_entity(foreign_entity)
+                await writer.append_messages((source,))
+                await writer.save_facts((foreign_fact,), changed_at=10.0)
+
+            good = fact(local_entity, "good")
+            candidate = fact(local_entity, "bad")
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.upsert_entity(local_entity)
+                await writer.save_facts((good,), changed_at=10.0)
+                assert await writer.get_facts((foreign_fact.id,)) == {}
+                assert await writer.list_fact_changes(foreign_fact.id) == ()
+                pending = fact(local_entity, "pending")
+                for invalid in (
+                    replace(candidate, subject=EntityRef(foreign_entity.id)),
+                    replace(candidate, object=EntityRef(foreign_entity.id)),
+                    replace(
+                        candidate, source=Source.EXTRACTED, provenance=(source.id,)
+                    ),
+                    replace(candidate, provenance=(MessageId("missing"),)),
+                    replace(candidate, supersedes=(foreign_fact.id,)),
+                    replace(candidate, supersedes=(pending.id,)),
+                    foreign_fact,
+                ):
+                    with pytest.raises(ValueError):
+                        await writer.save_facts((pending, invalid), changed_at=20.0)
+                    assert await writer.get_fact(pending.id) is None
+                with pytest.raises(ValueError):
+                    await writer.save_facts(
+                        (
+                            replace(good, labels=(Label("food"),)),
+                            replace(candidate, provenance=(source.id,)),
+                        ),
+                        changed_at=25.0,
+                    )
+                assert await writer.get_fact(good.id) == good
+                assert len(await writer.list_fact_changes(good.id)) == 1
+            async with storage.session(scope.id) as reader:
+                assert await reader.query_facts(FactQuery(), reference_time=25.0) == (
+                    good,
+                )
+
+    run(exercise())
+
+
+def test_fact_filters_and_keyset_paging(database: PgDatabase) -> None:
+    """按查询有效时点、任一标签、任一来源和稳定游标查询。"""
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id="owner")
+            scope = space()
+            await storage.create_space(scope)
+            subject = Entity(scope.id, "用户")
+            origin = message(scope, "src")
+            food = Label("food")
+            current = replace(
+                fact(subject, "b"),
+                valid_at=50.0,
+                labels=(food,),
+                provenance=(origin.id,),
+            )
+            ended = replace(fact(subject, "a"), valid_at=5.0, labels=(food,)).close(
+                50.0, 60.0
+            )
+            unknown_end = fact(subject, "c").close(35.0, 60.0)
+            future = replace(fact(subject, "中"), valid_at=100.0, recorded_at=12.0)
+            unknown = fact(subject, "ä")
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.upsert_entity(subject)
+                await writer.append_messages((origin,))
+                await writer.save_facts(
+                    (unknown, future, ended, current, unknown_end), changed_at=65.0
+                )
+            async with storage.session(scope.id) as reader:
+                assert await reader.query_facts(FactQuery(), reference_time=50.0) == (
+                    current,
+                    unknown,
+                )
+                assert await reader.query_facts(
+                    FactQuery(FactFilter(state="history")),
+                    reference_time=50.0,
+                ) == (ended, unknown_end)
+                assert await reader.query_facts(
+                    FactQuery(FactFilter(state="history", valid_at=50.0)),
+                    reference_time=0.0,
+                ) == (ended,)
+                filtered = FactFilter(
+                    state="all",
+                    subject=current.subject,
+                    predicate=current.predicate,
+                    labels=(Label("music"), food),
+                    provenance=(MessageId("absent"), origin.id),
+                )
+                assert await reader.query_facts(
+                    FactQuery(filtered), reference_time=50.0
+                ) == (current,)
+                timeline = FactFilter(state="all")
+                first = await reader.query_facts(
+                    FactQuery(timeline, limit=2), reference_time=50.0
+                )
+                assert first == (future, ended)
+                cursor = FactCursor(first[-1].recorded_at, first[-1].id)
+                assert await reader.query_facts(
+                    FactQuery(timeline, after=cursor),
+                    reference_time=50.0,
+                ) == (current, unknown_end, unknown)
+                assert await reader.facts_in_slot(
+                    current.subject, current.predicate, limit=10
+                ) == (
+                    future,
+                    ended,
+                    current,
+                    unknown_end,
+                    unknown,
+                )
+
+    run(exercise())
+
+
+def test_edges_follow_direction_time_and_visibility(database: PgDatabase) -> None:
+    """一跳只返回实体关系，自环去重，按有效起点排序。"""
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id="owner")
+            scope = space()
+            await storage.create_space(scope)
+            a, b = Entity(scope.id, "甲"), Entity(scope.id, "乙")
+            outbound = replace(fact(a, "out"), object=EntityRef(b.id), valid_at=20.0)
+            inbound = replace(fact(b, "in"), object=EntityRef(a.id), valid_at=20.0)
+            loop = replace(fact(a, "loop"), object=EntityRef(a.id), valid_at=25.0)
+            secret = replace(fact(a, "secret"), object=EntityRef(b.id), sensitive=True)
+            ended = replace(fact(a, "ended"), object=EntityRef(b.id)).close(20.0, 30.0)
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.upsert_entity(a)
+                await writer.upsert_entity(b)
+                await writer.save_facts(
+                    (outbound, inbound, loop, secret, ended, fact(a, "literal")),
+                    changed_at=30.0,
+                )
+            async with storage.session(scope.id) as reader:
+                assert await reader.edges(a.id, reference_time=30.0, limit=10) == (
+                    loop,
+                    inbound,
+                    outbound,
+                    secret,
+                )
+                assert await reader.edges(
+                    a.id, reference_time=30.0, direction="in", limit=10
+                ) == (
+                    loop,
+                    inbound,
+                )
+                assert await reader.edges(
+                    a.id,
+                    reference_time=30.0,
+                    direction="out",
+                    exclude_sensitive=True,
+                    limit=10,
+                ) == (loop, outbound)
+                assert await reader.edges(
+                    a.id,
+                    reference_time=30.0,
+                    valid_at=20.0,
+                    limit=1,
+                ) == (inbound,)
+
+    run(exercise())

@@ -28,7 +28,12 @@ from mnemotrace_next.ports.inference import LLM, Embedder
 from mnemotrace_next.ports.queries import FactCursor, FactFilter, FactQuery
 from mnemotrace_next.ports.reranker import Reranker
 from mnemotrace_next.ports.runtime import Clock, IdGenerator
-from mnemotrace_next.ports.storage import SpaceReader, Storage
+from mnemotrace_next.ports.storage import (
+    GraphEdge,
+    GraphEdgeBatch,
+    SpaceReader,
+    Storage,
+)
 
 from .fakes import (
     FakeClock,
@@ -182,9 +187,10 @@ def test_reinforce_context_facts_reads_latest_eligible_states() -> None:
         )
         await storage.create_space(_SPACE)
         async with storage.session(_SPACE.id, write=True) as session:
+            await session.upsert_entity(_SUBJECT)
             await session.save_facts((_FACT, closed, future, sensitive), changed_at=now)
             await session.save_profile(profile)
-            token = await session.get_purge_token()
+            token = await session.get_erasure_token()
 
         fact_ids = (_FACT.id, closed.id, future.id, sensitive.id, missing)
         for expected in (1.5, 2.0):
@@ -194,7 +200,7 @@ def test_reinforce_context_facts_reads_latest_eligible_states() -> None:
                 _SPACE.id,
                 (*fact_ids, _FACT.id),
                 reference_time=reference_time,
-                expected_purge_token=token,
+                expected_erasure_token=token,
                 exclude_sensitive=True,
             )
             async with storage.session(_SPACE.id) as session:
@@ -238,6 +244,7 @@ def test_reinforce_context_facts_after_effective_cutoff() -> None:
         fact = _FACT.close(valid_end=reference_time + 5.0, closed_at=reference_time)
         await storage.create_space(_SPACE)
         async with storage.session(_SPACE.id, write=True) as session:
+            await session.upsert_entity(_SUBJECT)
             await session.save_facts((fact,), changed_at=reference_time)
 
         async with storage.session(_SPACE.id) as session:
@@ -245,7 +252,7 @@ def test_reinforce_context_facts_after_effective_cutoff() -> None:
                 FactQuery(), reference_time=reference_time
             )
             assert selected == (fact,)
-            token = await session.get_purge_token()
+            token = await session.get_erasure_token()
 
         await reinforce_context_facts(
             storage,
@@ -253,7 +260,7 @@ def test_reinforce_context_facts_after_effective_cutoff() -> None:
             _SPACE.id,
             tuple(selected_fact.id for selected_fact in selected),
             reference_time=reference_time,
-            expected_purge_token=token,
+            expected_erasure_token=token,
         )
         async with storage.session(_SPACE.id) as session:
             assert await session.get_salience((fact.id,)) == {
@@ -307,6 +314,12 @@ def test_message_replay_retains_first_recorded_at_and_append_order() -> None:
     asyncio.run(exercise())
 
 
+def test_fact_filter_rejects_a_time_for_the_full_timeline() -> None:
+    """完整时间线与显式有效时点互斥。"""
+    with pytest.raises(ValueError, match="valid_at"):
+        FactFilter(state="all", valid_at=0.0)
+
+
 def test_fact_query_time_filters_and_cursor() -> None:
     """校验时间边界、过滤组合和同收录时刻的续页。"""
 
@@ -348,6 +361,7 @@ def test_fact_query_time_filters_and_cursor() -> None:
         )
         unknown = replace(_FACT, id=FactId("e"), recorded_at=50.0)
         async with storage.session(_SPACE.id, write=True) as session:
+            await session.upsert_entity(_SUBJECT)
             await session.append_messages((message,))
             await session.save_facts(
                 (future, current, unknown, unknown_end, ended), changed_at=100.0
@@ -440,6 +454,21 @@ def test_restricted_reads_hide_sensitive_facts_and_profile() -> None:
             )
 
             filters = FactFilter(exclude_sensitive=True)
+            visible_edge = GraphEdge(edge.id, _SUBJECT.id, target.id)
+            hidden_edge = GraphEdge(sensitive.id, _SUBJECT.id, target.id)
+            assert await session.adjacent_edges(
+                (_SUBJECT.id, target.id), filters=filters, reference_time=50.0, limit=1
+            ) == GraphEdgeBatch((visible_edge,), False)
+            assert await session.adjacent_edges(
+                (target.id,), filters=FactFilter(), reference_time=50.0, limit=1
+            ) == GraphEdgeBatch((visible_edge,), True)
+            assert await session.adjacent_edges(
+                (target.id,),
+                filters=FactFilter(),
+                reference_time=50.0,
+                limit=1,
+                exclude_fact_ids=(edge.id,),
+            ) == GraphEdgeBatch((hidden_edge,), False)
             assert await session.search_lexical(
                 "茶", 1, filters=filters, reference_time=50.0, min_score=1.0
             ) == ((edge.id, 1.0),)
@@ -486,6 +515,7 @@ def test_fact_replacement_keeps_each_body_for_its_effective_time() -> None:
             supersedes=(original.id,),
         )
         async with storage.session(_SPACE.id, write=True) as session:
+            await session.upsert_entity(_SUBJECT)
             await session.save_facts((original,), changed_at=10.0)
             await session.upsert_vectors(
                 ((original.id, (1.0, 0.0)),), embedding_space=embedder.embedding_space
@@ -558,6 +588,7 @@ def test_save_facts_rejects_fixed_field_changes_before_writing_batch() -> None:
         original = replace(_FACT, valid_at=20.0)
         incoming = replace(original, id=FactId("incoming"), supersedes=(original.id,))
         async with storage.session(_SPACE.id, write=True) as session:
+            await session.upsert_entity(_SUBJECT)
             with pytest.raises(ValueError, match="supersedes"):
                 await session.save_facts((original, incoming), changed_at=30.0)
             assert await session.get_facts((original.id, incoming.id)) == {}
@@ -598,6 +629,7 @@ def test_fact_cutoff_can_only_move_earlier() -> None:
             closed.shorten_validity(40.0), labels=(Label("food"),), sensitive=True
         )
         async with storage.session(_SPACE.id, write=True) as session:
+            await session.upsert_entity(_SUBJECT)
             await session.save_facts((original,), changed_at=30.0)
             await session.save_facts((closed,), changed_at=60.0)
             await session.save_facts((shortened,), changed_at=70.0)
@@ -684,6 +716,7 @@ def test_delete_session_data_removes_facts_and_source_history() -> None:
         reinforced = FactSalience().reinforce(25.0)
 
         async with storage.session(_SPACE.id, write=True) as session:
+            await session.upsert_entity(_SUBJECT)
             await session.append_messages((removed, kept))
             await session.save_digest(removed_digest)
             await session.save_digest(kept_digest)
@@ -697,9 +730,13 @@ def test_delete_session_data_removes_facts_and_source_history() -> None:
 
         async with storage.session(_SPACE.id, write=True) as session:
             assert await session.get_profile() == profile
+            original_token = await session.get_erasure_token()
             deleted_ids = await session.delete_session_data(removed.session_id)
             assert deleted_ids == frozenset({withdrawn.id, scheduled.id})
+            token_after_delete = await session.get_erasure_token()
+            assert token_after_delete != original_token
             assert await session.delete_session_data(removed.session_id) == frozenset()
+            assert await session.get_erasure_token() == token_after_delete
             assert deleted_ids.intersection(profile.source_fact_ids)
             await session.delete_profile()
 
@@ -753,30 +790,32 @@ def test_purge_space_replaces_token_even_when_empty() -> None:
         storage: Storage = FakeStorage()
         await storage.create_space(_SPACE)
         async with storage.session(_SPACE.id) as session:
-            original_token = await session.get_purge_token()
+            original_token = await session.get_erasure_token()
 
         async with storage.session(_SPACE.id, write=True) as session:
             await session.purge_space()
 
         async with storage.session(_SPACE.id) as session:
-            token_after_empty_purge = await session.get_purge_token()
+            token_after_empty_purge = await session.get_erasure_token()
             assert token_after_empty_purge != original_token
             assert await session.get_space() == _SPACE
 
         async with storage.session(_SPACE.id, write=True) as session:
+            await session.upsert_entity(_SUBJECT)
             await session.save_facts((_FACT,), changed_at=10.0)
             await session.save_salience({_FACT.id: FactSalience().reinforce(10.0)})
-            assert await session.get_purge_token() == token_after_empty_purge
+            assert await session.get_erasure_token() == token_after_empty_purge
             await session.purge_space()
 
         async with storage.session(_SPACE.id) as session:
-            assert await session.get_purge_token() not in {
+            assert await session.get_erasure_token() not in {
                 original_token,
                 token_after_empty_purge,
             }
             assert await session.get_fact(_FACT.id) is None
 
         async with storage.session(_SPACE.id, write=True) as session:
+            await session.upsert_entity(_SUBJECT)
             await session.save_facts((_FACT,), changed_at=11.0)
         await reinforce_context_facts(
             storage,
@@ -784,7 +823,7 @@ def test_purge_space_replaces_token_even_when_empty() -> None:
             _SPACE.id,
             (_FACT.id,),
             reference_time=10.0,
-            expected_purge_token=token_after_empty_purge,
+            expected_erasure_token=token_after_empty_purge,
         )
         async with storage.session(_SPACE.id) as session:
             assert await session.get_salience((_FACT.id,)) == {_FACT.id: FactSalience()}
@@ -792,8 +831,8 @@ def test_purge_space_replaces_token_even_when_empty() -> None:
     asyncio.run(exercise())
 
 
-def test_latest_digest_uses_append_order_and_skips_missing_sources() -> None:
-    """按追加位置选择摘要，来源缺失时整份摘要不可读。"""
+def test_latest_digest_uses_append_order_and_rejects_missing_sources() -> None:
+    """按追加位置选择摘要，保存时拒绝缺失来源。"""
 
     async def exercise() -> None:
         storage: Storage = FakeStorage()
@@ -836,7 +875,8 @@ def test_latest_digest_uses_append_order_and_skips_missing_sources() -> None:
             await session.save_digest(tied)
             await session.save_digest(stale)
             await session.save_digest(latest)
-            await session.save_digest(orphaned)
+            with pytest.raises(ValueError, match="摘要来源"):
+                await session.save_digest(orphaned)
         async with storage.session(_SPACE.id) as session:
             assert await session.last_messages(session_id, limit=2) == (first, second)
             assert await session.last_messages(session_id, limit=1) == (second,)

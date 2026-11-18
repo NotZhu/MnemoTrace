@@ -34,6 +34,34 @@ class FactChange:
     after: Fact
 
 
+@dataclass(frozen=True)
+class GraphEdge:
+    """保存关系事实的标识和有方向的两个端点。
+
+    Attributes:
+        fact_id: 关系事实标识。
+        subject_id: 主体实体标识。
+        object_entity_id: 客体实体标识。
+    """
+
+    fact_id: FactId
+    subject_id: EntityId
+    object_entity_id: EntityId
+
+
+@dataclass(frozen=True)
+class GraphEdgeBatch:
+    """保存一次邻接读取的结果。
+
+    Attributes:
+        edges: 按 FactId.value 升序排列的关系事实边。
+        truncated: 本批还有符合条件且未返回的边。
+    """
+
+    edges: tuple[GraphEdge, ...]
+    truncated: bool
+
+
 class SpaceReader(Protocol):
     """读取绑定授权空间中的一致快照。
 
@@ -47,18 +75,27 @@ class SpaceReader(Protocol):
 
     @property
     def space_id(self) -> SpaceId:
-        """返回会话绑定的空间标识。"""
+        """读取会话的空间作用域。
+
+        Returns:
+            已授权并绑定到会话的空间标识。
+        """
         ...
 
     async def get_space(self) -> Space:
-        """返回绑定空间的快照。"""
-        ...
-
-    async def get_purge_token(self) -> str:
-        """读取绑定空间在当前会话快照中的清空标记。
+        """读取绑定空间的元数据。
 
         Returns:
-            由存储为该空间分配的标记，每次清空取新的未用值，普通写入期间保持稳定。
+            当前事务可见的空间快照。
+        """
+        ...
+
+    async def get_erasure_token(self) -> str:
+        """读取绑定空间在当前会话快照中的擦除标记。
+
+        Returns:
+            由存储为该空间分配的不透明标记。清空空间或实际删除会话原文时取新的
+            未用值，其余写入期间保持稳定。
         """
         ...
 
@@ -196,10 +233,13 @@ class SpaceReader(Protocol):
         ...
 
     async def get_entity(self, entity_id: EntityId) -> Entity | None:
-        """按标识读取绑定空间中的实体，缺失时返回 None。
+        """按标识读取绑定空间中的实体。
 
         Args:
             entity_id: 要读取的实体标识。
+
+        Returns:
+            实体快照，缺失时为 None。
         """
         ...
 
@@ -244,6 +284,32 @@ class SpaceReader(Protocol):
         """
         ...
 
+    async def adjacent_edges(
+        self,
+        entity_ids: Sequence[EntityId],
+        *,
+        filters: FactFilter,
+        reference_time: float,
+        limit: int,
+        exclude_fact_ids: Sequence[FactId] = (),
+    ) -> GraphEdgeBatch:
+        """在绑定空间的当前快照中批量读取实体关系边。
+
+        主体或客体命中任一给定实体时返回该边，同一事实只返回一次。
+        事实筛选与 query_facts 一致，筛选和排除均先于截取。
+
+        Args:
+            entity_ids: 用于匹配邻接边的实体标识。
+            filters: 每条边必须满足的事实筛选条件。
+            reference_time: 本次请求共用的 UTC epoch 秒。
+            limit: 筛选及排除后最多返回的边数，须为正整数。
+            exclude_fact_ids: 本次读取跳过的事实标识。
+        Returns:
+            按 FactId.value 升序排列的边及是否有符合条件但未返回的边。
+            空端点返回未截断的空批次。
+        """
+        ...
+
     async def get_digest(self, digest_id: DigestId) -> Digest | None:
         """按标识读取绑定空间中可用的摘要。
 
@@ -271,7 +337,8 @@ class SpaceReader(Protocol):
             source_message_ids: 组成摘要的消息标识序列。
 
         Returns:
-            对应消息组的可用摘要快照，无可用摘要时返回 None。
+            对应消息组的可用摘要快照。同组有多份时按 updated_at 倒序，再按
+            DigestId.value 升序选取。无可用摘要时返回 None。
         """
         ...
 
@@ -357,7 +424,7 @@ class SpaceSession(SpaceReader, Protocol):
     """在绑定空间的写会话中执行事务操作。
 
     写操作要求以 write=True 打开会话。派生写入的调用方在准备输入的读会话内
-    读取清空标记，再在事务外生成。发布前进入串行写会话，核对清空标记并重读
+    读取擦除标记，再在事务外生成。发布前进入串行写会话，核对擦除标记并重读
     参与决策的来源、目标事实和槽位。标记或依赖发生变化时放弃整批派生写入。
     """
 
@@ -383,7 +450,8 @@ class SpaceSession(SpaceReader, Protocol):
         invalid_at 和 expired_at，提前截止保留首次获知的 expired_at。
         其余字段固定，包括 subject、predicate、object、text、valid_at、
         recorded_at、source 和 supersedes。新事实的 supersedes 指向本批
-        保存前绑定空间内已存在的事实。
+        保存前绑定空间内已存在的事实。主体、实体客体及已提供的来源原文须在
+        绑定空间的当前写事务内存在，手工事实可以没有来源。
 
         每次创建或实际更新在同一事务追加一条 FactChange。创建事实时由存储
         从 Fact.text 派生词法索引，与事实一同提交。相同快照重放幂等。
@@ -396,8 +464,8 @@ class SpaceSession(SpaceReader, Protocol):
                 在线创建可与 recorded_at 共用一次时钟读取，历史导入可保留原 recorded_at。
 
         Raises:
-            ValueError: 事实超出绑定空间、修改固定字段、重开或延后截止、
-                修改首次获知时刻，或新事实引用尚不存在的前驱。整批拒绝。
+            ValueError: 同批标识重复、事实超出绑定空间、修改固定字段、重开或延后截止、
+                修改首次获知时刻，或引用尚不存在的实体、来源或前驱。整批拒绝。
         """
         ...
 
@@ -431,6 +499,7 @@ class SpaceSession(SpaceReader, Protocol):
         删除范围包括已截止和未来生效的事实。
         整条事实及其索引、修改记录和关联引用按 delete_facts 的规则撤下。
         对仍存在的事实，创建或修改记录的任一快照引用被删原文时，删除该记录。
+        删除原文与更换擦除标记在同一事务内完成。
         有剩余来源时，调用方可重新抽取并按正常写入流程发布。
 
         Args:
@@ -444,15 +513,22 @@ class SpaceSession(SpaceReader, Protocol):
     async def purge_space(self) -> None:
         """清空原文、实体、事实及其显著度、索引、摘要、画像和修改记录。
 
-        保留空间。清空数据和更换清空标记在同一事务中完成。空空间清空时也更换标记。
+        保留空间和各嵌入模型已登记的维度。清空数据和更换擦除标记在同一
+        事务中完成。空空间清空时也更换标记。
         """
         ...
 
     async def upsert_entity(self, entity: Entity) -> Entity:
-        """保存实体并返回最终保存的快照。
+        """保存实体快照。
 
         Args:
             entity: 待保存的实体。
+
+        Returns:
+            存储最终保存的实体快照。
+
+        Raises:
+            ValueError: 实体超出绑定空间。
         """
         ...
 
@@ -460,17 +536,27 @@ class SpaceSession(SpaceReader, Protocol):
         """按摘要标识保存整份摘要快照。
 
         适配器核对来源消息均属于绑定空间和摘要所属会话。
+        同 ID 的会话、来源顺序和创建时刻固定，更新时间可以持平或前进。
 
         Args:
             digest: 待保存的摘要。
+
+        Raises:
+            ValueError: 摘要或来源超出所属空间或会话，来源缺失，修改同 ID
+                的消息组或创建时刻，或更新时间倒退。
         """
         ...
 
     async def save_profile(self, profile: Profile) -> None:
-        """保存绑定空间的整份画像快照。
+        """保存绑定空间的整份画像快照，来源事实须在该空间内存在。
+
+        已存在画像时，更新时间可以持平或前进。
 
         Args:
             profile: 待保存的画像。
+
+        Raises:
+            ValueError: 画像超出绑定空间、来源事实缺失或更新时间倒退。
         """
         ...
 
@@ -511,6 +597,10 @@ class Storage(Protocol):
 
         Args:
             space: 待创建的空间快照。
+
+        Raises:
+            PermissionError: 空间所有者与认证账号不一致。
+            ValueError: 空间标识已存在。
         """
         ...
 
@@ -532,6 +622,8 @@ class Storage(Protocol):
         进入时验证空间存在且已授权，并开启事务。只读会话提供一致快照。
         写会话取得本空间的串行写入权后读取最新已提交的标记和依赖。
         写会话正常退出时提交，块内异常或取消时回滚并传播异常。
+        若捕获数据库异常后写事务仍处于失败状态，会话退出时抛出 RuntimeError
+        并回滚。
         PostgreSQL 适配器为每次只读会话开启一个 REPEATABLE READ 事务。
 
         Args:
@@ -540,5 +632,9 @@ class Storage(Protocol):
 
         Returns:
             显式传入 write=True 时类型为 SpaceSession，其余调用按 SpaceReader 使用。
+
+        Raises:
+            LookupError: 进入会话时空间不存在或账号无权访问。
+            RuntimeError: 退出写会话时，事务因已捕获的数据库错误而无法提交。
         """
         ...
