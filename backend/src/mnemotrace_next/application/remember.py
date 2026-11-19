@@ -1,4 +1,4 @@
-"""记忆写入用例，负责验证输入并固定会话快照。"""
+"""编排一次同步记忆写入及提交前复核。"""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -7,11 +7,29 @@ from typing import Literal
 
 from ..domain.enums import Role
 from ..domain.errors import InvalidMessage
-from ..domain.ids import SessionId, SpaceId
+from ..domain.ids import MessageId, SessionId, SpaceId
 from ..domain.message import Message
+from ..ports.inference import LLM, Embedder
 from ..ports.runtime import Clock, IdGenerator
-from ..ports.storage import SessionUnavailable, Storage
-from .extraction import message_reference_time
+from ..ports.storage import (
+    FactChange,
+    SessionUnavailable,
+    SpaceReader,
+    SpaceSession,
+    Storage,
+)
+from .adjudication import (
+    ComparisonCandidates,
+    FactComparison,
+    PreparedFact,
+    compare_facts,
+    find_comparison_candidates,
+    prepare_facts,
+    resolve_known_comparisons,
+)
+from .extraction import extract_facts, message_reference_time
+from .fact_lifecycle import calculate_fact_writes
+from .sessions import create_session
 
 _CONTEXT_MESSAGES = 10
 
@@ -26,6 +44,27 @@ class MessageInput:
 
 
 @dataclass(frozen=True)
+class RememberResult:
+    """保存已提交的原文标识与实际事实变更。
+
+    Attributes:
+        message_ids: 按输入顺序排列的原文标识。
+        fact_changes: 按审计游标升序排列的事实变更。
+    """
+
+    message_ids: tuple[MessageId, ...]
+    fact_changes: tuple[FactChange, ...]
+
+
+class RememberInvalidated(RuntimeError):
+    """表示空间发生擦除，本次请求使用的快照已经失效。"""
+
+
+class RememberRetryRequired(RuntimeError):
+    """表示已用完重判机会，且本次提交尚未开始写入。"""
+
+
+@dataclass(frozen=True)
 class _RememberContext:
     """保存本次使用的已提交前文、新原文和提交前须复核的擦除标记。"""
 
@@ -33,6 +72,243 @@ class _RememberContext:
     erasure_token: str
     previous: tuple[Message, ...]
     messages: tuple[Message, ...]
+
+
+class Memory:
+    """为服务端选定的空间提供会话登记与同步记忆写入。
+
+    Args:
+        space_id: 服务端选定的目标空间，存储会话仍会校验访问权。
+        storage: 已绑定认证账号的存储端口。
+        llm: 装配时已校验配置的结构化补全端口。
+        embedder: 装配时已校验配置的嵌入端口。
+        clock: 提供 UTC epoch 秒的时钟。
+        ids: 提供不可复用标识的生成器。
+        timezone: 解释日历日期的时区，默认 UTC。
+
+    Raises:
+        ValueError: 缺少补全或嵌入端口。
+    """
+
+    def __init__(
+        self,
+        *,
+        space_id: SpaceId,
+        storage: Storage,
+        llm: LLM,
+        embedder: Embedder,
+        clock: Clock,
+        ids: IdGenerator,
+        timezone: tzinfo = UTC,
+    ) -> None:
+        if llm is None:
+            raise ValueError("Memory 需要配置补全模型")
+        if embedder is None:
+            raise ValueError("Memory 需要配置嵌入模型")
+        self._space_id = space_id
+        self._storage = storage
+        self._llm = llm
+        self._embedder = embedder
+        self._clock = clock
+        self._ids = ids
+        self._timezone = timezone
+
+    async def create_session(self) -> SessionId:
+        """登记一个新会话，提交后返回标识。
+
+        Returns:
+            可用于本空间记忆写入的会话标识。
+
+        Raises:
+            LookupError: 无权访问绑定空间。
+        """
+        return await create_session(self._storage, self._space_id, self._ids)
+
+    async def remember(
+        self, messages: str | Sequence[MessageInput], *, session_id: SessionId
+    ) -> RememberResult:
+        """在事务外生成事实，在空间写锁保护下复核并发布。
+
+        Args:
+            messages: 单条用户文本，或非空的有序消息批次。
+            session_id: 绑定空间内已登记的会话标识。
+
+        Returns:
+            PostgreSQL 确认提交后的原文标识和事实变更。
+
+        Raises:
+            InvalidMessage: 消息批次或内容无效。
+            LookupError: 无权访问绑定空间。
+            SessionUnavailable: 会话不可用。
+            RememberInvalidated: 空间擦除使本次快照失效。
+            RememberRetryRequired: 重判后再次遇到需要模型裁决的变化。
+            CommitOutcomeUnknown: 写事务进入提交阶段后无法确认结果。
+        """
+        context = await _prepare_remember_context(
+            self._storage,
+            self._space_id,
+            session_id,
+            messages,
+            clock=self._clock,
+            ids=self._ids,
+            timezone=self._timezone,
+        )
+        extracted = await extract_facts(
+            self._llm, context.previous, context.messages, timezone=self._timezone
+        )
+        if extracted:
+            async with self._storage.session(self._space_id) as reader:
+                await _check_remember_snapshot(
+                    reader, session_id, context.erasure_token
+                )
+        prepared = await prepare_facts(
+            extracted,
+            space_id=self._space_id,
+            embedder=self._embedder,
+            ids=self._ids,
+            received_at=context.received_at,
+        )
+        candidates = ComparisonCandidates({}, ())
+        if prepared:
+            async with self._storage.session(self._space_id) as reader:
+                await _check_remember_snapshot(
+                    reader, session_id, context.erasure_token
+                )
+                candidates = await self._find_candidates(
+                    reader, prepared, context.received_at
+                )
+        comparisons = await compare_facts(self._llm, prepared, candidates)
+
+        for attempt in range(2):
+            async with self._storage.session(self._space_id, write=True) as writer:
+                await _check_remember_snapshot(
+                    writer, session_id, context.erasure_token
+                )
+                current = await self._find_candidates(
+                    writer, prepared, context.received_at
+                )
+                resolved = resolve_known_comparisons(
+                    prepared, current, candidates, comparisons
+                )
+                if len(resolved) == len(current.pairs):
+                    changes = await self._publish(
+                        writer,
+                        context,
+                        prepared,
+                        current,
+                        tuple(resolved[pair] for pair in current.pairs),
+                    )
+                    return RememberResult(
+                        tuple(message.id for message in context.messages), changes
+                    )
+            if attempt == 1:
+                break
+            candidates = current
+            async with self._storage.session(self._space_id) as reader:
+                await _check_remember_snapshot(
+                    reader, session_id, context.erasure_token
+                )
+            comparisons = await compare_facts(
+                self._llm, prepared, current, reusable=resolved
+            )
+
+        raise RememberRetryRequired("比较依据再次变化，请重新发起写入")
+
+    async def _find_candidates(
+        self,
+        reader: SpaceReader,
+        prepared: Sequence[PreparedFact],
+        reference_time: float,
+    ) -> ComparisonCandidates:
+        if not prepared:
+            return ComparisonCandidates({}, ())
+        return await find_comparison_candidates(
+            reader,
+            prepared,
+            embedding_space=self._embedder.embedding_space,
+            reference_time=reference_time,
+        )
+
+    async def _publish(
+        self,
+        writer: SpaceSession,
+        context: _RememberContext,
+        prepared: Sequence[PreparedFact],
+        candidates: ComparisonCandidates,
+        comparisons: Sequence[FactComparison],
+    ) -> tuple[FactChange, ...]:
+        if not prepared:
+            await writer.append_messages(context.messages)
+            return ()
+        existing = candidates.existing_facts
+        groups = (
+            await writer.get_fact_support_groups(tuple(existing)) if existing else {}
+        )
+        if groups.keys() != existing.keys():
+            raise RuntimeError("写会话中旧候选的证据组读取不完整")
+        changed_at = max(
+            self._clock.now(),
+            context.received_at,
+            max(
+                (fact.recorded_at for fact in existing.values()),
+                default=context.received_at,
+            ),
+        )
+        writes = calculate_fact_writes(
+            prepared,
+            comparisons,
+            existing_facts=existing,
+            existing_support_groups=groups,
+            changed_at=changed_at,
+        )
+        await writer.append_messages(context.messages)
+        if not writes.facts:
+            return ()
+        if writes.entities:
+            existing_entities = await writer.get_entities(
+                tuple(entity.id for entity in writes.entities)
+            )
+            for entity in writes.entities:
+                if entity.id not in existing_entities:
+                    await writer.upsert_entity(entity)
+        changes = await writer.save_facts(
+            writes.facts,
+            changed_at=changed_at,
+            support_groups=writes.support_groups,
+            cutoff_triggers=writes.cutoff_triggers,
+        )
+        if writes.vectors:
+            await writer.upsert_vectors(
+                tuple(writes.vectors.items()),
+                embedding_space=self._embedder.embedding_space,
+            )
+        # 画像由事实本身派生，证据组追加只改变来源和审计。
+        dirty_profile_sources = {
+            change.after.id
+            for change in changes
+            if change.before is not None
+            and (
+                change.before.invalid_at != change.after.invalid_at
+                or change.before.labels != change.after.labels
+                or change.before.sensitive != change.after.sensitive
+            )
+        }
+        if dirty_profile_sources:
+            profile = await writer.get_profile()
+            if profile is not None and dirty_profile_sources.intersection(
+                profile.source_fact_ids
+            ):
+                await writer.delete_profile()
+        return changes
+
+
+async def _check_remember_snapshot(
+    reader: SpaceReader, session_id: SessionId, erasure_token: str
+) -> None:
+    if not await reader.has_session(session_id):
+        raise SessionUnavailable("会话不可用")
+    if await reader.get_erasure_token() != erasure_token:
+        raise RememberInvalidated("空间发生擦除，本次写入已失效")
 
 
 async def _prepare_remember_context(

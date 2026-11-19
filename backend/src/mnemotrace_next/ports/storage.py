@@ -35,6 +35,10 @@ class SessionUnavailable(LookupError):
     """表示对话在绑定空间内不可用。"""
 
 
+class CommitOutcomeUnknown(RuntimeError):
+    """表示写事务已进入提交阶段，但无法确认数据库是否已提交。"""
+
+
 @dataclass(frozen=True)
 class CutoffTrigger:
     """记录触发一次截止的事实及该次裁决采用的原文。
@@ -647,8 +651,8 @@ class SpaceSession(SpaceReader, Protocol):
     async def delete_profile(self) -> None:
         """幂等删除绑定空间的画像，随后 get_profile 返回 None。
 
-        当实际变更或删除的事实出现在 Profile.source_fact_ids 中时，调用方
-        在处理事实的同一个写会话内调用本方法。
+        当画像引用的事实被删除或其有效期、标签、敏感性发生变化时，调用方
+        在处理事实的同一写会话内调用本方法。单独追加证据组可沿用现有画像。
         """
         ...
 
@@ -720,5 +724,6 @@ class Storage(Protocol):
         Raises:
             LookupError: 进入会话时空间不存在或账号无权访问。
             RuntimeError: 退出写会话时，事务因已捕获的数据库错误而无法提交。
+            CommitOutcomeUnknown: 写事务进入提交阶段后无法确认结果。
         """
         ...

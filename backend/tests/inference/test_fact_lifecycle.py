@@ -394,3 +394,86 @@ def test_cutoff_requires_support_retained_by_new_representative(
     else:
         assert old.fact.id not in saved
         assert old.fact.id not in result.cutoff_triggers
+
+
+@pytest.mark.parametrize(
+    "closes_representative", [True, False], ids=["grounded", "open-representative"]
+)
+def test_newly_covering_support_can_trigger_a_cutoff(
+    closes_representative: bool,
+) -> None:
+    """有限期证据在代表被独立截止后参与冲突，并留下实际引用。"""
+    old, representative, alias, later = _prepare(
+        candidate("old", start=10.0, text="用户默认用法文"),
+        candidate("representative", start=20.0, text="用户默认用英文"),
+        candidate("alias", start=20.0, end=40.0, text="该时段默认用英文"),
+        candidate("later", start=40.0, text="用户默认用中文"),
+    )
+    comparisons = [
+        FactComparison((representative.fact.id, alias.fact.id), "duplicate"),
+        FactComparison((alias.fact.id, old.fact.id), "conflict"),
+    ]
+    if closes_representative:
+        comparisons.extend(
+            (
+                FactComparison((later.fact.id, old.fact.id), "conflict"),
+                FactComparison((later.fact.id, representative.fact.id), "conflict"),
+            )
+        )
+    items = (
+        (representative, alias, later)
+        if closes_representative
+        else (representative, alias)
+    )
+    result = _decide(items, (old.fact,), *comparisons)
+    saved = {fact.id: fact for fact in result.facts}
+    if closes_representative:
+        assert saved[representative.fact.id].invalid_at == 40.0
+        assert saved[old.fact.id].invalid_at == 20.0
+        assert result.support_groups[representative.fact.id] == (
+            representative.fact.provenance,
+            alias.fact.provenance,
+        )
+        assert result.cutoff_triggers[old.fact.id] == (
+            CutoffTrigger(representative.fact.id, 20.0, alias.fact.provenance),
+        )
+    else:
+        assert saved[representative.fact.id].invalid_at is None
+        assert old.fact.id not in saved
+        assert result.support_groups[representative.fact.id] == (
+            representative.fact.provenance,
+        )
+        assert result.cutoff_triggers == {}
+
+
+def test_newly_covering_support_can_enable_an_earlier_cutoff() -> None:
+    """后继先确认较新的证据组，再沿时间线确认较早的证据组。"""
+    old, first, first_alias, second, second_alias, latest = _prepare(
+        candidate("old", start=10.0, text="用户默认用法文"),
+        candidate("first", start=20.0, text="用户默认用英文"),
+        candidate("first-alias", start=20.0, end=30.0, text="该时段默认用英文"),
+        candidate("second", start=30.0, text="用户默认用中文"),
+        candidate("second-alias", start=30.0, end=40.0, text="该时段默认用中文"),
+        candidate("latest", start=40.0, text="用户默认用日文"),
+    )
+    result = _decide(
+        (first, first_alias, second, second_alias, latest),
+        (old.fact,),
+        FactComparison((first.fact.id, first_alias.fact.id), "duplicate"),
+        FactComparison((second.fact.id, second_alias.fact.id), "duplicate"),
+        FactComparison((latest.fact.id, second.fact.id), "conflict"),
+        FactComparison((second_alias.fact.id, first.fact.id), "conflict"),
+        FactComparison((first_alias.fact.id, old.fact.id), "conflict"),
+    )
+    assert {fact.id: fact.invalid_at for fact in result.facts} == {
+        old.fact.id: 20.0,
+        first.fact.id: 30.0,
+        second.fact.id: 40.0,
+        latest.fact.id: None,
+    }
+    assert result.cutoff_triggers[old.fact.id] == (
+        CutoffTrigger(first.fact.id, 20.0, first_alias.fact.provenance),
+    )
+    assert result.cutoff_triggers[first.fact.id] == (
+        CutoffTrigger(second.fact.id, 30.0, second_alias.fact.provenance),
+    )

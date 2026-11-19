@@ -14,6 +14,7 @@ from mnemotrace_next.application.adjudication import (
     compare_facts,
     find_comparison_candidates,
     prepare_facts,
+    resolve_known_comparisons,
 )
 from mnemotrace_next.application.extraction import EntityMention, SpaceUserMention
 from mnemotrace_next.domain.entity import Entity
@@ -29,6 +30,37 @@ from mnemotrace_next.ports.inference import (
 from ..ports.fakes import FakeEmbedder, FakeIdGenerator, FakeSpaceSession
 from .adjudication_samples import SPACE, FactIds, candidate
 from .sample import chat_response, configured_chat
+
+
+def test_resolving_known_comparisons_ignores_pair_orientation() -> None:
+    """事实内容和区间相同时复用反向配对，返回当前顺序。"""
+
+    async def exercise() -> None:
+        prepared = await prepare_facts(
+            (candidate("incoming"), candidate("previous")),
+            space_id=SPACE,
+            embedder=FakeEmbedder(),
+            ids=FactIds(),
+            received_at=100.0,
+        )
+        new, old = (item.fact for item in prepared)
+        original = (new.id, old.id)
+        reverse = (old.id, new.id)
+        previous = ComparisonCandidates({old.id: old}, (original,))
+        decisions = (FactComparison(original, "conflict"),)
+        current = ComparisonCandidates({old.id: old}, (reverse,))
+        assert resolve_known_comparisons(
+            prepared[:1], current, previous, decisions
+        ) == {
+            reverse: FactComparison(reverse, "conflict"),
+        }
+
+        updated = ComparisonCandidates({old.id: old.close(30.0, 100.0)}, (reverse,))
+        assert (
+            resolve_known_comparisons(prepared[:1], updated, previous, decisions) == {}
+        )
+
+    asyncio.run(exercise())
 
 
 class _Vectors(FakeEmbedder):

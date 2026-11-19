@@ -60,13 +60,15 @@ def calculate_fact_writes(
     targets, new_ids = _select_representatives(
         prepared, existing_facts, duplicates, suspended
     )
-    projectable_targets = {
-        source: target
-        for source, target in targets.items()
-        if source == target or _covers_interval(incoming[source], facts[target])
-    }
-    cutoffs, uncertain_representatives = _project_conflicts(
-        comparisons, facts, existing_facts, new_ids, projectable_targets, suspended
+    closed, cutoff_triggers, uncertain_representatives = _resolve_cutoffs(
+        comparisons,
+        facts,
+        incoming,
+        targets,
+        existing_facts,
+        existing_support_groups,
+        suspended,
+        changed_at,
     )
     new_ids.difference_update(uncertain_representatives)
     updated: dict[FactId, Fact] = {}
@@ -76,25 +78,18 @@ def calculate_fact_writes(
     for item in prepared:
         fact = item.fact
         if fact.id in new_ids:
+            snapshot = closed.pop(fact.id, fact)
             updated[fact.id] = (
-                replace(fact, expired_at=changed_at)
-                if fact.invalid_at is not None
-                else fact
+                replace(snapshot, expired_at=changed_at)
+                if snapshot.invalid_at is not None
+                else snapshot
             )
             support_groups[fact.id] = (fact.provenance,)
             vectors[fact.id] = item.vector
             for entity in item.entities:
                 entities.setdefault(entity.id, entity)
 
-    cutoff_triggers = _apply_cutoffs(
-        cutoffs,
-        facts,
-        incoming,
-        existing_support_groups,
-        uncertain_representatives,
-        updated,
-        changed_at,
-    )
+    updated.update(closed)
     for source, target in targets.items():
         if source == target or target in uncertain_representatives:
             continue
@@ -187,6 +182,58 @@ def _order_by_start_time(left: Fact, right: Fact) -> tuple[Fact, Fact] | None:
     ):
         return None
     return (left, right) if left.valid_at < right.valid_at else (right, left)
+
+
+def _resolve_cutoffs(
+    comparisons: Sequence[FactComparison],
+    facts: Mapping[FactId, Fact],
+    incoming: Mapping[FactId, PreparedFact],
+    targets: Mapping[FactId, FactId],
+    existing: Mapping[FactId, Fact],
+    groups: Mapping[FactId, SupportGroups],
+    suspended: set[FactId],
+    changed_at: float,
+) -> tuple[dict[FactId, Fact], dict[FactId, tuple[CutoffTrigger, ...]], set[FactId]]:
+    new_ids = {source for source, target in targets.items() if source == target}
+    projectable: dict[FactId, FactId] = {}
+    deferred: dict[FactId, FactId] = {}
+    for source, target in targets.items():
+        if source == target or _covers_interval(incoming[source], facts[target]):
+            projectable[source] = target
+        elif source not in suspended and incoming[source].fact.invalid_at is not None:
+            deferred[source] = target
+
+    # 有截止的重复证据先等代表通过独立裁决缩短，避免证据用自己的冲突证明覆盖。
+    eligible: dict[FactId, FactId] = {}
+    uncertain: set[FactId] = set()
+    while True:
+        cutoffs, disputed = _project_conflicts(
+            comparisons,
+            facts,
+            existing,
+            new_ids - uncertain,
+            {
+                source: target
+                for source, target in (projectable | eligible).items()
+                if target not in uncertain
+            },
+            suspended,
+        )
+        uncertain.update(disputed)
+        closed: dict[FactId, Fact] = {}
+        triggers = _apply_cutoffs(
+            cutoffs, facts, incoming, groups, uncertain, closed, changed_at
+        )
+        covered = {
+            source: target
+            for source, target in deferred.items()
+            if target not in uncertain
+            and target in closed
+            and _covers_interval(incoming[source], closed[target])
+        }
+        if covered == eligible:
+            return closed, triggers, uncertain
+        eligible = covered
 
 
 def _project_conflicts(

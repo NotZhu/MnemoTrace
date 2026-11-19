@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import combinations
 from math import fsum, hypot
 from typing import Literal, TypedDict, cast
@@ -11,7 +11,7 @@ from ..domain.entity import Entity
 from ..domain.enums import Source
 from ..domain.fact import Fact, intervals_disjoint
 from ..domain.ids import EntityId, FactId, SpaceId
-from ..domain.values import EntityRef, LiteralValue
+from ..domain.values import EntityRef, LiteralValue, Predicate
 from ..ports.inference import LLM, Embedder, InvalidStructuredOutput
 from ..ports.queries import FactCursor, FactFilter, FactQuery, FactSlot
 from ..ports.runtime import IdGenerator
@@ -300,6 +300,8 @@ async def compare_facts(
     llm: LLM,
     prepared: Sequence[PreparedFact],
     candidates: ComparisonCandidates,
+    *,
+    reusable: Mapping[FactPair, FactComparison] | None = None,
 ) -> tuple[FactComparison, ...]:
     """用一次结构化调用裁决所有无法直接判断的配对。
 
@@ -307,6 +309,7 @@ async def compare_facts(
         llm: 已装配的结构化模型端口。
         prepared: 本批已绑定的事实候选。
         candidates: 读快照内取得的旧事实和稳定配对。
+        reusable: 已针对当前配对复核、可以沿用的判定。
 
     Returns:
         按候选配对顺序排列的判定。
@@ -314,17 +317,14 @@ async def compare_facts(
     Raises:
         InvalidStructuredOutput: 模型响应未精确覆盖送入的配对。
     """
-    facts = {
-        **candidates.existing_facts,
-        **{item.fact.id: item.fact for item in prepared},
+    facts = _comparison_facts(prepared, candidates)
+    cached = {frozenset(pair): decision for pair, decision in (reusable or {}).items()}
+    resolved = _resolve_comparisons(candidates.pairs, facts, cached)
+    pending = {
+        str(index): pair
+        for index, pair in enumerate(candidates.pairs, start=1)
+        if pair not in resolved
     }
-    resolved: dict[FactPair, FactComparison] = {}
-    pending: dict[str, FactPair] = {}
-    for index, pair in enumerate(candidates.pairs, start=1):
-        if intervals_disjoint(facts[pair[0]], facts[pair[1]]):
-            resolved[pair] = FactComparison(pair, "coexists", disjoint=True)
-        else:
-            pending[str(index)] = pair
 
     if pending:
         prompt = _comparison_prompt(pending, facts)
@@ -338,6 +338,79 @@ async def compare_facts(
         for key, pair in pending.items():
             resolved[pair] = FactComparison(pair, by_id[key])
     return tuple(resolved[pair] for pair in candidates.pairs)
+
+
+def resolve_known_comparisons(
+    prepared: Sequence[PreparedFact],
+    current: ComparisonCandidates,
+    previous: ComparisonCandidates,
+    comparisons: Sequence[FactComparison],
+) -> dict[FactPair, FactComparison]:
+    """复用配对依据未变的判定，并直接判断有效期错开的当前配对。
+
+    Args:
+        prepared: 两次复核共用的本批候选。
+        current: 写锁保护下重查的比较候选。
+        previous: 上次裁决使用的候选快照。
+        comparisons: 基于上次快照取得的判定。
+
+    Returns:
+        当前配对中已能确定的判定，缺项须在写锁外请求模型。
+    """
+    changed = {
+        fact_id
+        for fact_id, fact in current.existing_facts.items()
+        if fact_id not in previous.existing_facts
+        or _comparison_input(fact)
+        != _comparison_input(previous.existing_facts[fact_id])
+    }
+    reusable = {
+        frozenset(comparison.pair): comparison
+        for comparison in comparisons
+        if changed.isdisjoint(comparison.pair)
+    }
+    return _resolve_comparisons(
+        current.pairs, _comparison_facts(prepared, current), reusable
+    )
+
+
+def _comparison_input(
+    fact: Fact,
+) -> tuple[
+    str, EntityRef, Predicate, EntityRef | LiteralValue, float | None, float | None
+]:
+    # 只有送入模型的字段决定是否重判，提交时另用锁内最新证据和敏感标记。
+    return (
+        fact.text,
+        fact.subject,
+        fact.predicate,
+        fact.object,
+        fact.valid_at,
+        fact.invalid_at,
+    )
+
+
+def _comparison_facts(
+    prepared: Sequence[PreparedFact], candidates: ComparisonCandidates
+) -> dict[FactId, Fact]:
+    return {
+        **candidates.existing_facts,
+        **{item.fact.id: item.fact for item in prepared},
+    }
+
+
+def _resolve_comparisons(
+    pairs: Sequence[FactPair],
+    facts: Mapping[FactId, Fact],
+    reusable: Mapping[frozenset[FactId], FactComparison],
+) -> dict[FactPair, FactComparison]:
+    resolved: dict[FactPair, FactComparison] = {}
+    for pair in pairs:
+        if intervals_disjoint(facts[pair[0]], facts[pair[1]]):
+            resolved[pair] = FactComparison(pair, "coexists", disjoint=True)
+        elif (known := reusable.get(frozenset(pair))) is not None:
+            resolved[pair] = known if known.pair == pair else replace(known, pair=pair)
+    return resolved
 
 
 def _comparison_prompt(

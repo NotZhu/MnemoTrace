@@ -1,7 +1,8 @@
 """把已认证账号绑定到 PostgreSQL 空间事务。"""
 
+from asyncio import CancelledError, create_task, current_task, shield
 from collections.abc import AsyncIterator
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from typing import Literal, overload
 
 from psycopg import AsyncConnection, errors, sql
@@ -11,13 +12,55 @@ from psycopg_pool import AsyncConnectionPool
 
 from ...domain.ids import SpaceId
 from ...domain.space import Space
-from ...ports.storage import SpaceReader, SpaceSession
+from ...ports.storage import CommitOutcomeUnknown, SpaceReader, SpaceSession
 from .reader import PostgresReader
 from .session import PostgresSession
 
 _AUTHORIZED_SPACE = sql.SQL("""
     SELECT 1 FROM mnemotrace_next.spaces WHERE space_id = %s AND owner_id = %s
     """)
+_UNCERTAIN_COMMIT_STATES = {"08000", "08003", "08006", "08007", "40003"}
+
+
+@asynccontextmanager
+async def _session_transaction(
+    conn: AsyncConnection[TupleRow], *, write: bool
+) -> AsyncIterator[None]:
+    committing = False
+    try:
+        async with conn.transaction() as transaction:
+            yield
+            if write and conn.closed:
+                raise errors.OperationalError("写事务在提交前失去连接")
+            committing = write
+    except CancelledError as exc:
+        if committing:
+            raise CommitOutcomeUnknown("提交确认等待被取消") from exc
+        raise
+    except (errors.OperationalError, ConnectionError, TimeoutError) as exc:
+        if committing and (
+            not isinstance(exc, errors.OperationalError)
+            or exc.sqlstate is None
+            or exc.sqlstate in _UNCERTAIN_COMMIT_STATES
+        ):
+            raise CommitOutcomeUnknown("未能确认空间写事务是否已提交") from exc
+        raise
+    if write and transaction.status is transaction.Status.FAILED:
+        raise errors.OperationalError("写事务在提交前失去连接")
+
+
+async def _return_committed_connection(scope: AsyncExitStack) -> None:
+    # 提交已经确认。连接归还期间的取消不能改变调用方看到的写入结果。
+    release = create_task(scope.aclose())
+    while not release.done():
+        try:
+            await shield(release)
+        except CancelledError:
+            if release.cancelled():
+                raise
+            if (caller := current_task()) is not None:
+                caller.uncancel()
+    release.result()
 
 
 class PostgresStorage:
@@ -83,6 +126,7 @@ class PostgresStorage:
         Raises:
             LookupError: 进入会话时，绑定账号无法访问指定空间。
             RuntimeError: 退出写会话时，事务因已捕获的 SQL 错误而无法提交。
+            CommitOutcomeUnknown: 写事务进入提交阶段后无法确认结果。
         """
         return self._session(space_id, write)
 
@@ -90,26 +134,35 @@ class PostgresStorage:
     async def _session(
         self, space_id: SpaceId, write: bool
     ) -> AsyncIterator[SpaceReader]:
-        async with self._pool.connection() as conn, conn.transaction():
-            statement: sql.SQL | sql.Composed = _AUTHORIZED_SPACE
-            reader: PostgresReader
+        async with AsyncExitStack() as connection:
+            conn = await connection.enter_async_context(self._pool.connection())
+            async with _session_transaction(conn, write=write):
+                statement: sql.SQL | sql.Composed = _AUTHORIZED_SPACE
+                reader: PostgresReader
+                if write:
+                    await conn.execute(
+                        "SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ WRITE"
+                    )
+                    statement = _AUTHORIZED_SPACE + sql.SQL(" FOR UPDATE")
+                    reader = PostgresSession(conn, space_id)
+                else:
+                    await conn.execute(
+                        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+                    )
+                    reader = PostgresReader(conn, space_id)
+                authorized = await conn.execute(
+                    statement, (space_id.value, self._owner_id)
+                )
+                if await authorized.fetchone() is None:
+                    raise LookupError("空间不可访问")
+                try:
+                    yield reader
+                    if (
+                        write
+                        and conn.info.transaction_status == TransactionStatus.INERROR
+                    ):
+                        raise RuntimeError("写事务已中止，无法提交")
+                finally:
+                    reader._close()
             if write:
-                await conn.execute(
-                    "SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ WRITE"
-                )
-                statement = _AUTHORIZED_SPACE + sql.SQL(" FOR UPDATE")
-                reader = PostgresSession(conn, space_id)
-            else:
-                await conn.execute(
-                    "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
-                )
-                reader = PostgresReader(conn, space_id)
-            authorized = await conn.execute(statement, (space_id.value, self._owner_id))
-            if await authorized.fetchone() is None:
-                raise LookupError("空间不可访问")
-            try:
-                yield reader
-                if write and conn.info.transaction_status == TransactionStatus.INERROR:
-                    raise RuntimeError("写事务已中止，无法提交")
-            finally:
-                reader._close()
+                await _return_committed_connection(connection.pop_all())

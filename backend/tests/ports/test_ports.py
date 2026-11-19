@@ -2,10 +2,11 @@
 
 import asyncio
 from dataclasses import replace
-from typing import assert_type
+from typing import assert_type, cast
 
 import pytest
 
+from mnemotrace_next import Memory
 from mnemotrace_next.application.salience import reinforce_context_facts
 from mnemotrace_next.application.sessions import create_session
 from mnemotrace_next.domain.digest import Digest
@@ -64,6 +65,20 @@ _FACT = Fact(
     sensitive=False,
     source=Source.MANUAL,
 )
+
+
+@pytest.mark.parametrize("missing", ["llm", "embedder"])
+def test_memory_requires_inference_backends(missing: str) -> None:
+    """装配时拒绝缺少推理端口，纯助手批次也不能绕过校验。"""
+    with pytest.raises(ValueError, match="配置.+模型"):
+        Memory(
+            space_id=_SPACE.id,
+            storage=FakeStorage(),
+            llm=cast(LLM, None) if missing == "llm" else FakeLLM(),
+            embedder=cast(Embedder, None) if missing == "embedder" else FakeEmbedder(),
+            clock=FakeClock(),
+            ids=FakeIdGenerator(),
+        )
 
 
 def test_ports_smoke() -> None:
