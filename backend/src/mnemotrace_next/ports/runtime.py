@@ -32,7 +32,7 @@ class IdGenerator(Protocol):
         """为新对话分配身份。
 
         Returns:
-            新对话的标识。
+            从未签发的对话标识。已擦除的标识也不可复用。
         """
         ...
 

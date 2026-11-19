@@ -79,6 +79,8 @@ def test_adjacent_edges_match_fact_filters_and_bound_space(
             async with storage.session(scope.id, write=True) as writer:
                 for entity in (endpoint, incoming_from, outgoing_to, hidden):
                     await writer.upsert_entity(entity)
+                for session_id in {source_a.session_id, source_b.session_id}:
+                    await writer.register_session(session_id)
                 await writer.append_messages((source_a, source_b))
                 await writer.save_facts(records, changed_at=21.0)
             async with storage.session(sibling.id, write=True) as writer:

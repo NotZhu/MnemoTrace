@@ -10,6 +10,7 @@ from mnemotrace_next.domain.enums import Source
 from mnemotrace_next.domain.ids import FactId, MessageId
 from mnemotrace_next.domain.values import EntityRef, Label
 from mnemotrace_next.ports.queries import FactCursor, FactFilter, FactQuery
+from mnemotrace_next.ports.storage import CutoffTrigger
 
 from .conftest import PgDatabase
 from .sample import fact, message, pool, run, space
@@ -40,20 +41,52 @@ def test_fact_updates_keep_fixed_fields_and_first_expiration(
                 sensitive=True,
                 provenance=(correction.id, original.id),
             )
-            newer = replace(fact(subject, "new"), valid_at=25.0, supersedes=(old.id,))
+            newer = replace(fact(subject, "new"), valid_at=25.0)
+            intermediate = replace(fact(subject, "intermediate"), valid_at=28.0)
+            triggers = (
+                CutoffTrigger(intermediate.id, 28.0),
+                CutoffTrigger(newer.id, 25.0),
+            )
+            batch = (shortened, newer, intermediate)
+            support = {old.id: ((correction.id, original.id),)}
             async with storage.session(scope.id, write=True) as writer:
                 await writer.upsert_entity(subject)
+                await writer.register_session(original.session_id)
                 await writer.append_messages((original, correction))
                 await writer.save_facts((old,), changed_at=11.0)
                 await writer.save_facts((closed,), changed_at=35.0)
-                await writer.save_facts((shortened, newer), changed_at=45.0)
-                await writer.save_facts((shortened, newer), changed_at=46.0)
+                with pytest.raises(ValueError, match="完整证据组"):
+                    await writer.save_facts((shortened,), changed_at=45.0)
+                with pytest.raises(ValueError, match="依次设置或提前"):
+                    await writer.save_facts(
+                        batch,
+                        changed_at=45.0,
+                        support_groups=support,
+                        cutoff_triggers={old.id: (triggers[0], *triggers)},
+                    )
+                assert await writer.get_fact(old.id) == closed
+                assert await writer.get_fact(intermediate.id) is None
+                saved = await writer.save_facts(
+                    batch,
+                    changed_at=45.0,
+                    support_groups=support,
+                    cutoff_triggers={old.id: triggers},
+                )
+                assert tuple(change.after for change in saved) == batch
+                assert [change.cursor for change in saved] == sorted(
+                    change.cursor for change in saved
+                )
+                assert (
+                    await writer.save_facts(
+                        batch, changed_at=46.0, support_groups=support
+                    )
+                    == ()
+                )
                 for invalid in (
                     replace(shortened, text="改写正文"),
                     replace(shortened, invalid_at=26.0),
                     replace(shortened, expired_at=39.0),
                     replace(shortened, invalid_at=None, expired_at=None),
-                    replace(shortened, supersedes=(newer.id,)),
                 ):
                     with pytest.raises(ValueError):
                         await writer.save_facts(
@@ -67,6 +100,8 @@ def test_fact_updates_keep_fixed_fields_and_first_expiration(
                 }
                 assert await reader.get_fact(old.id, exclude_sensitive=True) is None
                 (latest,) = await reader.list_fact_changes(old.id, limit=1)
+                assert latest == saved[0]
+                assert latest.cutoff_triggers == triggers
                 remaining = await reader.list_fact_changes(old.id, after=latest.cursor)
                 assert [
                     (c.before, c.after, c.changed_at) for c in (latest, *remaining)
@@ -90,6 +125,14 @@ def test_fact_updates_keep_fixed_fields_and_first_expiration(
                 assert await reader.facts_in_slot(
                     old.subject, old.predicate, valid_at=25.0, limit=10
                 ) == (newer,)
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.delete_facts((intermediate.id,))
+                assert await writer.get_fact(old.id) == shortened
+                assert await writer.get_fact(newer.id) == newer
+                assert [
+                    change.changed_at
+                    for change in await writer.list_fact_changes(old.id)
+                ] == [35.0, 11.0]
 
     run(exercise())
 
@@ -97,7 +140,7 @@ def test_fact_updates_keep_fixed_fields_and_first_expiration(
 def test_strong_references_and_failed_batches_do_not_publish(
     database: PgDatabase,
 ) -> None:
-    """实体、原文和前驱只在绑定空间解析，外键错误回滚整个保存批次。"""
+    """实体、原文和截止触发只在绑定空间解析，批次验证失败时原子回滚。"""
 
     async def exercise() -> None:
         async with pool(database.runtime) as connections:
@@ -111,6 +154,7 @@ def test_strong_references_and_failed_batches_do_not_publish(
             foreign_fact = fact(foreign_entity, "foreign")
             async with storage.session(sibling.id, write=True) as writer:
                 await writer.upsert_entity(foreign_entity)
+                await writer.register_session(source.session_id)
                 await writer.append_messages((source,))
                 await writer.save_facts((foreign_fact,), changed_at=10.0)
 
@@ -129,13 +173,20 @@ def test_strong_references_and_failed_batches_do_not_publish(
                         candidate, source=Source.EXTRACTED, provenance=(source.id,)
                     ),
                     replace(candidate, provenance=(MessageId("missing"),)),
-                    replace(candidate, supersedes=(foreign_fact.id,)),
-                    replace(candidate, supersedes=(pending.id,)),
                     foreign_fact,
                 ):
                     with pytest.raises(ValueError):
                         await writer.save_facts((pending, invalid), changed_at=20.0)
                     assert await writer.get_fact(pending.id) is None
+                with pytest.raises(ValueError, match="截止须引用"):
+                    await writer.save_facts(
+                        (pending, candidate.close(18.0, 20.0)),
+                        changed_at=20.0,
+                        cutoff_triggers={
+                            candidate.id: (CutoffTrigger(foreign_fact.id, 18.0),)
+                        },
+                    )
+                assert await writer.get_fact(pending.id) is None
                 with pytest.raises(ValueError):
                     await writer.save_facts(
                         (
@@ -179,6 +230,7 @@ def test_fact_filters_and_keyset_paging(database: PgDatabase) -> None:
             unknown = fact(subject, "ä")
             async with storage.session(scope.id, write=True) as writer:
                 await writer.upsert_entity(subject)
+                await writer.register_session(origin.session_id)
                 await writer.append_messages((origin,))
                 await writer.save_facts(
                     (unknown, future, ended, current, unknown_end), changed_at=65.0

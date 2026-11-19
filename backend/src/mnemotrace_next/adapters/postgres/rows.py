@@ -12,7 +12,7 @@ from ...domain.profile import Profile, ProfileEntry
 from ...domain.salience import FactSalience
 from ...domain.space import Space
 from ...domain.values import EntityRef, Label, LiteralValue, Predicate
-from ...ports.storage import FactChange, GraphEdge
+from ...ports.storage import CutoffTrigger, FactChange, GraphEdge
 
 
 def space_from_row(space_id: str, owner_id: str, name: str, created_at: float) -> Space:
@@ -113,7 +113,6 @@ class FactRow(TypedDict):
     sensitive: bool
     source: str
     provenance: list[str]
-    supersedes: list[str]
 
 
 def fact_from_row(**row: Unpack[FactRow]) -> Fact:
@@ -149,7 +148,6 @@ def fact_from_row(**row: Unpack[FactRow]) -> Fact:
         labels=tuple(map(Label, row["labels"])),
         sensitive=row["sensitive"],
         source=Source(row["source"]),
-        supersedes=tuple(map(FactId, row["supersedes"])),
     )
 
 
@@ -182,12 +180,21 @@ def fact_to_row(fact: Fact) -> FactRow:
         "sensitive": fact.sensitive,
         "source": fact.source.value,
         "provenance": [source.value for source in fact.provenance],
-        "supersedes": [predecessor.value for predecessor in fact.supersedes],
     }
 
 
+class _CutoffTriggerRow(TypedDict):
+    fact_id: str
+    valid_end: float
+    source_message_ids: list[str] | None
+
+
 def change_from_row(
-    cursor: int, changed_at: float, before: FactRow | None, after: FactRow
+    cursor: int,
+    changed_at: float,
+    before: FactRow | None,
+    after: FactRow,
+    triggers: list[_CutoffTriggerRow],
 ) -> FactChange:
     """从变更表还原一条历史记录。
 
@@ -196,15 +203,27 @@ def change_from_row(
         changed_at: 变更时刻，单位为 UTC epoch 秒。
         before: 变更前快照，创建事实时为 None。
         after: 变更后快照。
+        triggers: 按裁决顺序排列的截止触发项。
 
     Returns:
         包含前后事实快照的变更记录。
     """
+    cutoff_triggers = []
+    for trigger in triggers:
+        sources = trigger["source_message_ids"]
+        cutoff_triggers.append(
+            CutoffTrigger(
+                FactId(trigger["fact_id"]),
+                trigger["valid_end"],
+                None if sources is None else tuple(MessageId(key) for key in sources),
+            )
+        )
     return FactChange(
         cursor,
         changed_at,
         fact_from_row(**before) if before is not None else None,
         fact_from_row(**after),
+        tuple(cutoff_triggers),
     )
 
 

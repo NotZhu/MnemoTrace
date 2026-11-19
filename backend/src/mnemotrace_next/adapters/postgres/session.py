@@ -2,6 +2,7 @@
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
+from itertools import groupby
 
 from psycopg import DataError, sql
 from psycopg.rows import args_row
@@ -14,8 +15,20 @@ from ...domain.ids import FactId, MessageId, SessionId, SpaceId
 from ...domain.message import Message
 from ...domain.profile import Profile
 from ...domain.salience import FactSalience
+from ...ports.storage import (
+    CutoffTrigger,
+    FactChange,
+    SessionUnavailable,
+    SupportGroups,
+)
 from . import search
-from .facts import validate_fact_update, write_fact_batch
+from .facts import (
+    FactWrite,
+    flatten_support_groups,
+    validate_cutoff_triggers,
+    validate_fact_update,
+    write_fact_batch,
+)
 from .reader import PostgresReader
 from .rows import entity_from_row, profile_to_json
 
@@ -27,6 +40,25 @@ class PostgresSession(PostgresReader):
         if space_id != self.space_id:
             raise ValueError("记录不属于会话绑定的空间")
 
+    async def register_session(self, session_id: SessionId) -> None:
+        """在绑定空间登记由后端生成的对话标识。
+
+        Args:
+            session_id: 待登记的对话标识。
+
+        Raises:
+            ValueError: 绑定空间内已有同一标识。
+        """
+        cursor = await self._conn.execute(
+            """
+            INSERT INTO mnemotrace_next.sessions (space_id, session_id)
+            VALUES (%s, %s) ON CONFLICT DO NOTHING
+            """,
+            (self.space_id.value, session_id.value),
+        )
+        if cursor.rowcount == 0:
+            raise ValueError("对话标识已存在")
+
     async def append_messages(self, messages: Sequence[Message]) -> None:
         """按输入顺序追加新原文，保留重放消息的首次收录位置。
 
@@ -34,15 +66,28 @@ class PostgresSession(PostgresReader):
             messages: 待追加或重放的消息。
 
         Raises:
+            SessionUnavailable: 任一原文的对话在绑定空间内不可用。
             ValueError: 消息超出绑定空间，或重放消息与首次收录的字段冲突。
         """
         conn = self._conn
         if not messages:
             return
+        for message in messages:
+            self._check_scope(message.space_id)
+        session_ids = {message.session_id.value for message in messages}
+        async with conn.cursor(row_factory=args_row(str)) as cursor:
+            await cursor.execute(
+                """
+                SELECT session_id FROM mnemotrace_next.sessions
+                WHERE space_id = %s AND session_id = ANY(%s::text[])
+                """,
+                (self.space_id.value, list(session_ids)),
+            )
+            if set(await cursor.fetchall()) != session_ids:
+                raise SessionUnavailable("对话不可用")
         existing = await self.get_messages(tuple(message.id for message in messages))
         pending: dict[MessageId, Message] = {}
         for message in messages:
-            self._check_scope(message.space_id)
             first = existing.get(message.id)
             if first is None:
                 first = pending.setdefault(message.id, message)
@@ -118,42 +163,115 @@ class PostgresSession(PostgresReader):
             if set(await cursor.fetchall()) != set(ids):
                 raise ValueError("引用的事实须在绑定空间内已存在")
 
-    async def save_facts(self, facts: Sequence[Fact], *, changed_at: float) -> None:
+    async def get_fact_support_groups(
+        self, fact_ids: Sequence[FactId]
+    ) -> Mapping[FactId, SupportGroups]:
+        """按写入顺序读取绑定空间中事实的证据组。
+
+        Args:
+            fact_ids: 待查找的事实标识。
+
+        Returns:
+            已存在事实到证据组的映射。
+        """
+        cursor = await self._conn.execute(
+            """
+            SELECT f.fact_id, p.support_group, p.message_id
+            FROM mnemotrace_next.facts AS f
+            LEFT JOIN mnemotrace_next.fact_provenance AS p USING (space_id, fact_id)
+            WHERE f.space_id = %s AND f.fact_id = ANY(%s::text[])
+            ORDER BY f.fact_id, p.support_group, p.position
+            """,
+            (self.space_id.value, [fact_id.value for fact_id in fact_ids]),
+        )
+        return {
+            FactId(fact_id): tuple(
+                tuple(MessageId(row[2]) for row in group)
+                for number, group in groupby(rows, key=lambda row: row[1])
+                if number is not None
+            )
+            for fact_id, rows in groupby(
+                await cursor.fetchall(), key=lambda row: row[0]
+            )
+        }
+
+    async def save_facts(
+        self,
+        facts: Sequence[Fact],
+        *,
+        changed_at: float,
+        support_groups: Mapping[FactId, SupportGroups] | None = None,
+        cutoff_triggers: Mapping[FactId, tuple[CutoffTrigger, ...]] | None = None,
+    ) -> tuple[FactChange, ...]:
         """保存一批事实及其变更记录，为新事实生成词法索引。
 
         Args:
             facts: 待保存的事实快照，每个标识只能出现一次。
             changed_at: 写入变更记录的 UTC epoch 秒。
+            support_groups: 指定事实变更后的完整证据组。
+            cutoff_triggers: 按裁决顺序记录设置或提前截止的触发事实及来源。
+
+        Returns:
+            本次实际写入的变更，按游标升序排列。
 
         Raises:
             ValueError: 标识重复、事实超出绑定空间、引用缺失或更新违反事实约束。
         """
         conn = self._conn
-        if not facts:
-            return
-        ids = tuple(fact.id for fact in facts)
-        if len(set(ids)) != len(ids):
+        groups_by_id = support_groups or {}
+        triggers_by_id = cutoff_triggers or {}
+        pending = {fact.id: fact for fact in facts}
+        if len(pending) != len(facts):
             raise ValueError("同批每个事实 ID 只接受一份快照")
+        if (groups_by_id.keys() | triggers_by_id.keys()) - pending.keys():
+            raise ValueError("证据组及截止触发信息须属于本批事实")
+        if not facts:
+            return ()
         for fact in facts:
             self._check_scope(fact.space_id)
-        existing = await self.get_facts(ids)
-        await self._require_facts(
-            {
-                predecessor
-                for fact in facts
-                if fact.id not in existing
-                for predecessor in fact.supersedes
-            }
+        existing = await self.get_facts(
+            tuple(
+                pending.keys()
+                | {
+                    trigger.fact_id
+                    for triggers in triggers_by_id.values()
+                    for trigger in triggers
+                }
+            )
         )
-        changes: list[tuple[Fact | None, Fact]] = []
+        old_groups = (
+            await self.get_fact_support_groups(tuple(groups_by_id))
+            if groups_by_id
+            else {}
+        )
+        causes = {**existing, **pending}
+        changes: list[FactWrite] = []
         for fact in facts:
             before = existing.get(fact.id)
-            if before == fact:
+            groups = groups_by_id.get(fact.id)
+            if groups is not None and (
+                any(not group for group in groups)
+                or flatten_support_groups(groups) != fact.provenance
+            ):
+                raise ValueError("证据组须非空且展开后与事实来源一致")
+            if before is None and groups is None:
+                groups = (fact.provenance,) if fact.provenance else ()
+            if (
+                before is not None
+                and groups is None
+                and before.provenance != fact.provenance
+            ):
+                raise ValueError("改变已有事实的来源须提供完整证据组")
+            if groups == old_groups.get(fact.id):
+                groups = None
+            if before == fact and groups is None:
                 continue
             if before is not None:
                 validate_fact_update(before, fact)
-            changes.append((before, fact))
-        await write_fact_batch(conn, changes, changed_at)
+            triggers = triggers_by_id.get(fact.id, ())
+            validate_cutoff_triggers(before, fact, triggers, causes)
+            changes.append(FactWrite(before, fact, groups, triggers))
+        return await write_fact_batch(conn, changes, changed_at)
 
     async def save_salience(self, states: Mapping[FactId, FactSalience]) -> None:
         """批量替换事实的访问强化状态。
@@ -330,21 +448,84 @@ class PostgresSession(PostgresReader):
             raise ValueError("向量超出 PostgreSQL 支持的范围") from None
 
     async def delete_facts(self, fact_ids: Sequence[FactId]) -> None:
-        """幂等清理事实、索引、修改历史和现行前驱关系。
+        """幂等清理事实、索引、变更记录和依赖画像。
 
         Args:
             fact_ids: 绑定空间内待删除的事实标识。
         """
+        async with self._conn.transaction():
+            await self._delete_facts(fact_ids)
+
+    async def _delete_facts(self, fact_ids: Sequence[FactId]) -> frozenset[FactId]:
+        if not fact_ids:
+            return frozenset()
+        params = (self.space_id.value, [fact_id.value for fact_id in fact_ids])
+        # 触发项依附于完整审计。先删主记录，避免留下缺少部分原因的历史。
         await self._conn.execute(
             """
-            DELETE FROM mnemotrace_next.facts
-            WHERE space_id = %s AND fact_id = ANY(%s::text[])
+            DELETE FROM mnemotrace_next.fact_changes AS change
+            USING mnemotrace_next.fact_change_triggers AS trigger
+            WHERE trigger.space_id = %s AND trigger.trigger_fact_id = ANY(%s::text[])
+              AND (change.space_id, change.fact_id, change.cursor)
+                = (trigger.space_id, trigger.fact_id, trigger.cursor)
             """,
-            (self.space_id.value, [fact_id.value for fact_id in fact_ids]),
+            params,
+        )
+        async with self._conn.cursor(row_factory=args_row(FactId)) as cursor:
+            await cursor.execute(
+                """
+                DELETE FROM mnemotrace_next.facts
+                WHERE space_id = %s AND fact_id = ANY(%s::text[])
+                RETURNING fact_id
+                """,
+                params,
+            )
+            deleted = frozenset(await cursor.fetchall())
+        if deleted:
+            profile = await self.get_profile()
+            if profile is not None and deleted.intersection(profile.source_fact_ids):
+                await self.delete_profile()
+        return deleted
+
+    async def _erase_session_support(self, sources: Sequence[str]) -> frozenset[FactId]:
+        if not sources:
+            return frozenset()
+        params = (self.space_id.value, list(sources))
+        async with self._conn.cursor(row_factory=args_row(FactId)) as cursor:
+            await cursor.execute(
+                """
+                DELETE FROM mnemotrace_next.fact_provenance AS member
+                USING mnemotrace_next.fact_provenance AS erased
+                WHERE erased.space_id = %s AND erased.message_id = ANY(%s::text[])
+                  AND (member.space_id, member.fact_id, member.support_group)
+                    = (erased.space_id, erased.fact_id, erased.support_group)
+                RETURNING member.fact_id
+                """,
+                params,
+            )
+            affected = tuple(dict.fromkeys(await cursor.fetchall()))
+        async with self._conn.cursor(row_factory=args_row(FactId)) as cursor:
+            await cursor.execute(
+                """
+                SELECT DISTINCT fact_id FROM mnemotrace_next.fact_provenance
+                WHERE space_id = %s AND fact_id = ANY(%s::text[])
+                """,
+                (self.space_id.value, [fact_id.value for fact_id in affected]),
+            )
+            supported = set(await cursor.fetchall())
+        await self._conn.execute(
+            """
+            DELETE FROM mnemotrace_next.fact_changes
+            WHERE space_id = %s AND source_message_ids && %s::text[]
+            """,
+            params,
+        )
+        return await self._delete_facts(
+            tuple(fact_id for fact_id in affected if fact_id not in supported)
         )
 
     async def delete_session_data(self, session_id: SessionId) -> frozenset[FactId]:
-        """在同一事务内撤下会话数据并更新擦除标记。
+        """在同一事务内撤销对话并撤下失去完整证据的事实。
 
         Args:
             session_id: 绑定空间内待清理的会话标识。
@@ -364,26 +545,7 @@ class PostgresSession(PostgresReader):
                     scope,
                 )
                 sources = [row[0] for row in await cursor.fetchall()]
-            async with conn.cursor(row_factory=args_row(FactId)) as cursor:
-                await cursor.execute(
-                    """
-                    DELETE FROM mnemotrace_next.facts AS f
-                    USING mnemotrace_next.fact_provenance AS p
-                    WHERE f.space_id = %s
-                      AND p.space_id = f.space_id AND p.fact_id = f.fact_id
-                      AND p.message_id = ANY(%s::text[])
-                    RETURNING f.fact_id
-                    """,
-                    (self.space_id.value, sources),
-                )
-                deleted = frozenset(await cursor.fetchall())
-            await conn.execute(
-                """
-                DELETE FROM mnemotrace_next.fact_changes
-                WHERE space_id = %s AND source_message_ids && %s::text[]
-                """,
-                (self.space_id.value, sources),
-            )
+            deleted = await self._erase_session_support(sources)
             await conn.execute(
                 """
                 DELETE FROM mnemotrace_next.digests WHERE space_id = %s AND session_id = %s
@@ -394,6 +556,10 @@ class PostgresSession(PostgresReader):
                 """
                 DELETE FROM mnemotrace_next.messages WHERE space_id = %s AND session_id = %s
                 """,
+                scope,
+            )
+            await conn.execute(
+                "DELETE FROM mnemotrace_next.sessions WHERE space_id = %s AND session_id = %s",
                 scope,
             )
             if removed_messages.rowcount > 0:
@@ -408,9 +574,11 @@ class PostgresSession(PostgresReader):
             for table in (
                 "profiles",
                 "digests",
+                "fact_changes",
                 "facts",
                 "entities",
                 "messages",
+                "sessions",
             ):
                 await conn.execute(
                     sql.SQL(

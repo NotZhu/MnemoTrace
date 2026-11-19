@@ -103,9 +103,12 @@ def database(admin_dsn: str, database_factory: DatabaseFactory) -> Iterator[PgDa
                         """
                         SELECT, INSERT, DELETE ON
                             mnemotrace_next.messages, mnemotrace_next.fact_provenance,
-                            mnemotrace_next.fact_supersedes, mnemotrace_next.fact_changes
+                            mnemotrace_next.sessions, mnemotrace_next.fact_changes
                         """,
-                        "SELECT, INSERT ON mnemotrace_next.embedding_spaces",
+                        """
+                        SELECT, INSERT ON
+                            mnemotrace_next.embedding_spaces, mnemotrace_next.fact_change_triggers
+                        """,
                         """
                         SELECT, INSERT, UPDATE, DELETE ON
                             mnemotrace_next.entities, mnemotrace_next.facts,

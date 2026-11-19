@@ -137,6 +137,21 @@ class PostgresReader:
             assert generation is not None
             return str(generation)
 
+    async def has_session(self, session_id: SessionId) -> bool:
+        """判断绑定空间的快照是否包含此对话。
+
+        Args:
+            session_id: 待检查的对话标识。
+
+        Returns:
+            在绑定空间仍有登记时为真。
+        """
+        cursor = await self._conn.execute(
+            "SELECT 1 FROM mnemotrace_next.sessions WHERE space_id = %s AND session_id = %s",
+            (self.space_id.value, session_id.value),
+        )
+        return await cursor.fetchone() is not None
+
     async def last_messages(
         self, session_id: SessionId, limit: int
     ) -> Sequence[Message]:
@@ -297,11 +312,20 @@ class PostgresReader:
         async with self._conn.cursor(row_factory=args_row(change_from_row)) as cursor:
             await cursor.execute(
                 """
-                SELECT cursor, changed_at, before, after
-                FROM mnemotrace_next.fact_changes
-                WHERE space_id = %(space)s AND fact_id = %(fact)s
-                  AND (%(after)s::bigint IS NULL OR cursor < %(after)s)
-                ORDER BY cursor DESC LIMIT %(limit)s
+                SELECT c.cursor, c.changed_at, c.before, c.after, ARRAY(
+                    SELECT jsonb_build_object(
+                        'fact_id', t.trigger_fact_id,
+                        'valid_end', t.valid_end,
+                        'source_message_ids', t.source_message_ids
+                    )
+                    FROM mnemotrace_next.fact_change_triggers AS t
+                    WHERE (t.space_id, t.fact_id, t.cursor) = (c.space_id, c.fact_id, c.cursor)
+                    ORDER BY t.position
+                )
+                FROM mnemotrace_next.fact_changes AS c
+                WHERE c.space_id = %(space)s AND c.fact_id = %(fact)s
+                  AND (%(after)s::bigint IS NULL OR c.cursor < %(after)s)
+                ORDER BY c.cursor DESC LIMIT %(limit)s
                 """,
                 {
                     "space": self.space_id.value,

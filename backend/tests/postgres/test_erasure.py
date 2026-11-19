@@ -14,6 +14,7 @@ from mnemotrace_next.domain.message import Message
 from mnemotrace_next.domain.profile import Profile, ProfileEntry
 from mnemotrace_next.domain.salience import FactSalience
 from mnemotrace_next.ports.queries import FactFilter
+from mnemotrace_next.ports.storage import CutoffTrigger, SessionUnavailable
 
 from .conftest import PgDatabase
 from .sample import SESSION, fact, message, pool, run, space
@@ -51,6 +52,7 @@ def test_digest_validates_sources_and_selects_by_append_position(
             out_of_session = message(scope, "wrong-session", session=SessionId("other"))
             foreign = message(sibling, "foreign")
             async with storage.session(sibling.id, write=True) as writer:
+                await writer.register_session(foreign.session_id)
                 await writer.append_messages((foreign,))
             first_digest = _digest("first", first, updated_at=100.0)
             latest = _digest("a", second, updated_at=50.0)
@@ -66,6 +68,8 @@ def test_digest_validates_sources_and_selects_by_append_position(
                 source_message_ids=(second.id, MessageId("missing")),
             )
             async with storage.session(scope.id, write=True) as writer:
+                await writer.register_session(first.session_id)
+                await writer.register_session(out_of_session.session_id)
                 await writer.append_messages((first, second, first, out_of_session))
                 for digest in (first_digest, latest, tied, stale, same_group):
                     await writer.save_digest(digest)
@@ -143,6 +147,8 @@ def test_digest_same_id_preserves_group_and_rejects_stale_updates(
                 latest, id=DigestId("reverse"), source_message_ids=(second.id, first.id)
             )
             async with storage.session(scope.id, write=True) as writer:
+                await writer.register_session(first.session_id)
+                await writer.register_session(other.session_id)
                 await writer.append_messages((first, second, other))
                 await writer.save_digest(initial)
                 await writer.save_digest(latest)
@@ -225,7 +231,7 @@ def test_profile_requires_local_sources_and_monotonic_updates(
     run(exercise())
 
 
-def test_session_erasure_cleans_indexes_changes_and_current_predecessors(
+def test_session_erasure_cleans_indexes_changes_and_dependent_profile(
     database: PgDatabase,
 ) -> None:
     """跨会话来源撤下整条事实，曾引用该来源的幸存历史同时清理。"""
@@ -240,6 +246,7 @@ def test_session_erasure_cleans_indexes_changes_and_current_predecessors(
             removed = message(scope, "same")
             kept = message(scope, "keep", session=SessionId("keep"))
             async with storage.session(sibling.id, write=True) as writer:
+                await writer.register_session(removed.session_id)
                 await writer.append_messages((replace(removed, space_id=sibling.id),))
             old = replace(
                 fact(subject, "old", text="删除标记"),
@@ -252,7 +259,6 @@ def test_session_erasure_cleans_indexes_changes_and_current_predecessors(
             )
             previous = replace(
                 fact(subject, "survivor", text="保留标记"),
-                supersedes=(old.id,),
                 provenance=(removed.id,),
             )
             corrected = replace(previous, provenance=(kept.id,))
@@ -269,12 +275,18 @@ def test_session_erasure_cleans_indexes_changes_and_current_predecessors(
             reinforced = FactSalience().reinforce(25.0)
             async with storage.session(scope.id, write=True) as writer:
                 await writer.upsert_entity(subject)
+                await writer.register_session(removed.session_id)
+                await writer.register_session(kept.session_id)
                 await writer.append_messages((removed, kept))
                 await writer.save_digest(_digest("removed", removed))
                 await writer.save_digest(_digest("kept", kept))
                 await writer.save_facts((old, future, manual), changed_at=25.0)
                 await writer.save_facts((previous,), changed_at=25.0)
-                await writer.save_facts((corrected,), changed_at=30.0)
+                await writer.save_facts(
+                    (corrected,),
+                    changed_at=30.0,
+                    support_groups={corrected.id: ((kept.id,),)},
+                )
                 await writer.save_facts((survivor,), changed_at=40.0)
                 await writer.save_profile(profile)
                 await writer.upsert_vectors(
@@ -307,11 +319,7 @@ def test_session_erasure_cleans_indexes_changes_and_current_predecessors(
                 assert (
                     await writer.delete_session_data(removed.session_id) == frozenset()
                 )
-                stored_profile = await writer.get_profile()
-                assert stored_profile is not None
-                assert stored_profile == profile
-                assert deleted.intersection(stored_profile.source_fact_ids)
-                await writer.delete_profile()
+                assert await writer.get_profile() is None
                 await writer.delete_profile()
                 await writer.delete_facts((manual.id, FactId("missing")))
                 await writer.delete_facts((manual.id,))
@@ -329,7 +337,7 @@ def test_session_erasure_cleans_indexes_changes_and_current_predecessors(
                 assert await reader.get_facts(
                     (old.id, future.id, manual.id, survivor.id)
                 ) == {
-                    survivor.id: replace(survivor, supersedes=()),
+                    survivor.id: survivor,
                 }
                 assert await reader.get_salience((survivor.id,)) == {
                     survivor.id: reinforced
@@ -361,15 +369,106 @@ def test_session_erasure_cleans_indexes_changes_and_current_predecessors(
     run(exercise())
 
 
+def test_erasure_removes_joint_group_and_audit_while_trigger_fact_survives(
+    database: PgDatabase,
+) -> None:
+    """触发事实有独立来源时仍存续，已擦除的截止审计和不完整证据组一起清理。"""
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id="owner")
+            scope = space()
+            await storage.create_space(scope)
+            subject = Entity(scope.id, "甲")
+            original = message(scope, "original", session=SessionId("original"))
+            erased = message(scope, "erased")
+            joint = message(scope, "joint", session=SessionId("kept"))
+            independent = message(scope, "independent", session=joint.session_id)
+            old = replace(
+                fact(subject, "old"), provenance=(original.id,), valid_at=10.0
+            )
+            closed = old.close(20.0, 25.0)
+            cause = replace(
+                fact(subject, "cause"),
+                valid_at=23.0,
+                provenance=(erased.id, joint.id, independent.id),
+            )
+            successor = replace(fact(subject, "successor"), valid_at=20.0)
+            triggers = (
+                CutoffTrigger(cause.id, 23.0, (erased.id, joint.id)),
+                CutoffTrigger(successor.id, 20.0),
+            )
+            groups = ((erased.id, joint.id), (independent.id,))
+            async with storage.session(scope.id, write=True) as writer:
+                for session_id in (
+                    original.session_id,
+                    erased.session_id,
+                    joint.session_id,
+                ):
+                    await writer.register_session(session_id)
+                await writer.append_messages((original, erased, joint, independent))
+                await writer.upsert_entity(subject)
+                await writer.save_facts((old, cause), changed_at=23.0)
+                await writer.save_facts(
+                    (closed, cause, successor),
+                    changed_at=25.0,
+                    support_groups={cause.id: groups},
+                    cutoff_triggers={old.id: triggers},
+                )
+                await writer.save_facts(
+                    (cause,), changed_at=26.0, support_groups={cause.id: groups}
+                )
+                assert len(await writer.list_fact_changes(cause.id)) == 2
+                assert await writer.get_fact_support_groups((cause.id,)) == {
+                    cause.id: groups
+                }
+                assert (await writer.list_fact_changes(old.id))[
+                    0
+                ].cutoff_triggers == triggers
+                await writer.upsert_vectors(((cause.id, (1.0,)),), embedding_space="v1")
+
+            async with storage.session(scope.id, write=True) as writer:
+                assert (
+                    await writer.delete_session_data(erased.session_id) == frozenset()
+                )
+                assert await writer.get_fact_support_groups((cause.id,)) == {
+                    cause.id: ((independent.id,),),
+                }
+                assert await writer.get_fact(cause.id) == replace(
+                    cause, provenance=(independent.id,)
+                )
+                assert await writer.get_fact(old.id) == closed
+                assert await writer.get_fact(successor.id) == successor
+                assert await writer.get_messages(
+                    (erased.id, joint.id, independent.id)
+                ) == {
+                    joint.id: joint,
+                    independent.id: independent,
+                }
+                (remaining_change,) = await writer.list_fact_changes(old.id)
+                assert remaining_change.before is None
+                assert remaining_change.after == old
+                hits = await writer.search_vectors(
+                    (1.0,),
+                    1,
+                    filters=FactFilter(),
+                    reference_time=25.0,
+                    embedding_space="v1",
+                )
+                assert hits == ((cause.id, 1.0),)
+
+    run(exercise())
+
+
 class _Clock:
     def now(self) -> float:
         return 30.0
 
 
-def test_session_erasure_rejects_late_reinforcement_after_replay(
+def test_session_erasure_rejects_late_reinforcement_after_new_session(
     database: PgDatabase,
 ) -> None:
-    """删除和代际一起提交或回滚，原样重放后旧派生写回仍失效。"""
+    """删除和代际一起提交或回滚，旧会话及旧派生写回仍失效。"""
 
     async def exercise() -> None:
         async with pool(database.runtime) as connections:
@@ -381,6 +480,7 @@ def test_session_erasure_rejects_late_reinforcement_after_replay(
             item = replace(fact(subject, "fact"), provenance=(source.id,))
             async with storage.session(scope.id, write=True) as writer:
                 await writer.upsert_entity(subject)
+                await writer.register_session(source.session_id)
                 await writer.append_messages((source,))
                 await writer.save_facts((item,), changed_at=15.0)
             async with storage.session(scope.id) as reader:
@@ -402,7 +502,11 @@ def test_session_erasure_rejects_late_reinforcement_after_replay(
                 )
                 assert await writer.get_erasure_token() == new_token
             async with storage.session(scope.id, write=True) as writer:
-                await writer.append_messages((source,))
+                with pytest.raises(SessionUnavailable):
+                    await writer.append_messages((source,))
+                fresh_source = replace(source, session_id=SessionId("new-session"))
+                await writer.register_session(fresh_source.session_id)
+                await writer.append_messages((fresh_source,))
                 await writer.save_facts((item,), changed_at=25.0)
 
             await reinforce_context_facts(
@@ -414,7 +518,9 @@ def test_session_erasure_rejects_late_reinforcement_after_replay(
                 expected_erasure_token=original_token,
             )
             async with storage.session(scope.id) as reader:
-                assert await reader.get_messages((source.id,)) == {source.id: source}
+                assert await reader.get_messages((source.id,)) == {
+                    source.id: fresh_source
+                }
                 assert await reader.get_fact(item.id) == item
                 assert await reader.get_salience((item.id,)) == {
                     item.id: FactSalience()
@@ -444,6 +550,7 @@ def test_purge_rotates_generation_and_rejects_late_reinforcement(
             async with storage.session(scope.id, write=True) as writer:
                 original_token = await writer.get_erasure_token()
                 await writer.upsert_entity(subject)
+                await writer.register_session(source.session_id)
                 await writer.append_messages((source,))
                 await writer.save_facts((item,), changed_at=15.0)
                 await writer.save_digest(digest)
@@ -487,7 +594,11 @@ def test_purge_rotates_generation_and_rejects_late_reinforcement(
                     new_token,
                 )
                 await writer.upsert_entity(subject)
-                await writer.append_messages((source,))
+                with pytest.raises(SessionUnavailable):
+                    await writer.append_messages((source,))
+                fresh_source = replace(source, session_id=SessionId("new-session"))
+                await writer.register_session(fresh_source.session_id)
+                await writer.append_messages((fresh_source,))
                 await writer.save_facts((item,), changed_at=25.0)
                 with pytest.raises(ValueError, match="维度不一致"):
                     await writer.upsert_vectors(

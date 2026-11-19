@@ -13,7 +13,7 @@ from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.enums import Role
 from mnemotrace_next.domain.ids import MessageId, SessionId, SpaceId
 from mnemotrace_next.domain.profile import Profile, ProfileEntry
-from mnemotrace_next.ports.storage import Storage
+from mnemotrace_next.ports.storage import SessionUnavailable, Storage
 
 from .conftest import PgDatabase
 from .sample import SESSION, fact, message, pool, run, space
@@ -52,6 +52,8 @@ def test_space_scope_message_replay_and_entity_identity(database: PgDatabase) ->
             original = Entity(primary.id, " Ａlice ", "person")
             renamed = Entity(primary.id, "ALICE")
             async with owner.session(primary.id, write=True) as writer:
+                await writer.register_session(first.session_id)
+                await writer.register_session(other_session.session_id)
                 await writer.append_messages((first, replay, other_session, second))
                 assert await writer.upsert_entity(original) == original
                 assert await writer.upsert_entity(renamed) == renamed
@@ -92,6 +94,7 @@ def test_space_scope_message_replay_and_entity_identity(database: PgDatabase) ->
             for adapter, scope in ((owner, sibling), (other, foreign)):
                 local = replace(first, space_id=scope.id, content="该空间原文")
                 async with adapter.session(scope.id, write=True) as writer:
+                    await writer.register_session(local.session_id)
                     await writer.append_messages((local,))
                 async with adapter.session(scope.id) as reader:
                     assert await reader.get_messages((first.id, second.id)) == {
@@ -123,15 +126,24 @@ def test_session_read_only_closes_and_rolls_back_on_cancel(
                 await reader.get_space()
 
             aborted = message(scope, "aborted")
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.register_session(aborted.session_id)
             with pytest.raises(RuntimeError, match="事务异常"):
                 async with storage.session(scope.id, write=True) as writer:
                     await writer.append_messages((aborted,))
                     raise RuntimeError("事务异常")
             written = asyncio.Event()
+            subject = Entity(scope.id, "甲")
+            unpublished = replace(fact(subject, "cancelled"), provenance=(aborted.id,))
 
             async def cancellable() -> None:
                 async with storage.session(scope.id, write=True) as writer:
                     await writer.append_messages((aborted,))
+                    await writer.upsert_entity(subject)
+                    await writer.save_facts((unpublished,), changed_at=20.0)
+                    await writer.upsert_vectors(
+                        ((unpublished.id, (1.0,)),), embedding_space="v1"
+                    )
                     written.set()
                     await asyncio.Future[None]()
 
@@ -142,10 +154,74 @@ def test_session_read_only_closes_and_rolls_back_on_cancel(
                 await task
             async with storage.session(scope.id, write=True) as writer:
                 assert await writer.get_messages((aborted.id,)) == {}
+                assert await writer.get_fact(unpublished.id) is None
+                assert await writer.get_fact_support_groups((unpublished.id,)) == {}
+                assert await writer.list_fact_changes(unpublished.id) == ()
                 assert await writer.get_erasure_token() == "0"
                 await writer.append_messages((aborted,))
             async with storage.session(scope.id) as reader:
                 assert await reader.get_messages((aborted.id,)) == {aborted.id: aborted}
+
+    run(exercise())
+
+
+@pytest.mark.parametrize("purge", (False, True), ids=("erase-session", "purge-space"))
+def test_empty_session_retirement_blocks_first_in_flight_write(
+    database: PgDatabase, purge: bool
+) -> None:
+    """对话撤销阻止已准备但未提交的首次消息，空间仍可开新对话。"""
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id="owner")
+            scope, sibling = space(), space()
+            await storage.create_space(scope)
+            await storage.create_space(sibling)
+            pending = message(scope, "first")
+            fresh = replace(pending, session_id=SessionId("fresh"))
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.register_session(pending.session_id)
+                before = await writer.get_erasure_token()
+            async with storage.session(sibling.id, write=True) as writer:
+                assert not await writer.has_session(pending.session_id)
+                with pytest.raises(SessionUnavailable):
+                    await writer.append_messages(
+                        (replace(pending, space_id=sibling.id),)
+                    )
+
+            ready, erased = asyncio.Event(), asyncio.Event()
+
+            async def delayed_publish() -> None:
+                async with storage.session(scope.id) as reader:
+                    assert await reader.has_session(pending.session_id)
+                ready.set()
+                await erased.wait()
+                async with storage.session(scope.id, write=True) as writer:
+                    assert not await writer.has_session(pending.session_id)
+                    with pytest.raises(SessionUnavailable):
+                        await writer.append_messages((pending,))
+
+            async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
+                tasks.create_task(delayed_publish())
+                await ready.wait()
+                async with storage.session(scope.id, write=True) as writer:
+                    if purge:
+                        await writer.purge_space()
+                    else:
+                        assert (
+                            await writer.delete_session_data(pending.session_id)
+                            == frozenset()
+                        )
+                    assert (await writer.get_erasure_token() != before) == purge
+                erased.set()
+
+            async with storage.session(scope.id, write=True) as writer:
+                assert await writer.get_messages((pending.id,)) == {}
+                await writer.register_session(fresh.session_id)
+                await writer.append_messages((fresh,))
+            async with storage.session(scope.id) as reader:
+                assert await reader.last_messages(fresh.session_id, 1) == (fresh,)
+                assert not await reader.has_session(pending.session_id)
 
     run(exercise())
 
@@ -165,6 +241,7 @@ def test_write_session_reports_failure_after_caught_sql_error(
             async with storage.session(scope.id, write=True) as writer:
                 await writer.upsert_entity(subject)
                 await writer.save_facts((source,), changed_at=10.0)
+                await writer.register_session(SESSION)
 
             entry = ProfileEntry("不可存储的字符\x00", (source.id,))
             invalid = Profile(scope.id, {"组": (entry,)}, 20.0)
@@ -201,6 +278,7 @@ def test_purge_waits_for_writer_without_blocking_sibling_space(
                     await writer.purge_space()
 
             async with storage.session(scope.id, write=True) as writer:
+                await writer.register_session(SESSION)
                 await writer.append_messages((message(scope, "to-purge"),))
                 token = await writer.get_erasure_token()
                 clearing = asyncio.create_task(purge())
@@ -225,6 +303,7 @@ def test_purge_waits_for_writer_without_blocking_sibling_space(
                             await asyncio.sleep(0.01)
                 async with asyncio.timeout(5):
                     async with storage.session(sibling.id, write=True) as other:
+                        await other.register_session(SESSION)
                         await other.append_messages((message(sibling, "kept"),))
             await asyncio.wait_for(clearing, timeout=5)
             async with storage.session(scope.id) as reader:

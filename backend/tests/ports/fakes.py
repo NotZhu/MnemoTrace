@@ -25,10 +25,13 @@ from mnemotrace_next.domain.values import EntityRef, Predicate
 from mnemotrace_next.ports.inference import Completion
 from mnemotrace_next.ports.queries import FactFilter, FactQuery
 from mnemotrace_next.ports.storage import (
+    CutoffTrigger,
     FactChange,
     GraphEdge,
     GraphEdgeBatch,
+    SessionUnavailable,
     SpaceSession,
+    SupportGroups,
 )
 
 _MUTABLE_FACT_FIELDS = frozenset(
@@ -90,13 +93,15 @@ class FakeSpaceSession:
         self.space_id = space.id
         self._space = space
         self._erasure_generation = 0
+        self._sessions: set[SessionId] = set()
         self._messages: dict[MessageId, Message] = {}
         self._facts: dict[FactId, Fact] = {}
         self._fact_salience: dict[FactId, FactSalience] = {}
         self._entities: dict[EntityId, Entity] = {}
         self._digests: dict[DigestId, Digest] = {}
         self._profile: Profile | None = None
-        self._changes: list[FactChange] = []
+        self._groups: dict[FactId, SupportGroups] = {}
+        self._changes: list[tuple[FactChange, frozenset[MessageId]]] = []
         self._change_cursors = count(1)
         self._vectors: dict[str, dict[FactId, Sequence[float]]] = {}
 
@@ -116,6 +121,30 @@ class FakeSpaceSession:
         """
         return str(self._erasure_generation)
 
+    async def has_session(self, session_id: SessionId) -> bool:
+        """查询测试对话的登记。
+
+        Args:
+            session_id: 要查询的对话标识。
+
+        Returns:
+            对话仍有登记时为真。
+        """
+        return session_id in self._sessions
+
+    async def register_session(self, session_id: SessionId) -> None:
+        """在测试空间登记对话。
+
+        Args:
+            session_id: 后端生成的对话标识。
+
+        Raises:
+            ValueError: 标识已登记。
+        """
+        if session_id in self._sessions:
+            raise ValueError("对话标识已存在")
+        self._sessions.add(session_id)
+
     async def append_messages(self, messages: Sequence[Message]) -> None:
         """追加一批消息并保留已存在记录的首次收录时刻。
 
@@ -123,10 +152,15 @@ class FakeSpaceSession:
             messages: 待追加或重放的消息。
 
         Raises:
+            SessionUnavailable: 任一原文的对话不存在。
             ValueError: 同一标识的消息字段冲突。
         """
         pending: dict[MessageId, Message] = {}
         for message in messages:
+            if message.space_id != self.space_id:
+                raise ValueError("消息不属于绑定空间")
+            if message.session_id not in self._sessions:
+                raise SessionUnavailable("对话不可用")
             existing = self._messages.get(message.id)
             if existing is None:
                 existing = pending.setdefault(message.id, message)
@@ -170,24 +204,60 @@ class FakeSpaceSession:
             if message_id in self._messages
         }
 
-    async def save_facts(self, facts: Sequence[Fact], *, changed_at: float) -> None:
+    async def get_fact_support_groups(
+        self, fact_ids: Sequence[FactId]
+    ) -> Mapping[FactId, SupportGroups]:
+        """读取现有事实的证据组。
+
+        Args:
+            fact_ids: 待查事实标识。
+
+        Returns:
+            以现有事实标识为键的证据组映射。
+        """
+        return {
+            fact_id: self._groups[fact_id]
+            for fact_id in fact_ids
+            if fact_id in self._facts
+        }
+
+    async def save_facts(
+        self,
+        facts: Sequence[Fact],
+        *,
+        changed_at: float,
+        support_groups: Mapping[FactId, SupportGroups] | None = None,
+        cutoff_triggers: Mapping[FactId, tuple[CutoffTrigger, ...]] | None = None,
+    ) -> tuple[FactChange, ...]:
         """保存事实快照并记录实际变化。
 
         Args:
             facts: 待保存的事实快照。
             changed_at: 写入变更记录的 UTC epoch 秒。
+            support_groups: 需要替换的完整证据组。
+            cutoff_triggers: 按裁决顺序排列的截止触发项。
+
+        Returns:
+            按游标升序排列的实际变更。
 
         Raises:
             ValueError: 事实超出绑定空间、引用缺失或更新违反事实约束。
         """
-        snapshots = [(self._facts.get(fact.id), fact) for fact in facts]
-        for before, fact in snapshots:
+        pending = {fact.id: fact for fact in facts}
+        groups_by_id = support_groups or {}
+        triggers_by_id = cutoff_triggers or {}
+        if (
+            len(pending) != len(facts)
+            or (groups_by_id.keys() | triggers_by_id.keys()) - pending.keys()
+        ):
+            raise ValueError("证据组及截止触发信息须属于本批唯一的事实")
+        changes = []
+        for fact in facts:
+            before = self._facts.get(fact.id)
             if fact.space_id != self.space_id:
                 raise ValueError("事实的 space_id 必须属于绑定空间")
             if before is not None:
                 _validate_fact_update(before, fact)
-            elif any(predecessor not in self._facts for predecessor in fact.supersedes):
-                raise ValueError("supersedes 必须指向绑定空间内已存在的事实")
             entities = {fact.subject.entity_id}
             if isinstance(fact.object, EntityRef):
                 entities.add(fact.object.entity_id)
@@ -196,14 +266,66 @@ class FakeSpaceSession:
                 or set(fact.provenance) - self._messages.keys()
             ):
                 raise ValueError("事实引用的实体和来源须在绑定空间内存在")
-
-        for before, fact in snapshots:
-            if before == fact:
-                continue
-            self._facts[fact.id] = fact
-            self._changes.append(
-                FactChange(next(self._change_cursors), changed_at, before, fact)
+            old_groups = self._groups.get(fact.id)
+            groups = groups_by_id.get(fact.id)
+            if groups is None:
+                if before is not None and before.provenance != fact.provenance:
+                    raise ValueError("改变已有事实的来源须提供完整证据组")
+                groups = (
+                    old_groups
+                    if old_groups is not None
+                    else ((fact.provenance,) if fact.provenance else ())
+                )
+            provenance = tuple(
+                dict.fromkeys(message_id for group in groups for message_id in group)
             )
+            if any(not group for group in groups) or provenance != fact.provenance:
+                raise ValueError("证据组须非空且展开后与事实来源一致")
+            if before == fact and groups == old_groups:
+                continue
+            triggers = triggers_by_id.get(fact.id, ())
+            if triggers and (
+                fact.invalid_at is None or triggers[-1].valid_end != fact.invalid_at
+            ):
+                raise ValueError("最后一个触发时点须等于事实的最终截止")
+            previous_end = before.invalid_at if before is not None else None
+            for trigger in triggers:
+                if previous_end is not None and trigger.valid_end >= previous_end:
+                    raise ValueError("触发时点须依次设置或提前截止")
+                cause = pending.get(trigger.fact_id) or self._facts.get(trigger.fact_id)
+                if cause is None or cause.id == fact.id:
+                    raise ValueError("截止须引用绑定空间内另一条已存在或同批保存的事实")
+                if trigger.valid_end != cause.valid_at:
+                    raise ValueError("触发时点须等于触发事实的生效点")
+                trigger_sources = trigger.source_message_ids
+                if (
+                    trigger_sources is None
+                    or (cause.provenance and not trigger_sources)
+                    or not set(trigger_sources).issubset(cause.provenance)
+                ):
+                    raise ValueError("截止触发来源须是本次裁决采用的触发事实原文")
+                previous_end = trigger.valid_end
+            changes.append((before, fact, groups, triggers))
+
+        saved = []
+        for before, fact, groups, triggers in changes:
+            self._facts[fact.id] = fact
+            self._groups[fact.id] = groups
+            sources = frozenset(fact.provenance)
+            if before is not None:
+                sources = sources.union(before.provenance)
+            for trigger in triggers:
+                sources = sources.union(trigger.source_message_ids or ())
+            change = FactChange(
+                next(self._change_cursors),
+                changed_at,
+                before,
+                fact,
+                triggers,
+            )
+            self._changes.append((change, sources))
+            saved.append(change)
+        return tuple(saved)
 
     async def save_salience(self, states: Mapping[FactId, FactSalience]) -> None:
         """批量更新已存在事实的显著度。
@@ -354,7 +476,7 @@ class FakeSpaceSession:
         """
         changes = tuple(
             change
-            for change in reversed(self._changes)
+            for change, _ in reversed(self._changes)
             if change.after.id == fact_id and (after is None or change.cursor < after)
         )
         return changes[:limit]
@@ -368,23 +490,23 @@ class FakeSpaceSession:
         deleted = set(fact_ids).intersection(self._facts)
         for fact_id in deleted:
             del self._facts[fact_id]
+            del self._groups[fact_id]
             self._fact_salience.pop(fact_id, None)
         for vectors in self._vectors.values():
             for fact_id in deleted:
                 vectors.pop(fact_id, None)
         self._changes = [
-            change for change in self._changes if change.after.id not in deleted
+            (change, sources)
+            for change, sources in self._changes
+            if change.after.id not in deleted
+            and all(
+                trigger.fact_id not in deleted for trigger in change.cutoff_triggers
+            )
         ]
-        for fact_id, fact in self._facts.items():
-            if deleted.intersection(fact.supersedes):
-                self._facts[fact_id] = replace(
-                    fact,
-                    supersedes=tuple(
-                        predecessor
-                        for predecessor in fact.supersedes
-                        if predecessor not in deleted
-                    ),
-                )
+        if self._profile is not None and deleted.intersection(
+            self._profile.source_fact_ids
+        ):
+            self._profile = None
 
     async def delete_session_data(self, session_id: SessionId) -> frozenset[FactId]:
         """删除会话原文及其派生数据，并在删去原文时推进擦除代际。
@@ -400,17 +522,25 @@ class FakeSpaceSession:
             for message in self._messages.values()
             if message.session_id == session_id
         }
-        deleted = frozenset(
-            fact.id
-            for fact in self._facts.values()
-            if messages.intersection(fact.provenance)
-        )
+        deleted: set[FactId] = set()
+        for fact_id, groups in self._groups.items():
+            remaining = tuple(group for group in groups if messages.isdisjoint(group))
+            if remaining != groups:
+                if remaining:
+                    self._groups[fact_id] = remaining
+                    self._facts[fact_id] = replace(
+                        self._facts[fact_id],
+                        provenance=tuple(
+                            dict.fromkeys(item for group in remaining for item in group)
+                        ),
+                    )
+                else:
+                    deleted.add(fact_id)
         await self.delete_facts(tuple(deleted))
         self._changes = [
-            change
-            for change in self._changes
-            if messages.isdisjoint(change.after.provenance)
-            and (change.before is None or messages.isdisjoint(change.before.provenance))
+            (change, sources)
+            for change, sources in self._changes
+            if messages.isdisjoint(sources)
         ]
         self._digests = {
             digest.id: digest
@@ -419,14 +549,17 @@ class FakeSpaceSession:
         }
         for message_id in messages:
             del self._messages[message_id]
+        self._sessions.discard(session_id)
         if messages:
             self._erasure_generation += 1
-        return deleted
+        return frozenset(deleted)
 
     async def purge_space(self) -> None:
         """清空空间内容并推进擦除代际。"""
         self._messages.clear()
+        self._sessions.clear()
         self._facts.clear()
+        self._groups.clear()
         self._fact_salience.clear()
         self._entities.clear()
         self._digests.clear()

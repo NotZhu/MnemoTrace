@@ -40,7 +40,6 @@ def fact() -> Fact:
         labels=(Label("sports"), Label("food"), Label("sports")),
         sensitive=False,
         source=Source.EXTRACTED,
-        supersedes=(FactId("earlier"),),
     )
 
 
@@ -48,7 +47,6 @@ def test_fact_normalizes_provenance_and_labels_and_derives_hash(fact: Fact) -> N
     assert fact.text == "　Ａｌｉｃｅ\tlikes\ntea "
     assert fact.provenance == (MessageId("m2"), MessageId("m1"))
     assert fact.labels == (Label("food"), Label("sports"))
-    assert fact.supersedes == (FactId("earlier"),)
     assert fact.is_edge
     assert fact.content_hash == ContentHash(
         "31006013baec0b33f6cfc3a2ec44bf3c44d41fe664ec118c093436152c4a2e55"
@@ -88,8 +86,6 @@ def test_manual_literal_fact_can_have_unknown_start_and_no_provenance(
         {"provenance": ()},
         {"provenance": [MessageId("m1")]},
         {"labels": ("unknown",)},
-        {"supersedes": (FactId("fact"),)},
-        {"supersedes": (FactId("earlier"), FactId("earlier"))},
     ),
 )
 def test_fact_rejects_invalid_fields(fact: Fact, changes: dict[str, object]) -> None:

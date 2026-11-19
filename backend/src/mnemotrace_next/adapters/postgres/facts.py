@@ -1,13 +1,15 @@
 """保存事实快照、现行引用和变更记录。"""
 
-from collections.abc import Sequence
-from dataclasses import replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 
 from psycopg import AsyncConnection, errors, sql
 from psycopg.rows import TupleRow
 from psycopg.types.json import Jsonb
 
 from ...domain.fact import Fact
+from ...domain.ids import FactId, MessageId
+from ...ports.storage import CutoffTrigger, FactChange, SupportGroups
 from .rows import fact_to_row
 from .search import lexical_terms
 
@@ -19,12 +21,7 @@ SELECT_FACTS = sql.SQL("""
                SELECT p.message_id FROM mnemotrace_next.fact_provenance AS p
                WHERE p.space_id = f.space_id AND p.fact_id = f.fact_id
                ORDER BY p.position
-           ) AS provenance,
-           ARRAY(
-               SELECT s.predecessor_id FROM mnemotrace_next.fact_supersedes AS s
-               WHERE s.space_id = f.space_id AND s.fact_id = f.fact_id
-               ORDER BY s.position
-           ) AS supersedes
+           ) AS provenance
     FROM mnemotrace_next.facts AS f
     """)
 
@@ -46,6 +43,28 @@ _UPDATE_FACT = """
         labels = %(labels)s, sensitive = %(sensitive)s
     WHERE space_id = %(space_id)s AND fact_id = %(fact_id)s
     """
+
+
+@dataclass(frozen=True)
+class FactWrite:
+    """保存适配器已验证的事实快照、来源变更和截止依据。"""
+
+    before: Fact | None
+    after: Fact
+    groups: SupportGroups | None
+    triggers: tuple[CutoffTrigger, ...]
+
+
+def flatten_support_groups(groups: SupportGroups) -> tuple[MessageId, ...]:
+    """按首次出现顺序生成证据组的来源视图。
+
+    Args:
+        groups: 有序证据组。
+
+    Returns:
+        去重后的原文标识。
+    """
+    return tuple(dict.fromkeys(message_id for group in groups for message_id in group))
 
 
 def validate_fact_update(before: Fact, after: Fact) -> None:
@@ -77,29 +96,76 @@ def validate_fact_update(before: Fact, after: Fact) -> None:
         raise ValueError("同标识的事实不能改变固定字段或首次获知时刻")
 
 
+def validate_cutoff_triggers(
+    before: Fact | None,
+    after: Fact,
+    triggers: tuple[CutoffTrigger, ...],
+    causes: Mapping[FactId, Fact],
+) -> None:
+    """核对实际改变截止点的触发顺序及来源。
+
+    Args:
+        before: 保存前的事实，新事实为 None。
+        after: 保存后的事实。
+        triggers: 按实际裁决顺序排列的触发项。
+        causes: 可引用的触发事实，以本批保存后的快照为准。
+
+    Raises:
+        ValueError: 本次未设置或提前截止，或触发事实及来源无效。
+    """
+    if not triggers:
+        return
+    if after.invalid_at is None or triggers[-1].valid_end != after.invalid_at:
+        raise ValueError("最后一个触发时点须等于事实的最终截止")
+    previous_end = before.invalid_at if before is not None else None
+    for trigger in triggers:
+        if previous_end is not None and trigger.valid_end >= previous_end:
+            raise ValueError("触发时点须依次设置或提前截止")
+        cause = causes.get(trigger.fact_id)
+        if cause is None or cause.id == after.id:
+            raise ValueError("截止须引用绑定空间内另一条已存在或同批保存的事实")
+        if trigger.valid_end != cause.valid_at:
+            raise ValueError("触发时点须等于触发事实的生效点")
+        sources = trigger.source_message_ids
+        if (
+            sources is None
+            or (cause.provenance and not sources)
+            or not set(sources).issubset(cause.provenance)
+        ):
+            raise ValueError("截止触发来源须是本次裁决采用的触发事实原文")
+        previous_end = trigger.valid_end
+
+
 async def write_fact_batch(
     conn: AsyncConnection[TupleRow],
-    changes: Sequence[tuple[Fact | None, Fact]],
+    changes: Sequence[FactWrite],
     changed_at: float,
-) -> None:
+) -> tuple[FactChange, ...]:
     """写入已校验的事实变化及其来源和历史记录。
 
     Args:
         conn: 已取得空间写入权的事务连接。
-        changes: 变更前后快照对，创建时前快照为 None。
+        changes: 变更前后快照及来源和触发信息。
         changed_at: 保存到变化记录的 UTC epoch 秒。
+
+    Returns:
+        按变更游标升序排列的已写入记录。
 
     Raises:
         ValueError: 事实引用违反外键约束，整个批次回滚。
     """
     if not changes:
-        return
-    created = [after for before, after in changes if before is None]
-    updated = [after for before, after in changes if before is not None]
+        return ()
+    created = [change.after for change in changes if change.before is None]
+    updated = [
+        change.after
+        for change in changes
+        if change.before is not None and change.before != change.after
+    ]
     relinked = [
-        after
-        for before, after in changes
-        if before and before.provenance != after.provenance
+        change.after
+        for change in changes
+        if change.before is not None and change.groups is not None
     ]
     try:
         async with conn.transaction(), conn.cursor() as cursor:
@@ -129,25 +195,14 @@ async def write_fact_batch(
             await cursor.executemany(
                 """
                 INSERT INTO mnemotrace_next.fact_provenance
-                    (space_id, fact_id, position, message_id)
-                VALUES (%s, %s, %s, %s)
+                    (space_id, fact_id, position, support_group, message_id)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
                 [
-                    (fact.space_id.value, fact.id.value, position, message_id.value)
-                    for fact in (*created, *relinked)
-                    for position, message_id in enumerate(fact.provenance)
-                ],
-            )
-            await cursor.executemany(
-                """
-                INSERT INTO mnemotrace_next.fact_supersedes
-                    (space_id, fact_id, position, predecessor_id)
-                VALUES (%s, %s, %s, %s)
-                """,
-                [
-                    (fact.space_id.value, fact.id.value, position, predecessor.value)
-                    for fact in created
-                    for position, predecessor in enumerate(fact.supersedes)
+                    row
+                    for change in changes
+                    if change.groups is not None
+                    for row in _support_rows(change.after, change.groups)
                 ],
             )
             await cursor.executemany(
@@ -155,24 +210,80 @@ async def write_fact_batch(
                 INSERT INTO mnemotrace_next.fact_changes
                     (space_id, fact_id, changed_at, before, after, source_message_ids)
                 VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING cursor
                 """,
-                [_change_row(before, after, changed_at) for before, after in changes],
+                [_change_row(change, changed_at) for change in changes],
+                returning=True,
             )
+            records: list[FactChange] = []
+            for change in changes:
+                row = await cursor.fetchone()
+                assert row is not None
+                records.append(
+                    FactChange(
+                        row[0], changed_at, change.before, change.after, change.triggers
+                    )
+                )
+                cursor.nextset()
+            triggers = [
+                (
+                    record.after.space_id.value,
+                    record.after.id.value,
+                    record.cursor,
+                    position,
+                    trigger.fact_id.value,
+                    trigger.valid_end,
+                    [source.value for source in trigger.source_message_ids or ()],
+                )
+                for record in records
+                for position, trigger in enumerate(record.cutoff_triggers)
+            ]
+            if triggers:
+                await cursor.executemany(
+                    """
+                    INSERT INTO mnemotrace_next.fact_change_triggers
+                        (space_id, fact_id, cursor, position, trigger_fact_id, valid_end,
+                         source_message_ids)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    triggers,
+                )
     except errors.ForeignKeyViolation:
-        raise ValueError("事实引用的实体或来源须在绑定空间内存在") from None
+        raise ValueError(
+            "事实引用的实体、来源及截止触发事实须在绑定空间内存在"
+        ) from None
+    return tuple(records)
+
+
+def _support_rows(
+    fact: Fact, groups: SupportGroups
+) -> list[tuple[str, str, int, int, str]]:
+    members = (
+        (group_number, message_id)
+        for group_number, group in enumerate(groups)
+        for message_id in group
+    )
+    return [
+        (fact.space_id.value, fact.id.value, position, group_number, message_id.value)
+        for position, (group_number, message_id) in enumerate(members)
+    ]
 
 
 def _change_row(
-    before: Fact | None, after: Fact, changed_at: float
+    change: FactWrite, changed_at: float
 ) -> tuple[str, str, float, Jsonb | None, Jsonb, list[str]]:
-    previous = fact_to_row(before) if before is not None else None
-    current = fact_to_row(after)
+    previous = fact_to_row(change.before) if change.before is not None else None
+    current = fact_to_row(change.after)
     sources = dict.fromkeys(current["provenance"])
     if previous is not None:
         sources.update(dict.fromkeys(previous["provenance"]))
+    for trigger in change.triggers:
+        sources.update(
+            dict.fromkeys(item.value for item in trigger.source_message_ids or ())
+        )
     return (
-        after.space_id.value,
-        after.id.value,
+        change.after.space_id.value,
+        change.after.id.value,
         changed_at,
         Jsonb(previous) if previous is not None else None,
         Jsonb(current),

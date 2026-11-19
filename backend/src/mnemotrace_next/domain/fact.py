@@ -37,7 +37,6 @@ class Fact:
     labels: tuple[Label, ...]
     sensitive: bool
     source: Source
-    supersedes: tuple[FactId, ...] = ()
     content_hash: ContentHash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -51,14 +50,8 @@ class Fact:
         require_type(self.source, Source, "source", InvalidFact)
         require_tuple(self.provenance, MessageId, "provenance", InvalidFact)
         require_tuple(self.labels, Label, "labels", InvalidFact)
-        require_tuple(self.supersedes, FactId, "supersedes", InvalidFact)
-
         if self.source is Source.EXTRACTED and not self.provenance:
             raise InvalidFact("抽取事实必须包含 provenance")
-        if self.id in self.supersedes or len(set(self.supersedes)) != len(
-            self.supersedes
-        ):
-            raise InvalidFact("supersedes 必须由互异的直接前驱组成，且不能引用自身")
 
         valid_at = optional_timestamp(self.valid_at, "valid_at", InvalidFact)
         invalid_at = optional_timestamp(self.invalid_at, "invalid_at", InvalidFact)

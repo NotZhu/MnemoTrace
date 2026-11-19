@@ -16,6 +16,28 @@ from ..domain.space import Space
 from ..domain.values import EntityRef, Predicate
 from .queries import FactFilter, FactQuery
 
+type SupportGroups = tuple[tuple[MessageId, ...], ...]
+
+
+class SessionUnavailable(LookupError):
+    """表示对话在绑定空间内不可用。"""
+
+
+@dataclass(frozen=True)
+class CutoffTrigger:
+    """记录触发一次截止的事实及该次裁决采用的原文。
+
+    Attributes:
+        fact_id: 触发截止的事实标识。
+        valid_end: 该触发事实设置的有效截止时刻，单位为 UTC epoch 秒。
+        source_message_ids: 本次裁决采用的原文标识。无来源的手工事实使用空元组，
+            旧审计无法还原逐项来源时为 None。
+    """
+
+    fact_id: FactId
+    valid_end: float
+    source_message_ids: tuple[MessageId, ...] | None = ()
+
 
 @dataclass(frozen=True)
 class FactChange:
@@ -26,12 +48,14 @@ class FactChange:
         changed_at: 写用例提供的修改时刻，单位为 UTC epoch 秒。
         before: 写入前的事实快照，创建时为 None。
         after: 写入后的事实快照。
+        cutoff_triggers: 按裁决顺序记录实际设置或提前截止的触发项。
     """
 
     cursor: int
     changed_at: float
     before: Fact | None
     after: Fact
+    cutoff_triggers: tuple[CutoffTrigger, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -96,6 +120,17 @@ class SpaceReader(Protocol):
         Returns:
             由存储为该空间分配的不透明标记。清空空间或实际删除会话原文时取新的
             未用值，其余写入期间保持稳定。
+        """
+        ...
+
+    async def has_session(self, session_id: SessionId) -> bool:
+        """判断对话是否在此快照的绑定空间内有效。
+
+        Args:
+            session_id: 后端签发的对话标识。
+
+        Returns:
+            绑定空间内有有效登记时为真。
         """
         ...
 
@@ -428,6 +463,17 @@ class SpaceSession(SpaceReader, Protocol):
     参与决策的来源、目标事实和槽位。标记或依赖发生变化时放弃整批派生写入。
     """
 
+    async def register_session(self, session_id: SessionId) -> None:
+        """登记由应用生成的新对话标识。
+
+        Args:
+            session_id: 后端新生成的标识。
+
+        Raises:
+            ValueError: 绑定空间内已有同一标识。
+        """
+        ...
+
     async def append_messages(self, messages: Sequence[Message]) -> None:
         """按输入顺序追加新消息。
 
@@ -438,23 +484,43 @@ class SpaceSession(SpaceReader, Protocol):
             messages: 待追加或重放的消息。
 
         Raises:
+            SessionUnavailable: 任一原文的对话在绑定空间内不可用。
             ValueError: 同 ID 的消息空间、会话、角色、正文或事件时刻冲突，
                 整批拒绝。
         """
         ...
 
-    async def save_facts(self, facts: Sequence[Fact], *, changed_at: float) -> None:
+    async def get_fact_support_groups(
+        self, fact_ids: Sequence[FactId]
+    ) -> Mapping[FactId, SupportGroups]:
+        """批量读取写会话中事实的完整证据组。
+
+        Args:
+            fact_ids: 绑定空间内待查询的事实标识。
+
+        Returns:
+            事实到有序证据组的映射。无来源的事实对应空元组，缺失事实省略。
+        """
+        ...
+
+    async def save_facts(
+        self,
+        facts: Sequence[Fact],
+        *,
+        changed_at: float,
+        support_groups: Mapping[FactId, SupportGroups] | None = None,
+        cutoff_triggers: Mapping[FactId, tuple[CutoffTrigger, ...]] | None = None,
+    ) -> tuple[FactChange, ...]:
         """按标识创建事实或更新截止与元数据。
 
         同 ID 可更新 labels、sensitive、provenance。首次截止同时设置
         invalid_at 和 expired_at，提前截止保留首次获知的 expired_at。
         其余字段固定，包括 subject、predicate、object、text、valid_at、
-        recorded_at、source 和 supersedes。新事实的 supersedes 指向本批
-        保存前绑定空间内已存在的事实。主体、实体客体及已提供的来源原文须在
+        recorded_at 和 source。主体、实体客体及已提供的来源原文须在
         绑定空间的当前写事务内存在，手工事实可以没有来源。
 
         每次创建或实际更新在同一事务追加一条 FactChange。创建事实时由存储
-        从 Fact.text 派生词法索引，与事实一同提交。相同快照重放幂等。
+        从 Fact.text 派生词法索引，与事实一同提交。事实和分组相同的重放幂等。
         替代时以同一时点截止旧事实和启用新 ID 的事实，有向量时在同一写会话
         写入新向量。旧事实保留正文和索引，供按有效时间查询。
 
@@ -462,10 +528,18 @@ class SpaceSession(SpaceReader, Protocol):
             facts: 待保存的事实快照，同批每个标识一份。
             changed_at: 调用方从 Clock 取得的本次变更时刻，单位为 UTC epoch 秒。
                 在线创建可与 recorded_at 共用一次时钟读取，历史导入可保留原 recorded_at。
+            support_groups: 事实写入后的完整证据组。每组需要全部成员，组之间独立。
+                展开去重后的顺序须与 provenance 一致。改变已有来源时须提供；
+                新事实省略时，所有来源组成一组。
+            cutoff_triggers: 按裁决顺序记录的触发项，截止点严格递减并以最终截止收尾。
+                每项截止点等于触发事实的生效点，来源须取自触发事实。
+
+        Returns:
+            本次实际写入的变更，按游标升序排列。空批次和幂等重放返回空元组。
 
         Raises:
             ValueError: 同批标识重复、事实超出绑定空间、修改固定字段、重开或延后截止、
-                修改首次获知时刻，或引用尚不存在的实体、来源或前驱。整批拒绝。
+                修改首次获知时刻，或证据组及触发引用违反契约。整批拒绝。
         """
         ...
 
@@ -486,7 +560,7 @@ class SpaceSession(SpaceReader, Protocol):
     async def delete_facts(self, fact_ids: Sequence[FactId]) -> None:
         """幂等删除事实及其显著度、索引项、修改记录与关联引用。
 
-        从其余事实的前驱引用中移除被删除的标识。
+        清理引用被删触发事实的变更记录及依赖被删事实的画像。
 
         Args:
             fact_ids: 绑定空间内待删除的事实标识。
@@ -494,24 +568,22 @@ class SpaceSession(SpaceReader, Protocol):
         ...
 
     async def delete_session_data(self, session_id: SessionId) -> frozenset[FactId]:
-        """幂等删除会话原文、摘要和引用这些原文的全部已保存事实。
+        """幂等撤销对话登记并擦除其原文、摘要和证据贡献。
 
         删除范围包括已截止和未来生效的事实。
-        整条事实及其索引、修改记录和关联引用按 delete_facts 的规则撤下。
-        对仍存在的事实，创建或修改记录的任一快照引用被删原文时，删除该记录。
-        删除原文与更换擦除标记在同一事务内完成。
-        有剩余来源时，调用方可重新抽取并按正常写入流程发布。
+        受影响的证据组整体撤下。仍有完整证据组时，保留事实和有效区间。
+        删除引用已擦除来源的审计记录。实际删除原文时更新擦除标记。
 
         Args:
             session_id: 绑定空间内待清理的会话标识。
 
         Returns:
-            撤下的事实标识，供调用方在同一事务内判断是否撤下画像。
+            撤下的事实标识，依赖这些事实的画像已在同一事务撤下。
         """
         ...
 
     async def purge_space(self) -> None:
-        """清空原文、实体、事实及其显著度、索引、摘要、画像和修改记录。
+        """清空对话登记、原文、实体、事实、显著度、索引、摘要、画像和修改记录。
 
         保留空间和各嵌入模型已登记的维度。清空数据和更换擦除标记在同一
         事务中完成。空空间清空时也更换标记。

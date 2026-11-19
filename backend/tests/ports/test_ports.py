@@ -7,6 +7,7 @@ from typing import assert_type
 import pytest
 
 from mnemotrace_next.application.salience import reinforce_context_facts
+from mnemotrace_next.application.sessions import create_session
 from mnemotrace_next.domain.digest import Digest
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.enums import Role, Source
@@ -29,6 +30,7 @@ from mnemotrace_next.ports.queries import FactCursor, FactFilter, FactQuery
 from mnemotrace_next.ports.reranker import Reranker
 from mnemotrace_next.ports.runtime import Clock, IdGenerator
 from mnemotrace_next.ports.storage import (
+    CutoffTrigger,
     GraphEdge,
     GraphEdgeBatch,
     SpaceReader,
@@ -115,6 +117,7 @@ def test_ports_smoke() -> None:
         assert await embedder.embed(()) == ()
 
         await storage.create_space(space)
+        assert await create_session(storage, space.id, ids) == session_id
         async with storage.session(space.id, write=True) as session:
             assert session.space_id == space.id
             await session.append_messages((message, message))
@@ -292,6 +295,7 @@ def test_message_replay_retains_first_recorded_at_and_append_order() -> None:
         retry = replace(original, recorded_at=30.0)
         rejected = replace(following, id=MessageId("rejected"))
         async with storage.session(_SPACE.id, write=True) as session:
+            await session.register_session(session_id)
             await session.append_messages((original, following))
         async with storage.session(_SPACE.id, write=True) as session:
             await session.append_messages((retry,))
@@ -362,6 +366,7 @@ def test_fact_query_time_filters_and_cursor() -> None:
         unknown = replace(_FACT, id=FactId("e"), recorded_at=50.0)
         async with storage.session(_SPACE.id, write=True) as session:
             await session.upsert_entity(_SUBJECT)
+            await session.register_session(message.session_id)
             await session.append_messages((message,))
             await session.save_facts(
                 (future, current, unknown, unknown_end, ended), changed_at=100.0
@@ -512,7 +517,6 @@ def test_fact_replacement_keeps_each_body_for_its_effective_time() -> None:
             text="喜欢喝咖啡",
             valid_at=cutoff,
             recorded_at=published_at,
-            supersedes=(original.id,),
         )
         async with storage.session(_SPACE.id, write=True) as session:
             await session.upsert_entity(_SUBJECT)
@@ -521,17 +525,22 @@ def test_fact_replacement_keeps_each_body_for_its_effective_time() -> None:
                 ((original.id, (1.0, 0.0)),), embedding_space=embedder.embedding_space
             )
         async with storage.session(_SPACE.id, write=True) as session:
-            await session.save_facts((closed, successor), changed_at=published_at)
+            await session.save_facts(
+                (closed, successor),
+                changed_at=published_at,
+                cutoff_triggers={closed.id: (CutoffTrigger(successor.id, cutoff),)},
+            )
             await session.upsert_vectors(
                 ((successor.id, (1.0, 0.0)),), embedding_space=embedder.embedding_space
             )
             await session.save_facts((closed, successor), changed_at=60.0)
 
         async with storage.session(_SPACE.id) as session:
-            assert await session.get_facts(
-                successor.supersedes, exclude_sensitive=True
-            ) == {original.id: closed}
+            assert await session.get_facts((original.id,), exclude_sensitive=True) == {
+                original.id: closed
+            }
             (latest,) = await session.list_fact_changes(original.id, limit=1)
+            assert latest.cutoff_triggers == (CutoffTrigger(successor.id, cutoff),)
             (created,) = await session.list_fact_changes(
                 original.id, after=latest.cursor
             )
@@ -572,25 +581,29 @@ def test_fact_replacement_keeps_each_body_for_its_effective_time() -> None:
 
         async with storage.session(_SPACE.id, write=True) as session:
             await session.delete_facts((original.id,))
-            assert await session.get_fact(successor.id) == replace(
-                successor, supersedes=()
-            )
+            assert await session.get_fact(successor.id) == successor
 
     asyncio.run(exercise())
 
 
 def test_save_facts_rejects_fixed_field_changes_before_writing_batch() -> None:
-    """前驱须已存在，固定字段冲突时整批保存失败。"""
+    """缺少截止触发事实或固定字段冲突时，整批保存失败。"""
 
     async def exercise() -> None:
         storage: Storage = FakeStorage()
         await storage.create_space(_SPACE)
         original = replace(_FACT, valid_at=20.0)
-        incoming = replace(original, id=FactId("incoming"), supersedes=(original.id,))
+        incoming = replace(original, id=FactId("incoming"))
         async with storage.session(_SPACE.id, write=True) as session:
             await session.upsert_entity(_SUBJECT)
-            with pytest.raises(ValueError, match="supersedes"):
-                await session.save_facts((original, incoming), changed_at=30.0)
+            with pytest.raises(ValueError, match="截止须引用"):
+                await session.save_facts(
+                    (original.close(25.0, 30.0), incoming),
+                    changed_at=30.0,
+                    cutoff_triggers={
+                        original.id: (CutoffTrigger(FactId("missing"), 25.0),)
+                    },
+                )
             assert await session.get_facts((original.id, incoming.id)) == {}
 
             await session.save_facts((original,), changed_at=30.0)
@@ -601,7 +614,6 @@ def test_save_facts_rejects_fixed_field_changes_before_writing_batch() -> None:
                 ("text", replace(original, text="修改原正文")),
                 ("valid_at", replace(original, valid_at=21.0)),
                 ("recorded_at", replace(original, recorded_at=11.0)),
-                ("supersedes", replace(original, supersedes=(incoming.id,))),
             ):
                 with pytest.raises(ValueError, match=field):
                     await session.save_facts((incoming, changed), changed_at=40.0)
@@ -717,11 +729,17 @@ def test_delete_session_data_removes_facts_and_source_history() -> None:
 
         async with storage.session(_SPACE.id, write=True) as session:
             await session.upsert_entity(_SUBJECT)
+            await session.register_session(removed.session_id)
+            await session.register_session(kept.session_id)
             await session.append_messages((removed, kept))
             await session.save_digest(removed_digest)
             await session.save_digest(kept_digest)
             await session.save_facts((withdrawn, scheduled, old), changed_at=20.0)
-            await session.save_facts((correction,), changed_at=20.0)
+            await session.save_facts(
+                (correction,),
+                changed_at=20.0,
+                support_groups={correction.id: ((kept.id,),)},
+            )
             await session.save_facts((current,), changed_at=25.0)
             await session.save_salience(
                 {withdrawn.id: reinforced, current.id: reinforced}
@@ -737,8 +755,7 @@ def test_delete_session_data_removes_facts_and_source_history() -> None:
             assert token_after_delete != original_token
             assert await session.delete_session_data(removed.session_id) == frozenset()
             assert await session.get_erasure_token() == token_after_delete
-            assert deleted_ids.intersection(profile.source_fact_ids)
-            await session.delete_profile()
+            assert await session.get_profile() is None
 
         async with storage.session(_SPACE.id) as session:
             assert await session.get_profile() is None
@@ -870,6 +887,7 @@ def test_latest_digest_uses_append_order_and_rejects_missing_sources() -> None:
             updated_at=200.0,
         )
         async with storage.session(_SPACE.id, write=True) as session:
+            await session.register_session(session_id)
             await session.append_messages((first, second, first))
             await session.save_digest(first_digest)
             await session.save_digest(tied)

@@ -49,6 +49,8 @@ def test_vector_top_k_filters_scope_before_ranking(database: PgDatabase) -> None
             closed = replace(b, id=FactId("closed")).close(11.0, 15.0)
             async with storage.session(scope.id, write=True) as writer:
                 await writer.upsert_entity(subject)
+                for session_id in {source_a.session_id, source_b.session_id}:
+                    await writer.register_session(session_id)
                 await writer.append_messages((source_a, source_b))
                 await writer.save_facts(
                     (b, a, secret, closed, *unrelated), changed_at=15.0
@@ -323,8 +325,13 @@ def test_dual_search_and_fact_load_share_snapshot_with_concurrent_writer(
     run(exercise())
 
 
-def test_fact_and_both_indexes_roll_back_together(database: PgDatabase) -> None:
-    """发布异常会一起回滚事实、变更历史、嵌入登记和两种索引。"""
+@pytest.mark.parametrize(
+    "vector_failure", (False, True), ids=("after-index", "vector-error")
+)
+def test_fact_and_both_indexes_roll_back_together(
+    database: PgDatabase, vector_failure: bool
+) -> None:
+    """发布异常一起回滚消息、事实、变更记录、嵌入登记和索引。"""
 
     async def exercise() -> None:
         async with pool(database.runtime) as connections:
@@ -332,20 +339,28 @@ def test_fact_and_both_indexes_roll_back_together(database: PgDatabase) -> None:
             scope = space()
             await storage.create_space(scope)
             subject = Entity(scope.id, "甲")
-            candidate = fact(subject, "unpublished")
+            source = message(scope, "unpublished-source")
+            candidate = replace(fact(subject, "unpublished"), provenance=(source.id,))
             filters = FactFilter()
-            with pytest.raises(RuntimeError, match="发布中断"):
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.register_session(source.session_id)
+            expected = ValueError if vector_failure else RuntimeError
+            match = "范数" if vector_failure else "发布中断"
+            with pytest.raises(expected, match=match):
                 async with storage.session(scope.id, write=True) as writer:
+                    await writer.append_messages((source,))
                     await writer.upsert_entity(subject)
                     await writer.save_facts((candidate,), changed_at=20.0)
+                    vector = (0.0,) if vector_failure else (1.0,)
                     await writer.upsert_vectors(
-                        ((candidate.id, (1.0,)),), embedding_space="v1"
+                        ((candidate.id, vector),), embedding_space="v1"
                     )
                     assert await writer.search_lexical(
                         "乌龙", 1, filters=filters, reference_time=20.0
                     )
                     raise RuntimeError("发布中断")
             async with storage.session(scope.id) as reader:
+                assert await reader.get_messages((source.id,)) == {}
                 assert await reader.get_fact(candidate.id) is None
                 assert await reader.list_fact_changes(candidate.id) == ()
                 assert (
