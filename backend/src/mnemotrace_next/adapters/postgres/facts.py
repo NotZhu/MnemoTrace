@@ -8,7 +8,7 @@ from psycopg.rows import TupleRow
 from psycopg.types.json import Jsonb
 
 from ...domain.fact import Fact
-from ...domain.ids import FactId, MessageId
+from ...domain.ids import FactId
 from ...ports.storage import CutoffTrigger, FactChange, SupportGroups
 from .rows import fact_to_row
 from .search import lexical_terms
@@ -55,18 +55,6 @@ class FactWrite:
     triggers: tuple[CutoffTrigger, ...]
 
 
-def flatten_support_groups(groups: SupportGroups) -> tuple[MessageId, ...]:
-    """按首次出现顺序生成证据组的来源视图。
-
-    Args:
-        groups: 有序证据组。
-
-    Returns:
-        去重后的原文标识。
-    """
-    return tuple(dict.fromkeys(message_id for group in groups for message_id in group))
-
-
 def validate_fact_update(before: Fact, after: Fact) -> None:
     """校验同一标识的事实更新。
 
@@ -101,6 +89,8 @@ def validate_cutoff_triggers(
     after: Fact,
     triggers: tuple[CutoffTrigger, ...],
     causes: Mapping[FactId, Fact],
+    *,
+    existing_causes: Mapping[FactId, Fact],
 ) -> None:
     """核对实际改变截止点的触发顺序及来源。
 
@@ -109,6 +99,7 @@ def validate_cutoff_triggers(
         after: 保存后的事实。
         triggers: 按实际裁决顺序排列的触发项。
         causes: 可引用的触发事实，以本批保存后的快照为准。
+        existing_causes: 已有触发事实在本批保存前的快照。
 
     Raises:
         ValueError: 本次未设置或提前截止，或触发事实及来源无效。
@@ -127,9 +118,10 @@ def validate_cutoff_triggers(
         if trigger.valid_end != cause.valid_at:
             raise ValueError("触发时点须等于触发事实的生效点")
         sources = trigger.source_message_ids
+        cause_before = existing_causes.get(cause.id, cause)
         if (
             sources is None
-            or (cause.provenance and not sources)
+            or (not sources and cause.provenance and cause_before.provenance)
             or not set(sources).issubset(cause.provenance)
         ):
             raise ValueError("截止触发来源须是本次裁决采用的触发事实原文")

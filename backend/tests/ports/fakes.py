@@ -57,6 +57,16 @@ def _validate_fact_update(before: Fact, after: Fact) -> None:
 
 
 def _matches_time(fact: Fact, filters: FactFilter, reference_time: float) -> bool:
+    if (
+        filters.overlap_start is not None
+        and fact.invalid_at is not None
+        and fact.invalid_at <= filters.overlap_start
+    ) or (
+        filters.overlap_end is not None
+        and fact.valid_at is not None
+        and fact.valid_at >= filters.overlap_end
+    ):
+        return False
     if filters.state == "all":
         return True
     at = reference_time if filters.valid_at is None else filters.valid_at
@@ -298,9 +308,14 @@ class FakeSpaceSession:
                 if trigger.valid_end != cause.valid_at:
                     raise ValueError("触发时点须等于触发事实的生效点")
                 trigger_sources = trigger.source_message_ids
+                cause_before = self._facts.get(cause.id, cause)
                 if (
                     trigger_sources is None
-                    or (cause.provenance and not trigger_sources)
+                    or (
+                        not trigger_sources
+                        and cause.provenance
+                        and cause_before.provenance
+                    )
                     or not set(trigger_sources).issubset(cause.provenance)
                 ):
                     raise ValueError("截止触发来源须是本次裁决采用的触发事实原文")
@@ -350,6 +365,7 @@ class FakeSpaceSession:
             for fact in self._facts.values()
             if (filters.subject is None or fact.subject == filters.subject)
             and (filters.predicate is None or fact.predicate == filters.predicate)
+            and (fact.subject, fact.predicate) != filters.exclude_slot
             and (not labels or not labels.isdisjoint(fact.labels))
             and (not provenance or not provenance.isdisjoint(fact.provenance))
             and (not filters.exclude_sensitive or not fact.sensitive)

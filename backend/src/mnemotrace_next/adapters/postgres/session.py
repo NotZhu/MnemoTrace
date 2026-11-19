@@ -20,11 +20,11 @@ from ...ports.storage import (
     FactChange,
     SessionUnavailable,
     SupportGroups,
+    flatten_support_groups,
 )
 from . import search
 from .facts import (
     FactWrite,
-    flatten_support_groups,
     validate_cutoff_triggers,
     validate_fact_update,
     write_fact_batch,
@@ -116,7 +116,7 @@ class PostgresSession(PostgresReader):
                 )
 
     async def upsert_entity(self, entity: Entity) -> Entity:
-        """按归一化名称创建或更新实体。
+        """按空间内的身份类型和规范名称创建或更新实体。
 
         Args:
             entity: 待保存的实体。
@@ -131,11 +131,11 @@ class PostgresSession(PostgresReader):
         async with self._conn.cursor(row_factory=args_row(entity_from_row)) as cursor:
             await cursor.execute(
                 """
-                INSERT INTO mnemotrace_next.entities (space_id, entity_id, name_key, name, type)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (space_id, name_key) DO UPDATE
+                INSERT INTO mnemotrace_next.entities (space_id, entity_id, name_key, name, type, kind)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (space_id, kind, name_key) DO UPDATE
                 SET name = EXCLUDED.name, type = EXCLUDED.type
-                RETURNING space_id, name, type
+                RETURNING space_id, name, type, kind
                 """,
                 (
                     self.space_id.value,
@@ -143,6 +143,7 @@ class PostgresSession(PostgresReader):
                     entity.name_key,
                     entity.name,
                     entity.type,
+                    entity.kind.value,
                 ),
             )
             saved = await cursor.fetchone()
@@ -269,7 +270,9 @@ class PostgresSession(PostgresReader):
             if before is not None:
                 validate_fact_update(before, fact)
             triggers = triggers_by_id.get(fact.id, ())
-            validate_cutoff_triggers(before, fact, triggers, causes)
+            validate_cutoff_triggers(
+                before, fact, triggers, causes, existing_causes=existing
+            )
             changes.append(FactWrite(before, fact, groups, triggers))
         return await write_fact_batch(conn, changes, changed_at)
 

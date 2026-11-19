@@ -123,3 +123,24 @@ class Fact:
         if self.invalid_at is None or invalid_at >= self.invalid_at:
             raise InvalidFact("新截止必须早于已记录的有效截止")
         return replace(self, invalid_at=invalid_at)
+
+
+def intervals_disjoint(left: Fact, right: Fact) -> bool:
+    """判断已有有效边界能否证明两个左闭右开区间错开。
+
+    Args:
+        left: 一侧事实。
+        right: 另一侧事实。
+
+    Returns:
+        至少一侧在另一侧生效前或生效时已截止。
+    """
+    return (
+        left.invalid_at is not None
+        and right.valid_at is not None
+        and left.invalid_at <= right.valid_at
+    ) or (
+        right.invalid_at is not None
+        and left.valid_at is not None
+        and right.invalid_at <= left.valid_at
+    )

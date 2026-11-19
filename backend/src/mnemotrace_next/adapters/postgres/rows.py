@@ -3,7 +3,7 @@
 from typing import TypedDict, Unpack
 
 from ...domain.digest import Digest
-from ...domain.entity import Entity
+from ...domain.entity import Entity, EntityKind
 from ...domain.enums import Role, Source
 from ...domain.fact import Fact
 from ...domain.ids import DigestId, EntityId, FactId, MessageId, SessionId, SpaceId
@@ -64,18 +64,19 @@ def message_from_row(
     )
 
 
-def entity_from_row(space_id: str, name: str, type: str | None) -> Entity:
-    """由原名称还原实体及其确定性标识。
+def entity_from_row(space_id: str, name: str, type: str | None, kind: str) -> Entity:
+    """从名称和身份类型还原实体及其确定性标识。
 
     Args:
         space_id: 实体所属空间的标识。
         name: 实体原名称。
         type: 实体种类，缺失时为 None。
+        kind: 持久化的实体身份类型。
 
     Returns:
         含派生标识和规范化名称的实体。
     """
-    return Entity(SpaceId(space_id), name, type)
+    return Entity(SpaceId(space_id), name, type, kind=EntityKind(kind))
 
 
 def graph_edge_from_row(

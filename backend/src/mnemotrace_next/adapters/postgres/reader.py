@@ -359,7 +359,7 @@ class PostgresReader:
         async with self._conn.cursor(row_factory=args_row(entity_from_row)) as cursor:
             await cursor.execute(
                 """
-                SELECT space_id, name, type FROM mnemotrace_next.entities
+                SELECT space_id, name, type, kind FROM mnemotrace_next.entities
                 WHERE space_id = %s AND entity_id = ANY(%s::text[])
                 """,
                 (self.space_id.value, [item.value for item in ids]),

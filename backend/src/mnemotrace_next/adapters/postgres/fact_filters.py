@@ -59,12 +59,29 @@ def fact_conditions(
         else:
             conditions.add("(f.valid_at IS NULL OR f.valid_at <= %(at)s)", at=at)
             conditions.add("(f.invalid_at IS NULL OR f.invalid_at > %(at)s)")
+    if filters.overlap_start is not None:
+        conditions.add(
+            "(f.invalid_at IS NULL OR f.invalid_at > %(overlap_start)s)",
+            overlap_start=filters.overlap_start,
+        )
+    if filters.overlap_end is not None:
+        conditions.add(
+            "(f.valid_at IS NULL OR f.valid_at < %(overlap_end)s)",
+            overlap_end=filters.overlap_end,
+        )
     if filters.subject is not None:
         conditions.add(
             "f.subject_id = %(subject)s", subject=filters.subject.entity_id.value
         )
     if filters.predicate is not None:
         conditions.add("f.predicate = %(predicate)s", predicate=filters.predicate.value)
+    if filters.exclude_slot is not None:
+        subject, predicate = filters.exclude_slot
+        conditions.add(
+            "NOT (f.subject_id = %(excluded_subject)s AND f.predicate = %(excluded_predicate)s)",
+            excluded_subject=subject.entity_id.value,
+            excluded_predicate=predicate.value,
+        )
     if filters.labels:
         conditions.add(
             "f.labels && %(labels)s::text[]",

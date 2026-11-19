@@ -1,0 +1,343 @@
+"""计算事实归并、有效区间与截止归因。"""
+
+from collections import defaultdict
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+
+from ..domain.entity import Entity
+from ..domain.fact import Fact, intervals_disjoint
+from ..domain.ids import EntityId, FactId
+from ..ports.storage import CutoffTrigger, SupportGroups, flatten_support_groups
+from .adjudication import FactComparison, FactPair, PreparedFact, Verdict
+
+
+@dataclass(frozen=True)
+class FactWrites:
+    """保存供写入用例提交的事实和实际需要的依赖。"""
+
+    facts: tuple[Fact, ...]
+    support_groups: Mapping[FactId, SupportGroups]
+    cutoff_triggers: Mapping[FactId, tuple[CutoffTrigger, ...]]
+    entities: tuple[Entity, ...]
+    vectors: Mapping[FactId, tuple[float, ...]]
+
+
+@dataclass(frozen=True)
+class _Cutoff:
+    earlier_id: FactId
+    later_id: FactId
+    trigger_source_ids: tuple[FactId, ...]
+    earlier_valid_at: float
+    valid_end: float
+
+
+def calculate_fact_writes(
+    prepared: Sequence[PreparedFact],
+    comparisons: Sequence[FactComparison],
+    *,
+    existing_facts: Mapping[FactId, Fact],
+    existing_support_groups: Mapping[FactId, SupportGroups],
+    changed_at: float,
+) -> FactWrites:
+    """根据固定裁决和最新证据组计算待保存的事实快照。
+
+    Args:
+        prepared: 按输入顺序排列的候选事实。
+        comparisons: 按原配对顺序排列的比较结果。
+        existing_facts: 构造比较时使用的旧事实快照。
+        existing_support_groups: 同一写会话中旧事实当前的完整证据组。无来源的事实对应空元组。
+        changed_at: 本次变更时刻，不早于受影响事实的录入时刻。
+
+    Returns:
+        每个受影响事实的一份最终快照及其写入依赖。
+    """
+    incoming = {item.fact.id: item for item in prepared}
+    facts = {
+        **existing_facts,
+        **{fact_id: item.fact for fact_id, item in incoming.items()},
+    }
+    duplicates, suspended = _collect_decisions(comparisons, facts, incoming)
+    targets, new_ids = _select_representatives(
+        prepared, existing_facts, duplicates, suspended
+    )
+    projectable_targets = {
+        source: target
+        for source, target in targets.items()
+        if source == target or _covers_interval(incoming[source], facts[target])
+    }
+    cutoffs, uncertain_representatives = _project_conflicts(
+        comparisons, facts, existing_facts, new_ids, projectable_targets, suspended
+    )
+    new_ids.difference_update(uncertain_representatives)
+    updated: dict[FactId, Fact] = {}
+    support_groups: dict[FactId, SupportGroups] = {}
+    entities: dict[EntityId, Entity] = {}
+    vectors: dict[FactId, tuple[float, ...]] = {}
+    for item in prepared:
+        fact = item.fact
+        if fact.id in new_ids:
+            updated[fact.id] = (
+                replace(fact, expired_at=changed_at)
+                if fact.invalid_at is not None
+                else fact
+            )
+            support_groups[fact.id] = (fact.provenance,)
+            vectors[fact.id] = item.vector
+            for entity in item.entities:
+                entities.setdefault(entity.id, entity)
+
+    cutoff_triggers = _apply_cutoffs(
+        cutoffs,
+        facts,
+        incoming,
+        existing_support_groups,
+        uncertain_representatives,
+        updated,
+        changed_at,
+    )
+    for source, target in targets.items():
+        if source == target or target in uncertain_representatives:
+            continue
+        final_fact = updated.get(target, facts[target])
+        if not _covers_interval(incoming[source], final_fact):
+            continue
+        _append_support(
+            final_fact,
+            incoming[source].fact,
+            existing_support_groups,
+            updated,
+            support_groups,
+        )
+
+    return FactWrites(
+        tuple(updated.values()),
+        support_groups,
+        cutoff_triggers,
+        tuple(entities.values()),
+        vectors,
+    )
+
+
+def _collect_decisions(
+    comparisons: Sequence[FactComparison],
+    facts: Mapping[FactId, Fact],
+    incoming: Mapping[FactId, PreparedFact],
+) -> tuple[dict[FactId, set[FactId]], set[FactId]]:
+    duplicates: dict[FactId, set[FactId]] = defaultdict(set)
+    suspended: set[FactId] = set()
+    for comparison in comparisons:
+        left, right = comparison.pair
+        if intervals_disjoint(facts[left], facts[right]):
+            continue
+        if comparison.verdict == "duplicate":
+            duplicates[left].add(right)
+            duplicates[right].add(left)
+        elif comparison.verdict == "unknown" or (
+            comparison.verdict == "conflict"
+            and _order_by_start_time(facts[left], facts[right]) is None
+        ):
+            suspended.update(incoming.keys() & {left, right})
+    return duplicates, suspended
+
+
+def _select_representatives(
+    prepared: Sequence[PreparedFact],
+    existing: Mapping[FactId, Fact],
+    duplicates: Mapping[FactId, set[FactId]],
+    suspended: set[FactId],
+) -> tuple[dict[FactId, FactId], set[FactId]]:
+    targets: dict[FactId, FactId] = {}
+    retained: dict[FactId, int] = {}
+    for index, item in enumerate(prepared):
+        source = item.fact.id
+        direct = duplicates.get(source, set())
+        old_targets = existing.keys() & direct
+        if old_targets:
+            targets[source] = min(
+                old_targets,
+                key=lambda fact_id: (existing[fact_id].recorded_at, fact_id.value),
+            )
+        elif source not in suspended:
+            new_targets = retained.keys() & direct
+            representative = min(new_targets, key=retained.__getitem__, default=source)
+            targets[source] = representative
+            if representative == source:
+                retained[source] = index
+    return targets, set(retained)
+
+
+def _covers_interval(item: PreparedFact, target: Fact) -> bool:
+    fact = item.fact
+    if item.valid_at_evidence is not None and fact.valid_at is None:
+        return False
+    if target.valid_at is not None and (
+        fact.valid_at is None or fact.valid_at > target.valid_at
+    ):
+        return False
+    if target.invalid_at is None:
+        return fact.invalid_at is None and item.invalid_at_evidence is None
+    return fact.invalid_at is not None and fact.invalid_at >= target.invalid_at
+
+
+def _order_by_start_time(left: Fact, right: Fact) -> tuple[Fact, Fact] | None:
+    if (
+        left.valid_at is None
+        or right.valid_at is None
+        or left.valid_at == right.valid_at
+    ):
+        return None
+    return (left, right) if left.valid_at < right.valid_at else (right, left)
+
+
+def _project_conflicts(
+    comparisons: Sequence[FactComparison],
+    facts: Mapping[FactId, Fact],
+    existing: Mapping[FactId, Fact],
+    new_ids: set[FactId],
+    projectable_targets: Mapping[FactId, FactId],
+    suspended: set[FactId],
+) -> tuple[list[_Cutoff], set[FactId]]:
+    targets = {fact_id: fact_id for fact_id in existing}
+    targets.update(projectable_targets)
+    projected: dict[FactPair, list[tuple[Verdict, FactPair]]] = defaultdict(list)
+    uncertain: set[FactId] = set()
+    for comparison in comparisons:
+        source_left, source_right = comparison.pair
+        if (
+            suspended.intersection(comparison.pair)
+            or source_left not in targets
+            or source_right not in targets
+        ):
+            continue
+        left, right = targets[source_left], targets[source_right]
+        if left == right:
+            if comparison.verdict == "conflict" and left in new_ids:
+                uncertain.add(left)
+            continue
+        if comparison.disjoint or intervals_disjoint(facts[left], facts[right]):
+            continue
+        if left not in new_ids and right not in new_ids:
+            continue
+        if left.value > right.value:
+            left, right = right, left
+            source_left, source_right = source_right, source_left
+        projected[(left, right)].append(
+            (comparison.verdict, (source_left, source_right))
+        )
+
+    cutoffs: list[_Cutoff] = []
+    existing_successors: dict[FactId, list[_Cutoff]] = defaultdict(list)
+    for pair, decisions in projected.items():
+        verdicts = {verdict for verdict, _ in decisions}
+        left, right = pair
+        if len(verdicts) > 1 or "unknown" in verdicts:
+            uncertain.update(new_ids.intersection(pair))
+        elif "conflict" in verdicts:
+            ordered = _order_by_start_time(facts[left], facts[right])
+            if ordered is None:
+                uncertain.update(new_ids.intersection(pair))
+                continue
+            earlier, later = ordered
+            assert earlier.valid_at is not None and later.valid_at is not None
+            trigger_sources = tuple(
+                source_left if later.id == left else source_right
+                for _, (source_left, source_right) in decisions
+            )
+            cutoff = _Cutoff(
+                earlier.id, later.id, trigger_sources, earlier.valid_at, later.valid_at
+            )
+            cutoffs.append(cutoff)
+            if later.id in existing:
+                existing_successors[earlier.id].append(cutoff)
+
+    # 已知的后继都来自同一快照，补录应一次确定最近的有效截止。
+    earliest_successors = {
+        min(
+            successors,
+            key=lambda cutoff: (
+                cutoff.valid_end,
+                existing[cutoff.later_id].recorded_at,
+                cutoff.later_id.value,
+            ),
+        )
+        for successors in existing_successors.values()
+    }
+    return [
+        cutoff
+        for cutoff in cutoffs
+        if cutoff.later_id not in existing or cutoff in earliest_successors
+    ], uncertain
+
+
+def _append_support(
+    fact: Fact,
+    evidence: Fact,
+    existing_support_groups: Mapping[FactId, SupportGroups],
+    updated: dict[FactId, Fact],
+    support_groups: dict[FactId, SupportGroups],
+) -> None:
+    target = fact.id
+    groups = (
+        support_groups[target]
+        if target in support_groups
+        else existing_support_groups[target]
+    )
+    sensitive = fact.sensitive or evidence.sensitive
+    members = frozenset(evidence.provenance)
+    if any(frozenset(existing) == members for existing in groups):
+        if sensitive != fact.sensitive:
+            updated[target] = replace(fact, sensitive=sensitive)
+        return
+    groups = (*groups, evidence.provenance)
+    support_groups[target] = groups
+    updated[target] = replace(
+        fact, provenance=flatten_support_groups(groups), sensitive=sensitive
+    )
+
+
+def _apply_cutoffs(
+    cutoffs: Sequence[_Cutoff],
+    facts: Mapping[FactId, Fact],
+    incoming: Mapping[FactId, PreparedFact],
+    existing_support_groups: Mapping[FactId, SupportGroups],
+    uncertain_representatives: set[FactId],
+    updated: dict[FactId, Fact],
+    changed_at: float,
+) -> dict[FactId, tuple[CutoffTrigger, ...]]:
+    triggers: dict[FactId, list[CutoffTrigger]] = defaultdict(list)
+    # 先确定触发事实的最终区间。同一事实的多个截止仍按原裁决顺序应用。
+    for cutoff in sorted(cutoffs, key=lambda item: item.earlier_valid_at, reverse=True):
+        earlier_id, later_id = cutoff.earlier_id, cutoff.later_id
+        if (
+            earlier_id in uncertain_representatives
+            or later_id in uncertain_representatives
+        ):
+            continue
+        earlier = updated.get(earlier_id, facts[earlier_id])
+        later = updated.get(later_id, facts[later_id])
+        if intervals_disjoint(earlier, later):
+            continue
+        if later_id in incoming:
+            source = next(
+                (
+                    incoming[source_id]
+                    for source_id in cutoff.trigger_source_ids
+                    if source_id == later_id
+                    or _covers_interval(incoming[source_id], later)
+                ),
+                None,
+            )
+            if source is None:
+                continue
+            group = source.fact.provenance
+        else:
+            groups = existing_support_groups[later_id]
+            group = groups[0] if groups else ()
+        valid_end = cutoff.valid_end
+        updated[earlier_id] = (
+            earlier.close(valid_end, changed_at)
+            if earlier.invalid_at is None
+            else earlier.shorten_validity(valid_end)
+        )
+        triggers[earlier_id].append(CutoffTrigger(later_id, valid_end, group))
+    return {fact_id: tuple(items) for fact_id, items in triggers.items()}

@@ -19,6 +19,18 @@ from .queries import FactFilter, FactQuery
 type SupportGroups = tuple[tuple[MessageId, ...], ...]
 
 
+def flatten_support_groups(groups: SupportGroups) -> tuple[MessageId, ...]:
+    """按首次出现顺序生成证据组的来源视图。
+
+    Args:
+        groups: 有序证据组。
+
+    Returns:
+        去重后的原文标识。
+    """
+    return tuple(dict.fromkeys(message_id for group in groups for message_id in group))
+
+
 class SessionUnavailable(LookupError):
     """表示对话在绑定空间内不可用。"""
 
@@ -30,7 +42,7 @@ class CutoffTrigger:
     Attributes:
         fact_id: 触发截止的事实标识。
         valid_end: 该触发事实设置的有效截止时刻，单位为 UTC epoch 秒。
-        source_message_ids: 本次裁决采用的原文标识。无来源的手工事实使用空元组，
+        source_message_ids: 本次裁决采用的原文标识。裁决时无来源的手工事实使用空元组，
             旧审计无法还原逐项来源时为 None。
     """
 

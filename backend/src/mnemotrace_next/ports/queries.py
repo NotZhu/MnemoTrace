@@ -10,6 +10,8 @@ from typing import Literal
 from ..domain.ids import FactId, MessageId
 from ..domain.values import EntityRef, Label, Predicate
 
+type FactSlot = tuple[EntityRef, Predicate]
+
 
 @dataclass(frozen=True)
 class FactFilter:
@@ -28,9 +30,12 @@ class FactFilter:
         labels: 匹配任意一项即可的标签，空元组不限。
         provenance: 匹配任意一项即可的原文标识，空元组不限。
         exclude_sensitive: 是否排除敏感事实。受限读取由服务端设为真。
+        overlap_start: 查询区间的有效起点。排除在此时或更早已截止的事实。
+        overlap_end: 查询区间的有效截止。排除在此时或更晚才生效的事实。
+        exclude_slot: 排除同时具有该主体和谓词的事实。
 
     Raises:
-        ValueError: 读取完整时间线时同时指定了有效时点。
+        ValueError: 读取完整时间线时同时指定有效时点，或查询区间起点未早于截止。
     """
 
     state: Literal["current", "history", "all"] = "current"
@@ -40,10 +45,19 @@ class FactFilter:
     labels: tuple[Label, ...] = ()
     provenance: tuple[MessageId, ...] = ()
     exclude_sensitive: bool = False
+    overlap_start: float | None = None
+    overlap_end: float | None = None
+    exclude_slot: FactSlot | None = None
 
     def __post_init__(self) -> None:
         if self.state == "all" and self.valid_at is not None:
             raise ValueError("state 为 all 时须省略 valid_at")
+        if (
+            self.overlap_start is not None
+            and self.overlap_end is not None
+            and self.overlap_start >= self.overlap_end
+        ):
+            raise ValueError("overlap_start 必须早于 overlap_end")
 
 
 @dataclass(frozen=True)

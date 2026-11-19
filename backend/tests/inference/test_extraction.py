@@ -8,18 +8,27 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
+from mnemotrace_next.application.adjudication import (
+    ComparisonCandidates,
+    compare_facts,
+    prepare_facts,
+)
 from mnemotrace_next.application.extraction import (
     EntityMention,
     SpaceUserMention,
     TimeEvidence,
     extract_facts,
 )
+from mnemotrace_next.application.fact_lifecycle import calculate_fact_writes
 from mnemotrace_next.domain.enums import Role
 from mnemotrace_next.domain.ids import MessageId, SessionId, SpaceId
 from mnemotrace_next.domain.message import Message
 from mnemotrace_next.domain.values import Label, LiteralValue, Predicate
 from mnemotrace_next.ports.inference import CompletionTruncated, InvalidStructuredOutput
+from mnemotrace_next.ports.storage import CutoffTrigger
 
+from ..ports.fakes import FakeEmbedder
+from .adjudication_samples import FactIds, candidate
 from .sample import chat_response, configured_chat
 
 _ZONE = timezone(timedelta(hours=8))
@@ -179,6 +188,115 @@ def test_extraction_separates_message_time_and_calendar_end() -> None:
     asyncio.run(exercise())
 
 
+def test_historical_interval_supports_state_closed_by_termination() -> None:
+    """历史陈述覆盖截止后的区间，明确终止提供独立的截止依据。"""
+    first = "2026-11-01T09:00"
+    last = "2026-11-10T09:00"
+    predicate = "on_duty"
+    historical = _message(
+        "history", Role.USER, "11 月 1 日 9 点到 10 日 9 点由我值班。", _CONFIRMED_AT
+    )
+    termination = _message(
+        "termination", Role.USER, "从 11 月 10 日 9 点起我不再值班。", _RECEIVED_AT
+    )
+
+    def absolute(source: int, value: str) -> dict[str, object]:
+        return {
+            "kind": "absolute",
+            "source_number": source,
+            "value": value,
+            "days": None,
+        }
+
+    extraction = {
+        "facts": [
+            _fact(
+                predicate=predicate,
+                text="用户从 11 月 1 日 9 点到 11 月 10 日 9 点值班。",
+                object={"kind": "literal", "value": "值班"},
+                valid_at_evidence=absolute(1, first),
+                invalid_at_evidence=absolute(1, last),
+                source_numbers=[1],
+                labels=[],
+            ),
+            _fact(
+                predicate=predicate,
+                text="用户从 11 月 10 日 9 点起不再值班。",
+                object={"kind": "literal", "value": "不值班"},
+                valid_at_evidence=absolute(2, last),
+                source_numbers=[2],
+                labels=[],
+            ),
+        ],
+    }
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(json.loads(request.content)["messages"][-1]["content"])
+        if "messages" in payload:
+            assert [row["number"] for row in payload["messages"]] == [1, 2]
+            return chat_response(json.dumps(extraction))
+        assert [pair["id"] for pair in payload["pairs"]] == ["1", "2"]
+        return chat_response(
+            '{"decisions":[{"id":"1","verdict":"duplicate"},{"id":"2","verdict":"conflict"}]}'
+        )
+
+    async def exercise() -> None:
+        start = datetime(2026, 11, 1, 9, tzinfo=_ZONE).timestamp()
+        end = datetime(2026, 11, 10, 9, tzinfo=_ZONE).timestamp()
+        embedder, ids = FakeEmbedder(), FactIds()
+        (original,) = await prepare_facts(
+            (
+                candidate(
+                    "old",
+                    text="用户从 11 月 1 日 9 点起值班。",
+                    predicate=predicate,
+                    target=LiteralValue("值班"),
+                    start=start,
+                ),
+            ),
+            space_id=historical.space_id,
+            embedder=embedder,
+            ids=ids,
+            received_at=start,
+        )
+        old = original.fact
+        async with configured_chat(respond) as llm:
+            extracted = await extract_facts(
+                llm, (), (historical, termination), timezone=_ZONE
+            )
+            prepared = await prepare_facts(
+                extracted,
+                space_id=historical.space_id,
+                embedder=embedder,
+                ids=ids,
+                received_at=_RECEIVED_AT,
+            )
+            history, ended = (item.fact for item in prepared)
+            assert (history.valid_at, history.invalid_at) == (start, end)
+            assert (ended.valid_at, ended.invalid_at) == (end, None)
+            candidates = ComparisonCandidates(
+                {old.id: old},
+                ((history.id, old.id), (ended.id, old.id), (history.id, ended.id)),
+            )
+            comparisons = await compare_facts(llm, prepared, candidates)
+        writes = calculate_fact_writes(
+            prepared,
+            comparisons,
+            existing_facts=candidates.existing_facts,
+            existing_support_groups={old.id: (old.provenance,)},
+            changed_at=_RECEIVED_AT,
+        )
+        assert {fact.id for fact in writes.facts} == {old.id, ended.id}
+        updated = next(fact for fact in writes.facts if fact.id == old.id)
+        assert updated.invalid_at == end
+        assert writes.support_groups[old.id] == (old.provenance, (historical.id,))
+        assert writes.cutoff_triggers[old.id] == (
+            CutoffTrigger(ended.id, end, (termination.id,)),
+        )
+
+    asyncio.run(exercise())
+
+
 def test_plan_date_and_unknown_start_remain_distinct() -> None:
     """计划从发言时成立，未知起点的历史陈述保留为空。"""
     messages = (
@@ -221,6 +339,55 @@ def test_plan_date_and_unknown_start_remain_distinct() -> None:
             "message_time", MessageId("plan"), _CONFIRMED_AT
         )
         assert plan.invalid_at_evidence is None and historical.valid_at_evidence is None
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("value", ["2026", "9:00", "09:00.5", "09:00+08:00", "24:00"])
+def test_extraction_rejects_invalid_relative_clock(value: str) -> None:
+    """相对日期的本地时间只接受 HH:MM 或 HH:MM:SS。"""
+    invalid = _fact(
+        valid_at_evidence={
+            "kind": "relative_date",
+            "source_number": 1,
+            "value": value,
+            "days": 7,
+        },
+    )
+
+    async def exercise() -> None:
+        async with configured_chat(
+            lambda _: chat_response(json.dumps({"facts": [_fact(), invalid]}))
+        ) as llm:
+            with pytest.raises(InvalidStructuredOutput, match="时间的格式或依据无效"):
+                await extract_facts(llm, *_batch(), timezone=_ZONE)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("value", ["09:00", "09:00:30"])
+def test_extraction_accepts_relative_clock(value: str) -> None:
+    """相对日期能解析精确到分或秒的本地时间。"""
+    response = _fact(
+        valid_at_evidence={
+            "kind": "relative_date",
+            "source_number": 1,
+            "value": value,
+            "days": 7,
+        },
+    )
+
+    async def exercise() -> None:
+        async with configured_chat(
+            lambda _: chat_response(json.dumps({"facts": [response]}))
+        ) as llm:
+            (fact,) = await extract_facts(llm, *_batch(), timezone=_ZONE)
+        seconds = 30 if value == "09:00:30" else 0
+        assert fact.valid_at_evidence == TimeEvidence(
+            "relative_date",
+            MessageId("proposal"),
+            datetime(2026, 11, 23, 9, 0, seconds, tzinfo=_ZONE).timestamp(),
+        )
 
     asyncio.run(exercise())
 
