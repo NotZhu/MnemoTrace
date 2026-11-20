@@ -74,6 +74,21 @@ GRANT USAGE ON ALL SEQUENCES IN SCHEMA mnemotrace_next TO mnemotrace_next_runtim
 
 本地测试使用独立的 PostgreSQL/pgvector 实例，镜像参见 [Backend CI](../../.github/workflows/backend-ci.yml)。将 `MNEMOTRACE_NEXT_TEST_POSTGRES_DSN` 指向该实例的管理连接。测试会在该实例创建 UTF-8、C locale 的专用数据库及临时运行角色，并在结束时清理。将 `MNEMOTRACE_NEXT_REQUIRE_POSTGRES` 设为 `1` 时，配置缺失或测试跳过都会使真库作业失败。
 
+### 普通召回质量验收
+
+从 `backend` 使用独立 PostgreSQL 实例和[嵌入端点配置](inference.md#环境变量)运行下列命令。脚本会在该实例上创建并清理自己的数据库，只用固定合成事实和查询调用配置的 Embedder。输出文件须是新路径。
+
+```sh
+mkdir -p .artifacts/recall-quality
+uv run --locked --extra inference python scripts/recall_quality.py --out .artifacts/recall-quality/run.json
+```
+
+调参集和留出集各含 235 条事实及 20 条查询，覆盖相似编号、无向量的专名、语义改写、历史区间及有干扰项的无答案查询。各策略共用同一份查询向量和实际 PostgreSQL 排名。脚本将默认策略与 `Memory.recall` 的结果逐题核对，报告记录模型与数据库版本、正确事实是否入围、Top‑1/Top‑5 命中数、无答案返回证据的次数和延迟。查看两组结果时同时检查漏在候选池外和入围后被挤出 Top‑5 的查询。脚本中的 `evaluate` 也可使用实现 `Embedder` 端口的本地模型。
+
+本地 CPU 对照使用仓库固定的多语 MiniLM ONNX 修订 `faf4aa4`。`top_k=5` 时，默认双路 RRF 在两组的 Top‑5 命中分别为 `10/12` 和 `12/12`，无答案误召回均为 `6/8`。候选深度增至 64 或 200 未改善命中，200 在调参集还把一条正确编号挤出 Top‑5。继续使用普通召回的[候选预算](../src/mnemotrace_next/application/recall.py)。
+
+MiniLM 的余弦下限降至 `0.45` 可补回余弦约为 `0.481` 的英文改写，留出集命中和两组无答案误召回持平。另一个中文改写的正确事实在原始向量排名第 203，先看分词与模型区分度，再考虑候选扩张。词法分数门槛在调参集的收益伴随留出集掉召回。当前通用向量下限为 `0.5`，词法路按词项命中入围。换嵌入模型时按本模型重跑；同题的弱命中由评测记录，普通召回允许返回相关性不足的候选供上层判断。
+
 ```sh
 uv run --locked pytest -m postgres
 uv run --locked pytest -m postgres -k vector_plan -s

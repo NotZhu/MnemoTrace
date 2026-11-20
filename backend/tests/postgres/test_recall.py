@@ -20,6 +20,49 @@ from .sample import fact, message, pool, run, space
 pytestmark = pytest.mark.postgres
 
 
+def test_recall_returns_identifier_and_paraphrase_with_independent_candidates(
+    database: PgDatabase,
+) -> None:
+    """相似编号共存时正确编号能由词法入榜，改写能独立依靠向量入榜。"""
+
+    class QueryEmbedder(FakeEmbedder):
+        async def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
+            return tuple(
+                (0.0, 1.0) if text == "MT-042" else (1.0, 0.0) for text in texts
+            )
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            scope = space()
+            storage = PostgresStorage(connections, owner_id=scope.owner_id)
+            embedder = QueryEmbedder()
+            await storage.create_space(scope)
+            subject = Entity(scope.id, "合成主体")
+            identifier = fact(subject, "identifier", text="MT-042 是发布复核手册。")
+            similar = fact(subject, "similar", text="MT-043 是发布值班手册。")
+            other = fact(subject, "other", text="OTHER-042 是测试环境的记录。")
+            semantic = fact(subject, "semantic", text="服务器切换前必须检查变更单。")
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.upsert_entity(subject)
+                await writer.save_facts(
+                    (identifier, similar, other, semantic), changed_at=100.0
+                )
+                await writer.upsert_vectors(
+                    ((semantic.id, (1.0, 0.0)),),
+                    embedding_space=embedder.embedding_space,
+                )
+
+            reader = Memory.for_recall(
+                space_id=scope.id, storage=storage, embedder=embedder, clock=FakeClock()
+            )
+            numbered = await reader.recall("MT-042", top_k=1)
+            paraphrased = await reader.recall("投产前该确认什么？", top_k=1)
+            assert [item.fact_id for item in numbered.evidence] == [identifier.id]
+            assert [item.fact_id for item in paraphrased.evidence] == [semantic.id]
+
+    run(exercise())
+
+
 def test_recall_applies_time_and_visibility_before_candidate_limits(
     database: PgDatabase,
 ) -> None:

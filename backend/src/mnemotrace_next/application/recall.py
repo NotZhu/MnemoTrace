@@ -115,7 +115,7 @@ class Recall:
             exclude_sensitive=self._exclude_sensitive,
         )
         reference_time = self._clock.now()
-        per_channel_limit = min(200, max(32, 4 * top_k))
+        per_channel_limit = _candidate_limit(top_k)
 
         # 进入会话已经完成授权。先退出事务，再把查询发给嵌入端点。
         async with self._storage.session(self._space_id):
@@ -188,6 +188,10 @@ def _validate_query(query: str) -> str:
     except UnicodeEncodeError as exc:
         raise ValueError("查询须能编码为 UTF-8") from exc
     return query
+
+
+def _candidate_limit(top_k: int) -> int:
+    return min(200, max(32, 4 * top_k))
 
 
 def _fuse_rankings(

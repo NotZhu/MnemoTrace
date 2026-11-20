@@ -65,6 +65,8 @@ result = await reader.recall("报表导出格式", top_k=5)
 
 PostgreSQL 的迁移、角色配置、表结构及真库验证见 [PostgreSQL 存储适配器](docs/postgres.md)。
 
+普通召回的固定样例、真实嵌入对照与复现命令见[普通召回质量验收](docs/postgres.md#普通召回质量验收)。
+
 补全和嵌入的端点配置、向量身份及真实端点验收见 [推理适配器](docs/inference.md)。
 
 发行包随附仓库的[开源许可](LICENSE)和[商业授权条款](COMMERCIAL-LICENSE.md)。
