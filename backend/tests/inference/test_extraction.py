@@ -251,9 +251,11 @@ def test_historical_interval_supports_state_closed_by_termination() -> None:
         if "messages" in payload:
             assert [row["number"] for row in payload["messages"]] == [1, 2]
             return chat_response(json.dumps(extraction))
-        assert [pair["id"] for pair in payload["pairs"]] == ["1", "2"]
+        (pair,) = payload["pairs"]
+        pair_id = pair["id"]
+        verdict = {"1": "duplicate", "2": "conflict"}[pair_id]
         return chat_response(
-            '{"decisions":[{"id":"1","verdict":"duplicate"},{"id":"2","verdict":"conflict"}]}'
+            json.dumps({"decisions": [{"id": pair_id, "verdict": verdict}]})
         )
 
     async def exercise() -> None:

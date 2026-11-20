@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
 import httpx
@@ -27,7 +27,7 @@ from mnemotrace_next.ports.inference import (
     InvalidStructuredOutput,
 )
 
-from ..ports.fakes import FakeEmbedder, FakeIdGenerator, FakeSpaceSession
+from ..ports.fakes import FakeEmbedder, FakeIdGenerator, FakeLLM, FakeSpaceSession
 from .adjudication_samples import SPACE, FactIds, candidate
 from .sample import chat_response, configured_chat
 
@@ -142,7 +142,7 @@ def test_batch_pairs_include_threshold_and_cap_each_selection() -> None:
 
 
 def test_batch_pairs_exclude_disjoint_intervals_before_ranking() -> None:
-    """已知错开的跨槽位事实不挤占相似候选名额。"""
+    """批内已知错开的事实即使同槽也不生成配对。"""
 
     async def exercise() -> None:
         extracted = (
@@ -171,17 +171,16 @@ def test_batch_pairs_exclude_disjoint_intervals_before_ranking() -> None:
             embedding_space=embedder.embedding_space,
             reference_time=30.0,
         )
-        anchor, overlap, same_slot = (item.fact.id for item in prepared[-3:])
+        anchor, overlap = (item.fact.id for item in prepared[-3:-1])
         assert [pair for pair in result.pairs if anchor in pair] == [
             (anchor, overlap),
-            (anchor, same_slot),
         ]
 
     asyncio.run(exercise())
 
 
 def test_comparison_sends_unique_facts_and_disjoint_pairs_bypass_model() -> None:
-    """已知错开的事实由应用判断，其余关系一次请求并按原配对顺序返回。"""
+    """已知错开的事实由应用判断，其余配对的判定按原顺序返回。"""
 
     async def exercise() -> None:
         prepared = await prepare_facts(
@@ -262,6 +261,60 @@ def test_comparison_sends_unique_facts_and_disjoint_pairs_bypass_model() -> None
                 llm, prepared, ComparisonCandidates(existing, (pairs[1],))
             ) == (decisions[1],)
         assert len(calls) == 1
+
+    asyncio.run(exercise())
+
+
+def test_comparison_shards_each_anchor_and_bounds_concurrency() -> None:
+    """大量同槽批内配对按左侧新事实分片，四路并发后按原顺序合并。"""
+
+    class Model(FakeLLM):
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+            self.active = 0
+            self.peak = 0
+
+        async def complete_json(
+            self, *, system: str, prompt: str, schema: Mapping[str, object]
+        ) -> Mapping[str, object]:
+            payload = json.loads(prompt)
+            pairs = payload["pairs"]
+            (anchor,) = {pair["left"] for pair in pairs}
+            facts = {row["id"]: row["text"] for row in payload["facts"]}
+            self.calls.append((facts[anchor], len(pairs)))
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            await asyncio.sleep(0)
+            self.active -= 1
+            return {
+                "decisions": [
+                    {"id": pair["id"], "verdict": "coexists"}
+                    for pair in reversed(pairs)
+                ]
+            }
+
+    async def exercise() -> None:
+        prepared = await prepare_facts(
+            tuple(candidate(str(index), text=f"候选 {index}") for index in range(32)),
+            space_id=SPACE,
+            embedder=FakeEmbedder(),
+            ids=FactIds(),
+            received_at=100.0,
+        )
+        ids = tuple(item.fact.id for item in prepared)
+        pairs = (
+            *((ids[0], peer) for peer in ids[1:]),
+            *((anchor, ids[-1]) for anchor in ids[1:6]),
+        )
+        llm = Model()
+        decisions = await compare_facts(llm, prepared, ComparisonCandidates({}, pairs))
+        assert decisions == tuple(FactComparison(pair, "coexists") for pair in pairs)
+        assert sorted(llm.calls) == [
+            ("候选 0", 1),
+            ("候选 0", 30),
+            *((f"候选 {index}", 1) for index in range(1, 6)),
+        ]
+        assert llm.peak == 4
 
     asyncio.run(exercise())
 

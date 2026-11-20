@@ -19,9 +19,11 @@ from ..ports.storage import (
     Storage,
 )
 from .adjudication import (
+    BatchPairs,
     ComparisonCandidates,
     FactComparison,
     PreparedFact,
+    build_batch_pairs,
     compare_facts,
     find_comparison_candidates,
     prepare_facts,
@@ -172,6 +174,7 @@ class Memory:
             ids=self._ids,
             received_at=context.received_at,
         )
+        batch_pairs = build_batch_pairs(prepared)
         candidates = ComparisonCandidates({}, ())
         if prepared:
             async with self._storage.session(self._space_id) as reader:
@@ -179,7 +182,7 @@ class Memory:
                     reader, session_id, context.erasure_token
                 )
                 candidates = await self._find_candidates(
-                    reader, prepared, context.received_at
+                    reader, prepared, batch_pairs, context.received_at
                 )
         comparisons = await compare_facts(self._llm, prepared, candidates)
 
@@ -190,7 +193,7 @@ class Memory:
                     writer, session_id, context.erasure_token
                 )
                 current = await self._find_candidates(
-                    writer, prepared, context.received_at
+                    writer, prepared, batch_pairs, context.received_at
                 )
                 resolved = resolve_known_comparisons(
                     prepared, current, candidates, comparisons
@@ -226,6 +229,7 @@ class Memory:
         self,
         reader: SpaceReader,
         prepared: Sequence[PreparedFact],
+        batch_pairs: BatchPairs,
         reference_time: float,
     ) -> ComparisonCandidates:
         if not prepared:
@@ -235,6 +239,7 @@ class Memory:
             prepared,
             embedding_space=self._embedder.embedding_space,
             reference_time=reference_time,
+            batch_pairs=batch_pairs,
         )
 
     async def _publish(

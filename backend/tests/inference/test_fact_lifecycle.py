@@ -16,6 +16,7 @@ from mnemotrace_next.application.extraction import ExtractedFact
 from mnemotrace_next.application.fact_lifecycle import FactWrites, calculate_fact_writes
 from mnemotrace_next.domain.fact import Fact
 from mnemotrace_next.domain.ids import FactId, MessageId
+from mnemotrace_next.domain.values import LiteralValue
 from mnemotrace_next.ports.storage import CutoffTrigger
 
 from ..ports.fakes import FakeEmbedder
@@ -217,6 +218,30 @@ def test_termination_and_multiple_cutoffs_use_actual_application_order() -> None
     assert result.cutoff_triggers[old.fact.id] == (
         CutoffTrigger(later.fact.id, 40.0, later.fact.provenance),
         CutoffTrigger(sooner.fact.id, 20.0, sooner.fact.provenance),
+    )
+
+
+def test_bounded_conflict_closes_old_fact_at_later_start() -> None:
+    """已有事实被后生效的有限冲突截止，旧区间不再恢复。"""
+    old, later = _prepare(
+        candidate("old", start=10.0, end=50.0, text="从 10 至 50 秒默认用英文"),
+        candidate(
+            "later",
+            start=20.0,
+            end=30.0,
+            text="从 20 至 30 秒默认用中文",
+            target=LiteralValue("中文"),
+        ),
+    )
+    result = _decide(
+        (later,), (old.fact,), FactComparison((later.fact.id, old.fact.id), "conflict")
+    )
+    assert {fact.id: (fact.valid_at, fact.invalid_at) for fact in result.facts} == {
+        old.fact.id: (10.0, 20.0),
+        later.fact.id: (20.0, 30.0),
+    }
+    assert result.cutoff_triggers[old.fact.id] == (
+        CutoffTrigger(later.fact.id, 20.0, later.fact.provenance),
     )
 
 

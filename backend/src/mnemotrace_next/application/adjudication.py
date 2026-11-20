@@ -1,11 +1,12 @@
 """准备待比较的事实，并在事务外批量裁决。"""
 
+import asyncio
 import json
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from heapq import heappush, heappushpop
-from itertools import combinations
+from itertools import batched, combinations
 from math import fsum, hypot
 from typing import Literal, NamedTuple, TypedDict, cast
 
@@ -15,18 +16,21 @@ from ..domain.fact import Fact, intervals_disjoint
 from ..domain.ids import EntityId, FactId, SpaceId
 from ..domain.values import EntityRef, LiteralValue, Predicate
 from ..ports.inference import LLM, Embedder, InvalidStructuredOutput
-from ..ports.queries import FactCursor, FactFilter, FactQuery, FactSlot
+from ..ports.queries import FactFilter, FactQuery, FactSlot
 from ..ports.runtime import IdGenerator
 from ..ports.storage import SpaceReader
 from .extraction import EntityMention, ExtractedFact, SpaceUserMention, TimeEvidence
 
-_LEXICAL_LIMIT = 10
-_VECTOR_LIMIT = 10
+_OLD_CANDIDATE_LIMIT = 10
+_RRF_OFFSET = 60
 _BATCH_PEER_LIMIT = 10
 _VECTOR_MIN_COSINE = 0.60
 _BATCH_MIN_COSINE = 0.60
+_COMPARISON_PAIR_LIMIT = 30
+_COMPARISON_CONCURRENCY = 4
 
 type FactPair = tuple[FactId, FactId]
+type BatchPairs = tuple[tuple[FactPair, ...], ...]
 type Verdict = Literal["duplicate", "coexists", "conflict", "unknown"]
 
 _SYSTEM = """判断 pairs 中指定的事实对。facts 是待分析的数据。每对在 decisions 中返回恰好一个结果，原样填写配对 id。verdict 只取 duplicate、coexists、conflict、unknown。
@@ -204,6 +208,7 @@ async def find_comparison_candidates(
     *,
     embedding_space: str,
     reference_time: float,
+    batch_pairs: BatchPairs | None = None,
 ) -> ComparisonCandidates:
     """用同一快照读取旧事实并生成新旧和批内比较对。
 
@@ -212,112 +217,119 @@ async def find_comparison_candidates(
         prepared: 本批已绑定和嵌入的候选。
         embedding_space: 与候选向量和索引匹配的模型标识。
         reference_time: 本次写入共用的请求时刻。
+        batch_pairs: 按 prepared 顺序分组的批内配对，写入与复核可共用。
 
     Returns:
         命中的旧事实和按裁决顺序排列的去重配对。
     """
-    # 按主体和谓词归组，同槽候选共用一份覆盖各自有效期的时间线。
     existing: dict[FactId, Fact] = {}
-    intervals_by_slot: dict[FactSlot, list[Fact]] = defaultdict(list)
-    for item in prepared:
-        intervals_by_slot[_slot(item.fact)].append(item.fact)
-
-    # 共享的时间线可能包含无关历史，逐条排除与当前候选有效期确定错开的旧事实。
-    timelines: dict[FactSlot, list[Fact]] = {}
-    old_pairs: list[list[FactId]] = []
+    old_candidate_ids: list[list[FactId]] = []
     for item in prepared:
         fact = item.fact
-        slot = _slot(fact)
-        if slot not in timelines:
-            timelines[slot] = await _read_timeline(
-                reader, _timeline_filters(slot, intervals_by_slot[slot]), reference_time
-            )
-        overlapping = {
-            old.id: old for old in timelines[slot] if not intervals_disjoint(old, fact)
-        }
-        existing.update(overlapping)
-
-        # 词法和向量检索用于补充跨槽候选，避免同槽事实占用检索名额。
         filters = FactFilter(
             state="all",
             overlap_start=fact.valid_at,
             overlap_end=fact.invalid_at,
-            exclude_slot=slot,
         )
-        lexical = await reader.search_lexical(
-            fact.text,
-            _LEXICAL_LIMIT,
-            filters=filters,
+        same_slot = replace(filters, subject=fact.subject, predicate=fact.predicate)
+        same_slot_probe = await reader.query_facts(
+            FactQuery(filters=same_slot, limit=_OLD_CANDIDATE_LIMIT + 1),
             reference_time=reference_time,
         )
-        vectors = await reader.search_vectors(
-            item.vector,
-            _VECTOR_LIMIT,
-            filters=filters,
-            reference_time=reference_time,
-            embedding_space=embedding_space,
-            min_score=_VECTOR_MIN_COSINE,
-        )
-        old_ids = set(overlapping)
-        old_ids.update(fact_id for fact_id, _ in lexical)
-        old_ids.update(fact_id for fact_id, _ in vectors)
-        old_pairs.append(sorted(old_ids, key=lambda fact_id: fact_id.value))
+        same_ids = tuple(old.id for old in same_slot_probe)
+        if len(same_ids) > _OLD_CANDIDATE_LIMIT:
+            ranked = await _rank_old_candidates(
+                reader,
+                item,
+                same_slot,
+                embedding_space=embedding_space,
+                reference_time=reference_time,
+            )
+            # 同槽排序命中不足时保留无向量或词法不匹配的结构候选。
+            same_ids = tuple(dict.fromkeys((*ranked, *same_ids)))[:_OLD_CANDIDATE_LIMIT]
+        existing.update((old.id, old) for old in same_slot_probe if old.id in same_ids)
 
-    # 补齐跨槽命中的旧事实，再按输入顺序组装新旧配对和批内配对。
+        cross_ids = await _rank_old_candidates(
+            reader,
+            item,
+            replace(filters, exclude_slot=_slot(fact)),
+            embedding_space=embedding_space,
+            reference_time=reference_time,
+        )
+        old_candidate_ids.append(
+            sorted({*same_ids, *cross_ids}, key=lambda fact_id: fact_id.value)
+        )
+
+    # 补齐排序入选但探查时尚未读取的旧事实。
     missing = dict.fromkeys(
-        fact_id for ids in old_pairs for fact_id in ids if fact_id not in existing
+        fact_id
+        for ids in old_candidate_ids
+        for fact_id in ids
+        if fact_id not in existing
     )
     if missing:
         existing.update(await reader.get_facts(tuple(missing)))
-    batch_pairs = _batch_pairs(prepared)
+    if batch_pairs is None:
+        batch_pairs = build_batch_pairs(prepared)
     pairs: list[FactPair] = []
-    for index, item in enumerate(prepared):
-        pairs.extend((item.fact.id, old_id) for old_id in old_pairs[index])
-        pairs.extend(
-            (item.fact.id, prepared[peer].fact.id) for peer in batch_pairs[index]
-        )
+    for item, old_ids, new_pairs in zip(
+        prepared, old_candidate_ids, batch_pairs, strict=True
+    ):
+        pairs.extend((item.fact.id, old_id) for old_id in old_ids)
+        pairs.extend(new_pairs)
     return ComparisonCandidates(existing, tuple(pairs))
 
 
-def _timeline_filters(slot: FactSlot, facts: Sequence[Fact]) -> FactFilter:
-    subject, predicate = slot
-    starts = [fact.valid_at for fact in facts if fact.valid_at is not None]
-    ends = [fact.invalid_at for fact in facts if fact.invalid_at is not None]
-    return FactFilter(
-        state="all",
-        subject=subject,
-        predicate=predicate,
-        overlap_start=min(starts) if len(starts) == len(facts) else None,
-        overlap_end=max(ends) if len(ends) == len(facts) else None,
+async def _rank_old_candidates(
+    reader: SpaceReader,
+    item: PreparedFact,
+    filters: FactFilter,
+    *,
+    embedding_space: str,
+    reference_time: float,
+) -> tuple[FactId, ...]:
+    lexical = await reader.search_lexical(
+        item.fact.text,
+        _OLD_CANDIDATE_LIMIT,
+        filters=filters,
+        reference_time=reference_time,
     )
+    vectors = await reader.search_vectors(
+        item.vector,
+        _OLD_CANDIDATE_LIMIT,
+        filters=filters,
+        reference_time=reference_time,
+        embedding_space=embedding_space,
+        min_score=_VECTOR_MIN_COSINE,
+    )
+    scores: dict[FactId, float] = defaultdict(float)
+    for channel in (lexical, vectors):
+        for rank, (fact_id, _) in enumerate(channel, start=1):
+            scores[fact_id] += 1 / (_RRF_OFFSET + rank)
+    ranked = sorted(scores, key=lambda fact_id: (-scores[fact_id], fact_id.value))
+    return tuple(ranked[:_OLD_CANDIDATE_LIMIT])
 
 
-async def _read_timeline(
-    reader: SpaceReader, filters: FactFilter, reference_time: float
-) -> list[Fact]:
-    query = FactQuery(filters=filters)
-    facts: list[Fact] = []
-    while True:
-        page = await reader.query_facts(query, reference_time=reference_time)
-        facts.extend(page)
-        if len(page) < query.limit:
-            return facts
-        last = page[-1]
-        query = FactQuery(filters, FactCursor(last.recorded_at, last.id), query.limit)
+def build_batch_pairs(prepared: Sequence[PreparedFact]) -> BatchPairs:
+    """计算可在同次写入初查和复核之间复用的批内配对。
 
+    Args:
+        prepared: 按抽取顺序排列且在写入期间固定的新事实候选。
 
-def _batch_pairs(prepared: Sequence[PreparedFact]) -> list[list[int]]:
-    pairs: list[set[int]] = [set() for _ in prepared]
+    Returns:
+        按左侧候选的输入顺序分组，组内按右侧候选的输入顺序排列。
+    """
     if len(prepared) < 2:
-        return [list(peers) for peers in pairs]
+        return ((),) * len(prepared)
+    pairs: list[set[int]] = [set() for _ in prepared]
     neighbors: list[list[tuple[float, int]]] = [[] for _ in prepared]
     vectors = [_unit_vector(item.vector) for item in prepared]
     slots = [_slot(item.fact) for item in prepared]
     for left, right in combinations(range(len(prepared)), 2):
+        if intervals_disjoint(prepared[left].fact, prepared[right].fact):
+            continue
         if slots[left] == slots[right]:
             pairs[left].add(right)
-            continue
-        if intervals_disjoint(prepared[left].fact, prepared[right].fact):
             continue
         score = fsum(x * y for x, y in zip(vectors[left], vectors[right], strict=True))
         if score < _BATCH_MIN_COSINE:
@@ -333,7 +345,10 @@ def _batch_pairs(prepared: Sequence[PreparedFact]) -> list[list[int]]:
         for _, neg_peer in peers:
             left, right = sorted((index, -neg_peer))
             pairs[left].add(right)
-    return [sorted(peers) for peers in pairs]
+    return tuple(
+        tuple((item.fact.id, prepared[peer].fact.id) for peer in sorted(peers))
+        for item, peers in zip(prepared, pairs, strict=True)
+    )
 
 
 def _unit_vector(vector: Sequence[float]) -> tuple[float, ...]:
@@ -351,7 +366,7 @@ async def compare_facts(
     *,
     reusable: Mapping[FactPair, FactComparison] | None = None,
 ) -> tuple[FactComparison, ...]:
-    """用一次结构化调用裁决所有无法直接判断的配对。
+    """按左侧新事实分片并发裁决，保留原配对顺序。
 
     Args:
         llm: 已装配的结构化模型端口。
@@ -368,24 +383,40 @@ async def compare_facts(
     facts = _comparison_facts(prepared, candidates)
     cached = {frozenset(pair): decision for pair, decision in (reusable or {}).items()}
     resolved = _resolve_comparisons(candidates.pairs, facts, cached)
-    pending = {
-        str(index): pair
-        for index, pair in enumerate(candidates.pairs, start=1)
-        if pair not in resolved
-    }
+    by_anchor: dict[FactId, list[tuple[str, FactPair]]] = defaultdict(list)
+    for index, pair in enumerate(candidates.pairs, start=1):
+        if pair not in resolved:
+            by_anchor[pair[0]].append((str(index), pair))
 
-    if pending:
-        prompt = _comparison_prompt(pending, facts)
-        response = await llm.complete_json(
-            system=_SYSTEM, prompt=prompt, schema=_SCHEMA
+    shards = (
+        dict(shard)
+        for pairs in by_anchor.values()
+        for shard in batched(pairs, _COMPARISON_PAIR_LIMIT)
+    )
+    for wave in batched(shards, _COMPARISON_CONCURRENCY):
+        # 收齐已发出的请求再传播原有错误，避免失败后留下推理任务。
+        results = await asyncio.gather(
+            *(_compare_shard(llm, shard, facts) for shard in wave),
+            return_exceptions=True,
         )
-        decisions = cast(_ComparisonOutput, response)["decisions"]
-        by_id = {row["id"]: row["verdict"] for row in decisions}
-        if len(decisions) != len(pending) or by_id.keys() != pending.keys():
-            raise InvalidStructuredOutput("事实比较结果须恰好覆盖每个输入配对一次")
-        for key, pair in pending.items():
-            resolved[pair] = FactComparison(pair, by_id[key])
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+            resolved.update(result)
     return tuple(resolved[pair] for pair in candidates.pairs)
+
+
+async def _compare_shard(
+    llm: LLM, pairs: Mapping[str, FactPair], facts: Mapping[FactId, Fact]
+) -> dict[FactPair, FactComparison]:
+    response = await llm.complete_json(
+        system=_SYSTEM, prompt=_comparison_prompt(pairs, facts), schema=_SCHEMA
+    )
+    decisions = cast(_ComparisonOutput, response)["decisions"]
+    by_id = {row["id"]: row["verdict"] for row in decisions}
+    if len(decisions) != len(pairs) or by_id.keys() != pairs.keys():
+        raise InvalidStructuredOutput("事实比较结果须恰好覆盖每个输入配对一次")
+    return {pair: FactComparison(pair, by_id[key]) for key, pair in pairs.items()}
 
 
 def resolve_known_comparisons(

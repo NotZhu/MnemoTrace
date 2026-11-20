@@ -1,12 +1,14 @@
 """验证真库候选和事实计算结果的原子保存与擦除。"""
 
 import json
+from collections.abc import Sequence
 from dataclasses import replace
 
 import httpx
 import pytest
 
 from mnemotrace_next.adapters.postgres import PostgresStorage
+from mnemotrace_next.adapters.postgres.reader import PostgresReader
 from mnemotrace_next.application.adjudication import (
     FactComparison,
     compare_facts,
@@ -15,8 +17,10 @@ from mnemotrace_next.application.adjudication import (
 )
 from mnemotrace_next.application.fact_lifecycle import calculate_fact_writes
 from mnemotrace_next.domain.entity import Entity
+from mnemotrace_next.domain.fact import Fact
 from mnemotrace_next.domain.ids import FactId, SessionId
 from mnemotrace_next.domain.values import EntityRef, LiteralValue, Predicate
+from mnemotrace_next.ports.queries import FactQuery
 from mnemotrace_next.ports.storage import CutoffTrigger
 
 from ..inference.adjudication_samples import FactIds, candidate
@@ -28,10 +32,22 @@ from .sample import fact, message, pool, run, space
 pytestmark = pytest.mark.postgres
 
 
-def test_write_candidates_page_timeline_and_search_both_channels(
-    database: PgDatabase,
+def test_write_candidates_limit_and_fuse_same_and_cross_slot_results(
+    database: PgDatabase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """分页读取时间重叠的同槽位事实，两路排名各为其他槽位保留十个名额。"""
+    """繁忙槽位和跨槽各保留十条，双路命中和榜外同槽高分都可入选。"""
+
+    probes: list[tuple[int, int]] = []
+    query_facts = PostgresReader.query_facts
+
+    async def measure(
+        reader: PostgresReader, query: FactQuery, *, reference_time: float
+    ) -> Sequence[Fact]:
+        rows = await query_facts(reader, query, reference_time=reference_time)
+        probes.append((query.limit, len(rows)))
+        return rows
+
+    monkeypatch.setattr(PostgresReader, "query_facts", measure)
 
     async def exercise() -> None:
         async with pool(database.runtime) as connections:
@@ -43,15 +59,18 @@ def test_write_candidates_page_timeline_and_search_both_channels(
             predicate = Predicate("project_owner")
             timeline = tuple(
                 replace(
-                    fact(user, f"a-slot-{index:03}", text="星河项目归属用户"),
+                    fact(user, f"a-slot-{index:03}", text="早期发布说明"),
                     predicate=predicate,
                 )
                 for index in range(102)
             )
             timeline = (
                 replace(timeline[0], valid_at=70.0),
-                *timeline[1:-1],
-                replace(timeline[-1], valid_at=1.0).close(2.0, 10.0),
+                *timeline[1:-2],
+                replace(timeline[-2], text="星河项目归属用户"),
+                replace(timeline[-1], valid_at=1.0, text="星河项目归属用户").close(
+                    2.0, 10.0
+                ),
             )
             lexical = tuple(
                 replace(
@@ -84,7 +103,12 @@ def test_write_candidates_page_timeline_and_search_both_channels(
                 await writer.upsert_vectors(
                     tuple(
                         (item.id, (1.0, 0.0))
-                        for item in (*timeline[:10], lexical[0], *vectors)
+                        for item in (
+                            *timeline[:3],
+                            *timeline[-2:],
+                            lexical[0],
+                            *vectors,
+                        )
                     ),
                     embedding_space=embedding.embedding_space,
                 )
@@ -110,7 +134,8 @@ def test_write_candidates_page_timeline_and_search_both_channels(
                     reference_time=30.0,
                 )
             expected = {
-                item.id for item in (*timeline[:-1], *lexical[:10], *vectors[:9])
+                item.id
+                for item in (*timeline[:9], timeline[-2], *lexical[:6], *vectors[:4])
             }
             assert result.existing_facts.keys() == expected
             assert [old for _, old in result.pairs] == sorted(
@@ -118,6 +143,7 @@ def test_write_candidates_page_timeline_and_search_both_channels(
             )
             assert lexical[0].id in result.existing_facts
             assert timeline[0].valid_at == 70.0 and timeline[-1].invalid_at == 2.0
+            assert probes == [(11, 11)]
 
     run(exercise())
 
@@ -125,7 +151,7 @@ def test_write_candidates_page_timeline_and_search_both_channels(
 def test_same_slot_candidates_match_each_interval_within_the_batch(
     database: PgDatabase,
 ) -> None:
-    """同槽共享分页范围后，仍按每条新事实的左闭右开区间建立配对。"""
+    """少量同槽旧事实无需向量，按每条新事实的左闭右开区间纳入。"""
 
     async def exercise() -> None:
         async with pool(database.runtime) as connections:
@@ -169,7 +195,6 @@ def test_same_slot_candidates_match_each_interval_within_the_batch(
             assert found.existing_facts == {old[1].id: old[1], old[3].id: old[3]}
             assert found.pairs == (
                 (first, old[1].id),
-                (first, second),
                 (second, old[3].id),
             )
 

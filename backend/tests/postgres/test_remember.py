@@ -28,14 +28,23 @@ from mnemotrace_next import (
 from mnemotrace_next.adapters.postgres import PostgresStorage
 from mnemotrace_next.adapters.postgres import session as postgres_session
 from mnemotrace_next.adapters.postgres.facts import FactWrite, write_fact_batch
+from mnemotrace_next.adapters.postgres.reader import PostgresReader
 from mnemotrace_next.adapters.postgres.session import PostgresSession
-from mnemotrace_next.application.adjudication import Verdict
+from mnemotrace_next.application import remember as remember_application
+from mnemotrace_next.application.adjudication import (
+    BatchPairs,
+    ComparisonCandidates,
+    PreparedFact,
+    Verdict,
+    find_comparison_candidates,
+)
 from mnemotrace_next.domain.entity import Entity
+from mnemotrace_next.domain.fact import Fact
 from mnemotrace_next.domain.ids import FactId, MessageId, SessionId, SpaceId
 from mnemotrace_next.domain.profile import Profile, ProfileEntry
 from mnemotrace_next.domain.space import Space
 from mnemotrace_next.domain.values import LiteralValue, Predicate
-from mnemotrace_next.ports.inference import InvalidStructuredOutput
+from mnemotrace_next.ports.inference import CompletionTruncated, InvalidStructuredOutput
 from mnemotrace_next.ports.queries import FactFilter, FactQuery
 from mnemotrace_next.ports.storage import (
     CutoffTrigger,
@@ -456,6 +465,54 @@ def test_remember_rejudges_only_changed_pairs(
     run(exercise())
 
 
+def test_remember_rejudges_newly_ranked_fact_and_drops_evicted_conflict(
+    database: PgDatabase,
+) -> None:
+    """同槽候选换榜后仅补判入榜的新事实，出榜项原有的矛盾判定不再提交。"""
+
+    async def exercise() -> None:
+        async with _workspace(database) as (scope, storage):
+            project = Entity(scope.id, "星河项目")
+            original = tuple(
+                replace(
+                    fact(project, f"old-{index}", text=f"候选说明 {index}"),
+                    predicate=_PREDICATE,
+                    valid_at=10.0,
+                )
+                for index in range(10)
+            )
+            evicted = original[-1]
+            added = replace(original[0], id=FactId("late"), text=_CURRENT)
+            gate = _ComparisonGate()
+            model = _Model(verdicts={evicted.text: "conflict"}, hook=gate)
+            memory = _memory(scope, storage, model, _Embedder())
+            session_id = await memory.create_session()
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.upsert_entity(project)
+                await writer.save_facts(original, changed_at=10.0)
+
+            async def compete() -> None:
+                await gate.ready[0].wait()
+                async with storage.session(scope.id, write=True) as writer:
+                    await writer.save_facts((added,), changed_at=20.0)
+                gate.resume[0].set()
+
+            async with asyncio.timeout(10), asyncio.TaskGroup() as tasks:
+                tasks.create_task(compete())
+                result = await memory.remember(_CURRENT, session_id=session_id)
+
+            assert model.comparison_calls == [
+                tuple(item.text for item in original),
+                (added.text,),
+            ]
+            (change,) = result.fact_changes
+            assert change.after.id == FactId("new-0")
+            async with storage.session(scope.id) as reader:
+                assert await reader.get_fact(evicted.id) == evicted
+
+    run(exercise())
+
+
 @pytest.mark.parametrize("update", ["metadata", "shorten", "disjoint"])
 def test_remember_revalidates_time_and_reads_latest_support_groups(
     database: PgDatabase, update: str
@@ -519,6 +576,115 @@ def test_remember_revalidates_time_and_reads_latest_support_groups(
             else:
                 (change,) = result.fact_changes
                 assert change.before is None and change.after.valid_at == event_time
+
+    run(exercise())
+
+
+@pytest.mark.parametrize(
+    "error",
+    [InvalidStructuredOutput, CompletionTruncated],
+    ids=["missing", "truncated"],
+)
+def test_remember_does_not_write_when_a_comparison_shard_fails(
+    database: PgDatabase, error: type[Exception]
+) -> None:
+    """同一锚点的第一片成功、第二片失败时，原文和事实均未写入。"""
+
+    class Model(_Model):
+        async def complete_json(
+            self, *, system: str, prompt: str, schema: Mapping[str, object]
+        ) -> Mapping[str, object]:
+            response = await super().complete_json(
+                system=system, prompt=prompt, schema=schema
+            )
+            if "facts" in response:
+                (template,) = cast(list[dict[str, object]], response["facts"])
+                return {
+                    "facts": [
+                        {**template, "text": f"星河项目设置 {index}"}
+                        for index in range(32)
+                    ]
+                }
+            if json.loads(prompt)["pairs"][0]["id"] == "31":
+                if error is CompletionTruncated:
+                    raise CompletionTruncated("测试裁决分片被截断")
+                return {"decisions": []}
+            return response
+
+    async def exercise() -> None:
+        async with _workspace(database) as (scope, storage):
+            model = Model()
+            memory = _memory(scope, storage, model, _Embedder())
+            session_id = await memory.create_session()
+            with pytest.raises(error):
+                await memory.remember(_CURRENT, session_id=session_id)
+            assert [len(call) for call in model.comparison_calls[:2]] == [30, 1]
+            async with storage.session(scope.id) as reader:
+                assert not await reader.last_messages(session_id, 10)
+                assert not await reader.query_facts(
+                    FactQuery(FactFilter(state="all")), reference_time=100.0
+                )
+
+    run(exercise())
+
+
+def test_remember_writes_disjoint_same_slot_facts_without_comparison(
+    database: PgDatabase,
+) -> None:
+    """同槽相邻区间的两条新事实分别入库，无需比较或截止。"""
+
+    class Model(_Model):
+        async def complete_json(
+            self, *, system: str, prompt: str, schema: Mapping[str, object]
+        ) -> Mapping[str, object]:
+            response = await super().complete_json(
+                system=system, prompt=prompt, schema=schema
+            )
+            if "facts" not in response:
+                return response
+            (template,) = cast(list[dict[str, object]], response["facts"])
+            (source,) = cast(list[int], template["source_numbers"])
+
+            def time_evidence(seconds: int) -> dict[str, object]:
+                return {
+                    "kind": "absolute",
+                    "source_number": source,
+                    "value": f"1970-01-01T00:00:{seconds:02d}Z",
+                    "days": None,
+                }
+
+            return {
+                "facts": [
+                    {
+                        **template,
+                        "object": {"kind": "literal", "value": language},
+                        "text": f"星河项目在第 {start} 至 {end} 秒使用{language}",
+                        "valid_at_evidence": time_evidence(start),
+                        "invalid_at_evidence": time_evidence(end),
+                    }
+                    for language, start, end in (("中文", 10, 20), ("英文", 20, 30))
+                ]
+            }
+
+    async def exercise() -> None:
+        async with _workspace(database) as (scope, storage):
+            model = Model()
+            memory = _memory(scope, storage, model, _Embedder())
+            session_id = await memory.create_session()
+            result = await memory.remember(
+                "分段回顾星河项目的用语", session_id=session_id
+            )
+            assert result.message_ids == (MessageId("incoming-0"),)
+            assert model.comparison_calls == []
+            assert all(not change.cutoff_triggers for change in result.fact_changes)
+            async with storage.session(scope.id) as reader:
+                saved = await reader.query_facts(
+                    FactQuery(FactFilter(state="all")), reference_time=100.0
+                )
+            assert [(row.object, row.valid_at, row.invalid_at) for row in saved] == [
+                (LiteralValue("中文"), 10.0, 20.0),
+                (LiteralValue("英文"), 20.0, 30.0),
+            ]
 
     run(exercise())
 
@@ -868,10 +1034,57 @@ def test_remember_returns_committed_result_when_pool_return_times_out(
 
 
 def test_remember_records_write_lock_duration_for_long_timeline(
-    database: PgDatabase, record_property: Callable[[str, object], None]
+    database: PgDatabase,
+    record_property: Callable[[str, object], None],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """测量跨页时间线和跨槽位向量候选在空间写入排队时的复核用时。"""
+    """重叠且带向量的同槽历史触发混合排序，记录初查与持锁复核耗时。"""
     durations: list[tuple[float, float]] = []
+    lookup_durations: list[float] = []
+    reused_pairs: list[BatchPairs | None] = []
+    probes: list[tuple[int, int]] = []
+    query_facts = PostgresReader.query_facts
+    vector = (1.0,) + (0.0,) * 1023
+
+    class Embedder(FakeEmbedder):
+        @property
+        def dim(self) -> int:
+            return len(vector)
+
+        async def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
+            return (vector,) * len(texts)
+
+    async def measure_lookup(
+        reader: SpaceReader,
+        prepared: Sequence[PreparedFact],
+        *,
+        embedding_space: str,
+        reference_time: float,
+        batch_pairs: BatchPairs | None = None,
+    ) -> ComparisonCandidates:
+        start = perf_counter()
+        result = await find_comparison_candidates(
+            reader,
+            prepared,
+            embedding_space=embedding_space,
+            reference_time=reference_time,
+            batch_pairs=batch_pairs,
+        )
+        lookup_durations.append((perf_counter() - start) * 1000)
+        reused_pairs.append(batch_pairs)
+        return result
+
+    async def measure_probe(
+        reader: PostgresReader, spec: FactQuery, *, reference_time: float
+    ) -> Sequence[Fact]:
+        rows = await query_facts(reader, spec, reference_time=reference_time)
+        probes.append((spec.limit, len(rows)))
+        return rows
+
+    monkeypatch.setattr(
+        remember_application, "find_comparison_candidates", measure_lookup
+    )
+    monkeypatch.setattr(PostgresReader, "query_facts", measure_probe)
 
     class TimedStorage(PostgresStorage):
         @asynccontextmanager
@@ -890,9 +1103,13 @@ def test_remember_records_write_lock_duration_for_long_timeline(
     async def exercise() -> None:
         async with _workspace(database, TimedStorage) as (scope, storage):
             project = Entity(scope.id, "星河项目")
-            old = replace(fact(project, "old"), predicate=_PREDICATE, valid_at=1.0)
+            old = replace(
+                fact(project, "old", text=_CURRENT), predicate=_PREDICATE, valid_at=1.0
+            )
             history = tuple(
-                replace(old, id=FactId(f"history-{index}")).close(20.0, 20.0)
+                replace(
+                    old, id=FactId(f"history-{index:03}"), text=f"历史安排 {index}"
+                ).close(120.0, 20.0)
                 for index in range(250)
             )
             cross_slot = tuple(
@@ -903,14 +1120,14 @@ def test_remember_records_write_lock_duration_for_long_timeline(
                 for index in range(100)
             )
             gate = _ComparisonGate()
-            model, embedder = _Model(hook=gate), _Embedder()
+            model, embedder = _Model(hook=gate), Embedder()
             memory = _memory(scope, storage, model, embedder)
             session_id = await memory.create_session()
             async with storage.session(scope.id, write=True) as writer:
                 await writer.upsert_entity(project)
                 await writer.save_facts((*history, old, *cross_slot), changed_at=30.0)
                 await writer.upsert_vectors(
-                    tuple((item.id, (1.0, 0.0)) for item in cross_slot),
+                    tuple((item.id, vector) for item in (*history, old, *cross_slot)),
                     embedding_space=embedder.embedding_space,
                 )
             durations.clear()
@@ -946,9 +1163,15 @@ def test_remember_records_write_lock_duration_for_long_timeline(
 
             assert len(result.fact_changes) == 1
             assert model.comparison_calls == [
-                (old.text, *(item.text for item in cross_slot[:10]))
+                tuple(item.text for item in (*history[:9], old, *cross_slot[:10]))
             ]
+            assert probes == [(11, 11), (11, 11)]
+            initial_pairs, rechecked_pairs = reused_pairs
+            assert initial_pairs is not None and initial_pairs is rechecked_pairs
             ((acquire, held),) = durations
+            lookup, recheck = lookup_durations
+            record_property("candidate_lookup_ms", round(lookup, 3))
+            record_property("write_lock_candidate_recheck_ms", round(recheck, 3))
             record_property("write_lock_acquire_ms", round(acquire, 3))
             record_property("write_lock_held_ms", round(held, 3))
 
