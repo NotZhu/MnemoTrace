@@ -83,6 +83,7 @@ class PostgresReader:
     def __init__(self, conn: AsyncConnection[TupleRow], space_id: SpaceId) -> None:
         self._connection: AsyncConnection[TupleRow] | None = conn
         self._space_id = space_id
+        self._embedding_dims: dict[str, int] = {}
 
     @property
     def space_id(self) -> SpaceId:
@@ -588,9 +589,13 @@ class PostgresReader:
         """
         query_vector = search.cosine_vector(vector)
         conn = self._conn
-        dim = await search.embedding_dim(conn, self.space_id, embedding_space)
+        dim = self._embedding_dims.get(embedding_space)
         if dim is None:
-            return ()
+            dim = await search.embedding_dim(conn, self.space_id, embedding_space)
+            if dim is None:
+                return ()
+            # 写会话内之后可能注册尚未登记的模型，只缓存已登记的维度。
+            self._embedding_dims[embedding_space] = dim
         if len(query_vector) != dim:
             raise ValueError("查询向量与嵌入空间登记的维度不一致")
         conditions = fact_conditions(self.space_id, filters, reference_time)

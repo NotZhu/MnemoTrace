@@ -248,18 +248,18 @@ def test_session_erasure_cleans_indexes_changes_and_dependent_profile(
             async with storage.session(sibling.id, write=True) as writer:
                 await writer.register_session(removed.session_id)
                 await writer.append_messages((replace(removed, space_id=sibling.id),))
-            old = replace(
-                fact(subject, "old", text="删除标记"),
+            old = fact(
+                subject,
+                "old",
+                text="删除标记",
                 provenance=(removed.id, kept.id),
             ).close(18.0, 20.0)
             future = replace(
-                fact(subject, "future", text="删除标记"),
+                fact(subject, "future", text="删除标记", provenance=(removed.id,)),
                 valid_at=120.0,
-                provenance=(removed.id,),
             )
-            previous = replace(
-                fact(subject, "survivor", text="保留标记"),
-                provenance=(removed.id,),
+            previous = fact(
+                subject, "survivor", text="保留标记", provenance=(removed.id,)
             )
             corrected = replace(previous, provenance=(kept.id,))
             survivor = replace(corrected, sensitive=True)
@@ -385,13 +385,14 @@ def test_erasure_removes_joint_group_and_audit_while_trigger_fact_survives(
             joint = message(scope, "joint", session=SessionId("kept"))
             independent = message(scope, "independent", session=joint.session_id)
             old = replace(
-                fact(subject, "old"), provenance=(original.id,), valid_at=10.0
+                fact(subject, "old", provenance=(original.id,)), valid_at=10.0
             )
             closed = old.close(20.0, 25.0)
             cause = replace(
-                fact(subject, "cause"),
+                fact(
+                    subject, "cause", provenance=(erased.id, joint.id, independent.id)
+                ),
                 valid_at=23.0,
-                provenance=(erased.id, joint.id, independent.id),
             )
             successor = replace(fact(subject, "successor"), valid_at=20.0)
             triggers = (
@@ -477,7 +478,7 @@ def test_session_erasure_rejects_late_reinforcement_after_new_session(
             await storage.create_space(scope)
             subject = Entity(scope.id, "甲")
             source = message(scope, "source")
-            item = replace(fact(subject, "fact"), provenance=(source.id,))
+            item = fact(subject, "fact", provenance=(source.id,))
             async with storage.session(scope.id, write=True) as writer:
                 await writer.upsert_entity(subject)
                 await writer.register_session(source.session_id)
@@ -542,7 +543,7 @@ def test_purge_rotates_generation_and_rejects_late_reinforcement(
             await storage.create_space(scope)
             subject = Entity(scope.id, "甲")
             source = message(scope, "source")
-            item = replace(fact(subject, "fact"), provenance=(source.id,))
+            item = fact(subject, "fact", provenance=(source.id,))
             digest = _digest("digest", source)
             profile = Profile(
                 scope.id, {"组": (ProfileEntry("画像", (item.id,)),)}, 12.0

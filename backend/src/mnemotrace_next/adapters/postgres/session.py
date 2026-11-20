@@ -1,7 +1,7 @@
 """实现空间行锁保护下的写入和清理。"""
 
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from itertools import groupby
 
 from psycopg import DataError, sql
@@ -10,6 +10,7 @@ from psycopg.types.json import Jsonb
 
 from ...domain.digest import Digest
 from ...domain.entity import Entity
+from ...domain.enums import Source
 from ...domain.fact import Fact
 from ...domain.ids import FactId, MessageId, SessionId, SpaceId
 from ...domain.message import Message
@@ -31,6 +32,13 @@ from .facts import (
 )
 from .reader import PostgresReader
 from .rows import entity_from_row, profile_to_json
+
+
+@dataclass(frozen=True)
+class _StoredFactSupport:
+    groups: SupportGroups
+    next_group: int
+    next_position: int
 
 
 class PostgresSession(PostgresReader):
@@ -175,9 +183,17 @@ class PostgresSession(PostgresReader):
         Returns:
             已存在事实到证据组的映射。
         """
+        return {
+            fact_id: support.groups
+            for fact_id, support in (await self._read_fact_support(fact_ids)).items()
+        }
+
+    async def _read_fact_support(
+        self, fact_ids: Sequence[FactId]
+    ) -> dict[FactId, _StoredFactSupport]:
         cursor = await self._conn.execute(
             """
-            SELECT f.fact_id, p.support_group, p.message_id
+            SELECT f.fact_id, p.support_group, p.position, p.message_id
             FROM mnemotrace_next.facts AS f
             LEFT JOIN mnemotrace_next.fact_provenance AS p USING (space_id, fact_id)
             WHERE f.space_id = %s AND f.fact_id = ANY(%s::text[])
@@ -185,16 +201,24 @@ class PostgresSession(PostgresReader):
             """,
             (self.space_id.value, [fact_id.value for fact_id in fact_ids]),
         )
-        return {
-            FactId(fact_id): tuple(
-                tuple(MessageId(row[2]) for row in group)
-                for number, group in groupby(rows, key=lambda row: row[1])
-                if number is not None
+        stored: dict[FactId, _StoredFactSupport] = {}
+        for fact_id, rows in groupby(await cursor.fetchall(), key=lambda row: row[0]):
+            groups: list[tuple[MessageId, ...]] = []
+            next_group = 0
+            next_position = 0
+            for number, members in groupby(rows, key=lambda row: row[1]):
+                if number is None:
+                    continue
+                messages = []
+                for _, _, position, message_id in members:
+                    messages.append(MessageId(message_id))
+                    next_position = max(next_position, position + 1)
+                groups.append(tuple(messages))
+                next_group = number + 1
+            stored[FactId(fact_id)] = _StoredFactSupport(
+                tuple(groups), next_group, next_position
             )
-            for fact_id, rows in groupby(
-                await cursor.fetchall(), key=lambda row: row[0]
-            )
-        }
+        return stored
 
     async def save_facts(
         self,
@@ -241,9 +265,7 @@ class PostgresSession(PostgresReader):
             )
         )
         old_groups = (
-            await self.get_fact_support_groups(tuple(groups_by_id))
-            if groups_by_id
-            else {}
+            await self._read_fact_support(tuple(groups_by_id)) if groups_by_id else {}
         )
         causes = {**existing, **pending}
         changes: list[FactWrite] = []
@@ -255,16 +277,22 @@ class PostgresSession(PostgresReader):
                 or flatten_support_groups(groups) != fact.provenance
             ):
                 raise ValueError("证据组须非空且展开后与事实来源一致")
-            if before is None and groups is None:
-                groups = (fact.provenance,) if fact.provenance else ()
-            if (
-                before is not None
-                and groups is None
-                and before.provenance != fact.provenance
-            ):
+            if before is None:
+                if fact.source is Source.MANUAL and fact.provenance:
+                    raise ValueError("新建手工事实的 provenance 必须为空")
+                if groups is None:
+                    groups = (fact.provenance,) if fact.provenance else ()
+            elif groups is None and before.provenance != fact.provenance:
                 raise ValueError("改变已有事实的来源须提供完整证据组")
-            if groups == old_groups.get(fact.id):
-                groups = None
+            append_at = None
+            stored = old_groups.get(fact.id)
+            if stored is not None and groups is not None:
+                previous = stored.groups
+                if groups == previous:
+                    groups = None
+                elif groups[: len(previous)] == previous:
+                    groups = groups[len(previous) :]
+                    append_at = (stored.next_group, stored.next_position)
             if before == fact and groups is None:
                 continue
             if before is not None:
@@ -273,7 +301,7 @@ class PostgresSession(PostgresReader):
             validate_cutoff_triggers(
                 before, fact, triggers, causes, existing_causes=existing
             )
-            changes.append(FactWrite(before, fact, groups, triggers))
+            changes.append(FactWrite(before, fact, groups, triggers, append_at))
         return await write_fact_batch(conn, changes, changed_at)
 
     async def save_salience(self, states: Mapping[FactId, FactSalience]) -> None:
@@ -510,12 +538,20 @@ class PostgresSession(PostgresReader):
         async with self._conn.cursor(row_factory=args_row(FactId)) as cursor:
             await cursor.execute(
                 """
-                SELECT DISTINCT fact_id FROM mnemotrace_next.fact_provenance
-                WHERE space_id = %s AND fact_id = ANY(%s::text[])
+                SELECT f.fact_id FROM mnemotrace_next.facts AS f
+                WHERE f.space_id = %s AND f.fact_id = ANY(%s::text[]) AND f.source = %s
+                  AND NOT EXISTS (
+                      SELECT 1 FROM mnemotrace_next.fact_provenance AS p
+                      WHERE p.space_id = f.space_id AND p.fact_id = f.fact_id
+                  )
                 """,
-                (self.space_id.value, [fact_id.value for fact_id in affected]),
+                (
+                    self.space_id.value,
+                    [fact_id.value for fact_id in affected],
+                    Source.EXTRACTED.value,
+                ),
             )
-            supported = set(await cursor.fetchall())
+            unsupported = await cursor.fetchall()
         await self._conn.execute(
             """
             DELETE FROM mnemotrace_next.fact_changes
@@ -523,12 +559,10 @@ class PostgresSession(PostgresReader):
             """,
             params,
         )
-        return await self._delete_facts(
-            tuple(fact_id for fact_id in affected if fact_id not in supported)
-        )
+        return await self._delete_facts(unsupported)
 
     async def delete_session_data(self, session_id: SessionId) -> frozenset[FactId]:
-        """在同一事务内撤销对话并撤下失去完整证据的事实。
+        """在同一事务内撤销对话并撤下失去完整证据的抽取事实。
 
         Args:
             session_id: 绑定空间内待清理的会话标识。

@@ -533,7 +533,8 @@ class SpaceSession(SpaceReader, Protocol):
         invalid_at 和 expired_at，提前截止保留首次获知的 expired_at。
         其余字段固定，包括 subject、predicate、object、text、valid_at、
         recorded_at 和 source。主体、实体客体及已提供的来源原文须在
-        绑定空间的当前写事务内存在，手工事实可以没有来源。
+        绑定空间的当前写事务内存在。新建手工事实的 provenance 须为空，
+        后续可追加会话证据组。
 
         每次创建或实际更新在同一事务追加一条 FactChange。创建事实时由存储
         从 Fact.text 派生词法索引，与事实一同提交。事实和分组相同的重放幂等。
@@ -554,8 +555,8 @@ class SpaceSession(SpaceReader, Protocol):
             本次实际写入的变更，按游标升序排列。空批次和幂等重放返回空元组。
 
         Raises:
-            ValueError: 同批标识重复、事实超出绑定空间、修改固定字段、重开或延后截止、
-                修改首次获知时刻，或证据组及触发引用违反契约。整批拒绝。
+            ValueError: 同批标识重复、事实超出绑定空间、新建手工事实引用原文、
+                修改固定字段、重开或延后截止，或证据组及触发引用违反契约。整批拒绝。
         """
         ...
 
@@ -586,8 +587,8 @@ class SpaceSession(SpaceReader, Protocol):
     async def delete_session_data(self, session_id: SessionId) -> frozenset[FactId]:
         """幂等撤销对话登记并擦除其原文、摘要和证据贡献。
 
-        删除范围包括已截止和未来生效的事实。
-        受影响的证据组整体撤下。仍有完整证据组时，保留事实和有效区间。
+        受影响的证据组整体撤下。抽取事实失去全部证据组时删除，
+        包括已截止和未来生效的事实。手工事实及仍有完整证据组的事实保留有效区间。
         删除引用已擦除来源的审计记录。实际删除原文时更新擦除标记。
 
         Args:

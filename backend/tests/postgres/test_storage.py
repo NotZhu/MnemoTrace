@@ -134,7 +134,7 @@ def test_session_read_only_closes_and_rolls_back_on_cancel(
                     raise RuntimeError("事务异常")
             written = asyncio.Event()
             subject = Entity(scope.id, "甲")
-            unpublished = replace(fact(subject, "cancelled"), provenance=(aborted.id,))
+            unpublished = fact(subject, "cancelled", provenance=(aborted.id,))
 
             async def cancellable() -> None:
                 async with storage.session(scope.id, write=True) as writer:

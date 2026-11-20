@@ -120,9 +120,9 @@ class _Endpoint(TypedDict):
 
 class _Time(TypedDict):
     kind: TimeBasis
-    source_number: int
+    source_number: int | float
     value: str | None
-    days: int | None
+    days: int | float | None
 
 
 class _FactOutput(TypedDict):
@@ -132,7 +132,7 @@ class _FactOutput(TypedDict):
     text: str
     valid_at_evidence: _Time | None
     invalid_at_evidence: _Time | None
-    source_numbers: list[int]
+    source_numbers: list[int | float]
     labels: list[str]
     sensitive: bool
 
@@ -283,7 +283,7 @@ def _parse_fact(
     previous_count: int,
     timezone: tzinfo,
 ) -> ExtractedFact:
-    refs = raw["source_numbers"]
+    refs = tuple(map(int, raw["source_numbers"]))
     if len(set(refs)) != len(refs) or any(ref not in numbered for ref in refs):
         raise InvalidStructuredOutput("事实来源含重复或无效的消息编号")
     if not any(
@@ -336,7 +336,7 @@ def _parse_time(
 ) -> TimeEvidence | None:
     if raw is None:
         return None
-    source = evidence.get(raw["source_number"])
+    source = evidence.get(int(raw["source_number"]))
     if source is None:
         raise InvalidStructuredOutput("时间依据须引用该事实的证据消息")
     basis = raw["kind"]
@@ -360,7 +360,7 @@ def _parse_time(
             local_time = time.fromisoformat(value) if value is not None else time()
             at = None
             if reference_time is not None:
-                date = reference_time.date() + timedelta(days=days)
+                date = reference_time.date() + timedelta(days=int(days))
                 at = _local_timestamp(datetime.combine(date, local_time), timezone)
         else:
             raise ValueError

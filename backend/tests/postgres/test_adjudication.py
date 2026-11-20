@@ -31,7 +31,7 @@ pytestmark = pytest.mark.postgres
 def test_write_candidates_page_timeline_and_search_both_channels(
     database: PgDatabase,
 ) -> None:
-    """完整读取同槽位时间线，两路排名各为其他槽位保留十个名额。"""
+    """分页读取时间重叠的同槽位事实，两路排名各为其他槽位保留十个名额。"""
 
     async def exercise() -> None:
         async with pool(database.runtime) as connections:
@@ -46,7 +46,7 @@ def test_write_candidates_page_timeline_and_search_both_channels(
                     fact(user, f"a-slot-{index:03}", text="星河项目归属用户"),
                     predicate=predicate,
                 )
-                for index in range(101)
+                for index in range(102)
             )
             timeline = (
                 replace(timeline[0], valid_at=70.0),
@@ -109,13 +109,69 @@ def test_write_candidates_page_timeline_and_search_both_channels(
                     embedding_space=embedding.embedding_space,
                     reference_time=30.0,
                 )
-            expected = {item.id for item in (*timeline, *lexical[:10], *vectors[:9])}
+            expected = {
+                item.id for item in (*timeline[:-1], *lexical[:10], *vectors[:9])
+            }
             assert result.existing_facts.keys() == expected
             assert [old for _, old in result.pairs] == sorted(
                 expected, key=lambda fact_id: fact_id.value
             )
             assert lexical[0].id in result.existing_facts
             assert timeline[0].valid_at == 70.0 and timeline[-1].invalid_at == 2.0
+
+    run(exercise())
+
+
+def test_same_slot_candidates_match_each_interval_within_the_batch(
+    database: PgDatabase,
+) -> None:
+    """同槽共享分页范围后，仍按每条新事实的左闭右开区间建立配对。"""
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            scope = space()
+            storage = PostgresStorage(connections, owner_id=scope.owner_id)
+            await storage.create_space(scope)
+            user = Entity.space_user(scope.id)
+            predicate = Predicate("reply_language")
+            fixture = replace(fact(user, "fixture"), predicate=predicate)
+            old = (
+                replace(fixture, id=FactId("past"), valid_at=5.0).close(10.0, 40.0),
+                replace(fixture, id=FactId("unknown-start")).close(15.0, 40.0),
+                replace(fixture, id=FactId("gap"), valid_at=20.0).close(30.0, 40.0),
+                replace(fixture, id=FactId("future"), valid_at=35.0),
+            )
+            embedder = FakeEmbedder()
+            prepared = await prepare_facts(
+                (
+                    candidate("first", predicate=predicate.value, start=10.0, end=20.0),
+                    candidate(
+                        "second", predicate=predicate.value, start=30.0, end=40.0
+                    ),
+                ),
+                space_id=scope.id,
+                embedder=embedder,
+                ids=FactIds(),
+                received_at=30.0,
+            )
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.upsert_entity(user)
+                await writer.save_facts(old, changed_at=40.0)
+
+            async with storage.session(scope.id) as reader:
+                found = await find_comparison_candidates(
+                    reader,
+                    prepared,
+                    embedding_space=embedder.embedding_space,
+                    reference_time=30.0,
+                )
+            first, second = (item.fact.id for item in prepared)
+            assert found.existing_facts == {old[1].id: old[1], old[3].id: old[3]}
+            assert found.pairs == (
+                (first, old[1].id),
+                (first, second),
+                (second, old[3].id),
+            )
 
     run(exercise())
 

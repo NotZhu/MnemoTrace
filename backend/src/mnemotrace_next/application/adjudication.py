@@ -1,11 +1,13 @@
 """准备待比较的事实，并在事务外批量裁决。"""
 
 import json
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from heapq import heappush, heappushpop
 from itertools import combinations
 from math import fsum, hypot
-from typing import Literal, TypedDict, cast
+from typing import Literal, NamedTuple, TypedDict, cast
 
 from ..domain.entity import Entity
 from ..domain.enums import Source
@@ -18,8 +20,11 @@ from ..ports.runtime import IdGenerator
 from ..ports.storage import SpaceReader
 from .extraction import EntityMention, ExtractedFact, SpaceUserMention, TimeEvidence
 
-_SEARCH_LIMIT = 10
-_MIN_SIMILARITY = 0.60
+_LEXICAL_LIMIT = 10
+_VECTOR_LIMIT = 10
+_BATCH_PEER_LIMIT = 10
+_VECTOR_MIN_COSINE = 0.60
+_BATCH_MIN_COSINE = 0.60
 
 type FactPair = tuple[FactId, FactId]
 type Verdict = Literal["duplicate", "coexists", "conflict", "unknown"]
@@ -101,6 +106,15 @@ class _Decision(TypedDict):
 
 class _ComparisonOutput(TypedDict):
     decisions: list[_Decision]
+
+
+class _ComparisonInput(NamedTuple):
+    text: str
+    subject: EntityRef
+    predicate: Predicate
+    object: EntityRef | LiteralValue
+    valid_at: float | None
+    invalid_at: float | None
 
 
 async def prepare_facts(
@@ -198,16 +212,28 @@ async def find_comparison_candidates(
     Returns:
         命中的旧事实和按裁决顺序排列的去重配对。
     """
+    # 按主体和谓词归组，同槽候选共用一份覆盖各自有效期的时间线。
     existing: dict[FactId, Fact] = {}
-    by_slot: dict[FactSlot, tuple[FactId, ...]] = {}
+    intervals_by_slot: dict[FactSlot, list[Fact]] = defaultdict(list)
+    for item in prepared:
+        intervals_by_slot[_slot(item.fact)].append(item.fact)
+
+    # 共享的时间线可能包含无关历史，逐条排除与当前候选有效期确定错开的旧事实。
+    timelines: dict[FactSlot, list[Fact]] = {}
     old_pairs: list[list[FactId]] = []
     for item in prepared:
         fact = item.fact
         slot = _slot(fact)
-        if slot not in by_slot:
-            timeline = await _read_timeline(reader, slot, reference_time)
-            existing.update((old.id, old) for old in timeline)
-            by_slot[slot] = tuple(old.id for old in timeline)
+        if slot not in timelines:
+            timelines[slot] = await _read_timeline(
+                reader, _timeline_filters(slot, intervals_by_slot[slot]), reference_time
+            )
+        overlapping = {
+            old.id: old for old in timelines[slot] if not intervals_disjoint(old, fact)
+        }
+        existing.update(overlapping)
+
+        # 词法和向量检索用于补充跨槽候选，避免同槽事实占用检索名额。
         filters = FactFilter(
             state="all",
             overlap_start=fact.valid_at,
@@ -216,23 +242,24 @@ async def find_comparison_candidates(
         )
         lexical = await reader.search_lexical(
             fact.text,
-            _SEARCH_LIMIT,
+            _LEXICAL_LIMIT,
             filters=filters,
             reference_time=reference_time,
         )
         vectors = await reader.search_vectors(
             item.vector,
-            _SEARCH_LIMIT,
+            _VECTOR_LIMIT,
             filters=filters,
             reference_time=reference_time,
             embedding_space=embedding_space,
-            min_score=_MIN_SIMILARITY,
+            min_score=_VECTOR_MIN_COSINE,
         )
-        old_ids = set(by_slot[slot])
+        old_ids = set(overlapping)
         old_ids.update(fact_id for fact_id, _ in lexical)
         old_ids.update(fact_id for fact_id, _ in vectors)
         old_pairs.append(sorted(old_ids, key=lambda fact_id: fact_id.value))
 
+    # 补齐跨槽命中的旧事实，再按输入顺序组装新旧配对和批内配对。
     missing = dict.fromkeys(
         fact_id for ids in old_pairs for fact_id in ids if fact_id not in existing
     )
@@ -248,11 +275,22 @@ async def find_comparison_candidates(
     return ComparisonCandidates(existing, tuple(pairs))
 
 
-async def _read_timeline(
-    reader: SpaceReader, slot: FactSlot, reference_time: float
-) -> list[Fact]:
+def _timeline_filters(slot: FactSlot, facts: Sequence[Fact]) -> FactFilter:
     subject, predicate = slot
-    filters = FactFilter(state="all", subject=subject, predicate=predicate)
+    starts = [fact.valid_at for fact in facts if fact.valid_at is not None]
+    ends = [fact.invalid_at for fact in facts if fact.invalid_at is not None]
+    return FactFilter(
+        state="all",
+        subject=subject,
+        predicate=predicate,
+        overlap_start=min(starts) if len(starts) == len(facts) else None,
+        overlap_end=max(ends) if len(ends) == len(facts) else None,
+    )
+
+
+async def _read_timeline(
+    reader: SpaceReader, filters: FactFilter, reference_time: float
+) -> list[Fact]:
     query = FactQuery(filters=filters)
     facts: list[Fact] = []
     while True:
@@ -278,12 +316,18 @@ def _batch_pairs(prepared: Sequence[PreparedFact]) -> list[list[int]]:
         if intervals_disjoint(prepared[left].fact, prepared[right].fact):
             continue
         score = fsum(x * y for x, y in zip(vectors[left], vectors[right], strict=True))
-        if score >= _MIN_SIMILARITY:
-            neighbors[left].append((-score, right))
-            neighbors[right].append((-score, left))
+        if score < _BATCH_MIN_COSINE:
+            continue
+        for index, peer in ((left, right), (right, left)):
+            # 堆顶是最弱候选。同分时优先保留输入下标更小的一条。
+            rank = (score, -peer)
+            if len(neighbors[index]) < _BATCH_PEER_LIMIT:
+                heappush(neighbors[index], rank)
+            else:
+                heappushpop(neighbors[index], rank)
     for index, peers in enumerate(neighbors):
-        for _, peer in sorted(peers)[:_SEARCH_LIMIT]:
-            left, right = sorted((index, peer))
+        for _, neg_peer in peers:
+            left, right = sorted((index, -neg_peer))
             pairs[left].add(right)
     return [sorted(peers) for peers in pairs]
 
@@ -374,13 +418,9 @@ def resolve_known_comparisons(
     )
 
 
-def _comparison_input(
-    fact: Fact,
-) -> tuple[
-    str, EntityRef, Predicate, EntityRef | LiteralValue, float | None, float | None
-]:
+def _comparison_input(fact: Fact) -> _ComparisonInput:
     # 只有送入模型的字段决定是否重判，提交时另用锁内最新证据和敏感标记。
-    return (
+    return _ComparisonInput(
         fact.text,
         fact.subject,
         fact.predicate,
@@ -423,7 +463,7 @@ def _comparison_prompt(
     entity_numbers: dict[EntityId, int] = {}
     rows = []
     for fact_id in fact_ids:
-        fact = facts[fact_id]
+        fact = _comparison_input(facts[fact_id])
         subject = entity_numbers.setdefault(
             fact.subject.entity_id, len(entity_numbers) + 1
         )

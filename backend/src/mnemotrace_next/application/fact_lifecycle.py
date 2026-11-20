@@ -26,7 +26,7 @@ class FactWrites:
 class _Cutoff:
     earlier_id: FactId
     later_id: FactId
-    trigger_source_ids: tuple[FactId, ...]
+    compared_trigger_fact_ids: tuple[FactId, ...]
     earlier_valid_at: float
     valid_end: float
 
@@ -45,12 +45,14 @@ def calculate_fact_writes(
         prepared: 按输入顺序排列的候选事实。
         comparisons: 按原配对顺序排列的比较结果。
         existing_facts: 构造比较时使用的旧事实快照。
-        existing_support_groups: 同一写会话中旧事实当前的完整证据组。无来源的事实对应空元组。
+        existing_support_groups: 同一写会话中重复或矛盾裁决涉及的旧事实证据组。
+            无来源的事实对应空元组。
         changed_at: 本次变更时刻，不早于受影响事实的录入时刻。
 
     Returns:
         每个受影响事实的一份最终快照及其写入依赖。
     """
+    # 根据裁决为重复事实选代表，无法确定的候选暂缓成为新事实。
     incoming = {item.fact.id: item for item in prepared}
     facts = {
         **existing_facts,
@@ -60,6 +62,8 @@ def calculate_fact_writes(
     targets, new_ids = _select_representatives(
         prepared, existing_facts, duplicates, suspended
     )
+
+    # 用冲突裁决确定事实的截止和触发依据，标记仍有争议的新代表。
     closed, cutoff_triggers, uncertain_representatives = _resolve_cutoffs(
         comparisons,
         facts,
@@ -71,6 +75,8 @@ def calculate_fact_writes(
         changed_at,
     )
     new_ids.difference_update(uncertain_representatives)
+
+    # 为可写入的新事实组装最终快照及所需的证据、实体和向量。
     updated: dict[FactId, Fact] = {}
     support_groups: dict[FactId, SupportGroups] = {}
     entities: dict[EntityId, Entity] = {}
@@ -89,6 +95,7 @@ def calculate_fact_writes(
             for entity in item.entities:
                 entities.setdefault(entity.id, entity)
 
+    # 截止裁决可能缩短代表事实的有效期，重复证据须按最终区间验收。
     updated.update(closed)
     for source, target in targets.items():
         if source == target or target in uncertain_representatives:
@@ -368,7 +375,7 @@ def _apply_cutoffs(
             source = next(
                 (
                     incoming[source_id]
-                    for source_id in cutoff.trigger_source_ids
+                    for source_id in cutoff.compared_trigger_fact_ids
                     if source_id == later_id
                     or _covers_interval(incoming[source_id], later)
                 ),

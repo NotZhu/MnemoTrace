@@ -362,6 +362,7 @@ def test_fact_query_time_filters_and_cursor() -> None:
             valid_at=20.0,
             labels=(food,),
             provenance=(message.id,),
+            source=Source.EXTRACTED,
         ).close(100.0, 100.0)
         current = replace(
             _FACT,
@@ -369,6 +370,7 @@ def test_fact_query_time_filters_and_cursor() -> None:
             valid_at=100.0,
             labels=(food, preferences),
             provenance=(message.id,),
+            source=Source.EXTRACTED,
         )
         unknown_end = replace(_FACT, id=FactId("c")).close(90.0, 100.0)
         future = replace(
@@ -377,6 +379,7 @@ def test_fact_query_time_filters_and_cursor() -> None:
             valid_at=120.0,
             labels=(Label("music"),),
             provenance=(message.id,),
+            source=Source.EXTRACTED,
         )
         unknown = replace(_FACT, id=FactId("e"), recorded_at=50.0)
         async with storage.session(_SPACE.id, write=True) as session:

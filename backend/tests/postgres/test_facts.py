@@ -1,13 +1,15 @@
 """验证事实生命周期、强引用、筛选、分页和一跳边。"""
 
 from dataclasses import replace
+from typing import cast
 
 import pytest
 
 from mnemotrace_next.adapters.postgres import PostgresStorage
+from mnemotrace_next.adapters.postgres.session import PostgresSession
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.enums import Source
-from mnemotrace_next.domain.ids import FactId, MessageId
+from mnemotrace_next.domain.ids import FactId, MessageId, SessionId
 from mnemotrace_next.domain.values import EntityRef, Label
 from mnemotrace_next.ports.queries import FactCursor, FactFilter, FactQuery
 from mnemotrace_next.ports.storage import CutoffTrigger
@@ -32,7 +34,7 @@ def test_fact_updates_keep_fixed_fields_and_first_expiration(
             original = message(scope, "a")
             correction = message(scope, "b")
             old = replace(
-                fact(subject, "old"), valid_at=10.0, provenance=(original.id,)
+                fact(subject, "old", provenance=(original.id,)), valid_at=10.0
             )
             closed = old.close(30.0, 35.0)
             shortened = replace(
@@ -137,6 +139,77 @@ def test_fact_updates_keep_fixed_fields_and_first_expiration(
     run(exercise())
 
 
+def test_appending_support_preserves_stored_rows_after_erasure(
+    database: PgDatabase,
+) -> None:
+    """证据组擦除留下编号空洞后，追加只写新关系和审计。"""
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            scope = space()
+            storage = PostgresStorage(connections, owner_id=scope.owner_id)
+            await storage.create_space(scope)
+            subject = Entity(scope.id, "小夏")
+            first, third, extra = (
+                message(scope, key) for key in ("first", "third", "extra")
+            )
+            erased = message(scope, "erased", session=SessionId("erase"))
+            original = fact(subject, "old", provenance=(first.id, erased.id, third.id))
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.register_session(first.session_id)
+                await writer.register_session(erased.session_id)
+                await writer.append_messages((first, erased, third, extra))
+                await writer.upsert_entity(subject)
+                await writer.save_facts(
+                    (original,),
+                    changed_at=20.0,
+                    support_groups={
+                        original.id: ((first.id,), (erased.id,), (third.id,))
+                    },
+                )
+                assert (
+                    await writer.delete_session_data(erased.session_id) == frozenset()
+                )
+
+                conn = cast(PostgresSession, writer)._conn
+                params = (scope.id.value, original.id.value)
+                relations = """
+                    SELECT position, support_group, message_id, ctid::text
+                    FROM mnemotrace_next.fact_provenance
+                    WHERE space_id = %s AND fact_id = %s ORDER BY position
+                    """
+                fact_row = """
+                    SELECT ctid::text FROM mnemotrace_next.facts
+                    WHERE space_id = %s AND fact_id = %s
+                    """
+                initial_relations = await (
+                    await conn.execute(relations, params)
+                ).fetchall()
+                initial_fact_row = await (
+                    await conn.execute(fact_row, params)
+                ).fetchone()
+                supported = replace(original, provenance=(first.id, third.id, extra.id))
+                groups = (first.id,), (third.id,), (extra.id,)
+                (change,) = await writer.save_facts(
+                    (supported,), changed_at=30.0, support_groups={original.id: groups}
+                )
+                final_relations = await (
+                    await conn.execute(relations, params)
+                ).fetchall()
+                assert final_relations[:-1] == initial_relations
+                assert final_relations[-1][:3] == (3, 3, extra.id.value)
+                assert (
+                    await (await conn.execute(fact_row, params)).fetchone()
+                    == initial_fact_row
+                )
+                assert change.after == supported
+                assert await writer.get_fact_support_groups((original.id,)) == {
+                    original.id: groups
+                }
+
+    run(exercise())
+
+
 def test_strong_references_and_failed_batches_do_not_publish(
     database: PgDatabase,
 ) -> None:
@@ -160,19 +233,32 @@ def test_strong_references_and_failed_batches_do_not_publish(
 
             good = fact(local_entity, "good")
             candidate = fact(local_entity, "bad")
+            local_source = message(scope, "local")
             async with storage.session(scope.id, write=True) as writer:
                 await writer.upsert_entity(local_entity)
+                await writer.register_session(local_source.session_id)
+                await writer.append_messages((local_source,))
                 await writer.save_facts((good,), changed_at=10.0)
                 assert await writer.get_facts((foreign_fact.id,)) == {}
                 assert await writer.list_fact_changes(foreign_fact.id) == ()
                 pending = fact(local_entity, "pending")
+                with pytest.raises(ValueError, match="新建手工事实"):
+                    await writer.save_facts(
+                        (pending, replace(candidate, provenance=(local_source.id,))),
+                        changed_at=20.0,
+                    )
+                assert await writer.get_facts((pending.id, candidate.id)) == {}
                 for invalid in (
                     replace(candidate, subject=EntityRef(foreign_entity.id)),
                     replace(candidate, object=EntityRef(foreign_entity.id)),
                     replace(
                         candidate, source=Source.EXTRACTED, provenance=(source.id,)
                     ),
-                    replace(candidate, provenance=(MessageId("missing"),)),
+                    replace(
+                        candidate,
+                        source=Source.EXTRACTED,
+                        provenance=(MessageId("missing"),),
+                    ),
                     foreign_fact,
                 ):
                     with pytest.raises(ValueError):
@@ -191,7 +277,11 @@ def test_strong_references_and_failed_batches_do_not_publish(
                     await writer.save_facts(
                         (
                             replace(good, labels=(Label("food"),)),
-                            replace(candidate, provenance=(source.id,)),
+                            replace(
+                                candidate,
+                                source=Source.EXTRACTED,
+                                provenance=(source.id,),
+                            ),
                         ),
                         changed_at=25.0,
                     )
@@ -217,10 +307,9 @@ def test_fact_filters_and_keyset_paging(database: PgDatabase) -> None:
             origin = message(scope, "src")
             food = Label("food")
             current = replace(
-                fact(subject, "b"),
+                fact(subject, "b", provenance=(origin.id,)),
                 valid_at=50.0,
                 labels=(food,),
-                provenance=(origin.id,),
             )
             ended = replace(fact(subject, "a"), valid_at=5.0, labels=(food,)).close(
                 50.0, 60.0

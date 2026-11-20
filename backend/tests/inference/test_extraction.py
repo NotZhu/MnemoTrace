@@ -110,7 +110,23 @@ def test_extraction_anchors_relative_date_to_evidence(
     def respond(request: httpx.Request) -> httpx.Response:
         calls.append(request)
         return chat_response(
-            json.dumps({"facts": [_fact(text=fact_text)]}, ensure_ascii=False)
+            json.dumps(
+                {
+                    "facts": [
+                        _fact(
+                            text=fact_text,
+                            source_numbers=[3.0, 1.0],
+                            valid_at_evidence={
+                                "kind": "relative_date",
+                                "source_number": 1.0,
+                                "value": None,
+                                "days": 7.0,
+                            },
+                        )
+                    ]
+                },
+                ensure_ascii=False,
+            )
         )
 
     async def exercise() -> None:

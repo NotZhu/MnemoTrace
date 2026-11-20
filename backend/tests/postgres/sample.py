@@ -80,16 +80,23 @@ def message(
     return Message(MessageId(identifier), scope.id, session, Role.USER, content, at, at)
 
 
-def fact(subject: Entity, identifier: str, *, text: str = "喜欢乌龙茶") -> Fact:
-    """构造一条由测试主体派生的手工事实。
+def fact(
+    subject: Entity,
+    identifier: str,
+    *,
+    text: str = "喜欢乌龙茶",
+    provenance: tuple[MessageId, ...] = (),
+) -> Fact:
+    """构造一条手工事实或带原文依据的抽取事实。
 
     Args:
         subject: 事实主体，提供所属空间。
         identifier: 事实标识。
         text: 合成事实的正文。
+        provenance: 抽取事实的原文标识。为空时创建手工事实。
 
     Returns:
-        测试空间内有效起点未知的手工事实。
+        测试空间内有效起点未知的事实。
     """
     return Fact(
         id=FactId(identifier),
@@ -102,8 +109,8 @@ def fact(subject: Entity, identifier: str, *, text: str = "喜欢乌龙茶") -> 
         invalid_at=None,
         recorded_at=10.0,
         expired_at=None,
-        provenance=(),
+        provenance=provenance,
         labels=(),
         sensitive=False,
-        source=Source.MANUAL,
+        source=Source.EXTRACTED if provenance else Source.MANUAL,
     )

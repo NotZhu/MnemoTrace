@@ -4,10 +4,13 @@ from dataclasses import replace
 from math import inf, nan, nextafter
 
 import pytest
+from psycopg import AsyncConnection
+from psycopg.rows import TupleRow
 
 from mnemotrace_next.adapters.postgres import PostgresStorage
+from mnemotrace_next.adapters.postgres import search as postgres_search
 from mnemotrace_next.domain.entity import Entity
-from mnemotrace_next.domain.ids import FactId
+from mnemotrace_next.domain.ids import FactId, SpaceId
 from mnemotrace_next.domain.values import Label
 from mnemotrace_next.ports.queries import FactFilter
 
@@ -17,7 +20,9 @@ from .sample import fact, message, pool, run, space
 pytestmark = pytest.mark.postgres
 
 
-def test_vector_top_k_filters_scope_before_ranking(database: PgDatabase) -> None:
+def test_vector_top_k_filters_scope_before_ranking(
+    database: PgDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """更近的不可见向量不占候选名额，同分稳定按 ID 排序。"""
 
     async def exercise() -> None:
@@ -38,10 +43,9 @@ def test_vector_top_k_filters_scope_before_ranking(database: PgDatabase) -> None
             source_a, source_b = message(scope, "sa"), message(scope, "sb")
             label = Label("food")
             a = replace(
-                fact(subject, "a"),
+                fact(subject, "a", provenance=(source_a.id, source_b.id)),
                 valid_at=10.0,
                 labels=(label,),
-                provenance=(source_a.id, source_b.id),
             )
             b = replace(a, id=FactId("b"))
             unrelated = tuple(fact(subject, f"outside-{i}") for i in range(30))
@@ -86,6 +90,16 @@ def test_vector_top_k_filters_scope_before_ranking(database: PgDatabase) -> None
                         ((a.id, (0.0, 1.0)), (foreign_fact.id, (1.0, 0.0))),
                         embedding_space="invalid-batch",
                     )
+            lookups: list[tuple[SpaceId, str]] = []
+            embedding_dim = postgres_search.embedding_dim
+
+            async def count_lookup(
+                conn: AsyncConnection[TupleRow], space_id: SpaceId, embedding_space: str
+            ) -> int | None:
+                lookups.append((space_id, embedding_space))
+                return await embedding_dim(conn, space_id, embedding_space)
+
+            monkeypatch.setattr(postgres_search, "embedding_dim", count_lookup)
             async with storage.session(scope.id) as reader:
                 filters = FactFilter(
                     subject=a.subject,
@@ -161,6 +175,11 @@ def test_vector_top_k_filters_scope_before_ranking(database: PgDatabase) -> None
                     reference_time=20.0,
                     embedding_space="v1",
                 ) == ((closed.id, 1.0),)
+            assert lookups == [
+                (scope.id, "v1"),
+                (scope.id, "v2"),
+                (scope.id, "invalid-batch"),
+            ]
 
     run(exercise())
 
@@ -340,7 +359,7 @@ def test_fact_and_both_indexes_roll_back_together(
             await storage.create_space(scope)
             subject = Entity(scope.id, "甲")
             source = message(scope, "unpublished-source")
-            candidate = replace(fact(subject, "unpublished"), provenance=(source.id,))
+            candidate = fact(subject, "unpublished", provenance=(source.id,))
             filters = FactFilter()
             async with storage.session(scope.id, write=True) as writer:
                 await writer.register_session(source.session_id)

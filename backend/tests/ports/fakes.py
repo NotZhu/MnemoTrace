@@ -8,6 +8,7 @@ from typing import Literal
 
 from mnemotrace_next.domain.digest import Digest
 from mnemotrace_next.domain.entity import Entity
+from mnemotrace_next.domain.enums import Source
 from mnemotrace_next.domain.fact import Fact
 from mnemotrace_next.domain.ids import (
     DigestId,
@@ -32,6 +33,7 @@ from mnemotrace_next.ports.storage import (
     SessionUnavailable,
     SpaceSession,
     SupportGroups,
+    flatten_support_groups,
 )
 
 _MUTABLE_FACT_FIELDS = frozenset(
@@ -268,6 +270,8 @@ class FakeSpaceSession:
                 raise ValueError("事实的 space_id 必须属于绑定空间")
             if before is not None:
                 _validate_fact_update(before, fact)
+            elif fact.source is Source.MANUAL and fact.provenance:
+                raise ValueError("新建手工事实的 provenance 必须为空")
             entities = {fact.subject.entity_id}
             if isinstance(fact.object, EntityRef):
                 entities.add(fact.object.entity_id)
@@ -541,17 +545,16 @@ class FakeSpaceSession:
         deleted: set[FactId] = set()
         for fact_id, groups in self._groups.items():
             remaining = tuple(group for group in groups if messages.isdisjoint(group))
-            if remaining != groups:
-                if remaining:
-                    self._groups[fact_id] = remaining
-                    self._facts[fact_id] = replace(
-                        self._facts[fact_id],
-                        provenance=tuple(
-                            dict.fromkeys(item for group in remaining for item in group)
-                        ),
-                    )
-                else:
-                    deleted.add(fact_id)
+            if remaining == groups:
+                continue
+            fact = self._facts[fact_id]
+            if not remaining and fact.source is Source.EXTRACTED:
+                deleted.add(fact_id)
+                continue
+            self._groups[fact_id] = remaining
+            self._facts[fact_id] = replace(
+                fact, provenance=flatten_support_groups(remaining)
+            )
         await self.delete_facts(tuple(deleted))
         self._changes = [
             (change, sources)

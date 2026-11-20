@@ -32,6 +32,7 @@ from .fact_lifecycle import calculate_fact_writes
 from .sessions import create_session
 
 _CONTEXT_MESSAGES = 10
+_COMPARISON_RETRIES = 1
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,7 @@ class Memory:
             RememberRetryRequired: 重判后再次遇到需要模型裁决的变化。
             CommitOutcomeUnknown: 写事务进入提交阶段后无法确认结果。
         """
+        # 固定本批原文和抽取所需的前文，保留擦除标记供提交前复核。
         context = await _prepare_remember_context(
             self._storage,
             self._space_id,
@@ -153,6 +155,8 @@ class Memory:
             ids=self._ids,
             timezone=self._timezone,
         )
+
+        # 在写锁外抽取事实、生成向量并完成首次裁决。
         extracted = await extract_facts(
             self._llm, context.previous, context.messages, timezone=self._timezone
         )
@@ -179,7 +183,8 @@ class Memory:
                 )
         comparisons = await compare_facts(self._llm, prepared, candidates)
 
-        for attempt in range(2):
+        # 持锁复核会话与候选。当前配对的裁决齐全时，原文和事实变更一起提交。
+        for attempt in range(_COMPARISON_RETRIES + 1):
             async with self._storage.session(self._space_id, write=True) as writer:
                 await _check_remember_snapshot(
                     writer, session_id, context.erasure_token
@@ -201,7 +206,10 @@ class Memory:
                     return RememberResult(
                         tuple(message.id for message in context.messages), changes
                     )
-            if attempt == 1:
+
+            # 锁外只补判缺项，避免推理阻塞同一空间的其他写入。
+            # 用完重判机会后，由调用方决定是否重新发起写入。
+            if attempt == _COMPARISON_RETRIES:
                 break
             candidates = current
             async with self._storage.session(self._space_id) as reader:
@@ -240,11 +248,22 @@ class Memory:
         if not prepared:
             await writer.append_messages(context.messages)
             return ()
+
+        # 读取重复或矛盾裁决涉及的旧事实证据组，用锁内的最新证据计算变更。
         existing = candidates.existing_facts
-        groups = (
-            await writer.get_fact_support_groups(tuple(existing)) if existing else {}
+        evidence_ids = tuple(
+            dict.fromkeys(
+                fact_id
+                for comparison in comparisons
+                if comparison.verdict in ("duplicate", "conflict")
+                for fact_id in comparison.pair
+                if fact_id in existing
+            )
         )
-        if groups.keys() != existing.keys():
+        groups = (
+            await writer.get_fact_support_groups(evidence_ids) if evidence_ids else {}
+        )
+        if groups.keys() != set(evidence_ids):
             raise RuntimeError("写会话中旧候选的证据组读取不完整")
         changed_at = max(
             self._clock.now(),
@@ -261,6 +280,8 @@ class Memory:
             existing_support_groups=groups,
             changed_at=changed_at,
         )
+
+        # 原文和实际产生的事实变更在同一事务内提交，零变更也保留原文。
         await writer.append_messages(context.messages)
         if not writes.facts:
             return ()
@@ -282,7 +303,8 @@ class Memory:
                 tuple(writes.vectors.items()),
                 embedding_space=self._embedder.embedding_space,
             )
-        # 画像由事实本身派生，证据组追加只改变来源和审计。
+
+        # 引用事实的截止时间、标签或敏感标记变化时，清理基于旧状态派生的画像。
         dirty_profile_sources = {
             change.after.id
             for change in changes

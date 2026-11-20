@@ -7,6 +7,7 @@ import pytest
 from mnemotrace_next.adapters.postgres import PostgresStorage
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.fact import Fact
+from mnemotrace_next.domain.ids import MessageId
 from mnemotrace_next.domain.values import EntityRef, Label, Predicate
 from mnemotrace_next.ports.queries import FactFilter, FactQuery
 from mnemotrace_next.ports.storage import GraphEdge, GraphEdgeBatch
@@ -17,8 +18,16 @@ from .sample import fact, message, pool, run, space
 pytestmark = pytest.mark.postgres
 
 
-def _edge(identifier: str, subject: Entity, target: Entity) -> Fact:
-    return replace(fact(subject, identifier), object=EntityRef(target.id))
+def _edge(
+    identifier: str,
+    subject: Entity,
+    target: Entity,
+    *,
+    provenance: tuple[MessageId, ...] = (),
+) -> Fact:
+    return replace(
+        fact(subject, identifier, provenance=provenance), object=EntityRef(target.id)
+    )
 
 
 def test_adjacent_edges_match_fact_filters_and_bound_space(
@@ -42,16 +51,14 @@ def test_adjacent_edges_match_fact_filters_and_bound_space(
             source_a, source_b = message(scope, "a"), message(scope, "b")
             work, family = Label("professional_details"), Label("family")
             incoming = replace(
-                _edge("01-in", incoming_from, endpoint),
+                _edge("01-in", incoming_from, endpoint, provenance=(source_a.id,)),
                 valid_at=5.0,
                 labels=(work,),
-                provenance=(source_a.id,),
             )
             active = replace(
-                _edge("02-active", endpoint, outgoing_to),
+                _edge("02-active", endpoint, outgoing_to, provenance=(source_b.id,)),
                 valid_at=20.0,
                 labels=(family,),
-                provenance=(source_b.id,),
             )
             records = (
                 incoming,
@@ -70,10 +77,7 @@ def test_adjacent_edges_match_fact_filters_and_bound_space(
                 _edge("09-other-endpoint", incoming_from, outgoing_to),
                 _edge("10-nonadjacent", outgoing_to, hidden),
                 fact(endpoint, "11-literal"),
-                replace(
-                    _edge("12-no-label", endpoint, outgoing_to),
-                    provenance=(source_a.id,),
-                ),
+                _edge("12-no-label", endpoint, outgoing_to, provenance=(source_a.id,)),
                 replace(_edge("13-no-source", endpoint, outgoing_to), labels=(family,)),
             )
             async with storage.session(scope.id, write=True) as writer:

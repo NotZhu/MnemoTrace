@@ -47,12 +47,26 @@ _UPDATE_FACT = """
 
 @dataclass(frozen=True)
 class FactWrite:
-    """保存适配器已验证的事实快照、来源变更和截止依据。"""
+    """保存适配器已验证的事实快照、待插入证据组和截止依据。
+
+    append_at 是追加证据组的起始组号和位置。为 None 时从零分配，
+    并在修改旧事实的分组前替换旧证据关系。
+    """
 
     before: Fact | None
     after: Fact
     groups: SupportGroups | None
     triggers: tuple[CutoffTrigger, ...]
+    append_at: tuple[int, int] | None = None
+
+
+def _fact_row_changes(before: Fact, after: Fact) -> bool:
+    return (
+        before.invalid_at != after.invalid_at
+        or before.expired_at != after.expired_at
+        or before.labels != after.labels
+        or before.sensitive != after.sensitive
+    )
 
 
 def validate_fact_update(before: Fact, after: Fact) -> None:
@@ -152,12 +166,14 @@ async def write_fact_batch(
     updated = [
         change.after
         for change in changes
-        if change.before is not None and change.before != change.after
+        if change.before is not None and _fact_row_changes(change.before, change.after)
     ]
     relinked = [
         change.after
         for change in changes
-        if change.before is not None and change.groups is not None
+        if change.before is not None
+        and change.groups is not None
+        and change.append_at is None
     ]
     try:
         async with conn.transaction(), conn.cursor() as cursor:
@@ -184,19 +200,23 @@ async def write_fact_batch(
                     """,
                     (relinked[0].space_id.value, [fact.id.value for fact in relinked]),
                 )
-            await cursor.executemany(
-                """
-                INSERT INTO mnemotrace_next.fact_provenance
-                    (space_id, fact_id, position, support_group, message_id)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                [
-                    row
-                    for change in changes
-                    if change.groups is not None
-                    for row in _support_rows(change.after, change.groups)
-                ],
-            )
+            support_rows = [
+                row
+                for change in changes
+                if change.groups is not None
+                for row in _support_rows(
+                    change.after, change.groups, start=change.append_at or (0, 0)
+                )
+            ]
+            if support_rows:
+                await cursor.executemany(
+                    """
+                    INSERT INTO mnemotrace_next.fact_provenance
+                        (space_id, fact_id, position, support_group, message_id)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    support_rows,
+                )
             await cursor.executemany(
                 """
                 INSERT INTO mnemotrace_next.fact_changes
@@ -248,16 +268,19 @@ async def write_fact_batch(
 
 
 def _support_rows(
-    fact: Fact, groups: SupportGroups
+    fact: Fact, groups: SupportGroups, *, start: tuple[int, int]
 ) -> list[tuple[str, str, int, int, str]]:
+    first_group, first_position = start
     members = (
         (group_number, message_id)
-        for group_number, group in enumerate(groups)
+        for group_number, group in enumerate(groups, start=first_group)
         for message_id in group
     )
     return [
         (fact.space_id.value, fact.id.value, position, group_number, message_id.value)
-        for position, (group_number, message_id) in enumerate(members)
+        for position, (group_number, message_id) in enumerate(
+            members, start=first_position
+        )
     ]
 
 

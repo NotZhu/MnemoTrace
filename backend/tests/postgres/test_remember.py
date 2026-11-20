@@ -328,10 +328,10 @@ def test_remember_can_commit_only_messages(database: PgDatabase, empty: bool) ->
 @pytest.mark.parametrize(
     "sensitive", [False, True], ids=["support-only", "sensitivity"]
 )
-def test_remember_keeps_profile_when_only_support_changes(
+def test_remember_adds_erasable_evidence_to_manual_fact(
     database: PgDatabase, sensitive: bool
 ) -> None:
-    """补证据照常写审计，只有事实的敏感性另外改变时才清理画像。"""
+    """手工事实可补证，擦除会话后保留事实和独立于原文的审计。"""
 
     async def exercise() -> None:
         async with _workspace(database) as (scope, storage):
@@ -350,7 +350,7 @@ def test_remember_keeps_profile_when_only_support_changes(
             )
             async with storage.session(scope.id, write=True) as writer:
                 await writer.upsert_entity(project)
-                await writer.save_facts((old,), changed_at=100.0)
+                (created,) = await writer.save_facts((old,), changed_at=100.0)
                 await writer.save_profile(profile)
 
             result = await memory.remember(_CURRENT, session_id=session_id)
@@ -365,6 +365,15 @@ def test_remember_keeps_profile_when_only_support_changes(
                     old.id: (result.message_ids,)
                 }
                 assert (await writer.list_fact_changes(old.id))[0] == change
+                assert await writer.get_profile() == (None if sensitive else profile)
+
+                assert await writer.delete_session_data(session_id) == frozenset()
+                assert not await writer.has_session(session_id)
+                assert await writer.get_fact(old.id) == replace(
+                    old, sensitive=sensitive
+                )
+                assert await writer.get_fact_support_groups((old.id,)) == {old.id: ()}
+                assert await writer.list_fact_changes(old.id) == (created,)
                 assert await writer.get_profile() == (None if sensitive else profile)
 
     run(exercise())
