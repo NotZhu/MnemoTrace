@@ -442,6 +442,25 @@ class FakeSpaceSession:
             and (not exclude_sensitive or not fact.sensitive)
         }
 
+    async def get_relation_edges(
+        self, fact_ids: Sequence[FactId], *, exclude_sensitive: bool = False
+    ) -> Mapping[FactId, GraphEdge]:
+        """按候选标识投影已保存的可见关系边。
+
+        Args:
+            fact_ids: 候选事实标识。
+            exclude_sensitive: 是否排除敏感事实。
+
+        Returns:
+            以事实标识为键的可见关系边。
+        """
+        facts = await self.get_facts(fact_ids, exclude_sensitive=exclude_sensitive)
+        return {
+            fact.id: GraphEdge(fact.id, fact.subject.entity_id, fact.object.entity_id)
+            for fact in facts.values()
+            if isinstance(fact.object, EntityRef)
+        }
+
     async def get_salience(
         self, ids: Sequence[FactId], *, exclude_sensitive: bool = False
     ) -> Mapping[FactId, FactSalience]:
@@ -694,6 +713,43 @@ class FakeSpaceSession:
         )
         edges = sorted(matches, key=lambda edge: edge.fact_id.value)
         return GraphEdgeBatch(tuple(edges[:limit]), len(edges) > limit)
+
+    async def outgoing_edges(
+        self,
+        subject_ids: Sequence[EntityId],
+        *,
+        filters: FactFilter,
+        reference_time: float,
+        limit: int,
+        predicates: Sequence[Predicate] = (),
+    ) -> Sequence[GraphEdge]:
+        """按主体输入顺序批量查找符合条件的出边。
+
+        Args:
+            subject_ids: 按遍历顺序排列的主体标识。
+            filters: 每条边必须满足的事实筛选条件。
+            reference_time: 判断事实状态使用的默认 UTC epoch 秒。
+            limit: 整批最多返回的边数。
+            predicates: 可选的精确谓词集合。
+
+        Returns:
+            按主体输入顺序、再按事实标识升序排列的唯一关系边。
+        """
+        positions = {item: pos for pos, item in enumerate(dict.fromkeys(subject_ids))}
+        allowed = set(predicates)
+        matches = (
+            GraphEdge(fact.id, fact.subject.entity_id, fact.object.entity_id)
+            for fact in self._matching_facts(filters, reference_time)
+            if isinstance(fact.object, EntityRef)
+            and fact.subject.entity_id in positions
+            and (not allowed or fact.predicate in allowed)
+        )
+        return tuple(
+            sorted(
+                matches,
+                key=lambda edge: (positions[edge.subject_id], edge.fact_id.value),
+            )[:limit]
+        )
 
     async def save_digest(self, digest: Digest) -> None:
         """保存来源可用的摘要。

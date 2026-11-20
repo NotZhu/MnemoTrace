@@ -1,18 +1,23 @@
 """从已授权空间的同一快照召回事实证据。"""
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from math import isfinite
+from numbers import Real
 from typing import Literal
 
 from ..domain._validation import optional_timestamp
 from ..domain.errors import DomainError
-from ..domain.ids import FactId, MessageId, SpaceId
+from ..domain.fact import Fact
+from ..domain.ids import EntityId, FactId, MessageId, SpaceId
+from ..domain.values import EntityRef, Predicate
 from ..ports.inference import Embedder, InferenceError
 from ..ports.queries import FactFilter
 from ..ports.reranker import Reranker
 from ..ports.runtime import Clock
 from ..ports.storage import Storage
+from .graph_recall import GraphRecallOptions, graph_ranking
 
 DEFAULT_TOP_K = 10
 _MAX_TOP_K = 100
@@ -24,6 +29,15 @@ type _DegradedReason = Literal["embedding_timeout", "reranker_timeout"]
 
 
 @dataclass(frozen=True)
+class RecallRelation:
+    """保存实体关系事实的两个端点及规范谓词。"""
+
+    subject_id: EntityId
+    predicate: Predicate
+    object_entity_id: EntityId
+
+
+@dataclass(frozen=True)
 class RecallEvidence:
     """保存可见事实及其有效区间和来源标识。"""
 
@@ -32,6 +46,7 @@ class RecallEvidence:
     valid_at: float | None
     invalid_at: float | None
     source_message_ids: tuple[MessageId, ...]
+    relation: RecallRelation | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +100,7 @@ class Recall:
         top_k: int = DEFAULT_TOP_K,
         as_of: float | None = None,
         rerank: bool = False,
+        graph: GraphRecallOptions | None = None,
     ) -> RecallResult:
         """按查询相关性召回指定时点有效的可见事实。
 
@@ -93,6 +109,7 @@ class Recall:
             top_k: 最多返回的证据条数，取 1 至 100。
             as_of: 显式有效时点，以 UTC epoch 秒表示。省略时查当前事实。
             rerank: 是否调用已装配的重排器调整候选顺序。
+            graph: 图召回设置，省略时使用普通召回。
 
         Returns:
             按相关性排列的事实证据及可选的超时降级原因。
@@ -107,6 +124,8 @@ class Recall:
             raise ValueError(f"top_k 须为 1 至 {_MAX_TOP_K} 的整数")
         if type(rerank) is not bool:
             raise ValueError("rerank 须为布尔值")
+        if graph is not None and not isinstance(graph, GraphRecallOptions):
+            raise ValueError("graph 须为 GraphRecallOptions 或 None")
         reranker = self._reranker if rerank else None
         if rerank and reranker is None:
             raise ValueError("开启重排需要装配重排器")
@@ -129,11 +148,7 @@ class Recall:
             reranker = None
             degraded_reason = "embedding_timeout"
         else:
-            if not isinstance(vectors, Sequence) or len(vectors) != 1:
-                raise InferenceError("查询嵌入须返回一条向量")
-            vector = vectors[0]
-            if vector is None or len(vector) == 0:
-                raise InferenceError("查询嵌入返回了空向量")
+            vector = _query_vector(vectors, self._embedder.dim)
 
         fact_load_limit = top_k if reranker is None else min(100, max(20, 2 * top_k))
         async with self._storage.session(self._space_id) as reader:
@@ -150,7 +165,22 @@ class Recall:
                     embedding_space=self._embedder.embedding_space,
                     min_score=_VECTOR_MIN_COSINE,
                 )
-            ids = _fuse_rankings(lexical, semantic)[:fact_load_limit]
+            lexical_ids = tuple(fact_id for fact_id, _ in lexical)
+            semantic_ids = tuple(fact_id for fact_id, _ in semantic)
+            graph_ids = (
+                await graph_ranking(
+                    reader,
+                    graph,
+                    lexical_ids,
+                    semantic_ids,
+                    filters=filters,
+                    reference_time=reference_time,
+                    top_k=top_k,
+                )
+                if graph is not None
+                else ()
+            )
+            ids = _fuse_rankings(lexical_ids, semantic_ids, graph_ids)[:fact_load_limit]
             if not ids:
                 return RecallResult((), degraded_reason)
             facts = await reader.get_facts(
@@ -166,15 +196,19 @@ class Recall:
             else:
                 ids = _fill_reranking(ids, ranked, top_k)
 
-        evidence = []
-        for fact_id in ids[:top_k]:
-            fact = facts[fact_id]
-            evidence.append(
-                RecallEvidence(
-                    fact.id, fact.text, fact.valid_at, fact.invalid_at, fact.provenance
-                )
-            )
-        return RecallResult(tuple(evidence), degraded_reason)
+        evidence = tuple(_evidence(facts[fact_id]) for fact_id in ids[:top_k])
+        return RecallResult(evidence, degraded_reason)
+
+
+def _evidence(fact: Fact) -> RecallEvidence:
+    relation = (
+        RecallRelation(fact.subject.entity_id, fact.predicate, fact.object.entity_id)
+        if isinstance(fact.object, EntityRef)
+        else None
+    )
+    return RecallEvidence(
+        fact.id, fact.text, fact.valid_at, fact.invalid_at, fact.provenance, relation
+    )
 
 
 def _validate_query(query: str) -> str:
@@ -190,16 +224,43 @@ def _validate_query(query: str) -> str:
     return query
 
 
+def _query_vector(vectors: object, dimension: int) -> tuple[float, ...]:
+    if (
+        not isinstance(vectors, Sequence)
+        or isinstance(vectors, (str, bytes, bytearray))
+        or len(vectors) != 1
+    ):
+        raise InferenceError("查询嵌入须返回一条向量")
+    vector = vectors[0]
+    if not isinstance(vector, Sequence) or isinstance(vector, (str, bytes, bytearray)):
+        raise InferenceError("查询嵌入须返回数值序列")
+    if not vector or len(vector) != dimension:
+        raise InferenceError("查询嵌入向量维度与 Embedder 配置不一致")
+
+    components: list[float] = []
+    for value in vector:
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise InferenceError("查询嵌入向量分量须为有限实数")
+        try:
+            component = float(value)
+        except OverflowError:
+            raise InferenceError("查询嵌入向量分量须为有限实数") from None
+        if not isfinite(component):
+            raise InferenceError("查询嵌入向量分量须为有限实数")
+        components.append(component)
+    if not any(components):
+        raise InferenceError("查询嵌入向量不能全为零")
+    return tuple(components)
+
+
 def _candidate_limit(top_k: int) -> int:
     return min(200, max(32, 4 * top_k))
 
 
-def _fuse_rankings(
-    *rankings: Sequence[tuple[FactId, float]],
-) -> list[FactId]:
+def _fuse_rankings(*rankings: Iterable[FactId]) -> list[FactId]:
     scores: dict[FactId, float] = defaultdict(float)
     for ranking in rankings:
-        for rank, (fact_id, _) in enumerate(ranking, start=1):
+        for rank, fact_id in enumerate(ranking, start=1):
             scores[fact_id] += 1 / (_RRF_K + rank)
     return sorted(scores, key=lambda fact_id: (-scores[fact_id], fact_id.value))
 

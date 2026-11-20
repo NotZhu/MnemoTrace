@@ -70,6 +70,10 @@ GRANT USAGE ON ALL SEQUENCES IN SCHEMA mnemotrace_next TO mnemotrace_next_runtim
 
 筛选和排除 `exclude_fact_ids` 后，按 `FactId` 升序返回最多 `limit` 条边。每条边包含事实 ID、主体 ID 和客体实体 ID。仅当符合条件的边数超过 `limit` 时，`truncated` 为真。空输入返回未截断的空批次。
 
+`SpaceReader.get_relation_edges` 按候选事实 ID 投影关系端点，省略字面值事实和不可见记录。候选的有效时点由同一读快照中的候选查询处理。
+
+`SpaceReader.outgoing_edges` 按主体批量读取一层出边，先应用 `FactFilter` 和可选的精确谓词集合，再按主体首次出现的位置、`FactId` 升序排列。`limit` 约束整批结果。两项读取均限定在会话绑定空间内。
+
 ## 真库验证
 
 本地测试使用独立的 PostgreSQL/pgvector 实例，镜像参见 [Backend CI](../../.github/workflows/backend-ci.yml)。将 `MNEMOTRACE_NEXT_TEST_POSTGRES_DSN` 指向该实例的管理连接。测试会在该实例创建 UTF-8、C locale 的专用数据库及临时运行角色，并在结束时清理。将 `MNEMOTRACE_NEXT_REQUIRE_POSTGRES` 设为 `1` 时，配置缺失或测试跳过都会使真库作业失败。
@@ -85,9 +89,36 @@ uv run --locked --extra inference python scripts/recall_quality.py --out .artifa
 
 调参集和留出集各含 235 条事实及 20 条查询，覆盖相似编号、无向量的专名、语义改写、历史区间及有干扰项的无答案查询。各策略共用同一份查询向量和实际 PostgreSQL 排名。脚本将默认策略与 `Memory.recall` 的结果逐题核对，报告记录模型与数据库版本、正确事实是否入围、Top‑1/Top‑5 命中数、无答案返回证据的次数和延迟。查看两组结果时同时检查漏在候选池外和入围后被挤出 Top‑5 的查询。脚本中的 `evaluate` 也可使用实现 `Embedder` 端口的本地模型。
 
-本地 CPU 对照使用仓库固定的多语 MiniLM ONNX 修订 `faf4aa4`。`top_k=5` 时，默认双路 RRF 在两组的 Top‑5 命中分别为 `10/12` 和 `12/12`，无答案误召回均为 `6/8`。候选深度增至 64 或 200 未改善命中，200 在调参集还把一条正确编号挤出 Top‑5。继续使用普通召回的[候选预算](../src/mnemotrace_next/application/recall.py)。
+本地 CPU 对照使用仓库固定的多语 MiniLM ONNX 修订 `faf4aa4`。`top_k=5` 时，默认双路 RRF 在两组的 Top‑5 命中分别为 `10/12` 和 `12/12`，无答案误召回均为 `6/8`。候选深度增至 64 或 200 未改善命中，200 在调参集还把一条正确编号挤出 Top‑5。继续使用普通召回的[候选预算](../src/mnemotrace_next/application/recall.py)。 [普通召回原始报告（gzip JSON）](recall-quality/ordinary-minilm-faf4aa4.json.gz)
 
 MiniLM 的余弦下限降至 `0.45` 可补回余弦约为 `0.481` 的英文改写，留出集命中和两组无答案误召回持平。另一个中文改写的正确事实在原始向量排名第 203，先看分词与模型区分度，再考虑候选扩张。词法分数门槛在调参集的收益伴随留出集掉召回。当前通用向量下限为 `0.5`，词法路按词项命中入围。换嵌入模型时按本模型重跑；同题的弱命中由评测记录，普通召回允许返回相关性不足的候选供上层判断。
+
+### 图召回质量验收
+
+复用上述测试实例和嵌入端点配置，从 `backend` 运行以下命令。也可将本地模型作为 `Embedder` 传给 `evaluate(..., suite="graph")`。脚本按查询共享同一嵌入向量，逐题核对公开 `Memory.recall` 的开图和关图排序，并把各路候选、起点来源、每跳读边及排名写入新报告。
+
+```sh
+uv run --locked --extra inference python scripts/recall_quality.py --suite graph --out .artifacts/recall-quality/graph.json
+```
+
+中英文调参集和留出集各含 4 道一跳直答、6 道二跳补全和 2 道无答案查询。二跳题覆盖已索引与未索引的目标、历史时点及显式多起点。另用含 13 和 32 个自动起点的两个压力样例比较边预算。出边计划使用生产 SQL，先预热一次，再记录 12 次 `EXPLAIN (ANALYZE, BUFFERS)`，对照完整前沿与前两个起点。
+
+本地 CPU 对照使用固定 MiniLM 修订 `faf4aa4`、FastEmbed `0.7.4`、ONNX Runtime `1.32.0`、tokenizers `0.23.3`、PostgreSQL `18.6` 和 pgvector `0.8.7`。同次复跑普通召回的 40 题，关闭图时的返回 ID 及目标排名逐题与原基线一致。 [MiniLM 固定修订](https://huggingface.co/Qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q/tree/faf4aa4225822f3bc6376869cb1164e8e3feedd0) · [普通召回复跑原始报告（gzip JSON）](recall-quality/ordinary-rerun-minilm-faf4aa4.json.gz)
+
+| 观察 | 调参集 | 留出集 |
+| --- | --- | --- |
+| 二跳 Top‑5 命中，关图 → 开图 | 0/6 → 6/6 | 0/6 → 6/6 |
+| 一跳 Top‑1 命中，保留 → 跳过种子边图路分 | 4/4 → 0/4 | 4/4 → 0/4 |
+| `top_k=1` 时二跳目标进入候选，默认 → 4 倍边预算 | 6/6 → 4/6 | 6/6 → 4/6 |
+| `top_k=5` 时无答案返回证据，关图 → 开图 | 1/2 → 1/2 | 1/2 → 1/2 |
+
+**保留种子边的图路 RRF 分及当前[全局边预算](../src/mnemotrace_next/application/graph_recall.py)**。只去掉种子边的图路分、保留遍历和后续边的原名次时，二跳无收益。一跳直答因竞争事实得分更高而退到第二。预算提高到 16 倍未改善两组结果。两组二跳目标在 `top_k=1` 均能进入图候选，最终都排在第一名之后。
+
+12 条干扰出边的样例在 `top_k=5` 以默认预算读取 `[25, 1]` 条边，4 倍预算停在第一跳。2,048 条干扰出边的样例在 `top_k=1` 和 `5` 都会耗尽首跳预算，16 倍预算也到不了第二跳。`top_k=1` 时真实计划使用现有 `facts_edges_out`，向排序节点送入约 2,050 条边后返回 8 条。保留全部 32 个起点的首跳 SQL P95 为 `0.97 ms`，仅传前两个起点为 `0.73 ms`。这组本地合成样例支持沿用现有索引，也表明候选上限只约束返回量。高出度下能否到达第二跳仍取决于首跳消耗，延迟数字用于比较这次本机运行。
+
+随文档保存的报告已按固定用例逐题核对，并从原始候选回放排序。图召回报告含 52 组查询与 `top_k` 组合，以及 8 组 PostgreSQL 执行计划和延迟样本。 [图召回原始报告（gzip JSON）](recall-quality/graph-minilm-faf4aa4.json.gz)
+
+### 检查命令
 
 ```sh
 uv run --locked pytest -m postgres

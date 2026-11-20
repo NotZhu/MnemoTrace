@@ -235,6 +235,22 @@ class SpaceReader(Protocol):
         """
         ...
 
+    async def get_relation_edges(
+        self, fact_ids: Sequence[FactId], *, exclude_sensitive: bool = False
+    ) -> Mapping[FactId, GraphEdge]:
+        """投影绑定空间内候选事实的关系端点。
+
+        与按 ID 读取事实一致，有效时点由选出候选的查询处理。
+
+        Args:
+            fact_ids: 本快照中的候选事实标识。
+            exclude_sensitive: 是否排除敏感事实。
+
+        Returns:
+            以事实标识为键的可见关系边。字面值事实和缺失事实省略。
+        """
+        ...
+
     async def get_salience(
         self, ids: Sequence[FactId], *, exclude_sensitive: bool = False
     ) -> Mapping[FactId, FactSalience]:
@@ -358,6 +374,31 @@ class SpaceReader(Protocol):
         Returns:
             按 FactId.value 升序排列的边及是否有符合条件但未返回的边。
             空端点返回未截断的空批次。
+        """
+        ...
+
+    async def outgoing_edges(
+        self,
+        subject_ids: Sequence[EntityId],
+        *,
+        filters: FactFilter,
+        reference_time: float,
+        limit: int,
+        predicates: Sequence[Predicate] = (),
+    ) -> Sequence[GraphEdge]:
+        """读取绑定空间内一层实体的有向出边。
+
+        主体匹配后应用事实筛选和谓词条件，再执行批次限额。
+
+        Args:
+            subject_ids: 按遍历顺序排列的主体标识，重复项按首次位置处理。
+            filters: 每条边必须满足的事实筛选条件。
+            reference_time: 本次请求共用的 UTC epoch 秒。
+            limit: 筛选后整批最多返回的边数，须为正整数。
+            predicates: 边须匹配的规范谓词之一。空序列表示不限。
+
+        Returns:
+            按主体输入顺序、再按 FactId.value 升序排列的唯一关系边。
         """
         ...
 

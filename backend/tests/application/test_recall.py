@@ -1,12 +1,13 @@
 """验证 Python 召回入口的行为。"""
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from typing import cast
 
 import pytest
 
-from mnemotrace_next import Memory, RecallResult
+from mnemotrace_next import GraphRecallOptions, Memory, RecallResult
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.enums import Source
 from mnemotrace_next.domain.fact import Fact
@@ -14,6 +15,7 @@ from mnemotrace_next.domain.ids import FactId, SpaceId
 from mnemotrace_next.domain.space import Space
 from mnemotrace_next.domain.values import EntityRef, LiteralValue, Predicate
 from mnemotrace_next.ports.inference import InferenceError
+from mnemotrace_next.ports.storage import SpaceSession
 from tests.ports.fakes import (
     FakeClock,
     FakeEmbedder,
@@ -243,23 +245,61 @@ def test_recall_rejects_unconfigured_reranking_before_embedding() -> None:
 
 @pytest.mark.parametrize(
     "vectors",
-    (None, (), (None,), ((),), ((1.0, 0.0), (1.0, 0.0))),
+    (
+        None,
+        (),
+        (None,),
+        ((),),
+        ((1.0, 0.0), (1.0, 0.0)),
+        (0.25,),
+        (b"12",),
+        ((1.0,),),
+        ((1.0, 0.0, 0.0),),
+        (("1", 0.0),),
+        ((True, 0.0),),
+        ((float("nan"), 0.0),),
+        ((float("inf"), 0.0),),
+        ((10**400, 0.0),),
+        ((-0.0, 0.0),),
+    ),
     ids=(
         "missing-batch",
         "empty-batch",
         "missing-vector",
         "empty-vector",
         "extra-vector",
+        "scalar",
+        "bytes-vector",
+        "short-vector",
+        "long-vector",
+        "text-component",
+        "bool-component",
+        "nan-component",
+        "infinite-component",
+        "overflowing-component",
+        "zero-vector",
     ),
 )
 def test_recall_rejects_an_invalid_query_embedding(vectors: object) -> None:
-    """缺失或多余的嵌入结果应报告推理错误。"""
-    storage = FakeStorage()
+    """无效查询嵌入在打开候选读会话前报告推理错误。"""
+
+    class AuthOnlyStorage(FakeStorage):
+        opened = False
+
+        @asynccontextmanager
+        async def session(
+            self, space_id: SpaceId, *, write: bool = False
+        ) -> AsyncIterator[SpaceSession]:
+            assert not self.opened, "无效查询嵌入不应打开候选读会话"
+            self.opened = True
+            async with super().session(space_id, write=write) as session:
+                yield session
 
     class InvalidEmbedder(FakeEmbedder):
         async def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
             return cast(Sequence[Sequence[float]], vectors)
 
+    storage = AuthOnlyStorage()
     reader = Memory.for_recall(
         space_id=_SPACE.id,
         storage=storage,
@@ -353,6 +393,18 @@ def test_recall_rejects_invalid_requests_before_inference(
     )
     with pytest.raises(ValueError):
         asyncio.run(reader.recall(query, top_k=top_k, as_of=as_of))
+
+
+def test_recall_rejects_invalid_graph_options_before_inference() -> None:
+    """图召回只接受经过校验的参数对象。"""
+    reader = Memory.for_recall(
+        space_id=_SPACE.id,
+        storage=FakeStorage(),
+        embedder=_UnexpectedEmbedder(),
+        clock=FakeClock(),
+    )
+    with pytest.raises(ValueError, match="GraphRecallOptions"):
+        asyncio.run(reader.recall("发布规范", graph=cast(GraphRecallOptions, {})))
 
 
 def test_recall_returns_empty_evidence_for_no_hits() -> None:

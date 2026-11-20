@@ -16,7 +16,7 @@ from ...domain.salience import FactSalience
 from ...domain.space import Space
 from ...domain.values import EntityRef, Predicate
 from ...ports.queries import FactFilter, FactQuery
-from ...ports.storage import FactChange, GraphEdgeBatch
+from ...ports.storage import FactChange, GraphEdge, GraphEdgeBatch
 from . import search
 from .fact_filters import FactConditions, fact_conditions
 from .facts import SELECT_FACTS
@@ -68,6 +68,36 @@ _ADJACENT_EDGES = sql.SQL("""
     SELECT fact_id, subject_id, object_entity_id FROM adjacent
     ORDER BY fact_id ASC LIMIT %(fetch_limit)s
     """)
+
+_OUTGOING_EDGES = sql.SQL("""
+    SELECT f.fact_id, f.subject_id, f.object_entity_id
+    FROM unnest(%(subject_ids)s::text[]) WITH ORDINALITY AS frontier(subject_id, position)
+    JOIN mnemotrace_next.facts AS f ON f.subject_id = frontier.subject_id
+    WHERE {} AND f.object_entity_id IS NOT NULL
+    ORDER BY frontier.position, f.fact_id LIMIT %(limit)s
+    """)
+
+
+def _outgoing_edge_query(
+    space_id: SpaceId,
+    subject_ids: Sequence[EntityId],
+    *,
+    filters: FactFilter,
+    reference_time: float,
+    limit: int,
+    predicates: Sequence[Predicate],
+) -> tuple[sql.Composed, dict[str, object]]:
+    conditions = fact_conditions(space_id, filters, reference_time)
+    if predicates:
+        conditions.add(
+            "f.predicate = ANY(%(predicates)s::text[])",
+            predicates=[predicate.value for predicate in predicates],
+        )
+    return _OUTGOING_EDGES.format(conditions.where()), {
+        **conditions.params,
+        "subject_ids": [item.value for item in dict.fromkeys(subject_ids)],
+        "limit": limit,
+    }
 
 
 class PostgresReader:
@@ -237,6 +267,40 @@ class PostgresReader:
         return {
             fact.id: fact for fact in await self._read_facts(conditions, sql.SQL(""))
         }
+
+    async def get_relation_edges(
+        self, fact_ids: Sequence[FactId], *, exclude_sensitive: bool = False
+    ) -> Mapping[FactId, GraphEdge]:
+        """按候选事实标识读取可见的关系端点。
+
+        Args:
+            fact_ids: 本快照中的候选事实标识。
+            exclude_sensitive: 是否排除敏感事实。
+
+        Returns:
+            以事实标识为键的可见关系边。
+        """
+        if not fact_ids:
+            return {}
+        conditions = FactConditions(self.space_id)
+        conditions.add(
+            "f.fact_id = ANY(%(ids)s::text[]) AND f.object_entity_id IS NOT NULL",
+            ids=[fact_id.value for fact_id in fact_ids],
+        )
+        if exclude_sensitive:
+            conditions.add("NOT f.sensitive")
+        async with self._conn.cursor(
+            row_factory=args_row(graph_edge_from_row)
+        ) as cursor:
+            await cursor.execute(
+                sql.SQL("""
+                    SELECT f.fact_id, f.subject_id, f.object_entity_id
+                    FROM mnemotrace_next.facts AS f
+                    WHERE {}
+                    """).format(conditions.where()),
+                conditions.params,
+            )
+            return {edge.fact_id: edge for edge in await cursor.fetchall()}
 
     async def facts_in_slot(
         self,
@@ -449,6 +513,43 @@ class PostgresReader:
             )
             edges = await cursor.fetchall()
         return GraphEdgeBatch(tuple(edges[:limit]), len(edges) > limit)
+
+    async def outgoing_edges(
+        self,
+        subject_ids: Sequence[EntityId],
+        *,
+        filters: FactFilter,
+        reference_time: float,
+        limit: int,
+        predicates: Sequence[Predicate] = (),
+    ) -> Sequence[GraphEdge]:
+        """按前沿主体顺序批量读取筛选后的出边。
+
+        Args:
+            subject_ids: 按遍历顺序排列的主体标识。
+            filters: 每条边必须满足的事实筛选条件。
+            reference_time: 用于判断事实状态的默认 UTC epoch 秒。
+            limit: 整批最多返回的边数。
+            predicates: 可选的精确谓词集合。
+
+        Returns:
+            按主体输入顺序、再按事实标识升序排列的唯一关系边。
+        """
+        if not subject_ids:
+            return ()
+        query, params = _outgoing_edge_query(
+            self.space_id,
+            subject_ids,
+            filters=filters,
+            reference_time=reference_time,
+            limit=limit,
+            predicates=predicates,
+        )
+        async with self._conn.cursor(
+            row_factory=args_row(graph_edge_from_row)
+        ) as cursor:
+            await cursor.execute(query, params)
+            return tuple(await cursor.fetchall())
 
     async def _digest(self, tail: str, **params: object) -> Digest | None:
         async with self._conn.cursor(row_factory=args_row(digest_from_row)) as cursor:

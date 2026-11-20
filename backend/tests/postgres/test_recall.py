@@ -6,18 +6,37 @@ from dataclasses import replace
 
 import pytest
 
-from mnemotrace_next import Memory, RecallEvidence
+from mnemotrace_next import GraphRecallOptions, Memory, RecallEvidence, RecallRelation
 from mnemotrace_next.adapters.postgres import PostgresStorage
 from mnemotrace_next.adapters.postgres.reader import PostgresReader
 from mnemotrace_next.domain.entity import Entity
-from mnemotrace_next.domain.ids import FactId
+from mnemotrace_next.domain.fact import Fact
+from mnemotrace_next.domain.ids import EntityId, FactId, MessageId
+from mnemotrace_next.domain.values import EntityRef, Predicate
 from mnemotrace_next.ports.queries import FactFilter
+from mnemotrace_next.ports.storage import GraphEdge
 from tests.ports.fakes import FakeClock, FakeEmbedder, FakeIdGenerator, FakeLLM
 
 from .conftest import PgDatabase
 from .sample import fact, message, pool, run, space
 
 pytestmark = pytest.mark.postgres
+
+
+def _relation(
+    subject: Entity,
+    target: Entity,
+    identifier: str,
+    *,
+    text: str = "合成关系",
+    provenance: tuple[MessageId, ...] = (),
+) -> Fact:
+    return replace(
+        fact(subject, identifier, text=text, provenance=provenance),
+        object=EntityRef(target.id),
+        predicate=Predicate("links_to"),
+        valid_at=10.0,
+    )
 
 
 def test_recall_returns_identifier_and_paraphrase_with_independent_candidates(
@@ -309,5 +328,156 @@ def test_recall_keeps_authorized_evidence_when_erased_during_reranking(
                 RecallEvidence(second.id, second.text, None, None, (source.id,)),
             )
             assert result.degraded_reason is None
+
+    run(exercise())
+
+
+def test_graph_recall_filters_every_bridge_before_expanding(
+    database: PgDatabase,
+) -> None:
+    """不可见或不合格的边无法把后续可见事实带入图候选。"""
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            scope, sibling = space(), space()
+            storage = PostgresStorage(connections, owner_id=scope.owner_id)
+            await storage.create_space(scope)
+            await storage.create_space(sibling)
+            root, tip = (Entity(scope.id, name) for name in ("起点", "终点"))
+            valid, closed, hidden, mismatch, unknown = (
+                Entity(scope.id, name)
+                for name in ("有效", "截止", "隐藏", "其他谓词", "未知起点")
+            )
+            good = _relation(root, valid, "a-good")
+            ended = _relation(root, closed, "b-ended").close(20.0, 20.0)
+            good_tail = _relation(valid, tip, "c-good-tail")
+            ended_tail = _relation(closed, tip, "d-ended-tail")
+            records = (
+                good,
+                ended,
+                good_tail,
+                ended_tail,
+                replace(_relation(root, hidden, "hidden"), sensitive=True),
+                replace(_relation(valid, tip, "hidden-tail"), sensitive=True),
+                replace(
+                    _relation(root, mismatch, "other"),
+                    predicate=Predicate("other_relation"),
+                ),
+                replace(_relation(root, unknown, "unknown"), valid_at=None),
+                *(
+                    _relation(bridge, tip, f"tail-{index}")
+                    for index, bridge in enumerate((hidden, mismatch, unknown))
+                ),
+            )
+            async with storage.session(scope.id, write=True) as writer:
+                for entity in (root, tip, valid, closed, hidden, mismatch, unknown):
+                    await writer.upsert_entity(entity)
+                await writer.save_facts(records, changed_at=20.0)
+            foreign = Entity(sibling.id, root.name)
+            async with storage.session(sibling.id, write=True) as writer:
+                await writer.upsert_entity(foreign)
+                await writer.save_facts(
+                    (_relation(foreign, foreign, "foreign"),), changed_at=20.0
+                )
+
+            recall = Memory.for_recall(
+                space_id=scope.id,
+                storage=storage,
+                embedder=FakeEmbedder(),
+                clock=FakeClock(),
+                exclude_sensitive=True,
+            )
+            graph = GraphRecallOptions(
+                origin_entity_ids=(foreign.id, root.id), predicates=(good.predicate,)
+            )
+            result = await recall.recall("unmatchedtoken", graph=graph, as_of=20.0)
+            assert tuple(item.fact_id for item in result.evidence) == (
+                good.id,
+                good_tail.id,
+            )
+            historical = await recall.recall("unmatchedtoken", graph=graph, as_of=19.0)
+            assert tuple(item.fact_id for item in historical.evidence) == (
+                good.id,
+                ended.id,
+                good_tail.id,
+                ended_tail.id,
+            )
+
+    run(exercise())
+
+
+def test_graph_recall_keeps_its_snapshot_between_hops_during_erasure(
+    database: PgDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """并发擦除不能使在途扩展或事实装载切换到另一读快照。"""
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            scope = space()
+            storage = PostgresStorage(connections, owner_id=scope.owner_id)
+            await storage.create_space(scope)
+            origin, bridge, tip = (
+                Entity(scope.id, name) for name in ("起点", "桥", "终点")
+            )
+            source = message(scope, "source", content="releasecode")
+            seed = _relation(
+                origin, bridge, "seed", text=source.content, provenance=(source.id,)
+            )
+            follow = _relation(bridge, tip, "follow", provenance=(source.id,))
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.register_session(source.session_id)
+                await writer.append_messages((source,))
+                for entity in (origin, bridge, tip):
+                    await writer.upsert_entity(entity)
+                await writer.save_facts((seed, follow), changed_at=10.0)
+
+            outgoing_edges = PostgresReader.outgoing_edges
+            erased = False
+
+            async def expand_then_erase(
+                reader: PostgresReader,
+                subject_ids: Sequence[EntityId],
+                *,
+                filters: FactFilter,
+                reference_time: float,
+                limit: int,
+                predicates: Sequence[Predicate] = (),
+            ) -> Sequence[GraphEdge]:
+                nonlocal erased
+                edges = await outgoing_edges(
+                    reader,
+                    subject_ids,
+                    filters=filters,
+                    reference_time=reference_time,
+                    limit=limit,
+                    predicates=predicates,
+                )
+                if not erased:
+                    async with storage.session(scope.id, write=True) as writer:
+                        assert await writer.delete_session_data(source.session_id) == {
+                            seed.id,
+                            follow.id,
+                        }
+                    erased = True
+                return edges
+
+            monkeypatch.setattr(PostgresReader, "outgoing_edges", expand_then_erase)
+            recall = Memory.for_recall(
+                space_id=scope.id,
+                storage=storage,
+                embedder=FakeEmbedder(),
+                clock=FakeClock(),
+            )
+            graph = GraphRecallOptions()
+            result = await recall.recall(source.content, graph=graph)
+            assert erased
+            assert tuple(item.fact_id for item in result.evidence) == (
+                seed.id,
+                follow.id,
+            )
+            assert result.evidence[1].relation == RecallRelation(
+                bridge.id, follow.predicate, tip.id
+            )
+            assert (await recall.recall(source.content, graph=graph)).evidence == ()
 
     run(exercise())

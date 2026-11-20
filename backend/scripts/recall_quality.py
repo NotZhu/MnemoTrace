@@ -1,4 +1,4 @@
-"""用独立 PostgreSQL 和实际嵌入对照普通召回质量。"""
+"""用独立 PostgreSQL 和实际嵌入对照召回质量。"""
 
 import argparse
 import asyncio
@@ -17,6 +17,7 @@ import psycopg
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg_pool import AsyncConnectionPool
+from recall_graph_quality import run_graph_suite
 from recall_quality_cases import DATASETS, Dataset, FactCase, QueryCase
 
 from mnemotrace_next import Memory
@@ -42,6 +43,7 @@ _MAX_TESTED_DEPTH = _candidate_limit(100)
 _NOW = 100.0
 _DEFAULT_LIMIT = _candidate_limit(_TOP_K)
 type Hits = Sequence[tuple[FactId, float]]
+type _Suite = Literal["ordinary", "graph"]
 
 
 @dataclass(frozen=True)
@@ -61,7 +63,9 @@ class _Policy:
             return [fact_id for fact_id, _ in lexical]
         if self.channel == "vector":
             return [fact_id for fact_id, _ in semantic]
-        return _fuse_rankings(lexical, semantic)
+        return _fuse_rankings(
+            (fact_id for fact_id, _ in lexical), (fact_id for fact_id, _ in semantic)
+        )
 
 
 _BASELINE = _Policy("rrf")
@@ -290,7 +294,13 @@ def _report_dataset(dataset: Dataset, traces: Sequence[_Trace]) -> dict[str, obj
 
 
 async def evaluate(
-    admin_dsn: str, embedder: Embedder, *, model: str, revision: str, out: Path
+    admin_dsn: str,
+    embedder: Embedder,
+    *,
+    model: str,
+    revision: str,
+    out: Path,
+    suite: _Suite = "ordinary",
 ) -> None:
     """在独立临时库运行评测并记录模型身份、逐题对照和耗时。
 
@@ -300,6 +310,7 @@ async def evaluate(
         model: 被测模型标识。
         revision: 被测模型的固定修订。
         out: 保存完整结果的新文件路径。
+        suite: ordinary 对照普通召回，graph 对照图路召回。
     """
     with _quality_database(admin_dsn) as dsn:
         with psycopg.connect(dsn) as conn:
@@ -310,12 +321,21 @@ async def evaluate(
             assert db is not None
         async with AsyncConnectionPool(dsn, open=False, min_size=0, max_size=2) as pool:
             storage = PostgresStorage(pool, owner_id="recall-quality")
-            reports = {
-                dataset.name: _report_dataset(
-                    dataset, await _run_dataset(storage, embedder, dataset)
-                )
-                for dataset in DATASETS
-            }
+            if suite == "graph":
+                details = await run_graph_suite(storage, embedder, dsn)
+            else:
+                details = {
+                    "top_k": _TOP_K,
+                    "default_candidate_limit": _DEFAULT_LIMIT,
+                    "max_tested_depth": _MAX_TESTED_DEPTH,
+                    "default_min_cosine": _VECTOR_MIN_COSINE,
+                    "datasets": {
+                        dataset.name: _report_dataset(
+                            dataset, await _run_dataset(storage, embedder, dataset)
+                        )
+                        for dataset in DATASETS
+                    },
+                }
     with out.open("x", encoding="utf-8") as report:
         json.dump(
             {
@@ -325,11 +345,7 @@ async def evaluate(
                 "dimension": embedder.dim,
                 "postgres_version": db[0],
                 "pgvector_version": db[1],
-                "top_k": _TOP_K,
-                "default_candidate_limit": _DEFAULT_LIMIT,
-                "max_tested_depth": _MAX_TESTED_DEPTH,
-                "default_min_cosine": _VECTOR_MIN_COSINE,
-                "datasets": reports,
+                **details,
             },
             report,
             indent=2,
@@ -338,7 +354,7 @@ async def evaluate(
         report.write("\n")
 
 
-async def _configured_run(dsn: str, out: Path) -> None:
+async def _configured_run(dsn: str, out: Path, suite: _Suite) -> None:
     async with open_inference(os.environ, embed=True) as clients:
         if clients.embedder is None:
             raise RuntimeError("缺少嵌入端口")
@@ -348,12 +364,19 @@ async def _configured_run(dsn: str, out: Path) -> None:
             model=os.environ["MNEMOTRACE_NEXT_EMBED_MODEL"],
             revision=os.environ["MNEMOTRACE_NEXT_EMBED_REVISION"],
             out=out,
+            suite=suite,
         )
 
 
 def main() -> None:
     """读取显式配置的测试实例和嵌入端点并运行评测。"""
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--suite",
+        choices=("ordinary", "graph"),
+        default="ordinary",
+        help="对照普通召回或图路召回",
+    )
     parser.add_argument("--out", required=True, type=Path, help="新建的 JSON 结果路径")
     args = parser.parse_args()
     dsn = os.environ.get("MNEMOTRACE_NEXT_TEST_POSTGRES_DSN")
@@ -361,7 +384,10 @@ def main() -> None:
         parser.error("请设置 MNEMOTRACE_NEXT_TEST_POSTGRES_DSN 指向专用测试实例")
     if args.out.exists() or not args.out.parent.is_dir():
         parser.error("输出文件必须尚不存在，且父目录已经创建")
-    asyncio.run(_configured_run(dsn, args.out), loop_factory=asyncio.SelectorEventLoop)
+    asyncio.run(
+        _configured_run(dsn, args.out, args.suite),
+        loop_factory=asyncio.SelectorEventLoop,
+    )
 
 
 if __name__ == "__main__":

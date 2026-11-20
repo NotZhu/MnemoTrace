@@ -55,17 +55,40 @@ reader = Memory.for_recall(
 result = await reader.recall("报表导出格式", top_k=5)
 ```
 
-`recall` 在同一读快照内融合词法和向量候选。`result.evidence` 按相关性排列，包含事实 ID、正文、有效区间和关联原文 ID。默认查当前有效事实。显式传入 `as_of` 时按 UTC epoch 秒查询，事实须有已知起点且有效区间覆盖该时点。
+`recall` 默认在同一读快照内融合词法和向量候选。`result.evidence` 按相关性排列，包含事实 ID、正文、有效区间和关联原文 ID。实体关系事实还带有 `relation`，包含 `subject_id`、`predicate` 和 `object_entity_id`。默认查当前有效事实。显式传入 `as_of` 时按 UTC epoch 秒查询，事实须有已知起点且有效区间覆盖该时点。
+
+使用 `graph` 参数开启图召回。
+
+```python
+from mnemotrace_next import GraphRecallOptions
+
+result = await reader.recall("发布负责人属于哪个团队", graph=GraphRecallOptions())
+```
+
+省略 `origin_entity_ids` 时，从词法和向量命中的关系事实中交替选取尚未使用的主体，直到两路候选用完。显式提供空序列或同空间内无可用起点时，只返回普通召回结果。`predicates` 按规范谓词约束图路的每一跳，可直接使用证据里的 `relation.predicate`。图路在同一读快照内逐跳筛选并扩展有向关系，受 [`GraphRecallOptions`](src/mnemotrace_next/application/graph_recall.py) 的跳数上限和请求的全局边预算约束。三路候选按事实 ID 融合后返回最多 `top_k` 条平铺证据。
+
+有关系证据时，可以从它的客体继续查询。
+
+```python
+relation = next((item.relation for item in result.evidence if item.relation), None)
+if relation is not None:
+    related = await reader.recall(
+        "这个实体负责哪些服务？",
+        graph=GraphRecallOptions(origin_entity_ids=(relation.object_entity_id,)),
+    )
+```
 
 读写和只读装配都可传入部署方提供的 `reranker`。显式开启重排（`recall(..., rerank=True)`）需要已装配重排器。至少有两条候选时，召回会在读事务退出后把查询及已授权的候选事实 ID 和正文交给重排器。返回的 ID 按重排顺序置前，其余候选按 RRF 顺序补齐。使用第三方重排服务时，部署方须授权发送相应数据。
 
-`result.degraded_reason` 默认是 `None`。查询嵌入超时返回词法结果并标记 `embedding_timeout`，即使结果为空也带该标记。重排超时返回原 RRF 结果并标记 `reranker_timeout`。重排期间完成的擦除由后续读快照反映，在途召回使用已读取的证据。
+`result.degraded_reason` 默认是 `None`。查询嵌入超时，返回词法和已启用的图路融合结果，跳过重排并标记 `embedding_timeout`，即使结果为空也带该标记。重排超时返回原 RRF 结果并标记 `reranker_timeout`。重排期间完成的擦除由后续读快照反映，在途召回使用已读取的证据。
 
 受限读取由服务端在装配时设置 `exclude_sensitive=True`。来源标识随可见事实返回，读取原文正文使用原文入口的授权规则。
 
 PostgreSQL 的迁移、角色配置、表结构及真库验证见 [PostgreSQL 存储适配器](docs/postgres.md)。
 
 普通召回的固定样例、真实嵌入对照与复现命令见[普通召回质量验收](docs/postgres.md#普通召回质量验收)。
+
+图路补全、种子边计分和高出度计划见[图召回质量验收](docs/postgres.md#图召回质量验收)。
 
 补全和嵌入的端点配置、向量身份及真实端点验收见 [推理适配器](docs/inference.md)。
 

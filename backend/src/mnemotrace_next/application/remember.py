@@ -10,7 +10,6 @@ from ..domain.errors import InvalidMessage
 from ..domain.ids import MessageId, SessionId, SpaceId
 from ..domain.message import Message
 from ..ports.inference import LLM, Embedder
-from ..ports.reranker import Reranker
 from ..ports.runtime import Clock, IdGenerator
 from ..ports.storage import (
     FactChange,
@@ -32,8 +31,6 @@ from .adjudication import (
 )
 from .extraction import extract_facts, message_reference_time
 from .fact_lifecycle import calculate_fact_writes
-from .recall import DEFAULT_TOP_K, Recall, RecallResult
-from .sessions import create_session
 
 _CONTEXT_MESSAGES = 10
 _COMPARISON_RETRIES = 1
@@ -79,8 +76,8 @@ class _RememberContext:
     messages: tuple[Message, ...]
 
 
-class Memory:
-    """为服务端选定的空间提供会话登记、记忆写入与召回。
+class Remember:
+    """为服务端选定的空间编排同步记忆写入。
 
     Args:
         space_id: 服务端选定的目标空间，存储会话仍会校验访问权。
@@ -90,11 +87,6 @@ class Memory:
         clock: 提供 UTC epoch 秒的时钟。
         ids: 提供不可复用标识的生成器。
         timezone: 解释日历日期的时区，默认 UTC。
-        exclude_sensitive: 是否排除召回中的敏感事实，由服务端设置。
-        reranker: 由服务端装配且获准接收候选正文的可选重排端口。
-
-    Raises:
-        ValueError: 缺少补全或嵌入端口。
     """
 
     def __init__(
@@ -107,19 +99,7 @@ class Memory:
         clock: Clock,
         ids: IdGenerator,
         timezone: tzinfo = UTC,
-        exclude_sensitive: bool = False,
-        reranker: Reranker | None = None,
     ) -> None:
-        if llm is None:
-            raise ValueError("Memory 需要配置补全模型")
-        self._recall = Recall(
-            space_id=space_id,
-            storage=storage,
-            embedder=embedder,
-            clock=clock,
-            exclude_sensitive=exclude_sensitive,
-            reranker=reranker,
-        )
         self._space_id = space_id
         self._storage = storage
         self._llm = llm
@@ -127,70 +107,6 @@ class Memory:
         self._clock = clock
         self._ids = ids
         self._timezone = timezone
-
-    @staticmethod
-    def for_recall(
-        *,
-        space_id: SpaceId,
-        storage: Storage,
-        embedder: Embedder,
-        clock: Clock,
-        exclude_sensitive: bool = False,
-        reranker: Reranker | None = None,
-    ) -> Recall:
-        """只装配召回所需的依赖。
-
-        Args:
-            space_id: 服务端选定且由存储授权的空间。
-            storage: 已绑定认证账号的存储端口。
-            embedder: 查询使用的嵌入端口。
-            clock: 提供 UTC epoch 秒的时钟。
-            exclude_sensitive: 是否排除敏感事实，由服务端设置。
-            reranker: 由服务端装配且获准接收候选正文的可选重排端口。
-
-        Returns:
-            与读写装配使用相同接口的只读召回对象。
-        """
-        return Recall(
-            space_id=space_id,
-            storage=storage,
-            embedder=embedder,
-            clock=clock,
-            exclude_sensitive=exclude_sensitive,
-            reranker=reranker,
-        )
-
-    async def recall(
-        self,
-        query: str,
-        *,
-        top_k: int = DEFAULT_TOP_K,
-        as_of: float | None = None,
-        rerank: bool = False,
-    ) -> RecallResult:
-        """在本空间召回可见的事实证据。
-
-        Args:
-            query: 非空查询。
-            top_k: 最多返回的证据条数。
-            as_of: 显式有效时点，以 UTC epoch 秒表示。
-            rerank: 是否调用已装配的重排器调整候选顺序。
-
-        Returns:
-            按相关性排列的事实证据及可选的超时降级原因。
-        """
-        return await self._recall.recall(query, top_k=top_k, as_of=as_of, rerank=rerank)
-
-    async def create_session(self) -> SessionId:
-        """登记一个新会话，提交后返回标识。
-
-        Returns:
-            可用于本空间记忆写入的会话标识。
-
-        Raises:
-            LookupError: 无权访问绑定空间。
-        """
-        return await create_session(self._storage, self._space_id, self._ids)
 
     async def remember(
         self, messages: str | Sequence[MessageInput], *, session_id: SessionId

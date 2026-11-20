@@ -492,6 +492,16 @@ def test_restricted_reads_hide_sensitive_facts_and_profile() -> None:
                 limit=1,
                 exclude_fact_ids=(edge.id,),
             ) == GraphEdgeBatch((hidden_edge,), False)
+            assert await session.get_relation_edges(
+                (edge.id, sensitive.id, literal.id), exclude_sensitive=True
+            ) == {edge.id: visible_edge}
+            assert await session.outgoing_edges(
+                (target.id, _SUBJECT.id, _SUBJECT.id),
+                filters=filters,
+                reference_time=50.0,
+                limit=2,
+                predicates=(edge.predicate,),
+            ) == (visible_edge,)
             assert await session.search_lexical(
                 "茶", 1, filters=filters, reference_time=50.0, min_score=1.0
             ) == ((edge.id, 1.0),)

@@ -7,7 +7,7 @@ import pytest
 from mnemotrace_next.adapters.postgres import PostgresStorage
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.fact import Fact
-from mnemotrace_next.domain.ids import MessageId
+from mnemotrace_next.domain.ids import EntityId, FactId, MessageId
 from mnemotrace_next.domain.values import EntityRef, Label, Predicate
 from mnemotrace_next.ports.queries import FactFilter, FactQuery
 from mnemotrace_next.ports.storage import GraphEdge, GraphEdgeBatch
@@ -90,8 +90,10 @@ def test_adjacent_edges_match_fact_filters_and_bound_space(
             async with storage.session(sibling.id, write=True) as writer:
                 await writer.upsert_entity(foreign)
                 await writer.upsert_entity(foreign_target)
+                foreign_only = _edge("foreign-only", foreign, foreign_target)
                 await writer.save_facts(
-                    (_edge("07-sensitive", foreign, foreign_target),), changed_at=21.0
+                    (_edge("07-sensitive", foreign, foreign_target), foreign_only),
+                    changed_at=21.0,
                 )
 
             combined = FactFilter(
@@ -143,6 +145,108 @@ def test_adjacent_edges_match_fact_filters_and_bound_space(
                 assert await reader.adjacent_edges(
                     (), filters=FactFilter(), reference_time=20.0, limit=2
                 ) == GraphEdgeBatch((), False)
+                assert await reader.get_relation_edges(
+                    (
+                        incoming.id,
+                        active.id,
+                        incoming.id,
+                        FactId("07-sensitive"),
+                        FactId("11-literal"),
+                        foreign_only.id,
+                        FactId("missing"),
+                    ),
+                    exclude_sensitive=True,
+                ) == {
+                    incoming.id: GraphEdge(incoming.id, incoming_from.id, endpoint.id),
+                    active.id: GraphEdge(active.id, endpoint.id, outgoing_to.id),
+                }
+                assert await reader.get_relation_edges(()) == {}
+
+    run(exercise())
+
+
+def test_outgoing_edges_filter_before_ordered_batch_limit(database: PgDatabase) -> None:
+    """逐层读取按主体顺序截取，只有当前空间的合格出边占用额度。"""
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id="owner")
+            scope, sibling = space(), space()
+            await storage.create_space(scope)
+            await storage.create_space(sibling)
+            left, right, tip = (Entity(scope.id, name) for name in ("左", "右", "末端"))
+            foreign = Entity(sibling.id, right.name)
+            member, manages = Predicate("member_of"), Predicate("manages")
+            loop = replace(
+                _edge("b-self", right, right), predicate=member, valid_at=20.0
+            )
+            first = replace(_edge("a-out", right, tip), predicate=manages, valid_at=5.0)
+            later = replace(_edge("0-out", left, right), predicate=member, valid_at=5.0)
+            other_relation = replace(
+                first,
+                id=FactId("0-other-predicate"),
+                predicate=Predicate("manages_for"),
+            )
+            records = (
+                later,
+                loop,
+                first,
+                replace(_edge("0-in", tip, right), predicate=member, valid_at=5.0),
+                replace(first, id=FactId("0-sensitive"), sensitive=True),
+                replace(first, id=FactId("0-ended")).close(20.0, 20.0),
+                replace(first, id=FactId("0-future"), valid_at=21.0),
+                replace(first, id=FactId("0-unknown"), valid_at=None),
+                other_relation,
+                replace(fact(right, "0-literal"), predicate=member, valid_at=5.0),
+            )
+            async with storage.session(scope.id, write=True) as writer:
+                for entity in (left, right, tip):
+                    await writer.upsert_entity(entity)
+                await writer.save_facts(records, changed_at=21.0)
+            async with storage.session(sibling.id, write=True) as writer:
+                await writer.upsert_entity(foreign)
+                foreign_edge = replace(
+                    _edge(loop.id.value, foreign, foreign),
+                    predicate=member,
+                    valid_at=20.0,
+                )
+                await writer.save_facts((foreign_edge,), changed_at=21.0)
+
+            subjects = (foreign.id, EntityId("missing"), right.id, left.id, right.id)
+            filters = FactFilter(valid_at=20.0, exclude_sensitive=True)
+            expected = (
+                GraphEdge(first.id, right.id, tip.id),
+                GraphEdge(loop.id, right.id, right.id),
+                GraphEdge(later.id, left.id, right.id),
+            )
+            async with storage.session(scope.id) as reader:
+                for limit in (1, 2, 3, 5):
+                    assert (
+                        await reader.outgoing_edges(
+                            subjects,
+                            filters=filters,
+                            reference_time=21.0,
+                            limit=limit,
+                            predicates=(member, manages),
+                        )
+                        == expected[:limit]
+                    )
+                assert await reader.outgoing_edges(
+                    subjects, filters=filters, reference_time=21.0, limit=5
+                ) == (GraphEdge(other_relation.id, right.id, tip.id), *expected)
+                assert await reader.outgoing_edges(
+                    (right.id,),
+                    filters=FactFilter(exclude_sensitive=True),
+                    reference_time=20.0,
+                    limit=3,
+                    predicates=(manages,),
+                ) == (GraphEdge(FactId("0-unknown"), right.id, tip.id), expected[0])
+                assert (
+                    await reader.outgoing_edges(
+                        (), filters=filters, reference_time=21.0, limit=1
+                    )
+                    == ()
+                )
 
     run(exercise())
 
