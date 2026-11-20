@@ -394,14 +394,20 @@ async def compare_facts(
         for shard in batched(pairs, _COMPARISON_PAIR_LIMIT)
     )
     for wave in batched(shards, _COMPARISON_CONCURRENCY):
-        # 收齐已发出的请求再传播原有错误，避免失败后留下推理任务。
-        results = await asyncio.gather(
-            *(_compare_shard(llm, shard, facts) for shard in wave),
-            return_exceptions=True,
-        )
+        tasks = [
+            asyncio.create_task(_compare_shard(llm, shard, facts)) for shard in wave
+        ]
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            pending = [task for task in tasks if not task.done()]
+            for task in pending:
+                # 调用方取消时，gather 已发送取消，重复取消可能打断清理。
+                if not task.cancelling():
+                    task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            raise
         for result in results:
-            if isinstance(result, BaseException):
-                raise result
             resolved.update(result)
     return tuple(resolved[pair] for pair in candidates.pairs)
 

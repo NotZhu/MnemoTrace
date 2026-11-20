@@ -319,6 +319,48 @@ def test_comparison_shards_each_anchor_and_bounds_concurrency() -> None:
     asyncio.run(exercise())
 
 
+def test_comparison_cancels_and_joins_slow_shards_after_failure() -> None:
+    """后启动的分片失败时，先等慢分片完成取消清理，再传播原异常。"""
+
+    async def exercise() -> None:
+        slow_started = asyncio.Event()
+        slow_cleaned = asyncio.Event()
+        failure = CompletionTruncated("合成裁决分片被截断")
+
+        class Model(FakeLLM):
+            async def complete_json(
+                self, *, system: str, prompt: str, schema: Mapping[str, object]
+            ) -> Mapping[str, object]:
+                (pair,) = json.loads(prompt)["pairs"]
+                if pair["id"] == "2":
+                    await slow_started.wait()
+                    raise failure
+                slow_started.set()
+                try:
+                    await asyncio.Event().wait()
+                    raise AssertionError("慢分片应被取消")
+                finally:
+                    await asyncio.sleep(0)
+                    slow_cleaned.set()
+
+        prepared = await prepare_facts(
+            (candidate("slow"), candidate("failed"), candidate("peer")),
+            space_id=SPACE,
+            embedder=FakeEmbedder(),
+            ids=FactIds(),
+            received_at=100.0,
+        )
+        slow, failed, peer = (item.fact.id for item in prepared)
+        candidates = ComparisonCandidates({}, ((slow, peer), (failed, peer)))
+        async with asyncio.timeout(5):
+            with pytest.raises(CompletionTruncated) as captured:
+                await compare_facts(Model(), prepared, candidates)
+        assert captured.value is failure
+        assert slow_cleaned.is_set()
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize(
     ("body", "finish_reason", "refusal", "error"),
     [
