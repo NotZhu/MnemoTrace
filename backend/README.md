@@ -39,6 +39,30 @@ result = await memory.remember(
 
 依赖前一次对话的调用应等待前一次 `remember` 完成。`SessionUnavailable` 表示会话不可用，`RememberInvalidated` 表示空间擦除使本次请求失效，`RememberRetryRequired` 表示并发导致本次尚未写入、可由调用方重新发起。`CommitOutcomeUnknown` 表示写事务进入提交阶段后失去确认，原文和事实可能已经提交。调用方重送会按新写入处理，可能产生新的原文记录。
 
+## Python 召回
+
+已装配写入的 `Memory` 可以直接调用 `recall`。只读部署通过 `Memory.for_recall` 装配已授权的存储和查询 Embedder。
+
+```python
+from mnemotrace_next import Memory
+
+reader = Memory.for_recall(
+    space_id=space_id,
+    storage=storage,
+    embedder=embedder,
+    clock=clock,
+)
+result = await reader.recall("报表导出格式", top_k=5)
+```
+
+`recall` 在同一读快照内融合词法和向量候选。`result.evidence` 按相关性排列，包含事实 ID、正文、有效区间和关联原文 ID。默认查当前有效事实。显式传入 `as_of` 时按 UTC epoch 秒查询，事实须有已知起点且有效区间覆盖该时点。
+
+读写和只读装配都可传入部署方提供的 `reranker`。显式开启重排（`recall(..., rerank=True)`）需要已装配重排器。至少有两条候选时，召回会在读事务退出后把查询及已授权的候选事实 ID 和正文交给重排器。返回的 ID 按重排顺序置前，其余候选按 RRF 顺序补齐。使用第三方重排服务时，部署方须授权发送相应数据。
+
+`result.degraded_reason` 默认是 `None`。查询嵌入超时返回词法结果并标记 `embedding_timeout`，即使结果为空也带该标记。重排超时返回原 RRF 结果并标记 `reranker_timeout`。重排期间完成的擦除由后续读快照反映，在途召回使用已读取的证据。
+
+受限读取由服务端在装配时设置 `exclude_sensitive=True`。来源标识随可见事实返回，读取原文正文使用原文入口的授权规则。
+
 PostgreSQL 的迁移、角色配置、表结构及真库验证见 [PostgreSQL 存储适配器](docs/postgres.md)。
 
 补全和嵌入的端点配置、向量身份及真实端点验收见 [推理适配器](docs/inference.md)。

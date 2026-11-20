@@ -1,5 +1,6 @@
 """MnemoTrace 的 Python 记忆用例。"""
 
+from .application.recall import RecallEvidence, RecallResult
 from .application.remember import (
     Memory,
     MessageInput,
@@ -13,6 +14,8 @@ __all__ = [
     "CommitOutcomeUnknown",
     "Memory",
     "MessageInput",
+    "RecallEvidence",
+    "RecallResult",
     "RememberInvalidated",
     "RememberResult",
     "RememberRetryRequired",

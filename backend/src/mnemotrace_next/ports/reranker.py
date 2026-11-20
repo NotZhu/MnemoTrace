@@ -22,5 +22,9 @@ class Reranker(Protocol):
         Returns:
             至多 limit 个来自输入且互异的标识，按相关性从高到低排列。
             空输入对应空序列。
+
+        Raises:
+            InferenceError: 请求失败或上游响应无法解析。
+            TimeoutError: 重排超过实现配置的时限。
         """
         ...
