@@ -1,0 +1,11 @@
+**
+!.python-version
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!COMMERCIAL-LICENSE.md
+!src/
+!src/**
+**/__pycache__/
+**/*.py[cod]

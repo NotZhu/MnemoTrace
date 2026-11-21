@@ -81,7 +81,8 @@ uv run --locked --extra inference python scripts/inference_smoke.py --embed
 | 端点 | 冒烟配置 | 真实端点状态 |
 | --- | --- | --- |
 | [OpenAI](https://developers.openai.com/api/docs/models/gpt-4.1-mini) | `gpt-4.1-mini-2025-04-14` 用 `json_schema`。嵌入用 `text-embedding-3-small`，1536 维，`EMBED_REVISION=r1`。 | 待验证 |
-| [DeepSeek](https://api-docs.deepseek.com/api/create-chat-completion/) | `deepseek-flash` 用 `json_object`、`max_tokens` 和 `DISABLE_THINKING=deepseek`。嵌入角色另配端点。 | 待验证 |
+| [DeepSeek](https://api-docs.deepseek.com/api/create-chat-completion/) | 补全使用 `https://api.deepseek.com/v1`，`deepseek-flash` 用 `json_object`、`max_tokens` 和 `LLM_DISABLE_THINKING=deepseek`。 | 与硅基流动嵌入通过 HTTP 闭环 |
+| [硅基流动](https://docs.siliconflow.cn/docs/userguide/quickstart) | 嵌入使用 `https://api.siliconflow.cn/v1`、`BAAI/bge-m3`、1024 维，验收使用 `EMBED_REVISION=r1`。 | 与 DeepSeek 补全通过 HTTP 闭环 |
 | [阿里云百炼](https://www.alibabacloud.com/help/zh/model-studio/qwen-api-via-openai-chat-completions) | 选与密钥对应的地域和 `/compatible-mode/v1` 前缀。`qwen-plus` 用 `json_object`、`max_tokens` 和 `DISABLE_THINKING=dashscope`。嵌入用 `text-embedding-v4`，1024 维，`EMBED_REVISION=r1`，每批至多 10 条。 | 待验证 |
 | [本地 Ollama](https://docs.ollama.com/api/openai-compatibility) | `http://127.0.0.1:11434/v1`，`bge-m3` 默认 1024 维，显式记录模型修订。 | 待验证 |
 

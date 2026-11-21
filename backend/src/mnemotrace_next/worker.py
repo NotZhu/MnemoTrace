@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import sys
+from contextlib import nullcontext
 from types import FrameType
 
 import psycopg
@@ -41,7 +42,16 @@ async def _consume(runner: OperationRunner, stopping: asyncio.Event) -> None:
         await asyncio.sleep(1)
 
 
-async def _serve(settings: Settings, concurrency: int, stopping: asyncio.Event) -> None:
+def _close_probe(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    writer.close()
+
+
+async def _serve(
+    settings: Settings,
+    concurrency: int,
+    stopping: asyncio.Event,
+    readiness_port: int | None,
+) -> None:
     pool: AsyncConnectionPool[AsyncConnection[TupleRow]] = AsyncConnectionPool(
         settings.postgres_dsn,
         open=False,
@@ -74,13 +84,21 @@ async def _serve(settings: Settings, concurrency: int, stopping: asyncio.Event) 
             )
 
         runner = OperationRunner(PostgresOperations(pool), remember_for, _is_transient)
+        readiness = (
+            await asyncio.start_server(_close_probe, "127.0.0.1", readiness_port)
+            if readiness_port is not None
+            else nullcontext()
+        )
         _LOG.info("写入 worker 已启动 concurrency=%d", concurrency)
-        async with asyncio.TaskGroup() as workers:
+        async with asyncio.TaskGroup() as workers, readiness:
             for _ in range(concurrency):
                 workers.create_task(_consume(runner, stopping))
+            await stopping.wait()
 
 
-async def _run(settings: Settings, concurrency: int) -> None:
+async def _run(
+    settings: Settings, concurrency: int, readiness_port: int | None = None
+) -> None:
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     supervisor = asyncio.current_task()
@@ -100,7 +118,7 @@ async def _run(settings: Settings, concurrency: int) -> None:
     try:
         for signum in signals:
             signal.signal(signum, on_signal)
-        await _serve(settings, concurrency, stopping)
+        await _serve(settings, concurrency, stopping, readiness_port)
     except asyncio.CancelledError:
         if not stopping.is_set():
             raise
@@ -113,18 +131,24 @@ def main() -> int:
     """读取数据库和推理配置并运行写入任务。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--concurrency", type=int, default=2, metavar="1-16")
+    parser.add_argument("--readiness-port", type=int, help="在本机监听的就绪探针端口")
     args = parser.parse_args()
     if not 1 <= args.concurrency <= 16:
         parser.error("--concurrency 须为 1 至 16")
+    if args.readiness_port is not None and not 1 <= args.readiness_port <= 65535:
+        parser.error("--readiness-port 须为 1 至 65535")
     logging.basicConfig(level=logging.WARNING)
     _LOG.setLevel(logging.INFO)
     try:
         settings = Settings.from_env(os.environ)
         loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
-        asyncio.run(_run(settings, args.concurrency), loop_factory=loop_factory)
+        asyncio.run(
+            _run(settings, args.concurrency, args.readiness_port),
+            loop_factory=loop_factory,
+        )
     except ValueError as exc:
         parser.error(str(exc))
-    except (psycopg.Error, ExceptionGroup) as exc:
+    except (psycopg.Error, OSError, ExceptionGroup) as exc:
         _LOG.error("写入 worker 中止 type=%s", type(exc).__name__)
         return 1
     except KeyboardInterrupt:

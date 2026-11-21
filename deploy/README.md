@@ -1,5 +1,7 @@
 # 自托管部署与运维
 
+新后端 `/v1` 服务使用独立的[部署说明](next/README.md)。
+
 部署 MnemoTrace HTTP API 和管理控制台。接口语义见 [HTTP API](../docs/reference/http-api.md)，模型与环境参数见[配置参考](../docs/reference/configuration.md)。
 
 ## 选择部署方式

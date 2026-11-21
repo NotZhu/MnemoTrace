@@ -1,5 +1,7 @@
 # HTTP API
 
+自托管可用 [Compose 部署](../../deploy/next/README.md)。以下为源码启动方式。
+
 在 `backend` 下运行以下命令。先应用显式迁移并配置运行和管理角色。数据库连接串放在环境变量中。 [PostgreSQL 设置](postgres.md)
 
 | 环境变量 | 用途 |
@@ -27,7 +29,7 @@ uv run --locked --extra server python -m mnemotrace_next.server
 | --- | --- |
 | `GET /livez` | 进程可响应时返回 200。 |
 | `GET /readyz` | 数据库可访问且迁移账本匹配时返回 200，其他情况返回 503。 |
-| `GET /openapi.json`、`GET /docs` | OpenAPI 契约和交互文档。 |
+| `GET /openapi.json`、`GET /docs` | OpenAPI 3.1 契约和交互文档。 |
 
 `/v1` 的每个操作都有显式的 OpenAPI `operationId`，供生成客户端使用。
 
@@ -60,6 +62,8 @@ uv run --locked --extra server python -m mnemotrace_next.server
 ```sh
 uv run --locked --extra server python -m mnemotrace_next.worker
 ```
+
+可用 `--readiness-port` 启用本机 TCP 就绪探针。worker 成功装配模型配置并核对数据库迁移后开始监听，停机时关闭端口。上游模型调用是否成功由闭环示例验证。
 
 `POST /v1/spaces/{space_id}/sessions/{session_id}/remember` 接受包含 1–64 条消息的 `messages` 数组，每条有 `role`（`user` 或 `assistant`）、非空 `content` 和可选的 RFC 3339 `event_time`。省略发言时间时用任务接收时刻。请求受全局正文大小上限约束。先登记会话，并为每批消息生成一个含 1–128 个可见 ASCII 字符的 `Idempotency-Key`。
 
@@ -130,3 +134,15 @@ curl -i -X POST "$BASE_URL/v1/spaces/$SPACE_ID/purge" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Idempotency-Key: $PURGE_ID"
 ```
+
+## HTTP 闭环示例
+
+服务和 worker 启动后，把签发响应中的 `token` 注入 `MNEMOTRACE_NEXT_SMOKE_TOKEN`。从 `backend` 运行以下命令。示例只操作新建的验收空间，写入合成消息，检查任务结果、召回证据、来源原文和清空效果，并删除该空间。重放旧的清空幂等键时，示例会检查清空后新写入的原文仍然可读。
+
+```sh
+uv run --locked --extra server python scripts/http_smoke.py
+```
+
+使用 `--base-url` 指定其他本机地址或 HTTPS 地址。`--timeout` 调整每项写入任务的轮询上限，默认 240 秒。`--recall-read-timeout` 单独调整召回请求的 HTTP 读取超时，默认 45 秒。增大服务端查询嵌入超时时，为召回请求预留数据库查询时间。 [推理超时配置](inference.md#环境变量)
+
+创建空间的结果不明时，脚本会按本次唯一名称在账号的空间列表中查找，以便清理。无法确认清理时，脚本会输出该名称，供后续核对。

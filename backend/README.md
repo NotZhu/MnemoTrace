@@ -1,6 +1,6 @@
 # MnemoTrace 新后端
 
-`mnemotrace-next` 是为重构准备的独立 Python 项目，临时导入名为 `mnemotrace_next`。
+`mnemotrace-next` 是独立的 Python 后端项目，导入名为 `mnemotrace_next`。部署 HTTP `/v1` 服务和写入 worker 见 [Compose 部署](../deploy/next/README.md)。
 
 本地与 CI 都用 `.python-version` 选择 Python。uv 会为后端创建虚拟环境，并按 `uv.lock` 安装项目及开发依赖。默认 `dev` 组包含测试所需的 `inference` 和 `server` extras。先安装 uv，再从仓库根目录运行下面的命令。 [uv 安装说明](https://docs.astral.sh/uv/getting-started/installation/)
 

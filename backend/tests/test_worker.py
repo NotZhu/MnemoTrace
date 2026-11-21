@@ -45,7 +45,10 @@ def test_worker_stops_after_cancel_is_consumed_returning_a_connection(
             handlers[signum] = handler
 
         async def serve(
-            settings: Settings, concurrency: int, stopping: asyncio.Event
+            settings: Settings,
+            concurrency: int,
+            stopping: asyncio.Event,
+            readiness_port: int | None,
         ) -> None:
             async with asyncio.TaskGroup() as group:
                 group.create_task(worker._consume(runner, stopping))

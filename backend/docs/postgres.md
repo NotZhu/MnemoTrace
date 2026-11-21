@@ -25,35 +25,15 @@ uv run --locked python -m mnemotrace_next.adapters.postgres.migrate up
 
 ## 运行账号与会话
 
-数据库管理员为服务配置独立登录角色。以下授权在迁移后执行，其中 `mnemotrace_next_runtime` 是已创建的运行角色。
+数据库管理员为迁移、运行和凭据管理配置独立登录角色。迁移角色拥有业务 schema 和对象，运行角色用于 API 与 worker，凭据管理角色用于签发和撤销。运行与凭据管理角色都需要目标库的连接权限。使用独立 PostgreSQL 时，先设置 `psql` 的连接环境，以迁移角色连接目标数据库。在迁移后从 `backend` 运行下列命令，参数替换为实际创建的角色名。 [授权脚本](../../deploy/next/grant-roles.sql)
 
-```sql
-GRANT USAGE ON SCHEMA mnemotrace_next TO mnemotrace_next_runtime;
-GRANT SELECT ON mnemotrace_next.schema_migrations TO mnemotrace_next_runtime;
-GRANT SELECT (key_id, owner_id, secret_hash, revoked_at) ON mnemotrace_next.api_keys
-    TO mnemotrace_next_runtime;
-GRANT SELECT, INSERT, UPDATE (purge_generation, name) ON mnemotrace_next.spaces
-    TO mnemotrace_next_runtime;
-GRANT DELETE ON mnemotrace_next.spaces, mnemotrace_next.embedding_spaces
-    TO mnemotrace_next_runtime;
-GRANT SELECT, INSERT ON mnemotrace_next.space_purge_keys
-    TO mnemotrace_next_runtime;
-GRANT SELECT, INSERT, UPDATE ON mnemotrace_next.remember_operations
-    TO mnemotrace_next_runtime;
-GRANT SELECT, INSERT, DELETE ON
-    mnemotrace_next.messages, mnemotrace_next.fact_provenance,
-    mnemotrace_next.sessions, mnemotrace_next.fact_changes TO mnemotrace_next_runtime;
-GRANT SELECT, INSERT ON
-    mnemotrace_next.embedding_spaces, mnemotrace_next.fact_change_triggers
-    TO mnemotrace_next_runtime;
-GRANT SELECT, INSERT, UPDATE, DELETE ON
-    mnemotrace_next.entities, mnemotrace_next.facts, mnemotrace_next.digests,
-    mnemotrace_next.profiles, mnemotrace_next.fact_salience,
-    mnemotrace_next.fact_vectors TO mnemotrace_next_runtime;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA mnemotrace_next TO mnemotrace_next_runtime;
+```sh
+psql -X -v ON_ERROR_STOP=1 \
+  -v runtime_role=mnemotrace_next_runtime -v admin_role=mnemotrace_next_admin \
+  -f ../deploy/next/grant-roles.sql
 ```
 
-本地凭据管理角色需要 schema 的 `USAGE` 和 `api_keys` 表的 `SELECT`、`INSERT`、`UPDATE (revoked_at)` 权限。HTTP 运行账号只读取验证所需的凭据列。
+HTTP 运行角色只读取验证所需的凭据列。凭据管理角色可以查询、签发和撤销 API key。Compose 的角色初始化和授权流程见[部署说明](../../deploy/next/README.md)。
 
 服务进程共享并管理 `psycopg_pool.AsyncConnectionPool`。服务端按已认证账号构造 `PostgresStorage(pool, owner_id=owner_id)`。在 Windows 上，运行异步池的进程可用 `asyncio.run(main(), loop_factory=asyncio.SelectorEventLoop)`。会话入口用可信账号和空间 ID 联合检查授权，会话里的 SQL 始终使用绑定空间。受限读取的可见性由服务端设置。
 
