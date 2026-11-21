@@ -17,13 +17,18 @@ uv run --locked python -m mnemotrace_next.adapters.postgres.migrate up
 
 `005` 为实体增加身份类型，将既有实体归为 `named`，保留 ID 和事实引用。每个空间最多一个 `space_user`，其确定性 ID 与同名普通实体分开。迁移随新版实体适配器切换。
 
+`006` 增加账号 API key 校验值表和按账号列出空间的索引。既有空间保留原账号标识，签发 key 时可用该标识访问既有空间。
+
 ## 运行账号与会话
 
 数据库管理员为服务配置独立登录角色。以下授权在迁移后执行，其中 `mnemotrace_next_runtime` 是已创建的运行角色。
 
 ```sql
 GRANT USAGE ON SCHEMA mnemotrace_next TO mnemotrace_next_runtime;
-GRANT SELECT, INSERT, UPDATE (purge_generation) ON mnemotrace_next.spaces
+GRANT SELECT ON mnemotrace_next.schema_migrations TO mnemotrace_next_runtime;
+GRANT SELECT (key_id, owner_id, secret_hash, revoked_at) ON mnemotrace_next.api_keys
+    TO mnemotrace_next_runtime;
+GRANT SELECT, INSERT, UPDATE (purge_generation, name) ON mnemotrace_next.spaces
     TO mnemotrace_next_runtime;
 GRANT SELECT, INSERT, DELETE ON
     mnemotrace_next.messages, mnemotrace_next.fact_provenance,
@@ -37,6 +42,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
     mnemotrace_next.fact_vectors TO mnemotrace_next_runtime;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA mnemotrace_next TO mnemotrace_next_runtime;
 ```
+
+本地凭据管理角色需要 schema 的 `USAGE` 和 `api_keys` 表的 `SELECT`、`INSERT`、`UPDATE (revoked_at)` 权限。HTTP 运行账号只读取验证所需的凭据列。
 
 服务进程共享并管理 `psycopg_pool.AsyncConnectionPool`。服务端按已认证账号构造 `PostgresStorage(pool, owner_id=owner_id)`。在 Windows 上，运行异步池的进程可用 `asyncio.run(main(), loop_factory=asyncio.SelectorEventLoop)`。会话入口用可信账号和空间 ID 联合检查授权，会话里的 SQL 始终使用绑定空间。受限读取的可见性由服务端设置。
 
@@ -134,8 +141,6 @@ uv run --locked --extra inference python scripts/memory_closure.py --out .artifa
 每轮在两个空空间中分别验证跨会话状态变更和二跳关系召回。状态变更检查生效前、恰好生效和当前三次召回。二跳用例固定查询与 `top_k=5`，要求输出中的目标边只出现在二跳结果。三轮中至少两轮的两个用例都通过，且全程没有事实区间、来源或可见性契约违规，验收才通过。使用新的输出路径保留全部轮次，报告包含显式模型配置、代码版本、合成原文、提交的事实变更、查询条件和排序后的证据。
 
 真库回归使用固定模型输出覆盖同一闭环，以及擦除、写入竞争和提交确认丢失。实际模型验收由上述命令单独执行。
-
-2026-11-21 的闭环验收使用 DeepSeek `deepseek-chat`、SiliconFlow `BAAI/bge-m3`、PostgreSQL 18.6 和 pgvector 0.8.7。三个完整轮次均通过，报告未发现契约违规。报告中的嵌入修订是本次部署的标识，服务端权重修订未确认。
 
 ### 检查命令
 

@@ -10,10 +10,10 @@ from typing import Literal, TypedDict, cast
 from ..domain.enums import Role
 from ..domain.ids import MessageId
 from ..domain.message import Message
+from ..domain.time import utc_datetime
 from ..domain.values import KNOWN_LABELS, Label, LiteralValue, Predicate
 from ..ports.inference import LLM, InvalidStructuredOutput
 
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _ISO_CALENDAR_TIME = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
     r"(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:[.][0-9]{1,6})?)?"
@@ -260,7 +260,7 @@ def message_reference_time(
     if seconds is None:
         return None
     try:
-        return (_EPOCH + timedelta(seconds=seconds)).astimezone(timezone)
+        return utc_datetime(seconds).astimezone(timezone)
     except (ValueError, OverflowError):
         return None
 

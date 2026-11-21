@@ -7,13 +7,19 @@ from typing import Literal, overload
 
 from psycopg import AsyncConnection, errors, sql
 from psycopg.pq import TransactionStatus
-from psycopg.rows import TupleRow
+from psycopg.rows import TupleRow, args_row
 from psycopg_pool import AsyncConnectionPool
 
 from ...domain.ids import SpaceId
 from ...domain.space import Space
-from ...ports.storage import CommitOutcomeUnknown, SpaceReader, SpaceSession
+from ...ports.storage import (
+    CommitOutcomeUnknown,
+    SpaceReader,
+    SpaceSession,
+    SpaceUnavailable,
+)
 from .reader import PostgresReader
+from .rows import space_from_row
 from .session import PostgresSession
 
 _AUTHORIZED_SPACE = sql.SQL("""
@@ -86,20 +92,62 @@ class PostgresStorage:
         Raises:
             PermissionError: 空间所有者与认证账号不一致。
             ValueError: 空间标识已存在。
+            CommitOutcomeUnknown: 创建事务进入提交阶段后无法确认结果。
         """
         if space.owner_id != self._owner_id:
             raise PermissionError("空间的所有者须与认证账号一致")
         try:
-            async with self._pool.connection() as conn, conn.transaction():
-                await conn.execute(
-                    """
-                    INSERT INTO mnemotrace_next.spaces (space_id, owner_id, name, created_at)
-                    VALUES (%s, %s, %s, %s)
-                    """,
-                    (space.id.value, self._owner_id, space.name, space.created_at),
-                )
+            async with AsyncExitStack() as connection:
+                conn = await connection.enter_async_context(self._pool.connection())
+                async with _session_transaction(conn, write=True):
+                    await conn.execute(
+                        """
+                        INSERT INTO mnemotrace_next.spaces
+                            (space_id, owner_id, name, created_at)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (space.id.value, self._owner_id, space.name, space.created_at),
+                    )
+                await _return_committed_connection(connection.pop_all())
         except errors.UniqueViolation:
             raise ValueError("空间标识已存在") from None
+
+    async def list_spaces(self, *, after_id: str, limit: int) -> list[Space]:
+        """读取当前账号拥有的空间，包括尚未写入记忆的空间。"""
+        async with (
+            self._pool.connection() as conn,
+            conn.cursor(row_factory=args_row(space_from_row)) as cursor,
+        ):
+            await cursor.execute(
+                """
+                SELECT space_id, owner_id, name, created_at
+                FROM mnemotrace_next.spaces
+                WHERE owner_id = %s AND space_id > %s
+                ORDER BY space_id LIMIT %s
+                """,
+                (self._owner_id, after_id, limit),
+            )
+            return await cursor.fetchall()
+
+    async def rename_space(self, space_id: SpaceId, name: str) -> Space:
+        """在同一更新语句中检查归属并修改空间名称。"""
+        async with (
+            self._pool.connection() as conn,
+            _session_transaction(conn, write=True),
+            conn.cursor(row_factory=args_row(space_from_row)) as cursor,
+        ):
+            await cursor.execute(
+                """
+                UPDATE mnemotrace_next.spaces SET name = %s
+                WHERE space_id = %s AND owner_id = %s
+                RETURNING space_id, owner_id, name, created_at
+                """,
+                (name, space_id.value, self._owner_id),
+            )
+            space = await cursor.fetchone()
+            if space is None:
+                raise SpaceUnavailable("空间不可访问")
+        return space
 
     @overload
     def session(
@@ -154,7 +202,7 @@ class PostgresStorage:
                     statement, (space_id.value, self._owner_id)
                 )
                 if await authorized.fetchone() is None:
-                    raise LookupError("空间不可访问")
+                    raise SpaceUnavailable("空间不可访问")
                 try:
                     yield reader
                     if (

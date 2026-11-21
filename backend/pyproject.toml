@@ -14,9 +14,10 @@ dependencies = ["psycopg[binary]==3.3.8", "psycopg-pool==3.3.3"]
 
 [project.optional-dependencies]
 inference = ["httpx>=0.28,<1", "jsonschema>=4.26,<5"]
+server = ["mnemotrace-next[inference]", "fastapi>=0.128,<1", "pydantic>=2.11,<3", "uvicorn>=0.41,<1"]
 
 [dependency-groups]
-dev = ["mnemotrace-next[inference]", "mypy", "pytest", "ruff", "types-jsonschema>=4.26,<5"]
+dev = ["mnemotrace-next[server]", "mypy", "pytest", "ruff", "types-jsonschema>=4.26,<5"]
 
 [tool.ruff.lint]
 extend-select = ["I", "UP"]

@@ -16,7 +16,7 @@ from ...domain.salience import FactSalience
 from ...domain.space import Space
 from ...domain.values import EntityRef, Predicate
 from ...ports.queries import FactFilter, FactQuery
-from ...ports.storage import FactChange, GraphEdge, GraphEdgeBatch
+from ...ports.storage import FactChange, GraphEdge, GraphEdgeBatch, SessionRegistration
 from . import search
 from .fact_filters import FactConditions, fact_conditions
 from .facts import SELECT_FACTS
@@ -182,6 +182,49 @@ class PostgresReader:
             (self.space_id.value, session_id.value),
         )
         return await cursor.fetchone() is not None
+
+    async def get_session(self, session_id: SessionId) -> SessionRegistration | None:
+        """读取绑定空间中的单条会话登记。"""
+        cursor = await self._conn.execute(
+            """
+            SELECT created_at FROM mnemotrace_next.sessions
+            WHERE space_id = %s AND session_id = %s
+            """,
+            (self.space_id.value, session_id.value),
+        )
+        row = await cursor.fetchone()
+        return SessionRegistration(session_id, row[0]) if row is not None else None
+
+    async def list_sessions(
+        self, *, after: SessionRegistration | None, limit: int
+    ) -> list[SessionRegistration]:
+        """读取绑定空间的会话，按创建时间倒序并将未知时间排在末尾。"""
+        query: sql.Composable = sql.SQL("""
+            SELECT session_id, created_at FROM mnemotrace_next.sessions
+            WHERE space_id = %s
+            """)
+        params: list[object] = [self.space_id.value]
+        if after is not None:
+            if after.created_at is None:
+                query += sql.SQL(" AND created_at IS NULL AND session_id > %s")
+                params.append(after.session_id.value)
+            else:
+                query += sql.SQL("""
+                    AND (created_at < %s OR (created_at = %s AND session_id > %s)
+                         OR created_at IS NULL)
+                    """)
+                params.extend(
+                    (after.created_at, after.created_at, after.session_id.value)
+                )
+        cursor = await self._conn.execute(
+            query
+            + sql.SQL(" ORDER BY created_at DESC NULLS LAST, session_id LIMIT %s"),
+            (*params, limit),
+        )
+        return [
+            SessionRegistration(SessionId(session_id), created_at)
+            for session_id, created_at in await cursor.fetchall()
+        ]
 
     async def last_messages(
         self, session_id: SessionId, limit: int

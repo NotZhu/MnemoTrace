@@ -9,9 +9,10 @@ from ..domain.values import Predicate
 from ..ports.queries import FactFilter
 from ..ports.storage import GraphEdge, SpaceReader
 
-_MAX_HOPS = 4
-_MAX_EXPLICIT_ANCHORS = 32
-_MAX_PREDICATES = 32
+DEFAULT_GRAPH_HOPS = 2
+MAX_GRAPH_HOPS = 4
+MAX_EXPLICIT_ANCHORS = 32
+MAX_GRAPH_PREDICATES = 32
 _MAX_EDGES = 200
 
 
@@ -31,11 +32,11 @@ class GraphRecallOptions:
 
     origin_entity_ids: Sequence[EntityId] | None = None
     predicates: Sequence[Predicate] | None = None
-    max_hops: int = 2
+    max_hops: int = DEFAULT_GRAPH_HOPS
 
     def __post_init__(self) -> None:
-        if type(self.max_hops) is not int or not 1 <= self.max_hops <= _MAX_HOPS:
-            raise ValueError(f"max_hops 须为 1 至 {_MAX_HOPS} 的整数")
+        if type(self.max_hops) is not int or not 1 <= self.max_hops <= MAX_GRAPH_HOPS:
+            raise ValueError(f"max_hops 须为 1 至 {MAX_GRAPH_HOPS} 的整数")
         if self.origin_entity_ids is not None:
             object.__setattr__(
                 self,
@@ -43,13 +44,13 @@ class GraphRecallOptions:
                 _validated_values(
                     self.origin_entity_ids,
                     EntityId,
-                    _MAX_EXPLICIT_ANCHORS,
+                    MAX_EXPLICIT_ANCHORS,
                     "origin_entity_ids",
                 ),
             )
         if self.predicates is not None:
             predicates = _validated_values(
-                self.predicates, Predicate, _MAX_PREDICATES, "predicates"
+                self.predicates, Predicate, MAX_GRAPH_PREDICATES, "predicates"
             )
             if not predicates:
                 raise ValueError("predicates 须为非空序列，省略时不限谓词")

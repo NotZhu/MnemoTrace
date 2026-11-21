@@ -48,6 +48,11 @@ def _applied(conn: psycopg.Connection[TupleRow]) -> dict[str, str]:
     )
 
 
+def migration_checksums() -> dict[str, str]:
+    """返回当前包所需的迁移及校验和，供服务就绪检查使用。"""
+    return {migration.version: migration.checksum for migration in _migrations()}
+
+
 def _check_history(migrations: tuple[_Migration, ...], applied: dict[str, str]) -> None:
     known = {migration.version: migration.checksum for migration in migrations}
     for version, checksum in applied.items():

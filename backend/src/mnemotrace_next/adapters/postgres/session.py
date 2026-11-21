@@ -21,6 +21,7 @@ from ...domain.salience import FactSalience
 from ...ports.storage import (
     CutoffTrigger,
     FactChange,
+    SessionRegistration,
     SessionUnavailable,
     SupportGroups,
     flatten_support_groups,
@@ -46,11 +47,13 @@ class PostgresSession(PostgresReader):
         if space_id != self.space_id:
             raise ValueError("记录不属于会话绑定的空间")
 
-    async def register_session(self, session_id: SessionId) -> None:
+    async def register_session(self, session_id: SessionId) -> SessionRegistration:
         """在绑定空间登记由后端生成的对话标识。
 
         Args:
             session_id: 待登记的对话标识。
+        Returns:
+            新登记及数据库记录的创建时间。
 
         Raises:
             ValueError: 绑定空间内已有同一标识。
@@ -59,11 +62,14 @@ class PostgresSession(PostgresReader):
             """
             INSERT INTO mnemotrace_next.sessions (space_id, session_id)
             VALUES (%s, %s) ON CONFLICT DO NOTHING
+            RETURNING created_at
             """,
             (self.space_id.value, session_id.value),
         )
-        if cursor.rowcount == 0:
+        row = await cursor.fetchone()
+        if row is None:
             raise ValueError("对话标识已存在")
+        return SessionRegistration(session_id, row[0])
 
     async def append_messages(self, messages: Sequence[Message]) -> None:
         """按输入顺序追加新原文，保留重放消息的首次收录位置。

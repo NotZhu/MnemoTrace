@@ -99,7 +99,12 @@ def database(admin_dsn: str, database_factory: DatabaseFactory) -> Iterator[PgDa
                 with psycopg.connect(dsn) as conn:
                     for grant in (
                         "USAGE ON SCHEMA mnemotrace_next",
-                        "SELECT, INSERT, UPDATE (purge_generation) ON mnemotrace_next.spaces",
+                        "SELECT ON mnemotrace_next.schema_migrations",
+                        """
+                        SELECT (key_id, owner_id, secret_hash, revoked_at)
+                            ON mnemotrace_next.api_keys
+                        """,
+                        "SELECT, INSERT, UPDATE (purge_generation, name) ON mnemotrace_next.spaces",
                         """
                         SELECT, INSERT, DELETE ON
                             mnemotrace_next.messages, mnemotrace_next.fact_provenance,

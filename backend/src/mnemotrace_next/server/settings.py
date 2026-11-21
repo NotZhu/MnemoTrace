@@ -1,0 +1,44 @@
+"""读取 HTTP 进程的运行配置。"""
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Self
+
+from psycopg import ProgrammingError
+from psycopg.conninfo import conninfo_to_dict
+
+
+@dataclass(frozen=True)
+class Settings:
+    """保存 HTTP 服务启动所需的运行连接和请求限制。"""
+
+    postgres_dsn: str = field(repr=False)
+    max_body_bytes: int = 64 * 1024
+    inference_env: Mapping[str, str] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.postgres_dsn.strip():
+            raise ValueError("请设置 MNEMOTRACE_NEXT_POSTGRES_DSN")
+        try:
+            if "\x00" in self.postgres_dsn:
+                raise ValueError
+            conninfo_to_dict(self.postgres_dsn)
+        except (ProgrammingError, ValueError):
+            raise ValueError("MNEMOTRACE_NEXT_POSTGRES_DSN 格式无效") from None
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> Self:
+        """解析运行配置，缺失或非法时拒绝启动。"""
+        dsn = env.get("MNEMOTRACE_NEXT_POSTGRES_DSN", "").strip()
+        try:
+            limit = int(env.get("MNEMOTRACE_NEXT_MAX_BODY_BYTES", "65536"))
+            if limit < 1:
+                raise ValueError
+        except ValueError:
+            raise ValueError("MNEMOTRACE_NEXT_MAX_BODY_BYTES 须为正整数") from None
+        inference_env = {
+            key: value
+            for key, value in env.items()
+            if key.startswith(("MNEMOTRACE_NEXT_EMBED_", "MNEMOTRACE_NEXT_INFERENCE_"))
+        }
+        return cls(dsn, limit, inference_env)

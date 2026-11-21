@@ -3,6 +3,7 @@
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal, Protocol, overload
 
 from ..domain.digest import Digest
@@ -31,12 +32,24 @@ def flatten_support_groups(groups: SupportGroups) -> tuple[MessageId, ...]:
     return tuple(dict.fromkeys(message_id for group in groups for message_id in group))
 
 
+class SpaceUnavailable(LookupError):
+    """表示空间不存在或当前账号无权访问。"""
+
+
 class SessionUnavailable(LookupError):
     """表示对话在绑定空间内不可用。"""
 
 
 class CommitOutcomeUnknown(RuntimeError):
     """表示写事务已进入提交阶段，但无法确认数据库是否已提交。"""
+
+
+@dataclass(frozen=True)
+class SessionRegistration:
+    """空间中的会话登记，历史记录的创建时间可能未知。"""
+
+    session_id: SessionId
+    created_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -191,6 +204,24 @@ class SpaceReader(Protocol):
 
         Returns:
             绑定空间内有有效登记时为真。
+        """
+        ...
+
+    async def get_session(self, session_id: SessionId) -> SessionRegistration | None:
+        """读取绑定空间中的会话登记，查无记录时返回 None。"""
+        ...
+
+    async def list_sessions(
+        self, *, after: SessionRegistration | None, limit: int
+    ) -> Sequence[SessionRegistration]:
+        """按创建时间倒序和标识升序分页，未知创建时间排在末尾。
+
+        Args:
+            after: 上一页末尾的排序位置，省略时读取首页。
+            limit: 最大返回条数。
+
+        Returns:
+            本页会话标识，包括尚无原文的会话。
         """
         ...
 
@@ -564,11 +595,13 @@ class SpaceSession(SpaceReader, Protocol):
     参与决策的来源、目标事实和槽位。标记或依赖发生变化时放弃整批派生写入。
     """
 
-    async def register_session(self, session_id: SessionId) -> None:
+    async def register_session(self, session_id: SessionId) -> SessionRegistration:
         """登记由应用生成的新对话标识。
 
         Args:
             session_id: 后端新生成的标识。
+        Returns:
+            已登记的会话及创建时间。
 
         Raises:
             ValueError: 绑定空间内已有同一标识。

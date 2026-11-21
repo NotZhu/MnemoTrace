@@ -166,7 +166,7 @@ def test_session_evidence_and_trigger_upgrades_from_002(
 ) -> None:
     """依次升级会话、证据和触发列表，保留旧来源和变更游标。"""
     with database_factory() as dsn:
-        initial, salience, evidence, triggers, entity_kind = migrate._migrations()
+        initial, salience, evidence, triggers, *remaining = migrate._migrations()
         with monkeypatch.context() as legacy:
             legacy.setattr(migrate, "_migrations", lambda: (initial, salience))
             assert migrate.apply_migrations(dsn) == (initial.version, salience.version)
@@ -278,7 +278,9 @@ def test_session_evidence_and_trigger_upgrades_from_002(
                 migrate, "_migrations", lambda: (initial, salience, evidence, triggers)
             )
             assert migrate.apply_migrations(dsn) == (triggers.version,)
-        assert migrate.apply_migrations(dsn) == (entity_kind.version,)
+        assert migrate.apply_migrations(dsn) == tuple(
+            item.version for item in remaining
+        )
         assert migrate.apply_migrations(dsn) == ()
 
         async def verify() -> None:

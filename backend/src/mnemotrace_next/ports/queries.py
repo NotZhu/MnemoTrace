@@ -13,6 +13,7 @@ from ..domain.ids import FactId, MessageId
 from ..domain.values import EntityRef, Label, Predicate
 
 type FactSlot = tuple[EntityRef, Predicate]
+type FactState = Literal["current", "history", "all"]
 
 
 @dataclass(frozen=True)
@@ -40,7 +41,7 @@ class FactFilter:
         ValueError: 时点无效，完整时间线指定了有效时点，或区间起点未早于截止。
     """
 
-    state: Literal["current", "history", "all"] = "current"
+    state: FactState = "current"
     valid_at: float | None = None
     subject: EntityRef | None = None
     predicate: Predicate | None = None

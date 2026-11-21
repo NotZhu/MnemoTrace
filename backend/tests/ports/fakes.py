@@ -4,6 +4,7 @@ from collections import ChainMap
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import fields, replace
+from datetime import UTC, datetime
 from itertools import count
 from typing import Literal
 
@@ -33,6 +34,7 @@ from mnemotrace_next.ports.storage import (
     FactChange,
     GraphEdge,
     GraphEdgeBatch,
+    SessionRegistration,
     SessionUnavailable,
     SpaceSession,
     SupportGroups,
@@ -109,7 +111,7 @@ class FakeSpaceSession:
         self.space_id = space.id
         self._space = space
         self._erasure_generation = 0
-        self._sessions: set[SessionId] = set()
+        self._sessions: dict[SessionId, SessionRegistration] = {}
         self._messages: dict[MessageId, Message] = {}
         self._facts: dict[FactId, Fact] = {}
         self._fact_salience: dict[FactId, FactSalience] = {}
@@ -148,7 +150,25 @@ class FakeSpaceSession:
         """
         return session_id in self._sessions
 
-    async def register_session(self, session_id: SessionId) -> None:
+    async def get_session(self, session_id: SessionId) -> SessionRegistration | None:
+        """读取测试空间中的会话登记。"""
+        return self._sessions.get(session_id)
+
+    async def list_sessions(
+        self, *, after: SessionRegistration | None, limit: int
+    ) -> list[SessionRegistration]:
+        """使用与 PostgreSQL 一致的会话排序位置。"""
+
+        def position(item: SessionRegistration) -> tuple[float, str]:
+            when = -item.created_at.timestamp() if item.created_at else float("inf")
+            return when, item.session_id.value
+
+        sessions = sorted(self._sessions.values(), key=position)
+        if after is not None:
+            sessions = [item for item in sessions if position(item) > position(after)]
+        return sessions[:limit]
+
+    async def register_session(self, session_id: SessionId) -> SessionRegistration:
         """在测试空间登记对话。
 
         Args:
@@ -159,7 +179,9 @@ class FakeSpaceSession:
         """
         if session_id in self._sessions:
             raise ValueError("对话标识已存在")
-        self._sessions.add(session_id)
+        session = SessionRegistration(session_id, datetime.now(UTC))
+        self._sessions[session_id] = session
+        return session
 
     async def append_messages(self, messages: Sequence[Message]) -> None:
         """追加一批消息并保留已存在记录的首次收录时刻。
@@ -570,7 +592,7 @@ class FakeSpaceSession:
         }
         for message_id in messages:
             del self._messages[message_id]
-        self._sessions.discard(session_id)
+        self._sessions.pop(session_id, None)
         if messages:
             self._erasure_generation += 1
         return frozenset(deleted)

@@ -20,12 +20,12 @@ from ..ports.storage import Storage
 from .graph_recall import GraphRecallOptions, graph_ranking
 
 DEFAULT_TOP_K = 10
-_MAX_TOP_K = 100
-_MAX_QUERY_CHARS = 4096
+MAX_TOP_K = 100
+MAX_QUERY_CHARS = 4096
 _RRF_K = 60
 _VECTOR_MIN_COSINE = 0.5
 
-type _DegradedReason = Literal["embedding_timeout", "reranker_timeout"]
+type RecallDegradedReason = Literal["embedding_timeout", "reranker_timeout"]
 
 
 @dataclass(frozen=True)
@@ -48,13 +48,32 @@ class RecallEvidence:
     source_message_ids: tuple[MessageId, ...]
     relation: RecallRelation | None = None
 
+    @classmethod
+    def from_fact(cls, fact: Fact) -> "RecallEvidence":
+        """从领域事实投影召回证据。"""
+        relation = (
+            RecallRelation(
+                fact.subject.entity_id, fact.predicate, fact.object.entity_id
+            )
+            if isinstance(fact.object, EntityRef)
+            else None
+        )
+        return cls(
+            fact.id,
+            fact.text,
+            fact.valid_at,
+            fact.invalid_at,
+            fact.provenance,
+            relation,
+        )
+
 
 @dataclass(frozen=True)
 class RecallResult:
     """保存按相关性排列的证据及可选的超时降级原因。"""
 
     evidence: tuple[RecallEvidence, ...]
-    degraded_reason: _DegradedReason | None = None
+    degraded_reason: RecallDegradedReason | None = None
 
 
 class Recall:
@@ -120,8 +139,8 @@ class Recall:
             InferenceError: 推理端口请求失败或返回无效结果。
         """
         query = _validate_query(query)
-        if type(top_k) is not int or not 1 <= top_k <= _MAX_TOP_K:
-            raise ValueError(f"top_k 须为 1 至 {_MAX_TOP_K} 的整数")
+        if type(top_k) is not int or not 1 <= top_k <= MAX_TOP_K:
+            raise ValueError(f"top_k 须为 1 至 {MAX_TOP_K} 的整数")
         if type(rerank) is not bool:
             raise ValueError("rerank 须为布尔值")
         if graph is not None and not isinstance(graph, GraphRecallOptions):
@@ -140,7 +159,7 @@ class Recall:
         async with self._storage.session(self._space_id):
             pass
         vector: Sequence[float] | None
-        degraded_reason: _DegradedReason | None = None
+        degraded_reason: RecallDegradedReason | None = None
         try:
             vectors = await self._embedder.embed((query,))
         except TimeoutError:
@@ -196,24 +215,15 @@ class Recall:
             else:
                 ids = _fill_reranking(ids, ranked, top_k)
 
-        evidence = tuple(_evidence(facts[fact_id]) for fact_id in ids[:top_k])
+        evidence = tuple(
+            RecallEvidence.from_fact(facts[fact_id]) for fact_id in ids[:top_k]
+        )
         return RecallResult(evidence, degraded_reason)
 
 
-def _evidence(fact: Fact) -> RecallEvidence:
-    relation = (
-        RecallRelation(fact.subject.entity_id, fact.predicate, fact.object.entity_id)
-        if isinstance(fact.object, EntityRef)
-        else None
-    )
-    return RecallEvidence(
-        fact.id, fact.text, fact.valid_at, fact.invalid_at, fact.provenance, relation
-    )
-
-
 def _validate_query(query: str) -> str:
-    if not isinstance(query, str) or len(query) > _MAX_QUERY_CHARS:
-        raise ValueError(f"查询须为最多 {_MAX_QUERY_CHARS} 个字符的字符串")
+    if not isinstance(query, str) or len(query) > MAX_QUERY_CHARS:
+        raise ValueError(f"查询须为最多 {MAX_QUERY_CHARS} 个字符的字符串")
     query = query.strip()
     if not query or "\x00" in query:
         raise ValueError("查询须为非空且不含空字符的字符串")
