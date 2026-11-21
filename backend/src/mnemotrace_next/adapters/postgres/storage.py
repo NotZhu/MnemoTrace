@@ -3,7 +3,8 @@
 from asyncio import CancelledError, create_task, current_task, shield
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
-from typing import Literal, overload
+from hashlib import sha256
+from typing import Literal, cast, overload
 
 from psycopg import AsyncConnection, errors, sql
 from psycopg.pq import TransactionStatus
@@ -148,6 +149,18 @@ class PostgresStorage:
             if space is None:
                 raise SpaceUnavailable("空间不可访问")
         return space
+
+    async def purge_space(self, space_id: SpaceId, *, key: str) -> None:
+        """按幂等键清空绑定账号的空间，提交后保留空间登记。"""
+        async with self.session(space_id, write=True) as writer:
+            await cast(PostgresSession, writer).purge_space(
+                key_hash=sha256(key.encode()).digest()
+            )
+
+    async def delete_space(self, space_id: SpaceId) -> None:
+        """提交对绑定账号空间及其内容的完整删除。"""
+        async with self.session(space_id, write=True) as writer:
+            await cast(PostgresSession, writer).delete_space()
 
     @overload
     def session(

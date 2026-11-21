@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 
 from ...adapters.runtime import SystemClock
@@ -22,7 +22,7 @@ from .memory_schemas import (
     RecallRequest,
     RecallResponse,
 )
-from .schemas import ResourceId, require_json
+from .schemas import ResourceId, require_empty_body, require_json
 
 router = APIRouter(
     prefix="/spaces/{space_id}",
@@ -151,3 +151,23 @@ async def get_message(
     if message is None:
         raise HTTPException(404, detail="message_not_found")
     return MessageResponse.from_message(message)
+
+
+@router.delete(
+    "/facts/{fact_id}",
+    operation_id="deleteFact",
+    status_code=204,
+    response_class=Response,
+    dependencies=[Depends(require_empty_body)],
+    responses=problem_responses(400, 413),
+)
+async def delete_fact(
+    space_id: ResourceId, fact_id: ResourceId, storage: AuthorizedStorage
+) -> Response:
+    """删除指定事实及其派生记录，保留会话原文。"""
+    identifier = FactId(fact_id)
+    async with storage.session(SpaceId(space_id), write=True) as writer:
+        if await writer.get_fact(identifier) is None:
+            raise HTTPException(404, detail="fact_not_found")
+        await writer.delete_facts((identifier,))
+    return Response(status_code=204)

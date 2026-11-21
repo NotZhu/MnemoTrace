@@ -2,7 +2,7 @@
 
 import re
 from datetime import UTC, datetime
-from typing import Annotated, Self, TypedDict
+from typing import Annotated, Literal, Self, TypedDict
 
 from pydantic import (
     AfterValidator,
@@ -39,6 +39,7 @@ from ...domain.message import Message
 from ...domain.time import utc_datetime
 from ...domain.values import Predicate
 from ...ports.queries import FactState
+from .resource_ids import encode_resource_id
 from .schemas import NonblankText, PageQuery
 
 _RFC3339 = re.compile(
@@ -127,8 +128,19 @@ class FactListQuery(PageQuery):
         return self
 
 
-def _optional_utc(seconds: float | None) -> datetime | None:
-    return utc_datetime(seconds) if seconds is not None else None
+type FactTimeField = Literal["valid_at", "invalid_at", "recorded_at", "expired_at"]
+
+
+def _fact_time(
+    name: FactTimeField, seconds: float | None, out_of_range: list[FactTimeField]
+) -> datetime | None:
+    if seconds is None:
+        return None
+    try:
+        return utc_datetime(seconds)
+    except OverflowError:
+        out_of_range.append(name)
+        return None
 
 
 class RelationResponse(BaseModel):
@@ -155,6 +167,7 @@ class EvidenceResponse(BaseModel):
     text: str
     valid_at: datetime | None
     invalid_at: datetime | None
+    out_of_range_fields: list[FactTimeField]
     source_message_ids: list[str]
     relation: RelationResponse | None
 
@@ -164,17 +177,22 @@ class _EvidenceFields(TypedDict):
     text: str
     valid_at: datetime | None
     invalid_at: datetime | None
+    out_of_range_fields: list[FactTimeField]
     source_message_ids: list[str]
     relation: RelationResponse | None
 
 
 def _evidence_fields(evidence: RecallEvidence) -> _EvidenceFields:
+    out_of_range: list[FactTimeField] = []
     return {
-        "fact_id": evidence.fact_id.value,
+        "fact_id": encode_resource_id(evidence.fact_id.value),
         "text": evidence.text,
-        "valid_at": _optional_utc(evidence.valid_at),
-        "invalid_at": _optional_utc(evidence.invalid_at),
-        "source_message_ids": [item.value for item in evidence.source_message_ids],
+        "valid_at": _fact_time("valid_at", evidence.valid_at, out_of_range),
+        "invalid_at": _fact_time("invalid_at", evidence.invalid_at, out_of_range),
+        "out_of_range_fields": out_of_range,
+        "source_message_ids": [
+            encode_resource_id(item.value) for item in evidence.source_message_ids
+        ],
         "relation": (
             RelationResponse.from_relation(evidence.relation)
             if evidence.relation is not None
@@ -203,7 +221,7 @@ class RecallResponse(BaseModel):
 class FactResponse(EvidenceResponse):
     """在证据基础上提供事实的收录、首次获知截止和可见性信息。"""
 
-    recorded_at: datetime
+    recorded_at: datetime | None
     expired_at: datetime | None
     sensitive: bool
     source: Source
@@ -212,10 +230,14 @@ class FactResponse(EvidenceResponse):
     @classmethod
     def from_fact(cls, fact: Fact) -> Self:
         """将存储事实转换为公开详情。"""
+        evidence = _evidence_fields(RecallEvidence.from_fact(fact))
+        out_of_range = evidence["out_of_range_fields"]
+        recorded_at = _fact_time("recorded_at", fact.recorded_at, out_of_range)
+        expired_at = _fact_time("expired_at", fact.expired_at, out_of_range)
         return cls(
-            **_evidence_fields(RecallEvidence.from_fact(fact)),
-            recorded_at=utc_datetime(fact.recorded_at),
-            expired_at=_optional_utc(fact.expired_at),
+            **evidence,
+            recorded_at=recorded_at,
+            expired_at=expired_at,
             sensitive=fact.sensitive,
             source=fact.source,
             labels=[label.value for label in fact.labels],
@@ -244,8 +266,8 @@ class MessageResponse(BaseModel):
     def from_message(cls, message: Message) -> Self:
         """以 UTC 表示原文的事件和收录时间。"""
         return cls(
-            message_id=message.id.value,
-            session_id=message.session_id.value,
+            message_id=encode_resource_id(message.id.value),
+            session_id=encode_resource_id(message.session_id.value),
             role=message.role,
             content=message.content,
             event_time=message_reference_time(message.event_time, timezone=UTC),

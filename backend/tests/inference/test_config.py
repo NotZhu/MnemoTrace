@@ -13,6 +13,8 @@ from .sample import CHAT_ENV, EMBED_ENV, chat_response
 @pytest.mark.parametrize(
     ("setting", "value"),
     [
+        ("LLM_MODEL", ""),
+        ("LLM_API_KEY", ""),
         ("LLM_TEMPERATURE", "nan"),
         ("LLM_TEMPERATURE", "2.1"),
         ("EMBED_DIM", "0"),

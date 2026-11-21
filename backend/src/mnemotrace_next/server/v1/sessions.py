@@ -1,9 +1,8 @@
 """在已授权空间中登记和查看会话。"""
 
 from typing import Annotated
-from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from ...adapters.runtime import UuidGenerator
 from ...application.sessions import create_session_registration
@@ -12,12 +11,14 @@ from ...ports.storage import SessionRegistration
 from ..auth import AuthorizedStorage
 from ..errors import problem_responses
 from .page_cursor import SessionPageCursor
+from .resource_ids import encode_resource_id
 from .schemas import (
     CREATED_LOCATION,
     PageQuery,
     ResourceId,
     SessionPage,
     SessionResponse,
+    require_empty_body,
 )
 
 router = APIRouter(
@@ -45,11 +46,11 @@ async def create_session(
     async for _ in request.stream():
         pass
     session = await create_session_registration(storage, SpaceId(space_id), _ids)
-    session_id = session.session_id.value
+    created = SessionResponse.from_registration(session)
     response.headers["Location"] = (
-        f"/v1/spaces/{quote(space_id, safe='')}/sessions/{session_id}"
+        f"/v1/spaces/{encode_resource_id(space_id)}/sessions/{created.session_id}"
     )
-    return SessionResponse.from_registration(session)
+    return created
 
 
 @router.get("", operation_id="listSessions")
@@ -92,3 +93,23 @@ async def get_session(
     if session is None:
         raise HTTPException(404, detail="session_not_found")
     return SessionResponse.from_registration(session)
+
+
+@router.delete(
+    "/{session_id}",
+    operation_id="deleteSession",
+    status_code=204,
+    response_class=Response,
+    dependencies=[Depends(require_empty_body)],
+    responses=problem_responses(400, 413),
+)
+async def delete_session(
+    space_id: ResourceId, session_id: ResourceId, storage: AuthorizedStorage
+) -> Response:
+    """擦除会话原文、任务及失去独立证据的抽取事实。"""
+    identifier = SessionId(session_id)
+    async with storage.session(SpaceId(space_id), write=True) as writer:
+        if not await writer.has_session(identifier):
+            raise HTTPException(404, detail="session_not_found")
+        await writer.delete_session_data(identifier)
+    return Response(status_code=204)

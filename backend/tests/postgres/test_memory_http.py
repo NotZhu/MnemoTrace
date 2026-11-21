@@ -1,6 +1,7 @@
 """从 HTTP 入口验证召回、事实与来源原文的读取契约。"""
 
 import json
+from base64 import urlsafe_b64encode
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
@@ -17,7 +18,7 @@ from mnemotrace_next.adapters.inference import open_inference
 from mnemotrace_next.adapters.postgres import PostgresStorage
 from mnemotrace_next.adapters.postgres.identity import issue_key
 from mnemotrace_next.domain.entity import Entity
-from mnemotrace_next.domain.ids import FactId
+from mnemotrace_next.domain.ids import FactId, SessionId, SpaceId
 from mnemotrace_next.domain.space import Space
 from mnemotrace_next.domain.values import EntityRef, Predicate
 from mnemotrace_next.ports.inference import Embedder
@@ -123,6 +124,175 @@ async def _http(
         if embedder is not None:
             app.state.embedder = embedder
         yield client
+
+
+def test_delete_fact_keeps_original_message_and_clears_search_and_history(
+    database: PgDatabase, corpus: Corpus
+) -> None:
+    """单独删事实时清理索引与审计，并保留原文。"""
+
+    async def exercise() -> None:
+        path = corpus.path + "/facts/current"
+        async with _http(Settings(database.runtime), FakeEmbedder()) as client:
+            assert (
+                await client.delete(path, headers=corpus.foreign_headers)
+            ).status_code == 404
+            wrong_space = f"/v1/spaces/{corpus.sibling.id.value}/facts/current"
+            assert (await client.delete(wrong_space, headers=corpus.headers)).json()[
+                "code"
+            ] == "fact_not_found"
+            response = await client.delete(path, headers=corpus.headers)
+            assert response.status_code == 204 and response.content == b""
+            assert (
+                await client.delete(path, headers=corpus.headers)
+            ).status_code == 404
+            assert (await client.get(path, headers=corpus.headers)).status_code == 404
+            original = await client.get(
+                corpus.path + "/messages/source", headers=corpus.headers
+            )
+            assert (
+                original.status_code == 200
+                and original.json()["content"] == "默认配发 XLSX 附件。"
+            )
+            for recall in (
+                {"query": "dispatchtag"},
+                {"query": "dispatchtag", "as_of": "1970-01-01T00:00:21Z"},
+            ):
+                result = await client.post(
+                    corpus.path + "/recall", json=recall, headers=corpus.headers
+                )
+                assert result.status_code == 200
+                assert "current" not in {
+                    item["fact_id"] for item in result.json()["evidence"]
+                }
+            hidden = await client.delete(
+                corpus.path + "/facts/hidden", headers=corpus.headers
+            )
+            assert hidden.status_code == 204
+        async with await psycopg.AsyncConnection.connect(database.runtime) as conn:
+            for table in ("fact_vectors", "fact_provenance", "fact_changes"):
+                cursor = await conn.execute(
+                    psycopg.sql.SQL(
+                        "SELECT 1 FROM mnemotrace_next.{} WHERE space_id = %s AND fact_id = 'current'"
+                    ).format(psycopg.sql.Identifier(table)),
+                    (corpus.scope.id.value,),
+                )
+                assert await cursor.fetchone() is None
+
+    run(exercise())
+
+
+def test_erase_session_preserves_facts_with_an_independent_support_group(
+    database: PgDatabase, corpus: Corpus
+) -> None:
+    """擦除目标会话时只撤下依赖该原文的证据。"""
+
+    async def exercise() -> None:
+        kept = message(corpus.scope, "kept", session=SessionId("kept-session"), at=22.0)
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id=corpus.scope.owner_id)
+            async with storage.session(corpus.scope.id, write=True) as writer:
+                current = await writer.get_fact(FactId("current"))
+                assert current is not None
+                await writer.register_session(kept.session_id)
+                await writer.append_messages((kept,))
+                shared = replace(
+                    current,
+                    id=FactId("shared"),
+                    provenance=(*current.provenance, kept.id),
+                )
+                await writer.save_facts(
+                    (shared,),
+                    changed_at=22.0,
+                    support_groups={shared.id: (current.provenance, (kept.id,))},
+                )
+        async with _http(Settings(database.runtime)) as client:
+            original = await client.get(
+                corpus.path + "/messages/source", headers=corpus.headers
+            )
+            session = corpus.path + "/sessions/" + original.json()["session_id"]
+            assert (
+                await client.delete(session, headers=corpus.foreign_headers)
+            ).status_code == 404
+            response = await client.delete(session, headers=corpus.headers)
+            assert response.status_code == 204 and response.content == b""
+            for resource in (
+                session,
+                corpus.path + "/messages/source",
+                corpus.path + "/facts/current",
+            ):
+                assert (
+                    await client.get(resource, headers=corpus.headers)
+                ).status_code == 404
+            repeated = await client.delete(session, headers=corpus.headers)
+            assert (repeated.status_code, repeated.json()["code"]) == (
+                404,
+                "session_not_found",
+            )
+            fact_response = await client.get(
+                corpus.path + "/facts/shared", headers=corpus.headers
+            )
+            assert fact_response.status_code == 200
+            assert fact_response.json()["source_message_ids"] == [kept.id.value]
+            assert (
+                await client.get(corpus.path + "/messages/kept", headers=corpus.headers)
+            ).status_code == 200
+
+    run(exercise())
+
+
+def test_delete_space_removes_embedding_registration_and_only_the_target_space(
+    database: PgDatabase, corpus: Corpus
+) -> None:
+    """空间删除移除模型维度注册及全部资源，保留账号的其他空间和凭据。"""
+
+    async def exercise() -> None:
+        with psycopg.connect(database.admin) as conn:
+            conn.execute(
+                "INSERT INTO mnemotrace_next.space_purge_keys (space_id, key_hash) VALUES (%s, %s)",
+                (corpus.scope.id.value, b"p" * 32),
+            )
+        async with _http(Settings(database.runtime)) as client:
+            assert (
+                await client.delete(corpus.path, headers=corpus.foreign_headers)
+            ).status_code == 404
+            deleted = await client.delete(corpus.path, headers=corpus.headers)
+            assert deleted.status_code == 204 and deleted.content == b""
+            for suffix in ("", "/facts", "/sessions", "/messages/source"):
+                inaccessible = await client.get(
+                    corpus.path + suffix, headers=corpus.headers
+                )
+                assert (inaccessible.status_code, inaccessible.json()["code"]) == (
+                    404,
+                    "space_not_found",
+                )
+            other = await client.get(
+                f"/v1/spaces/{corpus.sibling.id.value}", headers=corpus.headers
+            )
+            assert other.status_code == 200
+            assert (
+                await client.delete(corpus.path, headers=corpus.headers)
+            ).status_code == 404
+        with psycopg.connect(database.admin) as conn:
+            for table in (
+                "spaces",
+                "embedding_spaces",
+                "fact_vectors",
+                "sessions",
+                "messages",
+                "space_purge_keys",
+            ):
+                assert (
+                    conn.execute(
+                        psycopg.sql.SQL(
+                            "SELECT 1 FROM mnemotrace_next.{} WHERE space_id = %s"
+                        ).format(psycopg.sql.Identifier(table)),
+                        (corpus.scope.id.value,),
+                    ).fetchone()
+                    is None
+                )
+
+    run(exercise())
 
 
 def test_http_recall_matches_core_order_and_boundaries(
@@ -372,6 +542,220 @@ def test_http_fact_pages_accept_legacy_ids(
             detail = await client.get(f"{path}/{fact_id}", headers=corpus.headers)
             assert detail.status_code == 200
             assert detail.json()["fact_id"] == fact_id
+
+    run(exercise())
+
+
+def test_out_of_range_fact_times_survive_recall_detail_and_pagination(
+    database: PgDatabase, corpus: Corpus
+) -> None:
+    """越界字段单独标记，业务过滤与键集分页使用原始时刻。"""
+
+    async def exercise() -> None:
+        subject = Entity(corpus.scope.id, "旧档案")
+        old = replace(
+            fact(subject, "outside-calendar", text="temporalfixture"),
+            valid_at=-62_135_596_801.0,
+            invalid_at=253_402_300_800.0,
+            recorded_at=253_402_300_800.0,
+            expired_at=253_402_300_800.0,
+        )
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id=corpus.scope.owner_id)
+            async with storage.session(corpus.scope.id, write=True) as writer:
+                await writer.upsert_entity(subject)
+                await writer.save_facts((old,), changed_at=old.recorded_at)
+
+        path = corpus.path + "/facts"
+        params = {"state": "all", "limit": "1"}
+        async with _http(Settings(database.runtime), FakeEmbedder()) as client:
+            first = await client.get(path, headers=corpus.headers, params=params)
+            assert first.status_code == 200
+            (item,) = first.json()["items"]
+            assert item["fact_id"] == old.id.value
+            assert item["text"] == old.text
+            names = ["valid_at", "invalid_at", "recorded_at", "expired_at"]
+            assert item["out_of_range_fields"] == names
+            assert all(item[name] is None for name in names)
+            detail = await client.get(
+                path + "/outside-calendar", headers=corpus.headers
+            )
+            assert detail.status_code == 200 and detail.json() == item
+            cursor = first.json()["next_cursor"]
+            assert cursor
+            second = await client.get(
+                path, headers=corpus.headers, params={**params, "cursor": cursor}
+            )
+            assert second.status_code == 200
+            (other,) = second.json()["items"]
+            assert other["fact_id"] == "current"
+            assert other["invalid_at"] is None and other["out_of_range_fields"] == []
+            history = await client.get(
+                path, headers=corpus.headers, params={"state": "history"}
+            )
+            assert history.status_code == 200
+            assert old.id.value not in {
+                item["fact_id"] for item in history.json()["items"]
+            }
+            recalled = await client.post(
+                corpus.path + "/recall",
+                headers=corpus.headers,
+                json={"query": old.text, "as_of": "1970-01-01T00:00:21Z"},
+            )
+            assert recalled.status_code == 200
+            evidence = next(
+                entry
+                for entry in recalled.json()["evidence"]
+                if entry["fact_id"] == old.id.value
+            )
+            assert evidence["out_of_range_fields"] == ["valid_at", "invalid_at"]
+            assert evidence["valid_at"] is None and evidence["invalid_at"] is None
+
+    run(exercise())
+
+
+def test_legacy_path_ids_round_trip_through_resources_and_locations(
+    database: PgDatabase,
+) -> None:
+    """存量 ID 可从响应回传到子路由，编码碰撞和越权均受控制。"""
+    owner = uuid4().hex
+    scope = replace(space(owner), id=SpaceId(owner + "/archive"))
+    expected = "~" + urlsafe_b64encode(scope.id.value.encode()).decode().rstrip("=")
+    collision = replace(space(owner), id=SpaceId(expected))
+    with psycopg.connect(database.admin) as conn:
+        key, foreign = issue_key(conn, owner), issue_key(conn, uuid4().hex)
+    settings = Settings.from_env(
+        {
+            "MNEMOTRACE_NEXT_POSTGRES_DSN": database.runtime,
+            "MNEMOTRACE_NEXT_LLM_BASE_URL": "http://127.0.0.1:1/v1",
+            "MNEMOTRACE_NEXT_LLM_MODEL": "fixture",
+            "MNEMOTRACE_NEXT_LLM_JSON_MODE": "json_schema",
+            "MNEMOTRACE_NEXT_EMBED_BASE_URL": "http://127.0.0.1:1/v1",
+            "MNEMOTRACE_NEXT_EMBED_MODEL": "fixture",
+            "MNEMOTRACE_NEXT_EMBED_REVISION": "test",
+            "MNEMOTRACE_NEXT_EMBED_DIM": "2",
+        }
+    )
+
+    async def exercise() -> None:
+        subject = Entity(scope.id, "旧对话")
+        original = message(
+            scope, "~原文/source", session=SessionId("session/archive"), at=25.0
+        )
+        old = replace(
+            fact(
+                subject, "fact/archive", text="pathfixture", provenance=(original.id,)
+            ),
+            recorded_at=25.0,
+        )
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id=owner)
+            await storage.create_space(scope)
+            await storage.create_space(collision)
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.register_session(original.session_id)
+                await writer.append_messages((original,))
+                await writer.upsert_entity(subject)
+                await writer.save_facts((old,), changed_at=25.0)
+
+            headers = {"Authorization": f"Bearer {key.token}"}
+            async with _http(settings, FakeEmbedder()) as client:
+                first = await client.get(
+                    "/v1/spaces", headers=headers, params={"limit": 1}
+                )
+                assert first.status_code == 200
+                (listed,) = first.json()["items"]
+                assert listed["space_id"] == expected
+                cursor = first.json()["next_cursor"]
+                assert cursor
+                second = await client.get(
+                    "/v1/spaces", headers=headers, params={"limit": 1, "cursor": cursor}
+                )
+                (other,) = second.json()["items"]
+                assert (
+                    other["space_id"].startswith("~") and other["space_id"] != expected
+                )
+                path = "/v1/spaces/" + expected
+                paths = (path, "/v1/spaces/" + other["space_id"])
+                for target, expected_id in zip(
+                    paths, (expected, other["space_id"]), strict=True
+                ):
+                    detail = await client.get(target, headers=headers)
+                    assert (
+                        detail.status_code == 200
+                        and detail.json()["space_id"] == expected_id
+                    )
+                denied = await client.get(
+                    path, headers={"Authorization": f"Bearer {foreign.token}"}
+                )
+                assert (denied.status_code, denied.json()["code"]) == (
+                    404,
+                    "space_not_found",
+                )
+                for malformed in ("~", "~a=", "~_w", "~YTli", "~AA"):
+                    invalid = await client.get(
+                        "/v1/spaces/" + malformed, headers=headers
+                    )
+                    assert (invalid.status_code, invalid.json()["code"]) == (
+                        422,
+                        "invalid_request",
+                    )
+
+                sessions = await client.get(path + "/sessions", headers=headers)
+                (registered,) = sessions.json()["items"]
+                session_id = registered["session_id"]
+                assert session_id.startswith("~")
+                session_path = f"{path}/sessions/{session_id}"
+                assert (
+                    await client.get(session_path, headers=headers)
+                ).json() == registered
+                created = await client.post(path + "/sessions", headers=headers)
+                assert created.status_code == 201
+                assert created.headers["Location"].startswith(path + "/sessions/")
+                assert (
+                    await client.get(created.headers["Location"], headers=headers)
+                ).json() == created.json()
+                recalled = await client.post(
+                    path + "/recall", headers=headers, json={"query": old.text}
+                )
+                assert recalled.status_code == 200
+                (evidence,) = recalled.json()["evidence"]
+                assert evidence["text"] == old.text
+                (message_id,) = evidence["source_message_ids"]
+                assert message_id.startswith("~")
+                raw = await client.get(f"{path}/messages/{message_id}", headers=headers)
+                assert (
+                    raw.status_code == 200 and raw.json()["content"] == original.content
+                )
+                assert raw.json()["session_id"] == session_id
+                assert raw.json()["message_id"] == message_id
+                fact_id = evidence["fact_id"]
+                assert fact_id.startswith("~")
+                detail = await client.get(f"{path}/facts/{fact_id}", headers=headers)
+                assert detail.status_code == 200 and detail.json()["fact_id"] == fact_id
+                assert detail.json()["source_message_ids"] == [message_id]
+
+                accepted = await client.post(
+                    session_path + "/remember",
+                    headers={**headers, "Idempotency-Key": "legacy"},
+                    json={"messages": [{"role": "user", "content": "合成续写"}]},
+                )
+                try:
+                    assert accepted.status_code == 202
+                    assert accepted.headers["Location"].startswith(
+                        path + "/operations/"
+                    )
+                    task = await client.get(
+                        accepted.headers["Location"], headers=headers
+                    )
+                    assert (
+                        task.status_code == 200
+                        and task.json()["session_id"] == session_id
+                    )
+                finally:
+                    assert (
+                        await client.delete(session_path, headers=headers)
+                    ).status_code == 204
 
     run(exercise())
 

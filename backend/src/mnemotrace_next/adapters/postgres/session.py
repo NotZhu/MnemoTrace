@@ -608,27 +608,50 @@ class PostgresSession(PostgresReader):
                 await self._advance_erasure_generation()
         return deleted
 
-    async def purge_space(self) -> None:
-        """在同一事务内清除内容并推进空间代际。"""
-        conn = self._conn
-        params = (self.space_id.value,)
-        async with conn.transaction():
-            for table in (
-                "profiles",
-                "digests",
-                "fact_changes",
-                "facts",
-                "entities",
-                "messages",
-                "sessions",
-            ):
-                await conn.execute(
-                    sql.SQL(
-                        "DELETE FROM mnemotrace_next.{} WHERE space_id = %s"
-                    ).format(sql.Identifier(table)),
-                    params,
+    async def purge_space(self, *, key_hash: bytes | None = None) -> None:
+        """清空内容并推进代际，可按幂等键记录清空结果。"""
+        async with self._conn.transaction():
+            if key_hash is not None:
+                cursor = await self._conn.execute(
+                    """
+                    INSERT INTO mnemotrace_next.space_purge_keys (space_id, key_hash)
+                    VALUES (%s, %s) ON CONFLICT DO NOTHING
+                    """,
+                    (self.space_id.value, key_hash),
                 )
+                if cursor.rowcount == 0:
+                    return
+            await self._clear_space_contents()
             await self._advance_erasure_generation()
+
+    async def delete_space(self) -> None:
+        """在调用方持有的空间写事务内移除空间及其完整内容。"""
+        await self._clear_space_contents()
+        await self._conn.execute(
+            "DELETE FROM mnemotrace_next.embedding_spaces WHERE space_id = %s",
+            (self.space_id.value,),
+        )
+        await self._conn.execute(
+            "DELETE FROM mnemotrace_next.spaces WHERE space_id = %s",
+            (self.space_id.value,),
+        )
+
+    async def _clear_space_contents(self) -> None:
+        for table in (
+            "profiles",
+            "digests",
+            "fact_changes",
+            "facts",
+            "entities",
+            "messages",
+            "sessions",
+        ):
+            await self._conn.execute(
+                sql.SQL("DELETE FROM mnemotrace_next.{} WHERE space_id = %s").format(
+                    sql.Identifier(table)
+                ),
+                (self.space_id.value,),
+            )
 
     async def _advance_erasure_generation(self) -> None:
         await self._conn.execute(

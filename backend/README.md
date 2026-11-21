@@ -13,7 +13,7 @@ uv run --locked python scripts/check.py
 
 运行 `uv run --locked python -m mnemotrace_next` 进行冒烟检查，预期输出 `ok`。
 
-HTTP 服务的启动、凭据管理和空间、会话接口见 [HTTP API](docs/http-api.md)。
+HTTP 服务和写入 worker 的启动方式，以及凭据、任务和召回契约，见 [HTTP API](docs/http-api.md)。
 
 ## Python 写入
 

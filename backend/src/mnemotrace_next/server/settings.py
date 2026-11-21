@@ -1,4 +1,4 @@
-"""读取 HTTP 进程的运行配置。"""
+"""读取 HTTP 进程和写入 worker 的运行配置。"""
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -15,6 +15,7 @@ class Settings:
     postgres_dsn: str = field(repr=False)
     max_body_bytes: int = 64 * 1024
     inference_env: Mapping[str, str] = field(default_factory=dict, repr=False)
+    queue_limit: int = 100
 
     def __post_init__(self) -> None:
         if not self.postgres_dsn.strip():
@@ -25,6 +26,8 @@ class Settings:
             conninfo_to_dict(self.postgres_dsn)
         except (ProgrammingError, ValueError):
             raise ValueError("MNEMOTRACE_NEXT_POSTGRES_DSN 格式无效") from None
+        if self.queue_limit < 1:
+            raise ValueError("MNEMOTRACE_NEXT_QUEUE_LIMIT 须为正整数")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Self:
@@ -39,6 +42,16 @@ class Settings:
         inference_env = {
             key: value
             for key, value in env.items()
-            if key.startswith(("MNEMOTRACE_NEXT_EMBED_", "MNEMOTRACE_NEXT_INFERENCE_"))
+            if key.startswith(
+                (
+                    "MNEMOTRACE_NEXT_LLM_",
+                    "MNEMOTRACE_NEXT_EMBED_",
+                    "MNEMOTRACE_NEXT_INFERENCE_",
+                )
+            )
         }
-        return cls(dsn, limit, inference_env)
+        try:
+            queue_limit = int(env.get("MNEMOTRACE_NEXT_QUEUE_LIMIT", "100"))
+        except ValueError:
+            raise ValueError("MNEMOTRACE_NEXT_QUEUE_LIMIT 须为正整数") from None
+        return cls(dsn, limit, inference_env, queue_limit)

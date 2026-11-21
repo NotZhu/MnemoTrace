@@ -1,0 +1,136 @@
+"""启动独立的 PostgreSQL 记忆写入 worker。"""
+
+import argparse
+import asyncio
+import logging
+import os
+import signal
+import sys
+from types import FrameType
+
+import psycopg
+from psycopg import AsyncConnection
+from psycopg.rows import TupleRow
+from psycopg_pool import AsyncConnectionPool
+
+from .adapters.inference import InferenceRequestError, open_inference
+from .adapters.postgres.migrate import migration_checksums
+from .adapters.postgres.operations import PostgresOperations
+from .adapters.postgres.storage import PostgresStorage
+from .adapters.runtime import SystemClock, UuidGenerator
+from .application.operations import ClaimedOperation, OperationRunner
+from .application.remember import Remember
+from .server.settings import Settings
+
+_LOG = logging.getLogger(__name__)
+
+
+def _is_transient(error: Exception) -> bool:
+    if isinstance(error, InferenceRequestError):
+        return error.kind in ("rate_limit", "upstream", "connection")
+    return isinstance(error, psycopg.OperationalError)
+
+
+async def _consume(runner: OperationRunner, stopping: asyncio.Event) -> None:
+    while not stopping.is_set():
+        try:
+            if await runner.run_once():
+                continue
+        except psycopg.OperationalError as exc:
+            _LOG.warning("任务队列暂不可用 sqlstate=%s", exc.sqlstate)
+        await asyncio.sleep(1)
+
+
+async def _serve(settings: Settings, concurrency: int, stopping: asyncio.Event) -> None:
+    pool: AsyncConnectionPool[AsyncConnection[TupleRow]] = AsyncConnectionPool(
+        settings.postgres_dsn,
+        open=False,
+        min_size=0,
+        max_size=max(2, concurrency),
+        timeout=3,
+        kwargs={"connect_timeout": 3},
+    )
+    async with (
+        open_inference(settings.inference_env, llm=True, embed=True) as clients,
+        pool,
+    ):
+        llm, embedder = clients.llm, clients.embedder
+        assert llm is not None and embedder is not None
+        async with pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT version, checksum FROM mnemotrace_next.schema_migrations"
+            )
+            if dict(await cursor.fetchall()) != migration_checksums():
+                raise ValueError("请先应用当前版本的 PostgreSQL 迁移")
+
+        def remember_for(job: ClaimedOperation) -> Remember:
+            return Remember(
+                space_id=job.space_id,
+                storage=PostgresStorage(pool, owner_id=job.owner_id),
+                llm=llm,
+                embedder=embedder,
+                clock=SystemClock(),
+                ids=UuidGenerator(),
+            )
+
+        runner = OperationRunner(PostgresOperations(pool), remember_for, _is_transient)
+        _LOG.info("写入 worker 已启动 concurrency=%d", concurrency)
+        async with asyncio.TaskGroup() as workers:
+            for _ in range(concurrency):
+                workers.create_task(_consume(runner, stopping))
+
+
+async def _run(settings: Settings, concurrency: int) -> None:
+    stopping = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    supervisor = asyncio.current_task()
+    assert supervisor is not None
+
+    def stop() -> None:
+        if not stopping.is_set():
+            # 归还已提交事务的连接时可能消耗取消，领取循环仍须观察到停机。
+            stopping.set()
+            supervisor.cancel()
+
+    def on_signal(_signum: int, _frame: FrameType | None) -> None:
+        loop.call_soon_threadsafe(stop)
+
+    signals = (signal.SIGINT, signal.SIGTERM)
+    previous = {signum: signal.getsignal(signum) for signum in signals}
+    try:
+        for signum in signals:
+            signal.signal(signum, on_signal)
+        await _serve(settings, concurrency, stopping)
+    except asyncio.CancelledError:
+        if not stopping.is_set():
+            raise
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def main() -> int:
+    """读取数据库和推理配置并运行写入任务。"""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--concurrency", type=int, default=2, metavar="1-16")
+    args = parser.parse_args()
+    if not 1 <= args.concurrency <= 16:
+        parser.error("--concurrency 须为 1 至 16")
+    logging.basicConfig(level=logging.WARNING)
+    _LOG.setLevel(logging.INFO)
+    try:
+        settings = Settings.from_env(os.environ)
+        loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
+        asyncio.run(_run(settings, args.concurrency), loop_factory=loop_factory)
+    except ValueError as exc:
+        parser.error(str(exc))
+    except (psycopg.Error, ExceptionGroup) as exc:
+        _LOG.error("写入 worker 中止 type=%s", type(exc).__name__)
+        return 1
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

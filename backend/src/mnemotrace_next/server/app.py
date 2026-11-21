@@ -13,7 +13,7 @@ from .errors import install_error_handlers
 from .health import router as health_router
 from .middleware import RequestBoundary
 from .settings import Settings
-from .v1 import memories, sessions, spaces
+from .v1 import memories, operations, sessions, spaces
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -35,15 +35,22 @@ def create_app(settings: Settings) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with (
-            open_inference(settings.inference_env, embed=embed_configured) as inference,
+            open_inference(
+                settings.inference_env, llm="optional", embed=embed_configured
+            ) as inference,
             pool,
         ):
             app.state.embedder = inference.embedder
+            app.state.write_configured = (
+                inference.llm is not None and inference.embedder is not None
+            )
             yield
 
     app = FastAPI(title="MnemoTrace", version="1.0.0", lifespan=lifespan)
     app.state.pool = pool
     app.state.embedder = None
+    app.state.write_configured = False
+    app.state.queue_limit = settings.queue_limit
     app.state.migration_checksums = migration_checksums()
     install_error_handlers(app)
     app.add_middleware(RequestBoundary, max_body_bytes=settings.max_body_bytes)
@@ -51,4 +58,5 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(spaces.router, prefix="/v1")
     app.include_router(sessions.router, prefix="/v1")
     app.include_router(memories.router, prefix="/v1")
+    app.include_router(operations.router, prefix="/v1")
     return app

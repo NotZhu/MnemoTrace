@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from math import isfinite
-from typing import cast
+from typing import Literal, cast
 
 import httpx
 
@@ -20,6 +20,10 @@ from .openai_chat import (
 from .openai_embeddings import OpenAIEmbedder, _EmbeddingOptions
 
 _PREFIX = "MNEMOTRACE_NEXT_"
+
+
+class _MissingInferenceSetting(ValueError):
+    """表示所选模型缺少必填配置。"""
 
 
 @dataclass(frozen=True)
@@ -45,7 +49,7 @@ class InferenceClients:
 async def open_inference(
     env: Mapping[str, str],
     *,
-    llm: bool = False,
+    llm: bool | Literal["optional"] = False,
     embed: bool = False,
     transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None,
 ) -> AsyncIterator[InferenceClients]:
@@ -53,7 +57,7 @@ async def open_inference(
 
     Args:
         env: 部署配置的环境变量映射。
-        llm: 是否启用补全角色。
+        llm: True 时必须配置补全角色，optional 时允许缺少必填项。
         embed: 是否启用嵌入角色。
         transport_factory: 可选的 HTTP 传输工厂，便于用固定响应验证。
 
@@ -63,7 +67,12 @@ async def open_inference(
     Raises:
         ValueError: 所选角色的配置缺失或无效。
     """
-    chat = _chat_config(env) if llm else None
+    try:
+        chat = _chat_config(env) if llm else None
+    except _MissingInferenceSetting:
+        if llm != "optional":
+            raise
+        chat = None
     embeddings = _embedding_config(env) if embed else None
     if chat is None and embeddings is None:
         yield InferenceClients()
@@ -121,8 +130,10 @@ async def open_inference(
 
 
 def _chat_config(env: Mapping[str, str]) -> tuple[_Endpoint, _ChatOptions]:
-    endpoint = _endpoint(env, "LLM")
+    base_url = _required(env, "LLM_BASE_URL")
     mode = _required(env, "LLM_JSON_MODE")
+    model = _required(env, "LLM_MODEL")
+    endpoint = _endpoint(env, "LLM", base_url)
     if mode not in ("json_schema", "json_object", "prompt"):
         raise ValueError(
             f"{_PREFIX}LLM_JSON_MODE 须为 json_schema、json_object 或 prompt"
@@ -136,7 +147,7 @@ def _chat_config(env: Mapping[str, str]) -> tuple[_Endpoint, _ChatOptions]:
     if thinking not in (None, "deepseek", "dashscope"):
         raise ValueError(f"{_PREFIX}LLM_DISABLE_THINKING 须为 deepseek 或 dashscope")
     return endpoint, _ChatOptions(
-        model=_required(env, "LLM_MODEL"),
+        model=model,
         json_mode=cast(_JSONMode, mode),
         temperature=_temperature(env),
         max_output_tokens=_positive_int(env, "LLM_MAX_OUTPUT_TOKENS", 2048),
@@ -161,7 +172,7 @@ def _temperature(env: Mapping[str, str]) -> float | None:
 
 
 def _embedding_config(env: Mapping[str, str]) -> tuple[_Endpoint, _EmbeddingOptions]:
-    endpoint = _endpoint(env, "EMBED")
+    endpoint = _endpoint(env, "EMBED", _required(env, "EMBED_BASE_URL"))
     send_dimensions = env.get(f"{_PREFIX}EMBED_SEND_DIMENSIONS", "0")
     if send_dimensions not in ("0", "1"):
         raise ValueError(f"{_PREFIX}EMBED_SEND_DIMENSIONS 须为 0 或 1")
@@ -175,9 +186,8 @@ def _embedding_config(env: Mapping[str, str]) -> tuple[_Endpoint, _EmbeddingOpti
     )
 
 
-def _endpoint(env: Mapping[str, str], role: str) -> _Endpoint:
+def _endpoint(env: Mapping[str, str], role: str, configured_url: str) -> _Endpoint:
     name = f"{role}_BASE_URL"
-    configured_url = _required(env, name)
     try:
         url = httpx.URL(configured_url)
     except httpx.InvalidURL:
@@ -201,7 +211,8 @@ def _endpoint(env: Mapping[str, str], role: str) -> _Endpoint:
         if url.host not in ("localhost", "127.0.0.1", "::1") or key:
             raise ValueError(f"{_PREFIX}{name} 的 HTTP 连接只允许无密钥的本机回环端点")
     elif not key or not all(33 <= ord(char) <= 126 for char in key):
-        raise ValueError(f"{_PREFIX}{key_name} 须为有效的 HTTPS 端点密钥")
+        error = ValueError if key else _MissingInferenceSetting
+        raise error(f"{_PREFIX}{key_name} 须为有效的 HTTPS 端点密钥")
     return _Endpoint(url.copy_with(raw_path=url.raw_path.rstrip(b"/") + b"/"), key)
 
 
@@ -209,7 +220,7 @@ def _required(env: Mapping[str, str], name: str) -> str:
     key = f"{_PREFIX}{name}"
     value = env.get(key, "").strip()
     if not value:
-        raise ValueError(f"请设置 {key}")
+        raise _MissingInferenceSetting(f"请设置 {key}")
     return value
 
 

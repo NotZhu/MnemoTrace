@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import psycopg
 import pytest
+from psycopg.types.json import Jsonb
 
 from mnemotrace_next.adapters.postgres import PostgresStorage, migrate
 from mnemotrace_next.domain.entity import Entity
@@ -44,6 +45,42 @@ def test_migration_concurrency_repeat_and_checksum(
             )
         with pytest.raises(migrate.MigrationError, match="校验和不匹配"):
             migrate.apply_migrations(dsn)
+
+
+def test_upgrade_preserves_queued_operation_and_idempotency_hashes(
+    database_factory: DatabaseFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """从 008 升级时仅移除旧代际，原任务仍可领取或重放。"""
+    payload = [{"role": "user", "content": "合成原文", "event_time": None}]
+    key_hash, request_hash = b"k" * 32, b"r" * 32
+    previous = tuple(m for m in migrate._migrations() if m.version < "009_")
+    with database_factory() as dsn:
+        with monkeypatch.context() as legacy:
+            legacy.setattr(migrate, "_migrations", lambda: previous)
+            assert migrate.apply_migrations(dsn)[-1] == "008_remember_operations.sql"
+        with psycopg.connect(dsn) as conn:
+            conn.execute("""
+                INSERT INTO mnemotrace_next.spaces (space_id, owner_id, name, created_at)
+                VALUES ('space', 'owner', '合成空间', 1)
+                """)
+            conn.execute("""
+                INSERT INTO mnemotrace_next.sessions (space_id, session_id)
+                VALUES ('space', 'session')
+                """)
+            conn.execute(
+                """
+                INSERT INTO mnemotrace_next.remember_operations
+                    (operation_id, space_id, session_id, key_hash, request_hash, messages, erasure_token)
+                VALUES ('job', 'space', 'session', %s, %s, %s, '0')
+                """,
+                (key_hash, request_hash, Jsonb(payload)),
+            )
+        assert migrate.apply_migrations(dsn)[0] == "009_drop_queued_erasure_token.sql"
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute("""
+                SELECT operation_id, status, key_hash, request_hash, messages
+                FROM mnemotrace_next.remember_operations
+                """).fetchone() == ("job", "queued", key_hash, request_hash, payload)
 
 
 def test_migration_upgrade_and_failure_are_atomic(

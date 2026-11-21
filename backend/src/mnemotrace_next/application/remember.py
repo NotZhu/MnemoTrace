@@ -1,6 +1,6 @@
 """编排一次同步记忆写入及提交前复核。"""
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, tzinfo
 from typing import Literal
@@ -66,6 +66,18 @@ class RememberRetryRequired(RuntimeError):
     """表示已用完重判机会，且本次提交尚未开始写入。"""
 
 
+type RememberStage = Literal["extraction", "embedding", "adjudication", "publish"]
+
+
+@dataclass(frozen=True)
+class RememberOperation:
+    """持久写入的接收时刻和事务内完成动作。"""
+
+    received_at: float
+    enter_stage: Callable[[RememberStage], None]
+    complete: Callable[[SpaceSession, RememberResult], Awaitable[None]]
+
+
 @dataclass(frozen=True)
 class _RememberContext:
     """保存本次使用的已提交前文、新原文和提交前须复核的擦除标记。"""
@@ -109,13 +121,18 @@ class Remember:
         self._timezone = timezone
 
     async def remember(
-        self, messages: str | Sequence[MessageInput], *, session_id: SessionId
+        self,
+        messages: str | Sequence[MessageInput],
+        *,
+        session_id: SessionId,
+        operation: RememberOperation | None = None,
     ) -> RememberResult:
         """在事务外生成事实，在空间写锁保护下复核并发布。
 
         Args:
             messages: 单条用户文本，或非空的有序消息批次。
             session_id: 绑定空间内已登记的会话标识。
+            operation: 后台写入的持久接收信息和事务内完成动作。
 
         Returns:
             PostgreSQL 确认提交后的原文标识和事实变更。
@@ -137,9 +154,12 @@ class Remember:
             clock=self._clock,
             ids=self._ids,
             timezone=self._timezone,
+            accepted_at=operation.received_at if operation else None,
         )
 
         # 在写锁外抽取事实、生成向量并完成首次裁决。
+        if operation:
+            operation.enter_stage("extraction")
         extracted = await extract_facts(
             self._llm, context.previous, context.messages, timezone=self._timezone
         )
@@ -148,6 +168,8 @@ class Remember:
                 await _check_remember_snapshot(
                     reader, session_id, context.erasure_token
                 )
+        if operation:
+            operation.enter_stage("embedding")
         prepared = await prepare_facts(
             extracted,
             space_id=self._space_id,
@@ -155,6 +177,8 @@ class Remember:
             ids=self._ids,
             received_at=context.received_at,
         )
+        if operation:
+            operation.enter_stage("adjudication")
         batch_pairs = build_batch_pairs(prepared)
         candidates = ComparisonCandidates({}, ())
         if prepared:
@@ -169,6 +193,8 @@ class Remember:
 
         # 持锁复核会话与候选。当前配对的裁决齐全时，原文和事实变更一起提交。
         for attempt in range(_COMPARISON_RETRIES + 1):
+            if operation:
+                operation.enter_stage("publish")
             async with self._storage.session(self._space_id, write=True) as writer:
                 await _check_remember_snapshot(
                     writer, session_id, context.erasure_token
@@ -187,15 +213,20 @@ class Remember:
                         current,
                         tuple(resolved[pair] for pair in current.pairs),
                     )
-                    return RememberResult(
+                    result = RememberResult(
                         tuple(message.id for message in context.messages), changes
                     )
+                    if operation:
+                        await operation.complete(writer, result)
+                    return result
 
             # 锁外只补判缺项，避免推理阻塞同一空间的其他写入。
             # 用完重判机会后，由调用方决定是否重新发起写入。
             if attempt == _COMPARISON_RETRIES:
                 break
             candidates = current
+            if operation:
+                operation.enter_stage("adjudication")
             async with self._storage.session(self._space_id) as reader:
                 await _check_remember_snapshot(
                     reader, session_id, context.erasure_token
@@ -321,6 +352,7 @@ async def _prepare_remember_context(
     clock: Clock,
     ids: IdGenerator,
     timezone: tzinfo = UTC,
+    accepted_at: float | None = None,
 ) -> _RememberContext:
     """校验新消息，在一个只读快照里授权并读取抽取前文。
 
@@ -329,9 +361,10 @@ async def _prepare_remember_context(
         space_id: 目标空间。
         session_id: 已登记的会话。
         messages: 单条用户文本或按提交顺序排列的消息批次。
-        clock: 提供本次请求接收时刻。
+        clock: 提供同步请求的 UTC epoch 接收时刻。
         ids: 提供本批尚未入库的原文标识。
         timezone: 抽取解释日历日期所用的时区。
+        accepted_at: 后台任务已持久化的接收时间。
 
     Returns:
         供后续抽取和提交复核复用的输入。
@@ -340,7 +373,7 @@ async def _prepare_remember_context(
         InvalidMessage: 批次或其中的消息无效。
         LookupError: 无权访问空间，或会话在该空间内不可用。
     """
-    received_at = clock.now()
+    received_at = accepted_at if accepted_at is not None else clock.now()
     inputs = (
         (MessageInput("user", messages),) if isinstance(messages, str) else messages
     )

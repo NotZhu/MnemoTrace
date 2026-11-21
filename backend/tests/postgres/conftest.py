@@ -105,6 +105,9 @@ def database(admin_dsn: str, database_factory: DatabaseFactory) -> Iterator[PgDa
                             ON mnemotrace_next.api_keys
                         """,
                         "SELECT, INSERT, UPDATE (purge_generation, name) ON mnemotrace_next.spaces",
+                        "DELETE ON mnemotrace_next.spaces, mnemotrace_next.embedding_spaces",
+                        "SELECT, INSERT ON mnemotrace_next.space_purge_keys",
+                        "SELECT, INSERT, UPDATE ON mnemotrace_next.remember_operations",
                         """
                         SELECT, INSERT, DELETE ON
                             mnemotrace_next.messages, mnemotrace_next.fact_provenance,

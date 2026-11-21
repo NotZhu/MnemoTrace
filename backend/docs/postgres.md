@@ -19,6 +19,10 @@ uv run --locked python -m mnemotrace_next.adapters.postgres.migrate up
 
 `006` 增加账号 API key 校验值表和按账号列出空间的索引。既有空间保留原账号标识，签发 key 时可用该标识访问既有空间。
 
+`007` 为新会话记录创建时刻，已有会话的未知时刻保持为空。`008` 增加持久写入任务表及领取索引，任务随目标会话登记级联清理。`009` 去掉入队时保存的擦除代际，已有任务和幂等记录继续保留。
+
+`010` 增加空间清空的幂等记录表。记录与清空提交在同一写事务，随空间删除级联清理。
+
 ## 运行账号与会话
 
 数据库管理员为服务配置独立登录角色。以下授权在迁移后执行，其中 `mnemotrace_next_runtime` 是已创建的运行角色。
@@ -29,6 +33,12 @@ GRANT SELECT ON mnemotrace_next.schema_migrations TO mnemotrace_next_runtime;
 GRANT SELECT (key_id, owner_id, secret_hash, revoked_at) ON mnemotrace_next.api_keys
     TO mnemotrace_next_runtime;
 GRANT SELECT, INSERT, UPDATE (purge_generation, name) ON mnemotrace_next.spaces
+    TO mnemotrace_next_runtime;
+GRANT DELETE ON mnemotrace_next.spaces, mnemotrace_next.embedding_spaces
+    TO mnemotrace_next_runtime;
+GRANT SELECT, INSERT ON mnemotrace_next.space_purge_keys
+    TO mnemotrace_next_runtime;
+GRANT SELECT, INSERT, UPDATE ON mnemotrace_next.remember_operations
     TO mnemotrace_next_runtime;
 GRANT SELECT, INSERT, DELETE ON
     mnemotrace_next.messages, mnemotrace_next.fact_provenance,
@@ -52,6 +62,10 @@ GRANT USAGE ON ALL SEQUENCES IN SCHEMA mnemotrace_next TO mnemotrace_next_runtim
 `application.sessions.create_session` 通过服务端标识生成器创建对话，在空间写事务提交后返回标识。调用方用 `has_session` 检查 ID 是否在绑定空间内有效，`append_messages` 在写入时拒绝未登记或已擦除的对话。
 
 应用在事务外生成向量和派生内容，发布前在写会话中复核对话登记、擦除标记及读入依赖。擦除对话即撤销登记，即使该对话尚无消息。擦除标记使用 `spaces.purge_generation`，在空间清空或实际删除对话原文的同一事务内推进，使同空间依赖旧快照的在途派生结果失效。空间清空撤销全部会话登记，保留空间及模型维度登记。已开始的只读事务仍按其快照返回数据。
+
+worker 开始处理任务时，从读取会话前文的同一快照取出擦除代际。其他会话的擦除使已读取旧快照的写入失效，尚未读取前文的任务可以使用新快照继续执行。
+
+HTTP 清空和空间删除均持有空间写锁。清空保留空间及嵌入模型维度登记，删除空间也移除这些登记。清空复用同一幂等键时，已有记录直接返回成功。新键的记录和数据清理一起提交。
 
 `Memory.remember` 在抽取后生成向量前、读取候选时以及再次请求模型前复核对话登记和擦除标记。在锁外一次计算本批新事实之间的配对。在空间写锁内复用这些配对，并以原请求时刻和同一套[有界候选规则](inference.md#写入抽取)重新选取同槽与跨槽旧事实。出榜候选的判定不参与写入。仅候选移除、区间确定错开或证据组与敏感标记更新时，直接用锁内结果计算写入。候选入榜或比较依据发生实质变化时，释放锁并只重判受影响的比较对，随后重新复核一次。提交时从写会话批量读取重复或矛盾裁决所涉旧事实的最新完整证据组。画像引用事实的有效期、标签或敏感性发生变化时，在同一事务内清理画像。仅追加证据组时保留画像。原文、缺失实体、事实、证据组、词法及向量索引、变更记录和受影响的画像清理在同一事务内生效。写会话确认提交后才返回结果。
 

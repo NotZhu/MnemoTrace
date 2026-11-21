@@ -360,6 +360,9 @@ def test_readiness_requires_explicit_migration(
     database_factory: DatabaseFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """兼容性不足时保持存活，显式升级后才就绪。"""
+    migrations = migrate._migrations()
+    previous = tuple(m for m in migrations if m.version < "007_")
+    pending = tuple(m.version for m in migrations if m.version >= "007_")
 
     async def exercise(dsn: str) -> None:
         async with _http(dsn) as client:
@@ -367,11 +370,10 @@ def test_readiness_requires_explicit_migration(
             response = await client.get("/readyz")
             assert response.status_code == 503
             assert response.json()["code"] == "database_not_ready"
-            assert migrate.apply_migrations(dsn) == ("007_session_created_at.sql",)
+            assert migrate.apply_migrations(dsn) == pending
             assert (await client.get("/readyz")).status_code == 200
 
     with database_factory() as dsn:
-        previous = migrate._migrations()[:-1]
         with monkeypatch.context() as legacy:
             legacy.setattr(migrate, "_migrations", lambda: previous)
             migrate.apply_migrations(dsn)

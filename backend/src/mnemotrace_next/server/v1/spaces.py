@@ -13,11 +13,13 @@ from ..errors import problem_responses
 from .page_cursor import SpacePageCursor
 from .schemas import (
     CREATED_LOCATION,
+    IdempotencyKey,
     PageQuery,
     ResourceId,
     SpaceName,
     SpacePage,
     SpaceResponse,
+    require_empty_body,
     require_json,
 )
 
@@ -44,8 +46,9 @@ async def create_space(
     """在认证账号下创建空间。"""
     space = Space(_ids.new_space_id(), owner_id, body.name, time())
     await storage.create_space(space)
-    response.headers["Location"] = f"/v1/spaces/{space.id.value}"
-    return SpaceResponse.from_space(space)
+    created = SpaceResponse.from_space(space)
+    response.headers["Location"] = f"/v1/spaces/{created.space_id}"
+    return created
 
 
 @router.get("", operation_id="listSpaces")
@@ -89,3 +92,33 @@ async def rename_space(
     return SpaceResponse.from_space(
         await storage.rename_space(SpaceId(space_id), body.name)
     )
+
+
+@router.post(
+    "/{space_id}/purge",
+    operation_id="purgeSpace",
+    status_code=204,
+    response_class=Response,
+    dependencies=[Depends(require_empty_body)],
+    responses=problem_responses(400, 404, 413),
+)
+async def purge_space(
+    space_id: ResourceId, key: IdempotencyKey, storage: AuthorizedStorage
+) -> Response:
+    """按幂等键同步清空空间中的记忆、会话和任务。"""
+    await storage.purge_space(SpaceId(space_id), key=key)
+    return Response(status_code=204)
+
+
+@router.delete(
+    "/{space_id}",
+    operation_id="deleteSpace",
+    status_code=204,
+    response_class=Response,
+    dependencies=[Depends(require_empty_body)],
+    responses=problem_responses(400, 404, 413),
+)
+async def delete_space(space_id: ResourceId, storage: AuthorizedStorage) -> Response:
+    """同步删除绑定账号下的空间及其全部内容。"""
+    await storage.delete_space(SpaceId(space_id))
+    return Response(status_code=204)

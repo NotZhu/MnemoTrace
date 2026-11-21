@@ -90,6 +90,10 @@ async def test_health_auth_and_openapi(client: AsyncClient) -> None:
     spec = (await client.get("/openapi.json")).json()
     assert spec["openapi"].startswith("3.1.")
     assert spec["components"]["securitySchemes"]["ApiKey"]["scheme"] == "bearer"
+    schemas = spec["components"]["schemas"]
+    recorded_at = schemas["FactResponse"]["properties"]["recorded_at"]
+    assert {item["type"] for item in recorded_at["anyOf"]} == {"string", "null"}
+    assert "out_of_range_fields" in schemas["EvidenceResponse"]["properties"]
     for methods in spec["paths"].values():
         for operation in methods.values():
             if "security" in operation:
@@ -103,15 +107,28 @@ async def test_health_auth_and_openapi(client: AsyncClient) -> None:
         if path.startswith("/v1/")
     } == {
         "/v1/spaces": {"get": "listSpaces", "post": "createSpace"},
-        "/v1/spaces/{space_id}": {"get": "getSpace", "patch": "renameSpace"},
+        "/v1/spaces/{space_id}": {
+            "get": "getSpace",
+            "patch": "renameSpace",
+            "delete": "deleteSpace",
+        },
+        "/v1/spaces/{space_id}/purge": {"post": "purgeSpace"},
         "/v1/spaces/{space_id}/sessions": {
             "get": "listSessions",
             "post": "createSession",
         },
-        "/v1/spaces/{space_id}/sessions/{session_id}": {"get": "getSession"},
+        "/v1/spaces/{space_id}/sessions/{session_id}": {
+            "get": "getSession",
+            "delete": "deleteSession",
+        },
+        "/v1/spaces/{space_id}/sessions/{session_id}/remember": {"post": "remember"},
+        "/v1/spaces/{space_id}/operations/{operation_id}": {"get": "getOperation"},
         "/v1/spaces/{space_id}/recall": {"post": "recall"},
         "/v1/spaces/{space_id}/facts": {"get": "listFacts"},
-        "/v1/spaces/{space_id}/facts/{fact_id}": {"get": "getFact"},
+        "/v1/spaces/{space_id}/facts/{fact_id}": {
+            "get": "getFact",
+            "delete": "deleteFact",
+        },
         "/v1/spaces/{space_id}/messages/{message_id}": {"get": "getMessage"},
     }
     for path in (
@@ -130,6 +147,33 @@ async def test_health_auth_and_openapi(client: AsyncClient) -> None:
         "path",
         "code",
     }
+    remember = spec["paths"]["/v1/spaces/{space_id}/sessions/{session_id}/remember"][
+        "post"
+    ]
+    assert any(
+        item["name"] == "Idempotency-Key"
+        and item["in"] == "header"
+        and item["required"]
+        for item in remember["parameters"]
+    )
+    accepted = remember["responses"]["202"]
+    assert "Location" in accepted["headers"]
+    assert "application/json" in accepted["content"]
+    purge = spec["paths"]["/v1/spaces/{space_id}/purge"]["post"]
+    assert any(
+        item["name"] == "Idempotency-Key"
+        and item["in"] == "header"
+        and item["required"]
+        for item in purge["parameters"]
+    )
+    for operation in (
+        purge,
+        spec["paths"]["/v1/spaces/{space_id}"]["delete"],
+        spec["paths"]["/v1/spaces/{space_id}/sessions/{session_id}"]["delete"],
+        spec["paths"]["/v1/spaces/{space_id}/facts/{fact_id}"]["delete"],
+    ):
+        assert "requestBody" not in operation
+        assert "content" not in operation["responses"]["204"]
     for path in ("/v1/spaces", "/v1/spaces/{space_id}/sessions"):
         responses = spec["paths"][path]["post"]["responses"]
         created = responses["201"]

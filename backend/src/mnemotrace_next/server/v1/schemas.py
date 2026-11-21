@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import Annotated, Self
 
-from fastapi import HTTPException, Path, Request
+from fastapi import Header, HTTPException, Path, Request
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -17,6 +17,7 @@ from ...domain._validation import require_nonblank
 from ...domain.space import Space
 from ...domain.time import utc_datetime
 from ...ports.storage import SessionRegistration
+from .resource_ids import decode_resource_id, encode_resource_id
 
 
 def _nonblank_text(value: str) -> str:
@@ -31,7 +32,10 @@ def _strip_text(value: object) -> object:
 
 
 NonblankText = Annotated[str, AfterValidator(_nonblank_text)]
-ResourceId = Annotated[NonblankText, Path()]
+ResourceId = Annotated[NonblankText, BeforeValidator(decode_resource_id), Path()]
+IdempotencyKey = Annotated[
+    str, Header(alias="Idempotency-Key", pattern=r"^[!-~]{1,128}$")
+]
 
 CREATED_LOCATION = {
     "headers": {
@@ -65,7 +69,7 @@ class SpaceResponse(BaseModel):
     def from_space(cls, space: Space) -> Self:
         """将核心的 UTC epoch 秒转为 HTTP 日期时间。"""
         return cls(
-            space_id=space.id.value,
+            space_id=encode_resource_id(space.id.value),
             name=space.name,
             created_at=utc_datetime(space.created_at),
         )
@@ -89,7 +93,7 @@ class SessionResponse(BaseModel):
         """以 UTC 返回会话创建时间，保留未知值。"""
         created_at = session.created_at
         return cls(
-            session_id=session.session_id.value,
+            session_id=encode_resource_id(session.session_id.value),
             created_at=created_at.astimezone(UTC) if created_at is not None else None,
         )
 
@@ -115,3 +119,12 @@ async def require_json(request: Request) -> None:
     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip()
     if media_type.lower() != "application/json":
         raise HTTPException(415, detail="unsupported_media_type")
+
+
+async def require_empty_body(request: Request) -> None:
+    """为删除与清空校验空正文，同时保留流式字节上限。"""
+    has_body = False
+    async for chunk in request.stream():
+        has_body |= bool(chunk)
+    if has_body:
+        raise HTTPException(400, detail="unexpected_body")
