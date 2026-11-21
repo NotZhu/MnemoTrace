@@ -3,7 +3,7 @@
 import os
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from secrets import token_urlsafe
 from uuid import uuid4
 
@@ -21,8 +21,8 @@ type DatabaseFactory = Callable[[], AbstractContextManager[str]]
 class PgDatabase:
     """记录一次真库验证的迁移和运行连接串。"""
 
-    admin: str
-    runtime: str
+    admin: str = field(repr=False)
+    runtime: str = field(repr=False)
 
 
 @pytest.fixture(scope="session")

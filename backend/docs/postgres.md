@@ -118,6 +118,21 @@ uv run --locked --extra inference python scripts/recall_quality.py --suite graph
 
 随文档保存的报告已按固定用例逐题核对，并从原始候选回放排序。图召回报告含 52 组查询与 `top_k` 组合，以及 8 组 PostgreSQL 执行计划和延迟样本。 [图召回原始报告（gzip JSON）](recall-quality/graph-minilm-faf4aa4.json.gz)
 
+### 写入到召回闭环验收
+
+从 `backend` 配置专用 PostgreSQL 测试实例及[实际补全和嵌入端点](inference.md#环境变量)，运行以下命令。脚本创建并清理自己的临时数据库，仅向配置端点发送合成消息和查询。每次执行调用实际模型，可能产生费用。
+
+```sh
+mkdir -p .artifacts/memory-closure
+uv run --locked --extra inference python scripts/memory_closure.py --out .artifacts/memory-closure/run.json
+```
+
+每轮在两个空空间中分别验证跨会话状态变更和二跳关系召回。状态变更检查生效前、恰好生效和当前三次召回。二跳用例固定查询与 `top_k=5`，要求输出中的目标边只出现在二跳结果。三轮中至少两轮的两个用例都通过，且全程没有事实区间、来源或可见性契约违规，验收才通过。使用新的输出路径保留全部轮次，报告包含显式模型配置、代码版本、合成原文、提交的事实变更、查询条件和排序后的证据。
+
+真库回归使用固定模型输出覆盖同一闭环，以及擦除、写入竞争和提交确认丢失。实际模型验收由上述命令单独执行。
+
+2026-11-21 的闭环验收使用 DeepSeek `deepseek-chat`、SiliconFlow `BAAI/bge-m3`、PostgreSQL 18.6 和 pgvector 0.8.7。三个完整轮次均通过，报告未发现契约违规。报告中的嵌入修订是本次部署的标识，服务端权重修订未确认。
+
 ### 检查命令
 
 ```sh

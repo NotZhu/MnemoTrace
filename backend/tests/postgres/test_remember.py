@@ -461,6 +461,22 @@ def test_remember_rejudges_only_changed_pairs(
                 )
                 if second_update == "added":
                     assert await reader.get_fact(added.id) == added
+            if second_update == "added":
+                before = await memory.recall(_CURRENT)
+                assert all(item.text != _CURRENT for item in before.evidence)
+                retried = await memory.remember(_CURRENT, session_id=session_id)
+                assert len(model.extraction_calls) == 2
+                (written,) = (
+                    change.after
+                    for change in retried.fact_changes
+                    if change.before is None
+                )
+                after = await memory.recall(_CURRENT)
+                assert any(
+                    item.fact_id == written.id
+                    and item.source_message_ids == retried.message_ids
+                    for item in after.evidence
+                )
 
     run(exercise())
 
@@ -749,6 +765,8 @@ def test_remember_rejects_inflight_erasure(
                     )
                     == ()
                 )
+            recalled = await memory.recall(_CURRENT)
+            assert all(item.text != _CURRENT for item in recalled.evidence)
 
     run(exercise())
 
@@ -866,7 +884,15 @@ def test_remember_rolls_back_failed_writes(
 
 
 @pytest.mark.parametrize(
-    "fault", ["before", "timeout-before", "rejected", "unknown", "timeout-commit"]
+    "fault",
+    [
+        "before",
+        "timeout-before",
+        "rejected",
+        "unknown",
+        "unknown-rollback",
+        "timeout-commit",
+    ],
 )
 def test_remember_propagates_commit_failure_without_resending(
     database: PgDatabase, monkeypatch: pytest.MonkeyPatch, fault: str
@@ -889,6 +915,11 @@ def test_remember_propagates_commit_failure_without_resending(
         exc_tb: TracebackType | None,
     ) -> bool:
         nonlocal drop_ack
+        if drop_ack and fault == "unknown-rollback":
+            drop_ack = False
+            failure = errors.OperationalError("合成提交阶段丢失连接，事务已回滚")
+            await original_exit(transaction, type(failure), failure, None)
+            raise failure
         result = await original_exit(transaction, exc_type, exc_val, exc_tb)
         if drop_ack and transaction.status is transaction.Status.COMMITTED:
             drop_ack = False
@@ -931,7 +962,7 @@ def test_remember_propagates_commit_failure_without_resending(
         async with _workspace(database, CommitFaultStorage) as (scope, storage):
             project = Entity(scope.id, "星河项目")
             old = replace(fact(project, "old"), predicate=_PREDICATE, valid_at=10.0)
-            model = _Model(verdicts={old.text: "conflict"})
+            model = _Model(verdicts={old.text: "conflict", _CURRENT: "duplicate"})
             memory = _memory(scope, storage, model, _Embedder())
             session_id = await memory.create_session()
             profile = Profile(
@@ -948,24 +979,49 @@ def test_remember_propagates_commit_failure_without_resending(
                 "timeout-before": TimeoutError,
                 "rejected": errors.UniqueViolation,
                 "unknown": CommitOutcomeUnknown,
+                "unknown-rollback": CommitOutcomeUnknown,
                 "timeout-commit": CommitOutcomeUnknown,
             }[fault]
             with pytest.raises(error) as failure:
                 async with asyncio.timeout(None) as deadline:
                     await memory.remember(_CURRENT, session_id=session_id)
-            ack_lost = fault in {"unknown", "timeout-commit"}
-            if fault == "unknown":
+            committed = fault in {"unknown", "timeout-commit"}
+            if fault in {"unknown", "unknown-rollback"}:
                 assert isinstance(failure.value.__cause__, errors.OperationalError)
             if fault == "timeout-commit":
                 assert isinstance(failure.value.__cause__, asyncio.CancelledError)
             assert attempts == 1 and len(model.extraction_calls) == 1
             async with storage.session(scope.id) as reader:
-                assert bool(await reader.last_messages(session_id, 10)) is ack_lost
-                assert (await reader.get_profile() is None) is ack_lost
-                assert (await reader.get_fact(FactId("new-0")) is not None) is ack_lost
+                assert bool(await reader.last_messages(session_id, 10)) is committed
+                assert (await reader.get_profile() is None) is committed
+                assert (await reader.get_fact(FactId("new-0")) is not None) is committed
                 assert len(await reader.list_fact_changes(old.id)) == (
-                    2 if ack_lost else 1
+                    2 if committed else 1
                 )
+            if fault in {"unknown", "unknown-rollback"}:
+                first_source = MessageId("incoming-0")
+                before = await memory.recall(_CURRENT)
+                assert [
+                    item.source_message_ids
+                    for item in before.evidence
+                    if item.text == _CURRENT
+                ] == ([(first_source,)] if committed else [])
+                fail = False
+                resent = await memory.remember(_CURRENT, session_id=session_id)
+                assert resent.message_ids == (MessageId("incoming-1"),)
+                assert len(model.extraction_calls) == 2
+                expected_sources = (
+                    {first_source, *resent.message_ids}
+                    if committed
+                    else set(resent.message_ids)
+                )
+                async with storage.session(scope.id) as reader:
+                    assert {
+                        row.id for row in await reader.last_messages(session_id, 10)
+                    } == expected_sources
+                after = await memory.recall(_CURRENT)
+                (evidence,) = (item for item in after.evidence if item.text == _CURRENT)
+                assert set(evidence.source_message_ids) == expected_sources
 
     run(exercise())
 
