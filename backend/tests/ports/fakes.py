@@ -1,14 +1,17 @@
 """用合成数据演示端口的组合调用。"""
 
+from collections import ChainMap
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import fields, replace
 from itertools import count
 from typing import Literal
 
+from mnemotrace_next.domain._validation import timestamp
 from mnemotrace_next.domain.digest import Digest
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.enums import Source
+from mnemotrace_next.domain.errors import DomainError
 from mnemotrace_next.domain.fact import Fact
 from mnemotrace_next.domain.ids import (
     DigestId,
@@ -34,6 +37,7 @@ from mnemotrace_next.ports.storage import (
     SpaceSession,
     SupportGroups,
     flatten_support_groups,
+    validate_cutoff_triggers,
 )
 
 _MUTABLE_FACT_FIELDS = frozenset(
@@ -255,6 +259,7 @@ class FakeSpaceSession:
         Raises:
             ValueError: 事实超出绑定空间、引用缺失或更新违反事实约束。
         """
+        changed_at = timestamp(changed_at, "changed_at", DomainError)
         pending = {fact.id: fact for fact in facts}
         groups_by_id = support_groups or {}
         triggers_by_id = cutoff_triggers or {}
@@ -263,6 +268,7 @@ class FakeSpaceSession:
             or (groups_by_id.keys() | triggers_by_id.keys()) - pending.keys()
         ):
             raise ValueError("证据组及截止触发信息须属于本批唯一的事实")
+        causes = ChainMap(pending, self._facts)
         changes = []
         for fact in facts:
             before = self._facts.get(fact.id)
@@ -295,35 +301,12 @@ class FakeSpaceSession:
             )
             if any(not group for group in groups) or provenance != fact.provenance:
                 raise ValueError("证据组须非空且展开后与事实来源一致")
+            triggers = triggers_by_id.get(fact.id, ())
+            validate_cutoff_triggers(
+                before, fact, triggers, causes, existing_causes=self._facts
+            )
             if before == fact and groups == old_groups:
                 continue
-            triggers = triggers_by_id.get(fact.id, ())
-            if triggers and (
-                fact.invalid_at is None or triggers[-1].valid_end != fact.invalid_at
-            ):
-                raise ValueError("最后一个触发时点须等于事实的最终截止")
-            previous_end = before.invalid_at if before is not None else None
-            for trigger in triggers:
-                if previous_end is not None and trigger.valid_end >= previous_end:
-                    raise ValueError("触发时点须依次设置或提前截止")
-                cause = pending.get(trigger.fact_id) or self._facts.get(trigger.fact_id)
-                if cause is None or cause.id == fact.id:
-                    raise ValueError("截止须引用绑定空间内另一条已存在或同批保存的事实")
-                if trigger.valid_end != cause.valid_at:
-                    raise ValueError("触发时点须等于触发事实的生效点")
-                trigger_sources = trigger.source_message_ids
-                cause_before = self._facts.get(cause.id, cause)
-                if (
-                    trigger_sources is None
-                    or (
-                        not trigger_sources
-                        and cause.provenance
-                        and cause_before.provenance
-                    )
-                    or not set(trigger_sources).issubset(cause.provenance)
-                ):
-                    raise ValueError("截止触发来源须是本次裁决采用的触发事实原文")
-                previous_end = trigger.valid_end
             changes.append((before, fact, groups, triggers))
 
         saved = []

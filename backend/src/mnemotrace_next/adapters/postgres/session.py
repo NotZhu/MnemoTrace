@@ -24,14 +24,10 @@ from ...ports.storage import (
     SessionUnavailable,
     SupportGroups,
     flatten_support_groups,
+    validate_cutoff_triggers,
 )
 from . import search
-from .facts import (
-    FactWrite,
-    validate_cutoff_triggers,
-    validate_fact_update,
-    write_fact_batch,
-)
+from .facts import FactWrite, validate_fact_update, write_fact_batch
 from .reader import PostgresReader
 from .rows import entity_from_row, profile_to_json
 

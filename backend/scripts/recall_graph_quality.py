@@ -277,8 +277,8 @@ async def _trace_case(
             name: await _expand(reader, options, tuple(origins), filters, budget)
             for name, budget in (
                 ("default", _edge_budget(top_k)),
-                ("budget_4x", min(4 * top_k, _MAX_EDGES)),
-                ("budget_16x", min(16 * top_k, _MAX_EDGES)),
+                ("budget_4x_top_k", min(4 * top_k, _MAX_EDGES)),
+                ("budget_16x_top_k", min(16 * top_k, _MAX_EDGES)),
             )
         }
 
@@ -289,8 +289,9 @@ async def _trace_case(
         "graph_on": _fuse_rankings(lexical, semantic, graph_ids),
         "no_seed_vote": _rank_without_seed_votes(lexical, semantic, graph_ids, seeds),
         **{
-            name: _fuse_rankings(lexical, semantic, expansions[name].ids)
-            for name in ("budget_4x", "budget_16x")
+            name: _fuse_rankings(lexical, semantic, expansion.ids)
+            for name, expansion in expansions.items()
+            if name != "default"
         },
     }
     recall = Memory.for_recall(

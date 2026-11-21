@@ -21,25 +21,17 @@ pytestmark = pytest.mark.postgres
 
 
 @pytest.mark.parametrize("value", [nan, inf, -inf])
-def test_postgres_rejects_nonfinite_query_and_audit_values(
+def test_postgres_rejects_nonfinite_query_values(
     database: PgDatabase, value: float
 ) -> None:
-    """异常查询参数应明确拒绝，非法审计时间不能留下事实或变更。"""
+    """拒绝非有限查询参数，显式有效时点可覆盖默认时点。"""
 
     async def exercise() -> None:
         scope = space()
-        subject = Entity(scope.id, "星河项目")
-        target = fact(subject, "target")
         async with pool(database.runtime) as connections:
             storage = PostgresStorage(connections, owner_id=scope.owner_id)
             await storage.create_space(scope)
-            async with storage.session(scope.id, write=True) as writer:
-                await writer.upsert_entity(subject)
-                with pytest.raises(ValueError, match="changed_at"):
-                    await writer.save_facts((target,), changed_at=value)
             async with storage.session(scope.id) as reader:
-                assert await reader.get_fact(target.id) is None
-                assert await reader.list_fact_changes(target.id) == ()
                 with pytest.raises(ValueError, match="reference_time"):
                     await reader.query_facts(FactQuery(), reference_time=value)
                 assert (

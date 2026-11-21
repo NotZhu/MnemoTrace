@@ -400,46 +400,6 @@ def test_duplicate_evidence_raises_sensitivity_in_storage(
     run(exercise())
 
 
-def test_save_facts_rejects_cutoff_triggers_on_unchanged_facts(
-    database: PgDatabase,
-) -> None:
-    """只有实际设置或提前截止才能附带触发器，普通重放保持幂等。"""
-
-    async def exercise() -> None:
-        async with pool(database.runtime) as connections:
-            scope = space()
-            storage = PostgresStorage(connections, owner_id=scope.owner_id)
-            await storage.create_space(scope)
-            subject = Entity(scope.id, "星河项目")
-            old = replace(fact(subject, "old"), valid_at=10.0)
-            cause = replace(fact(subject, "cause"), valid_at=20.0)
-            closed = old.close(20.0, 30.0)
-            trigger = CutoffTrigger(cause.id, 20.0, ())
-            triggers = {old.id: (trigger,)}
-            async with storage.session(scope.id, write=True) as writer:
-                await writer.upsert_entity(subject)
-                await writer.save_facts((old, cause), changed_at=10.0)
-                with pytest.raises(ValueError, match="截止"):
-                    await writer.save_facts(
-                        (old,), changed_at=30.0, cutoff_triggers=triggers
-                    )
-                (change,) = await writer.save_facts(
-                    (closed,), changed_at=30.0, cutoff_triggers=triggers
-                )
-                assert change.cutoff_triggers == (trigger,)
-                with pytest.raises(ValueError, match="截止"):
-                    await writer.save_facts(
-                        (closed,), changed_at=40.0, cutoff_triggers=triggers
-                    )
-                assert await writer.save_facts((closed,), changed_at=40.0) == ()
-            async with storage.session(scope.id) as reader:
-                latest, created = await reader.list_fact_changes(old.id)
-                assert latest == change
-                assert created.after == old
-
-    run(exercise())
-
-
 def test_supplemental_evidence_preserves_source_free_cutoff_attribution(
     database: PgDatabase,
 ) -> None:
