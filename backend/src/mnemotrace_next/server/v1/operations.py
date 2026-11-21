@@ -22,10 +22,10 @@ from ...domain.ids import SessionId, SpaceId
 from ...ports.storage import SessionUnavailable
 from ..auth import OwnerDependency, PoolDependency
 from ..errors import problem_responses
-from .memory_schemas import RFC3339
 from .resource_ids import encode_resource_id
 from .schemas import (
     CREATED_LOCATION,
+    RFC3339,
     IdempotencyKey,
     NonblankText,
     ResourceId,
@@ -45,18 +45,13 @@ def _event_time(value: datetime) -> datetime:
     return value
 
 
-def _utf8_content(value: str) -> str:
-    value.encode("utf-8")
-    return value
-
-
 class RememberMessage(BaseModel):
     """一条待抽取的原文。"""
 
     model_config = ConfigDict(extra="forbid")
 
     role: Role
-    content: Annotated[NonblankText, AfterValidator(_utf8_content)]
+    content: NonblankText
     event_time: Annotated[RFC3339, AfterValidator(_event_time)] | None = None
 
     def to_input(self) -> MessageInput:

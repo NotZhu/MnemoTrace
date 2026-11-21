@@ -37,6 +37,24 @@ _MESSAGES = sql.SQL("""
     FROM mnemotrace_next.messages WHERE space_id = %s
     """)
 
+_SESSIONS = sql.SQL("""
+    SELECT session_id, created_at FROM mnemotrace_next.sessions
+    WHERE space_id = %(space_id)s
+    """)
+_SESSION_ORDER = sql.SQL(
+    " ORDER BY created_at DESC NULLS LAST, session_id LIMIT %(limit)s"
+)
+
+# 拆开游标的范围，使每段都能从会话排序索引直接定位，并限制参与合并的行数。
+_SESSIONS_AFTER_TIMESTAMP = sql.SQL("""
+    ({rows} AND created_at = %(created_at)s AND session_id > %(session_id)s {order})
+    UNION ALL
+    ({rows} AND created_at < %(created_at)s {order})
+    UNION ALL
+    ({rows} AND created_at IS NULL {order})
+    {order}
+    """).format(rows=_SESSIONS, order=_SESSION_ORDER)
+
 _AVAILABLE_DIGESTS = sql.SQL("""
     SELECT d.digest_id, d.space_id, d.session_id, d.text, d.source_message_ids,
            d.created_at, d.updated_at
@@ -199,28 +217,22 @@ class PostgresReader:
         self, *, after: SessionRegistration | None, limit: int
     ) -> list[SessionRegistration]:
         """读取绑定空间的会话，按创建时间倒序并将未知时间排在末尾。"""
-        query: sql.Composable = sql.SQL("""
-            SELECT session_id, created_at FROM mnemotrace_next.sessions
-            WHERE space_id = %s
-            """)
-        params: list[object] = [self.space_id.value]
-        if after is not None:
-            if after.created_at is None:
-                query += sql.SQL(" AND created_at IS NULL AND session_id > %s")
-                params.append(after.session_id.value)
-            else:
-                query += sql.SQL("""
-                    AND (created_at < %s OR (created_at = %s AND session_id > %s)
-                         OR created_at IS NULL)
-                    """)
-                params.extend(
-                    (after.created_at, after.created_at, after.session_id.value)
-                )
-        cursor = await self._conn.execute(
-            query
-            + sql.SQL(" ORDER BY created_at DESC NULLS LAST, session_id LIMIT %s"),
-            (*params, limit),
-        )
+        params: dict[str, object] = {"space_id": self.space_id.value, "limit": limit}
+        if after is None:
+            query = _SESSIONS + _SESSION_ORDER
+        elif after.created_at is None:
+            query = (
+                _SESSIONS
+                + sql.SQL(" AND created_at IS NULL AND session_id > %(session_id)s")
+                + _SESSION_ORDER
+            )
+            params["session_id"] = after.session_id.value
+        else:
+            query = _SESSIONS_AFTER_TIMESTAMP
+            params.update(
+                created_at=after.created_at, session_id=after.session_id.value
+            )
+        cursor = await self._conn.execute(query, params)
         return [
             SessionRegistration(SessionId(session_id), created_at)
             for session_id, created_at in await cursor.fetchall()

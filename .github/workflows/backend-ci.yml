@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - 'backend/**'
+      - 'deploy/next/**'
       - '.github/workflows/backend-ci.yml'
   pull_request:
     paths:
       - 'backend/**'
+      - 'deploy/next/**'
       - '.github/workflows/backend-ci.yml'
 
 permissions:
@@ -55,6 +57,10 @@ jobs:
         with:
           version: '0.12.14'
           enable-cache: false
+      - name: Install psql
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
       - run: uv run --locked pytest -m postgres
         env:
           MNEMOTRACE_NEXT_TEST_POSTGRES_DSN: host=127.0.0.1 port=${{ job.services.postgres.ports['5432'] }} dbname=postgres user=postgres password=postgres-ci-only connect_timeout=5

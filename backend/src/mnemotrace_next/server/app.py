@@ -19,7 +19,7 @@ from .v1 import memories, operations, sessions, spaces
 def create_app(settings: Settings) -> FastAPI:
     """创建带版本化路由和进程共享连接池的 ASGI 应用。"""
     pool: ConnectionPool = AsyncConnectionPool(
-        settings.postgres_dsn,
+        settings.runtime.postgres_dsn,
         open=False,
         min_size=0,
         max_size=8,
@@ -29,14 +29,15 @@ def create_app(settings: Settings) -> FastAPI:
     )
 
     embed_configured = any(
-        key.startswith("MNEMOTRACE_NEXT_EMBED_") for key in settings.inference_env
+        key.startswith("MNEMOTRACE_NEXT_EMBED_")
+        for key in settings.runtime.inference_env
     )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with (
             open_inference(
-                settings.inference_env, llm="optional", embed=embed_configured
+                settings.runtime.inference_env, llm="optional", embed=embed_configured
             ) as inference,
             pool,
         ):
@@ -46,7 +47,13 @@ def create_app(settings: Settings) -> FastAPI:
             )
             yield
 
-    app = FastAPI(title="MnemoTrace", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(
+        title="MnemoTrace",
+        version="1.0.0",
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+    )
     app.state.pool = pool
     app.state.embedder = None
     app.state.write_configured = False

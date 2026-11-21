@@ -81,7 +81,7 @@ HTTP 清空和空间删除均持有空间写锁。清空保留空间及嵌入模
 
 ## 真库验证
 
-本地测试使用独立的 PostgreSQL/pgvector 实例，镜像参见 [Backend CI](../../.github/workflows/backend-ci.yml)。将 `MNEMOTRACE_NEXT_TEST_POSTGRES_DSN` 指向该实例的管理连接。测试会在该实例创建 UTF-8、C locale 的专用数据库及临时运行角色，并在结束时清理。将 `MNEMOTRACE_NEXT_REQUIRE_POSTGRES` 设为 `1` 时，配置缺失或测试跳过都会使真库作业失败。
+本地测试使用独立的 PostgreSQL/pgvector 实例，并要求 `psql` 已加入 `PATH`。将 `MNEMOTRACE_NEXT_TEST_POSTGRES_DSN` 指向该实例的管理连接。测试创建 UTF-8、C locale 的专用数据库及临时运行和凭据管理角色，迁移后通过同一部署授权脚本配置权限，结束时清理。将 `MNEMOTRACE_NEXT_REQUIRE_POSTGRES` 设为 `1` 时，配置缺失或测试跳过都会使真库作业失败。 [Backend CI](../../.github/workflows/backend-ci.yml)
 
 ### 普通召回质量验收
 

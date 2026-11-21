@@ -1,11 +1,13 @@
-"""空间和会话的公开请求与响应。"""
+"""定义 HTTP 公共校验类型及空间和会话的请求与响应。"""
 
+import re
 from datetime import UTC, datetime
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 
 from fastapi import Header, HTTPException, Path, Request
 from pydantic import (
     AfterValidator,
+    AwareDatetime,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -19,11 +21,17 @@ from ...domain.time import utc_datetime
 from ...ports.storage import SessionRegistration
 from .resource_ids import decode_resource_id, encode_resource_id
 
+_RFC3339 = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,6})?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})"
+)
+
 
 def _nonblank_text(value: str) -> str:
     require_nonblank(value, "文本")
     if "\x00" in value:
         raise ValueError("文本不能包含空字符")
+    value.encode("utf-8")
     return value
 
 
@@ -31,10 +39,28 @@ def _strip_text(value: object) -> object:
     return value.strip() if isinstance(value, str) else value
 
 
+def _validate_rfc3339_text(value: object) -> str:
+    if not isinstance(value, str) or not _RFC3339.fullmatch(value):
+        raise ValueError("须为带时区且最多六位小数的 RFC 3339 日期时间")
+    return value
+
+
+def _normalize_utc(value: datetime) -> datetime:
+    try:
+        return value.astimezone(UTC)
+    except OverflowError:
+        raise ValueError("转换后的 UTC 时间超出支持范围") from None
+
+
 NonblankText = Annotated[str, AfterValidator(_nonblank_text)]
 ResourceId = Annotated[NonblankText, BeforeValidator(decode_resource_id), Path()]
 IdempotencyKey = Annotated[
     str, Header(alias="Idempotency-Key", pattern=r"^[!-~]{1,128}$")
+]
+RFC3339 = Annotated[
+    AwareDatetime,
+    BeforeValidator(_validate_rfc3339_text),
+    AfterValidator(_normalize_utc),
 ]
 
 CREATED_LOCATION = {
@@ -45,6 +71,28 @@ CREATED_LOCATION = {
         }
     }
 }
+
+
+def epoch_to_response_datetime[TimeField: str](
+    field: TimeField, seconds: float | None, out_of_range: list[TimeField]
+) -> datetime | None:
+    """将有限的存储时刻转换为 UTC，并记录超出日历范围的响应字段。
+
+    Args:
+        field: 响应中的时间字段名。
+        seconds: UTC epoch 秒数或未知时刻。
+        out_of_range: 当前响应收集的越界字段。
+
+    Returns:
+        可表示的 UTC 日期时间，未知或越界时为 None。
+    """
+    if seconds is None:
+        return None
+    try:
+        return utc_datetime(seconds)
+    except OverflowError:
+        out_of_range.append(field)
+        return None
 
 
 class SpaceName(BaseModel):
@@ -63,15 +111,20 @@ class SpaceResponse(BaseModel):
 
     space_id: str
     name: str
-    created_at: datetime
+    created_at: datetime | None
+    out_of_range_fields: list[Literal["created_at"]]
 
     @classmethod
     def from_space(cls, space: Space) -> Self:
         """将核心的 UTC epoch 秒转为 HTTP 日期时间。"""
+        out_of_range: list[Literal["created_at"]] = []
         return cls(
             space_id=encode_resource_id(space.id.value),
             name=space.name,
-            created_at=utc_datetime(space.created_at),
+            created_at=epoch_to_response_datetime(
+                "created_at", space.created_at, out_of_range
+            ),
+            out_of_range_fields=out_of_range,
         )
 
 

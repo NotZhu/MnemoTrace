@@ -17,6 +17,8 @@ from psycopg import AsyncConnection, AsyncTransaction
 from psycopg.rows import TupleRow
 from psycopg_pool import AsyncConnectionPool
 
+from mnemotrace_next import worker
+from mnemotrace_next.adapters.inference import InferenceRequestError
 from mnemotrace_next.adapters.postgres.identity import issue_key
 from mnemotrace_next.adapters.postgres.operations import PostgresOperations
 from mnemotrace_next.adapters.postgres.storage import PostgresStorage
@@ -115,7 +117,7 @@ class _Scope:
                 clock=SystemClock(),
                 ids=UuidGenerator(),
             ),
-            lambda error: False,
+            worker._is_transient,
         )
 
 
@@ -124,7 +126,7 @@ async def _scope(
     database: PgDatabase, *, limit: int = 10, configured: bool = True
 ) -> AsyncIterator[_Scope]:
     owner = uuid4().hex
-    with psycopg.connect(database.admin) as connection:
+    with psycopg.connect(database.key_admin) as connection:
         key = issue_key(connection, owner)
         foreign = issue_key(connection, uuid4().hex)
     config = {
@@ -502,8 +504,32 @@ def _set_due(database: PgDatabase, operation_id: str) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        pytest.param(TimeoutError(), "operation_timeout", id="attempt-timeout"),
+        pytest.param(
+            InferenceRequestError("rate_limit", status_code=429),
+            "inference_failed",
+            id="model-rate-limit",
+        ),
+        pytest.param(
+            InferenceRequestError("connection"),
+            "inference_failed",
+            id="model-disconnect",
+        ),
+        pytest.param(
+            InferenceRequestError("upstream", status_code=503),
+            "inference_failed",
+            id="model-unavailable",
+        ),
+        pytest.param(
+            psycopg.OperationalError(), "database_unavailable", id="postgres-disconnect"
+        ),
+    ],
+)
 def test_retry_holds_session_head_and_terminal_failure_releases_it(
-    database: PgDatabase,
+    database: PgDatabase, failure: Exception, code: str
 ) -> None:
     """瞬时错误退避时阻塞同会话队尾，其他会话和终态后的任务仍继续。"""
 
@@ -513,7 +539,7 @@ def test_retry_holds_session_head_and_terminal_failure_releases_it(
         ) -> Mapping[str, object]:
             (message,) = json.loads(prompt)["messages"]
             if message["content"] == "失败的前批":
-                raise TimeoutError
+                raise failure
             return await super().complete_json(
                 system=system, prompt=prompt, schema=schema
             )
@@ -544,7 +570,7 @@ def test_retry_holds_session_head_and_terminal_failure_releases_it(
             failed = (await scope.status(first_path)).json()
             assert failed["status"] == "failed"
             assert failed["error"] == {
-                "code": "operation_timeout",
+                "code": code,
                 "stage": "extraction",
             }
             assert "message_ids" not in failed and "next_retry_at" not in failed
@@ -556,6 +582,80 @@ def test_retry_holds_session_head_and_terminal_failure_releases_it(
             assert (await scope.status(rerun.headers["Location"])).json()[
                 "status"
             ] == "queued"
+
+    run(exercise())
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(
+            InferenceRequestError("auth", status_code=401), id="authentication"
+        ),
+        pytest.param(InferenceRequestError("quota", status_code=429), id="quota"),
+    ],
+)
+def test_permanent_inference_failure_skips_retry(
+    database: PgDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: InferenceRequestError,
+) -> None:
+    """凭据和账户额度错误首次失败即可终结任务。"""
+    model = _Model()
+    monkeypatch.setattr(model, "complete_json", AsyncMock(side_effect=failure))
+
+    async def exercise() -> None:
+        async with _scope(database) as scope:
+            session = await scope.new_session()
+            first = await scope.submit(session, "first", _FACT)
+            tail = await scope.submit(session, "tail", "后续任务")
+            assert await scope.runner(model).run_once()
+            failed = (await scope.status(first.headers["Location"])).json()
+            assert failed["status"] == "failed"
+            assert failed["error"] == {
+                "code": "inference_failed",
+                "stage": "extraction",
+            }
+            assert "next_retry_at" not in failed
+            assert await scope.runner(_Model()).run_once()
+            assert (await scope.status(tail.headers["Location"])).json()[
+                "status"
+            ] == "succeeded"
+
+    run(exercise())
+
+
+def test_expired_lease_cannot_mark_failure_or_discard_messages(
+    database: PgDatabase,
+) -> None:
+    """过期 worker 的失败报告不能丢弃任务，后续领取可成功发布原文。"""
+
+    async def exercise() -> None:
+        async with _scope(database) as scope:
+            session = await scope.new_session()
+            submitted = await scope.submit(session, "first", _FACT)
+            path = submitted.headers["Location"]
+            queue = PostgresOperations(scope.connections)
+            job = await queue.claim()
+            assert (
+                job is not None and job.operation_id == submitted.json()["operation_id"]
+            )
+            _set_due(database, job.operation_id)
+            assert not await queue.has_active_lease(job)
+            await queue.record_attempt_failure(
+                job, "inference_failed", "extraction", None
+            )
+            updated = (await scope.status(path)).json()
+            assert updated["status"] == "running"
+            assert "error" not in updated
+
+            assert await scope.runner(_Model()).run_once()
+            recovered = (await scope.status(path)).json()
+            assert recovered["status"] == "succeeded"
+            (message_id,) = recovered["message_ids"]
+            read = await scope.status(f"{scope.path}/messages/{message_id}")
+            assert read.status_code == 200
+            assert read.json()["content"] == _FACT
 
     run(exercise())
 

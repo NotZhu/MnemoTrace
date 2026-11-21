@@ -35,8 +35,8 @@ _FIELDS = (
     "message_ids, fact_change_count, error_code, error_stage"
 )
 _ACTIVE_LEASE = """
-    space_id = %s AND operation_id = %s AND status = 'running'
-    AND lease_token = %s AND lease_until > clock_timestamp()
+    space_id = %(space)s AND operation_id = %(id)s AND status = 'running'
+    AND lease_token = %(token)s AND lease_until > clock_timestamp()
     """
 
 
@@ -67,8 +67,12 @@ def _operation(row: TupleRow) -> Operation:
     )
 
 
-def _lease(job: ClaimedOperation) -> tuple[str, str, str]:
-    return job.space_id.value, job.operation_id, job.lease_token
+def _lease(job: ClaimedOperation) -> dict[str, str]:
+    return {
+        "space": job.space_id.value,
+        "id": job.operation_id,
+        "token": job.lease_token,
+    }
 
 
 class PostgresOperations:
@@ -190,7 +194,7 @@ class PostgresOperations:
                 FROM candidate, mnemotrace_next.spaces space
                 WHERE op.operation_id = candidate.operation_id AND space.space_id = op.space_id
                 RETURNING op.operation_id, op.space_id, space.owner_id, op.session_id,
-                    op.messages, op.created_at, op.attempts
+                    op.status, op.messages, op.created_at, op.attempts
                 """,
                 {
                     "max": MAX_ATTEMPTS,
@@ -199,17 +203,29 @@ class PostgresOperations:
                 },
             )
             row = await cursor.fetchone()
-        if row is None or row[4] is None:
+        if row is None:
+            return None
+        (
+            operation_id,
+            space_id,
+            owner_id,
+            session_id,
+            status,
+            messages,
+            created_at,
+            attempts,
+        ) = row
+        if status == "failed":
             return None
         return ClaimedOperation(
-            row[0],
-            SpaceId(row[1]),
-            row[2],
-            SessionId(row[3]),
-            tuple(MessageInput(**message) for message in row[4]),
-            row[5].timestamp(),
-            row[6],
-            token,
+            operation_id=operation_id,
+            space_id=SpaceId(space_id),
+            owner_id=owner_id,
+            session_id=SessionId(session_id),
+            messages=tuple(MessageInput(**message) for message in messages),
+            received_at=created_at.timestamp(),
+            attempt=attempts,
+            lease_token=token,
         )
 
     async def complete(
@@ -219,20 +235,21 @@ class PostgresOperations:
         cursor = await cast(PostgresSession, writer)._conn.execute(
             f"""
             UPDATE {_TABLE} SET status = 'succeeded', updated_at = clock_timestamp(),
-                message_ids = %s, fact_change_count = %s, messages = NULL,
+                message_ids = %(message_ids)s, fact_change_count = %(change_count)s,
+                messages = NULL,
                 lease_token = NULL, lease_until = NULL
             WHERE {_ACTIVE_LEASE}
             """,
-            (
-                [item.value for item in result.message_ids],
-                len(result.fact_changes),
-                *_lease(job),
-            ),
+            {
+                **_lease(job),
+                "message_ids": [item.value for item in result.message_ids],
+                "change_count": len(result.fact_changes),
+            },
         )
         if cursor.rowcount != 1:
             raise LeaseLost
 
-    async def fail(
+    async def record_attempt_failure(
         self,
         job: ClaimedOperation,
         code: str,
@@ -251,20 +268,17 @@ class PostgresOperations:
                     messages = CASE WHEN %(delay)s::interval IS NOT NULL THEN messages END,
                     error_code = CASE WHEN %(delay)s::interval IS NULL THEN %(code)s END,
                     error_stage = CASE WHEN %(delay)s::interval IS NULL THEN %(stage)s END
-                WHERE space_id = %(space)s AND operation_id = %(id)s AND status = 'running'
-                    AND lease_token = %(token)s AND lease_until > clock_timestamp()
+                WHERE {_ACTIVE_LEASE}
                 """,
                 {
+                    **_lease(job),
                     "delay": retry_delay,
                     "code": code,
                     "stage": stage,
-                    "space": job.space_id.value,
-                    "id": job.operation_id,
-                    "token": job.lease_token,
                 },
             )
 
-    async def is_running(self, job: ClaimedOperation) -> bool:
+    async def has_active_lease(self, job: ClaimedOperation) -> bool:
         """通过新事务判断提交结果未知的尝试是否仍持有租约。"""
         async with self._pool.connection() as conn:
             cursor = await conn.execute(

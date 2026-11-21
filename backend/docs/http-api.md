@@ -8,9 +8,9 @@
 | --- | --- |
 | `MNEMOTRACE_NEXT_MIGRATION_DSN` | 使用 `python -m mnemotrace_next.adapters.postgres.migrate up` 应用迁移。 |
 | `MNEMOTRACE_NEXT_ADMIN_DSN` | 在本机签发和撤销账号凭据。 |
-| `MNEMOTRACE_NEXT_POSTGRES_DSN` | HTTP 运行角色连接。 |
-| `MNEMOTRACE_NEXT_MAX_BODY_BYTES` | 请求体字节上限，默认 65536。 |
-| `MNEMOTRACE_NEXT_QUEUE_LIMIT` | 每个空间等待或执行中的写入任务上限，默认 100。 |
+| `MNEMOTRACE_NEXT_POSTGRES_DSN` | API 与 worker 的运行角色连接。 |
+| `MNEMOTRACE_NEXT_MAX_BODY_BYTES` | API 请求体字节上限，默认 65536。 |
+| `MNEMOTRACE_NEXT_QUEUE_LIMIT` | API 接收写入时每个空间的待处理任务上限，包含等待和执行中的任务，默认 100。 |
 
 ## 管理凭据和启动
 
@@ -29,9 +29,9 @@ uv run --locked --extra server python -m mnemotrace_next.server
 | --- | --- |
 | `GET /livez` | 进程可响应时返回 200。 |
 | `GET /readyz` | 数据库可访问且迁移账本匹配时返回 200，其他情况返回 503。 |
-| `GET /openapi.json`、`GET /docs` | OpenAPI 3.1 契约和交互文档。 |
+| `GET /openapi.json` | OpenAPI 3.1 契约。 |
 
-`/v1` 的每个操作都有显式的 OpenAPI `operationId`，供生成客户端使用。
+`/v1` 的每个操作都有显式的 OpenAPI `operationId`，供生成客户端使用。服务关闭 Swagger UI（`/docs`）和 ReDoc（`/redoc`）。
 
 可放入路径的资源标识以响应字段和 `Location` 中的值为准。路径安全的普通 ID 保持原样。包含斜杠等字符、是 `.` 或 `..`、或以保留前缀 `~` 开头的存量 ID，使用 `~` 加无填充 Base64URL 暴露。调用方可直接在路径中使用返回的值。事实证据的 `source_message_ids` 和任务结果的 `message_ids` 也采用同一表示。
 
@@ -47,13 +47,13 @@ uv run --locked --extra server python -m mnemotrace_next.server
 | `GET /v1/spaces/{space_id}/sessions` | 分页列出已登记的会话，含空会话。 |
 | `GET /v1/spaces/{space_id}/sessions/{session_id}` | 返回会话登记的 `session_id` 和 `created_at`。 |
 
-空间名去除首尾空白后须为 1–128 字符。会话列表按创建时间倒序，同刻按会话 ID 升序。历史会话的创建时间未知时为 `null`，排在末尾。
+空间名去除首尾空白后须为 1–128 字符。存量空间的 `created_at` 超出日历范围时返回 `null`，并列在 `out_of_range_fields` 中，正常时该数组为空。会话列表按创建时间倒序，同刻按会话 ID 升序。历史会话的创建时间未知时为 `null`，排在末尾。
 
 空间、会话和事实列表使用同一分页契约。请求使用 `limit`（1–100，默认 50）和可选的 `cursor`，响应含 `items` 和 `next_cursor`。续页原样回传上页的 `next_cursor`。值为 `null` 时已到末页。
 
 错误响应使用 `application/problem+json`，包含 `code` 和 `request_id`。无效或已撤销的凭据返回 401。不存在或不可访问的空间、会话返回 404。若收到 `503 commit_outcome_unknown`，写入可能已提交。先查询资源列表核对结果，再决定是否重试。
 
-`422 invalid_request` 的 `errors` 为字段校验列表，每项包含参数位置 `location`（`body`、`query`、`path` 或 `header`）、JSON Pointer `path` 和稳定的 `code`。例如 `{"location":"body","path":"/graph/max_hops","code":"out_of_range"}`。`path` 为空字符串时指向该位置的根。未知字段的错误定位到包含它的对象。错误码包括 `required`、`unknown_field`、`out_of_range`、`invalid_length` 和 `invalid_value`。JSON 语法错误返回 `400 invalid_json`。
+`422 invalid_request` 的 `errors` 为字段校验列表，每项包含参数位置 `location`（`body`、`query`、`path` 或 `header`）、JSON Pointer `path` 和稳定的 `code`。例如 `{"location":"body","path":"/graph/max_hops","code":"out_of_range"}`。`path` 为空字符串时指向该位置的根。未知字段的错误定位到包含它的对象。错误码包括 `required`、`unknown_field`、`out_of_range`、`invalid_length` 和 `invalid_value`。无法编码为 UTF-8 的文本字段返回 `invalid_value`，JSON 语法错误返回 `400 invalid_json`。
 
 ## 写入与任务
 
@@ -114,7 +114,7 @@ worker 短暂停止期间 API 可继续接收。达到单空间上限后，新�
 
 事实列表用 `state=current`（默认）、`history` 或 `all` 选择有效、已截止或完整时间线。前两种可传 `as_of`。列表和详情默认隐藏敏感事实，可用 `include_sensitive=true` 显式读取。按收录时间倒序、同刻按事实 ID 升序分页。续页沿用原筛选。同一页序列固定业务评估时点，每页读取独立数据库快照。服务器会重新校验空间归属和事实可见性。
 
-事实详情、列表和召回证据中的时间以 RFC 3339 表示。存量时刻超出可表示的日历范围时，该字段返回 `null`，字段名列在 `out_of_range_fields` 中。没有越界字段时，`out_of_range_fields` 为空数组。业务有效期筛选和分页仍使用原始时刻。
+事实详情、列表和召回证据中的时间以 RFC 3339 表示。存量时刻超出可表示的日历范围时，该字段返回 `null`，字段名列在 `out_of_range_fields` 中。原文收录时刻 `recorded_at` 使用同样的越界表示。没有越界字段时，`out_of_range_fields` 为空数组。业务有效期筛选和分页仍使用原始时刻。
 
 ## 删除与清空
 

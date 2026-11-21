@@ -21,7 +21,7 @@ from .adapters.postgres.storage import PostgresStorage
 from .adapters.runtime import SystemClock, UuidGenerator
 from .application.operations import ClaimedOperation, OperationRunner
 from .application.remember import Remember
-from .server.settings import Settings
+from .runtime_settings import RuntimeSettings
 
 _LOG = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ def _close_probe(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
 
 
 async def _serve(
-    settings: Settings,
+    settings: RuntimeSettings,
     concurrency: int,
     stopping: asyncio.Event,
     readiness_port: int | None,
@@ -97,7 +97,7 @@ async def _serve(
 
 
 async def _run(
-    settings: Settings, concurrency: int, readiness_port: int | None = None
+    settings: RuntimeSettings, concurrency: int, readiness_port: int | None = None
 ) -> None:
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -140,7 +140,7 @@ def main() -> int:
     logging.basicConfig(level=logging.WARNING)
     _LOG.setLevel(logging.INFO)
     try:
-        settings = Settings.from_env(os.environ)
+        settings = RuntimeSettings.from_env(os.environ)
         loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
         asyncio.run(
             _run(settings, args.concurrency, args.readiness_port),

@@ -15,6 +15,7 @@ from psycopg import AsyncTransaction
 from mnemotrace_next.adapters.postgres import migrate
 from mnemotrace_next.adapters.postgres.identity import issue_key, revoke_key
 from mnemotrace_next.admin import main as admin_main
+from mnemotrace_next.runtime_settings import RuntimeSettings
 from mnemotrace_next.server.app import create_app
 from mnemotrace_next.server.settings import Settings
 
@@ -26,7 +27,7 @@ pytestmark = pytest.mark.postgres
 
 @asynccontextmanager
 async def _http(dsn: str) -> AsyncIterator[AsyncClient]:
-    app = create_app(Settings(dsn, max_body_bytes=128))
+    app = create_app(Settings(RuntimeSettings(dsn), max_body_bytes=128))
     async with (
         app.router.lifespan_context(app),
         AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
@@ -57,8 +58,14 @@ def test_server_space_and_session_isolation(database: PgDatabase) -> None:
             first = response.headers["location"]
             body = response.json()
             assert body["name"] == "研究"
-            assert set(body) == {"space_id", "created_at", "name"}
+            assert set(body) == {
+                "space_id",
+                "created_at",
+                "name",
+                "out_of_range_fields",
+            }
             assert body["created_at"].endswith("Z")
+            assert body["out_of_range_fields"] == []
             second = await client.post(
                 "/v1/spaces", headers=headers, json={"name": "学习"}
             )
@@ -140,10 +147,11 @@ def test_server_space_and_session_isolation(database: PgDatabase) -> None:
     run(exercise())
 
 
+@pytest.mark.parametrize("limit", [1, 2, 3])
 def test_session_pages_order_ties_and_unknown_creation_times(
-    database: PgDatabase,
+    database: PgDatabase, limit: int
 ) -> None:
-    """以单条分页覆盖时间降序、同刻 ID 和未知时间三个边界。"""
+    """覆盖时间降序、同刻 ID、未知时间及跨范围分页。"""
     owner, space_id = uuid4().hex, uuid4().hex
     with psycopg.connect(database.admin) as conn:
         key = issue_key(conn, owner)
@@ -168,22 +176,24 @@ def test_session_pages_order_ties_and_unknown_creation_times(
     async def exercise() -> None:
         headers = {"Authorization": f"Bearer {key.token}"}
         path = f"/v1/spaces/{space_id}/sessions"
-        params: dict[str, str | int] = {"limit": 1}
-        async with _http(database.runtime) as client:
+        params: dict[str, str | int] = {"limit": limit}
+        expected = [
+            {"session_id": session_id, "created_at": created_at}
             for session_id, created_at in (
                 ("z-newest", "2025-01-01T00:00:00.000001Z"),
                 ("a-tie", "2025-01-01T00:00:00Z"),
                 ("b-tie", "2025-01-01T00:00:00Z"),
                 ("a-unknown", None),
                 ("b-unknown", None),
-            ):
+            )
+        ]
+        async with _http(database.runtime) as client:
+            for start in range(0, len(expected), limit):
                 response = await client.get(path, headers=headers, params=params)
                 assert response.status_code == 200, response.text
                 page = response.json()
-                assert page["items"] == [
-                    {"session_id": session_id, "created_at": created_at}
-                ]
-                if session_id == "b-unknown":
+                assert page["items"] == expected[start : start + limit]
+                if start + limit >= len(expected):
                     assert page["next_cursor"] is None
                 else:
                     assert page["next_cursor"]
@@ -305,7 +315,7 @@ def test_admin_key_lifecycle(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """管理命令只在签发时输出明文，撤销按账号限定。"""
-    monkeypatch.setenv("MNEMOTRACE_NEXT_ADMIN_DSN", database.admin)
+    monkeypatch.setenv("MNEMOTRACE_NEXT_ADMIN_DSN", database.key_admin)
     owner_id = f" {uuid4().hex * 4} "
     space_id = uuid4().hex
     with psycopg.connect(database.admin) as conn:
@@ -324,25 +334,37 @@ def test_admin_key_lifecycle(
 
     async def verify_space_access() -> None:
         async with _http(database.runtime) as client:
-            response = await client.get(
-                f"/v1/spaces/{space_id}",
-                headers={"Authorization": f"Bearer {issued['token']}"},
-            )
+            path = f"/v1/spaces/{space_id}"
+            headers = {"Authorization": f"Bearer {issued['token']}"}
+            response = await client.get(path, headers=headers)
             assert response.status_code == 200
             assert response.json()["space_id"] == space_id
 
+            assert admin_main(["list", *owner]) == 0
+            assert json.loads(capsys.readouterr().out) == [
+                {
+                    "key_id": key_id,
+                    "created_at": issued["created_at"],
+                    "revoked_at": None,
+                }
+            ]
+            assert admin_main(["revoke", "--owner-id", "another-owner", key_id]) == 1
+            capsys.readouterr()
+            assert admin_main(["revoke", *owner, key_id]) == 0
+            assert json.loads(capsys.readouterr().out) == {
+                "key_id": key_id,
+                "revoked": True,
+            }
+            assert admin_main(["list", *owner]) == 0
+            assert json.loads(capsys.readouterr().out)[0]["revoked_at"] is not None
+
+            response = await client.get(path, headers=headers)
+            assert (response.status_code, response.json()["code"]) == (
+                401,
+                "invalid_api_key",
+            )
+
     run(verify_space_access())
-    assert admin_main(["list", *owner]) == 0
-    listed = json.loads(capsys.readouterr().out)
-    assert listed == [
-        {"key_id": key_id, "created_at": issued["created_at"], "revoked_at": None}
-    ]
-    assert admin_main(["revoke", "--owner-id", "another-owner", key_id]) == 1
-    capsys.readouterr()
-    assert admin_main(["revoke", *owner, key_id]) == 0
-    assert json.loads(capsys.readouterr().out) == {"key_id": key_id, "revoked": True}
-    assert admin_main(["list", *owner]) == 0
-    assert json.loads(capsys.readouterr().out)[0]["revoked_at"] is not None
     with psycopg.connect(database.admin) as conn:
         row = conn.execute(
             "SELECT secret_hash FROM mnemotrace_next.api_keys WHERE key_id = %s",
@@ -354,6 +376,11 @@ def test_admin_key_lifecycle(
         pytest.raises(psycopg.errors.InsufficientPrivilege),
     ):
         conn.execute("UPDATE mnemotrace_next.api_keys SET revoked_at = NULL")
+    with (
+        psycopg.connect(database.key_admin) as conn,
+        pytest.raises(psycopg.errors.InsufficientPrivilege),
+    ):
+        conn.execute("SELECT secret_hash FROM mnemotrace_next.api_keys")
 
 
 def test_readiness_requires_explicit_migration(

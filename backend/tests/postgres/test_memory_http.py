@@ -22,6 +22,7 @@ from mnemotrace_next.domain.ids import FactId, SessionId, SpaceId
 from mnemotrace_next.domain.space import Space
 from mnemotrace_next.domain.values import EntityRef, Predicate
 from mnemotrace_next.ports.inference import Embedder
+from mnemotrace_next.runtime_settings import RuntimeSettings
 from mnemotrace_next.server import app as server_app
 from mnemotrace_next.server.settings import Settings
 from tests.ports.fakes import FakeClock, FakeEmbedder
@@ -133,7 +134,9 @@ def test_delete_fact_keeps_original_message_and_clears_search_and_history(
 
     async def exercise() -> None:
         path = corpus.path + "/facts/current"
-        async with _http(Settings(database.runtime), FakeEmbedder()) as client:
+        async with _http(
+            Settings(RuntimeSettings(database.runtime)), FakeEmbedder()
+        ) as client:
             assert (
                 await client.delete(path, headers=corpus.foreign_headers)
             ).status_code == 404
@@ -206,7 +209,7 @@ def test_erase_session_preserves_facts_with_an_independent_support_group(
                     changed_at=22.0,
                     support_groups={shared.id: (current.provenance, (kept.id,))},
                 )
-        async with _http(Settings(database.runtime)) as client:
+        async with _http(Settings(RuntimeSettings(database.runtime))) as client:
             original = await client.get(
                 corpus.path + "/messages/source", headers=corpus.headers
             )
@@ -252,7 +255,7 @@ def test_delete_space_removes_embedding_registration_and_only_the_target_space(
                 "INSERT INTO mnemotrace_next.space_purge_keys (space_id, key_hash) VALUES (%s, %s)",
                 (corpus.scope.id.value, b"p" * 32),
             )
-        async with _http(Settings(database.runtime)) as client:
+        async with _http(Settings(RuntimeSettings(database.runtime))) as client:
             assert (
                 await client.delete(corpus.path, headers=corpus.foreign_headers)
             ).status_code == 404
@@ -311,7 +314,7 @@ def test_http_recall_matches_core_order_and_boundaries(
         embedder = CountingEmbedder()
         path = corpus.path + "/recall"
         async with (
-            _http(Settings(database.runtime), embedder) as client,
+            _http(Settings(RuntimeSettings(database.runtime)), embedder) as client,
             pool(database.runtime) as connections,
         ):
             reader = Memory.for_recall(
@@ -411,7 +414,7 @@ def test_http_fact_pages_and_message_scope(
     """列表沿用评估时点和可见性，事实详情与原文分别按空间授权。"""
 
     async def exercise() -> None:
-        async with _http(Settings(database.runtime)) as client:
+        async with _http(Settings(RuntimeSettings(database.runtime))) as client:
             facts = corpus.path + "/facts"
             first = await client.get(
                 facts, headers=corpus.headers, params={"state": "all", "limit": 2}
@@ -528,7 +531,7 @@ def test_http_fact_pages_accept_legacy_ids(
                 )
 
         path = corpus.path + "/facts"
-        async with _http(Settings(database.runtime)) as client:
+        async with _http(Settings(RuntimeSettings(database.runtime))) as client:
             first = await client.get(path, headers=corpus.headers, params={"limit": 1})
             assert first.status_code == 200
             assert [item["fact_id"] for item in first.json()["items"]] == [fact_id]
@@ -568,7 +571,9 @@ def test_out_of_range_fact_times_survive_recall_detail_and_pagination(
 
         path = corpus.path + "/facts"
         params = {"state": "all", "limit": "1"}
-        async with _http(Settings(database.runtime), FakeEmbedder()) as client:
+        async with _http(
+            Settings(RuntimeSettings(database.runtime)), FakeEmbedder()
+        ) as client:
             first = await client.get(path, headers=corpus.headers, params=params)
             assert first.status_code == 200
             (item,) = first.json()["items"]
@@ -760,28 +765,78 @@ def test_legacy_path_ids_round_trip_through_resources_and_locations(
     run(exercise())
 
 
-def test_http_legacy_message_keeps_content_with_out_of_range_event_time(
-    database: PgDatabase, corpus: Corpus
+def test_http_legacy_space_time_keeps_reads_and_updates_available(
+    database: PgDatabase,
 ) -> None:
-    """保留旧原文正文和收录时间，将超范围的事件时间视为未知。"""
+    """旧空间的创建时间越界时，列表、详情和改名仍然可用。"""
+    owner = uuid4().hex
+    old = replace(space(owner), created_at=1e20)
+    with psycopg.connect(database.admin) as conn:
+        key = issue_key(conn, owner)
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            await PostgresStorage(connections, owner_id=owner).create_space(old)
+        headers = {"Authorization": f"Bearer {key.token}"}
+        path = f"/v1/spaces/{old.id.value}"
+        expected = {
+            "space_id": old.id.value,
+            "name": old.name,
+            "created_at": None,
+            "out_of_range_fields": ["created_at"],
+        }
+        async with _http(Settings(RuntimeSettings(database.runtime))) as client:
+            listed = await client.get("/v1/spaces", headers=headers)
+            assert listed.status_code == 200
+            assert listed.json()["items"] == [expected]
+            detail = await client.get(path, headers=headers)
+            assert detail.status_code == 200
+            assert detail.json() == expected
+            renamed = await client.patch(
+                path, headers=headers, json={"name": "Renamed"}
+            )
+            assert renamed.status_code == 200
+            assert renamed.json() == {**expected, "name": "Renamed"}
+            assert (await client.get(path, headers=headers)).json() == renamed.json()
+
+    run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("recorded_at", "public_time", "out_of_range"),
+    (
+        (22.0, "1970-01-01T00:00:22Z", []),
+        (1e20, None, ["recorded_at"]),
+    ),
+)
+def test_http_legacy_message_keeps_content_with_out_of_range_times(
+    database: PgDatabase,
+    corpus: Corpus,
+    recorded_at: float,
+    public_time: str | None,
+    out_of_range: list[str],
+) -> None:
+    """保留旧原文正文，事件时刻未知和收录时刻越界各自按契约返回。"""
 
     async def exercise() -> None:
         original = replace(
             message(corpus.scope, "legacy-event", at=22.0, content="合成旧原文"),
             event_time=1e20,
+            recorded_at=recorded_at,
         )
         async with pool(database.runtime) as connections:
             storage = PostgresStorage(connections, owner_id=corpus.scope.owner_id)
             async with storage.session(corpus.scope.id, write=True) as writer:
                 await writer.append_messages((original,))
-        async with _http(Settings(database.runtime)) as client:
+        async with _http(Settings(RuntimeSettings(database.runtime))) as client:
             read = await client.get(
                 corpus.path + "/messages/legacy-event", headers=corpus.headers
             )
             assert read.status_code == 200
             assert read.json()["content"] == original.content
             assert read.json()["event_time"] is None
-            assert read.json()["recorded_at"] == "1970-01-01T00:00:22Z"
+            assert read.json()["recorded_at"] == public_time
+            assert read.json()["out_of_range_fields"] == out_of_range
 
     run(exercise())
 
@@ -821,7 +876,7 @@ def test_http_recall_inference_configuration_and_errors(
 
     async def exercise() -> None:
         path = corpus.path + "/recall"
-        async with _http(Settings(database.runtime)) as client:
+        async with _http(Settings(RuntimeSettings(database.runtime))) as client:
             response = await client.post(
                 path, headers=corpus.headers, json={"query": "dispatchtag"}
             )

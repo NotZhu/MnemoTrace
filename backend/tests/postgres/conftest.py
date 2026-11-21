@@ -1,28 +1,34 @@
 """只在专用测试实例上创建并清理当前测试库。"""
 
 import os
+import subprocess
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from secrets import token_urlsafe
 from uuid import uuid4
 
 import psycopg
 import pytest
 from psycopg import sql
-from psycopg.conninfo import make_conninfo
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from mnemotrace_next.adapters.postgres.migrate import apply_migrations
 
 type DatabaseFactory = Callable[[], AbstractContextManager[str]]
+_GRANT_ROLES = (
+    Path(__file__).resolve().parents[3] / "deploy" / "next" / "grant-roles.sql"
+)
 
 
 @dataclass(frozen=True)
 class PgDatabase:
-    """记录一次真库验证的迁移和运行连接串。"""
+    """记录一次真库验证的管理、运行和凭据管理连接串。"""
 
     admin: str = field(repr=False)
     runtime: str = field(repr=False)
+    key_admin: str = field(repr=False)
 
 
 @pytest.fixture(scope="session")
@@ -73,64 +79,79 @@ def database_factory(admin_dsn: str) -> DatabaseFactory:
     return empty
 
 
+def _grant_roles(dsn: str, runtime: str, key_admin: str) -> None:
+    options = conninfo_to_dict(dsn)
+    env = os.environ.copy()
+    if (password := options.pop("password", None)) is not None:
+        env["PGPASSWORD"] = str(password)
+    try:
+        result = subprocess.run(
+            [
+                "psql",
+                "-X",
+                "-w",
+                "-q",
+                "-d",
+                make_conninfo("", **options),
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-v",
+                f"runtime_role={runtime}",
+                "-v",
+                f"admin_role={key_admin}",
+                "-f",
+                str(_GRANT_ROLES),
+            ],
+            env=env,
+            check=False,
+        )
+    except FileNotFoundError:
+        pytest.fail("真库测试需要在 PATH 中提供 psql 以执行部署授权脚本")
+    if result.returncode:
+        pytest.fail(f"部署授权脚本执行失败（psql 退出码 {result.returncode}）")
+
+
 @pytest.fixture(scope="session")
 def database(admin_dsn: str, database_factory: DatabaseFactory) -> Iterator[PgDatabase]:
-    """迁移临时库并为测试运行角色配置最小权限。
+    """迁移临时库并用部署脚本配置运行和凭据管理角色。
 
     Args:
         admin_dsn: 具有建库和创建角色权限的测试实例连接串。
         database_factory: 创建临时库的工厂。
 
     Yields:
-        临时数据库的迁移账号和运行账号连接信息。
+        临时数据库的管理、运行和凭据管理账号连接信息。
     """
-    role = f"mnemo_next_run_{uuid4().hex}"
-    password = token_urlsafe(24)
-    identifier = sql.Identifier(role)
+    suffix = uuid4().hex
+    runtime, key_admin = f"mnemo_next_run_{suffix}", f"mnemo_next_keys_{suffix}"
+    passwords = {role: token_urlsafe(24) for role in (runtime, key_admin)}
     with psycopg.connect(admin_dsn, autocommit=True) as cluster:
-        cluster.execute(
-            sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
-                identifier, sql.Literal(password)
-            )
-        )
+        with cluster.transaction():
+            for role, password in passwords.items():
+                cluster.execute(
+                    sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                        sql.Identifier(role), sql.Literal(password)
+                    )
+                )
         try:
             with database_factory() as dsn:
                 apply_migrations(dsn)
-                with psycopg.connect(dsn) as conn:
-                    for grant in (
-                        "USAGE ON SCHEMA mnemotrace_next",
-                        "SELECT ON mnemotrace_next.schema_migrations",
-                        """
-                        SELECT (key_id, owner_id, secret_hash, revoked_at)
-                            ON mnemotrace_next.api_keys
-                        """,
-                        "SELECT, INSERT, UPDATE (purge_generation, name) ON mnemotrace_next.spaces",
-                        "DELETE ON mnemotrace_next.spaces, mnemotrace_next.embedding_spaces",
-                        "SELECT, INSERT ON mnemotrace_next.space_purge_keys",
-                        "SELECT, INSERT, UPDATE ON mnemotrace_next.remember_operations",
-                        """
-                        SELECT, INSERT, DELETE ON
-                            mnemotrace_next.messages, mnemotrace_next.fact_provenance,
-                            mnemotrace_next.sessions, mnemotrace_next.fact_changes
-                        """,
-                        """
-                        SELECT, INSERT ON
-                            mnemotrace_next.embedding_spaces, mnemotrace_next.fact_change_triggers
-                        """,
-                        """
-                        SELECT, INSERT, UPDATE, DELETE ON
-                            mnemotrace_next.entities, mnemotrace_next.facts,
-                            mnemotrace_next.digests, mnemotrace_next.profiles,
-                            mnemotrace_next.fact_salience, mnemotrace_next.fact_vectors
-                        """,
-                        "USAGE ON ALL SEQUENCES IN SCHEMA mnemotrace_next",
-                    ):
-                        conn.execute(
-                            sql.SQL("GRANT {} TO {}").format(sql.SQL(grant), identifier)
-                        )
-                yield PgDatabase(dsn, make_conninfo(dsn, user=role, password=password))
+                _grant_roles(dsn, runtime, key_admin)
+                yield PgDatabase(
+                    admin=dsn,
+                    runtime=make_conninfo(
+                        dsn, user=runtime, password=passwords[runtime]
+                    ),
+                    key_admin=make_conninfo(
+                        dsn, user=key_admin, password=passwords[key_admin]
+                    ),
+                )
         finally:
-            cluster.execute(sql.SQL("DROP ROLE {}").format(identifier))
+            cluster.execute(
+                sql.SQL("DROP ROLE {}, {}").format(
+                    sql.Identifier(runtime), sql.Identifier(key_admin)
+                )
+            )
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:

@@ -15,6 +15,7 @@ from mnemotrace_next.domain.ids import FactId, MessageId, SessionId, SpaceId
 from mnemotrace_next.domain.message import Message
 from mnemotrace_next.domain.space import Space
 from mnemotrace_next.domain.values import EntityRef, LiteralValue, Predicate
+from mnemotrace_next.runtime_settings import RuntimeSettings
 from mnemotrace_next.server.__main__ import main as server_main
 from mnemotrace_next.server.app import create_app
 from mnemotrace_next.server.auth import authenticated_owner, authorized_storage
@@ -30,11 +31,19 @@ def anyio_backend() -> str:
 
 @pytest.fixture
 async def client() -> AsyncIterator[AsyncClient]:
-    app = create_app(Settings("dbname=unused", max_body_bytes=64))
+    app = create_app(Settings(RuntimeSettings("dbname=unused"), max_body_bytes=64))
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         yield client
+
+
+@pytest.fixture
+async def openapi_response(client: AsyncClient) -> Response:
+    """读取服务发布的公开契约。"""
+    response = await client.get("/openapi.json")
+    assert response.status_code == 200
+    return response
 
 
 def _assert_problem(response: Response, status: int, code: str) -> None:
@@ -59,7 +68,7 @@ def test_malformed_postgres_dsn_is_rejected_without_echoing_credentials(
     dsn = dsn_template.format(secret)
     error = "MNEMOTRACE_NEXT_POSTGRES_DSN 格式无效"
     with pytest.raises(ValueError, match=f"^{error}$") as settings_error:
-        Settings(dsn)
+        RuntimeSettings(dsn)
     assert settings_error.value.__suppress_context__
 
     monkeypatch.setenv("MNEMOTRACE_NEXT_POSTGRES_DSN", dsn)
@@ -73,8 +82,8 @@ def test_malformed_postgres_dsn_is_rejected_without_echoing_credentials(
 
 
 @pytest.mark.anyio
-async def test_health_auth_and_openapi(client: AsyncClient) -> None:
-    """健康信息和契约公开，空间路由声明并执行 Bearer 认证。"""
+async def test_health_and_bearer_auth(client: AsyncClient) -> None:
+    """健康探针公开，空间路由执行 Bearer 认证。"""
     assert (await client.get("/livez")).json() == {"status": "ok"}
     _assert_problem(await client.get("/readyz"), 503, "database_unavailable")
     for headers in (
@@ -87,13 +96,17 @@ async def test_health_auth_and_openapi(client: AsyncClient) -> None:
         assert response.headers["www-authenticate"] == "Bearer"
         assert response.headers["cache-control"] == "no-store"
 
-    spec = (await client.get("/openapi.json")).json()
+
+@pytest.mark.anyio
+async def test_openapi_routes_and_operation_ids(
+    client: AsyncClient, openapi_response: Response
+) -> None:
+    """公开契约发布稳定的 /v1 路由、操作 ID 和认证声明。"""
+    for path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
+        _assert_problem(await client.get(path), 404, "not_found")
+    spec = openapi_response.json()
     assert spec["openapi"].startswith("3.1.")
     assert spec["components"]["securitySchemes"]["ApiKey"]["scheme"] == "bearer"
-    schemas = spec["components"]["schemas"]
-    recorded_at = schemas["FactResponse"]["properties"]["recorded_at"]
-    assert {item["type"] for item in recorded_at["anyOf"]} == {"string", "null"}
-    assert "out_of_range_fields" in schemas["EvidenceResponse"]["properties"]
     for methods in spec["paths"].values():
         for operation in methods.values():
             if "security" in operation:
@@ -131,6 +144,25 @@ async def test_health_auth_and_openapi(client: AsyncClient) -> None:
         },
         "/v1/spaces/{space_id}/messages/{message_id}": {"get": "getMessage"},
     }
+
+
+@pytest.mark.anyio
+async def test_openapi_request_and_response_schemas(openapi_response: Response) -> None:
+    """公开契约描述分页、写入与擦除参数，以及响应结构。"""
+    spec = openapi_response.json()
+    schemas = spec["components"]["schemas"]
+    for schema, field in (
+        ("FactResponse", "recorded_at"),
+        ("SpaceResponse", "created_at"),
+        ("MessageResponse", "recorded_at"),
+    ):
+        properties = schemas[schema]["properties"]
+        assert {item["type"] for item in properties[field]["anyOf"]} == {
+            "string",
+            "null",
+        }
+        assert "out_of_range_fields" in properties
+    assert "out_of_range_fields" in schemas["EvidenceResponse"]["properties"]
     for path in (
         "/v1/spaces",
         "/v1/spaces/{space_id}/sessions",
@@ -204,7 +236,7 @@ async def test_request_errors_do_not_echo_input(client: AsyncClient) -> None:
 @pytest.mark.anyio
 async def test_validation_reports_safe_field_locations() -> None:
     """嵌套、列表元素和查询参数错误可定位，额外字段名和请求值不回显。"""
-    app = create_app(Settings("dbname=unused"))
+    app = create_app(Settings(RuntimeSettings("dbname=unused")))
     app.dependency_overrides[authenticated_owner] = lambda: "synthetic-owner"
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -237,6 +269,51 @@ async def test_validation_reports_safe_field_locations() -> None:
         assert response.json()["errors"] == [
             {"location": "query", "path": "/limit", "code": "out_of_range"}
         ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("method", "path", "body", "pointer"),
+    (
+        ("POST", "/v1/spaces", rb'{"name":"\ud800"}', "/name"),
+        ("PATCH", "/v1/spaces/space", rb'{"name":"\ud800"}', "/name"),
+        ("POST", "/v1/spaces/space/recall", rb'{"query":"\ud800"}', "/query"),
+        (
+            "POST",
+            "/v1/spaces/space/recall",
+            rb'{"query":"valid","graph":{"predicates":["\ud800"]}}',
+            "/graph/predicates/0",
+        ),
+        (
+            "POST",
+            "/v1/spaces/space/sessions/session/remember",
+            rb'{"messages":[{"role":"user","content":"\ud800"}]}',
+            "/messages/0/content",
+        ),
+    ),
+)
+async def test_http_text_rejects_unpaired_surrogates(
+    method: str, path: str, body: bytes, pointer: str
+) -> None:
+    """JSON 解码后无法表示为 UTF-8 的文本在 HTTP 装配层统一失败。"""
+    app = create_app(Settings(RuntimeSettings("dbname=unused")))
+    app.dependency_overrides[authenticated_owner] = lambda: "synthetic-owner"
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.request(
+            method,
+            path,
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "Idempotency-Key": "synthetic",
+            },
+        )
+    _assert_problem(response, 422, "invalid_request")
+    assert response.json()["errors"] == [
+        {"location": "body", "path": pointer, "code": "invalid_value"}
+    ]
 
 
 @pytest.mark.anyio
@@ -281,7 +358,7 @@ async def test_legacy_ids_and_pre_epoch_times_round_trip_over_http() -> None:
         await writer.upsert_entity(subject)
         await writer.save_facts((fact, other), changed_at=end.timestamp())
 
-    app = create_app(Settings("dbname=unused"))
+    app = create_app(Settings(RuntimeSettings("dbname=unused")))
     app.dependency_overrides[authorized_storage] = lambda: storage
     app.state.embedder = FakeEmbedder()
     path = f"/v1/spaces/{space.id.value}"

@@ -92,21 +92,31 @@ class ClaimedOperation:
 class OperationQueue(Protocol):
     """执行端使用的队列操作。"""
 
-    async def claim(self) -> ClaimedOperation | None: ...
+    async def claim(self) -> ClaimedOperation | None:
+        """领取可执行的队首任务。
+
+        Returns:
+            领取到的任务。没有候选任务或只结算过期任务时返回 None。
+        """
+        ...
 
     async def complete(
         self, job: ClaimedOperation, writer: SpaceSession, result: RememberResult
     ) -> None: ...
 
-    async def fail(
+    async def record_attempt_failure(
         self,
         job: ClaimedOperation,
         code: str,
         stage: RememberStage | None,
         retry_delay: timedelta | None,
-    ) -> None: ...
+    ) -> None:
+        """在有效租约下安排重试或结束失败的任务。"""
+        ...
 
-    async def is_running(self, job: ClaimedOperation) -> bool: ...
+    async def has_active_lease(self, job: ClaimedOperation) -> bool:
+        """确认本次领取对应的租约仍然有效。"""
+        ...
 
 
 class OperationRunner:
@@ -148,30 +158,13 @@ class OperationRunner:
             _LOG.info("任务租约失效 operation_id=%s", job.operation_id)
         except CommitOutcomeUnknown:
             # 先从队列重新读取，状态有变化时交给已提交的结果或新的租约。
-            if await self._queue.is_running(job):
-                await self._fail(job, "commit_outcome_unknown", "publish", retry=True)
+            if await self._queue.has_active_lease(job):
+                await self._record_attempt_failure(
+                    job, "commit_outcome_unknown", "publish", retry=True
+                )
         except Exception as exc:  # noqa: BLE001
             # 单个任务的未知异常应在任务内终结，避免阻塞同会话后续批次。
-            if isinstance(
-                exc, (SessionUnavailable, SpaceUnavailable, RememberInvalidated)
-            ):
-                code, retry = "write_invalidated", False
-            elif isinstance(exc, InvalidMessage):
-                code, retry = "invalid_message", False
-            elif isinstance(exc, RememberRetryRequired):
-                code, retry = "remember_conflict", True
-            elif isinstance(exc, TimeoutError):
-                code, retry = "operation_timeout", True
-            elif isinstance(
-                exc, (InvalidStructuredOutput, CompletionRefused, CompletionTruncated)
-            ):
-                code, retry = "invalid_model_output", False
-            elif isinstance(exc, InferenceError):
-                code, retry = "inference_failed", self._transient(exc)
-            elif self._transient(exc):
-                code, retry = "database_unavailable", True
-            else:
-                code, retry = "internal_error", False
+            code, retry = self._classify_failure(exc)
             _LOG.warning(
                 "任务执行失败 operation_id=%s code=%s stage=%s type=%s",
                 job.operation_id,
@@ -179,10 +172,31 @@ class OperationRunner:
                 stage,
                 type(exc).__name__,
             )
-            await self._fail(job, code, stage, retry=retry)
+            await self._record_attempt_failure(job, code, stage, retry=retry)
         return True
 
-    async def _fail(
+    def _classify_failure(self, error: Exception) -> tuple[str, bool]:
+        if isinstance(
+            error, (SessionUnavailable, SpaceUnavailable, RememberInvalidated)
+        ):
+            return "write_invalidated", False
+        if isinstance(error, InvalidMessage):
+            return "invalid_message", False
+        if isinstance(error, RememberRetryRequired):
+            return "remember_conflict", True
+        if isinstance(error, TimeoutError):
+            return "operation_timeout", True
+        if isinstance(
+            error, (InvalidStructuredOutput, CompletionRefused, CompletionTruncated)
+        ):
+            return "invalid_model_output", False
+        if isinstance(error, InferenceError):
+            return "inference_failed", self._transient(error)
+        if self._transient(error):
+            return "database_unavailable", True
+        return "internal_error", False
+
+    async def _record_attempt_failure(
         self,
         job: ClaimedOperation,
         code: str,
@@ -195,4 +209,4 @@ class OperationRunner:
             if retry and job.attempt < MAX_ATTEMPTS
             else None
         )
-        await self._queue.fail(job, code, stage, delay)
+        await self._queue.record_attempt_failure(job, code, stage, delay)

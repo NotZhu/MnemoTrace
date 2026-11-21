@@ -17,10 +17,8 @@ x-runtime: &runtime
     - path: .env.models
       required: false
       format: raw
-  environment:
+  environment: &runtime-environment
     MNEMOTRACE_NEXT_POSTGRES_DSN: postgresql://mnemotrace_next_runtime:${MNEMOTRACE_NEXT_RUNTIME_PASSWORD:?set the runtime password}@db:5432/mnemotrace_next
-    MNEMOTRACE_NEXT_MAX_BODY_BYTES: ${MNEMOTRACE_NEXT_MAX_BODY_BYTES:-65536}
-    MNEMOTRACE_NEXT_QUEUE_LIMIT: ${MNEMOTRACE_NEXT_QUEUE_LIMIT:-100}
 
 services:
   db:
@@ -43,6 +41,10 @@ services:
 
   api:
     <<: *runtime
+    environment:
+      <<: *runtime-environment
+      MNEMOTRACE_NEXT_MAX_BODY_BYTES: ${MNEMOTRACE_NEXT_MAX_BODY_BYTES:-65536}
+      MNEMOTRACE_NEXT_QUEUE_LIMIT: ${MNEMOTRACE_NEXT_QUEUE_LIMIT:-100}
     stop_grace_period: ${MNEMOTRACE_NEXT_API_STOP_GRACE_PERIOD:-45s}
     build:
       context: ../../backend
