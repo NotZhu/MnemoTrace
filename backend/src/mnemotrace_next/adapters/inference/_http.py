@@ -1,10 +1,12 @@
 """共享推理客户端的并发、请求预算与错误处理。"""
 
 import asyncio
+import json
 import logging
 import re
 import socket
 import ssl
+import zlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -24,9 +26,11 @@ type _FailureKind = Literal[
     "upstream",
     "connection",
     "protocol",
+    "response_limit",
 ]
 
 _LOG = logging.getLogger(__name__)
+_GZIP_WINDOW_BITS = 16 + zlib.MAX_WBITS
 _RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
 _QUOTA_CODES = {
     "insufficient_quota",
@@ -106,14 +110,21 @@ class InferenceHTTP:
         client: 装配层管理的客户端。
         connect_timeout: 连接、写入及连接池等待的超时秒数。
         max_in_flight: 同时发出的请求上限。
+        max_response_bytes: 单响应的传输和解压正文上限，单位为字节。
     """
 
     def __init__(
-        self, client: httpx.AsyncClient, *, connect_timeout: float, max_in_flight: int
+        self,
+        client: httpx.AsyncClient,
+        *,
+        connect_timeout: float,
+        max_in_flight: int,
+        max_response_bytes: int,
     ) -> None:
         self._client = client
         self._connect_timeout = connect_timeout
         self._slots = asyncio.Semaphore(max_in_flight)
+        self._max_response_bytes = max_response_bytes
 
     async def post(
         self, path: str, payload: dict[str, object], *, budget: RequestBudget, mode: str
@@ -158,16 +169,21 @@ class InferenceHTTP:
             budget.attempts += 1
             phase_timeout = min(self._connect_timeout, remaining)
             try:
-                response = await self._client.post(
+                async with self._client.stream(
+                    "POST",
                     path,
                     json=payload,
+                    headers={"Accept-Encoding": "gzip, identity"},
                     timeout=httpx.Timeout(
                         remaining,
                         connect=phase_timeout,
                         write=phase_timeout,
                         pool=phase_timeout,
                     ),
-                )
+                ) as response:
+                    raw_body = await _read_response_body(
+                        response, self._max_response_bytes
+                    )
             except httpx.RequestError as exc:
                 _LOG.info(
                     "推理请求 model=%s mode=%s attempt=%d elapsed_ms=%.0f transport=%s",
@@ -192,7 +208,7 @@ class InferenceHTTP:
                     raise _RetryableFailure(failure) from None
                 raise failure from None
 
-        body = _response_object(response)
+        body = _response_object(raw_body)
         request_id = _request_id(response.headers, body)
         usage = body.get("usage") if body is not None else None
         _LOG.info(
@@ -241,9 +257,57 @@ def require_response_object(value: object) -> dict[str, object]:
     return cast(dict[str, object], value)
 
 
-def _response_object(response: httpx.Response) -> dict[str, object] | None:
+async def _read_response_body(
+    response: httpx.Response, limit: int
+) -> bytes | bytearray:
+    if response.is_stream_consumed:
+        # 自定义传输可返回已缓冲内容，此时 HTTPX 已对正文解码。
+        if len(response.content) > limit:
+            raise _response_error("response_limit", response)
+        return response.content
+
+    encoding = response.headers.get("content-encoding", "").strip().lower()
+    if encoding not in ("", "identity", "gzip"):
+        raise _response_error("protocol", response)
+    decoder = zlib.decompressobj(_GZIP_WINDOW_BITS) if encoding == "gzip" else None
+    body = bytearray()
+    received = 0
     try:
-        value: object = response.json()
+        async for chunk in response.aiter_raw():
+            received += len(chunk)
+            if received > limit:
+                raise _response_error("response_limit", response)
+            if decoder is None:
+                body.extend(chunk)
+                continue
+            while chunk:
+                if decoder.eof:
+                    decoder = zlib.decompressobj(_GZIP_WINDOW_BITS)
+                # 限制单次解压分配，多读一字节区分恰好达到上限和超限。
+                body.extend(decoder.decompress(chunk, limit - len(body) + 1))
+                if len(body) > limit:
+                    raise _response_error("response_limit", response)
+                chunk = decoder.unused_data
+    except zlib.error:
+        raise _response_error("protocol", response) from None
+    if decoder is not None and not decoder.eof:
+        raise _response_error("protocol", response)
+    return body
+
+
+def _response_error(
+    kind: _FailureKind, response: httpx.Response
+) -> InferenceRequestError:
+    return InferenceRequestError(
+        kind,
+        status_code=response.status_code,
+        request_id=_request_id(response.headers, None),
+    )
+
+
+def _response_object(body: bytes | bytearray) -> dict[str, object] | None:
+    try:
+        value: object = json.loads(body)
     except (ValueError, RecursionError):
         return None
     return cast(dict[str, object], value) if isinstance(value, dict) else None

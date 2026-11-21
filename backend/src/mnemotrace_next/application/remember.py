@@ -251,14 +251,7 @@ class Remember:
         )
         if groups.keys() != set(evidence_ids):
             raise RuntimeError("写会话中旧候选的证据组读取不完整")
-        changed_at = max(
-            self._clock.now(),
-            context.received_at,
-            max(
-                (fact.recorded_at for fact in existing.values()),
-                default=context.received_at,
-            ),
-        )
+        changed_at = max(self._clock.now(), context.received_at)
         writes = calculate_fact_writes(
             prepared,
             comparisons,

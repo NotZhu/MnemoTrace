@@ -294,6 +294,53 @@ def test_remember_commits_messages_facts_indexes_and_audit(
     run(exercise())
 
 
+@pytest.mark.parametrize("verdict", ["coexists", "conflict"])
+def test_remember_separates_audit_time_from_future_candidate_recorded_at(
+    database: PgDatabase, verdict: Verdict
+) -> None:
+    """未来录入时刻不能推迟审计时间，首次截止仍不得早于事实录入。"""
+
+    async def exercise() -> None:
+        async with _workspace(database) as (scope, storage):
+            project = Entity(scope.id, "星河项目")
+            old = replace(
+                fact(project, "old", text="星河项目默认用中文"),
+                predicate=_PREDICATE,
+                object=LiteralValue("中文"),
+                valid_at=10.0,
+                recorded_at=900.0,
+            )
+            model = _Model(verdicts={old.text: verdict})
+            memory = _memory(scope, storage, model, _Embedder())
+            session_id = await memory.create_session()
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.upsert_entity(project)
+                (original,) = await writer.save_facts((old,), changed_at=900.0)
+
+            result = await memory.remember(_CURRENT, session_id=session_id)
+            assert model.comparison_calls == [(old.text,)]
+            (created,) = (
+                change for change in result.fact_changes if change.before is None
+            )
+            assert created.changed_at == created.after.recorded_at == 100.0
+            changes = tuple(
+                change for change in result.fact_changes if change.before is not None
+            )
+            async with storage.session(scope.id) as reader:
+                assert await reader.list_fact_changes(created.after.id) == (created,)
+                history = await reader.list_fact_changes(old.id)
+                assert history == (*changes, original)
+            if verdict == "conflict":
+                (cutoff,) = changes
+                assert cutoff.changed_at == 100.0
+                assert cutoff.after.invalid_at == 100.0
+                assert cutoff.after.expired_at == old.recorded_at
+            else:
+                assert changes == ()
+
+    run(exercise())
+
+
 @pytest.mark.parametrize("empty", [True, False], ids=["zero-facts", "undecided"])
 def test_remember_can_commit_only_messages(database: PgDatabase, empty: bool) -> None:
     """合法空抽取或不确定裁决仍提交原文，画像依赖保持有效。"""

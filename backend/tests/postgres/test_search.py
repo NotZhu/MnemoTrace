@@ -12,12 +12,62 @@ from mnemotrace_next.adapters.postgres import search as postgres_search
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.ids import FactId, SpaceId
 from mnemotrace_next.domain.values import Label
-from mnemotrace_next.ports.queries import FactFilter
+from mnemotrace_next.ports.queries import FactFilter, FactQuery
 
 from .conftest import PgDatabase
 from .sample import fact, message, pool, run, space
 
 pytestmark = pytest.mark.postgres
+
+
+@pytest.mark.parametrize("value", [nan, inf, -inf])
+def test_postgres_rejects_nonfinite_query_and_audit_values(
+    database: PgDatabase, value: float
+) -> None:
+    """异常查询参数应明确拒绝，非法审计时间不能留下事实或变更。"""
+
+    async def exercise() -> None:
+        scope = space()
+        subject = Entity(scope.id, "星河项目")
+        target = fact(subject, "target")
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id=scope.owner_id)
+            await storage.create_space(scope)
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.upsert_entity(subject)
+                with pytest.raises(ValueError, match="changed_at"):
+                    await writer.save_facts((target,), changed_at=value)
+            async with storage.session(scope.id) as reader:
+                assert await reader.get_fact(target.id) is None
+                assert await reader.list_fact_changes(target.id) == ()
+                with pytest.raises(ValueError, match="reference_time"):
+                    await reader.query_facts(FactQuery(), reference_time=value)
+                assert (
+                    await reader.query_facts(
+                        FactQuery(filters=FactFilter(valid_at=10.0)),
+                        reference_time=value,
+                    )
+                    == ()
+                )
+                with pytest.raises(ValueError, match="min_score"):
+                    await reader.search_lexical(
+                        "星河项目",
+                        1,
+                        filters=FactFilter(),
+                        reference_time=10.0,
+                        min_score=value,
+                    )
+                with pytest.raises(ValueError, match="min_score"):
+                    await reader.search_vectors(
+                        (1.0, 0.0),
+                        1,
+                        filters=FactFilter(),
+                        reference_time=10.0,
+                        min_score=value,
+                        embedding_space="fixture",
+                    )
+
+    run(exercise())
 
 
 def test_vector_top_k_filters_scope_before_ranking(

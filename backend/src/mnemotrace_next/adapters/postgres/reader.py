@@ -686,8 +686,10 @@ class PostgresReader:
             嵌入空间尚未登记时返回空序列。
 
         Raises:
-            ValueError: 嵌入空间标识为空，或向量无效、维度超限或与登记维度不符。
+            ValueError: 阈值或有效时点无效、嵌入空间标识为空，或向量无效或维度不符。
         """
+        search.validate_min_score(min_score)
+        conditions = fact_conditions(self.space_id, filters, reference_time)
         query_vector = search.cosine_vector(vector)
         conn = self._conn
         dim = self._embedding_dims.get(embedding_space)
@@ -699,7 +701,6 @@ class PostgresReader:
             self._embedding_dims[embedding_space] = dim
         if len(query_vector) != dim:
             raise ValueError("查询向量与嵌入空间登记的维度不一致")
-        conditions = fact_conditions(self.space_id, filters, reference_time)
         return tuple(
             await search.search_vectors(
                 conn,
@@ -731,7 +732,11 @@ class PostgresReader:
 
         Returns:
             按分数倒序、事实标识升序排列的候选标识和分数。
+
+        Raises:
+            ValueError: 阈值或有效时点无效。
         """
+        search.validate_min_score(min_score)
         conditions = fact_conditions(self.space_id, filters, reference_time)
         return tuple(
             await search.search_lexical(self._conn, conditions, query, min_score, limit)

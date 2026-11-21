@@ -7,6 +7,8 @@ UTC epoch 秒。
 from dataclasses import dataclass, field
 from typing import Literal
 
+from ..domain._validation import optional_timestamp
+from ..domain.errors import DomainError
 from ..domain.ids import FactId, MessageId
 from ..domain.values import EntityRef, Label, Predicate
 
@@ -35,7 +37,7 @@ class FactFilter:
         exclude_slot: 排除同时具有该主体和谓词的事实。
 
     Raises:
-        ValueError: 读取完整时间线时同时指定有效时点，或查询区间起点未早于截止。
+        ValueError: 时点无效，完整时间线指定了有效时点，或区间起点未早于截止。
     """
 
     state: Literal["current", "history", "all"] = "current"
@@ -50,6 +52,12 @@ class FactFilter:
     exclude_slot: FactSlot | None = None
 
     def __post_init__(self) -> None:
+        for name, value in (
+            ("valid_at", self.valid_at),
+            ("overlap_start", self.overlap_start),
+            ("overlap_end", self.overlap_end),
+        ):
+            object.__setattr__(self, name, optional_timestamp(value, name, DomainError))
         if self.state == "all" and self.valid_at is not None:
             raise ValueError("state 为 all 时须省略 valid_at")
         if (

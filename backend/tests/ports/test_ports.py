@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import replace
+from math import inf, nan
 from typing import assert_type, cast
 
 import pytest
@@ -337,6 +338,17 @@ def test_fact_filter_rejects_a_time_for_the_full_timeline() -> None:
     """完整时间线与显式有效时点互斥。"""
     with pytest.raises(ValueError, match="valid_at"):
         FactFilter(state="all", valid_at=0.0)
+
+
+@pytest.mark.parametrize("value", [nan, inf, -inf])
+def test_fact_filter_rejects_nonfinite_times(value: float) -> None:
+    """任何显式筛选时点都须是有限的 UTC 秒数。"""
+    with pytest.raises(ValueError, match="valid_at"):
+        FactFilter(valid_at=value)
+    with pytest.raises(ValueError, match="overlap_start"):
+        FactFilter(overlap_start=value, overlap_end=10.0)
+    with pytest.raises(ValueError, match="overlap_end"):
+        FactFilter(overlap_start=0.0, overlap_end=value)
 
 
 def test_fact_query_time_filters_and_cursor() -> None:

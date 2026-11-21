@@ -14,6 +14,12 @@ from .fact_filters import FactConditions
 _PGVECTOR_MAX_DIMENSIONS = 16_000
 
 
+def validate_min_score(min_score: float | None) -> None:
+    """拒绝无法作为检索阈值的非有限分数。"""
+    if min_score is not None and not isfinite(min_score):
+        raise ValueError("min_score 须为有限数值")
+
+
 def cosine_vector(vector: Sequence[float]) -> list[float]:
     """等比缩放向量，避免 pgvector 单精度计算的溢出和下溢。
 

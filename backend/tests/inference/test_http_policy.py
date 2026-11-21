@@ -1,6 +1,8 @@
 """从推理端口验证请求失败、重试与并发策略。"""
 
 import asyncio
+from collections.abc import AsyncIterator
+from gzip import compress
 
 import httpx
 import pytest
@@ -9,6 +11,84 @@ from mnemotrace_next.adapters.inference import InferenceRequestError, open_infer
 from mnemotrace_next.ports.inference import InferenceError
 
 from .sample import CHAT_ENV, EMBED_ENV, chat_response, configured_chat
+
+
+class _ResponseStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: tuple[bytes, ...]) -> None:
+        self._chunks = chunks
+        self.read = 0
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            self.read += 1
+            yield chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.parametrize("status", [200, 503])
+@pytest.mark.parametrize("encoding", ["identity", "gzip"])
+def test_provider_response_body_limit_stops_reading_without_retry(
+    status: int, encoding: str
+) -> None:
+    """响应没有 Content-Length 时仍限制原始及解压正文，并释放连接。"""
+    body = chat_response().content + b" " * 512
+    chunks = (
+        (body[:128], body[128:], b" ")
+        if encoding == "identity"
+        else (compress(body), compress(b" "))
+    )
+    streams = []
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        stream = _ResponseStream(chunks)
+        streams.append(stream)
+        return httpx.Response(
+            status,
+            headers={
+                "content-encoding": encoding,
+                "retry-after": "0",
+                "x-request-id": "fixture-request",
+            },
+            stream=stream,
+        )
+
+    async def exercise() -> None:
+        env = {**CHAT_ENV, "MNEMOTRACE_NEXT_INFERENCE_MAX_RESPONSE_BYTES": "256"}
+        async with configured_chat(respond, env) as llm:
+            with pytest.raises(InferenceRequestError) as captured:
+                await llm.complete(system="回复", prompt="输入")
+            assert captured.value.kind == "response_limit"
+            assert captured.value.status_code == status
+            assert captured.value.request_id == "fixture-request"
+            (stream,) = streams
+            assert stream.read == len(chunks) - 1
+            assert stream.closed
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("encoding", ["identity", "gzip"])
+def test_provider_response_at_the_limit_is_accepted(encoding: str) -> None:
+    """分段正文恰好达到上限时仍可解析，包括分段 gzip。"""
+    body = chat_response().content.ljust(256)
+    wire = body if encoding == "identity" else compress(body)
+    stream = _ResponseStream((wire[:5], wire[5:]))
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-encoding": encoding}, stream=stream
+        )
+
+    async def exercise() -> None:
+        env = {**CHAT_ENV, "MNEMOTRACE_NEXT_INFERENCE_MAX_RESPONSE_BYTES": "256"}
+        async with configured_chat(respond, env) as llm:
+            assert (await llm.complete(system="回复", prompt="输入")).text == "合成回答"
+        assert stream.closed
+
+    asyncio.run(exercise())
 
 
 @pytest.mark.parametrize(

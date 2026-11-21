@@ -502,3 +502,46 @@ def test_newly_covering_support_can_enable_an_earlier_cutoff() -> None:
     assert result.cutoff_triggers[first.fact.id] == (
         CutoffTrigger(second.fact.id, 30.0, second_alias.fact.provenance),
     )
+
+
+@pytest.mark.parametrize("disputed", [True, False], ids=["withdrawn", "retained"])
+def test_duplicate_evidence_requires_a_surviving_independent_cutoff(
+    disputed: bool,
+) -> None:
+    """独立截止依据暂缓后，已入围的有限期证据不能维持代表事实的截止。"""
+    first, first_alias, other, other_alias, independent, earlier = _prepare(
+        candidate("first", start=20.0),
+        candidate("first-alias", start=20.0, end=45.0),
+        candidate("other", start=15.0),
+        candidate("other-alias", start=15.0, end=45.0),
+        candidate("independent", start=40.0),
+        candidate("earlier", start=35.0),
+    )
+    result = _decide(
+        (first, first_alias, other, other_alias, independent, earlier),
+        (),
+        FactComparison((first.fact.id, first_alias.fact.id), "duplicate"),
+        FactComparison((other.fact.id, other_alias.fact.id), "duplicate"),
+        FactComparison((first.fact.id, independent.fact.id), "conflict"),
+        FactComparison((other.fact.id, independent.fact.id), "conflict"),
+        FactComparison((first_alias.fact.id, earlier.fact.id), "conflict"),
+        FactComparison(
+            (other_alias.fact.id, independent.fact.id),
+            "coexists" if disputed else "conflict",
+        ),
+    )
+    saved = {fact.id: fact for fact in result.facts}
+    if disputed:
+        assert set(saved) == {first.fact.id, earlier.fact.id}
+        assert saved[first.fact.id] == first.fact
+        assert result.support_groups[first.fact.id] == (first.fact.provenance,)
+        assert not result.cutoff_triggers
+    else:
+        assert saved[first.fact.id].invalid_at == 35.0
+        assert result.support_groups[first.fact.id] == (
+            first.fact.provenance,
+            first_alias.fact.provenance,
+        )
+        assert result.cutoff_triggers[first.fact.id][-1] == CutoffTrigger(
+            earlier.fact.id, 35.0, earlier.fact.provenance
+        )

@@ -47,7 +47,7 @@ def calculate_fact_writes(
         existing_facts: 构造比较时使用的旧事实快照。
         existing_support_groups: 同一写会话中重复或矛盾裁决涉及的旧事实证据组。
             无来源的事实对应空元组。
-        changed_at: 本次变更时刻，不早于受影响事实的录入时刻。
+        changed_at: 本次审计变更时刻。首次获知截止的时刻另受各事实录入时间约束。
 
     Returns:
         每个受影响事实的一份最终快照及其写入依赖。
@@ -86,7 +86,7 @@ def calculate_fact_writes(
         if fact.id in new_ids:
             snapshot = closed.pop(fact.id, fact)
             updated[fact.id] = (
-                replace(snapshot, expired_at=changed_at)
+                replace(snapshot, expired_at=max(changed_at, snapshot.recorded_at))
                 if snapshot.invalid_at is not None
                 else snapshot
             )
@@ -226,11 +226,13 @@ def _resolve_cutoffs(
             },
             suspended,
         )
-        uncertain.update(disputed)
+        if disputed:
+            uncertain.update(disputed)
+            # 暂缓的事实可能是上一轮允许有限期证据参与裁决的独立依据。
+            eligible.clear()
+            continue
         closed: dict[FactId, Fact] = {}
-        triggers = _apply_cutoffs(
-            cutoffs, facts, incoming, groups, uncertain, closed, changed_at
-        )
+        triggers = _apply_cutoffs(cutoffs, facts, incoming, groups, closed, changed_at)
         covered = {
             source: target
             for source, target in deferred.items()
@@ -354,7 +356,6 @@ def _apply_cutoffs(
     facts: Mapping[FactId, Fact],
     incoming: Mapping[FactId, PreparedFact],
     existing_support_groups: Mapping[FactId, SupportGroups],
-    uncertain_representatives: set[FactId],
     updated: dict[FactId, Fact],
     changed_at: float,
 ) -> dict[FactId, tuple[CutoffTrigger, ...]]:
@@ -362,11 +363,6 @@ def _apply_cutoffs(
     # 先确定触发事实的最终区间。同一事实的多个截止仍按原裁决顺序应用。
     for cutoff in sorted(cutoffs, key=lambda item: item.earlier_valid_at, reverse=True):
         earlier_id, later_id = cutoff.earlier_id, cutoff.later_id
-        if (
-            earlier_id in uncertain_representatives
-            or later_id in uncertain_representatives
-        ):
-            continue
         earlier = updated.get(earlier_id, facts[earlier_id])
         later = updated.get(later_id, facts[later_id])
         if intervals_disjoint(earlier, later):
@@ -389,7 +385,7 @@ def _apply_cutoffs(
             group = groups[0] if groups else ()
         valid_end = cutoff.valid_end
         updated[earlier_id] = (
-            earlier.close(valid_end, changed_at)
+            earlier.close(valid_end, max(changed_at, earlier.recorded_at))
             if earlier.invalid_at is None
             else earlier.shorten_validity(valid_end)
         )

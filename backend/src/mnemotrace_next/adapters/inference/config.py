@@ -70,6 +70,9 @@ async def open_inference(
         return
     connect_timeout = _positive_seconds(env, "INFERENCE_CONNECT_TIMEOUT_SECONDS", 5)
     max_in_flight = _positive_int(env, "INFERENCE_MAX_IN_FLIGHT", 4)
+    max_response_bytes = _positive_int(
+        env, "INFERENCE_MAX_RESPONSE_BYTES", 8 * 1024 * 1024
+    )
 
     async with AsyncExitStack() as stack:
         clients: dict[_Endpoint, InferenceHTTP] = {}
@@ -101,6 +104,7 @@ async def open_inference(
                 http_client,
                 connect_timeout=connect_timeout,
                 max_in_flight=max_in_flight,
+                max_response_bytes=max_response_bytes,
             )
             return clients[endpoint]
 

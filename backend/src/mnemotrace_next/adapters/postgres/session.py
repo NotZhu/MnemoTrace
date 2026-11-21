@@ -8,9 +8,11 @@ from psycopg import DataError, sql
 from psycopg.rows import args_row
 from psycopg.types.json import Jsonb
 
+from ...domain._validation import timestamp
 from ...domain.digest import Digest
 from ...domain.entity import Entity
 from ...domain.enums import Source
+from ...domain.errors import DomainError
 from ...domain.fact import Fact
 from ...domain.ids import FactId, MessageId, SessionId, SpaceId
 from ...domain.message import Message
@@ -240,8 +242,9 @@ class PostgresSession(PostgresReader):
             本次实际写入的变更，按游标升序排列。
 
         Raises:
-            ValueError: 标识重复、事实超出绑定空间、引用缺失或更新违反事实约束。
+            ValueError: 审计时间无效、标识重复、事实越界、引用缺失或更新违反约束。
         """
+        changed_at = timestamp(changed_at, "changed_at", DomainError)
         conn = self._conn
         groups_by_id = support_groups or {}
         triggers_by_id = cutoff_triggers or {}
@@ -293,14 +296,14 @@ class PostgresSession(PostgresReader):
                 elif groups[: len(previous)] == previous:
                     groups = groups[len(previous) :]
                     append_at = (stored.next_group, stored.next_position)
-            if before == fact and groups is None:
-                continue
-            if before is not None:
-                validate_fact_update(before, fact)
             triggers = triggers_by_id.get(fact.id, ())
             validate_cutoff_triggers(
                 before, fact, triggers, causes, existing_causes=existing
             )
+            if before == fact and groups is None:
+                continue
+            if before is not None:
+                validate_fact_update(before, fact)
             changes.append(FactWrite(before, fact, groups, triggers, append_at))
         return await write_fact_batch(conn, changes, changed_at)
 
