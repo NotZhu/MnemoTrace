@@ -55,10 +55,16 @@ async def recall(
         ) from exc
     space = SpaceId(space_id)
     embedder = cast(Embedder | None, request.app.state.embedder)
-    if embedder is None:
-        async with storage.session(space):
-            raise HTTPException(503, detail="embedding_not_configured")
     reranker = cast(Reranker | None, request.app.state.reranker)
+    use_rerank = reranker is not None if body.rerank is None else body.rerank
+    if embedder is None or (use_rerank and reranker is None):
+        async with storage.session(space):
+            code = (
+                "embedding_not_configured"
+                if embedder is None
+                else "reranker_not_configured"
+            )
+            raise HTTPException(503, detail=code)
     queue = cast(RecallUsageQueue | None, request.app.state.recall_usage)
     reader = Recall(
         space_id=space,
@@ -75,7 +81,7 @@ async def recall(
         as_of=body.as_of.timestamp() if body.as_of is not None else None,
         graph=graph,
         prefer_recent=body.prefer_recent,
-        rerank=reranker is not None,
+        rerank=use_rerank,
     )
     response = RecallResponse.from_result(result)
     if usage is not None and queue is not None:

@@ -101,11 +101,14 @@ worker 短暂停止期间 API 可继续接收。达到单空间上限后，新�
 | `top_k` | 证据上限，取 1–100，默认 10。 |
 | `as_of` | 可选业务有效时点，使用带偏移或 `Z` 的 RFC 3339 日期时间，最多六位小数。省略时查当前。 |
 | `graph` | 可选，传 `{}` 启用默认图召回。可用 `max_hops`（1–4，默认 2）、`origin_entity_ids` 和 `predicates` 限定遍历。显式传空起点数组时只返回普通召回结果。可将证据中的 `relation.predicate` 原样传入 `predicates`。 |
+| `rerank` | 省略或传 `null` 时采用部署默认。传 `false` 跳过重排。传 `true` 时，空间授权通过后如果未配置重排器，返回 `503 reranker_not_configured`。嵌入也未配置时优先返回 `embedding_not_configured`。 |
 | `prefer_recent` | 严格布尔值，默认 `false`。开启时，在当前事实的相关候选中优先返回近期生效的事实。 |
 | `track_usage` | 严格布尔值，默认 `true`。传 `false` 保持同样的排序并跳过强化。 |
 | `include_sensitive` | 默认 `false`。显式传 `true` 可召回该账号空间中的敏感事实。 |
 
 成功响应的 `evidence` 按相关性排序。每条证据包含事实 ID、文本、有效区间、来源消息 ID 和可选的 `relation`。有关系时，召回和事实响应都使用 `subject_entity_id`、`predicate`、`object_entity_id`。有效区间左闭右开。`as_of` 使用当前已经收录的证据判断该时点有效性，补录历史会影响结果。历史召回沿用相关性排序，跳过两种加成和强化。没有命中时返回空数组。
+
+请求 `{"query":"报表导出格式"}` 采用部署默认。请求 `{"query":"报表导出格式","rerank":false,"track_usage":false}` 跳过重排和强化，便于跨入口核对排序。响应中的 `rerank_applied` 仅在有效重排结果参与排序时为 `true`。
 
 启用重排时，按 RRF 选出最多 `min(100, max(20, 2 × top_k))` 条可见候选，由重排器为候选逐条打分。最终分为 `基础分 × (1 + min(0.05, 新近度加成 + 显著度加成))`，基础分取重排分，未使用重排时取 RRF 分。最终分相同时依次按基础分和 RRF 顺序排列。新近度加成为 `0.05 × 2^(-距生效天数 / 30)`，从 `valid_at` 算到本次查询时点，起点未知或未启用时为零。空间开启 `memory_decay` 时显著度加成为 `0.05 × (有效显著度 - 1) / 2`，未强化的事实使用基线。 [显著度领域规则](../src/mnemotrace_next/domain/salience.py)
 

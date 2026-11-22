@@ -5,6 +5,8 @@ artifacts; storage schema compatibility is documented separately when it changes
 
 ## [Unreleased]
 
+- Replace the TypeScript SDK with a client for the new backend HTTP v1. The client tracks idempotent writes through completion and follows recall evidence back to its source messages.
+- Allow HTTP v1 callers to control reranking per request and see whether it was applied.
 - Install from an empty PostgreSQL database using the `postgres-v4` baseline. The API and worker verify the baseline and database structure. Use a build with the matching database schema for older databases and archives.
 - Unify commit receipts for record writes, task completion, and segmented processing. Keep original inputs, extraction products, digests, fact history, and the profile cache in database backups.
 - Retire conversation history import, watchers, session hooks, and the historical file-store benchmarks.

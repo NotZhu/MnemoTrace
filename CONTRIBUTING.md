@@ -91,11 +91,22 @@ npm test
 
 test 通过 pretest 先构建。发布包的使用和 API 参考维护在 [SDK README](clients/typescript/README.md)，公共导出来自 src/index.ts，运行测试位于该目录的 test/。
 
+修改后端 HTTP v1 契约后，从仓库根目录重新生成 SDK 类型，并与代码一同提交。JSON 中间文件可放在系统临时目录，生成结束后清理。CI 给生成命令传入 `--check`，检查类型是否与当前后端一致。
+
+```sh
+schema_dir=$(mktemp -d)
+schema="$schema_dir/mnemotrace-openapi.json"
+uv run --locked --project backend python backend/scripts/export_openapi.py "$schema"
+npm --prefix clients/typescript run generate:openapi -- "$schema"
+rm "$schema"
+rmdir "$schema_dir"
+```
+
 ## 文档与生成内容
 
 当前使用仓库 Markdown。docs/README.md 是完整导航；新增独立页面需有明确读者和职责，并接入导航。示例优先复用已有可运行入口，参考页描述契约与限制，架构页解释机制和理由。
 
-分类标识和顺序维护在 [categories.py](mnemotrace/categories.py) 的 `CATEGORIES`，画像栏目维护在 [profile.py](mnemotrace/profile.py) 的 `SECTIONS`。修改后运行 `python scripts/build_memory_contract.py`，将生成的前端和 SDK 文件一起提交，并补齐前端中文名称。CI 使用 `--check` 检查生成内容。数据库分类约束随迁移文件显式修改，Postgres 回归核对实际约束与 Python 分类目录一致。
+分类标识和顺序维护在 [categories.py](mnemotrace/categories.py) 的 `CATEGORIES`，画像栏目维护在 [profile.py](mnemotrace/profile.py) 的 `SECTIONS`。修改后运行 `python scripts/build_memory_contract.py`，提交生成的前端文件并补齐前端中文名称。CI 使用 `--check` 检查生成内容。数据库分类约束随迁移文件显式修改，Postgres 回归核对实际约束与 Python 分类目录一致。
 
 ```sh
 python scripts/build_memory_contract.py --check

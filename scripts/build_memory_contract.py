@@ -12,10 +12,7 @@ sys.path.insert(0, str(ROOT))
 from mnemotrace.categories import CATEGORIES  # noqa: E402
 from mnemotrace.profile import SECTIONS  # noqa: E402
 
-TARGETS = (
-    "frontend/src/generated/memory-contract.ts",
-    "clients/typescript/src/generated/memory-contract.ts",
-)
+TARGET = "frontend/src/generated/memory-contract.ts"
 
 
 def render() -> str:
@@ -41,20 +38,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="Report stale files without writing")
     args = parser.parse_args(argv)
     expected = render()
-    stale = []
-    for target in TARGETS:
-        path = ROOT / target
-        if path.is_file() and path.read_text(encoding="utf-8") == expected:
-            continue
-        if args.check:
-            stale.append(target)
-        else:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(expected.encode("utf-8"))
-    if stale:
+    path = ROOT / TARGET
+    if path.is_file() and path.read_text(encoding="utf-8") == expected:
+        return 0
+    if args.check:
         print("Stale memory contracts. Run python scripts/build_memory_contract.py")
-        print("\n".join(stale))
+        print(TARGET)
         return 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(expected.encode("utf-8"))
     return 0
 
 

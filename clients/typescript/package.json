@@ -1,7 +1,7 @@
 {
   "name": "mnemotrace-memory",
   "version": "0.1.0",
-  "description": "Official TypeScript/JavaScript SDK for MnemoTrace — open-source long-term memory for LLM agents (with an OpenAI-compatible chat surface).",
+  "description": "TypeScript and JavaScript SDK for MnemoTrace backend HTTP v1.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -9,20 +9,29 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
+    "generate:openapi": "openapi-typescript --no-default-non-nullable --output src/generated/openapi.ts",
     "pretest": "npm run build",
     "test": "node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run typecheck && npm run build && npm test"
+    "prepublishOnly": "npm run typecheck && npm test"
   },
   "keywords": [
     "mnemotrace",
@@ -30,16 +39,22 @@
     "long-term-memory",
     "llm",
     "agents",
-    "mcp",
-    "openai",
-    "rag",
     "knowledge-graph"
   ],
-  "engines": { "node": ">=18" },
-  "repository": { "type": "git", "url": "https://github.com/NotZhu/MnemoTrace", "directory": "clients/typescript" },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NotZhu/MnemoTrace",
+    "directory": "clients/typescript"
+  },
   "homepage": "https://github.com/NotZhu/MnemoTrace/tree/main/clients/typescript",
-  "bugs": { "url": "https://github.com/NotZhu/MnemoTrace/issues" },
+  "bugs": {
+    "url": "https://github.com/NotZhu/MnemoTrace/issues"
+  },
   "devDependencies": {
+    "openapi-typescript": "7.13.0",
     "tsup": "^8.0.0",
     "typescript": "^5.4.0"
   }

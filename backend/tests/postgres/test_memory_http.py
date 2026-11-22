@@ -6,6 +6,7 @@ from base64 import urlsafe_b64encode
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from datetime import datetime
 from functools import partial
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from mnemotrace_next.domain.salience import FactSalience
 from mnemotrace_next.domain.space import Space
 from mnemotrace_next.domain.values import EntityRef, Predicate
 from mnemotrace_next.ports.inference import Embedder
+from mnemotrace_next.ports.reranker import Reranker
 from mnemotrace_next.ports.runtime import Clock
 from mnemotrace_next.ports.storage import Storage
 from mnemotrace_next.runtime_settings import RuntimeSettings
@@ -120,7 +122,10 @@ def corpus(database: PgDatabase) -> Corpus:
 
 @asynccontextmanager
 async def _http(
-    settings: Settings, embedder: Embedder | None = None
+    settings: Settings,
+    embedder: Embedder | None = None,
+    *,
+    reranker: Reranker | None = None,
 ) -> AsyncIterator[AsyncClient]:
     app = server_app.create_app(settings)
     async with (
@@ -129,6 +134,8 @@ async def _http(
     ):
         if embedder is not None:
             app.state.embedder = embedder
+        if reranker is not None:
+            app.state.reranker = reranker
         yield client
 
 
@@ -317,14 +324,26 @@ def test_http_recall_matches_core_order_and_boundaries(
                 return ((0.0, 1.0),)
             return await super().embed(texts)
 
+    class FixedReranker:
+        async def rerank(
+            self, query: str, documents: Sequence[tuple[FactId, str]]
+        ) -> Sequence[tuple[FactId, float]]:
+            return tuple(
+                (fact_id, index / len(documents))
+                for index, (fact_id, _) in enumerate(documents, start=1)
+            )
+
     clock = FakeClock()
     monkeypatch.setattr("mnemotrace_next.server.v1.memories._clock", clock)
 
     async def exercise() -> None:
         embedder = CountingEmbedder()
+        reranker = FixedReranker()
         path = corpus.path + "/recall"
         async with (
-            _http(Settings(RuntimeSettings(database.runtime)), embedder) as client,
+            _http(
+                Settings(RuntimeSettings(database.runtime)), embedder, reranker=reranker
+            ) as client,
             pool(database.runtime) as connections,
         ):
             storage = PostgresStorage(connections, owner_id=corpus.scope.owner_id)
@@ -334,6 +353,7 @@ def test_http_recall_matches_core_order_and_boundaries(
                 embedder=embedder,
                 clock=clock,
                 exclude_sensitive=True,
+                reranker=reranker,
             )
             denied = await client.post(
                 path,
@@ -360,6 +380,8 @@ def test_http_recall_matches_core_order_and_boundaries(
                 {"track_usage": "true"},
                 {"track_usage": 1},
                 {"track_usage": None},
+                {"rerank": "false"},
+                {"rerank": 1},
                 {"prefer_salient": True},
             )
             for invalid in invalid_inputs:
@@ -385,10 +407,19 @@ def test_http_recall_matches_core_order_and_boundaries(
                 actual = await client.post(
                     path,
                     headers=corpus.headers,
-                    json={"query": "dispatchtag", **request},
+                    json={
+                        "query": "dispatchtag",
+                        "rerank": True,
+                        "include_sensitive": False,
+                        "track_usage": False,
+                        **request,
+                    },
                 )
                 assert actual.status_code == 200, actual.text
-                expected = await reader.recall("dispatchtag", as_of=as_of, graph=graph)
+                expected = await reader.recall(
+                    "dispatchtag", as_of=as_of, graph=graph, rerank=True
+                )
+                assert actual.json()["rerank_applied"] is expected.rerank_applied
                 evidence = actual.json()["evidence"]
                 ids = [item["fact_id"] for item in evidence]
                 assert ids == [item.fact_id.value for item in expected.evidence]
@@ -400,6 +431,16 @@ def test_http_recall_matches_core_order_and_boundaries(
                 for item, expected_item in zip(
                     evidence, expected.evidence, strict=True
                 ):
+                    assert item["source_message_ids"] == [
+                        item.value for item in expected_item.source_message_ids
+                    ]
+                    for field in ("valid_at", "invalid_at"):
+                        stamp = item[field]
+                        assert (
+                            datetime.fromisoformat(stamp).timestamp()
+                            if stamp is not None
+                            else None
+                        ) == getattr(expected_item, field)
                     relation = expected_item.relation
                     if relation is not None:
                         assert item["relation"] == {
@@ -421,6 +462,20 @@ def test_http_recall_matches_core_order_and_boundaries(
                     )
                 else:
                     assert "tail" not in ids
+
+            for rerank_options, applied in (
+                ({}, True),
+                ({"rerank": None}, True),
+                ({"rerank": False}, False),
+                ({"rerank": True}, True),
+            ):
+                response = await client.post(
+                    path,
+                    headers=corpus.headers,
+                    json={"query": "dispatchtag", **rerank_options},
+                )
+                assert response.status_code == 200
+                assert response.json()["rerank_applied"] is applied
 
             full = await client.post(
                 path,
@@ -467,6 +522,7 @@ def test_http_recall_matches_core_order_and_boundaries(
                     json={
                         "query": "recencytag",
                         "top_k": 1,
+                        "rerank": False,
                         "track_usage": False,
                         **options,
                     },
@@ -1008,7 +1064,9 @@ def test_http_recall_inference_configuration_and_errors(
         path = corpus.path + "/recall"
         async with _http(Settings(RuntimeSettings(database.runtime))) as client:
             response = await client.post(
-                path, headers=corpus.headers, json={"query": "dispatchtag"}
+                path,
+                headers=corpus.headers,
+                json={"query": "dispatchtag", "rerank": True},
             )
             assert response.status_code == 503
             assert response.json()["code"] == "embedding_not_configured"
@@ -1018,6 +1076,18 @@ def test_http_recall_inference_configuration_and_errors(
             )
             assert response.status_code == 200
             assert response.json()["evidence"]
+            assert response.json()["rerank_applied"] is False
+            for headers, status, code in (
+                (corpus.headers, 503, "reranker_not_configured"),
+                (corpus.foreign_headers, 404, "space_not_found"),
+            ):
+                unavailable = await client.post(
+                    path, headers=headers, json={"query": "dispatchtag", "rerank": True}
+                )
+                assert (unavailable.status_code, unavailable.json()["code"]) == (
+                    status,
+                    code,
+                )
             timeout = await client.post(
                 path, headers=corpus.headers, json={"query": "timeout"}
             )
@@ -1025,6 +1095,7 @@ def test_http_recall_inference_configuration_and_errors(
             assert timeout.json() == {
                 "evidence": [],
                 "degraded_reason": "embedding_timeout",
+                "rerank_applied": False,
             }
             failure = await client.post(
                 path, headers=corpus.headers, json={"query": "invalid"}
@@ -1228,6 +1299,7 @@ def test_http_tracks_only_final_reranked_evidence_and_rechecks_visibility(
             local_order = evidence(degraded)
             assert local_order
             assert degraded.json()["degraded_reason"] == "reranker_timeout"
+            assert degraded.json()["rerank_applied"] is False
             provider_mode = "rank-gateway-timeout"
             degraded = await recall()
             assert gateway_attempts == 2

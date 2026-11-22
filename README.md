@@ -13,7 +13,9 @@ MnemoTrace stores conversation episodes, extracts facts with time and provenance
 
 Start with the [deployment guide](deploy/README.md) to initialize Postgres and create an account and space. Use the [quickstart](docs/quickstart.md) to ingest a conversation and query the result.
 
-The HTTP service, MCP tools, SDK clients, CLI and direct Python integrations use explicitly selected Postgres spaces. Install `mnemotrace-memory[serve]` for the service or `mnemotrace-memory[postgres,llm,fastembed]` for the Python quickstart. The in-memory `MemoryEngine` class remains available for offline algorithm experiments.
+The HTTP service, MCP tools, CLI and direct Python integrations use explicitly selected Postgres spaces. Install `mnemotrace-memory[serve]` for the service or `mnemotrace-memory[postgres,llm,fastembed]` for the Python quickstart. The in-memory `MemoryEngine` class remains available for offline algorithm experiments.
+
+For TypeScript or JavaScript, deploy the HTTP v1 backend and connect the SDK. [Backend deployment](deploy/next/README.md) · [SDK quickstart](clients/typescript/README.md)
 
 ## Choose an entry point
 

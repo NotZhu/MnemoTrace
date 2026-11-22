@@ -85,6 +85,7 @@ class RecallRequest(BaseModel):
     top_k: Annotated[int, Field(strict=True, ge=1, le=MAX_TOP_K)] = DEFAULT_TOP_K
     as_of: RFC3339 | None = None
     graph: GraphOptions | None = None
+    rerank: Annotated[bool, Field(strict=True)] | None = None
     prefer_recent: Annotated[bool, Field(strict=True)] = False
     track_usage: Annotated[bool, Field(strict=True)] = True
     include_sensitive: Annotated[bool, Field(strict=True)] = False
@@ -171,10 +172,11 @@ def _evidence_fields(evidence: RecallEvidence) -> _EvidenceFields:
 
 
 class RecallResponse(BaseModel):
-    """按相关性排序的证据和可选的降级原因。"""
+    """按相关性排序的证据、降级原因和实际重排状态。"""
 
     evidence: list[EvidenceResponse]
     degraded_reason: RecallDegradedReason | None
+    rerank_applied: bool
 
     @classmethod
     def from_result(cls, result: RecallResult) -> Self:
@@ -184,6 +186,7 @@ class RecallResponse(BaseModel):
                 EvidenceResponse(**_evidence_fields(item)) for item in result.evidence
             ],
             degraded_reason=result.degraded_reason,
+            rerank_applied=result.rerank_applied,
         )
 
 

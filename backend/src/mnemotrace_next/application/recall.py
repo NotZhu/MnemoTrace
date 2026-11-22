@@ -72,10 +72,11 @@ class RecallEvidence:
 
 @dataclass(frozen=True)
 class RecallResult:
-    """保存按相关性排列的证据及可选的超时降级原因。"""
+    """保存按相关性排列的证据、超时降级原因和实际重排状态。"""
 
     evidence: tuple[RecallEvidence, ...]
     degraded_reason: RecallDegradedReason | None = None
+    rerank_applied: bool = False
 
 
 @dataclass(frozen=True)
@@ -267,6 +268,7 @@ class Recall:
                 erasure_token = await reader.get_erasure_token()
 
         scores = dict(candidates)
+        rerank_applied = False
         if reranker is not None and len(ids) > 1:
             documents = tuple((fact_id, facts[fact_id].text) for fact_id in ids)
             try:
@@ -275,6 +277,7 @@ class Recall:
                 degraded_reason = "reranker_timeout"
             else:
                 scores = _relevance_scores(ids, ranked)
+                rerank_applied = True
 
         if reranker is not None or use_recency or use_salience:
 
@@ -310,7 +313,7 @@ class Recall:
             if erasure_token is not None and degraded_reason is None
             else None
         )
-        return RecallResult(evidence, degraded_reason), usage
+        return RecallResult(evidence, degraded_reason, rerank_applied), usage
 
 
 def _validate_query(query: str) -> str:

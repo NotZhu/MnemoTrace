@@ -175,6 +175,11 @@ async def test_openapi_request_and_response_schemas(openapi_response: Response) 
     recall = spec["paths"]["/v1/spaces/{space_id}/recall"]["post"]
     recall_request = schemas["RecallRequest"]
     assert "prefer_salient" not in recall_request["properties"]
+    assert {
+        item["type"] for item in recall_request["properties"]["rerank"]["anyOf"]
+    } == {"boolean", "null"}
+    assert "rerank" not in recall_request["required"]
+    assert "rerank_applied" in schemas["RecallResponse"]["required"]
     for option, default in (("prefer_recent", False), ("track_usage", True)):
         schema = recall_request["properties"][option]
         assert schema["type"] == "boolean" and schema["default"] is default

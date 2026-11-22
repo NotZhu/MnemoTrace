@@ -35,6 +35,7 @@ _DETAILS = {
     "database_unavailable": "数据库暂时不可用。",
     "database_not_ready": "数据库迁移与当前服务版本不一致。",
     "embedding_not_configured": "服务未配置查询嵌入。",
+    "reranker_not_configured": "服务未配置候选重排。",
     "inference_failed": "查询嵌入请求失败或返回了无效结果。",
     "commit_outcome_unknown": "数据库提交结果暂未确认。",
     "internal_error": "服务处理请求时发生错误。",

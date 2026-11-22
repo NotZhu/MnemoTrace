@@ -1,415 +1,314 @@
-/**
- * MnemoTraceClient — 忆痕记忆服务器的官方 TypeScript/JavaScript SDK。
- *
- * 零运行时依赖：使用全局 `fetch`（Node 18+ 或浏览器）。客户端携带 Bearer key，
- * 身份、主空间与共享空间权限由服务器配置解析。
- *
- *   import { MnemoTraceClient } from 'mnemotrace-memory'
- *   const mnemotrace = new MnemoTraceClient({ baseUrl: 'http://localhost:8000', apiKey: 'sk-alice-123' })
- *   await mnemotrace.remember('I live in Shenzhen and work at Tencent.')
- *   const { context } = await mnemotrace.recall('where do I live?')
- */
-export interface SpaceOptions { spaceId: string }
-
 import type {
-  ChatCompletion,
-  ChatCompletionChunk,
-  ChatCompletionCreateParams,
-  OperationResult,
-  MemorySpace,
-  AgentStatus,
-  Fact,
-  AggregateFactsOptions,
-  AggregateFactsResult,
-  FollowPathResult,
-  StructuredReadOptions,
-  ForgetOptions,
-  Focus,
-  GraphResponse,
-  Health,
-  MemoryExport,
-  MemoryDump,
-  MemoryListOptions,
-  MemoryStats,
-  OkMessage,
-  Policy,
-  PolicyResponse,
-  ProfileResult,
-  RecallResult,
-  RememberResult,
-  ProcessingStatus,
-  DialogueMessage,
-  SearchResult,
-  SessionIndex,
-  SessionListOptions,
-  SessionReport,
+  MessageResponse,
+  OperationHandle,
+  OperationResponse,
+  RecallRequest,
+  RecallResponse,
+  RememberAndWaitOptions,
+  RememberMessage,
+  RememberOptions,
+  RememberSubmission,
+  SessionResponse,
+  TerminalOperation,
+  WaitOperationOptions,
 } from './types'
 
-/** 任何非 2xx 响应都会抛出此错误。`detail` 尽可能携带解析后的错误响应体。 */
+const REQUEST_TIMEOUT_MS = 45_000
+const SUBMIT_TIMEOUT_MS = 15_000
+const SUBMIT_RETRY_DELAYS_MS: readonly (number | undefined)[] = [500, 1_000]
+const WAIT_TIMEOUT_MS = 240_000
+const POLL_INTERVAL_MS = 1_000
+
+export interface MnemoTraceClientOptions {
+  baseUrl: string
+  apiKey: string
+  fetch?: typeof globalThis.fetch
+}
+
 export class MnemoTraceError extends Error {
   constructor(
-    public readonly status: number,
     message: string,
-    public readonly detail?: unknown,
+    public readonly code: string,
+    public readonly status?: number,
+    public readonly requestId?: string,
+    public readonly cause?: MnemoTraceError,
   ) {
     super(message)
     this.name = 'MnemoTraceError'
   }
 }
 
-export interface MnemoTraceClientOptions {
-  /** 服务器基础 URL。默认 'http://localhost:8000'。允许以 '/v1' 结尾，会被规整掉。 */
-  baseUrl?: string
-  /** Bearer 鉴权凭据；可访问的记忆空间由服务器配置决定。 */
-  apiKey?: string
-  /** 自定义 fetch 实现（如旧运行时环境下的 node-fetch）。默认使用全局 fetch。 */
-  fetch?: typeof fetch
-  /** 每个请求都会携带的额外请求头。 */
-  headers?: Record<string, string>
+export class OperationWaitTimeout extends MnemoTraceError {
+  constructor(public readonly handle: OperationHandle) {
+    super('等待任务完成超时', 'operation_wait_timeout')
+    this.name = 'OperationWaitTimeout'
+  }
 }
 
-/** 重载的 create()：`stream: true` 时返回流式响应，否则返回单条补全。 */
-export interface ChatCompletionsCreate {
-  (params: ChatCompletionCreateParams & { stream: true }): Promise<AsyncIterable<ChatCompletionChunk>>
-  (params: ChatCompletionCreateParams & { stream?: false }): Promise<ChatCompletion>
+interface RequestOptions {
+  method?: 'POST'
+  body?: string
+  idempotencyKey?: string
+  timeoutMs?: number
+}
+
+function isResourceId(id: unknown): id is string {
+  return typeof id === 'string' && id.length > 0 && !/[^A-Za-z0-9._~-]/.test(id)
+    && id !== '.' && id !== '..'
+}
+
+function resourceSegment(id: string): string {
+  if (!isResourceId(id)) {
+    throw new TypeError('请使用 HTTP v1 返回的资源标识')
+  }
+  return id
+}
+
+function spacePath(spaceId: string): string {
+  return `/v1/spaces/${resourceSegment(spaceId)}`
+}
+
+function operationPath({ spaceId, operationId }: OperationHandle): string {
+  return `${spacePath(spaceId)}/operations/${resourceSegment(operationId)}`
+}
+
+function validateTimeout(timeoutMs: number): void {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) {
+    throw new RangeError('超时须为 1 至 2147483647 毫秒的整数')
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, Math.ceil(ms)))
+}
+
+function isTerminal(operation: OperationResponse): operation is TerminalOperation {
+  return operation.status === 'succeeded' || operation.status === 'failed'
+}
+
+function invalidResponse(response: Response): MnemoTraceError {
+  return new MnemoTraceError(
+    '服务返回了不符合 HTTP v1 契约的响应',
+    'invalid_response',
+    response.status,
+    response.headers.get('X-Request-ID') ?? undefined,
+  )
+}
+
+function requestTimeout(): MnemoTraceError {
+  return new MnemoTraceError('HTTP 请求超时', 'request_timeout')
+}
+
+function validateOperation(operation: OperationResponse, response: Response): void {
+  if (!operation || !isResourceId(operation.operation_id)
+    || !['queued', 'running', 'succeeded', 'failed'].includes(operation.status)) {
+    throw invalidResponse(response)
+  }
 }
 
 export class MnemoTraceClient {
-  readonly baseUrl: string
-  private readonly apiKey?: string
-  private readonly _fetch: typeof fetch
-  private readonly extraHeaders: Record<string, string>
+  readonly #baseUrl: string
+  readonly #apiKey: string
+  readonly #fetch: typeof globalThis.fetch
 
-  /** OpenAI 兼容接口：`client.chat.completions.create({ messages })`。 */
-  readonly chat: { completions: { create: ChatCompletionsCreate } }
-
-  constructor(options: MnemoTraceClientOptions = {}) {
-    const base = options.baseUrl ?? 'http://localhost:8000'
-    // 容忍 base 已以 /v1 结尾的情况（两种写法都可用）
-    this.baseUrl = base.replace(/\/$/, '').replace(/\/v1$/, '')
-    this.apiKey = options.apiKey
-    const f = options.fetch ?? (globalThis.fetch ? globalThis.fetch.bind(globalThis) : undefined)
-    if (!f) {
-      throw new Error('No global fetch found. Use Node 18+, a browser, or pass options.fetch.')
+  constructor({ baseUrl, apiKey, fetch: fetchImpl }: MnemoTraceClientOptions) {
+    const url = new URL(baseUrl)
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password
+      || url.search || url.hash) {
+      throw new TypeError('baseUrl 须为不含凭据、查询或片段的 HTTP(S) 地址')
     }
-    this._fetch = f
-    this.extraHeaders = options.headers ?? {}
-    this.chat = {
-      completions: { create: this.createChatCompletion.bind(this) as ChatCompletionsCreate },
+    if (typeof apiKey !== 'string' || !apiKey.trim()) {
+      throw new TypeError('apiKey 须为非空字符串')
     }
+    this.#baseUrl = url.href.replace(/\/+$/, '')
+    this.#apiKey = apiKey
+    this.#fetch = fetchImpl ?? globalThis.fetch.bind(globalThis)
   }
 
-  // --- 底层请求封装 ----------------------------------------------------------
-  private buildHeaders(json: boolean): Record<string, string> {
-    const h: Record<string, string> = { ...this.extraHeaders }
-    if (json) h['Content-Type'] = 'application/json'
-    if (this.apiKey) h['Authorization'] = `Bearer ${this.apiKey}`
-    return h
-  }
-
-  private async assertOk(res: Response): Promise<void> {
-    if (res.ok) return
-    let detail: unknown
-    let message = `MnemoTrace request failed (${res.status})`
-    try {
-      const body = (await res.json()) as { detail?: unknown }
-      detail = body
-      if (body?.detail) {
-        message = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
-      }
-    } catch {
-      /* 非 JSON 的错误响应体 */
-    }
-    throw new MnemoTraceError(res.status, message, detail)
-  }
-
-  private async request<T>(path: string, init: RequestInit = {}, spaceId?: string): Promise<T> {
-    if (spaceId !== undefined) {
-      if (!spaceId.trim()) throw new MnemoTraceError(422, 'A space ID is required')
-      if (typeof init.body === 'string') {
-        init = { ...init, body: JSON.stringify({ ...JSON.parse(init.body), space_id: spaceId }) }
-      } else {
-        const separator = path.includes('?') ? '&' : '?'
-        path += separator + new URLSearchParams({ space_id: spaceId })
-      }
-    }
-    const hasBody = init.body != null
-    const res = await this._fetch(`${this.baseUrl}${path}`, {
-      ...init,
-      headers: { ...this.buildHeaders(hasBody), ...(init.headers as Record<string, string>) },
-    })
-    await this.assertOk(res)
-    if (res.status === 204) return undefined as T
-    return (await res.json()) as T
-  }
-
-  private post<T>(path: string, body: object, spaceId?: string): Promise<T> {
-    return this.request<T>(path, { method: 'POST', body: JSON.stringify(body) }, spaceId)
-  }
-
-  // --- 健康检查 ---------------------------------------------------------------
-  health(): Promise<Health> {
-    return this.request<Health>('/health')
-  }
-
-  listSpaces(options: { afterId?: string; limit?: number } = {}): Promise<{
-    spaces: MemorySpace[]; next_after_id: string | null
-  }> {
-    const params = new URLSearchParams()
-    if (options.afterId !== undefined) params.set('after_id', options.afterId)
-    if (options.limit !== undefined) params.set('limit', String(options.limit))
-    return this.request(`/v1/spaces${params.size ? `?${params}` : ''}`)
-  }
-
-  createSpace(name: string): Promise<MemorySpace> {
-    return this.post('/v1/spaces', { name })
-  }
-
-  renameSpace(spaceId: string, name: string): Promise<MemorySpace> {
-    return this.request(`/v1/spaces/${encodeURIComponent(spaceId)}`, {
-      method: 'PATCH', body: JSON.stringify({ name }),
-    })
-  }
-
-  deleteSpace(spaceId: string, options: { confirm: true }): Promise<OkMessage> {
-    if (!options?.confirm) throw new MnemoTraceError(400, 'Space deletion requires confirmation')
-    return this.request(`/v1/spaces/${encodeURIComponent(spaceId)}?confirm=true`, { method: 'DELETE' })
-  }
-
-  remember(value: string | DialogueMessage[], options: SpaceOptions & {
-    sessionId?: string; messageId?: string; eventTime?: number | null;
-    wait?: boolean; agentId?: string; timeout?: number
-  }): Promise<RememberResult> {
-    const messages: DialogueMessage[] = typeof value === 'string'
-      ? [{message_id: options.messageId ?? globalThis.crypto?.randomUUID?.()
-          ?? `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`, role: 'user',
-          content: value, event_time: options.eventTime}]
-      : value
-    return this.post('/v1/remember', {
-      messages, session_id: options.sessionId ?? 'default', wait: options.wait,
-      agent_id: options.agentId, timeout: options.timeout,
-    }, options.spaceId)
-  }
-
-  getOperation(operationId: string, options: SpaceOptions): Promise<OperationResult> {
-    return this.request(`/v1/operations/${encodeURIComponent(operationId)}`, {}, options.spaceId)
-  }
-
-  retryOperation(operationId: string, options: SpaceOptions): Promise<OperationResult> {
-    return this.post(`/v1/operations/${encodeURIComponent(operationId)}/retry`, {}, options.spaceId)
-  }
-
-  processingStatus(options: SpaceOptions & {
-    sessionId?: string; afterId?: string; limit?: number
-  }): Promise<ProcessingStatus> {
-    const query = new URLSearchParams()
-    if (options.sessionId !== undefined) query.set('session_id', options.sessionId)
-    if (options.afterId !== undefined) query.set('after_id', options.afterId)
-    if (options.limit !== undefined) query.set('limit', String(options.limit))
-    return this.request(`/v1/processing${query.size ? `?${query}` : ''}`, {}, options.spaceId)
-  }
-
-  getEpisode(episodeId: string, options: SpaceOptions): Promise<import('./types.js').OriginalEpisode> {
-    return this.request(`/v1/episodes/${encodeURIComponent(episodeId)}`, {}, options.spaceId)
-  }
-
-  recall(query: string, options: ({ spaceId: string; spaceIds?: never } | { spaceIds: string[]; spaceId?: never }) & {
-    nDigests?: number; asOf?: number; redactSensitive?: boolean; answer?: boolean
-    state?: StructuredReadOptions["state"]; validAt?: number
-  }): Promise<RecallResult> {
-    return this.post('/v1/recall', {
-      query, lean: true, n_digests: options.nDigests, answer: options.answer,
-      as_of: options.asOf, state: options.state, valid_at: options.validAt, redact_sensitive: options.redactSensitive, space_ids: options.spaceIds,
-    }, options.spaceId)
-  }
-
-  /** 审计某个会话贡献了哪些持久事实。敏感事实文本默认脱敏。 */
-  sessionReport(
-    sessionId: string,
-    options: SpaceOptions & { includeSensitive?: boolean; limit?: number; offset?: number },
-  ): Promise<SessionReport> {
-    const params = new URLSearchParams({
-      session_id: sessionId,
-      include_sensitive: options.includeSensitive ? 'true' : 'false',
-    })
-    if (options.limit !== undefined) params.set('limit', String(options.limit))
-    if (options.offset !== undefined) params.set('offset', String(options.offset))
-    return this.request<SessionReport>(`/v1/sessions/report?${params}`, {}, options.spaceId)
-  }
-
-  /** 不含内容的跨 agent/应用会话索引，用于记忆管理界面。 */
-  sessions(options: SpaceOptions & SessionListOptions): Promise<SessionIndex> {
-    const params = new URLSearchParams()
-    if (options.limit !== undefined) params.set('limit', String(options.limit))
-    if (options.offset !== undefined) params.set('offset', String(options.offset))
-    const query = options.query
-    if (query !== undefined) params.set('q', query)
-    const qs = params.toString()
-    return this.request<SessionIndex>(`/v1/sessions${qs ? `?${qs}` : ''}`, {}, options.spaceId)
-  }
-
-  aggregateFacts(predicate: string, options: SpaceOptions & AggregateFactsOptions): Promise<AggregateFactsResult> {
-    const { spaceId, ...filters } = options
-    return this.post('/v1/aggregate', { predicate, ...filters }, spaceId)
-  }
-
-  followPath(anchor: string, predicates: string[], options: SpaceOptions & StructuredReadOptions): Promise<FollowPathResult> {
-    const { spaceId, ...filters } = options
-    return this.post('/v1/follow-path', { anchor, predicates, ...filters }, spaceId)
-  }
-
-  /** Retrieve candidates or the unique value of an explicit subject and predicate. */
-  search(query: string, options: SpaceOptions & { asOf?: number; redactSensitive?: boolean;
-    state?: StructuredReadOptions["state"]; validAt?: number; subject?: string; predicate?: string }): Promise<SearchResult> {
-    return this.post<SearchResult>('/v1/recall', {
-      query,
-      lean: false,
-      subject: options.subject, predicate: options.predicate,
-      as_of: options.asOf ?? null,
-      state: options.state, valid_at: options.validAt,
-      redact_sensitive: options.redactSensitive ?? false,
-    }, options.spaceId)
-  }
-
-  /** 该命名空间下存储的全部记忆，支持分页/过滤，用于用户自有记忆管理界面。 */
-  memories(options: SpaceOptions & MemoryListOptions): Promise<MemoryDump> {
-    const params = new URLSearchParams()
-    for (const category of options.categories ?? []) params.append('categories', category)
-    if (options.factsLimit !== undefined) params.set('facts_limit', String(options.factsLimit))
-    if (options.factsOffset !== undefined) params.set('facts_offset', String(options.factsOffset))
-    if (options.episodesLimit !== undefined) params.set('episodes_limit', String(options.episodesLimit))
-    if (options.episodesOffset !== undefined) params.set('episodes_offset', String(options.episodesOffset))
-    if (options.status !== undefined) params.set('status', options.status)
-    if (options.kind !== undefined) params.set('kind', options.kind)
-    if (options.outcomeKind !== undefined) params.set('outcome_kind', options.outcomeKind)
-    if (options.expectedRevision !== undefined) params.set('expected_revision', options.expectedRevision)
-    if (options.evaluatedAt !== undefined) params.set('evaluated_at', String(options.evaluatedAt))
-    const query = options.query
-    if (query !== undefined) params.set('q', query)
-    if (options.includeSensitive !== undefined) {
-      params.set('include_sensitive', options.includeSensitive ? 'true' : 'false')
-    }
-    const qs = params.toString()
-    return this.request<MemoryDump>(`/v1/memories${qs ? `?${qs}` : ''}`, {}, options.spaceId)
-  }
-
-  /** 不含内容的命名空间统计，用于仪表盘；服务就绪检查使用 /ready。 */
-  stats(options: SpaceOptions): Promise<MemoryStats> {
-    return this.request<MemoryStats>('/v1/stats', {}, options.spaceId)
-  }
-
-  /** 不含内容的 agent/会话状态：命名空间、focus、计数以及建议的记忆操作。 */
-  agentStatus(options: SpaceOptions & { sessionId?: string }): Promise<AgentStatus> {
-    const qs = options.sessionId === undefined ? '' : `?session_id=${encodeURIComponent(options.sessionId)}`
-    return this.request<AgentStatus>(`/v1/agent/status${qs}`, {}, options.spaceId)
-  }
-
-  /** 显式创建空间级画像刷新任务。 */
-  refreshProfile(options: SpaceOptions): Promise<OperationResult> {
-    return this.request<OperationResult>('/v1/profile/refresh', { method: 'POST', body: '{}' }, options.spaceId)
-  }
-
-  /** 读取结构化画像缓存及待更新状态。 */
-  profile(options: SpaceOptions): Promise<ProfileResult> {
-    return this.request<ProfileResult>('/v1/profile', {}, options.spaceId)
-  }
-
-  // --- 事实操作 ----------------------------------------------------------
-  /** 更改事实的共享可见性。 */
-  setFactSensitive(id: string, sensitive: boolean, options: SpaceOptions): Promise<{ ok: boolean; id: string; sensitive: boolean }> {
-    return this.request(`/v1/facts/${encodeURIComponent(id)}/sensitivity`, { method: 'PATCH', body: JSON.stringify({ sensitive }) }, options.spaceId)
-  }
-
-  deleteFact(id: string, options: SpaceOptions): Promise<{ ok: boolean }> {
-    return this.request(`/v1/facts/${encodeURIComponent(id)}`, { method: 'DELETE' }, options.spaceId)
-  }
-
-  // --- focus / policy / graph ----------------------------------------------
-  getFocus(options: SpaceOptions): Promise<Focus> {
-    return this.request<Focus>('/v1/focus', {}, options.spaceId)
-  }
-
-  setFocus(focus: Partial<Focus>, options: SpaceOptions): Promise<{ ok: boolean; focus: Focus }> {
-    return this.request('/v1/focus', { method: 'PUT', body: JSON.stringify(focus) }, options.spaceId)
-  }
-
-  getPolicy(options: SpaceOptions): Promise<PolicyResponse> {
-    return this.request<PolicyResponse>('/v1/policy', {}, options.spaceId)
-  }
-
-  setPolicy(patch: Partial<Policy>, options: SpaceOptions): Promise<{ ok: boolean } & PolicyResponse> {
-    return this.request('/v1/policy', { method: 'PUT', body: JSON.stringify(patch) }, options.spaceId)
-  }
-
-  /** 语义图谱。默认返回可安全分享的版本；传入 includeSensitive=true 获取完整的所有者可见图谱。 */
-  graph(options: SpaceOptions & { asOf?: number; includeSensitive?: boolean }): Promise<GraphResponse> {
-    const params = new URLSearchParams()
-    if (options.asOf !== undefined) params.set('as_of', String(options.asOf))
-    if (options.includeSensitive !== undefined) {
-      params.set('include_sensitive', options.includeSensitive ? 'true' : 'false')
-    }
-    const qs = params.toString()
-    return this.request<GraphResponse>(`/v1/graph${qs ? `?${qs}` : ''}`, {}, options.spaceId)
-  }
-
-  // --- 导出 / 遗忘 ----------------------------------------------------------
-
-  /** 数据导出。默认返回可安全分享的结构化导出；传入 includeSensitive=true 获取完整私有导出。 */
-  export<T = MemoryExport>(options: SpaceOptions & { includeSensitive?: boolean }): Promise<T> {
-    const includeSensitive = options.includeSensitive ?? false
-    const qs = `?include_sensitive=${includeSensitive ? 'true' : 'false'}`
-    return this.request<T>(`/v1/export${qs}`, {}, options.spaceId)
-  }
-
-  /** 清空该命名空间下的所有记忆（不可逆）；需要显式确认。 */
-  forget(options: SpaceOptions & ForgetOptions): Promise<OkMessage> {
-    if (!options?.confirm) {
-      throw new MnemoTraceError(400, 'forget requires { confirm: true } because it permanently erases this namespace')
-    }
-    return this.post<OkMessage>('/v1/forget', { confirm: true }, options.spaceId)
-  }
-
-  // --- OpenAI 兼容 chat ------------------------------------------------------
-  private async createChatCompletion(
-    params: ChatCompletionCreateParams,
-  ): Promise<ChatCompletion | AsyncIterable<ChatCompletionChunk>> {
-    const res = await this._fetch(`${this.baseUrl}/v1/chat/completions`, {
+  async createSession(spaceId: string): Promise<SessionResponse> {
+    const { data } = await this.#request<SessionResponse>(`${spacePath(spaceId)}/sessions`, {
       method: 'POST',
-      headers: this.buildHeaders(true),
-      body: JSON.stringify(params),
     })
-    await this.assertOk(res)
-    if (params.stream) return parseSSE(res)
-    return (await res.json()) as ChatCompletion
+    return data
   }
-}
 
-/** 将 OpenAI 风格的 SSE 流解析为 ChatCompletionChunk。 */
-async function* parseSSE(res: Response): AsyncGenerator<ChatCompletionChunk> {
-  if (!res.body) throw new MnemoTraceError(500, 'streaming requested but the response has no body')
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let idx: number
-      while ((idx = buffer.indexOf('\n\n')) >= 0) {
-        const event = buffer.slice(0, idx).trim()
-        buffer = buffer.slice(idx + 2)
-        if (!event.startsWith('data:')) continue
-        const data = event.slice(5).trim()
-        if (data === '[DONE]') return
-        try {
-          yield JSON.parse(data) as ChatCompletionChunk
-        } catch {
-          /* 跳过格式错误的分块 */
+  async remember(
+    spaceId: string,
+    sessionId: string,
+    messages: readonly RememberMessage[] | string,
+    { idempotencyKey, submitTimeoutMs = SUBMIT_TIMEOUT_MS }: RememberOptions,
+  ): Promise<RememberSubmission> {
+    if (typeof idempotencyKey !== 'string' || idempotencyKey.length < 1
+      || idempotencyKey.length > 128 || /[^!-~]/.test(idempotencyKey)) {
+      throw new TypeError('idempotencyKey 须包含 1 至 128 个可见 ASCII 字符')
+    }
+    const path = `${spacePath(spaceId)}/sessions/${resourceSegment(sessionId)}/remember`
+    const body = JSON.stringify({
+      messages: typeof messages === 'string' ? [{ role: 'user', content: messages }] : messages,
+    })
+    validateTimeout(submitTimeoutMs)
+    const deadline = performance.now() + submitTimeoutMs
+    let outcomeUnknown = false
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { data: operation, response } = await this.#request<OperationResponse>(path, {
+          method: 'POST',
+          body,
+          idempotencyKey,
+          timeoutMs: deadline - performance.now(),
+        })
+        validateOperation(operation, response)
+        const handle = { spaceId, operationId: operation.operation_id }
+        if (response.status !== 202 || operation.session_id !== sessionId
+          || response.headers.get('Location') !== operationPath(handle)) {
+          throw invalidResponse(response)
         }
+        return { handle, operation }
+      } catch (error) {
+        if (!(error instanceof MnemoTraceError)) throw error
+        const uncertain = error.code === 'transport_error' || error.code === 'request_timeout'
+          || (error.status === 503 && error.code === 'commit_outcome_unknown')
+        const queueFull = error.status === 503 && error.code === 'remember_queue_full'
+        outcomeUnknown ||= uncertain
+        const delay = SUBMIT_RETRY_DELAYS_MS[attempt]
+        if ((uncertain || queueFull) && delay !== undefined && deadline - performance.now() > delay) {
+          await sleep(delay)
+          continue
+        }
+        if (outcomeUnknown) {
+          throw new MnemoTraceError(
+            '提交结果不明，可用原幂等键和原参数恢复',
+            'submit_outcome_unknown',
+            error.status,
+            error.requestId,
+            error,
+          )
+        }
+        throw error
       }
     }
-  } finally {
-    reader.releaseLock()
+  }
+
+  async getOperation(handle: OperationHandle): Promise<OperationResponse> {
+    return this.#getOperation(handle, REQUEST_TIMEOUT_MS)
+  }
+
+  async waitOperation(
+    handle: OperationHandle,
+    { timeoutMs = WAIT_TIMEOUT_MS }: WaitOperationOptions = {},
+  ): Promise<TerminalOperation> {
+    validateTimeout(timeoutMs)
+    const deadline = performance.now() + timeoutMs
+    while (true) {
+      const remaining = deadline - performance.now()
+      if (remaining <= 0) throw new OperationWaitTimeout(handle)
+
+      let operation: OperationResponse
+      try {
+        operation = await this.#getOperation(handle, remaining)
+      } catch (error) {
+        if (error instanceof MnemoTraceError && error.code === 'request_timeout') {
+          throw new OperationWaitTimeout(handle)
+        }
+        throw error
+      }
+      if (isTerminal(operation)) return operation
+
+      const untilRetry = operation.next_retry_at
+        ? Date.parse(operation.next_retry_at) - Date.now()
+        : 0
+      const delay = untilRetry > 0 ? untilRetry : POLL_INTERVAL_MS
+      await sleep(Math.min(delay, Math.max(0, deadline - performance.now())))
+    }
+  }
+
+  async rememberAndWait(
+    spaceId: string,
+    sessionId: string,
+    messages: readonly RememberMessage[] | string,
+    { timeoutMs = WAIT_TIMEOUT_MS, ...submit }: RememberAndWaitOptions,
+  ): Promise<TerminalOperation> {
+    validateTimeout(timeoutMs)
+    const { handle, operation } = await this.remember(spaceId, sessionId, messages, submit)
+    return isTerminal(operation) ? operation : this.waitOperation(handle, { timeoutMs })
+  }
+
+  async recall(spaceId: string, request: RecallRequest): Promise<RecallResponse> {
+    const { data } = await this.#request<RecallResponse>(`${spacePath(spaceId)}/recall`, {
+      method: 'POST',
+      body: JSON.stringify(request),
+    })
+    return data
+  }
+
+  async getMessage(spaceId: string, messageId: string): Promise<MessageResponse> {
+    const path = `${spacePath(spaceId)}/messages/${resourceSegment(messageId)}`
+    const { data } = await this.#request<MessageResponse>(path)
+    return data
+  }
+
+  async #getOperation(handle: OperationHandle, timeoutMs: number): Promise<OperationResponse> {
+    const { data, response } = await this.#request<OperationResponse>(operationPath(handle), {
+      timeoutMs,
+    })
+    validateOperation(data, response)
+    if (data.operation_id !== handle.operationId) throw invalidResponse(response)
+    return data
+  }
+
+  async #request<T>(
+    path: string,
+    { method, body, idempotencyKey, timeoutMs = REQUEST_TIMEOUT_MS }: RequestOptions = {},
+  ): Promise<{ data: T; response: Response }> {
+    if (timeoutMs <= 0) throw requestTimeout()
+    const headers = new Headers({ Authorization: `Bearer ${this.#apiKey}` })
+    if (body !== undefined) headers.set('Content-Type', 'application/json')
+    if (idempotencyKey !== undefined) headers.set('Idempotency-Key', idempotencyKey)
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(requestTimeout())
+        controller.abort()
+      }, Math.ceil(timeoutMs))
+    })
+    try {
+      return await Promise.race([timeout, this.#fetchJson<T>(path, {
+        method,
+        headers,
+        body,
+        signal: controller.signal,
+        redirect: 'error',
+      })])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  async #fetchJson<T>(path: string, init: RequestInit): Promise<{ data: T; response: Response }> {
+    try {
+      const response = await this.#fetch(this.#baseUrl + path, init)
+      const data: unknown = await response.json().catch((error: unknown) => {
+        if (error instanceof SyntaxError) return undefined
+        throw error
+      })
+      if (!response.ok) {
+        const problem = data as { code?: unknown; request_id?: unknown } | null | undefined
+        throw new MnemoTraceError(
+          `HTTP 请求失败（${response.status}）`,
+          typeof problem?.code === 'string' ? problem.code : 'http_error',
+          response.status,
+          typeof problem?.request_id === 'string'
+            ? problem.request_id
+            : response.headers.get('X-Request-ID') ?? undefined,
+        )
+      }
+      if (data == null) throw invalidResponse(response)
+      return { data: data as T, response }
+    } catch (error) {
+      if (error instanceof MnemoTraceError) throw error
+      throw new MnemoTraceError('HTTP 请求传输失败', 'transport_error')
+    }
   }
 }

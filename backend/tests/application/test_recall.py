@@ -303,6 +303,7 @@ def test_recall_boosts_after_scoring_the_bounded_rrf_pool(
             candidates[5 if boosted else 4].id,
         )
         assert result.degraded_reason is None
+        assert result.rerank_applied
         historical = await memory.recall(
             "发布规范", top_k=5, as_of=100.0, rerank=True, prefer_recent=True
         )
@@ -340,6 +341,7 @@ def test_recall_skips_reranking_for_a_single_candidate() -> None:
         result = await reader.recall("发布规范", rerank=True)
         assert tuple(item.fact_id for item in result.evidence) == (only_fact.id,)
         assert result.degraded_reason is None
+        assert not result.rerank_applied
 
     asyncio.run(exercise())
 
@@ -408,6 +410,7 @@ def test_recall_reports_inference_timeout_and_keeps_the_expected_order(
             prefer_recent=prefer_recent,
         )
         ids = [item.fact_id for item in result.evidence]
+        assert not result.rerank_applied
         if embedding_times_out:
             assert ids == (
                 [shared.id, lexical.id] if boosted else [lexical.id, shared.id]

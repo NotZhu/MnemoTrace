@@ -14,6 +14,7 @@ uv run --locked python scripts/check.py
 运行 `uv run --locked python -m mnemotrace_next` 进行冒烟检查，预期输出 `ok`。
 
 HTTP 服务和写入 worker 的启动方式，以及凭据、任务和召回契约，见 [HTTP API](docs/http-api.md)。
+通过 TypeScript 或 JavaScript 接入 HTTP v1，见 [新版 SDK](../clients/typescript/README.md)。
 
 ## Python 写入
 
@@ -60,6 +61,8 @@ result = await reader.recall("报表导出格式", top_k=5)
 `recall` 默认在同一读快照内融合词法和向量候选。`result.evidence` 按相关性排列，包含事实 ID、正文、有效区间和关联原文 ID。实体关系事实还带有 `relation`，包含 `subject_id`、`predicate` 和 `object_entity_id`。默认查当前有效事实。显式传入 `as_of` 时按 UTC epoch 秒查询，事实须有已知起点且有效区间覆盖该时点。
 
 查询近期变化时可调用 `reader.recall("发布规则有哪些变化", prefer_recent=True)`，在相关性接近的候选中优先返回近期生效的事实。`prefer_recent` 默认为 `False`。
+
+装配了重排器时，可在单次召回传入 `rerank=True`。Python 默认 `False`。通过 `result.rerank_applied` 检查本次是否实际使用重排结果。
 
 空间启用 `memory_decay` 后，当前召回会提高显著度较高的相关候选的排名。新建空间默认为关闭，可通过空间 PATCH 修改。新近度和显著度共用加成上限，传入 `as_of` 时按相关性排列历史候选。Python 召回保持只读。 [空间设置及计分](docs/http-api.md#召回)
 

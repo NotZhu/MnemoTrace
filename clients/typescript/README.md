@@ -1,128 +1,48 @@
-# mnemotrace-memory (TypeScript/JavaScript SDK)
+# MnemoTrace TypeScript SDK
 
-TypeScript/JavaScript client for a running MnemoTrace HTTP service. Uses global `fetch` in Node.js 18+ or browsers, with no runtime dependencies. The package exposes ESM, CommonJS, and TypeScript declarations.
+`mnemotrace-memory` 调用 MnemoTrace HTTP v1。使用 Node.js 18 或更新版本，支持 ESM 和 CommonJS。
 
-## Install from this repository
+## 接入
 
-From the repository root:
+按[部署指南](../../deploy/next/README.md)启动 API 和写入 worker。从[凭据签发命令](../../backend/docs/http-api.md#管理凭据和启动)的输出获取 Bearer token，使用有权访问的[空间](../../backend/docs/http-api.md#空间和会话) ID。默认本机地址为 `http://127.0.0.1:8100`。将 token 放在服务端的环境或凭据存储中。
+
+在仓库根目录安装并构建，再从你的项目安装已构建的本地包。
 
 ```sh
 npm --prefix clients/typescript ci
 npm --prefix clients/typescript run build
-```
-
-In a consuming application, install the built package using its absolute directory:
-
-```sh
 npm install /absolute/path/to/MnemoTrace/clients/typescript
 ```
 
-The examples below use the package's declared name. Follow the [deployment guide](https://github.com/NotZhu/MnemoTrace/blob/main/deploy/README.md) to initialize Postgres, start the service and issue a Bearer key. The memory extraction example requires a configured server LLM.
-
-## Connect and use memory
-
 ```ts
+import { randomUUID } from 'node:crypto'
 import { MnemoTraceClient } from 'mnemotrace-memory'
 
 const client = new MnemoTraceClient({
-  baseUrl: 'http://127.0.0.1:8000',
-  apiKey: 'YOUR_API_KEY',
+  baseUrl: 'http://127.0.0.1:8100',
+  apiKey: process.env.MNEMOTRACE_NEXT_API_KEY!,
 })
-
-const { space_id: spaceId } = await client.createSpace('Research')
-const scope = { spaceId }
-const accepted = await client.remember('I live in Paris.', {
-  ...scope, sessionId: 'demo', messageId: 'm1', wait: true,
-})
-console.log(accepted.messages[0].sequence, accepted.task)
-if (accepted.status === 'timed_out') {
-  console.log(await client.getOperation(accepted.task.operation_id, scope))
-}
-const result = await client.recall('Where do I live?', scope)
-console.log(result.context)
-```
-
-The server resolves the Bearer key to the account and checks each requested space.
-Use `listSpaces()` to select an existing space. Keep the returned ID when renaming the space.
-
-## Constructor
-
-`new MnemoTraceClient({ baseUrl?, apiKey?, fetch?, headers? })`
-
-- baseUrl defaults to `http://localhost:8000`; a trailing slash or `/v1` is normalized.
-- apiKey becomes the Authorization Bearer header.
-- fetch allows a custom implementation; headers adds request headers.
-- The client does not provide an automatic retry or request-timeout policy. Configure those in your application or custom fetch.
-
-## API reference
-
-All methods return promises. Pass `{ spaceId }` to single-space methods. For multi-space recall pass `{ spaceIds }`. Chat uses `memory.space_id`.
-
-| Method | Parameters and result |
-| --- | --- |
-| `health()` | Health; readiness is a separate HTTP endpoint |
-| `remember(value, options)` | String or message array. sessionId, messageId, eventTime, wait, timeout, agentId. Returns RememberResult |
-| `recall(query, options)` | nDigests=20, sessionId, asOf, redactSensitive=false, spaceIds; RecallResult |
-| `search(query, options)` | asOf, redactSensitive, subject, predicate; candidate facts and sources, or a unique explicit slot value |
-| `listSpaces(options?)` / `createSpace(name)` | list or create spaces owned by the authenticated account |
-| `getOperation(id, options)` / `retryOperation(id, options)` | query or retry a stable operation ID |
-| `sessionReport(sessionId, options)` | includeSensitive=false, limit=100, offset=0. Use facts_page.next_offset for subsequent pages |
-| `sessions(options)` | limit, offset, query; SessionIndex |
-| `memories(options)` | pagination and filters described below; MemoryDump |
-| `stats(options)` | MemoryStats without memory text |
-| `agentStatus(options)` | optional sessionId; AgentStatus |
-| `profile(options)` | Cached ProfileResult with seven sections, fact references, counts and refresh status |
-| `refreshProfile(options)` | OperationResult; explicit model refresh, inspect or retry its operation ID |
-| `setFactSensitive(id, sensitive, options)` | changes the fact’s sharing flag |
-| `deleteFact(id, options)` | deletion result; inspect ok |
-| `getFocus(options)` / `setFocus(partial, options)` | track/mute lists |
-| `getPolicy(options)` / `setPolicy(partial, options)` | extraction, digest and profile overrides |
-| `graph(options)` | asOf, includeSensitive=false; GraphResponse（nodes、edges、has_more） |
-| `export(options)` | includeSensitive=false; MemoryExport by default |
-| `forget({ spaceId, confirm: true })` | irreversible space clearing; missing confirmation fails before sending |
-| `chat.completions.create(params)` | ChatCompletion, or AsyncIterable when stream=true |
-
-MemoryListOptions supports categories, factsLimit/factsOffset, episodesLimit/episodesOffset, status, kind, outcomeKind, query, includeSensitive, expectedRevision, and evaluatedAt. The existing q alias is also accepted by sessions/memories, with query taking precedence. Use query in new callers. Other legacy status aliases remain server-defined; this documentation does not change them.
-
-The optional `categories` array matches any of the supplied labels before pagination. It intersects with other fact filters and does not filter raw episodes.
-
-For consistent pagination, carry the response's data_revision and evaluated_at into expectedRevision/evaluatedAt on the next request. On a 409 revision change, start again from the first page.
-
-Use the HTTP API directly for document uploads and slot clearing. For a dated note or correction, pass Unix seconds as `eventTime` to `remember`. Immediate completion returns the affected fact IDs in `fact_ids`.
-
-## Types and errors
-
-Public types are exported from [types.ts](https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/src/types.ts). Core results include RememberResult, RecallResult, SearchResult, Fact, MemoryDump, SessionIndex, SessionReport, MemoryExport, and chat completion types.
-
-`Category` defines the fixed label catalog. Fact results return `categories` and any linked entity IDs and types. Use `setFactSensitive(id, sensitive, { spaceId })` to change sharing. Structured exports carry `format_version: 7`.
-
-`CATEGORIES` and `PROFILE_SECTIONS` export the ordered catalogs as readonly tuples. Their `Category` and `ProfileSection` types are generated from the Python definitions.
-
-Non-2xx responses throw `MnemoTraceError` with status and the parsed error body in detail. Network failures can remain native fetch errors. A successful HTTP response can contain a queued acknowledgement or a rejected business result; inspect the operation's payload. Extraction failures return HTTP 502/503 with a stable error code, `stored_raw`, and `episode_ids`; they are not successful degraded results.
-
-```ts
-import { MnemoTraceError } from 'mnemotrace-memory'
-
-try {
-  await client.sessionReport('demo', { spaceId })
-} catch (error) {
-  if (error instanceof MnemoTraceError) console.error(error.status, error.message)
-  else throw error
+const spaceId = process.env.MNEMOTRACE_NEXT_SPACE_ID!
+const { session_id } = await client.createSession(spaceId)
+const completed = await client.rememberAndWait(
+  spaceId,
+  session_id,
+  '忆痕项目默认用 CSV 导出报表。',
+  { idempotencyKey: randomUUID() },
+)
+if (completed.status === 'succeeded') {
+  const { evidence } = await client.recall(spaceId, { query: '忆痕项目的默认导出格式' })
+  const messageId = evidence[0]?.source_message_ids[0]
+  if (messageId) {
+    const original = await client.getMessage(spaceId, messageId)
+    console.log(original.content)
+  }
 }
 ```
 
-## Chat and privacy
+## 写入和恢复
 
-Chat uses the configured server LLM. To save the conversation without fact extraction, set `memory.extract` to `false`. The memory object requires space_id and supports recall, remember, session_id, extract, n_digests, as_of, and redact_sensitive. Its model field does not select an arbitrary backend. stream=true exposes SSE chunks; the current server splits a completed response rather than forwarding live model tokens.
-
-Export defaults to a restricted structured view. Set `includeSensitive: true` to include private text. Fact deletion preserves its original sources, which can be erased by clearing or deleting the space.
-
-## Development and license
-
-In this directory, run `npm ci`, `npm run typecheck`, and `npm test`. Tests run the build through pretest. Repository-wide development guidance is in [CONTRIBUTING](https://github.com/NotZhu/MnemoTrace/blob/main/CONTRIBUTING.md); HTTP semantics are in the [HTTP reference](https://github.com/NotZhu/MnemoTrace/blob/main/docs/reference/http-api.md).
-
-Source: [NotZhu/MnemoTrace](https://github.com/NotZhu/MnemoTrace).
-License: [AGPL-3.0](https://github.com/NotZhu/MnemoTrace/blob/main/LICENSE); see [commercial terms](https://github.com/NotZhu/MnemoTrace/blob/main/COMMERCIAL-LICENSE.md).
-
-
-`getEpisode(episodeId, { spaceId })` reads the complete original event referenced by recall. Recall uses the event digest when available. Set `wait: true` to wait for facts and eligible digests to be published together. A timed-out request returns the task for later polling.
+- `remember(spaceId, sessionId, messages, options)` 返回 `{ handle, operation }`。要求 `options.idempotencyKey`，支持字符串或含 `role`、`content`、可选 `event_time` 的消息数组。字符串按一条 `user` 消息提交。传输失败、提交结果不明或队列满时会在 `submitTimeoutMs` 预算内用原键原参重发，最多提交三次，默认总预算为 15000 毫秒。
+- `getOperation(handle)` 查询当前状态，`waitOperation(handle, { timeoutMs })` 轮询直到 `succeeded` 或 `failed`。等待默认最多 240000 毫秒，超时抛出 `OperationWaitTimeout`。可以保存异常的 `handle`，稍后重新查询或等待。
+- `rememberAndWait` 接受同一组写入参数和等待选项。收到 `submit_outcome_unknown` 时，使用原幂等键和原输入恢复提交，最近一次错误可从 `cause` 查看。收到 `failed` 终态时查看 `operation.error`。HTTP 失败会抛出 `MnemoTraceError`，包含 `status`、`code` 和服务端提供的 `requestId`。
+- `recall(spaceId, request)` 采用[后端召回契约](../../backend/docs/http-api.md#召回)。例如传 `rerank: false` 跳过重排，从 `rerank_applied` 查看是否实际重排。使用证据中的 `source_message_ids` 调用 `getMessage(spaceId, messageId)`。接口接收服务端返回的路径标识。
