@@ -351,12 +351,14 @@ dependencies = [
 inference = [
     { name = "httpx" },
     { name = "jsonschema" },
+    { name = "tzdata" },
 ]
 server = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jsonschema" },
     { name = "pydantic" },
+    { name = "tzdata" },
     { name = "uvicorn" },
 ]
 
@@ -378,6 +380,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = "==3.3.8" },
     { name = "psycopg-pool", specifier = "==3.3.3" },
     { name = "pydantic", marker = "extra == 'server'", specifier = ">=2.11,<3" },
+    { name = "tzdata", marker = "extra == 'inference'" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.41,<1" },
 ]
 provides-extras = ["inference", "server"]

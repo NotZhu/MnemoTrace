@@ -9,6 +9,7 @@ from datetime import datetime
 from types import TracebackType
 from unittest.mock import AsyncMock
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import psycopg
 import pytest
@@ -18,7 +19,7 @@ from psycopg.rows import TupleRow
 from psycopg_pool import AsyncConnectionPool
 
 from mnemotrace_next import worker
-from mnemotrace_next.adapters.inference import InferenceRequestError
+from mnemotrace_next.adapters.inference import InferenceClients, InferenceRequestError
 from mnemotrace_next.adapters.postgres.identity import issue_key
 from mnemotrace_next.adapters.postgres.operations import PostgresOperations
 from mnemotrace_next.adapters.postgres.storage import PostgresStorage
@@ -33,6 +34,7 @@ from mnemotrace_next.application.remember import Remember, RememberResult
 from mnemotrace_next.domain.ids import SessionId, SpaceId
 from mnemotrace_next.ports.inference import LLM, InvalidStructuredOutput
 from mnemotrace_next.ports.storage import SpaceSession, SpaceUnavailable
+from mnemotrace_next.runtime_settings import RuntimeSettings
 from mnemotrace_next.server.app import create_app
 from mnemotrace_next.server.settings import Settings
 
@@ -45,8 +47,9 @@ _FACT = "项目 Atlas-903 默认导出 XLSX"
 
 
 class _Model(FakeLLM):
-    def __init__(self) -> None:
+    def __init__(self, *, relative_day: int | None = None) -> None:
         self.prompts: list[dict[str, object]] = []
+        self._relative_day = relative_day
 
     async def complete_json(
         self, *, system: str, prompt: str, schema: Mapping[str, object]
@@ -54,7 +57,8 @@ class _Model(FakeLLM):
         request = json.loads(prompt)
         self.prompts.append(request)
         (message,) = request["messages"]
-        if message["content"] != _FACT:
+        expected_text = _FACT if self._relative_day is None else f"今天起，{_FACT}"
+        if message["content"] != expected_text:
             return {"facts": []}
         return {
             "facts": [
@@ -64,10 +68,12 @@ class _Model(FakeLLM):
                     "object": {"kind": "literal", "value": "XLSX"},
                     "text": _FACT,
                     "valid_at_evidence": {
-                        "kind": "message_time",
+                        "kind": "message_time"
+                        if self._relative_day is None
+                        else "relative_date",
                         "source_number": message["number"],
                         "value": None,
-                        "days": None,
+                        "days": self._relative_day,
                     },
                     "invalid_at_evidence": None,
                     "source_numbers": [message["number"]],
@@ -255,6 +261,69 @@ def test_http_admission_idempotency_capacity_and_publication(
                 )
                 assert await cursor.fetchone() == (0,)
             assert not await runner.run_once()
+
+    run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("zone", "valid_at"),
+    [("UTC", "2026-11-21T00:00:00Z"), ("Asia/Shanghai", "2026-11-21T16:00:00Z")],
+)
+def test_http_write_worker_uses_extraction_timezone(
+    database: PgDatabase, monkeypatch: pytest.MonkeyPatch, zone: str, valid_at: str
+) -> None:
+    """午夜后的同一条原文按 worker 时区解析当日生效时刻。"""
+
+    @asynccontextmanager
+    async def inference(
+        _env: Mapping[str, str], *, llm: bool, embed: bool
+    ) -> AsyncIterator[InferenceClients]:
+        yield InferenceClients(_Model(relative_day=0), FakeEmbedder())
+
+    async def consume_one(runner: OperationRunner, stopping: asyncio.Event) -> None:
+        assert await runner.run_once()
+        stopping.set()
+
+    monkeypatch.setattr(worker, "open_inference", inference)
+    monkeypatch.setattr(worker, "_consume", consume_one)
+
+    async def exercise() -> None:
+        async with _scope(database) as scope:
+            session = await scope.new_session()
+            admitted = await scope.client.post(
+                session + "/remember",
+                headers={**scope.headers, "Idempotency-Key": "today"},
+                json={
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": f"今天起，{_FACT}",
+                            "event_time": "2026-11-22T00:30:00+08:00",
+                        }
+                    ]
+                },
+            )
+            assert admitted.status_code == 202
+            await asyncio.wait_for(
+                worker._run(
+                    RuntimeSettings(database.runtime),
+                    1,
+                    extraction_timezone=ZoneInfo(zone),
+                ),
+                timeout=5,
+            )
+            result = (await scope.status(admitted.headers["Location"])).json()
+            assert result["status"] == "succeeded"
+            facts = await scope.client.get(
+                scope.path + "/facts", params={"state": "all"}, headers=scope.headers
+            )
+            assert facts.status_code == 200
+            (item,) = facts.json()["items"]
+            assert item["valid_at"] == valid_at
+            (message_id,) = result["message_ids"]
+            original = await scope.status(f"{scope.path}/messages/{message_id}")
+            assert original.status_code == 200
+            assert original.json()["event_time"] == "2026-11-21T16:30:00Z"
 
     run(exercise())
 

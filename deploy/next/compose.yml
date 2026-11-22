@@ -59,6 +59,9 @@ services:
 
   worker:
     <<: *runtime
+    environment:
+      <<: *runtime-environment
+      MNEMOTRACE_NEXT_EXTRACTION_TIMEZONE:
     command: [python, -m, mnemotrace_next.worker, --concurrency, "${MNEMOTRACE_NEXT_WORKER_CONCURRENCY:-2}", --readiness-port, "8101"]
     healthcheck:
       test: [CMD, python, -c, "from socket import create_connection; create_connection(('127.0.0.1', 8101), timeout=2).close()"]

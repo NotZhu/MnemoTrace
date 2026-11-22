@@ -7,7 +7,9 @@ import os
 import signal
 import sys
 from contextlib import nullcontext
+from datetime import tzinfo
 from types import FrameType
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import psycopg
 from psycopg import AsyncConnection
@@ -51,6 +53,8 @@ async def _serve(
     concurrency: int,
     stopping: asyncio.Event,
     readiness_port: int | None,
+    *,
+    extraction_timezone: tzinfo,
 ) -> None:
     pool: AsyncConnectionPool[AsyncConnection[TupleRow]] = AsyncConnectionPool(
         settings.postgres_dsn,
@@ -81,6 +85,7 @@ async def _serve(
                 embedder=embedder,
                 clock=SystemClock(),
                 ids=UuidGenerator(),
+                timezone=extraction_timezone,
             )
 
         runner = OperationRunner(PostgresOperations(pool), remember_for, _is_transient)
@@ -97,7 +102,11 @@ async def _serve(
 
 
 async def _run(
-    settings: RuntimeSettings, concurrency: int, readiness_port: int | None = None
+    settings: RuntimeSettings,
+    concurrency: int,
+    readiness_port: int | None = None,
+    *,
+    extraction_timezone: tzinfo,
 ) -> None:
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -118,7 +127,13 @@ async def _run(
     try:
         for signum in signals:
             signal.signal(signum, on_signal)
-        await _serve(settings, concurrency, stopping, readiness_port)
+        await _serve(
+            settings,
+            concurrency,
+            stopping,
+            readiness_port,
+            extraction_timezone=extraction_timezone,
+        )
     except asyncio.CancelledError:
         if not stopping.is_set():
             raise
@@ -128,7 +143,7 @@ async def _run(
 
 
 def main() -> int:
-    """读取数据库和推理配置并运行写入任务。"""
+    """读取数据库、推理和抽取时区配置并运行写入任务。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--concurrency", type=int, default=2, metavar="1-16")
     parser.add_argument("--readiness-port", type=int, help="在本机监听的就绪探针端口")
@@ -137,13 +152,24 @@ def main() -> int:
         parser.error("--concurrency 须为 1 至 16")
     if args.readiness_port is not None and not 1 <= args.readiness_port <= 65535:
         parser.error("--readiness-port 须为 1 至 65535")
+    try:
+        extraction_timezone = ZoneInfo(
+            os.environ.get("MNEMOTRACE_NEXT_EXTRACTION_TIMEZONE", "UTC")
+        )
+    except (ZoneInfoNotFoundError, ValueError):
+        parser.error("MNEMOTRACE_NEXT_EXTRACTION_TIMEZONE 须为有效的 IANA 时区名称")
     logging.basicConfig(level=logging.WARNING)
     _LOG.setLevel(logging.INFO)
     try:
         settings = RuntimeSettings.from_env(os.environ)
         loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
         asyncio.run(
-            _run(settings, args.concurrency, args.readiness_port),
+            _run(
+                settings,
+                args.concurrency,
+                args.readiness_port,
+                extraction_timezone=extraction_timezone,
+            ),
             loop_factory=loop_factory,
         )
     except ValueError as exc:

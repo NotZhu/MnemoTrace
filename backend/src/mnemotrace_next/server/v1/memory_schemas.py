@@ -50,7 +50,9 @@ class GraphOptions(BaseModel):
         Annotated[list[IdText], Field(max_length=MAX_EXPLICIT_ANCHORS)] | None
     ) = None
     predicates: (
-        Annotated[list[IdText], Field(min_length=1, max_length=MAX_GRAPH_PREDICATES)]
+        Annotated[
+            list[NonblankText], Field(min_length=1, max_length=MAX_GRAPH_PREDICATES)
+        ]
         | None
     ) = None
     max_hops: Annotated[int, Field(strict=True, ge=1, le=MAX_GRAPH_HOPS)] = (

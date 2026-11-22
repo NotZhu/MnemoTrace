@@ -479,6 +479,64 @@ def test_http_recall_matches_core_order_and_boundaries(
     run(exercise())
 
 
+def test_http_graph_predicate_round_trips_without_id_length_limit(
+    database: PgDatabase, corpus: Corpus
+) -> None:
+    """图召回返回的长谓词可直接用于筛选下一次遍历。"""
+
+    async def exercise() -> None:
+        root, target = (Entity(corpus.scope.id, name) for name in ("入口", "目标"))
+        long_edge = replace(
+            fact(root, "long-predicate"),
+            predicate=Predicate("p" * 257),
+            object=EntityRef(target.id),
+        )
+        other_edge = replace(
+            fact(root, "other-predicate"),
+            object=EntityRef(target.id),
+        )
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id=corpus.scope.owner_id)
+            async with storage.session(corpus.scope.id, write=True) as writer:
+                await writer.upsert_entity(root)
+                await writer.upsert_entity(target)
+                await writer.save_facts((long_edge, other_edge), changed_at=21.0)
+
+        path = corpus.path + "/recall"
+        request = {
+            "query": "unmatchedpredicateprobe",
+            "graph": {"origin_entity_ids": [root.id.value]},
+            "track_usage": False,
+        }
+        async with _http(
+            Settings(RuntimeSettings(database.runtime)), FakeEmbedder()
+        ) as client:
+            initial = await client.post(path, headers=corpus.headers, json=request)
+            assert initial.status_code == 200, initial.text
+            evidence = {item["fact_id"]: item for item in initial.json()["evidence"]}
+            assert other_edge.id.value in evidence
+            predicate = evidence[long_edge.id.value]["relation"]["predicate"]
+            assert predicate == long_edge.predicate.value
+
+            filtered = await client.post(
+                path,
+                headers=corpus.headers,
+                json={
+                    **request,
+                    "graph": {
+                        "origin_entity_ids": [root.id.value],
+                        "predicates": [predicate],
+                    },
+                },
+            )
+            assert filtered.status_code == 200, filtered.text
+            ids = {item["fact_id"] for item in filtered.json()["evidence"]}
+            assert long_edge.id.value in ids
+            assert other_edge.id.value not in ids
+
+    run(exercise())
+
+
 def test_http_fact_pages_and_message_scope(
     database: PgDatabase, corpus: Corpus
 ) -> None:

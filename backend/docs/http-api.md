@@ -11,6 +11,7 @@
 | `MNEMOTRACE_NEXT_POSTGRES_DSN` | API 与 worker 的运行角色连接。 |
 | `MNEMOTRACE_NEXT_MAX_BODY_BYTES` | API 请求体字节上限，默认 65536。 |
 | `MNEMOTRACE_NEXT_QUEUE_LIMIT` | API 接收写入时每个空间的待处理任务上限，包含等待和执行中的任务，默认 100。 |
+| `MNEMOTRACE_NEXT_EXTRACTION_TIMEZONE` | worker 解释“今天”“明天”等日历时间时使用的 IANA 时区，默认 `UTC`。Compose 部署在 `deploy/next/.env` 中设置，例如 `Asia/Shanghai`。 |
 
 ## 管理凭据和启动
 
@@ -99,7 +100,7 @@ worker 短暂停止期间 API 可继续接收。达到单空间上限后，新�
 | `query` | 非空查询，最多 4096 字符。 |
 | `top_k` | 证据上限，取 1–100，默认 10。 |
 | `as_of` | 可选业务有效时点，使用带偏移或 `Z` 的 RFC 3339 日期时间，最多六位小数。省略时查当前。 |
-| `graph` | 可选，传 `{}` 启用默认图召回。可用 `max_hops`（1–4，默认 2）、`origin_entity_ids` 和 `predicates` 限定遍历。显式传空起点数组时只返回普通召回结果。 |
+| `graph` | 可选，传 `{}` 启用默认图召回。可用 `max_hops`（1–4，默认 2）、`origin_entity_ids` 和 `predicates` 限定遍历。显式传空起点数组时只返回普通召回结果。可将证据中的 `relation.predicate` 原样传入 `predicates`。 |
 | `prefer_recent` | 严格布尔值，默认 `false`。开启时，在当前事实的相关候选中优先返回近期生效的事实。 |
 | `track_usage` | 严格布尔值，默认 `true`。传 `false` 保持同样的排序并跳过强化。 |
 | `include_sensitive` | 默认 `false`。显式传 `true` 可召回该账号空间中的敏感事实。 |
