@@ -83,6 +83,7 @@ class RecallRequest(BaseModel):
     top_k: Annotated[int, Field(strict=True, ge=1, le=MAX_TOP_K)] = DEFAULT_TOP_K
     as_of: RFC3339 | None = None
     graph: GraphOptions | None = None
+    prefer_recent: Annotated[bool, Field(strict=True)] = False
     include_sensitive: Annotated[bool, Field(strict=True)] = False
 
 

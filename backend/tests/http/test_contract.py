@@ -173,6 +173,10 @@ async def test_openapi_request_and_response_schemas(openapi_response: Response) 
         assert {"cursor", "limit"} <= parameters
         assert "after_id" not in parameters
     recall = spec["paths"]["/v1/spaces/{space_id}/recall"]["post"]
+    recall_request = schemas["RecallRequest"]
+    prefer_recent = recall_request["properties"]["prefer_recent"]
+    assert prefer_recent["type"] == "boolean" and prefer_recent["default"] is False
+    assert "prefer_recent" not in recall_request["required"]
     validation = recall["responses"]["422"]["content"]["application/problem+json"]
     assert set(validation["schema"]["properties"]["errors"]["items"]["properties"]) == {
         "location",
@@ -246,6 +250,7 @@ async def test_validation_reports_safe_field_locations() -> None:
             json={
                 "query": "synthetic-query",
                 "top_k": 101,
+                "prefer_recent": "synthetic-boolean",
                 "graph": {
                     "max_hops": 5,
                     "origin_entity_ids": [" ", "valid"],
@@ -260,6 +265,7 @@ async def test_validation_reports_safe_field_locations() -> None:
             for error in response.json()["errors"]
         } == {
             ("body", "/top_k", "out_of_range"),
+            ("body", "/prefer_recent", "invalid_value"),
             ("body", "/graph/max_hops", "out_of_range"),
             ("body", "/graph/origin_entity_ids/0", "invalid_value"),
             ("body", "/graph", "unknown_field"),

@@ -299,7 +299,7 @@ def test_delete_space_removes_embedding_registration_and_only_the_target_space(
 
 
 def test_http_recall_matches_core_order_and_boundaries(
-    database: PgDatabase, corpus: Corpus
+    database: PgDatabase, corpus: Corpus, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """普通、历史和图召回沿用核心排序，越权查询不触发模型。"""
 
@@ -308,7 +308,12 @@ def test_http_recall_matches_core_order_and_boundaries(
 
         async def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
             self.calls += 1
+            if texts == ("recencytag",):
+                return ((0.0, 1.0),)
             return await super().embed(texts)
+
+    clock = FakeClock()
+    monkeypatch.setattr("mnemotrace_next.server.v1.memories._clock", clock)
 
     async def exercise() -> None:
         embedder = CountingEmbedder()
@@ -317,15 +322,18 @@ def test_http_recall_matches_core_order_and_boundaries(
             _http(Settings(RuntimeSettings(database.runtime)), embedder) as client,
             pool(database.runtime) as connections,
         ):
+            storage = PostgresStorage(connections, owner_id=corpus.scope.owner_id)
             reader = Memory.for_recall(
                 space_id=corpus.scope.id,
-                storage=PostgresStorage(connections, owner_id=corpus.scope.owner_id),
+                storage=storage,
                 embedder=embedder,
-                clock=FakeClock(),
+                clock=clock,
                 exclude_sensitive=True,
             )
             denied = await client.post(
-                path, headers=corpus.foreign_headers, json={"query": "dispatchtag"}
+                path,
+                headers=corpus.foreign_headers,
+                json={"query": "dispatchtag", "prefer_recent": True},
             )
             assert denied.status_code == 404
             assert embedder.calls == 0
@@ -337,6 +345,9 @@ def test_http_recall_matches_core_order_and_boundaries(
                 {"graph": {"predicates": []}},
                 {"graph": {"max_hops": 5}},
                 {"include_sensitive": "true"},
+                {"prefer_recent": "true"},
+                {"prefer_recent": 1},
+                {"prefer_recent": None},
             )
             for invalid in invalid_inputs:
                 response = await client.post(
@@ -404,6 +415,35 @@ def test_http_recall_matches_core_order_and_boundaries(
                 json={"query": "dispatchtag", "include_sensitive": True},
             )
             assert "hidden" in [item["fact_id"] for item in full.json()["evidence"]]
+
+            now = clock.now()
+            subject = Entity(corpus.scope.id, "近期排序合成主体")
+            older = replace(
+                fact(subject, "recency-older", text="recencytag older"),
+                valid_at=now - 90 * 86_400,
+            )
+            recent = replace(
+                fact(subject, "recency-recent", text="recencytag recent"), valid_at=now
+            )
+            async with storage.session(corpus.scope.id, write=True) as writer:
+                await writer.upsert_entity(subject)
+                await writer.save_facts((older, recent), changed_at=now)
+
+            for options, expected_id in (
+                ({}, older.id),
+                ({"prefer_recent": False}, older.id),
+                ({"prefer_recent": True}, recent.id),
+                ({"prefer_recent": True, "as_of": "1970-01-01T00:01:40Z"}, older.id),
+            ):
+                response = await client.post(
+                    path,
+                    headers=corpus.headers,
+                    json={"query": "recencytag", "top_k": 1, **options},
+                )
+                assert response.status_code == 200, response.text
+                assert [hit["fact_id"] for hit in response.json()["evidence"]] == [
+                    expected_id.value
+                ]
 
     run(exercise())
 

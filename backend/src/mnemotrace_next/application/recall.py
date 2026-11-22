@@ -3,7 +3,7 @@
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from math import isfinite
+from math import exp2, isfinite
 from numbers import Real
 from typing import Literal
 
@@ -24,6 +24,8 @@ MAX_TOP_K = 100
 MAX_QUERY_CHARS = 4096
 _RRF_K = 60
 _VECTOR_MIN_COSINE = 0.5
+_RECENCY_BOOST = 0.05
+_RECENCY_HALF_LIFE_SECONDS = 30 * 86_400
 
 type RecallDegradedReason = Literal["embedding_timeout", "reranker_timeout"]
 
@@ -120,6 +122,7 @@ class Recall:
         as_of: float | None = None,
         rerank: bool = False,
         graph: GraphRecallOptions | None = None,
+        prefer_recent: bool = False,
     ) -> RecallResult:
         """按查询相关性召回指定时点有效的可见事实。
 
@@ -129,6 +132,7 @@ class Recall:
             as_of: 显式有效时点，以 UTC epoch 秒表示。省略时查当前事实。
             rerank: 是否调用已装配的重排器调整候选顺序。
             graph: 图召回设置，省略时使用普通召回。
+            prefer_recent: 是否在当前事实中小幅优先近期生效的候选。
 
         Returns:
             按相关性排列的事实证据及可选的超时降级原因。
@@ -143,6 +147,8 @@ class Recall:
             raise ValueError(f"top_k 须为 1 至 {MAX_TOP_K} 的整数")
         if type(rerank) is not bool:
             raise ValueError("rerank 须为布尔值")
+        if type(prefer_recent) is not bool:
+            raise ValueError("prefer_recent 须为布尔值")
         if graph is not None and not isinstance(graph, GraphRecallOptions):
             raise ValueError("graph 须为 GraphRecallOptions 或 None")
         reranker = self._reranker if rerank else None
@@ -153,6 +159,7 @@ class Recall:
             exclude_sensitive=self._exclude_sensitive,
         )
         reference_time = self._clock.now()
+        use_recency = prefer_recent and filters.valid_at is None
         per_channel_limit = _candidate_limit(top_k)
 
         # 进入会话已经完成授权。先退出事务，再把查询发给嵌入端点。
@@ -199,12 +206,27 @@ class Recall:
                 if graph is not None
                 else ()
             )
-            ids = _fuse_rankings(lexical_ids, semantic_ids, graph_ids)[:fact_load_limit]
+            ranking = _rrf_scores(lexical_ids, semantic_ids, graph_ids)
+            candidates = (
+                _recency_candidates(ranking, fact_load_limit)
+                if use_recency
+                else ranking[:fact_load_limit]
+            )
+            ids = [fact_id for fact_id, _ in candidates]
             if not ids:
                 return RecallResult((), degraded_reason)
             facts = await reader.get_facts(
                 ids, exclude_sensitive=self._exclude_sensitive
             )
+            if use_recency:
+                candidates.sort(
+                    key=lambda hit: (
+                        -_score_with_recency(
+                            hit[1], facts[hit[0]].valid_at, reference_time
+                        )
+                    )
+                )
+                ids = [fact_id for fact_id, _ in candidates[:fact_load_limit]]
 
         if reranker is not None and len(ids) > 1:
             documents = tuple((fact_id, facts[fact_id].text) for fact_id in ids)
@@ -268,11 +290,34 @@ def _candidate_limit(top_k: int) -> int:
 
 
 def _fuse_rankings(*rankings: Iterable[FactId]) -> list[FactId]:
+    return [fact_id for fact_id, _ in _rrf_scores(*rankings)]
+
+
+def _rrf_scores(*rankings: Iterable[FactId]) -> list[tuple[FactId, float]]:
     scores: dict[FactId, float] = defaultdict(float)
     for ranking in rankings:
         for rank, fact_id in enumerate(ranking, start=1):
             scores[fact_id] += 1 / (_RRF_K + rank)
-    return sorted(scores, key=lambda fact_id: (-scores[fact_id], fact_id.value))
+    return sorted(scores.items(), key=lambda hit: (-hit[1], hit[0].value))
+
+
+def _recency_candidates(
+    ranking: list[tuple[FactId, float]], limit: int
+) -> list[tuple[FactId, float]]:
+    if len(ranking) <= limit:
+        return ranking
+    cutoff = ranking[limit - 1][1]
+    # 原榜候选的分只增不减，因此最高加成仍达不到原榜线的候选可省略。
+    return [hit for hit in ranking if hit[1] * (1 + _RECENCY_BOOST) >= cutoff]
+
+
+def _score_with_recency(
+    score: float, valid_at: float | None, reference_time: float
+) -> float:
+    if valid_at is None:
+        return score
+    elapsed = reference_time - valid_at
+    return score * (1 + _RECENCY_BOOST * exp2(-elapsed / _RECENCY_HALF_LIFE_SECONDS))
 
 
 def _fill_reranking(

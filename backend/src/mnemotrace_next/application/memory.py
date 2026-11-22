@@ -108,6 +108,7 @@ class Memory:
         as_of: float | None = None,
         rerank: bool = False,
         graph: GraphRecallOptions | None = None,
+        prefer_recent: bool = False,
     ) -> RecallResult:
         """在本空间召回可见的事实证据。
 
@@ -117,12 +118,18 @@ class Memory:
             as_of: 显式有效时点，以 UTC epoch 秒表示。
             rerank: 是否调用已装配的重排器调整候选顺序。
             graph: 图召回设置，省略时使用普通召回。
+            prefer_recent: 是否在当前事实中小幅优先近期生效的候选。
 
         Returns:
             按相关性排列的事实证据及可选的超时降级原因。
         """
         return await self._recall.recall(
-            query, top_k=top_k, as_of=as_of, rerank=rerank, graph=graph
+            query,
+            top_k=top_k,
+            as_of=as_of,
+            rerank=rerank,
+            graph=graph,
+            prefer_recent=prefer_recent,
         )
 
     async def create_session(self) -> SessionId:

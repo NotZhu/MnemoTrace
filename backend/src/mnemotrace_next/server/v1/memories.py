@@ -68,6 +68,7 @@ async def recall(
         top_k=body.top_k,
         as_of=body.as_of.timestamp() if body.as_of is not None else None,
         graph=graph,
+        prefer_recent=body.prefer_recent,
     )
     return RecallResponse.from_result(result)
 

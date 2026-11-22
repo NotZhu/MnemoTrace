@@ -235,8 +235,10 @@ def test_graph_candidates_participate_in_inference_and_timeout_fallback(
         origin, bridge, tip = (
             Entity(_SPACE.id, name) for name in ("起点", "桥", "末端")
         )
-        seed = _edge("seed", origin, bridge, "releasecode")
-        follow = _edge("follow", bridge, tip)
+        seed = replace(
+            _edge("seed", origin, bridge, "releasecode"), valid_at=100.0 - 90 * 86_400
+        )
+        follow = replace(_edge("follow", bridge, tip), valid_at=100.0)
         await _seed(storage, (origin, bridge, tip), (seed, follow))
 
         class Embedder(FakeEmbedder):
@@ -279,6 +281,12 @@ def test_graph_candidates_participate_in_inference_and_timeout_fallback(
                 "reranker_timeout" if mode == "rerank_timeout" else "embedding_timeout"
             )
             assert [item.fact_id for item in result.evidence] == [seed.id, follow.id]
+        if mode == "explicit_seed":
+            preferred = await recall.recall(
+                query, graph=options, top_k=1, rerank=True, prefer_recent=True
+            )
+            assert preferred.degraded_reason == "embedding_timeout"
+            assert [item.fact_id for item in preferred.evidence] == [follow.id]
 
     asyncio.run(exercise())
 

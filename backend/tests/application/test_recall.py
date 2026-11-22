@@ -1,13 +1,15 @@
 """验证 Python 召回入口的行为。"""
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import cast
 
 import pytest
 
 from mnemotrace_next import GraphRecallOptions, Memory, RecallResult
+from mnemotrace_next.application.recall import _recency_candidates, _score_with_recency
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.enums import Source
 from mnemotrace_next.domain.fact import Fact
@@ -21,6 +23,7 @@ from tests.ports.fakes import (
     FakeEmbedder,
     FakeIdGenerator,
     FakeLLM,
+    FakeSpaceSession,
     FakeStorage,
 )
 
@@ -87,14 +90,136 @@ def test_read_only_recall_combines_independent_hits() -> None:
         ]
         assert result.evidence[0].text == shared.text
         assert (await reader.recall("MT-042", top_k=1)).evidence == result.evidence[:1]
+        assert await reader.recall("MT-042", top_k=5, prefer_recent=True) == result
 
     asyncio.run(exercise())
 
 
-def test_recall_reranks_a_bounded_pool_and_fills_with_rrf() -> None:
-    """重排按需启用，部分返回按原排名补齐，并按 ID 区分同正文事实。"""
+def test_recall_prefers_recent_facts_only_within_the_relevance_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """新近度可以改变已授权候选的次序，边界外的候选无需加载。"""
+    storage, embedder, clock = FakeStorage(), FakeEmbedder(), FakeClock()
+    now = clock.now()
+    old = now - 90 * 86_400
+    text = "发布规范"
+    candidates = tuple(_fact(identifier, text) for identifier in "abcdef")
+    unknown, backfill, recent, fourth, fifth, sixth = candidates
+    backfill = replace(backfill, valid_at=old, recorded_at=now)
+    recent = replace(recent, valid_at=now)
+    strong = replace(_fact("strong", text), valid_at=old)
+    hidden = replace(_fact("0-hidden", text), valid_at=now, sensitive=True)
+    expired = replace(_fact("0-expired", text), valid_at=old).close(now, now)
+    future = replace(_fact("0-future", text), valid_at=now + 1.0)
+    reader = Memory.for_recall(
+        space_id=_SPACE.id,
+        storage=storage,
+        embedder=embedder,
+        clock=clock,
+        exclude_sensitive=True,
+    )
+    reads: list[tuple[FactId, ...]] = []
+    get_facts = FakeSpaceSession.get_facts
+
+    async def record_load(
+        session: FakeSpaceSession,
+        ids: Sequence[FactId],
+        *,
+        exclude_sensitive: bool = False,
+    ) -> Mapping[FactId, Fact]:
+        reads.append(tuple(ids))
+        return await get_facts(session, ids, exclude_sensitive=exclude_sensitive)
+
+    monkeypatch.setattr(FakeSpaceSession, "get_facts", record_load)
+
+    async def exercise() -> None:
+        await storage.create_space(_SPACE)
+        async with storage.session(_SPACE.id, write=True) as writer:
+            await writer.upsert_entity(_SUBJECT)
+            await writer.save_facts(
+                (
+                    unknown,
+                    backfill,
+                    recent,
+                    fourth,
+                    fifth,
+                    sixth,
+                    strong,
+                    hidden,
+                    expired,
+                    future,
+                ),
+                changed_at=now,
+            )
+            await writer.upsert_vectors(
+                ((strong.id, (1.0, 0.0)),), embedding_space=embedder.embedding_space
+            )
+
+        baseline = await reader.recall(text, top_k=3)
+        baseline_ids = (strong.id, unknown.id, backfill.id)
+        assert tuple(hit.fact_id for hit in baseline.evidence) == baseline_ids
+        assert await reader.recall(text, top_k=3, prefer_recent=False) == baseline
+
+        preferred = await reader.recall(text, top_k=3, prefer_recent=True)
+        assert tuple(hit.fact_id for hit in preferred.evidence) == (
+            strong.id,
+            recent.id,
+            unknown.id,
+        )
+        assert reads == [
+            baseline_ids,
+            baseline_ids,
+            (*baseline_ids, recent.id, fourth.id, fifth.id),
+        ]
+        assert await reader.recall(
+            text, top_k=3, as_of=now, prefer_recent=True
+        ) == await reader.recall(text, top_k=3, as_of=now)
+
+    asyncio.run(exercise())
+
+
+def test_recency_cutoff_includes_the_exact_maximum_boost_boundary() -> None:
+    """最高加成正好达到截断线时，候选仍可能保留。"""
+    ranking = [(FactId("a"), 1.05), (FactId("b"), 1.0), (FactId("c"), 0.99)]
+    assert _recency_candidates(ranking, 1) == ranking[:2]
+    assert _recency_candidates(ranking, 5) == ranking
+
+
+@pytest.mark.parametrize(
+    ("age_days", "factor"), ((None, 1.0), (0, 1.05), (30, 1.025), (90, 1.00625))
+)
+def test_recency_score_uses_a_thirty_day_half_life(
+    age_days: int | None, factor: float
+) -> None:
+    """未知起点为中性，已知起点的加成按半衰期变化。"""
+    now = FakeClock().now()
+    valid_at = None if age_days is None else now - age_days * 86_400
+    assert _score_with_recency(0.02, valid_at, now) == pytest.approx(0.02 * factor)
+
+
+@pytest.mark.parametrize("prefer_recent", (False, True))
+def test_recall_reranks_a_bounded_pool_and_fills_with_rrf(prefer_recent: bool) -> None:
+    """部分重排按送入重排器的顺序补齐，并按 ID 区分同正文事实。"""
     storage = FakeStorage()
-    candidates = tuple(_fact(f"{index:02}", "发布规范") for index in range(25))
+    candidates = tuple(
+        replace(
+            _fact(f"{index:02}", "发布规范"),
+            valid_at=100.0 if index in (2, 21) else None,
+        )
+        for index in range(25)
+    )
+    pool = (
+        (
+            candidates[2],
+            *candidates[:2],
+            *candidates[3:18],
+            candidates[21],
+            candidates[18],
+        )
+        if prefer_recent
+        else candidates[:20]
+    )
+    chosen = candidates[21] if prefer_recent else candidates[19]
 
     class PartialReranker:
         async def rerank(
@@ -103,9 +228,9 @@ def test_recall_reranks_a_bounded_pool_and_fills_with_rrf() -> None:
             assert query == "发布规范"
             assert limit == 3
             assert tuple(documents) == tuple(
-                (candidate.id, candidate.text) for candidate in candidates[:20]
+                (candidate.id, candidate.text) for candidate in pool
             )
-            return candidates[19].id, candidates[1].id
+            return chosen.id, candidates[1].id
 
     memory = Memory(
         space_id=_SPACE.id,
@@ -127,11 +252,13 @@ def test_recall_reranks_a_bounded_pool_and_fills_with_rrf() -> None:
         assert tuple(item.fact_id for item in baseline.evidence) == tuple(
             candidate.id for candidate in candidates[:3]
         )
-        result = await memory.recall("发布规范", top_k=3, rerank=True)
+        result = await memory.recall(
+            "发布规范", top_k=3, rerank=True, prefer_recent=prefer_recent
+        )
         assert tuple(item.fact_id for item in result.evidence) == (
-            candidates[19].id,
+            chosen.id,
             candidates[1].id,
-            candidates[0].id,
+            candidates[2 if prefer_recent else 0].id,
         )
         assert result.degraded_reason is None
 
@@ -170,14 +297,23 @@ def test_recall_skips_reranking_for_a_single_candidate() -> None:
 
 
 @pytest.mark.parametrize("embedding_times_out", (True, False), ids=("embed", "rank"))
+@pytest.mark.parametrize("prefer_recent", (False, True))
 def test_recall_reports_inference_timeout_and_keeps_the_expected_order(
     embedding_times_out: bool,
+    prefer_recent: bool,
 ) -> None:
     """嵌入超时走词法，重排超时保留 RRF，空结果也报告降级。"""
     storage = FakeStorage()
     semantic = _fact("a", "部署前检查变更记录")
-    lexical = _fact("b", "发布规范")
-    shared = _fact("z", "发布规范")
+    lexical = replace(
+        _fact("b", "发布规范"), valid_at=None if embedding_times_out else 100.0
+    )
+    shared = replace(
+        _fact("z", "发布规范"), valid_at=100.0 if embedding_times_out else None
+    )
+    remainder = (
+        (lexical.id, semantic.id) if prefer_recent else (semantic.id, lexical.id)
+    )
 
     class QueryEmbedder(FakeEmbedder):
         async def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
@@ -190,11 +326,7 @@ def test_recall_reports_inference_timeout_and_keeps_the_expected_order(
             self, query: str, documents: Sequence[tuple[FactId, str]], limit: int
         ) -> Sequence[FactId]:
             assert not embedding_times_out
-            assert [fact_id for fact_id, _ in documents] == [
-                shared.id,
-                semantic.id,
-                lexical.id,
-            ]
+            assert tuple(fact_id for fact_id, _ in documents) == (shared.id, *remainder)
             raise TimeoutError("合成重排超时")
 
     embedder = QueryEmbedder()
@@ -216,16 +348,20 @@ def test_recall_reports_inference_timeout_and_keeps_the_expected_order(
                 embedding_space=embedder.embedding_space,
             )
 
-        result = await reader.recall("发布规范", top_k=2, rerank=True)
+        result = await reader.recall(
+            "发布规范", top_k=2, rerank=True, prefer_recent=prefer_recent
+        )
         ids = [item.fact_id for item in result.evidence]
         if embedding_times_out:
-            assert ids == [lexical.id, shared.id]
-            assert result.degraded_reason == "embedding_timeout"
-            assert await reader.recall("未命中", rerank=True) == RecallResult(
-                (), "embedding_timeout"
+            assert ids == (
+                [shared.id, lexical.id] if prefer_recent else [lexical.id, shared.id]
             )
+            assert result.degraded_reason == "embedding_timeout"
+            assert await reader.recall(
+                "未命中", rerank=True, prefer_recent=prefer_recent
+            ) == RecallResult((), "embedding_timeout")
         else:
-            assert ids == [shared.id, semantic.id]
+            assert ids == [shared.id, lexical.id if prefer_recent else semantic.id]
             assert result.degraded_reason == "reranker_timeout"
 
     asyncio.run(exercise())
@@ -405,6 +541,19 @@ def test_recall_rejects_invalid_graph_options_before_inference() -> None:
     )
     with pytest.raises(ValueError, match="GraphRecallOptions"):
         asyncio.run(reader.recall("发布规范", graph=cast(GraphRecallOptions, {})))
+
+
+@pytest.mark.parametrize("invalid", (1, "true", None))
+def test_recall_rejects_invalid_prefer_recent_before_inference(invalid: object) -> None:
+    """新近度开关只接受布尔值。"""
+    reader = Memory.for_recall(
+        space_id=_SPACE.id,
+        storage=FakeStorage(),
+        embedder=_UnexpectedEmbedder(),
+        clock=FakeClock(),
+    )
+    with pytest.raises(ValueError, match="prefer_recent"):
+        asyncio.run(reader.recall("发布规范", prefer_recent=cast(bool, invalid)))
 
 
 def test_recall_returns_empty_evidence_for_no_hits() -> None:

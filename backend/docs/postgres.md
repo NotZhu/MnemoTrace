@@ -98,6 +98,16 @@ uv run --locked --extra inference python scripts/recall_quality.py --out .artifa
 
 MiniLM 的余弦下限降至 `0.45` 可补回余弦约为 `0.481` 的英文改写，留出集命中和两组无答案误召回持平。另一个中文改写的正确事实在原始向量排名第 203，先看分词与模型区分度，再考虑候选扩张。词法分数门槛在调参集的收益伴随留出集掉召回。当前通用向量下限为 `0.5`，词法路按词项命中入围。换嵌入模型时按本模型重跑；同题的弱命中由评测记录，普通召回允许返回相关性不足的候选供上层判断。
 
+### 新近度质量验收
+
+在 `backend` 下创建 `.artifacts/recall-quality/`，沿用专用测试实例设置，用固定合成向量运行对照。
+
+```sh
+uv run --locked python scripts/recall_quality.py --suite recency --out .artifacts/recall-quality/recency.json
+```
+
+每题生成一次查询向量，供候选探测和两次公开召回复用。报告记录原始 RRF 候选、命中率、从候选重放得出的批量加载条数，以及查询向量生成后的召回耗时。近期偏好样例须改善至少一题，旧有效证据和历史查询须保留 Top‑5 命中，历史排序须一致。
+
 ### 图召回质量验收
 
 复用上述测试实例和嵌入端点配置，从 `backend` 运行以下命令。也可将本地模型作为 `Embedder` 传给 `evaluate(..., suite="graph")`。脚本按查询共享同一嵌入向量，逐题核对公开 `Memory.recall` 的开图和关图排序，并把各路候选、起点来源、每跳读边及排名写入新报告。

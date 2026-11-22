@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
 from time import perf_counter
-from typing import Literal
+from typing import ClassVar, Literal
 from uuid import uuid4
 
 import psycopg
@@ -18,7 +18,14 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg_pool import AsyncConnectionPool
 from recall_graph_quality import run_graph_suite
-from recall_quality_cases import DATASETS, Dataset, FactCase, QueryCase
+from recall_quality_cases import (
+    DATASETS,
+    QUALITY_NOW,
+    RECENCY_DATASET,
+    Dataset,
+    FactCase,
+    QueryCase,
+)
 
 from mnemotrace_next import Memory
 from mnemotrace_next.adapters.inference import open_inference
@@ -28,6 +35,8 @@ from mnemotrace_next.application.recall import (
     _VECTOR_MIN_COSINE,
     _candidate_limit,
     _fuse_rankings,
+    _recency_candidates,
+    _rrf_scores,
 )
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.enums import Source
@@ -37,13 +46,14 @@ from mnemotrace_next.domain.space import Space
 from mnemotrace_next.domain.values import EntityRef, LiteralValue, Predicate
 from mnemotrace_next.ports.inference import Embedder
 from mnemotrace_next.ports.queries import FactFilter
+from mnemotrace_next.ports.storage import Storage
 
 _TOP_K = 5
 _MAX_TESTED_DEPTH = _candidate_limit(100)
-_NOW = 100.0
+_NOW = QUALITY_NOW
 _DEFAULT_LIMIT = _candidate_limit(_TOP_K)
 type Hits = Sequence[tuple[FactId, float]]
-type _Suite = Literal["ordinary", "graph"]
+type _Suite = Literal["ordinary", "graph", "recency"]
 
 
 @dataclass(frozen=True)
@@ -111,6 +121,33 @@ class _MeasuredEmbedder:
         return result
 
 
+class _RecencyEmbedder:
+    """固定主题向量，使时间排序的对照可以离线复现。"""
+
+    embedding_space = "recall-quality-recency-v1"
+    dim = 3
+    _vectors: ClassVar[dict[str, tuple[float, ...]]] = {
+        "rollouttag": (1.0, 0.0, 0.0),
+        "policytag": (0.0, 1.0, 0.0),
+        "historytag": (0.0, 0.0, 1.0),
+    }
+
+    async def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
+        return tuple(self._vectors[text.split(maxsplit=1)[0]] for text in texts)
+
+
+@dataclass(frozen=True)
+class _FixedQueryEmbedder:
+    """为同一查询的两次公开召回复用预先生成的向量。"""
+
+    embedding_space: str
+    dim: int
+    vector: tuple[float, ...]
+
+    async def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
+        return tuple(self.vector for _ in texts)
+
+
 @dataclass(frozen=True)
 class _Trace:
     case: QueryCase
@@ -157,9 +194,9 @@ def _make_fact(case: FactCase, subject: Entity) -> Fact:
     )
 
 
-async def _run_dataset(
-    storage: PostgresStorage, embedder: Embedder, dataset: Dataset
-) -> list[_Trace]:
+async def _seed_dataset(
+    storage: Storage, embedder: Embedder, dataset: Dataset
+) -> SpaceId:
     scope = Space(SpaceId(dataset.name), "recall-quality", dataset.name, 0.0)
     subject = Entity(scope.id, "合成评测")
     facts = tuple(_make_fact(case, subject) for case in dataset.facts)
@@ -177,10 +214,17 @@ async def _run_dataset(
             ),
             embedding_space=embedder.embedding_space,
         )
+    return scope.id
+
+
+async def _run_dataset(
+    storage: PostgresStorage, embedder: Embedder, dataset: Dataset
+) -> list[_Trace]:
+    space_id = await _seed_dataset(storage, embedder, dataset)
 
     measured = _MeasuredEmbedder(embedder)
     memory = Memory.for_recall(
-        space_id=scope.id, storage=storage, embedder=measured, clock=_FixedClock()
+        space_id=space_id, storage=storage, embedder=measured, clock=_FixedClock()
     )
     traces = []
     for case in dataset.queries:
@@ -191,16 +235,16 @@ async def _run_dataset(
             raise RuntimeError(f"{dataset.name}/{case.id} 发生降级，无法标定双路质量")
 
         filters = FactFilter(valid_at=case.as_of)
-        async with storage.session(scope.id) as reader:
+        async with storage.session(space_id) as reader:
             started = perf_counter()
             lexical = await reader.search_lexical(
-                case.text, len(facts), filters=filters, reference_time=_NOW
+                case.text, len(dataset.facts), filters=filters, reference_time=_NOW
             )
             lexical_ms = (perf_counter() - started) * 1000
             started = perf_counter()
             semantic = await reader.search_vectors(
                 measured.vector,
-                len(facts),
+                len(dataset.facts),
                 filters=filters,
                 reference_time=_NOW,
                 embedding_space=measured.embedding_space,
@@ -293,6 +337,120 @@ def _report_dataset(dataset: Dataset, traces: Sequence[_Trace]) -> dict[str, obj
     }
 
 
+@dataclass(frozen=True)
+class _RecencyTrial:
+    expected_rank: int | None
+    loaded_count: int
+    elapsed_ms: float
+
+
+async def _run_recency_suite(storage: Storage, embedder: Embedder) -> dict[str, object]:
+    space_id = await _seed_dataset(storage, embedder, RECENCY_DATASET)
+    trials: dict[str, list[_RecencyTrial]] = {"rrf": [], "prefer_recent": []}
+    queries = []
+    candidate_hits = 0
+    recent_improved = False
+    controls_passed = True
+    for case in RECENCY_DATASET.queries:
+        expected = FactId(case.expected) if case.expected is not None else None
+        (vector,) = await embedder.embed((case.text,))
+        query_embedder = _FixedQueryEmbedder(
+            embedding_space=embedder.embedding_space,
+            dim=embedder.dim,
+            vector=tuple(vector),
+        )
+        memory = Memory.for_recall(
+            space_id=space_id,
+            storage=storage,
+            embedder=query_embedder,
+            clock=_FixedClock(),
+        )
+        filters = FactFilter(valid_at=case.as_of)
+        async with storage.session(space_id) as reader:
+            lexical = await reader.search_lexical(
+                case.text, _DEFAULT_LIMIT, filters=filters, reference_time=_NOW
+            )
+            semantic = await reader.search_vectors(
+                query_embedder.vector,
+                _DEFAULT_LIMIT,
+                filters=filters,
+                reference_time=_NOW,
+                embedding_space=query_embedder.embedding_space,
+                min_score=_VECTOR_MIN_COSINE,
+            )
+        ranking = _rrf_scores(
+            (fact_id for fact_id, _ in lexical), (fact_id for fact_id, _ in semantic)
+        )
+        candidate_hits += any(fact_id == expected for fact_id, _ in ranking)
+        runs = {}
+        for policy, prefer_recent in (("rrf", False), ("prefer_recent", True)):
+            started = perf_counter()
+            result = await memory.recall(
+                case.text, top_k=_TOP_K, as_of=case.as_of, prefer_recent=prefer_recent
+            )
+            elapsed_ms = round((perf_counter() - started) * 1000, 3)
+            if result.degraded_reason is not None:
+                raise RuntimeError(f"{case.id} 发生推理降级，无法对照新近度")
+            returned = [item.fact_id for item in result.evidence]
+            if not prefer_recent and returned != [hit[0] for hit in ranking[:_TOP_K]]:
+                raise RuntimeError(f"{case.id} 的基线与公开召回排序不一致")
+            # 从相同条件下的候选重放批量读取范围，耗时来自公开召回调用。
+            loaded = (
+                _recency_candidates(ranking, _TOP_K)
+                if prefer_recent and case.as_of is None
+                else ranking[:_TOP_K]
+            )
+            rank = next(
+                (i for i, fact_id in enumerate(returned, 1) if fact_id == expected),
+                None,
+            )
+            trials[policy].append(_RecencyTrial(rank, len(loaded), elapsed_ms))
+            runs[policy] = {
+                "expected_rank": rank,
+                "returned": [fact_id.value for fact_id in returned],
+                "loaded_count": len(loaded),
+                "elapsed_ms": elapsed_ms,
+            }
+        before = trials["rrf"][-1].expected_rank
+        after = trials["prefer_recent"][-1].expected_rank
+        if case.kind == "recent":
+            recent_improved |= after is not None and (before is None or after < before)
+        else:
+            controls_passed &= before is not None and after is not None
+        if case.as_of is not None:
+            controls_passed &= (
+                runs["rrf"]["returned"] == runs["prefer_recent"]["returned"]
+            )
+        queries.append(
+            {
+                **case._asdict(),
+                "rrf_candidates": [
+                    (fact_id.value, score) for fact_id, score in ranking
+                ],
+                "runs": runs,
+            }
+        )
+    return {
+        "reference_time": _NOW,
+        "top_k": _TOP_K,
+        "expected_in_candidates": candidate_hits,
+        "recent_improved": recent_improved,
+        "controls_passed": controls_passed,
+        "passed": recent_improved and controls_passed,
+        "facts": [case._asdict() for case in RECENCY_DATASET.facts],
+        "policies": {
+            policy: {
+                "hit_at_1": sum(trial.expected_rank == 1 for trial in runs),
+                "hit_at_k": sum(trial.expected_rank is not None for trial in runs),
+                "total_loaded": sum(trial.loaded_count for trial in runs),
+                "max_latency_ms": max(trial.elapsed_ms for trial in runs),
+            }
+            for policy, runs in trials.items()
+        },
+        "queries": queries,
+    }
+
+
 async def evaluate(
     admin_dsn: str,
     embedder: Embedder,
@@ -310,7 +468,7 @@ async def evaluate(
         model: 被测模型标识。
         revision: 被测模型的固定修订。
         out: 保存完整结果的新文件路径。
-        suite: ordinary 对照普通召回，graph 对照图路召回。
+        suite: 对照普通召回、图路召回或按需新近度。
     """
     with _quality_database(admin_dsn) as dsn:
         with psycopg.connect(dsn) as conn:
@@ -323,6 +481,8 @@ async def evaluate(
             storage = PostgresStorage(pool, owner_id="recall-quality")
             if suite == "graph":
                 details = await run_graph_suite(storage, embedder, dsn)
+            elif suite == "recency":
+                details = await _run_recency_suite(storage, embedder)
             else:
                 details = {
                     "top_k": _TOP_K,
@@ -352,9 +512,21 @@ async def evaluate(
             ensure_ascii=False,
         )
         report.write("\n")
+    if suite == "recency" and not details["passed"]:
+        raise RuntimeError("新近度对照未通过，详见输出报告")
 
 
 async def _configured_run(dsn: str, out: Path, suite: _Suite) -> None:
+    if suite == "recency":
+        await evaluate(
+            dsn,
+            _RecencyEmbedder(),
+            model="synthetic-topic",
+            revision="v1",
+            out=out,
+            suite=suite,
+        )
+        return
     async with open_inference(os.environ, embed=True) as clients:
         if clients.embedder is None:
             raise RuntimeError("缺少嵌入端口")
@@ -369,13 +541,13 @@ async def _configured_run(dsn: str, out: Path, suite: _Suite) -> None:
 
 
 def main() -> None:
-    """读取显式配置的测试实例和嵌入端点并运行评测。"""
+    """使用显式配置的测试实例运行所选召回评测。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("ordinary", "graph"),
+        choices=("ordinary", "graph", "recency"),
         default="ordinary",
-        help="对照普通召回或图路召回",
+        help="对照普通召回、图路召回或按需新近度",
     )
     parser.add_argument("--out", required=True, type=Path, help="新建的 JSON 结果路径")
     args = parser.parse_args()

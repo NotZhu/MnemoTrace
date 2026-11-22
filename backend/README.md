@@ -59,6 +59,8 @@ result = await reader.recall("报表导出格式", top_k=5)
 
 `recall` 默认在同一读快照内融合词法和向量候选。`result.evidence` 按相关性排列，包含事实 ID、正文、有效区间和关联原文 ID。实体关系事实还带有 `relation`，包含 `subject_id`、`predicate` 和 `object_entity_id`。默认查当前有效事实。显式传入 `as_of` 时按 UTC epoch 秒查询，事实须有已知起点且有效区间覆盖该时点。
 
+查询近期变化时可调用 `reader.recall("发布规则有哪些变化", prefer_recent=True)`，在相关性接近的候选中优先返回近期生效的事实。`prefer_recent` 默认为 `False`，显式传入 `as_of` 时使用原排序。使用外部重排时，新近度影响送入重排器的候选和回填顺序。 [计分规则](docs/http-api.md#召回)
+
 使用 `graph` 参数开启图召回。
 
 ```python

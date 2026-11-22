@@ -178,3 +178,37 @@ _HOLDOUT = Dataset(
 )
 
 DATASETS = (_CALIBRATION, _HOLDOUT)
+
+QUALITY_NOW = 100.0
+_OLD_VALID_AT = QUALITY_NOW - 90 * 86_400
+RECENCY_DATASET = Dataset(
+    "recency",
+    (
+        *(
+            FactCase(
+                f"rollout-{index}",
+                f"rollouttag step {index}",
+                valid_at=QUALITY_NOW if index == 5 else _OLD_VALID_AT,
+            )
+            for index in range(6)
+        ),
+        FactCase("policy-old", "policytag enduring rule", valid_at=_OLD_VALID_AT),
+        *(
+            FactCase(
+                f"policy-{index}",
+                f"policytag recent change {index}",
+                indexed=False,
+                valid_at=QUALITY_NOW,
+            )
+            for index in range(6)
+        ),
+        FactCase("history-old", "historytag previous rule", valid_at=10, invalid_at=90),
+        FactCase("history-other", "historytag secondary rule", valid_at=50),
+        FactCase("history-current", "historytag replacement rule", valid_at=90),
+    ),
+    (
+        QueryCase("recent-rollout", "recent", "rollouttag", "rollout-5"),
+        QueryCase("old-policy", "evergreen", "policytag", "policy-old"),
+        QueryCase("past-rule", "historical", "historytag", "history-old", 50),
+    ),
+)
