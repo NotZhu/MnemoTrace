@@ -43,7 +43,6 @@ jobs:
           name: python-windows-${{ matrix.python-version }}
           path: .artifacts/ci/python-regressions.xml
       - run: python scripts/check_repository.py
-      - run: python scripts/build_landing_pages.py --check
       - run: python scripts/check_core.py
       - run: python scripts/check_release.py
       - if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
@@ -190,6 +189,20 @@ jobs:
         working-directory: frontend
       - run: pnpm run build
         working-directory: frontend
+
+  website:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
 
   container:
     runs-on: ubuntu-latest

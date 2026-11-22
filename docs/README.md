@@ -26,7 +26,7 @@
 - [记忆生命周期与持久化](architecture/memory.md)：数据模型、时间、替代、擦除和恢复边界。
 - [贡献指南](../CONTRIBUTING.md)：开发环境、测试、构建和调试。
 - [评测说明](../eval/README.md)：基线、消融、指标和结果校验。
-- [开发约定](../AGENTS.md)、[静态展示页来源](../landing/README.md)。
+- [开发约定](../AGENTS.md)、[官网开发](../CONTRIBUTING.md#官网开发)。
 - [版本变化](../CHANGELOG.md)、[漏洞报告](../SECURITY.md)、[许可](../LICENSE)及[商业授权](../COMMERCIAL-LICENSE.md)。
 
 缺陷、需求和待验证事项在 [GitHub Issues](https://github.com/NotZhu/MnemoTrace/issues) 维护。

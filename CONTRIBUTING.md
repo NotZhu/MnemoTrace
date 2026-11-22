@@ -28,7 +28,7 @@ python -m pip install -e ".[dev,server,mcp]" build twine
 | 控制台与 SDK   | 下方开发步骤和对应接口测试                                                         |
 | 算法与性能     | [评测说明](eval/README.md)                                                         |
 | 文档           | [导航](docs/README.md)及对应权威页面                                               |
-| 两个静态展示页 | [来源说明](landing/README.md)                                                      |
+| 官网           | [官网开发](#官网开发)                                                             |
 
 先检查相关实现、调用方和已有测试。新行为与缺陷需要能区分正确和错误结果的回归；文案和排版修改按影响选择静态检查。重大取舍按 AGENTS 的条件保留设计说明，普通修复直接实施。
 
@@ -102,6 +102,23 @@ rm "$schema"
 rmdir "$schema_dir"
 ```
 
+## 官网开发
+
+官网首页位于 [website/src/pages/index.astro](website/src/pages/index.astro)，样式、脚本和素材位于 `website/public/assets/`。使用 Node.js 24，通过 Corepack 加载官网声明的 pnpm 版本。在 `website/` 执行：
+
+```sh
+corepack enable
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+构建后可以预览 `website/dist/` 中的静态产物。CI 使用同一构建命令。
+
+```sh
+pnpm build
+pnpm preview
+```
+
 ## 文档与生成内容
 
 当前使用仓库 Markdown。docs/README.md 是完整导航；新增独立页面需有明确读者和职责，并接入导航。示例优先复用已有可运行入口，参考页描述契约与限制，架构页解释机制和理由。
@@ -111,7 +128,6 @@ rmdir "$schema_dir"
 ```sh
 python scripts/build_memory_contract.py --check
 python scripts/check_repository.py
-python scripts/build_landing_pages.py --check
 git diff --check
 ```
 

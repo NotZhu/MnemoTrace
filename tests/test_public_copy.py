@@ -2,6 +2,7 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+HOMEPAGE = "website/src/pages/index.astro"
 
 
 def test_public_copy_avoids_unmeasured_scale_or_latency_claims():
@@ -17,7 +18,7 @@ def test_public_copy_avoids_unmeasured_scale_or_latency_claims():
         "under 50ms",
         "~50ms",
     )
-    for rel in ("README.md", "README.zh-CN.md", "docs/index.html", "demo/index.html"):
+    for rel in ("README.md", "README.zh-CN.md", HOMEPAGE):
         text = (ROOT / rel).read_text(encoding="utf-8")
         lowered = text.lower()
         for phrase in forbidden:
@@ -37,8 +38,7 @@ def test_public_copy_avoids_competitor_leaderboard_positioning():
     public_surfaces = (
         "README.md",
         "README.zh-CN.md",
-        "docs/index.html",
-        "demo/index.html",
+        HOMEPAGE,
         "docs/guides/usage.md",
         "eval/report.py",
     )

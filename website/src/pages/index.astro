@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="./assets/brain-circuit.svg">
+<title>MnemoTrace · 忆痕</title>
+<meta name="description" content="忆痕（MnemoTrace）是面向 LLM Agent 的开源长期记忆引擎，支持事实提炼、双时间轴更新、精准检索与来源追溯。">
+<link rel="stylesheet" href="./assets/site.css">
+<script is:inline src="./assets/memory-graph.js" defer></script>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <div class="logo"><img class="brand-mark" src="./assets/brain-circuit.svg" width="28" height="28" alt=""><span>MnemoTrace</span></div>
+  <div class="nlinks">
+    <a href="#problem"><span>为什么需要</span></a>
+    <a href="#how"><span>工作原理</span></a>
+    <a href="#example"><span>使用示例</span></a>
+    <a href="#bench"><span>评估结果</span></a>
+    <a href="#sources"><span>系统架构</span></a>
+    <a href="#use"><span>接入方式</span></a>
+  </div>
+  <div class="navright">
+    <details class="mnav">
+      <summary aria-label="章节导航">目录</summary>
+      <div class="mnav-panel">
+        <a href="#problem">为什么需要</a>
+        <a href="#how">工作原理</a>
+        <a href="#example">使用示例</a>
+        <a href="#bench">评估结果</a>
+        <a href="#sources">系统架构</a>
+        <a href="#use">接入方式</a>
+      </div>
+    </details>
+    <a class="ghbtn" href="https://github.com/NotZhu/MnemoTrace" target="_blank" aria-label="GitHub"><img class="button-icon" src="./assets/github.svg" width="16" height="16" alt=""><span>GitHub</span></a>
+  </div>
+</div></nav>
+
+<!-- HERO -->
+<header class="hero">
+  <canvas class="particle-network-background" data-particle-network aria-hidden="true"></canvas>
+  <div class="wrap">
+  <div class="eyebrow rv in"><span>开源 · 可自托管 · 长期记忆引擎</span></div>
+  <h1 class="rv in d1"><span>让记<span class="hl">忆</span>留<span class="hl">痕,</span><br>回答有据</span></h1>
+  <p class="tag rv in d2"><span>像大脑一样，从对话中积累记忆，随时间更新，也保留过往<br>提问时，找回相关的片段，让回答有迹可循</span></p>
+  <div class="stats">
+    <div class="stat rv in d2"><div class="n hl">84.4%</div><div class="l"><span>评测准确率</span></div></div>
+    <div class="stat rv in d3"><div class="n hl">约 1/10</div><div class="l"><span>全文上下文占比</span></div></div>
+    <div class="stat rv in d3"><div class="n hl"><span>5 类</span></div><div class="l"><span>记忆类型</span></div></div>
+    <div class="stat rv in d4"><div class="n hl">开源</div><div class="l"><span>可自托管 · 可复现</span></div></div>
+  </div>
+  <div class="cta rv in d4">
+    <a class="b1" href="https://github.com/NotZhu/MnemoTrace" target="_blank"><img class="button-icon" src="./assets/github.svg" width="16" height="16" alt=""><span>在 GitHub 上看</span></a>
+    <a class="b2" href="#how"><span>了解工作原理</span><span class="button-arrow" aria-hidden="true">↓</span></a>
+  </div>
+  <p class="note rv in d5" style="margin-top:18px"><span>评估方法与原始日志公开，支持自行复现</span></p>
+</div></header>
+
+<!-- PROBLEM -->
+<section id="problem">
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+<div class="wrap">
+  <div class="eyebrow rv"><span>为什么需要长期记忆</span></div>
+  <h2 class="rv d1">让每次对话，<span class="hl">都接得上过去。</span></h2>
+  <p class="lead rv d2">偏好、约定和项目进展，往往分散在多次对话中。MnemoTrace 将它们沉淀为可检索、可更新的记忆，让 AI 在需要时找回相关上下文。</p>
+  <div class="memory-comparison rv d2">
+    <article class="memory-approach" aria-labelledby="replay-title">
+      <span class="approach-label">完整上下文</span>
+      <h3 id="replay-title">重放完整历史</h3>
+      <ul>
+        <li>50 段对话，约 <b>7.9 万 token</b>，每次提问都得重读</li>
+        <li>历史越积越多，每次读取也越慢、越贵</li>
+        <li>无关信息太多，关键细节反而容易漏掉</li>
+        <li>本次 500 题评测，准确率 <b>78.8%</b></li>
+      </ul>
+    </article>
+    <article class="memory-approach recall" aria-labelledby="recall-title">
+      <span class="approach-label">MnemoTrace · 长期记忆</span>
+      <h3 id="recall-title">按需召回记忆</h3>
+      <ul>
+        <li>先把对话整理成记忆，提问时找回相关事实和原文</li>
+        <li>平均只读约 <b>7.9k token</b>，约为全文的 <b>1/10</b></li>
+        <li>少读无关内容，让 AI 把注意力放在问题上</li>
+        <li>同一批 500 题，准确率 <b>84.4%</b></li>
+      </ul>
+    </article>
+  </div>
+</div></section>
+
+<!-- HOW -->
+<section id="how">
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+<div class="wrap">
+  <div class="eyebrow rv"><span>记忆如何运作</span></div>
+  <h2 class="rv d1"><span>即时记录，<span class="hl">后台整理，按需召回。</span></span></h2>
+  <p class="lead rv d2"><span>MnemoTrace 借鉴人脑记录与巩固记忆的方式：对话发生时完整记下，再像睡眠中整理记忆一样，在后台提炼事实、建立关系、处理新旧信息的冲突，让记忆持续更新，也保留过往。</span></p>
+
+  <div class="flow">
+    <div class="fstep rv d2"><div class="ic" aria-hidden="true">01</div><div class="t"><span>保存原始对话</span></div><div class="s"><span>原文完整留下<br>记录所属会话与时间</span></div></div>
+
+    <div class="fstep rv d3"><div class="ic" aria-hidden="true">02</div><div class="t"><span>提炼原子事实</span></div><div class="s"><span>把对话整理成一条条事实<br>每条都能追溯到原文</span></div></div>
+
+    <div class="fstep rv d3"><div class="ic" aria-hidden="true">03</div><div class="t"><span>构建双时间轴图谱</span></div><div class="s"><span>关联实体，记录事实何时有效、何时得知<br>更新标记失效，保留旧记录</span></div></div>
+
+    <div class="fstep rv d4"><div class="ic" aria-hidden="true">04</div><div class="t"><span>检索事实与原文</span></div><div class="s"><span>按问题找回相关记忆<br>事实提供线索，原文补充细节</span></div></div>
+  </div>
+
+  <h3 class="memory-types-title rv d3"><span>五类记忆，承接不同层次的信息。</span></h3>
+  <div class="mem">
+    <div class="mcard rv d2"><div class="t"><span>情节记忆</span></div><div class="s"><span>聊过什么、发生过什么，保留原始记录</span></div></div>
+    <div class="mcard rv d2"><div class="t"><span>语义记忆</span></div><div class="s"><span>提炼出的事实，以及实体之间的关系</span></div></div>
+    <div class="mcard rv d3"><div class="t"><span>用户画像</span></div><div class="s"><span>根据已有事实，归纳身份、偏好与习惯</span></div></div>
+    <div class="mcard rv d3"><div class="t"><span>程序记忆</span></div><div class="s"><span>交代过的规则、指令与操作步骤</span></div></div>
+  </div>
+</div></section>
+
+<!-- EXAMPLE -->
+<section id="example">
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+<div class="wrap">
+  <div class="eyebrow rv"><span>一个例子 · 工作变了，记忆怎么更新</span></div>
+  <h2 class="rv d1"><span>换了工作，<span class="hl">记得住现在，也查得到过去</span></span></h2>
+  <p class="lead rv d2"><span>新信息来了，旧事实不会直接消失。MnemoTrace 记录事实的有效时间和替代关系，让“现在在哪工作”和“以前在哪工作”都能找到对应依据。</span></p>
+  <div class="example-layout rv d2">
+    <div class="example-history">
+      <h3 class="example-label">记忆如何更新</h3>
+      <div class="tl">
+    <div class="tlrow old"><div class="dt">2025-05</div><div class="bd"><div class="say"><span>"我在<b>A 公司</b>工作。"</span></div><div class="fx"><span class="tag2 tag-old"><span>历史</span></span><span>在 A 公司工作 · 2025-05 → 2026-03</span></div></div></div>
+    <div class="tlrow"><div class="dt">2026-03</div><div class="bd"><div class="say"><span>"我跳槽了,现在在 <b>B 公司</b>。"</span></div><div class="fx"><span class="tag2 tag-cur"><span>当前</span></span><span>在 B 公司工作 · 2026-03 → 至今</span></div></div></div>
+      </div>
+    </div>
+    <div class="example-queries">
+      <h3 class="example-label">按时间查询</h3>
+      <div class="example-query">
+        <p class="example-question">"我<b>现在</b>在哪上班?"</p>
+        <p class="example-answer"><b style="color:var(--cyan)">B 公司</b></p>
+      </div>
+      <div class="example-query">
+        <p class="example-question">"去 B 公司<b>之前</b>，我在哪工作？"</p>
+        <p class="example-answer"><b style="color:var(--cyan)">A 公司</b></p>
+      </div>
+    </div>
+  </div>
+  <p class="note example-provenance rv d3"><span>不只记住结果，也留下依据：谁说的、什么时候说的、替换了哪条记录，都有迹可循。</span></p>
+</div></section>
+
+<!-- BENCHMARK -->
+<section id="bench">
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+<div class="wrap">
+  <div class="eyebrow rv"><span>LongMemEval_S · 500 题实测</span></div>
+  <h2 class="rv d1"><span>同一批问题，准确率高出 <span class="hl">5.6 个百分点</span></span></h2>
+  <p class="lead rv d2"><span>题目相同，回答模型相同，评分提示词采用 LongMemEval 官方版本。每道题的回答、判分和运行记录都已公开，可以逐项查看。</span></p>
+  <div class="vs rv d2">
+    <div class="vcard">
+      <h3>重读全部历史</h3>
+      <div class="vtok">79.2k</div>
+      <p class="token-unit">token · 平均每题用量</p>
+      <div class="token-track" aria-hidden="true"><div class="token-fill" style="--token-share:100%"></div></div>
+      <p class="token-hint">全文上下文用量</p>
+      <p class="token-accuracy">准确率 <b>78.8%</b></p>
+    </div>
+    <div class="vcard win">
+      <h3>检索相关记忆</h3>
+      <div class="vtok">7.9k</div>
+      <p class="token-unit">token · 平均每题用量</p>
+      <div class="token-track" aria-hidden="true"><div class="token-fill" style="--token-share:calc(7.9 / 79.2 * 100%)"></div></div>
+      <p class="token-hint">约为全文的 1/10</p>
+      <p class="token-accuracy">准确率 <b>84.4%</b></p>
+    </div>
+  </div>
+  <div class="benchmark-evidence rv d3">
+    <p>同样的 500 题，平均上下文长度约为全文基线的 1/10，准确率从 78.8% 提升到 84.4%。</p>
+    <div class="benchmark-links">
+      <a href="https://github.com/NotZhu/MnemoTrace" target="_blank" rel="noopener noreferrer">查看原始日志 <span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/NotZhu/MnemoTrace" target="_blank" rel="noopener noreferrer">评测方法 <span aria-hidden="true">↗</span></a>
+    </div>
+  </div>
+  <details class="benchmark-details rv d3">
+    <summary>核验结果与复现评测</summary>
+    <div class="benchmark-details-content">
+      <p>下载仓库后，可从已公开的原始日志核验结果。重新运行评测所需的数据、模型与环境配置见<a href="https://github.com/NotZhu/MnemoTrace" target="_blank" rel="noopener noreferrer">完整评测指南</a>。</p>
+      <pre class="benchmark-command"><code>python eval/report.py results/benchmarks/run500_v3_main_deepseekjudge.jsonl
+python eval/validate_results.py --expected-rows 500 --require-complete --system engram_lean --system full_context results/benchmarks/run500_v3_main_deepseekjudge.jsonl</code></pre>
+      <div class="benchmark-latencies">
+        <p>全文上下文基线：p50 14.6s · p95 58.4s</p>
+        <p>MnemoTrace：p50 52.9s · p95 117.7s</p>
+      </div>
+      <p class="benchmark-latency-note">以上为同次运行的端到端回答延迟，包含模型调用，不代表单独的检索耗时。</p>
+    </div>
+  </details>
+</div></section>
+
+<!-- SOURCES -->
+<section id="sources">
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+<div class="wrap">
+  <div class="eyebrow rv"><span>架构一览 · 六项核心能力</span></div>
+  <h2 class="rv d1"><span>写入、更新、检索，<span class="hl">一套引擎串起来</span></span></h2>
+  <p class="lead rv d2"><span>从写入、固化到检索，MnemoTrace 把原始对话、结构化事实和关系图谱串起来。信息更新时保留历史，提问时找回相关事实与原文。</span></p>
+  <div class="chips">
+    <article class="chip rv d2"><h3>双过程写入与固化</h3><p>写入先保存原文并建立索引；固化负责提炼事实与建图，支持后台异步执行。</p></article>
+    <article class="chip rv d2"><h3>双时间轴事实</h3><p>分别记录事实何时有效、系统何时得知，支持按时间查询。</p></article>
+    <article class="chip rv d3"><h3>非破坏式冲突处理</h3><p>用属性匹配、语义相似度和内容包含关系检测更新；旧事实标记失效，保留来源与替代记录。</p></article>
+    <article class="chip rv d3"><h3>多信号混合检索</h3><p>融合语义、BM25、图关系、近期性与重要性信号，通过 RRF 排序，可选重排。</p></article>
+    <article class="chip rv d4"><h3>五类记忆，各有用途</h3><p>原始对话、事实关系、用户画像、规则步骤和临时状态，按各自用途参与读取。</p></article>
+    <article class="chip rv d4"><h3>显著度衰减与摘要维护</h3><p>对未强化的偶发事实随时间降权；事实更新后，可向相关摘要补入新信息。</p></article>
+  </div>
+  <p class="sources-note rv d4"><span>配置 LLM 后抽取长期事实与临时状态；原文和显式事实可独立使用。嵌入器、向量库和图库通过接口接入。</span></p>
+</div></section>
+
+<!-- HOW TO CALL -->
+<section id="use">
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+<div class="wrap">
+  <div class="eyebrow rv"><span>接入方式 · API、MCP 与 SDK</span></div>
+  <h2 class="rv d1"><span>把记忆<span class="hl">接进现有应用。</span></span></h2>
+  <p class="lead rv d2"><span>本地启动服务后，可在控制台体验记忆的写入、更新与检索；也可通过 MCP、API 或 SDK 接入现有应用，或自行部署，将数据保存在自己的环境中。</span></p>
+
+  <div class="integration-options rv d2">
+    <article class="integration-option">
+      <h3>HTTP API</h3>
+      <p>通过接口写入、召回和管理记忆，接入现有服务与应用。</p>
+      <a href="#api-example" data-open-example>查看调用示例 <span aria-hidden="true">↓</span></a>
+    </article>
+    <article class="integration-option">
+      <h3>MCP</h3>
+      <p>为支持 MCP 的 Agent 提供记忆工具，在对话与任务之间延续上下文。</p>
+      <a href="https://github.com/NotZhu/MnemoTrace/blob/main/docs/guides/agents.md" target="_blank" rel="noopener noreferrer">查看配置指南 <span aria-hidden="true">↗</span></a>
+    </article>
+    <article class="integration-option">
+      <h3>SDK / OpenAI 兼容</h3>
+      <p>通过 SDK 或 OpenAI 兼容接口，将记忆接入现有调用流程。</p>
+      <a href="https://github.com/NotZhu/MnemoTrace/blob/main/clients/typescript/README.md" target="_blank" rel="noopener noreferrer">查看接入文档 <span aria-hidden="true">↗</span></a>
+    </article>
+  </div>
+  <div class="integration-example rv d3">
+    <details id="api-example" class="integration-code">
+      <summary>HTTP API 调用示例</summary>
+      <pre id="api-snippet" tabindex="0"><code># 连接本地服务，设置自己的命名空间
+B=http://127.0.0.1:8000
+K=my-app
+
+# 写入：告诉它一件需要记住的事
+curl -X POST "$B/v1/remember" \
+  -H "Authorization: Bearer $K" \
+  -H "Content-Type: application/json" \
+  -d '&#123;"content":"我喜欢简洁的回答，先给结论，再解释原因。"&#125;'
+
+# 召回：带着问题找回相关记忆
+curl -X POST "$B/v1/recall" \
+  -H "Authorization: Bearer $K" \
+  -H "Content-Type: application/json" \
+  -d '&#123;"query":"我希望你怎样回答问题？"&#125;'</code></pre>
+    </details>
+    <button type="button" class="copy-example" data-copy-code="api-snippet" aria-label="复制 HTTP API 调用示例">复制</button>
+    <p class="copy-status" role="status" aria-live="polite"></p>
+  </div>
+  <p class="integration-deploy rv d3">希望数据保存在自己的环境？<a href="https://github.com/NotZhu/MnemoTrace/blob/main/deploy/README.md" target="_blank" rel="noopener noreferrer">查看自托管部署指南 <span aria-hidden="true">↗</span></a></p>
+  <div class="cta integration-cta rv d4">
+    <a class="b1" role="button" aria-disabled="true" tabindex="-1" style="cursor:default;opacity:.55;pointer-events:none">打开体验控制台</a>
+    <a class="b2" href="https://github.com/NotZhu/MnemoTrace/blob/main/docs/reference/http-api.md" target="_blank" rel="noopener noreferrer">查看接入文档 <span aria-hidden="true">↗</span></a>
+  </div>
+</div></section>
+
+<footer>
+  <canvas class="particle-network-background" data-particle-network="particles" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <div class="footer-wordmark" role="img" aria-label="MnemoTrace">
+      <canvas class="footer-wordmark-canvas" data-particle-network="wordmark" aria-hidden="true"></canvas>
+    </div>
+    <div class="footer-meta">
+      <p>开源 · 可自托管 · 结果可复现</p>
+      <div class="footer-links">
+        <a href="https://github.com/NotZhu/MnemoTrace" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+        <a href="https://github.com/NotZhu/MnemoTrace/blob/main/docs/reference/http-api.md" target="_blank" rel="noopener noreferrer">文档</a>
+        <a href="https://github.com/NotZhu/MnemoTrace/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">AGPL-3.0</a>
+        <a href="https://github.com/NotZhu/MnemoTrace/blob/main/COMMERCIAL-LICENSE.md" target="_blank" rel="noopener noreferrer">商业许可</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script is:inline src="./assets/page.js"></script>
+</body>
+</html>
