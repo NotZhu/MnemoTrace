@@ -30,6 +30,7 @@ from mnemotrace_next.application.operations import (
     ClaimedOperation,
     OperationRunner,
 )
+from mnemotrace_next.application.profile_refresh import ProfileRefreshRunner
 from mnemotrace_next.application.remember import Remember, RememberResult
 from mnemotrace_next.domain.ids import SessionId, SpaceId
 from mnemotrace_next.ports.inference import LLM, InvalidStructuredOutput
@@ -292,9 +293,14 @@ def test_http_write_worker_uses_extraction_timezone(
     ) -> AsyncIterator[InferenceClients]:
         yield InferenceClients(_Model(relative_day=0), FakeEmbedder())
 
-    async def consume_one(runner: OperationRunner, stopping: asyncio.Event) -> None:
-        assert await runner.run_once()
-        stopping.set()
+    async def consume_one(
+        runner: OperationRunner | ProfileRefreshRunner, stopping: asyncio.Event
+    ) -> None:
+        if isinstance(runner, OperationRunner):
+            assert await runner.run_once()
+            stopping.set()
+        else:
+            await stopping.wait()
 
     monkeypatch.setattr(worker, "open_inference", inference)
     monkeypatch.setattr(worker, "_consume", consume_one)

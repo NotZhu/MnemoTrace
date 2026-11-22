@@ -42,8 +42,8 @@ uv run --locked --extra server python -m mnemotrace_next.server
 | --- | --- |
 | `POST /v1/spaces` | JSON 请求 `{"name":"研究"}`。返回 201、空间及 `Location`。 |
 | `GET /v1/spaces` | 分页列出账号拥有的空间，含空空间。 |
-| `GET /v1/spaces/{space_id}` | 返回 `space_id`、`name`、`memory_decay` 和 UTC `created_at`。 |
-| `PATCH /v1/spaces/{space_id}` | 修改 `name`、`memory_decay` 或同时修改两项。返回更新后的空间，`operationId` 仍为 `renameSpace`。 |
+| `GET /v1/spaces/{space_id}` | 返回 `space_id`、`name`、`memory_decay`、`profile_auto_refresh` 和 UTC `created_at`。 |
+| `PATCH /v1/spaces/{space_id}` | 更新 `name`、`memory_decay` 和 `profile_auto_refresh` 中的一个或多个字段。返回更新后的空间，`operationId` 为 `renameSpace`。 |
 | `POST /v1/spaces/{space_id}/sessions` | 正文可省略，提交的正文仍受字节上限约束。返回 201、`session_id`、UTC `created_at` 和 `Location`。 |
 | `GET /v1/spaces/{space_id}/sessions` | 分页列出已登记的会话，含空会话。 |
 | `GET /v1/spaces/{space_id}/sessions/{session_id}` | 返回会话登记的 `session_id` 和 `created_at`。 |
@@ -88,6 +88,24 @@ curl -i -X POST "$BASE_URL/v1/spaces/$SPACE_ID/sessions/$SESSION_ID/remember" \
 同一会话按持久接收顺序执行，前批退避期间后批等待。其他会话可继续处理。每次尝试最多运行 180 秒，领取租约 210 秒，含过期租约在内最多尝试三次。可重试错误分别退避 5 秒、10 秒。原文、事实、向量、审计和任务成功状态在同一事务发布，终态会释放待处理的消息副本。持久任务结果和幂等记录当前随会话保留，删除会话登记会级联清理其任务记录。
 
 worker 短暂停止期间 API 可继续接收。达到单空间上限后，新任务返回 `503 remember_queue_full`，原键重放和任务查询仍可用。缺少补全模型必填项时，HTTP 服务仍可启动，已配置嵌入模型的召回及既有任务查询继续可用，新写入返回 `503 write_models_unavailable`。worker 启动需要完整的补全和嵌入配置。
+
+## 用户画像
+
+通过 `POST /v1/spaces/{space_id}/profile/refresh` 手动刷新。发送空请求体，响应为 `202` 和 `refresh_status`（`queued` 或 `running`），`Location` 指向画像 GET。已有在途刷新时，同一空间的请求共用一次刷新。手动请求会提前结束自动合并等待，并把该轮提升为手动刷新。失败退避期间仍按原期限领取。进入终态后再次发送会开始新一轮。缺少 worker 所需的模型配置时，新手动刷新返回 `503 write_models_unavailable`。
+
+在空间 PATCH 中设置严格布尔值 `profile_auto_refresh: true` 来开启自动刷新。新建和升级的空间默认关闭。开启后的首批相关事实变更立即排队，后续从首个变更起合并 60 秒。已有事实可通过手动刷新归纳。关闭时撤销排队及在途的纯自动任务，保留已有画像和手动任务。清空空间后，开关仍生效，下一批相关变更立即排队。
+
+`GET /v1/spaces/{space_id}/profile` 在同一读快照内返回以下字段，调用时无需模型配置。
+
+| 字段 | 含义 |
+| --- | --- |
+| `profile` | `basic`、`communication_preferences`、`preferences` 和 `constraints` 四组。每条含 `text` 和非空的 `fact_ids`。ID 可用于查询对应事实。没有可用快照时为 `null`，成功生成的空画像有四个空数组。 |
+| `updated_at` | 当前快照的生成时间，UTC RFC 3339。无可用快照或存量时间超出日历范围时为 `null`。 |
+| `refresh_status` | `idle`、`queued`、`running`、`succeeded` 或 `failed`。尚无任务、清空空间或关闭时撤销了在途自动任务则为 `idle`。合并窗口内为 `queued`。 |
+| `next_retry_at` | 退避中的下一次可领取时间，UTC RFC 3339，其他时候为 `null`。 |
+| `refresh_error` | 失败时返回含稳定 `code` 的对象，其他时候为 `null`。 |
+
+只归纳本空间当前有效、非敏感且以空间用户为主体的抽取事实。条目所引用的任一事实更正、到期、转为敏感或被擦除时，该条目退出画像。刷新中或失败时，其他条目及其生成时间仍可读取。通过现有记忆接口纠正证据，再发起手动刷新。 [刷新与发布机制](postgres.md#画像刷新)
 
 ## 召回
 

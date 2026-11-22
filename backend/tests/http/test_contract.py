@@ -126,6 +126,8 @@ async def test_openapi_routes_and_operation_ids(
             "delete": "deleteSpace",
         },
         "/v1/spaces/{space_id}/purge": {"post": "purgeSpace"},
+        "/v1/spaces/{space_id}/profile": {"get": "getProfile"},
+        "/v1/spaces/{space_id}/profile/refresh": {"post": "refreshProfile"},
         "/v1/spaces/{space_id}/sessions": {
             "get": "listSessions",
             "post": "createSession",
@@ -159,6 +161,15 @@ async def test_openapi_request_and_response_schemas(openapi_response: Response) 
     """公开契约描述分页、写入与擦除参数，以及响应结构。"""
     spec = openapi_response.json()
     schemas = spec["components"]["schemas"]
+    assert set(schemas["ProfileData"]["required"]) == {
+        "basic",
+        "communication_preferences",
+        "preferences",
+        "constraints",
+    }
+    profile_refresh = spec["paths"]["/v1/spaces/{space_id}/profile/refresh"]["post"]
+    assert "requestBody" not in profile_refresh
+    assert "Location" in profile_refresh["responses"]["202"]["headers"]
     for schema, field in (
         ("FactResponse", "recorded_at"),
         ("SpaceResponse", "created_at"),
@@ -215,6 +226,10 @@ async def test_openapi_request_and_response_schemas(openapi_response: Response) 
         spec["paths"]["/v1/spaces/{space_id}"]["patch"]["operationId"] == "renameSpace"
     )
     assert schemas["SpacePatch"]["properties"]["memory_decay"]["type"] == "boolean"
+    assert (
+        schemas["SpacePatch"]["properties"]["profile_auto_refresh"]["type"] == "boolean"
+    )
+    assert "profile_auto_refresh" in schemas["SpaceResponse"]["required"]
     validation = recall["responses"]["422"]["content"]["application/problem+json"]
     assert set(validation["schema"]["properties"]["errors"]["items"]["properties"]) == {
         "location",

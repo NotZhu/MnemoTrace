@@ -19,6 +19,7 @@ from ...ports.storage import (
     SpaceSession,
     SpaceUnavailable,
 )
+from .profile_schedule import cancel_auto_refresh
 from .reader import PostgresReader
 from .rows import space_from_row
 from .session import PostgresSession
@@ -104,8 +105,8 @@ class PostgresStorage:
                     await conn.execute(
                         """
                         INSERT INTO mnemotrace_next.spaces
-                            (space_id, owner_id, name, created_at, memory_decay)
-                        VALUES (%s, %s, %s, %s, %s)
+                            (space_id, owner_id, name, created_at, memory_decay, profile_auto_refresh)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                         """,
                         (
                             space.id.value,
@@ -113,6 +114,7 @@ class PostgresStorage:
                             space.name,
                             space.created_at,
                             space.memory_decay,
+                            space.profile_auto_refresh,
                         ),
                     )
                 await _return_committed_connection(connection.pop_all())
@@ -127,7 +129,7 @@ class PostgresStorage:
         ):
             await cursor.execute(
                 """
-                SELECT space_id, owner_id, name, created_at, memory_decay
+                SELECT space_id, owner_id, name, created_at, memory_decay, profile_auto_refresh
                 FROM mnemotrace_next.spaces
                 WHERE owner_id = %s AND space_id > %s
                 ORDER BY space_id LIMIT %s
@@ -137,7 +139,12 @@ class PostgresStorage:
             return await cursor.fetchall()
 
     async def update_space(
-        self, space_id: SpaceId, *, name: str | None, memory_decay: bool | None
+        self,
+        space_id: SpaceId,
+        *,
+        name: str | None,
+        memory_decay: bool | None,
+        profile_auto_refresh: bool | None = None,
     ) -> Space:
         """检查空间归属并更新提供的设置，None 表示保留已有值。"""
         async with (
@@ -148,15 +155,24 @@ class PostgresStorage:
             await cursor.execute(
                 """
                 UPDATE mnemotrace_next.spaces
-                SET name = coalesce(%s, name), memory_decay = coalesce(%s, memory_decay)
+                SET name = coalesce(%s, name), memory_decay = coalesce(%s, memory_decay),
+                    profile_auto_refresh = coalesce(%s, profile_auto_refresh)
                 WHERE space_id = %s AND owner_id = %s
-                RETURNING space_id, owner_id, name, created_at, memory_decay
+                RETURNING space_id, owner_id, name, created_at, memory_decay, profile_auto_refresh
                 """,
-                (name, memory_decay, space_id.value, self._owner_id),
+                (
+                    name,
+                    memory_decay,
+                    profile_auto_refresh,
+                    space_id.value,
+                    self._owner_id,
+                ),
             )
             space = await cursor.fetchone()
             if space is None:
                 raise SpaceUnavailable("空间不可访问")
+            if profile_auto_refresh is False:
+                await cancel_auto_refresh(conn, space_id)
         return space
 
     async def purge_space(self, space_id: SpaceId, *, key: str) -> None:

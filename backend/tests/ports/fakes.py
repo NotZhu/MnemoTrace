@@ -365,6 +365,14 @@ class FakeSpaceSession:
             )
             self._changes.append((change, sources))
             saved.append(change)
+        if self._profile is not None:
+            self._profile = self._profile.without_facts(
+                {
+                    after.id
+                    for before, after, _, _ in changes
+                    if before is not None and not before.same_except_provenance(after)
+                }
+            )
         return tuple(saved)
 
     async def save_salience(self, states: Mapping[FactId, FactSalience]) -> None:
@@ -586,10 +594,8 @@ class FakeSpaceSession:
                 trigger.fact_id not in deleted for trigger in change.cutoff_triggers
             )
         ]
-        if self._profile is not None and deleted.intersection(
-            self._profile.source_fact_ids
-        ):
-            self._profile = None
+        if self._profile is not None:
+            self._profile = self._profile.without_facts(deleted)
 
     async def delete_session_data(self, session_id: SessionId) -> frozenset[FactId]:
         """删除会话原文及其派生数据，并在删去原文时推进擦除代际。

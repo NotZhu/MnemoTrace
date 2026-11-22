@@ -314,23 +314,6 @@ class Remember:
                 embedding_space=self._embedder.embedding_space,
             )
 
-        # 引用事实的截止时间、标签或敏感标记变化时，清理基于旧状态派生的画像。
-        dirty_profile_sources = {
-            change.after.id
-            for change in changes
-            if change.before is not None
-            and (
-                change.before.invalid_at != change.after.invalid_at
-                or change.before.labels != change.after.labels
-                or change.before.sensitive != change.after.sensitive
-            )
-        }
-        if dirty_profile_sources:
-            profile = await writer.get_profile()
-            if profile is not None and dirty_profile_sources.intersection(
-                profile.source_fact_ids
-            ):
-                await writer.delete_profile()
         return changes
 
 

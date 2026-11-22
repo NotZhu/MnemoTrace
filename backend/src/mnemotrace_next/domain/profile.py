@@ -1,6 +1,7 @@
 """定义空间画像及条目级事实引用。"""
 
 from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Self
@@ -73,3 +74,22 @@ class Profile:
         if updated.updated_at < self.updated_at:
             raise InvalidProfile("更新时间不能早于当前画像的 updated_at")
         return updated
+
+    def without_facts(self, unavailable: AbstractSet[FactId]) -> Self | None:
+        """撤下依赖失效事实的条目，保留其余条目的原生成时间。
+
+        Args:
+            unavailable: 已失效的支撑事实标识。
+
+        Returns:
+            清理后的画像。有内容的快照被全部清空时返回 None。
+        """
+        if unavailable.isdisjoint(self.source_fact_ids):
+            return self
+        data = {
+            group: tuple(
+                entry for entry in entries if unavailable.isdisjoint(entry.fact_ids)
+            )
+            for group, entries in self.data.items()
+        }
+        return self.update(data, self.updated_at) if any(data.values()) else None

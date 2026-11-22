@@ -86,6 +86,19 @@ class Fact:
         """
         return isinstance(self.object, EntityRef)
 
+    def same_except_provenance(self, other: "Fact") -> bool:
+        """比较事实快照，忽略对同一断言的原文引用变化。
+
+        Args:
+            other: 待比较的事实快照。
+
+        Returns:
+            除原文引用外所有字段相同时为真。
+        """
+        if self.source is not other.source or self.provenance == other.provenance:
+            return self == other
+        return self == replace(other, provenance=self.provenance)
+
     def close(self, valid_end: float, closed_at: float) -> Self:
         """首次记录事实的有效截止及获知时刻。
 

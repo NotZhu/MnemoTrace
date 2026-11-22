@@ -39,6 +39,15 @@ MAX_ATTEMPTS = 3
 _LOG = logging.getLogger(__name__)
 
 
+def retry_delay_for(attempt: int, *, retry: bool) -> timedelta | None:
+    """按共享的 worker 重试预算计算退避时间。"""
+    return (
+        timedelta(seconds=5 * 2 ** (attempt - 1))
+        if retry and attempt < MAX_ATTEMPTS
+        else None
+    )
+
+
 class IdempotencyConflict(ValueError):
     """幂等键已用于同一空间的另一批写入。"""
 
@@ -204,9 +213,6 @@ class OperationRunner:
         *,
         retry: bool,
     ) -> None:
-        delay = (
-            timedelta(seconds=5 * 2 ** (job.attempt - 1))
-            if retry and job.attempt < MAX_ATTEMPTS
-            else None
+        await self._queue.record_attempt_failure(
+            job, code, stage, retry_delay_for(job.attempt, retry=retry)
         )
-        await self._queue.record_attempt_failure(job, code, stage, delay)

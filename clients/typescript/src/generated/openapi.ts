@@ -91,7 +91,7 @@ export interface paths {
         head?: never;
         /**
          * Update Space
-         * @description 更新所属空间的名称或记忆衰减设置。
+         * @description 更新所属空间的名称或记忆策略。
          */
         patch: operations["renameSpace"];
         trace?: never;
@@ -368,6 +368,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/spaces/{space_id}/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Profile
+         * @description 读取仍有有效证据的画像条目和可轮询的刷新状态。
+         */
+        get: operations["getProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/spaces/{space_id}/profile/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh Profile
+         * @description 请求手动刷新，已有在途刷新时复用它。
+         */
+        post: operations["refreshProfile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -605,6 +645,60 @@ export interface components {
             error?: components["schemas"]["OperationError"] | null;
         };
         /** @enum {string} */
+        PendingRefreshStatus: "queued" | "running";
+        /**
+         * ProfileData
+         * @description 可独立读取的四组用户画像。
+         */
+        ProfileData: {
+            /** Basic */
+            basic: components["schemas"]["ProfileItem"][];
+            /** Communication Preferences */
+            communication_preferences: components["schemas"]["ProfileItem"][];
+            /** Preferences */
+            preferences: components["schemas"]["ProfileItem"][];
+            /** Constraints */
+            constraints: components["schemas"]["ProfileItem"][];
+        };
+        /**
+         * ProfileItem
+         * @description 一条有事实依据的画像条目。
+         */
+        ProfileItem: {
+            /** Text */
+            text: string;
+            /** Fact Ids */
+            fact_ids: string[];
+        };
+        /**
+         * ProfileRefreshAccepted
+         * @description 已持久接收或仍在处理的刷新。
+         */
+        ProfileRefreshAccepted: {
+            refresh_status: components["schemas"]["PendingRefreshStatus"];
+        };
+        /**
+         * ProfileRefreshError
+         * @description 最近一次刷新失败的公开分类。
+         */
+        ProfileRefreshError: {
+            /** Code */
+            code: string;
+        };
+        /**
+         * ProfileResponse
+         * @description 在同一读快照内取得的画像与刷新状态。
+         */
+        ProfileResponse: {
+            profile: components["schemas"]["ProfileData"] | null;
+            /** Updated At */
+            updated_at: string | null;
+            refresh_status: components["schemas"]["RefreshStatus"];
+            /** Next Retry At */
+            next_retry_at: string | null;
+            refresh_error: components["schemas"]["ProfileRefreshError"] | null;
+        };
+        /** @enum {string} */
         RecallDegradedReason: "embedding_timeout" | "reranker_timeout";
         /**
          * RecallFilterRequest
@@ -664,6 +758,8 @@ export interface components {
             /** Truncated */
             truncated: boolean;
         };
+        /** @enum {string} */
+        RefreshStatus: "idle" | "queued" | "running" | "succeeded" | "failed";
         /**
          * RelationResponse
          * @description 实体关系事实的两个端点和规范谓词。
@@ -748,12 +844,14 @@ export interface components {
         };
         /**
          * SpacePatch
-         * @description 更新空间名称或记忆衰减设置。
+         * @description 更新空间名称或记忆策略。
          */
         SpacePatch: {
             name?: components["schemas"]["_SpaceNameText"];
             /** Memory Decay */
             memory_decay?: boolean;
+            /** Profile Auto Refresh */
+            profile_auto_refresh?: boolean;
         };
         /**
          * SpaceResponse
@@ -766,6 +864,8 @@ export interface components {
             name: string;
             /** Memory Decay */
             memory_decay: boolean;
+            /** Profile Auto Refresh */
+            profile_auto_refresh: boolean;
             /** Created At */
             created_at: string | null;
             /** Out Of Range Fields */
@@ -4588,6 +4688,368 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                        errors?: {
+                            /** Location */
+                            location: string;
+                            /** Path */
+                            path: string;
+                            /** Code */
+                            code: string;
+                        }[];
+                    };
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+        };
+    };
+    getProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                        errors?: {
+                            /** Location */
+                            location: string;
+                            /** Path */
+                            path: string;
+                            /** Code */
+                            code: string;
+                        }[];
+                    };
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+        };
+    };
+    refreshProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    /** @description 可轮询的画像地址 */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileRefreshAccepted"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Request Entity Too Large */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };

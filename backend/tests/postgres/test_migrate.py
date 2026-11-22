@@ -47,6 +47,90 @@ def test_migration_concurrency_repeat_and_checksum(
             migrate.apply_migrations(dsn)
 
 
+def test_profile_refresh_upgrade_preserves_legacy_snapshot_without_queueing(
+    database_factory: DatabaseFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    version = "013_profile_refresh.sql"
+    previous = tuple(m for m in migrate._migrations() if m.version < version)
+    with database_factory() as dsn:
+        with monkeypatch.context() as legacy:
+            legacy.setattr(migrate, "_migrations", lambda: previous)
+            assert migrate.apply_migrations(dsn)[-1] == "012_operation_fact_changes.sql"
+        with psycopg.connect(dsn) as conn:
+            conn.execute("""
+                INSERT INTO mnemotrace_next.spaces (space_id, owner_id, name, created_at)
+                VALUES ('legacy', 'owner', '旧空间', 1)
+                """)
+            conn.execute("""
+                INSERT INTO mnemotrace_next.profiles (space_id, data, updated_at)
+                VALUES ('legacy', '[]'::jsonb, 20)
+                """)
+        assert migrate.apply_migrations(dsn)[0] == version
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute("""
+                SELECT data, updated_at FROM mnemotrace_next.profiles WHERE space_id = 'legacy'
+                """).fetchone() == ([], 20.0)
+            assert (
+                conn.execute("""
+                SELECT space_id FROM mnemotrace_next.profile_refreshes
+                """).fetchall()
+                == []
+            )
+
+
+def test_auto_profile_upgrade_preserves_active_manual_lease(
+    database_factory: DatabaseFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    version = "014_profile_auto_refresh.sql"
+    previous = tuple(m for m in migrate._migrations() if m.version < version)
+    with database_factory() as dsn:
+        with monkeypatch.context() as legacy:
+            legacy.setattr(migrate, "_migrations", lambda: previous)
+            assert migrate.apply_migrations(dsn)[-1] == "013_profile_refresh.sql"
+        with psycopg.connect(dsn) as conn:
+            conn.execute("""
+                INSERT INTO mnemotrace_next.spaces (space_id, owner_id, name, created_at)
+                VALUES ('legacy', 'owner', '旧空间', 1)
+                """)
+            conn.execute("""
+                INSERT INTO mnemotrace_next.profiles (space_id, data, updated_at)
+                VALUES ('legacy', '[]'::jsonb, 20)
+                """)
+            conn.execute("""
+                INSERT INTO mnemotrace_next.profile_refreshes
+                    (space_id, status, request_version, available_at, attempts, lease_token,
+                     lease_until, last_success_fact_cursor)
+                VALUES ('legacy', 'running', 4, NULL, 2, 'leased',
+                    '2099-01-01T00:00:00Z', 42)
+                """)
+        assert migrate.apply_migrations(dsn) == (
+            version,
+            "015_profile_evidence_revision.sql",
+        )
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute("""
+                SELECT profile_auto_refresh, profile_evidence_revision, status, trigger_kind, request_version,
+                    attempts, lease_token, EXTRACT(YEAR FROM lease_until)::int,
+                    last_success_fact_cursor, auto_started, followup_at, profiles.updated_at
+                FROM mnemotrace_next.spaces
+                JOIN mnemotrace_next.profile_refreshes USING (space_id)
+                JOIN mnemotrace_next.profiles USING (space_id)
+                """).fetchone() == (
+                False,
+                0,
+                "running",
+                "manual",
+                4,
+                2,
+                "leased",
+                2099,
+                42,
+                False,
+                None,
+                20.0,
+            )
+
+
 def test_upgrade_preserves_queued_operation_and_idempotency_hashes(
     database_factory: DatabaseFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

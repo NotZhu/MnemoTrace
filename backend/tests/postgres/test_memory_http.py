@@ -1219,6 +1219,7 @@ def test_http_legacy_space_time_keeps_reads_and_updates_available(
             "space_id": old.id.value,
             "name": old.name,
             "memory_decay": False,
+            "profile_auto_refresh": False,
             "created_at": None,
             "out_of_range_fields": ["created_at"],
         }

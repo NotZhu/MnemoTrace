@@ -14,7 +14,7 @@ from .health import router as health_router
 from .middleware import RequestBoundary
 from .recall_usage import RecallUsageQueue
 from .settings import Settings
-from .v1 import memories, operations, sessions, spaces
+from .v1 import memories, operations, profiles, sessions, spaces
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -82,4 +82,5 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(sessions.router, prefix="/v1")
     app.include_router(memories.router, prefix="/v1")
     app.include_router(operations.router, prefix="/v1")
+    app.include_router(profiles.router, prefix="/v1")
     return app

@@ -16,7 +16,12 @@ from ...ports.storage import CutoffTrigger, FactChange, GraphEdge
 
 
 def space_from_row(
-    space_id: str, owner_id: str, name: str, created_at: float, memory_decay: bool
+    space_id: str,
+    owner_id: str,
+    name: str,
+    created_at: float,
+    memory_decay: bool,
+    profile_auto_refresh: bool,
 ) -> Space:
     """从空间表还原领域快照。
 
@@ -26,11 +31,19 @@ def space_from_row(
         name: 空间显示名称。
         created_at: 创建时刻，单位为 UTC epoch 秒。
         memory_decay: 是否启用记忆衰减和自动强化。
+        profile_auto_refresh: 是否按事实变化自动刷新画像。
 
     Returns:
         空间快照。
     """
-    return Space(SpaceId(space_id), owner_id, name, created_at, memory_decay)
+    return Space(
+        SpaceId(space_id),
+        owner_id,
+        name,
+        created_at,
+        memory_decay,
+        profile_auto_refresh,
+    )
 
 
 def message_from_row(

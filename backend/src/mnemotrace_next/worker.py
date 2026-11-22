@@ -19,9 +19,11 @@ from psycopg_pool import AsyncConnectionPool
 from .adapters.inference import InferenceRequestError, open_inference
 from .adapters.postgres.migrate import migration_checksums
 from .adapters.postgres.operations import PostgresOperations
+from .adapters.postgres.profile_refresh import PostgresProfileRefresh
 from .adapters.postgres.storage import PostgresStorage
 from .adapters.runtime import SystemClock, UuidGenerator
 from .application.operations import ClaimedOperation, OperationRunner
+from .application.profile_refresh import ProfileRefreshRunner
 from .application.remember import Remember
 from .runtime_settings import RuntimeSettings
 
@@ -34,7 +36,9 @@ def _is_transient(error: Exception) -> bool:
     return isinstance(error, psycopg.OperationalError)
 
 
-async def _consume(runner: OperationRunner, stopping: asyncio.Event) -> None:
+async def _consume(
+    runner: OperationRunner | ProfileRefreshRunner, stopping: asyncio.Event
+) -> None:
     while not stopping.is_set():
         try:
             if await runner.run_once():
@@ -60,7 +64,7 @@ async def _serve(
         settings.postgres_dsn,
         open=False,
         min_size=0,
-        max_size=max(2, concurrency),
+        max_size=concurrency + 1,
         timeout=3,
         kwargs={"connect_timeout": 3},
     )
@@ -89,6 +93,13 @@ async def _serve(
             )
 
         runner = OperationRunner(PostgresOperations(pool), remember_for, _is_transient)
+        profile_runner = ProfileRefreshRunner(
+            PostgresProfileRefresh(pool),
+            lambda owner: PostgresStorage(pool, owner_id=owner),
+            llm,
+            SystemClock(),
+            _is_transient,
+        )
         readiness = (
             await asyncio.start_server(_close_probe, "127.0.0.1", readiness_port)
             if readiness_port is not None
@@ -98,6 +109,7 @@ async def _serve(
         async with asyncio.TaskGroup() as workers, readiness:
             for _ in range(concurrency):
                 workers.create_task(_consume(runner, stopping))
+            workers.create_task(_consume(profile_runner, stopping))
             await stopping.wait()
 
 

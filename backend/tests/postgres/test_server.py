@@ -63,11 +63,13 @@ def test_server_space_and_session_isolation(database: PgDatabase) -> None:
                 "created_at",
                 "name",
                 "memory_decay",
+                "profile_auto_refresh",
                 "out_of_range_fields",
             }
             assert body["created_at"].endswith("Z")
             assert body["out_of_range_fields"] == []
             assert body["memory_decay"] is False
+            assert body["profile_auto_refresh"] is False
             second = await client.post(
                 "/v1/spaces", headers=headers, json={"name": "学习"}
             )

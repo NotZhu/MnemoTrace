@@ -13,6 +13,7 @@ from mnemotrace_next.domain.ids import DigestId, FactId, MessageId, SessionId
 from mnemotrace_next.domain.message import Message
 from mnemotrace_next.domain.profile import Profile, ProfileEntry
 from mnemotrace_next.domain.salience import FactSalience
+from mnemotrace_next.domain.values import Label
 from mnemotrace_next.ports.queries import FactFilter
 from mnemotrace_next.ports.storage import CutoffTrigger, SessionUnavailable
 
@@ -231,6 +232,49 @@ def test_profile_requires_local_sources_and_monotonic_updates(
     run(exercise())
 
 
+@pytest.mark.parametrize("change", ["sensitive", "cutoff", "labels"])
+def test_fact_changes_prune_only_dependent_profile_entries(
+    database: PgDatabase,
+    change: str,
+) -> None:
+    async def exercise() -> None:
+        scope = space()
+        subject = Entity.space_user(scope.id)
+        first = fact(subject, "changed")
+        second = fact(subject, "erased")
+        third = fact(subject, "kept")
+        changed = ProfileEntry("撤下共同引用", (first.id, third.id))
+        erased = ProfileEntry("撤下硬删引用", (second.id,))
+        kept = ProfileEntry("保留独立条目", (third.id,))
+        profile = Profile(scope.id, {"basic": (changed, erased, kept)}, 30.0)
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id=scope.owner_id)
+            await storage.create_space(scope)
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.upsert_entity(subject)
+                await writer.save_facts((first, second, third), changed_at=20.0)
+                await writer.save_profile(profile)
+            async with storage.session(scope.id, write=True) as writer:
+                revised = {
+                    "sensitive": replace(first, sensitive=True),
+                    "cutoff": first.close(35.0, 40.0),
+                    "labels": replace(first, labels=(Label("technology"),)),
+                }[change]
+                await writer.save_facts((revised,), changed_at=40.0)
+            async with storage.session(scope.id) as reader:
+                assert await reader.get_profile() == profile.update(
+                    {"basic": (erased, kept)}, 30.0
+                )
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.delete_facts((second.id,))
+            async with storage.session(scope.id) as reader:
+                assert await reader.get_profile() == profile.update(
+                    {"basic": (kept,)}, 30.0
+                )
+
+    run(exercise())
+
+
 def test_session_erasure_cleans_indexes_changes_and_dependent_profile(
     database: PgDatabase,
 ) -> None:
@@ -319,7 +363,9 @@ def test_session_erasure_cleans_indexes_changes_and_dependent_profile(
                 assert (
                     await writer.delete_session_data(removed.session_id) == frozenset()
                 )
-                assert await writer.get_profile() is None
+                assert await writer.get_profile() == profile.update(
+                    {"较长的分组": (), "短": profile.data["短"]}, 40.0
+                )
                 await writer.delete_profile()
                 await writer.delete_facts((manual.id, FactId("missing")))
                 await writer.delete_facts((manual.id,))

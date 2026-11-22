@@ -89,12 +89,13 @@ async def get_space(space_id: ResourceId, storage: AuthorizedStorage) -> SpaceRe
 async def update_space(
     space_id: ResourceId, body: SpacePatchBody, storage: AuthorizedStorage
 ) -> SpaceResponse:
-    """更新所属空间的名称或记忆衰减设置。"""
+    """更新所属空间的名称或记忆策略。"""
     return SpaceResponse.from_space(
         await storage.update_space(
             SpaceId(space_id),
             name=body.get("name"),
             memory_decay=body.get("memory_decay"),
+            profile_auto_refresh=body.get("profile_auto_refresh"),
         )
     )
 

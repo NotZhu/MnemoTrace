@@ -679,6 +679,7 @@ class SpaceSession(SpaceReader, Protocol):
         从 Fact.text 派生词法索引，与事实一同提交。事实和分组相同的重放幂等。
         替代时以同一时点截止旧事实和启用新 ID 的事实，有向量时在同一写会话
         写入新向量。旧事实保留正文和索引，供按有效时间查询。
+        截止、标签或敏感性改变时，在同一事务撤下依赖该事实的画像条目。
 
         Args:
             facts: 待保存的事实快照，同批每个标识一份。
@@ -716,7 +717,7 @@ class SpaceSession(SpaceReader, Protocol):
     async def delete_facts(self, fact_ids: Sequence[FactId]) -> None:
         """幂等删除事实及其显著度、索引项、修改记录与关联引用。
 
-        清理引用被删触发事实的变更记录及依赖被删事实的画像。
+        清理引用被删触发事实的变更记录及依赖被删事实的画像条目。
 
         Args:
             fact_ids: 绑定空间内待删除的事实标识。
@@ -734,7 +735,7 @@ class SpaceSession(SpaceReader, Protocol):
             session_id: 绑定空间内待清理的会话标识。
 
         Returns:
-            撤下的事实标识，依赖这些事实的画像已在同一事务撤下。
+            撤下的事实标识，依赖这些事实的画像条目已在同一事务撤下。
         """
         ...
 
@@ -789,11 +790,7 @@ class SpaceSession(SpaceReader, Protocol):
         ...
 
     async def delete_profile(self) -> None:
-        """幂等删除绑定空间的画像，随后 get_profile 返回 None。
-
-        当画像引用的事实被删除或其有效期、标签、敏感性发生变化时，调用方
-        在处理事实的同一写会话内调用本方法。单独追加证据组可沿用现有画像。
-        """
+        """幂等删除绑定空间的整份画像，随后 get_profile 返回 None。"""
         ...
 
     async def upsert_vectors(

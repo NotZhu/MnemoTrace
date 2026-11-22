@@ -3,11 +3,13 @@
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import groupby
+from typing import cast
 
 from psycopg import DataError, sql
 from psycopg.rows import args_row
 from psycopg.types.json import Jsonb
 
+from ...application.profile import is_profile_evidence
 from ...domain._validation import timestamp
 from ...domain.digest import Digest
 from ...domain.entity import Entity
@@ -29,6 +31,7 @@ from ...ports.storage import (
 )
 from . import search
 from .facts import FactWrite, validate_fact_update, write_fact_batch
+from .profile_schedule import schedule_auto_refresh
 from .reader import PostgresReader
 from .rows import entity_from_row, profile_to_json
 
@@ -307,7 +310,68 @@ class PostgresSession(PostgresReader):
             if before is not None:
                 validate_fact_update(before, fact)
             changes.append(FactWrite(before, fact, groups, triggers, append_at))
-        return await write_fact_batch(conn, changes, changed_at)
+        invalidated = {
+            change.after.id
+            for change in changes
+            if change.before is not None
+            and not change.before.same_except_provenance(change.after)
+        }
+        async with conn.transaction():
+            saved = await write_fact_batch(conn, changes, changed_at)
+            await self._prune_profile(invalidated)
+            await self._track_profile_changes(saved, invalidated)
+        return saved
+
+    async def _track_profile_changes(
+        self, changes: Sequence[FactChange], invalidated: set[FactId]
+    ) -> None:
+        subject = Entity.space_user(self.space_id)
+        candidates = [
+            change
+            for change in changes
+            if change.after.subject.entity_id == subject.id
+            and change.after.source is Source.EXTRACTED
+            and (
+                not change.after.sensitive
+                or (change.before is not None and not change.before.sensitive)
+            )
+            and (
+                change.before is None
+                or change.after.id in invalidated
+                or change.after.provenance[: len(change.before.provenance)]
+                != change.before.provenance
+            )
+        ]
+        if not candidates:
+            return
+        auto_at = await self._advance_profile_evidence_revision()
+        if auto_at is not None and any(
+            (change.before is None or change.after.id in invalidated)
+            and (
+                is_profile_evidence(change.after, subject, auto_at)
+                or (
+                    change.before is not None
+                    and is_profile_evidence(change.before, subject, auto_at)
+                )
+            )
+            for change in candidates
+        ):
+            await schedule_auto_refresh(self._conn, self.space_id)
+
+    async def _advance_profile_evidence_revision(self) -> float | None:
+        cursor = await self._conn.execute(
+            """
+            UPDATE mnemotrace_next.spaces
+            SET profile_evidence_revision = profile_evidence_revision + 1
+            WHERE space_id = %s
+            RETURNING CASE WHEN profile_auto_refresh
+                THEN EXTRACT(EPOCH FROM statement_timestamp())::double precision END
+            """,
+            (self.space_id.value,),
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        return cast(float | None, row[0])
 
     async def save_salience(self, states: Mapping[FactId, FactSalience]) -> None:
         """批量替换事实的访问强化状态。
@@ -405,6 +469,11 @@ class PostgresSession(PostgresReader):
         Raises:
             ValueError: 画像超出绑定空间、来源事实缺失或更新时间倒退。
         """
+        await self._store_profile(profile, require_monotonic=True)
+
+    async def _store_profile(
+        self, profile: Profile, *, require_monotonic: bool
+    ) -> None:
         self._check_scope(profile.space_id)
         await self._require_facts(profile.source_fact_ids)
         saved = await self._conn.execute(
@@ -413,9 +482,14 @@ class PostgresSession(PostgresReader):
             VALUES (%s, %s, %s)
             ON CONFLICT (space_id) DO UPDATE
             SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
-            WHERE current_profile.updated_at <= EXCLUDED.updated_at
+            WHERE NOT %s OR current_profile.updated_at <= EXCLUDED.updated_at
             """,
-            (self.space_id.value, Jsonb(profile_to_json(profile)), profile.updated_at),
+            (
+                self.space_id.value,
+                Jsonb(profile_to_json(profile)),
+                profile.updated_at,
+                require_monotonic,
+            ),
         )
         if saved.rowcount == 0:
             raise ValueError("画像更新时间不能倒退")
@@ -426,6 +500,19 @@ class PostgresSession(PostgresReader):
             "DELETE FROM mnemotrace_next.profiles WHERE space_id = %s",
             (self.space_id.value,),
         )
+
+    async def _prune_profile(
+        self, unavailable: set[FactId] | frozenset[FactId]
+    ) -> None:
+        if not unavailable:
+            return
+        profile = await self.get_profile()
+        if profile is not None:
+            retained = profile.without_facts(unavailable)
+            if retained is None:
+                await self.delete_profile()
+            elif retained is not profile:
+                await self.save_profile(retained)
 
     async def upsert_vectors(
         self, items: Sequence[tuple[FactId, Sequence[float]]], *, embedding_space: str
@@ -507,20 +594,30 @@ class PostgresSession(PostgresReader):
             """,
             params,
         )
-        async with self._conn.cursor(row_factory=args_row(FactId)) as cursor:
+        async with self._conn.cursor() as cursor:
             await cursor.execute(
                 """
                 DELETE FROM mnemotrace_next.facts
                 WHERE space_id = %s AND fact_id = ANY(%s::text[])
-                RETURNING fact_id
+                RETURNING fact_id, subject_id = %s AND source = %s AND NOT sensitive,
+                    (valid_at IS NULL OR valid_at <= EXTRACT(EPOCH FROM statement_timestamp()))
+                    AND (invalid_at IS NULL OR invalid_at > EXTRACT(EPOCH FROM statement_timestamp()))
                 """,
-                params,
+                (
+                    *params,
+                    Entity.space_user(self.space_id).id.value,
+                    Source.EXTRACTED.value,
+                ),
             )
-            deleted = frozenset(await cursor.fetchall())
-        if deleted:
-            profile = await self.get_profile()
-            if profile is not None and deleted.intersection(profile.source_fact_ids):
-                await self.delete_profile()
+            rows = await cursor.fetchall()
+        deleted = frozenset(FactId(fact_id) for fact_id, _, _ in rows)
+        await self._prune_profile(deleted)
+        if any(evidence for _, evidence, _ in rows):
+            auto_at = await self._advance_profile_evidence_revision()
+            if auto_at is not None and any(
+                evidence and current for _, evidence, current in rows
+            ):
+                await schedule_auto_refresh(self._conn, self.space_id)
         return deleted
 
     async def _erase_session_support(self, sources: Sequence[str]) -> frozenset[FactId]:
@@ -638,6 +735,7 @@ class PostgresSession(PostgresReader):
 
     async def _clear_space_contents(self) -> None:
         for table in (
+            "profile_refreshes",
             "profiles",
             "digests",
             "fact_changes",
