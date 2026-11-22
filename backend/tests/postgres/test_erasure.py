@@ -1,16 +1,13 @@
-"""验证摘要、画像、访问强化及擦除路径。"""
+"""验证画像、访问强化及擦除路径。"""
 
 from dataclasses import replace
 
-import psycopg
 import pytest
 
 from mnemotrace_next.adapters.postgres import PostgresStorage
 from mnemotrace_next.application.salience import reinforce_context_facts
-from mnemotrace_next.domain.digest import Digest
 from mnemotrace_next.domain.entity import Entity
-from mnemotrace_next.domain.ids import DigestId, FactId, MessageId, SessionId
-from mnemotrace_next.domain.message import Message
+from mnemotrace_next.domain.ids import FactId, SessionId
 from mnemotrace_next.domain.profile import Profile, ProfileEntry
 from mnemotrace_next.domain.salience import FactSalience
 from mnemotrace_next.domain.values import Label
@@ -18,173 +15,9 @@ from mnemotrace_next.ports.queries import FactFilter
 from mnemotrace_next.ports.storage import CutoffTrigger, SessionUnavailable
 
 from .conftest import PgDatabase
-from .sample import SESSION, fact, message, pool, run, space
+from .sample import fact, message, pool, run, space
 
 pytestmark = pytest.mark.postgres
-
-
-def _digest(identifier: str, source: Message, *, updated_at: float = 30.0) -> Digest:
-    return Digest(
-        DigestId(identifier),
-        source.space_id,
-        source.session_id,
-        "摘要",
-        (source.id,),
-        10.0,
-        updated_at,
-    )
-
-
-def test_digest_validates_sources_and_selects_by_append_position(
-    database: PgDatabase,
-) -> None:
-    """摘要组保序，最近候选优先覆盖后追加的原文。"""
-
-    async def exercise() -> None:
-        async with pool(database.runtime) as connections:
-            storage = PostgresStorage(connections, owner_id="owner")
-            scope, sibling = space(), space()
-            await storage.create_space(scope)
-            await storage.create_space(sibling)
-            first, second = (
-                message(scope, "first", at=30.0),
-                message(scope, "second", at=20.0),
-            )
-            out_of_session = message(scope, "wrong-session", session=SessionId("other"))
-            foreign = message(sibling, "foreign")
-            async with storage.session(sibling.id, write=True) as writer:
-                await writer.register_session(foreign.session_id)
-                await writer.append_messages((foreign,))
-            first_digest = _digest("first", first, updated_at=100.0)
-            latest = _digest("a", second, updated_at=50.0)
-            tied = replace(
-                latest, id=DigestId("b"), source_message_ids=(first.id, second.id)
-            )
-            stale = replace(latest, id=DigestId("0"), updated_at=40.0)
-            same_group = replace(latest, id=DigestId("z"))
-            orphaned = replace(
-                latest,
-                id=DigestId("orphan"),
-                updated_at=1000.0,
-                source_message_ids=(second.id, MessageId("missing")),
-            )
-            async with storage.session(scope.id, write=True) as writer:
-                await writer.register_session(first.session_id)
-                await writer.register_session(out_of_session.session_id)
-                await writer.append_messages((first, second, first, out_of_session))
-                for digest in (first_digest, latest, tied, stale, same_group):
-                    await writer.save_digest(digest)
-                for invalid in (
-                    orphaned,
-                    replace(latest, source_message_ids=(out_of_session.id,)),
-                    replace(latest, source_message_ids=(foreign.id,)),
-                    replace(latest, space_id=sibling.id),
-                ):
-                    with pytest.raises(ValueError):
-                        await writer.save_digest(invalid)
-                latest = latest.update("修订摘要", 50.0)
-                await writer.save_digest(latest)
-            # 模拟已有的来源残缺记录，验证三种读取在数据库侧省略它。
-            async with await psycopg.AsyncConnection.connect(database.admin) as admin:
-                await admin.execute(
-                    """
-                    INSERT INTO mnemotrace_next.digests
-                        (space_id, digest_id, session_id, text, source_message_ids,
-                         last_message_seq, created_at, updated_at)
-                    VALUES (%s, %s, %s, '残缺摘要', %s, 10000000, 10, 1000)
-                    """,
-                    (
-                        scope.id.value,
-                        orphaned.id.value,
-                        SESSION.value,
-                        [item.value for item in orphaned.source_message_ids],
-                    ),
-                )
-            async with storage.session(scope.id) as reader:
-                assert await reader.get_digest(latest.id) == latest
-                assert (
-                    await reader.get_digest_for_group(SESSION, (second.id, second.id))
-                    == latest
-                )
-                assert (
-                    await reader.get_digest_for_group(SESSION, (first.id, second.id))
-                    == tied
-                )
-                assert (
-                    await reader.get_digest_for_group(SESSION, (second.id, first.id))
-                    is None
-                )
-                assert await reader.get_digest(orphaned.id) is None
-                assert (
-                    await reader.get_digest_for_group(
-                        SESSION, orphaned.source_message_ids
-                    )
-                    is None
-                )
-                assert await reader.get_latest_digest(SESSION) == latest
-
-    run(exercise())
-
-
-def test_digest_same_id_preserves_group_and_rejects_stale_updates(
-    database: PgDatabase,
-) -> None:
-    """摘要同 ID 固定分组，允许同刻修订并拒绝旧快照。"""
-
-    async def exercise() -> None:
-        async with pool(database.runtime) as connections:
-            storage = PostgresStorage(connections, owner_id="owner")
-            scope = space()
-            await storage.create_space(scope)
-            first = message(scope, "first")
-            second = message(scope, "second")
-            other = message(scope, "other", session=SessionId("other"))
-            initial = replace(
-                _digest("stable", first), source_message_ids=(first.id, second.id)
-            )
-            latest = initial.update("新摘要", 50.0)
-            revised = latest.update("同刻修订", latest.updated_at)
-            reverse_group = replace(
-                latest, id=DigestId("reverse"), source_message_ids=(second.id, first.id)
-            )
-            async with storage.session(scope.id, write=True) as writer:
-                await writer.register_session(first.session_id)
-                await writer.register_session(other.session_id)
-                await writer.append_messages((first, second, other))
-                await writer.save_digest(initial)
-                await writer.save_digest(latest)
-                for invalid in (
-                    initial,
-                    replace(latest, created_at=20.0),
-                    replace(
-                        latest, source_message_ids=reverse_group.source_message_ids
-                    ),
-                    replace(
-                        latest,
-                        session_id=other.session_id,
-                        source_message_ids=(other.id,),
-                    ),
-                ):
-                    with pytest.raises(ValueError, match="同 ID 的摘要"):
-                        await writer.save_digest(invalid)
-                assert await writer.get_digest(latest.id) == latest
-                await writer.save_digest(revised)
-                await writer.save_digest(reverse_group)
-            async with storage.session(scope.id) as reader:
-                assert (
-                    await reader.get_digest_for_group(
-                        SESSION, initial.source_message_ids
-                    )
-                    == revised
-                )
-                assert (
-                    await reader.get_digest_for_group(
-                        SESSION, reverse_group.source_message_ids
-                    )
-                    == reverse_group
-                )
-
-    run(exercise())
 
 
 def test_profile_requires_local_sources_and_monotonic_updates(
@@ -322,8 +155,6 @@ def test_session_erasure_cleans_indexes_changes_and_dependent_profile(
                 await writer.register_session(removed.session_id)
                 await writer.register_session(kept.session_id)
                 await writer.append_messages((removed, kept))
-                await writer.save_digest(_digest("removed", removed))
-                await writer.save_digest(_digest("kept", kept))
                 await writer.save_facts((old, future, manual), changed_at=25.0)
                 await writer.save_facts((previous,), changed_at=25.0)
                 await writer.save_facts(
@@ -375,10 +206,6 @@ def test_session_erasure_cleans_indexes_changes_and_dependent_profile(
                 assert await reader.get_messages((removed.id, kept.id)) == {
                     kept.id: kept
                 }
-                assert await reader.get_latest_digest(removed.session_id) is None
-                assert await reader.get_latest_digest(kept.session_id) == _digest(
-                    "kept", kept
-                )
                 assert await reader.get_profile() is None
                 assert await reader.get_facts(
                     (old.id, future.id, manual.id, survivor.id)
@@ -590,7 +417,6 @@ def test_purge_rotates_generation_and_rejects_late_reinforcement(
             subject = Entity(scope.id, "甲")
             source = message(scope, "source")
             item = fact(subject, "fact", provenance=(source.id,))
-            digest = _digest("digest", source)
             profile = Profile(
                 scope.id, {"组": (ProfileEntry("画像", (item.id,)),)}, 12.0
             )
@@ -600,7 +426,6 @@ def test_purge_rotates_generation_and_rejects_late_reinforcement(
                 await writer.register_session(source.session_id)
                 await writer.append_messages((source,))
                 await writer.save_facts((item,), changed_at=15.0)
-                await writer.save_digest(digest)
                 await writer.save_profile(profile)
                 await writer.upsert_vectors(((item.id, (1.0,)),), embedding_space="v1")
                 await writer.save_salience({item.id: FactSalience().reinforce(20.0)})
@@ -622,7 +447,6 @@ def test_purge_rotates_generation_and_rejects_late_reinforcement(
                 assert await reader.get_fact(item.id) is None
                 assert await reader.get_entity(subject.id) is None
                 assert await reader.get_messages((source.id,)) == {}
-                assert await reader.get_digest(digest.id) is None
                 assert await reader.get_profile() is None
                 assert await reader.list_fact_changes(item.id) == ()
                 assert await reader.get_salience((item.id,)) == {}

@@ -11,7 +11,6 @@ from psycopg.types.json import Jsonb
 
 from ...application.profile import is_profile_evidence
 from ...domain._validation import timestamp
-from ...domain.digest import Digest
 from ...domain.entity import Entity
 from ...domain.enums import Source
 from ...domain.errors import DomainError
@@ -34,6 +33,7 @@ from .facts import FactWrite, validate_fact_update, write_fact_batch
 from .profile_schedule import schedule_auto_refresh
 from .reader import PostgresReader
 from .rows import entity_from_row, profile_to_json
+from .session_summary_schedule import schedule_summaries
 
 
 @dataclass(frozen=True)
@@ -129,6 +129,12 @@ class PostgresSession(PostgresReader):
                         for message in pending.values()
                     ],
                 )
+                if self._session_summary_enabled:
+                    await schedule_summaries(
+                        conn,
+                        self.space_id,
+                        {message.session_id for message in pending.values()},
+                    )
 
     async def upsert_entity(self, entity: Entity) -> Entity:
         """按空间内的身份类型和规范名称创建或更新实体。
@@ -406,60 +412,6 @@ class PostgresSession(PostgresReader):
                 ],
             )
 
-    async def save_digest(self, digest: Digest) -> None:
-        """按标识保存摘要，同一标识保留初始分组与创建时刻。
-
-        Args:
-            digest: 待保存的摘要快照。
-
-        Raises:
-            ValueError: 摘要超出绑定空间、来源缺失或不属于摘要会话，
-                或更新改变分组或创建时刻、导致更新时间倒退。
-        """
-        self._check_scope(digest.space_id)
-        conn = self._conn
-        sources = [message_id.value for message_id in digest.source_message_ids]
-        source_row = await (
-            await conn.execute(
-                """
-            SELECT count(*), max(append_seq) FROM mnemotrace_next.messages
-            WHERE space_id = %s AND session_id = %s AND message_id = ANY(%s::text[])
-            """,
-                (self.space_id.value, digest.session_id.value, sources),
-            )
-        ).fetchone()
-        assert source_row is not None
-        source_count, last_seq = source_row
-        if source_count != len(sources):
-            raise ValueError("摘要来源须属于绑定空间和摘要所属会话")
-        saved = await conn.execute(
-            """
-            INSERT INTO mnemotrace_next.digests AS current_digest
-                (space_id, digest_id, session_id, text, source_message_ids, last_message_seq,
-                 created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (space_id, digest_id) DO UPDATE
-            SET text = EXCLUDED.text, last_message_seq = EXCLUDED.last_message_seq,
-                updated_at = EXCLUDED.updated_at
-            WHERE current_digest.session_id = EXCLUDED.session_id
-              AND current_digest.source_message_ids = EXCLUDED.source_message_ids
-              AND current_digest.created_at = EXCLUDED.created_at
-              AND current_digest.updated_at <= EXCLUDED.updated_at
-            """,
-            (
-                self.space_id.value,
-                digest.id.value,
-                digest.session_id.value,
-                digest.text,
-                sources,
-                last_seq,
-                digest.created_at,
-                digest.updated_at,
-            ),
-        )
-        if saved.rowcount == 0:
-            raise ValueError("同 ID 的摘要分组和创建时刻固定，更新时间不能倒退")
-
     async def save_profile(self, profile: Profile) -> None:
         """保存绑定空间的完整画像，保证更新时间单调。
 
@@ -685,12 +637,6 @@ class PostgresSession(PostgresReader):
                 )
                 sources = [row[0] for row in await cursor.fetchall()]
             deleted = await self._erase_session_support(sources)
-            await conn.execute(
-                """
-                DELETE FROM mnemotrace_next.digests WHERE space_id = %s AND session_id = %s
-                """,
-                scope,
-            )
             removed_messages = await conn.execute(
                 """
                 DELETE FROM mnemotrace_next.messages WHERE space_id = %s AND session_id = %s
@@ -737,7 +683,6 @@ class PostgresSession(PostgresReader):
         for table in (
             "profile_refreshes",
             "profiles",
-            "digests",
             "fact_changes",
             "facts",
             "entities",

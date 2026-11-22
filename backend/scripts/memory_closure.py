@@ -28,7 +28,7 @@ from mnemotrace_next.adapters.inference import InferenceRequestError, open_infer
 from mnemotrace_next.adapters.postgres import PostgresStorage
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.fact import Fact
-from mnemotrace_next.domain.ids import DigestId, FactId, MessageId, SessionId, SpaceId
+from mnemotrace_next.domain.ids import FactId, MessageId, SessionId, SpaceId
 from mnemotrace_next.domain.space import Space
 from mnemotrace_next.domain.values import EntityRef, LiteralValue
 from mnemotrace_next.ports.inference import (
@@ -64,9 +64,6 @@ class _Ids:
 
     def new_fact_id(self) -> FactId:
         return FactId(uuid4().hex)
-
-    def new_digest_id(self) -> DigestId:
-        return DigestId(uuid4().hex)
 
 
 @dataclass

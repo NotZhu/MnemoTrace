@@ -9,13 +9,11 @@ from itertools import count
 from typing import Literal
 
 from mnemotrace_next.domain._validation import timestamp
-from mnemotrace_next.domain.digest import Digest
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.enums import Source
 from mnemotrace_next.domain.errors import DomainError
 from mnemotrace_next.domain.fact import Fact
 from mnemotrace_next.domain.ids import (
-    DigestId,
     EntityId,
     FactId,
     MessageId,
@@ -118,7 +116,6 @@ class FakeSpaceSession:
         self._facts: dict[FactId, Fact] = {}
         self._fact_salience: dict[FactId, FactSalience] = {}
         self._entities: dict[EntityId, Entity] = {}
-        self._digests: dict[DigestId, Digest] = {}
         self._profile: Profile | None = None
         self._groups: dict[FactId, SupportGroups] = {}
         self._changes: list[tuple[FactChange, frozenset[MessageId]]] = []
@@ -230,8 +227,17 @@ class FakeSpaceSession:
         )
         return messages[-limit:]
 
+    async def get_session_summary(self, session_id: SessionId) -> str | None:
+        """内存测试替身默认没有已生成的会话摘要。"""
+        return None
+
     async def list_session_messages(
-        self, session_id: SessionId, *, after: int | None, limit: int
+        self,
+        session_id: SessionId,
+        *,
+        after: int | None,
+        limit: int,
+        through: int | None = None,
     ) -> Sequence[tuple[int, Message]]:
         """使用原文首次追加时的排序位置分页。"""
         return tuple(
@@ -239,6 +245,7 @@ class FakeSpaceSession:
             for message in self._messages.values()
             if message.session_id == session_id
             and self._message_positions[message.id] > (after or 0)
+            and (through is None or self._message_positions[message.id] <= through)
         )[:limit]
 
     async def get_messages(
@@ -630,11 +637,6 @@ class FakeSpaceSession:
             for change, sources in self._changes
             if messages.isdisjoint(sources)
         ]
-        self._digests = {
-            digest.id: digest
-            for digest in self._digests.values()
-            if digest.session_id != session_id
-        }
         for message_id in messages:
             del self._messages[message_id]
             del self._message_positions[message_id]
@@ -652,7 +654,6 @@ class FakeSpaceSession:
         self._groups.clear()
         self._fact_salience.clear()
         self._entities.clear()
-        self._digests.clear()
         self._profile = None
         self._changes.clear()
         self._vectors.clear()
@@ -801,101 +802,6 @@ class FakeSpaceSession:
                 matches,
                 key=lambda edge: (positions[edge.subject_id], edge.fact_id.value),
             )[:limit]
-        )
-
-    async def save_digest(self, digest: Digest) -> None:
-        """保存来源可用的摘要。
-
-        Args:
-            digest: 待保存的摘要快照。
-
-        Raises:
-            ValueError: 来源不可用、分组或创建时刻改变，或更新时间倒退。
-        """
-        if not self._has_digest_sources(digest):
-            raise ValueError("摘要来源须属于绑定空间和摘要所属会话")
-        previous = self._digests.get(digest.id)
-        if previous is not None and (
-            previous.session_id != digest.session_id
-            or previous.source_message_ids != digest.source_message_ids
-            or previous.created_at != digest.created_at
-            or previous.updated_at > digest.updated_at
-        ):
-            raise ValueError("同 ID 的摘要分组和创建时刻固定，更新时间不能倒退")
-        self._digests[digest.id] = digest
-
-    def _has_digest_sources(self, digest: Digest) -> bool:
-        return digest.space_id == self.space_id and all(
-            (message := self._messages.get(message_id)) is not None
-            and message.space_id == self.space_id
-            and message.session_id == digest.session_id
-            for message_id in digest.source_message_ids
-        )
-
-    async def get_digest(self, digest_id: DigestId) -> Digest | None:
-        """按标识查找摘要。
-
-        Args:
-            digest_id: 要读取的摘要标识。
-
-        Returns:
-            来源齐全的摘要，缺失或来源不可用时为 None。
-        """
-        digest = self._digests.get(digest_id)
-        if digest is None or not self._has_digest_sources(digest):
-            return None
-        return digest
-
-    async def get_digest_for_group(
-        self, session_id: SessionId, source_message_ids: Sequence[MessageId]
-    ) -> Digest | None:
-        """按有序原文组查找摘要。
-
-        Args:
-            session_id: 原文组所在的会话。
-            source_message_ids: 定义消息组的原文标识，按首次出现顺序去重。
-
-        Returns:
-            该组最新保存的可用摘要，缺失时为 None。
-        """
-        group = tuple(dict.fromkeys(source_message_ids))
-        return min(
-            (
-                digest
-                for digest in self._digests.values()
-                if digest.session_id == session_id
-                and digest.source_message_ids == group
-                and self._has_digest_sources(digest)
-            ),
-            key=lambda digest: (-digest.updated_at, digest.id.value),
-            default=None,
-        )
-
-    async def get_latest_digest(self, session_id: SessionId) -> Digest | None:
-        """按消息追加位置查找会话摘要。
-
-        Args:
-            session_id: 要查询的会话标识。
-
-        Returns:
-            覆盖原文追加位置最靠后的可用摘要，缺失时为 None。
-        """
-        positions = {
-            message_id: index for index, message_id in enumerate(self._messages)
-        }
-        digests = (
-            digest
-            for digest in self._digests.values()
-            if digest.session_id == session_id and self._has_digest_sources(digest)
-        )
-        return min(
-            digests,
-            key=lambda digest: (
-                -max(positions[source] for source in digest.source_message_ids),
-                -digest.updated_at,
-                digest.id.value,
-            ),
-            default=None,
         )
 
     async def save_profile(self, profile: Profile) -> None:
@@ -1175,11 +1081,3 @@ class FakeIdGenerator:
             固定的事实标识。
         """
         return FactId("fact")
-
-    def new_digest_id(self) -> DigestId:
-        """为测试摘要提供标识。
-
-        Returns:
-            固定的摘要标识。
-        """
-        return DigestId("digest")

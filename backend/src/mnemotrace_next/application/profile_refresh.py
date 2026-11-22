@@ -13,13 +13,7 @@ from ..domain.fact import Fact
 from ..domain.ids import FactId, SpaceId
 from ..domain.profile import Profile
 from ..domain.values import EntityRef
-from ..ports.inference import (
-    LLM,
-    CompletionRefused,
-    CompletionTruncated,
-    InferenceError,
-    InvalidStructuredOutput,
-)
+from ..ports.inference import LLM
 from ..ports.queries import FactCursor, FactFilter, FactQuery
 from ..ports.runtime import Clock
 from ..ports.storage import (
@@ -29,7 +23,12 @@ from ..ports.storage import (
     SpaceUnavailable,
     Storage,
 )
-from .operations import ATTEMPT_TIMEOUT, LeaseLost, retry_delay_for
+from .operations import (
+    ATTEMPT_TIMEOUT,
+    LeaseLost,
+    classify_worker_failure,
+    retry_delay_for,
+)
 from .profile import ProfileInputTooLarge, generate_profile
 
 type PendingRefreshStatus = Literal["queued", "running"]
@@ -208,17 +207,7 @@ class ProfileRefreshRunner:
             return "profile_snapshot_changed", True
         if isinstance(error, ProfileInputTooLarge):
             return "profile_input_too_large", False
-        if isinstance(error, TimeoutError):
-            return "operation_timeout", True
-        if isinstance(
-            error, (InvalidStructuredOutput, CompletionRefused, CompletionTruncated)
-        ):
-            return "invalid_model_output", False
-        if isinstance(error, InferenceError):
-            return "inference_failed", self._transient(error)
-        if self._transient(error):
-            return "database_unavailable", True
-        return "internal_error", False
+        return classify_worker_failure(error, self._transient)
 
     async def _fail(
         self, job: ClaimedProfileRefresh, code: str, *, retry: bool

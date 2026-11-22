@@ -64,12 +64,14 @@ def test_server_space_and_session_isolation(database: PgDatabase) -> None:
                 "name",
                 "memory_decay",
                 "profile_auto_refresh",
+                "session_summary_enabled",
                 "out_of_range_fields",
             }
             assert body["created_at"].endswith("Z")
             assert body["out_of_range_fields"] == []
             assert body["memory_decay"] is False
             assert body["profile_auto_refresh"] is False
+            assert body["session_summary_enabled"] is False
             second = await client.post(
                 "/v1/spaces", headers=headers, json={"name": "学习"}
             )
@@ -138,9 +140,36 @@ def test_server_space_and_session_isolation(database: PgDatabase) -> None:
             ).status_code == 404
             response = await client.patch(first, headers=other, json={"name": "越权"})
             assert response.status_code == 404
+            response = await client.patch(
+                first, headers=other, json={"session_summary_enabled": True}
+            )
+            assert response.json()["code"] == "space_not_found"
+            for invalid in (None, "true", 1):
+                response = await client.patch(
+                    first, headers=headers, json={"session_summary_enabled": invalid}
+                )
+                assert response.status_code == 422
+                assert (
+                    response.json()["errors"][0]["path"] == "/session_summary_enabled"
+                )
+            response = await client.patch(
+                first, headers=headers, json={"session_summary_enabled": True}
+            )
+            assert (
+                response.status_code == 200
+                and response.json()["session_summary_enabled"] is True
+            )
             response = await client.patch(first, headers=headers, json={"name": "改名"})
             assert response.json()["name"] == "改名"
-            assert (await client.get(first, headers=headers)).json()["name"] == "改名"
+            assert response.json()["session_summary_enabled"] is True
+            assert (await client.get(first, headers=headers)).json() == response.json()
+            listed = {
+                item["space_id"]: item["session_summary_enabled"]
+                for item in (await client.get("/v1/spaces", headers=headers)).json()[
+                    "items"
+                ]
+            }
+            assert listed == {body["space_id"]: True, second.json()["space_id"]: False}
 
             with psycopg.connect(database.admin) as conn:
                 assert revoke_key(conn, owner, first_key.info.key_id)

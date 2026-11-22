@@ -106,6 +106,7 @@ def test_auto_profile_upgrade_preserves_active_manual_lease(
         assert migrate.apply_migrations(dsn) == (
             version,
             "015_profile_evidence_revision.sql",
+            "016_session_summaries.sql",
         )
         with psycopg.connect(dsn) as conn:
             assert conn.execute("""
@@ -129,6 +130,49 @@ def test_auto_profile_upgrade_preserves_active_manual_lease(
                 None,
                 20.0,
             )
+
+
+def test_session_summary_upgrade_retires_fixed_group_table_and_starts_disabled(
+    database_factory: DatabaseFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    version = "016_session_summaries.sql"
+    previous = tuple(item for item in migrate._migrations() if item.version < version)
+    with database_factory() as dsn:
+        with monkeypatch.context() as legacy:
+            legacy.setattr(migrate, "_migrations", lambda: previous)
+            assert (
+                migrate.apply_migrations(dsn)[-1] == "015_profile_evidence_revision.sql"
+            )
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT count(*) FROM mnemotrace_next.digests"
+            ).fetchone() == (0,)
+            conn.execute("""
+                INSERT INTO mnemotrace_next.spaces (space_id, owner_id, name, created_at)
+                VALUES ('legacy', 'owner', '旧空间', 1);
+                INSERT INTO mnemotrace_next.sessions (space_id, session_id)
+                VALUES ('legacy', 'session');
+                INSERT INTO mnemotrace_next.messages
+                    (space_id, session_id, message_id, role, content, recorded_at)
+                SELECT 'legacy', 'session', i::text, 'user', '历史原文', 1
+                FROM generate_series(1, 20) AS i;
+                """)
+        assert migrate.apply_migrations(dsn) == (version,)
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute("""
+                SELECT session_summary_enabled, count(*) FROM mnemotrace_next.spaces
+                JOIN mnemotrace_next.messages USING (space_id)
+                GROUP BY session_summary_enabled
+                """).fetchone() == (False, 20)
+            assert (
+                conn.execute(
+                    "SELECT 1 FROM mnemotrace_next.session_summaries"
+                ).fetchone()
+                is None
+            )
+            assert conn.execute(
+                "SELECT to_regclass('mnemotrace_next.digests')"
+            ).fetchone() == (None,)
 
 
 def test_upgrade_preserves_queued_operation_and_idempotency_hashes(
@@ -388,11 +432,6 @@ def test_session_evidence_and_trigger_upgrades_from_002(
                 """,
                 (scope.id.value,),
             )
-            conn.execute(
-                "INSERT INTO mnemotrace_next.digests VALUES (%s, 'orphan', 'digest-only', "
-                "'旧摘要', ARRAY['first'], 1, 10, 10)",
-                (scope.id.value,),
-            )
         with monkeypatch.context() as single_trigger:
             single_trigger.setattr(
                 migrate, "_migrations", lambda: (initial, salience, evidence)
@@ -450,7 +489,6 @@ def test_session_evidence_and_trigger_upgrades_from_002(
                     assert stored is not None and stored.subject.entity_id == subject.id
                     assert await writer.has_session(SessionId("first-session"))
                     assert await writer.has_session(SessionId("second-session"))
-                    assert await writer.has_session(SessionId("digest-only"))
                     assert await writer.get_fact_support_groups((current,)) == {
                         current: ((first, second),),
                     }

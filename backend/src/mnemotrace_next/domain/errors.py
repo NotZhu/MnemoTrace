@@ -21,9 +21,5 @@ class InvalidFact(DomainError):
     """表示事实字段或截止操作无效。"""
 
 
-class InvalidDigest(DomainError):
-    """表示摘要字段或更新时间无效。"""
-
-
 class InvalidProfile(DomainError):
     """表示画像字段或更新时间无效。"""

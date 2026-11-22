@@ -64,7 +64,7 @@ class LLM(Protocol):
         并设置 additionalProperties 为 false。数组用单一 items schema。
         标量支持 string、integer、number、boolean、null 及标量 enum。
         可空字段用两项 anyOf 表达，一项为 null，另一项为受支持的非空 schema。
-        适配器在返回前验证模型输出。
+        适配器在返回前验证模型输出的结构、字段类型和字符串的 UTF-8 合法性。
 
         Args:
             system: 系统指令。

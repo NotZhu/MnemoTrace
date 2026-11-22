@@ -48,6 +48,23 @@ def retry_delay_for(attempt: int, *, retry: bool) -> timedelta | None:
     )
 
 
+def classify_worker_failure(
+    error: Exception, transient: Callable[[Exception], bool]
+) -> tuple[str, bool]:
+    """为通用任务异常返回稳定错误码及是否允许重试。"""
+    if isinstance(error, TimeoutError):
+        return "operation_timeout", True
+    if isinstance(
+        error, (InvalidStructuredOutput, CompletionRefused, CompletionTruncated)
+    ):
+        return "invalid_model_output", False
+    if isinstance(error, InferenceError):
+        return "inference_failed", transient(error)
+    if transient(error):
+        return "database_unavailable", True
+    return "internal_error", False
+
+
 class IdempotencyConflict(ValueError):
     """幂等键已用于同一空间的另一批写入。"""
 
@@ -193,17 +210,7 @@ class OperationRunner:
             return "invalid_message", False
         if isinstance(error, RememberRetryRequired):
             return "remember_conflict", True
-        if isinstance(error, TimeoutError):
-            return "operation_timeout", True
-        if isinstance(
-            error, (InvalidStructuredOutput, CompletionRefused, CompletionTruncated)
-        ):
-            return "invalid_model_output", False
-        if isinstance(error, InferenceError):
-            return "inference_failed", self._transient(error)
-        if self._transient(error):
-            return "database_unavailable", True
-        return "internal_error", False
+        return classify_worker_failure(error, self._transient)
 
     async def _record_attempt_failure(
         self,

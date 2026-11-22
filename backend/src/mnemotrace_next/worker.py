@@ -9,6 +9,7 @@ import sys
 from contextlib import nullcontext
 from datetime import tzinfo
 from types import FrameType
+from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import psycopg
@@ -20,14 +21,20 @@ from .adapters.inference import InferenceRequestError, open_inference
 from .adapters.postgres.migrate import migration_checksums
 from .adapters.postgres.operations import PostgresOperations
 from .adapters.postgres.profile_refresh import PostgresProfileRefresh
+from .adapters.postgres.session_summary_refresh import PostgresSessionSummaryRefresh
 from .adapters.postgres.storage import PostgresStorage
 from .adapters.runtime import SystemClock, UuidGenerator
 from .application.operations import ClaimedOperation, OperationRunner
 from .application.profile_refresh import ProfileRefreshRunner
 from .application.remember import Remember
+from .application.session_summary_refresh import SessionSummaryRunner
 from .runtime_settings import RuntimeSettings
 
 _LOG = logging.getLogger(__name__)
+
+
+class _Runner(Protocol):
+    async def run_once(self) -> bool: ...
 
 
 def _is_transient(error: Exception) -> bool:
@@ -36,9 +43,7 @@ def _is_transient(error: Exception) -> bool:
     return isinstance(error, psycopg.OperationalError)
 
 
-async def _consume(
-    runner: OperationRunner | ProfileRefreshRunner, stopping: asyncio.Event
-) -> None:
+async def _consume(runner: _Runner, stopping: asyncio.Event) -> None:
     while not stopping.is_set():
         try:
             if await runner.run_once():
@@ -64,7 +69,7 @@ async def _serve(
         settings.postgres_dsn,
         open=False,
         min_size=0,
-        max_size=concurrency + 1,
+        max_size=concurrency + 2,
         timeout=3,
         kwargs={"connect_timeout": 3},
     )
@@ -81,10 +86,13 @@ async def _serve(
             if dict(await cursor.fetchall()) != migration_checksums():
                 raise ValueError("请先应用当前版本的 PostgreSQL 迁移")
 
+        def storage_for(owner: str) -> PostgresStorage:
+            return PostgresStorage(pool, owner_id=owner)
+
         def remember_for(job: ClaimedOperation) -> Remember:
             return Remember(
                 space_id=job.space_id,
-                storage=PostgresStorage(pool, owner_id=job.owner_id),
+                storage=storage_for(job.owner_id),
                 llm=llm,
                 embedder=embedder,
                 clock=SystemClock(),
@@ -95,10 +103,13 @@ async def _serve(
         runner = OperationRunner(PostgresOperations(pool), remember_for, _is_transient)
         profile_runner = ProfileRefreshRunner(
             PostgresProfileRefresh(pool),
-            lambda owner: PostgresStorage(pool, owner_id=owner),
+            storage_for,
             llm,
             SystemClock(),
             _is_transient,
+        )
+        summary_runner = SessionSummaryRunner(
+            PostgresSessionSummaryRefresh(pool), storage_for, llm, _is_transient
         )
         readiness = (
             await asyncio.start_server(_close_probe, "127.0.0.1", readiness_port)
@@ -110,6 +121,7 @@ async def _serve(
             for _ in range(concurrency):
                 workers.create_task(_consume(runner, stopping))
             workers.create_task(_consume(profile_runner, stopping))
+            workers.create_task(_consume(summary_runner, stopping))
             await stopping.wait()
 
 

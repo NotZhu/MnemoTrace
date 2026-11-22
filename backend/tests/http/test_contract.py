@@ -4,6 +4,7 @@ import sys
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient, Response
@@ -52,6 +53,39 @@ def _assert_problem(response: Response, status: int, code: str) -> None:
     assert response.json()["status"] == status
     assert response.json()["code"] == code
     assert response.json()["request_id"] == response.headers["x-request-id"]
+
+
+@pytest.mark.anyio
+async def test_session_summary_patch_accepts_only_strict_booleans() -> None:
+    app = create_app(Settings(RuntimeSettings("dbname=unused")))
+    storage = AsyncMock()
+    storage.update_space.return_value = Space(
+        SpaceId("summary"), "owner", "已改名", 1.0, session_summary_enabled=True
+    )
+    app.dependency_overrides[authorized_storage] = lambda: storage
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for invalid in (None, "true", 1):
+            response = await client.patch(
+                "/v1/spaces/summary", json={"session_summary_enabled": invalid}
+            )
+            _assert_problem(response, 422, "invalid_request")
+            assert response.json()["errors"][0]["path"] == "/session_summary_enabled"
+        storage.update_space.assert_not_awaited()
+        response = await client.patch(
+            "/v1/spaces/summary",
+            json={"name": "已改名", "session_summary_enabled": True},
+        )
+        assert response.status_code == 200
+        assert response.json()["session_summary_enabled"] is True
+        storage.update_space.assert_awaited_once_with(
+            SpaceId("summary"),
+            name="已改名",
+            memory_decay=None,
+            profile_auto_refresh=None,
+            session_summary_enabled=True,
+        )
 
 
 @pytest.mark.parametrize(
@@ -122,7 +156,7 @@ async def test_openapi_routes_and_operation_ids(
         "/v1/spaces": {"get": "listSpaces", "post": "createSpace"},
         "/v1/spaces/{space_id}": {
             "get": "getSpace",
-            "patch": "renameSpace",
+            "patch": "updateSpace",
             "delete": "deleteSpace",
         },
         "/v1/spaces/{space_id}/purge": {"post": "purgeSpace"},
@@ -223,13 +257,19 @@ async def test_openapi_request_and_response_schemas(openapi_response: Response) 
         assert schema["type"] == "boolean" and schema["default"] is default
         assert option not in recall_request["required"]
     assert (
-        spec["paths"]["/v1/spaces/{space_id}"]["patch"]["operationId"] == "renameSpace"
+        spec["paths"]["/v1/spaces/{space_id}"]["patch"]["operationId"] == "updateSpace"
     )
     assert schemas["SpacePatch"]["properties"]["memory_decay"]["type"] == "boolean"
     assert (
         schemas["SpacePatch"]["properties"]["profile_auto_refresh"]["type"] == "boolean"
     )
     assert "profile_auto_refresh" in schemas["SpaceResponse"]["required"]
+    assert (
+        schemas["SpacePatch"]["properties"]["session_summary_enabled"]["type"]
+        == "boolean"
+    )
+    assert "session_summary_enabled" in schemas["SpaceResponse"]["required"]
+    assert "session_summary_enabled" not in schemas["SpaceName"]["properties"]
     validation = recall["responses"]["422"]["content"]["application/problem+json"]
     assert set(validation["schema"]["properties"]["errors"]["items"]["properties"]) == {
         "location",

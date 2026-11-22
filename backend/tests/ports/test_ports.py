@@ -10,12 +10,10 @@ import pytest
 from mnemotrace_next import Memory
 from mnemotrace_next.application.salience import reinforce_context_facts
 from mnemotrace_next.application.sessions import create_session
-from mnemotrace_next.domain.digest import Digest
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.enums import Role, Source
 from mnemotrace_next.domain.fact import Fact
 from mnemotrace_next.domain.ids import (
-    DigestId,
     EntityId,
     FactId,
     MessageId,
@@ -123,9 +121,6 @@ def test_ports_smoke() -> None:
             provenance=(message.id,),
             source=Source.EXTRACTED,
         )
-        digest = Digest(
-            ids.new_digest_id(), space.id, session_id, "摘要", (message.id,), now, now
-        )
         (vector,) = await embedder.embed((fact.text,))
         assert structured == {"text": message.content}
         assert completion.finish_reason is None
@@ -142,7 +137,6 @@ def test_ports_smoke() -> None:
             await session.upsert_vectors(
                 ((fact.id, vector),), embedding_space=embedder.embedding_space
             )
-            await session.save_digest(digest)
 
         async def check_reads(reader: SpaceReader) -> None:
             assert await reader.get_space() == space
@@ -154,11 +148,6 @@ def test_ports_smoke() -> None:
             assert await reader.get_messages((message.id, MessageId("absent"))) == {
                 message.id: message
             }
-            assert await reader.get_digest(digest.id) == digest
-            assert (
-                await reader.get_digest_for_group(session_id, (message.id,)) == digest
-            )
-            assert await reader.get_latest_digest(session_id) == digest
 
             filters = FactFilter()
             vector_hits = await reader.search_vectors(
@@ -724,22 +713,6 @@ def test_delete_session_data_removes_facts_and_source_history() -> None:
             session_id=SessionId("kept"),
             content="喜欢喝茶，也喜欢看书",
         )
-        removed_digest = Digest(
-            DigestId("removed"),
-            _SPACE.id,
-            removed.session_id,
-            "茶",
-            (removed.id,),
-            10.0,
-            20.0,
-        )
-        kept_digest = replace(
-            removed_digest,
-            id=DigestId("kept"),
-            session_id=kept.session_id,
-            text="喝茶、看书偏好",
-            source_message_ids=(kept.id,),
-        )
         withdrawn = replace(
             _FACT, source=Source.EXTRACTED, provenance=(removed.id, kept.id)
         ).close(valid_end=18.0, closed_at=18.0)
@@ -772,8 +745,6 @@ def test_delete_session_data_removes_facts_and_source_history() -> None:
             await session.register_session(removed.session_id)
             await session.register_session(kept.session_id)
             await session.append_messages((removed, kept))
-            await session.save_digest(removed_digest)
-            await session.save_digest(kept_digest)
             await session.save_facts((withdrawn, scheduled, old), changed_at=20.0)
             await session.save_facts(
                 (correction,),
@@ -800,8 +771,6 @@ def test_delete_session_data_removes_facts_and_source_history() -> None:
         async with storage.session(_SPACE.id) as session:
             assert await session.get_profile() is None
             assert await session.get_messages((removed.id, kept.id)) == {kept.id: kept}
-            assert await session.get_latest_digest(removed.session_id) is None
-            assert await session.get_latest_digest(kept.session_id) == kept_digest
             assert await session.get_facts(
                 (withdrawn.id, scheduled.id, current.id)
             ) == {current.id: current}
@@ -834,7 +803,6 @@ def test_delete_session_data_removes_facts_and_source_history() -> None:
             assert await session.get_space() == _SPACE
             assert await session.get_messages((kept.id,)) == {}
             assert await session.get_fact(current.id) is None
-            assert await session.get_latest_digest(kept.session_id) is None
             assert await session.list_fact_changes(current.id) == ()
 
     asyncio.run(exercise())
@@ -884,67 +852,5 @@ def test_purge_space_replaces_token_even_when_empty() -> None:
         )
         async with storage.session(_SPACE.id) as session:
             assert await session.get_salience((_FACT.id,)) == {_FACT.id: FactSalience()}
-
-    asyncio.run(exercise())
-
-
-def test_latest_digest_uses_append_order_and_rejects_missing_sources() -> None:
-    """按追加位置选择摘要，保存时拒绝缺失来源。"""
-
-    async def exercise() -> None:
-        storage: Storage = FakeStorage()
-        await storage.create_space(_SPACE)
-        session_id = SessionId("session")
-        first = Message(
-            MessageId("first"), _SPACE.id, session_id, Role.USER, "先记这条", 30.0, 30.0
-        )
-        second = replace(
-            first,
-            id=MessageId("second"),
-            content="后来补一句",
-            event_time=20.0,
-            recorded_at=20.0,
-        )
-        first_digest = Digest(
-            DigestId("first"), _SPACE.id, session_id, "第一段", (first.id,), 30.0, 100.0
-        )
-        latest = replace(
-            first_digest,
-            id=DigestId("a"),
-            text="后一段",
-            source_message_ids=(second.id,),
-            updated_at=50.0,
-        )
-        tied = replace(
-            latest, id=DigestId("b"), source_message_ids=(first.id, second.id)
-        )
-        stale = replace(tied, id=DigestId("0"), updated_at=40.0)
-        orphaned = replace(
-            latest,
-            id=DigestId("orphaned"),
-            text="含已缺失原文",
-            source_message_ids=(second.id, MessageId("missing")),
-            updated_at=200.0,
-        )
-        async with storage.session(_SPACE.id, write=True) as session:
-            await session.register_session(session_id)
-            await session.append_messages((first, second, first))
-            await session.save_digest(first_digest)
-            await session.save_digest(tied)
-            await session.save_digest(stale)
-            await session.save_digest(latest)
-            with pytest.raises(ValueError, match="摘要来源"):
-                await session.save_digest(orphaned)
-        async with storage.session(_SPACE.id) as session:
-            assert await session.last_messages(session_id, limit=2) == (first, second)
-            assert await session.last_messages(session_id, limit=1) == (second,)
-            assert await session.get_digest(orphaned.id) is None
-            assert (
-                await session.get_digest_for_group(
-                    session_id, orphaned.source_message_ids
-                )
-                is None
-            )
-            assert await session.get_latest_digest(session_id) == latest
 
     asyncio.run(exercise())

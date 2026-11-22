@@ -38,8 +38,3 @@ class FactId(_Id):
 @dataclass(frozen=True)
 class EntityId(_Id):
     """标识一个实体。"""
-
-
-@dataclass(frozen=True)
-class DigestId(_Id):
-    """标识一份摘要。"""

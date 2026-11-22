@@ -118,6 +118,7 @@ class SpacePatch(TypedDict, total=False):
     name: _SpaceNameText
     memory_decay: Annotated[bool, Field(strict=True)]
     profile_auto_refresh: Annotated[bool, Field(strict=True)]
+    session_summary_enabled: Annotated[bool, Field(strict=True)]
 
 
 def _require_space_update(patch: SpacePatch) -> SpacePatch:
@@ -136,6 +137,7 @@ class SpaceResponse(BaseModel):
     name: str
     memory_decay: bool
     profile_auto_refresh: bool
+    session_summary_enabled: bool
     created_at: datetime | None
     out_of_range_fields: list[Literal["created_at"]]
 
@@ -148,6 +150,7 @@ class SpaceResponse(BaseModel):
             name=space.name,
             memory_decay=space.memory_decay,
             profile_auto_refresh=space.profile_auto_refresh,
+            session_summary_enabled=space.session_summary_enabled,
             created_at=epoch_to_response_datetime(
                 "created_at", space.created_at, out_of_range
             ),

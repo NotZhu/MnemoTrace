@@ -30,7 +30,6 @@ KNOWN_LABELS = frozenset(
         "misc",
     }
 )
-MAX_DIGEST_CHARS = 2000
 
 
 def normalize_text(text: str) -> str:

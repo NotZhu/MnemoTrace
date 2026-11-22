@@ -93,7 +93,7 @@ export interface paths {
          * Update Space
          * @description 更新所属空间的名称或记忆策略。
          */
-        patch: operations["renameSpace"];
+        patch: operations["updateSpace"];
         trace?: never;
     };
     "/v1/spaces/{space_id}/purge": {
@@ -852,6 +852,8 @@ export interface components {
             memory_decay?: boolean;
             /** Profile Auto Refresh */
             profile_auto_refresh?: boolean;
+            /** Session Summary Enabled */
+            session_summary_enabled?: boolean;
         };
         /**
          * SpaceResponse
@@ -866,6 +868,8 @@ export interface components {
             memory_decay: boolean;
             /** Profile Auto Refresh */
             profile_auto_refresh: boolean;
+            /** Session Summary Enabled */
+            session_summary_enabled: boolean;
             /** Created At */
             created_at: string | null;
             /** Out Of Range Fields */
@@ -1658,7 +1662,7 @@ export interface operations {
             };
         };
     };
-    renameSpace: {
+    updateSpace: {
         parameters: {
             query?: never;
             header?: never;

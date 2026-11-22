@@ -31,8 +31,8 @@ from .adjudication import (
 )
 from .extraction import extract_facts, message_reference_time
 from .fact_lifecycle import calculate_fact_writes
+from .session_summary import RECENT_MESSAGE_WINDOW
 
-_CONTEXT_MESSAGES = 10
 _COMPARISON_RETRIES = 1
 
 
@@ -85,6 +85,7 @@ class _RememberContext:
     received_at: float
     erasure_token: str
     previous: tuple[Message, ...]
+    session_summary: str | None
     messages: tuple[Message, ...]
 
 
@@ -161,7 +162,11 @@ class Remember:
         if operation:
             operation.enter_stage("extraction")
         extracted = await extract_facts(
-            self._llm, context.previous, context.messages, timezone=self._timezone
+            self._llm,
+            context.previous,
+            context.messages,
+            timezone=self._timezone,
+            session_summary=context.session_summary,
         )
         if extracted:
             async with self._storage.session(self._space_id) as reader:
@@ -376,8 +381,9 @@ async def _prepare_remember_context(
         if not await reader.has_session(session_id):
             raise SessionUnavailable("会话不可用")
         erasure_token = await reader.get_erasure_token()
-        previous = tuple(await reader.last_messages(session_id, _CONTEXT_MESSAGES))
-    return _RememberContext(received_at, erasure_token, previous, prepared)
+        previous = tuple(await reader.last_messages(session_id, RECENT_MESSAGE_WINDOW))
+        summary = await reader.get_session_summary(session_id)
+    return _RememberContext(received_at, erasure_token, previous, summary, prepared)
 
 
 def _prepare_message(

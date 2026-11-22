@@ -7,7 +7,6 @@ import pytest
 
 from mnemotrace_next.domain.errors import DomainError
 from mnemotrace_next.domain.ids import (
-    DigestId,
     EntityId,
     FactId,
     MessageId,
@@ -15,8 +14,8 @@ from mnemotrace_next.domain.ids import (
     SpaceId,
 )
 
-type Identifier = SpaceId | SessionId | MessageId | FactId | EntityId | DigestId
-ID_TYPES = (SpaceId, SessionId, MessageId, FactId, EntityId, DigestId)
+type Identifier = SpaceId | SessionId | MessageId | FactId | EntityId
+ID_TYPES = (SpaceId, SessionId, MessageId, FactId, EntityId)
 
 
 def test_ids_preserve_value_and_compare_by_type() -> None:

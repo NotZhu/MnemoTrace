@@ -82,7 +82,7 @@ async def get_space(space_id: ResourceId, storage: AuthorizedStorage) -> SpaceRe
 
 @router.patch(
     "/{space_id}",
-    operation_id="renameSpace",
+    operation_id="updateSpace",
     dependencies=[Depends(require_json)],
     responses={**_json_errors, **problem_responses(404)},
 )
@@ -96,6 +96,7 @@ async def update_space(
             name=body.get("name"),
             memory_decay=body.get("memory_decay"),
             profile_auto_refresh=body.get("profile_auto_refresh"),
+            session_summary_enabled=body.get("session_summary_enabled"),
         )
     )
 

@@ -2,11 +2,10 @@
 
 from typing import TypedDict, Unpack
 
-from ...domain.digest import Digest
 from ...domain.entity import Entity, EntityKind
 from ...domain.enums import Role, Source
 from ...domain.fact import Fact
-from ...domain.ids import DigestId, EntityId, FactId, MessageId, SessionId, SpaceId
+from ...domain.ids import EntityId, FactId, MessageId, SessionId, SpaceId
 from ...domain.message import Message
 from ...domain.profile import Profile, ProfileEntry
 from ...domain.salience import FactSalience
@@ -22,6 +21,7 @@ def space_from_row(
     created_at: float,
     memory_decay: bool,
     profile_auto_refresh: bool,
+    session_summary_enabled: bool,
 ) -> Space:
     """从空间表还原领域快照。
 
@@ -32,6 +32,7 @@ def space_from_row(
         created_at: 创建时刻，单位为 UTC epoch 秒。
         memory_decay: 是否启用记忆衰减和自动强化。
         profile_auto_refresh: 是否按事实变化自动刷新画像。
+        session_summary_enabled: 是否后台更新会话滚动摘要。
 
     Returns:
         空间快照。
@@ -43,6 +44,7 @@ def space_from_row(
         created_at,
         memory_decay,
         profile_auto_refresh,
+        session_summary_enabled,
     )
 
 
@@ -241,40 +243,6 @@ def change_from_row(
         fact_from_row(**before) if before is not None else None,
         fact_from_row(**after),
         tuple(cutoff_triggers),
-    )
-
-
-def digest_from_row(
-    digest_id: str,
-    space_id: str,
-    session_id: str,
-    text: str,
-    source_message_ids: list[str],
-    created_at: float,
-    updated_at: float,
-) -> Digest:
-    """还原固定消息组的摘要快照。
-
-    Args:
-        digest_id: 持久化的摘要标识。
-        space_id: 摘要所属空间的标识。
-        session_id: 来源所属会话的标识。
-        text: 摘要正文。
-        source_message_ids: 按保存顺序排列的来源标识。
-        created_at: 初始摘要的记录时刻，单位为 UTC epoch 秒。
-        updated_at: 最近更新时刻，单位为 UTC epoch 秒。
-
-    Returns:
-        带有序来源的摘要快照。
-    """
-    return Digest(
-        DigestId(digest_id),
-        SpaceId(space_id),
-        SessionId(session_id),
-        text,
-        tuple(map(MessageId, source_message_ids)),
-        created_at,
-        updated_at,
     )
 
 

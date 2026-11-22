@@ -6,10 +6,9 @@ from typing import Literal
 from psycopg import AsyncConnection, sql
 from psycopg.rows import TupleRow, args_row, kwargs_row
 
-from ...domain.digest import Digest
 from ...domain.entity import Entity
 from ...domain.fact import Fact
-from ...domain.ids import DigestId, EntityId, FactId, MessageId, SessionId, SpaceId
+from ...domain.ids import EntityId, FactId, MessageId, SessionId, SpaceId
 from ...domain.message import Message
 from ...domain.profile import Profile
 from ...domain.salience import FactSalience
@@ -22,7 +21,6 @@ from .fact_filters import FactConditions, fact_conditions
 from .facts import SELECT_FACTS
 from .rows import (
     change_from_row,
-    digest_from_row,
     entity_from_row,
     fact_from_row,
     graph_edge_from_row,
@@ -57,20 +55,6 @@ _SESSIONS_AFTER_TIMESTAMP = sql.SQL("""
     {order}
     """).format(rows=_SESSIONS, order=_SESSION_ORDER)
 
-_AVAILABLE_DIGESTS = sql.SQL("""
-    SELECT d.digest_id, d.space_id, d.session_id, d.text, d.source_message_ids,
-           d.created_at, d.updated_at
-    FROM mnemotrace_next.digests AS d
-    WHERE d.space_id = %(space_id)s
-      AND NOT EXISTS (
-          SELECT 1 FROM unnest(d.source_message_ids) AS source(message_id)
-          WHERE NOT EXISTS (
-              SELECT 1 FROM mnemotrace_next.messages AS m
-              WHERE m.space_id = d.space_id AND m.session_id = d.session_id
-                AND m.message_id = source.message_id
-          )
-      )
-    """)
 
 _EDGE_DIRECTIONS = {
     "in": "f.object_entity_id = %(endpoint)s",
@@ -128,11 +112,19 @@ class PostgresReader:
     Args:
         conn: 会话事务使用的 PostgreSQL 连接。
         space_id: 已通过授权的空间标识。
+        session_summary_enabled: 空间授权查询在本事务中读取的摘要开关。
     """
 
-    def __init__(self, conn: AsyncConnection[TupleRow], space_id: SpaceId) -> None:
+    def __init__(
+        self,
+        conn: AsyncConnection[TupleRow],
+        space_id: SpaceId,
+        *,
+        session_summary_enabled: bool,
+    ) -> None:
         self._connection: AsyncConnection[TupleRow] | None = conn
         self._space_id = space_id
+        self._session_summary_enabled = session_summary_enabled
         self._embedding_dims: dict[str, int] = {}
 
     @property
@@ -162,7 +154,8 @@ class PostgresReader:
         async with self._conn.cursor(row_factory=args_row(space_from_row)) as cursor:
             await cursor.execute(
                 """
-                SELECT space_id, owner_id, name, created_at, memory_decay, profile_auto_refresh
+                SELECT space_id, owner_id, name, created_at, memory_decay, profile_auto_refresh,
+                    session_summary_enabled
                 FROM mnemotrace_next.spaces WHERE space_id = %s
                 """,
                 (self.space_id.value,),
@@ -261,18 +254,43 @@ class PostgresReader:
             )
             return tuple(reversed(await cursor.fetchall()))
 
+    async def get_session_summary(self, session_id: SessionId) -> str | None:
+        """依照当前读快照的空间开关读取本会话的非空摘要。"""
+        if not self._session_summary_enabled:
+            return None
+        async with self._conn.cursor(row_factory=args_row(str)) as cursor:
+            await cursor.execute(
+                """
+                SELECT summary_text FROM mnemotrace_next.session_summaries
+                WHERE space_id = %s AND session_id = %s AND summary_text <> ''
+                """,
+                (self.space_id.value, session_id.value),
+            )
+            return await cursor.fetchone()
+
     async def list_session_messages(
-        self, session_id: SessionId, *, after: int | None, limit: int
+        self,
+        session_id: SessionId,
+        *,
+        after: int | None,
+        limit: int,
+        through: int | None = None,
     ) -> Sequence[tuple[int, Message]]:
         """使用会话原文索引按追加位置分页。"""
-        statement = sql.SQL("""
+        statement: sql.SQL | sql.Composed = sql.SQL("""
             SELECT append_seq, {} FROM mnemotrace_next.messages
             WHERE space_id = %s AND session_id = %s AND append_seq > %s
-            ORDER BY append_seq LIMIT %s
             """).format(_MESSAGE_FIELDS)
+        params: tuple[str | int, ...] = (
+            self.space_id.value,
+            session_id.value,
+            after or 0,
+        )
+        if through is not None:
+            statement += sql.SQL(" AND append_seq <= %s")
+            params += (through,)
         cursor = await self._conn.execute(
-            statement,
-            (self.space_id.value, session_id.value, after or 0, limit),
+            statement + sql.SQL(" ORDER BY append_seq LIMIT %s"), (*params, limit)
         )
         return tuple(
             (position, message_from_row(*row))
@@ -667,65 +685,6 @@ class PostgresReader:
         ) as cursor:
             await cursor.execute(query, params)
             return tuple(await cursor.fetchall())
-
-    async def _digest(self, tail: str, **params: object) -> Digest | None:
-        async with self._conn.cursor(row_factory=args_row(digest_from_row)) as cursor:
-            await cursor.execute(
-                _AVAILABLE_DIGESTS + sql.SQL(tail),
-                {"space_id": self.space_id.value, **params},
-            )
-            return await cursor.fetchone()
-
-    async def get_digest(self, digest_id: DigestId) -> Digest | None:
-        """按标识读取摘要。
-
-        Args:
-            digest_id: 要读取的摘要标识。
-
-        Returns:
-            来源齐全的摘要。摘要或来源缺失时为 None。
-        """
-        return await self._digest(
-            " AND d.digest_id = %(digest)s", digest=digest_id.value
-        )
-
-    async def get_digest_for_group(
-        self, session_id: SessionId, source_message_ids: Sequence[MessageId]
-    ) -> Digest | None:
-        """读取有序消息组最新保存的可用摘要。
-
-        Args:
-            session_id: 消息组所在的会话。
-            source_message_ids: 定义消息组的原文标识，按首次出现顺序去重。
-
-        Returns:
-            对应消息组的可用摘要。同刻按摘要标识升序择一，缺失时为 None。
-        """
-        return await self._digest(
-            """
-            AND d.session_id = %(session)s AND d.source_message_ids = %(sources)s::text[]
-            ORDER BY d.updated_at DESC, d.digest_id ASC LIMIT 1
-            """,
-            session=session_id.value,
-            sources=list(dict.fromkeys(item.value for item in source_message_ids)),
-        )
-
-    async def get_latest_digest(self, session_id: SessionId) -> Digest | None:
-        """按原文覆盖位置选取最近的可用摘要。
-
-        Args:
-            session_id: 要查询的会话标识。
-
-        Returns:
-            覆盖原文追加位置最靠后的摘要。缺失时为 None。
-        """
-        return await self._digest(
-            """
-            AND d.session_id = %(session)s
-            ORDER BY d.last_message_seq DESC, d.updated_at DESC, d.digest_id ASC LIMIT 1
-            """,
-            session=session_id.value,
-        )
 
     async def get_profile(self, *, exclude_sensitive: bool = False) -> Profile | None:
         """读取绑定空间的画像。

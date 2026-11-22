@@ -40,6 +40,8 @@ result = await memory.remember(
 
 `remember` 也接受单条用户文本。`RememberResult.message_ids` 按输入顺序返回已提交原文的标识，`fact_changes` 按审计游标升序返回实际发生的变更。合法零事实或全部暂缓时仍保存原文，事实变更为空。
 
+`remember` 沿用空间的 `session_summary_enabled` 设置。开启后，运行 worker 的部署会在后台更新滚动摘要。有可用摘要时，写入用它辅助理解最新原文，引用仍来自本批消息或最近十条已提交原文。通过现有空间 PATCH 设置开关。 [会话摘要契约](docs/http-api.md#会话滚动摘要)
+
 依赖前一次对话的调用应等待前一次 `remember` 完成。`SessionUnavailable` 表示会话不可用，`RememberInvalidated` 表示空间擦除使本次请求失效，`RememberRetryRequired` 表示并发导致本次尚未写入、可由调用方重新发起。`CommitOutcomeUnknown` 表示写事务进入提交阶段后失去确认，原文和事实可能已经提交。调用方重送会按新写入处理，可能产生新的原文记录。
 
 ## Python 召回

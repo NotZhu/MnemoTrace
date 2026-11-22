@@ -17,6 +17,7 @@ class Space:
     created_at: float
     memory_decay: bool = False
     profile_auto_refresh: bool = False
+    session_summary_enabled: bool = False
 
     def __post_init__(self) -> None:
         require_type(self.id, SpaceId, "id", InvalidSpace)
@@ -25,6 +26,9 @@ class Space:
         require_type(self.memory_decay, bool, "memory_decay", InvalidSpace)
         require_type(
             self.profile_auto_refresh, bool, "profile_auto_refresh", InvalidSpace
+        )
+        require_type(
+            self.session_summary_enabled, bool, "session_summary_enabled", InvalidSpace
         )
         created_at = timestamp(self.created_at, "created_at", InvalidSpace)
         object.__setattr__(self, "created_at", created_at)

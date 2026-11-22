@@ -42,8 +42,8 @@ uv run --locked --extra server python -m mnemotrace_next.server
 | --- | --- |
 | `POST /v1/spaces` | JSON 请求 `{"name":"研究"}`。返回 201、空间及 `Location`。 |
 | `GET /v1/spaces` | 分页列出账号拥有的空间，含空空间。 |
-| `GET /v1/spaces/{space_id}` | 返回 `space_id`、`name`、`memory_decay`、`profile_auto_refresh` 和 UTC `created_at`。 |
-| `PATCH /v1/spaces/{space_id}` | 更新 `name`、`memory_decay` 和 `profile_auto_refresh` 中的一个或多个字段。返回更新后的空间，`operationId` 为 `renameSpace`。 |
+| `GET /v1/spaces/{space_id}` | 返回 `space_id`、`name`、`memory_decay`、`profile_auto_refresh`、`session_summary_enabled` 和 UTC `created_at`。 |
+| `PATCH /v1/spaces/{space_id}` | 更新 `name`、`memory_decay`、`profile_auto_refresh` 和 `session_summary_enabled` 中的一个或多个字段。返回更新后的空间，`operationId` 为 `updateSpace`。 |
 | `POST /v1/spaces/{space_id}/sessions` | 正文可省略，提交的正文仍受字节上限约束。返回 201、`session_id`、UTC `created_at` 和 `Location`。 |
 | `GET /v1/spaces/{space_id}/sessions` | 分页列出已登记的会话，含空会话。 |
 | `GET /v1/spaces/{space_id}/sessions/{session_id}` | 返回会话登记的 `session_id` 和 `created_at`。 |
@@ -88,6 +88,12 @@ curl -i -X POST "$BASE_URL/v1/spaces/$SPACE_ID/sessions/$SESSION_ID/remember" \
 同一会话按持久接收顺序执行，前批退避期间后批等待。其他会话可继续处理。每次尝试最多运行 180 秒，领取租约 210 秒，含过期租约在内最多尝试三次。可重试错误分别退避 5 秒、10 秒。原文、事实、向量、审计和任务成功状态在同一事务发布，终态会释放待处理的消息副本。持久任务结果和幂等记录当前随会话保留，删除会话登记会级联清理其任务记录。
 
 worker 短暂停止期间 API 可继续接收。达到单空间上限后，新任务返回 `503 remember_queue_full`，原键重放和任务查询仍可用。缺少补全模型必填项时，HTTP 服务仍可启动，已配置嵌入模型的召回及既有任务查询继续可用，新写入返回 `503 write_models_unavailable`。worker 启动需要完整的补全和嵌入配置。
+
+## 会话滚动摘要
+
+用空间 PATCH 发送 `{"session_summary_enabled":true}` 启用。字段接受严格布尔值，新建及升级空间默认关闭。空间创建、详情、列表和 PATCH 响应均返回当前开关值。
+
+启用后，worker 只为同会话移出最近十条窗口的原文维护滚动摘要。写入抽取在同一读快照取得摘要和最近十条已提交原文，摘要仅辅助理解背景，证据引用仍来自原文。摘要尚未生成或落后时，抽取照常进行，原文窗口保持十条。关闭时停止使用摘要并取消刷新，保留已有摘要供重新启用时使用。擦除会话时同时清理摘要。 [调度与部署](postgres.md#会话滚动摘要)
 
 ## 用户画像
 

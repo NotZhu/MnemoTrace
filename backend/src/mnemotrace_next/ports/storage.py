@@ -6,10 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol, overload
 
-from ..domain.digest import Digest
 from ..domain.entity import Entity
 from ..domain.fact import Fact
-from ..domain.ids import DigestId, EntityId, FactId, MessageId, SessionId, SpaceId
+from ..domain.ids import EntityId, FactId, MessageId, SessionId, SpaceId
 from ..domain.message import Message
 from ..domain.profile import Profile
 from ..domain.salience import FactSalience
@@ -241,8 +240,17 @@ class SpaceReader(Protocol):
         """
         ...
 
+    async def get_session_summary(self, session_id: SessionId) -> str | None:
+        """读取当前空间启用且属于指定会话的非空滚动摘要。"""
+        ...
+
     async def list_session_messages(
-        self, session_id: SessionId, *, after: int | None, limit: int
+        self,
+        session_id: SessionId,
+        *,
+        after: int | None,
+        limit: int,
+        through: int | None = None,
     ) -> Sequence[tuple[int, Message]]:
         """按追加顺序分页读取会话原文及其排序位置。
 
@@ -250,6 +258,7 @@ class SpaceReader(Protocol):
             session_id: 已校验存在的会话标识。
             after: 上一页末尾的排序位置，省略时读取首页。
             limit: 最大返回条数。
+            through: 包含在内的末尾追加位置，省略时读取到会话末尾。
 
         Returns:
             追加位置和原文组成的序列，按追加位置升序排列。
@@ -498,54 +507,6 @@ class SpaceReader(Protocol):
         """
         ...
 
-    async def get_digest(self, digest_id: DigestId) -> Digest | None:
-        """按标识读取绑定空间中可用的摘要。
-
-        调用方须具有摘要所属会话的完整读取权限。
-
-        Args:
-            digest_id: 要读取的摘要标识。
-
-        Returns:
-            摘要及其来源均可用时返回快照，否则返回 None。
-        """
-        ...
-
-    async def get_digest_for_group(
-        self, session_id: SessionId, source_message_ids: Sequence[MessageId]
-    ) -> Digest | None:
-        """按固定消息组读取可用的摘要。
-
-        调用方须具有该会话的完整读取权限。
-
-        组身份 = 会话标识 + 去重后保持首次出现顺序的消息标识序列，与 Digest 构造一致。
-
-        Args:
-            session_id: 摘要所属的会话。
-            source_message_ids: 组成摘要的消息标识序列。
-
-        Returns:
-            对应消息组的可用摘要快照。同组有多份时按 updated_at 倒序，再按
-            DigestId.value 升序选取。无可用摘要时返回 None。
-        """
-        ...
-
-    async def get_latest_digest(self, session_id: SessionId) -> Digest | None:
-        """读取绑定空间内覆盖消息位置最靠后的会话摘要。
-
-        调用方须具有该会话的完整读取权限。
-
-        消息位置使用存储分配的追加序，recorded_at 记录收录时刻。
-
-        Args:
-            session_id: 摘要所属的会话标识。
-
-        Returns:
-            按来源消息最晚追加位置选出的可用摘要。同一位置按 updated_at
-            倒序，再按 DigestId.value 升序选取。无可用摘要时返回 None。
-        """
-        ...
-
     async def get_profile(self, *, exclude_sensitive: bool = False) -> Profile | None:
         """读取绑定空间的画像快照。
 
@@ -758,21 +719,6 @@ class SpaceSession(SpaceReader, Protocol):
 
         Raises:
             ValueError: 实体超出绑定空间。
-        """
-        ...
-
-    async def save_digest(self, digest: Digest) -> None:
-        """按摘要标识保存整份摘要快照。
-
-        适配器核对来源消息均属于绑定空间和摘要所属会话。
-        同 ID 的会话、来源顺序和创建时刻固定，更新时间可以持平或前进。
-
-        Args:
-            digest: 待保存的摘要。
-
-        Raises:
-            ValueError: 摘要或来源超出所属空间或会话，来源缺失，修改同 ID
-                的消息组或创建时刻，或更新时间倒退。
         """
         ...
 

@@ -3,7 +3,7 @@
 from time import time
 from uuid import uuid4
 
-from ..domain.ids import DigestId, FactId, MessageId, SessionId, SpaceId
+from ..domain.ids import FactId, MessageId, SessionId, SpaceId
 
 
 class SystemClock:
@@ -27,6 +27,3 @@ class UuidGenerator:
 
     def new_fact_id(self) -> FactId:
         return FactId(uuid4().hex)
-
-    def new_digest_id(self) -> DigestId:
-        return DigestId(uuid4().hex)

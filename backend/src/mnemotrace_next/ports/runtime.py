@@ -2,7 +2,7 @@
 
 from typing import Protocol
 
-from ..domain.ids import DigestId, FactId, MessageId, SessionId, SpaceId
+from ..domain.ids import FactId, MessageId, SessionId, SpaceId
 
 
 class Clock(Protocol):
@@ -49,13 +49,5 @@ class IdGenerator(Protocol):
 
         Returns:
             新事实的标识。
-        """
-        ...
-
-    def new_digest_id(self) -> DigestId:
-        """为新摘要分配身份。
-
-        Returns:
-            新摘要的标识。
         """
         ...
