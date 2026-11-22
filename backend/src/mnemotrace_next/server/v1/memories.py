@@ -15,6 +15,12 @@ from ...ports.reranker import Reranker
 from ..auth import AuthorizedStorage
 from ..errors import problem_responses
 from ..recall_usage import RecallUsageQueue
+from .audit_schemas import (
+    ChangeListScope,
+    ChangePageCursor,
+    FactChangePage,
+    FactChangesQuery,
+)
 from .fact_cursor import FactListScope, FactPageCursor
 from .memory_schemas import (
     FactListQuery,
@@ -154,6 +160,37 @@ async def get_fact(
     if fact is None:
         raise HTTPException(404, detail="fact_not_found")
     return FactResponse.from_fact(fact)
+
+
+@router.get("/facts/{fact_id}/changes", operation_id="listFactChanges")
+async def list_fact_changes(
+    space_id: ResourceId,
+    fact_id: ResourceId,
+    query: Annotated[FactChangesQuery, Query()],
+    storage: AuthorizedStorage,
+) -> FactChangePage:
+    """分页读取事实的可见变更和截止依据。"""
+    scope = ChangeListScope(
+        space_id=space_id,
+        resource="fact",
+        resource_id=fact_id,
+        include_sensitive=query.include_sensitive,
+    )
+    identifier = FactId(fact_id)
+    exclude_sensitive = not query.include_sensitive
+    async with storage.session(SpaceId(space_id)) as reader:
+        if (
+            await reader.get_fact(identifier, exclude_sensitive=exclude_sensitive)
+            is None
+        ):
+            raise HTTPException(404, detail="fact_not_found")
+        changes = await reader.list_fact_changes(
+            identifier,
+            after=ChangePageCursor.position_for(query.cursor, scope),
+            limit=query.limit + 1,
+            exclude_sensitive=exclude_sensitive,
+        )
+    return FactChangePage.from_changes(changes, scope, query.limit)
 
 
 @router.get("/messages/{message_id}", operation_id="getMessage")

@@ -135,13 +135,21 @@ async def test_openapi_routes_and_operation_ids(
             "delete": "deleteSession",
         },
         "/v1/spaces/{space_id}/sessions/{session_id}/remember": {"post": "remember"},
+        "/v1/spaces/{space_id}/sessions/{session_id}/messages": {
+            "get": "listSessionMessages"
+        },
+        "/v1/spaces/{space_id}/operations": {"get": "listOperations"},
         "/v1/spaces/{space_id}/operations/{operation_id}": {"get": "getOperation"},
+        "/v1/spaces/{space_id}/operations/{operation_id}/fact-changes": {
+            "get": "listOperationFactChanges"
+        },
         "/v1/spaces/{space_id}/recall": {"post": "recall"},
         "/v1/spaces/{space_id}/facts": {"get": "listFacts"},
         "/v1/spaces/{space_id}/facts/{fact_id}": {
             "get": "getFact",
             "delete": "deleteFact",
         },
+        "/v1/spaces/{space_id}/facts/{fact_id}/changes": {"get": "listFactChanges"},
         "/v1/spaces/{space_id}/messages/{message_id}": {"get": "getMessage"},
     }
 
@@ -163,10 +171,19 @@ async def test_openapi_request_and_response_schemas(openapi_response: Response) 
         }
         assert "out_of_range_fields" in properties
     assert "out_of_range_fields" in schemas["EvidenceResponse"]["properties"]
+    assert set(schemas["OperationFactChangePage"]["properties"]) == {
+        "status",
+        "items",
+        "next_cursor",
+    }
     for path in (
         "/v1/spaces",
         "/v1/spaces/{space_id}/sessions",
         "/v1/spaces/{space_id}/facts",
+        "/v1/spaces/{space_id}/operations",
+        "/v1/spaces/{space_id}/operations/{operation_id}/fact-changes",
+        "/v1/spaces/{space_id}/facts/{fact_id}/changes",
+        "/v1/spaces/{space_id}/sessions/{session_id}/messages",
     ):
         operation = spec["paths"][path]["get"]
         parameters = {p["name"] for p in operation["parameters"] if p["in"] == "query"}

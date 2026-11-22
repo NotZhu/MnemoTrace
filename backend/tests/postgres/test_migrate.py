@@ -130,7 +130,8 @@ def test_memory_decay_defaults_off_after_upgrading_existing_spaces(
 ) -> None:
     """升级保留原有空间，新旧空间的记忆衰减都默认关闭。"""
     version = "011_space_memory_decay.sql"
-    previous = tuple(m for m in migrate._migrations() if m.version < version)
+    migrations = migrate._migrations()
+    previous = tuple(m for m in migrations if m.version < version)
     with database_factory() as dsn:
         with monkeypatch.context() as legacy:
             legacy.setattr(migrate, "_migrations", lambda: previous)
@@ -141,7 +142,9 @@ def test_memory_decay_defaults_off_after_upgrading_existing_spaces(
             """
         with psycopg.connect(dsn) as conn:
             conn.execute(insert, ("old", "旧空间"))
-        assert migrate.apply_migrations(dsn) == (version,)
+        assert migrate.apply_migrations(dsn) == tuple(
+            m.version for m in migrations if m.version >= version
+        )
         with psycopg.connect(dsn) as conn:
             conn.execute(insert, ("new", "新空间"))
             assert conn.execute("""

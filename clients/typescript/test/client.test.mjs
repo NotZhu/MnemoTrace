@@ -271,3 +271,65 @@ test('wait budget takes precedence over a future retry time', async () => {
   await assert.rejects(sdk.waitOperation(HANDLE, { timeoutMs: 30 }), OperationWaitTimeout)
   assert.equal(calls, 1)
 })
+
+test('pages operations and follows audit evidence back to a session message', async () => {
+  const auditItem = {
+    fact_id: '~b2xkL2ZhY3Q',
+    changed_at: TIME,
+    before: { valid_at: null, invalid_at: null },
+    after: { valid_at: null, invalid_at: TIME },
+    cutoff_triggers: [{ fact_id: 'cause', valid_end: TIME, source_message_ids: ['~YS9i'] }],
+    out_of_range_fields: [],
+  }
+  const message = {
+    message_id: '~YS9i', session_id: 'session-1', content: '以后使用 XLSX。',
+    role: 'user', event_time: TIME, recorded_at: TIME, out_of_range_fields: [],
+  }
+  const continuation = 'abc_-'
+  const requests = []
+  const sdk = client(async (url, init) => {
+    assert.equal(init.method ?? 'GET', 'GET')
+    assert.equal(init.headers.get('Authorization'), 'Bearer synthetic-key')
+    const target = new URL(url)
+    const path = target.pathname.slice('/proxy'.length)
+    requests.push([path, Object.fromEntries(target.searchParams)])
+    switch (path) {
+      case SPACE + '/operations':
+        return json(target.searchParams.has('cursor')
+          ? { items: [], next_cursor: null }
+          : { items: [operation('succeeded')], next_cursor: continuation })
+      case OPERATION + '/fact-changes':
+        return json({ status: 'succeeded', items: [auditItem], next_cursor: null })
+      case SPACE + '/facts/~b2xkL2ZhY3Q/changes':
+        return json({ items: [auditItem], next_cursor: null })
+      case SESSION + '/messages':
+        return json({ items: [message], next_cursor: null })
+      case SPACE + '/messages/~YS9i':
+        return json(message)
+      default:
+        assert.fail('意外的 SDK 请求')
+    }
+  })
+
+  const options = { limit: 1, status: 'succeeded', session_id: 'session-1' }
+  const listed = await sdk.listOperations(HANDLE.spaceId, options)
+  const next = await sdk.listOperations(HANDLE.spaceId, { ...options, cursor: listed.next_cursor })
+  assert.deepEqual(next, { items: [], next_cursor: null })
+  const handle = { spaceId: HANDLE.spaceId, operationId: listed.items[0].operation_id }
+  const audit = await sdk.listOperationFactChanges(handle, { include_sensitive: false })
+  assert.equal(audit.status, 'succeeded')
+  const changes = await sdk.listFactChanges(
+    handle.spaceId, audit.items[0].fact_id, { include_sensitive: true, limit: 2 },
+  )
+  const [sourceId] = changes.items[0].cutoff_triggers[0].source_message_ids
+  const messages = await sdk.listSessionMessages(handle.spaceId, listed.items[0].session_id, { limit: 1 })
+  assert.deepEqual(messages.items, [await sdk.getMessage(handle.spaceId, sourceId)])
+  assert.deepEqual(requests, [
+    [SPACE + '/operations', { ...options, limit: '1' }],
+    [SPACE + '/operations', { ...options, limit: '1', cursor: continuation }],
+    [OPERATION + '/fact-changes', { include_sensitive: 'false' }],
+    [SPACE + '/facts/~b2xkL2ZhY3Q/changes', { include_sensitive: 'true', limit: '2' }],
+    [SESSION + '/messages', { limit: '1' }],
+    [SPACE + '/messages/~YS9i', {}],
+  ])
+})

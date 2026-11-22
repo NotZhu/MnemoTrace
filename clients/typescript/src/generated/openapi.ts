@@ -164,6 +164,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/spaces/{space_id}/sessions/{session_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Session Messages
+         * @description 按追加位置分页读取已登记会话的原文。
+         */
+        get: operations["listSessionMessages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/spaces/{space_id}/recall": {
         parameters: {
             query?: never;
@@ -228,6 +248,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/spaces/{space_id}/facts/{fact_id}/changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Fact Changes
+         * @description 分页读取事实的可见变更和截止依据。
+         */
+        get: operations["listFactChanges"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/spaces/{space_id}/messages/{message_id}": {
         parameters: {
             query?: never;
@@ -268,6 +308,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/spaces/{space_id}/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Operations
+         * @description 按接收顺序倒序列出当前空间的任务。
+         */
+        get: operations["listOperations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/spaces/{space_id}/operations/{operation_id}": {
         parameters: {
             query?: never;
@@ -288,10 +348,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/spaces/{space_id}/operations/{operation_id}/fact-changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Operation Fact Changes
+         * @description 读取任务状态和在同一发布事务中产生的可见事实变更。
+         */
+        get: operations["listOperationFactChanges"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * CutoffTriggerResponse
+         * @description 一次设置或提前事实截止的可见依据。
+         */
+        CutoffTriggerResponse: {
+            /** Fact Id */
+            fact_id: string;
+            /** Valid End */
+            valid_end: string | null;
+            /** Source Message Ids */
+            source_message_ids: string[] | null;
+        };
         /**
          * EvidenceResponse
          * @description 模型可使用的事实证据，不展开原文。
@@ -310,6 +402,32 @@ export interface components {
             /** Source Message Ids */
             source_message_ids: string[];
             relation: components["schemas"]["RelationResponse"] | null;
+        };
+        /**
+         * FactChangePage
+         * @description 一页可见的事实变更。
+         */
+        FactChangePage: {
+            /** Items */
+            items: components["schemas"]["FactChangeResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /**
+         * FactChangeResponse
+         * @description 事实变更的有效期和来源摘要。
+         */
+        FactChangeResponse: {
+            /** Fact Id */
+            fact_id: string;
+            /** Changed At */
+            changed_at: string | null;
+            before: components["schemas"]["ValidityResponse"] | null;
+            after: components["schemas"]["ValidityResponse"];
+            /** Cutoff Triggers */
+            cutoff_triggers: components["schemas"]["CutoffTriggerResponse"][];
+            /** Out Of Range Fields */
+            out_of_range_fields: string[];
         };
         /**
          * FactPage
@@ -374,6 +492,16 @@ export interface components {
             max_hops?: number;
         };
         /**
+         * MessagePage
+         * @description 按追加位置分页的会话原文。
+         */
+        MessagePage: {
+            /** Items */
+            items: components["schemas"]["MessageResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /**
          * MessageResponse
          * @description 独立读取的一条会话原文。
          */
@@ -402,8 +530,29 @@ export interface components {
             stage?: components["schemas"]["RememberStage"] | null;
         };
         /**
+         * OperationFactChangePage
+         * @description 一页任务变更及其发布状态。
+         */
+        OperationFactChangePage: {
+            /** Items */
+            items: components["schemas"]["FactChangeResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+            status: components["schemas"]["OperationStatus"];
+        };
+        /**
+         * OperationPage
+         * @description 一页按接收顺序排列的任务。
+         */
+        OperationPage: {
+            /** Items */
+            items: components["schemas"]["OperationSummary"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /**
          * OperationResponse
-         * @description 写入进度与对应终态的简要结果。
+         * @description 写入进度与已发布的结果摘要。
          */
         OperationResponse: {
             /** Operation Id */
@@ -423,14 +572,38 @@ export interface components {
             updated_at: string;
             /** Next Retry At */
             next_retry_at?: string | null;
+            error?: components["schemas"]["OperationError"] | null;
             /** Message Ids */
             message_ids?: string[] | null;
             /** Fact Change Count */
             fact_change_count?: number | null;
-            error?: components["schemas"]["OperationError"] | null;
         };
         /** @enum {string} */
         OperationStatus: "queued" | "running" | "succeeded" | "failed";
+        /**
+         * OperationSummary
+         * @description 写入进度与失败诊断。
+         */
+        OperationSummary: {
+            /** Operation Id */
+            operation_id: string;
+            /** Session Id */
+            session_id: string;
+            status: components["schemas"]["OperationStatus"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Next Retry At */
+            next_retry_at?: string | null;
+            error?: components["schemas"]["OperationError"] | null;
+        };
         /** @enum {string} */
         RecallDegradedReason: "embedding_timeout" | "reranker_timeout";
         /**
@@ -583,6 +756,16 @@ export interface components {
             created_at: string | null;
             /** Out Of Range Fields */
             out_of_range_fields: "created_at"[];
+        };
+        /**
+         * ValidityResponse
+         * @description 变更前或变更后的业务有效区间。
+         */
+        ValidityResponse: {
+            /** Valid At */
+            valid_at: string | null;
+            /** Invalid At */
+            invalid_at: string | null;
         };
         _SpaceNameText: string;
     };
@@ -2500,6 +2683,165 @@ export interface operations {
             };
         };
     };
+    listSessionMessages: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                space_id: string;
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessagePage"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                        errors?: {
+                            /** Location */
+                            location: string;
+                            /** Path */
+                            path: string;
+                            /** Code */
+                            code: string;
+                        }[];
+                    };
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+        };
+    };
     recall: {
         parameters: {
             query?: never;
@@ -3282,6 +3624,166 @@ export interface operations {
             };
         };
     };
+    listFactChanges: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                include_sensitive?: boolean;
+            };
+            header?: never;
+            path: {
+                space_id: string;
+                fact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactChangePage"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                        errors?: {
+                            /** Location */
+                            location: string;
+                            /** Path */
+                            path: string;
+                            /** Code */
+                            code: string;
+                        }[];
+                    };
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+        };
+    };
     getMessage: {
         parameters: {
             query?: never;
@@ -3702,6 +4204,166 @@ export interface operations {
             };
         };
     };
+    listOperations: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                status?: components["schemas"]["OperationStatus"] | null;
+                session_id?: string | null;
+            };
+            header?: never;
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationPage"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                        errors?: {
+                            /** Location */
+                            location: string;
+                            /** Path */
+                            path: string;
+                            /** Code */
+                            code: string;
+                        }[];
+                    };
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+        };
+    };
     getOperation: {
         parameters: {
             query?: never;
@@ -3721,6 +4383,166 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OperationResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                        errors?: {
+                            /** Location */
+                            location: string;
+                            /** Path */
+                            path: string;
+                            /** Code */
+                            code: string;
+                        }[];
+                    };
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": {
+                        /**
+                         * Type
+                         * @default about:blank
+                         */
+                        type?: string;
+                        /** Title */
+                        title: string;
+                        /** Status */
+                        status: number;
+                        /** Detail */
+                        detail: string;
+                        /** Code */
+                        code: string;
+                        /** Request Id */
+                        request_id: string;
+                    };
+                };
+            };
+        };
+    };
+    listOperationFactChanges: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                include_sensitive?: boolean;
+            };
+            header?: never;
+            path: {
+                space_id: string;
+                operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationFactChangePage"];
                 };
             };
             /** @description Unauthorized */

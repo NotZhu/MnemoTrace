@@ -19,6 +19,7 @@ GRANT SELECT, INSERT, UPDATE ON mnemotrace_next.remember_operations
 GRANT SELECT, INSERT, DELETE ON
     mnemotrace_next.messages, mnemotrace_next.fact_provenance,
     mnemotrace_next.sessions, mnemotrace_next.fact_changes TO :"runtime_role";
+GRANT UPDATE (operation_id) ON mnemotrace_next.fact_changes TO :"runtime_role";
 GRANT SELECT, INSERT ON
     mnemotrace_next.embedding_spaces, mnemotrace_next.fact_change_triggers
     TO :"runtime_role";

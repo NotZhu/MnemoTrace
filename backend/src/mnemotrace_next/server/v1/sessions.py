@@ -3,6 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel, ConfigDict
 
 from ...adapters.runtime import UuidGenerator
 from ...application.sessions import create_session_registration
@@ -10,10 +11,12 @@ from ...domain.ids import SessionId, SpaceId
 from ...ports.storage import SessionRegistration
 from ..auth import AuthorizedStorage
 from ..errors import problem_responses
-from .page_cursor import SessionPageCursor
+from .memory_schemas import MessagePage, MessageResponse
+from .page_cursor import SequencePageCursor, SessionPageCursor
 from .resource_ids import encode_resource_id
 from .schemas import (
     CREATED_LOCATION,
+    NonblankText,
     PageQuery,
     ResourceId,
     SessionPage,
@@ -27,6 +30,18 @@ router = APIRouter(
     responses=problem_responses(401, 404, 422, 500, 503),
 )
 _ids = UuidGenerator()
+
+
+class MessageListScope(BaseModel):
+    """标识原文页所属的空间和会话。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    space_id: NonblankText
+    session_id: NonblankText
+
+
+MessagePageCursor = SequencePageCursor[MessageListScope]
 
 
 @router.post(
@@ -113,3 +128,35 @@ async def delete_session(
             raise HTTPException(404, detail="session_not_found")
         await writer.delete_session_data(identifier)
     return Response(status_code=204)
+
+
+@router.get("/{session_id}/messages", operation_id="listSessionMessages")
+async def list_session_messages(
+    space_id: ResourceId,
+    session_id: ResourceId,
+    query: Annotated[PageQuery, Query()],
+    storage: AuthorizedStorage,
+) -> MessagePage:
+    """按追加位置分页读取已登记会话的原文。"""
+    scope = MessageListScope(space_id=space_id, session_id=session_id)
+    identifier = SessionId(session_id)
+    async with storage.session(SpaceId(space_id)) as reader:
+        if not await reader.has_session(identifier):
+            raise HTTPException(404, detail="session_not_found")
+        after = MessagePageCursor.position_for(query.cursor, scope)
+        messages = await reader.list_session_messages(
+            identifier, after=after, limit=query.limit + 1
+        )
+    return MessagePage(
+        items=[
+            MessageResponse.from_message(message)
+            for _, message in messages[: query.limit]
+        ],
+        next_cursor=(
+            MessagePageCursor(
+                scope=scope, position=messages[query.limit - 1][0]
+            ).encode()
+            if len(messages) > query.limit
+            else None
+        ),
+    )

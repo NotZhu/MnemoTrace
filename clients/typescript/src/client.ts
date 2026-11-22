@@ -1,7 +1,14 @@
 import type {
+  FactChangeListQuery,
+  FactChangePage,
+  MessagePage,
   MessageResponse,
+  OperationFactChangePage,
   OperationHandle,
+  OperationListQuery,
+  OperationPage,
   OperationResponse,
+  PageQuery,
   RecallRequest,
   RecallResponse,
   RememberAndWaitOptions,
@@ -70,6 +77,17 @@ function spacePath(spaceId: string): string {
 
 function operationPath({ spaceId, operationId }: OperationHandle): string {
   return `${spacePath(spaceId)}/operations/${resourceSegment(operationId)}`
+}
+
+function withQuery(
+  path: string, query: Record<string, string | number | boolean | null | undefined>,
+): string {
+  const params = new URLSearchParams()
+  for (const [name, value] of Object.entries(query)) {
+    if (value != null) params.set(name, String(value))
+  }
+  const search = params.toString()
+  return search ? `${path}?${search}` : path
 }
 
 function validateTimeout(timeoutMs: number): void {
@@ -194,6 +212,21 @@ export class MnemoTraceClient {
     return this.#getOperation(handle, REQUEST_TIMEOUT_MS)
   }
 
+  async listOperations(spaceId: string, options: OperationListQuery = {}): Promise<OperationPage> {
+    const path = withQuery(`${spacePath(spaceId)}/operations`, options)
+    const { data } = await this.#request<OperationPage>(path)
+    return data
+  }
+
+  async listOperationFactChanges(
+    handle: OperationHandle,
+    options: FactChangeListQuery = {},
+  ): Promise<OperationFactChangePage> {
+    const path = withQuery(`${operationPath(handle)}/fact-changes`, options)
+    const { data } = await this.#request<OperationFactChangePage>(path)
+    return data
+  }
+
   async waitOperation(
     handle: OperationHandle,
     { timeoutMs = WAIT_TIMEOUT_MS }: WaitOperationOptions = {},
@@ -245,6 +278,22 @@ export class MnemoTraceClient {
   async getMessage(spaceId: string, messageId: string): Promise<MessageResponse> {
     const path = `${spacePath(spaceId)}/messages/${resourceSegment(messageId)}`
     const { data } = await this.#request<MessageResponse>(path)
+    return data
+  }
+
+  async listFactChanges(
+    spaceId: string, factId: string, options: FactChangeListQuery = {},
+  ): Promise<FactChangePage> {
+    const path = withQuery(`${spacePath(spaceId)}/facts/${resourceSegment(factId)}/changes`, options)
+    const { data } = await this.#request<FactChangePage>(path)
+    return data
+  }
+
+  async listSessionMessages(
+    spaceId: string, sessionId: string, options: PageQuery = {},
+  ): Promise<MessagePage> {
+    const path = withQuery(`${spacePath(spaceId)}/sessions/${resourceSegment(sessionId)}/messages`, options)
+    const { data } = await this.#request<MessagePage>(path)
     return data
   }
 

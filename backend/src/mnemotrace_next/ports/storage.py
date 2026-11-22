@@ -241,6 +241,21 @@ class SpaceReader(Protocol):
         """
         ...
 
+    async def list_session_messages(
+        self, session_id: SessionId, *, after: int | None, limit: int
+    ) -> Sequence[tuple[int, Message]]:
+        """按追加顺序分页读取会话原文及其排序位置。
+
+        Args:
+            session_id: 已校验存在的会话标识。
+            after: 上一页末尾的排序位置，省略时读取首页。
+            limit: 最大返回条数。
+
+        Returns:
+            追加位置和原文组成的序列，按追加位置升序排列。
+        """
+        ...
+
     async def get_messages(
         self, message_ids: Sequence[MessageId]
     ) -> Mapping[MessageId, Message]:
@@ -357,7 +372,12 @@ class SpaceReader(Protocol):
         ...
 
     async def list_fact_changes(
-        self, fact_id: FactId, *, after: int | None = None, limit: int = 100
+        self,
+        fact_id: FactId,
+        *,
+        after: int | None = None,
+        limit: int = 100,
+        exclude_sensitive: bool = False,
     ) -> Sequence[FactChange]:
         """按追加顺序倒序读取绑定空间内一条事实的修改记录。
 
@@ -368,6 +388,7 @@ class SpaceReader(Protocol):
             after: 上一页最后一条记录的游标，仅返回游标更小的记录。
                 省略时从最新一条开始。
             limit: 最大返回条数，须为正整数。
+            exclude_sensitive: 在分页前隐藏敏感变更，并省略敏感触发引用。
 
         Returns:
             游标倒序的修改记录。无记录时返回空序列。

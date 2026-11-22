@@ -1,10 +1,10 @@
 """编码客户端原样回传的列表游标。"""
 
 from base64 import b64decode, urlsafe_b64encode
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 from fastapi import HTTPException
-from pydantic import AwareDatetime, BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from .schemas import NonblankText
 
@@ -44,3 +44,20 @@ class SessionPageCursor(PageCursor):
     space_id: NonblankText
     session_id: NonblankText
     created_at: AwareDatetime | None
+
+
+class SequencePageCursor[Scope: BaseModel](PageCursor):
+    """记录顺序分页的范围和末尾位置。"""
+
+    scope: Scope
+    position: Annotated[int, Field(ge=1, le=2**63 - 1)]
+
+    @classmethod
+    def position_for(cls, token: str | None, scope: Scope) -> int | None:
+        """解析续页位置并校验资源及筛选范围。"""
+        if token is None:
+            return None
+        cursor = cls.decode(token)
+        if cursor.scope != scope:
+            raise HTTPException(422, detail="invalid_cursor")
+        return cursor.position

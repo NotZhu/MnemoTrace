@@ -254,3 +254,10 @@ class MessageResponse(BaseModel):
             ),
             out_of_range_fields=out_of_range,
         )
+
+
+class MessagePage(BaseModel):
+    """按追加位置分页的会话原文。"""
+
+    items: list[MessageResponse]
+    next_cursor: str | None

@@ -8,12 +8,32 @@ export type RememberRequest = Schemas['RememberRequest']
 export type OperationStatus = Schemas['OperationResponse']['status']
 export type OperationError = Schemas['OperationError']
 export type OperationResponse = Schemas['OperationResponse']
+export type OperationSummary = Schemas['OperationSummary']
+export type OperationPage = Schemas['OperationPage']
+export type FactChange = Schemas['FactChangeResponse']
+export type FactChangePage = Schemas['FactChangePage']
+export type OperationFactChangePage = Schemas['OperationFactChangePage']
 export type TerminalOperation = OperationResponse & { status: 'succeeded' | 'failed' }
 export type RecallRequest = Schemas['RecallRequest']
 export type RecallResponse = Schemas['RecallResponse']
 export type RecallEvidence = Schemas['EvidenceResponse']
 export type GraphOptions = Schemas['GraphOptions']
 export type MessageResponse = Schemas['MessageResponse']
+export type MessagePage = Schemas['MessagePage']
+
+export type PageQuery = {
+  limit?: number
+  cursor?: string | null
+}
+
+export type OperationListQuery = PageQuery & {
+  status?: OperationStatus | null
+  session_id?: string | null
+}
+
+export type FactChangeListQuery = PageQuery & {
+  include_sensitive?: boolean
+}
 
 export interface OperationHandle {
   spaceId: string

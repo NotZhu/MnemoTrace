@@ -1,5 +1,6 @@
 """在 PostgreSQL 中接收、领取和原子完成记忆写入任务。"""
 
+from collections.abc import Sequence
 from datetime import timedelta
 from hashlib import sha256
 from json import dumps
@@ -19,12 +20,13 @@ from ...application.operations import (
     LeaseLost,
     Operation,
     OperationNotFound,
+    OperationStatus,
     QueueFull,
     WriteModelsUnavailable,
 )
 from ...application.remember import MessageInput, RememberResult, RememberStage
 from ...domain.ids import SessionId, SpaceId
-from ...ports.storage import SessionUnavailable, SpaceSession
+from ...ports.storage import FactChange, SessionUnavailable, SpaceSession
 from .reader import PostgresReader
 from .session import PostgresSession
 from .storage import PostgresStorage
@@ -149,14 +151,79 @@ class PostgresOperations:
         """在已授权的空间快照内读取任务公开字段。"""
         storage = PostgresStorage(self._pool, owner_id=owner_id)
         async with storage.session(space_id) as reader:
-            cursor = await cast(PostgresReader, reader)._conn.execute(
-                f"SELECT {_FIELDS} FROM {_TABLE} WHERE space_id = %s AND operation_id = %s",
-                (space_id.value, operation_id),
-            )
-            row = await cursor.fetchone()
+            return await self._get(cast(PostgresReader, reader), operation_id)
+
+    @staticmethod
+    async def _get(reader: PostgresReader, operation_id: str) -> Operation:
+        cursor = await reader._conn.execute(
+            f"SELECT {_FIELDS} FROM {_TABLE} WHERE space_id = %s AND operation_id = %s",
+            (reader.space_id.value, operation_id),
+        )
+        row = await cursor.fetchone()
         if row is None:
             raise OperationNotFound
         return _operation(row)
+
+    async def list(
+        self,
+        owner_id: str,
+        space_id: SpaceId,
+        *,
+        status: OperationStatus | None,
+        session_id: SessionId | None,
+        after: int | None,
+        limit: int,
+    ) -> Sequence[tuple[int, Operation]]:
+        """按持久接受顺序分页读取所属空间的任务。"""
+        storage = PostgresStorage(self._pool, owner_id=owner_id)
+        conditions = ["space_id = %(space)s"]
+        params: dict[str, object] = {"space": space_id.value, "limit": limit}
+        if status is not None:
+            conditions.append("status = %(status)s")
+            params["status"] = status
+        if session_id is not None:
+            conditions.append("session_id = %(session)s")
+            params["session"] = session_id.value
+        if after is not None:
+            conditions.append("enqueue_order < %(after)s")
+            params["after"] = after
+        async with storage.session(space_id) as reader:
+            cursor = await cast(PostgresReader, reader)._conn.execute(
+                f"""
+                SELECT enqueue_order, {_FIELDS} FROM {_TABLE}
+                WHERE {" AND ".join(conditions)}
+                ORDER BY enqueue_order DESC LIMIT %(limit)s
+                """,
+                params,
+            )
+            return tuple(
+                (row[0], _operation(row[1:])) for row in await cursor.fetchall()
+            )
+
+    async def list_fact_changes(
+        self,
+        owner_id: str,
+        space_id: SpaceId,
+        operation_id: str,
+        *,
+        after: int | None,
+        limit: int,
+        exclude_sensitive: bool,
+    ) -> tuple[Operation, Sequence[FactChange]]:
+        """在同一空间快照内读取任务状态及可见变更。"""
+        storage = PostgresStorage(self._pool, owner_id=owner_id)
+        async with storage.session(space_id) as session:
+            reader = cast(PostgresReader, session)
+            operation = await self._get(reader, operation_id)
+            if operation.status != "succeeded":
+                return operation, ()
+            changes = await reader.list_operation_fact_changes(
+                operation_id,
+                after=after,
+                limit=limit,
+                exclude_sensitive=exclude_sensitive,
+            )
+            return operation, changes
 
     async def claim(self) -> ClaimedOperation | None:
         """领取可执行的会话队首任务，或结算已耗尽次数的过期任务。"""
@@ -232,7 +299,8 @@ class PostgresOperations:
         self, job: ClaimedOperation, writer: SpaceSession, result: RememberResult
     ) -> None:
         """在原文和事实的写事务中提交成功状态，租约无效时回滚整批。"""
-        cursor = await cast(PostgresSession, writer)._conn.execute(
+        conn = cast(PostgresSession, writer)._conn
+        cursor = await conn.execute(
             f"""
             UPDATE {_TABLE} SET status = 'succeeded', updated_at = clock_timestamp(),
                 message_ids = %(message_ids)s, fact_change_count = %(change_count)s,
@@ -248,6 +316,23 @@ class PostgresOperations:
         )
         if cursor.rowcount != 1:
             raise LeaseLost
+        if result.fact_changes:
+            linked = await conn.execute(
+                """
+                UPDATE mnemotrace_next.fact_changes AS change SET operation_id = %(id)s
+                FROM unnest(%(facts)s::text[], %(cursors)s::bigint[]) AS published(fact_id, cursor)
+                WHERE change.space_id = %(space)s AND change.operation_id IS NULL
+                  AND (change.fact_id, change.cursor) = (published.fact_id, published.cursor)
+                """,
+                {
+                    "id": job.operation_id,
+                    "space": job.space_id.value,
+                    "facts": [change.after.id.value for change in result.fact_changes],
+                    "cursors": [change.cursor for change in result.fact_changes],
+                },
+            )
+            if linked.rowcount != len(result.fact_changes):
+                raise RuntimeError("任务发布的事实审计关联数量不一致")
 
     async def record_attempt_failure(
         self,

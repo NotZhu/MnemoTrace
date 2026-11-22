@@ -32,10 +32,12 @@ from .rows import (
     space_from_row,
 )
 
-_MESSAGES = sql.SQL("""
-    SELECT message_id, space_id, session_id, role, content, event_time, recorded_at
-    FROM mnemotrace_next.messages WHERE space_id = %s
-    """)
+_MESSAGE_FIELDS = sql.SQL(
+    "message_id, space_id, session_id, role, content, event_time, recorded_at"
+)
+_MESSAGES = sql.SQL(
+    "SELECT {} FROM mnemotrace_next.messages WHERE space_id = %s"
+).format(_MESSAGE_FIELDS)
 
 _SESSIONS = sql.SQL("""
     SELECT session_id, created_at FROM mnemotrace_next.sessions
@@ -259,6 +261,24 @@ class PostgresReader:
             )
             return tuple(reversed(await cursor.fetchall()))
 
+    async def list_session_messages(
+        self, session_id: SessionId, *, after: int | None, limit: int
+    ) -> Sequence[tuple[int, Message]]:
+        """使用会话原文索引按追加位置分页。"""
+        statement = sql.SQL("""
+            SELECT append_seq, {} FROM mnemotrace_next.messages
+            WHERE space_id = %s AND session_id = %s AND append_seq > %s
+            ORDER BY append_seq LIMIT %s
+            """).format(_MESSAGE_FIELDS)
+        cursor = await self._conn.execute(
+            statement,
+            (self.space_id.value, session_id.value, after or 0, limit),
+        )
+        return tuple(
+            (position, message_from_row(*row))
+            for position, *row in await cursor.fetchall()
+        )
+
     async def get_messages(
         self, message_ids: Sequence[MessageId]
     ) -> Mapping[MessageId, Message]:
@@ -417,41 +437,83 @@ class PostgresReader:
         return tuple(facts)
 
     async def list_fact_changes(
-        self, fact_id: FactId, *, after: int | None = None, limit: int = 100
+        self,
+        fact_id: FactId,
+        *,
+        after: int | None = None,
+        limit: int = 100,
+        exclude_sensitive: bool = False,
     ) -> Sequence[FactChange]:
-        """分页读取事实的变更记录。
+        """分页读取指定事实的变更记录。"""
+        return await self._list_changes(
+            sql.SQL("c.fact_id = %(identifier)s"),
+            fact_id.value,
+            after=after,
+            limit=limit,
+            exclude_sensitive=exclude_sensitive,
+        )
 
-        Args:
-            fact_id: 要查询的事实标识。
-            after: 上一页末尾的游标。省略时从最新记录开始。
-            limit: 最大返回条数。
+    async def list_operation_fact_changes(
+        self,
+        operation_id: str,
+        *,
+        after: int | None,
+        limit: int,
+        exclude_sensitive: bool,
+    ) -> Sequence[FactChange]:
+        """分页读取同一空间内任务发布的变更记录。"""
+        return await self._list_changes(
+            sql.SQL("c.operation_id = %(identifier)s"),
+            operation_id,
+            after=after,
+            limit=limit,
+            exclude_sensitive=exclude_sensitive,
+        )
 
-        Returns:
-            游标倒序排列的记录，含变更前后快照。
-        """
+    async def _list_changes(
+        self,
+        scope: sql.SQL,
+        identifier: str,
+        *,
+        after: int | None,
+        limit: int,
+        exclude_sensitive: bool,
+    ) -> Sequence[FactChange]:
+        # 先筛选审计行再截取一页，避免隐藏项消耗可见记录的页容量。
+        query = sql.SQL("""
+            SELECT c.cursor, c.changed_at, c.before, c.after, ARRAY(
+                SELECT jsonb_build_object(
+                    'fact_id', t.trigger_fact_id,
+                    'valid_end', t.valid_end,
+                    'source_message_ids', t.source_message_ids
+                )
+                FROM mnemotrace_next.fact_change_triggers AS t
+                JOIN mnemotrace_next.facts AS cause
+                  ON (cause.space_id, cause.fact_id) = (t.space_id, t.trigger_fact_id)
+                WHERE (t.space_id, t.fact_id, t.cursor) = (c.space_id, c.fact_id, c.cursor)
+                  AND (NOT %(exclude_sensitive)s OR NOT cause.sensitive)
+                ORDER BY t.position
+            )
+            FROM mnemotrace_next.fact_changes AS c
+            JOIN mnemotrace_next.facts AS f USING (space_id, fact_id)
+            WHERE c.space_id = %(space)s AND {}
+              AND (%(after)s::bigint IS NULL OR c.cursor < %(after)s)
+              AND (NOT %(exclude_sensitive)s OR (
+                    NOT f.sensitive
+                    AND NOT COALESCE((c.before ->> 'sensitive')::boolean, false)
+                    AND NOT (c.after ->> 'sensitive')::boolean
+              ))
+            ORDER BY c.cursor DESC LIMIT %(limit)s
+            """).format(scope)
         async with self._conn.cursor(row_factory=args_row(change_from_row)) as cursor:
             await cursor.execute(
-                """
-                SELECT c.cursor, c.changed_at, c.before, c.after, ARRAY(
-                    SELECT jsonb_build_object(
-                        'fact_id', t.trigger_fact_id,
-                        'valid_end', t.valid_end,
-                        'source_message_ids', t.source_message_ids
-                    )
-                    FROM mnemotrace_next.fact_change_triggers AS t
-                    WHERE (t.space_id, t.fact_id, t.cursor) = (c.space_id, c.fact_id, c.cursor)
-                    ORDER BY t.position
-                )
-                FROM mnemotrace_next.fact_changes AS c
-                WHERE c.space_id = %(space)s AND c.fact_id = %(fact)s
-                  AND (%(after)s::bigint IS NULL OR c.cursor < %(after)s)
-                ORDER BY c.cursor DESC LIMIT %(limit)s
-                """,
+                query,
                 {
                     "space": self.space_id.value,
-                    "fact": fact_id.value,
+                    "identifier": identifier,
                     "after": after,
                     "limit": limit,
+                    "exclude_sensitive": exclude_sensitive,
                 },
             )
             return tuple(await cursor.fetchall())

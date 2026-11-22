@@ -113,6 +113,8 @@ class FakeSpaceSession:
         self._erasure_generation = 0
         self._sessions: dict[SessionId, SessionRegistration] = {}
         self._messages: dict[MessageId, Message] = {}
+        self._message_positions: dict[MessageId, int] = {}
+        self._next_message_position = count(1)
         self._facts: dict[FactId, Fact] = {}
         self._fact_salience: dict[FactId, FactSalience] = {}
         self._entities: dict[EntityId, Entity] = {}
@@ -205,6 +207,9 @@ class FakeSpaceSession:
             if existing != replace(message, recorded_at=existing.recorded_at):
                 raise ValueError("同 ID 的消息字段冲突")
         self._messages.update(pending)
+        self._message_positions.update(
+            (message_id, next(self._next_message_position)) for message_id in pending
+        )
 
     async def last_messages(
         self, session_id: SessionId, limit: int
@@ -224,6 +229,17 @@ class FakeSpaceSession:
             if message.session_id == session_id
         )
         return messages[-limit:]
+
+    async def list_session_messages(
+        self, session_id: SessionId, *, after: int | None, limit: int
+    ) -> Sequence[tuple[int, Message]]:
+        """使用原文首次追加时的排序位置分页。"""
+        return tuple(
+            (self._message_positions[message.id], message)
+            for message in self._messages.values()
+            if message.session_id == session_id
+            and self._message_positions[message.id] > (after or 0)
+        )[:limit]
 
     async def get_messages(
         self, message_ids: Sequence[MessageId]
@@ -506,7 +522,12 @@ class FakeSpaceSession:
         return tuple(ordered[: spec.limit])
 
     async def list_fact_changes(
-        self, fact_id: FactId, *, after: int | None = None, limit: int = 100
+        self,
+        fact_id: FactId,
+        *,
+        after: int | None = None,
+        limit: int = 100,
+        exclude_sensitive: bool = False,
     ) -> Sequence[FactChange]:
         """从内存账本分页读取修改记录。
 
@@ -514,6 +535,7 @@ class FakeSpaceSession:
             fact_id: 要查询的事实标识。
             after: 排除本游标及更新的记录，省略时从最新记录开始。
             limit: 最大返回条数。
+            exclude_sensitive: 是否隐藏敏感变更与触发引用。
 
         Returns:
             按游标倒序排列的修改记录。
@@ -523,7 +545,23 @@ class FakeSpaceSession:
             for change, _ in reversed(self._changes)
             if change.after.id == fact_id and (after is None or change.cursor < after)
         )
-        return changes[:limit]
+        if not changes or not exclude_sensitive:
+            return changes[:limit]
+        if self._facts[fact_id].sensitive:
+            return ()
+        return tuple(
+            replace(
+                change,
+                cutoff_triggers=tuple(
+                    trigger
+                    for trigger in change.cutoff_triggers
+                    if not self._facts[trigger.fact_id].sensitive
+                ),
+            )
+            for change in changes
+            if not change.after.sensitive
+            and (change.before is None or not change.before.sensitive)
+        )[:limit]
 
     async def delete_facts(self, fact_ids: Sequence[FactId]) -> None:
         """从内存索引和记录中删除事实及其引用。
@@ -592,6 +630,7 @@ class FakeSpaceSession:
         }
         for message_id in messages:
             del self._messages[message_id]
+            del self._message_positions[message_id]
         self._sessions.pop(session_id, None)
         if messages:
             self._erasure_generation += 1
@@ -600,6 +639,7 @@ class FakeSpaceSession:
     async def purge_space(self) -> None:
         """清空空间内容并推进擦除代际。"""
         self._messages.clear()
+        self._message_positions.clear()
         self._sessions.clear()
         self._facts.clear()
         self._groups.clear()

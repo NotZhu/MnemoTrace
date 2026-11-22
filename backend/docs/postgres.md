@@ -25,6 +25,8 @@ uv run --locked python -m mnemotrace_next.adapters.postgres.migrate up
 
 `011` 增加 `spaces.memory_decay`，存量空间默认关闭。升级时先应用迁移，执行下节的运行角色授权脚本，再启动新服务。
 
+`012` 为事实审计增加可空的同空间任务关联。worker 在同一事务内记录关联并将任务置为 `succeeded`。删除任务时只清空存续审计的任务标识。应用迁移后重新执行运行角色授权脚本，再启动 API 和 worker。
+
 ## 运行账号与会话
 
 数据库管理员为迁移、运行和凭据管理配置独立登录角色。迁移角色拥有业务 schema 和对象，运行角色用于 API 与 worker，凭据管理角色用于签发和撤销。运行与凭据管理角色都需要目标库的连接权限。使用独立 PostgreSQL 时，先设置 `psql` 的连接环境，以迁移角色连接目标数据库。在迁移后从 `backend` 运行下列命令，参数替换为实际创建的角色名。 [授权脚本](../../deploy/next/grant-roles.sql)

@@ -227,6 +227,10 @@ def test_http_admission_idempotency_capacity_and_publication(
             result = (await scope.status(path)).json()
             assert result["status"] == "succeeded"
             assert result["fact_change_count"] == 1
+            audit_path = path + "/fact-changes"
+            audit = (await scope.status(audit_path)).json()
+            assert audit["status"] == "succeeded" and len(audit["items"]) == 1
+            assert audit["items"][0]["before"] is None
             (message_id,) = result["message_ids"]
             recalled = await scope.client.post(
                 scope.path + "/recall", headers=scope.headers, json={"query": _FACT}
@@ -238,6 +242,7 @@ def test_http_admission_idempotency_capacity_and_publication(
                 original.json()["event_time"]
             ) == datetime.fromisoformat(result["created_at"])
             assert (await scope.submit(session, "first", _FACT)).json() == result
+            assert (await scope.status(audit_path)).json() == audit
             assert await runner.run_once()
             assert model.prompts[1]["previous"] == [
                 {
@@ -253,6 +258,13 @@ def test_http_admission_idempotency_capacity_and_publication(
             assert finished["status"] == "succeeded"
             assert finished["fact_change_count"] == 0
             assert len(finished["message_ids"]) == 1
+            assert (
+                await scope.status(two.headers["Location"] + "/fact-changes")
+            ).json() == {
+                "status": "succeeded",
+                "items": [],
+                "next_cursor": None,
+            }
             async with scope.connections.connection() as conn:
                 cursor = await conn.execute(
                     "SELECT count(*) FROM mnemotrace_next.remember_operations "
@@ -758,8 +770,16 @@ def test_expired_lease_rolls_back_then_recovers_and_has_a_crash_budget(
                     SessionId(session.rsplit("/", 1)[1]), 10
                 )
             assert (await scope.status(scope.path + "/facts")).json()["items"] == []
+            assert (await scope.status(path + "/fact-changes")).json() == {
+                "status": "running",
+                "items": [],
+                "next_cursor": None,
+            }
             assert await scope.runner(_Model()).run_once()
             assert (await scope.status(path)).json()["status"] == "succeeded"
+            assert (
+                len((await scope.status(path + "/fact-changes")).json()["items"]) == 1
+            )
 
             crashed = await scope.submit(session, "crash", "反复崩溃")
             tail = await scope.submit(session, "tail", "后批")
@@ -776,6 +796,9 @@ def test_expired_lease_rolls_back_then_recovers_and_has_a_crash_budget(
             state = (await scope.status(crashed.headers["Location"])).json()
             assert state["status"] == "failed"
             assert state["error"] == {"code": "worker_lease_expired"}
+            assert (
+                await scope.status(crashed.headers["Location"] + "/fact-changes")
+            ).json() == {"status": "failed", "items": [], "next_cursor": None}
             assert await scope.runner(_Model()).run_once()
             assert (await scope.status(tail.headers["Location"])).json()[
                 "status"
@@ -833,13 +856,14 @@ def test_lost_commit_acknowledgements_reconcile_by_key_and_operation_status(
             with monkeypatch.context() as changes:
                 changes.setattr(AsyncTransaction, "__aexit__", drop_ack)
                 lose_ack = True
-                uncertain = await scope.submit(session, "stable", "合成原文")
+                uncertain = await scope.submit(session, "stable", _FACT)
                 assert (uncertain.status_code, uncertain.json()["code"]) == (
                     503,
                     "commit_outcome_unknown",
                 )
-                accepted = await scope.submit(session, "stable", "合成原文")
+                accepted = await scope.submit(session, "stable", _FACT)
                 assert accepted.status_code == 202
+                audit_path = accepted.headers["Location"] + "/fact-changes"
                 changes.setattr(PostgresOperations, "complete", mark_publish)
                 runner = scope.runner(_Model())
                 assert await runner.run_once()
@@ -847,6 +871,11 @@ def test_lost_commit_acknowledgements_reconcile_by_key_and_operation_status(
                     pending = (await scope.status(accepted.headers["Location"])).json()
                     assert pending["status"] == "queued"
                     assert "next_retry_at" in pending
+                    assert (await scope.status(audit_path)).json() == {
+                        "status": "queued",
+                        "items": [],
+                        "next_cursor": None,
+                    }
                     storage = PostgresStorage(scope.connections, owner_id=scope.owner)
                     async with storage.session(scope.space_id) as reader:
                         assert not await reader.last_messages(
@@ -857,8 +886,10 @@ def test_lost_commit_acknowledgements_reconcile_by_key_and_operation_status(
                 assert not await runner.run_once()
                 state = (await scope.status(accepted.headers["Location"])).json()
                 assert state["status"] == "succeeded"
-                replay = await scope.submit(session, "stable", "合成原文")
+                replay = await scope.submit(session, "stable", _FACT)
                 assert replay.json() == state
+                audit = (await scope.status(audit_path)).json()
+                assert audit["status"] == "succeeded" and len(audit["items"]) == 1
                 storage = PostgresStorage(scope.connections, owner_id=scope.owner)
                 async with storage.session(scope.space_id) as reader:
                     messages = await reader.last_messages(

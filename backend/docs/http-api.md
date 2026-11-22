@@ -50,7 +50,7 @@ uv run --locked --extra server python -m mnemotrace_next.server
 
 空间名去除首尾空白后须为 1–128 字符。空间详情和列表均返回严格布尔开关 `memory_decay`，新建与升级空间默认为 `false`。发送 `{"memory_decay":true}` 可为指定空间启用显著度加权及自动强化。PATCH 至少提供一个字段，省略的字段保留原值。存量空间的 `created_at` 超出日历范围时返回 `null`，并列在 `out_of_range_fields` 中，正常时该数组为空。会话列表按创建时间倒序，同刻按会话 ID 升序。历史会话的创建时间未知时为 `null`，排在末尾。
 
-空间、会话和事实列表使用同一分页契约。请求使用 `limit`（1–100，默认 50）和可选的 `cursor`，响应含 `items` 和 `next_cursor`。续页原样回传上页的 `next_cursor`。值为 `null` 时已到末页。
+列表使用同一分页契约。请求使用 `limit`（1–100，默认 50）和可选的 `cursor`，响应含 `items` 和 `next_cursor`。续页原样回传上页的 `next_cursor`。值为 `null` 时已到末页。
 
 错误响应使用 `application/problem+json`，包含 `code` 和 `request_id`。无效或已撤销的凭据返回 401。不存在或不可访问的空间、会话返回 404。若收到 `503 commit_outcome_unknown`，写入可能已提交。先查询资源列表核对结果，再决定是否重试。
 
@@ -127,6 +127,27 @@ worker 短暂停止期间 API 可继续接收。达到单空间上限后，新�
 事实列表用 `state=current`（默认）、`history` 或 `all` 选择有效、已截止或完整时间线。前两种可传 `as_of`。列表和详情默认隐藏敏感事实，可用 `include_sensitive=true` 显式读取。按收录时间倒序、同刻按事实 ID 升序分页。续页沿用原筛选。同一页序列固定业务评估时点，每页读取独立数据库快照。服务器会重新校验空间归属和事实可见性。
 
 事实详情、列表和召回证据中的时间以 RFC 3339 表示。存量时刻超出可表示的日历范围时，该字段返回 `null`，字段名列在 `out_of_range_fields` 中。原文收录时刻 `recorded_at` 使用同样的越界表示。没有越界字段时，`out_of_range_fields` 为空数组。业务有效期筛选和分页仍使用原始时刻。
+
+## 任务变更和会话原文
+
+以下路径位于 `/v1/spaces/{space_id}` 下。
+
+| 端点 | 行为 |
+| --- | --- |
+| `GET /operations` | 按接收顺序倒序列出任务，可组合使用 `status` 和 `session_id`。任务详情仍可通过单任务接口读取。 |
+| `GET /operations/{operation_id}/fact-changes` | 返回任务 `status`，按审计追加顺序倒序列出本次任务发布的可见变更。 |
+| `GET /facts/{fact_id}/changes` | 按审计追加顺序倒序列出指定事实的可见变更和截止依据。 |
+| `GET /sessions/{session_id}/messages` | 按原文追加顺序分页，沿用单条原文的字段。已登记的空会话返回空列表。 |
+
+续页使用相同的空间、目标资源和筛选条件。游标与查询不匹配时返回 `422 invalid_cursor`。每页重新校验账号和空间归属，在当时的数据库快照中读取。不存在、已擦除或不可访问的嵌套资源返回对应的 `404`。
+
+变更包含 `fact_id`、`changed_at`，以及前后有效区间 `before` 和 `after`。新建时 `before` 为 `null`。按裁决顺序排列的 `cutoff_triggers` 包含 `fact_id`、`valid_end` 和 `source_message_ids`，旧记录无法恢复逐项来源时该字段为 `null`。时间采用 RFC 3339。越界时间返回 `null`，并在 `out_of_range_fields` 中列出对应的 JSON Pointer，例如 `/after/invalid_at`。
+
+两个变更接口默认隐藏当前事实或任一前后快照标为敏感的条目，并省略敏感触发事实的引用。传 `include_sensitive=true` 可显式纳入敏感项。证据 ID 可以直接用于对应的事实和原文读取端点。
+
+任务状态为 `queued`、`running` 或 `failed` 时，`items` 为空且 `next_cursor` 为 `null`。`succeeded` 时返回仍可见的关联变更，零变更或无可见变更时也返回空列表。删除事实或来源后，相关变更可能被擦除，原任务的 `fact_change_count` 仍表示提交时的统计值。
+
+任务与逐条审计的关联由支持迁移 `012` 的 worker 在发布时写入。升级前已经完成的任务保留原有 `fact_change_count`，逐条关联不回填，因此即使计数大于零，`/fact-changes` 仍返回 `status: "succeeded"` 和空列表。
 
 ## 删除与清空
 
