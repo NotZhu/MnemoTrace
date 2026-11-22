@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from ..domain._validation import optional_timestamp
+from ..domain.enums import Source
 from ..domain.errors import DomainError
 from ..domain.ids import FactId, MessageId
 from ..domain.values import EntityRef, Label, Predicate
@@ -31,6 +32,7 @@ class FactFilter:
         subject: 要匹配的主体。
         predicate: 要匹配的谓词。
         labels: 匹配任意一项即可的标签，空元组不限。
+        source: 要匹配的事实来源，省略时不限。
         provenance: 匹配任意一项即可的原文标识，空元组不限。
         exclude_sensitive: 是否排除敏感事实。受限读取由服务端设为真。
         overlap_start: 查询区间的有效起点。排除在此时或更早已截止的事实。
@@ -51,6 +53,7 @@ class FactFilter:
     overlap_start: float | None = None
     overlap_end: float | None = None
     exclude_slot: FactSlot | None = None
+    source: Source | None = None
 
     def __post_init__(self) -> None:
         for name, value in (

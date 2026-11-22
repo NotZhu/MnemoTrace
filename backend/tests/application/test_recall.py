@@ -642,3 +642,74 @@ def test_recall_returns_empty_evidence_for_no_hits() -> None:
         assert (await reader.recall("发布规范")).evidence == ()
 
     asyncio.run(exercise())
+
+
+def test_character_budget_keeps_a_complete_reranked_prefix_and_tracks_only_that_prefix() -> (
+    None
+):
+    """按 Unicode 码点裁切重排结果，超限后保留证据顺序。"""
+    storage = FakeStorage()
+    first = _fact("b", "预算 甲🙂")
+    second = _fact("c", "预算 第二条更长")
+    last = _fact("a", "预算")
+
+    class FixedReranker:
+        async def rerank(
+            self, query: str, documents: Sequence[tuple[FactId, str]]
+        ) -> Sequence[tuple[FactId, float]]:
+            scores = {first.id: 0.9, second.id: 0.8, last.id: 0.7}
+            return tuple((fact_id, scores[fact_id]) for fact_id, _ in documents)
+
+    reader = Memory.for_recall(
+        space_id=_SPACE.id,
+        storage=storage,
+        embedder=FakeEmbedder(),
+        clock=FakeClock(),
+        reranker=FixedReranker(),
+    )
+
+    async def exercise() -> None:
+        await storage.create_space(replace(_SPACE, memory_decay=True))
+        async with storage.session(_SPACE.id, write=True) as writer:
+            await writer.upsert_entity(_SUBJECT)
+            await writer.save_facts((last, first, second), changed_at=10.0)
+        order = (first.id, second.id, last.id)
+        assert len(first.text) == 5
+        for top_k, budget, expected, truncated in (
+            (3, None, order, False),
+            (3, 5, order[:1], True),
+            (3, 5 + len(last.text), order[:1], True),
+            (3, 4, (), True),
+            (3, sum(len(item.text) for item in (first, second, last)), order, False),
+            (1, 5, order[:1], False),
+        ):
+            result, usage = await reader.recall_with_usage(
+                "预算",
+                track_usage=True,
+                rerank=True,
+                top_k=top_k,
+                max_evidence_chars=budget,
+            )
+            assert result.rerank_applied
+            assert result.truncated is truncated
+            assert tuple(item.fact_id for item in result.evidence) == expected
+            assert (usage.fact_ids if usage else ()) == expected
+        no_hits = await reader.recall("无关查询", max_evidence_chars=1)
+        assert not no_hits.evidence and not no_hits.truncated
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("budget", (False, 0, -1, 1.5, "5"))
+def test_recall_rejects_invalid_character_budget_before_inference(
+    budget: object,
+) -> None:
+    """字符预算只接受正整数。"""
+    reader = Memory.for_recall(
+        space_id=_SPACE.id,
+        storage=FakeStorage(),
+        embedder=_UnexpectedEmbedder(),
+        clock=FakeClock(),
+    )
+    with pytest.raises(ValueError, match="max_evidence_chars"):
+        asyncio.run(reader.recall("预算", max_evidence_chars=cast(int, budget)))

@@ -9,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from ...adapters.runtime import SystemClock
 from ...application.recall import Recall
 from ...domain.ids import FactId, MessageId, SpaceId
+from ...domain.values import Label
 from ...ports.inference import Embedder
 from ...ports.queries import FactFilter, FactQuery
 from ...ports.reranker import Reranker
@@ -88,6 +89,8 @@ async def recall(
         graph=graph,
         prefer_recent=body.prefer_recent,
         rerank=use_rerank,
+        filters=body.filters.to_core() if body.filters is not None else None,
+        max_evidence_chars=body.max_evidence_chars,
     )
     response = RecallResponse.from_result(result)
     if usage is not None and queue is not None:
@@ -107,6 +110,8 @@ async def list_facts(
         state=query.state,
         as_of=query.as_of,
         include_sensitive=query.include_sensitive,
+        labels=tuple(sorted(set(query.labels))),
+        source=query.source,
     )
     async with storage.session(SpaceId(space_id)) as reader:
         cursor = (
@@ -124,6 +129,8 @@ async def list_facts(
                 state=query.state,
                 valid_at=query.as_of.timestamp() if query.as_of is not None else None,
                 exclude_sensitive=not query.include_sensitive,
+                labels=tuple(map(Label, scope.labels)),
+                source=scope.source,
             ),
             after=cursor.position() if cursor is not None else None,
             limit=query.limit + 1,

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal, Self, TypedDict
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -25,6 +26,7 @@ from ...application.recall import (
     MAX_TOP_K,
     RecallDegradedReason,
     RecallEvidence,
+    RecallFilters,
     RecallRelation,
     RecallResult,
 )
@@ -32,13 +34,24 @@ from ...domain.enums import Role, Source
 from ...domain.fact import Fact
 from ...domain.ids import EntityId
 from ...domain.message import Message
-from ...domain.values import Predicate
+from ...domain.values import KNOWN_LABELS, Label, Predicate
 from ...ports.queries import FactState
 from .resource_ids import encode_resource_id
 from .schemas import RFC3339, NonblankText, PageQuery, epoch_to_response_datetime
 
 IdText = Annotated[NonblankText, StringConstraints(max_length=256)]
 _QueryText = Annotated[NonblankText, StringConstraints(max_length=MAX_QUERY_CHARS)]
+
+
+def _validate_label(value: str) -> str:
+    return Label(value).value
+
+
+_LabelText = Annotated[
+    str,
+    AfterValidator(_validate_label),
+    Field(json_schema_extra={"enum": sorted(KNOWN_LABELS)}),
+]
 
 
 class GraphOptions(BaseModel):
@@ -76,6 +89,19 @@ class GraphOptions(BaseModel):
         )
 
 
+class RecallFilterRequest(BaseModel):
+    """筛选召回候选的标签和来源。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    labels: list[_LabelText] = Field(default_factory=list)
+    source: Source | None = None
+
+    def to_core(self) -> RecallFilters:
+        """转换为核心召回使用的领域条件。"""
+        return RecallFilters(tuple(map(Label, self.labels)), self.source)
+
+
 class RecallRequest(BaseModel):
     """查询单一空间内的事实证据。"""
 
@@ -89,6 +115,8 @@ class RecallRequest(BaseModel):
     prefer_recent: Annotated[bool, Field(strict=True)] = False
     track_usage: Annotated[bool, Field(strict=True)] = True
     include_sensitive: Annotated[bool, Field(strict=True)] = False
+    filters: RecallFilterRequest | None = None
+    max_evidence_chars: Annotated[int, Field(strict=True, ge=1)] | None = None
 
 
 class FactListQuery(PageQuery):
@@ -97,6 +125,8 @@ class FactListQuery(PageQuery):
     state: FactState = "current"
     as_of: RFC3339 | None = None
     include_sensitive: bool = False
+    labels: list[_LabelText] = Field(default_factory=list)
+    source: Source | None = None
 
     @model_validator(mode="after")
     def validate_state_time(self) -> Self:
@@ -172,11 +202,12 @@ def _evidence_fields(evidence: RecallEvidence) -> _EvidenceFields:
 
 
 class RecallResponse(BaseModel):
-    """按相关性排序的证据、降级原因和实际重排状态。"""
+    """按相关性排序的证据及降级、重排与预算结果。"""
 
     evidence: list[EvidenceResponse]
     degraded_reason: RecallDegradedReason | None
     rerank_applied: bool
+    truncated: bool
 
     @classmethod
     def from_result(cls, result: RecallResult) -> Self:
@@ -187,6 +218,7 @@ class RecallResponse(BaseModel):
             ],
             degraded_reason=result.degraded_reason,
             rerank_applied=result.rerank_applied,
+            truncated=result.truncated,
         )
 
 

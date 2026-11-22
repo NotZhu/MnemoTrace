@@ -7,11 +7,12 @@ from math import exp2, isfinite
 from numbers import Real
 from typing import Literal
 
-from ..domain._validation import optional_timestamp
+from ..domain._validation import optional_timestamp, require_tuple, require_type
+from ..domain.enums import Source
 from ..domain.errors import DomainError
 from ..domain.fact import Fact
 from ..domain.ids import EntityId, FactId, MessageId, SpaceId
-from ..domain.values import EntityRef, Predicate
+from ..domain.values import EntityRef, Label, Predicate
 from ..ports.inference import Embedder, InferenceError
 from ..ports.queries import FactFilter
 from ..ports.reranker import Reranker
@@ -28,6 +29,27 @@ _MAX_RANKING_BOOST = 0.05
 _RECENCY_HALF_LIFE_SECONDS = 30 * 86_400
 
 type RecallDegradedReason = Literal["embedding_timeout", "reranker_timeout"]
+
+
+@dataclass(frozen=True)
+class RecallFilters:
+    """限制参与召回的事实。
+
+    Attributes:
+        labels: 匹配任意一项即可的标签，空元组不限。
+        source: 事实创建来源，省略时不限。
+
+    Raises:
+        ValueError: 标签或来源不是对应的领域值。
+    """
+
+    labels: tuple[Label, ...] = ()
+    source: Source | None = None
+
+    def __post_init__(self) -> None:
+        require_tuple(self.labels, Label, "labels")
+        if self.source is not None:
+            require_type(self.source, Source, "source")
 
 
 @dataclass(frozen=True)
@@ -72,11 +94,12 @@ class RecallEvidence:
 
 @dataclass(frozen=True)
 class RecallResult:
-    """保存按相关性排列的证据、超时降级原因和实际重排状态。"""
+    """保存证据、超时降级原因、实际重排状态及正文是否因预算截断。"""
 
     evidence: tuple[RecallEvidence, ...]
     degraded_reason: RecallDegradedReason | None = None
     rerank_applied: bool = False
+    truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -135,6 +158,8 @@ class Recall:
         rerank: bool = False,
         graph: GraphRecallOptions | None = None,
         prefer_recent: bool = False,
+        filters: RecallFilters | None = None,
+        max_evidence_chars: int | None = None,
     ) -> RecallResult:
         """按查询相关性召回指定时点有效的可见事实。
 
@@ -145,6 +170,8 @@ class Recall:
             rerank: 是否使用已装配的重排器计算候选相关性。
             graph: 图召回设置，省略时使用普通召回。
             prefer_recent: 是否在当前事实中小幅优先近期生效的候选。
+            filters: 筛选候选事实的标签和来源。
+            max_evidence_chars: 可选的证据正文总字符预算，须为正整数。
 
         Returns:
             按相关性排列的事实证据及可选的超时降级原因。
@@ -162,6 +189,8 @@ class Recall:
             rerank=rerank,
             graph=graph,
             prefer_recent=prefer_recent,
+            filters=filters,
+            max_evidence_chars=max_evidence_chars,
         )
         return result
 
@@ -175,6 +204,8 @@ class Recall:
         rerank: bool = False,
         graph: GraphRecallOptions | None = None,
         prefer_recent: bool = False,
+        filters: RecallFilters | None = None,
+        max_evidence_chars: int | None = None,
     ) -> tuple[RecallResult, RecallUsage | None]:
         """执行只读召回，按服务端策略返回可异步强化的证据凭据。"""
         query = _validate_query(query)
@@ -186,15 +217,23 @@ class Recall:
             raise ValueError("prefer_recent 须为布尔值")
         if graph is not None and not isinstance(graph, GraphRecallOptions):
             raise ValueError("graph 须为 GraphRecallOptions 或 None")
+        if filters is not None and not isinstance(filters, RecallFilters):
+            raise ValueError("filters 须为 RecallFilters 或 None")
+        if max_evidence_chars is not None and (
+            type(max_evidence_chars) is not int or max_evidence_chars < 1
+        ):
+            raise ValueError("max_evidence_chars 须为正整数")
         reranker = self._reranker if rerank else None
         if rerank and reranker is None:
             raise ValueError("开启重排需要装配重排器")
-        filters = FactFilter(
+        fact_filter = FactFilter(
             valid_at=optional_timestamp(as_of, "as_of", DomainError),
             exclude_sensitive=self._exclude_sensitive,
+            labels=filters.labels if filters is not None else (),
+            source=filters.source if filters is not None else None,
         )
         reference_time = self._clock.now()
-        use_recency = prefer_recent and filters.valid_at is None
+        use_recency = prefer_recent and fact_filter.valid_at is None
         per_channel_limit = _candidate_limit(top_k)
 
         # 进入会话已经完成授权。先退出事务，再把查询发给嵌入端点。
@@ -215,17 +254,20 @@ class Recall:
         erasure_token = None
         async with self._storage.session(self._space_id) as reader:
             use_salience = (
-                filters.valid_at is None and (await reader.get_space()).memory_decay
+                fact_filter.valid_at is None and (await reader.get_space()).memory_decay
             )
             lexical = await reader.search_lexical(
-                query, per_channel_limit, filters=filters, reference_time=reference_time
+                query,
+                per_channel_limit,
+                filters=fact_filter,
+                reference_time=reference_time,
             )
             semantic: Sequence[tuple[FactId, float]] = ()
             if vector is not None:
                 semantic = await reader.search_vectors(
                     vector,
                     per_channel_limit,
-                    filters=filters,
+                    filters=fact_filter,
                     reference_time=reference_time,
                     embedding_space=self._embedder.embedding_space,
                     min_score=_VECTOR_MIN_COSINE,
@@ -238,7 +280,7 @@ class Recall:
                     graph,
                     lexical_ids,
                     semantic_ids,
-                    filters=filters,
+                    filters=fact_filter,
                     reference_time=reference_time,
                     top_k=top_k,
                 )
@@ -299,6 +341,15 @@ class Recall:
             ids.sort(key=ranking_key, reverse=True)
 
         final_ids = tuple(ids[:top_k])
+        truncated = False
+        if max_evidence_chars is not None:
+            remaining = max_evidence_chars
+            for position, fact_id in enumerate(final_ids):
+                remaining -= len(facts[fact_id].text)
+                if remaining < 0:
+                    final_ids = final_ids[:position]
+                    truncated = True
+                    break
         evidence = tuple(
             RecallEvidence.from_fact(facts[fact_id]) for fact_id in final_ids
         )
@@ -310,10 +361,10 @@ class Recall:
                 erasure_token,
                 self._exclude_sensitive,
             )
-            if erasure_token is not None and degraded_reason is None
+            if final_ids and erasure_token is not None and degraded_reason is None
             else None
         )
-        return RecallResult(evidence, degraded_reason, rerank_applied), usage
+        return RecallResult(evidence, degraded_reason, rerank_applied, truncated), usage
 
 
 def _validate_query(query: str) -> str:

@@ -2,7 +2,12 @@
 
 from .application.graph_recall import GraphRecallOptions
 from .application.memory import Memory
-from .application.recall import RecallEvidence, RecallRelation, RecallResult
+from .application.recall import (
+    RecallEvidence,
+    RecallFilters,
+    RecallRelation,
+    RecallResult,
+)
 from .application.remember import (
     MessageInput,
     RememberInvalidated,
@@ -17,6 +22,7 @@ __all__ = [
     "Memory",
     "MessageInput",
     "RecallEvidence",
+    "RecallFilters",
     "RecallRelation",
     "RecallResult",
     "RememberInvalidated",

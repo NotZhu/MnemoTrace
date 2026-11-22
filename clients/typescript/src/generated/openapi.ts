@@ -607,6 +607,15 @@ export interface components {
         /** @enum {string} */
         RecallDegradedReason: "embedding_timeout" | "reranker_timeout";
         /**
+         * RecallFilterRequest
+         * @description 筛选召回候选的标签和来源。
+         */
+        RecallFilterRequest: {
+            /** Labels */
+            labels?: ("entertainment" | "family" | "fashion" | "food" | "health" | "hobbies" | "milestones" | "misc" | "music" | "personal_details" | "professional_details" | "sports" | "technology" | "travel" | "user_preferences")[];
+            source?: components["schemas"]["Source"] | null;
+        };
+        /**
          * RecallRequest
          * @description 查询单一空间内的事实证据。
          */
@@ -638,10 +647,13 @@ export interface components {
              * @default false
              */
             include_sensitive?: boolean;
+            filters?: components["schemas"]["RecallFilterRequest"] | null;
+            /** Max Evidence Chars */
+            max_evidence_chars?: number | null;
         };
         /**
          * RecallResponse
-         * @description 按相关性排序的证据、降级原因和实际重排状态。
+         * @description 按相关性排序的证据及降级、重排与预算结果。
          */
         RecallResponse: {
             /** Evidence */
@@ -649,6 +661,8 @@ export interface components {
             degraded_reason: components["schemas"]["RecallDegradedReason"] | null;
             /** Rerank Applied */
             rerank_applied: boolean;
+            /** Truncated */
+            truncated: boolean;
         };
         /**
          * RelationResponse
@@ -3109,6 +3123,8 @@ export interface operations {
                 state?: components["schemas"]["FactState"];
                 as_of?: string | null;
                 include_sensitive?: boolean;
+                labels?: ("entertainment" | "family" | "fashion" | "food" | "health" | "hobbies" | "milestones" | "misc" | "music" | "personal_details" | "professional_details" | "sports" | "technology" | "travel" | "user_preferences")[];
+                source?: components["schemas"]["Source"] | null;
             };
             header?: never;
             path: {

@@ -105,10 +105,16 @@ worker 短暂停止期间 API 可继续接收。达到单空间上限后，新�
 | `prefer_recent` | 严格布尔值，默认 `false`。开启时，在当前事实的相关候选中优先返回近期生效的事实。 |
 | `track_usage` | 严格布尔值，默认 `true`。传 `false` 保持同样的排序并跳过强化。 |
 | `include_sensitive` | 默认 `false`。显式传 `true` 可召回该账号空间中的敏感事实。 |
+| `filters` | 可选。按已知 `labels` 和单个 `source` 筛选候选。传空标签数组时不限标签。 |
+| `max_evidence_chars` | 可选正整数，限制最终证据的正文总字符数。 |
 
 成功响应的 `evidence` 按相关性排序。每条证据包含事实 ID、文本、有效区间、来源消息 ID 和可选的 `relation`。有关系时，召回和事实响应都使用 `subject_entity_id`、`predicate`、`object_entity_id`。有效区间左闭右开。`as_of` 使用当前已经收录的证据判断该时点有效性，补录历史会影响结果。历史召回沿用相关性排序，跳过两种加成和强化。没有命中时返回空数组。
 
 请求 `{"query":"报表导出格式"}` 采用部署默认。请求 `{"query":"报表导出格式","rerank":false,"track_usage":false}` 跳过重排和强化，便于跨入口核对排序。响应中的 `rerank_applied` 仅在有效重排结果参与排序时为 `true`。
+
+例如，传入 `{"filters":{"labels":["technology","professional_details"],"source":"extracted"}}` 可筛选带任一指定标签的抽取事实。标签使用[领域分类](../src/mnemotrace_next/domain/values.py)，`source` 为 `extracted` 或 `manual`。词法、向量和图的每一跳都在选择候选时应用过滤，并与有效期及敏感可见性条件一起生效。
+
+字符预算在排序并取 `top_k` 之后按 Unicode 码点累计 `text`。返回能装入预算的完整证据前缀。遇到首条放不下的证据时停止，响应的 `truncated` 为 `true`，首条超限时 `evidence` 为空。预算省略、无命中或预算容纳全部入选证据时，`truncated` 为 `false`。预算只计算证据正文。
 
 启用重排时，按 RRF 选出最多 `min(100, max(20, 2 × top_k))` 条可见候选，由重排器为候选逐条打分。最终分为 `基础分 × (1 + min(0.05, 新近度加成 + 显著度加成))`，基础分取重排分，未使用重排时取 RRF 分。最终分相同时依次按基础分和 RRF 顺序排列。新近度加成为 `0.05 × 2^(-距生效天数 / 30)`，从 `valid_at` 算到本次查询时点，起点未知或未启用时为零。空间开启 `memory_decay` 时显著度加成为 `0.05 × (有效显著度 - 1) / 2`，未强化的事实使用基线。 [显著度领域规则](../src/mnemotrace_next/domain/salience.py)
 
@@ -125,6 +131,8 @@ worker 短暂停止期间 API 可继续接收。达到单空间上限后，新�
 | `GET /v1/spaces/{space_id}/messages/{message_id}` | 返回原文正文、会话 ID、角色、事件时间和收录时间。事件时间未知或超出日历范围时，`event_time` 为 `null`。 |
 
 事实列表用 `state=current`（默认）、`history` 或 `all` 选择有效、已截止或完整时间线。前两种可传 `as_of`。列表和详情默认隐藏敏感事实，可用 `include_sensitive=true` 显式读取。按收录时间倒序、同刻按事实 ID 升序分页。续页沿用原筛选。同一页序列固定业务评估时点，每页读取独立数据库快照。服务器会重新校验空间归属和事实可见性。
+
+列表也可使用 `labels=technology&labels=professional_details&source=extracted`，过滤语义与召回相同。续页时标签顺序及重复项不影响匹配。更改筛选范围返回 `422 invalid_cursor`。
 
 事实详情、列表和召回证据中的时间以 RFC 3339 表示。存量时刻超出可表示的日历范围时，该字段返回 `null`，字段名列在 `out_of_range_fields` 中。原文收录时刻 `recorded_at` 使用同样的越界表示。没有越界字段时，`out_of_range_fields` 为空数组。业务有效期筛选和分页仍使用原始时刻。
 

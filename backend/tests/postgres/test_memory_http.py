@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from base64 import urlsafe_b64encode
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
@@ -15,16 +15,17 @@ import psycopg
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from mnemotrace_next import GraphRecallOptions, Memory
+from mnemotrace_next import GraphRecallOptions, Memory, RecallFilters
 from mnemotrace_next.adapters.inference import open_inference
 from mnemotrace_next.adapters.postgres import PostgresStorage
 from mnemotrace_next.adapters.postgres.identity import issue_key
 from mnemotrace_next.application.salience import reinforce_context_facts
 from mnemotrace_next.domain.entity import Entity
+from mnemotrace_next.domain.enums import Source
 from mnemotrace_next.domain.ids import FactId, SessionId, SpaceId
 from mnemotrace_next.domain.salience import FactSalience
 from mnemotrace_next.domain.space import Space
-from mnemotrace_next.domain.values import EntityRef, Predicate
+from mnemotrace_next.domain.values import EntityRef, Label, Predicate
 from mnemotrace_next.ports.inference import Embedder
 from mnemotrace_next.ports.reranker import Reranker
 from mnemotrace_next.ports.runtime import Clock
@@ -137,6 +138,249 @@ async def _http(
         if reranker is not None:
             app.state.reranker = reranker
         yield client
+
+
+def test_recall_filters_candidates_before_ranking(
+    database: PgDatabase, corpus: Corpus
+) -> None:
+    """词法、向量和图路的候选在截取排名前应用相同过滤。"""
+
+    class ChannelEmbedder(FakeEmbedder):
+        async def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
+            return tuple(
+                (1.0, 0.0) if text == "semanticquery" else (0.0, 1.0) for text in texts
+            )
+
+    async def exercise() -> None:
+        scope = corpus.sibling
+        root, middle, tail, blocked = (
+            Entity(scope.id, name) for name in ("起点", "中点", "末端", "断开")
+        )
+        original = message(scope, "original")
+        technology, professional, food = map(
+            Label, ("technology", "professional_details", "food")
+        )
+        lexical = replace(
+            fact(root, "z-lexical", text="channellex", provenance=(original.id,)),
+            valid_at=10.0,
+            labels=(technology,),
+        )
+        semantic = replace(
+            lexical, id=FactId("z-semantic"), text="合成向量", labels=(professional,)
+        )
+        hidden = replace(lexical, id=FactId("z-hidden"), sensitive=True)
+        future = replace(lexical, id=FactId("z-future"), valid_at=20.0)
+        path = replace(
+            fact(root, "z-path", text="首跳", provenance=(original.id,)),
+            valid_at=10.0,
+            labels=(technology,),
+            object=EntityRef(middle.id),
+        )
+        final = replace(
+            fact(middle, "z-tail", text="末跳", provenance=(original.id,)),
+            valid_at=10.0,
+            labels=(professional,),
+            object=EntityRef(tail.id),
+        )
+        bridge = replace(
+            fact(root, "a-bridge", text="不匹配的桥", provenance=(original.id,)),
+            labels=(food,),
+            object=EntityRef(blocked.id),
+        )
+        blocked_tail = replace(
+            fact(blocked, "z-blocked", text="不可达的末跳", provenance=(original.id,)),
+            labels=(technology,),
+            object=EntityRef(tail.id),
+        )
+        decoys = tuple(
+            replace(
+                fact(root, f"a-{index:02}", text="channellex"),
+                valid_at=10.0,
+                labels=(technology,),
+            )
+            for index in range(36)
+        )
+        wrong_edges = tuple(
+            replace(
+                fact(root, f"a-edge-{index}", text="错误首跳"),
+                labels=(technology,),
+                object=EntityRef(blocked.id),
+            )
+            for index in range(8)
+        )
+        embedder = ChannelEmbedder()
+        settings = Settings(RuntimeSettings(database.runtime))
+        async with (
+            pool(database.runtime) as connections,
+            _http(settings, embedder) as client,
+        ):
+            storage = PostgresStorage(connections, owner_id=scope.owner_id)
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.register_session(original.session_id)
+                await writer.append_messages((original,))
+                for entity in (root, middle, tail, blocked):
+                    await writer.upsert_entity(entity)
+                await writer.save_facts(
+                    (
+                        lexical,
+                        semantic,
+                        hidden,
+                        future,
+                        path,
+                        final,
+                        bridge,
+                        blocked_tail,
+                        *decoys,
+                        *wrong_edges,
+                    ),
+                    changed_at=30.0,
+                )
+                await writer.upsert_vectors(
+                    (
+                        (semantic.id, (4.0, 1.0)),
+                        *((item.id, (1.0, 0.0)) for item in decoys),
+                    ),
+                    embedding_space=embedder.embedding_space,
+                )
+            url = f"/v1/spaces/{scope.id.value}/recall"
+            filters = {
+                "labels": [technology.value, professional.value],
+                "source": "extracted",
+            }
+
+            async def recall(query: str, **options: object) -> list[str]:
+                response = await client.post(
+                    url,
+                    headers=corpus.headers,
+                    json={
+                        "query": query,
+                        "filters": filters,
+                        "track_usage": False,
+                        "rerank": False,
+                        **options,
+                    },
+                )
+                assert response.status_code == 200, response.text
+                return [item["fact_id"] for item in response.json()["evidence"]]
+
+            as_of = "1970-01-01T00:00:10Z"
+            assert await recall("channellex", top_k=1, as_of=as_of) == ["z-lexical"]
+            assert await recall("semanticquery", top_k=1) == ["z-semantic"]
+            graph = {"origin_entity_ids": [root.id.value]}
+            assert await recall("graphquery", top_k=1, graph=graph) == ["z-path"]
+            assert await recall("graphquery", graph=graph) == ["z-path", "z-tail"]
+            assert await recall("channellex", filters={"labels": ["sports"]}) == []
+            assert await recall(
+                "channellex", filters={"labels": [], "source": "manual"}, top_k=1
+            ) == ["a-00"]
+            reader = Memory.for_recall(
+                space_id=scope.id,
+                storage=storage,
+                embedder=embedder,
+                clock=FakeClock(),
+                exclude_sensitive=False,
+            )
+            expected = await reader.recall(
+                "channellex",
+                as_of=10.0,
+                filters=RecallFilters((technology, professional), Source.EXTRACTED),
+            )
+            included = await recall("channellex", as_of=as_of, include_sensitive=True)
+            assert included == [item.fact_id.value for item in expected.evidence]
+            assert set(included) == {"z-hidden", "z-lexical"}
+
+    run(exercise())
+
+
+def test_fact_filter_cursor_canonicalizes_labels_and_reads_old_tokens(
+    database: PgDatabase, corpus: Corpus
+) -> None:
+    """续页用规范化筛选，旧游标仍可读取未筛选页面。"""
+
+    async def exercise() -> None:
+        settings = Settings(RuntimeSettings(database.runtime))
+        scope = corpus.sibling
+        subject = Entity(scope.id, "筛选分页")
+        original = message(scope, "original")
+        technology, food = map(Label, ("technology", "food"))
+        records = (
+            replace(fact(subject, "a"), labels=(technology,)),
+            replace(fact(subject, "b"), labels=(food,)),
+            replace(
+                fact(subject, "c", provenance=(original.id,)), labels=(technology,)
+            ),
+            fact(subject, "d"),
+        )
+        async with pool(database.runtime) as connections, _http(settings) as client:
+            storage = PostgresStorage(connections, owner_id=scope.owner_id)
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.upsert_entity(subject)
+                await writer.register_session(original.session_id)
+                await writer.append_messages((original,))
+                await writer.save_facts(records, changed_at=10.0)
+            url = f"/v1/spaces/{scope.id.value}/facts"
+
+            async def page(params: Sequence[tuple[str, str]]) -> httpx.Response:
+                return await client.get(
+                    url, headers=corpus.headers, params=list(params)
+                )
+
+            def ids(response: httpx.Response) -> list[str]:
+                assert response.status_code == 200, response.text
+                return [item["fact_id"] for item in response.json()["items"]]
+
+            first = await page(
+                (
+                    ("limit", "1"),
+                    ("source", "manual"),
+                    ("labels", "technology"),
+                    ("labels", "food"),
+                    ("labels", "technology"),
+                )
+            )
+            assert ids(first) == ["a"]
+            cursor = first.json()["next_cursor"]
+            assert cursor
+            next_page = await page(
+                (
+                    ("cursor", cursor),
+                    ("labels", "food"),
+                    ("labels", "technology"),
+                    ("source", "manual"),
+                )
+            )
+            assert ids(next_page) == ["b"]
+            assert next_page.json()["next_cursor"] is None
+            for params in (
+                (("labels", "technology"), ("source", "manual")),
+                (("labels", "technology"), ("labels", "food"), ("source", "extracted")),
+            ):
+                response = await page((("cursor", cursor), *params))
+                assert (response.status_code, response.json()["code"]) == (
+                    422,
+                    "invalid_cursor",
+                )
+            for invalid_params in (
+                (("labels", ""),),
+                (("labels", "unknown"),),
+                (("source", "invalid"),),
+            ):
+                assert (await page(invalid_params)).status_code == 422
+
+            unfiltered = await page((("limit", "1"),))
+            assert ids(unfiltered) == ["a"]
+            token = unfiltered.json()["next_cursor"]
+            old = json.loads(urlsafe_b64decode(token + "=" * (-len(token) % 4)))
+            del old["scope"]["labels"], old["scope"]["source"]
+            old_token = urlsafe_b64encode(json.dumps(old).encode()).decode().rstrip("=")
+            assert ids(await page((("cursor", old_token),))) == ["b", "c", "d"]
+            changed = await page((("cursor", old_token), ("labels", "technology")))
+            assert (changed.status_code, changed.json()["code"]) == (
+                422,
+                "invalid_cursor",
+            )
+
+    run(exercise())
 
 
 def test_delete_fact_keeps_original_message_and_clears_search_and_history(
@@ -382,6 +626,13 @@ def test_http_recall_matches_core_order_and_boundaries(
                 {"track_usage": None},
                 {"rerank": "false"},
                 {"rerank": 1},
+                {"filters": {"labels": ["unknown"]}},
+                {"filters": {"labels": "technology"}},
+                {"filters": {"source": "invalid"}},
+                {"filters": {"unexpected": True}},
+                {"max_evidence_chars": False},
+                {"max_evidence_chars": "5"},
+                {"max_evidence_chars": 0},
                 {"prefer_salient": True},
             )
             for invalid in invalid_inputs:
@@ -1096,6 +1347,7 @@ def test_http_recall_inference_configuration_and_errors(
                 "evidence": [],
                 "degraded_reason": "embedding_timeout",
                 "rerank_applied": False,
+                "truncated": False,
             }
             failure = await client.post(
                 path, headers=corpus.headers, json={"query": "invalid"}
@@ -1107,7 +1359,7 @@ def test_http_recall_inference_configuration_and_errors(
 
 
 @pytest.mark.parametrize(
-    "after_queue", ("write", "disable", "purge", "expire", "sensitive")
+    "after_queue", ("write", "disable", "purge", "expire", "sensitive", "budget")
 )
 def test_http_tracks_only_final_reranked_evidence_and_rechecks_visibility(
     database: PgDatabase,
@@ -1318,9 +1570,19 @@ def test_http_tracks_only_final_reranked_evidence_and_rechecks_visibility(
             provider_mode = "ok"
             assert not calls
 
-            assert evidence(await recall()) == boosted
+            if after_queue == "budget":
+                budget = len(items[0].text)
+                empty = await recall(max_evidence_chars=budget - 1)
+                assert evidence(empty) == () and empty.json()["truncated"] is True
+                expected = boosted[:1]
+                response = await recall(max_evidence_chars=budget)
+                assert response.json()["truncated"] is True
+            else:
+                expected = boosted
+                response = await recall()
+            assert evidence(response) == expected
             await queued.wait()
-            assert calls == [boosted]
+            assert calls == [expected]
             if after_queue == "disable":
                 assert (
                     await client.patch(
@@ -1353,7 +1615,7 @@ def test_http_tracks_only_final_reranked_evidence_and_rechecks_visibility(
             for item in items[:5]:
                 assert states[item.id] == (
                     FactSalience()
-                    if untouched or item.id not in boosted
+                    if untouched or item.id not in expected
                     else FactSalience(1.5, clock.now())
                 )
             assert states[items[5].id] == (

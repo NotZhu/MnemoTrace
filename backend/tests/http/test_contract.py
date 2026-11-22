@@ -197,6 +197,16 @@ async def test_openapi_request_and_response_schemas(openapi_response: Response) 
     } == {"boolean", "null"}
     assert "rerank" not in recall_request["required"]
     assert "rerank_applied" in schemas["RecallResponse"]["required"]
+    assert "truncated" in schemas["RecallResponse"]["required"]
+    budget = recall_request["properties"]["max_evidence_chars"]["anyOf"]
+    assert any(item == {"type": "integer", "minimum": 1} for item in budget)
+    assert "max_evidence_chars" not in recall_request["required"]
+    labels = schemas["RecallFilterRequest"]["properties"]["labels"]["items"]
+    assert "technology" in labels["enum"]
+    fact_list = spec["paths"]["/v1/spaces/{space_id}/facts"]["get"]
+    assert {"labels", "source"} <= {
+        item["name"] for item in fact_list["parameters"] if item["in"] == "query"
+    }
     for option, default in (("prefer_recent", False), ("track_usage", True)):
         schema = recall_request["properties"][option]
         assert schema["type"] == "boolean" and schema["default"] is default

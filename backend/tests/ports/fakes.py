@@ -392,6 +392,7 @@ class FakeSpaceSession:
             and (filters.predicate is None or fact.predicate == filters.predicate)
             and (fact.subject, fact.predicate) != filters.exclude_slot
             and (not labels or not labels.isdisjoint(fact.labels))
+            and (filters.source is None or fact.source == filters.source)
             and (not provenance or not provenance.isdisjoint(fact.provenance))
             and (not filters.exclude_sensitive or not fact.sensitive)
             and _matches_time(fact, filters, reference_time)

@@ -6,6 +6,7 @@ from typing import Self
 from fastapi import HTTPException
 from pydantic import AwareDatetime, BaseModel, ConfigDict, FiniteFloat
 
+from ...domain.enums import Source
 from ...domain.ids import FactId
 from ...ports.queries import FactCursor, FactState
 from .page_cursor import PageCursor
@@ -21,6 +22,8 @@ class FactListScope(BaseModel):
     state: FactState
     as_of: AwareDatetime | None
     include_sensitive: bool
+    labels: tuple[str, ...] = ()
+    source: Source | None = None
 
 
 class FactPageCursor(PageCursor):

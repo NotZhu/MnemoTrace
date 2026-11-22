@@ -74,6 +74,7 @@ test('replays lost submissions and reads the original message after recall', asy
           }],
           degraded_reason: null,
           rerank_applied: false,
+          truncated: false,
         })
       case SPACE + '/messages/' + messageId:
         return json({
@@ -332,4 +333,33 @@ test('pages operations and follows audit evidence back to a session message', as
     [SESSION + '/messages', { limit: '1' }],
     [SPACE + '/messages/~YS9i', {}],
   ])
+})
+
+test('sends recall filters and budget, and repeats labels on fact pages', async () => {
+  const labels = ['technology', 'professional_details']
+  const filters = { labels, source: 'extracted' }
+  const recall = { query: '导出', filters, max_evidence_chars: 15 }
+  const requests = []
+  const sdk = client(async (url, init) => {
+    const target = new URL(url)
+    const path = target.pathname.slice('/proxy'.length)
+    requests.push(path)
+    if (path === SPACE + '/recall') {
+      assert.deepEqual(JSON.parse(init.body), recall)
+      return json({ evidence: [], degraded_reason: null, rerank_applied: false, truncated: true })
+    }
+    assert.equal(path, SPACE + '/facts')
+    assert.deepEqual(target.searchParams.getAll('labels'), labels)
+    assert.equal(target.searchParams.get('source'), 'extracted')
+    assert.equal(target.searchParams.get('state'), 'all')
+    const next_cursor = target.searchParams.has('cursor') ? null : 'next_-'
+    if (next_cursor === null) assert.equal(target.searchParams.get('cursor'), 'next_-')
+    return json({ items: [], next_cursor, evaluated_at: TIME })
+  })
+  assert.equal((await sdk.recall(HANDLE.spaceId, recall)).truncated, true)
+  const options = { ...filters, state: 'all' }
+  const first = await sdk.listFacts(HANDLE.spaceId, options)
+  const second = await sdk.listFacts(HANDLE.spaceId, { ...options, cursor: first.next_cursor })
+  assert.equal(second.next_cursor, null)
+  assert.deepEqual(requests, [SPACE + '/recall', SPACE + '/facts', SPACE + '/facts'])
 })

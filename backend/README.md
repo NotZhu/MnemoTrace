@@ -62,6 +62,20 @@ result = await reader.recall("报表导出格式", top_k=5)
 
 查询近期变化时可调用 `reader.recall("发布规则有哪些变化", prefer_recent=True)`，在相关性接近的候选中优先返回近期生效的事实。`prefer_recent` 默认为 `False`。
 
+使用 `RecallFilters` 筛选参与召回的候选，用 `max_evidence_chars` 限定返回的证据正文。结果的 `truncated` 表示字符预算裁掉了证据。 [过滤与预算契约](docs/http-api.md#召回)
+
+```python
+from mnemotrace_next import RecallFilters
+from mnemotrace_next.domain.enums import Source
+from mnemotrace_next.domain.values import Label
+
+result = await reader.recall(
+    "报表导出格式",
+    filters=RecallFilters(labels=(Label("technology"),), source=Source.EXTRACTED),
+    max_evidence_chars=1200,
+)
+```
+
 装配了重排器时，可在单次召回传入 `rerank=True`。Python 默认 `False`。通过 `result.rerank_applied` 检查本次是否实际使用重排结果。
 
 空间启用 `memory_decay` 后，当前召回会提高显著度较高的相关候选的排名。新建空间默认为关闭，可通过空间 PATCH 修改。新近度和显著度共用加成上限，传入 `as_of` 时按相关性排列历史候选。Python 召回保持只读。 [空间设置及计分](docs/http-api.md#召回)

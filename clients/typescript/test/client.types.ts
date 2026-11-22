@@ -1,9 +1,13 @@
 import { MnemoTraceClient, OperationWaitTimeout } from '../src/index'
-import type { OperationHandle, OperationResponse, RecallRequest, TerminalOperation } from '../src/index'
+import type { FactListQuery, OperationHandle, OperationResponse, RecallRequest, TerminalOperation } from '../src/index'
 import type { operations } from '../src/generated/openapi'
 
 const client = new MnemoTraceClient({ baseUrl: 'http://127.0.0.1:8100', apiKey: 'synthetic-key' })
-const request: RecallRequest = { query: '默认导出格式' }
+const request: RecallRequest = {
+  query: '默认导出格式',
+  filters: { labels: ['technology'], source: 'extracted' },
+  max_evidence_chars: 1_000,
+}
 
 async function checkTypes(spaceId: string): Promise<TerminalOperation> {
   const session = await client.createSession(spaceId)
@@ -28,6 +32,15 @@ async function checkTypes(spaceId: string): Promise<TerminalOperation> {
   const factId = audit.items[0]?.fact_id
   if (factId) await client.listFactChanges(spaceId, factId, auditQuery)
   await client.listSessionMessages(spaceId, session.session_id, { limit: 10 })
+  const factQuery: FactListQuery = {
+    state: 'current',
+    labels: ['technology', 'professional_details'],
+    source: 'extracted',
+  }
+  const facts = await client.listFacts(spaceId, factQuery)
+  if (facts.next_cursor) {
+    await client.listFacts(spaceId, { ...factQuery, cursor: facts.next_cursor })
+  }
   const queued: OperationResponse = operation
   if (queued.status === 'succeeded' && queued.message_ids?.[0]) {
     await client.getMessage(spaceId, queued.message_ids[0])

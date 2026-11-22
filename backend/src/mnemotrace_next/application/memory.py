@@ -9,7 +9,7 @@ from ..ports.reranker import Reranker
 from ..ports.runtime import Clock, IdGenerator
 from ..ports.storage import Storage
 from .graph_recall import GraphRecallOptions
-from .recall import DEFAULT_TOP_K, Recall, RecallResult
+from .recall import DEFAULT_TOP_K, Recall, RecallFilters, RecallResult
 from .remember import MessageInput, Remember, RememberResult
 from .sessions import create_session
 
@@ -109,6 +109,8 @@ class Memory:
         rerank: bool = False,
         graph: GraphRecallOptions | None = None,
         prefer_recent: bool = False,
+        filters: RecallFilters | None = None,
+        max_evidence_chars: int | None = None,
     ) -> RecallResult:
         """在本空间召回可见的事实证据。
 
@@ -119,6 +121,8 @@ class Memory:
             rerank: 是否调用已装配的重排器调整候选顺序。
             graph: 图召回设置，省略时使用普通召回。
             prefer_recent: 是否在当前事实中小幅优先近期生效的候选。
+            filters: 筛选候选事实的标签和来源。
+            max_evidence_chars: 可选的证据正文总字符预算，须为正整数。
 
         Returns:
             按相关性排列的事实证据及可选的超时降级原因。
@@ -130,6 +134,8 @@ class Memory:
             rerank=rerank,
             graph=graph,
             prefer_recent=prefer_recent,
+            filters=filters,
+            max_evidence_chars=max_evidence_chars,
         )
 
     async def create_session(self) -> SessionId:

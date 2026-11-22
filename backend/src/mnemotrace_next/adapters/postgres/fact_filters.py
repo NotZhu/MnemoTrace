@@ -94,6 +94,8 @@ def fact_conditions(
             "f.labels && %(labels)s::text[]",
             labels=[label.value for label in filters.labels],
         )
+    if filters.source is not None:
+        conditions.add("f.source = %(source)s", source=filters.source.value)
     if filters.provenance:
         conditions.add(
             """

@@ -47,11 +47,14 @@ if (completed.status === 'succeeded') {
 - `rememberAndWait` 接受同一组写入参数和等待选项。收到 `submit_outcome_unknown` 时，使用原幂等键和原输入恢复提交，最近一次错误可从 `cause` 查看。收到 `failed` 终态时查看 `operation.error`。HTTP 失败会抛出 `MnemoTraceError`，包含 `status`、`code` 和服务端提供的 `requestId`。
 - `recall(spaceId, request)` 采用[后端召回契约](../../backend/docs/http-api.md#召回)。例如传 `rerank: false` 跳过重排，从 `rerank_applied` 查看是否实际重排。使用证据中的 `source_message_ids` 调用 `getMessage(spaceId, messageId)`。接口接收服务端返回的路径标识。
 
+召回请求可传 `filters: { labels: ['technology'], source: 'extracted' }` 和 `max_evidence_chars: 1200`。字符预算只计算证据正文，响应中的 `truncated` 表示预算实际裁掉了证据。 [召回契约](../../backend/docs/http-api.md#召回)
+
 ## 查询任务与证据
 
 - `listOperations(spaceId, options)` 查找写入任务，支持 `status` 和 `session_id`。
 - `listOperationFactChanges({ spaceId, operationId }, options)` 返回任务状态和可见变更。任务状态为 `succeeded` 时读取关联审计，其余状态返回空列表。
 - `listFactChanges(spaceId, factId, options)` 读取事实有效期的变更和截止触发依据。两种变更查询都支持 `include_sensitive`。
+- `listFacts(spaceId, options)` 列出事实，支持 `labels`、`source` 和有效期筛选。 [事实列表契约](../../backend/docs/http-api.md#事实和原文)
 - `listSessionMessages(spaceId, sessionId, options)` 按追加顺序读取会话原文。也可将变更中的来源 ID 传给 `getMessage`。
 
 方法各返回一页。用 `limit` 设置页大小，续页在相同查询选项中传入上页返回的 `next_cursor` 作为 `cursor`。 [HTTP 查询契约](../../backend/docs/http-api.md#任务变更和会话原文)

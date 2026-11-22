@@ -1,6 +1,8 @@
 import type {
   FactChangeListQuery,
   FactChangePage,
+  FactListQuery,
+  FactPage,
   MessagePage,
   MessageResponse,
   OperationFactChangePage,
@@ -80,11 +82,16 @@ function operationPath({ spaceId, operationId }: OperationHandle): string {
 }
 
 function withQuery(
-  path: string, query: Record<string, string | number | boolean | null | undefined>,
+  path: string,
+  query: Record<string, string | number | boolean | readonly string[] | null | undefined>,
 ): string {
   const params = new URLSearchParams()
   for (const [name, value] of Object.entries(query)) {
-    if (value != null) params.set(name, String(value))
+    if (Array.isArray(value)) {
+      for (const item of value) params.append(name, item)
+    } else if (value != null) {
+      params.set(name, String(value))
+    }
   }
   const search = params.toString()
   return search ? `${path}?${search}` : path
@@ -286,6 +293,12 @@ export class MnemoTraceClient {
   ): Promise<FactChangePage> {
     const path = withQuery(`${spacePath(spaceId)}/facts/${resourceSegment(factId)}/changes`, options)
     const { data } = await this.#request<FactChangePage>(path)
+    return data
+  }
+
+  async listFacts(spaceId: string, options: FactListQuery = {}): Promise<FactPage> {
+    const path = withQuery(`${spacePath(spaceId)}/facts`, options)
+    const { data } = await this.#request<FactPage>(path)
     return data
   }
 

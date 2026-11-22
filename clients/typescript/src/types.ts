@@ -17,6 +17,11 @@ export type TerminalOperation = OperationResponse & { status: 'succeeded' | 'fai
 export type RecallRequest = Schemas['RecallRequest']
 export type RecallResponse = Schemas['RecallResponse']
 export type RecallEvidence = Schemas['EvidenceResponse']
+export type RecallFilter = Schemas['RecallFilterRequest']
+export type FactLabel = NonNullable<RecallFilter['labels']>[number]
+export type FactSource = Schemas['Source']
+export type FactResponse = Schemas['FactResponse']
+export type FactPage = Schemas['FactPage']
 export type GraphOptions = Schemas['GraphOptions']
 export type MessageResponse = Schemas['MessageResponse']
 export type MessagePage = Schemas['MessagePage']
@@ -33,6 +38,14 @@ export type OperationListQuery = PageQuery & {
 
 export type FactChangeListQuery = PageQuery & {
   include_sensitive?: boolean
+}
+
+export type FactListQuery = PageQuery & {
+  state?: Schemas['FactState']
+  as_of?: string | null
+  include_sensitive?: boolean
+  labels?: readonly FactLabel[]
+  source?: FactSource | null
 }
 
 export interface OperationHandle {
