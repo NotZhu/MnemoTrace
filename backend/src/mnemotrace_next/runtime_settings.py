@@ -35,6 +35,7 @@ class RuntimeSettings:
                 (
                     "MNEMOTRACE_NEXT_LLM_",
                     "MNEMOTRACE_NEXT_EMBED_",
+                    "MNEMOTRACE_NEXT_RERANK_",
                     "MNEMOTRACE_NEXT_INFERENCE_",
                 )
             )

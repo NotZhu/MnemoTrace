@@ -54,6 +54,19 @@ class FactSalience:
             -elapsed / _HALF_LIFE_SECONDS
         )
 
+    def normalized_at(self, reference_time: float) -> float:
+        """将有效显著度的加成映射到 0 至 1。
+
+        Args:
+            reference_time: 本次查询统一使用的有限 UTC epoch 秒。
+
+        Returns:
+            基线对应 0，显著度上限对应 1。
+        """
+        return (self.effective_at(reference_time) - _BASELINE) / (
+            _MAX_SALIENCE - _BASELINE
+        )
+
     def reinforce(self, at: float) -> Self:
         """将有效显著度提高 0.5，封顶 3.0。
 

@@ -1068,20 +1068,18 @@ class FakeReranker:
     """用子串命中提供确定性的重排。"""
 
     async def rerank(
-        self, query: str, documents: Sequence[tuple[FactId, str]], limit: int
-    ) -> Sequence[FactId]:
-        """将含查询子串的文档排在前面。
+        self, query: str, documents: Sequence[tuple[FactId, str]]
+    ) -> Sequence[tuple[FactId, float]]:
+        """将查询子串命中映射为相关性分数。
 
         Args:
             query: 要查找的子串。
             documents: 合成的事实标识和正文。
-            limit: 最大返回条数。
 
         Returns:
-            排序并去重后的事实标识。
+            各事实标识及对应的命中分数。
         """
-        ranked = sorted(documents, key=lambda document: query not in document[1])
-        return tuple(dict.fromkeys(fact_id for fact_id, _ in ranked))[:limit]
+        return tuple((fact_id, float(query in text)) for fact_id, text in documents)
 
 
 class FakeClock:

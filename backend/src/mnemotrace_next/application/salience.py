@@ -16,6 +16,7 @@ async def reinforce_context_facts(
     reference_time: float,
     expected_erasure_token: str,
     exclude_sensitive: bool = False,
+    require_memory_decay: bool = False,
 ) -> None:
     """为实际进入当前上下文且在请求时点有效的事实写回显著度。
 
@@ -31,24 +32,32 @@ async def reinforce_context_facts(
         reference_time: 组装上下文时选取当前事实所用的 UTC epoch 秒。
         expected_erasure_token: 读取上下文时在同一快照中取得的擦除标记。
         exclude_sensitive: 是否排除敏感事实，应与读取上下文的权限一致。
+        require_memory_decay: 自动反馈时要求写入时空间仍启用记忆衰减。
     """
     if not fact_ids:
         return
 
     async with storage.session(space_id, write=True) as session:
+        if require_memory_decay and not (await session.get_space()).memory_decay:
+            return
         if await session.get_erasure_token() != expected_erasure_token:
             return
 
         facts = await session.get_facts(fact_ids, exclude_sensitive=exclude_sensitive)
+        reinforced_at = clock.now()
+        visible_until = (
+            max(reference_time, reinforced_at)
+            if require_memory_decay
+            else reference_time
+        )
         eligible_ids = tuple(
             fact.id
             for fact in facts.values()
             if (fact.valid_at is None or fact.valid_at <= reference_time)
-            and (fact.invalid_at is None or reference_time < fact.invalid_at)
+            and (fact.invalid_at is None or visible_until < fact.invalid_at)
         )
         if eligible_ids:
             states = await session.get_salience(eligible_ids)
-            reinforced_at = clock.now()
             await session.save_salience(
                 {
                     fact_id: state.reinforce(reinforced_at)

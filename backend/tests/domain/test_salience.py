@@ -14,6 +14,7 @@ def test_default_salience_holds_at_baseline() -> None:
     assert state.salience == 1.0
     assert state.last_access is None
     assert state.effective_at(_HALF_LIFE) == 1.0
+    assert state.normalized_at(_HALF_LIFE) == 0.0
 
 
 def test_reinforce_adds_to_the_decayed_boost() -> None:
@@ -32,6 +33,13 @@ def test_reinforce_respects_the_cap_and_monotonic_access_time() -> None:
 
     assert state.effective_at(5.0) == 2.75
     assert state.reinforce(5.0) == FactSalience(3.0, 10.0)
+
+
+def test_normalized_salience_scales_the_decaying_bonus() -> None:
+    state = FactSalience(3.0, 0.0)
+    assert state.normalized_at(0.0) == 1.0
+    assert state.normalized_at(_HALF_LIFE) == 0.5
+    assert state.normalized_at(2 * _HALF_LIFE) == 0.25
 
 
 @pytest.mark.parametrize(

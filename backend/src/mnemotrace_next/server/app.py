@@ -12,6 +12,7 @@ from .auth import ConnectionPool
 from .errors import install_error_handlers
 from .health import router as health_router
 from .middleware import RequestBoundary
+from .recall_usage import RecallUsageQueue
 from .settings import Settings
 from .v1 import memories, operations, sessions, spaces
 
@@ -32,20 +33,33 @@ def create_app(settings: Settings) -> FastAPI:
         key.startswith("MNEMOTRACE_NEXT_EMBED_")
         for key in settings.runtime.inference_env
     )
+    rerank_configured = any(
+        key.startswith("MNEMOTRACE_NEXT_RERANK_")
+        for key in settings.runtime.inference_env
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with (
             open_inference(
-                settings.runtime.inference_env, llm="optional", embed=embed_configured
+                settings.runtime.inference_env,
+                llm="optional",
+                embed=embed_configured,
+                rerank=rerank_configured,
             ) as inference,
             pool,
+            RecallUsageQueue().run() as recall_usage,
         ):
             app.state.embedder = inference.embedder
+            app.state.reranker = inference.reranker
+            app.state.recall_usage = recall_usage
             app.state.write_configured = (
                 inference.llm is not None and inference.embedder is not None
             )
-            yield
+            try:
+                yield
+            finally:
+                app.state.recall_usage = None
 
     app = FastAPI(
         title="MnemoTrace",
@@ -56,6 +70,8 @@ def create_app(settings: Settings) -> FastAPI:
     )
     app.state.pool = pool
     app.state.embedder = None
+    app.state.reranker = None
+    app.state.recall_usage = None
     app.state.write_configured = False
     app.state.queue_limit = settings.queue_limit
     app.state.migration_checksums = migration_checksums()

@@ -125,6 +125,31 @@ def test_migration_upgrade_and_failure_are_atomic(
             ).fetchone() == ("空间", None)
 
 
+def test_memory_decay_defaults_off_after_upgrading_existing_spaces(
+    database_factory: DatabaseFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """升级保留原有空间，新旧空间的记忆衰减都默认关闭。"""
+    version = "011_space_memory_decay.sql"
+    previous = tuple(m for m in migrate._migrations() if m.version < version)
+    with database_factory() as dsn:
+        with monkeypatch.context() as legacy:
+            legacy.setattr(migrate, "_migrations", lambda: previous)
+            assert migrate.apply_migrations(dsn)[-1] == "010_space_purge_keys.sql"
+        insert = """
+            INSERT INTO mnemotrace_next.spaces (space_id, owner_id, name, created_at)
+            VALUES (%s, 'owner', %s, 1)
+            """
+        with psycopg.connect(dsn) as conn:
+            conn.execute(insert, ("old", "旧空间"))
+        assert migrate.apply_migrations(dsn) == (version,)
+        with psycopg.connect(dsn) as conn:
+            conn.execute(insert, ("new", "新空间"))
+            assert conn.execute("""
+                SELECT space_id, name, memory_decay
+                FROM mnemotrace_next.spaces ORDER BY space_id
+                """).fetchall() == [("new", "新空间", False), ("old", "旧空间", False)]
+
+
 def test_salience_access_constraint_on_upgrade(
     database_factory: DatabaseFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

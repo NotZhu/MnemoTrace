@@ -104,10 +104,16 @@ class PostgresStorage:
                     await conn.execute(
                         """
                         INSERT INTO mnemotrace_next.spaces
-                            (space_id, owner_id, name, created_at)
-                        VALUES (%s, %s, %s, %s)
+                            (space_id, owner_id, name, created_at, memory_decay)
+                        VALUES (%s, %s, %s, %s, %s)
                         """,
-                        (space.id.value, self._owner_id, space.name, space.created_at),
+                        (
+                            space.id.value,
+                            self._owner_id,
+                            space.name,
+                            space.created_at,
+                            space.memory_decay,
+                        ),
                     )
                 await _return_committed_connection(connection.pop_all())
         except errors.UniqueViolation:
@@ -121,7 +127,7 @@ class PostgresStorage:
         ):
             await cursor.execute(
                 """
-                SELECT space_id, owner_id, name, created_at
+                SELECT space_id, owner_id, name, created_at, memory_decay
                 FROM mnemotrace_next.spaces
                 WHERE owner_id = %s AND space_id > %s
                 ORDER BY space_id LIMIT %s
@@ -130,8 +136,10 @@ class PostgresStorage:
             )
             return await cursor.fetchall()
 
-    async def rename_space(self, space_id: SpaceId, name: str) -> Space:
-        """在同一更新语句中检查归属并修改空间名称。"""
+    async def update_space(
+        self, space_id: SpaceId, *, name: str | None, memory_decay: bool | None
+    ) -> Space:
+        """检查空间归属并更新提供的设置，None 表示保留已有值。"""
         async with (
             self._pool.connection() as conn,
             _session_transaction(conn, write=True),
@@ -139,11 +147,12 @@ class PostgresStorage:
         ):
             await cursor.execute(
                 """
-                UPDATE mnemotrace_next.spaces SET name = %s
+                UPDATE mnemotrace_next.spaces
+                SET name = coalesce(%s, name), memory_decay = coalesce(%s, memory_decay)
                 WHERE space_id = %s AND owner_id = %s
-                RETURNING space_id, owner_id, name, created_at
+                RETURNING space_id, owner_id, name, created_at, memory_decay
                 """,
-                (name, space_id.value, self._owner_id),
+                (name, memory_decay, space_id.value, self._owner_id),
             )
             space = await cursor.fetchone()
             if space is None:

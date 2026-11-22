@@ -8,7 +8,7 @@ GRANT SELECT (key_id, owner_id, created_at, revoked_at),
 GRANT SELECT ON mnemotrace_next.schema_migrations TO :"runtime_role";
 GRANT SELECT (key_id, owner_id, secret_hash, revoked_at) ON mnemotrace_next.api_keys
     TO :"runtime_role";
-GRANT SELECT, INSERT, UPDATE (purge_generation, name) ON mnemotrace_next.spaces
+GRANT SELECT, INSERT, UPDATE (purge_generation, name, memory_decay) ON mnemotrace_next.spaces
     TO :"runtime_role";
 GRANT DELETE ON mnemotrace_next.spaces, mnemotrace_next.embedding_spaces
     TO :"runtime_role";

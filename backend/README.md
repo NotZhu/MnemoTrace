@@ -59,7 +59,9 @@ result = await reader.recall("报表导出格式", top_k=5)
 
 `recall` 默认在同一读快照内融合词法和向量候选。`result.evidence` 按相关性排列，包含事实 ID、正文、有效区间和关联原文 ID。实体关系事实还带有 `relation`，包含 `subject_id`、`predicate` 和 `object_entity_id`。默认查当前有效事实。显式传入 `as_of` 时按 UTC epoch 秒查询，事实须有已知起点且有效区间覆盖该时点。
 
-查询近期变化时可调用 `reader.recall("发布规则有哪些变化", prefer_recent=True)`，在相关性接近的候选中优先返回近期生效的事实。`prefer_recent` 默认为 `False`，显式传入 `as_of` 时使用原排序。使用外部重排时，新近度影响送入重排器的候选和回填顺序。 [计分规则](docs/http-api.md#召回)
+查询近期变化时可调用 `reader.recall("发布规则有哪些变化", prefer_recent=True)`，在相关性接近的候选中优先返回近期生效的事实。`prefer_recent` 默认为 `False`。
+
+空间启用 `memory_decay` 后，当前召回会提高显著度较高的相关候选的排名。新建空间默认为关闭，可通过空间 PATCH 修改。新近度和显著度共用加成上限，传入 `as_of` 时按相关性排列历史候选。Python 召回保持只读。 [空间设置及计分](docs/http-api.md#召回)
 
 使用 `graph` 参数开启图召回。
 
@@ -82,9 +84,11 @@ if relation is not None:
     )
 ```
 
-读写和只读装配都可传入部署方提供的 `reranker`。显式开启重排（`recall(..., rerank=True)`）需要已装配重排器。至少有两条候选时，召回会在读事务退出后把查询及已授权的候选事实 ID 和正文交给重排器。返回的 ID 按重排顺序置前，其余候选按 RRF 顺序补齐。使用第三方重排服务时，部署方须授权发送相应数据。
+读写和只读装配都可传入部署方授权的 `reranker`，调用时用 `recall(..., rerank=True)` 启用。召回按 RRF 选出候选池。候选至少有两条时，退出读事务后把查询和已授权的候选 ID、正文交给重排器。新近度和显著度加到重排分数上，再截取最终结果。 [候选池与排序规则](docs/http-api.md#召回)
 
-`result.degraded_reason` 默认是 `None`。查询嵌入超时，返回词法和已启用的图路融合结果，跳过重排并标记 `embedding_timeout`，即使结果为空也带该标记。重排超时返回原 RRF 结果并标记 `reranker_timeout`。重排期间完成的擦除由后续读快照反映，在途召回使用已读取的证据。
+已有自定义重排器需将 `rerank(query, documents, limit)` 迁移为 `rerank(query, documents)`。为每条候选返回一个 `(FactId, float)`，顺序任意，分数须为 `[0, 1]` 内的有限数，缺失、重复和候选外 ID 会触发 `InferenceError`。 [重排端口](src/mnemotrace_next/ports/reranker.py)
+
+`result.degraded_reason` 默认是 `None`。嵌入超时时按剩余词法和图候选加权并标记 `embedding_timeout`。重排超时时按已读取候选的 RRF 分加权并标记 `reranker_timeout`。在途召回使用原读快照的证据，后续请求使用新的读快照。
 
 受限读取由服务端在装配时设置 `exclude_sensitive=True`。来源标识随可见事实返回，读取原文正文使用原文入口的授权规则。
 

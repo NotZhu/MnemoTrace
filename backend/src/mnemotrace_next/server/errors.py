@@ -184,5 +184,5 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(InferenceError)
     async def handle_inference(request: Request, exc: InferenceError) -> JSONResponse:
-        _logger.warning("查询嵌入失败 request_id=%s", request.state.request_id)
+        _logger.warning("召回推理失败 request_id=%s", request.state.request_id)
         return problem(request, 502, "inference_failed")

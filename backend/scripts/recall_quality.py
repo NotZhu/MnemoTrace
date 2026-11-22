@@ -6,7 +6,7 @@ import json
 import os
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from math import ceil
 from pathlib import Path
 from time import perf_counter
@@ -22,6 +22,10 @@ from recall_quality_cases import (
     DATASETS,
     QUALITY_NOW,
     RECENCY_DATASET,
+    SALIENCE_DATASET,
+    SALIENCE_HISTORY_TARGET,
+    SALIENCE_QUERY,
+    SALIENCE_TARGET,
     Dataset,
     FactCase,
     QueryCase,
@@ -34,10 +38,11 @@ from mnemotrace_next.adapters.postgres.migrate import apply_migrations
 from mnemotrace_next.application.recall import (
     _VECTOR_MIN_COSINE,
     _candidate_limit,
+    _candidates_within_boost,
     _fuse_rankings,
-    _recency_candidates,
     _rrf_scores,
 )
+from mnemotrace_next.application.salience import reinforce_context_facts
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.enums import Source
 from mnemotrace_next.domain.fact import Fact
@@ -53,7 +58,15 @@ _MAX_TESTED_DEPTH = _candidate_limit(100)
 _NOW = QUALITY_NOW
 _DEFAULT_LIMIT = _candidate_limit(_TOP_K)
 type Hits = Sequence[tuple[FactId, float]]
-type _Suite = Literal["ordinary", "graph", "recency"]
+type _Suite = Literal["ordinary", "graph", "recency", "salience"]
+type _RankingPolicy = tuple[str, bool, bool]
+
+_RECENCY_POLICIES = (("rrf", False, False), ("prefer_recent", True, False))
+_SALIENCE_POLICIES = (
+    *_RECENCY_POLICIES,
+    ("memory_decay", False, True),
+    ("both", True, True),
+)
 
 
 @dataclass(frozen=True)
@@ -98,9 +111,12 @@ _POLICIES = (
 )
 
 
+@dataclass(frozen=True)
 class _FixedClock:
+    reference_time: float = _NOW
+
     def now(self) -> float:
-        return _NOW
+        return self.reference_time
 
 
 class _MeasuredEmbedder:
@@ -138,7 +154,7 @@ class _RecencyEmbedder:
 
 @dataclass(frozen=True)
 class _FixedQueryEmbedder:
-    """为同一查询的两次公开召回复用预先生成的向量。"""
+    """为同一查询的各次公开召回复用预先生成的向量。"""
 
     embedding_space: str
     dim: int
@@ -195,16 +211,23 @@ def _make_fact(case: FactCase, subject: Entity) -> Fact:
 
 
 async def _seed_dataset(
-    storage: Storage, embedder: Embedder, dataset: Dataset
+    storage: Storage,
+    embedder: Embedder,
+    dataset: Dataset,
+    *,
+    memory_decay: bool = False,
+    vectors: Sequence[Sequence[float]] | None = None,
 ) -> SpaceId:
-    scope = Space(SpaceId(dataset.name), "recall-quality", dataset.name, 0.0)
+    name = f"{dataset.name}-decay" if memory_decay else dataset.name
+    scope = Space(SpaceId(name), "recall-quality", name, 0.0, memory_decay)
     subject = Entity(scope.id, "合成评测")
     facts = tuple(_make_fact(case, subject) for case in dataset.facts)
     indexed = tuple(
         fact for fact, case in zip(facts, dataset.facts, strict=True) if case.indexed
     )
     await storage.create_space(scope)
-    vectors = await embedder.embed(tuple(fact.text for fact in indexed))
+    if vectors is None:
+        vectors = await embedder.embed(tuple(fact.text for fact in indexed))
     async with storage.session(scope.id, write=True) as writer:
         await writer.upsert_entity(subject)
         await writer.save_facts(facts, changed_at=_NOW)
@@ -338,116 +361,269 @@ def _report_dataset(dataset: Dataset, traces: Sequence[_Trace]) -> dict[str, obj
 
 
 @dataclass(frozen=True)
-class _RecencyTrial:
+class _RankingTrial:
     expected_rank: int | None
+    returned: tuple[str, ...]
     loaded_count: int
+    salience_loaded_count: int
     elapsed_ms: float
+
+
+@dataclass(frozen=True)
+class _RankingComparison:
+    case: QueryCase
+    candidates: tuple[tuple[str, float], ...]
+    trials: dict[str, _RankingTrial]
+
+
+async def _fixed_query(embedder: Embedder, query: str) -> _FixedQueryEmbedder:
+    (vector,) = await embedder.embed((query,))
+    return _FixedQueryEmbedder(embedder.embedding_space, embedder.dim, tuple(vector))
+
+
+async def _compare_ranking(
+    storage: Storage,
+    space_id: SpaceId,
+    case: QueryCase,
+    query_embedder: _FixedQueryEmbedder,
+    clock: _FixedClock,
+    policies: Sequence[_RankingPolicy],
+    *,
+    decay_space_id: SpaceId | None = None,
+) -> _RankingComparison:
+    memory = Memory.for_recall(
+        space_id=space_id, storage=storage, embedder=query_embedder, clock=clock
+    )
+    decay_memory = (
+        Memory.for_recall(
+            space_id=decay_space_id,
+            storage=storage,
+            embedder=query_embedder,
+            clock=clock,
+        )
+        if decay_space_id is not None
+        else memory
+    )
+    filters = FactFilter(valid_at=case.as_of)
+    reference_time = clock.now()
+    async with storage.session(space_id) as reader:
+        lexical = await reader.search_lexical(
+            case.text, _DEFAULT_LIMIT, filters=filters, reference_time=reference_time
+        )
+        semantic = await reader.search_vectors(
+            query_embedder.vector,
+            _DEFAULT_LIMIT,
+            filters=filters,
+            reference_time=reference_time,
+            embedding_space=query_embedder.embedding_space,
+            min_score=_VECTOR_MIN_COSINE,
+        )
+    ranking = _rrf_scores(
+        (fact_id for fact_id, _ in lexical), (fact_id for fact_id, _ in semantic)
+    )
+    candidates = tuple((fact_id.value, score) for fact_id, score in ranking)
+    baseline = tuple(fact_id for fact_id, _ in candidates[:_TOP_K])
+    trials = {}
+    for policy, prefer_recent, memory_decay in policies:
+        started = perf_counter()
+        result = await (decay_memory if memory_decay else memory).recall(
+            case.text,
+            top_k=_TOP_K,
+            as_of=case.as_of,
+            prefer_recent=prefer_recent,
+        )
+        elapsed_ms = round((perf_counter() - started) * 1000, 3)
+        if result.degraded_reason is not None:
+            raise RuntimeError(f"{case.id} 发生推理降级，无法对照排序")
+        returned = tuple(item.fact_id.value for item in result.evidence)
+        if policy == "rrf" and returned != baseline:
+            raise RuntimeError(f"{case.id} 的基线与公开召回排序不一致")
+        # 从相同条件下的候选重放批量读取范围，耗时来自公开召回调用。
+        loaded = (
+            _candidates_within_boost(ranking, _TOP_K)
+            if (prefer_recent or memory_decay) and case.as_of is None
+            else ranking[:_TOP_K]
+        )
+        rank = next(
+            (i for i, fact_id in enumerate(returned, 1) if fact_id == case.expected),
+            None,
+        )
+        trials[policy] = _RankingTrial(
+            expected_rank=rank,
+            returned=returned,
+            loaded_count=len(loaded),
+            salience_loaded_count=len(loaded)
+            if memory_decay and case.as_of is None
+            else 0,
+            elapsed_ms=elapsed_ms,
+        )
+    return _RankingComparison(case, candidates, trials)
+
+
+def _report_rankings(comparisons: Sequence[_RankingComparison]) -> dict[str, object]:
+    policies = {}
+    for policy in comparisons[0].trials:
+        runs = tuple(comparison.trials[policy] for comparison in comparisons)
+        policies[policy] = {
+            "hit_at_1": sum(trial.expected_rank == 1 for trial in runs),
+            "hit_at_k": sum(trial.expected_rank is not None for trial in runs),
+            "total_loaded": sum(trial.loaded_count for trial in runs),
+            "total_salience_loaded": sum(trial.salience_loaded_count for trial in runs),
+            "max_latency_ms": max(trial.elapsed_ms for trial in runs),
+        }
+    return {
+        "expected_in_candidates": sum(
+            any(
+                fact_id == comparison.case.expected
+                for fact_id, _ in comparison.candidates
+            )
+            for comparison in comparisons
+        ),
+        "policies": policies,
+        "queries": [
+            {
+                **comparison.case._asdict(),
+                "rrf_candidates": comparison.candidates,
+                "runs": {
+                    policy: asdict(trial) for policy, trial in comparison.trials.items()
+                },
+            }
+            for comparison in comparisons
+        ],
+    }
+
+
+def _control_passed(comparison: _RankingComparison) -> bool:
+    baseline = comparison.trials["rrf"].returned
+    return all(
+        trial.expected_rank is not None
+        and (comparison.case.as_of is None or trial.returned == baseline)
+        for trial in comparison.trials.values()
+    )
 
 
 async def _run_recency_suite(storage: Storage, embedder: Embedder) -> dict[str, object]:
     space_id = await _seed_dataset(storage, embedder, RECENCY_DATASET)
-    trials: dict[str, list[_RecencyTrial]] = {"rrf": [], "prefer_recent": []}
-    queries = []
-    candidate_hits = 0
+    clock = _FixedClock()
+    comparisons = []
     recent_improved = False
     controls_passed = True
     for case in RECENCY_DATASET.queries:
-        expected = FactId(case.expected) if case.expected is not None else None
-        (vector,) = await embedder.embed((case.text,))
-        query_embedder = _FixedQueryEmbedder(
-            embedding_space=embedder.embedding_space,
-            dim=embedder.dim,
-            vector=tuple(vector),
+        comparison = await _compare_ranking(
+            storage,
+            space_id,
+            case,
+            await _fixed_query(embedder, case.text),
+            clock,
+            _RECENCY_POLICIES,
         )
-        memory = Memory.for_recall(
-            space_id=space_id,
-            storage=storage,
-            embedder=query_embedder,
-            clock=_FixedClock(),
-        )
-        filters = FactFilter(valid_at=case.as_of)
-        async with storage.session(space_id) as reader:
-            lexical = await reader.search_lexical(
-                case.text, _DEFAULT_LIMIT, filters=filters, reference_time=_NOW
-            )
-            semantic = await reader.search_vectors(
-                query_embedder.vector,
-                _DEFAULT_LIMIT,
-                filters=filters,
-                reference_time=_NOW,
-                embedding_space=query_embedder.embedding_space,
-                min_score=_VECTOR_MIN_COSINE,
-            )
-        ranking = _rrf_scores(
-            (fact_id for fact_id, _ in lexical), (fact_id for fact_id, _ in semantic)
-        )
-        candidate_hits += any(fact_id == expected for fact_id, _ in ranking)
-        runs = {}
-        for policy, prefer_recent in (("rrf", False), ("prefer_recent", True)):
-            started = perf_counter()
-            result = await memory.recall(
-                case.text, top_k=_TOP_K, as_of=case.as_of, prefer_recent=prefer_recent
-            )
-            elapsed_ms = round((perf_counter() - started) * 1000, 3)
-            if result.degraded_reason is not None:
-                raise RuntimeError(f"{case.id} 发生推理降级，无法对照新近度")
-            returned = [item.fact_id for item in result.evidence]
-            if not prefer_recent and returned != [hit[0] for hit in ranking[:_TOP_K]]:
-                raise RuntimeError(f"{case.id} 的基线与公开召回排序不一致")
-            # 从相同条件下的候选重放批量读取范围，耗时来自公开召回调用。
-            loaded = (
-                _recency_candidates(ranking, _TOP_K)
-                if prefer_recent and case.as_of is None
-                else ranking[:_TOP_K]
-            )
-            rank = next(
-                (i for i, fact_id in enumerate(returned, 1) if fact_id == expected),
-                None,
-            )
-            trials[policy].append(_RecencyTrial(rank, len(loaded), elapsed_ms))
-            runs[policy] = {
-                "expected_rank": rank,
-                "returned": [fact_id.value for fact_id in returned],
-                "loaded_count": len(loaded),
-                "elapsed_ms": elapsed_ms,
-            }
-        before = trials["rrf"][-1].expected_rank
-        after = trials["prefer_recent"][-1].expected_rank
+        comparisons.append(comparison)
         if case.kind == "recent":
+            before = comparison.trials["rrf"].expected_rank
+            after = comparison.trials["prefer_recent"].expected_rank
             recent_improved |= after is not None and (before is None or after < before)
         else:
-            controls_passed &= before is not None and after is not None
-        if case.as_of is not None:
-            controls_passed &= (
-                runs["rrf"]["returned"] == runs["prefer_recent"]["returned"]
-            )
-        queries.append(
-            {
-                **case._asdict(),
-                "rrf_candidates": [
-                    (fact_id.value, score) for fact_id, score in ranking
-                ],
-                "runs": runs,
-            }
-        )
+            controls_passed &= _control_passed(comparison)
     return {
-        "reference_time": _NOW,
+        "reference_time": clock.now(),
         "top_k": _TOP_K,
-        "expected_in_candidates": candidate_hits,
         "recent_improved": recent_improved,
         "controls_passed": controls_passed,
         "passed": recent_improved and controls_passed,
         "facts": [case._asdict() for case in RECENCY_DATASET.facts],
-        "policies": {
-            policy: {
-                "hit_at_1": sum(trial.expected_rank == 1 for trial in runs),
-                "hit_at_k": sum(trial.expected_rank is not None for trial in runs),
-                "total_loaded": sum(trial.loaded_count for trial in runs),
-                "max_latency_ms": max(trial.elapsed_ms for trial in runs),
-            }
-            for policy, runs in trials.items()
+        **_report_rankings(comparisons),
+    }
+
+
+async def _run_salience_suite(
+    storage: Storage, embedder: Embedder
+) -> dict[str, object]:
+    vectors = await embedder.embed(
+        tuple(case.text for case in SALIENCE_DATASET.facts if case.indexed)
+    )
+    space_id = await _seed_dataset(storage, embedder, SALIENCE_DATASET, vectors=vectors)
+    decay_space_id = await _seed_dataset(
+        storage, embedder, SALIENCE_DATASET, memory_decay=True, vectors=vectors
+    )
+    clock = _FixedClock()
+    # 强化历史查询的第二候选，使误用当前显著度时两条历史结果会换位。
+    reinforced_ids = (FactId(SALIENCE_TARGET), FactId(SALIENCE_HISTORY_TARGET))
+    reinforcement_times = (clock.now(), clock.now())
+    for scope_id in (space_id, decay_space_id):
+        async with storage.session(scope_id) as reader:
+            erasure_token = await reader.get_erasure_token()
+        for reference_time in reinforcement_times:
+            await reinforce_context_facts(
+                storage,
+                clock,
+                scope_id,
+                reinforced_ids,
+                reference_time=reference_time,
+                expected_erasure_token=erasure_token,
+            )
+
+    target_query = await _fixed_query(embedder, SALIENCE_QUERY.text)
+    reinforced = await _compare_ranking(
+        storage,
+        space_id,
+        SALIENCE_QUERY,
+        target_query,
+        clock,
+        _SALIENCE_POLICIES,
+        decay_space_id=decay_space_id,
+    )
+    controls = [
+        await _compare_ranking(
+            storage,
+            space_id,
+            case,
+            await _fixed_query(embedder, case.text),
+            clock,
+            _SALIENCE_POLICIES,
+            decay_space_id=decay_space_id,
+        )
+        for case in SALIENCE_DATASET.queries
+        if case != SALIENCE_QUERY
+    ]
+    later = _FixedClock(clock.now() + 35 * 86_400)
+    decayed = await _compare_ranking(
+        storage,
+        space_id,
+        SALIENCE_QUERY,
+        target_query,
+        later,
+        _SALIENCE_POLICIES,
+        decay_space_id=decay_space_id,
+    )
+
+    target_promoted = (
+        tuple(fact_id for fact_id, _ in reinforced.candidates[_TOP_K : _TOP_K + 1])
+        == (SALIENCE_TARGET,)
+        and reinforced.trials["prefer_recent"].expected_rank is None
+        and reinforced.trials["memory_decay"].expected_rank is not None
+        and reinforced.trials["both"].expected_rank is not None
+    )
+    target_decayed = (
+        decayed.candidates == reinforced.candidates
+        and decayed.trials["memory_decay"].expected_rank is None
+        and decayed.trials["both"].expected_rank is None
+    )
+    controls_passed = all(_control_passed(control) for control in controls)
+    return {
+        "reference_time": clock.now(),
+        "top_k": _TOP_K,
+        "reinforcement": {
+            "fact_id": SALIENCE_TARGET,
+            "historical_control_fact_id": SALIENCE_HISTORY_TARGET,
+            "at": reinforcement_times,
         },
-        "queries": queries,
+        "target_promoted": target_promoted,
+        "target_decayed": target_decayed,
+        "controls_passed": controls_passed,
+        "passed": target_promoted and target_decayed and controls_passed,
+        "facts": [case._asdict() for case in SALIENCE_DATASET.facts],
+        "after_decay": {"reference_time": later.now(), **_report_rankings((decayed,))},
+        **_report_rankings((reinforced, *controls)),
     }
 
 
@@ -468,7 +644,7 @@ async def evaluate(
         model: 被测模型标识。
         revision: 被测模型的固定修订。
         out: 保存完整结果的新文件路径。
-        suite: 对照普通召回、图路召回或按需新近度。
+        suite: 对照普通召回、图路召回、新近度或显著度。
     """
     with _quality_database(admin_dsn) as dsn:
         with psycopg.connect(dsn) as conn:
@@ -483,6 +659,8 @@ async def evaluate(
                 details = await run_graph_suite(storage, embedder, dsn)
             elif suite == "recency":
                 details = await _run_recency_suite(storage, embedder)
+            elif suite == "salience":
+                details = await _run_salience_suite(storage, embedder)
             else:
                 details = {
                     "top_k": _TOP_K,
@@ -512,12 +690,12 @@ async def evaluate(
             ensure_ascii=False,
         )
         report.write("\n")
-    if suite == "recency" and not details["passed"]:
-        raise RuntimeError("新近度对照未通过，详见输出报告")
+    if suite in {"recency", "salience"} and not details["passed"]:
+        raise RuntimeError(f"{suite} 排序对照未通过，详见输出报告")
 
 
 async def _configured_run(dsn: str, out: Path, suite: _Suite) -> None:
-    if suite == "recency":
+    if suite in {"recency", "salience"}:
         await evaluate(
             dsn,
             _RecencyEmbedder(),
@@ -545,9 +723,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("ordinary", "graph", "recency"),
+        choices=("ordinary", "graph", "recency", "salience"),
         default="ordinary",
-        help="对照普通召回、图路召回或按需新近度",
+        help="对照普通召回、图路召回、新近度或显著度",
     )
     parser.add_argument("--out", required=True, type=Path, help="新建的 JSON 结果路径")
     args = parser.parse_args()

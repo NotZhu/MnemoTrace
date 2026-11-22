@@ -174,9 +174,15 @@ async def test_openapi_request_and_response_schemas(openapi_response: Response) 
         assert "after_id" not in parameters
     recall = spec["paths"]["/v1/spaces/{space_id}/recall"]["post"]
     recall_request = schemas["RecallRequest"]
-    prefer_recent = recall_request["properties"]["prefer_recent"]
-    assert prefer_recent["type"] == "boolean" and prefer_recent["default"] is False
-    assert "prefer_recent" not in recall_request["required"]
+    assert "prefer_salient" not in recall_request["properties"]
+    for option, default in (("prefer_recent", False), ("track_usage", True)):
+        schema = recall_request["properties"][option]
+        assert schema["type"] == "boolean" and schema["default"] is default
+        assert option not in recall_request["required"]
+    assert (
+        spec["paths"]["/v1/spaces/{space_id}"]["patch"]["operationId"] == "renameSpace"
+    )
+    assert schemas["SpacePatch"]["properties"]["memory_decay"]["type"] == "boolean"
     validation = recall["responses"]["422"]["content"]["application/problem+json"]
     assert set(validation["schema"]["properties"]["errors"]["items"]["properties"]) == {
         "location",
@@ -251,6 +257,7 @@ async def test_validation_reports_safe_field_locations() -> None:
                 "query": "synthetic-query",
                 "top_k": 101,
                 "prefer_recent": "synthetic-boolean",
+                "track_usage": "synthetic-boolean",
                 "graph": {
                     "max_hops": 5,
                     "origin_entity_ids": [" ", "valid"],
@@ -266,6 +273,7 @@ async def test_validation_reports_safe_field_locations() -> None:
         } == {
             ("body", "/top_k", "out_of_range"),
             ("body", "/prefer_recent", "invalid_value"),
+            ("body", "/track_usage", "invalid_value"),
             ("body", "/graph/max_hops", "out_of_range"),
             ("body", "/graph/origin_entity_ids/0", "invalid_value"),
             ("body", "/graph", "unknown_field"),

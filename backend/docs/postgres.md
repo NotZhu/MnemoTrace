@@ -23,6 +23,8 @@ uv run --locked python -m mnemotrace_next.adapters.postgres.migrate up
 
 `010` 增加空间清空的幂等记录表。记录与清空提交在同一写事务，随空间删除级联清理。
 
+`011` 增加 `spaces.memory_decay`，存量空间默认关闭。升级时先应用迁移，执行下节的运行角色授权脚本，再启动新服务。
+
 ## 运行账号与会话
 
 数据库管理员为迁移、运行和凭据管理配置独立登录角色。迁移角色拥有业务 schema 和对象，运行角色用于 API 与 worker，凭据管理角色用于签发和撤销。运行与凭据管理角色都需要目标库的连接权限。使用独立 PostgreSQL 时，先设置 `psql` 的连接环境，以迁移角色连接目标数据库。在迁移后从 `backend` 运行下列命令，参数替换为实际创建的角色名。 [授权脚本](../../deploy/next/grant-roles.sql)
@@ -107,6 +109,16 @@ uv run --locked python scripts/recall_quality.py --suite recency --out .artifact
 ```
 
 每题生成一次查询向量，供候选探测和两次公开召回复用。报告记录原始 RRF 候选、命中率、从候选重放得出的批量加载条数，以及查询向量生成后的召回耗时。近期偏好样例须改善至少一题，旧有效证据和历史查询须保留 Top‑5 命中，历史排序须一致。
+
+### 显著度质量验收
+
+沿用新近度验收的测试实例和输出目录，从 `backend` 运行下列命令。脚本使用固定查询向量和时钟，通过现有强化用例为合成事实记录两次使用。
+
+```sh
+uv run --locked python scripts/recall_quality.py --suite salience --out .artifacts/recall-quality/salience.json
+```
+
+报告对照纯 RRF、仅新近度、仅 `memory_decay` 和双开。两套空间使用相同的事实、向量和强化记录，通过空间开关改变显著度策略。报告记录原始候选、Top‑5、重放得到的事实与显著度读取条数，以及实测召回耗时。目标事实的基础排名为第 6，启用显著度后须进入 Top‑5。时钟推进一个显著度半衰期后，目标须回到 Top‑5 之外。强相关旧事实须保留命中。历史对照强化基础排名第二的事实，各策略仍须保持同一历史排序。
 
 ### 图召回质量验收
 

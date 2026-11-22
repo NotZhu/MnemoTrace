@@ -9,7 +9,9 @@ from typing import Literal, cast
 import httpx
 
 from ...ports.inference import LLM, Embedder
+from ...ports.reranker import Reranker
 from ._http import InferenceHTTP
+from .cohere_reranker import CohereReranker
 from .openai_chat import (
     OpenAIChatLLM,
     _ChatOptions,
@@ -39,10 +41,12 @@ class InferenceClients:
     Attributes:
         llm: 选择补全角色时提供的端口。
         embedder: 选择嵌入角色时提供的端口。
+        reranker: 选择重排角色时提供的端口。
     """
 
     llm: LLM | None = None
     embedder: Embedder | None = None
+    reranker: Reranker | None = None
 
 
 @asynccontextmanager
@@ -51,6 +55,7 @@ async def open_inference(
     *,
     llm: bool | Literal["optional"] = False,
     embed: bool = False,
+    rerank: bool = False,
     transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None,
 ) -> AsyncIterator[InferenceClients]:
     """校验所选角色的配置并管理其 HTTP 客户端。
@@ -59,6 +64,7 @@ async def open_inference(
         env: 部署配置的环境变量映射。
         llm: True 时必须配置补全角色，optional 时允许缺少必填项。
         embed: 是否启用嵌入角色。
+        rerank: 是否启用重排角色。
         transport_factory: 可选的 HTTP 传输工厂，便于用固定响应验证。
 
     Yields:
@@ -74,7 +80,8 @@ async def open_inference(
             raise
         chat = None
     embeddings = _embedding_config(env) if embed else None
-    if chat is None and embeddings is None:
+    ranking = _rerank_config(env) if rerank else None
+    if chat is None and embeddings is None and ranking is None:
         yield InferenceClients()
         return
     connect_timeout = _positive_seconds(env, "INFERENCE_CONNECT_TIMEOUT_SECONDS", 5)
@@ -125,6 +132,11 @@ async def open_inference(
                 options=embeddings[1],
             )
             if embeddings
+            else None,
+            reranker=CohereReranker(
+                await get_http(ranking[0]), model=ranking[1], timeout=ranking[2]
+            )
+            if ranking
             else None,
         )
 
@@ -183,6 +195,15 @@ def _embedding_config(env: Mapping[str, str]) -> tuple[_Endpoint, _EmbeddingOpti
         batch_size=_positive_int(env, "EMBED_BATCH_SIZE", 10),
         send_dimensions=send_dimensions == "1",
         timeout=_positive_seconds(env, "EMBED_TIMEOUT_SECONDS", 30),
+    )
+
+
+def _rerank_config(env: Mapping[str, str]) -> tuple[_Endpoint, str, float]:
+    endpoint = _endpoint(env, "RERANK", _required(env, "RERANK_BASE_URL"))
+    return (
+        endpoint,
+        _required(env, "RERANK_MODEL"),
+        _positive_seconds(env, "RERANK_TIMEOUT_SECONDS", 5),
     )
 
 

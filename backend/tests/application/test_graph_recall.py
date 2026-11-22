@@ -13,6 +13,7 @@ from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.enums import Source
 from mnemotrace_next.domain.fact import Fact
 from mnemotrace_next.domain.ids import EntityId, FactId, SpaceId
+from mnemotrace_next.domain.salience import FactSalience
 from mnemotrace_next.domain.space import Space
 from mnemotrace_next.domain.values import EntityRef, LiteralValue, Predicate
 from mnemotrace_next.ports.queries import FactFilter
@@ -50,9 +51,13 @@ def _edge(
 
 
 async def _seed(
-    storage: FakeStorage, entities: Sequence[Entity], facts: Sequence[Fact]
+    storage: FakeStorage,
+    entities: Sequence[Entity],
+    facts: Sequence[Fact],
+    *,
+    memory_decay: bool = False,
 ) -> None:
-    await storage.create_space(_SPACE)
+    await storage.create_space(replace(_SPACE, memory_decay=memory_decay))
     async with storage.session(_SPACE.id, write=True) as writer:
         for entity in entities:
             await writer.upsert_entity(entity)
@@ -239,7 +244,12 @@ def test_graph_candidates_participate_in_inference_and_timeout_fallback(
             _edge("seed", origin, bridge, "releasecode"), valid_at=100.0 - 90 * 86_400
         )
         follow = replace(_edge("follow", bridge, tip), valid_at=100.0)
-        await _seed(storage, (origin, bridge, tip), (seed, follow))
+        await _seed(
+            storage,
+            (origin, bridge, tip),
+            (seed, follow),
+            memory_decay=mode == "explicit_seed",
+        )
 
         class Embedder(FakeEmbedder):
             async def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
@@ -249,8 +259,8 @@ def test_graph_candidates_participate_in_inference_and_timeout_fallback(
 
         class Reranker:
             async def rerank(
-                self, query: str, documents: Sequence[tuple[FactId, str]], limit: int
-            ) -> Sequence[FactId]:
+                self, query: str, documents: Sequence[tuple[FactId, str]]
+            ) -> Sequence[tuple[FactId, float]]:
                 assert mode in {"rerank", "rerank_timeout"}
                 assert tuple(documents) == (
                     (seed.id, seed.text),
@@ -258,7 +268,7 @@ def test_graph_candidates_participate_in_inference_and_timeout_fallback(
                 )
                 if mode == "rerank_timeout":
                     raise TimeoutError
-                return (follow.id,)
+                return ((follow.id, 1.0), (seed.id, 0.5))
 
         recall = Memory.for_recall(
             space_id=_SPACE.id,
@@ -282,11 +292,15 @@ def test_graph_candidates_participate_in_inference_and_timeout_fallback(
             )
             assert [item.fact_id for item in result.evidence] == [seed.id, follow.id]
         if mode == "explicit_seed":
-            preferred = await recall.recall(
+            recent = await recall.recall(
                 query, graph=options, top_k=1, rerank=True, prefer_recent=True
             )
-            assert preferred.degraded_reason == "embedding_timeout"
-            assert [item.fact_id for item in preferred.evidence] == [follow.id]
+            async with storage.session(_SPACE.id, write=True) as writer:
+                await writer.save_salience({follow.id: FactSalience(3.0, 100.0)})
+            salient = await recall.recall(query, graph=options, top_k=1, rerank=True)
+            assert salient == recent
+            assert salient.degraded_reason == "embedding_timeout"
+            assert [item.fact_id for item in salient.evidence] == [follow.id]
 
     asyncio.run(exercise())
 

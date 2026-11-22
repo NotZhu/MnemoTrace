@@ -18,6 +18,7 @@ from .schemas import (
     ResourceId,
     SpaceName,
     SpacePage,
+    SpacePatchBody,
     SpaceResponse,
     require_empty_body,
     require_json,
@@ -85,12 +86,16 @@ async def get_space(space_id: ResourceId, storage: AuthorizedStorage) -> SpaceRe
     dependencies=[Depends(require_json)],
     responses={**_json_errors, **problem_responses(404)},
 )
-async def rename_space(
-    space_id: ResourceId, body: SpaceName, storage: AuthorizedStorage
+async def update_space(
+    space_id: ResourceId, body: SpacePatchBody, storage: AuthorizedStorage
 ) -> SpaceResponse:
-    """为所属空间改名。"""
+    """更新所属空间的名称或记忆衰减设置。"""
     return SpaceResponse.from_space(
-        await storage.rename_space(SpaceId(space_id), body.name)
+        await storage.update_space(
+            SpaceId(space_id),
+            name=body.get("name"),
+            memory_decay=body.get("memory_decay"),
+        )
     )
 
 

@@ -11,8 +11,10 @@ from ...application.recall import Recall
 from ...domain.ids import FactId, MessageId, SpaceId
 from ...ports.inference import Embedder
 from ...ports.queries import FactFilter, FactQuery
+from ...ports.reranker import Reranker
 from ..auth import AuthorizedStorage
 from ..errors import problem_responses
+from ..recall_usage import RecallUsageQueue
 from .fact_cursor import FactListScope, FactPageCursor
 from .memory_schemas import (
     FactListQuery,
@@ -56,21 +58,29 @@ async def recall(
     if embedder is None:
         async with storage.session(space):
             raise HTTPException(503, detail="embedding_not_configured")
+    reranker = cast(Reranker | None, request.app.state.reranker)
+    queue = cast(RecallUsageQueue | None, request.app.state.recall_usage)
     reader = Recall(
         space_id=space,
         storage=storage,
         embedder=embedder,
         clock=_clock,
         exclude_sensitive=not body.include_sensitive,
+        reranker=reranker,
     )
-    result = await reader.recall(
+    result, usage = await reader.recall_with_usage(
         body.query,
+        track_usage=body.track_usage and queue is not None,
         top_k=body.top_k,
         as_of=body.as_of.timestamp() if body.as_of is not None else None,
         graph=graph,
         prefer_recent=body.prefer_recent,
+        rerank=reranker is not None,
     )
-    return RecallResponse.from_result(result)
+    response = RecallResponse.from_result(result)
+    if usage is not None and queue is not None:
+        queue.submit(storage, _clock, usage)
+    return response
 
 
 @router.get("/facts", operation_id="listFacts")

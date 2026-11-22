@@ -1,5 +1,6 @@
 """从 HTTP 入口验证召回、事实与来源原文的读取契约。"""
 
+import asyncio
 import json
 from base64 import urlsafe_b64encode
 from collections.abc import AsyncIterator, Sequence
@@ -17,11 +18,15 @@ from mnemotrace_next import GraphRecallOptions, Memory
 from mnemotrace_next.adapters.inference import open_inference
 from mnemotrace_next.adapters.postgres import PostgresStorage
 from mnemotrace_next.adapters.postgres.identity import issue_key
+from mnemotrace_next.application.salience import reinforce_context_facts
 from mnemotrace_next.domain.entity import Entity
 from mnemotrace_next.domain.ids import FactId, SessionId, SpaceId
+from mnemotrace_next.domain.salience import FactSalience
 from mnemotrace_next.domain.space import Space
 from mnemotrace_next.domain.values import EntityRef, Predicate
 from mnemotrace_next.ports.inference import Embedder
+from mnemotrace_next.ports.runtime import Clock
+from mnemotrace_next.ports.storage import Storage
 from mnemotrace_next.runtime_settings import RuntimeSettings
 from mnemotrace_next.server import app as server_app
 from mnemotrace_next.server.settings import Settings
@@ -333,7 +338,11 @@ def test_http_recall_matches_core_order_and_boundaries(
             denied = await client.post(
                 path,
                 headers=corpus.foreign_headers,
-                json={"query": "dispatchtag", "prefer_recent": True},
+                json={
+                    "query": "dispatchtag",
+                    "prefer_recent": True,
+                    "track_usage": True,
+                },
             )
             assert denied.status_code == 404
             assert embedder.calls == 0
@@ -348,6 +357,10 @@ def test_http_recall_matches_core_order_and_boundaries(
                 {"prefer_recent": "true"},
                 {"prefer_recent": 1},
                 {"prefer_recent": None},
+                {"track_usage": "true"},
+                {"track_usage": 1},
+                {"track_usage": None},
+                {"prefer_salient": True},
             )
             for invalid in invalid_inputs:
                 response = await client.post(
@@ -428,17 +441,35 @@ def test_http_recall_matches_core_order_and_boundaries(
             async with storage.session(corpus.scope.id, write=True) as writer:
                 await writer.upsert_entity(subject)
                 await writer.save_facts((older, recent), changed_at=now)
+                await writer.save_salience({recent.id: FactSalience(2.0, now)})
 
-            for options, expected_id in (
-                ({}, older.id),
-                ({"prefer_recent": False}, older.id),
-                ({"prefer_recent": True}, recent.id),
-                ({"prefer_recent": True, "as_of": "1970-01-01T00:01:40Z"}, older.id),
+            for enabled, options, expected_id in (
+                (False, {}, older.id),
+                (False, {"prefer_recent": False}, older.id),
+                (False, {"prefer_recent": True}, recent.id),
+                (True, {}, recent.id),
+                (True, {"prefer_recent": True}, recent.id),
+                (
+                    True,
+                    {"prefer_recent": True, "as_of": "1970-01-01T00:01:40Z"},
+                    older.id,
+                ),
             ):
+                patch = await client.patch(
+                    corpus.path, headers=corpus.headers, json={"memory_decay": enabled}
+                )
+                assert (
+                    patch.status_code == 200 and patch.json()["memory_decay"] is enabled
+                )
                 response = await client.post(
                     path,
                     headers=corpus.headers,
-                    json={"query": "recencytag", "top_k": 1, **options},
+                    json={
+                        "query": "recencytag",
+                        "top_k": 1,
+                        "track_usage": False,
+                        **options,
+                    },
                 )
                 assert response.status_code == 200, response.text
                 assert [hit["fact_id"] for hit in response.json()["evidence"]] == [
@@ -822,6 +853,7 @@ def test_http_legacy_space_time_keeps_reads_and_updates_available(
         expected = {
             "space_id": old.id.value,
             "name": old.name,
+            "memory_decay": False,
             "created_at": None,
             "out_of_range_fields": ["created_at"],
         }
@@ -941,5 +973,263 @@ def test_http_recall_inference_configuration_and_errors(
             )
             assert failure.status_code == 502
             assert failure.json()["code"] == "inference_failed"
+
+    run(exercise())
+
+
+@pytest.mark.parametrize(
+    "after_queue", ("write", "disable", "purge", "expire", "sensitive")
+)
+def test_http_tracks_only_final_reranked_evidence_and_rechecks_visibility(
+    database: PgDatabase,
+    corpus: Corpus,
+    monkeypatch: pytest.MonkeyPatch,
+    after_queue: str,
+) -> None:
+    """先用固定的 Cohere 分数重排，再验证最终结果与写回快照保护。"""
+
+    class MutableClock(FakeClock):
+        value = 100.0
+
+        def now(self) -> float:
+            return self.value
+
+    clock = MutableClock()
+    now = clock.now()
+    scope_id = corpus.sibling.id
+    subject = Entity(scope_id, "合成重排")
+    items = tuple(
+        replace(fact(subject, f"rank-{i}", text=f"rankedtag {i}"), valid_at=20.0)
+        for i in range(6)
+    )
+    hidden = replace(fact(subject, "hidden", text="rankedtag hidden"), sensitive=True)
+    calls: list[tuple[FactId, ...]] = []
+    provider_mode = "ok"
+    gateway_attempts = 0
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        nonlocal gateway_attempts
+        payload = json.loads(request.content)
+        if request.url.path == "/v2/embeddings":
+            if provider_mode == "embed-timeout":
+                raise httpx.ReadTimeout("synthetic delay", request=request)
+            return httpx.Response(
+                200, json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]}
+            )
+        assert request.method == "POST"
+        assert request.url.path == "/v2/rerank"
+        assert request.headers["Authorization"] == "Bearer synthetic-key"
+        assert payload == {
+            "model": "synthetic-rank",
+            "query": "rankedtag",
+            "documents": [item.text for item in items],
+            "top_n": 6,
+        }
+        if provider_mode == "rank-timeout":
+            raise httpx.ReadTimeout("synthetic delay", request=request)
+        if provider_mode == "rank-gateway-timeout":
+            gateway_attempts += 1
+            return httpx.Response(504, headers={"Retry-After": "0"})
+        scores = (0.9, 0.8, 0.7, 0.65, 0.60, 0.59)
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"index": i, "relevance_score": score}
+                    for i, score in enumerate(scores)
+                    if provider_mode != "bad-score" or i != 5
+                ]
+            },
+        )
+
+    monkeypatch.setattr("mnemotrace_next.server.v1.memories._clock", clock)
+    monkeypatch.setattr(
+        server_app,
+        "open_inference",
+        partial(
+            open_inference, transport_factory=lambda: httpx.MockTransport(provider)
+        ),
+    )
+    settings = Settings.from_env(
+        {
+            "MNEMOTRACE_NEXT_POSTGRES_DSN": database.runtime,
+            "MNEMOTRACE_NEXT_EMBED_BASE_URL": "https://synthetic.invalid/v2",
+            "MNEMOTRACE_NEXT_EMBED_API_KEY": "synthetic-key",
+            "MNEMOTRACE_NEXT_EMBED_MODEL": "synthetic-embed",
+            "MNEMOTRACE_NEXT_EMBED_REVISION": "test",
+            "MNEMOTRACE_NEXT_EMBED_DIM": "2",
+            "MNEMOTRACE_NEXT_RERANK_BASE_URL": "https://synthetic.invalid/v2",
+            "MNEMOTRACE_NEXT_RERANK_API_KEY": "synthetic-key",
+            "MNEMOTRACE_NEXT_RERANK_MODEL": "synthetic-rank",
+        }
+    )
+
+    async def exercise() -> None:
+        nonlocal provider_mode
+        queued, resume, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def pause_write(
+            storage: Storage,
+            clock: Clock,
+            space_id: SpaceId,
+            fact_ids: Sequence[FactId],
+            *,
+            reference_time: float,
+            expected_erasure_token: str,
+            exclude_sensitive: bool,
+            require_memory_decay: bool,
+        ) -> None:
+            calls.append(tuple(fact_ids))
+            assert space_id == scope_id
+            assert reference_time == now and exclude_sensitive and require_memory_decay
+            queued.set()
+            await resume.wait()
+            await reinforce_context_facts(
+                storage,
+                clock,
+                space_id,
+                fact_ids,
+                reference_time=reference_time,
+                expected_erasure_token=expected_erasure_token,
+                exclude_sensitive=exclude_sensitive,
+                require_memory_decay=require_memory_decay,
+            )
+            finished.set()
+
+        monkeypatch.setattr(
+            "mnemotrace_next.server.recall_usage.reinforce_context_facts", pause_write
+        )
+        async with (
+            pool(database.runtime) as connections,
+            _http(settings) as client,
+            asyncio.timeout(10),
+        ):
+            storage = PostgresStorage(connections, owner_id=corpus.sibling.owner_id)
+            path = f"/v1/spaces/{scope_id.value}"
+            headers = corpus.headers
+            original_salience = FactSalience(2.0, now)
+
+            async def seed() -> None:
+                async with storage.session(scope_id, write=True) as writer:
+                    await writer.upsert_entity(subject)
+                    await writer.save_facts((*items, hidden), changed_at=now)
+                    await writer.save_salience({items[5].id: original_salience})
+
+            async def recall(**options: object) -> httpx.Response:
+                return await client.post(
+                    path + "/recall",
+                    headers=headers,
+                    json={"query": "rankedtag", "top_k": 5, **options},
+                )
+
+            def evidence(response: httpx.Response) -> tuple[FactId, ...]:
+                assert response.status_code == 200, response.text
+                return tuple(
+                    FactId(item["fact_id"]) for item in response.json()["evidence"]
+                )
+
+            await seed()
+            basic = tuple(item.id for item in items[:5])
+            boosted = (*basic[:4], items[5].id)
+            assert evidence(await recall()) == basic
+            for payload in (
+                {},
+                {"memory_decay": None},
+                {"memory_decay": "true"},
+                {"name": None},
+            ):
+                assert (
+                    await client.patch(path, headers=headers, json=payload)
+                ).status_code == 422
+            assert (
+                await client.patch(
+                    path, headers=corpus.foreign_headers, json={"memory_decay": True}
+                )
+            ).status_code == 404
+            patch = await client.patch(
+                path, headers=headers, json={"memory_decay": True}
+            )
+            assert patch.status_code == 200
+            assert patch.json()["name"] == corpus.sibling.name
+            listed = await client.get("/v1/spaces", headers=headers)
+            assert {
+                item["space_id"]: item["memory_decay"]
+                for item in listed.json()["items"]
+            } == {
+                scope_id.value: True,
+                corpus.scope.id.value: False,
+            }
+            assert evidence(await recall(track_usage=False)) == boosted
+            assert (
+                evidence(await recall(as_of="1970-01-01T00:01:40Z", prefer_recent=True))
+                == basic
+            )
+            assert evidence(await recall(query="nohits")) == ()
+            provider_mode = "rank-timeout"
+            degraded = await recall()
+            local_order = evidence(degraded)
+            assert local_order
+            assert degraded.json()["degraded_reason"] == "reranker_timeout"
+            provider_mode = "rank-gateway-timeout"
+            degraded = await recall()
+            assert gateway_attempts == 2
+            assert evidence(degraded) == local_order
+            assert degraded.json()["degraded_reason"] == "reranker_timeout"
+            provider_mode = "embed-timeout"
+            degraded = await recall()
+            assert evidence(degraded)
+            assert degraded.json()["degraded_reason"] == "embedding_timeout"
+            provider_mode = "bad-score"
+            invalid = await recall()
+            assert (invalid.status_code, invalid.json()["code"]) == (
+                502,
+                "inference_failed",
+            )
+            provider_mode = "ok"
+            assert not calls
+
+            assert evidence(await recall()) == boosted
+            await queued.wait()
+            assert calls == [boosted]
+            if after_queue == "disable":
+                assert (
+                    await client.patch(
+                        path, headers=headers, json={"memory_decay": False}
+                    )
+                ).status_code == 200
+            elif after_queue == "purge":
+                assert (
+                    await client.post(
+                        path + "/purge", headers={**headers, "Idempotency-Key": "queue"}
+                    )
+                ).status_code == 204
+                await seed()
+            elif after_queue in {"expire", "sensitive"}:
+                current = items[5]
+                updated = (
+                    current.close(now + 1, now + 1)
+                    if after_queue == "expire"
+                    else replace(current, sensitive=True)
+                )
+                clock.value = now + 1
+                async with storage.session(scope_id, write=True) as writer:
+                    await writer.save_facts((updated,), changed_at=clock.now())
+            resume.set()
+            await finished.wait()
+
+            async with storage.session(scope_id) as reader:
+                states = await reader.get_salience(tuple(item.id for item in items))
+            untouched = after_queue in {"disable", "purge"}
+            for item in items[:5]:
+                assert states[item.id] == (
+                    FactSalience()
+                    if untouched or item.id not in boosted
+                    else FactSalience(1.5, clock.now())
+                )
+            assert states[items[5].id] == (
+                original_salience.reinforce(now)
+                if after_queue == "write"
+                else original_salience
+            )
 
     run(exercise())

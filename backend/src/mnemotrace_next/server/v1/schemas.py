@@ -13,7 +13,9 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    with_config,
 )
+from typing_extensions import TypedDict
 
 from ...domain._validation import require_nonblank
 from ...domain.space import Space
@@ -95,15 +97,35 @@ def epoch_to_response_datetime[TimeField: str](
         return None
 
 
+type _SpaceNameText = Annotated[
+    NonblankText,
+    StringConstraints(min_length=1, max_length=128),
+    BeforeValidator(_strip_text),
+]
+
+
 class SpaceName(BaseModel):
-    """创建或改名时提供的空间名称。"""
+    """创建空间时提供的名称。"""
 
     model_config = ConfigDict(extra="forbid")
-    name: Annotated[
-        NonblankText,
-        StringConstraints(min_length=1, max_length=128),
-        BeforeValidator(_strip_text),
-    ]
+    name: _SpaceNameText
+
+
+@with_config(ConfigDict(extra="forbid", json_schema_extra={"minProperties": 1}))
+class SpacePatch(TypedDict, total=False):
+    """更新空间名称或记忆衰减设置。"""
+
+    name: _SpaceNameText
+    memory_decay: Annotated[bool, Field(strict=True)]
+
+
+def _require_space_update(patch: SpacePatch) -> SpacePatch:
+    if not patch:
+        raise ValueError("请提供要更新的空间设置")
+    return patch
+
+
+type SpacePatchBody = Annotated[SpacePatch, AfterValidator(_require_space_update)]
 
 
 class SpaceResponse(BaseModel):
@@ -111,6 +133,7 @@ class SpaceResponse(BaseModel):
 
     space_id: str
     name: str
+    memory_decay: bool
     created_at: datetime | None
     out_of_range_fields: list[Literal["created_at"]]
 
@@ -121,6 +144,7 @@ class SpaceResponse(BaseModel):
         return cls(
             space_id=encode_resource_id(space.id.value),
             name=space.name,
+            memory_decay=space.memory_decay,
             created_at=epoch_to_response_datetime(
                 "created_at", space.created_at, out_of_range
             ),

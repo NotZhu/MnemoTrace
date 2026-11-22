@@ -181,8 +181,8 @@ def test_ports_smoke() -> None:
             await check_reads(reader_session)
 
         assert await reranker.rerank(
-            "喝茶", ((FactId("other"), "看书"), (fact.id, fact.text)), 1
-        ) == (fact.id,)
+            "喝茶", ((FactId("other"), "看书"), (fact.id, fact.text))
+        ) == ((FactId("other"), 0.0), (fact.id, 1.0))
 
     asyncio.run(exercise(write=False))
 

@@ -24,7 +24,7 @@ MAX_TOP_K = 100
 MAX_QUERY_CHARS = 4096
 _RRF_K = 60
 _VECTOR_MIN_COSINE = 0.5
-_RECENCY_BOOST = 0.05
+_MAX_RANKING_BOOST = 0.05
 _RECENCY_HALF_LIFE_SECONDS = 30 * 86_400
 
 type RecallDegradedReason = Literal["embedding_timeout", "reranker_timeout"]
@@ -76,6 +76,17 @@ class RecallResult:
 
     evidence: tuple[RecallEvidence, ...]
     degraded_reason: RecallDegradedReason | None = None
+
+
+@dataclass(frozen=True)
+class RecallUsage:
+    """保存最终证据及后台复核所需的原读快照信息。"""
+
+    space_id: SpaceId
+    fact_ids: tuple[FactId, ...]
+    reference_time: float
+    erasure_token: str
+    exclude_sensitive: bool
 
 
 class Recall:
@@ -130,7 +141,7 @@ class Recall:
             query: 非空查询，最长 4096 个字符。
             top_k: 最多返回的证据条数，取 1 至 100。
             as_of: 显式有效时点，以 UTC epoch 秒表示。省略时查当前事实。
-            rerank: 是否调用已装配的重排器调整候选顺序。
+            rerank: 是否使用已装配的重排器计算候选相关性。
             graph: 图召回设置，省略时使用普通召回。
             prefer_recent: 是否在当前事实中小幅优先近期生效的候选。
 
@@ -142,6 +153,29 @@ class Recall:
             LookupError: 无权访问绑定空间。
             InferenceError: 推理端口请求失败或返回无效结果。
         """
+        result, _ = await self.recall_with_usage(
+            query,
+            track_usage=False,
+            top_k=top_k,
+            as_of=as_of,
+            rerank=rerank,
+            graph=graph,
+            prefer_recent=prefer_recent,
+        )
+        return result
+
+    async def recall_with_usage(
+        self,
+        query: str,
+        *,
+        track_usage: bool,
+        top_k: int = DEFAULT_TOP_K,
+        as_of: float | None = None,
+        rerank: bool = False,
+        graph: GraphRecallOptions | None = None,
+        prefer_recent: bool = False,
+    ) -> tuple[RecallResult, RecallUsage | None]:
+        """执行只读召回，按服务端策略返回可异步强化的证据凭据。"""
         query = _validate_query(query)
         if type(top_k) is not int or not 1 <= top_k <= MAX_TOP_K:
             raise ValueError(f"top_k 须为 1 至 {MAX_TOP_K} 的整数")
@@ -177,7 +211,11 @@ class Recall:
             vector = _query_vector(vectors, self._embedder.dim)
 
         fact_load_limit = top_k if reranker is None else min(100, max(20, 2 * top_k))
+        erasure_token = None
         async with self._storage.session(self._space_id) as reader:
+            use_salience = (
+                filters.valid_at is None and (await reader.get_space()).memory_decay
+            )
             lexical = await reader.search_lexical(
                 query, per_channel_limit, filters=filters, reference_time=reference_time
             )
@@ -208,39 +246,71 @@ class Recall:
             )
             ranking = _rrf_scores(lexical_ids, semantic_ids, graph_ids)
             candidates = (
-                _recency_candidates(ranking, fact_load_limit)
-                if use_recency
+                _candidates_within_boost(ranking, fact_load_limit)
+                if reranker is None and (use_recency or use_salience)
                 else ranking[:fact_load_limit]
             )
             ids = [fact_id for fact_id, _ in candidates]
             if not ids:
-                return RecallResult((), degraded_reason)
+                return RecallResult((), degraded_reason), None
             facts = await reader.get_facts(
                 ids, exclude_sensitive=self._exclude_sensitive
             )
-            if use_recency:
-                candidates.sort(
-                    key=lambda hit: (
-                        -_score_with_recency(
-                            hit[1], facts[hit[0]].valid_at, reference_time
-                        )
-                    )
+            salience = (
+                await reader.get_salience(
+                    ids, exclude_sensitive=self._exclude_sensitive
                 )
-                ids = [fact_id for fact_id, _ in candidates[:fact_load_limit]]
+                if use_salience
+                else {}
+            )
+            if use_salience and track_usage and degraded_reason is None:
+                erasure_token = await reader.get_erasure_token()
 
+        scores = dict(candidates)
         if reranker is not None and len(ids) > 1:
             documents = tuple((fact_id, facts[fact_id].text) for fact_id in ids)
             try:
-                ranked = await reranker.rerank(query, documents, top_k)
+                ranked = await reranker.rerank(query, documents)
             except TimeoutError:
                 degraded_reason = "reranker_timeout"
             else:
-                ids = _fill_reranking(ids, ranked, top_k)
+                scores = _relevance_scores(ids, ranked)
 
+        if reranker is not None or use_recency or use_salience:
+
+            def ranking_key(fact_id: FactId) -> tuple[float, float]:
+                score = scores[fact_id]
+                return (
+                    _score_with_boosts(
+                        score,
+                        _recency_bonus(facts[fact_id].valid_at, reference_time)
+                        if use_recency
+                        else 0.0,
+                        salience[fact_id].normalized_at(reference_time)
+                        if use_salience
+                        else 0.0,
+                    ),
+                    score,
+                )
+
+            ids.sort(key=ranking_key, reverse=True)
+
+        final_ids = tuple(ids[:top_k])
         evidence = tuple(
-            RecallEvidence.from_fact(facts[fact_id]) for fact_id in ids[:top_k]
+            RecallEvidence.from_fact(facts[fact_id]) for fact_id in final_ids
         )
-        return RecallResult(evidence, degraded_reason)
+        usage = (
+            RecallUsage(
+                self._space_id,
+                final_ids,
+                reference_time,
+                erasure_token,
+                self._exclude_sensitive,
+            )
+            if erasure_token is not None and degraded_reason is None
+            else None
+        )
+        return RecallResult(evidence, degraded_reason), usage
 
 
 def _validate_query(query: str) -> str:
@@ -301,38 +371,60 @@ def _rrf_scores(*rankings: Iterable[FactId]) -> list[tuple[FactId, float]]:
     return sorted(scores.items(), key=lambda hit: (-hit[1], hit[0].value))
 
 
-def _recency_candidates(
+def _candidates_within_boost(
     ranking: list[tuple[FactId, float]], limit: int
 ) -> list[tuple[FactId, float]]:
     if len(ranking) <= limit:
         return ranking
     cutoff = ranking[limit - 1][1]
     # 原榜候选的分只增不减，因此最高加成仍达不到原榜线的候选可省略。
-    return [hit for hit in ranking if hit[1] * (1 + _RECENCY_BOOST) >= cutoff]
+    return [hit for hit in ranking if hit[1] * (1 + _MAX_RANKING_BOOST) >= cutoff]
 
 
-def _score_with_recency(
-    score: float, valid_at: float | None, reference_time: float
-) -> float:
+def _recency_bonus(valid_at: float | None, reference_time: float) -> float:
     if valid_at is None:
-        return score
+        return 0.0
     elapsed = reference_time - valid_at
-    return score * (1 + _RECENCY_BOOST * exp2(-elapsed / _RECENCY_HALF_LIFE_SECONDS))
+    return _MAX_RANKING_BOOST * exp2(-elapsed / _RECENCY_HALF_LIFE_SECONDS)
 
 
-def _fill_reranking(
-    candidates: Sequence[FactId], ranked: Sequence[FactId], limit: int
-) -> list[FactId]:
+def _score_with_boosts(
+    score: float, recency_bonus: float, normalized_salience: float
+) -> float:
+    return score * (
+        1
+        + min(
+            _MAX_RANKING_BOOST, recency_bonus + _MAX_RANKING_BOOST * normalized_salience
+        )
+    )
+
+
+def _relevance_scores(
+    candidates: Sequence[FactId], ranked: object
+) -> dict[FactId, float]:
     if (
         not isinstance(ranked, Sequence)
         or isinstance(ranked, (str, bytes, bytearray))
-        or len(ranked) > limit
+        or len(ranked) != len(candidates)
     ):
-        raise InferenceError("重排返回的标识序列无效或超过上限")
+        raise InferenceError("重排须为每条候选返回一个相关性分数")
     allowed = set(candidates)
-    seen: set[FactId] = set()
-    for fact_id in ranked:
-        if not isinstance(fact_id, FactId) or fact_id not in allowed or fact_id in seen:
+    scores: dict[FactId, float] = {}
+    for item in ranked:
+        if not isinstance(item, tuple) or len(item) != 2:
+            raise InferenceError("重排须返回事实标识与相关性分数对")
+        fact_id, score = item
+        if (
+            not isinstance(fact_id, FactId)
+            or fact_id not in allowed
+            or fact_id in scores
+        ):
             raise InferenceError("重排返回了重复或不属于本次候选的事实标识")
-        seen.add(fact_id)
-    return list(ranked) + [fact_id for fact_id in candidates if fact_id not in seen]
+        if (
+            isinstance(score, bool)
+            or not isinstance(score, (int, float))
+            or not 0 <= score <= 1
+        ):
+            raise InferenceError("重排相关性分数须为 0 到 1 之间的有限数")
+        scores[fact_id] = float(score)
+    return scores

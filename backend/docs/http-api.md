@@ -41,13 +41,13 @@ uv run --locked --extra server python -m mnemotrace_next.server
 | --- | --- |
 | `POST /v1/spaces` | JSON 请求 `{"name":"研究"}`。返回 201、空间及 `Location`。 |
 | `GET /v1/spaces` | 分页列出账号拥有的空间，含空空间。 |
-| `GET /v1/spaces/{space_id}` | 返回 `space_id`、`name` 和 UTC `created_at`。 |
-| `PATCH /v1/spaces/{space_id}` | 用同一 JSON 结构改名，返回更新后的空间。 |
+| `GET /v1/spaces/{space_id}` | 返回 `space_id`、`name`、`memory_decay` 和 UTC `created_at`。 |
+| `PATCH /v1/spaces/{space_id}` | 修改 `name`、`memory_decay` 或同时修改两项。返回更新后的空间，`operationId` 仍为 `renameSpace`。 |
 | `POST /v1/spaces/{space_id}/sessions` | 正文可省略，提交的正文仍受字节上限约束。返回 201、`session_id`、UTC `created_at` 和 `Location`。 |
 | `GET /v1/spaces/{space_id}/sessions` | 分页列出已登记的会话，含空会话。 |
 | `GET /v1/spaces/{space_id}/sessions/{session_id}` | 返回会话登记的 `session_id` 和 `created_at`。 |
 
-空间名去除首尾空白后须为 1–128 字符。存量空间的 `created_at` 超出日历范围时返回 `null`，并列在 `out_of_range_fields` 中，正常时该数组为空。会话列表按创建时间倒序，同刻按会话 ID 升序。历史会话的创建时间未知时为 `null`，排在末尾。
+空间名去除首尾空白后须为 1–128 字符。空间详情和列表均返回严格布尔开关 `memory_decay`，新建与升级空间默认为 `false`。发送 `{"memory_decay":true}` 可为指定空间启用显著度加权及自动强化。PATCH 至少提供一个字段，省略的字段保留原值。存量空间的 `created_at` 超出日历范围时返回 `null`，并列在 `out_of_range_fields` 中，正常时该数组为空。会话列表按创建时间倒序，同刻按会话 ID 升序。历史会话的创建时间未知时为 `null`，排在末尾。
 
 空间、会话和事实列表使用同一分页契约。请求使用 `limit`（1–100，默认 50）和可选的 `cursor`，响应含 `items` 和 `next_cursor`。续页原样回传上页的 `next_cursor`。值为 `null` 时已到末页。
 
@@ -90,7 +90,7 @@ worker 短暂停止期间 API 可继续接收。达到单空间上限后，新�
 
 ## 召回
 
-在 HTTP 进程配置查询嵌入端点、模型、修订与维度。服务启动时检查配置并复用推理客户端。未配置嵌入时，召回返回 `503 embedding_not_configured`，事实检查和原文读取仍可使用。 [嵌入配置](inference.md#环境变量)
+在 HTTP 进程配置查询嵌入端点、模型、修订与维度。配置 Cohere v2 兼容重排端点后，服务自动为召回启用重排。服务启动时检查配置并复用推理客户端。未配置嵌入时，召回返回 `503 embedding_not_configured`，事实检查和原文读取仍可使用。 [推理配置](inference.md#环境变量)
 
 `POST /v1/spaces/{space_id}/recall` 接受 JSON 对象。
 
@@ -100,12 +100,17 @@ worker 短暂停止期间 API 可继续接收。达到单空间上限后，新�
 | `top_k` | 证据上限，取 1–100，默认 10。 |
 | `as_of` | 可选业务有效时点，使用带偏移或 `Z` 的 RFC 3339 日期时间，最多六位小数。省略时查当前。 |
 | `graph` | 可选，传 `{}` 启用默认图召回。可用 `max_hops`（1–4，默认 2）、`origin_entity_ids` 和 `predicates` 限定遍历。显式传空起点数组时只返回普通召回结果。 |
-| `prefer_recent` | 可选布尔值，默认 `false`。开启时，在当前事实的相关候选中优先返回近期生效的事实。指定 `as_of` 时使用原排序。 |
+| `prefer_recent` | 严格布尔值，默认 `false`。开启时，在当前事实的相关候选中优先返回近期生效的事实。 |
+| `track_usage` | 严格布尔值，默认 `true`。传 `false` 保持同样的排序并跳过强化。 |
 | `include_sensitive` | 默认 `false`。显式传 `true` 可召回该账号空间中的敏感事实。 |
 
-成功响应的 `evidence` 按相关性排序。每条证据包含事实 ID、文本、有效区间、来源消息 ID 和可选的 `relation`。有关系时，召回和事实响应都使用 `subject_entity_id`、`predicate`、`object_entity_id`。有效区间左闭右开。`as_of` 使用当前已经收录的证据判断该时点有效性，补录历史会影响结果。没有命中时返回空数组。查询嵌入超时时返回词法和已启用图路的结果，`degraded_reason` 为 `embedding_timeout`。嵌入失败或响应无效时返回 `502 inference_failed`。
+成功响应的 `evidence` 按相关性排序。每条证据包含事实 ID、文本、有效区间、来源消息 ID 和可选的 `relation`。有关系时，召回和事实响应都使用 `subject_entity_id`、`predicate`、`object_entity_id`。有效区间左闭右开。`as_of` 使用当前已经收录的证据判断该时点有效性，补录历史会影响结果。历史召回沿用相关性排序，跳过两种加成和强化。没有命中时返回空数组。
 
-开启新近度后，已知起点的候选以 `RRF 分 × (1 + 0.05 × 2^(-距生效天数 / 30))` 排序。距生效天数从事实的 `valid_at` 算到本次查询时点。起点未知时使用基础 RRF 分，同分沿用原顺序。补录时间和访问次数不参与计分，嵌入超时时也可对剩余候选加权。
+启用重排时，按 RRF 选出最多 `min(100, max(20, 2 × top_k))` 条可见候选，由重排器为候选逐条打分。最终分为 `基础分 × (1 + min(0.05, 新近度加成 + 显著度加成))`，基础分取重排分，未使用重排时取 RRF 分。最终分相同时依次按基础分和 RRF 顺序排列。新近度加成为 `0.05 × 2^(-距生效天数 / 30)`，从 `valid_at` 算到本次查询时点，起点未知或未启用时为零。空间开启 `memory_decay` 时显著度加成为 `0.05 × (有效显著度 - 1) / 2`，未强化的事实使用基线。 [显著度领域规则](../src/mnemotrace_next/domain/salience.py)
+
+候选池只有一条时直接返回证据，跳过外部重排。查询嵌入超时会按剩余词法和图候选加权，标记 `embedding_timeout`。重排超时或重试结束后仍收到上游 `504` 时，按已读取候选的 RRF 分加权，标记 `reranker_timeout`。其他推理失败或协议错误返回 `502 inference_failed`。
+
+空间开启衰减且允许计数时，HTTP 对成功、非空、无降级的当前召回异步强化最终返回的事实，每条每次最多一次。消费者写入前复核空间设置、擦除标记和事实可见性。响应无需等待写回，每个 HTTP 进程的内存队列容量为 128，队列满、进程停止或写入失败时可以丢弃反馈。
 
 ## 事实和原文
 

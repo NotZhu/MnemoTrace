@@ -292,15 +292,14 @@ def test_recall_keeps_authorized_evidence_when_erased_during_reranking(
                     self,
                     query: str,
                     documents: Sequence[tuple[FactId, str]],
-                    limit: int,
-                ) -> Sequence[FactId]:
+                ) -> Sequence[tuple[FactId, float]]:
                     assert tuple(documents) == (
                         (first.id, first.text),
                         (second.id, second.text),
                     )
                     started.set()
                     await resume.wait()
-                    return (second.id,)
+                    return ((second.id, 1.0), (first.id, 0.5))
 
             reader = Memory.for_recall(
                 space_id=scope.id,

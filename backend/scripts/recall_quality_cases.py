@@ -181,14 +181,18 @@ DATASETS = (_CALIBRATION, _HOLDOUT)
 
 QUALITY_NOW = 100.0
 _OLD_VALID_AT = QUALITY_NOW - 90 * 86_400
-RECENCY_DATASET = Dataset(
-    "recency",
-    (
+SALIENCE_TARGET = "rollout-5"
+SALIENCE_HISTORY_TARGET = "history-other"
+SALIENCE_QUERY = QueryCase("used-rollout", "reinforced", "rollouttag", SALIENCE_TARGET)
+
+
+def _ranking_facts(target_valid_at: float) -> tuple[FactCase, ...]:
+    return (
         *(
             FactCase(
                 f"rollout-{index}",
                 f"rollouttag step {index}",
-                valid_at=QUALITY_NOW if index == 5 else _OLD_VALID_AT,
+                valid_at=target_valid_at if index == 5 else _OLD_VALID_AT,
             )
             for index in range(6)
         ),
@@ -203,12 +207,23 @@ RECENCY_DATASET = Dataset(
             for index in range(6)
         ),
         FactCase("history-old", "historytag previous rule", valid_at=10, invalid_at=90),
-        FactCase("history-other", "historytag secondary rule", valid_at=50),
+        FactCase(SALIENCE_HISTORY_TARGET, "historytag secondary rule", valid_at=50),
         FactCase("history-current", "historytag replacement rule", valid_at=90),
-    ),
+    )
+
+
+_RANKING_CONTROLS = (
+    QueryCase("old-policy", "evergreen", "policytag", "policy-old"),
+    QueryCase("past-rule", "historical", "historytag", "history-old", 50),
+)
+RECENCY_DATASET = Dataset(
+    "recency",
+    _ranking_facts(QUALITY_NOW),
     (
-        QueryCase("recent-rollout", "recent", "rollouttag", "rollout-5"),
-        QueryCase("old-policy", "evergreen", "policytag", "policy-old"),
-        QueryCase("past-rule", "historical", "historytag", "history-old", 50),
+        QueryCase("recent-rollout", "recent", "rollouttag", SALIENCE_TARGET),
+        *_RANKING_CONTROLS,
     ),
+)
+SALIENCE_DATASET = Dataset(
+    "salience", _ranking_facts(_OLD_VALID_AT), (SALIENCE_QUERY, *_RANKING_CONTROLS)
 )

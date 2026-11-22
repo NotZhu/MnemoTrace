@@ -160,7 +160,7 @@ class PostgresReader:
         async with self._conn.cursor(row_factory=args_row(space_from_row)) as cursor:
             await cursor.execute(
                 """
-                SELECT space_id, owner_id, name, created_at
+                SELECT space_id, owner_id, name, created_at, memory_decay
                 FROM mnemotrace_next.spaces WHERE space_id = %s
                 """,
                 (self.space_id.value,),

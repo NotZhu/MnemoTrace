@@ -1,6 +1,6 @@
 # 推理适配器
 
-部署方通过环境变量选择 LLM 和嵌入端点。服务进程用 `open_inference` 装配一次，在退出时关闭 HTTP 客户端。两项能力可以独立启用，同一 API 前缀和凭据的请求共用连接池和并发上限。启用自动抽取的入口须先装配补全端口，再写入原文。
+部署方通过环境变量选择补全、嵌入和重排端点。服务进程用 `open_inference` 装配一次，在退出时关闭 HTTP 客户端。同一 API 前缀和凭据的请求共用连接池和并发上限。启用自动抽取的入口须先装配补全端口，再写入原文。
 
 ```python
 import os
@@ -16,7 +16,7 @@ async def run() -> None:
 
 ## 环境变量
 
-以下名称均加 `MNEMOTRACE_NEXT_` 前缀。启用某个角色时，设置该角色的必填项。非本机端点使用 HTTPS 和对应密钥，明文 HTTP 仅用于无密钥的 `localhost`、`127.0.0.1` 或 `::1`。API 前缀包括版本路径，例如 `https://api.openai.com/v1`。客户端保留该路径并追加 `chat/completions` 或 `embeddings`。
+以下名称均加 `MNEMOTRACE_NEXT_` 前缀。启用某个角色时，设置该角色的必填项。非本机端点使用 HTTPS 和对应密钥，明文 HTTP 仅用于无密钥的 `localhost`、`127.0.0.1` 或 `::1`。API 前缀包括版本路径，例如 `https://api.openai.com/v1`。客户端保留该路径并追加 `chat/completions`、`embeddings` 或 `rerank`。
 
 | 变量后缀 | 含义 | 默认值 |
 | --- | --- | --- |
@@ -33,9 +33,13 @@ async def run() -> None:
 | `EMBED_BATCH_SIZE` | 单个嵌入请求最多包含的文本数 | 10 |
 | `EMBED_SEND_DIMENSIONS` | 设为 `1` 时发送 `dimensions=EMBED_DIM`，仅用于支持该参数的模型 | 0 |
 | `EMBED_TIMEOUT_SECONDS` | 整批嵌入的总时限（秒） | 30 |
+| `RERANK_BASE_URL`、`RERANK_MODEL`、`RERANK_API_KEY` | Cohere v2 兼容 API 前缀、模型和密钥 | 显式配置 |
+| `RERANK_TIMEOUT_SECONDS` | 单次重排的总时限（秒） | 5 |
 | `INFERENCE_CONNECT_TIMEOUT_SECONDS` | 建连、写入和取连接的超时（秒） | 5 |
 | `INFERENCE_MAX_IN_FLIGHT` | 单进程同一端点和凭据的并发请求数 | 4 |
-| `INFERENCE_MAX_RESPONSE_BYTES` | 单次补全或嵌入子批的响应体上限，传输与解压后的正文各按字节计 | 8388608（8 MiB） |
+| `INFERENCE_MAX_RESPONSE_BYTES` | 每个 HTTP 响应的大小上限，传输与解压后的正文各按字节计 | 8388608（8 MiB） |
+
+HTTP 进程在设置任一 `RERANK_*` 项时装配重排器，部署时须填齐对应必填项。配置的前缀带版本路径，例如 `https://api.cohere.com/v2`。端点会收到查询和已授权的候选正文，`top_n` 等于候选条数。适配器通过响应索引映射事实 ID，并要求完整、唯一的索引与 `[0, 1]` 内的有限分数。Python 可通过 `open_inference(..., rerank=True)` 装配该适配器。 [Cohere v2 协议](https://docs.cohere.com/reference/rerank)
 
 ## 响应与向量身份
 

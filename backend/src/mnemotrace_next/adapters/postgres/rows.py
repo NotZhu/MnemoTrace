@@ -15,7 +15,9 @@ from ...domain.values import EntityRef, Label, LiteralValue, Predicate
 from ...ports.storage import CutoffTrigger, FactChange, GraphEdge
 
 
-def space_from_row(space_id: str, owner_id: str, name: str, created_at: float) -> Space:
+def space_from_row(
+    space_id: str, owner_id: str, name: str, created_at: float, memory_decay: bool
+) -> Space:
     """从空间表还原领域快照。
 
     Args:
@@ -23,11 +25,12 @@ def space_from_row(space_id: str, owner_id: str, name: str, created_at: float) -
         owner_id: 所有者账号标识。
         name: 空间显示名称。
         created_at: 创建时刻，单位为 UTC epoch 秒。
+        memory_decay: 是否启用记忆衰减和自动强化。
 
     Returns:
         空间快照。
     """
-    return Space(SpaceId(space_id), owner_id, name, created_at)
+    return Space(SpaceId(space_id), owner_id, name, created_at, memory_decay)
 
 
 def message_from_row(

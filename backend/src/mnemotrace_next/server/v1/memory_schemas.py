@@ -84,6 +84,7 @@ class RecallRequest(BaseModel):
     as_of: RFC3339 | None = None
     graph: GraphOptions | None = None
     prefer_recent: Annotated[bool, Field(strict=True)] = False
+    track_usage: Annotated[bool, Field(strict=True)] = True
     include_sensitive: Annotated[bool, Field(strict=True)] = False
 
 
