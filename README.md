@@ -5,10 +5,6 @@
 
 MnemoTrace provides long-term memory for LLM agents. The Python distribution and import package are both named `mnemotrace`. Deployment files for the HTTP API and write worker are in [deploy/](deploy/).
 
-HTTP v1 uses 32 lowercase hexadecimal characters for space, session, message, fact, and operation IDs. Use the IDs returned by the API in resource paths and in the `session_id` filter for operation lists.
-
-HTTP v1 returns UTC calendar timestamps and rejects input outside the supported calendar range. Unknown event times and fact validity bounds can still be `null`.
-
 ## Local deployment
 
 Start with an empty database. Fill the repository root `.env` using the [database settings](deploy/.env.example), and fill `deploy/.env.models` using the [model settings](deploy/.env.models.example). From the repository root, run:
