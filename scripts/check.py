@@ -12,7 +12,7 @@ def main() -> int:
         全部通过时为 0，否则为首个失败命令的退出码。
     """
     root = Path(__file__).resolve().parents[1]
-    paths = ("mnemotrace", "tests", "scripts")
+    paths = ("mnemotrace", "tests", "scripts", "eval")
     for args in (
         ("ruff", "check", *paths),
         ("ruff", "format", "--check", *paths),

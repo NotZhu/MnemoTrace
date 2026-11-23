@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'mnemotrace/**'
+      - 'eval/**'
       - 'tests/**'
       - 'scripts/**'
       - 'deploy/**'
@@ -15,6 +16,7 @@ on:
   pull_request:
     paths:
       - 'mnemotrace/**'
+      - 'eval/**'
       - 'tests/**'
       - 'scripts/**'
       - 'deploy/**'

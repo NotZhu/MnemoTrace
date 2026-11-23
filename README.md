@@ -25,3 +25,5 @@ uv run --locked python scripts/check.py
 ```
 
 Set `MNEMOTRACE_TEST_POSTGRES_DSN` to point to a dedicated PostgreSQL instance with pgvector for database integration tests. After deployment, run `uv run --locked python scripts/http_smoke.py --help` for the HTTP smoke test options and credential configuration.
+
+See the [quality evaluation guide](eval/README.md) for benchmark protocols and reproducibility artifacts.

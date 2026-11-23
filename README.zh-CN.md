@@ -24,3 +24,5 @@ uv run --locked python scripts/check.py
 ```
 
 真库回归通过 `MNEMOTRACE_TEST_POSTGRES_DSN` 指向独立的 PostgreSQL/pgvector 测试实例。部署后运行 `uv run --locked python scripts/http_smoke.py --help` 查看 HTTP 闭环验收所需的参数和凭据配置。
+
+公开评测协议、复现配置和产物格式见[质量评测指南](eval/README.md)。

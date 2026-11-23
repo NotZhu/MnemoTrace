@@ -1,0 +1,29 @@
+benchmark = "longmemeval-s"
+data_dir = "../.artifacts/eval-data/longmemeval-s"
+backends = ["mnemotrace", "full-context", "bm25"]
+reader_context_tokens = 131072
+tokenizer = "o200k_base"
+top_k = 20
+evidence_tokens = 4096
+# question_ids = ["上游题目 ID"]
+
+[reader]
+base_url = "http://127.0.0.1:8000/v1"
+key_env = "MNEMOTRACE_EVAL_READER_KEY"
+model = "replace-with-versioned-reader"
+max_output_tokens = 512
+# input_usd_per_million = 0.0
+# output_usd_per_million = 0.0
+
+[judge]
+base_url = "https://api.openai.com/v1"
+key_env = "MNEMOTRACE_EVAL_JUDGE_KEY"
+model = "gpt-4o-2024-08-06"
+max_output_tokens = 10
+
+[mnemotrace]
+base_url = "http://127.0.0.1:8100"
+key_env = "MNEMOTRACE_EVAL_API_KEY"
+version = "replace-with-image-or-commit"
+write_model = "replace-with-versioned-write-model"
+embedding_model = "replace-with-versioned-embedding-model"

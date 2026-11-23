@@ -17,7 +17,8 @@ inference = ["httpx>=0.28,<1", "jsonschema>=4.26,<5", "tzdata"]
 server = ["mnemotrace[inference]", "fastapi>=0.128,<1", "pydantic>=2.11,<3", "uvicorn>=0.41,<1"]
 
 [dependency-groups]
-dev = ["mnemotrace[server]", "mypy", "pytest", "ruff", "types-jsonschema>=4.26,<5"]
+eval = ["filelock>=3.16,<4", "httpx>=0.28,<1", "pydantic>=2.11,<3", "tiktoken>=0.9,<1"]
+dev = ["mnemotrace[server]", "mypy", "pytest", "ruff", "types-jsonschema>=4.26,<5", {include-group = "eval"}]
 
 [tool.hatch.build.targets.wheel]
 packages = ["mnemotrace"]
@@ -27,7 +28,7 @@ extend-select = ["I", "UP"]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["mnemotrace", "tests", "scripts"]
+files = ["mnemotrace", "tests", "scripts", "eval"]
 strict = true
 
 [tool.pytest.ini_options]
