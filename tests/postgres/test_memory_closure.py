@@ -52,7 +52,7 @@ _ASSERTIONS = {
 
 
 class _Model(FakeLLM):
-    async def complete_json(
+    async def _structured_response(
         self, *, system: str, prompt: str, schema: Mapping[str, object]
     ) -> Mapping[str, object]:
         payload = json.loads(prompt)

@@ -163,7 +163,7 @@ class _Model(FakeLLM):
         self.failure = failure
         self.prompts: list[list[str]] = []
 
-    async def complete_json(
+    async def _structured_response(
         self, *, system: str, prompt: str, schema: Mapping[str, object]
     ) -> Mapping[str, object]:
         request = json.loads(prompt)
@@ -724,7 +724,7 @@ def test_auto_refresh_corrects_and_erases_entries_across_sessions(
     database: PgDatabase,
 ) -> None:
     class AllEvidence(_Model):
-        async def complete_json(
+        async def _structured_response(
             self, *, system: str, prompt: str, schema: Mapping[str, object]
         ) -> Mapping[str, object]:
             rows = json.loads(prompt)["facts"]

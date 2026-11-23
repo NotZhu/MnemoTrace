@@ -2,9 +2,9 @@
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, overload
 
 from ...ports.inference import (
     Completion,
@@ -75,29 +75,56 @@ class OpenAIChatLLM:
                 raise InferenceRequestError("protocol") from None
             return completion
 
+    @overload
     async def complete_json(
-        self, *, system: str, prompt: str, schema: Mapping[str, object]
-    ) -> Mapping[str, object]:
+        self,
+        *,
+        system: str,
+        prompt: str,
+        schema: Mapping[str, object],
+        parse: None = None,
+    ) -> Mapping[str, object]: ...
+
+    @overload
+    async def complete_json[T](
+        self,
+        *,
+        system: str,
+        prompt: str,
+        schema: Mapping[str, object],
+        parse: Callable[[Mapping[str, object]], T],
+    ) -> T: ...
+
+    async def complete_json[T](
+        self,
+        *,
+        system: str,
+        prompt: str,
+        schema: Mapping[str, object],
+        parse: Callable[[Mapping[str, object]], T] | None = None,
+    ) -> Mapping[str, object] | T:
         """请求并校验一个 JSON 对象。
 
         Args:
             system: 系统指令。
             prompt: 待补全文本。
             schema: 端口支持的输出 schema。
+            parse: 可选的应用解析器，与 JSON 和 schema 校验共享纠错预算。
 
         Returns:
-            已通过 schema 校验的对象。
+            已通过 schema 校验的对象，或 parse 转换后的结果。
 
         Raises:
             ValueError: schema 不符合端口约定。
             CompletionRefused: 上游拒答或过滤输出。
             CompletionTruncated: 上游截断输出。
-            InvalidStructuredOutput: 正文不是符合 schema 的 JSON 对象。
+            InvalidStructuredOutput: 正文违反 JSON、schema 或应用契约。
             InferenceRequestError: 请求或上游响应故障。
             TimeoutError: 请求已超时。
         """
         validator = prepare_validator(schema)
         mode = self._options.json_mode
+        correct_invalid_output = parse is not None or mode != "json_schema"
         response_format: dict[str, object] | None = None
         if mode == "json_schema":
             response_format = {
@@ -122,9 +149,10 @@ class OpenAIChatLLM:
                     payload["response_format"] = response_format
                 completion = await self._send(payload, budget, mode)
                 try:
-                    return decode_output(completion.text, validator)
+                    decoded = decode_output(completion.text, validator)
+                    return decoded if parse is None else parse(decoded)
                 except InvalidStructuredOutput as exc:
-                    if mode == "json_schema" or not budget.allows_retry():
+                    if not correct_invalid_output or not budget.allows_retry():
                         raise
                     system += f"\n重新生成 JSON。校验反馈：{exc}"
 

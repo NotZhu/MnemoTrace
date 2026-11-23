@@ -1,12 +1,19 @@
 """用合成数据演示端口的组合调用。"""
 
 from collections import ChainMap
-from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import asynccontextmanager
 from dataclasses import fields, replace
 from datetime import UTC, datetime
 from itertools import count
-from typing import Literal
+from typing import Literal, overload
 
 from mnemotrace.domain._validation import timestamp
 from mnemotrace.domain.entity import Entity
@@ -926,19 +933,53 @@ class FakeLLM:
         """
         return Completion(prompt)
 
+    @overload
     async def complete_json(
-        self, *, system: str, prompt: str, schema: Mapping[str, object]
-    ) -> Mapping[str, object]:
-        """把提示文本包进固定的测试对象。
+        self,
+        *,
+        system: str,
+        prompt: str,
+        schema: Mapping[str, object],
+        parse: None = None,
+    ) -> Mapping[str, object]: ...
+
+    @overload
+    async def complete_json[T](
+        self,
+        *,
+        system: str,
+        prompt: str,
+        schema: Mapping[str, object],
+        parse: Callable[[Mapping[str, object]], T],
+    ) -> T: ...
+
+    async def complete_json[T](
+        self,
+        *,
+        system: str,
+        prompt: str,
+        schema: Mapping[str, object],
+        parse: Callable[[Mapping[str, object]], T] | None = None,
+    ) -> Mapping[str, object] | T:
+        """返回固定的测试对象，或经应用解析器转换后的结果。
 
         Args:
             system: 调用方传入的系统指令。
             prompt: 要回显的提示文本。
             schema: 调用方请求的结构。替身固定使用 text 字段。
+            parse: 可选的应用解析器。
 
         Returns:
-            以 text 为键、提示原文为值的对象。
+            固定的测试对象或解析结果。
         """
+        response = await self._structured_response(
+            system=system, prompt=prompt, schema=schema
+        )
+        return response if parse is None else parse(response)
+
+    async def _structured_response(
+        self, *, system: str, prompt: str, schema: Mapping[str, object]
+    ) -> Mapping[str, object]:
         return {"text": prompt}
 
 

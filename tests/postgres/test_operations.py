@@ -52,7 +52,7 @@ class _Model(FakeLLM):
         self.prompts: list[dict[str, object]] = []
         self._relative_day = relative_day
 
-    async def complete_json(
+    async def _structured_response(
         self, *, system: str, prompt: str, schema: Mapping[str, object]
     ) -> Mapping[str, object]:
         request = json.loads(prompt)
@@ -447,12 +447,12 @@ def test_workers_can_process_different_sessions_at_the_same_time(
             release = asyncio.Event()
 
             class Paused(_Model):
-                async def complete_json(
+                async def _structured_response(
                     self, *, system: str, prompt: str, schema: Mapping[str, object]
                 ) -> Mapping[str, object]:
                     started.set()
                     await release.wait()
-                    return await super().complete_json(
+                    return await super()._structured_response(
                         system=system, prompt=prompt, schema=schema
                     )
 
@@ -506,11 +506,11 @@ def test_erasing_another_session_preserves_only_work_without_an_old_snapshot(
                     )
 
             class EraseWhileExtracting(_Model):
-                async def complete_json(
+                async def _structured_response(
                     self, *, system: str, prompt: str, schema: Mapping[str, object]
                 ) -> Mapping[str, object]:
                     await erase()
-                    return await super().complete_json(
+                    return await super()._structured_response(
                         system=system, prompt=prompt, schema=schema
                     )
 
@@ -642,13 +642,13 @@ def test_retry_holds_session_head_and_terminal_failure_releases_it(
     """瞬时错误退避时阻塞同会话队尾，其他会话和终态后的任务仍继续。"""
 
     class Unreliable(_Model):
-        async def complete_json(
+        async def _structured_response(
             self, *, system: str, prompt: str, schema: Mapping[str, object]
         ) -> Mapping[str, object]:
             (message,) = json.loads(prompt)["messages"]
             if message["content"] == "失败的前批":
                 raise failure
-            return await super().complete_json(
+            return await super()._structured_response(
                 system=system, prompt=prompt, schema=schema
             )
 
@@ -781,11 +781,11 @@ def test_expired_lease_rolls_back_then_recovers_and_has_a_crash_budget(
             operation_id = first.json()["operation_id"]
 
             class MarkExpired(_Model):
-                async def complete_json(
+                async def _structured_response(
                     self, *, system: str, prompt: str, schema: Mapping[str, object]
                 ) -> Mapping[str, object]:
                     _set_due(database, operation_id)
-                    return await super().complete_json(
+                    return await super()._structured_response(
                         system=system, prompt=prompt, schema=schema
                     )
 
@@ -943,7 +943,7 @@ def test_erasing_inference_in_progress_removes_the_pending_payload(
             waiting = await scope.submit(session, "waiting", "合成排队消息")
 
             class EraseDuringInference(_Model):
-                async def complete_json(
+                async def _structured_response(
                     self, *, system: str, prompt: str, schema: Mapping[str, object]
                 ) -> Mapping[str, object]:
                     if target == "space_contents":
@@ -957,7 +957,7 @@ def test_erasing_inference_in_progress_removes_the_pending_payload(
                             path, headers=scope.headers
                         )
                     assert response.status_code == 204
-                    return await super().complete_json(
+                    return await super()._structured_response(
                         system=system, prompt=prompt, schema=schema
                     )
 

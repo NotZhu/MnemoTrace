@@ -274,7 +274,7 @@ def test_comparison_shards_each_anchor_and_bounds_concurrency() -> None:
             self.active = 0
             self.peak = 0
 
-        async def complete_json(
+        async def _structured_response(
             self, *, system: str, prompt: str, schema: Mapping[str, object]
         ) -> Mapping[str, object]:
             payload = json.loads(prompt)
@@ -328,7 +328,7 @@ def test_comparison_cancels_and_joins_slow_shards_after_failure() -> None:
         failure = CompletionTruncated("合成裁决分片被截断")
 
         class Model(FakeLLM):
-            async def complete_json(
+            async def _structured_response(
                 self, *, system: str, prompt: str, schema: Mapping[str, object]
             ) -> Mapping[str, object]:
                 (pair,) = json.loads(prompt)["pairs"]

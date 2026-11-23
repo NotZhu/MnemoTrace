@@ -3,6 +3,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta, timezone
+from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -20,16 +21,25 @@ from mnemotrace.application.extraction import (
     extract_facts,
 )
 from mnemotrace.application.fact_lifecycle import calculate_fact_writes
+from mnemotrace.application.operations import (
+    ClaimedOperation,
+    OperationQueue,
+    OperationRunner,
+)
+from mnemotrace.application.remember import MessageInput, Remember
+from mnemotrace.application.sessions import create_session
 from mnemotrace.domain.enums import Role
 from mnemotrace.domain.ids import MessageId, SessionId, SpaceId
 from mnemotrace.domain.message import Message
+from mnemotrace.domain.space import Space
 from mnemotrace.domain.values import Label, LiteralValue, Predicate
 from mnemotrace.ports.inference import CompletionTruncated, InvalidStructuredOutput
+from mnemotrace.ports.queries import FactQuery
 from mnemotrace.ports.storage import CutoffTrigger
 
-from ..ports.fakes import FakeEmbedder
+from ..ports.fakes import FakeClock, FakeEmbedder, FakeIdGenerator, FakeStorage
 from .adjudication_samples import FactIds, candidate
-from .sample import chat_response, configured_chat
+from .sample import CHAT_ENV, chat_response, configured_chat
 
 _ZONE = timezone(timedelta(hours=8))
 _NEW_YORK = ZoneInfo("America/New_York")
@@ -564,6 +574,146 @@ def test_extraction_rejects_entire_response_when_one_fact_is_invalid(
         async with configured_chat(respond) as llm:
             with pytest.raises(InvalidStructuredOutput, match=error):
                 await extract_facts(llm, *_batch())
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("mode", "overrides", "feedback"),
+    [
+        ("json_object", {"object": {"kind": "literal", "value": None}}, "object.value"),
+        ("prompt", {"source_numbers": [1, 99]}, "source_numbers"),
+        ("json_schema", {"source_numbers": [3]}, "valid_at_evidence.source_number"),
+        ("json_schema", {"text": " "}, "text"),
+    ],
+)
+def test_extraction_corrects_domain_errors(
+    mode: str, overrides: dict[str, object], feedback: str
+) -> None:
+    """领域校验失败后使用同一对话重新生成整批事实。"""
+    calls: list[list[dict[str, str]]] = []
+    original = _fact(text="合成的首轮输出")
+    corrected = _fact()
+    outputs = iter(((original, _fact(**overrides)), (corrected,)))
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content)["messages"])
+        return chat_response(json.dumps({"facts": next(outputs)}))
+
+    async def exercise() -> None:
+        async with configured_chat(
+            respond, {**CHAT_ENV, "MNEMOTRACE_LLM_JSON_MODE": mode}
+        ) as llm:
+            (fact,) = await extract_facts(llm, *_batch())
+        assert fact.text == corrected["text"]
+        first, retry = calls
+        assert retry[1] == first[1]
+        correction = retry[0]["content"].removeprefix(first[0]["content"])
+        assert f"facts[1].{feedback}" in correction
+        assert "合成的首轮输出" not in correction
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "feedback", "error"),
+    [
+        ("{", {"facts": [_fact(text=" ")]}, "合法 JSON", r"facts\[0\]\.text"),
+        (
+            {"facts": [_fact(text=" ")]},
+            {"facts": [_fact(labels=["fabricated"])]},
+            "facts[0].text",
+            "违反 enum 规则",
+        ),
+    ],
+)
+def test_extraction_shares_retry_budget_across_validation_layers(
+    first: str | dict[str, object],
+    second: dict[str, object],
+    feedback: str,
+    error: str,
+) -> None:
+    """不同校验层连续失败时仍最多请求两次。"""
+    outputs = iter(
+        (first if isinstance(first, str) else json.dumps(first), json.dumps(second))
+    )
+    calls: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content)["messages"][0]["content"])
+        return chat_response(next(outputs))
+
+    async def exercise() -> None:
+        async with configured_chat(respond) as llm:
+            with pytest.raises(InvalidStructuredOutput, match=error):
+                await extract_facts(llm, *_batch())
+        initial, retry = calls
+        assert feedback in retry.removeprefix(initial)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("corrected", [True, False], ids=["commit", "reject"])
+def test_remember_publishes_only_after_valid_extraction(
+    corrected: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    """worker 只提交完整通过校验的结果，失败日志只记录规则和字段。"""
+    private_input = "合成用户输入"
+    private_output = "合成的无效端点名称"
+    valid = _fact(source_numbers=[1], valid_at_evidence=None)
+    invalid = {**valid, "subject": {"kind": "user", "value": private_output}}
+    outputs = iter(([valid, invalid], [valid] if corrected else [valid, invalid]))
+
+    async def exercise() -> None:
+        storage = FakeStorage()
+        ids = FakeIdGenerator()
+        clock = FakeClock()
+        space = Space(ids.new_space_id(), "owner", "测试空间", clock.now())
+        await storage.create_space(space)
+        session_id = await create_session(storage, space.id, ids)
+        job = ClaimedOperation(
+            "write-1",
+            space.id,
+            "owner",
+            session_id,
+            (MessageInput("user", private_input),),
+            clock.now(),
+            1,
+            "lease",
+        )
+        queue = Mock(spec=OperationQueue)
+        queue.claim.return_value = job
+        async with configured_chat(
+            lambda _: chat_response(json.dumps({"facts": next(outputs)}))
+        ) as llm:
+            remember = Remember(
+                space_id=space.id,
+                storage=storage,
+                llm=llm,
+                embedder=FakeEmbedder(),
+                clock=clock,
+                ids=ids,
+            )
+            runner = OperationRunner(queue, lambda _: remember, lambda _: False)
+            assert await runner.run_once()
+        async with storage.session(space.id) as reader:
+            messages = await reader.last_messages(session_id, 10)
+            facts = await reader.query_facts(FactQuery(), reference_time=clock.now())
+
+        if corrected:
+            queue.complete.assert_awaited_once()
+            queue.record_attempt_failure.assert_not_awaited()
+            assert [message.content for message in messages] == [private_input]
+            assert [fact.text for fact in facts] == [valid["text"]]
+        else:
+            queue.complete.assert_not_awaited()
+            queue.record_attempt_failure.assert_awaited_once_with(
+                job, "invalid_model_output", "extraction", None
+            )
+            assert not messages and not facts
+            assert "facts[1].subject.value" in caplog.text
+            assert private_input not in caplog.text
+            assert private_output not in caplog.text
 
     asyncio.run(exercise())
 

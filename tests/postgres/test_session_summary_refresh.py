@@ -49,7 +49,7 @@ class _Model(FakeLLM):
         self.prompts: list[dict[str, object]] = []
         self.extractions: list[dict[str, object]] = []
 
-    async def complete_json(
+    async def _structured_response(
         self, *, system: str, prompt: str, schema: Mapping[str, object]
     ) -> Mapping[str, object]:
         if schema["required"] != ["summary"]:

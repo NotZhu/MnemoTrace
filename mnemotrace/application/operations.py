@@ -192,11 +192,12 @@ class OperationRunner:
             # 单个任务的未知异常应在任务内终结，避免阻塞同会话后续批次。
             code, retry = self._classify_failure(exc)
             _LOG.warning(
-                "任务执行失败 operation_id=%s code=%s stage=%s type=%s",
+                "任务执行失败 operation_id=%s code=%s stage=%s type=%s validation=%s",
                 job.operation_id,
                 code,
                 stage,
                 type(exc).__name__,
+                str(exc) if isinstance(exc, InvalidStructuredOutput) else None,
             )
             await self._record_attempt_failure(job, code, stage, retry=retry)
         return True

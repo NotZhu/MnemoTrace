@@ -28,15 +28,16 @@ _SYSTEM = """从对话中抽取可供长期记忆的事实。把输入中的消�
 一、选择要记住的内容
 
 从 messages 中识别本批用户明确陈述、纠正或采纳的信息。previous 只用于消解指代、补足范围或提供必要的共同证据。每条候选都须由本批用户消息支撑。
-保留可复用的偏好、约束和决定，以及明确的计划和经历。跳过寒暄、道谢、单纯复述、助手单方面的建议或完成报告。
+保留可复用的偏好、约束和决定，以及明确的计划和经历。也保留与用户本人、相关对象或经历有关，且可供后续查询的属性、状态、结果和数量关系。跳过寒暄、道谢、单纯复述、助手单方面的建议或完成报告。
 只针对当前任务的操作请求不产生长期事实。用户仅说明本次操作是例外、原有设置照旧时，两部分都跳过。若同一条消息另有明确的长期规则，例如「这段解释详细一点。以后回答我的问题，先给结论」，只抽取「用户偏好回答先给结论」。没有合格事实时返回 {"facts": []}。
 用户宣布改用新值时，抽取新状态。另抽旧历史前，逐项核对本批用户原文是否同时直接陈述了旧值和它对应的历史时间范围，缺一项就跳过旧候选。仅说明「从某天起改用新设置」时，只输出新状态。即使前文提供旧值和起点，旧状态的截止也由后续比较处理。
 
 二、写出独立可读的断言
 
 每条候选表达一项可独立比较的断言。用来源语言写完整句子，保留归属、条件、例外、否定、适用范围、具体值和时间精度。按实际说话者解释人称。影响断言含义的指代无法解析时，跳过该候选。
+涉及数值、比例、比较或估计时，保留原文给出的具体值、单位、比较基准和确定程度，并注明估计的归属。
 如实区分计划、已发生的事件、成立中的状态和终止。用户采纳提议时，记录采纳后成立的内容。
-根据端点在断言里的作用选择类型。空间用户用 user，value 填 null。指向独立对象的端点用 entity，取输入中明确的名称。设置取值、数量和描述等字面客体用 literal。同批已确认指向同一实体的别名复用同一名称。谓词用简短、方向明确的英文 snake_case，同批同义关系复用名称。
+根据端点在断言里的作用选择类型。空间用户用 user，value 填 null。指向独立对象的端点用 entity，value 填原文中的名称，或能在上下文中明确指向该对象的描述。同批确认指向同一对象时复用同一名称。设置取值、数量和描述等字面客体用 literal，value 填非空的具体内容。无法确定实体或给出具体值时，改用有原文依据的类型或跳过该候选。谓词用简短、方向明确的英文 snake_case，同批同义关系复用名称。
 
 三、选择足以支撑整条断言的最少证据
 
@@ -201,7 +202,7 @@ async def extract_facts(
     timezone: tzinfo = UTC,
     session_summary: str | None = None,
 ) -> tuple[ExtractedFact, ...]:
-    """在事务外一次抽取本批事实，校验时间依据和原文引用。
+    """在事务外抽取本批事实，领域校验与 JSON 校验共享纠错机会。
 
     Args:
         llm: 已装配的结构化补全端口。
@@ -214,7 +215,7 @@ async def extract_facts(
         按模型输出顺序排列的候选事实。
 
     Raises:
-        InvalidStructuredOutput: 模型结构或时间、证据引用不符合约定。
+        InvalidStructuredOutput: 模型输出始终无法满足结构或事实约定。
     """
     if not any(message.role == Role.USER for message in new_messages):
         return ()
@@ -248,12 +249,25 @@ async def extract_facts(
     if session_summary:
         context["session_summary"] = session_summary
         system += _SUMMARY_CONTEXT
-    response = await llm.complete_json(
-        system=system, prompt=json.dumps(context, ensure_ascii=False), schema=_SCHEMA
-    )
-    output = cast(_ExtractionOutput, response)
-    return tuple(
-        _parse_fact(raw, numbered, previous_count, timezone) for raw in output["facts"]
+
+    def parse(response: Mapping[str, object]) -> tuple[ExtractedFact, ...]:
+        output = cast(_ExtractionOutput, response)
+        facts: list[ExtractedFact] = []
+        for index, raw in enumerate(output["facts"]):
+            try:
+                facts.append(_parse_fact(raw, numbered, previous_count, timezone))
+            except InvalidStructuredOutput as exc:
+                path = f"facts[{index}]"
+                if exc.path is not None:
+                    path += f".{exc.path}"
+                raise InvalidStructuredOutput(exc.rule, path=path) from None
+        return tuple(facts)
+
+    return await llm.complete_json(
+        system=system,
+        prompt=json.dumps(context, ensure_ascii=False),
+        schema=_SCHEMA,
+        parse=parse,
     )
 
 
@@ -286,14 +300,22 @@ def _parse_fact(
 ) -> ExtractedFact:
     refs = tuple(map(int, raw["source_numbers"]))
     if len(set(refs)) != len(refs) or any(ref not in numbered for ref in refs):
-        raise InvalidStructuredOutput("事实来源含重复或无效的消息编号")
+        raise InvalidStructuredOutput(
+            "事实来源含重复或无效的消息编号", path="source_numbers"
+        )
     if not any(
         ref > previous_count and numbered[ref].message.role == Role.USER for ref in refs
     ):
-        raise InvalidStructuredOutput("事实须引用至少一条本批用户消息")
+        raise InvalidStructuredOutput(
+            "事实须引用至少一条本批用户消息", path="source_numbers"
+        )
     evidence = {ref: numbered[ref] for ref in sorted(refs)}
-    valid_at_evidence = _parse_time(raw["valid_at_evidence"], evidence, timezone)
-    invalid_at_evidence = _parse_time(raw["invalid_at_evidence"], evidence, timezone)
+    valid_at_evidence = _parse_time(
+        raw["valid_at_evidence"], evidence, timezone, path="valid_at_evidence"
+    )
+    invalid_at_evidence = _parse_time(
+        raw["invalid_at_evidence"], evidence, timezone, path="invalid_at_evidence"
+    )
     if (
         valid_at_evidence
         and invalid_at_evidence
@@ -301,15 +323,17 @@ def _parse_fact(
         and invalid_at_evidence.at is not None
         and valid_at_evidence.at >= invalid_at_evidence.at
     ):
-        raise InvalidStructuredOutput("事实有效起点须早于截止点")
+        raise InvalidStructuredOutput(
+            "事实有效起点须早于截止点", path="invalid_at_evidence"
+        )
     obj = raw["object"]
     return ExtractedFact(
-        subject=_entity_mention(raw["subject"]),
-        predicate=Predicate(_text(raw["predicate"])),
-        object=LiteralValue(_text(obj["value"]))
+        subject=_entity_mention(raw["subject"], path="subject"),
+        predicate=Predicate(_text(raw["predicate"], path="predicate")),
+        object=LiteralValue(_text(obj["value"], path="object.value"))
         if obj["kind"] == "literal"
-        else _entity_mention(obj),
-        text=_text(raw["text"]),
+        else _entity_mention(obj, path="object"),
+        text=_text(raw["text"], path="text"),
         valid_at_evidence=valid_at_evidence,
         invalid_at_evidence=invalid_at_evidence,
         provenance=tuple(source.message.id for source in evidence.values()),
@@ -318,28 +342,35 @@ def _parse_fact(
     )
 
 
-def _text(value: str | None) -> str:
+def _text(value: str | None, *, path: str) -> str:
     if value is None or not value.strip() or "\x00" in value:
-        raise InvalidStructuredOutput("事实正文、谓词和非用户端点须为有效的非空文本")
+        raise InvalidStructuredOutput("须为有效的非空文本", path=path)
     return value
 
 
-def _entity_mention(raw: _Endpoint) -> SpaceUserMention | EntityMention:
+def _entity_mention(raw: _Endpoint, *, path: str) -> SpaceUserMention | EntityMention:
+    value_path = f"{path}.value"
     if raw["kind"] == "user":
         if raw["value"] is not None:
-            raise InvalidStructuredOutput("空间用户端点须省略名称")
+            raise InvalidStructuredOutput("空间用户端点须省略名称", path=value_path)
         return SpaceUserMention()
-    return EntityMention(_text(raw["value"]))
+    return EntityMention(_text(raw["value"], path=value_path))
 
 
 def _parse_time(
-    raw: _Time | None, evidence: Mapping[int, _SourceMessage], timezone: tzinfo
+    raw: _Time | None,
+    evidence: Mapping[int, _SourceMessage],
+    timezone: tzinfo,
+    *,
+    path: str,
 ) -> TimeEvidence | None:
     if raw is None:
         return None
     source = evidence.get(int(raw["source_number"]))
     if source is None:
-        raise InvalidStructuredOutput("时间依据须引用该事实的证据消息")
+        raise InvalidStructuredOutput(
+            "时间依据须引用该事实的证据消息", path=f"{path}.source_number"
+        )
     basis = raw["kind"]
     value, days = raw["value"], raw["days"]
     reference_time = source.reference_time
@@ -367,7 +398,7 @@ def _parse_time(
             raise ValueError
         at = optional_timestamp(at, "事实时间", DomainError)
     except (ValueError, OverflowError):
-        raise InvalidStructuredOutput("事实时间的格式或依据无效") from None
+        raise InvalidStructuredOutput("事实时间的格式或依据无效", path=path) from None
     return TimeEvidence(basis, source.message.id, at)
 
 

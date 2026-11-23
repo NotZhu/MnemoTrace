@@ -1,7 +1,7 @@
 """定义文本生成、结构化补全和批量嵌入端口。"""
 
-from collections.abc import Mapping, Sequence
-from typing import NamedTuple, Protocol
+from collections.abc import Callable, Mapping, Sequence
+from typing import NamedTuple, Protocol, overload
 
 
 class Completion(NamedTuple):
@@ -25,7 +25,17 @@ class CompletionRefused(RuntimeError):
 
 
 class InvalidStructuredOutput(RuntimeError):
-    """模型输出无法解析为符合请求 schema 的对象。"""
+    """模型输出违反 JSON、schema 或应用契约。
+
+    Args:
+        rule: 违反的规则，不含原始输入或模型输出。
+        path: 可选的字段路径，只使用 schema 字段名和数组索引。
+    """
+
+    def __init__(self, rule: str, *, path: str | None = None) -> None:
+        self.rule = rule
+        self.path = path
+        super().__init__(f"字段路径 {path}：{rule}" if path else rule)
 
 
 class InferenceError(RuntimeError):
@@ -55,9 +65,34 @@ class LLM(Protocol):
         """
         ...
 
+    @overload
     async def complete_json(
-        self, *, system: str, prompt: str, schema: Mapping[str, object]
-    ) -> Mapping[str, object]:
+        self,
+        *,
+        system: str,
+        prompt: str,
+        schema: Mapping[str, object],
+        parse: None = None,
+    ) -> Mapping[str, object]: ...
+
+    @overload
+    async def complete_json[T](
+        self,
+        *,
+        system: str,
+        prompt: str,
+        schema: Mapping[str, object],
+        parse: Callable[[Mapping[str, object]], T],
+    ) -> T: ...
+
+    async def complete_json[T](
+        self,
+        *,
+        system: str,
+        prompt: str,
+        schema: Mapping[str, object],
+        parse: Callable[[Mapping[str, object]], T] | None = None,
+    ) -> Mapping[str, object] | T:
         """生成符合请求 schema 的 JSON 对象。
 
         根对象及嵌套对象用 properties 声明属性，全部成员列入 required，
@@ -70,15 +105,17 @@ class LLM(Protocol):
             system: 系统指令。
             prompt: 待补全的提示。
             schema: 描述结构化输出的受支持 JSON Schema 子集。
+            parse: 在 schema 校验后解析应用对象。其 InvalidStructuredOutput
+                参与同一次补全的纠错预算。
 
         Returns:
-            已通过 schema 校验的 JSON 对象。
+            直接返回已通过 schema 校验的对象，或 parse 转换后的结果。
 
         Raises:
             ValueError: 请求 schema 无效或包含不支持的结构。
             CompletionTruncated: 输出在完成之前被截断。
             CompletionRefused: 模型拒绝执行请求。
-            InvalidStructuredOutput: 输出无法解析或不符合 schema。
+            InvalidStructuredOutput: 输出无法解析或违反 schema 或应用契约。
             InferenceError: 请求失败或上游响应协议异常。
             TimeoutError: 请求或整次补全超过时限。
         """

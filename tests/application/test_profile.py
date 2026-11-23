@@ -65,7 +65,7 @@ class _ProfileLLM(FakeLLM):
         self._response = response
         self.calls: list[tuple[str, str, Mapping[str, object]]] = []
 
-    async def complete_json(
+    async def _structured_response(
         self, *, system: str, prompt: str, schema: Mapping[str, object]
     ) -> Mapping[str, object]:
         self.calls.append((system, prompt, schema))

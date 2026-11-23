@@ -46,7 +46,7 @@ class _SummaryLLM(FakeLLM):
         self.summary = summary
         self.calls: list[tuple[str, str]] = []
 
-    async def complete_json(
+    async def _structured_response(
         self, *, system: str, prompt: str, schema: Mapping[str, object]
     ) -> Mapping[str, object]:
         self.calls.append((system, prompt))
@@ -269,7 +269,7 @@ def test_summary_rejects_invalid_output_in_one_completion(response: str) -> None
 )
 def test_summary_propagates_completion_errors(error_type: type[Exception]) -> None:
     class FailedLLM(FakeLLM):
-        async def complete_json(
+        async def _structured_response(
             self, *, system: str, prompt: str, schema: Mapping[str, object]
         ) -> Mapping[str, object]:
             raise error_type

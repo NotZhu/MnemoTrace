@@ -109,7 +109,7 @@ class _Model(FakeLLM):
         self.extraction_calls: list[dict[str, object]] = []
         self.comparison_calls: list[tuple[str, ...]] = []
 
-    async def complete_json(
+    async def _structured_response(
         self, *, system: str, prompt: str, schema: Mapping[str, object]
     ) -> Mapping[str, object]:
         payload = json.loads(prompt)
@@ -654,10 +654,10 @@ def test_remember_does_not_write_when_a_comparison_shard_fails(
     """同一锚点的第一片成功、第二片失败时，原文和事实均未写入。"""
 
     class Model(_Model):
-        async def complete_json(
+        async def _structured_response(
             self, *, system: str, prompt: str, schema: Mapping[str, object]
         ) -> Mapping[str, object]:
-            response = await super().complete_json(
+            response = await super()._structured_response(
                 system=system, prompt=prompt, schema=schema
             )
             if "facts" in response:
@@ -697,10 +697,10 @@ def test_remember_writes_disjoint_same_slot_facts_without_comparison(
     """同槽相邻区间的两条新事实分别入库，无需比较或截止。"""
 
     class Model(_Model):
-        async def complete_json(
+        async def _structured_response(
             self, *, system: str, prompt: str, schema: Mapping[str, object]
         ) -> Mapping[str, object]:
-            response = await super().complete_json(
+            response = await super()._structured_response(
                 system=system, prompt=prompt, schema=schema
             )
             if "facts" not in response:
