@@ -1,132 +1,210 @@
-"""Run the Postgres processing worker with separate discovery credentials."""
-from argparse import ArgumentParser
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+"""启动独立的 PostgreSQL 记忆写入 worker。"""
+
+import argparse
+import asyncio
 import logging
 import os
 import signal
-from time import monotonic, sleep
+import sys
+from contextlib import nullcontext
+from datetime import tzinfo
+from types import FrameType
+from typing import Protocol
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ._postgres_pipeline import PostgresPipeline
-from .config import Config
-from .embed import EmbeddingUnavailable
-from .llm.providers import configured_embedder, load_dotenv, make_extraction_llm
-from .llm.tokens import ModelContextConfigurationError, TokenCounterConfigurationError, require_counter
-from .store.postgres.dao import PostgresDAO
-from .store.postgres.database import Database, DatabaseConfig
-from .store.postgres.errors import AccountNotFound, DatabaseError, DatabaseUnavailable, SpaceNotFound
+import psycopg
+from psycopg import AsyncConnection
+from psycopg.rows import TupleRow
+from psycopg_pool import AsyncConnectionPool
 
-logger = logging.getLogger(__name__)
-DATABASE_WARNING_INTERVAL = 60
+from .adapters.inference import InferenceRequestError, open_inference
+from .adapters.postgres.migrate import migration_checksums
+from .adapters.postgres.operations import PostgresOperations
+from .adapters.postgres.profile_refresh import PostgresProfileRefresh
+from .adapters.postgres.session_summary_refresh import PostgresSessionSummaryRefresh
+from .adapters.postgres.storage import PostgresStorage
+from .adapters.runtime import SystemClock, UuidGenerator
+from .application.operations import ClaimedOperation, OperationRunner
+from .application.profile_refresh import ProfileRefreshRunner
+from .application.remember import Remember
+from .application.session_summary_refresh import SessionSummaryRunner
+from .runtime_settings import RuntimeSettings
+
+_LOG = logging.getLogger(__name__)
 
 
-def run_worker(discovery, runtime, config, llm, embedder, model, *, concurrency=2, once=False,
-               should_stop=lambda: False):
-    """轮询并执行已就绪的 PostgreSQL 后台任务。
+class _Runner(Protocol):
+    async def run_once(self) -> bool: ...
 
-    Args:
-        discovery: 用于发现任务的数据库连接管理器。
-        runtime: 用于执行任务的数据库连接管理器。
-        config: 记忆处理配置。
-        llm: 抽取模型。为 None 时跳过任务发现。
-        embedder: 可选的向量编码器。
-        model: 向量模型标识。
-        concurrency: 同时执行的任务数上限。
-        once: 是否只执行一轮任务发现。
-        should_stop: 返回是否应停止调度的函数。
 
-    Raises:
-        DatabaseUnavailable: 单轮执行时数据库不可用。
-    """
-    def run(candidate):
-        context, operation_id = candidate
+def _is_transient(error: Exception) -> bool:
+    if isinstance(error, InferenceRequestError):
+        return error.kind in ("rate_limit", "upstream", "connection")
+    return isinstance(error, psycopg.OperationalError)
+
+
+async def _consume(runner: _Runner, stopping: asyncio.Event) -> None:
+    while not stopping.is_set():
         try:
-            pipeline = PostgresPipeline(PostgresDAO(runtime, context), config, llm, embedder, model)
-            return pipeline.run_next_stage(operation_id)
-        except (AccountNotFound, SpaceNotFound):
-            return False
-
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        running = {}
-        next_database_warning = float('-inf')
-        while not should_stop():
-            try:
-                for candidate, future in tuple(running.items()):
-                    if future.done():
-                        del running[candidate]
-                        future.result()
-                if len(running) < concurrency:
-                    for candidate in (discovery.discover_processing(100) if llm is not None else ()):
-                        if should_stop():
-                            break
-                        if candidate not in running:
-                            running[candidate] = executor.submit(run, candidate)
-                            if len(running) == concurrency:
-                                break
-                if once:
-                    for future in running.values():
-                        future.result()
-                    return
-                if running:
-                    wait(running.values(), timeout=1, return_when=FIRST_COMPLETED)
-                    continue
-            except DatabaseUnavailable:
-                if once:
-                    raise
-                now = monotonic()
-                if now >= next_database_warning:
-                    logger.warning('Postgres processing is temporarily unavailable')
-                    next_database_warning = now + DATABASE_WARNING_INTERVAL
-            if not should_stop():
-                sleep(1)
+            if await runner.run_once():
+                continue
+        except psycopg.OperationalError as exc:
+            _LOG.warning("任务队列暂不可用 sqlstate=%s", exc.sqlstate)
+        await asyncio.sleep(1)
 
 
-def main(argv=None):
-    """读取配置并启动 PostgreSQL 记忆处理 worker。
+def _close_probe(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    writer.close()
 
-    Args:
-        argv: 命令行参数。省略时读取进程参数。
 
-    Returns:
-        正常完成或收到键盘中断时返回 0。
-    """
-    parser = ArgumentParser(description=__doc__)
-    parser.add_argument('--concurrency', type=int, default=2)
-    parser.add_argument('--once', action='store_true', help='Process one ready operation per available slot')
-    args = parser.parse_args(argv)
-    if not 1 <= args.concurrency <= 32:
-        parser.error('concurrency must be between 1 and 32')
-    load_dotenv()
-    name = os.environ.get('MNEMOTRACE_LLM', '').strip()
-    stopping = False
+async def _serve(
+    settings: RuntimeSettings,
+    concurrency: int,
+    stopping: asyncio.Event,
+    readiness_port: int | None,
+    *,
+    extraction_timezone: tzinfo,
+) -> None:
+    pool: AsyncConnectionPool[AsyncConnection[TupleRow]] = AsyncConnectionPool(
+        settings.postgres_dsn,
+        open=False,
+        min_size=0,
+        max_size=concurrency + 2,
+        timeout=3,
+        kwargs={"connect_timeout": 3},
+    )
+    async with (
+        open_inference(settings.inference_env, llm=True, embed=True) as clients,
+        pool,
+    ):
+        llm, embedder = clients.llm, clients.embedder
+        assert llm is not None and embedder is not None
+        async with pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT version, checksum FROM mnemotrace.schema_migrations"
+            )
+            if dict(await cursor.fetchall()) != migration_checksums():
+                raise ValueError("请先应用当前版本的 PostgreSQL 迁移")
 
-    def request_stop(*_):
-        # A signal can interrupt the main thread while it holds a threading lock.
-        nonlocal stopping
-        stopping = True
+        def storage_for(owner: str) -> PostgresStorage:
+            return PostgresStorage(pool, owner_id=owner)
 
-    previous_handler = signal.signal(signal.SIGTERM, request_stop)
+        def remember_for(job: ClaimedOperation) -> Remember:
+            return Remember(
+                space_id=job.space_id,
+                storage=storage_for(job.owner_id),
+                llm=llm,
+                embedder=embedder,
+                clock=SystemClock(),
+                ids=UuidGenerator(),
+                timezone=extraction_timezone,
+            )
+
+        runner = OperationRunner(PostgresOperations(pool), remember_for, _is_transient)
+        profile_runner = ProfileRefreshRunner(
+            PostgresProfileRefresh(pool),
+            storage_for,
+            llm,
+            SystemClock(),
+            _is_transient,
+        )
+        summary_runner = SessionSummaryRunner(
+            PostgresSessionSummaryRefresh(pool), storage_for, llm, _is_transient
+        )
+        readiness = (
+            await asyncio.start_server(_close_probe, "127.0.0.1", readiness_port)
+            if readiness_port is not None
+            else nullcontext()
+        )
+        _LOG.info("写入 worker 已启动 concurrency=%d", concurrency)
+        async with asyncio.TaskGroup() as workers, readiness:
+            for _ in range(concurrency):
+                workers.create_task(_consume(runner, stopping))
+            workers.create_task(_consume(profile_runner, stopping))
+            workers.create_task(_consume(summary_runner, stopping))
+            await stopping.wait()
+
+
+async def _run(
+    settings: RuntimeSettings,
+    concurrency: int,
+    readiness_port: int | None = None,
+    *,
+    extraction_timezone: tzinfo,
+) -> None:
+    stopping = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    supervisor = asyncio.current_task()
+    assert supervisor is not None
+
+    def stop() -> None:
+        if not stopping.is_set():
+            # 归还已提交事务的连接时可能消耗取消，领取循环仍须观察到停机。
+            stopping.set()
+            supervisor.cancel()
+
+    def on_signal(_signum: int, _frame: FrameType | None) -> None:
+        loop.call_soon_threadsafe(stop)
+
+    signals = (signal.SIGINT, signal.SIGTERM)
+    previous = {signum: signal.getsignal(signum) for signum in signals}
     try:
-        llm = make_extraction_llm(name, require_context=True) if name else None
-        if llm is not None:
-            require_counter(llm)
-        embedder, model = configured_embedder()
-        config = Config()
-        with (Database(DatabaseConfig.from_env()) as runtime,
-              Database(DatabaseConfig.from_env('discovery'), purpose='discovery') as discovery):
-            run_worker(discovery, runtime, config, llm, embedder, model,
-                       concurrency=args.concurrency, once=args.once, should_stop=lambda: stopping)
-    except KeyboardInterrupt:
-        return 0
-    except EmbeddingUnavailable as exc:
-        parser.exit(1, f"{exc}\n")
-    except (ModelContextConfigurationError, TokenCounterConfigurationError) as exc:
-        parser.exit(1, f"{exc}\n")
-    except (DatabaseError, ImportError, ValueError):
-        parser.exit(1, 'Worker configuration or database access failed. Check credentials, schema and model settings.\n')
+        for signum in signals:
+            signal.signal(signum, on_signal)
+        await _serve(
+            settings,
+            concurrency,
+            stopping,
+            readiness_port,
+            extraction_timezone=extraction_timezone,
+        )
+    except asyncio.CancelledError:
+        if not stopping.is_set():
+            raise
     finally:
-        signal.signal(signal.SIGTERM, previous_handler)
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def main() -> int:
+    """读取数据库、推理和抽取时区配置并运行写入任务。"""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--concurrency", type=int, default=2, metavar="1-16")
+    parser.add_argument("--readiness-port", type=int, help="在本机监听的就绪探针端口")
+    args = parser.parse_args()
+    if not 1 <= args.concurrency <= 16:
+        parser.error("--concurrency 须为 1 至 16")
+    if args.readiness_port is not None and not 1 <= args.readiness_port <= 65535:
+        parser.error("--readiness-port 须为 1 至 65535")
+    try:
+        extraction_timezone = ZoneInfo(
+            os.environ.get("MNEMOTRACE_EXTRACTION_TIMEZONE", "UTC")
+        )
+    except (ZoneInfoNotFoundError, ValueError):
+        parser.error("MNEMOTRACE_EXTRACTION_TIMEZONE 须为有效的 IANA 时区名称")
+    logging.basicConfig(level=logging.WARNING)
+    _LOG.setLevel(logging.INFO)
+    try:
+        settings = RuntimeSettings.from_env(os.environ)
+        loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
+        asyncio.run(
+            _run(
+                settings,
+                args.concurrency,
+                args.readiness_port,
+                extraction_timezone=extraction_timezone,
+            ),
+            loop_factory=loop_factory,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    except (psycopg.Error, OSError, ExceptionGroup) as exc:
+        _LOG.error("写入 worker 中止 type=%s", type(exc).__name__)
+        return 1
+    except KeyboardInterrupt:
+        pass
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(main())

@@ -1,1 +1,1 @@
-"""Offline regression tests and synthetic response fixtures."""
+"""后端测试及共享替身。"""

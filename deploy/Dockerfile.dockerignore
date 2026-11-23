@@ -1,0 +1,10 @@
+**
+!.python-version
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!mnemotrace/
+!mnemotrace/**
+**/__pycache__/
+**/*.py[cod]

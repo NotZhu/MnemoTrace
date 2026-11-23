@@ -1,258 +1,172 @@
-"""Real, disposable databases. Only objects carrying our ownership marker are removed."""
-from contextlib import contextmanager
-from dataclasses import dataclass
+"""只在专用测试实例上创建并清理当前测试库。"""
+
 import os
-import secrets
+import subprocess
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+from secrets import token_urlsafe
 from uuid import uuid4
 
+import psycopg
 import pytest
+from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
-from mnemotrace.store.postgres import Accounts, Database, DatabaseConfig, Spaces
-from mnemotrace.store.postgres.database import driver
-from mnemotrace.store.postgres.migrate import bootstrap_roles, migrate, _roles
+from mnemotrace.adapters.postgres.migrate import apply_migrations
 
-
-def pytest_sessionfinish(session):
-    if os.environ.get('MNEMOTRACE_REQUIRE_POSTGRES') == '1':
-        reporter = session.config.pluginmanager.get_plugin('terminalreporter')
-        if reporter is not None and any(report.nodeid.startswith('tests/postgres/')
-                                        for report in reporter.stats.get('skipped', ())):
-            reporter.write_line('Required Postgres verification contains skipped tests')
-            session.exitstatus = 1
+type DatabaseFactory = Callable[[], AbstractContextManager[str]]
+_GRANT_ROLES = Path(__file__).resolve().parents[2] / "deploy" / "grant-roles.sql"
 
 
-@dataclass
-class TestDatabase:
-    bootstrap: DatabaseConfig
-    migration: DatabaseConfig
-    runtime: DatabaseConfig
-    admin: DatabaseConfig
-    discovery: DatabaseConfig
+@dataclass(frozen=True)
+class PgDatabase:
+    """记录一次真库验证的管理、运行和凭据管理连接串。"""
+
+    admin: str = field(repr=False)
+    runtime: str = field(repr=False)
+    key_admin: str = field(repr=False)
 
 
-def disposable_database_factory(dsn, record_testsuite_property=lambda *_: None):
-    psycopg, _ = driver()
-    from psycopg import sql
+@pytest.fixture(scope="session")
+def admin_dsn() -> str:
+    """为真库测试读取显式配置的专用实例。
+
+    Returns:
+        专用测试实例的管理连接串。
+    """
+    dsn = os.environ.get("MNEMOTRACE_TEST_POSTGRES_DSN")
+    if dsn:
+        return dsn
+    message = "请设置 MNEMOTRACE_TEST_POSTGRES_DSN 指向可丢弃的测试实例"
+    if os.environ.get("MNEMOTRACE_REQUIRE_POSTGRES") == "1":
+        pytest.fail(message)
+    pytest.skip(message)
+
+
+@pytest.fixture(scope="session")
+def database_factory(admin_dsn: str) -> DatabaseFactory:
+    """提供在专用实例上创建和清理已安装 pgvector 的临时空库的工厂。
+
+    Args:
+        admin_dsn: 具有建库权限的测试实例连接串。
+
+    Returns:
+        返回临时数据库上下文管理器的工厂。实例清理范围限定在本次创建的库。
+    """
 
     @contextmanager
-    def create(*, initialize=True):
-        token = uuid4().hex[:16]
-        dbname, prefix = 'mt_phase2_fixture_' + token, 'mt_' + token
-        marker = 'mnemotrace:storage-phase2:' + token
-        roles = _roles(prefix)
-        logins = {kind: prefix + '_' + kind + '_login'
-                  for kind in ('runtime', 'admin', 'migration', 'discovery')}
-        owned_roles = []
-        with psycopg.connect(dsn, autocommit=True) as root:
-            record_testsuite_property('postgres_version', root.execute('SHOW server_version').fetchone()[0])
-            root.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(dbname)))
-            root.execute(sql.SQL('COMMENT ON DATABASE {} IS {}').format(
-                sql.Identifier(dbname), sql.Literal(marker)))
-            db_dsn = psycopg.conninfo.make_conninfo(dsn, dbname=dbname)
-            config = DatabaseConfig(db_dsn, role_prefix=prefix, pool_max=1)
+    def empty() -> Iterator[str]:
+        database = f"mnemo_test_{uuid4().hex}"
+        identifier = sql.Identifier(database)
+        with psycopg.connect(admin_dsn, autocommit=True) as conn:
+            conn.execute(
+                sql.SQL(
+                    "CREATE DATABASE {} TEMPLATE template0 ENCODING 'UTF8' "
+                    "LOCALE_PROVIDER libc LOCALE 'C'"
+                ).format(identifier)
+            )
             try:
-                bootstrap_roles(config)
-                with psycopg.connect(db_dsn) as check:
-                    record_testsuite_property('pgvector_version', check.execute(
-                        "SELECT extversion FROM pg_extension WHERE extname='vector'").fetchone()[0])
-                for role in roles.values():
-                    root.execute(sql.SQL('COMMENT ON ROLE {} IS {}').format(
-                        sql.Identifier(role), sql.Literal(marker)))
-                    owned_roles.append(role)
-                configs = {}
-                for purpose, login in logins.items():
-                    password = secrets.token_urlsafe(24)
-                    root.execute(sql.SQL('CREATE ROLE {} LOGIN PASSWORD {}').format(
-                        sql.Identifier(login), sql.Literal(password)))
-                    root.execute(sql.SQL('COMMENT ON ROLE {} IS {}').format(
-                        sql.Identifier(login), sql.Literal(marker)))
-                    owned_roles.append(login)
-                    root.execute(sql.SQL('GRANT {} TO {}').format(
-                        sql.Identifier(roles[purpose]), sql.Identifier(login)))
-                    configs[purpose] = DatabaseConfig(
-                        psycopg.conninfo.make_conninfo(db_dsn, user=login, password=password),
-                        role_prefix=prefix, pool_max=1)
-                bundle = TestDatabase(config, **configs)
-                if initialize:
-                    migrate(bundle.migration)
-                yield bundle
+                dsn = make_conninfo(admin_dsn, dbname=database)
+                with psycopg.connect(dsn) as db:
+                    db.execute("CREATE EXTENSION vector WITH SCHEMA public")
+                yield dsn
             finally:
-                comment = root.execute(
-                    "SELECT shobj_description(oid,'pg_database') FROM pg_database WHERE datname=%s",
-                    (dbname,)).fetchone()
-                if comment != (marker,):
-                    raise RuntimeError('Refusing to clean an unowned test database')
-                root.execute(sql.SQL('DROP DATABASE {} WITH (FORCE)').format(sql.Identifier(dbname)))
-                # Memberships disappear on DROP ROLE; no DROP OWNED in unrelated databases.
-                for role in reversed(owned_roles):
-                    comment = root.execute(
-                        "SELECT shobj_description(oid,'pg_authid') FROM pg_roles WHERE rolname=%s",
-                        (role,)).fetchone()
-                    if comment != (marker,):
-                        raise RuntimeError('Refusing to clean an unowned test role')
-                    root.execute(sql.SQL('DROP ROLE {}').format(sql.Identifier(role)))
-    return create
+                conn.execute(
+                    sql.SQL("DROP DATABASE {} WITH (FORCE)").format(identifier)
+                )
+
+    return empty
 
 
-@pytest.fixture(scope='session')
-def database_factory(record_testsuite_property):
-    dsn = os.environ.get('MNEMOTRACE_TEST_POSTGRES_DSN')
-    if not dsn:
-        if os.environ.get('MNEMOTRACE_REQUIRE_POSTGRES') == '1':
-            pytest.fail('Real Postgres is required but MNEMOTRACE_TEST_POSTGRES_DSN is missing')
-        pytest.skip('Set MNEMOTRACE_TEST_POSTGRES_DSN to a disposable-database DBA connection')
-    return disposable_database_factory(dsn, record_testsuite_property)
+def _grant_roles(dsn: str, runtime: str, key_admin: str) -> None:
+    options = conninfo_to_dict(dsn)
+    env = os.environ.copy()
+    if (password := options.pop("password", None)) is not None:
+        env["PGPASSWORD"] = str(password)
+    try:
+        result = subprocess.run(
+            [
+                "psql",
+                "-X",
+                "-w",
+                "-q",
+                "-d",
+                make_conninfo("", **options),
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-v",
+                f"runtime_role={runtime}",
+                "-v",
+                f"admin_role={key_admin}",
+                "-f",
+                str(_GRANT_ROLES),
+            ],
+            env=env,
+            check=False,
+        )
+    except FileNotFoundError:
+        pytest.fail("真库测试需要在 PATH 中提供 psql 以执行部署授权脚本")
+    if result.returncode:
+        pytest.fail(f"部署授权脚本执行失败（psql 退出码 {result.returncode}）")
 
 
-@pytest.fixture(scope='session')
-def cluster(database_factory):
-    with database_factory() as bundle:
-        yield bundle
+@pytest.fixture(scope="session")
+def database(admin_dsn: str, database_factory: DatabaseFactory) -> Iterator[PgDatabase]:
+    """迁移临时库并用部署脚本配置运行和凭据管理角色。
+
+    Args:
+        admin_dsn: 具有建库和创建角色权限的测试实例连接串。
+        database_factory: 创建临时库的工厂。
+
+    Yields:
+        临时数据库的管理、运行和凭据管理账号连接信息。
+    """
+    suffix = uuid4().hex
+    runtime, key_admin = f"mnemo_run_{suffix}", f"mnemo_keys_{suffix}"
+    passwords = {role: token_urlsafe(24) for role in (runtime, key_admin)}
+    with psycopg.connect(admin_dsn, autocommit=True) as cluster:
+        with cluster.transaction():
+            for role, password in passwords.items():
+                cluster.execute(
+                    sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                        sql.Identifier(role), sql.Literal(password)
+                    )
+                )
+        try:
+            with database_factory() as dsn:
+                apply_migrations(dsn)
+                _grant_roles(dsn, runtime, key_admin)
+                yield PgDatabase(
+                    admin=dsn,
+                    runtime=make_conninfo(
+                        dsn, user=runtime, password=passwords[runtime]
+                    ),
+                    key_admin=make_conninfo(
+                        dsn, user=key_admin, password=passwords[key_admin]
+                    ),
+                )
+        finally:
+            cluster.execute(
+                sql.SQL("DROP ROLE {}, {}").format(
+                    sql.Identifier(runtime), sql.Identifier(key_admin)
+                )
+            )
 
 
-@pytest.fixture
-def runtime(cluster):
-    with Database(cluster.runtime) as database:
-        yield database
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    """在必跑真库作业中把跳过真库测试视为失败。
 
-
-@pytest.fixture
-def accounts(cluster):
-    with Database(cluster.admin, purpose='admin') as database:
-        yield Accounts(database)
-
-
-@pytest.fixture
-def user(accounts):
-    user_id = accounts.create_user()
-    yield user_id
-    accounts.delete_user(user_id)
-
-
-@pytest.fixture
-def spaces(runtime):
-    return Spaces(runtime)
-
-
-@pytest.fixture
-def product_service(runtime, monkeypatch):
-    pytest.importorskip('fastapi')
-    from mnemotrace.service import MemoryService
-    from mnemotrace.server import app
-    from tests.model_fixtures import RecordedLLM
-
-    service = MemoryService(runtime, llm=RecordedLLM())
-    monkeypatch.setattr(app, '_svc', service)
-    return service
-
-
-@pytest.fixture
-def product_scope(accounts, spaces):
-    users = {}
-
-    def create(label='synthetic'):
-        if label not in users:
-            user = accounts.create_user()
-            space = spaces.create(user, label)
-            users[label] = spaces.authorize(user, space.space_id), accounts.issue_key(user).value
-        return users[label]
-
-    yield create
-    for context, _ in users.values():
-        accounts.delete_user(context.user_id)
-
-
-@pytest.fixture()
-def product_client(product_service, product_scope):
-    from fastapi.testclient import TestClient
-    from urllib.parse import parse_qsl, urlsplit
-    from mnemotrace.server import app
-
-    class ScopedClient(TestClient):
-        def seed_fact(self, headers, *, predicate, object, text, subject='我', **fields):
-            from tests.postgres.fact_fixtures import seed_fact
-
-            context, _ = product_scope(headers['X-Synthetic-Scope'])
-            return seed_fact(product_service.memory(context), subject, predicate, object, text=text, **fields)
-
-        def publish_batch(self, messages, *, headers, session_id='default', **fields):
-            label = headers['X-Synthetic-Scope']
-            context, _ = product_scope(label)
-            body = dict(messages=messages, session_id=session_id, **fields)
-            accepted = self.post('/v1/remember', headers=headers, json=body)
-            if accepted.status_code != 202:
-                return accepted
-            task = accepted.json()['task']['operation_id']
-            memory = app.svc().memory(context)
-            while memory._processing.run_next_stage(task):
-                pass
-            return self.post('/v1/remember', headers=headers, json=dict(body, wait=True, timeout=0))
-
-        def publish_text(self, content, *, headers, event_time=None, **fields):
-            message = dict(message_id=uuid4().hex, role='user', content=content, event_time=event_time)
-            return self.publish_batch([message], headers=headers, **fields)
-
-        def seed_original(self, headers, content, session_id='default', *, event_time=None):
-            context, _ = product_scope(headers['X-Synthetic-Scope'])
-            return app.svc().memory(context)._store_originals(content, session_id, event_time=event_time)[0]
-
-        def request(self, method, url, *, headers=None, **kwargs):
-            headers = dict(headers or {})
-            label = headers.pop('X-Synthetic-Scope', None)
-            if label is not None:
-                context, key = product_scope(label)
-                headers['Authorization'] = f'Bearer {key}'
-                if method in {'GET', 'HEAD', 'DELETE'}:
-                    query = dict(parse_qsl(urlsplit(url).query))
-                    kwargs['params'] = {**query, **(kwargs.get('params') or {}), 'space_id': context.space_id}
-                elif urlsplit(url).path == '/v1/chat/completions':
-                    body = kwargs['json']
-                    kwargs['json'] = {**body, 'memory': {'space_id': context.space_id, **body.get('memory', {})}}
-                elif kwargs.get('content') is None and kwargs.get('data') is None:
-                    kwargs['json'] = {'space_id': context.space_id, **(kwargs.get('json') or {})}
-            return super().request(method, url, headers=headers, **kwargs)
-
-    with ScopedClient(app.app) as http:
-        yield http
-
-
-@pytest.fixture
-def processing(runtime, spaces, user):
-    import json
-
-    from mnemotrace.consolidate.planning import WINDOW_PREFIX
-    from mnemotrace.llm import FakeLLM
-    from mnemotrace.memory import Memory
-    from tests.postgres.ontology_fixtures import ontology_reply, typed_result
-
-    space = spaces.create(user, 'Processing tests')
-    context = spaces.authorize(user, space.space_id)
-
-    def make(*, database=runtime, embedder=None, config=None, handle=None, adjudicate=None):
-        calls = []
-
-        def respond(prompt, system=''):
-            if 'MNEMOTRACE_FACT_COMPARISON' in system:
-                if adjudicate is not None:
-                    return adjudicate(prompt)
-                from tests.model_fixtures import adjudication_reply
-                return adjudication_reply(prompt)
-            if 'MNEMOTRACE_' in system:
-                return ontology_reply(prompt, system, {'prefers': ('prefers', False), 'lives_in': ('lives_in', False),
-                                                        'based_in': ('lives_in', False)})
-            data = json.loads(prompt.removeprefix(WINDOW_PREFIX))
-            calls.append(data)
-            if handle:
-                return json.dumps(typed_result(handle(data)))
-            facts = [dict(categories=['food'], sensitive=False, time_kind='current', effective_date=None, retention='unknown', subject='我', predicate='likes', object='tea', text='Synthetic person likes tea',
-                          source_ids=[item['id']]) for item in data['pending'] if item['role'] != 'assistant']
-            return json.dumps(typed_result(dict(facts=facts, digests=[
-                dict(source_id=item['id'], text='Recorded preference')
-                for item in data['pending'] if item['needs_digest']
-            ])))
-
-        memory = Memory(database, context, llm=FakeLLM(handler=respond), config=config,
-                                embedder=embedder, embedding_model='fixture' if embedder else None)
-        return memory, calls
-
-    return make
+    Args:
+        session: 提供测试结果及退出状态的 pytest 会话。
+    """
+    if os.environ.get("MNEMOTRACE_REQUIRE_POSTGRES") != "1":
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None and any(
+        report.nodeid.startswith("tests/postgres/")
+        for report in reporter.stats.get("skipped", ())
+    ):
+        reporter.write_line("必跑真库测试出现跳过")
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED

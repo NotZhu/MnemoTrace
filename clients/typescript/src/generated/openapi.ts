@@ -414,15 +414,18 @@ export interface components {
     schemas: {
         /**
          * CutoffTriggerResponse
-         * @description 一次设置或提前事实截止的可见依据。
+         * @description 一次设置或提前事实截止的可见依据，无来源时返回空数组。
          */
         CutoffTriggerResponse: {
             /** Fact Id */
             fact_id: string;
-            /** Valid End */
-            valid_end: string | null;
+            /**
+             * Valid End
+             * Format: date-time
+             */
+            valid_end: string;
             /** Source Message Ids */
-            source_message_ids: string[] | null;
+            source_message_ids: string[];
         };
         /**
          * EvidenceResponse
@@ -437,8 +440,6 @@ export interface components {
             valid_at: string | null;
             /** Invalid At */
             invalid_at: string | null;
-            /** Out Of Range Fields */
-            out_of_range_fields: components["schemas"]["FactTimeField"][];
             /** Source Message Ids */
             source_message_ids: string[];
             relation: components["schemas"]["RelationResponse"] | null;
@@ -460,14 +461,15 @@ export interface components {
         FactChangeResponse: {
             /** Fact Id */
             fact_id: string;
-            /** Changed At */
-            changed_at: string | null;
+            /**
+             * Changed At
+             * Format: date-time
+             */
+            changed_at: string;
             before: components["schemas"]["ValidityResponse"] | null;
             after: components["schemas"]["ValidityResponse"];
             /** Cutoff Triggers */
             cutoff_triggers: components["schemas"]["CutoffTriggerResponse"][];
-            /** Out Of Range Fields */
-            out_of_range_fields: string[];
         };
         /**
          * FactPage
@@ -497,13 +499,14 @@ export interface components {
             valid_at: string | null;
             /** Invalid At */
             invalid_at: string | null;
-            /** Out Of Range Fields */
-            out_of_range_fields: components["schemas"]["FactTimeField"][];
             /** Source Message Ids */
             source_message_ids: string[];
             relation: components["schemas"]["RelationResponse"] | null;
-            /** Recorded At */
-            recorded_at: string | null;
+            /**
+             * Recorded At
+             * Format: date-time
+             */
+            recorded_at: string;
             /** Expired At */
             expired_at: string | null;
             /** Sensitive */
@@ -514,8 +517,6 @@ export interface components {
         };
         /** @enum {string} */
         FactState: "current" | "history" | "all";
-        /** @enum {string} */
-        FactTimeField: "valid_at" | "invalid_at" | "recorded_at" | "expired_at";
         /**
          * GraphOptions
          * @description 限制一次图召回的起点、谓词与深度。
@@ -555,10 +556,11 @@ export interface components {
             content: string;
             /** Event Time */
             event_time: string | null;
-            /** Recorded At */
-            recorded_at: string | null;
-            /** Out Of Range Fields */
-            out_of_range_fields: "recorded_at"[];
+            /**
+             * Recorded At
+             * Format: date-time
+             */
+            recorded_at: string;
         };
         /**
          * OperationError
@@ -811,13 +813,16 @@ export interface components {
         };
         /**
          * SessionResponse
-         * @description 空间内的会话登记。
+         * @description 空间内的会话登记，创建时间以 UTC 返回。
          */
         SessionResponse: {
             /** Session Id */
             session_id: string;
-            /** Created At */
-            created_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
         };
         /**
          * Source
@@ -870,10 +875,11 @@ export interface components {
             profile_auto_refresh: boolean;
             /** Session Summary Enabled */
             session_summary_enabled: boolean;
-            /** Created At */
-            created_at: string | null;
-            /** Out Of Range Fields */
-            out_of_range_fields: "created_at"[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
         };
         /**
          * ValidityResponse

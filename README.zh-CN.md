@@ -1,36 +1,30 @@
 # MnemoTrace · 忆痕
 
-[![CI](https://github.com/NotZhu/MnemoTrace/actions/workflows/ci.yml/badge.svg)](https://github.com/NotZhu/MnemoTrace/actions/workflows/ci.yml)
-[![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
+[English](README.md)
 
-为 LLM 智能体提供长期记忆，包含 Python 库、HTTP 服务、MCP 工具、TypeScript SDK 和管理控制台。
+为 LLM 智能体提供长期记忆。Python 包和导入名均为 `mnemotrace`，HTTP 服务和写入 worker 的部署配置位于 [deploy/](deploy/)。
 
-MnemoTrace 保存原始会话，从中提取带时间和来源的事实，并跨会话检索相关上下文。知识更新可以保留被替代的事实，支持历史查询。自然语言事实抽取需要配置 LLM；原文保存、手动事实、已有记忆读取和数据库恢复可独立使用。默认哈希嵌入仍可用于词汇烟测，不代表语义检索质量。
+HTTP v1 的空间、会话、原文、事实和写入任务标识由 32 位小写十六进制字符组成。资源路径和任务列表的 `session_id` 筛选参数直接使用 API 返回的标识。
 
-[English](README.md) · [文档导航](docs/README.md) · [快速开始](docs/quickstart.md)
+HTTP v1 以 UTC 返回时间，并拒绝超出日历范围的输入。未知的事件时刻和事实有效期边界可以为 `null`。
 
-## 试用
+## 本地部署
 
-按[部署说明](deploy/README.md)初始化 Postgres、创建账号和空间，再按[快速开始](docs/quickstart.md)写入会话并检索结果。
+请从空数据库开始。按[数据库配置示例](deploy/.env.example)填写根目录 `.env`，按[模型配置示例](deploy/.env.models.example)填写 `deploy/.env.models`。在仓库根目录运行：
 
-HTTP 服务、MCP 工具、CLI 和 Python 直连均使用显式选择的 Postgres 空间。运行服务安装 `mnemotrace-memory[serve]`，运行 Python 示例安装 `mnemotrace-memory[postgres,llm,fastembed]`。离线 `MemoryEngine` 用于离线算法实验。
+```sh
+docker compose --env-file .env -f deploy/compose.yaml up --build --wait
+```
 
-使用 TypeScript 或 JavaScript 时，先部署 HTTP v1 后端，再接入 SDK。 [后端部署](deploy/next/README.md) · [SDK 接入指南](clients/typescript/README.md)
+Compose 会安装 pgvector 并创建数据库角色，完成迁移和授权后启动 API 和 worker。自管数据库需要在执行迁移前将 pgvector 安装到 `public` schema。
 
-## 选择入口
+## 开发验证
 
+在仓库根目录运行：
 
-| 目标                     | 阅读入口                                                                                                                                             |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 使用与管理记忆           | [使用指南](docs/guides/usage.md)                                                                                                                     |
-| 接入 Agent 或 MCP 客户端 | [Agent 接入](docs/guides/agents.md)                                                                                                                  |
-| 调用接口                 | [Python](docs/reference/python-api.md)、[HTTP](docs/reference/http-api.md)、[MCP](docs/reference/mcp.md)、[TypeScript](clients/typescript/README.md) |
-| 配置模型与存储           | [配置参考](docs/reference/configuration.md)                                                                                                          |
-| 理解实现                 | [架构总览](docs/architecture/README.md)                                                                                                              |
-| 开发与测量变更           | [贡献指南](CONTRIBUTING.md)、[评测说明](eval/README.md)                                                                                              |
+```sh
+uv sync --locked
+uv run --locked python scripts/check.py
+```
 
-模型抽取、真实嵌入与作答需要相应的可选依赖和配置。控制台需要构建前端，单独安装 Python wheel 不包含这份构建。
-
-## 许可与安全
-
-许可见 [LICENSE](LICENSE) 与[商业授权条款](COMMERCIAL-LICENSE.md)。漏洞报告方式见[安全政策](SECURITY.md)，版本变化见 [CHANGELOG](CHANGELOG.md)。
+真库回归通过 `MNEMOTRACE_TEST_POSTGRES_DSN` 指向独立的 PostgreSQL/pgvector 测试实例。部署后运行 `uv run --locked python scripts/http_smoke.py --help` 查看 HTTP 闭环验收所需的参数和凭据配置。

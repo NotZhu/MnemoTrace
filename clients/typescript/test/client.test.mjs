@@ -4,17 +4,23 @@ import { test } from 'node:test'
 import { MnemoTraceClient, MnemoTraceError, OperationWaitTimeout } from 'mnemotrace-memory'
 
 const BASE = 'https://synthetic.invalid/proxy'
-const SPACE = '/v1/spaces/space-1'
-const SESSION = SPACE + '/sessions/session-1'
-const OPERATION = SPACE + '/operations/operation-1'
-const HANDLE = { spaceId: 'space-1', operationId: 'operation-1' }
+const SPACE_ID = 'a'.repeat(32)
+const SESSION_ID = 'b'.repeat(32)
+const OPERATION_ID = 'c'.repeat(32)
+const FACT_ID = 'd'.repeat(32)
+const MESSAGE_ID = 'e'.repeat(32)
+const CAUSE_ID = 'f'.repeat(32)
+const SPACE = '/v1/spaces/' + SPACE_ID
+const SESSION = SPACE + '/sessions/' + SESSION_ID
+const OPERATION = SPACE + '/operations/' + OPERATION_ID
+const HANDLE = { spaceId: SPACE_ID, operationId: OPERATION_ID }
 const KEY = { idempotencyKey: 'synthetic-write-1' }
 const TIME = '2026-01-01T00:00:00Z'
 
 function operation(status, fields = {}) {
   return {
-    operation_id: 'operation-1',
-    session_id: 'session-1',
+    operation_id: OPERATION_ID,
+    session_id: SESSION_ID,
     created_at: TIME,
     updated_at: TIME,
     status,
@@ -43,9 +49,18 @@ test('publishes an equivalent CommonJS entry', () => {
   assert.equal(typeof require('mnemotrace-memory').MnemoTraceClient, 'function')
 })
 
+test('rejects invalid resource IDs in paths and filters before sending requests', async () => {
+  const sdk = client(async () => assert.fail('Invalid ID reached fetch'))
+  for (const invalid of ['old-id', '~YS9i', 'a/b', 'a'.repeat(31), 'a'.repeat(33), 'A'.repeat(32)]) {
+    await assert.rejects(sdk.createSession(invalid), TypeError)
+    await assert.rejects(sdk.listOperations(SPACE_ID, { session_id: invalid }), TypeError)
+    await assert.rejects(sdk.getOperation({ ...HANDLE, operationId: invalid }), TypeError)
+  }
+})
+
 test('replays lost submissions and reads the original message after recall', async () => {
   const requests = []
-  const messageId = '~YS9i'
+  const messageId = MESSAGE_ID
   const success = operation('succeeded', { message_ids: [messageId], fact_change_count: 1 })
   const sdk = client(async (url, init) => {
     const path = url.slice(BASE.length)
@@ -55,7 +70,7 @@ test('replays lost submissions and reads the original message after recall', asy
     requests.push({ path, method: init.method ?? 'GET', body: init.body, headers: init.headers })
     switch (path) {
       case SPACE + '/sessions':
-        return json({ session_id: 'session-1', created_at: TIME }, 201)
+        return json({ session_id: SESSION_ID, created_at: TIME }, 201)
       case SESSION + '/remember':
         if (requests.length === 2) throw new TypeError('synthetic response was lost')
         return accepted(operation('queued'))
@@ -64,11 +79,10 @@ test('replays lost submissions and reads the original message after recall', asy
       case SPACE + '/recall':
         return json({
           evidence: [{
-            fact_id: 'fact-1',
+            fact_id: FACT_ID,
             text: '默认导出 CSV。',
             valid_at: TIME,
             invalid_at: null,
-            out_of_range_fields: [],
             source_message_ids: [messageId],
             relation: null,
           }],
@@ -79,12 +93,11 @@ test('replays lost submissions and reads the original message after recall', asy
       case SPACE + '/messages/' + messageId:
         return json({
           message_id: messageId,
-          session_id: 'session-1',
+          session_id: SESSION_ID,
           role: 'user',
           content: '默认导出 CSV。',
           event_time: TIME,
           recorded_at: TIME,
-          out_of_range_fields: [],
         })
       default:
         assert.fail('意外的 SDK 请求')
@@ -119,7 +132,7 @@ test('honors both retryable server errors and stops after the third submission',
     assert.equal(init.headers.get('Idempotency-Key'), KEY.idempotencyKey)
     return problem(responseCodes[calls++], 503)
   })
-  await assert.rejects(sdk.remember(HANDLE.spaceId, 'session-1', '合成原文', KEY), {
+  await assert.rejects(sdk.remember(HANDLE.spaceId, SESSION_ID, '合成原文', KEY), {
     code: 'submit_outcome_unknown',
     status: 503,
     requestId: 'request-1',
@@ -134,7 +147,7 @@ test('preserves an unknown submission outcome when replay is rejected', async ()
     if (submissions.length === 1) throw new TypeError('synthetic response was lost')
     return problem('database_unavailable', 503)
   })
-  await assert.rejects(sdk.remember(HANDLE.spaceId, 'session-1', '合成原文', KEY), error => {
+  await assert.rejects(sdk.remember(HANDLE.spaceId, SESSION_ID, '合成原文', KEY), error => {
     assert.ok(error instanceof MnemoTraceError)
     assert.equal(error.code, 'submit_outcome_unknown')
     assert.equal(error.status, 503)
@@ -153,7 +166,7 @@ test('surfaces idempotency conflicts without resubmitting', async () => {
     calls++
     return problem('idempotency_conflict', 409)
   })
-  await assert.rejects(sdk.remember(HANDLE.spaceId, 'session-1', '合成原文', KEY), error => {
+  await assert.rejects(sdk.remember(HANDLE.spaceId, SESSION_ID, '合成原文', KEY), error => {
     assert.ok(error instanceof MnemoTraceError)
     assert.equal(error.code, 'idempotency_conflict')
     assert.equal(error.status, 409)
@@ -170,7 +183,7 @@ test('invalid Location fails the submission without starting a poll', async () =
     return accepted(operation('queued'), 'https://other.invalid' + OPERATION)
   })
   await assert.rejects(sdk.rememberAndWait(
-    HANDLE.spaceId, 'session-1', '合成原文', { ...KEY, timeoutMs: 30 },
+    HANDLE.spaceId, SESSION_ID, '合成原文', { ...KEY, timeoutMs: 30 },
   ), { code: 'invalid_response' })
   assert.equal(calls, 1)
 })
@@ -184,7 +197,7 @@ test('returns a terminal replay without polling', async () => {
     return accepted(failure)
   })
   assert.deepEqual(await sdk.rememberAndWait(
-    HANDLE.spaceId, 'session-1', [{ role: 'assistant', content: '合成回复' }], KEY,
+    HANDLE.spaceId, SESSION_ID, [{ role: 'assistant', content: '合成回复' }], KEY,
   ), failure)
 })
 
@@ -195,7 +208,7 @@ test('rejects an invalid wait budget before submitting', async () => {
     return accepted(operation('queued'))
   })
   await assert.rejects(sdk.rememberAndWait(
-    HANDLE.spaceId, 'session-1', '合成原文', { ...KEY, timeoutMs: 0 },
+    HANDLE.spaceId, SESSION_ID, '合成原文', { ...KEY, timeoutMs: 0 },
   ), RangeError)
   assert.equal(calls, 0)
 })
@@ -225,7 +238,7 @@ test('wait timeout carries a handle that can resume without resubmission', async
         signal.addEventListener('abort', () => reject(signal.reason), { once: true })
       })
     }
-    return json(operation('succeeded', { message_ids: ['message-1'], fact_change_count: 0 }))
+    return json(operation('succeeded', { message_ids: [MESSAGE_ID], fact_change_count: 0 }))
   })
   let handle
   await assert.rejects(sdk.waitOperation(HANDLE, { timeoutMs: 30 }), error => {
@@ -275,16 +288,15 @@ test('wait budget takes precedence over a future retry time', async () => {
 
 test('pages operations and follows audit evidence back to a session message', async () => {
   const auditItem = {
-    fact_id: '~b2xkL2ZhY3Q',
+    fact_id: FACT_ID,
     changed_at: TIME,
     before: { valid_at: null, invalid_at: null },
     after: { valid_at: null, invalid_at: TIME },
-    cutoff_triggers: [{ fact_id: 'cause', valid_end: TIME, source_message_ids: ['~YS9i'] }],
-    out_of_range_fields: [],
+    cutoff_triggers: [{ fact_id: CAUSE_ID, valid_end: TIME, source_message_ids: [MESSAGE_ID] }],
   }
   const message = {
-    message_id: '~YS9i', session_id: 'session-1', content: '以后使用 XLSX。',
-    role: 'user', event_time: TIME, recorded_at: TIME, out_of_range_fields: [],
+    message_id: MESSAGE_ID, session_id: SESSION_ID, content: '以后使用 XLSX。',
+    role: 'user', event_time: TIME, recorded_at: TIME,
   }
   const continuation = 'abc_-'
   const requests = []
@@ -301,18 +313,18 @@ test('pages operations and follows audit evidence back to a session message', as
           : { items: [operation('succeeded')], next_cursor: continuation })
       case OPERATION + '/fact-changes':
         return json({ status: 'succeeded', items: [auditItem], next_cursor: null })
-      case SPACE + '/facts/~b2xkL2ZhY3Q/changes':
+      case SPACE + '/facts/' + FACT_ID + '/changes':
         return json({ items: [auditItem], next_cursor: null })
       case SESSION + '/messages':
         return json({ items: [message], next_cursor: null })
-      case SPACE + '/messages/~YS9i':
+      case SPACE + '/messages/' + MESSAGE_ID:
         return json(message)
       default:
         assert.fail('意外的 SDK 请求')
     }
   })
 
-  const options = { limit: 1, status: 'succeeded', session_id: 'session-1' }
+  const options = { limit: 1, status: 'succeeded', session_id: SESSION_ID }
   const listed = await sdk.listOperations(HANDLE.spaceId, options)
   const next = await sdk.listOperations(HANDLE.spaceId, { ...options, cursor: listed.next_cursor })
   assert.deepEqual(next, { items: [], next_cursor: null })
@@ -329,9 +341,9 @@ test('pages operations and follows audit evidence back to a session message', as
     [SPACE + '/operations', { ...options, limit: '1' }],
     [SPACE + '/operations', { ...options, limit: '1', cursor: continuation }],
     [OPERATION + '/fact-changes', { include_sensitive: 'false' }],
-    [SPACE + '/facts/~b2xkL2ZhY3Q/changes', { include_sensitive: 'true', limit: '2' }],
+    [SPACE + '/facts/' + FACT_ID + '/changes', { include_sensitive: 'true', limit: '2' }],
     [SESSION + '/messages', { limit: '1' }],
-    [SPACE + '/messages/~YS9i', {}],
+    [SPACE + '/messages/' + MESSAGE_ID, {}],
   ])
 })
 

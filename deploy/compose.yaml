@@ -1,0 +1,106 @@
+name: mnemotrace
+
+x-app: &app
+  image: ${MNEMOTRACE_IMAGE:-mnemotrace:local}
+  pull_policy: never
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+
+x-runtime: &runtime
+  <<: *app
+  restart: unless-stopped
+  depends_on: &database_ready
+    grant:
+      condition: service_completed_successfully
+  env_file:
+    - path: .env.models
+      required: false
+      format: raw
+  environment: &runtime-environment
+    MNEMOTRACE_POSTGRES_DSN: postgresql://mnemotrace_runtime:${MNEMOTRACE_RUNTIME_PASSWORD:?set the runtime password}@db:5432/mnemotrace
+
+services:
+  db:
+    image: &postgres pgvector/pgvector:0.8.7-pg18-trixie@sha256:5895949dfcdf308eb0cd31c950c93c14895c77f33fbedfecf1fa511ab1d4bcd2
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mnemotrace
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set the PostgreSQL bootstrap password}
+      MNEMOTRACE_MIGRATION_PASSWORD: ${MNEMOTRACE_MIGRATION_PASSWORD:?set the migration password}
+      MNEMOTRACE_RUNTIME_PASSWORD: ${MNEMOTRACE_RUNTIME_PASSWORD:?set the runtime password}
+      MNEMOTRACE_ADMIN_PASSWORD: ${MNEMOTRACE_ADMIN_PASSWORD:?set the admin password}
+    volumes:
+      - postgres:/var/lib/postgresql
+      - ./init-postgres.sql:/docker-entrypoint-initdb.d/01-roles.sql:ro
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, postgres, -d, mnemotrace]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  api:
+    <<: *runtime
+    environment:
+      <<: *runtime-environment
+      MNEMOTRACE_MAX_BODY_BYTES: ${MNEMOTRACE_MAX_BODY_BYTES:-65536}
+      MNEMOTRACE_QUEUE_LIMIT: ${MNEMOTRACE_QUEUE_LIMIT:-100}
+    stop_grace_period: ${MNEMOTRACE_API_STOP_GRACE_PERIOD:-45s}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - 127.0.0.1:${MNEMOTRACE_HTTP_PORT:-8100}:8100
+    healthcheck:
+      test: [CMD, python, -c, "from urllib.request import urlopen; urlopen('http://127.0.0.1:8100/readyz', timeout=4).close()"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  worker:
+    <<: *runtime
+    environment:
+      <<: *runtime-environment
+      MNEMOTRACE_EXTRACTION_TIMEZONE:
+    command: [python, -m, mnemotrace.worker, --concurrency, "${MNEMOTRACE_WORKER_CONCURRENCY:-2}", --readiness-port, "8101"]
+    healthcheck:
+      test: [CMD, python, -c, "from socket import create_connection; create_connection(('127.0.0.1', 8101), timeout=2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  migrate:
+    <<: *app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      MNEMOTRACE_MIGRATION_DSN: postgresql://mnemotrace_migrate:${MNEMOTRACE_MIGRATION_PASSWORD:?set the migration password}@db:5432/mnemotrace
+    entrypoint: [python, -m, mnemotrace.adapters.postgres.migrate]
+    command: [up]
+
+  grant:
+    image: *postgres
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PGHOST: db
+      PGDATABASE: mnemotrace
+      PGUSER: mnemotrace_migrate
+      PGPASSWORD: ${MNEMOTRACE_MIGRATION_PASSWORD:?set the migration password}
+    volumes:
+      - ./grant-roles.sql:/grant-roles.sql:ro
+    entrypoint: [psql, -X, -v, ON_ERROR_STOP=1, -v, runtime_role=mnemotrace_runtime, -v, admin_role=mnemotrace_admin, -f, /grant-roles.sql]
+
+  admin:
+    <<: *app
+    profiles: [ops]
+    depends_on: *database_ready
+    environment:
+      MNEMOTRACE_ADMIN_DSN: postgresql://mnemotrace_admin:${MNEMOTRACE_ADMIN_PASSWORD:?set the admin password}@db:5432/mnemotrace
+    entrypoint: [python, -m, mnemotrace.admin]
+    command: [--help]
+
+volumes:
+  postgres:

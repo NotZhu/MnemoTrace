@@ -62,11 +62,10 @@ interface RequestOptions {
 }
 
 function isResourceId(id: unknown): id is string {
-  return typeof id === 'string' && id.length > 0 && !/[^A-Za-z0-9._~-]/.test(id)
-    && id !== '.' && id !== '..'
+  return typeof id === 'string' && id.length === 32 && !/[^0-9a-f]/.test(id)
 }
 
-function resourceSegment(id: string): string {
+function requireResourceId(id: string): string {
   if (!isResourceId(id)) {
     throw new TypeError('请使用 HTTP v1 返回的资源标识')
   }
@@ -74,11 +73,11 @@ function resourceSegment(id: string): string {
 }
 
 function spacePath(spaceId: string): string {
-  return `/v1/spaces/${resourceSegment(spaceId)}`
+  return `/v1/spaces/${requireResourceId(spaceId)}`
 }
 
 function operationPath({ spaceId, operationId }: OperationHandle): string {
-  return `${spacePath(spaceId)}/operations/${resourceSegment(operationId)}`
+  return `${spacePath(spaceId)}/operations/${requireResourceId(operationId)}`
 }
 
 function withQuery(
@@ -167,7 +166,7 @@ export class MnemoTraceClient {
       || idempotencyKey.length > 128 || /[^!-~]/.test(idempotencyKey)) {
       throw new TypeError('idempotencyKey 须包含 1 至 128 个可见 ASCII 字符')
     }
-    const path = `${spacePath(spaceId)}/sessions/${resourceSegment(sessionId)}/remember`
+    const path = `${spacePath(spaceId)}/sessions/${requireResourceId(sessionId)}/remember`
     const body = JSON.stringify({
       messages: typeof messages === 'string' ? [{ role: 'user', content: messages }] : messages,
     })
@@ -220,7 +219,11 @@ export class MnemoTraceClient {
   }
 
   async listOperations(spaceId: string, options: OperationListQuery = {}): Promise<OperationPage> {
-    const path = withQuery(`${spacePath(spaceId)}/operations`, options)
+    const { session_id, ...filters } = options
+    const path = withQuery(`${spacePath(spaceId)}/operations`, {
+      ...filters,
+      session_id: session_id == null ? session_id : requireResourceId(session_id),
+    })
     const { data } = await this.#request<OperationPage>(path)
     return data
   }
@@ -283,7 +286,7 @@ export class MnemoTraceClient {
   }
 
   async getMessage(spaceId: string, messageId: string): Promise<MessageResponse> {
-    const path = `${spacePath(spaceId)}/messages/${resourceSegment(messageId)}`
+    const path = `${spacePath(spaceId)}/messages/${requireResourceId(messageId)}`
     const { data } = await this.#request<MessageResponse>(path)
     return data
   }
@@ -291,7 +294,7 @@ export class MnemoTraceClient {
   async listFactChanges(
     spaceId: string, factId: string, options: FactChangeListQuery = {},
   ): Promise<FactChangePage> {
-    const path = withQuery(`${spacePath(spaceId)}/facts/${resourceSegment(factId)}/changes`, options)
+    const path = withQuery(`${spacePath(spaceId)}/facts/${requireResourceId(factId)}/changes`, options)
     const { data } = await this.#request<FactChangePage>(path)
     return data
   }
@@ -305,7 +308,7 @@ export class MnemoTraceClient {
   async listSessionMessages(
     spaceId: string, sessionId: string, options: PageQuery = {},
   ): Promise<MessagePage> {
-    const path = withQuery(`${spacePath(spaceId)}/sessions/${resourceSegment(sessionId)}/messages`, options)
+    const path = withQuery(`${spacePath(spaceId)}/sessions/${requireResourceId(sessionId)}/messages`, options)
     const { data } = await this.#request<MessagePage>(path)
     return data
   }

@@ -1,36 +1,31 @@
-# MnemoTrace · 忆痕
 
-[![CI](https://github.com/NotZhu/MnemoTrace/actions/workflows/ci.yml/badge.svg)](https://github.com/NotZhu/MnemoTrace/actions/workflows/ci.yml)
-[![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
+# MnemoTrace
 
-Long-term memory for LLM agents, with a Python library, HTTP service, MCP tools, TypeScript SDK, and a management console.
+[简体中文](README.zh-CN.md)
 
-MnemoTrace stores conversation episodes, extracts facts with time and provenance, and retrieves relevant context across sessions. Memory updates can retain superseded facts for historical queries. Natural-language fact extraction requires a configured LLM. Raw records, explicit facts, existing memory reads, and database restoration work without one. The base package supports Chinese and English lexical retrieval without an embedding model. The official deployment uses a pinned FastEmbed model for hybrid retrieval.
+MnemoTrace provides long-term memory for LLM agents. The Python distribution and import package are both named `mnemotrace`. Deployment files for the HTTP API and write worker are in [deploy/](deploy/).
 
-[中文](README.zh-CN.md) · [Documentation](docs/README.md) · [Quickstart](docs/quickstart.md)
+HTTP v1 uses 32 lowercase hexadecimal characters for space, session, message, fact, and operation IDs. Use the IDs returned by the API in resource paths and in the `session_id` filter for operation lists.
 
-## Try it
+HTTP v1 returns UTC calendar timestamps and rejects input outside the supported calendar range. Unknown event times and fact validity bounds can still be `null`.
 
-Start with the [deployment guide](deploy/README.md) to initialize Postgres and create an account and space. Use the [quickstart](docs/quickstart.md) to ingest a conversation and query the result.
+## Local deployment
 
-The HTTP service, MCP tools, CLI and direct Python integrations use explicitly selected Postgres spaces. Install `mnemotrace-memory[serve]` for the service or `mnemotrace-memory[postgres,llm,fastembed]` for the Python quickstart. The in-memory `MemoryEngine` class remains available for offline algorithm experiments.
+Start with an empty database. Fill the repository root `.env` using the [database settings](deploy/.env.example), and fill `deploy/.env.models` using the [model settings](deploy/.env.models.example). From the repository root, run:
 
-For TypeScript or JavaScript, deploy the HTTP v1 backend and connect the SDK. [Backend deployment](deploy/next/README.md) · [SDK quickstart](clients/typescript/README.md)
+```sh
+docker compose --env-file .env -f deploy/compose.yaml up --build --wait
+```
 
-## Choose an entry point
+Compose provisions pgvector and database roles, then runs migrations and grants before starting the API and worker. Before running migrations against a separately managed database, install pgvector in the `public` schema.
 
+## Development checks
 
-| Goal                           | Start here                                                                                                                                           |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Use and manage memory          | [Usage guide](docs/guides/usage.md)                                                                                                                  |
-| Connect an agent or MCP client | [Agent integration](docs/guides/agents.md)                                                                                                           |
-| Call an API                    | [Python](docs/reference/python-api.md), [HTTP](docs/reference/http-api.md), [MCP](docs/reference/mcp.md), [TypeScript](clients/typescript/README.md) |
-| Configure models and storage   | [Configuration](docs/reference/configuration.md)                                                                                                     |
-| Understand the implementation  | [Architecture](docs/architecture/README.md)                                                                                                          |
-| Develop or measure changes     | [Contributing](CONTRIBUTING.md), [Evaluation](eval/README.md)                                                                                        |
+Run these commands from the repository root.
 
-Model-backed extraction, embeddings, and answering require the corresponding optional dependencies and configuration. The console requires a frontend build; installing the Python wheel alone does not include that build.
+```sh
+uv sync --locked
+uv run --locked python scripts/check.py
+```
 
-## License and security
-
-See [LICENSE](LICENSE) and [commercial licensing terms](COMMERCIAL-LICENSE.md). Report vulnerabilities using [SECURITY.md](SECURITY.md). Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
+Set `MNEMOTRACE_TEST_POSTGRES_DSN` to point to a dedicated PostgreSQL instance with pgvector for database integration tests. After deployment, run `uv run --locked python scripts/http_smoke.py --help` for the HTTP smoke test options and credential configuration.

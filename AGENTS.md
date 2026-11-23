@@ -21,17 +21,17 @@ MnemoTrace（忆痕）为 LLM 智能体提供长期记忆，关注记忆正确�
 - 示例、fixture 和验证使用合成数据。凭据留在环境或本地配置中，输出日志前脱敏；真实个人数据和密钥不得进入提交。发现已泄露凭据时，标记并处理撤销或轮换需求。
 - 在任务授权范围内自主完成本地修改和必要验证；只读任务保持只读。真实服务、付费评测、生产数据、推送和发布按已有授权执行，缺少影响决策所需的信息时先澄清。
 - 文件删除、环境清理和 Git 历史改写须有明确范围与授权；保留用户已有改动、运行环境和记忆库。
-- 分发与许可遵循 [LICENSE](LICENSE) 和 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。
+- 分发与许可遵循 [LICENSE](LICENSE)。
 
 ## 验证与评测
 
 <a id="principle-ii"></a>
 
-自动抽取入口在写入原文前确认模型已配置。运行 `python examples/quickstart.py` 或 `mnemotrace-quickstart` 时显式配置 PostgreSQL 空间和模型。核心检查与离线 `pytest` 回归使用合成输入和固定模型响应。 [Python 验证命令](CONTRIBUTING.md#python-验证)
+自动抽取入口在写入原文前确认模型已配置。离线回归使用合成输入和固定模型响应，真库回归使用独立测试实例。 [开发验证](README.md#development-checks)
 
 <a id="principle-i"></a>
 
-公开评测结论以完整数据集和可复现的原始日志为依据。使用同次运行的 full-context 基线，并在发布前通过完整性校验。 [评测报告与完整性](eval/README.md#报告与完整性)
+公开评测结论以完整数据集和可复现的原始日志为依据。使用同次运行的 full-context 基线，并在发布前通过完整性校验。
 
 ## 协作与交付
 

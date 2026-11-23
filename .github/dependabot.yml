@@ -1,6 +1,6 @@
 version: 2
 updates:
-  - package-ecosystem: pip
+  - package-ecosystem: uv
     directory: /
     schedule:
       interval: weekly
@@ -9,6 +9,7 @@ updates:
     directories:
       - /frontend
       - /clients/typescript
+      - /website
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -17,6 +18,6 @@ updates:
     schedule:
       interval: weekly
   - package-ecosystem: docker
-    directory: /
+    directory: /deploy
     schedule:
       interval: weekly

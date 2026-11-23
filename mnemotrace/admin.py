@@ -1,85 +1,59 @@
-"""Restricted database administration: python -m mnemotrace.admin --help."""
-from __future__ import annotations
+"""在服务主机上签发、列出和撤销账号级 API key。"""
 
 import argparse
-from dataclasses import asdict
 import json
+import os
 import sys
 
-from .store.postgres import Accounts, Database, DatabaseConfig
-from .store.postgres.errors import DatabaseError
-from .store.postgres.migrate import bootstrap_roles, check_restore_target, migrate, provision_logins
+import psycopg
+
+from .adapters.postgres.identity import ApiKeyInfo, issue_key, list_keys, revoke_key
 
 
-def main(argv=None) -> int:
+def _key_json(info: ApiKeyInfo) -> dict[str, str | None]:
+    return {
+        "key_id": info.key_id,
+        "created_at": info.created_at.isoformat(),
+        "revoked_at": info.revoked_at.isoformat() if info.revoked_at else None,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    """读取管理连接配置，执行指定的凭据操作。"""
     parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest='command', required=True)
-    init = sub.add_parser('init-db')
-    init.add_argument('--bootstrap', action='store_true',
-                      help='Provision roles/extension with MNEMOTRACE_BOOTSTRAP_DATABASE_URL first')
-    init.add_argument('--provision-logins', action='store_true',
-                      help='Create or validate the four login roles from their configured DSNs')
-    init.add_argument('--roles-only', action='store_true',
-                      help='Prepare a restore target without applying migrations')
-    sub.add_parser('check-db', help='Validate the current schema and runtime credentials')
-    sub.add_parser('create-user')
-    for command in ('delete-user', 'issue-key', 'list-keys', 'revoke-key', 'rotate-key'):
-        command_parser = sub.add_parser(command)
-        command_parser.add_argument('--user-id', required=True)
-        if command in {'revoke-key', 'rotate-key'}:
-            command_parser.add_argument('--key-id', required=True)
-        if command in {'issue-key', 'rotate-key'}:
-            command_parser.add_argument('--name', default='')
-        if command == 'list-keys':
-            command_parser.add_argument('--after-id')
-            command_parser.add_argument('--limit', type=int, default=100)
+    commands = parser.add_subparsers(dest="command", required=True)
+    for command in ("issue", "list", "revoke"):
+        operation = commands.add_parser(command)
+        operation.add_argument("--owner-id", required=True)
+        if command == "revoke":
+            operation.add_argument("key_id")
     args = parser.parse_args(argv)
+    owner_id: str = args.owner_id
+    if not owner_id.strip() or "\x00" in owner_id:
+        parser.error("账号标识须非空且不能包含空字符")
+    dsn = os.environ.get("MNEMOTRACE_ADMIN_DSN")
+    if not dsn:
+        parser.error("请设置 MNEMOTRACE_ADMIN_DSN")
+
+    result: object
     try:
-        if args.command == 'init-db':
-            if (args.provision_logins or args.roles_only) and not args.bootstrap:
-                parser.error('--provision-logins and --roles-only require --bootstrap')
-            if args.bootstrap:
-                bootstrap = DatabaseConfig.from_env('bootstrap')
-                if args.roles_only:
-                    check_restore_target(bootstrap)
-                bootstrap_roles(bootstrap)
-                if args.provision_logins:
-                    provision_logins(bootstrap, {
-                        purpose: DatabaseConfig.from_env(purpose)
-                        for purpose in ('runtime', 'migration', 'admin', 'discovery')
-                    })
-            if not args.roles_only:
-                migrate(DatabaseConfig.from_env('migration'))
-            result = {'initialized': not args.roles_only}
-        elif args.command == 'check-db':
-            with Database(DatabaseConfig.from_env()):
-                result = {'ready': True}
-        else:
-            with Database(DatabaseConfig.from_env('admin'), purpose='admin') as database:
-                accounts = Accounts(database)
-                if args.command == 'create-user':
-                    result = {'user_id': accounts.create_user()}
-                elif args.command == 'delete-user':
-                    result = {'deleted': accounts.delete_user(args.user_id)}
-                elif args.command == 'list-keys':
-                    result = {'keys': [asdict(key) for key in accounts.list_keys(
-                        args.user_id, after_id=args.after_id, limit=args.limit)]}
-                elif args.command == 'revoke-key':
-                    accounts.revoke_key(args.user_id, args.key_id)
-                    result = {'revoked': True}
-                else:
-                    issued = (accounts.issue_key(args.user_id, args.name) if args.command == 'issue-key'
-                              else accounts.rotate_key(args.user_id, args.key_id, args.name))
-                    result = {**asdict(issued.info), 'key': issued.value}
-        print(json.dumps(result, ensure_ascii=False, default=lambda v: v.isoformat()))
-        return 0
-    except (DatabaseError, ValueError) as exc:
-        # Driver exceptions may contain credentials. Only our sanitized boundary
-        # exception is emitted; never print its cause or a traceback here.
-        print(json.dumps({'error': getattr(exc, 'code', 'invalid_argument'),
-                          'detail': str(exc)}), file=sys.stderr)
+        with psycopg.connect(dsn) as conn:
+            if args.command == "issue":
+                issued = issue_key(conn, owner_id)
+                result = {**_key_json(issued.info), "token": issued.token}
+            elif args.command == "list":
+                result = [_key_json(info) for info in list_keys(conn, owner_id)]
+            elif revoke_key(conn, owner_id, args.key_id):
+                result = {"key_id": args.key_id, "revoked": True}
+            else:
+                print("未找到指定账号的 key", file=sys.stderr)
+                return 1
+    except psycopg.Error as exc:
+        print(f"凭据操作失败（SQLSTATE {exc.sqlstate}）", file=sys.stderr)
         return 1
+    print(json.dumps(result))
+    return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(main())

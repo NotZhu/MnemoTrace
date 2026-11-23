@@ -11,7 +11,6 @@ dist/
 .ruff_cache/
 .mypy_cache/
 .playwright-cli/
-.cleanup-archive/
 .pnpm-store/
 node_modules/
 *.tsbuildinfo
@@ -25,23 +24,15 @@ env/
 
 # Secrets — never commit
 .env
-deploy/.env.restore
+.env.*
+!.env.example
+!.env.*.example
 *.key
 
 # Local data / scratch
 .artifacts/
 *.log
+*.pid
 .DS_Store
 data/
 external/
-# Local MnemoTrace runtime / repository caches
-.mnemotrace/
-mnemotrace_cache/
-.mnemotrace_cache/
-_repo_cache/
-
-# LOCOMO dataset: download from snap-research/locomo, not vendored
-eval/locomo10.json
-
-# Stale process-id files from scoreboard runs
-*.pid
