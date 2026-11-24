@@ -4,11 +4,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from psycopg_pool import AsyncConnectionPool
 
 from ..adapters.inference import open_inference
 from ..adapters.postgres.migrate import migration_checksums
-from .auth import ConnectionPool
+from ..adapters.postgres.pool import runtime_pool
 from .errors import install_error_handlers
 from .health import router as health_router
 from .middleware import RequestBoundary
@@ -19,15 +18,7 @@ from .v1 import memories, operations, profiles, sessions, spaces
 
 def create_app(settings: Settings) -> FastAPI:
     """创建带版本化路由和进程共享连接池的 ASGI 应用。"""
-    pool: ConnectionPool = AsyncConnectionPool(
-        settings.runtime.postgres_dsn,
-        open=False,
-        min_size=0,
-        max_size=8,
-        timeout=3,
-        max_waiting=32,
-        kwargs={"connect_timeout": 3},
-    )
+    pool = runtime_pool(settings.runtime, max_size=8, max_waiting=32)
 
     embed_configured = any(
         key.startswith("MNEMOTRACE_EMBED_") for key in settings.runtime.inference_env
@@ -67,6 +58,7 @@ def create_app(settings: Settings) -> FastAPI:
         redoc_url=None,
     )
     app.state.pool = pool
+    app.state.maintenance_timeout = settings.runtime.database_timeouts.maintenance
     app.state.embedder = None
     app.state.reranker = None
     app.state.recall_usage = None

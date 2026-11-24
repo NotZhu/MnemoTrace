@@ -13,13 +13,11 @@ from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import psycopg
-from psycopg import AsyncConnection
-from psycopg.rows import TupleRow
-from psycopg_pool import AsyncConnectionPool
 
 from .adapters.inference import InferenceRequestError, open_inference
 from .adapters.postgres.migrate import migration_checksums
 from .adapters.postgres.operations import PostgresOperations
+from .adapters.postgres.pool import runtime_pool
 from .adapters.postgres.profile_refresh import PostgresProfileRefresh
 from .adapters.postgres.session_summary_refresh import PostgresSessionSummaryRefresh
 from .adapters.postgres.storage import PostgresStorage
@@ -65,14 +63,7 @@ async def _serve(
     *,
     extraction_timezone: tzinfo,
 ) -> None:
-    pool: AsyncConnectionPool[AsyncConnection[TupleRow]] = AsyncConnectionPool(
-        settings.postgres_dsn,
-        open=False,
-        min_size=0,
-        max_size=concurrency + 2,
-        timeout=3,
-        kwargs={"connect_timeout": 3},
-    )
+    pool = runtime_pool(settings, max_size=concurrency + 2)
     async with (
         open_inference(settings.inference_env, llm=True, embed=True) as clients,
         pool,

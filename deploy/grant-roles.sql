@@ -9,7 +9,7 @@ GRANT SELECT ON mnemotrace.schema_migrations TO :"runtime_role";
 GRANT SELECT (key_id, owner_id, secret_hash, revoked_at) ON mnemotrace.api_keys
     TO :"runtime_role";
 GRANT SELECT, INSERT, UPDATE (purge_generation, name, memory_decay, profile_auto_refresh,
-    profile_evidence_revision, session_summary_enabled)
+    profile_evidence_revision, session_summary_enabled, fact_revision)
     ON mnemotrace.spaces
     TO :"runtime_role";
 GRANT DELETE ON mnemotrace.spaces, mnemotrace.embedding_spaces

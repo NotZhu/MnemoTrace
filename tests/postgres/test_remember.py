@@ -439,7 +439,7 @@ def test_remember_adds_erasable_evidence_to_manual_fact(
 def test_remember_rejudges_only_changed_pairs(
     database: PgDatabase, second_update: str
 ) -> None:
-    """复用原输入及已裁决的配对，并允许第二次复核在锁内处理移除。"""
+    """只补判变化的配对，重判期间再次变更时整次写入须重试。"""
 
     async def exercise() -> None:
         async with _workspace(database) as (scope, storage):
@@ -480,35 +480,33 @@ def test_remember_rejudges_only_changed_pairs(
                             await writer.delete_facts((added.id,))
                     gate.resume[1].set()
 
+            should_retry = second_update != "none"
             async with asyncio.timeout(10), asyncio.TaskGroup() as tasks:
                 tasks.create_task(compete())
-                if second_update == "added":
+                if should_retry:
                     with pytest.raises(RememberRetryRequired):
                         await memory.remember(_CURRENT, session_id=session_id)
                 else:
                     result = await memory.remember(_CURRENT, session_id=session_id)
                     assert result.message_ids == (MessageId("incoming-0"),)
+                    assert len(result.fact_changes) == 2
                     assert result.fact_changes[0].after.id == FactId("new-0")
-                    if second_update == "none":
-                        assert len(result.fact_changes) == 2
-                        assert result.fact_changes[1].after.id == added.id
-                        assert result.fact_changes[1].after.invalid_at == 100.0
-                    else:
-                        assert len(result.fact_changes) == 1
+                    assert result.fact_changes[1].after.id == added.id
+                    assert result.fact_changes[1].after.invalid_at == 100.0
             assert len(model.extraction_calls) == 1
             assert embedder.calls == [(_CURRENT,)]
             assert model.comparison_calls == [(stable.text,), (added.text,)]
             async with storage.session(scope.id) as reader:
                 committed = await reader.last_messages(session_id, 10)
                 assert [row.id for row in committed] == (
-                    [] if second_update == "added" else [MessageId("incoming-0")]
+                    [] if should_retry else [MessageId("incoming-0")]
                 )
-                assert (await reader.get_fact(FactId("new-0")) is None) == (
-                    second_update == "added"
-                )
+                assert (await reader.get_fact(FactId("new-0")) is None) == should_retry
                 if second_update == "added":
                     assert await reader.get_fact(added.id) == added
-            if second_update == "added":
+                elif second_update == "removed":
+                    assert await reader.get_fact(added.id) is None
+            if should_retry:
                 before = await memory.recall(_CURRENT)
                 assert all(item.text != _CURRENT for item in before.evidence)
                 retried = await memory.remember(_CURRENT, session_id=session_id)
@@ -528,8 +526,10 @@ def test_remember_rejudges_only_changed_pairs(
     run(exercise())
 
 
+@pytest.mark.parametrize("vector_only", [False, True])
 def test_remember_rejudges_newly_ranked_fact_and_drops_evicted_conflict(
     database: PgDatabase,
+    vector_only: bool,
 ) -> None:
     """同槽候选换榜后仅补判入榜的新事实，出榜项原有的矛盾判定不再提交。"""
 
@@ -545,19 +545,35 @@ def test_remember_rejudges_newly_ranked_fact_and_drops_evicted_conflict(
                 for index in range(10)
             )
             evicted = original[-1]
-            added = replace(original[0], id=FactId("late"), text=_CURRENT)
+            added = replace(
+                original[0],
+                id=FactId("late"),
+                text=_CURRENT if not vector_only else "vector-only-fixture",
+            )
             gate = _ComparisonGate()
             model = _Model(verdicts={evicted.text: "conflict"}, hook=gate)
-            memory = _memory(scope, storage, model, _Embedder())
+            embedder = _Embedder()
+            memory = _memory(scope, storage, model, embedder)
             session_id = await memory.create_session()
             async with storage.session(scope.id, write=True) as writer:
                 await writer.upsert_entity(project)
-                await writer.save_facts(original, changed_at=10.0)
+                if vector_only:
+                    added = replace(added, recorded_at=1.0)
+                await writer.save_facts(
+                    (*original, added) if vector_only else original, changed_at=10.0
+                )
 
             async def compete() -> None:
                 await gate.ready[0].wait()
                 async with storage.session(scope.id, write=True) as writer:
-                    await writer.save_facts((added,), changed_at=20.0)
+                    if vector_only:
+                        vector = (await embedder.embed((_CURRENT,)))[0]
+                        await writer.upsert_vectors(
+                            ((added.id, vector),),
+                            embedding_space=embedder.embedding_space,
+                        )
+                    else:
+                        await writer.save_facts((added,), changed_at=20.0)
                 gate.resume[0].set()
 
             async with asyncio.timeout(10), asyncio.TaskGroup() as tasks:
@@ -1141,7 +1157,7 @@ def test_remember_records_write_lock_duration_for_long_timeline(
     record_property: Callable[[str, object], None],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """重叠且带向量的同槽历史触发混合排序，记录初查与持锁复核耗时。"""
+    """重叠历史触发锁外混合排序，持锁发布复用同版本候选。"""
     durations: list[tuple[float, float]] = []
     lookup_durations: list[float] = []
     reused_pairs: list[BatchPairs | None] = []
@@ -1165,6 +1181,7 @@ def test_remember_records_write_lock_duration_for_long_timeline(
         reference_time: float,
         batch_pairs: BatchPairs | None = None,
     ) -> ComparisonCandidates:
+        assert not isinstance(reader, PostgresSession), "在持有空间写锁时执行了候选检索"
         start = perf_counter()
         result = await find_comparison_candidates(
             reader,
@@ -1268,13 +1285,13 @@ def test_remember_records_write_lock_duration_for_long_timeline(
             assert model.comparison_calls == [
                 tuple(item.text for item in (*history[:9], old, *cross_slot[:10]))
             ]
-            assert probes == [(11, 11), (11, 11)]
-            initial_pairs, rechecked_pairs = reused_pairs
-            assert initial_pairs is not None and initial_pairs is rechecked_pairs
+            assert probes == [(11, 11)]
+            (initial_pairs,) = reused_pairs
+            assert initial_pairs is not None
             ((acquire, held),) = durations
-            lookup, recheck = lookup_durations
+            (lookup,) = lookup_durations
             record_property("candidate_lookup_ms", round(lookup, 3))
-            record_property("write_lock_candidate_recheck_ms", round(recheck, 3))
+            record_property("write_lock_candidate_recheck_ms", 0)
             record_property("write_lock_acquire_ms", round(acquire, 3))
             record_property("write_lock_held_ms", round(held, 3))
 

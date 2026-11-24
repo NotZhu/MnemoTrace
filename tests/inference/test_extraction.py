@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
@@ -33,7 +34,11 @@ from mnemotrace.domain.ids import MessageId, SessionId, SpaceId
 from mnemotrace.domain.message import Message
 from mnemotrace.domain.space import Space
 from mnemotrace.domain.values import Label, LiteralValue, Predicate
-from mnemotrace.ports.inference import CompletionTruncated, InvalidStructuredOutput
+from mnemotrace.ports.inference import (
+    CompletionTruncated,
+    InferenceInputTooLarge,
+    InvalidStructuredOutput,
+)
 from mnemotrace.ports.queries import FactQuery
 from mnemotrace.ports.storage import CutoffTrigger
 
@@ -98,6 +103,127 @@ def _fact(**overrides: object) -> dict[str, object]:
         "sensitive": False,
         **overrides,
     }
+
+
+@pytest.mark.parametrize("mode", ["json_schema", "json_object", "prompt"])
+def test_extraction_keeps_a_contiguous_suffix_with_new_evidence_numbers(
+    mode: str,
+) -> None:
+    """很长的历史占满预算时，只发送可容纳的最近原文，并重新编号。"""
+    oldest = _message("oldest", Role.USER, "短旧消息", _SUGGESTED_AT)
+    long = _message("long", Role.USER, '中"\\' * 5000, _SUGGESTED_AT)
+    recent = _message("recent", Role.ASSISTANT, '建议用"英文"', _SUGGESTED_AT)
+    new = _message("new", Role.USER, "好", _CONFIRMED_AT)
+    calls = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        prompt = json.loads(json.loads(request.content)["messages"][1]["content"])
+        assert [(row["number"], row["content"]) for row in prompt["previous"]] == [
+            (1, recent.content)
+        ]
+        assert [(row["number"], row["content"]) for row in prompt["messages"]] == [
+            (2, new.content)
+        ]
+        assert "session_summary" not in prompt
+        refs = [2, 1] if calls == 2 else [3]
+        return chat_response(
+            json.dumps({"facts": [_fact(source_numbers=refs, valid_at_evidence=None)]})
+        )
+
+    async def exercise() -> None:
+        env = {
+            **CHAT_ENV,
+            "MNEMOTRACE_LLM_JSON_MODE": mode,
+            "MNEMOTRACE_LLM_CONTEXT_WINDOW_TOKENS": "16000",
+        }
+        async with configured_chat(respond, env) as llm:
+            (fact,) = await extract_facts(
+                llm, (oldest, long, recent), (new,), session_summary="摘要" * 5000
+            )
+        assert calls == 2
+        assert fact.provenance == (recent.id, new.id)
+
+    asyncio.run(exercise())
+
+
+def test_structured_correction_that_exceeds_budget_preserves_validation_error() -> None:
+    """无法放入纠错反馈时保留首次结构错误，并释放剩余请求预算。"""
+    calls = 0
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return chat_response('{"value":"fixture"}')
+
+    def parse(_: Mapping[str, object]) -> str:
+        raise InvalidStructuredOutput("固定校验规则" + "字" * 5000)
+
+    async def exercise() -> None:
+        schema = {
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        }
+        env = {**CHAT_ENV, "MNEMOTRACE_LLM_CONTEXT_WINDOW_TOKENS": "4096"}
+        async with configured_chat(respond, env) as llm:
+            with pytest.raises(InvalidStructuredOutput, match="固定校验规则"):
+                await llm.complete_json(
+                    system="规则",
+                    prompt="输入",
+                    schema=schema,
+                    parse=parse,
+                    enforce_context_budget=True,
+                )
+        assert calls == 1
+
+    asyncio.run(exercise())
+
+
+def test_upstream_correction_input_limit_preserves_validation_error() -> None:
+    """上游拒绝追加纠错反馈后的请求时，保留原始结构错误。"""
+    calls = 0
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return chat_response("合成无效 JSON")
+        return httpx.Response(400, json={"error": {"code": "context_length_exceeded"}})
+
+    async def exercise() -> None:
+        new = (_message("new", Role.USER, "合成新原文", _RECEIVED_AT),)
+        async with configured_chat(respond) as llm:
+            with pytest.raises(InvalidStructuredOutput, match="返回单个合法 JSON 对象"):
+                await extract_facts(llm, (), new)
+        assert calls == 2
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("local_limit", [True, False])
+def test_extraction_reports_a_known_input_limit_without_retry(
+    local_limit: bool,
+) -> None:
+    """本地预算和上游拒绝都报告同一类抽取超限。"""
+    calls = 0
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(400, json={"error": {"code": "context_length_exceeded"}})
+
+    async def exercise() -> None:
+        text = "中" * 40_000 if local_limit else "合成新原文"
+        new = (_message("new", Role.USER, text, _RECEIVED_AT),)
+        async with configured_chat(respond) as llm:
+            with pytest.raises(InferenceInputTooLarge):
+                await extract_facts(llm, (), new)
+        assert calls == (0 if local_limit else 1)
+
+    asyncio.run(exercise())
 
 
 @pytest.mark.parametrize(

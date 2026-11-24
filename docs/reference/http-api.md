@@ -76,6 +76,8 @@ api "$BASE_URL/v1/spaces/$SPACE_ID/operations/$OPERATION_ID"
 | `succeeded` | 原文已提交，响应包含 `message_ids` 和 `fact_change_count`。事实变更数可以为 `0`。 |
 | `failed` | 任务已结束。从 `error.code` 和可用的 `error.stage` 定位失败。 |
 
+`error.code` 为 `extraction_input_too_large` 时，本批原文未提交。请把消息拆成更小且语义完整的批次，为每个新批次使用新的幂等键。 [模型上下文配置](model-configuration.md#选择补全的-json-输出模式)
+
 ### 召回并查看原文
 
 在同一空间发起召回。证据正文在 `evidence[].text`，原文 ID 在 `evidence[].source_message_ids`。以下命令打印召回结果，并读取第一条带来源的证据所引用的首条原文。

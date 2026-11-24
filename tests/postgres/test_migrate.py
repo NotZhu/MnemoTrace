@@ -33,9 +33,9 @@ def test_migration_concurrency_repeat_and_checksum(
                 """)
         assert migrate.apply_migrations(dsn) == ()
         with psycopg.connect(dsn) as conn:
-            assert conn.execute("SELECT name FROM mnemotrace.spaces").fetchone() == (
-                "空间",
-            )
+            assert conn.execute(
+                "SELECT name, fact_revision FROM mnemotrace.spaces"
+            ).fetchone() == ("空间", 0)
             conn.execute("UPDATE mnemotrace.schema_migrations SET checksum = 'changed'")
         with pytest.raises(migrate.MigrationError, match="校验和不匹配"):
             migrate.apply_migrations(dsn)

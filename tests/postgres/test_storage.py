@@ -8,17 +8,59 @@ import pytest
 from psycopg import errors
 
 from mnemotrace.adapters.postgres import PostgresStorage
+from mnemotrace.adapters.postgres.pool import runtime_pool
 from mnemotrace.adapters.postgres.reader import PostgresReader
+from mnemotrace.adapters.postgres.session import PostgresSession
 from mnemotrace.domain.entity import Entity
 from mnemotrace.domain.enums import Role
 from mnemotrace.domain.ids import MessageId, SessionId, SpaceId
 from mnemotrace.domain.profile import Profile, ProfileEntry
 from mnemotrace.ports.storage import SessionUnavailable, Storage
+from mnemotrace.runtime_settings import DatabaseTimeouts, RuntimeSettings
 
 from .conftest import PgDatabase
 from .sample import SESSION, fact, message, pool, run, space
 
 pytestmark = pytest.mark.postgres
+
+
+def test_runtime_pool_bounds_lock_and_statement_waits(database: PgDatabase) -> None:
+    """锁等待和慢语句回滚后可复用连接，维护时限仅在擦除事务内生效。"""
+
+    async def exercise() -> None:
+        settings = RuntimeSettings(
+            database.runtime, database_timeouts=DatabaseTimeouts(1, 2, 5)
+        )
+        async with runtime_pool(settings, max_size=2) as connections:
+            storage = PostgresStorage(
+                connections, owner_id="owner", maintenance_timeout=5
+            )
+            scope, sibling = space(), space()
+            await storage.create_space(scope)
+            await storage.create_space(sibling)
+
+            async def blocked() -> None:
+                with pytest.raises(errors.LockNotAvailable):
+                    async with storage.session(scope.id, write=True):
+                        pytest.fail("写锁仍被持有")
+
+            async with storage.session(scope.id, write=True):
+                await asyncio.wait_for(blocked(), timeout=4)
+                async with storage.maintenance_session(sibling.id) as reader:
+                    assert isinstance(reader, PostgresSession)
+                    options = await reader._conn.execute("SHOW statement_timeout")
+                    assert await options.fetchone() == ("5s",)
+                    await reader.register_session(SESSION)
+
+            with pytest.raises(errors.QueryCanceled):
+                async with connections.connection() as conn:
+                    options = await conn.execute("SHOW statement_timeout")
+                    assert await options.fetchone() == ("2s",)
+                    await conn.execute("SELECT pg_sleep(5)")
+            async with storage.session(sibling.id) as snapshot:
+                assert await snapshot.has_session(SESSION)
+
+    run(exercise())
 
 
 def test_space_scope_message_replay_and_entity_identity(database: PgDatabase) -> None:

@@ -122,7 +122,7 @@ async def delete_session(
 ) -> Response:
     """擦除会话原文、任务及失去独立证据的抽取事实。"""
     identifier = SessionId(session_id)
-    async with storage.session(SpaceId(space_id), write=True) as writer:
+    async with storage.maintenance_session(SpaceId(space_id)) as writer:
         if not await writer.has_session(identifier):
             raise HTTPException(404, detail="session_not_found")
         await writer.delete_session_data(identifier)

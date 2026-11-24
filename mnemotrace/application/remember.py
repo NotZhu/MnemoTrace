@@ -143,7 +143,7 @@ class Remember:
             LookupError: 无权访问绑定空间。
             SessionUnavailable: 会话不可用。
             RememberInvalidated: 空间擦除使本次快照失效。
-            RememberRetryRequired: 重判后再次遇到需要模型裁决的变化。
+            RememberRetryRequired: 锁外重查后，事实版本在发布前再次变化。
             CommitOutcomeUnknown: 写事务进入提交阶段后无法确认结果。
         """
         # 固定本批原文和抽取所需的前文，保留擦除标记供提交前复核。
@@ -186,17 +186,14 @@ class Remember:
             operation.enter_stage("adjudication")
         batch_pairs = build_batch_pairs(prepared)
         candidates = ComparisonCandidates({}, ())
+        revision: int | None = None
         if prepared:
-            async with self._storage.session(self._space_id) as reader:
-                await _check_remember_snapshot(
-                    reader, session_id, context.erasure_token
-                )
-                candidates = await self._find_candidates(
-                    reader, prepared, batch_pairs, context.received_at
-                )
+            revision, candidates = await self._candidate_snapshot(
+                session_id, context, prepared, batch_pairs
+            )
         comparisons = await compare_facts(self._llm, prepared, candidates)
 
-        # 持锁复核会话与候选。当前配对的裁决齐全时，原文和事实变更一起提交。
+        # 事实版本和候选来自同一快照。持锁只复核版本，再使用当前证据组发布。
         for attempt in range(_COMPARISON_RETRIES + 1):
             if operation:
                 operation.enter_stage("publish")
@@ -204,19 +201,9 @@ class Remember:
                 await _check_remember_snapshot(
                     writer, session_id, context.erasure_token
                 )
-                current = await self._find_candidates(
-                    writer, prepared, batch_pairs, context.received_at
-                )
-                resolved = resolve_known_comparisons(
-                    prepared, current, candidates, comparisons
-                )
-                if len(resolved) == len(current.pairs):
+                if revision is None or revision == await writer.get_fact_revision():
                     changes = await self._publish(
-                        writer,
-                        context,
-                        prepared,
-                        current,
-                        tuple(resolved[pair] for pair in current.pairs),
+                        writer, context, prepared, candidates, comparisons
                     )
                     result = RememberResult(
                         tuple(message.id for message in context.messages), changes
@@ -225,39 +212,44 @@ class Remember:
                         await operation.complete(writer, result)
                     return result
 
-            # 锁外只补判缺项，避免推理阻塞同一空间的其他写入。
-            # 用完重判机会后，由调用方决定是否重新发起写入。
             if attempt == _COMPARISON_RETRIES:
                 break
-            candidates = current
             if operation:
                 operation.enter_stage("adjudication")
-            async with self._storage.session(self._space_id) as reader:
-                await _check_remember_snapshot(
-                    reader, session_id, context.erasure_token
-                )
-            comparisons = await compare_facts(
-                self._llm, prepared, current, reusable=resolved
+            revision, current = await self._candidate_snapshot(
+                session_id, context, prepared, batch_pairs
             )
+            resolved = resolve_known_comparisons(
+                prepared, current, candidates, comparisons
+            )
+            if len(resolved) == len(current.pairs):
+                comparisons = tuple(resolved[pair] for pair in current.pairs)
+            else:
+                comparisons = await compare_facts(
+                    self._llm, prepared, current, reusable=resolved
+                )
+            candidates = current
 
         raise RememberRetryRequired("比较依据再次变化，请重新发起写入")
 
-    async def _find_candidates(
+    async def _candidate_snapshot(
         self,
-        reader: SpaceReader,
+        session_id: SessionId,
+        context: _RememberContext,
         prepared: Sequence[PreparedFact],
         batch_pairs: BatchPairs,
-        reference_time: float,
-    ) -> ComparisonCandidates:
-        if not prepared:
-            return ComparisonCandidates({}, ())
-        return await find_comparison_candidates(
-            reader,
-            prepared,
-            embedding_space=self._embedder.embedding_space,
-            reference_time=reference_time,
-            batch_pairs=batch_pairs,
-        )
+    ) -> tuple[int, ComparisonCandidates]:
+        async with self._storage.session(self._space_id) as reader:
+            await _check_remember_snapshot(reader, session_id, context.erasure_token)
+            revision = await reader.get_fact_revision()
+            candidates = await find_comparison_candidates(
+                reader,
+                prepared,
+                embedding_space=self._embedder.embedding_space,
+                reference_time=context.received_at,
+                batch_pairs=batch_pairs,
+            )
+            return revision, candidates
 
     async def _publish(
         self,

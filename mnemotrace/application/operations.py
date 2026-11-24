@@ -8,12 +8,14 @@ from datetime import datetime, timedelta
 from functools import partial
 from typing import Literal, Protocol
 
+from ..diagnostics import correlate
 from ..domain.errors import InvalidMessage
 from ..domain.ids import SessionId, SpaceId
 from ..ports.inference import (
     CompletionRefused,
     CompletionTruncated,
     InferenceError,
+    InferenceInputTooLarge,
     InvalidStructuredOutput,
 )
 from ..ports.storage import (
@@ -170,16 +172,17 @@ class OperationRunner:
             stage = value
 
         try:
-            async with timeout(ATTEMPT_TIMEOUT):
-                await self._remember_for(job).remember(
-                    job.messages,
-                    session_id=job.session_id,
-                    operation=RememberOperation(
-                        job.received_at,
-                        enter_stage,
-                        partial(self._queue.complete, job),
-                    ),
-                )
+            with correlate(job.operation_id):
+                async with timeout(ATTEMPT_TIMEOUT):
+                    await self._remember_for(job).remember(
+                        job.messages,
+                        session_id=job.session_id,
+                        operation=RememberOperation(
+                            job.received_at,
+                            enter_stage,
+                            partial(self._queue.complete, job),
+                        ),
+                    )
         except LeaseLost:
             _LOG.info("任务租约失效 operation_id=%s", job.operation_id)
         except CommitOutcomeUnknown:
@@ -190,7 +193,11 @@ class OperationRunner:
                 )
         except Exception as exc:  # noqa: BLE001
             # 单个任务的未知异常应在任务内终结，避免阻塞同会话后续批次。
-            code, retry = self._classify_failure(exc)
+            code, retry = (
+                ("extraction_input_too_large", False)
+                if stage == "extraction" and isinstance(exc, InferenceInputTooLarge)
+                else self._classify_failure(exc)
+            )
             _LOG.warning(
                 "任务执行失败 operation_id=%s code=%s stage=%s type=%s validation=%s",
                 job.operation_id,

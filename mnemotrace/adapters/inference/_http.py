@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import re
 import socket
 import ssl
 import zlib
@@ -12,9 +11,11 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from random import uniform
 from typing import Literal, cast
+from uuid import uuid4
 
 import httpx
 
+from ...diagnostics import correlation_id
 from ...ports.inference import InferenceError
 
 type _FailureKind = Literal[
@@ -48,12 +49,12 @@ class InferenceRequestError(InferenceError):
     Args:
         kind: 诊断用的错误类别。
         status_code: 有 HTTP 响应时的状态码。
-        request_id: 上游提供的请求标识。
+        attempt_id: 本地生成的传输尝试标识。
 
     Attributes:
         kind: 诊断用的错误类别。
         status_code: 有 HTTP 响应时的状态码。
-        request_id: 上游提供的请求标识。
+        attempt_id: 本地生成的传输尝试标识。
     """
 
     def __init__(
@@ -61,13 +62,13 @@ class InferenceRequestError(InferenceError):
         kind: _FailureKind,
         *,
         status_code: int | None = None,
-        request_id: str | None = None,
+        attempt_id: str | None = None,
     ) -> None:
         self.kind = kind
         self.status_code = status_code
-        self.request_id = request_id
+        self.attempt_id = attempt_id
         super().__init__(
-            f"推理请求失败 ({kind}, status={status_code}, request_id={request_id})"
+            f"推理请求失败 ({kind}, status={status_code}, attempt_id={attempt_id})"
         )
 
 
@@ -125,6 +126,11 @@ class InferenceHTTP:
         self._connect_timeout = connect_timeout
         self._slots = asyncio.Semaphore(max_in_flight)
         self._max_response_bytes = max_response_bytes
+        self._send_attempt_id = (
+            client.base_url.scheme == "https"
+            and client.base_url.host == "api.openai.com"
+            and client.base_url.port in (None, 443)
+        )
 
     async def post(
         self, path: str, payload: dict[str, object], *, budget: RequestBudget, mode: str
@@ -167,13 +173,20 @@ class InferenceHTTP:
             if remaining <= 0:
                 raise TimeoutError("推理总时限已用完")
             budget.attempts += 1
+            attempt_id = uuid4().hex
+            headers = {"Accept-Encoding": "gzip, identity"}
+            if self._send_attempt_id:
+                headers["X-Client-Request-Id"] = attempt_id
             phase_timeout = min(self._connect_timeout, remaining)
+            status: int | None = None
+            body: dict[str, object] | None = None
+            outcome = "ok"
             try:
                 async with self._client.stream(
                     "POST",
                     path,
                     json=payload,
-                    headers={"Accept-Encoding": "gzip, identity"},
+                    headers=headers,
                     timeout=httpx.Timeout(
                         remaining,
                         connect=phase_timeout,
@@ -181,20 +194,41 @@ class InferenceHTTP:
                         pool=phase_timeout,
                     ),
                 ) as response:
+                    status = response.status_code
                     raw_body = await _read_response_body(
                         response, self._max_response_bytes
                     )
-            except httpx.RequestError as exc:
-                _LOG.info(
-                    "推理请求 model=%s mode=%s attempt=%d elapsed_ms=%.0f transport=%s",
-                    payload["model"],
-                    mode,
-                    budget.attempts,
-                    (loop.time() - started) * 1000,
-                    type(exc).__name__,
+                body = _response_object(raw_body)
+                if response.is_success and body is not None:
+                    return body
+
+                http_kind = _failure_kind(status, body)
+                outcome = http_kind
+                error = InferenceRequestError(
+                    http_kind, status_code=status, attempt_id=attempt_id
                 )
+                if (
+                    http_kind in ("rate_limit", "upstream")
+                    and status in _RETRY_STATUSES
+                ):
+                    raise _RetryableFailure(
+                        error, _retry_after(response.headers.get("retry-after"))
+                    )
+                raise error
+            except InferenceRequestError as exc:
+                outcome = exc.kind
+                if exc.attempt_id is not None:
+                    raise
+                raise InferenceRequestError(
+                    exc.kind, status_code=exc.status_code, attempt_id=attempt_id
+                ) from None
+            except asyncio.CancelledError:
+                outcome = "cancelled"
+                raise
+            except httpx.RequestError as exc:
                 if isinstance(exc, httpx.TimeoutException):
-                    timeout = TimeoutError("推理请求超时")
+                    outcome = "timeout"
+                    timeout = TimeoutError(f"推理请求超时 attempt_id={attempt_id}")
                     if isinstance(exc, httpx.ConnectTimeout):
                         raise _RetryableFailure(timeout) from None
                     raise timeout from None
@@ -203,41 +237,31 @@ class InferenceHTTP:
                     if isinstance(exc, (httpx.ProtocolError, httpx.DecodingError))
                     else "connection"
                 )
-                failure = InferenceRequestError(kind)
+                outcome = kind
+                failure = InferenceRequestError(
+                    kind, status_code=status, attempt_id=attempt_id
+                )
                 if isinstance(exc, httpx.ConnectError) and _temporary_connection(exc):
                     raise _RetryableFailure(failure) from None
                 raise failure from None
 
-        body = _response_object(raw_body)
-        request_id = _request_id(response.headers, body)
-        usage = body.get("usage") if body is not None else None
-        _LOG.info(
-            "推理请求 model=%s mode=%s attempt=%d elapsed_ms=%.0f status=%d "
-            "request_id=%s prompt_tokens=%s completion_tokens=%s",
-            payload["model"],
-            mode,
-            budget.attempts,
-            (loop.time() - started) * 1000,
-            response.status_code,
-            request_id,
-            _usage_count(usage, "prompt_tokens"),
-            _usage_count(usage, "completion_tokens"),
-        )
-        if response.is_success and body is not None:
-            return body
-
-        http_kind = _failure_kind(response.status_code, body)
-        error = InferenceRequestError(
-            http_kind, status_code=response.status_code, request_id=request_id
-        )
-        if (
-            http_kind in ("rate_limit", "upstream")
-            and response.status_code in _RETRY_STATUSES
-        ):
-            raise _RetryableFailure(
-                error, _retry_after(response.headers.get("retry-after"))
-            )
-        raise error
+            finally:
+                usage = body.get("usage") if body is not None else None
+                _LOG.info(
+                    "推理请求 model=%s mode=%s attempt=%d elapsed_ms=%.0f status=%s "
+                    "outcome=%s correlation_id=%s attempt_id=%s "
+                    "prompt_tokens=%s completion_tokens=%s",
+                    payload["model"],
+                    mode,
+                    budget.attempts,
+                    (loop.time() - started) * 1000,
+                    status,
+                    outcome,
+                    correlation_id.get(),
+                    attempt_id,
+                    _usage_count(usage, "prompt_tokens"),
+                    _usage_count(usage, "completion_tokens"),
+                )
 
 
 def require_response_object(value: object) -> dict[str, object]:
@@ -298,11 +322,7 @@ async def _read_response_body(
 def _response_error(
     kind: _FailureKind, response: httpx.Response
 ) -> InferenceRequestError:
-    return InferenceRequestError(
-        kind,
-        status_code=response.status_code,
-        request_id=_request_id(response.headers, None),
-    )
+    return InferenceRequestError(kind, status_code=response.status_code)
 
 
 def _response_object(body: bytes | bytearray) -> dict[str, object] | None:
@@ -311,20 +331,6 @@ def _response_object(body: bytes | bytearray) -> dict[str, object] | None:
     except (ValueError, RecursionError):
         return None
     return cast(dict[str, object], value) if isinstance(value, dict) else None
-
-
-def _request_id(headers: httpx.Headers, body: dict[str, object] | None) -> str | None:
-    request_id: object = (
-        headers.get("x-request-id")
-        or headers.get("x-dashscope-request-id")
-        or headers.get("x-siliconcloud-trace-id")
-        or (body or {}).get("request_id")
-    )
-    if isinstance(request_id, str) and re.fullmatch(
-        r"[A-Za-z0-9._-]{1,128}", request_id
-    ):
-        return request_id
-    return None
 
 
 def _usage_count(usage: object, key: str) -> int | None:

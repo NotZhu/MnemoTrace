@@ -30,6 +30,8 @@ HTTP 端点限无密钥的本机回环地址。使用容器部署时，回环地
 
 生成长度字段通过 `MNEMOTRACE_LLM_TOKEN_LIMIT_FIELD` 选择，按上游契约使用 `max_completion_tokens` 或 `max_tokens`。 [补全适配器](../../mnemotrace/adapters/inference/openai_chat.py)
 
+启用补全时必须设置 `MNEMOTRACE_LLM_CONTEXT_WINDOW_TOKENS`，填写供应商对该模型和端点公布的总上下文 token 容量。事实抽取按组装后的请求字节保守估算输入，预留 `MNEMOTRACE_LLM_MAX_OUTPUT_TOKENS`（默认 2048）、256 个封装 token 和 512 个纠错 token。优先保留本批完整原文，再加入预算内的最近原文和会话摘要。兼容端点的实际 token 数可能与估算不同。
+
 ## 嵌入维度与版本切换
 
 `MNEMOTRACE_EMBED_DIM` 必须匹配服务实际返回的向量长度。上游接受 `dimensions` 请求字段且需要显式指定长度时，可设置 `MNEMOTRACE_EMBED_SEND_DIMENSIONS=1`。`MNEMOTRACE_EMBED_REVISION` 用来标识本地向量所属的模型版本。服务在同一端点、同一模型名下升级模型时，使用不同修订标识区分向量。上游模型由端点与发出的 `model` 字段确定。

@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -140,6 +140,7 @@ async def _scope(
         "MNEMOTRACE_LLM_BASE_URL": "http://127.0.0.1:1/v1",
         "MNEMOTRACE_LLM_MODEL": "synthetic",
         "MNEMOTRACE_LLM_JSON_MODE": "json_schema",
+        "MNEMOTRACE_LLM_CONTEXT_WINDOW_TOKENS": "32768",
         "MNEMOTRACE_EMBED_BASE_URL": "http://127.0.0.1:1/v1",
         "MNEMOTRACE_EMBED_MODEL": "synthetic",
         "MNEMOTRACE_EMBED_REVISION": "test",
@@ -541,6 +542,7 @@ def test_erasing_another_session_preserves_only_work_without_an_old_snapshot(
             "MNEMOTRACE_LLM_BASE_URL": "https://models.example.invalid/v1",
             "MNEMOTRACE_LLM_MODEL": "fixture",
             "MNEMOTRACE_LLM_JSON_MODE": "json_schema",
+            "MNEMOTRACE_LLM_CONTEXT_WINDOW_TOKENS": "32768",
         },
     ],
 )
@@ -1097,6 +1099,7 @@ def test_idempotent_purge_preserves_memory_written_after_the_first_commit(
     ("stage", "function"),
     [
         ("extraction", "extract_facts"),
+        ("extraction", "input_budget"),
         ("embedding", "prepare_facts"),
         ("adjudication", "compare_facts"),
         ("publish", "complete"),
@@ -1109,7 +1112,10 @@ def test_terminal_error_identifies_stage_and_publishes_nothing(
     function: str,
 ) -> None:
     """逐阶段注入终止错误，并验证连同待处理原文的副本也被清理。"""
-    if stage == "publish":
+    if function == "input_budget":
+        monkeypatch.setattr(_Model, "structured_prompt_fits", Mock(return_value=False))
+        code = "extraction_input_too_large"
+    elif stage == "publish":
         monkeypatch.setattr(
             PostgresOperations,
             function,
@@ -1128,7 +1134,9 @@ def test_terminal_error_identifies_stage_and_publishes_nothing(
         async with _scope(database) as scope:
             session = await scope.new_session()
             operation = await scope.submit(session, "stage", _FACT)
-            assert await scope.runner(_Model()).run_once()
+            runner = scope.runner(_Model())
+            assert await runner.run_once()
+            assert not await runner.run_once()
             result = (await scope.status(operation.headers["Location"])).json()
             assert result["status"] == "failed"
             assert result["error"] == {"code": code, "stage": stage}

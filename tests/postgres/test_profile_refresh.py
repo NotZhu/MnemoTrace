@@ -21,6 +21,7 @@ from mnemotrace.adapters.postgres import PostgresStorage
 from mnemotrace.adapters.postgres import storage as pg_storage
 from mnemotrace.adapters.postgres.identity import issue_key
 from mnemotrace.adapters.postgres.operations import PostgresOperations
+from mnemotrace.adapters.postgres.pool import ConnectionPool
 from mnemotrace.adapters.postgres.profile_refresh import PostgresProfileRefresh
 from mnemotrace.adapters.postgres.session import PostgresSession
 from mnemotrace.adapters.runtime import SystemClock, UuidGenerator
@@ -42,7 +43,6 @@ from mnemotrace.ports.runtime import Clock
 from mnemotrace.ports.storage import CommitOutcomeUnknown, SpaceReader
 from mnemotrace.runtime_settings import RuntimeSettings
 from mnemotrace.server.app import create_app
-from mnemotrace.server.auth import ConnectionPool
 from mnemotrace.server.settings import Settings
 from mnemotrace.server.v1 import profiles
 
@@ -114,6 +114,7 @@ async def _http_space(
         "MNEMOTRACE_LLM_BASE_URL": "http://127.0.0.1:1/v1",
         "MNEMOTRACE_LLM_MODEL": "profile-test",
         "MNEMOTRACE_LLM_JSON_MODE": "json_schema",
+        "MNEMOTRACE_LLM_CONTEXT_WINDOW_TOKENS": "32768",
         "MNEMOTRACE_EMBED_BASE_URL": "http://127.0.0.1:1/v1",
         "MNEMOTRACE_EMBED_MODEL": "profile-test",
         "MNEMOTRACE_EMBED_REVISION": "r1",

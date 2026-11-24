@@ -6,6 +6,7 @@ from fastapi import HTTPException, Request
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from ..diagnostics import correlate
 from .errors import problem
 
 
@@ -60,4 +61,5 @@ class RequestBoundary:
                     raise HTTPException(413, detail="request_too_large")
             return message
 
-        await self._app(scope, receive_limited, send_response)
+        with correlate(request_id):
+            await self._app(scope, receive_limited, send_response)

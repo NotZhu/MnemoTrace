@@ -435,7 +435,7 @@ def resolve_known_comparisons(
 
     Args:
         prepared: 两次复核共用的本批候选。
-        current: 写锁保护下重查的比较候选。
+        current: 新读快照内重查的比较候选。
         previous: 上次裁决使用的候选快照。
         comparisons: 基于上次快照取得的判定。
 

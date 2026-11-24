@@ -177,6 +177,17 @@ class PostgresReader:
             assert generation is not None
             return str(generation)
 
+    async def get_fact_revision(self) -> int:
+        """读取当前空间快照中的事实和向量版本。"""
+        async with self._conn.cursor(row_factory=args_row(int)) as cursor:
+            await cursor.execute(
+                "SELECT fact_revision FROM mnemotrace.spaces WHERE space_id = %s",
+                (self.space_id.value,),
+            )
+            revision = await cursor.fetchone()
+            assert revision is not None
+            return revision
+
     async def has_session(self, session_id: SessionId) -> bool:
         """判断绑定空间的快照是否包含此对话。
 

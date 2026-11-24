@@ -13,6 +13,7 @@ CHAT_ENV = {
     "MNEMOTRACE_LLM_API_KEY": "fixture-chat-key",
     "MNEMOTRACE_LLM_MODEL": "synthetic-chat",
     "MNEMOTRACE_LLM_JSON_MODE": "json_schema",
+    "MNEMOTRACE_LLM_CONTEXT_WINDOW_TOKENS": "32768",
 }
 EMBED_ENV = {
     "MNEMOTRACE_EMBED_BASE_URL": "https://vectors.example/v1",

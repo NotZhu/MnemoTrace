@@ -17,6 +17,7 @@ from .sample import CHAT_ENV, EMBED_ENV, chat_response
         ("LLM_API_KEY", ""),
         ("LLM_TEMPERATURE", "nan"),
         ("LLM_TEMPERATURE", "2.1"),
+        ("LLM_CONTEXT_WINDOW_TOKENS", "2048"),
         ("EMBED_DIM", "0"),
         ("EMBED_REVISION", ""),
         ("EMBED_SEND_DIMENSIONS", "yes"),
@@ -44,6 +45,19 @@ def test_invalid_selected_configuration_prevents_client_creation(
             async with open_inference(
                 env, llm=True, embed=True, transport_factory=transport
             ):
+                pytest.fail("应在装配时失败")
+
+    asyncio.run(exercise())
+
+
+def test_configured_optional_chat_requires_an_explicit_context_window() -> None:
+    """管理员漏配已启用补全的容量时，API 装配应报错。"""
+
+    async def exercise() -> None:
+        env = dict(CHAT_ENV)
+        del env["MNEMOTRACE_LLM_CONTEXT_WINDOW_TOKENS"]
+        with pytest.raises(ValueError, match="MNEMOTRACE_LLM_CONTEXT_WINDOW_TOKENS"):
+            async with open_inference(env, llm="optional"):
                 pytest.fail("应在装配时失败")
 
     asyncio.run(exercise())

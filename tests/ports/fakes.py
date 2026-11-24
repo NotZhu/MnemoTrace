@@ -116,6 +116,7 @@ class FakeSpaceSession:
         self.space_id = space.id
         self._space = space
         self._erasure_generation = 0
+        self._fact_revision = 0
         self._sessions: dict[SessionId, SessionRegistration] = {}
         self._messages: dict[MessageId, Message] = {}
         self._message_positions: dict[MessageId, int] = {}
@@ -144,6 +145,10 @@ class FakeSpaceSession:
             内存替身为当前空间保存的擦除代际标记。
         """
         return str(self._erasure_generation)
+
+    async def get_fact_revision(self) -> int:
+        """读取内存事实及向量版本。"""
+        return self._fact_revision
 
     async def has_session(self, session_id: SessionId) -> bool:
         """查询测试对话的登记。
@@ -386,6 +391,8 @@ class FakeSpaceSession:
                     if before is not None and not before.same_except_provenance(after)
                 }
             )
+        if saved:
+            self._fact_revision += 1
         return tuple(saved)
 
     async def save_salience(self, states: Mapping[FactId, FactSalience]) -> None:
@@ -562,6 +569,8 @@ class FakeSpaceSession:
             fact_ids: 要删除的事实标识。
         """
         deleted = set(fact_ids).intersection(self._facts)
+        if deleted:
+            self._fact_revision += 1
         for fact_id in deleted:
             del self._facts[fact_id]
             del self._groups[fact_id]
@@ -619,10 +628,12 @@ class FakeSpaceSession:
         self._sessions.pop(session_id, None)
         if messages:
             self._erasure_generation += 1
+            self._fact_revision += 1
         return frozenset(deleted)
 
     async def purge_space(self) -> None:
         """清空空间内容并推进擦除代际。"""
+        self._fact_revision += 1
         self._messages.clear()
         self._message_positions.clear()
         self._sessions.clear()
@@ -811,7 +822,9 @@ class FakeSpaceSession:
             items: 事实标识及对应的合成向量。
             embedding_space: 选择内存索引的嵌入空间标识。
         """
-        self._vectors.setdefault(embedding_space, {}).update(items)
+        if items:
+            self._vectors.setdefault(embedding_space, {}).update(items)
+            self._fact_revision += 1
 
     async def search_vectors(
         self,
@@ -921,6 +934,12 @@ class FakeStorage:
 class FakeLLM:
     """用提示文本构造确定性的补全结果。"""
 
+    def structured_prompt_fits(
+        self, *, system: str, prompt: str, schema: Mapping[str, object]
+    ) -> bool:
+        """默认允许所有合成提示，测试可覆盖此方法模拟预算。"""
+        return True
+
     async def complete(self, *, system: str, prompt: str) -> Completion:
         """回显提示作为文本补全。
 
@@ -941,6 +960,7 @@ class FakeLLM:
         prompt: str,
         schema: Mapping[str, object],
         parse: None = None,
+        enforce_context_budget: bool = False,
     ) -> Mapping[str, object]: ...
 
     @overload
@@ -951,6 +971,7 @@ class FakeLLM:
         prompt: str,
         schema: Mapping[str, object],
         parse: Callable[[Mapping[str, object]], T],
+        enforce_context_budget: bool = False,
     ) -> T: ...
 
     async def complete_json[T](
@@ -960,6 +981,7 @@ class FakeLLM:
         prompt: str,
         schema: Mapping[str, object],
         parse: Callable[[Mapping[str, object]], T] | None = None,
+        enforce_context_budget: bool = False,
     ) -> Mapping[str, object] | T:
         """返回固定的测试对象，或经应用解析器转换后的结果。
 
@@ -968,6 +990,7 @@ class FakeLLM:
             prompt: 要回显的提示文本。
             schema: 调用方请求的结构。替身固定使用 text 字段。
             parse: 可选的应用解析器。
+            enforce_context_budget: 兼容端口签名，替身允许合成请求。
 
         Returns:
             固定的测试对象或解析结果。

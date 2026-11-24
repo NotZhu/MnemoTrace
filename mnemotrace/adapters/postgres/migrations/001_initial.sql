@@ -7,6 +7,7 @@ CREATE TABLE mnemotrace.spaces (
     name text NOT NULL,
     created_at mnemotrace.epoch_seconds NOT NULL,
     purge_generation bigint NOT NULL DEFAULT 0,
+    fact_revision bigint NOT NULL DEFAULT 0,
     memory_decay boolean NOT NULL DEFAULT false,
     profile_auto_refresh boolean NOT NULL DEFAULT false,
     profile_evidence_revision bigint NOT NULL DEFAULT 0,

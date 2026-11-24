@@ -166,7 +166,7 @@ class Memory:
             LookupError: 无权访问绑定空间。
             SessionUnavailable: 会话不可用。
             RememberInvalidated: 空间擦除使本次快照失效。
-            RememberRetryRequired: 重判后再次遇到需要模型裁决的变化。
+            RememberRetryRequired: 锁外重查后，事实版本在发布前再次变化。
             CommitOutcomeUnknown: 写事务进入提交阶段后无法确认结果。
         """
         return await self._remember.remember(messages, session_id=session_id)

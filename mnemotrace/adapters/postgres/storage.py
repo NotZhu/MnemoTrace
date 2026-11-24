@@ -78,13 +78,19 @@ class PostgresStorage:
     Args:
         pool: 由服务端装配层管理的异步连接池。
         owner_id: 服务端从认证上下文取得的账号标识。
+        maintenance_timeout: 擦除操作的单语句时限，单位为秒。
     """
 
     def __init__(
-        self, pool: AsyncConnectionPool[AsyncConnection[TupleRow]], *, owner_id: str
+        self,
+        pool: AsyncConnectionPool[AsyncConnection[TupleRow]],
+        *,
+        owner_id: str,
+        maintenance_timeout: int = 60,
     ) -> None:
         self._pool = pool
         self._owner_id = owner_id
+        self._maintenance_timeout = maintenance_timeout
 
     async def create_space(self, space: Space) -> None:
         """为绑定账号创建独立空间和初始代际。
@@ -187,15 +193,27 @@ class PostgresStorage:
 
     async def purge_space(self, space_id: SpaceId, *, key: str) -> None:
         """按幂等键清空绑定账号的空间，提交后保留空间登记。"""
-        async with self.session(space_id, write=True) as writer:
+        async with self.maintenance_session(space_id) as writer:
             await cast(PostgresSession, writer).purge_space(
                 key_hash=sha256(key.encode()).digest()
             )
 
     async def delete_space(self, space_id: SpaceId) -> None:
         """提交对绑定账号空间及其内容的完整删除。"""
-        async with self.session(space_id, write=True) as writer:
+        async with self.maintenance_session(space_id) as writer:
             await cast(PostgresSession, writer).delete_space()
+
+    @asynccontextmanager
+    async def maintenance_session(
+        self, space_id: SpaceId
+    ) -> AsyncIterator[SpaceSession]:
+        """为擦除扩大单语句时限，归还连接前恢复池默认值。"""
+        async with self.session(space_id, write=True) as writer:
+            await cast(PostgresSession, writer)._conn.execute(
+                "SELECT set_config('statement_timeout', %s, true)",
+                (f"{self._maintenance_timeout}s",),
+            )
+            yield writer
 
     @overload
     def session(

@@ -19,6 +19,8 @@
 
 自管 PostgreSQL 时，在迁移前将 `vector` 扩展安装到 `public` schema，并准备独立的迁移、运行和密钥管理角色。随附 Compose 连接其内置 `db` 服务。接入自管数据库时，需要调整各进程的连接和启动配置，可参考仓库的授权脚本。 [数据库授权](grant-roles.sql)
 
+API 和 worker 等待池连接的时限为 3 秒。`MNEMOTRACE_DB_LOCK_TIMEOUT_SECONDS` 默认 1 秒，`MNEMOTRACE_DB_STATEMENT_TIMEOUT_SECONDS` 默认 15 秒，`MNEMOTRACE_DB_MAINTENANCE_TIMEOUT_SECONDS` 默认 60 秒。维护时限应用于会话擦除、空间清空和空间删除的单条语句。配置须满足等锁时限小于普通语句时限，且普通语句时限小于等于维护语句时限。
+
 ## 部署验收
 
 按[快速开始](../README.zh-CN.md#快速开始)启动后，先查看服务状态和 API 健康检查。
@@ -50,7 +52,7 @@ docker compose --env-file .env -f deploy/compose.yaml run --rm admin revoke --ow
 
 需要备份时，使用 PostgreSQL 备份工具保存数据库，并记录对应的部署版本、数据库版本和模型配置。恢复先在独立实例验证数据库角色、pgvector、迁移账本和 HTTP 闭环。 [PostgreSQL 备份与恢复](https://www.postgresql.org/docs/18/backup-dump.html)
 
-更新前先核对[变更日志](../CHANGELOG.md)里的兼容性说明。当前数据库基线从空库初始化，旧库无法就地升级到该基线。
+当前开发基线由 `001_initial` 从空数据库初始化。已有开发库的迁移账本与当前基线不匹配时，为当前版本使用新的空数据库或独立的 Compose 项目。 [变更日志](../CHANGELOG.md)
 
 ## 常见故障
 

@@ -13,6 +13,8 @@ from ...ports.reranker import Reranker
 from ._http import InferenceHTTP
 from .cohere_reranker import CohereReranker
 from .openai_chat import (
+    CONTEXT_OVERHEAD_TOKENS,
+    CORRECTION_TOKENS,
     OpenAIChatLLM,
     _ChatOptions,
     _JSONMode,
@@ -158,11 +160,19 @@ def _chat_config(env: Mapping[str, str]) -> tuple[_Endpoint, _ChatOptions]:
     thinking = env.get(f"{_PREFIX}LLM_DISABLE_THINKING")
     if thinking not in (None, "deepseek", "dashscope"):
         raise ValueError(f"{_PREFIX}LLM_DISABLE_THINKING 须为 deepseek 或 dashscope")
+    window_name = f"{_PREFIX}LLM_CONTEXT_WINDOW_TOKENS"
+    if not env.get(window_name, "").strip():
+        raise ValueError(f"请设置 {window_name}")
+    context_window = _positive_int(env, "LLM_CONTEXT_WINDOW_TOKENS")
+    max_output = _positive_int(env, "LLM_MAX_OUTPUT_TOKENS", 2048)
+    if context_window <= max_output + CONTEXT_OVERHEAD_TOKENS + CORRECTION_TOKENS:
+        raise ValueError(f"{window_name} 须容纳输出额度、封装和纠错预留")
     return endpoint, _ChatOptions(
         model=model,
         json_mode=cast(_JSONMode, mode),
         temperature=_temperature(env),
-        max_output_tokens=_positive_int(env, "LLM_MAX_OUTPUT_TOKENS", 2048),
+        max_output_tokens=max_output,
+        context_window_tokens=context_window,
         token_limit_field=cast(_TokenLimitField, field),
         disable_thinking=cast(_ThinkingStyle | None, thinking),
         timeout=_positive_seconds(env, "LLM_TIMEOUT_SECONDS", 45),

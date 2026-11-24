@@ -14,7 +14,8 @@ from ..domain.ids import MessageId
 from ..domain.message import Message
 from ..domain.time import optional_utc_datetime
 from ..domain.values import KNOWN_LABELS, Label, LiteralValue, Predicate
-from ..ports.inference import LLM, InvalidStructuredOutput
+from ..ports.inference import LLM, InferenceInputTooLarge, InvalidStructuredOutput
+from .session_summary import RECENT_MESSAGE_WINDOW
 
 _ISO_CALENDAR_TIME = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
@@ -220,35 +221,35 @@ async def extract_facts(
     if not any(message.role == Role.USER for message in new_messages):
         return ()
 
-    previous_count = len(context_messages)
-    numbered = {
-        number: _SourceMessage(
+    def source(message: Message) -> _SourceMessage:
+        return _SourceMessage(
             message, message_reference_time(message.event_time, timezone=timezone)
         )
-        for number, message in enumerate((*context_messages, *new_messages), start=1)
-    }
-    rows = [
-        {
-            "number": number,
-            "role": source.message.role.value,
-            "content": source.message.content,
-            "reference_time": (
-                source.reference_time.isoformat()
-                if source.reference_time is not None
-                else None
-            ),
-        }
-        for number, source in numbered.items()
-    ]
-    context: dict[str, object] = {
-        "timezone": str(timezone),
-        "previous": rows[:previous_count],
-        "messages": rows[previous_count:],
-    }
+
+    new = tuple(map(source, new_messages))
+    previous: tuple[_SourceMessage, ...] = ()
     system = _SYSTEM
+    prompt = _extraction_prompt(previous, new, timezone)
+    if not llm.structured_prompt_fits(system=system, prompt=prompt, schema=_SCHEMA):
+        raise InferenceInputTooLarge("新消息批次超出抽取上下文预算，请拆分批次")
+    for message in reversed(context_messages[-RECENT_MESSAGE_WINDOW:]):
+        candidate = (source(message), *previous)
+        expanded = _extraction_prompt(candidate, new, timezone)
+        if not llm.structured_prompt_fits(
+            system=system, prompt=expanded, schema=_SCHEMA
+        ):
+            break
+        previous, prompt = candidate, expanded
     if session_summary:
-        context["session_summary"] = session_summary
-        system += _SUMMARY_CONTEXT
+        expanded = _extraction_prompt(previous, new, timezone, session_summary)
+        with_summary = system + _SUMMARY_CONTEXT
+        if llm.structured_prompt_fits(
+            system=with_summary, prompt=expanded, schema=_SCHEMA
+        ):
+            system, prompt = with_summary, expanded
+
+    previous_count = len(previous)
+    numbered = dict(enumerate((*previous, *new), start=1))
 
     def parse(response: Mapping[str, object]) -> tuple[ExtractedFact, ...]:
         output = cast(_ExtractionOutput, response)
@@ -265,10 +266,40 @@ async def extract_facts(
 
     return await llm.complete_json(
         system=system,
-        prompt=json.dumps(context, ensure_ascii=False),
+        prompt=prompt,
         schema=_SCHEMA,
         parse=parse,
+        enforce_context_budget=True,
     )
+
+
+def _extraction_prompt(
+    previous: tuple[_SourceMessage, ...],
+    new: tuple[_SourceMessage, ...],
+    timezone: tzinfo,
+    summary: str | None = None,
+) -> str:
+    rows = [
+        {
+            "number": number,
+            "role": source.message.role.value,
+            "content": source.message.content,
+            "reference_time": (
+                source.reference_time.isoformat()
+                if source.reference_time is not None
+                else None
+            ),
+        }
+        for number, source in enumerate((*previous, *new), start=1)
+    ]
+    context: dict[str, object] = {
+        "timezone": str(timezone),
+        "previous": rows[: len(previous)],
+        "messages": rows[len(previous) :],
+    }
+    if summary is not None:
+        context["session_summary"] = summary
+    return json.dumps(context, ensure_ascii=False)
 
 
 def message_reference_time(

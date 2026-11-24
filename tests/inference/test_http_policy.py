@@ -3,11 +3,13 @@
 import asyncio
 from collections.abc import AsyncIterator
 from gzip import compress
+from uuid import UUID
 
 import httpx
 import pytest
 
 from mnemotrace.adapters.inference import InferenceRequestError, open_inference
+from mnemotrace.diagnostics import correlate
 from mnemotrace.ports.inference import InferenceError
 
 from .sample import CHAT_ENV, EMBED_ENV, chat_response, configured_chat
@@ -62,7 +64,9 @@ def test_provider_response_body_limit_stops_reading_without_retry(
                 await llm.complete(system="回复", prompt="输入")
             assert captured.value.kind == "response_limit"
             assert captured.value.status_code == status
-            assert captured.value.request_id == "fixture-request"
+            attempt = captured.value.attempt_id
+            assert attempt is not None and UUID(attempt).version == 4
+            assert "fixture-request" not in str(captured.value)
             (stream,) = streams
             assert stream.read == len(chunks) - 1
             assert stream.closed
@@ -126,16 +130,52 @@ def test_permanent_provider_error_is_sanitized_and_not_retried(
                 await llm.complete(system="合成指令", prompt=prompt)
         error = captured.value
         assert isinstance(error, InferenceRequestError)
-        assert (error.kind, error.status_code, error.request_id) == (
-            kind,
-            status,
-            "fixture-request",
-        )
+        assert (error.kind, error.status_code) == (kind, status)
+        assert error.attempt_id is not None and UUID(error.attempt_id).version == 4
         assert attempts == 1
-        assert "fixture-request" in caplog.text
-        for private in (key, echo, prompt):
+        assert f"attempt_id={error.attempt_id}" in caplog.text
+        for private in (key, echo, prompt, "fixture-request"):
             assert private not in str(error)
             assert private not in caplog.text
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("host", ["api.openai.com", "fixture.example"])
+def test_provider_correlation_uses_a_local_id_per_attempt(
+    host: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """官方端点接收本地标识，兼容端点仅记录本地关联。"""
+    caplog.set_level("INFO")
+    sent: list[str | None] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(request.headers.get("x-client-request-id"))
+        if len(sent) == 1:
+            return httpx.Response(429, headers={"retry-after": "0"})
+        response = chat_response()
+        return httpx.Response(
+            200, json={**response.json(), "request_id": "fixture-body-id"}
+        )
+
+    async def exercise() -> None:
+        env = {**CHAT_ENV, "MNEMOTRACE_LLM_BASE_URL": f"https://{host}/v1"}
+        async with configured_chat(respond, env) as llm:
+            with correlate("fixture-local-operation"):
+                await llm.complete(system="回复", prompt="输入")
+        events = [
+            record.message
+            for record in caplog.records
+            if record.name == "mnemotrace.adapters.inference._http"
+        ]
+        attempts = [event.split("attempt_id=")[1].split()[0] for event in events]
+        assert len(attempts) == len(set(attempts)) == 2
+        assert all(UUID(attempt).version == 4 for attempt in attempts)
+        assert all(
+            "correlation_id=fixture-local-operation" in event for event in events
+        )
+        assert sent == (attempts if host == "api.openai.com" else [None, None])
+        assert "fixture-body-id" not in caplog.text
 
     asyncio.run(exercise())
 
@@ -174,10 +214,11 @@ def test_rate_limit_respects_retry_after_and_deadline(
 
 @pytest.mark.parametrize("error", [httpx.ConnectTimeout, httpx.ReadTimeout])
 def test_connection_timeout_retries_but_read_timeout_does_not(
-    error: type[httpx.TimeoutException],
+    error: type[httpx.TimeoutException], caplog: pytest.LogCaptureFixture
 ) -> None:
     """区分连接超时与可能已计费的读超时。"""
     attempts = 0
+    caplog.set_level("INFO")
 
     def respond(request: httpx.Request) -> httpx.Response:
         nonlocal attempts
@@ -189,6 +230,9 @@ def test_connection_timeout_retries_but_read_timeout_does_not(
             with pytest.raises(TimeoutError, match="推理请求超时") as captured:
                 await llm.complete(system="回复", prompt="输入")
         assert "fixture-provider-exception" not in str(captured.value)
+        attempt_id = str(captured.value).split("attempt_id=")[1]
+        assert UUID(attempt_id).version == 4
+        assert f"attempt_id={attempt_id}" in caplog.text
         assert attempts == (2 if error is httpx.ConnectTimeout else 1)
 
     asyncio.run(exercise())

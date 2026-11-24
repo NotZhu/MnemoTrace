@@ -4,16 +4,12 @@ from typing import Annotated, cast
 
 from fastapi import Depends, HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from psycopg import AsyncConnection
-from psycopg.rows import TupleRow
-from psycopg_pool import AsyncConnectionPool
 
 from ..adapters.postgres import PostgresStorage
 from ..adapters.postgres.identity import authenticate
+from ..adapters.postgres.pool import ConnectionPool
 
 _bearer = HTTPBearer(auto_error=False, scheme_name="ApiKey")
-
-type ConnectionPool = AsyncConnectionPool[AsyncConnection[TupleRow]]
 
 
 def connection_pool(request: Request) -> ConnectionPool:
@@ -45,10 +41,14 @@ OwnerDependency = Annotated[str, Depends(authenticated_owner)]
 
 
 async def authorized_storage(
-    pool: PoolDependency, owner_id: OwnerDependency
+    pool: PoolDependency, owner_id: OwnerDependency, request: Request
 ) -> PostgresStorage:
     """为已认证账号绑定空间存储。"""
-    return PostgresStorage(pool, owner_id=owner_id)
+    return PostgresStorage(
+        pool,
+        owner_id=owner_id,
+        maintenance_timeout=request.app.state.maintenance_timeout,
+    )
 
 
 AuthorizedStorage = Annotated[PostgresStorage, Depends(authorized_storage)]

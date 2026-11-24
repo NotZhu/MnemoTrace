@@ -192,6 +192,10 @@ class SpaceReader(Protocol):
         """
         ...
 
+    async def get_fact_revision(self) -> int:
+        """读取当前快照的单调版本，事实、证据或向量的变更须在同一事务推进版本。"""
+        ...
+
     async def has_session(self, session_id: SessionId) -> bool:
         """判断对话是否在此快照的绑定空间内有效。
 

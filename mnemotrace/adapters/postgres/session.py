@@ -324,6 +324,8 @@ class PostgresSession(PostgresReader):
         }
         async with conn.transaction():
             saved = await write_fact_batch(conn, changes, changed_at)
+            if saved:
+                await self._advance_fact_revision()
             await self._prune_profile(invalidated)
             await self._track_profile_changes(saved, invalidated)
         return saved
@@ -519,6 +521,7 @@ class PostgresSession(PostgresReader):
                         for fact_id, vector in by_id.items()
                     ],
                 )
+                await self._advance_fact_revision()
         except DataError:
             raise ValueError("向量超出 PostgreSQL 支持的范围") from None
 
@@ -563,6 +566,8 @@ class PostgresSession(PostgresReader):
             )
             rows = await cursor.fetchall()
         deleted = frozenset(FactId(fact_id) for fact_id, _, _ in rows)
+        if deleted:
+            await self._advance_fact_revision()
         await self._prune_profile(deleted)
         if any(evidence for _, evidence, _ in rows):
             auto_at = await self._advance_profile_evidence_revision()
@@ -700,7 +705,14 @@ class PostgresSession(PostgresReader):
         await self._conn.execute(
             """
             UPDATE mnemotrace.spaces
-            SET purge_generation = purge_generation + 1 WHERE space_id = %s
+            SET purge_generation = purge_generation + 1, fact_revision = fact_revision + 1
+            WHERE space_id = %s
             """,
+            (self.space_id.value,),
+        )
+
+    async def _advance_fact_revision(self) -> None:
+        await self._conn.execute(
+            "UPDATE mnemotrace.spaces SET fact_revision = fact_revision + 1 WHERE space_id = %s",
             (self.space_id.value,),
         )

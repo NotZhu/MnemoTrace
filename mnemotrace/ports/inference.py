@@ -42,8 +42,18 @@ class InferenceError(RuntimeError):
     """推理请求失败或上游响应协议异常。"""
 
 
+class InferenceInputTooLarge(InferenceError):
+    """完整补全输入超出模型的上下文预算。"""
+
+
 class LLM(Protocol):
     """提供单次文本或结构化补全。"""
+
+    def structured_prompt_fits(
+        self, *, system: str, prompt: str, schema: Mapping[str, object]
+    ) -> bool:
+        """检查结构化请求及一次校验反馈能否装入该模型的输入预算。"""
+        ...
 
     async def complete(self, *, system: str, prompt: str) -> Completion:
         """根据系统指令和提示生成完整文本。
@@ -73,6 +83,7 @@ class LLM(Protocol):
         prompt: str,
         schema: Mapping[str, object],
         parse: None = None,
+        enforce_context_budget: bool = False,
     ) -> Mapping[str, object]: ...
 
     @overload
@@ -83,6 +94,7 @@ class LLM(Protocol):
         prompt: str,
         schema: Mapping[str, object],
         parse: Callable[[Mapping[str, object]], T],
+        enforce_context_budget: bool = False,
     ) -> T: ...
 
     async def complete_json[T](
@@ -92,6 +104,7 @@ class LLM(Protocol):
         prompt: str,
         schema: Mapping[str, object],
         parse: Callable[[Mapping[str, object]], T] | None = None,
+        enforce_context_budget: bool = False,
     ) -> Mapping[str, object] | T:
         """生成符合请求 schema 的 JSON 对象。
 
@@ -107,6 +120,7 @@ class LLM(Protocol):
             schema: 描述结构化输出的受支持 JSON Schema 子集。
             parse: 在 schema 校验后解析应用对象。其 InvalidStructuredOutput
                 参与同一次补全的纠错预算。
+            enforce_context_budget: 为真时在每次发送前检查完整结构化输入。
 
         Returns:
             直接返回已通过 schema 校验的对象，或 parse 转换后的结果。

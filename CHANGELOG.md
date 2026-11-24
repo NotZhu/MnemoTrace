@@ -11,8 +11,11 @@
 ### Changed
 
 - Python 分发包和导入名统一为 `mnemotrace`。部署采用 `deploy/compose.yaml` 和 `MNEMOTRACE_*` 配置。 [快速开始](README.zh-CN.md#快速开始)
-- **破坏性变更（数据库）** 新 PostgreSQL 基线要求从空数据库初始化，旧库迁移暂不受支持。
+- **数据库基线** PostgreSQL 从空数据库初始化，空间表包含发布复核所需的 `fact_revision`。 [部署说明](deploy/README.md#停机备份与升级)
 - **破坏性变更（自定义模型适配器）** `complete_json` 需要接受 `parse` 关键字参数，并在提供该参数时返回解析后的结果。
+- 启用补全须声明 `MNEMOTRACE_LLM_CONTEXT_WINDOW_TOKENS`。自定义模型适配器须实现 `structured_prompt_fits` 并支持 `complete_json` 的 `enforce_context_budget` 参数。 [模型配置](docs/reference/model-configuration.md)
+- `InferenceRequestError` 使用本地生成的 `attempt_id`。自定义存储的 `SpaceReader` 须提供与快照绑定的 `get_fact_revision`。
+- 写入在空间写锁外检索候选，版本变化后最多重查一次。运行连接设置锁等待和语句时限。 [写入流程](docs/architecture/memory.md#写入运行视图) · [部署配置](deploy/README.md#配置)
 
 ### Fixed
 
