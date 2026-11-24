@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
-dependencies = ["psycopg[binary]==3.3.8", "psycopg-pool==3.3.3"]
+dependencies = ["psycopg[binary]==3.3.9", "psycopg-pool==3.3.3"]
 
 [project.optional-dependencies]
 inference = ["httpx>=0.28,<1", "jsonschema>=4.26,<5", "tzdata"]
