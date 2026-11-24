@@ -1,6 +1,6 @@
 # MnemoTrace
 
-[简体中文](README.zh-CN.md) · [Quickstart](#quickstart) · [Docs (Chinese)](docs/README.md) · [How it works](#how-it-works) · [Evaluation](#evaluation)
+[Simplified Chinese](README.zh-CN.md) · [Quickstart](#quickstart) · [Docs (Chinese)](docs/README.md) · [How it works](#how-it-works) · [Evaluation](#evaluation)
 
 MnemoTrace is an open-source, self-hosted long-term memory engine for LLM agents. Agents can carry project conventions and user preferences into new sessions. When those details change, agents can look up what applies now, what applied at an earlier point in time, and which messages support each fact.
 
@@ -24,7 +24,7 @@ Install Docker Compose 2.30.0 or later and `uv`. Use an empty database for the f
    uv run --locked python scripts/http_smoke.py
    ```
 
-   The script writes synthetic messages, verifies that recalled evidence traces back to the original messages, and removes the test space it created. On success, it prints `HTTP 闭环通过，验收空间已删除。` (HTTP smoke test passed and the test space was removed).
+   The script writes synthetic messages, verifies that recalled evidence traces back to the original messages, and removes the test space it created.
 
 Once the smoke test passes, call the service directly using the [HTTP API v1 guide (Chinese)](docs/reference/http-api.md) or use the [TypeScript SDK (Chinese)](clients/typescript/README.md) in Node.js. See the [self-hosting guide (Chinese)](deploy/README.md) for external PostgreSQL, key rotation, and troubleshooting.
 
