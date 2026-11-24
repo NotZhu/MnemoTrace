@@ -239,6 +239,7 @@ def test_resume_keeps_successes_and_exports_recomputable_report(
     api = _Api()
     reader = reader_for(config)
     cases = preflight(config, dataset, reader)
+    monkeypatch.setattr(runner, "source_commit", lambda _: None)
     manifest = make_manifest(config, dataset, cases)
     monkeypatch.setattr("eval.runner.load_dataset", lambda *_: dataset)
     with httpx.Client(transport=httpx.MockTransport(api.handle)) as client:
@@ -259,6 +260,7 @@ def test_resume_keeps_successes_and_exports_recomputable_report(
             execute(store, resume_dataset(store, config), reader, client)
             report = build_report(store)
             assert report["complete"] and not report["publishable"]
+            assert not report["source_verified"]
             assert len(api.reader_prompts) == 3
             assert len(api.remember_keys) == 3
             assert len(api.deleted) == 2 and api.scope is None
