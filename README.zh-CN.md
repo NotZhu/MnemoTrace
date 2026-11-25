@@ -10,7 +10,7 @@ MnemoTrace（忆痕）是面向 LLM 智能体的开源、自托管长期记忆�
 
 需要 Docker Compose 2.30.0 或更高版本，以及 `uv`。首次部署使用空数据库。以下命令从仓库根目录运行。
 
-1. 将[数据库模板](deploy/.env.example)复制为根目录的 `.env`，为四个数据库角色分别生成不同的十六进制密码。将[模型模板](deploy/.env.models.example)复制为 `deploy/.env.models`，填写补全和嵌入模型的配置。
+1. 将[数据库模板](deploy/.env.example)复制为根目录的 `.env`，为 `MNEMOTRACE_DB_PASSWORD` 填写随机十六进制密码。将[模型模板](deploy/.env.models.example)复制为 `deploy/.env.models`，填写补全和嵌入模型的配置。
 2. 启动服务并为本地示例账号签发 API 密钥。
 
    ```sh

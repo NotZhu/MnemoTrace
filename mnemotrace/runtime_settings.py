@@ -7,6 +7,26 @@ from typing import Self
 from psycopg import ProgrammingError
 from psycopg.conninfo import conninfo_to_dict
 
+_POSTGRES_DSN = "MNEMOTRACE_POSTGRES_DSN"
+
+
+def read_postgres_dsn(env: Mapping[str, str]) -> str:
+    """读取当前进程的 PostgreSQL 连接串并校验格式。"""
+    dsn = env.get(_POSTGRES_DSN, "").strip()
+    _validate_postgres_dsn(dsn)
+    return dsn
+
+
+def _validate_postgres_dsn(dsn: str) -> None:
+    if not dsn.strip():
+        raise ValueError(f"请设置 {_POSTGRES_DSN}")
+    try:
+        if "\x00" in dsn:
+            raise ValueError
+        conninfo_to_dict(dsn)
+    except (ProgrammingError, ValueError):
+        raise ValueError(f"{_POSTGRES_DSN} 格式无效") from None
+
 
 @dataclass(frozen=True)
 class DatabaseTimeouts:
@@ -56,14 +76,7 @@ class RuntimeSettings:
     database_timeouts: DatabaseTimeouts = field(default_factory=DatabaseTimeouts)
 
     def __post_init__(self) -> None:
-        if not self.postgres_dsn.strip():
-            raise ValueError("请设置 MNEMOTRACE_POSTGRES_DSN")
-        try:
-            if "\x00" in self.postgres_dsn:
-                raise ValueError
-            conninfo_to_dict(self.postgres_dsn)
-        except (ProgrammingError, ValueError):
-            raise ValueError("MNEMOTRACE_POSTGRES_DSN 格式无效") from None
+        _validate_postgres_dsn(self.postgres_dsn)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Self:
@@ -81,7 +94,7 @@ class RuntimeSettings:
             )
         }
         return cls(
-            env.get("MNEMOTRACE_POSTGRES_DSN", "").strip(),
+            env.get(_POSTGRES_DSN, "").strip(),
             inference_env,
             DatabaseTimeouts.from_env(env),
         )

@@ -10,6 +10,8 @@ from importlib.resources import files
 import psycopg
 from psycopg.rows import TupleRow
 
+from ...runtime_settings import read_postgres_dsn
+
 _LOCK_KEY = 698771117284033230  # 此数据库内为 MnemoTrace 迁移保留的锁键。
 _LEDGER = "mnemotrace.schema_migrations"
 
@@ -64,6 +66,23 @@ def _check_history(migrations: tuple[_Migration, ...], applied: dict[str, str]) 
         raise MigrationError("数据库的迁移记录缺少前序版本")
 
 
+def _check_prerequisites(conn: psycopg.Connection[TupleRow]) -> None:
+    row = conn.execute("""
+        SELECT to_regnamespace('mnemotrace') IS NOT NULL,
+               EXISTS (
+                   SELECT 1 FROM pg_extension AS extension
+                   JOIN pg_namespace AS namespace ON namespace.oid = extension.extnamespace
+                   WHERE extension.extname = 'vector' AND namespace.nspname = 'public'
+               )
+        """).fetchone()
+    assert row is not None
+    has_schema, has_vector = row
+    if not has_schema:
+        raise MigrationError("请先初始化 mnemotrace schema")
+    if not has_vector:
+        raise MigrationError("请先在 public schema 安装 vector 扩展")
+
+
 def apply_migrations(dsn: str) -> tuple[str, ...]:
     """在迁移锁保护下应用待执行的迁移并更新账本。
 
@@ -74,7 +93,7 @@ def apply_migrations(dsn: str) -> tuple[str, ...]:
         本次提交的迁移文件名，按应用顺序排列。
 
     Raises:
-        MigrationError: 现有账本与迁移历史不符，或执行迁移文件失败。
+        MigrationError: 缺少 schema 或扩展、迁移历史不符，或迁移执行失败。
         psycopg.Error: 无法连接数据库，或迁移事务初始化、提交或回滚失败。
     """
     migrations = _migrations()
@@ -82,7 +101,7 @@ def apply_migrations(dsn: str) -> tuple[str, ...]:
     with psycopg.connect(dsn) as conn:
         conn.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ WRITE")
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_KEY,))
-        conn.execute("CREATE SCHEMA IF NOT EXISTS mnemotrace")
+        _check_prerequisites(conn)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS mnemotrace.schema_migrations (
                 version text PRIMARY KEY,
@@ -142,9 +161,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("up", "status"))
     options = parser.parse_args()
-    dsn = os.environ.get("MNEMOTRACE_MIGRATION_DSN")
-    if not dsn:
-        parser.error("请设置 MNEMOTRACE_MIGRATION_DSN")
+    try:
+        dsn = read_postgres_dsn(os.environ)
+    except ValueError as exc:
+        parser.error(str(exc))
     try:
         if options.command == "up":
             for version in apply_migrations(dsn):

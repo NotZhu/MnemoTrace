@@ -1,5 +1,7 @@
 name: mnemotrace
 
+x-postgres-dsn: &postgres-dsn postgresql://mnemotrace_app:${MNEMOTRACE_DB_PASSWORD:?set the application database password}@db:5432/mnemotrace
+
 x-app: &app
   image: ${MNEMOTRACE_IMAGE:-mnemotrace:local}
   pull_policy: never
@@ -11,33 +13,36 @@ x-runtime: &runtime
   <<: *app
   restart: unless-stopped
   depends_on: &database_ready
-    grant:
+    migrate:
       condition: service_completed_successfully
   env_file:
     - path: .env.models
       required: false
       format: raw
   environment: &runtime-environment
-    MNEMOTRACE_POSTGRES_DSN: postgresql://mnemotrace_runtime:${MNEMOTRACE_RUNTIME_PASSWORD:?set the runtime password}@db:5432/mnemotrace
+    MNEMOTRACE_POSTGRES_DSN: *postgres-dsn
     MNEMOTRACE_DB_LOCK_TIMEOUT_SECONDS: ${MNEMOTRACE_DB_LOCK_TIMEOUT_SECONDS:-1}
     MNEMOTRACE_DB_STATEMENT_TIMEOUT_SECONDS: ${MNEMOTRACE_DB_STATEMENT_TIMEOUT_SECONDS:-15}
     MNEMOTRACE_DB_MAINTENANCE_TIMEOUT_SECONDS: ${MNEMOTRACE_DB_MAINTENANCE_TIMEOUT_SECONDS:-60}
 
 services:
   db:
-    image: &postgres pgvector/pgvector:0.8.7-pg18-trixie@sha256:5895949dfcdf308eb0cd31c950c93c14895c77f33fbedfecf1fa511ab1d4bcd2
+    image: pgvector/pgvector:0.8.7-pg18-trixie@sha256:5895949dfcdf308eb0cd31c950c93c14895c77f33fbedfecf1fa511ab1d4bcd2
     restart: unless-stopped
+    entrypoint: [bash, /usr/local/bin/mnemotrace-postgres-entrypoint.sh]
+    command: [postgres]
     environment:
+      POSTGRES_USER: postgres
       POSTGRES_DB: mnemotrace
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set the PostgreSQL bootstrap password}
-      MNEMOTRACE_MIGRATION_PASSWORD: ${MNEMOTRACE_MIGRATION_PASSWORD:?set the migration password}
-      MNEMOTRACE_RUNTIME_PASSWORD: ${MNEMOTRACE_RUNTIME_PASSWORD:?set the runtime password}
-      MNEMOTRACE_ADMIN_PASSWORD: ${MNEMOTRACE_ADMIN_PASSWORD:?set the admin password}
+      POSTGRES_INITDB_ARGS: --auth-local=peer --auth-host=scram-sha-256
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      MNEMOTRACE_DB_PASSWORD: ${MNEMOTRACE_DB_PASSWORD:?set the application database password}
     volumes:
       - postgres:/var/lib/postgresql
-      - ./init-postgres.sql:/docker-entrypoint-initdb.d/01-roles.sql:ro
+      - ./postgres-entrypoint.sh:/usr/local/bin/mnemotrace-postgres-entrypoint.sh:ro
+      - ./init-postgres.sql:/docker-entrypoint-initdb.d/01-mnemotrace.sql:ro
     healthcheck:
-      test: [CMD, pg_isready, -h, 127.0.0.1, -U, postgres, -d, mnemotrace]
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, mnemotrace_app, -d, mnemotrace]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -78,30 +83,16 @@ services:
       db:
         condition: service_healthy
     environment:
-      MNEMOTRACE_MIGRATION_DSN: postgresql://mnemotrace_migrate:${MNEMOTRACE_MIGRATION_PASSWORD:?set the migration password}@db:5432/mnemotrace
+      MNEMOTRACE_POSTGRES_DSN: *postgres-dsn
     entrypoint: [python, -m, mnemotrace.adapters.postgres.migrate]
     command: [up]
-
-  grant:
-    image: *postgres
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    environment:
-      PGHOST: db
-      PGDATABASE: mnemotrace
-      PGUSER: mnemotrace_migrate
-      PGPASSWORD: ${MNEMOTRACE_MIGRATION_PASSWORD:?set the migration password}
-    volumes:
-      - ./grant-roles.sql:/grant-roles.sql:ro
-    entrypoint: [psql, -X, -v, ON_ERROR_STOP=1, -v, runtime_role=mnemotrace_runtime, -v, admin_role=mnemotrace_admin, -f, /grant-roles.sql]
 
   admin:
     <<: *app
     profiles: [ops]
     depends_on: *database_ready
     environment:
-      MNEMOTRACE_ADMIN_DSN: postgresql://mnemotrace_admin:${MNEMOTRACE_ADMIN_PASSWORD:?set the admin password}@db:5432/mnemotrace
+      MNEMOTRACE_POSTGRES_DSN: *postgres-dsn
     entrypoint: [python, -m, mnemotrace.admin]
     command: [--help]
 

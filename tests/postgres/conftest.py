@@ -71,6 +71,7 @@ def database_factory(admin_dsn: str) -> DatabaseFactory:
                 dsn = make_conninfo(admin_dsn, dbname=database)
                 with psycopg.connect(dsn) as db:
                     db.execute("CREATE EXTENSION vector WITH SCHEMA public")
+                    db.execute("CREATE SCHEMA mnemotrace")
                 yield dsn
             finally:
                 conn.execute(

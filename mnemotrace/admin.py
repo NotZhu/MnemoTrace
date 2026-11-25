@@ -8,6 +8,7 @@ import sys
 import psycopg
 
 from .adapters.postgres.identity import ApiKeyInfo, issue_key, list_keys, revoke_key
+from .runtime_settings import read_postgres_dsn
 
 
 def _key_json(info: ApiKeyInfo) -> dict[str, str | None]:
@@ -31,9 +32,10 @@ def main(argv: list[str] | None = None) -> int:
     owner_id: str = args.owner_id
     if not owner_id.strip() or "\x00" in owner_id:
         parser.error("账号标识须非空且不能包含空字符")
-    dsn = os.environ.get("MNEMOTRACE_ADMIN_DSN")
-    if not dsn:
-        parser.error("请设置 MNEMOTRACE_ADMIN_DSN")
+    try:
+        dsn = read_postgres_dsn(os.environ)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     result: object
     try:

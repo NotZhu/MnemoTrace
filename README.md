@@ -10,7 +10,7 @@ Applications submit conversation messages with `remember`, and a background work
 
 Install Docker Compose 2.30.0 or later and `uv`. Use an empty database for the first deployment. Run these commands from the repository root.
 
-1. Copy the [database template](deploy/.env.example) to `.env` at the repository root and generate a distinct hexadecimal password for each of the four database roles. Copy the [model template](deploy/.env.models.example) to `deploy/.env.models` and configure the completion and embedding models.
+1. Copy the [database template](deploy/.env.example) to `.env` at the repository root and set `MNEMOTRACE_DB_PASSWORD` to a random hexadecimal password. Copy the [model template](deploy/.env.models.example) to `deploy/.env.models` and configure the completion and embedding models.
 2. Start the service and issue an API key for the local demo account.
 
    ```sh

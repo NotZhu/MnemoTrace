@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from types import TracebackType
+from typing import LiteralString
 from uuid import uuid4
 
 import psycopg
@@ -349,7 +350,7 @@ def test_admin_key_lifecycle(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """管理命令只在签发时输出明文，撤销按账号限定。"""
-    monkeypatch.setenv("MNEMOTRACE_ADMIN_DSN", database.key_admin)
+    monkeypatch.setenv("MNEMOTRACE_POSTGRES_DSN", database.key_admin)
     owner_id = f" {uuid4().hex * 4} "
     space_id = uuid4().hex
     with psycopg.connect(database.admin) as conn:
@@ -411,16 +412,48 @@ def test_admin_key_lifecycle(
     ):
         conn.execute("UPDATE mnemotrace.api_keys SET revoked_at = NULL")
     with (
+        psycopg.connect(database.runtime) as conn,
+        pytest.raises(psycopg.errors.InsufficientPrivilege),
+    ):
+        issue_key(conn, owner_id)
+    with (
         psycopg.connect(database.key_admin) as conn,
         pytest.raises(psycopg.errors.InsufficientPrivilege),
     ):
         conn.execute("SELECT secret_hash FROM mnemotrace.api_keys")
 
 
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "ALTER TABLE mnemotrace.spaces ADD COLUMN restricted text",
+        "UPDATE mnemotrace.schema_migrations SET checksum = 'changed'",
+    ],
+)
+def test_runtime_cannot_modify_schema_or_migration_ledger(
+    database: PgDatabase, statement: LiteralString
+) -> None:
+    """自管分权的运行角色不能执行迁移或改写迁移账本。"""
+    with (
+        psycopg.connect(database.runtime) as conn,
+        pytest.raises(psycopg.errors.InsufficientPrivilege),
+    ):
+        conn.execute(statement)
+
+
+@pytest.mark.parametrize(
+    ("remove_prerequisite", "prerequisite_error"),
+    [
+        ("DROP SCHEMA mnemotrace", "请先初始化 mnemotrace schema"),
+        ("DROP EXTENSION vector", "请先在 public schema 安装 vector 扩展"),
+    ],
+)
 def test_readiness_requires_explicit_migration(
     database_factory: DatabaseFactory,
+    remove_prerequisite: LiteralString,
+    prerequisite_error: str,
 ) -> None:
-    """空库保持未就绪，应用基线后才接收流量。"""
+    """缺少初始化或迁移时拒绝就绪，准备好数据库后才能迁移。"""
     pending = tuple(migrate.migration_checksums())
 
     async def exercise(dsn: str) -> None:
@@ -429,6 +462,14 @@ def test_readiness_requires_explicit_migration(
             response = await client.get("/readyz")
             assert response.status_code == 503
             assert response.json()["code"] == "database_not_ready"
+            with psycopg.connect(dsn) as conn:
+                conn.execute(remove_prerequisite)
+            with pytest.raises(migrate.MigrationError, match=prerequisite_error):
+                migrate.apply_migrations(dsn)
+            assert (await client.get("/readyz")).status_code == 503
+            with psycopg.connect(dsn) as conn:
+                conn.execute("CREATE SCHEMA IF NOT EXISTS mnemotrace")
+                conn.execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public")
             assert migrate.apply_migrations(dsn) == pending
             assert (await client.get("/readyz")).status_code == 200
 
