@@ -10,6 +10,7 @@ import type {
   OperationListQuery,
   OperationPage,
   OperationResponse,
+  OperationSummary,
   PageQuery,
   RecallRequest,
   RecallResponse,
@@ -123,9 +124,10 @@ function requestTimeout(): MnemoTraceError {
   return new MnemoTraceError('HTTP 请求超时', 'request_timeout')
 }
 
-function validateOperation(operation: OperationResponse, response: Response): void {
+function validateOperation(operation: OperationSummary, response: Response): void {
   if (!operation || !isResourceId(operation.operation_id)
-    || !['queued', 'running', 'succeeded', 'failed'].includes(operation.status)) {
+    || !['queued', 'running', 'succeeded', 'failed'].includes(operation.status)
+    || !Number.isInteger(operation.attempts) || operation.attempts < 0) {
     throw invalidResponse(response)
   }
 }
@@ -224,7 +226,9 @@ export class MnemoTraceClient {
       ...filters,
       session_id: session_id == null ? session_id : requireResourceId(session_id),
     })
-    const { data } = await this.#request<OperationPage>(path)
+    const { data, response } = await this.#request<OperationPage>(path)
+    if (!Array.isArray(data.items)) throw invalidResponse(response)
+    for (const item of data.items) validateOperation(item, response)
     return data
   }
 

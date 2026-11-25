@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from types import TracebackType
 from unittest.mock import AsyncMock, Mock
@@ -197,6 +197,7 @@ def test_http_admission_idempotency_capacity_and_publication(
             assert path == replay.headers["Location"]
             assert one.json() == replay.json()
             assert one.json()["status"] == "queued"
+            assert one.json()["attempts"] == 0
             assert "message_ids" not in one.json()
             two = await scope.submit(session, "second", "继续")
             assert two.status_code == 202, two.text
@@ -228,7 +229,13 @@ def test_http_admission_idempotency_capacity_and_publication(
             assert await runner.run_once()
             result = (await scope.status(path)).json()
             assert result["status"] == "succeeded"
+            assert result["attempts"] == 1
             assert result["fact_change_count"] == 1
+            items = (await scope.status(scope.path + "/operations")).json()["items"]
+            assert [(item["operation_id"], item["attempts"]) for item in items] == [
+                (two.json()["operation_id"], 0),
+                (result["operation_id"], 1),
+            ]
             audit_path = path + "/fact-changes"
             audit = (await scope.status(audit_path)).json()
             assert audit["status"] == "succeeded" and len(audit["items"]) == 1
@@ -667,6 +674,7 @@ def test_retry_holds_session_head_and_terminal_failure_releases_it(
             assert await runner.run_once()
             pending = (await scope.status(first_path)).json()
             assert pending["status"] == "queued"
+            assert pending["attempts"] == 1
             assert datetime.fromisoformat(
                 pending["next_retry_at"]
             ) > datetime.fromisoformat(pending["updated_at"])
@@ -679,14 +687,17 @@ def test_retry_holds_session_head_and_terminal_failure_releases_it(
                 assert await runner.run_once()
             failed = (await scope.status(first_path)).json()
             assert failed["status"] == "failed"
+            assert failed["attempts"] == MAX_ATTEMPTS
             assert failed["error"] == {
                 "code": code,
                 "stage": "extraction",
             }
             assert "message_ids" not in failed and "next_retry_at" not in failed
             assert (await scope.submit(session, "first", "失败的前批")).json() == failed
-            rerun = await scope.submit(session, "new-key", "新键重新提交")
+            rerun = await scope.submit(session, "new-key", "失败的前批")
+            assert rerun.status_code == 202, rerun.text
             assert rerun.headers["Location"] != first_path
+            assert rerun.json()["attempts"] == 0
             assert await runner.run_once()
             assert (await scope.status(tail_path)).json()["status"] == "succeeded"
             assert (await scope.status(rerun.headers["Location"])).json()[
@@ -722,6 +733,7 @@ def test_permanent_inference_failure_skips_retry(
             assert await scope.runner(model).run_once()
             failed = (await scope.status(first.headers["Location"])).json()
             assert failed["status"] == "failed"
+            assert failed["attempts"] == 1
             assert failed["error"] == {
                 "code": "inference_failed",
                 "stage": "extraction",
@@ -766,6 +778,80 @@ def test_expired_lease_cannot_mark_failure_or_discard_messages(
             read = await scope.status(f"{scope.path}/messages/{message_id}")
             assert read.status_code == 200
             assert read.json()["content"] == _FACT
+
+    run(exercise())
+
+
+def test_replacement_worker_publishes_once_after_lease_expires(
+    database: PgDatabase, caplog: pytest.LogCaptureFixture
+) -> None:
+    """独立 worker 接管同一任务后，原 worker 的迟到结果不会重复发布。"""
+    caplog.set_level("INFO", logger="mnemotrace.application.operations")
+
+    async def exercise() -> None:
+        async with _scope(database) as scope, pool(database.runtime) as other_pool:
+            session = await scope.new_session()
+            submitted = await scope.submit(session, "takeover", _FACT)
+            path = submitted.headers["Location"]
+            operation_id = submitted.json()["operation_id"]
+            messages_path = session + "/messages"
+            facts_path = scope.path + "/facts"
+
+            class Paused(_Model):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.started = asyncio.Event()
+                    self.release = asyncio.Event()
+
+                async def _structured_response(
+                    self, *, system: str, prompt: str, schema: Mapping[str, object]
+                ) -> Mapping[str, object]:
+                    self.started.set()
+                    await self.release.wait()
+                    return await super()._structured_response(
+                        system=system, prompt=prompt, schema=schema
+                    )
+
+            original_model, replacement_model = Paused(), Paused()
+            replacement = replace(scope, connections=other_pool).runner(
+                replacement_model
+            )
+            async with asyncio.timeout(10), asyncio.TaskGroup() as tasks:
+                original = tasks.create_task(scope.runner(original_model).run_once())
+                await original_model.started.wait()
+                running = (await scope.status(path)).json()
+                assert (running["status"], running["attempts"]) == ("running", 1)
+                assert not await replacement.run_once()
+                _set_due(database, operation_id)
+
+                takeover = tasks.create_task(replacement.run_once())
+                await replacement_model.started.wait()
+                active = (await scope.status(path)).json()
+                assert (active["status"], active["attempts"]) == ("running", 2)
+
+                original_model.release.set()
+                assert await original
+                assert (await scope.status(path)).json() == active
+                assert (await scope.status(messages_path)).json()["items"] == []
+                assert (await scope.status(facts_path)).json()["items"] == []
+                assert f"任务租约失效 operation_id={operation_id}" in caplog.messages
+
+                replacement_model.release.set()
+            assert takeover.result()
+            recovered = (await scope.status(path)).json()
+            assert recovered["operation_id"] == operation_id
+            assert (recovered["status"], recovered["attempts"]) == ("succeeded", 2)
+            assert recovered["fact_change_count"] == 1
+            (message_id,) = recovered["message_ids"]
+            messages = (await scope.status(messages_path)).json()["items"]
+            assert [(item["message_id"], item["content"]) for item in messages] == [
+                (message_id, _FACT)
+            ]
+            facts = (await scope.status(facts_path)).json()["items"]
+            (fact,) = facts
+            assert fact["text"] == _FACT
+            changes = (await scope.status(path + "/fact-changes")).json()["items"]
+            assert len(changes) == 1
 
     run(exercise())
 
@@ -824,6 +910,7 @@ def test_expired_lease_rolls_back_then_recovers_and_has_a_crash_budget(
             assert await queue.claim() is None
             state = (await scope.status(crashed.headers["Location"])).json()
             assert state["status"] == "failed"
+            assert state["attempts"] == MAX_ATTEMPTS
             assert state["error"] == {"code": "worker_lease_expired"}
             assert (
                 await scope.status(crashed.headers["Location"] + "/fact-changes")

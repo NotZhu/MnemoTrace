@@ -24,6 +24,7 @@ function operation(status, fields = {}) {
     created_at: TIME,
     updated_at: TIME,
     status,
+    attempts: status === 'queued' ? 0 : 1,
     ...fields,
   }
 }
@@ -188,6 +189,28 @@ test('invalid Location fails the submission without starting a poll', async () =
   assert.equal(calls, 1)
 })
 
+test('rejects invalid attempt counts in operation responses', async t => {
+  for (const [name, request] of [
+    ['submission', sdk => sdk.remember(SPACE_ID, SESSION_ID, '合成原文', KEY)],
+    ['detail', sdk => sdk.getOperation(HANDLE)],
+    ['list', sdk => sdk.listOperations(SPACE_ID)],
+  ]) {
+    await t.test(name, async () => {
+      for (const attempts of [undefined, null, '2', 1.5, -1]) {
+        const invalid = operation('queued', { attempts })
+        const sdk = client(async (url, init) => {
+          if (init.method === 'POST') return accepted(invalid)
+          if (url === BASE + SPACE + '/operations') {
+            return json({ items: [operation('queued'), invalid], next_cursor: null })
+          }
+          return json(invalid)
+        })
+        await assert.rejects(request(sdk), { code: 'invalid_response' })
+      }
+    })
+  }
+})
+
 test('returns a terminal replay without polling', async () => {
   const failure = operation('failed', { error: { code: 'inference_failed', stage: 'embedding' } })
   const sdk = client(async (url, init) => {
@@ -216,11 +239,11 @@ test('rejects an invalid wait budget before submitting', async () => {
 test('waits for next_retry_at and returns a failed terminal operation', async () => {
   let calls = 0
   let retryAt
-  const failure = operation('failed', { error: { code: 'operation_timeout', stage: 'publish' } })
+  const failure = operation('failed', { attempts: 2, error: { code: 'operation_timeout', stage: 'publish' } })
   const sdk = client(async () => {
     if (++calls === 1) {
       retryAt = Date.now() + 40
-      return json(operation('queued', { next_retry_at: new Date(retryAt).toISOString() }))
+      return json(operation('queued', { attempts: 1, next_retry_at: new Date(retryAt).toISOString() }))
     }
     assert.ok(Date.now() >= retryAt)
     return json(failure)

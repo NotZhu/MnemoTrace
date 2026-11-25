@@ -157,9 +157,14 @@ restore_compose build api &&
 
 ## 常见故障
 
+从目标实例对应版本的代码目录执行以下命令。将 `project` 和 `env_file` 设为该实例启动时使用的 Compose 项目名和环境文件。默认部署使用 `mnemotrace` 和 `.env`，上文的恢复示例使用 `mnemotrace-restore` 和 `.env.restore`。
+
 ```sh
-docker compose --env-file .env -f deploy/compose.yaml logs --tail=100 db migrate api worker
-docker compose --env-file .env -f deploy/compose.yaml run --rm migrate status
+project=mnemotrace
+env_file=.env
+instance_compose() { docker compose --env-file "$env_file" -f deploy/compose.yaml -p "$project" "$@"; }
+instance_compose logs --tail=100 db migrate api worker
+instance_compose run --rm migrate status
 ```
 
 | 现象 | 优先检查 |
@@ -168,3 +173,13 @@ docker compose --env-file .env -f deploy/compose.yaml run --rm migrate status
 | 迁移任务失败，或 `/readyz` 返回 `database_not_ready` | 查看 `migrate` 日志，核对 schema、`public` 中的 `vector` 扩展及账本是否匹配当前运行版本。 |
 | 写入返回 `write_models_unavailable`，或 `worker` 一直未就绪 | 结合 `api` 和 `worker` 日志，核对补全与嵌入配置。 [模型排查](../docs/reference/model-configuration.md#应用配置并验收) |
 | API 就绪但 HTTP 验收失败 | 核对端口、验收账号密钥和模型服务调用结果，再按脚本报错的阶段查看对应日志。 |
+
+### 恢复后台写入
+
+任务在 PostgreSQL 中排队。发现任务长时间停在 `queued` 或 `running` 时，先查看上面的 `worker` 日志，确认它能访问数据库和模型服务。若 worker 已停止，在定义了 `instance_compose` 的同一终端运行以下命令恢复目标实例的处理。
+
+```sh
+instance_compose up -d worker
+```
+
+每次领取后，单次执行限时 180 秒，租约有效期为 210 秒。worker 突然退出时，`running` 可持续到当前租约到期。可用的 worker 随后会领取仍有尝试次数的任务并继续处理同一 `operation_id`。旧 worker 恢复后，其过期租约无法提交结果。用原任务 ID 检查 `status` 和 `attempts`。 [客户端幂等重试与恢复](../docs/reference/http-api.md#幂等重试与恢复)

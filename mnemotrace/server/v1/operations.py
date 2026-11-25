@@ -88,6 +88,7 @@ class OperationSummary(BaseModel):
     operation_id: str
     session_id: str
     status: OperationStatus
+    attempts: Annotated[int, Field(ge=0)]
     created_at: datetime
     updated_at: datetime
     next_retry_at: datetime | None = None
@@ -100,6 +101,7 @@ class OperationSummary(BaseModel):
             operation_id=item.operation_id,
             session_id=item.session_id.value,
             status=item.status,
+            attempts=item.attempts,
             created_at=item.created_at.astimezone(UTC),
             updated_at=item.updated_at.astimezone(UTC),
             next_retry_at=item.next_retry_at.astimezone(UTC)

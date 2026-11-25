@@ -33,7 +33,7 @@ from .storage import PostgresStorage
 
 _TABLE = "mnemotrace.remember_operations"
 _FIELDS = (
-    "operation_id, session_id, status, created_at, updated_at, next_retry_at, "
+    "operation_id, session_id, status, attempts, created_at, updated_at, next_retry_at, "
     "message_ids, fact_change_count, error_code, error_stage"
 )
 _ACTIVE_LEASE = """
@@ -47,6 +47,7 @@ def _operation(row: TupleRow) -> Operation:
         operation_id,
         session_id,
         status,
+        attempts,
         created_at,
         updated_at,
         next_retry_at,
@@ -59,6 +60,7 @@ def _operation(row: TupleRow) -> Operation:
         operation_id,
         SessionId(session_id),
         status,
+        attempts,
         created_at,
         updated_at,
         next_retry_at,

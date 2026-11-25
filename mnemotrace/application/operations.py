@@ -94,6 +94,7 @@ class Operation:
     operation_id: str
     session_id: SessionId
     status: OperationStatus
+    attempts: int
     created_at: datetime
     updated_at: datetime
     next_retry_at: datetime | None

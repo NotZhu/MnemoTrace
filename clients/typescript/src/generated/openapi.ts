@@ -602,6 +602,8 @@ export interface components {
             /** Session Id */
             session_id: string;
             status: components["schemas"]["OperationStatus"];
+            /** Attempts */
+            attempts: number;
             /**
              * Created At
              * Format: date-time
@@ -632,6 +634,8 @@ export interface components {
             /** Session Id */
             session_id: string;
             status: components["schemas"]["OperationStatus"];
+            /** Attempts */
+            attempts: number;
             /**
              * Created At
              * Format: date-time

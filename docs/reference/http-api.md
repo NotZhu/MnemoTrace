@@ -70,7 +70,7 @@ OPERATION_ID=$(api_field operation_id -X POST "$BASE_URL/v1/spaces/$SPACE_ID/ses
   -d "$WRITE_BODY")
 ```
 
-`202 Accepted` 表示服务已持久接收任务。响应正文包含 `operation_id` 和当前 `status`，`Location` 指向任务详情。原文和事实变更在后台任务成功时一并提交。
+`202 Accepted` 表示服务已持久接收任务。响应正文包含 `operation_id`、当前 `status` 和 `attempts`，`Location` 指向任务详情。原文、事实变更和任务成功状态在同一事务中提交。
 
 ### 等待任务完成
 
@@ -78,14 +78,16 @@ OPERATION_ID=$(api_field operation_id -X POST "$BASE_URL/v1/spaces/$SPACE_ID/ses
 api "$BASE_URL/v1/spaces/$SPACE_ID/operations/$OPERATION_ID"
 ```
 
-收到 `queued` 或 `running` 时，在客户端的等待预算内再次查询同一任务。响应包含 `next_retry_at` 时，可等到该时刻再查。收到 `succeeded` 后继续召回。收到 `failed` 时，根据公开错误排查，再决定是否重新提交。
+收到 `queued` 或 `running` 时，在客户端的等待预算内继续查询同一任务。收到 `succeeded` 后继续召回。遇到超时或失败时，按下文处理。 [幂等重试与恢复](#幂等重试与恢复)
 
 | `status` | 含义 |
 | --- | --- |
 | `queued` | 等待处理或后台重试。 |
-| `running` | 后台正在处理。 |
+| `running` | 本次尝试已被 worker 领取。worker 中断时，任务可能保持此状态直到租约到期。 |
 | `succeeded` | 原文已提交，响应包含 `message_ids` 和 `fact_change_count`。事实变更数可以为 `0`。 |
 | `failed` | 任务已结束。从 `error.code` 和可用的 `error.stage` 定位失败。 |
+
+`attempts` 是 worker 已成功领取任务的次数。新任务从 `0` 开始，首次领取、后台重试和租约到期后的接管均计入，最多为 `3`。提交回执、任务详情和任务列表都返回此字段。
 
 `error.code` 为 `extraction_input_too_large` 时，本批原文未提交。请把消息拆成更小且语义完整的批次，为每个新批次使用新的幂等键。 [模型上下文配置](model-configuration.md#选择补全的-json-输出模式)
 
@@ -115,11 +117,12 @@ print(next((item["source_message_ids"][0] for item in evidence if item["source_m
 
 ## 幂等重试与恢复
 
-`remember` 的 `Idempotency-Key` 使用 1 到 128 个可见 ASCII 字符，按空间生效。客户端应为每批逻辑写入保留原键、空间 ID、会话 ID 和消息。同一空间用相同键重放原会话与原消息，会返回原任务及其当前状态。用同一键换会话或消息，则返回 `409 idempotency_conflict`。
+`remember` 的 `Idempotency-Key` 使用 1 到 128 个可见 ASCII 字符，按空间生效。客户端应为每批逻辑写入保留原键、空间 ID、会话 ID 和消息。同一空间用相同键重放原会话与原消息，会返回原任务及其当前状态和领取次数。用同一键换会话或消息，则返回 `409 idempotency_conflict`。
 
 - **提交结果不明**。连接中断、提交超时或收到 `503 commit_outcome_unknown` 时，用原请求和原幂等键重试。
-- **已经取得任务 ID**。客户端等待超时后，继续查询同一任务。客户端停止轮询后，任务仍可由后台处理。
-- **任务最终失败**。先处理失败原因。只有决定发起新的写入时才用新键提交，请求重放会返回原失败任务。
+- **已经取得任务 ID**。连接恢复或客户端等待超时后，继续查询同一任务。有 `next_retry_at` 时等到该时刻再查。停止轮询后，后台仍可处理任务。
+- **worker 中断**。保持轮询同一任务。租约到期后，有剩余尝试次数的任务由可用的 worker 自动接管，任务 ID 保持不变。 [worker 恢复](../../deploy/README.md#恢复后台写入)
+- **任务最终失败**。先处理失败原因。如果仍需写入且原空间和会话可用，使用客户端保留的输入和新幂等键提交。新任务进入该会话的队尾，旧键仍返回原失败任务。失败任务结束时，服务清除其待处理消息。
 
 ## 召回选项
 

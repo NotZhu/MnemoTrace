@@ -241,6 +241,11 @@ async def test_openapi_request_and_response_schemas(openapi_response: Response) 
         "items",
         "next_cursor",
     }
+    for schema in ("OperationSummary", "OperationResponse"):
+        attempts = schemas[schema]["properties"]["attempts"]
+        assert attempts["type"] == "integer"
+        assert attempts["minimum"] == 0
+        assert "attempts" in schemas[schema]["required"]
     for path in (
         "/v1/spaces",
         "/v1/spaces/{space_id}/sessions",
