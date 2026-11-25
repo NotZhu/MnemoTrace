@@ -21,7 +21,7 @@ from ...ports.storage import (
 )
 from .profile_schedule import cancel_auto_refresh
 from .reader import PostgresReader
-from .rows import space_from_row
+from .rows import INSERT_SPACE, space_from_row, space_insert_values
 from .session import PostgresSession
 from .session_summary_schedule import cancel_summaries
 
@@ -109,23 +109,7 @@ class PostgresStorage:
             async with AsyncExitStack() as connection:
                 conn = await connection.enter_async_context(self._pool.connection())
                 async with _session_transaction(conn, write=True):
-                    await conn.execute(
-                        """
-                        INSERT INTO mnemotrace.spaces
-                            (space_id, owner_id, name, created_at, memory_decay, profile_auto_refresh,
-                             session_summary_enabled)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            space.id.value,
-                            self._owner_id,
-                            space.name,
-                            space.created_at,
-                            space.memory_decay,
-                            space.profile_auto_refresh,
-                            space.session_summary_enabled,
-                        ),
-                    )
+                    await conn.execute(INSERT_SPACE, space_insert_values(space))
                 await _return_committed_connection(connection.pop_all())
         except errors.UniqueViolation:
             raise ValueError("空间标识已存在") from None

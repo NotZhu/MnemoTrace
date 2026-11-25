@@ -13,6 +13,28 @@ from ...domain.space import Space
 from ...domain.values import EntityRef, Label, LiteralValue, Predicate
 from ...ports.storage import CutoffTrigger, FactChange, GraphEdge
 
+INSERT_SPACE = """
+    INSERT INTO mnemotrace.spaces
+        (space_id, owner_id, name, created_at, memory_decay, profile_auto_refresh,
+         session_summary_enabled)
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """
+
+
+def space_insert_values(
+    space: Space,
+) -> tuple[str, str, str, float, bool, bool, bool]:
+    """按空间写入语句的列顺序取出领域值。"""
+    return (
+        space.id.value,
+        space.owner_id,
+        space.name,
+        space.created_at,
+        space.memory_decay,
+        space.profile_auto_refresh,
+        space.session_summary_enabled,
+    )
+
 
 def space_from_row(
     space_id: str,

@@ -2,8 +2,10 @@
 
 import json
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime
+from time import monotonic, sleep
 from types import TracebackType
 from typing import LiteralString
 from uuid import uuid4
@@ -14,14 +16,20 @@ from httpx import ASGITransport, AsyncClient
 from psycopg import AsyncTransaction
 
 from mnemotrace.adapters.postgres import migrate
-from mnemotrace.adapters.postgres.identity import issue_key, revoke_key
+from mnemotrace.adapters.postgres.identity import (
+    DEFAULT_OWNER_ID,
+    DefaultOwnerAlreadyConfigured,
+    bootstrap_default_owner,
+    issue_key,
+    revoke_key,
+)
 from mnemotrace.admin import main as admin_main
 from mnemotrace.runtime_settings import RuntimeSettings
 from mnemotrace.server.app import create_app
 from mnemotrace.server.settings import Settings
 
 from .conftest import DatabaseFactory, PgDatabase
-from .sample import run
+from .sample import run, space
 
 pytestmark = pytest.mark.postgres
 
@@ -421,6 +429,206 @@ def test_admin_key_lifecycle(
         pytest.raises(psycopg.errors.InsufficientPrivilege),
     ):
         conn.execute("SELECT secret_hash FROM mnemotrace.api_keys")
+
+
+def test_bootstrap_space_and_key_rotation(
+    database_factory: DatabaseFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """首次配置创建普通空间，同账号换 key 后仍可访问。"""
+    with database_factory() as dsn:
+        migrate.apply_migrations(dsn)
+        monkeypatch.setenv("MNEMOTRACE_POSTGRES_DSN", dsn)
+        assert admin_main(["bootstrap"]) == 0
+        first = json.loads(capsys.readouterr().out)
+        assert set(first) == {"key_id", "created_at", "revoked_at", "token", "space_id"}
+        assert first["revoked_at"] is None
+
+        assert admin_main(["bootstrap"]) == 1
+        repeated = capsys.readouterr()
+        assert repeated.out == "" and "默认账号已配置" in repeated.err
+        assert admin_main(["list"]) == 0
+        assert json.loads(capsys.readouterr().out) == [
+            {field: first[field] for field in ("key_id", "created_at", "revoked_at")}
+        ]
+
+        assert admin_main(["issue"]) == 0
+        rotated = json.loads(capsys.readouterr().out)
+        assert admin_main(["issue", "--owner-id", "other"]) == 0
+        foreign = json.loads(capsys.readouterr().out)
+        assert admin_main(["revoke", first["key_id"]]) == 0
+        assert json.loads(capsys.readouterr().out)["revoked"]
+
+        async def verify() -> None:
+            async with _http(dsn) as client:
+                path = "/v1/spaces/" + first["space_id"]
+                headers = {"Authorization": f"Bearer {rotated['token']}"}
+                response = await client.get(path, headers=headers)
+                assert response.status_code == 200
+                assert response.json()["name"] == "default"
+                listing = await client.get("/v1/spaces", headers=headers)
+                assert listing.json()["items"] == [response.json()]
+                assert (
+                    await client.get(
+                        path, headers={"Authorization": f"Bearer {first['token']}"}
+                    )
+                ).status_code == 401
+                assert (
+                    await client.get(
+                        path, headers={"Authorization": f"Bearer {foreign['token']}"}
+                    )
+                ).status_code == 404
+
+        run(verify())
+
+
+@pytest.mark.parametrize("existing", ["revoked_key", "space"])
+def test_bootstrap_refuses_existing_default_owner(
+    database_factory: DatabaseFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    existing: str,
+) -> None:
+    """空间或已撤销的旧密钥都代表默认账号用过。"""
+    with database_factory() as dsn:
+        migrate.apply_migrations(dsn)
+        monkeypatch.setenv("MNEMOTRACE_POSTGRES_DSN", dsn)
+        with psycopg.connect(dsn) as conn:
+            if existing == "revoked_key":
+                issued = issue_key(conn, "local-demo")
+                assert revoke_key(conn, "local-demo", issued.info.key_id)
+            else:
+                conn.execute("""
+                    INSERT INTO mnemotrace.spaces (space_id, owner_id, name, created_at)
+                    VALUES ('existing-space', 'local-demo', 'existing space', 1)
+                    """)
+        assert admin_main(["bootstrap"]) == 1
+        rejected = capsys.readouterr()
+        assert rejected.out == "" and "默认账号已配置" in rejected.err
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT count(*) FROM mnemotrace.api_keys"
+            ).fetchone() == (int(existing == "revoked_key"),)
+            assert conn.execute(
+                "SELECT count(*) FROM mnemotrace.spaces"
+            ).fetchone() == (int(existing == "space"),)
+
+
+def test_bootstrap_rolls_back_key_when_space_creation_fails(
+    database_factory: DatabaseFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """空间插入失败时，数据库回滚同事务内已签发的 key。"""
+    with database_factory() as dsn:
+        migrate.apply_migrations(dsn)
+        monkeypatch.setenv("MNEMOTRACE_POSTGRES_DSN", dsn)
+        with psycopg.connect(dsn) as conn:
+            conn.execute("""
+                ALTER TABLE mnemotrace.spaces
+                ADD CONSTRAINT reject_bootstrap_space CHECK (name <> 'default')
+                """)
+        assert admin_main(["bootstrap"]) == 1
+        failed = capsys.readouterr()
+        assert failed.out == "" and "23514" in failed.err
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT count(*) FROM mnemotrace.api_keys"
+            ).fetchone() == (0,)
+            assert conn.execute(
+                "SELECT count(*) FROM mnemotrace.spaces"
+            ).fetchone() == (0,)
+            conn.execute(
+                "ALTER TABLE mnemotrace.spaces DROP CONSTRAINT reject_bootstrap_space"
+            )
+        assert admin_main(["bootstrap"]) == 0
+
+
+@pytest.mark.parametrize("first_command", ["bootstrap", "issue"])
+def test_bootstrap_waits_for_default_owner_transaction(
+    database_factory: DatabaseFactory, first_command: str
+) -> None:
+    """确认首次配置等待同账号事务提交，再重新检查账号状态。"""
+    with database_factory() as dsn:
+        migrate.apply_migrations(dsn)
+        first_space = space(DEFAULT_OWNER_ID)
+        waiter_name = "mnemo-bootstrap-waiter"
+
+        def bootstrap() -> None:
+            with psycopg.connect(dsn, application_name=waiter_name) as waiter:
+                bootstrap_default_owner(waiter, space(DEFAULT_OWNER_ID))
+
+        with (
+            ThreadPoolExecutor(max_workers=1) as executor,
+            psycopg.connect(dsn, autocommit=True) as observer,
+        ):
+            with psycopg.connect(dsn) as holder:
+                if first_command == "bootstrap":
+                    issued = bootstrap_default_owner(holder, first_space)
+                else:
+                    issued = issue_key(holder, DEFAULT_OWNER_ID)
+                pending = executor.submit(bootstrap)
+                deadline = monotonic() + 10
+                while monotonic() < deadline:
+                    waiting = observer.execute(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1 FROM pg_stat_activity
+                            WHERE datname = current_database()
+                              AND application_name = %s
+                              AND wait_event_type = 'Lock' AND wait_event = 'advisory'
+                              AND %s = ANY(pg_blocking_pids(pid))
+                        )
+                        """,
+                        (waiter_name, holder.info.backend_pid),
+                    ).fetchone()
+                    if waiting == (True,):
+                        break
+                    assert not pending.done(), "首次配置未等待默认账号的事务锁"
+                    sleep(0.01)
+                else:
+                    pytest.fail("未观察到首次配置等待默认账号的事务锁")
+            with pytest.raises(DefaultOwnerAlreadyConfigured):
+                pending.result(timeout=10)
+
+        expected_spaces = (
+            [(first_space.id.value,)] if first_command == "bootstrap" else []
+        )
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT key_id FROM mnemotrace.api_keys"
+            ).fetchall() == [(issued.info.key_id,)]
+            assert (
+                conn.execute("SELECT space_id FROM mnemotrace.spaces").fetchall()
+                == expected_spaces
+            )
+
+
+def test_key_admin_can_issue_default_key_for_http_space(
+    database: PgDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """自管密钥角色可签发默认凭据，空间通过运行角色的 HTTP 路径创建。"""
+    monkeypatch.setenv("MNEMOTRACE_POSTGRES_DSN", database.key_admin)
+    assert admin_main(["bootstrap"]) == 1
+    denied = capsys.readouterr()
+    assert denied.out == "" and "42501" in denied.err
+    assert admin_main(["list"]) == 0
+    assert json.loads(capsys.readouterr().out) == []
+    assert admin_main(["issue"]) == 0
+    issued = json.loads(capsys.readouterr().out)
+
+    async def verify() -> None:
+        async with _http(database.runtime) as client:
+            headers = {"Authorization": f"Bearer {issued['token']}"}
+            response = await client.post(
+                "/v1/spaces", headers=headers, json={"name": "自管空间"}
+            )
+            assert response.status_code == 201
+
+    run(verify())
 
 
 @pytest.mark.parametrize(

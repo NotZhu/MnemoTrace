@@ -10,9 +10,9 @@ MnemoTrace 以空间组织跨会话记忆。应用把消息写入某个会话，
 
 ## 写入并召回一条记忆
 
-准备 Bash、`curl` 和 Python 3（命令为 `python3`），把已签发的 `token` 设为环境变量 `MNEMOTRACE_API_KEY`。如果服务地址不同，设置 `MNEMOTRACE_BASE_URL`。以下步骤在同一个 Bash 会话中运行，使用专用空间和合成消息。请求失败时，处理 `curl` 报出的错误后再继续。
+准备 Bash、`curl` 和 Python 3（命令为 `python3`），把已签发的 `token` 设为环境变量 `MNEMOTRACE_API_KEY`。如果服务地址不同，设置 `MNEMOTRACE_BASE_URL`。以下步骤在同一个 Bash 会话中运行。请求失败时，处理 `curl` 报出的错误后再继续。
 
-### 创建空间
+### 配置请求
 
 ```bash
 : "${MNEMOTRACE_API_KEY:?请先设置 MNEMOTRACE_API_KEY}"
@@ -29,13 +29,24 @@ api_field() {
   response=$(api "$@") || return
   python3 -X utf8 -c 'import json, sys; print(json.load(sys.stdin)[sys.argv[1]])' "$field" <<< "$response"
 }
+```
 
+### 选择空间
+
+**接入已有空间。** 将 `SPACE_ID` 设为 `admin bootstrap` 返回的 `space_id`，或可访问的已有空间 ID。确认下方请求成功后，继续创建会话。
+
+```bash
+SPACE_ID='替换为已有空间 ID'
+api "$BASE_URL/v1/spaces/$SPACE_ID"
+```
+
+**运行独立演示。** 创建一个空间来写入本篇的合成消息。创建成功后返回 `201 Created`，`Location` 指向新空间。
+
+```bash
 SPACE_ID=$(api_field space_id -X POST "$BASE_URL/v1/spaces" \
   -H 'Content-Type: application/json' \
   -d '{"name":"http-v1-demo"}')
 ```
-
-空间创建成功后返回 `201 Created`，`Location` 指向该空间。
 
 ### 创建会话
 
@@ -43,14 +54,14 @@ SPACE_ID=$(api_field space_id -X POST "$BASE_URL/v1/spaces" \
 SESSION_ID=$(api_field session_id -X POST "$BASE_URL/v1/spaces/$SPACE_ID/sessions")
 ```
 
-创建会话时发送空正文，成功返回 `201 Created`，`Location` 指向该会话。接入已有空间时，可以先将 `SPACE_ID` 设为已有的空间 ID。
+创建会话时发送空正文，成功返回 `201 Created`，`Location` 指向该会话。
 
 ### 提交写入
 
-每次提交一个按原始发言顺序排列的消息批次。`messages` 包含 1 到 64 条消息，`role` 可为 `user` 或 `assistant`。已知发言时刻时，可传入带时区的 RFC 3339 `event_time`。
+每次提交一个按原始发言顺序排列的消息批次。`messages` 包含 1 到 64 条消息，`role` 可为 `user` 或 `assistant`。已知发言时刻时，可传入带时区的 RFC 3339 `event_time`。在已有空间接入时，把示例消息换成实际消息。
 
 ```bash
-WRITE_KEY='demo-remember-1'
+WRITE_KEY=$(python3 -c 'from uuid import uuid4; print(uuid4().hex)')
 WRITE_BODY='{"messages":[{"role":"user","content":"我工作日坐地铁上班。"}]}'
 
 OPERATION_ID=$(api_field operation_id -X POST "$BASE_URL/v1/spaces/$SPACE_ID/sessions/$SESSION_ID/remember" \
@@ -80,7 +91,7 @@ api "$BASE_URL/v1/spaces/$SPACE_ID/operations/$OPERATION_ID"
 
 ### 召回并查看原文
 
-在同一空间发起召回。证据正文在 `evidence[].text`，原文 ID 在 `evidence[].source_message_ids`。以下命令打印召回结果，并读取第一条带来源的证据所引用的首条原文。
+在同一空间发起召回。接入已有空间时，将示例问题换成与实际消息相关的问题。证据正文在 `evidence[].text`，原文 ID 在 `evidence[].source_message_ids`。以下命令打印召回结果，并读取第一条带来源的证据所引用的首条原文。
 
 ```bash
 RECALL_RESPONSE=$(api -X POST "$BASE_URL/v1/spaces/$SPACE_ID/recall" \

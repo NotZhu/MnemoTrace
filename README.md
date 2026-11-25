@@ -11,11 +11,11 @@ Applications submit conversation messages with `remember`, and a background work
 Install Docker Compose 2.30.0 or later and `uv`. Use an empty database for the first deployment. Run these commands from the repository root.
 
 1. Copy the [database template](deploy/.env.example) to `.env` at the repository root and set `MNEMOTRACE_DB_PASSWORD` to a random hexadecimal password. Copy the [model template](deploy/.env.models.example) to `deploy/.env.models` and configure the completion and embedding models.
-2. Start the service and issue an API key for the local demo account.
+2. Start the service and initialize the local account. The command creates a space named `default` and issues the first API key.
 
    ```sh
    docker compose --env-file .env -f deploy/compose.yaml up --build --wait
-   docker compose --env-file .env -f deploy/compose.yaml run --rm admin issue --owner-id local-demo
+   docker compose --env-file .env -f deploy/compose.yaml run --rm admin bootstrap
    ```
 
 3. Set the `MNEMOTRACE_SMOKE_TOKEN` environment variable to the returned `token` and run the smoke test.
@@ -24,9 +24,9 @@ Install Docker Compose 2.30.0 or later and `uv`. Use an empty database for the f
    uv run --locked python scripts/http_smoke.py
    ```
 
-   The script writes synthetic messages, verifies that recalled evidence traces back to the original messages, and removes the test space it created.
+   The script writes synthetic messages, verifies that recalled evidence traces back to the original messages, and removes its test space. If you changed the API port, pass the actual address with `--base-url`.
 
-Once the smoke test passes, call the service directly using the [HTTP API v1 guide (Chinese)](docs/reference/http-api.md) or use the [TypeScript SDK (Chinese)](clients/typescript/README.md) in Node.js. See the [self-hosting guide (Chinese)](deploy/README.md) for external PostgreSQL, key rotation, and troubleshooting.
+Configure your agent with the service address (default `http://127.0.0.1:8100`) and the `token` and `space_id` returned by `bootstrap`. Store the token as a credential. [Use an existing space over HTTP (Chinese)](docs/reference/http-api.md#选择空间) · [TypeScript SDK (Chinese)](clients/typescript/README.md) · [Self-hosting guide (Chinese)](deploy/README.md)
 
 ## How it works
 

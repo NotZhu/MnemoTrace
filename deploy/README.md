@@ -31,7 +31,7 @@ API 和 worker 等待池连接的时限为 3 秒。`MNEMOTRACE_DB_LOCK_TIMEOUT_S
      -v admin_role=mnemotrace_admin -f deploy/grant-roles.sql
    ```
 
-3. 将 API 和 worker 的连接串设为运行账号，将凭据管理 CLI 的连接串设为密钥管理账号。每次应用新迁移后按同一顺序核对授权并验收。 [授权脚本](grant-roles.sql)
+3. 将 API 和 worker 的连接串设为运行账号，将凭据管理 CLI 的连接串设为密钥管理账号。用 `python -m mnemotrace.admin issue` 为默认账号签发密钥，再用该密钥调用 `POST /v1/spaces` 创建空间。每次应用新迁移后按同一顺序核对授权并验收。 [授权脚本](grant-roles.sql) · [HTTP 接入指南](../docs/reference/http-api.md)
 
 ## 部署验收
 
@@ -49,11 +49,14 @@ curl -fsS http://127.0.0.1:8100/readyz
 
 ## API 密钥管理
 
-将签发返回的 `token` 保存到凭据存储，客户端用它构造 Bearer 请求头。查找和撤销密钥时使用 `key_id`。下面以 `local-demo` 为示例账号，撤销前将 `KEY_ID` 换成 `list` 返回的目标 ID。
+内置 Compose 的 `admin bootstrap` 为 `local-demo` 签发首把密钥并创建空间，命令成功后返回 `token` 和 `space_id`。若该账号已有空间或密钥记录，命令会提示已配置。使用现有密钥调用 `GET /v1/spaces` 找到所需的空间。若首次运行时丢失了输出，先用 `admin issue` 签发新密钥，再查找空间并撤销遗失的密钥。 [HTTP 接入指南](../docs/reference/http-api.md)
+
+将签发返回的 `token` 保存到凭据存储，客户端用它构造 Bearer 请求头。`issue`、`list` 和 `revoke` 默认操作 `local-demo`，也可用 `--owner-id` 选择其他账号。撤销前将 `KEY_ID` 换成 `list` 返回的目标 ID。
 
 ```sh
-docker compose --env-file .env -f deploy/compose.yaml run --rm admin list --owner-id local-demo
-docker compose --env-file .env -f deploy/compose.yaml run --rm admin revoke --owner-id local-demo KEY_ID
+docker compose --env-file .env -f deploy/compose.yaml run --rm admin issue
+docker compose --env-file .env -f deploy/compose.yaml run --rm admin list
+docker compose --env-file .env -f deploy/compose.yaml run --rm admin revoke KEY_ID
 ```
 
 轮换时先为同一账号签发新密钥，更新客户端配置并验证请求通过，再撤销旧密钥。
@@ -73,9 +76,84 @@ docker compose --env-file .env -f deploy/compose.yaml exec --user postgres db ps
 
 使用 `stop` 或普通 `down` 停机时，Compose 保留 `postgres` 命名卷。`down --volumes` 会删除该卷及其中的数据库。 [Compose down 文档](https://docs.docker.com/reference/cli/docker/compose/down/)
 
-需要备份时，从数据库容器内以 `postgres` 系统用户使用 PostgreSQL 备份工具，并记录对应的部署版本、数据库版本和模型配置。恢复先在独立实例验证数据库角色、pgvector、迁移账本和 HTTP 闭环。 [PostgreSQL 备份与恢复](https://www.postgresql.org/docs/18/backup-dump.html)
+### 判断旧卷能否复用
 
-当前开发基线从空数据库卷初始化。已有四凭据部署时，为新版使用新的 Compose 项目名（例如在启动和验收命令中统一加 `-p mnemotrace-single`）和空卷。若两套服务同时运行，为新版设置独立的 API 端口。继续保留旧项目和数据卷。 [变更日志](../CHANGELOG.md)
+复用旧卷前，先用 `SHOW server_version` 确认旧库运行的 PostgreSQL 大版本与目标 `db` 镜像一致。然后保持旧数据库运行，从目标版本的代码目录用原项目名和数据库配置检查应用迁移账本。将 `SOURCE_PROJECT` 换成原项目名，默认是 `mnemotrace`，将 `REVISION` 换成此次构建的标识。选择一个未被现有部署使用的镜像标签。 [PostgreSQL 大版本升级](https://www.postgresql.org/docs/18/upgrading.html)
+
+```sh
+candidate_compose() {
+  MNEMOTRACE_IMAGE=mnemotrace:candidate-REVISION docker compose --env-file .env -f deploy/compose.yaml -p SOURCE_PROJECT "$@"
+}
+candidate_compose build api &&
+  candidate_compose run --rm --no-deps migrate status
+```
+
+**复用原卷。** 迁移全部显示「已应用」时，按下一节备份源项目，备份完成后保持源 API 和 worker 停止。回到定义 `candidate_compose` 的终端和目标代码目录，在目标 `.env` 中将 `MNEMOTRACE_IMAGE` 设为刚才检查过的镜像标签，供后续启动和维护使用。用同一个 `candidate_compose` 命令切换原项目，并将下例地址替换为实际服务地址。
+
+```sh
+candidate_compose up --wait &&
+  curl -fsS http://127.0.0.1:8100/readyz
+```
+
+就绪检查通过后，用已有密钥读取原空间并召回一条已知记忆，再恢复 Agent 流量。 [部署验收](#部署验收)
+
+**启用新卷。** 遇到校验和不匹配、目标基线尚未应用或 PostgreSQL 大版本不同时，用新的项目名和空卷启动目标版本，保留旧项目和卷。四凭据部署继续用原版本和原数据库配置维护。两套服务同时运行时使用不同的 API 端口。 [变更日志](../CHANGELOG.md)
+
+### 备份单账号 Compose
+
+从备份对应版本的代码目录执行以下命令。示例使用默认项目名，指定过项目名的部署须在命令中继续使用同一个 `-p`。记录应用版本、PostgreSQL 版本、pgvector 版本和模型配置标识，另行保管所需凭据。备份包含记忆数据和 API 密钥校验值，应保存在访问受限的位置。
+
+```sh
+source_compose() { docker compose --env-file .env -f deploy/compose.yaml "$@"; }
+(
+  set -e
+  source_compose stop api worker
+  backup_dir=$(mktemp -d "$HOME/mnemotrace-backup.XXXXXXXX")
+  backup_file="$backup_dir/mnemotrace.dump"
+  container_dump=$(source_compose exec -T --user postgres db mktemp /tmp/mnemotrace-backup.XXXXXXXX)
+  source_compose exec -T --user postgres db pg_dump -Fc --schema=mnemotrace -d mnemotrace -f "$container_dump"
+  source_compose exec -T --user postgres db pg_restore --list "$container_dump"
+  source_compose cp "db:$container_dump" "$backup_file"
+  source_compose exec -T --user postgres db rm -- "$container_dump"
+  printf '%s\n' "$backup_file"
+)
+```
+
+命令在任一步失败时停止，成功后打印备份文件路径。单独备份后，可在源项目执行 `source_compose up --wait` 恢复服务。 [pg_dump](https://www.postgresql.org/docs/18/app-pgdump.html) · [Compose cp](https://docs.docker.com/reference/cli/docker/compose/cp/)
+
+### 恢复到独立实例
+
+使用与备份相同的代码、数据库镜像及模型配置。复制配置到 `.env.restore`，设置目标项目的数据库密码、独立 API 端口及专用镜像标签（如 `MNEMOTRACE_IMAGE=mnemotrace:restore`）。首次恢复时选择未使用过的项目名。示例使用 `mnemotrace-restore`。将下方 `backup_file` 设为实际归档的绝对路径。目标项目先只启动数据库，由初始化脚本准备角色和 pgvector。
+
+```sh
+backup_file=/absolute/path/to/mnemotrace.dump
+restore_compose() (
+  unset MNEMOTRACE_IMAGE MNEMOTRACE_DB_PASSWORD MNEMOTRACE_HTTP_PORT
+  docker compose --env-file .env.restore -f deploy/compose.yaml -p mnemotrace-restore "$@"
+)
+(
+  set -e
+  restore_compose up -d --wait db
+  restore_compose cp "$backup_file" db:/tmp/mnemotrace-restore.dump
+  restore_compose exec -T --user root db chown postgres:postgres /tmp/mnemotrace-restore.dump
+  restore_compose exec -T --user postgres db chmod 600 /tmp/mnemotrace-restore.dump
+  restore_compose exec -T --user postgres db pg_restore --list /tmp/mnemotrace-restore.dump
+  restore_compose exec -T --user postgres db psql -X -v ON_ERROR_STOP=1 -d mnemotrace -c 'DROP SCHEMA IF EXISTS mnemotrace RESTRICT'
+  restore_compose exec -T --user postgres db pg_restore --single-transaction --exit-on-error -d mnemotrace /tmp/mnemotrace-restore.dump
+  restore_compose exec -T --user postgres db rm -- /tmp/mnemotrace-restore.dump
+)
+```
+
+`RESTRICT` 要求已存在的目标 schema 为空。若删除失败，先核对项目名和卷。若 `pg_restore` 失败并回滚，可以修正原因后在同一目标项目重跑恢复命令。
+
+归档恢复成功后，构建目标镜像并查看账本。如果换了终端，先重新定义上面的 `restore_compose` 函数。
+
+```sh
+restore_compose build api &&
+  restore_compose run --rm --no-deps migrate status
+```
+
+账本全部显示「已应用」后执行 `restore_compose up --wait`。确认 `/readyz` 返回成功，使用备份前的 API Key 读取原空间和原文，并召回该空间里的已知记忆，再切换到恢复实例。 [pg_restore](https://www.postgresql.org/docs/18/app-pgrestore.html)
 
 ## 常见故障
 

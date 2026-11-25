@@ -6,6 +6,7 @@
 
 ### Added
 
+- 内置 Compose 可用 `admin bootstrap` 一次签发首把 API 密钥并创建默认空间。 [快速开始](README.zh-CN.md#快速开始)
 - 新增长期记忆评测套件，覆盖 LongMemEval-S、LoCoMo 和 PersonaMem v2，支持同次运行的全文输入和 BM25 基线、逐题记录、断点续跑与发布校验。 [评测指南](eval/README.md)
 
 ### Changed

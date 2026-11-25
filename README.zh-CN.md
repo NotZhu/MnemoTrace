@@ -11,11 +11,11 @@ MnemoTrace（忆痕）是面向 LLM 智能体的开源、自托管长期记忆�
 需要 Docker Compose 2.30.0 或更高版本，以及 `uv`。首次部署使用空数据库。以下命令从仓库根目录运行。
 
 1. 将[数据库模板](deploy/.env.example)复制为根目录的 `.env`，为 `MNEMOTRACE_DB_PASSWORD` 填写随机十六进制密码。将[模型模板](deploy/.env.models.example)复制为 `deploy/.env.models`，填写补全和嵌入模型的配置。
-2. 启动服务并为本地示例账号签发 API 密钥。
+2. 启动服务并初始化本地账号。命令创建名为 `default` 的空间并签发第一把 API 密钥。
 
    ```sh
    docker compose --env-file .env -f deploy/compose.yaml up --build --wait
-   docker compose --env-file .env -f deploy/compose.yaml run --rm admin issue --owner-id local-demo
+   docker compose --env-file .env -f deploy/compose.yaml run --rm admin bootstrap
    ```
 
 3. 将返回的 `token` 设为环境变量 `MNEMOTRACE_SMOKE_TOKEN`，运行验收脚本。
@@ -24,9 +24,9 @@ MnemoTrace（忆痕）是面向 LLM 智能体的开源、自托管长期记忆�
    uv run --locked python scripts/http_smoke.py
    ```
 
-   脚本写入合成消息、验证召回证据可以追溯到原文，并清理本次创建的验收空间。成功时输出「HTTP 闭环通过，验收空间已删除。」
+   脚本写入合成消息，验证召回证据可以追溯到原文，并清理本次创建的验收空间。如果修改了 API 端口，用 `--base-url` 指定实际地址。
 
-验收通过后，可以按 [HTTP API v1 接入指南](docs/reference/http-api.md)直接调用服务，或在 Node.js 中使用 [TypeScript SDK](clients/typescript/README.md)。自管 PostgreSQL、密钥轮换和故障排查见[自托管部署与运维](deploy/README.md)。
+将服务地址（默认 `http://127.0.0.1:8100`）、`bootstrap` 返回的 `token` 和 `space_id` 填入 Agent 配置，并使用凭据存储保存 `token`。 [通过 HTTP 接入已有空间](docs/reference/http-api.md#选择空间) · [TypeScript SDK](clients/typescript/README.md) · [自托管部署与运维](deploy/README.md)
 
 ## 工作原理
 
