@@ -252,10 +252,10 @@ translations are welcome.
 | Integrate over HTTP | [HTTP API v1](docs/reference/http-api.md) |
 | Use the TypeScript SDK | [TypeScript SDK](clients/typescript/README.md) |
 | Self-host, back up, rotate keys | [Self-hosting](deploy/README.md) |
-| Configure completion, embedding, and reranking | [Model configuration](docs/reference/model-configuration.md) |
-| Delete facts, erase sessions, purge or delete spaces | [Data lifecycle](docs/guides/data-lifecycle.md) |
 | Understand the data model and consistency boundaries | [Memory engine architecture](docs/architecture/memory.md) |
 | Browse all documentation | [Documentation index](docs/README.md) |
+
+The full index also covers model configuration, data lifecycle, and evaluation.
 
 ## Development checks
 

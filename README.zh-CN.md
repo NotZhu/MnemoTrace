@@ -176,15 +176,15 @@ curl -fsS -X POST "$BASE_URL/v1/spaces/$SPACE_ID/recall" \
 
 详细指南目前以简体中文撰写；欢迎贡献英文翻译。
 
-| 任务                               | 文档                                                  |
-| ------------------------------------ | ------------------------------------------------------- |
-| 通过 HTTP 接入                     | [HTTP API v1 接入指南](docs/reference/http-api.md)    |
-| 使用 TypeScript SDK                | [TypeScript SDK](clients/typescript/README.md)        |
-| 自托管、备份、轮换密钥             | [自托管部署与运维](deploy/README.md)                  |
-| 配置补全、嵌入和重排               | [模型配置参考](docs/reference/model-configuration.md) |
-| 删除事实、擦除会话、清空或删除空间 | [数据生命周期指南](docs/guides/data-lifecycle.md)     |
-| 理解数据模型和一致性边界           | [记忆引擎架构](docs/architecture/memory.md)           |
-| 浏览全部文档                       | [文档索引](docs/README.md)                            |
+| 任务 | 文档 |
+| --- | --- |
+| 通过 HTTP 接入 | [HTTP API v1 接入指南](docs/reference/http-api.md) |
+| 使用 TypeScript SDK | [TypeScript SDK](clients/typescript/README.md) |
+| 自托管、备份、轮换密钥 | [自托管部署与运维](deploy/README.md) |
+| 理解数据模型和一致性边界 | [记忆引擎架构](docs/architecture/memory.md) |
+| 浏览全部文档 | [文档索引](docs/README.md) |
+
+完整索引还包括模型配置、数据生命周期和评测。
 
 ## 开发验证
 
