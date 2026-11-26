@@ -208,6 +208,7 @@ def main() -> int:
                     failed = True
     if failed:
         return 1
+    print("HTTP smoke test passed; test space removed.")
     print("HTTP 闭环通过，验收空间已删除。")
     return 0
 
