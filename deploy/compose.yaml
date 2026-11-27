@@ -24,6 +24,7 @@ x-runtime: &runtime
     MNEMOTRACE_DB_LOCK_TIMEOUT_SECONDS: ${MNEMOTRACE_DB_LOCK_TIMEOUT_SECONDS:-1}
     MNEMOTRACE_DB_STATEMENT_TIMEOUT_SECONDS: ${MNEMOTRACE_DB_STATEMENT_TIMEOUT_SECONDS:-15}
     MNEMOTRACE_DB_MAINTENANCE_TIMEOUT_SECONDS: ${MNEMOTRACE_DB_MAINTENANCE_TIMEOUT_SECONDS:-60}
+    MNEMOTRACE_EXTRACTION_TIMEZONE: ${MNEMOTRACE_EXTRACTION_TIMEZONE-UTC}
 
 services:
   db:
@@ -67,9 +68,6 @@ services:
 
   worker:
     <<: *runtime
-    environment:
-      <<: *runtime-environment
-      MNEMOTRACE_EXTRACTION_TIMEZONE:
     command: [python, -m, mnemotrace.worker, --concurrency, "${MNEMOTRACE_WORKER_CONCURRENCY:-2}", --readiness-port, "8101"]
     healthcheck:
       test: [CMD, python, -c, "from socket import create_connection; create_connection(('127.0.0.1', 8101), timeout=2).close()"]

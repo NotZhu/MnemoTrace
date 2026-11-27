@@ -92,7 +92,7 @@ SESSION_ID=$(api_field session_id -X POST "$BASE_URL/v1/spaces/$SPACE_ID/session
 
 ### 提交写入
 
-每次提交一个按原始发言顺序排列的消息批次。`messages` 包含 1 到 64 条消息，`role` 可为 `user` 或 `assistant`。已知发言时刻时，可传入带时区的 RFC 3339 `event_time`。在已有空间接入时，把示例消息换成实际消息。
+每次提交一个按原始发言顺序排列的消息批次。`messages` 包含 1 到 64 条消息，`role` 可为 `user` 或 `assistant`。已知发言时刻时，可传入带时区的 RFC 3339 `event_time`。对新任务，发言时刻须能转换到部署配置的抽取时区，否则返回 `422 invalid_request` 并指向对应的 `event_time` 字段。省略时使用任务接收时刻。在已有空间接入时，把示例消息换成实际消息。 [抽取时区配置](../../deploy/README.md#配置)
 
 ```bash
 WRITE_KEY=$(python3 -c 'from uuid import uuid4; print(uuid4().hex)')

@@ -64,6 +64,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.recall_usage = None
     app.state.write_configured = False
     app.state.queue_limit = settings.queue_limit
+    app.state.extraction_timezone = settings.runtime.extraction_timezone
     app.state.migration_checksums = migration_checksums()
     install_error_handlers(app)
     app.add_middleware(RequestBoundary, max_body_bytes=settings.max_body_bytes)

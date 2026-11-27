@@ -7,10 +7,8 @@ import os
 import signal
 import sys
 from contextlib import nullcontext
-from datetime import tzinfo
 from types import FrameType
 from typing import Protocol
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import psycopg
 
@@ -60,8 +58,6 @@ async def _serve(
     concurrency: int,
     stopping: asyncio.Event,
     readiness_port: int | None,
-    *,
-    extraction_timezone: tzinfo,
 ) -> None:
     pool = runtime_pool(settings, max_size=concurrency + 2)
     async with (
@@ -88,7 +84,7 @@ async def _serve(
                 embedder=embedder,
                 clock=SystemClock(),
                 ids=UuidGenerator(),
-                timezone=extraction_timezone,
+                timezone=settings.extraction_timezone,
             )
 
         runner = OperationRunner(PostgresOperations(pool), remember_for, _is_transient)
@@ -120,8 +116,6 @@ async def _run(
     settings: RuntimeSettings,
     concurrency: int,
     readiness_port: int | None = None,
-    *,
-    extraction_timezone: tzinfo,
 ) -> None:
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -142,13 +136,7 @@ async def _run(
     try:
         for signum in signals:
             signal.signal(signum, on_signal)
-        await _serve(
-            settings,
-            concurrency,
-            stopping,
-            readiness_port,
-            extraction_timezone=extraction_timezone,
-        )
+        await _serve(settings, concurrency, stopping, readiness_port)
     except asyncio.CancelledError:
         if not stopping.is_set():
             raise
@@ -167,24 +155,13 @@ def main() -> int:
         parser.error("--concurrency 须为 1 至 16")
     if args.readiness_port is not None and not 1 <= args.readiness_port <= 65535:
         parser.error("--readiness-port 须为 1 至 65535")
-    try:
-        extraction_timezone = ZoneInfo(
-            os.environ.get("MNEMOTRACE_EXTRACTION_TIMEZONE", "UTC")
-        )
-    except (ZoneInfoNotFoundError, ValueError):
-        parser.error("MNEMOTRACE_EXTRACTION_TIMEZONE 须为有效的 IANA 时区名称")
     logging.basicConfig(level=logging.WARNING)
     _LOG.setLevel(logging.INFO)
     try:
         settings = RuntimeSettings.from_env(os.environ)
         loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
         asyncio.run(
-            _run(
-                settings,
-                args.concurrency,
-                args.readiness_port,
-                extraction_timezone=extraction_timezone,
-            ),
+            _run(settings, args.concurrency, args.readiness_port),
             loop_factory=loop_factory,
         )
     except ValueError as exc:

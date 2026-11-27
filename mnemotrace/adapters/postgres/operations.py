@@ -1,7 +1,7 @@
 """在 PostgreSQL 中接收、领取和原子完成记忆写入任务。"""
 
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import timedelta, tzinfo
 from hashlib import sha256
 from json import dumps
 from typing import cast
@@ -13,8 +13,6 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from ...application.operations import (
-    LEASE_SECONDS,
-    MAX_ATTEMPTS,
     ClaimedOperation,
     IdempotencyConflict,
     LeaseLost,
@@ -24,7 +22,13 @@ from ...application.operations import (
     QueueFull,
     WriteModelsUnavailable,
 )
-from ...application.remember import MessageInput, RememberResult, RememberStage
+from ...application.remember import (
+    MessageInput,
+    RememberResult,
+    RememberStage,
+    validate_message_event_times,
+)
+from ...application.task_policy import LEASE_DURATION, MAX_ATTEMPTS
 from ...domain.ids import SessionId, SpaceId
 from ...ports.storage import FactChange, SessionUnavailable, SpaceSession
 from .reader import PostgresReader
@@ -93,6 +97,7 @@ class PostgresOperations:
         session_id: SessionId,
         key: str,
         messages: tuple[MessageInput, ...],
+        extraction_timezone: tzinfo,
         queue_limit: int,
         configured: bool,
     ) -> Operation:
@@ -117,6 +122,9 @@ class PostgresOperations:
                 return _operation(existing[1:])
             if not await writer.has_session(session_id):
                 raise SessionUnavailable
+            validate_message_event_times(
+                (item.event_time for item in messages), timezone=extraction_timezone
+            )
             if not configured:
                 raise WriteModelsUnavailable
             cursor = await conn.execute(
@@ -268,7 +276,7 @@ class PostgresOperations:
                 {
                     "max": MAX_ATTEMPTS,
                     "token": token,
-                    "lease": timedelta(seconds=LEASE_SECONDS),
+                    "lease": LEASE_DURATION,
                 },
             )
             row = await cursor.fetchone()

@@ -8,8 +8,9 @@ from psycopg import AsyncConnection
 from psycopg.rows import TupleRow
 from psycopg_pool import AsyncConnectionPool
 
-from ...application.operations import LEASE_SECONDS, MAX_ATTEMPTS, LeaseLost
+from ...application.operations import LeaseLost
 from ...application.session_summary_refresh import ClaimedSessionSummary
+from ...application.task_policy import LEASE_DURATION, MAX_ATTEMPTS
 from ...domain.ids import SessionId, SpaceId
 from ...ports.storage import SpaceReader, SpaceSession
 from .reader import PostgresReader
@@ -77,7 +78,7 @@ class PostgresSessionSummaryRefresh:
                     attempts = attempts + 1, lease_token = %s, lease_until = clock_timestamp() + %s
                 WHERE space_id = %s AND session_id = %s
                 """,
-                (target, token, timedelta(seconds=LEASE_SECONDS), space, session),
+                (target, token, LEASE_DURATION, space, session),
             )
         return ClaimedSessionSummary(
             SpaceId(space),

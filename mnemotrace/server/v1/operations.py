@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal, Self
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field
 
 from ...adapters.postgres.operations import PostgresOperations
@@ -15,7 +16,11 @@ from ...application.operations import (
     QueueFull,
     WriteModelsUnavailable,
 )
-from ...application.remember import MessageInput, RememberStage
+from ...application.remember import (
+    MessageInput,
+    RememberStage,
+    UnrepresentableMessageTime,
+)
 from ...domain.enums import Role
 from ...domain.ids import SessionId, SpaceId
 from ...ports.storage import SessionUnavailable
@@ -184,11 +189,22 @@ async def remember(
             session_id=SessionId(session_id),
             key=key,
             messages=tuple(message.to_input() for message in body.messages),
+            extraction_timezone=request.app.state.extraction_timezone,
             queue_limit=request.app.state.queue_limit,
             configured=request.app.state.write_configured,
         )
     except SessionUnavailable as exc:
         raise HTTPException(404, detail="session_not_found") from exc
+    except UnrepresentableMessageTime as exc:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("body", "messages", exc.message_index, "event_time"),
+                    "msg": str(exc),
+                }
+            ]
+        ) from exc
     except IdempotencyConflict as exc:
         raise HTTPException(409, detail="idempotency_conflict") from exc
     except QueueFull as exc:

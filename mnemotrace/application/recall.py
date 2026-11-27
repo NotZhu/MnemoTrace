@@ -1,7 +1,6 @@
 """从已授权空间的同一快照召回事实证据。"""
 
-from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from math import exp2
 from typing import Literal
@@ -18,6 +17,7 @@ from ..ports.reranker import Reranker
 from ..ports.runtime import Clock
 from ..ports.storage import Storage
 from .graph_recall import GraphRecallOptions, graph_ranking
+from .ranking import rrf_scores
 
 DEFAULT_TOP_K = 10
 MAX_TOP_K = 100
@@ -288,7 +288,9 @@ class Recall:
                 if graph is not None
                 else ()
             )
-            ranking = _rrf_scores(lexical_ids, semantic_ids, graph_ids)
+            ranking = rrf_scores(
+                lexical_ids, semantic_ids, graph_ids, rank_constant=_RRF_K
+            )
             candidates = (
                 _candidates_within_boost(ranking, fact_load_limit)
                 if reranker is None and (use_recency or use_salience)
@@ -383,18 +385,6 @@ def _validate_query(query: str) -> str:
 
 def _candidate_limit(top_k: int) -> int:
     return min(200, max(32, 4 * top_k))
-
-
-def _fuse_rankings(*rankings: Iterable[FactId]) -> list[FactId]:
-    return [fact_id for fact_id, _ in _rrf_scores(*rankings)]
-
-
-def _rrf_scores(*rankings: Iterable[FactId]) -> list[tuple[FactId, float]]:
-    scores: dict[FactId, float] = defaultdict(float)
-    for ranking in rankings:
-        for rank, fact_id in enumerate(ranking, start=1):
-            scores[fact_id] += 1 / (_RRF_K + rank)
-    return sorted(scores.items(), key=lambda hit: (-hit[1], hit[0].value))
 
 
 def _candidates_within_boost(

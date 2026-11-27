@@ -5,7 +5,7 @@ import json
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime, tzinfo
 from types import TracebackType
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -25,13 +25,10 @@ from mnemotrace.adapters.postgres.operations import PostgresOperations
 from mnemotrace.adapters.postgres.storage import PostgresStorage
 from mnemotrace.adapters.runtime import SystemClock, UuidGenerator
 from mnemotrace.application import remember as remember_app
-from mnemotrace.application.operations import (
-    MAX_ATTEMPTS,
-    ClaimedOperation,
-    OperationRunner,
-)
+from mnemotrace.application.operations import ClaimedOperation, OperationRunner
 from mnemotrace.application.profile_refresh import ProfileRefreshRunner
-from mnemotrace.application.remember import Remember, RememberResult
+from mnemotrace.application.remember import MessageInput, Remember, RememberResult
+from mnemotrace.application.task_policy import MAX_ATTEMPTS
 from mnemotrace.domain.ids import SessionId, SpaceId
 from mnemotrace.ports.inference import LLM, InvalidStructuredOutput
 from mnemotrace.ports.storage import SpaceSession, SpaceUnavailable
@@ -114,7 +111,7 @@ class _Scope:
     async def status(self, path: str) -> Response:
         return await self.client.get(path, headers=self.headers)
 
-    def runner(self, model: LLM) -> OperationRunner:
+    def runner(self, model: LLM, *, timezone: tzinfo = UTC) -> OperationRunner:
         return OperationRunner(
             PostgresOperations(self.connections),
             lambda job: Remember(
@@ -124,6 +121,7 @@ class _Scope:
                 embedder=FakeEmbedder(),
                 clock=SystemClock(),
                 ids=UuidGenerator(),
+                timezone=timezone,
             ),
             worker._is_transient,
         )
@@ -131,7 +129,11 @@ class _Scope:
 
 @asynccontextmanager
 async def _scope(
-    database: PgDatabase, *, limit: int = 10, configured: bool = True
+    database: PgDatabase,
+    *,
+    limit: int = 10,
+    configured: bool = True,
+    extraction_timezone: str = "UTC",
 ) -> AsyncIterator[_Scope]:
     owner = uuid4().hex
     with psycopg.connect(database.key_admin) as connection:
@@ -150,6 +152,7 @@ async def _scope(
     env = {
         "MNEMOTRACE_POSTGRES_DSN": database.runtime,
         "MNEMOTRACE_QUEUE_LIMIT": str(limit),
+        "MNEMOTRACE_EXTRACTION_TIMEZONE": extraction_timezone,
         **(config if configured else {}),
     }
     app = create_app(Settings.from_env(env))
@@ -179,6 +182,110 @@ async def _scope(
             with suppress(SpaceUnavailable):
                 async with storage.session(scope.space_id, write=True) as writer:
                     await writer.purge_space()
+
+
+def test_http_rejects_unrepresentable_event_time_before_enqueue(
+    database: PgDatabase,
+) -> None:
+    """新批次的发言时刻须能转换到配置的抽取时区。"""
+
+    async def exercise() -> None:
+        async with _scope(database, extraction_timezone="Asia/Shanghai") as scope:
+            session = await scope.new_session()
+            headers = {**scope.headers, "Idempotency-Key": "boundary"}
+            messages = [
+                {"role": "assistant", "content": "较早的消息"},
+                {
+                    "role": "user",
+                    "content": "日期边界",
+                    "event_time": "9999-12-31T23:30:00Z",
+                },
+            ]
+            rejected = await scope.client.post(
+                session + "/remember", headers=headers, json={"messages": messages}
+            )
+            assert rejected.status_code == 422, rejected.text
+            assert rejected.json()["code"] == "invalid_request"
+            assert rejected.json()["errors"] == [
+                {
+                    "location": "body",
+                    "path": "/messages/1/event_time",
+                    "code": "invalid_value",
+                }
+            ]
+            assert (await scope.status(scope.path + "/operations")).json()[
+                "items"
+            ] == []
+
+            messages[1]["event_time"] = "2026-11-27T12:00:00Z"
+            accepted = await scope.client.post(
+                session + "/remember", headers=headers, json={"messages": messages}
+            )
+            assert accepted.status_code == 202, accepted.text
+
+    run(exercise())
+
+
+def test_timezone_validation_preserves_admitted_replays(
+    database: PgDatabase,
+) -> None:
+    """受理时可表示的任务仍可重放，执行时复核当前抽取时区。"""
+
+    async def exercise() -> None:
+        zone = ZoneInfo("Asia/Shanghai")
+        async with _scope(database, extraction_timezone=zone.key) as scope:
+            session = await scope.new_session()
+            event_time = "9999-12-31T23:30:00Z"
+            text = "切换时区前受理的消息"
+            key = "admitted-before-switch"
+            existing = await PostgresOperations(scope.connections).submit(
+                owner_id=scope.owner,
+                space_id=scope.space_id,
+                session_id=SessionId(session.rsplit("/", 1)[-1]),
+                key=key,
+                messages=(
+                    MessageInput(
+                        "user", text, datetime.fromisoformat(event_time).timestamp()
+                    ),
+                ),
+                extraction_timezone=UTC,
+                queue_limit=10,
+                configured=True,
+            )
+            headers = {**scope.headers, "Idempotency-Key": key}
+            message = {"role": "user", "content": text, "event_time": event_time}
+            replay = await scope.client.post(
+                session + "/remember", headers=headers, json={"messages": [message]}
+            )
+            assert replay.status_code == 202, replay.text
+            assert replay.json()["operation_id"] == existing.operation_id
+
+            conflict = await scope.client.post(
+                session + "/remember",
+                headers=headers,
+                json={"messages": [{**message, "content": "不同的消息"}]},
+            )
+            assert conflict.status_code == 409, conflict.text
+            assert conflict.json()["code"] == "idempotency_conflict"
+
+            model = _Model()
+            assert await scope.runner(model, timezone=zone).run_once()
+            failed = (await scope.status(replay.headers["Location"])).json()
+            assert failed["status"] == "failed"
+            assert failed["error"] == {"code": "invalid_message"}
+            assert model.prompts == []
+
+            accepted = await scope.submit(session, "without-event-time", text)
+            assert accepted.status_code == 202, accepted.text
+            assert await scope.runner(model, timezone=zone).run_once()
+            published = (await scope.status(accepted.headers["Location"])).json()
+            assert published["status"] == "succeeded"
+            (message_id,) = published["message_ids"]
+            raw = await scope.status(f"{scope.path}/messages/{message_id}")
+            assert raw.status_code == 200, raw.text
+            assert raw.json()["event_time"] == published["created_at"]
+
+    run(exercise())
 
 
 def test_http_admission_idempotency_capacity_and_publication(
@@ -315,7 +422,7 @@ def test_http_write_worker_uses_extraction_timezone(
     monkeypatch.setattr(worker, "_consume", consume_one)
 
     async def exercise() -> None:
-        async with _scope(database) as scope:
+        async with _scope(database, extraction_timezone=zone) as scope:
             session = await scope.new_session()
             admitted = await scope.client.post(
                 session + "/remember",
@@ -333,9 +440,10 @@ def test_http_write_worker_uses_extraction_timezone(
             assert admitted.status_code == 202
             await asyncio.wait_for(
                 worker._run(
-                    RuntimeSettings(database.runtime),
+                    RuntimeSettings(
+                        database.runtime, extraction_timezone=ZoneInfo(zone)
+                    ),
                     1,
-                    extraction_timezone=ZoneInfo(zone),
                 ),
                 timeout=5,
             )

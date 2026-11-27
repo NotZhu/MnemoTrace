@@ -8,7 +8,6 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
 import psycopg
 import pytest
@@ -988,7 +987,6 @@ def test_worker_resumes_refresh_and_publishes_the_http_profile(
                         1,
                         stopping,
                         None,
-                        extraction_timezone=ZoneInfo("UTC"),
                     )
                 )
                 try:
@@ -1015,7 +1013,6 @@ def test_worker_resumes_refresh_and_publishes_the_http_profile(
                         1,
                         stopping,
                         None,
-                        extraction_timezone=ZoneInfo("UTC"),
                     )
                 )
                 try:

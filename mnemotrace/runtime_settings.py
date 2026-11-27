@@ -2,7 +2,9 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, tzinfo
 from typing import Self
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from psycopg import ProgrammingError
 from psycopg.conninfo import conninfo_to_dict
@@ -69,18 +71,26 @@ def _seconds(env: Mapping[str, str], name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class RuntimeSettings:
-    """提供数据库连接串与推理配置。"""
+    """提供数据库连接串、推理环境和抽取时区。"""
 
     postgres_dsn: str = field(repr=False)
     inference_env: Mapping[str, str] = field(default_factory=dict, repr=False)
     database_timeouts: DatabaseTimeouts = field(default_factory=DatabaseTimeouts)
+    extraction_timezone: tzinfo = UTC
 
     def __post_init__(self) -> None:
         _validate_postgres_dsn(self.postgres_dsn)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Self:
-        """解析两个进程共用的数据库与推理环境。"""
+        """解析两个进程共用的数据库、推理和抽取配置。"""
+        timezone = env.get("MNEMOTRACE_EXTRACTION_TIMEZONE")
+        try:
+            extraction_timezone = UTC if timezone is None else ZoneInfo(timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(
+                "MNEMOTRACE_EXTRACTION_TIMEZONE 须为有效的 IANA 时区名称"
+            ) from None
         inference_env = {
             key: value
             for key, value in env.items()
@@ -97,4 +107,5 @@ class RuntimeSettings:
             env.get(_POSTGRES_DSN, "").strip(),
             inference_env,
             DatabaseTimeouts.from_env(env),
+            extraction_timezone,
         )

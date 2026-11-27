@@ -26,6 +26,7 @@ from ..ports.queries import FactFilter, FactQuery, FactSlot
 from ..ports.runtime import IdGenerator
 from ..ports.storage import SpaceReader
 from .extraction import EntityMention, ExtractedFact, SpaceUserMention, TimeEvidence
+from .ranking import rrf_scores
 
 _OLD_CANDIDATE_LIMIT = 10
 _RRF_OFFSET = 60
@@ -312,12 +313,12 @@ async def _rank_old_candidates(
         embedding_space=embedding_space,
         min_score=_VECTOR_MIN_COSINE,
     )
-    scores: dict[FactId, float] = defaultdict(float)
-    for channel in (lexical, vectors):
-        for rank, (fact_id, _) in enumerate(channel, start=1):
-            scores[fact_id] += 1 / (_RRF_OFFSET + rank)
-    ranked = sorted(scores, key=lambda fact_id: (-scores[fact_id], fact_id.value))
-    return tuple(ranked[:_OLD_CANDIDATE_LIMIT])
+    ranked = rrf_scores(
+        (fact_id for fact_id, _ in lexical),
+        (fact_id for fact_id, _ in vectors),
+        rank_constant=_RRF_OFFSET,
+    )
+    return tuple(fact_id for fact_id, _ in ranked[:_OLD_CANDIDATE_LIMIT])
 
 
 def build_batch_pairs(prepared: Sequence[PreparedFact]) -> BatchPairs:

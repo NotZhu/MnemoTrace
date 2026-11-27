@@ -19,6 +19,8 @@
 
 API 和 worker 等待池连接的时限为 3 秒。`MNEMOTRACE_DB_LOCK_TIMEOUT_SECONDS` 默认 1 秒，`MNEMOTRACE_DB_STATEMENT_TIMEOUT_SECONDS` 默认 15 秒，`MNEMOTRACE_DB_MAINTENANCE_TIMEOUT_SECONDS` 默认 60 秒。维护时限应用于会话擦除、空间清空和空间删除的单条语句。配置须满足等锁时限小于普通语句时限，且普通语句时限小于等于维护语句时限。
 
+`MNEMOTRACE_EXTRACTION_TIMEZONE` 接受 IANA 时区名称，默认 `UTC`。API 用它校验新写入任务的发言时刻，worker 用它解释「今天」等相对日期。API 和所有 worker 须使用相同值。切换时区前暂停接收新写入，等已有写入任务进入终态，再同时更新 API 和所有 worker 的配置。
+
 ## 自管 PostgreSQL 分权
 
 自管部署自行设置各进程的 `MNEMOTRACE_POSTGRES_DSN`。按下列顺序开通数据库。随附 Compose 连接其内置 PostgreSQL。

@@ -18,12 +18,11 @@ from ..ports.storage import (
     Storage,
 )
 from .operations import (
-    ATTEMPT_TIMEOUT,
     LeaseLost,
     classify_worker_failure,
-    retry_delay_for,
 )
 from .session_summary import generate_session_summary, prepare_summary_batch
+from .task_policy import ATTEMPT_TIMEOUT_SECONDS, retry_delay_for
 
 _LOG = logging.getLogger(__name__)
 _PAGE_SIZE = 16
@@ -91,7 +90,7 @@ class SessionSummaryRunner:
         if job is None:
             return False
         try:
-            async with timeout(ATTEMPT_TIMEOUT):
+            async with timeout(ATTEMPT_TIMEOUT_SECONDS):
                 await self._refresh(job)
         except (LeaseLost, SpaceUnavailable):
             return True

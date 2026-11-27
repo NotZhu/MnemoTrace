@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import timedelta
 from math import nan
+from unittest.mock import patch
 
 import pytest
 
@@ -179,6 +180,65 @@ def test_missing_space_invalidates_operation_without_retry() -> None:
         assert queue.completions == []
         assert queue.lease_checks == []
         assert queue.failures == [(_JOB, "write_invalidated", None, None)]
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("attempt", "retry_delay"),
+    [(1, timedelta(seconds=5)), (2, timedelta(seconds=10)), (3, None)],
+)
+def test_attempt_deadline_cancels_extraction_before_publish(
+    attempt: int, retry_delay: timedelta | None
+) -> None:
+    """执行截止取消阻塞的抽取，按当前尝试次数处理后续状态。"""
+
+    async def exercise() -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        clock_offset = 0.0
+
+        def loop_time() -> float:
+            return real_time() + clock_offset
+
+        class BlockingModel(FakeLLM):
+            async def _structured_response(
+                self, *, system: str, prompt: str, schema: Mapping[str, object]
+            ) -> Mapping[str, object]:
+                started.set()
+                try:
+                    await asyncio.Future[None]()
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+                return {"facts": []}
+
+        job = replace(
+            _JOB, attempt=attempt, messages=(MessageInput("user", "合成偏好"),)
+        )
+        queue, storage = _RecordingQueue(job), FakeStorage()
+        await storage.create_space(_SPACE)
+        async with storage.session(_SPACE.id, write=True) as writer:
+            await writer.register_session(job.session_id)
+
+        runner = _runner(queue, storage, llm=BlockingModel())
+        with (
+            patch.object(storage, "session", wraps=storage.session) as sessions,
+            patch.object(loop, "time", loop_time),
+        ):
+            async with asyncio.TaskGroup() as tasks:
+                running = tasks.create_task(runner.run_once())
+                await asyncio.wait_for(started.wait(), timeout=5)
+                # 让模型先进入等待，再推进事件循环时钟触发 worker 的执行截止。
+                clock_offset = 181.0
+                assert await asyncio.wait_for(running, timeout=5)
+            assert not any(call.kwargs.get("write") for call in sessions.call_args_list)
+
+        assert cancelled.is_set()
+        assert queue.completions == []
+        assert queue.failures == [(job, "operation_timeout", "extraction", retry_delay)]
 
     asyncio.run(exercise())
 

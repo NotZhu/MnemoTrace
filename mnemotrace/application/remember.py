@@ -1,6 +1,6 @@
 """编排一次同步记忆写入及提交前复核。"""
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, tzinfo
 from typing import Literal
@@ -43,6 +43,26 @@ class MessageInput:
     role: Literal["user", "assistant"]
     content: str
     event_time: float | None = None
+
+
+class UnrepresentableMessageTime(InvalidMessage):
+    """表示指定下标的发言时刻超出抽取时区支持的日历范围。"""
+
+    def __init__(self, message_index: int) -> None:
+        super().__init__("消息发言时刻超出支持的日历范围")
+        self.message_index = message_index
+
+
+def validate_message_event_times(
+    event_times: Iterable[float | None], *, timezone: tzinfo
+) -> None:
+    """检查已验证的 UTC 发言时刻能否用抽取时区表示，允许尚未补齐的时刻。"""
+    for index, event_time in enumerate(event_times):
+        if (
+            event_time is not None
+            and message_reference_time(event_time, timezone=timezone) is None
+        ):
+            raise UnrepresentableMessageTime(index)
 
 
 @dataclass(frozen=True)
@@ -364,11 +384,9 @@ async def _prepare_remember_context(
         _prepare_message(item, space_id, session_id, received_at, ids)
         for item in inputs
     )
-    if any(
-        message_reference_time(message.event_time, timezone=timezone) is None
-        for message in prepared
-    ):
-        raise InvalidMessage("消息发言时刻超出支持的日历范围")
+    validate_message_event_times(
+        (message.event_time for message in prepared), timezone=timezone
+    )
     async with storage.session(space_id) as reader:
         if not await reader.has_session(session_id):
             raise SessionUnavailable("会话不可用")

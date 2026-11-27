@@ -33,21 +33,10 @@ from .remember import (
     RememberRetryRequired,
     RememberStage,
 )
+from .task_policy import ATTEMPT_TIMEOUT_SECONDS, retry_delay_for
 
 type OperationStatus = Literal["queued", "running", "succeeded", "failed"]
-ATTEMPT_TIMEOUT = 180
-LEASE_SECONDS = ATTEMPT_TIMEOUT + 30
-MAX_ATTEMPTS = 3
 _LOG = logging.getLogger(__name__)
-
-
-def retry_delay_for(attempt: int, *, retry: bool) -> timedelta | None:
-    """按共享的 worker 重试预算计算退避时间。"""
-    return (
-        timedelta(seconds=5 * 2 ** (attempt - 1))
-        if retry and attempt < MAX_ATTEMPTS
-        else None
-    )
 
 
 def classify_worker_failure(
@@ -174,7 +163,7 @@ class OperationRunner:
 
         try:
             with correlate(job.operation_id):
-                async with timeout(ATTEMPT_TIMEOUT):
+                async with timeout(ATTEMPT_TIMEOUT_SECONDS):
                     await self._remember_for(job).remember(
                         job.messages,
                         session_id=job.session_id,

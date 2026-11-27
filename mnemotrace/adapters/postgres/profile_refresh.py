@@ -10,7 +10,7 @@ from psycopg.errors import LockNotAvailable
 from psycopg.rows import TupleRow
 from psycopg_pool import AsyncConnectionPool
 
-from ...application.operations import LEASE_SECONDS, LeaseLost, WriteModelsUnavailable
+from ...application.operations import LeaseLost, WriteModelsUnavailable
 from ...application.profile import MAX_PROFILE_FACTS, ProfileEvidence
 from ...application.profile_refresh import (
     ClaimedProfileRefresh,
@@ -19,6 +19,7 @@ from ...application.profile_refresh import (
     ProfileSnapshot,
     SnapshotChanged,
 )
+from ...application.task_policy import LEASE_DURATION
 from ...domain.entity import Entity
 from ...domain.enums import ProfileGroup
 from ...domain.ids import FactId, SpaceId
@@ -178,7 +179,7 @@ class PostgresProfileRefresh:
                     attempts = attempts + 1, lease_token = %s, lease_until = clock_timestamp() + %s
                 WHERE space_id = %s
                 """,
-                (token, timedelta(seconds=LEASE_SECONDS), space),
+                (token, LEASE_DURATION, space),
             )
         return ClaimedProfileRefresh(
             SpaceId(space), owner, version, attempts + 1, token

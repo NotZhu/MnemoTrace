@@ -20,13 +20,11 @@ from ..ports.storage import (
     Storage,
 )
 from .operations import (
-    ATTEMPT_TIMEOUT,
-    MAX_ATTEMPTS,
     LeaseLost,
     classify_worker_failure,
-    retry_delay_for,
 )
 from .profile import ProfileEvidence, ProfileInputTooLarge, generate_profile
+from .task_policy import ATTEMPT_TIMEOUT_SECONDS, MAX_ATTEMPTS, retry_delay_for
 
 type PendingRefreshStatus = Literal["queued", "running"]
 type RefreshStatus = Literal["idle", "queued", "running", "succeeded", "failed"]
@@ -135,7 +133,7 @@ class ProfileRefreshRunner:
             if job.attempt > MAX_ATTEMPTS:
                 await self._fail(job, "worker_lease_expired", retry=False)
             else:
-                async with timeout(ATTEMPT_TIMEOUT):
+                async with timeout(ATTEMPT_TIMEOUT_SECONDS):
                     storage = self._storage_for(job.owner_id)
                     async with storage.session(job.space_id) as reader:
                         if not await self._queue.has_active_lease(job, reader):

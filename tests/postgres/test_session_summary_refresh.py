@@ -5,7 +5,6 @@ import json
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from datetime import UTC
 from unittest.mock import AsyncMock, PropertyMock
 
 import psycopg
@@ -584,7 +583,6 @@ def test_worker_consumes_persisted_summary_after_startup(
                         1,
                         stopping,
                         None,
-                        extraction_timezone=UTC,
                     )
                 )
                 try:

@@ -5,7 +5,6 @@ import signal
 import sys
 from collections.abc import Callable
 from contextlib import AsyncExitStack
-from datetime import UTC, tzinfo
 from types import FrameType
 from unittest.mock import AsyncMock, Mock
 
@@ -36,24 +35,30 @@ def test_worker_loads_extraction_timezone(
 
     assert worker.main() == 0
     run_worker.assert_awaited_once()
-    assert str(run_worker.await_args_list[0].kwargs["extraction_timezone"]) == expected
+    settings = run_worker.await_args_list[0].args[0]
+    assert isinstance(settings, RuntimeSettings)
+    assert str(settings.extraction_timezone) == expected
 
 
 @pytest.mark.parametrize("configured", ["Invalid/TimeZone", ""])
-def test_worker_rejects_invalid_extraction_timezone_before_starting(
+@pytest.mark.parametrize(
+    "entrypoint", [worker.main, server_main], ids=["worker", "http"]
+)
+def test_process_rejects_invalid_extraction_timezone_before_starting(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     configured: str,
+    entrypoint: Callable[[], int],
 ) -> None:
-    """显式提供无效时区时，在启动 worker 前报告配置错误。"""
+    """HTTP 与 worker 在启动前拒绝无效的抽取时区。"""
     monkeypatch.setenv("MNEMOTRACE_POSTGRES_DSN", "dbname=unused")
     monkeypatch.setenv("MNEMOTRACE_EXTRACTION_TIMEZONE", configured)
-    monkeypatch.setattr(sys, "argv", ["mnemotrace.worker"])
+    monkeypatch.setattr(sys, "argv", ["mnemotrace"])
     run_worker = AsyncMock()
     monkeypatch.setattr(worker, "_run", run_worker)
 
     with pytest.raises(SystemExit) as exit_info:
-        worker.main()
+        entrypoint()
     assert exit_info.value.code == 2
     assert "MNEMOTRACE_EXTRACTION_TIMEZONE" in capsys.readouterr().err
     run_worker.assert_not_awaited()
@@ -128,8 +133,6 @@ def test_worker_stops_after_cancel_is_consumed_returning_a_connection(
             concurrency: int,
             stopping: asyncio.Event,
             readiness_port: int | None,
-            *,
-            extraction_timezone: tzinfo,
         ) -> None:
             async with asyncio.TaskGroup() as group:
                 group.create_task(worker._consume(runner, stopping))
@@ -139,9 +142,7 @@ def test_worker_stops_after_cancel_is_consumed_returning_a_connection(
             patch.setattr(worker, "_serve", serve)
             patch.setattr(signal, "signal", capture)
             supervisor = asyncio.create_task(
-                worker._run(
-                    RuntimeSettings("dbname=unused"), 1, extraction_timezone=UTC
-                )
+                worker._run(RuntimeSettings("dbname=unused"), 1)
             )
             try:
                 await asyncio.wait_for(returning.wait(), 2)
