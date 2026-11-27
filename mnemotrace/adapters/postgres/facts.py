@@ -1,7 +1,7 @@
 """保存事实快照、现行引用和变更记录。"""
 
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from psycopg import AsyncConnection, errors, sql
 from psycopg.rows import TupleRow
@@ -67,36 +67,6 @@ def _fact_row_changes(before: Fact, after: Fact) -> bool:
         or before.sensitive != after.sensitive
         or before.profile_groups != after.profile_groups
     )
-
-
-def validate_fact_update(before: Fact, after: Fact) -> None:
-    """校验同一标识的事实更新。
-
-    Args:
-        before: 已保存的事实快照。
-        after: 待保存的事实快照。
-
-    Raises:
-        ValueError: 更新违反有效截止约束或改变了固定字段。
-    """
-    expected = before
-    if after.invalid_at != before.invalid_at:
-        if after.invalid_at is None:
-            raise ValueError("已截止的事实不能重开")
-        if before.invalid_at is None:
-            assert after.expired_at is not None
-            expected = before.close(after.invalid_at, after.expired_at)
-        else:
-            expected = before.shorten_validity(after.invalid_at)
-    expected = replace(
-        expected,
-        labels=after.labels,
-        sensitive=after.sensitive,
-        provenance=after.provenance,
-        profile_groups=after.profile_groups,
-    )
-    if expected != after:
-        raise ValueError("同标识的事实不能改变固定字段或首次获知时刻")
 
 
 async def write_fact_batch(

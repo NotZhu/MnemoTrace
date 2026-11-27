@@ -20,8 +20,8 @@ from mnemotrace.domain.ids import FactId, MessageId
 from mnemotrace.domain.values import LiteralValue
 from mnemotrace.ports.storage import CutoffTrigger
 
-from ..ports.fakes import FakeEmbedder
-from .adjudication_samples import SPACE, FactIds, candidate
+from ..ports.fakes import FakeEmbedder, FakeIdGenerator
+from .adjudication_samples import SPACE, candidate
 
 
 def _prepare(*extracted: ExtractedFact) -> tuple[PreparedFact, ...]:
@@ -30,7 +30,7 @@ def _prepare(*extracted: ExtractedFact) -> tuple[PreparedFact, ...]:
             extracted,
             space_id=SPACE,
             embedder=FakeEmbedder(),
-            ids=FactIds(),
+            ids=FakeIdGenerator(),
             received_at=100.0,
         )
     )

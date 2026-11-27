@@ -364,19 +364,13 @@ def test_profile_publication_does_not_page_facts_under_the_write_lock(
 def test_profile_rechecks_changes_after_the_last_read_snapshot(
     database: PgDatabase, monkeypatch: pytest.MonkeyPatch, change: str
 ) -> None:
-    class MutableClock(FakeClock):
-        at = 100.0
-
-        def now(self) -> float:
-            return self.at
-
     async def exercise() -> None:
         async with (
             _http_space(database) as scope,
             pool(database.runtime) as connections,
         ):
             storage = PostgresStorage(connections, owner_id=scope.owner)
-            clock = MutableClock()
+            clock = FakeClock()
             first = await _write_fact(scope, storage, "first")
             if change == "activation":
                 await _write_fact(scope, storage, "later", valid_at=101.0)
@@ -1239,13 +1233,7 @@ def test_profile_retains_entries_after_evidence_metadata_update(
 def test_scheduled_expiry_preserves_the_last_profile_until_the_fact_expires(
     database: PgDatabase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class MutableClock(FakeClock):
-        at = _database_now(database).timestamp()
-
-        def now(self) -> float:
-            return self.at
-
-    clock = MutableClock()
+    clock = FakeClock(at=_database_now(database).timestamp())
     monkeypatch.setattr(profiles, "time", clock.now)
 
     async def exercise() -> None:
@@ -1645,13 +1633,7 @@ def test_automatic_group_refresh_wakes_on_activation_and_expiry(
     database: PgDatabase,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class MutableClock(FakeClock):
-        at = datetime.now(UTC).timestamp()
-
-        def now(self) -> float:
-            return self.at
-
-    clock = MutableClock()
+    clock = FakeClock(at=datetime.now(UTC).timestamp())
     monkeypatch.setattr(profiles, "time", clock.now)
 
     async def exercise() -> None:
@@ -1887,13 +1869,7 @@ def test_fact_write_preserves_unprocessed_profile_expiry(
     change: str,
     expiry_processed: bool,
 ) -> None:
-    class MutableClock(FakeClock):
-        at = 100.0
-
-        def now(self) -> float:
-            return self.at
-
-    clock = MutableClock()
+    clock = FakeClock()
     monkeypatch.setattr(profiles, "time", clock.now)
 
     async def exercise() -> None:

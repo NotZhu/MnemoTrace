@@ -224,7 +224,7 @@ class PostgresStorage:
             管理连接和事务生命周期的异步上下文管理器。
 
         Raises:
-            LookupError: 进入会话时，绑定账号无法访问指定空间。
+            SpaceUnavailable: 进入会话时，绑定账号无法访问指定空间。
             RuntimeError: 退出写会话时，事务因已捕获的 SQL 错误而无法提交。
             CommitOutcomeUnknown: 写事务进入提交阶段后无法确认结果。
         """

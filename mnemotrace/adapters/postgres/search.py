@@ -9,9 +9,9 @@ from psycopg import AsyncConnection, sql
 from psycopg.rows import TupleRow, args_row
 
 from ...domain.ids import FactId, SpaceId
+from ...domain.vector import scale_by_max_abs
+from ...ports.storage import validate_embedding_dimension
 from .fact_filters import FactConditions
-
-_PGVECTOR_MAX_DIMENSIONS = 16_000
 
 
 def validate_min_score(min_score: float | None) -> None:
@@ -32,15 +32,8 @@ def cosine_vector(vector: Sequence[float]) -> list[float]:
     Raises:
         ValueError: 向量为空、维度超过上限、含非有限分量或所有分量为零。
     """
-    dimensions = len(vector)
-    if dimensions > _PGVECTOR_MAX_DIMENSIONS:
-        raise ValueError(f"向量维度不能超过 {_PGVECTOR_MAX_DIMENSIONS}")
-    if dimensions == 0 or not all(map(isfinite, vector)):
-        raise ValueError("向量须包含有限分量")
-    scale = max(map(abs, vector))
-    if scale == 0:
-        raise ValueError("余弦向量的范数须大于零")
-    return [value / scale for value in vector]
+    validate_embedding_dimension(len(vector))
+    return scale_by_max_abs(vector)
 
 
 async def embedding_dim(

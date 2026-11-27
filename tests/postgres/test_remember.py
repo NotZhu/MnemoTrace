@@ -5,7 +5,6 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from itertools import count
 from time import perf_counter
 from types import TracebackType
 from typing import cast
@@ -53,8 +52,7 @@ from mnemotrace.ports.storage import (
     SupportGroups,
 )
 
-from ..inference.adjudication_samples import FactIds
-from ..ports.fakes import FakeClock, FakeEmbedder, FakeLLM
+from ..ports.fakes import FakeClock, FakeEmbedder, FakeIdGenerator, FakeLLM
 from .conftest import PgDatabase
 from .sample import fact, message, pool, run, space
 
@@ -62,19 +60,6 @@ pytestmark = pytest.mark.postgres
 
 _PREDICATE = Predicate("project_language")
 _CURRENT = "星河项目默认用英文"
-
-
-class _Ids(FactIds):
-    def __init__(self) -> None:
-        super().__init__()
-        self._messages = count()
-        self._sessions = count()
-
-    def new_message_id(self) -> MessageId:
-        return MessageId(f"incoming-{next(self._messages)}")
-
-    def new_session_id(self) -> SessionId:
-        return SessionId(f"session-{next(self._sessions)}")
 
 
 class _Embedder(FakeEmbedder):
@@ -187,7 +172,7 @@ def _memory(
         llm=model,
         embedder=embedder,
         clock=FakeClock(),
-        ids=_Ids(),
+        ids=FakeIdGenerator(),
     )
 
 

@@ -5,8 +5,8 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
-from math import isfinite
 
+from ...ports.inference import InferenceError, validate_embedding_batch
 from ._http import (
     InferenceHTTP,
     InferenceRequestError,
@@ -113,31 +113,19 @@ class OpenAIEmbedder:
 def _decode_vectors(
     value: object, size: int, dim: int
 ) -> tuple[tuple[float, ...], ...]:
-    if not isinstance(value, list) or len(value) != size:
+    if not isinstance(value, list):
         raise InferenceRequestError("protocol")
-    by_index: dict[int, tuple[float, ...]] = {}
+    by_index: dict[int, list[object]] = {}
     for item in value:
         record = require_response_object(item)
         index, embedding = record.get("index"), record.get("embedding")
         if type(index) is not int or not 0 <= index < size or index in by_index:
             raise InferenceRequestError("protocol")
-        if not isinstance(embedding, list) or len(embedding) != dim:
+        if not isinstance(embedding, list):
             raise InferenceRequestError("protocol")
-        try:
-            vector = tuple(_number(component) for component in embedding)
-        except OverflowError:
-            raise InferenceRequestError("protocol") from None
-        if not any(vector):
-            raise InferenceRequestError("protocol")
-        by_index[index] = vector
-    return tuple(by_index[index] for index in range(size))
-
-
-def _number(value: object) -> float:
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not isfinite(value)
-    ):
-        raise InferenceRequestError("protocol")
-    return float(value)
+        by_index[index] = embedding
+    ordered = tuple(by_index[index] for index in range(size) if index in by_index)
+    try:
+        return validate_embedding_batch(ordered, expected_count=size, dimension=dim)
+    except InferenceError:
+        raise InferenceRequestError("protocol") from None

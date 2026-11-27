@@ -27,8 +27,14 @@ from mnemotrace.ports.inference import (
     InvalidStructuredOutput,
 )
 
-from ..ports.fakes import FakeEmbedder, FakeIdGenerator, FakeLLM, FakeSpaceSession
-from .adjudication_samples import SPACE, FactIds, candidate
+from ..ports.fakes import (
+    FakeClock,
+    FakeEmbedder,
+    FakeIdGenerator,
+    FakeLLM,
+    FakeSpaceSession,
+)
+from .adjudication_samples import SPACE, candidate
 from .sample import chat_response, configured_chat
 
 
@@ -40,7 +46,7 @@ def test_resolving_known_comparisons_ignores_pair_orientation() -> None:
             (candidate("incoming"), candidate("previous")),
             space_id=SPACE,
             embedder=FakeEmbedder(),
-            ids=FactIds(),
+            ids=FakeIdGenerator(),
             received_at=100.0,
         )
         new, old = (item.fact for item in prepared)
@@ -87,7 +93,7 @@ def test_prepare_facts_binds_space_user_and_embeds_text_once() -> None:
     embedder = _Vectors(((1.0, 0.0), (0.0, 1.0)))
 
     async def exercise() -> None:
-        ids = FactIds()
+        ids = FakeIdGenerator()
         first, second = await prepare_facts(
             inputs, space_id=SPACE, embedder=embedder, ids=ids, received_at=100.0
         )
@@ -123,10 +129,10 @@ def test_batch_pairs_include_threshold_and_cap_each_selection() -> None:
             extracted,
             space_id=SPACE,
             embedder=_Vectors(((1.0, 0.0), *((3.0, 4.0),) * 12, (-1.0, 0.0))),
-            ids=FactIds(),
+            ids=FakeIdGenerator(),
             received_at=100.0,
         )
-        reader = FakeSpaceSession(Space(SPACE, "owner", "测试", 0.0))
+        reader = FakeSpaceSession(Space(SPACE, "owner", "测试", 0.0), FakeClock())
         result = await find_comparison_candidates(
             reader, prepared, embedding_space="test", reference_time=100.0
         )
@@ -161,10 +167,10 @@ def test_batch_pairs_exclude_disjoint_intervals_before_ranking() -> None:
             extracted,
             space_id=SPACE,
             embedder=embedder,
-            ids=FactIds(),
+            ids=FakeIdGenerator(),
             received_at=30.0,
         )
-        reader = FakeSpaceSession(Space(SPACE, "owner", "测试", 0.0))
+        reader = FakeSpaceSession(Space(SPACE, "owner", "测试", 0.0), FakeClock())
         result = await find_comparison_candidates(
             reader,
             prepared,
@@ -298,7 +304,7 @@ def test_comparison_shards_each_anchor_and_bounds_concurrency() -> None:
             tuple(candidate(str(index), text=f"候选 {index}") for index in range(32)),
             space_id=SPACE,
             embedder=FakeEmbedder(),
-            ids=FactIds(),
+            ids=FakeIdGenerator(),
             received_at=100.0,
         )
         ids = tuple(item.fact.id for item in prepared)
@@ -347,7 +353,7 @@ def test_comparison_cancels_and_joins_slow_shards_after_failure() -> None:
             (candidate("slow"), candidate("failed"), candidate("peer")),
             space_id=SPACE,
             embedder=FakeEmbedder(),
-            ids=FactIds(),
+            ids=FakeIdGenerator(),
             received_at=100.0,
         )
         slow, failed, peer = (item.fact.id for item in prepared)
@@ -392,7 +398,7 @@ def test_comparison_rejects_incomplete_or_invalid_responses(
             (candidate("new"),),
             space_id=SPACE,
             embedder=FakeEmbedder(),
-            ids=FactIds(),
+            ids=FakeIdGenerator(),
             received_at=100.0,
         )
         original = prepared[0].fact

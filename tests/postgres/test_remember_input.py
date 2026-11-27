@@ -2,7 +2,6 @@
 
 import asyncio
 from dataclasses import replace
-from itertools import count
 from typing import Literal, cast
 
 import pytest
@@ -17,14 +16,6 @@ from mnemotrace.ports.storage import SessionUnavailable
 from ..ports.fakes import FakeClock, FakeIdGenerator, FakeStorage
 from .conftest import PgDatabase
 from .sample import SESSION, message, pool, run, space
-
-
-class _Ids(FakeIdGenerator):
-    def __init__(self) -> None:
-        self._messages = count()
-
-    def new_message_id(self) -> MessageId:
-        return MessageId(f"pending-{next(self._messages)}")
 
 
 @pytest.mark.parametrize(
@@ -59,7 +50,12 @@ def test_invalid_remember_input_is_rejected(
         storage = FakeStorage()
         with pytest.raises(InvalidMessage):
             await _prepare_remember_context(
-                storage, space().id, SESSION, messages, clock=FakeClock(), ids=_Ids()
+                storage,
+                space().id,
+                SESSION,
+                messages,
+                clock=FakeClock(),
+                ids=FakeIdGenerator(),
             )
 
     asyncio.run(exercise())
@@ -91,7 +87,7 @@ def test_remember_input_uses_authorized_session_snapshot(database: PgDatabase) -
                 MessageInput("assistant", " 建议从明天开始。 "),
                 MessageInput("user", "可以。", 81.0),
             )
-            clock, ids = FakeClock(), _Ids()
+            clock, ids = FakeClock(), FakeIdGenerator()
             ready = await _prepare_remember_context(
                 storage, scope.id, SESSION, inputs, clock=clock, ids=ids
             )

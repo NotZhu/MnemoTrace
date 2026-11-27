@@ -1,31 +1,17 @@
 """提供事实比较和生命周期测试使用的合成输入。"""
 
-from itertools import count
-
 from mnemotrace.application.extraction import (
     EntityMention,
     ExtractedFact,
     SpaceUserMention,
     TimeEvidence,
 )
-from mnemotrace.domain.ids import FactId, MessageId, SpaceId
+from mnemotrace.domain.ids import MessageId, SpaceId
 from mnemotrace.domain.values import LiteralValue, Predicate
-
-from ..ports.fakes import FakeIdGenerator
 
 SPACE = SpaceId("adjudication")
 _USER = SpaceUserMention()
 _LANGUAGE = LiteralValue("英文")
-
-
-class FactIds(FakeIdGenerator):
-    """为测试批次按输入顺序分配不同的事实标识。"""
-
-    def __init__(self) -> None:
-        self._ids = count()
-
-    def new_fact_id(self) -> FactId:
-        return FactId(f"new-{next(self._ids)}")
 
 
 def candidate(

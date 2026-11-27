@@ -3,8 +3,7 @@
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from math import exp2, isfinite
-from numbers import Real
+from math import exp2
 from typing import Literal
 
 from ..domain._validation import optional_timestamp, require_tuple, require_type
@@ -13,7 +12,7 @@ from ..domain.errors import DomainError
 from ..domain.fact import Fact
 from ..domain.ids import EntityId, FactId, MessageId, SpaceId
 from ..domain.values import EntityRef, Label, Predicate
-from ..ports.inference import Embedder, InferenceError
+from ..ports.inference import Embedder, InferenceError, validate_embedding_batch
 from ..ports.queries import FactFilter
 from ..ports.reranker import Reranker
 from ..ports.runtime import Clock
@@ -248,7 +247,9 @@ class Recall:
             reranker = None
             degraded_reason = "embedding_timeout"
         else:
-            vector = _query_vector(vectors, self._embedder.dim)
+            (vector,) = validate_embedding_batch(
+                vectors, expected_count=1, dimension=self._embedder.dim
+            )
 
         fact_load_limit = top_k if reranker is None else min(100, max(20, 2 * top_k))
         erasure_token = None
@@ -378,35 +379,6 @@ def _validate_query(query: str) -> str:
     except UnicodeEncodeError as exc:
         raise ValueError("查询须能编码为 UTF-8") from exc
     return query
-
-
-def _query_vector(vectors: object, dimension: int) -> tuple[float, ...]:
-    if (
-        not isinstance(vectors, Sequence)
-        or isinstance(vectors, (str, bytes, bytearray))
-        or len(vectors) != 1
-    ):
-        raise InferenceError("查询嵌入须返回一条向量")
-    vector = vectors[0]
-    if not isinstance(vector, Sequence) or isinstance(vector, (str, bytes, bytearray)):
-        raise InferenceError("查询嵌入须返回数值序列")
-    if not vector or len(vector) != dimension:
-        raise InferenceError("查询嵌入向量维度与 Embedder 配置不一致")
-
-    components: list[float] = []
-    for value in vector:
-        if isinstance(value, bool) or not isinstance(value, Real):
-            raise InferenceError("查询嵌入向量分量须为有限实数")
-        try:
-            component = float(value)
-        except OverflowError:
-            raise InferenceError("查询嵌入向量分量须为有限实数") from None
-        if not isfinite(component):
-            raise InferenceError("查询嵌入向量分量须为有限实数")
-        components.append(component)
-    if not any(components):
-        raise InferenceError("查询嵌入向量不能全为零")
-    return tuple(components)
 
 
 def _candidate_limit(top_k: int) -> int:

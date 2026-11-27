@@ -13,7 +13,7 @@ from ...domain._validation import timestamp
 from ...domain.entity import Entity
 from ...domain.enums import ProfileGroup, Source
 from ...domain.errors import DomainError
-from ...domain.fact import Fact
+from ...domain.fact import Fact, validate_fact_update
 from ...domain.ids import FactId, MessageId, SessionId, SpaceId
 from ...domain.message import Message
 from ...domain.profile import Profile
@@ -28,7 +28,7 @@ from ...ports.storage import (
     validate_cutoff_triggers,
 )
 from . import search
-from .facts import FactWrite, validate_fact_update, write_fact_batch
+from .facts import FactWrite, write_fact_batch
 from .profile_schedule import (
     clear_profile_schedule,
     mark_profile_groups,

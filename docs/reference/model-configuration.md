@@ -34,7 +34,7 @@ HTTP 端点限无密钥的本机回环地址。使用容器部署时，回环地
 
 ## 嵌入维度与版本切换
 
-`MNEMOTRACE_EMBED_DIM` 必须匹配服务实际返回的向量长度。上游接受 `dimensions` 请求字段且需要显式指定长度时，可设置 `MNEMOTRACE_EMBED_SEND_DIMENSIONS=1`。`MNEMOTRACE_EMBED_REVISION` 用来标识本地向量所属的模型版本。服务在同一端点、同一模型名下升级模型时，使用不同修订标识区分向量。上游模型由端点与发出的 `model` 字段确定。
+`MNEMOTRACE_EMBED_DIM` 必须匹配服务实际返回的向量长度，取值为 1 到 16,000 之间的整数。HTTP 服务和 worker 在启动时拒绝超出此范围的嵌入配置。上游接受 `dimensions` 请求字段且需要显式指定长度时，可设置 `MNEMOTRACE_EMBED_SEND_DIMENSIONS=1`。`MNEMOTRACE_EMBED_REVISION` 用来标识本地向量所属的模型版本。服务在同一端点、同一模型名下升级模型时，使用不同修订标识区分向量。上游模型由端点与发出的 `model` 字段确定。
 
 MnemoTrace 用规范化后的端点前缀、模型名、修订标识、维度、是否发送 `dimensions` 以及输入规则生成嵌入空间标识。轮换密钥或调整批次大小、超时会保留同一标识。写入和召回使用相同标识的向量。 [向量标识实现](../../mnemotrace/adapters/inference/openai_embeddings.py) · [向量查询](../../mnemotrace/adapters/postgres/search.py)
 

@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from heapq import heappush, heappushpop
 from itertools import batched, combinations
-from math import fsum, hypot
+from math import fsum
 from typing import Literal, NamedTuple, TypedDict, cast
 
 from ..domain.entity import Entity
@@ -15,7 +15,13 @@ from ..domain.enums import Source
 from ..domain.fact import Fact, intervals_disjoint
 from ..domain.ids import EntityId, FactId, SpaceId
 from ..domain.values import EntityRef, LiteralValue, Predicate
-from ..ports.inference import LLM, Embedder, InvalidStructuredOutput
+from ..domain.vector import unit_vector
+from ..ports.inference import (
+    LLM,
+    Embedder,
+    InvalidStructuredOutput,
+    validate_embedding_batch,
+)
 from ..ports.queries import FactFilter, FactQuery, FactSlot
 from ..ports.runtime import IdGenerator
 from ..ports.storage import SpaceReader
@@ -179,16 +185,19 @@ async def prepare_facts(
         )
         bound.append((fact, entities))
     vectors = await embedder.embed(tuple(fact.text for fact, _ in bound))
+    validated = validate_embedding_batch(
+        vectors, expected_count=len(bound), dimension=embedder.dim
+    )
     return tuple(
         PreparedFact(
             fact,
             entities,
-            tuple(vector),
+            vector,
             item.valid_at_evidence,
             item.invalid_at_evidence,
         )
         for (fact, entities), item, vector in zip(
-            bound, extracted, vectors, strict=True
+            bound, extracted, validated, strict=True
         )
     )
 
@@ -324,7 +333,7 @@ def build_batch_pairs(prepared: Sequence[PreparedFact]) -> BatchPairs:
         return ((),) * len(prepared)
     pairs: list[set[int]] = [set() for _ in prepared]
     neighbors: list[list[tuple[float, int]]] = [[] for _ in prepared]
-    vectors = [_unit_vector(item.vector) for item in prepared]
+    vectors = [unit_vector(item.vector) for item in prepared]
     slots = [_slot(item.fact) for item in prepared]
     for left, right in combinations(range(len(prepared)), 2):
         if intervals_disjoint(prepared[left].fact, prepared[right].fact):
@@ -350,14 +359,6 @@ def build_batch_pairs(prepared: Sequence[PreparedFact]) -> BatchPairs:
         tuple((item.fact.id, prepared[peer].fact.id) for peer in sorted(peers))
         for item, peers in zip(prepared, pairs, strict=True)
     )
-
-
-def _unit_vector(vector: Sequence[float]) -> tuple[float, ...]:
-    # 先等比缩放，使大分量的有限向量也能计算有限的范数。
-    scale = max(map(abs, vector))
-    scaled = tuple(component / scale for component in vector)
-    norm = hypot(*scaled)
-    return tuple(component / norm for component in scaled)
 
 
 async def compare_facts(

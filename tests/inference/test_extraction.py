@@ -43,7 +43,7 @@ from mnemotrace.ports.queries import FactQuery
 from mnemotrace.ports.storage import CutoffTrigger
 
 from ..ports.fakes import FakeClock, FakeEmbedder, FakeIdGenerator, FakeStorage
-from .adjudication_samples import FactIds, candidate
+from .adjudication_samples import candidate
 from .sample import CHAT_ENV, chat_response, configured_chat
 
 _ZONE = timezone(timedelta(hours=8))
@@ -398,7 +398,7 @@ def test_historical_interval_supports_state_closed_by_termination() -> None:
     async def exercise() -> None:
         start = datetime(2026, 11, 1, 9, tzinfo=_ZONE).timestamp()
         end = datetime(2026, 11, 10, 9, tzinfo=_ZONE).timestamp()
-        embedder, ids = FakeEmbedder(), FactIds()
+        embedder, ids = FakeEmbedder(), FakeIdGenerator()
         (original,) = await prepare_facts(
             (
                 candidate(

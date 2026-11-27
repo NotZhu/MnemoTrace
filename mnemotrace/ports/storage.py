@@ -16,7 +16,23 @@ from ..domain.space import Space
 from ..domain.values import Predicate
 from .queries import FactFilter, FactQuery
 
+MAX_EMBEDDING_DIMENSIONS = 16_000
+
 type SupportGroups = tuple[tuple[MessageId, ...], ...]
+
+
+def validate_embedding_dimension(dimension: int, *, name: str = "向量维度") -> None:
+    """校验嵌入维度是否在存储支持的范围内。
+
+    Args:
+        dimension: 待检查的维度。
+        name: 校验错误中使用的参数名称。
+
+    Raises:
+        ValueError: 维度超出存储支持范围。
+    """
+    if not 1 <= dimension <= MAX_EMBEDDING_DIMENSIONS:
+        raise ValueError(f"{name} 须为 1 到 {MAX_EMBEDDING_DIMENSIONS} 之间的整数")
 
 
 def flatten_support_groups(groups: SupportGroups) -> tuple[MessageId, ...]:
@@ -490,19 +506,20 @@ class SpaceReader(Protocol):
         embedding_space: str,
         min_score: float | None = None,
     ) -> Sequence[tuple[FactId, float]]:
-        """在当前会话快照中按向量相似性搜索事实候选。
+        """在当前会话快照中按余弦相似度搜索事实候选。
 
         Args:
-            vector: 查询向量，长度须与嵌入空间绑定的维度一致。
+            vector: 有限的非零查询向量，长度须在 1 到 MAX_EMBEDDING_DIMENSIONS
+                之间，并与已登记的嵌入空间维度一致。
             limit: 最大返回条数，须为正整数。
             filters: 按有效时间、可见性等条件筛选事实。
             reference_time: 本次请求共用的 UTC epoch 秒。
             embedding_space: 与写入一致的向量模型及版本标识。
-            min_score: 向量通道的最低分数，包含阈值本身。省略时不限。
+            min_score: 有限的最低余弦分数，包含阈值本身。省略时不限。
 
         Returns:
-            去重后的候选事实标识及有限分数。分数从高到低排列，
-            同分按 FactId.value 升序排列。
+            去重后的候选事实标识及 [-1, 1] 内的余弦分数。分数从高到低排列，
+            同分按 FactId.value 升序排列。嵌入空间尚未登记时返回空序列。
         """
         ...
 
@@ -591,7 +608,7 @@ class SpaceSession(SpaceReader, Protocol):
     ) -> tuple[FactChange, ...]:
         """按标识创建事实或更新截止与元数据。
 
-        同 ID 可更新 labels、sensitive、provenance。首次截止同时设置
+        同 ID 可更新 labels、sensitive、provenance、profile_groups。首次截止同时设置
         invalid_at 和 expired_at，提前截止保留首次获知的 expired_at。
         其余字段固定，包括 subject、predicate、object、text、valid_at、
         recorded_at 和 source。主体、实体客体及已提供的来源原文须在
@@ -602,7 +619,8 @@ class SpaceSession(SpaceReader, Protocol):
         从 Fact.text 派生词法索引，与事实一同提交。事实和分组相同的重放幂等。
         替代时以同一时点截止旧事实和启用新 ID 的事实，有向量时在同一写会话
         写入新向量。旧事实保留正文和索引，供按有效时间查询。
-        截止、标签或敏感性改变时，在同一事务撤下依赖该事实的画像条目。
+        事实转为敏感时，在同一事务撤下依赖该事实的已存储画像条目。
+        画像读取时复核来源事实的分组、有效期和敏感性。
 
         Args:
             facts: 待保存的事实快照，同批每个标识一份。
@@ -709,7 +727,8 @@ class SpaceSession(SpaceReader, Protocol):
         事实记录与向量索引随同一事务提交或回滚。
 
         Args:
-            items: 绑定空间内的事实标识和向量。
+            items: 绑定空间内的事实标识和有限的非零向量，维度须在 1 到
+                MAX_EMBEDDING_DIMENSIONS 之间。
             embedding_space: 向量模型及版本标识，与查询一致。适配器为每个
                 嵌入空间绑定唯一向量维度。
         """
@@ -767,7 +786,7 @@ class Storage(Protocol):
             显式传入 write=True 时类型为 SpaceSession，其余调用按 SpaceReader 使用。
 
         Raises:
-            LookupError: 进入会话时空间不存在或账号无权访问。
+            SpaceUnavailable: 进入会话时空间不存在或账号无权访问。
             RuntimeError: 退出写会话时，事务因已捕获的数据库错误而无法提交。
             CommitOutcomeUnknown: 写事务进入提交阶段后无法确认结果。
         """

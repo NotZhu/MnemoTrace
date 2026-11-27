@@ -23,9 +23,9 @@ from mnemotrace.domain.values import EntityRef, LiteralValue, Predicate
 from mnemotrace.ports.queries import FactQuery
 from mnemotrace.ports.storage import CutoffTrigger
 
-from ..inference.adjudication_samples import FactIds, candidate
+from ..inference.adjudication_samples import candidate
 from ..inference.sample import chat_response, configured_chat
-from ..ports.fakes import FakeEmbedder
+from ..ports.fakes import FakeEmbedder, FakeIdGenerator
 from .conftest import PgDatabase
 from .sample import fact, message, pool, run, space
 
@@ -123,7 +123,7 @@ def test_write_candidates_limit_and_fuse_same_and_cross_slot_results(
                 ),
                 space_id=scope.id,
                 embedder=embedding,
-                ids=FactIds(),
+                ids=FakeIdGenerator(),
                 received_at=30.0,
             )
             async with storage.session(scope.id) as reader:
@@ -177,7 +177,7 @@ def test_same_slot_candidates_match_each_interval_within_the_batch(
                 ),
                 space_id=scope.id,
                 embedder=embedder,
-                ids=FactIds(),
+                ids=FakeIdGenerator(),
                 received_at=30.0,
             )
             async with storage.session(scope.id, write=True) as writer:
@@ -260,7 +260,7 @@ def test_write_candidates_exclude_disjoint_intervals_before_ranking(
                 (candidate("backfill", text=source.content, start=30.0, end=150.0),),
                 space_id=scope.id,
                 embedder=embedder,
-                ids=FactIds(),
+                ids=FakeIdGenerator(),
                 received_at=100.0,
             )
             async with storage.session(scope.id) as reader:
@@ -358,7 +358,7 @@ def test_duplicate_evidence_raises_sensitivity_in_storage(
                 ),
                 space_id=scope.id,
                 embedder=FakeEmbedder(),
-                ids=FactIds(),
+                ids=FakeIdGenerator(),
                 received_at=20.0,
             )
             expected_groups = (
@@ -442,7 +442,7 @@ def test_supplemental_evidence_preserves_source_free_cutoff_attribution(
                 ),
                 space_id=scope.id,
                 embedder=FakeEmbedder(),
-                ids=FactIds(),
+                ids=FakeIdGenerator(),
                 received_at=100.0,
             )
             backfill, duplicate, successor = (item.fact for item in prepared)
@@ -491,7 +491,7 @@ def test_calculated_cutoffs_persist_evidence_and_erase_audit(
             scope = space()
             storage = PostgresStorage(connections, owner_id=scope.owner_id)
             await storage.create_space(scope)
-            embedder, ids = FakeEmbedder(), FactIds()
+            embedder, ids = FakeEmbedder(), FakeIdGenerator()
             original = message(scope, "original", at=10.0, content="用户参加周末跑团")
             early_session = SessionId("early")
             later = message(

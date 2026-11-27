@@ -10,6 +10,7 @@ import httpx
 
 from ...ports.inference import LLM, Embedder
 from ...ports.reranker import Reranker
+from ...ports.storage import validate_embedding_dimension
 from ._http import InferenceHTTP
 from .cohere_reranker import CohereReranker
 from .openai_chat import (
@@ -198,10 +199,14 @@ def _embedding_config(env: Mapping[str, str]) -> tuple[_Endpoint, _EmbeddingOpti
     send_dimensions = env.get(f"{_PREFIX}EMBED_SEND_DIMENSIONS", "0")
     if send_dimensions not in ("0", "1"):
         raise ValueError(f"{_PREFIX}EMBED_SEND_DIMENSIONS 须为 0 或 1")
+    model = _required(env, "EMBED_MODEL")
+    revision = _required(env, "EMBED_REVISION")
+    dim = _positive_int(env, "EMBED_DIM")
+    validate_embedding_dimension(dim, name=f"{_PREFIX}EMBED_DIM")
     return endpoint, _EmbeddingOptions(
-        model=_required(env, "EMBED_MODEL"),
-        revision=_required(env, "EMBED_REVISION"),
-        dim=_positive_int(env, "EMBED_DIM"),
+        model=model,
+        revision=revision,
+        dim=dim,
         batch_size=_positive_int(env, "EMBED_BATCH_SIZE", 10),
         send_dimensions=send_dimensions == "1",
         timeout=_positive_seconds(env, "EMBED_TIMEOUT_SECONDS", 30),

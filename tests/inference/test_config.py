@@ -19,6 +19,7 @@ from .sample import CHAT_ENV, EMBED_ENV, chat_response
         ("LLM_TEMPERATURE", "2.1"),
         ("LLM_CONTEXT_WINDOW_TOKENS", "2048"),
         ("EMBED_DIM", "0"),
+        ("EMBED_DIM", "16001"),
         ("EMBED_REVISION", ""),
         ("EMBED_SEND_DIMENSIONS", "yes"),
         ("EMBED_TIMEOUT_SECONDS", "nan"),
@@ -59,6 +60,18 @@ def test_configured_optional_chat_requires_an_explicit_context_window() -> None:
         with pytest.raises(ValueError, match="MNEMOTRACE_LLM_CONTEXT_WINDOW_TOKENS"):
             async with open_inference(env, llm="optional"):
                 pytest.fail("应在装配时失败")
+
+    asyncio.run(exercise())
+
+
+def test_embedding_dimension_at_storage_limit_is_accepted() -> None:
+    """边界维度可装配嵌入端口。"""
+
+    async def exercise() -> None:
+        env = {**EMBED_ENV, "MNEMOTRACE_EMBED_DIM": "16000"}
+        async with open_inference(env, embed=True) as clients:
+            assert clients.embedder is not None
+            assert clients.embedder.dim == 16_000
 
     asyncio.run(exercise())
 

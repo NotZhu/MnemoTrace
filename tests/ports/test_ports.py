@@ -10,7 +10,7 @@ import pytest
 from mnemotrace import Memory
 from mnemotrace.application.profile import read_visible_profile
 from mnemotrace.application.salience import reinforce_context_facts
-from mnemotrace.application.sessions import create_session
+from mnemotrace.application.sessions import create_session, create_session_registration
 from mnemotrace.domain.entity import Entity
 from mnemotrace.domain.enums import ProfileGroup, Role, Source
 from mnemotrace.domain.fact import Fact
@@ -85,15 +85,17 @@ def test_ports_smoke() -> None:
     """通过协议类型组装模型调用、空间写入、原文读取与检索。"""
 
     async def exercise(write: bool) -> None:
-        storage: Storage = FakeStorage()
+        clock: Clock = FakeClock()
+        storage: Storage = FakeStorage(clock=clock)
         llm: LLM = FakeLLM()
         embedder: Embedder = FakeEmbedder()
         reranker: Reranker = FakeReranker()
-        clock: Clock = FakeClock()
         ids: IdGenerator = FakeIdGenerator()
         now = clock.now()
         space = Space(ids.new_space_id(), "owner", "测试空间", now)
-        session_id = ids.new_session_id()
+        subject = Entity(space.id, "用户")
+        await storage.create_space(space)
+        session_id = await create_session(storage, space.id, ids)
         completion = await llm.complete(system="返回原文", prompt="喜欢喝茶")
         structured = await llm.complete_json(
             system="返回结构化字段",
@@ -117,6 +119,8 @@ def test_ports_smoke() -> None:
         fact = replace(
             _FACT,
             id=ids.new_fact_id(),
+            space_id=space.id,
+            subject=EntityRef(subject.id),
             text=completion.text,
             recorded_at=now,
             provenance=(message.id,),
@@ -128,12 +132,10 @@ def test_ports_smoke() -> None:
         assert len(vector) == embedder.dim
         assert await embedder.embed(()) == ()
 
-        await storage.create_space(space)
-        assert await create_session(storage, space.id, ids) == session_id
         async with storage.session(space.id, write=True) as session:
             assert session.space_id == space.id
             await session.append_messages((message, message))
-            assert await session.upsert_entity(_SUBJECT) == _SUBJECT
+            assert await session.upsert_entity(subject) == subject
             await session.save_facts((fact,), changed_at=now)
             await session.upsert_vectors(
                 ((fact.id, vector),), embedding_space=embedder.embedding_space
@@ -143,8 +145,8 @@ def test_ports_smoke() -> None:
             assert await reader.get_space() == space
             assert await reader.last_messages(session_id, limit=2) == (message,)
             assert await reader.get_fact(fact.id) == fact
-            assert await reader.get_entities((_SUBJECT.id, EntityId("absent"))) == {
-                _SUBJECT.id: _SUBJECT
+            assert await reader.get_entities((subject.id, EntityId("absent"))) == {
+                subject.id: subject
             }
             assert await reader.get_messages((message.id, MessageId("absent"))) == {
                 message.id: message
@@ -175,6 +177,35 @@ def test_ports_smoke() -> None:
         ) == ((FactId("other"), 0.0), (fact.id, 1.0))
 
     asyncio.run(exercise(write=False))
+
+
+def test_session_pagination_uses_controlled_time_and_unique_ids() -> None:
+    """新会话排在前面，同一时刻登记的会话按标识排序。"""
+
+    async def exercise() -> None:
+        clock = FakeClock(at=20.0)
+        storage: Storage = FakeStorage(clock=clock)
+        ids = FakeIdGenerator()
+        await storage.create_space(_SPACE)
+        first_id = ids.new_session_id()
+        second_id = ids.new_session_id()
+        async with storage.session(_SPACE.id, write=True) as writer:
+            second = await writer.register_session(second_id)
+            first = await writer.register_session(first_id)
+        clock.at = 30.0
+        latest = await create_session_registration(storage, _SPACE.id, ids)
+        assert len({first.session_id, second.session_id, latest.session_id}) == 3
+        assert first.created_at.timestamp() == second.created_at.timestamp() == 20.0
+        assert latest.created_at.timestamp() == 30.0
+
+        async with storage.session(_SPACE.id) as reader:
+            (page_one,) = await reader.list_sessions(after=None, limit=1)
+            (page_two,) = await reader.list_sessions(after=page_one, limit=1)
+            (page_three,) = await reader.list_sessions(after=page_two, limit=1)
+            assert (page_one, page_two, page_three) == (latest, first, second)
+            assert not await reader.list_sessions(after=page_three, limit=1)
+
+    asyncio.run(exercise())
 
 
 def test_reinforce_context_facts_reads_latest_eligible_states() -> None:
@@ -512,7 +543,7 @@ def test_restricted_reads_hide_sensitive_facts() -> None:
             await session.upsert_entity(target)
             await session.save_facts((edge, sensitive, literal), changed_at=50.0)
             await session.upsert_vectors(
-                ((edge.id, (0.5, 0.0)), (sensitive.id, (1.0, 0.0))),
+                ((edge.id, (0.5, 0.5)), (sensitive.id, (1.0, 0.0))),
                 embedding_space=embedder.embedding_space,
             )
         async with storage.session(_SPACE.id) as session:
@@ -565,14 +596,15 @@ def test_restricted_reads_hide_sensitive_facts() -> None:
             assert await session.search_lexical(
                 "茶", 1, filters=filters, reference_time=50.0, min_score=1.0
             ) == ((edge.id, 1.0),)
-            assert await session.search_vectors(
+            hits = await session.search_vectors(
                 (1.0, 0.0),
                 1,
                 filters=filters,
                 reference_time=50.0,
                 embedding_space=embedder.embedding_space,
                 min_score=0.5,
-            ) == ((edge.id, 0.5),)
+            )
+            assert tuple(fact_id for fact_id, _ in hits) == (edge.id,)
             assert (
                 await session.search_vectors(
                     (1.0, 0.0),
@@ -580,7 +612,7 @@ def test_restricted_reads_hide_sensitive_facts() -> None:
                     filters=filters,
                     reference_time=50.0,
                     embedding_space=embedder.embedding_space,
-                    min_score=0.6,
+                    min_score=0.8,
                 )
                 == ()
             )
@@ -670,83 +702,6 @@ def test_fact_replacement_keeps_each_body_for_its_effective_time() -> None:
         async with storage.session(_SPACE.id, write=True) as session:
             await session.delete_facts((original.id,))
             assert await session.get_fact(successor.id) == successor
-
-    asyncio.run(exercise())
-
-
-def test_save_facts_rejects_fixed_field_changes_before_writing_batch() -> None:
-    """缺少截止触发事实或固定字段冲突时，整批保存失败。"""
-
-    async def exercise() -> None:
-        storage: Storage = FakeStorage()
-        await storage.create_space(_SPACE)
-        original = replace(_FACT, valid_at=20.0)
-        incoming = replace(original, id=FactId("incoming"))
-        async with storage.session(_SPACE.id, write=True) as session:
-            await session.upsert_entity(_SUBJECT)
-            with pytest.raises(ValueError, match="截止须引用"):
-                await session.save_facts(
-                    (original.close(25.0, 30.0), incoming),
-                    changed_at=30.0,
-                    cutoff_triggers={
-                        original.id: (CutoffTrigger(FactId("missing"), 25.0),)
-                    },
-                )
-            assert await session.get_facts((original.id, incoming.id)) == {}
-
-            await session.save_facts((original,), changed_at=30.0)
-            for field, changed in (
-                ("subject", replace(original, subject=EntityRef(EntityId("other")))),
-                ("predicate", replace(original, predicate=Predicate("偏好"))),
-                ("object", replace(original, object=LiteralValue("咖啡"))),
-                ("text", replace(original, text="修改原正文")),
-                ("valid_at", replace(original, valid_at=21.0)),
-                ("recorded_at", replace(original, recorded_at=11.0)),
-            ):
-                with pytest.raises(ValueError, match=field):
-                    await session.save_facts((incoming, changed), changed_at=40.0)
-
-        async with storage.session(_SPACE.id) as session:
-            assert await session.get_facts((original.id, incoming.id)) == {
-                original.id: original
-            }
-            assert await session.list_fact_changes(incoming.id) == ()
-            (creation,) = await session.list_fact_changes(original.id)
-            assert (creation.before, creation.after) == (None, original)
-
-    asyncio.run(exercise())
-
-
-def test_fact_cutoff_can_only_move_earlier() -> None:
-    """提前截止可以伴随元数据更新，首次获知时间保持固定。"""
-
-    async def exercise() -> None:
-        storage: Storage = FakeStorage()
-        await storage.create_space(_SPACE)
-        original = replace(_FACT, valid_at=20.0)
-        closed = original.close(valid_end=50.0, closed_at=60.0)
-        shortened = replace(
-            closed.shorten_validity(40.0), labels=(Label("food"),), sensitive=True
-        )
-        async with storage.session(_SPACE.id, write=True) as session:
-            await session.upsert_entity(_SUBJECT)
-            await session.save_facts((original,), changed_at=30.0)
-            await session.save_facts((closed,), changed_at=60.0)
-            await session.save_facts((shortened,), changed_at=70.0)
-            for field, changed in (
-                ("invalid_at", original),
-                ("invalid_at", closed),
-                ("expired_at", replace(shortened, expired_at=70.0)),
-            ):
-                with pytest.raises(ValueError, match=field):
-                    await session.save_facts((changed,), changed_at=80.0)
-
-        async with storage.session(_SPACE.id) as session:
-            assert await session.get_fact(original.id) == shortened
-            latest, cutoff, created = await session.list_fact_changes(original.id)
-            assert (latest.before, latest.after) == (closed, shortened)
-            assert (cutoff.before, cutoff.after) == (original, closed)
-            assert created.before is None
 
     asyncio.run(exercise())
 

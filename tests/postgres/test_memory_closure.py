@@ -3,7 +3,6 @@
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from uuid import uuid4
 
 import pytest
 
@@ -16,11 +15,10 @@ from mnemotrace import (
 )
 from mnemotrace.adapters.postgres import PostgresStorage
 from mnemotrace.domain.fact import Fact
-from mnemotrace.domain.ids import FactId, MessageId, SessionId
+from mnemotrace.domain.ids import FactId
 from mnemotrace.domain.values import EntityRef
 
-from ..inference.adjudication_samples import FactIds
-from ..ports.fakes import FakeClock, FakeEmbedder, FakeLLM
+from ..ports.fakes import FakeClock, FakeEmbedder, FakeIdGenerator, FakeLLM
 from .conftest import PgDatabase
 from .sample import pool, run, space
 
@@ -111,14 +109,6 @@ class _Embedder(FakeEmbedder):
         )
 
 
-class _Ids(FactIds):
-    def new_session_id(self) -> SessionId:
-        return SessionId(uuid4().hex)
-
-    def new_message_id(self) -> MessageId:
-        return MessageId(uuid4().hex)
-
-
 def _matching(
     evidence: Sequence[RecallEvidence], *facts: Fact
 ) -> dict[FactId, RecallEvidence]:
@@ -142,7 +132,7 @@ def test_cross_session_change_is_visible_at_the_effective_boundary(
                 llm=_Model(),
                 embedder=_Embedder(),
                 clock=FakeClock(),
-                ids=_Ids(),
+                ids=FakeIdGenerator(),
             )
             first = await memory.remember(
                 (MessageInput("user", _OLD, 10.0),),
@@ -193,7 +183,7 @@ def test_written_graph_and_session_erasure_close_through_recall(
                 llm=_Model(),
                 embedder=_Embedder(),
                 clock=FakeClock(),
-                ids=_Ids(),
+                ids=FakeIdGenerator(),
             )
             erased, kept = await memory.create_session(), await memory.create_session()
             bridge_write = await memory.remember(

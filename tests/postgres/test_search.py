@@ -226,50 +226,6 @@ def test_vector_top_k_filters_scope_before_ranking(
     run(exercise())
 
 
-def test_vector_dimension_limit_applies_before_registration(
-    database: PgDatabase,
-) -> None:
-    """读写共用 pgvector 的维度上限，边界维度仍可写入和检索。"""
-
-    async def exercise() -> None:
-        async with pool(database.runtime) as connections:
-            storage = PostgresStorage(connections, owner_id="owner")
-            scope = space()
-            await storage.create_space(scope)
-            subject = Entity(scope.id, "甲")
-            item = fact(subject, "vector-limit")
-            at_limit = (1.0,) + (0.0,) * 15_999
-            too_large = (*at_limit, 0.0)
-            async with storage.session(scope.id, write=True) as writer:
-                await writer.upsert_entity(subject)
-                await writer.save_facts((item,), changed_at=20.0)
-                with pytest.raises(ValueError, match="16000"):
-                    await writer.upsert_vectors(
-                        ((item.id, too_large),), embedding_space="limit"
-                    )
-                await writer.upsert_vectors(
-                    ((item.id, at_limit),), embedding_space="limit"
-                )
-            async with storage.session(scope.id) as reader:
-                with pytest.raises(ValueError, match="16000"):
-                    await reader.search_vectors(
-                        too_large,
-                        1,
-                        filters=FactFilter(),
-                        reference_time=20.0,
-                        embedding_space="unregistered",
-                    )
-                assert await reader.search_vectors(
-                    at_limit,
-                    1,
-                    filters=FactFilter(),
-                    reference_time=20.0,
-                    embedding_space="limit",
-                ) == ((item.id, 1.0),)
-
-    run(exercise())
-
-
 def test_lexical_search_uses_fact_text_and_same_filter_semantics(
     database: PgDatabase,
 ) -> None:

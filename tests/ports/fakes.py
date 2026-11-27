@@ -10,16 +10,16 @@ from collections.abc import (
     Sequence,
 )
 from contextlib import asynccontextmanager
-from dataclasses import fields, replace
-from datetime import UTC, datetime
+from dataclasses import dataclass, replace
 from itertools import count
-from typing import Literal, overload
+from math import fsum, isfinite, sqrt
+from typing import Literal, NamedTuple, Self, overload
 
 from mnemotrace.domain._validation import timestamp
 from mnemotrace.domain.entity import Entity
 from mnemotrace.domain.enums import Source
 from mnemotrace.domain.errors import DomainError
-from mnemotrace.domain.fact import Fact
+from mnemotrace.domain.fact import Fact, validate_fact_update
 from mnemotrace.domain.ids import (
     EntityId,
     FactId,
@@ -31,9 +31,12 @@ from mnemotrace.domain.message import Message
 from mnemotrace.domain.profile import Profile
 from mnemotrace.domain.salience import FactSalience
 from mnemotrace.domain.space import Space
+from mnemotrace.domain.time import utc_datetime
 from mnemotrace.domain.values import EntityRef, Predicate
+from mnemotrace.domain.vector import scale_by_max_abs
 from mnemotrace.ports.inference import Completion
 from mnemotrace.ports.queries import FactFilter, FactQuery
+from mnemotrace.ports.runtime import Clock
 from mnemotrace.ports.storage import (
     CutoffTrigger,
     FactChange,
@@ -42,31 +45,12 @@ from mnemotrace.ports.storage import (
     SessionRegistration,
     SessionUnavailable,
     SpaceSession,
+    SpaceUnavailable,
     SupportGroups,
     flatten_support_groups,
     validate_cutoff_triggers,
+    validate_embedding_dimension,
 )
-
-_MUTABLE_FACT_FIELDS = frozenset(
-    {"invalid_at", "expired_at", "labels", "sensitive", "provenance"}
-)
-
-
-def _validate_fact_update(before: Fact, after: Fact) -> None:
-    for field in fields(before):
-        if (
-            field.init
-            and field.name not in _MUTABLE_FACT_FIELDS
-            and getattr(before, field.name) != getattr(after, field.name)
-        ):
-            raise ValueError(f"同标识的事实不能修改 {field.name}")
-
-    if before.invalid_at is None:
-        return
-    if after.invalid_at is None or after.invalid_at > before.invalid_at:
-        raise ValueError("已有的 invalid_at 只能提前")
-    if after.expired_at != before.expired_at:
-        raise ValueError("expired_at 必须保留首次获知时刻")
 
 
 def _matches_time(fact: Fact, filters: FactFilter, reference_time: float) -> bool:
@@ -105,16 +89,31 @@ def _rank_hits(
     return tuple(sorted(eligible, key=lambda hit: (-hit[1], hit[0].value))[:limit])
 
 
+class _CosineVector(NamedTuple):
+    """保留缩放后的向量分量及其平方范数。"""
+
+    components: tuple[float, ...]
+    squared_norm: float
+
+    @classmethod
+    def from_vector(cls, vector: Sequence[float]) -> Self:
+        validate_embedding_dimension(len(vector))
+        components = tuple(scale_by_max_abs(vector))
+        return cls(components, fsum(value * value for value in components))
+
+
 class FakeSpaceSession:
     """保存测试使用的空间记录和索引项。
 
     Args:
         space: 此内存会话绑定的空间快照。
+        clock: 提供会话登记时刻的时钟。
     """
 
-    def __init__(self, space: Space) -> None:
+    def __init__(self, space: Space, clock: Clock) -> None:
         self.space_id = space.id
         self._space = space
+        self._clock = clock
         self._erasure_generation = 0
         self._fact_revision = 0
         self._sessions: dict[SessionId, SessionRegistration] = {}
@@ -128,7 +127,8 @@ class FakeSpaceSession:
         self._groups: dict[FactId, SupportGroups] = {}
         self._changes: list[tuple[FactChange, frozenset[MessageId]]] = []
         self._change_cursors = count(1)
-        self._vectors: dict[str, dict[FactId, Sequence[float]]] = {}
+        self._vectors: dict[str, dict[FactId, _CosineVector]] = {}
+        self._embedding_dims: dict[str, int] = {}
 
     async def get_space(self) -> Space:
         """读取会话的空间元数据。
@@ -189,7 +189,7 @@ class FakeSpaceSession:
         """
         if session_id in self._sessions:
             raise ValueError("对话标识已存在")
-        session = SessionRegistration(session_id, datetime.now(UTC))
+        session = SessionRegistration(session_id, utc_datetime(self._clock.now()))
         self._sessions[session_id] = session
         return session
 
@@ -331,7 +331,7 @@ class FakeSpaceSession:
             if fact.space_id != self.space_id:
                 raise ValueError("事实的 space_id 必须属于绑定空间")
             if before is not None:
-                _validate_fact_update(before, fact)
+                validate_fact_update(before, fact)
             elif fact.source is Source.MANUAL and fact.provenance:
                 raise ValueError("新建手工事实的 provenance 必须为空")
             entities = {fact.subject.entity_id}
@@ -352,10 +352,10 @@ class FakeSpaceSession:
                     if old_groups is not None
                     else ((fact.provenance,) if fact.provenance else ())
                 )
-            provenance = tuple(
-                dict.fromkeys(message_id for group in groups for message_id in group)
-            )
-            if any(not group for group in groups) or provenance != fact.provenance:
+            if (
+                any(not group for group in groups)
+                or flatten_support_groups(groups) != fact.provenance
+            ):
                 raise ValueError("证据组须非空且展开后与事实来源一致")
             triggers = triggers_by_id.get(fact.id, ())
             validate_cutoff_triggers(
@@ -811,15 +811,30 @@ class FakeSpaceSession:
     async def upsert_vectors(
         self, items: Sequence[tuple[FactId, Sequence[float]]], *, embedding_space: str
     ) -> None:
-        """把合成向量写入指定的内存索引。
+        """校验并缩放向量，再将向量和平方范数整批写入内存索引。
 
         Args:
             items: 事实标识及对应的合成向量。
             embedding_space: 选择内存索引的嵌入空间标识。
+
+        Raises:
+            ValueError: 标识为空、事实缺失、向量无效或维度不一致。
         """
-        if items:
-            self._vectors.setdefault(embedding_space, {}).update(items)
-            self._fact_revision += 1
+        if not items:
+            return
+        if not embedding_space.strip():
+            raise ValueError("embedding_space 须为非空标识")
+        vectors = [
+            (fact_id, _CosineVector.from_vector(vector)) for fact_id, vector in items
+        ]
+        dim = self._embedding_dims.get(embedding_space, len(vectors[0][1].components))
+        if any(len(vector.components) != dim for _, vector in vectors):
+            raise ValueError("写入向量与嵌入空间登记的维度不一致")
+        if any(fact_id not in self._facts for fact_id, _ in vectors):
+            raise ValueError("向量对应的事实须在绑定空间内存在")
+        self._embedding_dims[embedding_space] = dim
+        self._vectors.setdefault(embedding_space, {}).update(vectors)
+        self._fact_revision += 1
 
     async def search_vectors(
         self,
@@ -831,7 +846,7 @@ class FakeSpaceSession:
         embedding_space: str,
         min_score: float | None = None,
     ) -> Sequence[tuple[FactId, float]]:
-        """用点积对同嵌入空间的合成向量排序。
+        """用余弦相似度对同嵌入空间的合成向量排序。
 
         Args:
             vector: 查询向量。
@@ -839,26 +854,39 @@ class FakeSpaceSession:
             filters: 候选事实须满足的条件。
             reference_time: 判断事实状态使用的默认 UTC epoch 秒。
             embedding_space: 要查询的内存索引标识。
-            min_score: 包含下界的最低点积分数，省略时不限。
+            min_score: 包含下界的最低余弦分数，省略时不限。
 
         Returns:
             按分数倒序、事实标识升序排列的标识和分数。
 
         Raises:
-            ValueError: 查询和候选向量的维度不一致。
+            ValueError: 阈值、查询向量或嵌入空间标识无效，或向量维度不一致。
         """
+        if min_score is not None and not isfinite(min_score):
+            raise ValueError("min_score 须为有限数值")
+        query = _CosineVector.from_vector(vector)
+        if not embedding_space.strip():
+            raise ValueError("embedding_space 须为非空标识")
+        dim = self._embedding_dims.get(embedding_space)
+        if dim is None:
+            return ()
+        if len(query.components) != dim:
+            raise ValueError("查询向量与嵌入空间登记的维度不一致")
         vectors = self._vectors.get(embedding_space, {})
         hits: list[tuple[FactId, float]] = []
         for fact in self._matching_facts(filters, reference_time):
-            if fact.id in vectors:
-                score = sum(
-                    (
-                        left * right
-                        for left, right in zip(vector, vectors[fact.id], strict=True)
-                    ),
-                    0.0,
+            candidate = vectors.get(fact.id)
+            if candidate is None:
+                continue
+            dot = fsum(
+                left * right
+                for left, right in zip(
+                    query.components, candidate.components, strict=True
                 )
-                hits.append((fact.id, score))
+            )
+            # 先乘平方范数再开方，避免分别归一化时的舍入使边界得分偏低。
+            score = dot / sqrt(query.squared_norm * candidate.squared_norm)
+            hits.append((fact.id, min(1.0, max(-1.0, score))))
         return _rank_hits(hits, limit, min_score)
 
     async def search_lexical(
@@ -894,9 +922,13 @@ class FakeStorage:
     """以共享内存记录验证端口的组合调用。
 
     事务隔离、只读限制和并发语义由实际适配器的集成测试验收。
+
+    Args:
+        clock: 提供会话登记时刻的时钟。省略时使用独立的 FakeClock。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Clock | None = None) -> None:
+        self._clock = FakeClock() if clock is None else clock
         self.sessions: dict[SpaceId, FakeSpaceSession] = {}
 
     async def create_space(self, space: Space) -> None:
@@ -904,8 +936,13 @@ class FakeStorage:
 
         Args:
             space: 要注册的空间快照。
+
+        Raises:
+            ValueError: 空间标识已存在。
         """
-        self.sessions[space.id] = FakeSpaceSession(space)
+        if space.id in self.sessions:
+            raise ValueError("空间标识已存在")
+        self.sessions[space.id] = FakeSpaceSession(space, self._clock)
 
     @asynccontextmanager
     async def session(
@@ -921,9 +958,12 @@ class FakeStorage:
             绑定到目标空间的内存会话。
 
         Raises:
-            KeyError: 指定空间尚未注册。
+            SpaceUnavailable: 指定空间尚未注册。
         """
-        yield self.sessions[space_id]
+        session = self.sessions.get(space_id)
+        if session is None:
+            raise SpaceUnavailable("空间不可访问")
+        yield session
 
 
 class FakeLLM:
@@ -1052,49 +1092,38 @@ class FakeReranker:
         return tuple((fact_id, float(query in text)) for fact_id, text in documents)
 
 
+@dataclass
 class FakeClock:
-    """为测试提供固定时钟。"""
+    """为测试提供可显式设定的 UTC epoch 时钟。"""
+
+    at: float = 100.0
 
     def now(self) -> float:
-        """读取测试参考时刻。
-
-        Returns:
-            固定的 UTC epoch 秒数 100.0。
-        """
-        return 100.0
+        """读取当前设定的 UTC epoch 秒数。"""
+        return self.at
 
 
 class FakeIdGenerator:
-    """为各类测试对象提供可预测的固定标识。"""
+    """按类型为同一测试场景依次分配可复现的唯一标识。"""
+
+    def __init__(self) -> None:
+        self._spaces = count()
+        self._sessions = count()
+        self._messages = count()
+        self._facts = count()
 
     def new_space_id(self) -> SpaceId:
-        """为测试空间提供标识。
-
-        Returns:
-            固定的空间标识。
-        """
-        return SpaceId("space")
+        """为测试空间分配下一个标识。"""
+        return SpaceId(f"space-{next(self._spaces)}")
 
     def new_session_id(self) -> SessionId:
-        """为测试会话提供标识。
-
-        Returns:
-            固定的会话标识。
-        """
-        return SessionId("session")
+        """为测试会话分配下一个标识。"""
+        return SessionId(f"session-{next(self._sessions)}")
 
     def new_message_id(self) -> MessageId:
-        """为测试原文提供标识。
-
-        Returns:
-            固定的原文标识。
-        """
-        return MessageId("message")
+        """为测试原文分配下一个标识。"""
+        return MessageId(f"incoming-{next(self._messages)}")
 
     def new_fact_id(self) -> FactId:
-        """为测试事实提供标识。
-
-        Returns:
-            固定的事实标识。
-        """
-        return FactId("fact")
+        """为测试事实分配下一个标识。"""
+        return FactId(f"new-{next(self._facts)}")

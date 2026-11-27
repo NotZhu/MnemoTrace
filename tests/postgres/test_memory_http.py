@@ -1233,13 +1233,7 @@ def test_http_tracks_only_final_reranked_evidence_and_rechecks_visibility(
 ) -> None:
     """先用固定的 Cohere 分数重排，再验证最终结果与写回快照保护。"""
 
-    class MutableClock(FakeClock):
-        value = 100.0
-
-        def now(self) -> float:
-            return self.value
-
-    clock = MutableClock()
+    clock = FakeClock()
     now = clock.now()
     scope_id = corpus.sibling.id
     subject = Entity(scope_id, "合成重排")
@@ -1469,7 +1463,7 @@ def test_http_tracks_only_final_reranked_evidence_and_rechecks_visibility(
                     if after_queue == "expire"
                     else replace(current, sensitive=True)
                 )
-                clock.value = now + 1
+                clock.at = now + 1
                 async with storage.session(scope_id, write=True) as writer:
                     await writer.save_facts((updated,), changed_at=clock.now())
             resume.set()

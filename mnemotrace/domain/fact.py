@@ -130,6 +130,36 @@ class Fact:
         return replace(self, invalid_at=invalid_at)
 
 
+def validate_fact_update(before: Fact, after: Fact) -> None:
+    """校验同一标识的事实更新。
+
+    Args:
+        before: 已保存的事实快照。
+        after: 待保存的事实快照。
+
+    Raises:
+        ValueError: 更新违反有效截止约束或改变了固定字段。
+    """
+    expected = before
+    if after.invalid_at != before.invalid_at:
+        if after.invalid_at is None:
+            raise ValueError("已截止的事实不能重开")
+        if before.invalid_at is None:
+            assert after.expired_at is not None
+            expected = before.close(after.invalid_at, after.expired_at)
+        else:
+            expected = before.shorten_validity(after.invalid_at)
+    expected = replace(
+        expected,
+        labels=after.labels,
+        sensitive=after.sensitive,
+        provenance=after.provenance,
+        profile_groups=after.profile_groups,
+    )
+    if expected != after:
+        raise ValueError("同标识的事实不能改变固定字段或首次获知时刻")
+
+
 def intervals_disjoint(left: Fact, right: Fact) -> bool:
     """判断已有有效边界能否证明两个左闭右开区间错开。
 

@@ -82,7 +82,7 @@ def test_read_only_recall_combines_independent_hits() -> None:
             await writer.upsert_vectors(
                 (
                     (semantic.id, (1.0, 0.0)),
-                    (shared.id, (0.9, 0.0)),
+                    (shared.id, (0.9, 0.3)),
                     (weak.id, (0.0, 1.0)),
                 ),
                 embedding_space=embedder.embedding_space,
@@ -506,7 +506,7 @@ def test_recall_rejects_an_invalid_query_embedding(vectors: object) -> None:
 
     async def exercise() -> None:
         await storage.create_space(_SPACE)
-        with pytest.raises(InferenceError, match="查询嵌入"):
+        with pytest.raises(InferenceError, match="嵌入"):
             await reader.recall("发布规范")
 
     asyncio.run(exercise())

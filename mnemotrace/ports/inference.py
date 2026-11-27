@@ -1,6 +1,8 @@
 """定义文本生成、结构化补全和批量嵌入端口。"""
 
 from collections.abc import Callable, Mapping, Sequence
+from math import isfinite
+from numbers import Real
 from typing import NamedTuple, Protocol, overload
 
 
@@ -160,16 +162,68 @@ class Embedder(Protocol):
     async def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
         """按输入顺序生成一一对应的向量。
 
-        适配器校验模型输出的批次大小、向量长度和分量有限性。
+        适配器校验模型输出的批次大小、向量长度、分量有限性与非零要求。
 
         Args:
             texts: 待嵌入的文本序列。
 
         Returns:
-            向量序列，每条向量长度为 dim。空输入对应空序列。
+            向量序列，每条向量长度为 dim，至少一个分量非零，分量须为有限实数
+            且不含布尔值。空输入对应空序列。
 
         Raises:
             InferenceError: 请求失败或上游返回无效向量。
             TimeoutError: 请求或整批嵌入超过时限。
         """
         ...
+
+
+def validate_embedding_batch(
+    vectors: object, *, expected_count: int, dimension: int
+) -> tuple[tuple[float, ...], ...]:
+    """校验嵌入结果并按原顺序返回浮点向量。
+
+    Args:
+        vectors: 推理返回的向量批次。
+        expected_count: 本批输入文本数。
+        dimension: 嵌入端口声明的维度。
+
+    Returns:
+        通过校验的浮点向量元组。
+
+    Raises:
+        InferenceError: 批次数量、向量维度或向量分量违反端口契约。
+    """
+    if (
+        not isinstance(vectors, Sequence)
+        or isinstance(vectors, (str, bytes, bytearray))
+        or len(vectors) != expected_count
+    ):
+        raise InferenceError("嵌入结果的向量数量须与输入数量一致")
+
+    batch: list[tuple[float, ...]] = []
+    for vector in vectors:
+        if not isinstance(vector, Sequence) or isinstance(
+            vector, (str, bytes, bytearray)
+        ):
+            raise InferenceError("嵌入结果须返回数值序列")
+        if not vector or len(vector) != dimension:
+            raise InferenceError("嵌入向量维度与 Embedder 配置不一致")
+        components: list[float] = []
+        for value in vector:
+            # 原生数值占多数，优先跳过 Real 的抽象类型检查。
+            if type(value) not in (float, int) and (
+                isinstance(value, bool) or not isinstance(value, Real)
+            ):
+                raise InferenceError("嵌入向量分量须为有限实数")
+            try:
+                component = float(value)
+            except (OverflowError, TypeError, ValueError):
+                raise InferenceError("嵌入向量分量须为有限实数") from None
+            if not isfinite(component):
+                raise InferenceError("嵌入向量分量须为有限实数")
+            components.append(component)
+        if not any(components):
+            raise InferenceError("嵌入向量不能全为零")
+        batch.append(tuple(components))
+    return tuple(batch)
