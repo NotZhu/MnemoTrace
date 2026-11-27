@@ -268,12 +268,14 @@ print(next((item["source_message_ids"][0] for item in evidence if item["source_m
 | `profile.communication_preferences` | 沟通偏好                                             |
 | `profile.preferences`               | 一般偏好                                             |
 | `profile.constraints`               | 约束与禁止事项                                       |
-| `updated_at`                        | 最近一次成功刷新时间                                 |
+| `updated_at`                        | 当前画像内容的写入时间                                 |
 | `refresh_status`                    | `idle`、`queued`、`running`、`succeeded` 或 `failed` |
 | `next_retry_at`                     | 下次可重试时间                                       |
 | `refresh_error.code`                | 最近一次刷新的公开错误分类                           |
 
-每个画像条目包含 `text` 和支撑它的 `fact_ids`。`POST /v1/spaces/{space_id}/profile/refresh` 发送空正文，返回 `202` 和 `Location`；之后轮询 `GET /profile` 查看刷新状态。
+每个画像条目包含 `text` 和支撑它的 `fact_ids`。同一事实可以为多个分组提供证据。一次刷新统一发布整份画像。等待刷新或刷新失败时，接口继续返回上一版中证据仍有效的条目。`profile_input_too_large` 表示任一待刷新组的有效证据超过条数上限，或合并后的请求超过模型上下文预算。
+
+`POST /v1/spaces/{space_id}/profile/refresh` 发送空正文，请求重算四组，返回 `202` 和 `Location`。之后轮询 `GET /profile` 查看整次刷新状态。
 
 ## 幂等重试与恢复
 

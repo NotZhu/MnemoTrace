@@ -15,3 +15,12 @@ class Source(StrEnum):
 
     EXTRACTED = "extracted"
     MANUAL = "manual"
+
+
+class ProfileGroup(StrEnum):
+    """画像条目和支持该组的事实所使用的固定分组。"""
+
+    BASIC = "basic"
+    COMMUNICATION_PREFERENCES = "communication_preferences"
+    PREFERENCES = "preferences"
+    CONSTRAINTS = "constraints"

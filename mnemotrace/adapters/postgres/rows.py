@@ -3,7 +3,7 @@
 from typing import TypedDict, Unpack
 
 from ...domain.entity import Entity, EntityKind
-from ...domain.enums import Role, Source
+from ...domain.enums import ProfileGroup, Role, Source
 from ...domain.fact import Fact
 from ...domain.ids import EntityId, FactId, MessageId, SessionId, SpaceId
 from ...domain.message import Message
@@ -154,6 +154,7 @@ class FactRow(TypedDict):
     sensitive: bool
     source: str
     provenance: list[str]
+    profile_groups: list[str]
 
 
 def fact_from_row(**row: Unpack[FactRow]) -> Fact:
@@ -189,6 +190,7 @@ def fact_from_row(**row: Unpack[FactRow]) -> Fact:
         labels=tuple(map(Label, row["labels"])),
         sensitive=row["sensitive"],
         source=Source(row["source"]),
+        profile_groups=tuple(map(ProfileGroup, row["profile_groups"])),
     )
 
 
@@ -221,6 +223,7 @@ def fact_to_row(fact: Fact) -> FactRow:
         "sensitive": fact.sensitive,
         "source": fact.source.value,
         "provenance": [source.value for source in fact.provenance],
+        "profile_groups": [group.value for group in fact.profile_groups],
     }
 
 

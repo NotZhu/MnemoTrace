@@ -69,18 +69,19 @@ def _check_history(migrations: tuple[_Migration, ...], applied: dict[str, str]) 
 def _check_prerequisites(conn: psycopg.Connection[TupleRow]) -> None:
     row = conn.execute("""
         SELECT to_regnamespace('mnemotrace') IS NOT NULL,
-               EXISTS (
-                   SELECT 1 FROM pg_extension AS extension
+               ARRAY(
+                   SELECT extension.extname::text FROM pg_extension AS extension
                    JOIN pg_namespace AS namespace ON namespace.oid = extension.extnamespace
-                   WHERE extension.extname = 'vector' AND namespace.nspname = 'public'
+                   WHERE extension.extname IN ('vector', 'btree_gist') AND namespace.nspname = 'public'
                )
         """).fetchone()
     assert row is not None
-    has_schema, has_vector = row
+    has_schema, extensions = row
     if not has_schema:
         raise MigrationError("请先初始化 mnemotrace schema")
-    if not has_vector:
-        raise MigrationError("请先在 public schema 安装 vector 扩展")
+    for required in ("vector", "btree_gist"):
+        if required not in extensions:
+            raise MigrationError(f"请先在 public schema 安装 {required} 扩展")
 
 
 def apply_migrations(dsn: str) -> tuple[str, ...]:

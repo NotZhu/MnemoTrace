@@ -386,9 +386,11 @@ class FakeSpaceSession:
         if self._profile is not None:
             self._profile = self._profile.without_facts(
                 {
-                    after.id
-                    for before, after, _, _ in changes
-                    if before is not None and not before.same_except_provenance(after)
+                    change.after.id
+                    for change in saved
+                    if change.before is not None
+                    and not change.before.sensitive
+                    and change.after.sensitive
                 }
             )
         if saved:
@@ -798,16 +800,9 @@ class FakeSpaceSession:
             raise ValueError("画像更新时间不能倒退")
         self._profile = profile
 
-    async def get_profile(self, *, exclude_sensitive: bool = False) -> Profile | None:
-        """读取内存画像快照。
-
-        Args:
-            exclude_sensitive: 是否省略整份画像。
-
-        Returns:
-            已保存的画像，缺失或受限时为 None。
-        """
-        return None if exclude_sensitive else self._profile
+    async def get_profile(self) -> Profile | None:
+        """读取内存中已发布的画像快照。"""
+        return self._profile
 
     async def delete_profile(self) -> None:
         """清除内存中的当前画像。"""

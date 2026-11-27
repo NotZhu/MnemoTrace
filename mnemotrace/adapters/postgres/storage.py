@@ -19,7 +19,7 @@ from ...ports.storage import (
     SpaceSession,
     SpaceUnavailable,
 )
-from .profile_schedule import cancel_auto_refresh
+from .profile_schedule import cancel_auto_refresh, schedule_pending_profile
 from .reader import PostgresReader
 from .rows import INSERT_SPACE, space_from_row, space_insert_values
 from .session import PostgresSession
@@ -171,6 +171,8 @@ class PostgresStorage:
                 raise SpaceUnavailable("空间不可访问")
             if profile_auto_refresh is False:
                 await cancel_auto_refresh(conn, space_id)
+            if profile_auto_refresh is True:
+                await schedule_pending_profile(conn, space_id)
             if session_summary_enabled is False:
                 await cancel_summaries(conn, space_id)
         return space

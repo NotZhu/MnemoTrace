@@ -3,7 +3,6 @@
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import groupby
-from typing import cast
 
 from psycopg import DataError, sql
 from psycopg.rows import args_row
@@ -12,7 +11,7 @@ from psycopg.types.json import Jsonb
 from ...application.profile import is_profile_evidence
 from ...domain._validation import timestamp
 from ...domain.entity import Entity
-from ...domain.enums import Source
+from ...domain.enums import ProfileGroup, Source
 from ...domain.errors import DomainError
 from ...domain.fact import Fact
 from ...domain.ids import FactId, MessageId, SessionId, SpaceId
@@ -30,7 +29,13 @@ from ...ports.storage import (
 )
 from . import search
 from .facts import FactWrite, validate_fact_update, write_fact_batch
-from .profile_schedule import schedule_auto_refresh
+from .profile_schedule import (
+    clear_profile_schedule,
+    mark_profile_groups,
+    register_profile_transitions,
+    schedule_auto_refresh,
+    unprocessed_profile_expiry_groups,
+)
 from .reader import PostgresReader
 from .rows import entity_from_row, profile_to_json
 from .session_summary_schedule import schedule_summaries
@@ -316,23 +321,23 @@ class PostgresSession(PostgresReader):
             if before is not None:
                 validate_fact_update(before, fact)
             changes.append(FactWrite(before, fact, groups, triggers, append_at))
-        invalidated = {
-            change.after.id
-            for change in changes
-            if change.before is not None
-            and not change.before.same_except_provenance(change.after)
-        }
         async with conn.transaction():
             saved = await write_fact_batch(conn, changes, changed_at)
             if saved:
                 await self._advance_fact_revision()
-            await self._prune_profile(invalidated)
-            await self._track_profile_changes(saved, invalidated)
+            await self._prune_profile(
+                {
+                    change.after.id
+                    for change in saved
+                    if change.before is not None
+                    and not change.before.sensitive
+                    and change.after.sensitive
+                }
+            )
+            await self._track_profile_changes(saved)
         return saved
 
-    async def _track_profile_changes(
-        self, changes: Sequence[FactChange], invalidated: set[FactId]
-    ) -> None:
+    async def _track_profile_changes(self, changes: Sequence[FactChange]) -> None:
         subject = Entity.space_user(self.space_id)
         candidates = [
             change
@@ -340,46 +345,65 @@ class PostgresSession(PostgresReader):
             if change.after.subject.entity_id == subject.id
             and change.after.source is Source.EXTRACTED
             and (
-                not change.after.sensitive
-                or (change.before is not None and not change.before.sensitive)
+                change.after.profile_groups
+                or (change.before is not None and change.before.profile_groups)
             )
             and (
                 change.before is None
-                or change.after.id in invalidated
-                or change.after.provenance[: len(change.before.provenance)]
-                != change.before.provenance
+                or change.before.profile_groups != change.after.profile_groups
+                or change.before.sensitive != change.after.sensitive
+                or change.before.invalid_at != change.after.invalid_at
             )
         ]
         if not candidates:
             return
-        auto_at = await self._advance_profile_evidence_revision()
-        if auto_at is not None and any(
-            (change.before is None or change.after.id in invalidated)
-            and (
-                is_profile_evidence(change.after, subject, auto_at)
-                or (
-                    change.before is not None
-                    and is_profile_evidence(change.before, subject, auto_at)
-                )
-            )
-            for change in candidates
-        ):
-            await schedule_auto_refresh(self._conn, self.space_id)
-
-    async def _advance_profile_evidence_revision(self) -> float | None:
         cursor = await self._conn.execute(
-            """
-            UPDATE mnemotrace.spaces
-            SET profile_evidence_revision = profile_evidence_revision + 1
-            WHERE space_id = %s
-            RETURNING CASE WHEN profile_auto_refresh
-                THEN EXTRACT(EPOCH FROM statement_timestamp())::double precision END
-            """,
-            (self.space_id.value,),
+            "SELECT EXTRACT(EPOCH FROM statement_timestamp())::double precision"
         )
         row = await cursor.fetchone()
         assert row is not None
-        return cast(float | None, row[0])
+        at: float = row[0]
+        dirty: set[ProfileGroup] = set()
+        expiries: list[tuple[frozenset[ProfileGroup], float]] = []
+        transitions: dict[ProfileGroup, float] = {}
+        for change in candidates:
+            before, after = change.before, change.after
+            dirty.update(
+                group
+                for fact in (before, after)
+                if fact is not None and is_profile_evidence(fact, subject, at)
+                for group in fact.profile_groups
+            )
+            if (
+                before is not None
+                and not before.sensitive
+                and before.profile_groups
+                and before.invalid_at is not None
+                and before.invalid_at <= at
+                and (
+                    after.sensitive
+                    or after.invalid_at != before.invalid_at
+                    or any(
+                        group not in after.profile_groups
+                        for group in before.profile_groups
+                    )
+                )
+            ):
+                expiries.append((frozenset(before.profile_groups), before.invalid_at))
+            if not after.sensitive:
+                for boundary in (after.valid_at, after.invalid_at):
+                    if boundary is not None and boundary > at:
+                        for group in after.profile_groups:
+                            transitions[group] = min(
+                                boundary, transitions.get(group, boundary)
+                            )
+        dirty.update(
+            await unprocessed_profile_expiry_groups(self._conn, self.space_id, expiries)
+        )
+        await register_profile_transitions(self._conn, self.space_id, transitions)
+        if dirty:
+            await mark_profile_groups(self._conn, self.space_id, dirty)
+            await schedule_auto_refresh(self._conn, self.space_id)
 
     async def save_salience(self, states: Mapping[FactId, FactSalience]) -> None:
         """批量替换事实的访问强化状态。
@@ -554,9 +578,11 @@ class PostgresSession(PostgresReader):
                 """
                 DELETE FROM mnemotrace.facts
                 WHERE space_id = %s AND fact_id = ANY(%s::text[])
-                RETURNING fact_id, subject_id = %s AND source = %s AND NOT sensitive,
+                RETURNING fact_id, profile_groups,
+                    subject_id = %s AND source = %s AND NOT sensitive,
                     (valid_at IS NULL OR valid_at <= EXTRACT(EPOCH FROM statement_timestamp()))
-                    AND (invalid_at IS NULL OR invalid_at > EXTRACT(EPOCH FROM statement_timestamp()))
+                    AND (invalid_at IS NULL OR invalid_at > EXTRACT(EPOCH FROM statement_timestamp())),
+                    CASE WHEN invalid_at <= EXTRACT(EPOCH FROM statement_timestamp()) THEN invalid_at END
                 """,
                 (
                     *params,
@@ -565,16 +591,26 @@ class PostgresSession(PostgresReader):
                 ),
             )
             rows = await cursor.fetchall()
-        deleted = frozenset(FactId(fact_id) for fact_id, _, _ in rows)
+        deleted = frozenset(FactId(fact_id) for fact_id, *_ in rows)
         if deleted:
             await self._advance_fact_revision()
         await self._prune_profile(deleted)
-        if any(evidence for _, evidence, _ in rows):
-            auto_at = await self._advance_profile_evidence_revision()
-            if auto_at is not None and any(
-                evidence and current for _, evidence, current in rows
-            ):
-                await schedule_auto_refresh(self._conn, self.space_id)
+        dirty: set[ProfileGroup] = set()
+        expiries: list[tuple[frozenset[ProfileGroup], float]] = []
+        for _, groups, evidence, current, invalid_at in rows:
+            if not groups or not evidence:
+                continue
+            affected = frozenset(map(ProfileGroup, groups))
+            if current:
+                dirty.update(affected)
+            elif invalid_at is not None:
+                expiries.append((affected, invalid_at))
+        dirty.update(
+            await unprocessed_profile_expiry_groups(self._conn, self.space_id, expiries)
+        )
+        if dirty:
+            await mark_profile_groups(self._conn, self.space_id, dirty)
+            await schedule_auto_refresh(self._conn, self.space_id)
         return deleted
 
     async def _erase_session_support(self, sources: Sequence[str]) -> frozenset[FactId]:
@@ -685,8 +721,8 @@ class PostgresSession(PostgresReader):
         )
 
     async def _clear_space_contents(self) -> None:
+        await clear_profile_schedule(self._conn, self.space_id)
         for table in (
-            "profile_refreshes",
             "profiles",
             "fact_changes",
             "facts",

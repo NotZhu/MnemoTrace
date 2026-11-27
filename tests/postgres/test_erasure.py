@@ -66,7 +66,7 @@ def test_profile_requires_local_sources_and_monotonic_updates(
 
 
 @pytest.mark.parametrize("change", ["sensitive", "cutoff", "labels"])
-def test_fact_changes_prune_only_dependent_profile_entries(
+def test_only_sensitivity_and_erasure_prune_the_stored_profile(
     database: PgDatabase,
     change: str,
 ) -> None:
@@ -94,15 +94,16 @@ def test_fact_changes_prune_only_dependent_profile_entries(
                     "labels": replace(first, labels=(Label("technology"),)),
                 }[change]
                 await writer.save_facts((revised,), changed_at=40.0)
+            retained = () if change == "sensitive" else (changed,)
             async with storage.session(scope.id) as reader:
                 assert await reader.get_profile() == profile.update(
-                    {"basic": (erased, kept)}, 30.0
+                    {"basic": (*retained, erased, kept)}, 30.0
                 )
             async with storage.session(scope.id, write=True) as writer:
                 await writer.delete_facts((second.id,))
             async with storage.session(scope.id) as reader:
                 assert await reader.get_profile() == profile.update(
-                    {"basic": (kept,)}, 30.0
+                    {"basic": (*retained, kept)}, 30.0
                 )
 
     run(exercise())
@@ -183,7 +184,6 @@ def test_session_erasure_cleans_indexes_changes_and_dependent_profile(
                 )
                 assert len(await writer.list_fact_changes(old.id)) == 1
                 assert await writer.get_profile() == profile
-                assert await writer.get_profile(exclude_sensitive=True) is None
                 assert (
                     await writer.get_salience((survivor.id,), exclude_sensitive=True)
                     == {}

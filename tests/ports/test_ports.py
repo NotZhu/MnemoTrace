@@ -8,10 +8,11 @@ from typing import assert_type, cast
 import pytest
 
 from mnemotrace import Memory
+from mnemotrace.application.profile import read_visible_profile
 from mnemotrace.application.salience import reinforce_context_facts
 from mnemotrace.application.sessions import create_session
 from mnemotrace.domain.entity import Entity
-from mnemotrace.domain.enums import Role, Source
+from mnemotrace.domain.enums import ProfileGroup, Role, Source
 from mnemotrace.domain.fact import Fact
 from mnemotrace.domain.ids import (
     EntityId,
@@ -435,8 +436,66 @@ def test_fact_query_time_filters_and_cursor() -> None:
     asyncio.run(exercise())
 
 
-def test_restricted_reads_hide_sensitive_facts_and_profile() -> None:
-    """受限读取隐藏敏感事实和画像，图与索引在截取前完成过滤。"""
+def test_profile_retains_valid_entries_after_fact_updates() -> None:
+    async def exercise() -> None:
+        storage: Storage = FakeStorage()
+        await storage.create_space(_SPACE)
+        subject = Entity.space_user(_SPACE.id)
+        message = Message(
+            MessageId("profile-source"),
+            _SPACE.id,
+            SessionId("profile-session"),
+            Role.USER,
+            "我喜欢喝茶，也喜欢散步。",
+            None,
+            10.0,
+        )
+        group = ProfileGroup.PREFERENCES
+        first = replace(
+            _FACT,
+            subject=EntityRef(subject.id),
+            provenance=(message.id,),
+            source=Source.EXTRACTED,
+            profile_groups=(group,),
+        )
+        second = replace(
+            first, id=FactId("other"), object=LiteralValue("散步"), text="喜欢散步"
+        )
+        expires = ProfileEntry(first.text, (first.id,))
+        remains = ProfileEntry(second.text, (second.id,))
+        saved = Profile(_SPACE.id, {group: (expires, remains)}, 20.0)
+
+        async with storage.session(_SPACE.id, write=True) as session:
+            await session.upsert_entity(subject)
+            await session.register_session(message.session_id)
+            await session.append_messages((message,))
+            await session.save_facts((first, second), changed_at=20.0)
+            await session.save_profile(saved)
+
+            labeled = replace(first, labels=(Label("food"),))
+            await session.save_facts((labeled,), changed_at=30.0)
+            assert await session.get_profile() == saved
+
+            closed = labeled.close(50.0, 40.0)
+            await session.save_facts((closed,), changed_at=40.0)
+            before = await read_visible_profile(session, reference_time=49.0)
+            assert before is not None and before.data[group] == (expires, remains)
+            after = await read_visible_profile(session, reference_time=50.0)
+            assert after is not None and after.data[group] == (remains,)
+            assert await session.get_profile() == saved
+
+            await session.save_facts(
+                (replace(closed, sensitive=True),), changed_at=51.0
+            )
+            assert await session.get_profile() == saved.update(
+                {group: (remains,)}, 20.0
+            )
+
+    asyncio.run(exercise())
+
+
+def test_restricted_reads_hide_sensitive_facts() -> None:
+    """受限读取隐藏敏感事实，图与索引在截取前完成过滤。"""
 
     async def exercise() -> None:
         storage: Storage = FakeStorage()
@@ -448,9 +507,6 @@ def test_restricted_reads_hide_sensitive_facts_and_profile() -> None:
             edge, id=FactId("sensitive"), text="茶 茶", valid_at=40.0, sensitive=True
         )
         literal = replace(_FACT, id=FactId("literal"), valid_at=30.0)
-        profile = Profile(
-            _SPACE.id, {"偏好": (ProfileEntry(edge.text, (edge.id,)),)}, 50.0
-        )
         async with storage.session(_SPACE.id, write=True) as session:
             await session.upsert_entity(_SUBJECT)
             await session.upsert_entity(target)
@@ -459,7 +515,6 @@ def test_restricted_reads_hide_sensitive_facts_and_profile() -> None:
                 ((edge.id, (0.5, 0.0)), (sensitive.id, (1.0, 0.0))),
                 embedding_space=embedder.embedding_space,
             )
-            await session.save_profile(profile)
         async with storage.session(_SPACE.id) as session:
             assert await session.get_fact(sensitive.id) == sensitive
             assert await session.get_fact(sensitive.id, exclude_sensitive=True) is None
@@ -467,8 +522,6 @@ def test_restricted_reads_hide_sensitive_facts_and_profile() -> None:
             assert await session.get_facts(
                 (edge.id, sensitive.id, FactId("absent")), exclude_sensitive=True
             ) == {edge.id: edge}
-            assert await session.get_profile() == profile
-            assert await session.get_profile(exclude_sensitive=True) is None
             assert await session.edges(
                 _SUBJECT.id,
                 reference_time=50.0,

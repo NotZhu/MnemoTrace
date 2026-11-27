@@ -1,10 +1,13 @@
 """在真实 PostgreSQL 上验证 HTTP、凭据和空间隔离。"""
 
 import json
+import re
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime
+from hashlib import sha256
+from secrets import token_urlsafe
 from time import monotonic, sleep
 from types import TracebackType
 from typing import LiteralString
@@ -372,7 +375,8 @@ def test_admin_key_lifecycle(
     owner = ["--owner-id", owner_id]
     assert admin_main(["issue", *owner]) == 0
     issued = json.loads(capsys.readouterr().out)
-    assert issued["token"].startswith("mtn_")
+    valid_format = re.fullmatch(r"mnemo_[A-Za-z0-9_-]{43}", issued["token"]) is not None
+    assert valid_format
     key_id = issued["key_id"]
 
     async def verify_space_access() -> None:
@@ -413,7 +417,21 @@ def test_admin_key_lifecycle(
             "SELECT secret_hash FROM mnemotrace.api_keys WHERE key_id = %s",
             (key_id,),
         ).fetchone()
-        assert row is not None and isinstance(row[0], bytes) and len(row[0]) == 32
+        digest = sha256(issued["token"].encode("ascii")).digest()
+        assert row == (digest,)
+        with pytest.raises(psycopg.errors.UniqueViolation), conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO mnemotrace.api_keys (key_id, owner_id, secret_hash)
+                VALUES (%s, %s, %s)
+                """,
+                (uuid4().hex, owner_id, digest),
+            )
+    with (
+        psycopg.connect(database.runtime) as conn,
+        pytest.raises(psycopg.errors.InsufficientPrivilege),
+    ):
+        conn.execute("SELECT key_id FROM mnemotrace.api_keys")
     with (
         psycopg.connect(database.runtime) as conn,
         pytest.raises(psycopg.errors.InsufficientPrivilege),
@@ -431,6 +449,31 @@ def test_admin_key_lifecycle(
         conn.execute("SELECT secret_hash FROM mnemotrace.api_keys")
 
 
+def test_server_rejects_legacy_api_key_with_matching_digest(
+    database: PgDatabase,
+) -> None:
+    key_id = uuid4().hex
+    token = f"mtn_{key_id}.{token_urlsafe(32)}"
+    with psycopg.connect(database.key_admin) as conn:
+        conn.execute(
+            """
+            INSERT INTO mnemotrace.api_keys (key_id, owner_id, secret_hash)
+            VALUES (%s, %s, %s)
+            """,
+            (key_id, uuid4().hex, sha256(token.encode("ascii")).digest()),
+        )
+
+    async def verify() -> None:
+        async with _http(database.runtime) as client:
+            response = await client.get(
+                "/v1/spaces", headers={"Authorization": f"Bearer {token}"}
+            )
+            assert response.status_code == 401
+            assert response.json()["code"] == "invalid_api_key"
+
+    run(verify())
+
+
 def test_bootstrap_space_and_key_rotation(
     database_factory: DatabaseFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -444,6 +487,15 @@ def test_bootstrap_space_and_key_rotation(
         first = json.loads(capsys.readouterr().out)
         assert set(first) == {"key_id", "created_at", "revoked_at", "token", "space_id"}
         assert first["revoked_at"] is None
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                """
+                SELECT k.owner_id, s.owner_id
+                FROM mnemotrace.api_keys AS k CROSS JOIN mnemotrace.spaces AS s
+                WHERE k.key_id = %s AND s.space_id = %s
+                """,
+                (first["key_id"], first["space_id"]),
+            ).fetchone() == ("owner", "owner")
 
         assert admin_main(["bootstrap"]) == 1
         repeated = capsys.readouterr()
@@ -496,13 +548,16 @@ def test_bootstrap_refuses_existing_default_owner(
         monkeypatch.setenv("MNEMOTRACE_POSTGRES_DSN", dsn)
         with psycopg.connect(dsn) as conn:
             if existing == "revoked_key":
-                issued = issue_key(conn, "local-demo")
-                assert revoke_key(conn, "local-demo", issued.info.key_id)
+                issued = issue_key(conn, DEFAULT_OWNER_ID)
+                assert revoke_key(conn, DEFAULT_OWNER_ID, issued.info.key_id)
             else:
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT INTO mnemotrace.spaces (space_id, owner_id, name, created_at)
-                    VALUES ('existing-space', 'local-demo', 'existing space', 1)
-                    """)
+                    VALUES ('existing-space', %s, 'existing space', 1)
+                    """,
+                    (DEFAULT_OWNER_ID,),
+                )
         assert admin_main(["bootstrap"]) == 1
         rejected = capsys.readouterr()
         assert rejected.out == "" and "默认账号已配置" in rejected.err
@@ -606,12 +661,12 @@ def test_bootstrap_waits_for_default_owner_transaction(
 
 
 def test_key_admin_can_issue_default_key_for_http_space(
-    database: PgDatabase,
+    isolated_database: PgDatabase,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """自管密钥角色可签发默认凭据，空间通过运行角色的 HTTP 路径创建。"""
-    monkeypatch.setenv("MNEMOTRACE_POSTGRES_DSN", database.key_admin)
+    monkeypatch.setenv("MNEMOTRACE_POSTGRES_DSN", isolated_database.key_admin)
     assert admin_main(["bootstrap"]) == 1
     denied = capsys.readouterr()
     assert denied.out == "" and "42501" in denied.err
@@ -621,7 +676,7 @@ def test_key_admin_can_issue_default_key_for_http_space(
     issued = json.loads(capsys.readouterr().out)
 
     async def verify() -> None:
-        async with _http(database.runtime) as client:
+        async with _http(isolated_database.runtime) as client:
             headers = {"Authorization": f"Bearer {issued['token']}"}
             response = await client.post(
                 "/v1/spaces", headers=headers, json={"name": "自管空间"}
@@ -654,6 +709,7 @@ def test_runtime_cannot_modify_schema_or_migration_ledger(
     [
         ("DROP SCHEMA mnemotrace", "请先初始化 mnemotrace schema"),
         ("DROP EXTENSION vector", "请先在 public schema 安装 vector 扩展"),
+        ("DROP EXTENSION btree_gist", "请先在 public schema 安装 btree_gist 扩展"),
     ],
 )
 def test_readiness_requires_explicit_migration(
@@ -678,6 +734,9 @@ def test_readiness_requires_explicit_migration(
             with psycopg.connect(dsn) as conn:
                 conn.execute("CREATE SCHEMA IF NOT EXISTS mnemotrace")
                 conn.execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public")
+                conn.execute(
+                    "CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public"
+                )
             assert migrate.apply_migrations(dsn) == pending
             assert (await client.get("/readyz")).status_code == 200
 

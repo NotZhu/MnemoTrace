@@ -6,13 +6,14 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import psycopg
 import pytest
 from httpx import ASGITransport, AsyncClient
-from psycopg import AsyncConnection
+from psycopg import AsyncConnection, sql
 from psycopg.rows import TupleRow
 
 from mnemotrace import worker
@@ -21,22 +22,29 @@ from mnemotrace.adapters.postgres import PostgresStorage
 from mnemotrace.adapters.postgres import storage as pg_storage
 from mnemotrace.adapters.postgres.identity import issue_key
 from mnemotrace.adapters.postgres.operations import PostgresOperations
-from mnemotrace.adapters.postgres.pool import ConnectionPool
-from mnemotrace.adapters.postgres.profile_refresh import PostgresProfileRefresh
+from mnemotrace.adapters.postgres.pool import ConnectionPool, runtime_pool
+from mnemotrace.adapters.postgres.profile_refresh import (
+    _NEXT_DUE_SPACE,
+    PostgresProfileRefresh,
+    _group_evidence_query,
+)
 from mnemotrace.adapters.postgres.session import PostgresSession
 from mnemotrace.adapters.runtime import SystemClock, UuidGenerator
+from mnemotrace.application import profile_refresh
 from mnemotrace.application.operations import OperationRunner
+from mnemotrace.application.profile import MAX_PROFILE_FACTS
 from mnemotrace.application.profile_refresh import (
-    ProfileEvidenceVersion,
     ProfileRefreshRunner,
+    ProfileSnapshot,
 )
 from mnemotrace.application.remember import Remember
 from mnemotrace.domain.entity import Entity
+from mnemotrace.domain.enums import ProfileGroup
 from mnemotrace.domain.fact import Fact
 from mnemotrace.domain.ids import FactId, SessionId, SpaceId
 from mnemotrace.domain.profile import Profile, ProfileEntry
 from mnemotrace.domain.space import Space
-from mnemotrace.domain.values import Predicate
+from mnemotrace.domain.values import Label, Predicate
 from mnemotrace.ports.inference import LLM, InvalidStructuredOutput
 from mnemotrace.ports.queries import FactQuery
 from mnemotrace.ports.runtime import Clock
@@ -180,6 +188,7 @@ class _Model(FakeLLM):
                         "valid_at_evidence": None,
                         "invalid_at_evidence": None,
                         "source_numbers": [origin["number"]],
+                        "profile_groups": ["basic"],
                         "labels": [],
                         "sensitive": False,
                     }
@@ -190,9 +199,21 @@ class _Model(FakeLLM):
             await self.before_response()
         if self.failure is not None:
             raise self.failure
+        groups = cast(list[str], schema["required"])
         return {
-            **_EMPTY,
-            "basic": [{"text": self.text, "evidence_numbers": [1]}],
+            group: [
+                {
+                    "text": self.text,
+                    "evidence_numbers": [
+                        next(
+                            row["number"]
+                            for row in request["facts"]
+                            if group in row["profile_groups"]
+                        )
+                    ],
+                }
+            ]
+            for group in groups
         }
 
 
@@ -206,6 +227,7 @@ async def _write_fact(
     valid_at: float | None = None,
     invalid_at: float | None = None,
     sensitive: bool = False,
+    groups: tuple[ProfileGroup, ...] = (ProfileGroup.BASIC,),
 ) -> Fact:
     space = Space(scope.id, scope.owner, "画像测试", 0)
     subject = Entity.space_user(scope.id)
@@ -217,6 +239,7 @@ async def _write_fact(
         invalid_at=invalid_at,
         expired_at=20.0 if invalid_at is not None else None,
         sensitive=sensitive,
+        profile_groups=groups,
     )
     async with storage.session(scope.id, write=True) as writer:
         await writer.upsert_entity(subject)
@@ -238,6 +261,38 @@ def _make_claimable(database: PgDatabase, space_id: SpaceId) -> None:
             """,
             (space_id.value,),
         )
+
+
+def _group_revisions(
+    database: PgDatabase, space_id: SpaceId
+) -> dict[ProfileGroup, tuple[int, int]]:
+    with psycopg.connect(database.admin) as conn:
+        rows = conn.execute(
+            """
+            SELECT group_name, target_revision, published_revision
+            FROM mnemotrace.profile_group_refreshes WHERE space_id = %s
+            """,
+            (space_id.value,),
+        ).fetchall()
+    return {ProfileGroup(name): (target, published) for name, target, published in rows}
+
+
+def _space_transition(database: PgDatabase, space: SpaceId) -> float | None:
+    with psycopg.connect(database.admin) as conn:
+        row = conn.execute(
+            """
+            SELECT profile_next_transition_at, (
+                SELECT min(transition_at) FROM mnemotrace.profile_group_refreshes
+                WHERE space_id = s.space_id
+            )
+            FROM mnemotrace.spaces AS s WHERE s.space_id = %s
+            """,
+            (space.value,),
+        ).fetchone()
+    assert row is not None
+    earliest, group_minimum = row
+    assert earliest == group_minimum
+    return cast(float | None, earliest)
 
 
 def test_profile_refresh_uses_lease_order_after_clock_rollback(
@@ -328,27 +383,26 @@ def test_profile_rechecks_changes_after_the_last_read_snapshot(
             elif change == "expiry":
                 await _write_fact(scope, storage, "expiring", invalid_at=101.0)
             await scope.submit()
-            read_versions = 0
-            get_version = PostgresProfileRefresh.evidence_version
+            get_snapshot = PostgresProfileRefresh.snapshot
 
-            async def change_after_read(reader: SpaceReader) -> ProfileEvidenceVersion:
-                nonlocal read_versions
-                version = await get_version(reader)
-                if not isinstance(reader, PostgresSession):
-                    read_versions += 1
-                    if read_versions == 2:
-                        if change == "hard_delete":
-                            async with storage.session(scope.id, write=True) as writer:
-                                await writer.delete_facts((first.id,))
-                        else:
-                            clock.at = 101.0
-                return version
+            async def change_after_read(
+                queue: PostgresProfileRefresh,
+                reader: SpaceReader,
+                reference_time: float,
+            ) -> ProfileSnapshot:
+                snapshot = await get_snapshot(queue, reader, reference_time)
+                if change == "hard_delete":
+                    async with storage.session(scope.id, write=True) as writer:
+                        await writer.delete_facts((first.id,))
+                else:
+                    clock.at = 101.0
+                return snapshot
 
             with monkeypatch.context() as patch:
                 patch.setattr(
                     PostgresProfileRefresh,
-                    "evidence_version",
-                    staticmethod(change_after_read),
+                    "snapshot",
+                    change_after_read,
                 )
                 assert await scope.runner(connections, _Model(), clock=clock).run_once()
             stale = await scope.view()
@@ -381,7 +435,7 @@ def test_auto_refresh_starts_on_first_qualifying_commit(database: PgDatabase) ->
             await _write_fact(scope, storage, "stored-before-enabling")
             assert (await scope.view())["refresh_status"] == "idle"
             await scope.set_auto_refresh(True)
-            assert (await scope.view())["refresh_status"] == "idle"
+            assert (await scope.view())["refresh_status"] == "queued"
             await _write_fact(scope, storage, "schedules-first", valid_at=80.0)
             assert (await scope.view())["refresh_status"] == "queued"
             model = _Model()
@@ -544,14 +598,16 @@ def test_disabling_auto_refresh_fences_only_automatic_leases(
                 connections, _Model("在途结果", before_response=change_policy)
             ).run_once()
             view = await scope.view()
+            assert view["refresh_status"] == "queued"
+            assert view["profile"] == original
             if promote:
-                assert view["refresh_status"] == "succeeded"
-                assert view["profile"] != original
+                _make_claimable(database, scope.id)
+                assert await scope.runner(connections, _Model()).run_once()
             else:
-                assert view["refresh_status"] == "queued"
-                assert view["profile"] == original
                 assert await scope.runner(connections, _Model("重开后结果")).run_once()
-                assert (await scope.view())["refresh_status"] == "succeeded"
+            published = await scope.view()
+            assert published["refresh_status"] == "succeeded"
+            assert published["profile"] != original
 
     run(exercise())
 
@@ -595,7 +651,9 @@ def test_inference_followup_preserves_its_window_through_settlement(
                 await change_facts()
                 _make_claimable(database, scope.id)
                 if outcome == "expired":
-                    assert await queue.claim() is None
+                    model = _Model()
+                    assert await scope.runner(connections, model).run_once()
+                    assert model.prompts == []
             else:
                 model = _Model(
                     before_response=change_facts,
@@ -606,7 +664,7 @@ def test_inference_followup_preserves_its_window_through_settlement(
                 )
                 assert await scope.runner(connections, model).run_once()
                 assert model.prompts == [["first"]]
-            if outcome in ("stale", "permanent_error", "expired"):
+            if outcome in ("stale", "permanent_error", "expired", "unchanged"):
                 assert (await scope.view())["refresh_status"] == "queued"
                 assert (await scope.view())["profile"] is None
                 assert _auto_deadline(database, scope.id) == followup
@@ -618,13 +676,22 @@ def test_inference_followup_preserves_its_window_through_settlement(
                 assert isinstance(retrying["next_retry_at"], str)
                 assert _auto_deadline(database, scope.id, followup=True) == followup
                 assert await scope.submit() == {"refresh_status": "queued"}
-                assert await scope.view() == retrying
+                promoted = await scope.view()
+                assert promoted["next_retry_at"] == retrying["next_retry_at"]
+                revisions = _group_revisions(database, scope.id)
+                assert revisions.keys() == set(ProfileGroup)
+                assert all(
+                    target > published for target, published in revisions.values()
+                )
                 _make_claimable(database, scope.id)
-            if outcome != "unchanged":
-                async with pool(database.runtime) as new_connections:
-                    model = _Model()
-                    assert await scope.runner(new_connections, model).run_once()
-                    assert model.prompts == [["followup", "same-batch", "first"]]
+            async with pool(database.runtime) as new_connections:
+                model = _Model()
+                assert await scope.runner(new_connections, model).run_once()
+                assert model.prompts == (
+                    [["first"]]
+                    if outcome == "unchanged"
+                    else [["followup", "same-batch", "first"]]
+                )
             assert (await scope.view())["refresh_status"] == "succeeded"
             assert not await scope.runner(connections, _Model()).run_once()
 
@@ -643,7 +710,8 @@ def test_purge_clears_auto_refresh_deadline_and_preserves_setting(
             await scope.set_auto_refresh(True)
             await _write_fact(scope, storage, "before-purge")
             assert await scope.runner(connections, _Model()).run_once()
-            await _write_fact(scope, storage, "waiting")
+            await _write_fact(scope, storage, "waiting", invalid_at=4_000_000_000)
+            assert _space_transition(database, scope.id) == 4_000_000_000
             assert not await scope.runner(connections, _Model()).run_once()
             base = scope.path.removesuffix("/profile")
             response = await scope.client.post(
@@ -653,6 +721,7 @@ def test_purge_clears_auto_refresh_deadline_and_preserves_setting(
             assert response.status_code == 204
             assert (await scope.view())["refresh_status"] == "idle"
             assert (await scope.view())["profile"] is None
+            assert _space_transition(database, scope.id) is None
             assert (await scope.client.get(base, headers=scope.headers)).json()[
                 "profile_auto_refresh"
             ]
@@ -697,6 +766,7 @@ def test_auto_refresh_ignores_ineligible_evidence_and_rolled_back_writes(
             assert listed["profile_auto_refresh"] is True
             await _write_fact(scope, storage, "sensitive", sensitive=True)
             await _write_fact(scope, storage, "future", valid_at=4_000_000_000)
+            assert _space_transition(database, scope.id) == 4_000_000_000
             await _write_fact(scope, storage, "expired", invalid_at=90.0)
             await _write_fact(
                 other, PostgresStorage(connections, owner_id=other.owner), "isolated"
@@ -708,12 +778,19 @@ def test_auto_refresh_ignores_ineligible_evidence_and_rolled_back_writes(
                 async with storage.session(scope.id, write=True) as writer:
                     origin = message(await writer.get_space(), "uncommitted")
                     await writer.append_messages((origin,))
-                    evidence = fact(
-                        Entity.space_user(scope.id), "rollback", provenance=(origin.id,)
+                    evidence = replace(
+                        fact(
+                            Entity.space_user(scope.id),
+                            "rollback",
+                            provenance=(origin.id,),
+                        ),
+                        profile_groups=(ProfileGroup.BASIC,),
+                        valid_at=3_999_999_000,
                     )
                     await writer.save_facts((evidence,), changed_at=20.0)
                     raise RuntimeError("回滚整个事务")
             assert (await scope.view())["refresh_status"] == "idle"
+            assert _space_transition(database, scope.id) == 4_000_000_000
             async with storage.session(scope.id) as reader:
                 assert await reader.get_fact(FactId("rollback")) is None
             assert not await scope.runner(connections, _Model()).run_once()
@@ -731,7 +808,6 @@ def test_auto_refresh_corrects_and_erases_entries_across_sessions(
             rows = json.loads(prompt)["facts"]
             self.prompts.append([row["text"] for row in rows])
             return {
-                **_EMPTY,
                 "basic": [
                     {"text": row["text"], "evidence_numbers": [row["number"]]}
                     for row in rows
@@ -1037,7 +1113,9 @@ def test_late_result_cannot_override_a_new_worker(
     run(exercise())
 
 
-@pytest.mark.parametrize("change", ["new_fact", "erase_session", "append_evidence"])
+@pytest.mark.parametrize(
+    "change", ["new_fact", "new_group", "erase_session", "append_evidence"]
+)
 def test_profile_publication_rechecks_the_snapshot(
     database: PgDatabase, change: str
 ) -> None:
@@ -1048,12 +1126,20 @@ def test_profile_publication_rechecks_the_snapshot(
         ):
             storage = PostgresStorage(connections, owner_id=scope.owner)
             original = await _write_fact(scope, storage, "source")
-            await scope.submit()
+            if change == "new_group":
+                await scope.set_auto_refresh(True)
+            else:
+                await scope.submit()
 
             async def mutate() -> None:
                 async with asyncio.timeout(3):
                     if change == "new_fact":
                         await _write_fact(scope, storage, "new", valid_at=80.0)
+                        return
+                    if change == "new_group":
+                        await _write_fact(
+                            scope, storage, "new", groups=(ProfileGroup.PREFERENCES,)
+                        )
                         return
                     async with storage.session(scope.id, write=True) as writer:
                         if change == "erase_session":
@@ -1086,7 +1172,11 @@ def test_profile_publication_rechecks_the_snapshot(
             else:
                 assert view["refresh_status"] == "queued"
                 assert view["profile"] is None
-                assert isinstance(view["next_retry_at"], str)
+                if change == "new_group":
+                    assert _auto_deadline(database, scope.id) is not None
+                    assert view["next_retry_at"] is None
+                else:
+                    assert isinstance(view["next_retry_at"], str)
                 _make_claimable(database, scope.id)
                 fresh = _Model("从新快照生成")
                 assert await scope.runner(connections, fresh).run_once()
@@ -1098,6 +1188,13 @@ def test_profile_publication_rechecks_the_snapshot(
                         **_EMPTY,
                         "basic": [{"text": "从新快照生成", "fact_ids": ["new"]}],
                     }
+                elif change == "new_group":
+                    assert fresh.prompts == [["source", "new"]]
+                    assert view["profile"] == {
+                        **_EMPTY,
+                        "basic": [{"text": fresh.text, "fact_ids": ["source"]}],
+                        "preferences": [{"text": fresh.text, "fact_ids": ["new"]}],
+                    }
                 else:
                     assert fresh.prompts == []
                     assert view["profile"] == _EMPTY
@@ -1105,20 +1202,59 @@ def test_profile_publication_rechecks_the_snapshot(
     run(exercise())
 
 
-def test_natural_expiry_hides_only_the_dependent_entries_during_failed_refresh(
-    database: PgDatabase, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("change", ["labels", "append_source"])
+def test_profile_retains_entries_after_evidence_metadata_update(
+    database: PgDatabase, change: str
 ) -> None:
-    at = 99.0
-    monkeypatch.setattr(profiles, "time", lambda: at)
-
     async def exercise() -> None:
-        nonlocal at
         async with (
             _http_space(database) as scope,
             pool(database.runtime) as connections,
         ):
             storage = PostgresStorage(connections, owner_id=scope.owner)
-            expires = await _write_fact(scope, storage, "expiring", invalid_at=100.0)
+            await scope.set_auto_refresh(True)
+            source = await _write_fact(scope, storage, "source")
+            assert await scope.runner(connections, _Model()).run_once()
+            before = await scope.view()
+            assert before["profile"] is not None
+            revisions = _group_revisions(database, scope.id)
+            async with storage.session(scope.id, write=True) as writer:
+                support = None
+                if change == "labels":
+                    updated = replace(source, labels=(Label("user_preferences"),))
+                else:
+                    extra = message(await writer.get_space(), "extra")
+                    await writer.append_messages((extra,))
+                    updated = replace(source, provenance=(*source.provenance, extra.id))
+                    support = {source.id: (source.provenance, (extra.id,))}
+                await writer.save_facts(
+                    (updated,), changed_at=21.0, support_groups=support
+                )
+            assert await scope.view() == before
+            assert _group_revisions(database, scope.id) == revisions
+
+    run(exercise())
+
+
+def test_scheduled_expiry_preserves_the_last_profile_until_the_fact_expires(
+    database: PgDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class MutableClock(FakeClock):
+        at = _database_now(database).timestamp()
+
+        def now(self) -> float:
+            return self.at
+
+    clock = MutableClock()
+    monkeypatch.setattr(profiles, "time", clock.now)
+
+    async def exercise() -> None:
+        async with (
+            _http_space(database) as scope,
+            pool(database.runtime) as connections,
+        ):
+            storage = PostgresStorage(connections, owner_id=scope.owner)
+            expires = await _write_fact(scope, storage, "expiring")
             current = await _write_fact(scope, storage, "regular")
             stored = Profile(
                 scope.id,
@@ -1128,7 +1264,7 @@ def test_natural_expiry_hides_only_the_dependent_entries_during_failed_refresh(
                         ProfileEntry("有独立支撑", (current.id,)),
                     )
                 },
-                90.0,
+                clock.at,
             )
             async with storage.session(scope.id, write=True) as writer:
                 await writer.save_profile(stored)
@@ -1140,23 +1276,32 @@ def test_natural_expiry_hides_only_the_dependent_entries_during_failed_refresh(
                     {"text": "有独立支撑", "fact_ids": ["regular"]},
                 ],
             }
-            at = 100.0
+            cutoff = clock.at + 120
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.save_facts(
+                    (replace(expires, invalid_at=cutoff, expired_at=clock.at),),
+                    changed_at=clock.at,
+                )
             await scope.submit()
             pending = await scope.view()
-            assert pending["profile"] == {
+            assert pending["profile"] == before["profile"]
+            assert pending["updated_at"] == before["updated_at"]
+            model = _Model(failure=InvalidStructuredOutput("正文不得进入失败响应"))
+            assert await scope.runner(connections, model, clock=clock).run_once()
+            failed = await scope.view()
+            assert failed["profile"] == pending["profile"]
+            assert failed["updated_at"] == pending["updated_at"]
+            assert failed["refresh_status"] == "failed"
+            assert failed["refresh_error"] == {"code": "invalid_model_output"}
+            assert model.prompts == [["expiring", "regular"]]
+            clock.at = cutoff
+            expired = await scope.view()
+            assert expired["refresh_status"] == "failed"
+            assert expired["updated_at"] == pending["updated_at"]
+            assert expired["profile"] == {
                 **_EMPTY,
                 "basic": [{"text": "有独立支撑", "fact_ids": ["regular"]}],
             }
-            assert pending["updated_at"] == before["updated_at"]
-            model = _Model(failure=InvalidStructuredOutput("正文不得进入失败响应"))
-            assert await scope.runner(connections, model).run_once()
-            failed = await scope.view()
-            assert failed == {
-                **pending,
-                "refresh_status": "failed",
-                "refresh_error": {"code": "invalid_model_output"},
-            }
-            assert model.prompts == [["regular"]]
             async with storage.session(scope.id) as reader:
                 assert await reader.get_profile() == stored
 
@@ -1207,16 +1352,21 @@ def test_profile_recovers_an_uncertain_commit_without_partial_publication(
     database: PgDatabase, monkeypatch: pytest.MonkeyPatch, commit_succeeded: bool
 ) -> None:
     real_transaction = pg_storage._session_transaction
+    injected = False
 
     @asynccontextmanager
     async def transaction(
         conn: AsyncConnection[TupleRow], *, write: bool
     ) -> AsyncIterator[None]:
+        nonlocal injected
+        fail = write and not injected
         async with real_transaction(conn, write=write):
             yield
-            if write and not commit_succeeded:
+            if fail:
+                injected = True
+            if fail and not commit_succeeded:
                 raise CommitOutcomeUnknown("测试回滚")
-        if write:
+        if fail:
             raise CommitOutcomeUnknown("测试提交确认丢失")
 
     async def exercise() -> None:
@@ -1226,28 +1376,47 @@ def test_profile_recovers_an_uncertain_commit_without_partial_publication(
         ):
             storage = PostgresStorage(connections, owner_id=scope.owner)
             await _write_fact(scope, storage, "source")
+            await _write_fact(
+                scope, storage, "preference", groups=(ProfileGroup.PREFERENCES,)
+            )
             await scope.submit()
-            runner = scope.runner(connections, _Model())
+            pending = _group_revisions(database, scope.id)
+            assert pending.keys() == set(ProfileGroup)
+            model = _Model()
+            runner = scope.runner(connections, model)
             with monkeypatch.context() as patch:
                 patch.setattr(pg_storage, "_session_transaction", transaction)
                 assert await runner.run_once()
             view = await scope.view()
             if commit_succeeded:
                 assert view["refresh_status"] == "succeeded"
-                assert view["profile"] is not None
-                assert not await runner.run_once()
+                assert view["next_retry_at"] is None
             else:
                 assert view["refresh_status"] == "queued"
                 assert view["profile"] is None
                 assert isinstance(view["next_retry_at"], str)
+                assert _group_revisions(database, scope.id) == pending
                 _make_claimable(database, scope.id)
                 assert await runner.run_once()
-                assert (await scope.view())["refresh_status"] == "succeeded"
+                view = await scope.view()
+            assert view["refresh_status"] == "succeeded"
+            assert view["profile"] == {
+                **_EMPTY,
+                "basic": [{"text": model.text, "fact_ids": ["source"]}],
+                "preferences": [{"text": model.text, "fact_ids": ["preference"]}],
+            }
+            assert _group_revisions(database, scope.id) == {
+                group: (target, target) for group, (target, _) in pending.items()
+            }
+            assert model.prompts == [["source", "preference"]] * (
+                1 if commit_succeeded else 2
+            )
+            assert not await runner.run_once()
 
     run(exercise())
 
 
-def test_followup_profile_prioritizes_changes_since_its_successful_snapshot(
+def test_followup_profile_reads_all_evidence_for_the_affected_group(
     database: PgDatabase,
 ) -> None:
     async def exercise() -> None:
@@ -1265,6 +1434,622 @@ def test_followup_profile_prioritizes_changes_since_its_successful_snapshot(
             await scope.submit()
             followup = _Model()
             assert await scope.runner(connections, followup).run_once()
-            assert followup.prompts == [["new", "existing"]]
+            assert followup.prompts == [["existing", "new"]]
+
+    run(exercise())
+
+
+@pytest.mark.parametrize("change", ["move", "sensitive", "erase"])
+def test_only_affected_groups_refresh_for_shared_evidence(
+    database: PgDatabase,
+    change: str,
+) -> None:
+    async def exercise() -> None:
+        async with (
+            _http_space(database) as scope,
+            pool(database.runtime) as connections,
+        ):
+            storage = PostgresStorage(connections, owner_id=scope.owner)
+            communication, constraints = (
+                ProfileGroup.COMMUNICATION_PREFERENCES,
+                ProfileGroup.CONSTRAINTS,
+            )
+            await _write_fact(
+                scope, storage, "unrelated", groups=(ProfileGroup.PREFERENCES,)
+            )
+            shared = await _write_fact(
+                scope, storage, "shared", groups=(communication, constraints)
+            )
+            await scope.set_auto_refresh(True)
+            first = _Model("已有画像")
+            assert await scope.runner(connections, first).run_once()
+            assert first.prompts == [["shared", "unrelated"]]
+            before = await scope.view()
+            before_revisions = _group_revisions(database, scope.id)
+            before_profile = cast(dict[str, object], before["profile"])
+            assert (
+                before_profile[communication]
+                == before_profile[constraints]
+                == [
+                    {"text": "已有画像", "fact_ids": ["shared"]},
+                ]
+            )
+
+            async with storage.session(scope.id, write=True) as writer:
+                if change == "move":
+                    await writer.save_facts(
+                        (replace(shared, profile_groups=(constraints,)),),
+                        changed_at=21.0,
+                    )
+                elif change == "sensitive":
+                    await writer.save_facts(
+                        (replace(shared, sensitive=True),), changed_at=21.0
+                    )
+                else:
+                    await writer.delete_facts((shared.id,))
+            pending = await scope.view()
+            assert pending["refresh_status"] == "queued"
+            revisions = _group_revisions(database, scope.id)
+            for group in (communication, constraints):
+                target, published = revisions[group]
+                assert target > published == before_revisions[group][1]
+            assert (
+                revisions[ProfileGroup.PREFERENCES]
+                == before_revisions[ProfileGroup.PREFERENCES]
+            )
+            assert cast(dict[str, object], pending["profile"])[communication] == []
+            if change != "move":
+                async with storage.session(scope.id) as reader:
+                    stored = await reader.get_profile()
+                    assert stored is not None
+                    assert shared.id not in stored.source_fact_ids
+            _make_claimable(database, scope.id)
+            model = _Model("刷新后的约束")
+            assert await scope.runner(connections, model).run_once()
+            assert model.prompts == ([["shared"]] if change == "move" else [])
+            view = await scope.view()
+            profile = cast(dict[str, object], view["profile"])
+            assert profile[communication] == []
+            assert (profile[constraints] == []) == (change != "move")
+            assert (
+                profile[ProfileGroup.PREFERENCES]
+                == before_profile[ProfileGroup.PREFERENCES]
+            )
+            assert view["refresh_status"] == "succeeded"
+
+    run(exercise())
+
+
+@pytest.mark.parametrize("failure", ["row_limit", "context_limit", "timeout"])
+def test_profile_failure_keeps_all_published_groups_until_recovery(
+    database: PgDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    class ContextLimitedModel(_Model):
+        def structured_prompt_fits(
+            self, *, system: str, prompt: str, schema: Mapping[str, object]
+        ) -> bool:
+            # 各组单独都能放入预算，合并后需要减少一条证据。
+            return len(json.loads(prompt)["facts"]) <= 3
+
+    async def exercise() -> None:
+        async with (
+            _http_space(database) as scope,
+            pool(database.runtime) as connections,
+        ):
+            storage = PostgresStorage(connections, owner_id=scope.owner)
+            communication, preferences = (
+                ProfileGroup.COMMUNICATION_PREFERENCES,
+                ProfileGroup.PREFERENCES,
+            )
+            old = await _write_fact(
+                scope, storage, "old-communication", groups=(communication,)
+            )
+            await _write_fact(scope, storage, "old-preference", groups=(preferences,))
+            await scope.set_auto_refresh(True)
+            assert await scope.runner(connections, _Model("上版")).run_once()
+            before = await scope.view()
+            before_revisions = _group_revisions(database, scope.id)
+            extra = tuple(
+                replace(old, id=FactId(f"extra-{index:03}"), text=f"extra-{index:03}")
+                for index in range(MAX_PROFILE_FACTS if failure == "row_limit" else 1)
+            )
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.save_facts(extra, changed_at=21.0)
+            await _write_fact(
+                scope, storage, "new-preference", valid_at=90.0, groups=(preferences,)
+            )
+            pending = _group_revisions(database, scope.id)
+            for group in (communication, preferences):
+                target, published = pending[group]
+                assert target > published == before_revisions[group][1]
+
+            deadline: asyncio.Timeout | None = None
+
+            def enter_attempt_timeout(_: float) -> asyncio.Timeout:
+                nonlocal deadline
+                deadline = asyncio.timeout(None)
+                return deadline
+
+            async def expire_during_model_call() -> None:
+                assert deadline is not None
+                deadline.reschedule(asyncio.get_running_loop().time())
+                await asyncio.Event().wait()
+
+            if failure == "timeout":
+                model = _Model("半份结果", before_response=expire_during_model_call)
+                runner = scope.runner(connections, model)
+                with monkeypatch.context() as patch:
+                    patch.setattr(profile_refresh, "timeout", enter_attempt_timeout)
+                    for attempt in range(1, 4):
+                        _make_claimable(database, scope.id)
+                        assert await runner.run_once()
+                        state = await scope.view()
+                        assert state["profile"] == before["profile"]
+                        assert _group_revisions(database, scope.id) == pending
+                        if attempt < 3:
+                            assert state["refresh_status"] == "queued"
+                            assert isinstance(state["next_retry_at"], str)
+                assert len(model.prompts) == 3
+                expected_error = "operation_timeout"
+            else:
+                model = (
+                    ContextLimitedModel() if failure == "context_limit" else _Model()
+                )
+                runner = scope.runner(connections, model)
+                _make_claimable(database, scope.id)
+                assert await runner.run_once()
+                assert model.prompts == []
+                expected_error = "profile_input_too_large"
+
+            failed = await scope.view()
+            assert failed == {
+                **before,
+                "refresh_status": "failed",
+                "refresh_error": {"code": expected_error},
+            }
+            assert _group_revisions(database, scope.id) == pending
+            assert not await runner.run_once()
+
+            if failure == "timeout":
+                await scope.submit()
+            else:
+                async with storage.session(scope.id, write=True) as writer:
+                    await writer.delete_facts((extra[0].id,))
+            _make_claimable(database, scope.id)
+            recovered_model = (
+                ContextLimitedModel("新画像")
+                if failure == "context_limit"
+                else _Model("新画像")
+            )
+            assert await scope.runner(connections, recovered_model).run_once()
+            [prompt] = recovered_model.prompts
+            assert "new-preference" in prompt
+            if failure == "row_limit":
+                assert len(prompt) == MAX_PROFILE_FACTS + 2
+            recovered = await scope.view()
+            assert recovered["refresh_status"] == "succeeded"
+            assert recovered["refresh_error"] is None
+            profile = cast(dict[str, list[dict[str, object]]], recovered["profile"])
+            revisions = _group_revisions(database, scope.id)
+            for group in (communication, preferences):
+                assert profile[group][0]["text"] == recovered_model.text
+                target, published = revisions[group]
+                assert target == published > before_revisions[group][1]
+
+    run(exercise())
+
+
+def test_automatic_group_refresh_wakes_on_activation_and_expiry(
+    database: PgDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MutableClock(FakeClock):
+        at = datetime.now(UTC).timestamp()
+
+        def now(self) -> float:
+            return self.at
+
+    clock = MutableClock()
+    monkeypatch.setattr(profiles, "time", clock.now)
+
+    async def exercise() -> None:
+        async with (
+            _http_space(database) as scope,
+            pool(database.runtime) as connections,
+        ):
+            storage = PostgresStorage(connections, owner_id=scope.owner)
+            await scope.set_auto_refresh(True)
+            starts, ends = clock.at + 120, clock.at + 240
+            groups = (ProfileGroup.COMMUNICATION_PREFERENCES, ProfileGroup.CONSTRAINTS)
+            await _write_fact(
+                scope, storage, "timed", groups=groups, valid_at=starts, invalid_at=ends
+            )
+            assert _space_transition(database, scope.id) == starts
+            model = _Model()
+            runner = scope.runner(connections, model, clock=clock)
+            assert not await runner.run_once()
+            clock.at = starts
+            assert await runner.run_once()
+            assert model.prompts == [["timed"]]
+            assert _space_transition(database, scope.id) == ends
+            active = cast(dict[str, object], (await scope.view())["profile"])
+            assert all(active[group] for group in groups)
+            clock.at = ends
+            assert not await runner.run_once()
+            expired = await scope.view()
+            assert expired["refresh_status"] == "queued"
+            assert expired["profile"] is None
+            assert _space_transition(database, scope.id) is None
+            _make_claimable(database, scope.id)
+            assert await runner.run_once()
+            assert model.prompts == [["timed"]]
+            assert (await scope.view())["profile"] == _EMPTY
+
+    run(exercise())
+
+
+def test_reenabled_auto_profile_can_claim_a_missed_transition(
+    database: PgDatabase,
+) -> None:
+    async def exercise() -> None:
+        async with (
+            _http_space(database) as scope,
+            pool(database.runtime) as connections,
+        ):
+            storage = PostgresStorage(connections, owner_id=scope.owner)
+            starts = _database_now(database).timestamp() + 120
+            await scope.set_auto_refresh(True)
+            await _write_fact(scope, storage, "future", valid_at=starts)
+            await scope.set_auto_refresh(False)
+            queue = PostgresProfileRefresh(connections)
+            await queue.wake_due(starts)
+            assert (await scope.view())["refresh_status"] == "idle"
+            assert _space_transition(database, scope.id) == starts
+
+            await scope.set_auto_refresh(True)
+            await queue.wake_due(starts)
+            assert (await scope.view())["refresh_status"] == "queued"
+            assert _space_transition(database, scope.id) is None
+
+    run(exercise())
+
+
+@pytest.mark.parametrize("advance", ["publish", "wake"])
+def test_cancelled_profile_transition_is_removed_without_spurious_refresh(
+    database: PgDatabase, advance: str
+) -> None:
+    async def exercise() -> None:
+        async with (
+            _http_space(database) as scope,
+            pool(database.runtime) as connections,
+        ):
+            storage = PostgresStorage(connections, owner_id=scope.owner)
+            await scope.set_auto_refresh(True)
+            starts = _database_now(database).timestamp() + 120
+            future = await _write_fact(scope, storage, "future", valid_at=starts)
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.delete_facts((future.id,))
+            assert _space_transition(database, scope.id) == starts
+            assert (await scope.view())["refresh_status"] == "idle"
+
+            if advance == "publish":
+                await scope.submit()
+                model = _Model()
+                assert await scope.runner(connections, model).run_once()
+                assert model.prompts == []
+                assert (await scope.view())["refresh_status"] == "succeeded"
+            else:
+                queue = PostgresProfileRefresh(connections)
+                await queue.wake_due(starts)
+                assert (await scope.view())["refresh_status"] == "idle"
+            assert _space_transition(database, scope.id) is None
+
+    run(exercise())
+
+
+def test_due_profile_query_stays_bounded_as_disabled_spaces_grow(
+    database: PgDatabase,
+) -> None:
+    with psycopg.connect(database.admin) as conn, conn.transaction(force_rollback=True):
+        conn.execute("""
+            INSERT INTO mnemotrace.spaces
+                (space_id, owner_id, name, created_at, profile_auto_refresh,
+                 profile_next_transition_at)
+            VALUES ('poll-enabled', 'fixture', 'fixture', 0, true, 300)
+            """)
+        conn.execute("""
+            INSERT INTO mnemotrace.profile_group_refreshes (space_id, group_name, transition_at)
+            VALUES ('poll-enabled', 'basic', 300)
+            """)
+
+        def seed_disabled(start: int, end: int) -> None:
+            conn.execute(
+                """
+                WITH inserted AS (
+                    INSERT INTO mnemotrace.spaces
+                        (space_id, owner_id, name, created_at, profile_next_transition_at)
+                    SELECT 'poll-disabled-' || i, 'fixture', 'fixture', 0, 100
+                    FROM generate_series(%s::integer, %s::integer) AS i
+                    RETURNING space_id
+                )
+                INSERT INTO mnemotrace.profile_group_refreshes
+                    (space_id, group_name, transition_at)
+                SELECT space_id, 'basic', 100 FROM inserted
+                """,
+                (start, end),
+            )
+            conn.execute("ANALYZE mnemotrace.spaces")
+
+        def empty_poll_buffers() -> int:
+            row = conn.execute(
+                sql.SQL("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ")
+                + sql.SQL(_NEXT_DUE_SPACE),
+                (200.0,),
+            ).fetchone()
+            assert row is not None
+            plan = row[0][0]["Plan"]
+            assert plan["Actual Rows"] == 0
+            assert '"Index Name": "spaces_profile_next_transition"' in json.dumps(plan)
+            return int(plan["Shared Hit Blocks"] + plan["Shared Read Blocks"])
+
+        seed_disabled(1, 1000)
+        small = empty_poll_buffers()
+        seed_disabled(1001, 10000)
+        assert empty_poll_buffers() <= small + 2
+        assert conn.execute(_NEXT_DUE_SPACE, (300.0,)).fetchone() == ("poll-enabled",)
+
+
+def test_due_refresh_skips_a_space_with_a_busy_writer(database: PgDatabase) -> None:
+    async def exercise() -> None:
+        async with (
+            _http_space(database) as first,
+            _http_space(database) as second,
+            runtime_pool(RuntimeSettings(database.runtime), max_size=3) as connections,
+        ):
+            first_storage = PostgresStorage(connections, owner_id=first.owner)
+            second_storage = PostgresStorage(connections, owner_id=second.owner)
+            await first.set_auto_refresh(True)
+            await second.set_auto_refresh(True)
+            now = _database_now(database).timestamp()
+            await _write_fact(first, first_storage, "first", valid_at=now + 120)
+            await _write_fact(second, second_storage, "second", valid_at=now + 240)
+            queue = PostgresProfileRefresh(connections)
+
+            async with first_storage.session(first.id, write=True):
+                await queue.wake_due(now + 240)
+                assert (await second.view())["refresh_status"] == "queued"
+                assert (await first.view())["refresh_status"] == "idle"
+
+            await queue.wake_due(now + 240)
+            assert (await first.view())["refresh_status"] == "queued"
+
+    run(exercise())
+
+
+def test_profile_get_checks_expiry_after_opening_read_session(
+    database: PgDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = 100.0
+    monkeypatch.setattr(profiles, "time", lambda: now)
+
+    async def exercise() -> None:
+        async with (
+            _http_space(database) as scope,
+            pool(database.runtime) as connections,
+        ):
+            storage = PostgresStorage(connections, owner_id=scope.owner)
+            evidence = await _write_fact(scope, storage, "expiring", invalid_at=101.0)
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.save_profile(
+                    Profile(
+                        scope.id,
+                        {"basic": (ProfileEntry("画像", (evidence.id,)),)},
+                        now,
+                    )
+                )
+            assert (await scope.view())["profile"] is not None
+
+            open_session = PostgresStorage._session
+
+            @asynccontextmanager
+            async def open_after_expiry(
+                storage: PostgresStorage, space_id: SpaceId, write: bool
+            ) -> AsyncIterator[SpaceReader]:
+                nonlocal now
+                assert not write
+                now = 101.0
+                async with open_session(storage, space_id, write) as reader:
+                    yield reader
+
+            with monkeypatch.context() as patch:
+                patch.setattr(PostgresStorage, "_session", open_after_expiry)
+                assert (await scope.view())["profile"] is None
+
+    run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("change", "expiry_processed"),
+    [
+        ("delete", False),
+        ("delete", True),
+        ("erase", False),
+        ("move", False),
+        ("sensitive", False),
+        ("shorten", False),
+    ],
+)
+def test_fact_write_preserves_unprocessed_profile_expiry(
+    database: PgDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+    expiry_processed: bool,
+) -> None:
+    class MutableClock(FakeClock):
+        at = 100.0
+
+        def now(self) -> float:
+            return self.at
+
+    clock = MutableClock()
+    monkeypatch.setattr(profiles, "time", clock.now)
+
+    async def exercise() -> None:
+        async with (
+            _http_space(database) as scope,
+            pool(database.runtime) as connections,
+        ):
+            storage = PostgresStorage(connections, owner_id=scope.owner)
+            communication = ProfileGroup.COMMUNICATION_PREFERENCES
+            constraints = ProfileGroup.CONSTRAINTS
+            preferences = ProfileGroup.PREFERENCES
+            for group in (communication, constraints, preferences):
+                await _write_fact(
+                    scope, storage, group.value, valid_at=80.0, groups=(group,)
+                )
+            origin_session = SessionId("timed-evidence")
+            timed = await _write_fact(
+                scope,
+                storage,
+                "timed",
+                session=origin_session,
+                groups=(communication, constraints),
+                valid_at=95.0,
+                invalid_at=120.0,
+            )
+            await scope.set_auto_refresh(True)
+            initial = _Model()
+            assert await scope.runner(connections, initial, clock=clock).run_once()
+            before = await scope.view()
+            before_revisions = _group_revisions(database, scope.id)
+            previous = cast(dict[str, object], before["profile"])
+            for group in (communication, constraints):
+                assert previous[group] == [
+                    {"text": initial.text, "fact_ids": [timed.id.value]}
+                ]
+
+            clock.at = 120.0
+            model = _Model("到期后重算")
+            runner = scope.runner(connections, model, clock=clock)
+            if expiry_processed:
+                assert not await runner.run_once()
+                _make_claimable(database, scope.id)
+                assert await runner.run_once()
+
+            async with storage.session(scope.id, write=True) as writer:
+                if change == "delete":
+                    await writer.delete_facts((timed.id,))
+                elif change == "erase":
+                    assert await writer.delete_session_data(origin_session) == {
+                        timed.id
+                    }
+                elif change == "move":
+                    await writer.save_facts(
+                        (replace(timed, profile_groups=(constraints,)),),
+                        changed_at=clock.at,
+                    )
+                elif change == "sensitive":
+                    await writer.save_facts(
+                        (replace(timed, sensitive=True),), changed_at=clock.at
+                    )
+                else:
+                    await writer.save_facts(
+                        (timed.shorten_validity(110.0),), changed_at=clock.at
+                    )
+
+            pending = await scope.view()
+            if expiry_processed:
+                assert pending["refresh_status"] == "succeeded"
+                assert not await runner.run_once()
+            else:
+                assert pending["refresh_status"] == "queued"
+                _make_claimable(database, scope.id)
+                assert await runner.run_once()
+            assert model.prompts == [[communication.value, constraints.value]]
+
+            refreshed = await scope.view()
+            assert refreshed["refresh_status"] == "succeeded"
+            profile = cast(dict[str, object], refreshed["profile"])
+            for group in (communication, constraints):
+                assert profile[group] == [
+                    {"text": model.text, "fact_ids": [group.value]}
+                ]
+            revisions = _group_revisions(database, scope.id)
+            assert revisions[preferences] == before_revisions[preferences]
+            assert profile[preferences] == previous[preferences]
+
+    run(exercise())
+
+
+@pytest.mark.parametrize("growth", ["other_group", "same_group_history"])
+def test_group_query_buffers_stay_bounded_as_facts_grow(
+    database: PgDatabase, growth: str
+) -> None:
+    async def exercise() -> None:
+        async with (
+            _http_space(database) as scope,
+            pool(database.runtime) as connections,
+        ):
+            storage = PostgresStorage(connections, owner_id=scope.owner)
+            basic = await _write_fact(scope, storage, "driving-fact")
+            with psycopg.connect(database.admin) as conn:
+                same_group = growth == "same_group_history"
+
+                def seed(start: int, end: int) -> None:
+                    conn.execute(
+                        """
+                        INSERT INTO mnemotrace.facts
+                            (space_id, fact_id, subject_id, predicate, object_value, text, valid_at,
+                             invalid_at, expired_at, recorded_at, labels, sensitive, source,
+                             profile_groups, lexemes)
+                        SELECT %(space)s, 'growth-' || i, %(subject)s, 'tool', 'fixture', 'fixture',
+                            CASE WHEN %(same_group)s THEN CASE WHEN i %% 2 = 0 THEN 20 ELSE 110 END END,
+                            CASE WHEN %(same_group)s THEN CASE WHEN i %% 2 = 0 THEN 90 ELSE 120 END END,
+                            CASE WHEN %(same_group)s THEN 10 END,
+                            10, '{}', false, 'extracted', %(groups)s::text[], ''::tsvector
+                        FROM generate_series(%(start)s::integer, %(end)s::integer) AS i
+                        """,
+                        {
+                            "space": scope.id.value,
+                            "subject": basic.subject.entity_id.value,
+                            "same_group": same_group,
+                            "groups": ["basic" if same_group else "preferences"],
+                            "start": start,
+                            "end": end,
+                        },
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO mnemotrace.fact_provenance
+                            (space_id, fact_id, position, message_id, support_group)
+                        SELECT %s, 'growth-' || i, 0, %s, 0
+                        FROM generate_series(%s::integer, %s::integer) AS i
+                        """,
+                        (scope.id.value, basic.provenance[0].value, start, end),
+                    )
+                    conn.execute("ANALYZE mnemotrace.facts")
+
+                def evidence_buffers() -> int:
+                    row = conn.execute(
+                        sql.SQL("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ")
+                        + _group_evidence_query(ProfileGroup.BASIC),
+                        {
+                            "space": scope.id.value,
+                            "subject": basic.subject.entity_id.value,
+                            "at": 100.0,
+                            "limit": MAX_PROFILE_FACTS + 1,
+                        },
+                    ).fetchone()
+                    assert row is not None
+                    plan = row[0][0]["Plan"]
+                    assert plan["Actual Rows"] == 1
+                    return int(plan["Shared Hit Blocks"] + plan["Shared Read Blocks"])
+
+                seed(1, 500)
+                small = evidence_buffers()
+                seed(501, 10000)
+                assert evidence_buffers() <= small + 8
 
     run(exercise())

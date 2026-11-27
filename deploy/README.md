@@ -15,7 +15,7 @@
 | 根目录 `.env` | 填写应用数据库账号的随机十六进制密码 `MNEMOTRACE_DB_PASSWORD`。可以用 `openssl rand -hex 32` 生成。此文件也可配置 API 端口等运行参数。 [数据库配置模板](.env.example) |
 | `deploy/.env.models` | 配置补全和嵌入模型，可按需启用重排。API 和写入进程使用此文件配置模型服务。 [模型配置模板](.env.models.example) · [模型配置参考](../docs/reference/model-configuration.md) |
 
-首次部署使用空数据库卷。数据库容器初始化 `pgvector` 和非超级用户 `mnemotrace_app`，将 `mnemotrace` schema 交给该账号，并清除 PostgreSQL 初始化管理员的临时口令。应用账号通过 SCRAM 登录，拥有自己 schema 中的表、迁移账本和 API 密钥表，可修改结构及记录。数据库管理员通过容器内 Unix socket 使用 peer 认证。 [初始化脚本](init-postgres.sql) · [PostgreSQL 容器初始化说明](https://hub.docker.com/_/postgres)
+首次部署使用空数据库卷。数据库容器初始化 `vector`（pgvector）和 `btree_gist` 扩展，创建非超级用户 `mnemotrace_app`，将 `mnemotrace` schema 交给该账号，并清除 PostgreSQL 初始化管理员的临时口令。应用账号通过 SCRAM 登录，拥有自己 schema 中的表、迁移账本和 API 密钥表，可修改结构及记录。数据库管理员通过容器内 Unix socket 使用 peer 认证。 [初始化脚本](init-postgres.sql) · [PostgreSQL 容器初始化说明](https://hub.docker.com/_/postgres)
 
 API 和 worker 等待池连接的时限为 3 秒。`MNEMOTRACE_DB_LOCK_TIMEOUT_SECONDS` 默认 1 秒，`MNEMOTRACE_DB_STATEMENT_TIMEOUT_SECONDS` 默认 15 秒，`MNEMOTRACE_DB_MAINTENANCE_TIMEOUT_SECONDS` 默认 60 秒。维护时限应用于会话擦除、空间清空和空间删除的单条语句。配置须满足等锁时限小于普通语句时限，且普通语句时限小于等于维护语句时限。
 
@@ -23,7 +23,7 @@ API 和 worker 等待池连接的时限为 3 秒。`MNEMOTRACE_DB_LOCK_TIMEOUT_S
 
 自管部署自行设置各进程的 `MNEMOTRACE_POSTGRES_DSN`。按下列顺序开通数据库。随附 Compose 连接其内置 PostgreSQL。
 
-1. 由 DBA 准备有权连接目标数据库的迁移、运行和密钥管理账号。在目标库将 `vector` 扩展安装到 `public` schema，并创建 `mnemotrace` schema，由迁移账号拥有。
+1. 由 DBA 准备有权连接目标数据库的迁移、运行和密钥管理账号。在目标库的 `public` schema 安装 `vector` 和 `btree_gist` 扩展，并创建由迁移账号拥有的 `mnemotrace` schema。
 2. 在迁移进程的环境中配置迁移账号的连接串，执行 `python -m mnemotrace.adapters.postgres.migrate up`。迁移成功后，用该账号执行授权脚本。下列命令假设 `psql` 的连接配置已指向目标库的迁移账号。按实际部署填写 `-v` 的角色名。
 
    ```sh
@@ -49,9 +49,11 @@ curl -fsS http://127.0.0.1:8100/readyz
 
 ## API 密钥管理
 
-内置 Compose 的 `admin bootstrap` 为 `local-demo` 签发首把密钥并创建空间，命令成功后返回 `token` 和 `space_id`。若该账号已有空间或密钥记录，命令会提示已配置。使用现有密钥调用 `GET /v1/spaces` 找到所需的空间。若首次运行时丢失了输出，先用 `admin issue` 签发新密钥，再查找空间并撤销遗失的密钥。 [HTTP 接入指南](../docs/reference/http-api.md)
+内置 Compose 的 `admin bootstrap` 为默认账号 `owner` 签发首把密钥并创建名为 `default` 的空间，命令成功后返回 `token` 和 `space_id`。若该账号已有空间或密钥记录，命令会提示已配置。使用现有密钥调用 `GET /v1/spaces` 找到所需的空间。若首次运行时丢失了输出，先用 `admin issue` 签发新密钥，再查找空间并撤销遗失的密钥。 [HTTP 接入指南](../docs/reference/http-api.md)
 
-将签发返回的 `token` 保存到凭据存储，客户端用它构造 Bearer 请求头。`issue`、`list` 和 `revoke` 默认操作 `local-demo`，也可用 `--owner-id` 选择其他账号。撤销前将 `KEY_ID` 换成 `list` 返回的目标 ID。
+签发的 `token` 由 `mnemo_` 前缀和 43 个 URL 安全字符组成，共 49 字符。服务端保存整串凭据的 SHA-256 摘要，客户端保存完整 `token` 并用它构造 Bearer 请求头。
+
+`issue`、`list` 和 `revoke` 默认操作 `owner`，也可用 `--owner-id` 选择其他账号。撤销前将 `KEY_ID` 换成 `list` 返回的目标 ID。
 
 ```sh
 docker compose --env-file .env -f deploy/compose.yaml run --rm admin issue
@@ -123,7 +125,7 @@ source_compose() { docker compose --env-file .env -f deploy/compose.yaml "$@"; }
 
 ### 恢复到独立实例
 
-使用与备份相同的代码、数据库镜像及模型配置。复制配置到 `.env.restore`，设置目标项目的数据库密码、独立 API 端口及专用镜像标签（如 `MNEMOTRACE_IMAGE=mnemotrace:restore`）。首次恢复时选择未使用过的项目名。示例使用 `mnemotrace-restore`。将下方 `backup_file` 设为实际归档的绝对路径。目标项目先只启动数据库，由初始化脚本准备角色和 pgvector。
+使用与备份相同的代码、数据库镜像及模型配置。复制配置到 `.env.restore`，设置目标项目的数据库密码、独立 API 端口及专用镜像标签（如 `MNEMOTRACE_IMAGE=mnemotrace:restore`）。首次恢复时选择未使用过的项目名。示例使用 `mnemotrace-restore`。将下方 `backup_file` 设为实际归档的绝对路径。目标项目先只启动数据库，由初始化脚本准备角色和扩展。
 
 ```sh
 backup_file=/absolute/path/to/mnemotrace.dump

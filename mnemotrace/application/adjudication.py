@@ -175,6 +175,7 @@ async def prepare_facts(
             labels=item.labels,
             sensitive=item.sensitive,
             source=Source.EXTRACTED,
+            profile_groups=item.profile_groups,
         )
         bound.append((fact, entities))
     vectors = await embedder.embed(tuple(fact.text for fact, _ in bound))

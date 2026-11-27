@@ -645,19 +645,9 @@ class PostgresReader:
             await cursor.execute(query, params)
             return tuple(await cursor.fetchall())
 
-    async def get_profile(self, *, exclude_sensitive: bool = False) -> Profile | None:
-        """读取绑定空间的画像。
-
-        Args:
-            exclude_sensitive: 是否使用省略整份画像的受限读取。
-
-        Returns:
-            完整画像快照。缺失或受限时为 None。
-        """
-        conn = self._conn
-        if exclude_sensitive:
-            return None
-        async with conn.cursor(row_factory=args_row(profile_from_row)) as cursor:
+    async def get_profile(self) -> Profile | None:
+        """读取绑定空间已发布的画像快照。"""
+        async with self._conn.cursor(row_factory=args_row(profile_from_row)) as cursor:
             await cursor.execute(
                 """
                 SELECT space_id, data, updated_at FROM mnemotrace.profiles WHERE space_id = %s

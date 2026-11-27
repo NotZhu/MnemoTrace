@@ -10,7 +10,7 @@ from ._validation import (
     require_type,
     timestamp,
 )
-from .enums import Source
+from .enums import ProfileGroup, Source
 from .errors import InvalidFact
 from .ids import FactId, MessageId, SpaceId
 from .values import ContentHash, EntityRef, Label, LiteralValue, Predicate, content_hash
@@ -37,6 +37,7 @@ class Fact:
     labels: tuple[Label, ...]
     sensitive: bool
     source: Source
+    profile_groups: tuple[ProfileGroup, ...] = ()
     content_hash: ContentHash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -50,6 +51,10 @@ class Fact:
         require_type(self.source, Source, "source", InvalidFact)
         require_tuple(self.provenance, MessageId, "provenance", InvalidFact)
         require_tuple(self.labels, Label, "labels", InvalidFact)
+        require_tuple(self.profile_groups, ProfileGroup, "profile_groups", InvalidFact)
+        object.__setattr__(
+            self, "profile_groups", tuple(sorted(set(self.profile_groups)))
+        )
         if self.source is Source.EXTRACTED and not self.provenance:
             raise InvalidFact("抽取事实必须包含 provenance")
 
@@ -85,19 +90,6 @@ class Fact:
             对象为实体引用时为 True。
         """
         return isinstance(self.object, EntityRef)
-
-    def same_except_provenance(self, other: "Fact") -> bool:
-        """比较事实快照，忽略对同一断言的原文引用变化。
-
-        Args:
-            other: 待比较的事实快照。
-
-        Returns:
-            除原文引用外所有字段相同时为真。
-        """
-        if self.source is not other.source or self.provenance == other.provenance:
-            return self == other
-        return self == replace(other, provenance=self.provenance)
 
     def close(self, valid_end: float, closed_at: float) -> Self:
         """首次记录事实的有效截止及获知时刻。

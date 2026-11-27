@@ -47,7 +47,7 @@ def admin_dsn() -> str:
 
 @pytest.fixture(scope="session")
 def database_factory(admin_dsn: str) -> DatabaseFactory:
-    """提供在专用实例上创建和清理已安装 pgvector 的临时空库的工厂。
+    """提供在专用实例上创建和清理已安装数据库扩展的临时空库的工厂。
 
     Args:
         admin_dsn: 具有建库权限的测试实例连接串。
@@ -71,6 +71,7 @@ def database_factory(admin_dsn: str) -> DatabaseFactory:
                 dsn = make_conninfo(admin_dsn, dbname=database)
                 with psycopg.connect(dsn) as db:
                     db.execute("CREATE EXTENSION vector WITH SCHEMA public")
+                    db.execute("CREATE EXTENSION btree_gist WITH SCHEMA public")
                     db.execute("CREATE SCHEMA mnemotrace")
                 yield dsn
             finally:
@@ -113,8 +114,10 @@ def _grant_roles(dsn: str, runtime: str, key_admin: str) -> None:
         pytest.fail(f"部署授权脚本执行失败（psql 退出码 {result.returncode}）")
 
 
-@pytest.fixture(scope="session")
-def database(admin_dsn: str, database_factory: DatabaseFactory) -> Iterator[PgDatabase]:
+@contextmanager
+def _granted_database(
+    admin_dsn: str, database_factory: DatabaseFactory
+) -> Iterator[PgDatabase]:
     """迁移临时库并用部署脚本配置运行和凭据管理角色。
 
     Args:
@@ -154,6 +157,21 @@ def database(admin_dsn: str, database_factory: DatabaseFactory) -> Iterator[PgDa
                     sql.Identifier(runtime), sql.Identifier(key_admin)
                 )
             )
+
+
+@pytest.fixture(scope="session")
+def database(admin_dsn: str, database_factory: DatabaseFactory) -> Iterator[PgDatabase]:
+    with _granted_database(admin_dsn, database_factory) as db:
+        yield db
+
+
+@pytest.fixture
+def isolated_database(
+    admin_dsn: str, database_factory: DatabaseFactory
+) -> Iterator[PgDatabase]:
+    """为依赖账号初始状态的测试提供独立的空库和角色。"""
+    with _granted_database(admin_dsn, database_factory) as db:
+        yield db
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:

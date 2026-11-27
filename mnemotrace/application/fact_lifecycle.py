@@ -339,15 +339,23 @@ def _append_support(
         else existing_support_groups[target]
     )
     sensitive = fact.sensitive or evidence.sensitive
+    profile_groups = tuple(
+        sorted(set(fact.profile_groups) | set(evidence.profile_groups))
+    )
     members = frozenset(evidence.provenance)
     if any(frozenset(existing) == members for existing in groups):
-        if sensitive != fact.sensitive:
-            updated[target] = replace(fact, sensitive=sensitive)
+        if sensitive != fact.sensitive or profile_groups != fact.profile_groups:
+            updated[target] = replace(
+                fact, sensitive=sensitive, profile_groups=profile_groups
+            )
         return
     groups = (*groups, evidence.provenance)
     support_groups[target] = groups
     updated[target] = replace(
-        fact, provenance=flatten_support_groups(groups), sensitive=sensitive
+        fact,
+        provenance=flatten_support_groups(groups),
+        sensitive=sensitive,
+        profile_groups=profile_groups,
     )
 
 

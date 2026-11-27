@@ -14,6 +14,7 @@ from mnemotrace.application.adjudication import (
 )
 from mnemotrace.application.extraction import ExtractedFact
 from mnemotrace.application.fact_lifecycle import FactWrites, calculate_fact_writes
+from mnemotrace.domain.enums import ProfileGroup
 from mnemotrace.domain.fact import Fact
 from mnemotrace.domain.ids import FactId, MessageId
 from mnemotrace.domain.values import LiteralValue
@@ -48,6 +49,30 @@ def _decide(
             item.id: (item.provenance,) if item.provenance else () for item in old
         },
         changed_at=110.0,
+    )
+
+
+def test_duplicate_fact_merges_profile_groups_and_keeps_its_identity() -> None:
+    old, repeat = _prepare(
+        replace(
+            candidate("old"), profile_groups=(ProfileGroup.COMMUNICATION_PREFERENCES,)
+        ),
+        replace(candidate("repeat"), profile_groups=(ProfileGroup.CONSTRAINTS,)),
+    )
+    result = _decide(
+        (repeat,),
+        (old.fact,),
+        FactComparison((repeat.fact.id, old.fact.id), "duplicate"),
+    )
+    assert result.facts == (
+        replace(
+            old.fact,
+            provenance=(*old.fact.provenance, *repeat.fact.provenance),
+            profile_groups=(
+                ProfileGroup.COMMUNICATION_PREFERENCES,
+                ProfileGroup.CONSTRAINTS,
+            ),
+        ),
     )
 
 

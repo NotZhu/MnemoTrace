@@ -135,6 +135,7 @@ class _Model(FakeLLM):
                         },
                         "invalid_at_evidence": None,
                         "source_numbers": [source],
+                        "profile_groups": [],
                         "labels": [],
                         "sensitive": self.sensitive,
                     }
@@ -193,7 +194,7 @@ def _memory(
 def test_remember_commits_messages_facts_indexes_and_audit(
     database: PgDatabase,
 ) -> None:
-    """公开用例提交原文、事实、证据、索引、审计及依赖画像清理。"""
+    """公开用例提交原文、事实、证据、索引及审计，并保留已发布画像快照。"""
 
     async def exercise() -> None:
         async with _workspace(database) as (scope, storage):
@@ -203,6 +204,9 @@ def test_remember_commits_messages_facts_indexes_and_audit(
                 predicate=_PREDICATE,
                 object=LiteralValue("中文"),
                 valid_at=10.0,
+            )
+            profile = Profile(
+                scope.id, {"language": (ProfileEntry(old.text, (old.id,)),)}, 10.0
             )
             model, embedder = _Model(verdicts={old.text: "conflict"}), _Embedder()
             memory = _memory(scope, storage, model, embedder)
@@ -220,13 +224,7 @@ def test_remember_commits_messages_facts_indexes_and_audit(
                 await writer.append_messages(history)
                 await writer.upsert_entity(project)
                 await writer.save_facts((old,), changed_at=10.0)
-                await writer.save_profile(
-                    Profile(
-                        scope.id,
-                        {"language": (ProfileEntry(old.text, (old.id,)),)},
-                        10.0,
-                    )
-                )
+                await writer.save_profile(profile)
 
             result = await memory.remember(
                 (
@@ -269,7 +267,7 @@ def test_remember_commits_messages_facts_indexes_and_audit(
                     == result.message_ids
                 )
                 assert await reader.get_entities((project.id,)) == {project.id: project}
-                assert await reader.get_profile() is None
+                assert await reader.get_profile() == profile
                 filters = FactFilter()
                 assert created.after.id in dict(
                     await reader.search_lexical(
@@ -1056,7 +1054,7 @@ def test_remember_propagates_commit_failure_without_resending(
             assert attempts == 1 and len(model.extraction_calls) == 1
             async with storage.session(scope.id) as reader:
                 assert bool(await reader.last_messages(session_id, 10)) is committed
-                assert (await reader.get_profile() is None) is committed
+                assert await reader.get_profile() == profile
                 assert (await reader.get_fact(FactId("new-0")) is not None) is committed
                 assert len(await reader.list_fact_changes(old.id)) == (
                     2 if committed else 1

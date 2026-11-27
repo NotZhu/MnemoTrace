@@ -99,6 +99,7 @@ def _fact(**overrides: object) -> dict[str, object]:
         },
         "invalid_at_evidence": None,
         "source_numbers": [3, 1],
+        "profile_groups": [],
         "labels": ["user_preferences"],
         "sensitive": False,
         **overrides,
@@ -674,6 +675,9 @@ def test_extraction_accepts_unique_and_explicit_offset_times(
             "早于截止点",
         ),
         ({"labels": ["fabricated"]}, "违反 enum 规则"),
+        ({"profile_groups": ["fabricated"]}, "违反 enum 规则"),
+        ({"profile_groups": ["basic", "basic"]}, "画像分组不得重复"),
+        ({"profile_groups": ["basic"], "sensitive": True}, "非敏感事实"),
     ],
     ids=[
         "unknown-reference",
@@ -686,6 +690,9 @@ def test_extraction_accepts_unique_and_explicit_offset_times(
         "invalid-time",
         "invalid-interval",
         "schema",
+        "unknown-profile-group",
+        "repeated-profile-group",
+        "sensitive-profile-group",
     ],
 )
 def test_extraction_rejects_entire_response_when_one_fact_is_invalid(

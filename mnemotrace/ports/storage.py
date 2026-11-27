@@ -472,14 +472,11 @@ class SpaceReader(Protocol):
         """
         ...
 
-    async def get_profile(self, *, exclude_sensitive: bool = False) -> Profile | None:
-        """读取绑定空间的画像快照。
-
-        Args:
-            exclude_sensitive: 受限读取由服务端设为真，此时省略整份画像。
+    async def get_profile(self) -> Profile | None:
+        """读取绑定空间已发布的画像快照。
 
         Returns:
-            完整读取权限下的画像快照，缺失或受限时返回 None。
+            完整画像快照，尚无快照时返回 None。
         """
         ...
 

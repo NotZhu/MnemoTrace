@@ -1,6 +1,11 @@
 CREATE DOMAIN mnemotrace.epoch_seconds AS double precision
     CHECK (VALUE >= -62135596800 AND VALUE < 253402300800);
 
+CREATE TYPE mnemotrace.epoch_range AS RANGE (
+    subtype = double precision,
+    subtype_diff = pg_catalog.float8mi
+);
+
 CREATE TABLE mnemotrace.spaces (
     space_id text COLLATE "C" PRIMARY KEY,
     owner_id text COLLATE "C" NOT NULL,
@@ -10,16 +15,19 @@ CREATE TABLE mnemotrace.spaces (
     fact_revision bigint NOT NULL DEFAULT 0,
     memory_decay boolean NOT NULL DEFAULT false,
     profile_auto_refresh boolean NOT NULL DEFAULT false,
-    profile_evidence_revision bigint NOT NULL DEFAULT 0,
+    profile_next_transition_at mnemotrace.epoch_seconds,
     session_summary_enabled boolean NOT NULL DEFAULT false
 );
 
 CREATE INDEX spaces_by_owner ON mnemotrace.spaces (owner_id, space_id);
+CREATE INDEX spaces_profile_next_transition
+    ON mnemotrace.spaces (profile_next_transition_at, space_id)
+    WHERE profile_auto_refresh AND profile_next_transition_at IS NOT NULL;
 
 CREATE TABLE mnemotrace.api_keys (
     key_id text COLLATE "C" PRIMARY KEY,
     owner_id text COLLATE "C" NOT NULL,
-    secret_hash bytea NOT NULL CHECK (octet_length(secret_hash) = 32),
+    secret_hash bytea NOT NULL UNIQUE CHECK (octet_length(secret_hash) = 32),
     created_at timestamptz NOT NULL DEFAULT statement_timestamp(),
     revoked_at timestamptz
 );
@@ -85,6 +93,7 @@ CREATE TABLE mnemotrace.facts (
     labels text[] NOT NULL,
     sensitive boolean NOT NULL,
     source text NOT NULL,
+    profile_groups text[] NOT NULL DEFAULT '{}',
     lexemes tsvector NOT NULL,
     PRIMARY KEY (space_id, fact_id),
     FOREIGN KEY (space_id, subject_id) REFERENCES mnemotrace.entities,
@@ -93,7 +102,9 @@ CREATE TABLE mnemotrace.facts (
     CHECK (object_value IS NOT NULL OR object_kind IS NULL),
     CHECK ((invalid_at IS NULL) = (expired_at IS NULL)),
     CHECK (valid_at < invalid_at),
-    CHECK (recorded_at <= expired_at)
+    CHECK (recorded_at <= expired_at),
+    CHECK (cardinality(profile_groups) <= 4 AND array_position(profile_groups, NULL) IS NULL
+        AND profile_groups <@ ARRAY['basic', 'communication_preferences', 'preferences', 'constraints']::text[])
 );
 
 CREATE INDEX facts_timeline
@@ -110,9 +121,58 @@ CREATE INDEX facts_edges_in
     WHERE object_entity_id IS NOT NULL;
 CREATE INDEX facts_labels ON mnemotrace.facts USING gin (labels);
 CREATE INDEX facts_lexemes ON mnemotrace.facts USING gin (lexemes);
-CREATE INDEX facts_profile_activation
+CREATE INDEX facts_profile_validity_1
+    ON mnemotrace.facts USING gist (space_id public.gist_text_ops, subject_id public.gist_text_ops,
+        mnemotrace.epoch_range(valid_at, invalid_at, '[)'))
+    WHERE source = 'extracted' AND NOT sensitive
+      AND profile_groups @> ARRAY['basic']::text[];
+CREATE INDEX facts_profile_validity_2
+    ON mnemotrace.facts USING gist (space_id public.gist_text_ops, subject_id public.gist_text_ops,
+        mnemotrace.epoch_range(valid_at, invalid_at, '[)'))
+    WHERE source = 'extracted' AND NOT sensitive
+      AND profile_groups @> ARRAY['communication_preferences']::text[];
+CREATE INDEX facts_profile_validity_3
+    ON mnemotrace.facts USING gist (space_id public.gist_text_ops, subject_id public.gist_text_ops,
+        mnemotrace.epoch_range(valid_at, invalid_at, '[)'))
+    WHERE source = 'extracted' AND NOT sensitive
+      AND profile_groups @> ARRAY['preferences']::text[];
+CREATE INDEX facts_profile_validity_4
+    ON mnemotrace.facts USING gist (space_id public.gist_text_ops, subject_id public.gist_text_ops,
+        mnemotrace.epoch_range(valid_at, invalid_at, '[)'))
+    WHERE source = 'extracted' AND NOT sensitive
+      AND profile_groups @> ARRAY['constraints']::text[];
+CREATE INDEX facts_profile_activation_1
     ON mnemotrace.facts (space_id, subject_id, valid_at)
-    WHERE source = 'extracted' AND NOT sensitive AND valid_at IS NOT NULL;
+    WHERE source = 'extracted' AND NOT sensitive AND valid_at IS NOT NULL
+      AND profile_groups @> ARRAY['basic']::text[];
+CREATE INDEX facts_profile_activation_2
+    ON mnemotrace.facts (space_id, subject_id, valid_at)
+    WHERE source = 'extracted' AND NOT sensitive AND valid_at IS NOT NULL
+      AND profile_groups @> ARRAY['communication_preferences']::text[];
+CREATE INDEX facts_profile_activation_3
+    ON mnemotrace.facts (space_id, subject_id, valid_at)
+    WHERE source = 'extracted' AND NOT sensitive AND valid_at IS NOT NULL
+      AND profile_groups @> ARRAY['preferences']::text[];
+CREATE INDEX facts_profile_activation_4
+    ON mnemotrace.facts (space_id, subject_id, valid_at)
+    WHERE source = 'extracted' AND NOT sensitive AND valid_at IS NOT NULL
+      AND profile_groups @> ARRAY['constraints']::text[];
+CREATE INDEX facts_profile_expiry_1
+    ON mnemotrace.facts (space_id, subject_id, invalid_at)
+    WHERE source = 'extracted' AND NOT sensitive AND invalid_at IS NOT NULL
+      AND profile_groups @> ARRAY['basic']::text[];
+CREATE INDEX facts_profile_expiry_2
+    ON mnemotrace.facts (space_id, subject_id, invalid_at)
+    WHERE source = 'extracted' AND NOT sensitive AND invalid_at IS NOT NULL
+      AND profile_groups @> ARRAY['communication_preferences']::text[];
+CREATE INDEX facts_profile_expiry_3
+    ON mnemotrace.facts (space_id, subject_id, invalid_at)
+    WHERE source = 'extracted' AND NOT sensitive AND invalid_at IS NOT NULL
+      AND profile_groups @> ARRAY['preferences']::text[];
+CREATE INDEX facts_profile_expiry_4
+    ON mnemotrace.facts (space_id, subject_id, invalid_at)
+    WHERE source = 'extracted' AND NOT sensitive AND invalid_at IS NOT NULL
+      AND profile_groups @> ARRAY['constraints']::text[];
 
 CREATE TABLE mnemotrace.fact_provenance (
     space_id text COLLATE "C" NOT NULL,
@@ -270,7 +330,6 @@ CREATE TABLE mnemotrace.profile_refreshes (
     lease_token text,
     lease_until timestamptz,
     error_code text,
-    last_success_fact_cursor bigint CHECK (last_success_fact_cursor >= 0),
     trigger_kind text NOT NULL DEFAULT 'manual' CHECK (trigger_kind IN ('manual', 'auto')),
     auto_started boolean NOT NULL DEFAULT false,
     followup_at timestamptz,
@@ -284,6 +343,16 @@ CREATE TABLE mnemotrace.profile_refreshes (
 CREATE INDEX profile_refreshes_pending ON mnemotrace.profile_refreshes
     ((COALESCE(available_at, lease_until)), space_id)
     WHERE status IN ('queued', 'running');
+
+CREATE TABLE mnemotrace.profile_group_refreshes (
+    space_id text COLLATE "C" REFERENCES mnemotrace.spaces ON DELETE CASCADE NOT NULL,
+    group_name text NOT NULL CHECK (group_name IN ('basic', 'communication_preferences', 'preferences', 'constraints')),
+    target_revision bigint NOT NULL DEFAULT 0,
+    published_revision bigint NOT NULL DEFAULT 0,
+    transition_at mnemotrace.epoch_seconds,
+    PRIMARY KEY (space_id, group_name),
+    CHECK (target_revision >= published_revision AND published_revision >= 0)
+);
 
 CREATE TABLE mnemotrace.session_summaries (
     space_id text COLLATE "C" NOT NULL,

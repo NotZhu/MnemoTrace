@@ -215,6 +215,13 @@ async def test_openapi_request_and_response_schemas(openapi_response: Response) 
         "preferences",
         "constraints",
     }
+    assert set(schemas["ProfileResponse"]["properties"]) == {
+        "profile",
+        "updated_at",
+        "refresh_status",
+        "next_retry_at",
+        "refresh_error",
+    }
     profile_refresh = spec["paths"]["/v1/spaces/{space_id}/profile/refresh"]["post"]
     assert "requestBody" not in profile_refresh
     assert "Location" in profile_refresh["responses"]["202"]["headers"]

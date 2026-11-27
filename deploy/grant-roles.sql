@@ -6,10 +6,10 @@ GRANT SELECT (key_id, owner_id, created_at, revoked_at),
     ON mnemotrace.api_keys TO :"admin_role";
 
 GRANT SELECT ON mnemotrace.schema_migrations TO :"runtime_role";
-GRANT SELECT (key_id, owner_id, secret_hash, revoked_at) ON mnemotrace.api_keys
+GRANT SELECT (owner_id, secret_hash, revoked_at) ON mnemotrace.api_keys
     TO :"runtime_role";
 GRANT SELECT, INSERT, UPDATE (purge_generation, name, memory_decay, profile_auto_refresh,
-    profile_evidence_revision, session_summary_enabled, fact_revision)
+    profile_next_transition_at, session_summary_enabled, fact_revision)
     ON mnemotrace.spaces
     TO :"runtime_role";
 GRANT DELETE ON mnemotrace.spaces, mnemotrace.embedding_spaces
@@ -27,7 +27,7 @@ GRANT SELECT, INSERT ON
     TO :"runtime_role";
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     mnemotrace.entities, mnemotrace.facts,
-    mnemotrace.profiles, mnemotrace.profile_refreshes, mnemotrace.fact_salience,
+    mnemotrace.profiles, mnemotrace.profile_refreshes, mnemotrace.profile_group_refreshes, mnemotrace.fact_salience,
     mnemotrace.fact_vectors TO :"runtime_role";
 GRANT SELECT, INSERT, UPDATE ON mnemotrace.session_summaries TO :"runtime_role";
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA mnemotrace TO :"runtime_role";

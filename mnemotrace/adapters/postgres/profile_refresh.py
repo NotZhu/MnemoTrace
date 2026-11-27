@@ -1,33 +1,41 @@
-"""将空间画像的刷新请求与发布租约持久化到 PostgreSQL。"""
+"""持久化画像分组进度、时间唤醒和空间任务租约。"""
 
-from datetime import datetime, timedelta
+from collections.abc import Mapping
+from datetime import timedelta
 from typing import cast
 from uuid import uuid4
 
-from psycopg import AsyncConnection
+from psycopg import AsyncConnection, sql
+from psycopg.errors import LockNotAvailable
 from psycopg.rows import TupleRow
 from psycopg_pool import AsyncConnectionPool
 
-from ...application.operations import (
-    LEASE_SECONDS,
-    MAX_ATTEMPTS,
-    LeaseLost,
-    WriteModelsUnavailable,
-)
+from ...application.operations import LEASE_SECONDS, LeaseLost, WriteModelsUnavailable
+from ...application.profile import MAX_PROFILE_FACTS, ProfileEvidence
 from ...application.profile_refresh import (
     ClaimedProfileRefresh,
     PendingRefreshStatus,
-    ProfileEvidenceVersion,
     ProfileRefreshState,
+    ProfileSnapshot,
+    SnapshotChanged,
 )
 from ...domain.entity import Entity
+from ...domain.enums import ProfileGroup
 from ...domain.ids import FactId, SpaceId
-from ...domain.profile import Profile
-from ...ports.storage import SpaceReader, SpaceSession
-from .profile_schedule import TABLE as _TABLE
+from ...domain.profile import Profile, ProfileEntry
+from ...ports.storage import SpaceReader, SpaceSession, SpaceUnavailable
+from .profile_schedule import (
+    GROUP_TABLE,
+    TABLE,
+    advance_due_profile_transitions,
+    mark_profile_groups,
+    next_profile_transition,
+    profile_fact_scope,
+    publish_profile_group_revisions,
+)
 from .reader import PostgresReader
 from .session import PostgresSession
-from .storage import PostgresStorage
+from .storage import PostgresStorage, _session_transaction
 
 _ACTIVE_LEASE = """
     space_id = %(space)s AND request_version = %(version)s AND status = 'running'
@@ -36,6 +44,14 @@ _ACTIVE_LEASE = """
         SELECT 1 FROM mnemotrace.spaces AS space
         WHERE space.space_id = %(space)s AND space.profile_auto_refresh
     ))
+    """
+
+_NEXT_DUE_SPACE = """
+    SELECT space_id FROM mnemotrace.spaces
+    WHERE profile_auto_refresh AND profile_next_transition_at IS NOT NULL
+      AND profile_next_transition_at <= %s
+    ORDER BY profile_next_transition_at, space_id
+    LIMIT 1 FOR UPDATE SKIP LOCKED
     """
 
 
@@ -48,51 +64,56 @@ def _lease(job: ClaimedProfileRefresh) -> dict[str, str | int]:
 
 
 class PostgresProfileRefresh:
-    """持久接收画像刷新并用有效租约约束状态变更。"""
+    """在持空间写锁的事务中发布画像并结算任务。"""
 
     def __init__(self, pool: AsyncConnectionPool[AsyncConnection[TupleRow]]) -> None:
         self._pool = pool
 
+    def _storage(self, owner_id: str) -> PostgresStorage:
+        return PostgresStorage(self._pool, owner_id=owner_id)
+
     async def submit(
         self, owner_id: str, space_id: SpaceId, *, configured: bool
     ) -> PendingRefreshStatus:
-        """授权并入队，将在途自动任务提升为手动刷新。"""
-        storage = PostgresStorage(self._pool, owner_id=owner_id)
-        async with storage.session(space_id, write=True) as writer:
-            conn = cast(PostgresReader, writer)._conn
+        """为四组发起手动刷新，合并已有手动请求或提升自动任务。"""
+        async with self._storage(owner_id).session(space_id, write=True) as writer:
+            conn = cast(PostgresSession, writer)._conn
             cursor = await conn.execute(
-                f"""
-                SELECT status, trigger_kind FROM {_TABLE}
-                WHERE space_id = %s FOR UPDATE
-                """,
+                f"SELECT status, trigger_kind FROM {TABLE} WHERE space_id = %s FOR UPDATE",
                 (space_id.value,),
             )
             row = await cursor.fetchone()
-            if row is not None:
-                status, trigger = row
-                if status in ("queued", "running"):
-                    if trigger == "auto":
-                        await conn.execute(
-                            f"""
-                            UPDATE {_TABLE} SET trigger_kind = 'manual',
-                                available_at = CASE WHEN status = 'queued' AND attempts = 0
-                                    THEN LEAST(available_at, clock_timestamp())
-                                    ELSE available_at END
-                            WHERE space_id = %s
-                            """,
-                            (space_id.value,),
-                        )
-                    return "queued" if status == "queued" else "running"
+            if row is not None and row[0] in ("queued", "running"):
+                status: PendingRefreshStatus = (
+                    "running" if row[0] == "running" else "queued"
+                )
+                if row[1] == "auto":
+                    pending = await self._pending(writer)
+                    await mark_profile_groups(
+                        conn,
+                        space_id,
+                        set(ProfileGroup).difference(pending),
+                    )
+                    await conn.execute(
+                        f"""
+                        UPDATE {TABLE} SET trigger_kind = 'manual',
+                            available_at = CASE WHEN status = 'queued' AND attempts = 0
+                                THEN LEAST(available_at, clock_timestamp()) ELSE available_at END
+                        WHERE space_id = %s
+                        """,
+                        (space_id.value,),
+                    )
+                return status
             if not configured:
                 raise WriteModelsUnavailable
+            await mark_profile_groups(conn, space_id, tuple(ProfileGroup))
             await conn.execute(
                 f"""
-                INSERT INTO {_TABLE} AS current (space_id)
-                VALUES (%s)
+                INSERT INTO {TABLE} AS current (space_id) VALUES (%s)
                 ON CONFLICT (space_id) DO UPDATE SET
                     request_version = current.request_version + 1,
-                    status = 'queued', available_at = statement_timestamp(),
-                    attempts = 0, error_code = NULL, trigger_kind = 'manual'
+                    status = 'queued', available_at = statement_timestamp(), attempts = 0,
+                    error_code = NULL, trigger_kind = 'manual'
                 """,
                 (space_id.value,),
             )
@@ -100,13 +121,10 @@ class PostgresProfileRefresh:
 
     @staticmethod
     async def get(reader: SpaceReader) -> ProfileRefreshState:
-        """在调用方的已授权快照内读取公开刷新状态。"""
+        """在同一授权快照内读取空间刷新状态。"""
         conn = cast(PostgresReader, reader)._conn
         cursor = await conn.execute(
-            f"""
-            SELECT status, CASE WHEN attempts > 0 THEN available_at END, error_code
-            FROM {_TABLE} WHERE space_id = %s
-            """,
+            f"SELECT status, CASE WHEN attempts > 0 THEN available_at END, error_code FROM {TABLE} WHERE space_id = %s",
             (reader.space_id.value,),
         )
         row = await cursor.fetchone()
@@ -116,15 +134,33 @@ class PostgresProfileRefresh:
             else ProfileRefreshState("idle")
         )
 
+    async def wake_due(self, reference_time: float) -> None:
+        """持有选中空间的写锁，将到期证据边界转换为持久刷新请求。"""
+        try:
+            async with (
+                self._pool.connection() as conn,
+                _session_transaction(conn, write=True),
+            ):
+                await conn.execute(
+                    "SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ WRITE"
+                )
+                cursor = await conn.execute(_NEXT_DUE_SPACE, (reference_time,))
+                row = await cursor.fetchone()
+                if row is not None:
+                    await advance_due_profile_transitions(
+                        conn, SpaceId(row[0]), reference_time
+                    )
+        except LockNotAvailable:
+            return
+
     async def claim(self) -> ClaimedProfileRefresh | None:
-        """领取一项就绪刷新，或结算重试耗尽的过期租约。"""
+        """领取就绪任务或接管过期租约，由执行端结算耗尽的尝试。"""
         token = uuid4().hex
         async with self._pool.connection() as conn:
             cursor = await conn.execute(
                 f"""
-                SELECT job.space_id, space.owner_id, job.request_version, job.attempts,
-                    job.last_success_fact_cursor, job.followup_at
-                FROM {_TABLE} AS job JOIN mnemotrace.spaces AS space USING (space_id)
+                SELECT job.space_id, space.owner_id, job.request_version, job.attempts
+                FROM {TABLE} AS job JOIN mnemotrace.spaces AS space USING (space_id)
                 WHERE job.status IN ('queued', 'running')
                   AND (job.trigger_kind = 'manual' OR space.profile_auto_refresh)
                   AND COALESCE(job.available_at, job.lease_until) <= statement_timestamp()
@@ -135,180 +171,228 @@ class PostgresProfileRefresh:
             row = await cursor.fetchone()
             if row is None:
                 return None
-            space_id, owner, version, attempts, fact_cursor, followup_at = row
-            if attempts >= MAX_ATTEMPTS:
-                await _finish_attempt(
-                    conn, space_id, "worker_lease_expired", None, followup_at
-                )
-                return None
+            space, owner, version, attempts = row
             await conn.execute(
                 f"""
-                UPDATE {_TABLE} SET status = 'running', available_at = NULL,
-                    attempts = attempts + 1, lease_token = %s,
-                    lease_until = clock_timestamp() + %s
+                UPDATE {TABLE} SET status = 'running', available_at = NULL,
+                    attempts = attempts + 1, lease_token = %s, lease_until = clock_timestamp() + %s
                 WHERE space_id = %s
                 """,
-                (token, timedelta(seconds=LEASE_SECONDS), space_id),
+                (token, timedelta(seconds=LEASE_SECONDS), space),
             )
         return ClaimedProfileRefresh(
-            SpaceId(space_id), owner, version, attempts + 1, token, fact_cursor
+            SpaceId(space), owner, version, attempts + 1, token
         )
 
-    async def changes_since(
-        self, reader: SpaceReader, after: int | None
-    ) -> tuple[int, tuple[FactId, ...]]:
-        """读取同一快照的事实进度与非单纯追加证据的变更标识。"""
+    @staticmethod
+    async def _pending(reader: SpaceReader) -> dict[ProfileGroup, int]:
         conn = cast(PostgresReader, reader)._conn
-        space = reader.space_id.value
         cursor = await conn.execute(
-            """
-            SELECT COALESCE(max(cursor), 0) FROM mnemotrace.fact_changes
-            WHERE space_id = %s
+            f"""
+            SELECT group_name, target_revision FROM {GROUP_TABLE}
+            WHERE space_id = %s AND target_revision > published_revision
             """,
-            (space,),
+            (reader.space_id.value,),
         )
-        row = await cursor.fetchone()
-        assert row is not None
-        current = row[0]
-        if after is None or current <= after:
-            return max(current, after or 0), ()
-        cursor = await conn.execute(
-            """
-            SELECT DISTINCT fact_id FROM mnemotrace.fact_changes
-            WHERE space_id = %s AND cursor > %s
-              AND ("before" - 'provenance') IS DISTINCT FROM ("after" - 'provenance')
-            """,
-            (space, after),
+        return {
+            ProfileGroup(name): revision for name, revision in await cursor.fetchall()
+        }
+
+    async def snapshot(
+        self, reader: SpaceReader, reference_time: float
+    ) -> ProfileSnapshot:
+        """在同一读快照内读取待发布组及其证据。"""
+        pending = await self._pending(reader)
+        conn = cast(PostgresReader, reader)._conn
+        evidence: dict[ProfileGroup, tuple[ProfileEvidence, ...]] = {}
+        transitions: dict[ProfileGroup, float | None] = {}
+        oversized = False
+        for group in ProfileGroup:
+            if group not in pending:
+                continue
+            if not oversized:
+                evidence[group] = await _read_group_evidence(
+                    conn, reader.space_id, group, reference_time
+                )
+                oversized = len(evidence[group]) > MAX_PROFILE_FACTS
+            transitions[group] = await next_profile_transition(
+                conn, reader.space_id, group, reference_time
+            )
+        return ProfileSnapshot(
+            pending,
+            evidence,
+            await reader.get_erasure_token(),
+            reference_time,
+            transitions,
         )
-        return current, tuple(FactId(fact_id) for (fact_id,) in await cursor.fetchall())
 
     async def has_active_lease(
         self, job: ClaimedProfileRefresh, reader: SpaceReader | None = None
     ) -> bool:
-        """检查版本和租约，读会话未传入时查询最新状态。"""
+        """查询当前租约，传入读会话时复用其快照。"""
         if reader is not None:
             return await self._active(cast(PostgresReader, reader)._conn, job)
         async with self._pool.connection() as conn:
             return await self._active(conn, job)
 
     @staticmethod
-    async def evidence_version(reader: SpaceReader) -> ProfileEvidenceVersion:
-        """读取绑定空间在当前快照中的擦除代际与证据版本。"""
-        conn = cast(PostgresReader, reader)._conn
-        cursor = await conn.execute(
-            """
-            SELECT purge_generation, profile_evidence_revision
-            FROM mnemotrace.spaces WHERE space_id = %s
-            """,
-            (reader.space_id.value,),
-        )
-        row = await cursor.fetchone()
-        assert row is not None
-        return ProfileEvidenceVersion(*row)
-
-    @staticmethod
-    async def next_activation(reader: SpaceReader, after: float) -> float | None:
-        """取得未来可能进入画像的最早事实生效时刻。"""
-        conn = cast(PostgresReader, reader)._conn
-        cursor = await conn.execute(
-            """
-            SELECT valid_at FROM mnemotrace.facts
-            WHERE space_id = %s AND subject_id = %s
-              AND source = 'extracted' AND NOT sensitive AND valid_at > %s
-            ORDER BY valid_at LIMIT 1
-            """,
-            (reader.space_id.value, Entity.space_user(reader.space_id).id.value, after),
-        )
-        row = await cursor.fetchone()
-        return row[0] if row is not None else None
-
-    @staticmethod
     async def _active(
-        conn: AsyncConnection[TupleRow], job: ClaimedProfileRefresh
+        conn: AsyncConnection[TupleRow],
+        job: ClaimedProfileRefresh,
+        *,
+        lock: bool = False,
     ) -> bool:
+        tail = " FOR UPDATE" if lock else ""
         cursor = await conn.execute(
-            f"SELECT 1 FROM {_TABLE} WHERE {_ACTIVE_LEASE}", _lease(job)
+            f"SELECT 1 FROM {TABLE} WHERE {_ACTIVE_LEASE}{tail}", _lease(job)
         )
         return await cursor.fetchone() is not None
+
+    async def _snapshot_matches(
+        self, reader: SpaceReader, snapshot: ProfileSnapshot, at: float
+    ) -> bool:
+        checked_at = max(at, snapshot.reference_time)
+        return (
+            await reader.get_erasure_token() == snapshot.erasure_token
+            and await self._pending(reader) == snapshot.revisions
+            and all(
+                boundary is None or checked_at < boundary
+                for boundary in snapshot.transitions.values()
+            )
+        )
 
     async def complete(
         self,
         job: ClaimedProfileRefresh,
         writer: SpaceSession,
-        fact_cursor: int,
-        profile: Profile,
+        snapshot: ProfileSnapshot,
+        data: Mapping[ProfileGroup, tuple[ProfileEntry, ...]],
+        *,
+        at: float,
     ) -> None:
-        """凭有效租约替换画像并在同一事务内结算成功。"""
+        """复核租约和证据后一起提交画像、分组进度和任务结果。"""
         session = cast(PostgresSession, writer)
         conn = session._conn
-        cursor = await conn.execute(
-            f"""
-            UPDATE {_TABLE} SET status = 'succeeded', last_success_fact_cursor = %(cursor)s,
-                lease_token = NULL, lease_until = NULL, followup_at = NULL
-            WHERE {_ACTIVE_LEASE}
-            """,
-            {**_lease(job), "cursor": fact_cursor},
-        )
-        if cursor.rowcount != 1:
+        if not await self._active(conn, job, lock=True):
             raise LeaseLost
-        # 租约决定刷新顺序，系统时钟回拨时也允许发布已确认的结果。
-        await session._store_profile(profile, require_monotonic=False)
+        if not await self._snapshot_matches(writer, snapshot, at):
+            raise SnapshotChanged
+        old = await writer.get_profile()
+        previous: dict[str, tuple[ProfileEntry, ...]] = dict.fromkeys(
+            (group.value for group in ProfileGroup), ()
+        )
+        if old is not None:
+            previous.update(old.data)
+        merged = {
+            **previous,
+            **{group.value: entries for group, entries in data.items()},
+        }
+        if old is None or merged != previous:
+            await session._store_profile(
+                Profile(job.space_id, merged, at), require_monotonic=False
+            )
+        await publish_profile_group_revisions(conn, job.space_id, snapshot.transitions)
+        await _settle(conn, job.space_id, None)
 
     async def record_attempt_failure(
-        self, job: ClaimedProfileRefresh, code: str, retry_delay: timedelta | None
+        self,
+        job: ClaimedProfileRefresh,
+        code: str,
+        retry_delay: timedelta | None,
+        *,
+        snapshot: ProfileSnapshot | None,
+        at: float,
     ) -> None:
-        """用有效租约安排重试或公开稳定失败码。"""
-        async with self._pool.connection() as conn:
-            cursor = await conn.execute(
-                f"""
-                SELECT trigger_kind, followup_at FROM {_TABLE} WHERE {_ACTIVE_LEASE} FOR UPDATE
-                """,
-                _lease(job),
-            )
-            row = await cursor.fetchone()
-            if row is None:
-                return
-            trigger, followup_at = row
-            if (
-                trigger == "auto"
-                and followup_at is not None
-                and code == "profile_snapshot_changed"
-            ):
-                retry_delay = None
-            await _finish_attempt(
-                conn, job.space_id.value, code, retry_delay, followup_at
-            )
+        """为整个空间任务退避、重新入队或登记失败。"""
+        try:
+            async with self._storage(job.owner_id).session(
+                job.space_id, write=True
+            ) as writer:
+                conn = cast(PostgresSession, writer)._conn
+                if not await self._active(conn, job, lock=True):
+                    return
+                cursor = await conn.execute(
+                    f"SELECT followup_at FROM {TABLE} WHERE space_id = %s",
+                    (job.space_id.value,),
+                )
+                row = await cursor.fetchone()
+                assert row is not None
+                (followup_at,) = row
+                if code == "profile_snapshot_changed" and (
+                    retry_delay is None or followup_at is not None
+                ):
+                    await _requeue(conn, job.space_id)
+                elif retry_delay is not None:
+                    await conn.execute(
+                        f"""
+                        UPDATE {TABLE} SET status = 'queued', available_at = clock_timestamp() + %s,
+                            lease_token = NULL, lease_until = NULL
+                        WHERE space_id = %s
+                        """,
+                        (retry_delay, job.space_id.value),
+                    )
+                elif followup_at is not None or (
+                    snapshot is not None
+                    and not await self._snapshot_matches(writer, snapshot, at)
+                ):
+                    await _requeue(conn, job.space_id)
+                else:
+                    await _settle(conn, job.space_id, code)
+        except SpaceUnavailable:
+            return
 
 
-async def _finish_attempt(
-    conn: AsyncConnection[TupleRow],
-    space_id: str,
-    code: str,
-    retry_delay: timedelta | None,
-    followup_at: datetime | None,
-) -> None:
-    promote = retry_delay is None and followup_at is not None
-    queued = retry_delay is not None or promote
+async def _read_group_evidence(
+    conn: AsyncConnection[TupleRow], space: SpaceId, group: ProfileGroup, at: float
+) -> tuple[ProfileEvidence, ...]:
+    cursor = await conn.execute(
+        _group_evidence_query(group),
+        {
+            "space": space.value,
+            "subject": Entity.space_user(space).id.value,
+            "at": at,
+            "limit": MAX_PROFILE_FACTS + 1,
+        },
+    )
+    return tuple(
+        ProfileEvidence(FactId(fact_id), predicate, text, start, end)
+        for fact_id, predicate, text, start, end in await cursor.fetchall()
+    )
+
+
+def _group_evidence_query(group: ProfileGroup) -> sql.Composed:
+    return sql.SQL("""
+        SELECT fact_id, predicate, text, valid_at, invalid_at
+        FROM (
+            SELECT fact_id, predicate, text, valid_at, invalid_at, recorded_at
+            FROM mnemotrace.facts
+            WHERE {} AND mnemotrace.epoch_range(valid_at, invalid_at, '[)') @> %(at)s::double precision
+            LIMIT %(limit)s
+        ) AS evidence
+        ORDER BY valid_at DESC NULLS LAST, recorded_at DESC, fact_id
+        """).format(profile_fact_scope(group))
+
+
+async def _requeue(conn: AsyncConnection[TupleRow], space: SpaceId) -> None:
     await conn.execute(
         f"""
-        UPDATE {_TABLE} SET
-            status = %(status)s,
-            available_at = COALESCE(%(next)s::timestamptz, clock_timestamp() + %(delay)s::interval),
-            lease_token = NULL, lease_until = NULL,
-            error_code = %(error)s,
-            request_version = request_version + %(version_step)s,
-            attempts = CASE WHEN %(promote)s THEN 0 ELSE attempts END,
-            trigger_kind = CASE WHEN %(promote)s THEN 'auto' ELSE trigger_kind END,
-            followup_at = CASE WHEN %(promote)s THEN NULL ELSE followup_at END
-        WHERE space_id = %(space)s
+        UPDATE {TABLE} SET status = 'queued', available_at = COALESCE(followup_at, clock_timestamp()),
+            lease_token = NULL, lease_until = NULL, request_version = request_version + 1,
+            error_code = NULL, attempts = 0, followup_at = NULL
+        WHERE space_id = %s
         """,
-        {
-            "space": space_id,
-            "status": "queued" if queued else "failed",
-            "next": followup_at if promote else None,
-            "delay": retry_delay,
-            "error": None if queued else code,
-            "promote": promote,
-            "version_step": int(promote),
-        },
+        (space.value,),
+    )
+
+
+async def _settle(
+    conn: AsyncConnection[TupleRow], space: SpaceId, error: str | None
+) -> None:
+    await conn.execute(
+        f"""
+        UPDATE {TABLE} SET status = %s, available_at = NULL, error_code = %s,
+            lease_token = NULL, lease_until = NULL, followup_at = NULL
+        WHERE space_id = %s
+        """,
+        ("failed" if error else "succeeded", error, space.value),
     )

@@ -15,7 +15,7 @@ from .search import lexical_terms
 SELECT_FACTS = sql.SQL("""
     SELECT f.space_id, f.fact_id, f.subject_id, f.predicate, f.object_entity_id,
            f.object_value, f.object_kind, f.text, f.valid_at, f.invalid_at,
-           f.recorded_at, f.expired_at, f.labels, f.sensitive, f.source,
+           f.recorded_at, f.expired_at, f.labels, f.sensitive, f.source, f.profile_groups,
            ARRAY(
                SELECT p.message_id FROM mnemotrace.fact_provenance AS p
                WHERE p.space_id = f.space_id AND p.fact_id = f.fact_id
@@ -28,18 +28,18 @@ _INSERT_FACT = """
     INSERT INTO mnemotrace.facts
         (space_id, fact_id, subject_id, predicate, object_entity_id, object_value,
          object_kind, text, valid_at, invalid_at, recorded_at, expired_at, labels,
-         sensitive, source, lexemes)
+         sensitive, source, profile_groups, lexemes)
     VALUES (%(space_id)s, %(fact_id)s, %(subject_id)s, %(predicate)s,
             %(object_entity_id)s, %(object_value)s, %(object_kind)s, %(text)s,
             %(valid_at)s, %(invalid_at)s, %(recorded_at)s, %(expired_at)s,
-            %(labels)s, %(sensitive)s, %(source)s,
+            %(labels)s, %(sensitive)s, %(source)s, %(profile_groups)s,
             to_tsvector('pg_catalog.simple', %(lexemes)s))
     """
 
 _UPDATE_FACT = """
     UPDATE mnemotrace.facts
     SET invalid_at = %(invalid_at)s, expired_at = %(expired_at)s,
-        labels = %(labels)s, sensitive = %(sensitive)s
+        labels = %(labels)s, sensitive = %(sensitive)s, profile_groups = %(profile_groups)s
     WHERE space_id = %(space_id)s AND fact_id = %(fact_id)s
     """
 
@@ -65,6 +65,7 @@ def _fact_row_changes(before: Fact, after: Fact) -> bool:
         or before.expired_at != after.expired_at
         or before.labels != after.labels
         or before.sensitive != after.sensitive
+        or before.profile_groups != after.profile_groups
     )
 
 
@@ -92,6 +93,7 @@ def validate_fact_update(before: Fact, after: Fact) -> None:
         labels=after.labels,
         sensitive=after.sensitive,
         provenance=after.provenance,
+        profile_groups=after.profile_groups,
     )
     if expected != after:
         raise ValueError("同标识的事实不能改变固定字段或首次获知时刻")

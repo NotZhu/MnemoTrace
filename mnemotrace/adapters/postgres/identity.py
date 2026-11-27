@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import sha256
-from secrets import compare_digest, token_urlsafe
+from secrets import token_urlsafe
 from uuid import uuid4
 
 from psycopg import AsyncConnection, Connection
@@ -14,11 +14,12 @@ from psycopg_pool import AsyncConnectionPool
 from ...domain.space import Space
 from .rows import INSERT_SPACE, space_insert_values
 
-DEFAULT_OWNER_ID = "local-demo"
+DEFAULT_OWNER_ID = "owner"
 _DEFAULT_OWNER_LOCK = (
     698771117284033231  # 与迁移锁分开，串行化默认账号的首次配置和签发。
 )
-_TOKEN = re.compile(r"mtn_([0-9a-f]{32})\.[A-Za-z0-9_-]{43}")
+_TOKEN_PREFIX = "mnemo_"
+_TOKEN = re.compile(rf"{_TOKEN_PREFIX}[A-Za-z0-9_-]{{43}}")
 
 
 @dataclass(frozen=True)
@@ -46,27 +47,19 @@ async def authenticate(
     pool: AsyncConnectionPool[AsyncConnection[TupleRow]], token: str
 ) -> str | None:
     """验证凭据并返回服务端记录的账号，凭据不可用时返回 None。"""
-    match = _TOKEN.fullmatch(token)
-    if match is None:
+    if _TOKEN.fullmatch(token) is None:
         return None
+    digest = sha256(token.encode("ascii")).digest()
     async with pool.connection() as conn:
-        row = await (
-            await conn.execute(
-                """
-                SELECT owner_id, secret_hash FROM mnemotrace.api_keys
-                WHERE key_id = %s AND revoked_at IS NULL
-                """,
-                (match[1],),
-            )
-        ).fetchone()
-    if row is None:
-        return None
-    owner_id, secret_hash = row
-    return (
-        str(owner_id)
-        if compare_digest(sha256(token.encode()).digest(), secret_hash)
-        else None
-    )
+        cursor = await conn.execute(
+            """
+            SELECT owner_id FROM mnemotrace.api_keys
+            WHERE secret_hash = %s AND revoked_at IS NULL
+            """,
+            (digest,),
+        )
+        row = await cursor.fetchone()
+    return str(row[0]) if row is not None else None
 
 
 def issue_key(conn: Connection[TupleRow], owner_id: str) -> IssuedApiKey:
@@ -98,7 +91,7 @@ def bootstrap_default_owner(conn: Connection[TupleRow], space: Space) -> IssuedA
 
 def _insert_key(conn: Connection[TupleRow], owner_id: str) -> IssuedApiKey:
     key_id = uuid4().hex
-    token = f"mtn_{key_id}.{token_urlsafe(32)}"
+    token = f"{_TOKEN_PREFIX}{token_urlsafe(32)}"
     with conn.cursor(row_factory=class_row(ApiKeyInfo)) as cursor:
         cursor.execute(
             """
@@ -106,7 +99,7 @@ def _insert_key(conn: Connection[TupleRow], owner_id: str) -> IssuedApiKey:
             VALUES (%s, %s, %s)
             RETURNING key_id, created_at, revoked_at
             """,
-            (key_id, owner_id, sha256(token.encode()).digest()),
+            (key_id, owner_id, sha256(token.encode("ascii")).digest()),
         )
         info = cursor.fetchone()
         assert info is not None

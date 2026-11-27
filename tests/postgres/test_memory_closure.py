@@ -79,6 +79,7 @@ class _Model(FakeLLM):
                         },
                         "invalid_at_evidence": None,
                         "source_numbers": [source],
+                        "profile_groups": [],
                         "labels": [],
                         "sensitive": False,
                     }

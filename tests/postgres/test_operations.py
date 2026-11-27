@@ -78,6 +78,7 @@ class _Model(FakeLLM):
                     },
                     "invalid_at_evidence": None,
                     "source_numbers": [message["number"]],
+                    "profile_groups": [],
                     "labels": [],
                     "sensitive": False,
                 }

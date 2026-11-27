@@ -8,7 +8,7 @@ from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Literal, TypedDict, cast
 
 from ..domain._validation import optional_timestamp
-from ..domain.enums import Role
+from ..domain.enums import ProfileGroup, Role
 from ..domain.errors import DomainError
 from ..domain.ids import MessageId
 from ..domain.message import Message
@@ -57,7 +57,11 @@ source_numbers 填一组原文编号，须共同支撑完整断言及其时间�
 
 本地时间须能确定唯一时刻。夏令时重复时刻有明确偏移时，用 absolute 保留偏移。缺少依据时留空。
 
-labels 只填有依据的标签，否则填空数组。涉及个人敏感信息或敏感性无法判断时，sensitive 填 true。按 schema 返回 JSON。
+labels 只填有依据的标签，否则填空数组。涉及个人敏感信息或敏感性无法判断时，sensitive 填 true。
+profile_groups 只给空间用户明确陈述或确认的长期事实标组，可以同时属于多组：
+basic 是称呼、时区、长期角色等基本信息；communication_preferences 是回复语言、格式等偏好；
+preferences 是工具、工作方式等偏好；constraints 是长期限制。涉及默认回复语言和强制例外时可同时标沟通偏好和约束。
+普通事实、短期状态、对他人的描述以及敏感事实填空数组。按 schema 返回 JSON。
 """
 
 type TimeBasis = Literal["message_time", "absolute", "relative_date"]
@@ -97,6 +101,7 @@ class ExtractedFact:
     provenance: tuple[MessageId, ...]
     labels: tuple[Label, ...]
     sensitive: bool
+    profile_groups: tuple[ProfileGroup, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,6 +132,7 @@ class _FactOutput(TypedDict):
     source_numbers: list[int | float]
     labels: list[str]
     sensitive: bool
+    profile_groups: list[str]
 
 
 class _ExtractionOutput(TypedDict):
@@ -185,6 +191,13 @@ _FACT = _object_schema(
             "items": {"type": "string", "enum": sorted(KNOWN_LABELS)},
         },
         "sensitive": {"type": "boolean"},
+        "profile_groups": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [group.value for group in ProfileGroup],
+            },
+        },
     }
 )
 _SCHEMA = _object_schema({"facts": {"type": "array", "items": _FACT}})
@@ -358,8 +371,16 @@ def _parse_fact(
             "事实有效起点须早于截止点", path="invalid_at_evidence"
         )
     obj = raw["object"]
+    subject = _entity_mention(raw["subject"], path="subject")
+    groups = raw["profile_groups"]
+    if len(groups) != len(set(groups)):
+        raise InvalidStructuredOutput("画像分组不得重复", path="profile_groups")
+    if groups and (not isinstance(subject, SpaceUserMention) or raw["sensitive"]):
+        raise InvalidStructuredOutput(
+            "只给空间用户的非敏感事实标记画像分组", path="profile_groups"
+        )
     return ExtractedFact(
-        subject=_entity_mention(raw["subject"], path="subject"),
+        subject=subject,
         predicate=Predicate(_text(raw["predicate"], path="predicate")),
         object=LiteralValue(_text(obj["value"], path="object.value"))
         if obj["kind"] == "literal"
@@ -370,6 +391,7 @@ def _parse_fact(
         provenance=tuple(source.message.id for source in evidence.values()),
         labels=tuple(Label(name) for name in sorted(set(raw["labels"]))),
         sensitive=raw["sensitive"],
+        profile_groups=tuple(map(ProfileGroup, sorted(groups))),
     )
 
 
