@@ -16,7 +16,7 @@
 
 ### Changed
 
-- **破坏性变更（API 密钥与默认账号）** 采用 `mnemo_` 前缀的 49 字符凭据，初始化使用默认账号 `owner`。使用新数据库基线并重新签发客户端密钥。 [API 密钥管理](deploy/README.md#api-密钥管理)
+- **破坏性变更（API 密钥与默认账号）** 密钥采用 `mnemo_` 前缀加 32 位随机字母数字，初始化使用默认账号 `owner`。使用新数据库基线并重新签发客户端密钥。 [API 密钥管理](deploy/README.md#api-密钥管理)
 - 画像刷新按组有界读取证据，整份发布并统一结算。`GET /profile` 返回空间级刷新状态。 [画像 API](docs/reference/http-api.md#用户画像)
 - **破坏性变更（包名与配置）** Python 分发包和导入名统一为 `mnemotrace`；部署采用 `deploy/compose.yaml` 和 `MNEMOTRACE_*` 配置。 [快速开始](README.zh-CN.md#快速开始)
 - **破坏性变更（数据库基线）** PostgreSQL 从空数据库初始化，空间表包含发布复核所需的 `fact_revision`。 [部署说明](deploy/README.md#停机备份与升级)

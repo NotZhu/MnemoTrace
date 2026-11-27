@@ -51,7 +51,7 @@ curl -fsS http://127.0.0.1:8100/readyz
 
 内置 Compose 的 `admin bootstrap` 为默认账号 `owner` 签发首把密钥并创建名为 `default` 的空间，命令成功后返回 `token` 和 `space_id`。若该账号已有空间或密钥记录，命令会提示已配置。使用现有密钥调用 `GET /v1/spaces` 找到所需的空间。若首次运行时丢失了输出，先用 `admin issue` 签发新密钥，再查找空间并撤销遗失的密钥。 [HTTP 接入指南](../docs/reference/http-api.md)
 
-签发的 `token` 由 `mnemo_` 前缀和 43 个 URL 安全字符组成，共 49 字符。服务端保存整串凭据的 SHA-256 摘要，客户端保存完整 `token` 并用它构造 Bearer 请求头。
+签发的 `token` 由 `mnemo_` 前缀和 32 个随机字符组成，共 38 字符。随机部分只使用 ASCII 大小写字母和数字。服务端保存整串凭据的 SHA-256 摘要，客户端保存完整 `token` 并用它构造 Bearer 请求头。
 
 `issue`、`list` 和 `revoke` 默认操作 `owner`，也可用 `--owner-id` 选择其他账号。撤销前将 `KEY_ID` 换成 `list` 返回的目标 ID。
 

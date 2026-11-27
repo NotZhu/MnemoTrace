@@ -4,7 +4,8 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import sha256
-from secrets import token_urlsafe
+from secrets import choice
+from string import ascii_letters, digits
 from uuid import uuid4
 
 from psycopg import AsyncConnection, Connection
@@ -19,7 +20,9 @@ _DEFAULT_OWNER_LOCK = (
     698771117284033231  # 与迁移锁分开，串行化默认账号的首次配置和签发。
 )
 _TOKEN_PREFIX = "mnemo_"
-_TOKEN = re.compile(rf"{_TOKEN_PREFIX}[A-Za-z0-9_-]{{43}}")
+_TOKEN_ALPHABET = ascii_letters + digits
+_TOKEN_RANDOM_LENGTH = 32
+_TOKEN = re.compile(rf"{_TOKEN_PREFIX}[{_TOKEN_ALPHABET}]{{{_TOKEN_RANDOM_LENGTH}}}")
 
 
 @dataclass(frozen=True)
@@ -91,7 +94,8 @@ def bootstrap_default_owner(conn: Connection[TupleRow], space: Space) -> IssuedA
 
 def _insert_key(conn: Connection[TupleRow], owner_id: str) -> IssuedApiKey:
     key_id = uuid4().hex
-    token = f"{_TOKEN_PREFIX}{token_urlsafe(32)}"
+    random_part = "".join(choice(_TOKEN_ALPHABET) for _ in range(_TOKEN_RANDOM_LENGTH))
+    token = _TOKEN_PREFIX + random_part
     with conn.cursor(row_factory=class_row(ApiKeyInfo)) as cursor:
         cursor.execute(
             """

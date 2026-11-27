@@ -375,7 +375,7 @@ def test_admin_key_lifecycle(
     owner = ["--owner-id", owner_id]
     assert admin_main(["issue", *owner]) == 0
     issued = json.loads(capsys.readouterr().out)
-    valid_format = re.fullmatch(r"mnemo_[A-Za-z0-9_-]{43}", issued["token"]) is not None
+    valid_format = re.fullmatch(r"mnemo_[A-Za-z0-9]{32}", issued["token"]) is not None
     assert valid_format
     key_id = issued["key_id"]
 
@@ -449,11 +449,33 @@ def test_admin_key_lifecycle(
         conn.execute("SELECT secret_hash FROM mnemotrace.api_keys")
 
 
-def test_server_rejects_legacy_api_key_with_matching_digest(
+@pytest.mark.parametrize(
+    "token_template",
+    [
+        "mtn_{key_id}.{random}",
+        "mnemo_{random}",
+        "a" * 32,
+        "mnemo" + "a" * 32,
+        "mnemo_" + "a" * 31,
+        "mnemo_" + "a" * 33,
+        "mnemo_" + "a" * 31 + "_",
+    ],
+    ids=[
+        "legacy-80",
+        "legacy-49",
+        "no-prefix",
+        "no-separator",
+        "short",
+        "long",
+        "underscore-in-suffix",
+    ],
+)
+def test_server_rejects_invalid_api_key_format_with_matching_digest(
     database: PgDatabase,
+    token_template: str,
 ) -> None:
     key_id = uuid4().hex
-    token = f"mtn_{key_id}.{token_urlsafe(32)}"
+    token = token_template.format(key_id=key_id, random=token_urlsafe(32))
     with psycopg.connect(database.key_admin) as conn:
         conn.execute(
             """
