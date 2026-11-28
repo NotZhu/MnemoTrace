@@ -10,6 +10,7 @@ from psycopg import ProgrammingError
 from psycopg.conninfo import conninfo_to_dict
 
 _POSTGRES_DSN = "MNEMOTRACE_POSTGRES_DSN"
+_POOL_TIMEOUT_ENV = "MNEMOTRACE_DB_POOL_TIMEOUT_SECONDS"
 
 
 def read_postgres_dsn(env: Mapping[str, str]) -> str:
@@ -32,13 +33,16 @@ def _validate_postgres_dsn(dsn: str) -> None:
 
 @dataclass(frozen=True)
 class DatabaseTimeouts:
-    """运行角色的 PostgreSQL 锁等待与语句时限，单位为秒。"""
+    """运行进程的取连接、数据库锁等待与语句时限，单位为秒。"""
 
     lock: int = 1
     statement: int = 15
     maintenance: int = 60
+    pool_wait: int = 3
 
     def __post_init__(self) -> None:
+        if type(self.pool_wait) is not int or self.pool_wait <= 0:
+            raise ValueError(f"{_POOL_TIMEOUT_ENV} 须为正整数秒数")
         if (
             not 0
             < self.lock
@@ -59,6 +63,7 @@ class DatabaseTimeouts:
             lock=_seconds(env, "MNEMOTRACE_DB_LOCK_TIMEOUT_SECONDS", 1),
             statement=_seconds(env, "MNEMOTRACE_DB_STATEMENT_TIMEOUT_SECONDS", 15),
             maintenance=_seconds(env, "MNEMOTRACE_DB_MAINTENANCE_TIMEOUT_SECONDS", 60),
+            pool_wait=_seconds(env, _POOL_TIMEOUT_ENV, cls.pool_wait),
         )
 
 
