@@ -15,10 +15,11 @@ import psycopg
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from mnemotrace import GraphRecallOptions, Memory, RecallFilters
+from mnemotrace import GraphRecallOptions, Memory, RecallFilters, RecallQuery
 from mnemotrace.adapters.inference import open_inference
 from mnemotrace.adapters.postgres import PostgresStorage
 from mnemotrace.adapters.postgres.identity import issue_key
+from mnemotrace.application.recall import RecallUsage
 from mnemotrace.application.salience import reinforce_context_facts
 from mnemotrace.domain.entity import Entity
 from mnemotrace.domain.enums import Source
@@ -134,8 +135,9 @@ async def _http(
     embedder: Embedder | None = None,
     *,
     reranker: Reranker | None = None,
+    clock: Clock | None = None,
 ) -> AsyncIterator[AsyncClient]:
-    app = server_app.create_app(settings)
+    app = server_app.create_app(settings, clock=clock)
     async with (
         app.router.lifespan_context(app),
         AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
@@ -288,9 +290,11 @@ def test_recall_filters_candidates_before_ranking(
                 exclude_sensitive=False,
             )
             expected = await reader.recall(
-                "channellex",
-                as_of=10.0,
-                filters=RecallFilters((technology, professional), Source.EXTRACTED),
+                RecallQuery(
+                    "channellex",
+                    as_of=10.0,
+                    filters=RecallFilters((technology, professional), Source.EXTRACTED),
+                ),
             )
             included = await recall("channellex", as_of=as_of, include_sensitive=True)
             assert included == [item.fact_id.value for item in expected.evidence]
@@ -595,7 +599,7 @@ def test_delete_space_removes_embedding_registration_and_only_the_target_space(
 
 
 def test_http_recall_matches_core_order_and_boundaries(
-    database: PgDatabase, corpus: Corpus, monkeypatch: pytest.MonkeyPatch
+    database: PgDatabase, corpus: Corpus
 ) -> None:
     """普通、历史和图召回沿用核心排序，越权查询不触发模型。"""
 
@@ -618,7 +622,6 @@ def test_http_recall_matches_core_order_and_boundaries(
             )
 
     clock = FakeClock()
-    monkeypatch.setattr("mnemotrace.server.v1.memories._clock", clock)
 
     async def exercise() -> None:
         embedder = CountingEmbedder()
@@ -626,7 +629,10 @@ def test_http_recall_matches_core_order_and_boundaries(
         path = corpus.path + "/recall"
         async with (
             _http(
-                Settings(RuntimeSettings(database.runtime)), embedder, reranker=reranker
+                Settings(RuntimeSettings(database.runtime)),
+                embedder,
+                reranker=reranker,
+                clock=clock,
             ) as client,
             pool(database.runtime) as connections,
         ):
@@ -708,7 +714,7 @@ def test_http_recall_matches_core_order_and_boundaries(
                 )
                 assert actual.status_code == 200, actual.text
                 expected = await reader.recall(
-                    "dispatchtag", as_of=as_of, graph=graph, rerank=True
+                    RecallQuery("dispatchtag", as_of=as_of, graph=graph, rerank=True)
                 )
                 assert actual.json()["rerank_applied"] is expected.rerank_applied
                 evidence = actual.json()["evidence"]
@@ -1283,7 +1289,6 @@ def test_http_tracks_only_final_reranked_evidence_and_rechecks_visibility(
             },
         )
 
-    monkeypatch.setattr("mnemotrace.server.v1.memories._clock", clock)
     monkeypatch.setattr(
         server_app,
         "open_inference",
@@ -1307,7 +1312,9 @@ def test_http_tracks_only_final_reranked_evidence_and_rechecks_visibility(
 
     async def exercise() -> None:
         nonlocal provider_mode
-        queued, resume, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        queued = asyncio.Future[tuple[RecallUsage, bool]]()
+        resume = asyncio.Event()
+        finished = asyncio.Future[Exception | None]()
 
         async def pause_write(
             storage: Storage,
@@ -1321,28 +1328,45 @@ def test_http_tracks_only_final_reranked_evidence_and_rechecks_visibility(
             require_memory_decay: bool,
         ) -> None:
             calls.append(tuple(fact_ids))
-            assert space_id == scope_id
-            assert reference_time == now and exclude_sensitive and require_memory_decay
-            queued.set()
+            if not queued.done():
+                queued.set_result(
+                    (
+                        RecallUsage(
+                            space_id,
+                            tuple(fact_ids),
+                            reference_time,
+                            expected_erasure_token,
+                            exclude_sensitive,
+                        ),
+                        require_memory_decay,
+                    )
+                )
             await resume.wait()
-            await reinforce_context_facts(
-                storage,
-                clock,
-                space_id,
-                fact_ids,
-                reference_time=reference_time,
-                expected_erasure_token=expected_erasure_token,
-                exclude_sensitive=exclude_sensitive,
-                require_memory_decay=require_memory_decay,
-            )
-            finished.set()
+            try:
+                await reinforce_context_facts(
+                    storage,
+                    clock,
+                    space_id,
+                    fact_ids,
+                    reference_time=reference_time,
+                    expected_erasure_token=expected_erasure_token,
+                    exclude_sensitive=exclude_sensitive,
+                    require_memory_decay=require_memory_decay,
+                )
+            except Exception as exc:
+                if not finished.done():
+                    finished.set_result(exc)
+                raise
+            else:
+                if not finished.done():
+                    finished.set_result(None)
 
         monkeypatch.setattr(
             "mnemotrace.server.recall_usage.reinforce_context_facts", pause_write
         )
         async with (
             pool(database.runtime) as connections,
-            _http(settings) as client,
+            _http(settings, clock=clock) as client,
             asyncio.timeout(10),
         ):
             storage = PostgresStorage(connections, owner_id=corpus.sibling.owner_id)
@@ -1441,7 +1465,11 @@ def test_http_tracks_only_final_reranked_evidence_and_rechecks_visibility(
                 expected = boosted
                 response = await recall()
             assert evidence(response) == expected
-            await queued.wait()
+            usage, require_memory_decay = await queued
+            assert usage.space_id == scope_id
+            assert usage.fact_ids == expected
+            assert usage.reference_time == now
+            assert usage.exclude_sensitive and require_memory_decay
             assert calls == [expected]
             if after_queue == "disable":
                 assert (
@@ -1466,8 +1494,11 @@ def test_http_tracks_only_final_reranked_evidence_and_rechecks_visibility(
                 clock.at = now + 1
                 async with storage.session(scope_id, write=True) as writer:
                     await writer.save_facts((updated,), changed_at=clock.now())
+            elif after_queue == "write":
+                clock.at = now + 1
             resume.set()
-            await finished.wait()
+            if (write_error := await finished) is not None:
+                raise write_error
 
             async with storage.session(scope_id) as reader:
                 states = await reader.get_salience(tuple(item.id for item in items))
@@ -1479,7 +1510,7 @@ def test_http_tracks_only_final_reranked_evidence_and_rechecks_visibility(
                     else FactSalience(1.5, clock.now())
                 )
             assert states[items[5].id] == (
-                original_salience.reinforce(now)
+                original_salience.reinforce(now + 1)
                 if after_queue == "write"
                 else original_salience
             )

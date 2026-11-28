@@ -8,8 +8,7 @@ from ..ports.inference import LLM, Embedder
 from ..ports.reranker import Reranker
 from ..ports.runtime import Clock, IdGenerator
 from ..ports.storage import Storage
-from .graph_recall import GraphRecallOptions
-from .recall import DEFAULT_TOP_K, Recall, RecallFilters, RecallResult
+from .recall import DEFAULT_VECTOR_MIN_COSINE, Recall, RecallQuery, RecallResult
 from .remember import MessageInput, Remember, RememberResult
 from .sessions import create_session
 
@@ -27,9 +26,10 @@ class Memory:
         timezone: 解释日历日期的时区，默认 UTC。
         exclude_sensitive: 是否排除召回中的敏感事实，由服务端设置。
         reranker: 由服务端装配且获准接收候选正文的可选重排端口。
+        vector_min_cosine: 向量候选的最低余弦分数，包含阈值本身。
 
     Raises:
-        ValueError: 缺少补全或嵌入端口，或召回可见性参数无效。
+        ValueError: 缺少补全或嵌入端口、召回可见性选项无效或余弦阈值越界。
     """
 
     def __init__(
@@ -44,6 +44,7 @@ class Memory:
         timezone: tzinfo = UTC,
         exclude_sensitive: bool = False,
         reranker: Reranker | None = None,
+        vector_min_cosine: float = DEFAULT_VECTOR_MIN_COSINE,
     ) -> None:
         if llm is None:
             raise ValueError("Memory 需要配置补全模型")
@@ -54,6 +55,7 @@ class Memory:
             clock=clock,
             exclude_sensitive=exclude_sensitive,
             reranker=reranker,
+            vector_min_cosine=vector_min_cosine,
         )
         self._remember = Remember(
             space_id=space_id,
@@ -77,6 +79,7 @@ class Memory:
         clock: Clock,
         exclude_sensitive: bool = False,
         reranker: Reranker | None = None,
+        vector_min_cosine: float = DEFAULT_VECTOR_MIN_COSINE,
     ) -> Recall:
         """只装配召回所需的依赖。
 
@@ -87,6 +90,7 @@ class Memory:
             clock: 提供 UTC epoch 秒的时钟。
             exclude_sensitive: 是否排除敏感事实，由服务端设置。
             reranker: 由服务端装配且获准接收候选正文的可选重排端口。
+            vector_min_cosine: 向量候选的最低余弦分数，包含阈值本身。
 
         Returns:
             与读写装配使用相同接口的只读召回对象。
@@ -98,45 +102,19 @@ class Memory:
             clock=clock,
             exclude_sensitive=exclude_sensitive,
             reranker=reranker,
+            vector_min_cosine=vector_min_cosine,
         )
 
-    async def recall(
-        self,
-        query: str,
-        *,
-        top_k: int = DEFAULT_TOP_K,
-        as_of: float | None = None,
-        rerank: bool = False,
-        graph: GraphRecallOptions | None = None,
-        prefer_recent: bool = False,
-        filters: RecallFilters | None = None,
-        max_evidence_chars: int | None = None,
-    ) -> RecallResult:
+    async def recall(self, query: RecallQuery) -> RecallResult:
         """在本空间召回可见的事实证据。
 
         Args:
-            query: 非空查询。
-            top_k: 最多返回的证据条数。
-            as_of: 显式有效时点，以 UTC epoch 秒表示。
-            rerank: 是否调用已装配的重排器调整候选顺序。
-            graph: 图召回设置，省略时使用普通召回。
-            prefer_recent: 是否在当前事实中小幅优先近期生效的候选。
-            filters: 筛选候选事实的标签和来源。
-            max_evidence_chars: 可选的证据正文总字符预算，须为正整数。
+            query: 已校验的召回查询及选项。
 
         Returns:
             按相关性排列的事实证据及可选的超时降级原因。
         """
-        return await self._recall.recall(
-            query,
-            top_k=top_k,
-            as_of=as_of,
-            rerank=rerank,
-            graph=graph,
-            prefer_recent=prefer_recent,
-            filters=filters,
-            max_evidence_chars=max_evidence_chars,
-        )
+        return await self._recall.recall(query)
 
     async def create_session(self) -> SessionId:
         """登记一个新会话，提交后返回标识。

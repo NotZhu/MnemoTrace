@@ -16,9 +16,10 @@ _LOG = logging.getLogger(__name__)
 class RecallUsageQueue:
     """每个服务进程持有一个有界的尽力写回队列。"""
 
-    def __init__(self) -> None:
-        self._pending: asyncio.Queue[tuple[Storage, Clock, RecallUsage]] = (
-            asyncio.Queue(maxsize=128)
+    def __init__(self, clock: Clock) -> None:
+        self._clock = clock
+        self._pending: asyncio.Queue[tuple[Storage, RecallUsage]] = asyncio.Queue(
+            maxsize=128
         )
         self._accepting = False
 
@@ -35,22 +36,22 @@ class RecallUsageQueue:
             with suppress(asyncio.CancelledError):
                 await worker
 
-    def submit(self, storage: Storage, clock: Clock, usage: RecallUsage) -> None:
+    def submit(self, storage: Storage, usage: RecallUsage) -> None:
         """登记已确定的响应证据，队列满或关闭时允许丢弃。"""
         if not self._accepting:
             return
         try:
-            self._pending.put_nowait((storage, clock, usage))
+            self._pending.put_nowait((storage, usage))
         except asyncio.QueueFull:
             _LOG.debug("召回强化队列已满，丢弃反馈")
 
     async def _consume(self) -> None:
         while self._accepting:
-            storage, clock, usage = await self._pending.get()
+            storage, usage = await self._pending.get()
             try:
                 await reinforce_context_facts(
                     storage,
-                    clock,
+                    self._clock,
                     usage.space_id,
                     usage.fact_ids,
                     reference_time=usage.reference_time,

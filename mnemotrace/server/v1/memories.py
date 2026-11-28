@@ -6,13 +6,13 @@ from typing import Annotated, cast
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 
-from ...adapters.runtime import SystemClock
-from ...application.recall import Recall
+from ...application.recall import Recall, RecallQuery
 from ...domain.ids import FactId, MessageId, SpaceId
 from ...domain.values import Label
 from ...ports.inference import Embedder
 from ...ports.queries import FactFilter, FactQuery
 from ...ports.reranker import Reranker
+from ...ports.runtime import Clock
 from ..auth import AuthorizedStorage
 from ..errors import problem_responses
 from ..recall_usage import RecallUsageQueue
@@ -38,7 +38,6 @@ router = APIRouter(
     tags=["memory"],
     responses=problem_responses(401, 404, 422, 500, 503),
 )
-_clock = SystemClock()
 
 
 @router.post(
@@ -77,13 +76,12 @@ async def recall(
         space_id=space,
         storage=storage,
         embedder=embedder,
-        clock=_clock,
+        clock=cast(Clock, request.app.state.recall_clock),
         exclude_sensitive=not body.include_sensitive,
         reranker=reranker,
     )
-    result, usage = await reader.recall_with_usage(
+    query = RecallQuery(
         body.query,
-        track_usage=body.track_usage and queue is not None,
         top_k=body.top_k,
         as_of=body.as_of.timestamp() if body.as_of is not None else None,
         graph=graph,
@@ -92,9 +90,12 @@ async def recall(
         filters=body.filters.to_core() if body.filters is not None else None,
         max_evidence_chars=body.max_evidence_chars,
     )
+    result, usage = await reader.recall_with_usage(
+        query, track_usage=body.track_usage and queue is not None
+    )
     response = RecallResponse.from_result(result)
     if usage is not None and queue is not None:
-        queue.submit(storage, _clock, usage)
+        queue.submit(storage, usage)
     return response
 
 

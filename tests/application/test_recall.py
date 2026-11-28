@@ -8,10 +8,19 @@ from typing import cast
 
 import pytest
 
-from mnemotrace import GraphRecallOptions, Memory, RecallResult
+from mnemotrace import (
+    GraphRecallOptions,
+    Memory,
+    RecallFilters,
+    RecallQuery,
+    RecallResult,
+)
 from mnemotrace.application.recall import (
     _candidates_within_boost,
+    _channel_candidate_limit,
+    _graph_edge_budget,
     _recency_bonus,
+    _rerank_candidate_limit,
     _score_with_boosts,
 )
 from mnemotrace.domain.entity import Entity
@@ -88,15 +97,20 @@ def test_read_only_recall_combines_independent_hits() -> None:
                 embedding_space=embedder.embedding_space,
             )
 
-        result = await reader.recall("MT-042", top_k=5)
+        result = await reader.recall(RecallQuery("MT-042", top_k=5))
         assert [item.fact_id for item in result.evidence] == [
             shared.id,
             semantic.id,
             lexical.id,
         ]
         assert result.evidence[0].text == shared.text
-        assert (await reader.recall("MT-042", top_k=1)).evidence == result.evidence[:1]
-        assert await reader.recall("MT-042", top_k=5, prefer_recent=True) == result
+        assert (
+            await reader.recall(RecallQuery("MT-042", top_k=1))
+        ).evidence == result.evidence[:1]
+        assert (
+            await reader.recall(RecallQuery("MT-042", top_k=5, prefer_recent=True))
+            == result
+        )
 
     asyncio.run(exercise())
 
@@ -179,12 +193,15 @@ def test_recall_boosts_only_visible_facts_within_the_relevance_cutoff(
                 {item.id: salience_before for item in (recent, hidden, expired, future)}
             )
 
-        baseline = await reader.recall(text, top_k=3)
+        baseline = await reader.recall(RecallQuery(text, top_k=3))
         baseline_ids = (strong.id, unknown.id, backfill.id)
         assert tuple(hit.fact_id for hit in baseline.evidence) == baseline_ids
-        assert await reader.recall(text, top_k=3, prefer_recent=False) == baseline
+        assert (
+            await reader.recall(RecallQuery(text, top_k=3, prefer_recent=False))
+            == baseline
+        )
 
-        preferred = await reader.recall(text, top_k=3, prefer_recent=True)
+        preferred = await reader.recall(RecallQuery(text, top_k=3, prefer_recent=True))
         assert tuple(hit.fact_id for hit in preferred.evidence) == (
             strong.id,
             recent.id,
@@ -196,12 +213,15 @@ def test_recall_boosts_only_visible_facts_within_the_relevance_cutoff(
         monkeypatch.setattr(
             storage.sessions[_SPACE.id], "_space", replace(_SPACE, memory_decay=True)
         )
-        assert await reader.recall(text, top_k=3) == preferred
-        assert await reader.recall(text, top_k=3, prefer_recent=True) == preferred
+        assert await reader.recall(RecallQuery(text, top_k=3)) == preferred
+        assert (
+            await reader.recall(RecallQuery(text, top_k=3, prefer_recent=True))
+            == preferred
+        )
         assert salience_reads == [boost_ids, boost_ids]
         assert await reader.recall(
-            text, top_k=3, as_of=now, prefer_recent=True
-        ) == await reader.recall(text, top_k=3, as_of=now)
+            RecallQuery(text, top_k=3, as_of=now, prefer_recent=True)
+        ) == await reader.recall(RecallQuery(text, top_k=3, as_of=now))
         assert salience_reads == [boost_ids, boost_ids]
         async with storage.session(_SPACE.id) as session:
             assert await session.get_salience((recent.id,), exclude_sensitive=True) == {
@@ -293,10 +313,7 @@ def test_recall_boosts_after_scoring_the_bounded_rrf_pool(
             )
 
         result = await memory.recall(
-            "发布规范",
-            top_k=5,
-            rerank=True,
-            prefer_recent=prefer_recent,
+            RecallQuery("发布规范", top_k=5, rerank=True, prefer_recent=prefer_recent),
         )
         assert tuple(item.fact_id for item in result.evidence) == (
             *(item.id for item in candidates[:4]),
@@ -305,7 +322,9 @@ def test_recall_boosts_after_scoring_the_bounded_rrf_pool(
         assert result.degraded_reason is None
         assert result.rerank_applied
         historical = await memory.recall(
-            "发布规范", top_k=5, as_of=100.0, rerank=True, prefer_recent=True
+            RecallQuery(
+                "发布规范", top_k=5, as_of=100.0, rerank=True, prefer_recent=True
+            )
         )
         assert tuple(item.fact_id for item in historical.evidence) == tuple(
             item.id for item in candidates[:5]
@@ -338,7 +357,7 @@ def test_recall_skips_reranking_for_a_single_candidate() -> None:
         async with storage.session(_SPACE.id, write=True) as writer:
             await writer.upsert_entity(_SUBJECT)
             await writer.save_facts((only_fact,), changed_at=10.0)
-        result = await reader.recall("发布规范", rerank=True)
+        result = await reader.recall(RecallQuery("发布规范", rerank=True))
         assert tuple(item.fact_id for item in result.evidence) == (only_fact.id,)
         assert result.degraded_reason is None
         assert not result.rerank_applied
@@ -404,10 +423,7 @@ def test_recall_reports_inference_timeout_and_keeps_the_expected_order(
             await writer.save_salience({target.id: FactSalience(3.0, 100.0)})
 
         result = await reader.recall(
-            "发布规范",
-            top_k=2,
-            rerank=True,
-            prefer_recent=prefer_recent,
+            RecallQuery("发布规范", top_k=2, rerank=True, prefer_recent=prefer_recent),
         )
         ids = [item.fact_id for item in result.evidence]
         assert not result.rerank_applied
@@ -417,9 +433,7 @@ def test_recall_reports_inference_timeout_and_keeps_the_expected_order(
             )
             assert result.degraded_reason == "embedding_timeout"
             assert await reader.recall(
-                "未命中",
-                rerank=True,
-                prefer_recent=prefer_recent,
+                RecallQuery("未命中", rerank=True, prefer_recent=prefer_recent),
             ) == RecallResult((), "embedding_timeout")
         else:
             assert ids == [shared.id, lexical.id if boosted else semantic.id]
@@ -437,7 +451,7 @@ def test_recall_rejects_unconfigured_reranking_before_embedding() -> None:
         clock=FakeClock(),
     )
     with pytest.raises(ValueError, match="装配重排器"):
-        asyncio.run(reader.recall("发布规范", rerank=True))
+        asyncio.run(reader.recall(RecallQuery("发布规范", rerank=True)))
 
 
 @pytest.mark.parametrize(
@@ -507,7 +521,7 @@ def test_recall_rejects_an_invalid_query_embedding(vectors: object) -> None:
     async def exercise() -> None:
         await storage.create_space(_SPACE)
         with pytest.raises(InferenceError, match="嵌入"):
-            await reader.recall("发布规范")
+            await reader.recall(RecallQuery("发布规范"))
 
     asyncio.run(exercise())
 
@@ -555,7 +569,96 @@ def test_recall_rejects_invalid_reranking(
                 changed_at=10.0,
             )
         with pytest.raises(InferenceError, match="重排"):
-            await reader.recall("发布规范", top_k=2, rerank=True)
+            await reader.recall(RecallQuery("发布规范", top_k=2, rerank=True))
+
+    asyncio.run(exercise())
+
+
+def test_recall_query_normalizes_text_and_uses_default_options() -> None:
+    query = RecallQuery("  发布规范  ")
+    assert query.query == "发布规范"
+    assert query.top_k == 10
+    assert query.as_of is None
+    assert not query.rerank
+    assert query.graph is None
+    assert not query.prefer_recent
+    assert query.filters is None
+    assert query.max_evidence_chars is None
+
+
+@pytest.mark.parametrize(
+    ("top_k", "channel_limit", "rerank_limit", "edge_budget"),
+    (
+        (1, 32, 20, 8),
+        (11, 44, 22, 88),
+        (24, 96, 48, 192),
+        (25, 100, 50, 200),
+        (49, 196, 98, 200),
+        (50, 200, 100, 200),
+        (100, 200, 100, 200),
+    ),
+)
+def test_recall_candidate_budget_bounds(
+    top_k: int, channel_limit: int, rerank_limit: int, edge_budget: int
+) -> None:
+    assert _channel_candidate_limit(top_k) == channel_limit
+    assert _rerank_candidate_limit(top_k) == rerank_limit
+    assert _graph_edge_budget(top_k) == edge_budget
+
+
+@pytest.mark.parametrize(
+    "minimum", (True, "0.5", float("nan"), float("inf"), -1.1, 1.1)
+)
+def test_recall_rejects_invalid_cosine_threshold(minimum: object) -> None:
+    with pytest.raises(ValueError, match="vector_min_cosine"):
+        Memory.for_recall(
+            space_id=_SPACE.id,
+            storage=FakeStorage(),
+            embedder=_UnexpectedEmbedder(),
+            clock=FakeClock(),
+            vector_min_cosine=cast(float, minimum),
+        )
+
+
+def test_recall_includes_vectors_at_the_configured_cosine_threshold() -> None:
+    storage, embedder, clock = FakeStorage(), FakeEmbedder(), FakeClock()
+    exact = _fact("exact", "精确匹配")
+    similar = _fact("similar", "近似匹配")
+    unrelated = _fact("unrelated", "其他主题")
+    default = Memory.for_recall(
+        space_id=_SPACE.id, storage=storage, embedder=embedder, clock=clock
+    )
+    strict = Memory(
+        space_id=_SPACE.id,
+        storage=storage,
+        llm=FakeLLM(),
+        embedder=embedder,
+        clock=clock,
+        ids=FakeIdGenerator(),
+        vector_min_cosine=1.0,
+    )
+
+    async def exercise() -> None:
+        await storage.create_space(_SPACE)
+        async with storage.session(_SPACE.id, write=True) as writer:
+            await writer.upsert_entity(_SUBJECT)
+            await writer.save_facts((exact, similar, unrelated), changed_at=10.0)
+            await writer.upsert_vectors(
+                (
+                    (exact.id, (1.0, 0.0)),
+                    (similar.id, (3.0, 4.0)),
+                    (unrelated.id, (0.0, 1.0)),
+                ),
+                embedding_space=embedder.embedding_space,
+            )
+        query = RecallQuery("词法无命中")
+        default_result = await default.recall(query)
+        strict_result = await strict.recall(query)
+        assert tuple(item.fact_id for item in default_result.evidence) == (
+            exact.id,
+            similar.id,
+        )
+        assert tuple(item.fact_id for item in strict_result.evidence) == (exact.id,)
 
     asyncio.run(exercise())
 
@@ -589,45 +692,49 @@ def test_recall_rejects_invalid_reranking(
         "overflow-time",
     ],
 )
-def test_recall_rejects_invalid_requests_before_inference(
+def test_recall_query_rejects_invalid_text_limit_and_time(
     query: str, top_k: int, as_of: float | None
 ) -> None:
-    """无效的输入在访问空间或请求嵌入前被拒绝。"""
-    reader = Memory.for_recall(
-        space_id=_SPACE.id,
-        storage=FakeStorage(),
-        embedder=_UnexpectedEmbedder(),
-        clock=FakeClock(),
-    )
     with pytest.raises(ValueError):
-        asyncio.run(reader.recall(query, top_k=top_k, as_of=as_of))
+        RecallQuery(query, top_k=top_k, as_of=as_of)
 
 
-def test_recall_rejects_invalid_graph_options_before_inference() -> None:
-    """图召回只接受经过校验的参数对象。"""
-    reader = Memory.for_recall(
-        space_id=_SPACE.id,
-        storage=FakeStorage(),
-        embedder=_UnexpectedEmbedder(),
-        clock=FakeClock(),
-    )
+def test_recall_query_requires_typed_graph_options_and_filters() -> None:
     with pytest.raises(ValueError, match="GraphRecallOptions"):
-        asyncio.run(reader.recall("发布规范", graph=cast(GraphRecallOptions, {})))
+        RecallQuery("发布规范", graph=cast(GraphRecallOptions, {}))
+    with pytest.raises(ValueError, match="RecallFilters"):
+        RecallQuery("发布规范", filters=cast(RecallFilters, {}))
 
 
 @pytest.mark.parametrize("invalid", (1, "true", None))
-def test_recall_rejects_invalid_ranking_option_before_inference(
-    invalid: object,
+def test_recall_query_requires_boolean_ranking_options(invalid: object) -> None:
+    with pytest.raises(ValueError, match="prefer_recent"):
+        RecallQuery("发布规范", prefer_recent=cast(bool, invalid))
+    with pytest.raises(ValueError, match="rerank"):
+        RecallQuery("发布规范", rerank=cast(bool, invalid))
+
+
+def test_recall_rejects_invalid_track_usage_before_accessing_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """排序开关只接受布尔值。"""
+    storage = FakeStorage()
+
+    def unexpected_session(*args: object, **kwargs: object) -> None:
+        raise AssertionError("无效的 track_usage 不能打开存储会话")
+
+    monkeypatch.setattr(storage, "session", unexpected_session)
     reader = Memory.for_recall(
         space_id=_SPACE.id,
-        storage=FakeStorage(),
+        storage=storage,
         embedder=_UnexpectedEmbedder(),
         clock=FakeClock(),
     )
-    with pytest.raises(ValueError, match="prefer_recent"):
-        asyncio.run(reader.recall("发布规范", prefer_recent=cast(bool, invalid)))
+    with pytest.raises(ValueError, match="track_usage"):
+        asyncio.run(
+            reader.recall_with_usage(
+                RecallQuery("发布规范"), track_usage=cast(bool, "false")
+            )
+        )
 
 
 def test_recall_returns_empty_evidence_for_no_hits() -> None:
@@ -639,7 +746,7 @@ def test_recall_returns_empty_evidence_for_no_hits() -> None:
 
     async def exercise() -> None:
         await storage.create_space(_SPACE)
-        assert (await reader.recall("发布规范")).evidence == ()
+        assert (await reader.recall(RecallQuery("发布规范"))).evidence == ()
 
     asyncio.run(exercise())
 
@@ -684,32 +791,23 @@ def test_character_budget_keeps_a_complete_reranked_prefix_and_tracks_only_that_
             (1, 5, order[:1], False),
         ):
             result, usage = await reader.recall_with_usage(
-                "预算",
+                RecallQuery(
+                    "预算", rerank=True, top_k=top_k, max_evidence_chars=budget
+                ),
                 track_usage=True,
-                rerank=True,
-                top_k=top_k,
-                max_evidence_chars=budget,
             )
             assert result.rerank_applied
             assert result.truncated is truncated
             assert tuple(item.fact_id for item in result.evidence) == expected
             assert (usage.fact_ids if usage else ()) == expected
-        no_hits = await reader.recall("无关查询", max_evidence_chars=1)
+        no_hits = await reader.recall(RecallQuery("无关查询", max_evidence_chars=1))
         assert not no_hits.evidence and not no_hits.truncated
 
     asyncio.run(exercise())
 
 
 @pytest.mark.parametrize("budget", (False, 0, -1, 1.5, "5"))
-def test_recall_rejects_invalid_character_budget_before_inference(
-    budget: object,
-) -> None:
+def test_recall_query_rejects_invalid_character_budget(budget: object) -> None:
     """字符预算只接受正整数。"""
-    reader = Memory.for_recall(
-        space_id=_SPACE.id,
-        storage=FakeStorage(),
-        embedder=_UnexpectedEmbedder(),
-        clock=FakeClock(),
-    )
     with pytest.raises(ValueError, match="max_evidence_chars"):
-        asyncio.run(reader.recall("预算", max_evidence_chars=cast(int, budget)))
+        RecallQuery("预算", max_evidence_chars=cast(int, budget))

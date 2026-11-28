@@ -20,6 +20,7 @@ from mnemotrace import (
     CommitOutcomeUnknown,
     Memory,
     MessageInput,
+    RecallQuery,
     RememberInvalidated,
     RememberRetryRequired,
     SessionUnavailable,
@@ -490,7 +491,7 @@ def test_remember_rejudges_only_changed_pairs(
                 elif second_update == "removed":
                     assert await reader.get_fact(added.id) is None
             if should_retry:
-                before = await memory.recall(_CURRENT)
+                before = await memory.recall(RecallQuery(_CURRENT))
                 assert all(item.text != _CURRENT for item in before.evidence)
                 retried = await memory.remember(_CURRENT, session_id=session_id)
                 assert len(model.extraction_calls) == 2
@@ -499,7 +500,7 @@ def test_remember_rejudges_only_changed_pairs(
                     for change in retried.fact_changes
                     if change.before is None
                 )
-                after = await memory.recall(_CURRENT)
+                after = await memory.recall(RecallQuery(_CURRENT))
                 assert any(
                     item.fact_id == written.id
                     and item.source_message_ids == retried.message_ids
@@ -811,7 +812,7 @@ def test_remember_rejects_inflight_erasure(
                     )
                     == ()
                 )
-            recalled = await memory.recall(_CURRENT)
+            recalled = await memory.recall(RecallQuery(_CURRENT))
             assert all(item.text != _CURRENT for item in recalled.evidence)
 
     run(exercise())
@@ -1046,7 +1047,7 @@ def test_remember_propagates_commit_failure_without_resending(
                 )
             if fault in {"unknown", "unknown-rollback"}:
                 first_source = MessageId("incoming-0")
-                before = await memory.recall(_CURRENT)
+                before = await memory.recall(RecallQuery(_CURRENT))
                 assert [
                     item.source_message_ids
                     for item in before.evidence
@@ -1065,7 +1066,7 @@ def test_remember_propagates_commit_failure_without_resending(
                     assert {
                         row.id for row in await reader.last_messages(session_id, 10)
                     } == expected_sources
-                after = await memory.recall(_CURRENT)
+                after = await memory.recall(RecallQuery(_CURRENT))
                 (evidence,) = (item for item in after.evidence if item.text == _CURRENT)
                 assert set(evidence.source_message_ids) == expected_sources
 

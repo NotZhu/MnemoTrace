@@ -11,6 +11,7 @@ from mnemotrace import (
     Memory,
     MessageInput,
     RecallEvidence,
+    RecallQuery,
     RecallRelation,
 )
 from mnemotrace.adapters.postgres import PostgresStorage
@@ -154,7 +155,9 @@ def test_cross_session_change_is_visible_at_the_effective_boundary(
                 (50.0, new, None, second.message_ids),
                 (None, new, None, second.message_ids),
             ):
-                result = await memory.recall("星河项目 默认语言", top_k=5, as_of=at)
+                result = await memory.recall(
+                    RecallQuery("星河项目 默认语言", top_k=5, as_of=at)
+                )
                 found = _matching(result.evidence, old, new)
                 assert set(found) == {expected.id}
                 evidence = found[expected.id]
@@ -206,7 +209,9 @@ def test_written_graph_and_session_erasure_close_through_recall(
             one = GraphRecallOptions(origin_entity_ids=origin, max_hops=1)
             two = GraphRecallOptions(origin_entity_ids=origin, max_hops=2)
             for options in (None, one, two):
-                result = await memory.recall(_GRAPH_QUERY, top_k=5, graph=options)
+                result = await memory.recall(
+                    RecallQuery(_GRAPH_QUERY, top_k=5, graph=options)
+                )
                 found = _matching(result.evidence, target)
                 assert (target.id in found) is (options is two)
                 if found:
@@ -219,12 +224,12 @@ def test_written_graph_and_session_erasure_close_through_recall(
                     )
                     assert evidence.source_message_ids == target_write.message_ids
 
-            before = await memory.recall(_TARGET, top_k=5, as_of=40.0)
+            before = await memory.recall(RecallQuery(_TARGET, top_k=5, as_of=40.0))
             assert (
                 _matching(before.evidence, target)[target.id].source_message_ids
                 == target_write.message_ids
             )
-            before = await memory.recall(_SHARED, top_k=5)
+            before = await memory.recall(RecallQuery(_SHARED, top_k=5))
             assert set(
                 _matching(before.evidence, shared)[shared.id].source_message_ids
             ) == {*shared_write.message_ids, *support.message_ids}
@@ -232,11 +237,13 @@ def test_written_graph_and_session_erasure_close_through_recall(
                 assert await writer.delete_session_data(erased) == {target.id}
 
             for at in (None, 40.0):
-                result = await memory.recall(_TARGET, top_k=5, as_of=at)
+                result = await memory.recall(RecallQuery(_TARGET, top_k=5, as_of=at))
                 assert not _matching(result.evidence, target)
-                result = await memory.recall(_GRAPH_QUERY, top_k=5, graph=two, as_of=at)
+                result = await memory.recall(
+                    RecallQuery(_GRAPH_QUERY, top_k=5, graph=two, as_of=at)
+                )
                 assert not _matching(result.evidence, target)
-                result = await memory.recall(_SHARED, top_k=5, as_of=at)
+                result = await memory.recall(RecallQuery(_SHARED, top_k=5, as_of=at))
                 assert (
                     _matching(result.evidence, shared)[shared.id].source_message_ids
                     == support.message_ids

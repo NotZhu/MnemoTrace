@@ -1,7 +1,7 @@
 """从已授权空间的同一快照召回事实证据。"""
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass
 from math import exp2
 from typing import Literal
 
@@ -22,8 +22,8 @@ from .ranking import rrf_scores
 DEFAULT_TOP_K = 10
 MAX_TOP_K = 100
 MAX_QUERY_CHARS = 4096
+DEFAULT_VECTOR_MIN_COSINE = 0.5
 _RRF_K = 60
-_VECTOR_MIN_COSINE = 0.5
 _MAX_RANKING_BOOST = 0.05
 _RECENCY_HALF_LIFE_SECONDS = 30 * 86_400
 
@@ -49,6 +49,55 @@ class RecallFilters:
         require_tuple(self.labels, Label, "labels")
         if self.source is not None:
             require_type(self.source, Source, "source")
+
+
+@dataclass(frozen=True)
+class RecallQuery:
+    """保存已校验的召回查询及排序和证据选项。
+
+    Attributes:
+        query: 去除首尾空白的查询文本，原文本最长 4096 个字符。
+        top_k: 最多返回的证据条数，取 1 至 100。
+        as_of: 以 UTC epoch 秒表示的有效时点，省略时查询当前事实。
+        rerank: 是否使用已装配的重排器计算候选相关性。
+        graph: 图召回设置，省略时使用普通召回。
+        prefer_recent: 是否在当前事实中小幅优先近期生效的候选。
+        filters: 筛选候选事实的标签和来源。
+        max_evidence_chars: 可选的证据正文总字符预算，须为正整数。
+
+    Raises:
+        ValueError: 查询文本或选项无效。
+    """
+
+    query: str
+    _: KW_ONLY
+    top_k: int = DEFAULT_TOP_K
+    as_of: float | None = None
+    rerank: bool = False
+    graph: GraphRecallOptions | None = None
+    prefer_recent: bool = False
+    filters: RecallFilters | None = None
+    max_evidence_chars: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "query", _validate_query(self.query))
+        if type(self.top_k) is not int or not 1 <= self.top_k <= MAX_TOP_K:
+            raise ValueError(f"top_k 须为 1 至 {MAX_TOP_K} 的整数")
+        if type(self.rerank) is not bool:
+            raise ValueError("rerank 须为布尔值")
+        if self.graph is not None and not isinstance(self.graph, GraphRecallOptions):
+            raise ValueError("graph 须为 GraphRecallOptions 或 None")
+        if type(self.prefer_recent) is not bool:
+            raise ValueError("prefer_recent 须为布尔值")
+        if self.filters is not None and not isinstance(self.filters, RecallFilters):
+            raise ValueError("filters 须为 RecallFilters 或 None")
+        if self.max_evidence_chars is not None and (
+            type(self.max_evidence_chars) is not int or self.max_evidence_chars < 1
+        ):
+            raise ValueError("max_evidence_chars 须为正整数")
+        object.__setattr__(
+            self, "as_of", optional_timestamp(self.as_of, "as_of", DomainError)
+        )
 
 
 @dataclass(frozen=True)
@@ -122,9 +171,10 @@ class Recall:
         clock: 提供 UTC epoch 秒的时钟。
         exclude_sensitive: 由服务端设置，受限调用为真。
         reranker: 由服务端装配且获准接收候选正文的可选重排端口。
+        vector_min_cosine: 向量候选的最低余弦分数，包含阈值本身。
 
     Raises:
-        ValueError: 缺少查询嵌入模型或可见性选项无效。
+        ValueError: 缺少查询嵌入模型、可见性选项无效或余弦阈值越界。
     """
 
     def __init__(
@@ -136,104 +186,68 @@ class Recall:
         clock: Clock,
         exclude_sensitive: bool = False,
         reranker: Reranker | None = None,
+        vector_min_cosine: float = DEFAULT_VECTOR_MIN_COSINE,
     ) -> None:
         if embedder is None:
             raise ValueError("Memory 需要配置嵌入模型")
         if type(exclude_sensitive) is not bool:
             raise ValueError("exclude_sensitive 须为布尔值")
+        if (
+            isinstance(vector_min_cosine, bool)
+            or not isinstance(vector_min_cosine, (int, float))
+            or not -1 <= vector_min_cosine <= 1
+        ):
+            raise ValueError("vector_min_cosine 须为 -1 至 1 之间的有限数")
         self._space_id = space_id
         self._storage = storage
         self._embedder = embedder
         self._clock = clock
         self._exclude_sensitive = exclude_sensitive
         self._reranker = reranker
+        self._vector_min_cosine = float(vector_min_cosine)
 
-    async def recall(
-        self,
-        query: str,
-        *,
-        top_k: int = DEFAULT_TOP_K,
-        as_of: float | None = None,
-        rerank: bool = False,
-        graph: GraphRecallOptions | None = None,
-        prefer_recent: bool = False,
-        filters: RecallFilters | None = None,
-        max_evidence_chars: int | None = None,
-    ) -> RecallResult:
+    async def recall(self, query: RecallQuery) -> RecallResult:
         """按查询相关性召回指定时点有效的可见事实。
 
         Args:
-            query: 非空查询，最长 4096 个字符。
-            top_k: 最多返回的证据条数，取 1 至 100。
-            as_of: 显式有效时点，以 UTC epoch 秒表示。省略时查当前事实。
-            rerank: 是否使用已装配的重排器计算候选相关性。
-            graph: 图召回设置，省略时使用普通召回。
-            prefer_recent: 是否在当前事实中小幅优先近期生效的候选。
-            filters: 筛选候选事实的标签和来源。
-            max_evidence_chars: 可选的证据正文总字符预算，须为正整数。
+            query: 已校验的召回查询及选项。
 
         Returns:
             按相关性排列的事实证据及可选的超时降级原因。
 
         Raises:
-            ValueError: 输入无效，或显式开启重排但未装配重排器。
+            ValueError: 显式开启重排但未装配重排器。
             LookupError: 无权访问绑定空间。
             InferenceError: 推理端口请求失败或返回无效结果。
         """
-        result, _ = await self.recall_with_usage(
-            query,
-            track_usage=False,
-            top_k=top_k,
-            as_of=as_of,
-            rerank=rerank,
-            graph=graph,
-            prefer_recent=prefer_recent,
-            filters=filters,
-            max_evidence_chars=max_evidence_chars,
-        )
+        result, _ = await self.recall_with_usage(query, track_usage=False)
         return result
 
     async def recall_with_usage(
         self,
-        query: str,
+        query: RecallQuery,
         *,
         track_usage: bool,
-        top_k: int = DEFAULT_TOP_K,
-        as_of: float | None = None,
-        rerank: bool = False,
-        graph: GraphRecallOptions | None = None,
-        prefer_recent: bool = False,
-        filters: RecallFilters | None = None,
-        max_evidence_chars: int | None = None,
     ) -> tuple[RecallResult, RecallUsage | None]:
         """执行只读召回，按服务端策略返回可异步强化的证据凭据。"""
-        query = _validate_query(query)
-        if type(top_k) is not int or not 1 <= top_k <= MAX_TOP_K:
-            raise ValueError(f"top_k 须为 1 至 {MAX_TOP_K} 的整数")
-        if type(rerank) is not bool:
-            raise ValueError("rerank 须为布尔值")
-        if type(prefer_recent) is not bool:
-            raise ValueError("prefer_recent 须为布尔值")
-        if graph is not None and not isinstance(graph, GraphRecallOptions):
-            raise ValueError("graph 须为 GraphRecallOptions 或 None")
-        if filters is not None and not isinstance(filters, RecallFilters):
-            raise ValueError("filters 须为 RecallFilters 或 None")
-        if max_evidence_chars is not None and (
-            type(max_evidence_chars) is not int or max_evidence_chars < 1
-        ):
-            raise ValueError("max_evidence_chars 须为正整数")
-        reranker = self._reranker if rerank else None
-        if rerank and reranker is None:
+        if not isinstance(query, RecallQuery):
+            raise TypeError("query 须为 RecallQuery")
+        if type(track_usage) is not bool:
+            raise ValueError("track_usage 须为布尔值")
+        reranker = self._reranker if query.rerank else None
+        if query.rerank and reranker is None:
             raise ValueError("开启重排需要装配重排器")
+        filters = query.filters
         fact_filter = FactFilter(
-            valid_at=optional_timestamp(as_of, "as_of", DomainError),
+            valid_at=query.as_of,
             exclude_sensitive=self._exclude_sensitive,
             labels=filters.labels if filters is not None else (),
             source=filters.source if filters is not None else None,
         )
         reference_time = self._clock.now()
-        use_recency = prefer_recent and fact_filter.valid_at is None
-        per_channel_limit = _candidate_limit(top_k)
+        use_recency = query.prefer_recent and fact_filter.valid_at is None
+        top_k = query.top_k
+        per_channel_limit = _channel_candidate_limit(top_k)
 
         # 进入会话已经完成授权。先退出事务，再把查询发给嵌入端点。
         async with self._storage.session(self._space_id):
@@ -241,7 +255,7 @@ class Recall:
         vector: Sequence[float] | None
         degraded_reason: RecallDegradedReason | None = None
         try:
-            vectors = await self._embedder.embed((query,))
+            vectors = await self._embedder.embed((query.query,))
         except TimeoutError:
             vector = None
             reranker = None
@@ -251,14 +265,14 @@ class Recall:
                 vectors, expected_count=1, dimension=self._embedder.dim
             )
 
-        fact_load_limit = top_k if reranker is None else min(100, max(20, 2 * top_k))
+        fact_load_limit = top_k if reranker is None else _rerank_candidate_limit(top_k)
         erasure_token = None
         async with self._storage.session(self._space_id) as reader:
             use_salience = (
                 fact_filter.valid_at is None and (await reader.get_space()).memory_decay
             )
             lexical = await reader.search_lexical(
-                query,
+                query.query,
                 per_channel_limit,
                 filters=fact_filter,
                 reference_time=reference_time,
@@ -271,21 +285,21 @@ class Recall:
                     filters=fact_filter,
                     reference_time=reference_time,
                     embedding_space=self._embedder.embedding_space,
-                    min_score=_VECTOR_MIN_COSINE,
+                    min_score=self._vector_min_cosine,
                 )
             lexical_ids = tuple(fact_id for fact_id, _ in lexical)
             semantic_ids = tuple(fact_id for fact_id, _ in semantic)
             graph_ids = (
                 await graph_ranking(
                     reader,
-                    graph,
+                    query.graph,
                     lexical_ids,
                     semantic_ids,
                     filters=fact_filter,
                     reference_time=reference_time,
-                    top_k=top_k,
+                    edge_budget=_graph_edge_budget(top_k),
                 )
-                if graph is not None
+                if query.graph is not None
                 else ()
             )
             ranking = rrf_scores(
@@ -317,7 +331,7 @@ class Recall:
         if reranker is not None and len(ids) > 1:
             documents = tuple((fact_id, facts[fact_id].text) for fact_id in ids)
             try:
-                ranked = await reranker.rerank(query, documents)
+                ranked = await reranker.rerank(query.query, documents)
             except TimeoutError:
                 degraded_reason = "reranker_timeout"
             else:
@@ -345,8 +359,8 @@ class Recall:
 
         final_ids = tuple(ids[:top_k])
         truncated = False
-        if max_evidence_chars is not None:
-            remaining = max_evidence_chars
+        if query.max_evidence_chars is not None:
+            remaining = query.max_evidence_chars
             for position, fact_id in enumerate(final_ids):
                 remaining -= len(facts[fact_id].text)
                 if remaining < 0:
@@ -383,8 +397,16 @@ def _validate_query(query: str) -> str:
     return query
 
 
-def _candidate_limit(top_k: int) -> int:
+def _channel_candidate_limit(top_k: int) -> int:
     return min(200, max(32, 4 * top_k))
+
+
+def _rerank_candidate_limit(top_k: int) -> int:
+    return min(100, max(20, 2 * top_k))
+
+
+def _graph_edge_budget(top_k: int) -> int:
+    return min(200, 8 * top_k)
 
 
 def _candidates_within_boost(

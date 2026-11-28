@@ -13,7 +13,6 @@ DEFAULT_GRAPH_HOPS = 2
 MAX_GRAPH_HOPS = 4
 MAX_EXPLICIT_ANCHORS = 32
 MAX_GRAPH_PREDICATES = 32
-_MAX_EDGES = 200
 
 
 @dataclass(frozen=True)
@@ -83,7 +82,7 @@ async def graph_ranking(
     *,
     filters: FactFilter,
     reference_time: float,
-    top_k: int,
+    edge_budget: int,
 ) -> tuple[FactId, ...]:
     """在普通召回的读快照中生成图候选排名。
 
@@ -94,7 +93,7 @@ async def graph_ranking(
         semantic: 向量候选事实标识，按该路排名排列。
         filters: 本次召回统一使用的时间和可见性条件。
         reference_time: 本次请求共用的 UTC epoch 秒。
-        top_k: 最终证据上限，用于确定全局边预算。
+        edge_budget: 各跳共用的非负关系边预算。
 
     Returns:
         按跳数、主体发现顺序和事实标识排序的候选事实标识。
@@ -110,15 +109,11 @@ async def graph_ranking(
             tuple(origins),
             filters=filters,
             reference_time=reference_time,
-            budget=_edge_budget(top_k),
+            budget=edge_budget,
         )
         for edge in edges
     ]
     return tuple(ranking)
-
-
-def _edge_budget(top_k: int) -> int:
-    return min(8 * top_k, _MAX_EDGES)
 
 
 async def _graph_layers(

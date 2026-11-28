@@ -6,7 +6,13 @@ from dataclasses import replace
 
 import pytest
 
-from mnemotrace import GraphRecallOptions, Memory, RecallEvidence, RecallRelation
+from mnemotrace import (
+    GraphRecallOptions,
+    Memory,
+    RecallEvidence,
+    RecallQuery,
+    RecallRelation,
+)
 from mnemotrace.adapters.postgres import PostgresStorage
 from mnemotrace.adapters.postgres.reader import PostgresReader
 from mnemotrace.domain.entity import Entity
@@ -74,8 +80,10 @@ def test_recall_returns_identifier_and_paraphrase_with_independent_candidates(
             reader = Memory.for_recall(
                 space_id=scope.id, storage=storage, embedder=embedder, clock=FakeClock()
             )
-            numbered = await reader.recall("MT-042", top_k=1)
-            paraphrased = await reader.recall("投产前该确认什么？", top_k=1)
+            numbered = await reader.recall(RecallQuery("MT-042", top_k=1))
+            paraphrased = await reader.recall(
+                RecallQuery("投产前该确认什么？", top_k=1)
+            )
             assert [item.fact_id for item in numbered.evidence] == [identifier.id]
             assert [item.fact_id for item in paraphrased.evidence] == [semantic.id]
 
@@ -149,7 +157,7 @@ def test_recall_applies_time_and_visibility_before_candidate_limits(
                 clock=clock,
                 ids=FakeIdGenerator(),
             )
-            assert (await owner.recall("MT-042", top_k=1)).evidence[
+            assert (await owner.recall(RecallQuery("MT-042", top_k=1))).evidence[
                 0
             ].fact_id == hidden[0].id
 
@@ -161,17 +169,18 @@ def test_recall_applies_time_and_visibility_before_candidate_limits(
                 exclude_sensitive=True,
             )
             assert [
-                item.fact_id for item in (await restricted.recall("MT-042")).evidence
+                item.fact_id
+                for item in (await restricted.recall(RecallQuery("MT-042"))).evidence
             ] == [current.id, unknown.id]
-            assert (await restricted.recall("MT-042", as_of=100.0)).evidence == (
-                RecallEvidence(current.id, text, 100.0, None, (source.id,)),
-            )
-            assert (await restricted.recall("MT-042", as_of=99.0)).evidence == (
-                RecallEvidence(stopped.id, text, 10.0, 100.0, ()),
-            )
-            assert (await restricted.recall("上线前看哪些记录", top_k=1)).evidence == (
-                RecallEvidence(current.id, text, 100.0, None, (source.id,)),
-            )
+            assert (
+                await restricted.recall(RecallQuery("MT-042", as_of=100.0))
+            ).evidence == (RecallEvidence(current.id, text, 100.0, None, (source.id,)),)
+            assert (
+                await restricted.recall(RecallQuery("MT-042", as_of=99.0))
+            ).evidence == (RecallEvidence(stopped.id, text, 10.0, 100.0, ()),)
+            assert (
+                await restricted.recall(RecallQuery("上线前看哪些记录", top_k=1))
+            ).evidence == (RecallEvidence(current.id, text, 100.0, None, (source.id,)),)
 
     run(exercise())
 
@@ -196,7 +205,7 @@ def test_recall_checks_owner_before_embedding(database: PgDatabase) -> None:
                 clock=FakeClock(),
             )
             with pytest.raises(LookupError, match="空间不可访问"):
-                await reader.recall("合成查询")
+                await reader.recall(RecallQuery("合成查询"))
 
     run(exercise())
 
@@ -254,10 +263,10 @@ def test_recall_searches_and_loads_facts_in_one_snapshot(
             recall = Memory.for_recall(
                 space_id=scope.id, storage=storage, embedder=embedder, clock=FakeClock()
             )
-            assert (await recall.recall("发布规范")).evidence == (
+            assert (await recall.recall(RecallQuery("发布规范"))).evidence == (
                 RecallEvidence(current.id, current.text, 10.0, None, ()),
             )
-            assert (await recall.recall("发布规范")).evidence == ()
+            assert (await recall.recall(RecallQuery("发布规范"))).evidence == ()
 
     run(exercise())
 
@@ -311,13 +320,13 @@ def test_recall_keeps_authorized_evidence_when_erased_during_reranking(
             )
             async with asyncio.timeout(10), asyncio.TaskGroup() as tasks:
                 inflight = tasks.create_task(
-                    reader.recall("发布规范", top_k=1, rerank=True)
+                    reader.recall(RecallQuery("发布规范", top_k=1, rerank=True))
                 )
                 await started.wait()
                 async with storage.session(scope.id, write=True) as writer:
                     deleted = await writer.delete_session_data(source.session_id)
                     assert deleted == {first.id, second.id, hidden.id}
-                fresh = await reader.recall("发布规范", rerank=True)
+                fresh = await reader.recall(RecallQuery("发布规范", rerank=True))
                 assert fresh.evidence == ()
                 assert fresh.degraded_reason is None
                 resume.set()
@@ -389,12 +398,16 @@ def test_graph_recall_filters_every_bridge_before_expanding(
             graph = GraphRecallOptions(
                 origin_entity_ids=(foreign.id, root.id), predicates=(good.predicate,)
             )
-            result = await recall.recall("unmatchedtoken", graph=graph, as_of=20.0)
+            result = await recall.recall(
+                RecallQuery("unmatchedtoken", graph=graph, as_of=20.0)
+            )
             assert tuple(item.fact_id for item in result.evidence) == (
                 good.id,
                 good_tail.id,
             )
-            historical = await recall.recall("unmatchedtoken", graph=graph, as_of=19.0)
+            historical = await recall.recall(
+                RecallQuery("unmatchedtoken", graph=graph, as_of=19.0)
+            )
             assert tuple(item.fact_id for item in historical.evidence) == (
                 good.id,
                 ended.id,
@@ -468,7 +481,7 @@ def test_graph_recall_keeps_its_snapshot_between_hops_during_erasure(
                 clock=FakeClock(),
             )
             graph = GraphRecallOptions()
-            result = await recall.recall(source.content, graph=graph)
+            result = await recall.recall(RecallQuery(source.content, graph=graph))
             assert erased
             assert tuple(item.fact_id for item in result.evidence) == (
                 seed.id,
@@ -477,6 +490,8 @@ def test_graph_recall_keeps_its_snapshot_between_hops_during_erasure(
             assert result.evidence[1].relation == RecallRelation(
                 bridge.id, follow.predicate, tip.id
             )
-            assert (await recall.recall(source.content, graph=graph)).evidence == ()
+            assert (
+                await recall.recall(RecallQuery(source.content, graph=graph))
+            ).evidence == ()
 
     run(exercise())

@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from ..adapters.inference import open_inference
 from ..adapters.postgres.migrate import migration_checksums
 from ..adapters.postgres.pool import runtime_pool
+from ..adapters.runtime import SystemClock
+from ..ports.runtime import Clock
 from .errors import install_error_handlers
 from .health import router as health_router
 from .middleware import RequestBoundary
@@ -16,9 +18,10 @@ from .settings import Settings
 from .v1 import memories, operations, profiles, sessions, spaces
 
 
-def create_app(settings: Settings) -> FastAPI:
+def create_app(settings: Settings, *, clock: Clock | None = None) -> FastAPI:
     """创建带版本化路由和进程共享连接池的 ASGI 应用。"""
     pool = runtime_pool(settings.runtime, max_size=8, max_waiting=32)
+    recall_clock = SystemClock() if clock is None else clock
 
     embed_configured = any(
         key.startswith("MNEMOTRACE_EMBED_") for key in settings.runtime.inference_env
@@ -37,7 +40,7 @@ def create_app(settings: Settings) -> FastAPI:
                 rerank=rerank_configured,
             ) as inference,
             pool,
-            RecallUsageQueue().run() as recall_usage,
+            RecallUsageQueue(recall_clock).run() as recall_usage,
         ):
             app.state.embedder = inference.embedder
             app.state.reranker = inference.reranker
@@ -62,6 +65,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.embedder = None
     app.state.reranker = None
     app.state.recall_usage = None
+    app.state.recall_clock = recall_clock
     app.state.write_configured = False
     app.state.queue_limit = settings.queue_limit
     app.state.extraction_timezone = settings.runtime.extraction_timezone

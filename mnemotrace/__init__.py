@@ -5,6 +5,7 @@ from .application.memory import Memory
 from .application.recall import (
     RecallEvidence,
     RecallFilters,
+    RecallQuery,
     RecallRelation,
     RecallResult,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "MessageInput",
     "RecallEvidence",
     "RecallFilters",
+    "RecallQuery",
     "RecallRelation",
     "RecallResult",
     "RememberInvalidated",

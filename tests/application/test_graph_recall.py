@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from mnemotrace import GraphRecallOptions, Memory, RecallRelation
+from mnemotrace import GraphRecallOptions, Memory, RecallQuery, RecallRelation
 from mnemotrace.application.graph_recall import graph_ranking
 from mnemotrace.domain.entity import Entity
 from mnemotrace.domain.enums import Source
@@ -84,18 +84,18 @@ def test_graph_recall_expands_subjects_and_returns_flat_relation_evidence() -> N
             llm=FakeLLM(),
             ids=FakeIdGenerator(),
         )
-        plain = await memory.recall("releasecode", top_k=5)
+        plain = await memory.recall(RecallQuery("releasecode", top_k=5))
         assert [item.fact_id for item in plain.evidence] == [literal.id, seed.id]
         assert plain.evidence[0].relation is None
         relation = plain.evidence[1].relation
         assert relation is not None
         assert relation == RecallRelation(origin.id, _LINK, bridge.id)
         one_hop = await memory.recall(
-            "releasecode", top_k=5, graph=GraphRecallOptions(max_hops=1)
+            RecallQuery("releasecode", top_k=5, graph=GraphRecallOptions(max_hops=1))
         )
         assert [item.fact_id for item in one_hop.evidence] == [seed.id, literal.id]
         expanded = await memory.recall(
-            "releasecode", top_k=5, graph=GraphRecallOptions()
+            RecallQuery("releasecode", top_k=5, graph=GraphRecallOptions())
         )
         assert [item.fact_id for item in expanded.evidence] == [
             seed.id,
@@ -106,12 +106,14 @@ def test_graph_recall_expands_subjects_and_returns_flat_relation_evidence() -> N
             bridge.id, _LINK, target.id
         )
         explicit = await memory.recall(
-            "releasecode",
-            top_k=5,
-            graph=GraphRecallOptions(
-                origin_entity_ids=[EntityId("missing"), relation.object_entity_id],
-                predicates=[relation.predicate],
-                max_hops=1,
+            RecallQuery(
+                "releasecode",
+                top_k=5,
+                graph=GraphRecallOptions(
+                    origin_entity_ids=[EntityId("missing"), relation.object_entity_id],
+                    predicates=[relation.predicate],
+                    max_hops=1,
+                ),
             ),
         )
         assert {item.fact_id for item in explicit.evidence} == {
@@ -122,9 +124,11 @@ def test_graph_recall_expands_subjects_and_returns_flat_relation_evidence() -> N
         for ids in ((), (EntityId("missing"),)):
             assert (
                 await memory.recall(
-                    "releasecode",
-                    top_k=5,
-                    graph=GraphRecallOptions(origin_entity_ids=ids),
+                    RecallQuery(
+                        "releasecode",
+                        top_k=5,
+                        graph=GraphRecallOptions(origin_entity_ids=ids),
+                    ),
                 )
                 == plain
             )
@@ -132,9 +136,9 @@ def test_graph_recall_expands_subjects_and_returns_flat_relation_evidence() -> N
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize(("top_k", "tail_count"), ((1, 1), (8, 29)))
+@pytest.mark.parametrize(("edge_budget", "tail_count"), ((8, 1), (64, 29)))
 def test_graph_order_interleaves_all_distinct_ranked_subjects(
-    top_k: int, tail_count: int
+    edge_budget: int, tail_count: int
 ) -> None:
     """两路命中同一主体时继续取下一个，直到两路候选都用完。"""
 
@@ -168,7 +172,7 @@ def test_graph_order_interleaves_all_distinct_ranked_subjects(
                 (first.id, sem_first.id, sem_second.id),
                 filters=FactFilter(),
                 reference_time=100.0,
-                top_k=top_k,
+                edge_budget=edge_budget,
             )
         assert ranking == (
             first.id,
@@ -207,9 +211,9 @@ def test_graph_expands_each_subject_once_with_a_shared_edge_budget() -> None:
         first_eight = tuple(edge.id for edge in (*first_layer, *left_edges))
         assert options.origin_entity_ids == (root.id,)
         async with storage.session(_SPACE.id) as reader:
-            for top_k, expected in (
-                (1, first_eight),
-                (2, (*first_eight, from_right.id, cycle.id)),
+            for edge_budget, expected in (
+                (8, first_eight),
+                (16, (*first_eight, from_right.id, cycle.id)),
             ):
                 assert (
                     await graph_ranking(
@@ -219,7 +223,7 @@ def test_graph_expands_each_subject_once_with_a_shared_edge_budget() -> None:
                         (),
                         filters=FactFilter(),
                         reference_time=100.0,
-                        top_k=top_k,
+                        edge_budget=edge_budget,
                     )
                     == expected
                 )
@@ -282,7 +286,9 @@ def test_graph_candidates_participate_in_inference_and_timeout_fallback(
             if mode == "explicit_seed"
             else ("releasecode", GraphRecallOptions())
         )
-        result = await recall.recall(query, graph=options, top_k=2, rerank=True)
+        result = await recall.recall(
+            RecallQuery(query, graph=options, top_k=2, rerank=True)
+        )
         if mode == "rerank":
             assert result.degraded_reason is None
             assert [item.fact_id for item in result.evidence] == [follow.id, seed.id]
@@ -293,11 +299,15 @@ def test_graph_candidates_participate_in_inference_and_timeout_fallback(
             assert [item.fact_id for item in result.evidence] == [seed.id, follow.id]
         if mode == "explicit_seed":
             recent = await recall.recall(
-                query, graph=options, top_k=1, rerank=True, prefer_recent=True
+                RecallQuery(
+                    query, graph=options, top_k=1, rerank=True, prefer_recent=True
+                )
             )
             async with storage.session(_SPACE.id, write=True) as writer:
                 await writer.save_salience({follow.id: FactSalience(3.0, 100.0)})
-            salient = await recall.recall(query, graph=options, top_k=1, rerank=True)
+            salient = await recall.recall(
+                RecallQuery(query, graph=options, top_k=1, rerank=True)
+            )
             assert salient == recent
             assert salient.degraded_reason == "embedding_timeout"
             assert [item.fact_id for item in salient.evidence] == [follow.id]
