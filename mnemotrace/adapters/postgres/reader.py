@@ -14,7 +14,7 @@ from ...domain.profile import Profile
 from ...domain.salience import FactSalience
 from ...domain.space import Space
 from ...domain.values import Predicate
-from ...ports.queries import FactFilter, FactQuery
+from ...ports.queries import FactFilter, FactQuery, validate_min_score
 from ...ports.storage import FactChange, GraphEdge, GraphEdgeBatch, SessionRegistration
 from . import search
 from .fact_filters import FactConditions, fact_conditions
@@ -713,7 +713,7 @@ class PostgresReader:
         Raises:
             ValueError: 阈值或有效时点无效、嵌入空间标识为空，或向量无效或维度不符。
         """
-        search.validate_min_score(min_score)
+        validate_min_score(min_score)
         conditions = fact_conditions(self.space_id, filters, reference_time)
         query_vector = search.cosine_vector(vector)
         conn = self._conn
@@ -761,7 +761,7 @@ class PostgresReader:
         Raises:
             ValueError: 阈值或有效时点无效。
         """
-        search.validate_min_score(min_score)
+        validate_min_score(min_score)
         conditions = fact_conditions(self.space_id, filters, reference_time)
         return tuple(
             await search.search_lexical(self._conn, conditions, query, min_score, limit)

@@ -2,8 +2,6 @@
 
 from psycopg import sql
 
-from ...domain._validation import timestamp
-from ...domain.errors import DomainError
 from ...domain.ids import SpaceId
 from ...ports.queries import FactFilter
 
@@ -55,11 +53,9 @@ def fact_conditions(
         ValueError: 实际用于筛选的 reference_time 不是有限的 UTC 秒数。
     """
     conditions = FactConditions(space_id)
-    if filters.state != "all":
-        if filters.valid_at is None:
-            at = timestamp(reference_time, "reference_time", DomainError)
-        else:
-            at = filters.valid_at
+    at = filters.effective_time(reference_time)
+    if at is not None:
+        if filters.valid_at is not None:
             conditions.add("f.valid_at IS NOT NULL")
         if filters.state == "history":
             conditions.add("f.invalid_at <= %(at)s", at=at)

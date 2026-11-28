@@ -14,7 +14,7 @@ from mnemotrace.domain.enums import ProfileGroup
 from mnemotrace.domain.ids import FactId
 from mnemotrace.domain.space import Space
 from mnemotrace.domain.values import EntityRef, Label, LiteralValue, Predicate
-from mnemotrace.ports.queries import FactFilter
+from mnemotrace.ports.queries import FactFilter, FactQuery
 from mnemotrace.ports.storage import CutoffTrigger, SpaceUnavailable, Storage
 
 from ..ports.fakes import FakeStorage
@@ -44,6 +44,79 @@ async def _storage(scope: Space, database: PgDatabase | None) -> AsyncIterator[S
         postgres = PostgresStorage(connections, owner_id=scope.owner_id)
         await postgres.create_space(scope)
         yield postgres
+
+
+def test_queries_validate_only_the_effective_time(
+    storage_database: PgDatabase | None,
+) -> None:
+    """空库和未登记的向量空间也校验实际使用的时点。"""
+
+    async def exercise() -> None:
+        scope = space()
+        async with (
+            _storage(scope, storage_database) as storage,
+            storage.session(scope.id) as reader,
+        ):
+            for filters in (FactFilter(), FactFilter(state="history")):
+                with pytest.raises(ValueError, match="reference_time"):
+                    await reader.query_facts(
+                        FactQuery(filters=filters), reference_time=nan
+                    )
+            with pytest.raises(ValueError, match="reference_time"):
+                await reader.search_vectors(
+                    (1.0,),
+                    1,
+                    filters=FactFilter(),
+                    reference_time=nan,
+                    embedding_space="unregistered",
+                )
+            for filters in (FactFilter(valid_at=0.0), FactFilter(state="all")):
+                assert not await reader.query_facts(
+                    FactQuery(filters=filters), reference_time=nan
+                )
+            assert not (
+                await reader.adjacent_edges(
+                    (), filters=FactFilter(), reference_time=nan, limit=1
+                )
+            ).edges
+            assert not await reader.outgoing_edges(
+                (), filters=FactFilter(), reference_time=nan, limit=1
+            )
+
+    run(exercise())
+
+
+@pytest.mark.parametrize("score", (nan, inf, -inf))
+def test_search_rejects_nonfinite_min_score(
+    storage_database: PgDatabase | None, score: float
+) -> None:
+    """词法和向量查询在空库中也拒绝非有限阈值。"""
+
+    async def exercise() -> None:
+        scope = space()
+        async with (
+            _storage(scope, storage_database) as storage,
+            storage.session(scope.id) as reader,
+        ):
+            with pytest.raises(ValueError, match="min_score"):
+                await reader.search_lexical(
+                    "茶",
+                    1,
+                    filters=FactFilter(),
+                    reference_time=0.0,
+                    min_score=score,
+                )
+            with pytest.raises(ValueError, match="min_score"):
+                await reader.search_vectors(
+                    (1.0,),
+                    1,
+                    filters=FactFilter(),
+                    reference_time=0.0,
+                    embedding_space="unregistered",
+                    min_score=score,
+                )
+
+    run(exercise())
 
 
 def test_save_facts_rejects_cutoff_triggers_on_unchanged_facts(

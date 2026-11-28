@@ -5,9 +5,10 @@ UTC epoch 秒。
 """
 
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Literal
 
-from ..domain._validation import optional_timestamp
+from ..domain._validation import optional_timestamp, timestamp
 from ..domain.enums import Source
 from ..domain.errors import DomainError
 from ..domain.ids import FactId, MessageId
@@ -15,6 +16,12 @@ from ..domain.values import EntityRef, Label, Predicate
 
 type FactSlot = tuple[EntityRef, Predicate]
 type FactState = Literal["current", "history", "all"]
+
+
+def validate_min_score(min_score: float | None) -> None:
+    """拒绝无法作为检索阈值的非有限分数。"""
+    if min_score is not None and not isfinite(min_score):
+        raise ValueError("min_score 须为有限数值")
 
 
 @dataclass(frozen=True)
@@ -70,6 +77,21 @@ class FactFilter:
             and self.overlap_start >= self.overlap_end
         ):
             raise ValueError("overlap_start 必须早于 overlap_end")
+
+    def effective_time(self, reference_time: float) -> float | None:
+        """解析用于判断事实状态的 UTC 时点。
+
+        Returns:
+            完整时间线返回 None，其他查询优先使用显式的 valid_at。
+
+        Raises:
+            ValueError: 实际使用的 reference_time 不是有效的 UTC epoch 秒数。
+        """
+        if self.state == "all":
+            return None
+        if self.valid_at is not None:
+            return self.valid_at
+        return timestamp(reference_time, "reference_time", DomainError)
 
 
 @dataclass(frozen=True)

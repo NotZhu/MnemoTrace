@@ -2,7 +2,6 @@
 
 from collections.abc import Sequence
 from itertools import groupby, pairwise
-from math import isfinite
 from unicodedata import name, normalize
 
 from psycopg import AsyncConnection, sql
@@ -12,12 +11,6 @@ from ...domain.ids import FactId, SpaceId
 from ...domain.vector import scale_by_max_abs
 from ...ports.storage import validate_embedding_dimension
 from .fact_filters import FactConditions
-
-
-def validate_min_score(min_score: float | None) -> None:
-    """拒绝无法作为检索阈值的非有限分数。"""
-    if min_score is not None and not isfinite(min_score):
-        raise ValueError("min_score 须为有限数值")
 
 
 def cosine_vector(vector: Sequence[float]) -> list[float]:

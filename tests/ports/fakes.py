@@ -12,7 +12,7 @@ from collections.abc import (
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from itertools import count
-from math import fsum, isfinite, sqrt
+from math import fsum, sqrt
 from typing import Literal, NamedTuple, Self, overload
 
 from mnemotrace.domain._validation import timestamp
@@ -35,7 +35,7 @@ from mnemotrace.domain.time import utc_datetime
 from mnemotrace.domain.values import EntityRef, Predicate
 from mnemotrace.domain.vector import scale_by_max_abs
 from mnemotrace.ports.inference import Completion
-from mnemotrace.ports.queries import FactFilter, FactQuery
+from mnemotrace.ports.queries import FactFilter, FactQuery, validate_min_score
 from mnemotrace.ports.runtime import Clock
 from mnemotrace.ports.storage import (
     CutoffTrigger,
@@ -53,7 +53,7 @@ from mnemotrace.ports.storage import (
 )
 
 
-def _matches_time(fact: Fact, filters: FactFilter, reference_time: float) -> bool:
+def _matches_time(fact: Fact, filters: FactFilter, at: float | None) -> bool:
     if (
         filters.overlap_start is not None
         and fact.invalid_at is not None
@@ -64,9 +64,8 @@ def _matches_time(fact: Fact, filters: FactFilter, reference_time: float) -> boo
         and fact.valid_at >= filters.overlap_end
     ):
         return False
-    if filters.state == "all":
+    if at is None:
         return True
-    at = reference_time if filters.valid_at is None else filters.valid_at
     if filters.valid_at is not None and fact.valid_at is None:
         return False
     if filters.state == "history":
@@ -413,6 +412,7 @@ class FakeSpaceSession:
     def _matching_facts(
         self, filters: FactFilter, reference_time: float
     ) -> Iterator[Fact]:
+        at = filters.effective_time(reference_time)
         labels = set(filters.labels)
         provenance = set(filters.provenance)
         return (
@@ -425,7 +425,7 @@ class FakeSpaceSession:
             and (filters.source is None or fact.source == filters.source)
             and (not provenance or not provenance.isdisjoint(fact.provenance))
             and (not filters.exclude_sensitive or not fact.sensitive)
-            and _matches_time(fact, filters, reference_time)
+            and _matches_time(fact, filters, at)
         )
 
     async def get_fact(
@@ -731,6 +731,8 @@ class FakeSpaceSession:
         Returns:
             按事实标识排序的邻接边及截断标记。
         """
+        if not entity_ids:
+            return GraphEdgeBatch((), False)
         endpoints, excluded = set(entity_ids), set(exclude_fact_ids)
         matches = (
             GraphEdge(fact.id, fact.subject.entity_id, fact.object.entity_id)
@@ -766,6 +768,8 @@ class FakeSpaceSession:
         Returns:
             按主体输入顺序、再按事实标识升序排列的唯一关系边。
         """
+        if not subject_ids:
+            return ()
         positions = {item: pos for pos, item in enumerate(dict.fromkeys(subject_ids))}
         allowed = set(predicates)
         matches = (
@@ -862,8 +866,8 @@ class FakeSpaceSession:
         Raises:
             ValueError: 阈值、查询向量或嵌入空间标识无效，或向量维度不一致。
         """
-        if min_score is not None and not isfinite(min_score):
-            raise ValueError("min_score 须为有限数值")
+        validate_min_score(min_score)
+        matching = self._matching_facts(filters, reference_time)
         query = _CosineVector.from_vector(vector)
         if not embedding_space.strip():
             raise ValueError("embedding_space 须为非空标识")
@@ -874,7 +878,7 @@ class FakeSpaceSession:
             raise ValueError("查询向量与嵌入空间登记的维度不一致")
         vectors = self._vectors.get(embedding_space, {})
         hits: list[tuple[FactId, float]] = []
-        for fact in self._matching_facts(filters, reference_time):
+        for fact in matching:
             candidate = vectors.get(fact.id)
             if candidate is None:
                 continue
@@ -910,6 +914,7 @@ class FakeSpaceSession:
         Returns:
             按分数倒序、事实标识升序排列的标识和分数。
         """
+        validate_min_score(min_score)
         hits = (
             (fact.id, float(fact.text.count(query)))
             for fact in self._matching_facts(filters, reference_time)
